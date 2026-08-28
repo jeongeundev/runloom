@@ -183,6 +183,13 @@ class StepExecutor:
         if docs_dir.is_dir():
             for doc in sorted(docs_dir.glob("*.md")):
                 sections.append(f"## {doc.stem}\n\n{doc.read_text()}")
+            # ADR 은 결정마다 파일 하나. 비재귀 glob 이므로 뒤집힌 결정을
+            # docs/adr/superseded/ 로 옮기면 디스크에는 남고 주입에서만 빠진다.
+            # 같은 이유로 docs/presets/ 등 다른 하위 디렉토리는 주입되지 않는다.
+            adr_dir = docs_dir / "adr"
+            if adr_dir.is_dir():
+                for doc in sorted(adr_dir.glob("*.md")):
+                    sections.append(f"## ADR {doc.stem}\n\n{doc.read_text()}")
         return "\n\n---\n\n".join(sections) if sections else ""
 
     @staticmethod
