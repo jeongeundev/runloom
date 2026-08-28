@@ -1,7 +1,8 @@
 #!/bin/bash
 # Verify Hook — Stop
 # 턴 종료 시 프로젝트를 검증한다. 존재하는 툴체인만 실행하므로
-# Python 하네스 단독 상태에서도, 대상 프로젝트(Next.js)가 스캐폴딩된 뒤에도 동작한다.
+# 하네스 단독 상태에서도, 대상 프로젝트가 스캐폴딩된 뒤에도 동작한다.
+# 현재 감지 대상: Node(package.json) / Python(pytest). 그 외 스택은 검증이 걸리지 않는다.
 # 실패하면 exit 2 로 실패 내용을 Claude 에게 돌려주고 수정을 이어가게 한다.
 
 INPUT=$(cat)
