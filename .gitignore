@@ -13,3 +13,8 @@ __pycache__/
 # phase execution outputs
 phases/**/phase*-output.json
 phases/**/step*-output.json
+
+# secrets — execute.py 가 git add -A 로 커밋하므로 반드시 제외
+.env
+.env.*
+!.env.example
