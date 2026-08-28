@@ -11,36 +11,55 @@ if [ -z "$FILE_PATH" ]; then
   exit 0
 fi
 
-# 테스트 파일 자체를 수정하는 건 허용
-case "$FILE_PATH" in
-  *test*|*spec*|*.test.*|*.spec.*|*__tests__*)
+# 판정은 프로젝트 루트 기준 상대경로로 한다.
+# 절대경로 전체로 매칭하면 프로젝트가 'test'/'spec' 이 들어간 디렉토리 아래 있을 때
+# (예: ~/testing/proj) 모든 파일이 테스트 파일로 분류돼 가드가 통째로 꺼진다.
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+REL="$FILE_PATH"
+if [ -n "$PROJECT_ROOT" ]; then
+  case "$FILE_PATH" in
+    "$PROJECT_ROOT"/*) REL="${FILE_PATH#"$PROJECT_ROOT"/}" ;;
+  esac
+fi
+BASE=$(basename "$FILE_PATH")
+
+# 테스트 파일 자체를 수정하는 건 허용 — 파일명으로 판정
+case "$BASE" in
+  *.test.*|*.spec.*|test_*|*_test.*)
+    exit 0
+    ;;
+esac
+
+# 테스트 전용 디렉토리도 허용 — 경로 '세그먼트' 로 판정
+case "/$REL" in
+  */__tests__/*|*/tests/*|*/test/*|*/spec/*|*/specs/*)
     exit 0
     ;;
 esac
 
 # 설정/타입/스타일 파일은 테스트 불필요 — 허용
-case "$FILE_PATH" in
+case "$REL" in
   *.json|*.css|*.scss|*.md|*.yml|*.yaml|*.env*|*.config.*|*tailwind*|*postcss*|*next.config*|*tsconfig*)
     exit 0
     ;;
 esac
 
 # types/ 폴더는 테스트 불필요 — 허용
-case "$FILE_PATH" in
+case "$REL" in
   */types/*|*/types.ts|*/types.d.ts)
     exit 0
     ;;
 esac
 
 # Python 패키징/픽스처 파일은 테스트 불필요 — 허용
-case "$FILE_PATH" in
+case "$REL" in
   */__init__.py|*/conftest.py|*/setup.py)
     exit 0
     ;;
 esac
 
 # Next.js 프레임워크 파일은 허용 (layout, page, loading, error, not-found, global styles)
-case "$FILE_PATH" in
+case "$REL" in
   */layout.tsx|*/layout.ts|*/page.tsx|*/page.ts|*/loading.tsx|*/error.tsx|*/not-found.tsx|*/globals.css)
     exit 0
     ;;
