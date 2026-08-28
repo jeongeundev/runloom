@@ -12,11 +12,65 @@ if [ "$(echo "$INPUT" | jq -r '.stop_hook_active // false')" = "true" ]; then
   exit 0
 fi
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT" || exit 0
 
+# --- 이번 턴이 검증 대상인지 판정 ---
+# 작업 트리만 보면, 세션이 커밋하고 턴을 끝냈을 때 트리가 깨끗해져서
+# 검증이 통째로 빠진다 (execute.py 프리앰블이 세션에게 커밋을 지시한다).
+# 마지막으로 검증을 통과한 커밋을 .git 에 기록해 두고, HEAD 가 그 뒤로
+# 움직였으면 커밋된 변경도 검증 대상에 포함한다.
+MARK="$(git rev-parse --git-dir 2>/dev/null || echo .)/harness-verified"
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+PREV=$(cat "$MARK" 2>/dev/null || echo "")
+
+WORKTREE=$( { git diff --name-only HEAD 2>/dev/null; \
+              git ls-files --others --exclude-standard 2>/dev/null; } | sort -u )
+
+COMMITTED=""
+if [ -n "$HEAD_SHA" ] && [ "$HEAD_SHA" != "$PREV" ]; then
+  if [ -n "$PREV" ] && git cat-file -e "${PREV}^{commit}" 2>/dev/null; then
+    COMMITTED=$(git diff --name-only "$PREV" HEAD 2>/dev/null)
+  else
+    # 마커가 없거나 (rebase 등으로) 사라진 커밋이면 마지막 커밋만 본다
+    COMMITTED=$(git show --name-only --pretty=format: HEAD 2>/dev/null)
+  fi
+fi
+
+CHANGED=$(printf '%s\n%s\n' "$WORKTREE" "$COMMITTED" | sort -u | grep -v '^$')
+
+# 변경이 없거나 문서(.md)만 바뀐 턴은 검증하지 않는다.
+# 대화만 주고받은 턴에서 빌드/테스트가 도는 것을 막는다.
+if [ -z "$(printf '%s\n' "$CHANGED" | grep -v '\.md$')" ]; then
+  exit 0
+fi
+
 FAILED=""
 
+# --- TDD 불변식 ---
+# tdd-guard.sh 는 PreToolUse[Edit|Write] 라 Bash 리다이렉션(cat > f, tee, sed -i)으로
+# 만든 파일을 막지 못한다. 여기서 작업 트리를 다시 확인해 우회를 잡는다.
+# 판정은 tdd-guard.sh 를 그대로 호출해 재사용한다 — 규칙을 두 곳에서 관리하지 않기 위해.
+MISSING=""
+while IFS= read -r f; do
+  [ -n "$f" ] && [ -f "$f" ] || continue
+  if printf '{"tool_input":{"file_path":"%s"}}' "$ROOT/$f" \
+     | bash "$SCRIPT_DIR/tdd-guard.sh" 2>/dev/null \
+     | grep -q '"permissionDecision": "deny"'; then
+    MISSING="${MISSING}
+  - ${f}"
+  fi
+done < <(printf '%s\n' "$CHANGED" | grep -E '\.(ts|tsx|js|jsx|py)$')
+
+if [ -n "$MISSING" ]; then
+  FAILED="${FAILED}
+
+===== TDD 위반 — 테스트 없는 소스 파일 =====
+아래 파일에 대응하는 테스트가 없습니다. 구현보다 테스트를 먼저 작성하세요.${MISSING}"
+fi
+
+# --- 툴체인 검증 ---
 run() {
   LABEL=$1
   shift
@@ -48,8 +102,11 @@ if [ -n "$PY_TESTS" ] && python3 -c 'import pytest' >/dev/null 2>&1; then
 fi
 
 if [ -n "$FAILED" ]; then
+  # 실패 시에는 마커를 갱신하지 않는다 — 고칠 때까지 매 턴 다시 잡히도록.
   echo "검증 실패 — 아래 오류를 수정하세요.${FAILED}" >&2
   exit 2
 fi
+
+[ -n "$HEAD_SHA" ] && printf '%s' "$HEAD_SHA" > "$MARK" 2>/dev/null
 
 exit 0

@@ -181,6 +181,41 @@ class TestLoadGuardrails:
         assert "Rules" in result
         assert "Architecture" not in result
 
+    def test_loads_adr_directory(self, executor, tmp_project):
+        adr = tmp_project / "docs" / "adr"
+        adr.mkdir()
+        (adr / "0001-use-postgres.md").write_text("# ADR-0001\nPostgres 채택")
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails()
+        assert "Postgres 채택" in result
+
+    def test_excludes_superseded_adr(self, executor, tmp_project):
+        adr = tmp_project / "docs" / "adr"
+        (adr / "superseded").mkdir(parents=True)
+        (adr / "0001-live.md").write_text("# ADR-0001\n유효한 결정")
+        (adr / "superseded" / "0002-dead.md").write_text("# ADR-0002\n뒤집힌 결정")
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails()
+        assert "유효한 결정" in result
+        assert "뒤집힌 결정" not in result
+
+    def test_excludes_other_docs_subdirectories(self, executor, tmp_project):
+        presets = tmp_project / "docs" / "presets"
+        presets.mkdir()
+        (presets / "nextjs.md").write_text("# 프리셋\n주입되면 안 되는 내용")
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails()
+        assert "주입되면 안 되는 내용" not in result
+
+    def test_adr_sorted_by_number(self, executor, tmp_project):
+        adr = tmp_project / "docs" / "adr"
+        adr.mkdir()
+        (adr / "0010-later.md").write_text("나중결정")
+        (adr / "0002-earlier.md").write_text("먼저결정")
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails()
+        assert result.index("먼저결정") < result.index("나중결정")
+
     def test_empty_project(self, tmp_path):
         with patch.object(ex, "ROOT", tmp_path):
             # executor가 필요 없는 static-like 동작이므로 임시 인스턴스

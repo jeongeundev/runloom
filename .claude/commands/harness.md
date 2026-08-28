@@ -93,7 +93,7 @@
 먼저 아래 파일들을 읽고 프로젝트의 아키텍처와 설계 의도를 파악하라:
 
 - `/docs/ARCHITECTURE.md`
-- `/docs/ADR.md`
+- `/docs/adr/` (하위 파일 전부)
 - `/docs/GLOSSARY.md`
 - {이전 step에서 생성/수정된 파일 경로}
 
