@@ -21,3 +21,9 @@ phases/**/step*-output.json
 .env
 .env.*
 !.env.example
+
+# sqlite DB 와 로컬 데이터 디렉터리 (중앙·진단·연결 프로그램)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+data/
