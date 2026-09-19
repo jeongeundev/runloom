@@ -21,7 +21,10 @@
     {
       "step": 2,
       "name": "domain-rules",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T07:02:08+0900",
+      "summary": "src/workflow/domain/ 에 순수 함수 모듈 5개: selection.py (Candidate, select_agent — auto 후보 0/1/N·manual 3경우, CONTRACT 9절 reason), status.py (EXECUTION_STATUSES, TERMINAL_STATUSES, InvalidTransition, next_execution_status, USER_STATUS_LABELS, TaskView, UserStatus, user_status — PRD 3절 10행 + 검토 승인/거절), completion.py (Criterion, criteria_template, merge_criteria, can_auto_complete), defaults.py (default_run_mode, default_selection_mode, default_completion_mode, kind_for_capability), start_key.py (auto_start_key, request_start_key). 스펙 대비 추가: TaskView.selected_agent_id 필드('{agent} 선택됨' 문구용), run_mode=auto 이고 조건 충족·실행 없음이면 '대기 · 자동 실행 대기', manual 선택은 candidate_count 1/0 (SelectionRecord 검증기가 selected 에 count 1 요구). tests/workflow/domain/ 5개 파일 80 passed, 전체 254 passed, ruff 통과. GLOSSARY 에 Candidate·TaskView·Criterion 3행 추가.",
+      "completed_at": "2026-09-20T07:08:00+0900"
     },
     {
       "step": 3,
