@@ -29,7 +29,10 @@
     {
       "step": 3,
       "name": "diagnosis-verifier",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T07:08:00+0900",
+      "summary": "src/workflow/domain/evidence_location.py (ObjectPath, LineRange, Resolved, parse_location, resolve_location — `$.a.b`·`lines:N-M`, JSON/텍스트 자료형 불일치·범위 밖은 None, 문법 오류는 ValueError) 와 src/workflow/domain/verification.py (LoadedEvidence, TraceEntry, Check, Verdict, verify_diagnosis). 공통 검사 5개: attachments_in_trace(ok=True 호출만 인정), refs_in_attachments, attachments_loaded(참조·LoadedEvidence·실제 sha256 삼중 일치), locations_resolve, outcome_shape — 하나라도 실패하면 failed, needs_information 이면 undecidable. 데모 검사 7개 (response_path_changed 만): runs_same_workflow_and_version, failed_run_http_ok_then_transform_failed, paths_differ_as_claimed, change_document_matches, change_effective_before_failure(detail evidence_conflict), report_contract_supports_both, run_ids_consistent — 모순·깨진 형식은 failed, 필요한 첨부 부족은 undecidable(모순이 있으면 failed 우선). 실행 기록(run-{run_id}@1: run_id·workflow_id·started_at·status·code_version·http_status·stages·response_ref·log_ref·report_ref)과 문서({markdown, machine}) 첨부 형식은 phases/0-mvp/step3.md '실행 기록·문서 첨부의 형식' 절과 tests/workflow/domain/test_verification.py demo_sources() 가 정의한다 (Step 9 fixture 기준). 테스트는 CONTRACT 5·6절 JSON 을 그대로 파싱하고 해시를 fixture 에서 재계산. 자연어·고정 수치(20·5) 미사용, I/O 없음. GLOSSARY 에 Verdict·Check·LoadedEvidence 추가하고 Criterion 금지 표현에서 Check 제거. 도메인 136 passed, 전체 310 passed, ruff 통과.",
+      "completed_at": "2026-09-20T07:18:07+0900"
     },
     {
       "step": 4,
