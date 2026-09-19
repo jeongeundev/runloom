@@ -7,7 +7,8 @@
       "name": "project-setup",
       "status": "completed",
       "started_at": "2026-09-20T06:40:59+0900",
-      "summary": "src/workflow/{contracts,domain,adapters,server,connector}, src/diagnostic_demo/{api,worker,tools,fixtures} 빈 패키지와 tests/ 미러 배치 생성. tests/test_packages.py 로 import 스모크 + AGENTS.md 의존 방향 회귀 테스트 4건 추가. pip install -e '.[dev]' 성공, pyproject 미수정. .gitignore 에 *.sqlite·data/ 추가. pytest 98 passed, ruff 통과."
+      "summary": "src/workflow/{contracts,domain,adapters,server,connector}, src/diagnostic_demo/{api,worker,tools,fixtures} 빈 패키지와 tests/ 미러 배치 생성. tests/test_packages.py 로 import 스모크 + AGENTS.md 의존 방향 회귀 테스트 4건 추가. pip install -e '.[dev]' 성공, pyproject 미수정. .gitignore 에 *.sqlite·data/ 추가. pytest 98 passed, ruff 통과.",
+      "completed_at": "2026-09-20T06:43:15+0900"
     },
     {
       "step": 1,
