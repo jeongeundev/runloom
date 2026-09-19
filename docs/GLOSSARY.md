@@ -46,6 +46,7 @@
 | `Verdict` | 진단 결과 검증기의 판정. `passed`/`failed`/`undecidable` 와 `checks` (`domain/verification.py`). Task 상태·`outcome` 과 구분 | `Result`, `Decision`, `Status` |
 | `Check` | 검증기 판정 항목 하나. `code`·`passed`·`detail` (`domain/verification.py`) | `Rule`, `Assertion`, `Test` |
 | `LoadedEvidence` | 중앙이 내려받아 해시를 확인한 첨부 원문. `(evidence_id, version)` 키로 검증기에 넘긴다 (`domain/verification.py`) | `Attachment`(결과 봉투의 참조), `Document`, `Blob` |
+| `ExecutionObservation` | 서버가 기록한 관찰 (`unknown_no_start`, `heartbeat_lost`, `timeout`). `unknown` 판정 근거이며 실행 주체가 보내는 `ExecutionEvent` 와 구분한다 — seq 를 소비하지 않는다 (`execution_observations` 테이블) | `Event`, `Log`, `Alert` |
 | 사용자 상태 | `대기`, `실행 가능`, `실행 요청됨`, `실행 중`, `확인 필요`, `완료`, `실패`. 화면 문구로 그대로 쓴다 | `pending`, `done`, `success`, `error`, `대기 중` |
 
 ## 경계가 헷갈리는 개념

@@ -37,7 +37,10 @@
     {
       "step": 4,
       "name": "central-db",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T07:18:41+0900",
+      "summary": "src/workflow/adapters/ 에 저장 계층 4개 모듈. db.py: connect(foreign_keys·WAL·busy_timeout 5000·Row·isolation_level None), init_schema(멱등, schema_version=1) — 테이블 12개 sessions·agents·connect_codes·connectors·tasks·selection_records·executions·execution_events·execution_observations·artifacts·task_verdicts·diagnosis_usage + 부분 유일 인덱스 ux_executions_active(released_at IS NULL). 허용 상태 CHECK 는 domain.status·contracts.v1 상수로 생성. artifact_store.py: ArtifactStore(write 임시파일+fsync+rename, root/ab/cd/<sha256> 내용 주소, read, exists). errors.py: AdapterError 하위 9종. repo.py: 세션·에이전트(upsert_agent 는 capabilities/verification_profile_ids/discovered 를 native 로 받아 Capability 검증 후 *_json 저장)·연결 코드(token_urlsafe, wfc_ 토큰은 sha256 만 저장, 만료·사용·취소 NotFound)·업무(insert_task 는 선행 Task 같은 세션 검사)·선택 기록·실행(create_execution: IntegrityError 메시지로 ActiveExecutionExists/DuplicateStartKey 구분, claim_execution: queued 최오래된 1건 + connectors.current_execution_id 로 접수 전 동일 실행 유지, append_event: 한 트랜잭션에 CONTRACT 3절 오류표 전부 — 동일 중복 무시·EventConflict·SequenceGap(expected_seq)·InvalidTransition(current_status, reason=result_artifact_missing), 전이는 domain.next_execution_status 호출, mark_unknown 은 observation 행 + status unknown, release_execution, executions_needing_attention)·산출물(store_artifact 해시 검사·재업로드 기존 반환, read_artifact 파일 없으면 ArtifactMissing, download_allowed(conn, store, …) 3경로 — 스펙 시그니처에 store 추가: manifest 를 읽어야 해서)·상한(count_diagnosis_started, record_diagnosis_start). tests/workflow/adapters/ conftest+4파일 50 passed (스레드 2개 동시 claim 포함), 전체 360 passed, ruff 통과. GLOSSARY 에 ExecutionObservation 추가.",
+      "completed_at": "2026-09-20T07:29:02+0900"
     },
     {
       "step": 5,
