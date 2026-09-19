@@ -1,0 +1,24 @@
+{
+  "project": "workflow",
+  "phase": "0-mvp",
+  "steps": [
+    { "step": 0, "name": "project-setup", "status": "pending" },
+    { "step": 1, "name": "contracts", "status": "pending" },
+    { "step": 2, "name": "domain-rules", "status": "pending" },
+    { "step": 3, "name": "diagnosis-verifier", "status": "pending" },
+    { "step": 4, "name": "central-db", "status": "pending" },
+    { "step": 5, "name": "machine-api", "status": "pending" },
+    { "step": 6, "name": "session-web", "status": "pending" },
+    { "step": 7, "name": "web-ui", "status": "pending" },
+    { "step": 8, "name": "central-worker", "status": "pending" },
+    { "step": 9, "name": "diag-fixtures-tools", "status": "pending" },
+    { "step": 10, "name": "diag-service", "status": "pending" },
+    { "step": 11, "name": "connector-core", "status": "pending" },
+    { "step": 12, "name": "connector-codex", "status": "pending" },
+    { "step": 13, "name": "demo-report-repo", "status": "pending" },
+    { "step": 14, "name": "local-e2e", "status": "pending" },
+    { "step": 15, "name": "codex-live-check", "status": "pending" },
+    { "step": 16, "name": "deploy-prep", "status": "pending" },
+    { "step": 17, "name": "diag-live-eval", "status": "pending" }
+  ]
+}
