@@ -1,6 +1,7 @@
 """db.py — 연결 설정과 스키마 (ARCHITECTURE "DB 제약과 실행 잠금")."""
 
 import sqlite3
+import threading
 
 import pytest
 
@@ -77,3 +78,24 @@ def test_check_constraints(conn):
             " data_json, actor) VALUES ('e1', 0, 'accepted', ?, ?, '{}', 'x')",
             (NOW, NOW),
         )
+
+
+def test_connection_is_usable_from_another_thread_sequentially(db_path):
+    """FastAPI 는 의존성 준비·핸들러·정리를 서로 다른 threadpool 스레드에서 돌린다.
+    요청당 연결 하나를 순차적으로 쓸 수 있어야 한다 (동시 공유는 하지 않는다)."""
+    c = connect(db_path)
+    init_schema(c)
+    result: dict[str, object] = {}
+
+    def use():
+        try:
+            result["value"] = c.execute("SELECT version FROM schema_version").fetchone()[0]
+        except Exception as exc:  # noqa: BLE001 — 스레드 예외를 본 스레드로 옮긴다
+            result["error"] = exc
+
+    t = threading.Thread(target=use)
+    t.start()
+    t.join()
+    assert "error" not in result, result.get("error")
+    assert result["value"] == SCHEMA_VERSION
+    c.close()

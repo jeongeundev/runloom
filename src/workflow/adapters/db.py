@@ -16,8 +16,12 @@ OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
-    """외래키 ON, WAL, busy_timeout 5초(ARCHITECTURE 배포 절), Row, 명시적 BEGIN."""
-    conn = sqlite3.connect(str(path), isolation_level=None)
+    """외래키 ON, WAL, busy_timeout 5초(ARCHITECTURE 배포 절), Row, 명시적 BEGIN.
+
+    `check_same_thread=False`: FastAPI 는 요청 하나의 의존성 준비·핸들러·정리를 서로 다른
+    threadpool 스레드에서 돌린다. 연결은 요청마다 새로 열어 순차적으로만 쓰고 스레드 간에
+    동시에 공유하지 않는다."""
+    conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA journal_mode=WAL")

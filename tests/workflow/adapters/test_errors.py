@@ -18,8 +18,7 @@ from workflow.adapters.errors import (
 
 @pytest.mark.parametrize(
     "exc_type",
-    [ActiveExecutionExists, DuplicateStartKey, EventConflict, NotFound, Forbidden, HashMismatch,
-     ArtifactMissing],
+    [ActiveExecutionExists, DuplicateStartKey, NotFound, Forbidden, HashMismatch, ArtifactMissing],
 )
 def test_simple_errors_inherit_adapter_error(exc_type):
     exc = exc_type("detail")
@@ -34,9 +33,19 @@ def test_sequence_gap_carries_expected_seq():
     assert "4" in str(exc)
 
 
-def test_invalid_transition_carries_current_status_and_optional_reason():
+def test_event_conflict_carries_seq():
+    exc = EventConflict(3)
+    assert isinstance(exc, AdapterError)
+    assert exc.seq == 3
+    assert "3" in str(exc)
+
+
+def test_invalid_transition_carries_current_status_event_type_and_optional_reason():
     exc = InvalidTransition("result_ready")
     assert isinstance(exc, AdapterError)
-    assert (exc.current_status, exc.reason) == ("result_ready", None)
-    exc = InvalidTransition("running", reason="result_artifact_missing")
-    assert (exc.current_status, exc.reason) == ("running", "result_artifact_missing")
+    assert (exc.current_status, exc.event_type, exc.reason) == ("result_ready", None, None)
+    exc = InvalidTransition("result_ready", event_type="started")
+    assert (exc.current_status, exc.event_type, exc.reason) == ("result_ready", "started", None)
+    exc = InvalidTransition("running", event_type="result_ready", reason="result_artifact_missing")
+    assert (exc.current_status, exc.event_type, exc.reason) == (
+        "running", "result_ready", "result_artifact_missing")

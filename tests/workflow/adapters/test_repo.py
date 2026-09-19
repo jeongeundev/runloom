@@ -211,6 +211,32 @@ def test_agent_connection_state_and_connector_lookup(conn):
         repo.set_agent_connection(conn, "nope", "online", None)
 
 
+def test_update_registration_fills_connector_fields_and_keeps_capabilities(conn):
+    repo.upsert_agent(conn, _agent("agent-codex-mac", connection_type="local", owner_scope="personal",
+                                   local_registration_id="local-demo-report",
+                                   capabilities=[{"code": "code.modify",
+                                                  "scope": {"repository_id": "demo-report-repo"}}],
+                                   connection_state="unknown"))
+    agent_id = repo.update_registration(
+        conn, "local-demo-report", connector_id=CONNECTOR, repository_id="demo-report-repo",
+        base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e", verification_profile_ids=["vp-pytest"],
+        discovered={"codex_version": "0.155.1"}, now=LATER,
+    )
+    assert agent_id == "agent-codex-mac"
+    row = repo.get_agent(conn, "agent-codex-mac")
+    assert row["connector_id"] == CONNECTOR
+    assert row["repository_id"] == "demo-report-repo"
+    assert row["base_commit"] == "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e"
+    assert json.loads(row["verification_profile_ids_json"]) == ["vp-pytest"]
+    assert json.loads(row["discovered_json"]) == {"codex_version": "0.155.1"}
+    assert (row["connection_state"], row["last_seen_at"]) == ("online", LATER)
+    assert json.loads(row["capabilities_json"])[0]["code"] == "code.modify"
+    with pytest.raises(NotFound):
+        repo.update_registration(conn, "local-none", connector_id=CONNECTOR, repository_id="r",
+                                 base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
+                                 verification_profile_ids=[], discovered={}, now=LATER)
+
+
 # --- 연결 코드·연결 프로그램 ------------------------------------------------
 
 
@@ -402,9 +428,10 @@ def test_duplicate_same_seq_same_content_is_accepted_without_reapply(running):
 
 
 def test_same_seq_different_content_conflicts(running):
-    with pytest.raises(EventConflict):
+    with pytest.raises(EventConflict) as info:
         repo.append_event(running, "exec-1", _event("exec-1", 2, "started", {"runtime_ref": "pid:2"}),
                           "conn", LATER)
+    assert info.value.seq == 2
     with pytest.raises(EventConflict):
         repo.append_event(running, "exec-1", _event("exec-1", 2, "progress", {"message": "x"}),
                           "conn", LATER)
@@ -425,7 +452,7 @@ def test_invalid_transitions(seeded, store):
     repo.append_event(conn, "exec-1", _event("exec-1", 1, "accepted", {}), "conn", NOW)
     with pytest.raises(InvalidTransition) as info:  # running 아닌데 progress
         repo.append_event(conn, "exec-1", _event("exec-1", 2, "progress", {"message": "x"}), "conn", NOW)
-    assert info.value.current_status == "accepted"
+    assert (info.value.current_status, info.value.event_type) == ("accepted", "progress")
 
     repo.append_event(conn, "exec-1", _event("exec-1", 2, "failed",
                                              {"code": "timeout", "message": "x", "process_stopped": True}),
@@ -436,7 +463,7 @@ def test_invalid_transitions(seeded, store):
     with pytest.raises(InvalidTransition) as info:  # 최종 상태 뒤 새 started
         repo.append_event(conn, "exec-1", _event("exec-1", 3, "started", {"runtime_ref": "pid:9"}),
                           "conn", LATER)
-    assert info.value.current_status == "failed"
+    assert (info.value.current_status, info.value.event_type) == ("failed", "started")
     assert repo.get_execution(conn, "exec-1")["last_event_seq"] == 2
 
 
@@ -446,6 +473,7 @@ def test_result_ready_requires_artifact_of_this_execution(running, store):
         repo.append_event(conn, "exec-1", _event("exec-1", 3, "result_ready",
                                                  {"result_artifact_id": "art-none"}), "conn", NOW)
     assert info.value.current_status == "running" and info.value.reason == "result_artifact_missing"
+    assert info.value.event_type == "result_ready"
 
     repo.insert_task(conn, _task("other-task"), NOW)
     _create_execution(conn, "exec-other", "other-task")

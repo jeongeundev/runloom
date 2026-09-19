@@ -174,6 +174,42 @@ def agents_for_connector(conn: Connection, connector_id: str) -> list[Row]:
     ).fetchall()
 
 
+def update_registration(
+    conn: Connection,
+    local_registration_id: str,
+    *,
+    connector_id: str,
+    repository_id: str,
+    base_commit: str,
+    verification_profile_ids: list[str],
+    discovered: dict,
+    now: str,
+) -> str:
+    """연결 프로그램이 보고한 로컬 등록으로, 운영자가 미리 등록한 agent 의 연결 정보를 채운다.
+    이름·소유 구분·능력은 운영자 값이라 건드리지 않는다. 없으면 NotFound. 반환은 agent_id."""
+    with _tx(conn):
+        row = _one(
+            conn,
+            "SELECT agent_id FROM agents WHERE local_registration_id = ? ORDER BY agent_id",
+            (local_registration_id,),
+        )
+        if row is None:
+            raise NotFound(f"local registration {local_registration_id}")
+        conn.execute(
+            """
+            UPDATE agents SET connector_id = ?, repository_id = ?, base_commit = ?,
+              verification_profile_ids_json = ?, discovered_json = ?,
+              connection_state = 'online', last_seen_at = ?
+            WHERE agent_id = ?
+            """,
+            (
+                connector_id, repository_id, base_commit, json.dumps(list(verification_profile_ids)),
+                json.dumps(discovered, ensure_ascii=False), now, row["agent_id"],
+            ),
+        )
+    return row["agent_id"]
+
+
 # --- 연결 코드·연결 프로그램 (ARCHITECTURE 인증 절) -------------------------
 
 
@@ -433,7 +469,7 @@ def append_event(
                 event.type, event.occurred_at, data_json
             )
             if not same:
-                raise EventConflict(f"seq {event.seq}")
+                raise EventConflict(event.seq)
             return EventAck(
                 execution_id=execution_id, last_event_seq=row["last_event_seq"], status=row["status"]
             )
@@ -443,7 +479,7 @@ def append_event(
         try:
             new_status = next_execution_status(row["status"], event.type)
         except domain_status.InvalidTransition as exc:
-            raise InvalidTransition(row["status"]) from exc
+            raise InvalidTransition(row["status"], event_type=event.type) from exc
 
         updates: dict[str, object] = {"status": new_status, "last_event_seq": event.seq}
         if event.type == "accepted":
@@ -458,7 +494,9 @@ def append_event(
                 (artifact_id, execution_id),
             )
             if owned is None:
-                raise InvalidTransition(row["status"], reason="result_artifact_missing")
+                raise InvalidTransition(
+                    row["status"], event_type=event.type, reason="result_artifact_missing"
+                )
             updates["result_artifact_id"] = artifact_id
             updates["finished_at"] = now
         elif event.type == "failed":

@@ -16,6 +16,10 @@ class DuplicateStartKey(AdapterError):
 class EventConflict(AdapterError):
     """같은 seq 에 다른 내용의 이벤트가 이미 저장돼 있다."""
 
+    def __init__(self, seq: int):
+        super().__init__(f"seq {seq}에 다른 내용이 이미 저장돼 있습니다")
+        self.seq = seq
+
 
 class SequenceGap(AdapterError):
     def __init__(self, expected_seq: int):
@@ -24,9 +28,14 @@ class SequenceGap(AdapterError):
 
 
 class InvalidTransition(AdapterError):
-    def __init__(self, current_status: str, reason: str | None = None):
+    """`event_type` 은 거부한 이벤트 종류(서버 관찰로 막힌 경우 None), `reason` 은 추가 사유."""
+
+    def __init__(
+        self, current_status: str, *, event_type: str | None = None, reason: str | None = None
+    ):
         super().__init__(f"{current_status} 상태에서는 허용되지 않는 전환입니다")
         self.current_status = current_status
+        self.event_type = event_type
         self.reason = reason
 
 

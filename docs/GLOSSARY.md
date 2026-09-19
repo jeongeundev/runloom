@@ -32,6 +32,7 @@
 | `capability` | Agent의 등록 능력 `{ code, scope }`. code는 `operations.diagnose`, `code.modify` | `skill`, `role`, `permission` |
 | `required_capability` | Task가 요구하는 능력 하나. 같은 구조 | `requirement`, `needs` |
 | `connector` / `connector_id` | 운영자 Mac에서 도는 로컬 연결 프로그램. Agent 여러 개(`local_registration_id`)를 대신 실행할 수 있다 | `agent`, `daemon`, `client` |
+| `connect code` | 운영자가 발급하는 1회용 10분 연결 코드. `POST /connector/exchange` 로 교환하면 `connector_id` 와 연결 토큰 `wfc_…` 이 된다. 코드는 교환 즉시 무효, 토큰은 서버에 sha256 만 남는다 | `pairing code`, `invite`, `api key` |
 | `local_registration_id` | connector 안에서 등록된 폴더 + 도구 하나 | `folder_id`, `workspace` |
 | `handoff bundle` | A 결과와 근거 원문을 묶은 B 입력 manifest. kind `handoff_bundle` | `payload`, `context`, `package` |
 | `verification profile` / `verification_profile_id` | 소유자가 사전 등록한 검증 명령 (예: `vp-pytest`). 요청에 셸 명령을 넣지 않는다 | `test command`, `check` |
