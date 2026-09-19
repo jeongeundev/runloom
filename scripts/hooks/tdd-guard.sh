@@ -58,9 +58,9 @@ case "$REL" in
     ;;
 esac
 
-# Python 패키징/픽스처 파일은 테스트 불필요 — 허용
+# Python 패키징/픽스처/진입점 파일은 테스트 불필요 — 허용 (__main__.py 는 `python3 -m pkg` 진입점)
 case "$REL" in
-  */__init__.py|*/conftest.py|*/setup.py)
+  */__init__.py|*/__main__.py|*/conftest.py|*/setup.py)
     exit 0
     ;;
 esac

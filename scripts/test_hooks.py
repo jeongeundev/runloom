@@ -94,6 +94,15 @@ class TestTddInvariant:
             "def test_x():\n    assert True\n")
         assert run_verify(repo).returncode == 0
 
+    def test_python_main_entrypoint_is_exempt(self, repo):
+        """`python3 -m pkg` 진입점 __main__.py 는 __init__.py 와 같이 TDD 대상이 아니다."""
+        (repo / "src" / "pkg").mkdir(parents=True)
+        (repo / "src" / "pkg" / "__init__.py").write_text("")
+        (repo / "src" / "pkg" / "__main__.py").write_text("print('entry')\n")
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_dummy.py").write_text("def test_x():\n    assert True\n")
+        assert run_verify(repo).returncode == 0
+
     def test_committed_source_without_test_also_fails(self, repo):
         """커밋된 변경도 HEAD 기준이 아니라 작업 트리 기준으로 본다."""
         (repo / "src").mkdir()

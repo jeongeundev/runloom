@@ -54,6 +54,7 @@ class StepExecutor:
     """Phase 디렉토리 안의 step들을 순차 실행하는 하네스."""
 
     MAX_RETRIES = 3
+    STEP_TIMEOUT = 1800  # 초. 한 step 의 에이전트 세션 상한
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
     TZ = timezone(timedelta(hours=9))
@@ -247,10 +248,19 @@ class StepExecutor:
 
     def _run_engine(self, prompt: str) -> subprocess.CompletedProcess:
         # stdin 이 파이프면 codex exec 가 EOF 까지 읽으므로 DEVNULL 로 막는다.
-        return subprocess.run(
-            self.ENGINES[self._engine] + [prompt],
-            cwd=self._root, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1800,
-        )
+        cmd = self.ENGINES[self._engine] + [prompt]
+        try:
+            return subprocess.run(
+                cmd, cwd=self._root, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=self.STEP_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as e:
+            # 시간 초과를 실패한 실행으로 돌려 재시도 루프에 맡긴다. 예외를 그대로 두면
+            # 실행 전체가 죽고 index.json 에 아무 기록도 남지 않는다.
+            out = e.output if isinstance(e.output, str) else (e.output or b"").decode(errors="replace")
+            err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode(errors="replace")
+            return subprocess.CompletedProcess(
+                cmd, 124, out, f"{err}\n[timeout] step 이 {self.STEP_TIMEOUT}초를 초과했습니다.")
 
     def _invoke_agent(self, step: dict, preamble: str) -> dict:
         step_num, step_name = step["step"], step["name"]

@@ -501,6 +501,14 @@ class TestInvokeAgent:
         assert "--dangerously-skip-permissions" in cmd
         assert output["engine"] == "claude"
 
+    def test_engine_timeout_becomes_failed_result_not_crash(self, executor):
+        """step 이 시간 제한을 넘기면 실행 전체가 죽지 않고 재시도 루프로 돌아간다."""
+        exc = subprocess.TimeoutExpired(cmd=["codex"], timeout=1, output="partial", stderr="")
+        with patch("subprocess.run", side_effect=exc):
+            output = executor._invoke_agent({"step": 2, "name": "ui"}, "PREAMBLE\n")
+        assert output["exitCode"] != 0
+        assert "timeout" in output["stderr"].lower() or "시간" in output["stderr"]
+
     def test_unknown_engine_rejected(self, tmp_project):
         with patch.object(ex, "ROOT", tmp_project):
             with pytest.raises(ValueError):
