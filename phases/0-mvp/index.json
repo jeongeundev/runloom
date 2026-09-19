@@ -16,7 +16,7 @@
       "status": "completed",
       "started_at": "2026-09-20T06:57:42+0900",
       "summary": "src/workflow/contracts/v1.py 에 계약 v1 Pydantic 모델 31종 (ErrorBody, DiagnosisTarget, CodeChangeTarget, ExecutionRequest, RunStatus, ClaimRequest, HeartbeatRequest, AttachmentRef, HandoffBundle, ExecutionEvent(+데이터 모델 5종), EventAck, ArtifactMeta, ArtifactCreated, EvidenceVersion, EvidenceRef, Finding, Diagnosis, RepairRequest, MissingInformation, Provenance, DiagnosisResult, Verification, CodeChangeResult, ReviewComment, Capability, SelectionRecord), 상수 CONTRACT_VERSION·ARTIFACT_KINDS(13종), 헬퍼 parse_rfc3339_aware 작성. 모든 모델 extra=forbid·strict=True, 시각은 str+RFC3339 validator. tests/workflow/contracts/test_v1.py 가 docs/CONTRACT.md 의 ```json 22블록·표 인라인 8블록을 fixture 로 키 서명 대응·검증하고 거부 사례·왕복 테스트 포함 76 passed. 전체 pytest 174 passed, ruff 통과. stash@{0} 의 미완성분을 이어 완성했다 (stash 는 보존, 이제 불필요).",
-      "completed_at": "2026-09-20T07:01:13+0900"
+      "completed_at": "2026-09-20T07:02:08+0900"
     },
     {
       "step": 2,
