@@ -1,13 +1,39 @@
 # 현재 인계 — 이종 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-20
-상태: 구현 전 문서 작업 7항목 중 6개 완료(범위 확정, 선택·완료 규칙, 인증·권한, 배포·예산, 계약 예시집, AGENTS.md·훅). 남은 것은 7번 구현 계획(`phases/`)이다. 제품 코드·실연동·배포는 시작하지 않았다.
+갱신일: 2026-09-20 (구현 시작 후 중단)
+상태: 문서 7항목 완료. 구현 계획 `phases/0-mvp/` step 0~17 작성·커밋. 하네스를 `--engine claude` 로 실행해 step 0 완료 후 step 1 진행 중 사용자 요청으로 중단. 브랜치 `feat-0-mvp`, 푸시 안 함.
+
+## 지금 상태 — 새 세션이 먼저 볼 것
+
+| 항목 | 상태 |
+|---|---|
+| 브랜치 | `feat-0-mvp` (main 에서 분기. main 은 그대로) |
+| 커밋 | `docs:` 설계 문서 → `fix(harness)` 시간 초과·`__main__.py` 예외 → `chore(harness)` step 계획 → `feat(0-mvp): step 0` + `chore` |
+| step 0 project-setup | 완료. `src/`·`tests/` 뼈대, editable 설치, `tests/test_packages.py` 의존 방향 회귀 테스트. pytest 98 passed |
+| step 1 contracts | 시작했다가 중단. 미완성분은 `git stash list` 의 `stash@{0}` (v1.py 417줄, test_v1.py 393줄). 작업 트리는 HEAD 와 같다 |
+| step 2~17 | pending. 파일은 `phases/0-mvp/step{N}.md` |
+| 사용자 검토 | **step 파일 18개를 사용자가 아직 검토하지 않았다.** 이전 세션이 승인 범위를 넘어 실행을 시작했고 사용자가 멈췄다. 실행 재개 전에 사용자에게 step 파일 검토 여부를 묻는다 |
+
+재개 방법:
+
+```bash
+# (선택) step 1 진행분을 이어서 쓰려면
+git stash pop
+# 실행 — 반드시 claude 엔진 (Codex 사용량 소진)
+python3 scripts/execute.py 0-mvp --engine claude
+```
+
+`git stash pop` 없이 돌리면 step 1 을 처음부터 다시 만든다. pop 하면 그 파일 위에서 이어 간다 (execute.py 는 작업 트리를 초기화하지 않는다). 하네스는 step 15(Codex 실연동)·17(OpenAI 키) 에서 blocked 로 멈출 수 있다 — 사유 해결 후 `index.json` 의 해당 step 을 `pending` 으로 되돌리고 같은 명령으로 재개한다.
+
+주의: 하네스가 도는 동안 같은 작업 트리에서 다른 Claude Code 세션의 Stop 훅(`verify.sh`)이 미완성 파일을 보고 검증 실패를 낸다. 하네스 실행 중에는 그 세션에서 소스를 만지지 않는다.
+
+리스크 (사용자에게 알린 것): 제품의 B 실행은 연결 프로그램이 띄우는 Codex 이고 하네스와 같은 사용량을 쓴다. 사용량이 거의 없으면 심사 기간 B 가 `실패`로 표시된다. Claude Code 어댑터(`src/workflow/connector/` 경계에 추가)가 대안이며 step 15 결과를 보고 결정하기로 했다.
 
 ## 새 세션 시작
 
 1. 루트 AGENTS.md(스택·규칙·명령어 채움)와 [ADR 목록](adr/0000-principles.md)을 읽는다. ADR-0000~0006이 확정 사항이며 0003만 작업 가정이다.
 2. [PRD](PRD.md)·[ARCHITECTURE](ARCHITECTURE.md)·[CONTRACT](CONTRACT.md)·[GLOSSARY](GLOSSARY.md)를 읽는다. "2026-09-20 확정"으로 표시한 절은 재질문하지 않는다.
-3. 7번 구현 계획이 없으면 `.claude/commands/harness.md`의 C·D 절차로 `phases/0-mvp/` step 초안을 만들어 사용자 피드백을 받는다. 사용자에게 제품 방향이나 시연 사례를 다시 고르도록 요구하지 않는다.
+3. 구현 계획은 `phases/0-mvp/` 에 있다. 위 "지금 상태" 표를 보고 사용자에게 step 파일 검토 여부와 재개 여부를 확인한 뒤 실행한다. 사용자에게 제품 방향이나 시연 사례를 다시 고르도록 요구하지 않는다.
 
 사용자는 문서 작성을 먼저 끝내고 구현으로 넘어가길 원한다. 별도 구현 요청 전에는 제품 코드·실연동·배포를 시작하지 않는다. 결정 질문은 압축 용어 대신 "누가 무엇을 하면 어떤 일이 생기는지" 장면으로 풀어 설명한 뒤 2~3개씩 묻는다.
 
@@ -87,9 +113,9 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 
 ## 다음 세션에서 할 일
 
-1. 7번 구현 계획: `phases/0-mvp/` step 초안을 작성해 사용자 피드백을 받고, 승인 후 `phases/index.json`·`phases/0-mvp/index.json`·`step{N}.md`를 만든다. 각 step은 "어떤 실패를 재현하고 통과시킬지"와 AGENTS.md 명령어 그대로의 AC를 가진다. 진단 실연동·실제 Codex 실행 step은 키·환경 확인 전 blocked다.
-2. 사용자가 구현 시작을 지시하면 `python3 scripts/execute.py 0-mvp`로 실행한다.
-3. 미결 3건(VM·도메인, OpenAI 키·단가, 예시 실행 공개)은 해당 step에 도달할 때 확인한다.
+1. 사용자에게 `phases/0-mvp/step*.md` 검토 여부를 묻는다. 고칠 점이 있으면 해당 step 파일을 고친다 (아직 시작 안 한 step 은 실행 시점에 파일을 읽는다).
+2. 사용자가 재개를 지시하면 `python3 scripts/execute.py 0-mvp --engine claude` 로 실행한다. step 1 진행분을 쓸지(`git stash pop`) 먼저 정한다.
+3. 미결 3건(VM·도메인, OpenAI 키·단가, 예시 실행 공개)은 해당 step(16·17·8)에 도달할 때 확인한다.
 
 ### 이전 세션의 기술 설계 진행 내용 — 확정 전 기록 (위 표가 우선)
 
