@@ -1,9 +1,12 @@
+{# 오류 — UI_GUIDE "오류 알림": message 그대로, code 는 모노스페이스, 429 는 resets_at 을 "다시 가능" 으로. #}
 {% extends "base.html" %}
 {% block title %}오류 {{ error.status }} — workflow{% endblock %}
 {% block content %}
-<h1>{{ error.status }}</h1>
-<p>{{ error.message }}</p>
-<p><code>{{ error.code }}</code>{% if error.field %} · 필드 {{ error.field }}{% endif %}</p>
-{% if error.details and error.details.resets_at %}<p>다시 가능: {{ error.details.resets_at|kst }}</p>{% endif %}
-<p><a href="/">업무 목록으로</a></p>
+<div class="crumbs"><div class="crumb">오류 {{ error.status }}</div></div>
+<div class="alert">
+  <div>{{ error.message }}</div>
+  <div class="small"><code>{{ error.code }}</code>{% if error.field %} · 필드 <code>{{ error.field }}</code>{% endif %}
+  {%- if error.details and error.details.resets_at %} · 다시 가능: {{ error.details.resets_at|kst }}{% endif %}</div>
+</div>
+<div class="actions"><a class="btn btn-secondary" href="/">업무 목록으로</a></div>
 {% endblock %}

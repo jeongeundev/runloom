@@ -219,3 +219,188 @@ def test_kst_day_bounds():
     since, resets_at = views.kst_day_bounds("2026-09-20T15:00:00Z")  # 다음 날 00:00 KST
     assert since == "2026-09-20T15:00:00.000000Z"
     assert resets_at == "2026-09-22T00:00:00+09:00"
+
+
+# --- Step 7: 화면 헬퍼 -----------------------------------------------------------
+
+DIFF_TEXT = (
+    "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,3 @@\n context\n-old\n+new\n+added\n"
+    "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -0,0 +1,1 @@\n+only\n"
+)
+
+
+def test_diff_stats_counts_files_and_changed_lines():
+    assert views.diff_stats(DIFF_TEXT) == (2, 3, 1)
+    assert views.diff_stats("") == (0, 0, 0)
+    assert views.diff_stats("--- a\n+++ b\n+x\n-y\n") == (1, 1, 1)  # 헤더 줄은 세지 않는다
+
+
+def test_diff_lines_classifies_each_line():
+    kinds = [kind for kind, _ in views.diff_lines(DIFF_TEXT)]
+    assert kinds[:8] == ["meta", "meta", "meta", "hunk", "ctx", "del", "add", "add"]
+    assert views.diff_lines("+x\n")[0] == ("add", "+x")
+    assert views.diff_lines("") == []
+
+
+def test_tail_lines_keeps_last_n():
+    assert views.tail_lines("a\nb\nc\n", 2) == ["b", "c"]
+    assert views.tail_lines("", 5) == []
+
+
+def _store_evidence(conn, store, execution_id: str, sources: dict) -> dict:
+    from workflow.contracts.v1 import ArtifactMeta
+
+    from .conftest import meta_for
+
+    ids = {}
+    for (evidence_id, version), (content_type, text) in sources.items():
+        data = text.encode()
+        created, _ = repo.store_artifact(
+            conn, store, execution_id=execution_id, session_id="sess-1",
+            meta=ArtifactMeta.model_validate(meta_for(data, kind="evidence", name=evidence_id,
+                                                       content_type=content_type)),
+            data=data, now=NOW,
+        )
+        ids[(evidence_id, version)] = created.artifact_id
+    return ids
+
+
+def test_evidence_excerpts_resolve_locations_from_stored_attachments(seeded, settings, store):
+    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
+    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
+    ids = _store_evidence(seeded, store, "exec-1", {
+        ("response-after", "1"): ("application/json", '{"report_date": "2026-09-19", "data": {"records": [{"team": "운영"}]}}'),
+        ("log-daily-0920", "1"): ("text/plain", "line one\nline two\nline three\n"),
+    })
+    result = {
+        "findings": [
+            {"claim": "a", "evidence_refs": [
+                {"evidence_id": "response-after", "version": "1", "location": "$.data.records"},
+                {"evidence_id": "log-daily-0920", "version": "1", "location": "lines:2-3"},
+                {"evidence_id": "log-daily-0920", "version": "1", "location": "lines:9-9"},
+                {"evidence_id": "missing-doc", "version": "1", "location": "$.x"},
+            ]},
+        ],
+        "attachments": [
+            {"evidence_id": "response-after", "version": "1", "content_type": "application/json",
+             "artifact_id": ids[("response-after", "1")], "sha256": "0" * 64},
+            {"evidence_id": "log-daily-0920", "version": "1", "content_type": "text/plain",
+             "artifact_id": ids[("log-daily-0920", "1")], "sha256": "0" * 64},
+            {"evidence_id": "other-session", "version": "1", "content_type": "text/plain",
+             "artifact_id": ids[("log-daily-0920", "1")], "sha256": "0" * 64},
+        ],
+    }
+    excerpts = views.evidence_excerpts(seeded, store, result, session_id="sess-1")
+    assert excerpts["response-after@1 · $.data.records"] == {"found": True, "text": '[\n  {\n    "team": "운영"\n  }\n]'}
+    assert excerpts["log-daily-0920@1 · lines:2-3"] == {"found": True, "text": "line two\nline three"}
+    assert excerpts["log-daily-0920@1 · lines:9-9"] == {"found": False, "text": "원문에 없음"}
+    assert excerpts["missing-doc@1 · $.x"] == {"found": False, "text": "첨부 없음"}
+    # 다른 세션의 산출물은 읽지 않는다
+    result["findings"][0]["evidence_refs"] = [{"evidence_id": "log-daily-0920", "version": "1", "location": "lines:1-1"}]
+    assert views.evidence_excerpts(seeded, store, result, session_id="sess-other") == {
+        "log-daily-0920@1 · lines:1-1": {"found": False, "text": "첨부 없음"},
+    }
+
+
+def test_viewer_context_for_diagnosis_reads_verdict_and_response_pair(seeded, settings, store):
+    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
+    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
+    ids = _store_evidence(seeded, store, "exec-1", {
+        ("run-daily-0919-0900", "1"): ("application/json", '{"response_ref": {"evidence_id": "response-before", "version": "1"}}'),
+        ("run-daily-0920-0900", "1"): ("application/json", '{"response_ref": {"evidence_id": "response-after", "version": "1"}}'),
+        ("response-before", "1"): ("application/json", '{"items": []}'),
+        ("response-after", "1"): ("application/json", '{"data": {"records": []}}'),
+    })
+    body = {
+        "outcome": "ready_for_handoff", "summary": "s", "findings": [], "missing_information": [],
+        "diagnosis": {"code": "response_path_changed", "baseline_run_id": "daily-0919-0900",
+                      "failed_run_id": "daily-0920-0900", "old_path": "$.items", "new_path": "$.data.records"},
+        "attachments": [
+            {"evidence_id": e, "version": v, "content_type": "application/json", "artifact_id": a, "sha256": "0" * 64}
+            for (e, v), a in ids.items()
+        ],
+    }
+    artifact_id = seed_result_ready(seeded, store, "exec-1", kind="diagnosis_result", body=body)
+    seeded.execute(
+        "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
+        (TASK_A, "exec-1", json.dumps({"outcome": "passed", "checks": [{"code": "c1", "passed": True, "detail": "ok"}]}), NOW),
+    )
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
+    viewer = views.viewer_context(seeded, store, ctx["result"], session_id="sess-1")
+    assert viewer["kind"] == "diagnosis_result"
+    assert viewer["artifact_id"] == artifact_id
+    assert viewer["verdict"]["outcome"] == "passed"
+    assert (viewer["verdict_passed"], viewer["verdict_total"]) == (1, 1)
+    assert viewer["compare"]["before"]["path"] == "$.items"
+    assert '"items": []' in viewer["compare"]["before"]["text"]
+    assert viewer["compare"]["after"]["path"] == "$.data.records"
+    assert '"records": []' in viewer["compare"]["after"]["text"]
+    assert viewer["raw_text"].startswith("{")
+    assert views.viewer_context(seeded, store, None, session_id="sess-1") is None
+
+
+def test_viewer_context_for_code_change_reads_logs_diff_and_report(seeded, settings, store):
+    from workflow.contracts.v1 import ArtifactMeta
+
+    from .conftest import meta_for
+
+    _select(seeded, TASK_B, "agent-codex-mac", CAP_B)
+    seed_execution(seeded, "exec-fix-001", TASK_B)
+    for kind, text in (("diff", DIFF_TEXT), ("test_log_before", "\n".join(str(n) for n in range(30))),
+                       ("test_log_after", "ok\n"), ("report_output", "보고서\n")):
+        data = text.encode()
+        repo.store_artifact(
+            seeded, store, execution_id="exec-fix-001", session_id="sess-1",
+            meta=ArtifactMeta.model_validate(meta_for(data, kind=kind, name=kind)), data=data, now=NOW,
+        )
+    seed_result_ready(seeded, store, "exec-fix-001", kind="code_change_result",
+                      body=code_change_result("exec-fix-001", TASK_B))
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_B), now=NOW, settings=settings)
+    viewer = views.viewer_context(seeded, store, ctx["result"], session_id="sess-1")
+    assert viewer["kind"] == "code_change_result"
+    assert viewer["diff"]["stats"] == (2, 3, 1)
+    assert viewer["diff"]["lines"][5] == ("del", "-old")
+    assert viewer["test_before"]["lines"] == [str(n) for n in range(10, 30)]
+    assert viewer["test_after"]["lines"] == ["ok"]
+    assert viewer["report"]["text"] == "보고서\n"
+    assert viewer["verdict"] is None
+    empty = views.viewer_context(seeded, store, {"kind": "code_change_result", "artifact_id": "x",
+                                                  "execution_id": "exec-none", "data": None}, session_id="sess-1")
+    assert empty["diff"] is None and empty["test_before"] is None and empty["report"] is None
+
+
+def test_execution_context_has_duration_and_progress_count(seeded, settings, store):
+    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
+    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
+    for body in (
+        event("exec-1", 1, "accepted", {}, occurred_at="2026-09-20T09:00:00+09:00"),
+        event("exec-1", 2, "started", {"runtime_ref": "r"}, occurred_at="2026-09-20T09:00:05+09:00"),
+        event("exec-1", 3, "progress", {"message": "하나"}, occurred_at="2026-09-20T09:01:00+09:00"),
+        event("exec-1", 4, "progress", {"message": "둘"}, occurred_at="2026-09-20T09:02:00+09:00"),
+    ):
+        repo.append_event(seeded, "exec-1", ExecutionEvent.model_validate(body), actor="diag", now=NOW)
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now="2026-09-20T00:04:18Z", settings=settings)
+    [execution] = ctx["executions"]
+    assert execution["duration_seconds"] == 253  # started 09:00:05 KST → now 09:04:18 KST
+    assert execution["progress_count"] == 2
+    assert execution["last_progress"] == "둘"
+
+    repo.append_event(
+        seeded, "exec-1",
+        ExecutionEvent.model_validate(event("exec-1", 5, "failed", {"code": "timeout", "message": "x", "process_stopped": True},
+                                            occurred_at="2026-09-20T09:03:00+09:00")),
+        actor="diag", now=NOW,
+    )
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now="2026-09-20T01:00:00Z", settings=settings)
+    assert ctx["executions"][0]["duration_seconds"] == 175  # 종료 이벤트까지
+
+
+def test_artifact_render_context_by_kind():
+    diff = views.artifact_render({"kind": "diff", "content_type": "text/plain"}, DIFF_TEXT.encode())
+    assert diff["mode"] == "diff" and diff["diff_lines"][0][0] == "meta"
+    log = views.artifact_render({"kind": "test_log_after", "content_type": "text/plain"}, b"a\nb\n")
+    assert log["mode"] == "log" and log["lines"] == ["a", "b"]
+    js = views.artifact_render({"kind": "evidence", "content_type": "application/json"}, b'{"a":1}')
+    assert js["mode"] == "json" and js["text"] == '{\n  "a": 1\n}'
+    broken = views.artifact_render({"kind": "evidence", "content_type": "application/json"}, b"{oops")
+    assert broken["mode"] == "text" and broken["text"] == "{oops"

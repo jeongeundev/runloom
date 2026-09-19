@@ -1,27 +1,40 @@
+{# 홈 — UI_GUIDE "화면 목록". 에이전트 연결 상태 카드, 빈 상태 문장, 다음 행동 버튼 하나. #}
 {% extends "base.html" %}
+{% import "_status.html" as st %}
 {% block title %}업무 — workflow{% endblock %}
 {% block content %}
-<h1>업무</h1>
-<section>
-  <h2>등록된 에이전트</h2>
-  <ul>
-    {% for a in agents %}
-    <li><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a> ({{ a.agent_id }}) —
-      {{ '연결됨' if a.online else '연결 끊김' }}, 마지막 확인 {{ a.last_seen_at|kst or '없음' }}</li>
-    {% endfor %}
-  </ul>
-</section>
-<section>
-  <h2>내 업무</h2>
-  {% if my_tasks %}
-  <ul>
-    {% for t in my_tasks %}
-    <li><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a> — {{ t.status.label }} · {{ t.status.reason }}</li>
-    {% endfor %}
-  </ul>
+<div class="crumbs"><div class="crumb">업무</div></div>
+
+<h2 style="margin-top:0">등록된 에이전트</h2>
+<div class="agent-grid">
+  {% for a in agents %}
+  <div class="card agent-card">
+    <div class="name"><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></div>
+    <div class="meta mono">{{ a.agent_id }} · {{ a.owner_scope }} · {{ a.connection_type }}</div>
+    <div>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+    <div style="margin-top:8px">{{ st.connection(a) }}</div>
+  </div>
   {% else %}
+  <p class="muted">등록된 에이전트가 없습니다. 운영자가 등록합니다.</p>
+  {% endfor %}
+</div>
+
+<h2>내 업무</h2>
+{% if my_tasks %}
+<div>
+  {% for t in my_tasks|reverse %}
+  <div class="card">
+    <div class="card-title"><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a></div>
+    <div class="status-line" style="margin:0">{{ st.badge(t.status.label) }}<span class="reason">{{ t.status.reason }}</span><span class="small">{{ t.created_at|ago(now) }}</span></div>
+  </div>
+  {% endfor %}
+</div>
+<div class="actions"><a class="btn btn-secondary" href="/tasks/new?example=diagnose">시연 업무 만들기</a></div>
+{% else %}
+<div class="empty">
   <p>아직 업무가 없습니다.</p>
-  {% endif %}
-  <p><a href="/tasks/new?example=diagnose">시연 업무 만들기</a></p>
-</section>
+  <a class="btn" href="/tasks/new?example=diagnose">시연 업무 만들기</a>
+  <p class="small" style="margin-top:8px">진단 업무 A 가 미리 채워진 등록 폼이 열립니다. 등록 뒤 후속 업무 B 를 이어서 만들 수 있습니다.</p>
+</div>
+{% endif %}
 {% endblock %}

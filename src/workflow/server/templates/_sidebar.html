@@ -1,0 +1,24 @@
+{# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무 · 세션. 상태 점은 _status.html 규칙. #}
+{% import "_status.html" as st %}
+<aside class="sidebar">
+  <div class="brand">workflow</div>
+  <nav class="nav">
+    <a href="/"{% if request.url.path == '/' %} class="active"{% endif %}>업무</a>
+    <a href="/agents"{% if request.url.path.startswith('/agents') %} class="active"{% endif %}>에이전트</a>
+    {% if is_operator %}<a href="/operator"{% if request.url.path.startswith('/operator') %} class="active"{% endif %}>운영자</a>{% endif %}
+  </nav>
+  <div class="side-head"><span>최근</span><a class="plus" href="/tasks/new?example=diagnose" title="시연 업무 만들기" aria-label="시연 업무 만들기">+</a></div>
+  {% if my_tasks %}
+  <ul class="task-list">
+    {% for t in my_tasks|reverse %}
+    <li><a href="/tasks/{{ t.task_id }}"{% if request.url.path == '/tasks/' ~ t.task_id %} class="active"{% endif %} data-task-id="{{ t.task_id }}">
+      <span class="title">{{ t.title }}</span>
+      <span class="sub">{{ t.created_at|ago(now) }} · {{ st.mini(t.status.label) }}</span>
+    </a></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="side-empty">아직 업무가 없습니다.</div>
+  {% endif %}
+  <div class="side-foot">세션 · 익명, 14일 보존</div>
+</aside>

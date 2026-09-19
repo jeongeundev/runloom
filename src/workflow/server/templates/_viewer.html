@@ -1,0 +1,213 @@
+{# 산출물 뷰어 — UI_GUIDE "오른쪽 열". 두 모드:
+   - `viewer` (views.viewer_context): 진단이면 `진단 결과`, 코드 수정이면 `검증 요약`
+   - `artifact` + `render` (views.artifact_render): 개별 산출물
+   근거 원문은 서버가 첨부에서 잘라 준다 (excerpts). 모델 문장을 원문 대신 넣지 않는다. #}
+{% import "_status.html" as st %}
+<div class="viewer-panel" id="viewer-panel">
+{% if viewer %}
+  {% set d = viewer.data %}
+  {% set is_diag = viewer.kind == 'diagnosis_result' %}
+  <div class="viewer-head">
+    <span class="doc-title">{{ '진단 결과' if is_diag else '검증 요약' }}</span>
+    <span class="chip chip-mono">{{ viewer.kind }}</span>
+    <span class="size">{{ viewer.raw_text|length }} bytes</span>
+    <span class="tools">
+      <button type="button" class="btn btn-secondary btn-small" data-raw-toggle>원문 보기</button>
+      <button type="button" class="btn btn-secondary btn-small" data-copy>복사</button>
+      <a class="btn btn-secondary btn-small" href="/tasks/{{ task.task_id }}/artifacts/{{ viewer.artifact_id }}?raw=1">다운로드</a>
+      <button type="button" class="icon-btn viewer-close" data-viewer-close title="닫기" aria-label="닫기"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
+    </span>
+  </div>
+  <pre class="raw-pre" data-raw hidden>{{ viewer.raw_text }}</pre>
+
+  {% if not d %}
+  <p class="viewer-empty">결과 본문을 읽을 수 없습니다. 원문 보기로 저장된 바이트를 확인하세요.</p>
+
+  {% elif is_diag %}
+  {# --- 진단 결과: (정보 필요면 missing_information 먼저) 검증 결과 → summary → findings → diagnosis → repair_request → missing_information --- #}
+  {% set missing_first = d.outcome == 'needs_information' %}
+  {% if missing_first and d.missing_information %}
+  <div class="viewer-section">
+    <h3>부족한 정보</h3>
+    <ul class="check-list">
+      {% for m in d.missing_information %}<li><span class="code check-fail">{{ m.code }}</span><span>{{ m.description }}{% if m.evidence_id %} <span class="mono">({{ m.evidence_id }})</span>{% endif %}</span></li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="viewer-section">
+    <h3>검증 결과</h3>
+    {% if viewer.verdict %}
+    <p class="small">{{ viewer.verdict.outcome }} · {{ viewer.verdict_passed }}/{{ viewer.verdict_total }} 통과</p>
+    <ul class="check-list">
+      {% for c in viewer.verdict.checks %}<li><span class="code {{ 'check-pass' if c.passed else 'check-fail' }}">{{ '✓' if c.passed else '✗' }} {{ c.code }}</span><span class="small">{{ c.detail }}</span></li>{% endfor %}
+    </ul>
+    {% else %}
+    <p class="small">판정 전 — 중앙 워커가 근거 검증을 마치면 여기에 항목이 보입니다.</p>
+    {% endif %}
+  </div>
+
+  <div class="viewer-section">
+    <h3>{{ st.outcome_badge(d.outcome) }} <span class="mono">{{ d.run_id }}</span></h3>
+    <p>{{ d.summary }}</p>
+  </div>
+
+  <div class="viewer-section">
+    <h3>근거 {{ d.findings|length }}</h3>
+    {% for f in d.findings %}
+    <div class="finding">
+      <div class="claim">{{ f.claim }}</div>
+      {% for ref in f.evidence_refs %}
+      {% set key = ref.evidence_id ~ '@' ~ ref.version ~ ' · ' ~ ref.location %}
+      {% set ex = viewer.excerpts.get(key) %}
+      <details class="evidence">
+        <summary><span class="chip chip-mono">{{ key }}</span></summary>
+        <div class="excerpt">
+          {% if ex and ex.found %}
+          <div class="excerpt-cap">{{ ref.evidence_id }}@{{ ref.version }} 의 {{ ref.location }}</div>
+          <pre>{{ ex.text }}</pre>
+          {% else %}
+          <div class="excerpt-missing">{{ ex.text if ex else '첨부 없음' }}</div>
+          {% endif %}
+        </div>
+      </details>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if viewer.compare %}
+  <div class="viewer-section">
+    <h3>응답 비교</h3>
+    <div class="compare">
+      {% for side, pane in (('변경 전 응답', viewer.compare.before), ('변경 후 응답', viewer.compare.after)) %}
+      <div>
+        <div class="pane-label">{{ side }}{% if pane.evidence %} · <span class="mono">{{ pane.evidence }}</span>{% endif %}</div>
+        <div class="pane">
+          {% if pane.text is not none %}<pre>{{ pane.text }}</pre>{% else %}<span class="excerpt-missing">첨부 없음</span>{% endif %}
+        </div>
+        <div class="pane-note">{{ pane.run_id }} · 목록 위치 <span class="path-hl">{{ pane.path }}</span></div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if d.diagnosis %}
+  <div class="viewer-section">
+    <h3>원인 (diagnosis)</h3>
+    <table class="kv">
+      {% for k, v in d.diagnosis.items() %}
+      <tr><th>{{ k }}</th><td class="mono">{% if v is mapping %}{{ v.evidence_id }}@{{ v.version }}{% else %}{{ v }}{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if d.repair_request %}
+  <div class="viewer-section">
+    <h3>수정 요청 (repair_request)</h3>
+    <table class="kv">
+      <tr><th>target_component</th><td class="mono">{{ d.repair_request.target_component }}</td></tr>
+      <tr><th>change</th><td>{{ d.repair_request.change }}</td></tr>
+      <tr><th>preserve</th><td>{{ d.repair_request.preserve }}</td></tr>
+      <tr><th>checks</th><td><ul>{% for c in d.repair_request.checks %}<li>{{ c }}</li>{% endfor %}</ul></td></tr>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if not missing_first and d.missing_information %}
+  <div class="viewer-section">
+    <h3>부족한 정보</h3>
+    <ul class="check-list">
+      {% for m in d.missing_information %}<li><span class="code check-fail">{{ m.code }}</span><span>{{ m.description }}</span></li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if d.provenance %}
+  <div class="viewer-section">
+    <h3>provenance</h3>
+    <p class="small mono">{{ d.provenance.model_id }} · {{ d.provenance.prompt_version }} · {{ d.provenance.tool_contract_version }}</p>
+  </div>
+  {% endif %}
+
+  {% else %}
+  {# --- 검증 요약: verification → 수정 전/후 테스트 → 보고서 → summary --- #}
+  <div class="viewer-section">
+    <h3>검증 (verification)</h3>
+    {% if d.verification %}
+    <table class="kv">
+      <tr><th>profile_id</th><td class="mono">{{ d.verification.profile_id }}</td></tr>
+      <tr><th>exit_code</th><td class="mono {{ 'check-pass' if d.verification.exit_code == 0 else 'check-fail' }}">{{ d.verification.exit_code }}</td></tr>
+      <tr><th>result_commit</th><td class="mono">{{ d.verification.result_commit }}</td></tr>
+      <tr><th>base_commit</th><td class="mono">{{ d.base_commit }}</td></tr>
+    </table>
+    {% else %}
+    <p class="small">검증 기록 없음 — 보류 제출(needs_information)이거나 연결 프로그램이 검증 프로필을 실행하지 않았습니다.</p>
+    {% endif %}
+  </div>
+
+  <div class="viewer-section">
+    <h3>테스트</h3>
+    <div class="compare">
+      {% for side, pane in (('수정 전 테스트', viewer.test_before), ('수정 후 테스트', viewer.test_after)) %}
+      <div>
+        <div class="pane-label">{{ side }}</div>
+        <div class="pane">
+          {% if pane %}<pre class="log">{% for line in pane.lines %}<span class="ln">{{ line }}</span>{% endfor %}</pre>{% else %}<span class="excerpt-missing">첨부 없음</span>{% endif %}
+        </div>
+        <div class="pane-note">{% if pane %}마지막 {{ pane.lines|length }}줄 · <a href="/tasks/{{ task.task_id }}/artifacts/{{ pane.artifact_id }}" data-open-viewer>전체</a>{% else %}로그 산출물이 없습니다{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="viewer-section">
+    <h3>생성된 보고서</h3>
+    {% if viewer.report %}<pre>{{ viewer.report.text }}</pre>{% else %}<span class="excerpt-missing">첨부 없음</span>{% endif %}
+  </div>
+
+  {% if viewer.diff %}
+  <div class="viewer-section">
+    <h3>diff · {{ viewer.diff.stats[0] }} files · <span class="plus-n">+{{ viewer.diff.stats[1] }}</span> <span class="minus-n">-{{ viewer.diff.stats[2] }}</span></h3>
+    <pre class="diff">{% for kind, line in viewer.diff.lines %}<span class="diff-{{ kind }}">{{ line }}</span>{% endfor %}</pre>
+  </div>
+  {% endif %}
+
+  <div class="viewer-section">
+    <h3>{{ st.outcome_badge(d.outcome) }}</h3>
+    <p>{{ d.summary }}</p>
+  </div>
+  {% endif %}
+
+{% elif artifact %}
+  {# --- 개별 산출물 --- #}
+  <div class="viewer-head">
+    <span class="doc-title">{{ artifact.name }}</span>
+    <span class="chip chip-mono">{{ artifact.kind }}</span>
+    <span class="size">{{ artifact.size }} bytes · {{ artifact.content_type }}</span>
+    <span class="tools">
+      {% if render.mode != 'text' %}<button type="button" class="btn btn-secondary btn-small" data-raw-toggle>원문 보기</button>{% endif %}
+      <button type="button" class="btn btn-secondary btn-small" data-copy>복사</button>
+      <a class="btn btn-secondary btn-small" href="/tasks/{{ task_id }}/artifacts/{{ artifact.artifact_id }}?raw=1">다운로드</a>
+      <button type="button" class="icon-btn viewer-close" data-viewer-close title="닫기" aria-label="닫기"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
+    </span>
+  </div>
+  <p class="small mono">sha256 {{ artifact.sha256 }}</p>
+  {% if render.mode == 'diff' %}
+  <pre class="raw-pre" data-raw hidden>{{ text }}</pre>
+  <pre class="diff">{% for kind, line in render.diff_lines %}<span class="diff-{{ kind }}">{{ line }}</span>{% endfor %}</pre>
+  {% elif render.mode == 'log' %}
+  <pre class="raw-pre" data-raw hidden>{{ text }}</pre>
+  <pre class="log">{% for line in render.lines %}<span class="ln">{{ line }}</span>{% endfor %}</pre>
+  {% elif render.mode == 'json' %}
+  <pre class="raw-pre" data-raw hidden>{{ text }}</pre>
+  <pre class="raw-pre">{{ render.text }}</pre>
+  {% else %}
+  <pre class="raw-pre" data-raw>{{ text }}</pre>
+  {% endif %}
+{% else %}
+  <p class="viewer-empty">열 산출물이 없습니다.</p>
+{% endif %}
+</div>

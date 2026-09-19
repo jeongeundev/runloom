@@ -1,72 +1,125 @@
+{# 운영자 — ADR-0005. 토큰 입력 → 에이전트 등록·삭제, 연결 코드, 병합 확인 대기, 모든 세션 업무, 진단 사용량.
+   등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
 {% extends "base.html" %}
+{% import "_status.html" as st %}
 {% block title %}운영자 — workflow{% endblock %}
 {% block content %}
-<h1>운영자</h1>
+<div class="crumbs"><div class="crumb">운영자</div></div>
 {% if not is_operator %}
-<form method="post" action="/operator/login">
-  <label>운영자 토큰 <input type="password" name="token" autocomplete="off"></label>
-  <button type="submit">열기</button>
+<form method="post" action="/operator/login" class="card">
+  <div class="field">
+    <label for="token">운영자 토큰</label>
+    <input type="password" id="token" name="token" autocomplete="off">
+    <div class="help">OPERATOR_TOKEN 환경변수 값. 쿠키·HTML 에 남지 않습니다.</div>
+  </div>
+  <div class="actions"><button class="btn" type="submit">열기</button></div>
 </form>
 {% else %}
-<section>
-  <h2>연결 코드</h2>
+
+<h2 style="margin-top:0">연결 코드</h2>
+<div class="card">
   {% if issued %}
-  <p>발급된 코드: <code id="issued-code">{{ issued.code }}</code> · 만료 {{ issued.expires_at|kst }} (1회용. 연결 프로그램에서 교환)</p>
+  <div class="alert" style="background:var(--bg-done);color:var(--state-done)">
+    발급된 코드: <code id="issued-code">{{ issued.code }}</code> · 만료 {{ issued.expires_at|kst }} · 1회용. 연결 프로그램에서 교환하면 무효가 됩니다.
+  </div>
   {% endif %}
-  <form method="post" action="/operator/connect-codes"><button type="submit">연결 코드 발급</button></form>
-  <ul>
+  <form method="post" action="/operator/connect-codes" class="actions"><button class="btn" type="submit">연결 코드 발급</button></form>
+  {% if connect_codes %}
+  <div class="table-wrap" style="margin-top:12px">
+  <table>
+    <tr><th>코드</th><th>발급</th><th>만료</th><th>상태</th></tr>
     {% for c in connect_codes %}
-    <li><code>{{ c.code }}</code> · 발급 {{ c.issued_at|kst }} · 만료 {{ c.expires_at|kst }}
-      {% if c.used_at %} · 사용됨 {{ c.used_at|kst }}{% elif c.revoked_at %} · 취소됨 {{ c.revoked_at|kst }}{% else %}
-      <form method="post" action="/operator/connect-codes/{{ c.code }}/revoke" style="display:inline"><button type="submit">취소</button></form>{% endif %}</li>
+    <tr>
+      <td class="mono">{{ c.code }}</td>
+      <td>{{ c.issued_at|kst }}</td>
+      <td>{{ c.expires_at|kst }}</td>
+      <td>{% if c.used_at %}사용됨 {{ c.used_at|kst }}{% elif c.revoked_at %}취소됨 {{ c.revoked_at|kst }}{% else %}
+        <form method="post" action="/operator/connect-codes/{{ c.code }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">취소</button></form>{% endif %}</td>
+    </tr>
     {% endfor %}
-  </ul>
-</section>
-<section>
-  <h2>에이전트</h2>
-  <ul>
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+<h2>에이전트</h2>
+<div class="card">
+  <ul class="agent-list">
     {% for a in agents %}
-    <li>{{ a.name }} ({{ a.agent_id }}) · {{ a.owner_scope }} · {{ a.connection_type }} ·
-      {{ '연결됨' if a.online else '연결 끊김' }}
-      <form method="post" action="/operator/agents/{{ a.agent_id }}/delete" style="display:inline"><button type="submit">삭제</button></form></li>
-    {% endfor %}
-  </ul>
-  <h3>등록</h3>
-  <form method="post" action="/operator/agents">
-    <p><label>ID <input name="agent_id" required></label> <label>이름 <input name="name" required></label></p>
-    <p><label>소유 구분 <select name="owner_scope">{% for s in owner_scopes %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></label>
-       <label>연결 유형 <select name="connection_type">{% for t in connection_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></label></p>
-    <p><label>능력 <select name="capability_code">{% for code in capability_codes %}<option value="{{ code }}">{{ code }} ({{ scope_keys[code] }})</option>{% endfor %}</select></label>
-       <label>범위 값 <input name="scope_value" required></label></p>
-    <p><label>local_registration_id (로컬) <input name="local_registration_id"></label></p>
-    <p><label>api_url (API) <input name="api_url"></label> <label>credential_ref (API, env:… 참조명만) <input name="credential_ref"></label></p>
-    <p>자동 파악값(저장소·기준 커밋·검증 프로필·발견 설정)은 연결 프로그램이 등록을 보고하면 채워짐.</p>
-    <button type="submit">등록</button>
-  </form>
-</section>
-<section>
-  <h2>병합 확인 대기</h2>
-  <p>실제 git 병합은 운영자가 Mac 의 데모 저장소에서 수동으로 한다. 여기서는 확인 사실만 기록한다.</p>
-  <ul>
-    {% for t in merge_queue %}
-    <li>{{ t.title }} ({{ t.task_id }}) · {{ t.session_id }}
-      <form method="post" action="/operator/merges/{{ t.task_id }}/confirm" style="display:inline"><button type="submit">병합 확인</button></form></li>
+    <li>
+      <span><strong>{{ a.name }}</strong> <span class="mono small">{{ a.agent_id }}</span></span>
+      <span class="small">{{ a.owner_scope }} · {{ a.connection_type }}</span>
+      {{ st.connection(a) }}
+      <form method="post" action="/operator/agents/{{ a.agent_id }}/delete" class="inline-form" style="margin-left:auto"><button class="btn btn-danger btn-small" type="submit">삭제</button></form>
+    </li>
     {% else %}
-    <li>없음</li>
+    <li class="muted">등록된 에이전트 없음</li>
     {% endfor %}
   </ul>
-</section>
-<section>
-  <h2>모든 세션 업무</h2>
-  <ul>
+</div>
+<h3>등록 · 수정</h3>
+<form method="post" action="/operator/agents" class="card">
+  <div class="field-row">
+    <div class="field"><label for="agent_id">ID</label><input type="text" id="agent_id" name="agent_id" required></div>
+    <div class="field"><label for="name">이름</label><input type="text" id="name" name="name" required></div>
+  </div>
+  <div class="field-row">
+    <div class="field"><label for="owner_scope">소유 구분</label><select id="owner_scope" name="owner_scope">{% for s in owner_scopes %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></div>
+    <div class="field"><label for="connection_type">연결 유형</label><select id="connection_type" name="connection_type">{% for t in connection_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
+  </div>
+  <div class="field-row">
+    <div class="field"><label for="op_capability_code">능력</label><select id="op_capability_code" name="capability_code">{% for code in capability_codes %}<option value="{{ code }}">{{ code }} ({{ scope_keys[code] }})</option>{% endfor %}</select></div>
+    <div class="field"><label for="op_scope_value">범위 값</label><input type="text" id="op_scope_value" name="scope_value" required></div>
+  </div>
+  <div class="field">
+    <label for="local_registration_id">local_registration_id (로컬)</label>
+    <input type="text" id="local_registration_id" name="local_registration_id">
+    <div class="help">자동 파악된 값(저장소·기준 커밋·검증 프로필·발견 설정)은 연결 프로그램이 등록을 보고하면 채워지고, 여기서 다시 등록해도 유지됩니다. 읽어오지 못한 항목은 빈칸으로 남고 직접 입력합니다.</div>
+  </div>
+  <div class="field-row">
+    <div class="field"><label for="api_url">api_url (API)</label><input type="text" id="api_url" name="api_url"></div>
+    <div class="field"><label for="credential_ref">credential_ref (API)</label><input type="text" id="credential_ref" name="credential_ref" placeholder="env:DIAG_API_TOKEN"><div class="help">환경변수 참조명만. 값 자체는 넣지 않습니다.</div></div>
+  </div>
+  <div class="actions"><button class="btn" type="submit">등록</button></div>
+</form>
+
+<h2>병합 확인 대기</h2>
+<div class="card">
+  <p class="small">실제 git 병합은 운영자가 Mac 의 데모 저장소에서 수동으로 합니다. 여기서는 확인 사실만 기록합니다.</p>
+  <ul class="agent-list">
+    {% for t in merge_queue %}
+    <li>
+      <span><strong>{{ t.title }}</strong> <span class="mono small">{{ t.task_id }}</span></span>
+      <span class="small mono">{{ t.session_id }}</span>
+      <form method="post" action="/operator/merges/{{ t.task_id }}/confirm" class="inline-form" style="margin-left:auto"><button class="btn btn-small" type="submit">병합 확인</button></form>
+    </li>
+    {% else %}
+    <li class="muted">없음</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<h2>모든 세션 업무</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>업무</th><th>세션</th><th>상태</th><th>등록</th></tr>
     {% for t in all_tasks %}
-    <li>{{ t.task_id }} · {{ t.title }} · {{ t.status.label }} · {{ t.status.reason }} · {{ t.created_at|kst }}</li>
+    <tr>
+      <td><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a> <span class="mono small">{{ t.task_id }}</span></td>
+      <td class="mono small">{{ t.session_id }}</td>
+      <td>{{ st.badge(t.status.label) }} <span class="small">{{ t.status.reason }}</span></td>
+      <td class="small">{{ t.created_at|kst }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">없음</td></tr>
     {% endfor %}
-  </ul>
-</section>
-<section>
-  <h2>진단 사용량</h2>
-  <p>오늘 진단 실행: <strong>{{ diagnosis_today }}</strong>건</p>
-</section>
+  </table>
+</div>
+
+<h2>진단 사용량</h2>
+<div class="card">
+  <p>오늘 진단 실행: <strong>{{ diagnosis_today }}</strong>건 (세션당 10회 · 전체 60회 상한)</p>
+  <p class="small">총액 상한(US$30)은 진단 서비스가 토큰 사용량으로 추정해 판단합니다.</p>
+</div>
 {% endif %}
 {% endblock %}

@@ -7,7 +7,8 @@
 - 실행 요청(`ExecutionRequest`) 은 여기서 조립해 `request_json` 에 고정한다. 셸 명령·경로는 폼에서 받지 않는다.
   대상 정보는 선택된 Agent 등록값에서, 인계 자료는 선행 Task 의 `handoff_bundle` 산출물에서 온다.
 - 진단 API·연결 프로그램에 직접 보내지 않는다. `queued` 로 남기면 워커(Step 8)·claim(Step 5) 이 가져간다.
-- 마크업은 최소다. Step 7 이 UI_GUIDE 대로 다시 쓴다.
+- 화면은 UI_GUIDE 의 3열 셸이다. `GET /tasks/{id}/live` 는 상세의 라이브 조각(`_live.html`)만 돌려주고
+  `base.html` 의 스크립트가 3초(마감 후 10초)마다 교체한다.
 """
 
 import hashlib
@@ -43,7 +44,7 @@ from workflow.domain.status import user_status
 from workflow.server import views
 from workflow.server.auth import get_conn, require_operator, require_session, utc_now
 from workflow.server.errors import ApiError
-from workflow.server.filters import kst
+from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -108,7 +109,10 @@ _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 router = APIRouter()
 
 _env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
-_env.filters["kst"] = kst
+_env.filters.update({
+    "kst": kst, "ago": ago, "duration": duration,
+    "outcome_label": outcome_label, "kind_label": kind_label,
+})
 
 
 class PageError(ApiError):
@@ -147,6 +151,7 @@ def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict
     settings = _settings(request)
     return {
         "request": request,
+        "now": now,
         "session_id": session_id,
         "is_operator": bool(session["is_operator"]) if session is not None else False,
         "my_tasks": [
@@ -451,8 +456,28 @@ def task_detail(
 ) -> str:
     now = utc_now()
     row = _own_task(conn, session_id, task_id)
-    context = views.task_context(conn, request.app.state.store, row, now=now, settings=_settings(request))
-    return _render("task_detail.html", **_base(request, conn, session_id, now), **context)
+    store = request.app.state.store
+    context = views.task_context(conn, store, row, now=now, settings=_settings(request))
+    viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
+    return _render("task_detail.html", **_base(request, conn, session_id, now), **context, viewer=viewer)
+
+
+@router.get("/tasks/{task_id}/live", response_class=HTMLResponse)
+def task_live(
+    request: Request,
+    response: Response,
+    task_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """상세의 라이브 조각만 (상태 줄·실행 블록·결과 카드·산출물 칩·동작 영역·연결 업무 칩). 세션 소유 확인은 같다."""
+    now = utc_now()
+    row = _own_task(conn, session_id, task_id)
+    store = request.app.state.store
+    context = views.task_context(conn, store, row, now=now, settings=_settings(request))
+    viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
+    response.headers["Cache-Control"] = "no-store"
+    return _render("_live.html", request=request, now=now, **context, viewer=viewer)
 
 
 @router.post("/tasks/{task_id}/run")
@@ -664,6 +689,7 @@ def artifact_view(
         task_id=task_id,
         artifact=dict(artifact),
         text=data.decode("utf-8", errors="replace"),
+        render=views.artifact_render(artifact, data),
     )
 
 

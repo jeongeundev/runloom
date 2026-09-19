@@ -1,23 +1,34 @@
+{# 에이전트 상세 — 능력, 파악된 정보와 확인 수준("설정 발견" / "실제 사용 확인"), 연결 상태. #}
 {% extends "base.html" %}
+{% import "_status.html" as st %}
 {% block title %}{{ agent.name }} — workflow{% endblock %}
 {% block content %}
-<h1>{{ agent.name }} <small>{{ agent.agent_id }}</small></h1>
-<table>
-  <tr><th>소유 구분</th><td>{{ agent.owner_scope }}</td></tr>
-  <tr><th>연결 유형</th><td>{{ agent.connection_type }}</td></tr>
-  <tr><th>연결 상태</th><td>{{ '연결됨' if agent.online else '연결 끊김' }}, 마지막 확인 {{ agent.last_seen_at|kst or '없음' }}</td></tr>
-  {% if agent.connection_type == 'api' %}
-  <tr><th>주소</th><td>{{ agent.api_url }}</td></tr>
-  {% else %}
-  <tr><th>local_registration_id</th><td>{{ agent.local_registration_id }}</td></tr>
-  <tr><th>repository_id</th><td>{{ agent.repository_id or '연결 프로그램 보고 전' }}</td></tr>
-  <tr><th>base_commit</th><td>{{ agent.base_commit or '연결 프로그램 보고 전' }}</td></tr>
-  <tr><th>검증 프로필</th><td>{{ agent.verification_profile_ids|join(', ') or '연결 프로그램 보고 전' }}</td></tr>
-  {% endif %}
-</table>
+<div class="crumbs">
+  <div class="crumb"><a href="/agents">에이전트</a><span class="sep">/</span>{{ agent.name }}</div>
+  <div class="crumb-side">{{ st.connection(agent) }}</div>
+</div>
+<div class="card">
+  <table class="kv">
+    <tr><th>ID</th><td class="mono">{{ agent.agent_id }}</td></tr>
+    <tr><th>소유 구분</th><td>{{ agent.owner_scope }}</td></tr>
+    <tr><th>연결 유형</th><td>{{ agent.connection_type }}</td></tr>
+    {% if agent.connection_type == 'api' %}
+    <tr><th>주소</th><td class="mono">{{ agent.api_url }}</td></tr>
+    {% else %}
+    <tr><th>local_registration_id</th><td class="mono">{{ agent.local_registration_id }}</td></tr>
+    <tr><th>repository_id</th><td class="mono">{{ agent.repository_id or '연결 프로그램 보고 전' }}</td></tr>
+    <tr><th>base_commit</th><td class="mono">{{ agent.base_commit or '연결 프로그램 보고 전' }}</td></tr>
+    <tr><th>검증 프로필</th><td class="mono">{{ agent.verification_profile_ids|join(', ') or '연결 프로그램 보고 전' }}</td></tr>
+    {% endif %}
+  </table>
+</div>
 <h2>능력</h2>
-<ul>{% for c in agent.capabilities %}<li>{{ c.code }} · {{ c.scope }}</li>{% endfor %}</ul>
+<div class="card">
+  <ul>{% for c in agent.capabilities %}<li><span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span></li>{% endfor %}</ul>
+</div>
 <h2>파악된 정보</h2>
-<p>연결 프로그램이 보고한 설정·도구 발견 결과. "설정 발견"이며 "실제 사용 확인"이 아니다.</p>
-<pre>{{ agent.discovered|tojson(indent=2) }}</pre>
+<div class="card">
+  <p class="small">연결 프로그램이 보고한 설정·도구 발견 결과. 확인 수준은 <strong>설정 발견</strong>이며 <strong>실제 사용 확인</strong>이 아니다.</p>
+  {% if agent.discovered %}<pre>{{ agent.discovered|tojson(indent=2) }}</pre>{% else %}<p class="muted">보고된 정보 없음 — 읽어오지 못한 항목은 운영자가 직접 입력한다.</p>{% endif %}
+</div>
 {% endblock %}

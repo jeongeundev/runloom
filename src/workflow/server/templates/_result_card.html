@@ -1,0 +1,34 @@
+{# 결과 카드 — UI_GUIDE "결과 카드". PR 카드 형식: outcome 배지 + 대상 / 요약 / 모노스페이스 메타. `viewer` 는 views.viewer_context. #}
+{% import "_status.html" as st %}
+{% if result %}
+{% set d = result.data %}
+<div class="result-card card">
+  {% if d %}
+  <div class="line1">
+    {{ st.outcome_badge(d.outcome) }}
+    {% if result.kind == 'diagnosis_result' %}
+    <span class="mono">{{ task.required_capability.scope.workflow_id }} · {{ d.run_id }}</span>
+    {% else %}
+    <span class="mono">{{ task.required_capability.scope.repository_id }} · {{ task.task_id }}</span>
+    {% endif %}
+  </div>
+  <div class="line2">{{ d.summary }}</div>
+  <div class="line3">
+    {%- if result.kind == 'diagnosis_result' -%}
+    {{ d.diagnosis.code if d.diagnosis else '원인 미확정' }} · 근거 {{ d.findings|length }} · 첨부 {{ d.attachments|length }}
+    {%- if viewer and viewer.verdict %} · 검증 {{ viewer.verdict_passed }}/{{ viewer.verdict_total }} 통과{% endif -%}
+    {%- else -%}
+    {{ (d.result_commit or '')[:7] or '커밋 없음' }} ← {{ d.base_commit[:7] }}
+    {%- if viewer and viewer.diff %} · {{ viewer.diff.stats[0] }} files · <span class="plus-n">+{{ viewer.diff.stats[1] }}</span> <span class="minus-n">-{{ viewer.diff.stats[2] }}</span>{% endif -%}
+    {%- if d.verification %} · {{ d.verification.profile_id }} exit {{ d.verification.exit_code }}{% endif -%}
+    {%- endif -%}
+  </div>
+  {% else %}
+  <div class="line1">결과 본문을 읽을 수 없습니다</div>
+  <div class="line3">{{ result.kind }} · {{ result.artifact_id }}</div>
+  {% endif %}
+  <a class="icon-btn open-viewer" href="/tasks/{{ task.task_id }}/artifacts/{{ result.artifact_id }}" data-viewer-open title="뷰어에서 열기" aria-label="뷰어에서 열기">
+    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3H3v10h10v-3M9 3h4v4M13 3L7 9"/></svg>
+  </a>
+</div>
+{% endif %}

@@ -7,14 +7,18 @@
 """
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import connect, init_schema
 from workflow.server import machine_api, web
 from workflow.server.errors import install_error_handlers
 from workflow.server.settings import Settings, load_settings
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -36,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handlers(app)
     app.include_router(machine_api.router)
     web.install(app)  # 라우터 + PageError → error.html
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")  # style.css 만. CDN 없음
     return app
 
 

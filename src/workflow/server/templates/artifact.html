@@ -1,9 +1,9 @@
+{# 산출물 단독 페이지 — 오른쪽 뷰어와 같은 패널을 가운데 열에 둔다 (800px 미만·직접 링크). 칩 클릭은 이 페이지의 #viewer-panel 을 가져간다. #}
 {% extends "base.html" %}
 {% block title %}{{ artifact.name }} — workflow{% endblock %}
 {% block content %}
-<h1>{{ artifact.name }}</h1>
-<p>{{ artifact.kind }} · {{ artifact.content_type }} · {{ artifact.size }} bytes · sha256 {{ artifact.sha256 }} ·
-  <a href="/tasks/{{ task_id }}/artifacts/{{ artifact.artifact_id }}?raw=1">다운로드</a> ·
-  <a href="/tasks/{{ task_id }}">업무로</a></p>
-<pre>{{ text }}</pre>
+<div class="crumbs">
+  <div class="crumb"><a href="/tasks/{{ task_id }}">업무로</a><span class="sep">/</span>{{ artifact.kind|kind_label }}</div>
+</div>
+{% include "_viewer.html" %}
 {% endblock %}

@@ -61,7 +61,10 @@
     {
       "step": 7,
       "name": "web-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T08:03:40+0900",
+      "summary": "src/workflow/server/static/style.css (UI_GUIDE :root 변수·컴포넌트·배지·뷰어·반응형 1199/799px·reduced-motion) 와 templates 14개: base.html(3열 셸 .sidebar/.main/.viewer + 인라인 <script>: 3초/마감 10초 폴링, textarea 입력 중 건너뜀, '마지막 갱신'/'갱신 실패, 재시도 중', data-result 변경 시 reload, details 펼침 유지, 칩 클릭→#viewer-panel 교체, 목록 서랍, 원문 토글·복사), _sidebar.html, _status.html(badge·mini·status_line·connection·outcome_badge 매크로, data-status, 점 채움 규칙), _live.html(브레드크럼·연결 칩·요청 말풍선·선택 기록·완료 기준·실행 블록/타임라인·결과 카드·산출물 칩·상태 줄·동작 영역), _result_card.html, _viewer.html(진단 결과: 검증→summary→findings 근거 칩+excerpt→응답 비교→diagnosis→repair_request→missing_information, needs_information 은 missing 먼저 / 검증 요약: verification→테스트 전·후 마지막 20줄→보고서→diff / 개별 산출물), home·task_new·task_detail·artifact·agents·agent_detail·operator·error. 라이브 조각 라우트 GET /tasks/{task_id}/live (Cache-Control: no-store, 세션 소유 404). app.py 가 /static 마운트. views.py: diff_stats·diff_lines·tail_lines·evidence_excerpts(같은 세션 산출물만, resolve_location)·viewer_context(verdict·응답 쌍·로그·diff·보고서)·artifact_render, _execution_context 에 duration_seconds·progress_count·last_progress, 산출물은 KIND_LABELS 순 정렬. filters.py: outcome_label·ago·duration·kind_label. GLOSSARY 에 outcome 라벨 추가. tests/workflow/server/test_ui.py 15건 + test_views·test_filters 추가, 서버 169 passed, 전체 535 passed, ruff 통과. Playwright 로 1440/1000/390px 렌더·폴링·칩 클릭·슬라이드 오버 확인. UI_GUIDE 대비 미구현: '실행 가능' 상태의 '에이전트 직접 선택' 링크(Step 6 라우트가 선택된 업무의 재선택을 409 로 막음), 왼쪽 목록 상태의 라이브 갱신(조각 밖).",
+      "completed_at": "2026-09-20T08:30:00+0900"
     },
     {
       "step": 8,

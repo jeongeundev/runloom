@@ -1,18 +1,22 @@
+{# 에이전트 목록 — 세션은 읽기 전용. 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). #}
 {% extends "base.html" %}
+{% import "_status.html" as st %}
 {% block title %}에이전트 — workflow{% endblock %}
 {% block content %}
-<h1>에이전트</h1>
+<div class="crumbs"><div class="crumb">에이전트</div></div>
+<div class="table-wrap">
 <table>
   <tr><th>이름</th><th>ID</th><th>소유</th><th>연결</th><th>능력</th><th>상태</th></tr>
   {% for a in agents %}
   <tr>
     <td><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></td>
-    <td>{{ a.agent_id }}</td>
+    <td class="mono">{{ a.agent_id }}</td>
     <td>{{ a.owner_scope }}</td>
     <td>{{ a.connection_type }}</td>
-    <td>{% for c in a.capabilities %}{{ c.code }} {{ c.scope }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
-    <td>{{ '연결됨' if a.online else '연결 끊김' }}, 마지막 확인 {{ a.last_seen_at|kst or '없음' }}</td>
+    <td>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+    <td>{{ st.connection(a) }}</td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% endblock %}

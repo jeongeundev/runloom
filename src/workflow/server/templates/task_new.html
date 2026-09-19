@@ -1,56 +1,103 @@
+{# 업무 등록 — PRD 2절 입력 항목. `example` 미리 채움은 web.EXAMPLES. 코드 수정 대상은 폼에서 받지 않는다. #}
 {% extends "base.html" %}
 {% block title %}업무 등록 — workflow{% endblock %}
 {% block content %}
-<h1>업무 등록</h1>
-<form method="post" action="/tasks">
-  <p><label>제목 <input name="title" value="{{ form.title }}" required></label></p>
-  <p><label>요청 내용<br><textarea name="request" rows="4" required>{{ form.request }}</textarea></label></p>
-  <p><label>요구 능력
-    <select name="capability_code">
-      {% for code in capability_codes %}
-      <option value="{{ code }}"{% if code == form.capability_code %} selected{% endif %}>{{ code }} ({{ scope_keys[code] }})</option>
+<div class="crumbs"><div class="crumb">업무 등록</div></div>
+<form method="post" action="/tasks" class="card">
+  <div class="field">
+    <label for="title">제목</label>
+    <input type="text" id="title" name="title" value="{{ form.title }}" required>
+  </div>
+  <div class="field">
+    <label for="request">요청 내용</label>
+    <textarea id="request" name="request" rows="4" required>{{ form.request }}</textarea>
+    <div class="help">무엇을 수행할지. 결과물·완료 조건을 함께 적을 수 있습니다.</div>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="capability_code">요구 능력</label>
+      <select id="capability_code" name="capability_code">
+        {% for code in capability_codes %}
+        <option value="{{ code }}"{% if code == form.capability_code %} selected{% endif %}>{{ code }} ({{ scope_keys[code] }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="scope_value">범위 값</label>
+      <input type="text" id="scope_value" name="scope_value" value="{{ form.scope_value }}" required>
+      <div class="help">operations.diagnose 는 workflow_id, code.modify 는 repository_id</div>
+    </div>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="selection_mode">선택 방식</label>
+      <select id="selection_mode" name="selection_mode">
+        <option value="auto"{% if form.selection_mode == 'auto' %} selected{% endif %}>자동 선택</option>
+        <option value="manual"{% if form.selection_mode == 'manual' %} selected{% endif %}>직접 선택</option>
+      </select>
+      <div class="help">자동 선택은 요구 능력과 등록 능력이 정확히 하나 일치할 때 고릅니다. 0개·2개 이상이면 확인 필요.</div>
+    </div>
+    <div class="field">
+      <label for="chosen_agent_id">직접 선택 대상</label>
+      <select id="chosen_agent_id" name="chosen_agent_id">
+        <option value="">(자동 선택)</option>
+        {% for a in agents %}
+        <option value="{{ a.agent_id }}"{% if a.agent_id == form.chosen_agent_id %} selected{% endif %}>{{ a.name }} ({{ a.agent_id }})</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="run_mode">실행 방식</label>
+      <select id="run_mode" name="run_mode">
+        <option value="manual"{% if form.run_mode == 'manual' %} selected{% endif %}>직접 실행</option>
+        <option value="auto"{% if form.run_mode == 'auto' %} selected{% endif %}>자동 실행</option>
+      </select>
+      <div class="help">선행 업무가 있으면 자동, 없으면 직접이 기본값입니다.</div>
+    </div>
+    <div class="field">
+      <label for="completion_mode">완료 방식</label>
+      <select id="completion_mode" name="completion_mode">
+        <option value="review"{% if form.completion_mode == 'review' %} selected{% endif %}>검토 후 완료</option>
+        <option value="auto"{% if form.completion_mode == 'auto' %} selected{% endif %}{% if form_kind not in auto_completion_kinds %} disabled{% endif %}>자동 완료</option>
+      </select>
+      <div class="help">{% if form.completion_note %}{{ form.completion_note }}{% else %}자동 완료는 자동 판정기가 있는 업무 종류(진단)에서만 고를 수 있습니다.{% endif %}</div>
+    </div>
+  </div>
+  <div class="field">
+    <label>완료 기준 템플릿</label>
+    <div class="help">업무 종류별로 시스템이 제안합니다. 구조화된 항목만 자동 판정에 쓰고, 아래에 추가한 항목은 검토자에게 표시됩니다.</div>
+    <ul>
+      {% for kind, items in criteria_templates.items() %}
+      <li><span class="mono">{{ kind }}</span>{% if kind == form_kind %} <span class="small">(현재)</span>{% endif %}: {{ items|join(' · ') }}</li>
       {% endfor %}
-    </select></label>
-    <label>범위 값 <input name="scope_value" value="{{ form.scope_value }}" required></label></p>
-  <p><label>선택 방식
-    <select name="selection_mode">
-      <option value="auto"{% if form.selection_mode == 'auto' %} selected{% endif %}>자동 선택</option>
-      <option value="manual"{% if form.selection_mode == 'manual' %} selected{% endif %}>직접 선택</option>
-    </select></label>
-    <label>직접 선택 대상
-    <select name="chosen_agent_id">
-      <option value="">(자동 선택)</option>
-      {% for a in agents %}
-      <option value="{{ a.agent_id }}"{% if a.agent_id == form.chosen_agent_id %} selected{% endif %}>{{ a.name }} ({{ a.agent_id }})</option>
-      {% endfor %}
-    </select></label></p>
-  <p><label>실행 방식
-    <select name="run_mode">
-      <option value="manual"{% if form.run_mode == 'manual' %} selected{% endif %}>직접 실행</option>
-      <option value="auto"{% if form.run_mode == 'auto' %} selected{% endif %}>자동 실행</option>
-    </select></label></p>
-  <p><label>완료 방식
-    <select name="completion_mode">
-      <option value="review"{% if form.completion_mode == 'review' %} selected{% endif %}>검토 후 완료</option>
-      <option value="auto"{% if form.completion_mode == 'auto' %} selected{% endif %}{% if form_kind not in auto_completion_kinds %} disabled{% endif %}>자동 완료</option>
-    </select></label>
-    {% if form.completion_note %}<span>{{ form.completion_note }}</span>{% endif %}</p>
-  <p>완료 기준 템플릿 (업무 종류별. 시스템이 제안하고 아래 항목을 추가할 수 있다):</p>
-  <ul>
-    {% for kind, items in criteria_templates.items() %}
-    <li>{{ kind }}{% if kind == form_kind %} (현재){% endif %}: {{ items|join(' · ') }}</li>
-    {% endfor %}
-  </ul>
-  <p><label>추가 완료 기준 (줄마다 한 항목. 검토자에게 표시)<br><textarea name="criteria_extra" rows="3">{{ form.criteria_extra }}</textarea></label></p>
-  <p><label>선행 업무
-    <select name="predecessor_task_id">
-      <option value="">(없음)</option>
-      {% for t in my_tasks %}
-      <option value="{{ t.task_id }}"{% if t.task_id == form.predecessor_task_id %} selected{% endif %}>{{ t.title }} — {{ t.status.label }}</option>
-      {% endfor %}
-    </select></label></p>
-  <p><label>조사할 run_id (진단 업무) <input name="run_id" value="{{ form.run_id }}"></label></p>
-  <p>코드 수정 업무의 대상(저장소·기준 커밋·검증 프로필)은 선택된 에이전트의 등록값에서 가져옵니다.</p>
-  <button type="submit">등록</button>
+    </ul>
+  </div>
+  <div class="field">
+    <label for="criteria_extra">추가 완료 기준</label>
+    <textarea id="criteria_extra" name="criteria_extra" rows="3" placeholder="줄마다 한 항목">{{ form.criteria_extra }}</textarea>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="predecessor_task_id">선행 업무</label>
+      <select id="predecessor_task_id" name="predecessor_task_id">
+        <option value="">(없음)</option>
+        {% for t in my_tasks %}
+        <option value="{{ t.task_id }}"{% if t.task_id == form.predecessor_task_id %} selected{% endif %}>{{ t.title }} — {{ t.status.label }}</option>
+        {% endfor %}
+      </select>
+      <div class="help">선행 업무가 완료돼야 이 업무가 시작됩니다 (A → B).</div>
+    </div>
+    <div class="field">
+      <label for="run_id">조사할 run_id (진단 업무)</label>
+      <input type="text" id="run_id" name="run_id" value="{{ form.run_id }}">
+      <div class="help">코드 수정 업무의 대상(저장소·기준 커밋·검증 프로필)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn" type="submit">등록</button>
+    <a class="btn btn-secondary" href="/">취소</a>
+  </div>
 </form>
 {% endblock %}

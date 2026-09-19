@@ -1,0 +1,134 @@
+{# 업무 상세의 라이브 조각 — UI_GUIDE "업무 상세 — 가운데 열의 순서". `GET /tasks/{id}/live` 가 이것만 돌려주고
+   base.html 의 스크립트가 통째로 교체한다. `data-result` 가 바뀌면(결과 도착) 페이지를 다시 열어 뷰어를 채운다. #}
+{% import "_status.html" as st %}
+{% set terminal = status.label in ['완료', '실패'] %}
+<div class="live" data-live="/tasks/{{ task.task_id }}/live" data-result="{{ result.artifact_id if result else '' }}" data-terminal="{{ '1' if terminal else '0' }}" data-status="{{ status.label }}">
+
+  {# 1. 브레드크럼 + 연결 업무 칩 + 뷰어 열기 #}
+  <div class="crumbs">
+    <div class="crumb">{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }}</div>
+    <div class="crumb-side">
+      {% if predecessor %}<a class="task-chip" href="/tasks/{{ predecessor.task_id }}" title="{{ predecessor.title }}">선행 · {{ st.mini(predecessor.status.label) }}</a>{% endif %}
+      {% for s in successors %}<a class="task-chip" href="/tasks/{{ s.task_id }}" title="{{ s.title }}">후속 · {{ st.mini(s.status.label) }}</a>{% endfor %}
+      {% if not successors and not task.finished_at %}<a class="task-chip" href="/tasks/new?example=fix&amp;predecessor={{ task.task_id }}">후속 업무 B 등록</a>{% endif %}
+      {% if viewer %}<button type="button" class="icon-btn" data-viewer-open title="뷰어 열기" aria-label="뷰어 열기"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM10 3v10"/></svg></button>{% endif %}
+    </div>
+  </div>
+
+  {# 2. 요청 말풍선 #}
+  <div class="bubble">{{ task.request }}<span class="stamp">{{ task.created_at|kst }}</span></div>
+
+  {# 3. 선택 기록 (CONTRACT 9절) #}
+  <details class="row" data-key="selection">
+    <summary>{{ '자동 선택' if selection and selection.mode == 'auto' else '직접 선택' }} · {{ selection.selected_agent_id if selection and selection.selected_agent_id else '미선택' }} · {{ selection.reason if selection else '후보 없음' }}</summary>
+    <div class="row-body">
+      {% if selection %}
+      <table class="kv">
+        <tr><th>required_capability</th><td class="mono">{{ selection.required_capability.code }} · {{ selection.required_capability.scope }}</td></tr>
+        <tr><th>candidate_count</th><td>{{ selection.candidate_count }}</td></tr>
+        <tr><th>matched</th><td class="mono">{{ selection.matched.code ~ ' · ' ~ selection.matched.scope if selection.matched else '—' }}</td></tr>
+        <tr><th>status</th><td class="mono">{{ selection.status }}</td></tr>
+        <tr><th>reason</th><td>{{ selection.reason }}</td></tr>
+      </table>
+      {% else %}
+      <p class="small">선택 기록 없음</p>
+      {% endif %}
+    </div>
+  </details>
+
+  {# 4. 완료 기준 #}
+  <details class="row" data-key="criteria">
+    <summary>완료 기준 · {{ '자동 완료' if task.completion_mode == 'auto' else '검토 후 완료' }} · {{ task.criteria|map(attribute='text')|join(' · ') }}</summary>
+    <div class="row-body">
+      <ul>
+        {% for c in task.criteria %}<li>{{ c.text }}{% if not c.structured %} <span class="small">(검토자 표시)</span>{% endif %}</li>{% endfor %}
+      </ul>
+      <p class="small">실행 방식: {{ '자동 실행' if task.run_mode == 'auto' else '직접 실행' }} · 대상: <span class="mono">{{ task.target }}</span></p>
+    </div>
+  </details>
+
+  {# 5. 실행 블록 — 시도마다 하나. 접혀 있어도 마지막 progress 한 줄은 보인다 #}
+  {% for e in executions %}
+  <div class="exec-block">
+    <details class="row" data-key="exec-{{ e.execution_id }}"{% if loop.last %} open{% endif %}>
+      <summary>실행 {{ e.attempt_no }}회차{% if e.duration_seconds is not none %} · {{ e.duration_seconds|duration }}{% endif %}{% if task.kind == 'code_change' and loop.last and viewer and viewer.diff %} · <span class="plus-n">+{{ viewer.diff.stats[1] }}</span> <span class="minus-n">-{{ viewer.diff.stats[2] }}</span>{% elif e.progress_count %} · 진행 {{ e.progress_count }}건{% endif %} · <span class="mono">{{ e.status }}</span>{% if e.released_at %} · 종결{% endif %}</summary>
+      <div class="row-body">
+        <p class="small mono">{{ e.execution_id }} · {{ e.created_at|kst }}</p>
+        <ol class="timeline">
+          {% for ev in e.events %}
+          <li>
+            <span class="t-seq">{{ ev.seq }}</span>
+            <span class="t-time">{{ ev.occurred_at|kst }}</span>
+            <span class="t-type">{{ ev.type }}</span>
+            <span class="t-msg">
+              {%- if ev.type == 'started' %}{{ ev.data.runtime_ref }}
+              {%- elif ev.type == 'progress' %}{{ ev.data.message }}
+              {%- elif ev.type == 'result_ready' %}{{ ev.data.result_artifact_id }}
+              {%- elif ev.type == 'failed' %}{{ ev.data.code }} · {{ ev.data.message }} · {{ '프로세스 종료 확인' if ev.data.process_stopped else '종료 미확인' }}
+              {%- endif -%}
+            </span>
+          </li>
+          {% else %}
+          <li><span class="t-seq">—</span><span class="t-time"></span><span class="t-type"></span><span class="t-msg">아직 이벤트 없음</span></li>
+          {% endfor %}
+        </ol>
+        {% if e.artifacts and not loop.last %}
+        <div class="chips">
+          {% for a in e.artifacts if a.kind != 'evidence' %}<a class="chip" href="/tasks/{{ task.task_id }}/artifacts/{{ a.artifact_id }}" data-open-viewer><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9H4zM9 2v3h3"/></svg>{{ a.kind|kind_label }}</a>{% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </details>
+    {% if e.last_progress and e.released_at is none %}<div class="row-note">{{ e.last_progress }}</div>{% endif %}
+  </div>
+  {% endfor %}
+
+  {# 6. 결과 카드 + 7. 산출물 칩 #}
+  {% include "_result_card.html" %}
+  {% if result %}
+  {% set producer = executions|selectattr('execution_id', 'equalto', result.execution_id)|first %}
+  {% if producer and producer.artifacts %}
+  <div class="chips">
+    {% for a in producer.artifacts if a.kind != 'evidence' %}<a class="chip" href="/tasks/{{ task.task_id }}/artifacts/{{ a.artifact_id }}" data-open-viewer{% if a.artifact_id == result.artifact_id %} data-primary{% endif %}><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5l3 3v9H4zM9 2v3h3"/></svg>{{ a.kind|kind_label }}</a>{% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {# 8. 상태 줄 #}
+  {{ st.status_line(status, live=true) }}
+
+  {# 9. 동작 영역 — 상태에 따라 하나만. 채팅 입력창은 없다 #}
+  <div class="action-area">
+    {% if can_run %}
+    <form method="post" action="/tasks/{{ task.task_id }}/run" class="actions">
+      <button class="btn" type="submit">실행</button>
+      <span class="action-note">{{ agent.name if agent else '' }} 에서 새 실행을 시작합니다. 접수·시작은 실행 블록에서 확인합니다.</span>
+    </form>
+    {% elif needs_selection %}
+    <form method="post" action="/tasks/{{ task.task_id }}/select">
+      <div class="field">
+        <label for="agent_id">에이전트 직접 선택</label>
+        <select id="agent_id" name="agent_id">
+          {% for c in candidates %}<option value="{{ c.agent_id }}">{{ c.name }} ({{ c.agent_id }}) · {% for cap in c.capabilities %}{{ cap.code }}{% if not loop.last %}, {% endif %}{% endfor %}</option>{% endfor %}
+        </select>
+        <div class="help">{{ status.reason }}. 요구 능력과 맞지 않는 대상을 고르면 다시 확인 필요가 됩니다.</div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">확정</button></div>
+    </form>
+    {% elif can_review %}
+    <form method="post" action="/tasks/{{ task.task_id }}/review">
+      <div class="field">
+        <label for="comment">검토 의견</label>
+        <textarea id="comment" name="comment" rows="3" placeholder="수정 요청·종료 사유. 승인은 비워도 됩니다."></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit" name="decision" value="approve">완료 승인</button>
+        <button class="btn btn-secondary" type="submit" name="decision" value="request_changes">수정 요청</button>
+        <button class="btn btn-danger" type="submit" name="decision" value="close">종료</button>
+      </div>
+    </form>
+    {% elif task.finished_at and task.review_decision == 'approve' and task.kind == 'code_change' %}
+    <p class="action-note">병합: {{ '운영자 확인 완료 ' ~ (task.merge_confirmed_at|kst) if task.merge_confirmed_at else '운영자 확인 대기' }}</p>
+    {% endif %}
+  </div>
+</div>

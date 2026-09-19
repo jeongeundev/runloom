@@ -1,33 +1,148 @@
-{# 최소 마크업. Step 7 이 UI_GUIDE 대로 3열 셸·CSS 로 다시 쓴다. 상태 문구는 GLOSSARY 사용자 상태 7개만 쓴다. #}
+{# 3열 셸 — UI_GUIDE "앱 셸". 왼쪽 목록 · 가운데 본문 · 오른쪽 산출물 뷰어. 대화 입력창은 없다.
+   스크립트는 여기 인라인 하나뿐이다 (폴링·뷰어 열기·목록 서랍·복사·원문 토글). 외부 자원 없음. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}workflow{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <strong>workflow</strong>
-  <nav>
-    <a href="/">업무</a> ·
-    <a href="/agents">에이전트</a>{% if is_operator %} ·
-    <a href="/operator">운영자</a>{% endif %}
-  </nav>
-</header>
-<aside>
-  <h2>최근</h2>
-  <a href="/tasks/new?example=diagnose">+ 시연 업무 만들기</a>
-  {% if my_tasks %}
-  <ul>
-    {% for t in my_tasks %}
-    <li><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a> — {{ t.status.label }} · {{ t.status.reason }} · {{ t.created_at|kst }}</li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-</aside>
-<main>
-{% block content %}{% endblock %}
-</main>
+<div class="shell" id="shell">
+  <div class="topbar">
+    <button type="button" class="icon-btn" id="nav-toggle" aria-label="목록">
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <span class="brand">workflow</span>
+  </div>
+  {% include "_sidebar.html" %}
+  <main class="main">
+    <div class="main-inner">
+    {% block content %}{% endblock %}
+    </div>
+  </main>
+  <aside class="viewer" id="viewer"{% if not viewer %} hidden{% endif %}>
+    {% block viewer %}{% endblock %}
+  </aside>
+</div>
+<script>
+(function () {
+  var shell = document.getElementById('shell');
+  var viewer = document.getElementById('viewer');
+  var navToggle = document.getElementById('nav-toggle');
+  if (navToggle) {
+    navToggle.addEventListener('click', function () { shell.classList.toggle('nav-open'); });
+  }
+
+  // --- 뷰어 열기: 산출물 칩을 누르면 그 페이지의 뷰어 패널을 가져와 오른쪽 열에 넣는다 (800px 미만은 페이지 이동) ---
+  function openViewerFrom(href) {
+    return fetch(href, { headers: { 'Accept': 'text/html' } }).then(function (r) {
+      if (!r.ok) { throw new Error(String(r.status)); }
+      return r.text();
+    }).then(function (html) {
+      var tpl = document.createElement('template');
+      tpl.innerHTML = html;
+      var panel = tpl.content.querySelector('#viewer-panel');
+      if (!panel) { throw new Error('panel'); }
+      var current = document.getElementById('viewer-panel');
+      if (current) { current.replaceWith(panel); } else { viewer.appendChild(panel); }
+      viewer.hidden = false;
+      shell.classList.add('viewer-open');
+      bindViewer();
+    });
+  }
+  function narrow() { return window.matchMedia('(max-width: 799px)').matches; }
+  document.addEventListener('click', function (ev) {
+    var link = ev.target.closest('a[data-open-viewer]');
+    if (!link || narrow()) { return; }
+    ev.preventDefault();
+    openViewerFrom(link.getAttribute('href')).catch(function () { window.location.href = link.getAttribute('href'); });
+  });
+  document.addEventListener('click', function (ev) {
+    var opener = ev.target.closest('[data-viewer-open]');
+    if (opener && !narrow()) {
+      ev.preventDefault();  // 넓은 화면에서는 오른쪽 열을 열고, 800px 미만에서는 링크대로 산출물 페이지로 간다
+      viewer.hidden = false;
+      shell.classList.add('viewer-open');
+    }
+    if (ev.target.closest('[data-viewer-close]')) {
+      shell.classList.remove('viewer-open');
+    }
+  });
+
+  // --- 뷰어 도구: 원문 보기 토글, 복사 ---
+  function bindViewer() {
+    var raw = document.querySelector('[data-raw-toggle]');
+    var rawPre = document.querySelector('[data-raw]');
+    if (raw && rawPre) {
+      raw.addEventListener('click', function () {
+        rawPre.hidden = !rawPre.hidden;
+        raw.textContent = rawPre.hidden ? '원문 보기' : '원문 닫기';
+      });
+    }
+    var copy = document.querySelector('[data-copy]');
+    if (copy && rawPre && navigator.clipboard) {
+      copy.addEventListener('click', function () {
+        navigator.clipboard.writeText(rawPre.textContent).then(function () {
+          copy.textContent = '복사됨';
+          setTimeout(function () { copy.textContent = '복사'; }, 1500);
+        });
+      });
+    }
+  }
+  bindViewer();
+
+  // --- 라이브 조각: 3초(완료·실패면 10초)마다 교체. 입력 중이면 건너뛴다. 결과 산출물이 바뀌면 뷰어를 위해 다시 연다 ---
+  var live = document.querySelector('[data-live]');
+  if (!live) { return; }
+  var url = live.getAttribute('data-live');
+  function stamp(text) {
+    var el = document.getElementById('live-stamp');
+    if (el) { el.textContent = text; }
+  }
+  function delay() { return live.getAttribute('data-terminal') === '1' ? 10000 : 3000; }
+  function typing() {
+    var a = document.activeElement;
+    return !!(a && a.tagName === 'TEXTAREA' && live.contains(a));
+  }
+  function clock() {
+    var d = new Date();
+    return [d.getHours(), d.getMinutes(), d.getSeconds()].map(function (n) { return (n < 10 ? '0' : '') + n; }).join(':');
+  }
+  function tick() {
+    if (typing()) { schedule(); return; }
+    fetch(url, { cache: 'no-store', headers: { 'Accept': 'text/html' } }).then(function (r) {
+      if (!r.ok) { throw new Error(String(r.status)); }
+      return r.text();
+    }).then(function (html) {
+      var tpl = document.createElement('template');
+      tpl.innerHTML = html.trim();
+      var next = tpl.content.querySelector('[data-live]');
+      if (!next) { throw new Error('fragment'); }
+      if (next.getAttribute('data-result') !== live.getAttribute('data-result')) {
+        window.location.reload();
+        return;
+      }
+      // 펼쳐 둔 접이식 행은 교체 뒤에도 유지한다
+      live.querySelectorAll('details[data-key]').forEach(function (d) {
+        var twin = next.querySelector('details[data-key="' + d.getAttribute('data-key') + '"]');
+        if (twin) { twin.open = d.open; }
+      });
+      live.replaceWith(next);
+      live = next;
+      live.classList.add('live-swap');
+      stamp('마지막 갱신 ' + clock());
+      schedule();
+    }).catch(function () {
+      stamp('갱신 실패, 재시도 중');
+      schedule();
+    });
+  }
+  function schedule() { setTimeout(tick, delay()); }
+  stamp('마지막 갱신 ' + clock());
+  schedule();
+})();
+</script>
 </body>
 </html>
