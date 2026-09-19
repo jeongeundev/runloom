@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ task.title }} — workflow{% endblock %}
+{% block content %}
+<p>{{ agent.name if agent else '에이전트 미선택' }} / {{ task.title }}
+  {% if predecessor %} · 선행: <a href="/tasks/{{ predecessor.task_id }}">{{ predecessor.title }}</a> ({{ predecessor.status.label }}){% endif %}
+  {% for s in successors %} · 후속: <a href="/tasks/{{ s.task_id }}">{{ s.title }}</a> ({{ s.status.label }}){% endfor %}
+  {% if not successors and not task.finished_at %} · <a href="/tasks/new?example=fix&amp;predecessor={{ task.task_id }}">후속 업무 B 등록</a>{% endif %}
+</p>
+<h1>{{ task.title }}</h1>
+<blockquote>{{ task.request }}<br><small>{{ task.created_at|kst }}</small></blockquote>
+
+<details open>
+  <summary>{{ '자동 선택' if selection and selection.mode == 'auto' else '직접 선택' }} · {{ selection.selected_agent_id if selection and selection.selected_agent_id else '미선택' }} · {{ selection.reason if selection else '후보 없음' }}</summary>
+  {% if selection %}
+  <table>
+    <tr><th>required_capability</th><td>{{ selection.required_capability.code }} · {{ selection.required_capability.scope }}</td></tr>
+    <tr><th>candidate_count</th><td>{{ selection.candidate_count }}</td></tr>
+    <tr><th>status</th><td>{{ selection.status }}</td></tr>
+  </table>
+  {% endif %}
+</details>
+
+<details open>
+  <summary>완료 기준 · {{ '자동 완료' if task.completion_mode == 'auto' else '검토 후 완료' }} · {{ task.criteria|map(attribute='text')|join(', ') }}</summary>
+  <ul>
+    {% for c in task.criteria %}<li>{{ c.text }}{% if not c.structured %} (검토자 표시){% endif %}</li>{% endfor %}
+  </ul>
+  <p>실행 방식: {{ '자동 실행' if task.run_mode == 'auto' else '직접 실행' }} · 대상: {{ task.target }}</p>
+</details>
+
+{% for e in executions %}
+<details{% if loop.last %} open{% endif %}>
+  <summary>실행 {{ e.attempt_no }}회차 · {{ e.status }} · {{ e.execution_id }}{% if e.released_at %} · 종결{% endif %}</summary>
+  <ol>
+    {% for ev in e.events %}
+    <li>seq {{ ev.seq }} · {{ ev.occurred_at|kst }} · {{ ev.type }} · {{ ev.data }}</li>
+    {% endfor %}
+  </ol>
+  {% if e.failed_code %}<p>실패: {{ e.failed_code }} · {{ e.failed_message }}</p>{% endif %}
+  {% if e.artifacts %}
+  <p>산출물:
+    {% for a in e.artifacts %}<a href="/tasks/{{ task.task_id }}/artifacts/{{ a.artifact_id }}">{{ a.kind }}</a> {% endfor %}
+  </p>
+  {% endif %}
+</details>
+{% endfor %}
+
+{% if result %}
+<section>
+  <h2>결과 · {{ result.kind }}</h2>
+  {% if result.data %}
+  <p>outcome: {{ result.data.outcome }}</p>
+  <p>{{ result.data.summary }}</p>
+  {% if result.kind == 'code_change_result' %}
+  <p>{{ (result.data.result_commit or '')[:7] }} ← {{ result.data.base_commit[:7] }}{% if result.data.verification %} · {{ result.data.verification.profile_id }} exit {{ result.data.verification.exit_code }}{% endif %}</p>
+  {% elif result.kind == 'diagnosis_result' %}
+  <p>{{ result.data.run_id }}{% if result.data.diagnosis %} · {{ result.data.diagnosis.code }}{% endif %} · 근거 {{ result.data.findings|length }} · 첨부 {{ result.data.attachments|length }}</p>
+  {% endif %}
+  {% else %}
+  <p>결과 본문을 읽을 수 없습니다.</p>
+  {% endif %}
+  <p><a href="/tasks/{{ task.task_id }}/artifacts/{{ result.artifact_id }}">원문 보기</a></p>
+</section>
+{% endif %}
+
+<p><strong>{{ status.label }}</strong> · {{ status.reason }}</p>
+
+{% if can_run %}
+<form method="post" action="/tasks/{{ task.task_id }}/run"><button type="submit">실행</button></form>
+{% elif needs_selection %}
+<form method="post" action="/tasks/{{ task.task_id }}/select">
+  <select name="agent_id">
+    {% for c in candidates %}<option value="{{ c.agent_id }}">{{ c.name }} ({{ c.agent_id }})</option>{% endfor %}
+  </select>
+  <button type="submit">확정</button>
+</form>
+{% elif can_review %}
+<form method="post" action="/tasks/{{ task.task_id }}/review">
+  <label>검토 의견<br><textarea name="comment" rows="3"></textarea></label><br>
+  <button type="submit" name="decision" value="approve">완료 승인</button>
+  <button type="submit" name="decision" value="request_changes">수정 요청</button>
+  <button type="submit" name="decision" value="close">종료</button>
+</form>
+{% endif %}
+{% endblock %}

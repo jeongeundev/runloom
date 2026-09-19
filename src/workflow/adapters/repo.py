@@ -231,6 +231,11 @@ def revoke_connect_code(conn: Connection, code: str, now: str) -> None:
     _require_rowcount(cur, "connect code")
 
 
+def list_connect_codes(conn: Connection) -> list[Row]:
+    """운영자 화면용. 최근 발급 순. 코드 자체는 1회용·10분이라 화면에 보여도 된다."""
+    return conn.execute("SELECT * FROM connect_codes ORDER BY issued_at DESC, code").fetchall()
+
+
 def exchange_connect_code(conn: Connection, code: str, now: str) -> tuple[str, str]:
     """(connector_id, token_plain). 만료·사용·취소된 코드는 NotFound. DB 에는 토큰 sha256 만 남는다."""
     token_plain = TOKEN_PREFIX + secrets.token_urlsafe(32)
@@ -342,6 +347,18 @@ def update_task_status(
     _require_rowcount(cur, f"task {task_id}")
 
 
+def update_task_choice(
+    conn: Connection, task_id: str, *, chosen_agent_id: str, target: dict
+) -> None:
+    """직접 선택으로 전환. 선택된 agent 등록값에서 다시 만든 target 을 함께 고정한다."""
+    cur = conn.execute(
+        "UPDATE tasks SET selection_mode = 'manual', chosen_agent_id = ?, target_json = ? "
+        "WHERE task_id = ?",
+        (chosen_agent_id, json.dumps(target, ensure_ascii=False), task_id),
+    )
+    _require_rowcount(cur, f"task {task_id}")
+
+
 def save_selection(conn: Connection, record: SelectionRecord) -> None:
     conn.execute(
         "INSERT INTO selection_records (task_id, record_json) VALUES (?, ?) "
@@ -416,6 +433,13 @@ def active_execution(conn: Connection, task_id: str) -> Row | None:
     return _one(
         conn, "SELECT * FROM executions WHERE task_id = ? AND released_at IS NULL", (task_id,)
     )
+
+
+def list_executions(conn: Connection, task_id: str) -> list[Row]:
+    """Task 의 모든 시도. attempt_no 순 (해제된 것 포함)."""
+    return conn.execute(
+        "SELECT * FROM executions WHERE task_id = ? ORDER BY attempt_no", (task_id,)
+    ).fetchall()
 
 
 def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None:
@@ -562,6 +586,15 @@ def executions_needing_attention(conn: Connection) -> list[Row]:
         "ORDER BY created_at, execution_id",
         TERMINAL_STATUSES,
     ).fetchall()
+
+
+def get_verdict(conn: Connection, execution_id: str) -> Row | None:
+    """실행에 대한 가장 최근 판정 (task_verdicts). 저장은 워커(Step 8)가 한다."""
+    return _one(
+        conn,
+        "SELECT * FROM task_verdicts WHERE execution_id = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1",
+        (execution_id,),
+    )
 
 
 # --- 산출물 (CONTRACT 4절) ----------------------------------------------------

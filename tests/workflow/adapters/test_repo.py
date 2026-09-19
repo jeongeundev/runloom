@@ -685,3 +685,52 @@ def test_diagnosis_usage_counts_per_session_and_total(seeded):
     assert repo.count_diagnosis_started(conn, session_id=OTHER_SESSION, since=since) == 1
     assert repo.count_diagnosis_started(conn, session_id=None, since=since) == 2
     assert repo.count_diagnosis_started(conn, session_id=None, since="2026-09-19T00:00:00Z") == 3
+
+
+# --- Step 6 웹 화면이 쓰는 읽기·갱신 보조 -------------------------------------
+
+
+def test_list_executions_orders_by_attempt_no(seeded):
+    conn = seeded
+    assert repo.list_executions(conn, TASK_A) == []
+    _create_execution(conn, "exec-1", attempt_no=1)
+    repo.release_execution(conn, "exec-1", NOW)
+    _create_execution(conn, "exec-2", attempt_no=2, start_key="req:2")
+    assert [r["execution_id"] for r in repo.list_executions(conn, TASK_A)] == ["exec-1", "exec-2"]
+    assert [r["attempt_no"] for r in repo.list_executions(conn, TASK_A)] == [1, 2]
+
+
+def test_update_task_choice_sets_manual_selection_and_target(seeded):
+    conn = seeded
+    repo.update_task_choice(
+        conn, TASK_A, chosen_agent_id="agent-ops-demo", target={"run_id": "daily-0921-0900"}
+    )
+    row = repo.get_task(conn, TASK_A)
+    assert row["selection_mode"] == "manual"
+    assert row["chosen_agent_id"] == "agent-ops-demo"
+    assert json.loads(row["target_json"]) == {"run_id": "daily-0921-0900"}
+    with pytest.raises(NotFound):
+        repo.update_task_choice(conn, "nope", chosen_agent_id="a", target={})
+
+
+def test_get_verdict_reads_latest_row_for_execution(seeded):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    assert repo.get_verdict(conn, "exec-1") is None
+    conn.execute(
+        "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
+        (TASK_A, "exec-1", json.dumps({"outcome": "passed", "checks": []}), NOW),
+    )
+    row = repo.get_verdict(conn, "exec-1")
+    assert json.loads(row["verdict_json"])["outcome"] == "passed"
+    assert row["decided_at"] == NOW
+
+
+def test_list_connect_codes_newest_first_with_state_columns(conn):
+    first = repo.issue_connect_code(conn, NOW)
+    second = repo.issue_connect_code(conn, LATER)
+    repo.revoke_connect_code(conn, first, LATER)
+    rows = repo.list_connect_codes(conn)
+    assert [r["code"] for r in rows] == [second, first]
+    assert rows[1]["revoked_at"] == LATER and rows[0]["revoked_at"] is None
+    assert rows[0]["used_at"] is None

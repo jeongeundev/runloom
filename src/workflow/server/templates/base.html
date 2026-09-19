@@ -1,0 +1,33 @@
+{# 최소 마크업. Step 7 이 UI_GUIDE 대로 3열 셸·CSS 로 다시 쓴다. 상태 문구는 GLOSSARY 사용자 상태 7개만 쓴다. #}
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}workflow{% endblock %}</title>
+</head>
+<body>
+<header>
+  <strong>workflow</strong>
+  <nav>
+    <a href="/">업무</a> ·
+    <a href="/agents">에이전트</a>{% if is_operator %} ·
+    <a href="/operator">운영자</a>{% endif %}
+  </nav>
+</header>
+<aside>
+  <h2>최근</h2>
+  <a href="/tasks/new?example=diagnose">+ 시연 업무 만들기</a>
+  {% if my_tasks %}
+  <ul>
+    {% for t in my_tasks %}
+    <li><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a> — {{ t.status.label }} · {{ t.status.reason }} · {{ t.created_at|kst }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</aside>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

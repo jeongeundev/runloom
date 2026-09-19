@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}오류 {{ error.status }} — workflow{% endblock %}
+{% block content %}
+<h1>{{ error.status }}</h1>
+<p>{{ error.message }}</p>
+<p><code>{{ error.code }}</code>{% if error.field %} · 필드 {{ error.field }}{% endif %}</p>
+{% if error.details and error.details.resets_at %}<p>다시 가능: {{ error.details.resets_at|kst }}</p>{% endif %}
+<p><a href="/">업무 목록으로</a></p>
+{% endblock %}

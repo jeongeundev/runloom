@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}운영자 — workflow{% endblock %}
+{% block content %}
+<h1>운영자</h1>
+{% if not is_operator %}
+<form method="post" action="/operator/login">
+  <label>운영자 토큰 <input type="password" name="token" autocomplete="off"></label>
+  <button type="submit">열기</button>
+</form>
+{% else %}
+<section>
+  <h2>연결 코드</h2>
+  {% if issued %}
+  <p>발급된 코드: <code id="issued-code">{{ issued.code }}</code> · 만료 {{ issued.expires_at|kst }} (1회용. 연결 프로그램에서 교환)</p>
+  {% endif %}
+  <form method="post" action="/operator/connect-codes"><button type="submit">연결 코드 발급</button></form>
+  <ul>
+    {% for c in connect_codes %}
+    <li><code>{{ c.code }}</code> · 발급 {{ c.issued_at|kst }} · 만료 {{ c.expires_at|kst }}
+      {% if c.used_at %} · 사용됨 {{ c.used_at|kst }}{% elif c.revoked_at %} · 취소됨 {{ c.revoked_at|kst }}{% else %}
+      <form method="post" action="/operator/connect-codes/{{ c.code }}/revoke" style="display:inline"><button type="submit">취소</button></form>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+<section>
+  <h2>에이전트</h2>
+  <ul>
+    {% for a in agents %}
+    <li>{{ a.name }} ({{ a.agent_id }}) · {{ a.owner_scope }} · {{ a.connection_type }} ·
+      {{ '연결됨' if a.online else '연결 끊김' }}
+      <form method="post" action="/operator/agents/{{ a.agent_id }}/delete" style="display:inline"><button type="submit">삭제</button></form></li>
+    {% endfor %}
+  </ul>
+  <h3>등록</h3>
+  <form method="post" action="/operator/agents">
+    <p><label>ID <input name="agent_id" required></label> <label>이름 <input name="name" required></label></p>
+    <p><label>소유 구분 <select name="owner_scope">{% for s in owner_scopes %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select></label>
+       <label>연결 유형 <select name="connection_type">{% for t in connection_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></label></p>
+    <p><label>능력 <select name="capability_code">{% for code in capability_codes %}<option value="{{ code }}">{{ code }} ({{ scope_keys[code] }})</option>{% endfor %}</select></label>
+       <label>범위 값 <input name="scope_value" required></label></p>
+    <p><label>local_registration_id (로컬) <input name="local_registration_id"></label></p>
+    <p><label>api_url (API) <input name="api_url"></label> <label>credential_ref (API, env:… 참조명만) <input name="credential_ref"></label></p>
+    <p>자동 파악값(저장소·기준 커밋·검증 프로필·발견 설정)은 연결 프로그램이 등록을 보고하면 채워짐.</p>
+    <button type="submit">등록</button>
+  </form>
+</section>
+<section>
+  <h2>병합 확인 대기</h2>
+  <p>실제 git 병합은 운영자가 Mac 의 데모 저장소에서 수동으로 한다. 여기서는 확인 사실만 기록한다.</p>
+  <ul>
+    {% for t in merge_queue %}
+    <li>{{ t.title }} ({{ t.task_id }}) · {{ t.session_id }}
+      <form method="post" action="/operator/merges/{{ t.task_id }}/confirm" style="display:inline"><button type="submit">병합 확인</button></form></li>
+    {% else %}
+    <li>없음</li>
+    {% endfor %}
+  </ul>
+</section>
+<section>
+  <h2>모든 세션 업무</h2>
+  <ul>
+    {% for t in all_tasks %}
+    <li>{{ t.task_id }} · {{ t.title }} · {{ t.status.label }} · {{ t.status.reason }} · {{ t.created_at|kst }}</li>
+    {% endfor %}
+  </ul>
+</section>
+<section>
+  <h2>진단 사용량</h2>
+  <p>오늘 진단 실행: <strong>{{ diagnosis_today }}</strong>건</p>
+</section>
+{% endif %}
+{% endblock %}

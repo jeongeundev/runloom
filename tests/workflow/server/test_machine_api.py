@@ -533,11 +533,3 @@ def test_registration_rejects_short_commit(client, connector, headers):
     response = client.post("/connector/registrations", json=_registration(connector_id, base_commit="3f9c2e1"), headers=headers)
     assert response.status_code == 422
     assert response.json()["field"] == "base_commit"
-
-
-# --- 사람 화면 라우트는 없다 (Step 6) -----------------------------------------
-
-
-def test_no_human_routes_yet(client):
-    assert client.get("/").status_code == 404
-    assert client.get("/tasks").status_code == 404

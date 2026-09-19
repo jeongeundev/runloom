@@ -4,6 +4,7 @@
 """
 
 import hashlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -166,10 +167,8 @@ def bearer(token: str) -> dict:
 # --- 시드 ------------------------------------------------------------------
 
 
-@pytest.fixture
-def seeded(conn):
-    """세션 1개, 운영자 등록 에이전트 2개(진단 API·로컬 Codex), 업무 A → B."""
-    repo.create_session(conn, SESSION, NOW)
+def seed_agents(conn) -> None:
+    """운영자 등록 에이전트 2개(진단 API·로컬 Codex). 둘 다 모든 세션에 사용 허용."""
     repo.upsert_agent(conn, {
         "agent_id": "agent-ops-demo",
         "name": "운영 진단 데모",
@@ -191,6 +190,13 @@ def seeded(conn):
         "connection_state": "unknown",
         "shared_to_all_sessions": True,
     })
+
+
+@pytest.fixture
+def seeded(conn):
+    """세션 1개, 운영자 등록 에이전트 2개, 업무 A → B."""
+    repo.create_session(conn, SESSION, NOW)
+    seed_agents(conn)
     repo.insert_task(conn, task_row(TASK_A), NOW)
     repo.insert_task(conn, task_row(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     return conn
@@ -224,3 +230,53 @@ def running(client, headers, exec_fix) -> str:
         response = client.post(f"/executions/{exec_fix}/events", json=body, headers=headers)
         assert response.status_code == 200, response.text
     return exec_fix
+
+
+# --- 결과 시드 (Step 6 웹·뷰 테스트) -------------------------------------------
+
+RESULT_COMMIT = "9b7e4d2c1a0f8e6d5c3b2a1f0e9d8c7b6a5f4e3d"
+
+
+def code_change_result(execution_id: str, task_id: str) -> dict:
+    """CONTRACT 7절 `ready_for_review` 결과. 산출물 ID 는 화면이 파싱만 하므로 예시 값을 그대로 둔다."""
+    return {
+        "contract_version": 1,
+        "execution_id": execution_id,
+        "task_id": task_id,
+        "outcome": "ready_for_review",
+        "summary": "report_transformer가 items 또는 data.records 중 정확히 하나의 목록을 읽도록 수정했습니다.",
+        "base_commit": BASE_COMMIT,
+        "result_commit": RESULT_COMMIT,
+        "artifact_ids": ["art-diff-001", "art-test-before-001", "art-test-after-001", "art-report-001"],
+        "verification": {
+            "profile_id": "vp-pytest",
+            "result_commit": RESULT_COMMIT,
+            "exit_code": 0,
+            "log_artifact_id": "art-verify-001",
+        },
+    }
+
+
+def seed_result_ready(conn, store, execution_id: str, *, kind: str, body: dict,
+                      session_id: str = SESSION, actor: str = "connector:conn-1") -> str:
+    """queued 실행을 accepted → started → (결과 산출물 저장) → result_ready 까지 진행시킨다. 반환은 산출물 ID."""
+    from workflow.contracts.v1 import ArtifactMeta, ExecutionEvent
+
+    def _apply(seq: int, type_: str, data: dict) -> None:
+        repo.append_event(
+            conn, execution_id,
+            ExecutionEvent.model_validate(event(execution_id, seq, type_, data)),
+            actor=actor, now=NOW,
+        )
+
+    _apply(1, "accepted", {})
+    _apply(2, "started", {"runtime_ref": "pid:1"})
+    data = json.dumps(body, ensure_ascii=False).encode()
+    created, _ = repo.store_artifact(
+        conn, store, execution_id=execution_id, session_id=session_id,
+        meta=ArtifactMeta.model_validate(meta_for(data, kind=kind, name=f"{kind}.json",
+                                                   content_type="application/json")),
+        data=data, now=NOW,
+    )
+    _apply(3, "result_ready", {"result_artifact_id": created.artifact_id})
+    return created.artifact_id

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}업무 — workflow{% endblock %}
+{% block content %}
+<h1>업무</h1>
+<section>
+  <h2>등록된 에이전트</h2>
+  <ul>
+    {% for a in agents %}
+    <li><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a> ({{ a.agent_id }}) —
+      {{ '연결됨' if a.online else '연결 끊김' }}, 마지막 확인 {{ a.last_seen_at|kst or '없음' }}</li>
+    {% endfor %}
+  </ul>
+</section>
+<section>
+  <h2>내 업무</h2>
+  {% if my_tasks %}
+  <ul>
+    {% for t in my_tasks %}
+    <li><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a> — {{ t.status.label }} · {{ t.status.reason }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>아직 업무가 없습니다.</p>
+  {% endif %}
+  <p><a href="/tasks/new?example=diagnose">시연 업무 만들기</a></p>
+</section>
+{% endblock %}

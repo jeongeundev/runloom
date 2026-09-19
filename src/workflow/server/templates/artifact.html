@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ artifact.name }} — workflow{% endblock %}
+{% block content %}
+<h1>{{ artifact.name }}</h1>
+<p>{{ artifact.kind }} · {{ artifact.content_type }} · {{ artifact.size }} bytes · sha256 {{ artifact.sha256 }} ·
+  <a href="/tasks/{{ task_id }}/artifacts/{{ artifact.artifact_id }}?raw=1">다운로드</a> ·
+  <a href="/tasks/{{ task_id }}">업무로</a></p>
+<pre>{{ text }}</pre>
+{% endblock %}
