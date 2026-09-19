@@ -37,6 +37,13 @@ case "/$REL" in
     ;;
 esac
 
+# docs/research/ 는 일회성 리서치 프로브 스크립트, docs/archive/ 는 보관된 이력 — 테스트 불필요
+case "$REL" in
+  docs/research/*|docs/archive/*)
+    exit 0
+    ;;
+esac
+
 # 설정/타입/스타일 파일은 테스트 불필요 — 허용
 case "$REL" in
   *.json|*.css|*.scss|*.md|*.yml|*.yaml|*.env*|*.config.*|*tailwind*|*postcss*|*next.config*|*tsconfig*)
@@ -141,6 +148,19 @@ EOF
     if [ "$TEST_FOUND" = false ]; then
       PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
       if [ -f "${PROJECT_ROOT}/tests/test_${BASENAME}.py" ]; then
+        TEST_FOUND=true
+      fi
+    fi
+
+    # tests/ 가 src/ 구조를 따라가는 배치: src/a/b/x.py → tests/a/b/test_x.py
+    # (같은 파일명이 여러 패키지에 있어도 충돌하지 않도록)
+    if [ "$TEST_FOUND" = false ]; then
+      MIRROR=$(dirname "$REL")
+      case "$MIRROR" in
+        src) MIRROR="" ;;
+        src/*) MIRROR="${MIRROR#src/}" ;;
+      esac
+      if [ -f "${PROJECT_ROOT}/tests/${MIRROR:+$MIRROR/}test_${BASENAME}.py" ]; then
         TEST_FOUND=true
       fi
     fi

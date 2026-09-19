@@ -1,0 +1,166 @@
+{
+  "sdk": "a2a-sdk 0.3.25",
+  "protocol": "0.3.0",
+  "auth_rejection": 401,
+  "cross_owner_task_lookup": "not found",
+  "observations": [
+    {
+      "owner": "backend",
+      "phase": "prepare",
+      "task_id": "565c6e81-565a-423d-973e-2f16e87023d5",
+      "states": [
+        "submitted",
+        "working",
+        "completed"
+      ]
+    },
+    {
+      "owner": "frontend",
+      "phase": "consumer",
+      "task_id": "09fd93b6-3845-4455-96a2-989fe0b5c342",
+      "states": [
+        "submitted",
+        "working",
+        "completed"
+      ]
+    },
+    {
+      "owner": "backend",
+      "phase": "resume",
+      "task_id": "be7ef94c-e9da-42f5-b4a3-8936339c8b86",
+      "states": [
+        "submitted",
+        "working",
+        "completed"
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "correlation": {
+        "original_work_id": "B1",
+        "request_id": "R1",
+        "execution_id": "E1"
+      },
+      "owner": "backend",
+      "phase": "prepare",
+      "cli_exit": 0,
+      "test_exit": 0,
+      "task_id": "565c6e81-565a-423d-973e-2f16e87023d5",
+      "context_id": "5c46c361-0a6a-4b86-95af-29a6701e5d28",
+      "elapsed_seconds": 42.09,
+      "request": {
+        "original_work_id": "B1",
+        "request_id": "R1",
+        "target": "frontend",
+        "goal": "Fix consumer rendering for paid, free, and pending shipping using the summarize response. Treat shippingFee 0 as free and shippingFee null as pending; render a pending total when total is null.",
+        "result_conditions": [
+          "Run the consumer tests and report the actual command, exit code, and passing results for paid, free, and pending shipping.",
+          "Provide actual JSON cases consumed and the corresponding rendered results for paid, free, and pending shipping, including {\"subtotal\":100,\"shippingFee\":10,\"total\":110}, {\"subtotal\":100,\"shippingFee\":0,\"total\":100}, and {\"subtotal\":100,\"shippingFee\":null,\"total\":null}."
+        ]
+      }
+    },
+    {
+      "correlation": {
+        "original_work_id": "B1",
+        "request_id": "R1",
+        "execution_id": "E2"
+      },
+      "owner": "frontend",
+      "phase": "consumer",
+      "cli_exit": 0,
+      "test_exit": 0,
+      "task_id": "09fd93b6-3845-4455-96a2-989fe0b5c342",
+      "context_id": "3952ab74-dc4f-4b2c-80e6-20b536d26e75",
+      "elapsed_seconds": 47.37,
+      "shared": {
+        "cases": [
+          {
+            "input": {
+              "subtotal": 100,
+              "shippingFee": 10,
+              "total": 110
+            },
+            "expected_display": {
+              "shipping": "10",
+              "total": "110"
+            }
+          },
+          {
+            "input": {
+              "subtotal": 100,
+              "shippingFee": 0,
+              "total": 100
+            },
+            "expected_display": {
+              "shipping": "0",
+              "total": "100"
+            }
+          },
+          {
+            "input": {
+              "subtotal": 100,
+              "shippingFee": null,
+              "total": null
+            },
+            "expected_display": {
+              "shipping": "pending",
+              "total": "pending"
+            }
+          }
+        ],
+        "sha256": "f6f080dbc5bd4f7793487f64c86fd7e7186443cb0943c341e2e339ce58c276e7",
+        "source": "frontend/cases.json",
+        "request_id": "R1"
+      }
+    },
+    {
+      "correlation": {
+        "original_work_id": "B1",
+        "request_id": "R1",
+        "execution_id": "E3"
+      },
+      "owner": "backend",
+      "phase": "resume",
+      "cli_exit": 0,
+      "test_exit": 0,
+      "task_id": "be7ef94c-e9da-42f5-b4a3-8936339c8b86",
+      "context_id": "dc76743e-78e8-4162-92f6-3c05feefee77",
+      "elapsed_seconds": 46.86,
+      "report": "# Compatibility report\n\nRead 3 received cases from `/workspace/shared-context.json`, supplied by the coordinator from Frontend via A2A. No Frontend repository was accessed.\n\nProvenance recorded in the shared file:\n\n- Source: `frontend/cases.json`\n- Request ID: `R1`\n- Supplied SHA-256: `f6f080dbc5bd4f7793487f64c86fd7e7186443cb0943c341e2e339ce58c276e7`\n\nThe digest above is the supplied provenance value; it was not independently verified against the unavailable Frontend source file.\n\nEach compatibility test calls `summarize(input.subtotal, input.shippingFee)` and strictly compares the entire returned object with the received `input` object.\n\n| Received case | Subtotal | Shipping fee | Total | Outcome |\n| --- | --- | --- | --- | --- |\n| 1 | 100 | 10 | 110 | PASS |\n| 2 | 100 | 0 | 100 | PASS |\n| 3 | 100 | null | null | PASS |\n\nExplicit strict assertions confirm that zero shipping remains zero with a numeric total, while pending shipping and total remain null.\n\nExecuted `node --test producer.test.mjs compatibility.test.mjs` successfully (exit code 0): 6 tests passed, 0 failed, 0 cancelled, 0 skipped, 0 todo. This includes all 3 received compatibility cases and all 3 producer tests.\n\nNeither `api.mjs` nor `shared-context.json` was edited.\n"
+    }
+  ],
+  "boundaries": {
+    "backend": {
+      "own": "backend-only",
+      "reads": {
+        "/workspace/../frontend/owner-marker.txt": "ENOENT",
+        "/workspace/../backend/owner-marker.txt": "ENOENT",
+        "/private/tmp/gateless-feasibility/frontend/owner-marker.txt": "ENOENT",
+        "/private/tmp/gateless-feasibility/backend/owner-marker.txt": "ENOENT",
+        "/Users/kje/.config/gh/hosts.yml": "ENOENT",
+        "/var/run/docker.sock": "ENOENT",
+        "/workspace/.git/config": "ENOENT"
+      },
+      "crossWrite": "EROFS",
+      "githubPrivateWithoutCredential": 404,
+      "githubCredentialPresent": false
+    },
+    "frontend": {
+      "own": "frontend-only",
+      "reads": {
+        "/workspace/../frontend/owner-marker.txt": "ENOENT",
+        "/workspace/../backend/owner-marker.txt": "ENOENT",
+        "/private/tmp/gateless-feasibility/frontend/owner-marker.txt": "ENOENT",
+        "/private/tmp/gateless-feasibility/backend/owner-marker.txt": "ENOENT",
+        "/Users/kje/.config/gh/hosts.yml": "ENOENT",
+        "/var/run/docker.sock": "ENOENT",
+        "/workspace/.git/config": "ENOENT"
+      },
+      "crossWrite": "EROFS",
+      "githubPrivateWithoutCredential": 404,
+      "githubCredentialPresent": false
+    }
+  },
+  "note": "Disposable coordinator probe, NOT Gateless product; no GitHub write/PR/check verified."
+}

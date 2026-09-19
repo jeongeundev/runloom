@@ -3,13 +3,13 @@
 Harness Step Executor — phase 내 step을 순차 실행하고 자가 교정한다.
 
 Usage:
-    python3 scripts/execute.py <phase-dir> [--push]
+    python3 scripts/execute.py <phase-dir> [--push] [--engine codex|claude]
 """
 
 import argparse
 import contextlib
 import json
-import os
+import re
 import subprocess
 import sys
 import threading
@@ -58,13 +58,24 @@ class StepExecutor:
     CHORE_MSG = "chore({phase}): step {num} output"
     TZ = timezone(timedelta(hours=9))
 
-    def __init__(self, phase_dir_name: str, *, auto_push: bool = False):
+    # step 을 위임할 에이전트. codex 가 기본이고, 사용량 한도에 걸리면 claude 로 넘어간다.
+    ENGINES = {
+        "codex": ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox"],
+        "claude": ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json"],
+    }
+    # codex 가 한도 초과로 실패할 때 출력에 남는 문구 (usage_limit_reached / "You've hit your usage limit")
+    QUOTA_RE = re.compile(r"usage[ _]limit", re.IGNORECASE)
+
+    def __init__(self, phase_dir_name: str, *, auto_push: bool = False, engine: str = "codex"):
+        if engine not in self.ENGINES:
+            raise ValueError(f"unknown engine: {engine}")
         self._root = str(ROOT)
         self._phases_dir = ROOT / "phases"
         self._phase_dir = self._phases_dir / phase_dir_name
         self._phase_dir_name = phase_dir_name
         self._top_index_file = self._phases_dir / "index.json"
         self._auto_push = auto_push
+        self._engine = engine
 
         if not self._phase_dir.is_dir():
             print(f"ERROR: {self._phase_dir} not found")
@@ -115,7 +126,7 @@ class StepExecutor:
 
         r = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
         if r.returncode != 0:
-            print(f"  ERROR: git을 사용할 수 없거나 git repo가 아닙니다.")
+            print("  ERROR: git을 사용할 수 없거나 git repo가 아닙니다.")
             print(f"  {r.stderr.strip()}")
             sys.exit(1)
 
@@ -128,7 +139,7 @@ class StepExecutor:
         if r.returncode != 0:
             print(f"  ERROR: 브랜치 '{branch}' checkout 실패.")
             print(f"  {r.stderr.strip()}")
-            print(f"  Hint: 변경사항을 stash하거나 commit한 후 다시 시도하세요.")
+            print("  Hint: 변경사항을 stash하거나 commit한 후 다시 시도하세요.")
             sys.exit(1)
 
         print(f"  Branch: {branch}")
@@ -176,9 +187,10 @@ class StepExecutor:
 
     def _load_guardrails(self) -> str:
         sections = []
-        claude_md = ROOT / "CLAUDE.md"
-        if claude_md.exists():
-            sections.append(f"## 프로젝트 규칙 (CLAUDE.md)\n\n{claude_md.read_text()}")
+        # codex 는 AGENTS.md 를 읽는다. 없으면 CLAUDE.md 로 폴백.
+        guide = next((p for p in (ROOT / "AGENTS.md", ROOT / "CLAUDE.md") if p.exists()), None)
+        if guide is not None:
+            sections.append(f"## 프로젝트 규칙 ({guide.name})\n\n{guide.read_text()}")
         docs_dir = ROOT / "docs"
         if docs_dir.is_dir():
             for doc in sorted(docs_dir.glob("*.md")):
@@ -231,9 +243,16 @@ class StepExecutor:
             f"   {commit_example}\n\n---\n\n"
         )
 
-    # --- Claude 호출 ---
+    # --- 에이전트 호출 ---
 
-    def _invoke_claude(self, step: dict, preamble: str) -> dict:
+    def _run_engine(self, prompt: str) -> subprocess.CompletedProcess:
+        # stdin 이 파이프면 codex exec 가 EOF 까지 읽으므로 DEVNULL 로 막는다.
+        return subprocess.run(
+            self.ENGINES[self._engine] + [prompt],
+            cwd=self._root, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1800,
+        )
+
+    def _invoke_agent(self, step: dict, preamble: str) -> dict:
         step_num, step_name = step["step"], step["name"]
         step_file = self._phase_dir / f"step{step_num}.md"
 
@@ -242,18 +261,23 @@ class StepExecutor:
             sys.exit(1)
 
         prompt = preamble + step_file.read_text()
-        result = subprocess.run(
-            ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json", prompt],
-            cwd=self._root, capture_output=True, text=True, timeout=1800,
-        )
+        result = self._run_engine(prompt)
+
+        # codex 한도 초과 → 같은 프롬프트를 claude 로 재실행하고, 이번 실행의 남은 step 도 claude 로.
+        # exit 0 이면 문구가 있어도 폴백하지 않는다 — 완료된 step 을 두 번 실행하게 된다.
+        if (self._engine == "codex" and result.returncode != 0
+                and self.QUOTA_RE.search(result.stdout + result.stderr)):
+            print("\n  ⚠ Codex 사용량 한도 도달 — 이후 step은 Claude로 실행")
+            self._engine = "claude"
+            result = self._run_engine(prompt)
 
         if result.returncode != 0:
-            print(f"\n  WARN: Claude가 비정상 종료됨 (code {result.returncode})")
+            print(f"\n  WARN: {self._engine} 비정상 종료 (code {result.returncode})")
             if result.stderr:
                 print(f"  stderr: {result.stderr[:500]}")
 
         output = {
-            "step": step_num, "name": step_name,
+            "step": step_num, "name": step_name, "engine": self._engine,
             "exitCode": result.returncode,
             "stdout": result.stdout, "stderr": result.stderr,
         }
@@ -267,10 +291,10 @@ class StepExecutor:
 
     def _print_header(self):
         print(f"\n{'='*60}")
-        print(f"  Harness Step Executor")
+        print("  Harness Step Executor")
         print(f"  Phase: {self._phase_name} | Steps: {self._total}")
         if self._auto_push:
-            print(f"  Auto-push: enabled")
+            print("  Auto-push: enabled")
         print(f"{'='*60}")
 
     def _check_blockers(self):
@@ -279,12 +303,12 @@ class StepExecutor:
             if s["status"] == "error":
                 print(f"\n  ✗ Step {s['step']} ({s['name']}) failed.")
                 print(f"  Error: {s.get('error_message', 'unknown')}")
-                print(f"  Fix and reset status to 'pending' to retry.")
+                print("  Fix and reset status to 'pending' to retry.")
                 sys.exit(1)
             if s["status"] == "blocked":
                 print(f"\n  ⏸ Step {s['step']} ({s['name']}) blocked.")
                 print(f"  Reason: {s.get('blocked_reason', 'unknown')}")
-                print(f"  Resolve and reset status to 'pending' to retry.")
+                print("  Resolve and reset status to 'pending' to retry.")
                 sys.exit(2)
             if s["status"] != "pending":
                 break
@@ -313,7 +337,7 @@ class StepExecutor:
                 tag += f" [retry {attempt}/{self.MAX_RETRIES}]"
 
             with progress_indicator(tag) as pi:
-                self._invoke_claude(step, preamble)
+                self._invoke_agent(step, preamble)
                 elapsed = int(pi.elapsed)
 
             index = self._read_json(self._index_file)
@@ -415,9 +439,11 @@ def main():
     parser = argparse.ArgumentParser(description="Harness Step Executor")
     parser.add_argument("phase_dir", help="Phase directory name (e.g. 0-mvp)")
     parser.add_argument("--push", action="store_true", help="Push branch after completion")
+    parser.add_argument("--engine", choices=sorted(StepExecutor.ENGINES), default="codex",
+                        help="step 을 위임할 에이전트 (기본 codex). claude 를 주면 처음부터 claude 로 실행")
     args = parser.parse_args()
 
-    StepExecutor(args.phase_dir, auto_push=args.push).run()
+    StepExecutor(args.phase_dir, auto_push=args.push, engine=args.engine).run()
 
 
 if __name__ == "__main__":

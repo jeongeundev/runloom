@@ -19,10 +19,10 @@
 설계 원칙:
 
 1. **Scope 최소화** — 하나의 step에서 하나의 레이어 또는 모듈만 다룬다. 여러 모듈을 동시에 수정해야 하면 step을 쪼갠다.
-2. **자기완결성** — 각 step 파일은 독립된 Claude 세션에서 실행된다. "이전 대화에서 논의한 바와 같이" 같은 외부 참조는 금지한다. 필요한 정보는 전부 파일 안에 적는다.
+2. **자기완결성** — 각 step 파일은 독립된 Codex 세션에서 실행된다. "이전 대화에서 논의한 바와 같이" 같은 외부 참조는 금지한다. 필요한 정보는 전부 파일 안에 적는다.
 3. **사전 준비 강제** — 관련 문서 경로와 이전 step에서 생성/수정된 파일 경로를 명시한다. 세션이 코드를 읽고 맥락을 파악한 뒤 작업하도록 유도한다.
 4. **시그니처 수준 지시** — 함수/클래스의 인터페이스만 제시하고 내부 구현은 에이전트 재량에 맡긴다. 단, 설계 의도에서 벗어나면 안 되는 핵심 규칙(멱등성, 보안, 데이터 무결성 등)은 반드시 명시한다.
-5. **AC는 실행 가능한 커맨드** — "~가 동작해야 한다" 같은 추상적 서술이 아닌, 그대로 복사해 실행할 수 있는 커맨드를 포함한다. 커맨드는 `CLAUDE.md`의 명령어 섹션에 정의된 것을 그대로 쓴다. PRD의 품질 기준에 해당 step과 관련된 항목이 있으면 그것도 실행 가능한 검증으로 AC에 넣는다.
+5. **AC는 실행 가능한 커맨드** — "~가 동작해야 한다" 같은 추상적 서술이 아닌, 그대로 복사해 실행할 수 있는 커맨드를 포함한다. 커맨드는 `AGENTS.md`의 명령어 섹션에 정의된 것을 그대로 쓴다. PRD의 품질 기준에 해당 step과 관련된 항목이 있으면 그것도 실행 가능한 검증으로 AC에 넣는다.
 6. **주의사항은 구체적으로** — "조심해라" 대신 "X를 하지 마라. 이유: Y" 형식으로 적는다.
 7. **네이밍** — step name은 kebab-case slug로, 해당 step의 핵심 모듈/작업을 한두 단어로 표현한다 (예: `project-setup`, `api-layer`, `auth-flow`).
 
@@ -65,7 +65,7 @@
 
 필드 규칙:
 
-- `project`: 프로젝트명 (CLAUDE.md 참조).
+- `project`: 프로젝트명 (AGENTS.md 참조).
 - `phase`: task 이름. 디렉토리명과 일치시킨다.
 - `steps[].step`: 0부터 시작하는 순번.
 - `steps[].name`: kebab-case slug.
@@ -75,9 +75,9 @@
 
 | 전이 | 기록되는 필드 | 기록 주체 |
 |------|-------------|----------|
-| → `completed` | `completed_at`, `summary` | Claude 세션 (summary), execute.py (timestamp) |
-| → `error` | `failed_at`, `error_message` | Claude 세션 (message), execute.py (timestamp) |
-| → `blocked` | `blocked_at`, `blocked_reason` | Claude 세션 (reason), execute.py (timestamp) |
+| → `completed` | `completed_at`, `summary` | Codex 세션 (summary), execute.py (timestamp) |
+| → `error` | `failed_at`, `error_message` | Codex 세션 (message), execute.py (timestamp) |
+| → `blocked` | `blocked_at`, `blocked_reason` | Codex 세션 (reason), execute.py (timestamp) |
 
 `summary`는 step 완료 시 산출물을 한 줄로 요약한 것으로, execute.py가 다음 step 프롬프트에 컨텍스트로 누적 전달한다. 따라서 다음 step에 유용한 정보(생성된 파일, 핵심 결정 등)를 담아야 한다.
 
@@ -108,8 +108,8 @@
 ## Acceptance Criteria
 
 ```bash
-{빌드}     # 컴파일/빌드 에러 없음 — CLAUDE.md 명령어 섹션 값
-{테스트}   # 테스트 통과 — CLAUDE.md 명령어 섹션 값
+{빌드}     # 컴파일/빌드 에러 없음 — AGENTS.md 명령어 섹션 값
+{테스트}   # 테스트 통과 — AGENTS.md 명령어 섹션 값
 {품질 검증} # PRD 품질 기준 중 이 step에 해당하는 항목 (없으면 생략)
 ```
 
@@ -120,7 +120,7 @@
    - ARCHITECTURE.md 디렉토리 구조를 따르는가?
    - ARCHITECTURE.md 외부 의존 표에 없는 외부 서비스를 끌어들이지 않았는가?
    - ADR 기술 스택을 벗어나지 않았는가?
-   - CLAUDE.md CRITICAL 규칙을 위반하지 않았는가?
+   - AGENTS.md CRITICAL 규칙을 위반하지 않았는가?
    - GLOSSARY.md 용어를 그대로 썼는가? 금지 표현을 쓰지 않았는가?
 3. 결과에 따라 `phases/{task-name}/index.json`의 해당 step을 업데이트한다:
    - 성공 → `"status": "completed"`, `"summary": "산출물 한 줄 요약"`
@@ -136,16 +136,18 @@
 ### E. 실행
 
 ```bash
-python3 scripts/execute.py {task-name}        # 순차 실행
-python3 scripts/execute.py {task-name} --push  # 실행 후 push
+python3 scripts/execute.py {task-name}                  # 순차 실행 (기본 엔진 codex)
+python3 scripts/execute.py {task-name} --engine claude  # 처음부터 claude 로 실행
+python3 scripts/execute.py {task-name} --push           # 실행 후 push
 ```
 
 execute.py가 자동으로 처리하는 것:
 
 - `feat-{task-name}` 브랜치 생성/checkout
-- 가드레일 주입 — CLAUDE.md + docs/*.md 내용을 매 step 프롬프트에 포함
+- 가드레일 주입 — AGENTS.md + docs/*.md 내용을 매 step 프롬프트에 포함
 - 컨텍스트 누적 — 완료된 step의 summary를 다음 step 프롬프트에 전달
 - 자가 교정 — 실패 시 최대 3회 재시도하며, 이전 에러 메시지를 프롬프트에 피드백
+- 엔진 폴백 — codex 가 사용량 한도로 실패하면 같은 step 부터 claude 독립 세션으로 전환
 - 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋
 - 타임스탬프 — started_at, completed_at, failed_at, blocked_at 자동 기록
 

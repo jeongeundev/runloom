@@ -1,0 +1,7 @@
+{
+  "fixture_digest_matches": true,
+  "cases_match_frontend_bytes": true,
+  "backend_does_not_contain_frontend_source": true,
+  "tampered_total_rejected": true,
+  "restored_tests_exit": 0
+}

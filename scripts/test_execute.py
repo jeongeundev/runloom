@@ -4,11 +4,9 @@ execute.py 리팩터링 안전망 테스트.
 """
 
 import json
-import os
 import subprocess
 import sys
-import textwrap
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -172,6 +170,15 @@ class TestLoadGuardrails:
             result = executor._load_guardrails()
         assert "CLAUDE.md" not in result
         assert "Architecture" in result
+
+    def test_prefers_agents_md_over_claude_md(self, executor, tmp_project):
+        (tmp_project / "AGENTS.md").write_text("# Agents\n- agents rule")
+        with patch.object(ex, "ROOT", tmp_project):
+            result = executor._load_guardrails()
+        assert "agents rule" in result
+        assert "(AGENTS.md)" in result
+        assert "rule one" not in result
+        assert "(CLAUDE.md)" not in result
 
     def test_no_docs_dir(self, executor, tmp_project):
         import shutil
@@ -455,54 +462,138 @@ class TestCommitStep:
 
 
 # ---------------------------------------------------------------------------
-# _invoke_claude (mocked)
+# _invoke_agent (mocked)
 # ---------------------------------------------------------------------------
 
-class TestInvokeClaude:
-    def test_invokes_claude_with_correct_args(self, executor):
-        mock_result = MagicMock(returncode=0, stdout='{"result": "ok"}', stderr="")
+def _proc(returncode=0, stdout="{}", stderr=""):
+    return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class TestInvokeAgent:
+    def test_default_engine_is_codex(self, executor):
         step = {"step": 2, "name": "ui"}
         preamble = "PREAMBLE\n"
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            output = executor._invoke_claude(step, preamble)
+        with patch("subprocess.run", return_value=_proc(stdout='{"result": "ok"}')) as mock_run:
+            output = executor._invoke_agent(step, preamble)
 
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "claude"
-        assert "-p" in cmd
-        assert "--dangerously-skip-permissions" in cmd
-        assert "--output-format" in cmd
+        assert cmd[:2] == ["codex", "exec"]
+        assert "--json" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         assert "PREAMBLE" in cmd[-1]
         assert "UI를 구현하세요" in cmd[-1]
+        assert output["engine"] == "codex"
+
+    def test_engine_option_runs_claude_from_the_start(self, tmp_project, phase_dir):
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("0-mvp", engine="claude")
+        inst._root = str(tmp_project)
+        inst._phase_dir = phase_dir
+        inst._index_file = phase_dir / "index.json"
+
+        with patch("subprocess.run", return_value=_proc(stdout='{"result": "ok"}')) as mock_run:
+            output = inst._invoke_agent({"step": 2, "name": "ui"}, "PREAMBLE\n")
+
+        assert mock_run.call_count == 1
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:2] == ["claude", "-p"]
+        assert "--dangerously-skip-permissions" in cmd
+        assert output["engine"] == "claude"
+
+    def test_unknown_engine_rejected(self, tmp_project):
+        with patch.object(ex, "ROOT", tmp_project):
+            with pytest.raises(ValueError):
+                ex.StepExecutor("0-mvp", engine="gemini")
 
     def test_saves_output_json(self, executor):
-        mock_result = MagicMock(returncode=0, stdout='{"ok": true}', stderr="")
         step = {"step": 2, "name": "ui"}
 
-        with patch("subprocess.run", return_value=mock_result):
-            executor._invoke_claude(step, "preamble")
+        with patch("subprocess.run", return_value=_proc(stdout='{"ok": true}')):
+            executor._invoke_agent(step, "preamble")
 
         output_file = executor._phase_dir / "step2-output.json"
         assert output_file.exists()
         data = json.loads(output_file.read_text())
         assert data["step"] == 2
         assert data["name"] == "ui"
+        assert data["engine"] == "codex"
         assert data["exitCode"] == 0
 
     def test_nonexistent_step_file_exits(self, executor):
         step = {"step": 99, "name": "nonexistent"}
         with pytest.raises(SystemExit) as exc_info:
-            executor._invoke_claude(step, "preamble")
+            executor._invoke_agent(step, "preamble")
         assert exc_info.value.code == 1
 
     def test_timeout_is_1800(self, executor):
-        mock_result = MagicMock(returncode=0, stdout="{}", stderr="")
         step = {"step": 2, "name": "ui"}
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            executor._invoke_claude(step, "preamble")
+        with patch("subprocess.run", return_value=_proc()) as mock_run:
+            executor._invoke_agent(step, "preamble")
 
         assert mock_run.call_args[1]["timeout"] == 1800
+
+    def test_stdin_is_devnull(self, executor):
+        # codex exec 는 stdin 이 파이프면 EOF 까지 읽는다 — 비대화형 실행에서 멈추지 않도록
+        step = {"step": 2, "name": "ui"}
+
+        with patch("subprocess.run", return_value=_proc()) as mock_run:
+            executor._invoke_agent(step, "preamble")
+
+        assert mock_run.call_args[1]["stdin"] == subprocess.DEVNULL
+
+    # --- codex 사용량 한도 → claude 폴백 ---
+
+    QUOTA_ERR = '{"type":"error","message":"{\\"error\\":{\\"type\\":\\"usage_limit_reached\\"}}"}'
+
+    def test_falls_back_to_claude_on_codex_usage_limit(self, executor):
+        step = {"step": 2, "name": "ui"}
+        preamble = "PREAMBLE\n"
+
+        with patch("subprocess.run", side_effect=[_proc(1, stdout=self.QUOTA_ERR), _proc(0)]) as mock_run:
+            output = executor._invoke_agent(step, preamble)
+
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[1][0][0]
+        assert cmd[:2] == ["claude", "-p"]
+        assert "--dangerously-skip-permissions" in cmd
+        assert "--output-format" in cmd
+        assert "PREAMBLE" in cmd[-1]
+        assert output["engine"] == "claude"
+        assert output["exitCode"] == 0
+
+    def test_fallback_persists_for_subsequent_steps(self, executor):
+        step = {"step": 2, "name": "ui"}
+
+        with patch("subprocess.run", side_effect=[_proc(1, stderr="You've hit your usage limit"), _proc(0)]):
+            executor._invoke_agent(step, "preamble")
+        with patch("subprocess.run", return_value=_proc()) as mock_run:
+            executor._invoke_agent(step, "preamble")
+
+        assert mock_run.call_count == 1
+        assert mock_run.call_args[0][0][0] == "claude"
+
+    def test_no_fallback_on_other_codex_error(self, executor):
+        step = {"step": 2, "name": "ui"}
+        other_err = '{"type":"error","message":"invalid_request_error"}'
+
+        with patch("subprocess.run", return_value=_proc(1, stdout=other_err)) as mock_run:
+            output = executor._invoke_agent(step, "preamble")
+
+        assert mock_run.call_count == 1
+        assert output["engine"] == "codex"
+        assert output["exitCode"] == 1
+
+    def test_no_fallback_when_codex_succeeds_mentioning_limit(self, executor):
+        # 성공한 실행의 출력에 문구가 있어도 exit 0 이면 폴백하지 않는다 (step 이중 실행 방지)
+        step = {"step": 2, "name": "ui"}
+
+        with patch("subprocess.run", return_value=_proc(0, stdout="usage limit 은 남아 있음")) as mock_run:
+            output = executor._invoke_agent(step, "preamble")
+
+        assert mock_run.call_count == 1
+        assert output["engine"] == "codex"
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +624,19 @@ class TestMainCli:
             with pytest.raises(SystemExit) as exc_info:
                 ex.main()
             assert exc_info.value.code == 2  # argparse exits with 2
+
+    def test_engine_flag_passed_to_executor(self, tmp_project, phase_dir):
+        with patch("sys.argv", ["execute.py", "0-mvp", "--engine", "claude"]):
+            with patch.object(ex, "ROOT", tmp_project):
+                with patch.object(ex.StepExecutor, "run") as mock_run:
+                    ex.main()
+        assert mock_run.called
+
+    def test_engine_flag_rejects_unknown(self):
+        with patch("sys.argv", ["execute.py", "0-mvp", "--engine", "gemini"]):
+            with pytest.raises(SystemExit) as exc_info:
+                ex.main()
+            assert exc_info.value.code == 2
 
     def test_invalid_phase_dir_exits(self):
         with patch("sys.argv", ["execute.py", "nonexistent"]):

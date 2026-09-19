@@ -2,7 +2,7 @@
 # Verify Hook — Stop
 # 턴 종료 시 프로젝트를 검증한다. 존재하는 툴체인만 실행하므로
 # 하네스 단독 상태에서도, 대상 프로젝트가 스캐폴딩된 뒤에도 동작한다.
-# 현재 감지 대상: Node(package.json) / Python(pytest). 그 외 스택은 검증이 걸리지 않는다.
+# 현재 감지 대상: Node(package.json) / Python(pytest, ruff 설치 시 lint). 그 외 스택은 검증이 걸리지 않는다.
 # 실패하면 exit 2 로 실패 내용을 Claude 에게 돌려주고 수정을 이어가게 한다.
 
 INPUT=$(cat)
@@ -99,6 +99,11 @@ PY_TESTS=$(find . \( -name 'test_*.py' -o -name '*_test.py' \) \
 # 활성 버전에는 pytest 가 없는 경우를 피하기 위해.
 if [ -n "$PY_TESTS" ] && python3 -c 'import pytest' >/dev/null 2>&1; then
   run "pytest" python3 -m pytest -q
+fi
+
+# Python 프로젝트 — ruff 가 설치돼 있으면 정적 검사도 돌린다 (AGENTS.md 린트 명령과 동일)
+if [ -n "$PY_TESTS" ] && python3 -m ruff --version >/dev/null 2>&1; then
+  run "ruff" python3 -m ruff check .
 fi
 
 if [ -n "$FAILED" ]; then

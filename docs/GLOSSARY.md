@@ -2,7 +2,7 @@
 
 ## 왜 필요한가
 
-`scripts/execute.py` 는 각 step 을 **독립된 Claude 세션**에서 실행한다. 세션 간에는
+`scripts/execute.py` 는 각 step 을 **독립된 Codex 세션**에서 실행한다. 세션 간에는
 대화 맥락이 이어지지 않으므로, 도메인 용어를 매 세션이 새로 해석한다. step 1 이
 만든 `Order` 를 step 4 가 `Purchase` 로 부르는 사고가 여기서 나온다.
 
@@ -17,14 +17,35 @@
 
 ## 용어
 
+갱신일: 2026-09-20. 필드 구조는 [ARCHITECTURE](ARCHITECTURE.md), 예시는 [CONTRACT](CONTRACT.md)를 따른다.
+
 | 용어 | 정의 | 금지 표현 |
 |------|------|-----------|
-| `{Order}` | {주문 1건. 결제 완료 여부와 무관하다} | {`Purchase`, `Transaction`} |
-| `{User}` | {인증된 계정 주체} | {`Account`, `Member`} |
-| `{...}` | {...} | {...} |
+| `Agent` | 등록된 실행 대상 하나. 로컬은 실행 도구 + 작업 폴더, API는 주소 + 자격 증명. `capabilities`를 가진다 | `Bot`, `Worker`, `Runner` |
+| `Task` | 사용자가 등록한 업무 하나. 선행 Task 하나를 가질 수 있고 `required_capability` 하나를 가진다 | `Job`, `Ticket`, `Issue` |
+| `Execution` | Task의 한 번의 시도. `attempt_no`로 구분. 상태는 `queued`, `accepted`, `running`, `result_ready`, `failed`, `unknown` | `Run`, `Job`, `Attempt` |
+| `ExecutionEvent` | 실행 주체가 보내는 이벤트. `seq` 연속 정수, `type`은 `accepted`, `started`, `progress`, `result_ready`, `failed` | `Log`, `Message`, `Notification` |
+| `Artifact` | 실행이 만든 불변 파일. `kind`, `sha256`, `artifact_id`. kind 목록은 CONTRACT 4절 | `File`, `Upload`, `Output` |
+| `run` / `run_id` | 진단 대상인 보고서 자동화의 실행 (예: `daily-0920-0900`). 이 제품의 Execution이 아니다 | `execution`, `job` |
+| `workflow_id` | 진단 대상 자동화의 ID (예: `daily-report`). 이 제품의 업무 흐름이 아니다 | `pipeline`, `flow` |
+| `evidence` | 진단 서비스가 조회하는 원문 자료 하나. `evidence_id@version`으로 참조 | `document`(문서는 evidence의 한 종류), `source` |
+| `capability` | Agent의 등록 능력 `{ code, scope }`. code는 `operations.diagnose`, `code.modify` | `skill`, `role`, `permission` |
+| `required_capability` | Task가 요구하는 능력 하나. 같은 구조 | `requirement`, `needs` |
+| `connector` / `connector_id` | 운영자 Mac에서 도는 로컬 연결 프로그램. Agent 여러 개(`local_registration_id`)를 대신 실행할 수 있다 | `agent`, `daemon`, `client` |
+| `local_registration_id` | connector 안에서 등록된 폴더 + 도구 하나 | `folder_id`, `workspace` |
+| `handoff bundle` | A 결과와 근거 원문을 묶은 B 입력 manifest. kind `handoff_bundle` | `payload`, `context`, `package` |
+| `verification profile` / `verification_profile_id` | 소유자가 사전 등록한 검증 명령 (예: `vp-pytest`). 요청에 셸 명령을 넣지 않는다 | `test command`, `check` |
+| `start_key` | Task당 실행 중복 방지 키. 웹 재전송·이벤트 중복에 같은 키 사용 | `idempotency_key`, `dedupe_key` |
+| `outcome` | 에이전트 결과 봉투의 결론. 진단은 `ready_for_handoff` / `needs_information`, 코드 수정은 `ready_for_review` / `needs_information`. 시스템 상태가 아니다 | `status`, `result_status` |
+| `session` | 심사자의 익명 워크스페이스. 서명 쿠키로 식별 | `user`, `account`, `visitor` |
+| `operator` | `OPERATOR_TOKEN`으로 인증한 운영자 | `admin`, `owner`, `superuser` |
+| `base_commit` / `result_commit` | 코드 수정 실행의 시작 커밋과 보존된 결과 커밋(전체 SHA) | `head`, `ref`, `branch` |
+| 사용자 상태 | `대기`, `실행 가능`, `실행 요청됨`, `실행 중`, `확인 필요`, `완료`, `실패`. 화면 문구로 그대로 쓴다 | `pending`, `done`, `success`, `error`, `대기 중` |
 
 ## 경계가 헷갈리는 개념
 
-{비슷하지만 구분해야 하는 것들을 적는다.
-예: `Order` 는 장바구니 확정 시점에 생기고, `Payment` 는 결제 승인 시점에 생긴다.
-하나의 `Order` 에 여러 `Payment` 가 붙을 수 있다.}
+- `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
+- `Agent`와 `connector`: Agent는 등록 레코드, connector는 그 Agent를 대신해 실제 프로세스를 띄우는 프로그램이다. connector 하나가 폴더별 Agent 여러 개를 가질 수 있다.
+- `outcome`과 상태: outcome은 에이전트의 주장이다. Execution `result_ready`는 결과가 저장됐다는 뜻이고, Task `완료`는 시스템이 완료 기준을 검증했거나 사람이 승인했다는 뜻이다. 셋을 서로 대체하지 않는다.
+- `attachments`와 `Artifact`: attachments는 결과 봉투 안의 근거 참조 배열이고, 각 항목의 `artifact_id`가 실제 Artifact를 가리킨다.
+- `Task.status`와 `Execution.status`: Task는 사용자 상태(한글), Execution은 내부 상태(영문). 대응표는 PRD 3절.

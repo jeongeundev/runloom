@@ -1,0 +1,32 @@
+{
+  "backend": {
+    "own": "backend-only",
+    "reads": {
+      "/workspace/../frontend/owner-marker.txt": "ENOENT",
+      "/workspace/../backend/owner-marker.txt": "ENOENT",
+      "/private/tmp/gateless-feasibility/frontend/owner-marker.txt": "ENOENT",
+      "/private/tmp/gateless-feasibility/backend/owner-marker.txt": "ENOENT",
+      "/Users/kje/.config/gh/hosts.yml": "ENOENT",
+      "/var/run/docker.sock": "ENOENT",
+      "/workspace/.git/config": "ENOENT"
+    },
+    "crossWrite": "EROFS",
+    "githubPrivateWithoutCredential": 404,
+    "githubCredentialPresent": false
+  },
+  "frontend": {
+    "own": "frontend-only",
+    "reads": {
+      "/workspace/../frontend/owner-marker.txt": "ENOENT",
+      "/workspace/../backend/owner-marker.txt": "ENOENT",
+      "/private/tmp/gateless-feasibility/frontend/owner-marker.txt": "ENOENT",
+      "/private/tmp/gateless-feasibility/backend/owner-marker.txt": "ENOENT",
+      "/Users/kje/.config/gh/hosts.yml": "ENOENT",
+      "/var/run/docker.sock": "ENOENT",
+      "/workspace/.git/config": "ENOENT"
+    },
+    "crossWrite": "EROFS",
+    "githubPrivateWithoutCredential": 404,
+    "githubCredentialPresent": false
+  }
+}

@@ -1,18 +1,18 @@
 # 프리셋: Next.js (App Router) + TypeScript
 
-프로젝트 시작 시 아래 값을 `CLAUDE.md` 와 `docs/ARCHITECTURE.md` 의 해당 슬롯에 복사해 넣는다.
+프로젝트 시작 시 아래 값을 `AGENTS.md` 와 `docs/ARCHITECTURE.md` 의 해당 슬롯에 복사해 넣는다.
 
-## CLAUDE.md → 기술 스택
+## AGENTS.md → 기술 스택
 - TypeScript strict mode
 - Next.js 15 (App Router)
 - Tailwind CSS
 
-## CLAUDE.md → 아키텍처 규칙
+## AGENTS.md → 아키텍처 규칙
 - CRITICAL: 모든 API 로직은 `app/api/` 라우트 핸들러에서만 처리한다
 - CRITICAL: 클라이언트 컴포넌트에서 외부 API 를 직접 호출하지 않는다
 - 컴포넌트는 `components/`, 타입은 `types/` 로 분리한다
 
-## CLAUDE.md → 명령어
+## AGENTS.md → 명령어
 ```
 npm run dev      # 개발 서버
 npm run build    # 프로덕션 빌드

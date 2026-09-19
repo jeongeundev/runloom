@@ -4,6 +4,9 @@ out/
 next-env.d.ts
 tsconfig.tsbuildinfo
 
+# macOS
+.DS_Store
+
 # python
 __pycache__/
 *.py[cod]

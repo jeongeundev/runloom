@@ -1,0 +1,55 @@
+{
+  "kind": "result",
+  "summary": "Fixed render so null shippingFee and total display 'pending', zero displays '0', and other numbers use String. node --test consumer.test.mjs exited 0: 3 passed, 0 failed (paid, free, pending shipping).",
+  "command": "node --test consumer.test.mjs",
+  "exit_code": 0,
+  "passed": 3,
+  "failed": 0,
+  "cases": [
+    {
+      "input": {
+        "subtotal": 100,
+        "shippingFee": 10,
+        "total": 110
+      },
+      "expected_display": {
+        "shipping": "10",
+        "total": "110"
+      },
+      "rendered": {
+        "shipping": "10",
+        "total": "110"
+      }
+    },
+    {
+      "input": {
+        "subtotal": 100,
+        "shippingFee": 0,
+        "total": 100
+      },
+      "expected_display": {
+        "shipping": "0",
+        "total": "100"
+      },
+      "rendered": {
+        "shipping": "0",
+        "total": "100"
+      }
+    },
+    {
+      "input": {
+        "subtotal": 100,
+        "shippingFee": null,
+        "total": null
+      },
+      "expected_display": {
+        "shipping": "pending",
+        "total": "pending"
+      },
+      "rendered": {
+        "shipping": "pending",
+        "total": "pending"
+      }
+    }
+  ]
+}

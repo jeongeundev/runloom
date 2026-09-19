@@ -72,6 +72,28 @@ class TestTddInvariant:
         (repo / "src" / "foo.test.ts").write_text("test('a', () => {})")
         assert run_verify(repo).returncode == 0
 
+    def test_research_probe_script_is_exempt(self, repo):
+        """docs/research/ 아래의 일회성 프로브 스크립트는 TDD 대상이 아니다."""
+        (repo / "docs" / "research" / "probe").mkdir(parents=True)
+        (repo / "docs" / "research" / "probe" / "probe.py").write_text("print(1)")
+        assert run_verify(repo).returncode == 0
+
+    def test_archived_script_is_exempt(self, repo):
+        """docs/archive/ 아래로 보관된 스크립트도 TDD 대상이 아니다."""
+        d = repo / "docs" / "archive" / "2026-09-16-x" / "research" / "probe"
+        d.mkdir(parents=True)
+        (d / "probe.py").write_text("print(1)")
+        assert run_verify(repo).returncode == 0
+
+    def test_python_source_with_mirrored_tests_dir_passes(self, repo):
+        """tests/ 가 src/ 구조를 따라간 배치도 인정한다: src/a/b/x.py → tests/a/b/test_x.py."""
+        (repo / "src" / "pkg" / "sub").mkdir(parents=True)
+        (repo / "src" / "pkg" / "sub" / "mod.py").write_text("x = 1\n")
+        (repo / "tests" / "pkg" / "sub").mkdir(parents=True)
+        (repo / "tests" / "pkg" / "sub" / "test_mod.py").write_text(
+            "def test_x():\n    assert True\n")
+        assert run_verify(repo).returncode == 0
+
     def test_committed_source_without_test_also_fails(self, repo):
         """커밋된 변경도 HEAD 기준이 아니라 작업 트리 기준으로 본다."""
         (repo / "src").mkdir()
@@ -100,6 +122,18 @@ class TestToolchainGate:
         (repo / "docs").mkdir()
         (repo / "docs" / "PRD.md").write_text("# PRD")
         assert run_verify(repo).returncode == 0
+
+    @pytest.mark.skipif(
+        subprocess.run(["python3", "-m", "ruff", "--version"], capture_output=True).returncode != 0,
+        reason="ruff 미설치")
+    def test_python_lint_failure_is_reported(self, repo):
+        """pytest 는 통과해도 ruff 가 실패하면 검증 실패로 전달한다."""
+        (repo / "src").mkdir()
+        (repo / "src" / "bad.py").write_text("value = undefined_name\n")
+        (repo / "src" / "test_bad.py").write_text("def test_ok():\n    assert True\n")
+        r = run_verify(repo)
+        assert r.returncode == 2
+        assert "ruff" in r.stderr
 
     def test_source_change_runs_toolchain(self, repo_with_failing_toolchain):
         """소스가 바뀌면 툴체인이 돌고, 실패가 전달된다."""
@@ -151,3 +185,92 @@ class TestCommittedWorkStillVerified:
         (repo / "src" / "foo.test.ts").write_text("test('a', () => {})")
         assert run_verify(repo).returncode == 0   # 고치면 통과
         assert run_verify(repo).returncode == 0   # 이후 대화 턴은 건너뜀
+
+
+# ---------------------------------------------------------------------------
+# Codex 어댑터 — 전역 ~/.codex/hooks.json 이 저장소의 scripts/hooks/codex-*.sh 를 찾아 실행한다.
+# 판정 규칙은 tdd-guard.sh / verify.sh 에 위임하고, 여기서는 입출력 변환만 검증한다.
+# ---------------------------------------------------------------------------
+
+HOOKS = VERIFY.parent
+
+
+def run_hook(name, repo, payload):
+    return subprocess.run(
+        ["bash", str(HOOKS / name)], cwd=repo, input=json.dumps(payload),
+        capture_output=True, text=True, timeout=120,
+    )
+
+
+class TestCodexBlockDangerous:
+    def test_denies_rm_rf(self, repo):
+        r = run_hook("codex-block-dangerous.sh", repo, {"tool_input": {"command": "rm -rf build"}})
+        assert r.returncode == 0
+        assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_handles_argv_array(self, repo):
+        r = run_hook("codex-block-dangerous.sh", repo, {"tool_input": {"command": ["git", "push", "--force"]}})
+        assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_passes_safe_command(self, repo):
+        r = run_hook("codex-block-dangerous.sh", repo, {"tool_input": {"command": "git push origin main"}})
+        assert r.returncode == 0 and r.stdout == ""
+
+    def test_passes_non_bash_tool(self, repo):
+        """전역 훅은 matcher 없이 모든 도구에 걸린다 — command 가 없으면 통과."""
+        r = run_hook("codex-block-dangerous.sh", repo, {"tool_input": {"file_path": "src/a.ts"}})
+        assert r.returncode == 0 and r.stdout == ""
+
+
+class TestCodexTddGuard:
+    PATCH_ADD = "*** Begin Patch\n*** Add File: src/foo.ts\n+export const a = 1\n*** End Patch"
+
+    def test_denies_apply_patch_without_test(self, repo):
+        (repo / "src").mkdir()
+        r = run_hook("codex-tdd-guard.sh", repo, {"tool_input": {"command": self.PATCH_ADD}})
+        assert r.returncode == 0
+        out = json.loads(r.stdout)["hookSpecificOutput"]
+        assert out["permissionDecision"] == "deny"
+        assert "foo" in out["permissionDecisionReason"]
+
+    def test_allows_apply_patch_when_test_exists(self, repo):
+        (repo / "src").mkdir()
+        (repo / "src" / "foo.test.ts").write_text("test('a', () => {})")
+        r = run_hook("codex-tdd-guard.sh", repo, {"tool_input": {"command": self.PATCH_ADD}})
+        assert r.returncode == 0 and r.stdout == ""
+
+    def test_ignores_delete(self, repo):
+        patch = "*** Begin Patch\n*** Delete File: src/foo.ts\n*** End Patch"
+        r = run_hook("codex-tdd-guard.sh", repo, {"tool_input": {"command": patch}})
+        assert r.returncode == 0 and r.stdout == ""
+
+    def test_accepts_file_path_directly(self, repo):
+        (repo / "src").mkdir()
+        r = run_hook("codex-tdd-guard.sh", repo, {"tool_input": {"file_path": str(repo / "src" / "bar.ts")}})
+        assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_passes_non_edit_tool(self, repo):
+        r = run_hook("codex-tdd-guard.sh", repo, {"tool_input": {"command": "ls"}})
+        assert r.returncode == 0 and r.stdout == ""
+
+
+class TestCodexVerifyGate:
+    def test_blocks_with_verify_message(self, repo):
+        (repo / "src").mkdir()
+        (repo / "src" / "foo.ts").write_text("export const a = 1")
+        r = run_hook("codex-verify-gate.sh", repo, {"stop_hook_active": False})
+        assert r.returncode == 0
+        out = json.loads(r.stdout)
+        assert out["decision"] == "block"
+        assert "foo.ts" in out["reason"]
+
+    def test_allows_when_nothing_to_verify(self, repo):
+        r = run_hook("codex-verify-gate.sh", repo, {"stop_hook_active": False})
+        assert r.returncode == 0 and r.stdout == ""
+
+    def test_stop_hook_active_passes_through(self, repo):
+        """재개된 턴은 verify.sh 가 스킵한다 — 어댑터도 막지 않아야 한다."""
+        (repo / "src").mkdir()
+        (repo / "src" / "foo.ts").write_text("export const a = 1")
+        r = run_hook("codex-verify-gate.sh", repo, {"stop_hook_active": True})
+        assert r.returncode == 0 and r.stdout == ""

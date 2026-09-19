@@ -1,0 +1,14 @@
+✔ received case 1: shippingFee=10 (0.715917ms)
+✔ received case 2: shippingFee=0 (0.099334ms)
+✔ received case 3: shippingFee=null (0.062917ms)
+✔ paid (0.846375ms)
+✔ free (0.08925ms)
+✔ pending (0.088458ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 65.808667
