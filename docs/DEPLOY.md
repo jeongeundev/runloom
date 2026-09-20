@@ -166,6 +166,16 @@ Mac 오프라인 대비로 결과가 남아 있도록, 그리고 실제 OpenAI·
 
 확인: Mac 의 `~/demo-report-repo` 는 `main` 이 `report-base` 그대로이고 결과는 `task/{B task_id}` 브랜치에만 있다(`git -C ~/demo-report-repo branch`).
 
+## 7b. 코드 갱신 — 이후 배포
+
+GitHub `main` 에 푸시한 뒤 VM 에서 한 줄. env·데이터·Caddy 는 건드리지 않고 코드만 받아 서비스 4개를 재시작한다 (몇 초 502).
+
+```bash
+sudo bash /opt/workflow/deploy/update-vm.sh        # "갱신 끝: {sha}, 중앙 웹 200" 이 나와야 한다
+```
+
+Mac 연결 프로그램도 같은 저장소를 쓰므로 `git pull` 뒤 `launchctl unload` / `load` 로 재시작한다.
+
 ## 8. 백업 타이머
 
 ```bash

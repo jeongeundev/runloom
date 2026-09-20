@@ -153,7 +153,7 @@ def test_repo_holds_no_secret_looking_values_under_deploy():
 # --- 셸 스크립트 -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("script", ["backup.sh", "install-vm.sh"])
+@pytest.mark.parametrize("script", ["backup.sh", "install-vm.sh", "update-vm.sh"])
 def test_shell_scripts_parse_and_start_strict(script):
     path = DEPLOY / script
     subprocess.run(["bash", "-n", str(path)], check=True)
@@ -171,6 +171,14 @@ def test_backup_script_covers_both_dbs_and_artifacts_and_keeps_7_days():
     assert "/var/backups/workflow" in text
     assert "tar" in text
     assert "-mtime +7" in text
+
+
+def test_update_script_pulls_restarts_and_checks_without_touching_env():
+    text = (DEPLOY / "update-vm.sh").read_text(encoding="utf-8")
+    assert "pull -q --ff-only origin" in text and "/venv/bin/pip\" install -q -e" in text
+    assert "systemctl restart workflow-diag workflow-diag-worker workflow-central workflow-worker" in text
+    assert "curl" in text and "127.0.0.1:8000" in text
+    assert "/etc/workflow" not in text and "openssl" not in text
 
 
 def test_install_script_is_systemd_only_and_never_starts_services_before_env_is_filled():
