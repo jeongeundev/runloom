@@ -118,3 +118,89 @@ def test_manual_requires_chosen_agent_id():
 def test_candidate_is_immutable_value():
     with pytest.raises(AttributeError):
         OPS.agent_id = "other"  # type: ignore[misc]
+
+
+# --- 동률 규칙: prefer(세션이 먼저 등록한 순서) — step 4 ---------------------------------
+
+CODEX_TWIN = Candidate(agent_id="agent-claude-mac", capabilities=(MODIFY,))
+
+
+def test_auto_tie_with_prefer_selects_first_registered():
+    record = select_agent(
+        "t", MODIFY, [OPS, CODEX, CODEX_TWIN], prefer=["agent-ops-demo", "agent-codex-mac", "agent-claude-mac"]
+    )
+
+    assert record.status == "selected"
+    assert record.selected_agent_id == "agent-codex-mac"
+    assert record.matched == MODIFY
+    assert record.candidate_count == 1
+    assert record.mode == "auto"
+    assert record.reason == (
+        "code.modify · repository_id=demo-report-repo 일치 후보 2개 — 먼저 등록한 agent-codex-mac 를 기본 선택 (변경 가능)"
+    )
+
+
+def test_auto_tie_prefer_order_decides_not_candidate_order():
+    record = select_agent("t", MODIFY, [CODEX, CODEX_TWIN], prefer=["agent-claude-mac", "agent-codex-mac"])
+
+    assert record.status == "selected"
+    assert record.selected_agent_id == "agent-claude-mac"
+    assert "먼저 등록한 agent-claude-mac" in record.reason
+
+
+def test_auto_tie_prefer_with_only_one_match_listed_selects_it():
+    record = select_agent("t", MODIFY, [CODEX, CODEX_TWIN], prefer=["agent-claude-mac"])
+
+    assert record.status == "selected"
+    assert record.selected_agent_id == "agent-claude-mac"
+
+
+def test_auto_tie_prefer_without_any_match_needs_selection():
+    record = select_agent("t", MODIFY, [CODEX, CODEX_TWIN], prefer=["agent-ops-demo"])
+
+    assert record.status == "needs_selection"
+    assert record.selected_agent_id is None
+    assert record.candidate_count == 2
+    assert record.reason == "후보 2개 — 선택 필요"
+
+
+def test_auto_tie_empty_prefer_keeps_needs_selection():
+    record = select_agent("t", MODIFY, [CODEX, CODEX_TWIN], prefer=[])
+
+    assert record.status == "needs_selection"
+    assert record.candidate_count == 2
+
+
+def test_prefer_does_not_change_single_match_reason():
+    record = select_agent("t", DIAGNOSE, [OPS, CODEX], prefer=["agent-codex-mac", "agent-ops-demo"])
+
+    assert record.status == "selected"
+    assert record.selected_agent_id == "agent-ops-demo"
+    assert record.reason == "operations.diagnose · workflow_id=daily-report 일치 후보 1개"
+
+
+def test_prefer_does_not_rescue_no_match():
+    record = select_agent("t", DIAGNOSE, [CODEX], prefer=["agent-codex-mac"])
+
+    assert record.status == "needs_selection"
+    assert record.reason == "후보 없음"
+
+
+def test_prefer_ignores_not_allowed_candidates():
+    blocked = Candidate(agent_id="agent-claude-mac", capabilities=(MODIFY,), allowed=False)
+
+    record = select_agent("t", MODIFY, [CODEX, blocked], prefer=["agent-claude-mac", "agent-codex-mac"])
+
+    assert record.status == "selected"
+    assert record.selected_agent_id == "agent-codex-mac"
+    assert record.reason == "code.modify · repository_id=demo-report-repo 일치 후보 1개"
+
+
+def test_prefer_is_ignored_in_manual_mode():
+    record = select_agent(
+        "t", MODIFY, [CODEX, CODEX_TWIN], mode="manual", chosen_agent_id="agent-claude-mac", prefer=["agent-codex-mac"]
+    )
+
+    assert record.status == "selected"
+    assert record.selected_agent_id == "agent-claude-mac"
+    assert record.reason == "직접 선택"
