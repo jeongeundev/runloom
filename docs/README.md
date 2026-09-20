@@ -15,6 +15,7 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 기술 설계 v0.3 제안. 스택·모델 평가안·계약 필드·이벤트 순서·DB 제약·검증 기준. 구현·실연동 검증 전 |
 | [CONTRACT.md](CONTRACT.md) | 계약 v1의 완전한 요청·이벤트·결과·오류 예시. 계약 테스트 fixture로 사용 |
 | [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록. 2026-09-20 Codex CLI 실연동 1회(Step 15) |
+| [DIAG_EVAL.md](DIAG_EVAL.md) | 진단 모델 실호출 평가 기록(Step 17). gpt-4.1-mini 로 5사례 × 3회 두 번 실행, `normal` 1/3·잘못된 수정 착수 0/12·총 US$0.23. ADR-0003 확정 보류와 도구 반환·계약·프롬프트·모델 분리 분석 |
 | [DEPLOY.md](DEPLOY.md) | 배포 런북. VM(systemd 4개 + Caddy + 백업 타이머)과 운영자 Mac(launchd 연결 프로그램) 설치 순서와 확인 명령. 설정 파일은 `deploy/`. VM·도메인은 미지정 |
 | [등록 방향 정리 전 원문](archive/2026-09-19-before-agent-registration/README.md) | 이전 제품 개요와 handoff. 현행 요구사항과 구분 |
 | [GLOSSARY.md](GLOSSARY.md) | 코드 식별자와 일치하는 도메인 용어와 금지 표현. 2026-09-20 채움 |
