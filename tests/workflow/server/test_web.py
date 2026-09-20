@@ -34,10 +34,18 @@ def agents(conn):
     return conn
 
 
+def register_agents(client, *agent_ids: str) -> None:
+    """세션이 카탈로그에서 Agent 를 등록한다 (`POST /agents/register`). 기본은 운영 진단·개인 Codex 둘 다."""
+    for agent_id in agent_ids or ("agent-ops-demo", "agent-codex-mac"):
+        response = client.post("/agents/register", data={"agent_id": agent_id}, follow_redirects=False)
+        assert response.status_code == 303, response.text
+
+
 @pytest.fixture
 def web(client, agents):
-    """홈을 한 번 열어 세션 쿠키를 받은 클라이언트."""
+    """홈을 한 번 열어 세션 쿠키를 받고, 카탈로그 2개를 등록한 클라이언트."""
     assert client.get("/tasks").status_code == 200
+    register_agents(client)
     return client
 
 
@@ -137,17 +145,30 @@ def seed_reviewable_fix(client, conn, store, settings) -> tuple[str, str]:
 
 
 def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
+    """새 세션 홈: 등록 Agent 0개 → 안내 문장과 `에이전트 등록` 링크, `시연 업무 만들기` 는 비활성."""
     first = client.get("/tasks")
     assert first.status_code == 200
     assert SESSION_COOKIE in first.cookies
     assert "아직 업무가 없습니다." in first.text
-    assert "시연 업무 만들기" in first.text
-    assert "/tasks/new?example=diagnose" in first.text
-    assert "운영 진단 데모" in first.text and "개인 Codex" in first.text
+    assert "먼저 에이전트를 등록하세요." in first.text
+    assert 'href="/agents/register"' in first.text
+    assert "운영 진단 데모" not in first.text and "개인 Codex" not in first.text  # 등록 전에는 카드 없음
+    button = re.search(r"<button[^>]*>시연 업무 만들기</button>", first.text)
+    assert button and "disabled" in button.group(0), first.text
+    assert "에이전트를 먼저 등록하세요" in first.text
+    assert 'class="btn" href="/tasks/new?example=diagnose"' not in first.text
 
     second = client.get("/tasks")
     assert "set-cookie" not in second.headers
     assert second.status_code == 200
+
+
+def test_home_after_registration_shows_cards_and_enables_demo_button(web):
+    text = web.get("/tasks").text
+    assert "운영 진단 데모" in text and "개인 Codex" in text
+    assert "먼저 에이전트를 등록하세요." not in text
+    assert 'href="/tasks/new?example=diagnose"' in text and "에이전트를 먼저 등록하세요" not in text
+    assert 'href="/agents/register"' in text  # 더 등록할 수 있다
 
 
 def test_landing_is_public_and_links_to_app(client, agents):
@@ -299,6 +320,7 @@ def test_create_task_needs_selection_when_two_candidates_then_manual_select(web,
         "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
         "shared_to_all_sessions": True,
     })
+    register_agents(web, "agent-ops-second")
     task_id = create_task(web, diagnose_form())
     text = detail(web, task_id)
     assert "확인 필요" in text and "후보 2개 — 선택 필요" in text
@@ -416,6 +438,7 @@ def test_run_requires_selection_and_finished_predecessor(web, conn):
         "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
         "shared_to_all_sessions": True,
     })
+    register_agents(web, "agent-ops-second")
     unselected = create_task(web, diagnose_form())
     assert web.post(f"/tasks/{unselected}/run", follow_redirects=False).status_code == 409
 
@@ -608,6 +631,170 @@ def test_agents_pages_hide_credentials(web, conn):
     assert "http://127.0.0.1:8100" in api.text
     assert "env:DIAG_API_TOKEN" not in api.text and "credential_ref" not in api.text
     assert web.get("/agents/nope").status_code == 404
+
+
+# --- 에이전트 등록 — 카탈로그에서 세션이 고른다 (phase 5 step 2, ADR-0005) --------------------
+
+
+DISCOVERED = {
+    "found": {
+        "AGENTS.md": "# demo-report-repo 지침 본문 …",
+        "codex_config": False,
+        "claude_config": False,
+        "pyproject": {"name": "demo-report", "pytest_configured": True},
+        "tests_dir": True,
+        "git": {"remotes": [], "head": "0c1ddcf6ecd35d20c49dc9b0868f3cabf1f2afa0"},
+    },
+    "not_read": ["CLAUDE.md"],
+    "verification_level": "설정 발견",
+}
+
+
+def test_register_page_lists_catalog_with_discovered_summary_and_no_secrets(client, conn, agents):
+    client.get("/tasks")
+    repo.update_registration(
+        conn, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
+        base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest", "vp-report"],
+        discovered=DISCOVERED, now=NOW,
+    )
+    page = client.get("/agents/register")
+    assert page.status_code == 200
+    text = page.text
+    assert "이미 쓰는 에이전트를 골라 등록합니다." in text
+    assert "운영 진단 데모" in text and "개인 Codex" in text
+    assert text.count('action="/agents/register"') == 2  # 카드마다 등록 버튼, 아직 등록됨 없음
+    assert "등록됨" not in text and "/unregister" not in text
+    # 발견된 정보 요약 — 키만. 값(파일 본문·커밋)은 넣지 않는다
+    assert "AGENTS.md" in text and "git.head" in text and "tests_dir" in text and "pyproject.name" in text
+    assert "codex_config" not in text and "git.remotes" not in text  # False·빈 목록은 발견이 아니다
+    assert "지침 본문" not in text and "0c1ddcf6" not in text
+    assert "vp-pytest" in text and "vp-report" in text
+    assert "operations.diagnose · workflow_id=daily-report" in text  # API 에이전트는 능력 역할·범위
+    for secret in ("api_url", "credential_ref", "env:DIAG_API_TOKEN", "http://127.0.0.1:8100", "wfc_"):
+        assert secret not in text, secret
+
+
+def test_register_agent_appears_on_home_and_list_and_is_idempotent(client, conn, agents, settings):
+    client.get("/tasks")
+    listing = client.get("/agents").text
+    assert "등록한 에이전트가 없습니다." in listing and 'href="/agents/register"' in listing
+    assert "agent-ops-demo" not in listing
+
+    response = client.post("/agents/register", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/tasks"
+    home = client.get("/tasks").text
+    assert "운영 진단 데모" in home and "개인 Codex" not in home
+    listing = client.get("/agents").text
+    assert "agent-ops-demo" in listing and "agent-codex-mac" not in listing
+    assert "등록한 에이전트가 없습니다." not in listing
+
+    register = client.get("/agents/register").text
+    assert "등록됨" in register and 'action="/agents/agent-ops-demo/unregister"' in register
+    assert 'action="/agents/register"' in register  # 아직 안 한 Codex 는 등록 버튼
+
+    client.post("/agents/register", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert len(repo.list_session_agents(conn, session_id_of(client, settings))) == 1
+    assert client.post("/agents/register", data={"agent_id": "agent-none"}, follow_redirects=False).status_code == 404
+    assert client.post("/agents/register", data={"agent_id": ""}, follow_redirects=False).status_code == 404
+
+
+def test_agent_detail_opens_for_catalog_and_registered_only(client, conn, agents):
+    client.get("/tasks")
+    assert client.get("/agents/agent-ops-demo").status_code == 200  # 카탈로그 — 등록 전에도 열린다
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-private", "name": "비공개", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": "local-private",
+        "capabilities": [{"code": "code.modify", "scope": {"repository_id": "other"}}],
+        "shared_to_all_sessions": False,
+    })
+    assert client.get("/agents/agent-private").status_code == 404
+    assert client.post("/agents/register", data={"agent_id": "agent-private"}, follow_redirects=False).status_code == 404
+
+
+def test_manual_choice_of_unregistered_agent_is_422(client, agents):
+    client.get("/tasks")
+    register_agents(client, "agent-ops-demo")
+    response = client.post(
+        "/tasks", data=diagnose_form(selection_mode="manual", chosen_agent_id="agent-codex-mac"),
+        follow_redirects=False,
+    )
+    assert response.status_code == 422
+    assert "agent_not_registered" in response.text and "등록하지 않은 에이전트입니다" in response.text
+    # 등록 폼의 직접 선택 목록에도 등록한 것만
+    form = client.get("/tasks/new").text
+    assert 'value="agent-ops-demo"' in form and 'value="agent-codex-mac"' not in form
+
+
+def test_auto_selection_counts_only_registered_agents(client, conn, agents):
+    """운영 진단을 등록하지 않으면 진단 업무는 카탈로그에 있어도 `확인 필요 · 후보 없음`. 직접 선택도 등록한 것만."""
+    client.get("/tasks")
+    register_agents(client, "agent-codex-mac")
+    task_id = create_task(client, diagnose_form())
+    text = detail(client, task_id)
+    assert "확인 필요" in text and "후보 없음" in text
+    assert f'action="/tasks/{task_id}/select"' in text
+    assert 'value="agent-ops-demo"' not in text and 'value="agent-codex-mac"' in text  # 선택 목록도 세션 등록만
+    blocked = client.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert blocked.status_code == 422 and "agent_not_registered" in blocked.text
+    assert repo.get_selection(conn, task_id).status == "needs_selection"
+
+    register_agents(client, "agent-ops-demo")
+    chosen = client.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert chosen.status_code == 303
+    assert "실행 가능" in detail(client, task_id)
+
+
+def test_unregister_agent_and_409_when_task_in_progress(web, conn, settings):
+    task_id = create_task(web, diagnose_form())  # agent-ops-demo 선택됨, 미완료
+    blocked = web.post("/agents/agent-ops-demo/unregister", follow_redirects=False)
+    assert blocked.status_code == 409
+    assert "agent_in_use" in blocked.text and "진행 중인 업무가 있어 해제할 수 없습니다" in blocked.text
+    assert repo.is_session_agent(conn, session_id_of(web, settings), "agent-ops-demo")
+
+    response = web.post("/agents/agent-codex-mac/unregister", follow_redirects=False)  # 선택된 업무 없음
+    assert response.status_code == 303
+    assert not repo.is_session_agent(conn, session_id_of(web, settings), "agent-codex-mac")
+    assert "개인 Codex" not in web.get("/tasks").text
+    assert web.post("/agents/agent-codex-mac/unregister", follow_redirects=False).status_code == 303  # 멱등
+    assert web.post("/agents/agent-none/unregister", follow_redirects=False).status_code == 404
+
+    repo.update_task_status(conn, task_id, "실패", "검토 거절", finished_at=NOW)
+    assert web.post("/agents/agent-ops-demo/unregister", follow_redirects=False).status_code == 303
+    assert "먼저 에이전트를 등록하세요." in web.get("/tasks").text
+
+
+def test_registration_is_isolated_per_session(app, web, conn, settings):
+    other = TestClient(app)
+    home = other.get("/tasks").text
+    assert "먼저 에이전트를 등록하세요." in home
+    assert "운영 진단 데모" not in home and "개인 Codex" not in home
+    assert "등록됨" not in other.get("/agents/register").text
+    assert len(repo.list_session_agents(conn, session_id_of(web, settings))) == 2
+    # 다른 세션의 해제는 이 세션에 영향 없음
+    other.post("/agents/register", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert other.post("/agents/agent-ops-demo/unregister", follow_redirects=False).status_code == 303
+    assert repo.is_session_agent(conn, session_id_of(web, settings), "agent-ops-demo")
+
+
+def test_scripted_agent_is_labelled_on_cards_and_result_card(web, conn, store, settings):
+    codex = repo.get_agent(conn, "agent-codex-mac")
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-codex-mac", "name": codex["name"], "owner_scope": codex["owner_scope"],
+        "connection_type": "local", "local_registration_id": codex["local_registration_id"],
+        "capabilities": [{"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}}],
+        "connection_state": codex["connection_state"], "shared_to_all_sessions": True, "demo_scripted": True,
+    })
+    for path in ("/tasks", "/agents/register", "/agents/agent-codex-mac"):
+        text = web.get(path).text
+        assert "시연용 · 대본 재생" in text, path
+        assert text.count("시연용 · 대본 재생") == 1, path  # 운영 진단은 대본이 아니다
+    assert "시연용 · 대본 재생" not in web.get("/agents/agent-ops-demo").text
+
+    task_b, _ = seed_reviewable_fix(web, conn, store, settings)
+    text = detail(web, task_b)
+    card = text[text.index('class="result-card'):text.index('class="viewer')]
+    assert "대본 재생 (실제 모델 호출 없음)" in card
+    assert "대본 재생" not in detail(web, create_task(web, diagnose_form()))  # 결과 없음
 
 
 # --- 운영자 ----------------------------------------------------------------------

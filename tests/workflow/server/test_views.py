@@ -9,6 +9,7 @@ from workflow.server import views
 from .conftest import (
     NOW,
     RESULT_COMMIT,
+    SESSION,
     TASK_A,
     TASK_B,
     code_change_result,
@@ -178,10 +179,17 @@ def test_task_context_collects_executions_result_and_actions(seeded, settings, s
 def test_task_context_flags_run_and_selection(seeded, settings, store):
     ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
     assert ctx["needs_selection"] is True
-    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac", "agent-ops-demo"]
+    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac", "agent-ops-demo"]  # 세션 등록 순
     assert ctx["can_run"] is False
     assert ctx["result"] is None
     assert ctx["executions"] == []
+    assert ctx["agent_scripted"] is False
+
+    # 후보는 세션이 등록한 Agent 만 — 해제하면 카탈로그에 있어도 후보에서 빠진다
+    repo.unregister_session_agent(seeded, SESSION, "agent-ops-demo")
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
+    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac"]
+    repo.register_session_agent(seeded, SESSION, "agent-ops-demo", NOW)
 
     _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
     ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
@@ -206,8 +214,48 @@ def test_task_summary_and_agent_public(seeded, settings):
     assert agent["capabilities"][0]["code"] == "operations.diagnose"
     assert agent["discovered"] == {}
     assert agent["online"] is True  # API 에이전트는 heartbeat 가 없으므로 connection_state 만 본다
+    assert agent["demo_scripted"] is False
+    assert agent["discovered_summary"] == ["operations.diagnose · workflow_id=daily-report"]  # API: 역할·자료 범위
     assert "credential_ref" not in agent
     assert not any("wfc_" in str(v) for v in agent.values())
+
+
+def test_agent_public_discovered_summary_lists_found_keys_and_profiles_only(seeded, settings):
+    """로컬 Agent 의 요약은 `discovered.found` 의 truthy 키(중첩은 `git.head`)와 검증 프로필. 값·URL·비밀 참조는 없다."""
+    codex = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
+    assert codex["demo_scripted"] is False and codex["discovered_summary"] == []
+
+    repo.update_registration(
+        seeded, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
+        base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e", verification_profile_ids=["vp-pytest", "vp-report"],
+        discovered={
+            "found": {"AGENTS.md": "# 본문", "codex_config": False, "tests_dir": True,
+                      "pyproject": {"name": "demo-report", "pytest_configured": False},
+                      "git": {"remotes": [], "head": "0c1ddcf6"}},
+            "not_read": ["CLAUDE.md"], "verification_level": "설정 발견",
+        },
+        now=NOW,
+    )
+    codex = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
+    assert codex["discovered_summary"] == [
+        "AGENTS.md", "tests_dir", "pyproject.name", "git.head", "검증 프로필 vp-pytest", "검증 프로필 vp-report",
+    ]
+
+    # `found` 가 없는 임의 형태(이전 테스트 시드)도 빈 목록으로
+    repo.update_registration(
+        seeded, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
+        base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e", verification_profile_ids=[],
+        discovered={"instructions": ["AGENTS.md"], "confirmed": False}, now=NOW,
+    )
+    assert views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)["discovered_summary"] == []
+
+    scripted = dict(repo.get_agent(seeded, "agent-codex-mac"))
+    repo.upsert_agent(seeded, {
+        "agent_id": "agent-codex-mac", "name": scripted["name"], "owner_scope": scripted["owner_scope"],
+        "connection_type": "local", "local_registration_id": scripted["local_registration_id"],
+        "capabilities": [CAP_B], "shared_to_all_sessions": True, "demo_scripted": True,
+    })
+    assert views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)["demo_scripted"] is True
 
 
 def test_agent_online_rule_by_connection_type(seeded, settings):

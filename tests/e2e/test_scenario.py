@@ -169,12 +169,25 @@ def _git(repo: Path, *args: str) -> str:
 # --- 시나리오 ------------------------------------------------------------------------------
 
 
-def test_01_first_visit_issues_session_and_shows_connected_agents(stack, client):
+def test_01_first_visit_issues_session_and_prompts_agent_registration(stack, client):
     response = client.get("/tasks")
     assert response.status_code == 200
     assert "wf_session" in response.headers.get("set-cookie", "")
     assert "아직 업무가 없습니다." in response.text
-    assert set(_agent_states(response.text)) == {"agent-ops-demo", "agent-codex-mac"}
+    # 등록 전에는 이 세션에 Agent 가 없다 — 카탈로그에서 고르라는 안내만
+    assert _agent_states(response.text) == {}
+    assert "먼저 에이전트를 등록하세요." in response.text and 'href="/agents/register"' in response.text
+
+
+def test_01b_register_two_catalog_agents_and_see_them_connected(client):
+    """심사자 흐름 1단계 — 운영자 카탈로그(진단 API·개인 Codex)에서 둘을 등록한다."""
+    catalog = client.get("/agents/register")
+    assert catalog.status_code == 200
+    assert "운영 진단 데모" in catalog.text and "개인 Codex" in catalog.text
+    for agent_id in ("agent-ops-demo", "agent-codex-mac"):
+        response = client.post("/agents/register", data={"agent_id": agent_id})
+        assert response.status_code == 303, response.text[:300]
+    assert set(_agent_states(client.get("/tasks").text)) == {"agent-ops-demo", "agent-codex-mac"}
     # connector run 이 heartbeat 를 보낸 뒤 연결됨 (등록 보고 직후에도 online 이지만 heartbeat 로 유지된다)
     _wait_agent(client, "agent-codex-mac", "연결됨", timeout=20)
 

@@ -15,7 +15,7 @@ from workflow.contracts.v1 import ArtifactMeta, ExecutionRequest
 from workflow.server.auth import SESSION_COOKIE, verify_session
 
 from .conftest import BASE_COMMIT, NOW, code_change_result, meta_for, seed_agents, seed_result_ready
-from .test_web import create_task, diagnose_form, fix_form, login_operator
+from .test_web import create_task, diagnose_form, fix_form, login_operator, register_agents
 
 SERVER_DIR = Path(__file__).resolve().parents[3] / "src" / "workflow" / "server"
 STYLE = SERVER_DIR / "static" / "style.css"
@@ -56,7 +56,9 @@ def agents(conn):
 
 @pytest.fixture
 def web(client, agents):
+    """세션 쿠키를 받고 카탈로그 2개를 등록한 클라이언트 (test_web 과 같다)."""
     assert client.get("/tasks").status_code == 200
+    register_agents(client)
     return client
 
 
@@ -176,7 +178,10 @@ def status_line(html: str) -> str:
 def test_pages_render_three_column_shell(web, conn, store, settings):
     task_id, _ = seed_diagnosis_result(web, conn, store, settings)
     login_operator(web)
-    for path in ("/tasks", f"/tasks/{task_id}", "/agents", "/agents/agent-ops-demo", "/operator", "/tasks/new"):
+    for path in (
+        "/tasks", f"/tasks/{task_id}", "/agents", "/agents/register", "/agents/agent-ops-demo", "/operator",
+        "/tasks/new",
+    ):
         html = web.get(path).text
         assert 'class="shell' in html, path
         shell = html[html.index('class="shell'):]
@@ -344,7 +349,10 @@ def test_live_fragment_shows_successor_chip(web):
 def test_visible_text_has_no_forbidden_phrases(web, conn, store, settings):
     task_id, _ = seed_code_change_result(web, conn, store, settings)
     login_operator(web)
-    for path in ("/tasks", f"/tasks/{task_id}", "/tasks/new", "/agents", "/agents/agent-codex-mac", "/operator"):
+    for path in (
+        "/tasks", f"/tasks/{task_id}", "/tasks/new", "/agents", "/agents/register", "/agents/agent-codex-mac",
+        "/operator",
+    ):
         text = visible_text(web.get(path).text)
         for phrase in ("대기 중", "Powered by"):
             assert phrase not in text, (path, phrase)

@@ -192,11 +192,18 @@ def seed_agents(conn) -> None:
     })
 
 
+def register_catalog(conn, session_id: str, *agent_ids: str, now: str = NOW) -> None:
+    """세션이 카탈로그 Agent 를 등록한 상태 (phase 5 step 2). 기본은 둘 다, codex → ops 순."""
+    for agent_id in agent_ids or ("agent-codex-mac", "agent-ops-demo"):
+        repo.register_session_agent(conn, session_id, agent_id, now)
+
+
 @pytest.fixture
 def seeded(conn):
-    """세션 1개, 운영자 등록 에이전트 2개, 업무 A → B."""
+    """세션 1개, 운영자 등록 에이전트 2개(세션이 둘 다 등록), 업무 A → B."""
     repo.create_session(conn, SESSION, NOW)
     seed_agents(conn)
+    register_catalog(conn, SESSION)
     repo.insert_task(conn, task_row(TASK_A), NOW)
     repo.insert_task(conn, task_row(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     return conn
