@@ -1,0 +1,340 @@
+"""runner — claim → 접수 → 인계 자료 → 어댑터 → 업로드 → result_ready|failed 루프 (ARCHITECTURE "상태·재접속·완료").
+
+중앙은 FakeCentral. 어댑터는 `EchoAdapter` 또는 훅을 가진 `StubAdapter`.
+"""
+
+import json
+from pathlib import Path
+
+from workflow.connector import state
+from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
+from workflow.connector.runner import Runner
+from workflow.contracts.v1 import CodeChangeResult, ExecutionRequest, Verification
+
+from .conftest import BASE_COMMIT, CONNECTOR_ID, NOW, FakeCentral, assign_with_handoff
+
+
+class StubAdapter:
+    """훅 `during(progress)` 를 어댑터 실행 도중 호출한다 (중앙 상태 조작·연결 끊김 재현용)."""
+
+    def __init__(self, *, output=None, during=None, raises: Exception | None = None):
+        self.calls: list[tuple[ExecutionRequest, Path]] = []
+        self._output = output
+        self._during = during
+        self._raises = raises
+
+    def run(self, request, handoff_dir, progress):
+        self.calls.append((request, handoff_dir))
+        progress("stub 시작", runtime_ref=f"stub:{request.execution_id}")
+        if self._during is not None:
+            self._during(progress)
+        if self._raises is not None:
+            raise self._raises
+        return self._output or ok_output(request)
+
+
+def ok_output(request: ExecutionRequest, extra_artifacts=()) -> AdapterOutput:
+    artifacts = [
+        make_meta("diff", "fix.diff", b"--- a\n+++ b\n", "text/plain"),
+        make_meta("test_log_before", "before.txt", b"exit_code=1\nFAILED\n", "text/plain"),
+        make_meta("test_log_after", "after.txt", b"exit_code=0\npassed\n", "text/plain"),
+        make_meta("verification_log", "verify.txt", b"exit_code=0\n", "text/plain"),
+        make_meta("report_output", "report.txt", "합계    20    5\n".encode(), "text/plain"),
+        *extra_artifacts,
+    ]
+    result = CodeChangeResult(
+        contract_version=1, execution_id=request.execution_id, task_id=request.task_id,
+        outcome="ready_for_review", summary="stub 수정", base_commit=BASE_COMMIT, result_commit=BASE_COMMIT,
+        artifact_ids=[],
+        verification=Verification(profile_id="vp-pytest", result_commit=BASE_COMMIT, exit_code=0,
+                                  log_artifact_id="verification_log"),
+    )
+    return AdapterOutput(result=result, artifacts=artifacts, failed=None, runtime_ref="stub:x")
+
+
+def make_runner(client, state_conn, paths, adapter, tmp_path, clock=lambda: NOW) -> Runner:
+    return Runner(client, state_conn, paths, adapter, CONNECTOR_ID, clock, tmp_path / "handoff")
+
+
+def event_types(fake: FakeCentral, execution_id: str) -> list[tuple[int, str]]:
+    return [(e["seq"], e["type"]) for e in fake.events_of(execution_id)]
+
+
+# --- 정상 흐름 ------------------------------------------------------------------------
+
+
+def test_happy_path_sends_events_in_order_and_uploads_result(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    adapter = StubAdapter(during=lambda progress: progress("재현 테스트 작성, 수정 전 실행 실패 확인"))
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path)
+
+    runner.tick()
+
+    events = fake.events_of(request.execution_id)
+    assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+    assert [e["type"] for e in events][:2] == ["accepted", "started"]
+    assert events[1]["data"] == {"runtime_ref": f"stub:{request.execution_id}"}
+    assert [e["type"] for e in events][-1] == "result_ready"
+    assert {e["type"] for e in events} == {"accepted", "started", "progress", "result_ready"}
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+    uploaded = fake.artifacts_of(request.execution_id)
+    assert {"diff", "test_log_before", "test_log_after", "verification_log", "report_output",
+            "code_change_result"} <= set(uploaded)
+    result = CodeChangeResult.model_validate_json(uploaded["code_change_result"]["data"])
+    assert events[-1]["data"]["result_artifact_id"] in fake.artifacts
+    assert fake.artifacts[events[-1]["data"]["result_artifact_id"]]["kind"] == "code_change_result"
+    assert set(result.artifact_ids) == {
+        a_id for a_id, a in fake.artifacts.items()
+        if a["execution_id"] == request.execution_id and a["kind"] != "code_change_result"
+    }
+    assert result.verification.log_artifact_id in fake.artifacts
+    assert fake.artifacts[result.verification.log_artifact_id]["kind"] == "verification_log"
+
+    # 로컬 기록: finished, 미전송 없음, 다음 tick 은 새 claim
+    row = state.get_execution(state_conn, request.execution_id)
+    assert row["phase"] == "finished" and row["finished_at"] is not None
+    assert state.pop_pending(state_conn, request.execution_id) == []
+    assert state.active_execution(state_conn) is None
+
+
+def test_handoff_dir_has_manifest_and_attachments_named_by_evidence(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    _, handoff_dir = adapter.calls[0]
+    assert handoff_dir == tmp_path / "handoff" / f"{request.task_id}.handoff"
+    names = sorted(p.name for p in handoff_dir.iterdir())
+    assert names == ["log-daily-0920@1.txt", "manifest.json", "response-after@1.json"]
+    manifest = json.loads((handoff_dir / "manifest.json").read_text())
+    assert manifest["source_execution_id"] == "exec-diagnose-001"
+    assert json.loads((handoff_dir / "response-after@1.json").read_text())["report_date"] == "2026-09-19"
+
+
+def test_handoff_dir_is_next_to_registered_repo(fake, client, state_conn, paths, tmp_path):
+    repo = tmp_path / "demo-report-repo"
+    state.save_registration(state_conn, {
+        "local_registration_id": "local-demo-report", "repo_path": str(repo), "tool": "codex",
+        "repository_id": "demo-report-repo", "base_commit": BASE_COMMIT, "verification_profiles": {},
+    })
+    request = assign_with_handoff(fake)
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert adapter.calls[0][1] == tmp_path / "demo-report-repo-worktrees" / f"{request.task_id}.handoff"
+
+
+def test_echo_adapter_completes_flow(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+
+    make_runner(client, state_conn, paths, EchoAdapter(), tmp_path).tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    result = CodeChangeResult.model_validate_json(
+        fake.artifacts_of(request.execution_id)["code_change_result"]["data"]
+    )
+    assert result.outcome == "ready_for_review"
+    assert "response-after@1.json" in fake.artifacts_of(request.execution_id)["report_output"]["data"].decode()
+
+
+def test_no_assignment_is_quiet(fake, client, state_conn, paths, tmp_path):
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert fake.claims == 1 and adapter.calls == []
+    assert fake.heartbeats == [
+        {"contract_version": 1, "connector_id": CONNECTOR_ID, "current_execution_id": None}
+    ]
+
+
+def test_heartbeat_is_sent_once_per_interval(fake, client, state_conn, paths, tmp_path):
+    runner = make_runner(client, state_conn, paths, StubAdapter(), tmp_path)
+
+    runner.tick()
+    runner.tick()
+
+    assert len(fake.heartbeats) == 1
+
+
+# --- 재접속·중복 방지 ------------------------------------------------------------------
+
+
+def test_crash_after_record_claim_resumes_from_accepted_without_second_execution(
+    fake, client, state_conn, paths, tmp_path
+):
+    request = assign_with_handoff(fake)
+    # 첫 Runner 가 claim 응답을 받아 로컬 접수 기록까지 남기고 죽었다 (accepted 이벤트 전송 전)
+    first = client.claim(CONNECTOR_ID)
+    assert first == request
+    state.record_claim(state_conn, first, NOW)
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()  # 새 Runner
+
+    assert [t for _, t in event_types(fake, request.execution_id)][:2] == ["accepted", "started"]
+    assert event_types(fake, request.execution_id)[0] == (1, "accepted")
+    assert len(fake.executions) == 1 and len(adapter.calls) == 1
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_launching_or_running_on_restart_is_unknown_local_and_not_rerun(
+    fake, client, state_conn, paths, tmp_path
+):
+    request = assign_with_handoff(fake)
+    client.claim(CONNECTOR_ID)
+    state.record_claim(state_conn, request, NOW)
+    state.set_phase(state_conn, request.execution_id, "launching")
+    claims_before = fake.claims
+    adapter = StubAdapter()
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path)
+
+    runner.tick()
+    runner.tick()
+
+    assert adapter.calls == []
+    assert fake.events_of(request.execution_id) == []  # failed 도 보내지 않는다
+    assert fake.claims == claims_before  # 새 배정도 받지 않는다
+    row = state.get_execution(state_conn, request.execution_id)
+    assert row["phase"] == "launching" and row["unknown_local_at"] == NOW
+    assert fake.heartbeats[-1]["current_execution_id"] == request.execution_id
+
+
+def test_sequence_gap_is_recovered_by_resending_from_expected(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+
+    def during(progress):
+        progress("첫 진행")  # seq 3 전송·ack
+        fake.forget_events_after(request.execution_id, 1)  # 중앙이 seq 2·3 을 잃음 (복원 등)
+        progress("둘째 진행")  # seq 4 → sequence_gap expected 2 → 2 부터 재전송
+
+    make_runner(client, state_conn, paths, StubAdapter(during=during), tmp_path).tick()
+
+    events = event_types(fake, request.execution_id)
+    assert [seq for seq, _ in events] == list(range(1, len(events) + 1))
+    assert [t for _, t in events][:4] == ["accepted", "started", "progress", "progress"]
+    assert events[-1][1] == "result_ready"
+    assert state.pop_pending(state_conn, request.execution_id) == []
+
+
+def test_events_queue_locally_while_unreachable_and_flush_in_order(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+
+    def during(progress):
+        fake.reachable = False
+        progress("끊긴 동안 진행 1")
+        progress("끊긴 동안 진행 2")
+
+    runner = make_runner(client, state_conn, paths, StubAdapter(during=during), tmp_path)
+    runner.tick()
+
+    assert [t for _, t in event_types(fake, request.execution_id)] == ["accepted", "started"]
+    pending = state.pop_pending(state_conn, request.execution_id)
+    assert [(e.seq, e.type) for e in pending] == [(3, "progress"), (4, "progress")]
+    assert "code_change_result" not in fake.artifacts_of(request.execution_id)
+
+    fake.reachable = True
+    runner.tick()
+
+    events = event_types(fake, request.execution_id)
+    assert events[:4] == [(1, "accepted"), (2, "started"), (3, "progress"), (4, "progress")]
+    assert events[-1][1] == "result_ready"
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    assert state.pop_pending(state_conn, request.execution_id) == []
+
+
+def test_unreachable_during_upload_does_not_rerun_adapter(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+
+    def during(progress):
+        fake.reachable = False
+
+    adapter = StubAdapter(during=during)
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path)
+    runner.tick()
+    fake.reachable = True
+    runner.tick()
+
+    assert len(adapter.calls) == 1
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    assert fake.claims == 1
+
+
+# --- 실패 ----------------------------------------------------------------------------
+
+
+def test_handoff_hash_mismatch_fails_before_adapter(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake, tamper=True)
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert adapter.calls == []
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "failed"]
+    assert events[-1]["data"]["code"] == "handoff_hash_mismatch"
+    assert events[-1]["data"]["process_stopped"] is True
+    assert "log-daily-0920@1" in events[-1]["data"]["message"]
+    assert fake.executions[request.execution_id]["status"] == "failed"
+    assert state.active_execution(state_conn) is None
+
+
+def test_adapter_failure_is_reported_with_process_stopped_flag(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    stderr = make_meta("codex_stderr", "stderr.txt", b"boom\n", "text/plain")
+    output = AdapterOutput(result=None, artifacts=[stderr], failed=("timeout", "20분 초과", True),
+                           runtime_ref="stub:x")
+
+    make_runner(client, state_conn, paths, StubAdapter(output=output), tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "started", "failed"]
+    assert events[-1]["data"] == {"code": "timeout", "message": "20분 초과", "process_stopped": True}
+    assert "codex_stderr" in fake.artifacts_of(request.execution_id)  # 실패 산출물도 보존
+    assert "code_change_result" not in fake.artifacts_of(request.execution_id)
+
+
+def test_adapter_exception_is_failed_without_process_stopped(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+
+    make_runner(client, state_conn, paths, StubAdapter(raises=RuntimeError("어댑터 버그 wfc_" + "z" * 43)), tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "failed"
+    assert events[-1]["data"]["code"] == "adapter_error"
+    assert events[-1]["data"]["process_stopped"] is False
+    assert "wfc_z" not in events[-1]["data"]["message"] and "wfc_***" in events[-1]["data"]["message"]
+
+
+# --- 마스킹 ----------------------------------------------------------------------------
+
+
+def test_secrets_in_artifacts_are_masked_before_upload_with_warning(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    secret = "wfc_" + "s" * 43
+    jsonl = make_meta("codex_jsonl", "codex.jsonl", f'{{"env": "{secret}"}}\n'.encode(), "application/x-ndjson")
+    adapter = StubAdapter(output=ok_output(request, extra_artifacts=[jsonl]))
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    uploaded = fake.artifacts_of(request.execution_id)["codex_jsonl"]
+    assert secret.encode() not in uploaded["data"]
+    assert b"wfc_***" in uploaded["data"]
+    assert secret not in json.dumps([a["data"].decode("utf-8", "replace") for a in fake.artifacts.values()])
+    warnings = [e for e in fake.events_of(request.execution_id)
+                if e["type"] == "progress" and "마스킹" in e["data"]["message"]]
+    assert len(warnings) == 1 and "codex.jsonl" in warnings[0]["data"]["message"]
+    assert secret not in json.dumps(fake.events_of(request.execution_id))
+
+
+def test_progress_messages_are_masked(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    secret = "sk-" + "k" * 40
+
+    make_runner(client, state_conn, paths, StubAdapter(during=lambda p: p(f"키 {secret}")), tmp_path).tick()
+
+    messages = [e["data"]["message"] for e in fake.events_of(request.execution_id) if e["type"] == "progress"]
+    assert any("sk-***" in m for m in messages) and all(secret not in m for m in messages)
