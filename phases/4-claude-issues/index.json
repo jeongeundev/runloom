@@ -7,7 +7,8 @@
       "name": "tool-contract",
       "status": "completed",
       "started_at": "2026-09-20T20:44:00+0900",
-      "summary": "ARTIFACT_KINDS 15종(+claude_jsonl·claude_stderr), RegistrationRequest.tool Literal[codex, claude], KIND_LABELS·LOG_KINDS 에 Claude 원시 로그 추가, CONTRACT.md 4절 kind 목록·원시 로그 표와 2절 등록 요청 예시(codex·claude) 추가. 테스트: 15종·CONTRACT 목록-상수 대조·ArtifactMeta(claude_*)·등록 예시 검증(test_v1 서명에 RegistrationRequest 추가, 블록 24개), tool=claude 200 / gemini 422, 라벨 2개, artifact_render 로그 모드. 확인 결과 중앙은 등록의 tool 값을 DB 에 저장하지 않고 분기도 없다(어댑터 선택은 connector state.sqlite 의 tool — step 3) — 스키마는 바꾸지 않았다. 주의: artifacts.kind CHECK 는 DB 생성 시점의 ARTIFACT_KINDS 로 고정되므로(CREATE TABLE IF NOT EXISTS, 마이그레이션 도구 없음) 이미 만들어진 중앙·진단 DB 는 claude_* 업로드를 거부한다 — step 5 실연동 전에 새 DB 또는 마이그레이션 필요."
+      "summary": "ARTIFACT_KINDS 15종(+claude_jsonl·claude_stderr), RegistrationRequest.tool Literal[codex, claude], KIND_LABELS·LOG_KINDS 에 Claude 원시 로그 추가, CONTRACT.md 4절 kind 목록·원시 로그 표와 2절 등록 요청 예시(codex·claude) 추가. 테스트: 15종·CONTRACT 목록-상수 대조·ArtifactMeta(claude_*)·등록 예시 검증(test_v1 서명에 RegistrationRequest 추가, 블록 24개), tool=claude 200 / gemini 422, 라벨 2개, artifact_render 로그 모드. 확인 결과 중앙은 등록의 tool 값을 DB 에 저장하지 않고 분기도 없다(어댑터 선택은 connector state.sqlite 의 tool — step 3) — 스키마는 바꾸지 않았다. 주의: artifacts.kind CHECK 는 DB 생성 시점의 ARTIFACT_KINDS 로 고정되므로(CREATE TABLE IF NOT EXISTS, 마이그레이션 도구 없음) 이미 만들어진 중앙·진단 DB 는 claude_* 업로드를 거부한다 — step 5 실연동 전에 새 DB 또는 마이그레이션 필요.",
+      "completed_at": "2026-09-20T20:50:56+0900"
     },
     {
       "step": 1,
