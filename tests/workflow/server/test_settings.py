@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow.server.settings import Limits, Settings, load_settings
+from workflow.server.settings import ENV_KEYS, SECRET_KEYS, Limits, Settings, load_settings
 
 FULL = {
     "SESSION_SECRET": "s",
@@ -89,3 +89,24 @@ def test_settings_is_frozen():
     with pytest.raises(AttributeError):
         s.operator_token = "x"
     assert isinstance(s, Settings)
+
+
+class _RecordingEnv(dict):
+    """`load_settings` 가 실제로 조회한 키를 기록한다 — ENV_KEYS 가 코드와 어긋나면 잡는다."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.asked: set[str] = set()
+
+    def get(self, key, default=None):
+        self.asked.add(key)
+        return super().get(key, default)
+
+
+def test_env_keys_lists_exactly_what_load_settings_reads():
+    """deploy/env/central.env.example 이 이 목록과 비교된다 (Step 16). 개발 플래그 WORKFLOW_DEV 는 제외."""
+    env = _RecordingEnv(FULL)
+    load_settings(env)
+    assert env.asked - {"WORKFLOW_DEV"} == set(ENV_KEYS)
+    assert set(SECRET_KEYS) <= set(ENV_KEYS)
+    assert len(ENV_KEYS) == len(set(ENV_KEYS))

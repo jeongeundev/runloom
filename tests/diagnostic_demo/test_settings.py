@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from diagnostic_demo.settings import DEFAULT_FIXTURES_DIR, FAKE_MODEL_ID, Settings, load_settings
+from diagnostic_demo.settings import (
+    DEFAULT_FIXTURES_DIR,
+    ENV_KEYS,
+    FAKE_MODEL_ID,
+    Settings,
+    load_settings,
+)
 
 BASE = {"DIAG_API_TOKEN": "tok"}
 
@@ -82,3 +88,24 @@ def test_settings_is_frozen_and_never_holds_key_in_repr():
     with pytest.raises(AttributeError):
         s.api_token = "x"  # type: ignore[misc]
     assert "secret-token" not in repr(s) and "sk-secret" not in repr(s)
+
+
+class _RecordingEnv(dict):
+    """`load_settings` 가 실제로 조회한 키를 기록한다 — ENV_KEYS 가 코드와 어긋나면 잡는다."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.asked: set[str] = set()
+
+    def get(self, key, default=None):
+        self.asked.add(key)
+        return super().get(key, default)
+
+
+def test_env_keys_lists_exactly_what_load_settings_reads():
+    """deploy/env/diag.env.example 이 이 목록과 비교된다 (Step 16). 개발 플래그 DIAG_DEV 는 제외."""
+    env = _RecordingEnv(BASE)
+    load_settings(env)
+    assert env.asked - {"DIAG_DEV"} == set(ENV_KEYS)
+    assert {"DIAG_API_TOKEN", "OPENAI_API_KEY"} <= set(ENV_KEYS)
+    assert len(ENV_KEYS) == len(set(ENV_KEYS))

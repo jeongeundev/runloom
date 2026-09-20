@@ -12,6 +12,21 @@ from pathlib import Path
 
 SECRET_KEYS = ("SESSION_SECRET", "OPERATOR_TOKEN", "DIAG_API_TOKEN")
 
+# `load_settings` 가 읽는 환경변수 전부 (개발 플래그 `WORKFLOW_DEV` 제외).
+# deploy/env/central.env.example 의 키 목록이 이것과 일치해야 한다 (tests/test_deploy_files.py).
+ENV_KEYS = (
+    "WORKFLOW_DB_PATH",
+    "WORKFLOW_ARTIFACT_DIR",
+    *SECRET_KEYS,
+    "DIAG_API_URL",
+    "WORKFLOW_LIMIT_PER_SESSION_DAILY",
+    "WORKFLOW_LIMIT_GLOBAL_DAILY",
+    "WORKFLOW_LIMIT_ACTIVE_TASKS_PER_SESSION",
+    "WORKFLOW_LIMIT_ATTACHMENTS_MAX_BYTES",
+    "WORKFLOW_LIMIT_UNKNOWN_AFTER_SECONDS",
+    "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS",
+)
+
 
 @dataclass(frozen=True)
 class Limits:

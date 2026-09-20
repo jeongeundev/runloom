@@ -1,0 +1,9 @@
+# 일일 백업 본체. workflow-backup.timer 가 03:00 에 띄운다. 경로만 필요하므로 env 파일(비밀값)을 읽지 않는다.
+[Unit]
+Description=workflow daily backup (sqlite .backup + artifacts tar)
+
+[Service]
+Type=oneshot
+User=workflow
+Group=workflow
+ExecStart=/opt/workflow/deploy/backup.sh

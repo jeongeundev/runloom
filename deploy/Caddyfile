@@ -1,0 +1,6 @@
+# Caddy — 중앙 웹/API 만 외부에 낸다 (ADR-0006). 도메인을 적으면 인증서 발급과 HTTP → HTTPS 리다이렉트는 자동이다.
+# 진단 API 는 여기 적지 않는다 — 중앙 워커만 localhost 로 호출한다.
+# {$WORKFLOW_DOMAIN} 은 docs/DEPLOY.md 4 단계에서 실제 도메인으로 치환한다.
+{$WORKFLOW_DOMAIN} {
+	reverse_proxy 127.0.0.1:8000
+}

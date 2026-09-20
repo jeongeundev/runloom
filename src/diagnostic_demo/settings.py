@@ -17,6 +17,28 @@ DEFAULT_MODEL_ID = "gpt-4.1-mini-2025-04-14"  # ADR-0003 작업 가정
 FAKE_MODEL_ID = "fake-fixture-script"  # DIAG_MODEL=fake 일 때 provenance.model_id — 실제 모델이 돈 것처럼 적지 않는다
 MODEL_CHOICES = ("openai", "fake")
 
+# `load_settings` 가 읽는 환경변수 전부 (개발 플래그 `DIAG_DEV` 제외).
+# deploy/env/diag.env.example 의 키 목록이 이것과 일치해야 한다 (tests/test_deploy_files.py).
+ENV_KEYS = (
+    "DIAG_DB_PATH",
+    "DIAG_ARTIFACT_DIR",
+    "DIAG_API_TOKEN",
+    "OPENAI_API_KEY",
+    "DIAG_FIXTURES_DIR",
+    "DIAG_MODEL",
+    "DIAG_MODEL_ID",
+    "DIAG_ALLOWED_WORKFLOWS",
+    "DIAG_BUDGET_USD",
+    "DIAG_BUDGET_STOP_RATIO",
+    "DIAG_PRICE_INPUT_PER_M",
+    "DIAG_PRICE_OUTPUT_PER_M",
+    "DIAG_MAX_CALLS",
+    "DIAG_MAX_INPUT_TOKENS",
+    "DIAG_MAX_OUTPUT_TOKENS",
+    "DIAG_TIMEOUT_SECONDS",
+    "DIAG_GLOBAL_DAILY",
+)
+
 
 @dataclass(frozen=True)
 class Settings:

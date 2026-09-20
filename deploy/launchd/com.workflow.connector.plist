@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  운영자 Mac 의 연결 프로그램 — ADR-0006 (launchd KeepAlive). docs/DEPLOY.md 6 단계.
+  launchd 는 ~ 와 $HOME 을 풀지 않는다: 설치 전에 /Users/USERNAME 을 실제 홈으로 바꾼다.
+    sed "s#/Users/USERNAME#$HOME#g" deploy/launchd/com.workflow.connector.plist > ~/Library/LaunchAgents/com.workflow.connector.plist
+  WorkingDirectory 는 이 저장소를 clone 한 위치. 토큰은 ~/Library/Application Support/workflow-connector/token.json (0600) 에서
+  프로그램이 읽는다 — 이 파일에 토큰·API 키를 넣지 않는다.
+  PATH 에는 codex 와 workflow 패키지가 설치된 python3 가 있어야 한다 (which codex / which python3 로 확인해 맞춘다).
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.workflow.connector</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/env</string>
+		<string>python3</string>
+		<string>-m</string>
+		<string>workflow.connector</string>
+		<string>run</string>
+	</array>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>WorkingDirectory</key>
+	<string>/Users/USERNAME/workflow</string>
+	<key>StandardOutPath</key>
+	<string>/Users/USERNAME/Library/Logs/workflow-connector/stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/USERNAME/Library/Logs/workflow-connector/stderr.log</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/USERNAME/.pyenv/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>LANG</key>
+		<string>ko_KR.UTF-8</string>
+	</dict>
+</dict>
+</plist>

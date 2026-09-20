@@ -1,0 +1,17 @@
+# 중앙 워커 — 시작 시 DB 의 활성 실행을 스캔해 이어간다 (ARCHITECTURE 재시작 절). 중앙 API 와 같은 env·DB.
+[Unit]
+Description=workflow central worker
+After=network-online.target workflow-diag.service
+Wants=network-online.target
+
+[Service]
+User=workflow
+Group=workflow
+WorkingDirectory=/opt/workflow
+EnvironmentFile=/etc/workflow/central.env
+ExecStart=/opt/workflow/venv/bin/python -m workflow.server.worker
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
