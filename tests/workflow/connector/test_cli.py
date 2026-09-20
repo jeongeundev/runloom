@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 
 import pytest
 
@@ -11,7 +12,8 @@ from workflow.connector import state
 from workflow.connector.cli import main
 from workflow.connector.config import connector_paths
 
-from .conftest import CONNECTOR_ID, TOKEN, FakeCentral
+from .conftest import CONNECTOR_ID, TOKEN, FakeCentral, make_request
+from .test_codex import RESPONSE_AFTER, make_repo, write_fake_codex
 
 
 @pytest.fixture
@@ -133,9 +135,80 @@ def test_help_exits_zero(capsys):
         main(["--help"])
     assert info.value.code == 0
     out = capsys.readouterr().out
-    assert "connect" in out and "register" in out and "run" in out
+    assert "connect" in out and "register" in out and "run" in out and "run-local" in out
 
 
 def test_module_help_runs():
     result = subprocess.run(["python3", "-m", "workflow.connector", "--help"], capture_output=True, text=True)
     assert result.returncode == 0 and "register" in result.stdout
+
+
+# --- run-local -------------------------------------------------------------------------
+
+
+def test_run_local_runs_adapter_once_and_writes_artifacts_to_out(env, tmp_path, monkeypatch, capsys):
+    bin_dir = tmp_path / "fakebin"
+    write_fake_codex(bin_dir, "full")
+    path_env = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+    monkeypatch.setenv("PATH", path_env)
+    repo = make_repo(tmp_path)
+    paths = connector_paths(env)
+    paths.home.mkdir(parents=True)
+    conn = state.connect(paths.state_db)
+    state.init_schema(conn)
+    state.save_registration(conn, {
+        "local_registration_id": "local-demo-report", "repo_path": str(repo), "tool": "codex",
+        "repository_id": "demo-report-repo", "base_commit": _head(repo),
+        "verification_profiles": {
+            "vp-pytest": [sys.executable, "-m", "pytest", "-q"],
+            "vp-report": [sys.executable, "-m", "daily_report", "{response}"],
+        },
+    })
+    conn.close()
+    request = make_request()
+    request = request.model_copy(update={
+        "target": type(request.target).model_validate({**request.target.model_dump(), "base_commit": _head(repo)}),
+    })
+    request_file = tmp_path / "request.json"
+    request_file.write_text(request.model_dump_json())
+    handoff = tmp_path / "handoff"
+    handoff.mkdir()
+    (handoff / "response-after@1.json").write_text(json.dumps(RESPONSE_AFTER, ensure_ascii=False))
+    out = tmp_path / "out"
+
+    code = main(
+        ["run-local", "--request", str(request_file), "--handoff-dir", str(handoff), "--out", str(out)],
+        env={**env, "PATH": path_env},
+    )
+
+    assert code == 0
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [
+        "code_change_result.json", "codex_jsonl.jsonl", "codex_stderr.txt", "diff.diff", "report_output.txt",
+        "test_log_after.txt", "test_log_before.txt", "verification_log.txt",
+    ]
+    result = json.loads((out / "code_change_result.json").read_text())
+    assert result["outcome"] == "ready_for_review" and result["result_commit"] != _head(repo)
+    assert (out / "test_log_before.txt").read_text().splitlines()[0] == "exit_code=1"
+    assert "합계    20    5" in (out / "report_output.txt").read_text()
+    printed = capsys.readouterr()
+    assert "ready_for_review" in printed.out and str(out) in printed.out
+
+
+def test_run_local_with_failed_adapter_exits_nonzero(env, tmp_path, capsys):
+    bin_dir = tmp_path / "fakebin"
+    write_fake_codex(bin_dir, "forbidden")
+    path_env = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+    request_file = tmp_path / "request.json"
+    request_file.write_text(make_request().model_dump_json())  # 등록 없음 → registration_missing
+    (tmp_path / "handoff").mkdir()
+
+    code = main(
+        ["run-local", "--request", str(request_file), "--handoff-dir", str(tmp_path / "handoff"),
+         "--out", str(tmp_path / "out")],
+        env={**env, "PATH": path_env},
+    )
+
+    assert code == 1
+    assert json.loads((tmp_path / "out" / "failed.json").read_text())["code"] == "registration_missing"
+    assert "registration_missing" in capsys.readouterr().err

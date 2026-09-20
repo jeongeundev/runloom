@@ -1,33 +1,44 @@
 """`python3 -m workflow.connector` — 운영자 Mac 의 연결 프로그램 CLI.
 
-    connect  --server URL --code CONNECT_CODE        연결 코드 교환 → 토큰 파일(0600)
-    register --id ID --repo PATH --repository-id RID [--verify NAME=CMD ...]
+    connect   --server URL --code CONNECT_CODE       연결 코드 교환 → 토큰 파일(0600)
+    register  --id ID --repo PATH --repository-id RID [--verify NAME=CMD ...]
                                                      로컬 등록 저장 + discovery 결과를 중앙에 보고
-    run      [--adapter echo]                        claim 루프
+                                                     예: --verify "vp-pytest=python3 -m pytest -q"
+                                                         --verify "vp-report=python3 -m daily_report {response}"
+    run       [--adapter codex|echo]                 claim 루프 (기본 codex)
+    run-local --request FILE --handoff-dir DIR --out DIR [--adapter codex|echo]
+                                                     중앙 없이 어댑터 한 번 실행, 산출물을 --out 에 파일로 (Step 15 실연동 확인용)
 
 검증 명령은 `--verify` 인자로만 받아 `shlex.split` 한 인자 배열을 로컬에 둔다. 서버·요청·근거에서 명령을 받지 않는다.
 """
 
 import argparse
+import json
 import logging
 import os
 import shlex
-import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
-from workflow.connector import state
+from workflow.connector import git_ops, state
 from workflow.connector.adapter import EchoAdapter
 from workflow.connector.client import CentralClient, CentralError, Unreachable
+from workflow.connector.codex import CodexAdapter
 from workflow.connector.config import ConnectorPaths, connector_paths, read_token, write_token
 from workflow.connector.discovery import discover
+from workflow.connector.git_ops import GitError
 from workflow.connector.runner import Runner, utc_now
+from workflow.contracts.v1 import ExecutionRequest
 
-# Step 12 가 CodexAdapter 를 추가하며 기본값을 바꾼다
-ADAPTERS = {"echo": EchoAdapter}
+# 이름 → (state_conn, env) 로 어댑터를 만드는 factory. codex 는 로컬 등록(검증 프로필·저장소 경로)을 읽는다
+ADAPTERS = {
+    "codex": lambda conn, env: CodexAdapter(conn, env_base=env),
+    "echo": lambda conn, env: EchoAdapter(),
+}
 
 
 def _verify_arg(value: str) -> tuple[str, list[str]]:
@@ -56,17 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     run = sub.add_parser("run", help="claim 루프를 돈다")
-    run.add_argument("--adapter", default="echo", choices=sorted(ADAPTERS))
+    run.add_argument("--adapter", default="codex", choices=sorted(ADAPTERS))
     run.add_argument("--claim-interval", type=float, default=5.0)
     run.add_argument("--heartbeat-interval", type=float, default=30.0)
+
+    local = sub.add_parser("run-local", help="중앙 없이 어댑터를 한 번 실행하고 산출물을 파일로 남긴다")
+    local.add_argument("--request", required=True, type=Path, help="ExecutionRequest JSON 파일")
+    local.add_argument("--handoff-dir", required=True, type=Path, help="인계 자료 디렉터리 (읽기 전용)")
+    local.add_argument("--out", required=True, type=Path, help="산출물을 쓸 디렉터리")
+    local.add_argument("--adapter", default="codex", choices=sorted(ADAPTERS))
     return parser
-
-
-def _head_sha(repo: Path) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-    )
-    return result.stdout.strip()
 
 
 def _require_token(paths: ConnectorPaths):
@@ -95,8 +105,8 @@ def _register(args, paths: ConnectorPaths, transport) -> int:
         return 2
     repo = args.repo.resolve()
     try:
-        base_commit = _head_sha(repo)
-    except (subprocess.CalledProcessError, OSError) as exc:
+        base_commit = git_ops.head_sha(repo)
+    except GitError as exc:
         print(f"저장소 HEAD 를 읽지 못했습니다 ({repo}): {exc}", file=sys.stderr)
         return 1
     profiles = dict(args.verify)
@@ -149,7 +159,7 @@ def _run(args, paths: ConnectorPaths, transport, env: Mapping[str, str]) -> int:
         client=CentralClient(stored.server, stored.token, transport=transport),
         state_conn=conn,
         paths=paths,
-        adapter=ADAPTERS[args.adapter](),
+        adapter=ADAPTERS[args.adapter](conn, env),
         connector_id=stored.connector_id,
         clock=utc_now,
         handoff_root=paths.home / "handoff",
@@ -158,6 +168,50 @@ def _run(args, paths: ConnectorPaths, transport, env: Mapping[str, str]) -> int:
         "연결 프로그램 시작: connector_id=%s server=%s adapter=%s", stored.connector_id, stored.server, args.adapter
     )
     runner.run_forever(args.claim_interval, args.heartbeat_interval)
+    return 0
+
+
+def _run_local(args, paths: ConnectorPaths, env: Mapping[str, str]) -> int:
+    """어댑터 한 번. 이벤트·업로드 없이 산출물을 `--out/{kind}.{ext}` 로 쓴다. 실패면 `failed.json` 과 exit 1."""
+    try:
+        request = ExecutionRequest.model_validate_json(args.request.read_text(encoding="utf-8"))
+    except (OSError, ValidationError) as exc:
+        print(f"요청 파일을 읽지 못했습니다 ({args.request}): {exc}", file=sys.stderr)
+        return 2
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    conn = state.connect(paths.state_db)
+    state.init_schema(conn)
+    try:
+        adapter = ADAPTERS[args.adapter](conn, env)
+
+        def progress(message: str, *, runtime_ref: str | None = None) -> None:
+            print(f"[{request.execution_id}] {message}" + (f" ({runtime_ref})" if runtime_ref else ""),
+                  file=sys.stderr)
+
+        output = adapter.run(request, args.handoff_dir, progress)
+    finally:
+        conn.close()
+    args.out.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    for meta, data in output.artifacts:
+        name = f"{meta.kind}{Path(meta.name).suffix or '.bin'}"
+        (args.out / name).write_bytes(data)
+        written.append(name)
+    if output.failed is not None:
+        code, message, stopped = output.failed
+        (args.out / "failed.json").write_text(
+            json.dumps({"code": code, "message": message, "process_stopped": stopped}, ensure_ascii=False, indent=2)
+        )
+        print(f"실패: {code} — {message} (process_stopped={stopped}). 산출물 {len(written)}개 → {args.out}",
+              file=sys.stderr)
+        return 1
+    result = output.result.model_copy(update={"artifact_ids": written})
+    if result.verification is not None:
+        result = result.model_copy(update={
+            "verification": result.verification.model_copy(update={"log_artifact_id": "verification_log.txt"}),
+        })
+    (args.out / "code_change_result.json").write_text(result.model_dump_json(indent=2))
+    print(f"{result.outcome} · result_commit={result.result_commit} · 산출물 {len(written) + 1}개 → {args.out}")
     return 0
 
 
@@ -175,4 +229,6 @@ def main(
         return _connect(args, paths, transport)
     if args.command == "register":
         return _register(args, paths, transport)
+    if args.command == "run-local":
+        return _run_local(args, paths, env)
     return _run(args, paths, transport, env)
