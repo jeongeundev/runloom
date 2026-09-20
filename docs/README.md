@@ -14,6 +14,7 @@
 | [PRD.md](PRD.md) | 검토용 v0.1. MVP 범위·사용자 흐름·공모전 시연·수용 기준 제안 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 기술 설계 v0.3 제안. 스택·모델 평가안·계약 필드·이벤트 순서·DB 제약·검증 기준. 구현·실연동 검증 전 |
 | [CONTRACT.md](CONTRACT.md) | 계약 v1의 완전한 요청·이벤트·결과·오류 예시. 계약 테스트 fixture로 사용 |
+| [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록. 2026-09-20 Codex CLI 실연동 1회(Step 15) |
 | [등록 방향 정리 전 원문](archive/2026-09-19-before-agent-registration/README.md) | 이전 제품 개요와 handoff. 현행 요구사항과 구분 |
 | [GLOSSARY.md](GLOSSARY.md) | 코드 식별자와 일치하는 도메인 용어와 금지 표현. 2026-09-20 채움 |
 | [UI_GUIDE.md](UI_GUIDE.md) | 화면 가이드 제안. 심사자 첫 방문 흐름, 화면 목록, 상태 배지·색·컴포넌트·폴링 규칙. 2026-09-20 채움, 경로는 구현 시 확정 |
