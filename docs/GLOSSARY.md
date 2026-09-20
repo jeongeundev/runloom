@@ -62,6 +62,8 @@
 | `ModelClient` | 진단 워커가 모델을 부르는 인터페이스 — `start(system, user, tools, schema)`·`continue_with_tool_results(results)` → `ModelTurn`(`tool_calls`, `draft`, 토큰 수) (`diagnostic_demo/worker/model.py`). 구현은 `OpenAIModelClient`(Responses API)와 `FakeModelClient`(대본, `DIAG_MODEL=fake` 전용) | `LLM`, `Agent`(등록 레코드와 혼동), `Provider` |
 | `Budget` | 진단 1회의 상한 — `max_calls`·`max_input_tokens`·`max_output_tokens`·`timeout_seconds` (`diagnostic_demo/worker/loop.py`). 넘으면 `BudgetExceeded`(code `budget_exceeded`/`timeout`) 로 실행이 `failed`. 총액 US$30·일일 건수는 접수 시점의 429 이며 이 객체가 아니다 | `Limit`, `Quota`, `Cost` |
 | `demo-report-repo` | B 가 수정하는 별도 저장소. 이 트리 밖에 `scripts/scaffold_demo_repo.py` 로 생성한다 (기본 위치 부모/`demo-report-repo`). `repository_id` 값과 같다. 기준 커밋은 태그 `report-base`(수정 전, `items` 만 지원)이며 스크립트 마지막 줄 `base_commit=…` 이 그 SHA 다. 가상 데모 자료이며 이 저장소에 커밋하지 않는다 | `demo repo`, `target repo`, `sample project` |
+| `LocalStack` | 로컬 5-프로세스 기동기 (`scripts/local_stack.py`). 데모 저장소 scaffold → 진단 API → 진단 워커(`DIAG_MODEL=fake`) → 중앙 API → seed → 중앙 워커 → connector 순으로 `python3 -m …` 를 띄우고 `workdir/logs/*.log` 에 로그를 남긴다. 비밀값은 시작마다 생성. 개발·e2e 용이며 심사 배포(Step 16 systemd·launchd)가 아니다 | `deploy`, `production stack`, `docker-compose` |
+| `fake codex` | e2e 전용 가짜 에이전트 (`tests/e2e/fake_codex.py`). `codex exec` 인자를 흉내 내 인계된 `response-after@1.json` 으로 재현 테스트를 쓰고 변환부를 고친다. `LocalStack(fake_codex=…)` 가 `codex` 이름으로 감싸 connector 의 PATH 앞에 둔다. 제품 코드(`src/`)에 두지 않으며 데모·심사에 쓰지 않는다 | `mock codex`, `stub agent`, `codex adapter`(`CodexAdapter` 는 제품 코드) |
 | 사용자 상태 | `대기`, `실행 가능`, `실행 요청됨`, `실행 중`, `확인 필요`, `완료`, `실패`. 화면 문구로 그대로 쓴다 | `pending`, `done`, `success`, `error`, `대기 중` |
 
 ## 경계가 헷갈리는 개념
