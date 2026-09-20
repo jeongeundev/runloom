@@ -5,8 +5,8 @@
                                                      로컬 등록 저장 + discovery 결과를 중앙에 보고
                                                      예: --verify "vp-pytest=python3 -m pytest -q"
                                                          --verify "vp-report=python3 -m daily_report {response}"
-    run       [--adapter codex|echo]                 claim 루프 (기본 codex)
-    run-local --request FILE --handoff-dir DIR --out DIR [--adapter codex|echo]
+    run       [--adapter codex|claude|echo]          claim 루프 (기본 codex)
+    run-local --request FILE --handoff-dir DIR --out DIR [--adapter codex|claude|echo]
                                                      중앙 없이 어댑터 한 번 실행, 산출물을 --out 에 파일로 (Step 15 실연동 확인용)
 
 검증 명령은 `--verify` 인자로만 받아 `shlex.split` 한 인자 배열을 로컬에 둔다. 서버·요청·근거에서 명령을 받지 않는다.
@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import EchoAdapter
+from workflow.connector.claude import ClaudeAdapter
 from workflow.connector.client import CentralClient, CentralError, Unreachable
 from workflow.connector.codex import CodexAdapter
 from workflow.connector.config import ConnectorPaths, connector_paths, read_token, write_token
@@ -34,9 +35,11 @@ from workflow.connector.git_ops import GitError
 from workflow.connector.runner import Runner, utc_now
 from workflow.contracts.v1 import ExecutionRequest
 
-# 이름 → (state_conn, env) 로 어댑터를 만드는 factory. codex 는 로컬 등록(검증 프로필·저장소 경로)을 읽는다
+# 이름 → (state_conn, env) 로 어댑터를 만드는 factory. codex·claude 는 로컬 등록(검증 프로필·저장소 경로)을 읽는다.
+# 등록의 `tool` 값으로 어댑터를 고르는 것은 step 3 (runner-dispatch) — 여기서는 factory 만 둔다
 ADAPTERS = {
     "codex": lambda conn, env: CodexAdapter(conn, env_base=env),
+    "claude": lambda conn, env: ClaudeAdapter(conn, env_base=env),
     "echo": lambda conn, env: EchoAdapter(),
 }
 

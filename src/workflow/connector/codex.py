@@ -7,7 +7,6 @@ Codex 프로세스 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐
 """
 
 import json
-import logging
 import os
 import subprocess
 import tempfile
@@ -19,14 +18,17 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from workflow.connector import state
 from workflow.connector.adapter import Progress
-from workflow.connector.local_tool import KILL_GRACE_SECONDS, LocalToolAdapter, ToolResult, ToolRun
-from workflow.connector.prompt import CODEX_RESULT_SCHEMA
-
-log = logging.getLogger(__name__)
+from workflow.connector.local_tool import (
+    RESULT_SCHEMA,
+    LocalToolAdapter,
+    ToolResult,
+    ToolRun,
+    communicate_or_stop,
+)
 
 
 class CodexLastMessage(BaseModel):
-    """`--output-last-message` 파일. 스키마(`prompt.CODEX_RESULT_SCHEMA`)를 따르지 않아도 읽을 수 있는 만큼 읽는다."""
+    """`--output-last-message` 파일. 스키마(`local_tool.RESULT_SCHEMA`)를 따르지 않아도 읽을 수 있는 만큼 읽는다."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -72,7 +74,7 @@ class CodexAdapter(LocalToolAdapter):
     def launch(self, worktree: Path, prompt_text: str, progress: Progress) -> ToolRun:
         with tempfile.TemporaryDirectory(prefix="workflow-codex-") as tmp:
             schema_path = Path(tmp) / "codex_result_schema.json"
-            schema_path.write_text(json.dumps(CODEX_RESULT_SCHEMA, ensure_ascii=False, indent=2))
+            schema_path.write_text(json.dumps(RESULT_SCHEMA, ensure_ascii=False, indent=2))
             last_message_path = Path(tmp) / "last_message.json"
             argv = self.build_argv(worktree, schema_path, last_message_path)
             started_at = state.utc_now()
@@ -81,22 +83,7 @@ class CodexAdapter(LocalToolAdapter):
                 env=self.child_env(),
             )
             progress(f"Codex 실행 시작 pid={proc.pid}", runtime_ref=f"pid:{proc.pid};start:{started_at}")
-            timed_out = False
-            try:
-                stdout, stderr = proc.communicate(prompt_text.encode("utf-8"), timeout=self._timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                proc.terminate()
-                try:
-                    proc.wait(timeout=KILL_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=KILL_GRACE_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        log.error("Codex pid=%s 를 종료하지 못했다", proc.pid)
-                stdout, stderr = proc.communicate()
-            stopped = proc.poll() is not None
+            stdout, stderr, timed_out, stopped = communicate_or_stop(proc, prompt_text.encode("utf-8"), self._timeout)
             progress(f"Codex 종료 exit={proc.returncode}{' (시간 초과)' if timed_out else ''}")
             last_message = last_message_path.read_text(encoding="utf-8") if last_message_path.is_file() else None
             return ToolRun(

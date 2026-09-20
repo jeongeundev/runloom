@@ -1,24 +1,13 @@
-"""Codex 에 stdin 으로 넘기는 프롬프트와 마지막 메시지의 출력 스키마.
+"""로컬 도구(Codex·Claude)에 stdin 으로 넘기는 프롬프트. 도구와 무관하다.
 
 프롬프트에는 업무 요청 원문·인계 파일 경로·작업 규칙만 넣는다. 토큰·서버 주소·셸 명령은 넣지 않는다.
 인계 자료의 `target_component` 는 단서일 뿐이며 실제 코드에서 확인하라고 적는다.
+마지막 메시지의 출력 스키마는 `local_tool.RESULT_SCHEMA` 이며 아래 "마지막 메시지" 절의 형식과 같다.
 """
 
 from pathlib import Path
 
 from workflow.contracts.v1 import ExecutionRequest
-
-CODEX_RESULT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string", "description": "무엇을 어떻게 고쳤는지 한 단락"},
-        "outcome": {"type": "string", "enum": ["ready_for_review", "needs_information"]},
-        "files_changed": {"type": "array", "items": {"type": "string"}},
-        "notes": {"type": "string", "description": "남은 사항·확인이 필요한 점. 없으면 빈 문자열"},
-    },
-    "required": ["summary", "outcome", "files_changed", "notes"],
-    "additionalProperties": False,
-}
 
 _FILE_HINTS = (
     ("diagnosis_result.json", "진단 결과 (원인·근거·수정 요청·검증 항목)"),

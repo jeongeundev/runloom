@@ -17,7 +17,7 @@ import pytest
 
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import Progress
-from workflow.connector.local_tool import LocalToolAdapter, ToolResult, ToolRun
+from workflow.connector.local_tool import RESULT_SCHEMA, LocalToolAdapter, ToolResult, ToolRun
 
 from .conftest import make_request
 
@@ -291,6 +291,67 @@ def test_failures_before_launch_do_not_call_launch(state_conn, repo, handoff):
     assert missing_registration.failed[0] == "registration_missing"
     assert missing_commit.failed[0] == "base_commit_missing"
     assert adapter.launched_with == []
+
+
+# --- classify_failure 훅 ----------------------------------------------------------------------
+
+
+class LimitedTool(ScriptedTool):
+    """stderr 에 'limit' 이 있으면 사용량 한도로 판정하는 하위 클래스 — 훅이 공통 흐름을 failed 로 끝내는지 본다."""
+
+    def classify_failure(self, run: ToolRun) -> tuple[str, str] | None:
+        return ("usage_limit", "fake 사용량 한도") if b"limit" in run.stderr else None
+
+
+def test_classify_failure_hook_ends_run_as_failed_and_keeps_raw_logs_only(state_conn, repo, handoff):
+    base = register(state_conn, repo)
+    request = request_for(base)
+
+    def script(worktree: Path) -> ToolRun:
+        fix_and_add_test(worktree)  # 한도 도중 남은 수정 — 커밋·검증하지 않는다
+        return _run(stdout=b'{"type":"result"}\n', stderr=b"You've hit your usage limit\n", last_message=_message())
+
+    progress = Recorder()
+    output = LimitedTool(state_conn, script).run(request, handoff, progress)
+
+    assert output.result is None
+    assert output.failed == ("usage_limit", "fake 사용량 한도", True)
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    assert by_kind(output)["claude_stderr"] == b"You've hit your usage limit\n"
+    assert output.runtime_ref == progress.runtime_refs[0]
+    worktree = repo.parent / "mini-repo-worktrees" / request.task_id
+    assert _git(worktree, "rev-parse", "HEAD") == base  # 결과 커밋 없음
+
+
+def test_classify_failure_uses_process_stop_confirmation(state_conn, repo, handoff):
+    base = register(state_conn, repo)
+    adapter = LimitedTool(state_conn, lambda _wt: _run(stderr=b"rate limit\n", stopped=False))
+
+    output = adapter.run(request_for(base), handoff, Recorder())
+
+    assert output.failed[0] == "usage_limit" and output.failed[2] is False
+
+
+def test_classify_failure_default_is_none_and_timeout_wins(state_conn, repo, handoff):
+    base = register(state_conn, repo)
+    assert ScriptedTool(state_conn, fix_only).classify_failure(_run(stderr=b"rate limit\n")) is None
+
+    output = LimitedTool(state_conn, lambda _wt: _run(stderr=b"limit\n", timed_out=True)).run(
+        request_for(base), handoff, Recorder(),
+    )
+
+    assert output.failed[0] == "timeout"  # 시간 초과가 먼저다
+
+
+# --- 결과 스키마 (Codex 는 파일, Claude 는 문자열로 같은 내용을 준다) -------------------------------
+
+
+def test_result_schema_is_strict_object_with_four_keys():
+    assert RESULT_SCHEMA["type"] == "object"
+    assert RESULT_SCHEMA["additionalProperties"] is False
+    assert sorted(RESULT_SCHEMA["required"]) == ["files_changed", "notes", "outcome", "summary"]
+    assert RESULT_SCHEMA["properties"]["outcome"]["enum"] == ["ready_for_review", "needs_information"]
+    json.dumps(RESULT_SCHEMA)  # 직렬화 가능
 
 
 # --- 비밀값 -------------------------------------------------------------------------------

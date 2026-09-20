@@ -9,7 +9,8 @@ import sys
 import pytest
 
 from workflow.connector import state
-from workflow.connector.cli import main
+from workflow.connector.claude import ClaudeAdapter
+from workflow.connector.cli import ADAPTERS, main
 from workflow.connector.config import connector_paths
 
 from .conftest import CONNECTOR_ID, TOKEN, FakeCentral, make_request
@@ -120,6 +121,23 @@ def test_register_rejects_bad_verify_format(env, repo):
         main(["register", "--id", "x", "--repo", str(repo), "--repository-id", "r", "--verify", "no-equals"],
              env=env, transport=fake.transport())
     assert fake.registrations == []
+
+
+# --- 어댑터 factory --------------------------------------------------------------------------
+
+
+def test_adapters_factory_builds_claude_adapter_from_env(env, tmp_path):
+    paths = connector_paths(env)
+    paths.home.mkdir(parents=True)
+    conn = state.connect(paths.state_db)
+    try:
+        adapter = ADAPTERS["claude"](conn, {**env, "ANTHROPIC_MODEL": "claude-x", "OPENAI_API_KEY": "sk-" + "x" * 20})
+    finally:
+        conn.close()
+
+    assert isinstance(adapter, ClaudeAdapter) and adapter.tool_name == "claude"
+    assert adapter.tool_env()["ANTHROPIC_MODEL"] == "claude-x" and "OPENAI_API_KEY" not in adapter.tool_env()
+    assert sorted(ADAPTERS) == ["claude", "codex", "echo"]
 
 
 # --- run · help ------------------------------------------------------------------------

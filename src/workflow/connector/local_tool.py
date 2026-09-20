@@ -7,7 +7,8 @@
 - 도구의 말을 믿지 않는다: 변경 없음·재현 테스트 없음이면 `needs_information`, 검증은 별도 체크아웃에서 다시 실행한다.
 
 하위 클래스는 `tool_name`·`raw_kinds` 와 `launch`(프로세스를 띄우고 `ToolRun` 을 돌려준다)·`parse_last_message`
-(도구의 마지막 구조화 메시지를 `ToolResult` 로)만 구현한다.
+(도구의 마지막 구조화 메시지를 `ToolResult` 로)만 구현한다. 도구 출력에서 실패 사유(사용량 한도 등)를 읽어야 하면
+`classify_failure` 를 덮어쓴다 — 기본은 None(판정 없음)이다.
 
 셸 명령은 로컬 등록의 검증 프로필에서만 온다. 요청·인계 자료·모델 출력에서 명령·경로를 받아 실행하지 않는다.
 도구·검증 프로세스의 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐이다 — 연결 토큰·API 키를 상속하지 않는다.
@@ -43,6 +44,19 @@ RESPONSE_PLACEHOLDER = "{response}"
 RESPONSE_FILE = "response-after@1.json"
 NO_REPRO_TEST_LOG = "exit_code=0\n(재현 테스트 없음)\n"
 KILL_GRACE_SECONDS = 5
+
+# 도구의 마지막 메시지 스키마. Codex 는 파일(`--output-schema`)로, Claude 는 문자열(`--json-schema`)로 같은 내용을 준다.
+RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "description": "무엇을 어떻게 고쳤는지 한 단락"},
+        "outcome": {"type": "string", "enum": ["ready_for_review", "needs_information"]},
+        "files_changed": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "string", "description": "남은 사항·확인이 필요한 점. 없으면 빈 문자열"},
+    },
+    "required": ["summary", "outcome", "files_changed", "notes"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -97,6 +111,11 @@ class LocalToolAdapter:
     def parse_last_message(self, raw: str | None) -> ToolResult:
         raise NotImplementedError
 
+    def classify_failure(self, run: ToolRun) -> tuple[str, str] | None:
+        """도구 출력에서 실패 사유를 읽는 훅 — `(code, message)` 면 공통 흐름이 그 자리에서 `failed` 로 끝낸다
+        (`process_stopped` 는 `run.stopped`). 시간 초과는 이 훅보다 먼저 판정한다. 기본은 None (Codex)."""
+        return None
+
     # --- 공통 ------------------------------------------------------------------------------------
 
     def child_env(self) -> dict[str, str]:
@@ -138,6 +157,12 @@ class LocalToolAdapter:
                 result=None, artifacts=raw_artifacts,
                 failed=("timeout", f"{self.tool_name} 실행이 {self._timeout}초를 초과해 종료했습니다.", run.stopped),
                 runtime_ref=runtime_ref,
+            )
+        failure = self.classify_failure(run)
+        if failure is not None:
+            code, message = failure
+            return AdapterOutput(
+                result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
             )
 
         parsed = self.parse_last_message(run.last_message)
@@ -235,6 +260,29 @@ class LocalToolAdapter:
             outcome=outcome, summary=summary, base_commit=request.target.base_commit,
             result_commit=result_commit, artifact_ids=[], verification=verification,
         )
+
+
+def communicate_or_stop(
+    proc: subprocess.Popen, input_bytes: bytes, timeout: int,
+) -> tuple[bytes, bytes, bool, bool]:
+    """stdin 을 쓰고 끝까지 기다린다. 시간 초과면 terminate → `KILL_GRACE_SECONDS` → kill.
+    `(stdout, stderr, timed_out, stopped)` — stopped 는 프로세스 종료를 실제로 확인했는지다."""
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(input_bytes, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.terminate()
+        try:
+            proc.wait(timeout=KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                log.error("pid=%s 를 종료하지 못했다", proc.pid)
+        stdout, stderr = proc.communicate()
+    return stdout, stderr, timed_out, proc.poll() is not None
 
 
 def _failed(code: str, message: str) -> AdapterOutput:
