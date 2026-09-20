@@ -21,7 +21,7 @@ def test_defaults_follow_architecture_budget_table():
     assert s.openai_api_key is None
     assert s.db_path == Path("data/diag.sqlite")
     assert s.fixtures_dir == DEFAULT_FIXTURES_DIR and (DEFAULT_FIXTURES_DIR / "index.json").is_file()
-    assert s.model == "openai" and s.model_id == "gpt-4.1-mini-2025-04-14"
+    assert s.model == "openai" and s.model_id == "gpt-4.1-2025-04-14"
     assert s.allowed_workflow_ids == frozenset({"daily-report"})
     assert (s.budget_usd, s.budget_stop_ratio) == (30.0, 0.9)
     assert (s.price_input_per_m, s.price_output_per_m) == (0.0, 0.0)

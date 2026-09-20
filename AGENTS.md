@@ -7,7 +7,7 @@
 ## 기술 스택
 - Python 3.13 계열, 시스템 `python3` 사용 (가상환경 없음). [ADR-0002](docs/adr/0002-server-stack-python-fastapi-sqlite.md)
 - FastAPI + Uvicorn (웹/API), Jinja2 + CSS + 소량 브라우저 JavaScript (화면), Pydantic v2 (계약 검증), 표준 `sqlite3` + 명시적 SQL (저장), HTTPX (HTTP 클라이언트)
-- 진단 데모: OpenAI Python SDK, Responses API — [ADR-0003](docs/adr/0003-diagnosis-model-openai-gpt41-mini.md) 작업 가정. 키·예산 확인 전 유료 호출 금지
+- 진단 데모: OpenAI Python SDK, Responses API — [ADR-0003](docs/adr/0003-diagnosis-model-openai-gpt41-mini.md) 확정 (gpt-4.1). 키·예산 확인 전 유료 호출 금지
 - 로컬 에이전트 어댑터: Codex CLI 1종 [ADR-0001](docs/adr/0001-first-local-agent-codex.md)
 - pytest, ruff. 의존성은 `pyproject.toml`
 

@@ -1,7 +1,7 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
 갱신일: 2026-09-20
-상태: 기술 설계 v0.3. [PRD](PRD.md)의 합의된 동작을 위한 초안이다. 첫 로컬 도구와 서버 스택은 [ADR-0001](adr/0001-first-local-agent-codex.md)·[ADR-0002](adr/0002-server-stack-python-fastapi-sqlite.md)로 확정했고, 진단 모델은 [ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md)의 작업 가정이다. 그 외 실행 계약·DB 제약은 assistant 제안이며 구현 착수 승인은 아니다. 코드·서비스 연결 실험은 수행하지 않았다.
+상태: 기술 설계 v0.3. [PRD](PRD.md)의 합의된 동작을 위한 초안이다. 첫 로컬 도구와 서버 스택은 [ADR-0001](adr/0001-first-local-agent-codex.md)·[ADR-0002](adr/0002-server-stack-python-fastapi-sqlite.md)로 확정했고, 진단 모델은 [ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md)으로 확정했다(gpt-4.1). 그 외 실행 계약·DB 제약은 assistant 제안이며 구현 착수 승인은 아니다. 코드·서비스 연결 실험은 수행하지 않았다.
 
 ## 첫 선택과 전제
 
@@ -17,7 +17,7 @@
 | 진단 구현 | 별도 FastAPI 서비스 + OpenAI Responses API + 읽기 전용 도구 4개 | GPT-4.1 mini를 첫 평가 후보로 제안. 실제 진단 품질·계정 접근은 미검증 |
 | n8n·A2A·MCP·OpenArchive | 첫 구현의 필수 의존에서 제외 | 두 실행 계약으로 시연 가능. 등록된 기존 에이전트의 MCP 사용은 별도로 재사용 검증 |
 
-위 표에서 첫 로컬 도구·중앙 구성·저장·진단 구현의 스택은 ADR-0001·0002로 확정했고, 진단 모델은 ADR-0003의 작업 가정이다. 나머지 행은 제안이다. 폴링 간격·시간 제한·성능 수치는 측정 전 확정하지 않는다.
+위 표에서 첫 로컬 도구·중앙 구성·저장·진단 구현의 스택은 ADR-0001·0002로 확정했고, 진단 모델은 ADR-0003으로 확정했다. 나머지 행은 제안이다. 폴링 간격·시간 제한·성능 수치는 측정 전 확정하지 않는다.
 
 ## 기술 스택 제안
 
@@ -43,7 +43,7 @@ FastAPI `BackgroundTasks`만으로 장시간 실행을 관리하지 않는다. D
 
 ### 진단 모델과 평가 기준
 
-제공자는 OpenAI, 호출 방식은 Responses API, 첫 평가 모델은 `gpt-4.1-mini-2025-04-14`로 제안한다. 공식 문서에서 Responses API·function calling·structured outputs·해당 스냅샷을 확인했다. 작은 자료와 네 도구로 구성된 데모에서 먼저 평가할 후보이며 최신·최고 성능 모델이라는 주장은 아니다. [모델 문서](https://developers.openai.com/api/docs/models/gpt-4.1-mini)
+제공자는 OpenAI, 호출 방식은 Responses API, 모델은 `gpt-4.1-2025-04-14` 다(ADR-0003 확정). 첫 평가 후보였던 `gpt-4.1-mini-2025-04-14` 는 네 번의 평가에서 정상 사례를 3/3 통과하지 못해 제외했다([DIAG_EVAL](DIAG_EVAL.md)). 최신·최고 성능 모델이라는 주장은 아니다. [모델 문서](https://developers.openai.com/api/docs/models/gpt-4.1)
 
 처리 순서는 조사 요청과 도구 정의 전달 → 모델의 도구 요청 → 서비스에서 인자·권한 검사 후 실제 조회 → 조회 결과를 모델에 반환 → 구조화 진단 수집이다. 모델은 DB·파일 경로를 직접 실행하지 않는다. 별도 에이전트 프레임워크나 벡터 검색은 첫 범위에 추가하지 않는다. [도구 호출 문서](https://developers.openai.com/api/docs/guides/function-calling)
 
@@ -358,7 +358,7 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 | 진단 1회 누적 입력/출력 토큰 | 80k / 8k | 위와 같음 |
 | 진단 1회 경과 시간 | 5분 | 실행 `failed`, code `timeout` |
 | 세션당 하루 진단 실행 | 10회 | 429 `daily_limit_reached`, 화면에 "오늘 진단 한도 도달" |
-| 전체 하루 진단 실행 | 60회 | 위와 같음 |
+| 전체 하루 진단 실행 | 36회 (ADR-0003: gpt-4.1 단가로 총액 안에 두는 값) | 위와 같음 |
 | 총액 추정 | US$27(90%) 도달 | 429 `budget_exhausted`, 운영자 화면에 표시 |
 
 진단 서비스는 응답의 usage 토큰을 실행마다 기록하고 설정된 단가로 누적 비용을 계산한다. 단가는 실연동 전 공식 가격 페이지에서 확인해 설정값으로 넣는다. 진단 1회 비용 추정(수 센트)은 첫 실연동에서 실제 토큰으로 대체한다. 진단 워커 동시 실행은 2건, 연결 프로그램당 실행은 1건이다. 세션당 활성 업무는 5개까지 만들 수 있다.

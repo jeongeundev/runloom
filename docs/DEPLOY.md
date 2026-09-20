@@ -60,9 +60,9 @@ sudoedit /etc/workflow/diag.env
 | 파일 | 채울 값 |
 |---|---|
 | `central.env` | `SESSION_SECRET`, `OPERATOR_TOKEN`, `DIAG_API_TOKEN`. 나머지는 예시 값 그대로 |
-| `diag.env` | `DIAG_API_TOKEN`(위와 같은 값), `OPENAI_API_KEY`, `DIAG_PRICE_INPUT_PER_M`·`DIAG_PRICE_OUTPUT_PER_M`(백만 토큰당 USD — 공식 가격 페이지에서 `gpt-4.1-mini` 단가를 확인해 적는다. 비우면 비용을 추정하지 못해 US$30 총액 상한이 동작하지 않는다) |
+| `diag.env` | `DIAG_API_TOKEN`(위와 같은 값), `OPENAI_API_KEY`, `DIAG_PRICE_INPUT_PER_M`·`DIAG_PRICE_OUTPUT_PER_M`(백만 토큰당 USD — gpt-4.1 은 입력 2.00 / 출력 8.00 — 공식 가격 페이지에서 다시 확인해 적는다. 비우면 비용을 추정하지 못해 US$30 총액 상한이 동작하지 않는다) |
 
-`OPENAI_API_KEY` 는 [ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md)의 확정 조건(키·계정 사용 가능·예산)을 확인한 뒤 넣는다. 키가 없으면 진단 워커는 exit 2 로 멈추고 유료 호출을 하지 않는다.
+모델은 [ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md) 확정대로 `gpt-4.1-2025-04-14`, 하루 상한 `DIAG_GLOBAL_DAILY=36` (예시 파일 값 그대로). 키가 없으면 진단 워커는 exit 2 로 멈추고 유료 호출을 하지 않는다.
 
 ```bash
 sudo chmod 600 /etc/workflow/central.env /etc/workflow/diag.env
@@ -74,7 +74,7 @@ sudo systemctl start workflow-diag workflow-diag-worker workflow-central workflo
 ```bash
 systemctl status workflow-central workflow-worker workflow-diag workflow-diag-worker   # 모두 active (running)
 curl -sI http://127.0.0.1:8000/ | head -1                                              # HTTP/1.1 200
-journalctl -u workflow-diag-worker -n 3        # "진단 워커 시작: model=openai model_id=gpt-4.1-mini-…"
+journalctl -u workflow-diag-worker -n 3        # "진단 워커 시작: model=openai model_id=gpt-4.1-2025-…"
 sudo ss -ltnp | grep -E ':(8000|8100) '        # 둘 다 127.0.0.1 에만 묶여 있다
 ```
 

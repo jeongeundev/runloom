@@ -4,7 +4,7 @@
     python3 scripts/diag_eval.py --cases all --repeat 3 --out docs/DIAG_EVAL.md
 
 - 각 실행은 진단 서비스의 실제 경로 `run_diagnosis` → `assemble_result` → 중앙 `verify_diagnosis` 를 HTTP 없이
-  프로세스 안에서 부른다. 모델은 `OpenAIModelClient(model_id=DIAG_MODEL_ID)` (기본 ADR-0003 의 gpt-4.1-mini).
+  프로세스 안에서 부른다. 모델은 `OpenAIModelClient(model_id=DIAG_MODEL_ID)` (기본 ADR-0003 의 gpt-4.1).
 - 시작 전 확인: `OPENAI_API_KEY`, `DIAG_PRICE_INPUT_PER_M`, `DIAG_PRICE_OUTPUT_PER_M`, `DIAG_EVAL_BUDGET_USD` 가
   없으면 유료 호출 0회로 exit 2. 매 실행 전 누적 추정 비용이 `DIAG_EVAL_BUDGET_USD` 이상이면 멈춘다.
 - 사례의 자료 누락·교체는 `FixtureStore(removed=, replaced=)` 로 재현하며 fixture 파일은 고치지 않는다.

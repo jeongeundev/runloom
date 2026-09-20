@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_FIXTURES_DIR = Path(__file__).parent / "fixtures"
-DEFAULT_MODEL_ID = "gpt-4.1-mini-2025-04-14"  # ADR-0003 작업 가정
+DEFAULT_MODEL_ID = "gpt-4.1-2025-04-14"  # ADR-0003 확정
 FAKE_MODEL_ID = "fake-fixture-script"  # DIAG_MODEL=fake 일 때 provenance.model_id — 실제 모델이 돈 것처럼 적지 않는다
 MODEL_CHOICES = ("openai", "fake")
 
