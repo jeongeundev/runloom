@@ -132,7 +132,7 @@ def _create_task(client: httpx.Client, form: dict[str, str]) -> str:
     assert response.status_code == 303, response.text[:500]
     location = response.headers["location"]
     assert location.startswith("/tasks/task-"), location
-    return location.rsplit("/tasks", 1)[1]
+    return location.rsplit("/", 1)[1]
 
 
 def _raw(client: httpx.Client, task_id: str, artifact_id: str) -> str:
