@@ -1,0 +1,10 @@
+{
+  "project": "workflow",
+  "phase": "1-diag-fix",
+  "steps": [
+    { "step": 0, "name": "location-grammar", "status": "pending" },
+    { "step": 1, "name": "tool-line-numbers", "status": "pending" },
+    { "step": 2, "name": "prompt-v2", "status": "pending" },
+    { "step": 3, "name": "diag-re-eval", "status": "pending" }
+  ]
+}
