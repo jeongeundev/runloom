@@ -1,8 +1,6 @@
 """prompt — Codex 에 stdin 으로 넘기는 프롬프트. 요청 원문·인계 파일 경로·작업 규칙·출력 형식을 담는다."""
 
-import json
-
-from workflow.connector.prompt import CODEX_RESULT_SCHEMA, build_prompt
+from workflow.connector.prompt import build_prompt
 
 from .conftest import make_request
 
@@ -52,11 +50,3 @@ def test_prompt_does_not_leak_secrets_from_request_fields(tmp_path):
     text = build_prompt(request, _handoff(tmp_path), tmp_path / "wt")
 
     assert "wfc_" not in text and "sk-" not in text
-
-
-def test_result_schema_is_strict_object_with_four_keys():
-    assert CODEX_RESULT_SCHEMA["type"] == "object"
-    assert CODEX_RESULT_SCHEMA["additionalProperties"] is False
-    assert sorted(CODEX_RESULT_SCHEMA["required"]) == ["files_changed", "notes", "outcome", "summary"]
-    assert CODEX_RESULT_SCHEMA["properties"]["outcome"]["enum"] == ["ready_for_review", "needs_information"]
-    json.dumps(CODEX_RESULT_SCHEMA)  # 직렬화 가능

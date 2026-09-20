@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 22개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 24개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -35,6 +35,7 @@ from workflow.contracts.v1 import (
     SelectionRecord,
     parse_rfc3339_aware,
 )
+from workflow.server.machine_api import RegistrationRequest
 
 CONTRACT_MD = Path(__file__).resolve().parents[3] / "docs" / "CONTRACT.md"
 
@@ -45,7 +46,12 @@ _INLINE = re.compile(r"\|\s*`(\{.*?\})`\s*\|")
 _SIGNATURES = [
     ("ExecutionRequest", lambda k: {"kind", "target"} <= k, ExecutionRequest),
     ("RunStatus", lambda k: {"status", "last_event_seq"} <= k, RunStatus),
-    ("ClaimRequest", lambda k: "connector_id" in k and "current_execution_id" not in k, ClaimRequest),
+    (
+        "ClaimRequest",
+        lambda k: "connector_id" in k and "current_execution_id" not in k and "local_registration_id" not in k,
+        ClaimRequest,
+    ),
+    ("RegistrationRequest", lambda k: {"local_registration_id", "tool"} <= k, RegistrationRequest),
     ("HandoffBundle", lambda k: "source_execution_id" in k, HandoffBundle),
     ("ExecutionEvent", lambda k: {"seq", "type"} <= k, ExecutionEvent),
     ("ArtifactMeta", lambda k: {"kind", "sha256", "size", "contract_version"} <= k, ArtifactMeta),
@@ -84,7 +90,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 22
+    assert len(FENCED) == 24
     assert len(INLINE) == 8
 
 
@@ -127,7 +133,32 @@ def test_constants():
         "report_output",
         "code_change_result",
         "review_comment",
+        "claude_jsonl",
+        "claude_stderr",
     )
+    assert len(ARTIFACT_KINDS) == 15
+
+
+def test_artifact_kinds_match_contract_md_list():
+    """CONTRACT 4절 "산출물 `kind` 목록:" 한 줄의 백틱 이름들이 상수와 순서까지 같다."""
+    text = CONTRACT_MD.read_text(encoding="utf-8")
+    (line,) = [ln for ln in text.splitlines() if ln.startswith("산출물 `kind` 목록:")]
+    assert tuple(re.findall(r"`([a-z_]+)`", line.split(":", 1)[1])) == ARTIFACT_KINDS
+
+
+@pytest.mark.parametrize("kind", ["claude_jsonl", "claude_stderr"])
+def test_artifact_meta_accepts_claude_kinds(kind):
+    meta = _first("ArtifactMeta")
+    meta["kind"] = kind
+    assert ArtifactMeta.model_validate(meta).kind == kind
+
+
+def test_registration_request_tool_literal():
+    body = _first("RegistrationRequest")
+    assert {b["tool"] for b in FENCED if _model_for(b) is RegistrationRequest} == {"codex", "claude"}
+    body["tool"] = "gemini"
+    with pytest.raises(ValidationError):
+        RegistrationRequest.model_validate(body)
 
 
 @pytest.mark.parametrize(

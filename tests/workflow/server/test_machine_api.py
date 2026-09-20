@@ -519,9 +519,21 @@ def test_registration_discovered_size_limit_422(client, connector, headers):
     assert response.json()["field"] == "discovered"
 
 
-def test_registration_rejects_other_tool_and_mismatched_connector(client, connector, headers):
+def test_registration_accepts_claude_tool(client, seeded, connector, headers):
+    """`tool` 은 `codex`·`claude` 둘 다 같은 경로다. 중앙은 값을 저장하지 않으며(어댑터 선택은
+    연결 프로그램의 로컬 등록 `state.sqlite` 의 `tool` 로만 정한다) 분기도 없다."""
     connector_id, _ = connector
     response = client.post("/connector/registrations", json=_registration(connector_id, tool="claude"), headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"agent_id": "agent-codex-mac"}
+    agent = repo.get_agent(seeded, "agent-codex-mac")
+    assert agent["connector_id"] == connector_id
+    assert agent["connection_state"] == "online"
+
+
+def test_registration_rejects_other_tool_and_mismatched_connector(client, connector, headers):
+    connector_id, _ = connector
+    response = client.post("/connector/registrations", json=_registration(connector_id, tool="gemini"), headers=headers)
     assert response.status_code == 422
     assert response.json()["field"] == "tool"
     response = client.post("/connector/registrations", json=_registration("conn-other"), headers=headers)

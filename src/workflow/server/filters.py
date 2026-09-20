@@ -29,6 +29,8 @@ KIND_LABELS = {
     "evidence": "근거",
     "codex_jsonl": "Codex JSONL",
     "codex_stderr": "Codex stderr",
+    "claude_jsonl": "Claude JSONL",
+    "claude_stderr": "Claude stderr",
     "review_comment": "검토 의견",
 }
 

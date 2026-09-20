@@ -1,4 +1,4 @@
-"""연결 프로그램의 실행 루프 — claim → 접수 → 인계 자료 → 어댑터 → 산출물 업로드 → result_ready|failed.
+"""연결 프로그램의 실행 루프 — claim → 접수 → 어댑터 선택 → 인계 자료 → 어댑터 → 산출물 업로드 → result_ready|failed.
 
 규칙 (ARCHITECTURE "상태·재접속·완료", CONTRACT 3절):
 - 모든 이벤트는 로컬 `pending_events` 에 먼저 쓰고 보낸다. 중앙에 닿지 않으면(`Unreachable`) 다음 tick 에
@@ -7,6 +7,8 @@
   `unknown_local_at` 만 적어 사람 확인을 기다린다 (중앙은 2분 규칙으로 `unknown`). 재실행하지 않는다.
 - 어댑터가 돌려준 산출물은 로컬 DB 에 보존한 뒤 업로드한다. 업로드 중 끊겨도 어댑터를 다시 돌리지 않는다.
 - 산출물·진행 메시지·오류 메시지는 `mask_secrets` 를 거친다. 연결 토큰은 이 모듈이 알지 못한다 (client 안).
+- 어댑터는 도구 이름 → 어댑터 매핑이며, 실행마다 `target.local_registration_id` 로 찾은 로컬 등록의 `tool` 로
+  하나를 고른다 (`select_adapter`). 요청 본문의 값으로 실행 대상을 고르지 않는다.
 """
 
 import hashlib
@@ -14,7 +16,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -70,13 +72,44 @@ class HandoffHashMismatch(Exception):
     pass
 
 
+class AdapterNotSelected(Exception):
+    """요청을 실행할 어댑터를 로컬 등록에서 고르지 못했다. `failed` 이벤트의 code·message 가 된다."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def select_adapter(
+    conn, adapters: Mapping[str, ExecutionAdapter], request: ExecutionRequest
+) -> ExecutionAdapter:
+    """`target.local_registration_id` 의 로컬 등록이 가진 `tool` 로 어댑터를 고른다.
+    등록 없음 → `registration_missing`, 그 도구의 어댑터 없음 → `adapter_missing`.
+    로컬 등록이 없는 종류(진단)는 지금처럼 첫 어댑터에 넘긴다 — 어댑터가 `unsupported_kind` 로 답한다."""
+    target = request.target
+    if not isinstance(target, CodeChangeTarget):
+        return next(iter(adapters.values()))
+    registration = state.get_registration(conn, target.local_registration_id)
+    if registration is None:
+        raise AdapterNotSelected("registration_missing", f"로컬 등록 {target.local_registration_id} 이 없다")
+    adapter = adapters.get(registration["tool"])
+    if adapter is None:
+        raise AdapterNotSelected(
+            "adapter_missing",
+            f"등록 {target.local_registration_id} 의 도구 {registration['tool']} 어댑터가 없다 "
+            f"(있는 것: {', '.join(adapters) or '없음'})",
+        )
+    return adapter
+
+
 class Runner:
     def __init__(
         self,
         client: CentralClient,
         state_conn,
         paths: ConnectorPaths,
-        adapter: ExecutionAdapter,
+        adapters: Mapping[str, ExecutionAdapter],
         connector_id: str,
         clock: Callable[[], str],
         handoff_root: Path,
@@ -84,7 +117,7 @@ class Runner:
         self._client = client
         self._conn = state_conn
         self._paths = paths
-        self._adapter = adapter
+        self._adapters = adapters
         self._connector_id = connector_id
         self._clock = clock
         self._handoff_root = handoff_root
@@ -203,6 +236,12 @@ class Runner:
         if row["next_seq"] == 1:
             self._emit(execution_id, "accepted", {})
 
+        try:
+            adapter = select_adapter(self._conn, self._adapters, request)
+        except AdapterNotSelected as exc:  # 시작 전 실패 — 프로세스를 띄우지 않았으므로 process_stopped=True
+            self._finish_failed(execution_id, (exc.code, exc.message, True))
+            return
+
         handoff_dir = self._handoff_dir(request)
         try:
             self._download_handoff(request, handoff_dir)
@@ -228,7 +267,7 @@ class Runner:
                 self._emit(execution_id, "progress", {"message": _masked_text(message)})
 
         try:
-            output = self._adapter.run(request, handoff_dir, progress)
+            output = adapter.run(request, handoff_dir, progress)
         except Exception as exc:  # 어댑터 예외 — 프로세스 종료를 확인하지 못했으므로 process_stopped=False
             log.exception("%s: 어댑터 예외", execution_id)
             output = AdapterOutput(

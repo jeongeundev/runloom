@@ -1,6 +1,7 @@
 """cli — `python3 -m workflow.connector connect|register|run`. 토큰 파일 0600, 등록 보고, 검증 명령의 로컬 보관."""
 
 import json
+import logging
 import os
 import stat
 import subprocess
@@ -9,8 +10,10 @@ import sys
 import pytest
 
 from workflow.connector import state
-from workflow.connector.cli import main
+from workflow.connector.claude import ClaudeAdapter
+from workflow.connector.cli import ADAPTERS, main
 from workflow.connector.config import connector_paths
+from workflow.connector.runner import Runner
 
 from .conftest import CONNECTOR_ID, TOKEN, FakeCentral, make_request
 from .test_codex import RESPONSE_AFTER, make_repo, write_fake_codex
@@ -104,6 +107,30 @@ def test_register_reports_registration_and_stores_commands_locally(env, repo, ca
     assert "agent-codex-mac" in capsys.readouterr().out
 
 
+def test_register_tool_claude_is_stored_locally_and_reported(env, repo):
+    fake = FakeCentral()
+    fake.connect_codes["code-1"] = CONNECTOR_ID
+    main(["connect", "--server", "http://central.test", "--code", "code-1"], env=env, transport=fake.transport())
+
+    code = main([
+        "register", "--id", "local-demo-claude", "--repo", str(repo), "--repository-id", "demo-report-repo",
+        "--tool", "claude",
+    ], env=env, transport=fake.transport())
+
+    assert code == 0
+    assert fake.registrations[0]["tool"] == "claude"
+    conn = state.connect(connector_paths(env).state_db)
+    try:
+        assert state.get_registration(conn, "local-demo-claude")["tool"] == "claude"
+    finally:
+        conn.close()
+
+
+def test_register_rejects_unknown_tool(env, repo):
+    with pytest.raises(SystemExit):
+        main(["register", "--id", "x", "--repo", str(repo), "--repository-id", "r", "--tool", "gemini"], env=env)
+
+
 def test_register_requires_connect_first(env, repo, capsys):
     code = main(["register", "--id", "x", "--repo", str(repo), "--repository-id", "r"], env=env)
 
@@ -122,7 +149,50 @@ def test_register_rejects_bad_verify_format(env, repo):
     assert fake.registrations == []
 
 
+# --- 어댑터 factory --------------------------------------------------------------------------
+
+
+def test_adapters_factory_builds_claude_adapter_from_env(env, tmp_path):
+    paths = connector_paths(env)
+    paths.home.mkdir(parents=True)
+    conn = state.connect(paths.state_db)
+    try:
+        adapter = ADAPTERS["claude"](conn, {**env, "ANTHROPIC_MODEL": "claude-x", "OPENAI_API_KEY": "sk-" + "x" * 20})
+    finally:
+        conn.close()
+
+    assert isinstance(adapter, ClaudeAdapter) and adapter.tool_name == "claude"
+    assert adapter.tool_env()["ANTHROPIC_MODEL"] == "claude-x" and "OPENAI_API_KEY" not in adapter.tool_env()
+    assert sorted(ADAPTERS) == ["claude", "codex", "echo"]
+
+
 # --- run · help ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def connected(env) -> FakeCentral:
+    fake = FakeCentral()
+    fake.connect_codes["code-1"] = CONNECTOR_ID
+    main(["connect", "--server", "http://central.test", "--code", "code-1"], env=env, transport=fake.transport())
+    return fake
+
+
+def test_run_default_builds_codex_and_claude_adapters(env, connected, monkeypatch, caplog):
+    monkeypatch.setattr(Runner, "run_forever", lambda self, *args, **kwargs: None)
+    caplog.set_level(logging.INFO, logger="workflow.connector.cli")
+
+    assert main(["run"], env=env, transport=connected.transport()) == 0
+
+    assert "adapter=codex,claude" in caplog.text
+
+
+def test_run_with_explicit_adapter_builds_only_that_one(env, connected, monkeypatch, caplog):
+    monkeypatch.setattr(Runner, "run_forever", lambda self, *args, **kwargs: None)
+    caplog.set_level(logging.INFO, logger="workflow.connector.cli")
+
+    assert main(["run", "--adapter", "echo"], env=env, transport=connected.transport()) == 0
+
+    assert "adapter=echo" in caplog.text and "codex" not in caplog.text
 
 
 def test_run_requires_connect_first(env, capsys):

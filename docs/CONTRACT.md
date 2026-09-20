@@ -78,6 +78,36 @@
 
 ## 2. 코드 수정 실행 — 연결 프로그램 claim
 
+등록 보고 `POST /connector/registrations`, `Authorization: Bearer wfc_…`. 운영자가 미리 등록한 Agent 의 `local_registration_id` 와 맞춰 연결 정보를 채운다. `tool` 은 `codex` 또는 `claude` 이며 중앙은 값에 따라 분기하지 않는다 — 어댑터 선택은 연결 프로그램의 로컬 등록이 정한다. `discovered` 는 설정 존재 여부와 짧은 요약뿐이며 파일 전체·인증 파일·원격 URL 은 넣지 않는다.
+
+```json
+{
+  "contract_version": 1,
+  "connector_id": "conn-mac-01",
+  "local_registration_id": "local-demo-report",
+  "tool": "codex",
+  "repository_id": "demo-report-repo",
+  "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
+  "verification_profile_ids": ["vp-pytest", "vp-report"],
+  "discovered": { "found": { "AGENTS.md": "# demo-report-repo …", "codex_config": false, "tests_dir": true }, "not_read": ["CLAUDE.md"], "verification_level": "설정 발견" }
+}
+```
+
+```json
+{
+  "contract_version": 1,
+  "connector_id": "conn-mac-01",
+  "local_registration_id": "local-demo-report-claude",
+  "tool": "claude",
+  "repository_id": "demo-report-repo",
+  "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
+  "verification_profile_ids": ["vp-pytest", "vp-report"],
+  "discovered": { "found": { "AGENTS.md": "# demo-report-repo …", "codex_config": false, "tests_dir": true }, "not_read": ["CLAUDE.md"], "verification_level": "설정 발견" }
+}
+```
+
+성공은 `200`과 `{ "agent_id": "agent-codex-mac" }`. `local_registration_id` 에 해당하는 Agent 가 없으면 `404 not_found`, `tool` 이 위 둘이 아니면 `422`.
+
 `POST /connector/claim`, `Authorization: Bearer wfc_…`
 
 ```json
@@ -178,7 +208,14 @@
 
 본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
-산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`.
+산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`.
+
+로컬 도구의 원시 로그 산출물 — 생산자와 내용:
+
+| kind | 생산자 | 내용 |
+|---|---|---|
+| `codex_jsonl` / `codex_stderr` | 연결 프로그램 Codex 어댑터 | `codex exec --json` 의 원문 stdout(JSONL) / stderr. 업로드 전 `wfc_`·`sk-` 마스킹 적용 |
+| `claude_jsonl` / `claude_stderr` | 연결 프로그램 Claude 어댑터 | `claude -p --output-format json` 의 원문 stdout / stderr. 같은 마스킹 적용 |
 
 ## 5. 진단 결과 — `ready_for_handoff` 전체
 

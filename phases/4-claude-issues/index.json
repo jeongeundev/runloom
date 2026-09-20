@@ -5,62 +5,36 @@
     {
       "step": 0,
       "name": "tool-contract",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T20:44:00+0900",
+      "summary": "ARTIFACT_KINDS 15종(+claude_jsonl·claude_stderr), RegistrationRequest.tool Literal[codex, claude], KIND_LABELS·LOG_KINDS 에 Claude 원시 로그 추가, CONTRACT.md 4절 kind 목록·원시 로그 표와 2절 등록 요청 예시(codex·claude) 추가. 테스트: 15종·CONTRACT 목록-상수 대조·ArtifactMeta(claude_*)·등록 예시 검증(test_v1 서명에 RegistrationRequest 추가, 블록 24개), tool=claude 200 / gemini 422, 라벨 2개, artifact_render 로그 모드. 확인 결과 중앙은 등록의 tool 값을 DB 에 저장하지 않고 분기도 없다(어댑터 선택은 connector state.sqlite 의 tool — step 3) — 스키마는 바꾸지 않았다. 주의: artifacts.kind CHECK 는 DB 생성 시점의 ARTIFACT_KINDS 로 고정되므로(CREATE TABLE IF NOT EXISTS, 마이그레이션 도구 없음) 이미 만들어진 중앙·진단 DB 는 claude_* 업로드를 거부한다 — step 5 실연동 전에 새 DB 또는 마이그레이션 필요.",
+      "completed_at": "2026-09-20T20:50:56+0900"
     },
     {
       "step": 1,
       "name": "local-tool-base",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T20:50:56+0900",
+      "summary": "src/workflow/connector/local_tool.py 신규: ToolRun(pid·started_at·exit_code·stdout·stderr·timed_out·stopped·last_message)·ToolResult(outcome·summary·parse_note)·LocalToolAdapter(tool_name·raw_kinds·launch·parse_last_message 추상, run 공통 흐름·child_env·_run_argv·_test_before·_report·_result, 상수 REPORT_PROFILE_ID·RESPONSE_*·NO_REPRO_TEST_LOG·KILL_GRACE_SECONDS). 실패 코드 {tool_name}_unavailable·타임아웃 문구·원시 산출물 이름({tool_name}.jsonl/-stderr.txt)과 kind(raw_kinds)를 도구 이름에서 만들고 마스킹·비밀값 제거 env(child_env=masking.codex_env)를 공통 흐름에서 적용. codex.py 는 CodexAdapter(LocalToolAdapter)로 build_argv·launch(구 _launch)·parse_last_message(구 _parse_last_message+outcome)·CodexLastMessage 만 남김, 공개 시그니처·ADAPTERS factory 유지, CodexRun 은 ToolRun 으로 대체. 테스트: tests/workflow/connector/test_local_tool.py 12건(가짜 하위 클래스 ScriptedTool + 최소 git 저장소·고정 check.py 프로필 — 정상 흐름·변경 없음·재현 테스트 없음·도구 outcome 유지·마지막 메시지 없음·timeout(stopped True/False)·OSError→fake_unavailable·launch 전 실패·마스킹·child_env·검증 프로필 env). test_codex.py 미변경(git diff 없음), connector 119 passed, 전체 1048 passed·11 skipped, ruff 통과. GLOSSARY: CodexRun→ToolRun, LocalToolAdapter·ToolResult 추가.",
+      "completed_at": "2026-09-20T21:00:01+0900"
     },
     {
       "step": 2,
       "name": "claude-adapter",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T21:00:01+0900",
+      "summary": "src/workflow/connector/claude.py 신규: ClaudeAdapter(LocalToolAdapter) — tool_name=claude·raw_kinds=(claude_jsonl, claude_stderr). build_argv 는 고정 인자만 [claude_bin, -p, --output-format json, --no-session-persistence, --permission-mode acceptEdits, --allowedTools <ALLOWED_TOOLS 9개: Read Edit Write Glob Grep Bash(python3 -m pytest*) Bash(python3 -m daily_report*) Bash(git diff*) Bash(git status*)>, --json-schema <RESULT_SCHEMA 문자열>] (worktree 는 cwd 로만, 프롬프트 stdin, -C/--add-dir 없음, 우회 권한 모드 없음). launch: Popen + communicate_or_stop(timeout→terminate→5초→kill), last_message=stdout 의 type=result 객체 JSON(줄 단위 출력도 허용). parse_last_message: ClaudeResult(type·subtype·is_error·result·structured_output·api_error_status, extra ignore)·ClaudeStructuredOutput — 결과 JSON 없음/형식 불일치/is_error/구조화 출력 없음/스키마 불일치 → needs_information + parse_note. classify_failure: 구조화 출력 있는 정상 결과면 None(usage 의 429 등 숫자 오인 방지); api_error_status==429 또는 result→stderr→stdout 에서 rate limit/usage limit/hit your … limit/status·http·error 문맥의 429 → ('usage_limit', 문구 주변), process_stopped=run.stopped. tool_env: child_env + 부모 CLAUDE_*·ANTHROPIC_* (Claude 프로세스에만, 검증 프로필은 child_env 그대로). 실제 claude 2.1.278 을 1회 실행해 --output-format json 키(type=result, subtype, is_error, result 문자열, structured_output 객체, usage, api_error_status, session_id …)를 확인하고 fixture 를 그 형태로 만들었다. local_tool.py: RESULT_SCHEMA(구 prompt.CODEX_RESULT_SCHEMA 이동 — Codex 는 파일, Claude 는 문자열로 공유), classify_failure 훅(기본 None, timeout 판정 뒤·parse 전에 호출해 failed 로 끝냄), communicate_or_stop 헬퍼(codex.py 의 종료 처리 블록을 옮김, codex 미사용 logger 제거). cli.py: ADAPTERS['claude'] factory 추가(등록·실행 선택은 step 3). 테스트: test_claude.py 22건(PATH 앞 가짜 claude 실행 파일이 결과 JSON 의 _fake 키에 argv·env·cwd·프롬프트를 남김 — argv 고정·cwd=worktree·stdin 프롬프트, 정상 7산출물·claude.jsonl/claude-stderr.txt 이름, 정상 결과의 429 오인 없음, is_error/구조화 출력 없음/noop/fix_only 보류, usage_limit(result 문구·stderr API 429)·timeout·claude_unavailable 실패, env 통과(ANTHROPIC_*·CLAUDE_*)/차단(OPENAI_*·WORKFLOW_*·DIAG_*), tool_env≠child_env, 마스킹, parse_last_message·classify_failure 단위; 수정 대본은 tests/e2e/fake_codex 의 FIXED_TRANSFORMER·REPRO_TEST 재사용), test_local_tool.py +4(훅이 failed 로 끝내고 커밋 안 함·stopped 전달·기본 None·timeout 우선, RESULT_SCHEMA 검사 — test_prompt 에서 이동), test_cli.py +1(factory). AC: connector 145 passed, 전체 1074 passed·11 skipped, ruff 통과, claude.py 에 bypassPermissions/dangerously 없음. GLOSSARY: LocalToolAdapter·ExecutionAdapter 행에 ClaudeAdapter·classify_failure·usage_limit 반영. 주의(step 5): 1회 확인은 이 세션(Claude Code 안)에서 env -u CLAUDECODE 로 실행했다 — 중첩 실행 제약 여부는 미확인이며 tool_env 는 CLAUDE_ 접두만 넘기므로 CLAUDECODE 는 상속되지 않는다. 실제 사용량 한도 시 stdout 문구는 미확인(패턴은 rate/usage limit·hit your limit·429 문맥).",
+      "completed_at": "2026-09-20T21:14:35+0900"
     },
     {
       "step": 3,
       "name": "runner-dispatch",
-      "status": "pending"
-    },
-    {
-      "step": 4,
-      "name": "third-agent-seed",
-      "status": "pending"
-    },
-    {
-      "step": 5,
-      "name": "claude-live-check",
-      "status": "pending"
-    },
-    {
-      "step": 6,
-      "name": "task-source-schema",
-      "status": "pending"
-    },
-    {
-      "step": 7,
-      "name": "github-issues-adapter",
-      "status": "pending"
-    },
-    {
-      "step": 8,
-      "name": "issues-import-web",
-      "status": "pending"
-    },
-    {
-      "step": 9,
-      "name": "session-agent-registration",
-      "status": "pending"
-    },
-    {
-      "step": 10,
-      "name": "demo-guide",
-      "status": "pending"
-    },
-    {
-      "step": 11,
-      "name": "deploy-docs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T21:14:35+0900",
+      "summary": "src/workflow/connector/runner.py: Runner(adapters: Mapping[str, ExecutionAdapter]) 로 단일 adapter= 인자 제거, select_adapter(conn, adapters, request)·AdapterNotSelected(code·message) 신규 — accepted 직후·인계 자료 다운로드 전에 target.local_registration_id 의 등록 tool 로 어댑터를 고르고, 등록 없음 → failed registration_missing, 그 도구 어댑터 없음 → failed adapter_missing (둘 다 process_stopped=True, handoff_hash_mismatch 와 같은 _finish_failed 경로, 인계 자료를 내려받지 않음). CodeChangeTarget 이 아닌 요청은 첫 어댑터에 넘겨 unsupported_kind 로 답하게 둠(변경 없음). cli.py: register --tool choices [codex, claude]; run·run-local --adapter 기본 auto (AUTO_ADAPTERS=(codex, claude) 둘을 _build_adapters 로 생성, 특정 이름이면 하나 — scripts/local_stack.py 의 --adapter codex 유지), 시작 로그 adapter=codex,claude 는 실제 만든 이름 목록; run-local 도 select_adapter 로 골라 AdapterNotSelected 면 failed.json(code) + exit 1. discovery.py: found.claude_config = .claude/ 디렉터리 또는 CLAUDE.md 존재 (존재 여부만, ~/.claude·settings 파일은 읽지 않음). 테스트: test_runner.py — make_runner 가 등록 local-demo-report(tool stub, repo tmp_path/demo-report-repo) 를 저장하고 {stub: adapter} 로 Runner 생성(기존 검증 유지, 인계 디렉터리 위치 assert 는 등록 옆 <repo>-worktrees 로), 신규 3건(등록 두 개 codex·claude 에 따라 다른 StubAdapter 호출·둘 다 result_ready, 등록 없음 → registration_missing + /artifacts/ 요청 0건, tool claude 등록 + codex 어댑터만 → adapter_missing 메시지에 claude·codex); test_cli.py +4(register --tool claude 가 state tool=claude + 서버 보고 tool=claude, --tool gemini SystemExit, run 기본 로그 adapter=codex,claude (Runner.run_forever monkeypatch + caplog), --adapter echo 는 adapter=echo 만); test_discovery.py: fixture 에 .claude/settings.local.json(비밀값) 추가 → claude_config True 이면서 비밀값 미포함, CLAUDE.md 만 있어도 True, 빈 폴더 found 에 claude_config False. AC: connector 153 passed, 전체 1082 passed·11 skipped, ruff 통과, register --help 에 --tool {codex,claude}. GLOSSARY local_registration_id 행에 tool → 어댑터 선택 규칙·실패 코드 추가. 서버·계약 미변경, launchd plist 는 run 만 넘기므로 auto 가 그대로 적용됨. 주의(step 4·5): 등록 tool 이 codex 인 상태에서 --adapter echo 를 쓰면 adapter_missing 이다 — echo 는 등록 tool 을 echo 로 직접 저장한 테스트에서만 쓴다; run-local 은 등록이 있어야 어댑터를 고르므로 register(또는 state.save_registration) 가 먼저다.",
+      "completed_at": "2026-09-20T21:25:19+0900"
     }
-  ]
+  ],
+  "created_at": "2026-09-20T20:44:00+0900",
+  "note": "2026-09-21 step 3 에서 종료. step 4~11(3번째 에이전트 seed·Claude 실연동 확인·GitHub Issues·세션 등록·안내·배포)은 공개 데모를 대본 재생으로 바꾸는 결정에 따라 phases/5-scripted-demo 로 대체했다. step 0~3 산출물(도구 계약·LocalToolAdapter·ClaudeAdapter·Runner 디스패치)은 유지한다."
 }

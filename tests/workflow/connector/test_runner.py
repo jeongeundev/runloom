@@ -1,6 +1,8 @@
-"""runner — claim → 접수 → 인계 자료 → 어댑터 → 업로드 → result_ready|failed 루프 (ARCHITECTURE "상태·재접속·완료").
+"""runner — claim → 접수 → 어댑터 선택(등록의 tool) → 인계 자료 → 어댑터 → 업로드 → result_ready|failed 루프
+(ARCHITECTURE "상태·재접속·완료").
 
-중앙은 FakeCentral. 어댑터는 `EchoAdapter` 또는 훅을 가진 `StubAdapter`.
+중앙은 FakeCentral. 어댑터는 `EchoAdapter` 또는 훅을 가진 `StubAdapter`. `Runner` 는 도구 이름 → 어댑터 매핑을 받고
+실행 요청의 `target.local_registration_id` 로 찾은 등록의 `tool` 로 하나를 고른다.
 """
 
 import json
@@ -11,7 +13,7 @@ from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
 from workflow.connector.runner import Runner
 from workflow.contracts.v1 import CodeChangeResult, ExecutionRequest, Verification
 
-from .conftest import BASE_COMMIT, CONNECTOR_ID, NOW, FakeCentral, assign_with_handoff
+from .conftest import BASE_COMMIT, CONNECTOR_ID, NOW, FakeCentral, assign_with_handoff, make_request
 
 
 class StubAdapter:
@@ -52,8 +54,20 @@ def ok_output(request: ExecutionRequest, extra_artifacts=()) -> AdapterOutput:
     return AdapterOutput(result=result, artifacts=artifacts, failed=None, runtime_ref="stub:x")
 
 
+REPO = "demo-report-repo"
+
+
+def register(state_conn, tmp_path, local_registration_id: str = "local-demo-report", *, tool: str = "stub") -> None:
+    state.save_registration(state_conn, {
+        "local_registration_id": local_registration_id, "repo_path": str(tmp_path / REPO), "tool": tool,
+        "repository_id": REPO, "base_commit": BASE_COMMIT, "verification_profiles": {},
+    })
+
+
 def make_runner(client, state_conn, paths, adapter, tmp_path, clock=lambda: NOW) -> Runner:
-    return Runner(client, state_conn, paths, adapter, CONNECTOR_ID, clock, tmp_path / "handoff")
+    """등록 `local-demo-report`(tool `stub`) 하나와 그 도구의 어댑터 하나 — 단일 어댑터 흐름 테스트용."""
+    register(state_conn, tmp_path)
+    return Runner(client, state_conn, paths, {"stub": adapter}, CONNECTOR_ID, clock, tmp_path / "handoff")
 
 
 def event_types(fake: FakeCentral, execution_id: str) -> list[tuple[int, str]]:
@@ -105,7 +119,7 @@ def test_handoff_dir_has_manifest_and_attachments_named_by_evidence(fake, client
     make_runner(client, state_conn, paths, adapter, tmp_path).tick()
 
     _, handoff_dir = adapter.calls[0]
-    assert handoff_dir == tmp_path / "handoff" / f"{request.task_id}.handoff"
+    assert handoff_dir.name == f"{request.task_id}.handoff"
     names = sorted(p.name for p in handoff_dir.iterdir())
     assert names == ["log-daily-0920@1.txt", "manifest.json", "response-after@1.json"]
     manifest = json.loads((handoff_dir / "manifest.json").read_text())
@@ -114,17 +128,12 @@ def test_handoff_dir_has_manifest_and_attachments_named_by_evidence(fake, client
 
 
 def test_handoff_dir_is_next_to_registered_repo(fake, client, state_conn, paths, tmp_path):
-    repo = tmp_path / "demo-report-repo"
-    state.save_registration(state_conn, {
-        "local_registration_id": "local-demo-report", "repo_path": str(repo), "tool": "codex",
-        "repository_id": "demo-report-repo", "base_commit": BASE_COMMIT, "verification_profiles": {},
-    })
     request = assign_with_handoff(fake)
     adapter = StubAdapter()
 
-    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()  # 등록 repo_path = tmp_path/demo-report-repo
 
-    assert adapter.calls[0][1] == tmp_path / "demo-report-repo-worktrees" / f"{request.task_id}.handoff"
+    assert adapter.calls[0][1] == tmp_path / f"{REPO}-worktrees" / f"{request.task_id}.handoff"
 
 
 def test_echo_adapter_completes_flow(fake, client, state_conn, paths, tmp_path):
@@ -158,6 +167,70 @@ def test_heartbeat_is_sent_once_per_interval(fake, client, state_conn, paths, tm
     runner.tick()
 
     assert len(fake.heartbeats) == 1
+
+
+# --- 어댑터 선택 — 등록의 tool ---------------------------------------------------------------
+
+
+def _request_for(local_registration_id: str, execution_id: str, task_id: str) -> ExecutionRequest:
+    request = make_request(execution_id=execution_id, task_id=task_id)
+    return request.model_copy(update={
+        "target": request.target.model_copy(update={"local_registration_id": local_registration_id}),
+    })
+
+
+def test_adapter_is_chosen_by_registered_tool_of_target(fake, client, state_conn, paths, tmp_path):
+    register(state_conn, tmp_path, "local-codex", tool="codex")
+    register(state_conn, tmp_path, "local-claude", tool="claude")
+    codex, claude = StubAdapter(), StubAdapter()
+    runner = Runner(client, state_conn, paths, {"codex": codex, "claude": claude}, CONNECTOR_ID, lambda: NOW,
+                    tmp_path / "handoff")
+    first = assign_with_handoff(fake, _request_for("local-claude", "exec-fix-001", "fix-1"))
+    second = assign_with_handoff(fake, _request_for("local-codex", "exec-fix-002", "fix-2"))
+
+    runner.tick()
+    runner.tick()
+
+    assert [r.execution_id for r, _ in claude.calls] == [first.execution_id]
+    assert [r.execution_id for r, _ in codex.calls] == [second.execution_id]
+    assert fake.executions[first.execution_id]["status"] == "result_ready"
+    assert fake.executions[second.execution_id]["status"] == "result_ready"
+
+
+def test_missing_registration_fails_before_handoff_download_and_adapter(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)  # local-demo-report 등록 없음
+    adapter = StubAdapter()
+    runner = Runner(client, state_conn, paths, {"codex": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    assert adapter.calls == []
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "failed"]
+    assert events[-1]["data"]["code"] == "registration_missing"
+    assert events[-1]["data"]["process_stopped"] is True
+    assert "local-demo-report" in events[-1]["data"]["message"]
+    assert fake.executions[request.execution_id]["status"] == "failed"
+    assert not any("/artifacts/" in str(r.url) for r in fake.requests)  # 인계 자료를 내려받지 않는다
+    assert state.active_execution(state_conn) is None
+
+
+def test_registered_tool_without_adapter_fails_with_adapter_missing(fake, client, state_conn, paths, tmp_path):
+    register(state_conn, tmp_path, tool="claude")
+    request = assign_with_handoff(fake)
+    codex = StubAdapter()
+    runner = Runner(client, state_conn, paths, {"codex": codex}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    assert codex.calls == []
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "failed"]
+    assert events[-1]["data"]["code"] == "adapter_missing"
+    assert events[-1]["data"]["process_stopped"] is True
+    assert "claude" in events[-1]["data"]["message"] and "codex" in events[-1]["data"]["message"]
+    assert fake.executions[request.execution_id]["status"] == "failed"
+    assert state.active_execution(state_conn) is None
 
 
 # --- 재접속·중복 방지 ------------------------------------------------------------------
