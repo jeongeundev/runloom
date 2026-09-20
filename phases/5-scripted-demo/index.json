@@ -44,7 +44,7 @@
       "name": "composition-rules",
       "status": "completed",
       "started_at": "2026-09-21T05:51:35+0900",
-      "completed_at": "2026-09-21T05:58:05+0900",
+      "completed_at": "2026-09-21T05:59:24+0900",
       "engine": "claude",
       "summary": "src/workflow/domain/selection.py: select_agent(prefer=…) 동률 규칙 — auto 에서 일치 후보 2개 이상이고 prefer(세션 등록 순서)에 있으면 가장 앞 후보를 selected·candidate_count=1·reason '{code} · {scope} 일치 후보 N개 — 먼저 등록한 {agent_id} 를 기본 선택 (변경 가능)'; prefer 없음·일치 후보가 prefer 에 없음·manual 은 기존 동작 그대로. src/workflow/domain/composition.py(신규, 순수): PlanNode·Standalone·ChainPlan 과 compose(issues, candidates, prefer) — 1 map_issue 매핑(능력 None → Standalone), 2 blocked_by 위상 정렬(입력 순서 유지, 순환 ValueError('의존 순환: …'), Standalone·미존재 key 의존은 건너뜀 reason), 3 체인은 operations.diagnose → code.modify 인접 쌍만(그 외 뒤 노드 Standalone '진단 → 코드 수정 인계만 지원'), 4 run_mode=default_run_mode, completion_mode 는 진단+can_auto_complete 면 auto 아니면 review, criteria=criteria_template, 5 select_agent(issue.key, …, prefer)(후보 0 → reasons '후보 없음 — 에이전트를 등록하거나 직접 지정'), 6 human_gate('검토 승인 (사람) · 병합은 운영자 확인' / '완료 확인 (사람)'), 7 title('첫 → 끝'). 노드마다 reasons 6문장. 노드 0개면 human_gate·title 빈 문자열. 테스트: test_composition.py 22건(fixture 4이슈+후보 3 → #41→#42, #43·#44 Standalone, Codex 기본 선택, 순환, 건너뜀, 인계 쌍 미지원, 1·0 노드), test_selection.py +9건. 검증: domain 248 passed, 전체 1224 passed + 12 skipped, ruff 통과, 도메인 경계 OK. server/·adapters/ 미변경."
     },
