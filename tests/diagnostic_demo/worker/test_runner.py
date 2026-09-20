@@ -46,7 +46,7 @@ def test_processes_fixture_script_to_result_ready(diag_conn, diag_settings, arti
     row = db.get_artifact(diag_conn, accepted, run["result_artifact_id"])
     result = DiagnosisResult.model_validate_json(artifact_store.read(row["store_ref"]))
     assert result.outcome == "ready_for_handoff" and result.provenance.model_id == diag_settings.model_id
-    assert result.provenance.prompt_version == "diag-prompt-v1"
+    assert result.provenance.prompt_version == "diag-prompt-v2"
 
     usage = diag_conn.execute("SELECT * FROM usage WHERE execution_id = ?", (accepted,)).fetchone()
     assert usage["calls"] == 9 and usage["model_id"] == diag_settings.model_id

@@ -9,7 +9,7 @@ import json
 
 from workflow.contracts.v1 import ExecutionRequest
 
-PROMPT_VERSION = "diag-prompt-v1"
+PROMPT_VERSION = "diag-prompt-v2"
 
 SYSTEM_PROMPT = """당신은 사내 운영 진단 에이전트다. 보고서 자동화의 실패 실행 하나를 조사해, 로컬 개발 에이전트가
 재현·수정할 수 있도록 근거 있는 진단을 작성한다. 코드를 수정하거나 운영 시스템을 바꾸지 않는다. 자료는 도구로만 읽는다.
@@ -30,8 +30,11 @@ SYSTEM_PROMPT = """당신은 사내 운영 진단 에이전트다. 보고서 자
 
 ## 인용 규칙
 - findings 의 각 claim 은 evidence_refs 로 뒷받침한다. 인용은 이 대화에서 실제로 읽은 근거(evidence_id, version)만 쓴다.
-- location 문법: JSON 자료는 `$.a.b` 객체 경로(와일드카드·필터 없음), 텍스트 자료는 `lines:N-M` (1부터 시작하는 줄 범위).
-  문서({markdown, machine} JSON)는 `$.machine.` 아래 값만 인용하고 markdown 본문은 인용하지 않는다.
+- location 문법 — JSON 자료: `$.a.b` 객체 경로. 배열 요소는 `[N]` 인덱스(0부터)로 가리킨다 (문법 예: `$.a[0].b`).
+  와일드카드·필터·함수 호출·`$` 단독은 쓸 수 없다.
+- location 문법 — 텍스트 자료: `lines:N-M` (1부터 시작하는 줄 범위, N ≤ M). 도구가 돌려준 줄 번호(lines[].line)를 그대로 쓰고
+  M 은 도구가 알려준 총 줄 수(line_count)를 넘지 않는다. 줄을 직접 세어 추정하지 않는다.
+- 문서({markdown, machine} JSON)는 `$.machine.` 아래 값만 인용하고 markdown 본문은 인용하지 않는다.
 - 인용한 경로·줄은 원문에 실제로 존재해야 한다. 값이 없으면 인용하지 않는다.
 
 ## 결론 규칙
@@ -39,6 +42,7 @@ SYSTEM_PROMPT = """당신은 사내 운영 진단 에이전트다. 보고서 자
 - ready_for_handoff 는 diagnosis 와 repair_request 가 있고 missing_information 이 비어 있어야 한다. diagnosis 의 code 는
   response_path_changed 만 지원한다: baseline_run_id(직전 정상 실행), failed_run_id(실패 실행), old_path·new_path(`$.` 경로),
   change_document(변경 안내 문서), report_contract(보고서 계약 문서)를 읽은 자료에서 채운다.
+- 도구 결과의 ok 가 false 인(not_found, access_denied, unavailable) 자료가 진단에 필요하면 outcome 은 needs_information 이다.
 - 변경 안내 문서를 읽지 못했거나 적용 시각·경로가 실행 기록과 맞지 않으면 needs_information 으로 두고
   missing_information 에 evidence_unavailable 또는 evidence_conflict 를 적는다. 원인이 response_path_changed 가 아니면
   unsupported_diagnosis 로 둔다. needs_information 이면 diagnosis 와 repair_request 는 null 이다.

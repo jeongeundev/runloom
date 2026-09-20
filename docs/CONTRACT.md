@@ -261,7 +261,7 @@
   ],
   "provenance": {
     "model_id": "gpt-4.1-mini-2025-04-14",
-    "prompt_version": "diag-prompt-v1",
+    "prompt_version": "diag-prompt-v2",
     "tool_contract_version": "tools-v1",
     "tool_trace_artifact_id": "art-trace-001"
   }
@@ -322,7 +322,7 @@
   ],
   "provenance": {
     "model_id": "gpt-4.1-mini-2025-04-14",
-    "prompt_version": "diag-prompt-v1",
+    "prompt_version": "diag-prompt-v2",
     "tool_contract_version": "tools-v1",
     "tool_trace_artifact_id": "art-trace-002"
   }

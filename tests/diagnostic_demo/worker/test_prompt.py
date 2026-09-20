@@ -9,7 +9,7 @@ from workflow.contracts.v1 import ExecutionRequest
 
 
 def test_prompt_version():
-    assert PROMPT_VERSION == "diag-prompt-v1"
+    assert PROMPT_VERSION == "diag-prompt-v2"
 
 
 def test_system_prompt_names_every_tool_and_the_investigation_order():
@@ -26,10 +26,26 @@ def test_system_prompt_states_citation_and_conclusion_rules():
         assert needle in SYSTEM_PROMPT, needle
 
 
+def test_citation_rules_follow_step0_grammar_and_step1_line_numbers():
+    # Step 0: 배열 인덱스 [N] 허용, 와일드카드·$ 단독 금지. Step 1: 텍스트 자료는 줄 번호·총 줄 수(line_count)와 함께 온다
+    section = SYSTEM_PROMPT.split("## 인용 규칙")[1].split("## ")[0]
+    for needle in ("[N]", "$.a[0].b", "0부터", "와일드카드", "lines:N-M", "line_count", "총 줄 수", "$.machine.", "읽은 근거"):
+        assert needle in section, needle
+
+
+def test_conclusion_rules_hold_back_when_a_needed_read_failed():
+    # 도구 결과 ok=false(not_found·access_denied·unavailable) 인 자료가 필요하면 needs_information — 기존 규칙의 명시적 재서술
+    section = SYSTEM_PROMPT.split("## 결론 규칙")[1].split("## ")[0]
+    line = next(ln for ln in section.splitlines() if "ok" in ln and "false" in ln)
+    assert "needs_information" in line
+    for needle in ("not_found", "access_denied", "unavailable"):
+        assert needle in section, needle
+
+
 def test_system_prompt_has_no_fixed_answer():
-    # 데모 정답(경로 이름·오류 코드·적용 시각)은 자료를 읽어야 나온다. 프롬프트에 박지 않는다
-    for banned in ("data.records", "$.items", "MISSING_RECORDS_FIELD", "2026-09-20", "report_transformer",
-                   "daily-0920-0900", "daily-0919-0900"):
+    # 데모 정답(경로 이름·오류 코드·적용 시각·fixture 구조)은 자료를 읽어야 나온다. 프롬프트에 박지 않는다
+    for banned in ("data.records", "$.items", "MISSING_RECORDS_FIELD", "stages", "2026-09-20", "report_transformer",
+                   "daily-0920-0900", "daily-0919-0900", "upstream-response-change", "daily-report-contract"):
         assert banned not in SYSTEM_PROMPT, banned
 
 

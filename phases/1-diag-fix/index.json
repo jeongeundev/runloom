@@ -21,7 +21,10 @@
     {
       "step": 2,
       "name": "prompt-v2",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T15:40:42+0900",
+      "summary": "worker/prompt.py: PROMPT_VERSION = 'diag-prompt-v2'. 인용 규칙을 두 줄로 나눠 고침 — JSON 자료: `$.a.b` 객체 경로에 배열 요소 `[N]` 인덱스(0부터, 문법 예 `$.a[0].b`) 허용, 와일드카드·필터·함수 호출·`$` 단독 금지; 텍스트 자료: `lines:N-M`(N ≤ M) 은 도구가 돌려준 줄 번호(lines[].line)를 그대로 쓰고 M 은 line_count(총 줄 수)를 넘지 않으며 줄을 직접 세지 않음. `$.machine.`·'읽은 근거만 인용' 유지. 결론 규칙에 한 줄 추가: '도구 결과의 ok 가 false 인(not_found, access_denied, unavailable) 자료가 진단에 필요하면 outcome 은 needs_information 이다' — 기존 규칙 재서술, 정답·fixture 구조 없음. 스키마 확인: draft_json_schema()['$defs']['EvidenceRef']['properties']['location']['pattern'] == contracts.v1.LOCATION_PATTERN 그대로 남아 있음(_strict 의 _UNSUPPORTED_KEYWORDS 는 title/default/minLength/maxLength 만 지우므로 코드 변경 없음, 테스트만 추가: $.stages[1].status·lines:1-4·$.stages[1] 매치, $.items[*]·$·$.keys()·$.stages[01]·lines:0-3 불일치). 참조 갱신: test_prompt(v2 + 인용·결론 규칙 테스트 2개, 금지 목록에 stages·upstream-response-change·daily-report-contract 추가), test_runner·scripts/test_diag_eval 의 diag-prompt-v1 → v2, docs/CONTRACT.md 5·6절 provenance 예시 → v2. test_assemble 의 PROVENANCE 는 assemble_result 에 직접 넘기는 fixture 값이라 그대로 둠(Step 1 의 tools-v1 처리와 동일). fake_script 대본 미변경, test_fake_script 통과. contracts/v1.py·tools/ 미변경, 유료 호출 없음. AC: tests/diagnostic_demo 154 passed, 전체 1018 passed 11 skipped, ruff 통과.",
+      "completed_at": "2026-09-20T15:45:17+0900"
     },
     {
       "step": 3,

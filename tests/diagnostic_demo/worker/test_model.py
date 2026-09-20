@@ -1,6 +1,7 @@
 """모델 클라이언트 — OpenAI Responses API 응답 파싱은 가짜 응답 객체로만 검사한다. 네트워크 호출 없음."""
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from diagnostic_demo.worker.model import (
     draft_json_schema,
 )
 from tests.diagnostic_demo.conftest import contract_results
+from workflow.contracts.v1 import LOCATION_PATTERN
 
 DRAFT_KEYS = ("outcome", "summary", "findings", "diagnosis", "repair_request", "missing_information")
 
@@ -105,6 +107,17 @@ def test_draft_json_schema_is_openai_strict_compatible():
             assert banned not in node
     assert set(schema["properties"]) == set(DRAFT_KEYS)
     assert "$defs" in schema
+
+
+def test_draft_json_schema_keeps_the_contract_location_pattern():
+    # Step 0 의 LOCATION_PATTERN 이 strict 스키마에 그대로 남아 모델 생성 시점에 문법을 강제한다 (_strict 가 pattern 을 지우지 않는다)
+    location = draft_json_schema()["$defs"]["EvidenceRef"]["properties"]["location"]
+    assert location["type"] == "string" and location["pattern"] == LOCATION_PATTERN
+    pattern = re.compile(location["pattern"])
+    for ok in ("$.stages[1].status", "lines:1-4", "$.stages[1]", "$.code_version", "$.machine.effective_at"):
+        assert pattern.match(ok), ok
+    for bad in ("$.items[*]", "$", "$.keys()", "$.stages[01]", "lines:2", "lines:0-3", "$.a."):
+        assert not pattern.match(bad), bad
 
 
 # --- OpenAIModelClient -------------------------------------------------------------
