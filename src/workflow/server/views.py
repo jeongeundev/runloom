@@ -21,7 +21,15 @@ from workflow.server.settings import Settings
 RESULT_KINDS = ("diagnosis_result", "code_change_result")
 
 # 뷰어가 줄 번호를 붙여 보이는 산출물 종류
-LOG_KINDS = ("test_log_before", "test_log_after", "verification_log", "codex_stderr", "codex_jsonl")
+LOG_KINDS = (
+    "test_log_before",
+    "test_log_after",
+    "verification_log",
+    "codex_stderr",
+    "codex_jsonl",
+    "claude_stderr",
+    "claude_jsonl",
+)
 
 # 검증 요약의 두 칸 비교에 보이는 로그 줄 수 (UI_GUIDE "오른쪽 열")
 LOG_TAIL = 20

@@ -416,6 +416,8 @@ def test_artifact_render_context_by_kind():
     assert diff["mode"] == "diff" and diff["diff_lines"][0][0] == "meta"
     log = views.artifact_render({"kind": "test_log_after", "content_type": "text/plain"}, b"a\nb\n")
     assert log["mode"] == "log" and log["lines"] == ["a", "b"]
+    for kind in ("codex_jsonl", "codex_stderr", "claude_jsonl", "claude_stderr"):
+        assert views.artifact_render({"kind": kind, "content_type": "text/plain"}, b"x\n")["mode"] == "log"
     js = views.artifact_render({"kind": "evidence", "content_type": "application/json"}, b'{"a":1}')
     assert js["mode"] == "json" and js["text"] == '{\n  "a": 1\n}'
     broken = views.artifact_render({"kind": "evidence", "content_type": "application/json"}, b"{oops")

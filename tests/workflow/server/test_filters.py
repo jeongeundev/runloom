@@ -73,4 +73,8 @@ def test_kind_label_maps_artifact_kinds_and_passes_unknown_through():
     assert kind_label("diagnosis_result") == "진단 결과"
     assert kind_label("code_change_result") == "수정 결과"
     assert kind_label("handoff_bundle") == "인계 묶음"
+    assert kind_label("codex_jsonl") == "Codex JSONL"
+    assert kind_label("codex_stderr") == "Codex stderr"
+    assert kind_label("claude_jsonl") == "Claude JSONL"
+    assert kind_label("claude_stderr") == "Claude stderr"
     assert kind_label("new_kind") == "new_kind"

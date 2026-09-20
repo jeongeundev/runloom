@@ -18,7 +18,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 
 CONTRACT_VERSION = 1
 
-# CONTRACT.md 4절의 산출물 kind 13종
+# CONTRACT.md 4절의 산출물 kind 15종
 ARTIFACT_KINDS: tuple[str, ...] = (
     "handoff_bundle",
     "diagnosis_result",
@@ -33,6 +33,8 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     "report_output",
     "code_change_result",
     "review_comment",
+    "claude_jsonl",
+    "claude_stderr",
 )
 
 _RFC3339 = re.compile(

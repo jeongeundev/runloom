@@ -45,7 +45,7 @@ class RegistrationRequest(_Body):
     contract_version: ContractVersion
     connector_id: NonEmptyStr
     local_registration_id: NonEmptyStr
-    tool: Literal["codex"]
+    tool: Literal["codex", "claude"]
     repository_id: NonEmptyStr
     base_commit: CommitSha
     verification_profile_ids: list[NonEmptyStr]
