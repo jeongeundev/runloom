@@ -127,7 +127,7 @@
       "name": "codex-live-check",
       "status": "completed",
       "started_at": "2026-09-20T11:30:14+0900",
-      "completed_at": "2026-09-20T11:40:00+0900",
+      "completed_at": "2026-09-20T11:42:11+0900",
       "summary": "실제 Codex CLI(codex-cli 0.155.1, ChatGPT 로그인 재사용) 로 어댑터를 1회 실행 — run-local, approval_policy=never + workspace-write, 승인 요청 0건, 2분 36초, exit 0, outcome ready_for_review, result_commit 93a84ea9 (task/fix-daily-0920, main 불변), test_log_before exit_code=1(3 failed/14 passed) → test_log_after·verification_log exit_code=0(17 passed), report_output 합계 20 5, 산출물 비밀값 0건. JSONL 증거: worktree AGENTS.md·pyproject 와 ~/.agents/skills/tdd 읽음, worktree 밖 handoff dir 읽기 허용됨(Step 12 미검증 해소), --output-schema 가 중간 메시지 7개에도 적용됨(어댑터는 last-message 만 읽어 무관), 입력 토큰 517k(cached 453k — 홈 config.toml 의 MCP·플러그인 몫 큼). 어댑터 결함 없음(src/ 변경 없음). 추가: scripts/make_handoff_dir.py(+test 8건: fixture 근거 8 + expected-report + manifest(CONTRACT 2절, 실제 sha256) + diagnosis_result(CONTRACT 5절)), docs/VERIFICATION_LOG.md(실행일·argv·시간·exit·검증 순서 1~3 결과·JSONL 발췌·승인/샌드박스·결함), ARCHITECTURE 'Codex와 worktree'·'검증 순서' 갱신(1·2 실연동 통과, 3 은 가짜 codex 만), README 색인. 메모: run-local 은 로컬 등록이 필요한데 register 는 토큰을 요구해 state.save_registration 으로 직접 넣음. 전체 pytest 915 passed + e2e 11 skipped, ruff 통과. 산출물 원본은 ../demo-report-repo-worktrees/step15/out/."
     },
     {
