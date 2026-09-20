@@ -95,6 +95,12 @@
       <div class="help">코드 수정 업무의 대상(저장소·기준 커밋·검증 프로필)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
     </div>
   </div>
+  {% if form.offer_successor %}
+  <div class="field">
+    <label><input type="checkbox" name="with_successor" value="1" checked> 후속 업무 B(코드 수정)도 함께 등록</label>
+    <div class="help">B 는 이 업무를 선행으로 두고 「대기 · 선행 대기」로 등록됩니다. A 완료 시 자동 착수해 개인 Codex 가 데모 저장소를 수정합니다.</div>
+  </div>
+  {% endif %}
   <div class="actions">
     <button class="btn" type="submit">등록</button>
     <a class="btn btn-secondary" href="/">취소</a>

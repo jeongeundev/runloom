@@ -172,6 +172,42 @@ def test_new_task_form_prefills_diagnose_example(web):
     assert "daily-0920-0900" in text
 
 
+def test_diagnose_example_form_offers_successor_checked(web):
+    """시연 폼은 후속 B 동시 등록 체크박스를 기본 체크로 보여 준다. 빈 폼·fix 폼에는 없다."""
+    text = web.get("/tasks/new?example=diagnose").text
+    assert 'name="with_successor"' in text and "checked" in text.split('name="with_successor"')[1][:80]
+    assert "A 완료 시 자동 착수" in text
+    assert 'name="with_successor"' not in web.get("/tasks/new").text
+    task_a = create_task(web, diagnose_form())
+    assert 'name="with_successor"' not in web.get(f"/tasks/new?example=fix&predecessor={task_a}").text
+
+
+def test_create_diagnose_with_successor_registers_b_waiting_on_a(web, conn):
+    """with_successor 면 A 와 fix 예시 B 가 한 번에 만들어지고 B 는 A 를 선행으로 자동 실행 대기한다."""
+    task_a = create_task(web, diagnose_form(with_successor="1"))
+    tasks = repo.list_tasks(conn, repo.get_task(conn, task_a)["session_id"])
+    assert len(tasks) == 2
+    task_b = next(t for t in tasks if t["task_id"] != task_a)
+    assert task_b["title"] == EXAMPLES["fix"]["title"]
+    assert task_b["predecessor_task_id"] == task_a
+    assert task_b["kind"] == "code_change" and task_b["run_mode"] == "auto" and task_b["completion_mode"] == "review"
+    assert task_b["status"] == "대기" and task_b["status_reason"] == "선행 대기"
+    text = detail(web, task_a)
+    assert "실행 가능" in text and "보고서 변환기 수정" in text  # A 화면에 후속 링크
+    # 체크 안 하면 A 만
+    task_c = create_task(web, diagnose_form())
+    assert len(repo.list_tasks(conn, repo.get_task(conn, task_c)["session_id"])) == 3
+
+
+def test_create_with_successor_counts_both_against_active_limit(app, web, conn):
+    settings = app.state.settings
+    for _ in range(settings.limits.active_tasks_per_session - 1):
+        create_task(web, diagnose_form())
+    response = web.post("/tasks", data=diagnose_form(with_successor="1"), follow_redirects=False)
+    assert response.status_code == 429
+    assert len(repo.list_tasks(conn, repo.get_task(conn, create_task(web, diagnose_form()))["session_id"])) == settings.limits.active_tasks_per_session
+
+
 def test_new_task_form_prefills_fix_example_with_predecessor(web):
     task_a = create_task(web, diagnose_form())
     text = web.get(f"/tasks/new?example=fix&predecessor={task_a}").text

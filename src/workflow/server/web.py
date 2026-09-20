@@ -350,6 +350,8 @@ def task_new(
     if predecessor:
         _own_task(conn, session_id, predecessor)
         form["predecessor_task_id"] = predecessor
+    # 시연 A 폼에서만 후속 B 동시 등록을 제안한다 — 심사자가 A 실행만으로 A → B 자동 착수를 보게 하기 위해
+    form["offer_successor"] = "1" if example == "diagnose" else ""
     return _render("task_new.html", **_form_context(request, conn, session_id, now, form))
 
 
@@ -368,6 +370,7 @@ def task_create(
     criteria_extra: str = Form(""),
     predecessor_task_id: str = Form(""),
     run_id: str = Form(""),
+    with_successor: str = Form(""),
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -404,14 +407,42 @@ def task_create(
     if predecessor_task_id:
         _own_task(conn, session_id, predecessor_task_id)
 
+    successor = bool(with_successor) and kind == "diagnosis"
     active = [t for t in repo.list_tasks(conn, session_id) if t["finished_at"] is None]
     limit = settings.limits.active_tasks_per_session
-    if len(active) >= limit:
+    if len(active) + (2 if successor else 1) > limit:
         raise PageError(
             429, "active_task_limit_reached",
             f"세션당 활성 업무 한도({limit}개)에 도달했습니다.", details={"limit": limit},
         )
 
+    task_id = _insert_new_task(
+        conn, session_id, now, settings,
+        title=title, request_text=request_text, kind=kind, capability_code=capability_code,
+        scope_value=scope_value, selection_mode=selection_mode, chosen_agent_id=chosen_agent_id,
+        run_mode=run_mode, completion_mode=completion_mode, criteria_extra=criteria_extra,
+        predecessor_task_id=predecessor_task_id, run_id=run_id,
+    )
+    if successor:
+        # 시연 후속 B — fix 예시 그대로, A 를 선행으로. A 가 완료되면 워커가 별도 조작 없이 착수한다.
+        fix = EXAMPLES["fix"]
+        _insert_new_task(
+            conn, session_id, now, settings,
+            title=fix["title"], request_text=fix["request"], kind=kind_for_capability(fix["capability_code"]),
+            capability_code=fix["capability_code"], scope_value=fix["scope_value"],
+            selection_mode=fix["selection_mode"], chosen_agent_id="", run_mode=fix["run_mode"],
+            completion_mode=fix["completion_mode"], criteria_extra="", predecessor_task_id=task_id, run_id="",
+        )
+    return _redirect(f"/tasks/{task_id}", response)
+
+
+def _insert_new_task(
+    conn: Connection, session_id: str, now: str, settings: Settings, *,
+    title: str, request_text: str, kind: str, capability_code: str, scope_value: str,
+    selection_mode: str, chosen_agent_id: str, run_mode: str, completion_mode: str,
+    criteria_extra: str, predecessor_task_id: str, run_id: str,
+) -> str:
+    """검증이 끝난 값으로 Task 1개를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다."""
     task_id = f"task-{secrets.token_hex(6)}"
     capability = Capability(code=capability_code, scope={SCOPE_KEYS[capability_code]: scope_value})
     selection = select_agent(
@@ -444,7 +475,7 @@ def task_create(
     )
     repo.save_selection(conn, selection)
     _refresh_status(conn, task_id, now, settings)
-    return _redirect(f"/tasks/{task_id}", response)
+    return task_id
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
