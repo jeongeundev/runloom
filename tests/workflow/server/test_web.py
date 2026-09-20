@@ -1,5 +1,6 @@
 """web.py — 심사자 세션·운영자 웹 라우트. 마크업이 아니라 렌더된 텍스트·리다이렉트·상태 코드를 본다 (Step 7 이 화면을 꾸민다)."""
 
+import json
 import re
 
 import pytest
@@ -16,6 +17,7 @@ from .conftest import (
     RESULT_COMMIT,
     code_change_result,
     seed_agents,
+    seed_claude_agent,
     seed_result_ready,
 )
 
@@ -145,29 +147,33 @@ def seed_reviewable_fix(client, conn, store, settings) -> tuple[str, str]:
 
 
 def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
-    """새 세션 홈: 등록 Agent 0개 → 안내 문장과 `에이전트 등록` 링크, `시연 업무 만들기` 는 비활성."""
+    """새 세션 홈: 등록 Agent 0개 → 안내 문장과 `에이전트 등록` 링크, `업무 가져오기` 는 비활성."""
     first = client.get("/tasks")
     assert first.status_code == 200
     assert SESSION_COOKIE in first.cookies
     assert "아직 업무가 없습니다." in first.text
+    assert "GitHub·Jira 이슈를 가져오면 순서와 담당 에이전트가 자동으로 구성됩니다." in first.text
     assert "먼저 에이전트를 등록하세요." in first.text
     assert 'href="/agents/register"' in first.text
     assert "운영 진단 데모" not in first.text and "개인 Codex" not in first.text  # 등록 전에는 카드 없음
-    button = re.search(r"<button[^>]*>시연 업무 만들기</button>", first.text)
+    button = re.search(r"<button[^>]*>업무 가져오기</button>", first.text)
     assert button and "disabled" in button.group(0), first.text
     assert "에이전트를 먼저 등록하세요" in first.text
-    assert 'class="btn" href="/tasks/new?example=diagnose"' not in first.text
+    assert 'class="btn" href="/tasks/import"' not in first.text
+    assert "시연 업무 만들기" not in first.text
 
     second = client.get("/tasks")
     assert "set-cookie" not in second.headers
     assert second.status_code == 200
 
 
-def test_home_after_registration_shows_cards_and_enables_demo_button(web):
+def test_home_after_registration_shows_cards_and_enables_import_button(web):
     text = web.get("/tasks").text
     assert "운영 진단 데모" in text and "개인 Codex" in text
     assert "먼저 에이전트를 등록하세요." not in text
-    assert 'href="/tasks/new?example=diagnose"' in text and "에이전트를 먼저 등록하세요" not in text
+    assert 'class="btn" href="/tasks/import"' in text and "에이전트를 먼저 등록하세요" not in text
+    assert 'href="/tasks/new"' in text  # 직접 등록은 보조 버튼
+    assert "시연 업무 만들기" not in text
     assert 'href="/agents/register"' in text  # 더 등록할 수 있다
 
 
@@ -795,6 +801,162 @@ def test_scripted_agent_is_labelled_on_cards_and_result_card(web, conn, store, s
     card = text[text.index('class="result-card'):text.index('class="viewer')]
     assert "대본 재생 (실제 모델 호출 없음)" in card
     assert "대본 재생" not in detail(web, create_task(web, diagnose_form()))  # 결과 없음
+
+
+# --- 업무 가져오기 — GitHub·Jira fixture → 체인 (phase 5 step 5) -------------------------
+
+
+def import_issues(client, source: str, *keys: str):
+    return client.post(
+        "/tasks/import", data={"source": source, "issue_keys": list(keys)}, follow_redirects=False,
+    )
+
+
+def test_import_page_defaults_to_github_tab_with_mapping_preview(web):
+    text = web.get("/tasks/import").text
+    assert "시연 데이터입니다 — 실제 GitHub·Jira 에 연결하지 않습니다." in text
+    assert 'href="/tasks/import?source=github"' in text and 'href="/tasks/import?source=jira"' in text
+    assert "GitHub Issues" in text and "Jira" in text
+    for key in ("#41", "#42", "#43", "#44"):
+        assert f'value="{key}" checked' in text, key
+    assert "OPS-41" not in text
+    assert "일일 보고서 생성 실패 (09-20 09:00)" in text and "README 오타 수정" in text
+    assert "operations.diagnose · daily-report" in text
+    assert "code.modify · demo-report-repo" in text
+    assert "맡을 에이전트 없음 · 맞는 능력 코드 없음 (라벨: enhancement, repo:demo-report-repo)" in text
+    assert "맡을 에이전트 없음 · 맞는 능력 코드 없음 (라벨: docs)" in text
+    assert "blocked by #41" in text and "blocked by #42" in text
+    assert "workflow:daily-report" in text and "run:daily-0920-0900" in text  # 라벨 칩
+    button = re.search(r"<button[^>]*>가져와서 워크플로우 구성</button>", text)
+    assert button and "disabled" not in button.group(0)
+    assert web.get("/tasks/import?source=svn").status_code == 422
+
+
+def test_import_page_jira_tab_lists_ops_keys(web):
+    text = web.get("/tasks/import?source=jira").text
+    for key in ("OPS-41", "OPS-42", "OPS-43", "OPS-44"):
+        assert f'value="{key}" checked' in text, key
+    assert 'value="#41"' not in text
+    assert "blocked by OPS-41" in text
+    assert "operations.diagnose · daily-report" in text
+
+
+def test_import_page_disables_button_without_registered_agent(client, agents):
+    client.get("/tasks")
+    text = client.get("/tasks/import").text
+    button = re.search(r"<button[^>]*>가져와서 워크플로우 구성</button>", text)
+    assert button and "disabled" in button.group(0), text
+    assert "에이전트를 먼저 등록하세요" in text and 'href="/agents/register"' in text
+    assert import_issues(client, "github", "#41", "#42").status_code == 422
+
+
+def test_import_fixture_builds_chain_of_two_tasks_and_skips_the_rest(web, conn, settings):
+    response = import_issues(web, "github", "#41", "#42", "#43", "#44")
+    assert response.status_code == 303, response.text
+    location = response.headers["location"]
+    assert location.startswith("/chains/chain-")
+    chain_id = location.removeprefix("/chains/")
+    session_id = session_id_of(web, settings)
+
+    chain = repo.get_chain(conn, chain_id)
+    assert chain["session_id"] == session_id and chain["source"] == "github"
+    assert chain["title"] == "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응"
+    assert chain["started_at"] is None
+    skipped = json.loads(chain["skipped_json"])
+    assert [s["key"] for s in skipped] == ["#43", "#44"]
+    assert skipped[0]["title"] == "변경 응답 형식 모니터링 알림 추가"
+    assert "맞는 능력 코드 없음" in skipped[0]["reason"] and "docs" in skipped[1]["reason"]
+
+    tasks = repo.tasks_of_chain(conn, chain_id)
+    assert [t["source_ref"] for t in tasks] == ["#41", "#42"]
+    assert {t["chain_id"] for t in tasks} == {chain_id}
+    task_a, task_b = tasks
+    assert task_a["title"] == "일일 보고서 생성 실패 (09-20 09:00)" and task_a["request"] == DIAGNOSE_REQUEST
+    assert task_a["kind"] == "diagnosis" and task_a["run_mode"] == "manual"
+    assert task_a["completion_mode"] == "auto" and task_a["selection_mode"] == "auto"
+    assert task_a["predecessor_task_id"] is None and task_a["status"] == "실행 가능"
+    assert json.loads(task_a["target_json"]) == {"run_id": "daily-0920-0900"}
+    assert task_b["title"] == "집계 API 응답 형식 변경 대응" and task_b["request"] == FIX_REQUEST
+    assert task_b["kind"] == "code_change" and task_b["run_mode"] == "auto"
+    assert task_b["completion_mode"] == "review"
+    assert task_b["predecessor_task_id"] == task_a["task_id"]
+    assert task_b["status"] == "대기" and task_b["status_reason"] == "선행 대기"
+    assert repo.get_selection(conn, task_a["task_id"]).selected_agent_id == "agent-ops-demo"
+    assert repo.get_selection(conn, task_b["task_id"]).selected_agent_id == "agent-codex-mac"
+    assert len(repo.list_tasks(conn, session_id)) == 2  # #43·#44 는 Task 가 아니다
+    assert repo.active_execution(conn, task_a["task_id"]) is None  # 실행은 체인 화면(step 6)에서만
+
+    home = web.get("/tasks").text
+    assert "일일 보고서 생성 실패 (09-20 09:00)" in home and "집계 API 응답 형식 변경 대응" in home
+    assert "README 오타 수정" not in home
+
+
+def test_import_with_codex_and_claude_picks_first_registered_agent(web, conn):
+    seed_claude_agent(conn)
+    register_agents(web, "agent-claude-mac")  # 등록 순서: ops → codex → claude
+    response = import_issues(web, "github", "#41", "#42")
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    task_b = repo.tasks_of_chain(conn, chain_id)[1]
+    selection = repo.get_selection(conn, task_b["task_id"])
+    assert selection.task_id == task_b["task_id"]  # PlanNode 의 임시 task_id(issue.key) 가 아니다
+    assert selection.status == "selected" and selection.selected_agent_id == "agent-codex-mac"
+    assert selection.candidate_count == 1
+    assert "먼저 등록한 agent-codex-mac" in selection.reason
+    assert json.loads(task_b["target_json"])["local_registration_id"] == "local-demo-report"
+    assert "먼저 등록한 agent-codex-mac" in detail(web, task_b["task_id"])
+    # 직접 등록 경로는 그대로 — 동률이면 확인 필요
+    task_c = create_task(web, fix_form(""))
+    assert repo.get_selection(conn, task_c).status == "needs_selection"
+
+
+def test_import_single_fix_issue_is_standalone_manual_task(web, conn):
+    response = import_issues(web, "github", "#42")
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    chain = repo.get_chain(conn, chain_id)
+    assert chain["title"] == "집계 API 응답 형식 변경 대응" and json.loads(chain["skipped_json"]) == []
+    (task,) = repo.tasks_of_chain(conn, chain_id)
+    assert task["kind"] == "code_change" and task["predecessor_task_id"] is None
+    assert task["run_mode"] == "manual" and task["completion_mode"] == "review"
+    assert task["source_ref"] == "#42"
+    # 선행 대기가 아니라 연결 프로그램 오프라인(conftest 의 Codex 는 unknown) 때문에 대기 — PRD 3절
+    assert task["status"] == "대기" and task["status_reason"].startswith("연결 끊김")
+    assert repo.get_selection(conn, task["task_id"]).selected_agent_id == "agent-codex-mac"
+
+
+@pytest.mark.parametrize("keys", [(), ("#99",), ("OPS-41",)])
+def test_import_without_known_issue_is_422(web, conn, settings, keys):
+    response = import_issues(web, "github", *keys)
+    assert response.status_code == 422, keys
+    assert "no_issues" in response.text
+    assert repo.list_chains(conn, session_id_of(web, settings)) == []
+    assert import_issues(web, "svn", "#41").status_code == 422
+
+
+def test_import_counts_all_new_tasks_against_active_limit(app, web, conn, settings):
+    limit = app.state.settings.limits.active_tasks_per_session
+    for _ in range(limit - 1):
+        create_task(web, diagnose_form())
+    response = import_issues(web, "github", "#41", "#42", "#43", "#44")
+    assert response.status_code == 429
+    assert f"세션당 활성 업무 한도({limit}개)에 도달했습니다." in response.text
+    session_id = session_id_of(web, settings)
+    assert len(repo.list_tasks(conn, session_id)) == limit - 1
+    assert repo.list_chains(conn, session_id) == []
+    assert import_issues(web, "github", "#41").status_code == 303  # 노드 1개는 들어간다
+
+
+def test_import_chain_is_isolated_per_session(app, web, conn, agents):
+    chain_id = import_issues(web, "github", "#41", "#42").headers["location"].removeprefix("/chains/")
+    task_id = repo.tasks_of_chain(conn, chain_id)[0]["task_id"]
+    stub = web.get(f"/chains/{chain_id}", follow_redirects=False)
+    assert stub.status_code == 303 and stub.headers["location"] == "/tasks"  # step 6 전 임시
+    other = TestClient(app)
+    assert other.get(f"/chains/{chain_id}").status_code == 404
+    assert other.get(f"/tasks/{task_id}").status_code == 404
+    assert "일일 보고서 생성 실패" not in other.get("/tasks").text
+    assert web.get("/chains/chain-none").status_code == 404
 
 
 # --- 운영자 ----------------------------------------------------------------------

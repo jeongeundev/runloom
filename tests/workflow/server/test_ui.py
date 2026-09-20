@@ -180,7 +180,7 @@ def test_pages_render_three_column_shell(web, conn, store, settings):
     login_operator(web)
     for path in (
         "/tasks", f"/tasks/{task_id}", "/agents", "/agents/register", "/agents/agent-ops-demo", "/operator",
-        "/tasks/new",
+        "/tasks/new", "/tasks/import",
     ):
         html = web.get(path).text
         assert 'class="shell' in html, path
@@ -204,7 +204,8 @@ def test_sidebar_lists_my_tasks_with_status_dot_and_relative_time(web):
     assert "일일 보고서 실패 진단" in sidebar
     assert 'data-status="실행 가능"' in sidebar
     assert "전" in sidebar  # 상대 시각 "n분 전"
-    assert "/tasks/new?example=diagnose" in sidebar
+    assert 'href="/tasks/import"' in sidebar  # `+` 는 업무 가져오기
+    assert "/tasks/new?example=diagnose" not in sidebar
     assert "운영자" not in sidebar  # 운영자 쿠키 없음
     login_operator(web)
     assert 'href="/operator"' in web.get("/tasks").text
@@ -350,8 +351,8 @@ def test_visible_text_has_no_forbidden_phrases(web, conn, store, settings):
     task_id, _ = seed_code_change_result(web, conn, store, settings)
     login_operator(web)
     for path in (
-        "/tasks", f"/tasks/{task_id}", "/tasks/new", "/agents", "/agents/register", "/agents/agent-codex-mac",
-        "/operator",
+        "/tasks", f"/tasks/{task_id}", "/tasks/new", "/tasks/import", "/agents", "/agents/register",
+        "/agents/agent-codex-mac", "/operator",
     ):
         text = visible_text(web.get(path).text)
         for phrase in ("대기 중", "Powered by"):

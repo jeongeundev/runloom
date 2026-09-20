@@ -213,6 +213,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 /* 등록 카탈로그 카드의 "발견된 정보" — 키 요약만 */
 .found { margin-top: 10px; }
 .found-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
+/* 업무 가져오기 — 출처 탭(링크 2개, 활성 탭 밑줄)과 이슈 표 */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.tabs a { padding: 8px 12px; font-size: 13px; color: var(--text-muted); border-bottom: 2px solid transparent;
+          margin-bottom: -1px; }
+.tabs a:hover { color: var(--text); text-decoration: none; }
+.tabs a.active { color: var(--text); border-bottom-color: var(--text); }
+.import-table td .chip { margin: 2px 4px 2px 0; }
+.import-table input[type="checkbox"] { margin: 0; }
 .agent-list { list-style: none; margin: 0; padding: 0; }
 .agent-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0;
                  border-bottom: 1px solid var(--border); }

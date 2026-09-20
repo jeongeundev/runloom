@@ -192,6 +192,22 @@ def seed_agents(conn) -> None:
     })
 
 
+def seed_claude_agent(conn) -> None:
+    """카탈로그 세 번째 — 같은 저장소를 맡는 개인 Claude Code. `seed_agents` 뒤에 부른다 (phase 5 step 5 동률 규칙)."""
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-claude-mac",
+        "name": "개인 Claude Code",
+        "owner_scope": "personal",
+        "connection_type": "local",
+        "local_registration_id": "local-demo-report-claude",
+        "repository_id": "demo-report-repo",
+        "base_commit": BASE_COMMIT,
+        "capabilities": [{"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}}],
+        "connection_state": "unknown",
+        "shared_to_all_sessions": True,
+    })
+
+
 def register_catalog(conn, session_id: str, *agent_ids: str, now: str = NOW) -> None:
     """세션이 카탈로그 Agent 를 등록한 상태 (phase 5 step 2). 기본은 둘 다, codex → ops 순."""
     for agent_id in agent_ids or ("agent-codex-mac", "agent-ops-demo"):

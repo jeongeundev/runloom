@@ -29,6 +29,7 @@ from pydantic import ValidationError
 
 from workflow.adapters import repo
 from workflow.adapters.errors import ActiveExecutionExists, NotFound
+from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.v1 import (
     ArtifactMeta,
     Capability,
@@ -37,10 +38,12 @@ from workflow.contracts.v1 import (
     ReviewComment,
 )
 from workflow.domain.completion import can_auto_complete, criteria_template, merge_criteria
+from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode, kind_for_capability
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
+from workflow.domain.task_sources import Issue, map_issue
 from workflow.server import views
 from workflow.server.auth import get_conn, require_operator, require_session, utc_now
 from workflow.server.errors import ApiError
@@ -461,13 +464,16 @@ def _insert_new_task(
     title: str, request_text: str, kind: str, capability_code: str, scope_value: str,
     selection_mode: str, chosen_agent_id: str, run_mode: str, completion_mode: str,
     criteria_extra: str, predecessor_task_id: str, run_id: str,
+    chain_id: str | None = None, source_ref: str | None = None, prefer: Sequence[str] | None = None,
 ) -> str:
-    """검증이 끝난 값으로 Task 1개를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다."""
+    """검증이 끝난 값으로 Task 1개를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다.
+
+    `prefer` 는 세션 등록 순서(동률 기본 선택, step 4). 직접 등록은 넘기지 않아 동률이면 확인 필요다."""
     task_id = f"task-{secrets.token_hex(6)}"
     capability = Capability(code=capability_code, scope={SCOPE_KEYS[capability_code]: scope_value})
     selection = select_agent(
         task_id, capability, _candidates(conn, session_id), mode=selection_mode,
-        chosen_agent_id=chosen_agent_id or None,
+        chosen_agent_id=chosen_agent_id or None, prefer=prefer,
     )
     agent = repo.get_agent(conn, selection.selected_agent_id) if selection.selected_agent_id else None
     criteria = merge_criteria(criteria_template(kind), criteria_extra.splitlines())
@@ -490,12 +496,147 @@ def _insert_new_task(
             "target": _target_for(kind, run_id, agent),
             "status": "대기",
             "status_reason": "등록 중",
+            "chain_id": chain_id,
+            "source_ref": source_ref,
         },
         now,
     )
     repo.save_selection(conn, selection)
     _refresh_status(conn, task_id, now, settings)
     return task_id
+
+
+# --- 업무 가져오기 — GitHub·Jira fixture 이슈 → 체인 (phase 5 step 5, ADR-0004) ------------------
+
+
+def _issue_view(issue: Issue) -> dict[str, Any]:
+    """가져오기 표의 한 행. 배정 미리보기는 `map_issue` 결과 그대로 — 여기서 추론하지 않는다."""
+    mapping = map_issue(issue)
+    if mapping.capability is None:
+        preview = f"맡을 에이전트 없음 · {mapping.reason}"
+    else:
+        scope_value = mapping.capability.scope[SCOPE_KEYS[mapping.capability.code]]
+        preview = f"{mapping.capability.code} · {scope_value}"
+    return {
+        "key": issue.key,
+        "title": issue.title,
+        "labels": issue.labels,
+        "blocked_by": issue.blocked_by,
+        "assignable": mapping.capability is not None,
+        "preview": preview,
+    }
+
+
+def _require_source(source: str) -> None:
+    if source not in SOURCES:
+        raise PageError(422, "invalid_field", "지원하지 않는 출처입니다.", field="source")
+
+
+@router.get("/tasks/import", response_class=HTMLResponse)
+def tasks_import_page(
+    request: Request,
+    source: str = "github",
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """출처 탭 + 이슈 표. 체크는 전부 기본 체크. 세션 등록 Agent 가 0개면 버튼 비활성."""
+    _require_source(source)
+    now = utc_now()
+    return _render(
+        "tasks_import.html", **_base(request, conn, session_id, now),
+        source=source, sources=[(key, SOURCE_LABELS[key]) for key in SOURCES],
+        issues=[_issue_view(issue) for issue in load_issues(source)],
+        can_import=bool(_session_agents(conn, session_id)),
+    )
+
+
+@router.post("/tasks/import")
+def tasks_import(
+    request: Request,
+    response: Response,
+    source: str = Form(""),
+    issue_keys: list[str] = Form(default=[]),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """선택한 이슈로 체인 하나와 Task 들을 만든다. 실행은 만들지 않는다 (체인 화면의 `워크플로우 시작`, step 6)."""
+    now = utc_now()
+    settings = _settings(request)
+    _require_source(source)
+    selected = set(issue_keys)
+    issues = [issue for issue in load_issues(source) if issue.key in selected]  # 모르는 key 는 무시
+    if not issues:
+        raise PageError(422, "no_issues", "가져올 이슈를 선택하세요.", field="issue_keys")
+    registered = _session_agents(conn, session_id)
+    if not registered:
+        raise PageError(422, "agent_not_registered", "에이전트를 먼저 등록하세요.", field="agent_id")
+    prefer = [a["agent_id"] for a in registered]
+    try:
+        plan = compose(issues, _candidates(conn, session_id), prefer=prefer)
+    except ValueError as exc:
+        raise PageError(422, "dependency_cycle", str(exc), field="issue_keys") from None
+
+    # Standalone 중 능력이 있는 것(지원 안 되는 인계 쌍)은 선행 없는 단독 Task, 없는 것은 체인의 skipped 로만
+    capable_standalone = [item for item in plan.standalone if item.mapping.capability is not None]
+    skipped = [
+        {"key": item.issue.key, "title": item.issue.title, "reason": item.reason}
+        for item in plan.standalone if item.mapping.capability is None
+    ]
+    active = [t for t in repo.list_tasks(conn, session_id) if t["finished_at"] is None]
+    limit = settings.limits.active_tasks_per_session
+    if len(active) + len(plan.nodes) + len(capable_standalone) > limit:
+        raise PageError(
+            429, "active_task_limit_reached",
+            f"세션당 활성 업무 한도({limit}개)에 도달했습니다.", details={"limit": limit},
+        )
+
+    chain_id = f"chain-{secrets.token_hex(6)}"
+    repo.insert_chain(
+        conn,
+        {"chain_id": chain_id, "session_id": session_id, "title": plan.title, "source": source,
+         "skipped": skipped},
+        now,
+    )
+    # PlanNode.selection 은 임시 task_id(issue.key) 라 저장하지 않는다 — 실제 task_id 로 다시 계산한다
+    task_ids: dict[str, str] = {}
+    for node in plan.nodes:
+        task_ids[node.issue.key] = _insert_new_task(
+            conn, session_id, now, settings,
+            title=node.issue.title, request_text=node.issue.body, kind=node.kind,
+            capability_code=node.capability.code,
+            scope_value=node.capability.scope[SCOPE_KEYS[node.capability.code]],
+            selection_mode="auto", chosen_agent_id="", run_mode=node.run_mode,
+            completion_mode=node.completion_mode, criteria_extra="",
+            predecessor_task_id=task_ids[node.predecessor_key] if node.predecessor_key else "",
+            run_id=node.run_id or "", chain_id=chain_id, source_ref=node.issue.key, prefer=prefer,
+        )
+    for item in capable_standalone:
+        capability = item.mapping.capability
+        kind = kind_for_capability(capability.code)
+        _insert_new_task(
+            conn, session_id, now, settings,
+            title=item.issue.title, request_text=item.issue.body, kind=kind,
+            capability_code=capability.code, scope_value=capability.scope[SCOPE_KEYS[capability.code]],
+            selection_mode="auto", chosen_agent_id="", run_mode="manual",
+            completion_mode="auto" if can_auto_complete(kind) else "review", criteria_extra="",
+            predecessor_task_id="", run_id=item.mapping.run_id or "",
+            chain_id=chain_id, source_ref=item.issue.key, prefer=prefer,
+        )
+    return _redirect(f"/chains/{chain_id}", response)
+
+
+@router.get("/chains/{chain_id}")
+def chain_page(
+    response: Response,
+    chain_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """임시 — step 6 이 체인 화면으로 바꾼다. 지금은 세션 소유만 확인하고 홈으로 보낸다."""
+    chain = repo.get_chain(conn, chain_id)
+    if chain is None or chain["session_id"] != session_id:
+        raise PageError(404, "not_found", f"체인 {chain_id}을 찾을 수 없습니다.", field="chain_id")
+    return _redirect("/tasks", response)
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)

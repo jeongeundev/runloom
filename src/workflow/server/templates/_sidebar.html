@@ -7,7 +7,7 @@
     <a href="/agents"{% if request.url.path.startswith('/agents') %} class="active"{% endif %}>에이전트</a>
     {% if is_operator %}<a href="/operator"{% if request.url.path.startswith('/operator') %} class="active"{% endif %}>운영자</a>{% endif %}
   </nav>
-  <div class="side-head"><span>최근</span><a class="plus" href="/tasks/new?example=diagnose" title="시연 업무 만들기" aria-label="시연 업무 만들기">+</a></div>
+  <div class="side-head"><span>최근</span><a class="plus" href="/tasks/import" title="업무 가져오기" aria-label="업무 가져오기">+</a></div>
   {% if my_tasks %}
   <ul class="task-list">
     {% for t in my_tasks|reverse %}
