@@ -185,12 +185,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 /* --- 랜딩 (`/`) ------------------------------------------------------------------- */
 
 .landing-body { background: var(--bg-page); }
-.landing { max-width: 720px; margin: 0 auto; padding: 48px 24px 64px; text-align: center; }
-.landing-logo { display: block; margin: 0 auto 8px; max-width: 100%; height: auto; }
+.landing { max-width: 1040px; margin: 0 auto; padding: 20px 24px 64px; text-align: center; }
+.landing-banner { position: relative; height: 420px; overflow: hidden; border-radius: 14px; margin-bottom: 20px; }
+.landing-banner img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 45%; }
 .landing-lead { font-size: 18px; color: var(--text); margin: 0 0 6px; line-height: 1.5; }
-.landing-sub { font-size: 14px; color: var(--text-muted); margin: 0 0 32px; }
-.landing-steps { list-style: none; margin: 0 0 32px; padding: 0; display: grid;
-                 grid-template-columns: repeat(4, 1fr); gap: 12px; text-align: left; }
+.landing-sub { font-size: 14px; color: var(--text-muted); margin: 0 0 20px; }
+.landing-cta { margin-bottom: 36px; }
+.landing-steps { list-style: none; margin: 0; padding: 0; display: grid;
+                 grid-template-columns: repeat(4, 1fr); gap: 12px; text-align: left; max-width: 760px; margin: 0 auto; }
 .landing-steps li { border: 1px solid var(--border); border-radius: 10px; padding: 14px 14px 12px;
                     display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-body); }
 .landing-steps .n { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
@@ -275,7 +277,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 
 @media (max-width: 799px) {
   .landing-steps { grid-template-columns: repeat(2, 1fr); }
-  .landing { padding-top: 24px; }
+  .landing { padding: 12px 16px 48px; }
+  .landing-banner { height: 220px; border-radius: 10px; }
   .shell { flex-direction: column; }
   .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);
             background: var(--bg-side); position: sticky; top: 0; z-index: 10; }

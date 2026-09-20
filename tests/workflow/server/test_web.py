@@ -155,13 +155,13 @@ def test_landing_is_public_and_links_to_app(client, agents):
     assert page.status_code == 200
     assert SESSION_COOKIE not in page.cookies  # 랜딩은 세션을 만들지 않는다
     text = page.text
-    assert '/static/logo.jpg' in text
+    assert '/static/hero.jpg' in text
     assert "Work flows. Agents continue." in text
     assert "앞 업무가 끝나는 순간 다음 에이전트가 이어서 일합니다" in text
     assert "서비스 바로 가기" in text and 'href="/tasks"' in text
-    assert "에이전트 등록" in text and "업무 가져오기" in text and "자동 실행" in text
+    assert "에이전트 등록" in text and "업무 가져오기" in text and "워크플로우 자동 구성" in text and "자동 실행" in text
     assert 'class="shell' not in text  # 앱 셸(사이드바·뷰어) 없이 단독 페이지
-    assert client.get("/static/logo.jpg").status_code == 200
+    assert client.get("/static/hero.jpg").status_code == 200
 
 
 def test_app_home_has_agent_and_task_sections_with_direct_register(client, agents):
