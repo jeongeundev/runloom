@@ -7,7 +7,8 @@
       "name": "location-grammar",
       "status": "completed",
       "started_at": "2026-09-20T15:30:07+0900",
-      "summary": "contracts/v1.py 에 LOCATION_PATTERN = ^(?:\\$(?:\\.[A-Za-z_][A-Za-z0-9_]*(?:\\[(?:0|[1-9][0-9]*)\\])*)+|lines:[1-9][0-9]*-[1-9][0-9]*)$ (OBJECT_PATH_PATTERN·LINE_RANGE_PATTERN 조합) 을 두고 Location = Annotated[str, Field(pattern=LOCATION_PATTERN), AfterValidator(_validate_location)] 로 바꿔 배열 인덱스 [N] 을 허용하고 JSON Schema 에 pattern 이 드러나게 함(draft_json_schema 에도 자동 반영). domain/evidence_location.py 는 그 상수를 import 해 ObjectPath.keys: tuple[str | int, ...] 로 해석하고 _resolve_object_path 가 list+인덱스/dict+키만 진행. ARCHITECTURE '진단 결과와 근거' 에 [N] 문법 추가. 테스트: contracts 스키마 pattern 일치, domain 인덱스 해석(fixture run-daily-0920-0900)·계약 문법 일치, verification $.stages[1].status 통과."
+      "summary": "contracts/v1.py 에 LOCATION_PATTERN = ^(?:\\$(?:\\.[A-Za-z_][A-Za-z0-9_]*(?:\\[(?:0|[1-9][0-9]*)\\])*)+|lines:[1-9][0-9]*-[1-9][0-9]*)$ (OBJECT_PATH_PATTERN·LINE_RANGE_PATTERN 조합) 을 두고 Location = Annotated[str, Field(pattern=LOCATION_PATTERN), AfterValidator(_validate_location)] 로 바꿔 배열 인덱스 [N] 을 허용하고 JSON Schema 에 pattern 이 드러나게 함(draft_json_schema 에도 자동 반영). domain/evidence_location.py 는 그 상수를 import 해 ObjectPath.keys: tuple[str | int, ...] 로 해석하고 _resolve_object_path 가 list+인덱스/dict+키만 진행. ARCHITECTURE '진단 결과와 근거' 에 [N] 문법 추가. 테스트: contracts 스키마 pattern 일치, domain 인덱스 해석(fixture run-daily-0920-0900)·계약 문법 일치, verification $.stages[1].status 통과.",
+      "completed_at": "2026-09-20T15:36:23+0900"
     },
     {
       "step": 1,
