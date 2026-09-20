@@ -1,0 +1,17 @@
+{
+  "run_id": "daily-0920-0900",
+  "workflow_id": "daily-report",
+  "started_at": "2026-09-20T09:00:00+09:00",
+  "finished_at": "2026-09-20T09:00:01+09:00",
+  "status": "failed",
+  "code_version": "report-base",
+  "http_status": 200,
+  "stages": [
+    {"stage": "fetch", "status": "succeeded"},
+    {"stage": "transform", "status": "failed", "error_code": "MISSING_RECORDS_FIELD"},
+    {"stage": "render", "status": "skipped"}
+  ],
+  "response_ref": {"evidence_id": "response-after", "version": "1"},
+  "log_ref": {"evidence_id": "log-daily-0920", "version": "1"},
+  "report_ref": null
+}

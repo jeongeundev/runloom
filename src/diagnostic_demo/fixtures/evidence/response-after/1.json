@@ -1,0 +1,9 @@
+{
+  "report_date": "2026-09-19",
+  "data": {
+    "records": [
+      { "team": "운영", "completed": 12, "pending": 3 },
+      { "team": "개발", "completed": 8, "pending": 2 }
+    ]
+  }
+}

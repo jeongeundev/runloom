@@ -1,0 +1,15 @@
+{
+  "markdown": "(가상 데모 자료) 일일 보고서 런북 — daily-report\n\n## 실행\n- 매일 09:00 (Asia/Seoul) 에 실행하며, 전날(report_date) 의 팀별 완료·미완료 건수를 집계한다.\n- 단계는 fetch → transform → render 순서다. fetch 는 집계 API 를 호출하고, transform 은 `report_transformer` 가 응답의 `items` 목록을 행으로 바꾸고, render 가 보고서 텍스트를 만든다.\n\n## 실패 시 동작\n- 어느 단계든 실패하면 해당 날짜의 보고서를 생성하지 않고 실행을 failed 로 기록한다. 이후 단계는 skipped 다.\n- 실행 기록의 `response_ref`·`log_ref` 로 그 실행이 받은 응답과 로그를 조회할 수 있다.\n\n## 코드 위치\n- 변환부는 등록된 데모 저장소의 응답 변환 모듈(`report_transformer` 역할)이다. 실제 파일 경로는 저장소에서 확인한다.",
+  "machine": {
+    "workflow_id": "daily-report",
+    "schedule": "09:00 Asia/Seoul",
+    "stages": [
+      "fetch",
+      "transform",
+      "render"
+    ],
+    "transformer_component": "report_transformer",
+    "reads_path": "$.items",
+    "on_failure": "no_report_for_date"
+  }
+}

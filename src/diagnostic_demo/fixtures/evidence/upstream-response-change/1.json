@@ -1,0 +1,15 @@
+{
+  "markdown": "(가상 데모 자료) 집계 API 응답 형식 변경 안내\n\n가상의 업무 집계 API 제공자가 daily-report 자동화가 호출하는 팀별 집계 응답의 구조를 변경합니다.\n\n## 변경 내용\n- 적용 시각: 2026-09-20 00:00 (+09:00) 부터.\n- 팀별 행 목록의 위치가 최상위 `items` 에서 `data.records` 로 이동합니다.\n- 각 행의 필드 `team`, `completed`, `pending` 과 최상위 `report_date` 는 이름·의미·자료형을 그대로 유지합니다.\n- 응답은 전체 팀을 한 번에 반환하며 페이지 나눔은 없습니다.\n\n## 참고\n- 적용 시각 이전에 수집한 응답은 기존 구조(`items`) 그대로입니다.",
+  "machine": {
+    "workflow_id": "daily-report",
+    "effective_at": "2026-09-20T00:00:00+09:00",
+    "old_path": "$.items",
+    "new_path": "$.data.records",
+    "preserved_fields": [
+      "report_date",
+      "team",
+      "completed",
+      "pending"
+    ]
+  }
+}

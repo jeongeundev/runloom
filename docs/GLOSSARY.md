@@ -51,6 +51,9 @@
 | `LoadedEvidence` | 중앙이 내려받아 해시를 확인한 첨부 원문. `(evidence_id, version)` 키로 검증기에 넘긴다 (`domain/verification.py`) | `Attachment`(결과 봉투의 참조), `Document`, `Blob` |
 | `ExecutionObservation` | 서버가 기록한 관찰 (`unknown_no_start`, `heartbeat_lost`, `timeout`). `unknown` 판정 근거이며 실행 주체가 보내는 `ExecutionEvent` 와 구분한다 — seq 를 소비하지 않는다 (`execution_observations` 테이블) | `Event`, `Log`, `Alert` |
 | `TickReport` | 중앙 워커 한 바퀴(`Worker.tick`)의 처리 건수 요약 — 접수·반영 이벤트·판정·후속 생성·실패 반영 등 정수 카운터 (`server/worker.py`). 로그·테스트용이며 Task·Execution 상태가 아니다 | `Status`, `Result`, `Summary` |
+| `FixtureStore` | 진단 데모의 가상 자료 저장소 (`diagnostic_demo/tools/store.py`). `allowed_workflow_ids` 로 조회 범위를 두고 범위 밖은 `access_denied`, 없는 자료는 `not_found`. `removed`·`replaced`·`unavailable` 로 자료 누락·교체·일시 오류를 재현한다 — fixture 파일은 고치지 않는다 | `Database`, `Repository`(중앙 `adapters/repo.py` 와 혼동), `Index` |
+| `ToolResult` | 조회 도구 호출 하나의 결과. `ok`·`content`·`content_type`·`error`(`not_found`/`access_denied`/`unavailable`)·`returned`(실제로 반환한 근거) (`diagnostic_demo/tools/store.py`). 오류를 빈 본문으로 바꾸지 않는다 | `Response`, `Output`, `Payload` |
+| `TraceRecord` | 진단 서비스가 기록한 조회 한 건. `call_id`·`tool`·`input`·`ok`·`error`·`returned[{evidence_id, version, sha256}]` (`diagnostic_demo/tools/trace.py`). `ToolTraceRecorder.to_json()` 의 항목이며 중앙은 이를 `TraceEntry` 로 읽는다 | `Log`, `Call`, `Event` |
 | 사용자 상태 | `대기`, `실행 가능`, `실행 요청됨`, `실행 중`, `확인 필요`, `완료`, `실패`. 화면 문구로 그대로 쓴다 | `pending`, `done`, `success`, `error`, `대기 중` |
 
 ## 경계가 헷갈리는 개념

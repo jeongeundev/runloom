@@ -1,0 +1,4 @@
+2026-09-19T09:00:00+09:00 INFO  run_id=daily-0919-0900 stage=fetch event=response_received http_status=200 response_ref=response-before
+2026-09-19T09:00:01+09:00 INFO  run_id=daily-0919-0900 stage=transform status=succeeded component=report_transformer rows=2 expected_path=$.items response_ref=response-before
+2026-09-19T09:00:01+09:00 INFO  run_id=daily-0919-0900 stage=render status=succeeded report_date=2026-09-18 report_ref=report-0918
+2026-09-19T09:00:01+09:00 INFO  run_id=daily-0919-0900 event=run_finished status=succeeded report_created=true

@@ -1,0 +1,4 @@
+2026-09-20T09:00:00+09:00 INFO  run_id=daily-0920-0900 stage=fetch event=response_received http_status=200 response_ref=response-after
+2026-09-20T09:00:01+09:00 ERROR run_id=daily-0920-0900 stage=transform component=report_transformer code=MISSING_RECORDS_FIELD expected_path=$.items observed_root_keys=[report_date,data] response_ref=response-after
+2026-09-20T09:00:01+09:00 INFO  run_id=daily-0920-0900 stage=render status=skipped reason=transform_failed
+2026-09-20T09:00:01+09:00 ERROR run_id=daily-0920-0900 event=run_finished status=failed report_created=false

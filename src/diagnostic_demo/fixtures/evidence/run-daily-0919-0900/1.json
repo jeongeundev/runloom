@@ -1,0 +1,17 @@
+{
+  "run_id": "daily-0919-0900",
+  "workflow_id": "daily-report",
+  "started_at": "2026-09-19T09:00:00+09:00",
+  "finished_at": "2026-09-19T09:00:01+09:00",
+  "status": "succeeded",
+  "code_version": "report-base",
+  "http_status": 200,
+  "stages": [
+    {"stage": "fetch", "status": "succeeded"},
+    {"stage": "transform", "status": "succeeded"},
+    {"stage": "render", "status": "succeeded"}
+  ],
+  "response_ref": {"evidence_id": "response-before", "version": "1"},
+  "log_ref": {"evidence_id": "log-daily-0919", "version": "1"},
+  "report_ref": {"evidence_id": "report-0918", "version": "1"}
+}
