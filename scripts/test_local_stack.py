@@ -137,3 +137,54 @@ def test_main_parser_defaults():
     args = local_stack.build_parser().parse_args([])
     assert args.workdir is None and args.central_port == 18000 and args.diag_port == 18100
     assert args.fake_codex is None
+
+
+# --- --scripted: 대본 에이전트 래퍼 (workflow.scripted) ------------------------------------
+
+PACE_ENV = "WORKFLOW_SCRIPT_PACE_SECONDS"
+
+
+def test_scripted_installs_codex_and_claude_wrappers_ahead_on_connector_path_only(tmp_path):
+    stack = LocalStack(tmp_path, fake_codex=None, scripted=True)
+
+    bin_dir = stack.fake_bin
+    assert bin_dir is not None
+    for name in ("codex", "claude"):
+        wrapper = bin_dir / name
+        assert wrapper.exists() and os.access(wrapper, os.X_OK)
+        lines = wrapper.read_text().splitlines()
+        assert lines[0] == "#!/usr/bin/env bash" and len(lines) == 2
+        assert f"-m workflow.scripted.{name}" in lines[1] and '"$@"' in lines[1]
+    connector_path = stack.services["connector"].env["PATH"].split(os.pathsep)
+    assert connector_path[0] == str(bin_dir)
+    assert str(bin_dir) not in stack.services["central_worker"].env["PATH"].split(os.pathsep)
+
+
+def test_scripted_wins_over_fake_codex(tmp_path):
+    stack = LocalStack(tmp_path, fake_codex=FAKE_CODEX, scripted=True)
+    assert "workflow.scripted.codex" in (stack.fake_bin / "codex").read_text()
+    assert (stack.fake_bin / "claude").exists()
+
+
+def test_fake_codex_alone_installs_no_claude_wrapper(stack):
+    assert "workflow.scripted" not in (stack.fake_bin / "codex").read_text()
+    assert not (stack.fake_bin / "claude").exists()
+
+
+def test_script_pace_env_is_passed_to_connector_only(tmp_path, monkeypatch):
+    monkeypatch.setenv(PACE_ENV, "25")
+    stack = LocalStack(tmp_path, fake_codex=None, scripted=True)
+    assert stack.services["connector"].env[PACE_ENV] == "25"
+    for name in ("central_api", "central_worker", "diag_api", "diag_worker"):
+        assert PACE_ENV not in stack.services[name].env
+
+
+def test_script_pace_env_is_absent_when_not_set(tmp_path, monkeypatch):
+    monkeypatch.delenv(PACE_ENV, raising=False)
+    stack = LocalStack(tmp_path, fake_codex=None, scripted=True)
+    assert PACE_ENV not in stack.services["connector"].env
+
+
+def test_main_parser_scripted_flag():
+    assert local_stack.build_parser().parse_args([]).scripted is False
+    assert local_stack.build_parser().parse_args(["--scripted"]).scripted is True

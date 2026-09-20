@@ -109,3 +109,12 @@ def test_env_keys_lists_exactly_what_load_settings_reads():
     assert env.asked - {"DIAG_DEV"} == set(ENV_KEYS)
     assert {"DIAG_API_TOKEN", "OPENAI_API_KEY"} <= set(ENV_KEYS)
     assert len(ENV_KEYS) == len(set(ENV_KEYS))
+
+
+def test_fake_turn_seconds_is_read_for_the_fake_script_and_defaults_to_zero():
+    """`DIAG_FAKE_TURN_SECONDS` — fake 대본의 턴당 지연. openai 에서는 쓰이지 않는다."""
+    assert "DIAG_FAKE_TURN_SECONDS" in ENV_KEYS
+    assert load_settings(BASE).fake_turn_seconds == 0.0
+    assert load_settings({**BASE, "DIAG_MODEL": "fake", "DIAG_FAKE_TURN_SECONDS": "2.5"}).fake_turn_seconds == 2.5
+    with pytest.raises(ValueError, match="DIAG_FAKE_TURN_SECONDS"):
+        load_settings({**BASE, "DIAG_FAKE_TURN_SECONDS": "slow"})

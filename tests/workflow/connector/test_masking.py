@@ -52,3 +52,12 @@ def test_codex_env_keeps_only_allowlist():
 
 def test_codex_env_allowlist_has_no_secret_names():
     assert not ENV_ALLOWLIST & {"OPENAI_API_KEY", "DIAG_API_TOKEN", "SESSION_SECRET", "OPERATOR_TOKEN"}
+
+
+def test_codex_env_passes_the_script_pace_knob_but_no_other_workflow_vars():
+    """`WORKFLOW_SCRIPT_PACE_SECONDS` 는 대본 에이전트 속도(비밀 아님)라 예외로 통과한다. 다른 `WORKFLOW_*` 는 여전히 빠진다."""
+    env = codex_env({
+        "PATH": "/usr/bin", "WORKFLOW_SCRIPT_PACE_SECONDS": "25",
+        "WORKFLOW_DB_PATH": "/y", "WORKFLOW_CONNECTOR_HOME": "/x", "WORKFLOW_SKIP_APP": "1",
+    })
+    assert env == {"PATH": "/usr/bin", "WORKFLOW_SCRIPT_PACE_SECONDS": "25"}

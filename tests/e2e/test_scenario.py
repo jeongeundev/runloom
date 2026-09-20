@@ -1,7 +1,9 @@
 """전체 시나리오 — PRD "시연 흐름" 1~7 과 UI_GUIDE "심사자 첫 방문 흐름" 을 HTTP 로 재현한다.
 
 `WORKFLOW_E2E=1` 일 때만 돈다 (verify.sh 가 매 턴 도는 pytest 에서 제외). 실제 Codex·OpenAI 는 호출하지 않는다:
-진단은 `DIAG_MODEL=fake`(fixture 대본), B 는 `tests/e2e/fake_codex.py`. 5개 프로세스는 `scripts/local_stack.py` 가 띄운다.
+진단은 `DIAG_MODEL=fake`(fixture 대본), B 는 `tests/e2e/fake_codex.py`(`workflow.scripted.codex` shim) —
+`WORKFLOW_E2E_SCRIPTED=1` 이면 `LocalStack(scripted=True)` 로 `codex`·`claude` 래퍼 경로를 대신 검증한다.
+5개 프로세스는 `scripts/local_stack.py` 가 띄운다.
 
 테스트 함수는 번호 순으로 이어지며 앞 단계의 결과(`ctx`)를 쓴다 — `-x` 로 첫 실패에서 멈춘다.
 """
@@ -61,7 +63,8 @@ _AGENT_CARD = re.compile(r'<div class="card agent-card">(.*?)</div>\s*</div>', r
 
 @pytest.fixture(scope="module")
 def stack(tmp_path_factory) -> LocalStack:
-    with LocalStack(tmp_path_factory.mktemp("stack"), fake_codex=FAKE_CODEX) as running:
+    scripted = os.environ.get("WORKFLOW_E2E_SCRIPTED") == "1"
+    with LocalStack(tmp_path_factory.mktemp("stack"), fake_codex=FAKE_CODEX, scripted=scripted) as running:
         yield running
 
 
@@ -244,7 +247,7 @@ def test_06_b_artifacts_prove_repro_fix_and_report(client, ctx):
     diff = _raw(client, ctx["B"], chips["diff"])
     assert "daily_report/transformer.py" in diff and "tests/test_repro_records.py" in diff
     jsonl = _raw(client, ctx["B"], chips["Codex JSONL"])
-    assert "fake-codex-e2e" in jsonl  # 실제 Codex 가 아니라 가짜가 돌았다
+    assert "scripted-codex" in jsonl  # 실제 Codex 가 아니라 대본(workflow.scripted.codex)이 돌았다
     ctx["B_result"] = _raw(client, ctx["B"], chips["수정 결과"])
     assert re.search(r'"outcome":\s*"ready_for_review"', ctx["B_result"])
 

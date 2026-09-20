@@ -37,6 +37,7 @@ ENV_KEYS = (
     "DIAG_MAX_OUTPUT_TOKENS",
     "DIAG_TIMEOUT_SECONDS",
     "DIAG_GLOBAL_DAILY",
+    "DIAG_FAKE_TURN_SECONDS",
 )
 
 
@@ -59,6 +60,7 @@ class Settings:
     max_output_tokens: int = 8_000
     timeout_seconds: float = 300.0
     global_daily: int = 60
+    fake_turn_seconds: float = 0.0  # DIAG_MODEL=fake 대본의 턴당 지연(초). openai 면 무시. 공개 데모는 2.5
 
     @property
     def pricing_configured(self) -> bool:
@@ -107,4 +109,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         max_output_tokens=_number(env, "DIAG_MAX_OUTPUT_TOKENS", 8_000, int),
         timeout_seconds=_number(env, "DIAG_TIMEOUT_SECONDS", 300.0, float),
         global_daily=_number(env, "DIAG_GLOBAL_DAILY", 60, int),
+        fake_turn_seconds=_number(env, "DIAG_FAKE_TURN_SECONDS", 0.0, float),
     )

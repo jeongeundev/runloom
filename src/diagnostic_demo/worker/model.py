@@ -4,10 +4,12 @@
   조회 이력에서 채운다 (`worker/assemble.py`). 봉투 규칙(outcome 별 필수 필드)은 `DiagnosisResult` 가 검증한다.
 - `OpenAIModelClient` 는 Responses API 를 `previous_response_id` 로 잇는다. SDK 객체는 생성자로 주입받아 테스트에서
   가짜로 바꾼다. 이 모듈은 API 키를 읽지 않는다 — 키는 `__main__` 이 `openai.OpenAI(api_key=…)` 에만 넘긴다.
-- `FakeModelClient` 는 대본을 순서대로 돌려준다. 테스트·로컬 e2e 전용이며 `DIAG_MODEL=fake` 로만 쓰인다.
+- `FakeModelClient` 는 대본을 순서대로 돌려준다. 테스트·로컬 e2e·공개 데모(대본 재생) 전용이며 `DIAG_MODEL=fake` 로만
+  쓰인다. `turn_seconds` 는 턴마다 기다리는 시간(`DIAG_FAKE_TURN_SECONDS`) — 진단이 화면에서 눈에 보이게 한다.
 """
 
 import json
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -181,11 +183,13 @@ class OpenAIModelClient:
 
 @dataclass
 class FakeModelClient:
-    """대본(`ModelTurn` 목록)을 순서대로 돌려준다. 도구 결과는 `received` 에 남겨 테스트가 확인한다."""
+    """대본(`ModelTurn` 목록)을 순서대로 돌려준다. 도구 결과는 `received` 에 남겨 테스트가 확인한다.
+    `turn_seconds` 가 0 보다 크면 대본을 꺼내기 전 그만큼 기다린다 (0 이면 sleep 하지 않는다)."""
 
     script: list[ModelTurn]
     received: list[list[tuple[str, dict]]] = field(default_factory=list)
     started: tuple[str, str] | None = None
+    turn_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         self.script = list(self.script)
@@ -199,6 +203,8 @@ class FakeModelClient:
         return self._next()
 
     def _next(self) -> ModelTurn:
+        if self.turn_seconds > 0:
+            time.sleep(self.turn_seconds)
         if not self.script:
             raise RuntimeError("fake 대본이 끝났습니다")
         return self.script.pop(0)

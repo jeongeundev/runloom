@@ -2,11 +2,13 @@
 
 import json
 import re
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from diagnostic_demo.tools.api import TOOL_SCHEMAS
+from diagnostic_demo.worker import model as model_module
 from diagnostic_demo.worker.model import (
     DiagnosisDraft,
     DraftInvalid,
@@ -218,3 +220,26 @@ def test_fake_client_replays_script_in_order_and_records_results():
     assert fake.received == [[("c1", {"ok": True})]]
     with pytest.raises(RuntimeError):
         fake.continue_with_tool_results([])
+
+
+def test_fake_client_turn_seconds_delays_each_turn():
+    """공개 데모용 속도 — 턴마다 `turn_seconds` 를 기다린 뒤 대본을 꺼낸다 (`DIAG_FAKE_TURN_SECONDS`)."""
+    script = [
+        ModelTurn([ToolCall("c1", "get_run", {"run_id": "daily-0920-0900"})], None, 10, 1, "f1"),
+        ModelTurn([], DiagnosisDraft.model_validate(draft_dict()), 20, 2, "f2"),
+    ]
+    fake = FakeModelClient(script, turn_seconds=0.01)
+
+    started = time.perf_counter()
+    fake.start("S", "U", TOOL_SCHEMAS, draft_json_schema())
+    fake.continue_with_tool_results([("c1", {"ok": True})])
+
+    assert time.perf_counter() - started >= 0.02
+
+
+def test_fake_client_default_turn_seconds_is_zero_and_never_sleeps(monkeypatch):
+    monkeypatch.setattr(model_module.time, "sleep", lambda s: pytest.fail(f"sleep({s}) 호출"))
+    fake = FakeModelClient([ModelTurn([], DiagnosisDraft.model_validate(draft_dict()), 1, 1, "f")])
+
+    assert fake.turn_seconds == 0.0
+    assert fake.start("S", "U", TOOL_SCHEMAS, draft_json_schema()).draft is not None
