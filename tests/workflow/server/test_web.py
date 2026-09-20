@@ -869,7 +869,8 @@ def test_operator_registers_and_deletes_agent(web, conn):
     row = repo.get_agent(conn, "agent-claude-mac")
     assert row["shared_to_all_sessions"] == 1 and row["connection_state"] == "unknown"
     assert row["local_registration_id"] == "local-other"
-    assert "agent-claude-mac" in web.get("/agents").text
+    assert "agent-claude-mac" in web.get("/agents/register").text  # 카탈로그에 바로 보인다 (세션 등록 전)
+    assert "agent-claude-mac" not in web.get("/agents").text  # 세션 목록은 등록한 것만
 
     bad = web.post("/operator/agents", data={
         "agent_id": "agent-api-2", "name": "x", "owner_scope": "company", "connection_type": "api",
@@ -908,8 +909,9 @@ def test_operator_sees_all_sessions_tasks_merge_queue_and_usage(app, web, conn, 
     web.post(f"/tasks/{task_b}/review", data={"decision": "approve"}, follow_redirects=False)
     other = TestClient(app)
     other.get("/tasks")
+    register_agents(other, "agent-ops-demo")  # 다른 세션도 카탈로그에서 등록해야 후보가 생긴다
     other_task = create_task(other, diagnose_form())
-    other.post(f"/tasks/{other_task}/run", follow_redirects=False)
+    assert other.post(f"/tasks/{other_task}/run", follow_redirects=False).status_code == 303
 
     login_operator(web)
     page = web.get("/operator").text

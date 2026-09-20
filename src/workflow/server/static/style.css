@@ -208,6 +208,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .agent-card .name { font-size: 15px; font-weight: 600; color: var(--text); }
 .agent-card .meta { font-size: 12px; color: var(--text-muted); margin: 2px 0 8px; }
 .cap { font-family: var(--mono); font-size: 12px; color: var(--text-body); }
+/* 대본 에이전트 라벨 — 작은 회색 텍스트. 배지 색을 쓰지 않는다 (상태가 아니다) */
+.tag-scripted { font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
+/* 등록 카탈로그 카드의 "발견된 정보" — 키 요약만 */
+.found { margin-top: 10px; }
+.found-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
 .agent-list { list-style: none; margin: 0; padding: 0; }
 .agent-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0;
                  border-bottom: 1px solid var(--border); }

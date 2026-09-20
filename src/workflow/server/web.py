@@ -161,11 +161,17 @@ def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict
     }
 
 
-def _shared_agents(conn: Connection) -> list[Row]:
+def _catalog_agents(conn: Connection) -> list[Row]:
+    """운영자 카탈로그 — 모든 세션에 사용 허용된 Agent. 세션은 여기서 골라 등록한다 (ADR-0005)."""
     return [a for a in repo.list_agents(conn) if a["shared_to_all_sessions"]]
 
 
-def _candidates(conn: Connection) -> list[Candidate]:
+def _session_agents(conn: Connection, session_id: str) -> list[Row]:
+    """이 세션이 카탈로그에서 등록한 Agent 만. 홈·등록 폼·선택 목록·후보는 전부 이 목록을 쓴다."""
+    return repo.list_session_agents(conn, session_id)
+
+
+def _candidates(conn: Connection, session_id: str) -> list[Candidate]:
     return [
         Candidate(
             agent_id=a["agent_id"],
@@ -173,8 +179,14 @@ def _candidates(conn: Connection) -> list[Candidate]:
                 Capability.model_validate(c) for c in json.loads(a["capabilities_json"])
             ),
         )
-        for a in _shared_agents(conn)
+        for a in _session_agents(conn, session_id)
     ]
+
+
+def _require_registered(conn: Connection, session_id: str, agent_id: str) -> None:
+    """직접 선택 대상은 세션이 등록한 Agent 여야 한다. 카탈로그에 있어도 등록 전이면 422."""
+    if not repo.is_session_agent(conn, session_id, agent_id):
+        raise PageError(422, "agent_not_registered", "등록하지 않은 에이전트입니다.", field="agent_id")
 
 
 def _own_task(conn: Connection, session_id: str, task_id: str) -> Row:
@@ -317,7 +329,7 @@ def home(
 ) -> str:
     now = utc_now()
     settings = _settings(request)
-    agents = [views.agent_public(a, now=now, settings=settings) for a in _shared_agents(conn)]
+    agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
     return _render("home.html", **_base(request, conn, session_id, now), agents=agents)
 
 
@@ -328,7 +340,7 @@ def _form_context(
     return {
         **_base(request, conn, session_id, now),
         "form": form,
-        "agents": [views.agent_public(a, now=now, settings=settings) for a in _shared_agents(conn)],
+        "agents": [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)],
         "capability_codes": CAPABILITY_CODES,
         "scope_keys": SCOPE_KEYS,
         "criteria_templates": {
@@ -400,6 +412,8 @@ def task_create(
         raise PageError(422, "invalid_field", "완료 방식이 올바르지 않습니다.", field="completion_mode")
     if selection_mode == "manual" and not chosen_agent_id:
         raise PageError(422, "invalid_field", "직접 선택은 에이전트를 지정해야 합니다.", field="chosen_agent_id")
+    if selection_mode == "manual":
+        _require_registered(conn, session_id, chosen_agent_id)
 
     kind = kind_for_capability(capability_code)
     if completion_mode == "auto" and not can_auto_complete(kind):
@@ -452,7 +466,7 @@ def _insert_new_task(
     task_id = f"task-{secrets.token_hex(6)}"
     capability = Capability(code=capability_code, scope={SCOPE_KEYS[capability_code]: scope_value})
     selection = select_agent(
-        task_id, capability, _candidates(conn), mode=selection_mode,
+        task_id, capability, _candidates(conn, session_id), mode=selection_mode,
         chosen_agent_id=chosen_agent_id or None,
     )
     agent = repo.get_agent(conn, selection.selected_agent_id) if selection.selected_agent_id else None
@@ -576,10 +590,11 @@ def task_select(
         raise PageError(409, "invalid_transition", "이미 에이전트가 선택된 업무입니다.")
     if not agent_id.strip():
         raise PageError(422, "invalid_field", "에이전트를 지정하세요.", field="agent_id")
+    _require_registered(conn, session_id, agent_id.strip())
 
     capability = Capability.model_validate(json.loads(task["required_capability_json"]))
     record = select_agent(
-        task_id, capability, _candidates(conn), mode="manual", chosen_agent_id=agent_id.strip()
+        task_id, capability, _candidates(conn, session_id), mode="manual", chosen_agent_id=agent_id.strip()
     )
     repo.save_selection(conn, record)
     agent = repo.get_agent(conn, record.selected_agent_id) if record.selected_agent_id else None
@@ -730,7 +745,7 @@ def artifact_view(
     )
 
 
-# --- 에이전트 (읽기 전용) ------------------------------------------------------------
+# --- 에이전트 — 세션은 운영자 카탈로그에서 골라 등록한다 (ADR-0005, phase 5 step 2) --------------
 
 
 @router.get("/agents", response_class=HTMLResponse)
@@ -739,10 +754,72 @@ def agents_list(
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> str:
+    """이 세션이 등록한 Agent 만. 0개면 빈 상태와 `에이전트 등록` 버튼."""
     now = utc_now()
     settings = _settings(request)
-    agents = [views.agent_public(a, now=now, settings=settings) for a in _shared_agents(conn)]
+    agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
     return _render("agents.html", **_base(request, conn, session_id, now), agents=agents)
+
+
+@router.get("/agents/register", response_class=HTMLResponse)
+def agents_register_page(
+    request: Request,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """카탈로그 목록. 카드마다 발견된 정보 요약과 등록/해제 버튼. 새 Agent 를 만드는 폼은 없다 (운영자 전용)."""
+    now = utc_now()
+    settings = _settings(request)
+    catalog = [views.agent_public(a, now=now, settings=settings) for a in _catalog_agents(conn)]
+    registered_ids = {a["agent_id"] for a in _session_agents(conn, session_id)}
+    return _render(
+        "agents_register.html", **_base(request, conn, session_id, now),
+        catalog=catalog, registered_ids=registered_ids,
+    )
+
+
+@router.post("/agents/register")
+def agents_register(
+    response: Response,
+    agent_id: str = Form(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """카탈로그 Agent 를 이 세션에 등록한다. 멱등. 카탈로그에 없으면 404."""
+    agent_id = agent_id.strip()
+    row = repo.get_agent(conn, agent_id)
+    if row is None or not row["shared_to_all_sessions"]:
+        raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
+    repo.register_session_agent(conn, session_id, agent_id, utc_now())
+    return _redirect("/tasks", response)
+
+
+def _agent_in_use(conn: Connection, session_id: str, agent_id: str) -> bool:
+    """이 세션의 미완료 Task 중 선택 기록이 이 Agent 를 가리키는 것이 있는가."""
+    for task in repo.list_tasks(conn, session_id):
+        if task["finished_at"] is not None:
+            continue
+        selection = repo.get_selection(conn, task["task_id"])
+        if selection is not None and selection.selected_agent_id == agent_id:
+            return True
+    return False
+
+
+@router.post("/agents/{agent_id}/unregister")
+def agents_unregister(
+    response: Response,
+    agent_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """세션 등록 해제. 멱등. 그 Agent 가 선택된 미완료 Task 가 있으면 409."""
+    row = repo.get_agent(conn, agent_id)
+    if row is None or not (row["shared_to_all_sessions"] or repo.is_session_agent(conn, session_id, agent_id)):
+        raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
+    if _agent_in_use(conn, session_id, agent_id):
+        raise PageError(409, "agent_in_use", "진행 중인 업무가 있어 해제할 수 없습니다.", field="agent_id")
+    repo.unregister_session_agent(conn, session_id, agent_id)
+    return _redirect("/agents/register", response)
 
 
 @router.get("/agents/{agent_id}", response_class=HTMLResponse)
@@ -752,9 +829,10 @@ def agent_detail(
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> str:
+    """카탈로그 Agent 또는 이 세션이 등록한 Agent 만 열린다. 그 외는 404 로 존재를 알리지 않는다."""
     now = utc_now()
     row = repo.get_agent(conn, agent_id)
-    if row is None or not row["shared_to_all_sessions"]:
+    if row is None or not (row["shared_to_all_sessions"] or repo.is_session_agent(conn, session_id, agent_id)):
         raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
     agent = views.agent_public(row, now=now, settings=_settings(request))
     return _render("agent_detail.html", **_base(request, conn, session_id, now), agent=agent)

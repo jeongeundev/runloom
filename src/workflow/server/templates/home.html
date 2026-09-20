@@ -1,25 +1,38 @@
-{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 에이전트 연결 상태 카드, 업무 목록과 다음 행동 버튼. 랜딩은 landing.html. #}
+{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 세션이 등록한 에이전트 카드, 업무 목록과 다음 행동 버튼. 랜딩은 landing.html.
+   등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `시연 업무 만들기` 는 비활성이다 (phase 5 step 2). #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}업무 — Runloom{% endblock %}
 {% block content %}
 <div class="section-head" style="margin-top:0"><h2 style="margin-top:0">에이전트</h2><a class="small" href="/agents">에이전트 목록</a></div>
+{% if agents %}
 <div class="agent-grid">
   {% for a in agents %}
   <div class="card agent-card">
-    <div class="name"><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></div>
+    <div class="name"><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a>{% if a.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}</div>
     <div class="meta mono">{{ a.agent_id }} · {{ a.owner_scope }} · {{ a.connection_type }}</div>
     <div>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
     <div style="margin-top:8px">{{ st.connection(a) }}</div>
   </div>
-  {% else %}
-  <p class="muted">등록된 에이전트가 없습니다. 운영자가 등록합니다.</p>
   {% endfor %}
 </div>
+<div class="actions"><a class="btn btn-secondary" href="/agents/register">에이전트 등록</a></div>
+{% else %}
+<div class="empty" style="padding-top:0">
+  <p>먼저 에이전트를 등록하세요.</p>
+  <p class="small" style="margin-top:8px">운영자가 준비한 카탈로그에서 이미 쓰는 에이전트를 골라 등록합니다. 등록한 에이전트만 이 세션의 업무에 배정됩니다.</p>
+  <div class="actions"><a class="btn" href="/agents/register">에이전트 등록</a></div>
+</div>
+{% endif %}
 
 <div class="section-head"><h2>업무</h2></div>
 <div class="actions" style="margin-bottom:12px">
+  {% if agents %}
   <a class="btn" href="/tasks/new?example=diagnose">시연 업무 만들기</a>
+  {% else %}
+  <button class="btn" type="button" disabled>시연 업무 만들기</button>
+  <span class="action-note">에이전트를 먼저 등록하세요</span>
+  {% endif %}
   <a class="btn btn-secondary" href="/tasks/new">직접 등록</a>
 </div>
 {% if my_tasks %}

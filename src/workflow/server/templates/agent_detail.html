@@ -4,7 +4,7 @@
 {% block title %}{{ agent.name }} — Runloom{% endblock %}
 {% block content %}
 <div class="crumbs">
-  <div class="crumb"><a href="/agents">에이전트</a><span class="sep">/</span>{{ agent.name }}</div>
+  <div class="crumb"><a href="/agents">에이전트</a><span class="sep">/</span>{{ agent.name }}{% if agent.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}</div>
   <div class="crumb-side">{{ st.connection(agent) }}</div>
 </div>
 <div class="card">

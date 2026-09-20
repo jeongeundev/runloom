@@ -1,4 +1,5 @@
-{# 결과 카드 — UI_GUIDE "결과 카드". PR 카드 형식: outcome 배지 + 대상 / 요약 / 모노스페이스 메타. `viewer` 는 views.viewer_context. #}
+{# 결과 카드 — UI_GUIDE "결과 카드". PR 카드 형식: outcome 배지 + 대상 / 요약 / 모노스페이스 메타. `viewer` 는 views.viewer_context.
+   실행한 Agent 가 대본(`agent_scripted`) 이면 메타 끝에 "대본 재생" 을 붙인다 — 실제 모델이 돈 것처럼 보이지 않게. #}
 {% import "_status.html" as st %}
 {% if result %}
 {% set d = result.data %}
@@ -22,6 +23,7 @@
     {%- if viewer and viewer.diff %} · {{ viewer.diff.stats[0] }} files · <span class="plus-n">+{{ viewer.diff.stats[1] }}</span> <span class="minus-n">-{{ viewer.diff.stats[2] }}</span>{% endif -%}
     {%- if d.verification %} · {{ d.verification.profile_id }} exit {{ d.verification.exit_code }}{% endif -%}
     {%- endif -%}
+    {%- if agent_scripted %} · 대본 재생 (실제 모델 호출 없음){% endif -%}
   </div>
   {% else %}
   <div class="line1">결과 본문을 읽을 수 없습니다</div>
