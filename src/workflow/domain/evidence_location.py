@@ -1,8 +1,9 @@
 """근거 위치(location) 문법과 첨부 원문에서의 해석 — ARCHITECTURE "진단 결과와 근거".
 
-JSON 자료(`application/json`)는 `$.a.b` 객체 경로, 텍스트 자료(`text/plain`)는
-`lines:N-M` 줄 범위(1부터, 양끝 포함)만 지원한다. 배열 인덱스·와일드카드·필터는 v1 에 없다.
-문법은 `contracts/v1.Location` 검증기와 같다. 여기서는 첨부 바이트만 보고 I/O 를 하지 않는다.
+JSON 자료(`application/json`)는 `$.a.b[0].c` 객체 경로(문자열 키와 0부터 시작하는 배열 인덱스 `[N]`),
+텍스트 자료(`text/plain`)는 `lines:N-M` 줄 범위(1부터, 양끝 포함)만 지원한다.
+와일드카드·필터·음수 인덱스는 v1 에 없다 — 위치는 원문의 값 하나를 결정적으로 가리켜야 한다.
+문법은 `contracts/v1.LOCATION_PATTERN` 하나를 그대로 쓴다. 여기서는 첨부 바이트만 보고 I/O 를 하지 않는다.
 """
 
 import json
@@ -10,13 +11,16 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-_OBJECT_PATH = re.compile(r"^\$(\.[A-Za-z_][A-Za-z0-9_]*)+$")
-_LINE_RANGE = re.compile(r"^lines:([1-9][0-9]*)-([1-9][0-9]*)$")
+from workflow.contracts.v1 import LOCATION_PATTERN
+
+_LOCATION = re.compile(LOCATION_PATTERN)
+# 문법 검사를 통과한 객체 경로를 토큰으로 자른다: `.key` 또는 `[index]`
+_SEGMENT = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)|\[([0-9]+)\]")
 
 
 @dataclass(frozen=True)
 class ObjectPath:
-    keys: tuple[str, ...]  # "$.data.records" → ("data", "records")
+    keys: tuple[str | int, ...]  # "$.stages[1].status" → ("stages", 1, "status")
 
 
 @dataclass(frozen=True)
@@ -35,14 +39,16 @@ class Resolved:
 
 def parse_location(location: str) -> ObjectPath | LineRange:
     """location 문자열을 구조로 바꾼다. 문법 오류는 ValueError."""
-    if _OBJECT_PATH.match(location):
-        return ObjectPath(keys=tuple(location.split(".")[1:]))
-    match = _LINE_RANGE.match(location)
-    if match:
-        start, end = int(match.group(1)), int(match.group(2))
-        if start <= end:
-            return LineRange(start=start, end=end)
-    raise ValueError(f"location 문법 오류: {location!r} — `$.a.b` 또는 `lines:N-M` (M ≥ N)")
+    if not _LOCATION.match(location):
+        raise ValueError(f"location 문법 오류: {location!r} — `$.a.b[0]` 또는 `lines:N-M` (M ≥ N)")
+    if location.startswith("lines:"):
+        start, end = (int(n) for n in location[len("lines:") :].split("-"))
+        if start > end:
+            raise ValueError(f"location 문법 오류: {location!r} — lines:N-M 은 M ≥ N")
+        return LineRange(start=start, end=end)
+    return ObjectPath(
+        keys=tuple(key if key else int(index) for key, index in _SEGMENT.findall(location))
+    )
 
 
 def resolve_location(content: bytes, content_type: str, location: str) -> Resolved | None:
@@ -66,7 +72,10 @@ def _resolve_object_path(content: bytes, path: ObjectPath) -> Resolved | None:
     except (UnicodeDecodeError, ValueError):
         return None
     for key in path.keys:
-        if not isinstance(current, dict) or key not in current:
+        if isinstance(key, int):
+            if not isinstance(current, list) or key >= len(current):
+                return None
+        elif not isinstance(current, dict) or key not in current:
             return None
         current = current[key]
     return Resolved(value=current)

@@ -243,15 +243,40 @@ def test_rejects_diagnosis_failed_run_id_mismatch():
         DiagnosisResult.model_validate(block)
 
 
-@pytest.mark.parametrize("location", ["$.items[*]", "lines:3-2", "$", "lines:0-1", "$.a.", "items"])
+# 문법 위반 — 스키마 pattern 단계에서 거부된다
+BAD_LOCATION_SYNTAX = [
+    "$.items[*]", "$", "lines:0-1", "$.a.", "items", "$.keys()", "$.a[01]", "$.a[-1]", "$[0]", "$.a[]",
+    "$.a[1", "$.a[1].", "$.a[x]",
+]
+# 문법은 맞지만 M ≥ N 위반 — AfterValidator 가 거부한다
+BAD_LINE_ORDER = ["lines:3-2"]
+GOOD_LOCATIONS = [
+    "$.items", "$.data.records", "lines:2-3", "lines:4-4",
+    "$.stages[1].status", "$.items[0]", "$.data.records[0].team", "$.a[0][1]",
+]
+
+
+@pytest.mark.parametrize("location", BAD_LOCATION_SYNTAX + BAD_LINE_ORDER)
 def test_rejects_bad_location(location):
     with pytest.raises(ValidationError):
         EvidenceRef.model_validate({"evidence_id": "e", "version": "1", "location": location})
 
 
-@pytest.mark.parametrize("location", ["$.items", "$.data.records", "lines:2-3", "lines:4-4"])
+@pytest.mark.parametrize("location", GOOD_LOCATIONS)
 def test_accepts_good_location(location):
     EvidenceRef.model_validate({"evidence_id": "e", "version": "1", "location": location})
+
+
+def test_location_schema_pattern_is_the_validator_grammar():
+    """모델에 보내는 JSON Schema 에 location 문법이 `pattern` 으로 드러나고, 그 pattern 이 검증기와 같은 문법이다."""
+    schema = EvidenceRef.model_json_schema()["properties"]["location"]
+
+    assert schema["pattern"] == v1.LOCATION_PATTERN
+    compiled = re.compile(schema["pattern"])
+    for location in GOOD_LOCATIONS + BAD_LINE_ORDER:
+        assert compiled.match(location), location
+    for location in BAD_LOCATION_SYNTAX:
+        assert compiled.match(location) is None, location
 
 
 def test_rejects_capability_scope_key_mismatch():

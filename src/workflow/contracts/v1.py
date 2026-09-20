@@ -38,8 +38,16 @@ ARTIFACT_KINDS: tuple[str, ...] = (
 _RFC3339 = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
 )
-_OBJECT_PATH = re.compile(r"^\$(\.[A-Za-z_][A-Za-z0-9_]*)+$")
-_LINE_RANGE = re.compile(r"^lines:([1-9][0-9]*)-([1-9][0-9]*)$")
+# location 문법 — ARCHITECTURE "진단 결과와 근거". `$.a.b[0].c` 객체 경로(배열 인덱스 `[N]` 은 0부터,
+# 앞자리 0 없음) 또는 `lines:N-M` 줄 범위. 와일드카드·필터·음수 인덱스는 없다.
+# 이 문자열 하나가 JSON Schema `pattern`(모델 생성 시점 강제)과 검증기·도메인 해석기의 유일한 문법이다.
+# pydantic-core 의 Rust regex 와 Python re 둘 다에서 돌아야 하므로 lookaround·backreference 를 쓰지 않는다.
+_KEY = r"[A-Za-z_][A-Za-z0-9_]*"
+_INDEX = r"\[(?:0|[1-9][0-9]*)\]"
+OBJECT_PATH_PATTERN = rf"\$(?:\.{_KEY}(?:{_INDEX})*)+"
+LINE_RANGE_PATTERN = r"lines:[1-9][0-9]*-[1-9][0-9]*"
+LOCATION_PATTERN = rf"^(?:{OBJECT_PATH_PATTERN}|{LINE_RANGE_PATTERN})$"
+_LOCATION = re.compile(LOCATION_PATTERN)
 
 
 def parse_rfc3339_aware(value: str) -> str:
@@ -53,12 +61,14 @@ def parse_rfc3339_aware(value: str) -> str:
 
 
 def _validate_location(value: str) -> str:
-    if _OBJECT_PATH.match(value):
-        return value
-    match = _LINE_RANGE.match(value)
-    if match and int(match.group(1)) <= int(match.group(2)):
-        return value
-    raise ValueError("location 은 `$.a.b` 객체 경로 또는 `lines:N-M` (M ≥ N) 이어야 합니다")
+    """문법은 `LOCATION_PATTERN`, 여기서는 그 위에 `lines:N-M` 의 M ≥ N 만 더 본다."""
+    if not _LOCATION.match(value):
+        raise ValueError("location 은 `$.a.b[0]` 객체 경로 또는 `lines:N-M` (M ≥ N) 이어야 합니다")
+    if value.startswith("lines:"):
+        start, end = (int(n) for n in value[len("lines:") :].split("-"))
+        if start > end:
+            raise ValueError("lines:N-M 은 M ≥ N 이어야 합니다")
+    return value
 
 
 ContractVersion = Literal[1]
@@ -66,7 +76,7 @@ NonEmptyStr = Annotated[str, Field(min_length=1)]
 Rfc3339 = Annotated[str, AfterValidator(parse_rfc3339_aware)]
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 CommitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
-Location = Annotated[str, AfterValidator(_validate_location)]
+Location = Annotated[str, Field(pattern=LOCATION_PATTERN), AfterValidator(_validate_location)]
 ArtifactKind = Literal[*ARTIFACT_KINDS]
 ExecutionStatus = Literal["queued", "accepted", "running", "result_ready", "failed", "unknown"]
 

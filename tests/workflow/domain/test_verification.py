@@ -366,6 +366,18 @@ def test_location_typo_fails(handoff_raw, attachments, trace):
     assert "response-after@1 $.data.record" in check.detail
 
 
+def test_array_index_location_resolves(handoff_raw, attachments, trace):
+    # 실행 기록의 stages 는 배열 — DIAG_EVAL 관찰 3 에서 모델이 인용한 형태를 검증기가 원문에서 찾는다
+    handoff_raw["findings"][2]["evidence_refs"].append(
+        {"evidence_id": "run-daily-0920-0900", "version": "1", "location": "$.stages[1].status"}
+    )
+
+    verdict = verify_diagnosis(DiagnosisResult.model_validate(handoff_raw), attachments, trace)
+
+    assert verdict.outcome == "passed"
+    assert _check(verdict, "locations_resolve").passed
+
+
 def test_line_range_beyond_log_fails(handoff_raw, attachments, trace):
     handoff_raw["findings"][2]["evidence_refs"][1]["location"] = "lines:4-5"
 

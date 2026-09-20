@@ -267,7 +267,7 @@ API 진단 실행도 같은 논리적 이벤트를 보존한다. 상태 조회�
 | `attachments` | `evidence_id`, `version`, `content_type`, `artifact_id`, `sha256`를 가진 참조 배열. 실제 원문 파일을 같은 인계 묶음에 포함 |
 | `provenance` | `model_id`, `prompt_version`, `tool_contract_version`, `tool_trace_artifact_id`. 진단 서비스가 기록 |
 
-근거 참조는 `evidence_id`, `version`, `location`을 갖는다. location은 JSON 자료에서는 `$.data.records` 같은 단순 객체 경로, 텍스트 자료에서는 `lines:2-3` 같은 1부터 시작하는 줄 범위다. 운영 문서 근거는 `{ "markdown": …, "machine": … }` 형태의 JSON이며 v1에서는 `$.machine.*`만 인용하고 Markdown 본문은 줄 단위로 인용하지 않는다. 첫 데모는 와일드카드·필터 표현식을 지원하지 않는다. 이 문법으로 가리킨 값·줄이 실제 첨부에 존재해야 한다.
+근거 참조는 `evidence_id`, `version`, `location`을 갖는다. location은 JSON 자료에서는 `$.data.records` 같은 단순 객체 경로(배열은 `$.stages[1].status` 같은 0부터 시작하는 인덱스 `[N]`, 앞자리 0·음수 없음), 텍스트 자료에서는 `lines:2-3` 같은 1부터 시작하는 줄 범위다. 이 문법은 계약 v1 의 `LOCATION_PATTERN` 하나이며 모델에 보내는 JSON Schema 의 `pattern` 으로도 드러난다. 운영 문서 근거는 `{ "markdown": …, "machine": … }` 형태의 JSON이며 v1에서는 `$.machine.*`만 인용하고 Markdown 본문은 줄 단위로 인용하지 않는다. 첫 데모는 와일드카드·필터 표현식을 지원하지 않는다. 이 문법으로 가리킨 값·줄이 실제 첨부에 존재해야 한다.
 
 ```json
 {
