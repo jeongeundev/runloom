@@ -1,187 +1,146 @@
-# 진단 모델 실호출 평가
+# 진단 모델 비교 평가 — 종합
 
 갱신일: 2026-09-20
-상태: Step 17 `scripts/diag_eval.py` 가 생성한 기록. ARCHITECTURE "진단 모델과 평가 기준"의 5사례 × 3회를 실제 모델로 돌린 결과다. 결과가 좋게 보이도록 편집하지 않는다. ADR-0003 파일 자체는 이 평가가 고치지 않는다 (사용자 확정). phase `1-diag-fix` Step 3 의 재평가다 — Step 0(location 문법에 배열 인덱스), Step 1(텍스트 자료 줄 번호, `tools-v2`), Step 2(`diag-prompt-v2`) 를 적용한 뒤 같은 하네스로 한 번 돌렸다. 기준선은 [DIAG_EVAL_2026-09-20_prompt-v1.md](DIAG_EVAL_2026-09-20_prompt-v1.md)(프롬프트 v1·도구 v1, 2차 실행)이다. "실행 이력" 부터는 손으로 더했다(스크립트를 다시 돌리면 생성 절만 덮어쓴다).
+상태: phase `2-model-compare` Step 2 의 종합 보고서. 같은 하네스(`scripts/diag_eval.py`)·같은 프롬프트(`diag-prompt-v3`)·같은 도구 계약(`tools-v2`)으로 `gpt-4.1-mini` 와 `gpt-4.1` 을 각각 5사례 × 3회 돌린 결과를 이전 두 평가(프롬프트 v1·v2, mini)와 나란히 놓는다. 스크립트가 생성한 원본 표는 모델별 보고서에 있고 이 문서는 손으로 썼다. 결과가 좋게 보이도록 편집하지 않는다. **ADR-0003 파일은 이 평가가 고치지 않는다** (사용자 확정) — 마지막 절은 제안이다.
+
+| 보고서 | 내용 |
+|---|---|
+| [DIAG_EVAL_2026-09-20_prompt-v1.md](DIAG_EVAL_2026-09-20_prompt-v1.md) | mini · 프롬프트 v1 · 도구 v1. 5사례 × 3회 두 번(1차·2차) + 사전 확인 1회 |
+| [DIAG_EVAL_2026-09-20_prompt-v2.md](DIAG_EVAL_2026-09-20_prompt-v2.md) | mini · 프롬프트 v2 · 도구 v2. 1회. location 배열 인덱스·줄 번호 반환 적용 후 |
+| [DIAG_EVAL_prompt-v3_gpt-4.1-mini.md](DIAG_EVAL_prompt-v3_gpt-4.1-mini.md) | mini · 프롬프트 v3 · 도구 v2. 1회 — 이번 비교의 한쪽 |
+| [DIAG_EVAL_prompt-v3_gpt-4.1.md](DIAG_EVAL_prompt-v3_gpt-4.1.md) | gpt-4.1 · 프롬프트 v3 · 도구 v2. 1회 — 이번 비교의 다른 쪽 |
 
 ## 조건
 
-| 항목 | 값 |
-|---|---|
-| 모델 | `gpt-4.1-mini-2025-04-14` (Responses API, function calling + structured outputs strict) |
-| 프롬프트·도구 계약 | `diag-prompt-v2` · `tools-v2` |
-| 단가 (US$ / 1M 토큰) | 입력 0.4 · 출력 1.6 (`DIAG_PRICE_*`, 사용자가 공식 가격 페이지에서 확인) |
-| 진단 1회 상한 | 호출 15회 · 입력 80,000 · 출력 8,000 토큰 · 300초 |
-| 평가 예산 | US$2 (`DIAG_EVAL_BUDGET_USD`) — 매 실행 전 누적 비용 확인 |
-| 실행 | 2026-09-20T15:48:51+09:00 ~ 2026-09-20T15:51:37+09:00 (KST) · 사례당 3회 · 총 15회 |
-| 총 추정 비용 | US$0.0951 |
-| 경로 | `run_diagnosis` → `assemble_result` → 중앙 `verify_diagnosis` 를 프로세스 안에서 직접 호출 (HTTP 없음). 자료 누락·교체는 `FixtureStore(removed=, replaced=)`, fixture 파일 불변 |
+| 평가 | 모델 (`provenance.model_id`) | 프롬프트 · 도구 계약 | 단가 입력/출력 (US$/1M) | 실행 (KST) | 호출 · 입력/출력 토큰 · 시간 | 총 추정 비용 |
+|---|---|---|---|---|---|---|
+| v1 mini 2차 | `gpt-4.1-mini-2025-04-14` | `diag-prompt-v1` · `tools-v1` | 0.40 / 1.60 | 15:01~15:04 | 93 · 245k/10.3k · 209초 | US$0.1147 (사전 확인·1차 포함 US$0.2263) |
+| v2 mini | `gpt-4.1-mini-2025-04-14` | `diag-prompt-v2` · `tools-v2` | 0.40 / 1.60 | 15:48~15:51 | 70(+1 미집계) · 193k/11.2k · 166초 | US$0.0951 (실제 약 0.10) |
+| **v3 mini** | `gpt-4.1-mini-2025-04-14` | `diag-prompt-v3` · `tools-v2` | 0.40 / 1.60 | 16:36~16:39 | 90 · 267k/14.8k · 214초 | **US$0.1305** |
+| **v3 gpt-4.1** | `gpt-4.1-2025-04-14` | `diag-prompt-v3` · `tools-v2` | 2.00 / 8.00 | 16:39~16:50 | 108 · 319k/12.7k · 629초 | **US$0.7394** |
 
-## 통과 기준과 판정
+- 공통: 진단 1회 상한 호출 15 · 입력 80k · 출력 8k 토큰 · 300초. 사례 정의·fixture·검증기 동일. 경로는 `run_diagnosis` → `assemble_result` → 중앙 `verify_diagnosis` (HTTP 없음). 평가 예산 `DIAG_EVAL_BUDGET_USD=2` 는 스크립트 실행 1회마다 적용된다.
+- v3 두 실행은 Step 1(계약 거부 턴의 호출·토큰을 `usage` 에 더함) 이후라 호출·토큰이 실제와 같다. v1·v2 는 계약 거부 1건당 한 턴이 빠져 있다.
+- 단가는 사용자가 2026-09-20 공식 가격 페이지에서 확인한 값이다. gpt-4.1 단가는 실행 명령의 환경변수로 덮어썼고 `.env` 는 mini 단가 그대로다.
+- 두 보고서의 "조건" 표와 산출물 `diagnosis_result` 15개의 `provenance.model_id` 가 각각 `gpt-4.1-mini-2025-04-14`, `gpt-4.1-2025-04-14` 로 일치함을 확인했다. 실행 중 모델 대체는 없다.
+- 이 step 의 실호출은 두 번(모델당 1회)이며 스크립트 결함·재실행은 없었다. 이 step 비용 US$0.8699. 프로젝트 누적(사전 확인 포함) 약 US$1.19.
+- 원본: `data/diag-eval/2026-09-20T163610+0900/`(mini), `data/diag-eval/2026-09-20T163950+0900/`(gpt-4.1) — `results.json`, 진단 서비스 DB·산출물, `invalid-drafts/`. `data/` 는 git 에 들어가지 않는다.
 
-- normal 0/3: `ready_for_handoff` 이고 검증기 `passed` — 기준 3/3
-- 잘못된 수정 착수 0/12: 나머지 4사례에서 `ready_for_handoff` 이면서 `passed` 인 실행 — 기준 0
-- 전 사례 3회 완료: 예
+## 모델 비교표 — v3 mini vs v3 gpt-4.1
 
-**판정: 확정 보류.** 기준 미충족 실행:
+outcome · 검증기 · 실패 check · 호출 · 입력/출력 토큰 · US$. `거부` 는 계약 검증기가 초안을 거부한 실행(`model_output_invalid`).
 
-- normal 1회차: outcome=needs_information 검증기=undecidable
-- normal 2회차: outcome=ready_for_handoff 검증기=failed 실패 check `locations_resolve`
-- normal 3회차: outcome=— 검증기=— 오류 `model_output_invalid: 초안이 DiagnosisDraft 형식이 아닙니다: 1개 오류 — diagnosis.baseline_run_id=''`
+| 사례 | 회차 | mini outcome | mini 검증기 | mini 실패 check | mini 호출·토큰·US$ | gpt-4.1 outcome | gpt-4.1 검증기 | gpt-4.1 실패 check | gpt-4.1 호출·토큰·US$ |
+|---|---|---|---|---|---|---|---|---|---|
+| `normal` | 1 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 6 · 17,519/895 · 0.0084 | ready_for_handoff | **passed** | — | 7 · 20,628/909 · 0.0485 |
+| `normal` | 2 | 거부 (`baseline_run_id=''`) | — | — | 4 · 11,048/1,149 · 0.0063 | ready_for_handoff | **passed** | — | 7 · 20,628/929 · 0.0487 |
+| `normal` | 3 | ready_for_handoff | failed | `locations_resolve` | 8 · 25,724/1,028 · 0.0119 | ready_for_handoff | **passed** | — | 7 · 20,628/904 · 0.0485 |
+| `missing_response` | 1 | 거부 (`baseline_run_id=''`) | — | — | 3 · 8,405/928 · 0.0048 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 7 · 20,451/873 · 0.0479 |
+| `missing_response` | 2 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 7 · 21,013/1,062 · 0.0101 | ready_for_handoff | undecidable | `paths_differ_as_claimed` (첨부 없음) | 8 · 23,882/961 · 0.0555 |
+| `missing_response` | 3 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 7 · 21,013/1,092 · 0.0102 | ready_for_handoff | undecidable | `paths_differ_as_claimed` (첨부 없음) | 7 · 20,451/877 · 0.0479 |
+| `missing_change_doc` | 1 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 6 · 17,757/848 · 0.0085 | **needs_information** (`evidence_unavailable`) | undecidable | — | 8 · 24,361/616 · 0.0537 |
+| `missing_change_doc` | 2 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 5 · 14,089/1,011 · 0.0073 | **needs_information** (`evidence_unavailable`) | undecidable | — | 8 · 24,361/704 · 0.0544 |
+| `missing_change_doc` | 3 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 7 · 21,475/848 · 0.0099 | ready_for_handoff | failed | `refs_in_attachments`, `locations_resolve` | 7 · 20,795/836 · 0.0483 |
+| `effective_conflict` | 1 | ready_for_handoff | failed | `change_effective_before_failure` | 7 · 21,052/1,024 · 0.0101 | ready_for_handoff | failed | `change_effective_before_failure` | 7 · 20,628/905 · 0.0485 |
+| `effective_conflict` | 2 | ready_for_handoff | failed | `change_effective_before_failure` | 7 · 21,052/1,178 · 0.0103 | ready_for_handoff | failed | `change_effective_before_failure` | 7 · 20,628/862 · 0.0482 |
+| `effective_conflict` | 3 | 거부 (`baseline_run_id=''`) | — | — | 3 · 8,464/887 · 0.0048 | ready_for_handoff | failed | `change_effective_before_failure` | 7 · 20,628/969 · 0.0490 |
+| `http_error_input` | 1 | ready_for_handoff | failed | `failed_run_http_ok_then_transform_failed`, `paths_differ_as_claimed` | 7 · 20,121/956 · 0.0096 | ready_for_handoff | failed | `failed_run_http_ok_then_transform_failed`, `paths_differ_as_claimed` | 7 · 20,121/806 · 0.0467 |
+| `http_error_input` | 2 | ready_for_handoff | failed | 위와 같음 | 7 · 21,048/961 · 0.0100 | ready_for_handoff | failed | 위와 같음 | 7 · 20,121/838 · 0.0469 |
+| `http_error_input` | 3 | ready_for_handoff | failed | 위와 같음 | 6 · 17,257/924 · 0.0084 | ready_for_handoff | failed | 위와 같음 | 7 · 20,402/757 · 0.0469 |
 
-도구 반환·계약·프롬프트 중 어디가 문제인지의 분리 분석과 모델 교체 필요 여부는 아래 절에 적는다.
+기대 결과(ARCHITECTURE·PRD): `normal` 은 `ready_for_handoff` + `passed`; `missing_response`·`missing_change_doc` 은 `needs_information`; `effective_conflict` 는 `needs_information`(evidence_conflict) 또는 검증기 `failed`; `http_error_input` 은 `needs_information`(unsupported_diagnosis) — `response_path_changed` 재생 없음.
 
-## 사례별 결과
+## 지표 비교
 
-| 사례 | 회차 | outcome | 검증기 | diagnosis / missing | 호출 | 입력 토큰 | 출력 토큰 | 초 | US$ | 오류 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `normal` | 1 | needs_information | undecidable | evidence_unavailable | 2 | 4,374 | 299 | 6.0 | 0.0022 | — |
-| `normal` | 2 | ready_for_handoff | failed | response_path_changed | 6 | 16,967 | 1,010 | 14.7 | 0.0084 | — |
-| `normal` | 3 | — | — | — | 2 | 4,610 | 210 | 11.2 | 0.0022 | model_output_invalid: 초안이 DiagnosisDraft 형식이 아닙니다: 1개 오류 — diagnosis.baseline_run_id='' |
-| `missing_response` | 1 | ready_for_handoff | failed | response_path_changed | 7 | 20,951 | 1,043 | 13.6 | 0.0100 | — |
-| `missing_response` | 2 | ready_for_handoff | failed | response_path_changed | 7 | 20,951 | 1,173 | 15.8 | 0.0103 | — |
-| `missing_response` | 3 | needs_information | undecidable | evidence_unavailable | 2 | 4,374 | 362 | 4.8 | 0.0023 | — |
-| `missing_change_doc` | 1 | needs_information | failed | evidence_unavailable | 2 | 4,374 | 353 | 5.5 | 0.0023 | — |
-| `missing_change_doc` | 2 | ready_for_handoff | failed | response_path_changed | 6 | 17,542 | 1,150 | 14.0 | 0.0089 | — |
-| `missing_change_doc` | 3 | ready_for_handoff | failed | response_path_changed | 6 | 16,710 | 981 | 12.3 | 0.0083 | — |
-| `effective_conflict` | 1 | needs_information | undecidable | evidence_unavailable | 2 | 4,374 | 302 | 4.3 | 0.0022 | — |
-| `effective_conflict` | 2 | ready_for_handoff | failed | response_path_changed | 5 | 14,041 | 890 | 13.5 | 0.0070 | — |
-| `effective_conflict` | 3 | ready_for_handoff | failed | response_path_changed | 7 | 20,201 | 1,030 | 13.6 | 0.0097 | — |
-| `http_error_input` | 1 | ready_for_handoff | failed | response_path_changed | 7 | 19,694 | 1,049 | 17.3 | 0.0096 | — |
-| `http_error_input` | 2 | ready_for_handoff | failed | response_path_changed | 7 | 19,694 | 935 | 14.3 | 0.0094 | — |
-| `http_error_input` | 3 | needs_information | failed | evidence_unavailable | 2 | 4,361 | 370 | 4.7 | 0.0023 | — |
+| 지표 | v2 mini | v3 mini | v3 gpt-4.1 | 읽기 |
+|---|---|---|---|---|
+| `normal` 통과 (`ready_for_handoff` + `passed`) | 0/3 | 0/3 | **3/3** | mini 는 네 번(v1 1/3·1/3, v2 0/3, v3 0/3) 모두 미달 |
+| 잘못된 수정 착수 (normal 외 `ready_for_handoff` + `passed`) | 0/12 | 0/12 | 0/12 | 세 번 모두 검증기가 만든 결과 (아래 판정 절) |
+| 의도한 사유로 `needs_information` (응답 누락·문서 누락·시각 충돌·503) | 0/12 | 0/12 | **2/12** | gpt-4.1 은 문서 누락 2건에서 `evidence_unavailable` + `evidence_id` 를 정확히 적음 |
+| `needs_information` 전체 (잘못된 사유 포함) | 5/15 | 0/15 | 2/15 | v2 의 5건은 전부 연도 오기로 "정상 실행 없음" |
+| 조사 완주 (정상 실행 `get_run` 도달) | 8/15 | 12/15 | 15/15 | |
+| `list_runs.before` 연도 오기 | 7/15 | 0/12 (3건 확인 불가) | 0/15 | v3 의 인자 규칙이 효과. mini 의 3건은 계약 거부 실행이라 조회 이력 산출물이 없다 (아래 관찰) |
+| 계약 거부 (`model_output_invalid`) | 1 | 3 | 0 | mini 3건 전부 `diagnosis.baseline_run_id=''` — 정상 실행 없이 `ready_for_handoff` |
+| 읽지 않은 근거 인용 (`refs_in_attachments` 실패 실행) | 5 | 6 (+거부 초안 1) | 2 | gpt-4.1 은 `not_found` 자료 인용 2건(`missing_response` 1, `missing_change_doc` 3) |
+| 부재 주장 인용 (읽은 `response-after` 에 `$.items`) | 2 | 1 | 0 | gpt-4.1 은 부재를 로그 2행(`observed_root_keys`)으로 표현 |
+| 지어낸 경로 | 1 (`$._meta.workflow_id`) | 2 (`$._keys` ×2) | 0 | |
+| 사실이 뒤집힌 진단 | 0 | 1 (`missing_change_doc` 2: old=`$.data.records` new=`$.items`) | 0 | |
+| `locations_resolve` 실패 실행 | 9 | 7 | 2 | gpt-4.1 의 2건은 읽지 않은 자료에서 파생 |
+| 검증기 `undecidable` | 3 | 0 | 4 | v2 의 3건은 연도 오기로 조기 종료한 결과. gpt-4.1 의 4건은 읽지 않은 자료를 인용하지 않아 첨부가 부족한 경우 — "차단(`failed`)" 보다 "보류" 로 끝난다 |
+| 진단 1회 평균 호출 · 토큰 · 시간 | 4.7 · 12.9k/0.7k · 11초 | 6.0 · 17.8k/1.0k · 14초 | 7.2 · 21.2k/0.8k · **42초** | gpt-4.1 은 13~52초. 상한 300초 안 |
+| 진단 1회 평균 비용 | US$0.0063 (실제 ~0.0067) | US$0.0087 | **US$0.0493** | `normal` 은 0.0485·0.0487·0.0485 |
+| 총비용 | US$0.0951 (실제 ~0.10) | US$0.1305 | US$0.7394 | |
 
-기대 결과 (ARCHITECTURE·PRD 수용 기준):
+## 관찰 — v3 gpt-4.1
 
-- `normal`: `ready_for_handoff` + 검증기 `passed`
-- `missing_response`: `needs_information` (실패 응답 본문 누락)
-- `missing_change_doc`: `needs_information` (변경 안내 누락)
-- `effective_conflict`: `needs_information`(evidence_conflict) 또는 검증기 `failed` — 인계 없음
-- `http_error_input`: `needs_information`(unsupported_diagnosis) — response_path_changed 재생 없음
+1. **`normal` 3/3 — 세 회차가 같은 궤적.** 조회 순서 9회가 동일하고 입력 토큰이 셋 다 20,628 이다. diagnosis 필드(경로·실행·문서)·첨부 7개·인용 위치 전부 원문에서 해석됐고 데모 검사 7개도 통과. 3회차의 `$.machine.empty_list_policy.missing` 처럼 깊은 경로도 실제 값이다.
+2. **문서 누락 2/3 에서 스스로 보류.** `missing_change_doc` 1·2회차는 `read_evidence upstream-response-change@1` 이 `not_found` 로 두 번 돌아오자 `needs_information` · `evidence_unavailable` · `evidence_id: upstream-response-change` 를 냈다 — CONTRACT 6절 예시와 같은 구조이며 PRD "부족한 자료·이유 표시" 그대로다. 3회차는 같은 `not_found` 문서를 `$.machine` 으로 인용하고 `change_document` 로 지정해 `refs_in_attachments` 가 막았다.
+3. **응답 누락 0/3 보류 — 그러나 지어내지 않음.** `missing_response` 세 회차 모두 `ready_for_handoff` 였다. 2·3회차는 `not_found` 인 `response-after` 를 인용하지 않고 로그 2행(`observed_root_keys=[report_date,data]`)으로 부재를 표현했다. 검증기는 `paths_differ_as_claimed` 에서 "첨부 없음" 으로 `undecidable`(보류) 을 냈고, 화면에는 `확인 필요 · 미충족 항목` 으로 남는다. 1회차만 `not_found` 자료를 `$.data.records` 로 인용해 `failed`.
+4. **시각 충돌 0/3, HTTP 503 0/3 — 읽고도 판단에 반영하지 않음.** `effective_conflict` 는 세 회차 모두 인용 위치가 전부 해석됐는데(`$.machine.effective_at` 을 읽었다) `ready_for_handoff` 였다. 1회차 요약 "변경 적용 직후"(사실은 적용 전), 2회차 claim "2026-09-21 00시 이전에 미리 변경되었음이 변경 안내 문서에 명시되었다"(문서에 없는 내용), 3회차는 적용 시각을 언급하지 않았다. `http_error_input` 은 세 회차 모두 claim 에 "fetch 단계 HTTP 503" 을 적고도 diagnosis 는 `response_path_changed` 였고, 2회차 요약은 "응답 구조 변경으로 인해 503" 이라는 인과를 만들었다. 여섯 건 모두 데모 검사(`change_effective_before_failure`, `failed_run_http_ok_then_transform_failed`·`paths_differ_as_claimed`)가 막았다.
+5. **도구 사용은 정확하다.** `list_runs.before` 15/15 가 실패 실행의 `started_at` 그대로, 정상 실행 `get_run` 15/15, 계약 거부 0, 지어낸 경로 0, 부재 주장 인용 0. `not_found` 자료를 한 번 더 읽어 보는 재시도가 3건(`missing_response` 2, `missing_change_doc` 1·2) 있었고 그중 2건이 보류로 이어졌다.
+6. **느리고 비싸다.** 진단 1회 평균 42초(13~52초), mini 의 3배. 비용 US$0.049 로 mini 의 5.7배. 상한(15회·80k·300초)에는 닿지 않았다. 웹 화면은 3초 폴링이라 `실행 중` 표시가 30~50초 이어진다.
 
-## 검증기가 실패로 표시한 check
+## 관찰 — v3 mini (v2 대비)
 
-| 사례 | 회차 | 검증기 | 실패 check |
-|---|---|---|---|
-| `normal` | 2 | failed | `locations_resolve` |
-| `missing_response` | 1 | failed | `refs_in_attachments`, `locations_resolve` |
-| `missing_response` | 2 | failed | `refs_in_attachments`, `locations_resolve` |
-| `missing_change_doc` | 1 | failed | `locations_resolve` |
-| `missing_change_doc` | 2 | failed | `refs_in_attachments`, `locations_resolve` |
-| `missing_change_doc` | 3 | failed | `refs_in_attachments`, `locations_resolve` |
-| `effective_conflict` | 2 | failed | `locations_resolve` |
-| `effective_conflict` | 3 | failed | `change_effective_before_failure` |
-| `http_error_input` | 1 | failed | `locations_resolve` |
-| `http_error_input` | 2 | failed | `failed_run_http_ok_then_transform_failed`, `paths_differ_as_claimed` |
-| `http_error_input` | 3 | failed | `refs_in_attachments`, `locations_resolve` |
+1. **연도 오기는 사라졌다.** 조회 이력이 남은 12건 전부 `before=2026-09-20T09:00:00+09:00`. v2 의 7/15 → 0/12. 계약 거부 3건(`normal` 2, `missing_response` 1, `effective_conflict` 3)은 조회 이력 산출물이 저장되지 않아 인자를 확인할 수 없다 — 셋 다 `list_runs` 직후 정상 실행 `get_run` 없이 `list_documents` 로 넘어갔고 요약에 "직전 정상 실행 기록이 없어" 라고 적었으므로 빈 목록을 받은 것으로 보이나, `before`·`status` 값이 원인인지는 알 수 없다. 조사 완주는 8 → 12.
+2. **완주가 늘자 확정 진단이 늘었다.** 유효 결과 12건 전부 `ready_for_handoff`, `needs_information` 0. 결론 규칙 준수 0/12 — v1 0/18, v2 0/7 에 이어 같다. v2 의 `needs_information` 5건은 전부 잘못된 사유였으므로, 의도한 사유의 보류는 세 평가 통틀어 0 이다.
+3. **읽지 않은 근거 인용 6건(+거부 초안 1).** `not_found` 자료 인용 5(`missing_response` 2·3, `missing_change_doc` 1·2·3), 한 번도 읽지 않은 `response-before` 인용 2(`normal` 1, `missing_change_doc` 2). v2 5건과 같은 수준이다.
+4. **지어낸 경로·뒤집힌 주장.** `response-after@1 $._keys` 2건(`normal` 3, `missing_response` 2). `missing_change_doc` 2회차는 old/new 경로를 반대로 적고(`old=$.data.records`, `new=$.items`) 읽지 않은 `response-before` 에 `$.data.records` 가 있다고 주장했다.
+5. **`normal` 은 인용 하나 차이로 두 번 미통과, 한 번 계약 거부.** 1회차 `response-after@1 $.items`(부재 주장) + 읽지 않은 `response-before` 인용, 3회차 `$._keys` 하나. v2 `normal` 2회차와 같은 양상이다. 2회차는 정상 실행을 못 찾고 `baseline_run_id=''` 로 거부됐다.
+6. **계약 거부 3건 전부 `baseline_run_id=''`.** 정상 실행을 찾지 못했는데도 `ready_for_handoff` 를 냈고 계약(`min_length=1`)이 막았다. 조회 이력이 없는 것은 하네스가 계약 거부 실행의 trace 를 저장하지 않기 때문이며 이 step 에서 고치지 않았다.
 
-## 도구 호출 순서 (조회 이력)
+## 통과 기준 판정 — 모델별
 
-- `normal` 1회차 (`eval-normal-1-00291c53`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok`
-- `normal` 2회차 (`eval-normal-2-ef5b3e3e`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-before@1 ok` → `read_evidence response-after@1 ok` → `read_evidence log-daily-0920@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `normal` 3회차 (`eval-normal-3-3e45cc4e`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `list_documents daily-report ok` → `read_evidence response-after@1 ok` → `read_evidence log-daily-0920@1 ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `missing_response` 1회차 (`eval-missing_response-1-fa3d1a8e`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-after@1 not_found` → `read_evidence log-daily-0920@1 ok` → `read_evidence response-before@1 ok` → `read_evidence log-daily-0919@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `missing_response` 2회차 (`eval-missing_response-2-0c86e778`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-before@1 ok` → `read_evidence response-after@1 not_found` → `read_evidence log-daily-0920@1 ok` → `read_evidence log-daily-0919@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `missing_response` 3회차 (`eval-missing_response-3-10a0f316`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok`
-- `missing_change_doc` 1회차 (`eval-missing_change_doc-1-397b627d`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok`
-- `missing_change_doc` 2회차 (`eval-missing_change_doc-2-91e36ecb`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 not_found` → `read_evidence daily-report-contract@1 ok` → `read_evidence response-after@1 ok` → `read_evidence log-daily-0920@1 ok`
-- `missing_change_doc` 3회차 (`eval-missing_change_doc-3-85533281`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-before@1 ok` → `read_evidence response-after@1 ok` → `read_evidence log-daily-0920@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 not_found` → `read_evidence daily-report-contract@1 ok`
-- `effective_conflict` 1회차 (`eval-effective_conflict-1-75b662e0`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok`
-- `effective_conflict` 2회차 (`eval-effective_conflict-2-c4fc1ad8`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-after@1 ok` → `read_evidence log-daily-0920@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `effective_conflict` 3회차 (`eval-effective_conflict-3-9ba1592f`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-before@1 ok` → `read_evidence response-after@1 ok` → `read_evidence log-daily-0920@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `http_error_input` 1회차 (`eval-http_error_input-1-26fd8424`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-before@1 ok` → `read_evidence log-daily-0920@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `http_error_input` 2회차 (`eval-http_error_input-2-1d4691fa`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok` → `get_run daily-0919-0900 ok` → `read_evidence response-before@1 ok` → `read_evidence log-daily-0920@1 ok` → `list_documents daily-report ok` → `read_evidence upstream-response-change@1 ok` → `read_evidence daily-report-contract@1 ok`
-- `http_error_input` 3회차 (`eval-http_error_input-3-18939ef9`): `get_run daily-0920-0900 ok` → `list_runs daily-report ok`
+ARCHITECTURE "진단 모델과 평가 기준": 정상 사례 3회 모두 정확한 근거와 결과(`normal` 3/3 `ready_for_handoff` + `passed`), 나머지 12회에서 잘못된 수정 착수 0.
 
-## 실행 이력
-
-이 step 의 실호출은 1회다. 프롬프트·도구·계약·fixture 는 실행 전후로 고치지 않았고, 스크립트 결함이 없어 재실행하지 않았다.
-
-| 실행 | 명령 | 결과 | 비용 |
-|---|---|---|---|
-| 15:48~15:51 KST | `--cases all --repeat 3` | normal 0/3 · 잘못된 수정 착수 0/12 · 계약 거부 1/15 · `needs_information` 5/15 | US$0.0951 (표 기준) |
-
-원본: `data/diag-eval/2026-09-20T154851+0900/` — `results.json`, 진단 서비스 DB·산출물(`diagnosis_result`·`tool_trace`·`evidence`), `invalid-drafts/`. `data/` 는 git 에 들어가지 않는다.
-
-표의 총액은 실제보다 조금 적다. `worker/loop.py` 의 `call_model` 은 `turn_fn()` 이 돌아온 뒤에 `usage` 를 더하는데, 계약 거부는 `OpenAIModelClient._turn` 안에서 `DraftInvalid` 로 던져지므로 **마지막 턴의 호출 1회와 토큰이 `usage` 에 들어가지 않는다**. `normal` 3회차는 조회 이력이 7건(3턴)인데 호출 2·토큰 4,610/210 으로 기록됐다. 빠진 턴은 같은 궤적의 다른 실행 기준 입력 4~12k·출력 0.6~1k 토큰, 약 US$0.003~0.006 이며, 이 실행의 실제 총액은 약 US$0.10 이다. 이전 보고서의 계약 거부 12건(1차 7·2차 5)도 같은 방식으로 한 턴씩 빠져 있었다. 진단 서비스의 `db.record_usage` 도 같은 값을 쓰므로 총액 US$30 상한 추정이 계약 거부 1건당 한 턴만큼 적게 잡힌다. 제품 코드 결함이며 이 step 에서는 고치지 않는다(다음 phase 항목).
-
-## 이전 평가와의 비교 — v1 2차 → 이번
-
-### 바뀐 조건
-
-| 항목 | 이전 (v1 2차) | 이번 |
+| 기준 | v3 mini | v3 gpt-4.1 |
 |---|---|---|
-| 프롬프트 | `diag-prompt-v1` | `diag-prompt-v2` — 인용 규칙에 배열 인덱스 `[N]` 허용·`$` 단독 등 금지 명시, `lines:N-M` 은 도구가 준 줄 번호를 그대로 쓰고 `line_count` 를 넘지 않음, 결론 규칙에 "ok 가 false 인 자료가 필요하면 `needs_information`" 한 줄 추가 |
-| 도구 계약 | `tools-v1` — 텍스트 자료는 원문 문자열 | `tools-v2` — `text/plain` 은 `{line_count, lines: [{line, text}, …]}`. JSON 자료·조회 이력·첨부 sha256 은 불변 |
-| 계약 v1 `Location` | 객체 경로(`$.a.b`) 또는 `lines:N-M`. 문법은 `AfterValidator` 라 strict 스키마에 없음 | `LOCATION_PATTERN` 이 배열 인덱스 `[N]` 을 허용하고 `Field(pattern=…)` 으로 strict 스키마의 `location` 에 `pattern` 이 드러남 |
-| 모델·단가·상한·예산·fixture·사례 정의 | 같음 | 같음 |
+| `normal` 3/3 | **미충족** 0/3 | **충족** 3/3 |
+| 잘못된 수정 착수 0/12 | 충족 — 검증기 12/12 차단 | 충족 — 모델 보류 2 + 검증기 차단 10 |
+| 전 사례 3회 완료 | 충족 | 충족 |
+| **판정** | **확정 보류 (네 번째)** | **통과 기준 충족** |
 
-### 지표
+PRD "도구·인계 수용 기준" 표에 대한 gpt-4.1 의 위치 — 제품 수준(A `확인 필요`·B 미실행·이유 표시)과 모델 수준(스스로 보류)을 나눠 본다:
 
-| 지표 | 이전 (v1 2차) | 이번 (v2) | 읽기 |
-|---|---|---|---|
-| `normal` 통과 (`ready_for_handoff` + `passed`) | 1/3 | **0/3** | 표본 3 에서 1 과 0 의 차이는 의미가 약하다. 실패 사유가 바뀐 것이 핵심(아래) |
-| 잘못된 수정 착수 | 0/12 | 0/12 | 두 번 다 검증기가 막은 결과 |
-| 계약 거부 (`model_output_invalid`) | 5 (전부 `location` 문법) | **1** (`diagnosis.baseline_run_id=''`, `location` 문법 0) | Step 0·2 의 목표 달성 |
-| 배열 인덱스 인용 `$.stages[N]…` | 계약 거부 | 8건 인용, 전부 계약 통과·원문 해석 성공 | Step 0 의 목표 달성 |
-| 실제 근거의 줄 범위 인용이 `line_count` 를 넘은 건 | 5 (`lines:2-5`·`2-6`·`1-6`·`1-7`) | **0** (계약 거부 초안 포함 12건 전부 안. ERROR 줄을 `lines:2-2` 로 짚음, 4줄 로그에 `lines:1-4`) | Step 1 의 목표 달성 |
-| `locations_resolve` 실패 | 6 (줄 범위 초과 5, 부재 주장 인용 1, 미읽음 근거 파생 1 — 한 실행에 둘이 겹침) | 9 | 구성이 다르다 — 이번 9건은 미읽음·지어낸 근거 파생 5, 부재 주장 인용 2, 지어낸 경로 1, 중첩 오류 1 (관찰 4) |
-| 읽지 않은 근거 인용 (`refs_in_attachments`) | 1 | **5** (실제 근거 4 + 지어낸 ID `-@-` 1) | 나빠짐 |
-| `needs_information` | 0 | 5 | **전부 잘못된 이유**(`list_runs.before` 연도 오기 → "정상 실행 없음"). 의도한 사유(응답 누락·문서 누락·시각 충돌·503)로 보류한 실행 0 |
-| 조사 순서 1~4 완주 (정상 실행 `get_run` 포함) | 15/15 | **8/15** | 연도 오기 7건이 정상 실행을 못 찾음 |
-| 모델 호출 · 입력/출력 토큰 · 시간 | 93 · 245k/10.3k · 209초 | 70(+1 미집계) · 193k/11.2k · 166초 | 조기 종료 5건 때문에 줄었다 |
-| 총 추정 비용 | US$0.1147 | US$0.0951 (실제 약 0.10) | |
-
-### 사례별 outcome·검증기
-
-| 사례 | 이전 1·2·3회차 | 이번 1·2·3회차 |
+| PRD 사례 | 제품 수준 | 모델 수준 |
 |---|---|---|
-| `normal` | 거부 / ready·**passed** / ready·failed | needs·undecidable / ready·failed / 거부 |
-| `missing_response` | 거부 / ready·failed / 거부 | ready·failed / ready·failed / needs·undecidable |
-| `missing_change_doc` | ready·failed / 거부 / ready·failed | needs·failed / ready·failed / ready·failed |
-| `effective_conflict` | ready·failed / ready·failed / ready·failed | needs·undecidable / ready·failed / ready·failed |
-| `http_error_input` | ready·failed / 거부 / ready·failed | ready·failed / ready·failed / needs·failed |
+| 모든 데모 근거 조회 가능 | 3/3 — 조회 이력·인용 일치, 첨부만으로 재현 가능 | 3/3 |
+| 실패 응답 본문 누락 | 3/3 — 검증기 `undecidable`/`failed`, 미충족 항목에 "첨부 없음: response-after@1" | 0/3 |
+| 변경 안내 누락 | 3/3 | **2/3** |
+| 적용 시각 충돌 | 3/3 — `change_effective_before_failure` 가 `evidence_conflict` 를 표시 | 0/3 |
+| HTTP 오류 입력 | 3/3 — 인계 차단. 다만 PRD "기존 형식 변경 진단을 재생하지 않고" 는 위반 | 0/3 |
 
-## 관찰
+즉 "잘못된 수정 착수 0" 은 gpt-4.1 에서도 대부분 검증기의 결과다(10/12). 모델 교체가 바꾼 것은 (a) `normal` 이 안정적으로 통과하고, (b) 도구 인자·인용 위치·계약 형식 오류가 사라지고, (c) 문서 누락에서 2/3 스스로 보류한다는 점이다. 시각 충돌·HTTP 오류·응답 누락에서 스스로 보류하는 행동은 여전히 없다.
 
-1. **`list_runs` 의 `before` 에 연도를 잘못 쓴 실행 7/15 — 새로 나타난 문제.** `get_run daily-0920-0900` 이 `started_at: 2026-09-20T09:00:00+09:00` 을 돌려줬는데도 모델은 `before` 를 `2023-09-20T09:00:00+09:00`(4건) 또는 `2024-…`(2건) 로 썼다(조회 이력 확인; `normal` 3회차는 이력 산출물이 없으나 요약에 "정상 실행 기록이 없으므로" 라고 적혀 같은 경우로 본다). 도구는 정확히 빈 목록을 돌려줬고(2023 이전 실행 없음), 모델은 "직전 정상 실행이 없다"고 결론했다. 5건은 그 자리에서 `needs_information`(`evidence_unavailable`, `evidence_id` null)으로 멈췄고, 2건은 조사를 계속해 `baseline_run_id` 를 `""`(계약 거부) / `"N/A"`(`missing_change_doc` 2회차) 로 채운 `ready_for_handoff` 를 냈다. 이전 두 실행의 조회 이력 18건은 전부 `2026-…` 이었다. 프롬프트 v2·도구 v2 어디에도 시각 관련 변경은 없어, 표본 변동인지 프롬프트 길이·도구 설명 변화의 간접 효과인지 이 실행만으로 가를 수 없다.
-2. **결론 규칙 미준수는 그대로다.** 조사를 끝까지 한 8건(정상 실행까지 읽은 실행) 전부 `ready_for_handoff` 였고, 그중 `normal` 이 아닌 7건에서 `needs_information` 은 0 이다. 모델은 자기 요약·claim 에 모순을 적고도 확정 진단을 냈다 — `effective_conflict` 2회차 요약 "2026-09-21부터 적용될 예정", 3회차 claim "2026-09-21 부터 적용되는 변경 사항"; `http_error_input` 1회차 claim "fetch 단계에서 HTTP 503 오류", 2회차 요약 "503 상태로 실패하여 데이터를 받아오지 못했습니다"; `missing_change_doc` 2회차 요약 "안내 문서가 적용된 이후 발생한 것으로 보인다"(그 문서는 `not_found`). v2 에 추가한 "ok 가 false 인 자료가 필요하면 `needs_information`" 문장은 해당하는 4건(`missing_response` 1·2회차, `missing_change_doc` 2·3회차)에서 0/4 준수였다. 이번의 `needs_information` 5건은 전부 관찰 1 의 잘못된 이유이며, PRD 가 요구하는 사유로 보류한 실행은 없다.
-3. **읽지 않은 근거 인용 5건 (이전 1건).** `missing_response` 1·2회차는 `not_found` 였던 `response-after` 를 `$.__root__`·`$.data.records` 로 인용했고, `missing_change_doc` 2·3회차는 `not_found` 였던 `upstream-response-change` 를 `$.machine` 으로 인용하고 `change_document` 로 지정했다. `http_error_input` 3회차는 존재하지 않는 근거 `-@-`(evidence_id `-`, version `-`)를 `lines:1-10` 으로 인용했다. 다섯 건 모두 `refs_in_attachments` 가 막았다.
-4. **인용 위치 — Step 0·1 의 목표 증상은 사라졌다.** 배열 인덱스 인용 8건(`$.stages[1].error_code`, `$.stages[1]`, `$.stages[0]`)이 모두 계약을 통과하고 원문에서 해석됐고, 실제 근거의 줄 범위 인용 12건이 모두 `line_count` 안이다. 남은 `locations_resolve` 9건은 (a) 관찰 3 의 미읽음·지어낸 근거에서 파생된 5건, (b) **부재를 주장하려고 없는 경로를 인용한 2건** — `response-after@1 $.items`(`normal` 2회차, `effective_conflict` 2회차; v1 2차 `effective_conflict` 1회차에도 같은 인용이 1건 있었다), (c) 지어낸 경로 1건 — `run-daily-0920-0900@1 $._meta.workflow_id`, (d) 중첩 오류 1건 — `upstream-response-change@1 $.old_path`(`$.machine.old_path` 여야 함) 이다. (b)~(d) 는 문법이 맞고 값이 없는 경우라 계약(`pattern`)으로는 막을 수 없고 검증기만 잡는다.
-5. **`normal` 2회차는 인용 하나 차이로 미통과.** diagnosis 필드·첨부 7건·나머지 6개 위치가 전부 맞았고 `response-after@1 $.items`(부재 주장) 하나가 걸렸다. 프롬프트 v1·v2 모두 "값이 없으면 인용하지 않는다" 를 명시한다. CONTRACT 5절 예시처럼 부재는 `response-before@1 $.items` + `response-after@1 $.data.records` 로 표현해야 하는데, 이를 문법으로 강제할 수단은 없다.
-6. **잘못된 수정 착수 0/12 — 이번에도 검증기의 결과다.** `http_error_input` 2회차는 위치가 전부 해석돼 데모 검사까지 갔고 `failed_run_http_ok_then_transform_failed`(`http_status=503`, transform `skipped`)·`paths_differ_as_claimed`(`response_ref` 없음) 가 막았다. `effective_conflict` 3회차는 `change_effective_before_failure`(effective_at 09-21 > failed 09-20) 가 막았다. 나머지는 공통 검사에서 걸려 데모 검사에 이르지 않았다. 검증기가 없으면 12건 중 8건이 B 로 인계됐다.
-7. **도구·SDK 는 안정적이다.** 조회 결과는 `ok` 와 제거한 자료의 `not_found` 뿐, `access_denied`·`unavailable`·`invalid_arguments` 0. 상한(15회·80k·300초) 미도달. 새 도구 반환 형식(줄 목록)과 strict 스키마의 `location.pattern` 은 400 없이 동작했다.
+## ADR-0003 판단 — 제안 (사용자 확정 전, ADR 파일 미수정)
 
-## 통과 기준 판정
+**gpt-4.1(`gpt-4.1-2025-04-14`) 로 ADR-0003 을 갱신하거나 ADR-0007 로 대체할 것을 제안한다.** 근거: 통과 기준을 같은 하네스에서 충족했고, mini 는 네 번의 평가(도구·계약·프롬프트 층을 세 차례 고친 뒤에도)에서 `normal` 을 한 번도 3/3 으로 넘기지 못했다. 시연의 핵심인 "A 자동 완료 → B 자동 착수" 는 `normal` 이 안정적이어야 성립한다.
 
-- `normal` 3/3 (`ready_for_handoff` + 검증기 `passed`): **0/3 — 미충족.** 1회차 연도 오기로 조기 `needs_information`, 2회차 부재 주장 인용 1건, 3회차 연도 오기 + 빈 `baseline_run_id` 로 계약 거부.
-- 나머지 12회 중 잘못된 수정 착수 0회: **충족.** 모델 행동이 아니라 검증기 결과다(관찰 6).
-- 전 사례 3회 완료: 충족.
+비용 (단가 2.00/8.00, 이번 실행 기준):
 
-**판정: 확정 조건 미충족 — 확정 보류.**
-
-## 남은 문제의 분리 — 도구 반환·계약·프롬프트·모델
-
-| 층 | 이번 실행의 관찰과 판단 | 고칠 수 있는 것 (이 step 에서 적용하지 않음) |
+| 항목 | gpt-4.1 | mini (참고) |
 |---|---|---|
-| 도구 반환 (`tools/api.py`, `tools/store.py`) | 줄 번호 반환은 목표대로 동작했다(줄 범위 초과 0). `list_runs` 는 `before` 가 자료 범위 밖이면 빈 목록만 돌려주므로, 모델이 연도를 잘못 써도 "잘못 썼다" 는 신호가 없다. 검증기 관점에서는 문제가 없다(빈 목록이 사실이다). | 빈 목록일 때 조회 범위의 사실 메타데이터(예: `total_runs`, 최초·최근 `started_at`)를 함께 돌려주는 안. 정답이 아니라 자료 범위 사실이다. 채택 여부는 프롬프트 층 수정과 함께 판단한다. |
-| 계약 (`contracts/v1.py`, `worker/model.py`) | `location.pattern` 이 생성 시점에 문법을 강제해 문법 거부가 0 이 됐다. 남은 계약 거부 1건은 `baseline_run_id` 빈 문자열(`min_length=1`) — 조사가 불완전한데 `ready_for_handoff` 를 낸 결과라 계약이 정상 차단한 것이다. 부재 주장·지어낸 경로·중첩 오류는 문법이 맞아 계약으로 막을 수 없다. | 계약 층에는 남은 항목이 없다. 부재 주장을 표현할 문법(예: `absent:` 접두)은 CONTRACT·검증기·ARCHITECTURE 를 함께 바꾸는 설계 변경이라 이 phase 범위 밖이다. |
-| 프롬프트 (`worker/prompt.py`) | 인용 규칙 보강은 효과가 있었다(관찰 4). 결론 규칙에 더한 한 줄은 0/4 준수(관찰 2). `list_runs` 인자 작성 규칙(`before` 에 실패 실행의 `started_at` 을 그대로 쓴다, 또는 `before` 없이 전체 목록을 본다)은 없다. | v3: `before` 값 작성 규칙 한 줄 — 정답이 아니라 인자 규칙이다. 이 한 줄로 관찰 1 의 7건이 줄면 결론 규칙 준수를 더 많은 표본에서 볼 수 있다. 결론 규칙 자체는 v1→v2 에서 문구를 더해도 0 준수였으므로 프롬프트만으로 해결된다고 기대하지 않는다. |
-| 모델 (`gpt-4.1-mini-2025-04-14`) | (a) 결론 규칙 미준수 — 모순을 스스로 적고도 확정 진단(조사 완주 7/7). (b) 읽지 않은·존재하지 않는 근거 인용 5건. (c) 도구 결과에 있는 시각을 다른 연도로 옮겨 씀 7건. (d) 부재 주장에 없는 경로 인용 2건 — 프롬프트가 명시적으로 금지한 행동. (a)(b)(d) 는 이전 보고서가 "도구·계약 수정으로 사라지지 않는다" 고 예상한 항목이며, 그대로였다. | 이전 보고서의 조건("도구 반환·계약 스키마를 고친 뒤 재평가해도 `needs_information` 준수가 0 에 가깝고 `normal` 3/3 이 안 되면 상위 모델을 같은 하네스로 평가") 에 도달했다. 아래 절. |
+| 진단 1회 | US$0.049 (범위 0.047~0.056, `normal` 0.0485) | US$0.0087 |
+| 하루 60회 상한(전체 일일 상한)을 채울 때 | US$2.96/일 | US$0.52/일 |
+| 월 예상 (30일 × 60회) | **US$88.7** | US$15.7 |
+| 심사 기간 15일 (9/21~10/5) × 60회 | US$44.4 | US$7.8 |
+| 총액 US$30 · 90% 정지(US$27) 도달 | 약 547회 — 하루 60회면 **10일째** 정지 | 약 3,100회 — 도달 안 함 |
 
-## ADR-0003 확정 여부
+하루 60회·15일을 US$27 안에 두려면 `DIAG_GLOBAL_DAILY` 를 **36회 이하**로 낮추거나 총액 상한을 US$45 이상으로 올려야 한다. 세션당 10회 상한은 그대로 둬도 된다. 실제 심사 트래픽은 알 수 없으므로 DEPLOY 9절의 `/budget` 점검으로 소진 속도를 보고 조정한다.
 
-**확정 조건 미충족 — 확정 보류.** 키·계정 API 사용 가능·단가·예산은 확인돼 있고 실호출은 동작하지만, ARCHITECTURE 의 통과 기준(`normal` 3/3)을 v1 1차 1/3, v1 2차 1/3, v2 0/3 으로 세 번 넘지 못했다. "잘못된 수정 착수 0회" 는 세 번 모두 검증기가 만든 결과다.
+시간: 진단 1회 42초(mini 14초). 상한 300초 안이지만 `accepted` 후 `started` 미확인 → `unknown` 2분 규칙과는 무관하고(진단 워커가 `started` 를 먼저 보낸다), 화면의 `실행 중` 이 길어질 뿐이다.
 
-**상위 모델 비교 평가가 필요하다고 판단한다.** 근거:
+채택 시 함께 바뀔 것 (사용자가 확정한 뒤에만, 이 step 은 어느 것도 고치지 않았다): ADR-0003 본문 또는 ADR-0007 신설, `src/diagnostic_demo/settings.py` 의 `DEFAULT_MODEL_ID`, `deploy/env/diag.env.example` 의 `DIAG_MODEL_ID`·`DIAG_PRICE_*`, DEPLOY.md 3절의 단가 문구, ARCHITECTURE "진단 모델과 평가 기준"·"모델 호출 예산" 절, 로컬 `.env` 의 단가.
 
-- 값싸고 결정적인 수정(도구 반환·계약 문법·프롬프트 인용 규칙)은 적용했고 그 목표 증상(문법 거부·줄 범위 초과)은 0 이 됐다. 남은 실패는 모델이 자기가 읽은 사실과 어긋나는 결론을 내는 행동(관찰 1·2·3·5)이며, 같은 종류의 행동이 프롬프트 v1·v2 에서 모두 나타났다.
-- 결론 규칙 준수는 v1 0/18, v2 0/7 이다. 이 값이 0 인 한 `normal` 이 3/3 이 되더라도 자료 누락·충돌 사례에서 A 는 매번 검증기 차단으로 `확인 필요` 에 머물고, PRD "입력 기록이 달라졌는데도 같은 확정 진단이면 수용 기준 실패" 를 통과하지 못한다.
-- 표본이 사례당 3회라 `normal` 1/3 과 0/3 의 차이는 판단 근거로 약하다. 모델 비교는 같은 하네스(`python3 scripts/diag_eval.py --cases all --repeat 3`)·같은 프롬프트·같은 도구 계약으로 해야 층을 섞지 않는다.
+다른 선택지 — 장단점:
 
-제안 순서 — 사용자 결정 사항이며 이 step 은 실행하지 않았다:
+| 선택지 | 장점 | 단점 |
+|---|---|---|
+| **gpt-4.1 채택 (제안)** | `normal` 3/3, 도구 인자·인용·계약 오류 0, 문서 누락 2/3 스스로 보류. 프롬프트·도구 재작업 없이 지금 배포 가능 | 비용 5.7배·시간 3배. 하루 상한을 낮추거나 총액을 올려야 15일을 버틴다. 시각 충돌·503·응답 누락은 여전히 검증기 의존 |
+| mini 유지 + 검증기 결과를 `확인 필요` 로 쓰는 데모 운영 | 비용 최소. 검증기가 잘못된 착수는 막는다 | 정상 사례가 4번의 평가에서 3/3 이 안 됐다 — 시연의 자동 인계가 성립하지 않고, 심사자가 보는 A 는 대부분 `확인 필요 · 미충족 항목` 또는 `실패 · model_output_invalid` |
+| 추론 모델 평가 | 결론 규칙(스스로 보류) 준수가 오를 가능성 | 단가·예산·스냅샷 확인이 없어 이 step 범위 밖. 응답 시간이 더 길 수 있음. 같은 하네스로 5사례 × 3회 한 번 더 필요 |
+| 프롬프트 재설계 (v4) 후 재평가 | 결론 규칙 문장을 첫 줄로 올리고 "ok 가 false 인 자료가 있으면 `needs_information`" 을 강조하면 gpt-4.1 의 2/12 가 오를 수 있음 | mini 에서는 v1→v2→v3 문구 추가가 결론 규칙에 효과가 없었다(0/18·0/7·0/12). 재평가 비용 US$0.75(gpt-4.1) 추가 |
 
-1. 프롬프트 v3 에 `list_runs` 의 `before` 작성 규칙 한 줄을 넣는다(관찰 1 의 7건은 모델 비교에서 잡음이다). 정답·fixture 구조는 넣지 않는다.
-2. 같은 제공자의 상위 모델 `gpt-4.1`(스냅샷은 공식 모델 문서에서 확인)을 `DIAG_MODEL_ID` 로 지정해 같은 하네스로 5사례 × 3회 돌린다. 단가는 공식 가격 페이지에서 확인해 `DIAG_PRICE_*` 를 바꿔야 한다 — mini 의 몇 배인지에 따라 다르지만 이번 실행이 US$0.10 이었으므로 5배라도 US$0.5 안팎으로 평가 예산 US$2 안이다. 실행 중 조용한 대체는 하지 않으며 `provenance.model_id` 에 그대로 남는다.
-3. 그 결과로 `normal` 3/3 과 결론 규칙 준수(`needs_information` 이 의도한 사유로 나오는 비율)를 비교해 ADR-0003 확정 또는 대체 ADR 을 사용자가 결정한다. 이 문서는 ADR 파일을 고치지 않는다.
+남은 문제 — 모델 교체로 해결되지 않는 것: 자료 누락·충돌·다른 원인에서 모델이 스스로 보류하는 비율은 gpt-4.1 에서도 2/12 다. PRD "입력 기록이 달라졌는데도 같은 확정 진단이면 수용 기준 실패" 를 모델 수준에서 통과한 것은 아니며, 제품은 검증기(`verify_diagnosis`)로 이를 막는다. ARCHITECTURE 의 "구조화 출력 성공과 사실 관계 검증 통과는 별개" 가 gpt-4.1 에서도 필요한 방어선이다. 이 검증기가 `failed` 대신 `undecidable` 로 끝나는 비율(gpt-4.1 4/12)이 높아진 것은 모델이 읽지 않은 자료를 지어내지 않기 때문이며, 화면 표시는 둘 다 `확인 필요` 다.
 
-배포 관점은 이전 보고서와 같다: 현재 상태로 심사 데모를 돌리면 A 는 대부분 `확인 필요 · 미충족 항목`(결과 배지는 검증기 차단이면 `인계 가능`, 연도 오기 조기 종료면 `정보 필요`; 계약 거부는 `실패 · model_output_invalid`)으로 끝나고 B 는 자동 착수하지 않는다.
+배포 관점: gpt-4.1 로 심사 데모를 돌리면 정상 사례 A 는 `완료 · 판정 근거` 로 끝나고 B 가 자동 착수한다(이 평가 기준 3/3). 자료가 빠지거나 충돌하는 비교 사례는 `확인 필요` 에 머문다 — 이는 "검증 없이는 인계하지 않는다" 는 제품 주장과 일치한다.

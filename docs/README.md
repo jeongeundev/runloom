@@ -2,7 +2,7 @@
 
 갱신일: 2026-09-20
 
-설계 문서(PRD·ARCHITECTURE·CONTRACT·ADR)가 있고 구현은 `phases/0-mvp`(18 step)·`phases/1-diag-fix`(4 step) 까지 끝났다. 진단 모델 비교(`phases/2-model-compare`)는 계획만 있다. 먼저 [현재 인계](CURRENT_HANDOFF.md)의 "지금 상태" 표를 읽는다.
+설계 문서(PRD·ARCHITECTURE·CONTRACT·ADR)가 있고 구현은 `phases/0-mvp`(18 step)·`phases/1-diag-fix`(4 step)·`phases/2-model-compare`(3 step, 진단 모델 비교) 까지 끝났다. 먼저 [현재 인계](CURRENT_HANDOFF.md)의 "지금 상태" 표를 읽는다.
 
 ## 현재 문서의 구분
 
@@ -15,8 +15,11 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 기술 설계 v0.3 제안. 스택·모델 평가안·계약 필드·이벤트 순서·DB 제약·검증 기준. 구현·실연동 검증 전 |
 | [CONTRACT.md](CONTRACT.md) | 계약 v1의 완전한 요청·이벤트·결과·오류 예시. 계약 테스트 fixture로 사용 |
 | [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록. 2026-09-20 Codex CLI 실연동 1회(Step 15) |
-| [DIAG_EVAL.md](DIAG_EVAL.md) | 진단 모델 실호출 재평가(phase 1-diag-fix Step 3). location 문법·도구 줄 번호·프롬프트 v2 적용 후 gpt-4.1-mini 로 5사례 × 3회 1회 실행, `normal` 0/3·잘못된 수정 착수 0/12·US$0.10. 문법 거부·줄 범위 초과는 0 이 됐으나 결론 규칙 미준수·읽지 않은 근거 인용·`list_runs.before` 연도 오기(7/15)가 남음. ADR-0003 확정 보류, 상위 모델(gpt-4.1) 비교 평가 필요 판단 |
-| [DIAG_EVAL_2026-09-20_prompt-v1.md](DIAG_EVAL_2026-09-20_prompt-v1.md) | 이전 평가(Step 17, 프롬프트 v1·도구 v1). 5사례 × 3회 두 번 실행, `normal` 1/3·잘못된 수정 착수 0/12·총 US$0.23. 위 재평가의 기준선이며 도구 반환·계약·프롬프트·모델 분리 분석의 원본 |
+| [DIAG_EVAL.md](DIAG_EVAL.md) | 진단 모델 비교 평가 종합(phase 2-model-compare Step 2). 같은 하네스·프롬프트 v3·도구 v2 로 gpt-4.1-mini 와 gpt-4.1 을 5사례 × 3회씩 실행. mini `normal` 0/3(네 번째 미달)·gpt-4.1 `normal` 3/3·잘못된 수정 착수 둘 다 0/12·의도한 사유의 보류 mini 0/12·gpt-4.1 2/12·비용 US$0.13 / US$0.74. 네 평가의 조건 표·모델 비교표·지표 비교·모델별 통과 기준 판정·ADR-0003 을 gpt-4.1 로 갱신(또는 ADR-0007)하자는 제안과 비용 추정(진단 1회 US$0.049, 하루 60회 월 US$88.7). ADR 파일은 미수정 |
+| [DIAG_EVAL_prompt-v3_gpt-4.1.md](DIAG_EVAL_prompt-v3_gpt-4.1.md) | 스크립트 산출 원본 — `gpt-4.1-2025-04-14` · 프롬프트 v3 · 도구 v2, 15회, `normal` 3/3, 통과 기준 충족, US$0.7394 |
+| [DIAG_EVAL_prompt-v3_gpt-4.1-mini.md](DIAG_EVAL_prompt-v3_gpt-4.1-mini.md) | 스크립트 산출 원본 — `gpt-4.1-mini-2025-04-14` · 프롬프트 v3 · 도구 v2, 15회, `normal` 0/3, 계약 거부 3(`baseline_run_id=''`), 연도 오기 0/12, US$0.1305 |
+| [DIAG_EVAL_2026-09-20_prompt-v2.md](DIAG_EVAL_2026-09-20_prompt-v2.md) | 이전 평가(phase 1-diag-fix Step 3, 프롬프트 v2·도구 v2, mini). `normal` 0/3·잘못된 수정 착수 0/12·US$0.10. 문법 거부·줄 범위 초과는 0 이 됐으나 결론 규칙 미준수·읽지 않은 근거 인용·`list_runs.before` 연도 오기(7/15)가 남아 상위 모델 비교를 판단한 원본 |
+| [DIAG_EVAL_2026-09-20_prompt-v1.md](DIAG_EVAL_2026-09-20_prompt-v1.md) | 이전 평가(Step 17, 프롬프트 v1·도구 v1, mini). 5사례 × 3회 두 번 실행, `normal` 1/3·잘못된 수정 착수 0/12·총 US$0.23. 도구 반환·계약·프롬프트·모델 분리 분석의 원본 |
 | [DEPLOY.md](DEPLOY.md) | 배포 런북. VM(systemd 4개 + Caddy + 백업 타이머)과 운영자 Mac(launchd 연결 프로그램) 설치 순서와 확인 명령. 설정 파일은 `deploy/`. VM·도메인은 미지정 |
 | [등록 방향 정리 전 원문](archive/2026-09-19-before-agent-registration/README.md) | 이전 제품 개요와 handoff. 현행 요구사항과 구분 |
 | [GLOSSARY.md](GLOSSARY.md) | 코드 식별자와 일치하는 도메인 용어와 금지 표현. 2026-09-20 채움 |
