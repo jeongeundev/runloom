@@ -54,6 +54,9 @@
 | `FixtureStore` | 진단 데모의 가상 자료 저장소 (`diagnostic_demo/tools/store.py`). `allowed_workflow_ids` 로 조회 범위를 두고 범위 밖은 `access_denied`, 없는 자료는 `not_found`. `removed`·`replaced`·`unavailable` 로 자료 누락·교체·일시 오류를 재현한다 — fixture 파일은 고치지 않는다 | `Database`, `Repository`(중앙 `adapters/repo.py` 와 혼동), `Index` |
 | `ToolResult` | 조회 도구 호출 하나의 결과. `ok`·`content`·`content_type`·`error`(`not_found`/`access_denied`/`unavailable`)·`returned`(실제로 반환한 근거) (`diagnostic_demo/tools/store.py`). 오류를 빈 본문으로 바꾸지 않는다 | `Response`, `Output`, `Payload` |
 | `TraceRecord` | 진단 서비스가 기록한 조회 한 건. `call_id`·`tool`·`input`·`ok`·`error`·`returned[{evidence_id, version, sha256}]` (`diagnostic_demo/tools/trace.py`). `ToolTraceRecorder.to_json()` 의 항목이며 중앙은 이를 `TraceEntry` 로 읽는다 | `Log`, `Call`, `Event` |
+| `DiagnosisDraft` | 모델이 작성하는 결과 초안 — `outcome`·`summary`·`findings`·`diagnosis`·`repair_request`·`missing_information` (`diagnostic_demo/worker/model.py`). 첨부·provenance·`execution_id` 가 없다. 서비스가 조회 이력에서 첨부를 조립해 `DiagnosisResult` 로 완성한다 (`worker/assemble.py`) | `Result`(완성 봉투와 혼동), `Answer`, `Output` |
+| `ModelClient` | 진단 워커가 모델을 부르는 인터페이스 — `start(system, user, tools, schema)`·`continue_with_tool_results(results)` → `ModelTurn`(`tool_calls`, `draft`, 토큰 수) (`diagnostic_demo/worker/model.py`). 구현은 `OpenAIModelClient`(Responses API)와 `FakeModelClient`(대본, `DIAG_MODEL=fake` 전용) | `LLM`, `Agent`(등록 레코드와 혼동), `Provider` |
+| `Budget` | 진단 1회의 상한 — `max_calls`·`max_input_tokens`·`max_output_tokens`·`timeout_seconds` (`diagnostic_demo/worker/loop.py`). 넘으면 `BudgetExceeded`(code `budget_exceeded`/`timeout`) 로 실행이 `failed`. 총액 US$30·일일 건수는 접수 시점의 429 이며 이 객체가 아니다 | `Limit`, `Quota`, `Cost` |
 | 사용자 상태 | `대기`, `실행 가능`, `실행 요청됨`, `실행 중`, `확인 필요`, `완료`, `실패`. 화면 문구로 그대로 쓴다 | `pending`, `done`, `success`, `error`, `대기 중` |
 
 ## 경계가 헷갈리는 개념

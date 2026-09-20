@@ -115,8 +115,9 @@ class FixtureStore:
         path = self._path_of(key)
         return path.read_bytes() if path is not None else None
 
-    def _content_type_of(self, key: EvidenceKey) -> str | None:
-        path = self._path_of(key)
+    def content_type_of(self, evidence_id: str, version: str) -> str | None:
+        """저장된 원문의 content_type. 첨부 조립용이며 범위 검사는 하지 않는다."""
+        path = self._path_of((evidence_id, version))
         if path is None:
             return None
         return self._content_types.get(path.suffix.lstrip("."))
@@ -145,7 +146,7 @@ class FixtureStore:
             return _failure(ToolError.access_denied)
         if key in self._unavailable:
             return _failure(ToolError.unavailable)
-        content_type = self._content_type_of(key)
+        content_type = self.content_type_of(*key)
         if content_type is None:
             return _failure(ToolError.not_found)
         raw = self.raw_bytes(*key)
