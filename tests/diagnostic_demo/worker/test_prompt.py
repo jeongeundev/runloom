@@ -1,6 +1,7 @@
 """시스템 프롬프트 — 역할·도구 규칙·조사 순서·인용 문법·결론 규칙만. 정답 문장·고정 답변은 넣지 않는다."""
 
 import json
+import re
 
 from diagnostic_demo.tools.api import TOOL_SCHEMAS
 from diagnostic_demo.worker.prompt import PROMPT_VERSION, SYSTEM_PROMPT, user_message
@@ -9,7 +10,7 @@ from workflow.contracts.v1 import ExecutionRequest
 
 
 def test_prompt_version():
-    assert PROMPT_VERSION == "diag-prompt-v2"
+    assert PROMPT_VERSION == "diag-prompt-v3"
 
 
 def test_system_prompt_names_every_tool_and_the_investigation_order():
@@ -42,10 +43,21 @@ def test_conclusion_rules_hold_back_when_a_needed_read_failed():
         assert needle in section, needle
 
 
+def test_list_runs_before_is_copied_from_the_failed_run_started_at():
+    # v3: 모델이 before 에 자료의 연도 대신 학습 시점 연도를 쓴 실행 7/15 (DIAG_EVAL 관찰 1).
+    # 인자는 실패 실행 get_run 결과의 started_at 을 그대로 쓴다 — 정답이 아니라 인자 작성 규칙이다
+    section = SYSTEM_PROMPT.split("## 조사 순서")[1].split("## ")[0]
+    sentences = re.split(r"(?<=다)\.\s*", " ".join(section.split()))
+    rule = [s for s in sentences if "list_runs" in s and "before" in s and "started_at" in s]
+    assert len(rule) == 1, sentences
+    assert "그대로" in rule[0]
+    assert "현재 날짜" in section and "기억" in section  # 시각은 자료에서 읽은 값만, 현재 날짜·기억으로 채우지 않는다
+
+
 def test_system_prompt_has_no_fixed_answer():
-    # 데모 정답(경로 이름·오류 코드·적용 시각·fixture 구조)은 자료를 읽어야 나온다. 프롬프트에 박지 않는다
-    for banned in ("data.records", "$.items", "MISSING_RECORDS_FIELD", "stages", "2026-09-20", "report_transformer",
-                   "daily-0920-0900", "daily-0919-0900", "upstream-response-change", "daily-report-contract"):
+    # 데모 정답(경로 이름·오류 코드·적용 시각·연도·fixture 구조)은 자료를 읽어야 나온다. 프롬프트에 박지 않는다
+    for banned in ("data.records", "$.items", "MISSING_RECORDS_FIELD", "stages", "2026", "report_transformer",
+                   "daily-0920", "daily-0919-0900", "upstream-response-change", "daily-report-contract"):
         assert banned not in SYSTEM_PROMPT, banned
 
 

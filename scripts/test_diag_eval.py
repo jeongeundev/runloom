@@ -268,7 +268,7 @@ def test_render_markdown_has_table_judgement_and_checks(settings):
     assert "확정 조건 충족" in text
     assert "failed_run_http_ok_then_transform_failed" in text
     assert "US$0.2000" in text and "US$2" in text
-    assert FAKE_MODEL_ID in text and "diag-prompt-v2" in text
+    assert FAKE_MODEL_ID in text and "diag-prompt-v3" in text
     assert "sk-" not in text
 
 

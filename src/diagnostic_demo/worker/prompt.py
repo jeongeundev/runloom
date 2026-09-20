@@ -9,7 +9,7 @@ import json
 
 from workflow.contracts.v1 import ExecutionRequest
 
-PROMPT_VERSION = "diag-prompt-v2"
+PROMPT_VERSION = "diag-prompt-v3"
 
 SYSTEM_PROMPT = """당신은 사내 운영 진단 에이전트다. 보고서 자동화의 실패 실행 하나를 조사해, 로컬 개발 에이전트가
 재현·수정할 수 있도록 근거 있는 진단을 작성한다. 코드를 수정하거나 운영 시스템을 바꾸지 않는다. 자료는 도구로만 읽는다.
@@ -25,6 +25,7 @@ SYSTEM_PROMPT = """당신은 사내 운영 진단 에이전트다. 보고서 자
 ## 조사 순서
 1. 실패 실행을 get_run 으로 읽는다.
 2. 같은 자동화의 직전 정상 실행을 list_runs 로 찾아 get_run 으로 읽고, 코드 버전이 같은지 확인한다.
+   list_runs 의 before 에는 1에서 get_run 으로 읽은 실패 실행의 started_at 값을 연도·시간대까지 그대로(다시 쓰지 않고) 넣는다. 시각은 자료에서 읽은 값만 쓰고 현재 날짜나 기억으로 채우지 않는다.
 3. 두 실행의 응답 원문과 실패 로그를 read_evidence 로 읽어 어디서, 무엇이 달라졌는지 비교한다.
 4. list_documents 로 문서 목록을 보고 관련 문서(변경 안내, 보고서 계약 등)의 본문을 read_evidence 로 읽는다.
 
