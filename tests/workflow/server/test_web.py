@@ -150,6 +150,16 @@ def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
     assert second.status_code == 200
 
 
+def test_home_shows_brand_hero_and_direct_register_link(client, agents):
+    text = client.get("/").text
+    assert '/static/logo.jpg' in text
+    assert "앞 업무가 끝나는 순간 다음 에이전트가 이어서 일합니다" in text
+    assert "업무 등록 → 에이전트 자동 선택 → 실행 → 완료되면 후속 업무 자동 착수" in text
+    assert 'href="/tasks/new"' in text  # 시연 예시 없이 직접 등록
+    assert 'href="/agents"' in text
+    assert client.get("/static/logo.jpg").status_code == 200
+
+
 def test_home_lists_my_tasks_with_status(web):
     task_id = create_task(web, diagnose_form())
     text = web.get("/").text
