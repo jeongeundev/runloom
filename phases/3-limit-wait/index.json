@@ -1,0 +1,14 @@
+{
+  "project": "workflow",
+  "phase": "3-limit-wait",
+  "steps": [
+    { "step": 0, "name": "failed-retry-after", "status": "pending" },
+    { "step": 1, "name": "codex-limit-signal", "status": "pending" },
+    { "step": 2, "name": "agent-limit-policy", "status": "pending" },
+    { "step": 3, "name": "connector-policy-flag", "status": "pending" },
+    { "step": 4, "name": "retry-after-persist", "status": "pending" },
+    { "step": 5, "name": "wait-status", "status": "pending" },
+    { "step": 6, "name": "wait-retry-worker", "status": "pending" },
+    { "step": 7, "name": "docs-sync", "status": "pending" }
+  ]
+}

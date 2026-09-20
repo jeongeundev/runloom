@@ -15,6 +15,10 @@
       "dir": "2-model-compare",
       "status": "completed",
       "completed_at": "2026-09-20T16:59:28+0900"
+    },
+    {
+      "dir": "3-limit-wait",
+      "status": "pending"
     }
   ]
 }
