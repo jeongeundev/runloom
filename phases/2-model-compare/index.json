@@ -24,7 +24,7 @@
       "status": "completed",
       "started_at": "2026-09-20T16:35:02+0900",
       "summary": "시작 전 확인 통과(OPENAI_API_KEY·단가 0.40/1.60·예산 US$2). docs/DIAG_EVAL.md → docs/DIAG_EVAL_2026-09-20_prompt-v2.md 로 git mv(내용 불변). 사전 점검 22/1022 passed·ruff 통과. 실호출 2회(모델당 1회, 재실행 없음), 프롬프트 v3·도구 v2·사례·fixture 불변: (a) gpt-4.1-mini-2025-04-14 16:36~16:39 KST — normal 0/3, 잘못된 수정 착수 0/12, 의도한 사유의 needs_information 0/12, 계약 거부 3(전부 baseline_run_id=''), list_runs.before 연도 오기 0/12(거부 3건은 이력 산출물 없어 확인 불가), 읽지 않은 근거 인용 6, 부재 주장 인용 1, 지어낸 경로 $._keys 2, 90호출·267k/14.8k 토큰·214초, US$0.1305; (b) gpt-4.1-2025-04-14(단가 2.00/8.00 env 덮어씀) 16:39~16:50 KST — normal 3/3(세 회차 조회 순서·입력 토큰 20,628 동일, 검증기 passed), 잘못된 수정 착수 0/12, 의도한 사유의 needs_information 2/12(missing_change_doc 1·2 evidence_unavailable), 계약 거부 0, 연도 오기 0/15, 읽지 않은 근거 인용 2, 부재 주장 0, 108호출·319k/12.7k 토큰·629초(1회 평균 42초), US$0.7394. provenance.model_id 두 실행 모두 일치 확인. 이 step 비용 US$0.8699. 판정: mini 확정 보류(네 번째), gpt-4.1 ARCHITECTURE 통과 기준 충족 — 단 잘못된 착수 0 은 gpt-4.1 에서도 10/12 가 검증기 차단(시각 충돌·503·응답 누락은 스스로 보류 0/9). docs/DIAG_EVAL.md 종합 새로 작성: 네 평가 조건 표(링크), 사례×회차 모델 비교표, 지표 비교(v2 mini 열 포함), 모델별 통과 기준 판정(제품 수준/모델 수준 분리), ADR-0003 을 gpt-4.1 로 갱신 또는 ADR-0007 대체 제안 — 진단 1회 US$0.049, 하루 60회 기준 US$2.96/일·월 US$88.7·심사 15일 US$44.4, US$27 정지가 10일째 도달하므로 DIAG_GLOBAL_DAILY 36 이하 또는 총액 상향 필요, 채택 시 바뀔 파일 목록, 다른 선택지(mini 유지/추론 모델/프롬프트 v4) 장단점. docs/README.md 색인 종합 + 보고서 4행. ADR·프롬프트·도구·계약·fixture·src 미변경. AC: scripts/test_diag_eval 22 passed, 전체 1022 passed 11 skipped, ruff 통과, 파일·grep 확인 통과, 스테이징 diff 에 sk-·wfc_ 0건.",
-      "completed_at": "2026-09-20T16:58:30+0900"
+      "completed_at": "2026-09-20T16:59:28+0900"
     }
   ],
   "created_at": "2026-09-20T16:26:41+0900"
