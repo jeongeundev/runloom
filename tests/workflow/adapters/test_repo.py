@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import sqlite3
 import threading
 
 import pytest
@@ -856,3 +857,172 @@ def test_get_connector(conn):
     row = repo.get_connector(conn, connector_id)
     assert (row["last_seen_at"], row["current_execution_id"]) == (LATER, "exec-1")
     assert repo.get_connector(conn, "nope") is None
+
+
+# --- phase 5: 세션 등록·Chain·대본 플래그 -----------------------------------
+
+
+def _chain(chain_id: str = "chain-1", session_id: str = SESSION, **overrides) -> dict:
+    chain = {
+        "chain_id": chain_id,
+        "session_id": session_id,
+        "title": "일일 보고서 복구",
+        "source": "github",
+    }
+    chain.update(overrides)
+    return chain
+
+
+def test_agent_demo_scripted_roundtrip(conn):
+    repo.upsert_agent(conn, _agent())
+    assert repo.get_agent(conn, "agent-ops-demo")["demo_scripted"] == 0
+    repo.upsert_agent(conn, _agent(demo_scripted=True))
+    assert repo.get_agent(conn, "agent-ops-demo")["demo_scripted"] == 1
+    repo.upsert_agent(conn, _agent(demo_scripted=False))
+    assert repo.get_agent(conn, "agent-ops-demo")["demo_scripted"] == 0
+
+
+def test_session_agent_register_is_idempotent_and_ordered_by_registration(seeded):
+    conn = seeded
+    repo.upsert_agent(conn, _agent())
+    repo.upsert_agent(conn, _agent("agent-codex-mac", connection_type="local", owner_scope="personal",
+                                   capabilities=[{"code": "code.modify",
+                                                  "scope": {"repository_id": "demo-report-repo"}}]))
+    repo.register_session_agent(conn, SESSION, "agent-codex-mac", NOW)
+    repo.register_session_agent(conn, SESSION, "agent-ops-demo", LATER)
+    repo.register_session_agent(conn, SESSION, "agent-codex-mac", LATER)  # 멱등 — 처음 시각 유지
+    rows = repo.list_session_agents(conn, SESSION)
+    assert [r["agent_id"] for r in rows] == ["agent-codex-mac", "agent-ops-demo"]
+    assert [r["registered_at"] for r in rows] == [NOW, LATER]
+    assert rows[1]["name"] == "운영 진단 데모"  # agents 행이 그대로 온다
+    assert repo.is_session_agent(conn, SESSION, "agent-ops-demo") is True
+    assert repo.is_session_agent(conn, SESSION, "nope") is False
+
+
+def test_session_agent_same_timestamp_keeps_insert_order(seeded):
+    conn = seeded
+    for agent_id in ("agent-z", "agent-a", "agent-m"):
+        repo.upsert_agent(conn, _agent(agent_id))
+        repo.register_session_agent(conn, SESSION, agent_id, NOW)
+    assert [r["agent_id"] for r in repo.list_session_agents(conn, SESSION)] == [
+        "agent-z", "agent-a", "agent-m"]
+
+
+def test_session_agent_is_isolated_per_session_and_unregister(seeded):
+    conn = seeded
+    repo.upsert_agent(conn, _agent())
+    repo.register_session_agent(conn, SESSION, "agent-ops-demo", NOW)
+    assert repo.list_session_agents(conn, OTHER_SESSION) == []
+    assert repo.is_session_agent(conn, OTHER_SESSION, "agent-ops-demo") is False
+    repo.unregister_session_agent(conn, SESSION, "agent-ops-demo")
+    assert repo.list_session_agents(conn, SESSION) == []
+    assert repo.is_session_agent(conn, SESSION, "agent-ops-demo") is False
+    repo.unregister_session_agent(conn, SESSION, "agent-ops-demo")  # 이미 없어도 오류 없음
+    assert repo.get_agent(conn, "agent-ops-demo") is not None  # 카탈로그 Agent 는 남는다
+
+
+def test_session_agent_requires_existing_agent_and_session(seeded):
+    conn = seeded
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.register_session_agent(conn, SESSION, "nope", NOW)
+    repo.upsert_agent(conn, _agent())
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.register_session_agent(conn, "no-such-session", "agent-ops-demo", NOW)
+
+
+def test_delete_agent_removes_session_registrations(seeded):
+    conn = seeded
+    repo.upsert_agent(conn, _agent())
+    repo.register_session_agent(conn, SESSION, "agent-ops-demo", NOW)
+    repo.register_session_agent(conn, OTHER_SESSION, "agent-ops-demo", NOW)
+    repo.delete_agent(conn, "agent-ops-demo")
+    assert repo.get_agent(conn, "agent-ops-demo") is None
+    assert repo.list_session_agents(conn, SESSION) == []
+    assert conn.execute("SELECT COUNT(*) FROM session_agents").fetchone()[0] == 0
+    with pytest.raises(NotFound):
+        repo.delete_agent(conn, "agent-ops-demo")
+
+
+def test_chain_insert_get_list_and_skipped_roundtrip(seeded):
+    conn = seeded
+    skipped = [{"key": "#43", "title": "문서 정리", "reason": "일치하는 능력 없음"}]
+    repo.insert_chain(conn, _chain("chain-2", skipped=skipped), LATER)
+    repo.insert_chain(conn, _chain("chain-1"), NOW)
+    repo.insert_chain(conn, _chain("chain-other", session_id=OTHER_SESSION, source="jira"), NOW)
+    row = repo.get_chain(conn, "chain-2")
+    assert (row["session_id"], row["title"], row["source"], row["created_at"]) == (
+        SESSION, "일일 보고서 복구", "github", LATER)
+    assert row["started_at"] is None
+    assert json.loads(row["skipped_json"]) == skipped
+    assert json.loads(repo.get_chain(conn, "chain-1")["skipped_json"]) == []
+    assert [r["chain_id"] for r in repo.list_chains(conn, SESSION)] == ["chain-1", "chain-2"]
+    assert [r["chain_id"] for r in repo.list_chains(conn, OTHER_SESSION)] == ["chain-other"]
+    assert repo.get_chain(conn, "nope") is None
+
+
+def test_chain_insert_rejects_bad_source_and_unknown_session(seeded):
+    conn = seeded
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.insert_chain(conn, _chain(source="email"), NOW)
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.insert_chain(conn, _chain(session_id="no-such-session"), NOW)
+
+
+def test_mark_chain_started_only_once(seeded):
+    conn = seeded
+    repo.insert_chain(conn, _chain(), NOW)
+    repo.mark_chain_started(conn, "chain-1", NOW)
+    repo.mark_chain_started(conn, "chain-1", LATER)
+    assert repo.get_chain(conn, "chain-1")["started_at"] == NOW
+    with pytest.raises(NotFound):
+        repo.mark_chain_started(conn, "nope", NOW)
+
+
+def test_task_chain_id_and_source_ref_roundtrip(seeded):
+    conn = seeded
+    row = repo.get_task(conn, TASK_A)
+    assert row["chain_id"] is None and row["source_ref"] is None  # 직접 등록 Task
+    repo.insert_chain(conn, _chain(), NOW)
+    task = {**_task("t-imported"), "chain_id": "chain-1", "source_ref": "#42"}
+    repo.insert_task(conn, task, NOW)
+    row = repo.get_task(conn, "t-imported")
+    assert (row["chain_id"], row["source_ref"]) == ("chain-1", "#42")
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.insert_task(conn, {**_task("t-bad"), "chain_id": "no-such-chain"}, NOW)
+    assert repo.get_task(conn, "t-bad") is None  # 롤백됨
+
+
+def test_tasks_of_chain_follows_predecessor_order(seeded):
+    """created_at·task_id 정렬이 모두 어긋나도 선행 없는 것부터 predecessor 체인 순서로 돌려준다."""
+    conn = seeded
+    repo.insert_chain(conn, _chain(), NOW)
+    repo.insert_chain(conn, _chain("chain-2"), NOW)
+    # A → B → C. 삽입은 선행이 먼저 있어야 하므로 A·B·C 순이지만 created_at 은 거꾸로, ID 는 역순 알파벳.
+    repo.insert_task(conn, {**_task("t-root"), "chain_id": "chain-1"}, "2026-09-20T00:00:09Z")
+    repo.insert_task(conn, {**_task("t-mid", kind="code_change", predecessor="t-root"),
+                            "chain_id": "chain-1"}, "2026-09-20T00:00:05Z")
+    repo.insert_task(conn, {**_task("t-last", kind="code_change", predecessor="t-mid"),
+                            "chain_id": "chain-1"}, "2026-09-20T00:00:01Z")
+    # 다른 체인·체인 없는 Task 는 섞이지 않는다
+    repo.insert_task(conn, {**_task("t-other"), "chain_id": "chain-2"}, NOW)
+    assert [r["task_id"] for r in repo.tasks_of_chain(conn, "chain-1")] == ["t-root", "t-mid", "t-last"]
+    assert [r["task_id"] for r in repo.tasks_of_chain(conn, "chain-2")] == ["t-other"]
+    assert repo.tasks_of_chain(conn, "nope") == []
+
+
+def test_tasks_of_chain_treats_predecessor_outside_chain_as_root(seeded):
+    conn = seeded
+    repo.insert_chain(conn, _chain(), NOW)
+    # TASK_A(체인 없음) 를 선행으로 갖는 B 가 체인의 첫 Task 다
+    repo.insert_task(conn, {**_task("t-b", kind="code_change", predecessor=TASK_A),
+                            "chain_id": "chain-1"}, LATER)
+    repo.insert_task(conn, {**_task("t-c", kind="code_change", predecessor="t-b"),
+                            "chain_id": "chain-1"}, NOW)
+    assert [r["task_id"] for r in repo.tasks_of_chain(conn, "chain-1")] == ["t-b", "t-c"]
+
+
+def test_list_tasks_is_unchanged_by_chain_columns(seeded):
+    conn = seeded
+    repo.insert_chain(conn, _chain(), NOW)
+    repo.insert_task(conn, {**_task("t-imported"), "chain_id": "chain-1", "source_ref": "OPS-42"}, LATER)
+    assert [r["task_id"] for r in repo.list_tasks(conn, SESSION)] == [TASK_A, "t-imported"]

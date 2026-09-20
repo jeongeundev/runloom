@@ -22,6 +22,8 @@ TABLES = {
     "artifacts",
     "task_verdicts",
     "diagnosis_usage",
+    "session_agents",
+    "chains",
 }
 
 
@@ -99,3 +101,70 @@ def test_connection_is_usable_from_another_thread_sequentially(db_path):
     assert "error" not in result, result.get("error")
     assert result["value"] == SCHEMA_VERSION
     c.close()
+
+
+# --- phase 5: 세션 등록·Chain·대본 플래그 -----------------------------------
+
+
+def _columns(conn, table: str) -> set[str]:
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_phase5_tables_and_columns(conn):
+    assert "demo_scripted" in _columns(conn, "agents")
+    assert {"chain_id", "source_ref"} <= _columns(conn, "tasks")
+    assert _columns(conn, "session_agents") == {"session_id", "agent_id", "registered_at"}
+    assert _columns(conn, "chains") == {
+        "chain_id", "session_id", "title", "source", "skipped_json", "created_at", "started_at",
+    }
+
+
+def test_schema_version_mismatch_raises(db_path):
+    c = connect(db_path)
+    init_schema(c)
+    c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION + 1,))
+    with pytest.raises(RuntimeError):
+        init_schema(c)
+    c.close()
+
+
+def test_phase5_check_and_key_constraints(conn):
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    conn.execute(
+        "INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
+        " connection_state) VALUES ('a1','n','company','api','[]','online')"
+    )
+    with pytest.raises(sqlite3.IntegrityError):  # demo_scripted 는 0/1
+        conn.execute(
+            "INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
+            " connection_state, demo_scripted) VALUES ('a2','n','company','api','[]','online', 2)"
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # chains.source 허용 값 밖
+        conn.execute(
+            "INSERT INTO chains (chain_id, session_id, title, source, created_at)"
+            " VALUES ('c1','s1','t','email',?)",
+            (NOW,),
+        )
+    conn.execute(
+        "INSERT INTO session_agents (session_id, agent_id, registered_at) VALUES ('s1','a1',?)",
+        (NOW,),
+    )
+    with pytest.raises(sqlite3.IntegrityError):  # (session_id, agent_id) 기본키
+        conn.execute(
+            "INSERT INTO session_agents (session_id, agent_id, registered_at) VALUES ('s1','a1',?)",
+            (NOW,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 agent 로 등록 불가
+        conn.execute(
+            "INSERT INTO session_agents (session_id, agent_id, registered_at) VALUES ('s1','nope',?)",
+            (NOW,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # tasks.chain_id 는 chains 를 참조
+        conn.execute(
+            "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,"
+            " selection_mode, run_mode, completion_mode, criteria_json, revision, target_json,"
+            " status, status_reason, created_at, chain_id) VALUES"
+            " ('t1','s1','t','r','diagnosis','{}','auto','manual','review','[]',1,'{}',"
+            " '대기','선행 대기',?, 'no-such-chain')",
+            (NOW,),
+        )

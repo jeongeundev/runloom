@@ -10,7 +10,7 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
@@ -60,7 +60,16 @@ CREATE TABLE IF NOT EXISTS agents (
   discovered_json               TEXT NOT NULL DEFAULT '{{}}',
   connection_state              TEXT NOT NULL CHECK (connection_state IN ('online', 'offline', 'unknown')),
   last_seen_at                  TEXT,
-  shared_to_all_sessions        INTEGER NOT NULL DEFAULT 0 CHECK (shared_to_all_sessions IN (0, 1))
+  shared_to_all_sessions        INTEGER NOT NULL DEFAULT 0 CHECK (shared_to_all_sessions IN (0, 1)),
+  demo_scripted                 INTEGER NOT NULL DEFAULT 0 CHECK (demo_scripted IN (0, 1))
+);
+
+-- 심사자 세션이 카탈로그(shared_to_all_sessions=1) 에서 등록한 Agent. 세션별로 격리된다.
+CREATE TABLE IF NOT EXISTS session_agents (
+  session_id    TEXT NOT NULL REFERENCES sessions(session_id),
+  agent_id      TEXT NOT NULL REFERENCES agents(agent_id),
+  registered_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, agent_id)
 );
 
 CREATE TABLE IF NOT EXISTS connect_codes (
@@ -78,6 +87,18 @@ CREATE TABLE IF NOT EXISTS connectors (
   revoked_at           TEXT,
   last_seen_at         TEXT,
   current_execution_id TEXT
+);
+
+-- Chain: 세션이 "업무 가져오기" 로 만든 Task 묶음 (화면 라벨 "워크플로우"). 순서는 Task 의
+-- predecessor_task_id 체인으로만 표현한다. `workflow_id` 는 진단 대상 자동화 ID 라 여기 쓰지 않는다.
+CREATE TABLE IF NOT EXISTS chains (
+  chain_id     TEXT PRIMARY KEY,
+  session_id   TEXT NOT NULL REFERENCES sessions(session_id),
+  title        TEXT NOT NULL,
+  source       TEXT NOT NULL CHECK (source IN ('github', 'jira', 'manual')),
+  skipped_json TEXT NOT NULL DEFAULT '[]',  -- 체인에 못 들어간 이슈 [{{key, title, reason}}]
+  created_at   TEXT NOT NULL,
+  started_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -101,6 +122,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   review_decision          TEXT CHECK (review_decision IN ('approve', 'request_changes', 'close')),
   merge_confirmed_at       TEXT,
   created_at               TEXT NOT NULL,
+  chain_id                 TEXT REFERENCES chains(chain_id),  -- 직접 등록 Task 는 NULL
+  source_ref               TEXT,                              -- 가져온 이슈 키 (#42, OPS-42)
   CHECK (predecessor_task_id IS NULL OR predecessor_task_id != task_id)
 );
 
