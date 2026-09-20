@@ -238,6 +238,15 @@ def test_badge_dot_fill_follows_ui_guide(web, conn, store, settings):
     assert "병합: 운영자 확인 대기" in visible_text(web.get(f"/tasks/{task_c}").text)
 
 
+def test_api_agent_card_shows_connected_without_last_seen(web):
+    """API 에이전트는 heartbeat 가 없어도 '연결됨' 이고 '마지막 확인' 을 보이지 않는다. 로컬은 heartbeat 규칙."""
+    cards = re.findall(r'<div class="card agent-card">(.*?)</div>\s*</div>', web.get("/").text, re.S)
+    by_id = {re.search(r"agent-[a-z-]+", c).group(0): c for c in cards}
+    ops, codex = by_id["agent-ops-demo"], by_id["agent-codex-mac"]
+    assert 'data-status="연결됨"' in ops and "마지막 확인" not in ops
+    assert 'data-status="연결 끊김"' in codex and "마지막 확인 없음" in codex
+
+
 # --- 결과 카드·뷰어 — 진단 -----------------------------------------------------------
 
 

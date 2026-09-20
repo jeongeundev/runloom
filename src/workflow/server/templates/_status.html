@@ -26,7 +26,7 @@
 {# 에이전트 연결 상태 — 연결됨(채운 점) / 연결 끊김(빈 점) + 마지막 확인 #}
 {% macro connection(agent) -%}
 <span class="badge {{ 'badge-done' if agent.online else 'badge-wait' }}" data-status="{{ '연결됨' if agent.online else '연결 끊김' }}"><span class="dot{% if agent.online %} dot-filled{% endif %}" aria-hidden="true"></span>{{ '연결됨' if agent.online else '연결 끊김' }}</span>
-<span class="small">마지막 확인 {{ agent.last_seen_at|kst if agent.last_seen_at else '없음' }}</span>
+{% if agent.connection_type != 'api' %}<span class="small">마지막 확인 {{ agent.last_seen_at|kst if agent.last_seen_at else '없음' }}</span>{% endif %}
 {%- endmacro %}
 
 {# outcome 배지 — 라벨은 filters.outcome_label (인계 가능 · 검토 가능 · 정보 필요) #}

@@ -205,9 +205,25 @@ def test_task_summary_and_agent_public(seeded, settings):
     assert agent["agent_id"] == "agent-ops-demo"
     assert agent["capabilities"][0]["code"] == "operations.diagnose"
     assert agent["discovered"] == {}
-    assert agent["online"] is False  # online 이지만 last_seen_at 이 없다
+    assert agent["online"] is True  # API 에이전트는 heartbeat 가 없으므로 connection_state 만 본다
     assert "credential_ref" not in agent
     assert not any("wfc_" in str(v) for v in agent.values())
+
+
+def test_agent_online_rule_by_connection_type(seeded, settings):
+    """로컬은 online + heartbeat 이내, API 는 connection_state 만 (heartbeat 를 보내지 않는다)."""
+    ops = repo.get_agent(seeded, "agent-ops-demo")
+    assert ops["connection_type"] == "api" and ops["last_seen_at"] is None
+    assert views.agent_online(ops, now=NOW, settings=settings) is True
+    repo.set_agent_connection(seeded, "agent-ops-demo", "offline", None)
+    assert views.agent_online(repo.get_agent(seeded, "agent-ops-demo"), now=NOW, settings=settings) is False
+
+    codex = repo.get_agent(seeded, "agent-codex-mac")
+    assert codex["connection_type"] == "local"
+    repo.set_agent_connection(seeded, "agent-codex-mac", "online", None)
+    assert views.agent_online(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings) is False
+    repo.set_agent_connection(seeded, "agent-codex-mac", "online", NOW)
+    assert views.agent_online(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings) is True
 
 
 def test_kst_day_bounds():

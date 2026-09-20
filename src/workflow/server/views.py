@@ -45,8 +45,12 @@ def kst_day_bounds(now: str) -> tuple[str, str]:
 
 
 def agent_online(agent: Row, *, now: str, settings: Settings) -> bool:
-    """`online` 이고 마지막 heartbeat 가 `heartbeat_offline_seconds` 이내인지."""
-    if agent["connection_state"] != "online" or not agent["last_seen_at"]:
+    """로컬: `online` 이고 마지막 heartbeat 가 `heartbeat_offline_seconds` 이내. API: heartbeat 가 없으므로 `online` 이면 연결됨."""
+    if agent["connection_state"] != "online":
+        return False
+    if agent["connection_type"] == "api":
+        return True
+    if not agent["last_seen_at"]:
         return False
     age = _parse(now) - _parse(agent["last_seen_at"])
     return age <= timedelta(seconds=settings.limits.heartbeat_offline_seconds)
