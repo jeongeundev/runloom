@@ -399,9 +399,11 @@ def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, setti
     )
     repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
     repo.release_execution(conn, exec_a, NOW)
+    # 온라인 판정이 서버 시각 기준 heartbeat_offline_seconds 이내인지 보므로 last_seen 은 실제 시각으로 둔다
+    from workflow.server.auth import utc_now
     repo.update_registration(
         conn, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
-        base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest"], discovered={}, now=NOW,
+        base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest"], discovered={}, now=utc_now(),
     )
     task_b = create_task(web, fix_form(task_a, run_mode="manual"))
     assert "실행 가능" in detail(web, task_b)
