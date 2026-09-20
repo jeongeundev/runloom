@@ -17,7 +17,7 @@
       "name": "chain-schema",
       "status": "completed",
       "started_at": "2026-09-21T02:15:06+0900",
-      "completed_at": "2026-09-21T02:20:32+0900",
+      "completed_at": "2026-09-21T02:21:34+0900",
       "engine": "claude",
       "summary": "adapters/db.py SCHEMA_VERSION 1→2(마이그레이션 없음): agents.demo_scripted(0/1 CHECK), session_agents(session_id·agent_id PK, registered_at), chains(chain_id, session_id, title, source github/jira/manual CHECK, skipped_json, created_at, started_at), tasks.chain_id(FK, NULL 허용)·source_ref. adapters/repo.py: upsert_agent demo_scripted 반영, delete_agent 가 session_agents 도 삭제(tx), register/unregister/list(registered_at·rowid 순)/is_session_agent, insert_chain(skipped 왕복)/get/list_chains/mark_chain_started(NULL 일 때만, 없으면 NotFound)/tasks_of_chain(predecessor 체인 순서, 체인 밖 선행은 root), insert_task chain_id·source_ref. tests/workflow/server/test_app.py 의 버전 하드코딩 1 → SCHEMA_VERSION 상수. 검증: adapters 96 passed, 전체 1145 passed + 11 skipped, ruff 통과. server/·domain/ 미변경."
     },
