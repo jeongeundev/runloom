@@ -734,3 +734,125 @@ def test_list_connect_codes_newest_first_with_state_columns(conn):
     assert [r["code"] for r in rows] == [second, first]
     assert rows[1]["revoked_at"] == LATER and rows[0]["revoked_at"] is None
     assert rows[0]["used_at"] is None
+
+
+# --- Step 8 워커가 쓰는 서버 확정·스캔 보조 --------------------------------------
+
+
+def test_fail_execution_marks_failed_without_event(seeded):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    repo.fail_execution(conn, "exec-1", code="daily_limit_reached", message="한도", now=LATER)
+    row = repo.get_execution(conn, "exec-1")
+    assert (row["status"], row["failed_code"], row["failed_message"]) == ("failed", "daily_limit_reached", "한도")
+    assert row["process_stopped"] == 1 and row["finished_at"] == LATER and row["last_event_seq"] == 0
+    assert repo.list_events(conn, "exec-1") == []
+    with pytest.raises(InvalidTransition):
+        repo.fail_execution(conn, "exec-1", code="x", message="x", now=LATER)
+    with pytest.raises(NotFound):
+        repo.fail_execution(conn, "nope", code="x", message="x", now=LATER)
+
+
+def test_record_observation_keeps_status(running):
+    conn = running
+    repo.record_observation(conn, "exec-1", "heartbeat_lost", "90초 미수신", LATER)
+    assert repo.get_execution(conn, "exec-1")["status"] == "running"
+    rows = repo.observations_of(conn, "exec-1")
+    assert [(r["kind"], r["observed_at"]) for r in rows] == [("heartbeat_lost", LATER)]
+    with pytest.raises(NotFound):
+        repo.record_observation(conn, "nope", "heartbeat_lost", "x", LATER)
+
+
+def test_record_verdict_with_finish_completes_task_and_releases(seeded, store):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    verdict = {"outcome": "passed", "checks": [{"code": "a", "passed": True, "detail": "ok"}]}
+    repo.record_verdict(
+        conn, task_id=TASK_A, execution_id="exec-1", verdict=verdict,
+        status="완료", reason="판정 근거: 1/1", finish=True, now=LATER,
+    )
+    task = repo.get_task(conn, TASK_A)
+    assert (task["status"], task["status_reason"], task["finished_at"]) == ("완료", "판정 근거: 1/1", LATER)
+    assert repo.get_execution(conn, "exec-1")["released_at"] == LATER
+    assert json.loads(repo.get_verdict(conn, "exec-1")["verdict_json"]) == verdict
+
+
+def test_record_verdict_without_finish_keeps_lock(seeded):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    repo.record_verdict(
+        conn, task_id=TASK_A, execution_id="exec-1", verdict={"outcome": "failed", "checks": []},
+        status="확인 필요", reason="미충족: a", finish=False, now=LATER,
+    )
+    task = repo.get_task(conn, TASK_A)
+    assert (task["status"], task["finished_at"]) == ("확인 필요", None)
+    assert repo.get_execution(conn, "exec-1")["released_at"] is None
+    assert [r["execution_id"] for r in repo.results_awaiting_verdict(conn, "diagnosis")] == []
+
+
+def test_finish_task_sets_finished_at_and_releases(seeded):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    repo.finish_task(conn, task_id=TASK_A, execution_id="exec-1", status="실패", reason="timeout · x", now=LATER)
+    task = repo.get_task(conn, TASK_A)
+    assert (task["status"], task["status_reason"], task["finished_at"]) == ("실패", "timeout · x", LATER)
+    assert repo.get_execution(conn, "exec-1")["released_at"] == LATER
+    with pytest.raises(NotFound):
+        repo.finish_task(conn, task_id="nope", execution_id="exec-1", status="실패", reason="x", now=LATER)
+
+
+def test_executions_by_filters_active_status_and_kind(seeded, store):
+    conn = seeded
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-1")
+    _create_execution(conn, "exec-2", TASK_B, kind="code_change", inputs=("art-1",))
+    repo.append_event(conn, "exec-2", _event("exec-2", 1, "accepted", {}), "conn", NOW)
+    assert [r["execution_id"] for r in repo.executions_by(conn, statuses=("queued",))] == ["exec-1"]
+    assert [r["execution_id"] for r in repo.executions_by(conn, statuses=("queued", "accepted"), kind="code_change")] == ["exec-2"]
+    repo.release_execution(conn, "exec-1", LATER)
+    assert repo.executions_by(conn, statuses=("queued",)) == []
+
+
+def test_results_awaiting_verdict_lists_result_ready_without_verdict(seeded, store):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    repo.append_event(conn, "exec-1", _event("exec-1", 1, "accepted", {}), "conn", NOW)
+    repo.append_event(conn, "exec-1", _event("exec-1", 2, "started", {"runtime_ref": "pid:1"}), "conn", NOW)
+    assert repo.results_awaiting_verdict(conn, "diagnosis") == []
+    data = b'{"outcome": "ready_for_handoff"}'
+    created, _ = repo.store_artifact(
+        conn, store, execution_id="exec-1", session_id=SESSION,
+        meta=_meta(data, kind="diagnosis_result"), data=data, now=NOW,
+    )
+    repo.append_event(
+        conn, "exec-1", _event("exec-1", 3, "result_ready", {"result_artifact_id": created.artifact_id}),
+        "conn", NOW,
+    )
+    assert [r["execution_id"] for r in repo.results_awaiting_verdict(conn, "diagnosis")] == ["exec-1"]
+    assert repo.results_awaiting_verdict(conn, "code_change") == []
+    conn.execute(
+        "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
+        (TASK_A, "exec-1", json.dumps({"outcome": "passed", "checks": []}), NOW),
+    )
+    assert repo.results_awaiting_verdict(conn, "diagnosis") == []
+
+
+def test_tasks_with_completed_predecessor(seeded):
+    conn = seeded
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    assert repo.tasks_with_completed_predecessor(conn) == []
+    repo.update_task_status(conn, TASK_A, "완료", "판정 근거: 12/12")
+    assert repo.tasks_with_completed_predecessor(conn) == []  # finished_at 이 없으면 완료로 보지 않는다
+    repo.update_task_status(conn, TASK_A, "완료", "판정 근거: 12/12", finished_at=LATER)
+    assert [r["task_id"] for r in repo.tasks_with_completed_predecessor(conn)] == [TASK_B]
+    repo.update_task_status(conn, TASK_B, "실패", "검토 거절", finished_at=LATER)
+    assert repo.tasks_with_completed_predecessor(conn) == []
+
+
+def test_get_connector(conn):
+    code = repo.issue_connect_code(conn, NOW)
+    connector_id, _ = repo.exchange_connect_code(conn, code, NOW)
+    repo.touch_connector(conn, connector_id, LATER, "exec-1")
+    row = repo.get_connector(conn, connector_id)
+    assert (row["last_seen_at"], row["current_execution_id"]) == (LATER, "exec-1")
+    assert repo.get_connector(conn, "nope") is None

@@ -285,6 +285,10 @@ def touch_connector(
     _require_rowcount(cur, f"connector {connector_id}")
 
 
+def get_connector(conn: Connection, connector_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM connectors WHERE connector_id = ?", (connector_id,))
+
+
 # --- 업무·선택 ---------------------------------------------------------------
 
 
@@ -375,6 +379,17 @@ def get_selection(conn: Connection, task_id: str) -> SelectionRecord | None:
 def successors_of(conn: Connection, task_id: str) -> list[Row]:
     return conn.execute(
         "SELECT * FROM tasks WHERE predecessor_task_id = ? ORDER BY created_at, task_id", (task_id,)
+    ).fetchall()
+
+
+def tasks_with_completed_predecessor(conn: Connection) -> list[Row]:
+    """워커 후속 스캔용: 마감되지 않았고 선행 Task 가 `완료` 로 마감(`finished_at`)된 Task."""
+    return conn.execute(
+        """
+        SELECT t.* FROM tasks t JOIN tasks p ON p.task_id = t.predecessor_task_id
+        WHERE t.finished_at IS NULL AND p.status = '완료' AND p.finished_at IS NOT NULL
+        ORDER BY t.created_at, t.task_id
+        """
     ).fetchall()
 
 
@@ -586,6 +601,115 @@ def executions_needing_attention(conn: Connection) -> list[Row]:
         "ORDER BY created_at, execution_id",
         TERMINAL_STATUSES,
     ).fetchall()
+
+
+def executions_by(
+    conn: Connection, *, statuses: tuple[str, ...], kind: str | None = None
+) -> list[Row]:
+    """워커 스캔용: 활성(`released_at IS NULL`)이면서 주어진 상태인 실행. `kind` 로 좁힐 수 있다."""
+    placeholders = ", ".join("?" for _ in statuses)
+    sql = f"SELECT * FROM executions WHERE released_at IS NULL AND status IN ({placeholders})"
+    params: tuple = tuple(statuses)
+    if kind is not None:
+        sql += " AND kind = ?"
+        params += (kind,)
+    return conn.execute(sql + " ORDER BY created_at, execution_id", params).fetchall()
+
+
+def results_awaiting_verdict(conn: Connection, kind: str) -> list[Row]:
+    """`result_ready` 인 활성 실행 중 판정(task_verdicts) 기록이 없는 것. 워커가 한 번씩만 판정한다."""
+    return conn.execute(
+        """
+        SELECT e.* FROM executions e
+        WHERE e.released_at IS NULL AND e.status = 'result_ready' AND e.kind = ?
+          AND NOT EXISTS (SELECT 1 FROM task_verdicts v WHERE v.execution_id = e.execution_id)
+        ORDER BY e.created_at, e.execution_id
+        """,
+        (kind,),
+    ).fetchall()
+
+
+def fail_execution(conn: Connection, execution_id: str, *, code: str, message: str, now: str) -> None:
+    """실행 주체의 이벤트 없이 서버가 `failed` 로 확정 — 접수 거부(4xx)·첨부 상한 초과.
+    `mark_unknown` 처럼 seq 를 소비하지 않는다. 프로세스가 남아 있지 않으므로 `process_stopped=1`."""
+    with _tx(conn):
+        row = get_execution(conn, execution_id)
+        if row is None:
+            raise NotFound(f"execution {execution_id}")
+        if row["status"] in TERMINAL_STATUSES:
+            raise InvalidTransition(row["status"])
+        conn.execute(
+            "UPDATE executions SET status = 'failed', failed_code = ?, failed_message = ?, "
+            "process_stopped = 1, finished_at = ? WHERE execution_id = ?",
+            (code, message, now, execution_id),
+        )
+
+
+def record_observation(
+    conn: Connection, execution_id: str, kind: str, detail: str, now: str
+) -> None:
+    """상태를 바꾸지 않는 서버 관찰 (예: 실행 중 heartbeat 상실). 재실행 근거가 아니다."""
+    if get_execution(conn, execution_id) is None:
+        raise NotFound(f"execution {execution_id}")
+    conn.execute(
+        "INSERT INTO execution_observations (execution_id, observed_at, kind, detail) "
+        "VALUES (?, ?, ?, ?)",
+        (execution_id, now, kind, detail),
+    )
+
+
+def observations_of(conn: Connection, execution_id: str) -> list[Row]:
+    return conn.execute(
+        "SELECT * FROM execution_observations WHERE execution_id = ? ORDER BY observed_at, id",
+        (execution_id,),
+    ).fetchall()
+
+
+def finish_task(
+    conn: Connection, *, task_id: str, execution_id: str, status: str, reason: str, now: str
+) -> None:
+    """Task 마감(`finished_at`)과 활성 잠금 해제를 한 트랜잭션에서. 워커의 `완료`(자동 판정)·`실패`(종료 확인) 용."""
+    with _tx(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, status_reason = ?, finished_at = ? WHERE task_id = ?",
+            (status, reason, now, task_id),
+        )
+        _require_rowcount(cur, f"task {task_id}")
+        conn.execute(
+            "UPDATE executions SET released_at = ? WHERE execution_id = ? AND released_at IS NULL",
+            (now, execution_id),
+        )
+
+
+def record_verdict(
+    conn: Connection,
+    *,
+    task_id: str,
+    execution_id: str,
+    verdict: dict,
+    status: str,
+    reason: str,
+    finish: bool,
+    now: str,
+) -> None:
+    """판정 저장 + Task 상태를 한 트랜잭션에서. `finish` 면 마감·잠금 해제까지 (A 자동 완료)."""
+    with _tx(conn):
+        conn.execute(
+            "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, execution_id, json.dumps(verdict, ensure_ascii=False), now),
+        )
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, status_reason = ?, "
+            "finished_at = CASE WHEN ? THEN ? ELSE finished_at END WHERE task_id = ?",
+            (status, reason, int(finish), now, task_id),
+        )
+        _require_rowcount(cur, f"task {task_id}")
+        if finish:
+            conn.execute(
+                "UPDATE executions SET released_at = ? WHERE execution_id = ? AND released_at IS NULL",
+                (now, execution_id),
+            )
 
 
 def get_verdict(conn: Connection, execution_id: str) -> Row | None:
