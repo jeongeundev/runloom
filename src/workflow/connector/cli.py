@@ -1,12 +1,13 @@
 """`python3 -m workflow.connector` — 운영자 Mac 의 연결 프로그램 CLI.
 
     connect   --server URL --code CONNECT_CODE       연결 코드 교환 → 토큰 파일(0600)
-    register  --id ID --repo PATH --repository-id RID [--verify NAME=CMD ...]
+    register  --id ID --repo PATH --repository-id RID [--tool codex|claude] [--verify NAME=CMD ...]
                                                      로컬 등록 저장 + discovery 결과를 중앙에 보고
                                                      예: --verify "vp-pytest=python3 -m pytest -q"
                                                          --verify "vp-report=python3 -m daily_report {response}"
-    run       [--adapter codex|claude|echo]          claim 루프 (기본 codex)
-    run-local --request FILE --handoff-dir DIR --out DIR [--adapter codex|claude|echo]
+    run       [--adapter auto|codex|claude|echo]     claim 루프. 기본 auto: codex·claude 어댑터를 둘 다 만들고
+                                                     실행마다 등록의 tool 로 고른다 (runner.select_adapter)
+    run-local --request FILE --handoff-dir DIR --out DIR [--adapter auto|codex|claude|echo]
                                                      중앙 없이 어댑터 한 번 실행, 산출물을 --out 에 파일로 (Step 15 실연동 확인용)
 
 검증 명령은 `--verify` 인자로만 받아 `shlex.split` 한 인자 배열을 로컬에 둔다. 서버·요청·근거에서 명령을 받지 않는다.
@@ -25,23 +26,29 @@ import httpx
 from pydantic import ValidationError
 
 from workflow.connector import git_ops, state
-from workflow.connector.adapter import EchoAdapter
+from workflow.connector.adapter import AdapterOutput, EchoAdapter, ExecutionAdapter
 from workflow.connector.claude import ClaudeAdapter
 from workflow.connector.client import CentralClient, CentralError, Unreachable
 from workflow.connector.codex import CodexAdapter
 from workflow.connector.config import ConnectorPaths, connector_paths, read_token, write_token
 from workflow.connector.discovery import discover
 from workflow.connector.git_ops import GitError
-from workflow.connector.runner import Runner, utc_now
+from workflow.connector.runner import AdapterNotSelected, Runner, select_adapter, utc_now
 from workflow.contracts.v1 import ExecutionRequest
 
 # 이름 → (state_conn, env) 로 어댑터를 만드는 factory. codex·claude 는 로컬 등록(검증 프로필·저장소 경로)을 읽는다.
-# 등록의 `tool` 값으로 어댑터를 고르는 것은 step 3 (runner-dispatch) — 여기서는 factory 만 둔다
+# 실행마다 어느 것을 쓸지는 등록의 `tool` 값으로 고른다 (`runner.select_adapter`)
 ADAPTERS = {
     "codex": lambda conn, env: CodexAdapter(conn, env_base=env),
     "claude": lambda conn, env: ClaudeAdapter(conn, env_base=env),
     "echo": lambda conn, env: EchoAdapter(),
 }
+AUTO_ADAPTERS = ("codex", "claude")  # `--adapter auto` 가 만드는 것. 실제 도구 둘 — echo 는 명시할 때만
+
+
+def _build_adapters(name: str, conn, env: Mapping[str, str]) -> dict[str, ExecutionAdapter]:
+    names = AUTO_ADAPTERS if name == "auto" else (name,)
+    return {n: ADAPTERS[n](conn, env) for n in names}
 
 
 def _verify_arg(value: str) -> tuple[str, list[str]]:
@@ -63,14 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--id", required=True, dest="local_registration_id")
     register.add_argument("--repo", required=True, type=Path)
     register.add_argument("--repository-id", required=True)
-    register.add_argument("--tool", default="codex", choices=["codex"])
+    register.add_argument("--tool", default="codex", choices=["codex", "claude"])
     register.add_argument(
         "--verify", action="append", default=[], type=_verify_arg, metavar="NAME=COMMAND",
         help="검증 프로필. 여러 번 지정 가능",
     )
 
     run = sub.add_parser("run", help="claim 루프를 돈다")
-    run.add_argument("--adapter", default="codex", choices=sorted(ADAPTERS))
+    run.add_argument("--adapter", default="auto", choices=["auto", *sorted(ADAPTERS)])
     run.add_argument("--claim-interval", type=float, default=5.0)
     run.add_argument("--heartbeat-interval", type=float, default=30.0)
 
@@ -78,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     local.add_argument("--request", required=True, type=Path, help="ExecutionRequest JSON 파일")
     local.add_argument("--handoff-dir", required=True, type=Path, help="인계 자료 디렉터리 (읽기 전용)")
     local.add_argument("--out", required=True, type=Path, help="산출물을 쓸 디렉터리")
-    local.add_argument("--adapter", default="codex", choices=sorted(ADAPTERS))
+    local.add_argument("--adapter", default="auto", choices=["auto", *sorted(ADAPTERS)])
     return parser
 
 
@@ -158,17 +165,19 @@ def _run(args, paths: ConnectorPaths, transport, env: Mapping[str, str]) -> int:
     )
     conn = state.connect(paths.state_db)
     state.init_schema(conn)
+    adapters = _build_adapters(args.adapter, conn, env)
     runner = Runner(
         client=CentralClient(stored.server, stored.token, transport=transport),
         state_conn=conn,
         paths=paths,
-        adapter=ADAPTERS[args.adapter](conn, env),
+        adapters=adapters,
         connector_id=stored.connector_id,
         clock=utc_now,
         handoff_root=paths.home / "handoff",
     )
     logging.getLogger(__name__).info(
-        "연결 프로그램 시작: connector_id=%s server=%s adapter=%s", stored.connector_id, stored.server, args.adapter
+        "연결 프로그램 시작: connector_id=%s server=%s adapter=%s",
+        stored.connector_id, stored.server, ",".join(adapters),
     )
     runner.run_forever(args.claim_interval, args.heartbeat_interval)
     return 0
@@ -185,13 +194,16 @@ def _run_local(args, paths: ConnectorPaths, env: Mapping[str, str]) -> int:
     conn = state.connect(paths.state_db)
     state.init_schema(conn)
     try:
-        adapter = ADAPTERS[args.adapter](conn, env)
+        adapters = _build_adapters(args.adapter, conn, env)
 
         def progress(message: str, *, runtime_ref: str | None = None) -> None:
             print(f"[{request.execution_id}] {message}" + (f" ({runtime_ref})" if runtime_ref else ""),
                   file=sys.stderr)
 
-        output = adapter.run(request, args.handoff_dir, progress)
+        try:
+            output = select_adapter(conn, adapters, request).run(request, args.handoff_dir, progress)
+        except AdapterNotSelected as exc:
+            output = AdapterOutput(result=None, failed=(exc.code, exc.message, True))
     finally:
         conn.close()
     args.out.mkdir(parents=True, exist_ok=True)

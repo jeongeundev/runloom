@@ -1,6 +1,6 @@
 """등록 폴더의 설정 존재 여부와 요약 — 능력 설명 제안의 재료 (ARCHITECTURE "등록·선택·권한").
 
-읽기 전용이며 존재 여부와 짧은 요약만 남긴다. 파일 전체, `.env`, 인증 파일(`.codex/auth.json` 등),
+읽기 전용이며 존재 여부와 짧은 요약만 남긴다. 파일 전체, `.env`, 인증 파일(`.codex/auth.json`, `~/.claude/…` 등),
 원격 URL(자격 증명이 섞일 수 있다)은 절대 포함하지 않는다. "설정 발견" 이지 "실제 사용 확인" 이 아니다.
 """
 
@@ -45,8 +45,9 @@ def discover(repo_path: Path) -> dict:
         else:
             not_read.append(name)
 
-    # 존재 여부만. 디렉터리 안의 파일(auth.json 등)은 열지 않는다
+    # 존재 여부만. 디렉터리 안의 파일(`.codex/auth.json`, `.claude/settings*.json` 등)은 열지 않는다
     found["codex_config"] = (repo_path / ".codex").is_dir() or (repo_path / "codex.toml").is_file()
+    found["claude_config"] = (repo_path / ".claude").is_dir() or (repo_path / "CLAUDE.md").is_file()
 
     pyproject = repo_path / "pyproject.toml"
     if pyproject.is_file():

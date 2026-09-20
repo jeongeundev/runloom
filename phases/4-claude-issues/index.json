@@ -29,7 +29,10 @@
     {
       "step": 3,
       "name": "runner-dispatch",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T21:14:35+0900",
+      "summary": "src/workflow/connector/runner.py: Runner(adapters: Mapping[str, ExecutionAdapter]) 로 단일 adapter= 인자 제거, select_adapter(conn, adapters, request)·AdapterNotSelected(code·message) 신규 — accepted 직후·인계 자료 다운로드 전에 target.local_registration_id 의 등록 tool 로 어댑터를 고르고, 등록 없음 → failed registration_missing, 그 도구 어댑터 없음 → failed adapter_missing (둘 다 process_stopped=True, handoff_hash_mismatch 와 같은 _finish_failed 경로, 인계 자료를 내려받지 않음). CodeChangeTarget 이 아닌 요청은 첫 어댑터에 넘겨 unsupported_kind 로 답하게 둠(변경 없음). cli.py: register --tool choices [codex, claude]; run·run-local --adapter 기본 auto (AUTO_ADAPTERS=(codex, claude) 둘을 _build_adapters 로 생성, 특정 이름이면 하나 — scripts/local_stack.py 의 --adapter codex 유지), 시작 로그 adapter=codex,claude 는 실제 만든 이름 목록; run-local 도 select_adapter 로 골라 AdapterNotSelected 면 failed.json(code) + exit 1. discovery.py: found.claude_config = .claude/ 디렉터리 또는 CLAUDE.md 존재 (존재 여부만, ~/.claude·settings 파일은 읽지 않음). 테스트: test_runner.py — make_runner 가 등록 local-demo-report(tool stub, repo tmp_path/demo-report-repo) 를 저장하고 {stub: adapter} 로 Runner 생성(기존 검증 유지, 인계 디렉터리 위치 assert 는 등록 옆 <repo>-worktrees 로), 신규 3건(등록 두 개 codex·claude 에 따라 다른 StubAdapter 호출·둘 다 result_ready, 등록 없음 → registration_missing + /artifacts/ 요청 0건, tool claude 등록 + codex 어댑터만 → adapter_missing 메시지에 claude·codex); test_cli.py +4(register --tool claude 가 state tool=claude + 서버 보고 tool=claude, --tool gemini SystemExit, run 기본 로그 adapter=codex,claude (Runner.run_forever monkeypatch + caplog), --adapter echo 는 adapter=echo 만); test_discovery.py: fixture 에 .claude/settings.local.json(비밀값) 추가 → claude_config True 이면서 비밀값 미포함, CLAUDE.md 만 있어도 True, 빈 폴더 found 에 claude_config False. AC: connector 153 passed, 전체 1082 passed·11 skipped, ruff 통과, register --help 에 --tool {codex,claude}. GLOSSARY local_registration_id 행에 tool → 어댑터 선택 규칙·실패 코드 추가. 서버·계약 미변경, launchd plist 는 run 만 넘기므로 auto 가 그대로 적용됨. 주의(step 4·5): 등록 tool 이 codex 인 상태에서 --adapter echo 를 쓰면 adapter_missing 이다 — echo 는 등록 tool 을 echo 로 직접 저장한 테스트에서만 쓴다; run-local 은 등록이 있어야 어댑터를 고르므로 register(또는 state.save_registration) 가 먼저다.",
+      "completed_at": "2026-09-20T21:24:11+0900"
     },
     {
       "step": 4,

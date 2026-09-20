@@ -34,7 +34,7 @@
 | `connector` / `connector_id` | 운영자 Mac에서 도는 로컬 연결 프로그램. Agent 여러 개(`local_registration_id`)를 대신 실행할 수 있다 | `agent`, `daemon`, `client` |
 | `connect code` | 운영자가 발급하는 1회용 10분 연결 코드. `POST /connector/exchange` 로 교환하면 `connector_id` 와 연결 토큰 `wfc_…` 이 된다. 코드는 교환 즉시 무효, 토큰은 서버에 sha256 만 남는다 | `pairing code`, `invite`, `api key` |
 | `example` | 등록 폼 미리 채움 키 `diagnose` / `fix` (`GET /tasks/new?example=…`, `server/web.py` 의 `EXAMPLES`). 시연 업무 A·B 의 제목·요청·능력·기본 방식을 채울 뿐이며 목표 자동 분해 기능이 아니다 | `template`(완료 기준 템플릿과 혼동), `preset`, `scenario` |
-| `local_registration_id` | connector 안에서 등록된 폴더 + 도구 하나 | `folder_id`, `workspace` |
+| `local_registration_id` | connector 안에서 등록된 폴더 + 도구 하나 (`tool` 은 `codex`/`claude`). 실행 요청의 `target.local_registration_id` 로 찾은 등록의 `tool` 이 어댑터를 정한다 (`runner.select_adapter`) — 요청 본문에서 도구를 받지 않는다. 등록 없음 → 실패 코드 `registration_missing`, 그 도구의 어댑터 없음 → `adapter_missing` | `folder_id`, `workspace` |
 | `handoff bundle` | A 결과와 근거 원문을 묶은 B 입력 manifest. kind `handoff_bundle` | `payload`, `context`, `package` |
 | `verification profile` / `verification_profile_id` | 소유자가 사전 등록한 검증 명령 (예: `vp-pytest`). 요청에 셸 명령을 넣지 않는다 | `test command`, `check` |
 | `start_key` | Task당 실행 중복 방지 키. 웹 재전송·이벤트 중복에 같은 키 사용 | `idempotency_key`, `dedupe_key` |
