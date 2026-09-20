@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "local-tool-base",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T20:50:56+0900",
+      "summary": "src/workflow/connector/local_tool.py 신규: ToolRun(pid·started_at·exit_code·stdout·stderr·timed_out·stopped·last_message)·ToolResult(outcome·summary·parse_note)·LocalToolAdapter(tool_name·raw_kinds·launch·parse_last_message 추상, run 공통 흐름·child_env·_run_argv·_test_before·_report·_result, 상수 REPORT_PROFILE_ID·RESPONSE_*·NO_REPRO_TEST_LOG·KILL_GRACE_SECONDS). 실패 코드 {tool_name}_unavailable·타임아웃 문구·원시 산출물 이름({tool_name}.jsonl/-stderr.txt)과 kind(raw_kinds)를 도구 이름에서 만들고 마스킹·비밀값 제거 env(child_env=masking.codex_env)를 공통 흐름에서 적용. codex.py 는 CodexAdapter(LocalToolAdapter)로 build_argv·launch(구 _launch)·parse_last_message(구 _parse_last_message+outcome)·CodexLastMessage 만 남김, 공개 시그니처·ADAPTERS factory 유지, CodexRun 은 ToolRun 으로 대체. 테스트: tests/workflow/connector/test_local_tool.py 12건(가짜 하위 클래스 ScriptedTool + 최소 git 저장소·고정 check.py 프로필 — 정상 흐름·변경 없음·재현 테스트 없음·도구 outcome 유지·마지막 메시지 없음·timeout(stopped True/False)·OSError→fake_unavailable·launch 전 실패·마스킹·child_env·검증 프로필 env). test_codex.py 미변경(git diff 없음), connector 119 passed, 전체 1048 passed·11 skipped, ruff 통과. GLOSSARY: CodexRun→ToolRun, LocalToolAdapter·ToolResult 추가.",
+      "completed_at": "2026-09-20T20:58:16+0900"
     },
     {
       "step": 2,
