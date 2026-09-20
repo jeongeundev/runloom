@@ -2,13 +2,13 @@
 
 갱신일: 2026-09-20
 
-설계 문서(PRD·ARCHITECTURE·CONTRACT·ADR)와 구현 계획(`phases/0-mvp/`)이 있고 구현이 step 0 까지 진행됐다. 먼저 [현재 인계](CURRENT_HANDOFF.md)의 "지금 상태" 표를 읽는다.
+설계 문서(PRD·ARCHITECTURE·CONTRACT·ADR)가 있고 구현은 `phases/0-mvp`(18 step)·`phases/1-diag-fix`(4 step) 까지 끝났다. 진단 모델 비교(`phases/2-model-compare`)는 계획만 있다. 먼저 [현재 인계](CURRENT_HANDOFF.md)의 "지금 상태" 표를 읽는다.
 
 ## 현재 문서의 구분
 
 | 위치 | 상태와 용도 |
 |---|---|
-| [CURRENT_HANDOFF.md](CURRENT_HANDOFF.md) | 최근 사용자 의도, 미결 사항, 다음 문서 작성 논의 |
+| [CURRENT_HANDOFF.md](CURRENT_HANDOFF.md) | 지금 상태 표, 하네스 재개 방법, 미결 사항, 진단 모델 판단 경위 |
 | [product/PRODUCT_BRIEF.md](product/PRODUCT_BRIEF.md) | 최신 제품 방향, 기존 서비스와의 차별성 가설, 검증할 사항 |
 | [archive/2026-09-16-gateless/](archive/2026-09-16-gateless/README.md) | 이전 Gateless 기획·도메인·아키텍처와 조사·실험 자료. 현행 요구사항이 아닌 참고 이력 |
 | [PRD.md](PRD.md) | 검토용 v0.1. MVP 범위·사용자 흐름·공모전 시연·수용 기준 제안 |

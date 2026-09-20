@@ -1,41 +1,54 @@
 # 현재 인계 — 이종 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-20 (구현 시작 후 중단)
-상태: 문서 7항목 완료. 구현 계획 `phases/0-mvp/` step 0~17 작성·커밋. 하네스를 `--engine claude` 로 실행해 step 0 완료 후 step 1 진행 중 사용자 요청으로 중단. 브랜치 `feat-0-mvp`, 푸시 안 함.
+갱신일: 2026-09-20 (phase 0-mvp·1-diag-fix 완료, 2-model-compare 계획 커밋)
+상태: 제품 코드·진단 데모·연결 프로그램·배포 설정까지 구현 완료(`phases/0-mvp` 18 step). Codex CLI 실연동 1회 성공. 진단 모델(gpt-4.1-mini) 실호출 평가는 세 번 모두 통과 기준 미달 → 사용자가 `gpt-4.1` 비교 평가를 결정했고 그 계획(`phases/2-model-compare`)만 커밋했다. 브랜치 `feat-1-diag-fix`, 푸시 안 함.
 
 ## 지금 상태 — 새 세션이 먼저 볼 것
 
 | 항목 | 상태 |
 |---|---|
-| 브랜치 | `feat-0-mvp` (main 에서 분기. main 은 그대로) |
-| 커밋 | `docs:` 설계 문서 → `fix(harness)` 시간 초과·`__main__.py` 예외 → `chore(harness)` step 계획 → `feat(0-mvp): step 0` + `chore` |
-| step 0 project-setup | 완료. `src/`·`tests/` 뼈대, editable 설치, `tests/test_packages.py` 의존 방향 회귀 테스트. pytest 98 passed |
-| step 1 contracts | 시작했다가 중단. 미완성분은 `git stash list` 의 `stash@{0}` (v1.py 417줄, test_v1.py 393줄). 작업 트리는 HEAD 와 같다 |
-| step 2~17 | pending. 파일은 `phases/0-mvp/step{N}.md` |
-| 사용자 검토 | **step 파일 18개를 사용자가 아직 검토하지 않았다.** 이전 세션이 승인 범위를 넘어 실행을 시작했고 사용자가 멈췄다. 실행 재개 전에 사용자에게 step 파일 검토 여부를 묻는다 |
+| 브랜치 | `feat-1-diag-fix` (main → `feat-0-mvp` → 여기. main 은 그대로. 푸시 안 함) |
+| `phases/0-mvp` step 0~17 | **완료.** contracts·domain·adapters·server(web/API/워커)·connector(Codex 어댑터·worktree)·diagnostic_demo(fixture·도구·워커)·deploy 설정·런북. 각 step 은 `feat(0-mvp): step N` + `chore` 로 커밋 |
+| `phases/1-diag-fix` step 0~3 | **완료.** location 배열 인덱스 `[N]` + JSON Schema `pattern`, 도구 텍스트 반환에 줄 번호(`tools-v2`), 프롬프트 v2, 재평가 |
+| `phases/2-model-compare` step 0~2 | **계획만 커밋 (`645538e`). 실행 전.** 프롬프트 v3(`list_runs.before` 인자 규칙) → `DraftInvalid` 턴 사용량 집계 수정 → mini·gpt-4.1 을 같은 v3 로 5사례 × 3회 비교 |
+| 검증 | `python3 -m pytest -q` 1018 passed + 11 skipped(e2e), `ruff` 통과. 하네스 테스트 포함 |
+| Codex 실연동 (step 15) | 성공 — codex-cli 0.155.1, ChatGPT 로그인 재사용, 승인 요청 0건, 데모 저장소 3 failed → 17 passed. 기록 [VERIFICATION_LOG](VERIFICATION_LOG.md) |
+| 진단 모델 평가 | 세 번(v1 2회, v2 1회) 모두 `normal` 3/3 미달, 잘못된 수정 착수 0회는 검증기 덕. 종합 [DIAG_EVAL](DIAG_EVAL.md). **ADR-0003 은 여전히 작업 가정** |
+| 배포 | `deploy/` 설정·[DEPLOY](DEPLOY.md) 런북만 있음. VM·도메인 미지정, 실제 배포 안 함 |
+| 로컬 산출물(커밋 안 됨) | `.env`(비밀값, gitignore), `data/`(sqlite·산출물·평가 workdir), `../demo-report-repo`(B 가 수정하는 데모 저장소, `scripts/scaffold_demo_repo.py` 로 재생성 가능) |
 
-재개 방법:
+### 재개 방법 — phase 2-model-compare
 
 ```bash
-# (선택) step 1 진행분을 이어서 쓰려면
-git stash pop
-# 실행 — 반드시 claude 엔진 (Codex 사용량 소진)
-python3 scripts/execute.py 0-mvp --engine claude
+cd /Users/kje/00_Workspace/01_Coding/project/workflow
+set -a && . ./.env && set +a && python3 scripts/execute.py 2-model-compare --engine claude
 ```
 
-`git stash pop` 없이 돌리면 step 1 을 처음부터 다시 만든다. pop 하면 그 파일 위에서 이어 간다 (execute.py 는 작업 트리를 초기화하지 않는다). 하네스는 step 15(Codex 실연동)·17(OpenAI 키) 에서 blocked 로 멈출 수 있다 — 사유 해결 후 `index.json` 의 해당 step 을 `pending` 으로 되돌리고 같은 명령으로 재개한다.
+- `.env` 는 프로젝트 루트에 있고 gitignore 된다(`.gitignore` 의 `.env` 행 — execute.py 가 `git add -A` 하므로 필수). 내용: `OPENAI_API_KEY`, `DIAG_PRICE_INPUT_PER_M=0.40`, `DIAG_PRICE_OUTPUT_PER_M=1.60`(gpt-4.1-mini 단가), `DIAG_EVAL_BUDGET_USD=2`. 키 값은 채팅에 붙이지 않는다.
+- `set -a && . ./.env` 없이 돌리면 step 2 가 `blocked` 로 멈춘다. gpt-4.1 단가(2.00/8.00)는 step 2 커맨드 안에서 덮어쓴다. 예상 비용 약 US$0.6.
+- `claude -p` 세션 한도(429 "session limit")로 step 이 3회 실패하면 코드 문제가 아니다. `index.json` 의 그 step 을 `pending` 으로 되돌리고 `error_message` 를 지운 뒤 같은 명령으로 재개한다 (0-mvp step 8 에서 한 번 겪음).
+- step 파일은 사용자가 검토·승인했다 (0-mvp 는 실행 전 승인, 1-diag-fix·2-model-compare 는 초안 제시 후 "진행해").
 
-주의: 하네스가 도는 동안 같은 작업 트리에서 다른 Claude Code 세션의 Stop 훅(`verify.sh`)이 미완성 파일을 보고 검증 실패를 낸다. 하네스 실행 중에는 그 세션에서 소스를 만지지 않는다.
+주의: 하네스가 도는 동안 같은 작업 트리에서 다른 Claude Code 세션의 Stop 훅(`verify.sh`)이 검증 실패를 낼 수 있다. 실패가 하네스의 미완성 파일 때문이면 기다리고, 커밋된 코드의 실제 결함이면(0-mvp step 7 의 시각 의존 테스트가 그 예) 테스트 파일만 따로 고쳐 커밋한다.
 
-리스크 (사용자에게 알린 것): 제품의 B 실행은 연결 프로그램이 띄우는 Codex 이고 하네스와 같은 사용량을 쓴다. 사용량이 거의 없으면 심사 기간 B 가 `실패`로 표시된다. Claude Code 어댑터(`src/workflow/connector/` 경계에 추가)가 대안이며 step 15 결과를 보고 결정하기로 했다.
+리스크 (사용자에게 알린 것): 제품의 B 실행은 연결 프로그램이 띄우는 Codex 이고 하네스 Codex 엔진과 같은 사용량을 쓴다. 하네스는 `--engine claude` 로 돌리므로 Codex 사용량은 B 실연동에만 쓰인다. Claude Code 어댑터(`src/workflow/connector/` 경계에 추가)는 여전히 대안이다.
+
+## 진단 모델 — 지금까지의 판단 (2026-09-20)
+
+사용자의 질문 "gpt-4.1-mini 는 사내 에이전트 역할인데 시나리오대로 돌게 하면 되지 않나" 에 대한 합의:
+
+- **정해진 답을 재생하는 fake 로 시연하지 않는다.** PRD "소수의 자료로 실제 조회·진단을 수행하며 고정된 답변 재생으로 대체하지 않는다". `DIAG_MODEL=fake` 는 테스트 전용이며 provenance 에 `fake-fixture-script` 로 남는다.
+- 대신 **우리 쪽(도구 반환·계약 문법·프롬프트)을 먼저 고치고 같은 하네스로 재평가**한다 → phase 1-diag-fix. 목표 증상(문법 거부 5→0, 줄 범위 초과 5→0)은 사라졌다.
+- 남은 실패는 모델이 읽은 사실과 어긋나는 결론을 내는 행동이다: "읽지 못했으면 보류" 규칙 0회 준수, 읽지 않은 근거 인용, `list_runs.before` 에 자료의 2026 대신 2023/2024 를 씀(7/15). 사용자가 `gpt-4.1` 비교를 결정했다 → phase 2-model-compare.
+- 비정상 사례에서 검증기가 막아 `확인 필요` 로 남는 것은 "검증 없이는 인계하지 않는다" 는 제품 주장이라 시연에 해가 되지 않는다. 문제는 정상 사례의 자동 인계가 안정적이지 않다는 점이다.
 
 ## 새 세션 시작
 
 1. 루트 AGENTS.md(스택·규칙·명령어 채움)와 [ADR 목록](adr/0000-principles.md)을 읽는다. ADR-0000~0006이 확정 사항이며 0003만 작업 가정이다.
 2. [PRD](PRD.md)·[ARCHITECTURE](ARCHITECTURE.md)·[CONTRACT](CONTRACT.md)·[GLOSSARY](GLOSSARY.md)를 읽는다. "2026-09-20 확정"으로 표시한 절은 재질문하지 않는다.
-3. 구현 계획은 `phases/0-mvp/` 에 있다. 위 "지금 상태" 표를 보고 사용자에게 step 파일 검토 여부와 재개 여부를 확인한 뒤 실행한다. 사용자에게 제품 방향이나 시연 사례를 다시 고르도록 요구하지 않는다.
+3. 위 "지금 상태" 표와 "재개 방법" 을 본다. 사용자가 재개를 지시하면 `phases/2-model-compare` 를 실행한다. 사용자에게 제품 방향·시연 사례·진단 모델 비교 여부를 다시 고르도록 요구하지 않는다.
 
-사용자는 문서 작성을 먼저 끝내고 구현으로 넘어가길 원한다. 별도 구현 요청 전에는 제품 코드·실연동·배포를 시작하지 않는다. 결정 질문은 압축 용어 대신 "누가 무엇을 하면 어떤 일이 생기는지" 장면으로 풀어 설명한 뒤 2~3개씩 묻는다.
+구현은 사용자가 "진행해" 로 지시했을 때만 하네스로 실행한다. 실배포·유료 호출·모델 교체는 별도 지시 없이 시작하지 않는다. 결정 질문은 압축 용어 대신 "누가 무엇을 하면 어떤 일이 생기는지" 장면으로 풀어 설명한 뒤 2~3개씩 묻는다.
 
 ## 제품의 중심 — 좁혀 해석하지 말 것
 
@@ -95,7 +108,7 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 |---|---|
 | 첫 로컬 도구 Codex CLI, Claude Code는 후속 | [ADR-0001](adr/0001-first-local-agent-codex.md) |
 | Python 3.13 + FastAPI + Jinja2 + SQLite + Pydantic v2 + HTTPX + pytest/ruff | [ADR-0002](adr/0002-server-stack-python-fastapi-sqlite.md), `pyproject.toml` |
-| 진단 모델 OpenAI gpt-4.1-mini — 작업 가정, 키·예산 확인 전 blocked | [ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md) |
+| 진단 모델 OpenAI gpt-4.1-mini — 작업 가정. 키·예산 확인됨, 평가 3회 미달, gpt-4.1 비교 예정 | [ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md) |
 | 중앙 서비스는 규칙 기반, LLM 미사용. 능력 코드 2개 명시 비교 | [ADR-0004](adr/0004-central-service-rule-based-no-llm.md), PRD 2절 |
 | 기본값: 자동 선택 / 선행 있으면 자동 실행·없으면 직접 / 검토 후 완료. 후보 0·2+면 확인 필요. 검토 동작 승인·수정 요청·종료 | PRD 2·3·4절 |
 | 익명 세션 워크스페이스, 운영자 토큰, 병합은 운영자 전용 | [ADR-0005](adr/0005-access-model-anonymous-session-operator-token.md), ARCHITECTURE 인증 절 |
@@ -106,16 +119,17 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 
 미결·확인 필요:
 
-- VM 제공자·도메인 이름은 아직 지정하지 않았다.
-- OpenAI API 키·계정 사용 가능 여부·단가 확인 전. 진단 실연동 step은 blocked로 시작한다.
+- VM 제공자·도메인 이름은 아직 지정하지 않았다. 배포 설정·런북은 준비됐다([DEPLOY](DEPLOY.md)).
+- OpenAI API 키·계정 사용 가능·단가·예산은 확인됐다(`.env`). ADR-0003 확정은 gpt-4.1 비교 결과를 보고 사용자가 정한다.
 - Mac 오프라인 대비 "운영자 예시 실행 공개"는 ARCHITECTURE 배포 절에 제안으로만 적었다. 사용자 확인 전.
-- 공모전 제출 마감이 2026-09-20으로 오늘이다. 사용자는 "적용됨, 일정 그대로"를 선택했다. 문서 완료 후 구현 일정은 사용자 판단이다.
+- 공모전 제출 마감 2026-09-20 은 지났다. 심사 9/21~10/5 상시 접속을 위해 배포가 필요하지만 사용자 판단 전이다.
+- 제품 코드 결함 1건 발견·미수정: `worker/loop.py` 가 계약 거부된 턴의 호출·토큰을 사용량에 안 더함 → 2-model-compare step 1 에서 고친다.
 
 ## 다음 세션에서 할 일
 
-1. 사용자에게 `phases/0-mvp/step*.md` 검토 여부를 묻는다. 고칠 점이 있으면 해당 step 파일을 고친다 (아직 시작 안 한 step 은 실행 시점에 파일을 읽는다).
-2. 사용자가 재개를 지시하면 `python3 scripts/execute.py 0-mvp --engine claude` 로 실행한다. step 1 진행분을 쓸지(`git stash pop`) 먼저 정한다.
-3. 미결 3건(VM·도메인, OpenAI 키·단가, 예시 실행 공개)은 해당 step(16·17·8)에 도달할 때 확인한다.
+1. 사용자가 지시하면 위 "재개 방법" 대로 `2-model-compare` 를 돌린다. 끝나면 `docs/DIAG_EVAL.md`(종합) 의 모델별 판정과 총비용을 보고하고, ADR-0003 갱신(또는 ADR-0007 대체) 여부를 사용자에게 묻는다. ADR 파일은 사용자 확정 후에만 고친다.
+2. 그 다음은 사용자 결정: 배포(VM·도메인 지정 → [DEPLOY](DEPLOY.md)) 또는 정리·푸시·PR.
+3. 인계 문서를 갱신할 때 "지금 상태" 표를 먼저 고친다.
 
 ### 이전 세션의 기술 설계 진행 내용 — 확정 전 기록 (위 표가 우선)
 
@@ -134,10 +148,10 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 
 ## 문서와 작업 상태
 
-- 현행 문서: 제품 개요, PRD, ARCHITECTURE v0.3, CONTRACT, GLOSSARY, [UI_GUIDE](UI_GUIDE.md)(2026-09-20 채움, 심사자 첫 방문 흐름·화면 목록·상태 표시 규칙), ADR 0000~0006, 이 handoff, [문서 안내](README.md).
+- 현행 문서: 제품 개요, PRD, ARCHITECTURE, CONTRACT, GLOSSARY, [UI_GUIDE](UI_GUIDE.md), ADR 0000~0006, [VERIFICATION_LOG](VERIFICATION_LOG.md), [DEPLOY](DEPLOY.md), [DIAG_EVAL](DIAG_EVAL.md)(+ 이전 평가 `DIAG_EVAL_2026-09-20_prompt-v1.md`), 이 handoff, [문서 안내](README.md).
 - [이전 원문 보관](archive/2026-09-19-before-agent-registration/README.md)은 이력이며 현행 요구사항이 아니다.
-- 작업 트리에 기존 코드·설정 변경이 많다. 이 세션에서는 문서·ADR·AGENTS.md·`pyproject.toml`·`scripts/hooks/{tdd-guard,verify}.sh`·`scripts/test_hooks.py`를 바꿨고 ruff `--fix`로 `scripts/execute.py`·`test_execute.py`의 미사용 import·빈 f-string을 정리했다. 커밋·푸시하지 않았다.
-- 검증은 문서 로컬 링크, CONTRACT.md JSON 파싱, `python3 -m pytest -q`(88 passed), `python3 -m ruff check .` 통과다. 제품 코드·서비스 연결 검증을 수행한 것으로 설명하지 않는다.
+- 작업 트리는 HEAD 와 같다(`.env`·`data/` 는 gitignore). 이 세션에서 한 것: 0-mvp step 1~17 하네스 실행, step 7 시각 의존 테스트 수정(`d01773b`), 1-diag-fix 계획·실행, 2-model-compare 계획 커밋, 이 문서 갱신. 푸시하지 않았다.
+- 검증은 `python3 -m pytest -q`(1018 passed, 11 skipped) 와 `python3 -m ruff check .` 통과. 실제 외부 호출 검증은 Codex 1회(step 15)·OpenAI 평가 3회(step 17, 1-diag-fix step 3) 뿐이며 배포·심사 환경 검증은 하지 않았다.
 
 ## 권장 스킬
 
