@@ -8,7 +8,7 @@
       "name": "scripted-agents",
       "status": "completed",
       "started_at": "2026-09-21T01:55:19+0900",
-      "completed_at": "2026-09-21T02:13:40+0900",
+      "completed_at": "2026-09-21T02:15:06+0900",
       "engine": "claude",
       "summary": "src/workflow/scripted/ 대본 에이전트 2종 — codex(`codex exec … --output-last-message` 형식, JSONL 3줄, thread_id scripted-codex)·claude(`claude -p --output-format json` 형식, type=result 봉투 한 덩어리) + _common(WORKFLOW_SCRIPT_PACE_SECONDS 속도, 인계 응답 찾기, 재현 테스트+두 경로 변환부 적용), SCRIPT_MODEL_ID=scripted-demo-agent. tests/e2e/fake_codex.py 는 7줄 shim. local_stack --scripted(codex·claude 래퍼, 속도 env 를 connector 에 통과). FakeModelClient.turn_seconds + DIAG_FAKE_TURN_SECONDS(settings·worker·diag.env.example). connector masking 허용 목록에 WORKFLOW_SCRIPT_PACE_SECONDS 추가(대본 프로세스까지 속도가 닿게, 비밀 아님). 검증: pytest 1129 passed, ruff, e2e 11 passed × 2(shim·WORKFLOW_E2E_SCRIPTED=1). 별도 fix 커밋: 34bbe78 이 깨뜨린 e2e `_create_task` task id 파싱."
     },
