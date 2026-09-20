@@ -220,7 +220,7 @@ def test_capabilities_and_budget(client, diag_conn, diag_settings):
         "tool_contract_version": TOOL_CONTRACT_VERSION, "model_id": diag_settings.model_id,
         "prompt_version": PROMPT_VERSION,
     }
-    assert TOOL_CONTRACT_VERSION == "tools-v1"
+    assert TOOL_CONTRACT_VERSION == "tools-v2"
 
     client.post("/runs", json=contract_request(), headers=HEADERS)
     db.record_usage(diag_conn, EXEC_A, "gpt-test", 1, 1, 1, 0.25, NOW)

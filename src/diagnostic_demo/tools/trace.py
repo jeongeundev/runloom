@@ -11,7 +11,8 @@ from dataclasses import asdict, dataclass
 from diagnostic_demo.tools.store import EvidenceKey, FixtureStore, ToolResult
 from workflow.contracts.v1 import CONTRACT_VERSION
 
-TOOL_CONTRACT_VERSION = "tools-v1"
+# tools-v2: 텍스트 자료를 줄 번호가 붙은 줄 목록과 line_count 로 돌려준다 (Step 1). 조회 이력·첨부 해시는 원문 바이트 기준으로 불변.
+TOOL_CONTRACT_VERSION = "tools-v2"
 
 
 @dataclass

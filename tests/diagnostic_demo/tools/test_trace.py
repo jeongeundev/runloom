@@ -84,7 +84,7 @@ def test_to_json_shape_and_worker_compatibility(store):
     data = json.loads(recorder.to_json())
 
     assert data["contract_version"] == 1
-    assert data["tool_contract_version"] == TOOL_CONTRACT_VERSION == "tools-v1"
+    assert data["tool_contract_version"] == TOOL_CONTRACT_VERSION == "tools-v2"
     assert [set(e) for e in data["entries"]] == [
         {"call_id", "tool", "input", "ok", "error", "returned"},
     ] * 2

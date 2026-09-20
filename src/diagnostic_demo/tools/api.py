@@ -3,6 +3,8 @@
 `TOOL_SCHEMAS` 는 OpenAI Responses API function calling 형식(`strict: true`, 추가 속성 금지)이다.
 모델은 DB·파일 경로를 직접 받지 않으며, 인자는 여기서 검증한 뒤 `FixtureStore` 의 고정된 메서드로만 이어진다.
 설명은 도구가 돌려주는 사실 자료를 적고, 진단 결론이나 힌트를 넣지 않는다.
+텍스트 자료(`text/plain`)는 모델에 줄 번호가 붙은 줄 목록으로 보낸다 — 모델이 `lines:N-M` 을 원문 안에서 고르게 하기 위한
+표시 형식이며, 첨부 원문·sha256·조회 이력은 `FixtureStore` 의 원문 바이트 그대로다.
 """
 
 from collections.abc import Callable
@@ -62,7 +64,9 @@ TOOL_SCHEMAS: list[dict] = [
     _tool(
         "read_evidence",
         "자료 하나의 해당 버전 원문을 반환한다: 실행 기록·응답 JSON·로그 텍스트·보고서 텍스트·운영 문서"
-        "({markdown, machine} JSON). 조회 실패는 not_found, access_denied, unavailable 로 구분한다.",
+        "({markdown, machine} JSON). 텍스트 자료(content_type text/plain)는 줄 번호가 붙은 줄 목록"
+        "(lines: [{line, text}, …], 1부터)과 총 줄 수(line_count)로 돌아오며, 인용은 lines:N-M (1 ≤ N ≤ M ≤ line_count) 이다. "
+        "조회 실패는 not_found, access_denied, unavailable 로 구분한다.",
         {
             "evidence_id": {"type": "string", "description": "자료 ID (예: response-after)"},
             "version": {"type": "string", "description": "자료 버전 (예: 1)"},
@@ -100,6 +104,18 @@ def _validate(name: str, arguments: dict) -> dict[str, Any]:
     return validated
 
 
+def _numbered_lines(text: str) -> dict[str, Any]:
+    """텍스트 원문을 모델용 줄 목록으로 바꾼다. 줄은 `workflow.domain.evidence_location._resolve_line_range` 와 같은
+    규칙으로 센다: `\\n` 으로 나누고 원문이 `\\n` 으로 끝나면 마지막 빈 조각은 줄이 아니다. 각 줄 텍스트는 그대로 둔다."""
+    lines = text.split("\n")
+    if text.endswith("\n"):
+        lines.pop()
+    return {
+        "line_count": len(lines),
+        "lines": [{"line": number, "text": line} for number, line in enumerate(lines, start=1)],
+    }
+
+
 class Tools:
     def __init__(self, store: FixtureStore, recorder: ToolTraceRecorder) -> None:
         self._store = store
@@ -125,9 +141,12 @@ class Tools:
         result = self._dispatch[name](validated)
         self._recorder.record(name, validated, result, self._store)
         single = result.returned[0] if len(result.returned) == 1 else None
+        content = result.content
+        if result.content_type == "text/plain" and isinstance(content, str):
+            content = _numbered_lines(content)
         return {
             "ok": result.ok,
-            "content": result.content,
+            "content": content,
             "content_type": result.content_type,
             "error": result.error.value if result.error is not None else None,
             "evidence_id": single.evidence_id if single is not None else None,
