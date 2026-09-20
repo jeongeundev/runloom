@@ -141,7 +141,10 @@
     {
       "step": 17,
       "name": "diag-live-eval",
-      "status": "pending"
+      "status": "blocked",
+      "started_at": "2026-09-20T11:54:13+0900",
+      "blocked_reason": "OPENAI_API_KEY·DIAG_PRICE_INPUT_PER_M·DIAG_PRICE_OUTPUT_PER_M·DIAG_EVAL_BUDGET_USD 미설정 (4개 전부 없음). 유료 호출 0회, 파일 변경 없음. ADR-0003 확정 조건: 사용자가 (1) API 키와 계정의 API 사용 가능 여부, (2) gpt-4.1-mini-2025-04-14 의 입력/출력 단가(US$ per 1M tokens, 공식 가격 페이지), (3) 이 평가에 쓸 상한 DIAG_EVAL_BUDGET_USD 를 확인해 환경변수로 넣은 뒤 — index.json 의 step 17 을 pending 으로 되돌리고 `python3 scripts/execute.py 0-mvp --engine claude` 로 재개. DIAG_MODEL_ID 는 선택(기본 gpt-4.1-mini-2025-04-14). 재개 시 예상 작업: scripts/diag_eval.py + scripts/test_diag_eval.py 작성 → pytest → 실호출 5사례×3회 → docs/DIAG_EVAL.md.",
+      "blocked_at": "2026-09-20T11:56:05+0900"
     }
   ],
   "created_at": "2026-09-20T06:40:59+0900"
