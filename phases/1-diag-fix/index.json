@@ -29,7 +29,10 @@
     {
       "step": 3,
       "name": "diag-re-eval",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T15:46:28+0900",
+      "summary": "실호출 1회 (gpt-4.1-mini-2025-04-14, diag-prompt-v2 · tools-v2, 5사례 × 3회, 15:48~15:51 KST). normal 0/3, 잘못된 수정 착수 0/12 (검증기 차단), 계약 거부 1/15, 총 US$0.0951 (표 기준; 계약 거부 턴 미집계로 실제 약 US$0.10). Step 0·1·2 의 목표 증상은 사라짐 — location 문법 거부 5→0, 배열 인덱스 인용 8건 전부 해석, 줄 범위 초과 5→0. 남은 문제: (1) 새 실패 — list_runs.before 에 연도를 2023/2024 로 써서 빈 목록 → '정상 실행 없음' 으로 조기 needs_information 5건·baseline_run_id 빈값 2건 (7/15, v1 조회 이력 18건은 전부 2026); (2) 결론 규칙 미준수 그대로 — 조사 완주 8건 전부 ready_for_handoff, 모순을 요약에 적고도 확정 진단, v2 추가 문장 0/4 준수; (3) 읽지 않은 근거 인용 1→5; (4) 부재 주장에 없는 경로 인용 2 (response-after $.items). 발견한 제품 코드 결함(미수정): loop.py call_model 이 DraftInvalid 턴의 호출·토큰을 usage 에 집계하지 않아 계약 거부 1건당 한 턴 비용이 빠짐. ADR-0003 확정 보류; 상위 모델(gpt-4.1) 비교 평가 필요 판단 — 프롬프트 v3 에 before 작성 규칙 추가 후 같은 하네스로 비교 제안 (ADR 파일 미변경). 산출물: docs/DIAG_EVAL.md 재생성 + 비교·관찰·분리 분석·ADR 판단 절, 이전 보고서 docs/DIAG_EVAL_2026-09-20_prompt-v1.md 로 git mv (내용 불변), docs/README.md 색인 갱신. 스크립트·테스트·프롬프트·도구·계약·fixture 미변경. AC: scripts/test_diag_eval.py 22 passed, 전체 1018 passed 11 skipped, ruff 통과, 커밋 diff 에 비밀값 접두사 0건.",
+      "completed_at": "2026-09-20T16:02:27+0900"
     }
   ],
   "created_at": "2026-09-20T15:30:07+0900"
