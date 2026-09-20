@@ -1,0 +1,19 @@
+{
+  "project": "workflow",
+  "phase": "5-scripted-demo",
+  "note": "공개 데모(runloom.duckdns.org)를 대본 재생으로 전환한다 — 실제 OpenAI·Codex·Claude 를 돌리지 않는다(2026-09-21 사용자 확정). 심사자 흐름: 에이전트 등록(카탈로그) → 업무 가져오기(GitHub·Jira fixture) → 워크플로우 자동 구성(규칙) → 자동 실행(대본 A→B) → 사람 검토. phase 4 step 0~3(도구 계약·LocalToolAdapter·ClaudeAdapter·Runner 디스패치) 위에 쌓는다.",
+  "steps": [
+    { "step": 0, "name": "scripted-agents", "status": "pending" },
+    { "step": 1, "name": "chain-schema", "status": "pending" },
+    { "step": 2, "name": "catalog-registration", "status": "pending" },
+    { "step": 3, "name": "task-sources", "status": "pending" },
+    { "step": 4, "name": "composition-rules", "status": "pending" },
+    { "step": 5, "name": "import-web", "status": "pending" },
+    { "step": 6, "name": "chain-web", "status": "pending" },
+    { "step": 7, "name": "seed-three-agents", "status": "pending" },
+    { "step": 8, "name": "connector-cleanup", "status": "pending" },
+    { "step": 9, "name": "e2e-chain", "status": "pending" },
+    { "step": 10, "name": "deploy-vm-scripted", "status": "pending" },
+    { "step": 11, "name": "docs-glossary", "status": "pending" }
+  ]
+}
