@@ -10,6 +10,10 @@
       "dir": "1-diag-fix",
       "status": "completed",
       "completed_at": "2026-09-20T16:04:00+0900"
+    },
+    {
+      "dir": "2-model-compare",
+      "status": "pending"
     }
   ]
 }

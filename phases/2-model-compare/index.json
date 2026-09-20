@@ -1,0 +1,9 @@
+{
+  "project": "workflow",
+  "phase": "2-model-compare",
+  "steps": [
+    { "step": 0, "name": "prompt-v3", "status": "pending" },
+    { "step": 1, "name": "usage-on-invalid-draft", "status": "pending" },
+    { "step": 2, "name": "model-compare", "status": "pending" }
+  ]
+}
