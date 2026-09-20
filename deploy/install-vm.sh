@@ -11,7 +11,7 @@ set -euo pipefail
 #   WORKFLOW_REPO_URL  clone 할 저장소 (비공개면 배포용 토큰/키가 필요하다)
 #   WORKFLOW_REPO_REF  체크아웃할 브랜치·태그
 
-WORKFLOW_REPO_URL="${WORKFLOW_REPO_URL:-https://github.com/jeongeundev/harness-framework.git}"
+WORKFLOW_REPO_URL="${WORKFLOW_REPO_URL:-https://github.com/jeongeundev/runloom.git}"
 WORKFLOW_REPO_REF="${WORKFLOW_REPO_REF:-main}"
 APP_DIR=/opt/workflow
 DATA_DIR=/var/lib/workflow

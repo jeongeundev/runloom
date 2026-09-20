@@ -29,7 +29,7 @@ VM 에서 root 로. 저장소를 임시로 받아 스크립트를 실행하면 `
 
 ```bash
 sudo apt-get install -y git
-git clone https://github.com/jeongeundev/harness-framework.git /tmp/workflow-src
+git clone https://github.com/jeongeundev/runloom.git /tmp/workflow-src
 sudo bash /tmp/workflow-src/deploy/install-vm.sh
 # 다른 저장소·브랜치면: sudo WORKFLOW_REPO_URL=… WORKFLOW_REPO_REF=… bash /tmp/workflow-src/deploy/install-vm.sh
 ```
@@ -103,7 +103,7 @@ seed 는 `agent-codex-mac` 의 기준 커밋(`--base-commit`)을 요구하고, �
 Mac:
 
 ```bash
-git clone https://github.com/jeongeundev/harness-framework.git ~/workflow
+git clone https://github.com/jeongeundev/runloom.git ~/workflow
 cd ~/workflow && python3 -m pip install -e ".[dev]"
 python3 scripts/scaffold_demo_repo.py ~/demo-report-repo     # 마지막 줄 base_commit={sha} 를 적어 둔다
 codex --version && codex login status                        # Step 15 와 같은 ChatGPT 로그인 재사용

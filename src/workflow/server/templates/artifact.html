@@ -1,6 +1,6 @@
 {# 산출물 단독 페이지 — 오른쪽 뷰어와 같은 패널을 가운데 열에 둔다 (800px 미만·직접 링크). 칩 클릭은 이 페이지의 #viewer-panel 을 가져간다. #}
 {% extends "base.html" %}
-{% block title %}{{ artifact.name }} — workflow{% endblock %}
+{% block title %}{{ artifact.name }} — Runloom{% endblock %}
 {% block content %}
 <div class="crumbs">
   <div class="crumb"><a href="/tasks/{{ task_id }}">업무로</a><span class="sep">/</span>{{ artifact.kind|kind_label }}</div>
