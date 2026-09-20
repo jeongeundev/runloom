@@ -66,7 +66,14 @@ def run_diagnosis(
             raise BudgetExceeded("budget_exceeded", f"모델 호출 {budget.max_calls}회 상한에 도달했습니다.")
         if clock() - started_at > budget.timeout_seconds:
             raise BudgetExceeded("timeout", f"진단이 {budget.timeout_seconds:g}초를 초과했습니다.")
-        turn = turn_fn()
+        try:
+            turn = turn_fn()
+        except DraftInvalid as exc:
+            # 거부된 턴도 호출·토큰을 썼다. 이미 실패한 실행이므로 상한 판정 없이 사용량만 더하고 그대로 던진다
+            usage.calls += 1
+            usage.input_tokens += exc.input_tokens
+            usage.output_tokens += exc.output_tokens
+            raise
         usage.calls += 1
         usage.input_tokens += turn.input_tokens
         usage.output_tokens += turn.output_tokens

@@ -136,6 +136,41 @@ def test_draft_citing_unread_evidence_is_returned_as_is(request_a, tools, record
 
 def test_turn_without_tool_calls_or_draft_is_draft_invalid(request_a, tools, emitted):
     empty = ModelTurn([], None, 10, 1, "r1")
+    usage = Usage()
     with pytest.raises(DraftInvalid):
         run_diagnosis(EXEC_A, request_a, tools, FakeModelClient([empty]), BUDGET, itertools.count().__next__,
-                      _emit(emitted))
+                      _emit(emitted), usage)
+    assert (usage.calls, usage.input_tokens, usage.output_tokens) == (1, 10, 1)
+
+
+class _RejectsLastTurn:
+    """대본이 끝난 다음 턴에서 DraftInvalid 를 던지는 가짜 클라이언트 — OpenAIModelClient._turn 의 계약 거부를 흉내 낸다."""
+
+    def __init__(self, script: list[ModelTurn], exc: DraftInvalid) -> None:
+        self._fake = FakeModelClient(script)
+        self._exc = exc
+
+    def start(self, system, user, tools, schema):
+        return self._fake.start(system, user, tools, schema)
+
+    def continue_with_tool_results(self, results):
+        if not self._fake.script:
+            raise self._exc
+        return self._fake.continue_with_tool_results(results)
+
+
+def test_draft_invalid_turn_is_added_to_usage_and_reraised_as_is(request_a, tools, emitted):
+    # 계약 거부 턴의 호출 1회·토큰이 usage 에 들어간다 (DIAG_EVAL 이 적은 결함). 두 번째 기회는 없고 상한 판정도 하지 않는다
+    script = [tool_turn("get_run", {"run_id": "daily-0920-0900"}, n) for n in range(1, 3)]
+    rejected = DraftInvalid('{"outcome": 1}', "초안이 DiagnosisDraft 형식이 아닙니다: 1개 오류",
+                            input_tokens=4610, output_tokens=210)
+    tight = Budget(max_calls=15, max_input_tokens=1200, max_output_tokens=8_000, timeout_seconds=300)
+    usage = Usage()
+
+    with pytest.raises(DraftInvalid) as exc:
+        run_diagnosis(EXEC_A, request_a, tools, _RejectsLastTurn(script, rejected), tight,
+                      itertools.count().__next__, _emit(emitted), usage)
+
+    assert exc.value is rejected  # 누적 1000 + 4610 > 1200 이어도 BudgetExceeded 로 바꾸지 않는다
+    assert usage.calls == 3
+    assert usage.input_tokens == 500 * 2 + 4610 and usage.output_tokens == 20 * 2 + 210

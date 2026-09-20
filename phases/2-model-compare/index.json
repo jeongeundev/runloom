@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "usage-on-invalid-draft",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-20T16:30:22+0900",
+      "summary": "worker/model.py: DraftInvalid(raw, message, *, input_tokens=0, output_tokens=0) — OpenAIModelClient._turn 이 거부·빈 출력·형식 위반으로 던질 때 응답 usage 값을 넣는다(loop 의 DraftInvalid('', …) 는 기본 0). worker/loop.py: call_model 이 turn_fn() 에서 DraftInvalid 를 받으면 usage.calls += 1 과 예외의 토큰을 더한 뒤 그대로 다시 던진다 — 상한 판정 없음, 호출 전 max_calls·timeout 검사 순서 불변, 두 번째 기회 없음. runner.py·diag_eval.py 는 이미 자기 Usage 객체를 넘기고 예외 뒤에 읽고 있어 미변경(기록 형식·컬럼 불변). 테스트 먼저: test_model(거부·non-JSON·빈 출력·형식 위반 4경우 모두 예외가 응답 토큰 4610/210 을 가짐, 기본값 0), test_loop(대본 뒤 마지막 턴에서 DraftInvalid 를 던지는 _RejectsLastTurn — usage.calls 3·토큰 합산, 누적 토큰이 상한을 넘어도 같은 예외 객체를 그대로 던짐; 도구도 초안도 없는 턴은 기존대로 1회 집계), test_runner(model_output_invalid 실행의 usage 행이 calls 3·거부 턴 토큰 포함), scripts/test_diag_eval(계약 거부 CaseResult 에 calls 1·토큰·비용). 프롬프트·도구·계약·상한 값 미변경, 유료 호출 없음. AC: tests/diagnostic_demo+scripts/test_diag_eval 180 passed, 전체 1022 passed 11 skipped, ruff 통과.",
+      "completed_at": "2026-09-20T16:34:08+0900"
     },
     {
       "step": 2,

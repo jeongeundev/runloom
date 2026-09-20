@@ -8,7 +8,7 @@ import pytest
 
 from diagnostic_demo import db
 from diagnostic_demo.worker.fake_script import fixture_script
-from diagnostic_demo.worker.model import DiagnosisDraft, FakeModelClient, ModelTurn
+from diagnostic_demo.worker.model import DiagnosisDraft, DraftInvalid, FakeModelClient, ModelTurn
 from diagnostic_demo.worker.runner import process_one
 from tests.diagnostic_demo.conftest import EXEC_A, diagnosis_request
 from workflow.contracts.v1 import DiagnosisResult, ExecutionRequest
@@ -88,6 +88,31 @@ def test_contract_violation_fails_result_schema_invalid(diag_conn, diag_settings
     assert json.loads(run["error_json"])["code"] == "result_schema_invalid"
     kinds = [r["kind"] for r in diag_conn.execute("SELECT kind FROM artifacts WHERE execution_id = ?", (accepted,))]
     assert kinds.count("diagnosis_result") == 1 and kinds.count("evidence") == 7 and "tool_trace" in kinds
+
+
+def test_model_output_invalid_records_the_rejected_turn_usage(diag_conn, diag_settings, accepted):
+    # 계약 거부로 끝난 실행도 그 턴의 호출·토큰을 usage 에 남긴다 — 총액 상한 추정이 한 턴씩 적게 잡히지 않도록
+    class RejectsLastTurn:
+        def __init__(self) -> None:
+            self._fake = FakeModelClient(fixture_script()[:2])  # get_run → list_runs 뒤 세 번째 턴에서 거부
+
+        def start(self, *args):
+            return self._fake.start(*args)
+
+        def continue_with_tool_results(self, results):
+            if not self._fake.script:
+                raise DraftInvalid('{"outcome": 1}', "초안이 DiagnosisDraft 형식이 아닙니다: 1개 오류",
+                                   input_tokens=4610, output_tokens=210)
+            return self._fake.continue_with_tool_results(results)
+
+    assert _run(diag_conn, diag_settings, RejectsLastTurn) is True
+
+    assert json.loads(db.get_run(diag_conn, accepted)["error_json"])["code"] == "model_output_invalid"
+    usage = diag_conn.execute("SELECT * FROM usage WHERE execution_id = ?", (accepted,)).fetchone()
+    tool_turns = fixture_script()[:2]
+    assert usage["calls"] == 3
+    assert usage["input_tokens"] == sum(t.input_tokens for t in tool_turns) + 4610
+    assert usage["output_tokens"] == sum(t.output_tokens for t in tool_turns) + 210
 
 
 def test_model_output_invalid_and_unexpected_errors_fail_without_leaking_keys(diag_conn, diag_settings, accepted):

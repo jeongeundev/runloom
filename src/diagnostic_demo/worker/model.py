@@ -78,11 +78,16 @@ class ModelTurn:
 
 
 class DraftInvalid(Exception):
-    """모델의 최종 출력이 `DiagnosisDraft` 가 아니다 (거부·빈 출력·형식 위반). 원문은 `raw` 에 보존한다."""
+    """모델의 최종 출력이 `DiagnosisDraft` 가 아니다 (거부·빈 출력·형식 위반). 원문은 `raw` 에 보존한다.
 
-    def __init__(self, raw: str, message: str):
+    거부된 턴도 호출 1회와 토큰을 썼으므로 그 usage 를 함께 갖는다 — 루프가 `Usage` 에 더한 뒤 그대로 다시 던진다.
+    """
+
+    def __init__(self, raw: str, message: str, *, input_tokens: int = 0, output_tokens: int = 0):
         super().__init__(message)
         self.raw = raw
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
 
 
 class ModelClient(Protocol):
@@ -159,15 +164,18 @@ class OpenAIModelClient:
 
         draft: DiagnosisDraft | None = None
         if not tool_calls:
+            spent = {"input_tokens": input_tokens, "output_tokens": output_tokens}
             if refusal is not None:
-                raise DraftInvalid(refusal, "모델이 응답을 거부했습니다")
+                raise DraftInvalid(refusal, "모델이 응답을 거부했습니다", **spent)
             text = "".join(texts).strip()
             if not text:
-                raise DraftInvalid("", "모델이 도구 호출도 초안도 내지 않았습니다")
+                raise DraftInvalid("", "모델이 도구 호출도 초안도 내지 않았습니다", **spent)
             try:
                 draft = DiagnosisDraft.model_validate_json(text)
             except ValidationError as exc:
-                raise DraftInvalid(text, f"초안이 DiagnosisDraft 형식이 아닙니다: {exc.error_count()}개 오류") from exc
+                raise DraftInvalid(
+                    text, f"초안이 DiagnosisDraft 형식이 아닙니다: {exc.error_count()}개 오류", **spent
+                ) from exc
         return ModelTurn(tool_calls, draft, input_tokens, output_tokens, response.id)
 
 

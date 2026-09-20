@@ -167,7 +167,8 @@ def test_run_case_preserves_invalid_draft_for_analysis(settings):
             try:
                 DiagnosisDraft.model_validate_json(raw)
             except ValidationError as exc:
-                raise DraftInvalid(raw, "초안이 DiagnosisDraft 형식이 아닙니다: 1개 오류") from exc
+                raise DraftInvalid(raw, "초안이 DiagnosisDraft 형식이 아닙니다: 1개 오류",
+                                   input_tokens=4610, output_tokens=210) from exc
             raise AssertionError("검증기가 거부해야 한다")
 
         def continue_with_tool_results(self, results):
@@ -179,6 +180,9 @@ def test_run_case_preserves_invalid_draft_for_analysis(settings):
     assert "findings.0.evidence_refs.0.location" in r.error
     saved = json.loads((settings.artifact_dir.parent / "invalid-drafts" / f"{r.execution_id}.json").read_text())
     assert saved["raw"] == raw and saved["errors"][0]["loc"] == ["findings", 0, "evidence_refs", 0, "location"]
+    # 거부된 턴의 호출·토큰·비용이 표에 들어간다 (DIAG_EVAL 이 적은 누락)
+    assert (r.calls, r.input_tokens, r.output_tokens) == (1, 4610, 210)
+    assert r.estimated_usd == pytest.approx(4610 / 1e6 * 0.40 + 210 / 1e6 * 1.60)
 
 
 def test_error_message_masks_secret_tokens():

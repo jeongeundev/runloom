@@ -187,6 +187,17 @@ def test_missing_usage_counts_zero():
     assert (turn.input_tokens, turn.output_tokens) == (0, 0)
 
 
+def test_draft_invalid_carries_the_rejected_turn_usage():
+    # 거부·빈 출력·형식 위반 턴도 호출 1회와 토큰을 썼다. 루프가 usage 에 더할 수 있도록 예외가 응답 usage 를 갖는다
+    for output in ([message(refusal="거부")], [message(text="not json")], [], [message(text='{"outcome": 1}')]):
+        sdk = FakeOpenAI([response("r", output, 4610, 210)])
+        with pytest.raises(DraftInvalid) as exc:
+            OpenAIModelClient(sdk, "gpt-test").start("S", "U", TOOL_SCHEMAS, draft_json_schema())
+        assert (exc.value.input_tokens, exc.value.output_tokens) == (4610, 210)
+    bare = DraftInvalid("", "x")
+    assert (bare.input_tokens, bare.output_tokens) == (0, 0)
+
+
 def test_openai_client_does_not_expose_the_sdk_or_key_in_repr():
     sdk = FakeOpenAI([])
     sdk.api_key = "sk-secret"
