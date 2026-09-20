@@ -1,15 +1,9 @@
-{# 홈 — UI_GUIDE "화면 목록". 상단 브랜드(로고·한 줄 설명·흐름), 에이전트 연결 상태 카드, 업무 목록과 다음 행동 버튼. #}
+{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 에이전트 연결 상태 카드, 업무 목록과 다음 행동 버튼. 랜딩은 landing.html. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
-{% block title %}Runloom{% endblock %}
+{% block title %}업무 — Runloom{% endblock %}
 {% block content %}
-<section class="hero">
-  <img class="hero-logo" src="/static/logo.jpg" alt="Runloom — Work flows. Agents continue." width="345" height="235">
-  <p class="hero-lead">이미 쓰는 AI 에이전트를 등록해 두면, 앞 업무가 끝나는 순간 다음 에이전트가 이어서 일합니다.</p>
-  <p class="hero-flow mono">업무 등록 → 에이전트 자동 선택 → 실행 → 완료되면 후속 업무 자동 착수</p>
-</section>
-
-<div class="section-head"><h2>에이전트</h2><a class="small" href="/agents">에이전트 목록</a></div>
+<div class="section-head" style="margin-top:0"><h2 style="margin-top:0">에이전트</h2><a class="small" href="/agents">에이전트 목록</a></div>
 <div class="agent-grid">
   {% for a in agents %}
   <div class="card agent-card">

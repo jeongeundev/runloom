@@ -56,7 +56,7 @@ def agents(conn):
 
 @pytest.fixture
 def web(client, agents):
-    assert client.get("/").status_code == 200
+    assert client.get("/tasks").status_code == 200
     return client
 
 
@@ -176,7 +176,7 @@ def status_line(html: str) -> str:
 def test_pages_render_three_column_shell(web, conn, store, settings):
     task_id, _ = seed_diagnosis_result(web, conn, store, settings)
     login_operator(web)
-    for path in ("/", f"/tasks/{task_id}", "/agents", "/agents/agent-ops-demo", "/operator", "/tasks/new"):
+    for path in ("/tasks", f"/tasks/{task_id}", "/agents", "/agents/agent-ops-demo", "/operator", "/tasks/new"):
         html = web.get(path).text
         assert 'class="shell' in html, path
         shell = html[html.index('class="shell'):]
@@ -193,7 +193,7 @@ def test_static_stylesheet_is_served(client):
 
 def test_sidebar_lists_my_tasks_with_status_dot_and_relative_time(web):
     task_id = create_task(web, diagnose_form())
-    html = web.get("/").text
+    html = web.get("/tasks").text
     sidebar = html[html.index('class="sidebar'):html.index('class="main')]
     assert f'href="/tasks/{task_id}"' in sidebar
     assert "일일 보고서 실패 진단" in sidebar
@@ -202,7 +202,7 @@ def test_sidebar_lists_my_tasks_with_status_dot_and_relative_time(web):
     assert "/tasks/new?example=diagnose" in sidebar
     assert "운영자" not in sidebar  # 운영자 쿠키 없음
     login_operator(web)
-    assert 'href="/operator"' in web.get("/").text
+    assert 'href="/operator"' in web.get("/tasks").text
 
 
 # --- 상태 배지 ----------------------------------------------------------------------
@@ -240,7 +240,7 @@ def test_badge_dot_fill_follows_ui_guide(web, conn, store, settings):
 
 def test_api_agent_card_shows_connected_without_last_seen(web):
     """API 에이전트는 heartbeat 가 없어도 '연결됨' 이고 '마지막 확인' 을 보이지 않는다. 로컬은 heartbeat 규칙."""
-    cards = re.findall(r'<div class="card agent-card">(.*?)</div>\s*</div>', web.get("/").text, re.S)
+    cards = re.findall(r'<div class="card agent-card">(.*?)</div>\s*</div>', web.get("/tasks").text, re.S)
     by_id = {re.search(r"agent-[a-z-]+", c).group(0): c for c in cards}
     ops, codex = by_id["agent-ops-demo"], by_id["agent-codex-mac"]
     assert 'data-status="연결됨"' in ops and "마지막 확인" not in ops
@@ -344,7 +344,7 @@ def test_live_fragment_shows_successor_chip(web):
 def test_visible_text_has_no_forbidden_phrases(web, conn, store, settings):
     task_id, _ = seed_code_change_result(web, conn, store, settings)
     login_operator(web)
-    for path in ("/", f"/tasks/{task_id}", "/tasks/new", "/agents", "/agents/agent-codex-mac", "/operator"):
+    for path in ("/tasks", f"/tasks/{task_id}", "/tasks/new", "/agents", "/agents/agent-codex-mac", "/operator"):
         text = visible_text(web.get(path).text)
         for phrase in ("대기 중", "Powered by"):
             assert phrase not in text, (path, phrase)

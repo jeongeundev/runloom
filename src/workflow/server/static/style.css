@@ -49,7 +49,8 @@ th { color: var(--text-muted); font-weight: 500; white-space: nowrap; }
 .viewer-panel { min-width: 0; }
 .topbar { display: none; }
 
-.brand { font-size: 15px; font-weight: 600; color: var(--text); padding: 2px 8px 10px; }
+.brand { display: block; font-size: 15px; font-weight: 600; color: var(--text); padding: 2px 8px 10px; }
+.brand:hover { text-decoration: none; }
 .nav { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
 .nav a { color: var(--text-body); padding: 5px 8px; border-radius: 6px; font-size: 13px; }
 .nav a:hover, .nav a.active { background: var(--bg-bubble); text-decoration: none; color: var(--text); }
@@ -181,12 +182,21 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .empty { padding: 24px 0; }
 .empty p { margin-bottom: 12px; }
 
-/* --- 홈 브랜드 --------------------------------------------------------------------- */
+/* --- 랜딩 (`/`) ------------------------------------------------------------------- */
 
-.hero { text-align: center; padding: 8px 0 20px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
-.hero-logo { display: block; margin: 0 auto; max-width: 100%; height: auto; }
-.hero-lead { font-size: 15px; color: var(--text); margin: 4px 0 6px; }
-.hero-flow { font-size: 12px; color: var(--text-muted); margin: 0; }
+.landing-body { background: var(--bg-page); }
+.landing { max-width: 720px; margin: 0 auto; padding: 48px 24px 64px; text-align: center; }
+.landing-logo { display: block; margin: 0 auto 8px; max-width: 100%; height: auto; }
+.landing-lead { font-size: 18px; color: var(--text); margin: 0 0 6px; line-height: 1.5; }
+.landing-sub { font-size: 14px; color: var(--text-muted); margin: 0 0 32px; }
+.landing-steps { list-style: none; margin: 0 0 32px; padding: 0; display: grid;
+                 grid-template-columns: repeat(4, 1fr); gap: 12px; text-align: left; }
+.landing-steps li { border: 1px solid var(--border); border-radius: 10px; padding: 14px 14px 12px;
+                    display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-body); }
+.landing-steps .n { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+.landing-steps b { font-size: 14px; color: var(--text); }
+.landing-cta .small { margin-top: 10px; }
+.btn-large { height: 44px; padding: 0 22px; font-size: 15px; }
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .section-head h2 { margin-bottom: 10px; }
 
@@ -264,6 +274,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 }
 
 @media (max-width: 799px) {
+  .landing-steps { grid-template-columns: repeat(2, 1fr); }
+  .landing { padding-top: 24px; }
   .shell { flex-direction: column; }
   .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);
             background: var(--bg-side); position: sticky; top: 0; z-index: 10; }

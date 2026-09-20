@@ -37,7 +37,7 @@ def agents(conn):
 @pytest.fixture
 def web(client, agents):
     """홈을 한 번 열어 세션 쿠키를 받은 클라이언트."""
-    assert client.get("/").status_code == 200
+    assert client.get("/tasks").status_code == 200
     return client
 
 
@@ -137,7 +137,7 @@ def seed_reviewable_fix(client, conn, store, settings) -> tuple[str, str]:
 
 
 def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
-    first = client.get("/")
+    first = client.get("/tasks")
     assert first.status_code == 200
     assert SESSION_COOKIE in first.cookies
     assert "아직 업무가 없습니다." in first.text
@@ -145,24 +145,36 @@ def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
     assert "/tasks/new?example=diagnose" in first.text
     assert "운영 진단 데모" in first.text and "개인 Codex" in first.text
 
-    second = client.get("/")
+    second = client.get("/tasks")
     assert "set-cookie" not in second.headers
     assert second.status_code == 200
 
 
-def test_home_shows_brand_hero_and_direct_register_link(client, agents):
-    text = client.get("/").text
+def test_landing_is_public_and_links_to_app(client, agents):
+    page = client.get("/")
+    assert page.status_code == 200
+    assert SESSION_COOKIE not in page.cookies  # 랜딩은 세션을 만들지 않는다
+    text = page.text
     assert '/static/logo.jpg' in text
+    assert "Work flows. Agents continue." in text
     assert "앞 업무가 끝나는 순간 다음 에이전트가 이어서 일합니다" in text
-    assert "업무 등록 → 에이전트 자동 선택 → 실행 → 완료되면 후속 업무 자동 착수" in text
+    assert "서비스 바로 가기" in text and 'href="/tasks"' in text
+    assert "에이전트 등록" in text and "업무 가져오기" in text and "자동 실행" in text
+    assert 'class="shell' not in text  # 앱 셸(사이드바·뷰어) 없이 단독 페이지
+    assert client.get("/static/logo.jpg").status_code == 200
+
+
+def test_app_home_has_agent_and_task_sections_with_direct_register(client, agents):
+    text = client.get("/tasks").text
     assert 'href="/tasks/new"' in text  # 시연 예시 없이 직접 등록
     assert 'href="/agents"' in text
-    assert client.get("/static/logo.jpg").status_code == 200
+    assert 'href="/"' in text  # 사이드바 브랜드 → 랜딩
+    assert '/static/logo.jpg' not in text  # 로고는 랜딩에만
 
 
 def test_home_lists_my_tasks_with_status(web):
     task_id = create_task(web, diagnose_form())
-    text = web.get("/").text
+    text = web.get("/tasks").text
     assert "아직 업무가 없습니다." not in text
     assert f"/tasks/{task_id}" in text
     assert "일일 보고서 실패 진단" in text
@@ -708,7 +720,7 @@ def test_operator_sees_all_sessions_tasks_merge_queue_and_usage(app, web, conn, 
     task_b, _ = seed_reviewable_fix(web, conn, store, settings)
     web.post(f"/tasks/{task_b}/review", data={"decision": "approve"}, follow_redirects=False)
     other = TestClient(app)
-    other.get("/")
+    other.get("/tasks")
     other_task = create_task(other, diagnose_form())
     other.post(f"/tasks/{other_task}/run", follow_redirects=False)
 
@@ -727,5 +739,5 @@ def test_operator_sees_all_sessions_tasks_merge_queue_and_usage(app, web, conn, 
 
 def test_operator_token_never_appears_in_html(web):
     login_operator(web)
-    for path in ("/", "/operator", "/agents", "/tasks/new"):
+    for path in ("/tasks", "/operator", "/agents", "/tasks/new"):
         assert "test-operator-token" not in web.get(path).text

@@ -304,6 +304,12 @@ def _start_execution(
 
 
 @router.get("/", response_class=HTMLResponse)
+def landing(request: Request) -> str:
+    """랜딩 — 세션을 만들지 않는다. `서비스 바로 가기` 가 `/tasks` 로 보낸다."""
+    return _render("landing.html", request=request)
+
+
+@router.get("/tasks", response_class=HTMLResponse)
 def home(
     request: Request,
     session_id: str = Depends(require_session),

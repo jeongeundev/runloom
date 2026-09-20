@@ -1,9 +1,9 @@
 {# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무 · 세션. 상태 점은 _status.html 규칙. #}
 {% import "_status.html" as st %}
 <aside class="sidebar">
-  <div class="brand">Runloom</div>
+  <a class="brand" href="/">Runloom</a>
   <nav class="nav">
-    <a href="/"{% if request.url.path == '/' %} class="active"{% endif %}>업무</a>
+    <a href="/tasks"{% if request.url.path == '/tasks' %} class="active"{% endif %}>업무</a>
     <a href="/agents"{% if request.url.path.startswith('/agents') %} class="active"{% endif %}>에이전트</a>
     {% if is_operator %}<a href="/operator"{% if request.url.path.startswith('/operator') %} class="active"{% endif %}>운영자</a>{% endif %}
   </nav>

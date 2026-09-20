@@ -8,5 +8,5 @@
   <div class="small"><code>{{ error.code }}</code>{% if error.field %} · 필드 <code>{{ error.field }}</code>{% endif %}
   {%- if error.details and error.details.resets_at %} · 다시 가능: {{ error.details.resets_at|kst }}{% endif %}</div>
 </div>
-<div class="actions"><a class="btn btn-secondary" href="/">업무 목록으로</a></div>
+<div class="actions"><a class="btn btn-secondary" href="/tasks">업무 목록으로</a></div>
 {% endblock %}

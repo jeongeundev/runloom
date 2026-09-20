@@ -132,7 +132,7 @@ def _create_task(client: httpx.Client, form: dict[str, str]) -> str:
     assert response.status_code == 303, response.text[:500]
     location = response.headers["location"]
     assert location.startswith("/tasks/task-"), location
-    return location.rsplit("/", 1)[1]
+    return location.rsplit("/tasks", 1)[1]
 
 
 def _raw(client: httpx.Client, task_id: str, artifact_id: str) -> str:
@@ -152,7 +152,7 @@ def _agent_states(html: str) -> dict[str, str]:
 def _wait_agent(client: httpx.Client, agent_id: str, state: str, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while True:
-        states = _agent_states(client.get("/").text)
+        states = _agent_states(client.get("/tasks").text)
         if states.get(agent_id) == state:
             return
         assert time.monotonic() < deadline, f"{agent_id} 가 {timeout}초 안에 {state} 가 되지 않음: {states}"
@@ -167,7 +167,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def test_01_first_visit_issues_session_and_shows_connected_agents(stack, client):
-    response = client.get("/")
+    response = client.get("/tasks")
     assert response.status_code == 200
     assert "wf_session" in response.headers.get("set-cookie", "")
     assert "아직 업무가 없습니다." in response.text
@@ -277,7 +277,7 @@ def test_09_other_session_cannot_see_the_tasks(stack, ctx):
     with httpx.Client(base_url=stack.central_url, timeout=10.0) as other:
         assert other.get(f"/tasks/{ctx['A']}").status_code == 404
         assert other.get(f"/tasks/{ctx['B']}").status_code == 404
-        assert "아직 업무가 없습니다." in other.get("/").text
+        assert "아직 업무가 없습니다." in other.get("/tasks").text
 
 
 def test_10_demo_repo_main_untouched_and_result_on_task_branch(stack, ctx):
