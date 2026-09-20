@@ -33,7 +33,11 @@
     {
       "step": 3,
       "name": "task-sources",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-21T05:44:59+0900",
+      "completed_at": "2026-09-21T05:49:48+0900",
+      "engine": "claude",
+      "summary": "src/workflow/domain/task_sources.py(순수): Issue(source·key·title·body·labels·blocked_by·url)·IssueMapping(capability·run_id·reason)·map_issue — 라벨 명시 비교만(ADR-0004): incident+workflow:<id>+run:<run_id> → operations.diagnose, run 라벨 없으면 None('run 라벨 없음'), bug+repo:<id> → code.modify, 그 외 None('맞는 능력 코드 없음 (라벨: …)'); 대소문자 정규화 없음, 빈 값 라벨은 없는 것으로. src/workflow/adapters/task_sources.py: SOURCES·SOURCE_LABELS·FIXTURES_DIR·load_issues(source) — 모르는 출처 ValueError, functools.cache 로 파일당 한 번 읽고 검증(필수 키·타입·key 유일·blocked_by 가 같은 파일의 다른 key), 호출마다 새 list. fixture task_source_fixtures/github.json·jira.json 각 4개(#41/OPS-41 incident 진단 body=EXAMPLES.diagnose.request, #42 bug 수정 blocked_by #41 body=EXAMPLES.fix.request, #43 enhancement blocked_by #42, #44 docs; url 전부 null, HTTPX·실제 API 호출 없음). 테스트 38건(domain 15·adapters 23). 검증: 전체 1193 passed + 12 skipped, ruff 통과, key 4개, 도메인 경계 OK. server/ 미변경."
     },
     {
       "step": 4,
