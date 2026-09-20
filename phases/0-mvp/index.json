@@ -111,7 +111,7 @@
       "name": "demo-report-repo",
       "status": "completed",
       "started_at": "2026-09-20T11:04:41+0900",
-      "completed_at": "2026-09-20T11:10:00+0900",
+      "completed_at": "2026-09-20T11:10:52+0900",
       "summary": "B 가 수정할 데모 저장소를 이 트리 밖에 생성하는 scripts/scaffold_demo_repo.py. `python3 scripts/scaffold_demo_repo.py [PATH] [--force]` — 기본 PATH 는 이 저장소의 부모/demo-report-repo (default_path()), 마지막 줄 `base_commit={sha}` 가 register/업무 등록에 쓸 기준 커밋(태그 report-base). scaffold(path, *, force) -> HEAD SHA: 파일 12개(README·AGENTS.md·docs/contract.md·pyproject·.gitignore·daily_report/{__init__,transformer,report,__main__}.py·tests/{__init__,test_transformer,test_report}.py)를 문자열 상수로 쓰고 git init -b main + 로컬 user 설정 + 커밋 'chore: report-base (수정 전 기준)' + 태그; 이미 있으면 FileExistsError, force 면 rmtree 후 재생성. transformer 는 수정 전(items 만, MISSING_RECORDS_FIELD expected_path=$.items observed_root_keys=…, INVALID_ROW, MISSING_REPORT_DATE), report.render 는 PRD 형식(fixture report-0918 과 바이트 일치), __main__ 은 exit 0/1(stderr ERROR stage=transform component=report_transformer code=… 한 줄)/2(파일·JSON). docs/contract.md 가 두 경로·정확히 하나·빈 배열 0건·누락/비배열/동시 존재 오류를 명시하고 '수정 전 코드는 이 계약을 아직 구현하지 않았다' 고 적음. 생성 저장소 자체 pytest 11 passed. scripts/test_scaffold_demo_repo.py 18건(git·태그·SHA·force·구조·가상 문구·records 미포함·URL 없음·response-before → report-0918 정확 일치·response-after → exit 1 MISSING_RECORDS_FIELD·빈 items·날짜 누락·행 오류·exit 2·수치 변경 반영·main). tests/workflow/connector/test_codex.py 의 make_repo 는 scaffold 를 부르는 래퍼로 교체(문자열 상수 5개 제거, test_cli 의 import 유지). GLOSSARY 에 demo-report-repo 추가. 전체 885 passed, ruff 통과. Step 14 참고: 로컬 e2e 는 scaffold 로 저장소를 만들고 base_commit 출력을 `register --repo … --repository-id demo-report-repo` 와 업무 target.base_commit 에 쓰면 된다."
     },
     {
