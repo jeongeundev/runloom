@@ -13,7 +13,8 @@
     },
     {
       "dir": "2-model-compare",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-20T16:59:28+0900"
     }
   ]
 }
