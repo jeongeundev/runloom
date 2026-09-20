@@ -26,7 +26,7 @@
       "name": "catalog-registration",
       "status": "completed",
       "started_at": "2026-09-21T02:21:34+0900",
-      "completed_at": "2026-09-21T05:43:51+0900",
+      "completed_at": "2026-09-21T05:44:59+0900",
       "engine": "claude",
       "summary": "server/web.py: _shared_agents → _catalog_agents + _session_agents(repo.list_session_agents), _candidates(conn, session_id)·_require_registered(422 agent_not_registered). 라우트 GET/POST /agents/register(카탈로그 카드 — 발견된 정보 요약·등록/해제 버튼·demo_scripted 라벨, 등록 멱등, 카탈로그에 없으면 404), POST /agents/{id}/unregister(멱등, 선택 기록이 가리키는 미완료 Task 있으면 409 agent_in_use), GET /agents 는 세션 등록만(0개면 빈 상태 + 등록 버튼), GET /agents/{id} 는 카탈로그 또는 세션 등록 Agent 만. task_create(manual)·task_select 는 세션 등록 Agent 만 허용, 후보도 세션 등록만 센다. views.agent_public 에 demo_scripted·discovered_summary(API: 능력 역할·자료 범위, 로컬: discovered.found 의 truthy 키(중첩은 git.head) + 검증 프로필 — 값·URL·비밀 참조 없음), task_context 후보를 세션 등록 순으로·agent_scripted(결과를 만든 실행의 Agent). 템플릿 agents_register.html 신규, home(등록 0개면 '먼저 에이전트를 등록하세요.' + 등록 버튼, 시연 업무 만들기 disabled)·agents·agent_detail·_result_card(메타 끝 '대본 재생 (실제 모델 호출 없음)') 갱신, style.css .tag-scripted·.found-list. 테스트: 이전 세션이 커밋한 RED 테스트(test_web·test_views·test_ui·e2e)에 더해 운영자 테스트 2건의 준비 코드만 새 규칙에 맞춤(카탈로그는 /agents/register 에서 확인, other 세션은 실행 전 등록). 검증: server 217 passed, 전체 1155 passed + 12 skipped, ruff 통과, e2e 12 passed × 2(shim·WORKFLOW_E2E_SCRIPTED=1). 결함 없음."
     },
