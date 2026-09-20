@@ -1,7 +1,7 @@
 """codex — 실제 Codex 를 띄우는 어댑터. 여기서는 PATH 앞에 둔 **가짜 `codex`** 스크립트로만 돈다 (실연동은 Step 15).
 
-`make_repo` 는 Step 13 이 만들 데모 저장소와 같은 최소 구조다: `daily_report/transformer.py` 는 수정 전(`items` 만),
-`python3 -m pytest -q`, `python3 -m daily_report <response.json>`.
+`make_repo` 는 Step 13 의 `scripts/scaffold_demo_repo.py` 로 데모 저장소를 만든다: `daily_report/transformer.py` 는
+수정 전(`items` 만), `python3 -m pytest -q`, `python3 -m daily_report <response.json>`.
 """
 
 import json
@@ -18,123 +18,10 @@ from workflow.contracts.v1 import ExecutionRequest
 
 from .conftest import make_request
 
-# --- 데모 저장소 (Step 13 과 같은 구조) ------------------------------------------------------
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+from scaffold_demo_repo import scaffold
 
-_TRANSFORMER_BASE = '''"""응답 변환부 — 수정 전 기준. 최상위 items 만 읽는다."""
-
-from dataclasses import dataclass
-
-
-class TransformError(Exception):
-    def __init__(self, code: str, detail: str = ""):
-        super().__init__(f"{code} {detail}".strip())
-        self.code = code
-        self.detail = detail
-
-
-@dataclass(frozen=True)
-class Row:
-    team: str
-    completed: int
-    pending: int
-
-
-@dataclass(frozen=True)
-class Report:
-    report_date: str
-    rows: tuple[Row, ...]
-
-
-def _row(item) -> Row:
-    if not isinstance(item, dict) or not isinstance(item.get("team"), str):
-        raise TransformError("INVALID_ROW", f"item={item!r}")
-    completed, pending = item.get("completed"), item.get("pending")
-    for value in (completed, pending):
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise TransformError("INVALID_ROW", f"item={item!r}")
-    return Row(item["team"], completed, pending)
-
-
-def transform(response: dict) -> Report:
-    if not isinstance(response.get("report_date"), str):
-        raise TransformError("MISSING_REPORT_DATE")
-    items = response.get("items")
-    if not isinstance(items, list):
-        raise TransformError(
-            "MISSING_RECORDS_FIELD", f"expected_path=$.items observed_root_keys={sorted(response)}"
-        )
-    return Report(response["report_date"], tuple(_row(item) for item in items))
-'''
-
-_REPORT = '''from daily_report.transformer import Report
-
-
-def render(report: Report) -> str:
-    lines = [f"일일 업무 보고서 — {report.report_date}", "", "팀      완료  미완료"]
-    total_completed = total_pending = 0
-    for row in report.rows:
-        lines.append(f"{row.team:<4}  {row.completed:<4}  {row.pending}")
-        total_completed += row.completed
-        total_pending += row.pending
-    lines.append(f"{'합계':<4}  {total_completed:<4}  {total_pending}")
-    return "\\n".join(lines) + "\\n"
-'''
-
-_MAIN = '''import json
-import sys
-
-from daily_report.report import render
-from daily_report.transformer import TransformError, transform
-
-
-def main(argv: list[str]) -> int:
-    if len(argv) != 1:
-        print("usage: python3 -m daily_report <response.json>", file=sys.stderr)
-        return 2
-    try:
-        with open(argv[0], encoding="utf-8") as handle:
-            response = json.load(handle)
-    except (OSError, ValueError) as exc:
-        print(f"ERROR stage=fetch {exc}", file=sys.stderr)
-        return 2
-    try:
-        report = transform(response)
-    except TransformError as exc:
-        print(f"ERROR stage=transform component=report_transformer code={exc.code} {exc.detail}",
-              file=sys.stderr)
-        return 1
-    sys.stdout.write(render(report))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
-'''
-
-_TEST_TRANSFORMER = '''import pytest
-
-from daily_report.transformer import TransformError, transform
-
-
-def test_items_format():
-    report = transform({"report_date": "2026-09-18", "items": [{"team": "운영", "completed": 12, "pending": 3}]})
-    assert report.report_date == "2026-09-18" and report.rows[0].completed == 12
-
-
-def test_missing_report_date():
-    with pytest.raises(TransformError) as info:
-        transform({"items": []})
-    assert info.value.code == "MISSING_REPORT_DATE"
-'''
-
-_PYPROJECT = '''[project]
-name = "daily-report-demo"
-version = "0.0.0"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-'''
+# --- 데모 저장소 (Step 13 스크립트로 생성) --------------------------------------------------
 
 
 def _git(cwd, *args) -> str:
@@ -145,21 +32,9 @@ def _git(cwd, *args) -> str:
 
 
 def make_repo(tmp_path: Path) -> Path:
-    """수정 전 데모 저장소. `items` 만 지원하는 변환부와 그 테스트, 커밋 1개."""
+    """수정 전 데모 저장소. scripts/scaffold_demo_repo.py 가 만드는 것과 같다 (커밋 1개, 태그 report-base)."""
     repo = tmp_path / "demo-report-repo"
-    (repo / "daily_report").mkdir(parents=True)
-    (repo / "tests").mkdir()
-    (repo / "pyproject.toml").write_text(_PYPROJECT)
-    (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
-    (repo / "daily_report" / "__init__.py").write_text("")
-    (repo / "daily_report" / "transformer.py").write_text(_TRANSFORMER_BASE)
-    (repo / "daily_report" / "report.py").write_text(_REPORT)
-    (repo / "daily_report" / "__main__.py").write_text(_MAIN)
-    (repo / "tests" / "__init__.py").write_text("")
-    (repo / "tests" / "test_transformer.py").write_text(_TEST_TRANSFORMER)
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", "chore: report-base (수정 전 기준)")
+    scaffold(repo)
     return repo
 
 

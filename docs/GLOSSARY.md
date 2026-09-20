@@ -61,6 +61,7 @@
 | `DiagnosisDraft` | 모델이 작성하는 결과 초안 — `outcome`·`summary`·`findings`·`diagnosis`·`repair_request`·`missing_information` (`diagnostic_demo/worker/model.py`). 첨부·provenance·`execution_id` 가 없다. 서비스가 조회 이력에서 첨부를 조립해 `DiagnosisResult` 로 완성한다 (`worker/assemble.py`) | `Result`(완성 봉투와 혼동), `Answer`, `Output` |
 | `ModelClient` | 진단 워커가 모델을 부르는 인터페이스 — `start(system, user, tools, schema)`·`continue_with_tool_results(results)` → `ModelTurn`(`tool_calls`, `draft`, 토큰 수) (`diagnostic_demo/worker/model.py`). 구현은 `OpenAIModelClient`(Responses API)와 `FakeModelClient`(대본, `DIAG_MODEL=fake` 전용) | `LLM`, `Agent`(등록 레코드와 혼동), `Provider` |
 | `Budget` | 진단 1회의 상한 — `max_calls`·`max_input_tokens`·`max_output_tokens`·`timeout_seconds` (`diagnostic_demo/worker/loop.py`). 넘으면 `BudgetExceeded`(code `budget_exceeded`/`timeout`) 로 실행이 `failed`. 총액 US$30·일일 건수는 접수 시점의 429 이며 이 객체가 아니다 | `Limit`, `Quota`, `Cost` |
+| `demo-report-repo` | B 가 수정하는 별도 저장소. 이 트리 밖에 `scripts/scaffold_demo_repo.py` 로 생성한다 (기본 위치 부모/`demo-report-repo`). `repository_id` 값과 같다. 기준 커밋은 태그 `report-base`(수정 전, `items` 만 지원)이며 스크립트 마지막 줄 `base_commit=…` 이 그 SHA 다. 가상 데모 자료이며 이 저장소에 커밋하지 않는다 | `demo repo`, `target repo`, `sample project` |
 | 사용자 상태 | `대기`, `실행 가능`, `실행 요청됨`, `실행 중`, `확인 필요`, `완료`, `실패`. 화면 문구로 그대로 쓴다 | `pending`, `done`, `success`, `error`, `대기 중` |
 
 ## 경계가 헷갈리는 개념
