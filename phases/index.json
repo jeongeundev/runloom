@@ -19,6 +19,10 @@
     {
       "dir": "3-limit-wait",
       "status": "pending"
+    },
+    {
+      "dir": "4-claude-issues",
+      "status": "pending"
     }
   ]
 }

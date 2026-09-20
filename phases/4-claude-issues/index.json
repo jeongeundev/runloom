@@ -1,0 +1,66 @@
+{
+  "project": "workflow",
+  "phase": "4-claude-issues",
+  "steps": [
+    {
+      "step": 0,
+      "name": "tool-contract",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "local-tool-base",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "claude-adapter",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "runner-dispatch",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "third-agent-seed",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "claude-live-check",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "task-source-schema",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "github-issues-adapter",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "issues-import-web",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "session-agent-registration",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "demo-guide",
+      "status": "pending"
+    },
+    {
+      "step": 11,
+      "name": "deploy-docs",
+      "status": "pending"
+    }
+  ]
+}
