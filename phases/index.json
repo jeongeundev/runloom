@@ -30,6 +30,10 @@
       "dir": "5-scripted-demo",
       "status": "completed",
       "completed_at": "2026-09-21T13:45:14+0900"
+    },
+    {
+      "dir": "6-typed-handoff",
+      "status": "pending"
     }
   ]
 }
