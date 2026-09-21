@@ -17,6 +17,6 @@
 - API 에이전트(진단 API)는 이번에도 `diagnosis` 만 받는다. 범용 API 계약은 다음 ADR 이다.
 - 완료 시 새 업무를 **생성**하는 규칙(대상·범위를 선행 결과에서 파생해야 한다)은 이 phase 밖이다. 미리 등록된 업무 사이를 잇는 것만 한다.
 - 사람이 선행을 종료해도 이미 시작한 후속은 계속된다. 후속을 멈추려면 후속 Task 를 따로 종료한다.
-- `HandoffBundle.diagnosis_result_artifact_id` 가 `source_result_artifact_id` 로 바뀌고 `source_kind`·`inputs` 가 추가되므로 계약 v1 안에서 필드명이 바뀐다. 공개 배포 전이라 버전을 올리지 않으며 DB 는 스키마 버전으로 재생성한다.
+- `HandoffBundle` 의 이전 이름 `diagnosis_result_artifact_id` 가 `source_result_artifact_id` 로 바뀌고 `source_kind`·`inputs` 가 추가되므로 계약 v1 안에서 필드명이 바뀐다. 공개 배포 전이라 버전을 올리지 않으며 DB 는 스키마 버전으로 재생성한다.
 
 **참고 — Astera(parsingk/Astera)·n8n 과의 차이**: "A 끝나면 B 자동"만으로는 차이가 없다. 차이는 "안 그려도 흐른다 + 넘어갈 때 검증한다"다. n8n 은 업무가 들어오는 입구·나가는 출구로만 쓴다(다음 phase).

@@ -1,6 +1,6 @@
 # 계약 v1 예시집
 
-갱신일: 2026-09-21
+갱신일: 2026-09-22 (phase 6-typed-handoff docs-sync)
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -134,7 +134,7 @@
 }
 ```
 
-`art-handoff-001`(kind `handoff_bundle`)은 다음 manifest다. `inputs` 는 내장 규칙 `handoff_kinds` [`diagnosis_result`, `evidence`] 로 모은 선행 실행의 산출물이며 `attachments` 에 이미 있는 근거 원문은 다시 넣지 않는다(11절). 연결 프로그램은 여기 나열된 산출물만 내려받을 수 있고, 저장소 옆 `<repo>-worktrees/fix-daily-0920.handoff/`에 풀어 경로를 Codex 프롬프트에 넣는다. worktree 안에는 쓰지 않는다.
+`art-handoff-001`(kind `handoff_bundle`, 파일명 `handoff.json`)은 워커 `assemble_handoff` 가 만든 다음 manifest다 — `HandoffBundle.model_dump_json(indent=2)` 그대로이며 필드 순서는 `contract_version` · `source_execution_id` · `source_kind` · `source_result_artifact_id` · `inputs` · `attachments`, `inputs` 항목은 `kind` · `artifact_id` · `sha256` · `content_type`(`InputRef`). `inputs` 는 내장 규칙 `handoff_kinds` [`diagnosis_result`, `evidence`] 로 모은 선행 실행의 산출물이며 `attachments` 에 이미 있는 근거 원문(`evidence`)은 다시 넣지 않으므로 진단 인계에서는 `diagnosis_result` 하나다(11절). `attachments` 는 진단 결과의 `attachments` 에 워커가 계산한 `expected-report@1`(`expected_report.json`, kind `evidence`)을 더한 것이다. 연결 프로그램은 여기 나열된 산출물만 내려받을 수 있고, 저장소 옆 `<repo>-worktrees/fix-daily-0920.handoff/`에 `manifest.json` · `{evidence_id}@{version}.{ext}` · `{kind}.{ext}`(`diagnosis_result.json`)로 풀어 경로를 Codex 프롬프트에 넣는다. worktree 안에는 쓰지 않는다.
 
 ```json
 {
@@ -509,7 +509,7 @@
 }
 ```
 
-`kind` 는 `^[a-z][a-z0-9_]{1,39}$`, `capability_code` 는 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`. 이미 있는 `kind` 재등록·내장 삭제는 `409`, `input_kinds` 에 4절 목록 밖의 값·`outcomes` 중복·사용자 정의인데 `output_kind` 가 `generic_result` 가 아니면 `422`.
+위 JSON 은 `KindSpec.model_dump_json()` 의 필드 순서 그대로다(기본값 없음 — 아홉 필드 모두 필수). `kind` 는 `^[a-z][a-z0-9_]{1,39}$`, `capability_code` 는 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`, `scope_key`·`outcomes` 항목은 `^[a-z][a-z0-9_]{0,39}$`. 등록은 화면 `POST /kinds`(폼 — `output_kind`·`builtin` 은 서버가 `generic_result`·`false` 로 고정, `capability_code` 를 비우면 `kind`): 이미 있는 `kind` 재등록은 `409 kind_exists`, 내장 삭제는 `409 kind_protected`, 업무나 규칙이 참조하는 종류 삭제는 `409 kind_in_use`, `input_kinds` 에 4절 목록 밖의 값·`input_kinds`/`outcomes` 중복·패턴 위반·빈 라벨·(계약 직접 사용 시) 사용자 정의인데 `output_kind` 가 `generic_result` 가 아니거나 내장 이름이 아닌데 `builtin: true` 면 `422 invalid_field`.
 
 ### 11.2 `SuccessorRule`
 
@@ -525,7 +525,7 @@
 { "from_kind": "code_change", "on_outcomes": ["ready_for_review"], "to_kind": "review", "handoff_kinds": ["diff", "code_change_result", "test_log_after"] }
 ```
 
-`on_outcomes` 가 `from_kind.outcomes` 밖이거나 `handoff_kinds` 가 `to_kind.input_kinds` 를 빠뜨리면 `422`. `from_kind`·`to_kind` 가 이 워크스페이스에 없으면 `422`.
+`SuccessorRule.model_dump_json()` 의 필드 순서 그대로(`from_kind` · `on_outcomes` · `to_kind` · `handoff_kinds`, 기본값 없음). 계약 자체는 `from_kind == to_kind`·`on_outcomes`/`handoff_kinds` 중복·`handoff_kinds` 에 `handoff_bundle` 을 거부한다. 등록은 `POST /rules`: `on_outcomes` 가 `from_kind.outcomes` 밖이거나 `handoff_kinds` 가 `to_kind.input_kinds` 를 빠뜨리거나 `from_kind`·`to_kind` 가 이 워크스페이스에 없으면 `422 invalid_field`(사유는 `domain/kinds.validate_rule` 문구 — `등록되지 않은 종류 …` / `on_outcomes 에 … 의 outcome 이 아닌 값이 있습니다: …` / `handoff_kinds 에 … 의 input_kinds 가 빠졌습니다: …`), 같은 `from_kind → to_kind` 가 이미 있으면 `409 rule_exists`. 삭제는 `POST /rules/{rule_id}/delete` 이며 내장 규칙도 지울 수 있다.
 
 ### 11.3 `GenericResult` — `review` 의 `approved`
 
@@ -543,11 +543,11 @@
 }
 ```
 
-`outcome` 이 `outcomes` 에 없으면 결과를 채택하지 않고 확인 필요, 이유 "허용되지 않은 outcome".
+`GenericResult.model_dump_json()` 의 필드 순서 그대로(`contract_version` · `execution_id` · `task_id` · `kind` · `outcome` · `summary` · `artifact_ids`, 기본값 없음). 연결 프로그램은 도구의 마지막 메시지 `{outcome, summary}` 에서 이 봉투를 만들고 `artifact_ids` 에 원시 로그(`claude_jsonl`·`claude_stderr` 또는 `codex_jsonl`·`codex_stderr`) ID 를 채워 kind `generic_result`(`generic_result.json`)로 올린다. `outcome` 이 `kind_spec.outcomes` 에 없으면 연결 프로그램이 결과를 만들지 않고 실패 코드 `result_invalid`(메시지 `허용되지 않은 outcome '…' — 허용: …`)로 끝낸다. 그래도 올라온 봉투는 중앙 워커가 `envelope_valid` · `ids_match`(`execution_id`·`task_id`·`kind` 가 요청과 일치) · `outcome_in_spec` 으로 판정해 통과면 `확인 필요 · 검토 대기`, 실패면 `확인 필요` + 실패 사유(예: `허용되지 않은 outcome changes — 허용: approved, changes_requested, needs_information`)로 둔다. 완료는 어느 쪽이든 사람이 한다.
 
 ### 11.4 일반화된 `HandoffBundle` — `code_change → review`
 
-`art-handoff-002`(kind `handoff_bundle`). `inputs` 는 규칙 `handoff_kinds` 로 모은 선행 실행(`exec-fix-001`)의 산출물이고, 근거 원문 `attachments` 는 진단 결과에서만 채워지므로 빈 배열이다. 2절의 진단 인계 예시와 같은 구조다.
+`art-handoff-002`(kind `handoff_bundle`). `inputs` 는 규칙 `handoff_kinds` 로 모은 선행 실행(`exec-fix-001`)의 산출물이고(`repo.artifacts_of_kinds` 순 — 저장 순서이며 규칙의 나열 순서가 아니다), 근거 원문 `attachments` 는 진단 결과에서만 채워지므로 빈 배열이다. 2절의 진단 인계 예시와 같은 구조다. 연결 프로그램은 이를 `diff.patch` · `code_change_result.json` · `test_log_after.txt` 로 인계 디렉터리에 푼다(같은 kind 가 둘 이상이면 두 번째부터 `{kind}-{artifact_id 앞 8자}.{ext}`).
 
 ```json
 {
@@ -593,4 +593,4 @@
 }
 ```
 
-`kind` 가 `diagnosis`·`code_change` 인 요청은 1·2절과 같고 `kind_spec` 은 `null` 이어도 된다. 그 외 `kind` 인데 `kind_spec` 이 없거나 `kind_spec.kind != kind` 이거나 `builtin: true` 이면 `422`.
+`ExecutionRequest.model_dump_json()` 의 필드 순서 그대로이며 `kind_spec` 은 유일한 선택 필드(기본 `null`)라 dump 에는 항상 나온다. `kind` 가 `diagnosis`·`code_change` 인 요청은 1·2절과 같고 계약상 `kind_spec` 은 `null` 이어도 되지만, 서버(`web._start_execution`·워커 `_spawn_successors`)는 모든 종류의 요청에 등록부의 봉투를 채워 고정한다 — 1·2절 예시는 그 필드를 생략한 형태다. 그 외 `kind` 인데 `kind_spec` 이 없거나 `kind_spec.kind != kind` 이거나 `builtin: true` 이거나 target 이 `LocalTarget` 이 아니면 `422`. 종류가 세션에 등록돼 있지 않아 봉투를 채울 수 없으면 실행을 만들지 않는다(`409 request_incomplete`).
