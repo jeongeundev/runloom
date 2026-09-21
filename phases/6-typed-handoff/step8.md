@@ -53,6 +53,17 @@
 - 증명 기준(step 8): e2e 가 화면으로 종류 `review`(diff·code_change_result 를 받아 `approved`/`changes_requested`/`needs_information` 을 냄)와
   규칙 `code_change --[ready_for_review]--> review` 를 등록하면, 진단 → 수정 → 검토가 `composition.py`·`worker.py` 를 고치지 않고 자동 착수한다.
 
+## 시작 상태 (이전 시도의 결과)
+
+이 step 의 첫 시도가 아래를 이미 만들고 커밋했다(`de06ffc`, 2026-09-21 23:24). 그 뒤 세 번의 재시도는 Claude 세션 한도(429)로 시작하지 못했다 — 코드 문제가 아니다. **다시 만들지 말고 읽고 이어서 하라**:
+
+- `src/workflow/scripted/_common.py`·`codex.py`·`claude.py` — 사용자 정의 종류 응답(`generic_kind_of`·`generic_outcomes`·`generic_result` 류), `tests/workflow/scripted/` 갱신 (60 passed 확인됨)
+- `scripts/seed_demo.py` — Claude 에이전트에 `review` 능력 추가, `scripts/test_seed_demo.py` 갱신
+- `tests/e2e/test_scenario.py` — test_12~18 추가(252줄). **아직 실행·통과가 확인되지 않았다.** `python3 -m pytest tests/e2e -q` 를 돌려 실패를 고치는 것이 이번 시도의 첫 일이다.
+- `docs/VERIFICATION_LOG.md` 절은 아직 없다.
+
+남은 일: e2e 통과 → VERIFICATION_LOG 절 → 전체 pytest·ruff → `index.json` 상태 갱신.
+
 ## 작업
 
 이 phase 의 증명이다: **e2e 가 화면으로 종류·규칙을 등록해 세 번째 단계를 자동 착수시킨다.** `composition.py`·`worker.py` 는 이 step 에서 한 줄도 바꾸지 않는다.
