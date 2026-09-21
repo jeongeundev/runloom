@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # VM 설치 스크립트 — Ubuntu 24.04 기준, root 로 실행. 멱등: 다시 돌려도 이미 있는 것은 건너뛴다.
-# ADR-0006: systemd 서비스 4개 + 백업 타이머 + Caddy 뿐이다. 컨테이너·오케스트레이션은 쓰지 않는다.
-# 하는 일: 패키지 → workflow 사용자 → 데이터 디렉터리(0700) → /opt/workflow clone + venv + pip install →
-#         /etc/workflow/*.env (예시 복사, 0600) → Caddyfile → systemd 유닛 복사·enable.
+# ADR-0006: systemd 서비스 + 백업 타이머 + Caddy 뿐이다. 컨테이너·오케스트레이션은 쓰지 않는다.
+# ADR-0008: 공개 데모는 이 VM 한 대에서 대본 에이전트로 돈다 — 연결 프로그램도 systemd 유닛(5번째)이고, deploy/bin 의
+#         codex·claude 래퍼가 workflow.scripted.* 를 띄운다. 실제 codex·claude 바이너리·OpenAI 키는 설치하지 않는다.
+# 하는 일: 패키지 → workflow 사용자 → 데이터 디렉터리(0700: central, diag, connector 토큰·상태, demo 데모 저장소) →
+#         /opt/workflow clone + venv + pip install → /etc/workflow/*.env (예시 복사, 0600) → Caddyfile → systemd 유닛 복사·enable.
 # 하지 않는 일: 서비스 start. env 파일이 비어 있으면 시작 즉시 실패해 Restart=always 가 반복되므로
-#         docs/DEPLOY.md 3 단계에서 값을 채운 뒤 사용자가 start 한다. 도메인·DNS 도 사용자가 한다.
+#         docs/DEPLOY.md 3 단계에서 값을 채운 뒤 사용자가 start 한다. 연결 프로그램은 6 단계(connect·register) 뒤에 start.
+#         도메인·DNS·데모 저장소 scaffold·seed 도 사용자가 런북대로 한다.
 #
 # 변수(환경변수로 덮어쓴다):
 #   WORKFLOW_REPO_URL  clone 할 저장소 (비공개면 배포용 토큰/키가 필요하다)
@@ -44,6 +47,8 @@ if ! id workflow >/dev/null 2>&1; then
   useradd --system --home-dir "$DATA_DIR" --shell /usr/sbin/nologin workflow
 fi
 install -d -m 700 -o workflow -g workflow "$DATA_DIR" "$DATA_DIR/central" "$DATA_DIR/diag" "$BACKUP_DIR"
+# 연결 프로그램의 토큰·상태 DB (WORKFLOW_CONNECTOR_HOME), 데모 저장소와 그 worktree (DEPLOY.md 5 단계)
+install -d -m 700 -o workflow -g workflow "$DATA_DIR/connector" "$DATA_DIR/demo"
 install -d -m 700 -o root -g root "$ENV_DIR"
 
 echo "== 3. 코드 ($APP_DIR)"
@@ -56,13 +61,14 @@ fi
 if [ ! -x "$APP_DIR/venv/bin/python" ]; then
   sudo -u workflow -H "$PY" -m venv "$APP_DIR/venv"
 fi
-# editable 설치: templates·static·fixtures 를 src/ 에서 그대로 읽고, git pull 뒤 재설치가 필요 없다
+# editable 설치: templates·static·fixtures 를 src/ 에서 그대로 읽고, git pull 뒤 재설치가 필요 없다.
+# [dev] 는 pytest 때문이다 — 데모 저장소의 검증 프로필(vp-pytest=python3 -m pytest -q)이 연결 프로그램 유닛의 PATH 에서 venv 의 python3 를 쓴다
 sudo -u workflow -H "$APP_DIR/venv/bin/pip" install -q --upgrade pip
-sudo -u workflow -H "$APP_DIR/venv/bin/pip" install -q -e "$APP_DIR"
-chmod 755 "$APP_DIR/deploy/backup.sh"
+sudo -u workflow -H "$APP_DIR/venv/bin/pip" install -q -e "$APP_DIR[dev]"
+chmod 755 "$APP_DIR/deploy/backup.sh" "$APP_DIR"/deploy/bin/*
 
 echo "== 4. 환경변수 파일 ($ENV_DIR, 예시 복사 — 값은 사용자가 채운다)"
-for name in central diag; do
+for name in central diag connector; do
   if [ ! -f "$ENV_DIR/$name.env" ]; then
     cp "$APP_DIR/deploy/env/$name.env.example" "$ENV_DIR/$name.env"
     echo "생성: $ENV_DIR/$name.env (비밀값 비어 있음)"
@@ -81,13 +87,14 @@ fi
 echo "== 6. systemd 유닛"
 install -m 644 "$APP_DIR"/deploy/systemd/workflow-*.service "$APP_DIR"/deploy/systemd/workflow-*.timer /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable workflow-central.service workflow-worker.service workflow-diag.service workflow-diag-worker.service
+systemctl enable workflow-central.service workflow-worker.service workflow-diag.service workflow-diag-worker.service workflow-connector.service
 systemctl enable --now workflow-backup.timer
 
 cat <<MSG
 
 설치 끝. 다음은 docs/DEPLOY.md 3 단계:
-  1) $ENV_DIR/central.env, $ENV_DIR/diag.env 의 비밀값·단가를 채운다 (openssl rand -hex 32)
+  1) $ENV_DIR/central.env 의 비밀값을 채운다 (openssl rand -hex 32). diag.env 는 DIAG_MODEL=fake, 키 없음. connector.env 는 예시 그대로
   2) systemctl start workflow-diag workflow-diag-worker workflow-central workflow-worker
   3) systemctl status 'workflow-*'
+  연결 프로그램(workflow-connector)은 5·6 단계(데모 저장소·seed → connect·register) 뒤에 start 한다.
 MSG
