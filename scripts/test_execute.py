@@ -31,8 +31,8 @@ def tmp_project(tmp_path):
 
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
-    (docs_dir / "arch.md").write_text("# Architecture\nSome content")
-    (docs_dir / "guide.md").write_text("# Guide\nAnother doc")
+    (docs_dir / "ARCHITECTURE.md").write_text("# Architecture\nSome content")
+    (docs_dir / "GLOSSARY.md").write_text("# Glossary\nAnother doc")
 
     return tmp_path
 
@@ -144,32 +144,12 @@ class TestJsonHelpers:
 # ---------------------------------------------------------------------------
 
 class TestLoadGuardrails:
-    def test_loads_claude_md_and_docs(self, executor, tmp_project):
+    def test_loads_claude_md(self, executor, tmp_project):
         with patch.object(ex, "ROOT", tmp_project):
             result = executor._load_guardrails()
+        assert "(CLAUDE.md)" in result
         assert "# Rules" in result
         assert "rule one" in result
-        assert "# Architecture" in result
-        assert "# Guide" in result
-
-    def test_sections_separated_by_divider(self, executor, tmp_project):
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "---" in result
-
-    def test_docs_sorted_alphabetically(self, executor, tmp_project):
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        arch_pos = result.index("arch")
-        guide_pos = result.index("guide")
-        assert arch_pos < guide_pos
-
-    def test_no_claude_md(self, executor, tmp_project):
-        (tmp_project / "CLAUDE.md").unlink()
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "CLAUDE.md" not in result
-        assert "Architecture" in result
 
     def test_prefers_agents_md_over_claude_md(self, executor, tmp_project):
         (tmp_project / "AGENTS.md").write_text("# Agents\n- agents rule")
@@ -180,48 +160,23 @@ class TestLoadGuardrails:
         assert "rule one" not in result
         assert "(CLAUDE.md)" not in result
 
-    def test_no_docs_dir(self, executor, tmp_project):
-        import shutil
-        shutil.rmtree(tmp_project / "docs")
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "Rules" in result
-        assert "Architecture" not in result
-
-    def test_loads_adr_directory(self, executor, tmp_project):
+    def test_does_not_inject_docs(self, executor, tmp_project):
+        # docs/ 는 step.md 의 "읽어야 할 파일" 절이 가리킨다 — 통째 주입하지 않는다.
         adr = tmp_project / "docs" / "adr"
         adr.mkdir()
         (adr / "0001-use-postgres.md").write_text("# ADR-0001\nPostgres 채택")
         with patch.object(ex, "ROOT", tmp_project):
             result = executor._load_guardrails()
-        assert "Postgres 채택" in result
+        assert "rule one" in result
+        assert "Architecture" not in result
+        assert "Glossary" not in result
+        assert "Postgres 채택" not in result
 
-    def test_excludes_superseded_adr(self, executor, tmp_project):
-        adr = tmp_project / "docs" / "adr"
-        (adr / "superseded").mkdir(parents=True)
-        (adr / "0001-live.md").write_text("# ADR-0001\n유효한 결정")
-        (adr / "superseded" / "0002-dead.md").write_text("# ADR-0002\n뒤집힌 결정")
+    def test_no_guide(self, executor, tmp_project):
+        (tmp_project / "CLAUDE.md").unlink()
         with patch.object(ex, "ROOT", tmp_project):
             result = executor._load_guardrails()
-        assert "유효한 결정" in result
-        assert "뒤집힌 결정" not in result
-
-    def test_excludes_other_docs_subdirectories(self, executor, tmp_project):
-        presets = tmp_project / "docs" / "presets"
-        presets.mkdir()
-        (presets / "nextjs.md").write_text("# 프리셋\n주입되면 안 되는 내용")
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert "주입되면 안 되는 내용" not in result
-
-    def test_adr_sorted_by_number(self, executor, tmp_project):
-        adr = tmp_project / "docs" / "adr"
-        adr.mkdir()
-        (adr / "0010-later.md").write_text("나중결정")
-        (adr / "0002-earlier.md").write_text("먼저결정")
-        with patch.object(ex, "ROOT", tmp_project):
-            result = executor._load_guardrails()
-        assert result.index("먼저결정") < result.index("나중결정")
+        assert result == ""
 
     def test_empty_project(self, tmp_path):
         with patch.object(ex, "ROOT", tmp_path):
@@ -500,6 +455,23 @@ class TestInvokeAgent:
         assert cmd[:2] == ["claude", "-p"]
         assert "--dangerously-skip-permissions" in cmd
         assert output["engine"] == "claude"
+
+    def test_claude_engine_skips_mcp_servers(self, tmp_project, phase_dir):
+        """step 세션은 전역 MCP 를 물지 않는다 — 도구 스키마만 컨텍스트를 차지한다."""
+        with patch.object(ex, "ROOT", tmp_project):
+            inst = ex.StepExecutor("0-mvp", engine="claude")
+        inst._root = str(tmp_project)
+        inst._phase_dir = phase_dir
+        inst._index_file = phase_dir / "index.json"
+
+        with patch("subprocess.run", return_value=_proc(stdout='{"result": "ok"}')) as mock_run:
+            inst._invoke_agent({"step": 2, "name": "ui"}, "PREAMBLE\n")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--strict-mcp-config" in cmd
+        # --mcp-config 는 가변 인자라 뒤따르는 prompt 를 삼킨다 — 쓰지 않는다.
+        assert "--mcp-config" not in cmd
+        assert "UI를 구현하세요" in cmd[-1]
 
     def test_engine_timeout_becomes_failed_result_not_crash(self, executor):
         """step 이 시간 제한을 넘기면 실행 전체가 죽지 않고 재시도 루프로 돌아간다."""

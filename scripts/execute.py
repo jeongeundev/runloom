@@ -60,9 +60,14 @@ class StepExecutor:
     TZ = timezone(timedelta(hours=9))
 
     # step 을 위임할 에이전트. codex 가 기본이고, 사용량 한도에 걸리면 claude 로 넘어간다.
+    # claude: --strict-mcp-config 로 전역 MCP(~/.claude.json, claude.ai 커넥터)를 물지 않는다.
+    # step 세션은 파일·셸 내장 도구만 쓰고, MCP 도구 스키마는 시작 컨텍스트만 키운다
+    # (2026-09-21 실측: 서버 12개·도구 174개 → 0개·29개). --mcp-config 는 가변 인자라
+    # 뒤따르는 prompt 를 설정으로 삼키므로 쓰지 않는다.
     ENGINES = {
         "codex": ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox"],
-        "claude": ["claude", "-p", "--dangerously-skip-permissions", "--output-format", "json"],
+        "claude": ["claude", "-p", "--dangerously-skip-permissions", "--strict-mcp-config",
+                   "--output-format", "json"],
     }
     # codex 가 한도 초과로 실패할 때 출력에 남는 문구 (usage_limit_reached / "You've hit your usage limit")
     QUOTA_RE = re.compile(r"usage[ _]limit", re.IGNORECASE)
@@ -187,23 +192,14 @@ class StepExecutor:
     # --- guardrails & context ---
 
     def _load_guardrails(self) -> str:
-        sections = []
-        # codex 는 AGENTS.md 를 읽는다. 없으면 CLAUDE.md 로 폴백.
+        # 프로젝트 규칙 문서만 넣는다. codex 는 AGENTS.md 를 읽는다. 없으면 CLAUDE.md 로 폴백.
+        # docs/ 는 주입하지 않는다 — 전부 넣으면 step 프롬프트가 12만~16만 토큰으로 출발하고
+        # 매 턴 다시 읽힌다 (2026-09-21 실측). 필요한 문서·절은 step.md 의
+        # "읽어야 할 파일" 절이 가리키고, 세션이 그때 읽는다.
         guide = next((p for p in (ROOT / "AGENTS.md", ROOT / "CLAUDE.md") if p.exists()), None)
-        if guide is not None:
-            sections.append(f"## 프로젝트 규칙 ({guide.name})\n\n{guide.read_text()}")
-        docs_dir = ROOT / "docs"
-        if docs_dir.is_dir():
-            for doc in sorted(docs_dir.glob("*.md")):
-                sections.append(f"## {doc.stem}\n\n{doc.read_text()}")
-            # ADR 은 결정마다 파일 하나. 비재귀 glob 이므로 뒤집힌 결정을
-            # docs/adr/superseded/ 로 옮기면 디스크에는 남고 주입에서만 빠진다.
-            # 같은 이유로 docs/presets/ 등 다른 하위 디렉토리는 주입되지 않는다.
-            adr_dir = docs_dir / "adr"
-            if adr_dir.is_dir():
-                for doc in sorted(adr_dir.glob("*.md")):
-                    sections.append(f"## ADR {doc.stem}\n\n{doc.read_text()}")
-        return "\n\n---\n\n".join(sections) if sections else ""
+        if guide is None:
+            return ""
+        return f"## 프로젝트 규칙 ({guide.name})\n\n{guide.read_text()}"
 
     @staticmethod
     def _build_step_context(index: dict) -> str:

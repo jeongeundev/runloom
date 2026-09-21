@@ -1,7 +1,7 @@
 # 프로젝트: workflow — 기존 에이전트 등록과 업무 자동 실행
 
 > Codex(`scripts/execute.py` 실행 엔진)와 Claude Code(`CLAUDE.md` 가 이 파일을 import)가 함께 읽는 프로젝트 규칙.
-> execute.py 가 매 step 프롬프트에 주입하므로, 여기 적은 내용은 모든 step 세션에 전달된다.
+> execute.py 가 매 step 프롬프트에 주입하므로, 여기 적은 내용은 모든 step 세션에 전달된다. 이 파일 외의 문서는 주입하지 않는다 — 필요한 문서·절은 각 step.md 의 "읽어야 할 파일" 절이 가리키고, 세션이 그때 읽는다.
 > 결정 기록은 `docs/adr/`, 설계는 `docs/ARCHITECTURE.md`, 계약 예시는 `docs/CONTRACT.md`, 용어는 `docs/GLOSSARY.md`.
 
 ## 기술 스택
@@ -54,7 +54,7 @@ codex exec --json --dangerously-bypass-approvals-and-sandbox <prompt>
 
 - `python3 scripts/execute.py {task-name} [--push] [--engine codex|claude]` 로 실행한다. 워크플로우 전체는 `.claude/commands/harness.md` 참고. 2026-09-20 기준 Codex 사용량이 거의 남지 않아 `--engine claude` 로 실행한다.
 - `--dangerously-bypass-approvals-and-sandbox` 는 승인 프롬프트·샌드박스를 건너뛴다 (자동화 전용). 외부에서 통제된 환경에서만 쓴다.
-- codex 가 사용량 한도로 실패하면 같은 step 을 `claude -p --dangerously-skip-permissions` 로 재실행하고, 그 실행의 남은 step 도 claude 로 돌린다. 어느 엔진이 돌았는지는 `step{N}-output.json` 의 `engine` 에 남는다.
+- codex 가 사용량 한도로 실패하면 같은 step 을 `claude -p --dangerously-skip-permissions --strict-mcp-config` 로 재실행하고, 그 실행의 남은 step 도 claude 로 돌린다. `--strict-mcp-config` 는 전역 MCP 를 물지 않게 한다 (step 세션은 내장 도구만 쓴다). 어느 엔진이 돌았는지는 `step{N}-output.json` 의 `engine` 에 남는다.
 - step 산출물은 `phases/{task-name}/step{N}-output.json`, 진행 상태는 `index.json` 에 기록된다.
 - 하네스 스크립트 자체를 수정할 때는 `python3 -m pytest scripts/` 를 green 으로 유지한다.
 
