@@ -11,6 +11,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from collections.abc import Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
@@ -19,14 +20,21 @@ from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     ArtifactMissing,
+    DuplicateKind,
+    DuplicateRule,
     DuplicateStartKey,
     EventConflict,
     HashMismatch,
     InvalidTransition,
+    KindInUse,
+    KindProtected,
     NotFound,
     SequenceGap,
 )
 from workflow.contracts.v1 import (
+    BUILTIN_KIND_NAMES,
+    BUILTIN_KINDS,
+    BUILTIN_RULES,
     ArtifactCreated,
     ArtifactMeta,
     Capability,
@@ -34,7 +42,9 @@ from workflow.contracts.v1 import (
     ExecutionEvent,
     ExecutionRequest,
     HandoffBundle,
+    KindSpec,
     SelectionRecord,
+    SuccessorRule,
 )
 from workflow.domain import status as domain_status
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
@@ -78,7 +88,13 @@ def _require_rowcount(cursor: sqlite3.Cursor, what: str) -> None:
 
 
 def create_session(conn: Connection, session_id: str, now: str) -> None:
-    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES (?, ?)", (session_id, now))
+    """세션 생성과 함께 내장 종류(`BUILTIN_KINDS`)·내장 규칙(`BUILTIN_RULES`)을 이 세션에 seed 한다 (ADR-0009)."""
+    with _tx(conn):
+        conn.execute("INSERT INTO sessions (session_id, created_at) VALUES (?, ?)", (session_id, now))
+        for spec in BUILTIN_KINDS:
+            _insert_kind_row(conn, session_id, spec, now)
+        for rule in BUILTIN_RULES:
+            _insert_rule_row(conn, session_id, rule, now)
 
 
 def get_session(conn: Connection, session_id: str) -> Row | None:
@@ -216,6 +232,112 @@ def update_registration(
     return row["agent_id"]
 
 
+# --- 업무 종류·후속 규칙 (phase 6, ADR-0009: 워크스페이스별 등록부) ---------------
+
+
+def _insert_kind_row(conn: Connection, session_id: str, spec: KindSpec, now: str) -> None:
+    conn.execute(
+        "INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+        (session_id, spec.kind, spec.model_dump_json(), now),
+    )
+
+
+def _insert_rule_row(conn: Connection, session_id: str, rule: SuccessorRule, now: str) -> str:
+    rule_id = f"rule-{secrets.token_hex(6)}"
+    conn.execute(
+        "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (rule_id, session_id, rule.from_kind, rule.to_kind, rule.model_dump_json(), now),
+    )
+    return rule_id
+
+
+def list_kinds(conn: Connection, session_id: str) -> list[KindSpec]:
+    """내장 먼저(`BUILTIN_KINDS` 순), 그 다음 created_at·kind 순."""
+    specs = [
+        KindSpec.model_validate_json(r["spec_json"])
+        for r in conn.execute(
+            "SELECT spec_json FROM kinds WHERE session_id = ? ORDER BY created_at, kind", (session_id,)
+        )
+    ]
+    builtin = sorted((s for s in specs if s.builtin), key=lambda s: BUILTIN_KIND_NAMES.index(s.kind))
+    return builtin + [s for s in specs if not s.builtin]
+
+
+def get_kind(conn: Connection, session_id: str, kind: str) -> KindSpec | None:
+    row = _one(conn, "SELECT spec_json FROM kinds WHERE session_id = ? AND kind = ?", (session_id, kind))
+    return KindSpec.model_validate_json(row["spec_json"]) if row else None
+
+
+def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str) -> None:
+    """같은 kind 가 있으면 DuplicateKind. `validate_*` 검증은 서버 몫 — 여기서는 저장만 한다."""
+    with _tx(conn):
+        if get_kind(conn, session_id, spec.kind) is not None:
+            raise DuplicateKind(spec.kind)
+        _insert_kind_row(conn, session_id, spec, now)
+
+
+def delete_kind(conn: Connection, session_id: str, kind: str) -> None:
+    """내장 → KindProtected. Task 가 쓰거나 규칙이 참조 → KindInUse. 없으면 NotFound."""
+    with _tx(conn):
+        spec = get_kind(conn, session_id, kind)
+        if spec is None:
+            raise NotFound(f"kind {kind}")
+        if spec.builtin:
+            raise KindProtected(kind)
+        used_by_task = _one(
+            conn, "SELECT 1 FROM tasks WHERE session_id = ? AND kind = ? LIMIT 1", (session_id, kind)
+        )
+        used_by_rule = _one(
+            conn,
+            "SELECT 1 FROM succession_rules WHERE session_id = ? AND (from_kind = ? OR to_kind = ?) LIMIT 1",
+            (session_id, kind, kind),
+        )
+        if used_by_task is not None or used_by_rule is not None:
+            raise KindInUse(kind)
+        conn.execute("DELETE FROM kinds WHERE session_id = ? AND kind = ?", (session_id, kind))
+
+
+def list_rules(conn: Connection, session_id: str) -> list[tuple[str, SuccessorRule]]:
+    """(rule_id, rule) 목록. created_at·rule_id 순."""
+    return [
+        (r["rule_id"], SuccessorRule.model_validate_json(r["rule_json"]))
+        for r in conn.execute(
+            "SELECT rule_id, rule_json FROM succession_rules WHERE session_id = ? "
+            "ORDER BY created_at, rule_id",
+            (session_id,),
+        )
+    ]
+
+
+def get_rule(conn: Connection, session_id: str, from_kind: str, to_kind: str) -> SuccessorRule | None:
+    row = _one(
+        conn,
+        "SELECT rule_json FROM succession_rules WHERE session_id = ? AND from_kind = ? AND to_kind = ?",
+        (session_id, from_kind, to_kind),
+    )
+    return SuccessorRule.model_validate_json(row["rule_json"]) if row else None
+
+
+def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str) -> str:
+    """rule_id 를 돌려준다. 같은 (from_kind, to_kind) → DuplicateRule. 종류가 세션에 없으면 NotFound."""
+    with _tx(conn):
+        for kind in (rule.from_kind, rule.to_kind):
+            if get_kind(conn, session_id, kind) is None:
+                raise NotFound(f"kind {kind}")
+        if get_rule(conn, session_id, rule.from_kind, rule.to_kind) is not None:
+            raise DuplicateRule(f"{rule.from_kind} → {rule.to_kind}")
+        return _insert_rule_row(conn, session_id, rule, now)
+
+
+def delete_rule(conn: Connection, session_id: str, rule_id: str) -> None:
+    """내장 규칙도 삭제할 수 있다 — 팀이 진단 → 코드 수정을 잇지 않을 수 있다."""
+    cur = conn.execute(
+        "DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id)
+    )
+    _require_rowcount(cur, f"rule {rule_id}")
+
+
 # --- 세션 등록 (phase 5: 심사자 세션이 카탈로그에서 고른 Agent) ---------------
 
 
@@ -336,9 +458,12 @@ def get_connector(conn: Connection, connector_id: str) -> Row | None:
 
 def insert_task(conn: Connection, task: dict, now: str) -> None:
     """JSON 컬럼은 `required_capability`(Capability 로 검증)·`criteria`·`target` 로 받는다.
+    종류는 이 세션의 등록부(`kinds`)에 있어야 한다 (없으면 NotFound — FK 오류를 기다리지 않는다).
     선행 Task 는 같은 세션의 것만 허용한다 (ARCHITECTURE "선행 연결 변경 시 같은 소유 범위 검사")."""
     capability = Capability.model_validate(task["required_capability"]).model_dump()
     with _tx(conn):
+        if get_kind(conn, task["session_id"], task["kind"]) is None:
+            raise NotFound(f"종류 {task['kind']} 이 등록되지 않음")
         predecessor = task.get("predecessor_task_id")
         if predecessor is not None:
             prev = _one(conn, "SELECT session_id FROM tasks WHERE task_id = ?", (predecessor,))
@@ -425,15 +550,40 @@ def successors_of(conn: Connection, task_id: str) -> list[Row]:
     ).fetchall()
 
 
-def tasks_with_completed_predecessor(conn: Connection) -> list[Row]:
-    """워커 후속 스캔용: 마감되지 않았고 선행 Task 가 `완료` 로 마감(`finished_at`)된 Task."""
+def tasks_with_ready_predecessor(conn: Connection) -> list[Row]:
+    """워커 후속 스캔용. 마감되지 않은 Task 중 선행 Task 가 (a) `완료` 로 마감됐거나 (b) 활성 실행이
+    `result_ready` 이고 task_verdicts 에 그 실행의 판정이 있는 것. 선행이 `실패` 로 마감된 Task 는 제외한다.
+    판정 통과·outcome 일치는 워커가 `predecessor_ready_execution` 으로 읽어 판단한다 (ADR-0009)."""
     return conn.execute(
         """
         SELECT t.* FROM tasks t JOIN tasks p ON p.task_id = t.predecessor_task_id
-        WHERE t.finished_at IS NULL AND p.status = '완료' AND p.finished_at IS NOT NULL
+        WHERE t.finished_at IS NULL AND p.status != '실패'
+          AND (
+            (p.status = '완료' AND p.finished_at IS NOT NULL)
+            OR EXISTS (
+              SELECT 1 FROM executions e
+              WHERE e.task_id = p.task_id AND e.released_at IS NULL AND e.status = 'result_ready'
+                AND EXISTS (SELECT 1 FROM task_verdicts v WHERE v.execution_id = e.execution_id)
+            )
+          )
         ORDER BY t.created_at, t.task_id
         """
     ).fetchall()
+
+
+def predecessor_ready_execution(conn: Connection, task_id: str) -> Row | None:
+    """`task_id`(선행 Task) 를 '준비'시킨 실행 — `result_ready` 이고 `result_artifact_id` 가 있으며
+    판정이 기록된 가장 최근 시도. 해제된 시도도 포함한다(선행이 이미 `완료` 된 경우). 없으면 None."""
+    return _one(
+        conn,
+        """
+        SELECT e.* FROM executions e
+        WHERE e.task_id = ? AND e.status = 'result_ready' AND e.result_artifact_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM task_verdicts v WHERE v.execution_id = e.execution_id)
+        ORDER BY e.attempt_no DESC LIMIT 1
+        """,
+        (task_id,),
+    )
 
 
 def confirm_merge(conn: Connection, task_id: str, now: str) -> None:
@@ -714,17 +864,19 @@ def executions_by(
     return conn.execute(sql + " ORDER BY created_at, execution_id", params).fetchall()
 
 
-def results_awaiting_verdict(conn: Connection, kind: str) -> list[Row]:
-    """`result_ready` 인 활성 실행 중 판정(task_verdicts) 기록이 없는 것. 워커가 한 번씩만 판정한다."""
-    return conn.execute(
-        """
+def results_awaiting_verdict(conn: Connection, kind: str | None = None) -> list[Row]:
+    """`result_ready` 인 활성 실행 중 판정(task_verdicts) 기록이 없는 것. 워커가 한 번씩만 판정한다.
+    `kind` 가 None 이면 모든 종류."""
+    sql = """
         SELECT e.* FROM executions e
-        WHERE e.released_at IS NULL AND e.status = 'result_ready' AND e.kind = ?
+        WHERE e.released_at IS NULL AND e.status = 'result_ready'
           AND NOT EXISTS (SELECT 1 FROM task_verdicts v WHERE v.execution_id = e.execution_id)
-        ORDER BY e.created_at, e.execution_id
-        """,
-        (kind,),
-    ).fetchall()
+    """
+    params: tuple = ()
+    if kind is not None:
+        sql += " AND e.kind = ?"
+        params = (kind,)
+    return conn.execute(sql + " ORDER BY e.created_at, e.execution_id", params).fetchall()
 
 
 def fail_execution(conn: Connection, execution_id: str, *, code: str, message: str, now: str) -> None:
@@ -888,11 +1040,24 @@ def artifacts_of(conn: Connection, execution_id: str) -> list[Row]:
     ).fetchall()
 
 
+def artifacts_of_kinds(conn: Connection, execution_id: str, kinds: Sequence[str]) -> list[Row]:
+    """실행의 산출물 중 `kinds` 에 든 것. 인계 조립이 규칙 `handoff_kinds` 로 모을 때 쓴다."""
+    if not kinds:
+        return []
+    placeholders = ", ".join("?" for _ in kinds)
+    return conn.execute(
+        f"SELECT * FROM artifacts WHERE execution_id = ? AND kind IN ({placeholders}) "
+        "ORDER BY created_at, artifact_id",
+        (execution_id, *kinds),
+    ).fetchall()
+
+
 def download_allowed(
     conn: Connection, store: ArtifactStore, execution_id: str, artifact_id: str
 ) -> bool:
-    """실행의 `input_artifact_ids` 에 있거나, 그 입력 중 `handoff_bundle` manifest 의 attachments 에
-    나열됐거나, 이 실행이 만든 산출물이면 True. manifest 를 읽어야 하므로 store 가 필요하다."""
+    """실행의 `input_artifact_ids` 에 있거나, 그 입력 중 `handoff_bundle` manifest 의
+    `source_result_artifact_id`·`inputs`·`attachments` 에 나열됐거나, 이 실행이 만든 산출물이면 True.
+    manifest 를 읽어야 하므로 store 가 필요하다."""
     execution = get_execution(conn, execution_id)
     artifact = get_artifact(conn, artifact_id)
     if execution is None or artifact is None:
@@ -910,6 +1075,10 @@ def download_allowed(
             bundle = HandoffBundle.model_validate_json(store.read(bundle_row["store_ref"]))
         except (FileNotFoundError, ValueError):
             continue
+        if artifact_id == bundle.source_result_artifact_id:
+            return True
+        if any(i.artifact_id == artifact_id for i in bundle.inputs):
+            return True
         if any(a.artifact_id == artifact_id for a in bundle.attachments):
             return True
     return False

@@ -369,7 +369,7 @@ def test_upload_to_other_connectors_or_unknown_execution(client, seeded, connect
 
 
 def test_download_allows_inputs_manifest_attachments_and_own_outputs(client, seeded, store, connector):
-    """B 실행은 입력 handoff bundle, 그 manifest 의 첨부, 자기 산출물만 내려받는다 (CONTRACT 4절)."""
+    """B 실행은 입력 handoff bundle, 그 manifest 의 선행 결과·inputs·첨부, 자기 산출물만 내려받는다 (CONTRACT 4절)."""
     connector_id, token = connector
     headers = bearer(token)
     seed_execution(seeded, "exec-diag", TASK_A, kind="diagnosis", inputs=())
@@ -382,6 +382,11 @@ def test_download_allows_inputs_manifest_attachments_and_own_outputs(client, see
     res, _ = repo.store_artifact(
         seeded, store, execution_id="exec-diag", session_id="sess-1",
         meta=_meta_model(result, "diagnosis_result", "diagnosis.json"), data=result, now=utc_now(),
+    )
+    trace_bytes = b"[]"
+    trace, _ = repo.store_artifact(
+        seeded, store, execution_id="exec-diag", session_id="sess-1",
+        meta=_meta_model(trace_bytes, "tool_trace", "trace.json"), data=trace_bytes, now=utc_now(),
     )
     manifest = json.dumps({
         "contract_version": 1,
@@ -416,7 +421,10 @@ def test_download_allows_inputs_manifest_attachments_and_own_outputs(client, see
     assert got_mine.content == own
     assert got_mine.headers["content-type"].startswith("text/plain")
 
-    denied = client.get(f"/executions/{EXEC_FIX}/artifacts/{res.artifact_id}", headers=headers)  # 나열되지 않은 A 산출물
+    got_result = client.get(f"/executions/{EXEC_FIX}/artifacts/{res.artifact_id}", headers=headers)  # source_result_artifact_id
+    assert got_result.status_code == 200
+
+    denied = client.get(f"/executions/{EXEC_FIX}/artifacts/{trace.artifact_id}", headers=headers)  # 나열되지 않은 A 산출물
     assert denied.status_code == 403
     assert denied.json()["code"] == "forbidden"
     assert client.get(f"/executions/{EXEC_FIX}/artifacts/art-none", headers=headers).status_code == 403

@@ -567,8 +567,11 @@ class Worker:
 
     def _spawn_successors(self, conn: Connection, report: TickReport) -> None:
         now = self._clock()
-        for task in repo.tasks_with_completed_predecessor(conn):
+        for task in repo.tasks_with_ready_predecessor(conn):
             task_id = task["task_id"]
+            predecessor = repo.get_task(conn, task["predecessor_task_id"])
+            if predecessor is None or predecessor["status"] != "완료":
+                continue  # 선행 결과·판정·outcome 으로 착수하는 조건은 phase 6 step 4 가 넣는다 — 그때까지 선행 완료만
             if repo.active_execution(conn, task_id) is not None:
                 continue
             selection = repo.get_selection(conn, task_id)
