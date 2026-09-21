@@ -54,7 +54,10 @@
     {
       "step": 6,
       "name": "web-kinds-page",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-21T22:21:20+0900",
+      "summary": "웹 계층에 종류·규칙 페이지 추가. web.py: GET /kinds(종류 카드 + 종류 등록 폼 + 규칙 표 + 규칙 등록 폼), POST /kinds(KindSpec.model_validate — output_kind=generic_result·builtin=False 서버 고정, capability_code 비면 kind, outcomes 는 쉼표·공백 분리 _split_identifiers, input_kinds 다중 선택 INPUT_KIND_CHOICES=ARTIFACT_KINDS−handoff_bundle; ValidationError → _validation_page_error 422 invalid_field(최상위 필드명 + 한글 문구: 패턴/비움/허용값/모델 ValueError 원문); DuplicateKind → 409 kind_exists), POST /kinds/{kind}/delete(KindProtected 409 kind_protected '내장 종류는 삭제할 수 없습니다' / KindInUse 409 kind_in_use — _kind_in_use_message 가 업무·후속 규칙 중 무엇이 쓰는지 문구로 / NotFound 404), POST /rules(SuccessorRule.model_validate 422 → domain.kinds.validate_rule(list_kinds) 사유 422 invalid_field → DuplicateRule 409 rule_exists), POST /rules/{rule_id}/delete(NotFound 404, 내장 규칙도 삭제). 모두 require_session, 운영자 전용 아님, 303 /kinds. views.py: kind_public(spec)(kind·label·capability_code·scope_key·input_kinds·input_labels·output_kind·output_label·outcomes·instructions·builtin), rule_public(rule_id, rule, kinds)(text '{from label} --[o1, o2]--> {to label}', 미등록 종류는 코드 그대로, handoff_kinds·handoff_labels). filters.KIND_LABELS 에 generic_result='결과 봉투'. 템플릿 kinds.html 신규(agents_register 구조, 카드: 라벨·kind·능력 코드·scope 키·받는 산출물/내는 산출물/결과값 칩·지시문 <details>·내장 태그(.tag-builtin, 삭제 버튼 없음)·삭제 form; 규칙은 표의 한 줄 텍스트 + 칩 + 삭제; 규칙 폼 from/to select + on_outcomes 체크박스(option data-outcomes 로 소량 인라인 JS 가 교체) + handoff_kinds 체크박스; 그래프·SVG·모달 없음). _sidebar.html 에 에이전트 다음 <a href=\"/kinds\">종류·규칙</a>(startswith 활성). style.css 최소 클래스(.kind-card·.tag-builtin·.kind-fields·.instructions·.check-list·.rule-text). 업무 등록 폼·가져오기·상세·운영자 폼 미수정(step 7). 테스트: test_web.py 종류·규칙 절 12건(내장 표시·삭제 버튼 없음·규칙 한 줄·세션 격리·capability_code 기본값·422 8케이스·중복 outcomes 문구·409 중복/내장 이름·규칙 등록·규칙 422 7케이스·규칙 409·삭제 보호/업무 사용/규칙 참조→규칙 삭제→성공→404·규칙 삭제→404·타 세션 삭제 404), test_ui.py 사이드바 링크·활성 1건 + 셸·금지 문구 경로에 /kinds 추가, test_views.py kind_public·rule_public 2건. 결과: server 281 passed, 전체 1509 passed·22 skipped, ruff 통과, AC grep 충족.",
+      "completed_at": "2026-09-21T22:32:44+0900"
     },
     {
       "step": 7,

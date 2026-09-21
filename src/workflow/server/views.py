@@ -5,6 +5,7 @@
 """
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
@@ -13,11 +14,12 @@ from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
-from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
+from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES, KindSpec, SuccessorRule
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
+from workflow.domain.kinds import get_kind
 from workflow.domain.status import TaskView, UserStatus, user_status
-from workflow.server.filters import KIND_LABELS, KST, kst
+from workflow.server.filters import KIND_LABELS, KST, kind_label, kst
 from workflow.server.settings import Settings
 
 # 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7절)
@@ -102,6 +104,41 @@ def agent_public(agent: Row, *, now: str, settings: Settings) -> dict[str, Any]:
     data["online"] = agent_online(agent, now=now, settings=settings)
     data["discovered_summary"] = discovered_summary(data)
     return data
+
+
+def kind_public(spec: KindSpec) -> dict[str, Any]:
+    """종류·규칙 화면의 종류 카드. 산출물 kind 는 칩 라벨(`KIND_LABELS`)로, outcome 은 코드 그대로 (GLOSSARY `outcome 라벨`)."""
+    return {
+        "kind": spec.kind,
+        "label": spec.label,
+        "capability_code": spec.capability_code,
+        "scope_key": spec.scope_key,
+        "input_kinds": list(spec.input_kinds),
+        "input_labels": [kind_label(k) for k in spec.input_kinds],
+        "output_kind": spec.output_kind,
+        "output_label": kind_label(spec.output_kind),
+        "outcomes": list(spec.outcomes),
+        "instructions": spec.instructions,
+        "builtin": spec.builtin,
+    }
+
+
+def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) -> dict[str, Any]:
+    """규칙 한 줄 `{from label} --[outcome, …]--> {to label}` (ADR-0009 — 그래프를 그리지 않는다).
+    등록부에 없는 종류는 코드 그대로 보인다."""
+
+    def label(kind: str) -> str:
+        spec = get_kind(kinds, kind)
+        return spec.label if spec is not None else kind
+
+    return {
+        "rule_id": rule_id,
+        "from_kind": rule.from_kind,
+        "to_kind": rule.to_kind,
+        "text": f"{label(rule.from_kind)} --[{', '.join(rule.on_outcomes)}]--> {label(rule.to_kind)}",
+        "handoff_kinds": list(rule.handoff_kinds),
+        "handoff_labels": [kind_label(k) for k in rule.handoff_kinds],
+    }
 
 
 def summarize_verdict(verdict: dict[str, Any]) -> tuple[str, str]:

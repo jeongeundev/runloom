@@ -29,21 +29,31 @@ from jinja2 import Environment, FileSystemLoader
 from pydantic import ValidationError
 
 from workflow.adapters import repo
-from workflow.adapters.errors import ActiveExecutionExists, NotFound
+from workflow.adapters.errors import (
+    ActiveExecutionExists,
+    DuplicateKind,
+    DuplicateRule,
+    KindInUse,
+    KindProtected,
+    NotFound,
+)
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.v1 import (
+    ARTIFACT_KINDS,
     BUILTIN_KINDS,
     BUILTIN_RULES,
     ArtifactMeta,
     Capability,
     CodeChangeResult,
     ExecutionRequest,
+    KindSpec,
     ReviewComment,
+    SuccessorRule,
 )
 from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
-from workflow.domain.kinds import can_auto_complete, get_kind, kind_for_capability
+from workflow.domain.kinds import can_auto_complete, get_kind, kind_for_capability, validate_rule
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
@@ -62,6 +72,8 @@ CAPABILITY_CODES = tuple(SCOPE_KEYS)
 OWNER_SCOPES = ("personal", "team", "company")
 CONNECTION_TYPES = ("local", "api")
 REVIEW_DECISIONS = ("approve", "request_changes", "close")
+# 종류·규칙 폼의 산출물 kind 선택지 — 묶음 자체(`handoff_bundle`)는 받는 산출물도 넘기는 산출물도 아니다
+INPUT_KIND_CHOICES = tuple(k for k in ARTIFACT_KINDS if k != "handoff_bundle")
 
 # 등록 폼 미리 채움 (UI_GUIDE "심사자 첫 방문 흐름"). `example` 은 미리 채움 키일 뿐 목표 자동 분해가 아니다.
 EXAMPLES: dict[str, dict[str, str]] = {
@@ -1067,6 +1079,164 @@ def agent_detail(
         raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
     agent = views.agent_public(row, now=now, settings=_settings(request))
     return _render("agent_detail.html", **_base(request, conn, session_id, now), agent=agent)
+
+
+# --- 업무 종류·후속 규칙 (ADR-0009) — 워크스페이스(세션) 구성원이 등록한다. 운영자 전용이 아니다 ------
+
+
+def _split_identifiers(text: str) -> list[str]:
+    """쉼표·공백 구분 텍스트 → 목록. 값의 형식은 계약(`Outcome`)이 검사한다."""
+    return [item for item in re.split(r"[,\s]+", text.strip()) if item]
+
+
+def _validation_page_error(exc: ValidationError) -> PageError:
+    """계약 모델의 첫 오류 → 422 `invalid_field`. 필드는 폼 입력 이름(최상위)이고 문구는 사람이 읽는 한 줄.
+    모델 검사(`model_validator`)의 ValueError 문구는 그대로 쓴다."""
+    err = exc.errors()[0]
+    loc = err["loc"]
+    field = str(loc[0]) if loc else None
+    kind = err["type"]
+    if kind == "value_error":
+        message = err["msg"].removeprefix("Value error, ")
+    elif kind == "string_pattern_mismatch":
+        message = f"{field} 형식이 올바르지 않습니다 (허용: {err['ctx']['pattern']})."
+    elif kind in ("string_too_short", "too_short"):
+        message = f"{field} 을(를) 비울 수 없습니다."
+    elif kind == "literal_error":
+        message = f"{field} 에 허용되지 않은 값이 있습니다."
+    else:
+        message = f"필드 {field}: {err['msg']}"
+    return PageError(422, "invalid_field", message, field=field)
+
+
+def _kind_in_use_message(conn: Connection, session_id: str, kind: str) -> str:
+    by_task = any(t["kind"] == kind for t in repo.list_tasks(conn, session_id))
+    by_rule = any(kind in (r.from_kind, r.to_kind) for _, r in repo.list_rules(conn, session_id))
+    if by_task and by_rule:
+        return "이 종류를 쓰는 업무와 참조하는 후속 규칙이 있어 삭제할 수 없습니다."
+    if by_rule:
+        return "이 종류를 참조하는 후속 규칙이 있어 삭제할 수 없습니다. 규칙을 먼저 삭제하세요."
+    return "이 종류를 쓰는 업무가 있어 삭제할 수 없습니다."
+
+
+@router.get("/kinds", response_class=HTMLResponse)
+def kinds_page(
+    request: Request,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """종류 목록 + 종류 등록 폼 + 규칙 목록 + 규칙 등록 폼. 규칙은 한 줄 텍스트다 — 그래프를 그리지 않는다."""
+    now = utc_now()
+    kinds = repo.list_kinds(conn, session_id)
+    return _render(
+        "kinds.html", **_base(request, conn, session_id, now),
+        kinds=[views.kind_public(spec) for spec in kinds],
+        rules=[views.rule_public(rule_id, rule, kinds) for rule_id, rule in repo.list_rules(conn, session_id)],
+        input_kind_choices=INPUT_KIND_CHOICES,
+    )
+
+
+@router.post("/kinds")
+def kinds_create(
+    response: Response,
+    kind: str = Form(""),
+    label: str = Form(""),
+    capability_code: str = Form(""),
+    scope_key: str = Form(""),
+    input_kinds: list[str] = Form([]),
+    outcomes: str = Form(""),
+    instructions: str = Form(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """사용자 정의 종류. `output_kind` 는 항상 `generic_result`(내장 결과 봉투는 검증기가 딸려 있다), `builtin` 은 False.
+    능력 코드를 비우면 종류 이름과 같다 (ARCHITECTURE "봉투와 내장 값")."""
+    kind = kind.strip()
+    try:
+        spec = KindSpec.model_validate({
+            "kind": kind,
+            "label": label.strip(),
+            "capability_code": capability_code.strip() or kind,
+            "scope_key": scope_key.strip(),
+            "input_kinds": input_kinds,
+            "output_kind": "generic_result",
+            "outcomes": _split_identifiers(outcomes),
+            "instructions": instructions.strip(),
+            "builtin": False,
+        })
+    except ValidationError as exc:
+        raise _validation_page_error(exc) from None
+    try:
+        repo.insert_kind(conn, session_id, spec, utc_now())
+    except DuplicateKind:
+        raise PageError(409, "kind_exists", f"종류 {spec.kind} 은 이미 등록돼 있습니다.", field="kind") from None
+    return _redirect("/kinds", response)
+
+
+@router.post("/kinds/{kind}/delete")
+def kinds_delete(
+    response: Response,
+    kind: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    try:
+        repo.delete_kind(conn, session_id, kind)
+    except KindProtected:
+        raise PageError(409, "kind_protected", "내장 종류는 삭제할 수 없습니다.", field="kind") from None
+    except KindInUse:
+        raise PageError(409, "kind_in_use", _kind_in_use_message(conn, session_id, kind), field="kind") from None
+    except NotFound:
+        raise PageError(404, "not_found", f"종류 {kind}을 찾을 수 없습니다.", field="kind") from None
+    return _redirect("/kinds", response)
+
+
+@router.post("/rules")
+def rules_create(
+    response: Response,
+    from_kind: str = Form(""),
+    on_outcomes: list[str] = Form([]),
+    to_kind: str = Form(""),
+    handoff_kinds: list[str] = Form([]),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """형식은 계약(`SuccessorRule`), 등록부와의 정합(`on_outcomes ⊆ from.outcomes`·`handoff_kinds ⊇ to.input_kinds`)은
+    `domain.kinds.validate_rule` 이 본다. 여기서 규칙 논리를 다시 쓰지 않는다."""
+    try:
+        rule = SuccessorRule.model_validate({
+            "from_kind": from_kind.strip(),
+            "on_outcomes": on_outcomes,
+            "to_kind": to_kind.strip(),
+            "handoff_kinds": handoff_kinds,
+        })
+    except ValidationError as exc:
+        raise _validation_page_error(exc) from None
+    reason = validate_rule(repo.list_kinds(conn, session_id), rule)
+    if reason is not None:
+        raise PageError(422, "invalid_field", reason)
+    try:
+        repo.insert_rule(conn, session_id, rule, utc_now())
+    except DuplicateRule:
+        raise PageError(
+            409, "rule_exists", f"규칙 {rule.from_kind} → {rule.to_kind} 은 이미 등록돼 있습니다.",
+        ) from None
+    return _redirect("/kinds", response)
+
+
+@router.post("/rules/{rule_id}/delete")
+def rules_delete(
+    response: Response,
+    rule_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """내장 규칙도 삭제할 수 있다 — 규칙이 없으면 그 결과 뒤 후속은 사람이 시작한다."""
+    try:
+        repo.delete_rule(conn, session_id, rule_id)
+    except NotFound:
+        raise PageError(404, "not_found", f"규칙 {rule_id}을 찾을 수 없습니다.", field="rule_id") from None
+    return _redirect("/kinds", response)
 
 
 # --- 운영자 (ADR-0005) --------------------------------------------------------------

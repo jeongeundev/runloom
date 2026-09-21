@@ -32,6 +32,7 @@ KIND_LABELS = {
     "claude_jsonl": "Claude JSONL",
     "claude_stderr": "Claude stderr",
     "review_comment": "검토 의견",
+    "generic_result": "결과 봉투",
 }
 
 

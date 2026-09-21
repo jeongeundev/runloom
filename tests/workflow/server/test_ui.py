@@ -181,7 +181,7 @@ def test_pages_render_three_column_shell(web, conn, store, settings):
     login_operator(web)
     for path in (
         "/tasks", f"/tasks/{task_id}", "/agents", "/agents/register", "/agents/agent-ops-demo", "/operator",
-        "/tasks/new", "/tasks/import", f"/chains/{chain_id}",
+        "/tasks/new", "/tasks/import", f"/chains/{chain_id}", "/kinds",
     ):
         html = web.get(path).text
         assert 'class="shell' in html, path
@@ -210,6 +210,18 @@ def test_sidebar_lists_my_tasks_with_status_dot_and_relative_time(web):
     assert "운영자" not in sidebar  # 운영자 쿠키 없음
     login_operator(web)
     assert 'href="/operator"' in web.get("/tasks").text
+
+
+def test_sidebar_links_kinds_page_after_agents_and_marks_active(web):
+    """종류·규칙 링크는 에이전트 다음. 활성 표시 규칙은 다른 탐색 항목과 같다 (phase 6 step 6)."""
+    html = web.get("/tasks").text
+    nav = html[html.index('class="nav"'):html.index('class="side-head"')]
+    assert '<a href="/kinds">종류·규칙</a>' in nav
+    assert nav.index('href="/agents"') < nav.index('href="/kinds"')
+    kinds = web.get("/kinds").text
+    nav = kinds[kinds.index('class="nav"'):kinds.index('class="side-head"')]
+    assert '<a href="/kinds" class="active">종류·규칙</a>' in nav
+    assert 'href="/agents" class="active"' not in nav and 'href="/tasks" class="active"' not in nav
 
 
 # --- 상태 배지 ----------------------------------------------------------------------
@@ -372,7 +384,7 @@ def test_visible_text_has_no_forbidden_phrases(web, conn, store, settings):
     login_operator(web)
     for path in (
         "/tasks", f"/tasks/{task_id}", "/tasks/new", "/tasks/import", "/agents", "/agents/register",
-        "/agents/agent-codex-mac", "/operator", f"/chains/{chain_id}",
+        "/agents/agent-codex-mac", "/operator", f"/chains/{chain_id}", "/kinds",
     ):
         text = visible_text(web.get(path).text)
         for phrase in ("대기 중", "Powered by"):

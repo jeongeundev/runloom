@@ -1,5 +1,6 @@
 """web.py — 심사자 세션·운영자 웹 라우트. 마크업이 아니라 렌더된 텍스트·리다이렉트·상태 코드를 본다 (Step 7 이 화면을 꾸민다)."""
 
+import html as html_lib
 import json
 import re
 
@@ -1316,3 +1317,248 @@ def test_operator_token_never_appears_in_html(web):
     login_operator(web)
     for path in ("/tasks", "/operator", "/agents", "/tasks/new"):
         assert "test-operator-token" not in web.get(path).text
+
+
+# --- 업무 종류·후속 규칙 (phase 6 step 6, ADR-0009) — 워크스페이스(세션)가 등록한다 ----------------
+
+
+REVIEW_INSTRUCTIONS = (
+    "인계 디렉터리의 diff 와 code_change_result 를 읽고 변경이 진단의 repair_request 를 충족하는지 검토하세요."
+)
+
+
+def kind_form(**overrides) -> dict:
+    """CONTRACT 11.1 의 사용자 정의 `review`. output_kind·builtin 은 서버가 채우므로 폼에 없다."""
+    form = {
+        "kind": "review",
+        "label": "검토",
+        "capability_code": "review",
+        "scope_key": "repository_id",
+        "input_kinds": ["diff", "code_change_result"],
+        "outcomes": "approved, changes_requested needs_information",
+        "instructions": REVIEW_INSTRUCTIONS,
+    }
+    form.update(overrides)
+    return form
+
+
+def rule_form(**overrides) -> dict:
+    """CONTRACT 11.2 의 `code_change --[ready_for_review]--> review`."""
+    form = {
+        "from_kind": "code_change",
+        "on_outcomes": ["ready_for_review"],
+        "to_kind": "review",
+        "handoff_kinds": ["diff", "code_change_result"],
+    }
+    form.update(overrides)
+    return form
+
+
+def register_kind(client, **overrides) -> None:
+    response = client.post("/kinds", data=kind_form(**overrides), follow_redirects=False)
+    assert response.status_code == 303, response.text
+    assert response.headers["location"] == "/kinds"
+
+
+def register_rule(client, **overrides) -> None:
+    response = client.post("/rules", data=rule_form(**overrides), follow_redirects=False)
+    assert response.status_code == 303, response.text
+    assert response.headers["location"] == "/kinds"
+
+
+def kinds_page(client) -> str:
+    """엔티티를 복원한 페이지 텍스트 — 규칙 한 줄의 `-->` 가 `--&gt;` 로 이스케이프되므로."""
+    response = client.get("/kinds")
+    assert response.status_code == 200, response.text
+    return html_lib.unescape(response.text)
+
+
+def alert_of(response) -> str:
+    """오류 화면의 알림 블록만 (사이드바의 `업무` 같은 탐색 문구를 제외하고 본다)."""
+    text = response.text
+    return text[text.index('class="alert"'):text.index('class="actions"')]
+
+
+def test_kinds_page_shows_builtin_kinds_and_rule_without_delete_button(web):
+    text = kinds_page(web)
+    assert "업무 종류" in text and "후속 규칙" in text and "받는 산출물" in text and "내는 산출물" in text
+    assert "결과값" in text
+    for value in ("진단", "코드 수정", "diagnosis", "code_change", "operations.diagnose", "code.modify",
+                  "workflow_id", "repository_id", "ready_for_handoff", "ready_for_review", "needs_information"):
+        assert value in text, value
+    assert text.count(">내장<") == 2
+    assert 'action="/kinds/diagnosis/delete"' not in text and 'action="/kinds/code_change/delete"' not in text
+    # 내장 규칙 한 줄 텍스트 — 그래프·화살표 그림 없음, 삭제 가능
+    assert "진단 --[ready_for_handoff]--> 코드 수정" in text
+    assert text.count('action="/rules/') == 1 and "/delete" in text
+    assert "규칙이 없으면 그 결과 뒤 후속은 사람이 시작합니다" in text
+    assert 'action="/kinds"' in text and 'action="/rules"' in text
+    assert 'name="input_kinds"' in text and 'value="handoff_bundle"' not in text
+    assert 'data-outcomes="ready_for_handoff needs_information"' in text
+    assert "<svg" not in text[text.index('class="main'):text.index('class="viewer')]
+
+
+def test_register_kind_appears_on_page_and_is_isolated_per_session(app, web, conn, settings):
+    register_kind(web)
+    text = kinds_page(web)
+    assert 'action="/kinds/review/delete"' in text
+    for value in ("검토", "review", "repository_id", "approved", "changes_requested", "결과 봉투", "수정 결과",
+                  REVIEW_INSTRUCTIONS):
+        assert value in text, value
+    spec = repo.get_kind(conn, session_id_of(web, settings), "review")
+    assert spec is not None
+    assert (spec.label, spec.capability_code, spec.scope_key) == ("검토", "review", "repository_id")
+    assert spec.input_kinds == ["diff", "code_change_result"]
+    assert spec.outcomes == ["approved", "changes_requested", "needs_information"]
+    assert (spec.output_kind, spec.builtin) == ("generic_result", False)
+    # 규칙 폼의 선행·후속 select 에도 나타난다
+    assert 'value="review" data-outcomes="approved changes_requested needs_information"' in text
+
+    other = TestClient(app)
+    assert 'action="/kinds/review/delete"' not in other.get("/kinds").text
+    assert [s.kind for s in repo.list_kinds(conn, session_id_of(other, settings))] == ["diagnosis", "code_change"]
+
+
+def test_register_kind_defaults_capability_code_to_kind(web, conn, settings):
+    register_kind(web, capability_code="")
+    assert repo.get_kind(conn, session_id_of(web, settings), "review").capability_code == "review"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "field"),
+    [
+        ({"kind": "Review"}, "kind"),
+        ({"kind": "r"}, "kind"),
+        ({"label": ""}, "label"),
+        ({"capability_code": "Code.Modify"}, "capability_code"),
+        ({"scope_key": "Repo-ID"}, "scope_key"),
+        ({"outcomes": ""}, "outcomes"),
+        ({"outcomes": "Approved"}, "outcomes"),
+        ({"input_kinds": ["nope"]}, "input_kinds"),
+    ],
+)
+def test_register_kind_rejects_bad_form_with_422(web, overrides, field):
+    response = web.post("/kinds", data=kind_form(**overrides), follow_redirects=False)
+    assert response.status_code == 422, response.text
+    assert "invalid_field" in response.text and f"<code>{field}</code>" in response.text
+
+
+def test_register_kind_duplicate_outcomes_422_with_model_message(web):
+    response = web.post("/kinds", data=kind_form(outcomes="approved approved"), follow_redirects=False)
+    assert response.status_code == 422
+    assert "outcomes 에 중복이 있습니다" in response.text and "Value error" not in response.text
+
+
+def test_register_kind_duplicate_and_builtin_name_409(web):
+    register_kind(web)
+    again = web.post("/kinds", data=kind_form(), follow_redirects=False)
+    assert again.status_code == 409 and "kind_exists" in again.text
+    builtin = web.post("/kinds", data=kind_form(kind="diagnosis", input_kinds=[]), follow_redirects=False)
+    assert builtin.status_code == 409 and "kind_exists" in builtin.text
+
+
+def test_register_rule_appears_as_one_line(web, conn, settings):
+    register_kind(web)
+    register_rule(web)
+    text = kinds_page(web)
+    assert "코드 수정 --[ready_for_review]--> 검토" in text
+    assert text.count('action="/rules/') == 2
+    rules = repo.list_rules(conn, session_id_of(web, settings))
+    assert [(r.from_kind, r.to_kind) for _, r in rules] == [("diagnosis", "code_change"), ("code_change", "review")]
+    assert rules[1][1].on_outcomes == ["ready_for_review"]
+    assert rules[1][1].handoff_kinds == ["diff", "code_change_result"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"on_outcomes": ["approved"]}, "on_outcomes 에 code_change 의 outcome 이 아닌 값이 있습니다: approved"),
+        ({"handoff_kinds": ["diff"]}, "handoff_kinds 에 review 의 input_kinds 가 빠졌습니다: code_change_result"),
+        ({"to_kind": "nope"}, "등록되지 않은 종류 nope"),
+        ({"from_kind": "nope"}, "등록되지 않은 종류 nope"),
+        ({"on_outcomes": []}, "on_outcomes"),
+        ({"from_kind": "review", "on_outcomes": ["approved"]}, "from_kind 와 to_kind 가 같습니다"),
+        ({"handoff_kinds": ["diff", "code_change_result", "handoff_bundle"]}, "handoff_bundle"),
+    ],
+)
+def test_register_rule_rejects_invalid_422(web, conn, settings, overrides, message):
+    register_kind(web)
+    response = web.post("/rules", data=rule_form(**overrides), follow_redirects=False)
+    assert response.status_code == 422, response.text
+    assert "invalid_field" in response.text and message in response.text
+    assert len(repo.list_rules(conn, session_id_of(web, settings))) == 1
+
+
+def test_register_rule_duplicate_409(web):
+    register_kind(web)
+    register_rule(web)
+    again = web.post("/rules", data=rule_form(), follow_redirects=False)
+    assert again.status_code == 409 and "rule_exists" in again.text
+    builtin = web.post(
+        "/rules",
+        data=rule_form(from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
+                       handoff_kinds=["diagnosis_result", "evidence"]),
+        follow_redirects=False,
+    )
+    assert builtin.status_code == 409 and "rule_exists" in builtin.text
+
+
+def test_delete_kind_protected_in_use_then_success(web, conn, settings):
+    session_id = session_id_of(web, settings)
+    protected = web.post("/kinds/diagnosis/delete", follow_redirects=False)
+    assert protected.status_code == 409
+    assert "kind_protected" in protected.text and "내장 종류는 삭제할 수 없습니다" in protected.text
+    assert repo.get_kind(conn, session_id, "diagnosis") is not None
+
+    # Task 가 쓰는 종류
+    register_kind(web)
+    row = {
+        "task_id": "review-daily-0920", "session_id": session_id, "title": "수정 검토", "request": "검토해 주세요.",
+        "kind": "review", "required_capability": {"code": "review", "scope": {"repository_id": "demo-report-repo"}},
+        "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "manual", "completion_mode": "review",
+        "criteria": [], "predecessor_task_id": None, "revision": 1,
+        "target": {"local_registration_id": "local-demo-report"}, "status": "확인 필요", "status_reason": "후보 없음",
+    }
+    repo.insert_task(conn, row, NOW)
+    by_task = web.post("/kinds/review/delete", follow_redirects=False)
+    assert by_task.status_code == 409
+    alert = alert_of(by_task)
+    assert "kind_in_use" in alert and "업무" in alert and "후속 규칙" not in alert
+
+    # 규칙이 참조하는 종류 → 규칙 삭제 뒤 종류 삭제 성공
+    register_kind(web, kind="audit", label="감사", capability_code="", input_kinds=[], outcomes="ok, not_ok")
+    register_rule(web, to_kind="audit")
+    by_rule = web.post("/kinds/audit/delete", follow_redirects=False)
+    assert by_rule.status_code == 409
+    alert = alert_of(by_rule)
+    assert "kind_in_use" in alert and "후속 규칙" in alert and "업무" not in alert
+    rule_id = next(rid for rid, r in repo.list_rules(conn, session_id) if r.to_kind == "audit")
+    assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 303
+    deleted = web.post("/kinds/audit/delete", follow_redirects=False)
+    assert deleted.status_code == 303 and deleted.headers["location"] == "/kinds"
+    assert repo.get_kind(conn, session_id, "audit") is None
+    assert 'action="/kinds/audit/delete"' not in kinds_page(web)
+    assert web.post("/kinds/audit/delete", follow_redirects=False).status_code == 404
+
+
+def test_delete_rule_then_404(web, conn, settings):
+    session_id = session_id_of(web, settings)
+    (rule_id, _), = repo.list_rules(conn, session_id)
+    response = web.post(f"/rules/{rule_id}/delete", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/kinds"
+    assert repo.list_rules(conn, session_id) == []
+    assert "진단 --[ready_for_handoff]--> 코드 수정" not in kinds_page(web)
+    assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
+    assert web.post("/rules/rule-none/delete", follow_redirects=False).status_code == 404
+
+
+def test_other_session_cannot_delete_my_kind_or_rule(app, web, conn, settings):
+    register_kind(web)
+    session_id = session_id_of(web, settings)
+    (rule_id, _), = repo.list_rules(conn, session_id)
+    other = TestClient(app)
+    other.get("/tasks")
+    assert other.post("/kinds/review/delete", follow_redirects=False).status_code == 404
+    assert other.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
+    assert repo.get_kind(conn, session_id, "review") is not None
+    assert len(repo.list_rules(conn, session_id)) == 1

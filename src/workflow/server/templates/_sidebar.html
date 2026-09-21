@@ -5,6 +5,7 @@
   <nav class="nav">
     <a href="/tasks"{% if request.url.path == '/tasks' %} class="active"{% endif %}>업무</a>
     <a href="/agents"{% if request.url.path.startswith('/agents') %} class="active"{% endif %}>에이전트</a>
+    <a href="/kinds"{% if request.url.path.startswith('/kinds') %} class="active"{% endif %}>종류·규칙</a>
     {% if is_operator %}<a href="/operator"{% if request.url.path.startswith('/operator') %} class="active"{% endif %}>운영자</a>{% endif %}
   </nav>
   <div class="side-head"><span>최근</span><a class="plus" href="/tasks/import" title="업무 가져오기" aria-label="업무 가져오기">+</a></div>

@@ -3,7 +3,7 @@
 import json
 
 from workflow.adapters import repo
-from workflow.contracts.v1 import ExecutionEvent, SelectionRecord
+from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES, ExecutionEvent, KindSpec, SelectionRecord
 from workflow.server import views
 
 from .conftest import (
@@ -598,3 +598,47 @@ def test_artifact_render_context_by_kind():
     assert js["mode"] == "json" and js["text"] == '{\n  "a": 1\n}'
     broken = views.artifact_render({"kind": "evidence", "content_type": "application/json"}, b"{oops")
     assert broken["mode"] == "text" and broken["text"] == "{oops"
+
+
+# --- 업무 종류·후속 규칙 화면 컨텍스트 (phase 6 step 6) -------------------------------
+
+REVIEW_SPEC = KindSpec(
+    kind="review", label="검토", capability_code="review", scope_key="repository_id",
+    input_kinds=["diff", "code_change_result"], output_kind="generic_result",
+    outcomes=["approved", "changes_requested", "needs_information"], instructions="diff 를 읽고 검토하세요.",
+    builtin=False,
+)
+
+
+def test_kind_public_labels_chips_and_builtin_flag():
+    code_change = views.kind_public(BUILTIN_KINDS[1])
+    assert (code_change["kind"], code_change["label"]) == ("code_change", "코드 수정")
+    assert (code_change["capability_code"], code_change["scope_key"]) == ("code.modify", "repository_id")
+    assert code_change["input_kinds"] == ["diagnosis_result", "evidence"]
+    assert code_change["input_labels"] == ["진단 결과", "근거"]
+    assert (code_change["output_kind"], code_change["output_label"]) == ("code_change_result", "수정 결과")
+    assert code_change["outcomes"] == ["ready_for_review", "needs_information"]
+    assert code_change["builtin"] is True and code_change["instructions"] == ""
+
+    review = views.kind_public(REVIEW_SPEC)
+    assert review["input_labels"] == ["diff", "수정 결과"]
+    assert (review["output_kind"], review["output_label"]) == ("generic_result", "결과 봉투")
+    assert review["builtin"] is False and review["instructions"] == "diff 를 읽고 검토하세요."
+
+
+def test_rule_public_one_line_text_with_labels():
+    rule = views.rule_public("rule-1", BUILTIN_RULES[0], BUILTIN_KINDS)
+    assert rule["rule_id"] == "rule-1"
+    assert (rule["from_kind"], rule["to_kind"]) == ("diagnosis", "code_change")
+    assert rule["text"] == "진단 --[ready_for_handoff]--> 코드 수정"
+    assert rule["handoff_kinds"] == ["diagnosis_result", "evidence"]
+    assert rule["handoff_labels"] == ["진단 결과", "근거"]
+
+    custom = views.rule_public(
+        "rule-2",
+        BUILTIN_RULES[0].model_copy(update={"on_outcomes": ["ready_for_handoff", "needs_information"]}),
+        [*BUILTIN_KINDS, REVIEW_SPEC],
+    )
+    assert custom["text"] == "진단 --[ready_for_handoff, needs_information]--> 코드 수정"
+    # 등록부에 없는 종류는 라벨 대신 코드 그대로
+    assert views.rule_public("rule-3", BUILTIN_RULES[0], ())["text"] == "diagnosis --[ready_for_handoff]--> code_change"

@@ -1,0 +1,151 @@
+{# 업무 종류·후속 규칙 — 워크스페이스(세션)가 등록한다 (ADR-0009, ARCHITECTURE "화면"). 규칙은 한 줄 텍스트이며
+   그래프·화살표 그림을 그리지 않는다. 사용자 정의 종류의 내는 산출물은 항상 결과 봉투(generic_result)라 폼에 없다.
+   인라인 스크립트 하나: 선행 종류를 바꾸면 결과값 체크박스를 그 종류의 것(option 의 data-outcomes)으로 바꾼다. #}
+{% extends "base.html" %}
+{% block title %}종류·규칙 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">종류·규칙</div></div>
+<p class="muted" style="margin-bottom:12px">업무 종류는 받는 산출물·내는 산출물·결과값의 봉투이고, 후속 규칙은 "이 결과값 다음에 무엇을 넘겨 어떤 종류를 시작하는가"를 한 줄로 정합니다.</p>
+
+<h2 style="margin-top:0">업무 종류</h2>
+<div class="agent-grid">
+  {% for k in kinds %}
+  <div class="card kind-card">
+    <div class="name">{{ k.label }}{% if k.builtin %} <span class="tag-builtin">내장</span>{% endif %}</div>
+    <div class="meta mono">{{ k.kind }} · {{ k.capability_code }} · {{ k.scope_key }}</div>
+    <dl class="kind-fields">
+      <dt>받는 산출물</dt><dd>{% for label in k.input_labels %}<span class="chip">{{ label }}</span>{% else %}<span class="small">없음</span>{% endfor %}</dd>
+      <dt>내는 산출물</dt><dd><span class="chip">{{ k.output_label }}</span></dd>
+      <dt>결과값</dt><dd>{% for o in k.outcomes %}<span class="chip chip-mono">{{ o }}</span>{% endfor %}</dd>
+    </dl>
+    {% if k.instructions %}
+    <details class="row" data-key="instructions-{{ k.kind }}"><summary>지시문</summary><div class="row-body"><pre class="instructions">{{ k.instructions }}</pre></div></details>
+    {% endif %}
+    {% if not k.builtin %}
+    <div class="actions"><form method="post" action="/kinds/{{ k.kind }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form></div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<h2>종류 등록</h2>
+<form method="post" action="/kinds" class="card">
+  <div class="field-row">
+    <div class="field">
+      <label for="kind">종류 이름 (kind)</label>
+      <input type="text" id="kind" name="kind" required placeholder="review">
+      <div class="help">소문자·숫자·밑줄, 2~40자, 소문자로 시작. 업무·실행의 <span class="mono">kind</span> 값이 됩니다.</div>
+    </div>
+    <div class="field">
+      <label for="label">화면 표시 이름</label>
+      <input type="text" id="label" name="label" required placeholder="검토">
+    </div>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="capability_code">능력 코드</label>
+      <input type="text" id="capability_code" name="capability_code" placeholder="비우면 종류 이름과 같음">
+      <div class="help">이 종류를 맡을 에이전트의 능력 코드. 비우면 종류 이름과 같습니다.</div>
+    </div>
+    <div class="field">
+      <label for="scope_key">능력 범위 키 (scope_key)</label>
+      <input type="text" id="scope_key" name="scope_key" required placeholder="repository_id">
+      <div class="help">에이전트 능력의 범위 키 하나. 예: repository_id, workflow_id</div>
+    </div>
+  </div>
+  <div class="field">
+    <label>받는 산출물</label>
+    <div class="check-list">
+      {% for choice in input_kind_choices %}
+      <label><input type="checkbox" name="input_kinds" value="{{ choice }}"> {{ choice|kind_label }}{% if choice|kind_label != choice %} <span class="mono">{{ choice }}</span>{% endif %}</label>
+      {% endfor %}
+    </div>
+    <div class="help">시작할 때 인계받아야 하는 산출물. 없어도 됩니다. 내는 산출물은 항상 결과 봉투(generic_result)이고 완료는 사람 검토입니다.</div>
+  </div>
+  <div class="field">
+    <label for="outcomes">결과값 (outcomes)</label>
+    <input type="text" id="outcomes" name="outcomes" required placeholder="approved, changes_requested, needs_information">
+    <div class="help">쉼표 또는 공백으로 구분. 에이전트가 낼 수 있는 결론이며 후속 규칙의 기준이 됩니다.</div>
+  </div>
+  <div class="field">
+    <label for="instructions">지시문</label>
+    <textarea id="instructions" name="instructions" rows="4" placeholder="에이전트가 무엇을 읽고 무엇을 판단해 어떤 근거로 답할지"></textarea>
+  </div>
+  <div class="actions"><button class="btn" type="submit">종류 등록</button></div>
+</form>
+
+<h2>후속 규칙</h2>
+<p class="small" style="margin-bottom:8px">선행 결과값이 규칙에 맞으면 산출물을 넘겨 후속을 시작합니다. 규칙이 없으면 그 결과 뒤 후속은 사람이 시작합니다.</p>
+{% if rules %}
+<div class="table-wrap">
+<table>
+  <tr><th>규칙</th><th>넘기는 산출물</th><th></th></tr>
+  {% for r in rules %}
+  <tr>
+    <td class="rule-text">{{ r.text }}</td>
+    <td>{% for label in r.handoff_labels %}<span class="chip">{{ label }}</span> {% endfor %}</td>
+    <td><form method="post" action="/rules/{{ r.rule_id }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<p class="muted">등록된 규칙이 없습니다. 모든 후속은 사람이 시작합니다.</p>
+{% endif %}
+
+<h2>규칙 등록</h2>
+<form method="post" action="/rules" class="card">
+  <div class="field-row">
+    <div class="field">
+      <label for="from_kind">선행 종류</label>
+      <select id="from_kind" name="from_kind">
+        {% for k in kinds %}<option value="{{ k.kind }}" data-outcomes="{{ k.outcomes|join(' ') }}">{{ k.label }} ({{ k.kind }})</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="to_kind">후속 종류</label>
+      <select id="to_kind" name="to_kind">
+        {% for k in kinds %}<option value="{{ k.kind }}"{% if loop.index == 2 %} selected{% endif %}>{{ k.label }} ({{ k.kind }})</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="field">
+    <label>선행 결과값 (on_outcomes)</label>
+    <div class="check-list" id="on-outcomes">
+      {% for o in kinds[0].outcomes %}<label><input type="checkbox" name="on_outcomes" value="{{ o }}"> <span class="mono">{{ o }}</span></label>{% endfor %}
+    </div>
+    <div class="help">선행 결과의 결과값이 이 중 하나면 후속을 시작합니다. 선행 종류를 바꾸면 목록이 바뀝니다.</div>
+  </div>
+  <div class="field">
+    <label>넘기는 산출물 (handoff_kinds)</label>
+    <div class="check-list">
+      {% for choice in input_kind_choices %}
+      <label><input type="checkbox" name="handoff_kinds" value="{{ choice }}"> {{ choice|kind_label }}{% if choice|kind_label != choice %} <span class="mono">{{ choice }}</span>{% endif %}</label>
+      {% endfor %}
+    </div>
+    <div class="help">선행 실행의 산출물 중 후속에 넘길 것. 후속 종류의 받는 산출물을 모두 포함해야 합니다.</div>
+  </div>
+  <div class="actions"><button class="btn" type="submit">규칙 등록</button></div>
+</form>
+<script>
+(function () {
+  var select = document.getElementById('from_kind');
+  var box = document.getElementById('on-outcomes');
+  if (!select || !box) { return; }
+  select.addEventListener('change', function () {
+    var option = select.options[select.selectedIndex];
+    var outcomes = option ? (option.getAttribute('data-outcomes') || '').split(' ').filter(Boolean) : [];
+    box.textContent = '';
+    outcomes.forEach(function (outcome) {
+      var label = document.createElement('label');
+      var input = document.createElement('input');
+      input.type = 'checkbox'; input.name = 'on_outcomes'; input.value = outcome;
+      var code = document.createElement('span');
+      code.className = 'mono'; code.textContent = outcome;
+      label.appendChild(input); label.appendChild(document.createTextNode(' ')); label.appendChild(code);
+      box.appendChild(label);
+    });
+  });
+})();
+</script>
+{% endblock %}

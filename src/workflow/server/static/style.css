@@ -213,6 +213,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 /* 등록 카탈로그 카드의 "발견된 정보" — 키 요약만 */
 .found { margin-top: 10px; }
 .found-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
+/* 업무 종류·후속 규칙 (/kinds) — 종류 카드는 에이전트 카드 격자를 쓰고, 규칙은 표의 한 줄 텍스트다 */
+.kind-card .name { font-size: 15px; font-weight: 600; color: var(--text); }
+.kind-card .meta { font-size: 12px; color: var(--text-muted); margin: 2px 0 8px; }
+.tag-builtin { font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
+.kind-fields { display: grid; grid-template-columns: 84px 1fr; gap: 6px 8px; margin: 0; font-size: 13px; }
+.kind-fields dt { color: var(--text-muted); }
+.kind-fields dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.instructions { white-space: pre-wrap; }
+.check-list { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.check-list label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
+.rule-text { font-family: var(--mono); font-size: 13px; color: var(--text); }
 /* 업무 가져오기 — 출처 탭(링크 2개, 활성 탭 밑줄)과 이슈 표 */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
 .tabs a { padding: 8px 12px; font-size: 13px; color: var(--text-muted); border-bottom: 2px solid transparent;
