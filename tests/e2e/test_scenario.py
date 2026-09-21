@@ -29,6 +29,7 @@ pytestmark = [
 ]
 
 FAKE_CODEX = Path(__file__).with_name("fake_codex.py")
+CATALOG = ("agent-ops-demo", "agent-codex-mac", "agent-claude-mac")  # seed_demo 의 3개, 등록 순서
 
 # web.EXAMPLES 와 같은 값 — 심사자가 미리 채워진 폼을 그대로 제출하는 상황
 FORM_A = {
@@ -138,6 +139,11 @@ def _create_task(client: httpx.Client, form: dict[str, str]) -> str:
     return location.rsplit("/", 1)[1]
 
 
+def _select(client: httpx.Client, task_id: str, agent_id: str) -> None:
+    response = client.post(f"/tasks/{task_id}/select", data={"agent_id": agent_id})
+    assert response.status_code == 303, response.text[:500]
+
+
 def _raw(client: httpx.Client, task_id: str, artifact_id: str) -> str:
     response = client.get(f"/tasks/{task_id}/artifacts/{artifact_id}", params={"raw": 1})
     assert response.status_code == 200, response.text[:300]
@@ -179,17 +185,21 @@ def test_01_first_visit_issues_session_and_prompts_agent_registration(stack, cli
     assert "먼저 에이전트를 등록하세요." in response.text and 'href="/agents/register"' in response.text
 
 
-def test_01b_register_two_catalog_agents_and_see_them_connected(client):
-    """심사자 흐름 1단계 — 운영자 카탈로그(진단 API·개인 Codex)에서 둘을 등록한다."""
+def test_01b_register_three_catalog_agents_and_see_them_connected(client):
+    """심사자 흐름 1단계 — 운영자 카탈로그 3개(진단 API·개인 Codex·Claude Code)를 ops → codex → claude 순으로 등록한다."""
     catalog = client.get("/agents/register")
     assert catalog.status_code == 200
-    assert "운영 진단 데모" in catalog.text and "개인 Codex" in catalog.text
-    for agent_id in ("agent-ops-demo", "agent-codex-mac"):
+    assert "운영 진단 데모" in catalog.text and "개인 Codex" in catalog.text and "Claude Code" in catalog.text
+    # LocalStack(scripted=True) 는 seed 도 --scripted 로 돌린다 — 셋 다 대본 라벨. shim 경로는 라벨 없음
+    expected_labels = 3 if os.environ.get("WORKFLOW_E2E_SCRIPTED") == "1" else 0
+    assert catalog.text.count("시연용 · 대본 재생") == expected_labels
+    for agent_id in CATALOG:
         response = client.post("/agents/register", data={"agent_id": agent_id})
         assert response.status_code == 303, response.text[:300]
-    assert set(_agent_states(client.get("/tasks").text)) == {"agent-ops-demo", "agent-codex-mac"}
-    # connector run 이 heartbeat 를 보낸 뒤 연결됨 (등록 보고 직후에도 online 이지만 heartbeat 로 유지된다)
+    assert set(_agent_states(client.get("/tasks").text)) == set(CATALOG)
+    # connector run 하나가 두 로컬 등록(codex·claude)을 대신하므로 heartbeat 뒤 둘 다 연결됨
     _wait_agent(client, "agent-codex-mac", "연결됨", timeout=20)
+    _wait_agent(client, "agent-claude-mac", "연결됨", timeout=20)
 
 
 def test_02_register_diagnosis_task_a_is_runnable(client, ctx):
@@ -202,7 +212,14 @@ def test_02_register_diagnosis_task_a_is_runnable(client, ctx):
 
 def test_03_register_fix_task_b_waits_for_predecessor(client, ctx):
     ctx["B"] = _create_task(client, {**FORM_B, "predecessor_task_id": ctx["A"]})
-    assert _status(_live(client, ctx["B"])) == ("대기", "선행 대기")
+    # 직접 등록은 동률 기본 선택이 없다 (phase 5 step 5) — Codex·Claude 둘 다 맡을 수 있어 선택 필요 (상태는 선행 대기가 먼저)
+    html = _live(client, ctx["B"])
+    assert _status(html) == ("대기", "선행 대기")
+    assert "자동 선택 · 미선택 · 후보 2개 — 선택 필요" in html
+    _select(client, ctx["B"], "agent-codex-mac")
+    html = _live(client, ctx["B"])
+    assert _status(html) == ("대기", "선행 대기")
+    assert "직접 선택 · agent-codex-mac" in html
 
 
 def test_04_run_a_completes_by_verifier_verdict(client, ctx):
@@ -318,6 +335,7 @@ def test_11_offline_connector_leaves_new_fix_task_waiting(stack, client, ctx):
     _wait_agent(client, "agent-codex-mac", "연결 끊김", timeout=100)
 
     ctx["C"] = _create_task(client, {**FORM_B, "predecessor_task_id": ctx["A"]})
+    _select(client, ctx["C"], "agent-codex-mac")  # test_03 과 같은 이유 — 후보 2개
     label, reason = _status(_live(client, ctx["C"]))
     assert label == "대기" and reason.startswith("연결 끊김, 마지막 확인 "), (label, reason)
     time.sleep(7)  # 워커 두 바퀴 — 오프라인 동안 실행을 만들지 않는다

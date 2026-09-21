@@ -17,7 +17,6 @@ from .conftest import (
     RESULT_COMMIT,
     code_change_result,
     seed_agents,
-    seed_claude_agent,
     seed_result_ready,
 )
 
@@ -892,7 +891,7 @@ def test_import_fixture_builds_chain_of_two_tasks_and_skips_the_rest(web, conn, 
 
 
 def test_import_with_codex_and_claude_picks_first_registered_agent(web, conn):
-    seed_claude_agent(conn)
+    seed_agents(conn, with_claude=True)
     register_agents(web, "agent-claude-mac")  # 등록 순서: ops → codex → claude
     response = import_issues(web, "github", "#41", "#42")
     assert response.status_code == 303, response.text
@@ -1074,7 +1073,7 @@ def test_chain_start_requires_first_node_selection(client, conn, agents):
 
 
 def test_chain_reassigns_tied_node_before_start_only(web, conn):
-    seed_claude_agent(conn)
+    seed_agents(conn, with_claude=True)
     register_agents(web, "agent-claude-mac")
     chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
     text = chain_page(web, chain_id)
@@ -1090,7 +1089,7 @@ def test_chain_reassigns_tied_node_before_start_only(web, conn):
     assert selection.mode == "manual" and selection.selected_agent_id == "agent-claude-mac"
     assert repo.get_task(conn, task_b)["selection_mode"] == "manual"
     assert json.loads(repo.get_task(conn, task_b)["target_json"])["local_registration_id"] == "local-demo-report-claude"
-    assert "개인 Claude Code" in chain_page(web, chain_id)
+    assert "Claude Code" in chain_page(web, chain_id)
 
     assert web.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
     assert "담당 변경" not in chain_page(web, chain_id)

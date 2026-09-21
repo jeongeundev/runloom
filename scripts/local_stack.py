@@ -3,16 +3,17 @@
 
     python3 scripts/local_stack.py [--workdir DIR] [--central-port 18000] [--diag-port 18100] [--fake-codex PATH] [--scripted]
 
-기동 순서: 데모 저장소 scaffold → 진단 API → 진단 워커(`DIAG_MODEL=fake`) → 중앙 API → seed → 중앙 워커 →
-connector connect / register / run. 프로세스는 AGENTS.md 명령어 절의 모듈 경로 그대로 `python3 -m …` 로 띄우고
+기동 순서: 데모 저장소 scaffold → 진단 API → 진단 워커(`DIAG_MODEL=fake`) → 중앙 API → seed(카탈로그 3개) → 중앙 워커 →
+connector connect / register ×2(codex·claude, 같은 폴더) / run(`--adapter auto` — 등록의 tool 로 어댑터를 고른다).
+프로세스는 AGENTS.md 명령어 절의 모듈 경로 그대로 `python3 -m …` 로 띄우고
 로그는 `workdir/logs/{name}.log` 에 남긴다. 심사 배포가 아니다 (배포는 Step 16 의 systemd·launchd).
 
 - 비밀값(`SESSION_SECRET`·`OPERATOR_TOKEN`·`DIAG_API_TOKEN`)은 시작마다 무작위로 만들어 두 서비스에 같은 값을 준다.
 - 부모 환경의 `WORKFLOW_*`·`DIAG_*`·`OPENAI_*` 는 자식에 물려주지 않는다 (pytest 의 `WORKFLOW_SKIP_APP=1`, 실제 키).
 - `fake_codex` 를 주면 그 스크립트를 `codex` 로 감싼 디렉터리를 connector 의 PATH 앞에 둔다. 없으면 PATH 의 실제 codex.
-- `scripted` 면 `codex`·`claude` 둘 다 대본 에이전트(`python3 -m workflow.scripted.{codex,claude}`)로 감싼다. 둘 다 주면
-  `scripted` 가 우선. 대본 속도 `WORKFLOW_SCRIPT_PACE_SECONDS` 는 부모 환경에 있으면 connector 자식에 그대로 넘긴다
-  (기본 0 이라 e2e 속도는 그대로).
+- `scripted` 면 `codex`·`claude` 둘 다 대본 에이전트(`python3 -m workflow.scripted.{codex,claude}`)로 감싸고 seed 도
+  `--scripted`(세 Agent 에 "시연용 · 대본 재생")로 돈다. 둘 다 주면 `scripted` 가 우선. 대본 속도
+  `WORKFLOW_SCRIPT_PACE_SECONDS` 는 부모 환경에 있으면 connector 자식에 그대로 넘긴다 (기본 0 이라 e2e 속도는 그대로).
 - heartbeat 오프라인 판정은 10초로 줄이고 connector heartbeat 는 3초 — e2e 가 연결 끊김을 100초 안에 보기 위해서다.
 """
 
@@ -31,7 +32,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).parent))
 from scaffold_demo_repo import scaffold  # noqa: E402
-from seed_demo import seed  # noqa: E402
+from seed_demo import LOCAL_REGISTRATION_IDS, REPOSITORY_ID, seed  # noqa: E402
 
 from workflow.scripted._common import PACE_ENV  # noqa: E402
 from workflow.server.auth import utc_now  # noqa: E402
@@ -79,6 +80,7 @@ class LocalStack:
         self.diag_db = self.workdir / "diag" / "db.sqlite"
         self.diag_artifacts = self.workdir / "diag" / "artifacts"
         self._secrets = {key: secrets.token_urlsafe(32) for key in SECRET_KEYS}
+        self.scripted = scripted
         if scripted:
             self.fake_bin: Path | None = self._install_scripted()
         else:
@@ -157,21 +159,24 @@ class LocalStack:
             Service("central_api", [py, "-m", "uvicorn", "workflow.server.app:app",
                                     "--host", "127.0.0.1", "--port", str(central_port)], central_env),
             Service("central_worker", [py, "-m", "workflow.server.worker"], central_env),
-            Service("connector", [py, "-m", "workflow.connector", "run", "--adapter", "codex",
+            Service("connector", [py, "-m", "workflow.connector", "run", "--adapter", "auto",
                                   "--claim-interval", str(CONNECTOR_CLAIM_INTERVAL),
                                   "--heartbeat-interval", str(CONNECTOR_HEARTBEAT_INTERVAL)], connector_env),
         ]
         return {s.name: s for s in services}
 
-    def connector_bootstrap(self, connect_code: str) -> tuple[list[str], list[str]]:
-        """`run` 전에 한 번씩 도는 `connect`·`register` 명령."""
+    def connector_bootstrap(self, connect_code: str) -> tuple[list[str], list[list[str]]]:
+        """`run` 전에 한 번씩 도는 `connect` 명령과 `register` 명령들 — tool 마다 하나(codex·claude), 같은 폴더·검증 프로필."""
         py = sys.executable
         connect = [py, "-m", "workflow.connector", "connect", "--server", self.central_url, "--code", connect_code]
-        register = [py, "-m", "workflow.connector", "register", "--id", "local-demo-report",
-                    "--repo", str(self.repo_path), "--repository-id", "demo-report-repo"]
-        for profile in VERIFY_PROFILES:
-            register += ["--verify", profile]
-        return connect, register
+        registers = []
+        for tool, registration_id in LOCAL_REGISTRATION_IDS.items():
+            register = [py, "-m", "workflow.connector", "register", "--id", registration_id, "--tool", tool,
+                        "--repo", str(self.repo_path), "--repository-id", REPOSITORY_ID]
+            for profile in VERIFY_PROFILES:
+                register += ["--verify", profile]
+            registers.append(register)
+        return connect, registers
 
     # --- 기동·종료 ---------------------------------------------------------------------------
 
@@ -186,12 +191,13 @@ class LocalStack:
         self._wait_http("central_api", f"{self.central_url}/", {})
         self.connect_code = seed(
             self.central_db, self.central_artifacts, base_commit=self.base_commit, now=utc_now(),
-            diag_api_url=self.diag_url,
+            diag_api_url=self.diag_url, scripted=self.scripted,
         )["connect_code"]
         self._spawn("central_worker")
-        connect, register = self.connector_bootstrap(self.connect_code)
+        connect, registers = self.connector_bootstrap(self.connect_code)
         self._run_once("connector-connect", connect)
-        self._run_once("connector-register", register)
+        for register in registers:
+            self._run_once(f"connector-register-{register[register.index('--tool') + 1]}", register)
         self._spawn("connector")
 
     def stop(self) -> None:

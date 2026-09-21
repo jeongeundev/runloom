@@ -14,7 +14,7 @@ import pytest
 
 from diagnostic_demo.settings import ENV_KEYS as DIAG_ENV_KEYS
 from workflow.server.settings import ENV_KEYS as CENTRAL_ENV_KEYS
-from workflow.server.settings import SECRET_KEYS
+from workflow.server.settings import SECRET_KEYS, Limits
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
@@ -137,8 +137,23 @@ def test_env_examples_point_at_architecture_paths():
     assert central["DIAG_API_URL"] == "http://127.0.0.1:8100"
     assert diag["DIAG_DB_PATH"] == "/var/lib/workflow/diag/db.sqlite"
     assert diag["DIAG_ARTIFACT_DIR"].startswith("/var/lib/workflow/diag/")
-    assert diag["DIAG_MODEL"] == "openai"  # fake 는 로컬 e2e 전용
     assert diag["DIAG_BUDGET_USD"] == "30"
+
+
+def test_env_examples_run_the_public_demo_on_scripted_diagnosis():
+    """공개 데모는 대본 진단(fake) — 비용 0 이라 한도를 올린다 (phase 5 step 7). 코드 기본값(Limits)은 그대로."""
+    central = _env_example("central.env.example")
+    diag = _env_example("diag.env.example")
+    assert diag["DIAG_MODEL"] == "fake"
+    assert diag["DIAG_FAKE_TURN_SECONDS"] == "2.5"
+    assert diag["OPENAI_API_KEY"] == ""  # ADR-0003: 키·예산 확인 전 유료 호출 금지
+    assert central["WORKFLOW_LIMIT_PER_SESSION_DAILY"] == "200"
+    assert central["WORKFLOW_LIMIT_GLOBAL_DAILY"] == "5000"
+    # 진단 API 의 하루 접수 상한은 횟수로 세므로 fake 에서도 걸린다 — 중앙과 같은 값이어야 중앙 한도가 의미 있다
+    assert diag["DIAG_GLOBAL_DAILY"] == central["WORKFLOW_LIMIT_GLOBAL_DAILY"]
+    assert (Limits.per_session_daily, Limits.global_daily) == (10, 60)
+    text = (DEPLOY / "env" / "central.env.example").read_text(encoding="utf-8")
+    assert "DIAG_MODEL=fake" in text and "10/36" in text  # 실제 모델을 켜면 되돌릴 ADR-0003 값
 
 
 def test_repo_holds_no_secret_looking_values_under_deploy():
@@ -226,7 +241,7 @@ def test_runbook_uses_the_same_commands_as_scripts_and_cli():
     assert "scaffold_demo_repo.py" in text
     assert "install-vm.sh" in text
     # register 인자는 seed_demo 의 등록 ID·저장소 ID·검증 프로필과 같아야 한다 (Step 14 와 동일)
-    assert f"--id {seed_demo.LOCAL_REGISTRATION_ID}" in text
+    assert f"--id {seed_demo.LOCAL_REGISTRATION_IDS['codex']}" in text
     assert f"--repository-id {seed_demo.REPOSITORY_ID}" in text
     for profile in local_stack.VERIFY_PROFILES:
         assert f'--verify "{profile}"' in text

@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 import local_stack
+import seed_demo
 from local_stack import SERVICE_NAMES, LocalStack
 
 FAKE_CODEX = Path(__file__).resolve().parents[1] / "tests" / "e2e" / "fake_codex.py"
@@ -117,16 +118,64 @@ def test_inherited_workflow_and_openai_env_is_dropped(tmp_path, monkeypatch):
 
 
 def test_connector_bootstrap_commands(stack):
-    connect, register = stack.connector_bootstrap("CODE-1")
+    """connect 1번 + register 2번(codex·claude, 같은 폴더·저장소 ID·검증 프로필). 등록 ID 는 seed_demo 와 같은 값."""
+    connect, registers = stack.connector_bootstrap("CODE-1")
     assert connect[1:4] == ["-m", "workflow.connector", "connect"]
     assert connect[connect.index("--server") + 1] == stack.central_url
     assert connect[connect.index("--code") + 1] == "CODE-1"
-    assert register[1:4] == ["-m", "workflow.connector", "register"]
-    assert register[register.index("--id") + 1] == "local-demo-report"
-    assert register[register.index("--repo") + 1] == str(stack.repo_path)
-    assert register[register.index("--repository-id") + 1] == "demo-report-repo"
-    verifies = [register[i + 1] for i, a in enumerate(register) if a == "--verify"]
-    assert verifies == ["vp-pytest=python3 -m pytest -q", "vp-report=python3 -m daily_report {response}"]
+
+    assert len(registers) == 2
+    by_tool = {r[r.index("--tool") + 1]: r for r in registers}
+    assert list(by_tool) == ["codex", "claude"]  # codex 먼저 — 카탈로그 등록 순서와 무관하지만 로그 순서를 고정한다
+    assert by_tool["codex"][by_tool["codex"].index("--id") + 1] == "local-demo-report"
+    assert by_tool["claude"][by_tool["claude"].index("--id") + 1] == "local-demo-report-claude"
+    for tool, register in by_tool.items():
+        assert register[1:4] == ["-m", "workflow.connector", "register"]
+        assert register[register.index("--id") + 1] == seed_demo.LOCAL_REGISTRATION_IDS[tool]
+        assert register[register.index("--repo") + 1] == str(stack.repo_path)
+        assert register[register.index("--repository-id") + 1] == "demo-report-repo"
+        verifies = [register[i + 1] for i, a in enumerate(register) if a == "--verify"]
+        assert verifies == ["vp-pytest=python3 -m pytest -q", "vp-report=python3 -m daily_report {response}"]
+
+
+def test_connector_runs_auto_adapter_so_both_registrations_are_served(stack):
+    """`run --adapter auto` 하나가 codex·claude 등록을 모두 실행한다 (runner.select_adapter 가 등록의 tool 로 고른다)."""
+    argv = stack.services["connector"].argv
+    assert argv[argv.index("--adapter") + 1] == "auto"
+
+
+def _start_without_processes(monkeypatch, stack) -> tuple[list[dict], list[tuple[str, list[str]]]]:
+    """start() 의 순서(seed 인자·1회 명령)만 기록한다. 프로세스는 띄우지 않는다."""
+    seeds: list[dict] = []
+    once: list[tuple[str, list[str]]] = []
+
+    def fake_seed(db, artifacts, **kwargs):
+        seeds.append({"db": db, "artifacts": artifacts, **kwargs})
+        return {"connect_code": "CODE-X", "agents": []}
+
+    monkeypatch.setattr(local_stack, "scaffold", lambda path, force: "a" * 40)
+    monkeypatch.setattr(local_stack, "seed", fake_seed)
+    monkeypatch.setattr(LocalStack, "_spawn", lambda self, name: None)
+    monkeypatch.setattr(LocalStack, "_wait_http", lambda self, name, url, headers: None)
+    monkeypatch.setattr(LocalStack, "_run_once", lambda self, name, argv: once.append((name, argv)))
+    stack.start()
+    return seeds, once
+
+
+def test_start_seeds_plain_by_default_and_registers_both_tools(tmp_path, monkeypatch):
+    stack = LocalStack(tmp_path, fake_codex=FAKE_CODEX)
+    seeds, once = _start_without_processes(monkeypatch, stack)
+    [call] = seeds
+    assert call["scripted"] is False
+    assert call["base_commit"] == "a" * 40 and call["diag_api_url"] == stack.diag_url
+    assert [name for name, _ in once] == ["connector-connect", "connector-register-codex", "connector-register-claude"]
+    assert once[0][1][once[0][1].index("--code") + 1] == "CODE-X"
+
+
+def test_start_with_scripted_seeds_scripted(tmp_path, monkeypatch):
+    stack = LocalStack(tmp_path, fake_codex=None, scripted=True)
+    seeds, _ = _start_without_processes(monkeypatch, stack)
+    assert seeds[0]["scripted"] is True
 
 
 def test_log_tails_is_empty_before_start(stack):
