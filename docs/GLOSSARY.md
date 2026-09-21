@@ -38,7 +38,7 @@
 | `handoff bundle` | A 결과와 근거 원문을 묶은 B 입력 manifest. kind `handoff_bundle` | `payload`, `context`, `package` |
 | `verification profile` / `verification_profile_id` | 소유자가 사전 등록한 검증 명령 (예: `vp-pytest`). 요청에 셸 명령을 넣지 않는다 | `test command`, `check` |
 | `start_key` | Task당 실행 중복 방지 키. 웹 재전송·이벤트 중복에 같은 키 사용 | `idempotency_key`, `dedupe_key` |
-| `outcome` | 에이전트 결과 봉투의 결론. 진단은 `ready_for_handoff` / `needs_information`, 코드 수정은 `ready_for_review` / `needs_information`. 시스템 상태가 아니다 | `status`, `result_status` |
+| `outcome` | 에이전트 결과 봉투의 결론. 진단은 `ready_for_handoff` / `needs_information`, 코드 수정은 `ready_for_review` / `needs_information`. 사용자 정의 종류는 `KindSpec.outcomes` 의 값 (예시 `review`: `approved` / `changes_requested` / `needs_information`). 시스템 상태가 아니다 | `status`, `result_status` |
 | `outcome 라벨` | 화면 표시용 한글: `ready_for_handoff`→`인계 가능`, `ready_for_review`→`검토 가능`, `needs_information`→`정보 필요` (`server/filters.py` 의 `outcome_label`). 코드 값은 그대로 유지하며 라벨은 배지에만 쓴다 | `완료`(Task 상태와 혼동), `성공`, `승인됨` |
 | `session` | 심사자의 익명 워크스페이스. 서명 쿠키로 식별 | `user`, `account`, `visitor` |
 | `operator` | `OPERATOR_TOKEN`으로 인증한 운영자 | `admin`, `owner`, `superuser` |
@@ -76,6 +76,14 @@
 | `human gate` | 체인 마지막의 사람 단계 노드. 문구는 `human_gate_label` — "검토 승인 (사람) · 병합은 운영자 확인"(검토 후 완료) / "완료 확인 (사람)"(자동 완료). Task 가 아니며 상태는 마지막 Task 에서 파생한다 (`views._human_gate`) | `approval step`, `manual task` |
 | `prefer` | `select_agent` 동률 규칙의 우선순위 — 세션이 먼저 등록한 순서의 agent_id 목록. 자동 선택에서 일치 후보가 2개 이상이면 `prefer` 에서 가장 앞인 후보를 기본 선택(이유 "먼저 등록한 …", 변경 가능). 가져오기만 넘기고 직접 등록은 넘기지 않는다 | `priority`, `score` |
 | 사용자 상태 | `대기`, `실행 가능`, `실행 요청됨`, `실행 중`, `확인 필요`, `완료`, `실패`. 화면 문구로 그대로 쓴다 | `pending`, `done`, `success`, `error`, `대기 중` |
+| `KindSpec` / `kind` | 업무 종류의 봉투 — `kind`·`label`·`capability_code`·`scope_key`·`input_kinds`·`output_kind`·`outcomes`·`instructions`·`builtin` (`contracts/v1.py`). 워크스페이스별 등록(`kinds` 테이블). `Task.kind`·`Execution.kind` 의 값이다. 종류의 내용은 정의하지 않고 봉투만 본다 ([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)) | `TaskType`, `Template`, `NodeType`, `Category` |
+| `BUILTIN_KINDS` / 내장 종류 | `diagnosis`(진단 · `operations.diagnose` · `workflow_id` · input 없음 · `diagnosis_result` · [`ready_for_handoff`, `needs_information`])·`code_change`(코드 수정 · `code.modify` · `repository_id` · input [`diagnosis_result`, `evidence`] · `code_change_result` · [`ready_for_review`, `needs_information`]). 검증기·실행 흐름이 코드에 있고 삭제 불가. 세션 생성 시 seed | `system kind`, `default kind` |
+| `SuccessorRule` / 후속 규칙 | `from_kind`·`on_outcomes`(`from_kind.outcomes` 부분집합)·`to_kind`·`handoff_kinds`(`to_kind.input_kinds` 를 모두 포함) (`contracts/v1.py`). 워크스페이스별 등록(`succession_rules` 테이블). 착수 조건은 선행 결과 + 판정 통과 + outcome 일치 — 선행 Task 의 `완료` 가 아니다 | `edge`, `transition`, `trigger`, `pipeline step`, `workflow`(체인 화면 라벨과 혼동) |
+| `BUILTIN_RULES` / 내장 규칙 | `diagnosis` --[`ready_for_handoff`]--> `code_change`, handoff [`diagnosis_result`, `evidence`]. 세션 생성 시 seed | — |
+| `GenericResult` / `generic_result` | 사용자 정의 종류의 결과 봉투(`contract_version`·`execution_id`·`task_id`·`kind`·`outcome`·`summary`·`artifact_ids`)와 그 산출물 kind. 중앙은 `outcome ∈ KindSpec.outcomes` 만 판정하고 완료는 사람이 한다 | `Result`(내장 결과와 혼동), `Output`, `Answer` |
+| `LocalTarget` | 사용자 정의 종류를 로컬 도구(Codex·Claude)가 읽기 전용으로 수행할 때의 target — `local_registration_id` 하나. worktree·커밋·검증 프로필 없음, 작업 위치는 인계 디렉터리 | `GenericTarget`, `workspace` |
+| `InputRef` / `inputs` | 인계 묶음의 입력 항목 — `kind`·`artifact_id`·`sha256`·`content_type`. 규칙 `handoff_kinds` 로 모은 선행 실행의 산출물. `attachments`(근거 원문 `evidence_id@version`, 진단 결과에서만)와 구분 | `payload`, `files` |
+| `source_result_artifact_id` | `HandoffBundle` 의 선행 결과 산출물 ID. `source_kind` 와 함께 어느 종류의 어떤 결과를 넘기는지 말한다. 이전 이름 `diagnosis_result_artifact_id` 는 쓰지 않는다 | `diagnosis_result_artifact_id` |
 
 ## 경계가 헷갈리는 개념
 
@@ -86,3 +94,5 @@
 - `attachments`와 `Artifact`: attachments는 결과 봉투 안의 근거 참조 배열이고, 각 항목의 `artifact_id`가 실제 Artifact를 가리킨다.
 - `Task.status`와 `Execution.status`: Task는 사용자 상태(한글), Execution은 내부 상태(영문). 대응표는 PRD 3절.
 - `Criterion`, `Check`, `Verdict`: Criterion은 사용자가 등록 화면에서 보고 고치는 완료 기준 항목이고, Check는 검증기가 첨부 원문을 읽어 낸 판정 항목, Verdict는 그 묶음의 결론이다. `Verdict.passed`는 A의 `완료` 근거일 뿐 Task 상태가 아니며, `undecidable`은 실패가 아니라 보류(확인 필요)다.
+- `SuccessorRule`과 `Chain`: 규칙은 종류 사이의 일반 규칙이며 워크스페이스에 한 번 등록한다. 체인은 가져오기로 만든 구체 Task 묶음이다. 체인의 순서는 규칙이 아니라 `predecessor_task_id`다. 규칙은 "선행 결과가 이 outcome 이면 이 산출물을 넘겨 이 종류를 시작한다"만 말하고, 어느 Task 가 어느 Task 의 후속인지는 말하지 않는다.
+- `KindSpec.capability_code`와 `Capability`: 전자는 종류가 요구하는 능력 코드 하나(문자열), 후자는 에이전트가 등록한 능력(`code` + `scope`)이다. 종류의 `scope_key`가 그 능력의 scope 키를 정한다. 사용자 정의 종류의 `capability_code` 기본값은 종류 이름과 같다(`review` → `review`). "코드가 어느 종류의 것인가 · scope 키가 맞는가"는 계약이 아니라 서버가 등록부로 검사한다(422).

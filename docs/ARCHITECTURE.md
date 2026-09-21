@@ -149,6 +149,64 @@ B에 전달하는 근거: `attachments`에는 진단 서비스의 조회 이력�
 
 병합: 운영자 전용이다. 심사자 세션이 B를 검토 승인하면 업무는 완료되고 "병합: 운영자 확인 대기"를 표시한다. 데모 저장소의 기준 커밋은 심사 기간 동안 고정하며 심사자 세션의 결과 커밋은 세션별 작업 브랜치에만 남는다.
 
+## 업무 종류와 후속 규칙 — 2026-09-21 확정
+
+[ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)를 따른다. 업무 종류 2개와 인계 쌍 1개가 코드에 박힌 상태를 "종류·후속 규칙을 워크스페이스(세션)가 등록하는 상태"로 바꾼다. 흐름을 그리지 않는다 — 규칙 표를 반복 적용한 결과가 흐름이다. 팀 사용을 전제하므로 종류·규칙은 코드가 아니라 DB + 화면이다. 예시는 [CONTRACT](CONTRACT.md) 11절.
+
+### 봉투와 내장 값
+
+`KindSpec` 은 업무 종류의 봉투다. 필드: `kind`(식별자, `^[a-z][a-z0-9_]{1,39}$`) · `label`(화면 표시) · `capability_code`(에이전트 능력 코드, `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`) · `scope_key`(능력 scope 의 키 하나, 식별자) · `input_kinds`(시작할 때 받아야 하는 산출물 kind 목록, `ARTIFACT_KINDS` 부분집합, 빈 목록 허용) · `output_kind`(`diagnosis_result` | `code_change_result` | `generic_result`) · `outcomes`(허용 outcome 식별자 목록, 1개 이상, 중복 없음) · `instructions`(에이전트 지시문 — 내장은 빈 문자열) · `builtin`(내장 여부). 종류의 내용(검토 의견이 어떻게 생겼는지 등)은 정의하지 않는다. 중앙은 봉투만 본다.
+
+내장 종류 2개 `BUILTIN_KINDS`:
+
+| `kind` | `label` | `capability_code` | `scope_key` | `input_kinds` | `output_kind` | `outcomes` |
+|---|---|---|---|---|---|---|
+| `diagnosis` | 진단 | `operations.diagnose` | `workflow_id` | `[]` | `diagnosis_result` | `ready_for_handoff`, `needs_information` |
+| `code_change` | 코드 수정 | `code.modify` | `repository_id` | `diagnosis_result`, `evidence` | `code_change_result` | `ready_for_review`, `needs_information` |
+
+내장은 검증기·실행 흐름이 코드에 있고 삭제할 수 없다. 사용자 정의 종류는 `output_kind` 가 항상 `generic_result` 이고 완료는 항상 사람 검토다. 사용자 정의 종류의 `capability_code` 기본값은 종류 이름과 같다.
+
+`SuccessorRule` 은 종류 사이의 후속 규칙이다. 필드: `from_kind` · `on_outcomes`(선행 결과의 outcome 이 이 중 하나면 잇는다, `from_kind.outcomes` 부분집합) · `to_kind` · `handoff_kinds`(선행 실행의 산출물 중 넘길 kind 목록; `to_kind.input_kinds` 를 모두 포함해야 한다). 내장 규칙 1개 `BUILTIN_RULES`: `diagnosis` --[`ready_for_handoff`]--> `code_change`, handoff [`diagnosis_result`, `evidence`]. 순서는 Task 의 `predecessor_task_id` 뿐이고, 규칙은 "이 결과 다음에 무엇을 넘겨 무엇을 시작하는가"만 말한다.
+
+`GenericResult` 는 내장이 아닌 종류의 결과 봉투다 — `contract_version` · `execution_id` · `task_id` · `kind` · `outcome` · `summary` · `artifact_ids`. 산출물 kind 는 `generic_result`. 중앙은 `outcome ∈ KindSpec.outcomes` 만 판정하고 완료는 사람이 한다.
+
+`ExecutionRequest.kind` 는 식별자 문자열이고 `kind_spec: KindSpec | None` 을 갖는다(서버가 채운다). target 은 `diagnosis` → `DiagnosisTarget`, `code_change` → `CodeChangeTarget`, 그 외 → `LocalTarget`(`local_registration_id` 하나. 이때 `kind_spec` 필수, `kind_spec.kind == kind`, `builtin=False`). `Capability.code` 는 패턴만 계약이 검사하고, "코드가 어느 종류의 `capability_code` 인가 · scope 키가 그 종류의 `scope_key` 인가"는 서버가 등록부로 검사한다(422).
+
+### 저장
+
+종류·규칙은 워크스페이스별이다.
+
+| 테이블 | 열 | 제약 |
+|---|---|---|
+| `kinds` | `session_id`, `kind`, `spec_json`, `created_at` | 기본키 `(session_id, kind)`. `spec_json` 은 `KindSpec` |
+| `succession_rules` | `rule_id`, `session_id`, `from_kind`, `to_kind`, `rule_json`, `created_at` | `(session_id, from_kind)`·`(session_id, to_kind)` 가 `kinds` 를 참조. `rule_json` 은 `SuccessorRule` |
+
+`tasks.kind` 는 `(session_id, kind)` 로 `kinds` 를 참조한다. 세션이 생길 때(`repo.create_session`) 내장 종류 2개 + 내장 규칙 1개를 seed 한다. 내장 종류는 삭제할 수 없다.
+
+### 워커 후속 스캔과 인계 조립
+
+후속 착수 조건이 바뀐다. 이전엔 선행 Task 가 `완료` 여야 했다. 이제는 선행 실행이 `result_ready` 이고 판정(`task_verdicts`)이 `passed` 이며 결과 봉투의 `outcome` 이 규칙 `on_outcomes` 에 있으면 착수한다. 사람 승인은 선행 Task 를 마감할 뿐 후속 착수를 막지 않는다 — 그래서 "에이전트 검토가 사람 승인보다 먼저"가 가능하다. 사람이 선행을 종료(close)하면 후속을 새로 착수하지 않는다(이미 시작한 것은 계속). 규칙에 없는 결과·outcome 은 착수하지 않고 이유를 남긴다(확인 필요). 중앙은 LLM 을 부르지 않는다([ADR-0004](adr/0004-central-service-rule-based-no-llm.md)). 이 조건이 아래 "상태·재접속·완료" 4번과 "DB 제약과 실행 잠금"의 후속 스캔 문장에 적용된다.
+
+인계 조립(`assemble_handoff`)은 규칙 `handoff_kinds` 로 선행 실행의 산출물을 모아 `HandoffBundle` 을 만든다:
+
+- `source_execution_id` · `source_kind` · `source_result_artifact_id`(선행 결과 산출물. 종류에 관계없이 이 이름 하나다).
+- `inputs: list[InputRef]` — `handoff_kinds` 에 해당하는 선행 실행의 산출물 각각을 `kind` · `artifact_id` · `sha256` · `content_type` 로. `attachments` 에 이미 있는 산출물과 `handoff_bundle` kind 는 넣지 않는다. 같은 kind 가 여럿이면 전부 넣는다.
+- `attachments` — 근거 원문 `evidence_id@version` 참조. 기존과 같으며 진단 결과에서만 채워진다(`DiagnosisResult.attachments` + `expected_report.json`). 그 외 종류는 빈 배열.
+
+후속 실행의 `input_artifact_ids` 는 이 묶음 하나이며, 연결 프로그램은 묶음에 나열된 산출물만 내려받는다. `start_key` 유일성으로 같은 선행 결과에 후속을 두 번 만들지 않는다.
+
+### 사용자 정의 종류의 실행 — 로컬 도구 읽기 전용
+
+내장이 아닌 종류는 로컬 도구(Codex·Claude)가 **읽기 전용**으로 수행한다. target 은 `LocalTarget`(`local_registration_id` 하나) — worktree·결과 커밋·검증 프로필이 없다. 작업 위치는 인계 디렉터리(`handoff dir`)다. 연결 프로그램은 `kind_spec.instructions` + `request` + 입력 목록(`inputs` 의 파일 경로)을 프롬프트로 주고, 도구의 마지막 메시지 `{outcome, summary}` 를 읽어 `GenericResult` 를 만든다. `outcome` 이 `kind_spec.outcomes` 에 없으면 결과를 채택하지 않고 확인 필요로 둔다. 원시 로그(`codex_jsonl`·`claude_jsonl` 등)는 기존과 같이 보존한다.
+
+### 화면
+
+"업무 종류·규칙" 페이지: 종류 목록(내장은 삭제 불가 표시)과 규칙 목록, 각각의 등록 폼. 업무 등록 폼의 종류 목록은 코드 상수가 아니라 등록부(`kinds`)에서 읽는다. 종류를 고르면 `capability_code`·`scope_key` 가 요구 능력 폼을 정한다.
+
+### 한계
+
+API 에이전트(진단 API)는 이번에도 `diagnosis` 만 받는다 — 범용 API 계약은 다음 ADR. 완료 시 새 업무를 **생성**하는 규칙(대상·범위 파생)은 다음이며, 이번엔 미리 등록된 업무 사이를 잇는 것만 한다. 사용자 정의 종류는 자동 완료 검증기가 없어 항상 사람 검토다.
+
 ## 최소 데이터 모델과 영속성
 
 | 레코드 | 핵심 필드 |
@@ -158,6 +216,8 @@ B에 전달하는 근거: `attachments`에는 진단 서비스의 조회 이력�
 | Execution | ID, Task ID, 시도 번호, 고정된 Agent·업무 설정·입력 산출물, 실행 상태, 시각, 결과 참조 |
 | ExecutionEvent | Execution ID, 발신자, 순번, 종류, 시각, 본문. 실행·발신자·순번 조합은 유일 |
 | Artifact | ID, 소유 범위, 생성 실행, 종류, 내용 해시, 저장 참조. 생성 후 내용 불변 |
+| KindSpec | 소유 범위(세션), `kind`, 봉투 JSON(`label`·`capability_code`·`scope_key`·`input_kinds`·`output_kind`·`outcomes`·`instructions`·`builtin`), 생성 시각. `Task.kind` 가 참조 |
+| SuccessorRule | ID, 소유 범위(세션), `from_kind`, `to_kind`, 규칙 JSON(`on_outcomes`·`handoff_kinds`), 생성 시각 |
 
 Task는 업무이고 Execution은 한 번의 시도다. 같은 Task에 활성 Execution을 둘 수 없다. 실행 중 설정은 고정하고 변경 요청은 다음 시도에 적용한다. B는 완료된 A의 Artifact ID를 고정해 받으며 A 재실행이 기존 B 입력을 바꾸지 않는다.
 
@@ -302,7 +362,7 @@ verification은 사전 등록된 `profile_id`, 검사 대상 `result_commit`, `e
 | Execution 활성 잠금 | `released_at IS NULL`인 행에 대해 task_id 유일. result_ready 검토 대기·unknown도 잠금을 유지 |
 | ExecutionEvent | `UNIQUE(execution_id, seq)`, `seq >= 1`. 배정된 실행 주체만 추가 가능 |
 | Artifact | ID 기본키, 생성 실행 FK, 확정 후 내용 변경 금지. 해시가 같아도 소유 권한을 합치지 않음 |
-| 결과 인계 | B Execution에 선행 Execution ID·입력 Artifact ID를 고정. 같은 소유 범위이며 A 완료 시 채택한 산출물인지 검사 |
+| 결과 인계 | B Execution에 선행 Execution ID·입력 Artifact ID를 고정. 같은 소유 범위이며 판정 통과한 선행 결과의 산출물인지 검사. 입력 산출물 목록은 규칙 `handoff_kinds` 로 고정 |
 
 모든 DB 연결에서 외래키 검사를 활성화하고 NOT NULL·허용 상태 CHECK를 적용한다. 복합 소유 관계는 `(owner_id, id)` 참조 또는 동일 트랜잭션 검사로 보장한다. 순환 금지·진단 의미 검증은 단순 CHECK만으로 해결했다고 주장하지 않는다.
 
@@ -404,7 +464,7 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 1. 선행 조건·대상·권한·입력을 확인한다. 직접 실행은 사용자 조작을, 자동 실행은 조건 충족을 기다린다.
 2. 요청 전달 후 프로세스·진단 시작을 확인해야 실행 중으로 바꾼다.
 3. 결과 보존과 기준 검증 후 자동 완료하거나 사람 검토를 기다린다. 검토 대기는 확인 필요와 이유로 표시한다.
-4. A 완료 후 B의 입력을 고정하고 실행을 생성한다. DB 제약과 조건부 상태 전환으로 완료 이벤트 중복에도 한 번만 실행한다.
+4. 선행 실행이 `result_ready` 이고 판정이 `passed` 이며 결과의 `outcome` 이 후속 규칙 `on_outcomes` 에 있으면 규칙 `handoff_kinds` 로 후속의 입력을 고정하고 실행을 생성한다(업무 종류와 후속 규칙 절). 선행 Task 의 `완료`(사람 승인)를 기다리지 않으며, 사람이 선행을 종료하면 새로 착수하지 않는다. DB 제약과 조건부 상태 전환으로 결과 이벤트 중복에도 한 번만 실행한다.
 
 로컬 프로그램은 ID별 `accepted/launching/running/finished`, PID·프로세스 시작 식별정보, 미전송 이벤트를 디스크에 보존한다. 네트워크 단절 중 이미 시작한 작업은 계속하고 결과를 저장해 재접속 때 업로드하는 안이다. 화면에는 마지막 확인 시각과 연결 끊김을 표시한다. 종료 이벤트(`result_ready`·`failed`)가 중앙에 닿은 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`--keep-workdirs` 로 보존). 프로세스 종료를 확인하지 못한 실패는 지우지 않는다.
 
