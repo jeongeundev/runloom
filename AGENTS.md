@@ -24,6 +24,7 @@
 - `src/workflow/` 는 제품(중앙 웹/API·워커·연결 프로그램·계약). `src/diagnostic_demo/` 는 "사내 운영 진단 API" 역할을 재현하는 데모 서비스이며 제품의 일부가 아니다.
 - B 가 수정하는 보고서 데모 저장소는 이 저장소 밖에 별도 Git 저장소로 둔다.
 - 진단 fixture(가상 실행 기록·로그·운영 문서)는 `src/diagnostic_demo/fixtures/` 에 두고 실제 운영 데이터로 표시하지 않는다.
+- `src/workflow/scripted/` 는 공개 데모 전용 대본 에이전트다([ADR-0008](docs/adr/0008-public-demo-scripted-agents.md)). 제품 런타임 경로(`connector/`)에서 import 하지 않는다 — 배포·로컬 스택이 `codex`/`claude` 이름의 PATH 래퍼로 앞에 둘 뿐이다.
 
 ## 개발 프로세스
 - CRITICAL: 새 기능 구현 시 반드시 테스트를 먼저 작성하고, 테스트가 통과하는 구현을 작성할 것 (TDD)
