@@ -14,16 +14,16 @@ from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
-from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES, KindSpec, SuccessorRule
+from workflow.contracts.v1 import KindSpec, SuccessorRule
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
-from workflow.domain.kinds import get_kind
+from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.server.filters import KIND_LABELS, KST, kind_label, kst
 from workflow.server.settings import Settings
 
-# 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7절)
-RESULT_KINDS = ("diagnosis_result", "code_change_result")
+# 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7·11절)
+RESULT_KINDS = ("diagnosis_result", "code_change_result", "generic_result")
 
 # 뷰어가 줄 번호를 붙여 보이는 산출물 종류
 LOG_KINDS = (
@@ -93,10 +93,14 @@ def discovered_summary(agent: dict[str, Any]) -> list[str]:
     return [*_found_keys(found), *(f"검증 프로필 {p}" for p in agent["verification_profile_ids"])]
 
 
-def agent_public(agent: Row, *, now: str, settings: Settings) -> dict[str, Any]:
-    """화면용 Agent. JSON 컬럼은 풀고 비밀 참조는 뺀다."""
+def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[KindSpec] = ()) -> dict[str, Any]:
+    """화면용 Agent. JSON 컬럼은 풀고 비밀 참조는 뺀다. 능력마다 `kind_label` — `kinds`(세션 등록부)에 그 코드의
+    종류가 있으면 그 라벨, 없으면 None. 코드 값은 그대로 둔다."""
     data = {k: agent[k] for k in agent.keys() if k not in _AGENT_PRIVATE}
-    data["capabilities"] = json.loads(data.pop("capabilities_json"))
+    data["capabilities"] = [
+        {**c, "kind_label": spec.label if (spec := kind_for_capability(kinds, c["code"])) is not None else None}
+        for c in json.loads(data.pop("capabilities_json"))
+    ]
     data["verification_profile_ids"] = json.loads(data.pop("verification_profile_ids_json"))
     data["discovered"] = json.loads(data.pop("discovered_json"))
     data["shared_to_all_sessions"] = bool(data["shared_to_all_sessions"])
@@ -152,6 +156,24 @@ def summarize_verdict(verdict: dict[str, Any]) -> tuple[str, str]:
     return outcome, ("미충족: " + ", ".join(failed)) if failed else "판정 불가"
 
 
+def predecessor_handoff(conn: Connection, task: Row) -> tuple[list[str], str | None]:
+    """선행의 준비된 실행(`repo.predecessor_ready_execution` — result_ready + 판정)이 만든 가장 최근 `handoff_bundle` 과
+    그 실행 ID. 선행이 없거나, 실패로 마감됐거나, 결과·판정·묶음이 아직 없으면 ([], None) — 묶음은 워커가 조립한다.
+    ADR-0009 (3): 선행 Task 의 `완료`(사람 승인)를 기다리지 않는다. 직접 실행(`web._run_task`)과 `can_run` 이 같이 쓴다."""
+    if task["predecessor_task_id"] is None:
+        return [], None
+    predecessor = repo.get_task(conn, task["predecessor_task_id"])
+    if predecessor is None or predecessor["status"] == "실패":
+        return [], None
+    execution = repo.predecessor_ready_execution(conn, predecessor["task_id"])
+    if execution is None:
+        return [], None
+    for artifact in reversed(repo.artifacts_of(conn, execution["execution_id"])):
+        if artifact["kind"] == "handoff_bundle":
+            return [artifact["artifact_id"]], execution["execution_id"]
+    return [], None
+
+
 def build_task_view(conn: Connection, task: Row, *, now: str, settings: Settings) -> TaskView:
     selection = repo.get_selection(conn, task["task_id"])
     if selection is None:
@@ -165,9 +187,14 @@ def build_task_view(conn: Connection, task: Row, *, now: str, settings: Settings
     if task["predecessor_task_id"] is not None:
         predecessor = repo.get_task(conn, task["predecessor_task_id"])
         predecessor_status = predecessor["status"] if predecessor is not None else None
+        # ADR-0009 (3): 선행 결과가 판정되고 인계 묶음이 준비됐으면 선행 조건이 충족된 것이다 — 선행 `완료` 를
+        # 기다리지 않으므로 판정에는 "선행 없음" 으로 넘긴다 (domain.status 는 `완료` 만 통과시킨다).
+        if predecessor_handoff(conn, task)[1] is not None:
+            predecessor_status = None
 
+    # 연결 상태는 종류 이름이 아니라 선택된 Agent 의 연결 유형으로 본다 — 사용자 정의 종류도 로컬 도구가 수행한다
     connector_online = connector_last_seen = None
-    if task["kind"] == "code_change" and selected is not None:
+    if selected is not None:
         agent = repo.get_agent(conn, selected)
         if agent is not None and agent["connection_type"] == "local":
             connector_online = agent_online(agent, now=now, settings=settings)
@@ -312,11 +339,13 @@ def task_context(
 
     needs_selection = not finished and active is None and not selected
     chain = repo.get_chain(conn, task_row["chain_id"]) if task_row["chain_id"] is not None else None
+    spec = repo.get_kind(conn, task_row["session_id"], task_row["kind"])
     return {
         "task": task,
         "view": view,
         "status": status,
         "selection": selection,
+        "kind_label": spec.label if spec is not None else task_row["kind"],
         # 가져오기로 만든 Task 면 브레드크럼에 워크플로우 칩 (phase 5 step 6)
         "chain": {"chain_id": chain["chain_id"], "title": chain["title"]} if chain is not None else None,
         "agent": agent_public(agent_row, now=now, settings=settings) if agent_row is not None else None,
@@ -329,11 +358,12 @@ def task_context(
             task_summary(conn, s, now=now, settings=settings)
             for s in repo.successors_of(conn, task_row["task_id"])
         ],
+        # 선행이 있으면 선행 결과 + 판정 + 인계 묶음이 조건이다 (ADR-0009 (3)) — `web._run_task` 와 같은 판단
         "can_run": (
             not finished
             and active is None
             and selected
-            and (predecessor is None or predecessor["status"].label == "완료")
+            and (predecessor is None or predecessor_handoff(conn, task_row)[1] is not None)
         ),
         "can_review": (
             not finished
@@ -356,15 +386,16 @@ def task_context(
 _LIVE_LABELS = ("실행 중", "실행 요청됨", "대기")
 
 
-def _composition_reasons(chain: Row, tasks: list[Row]) -> dict[str, tuple[str, ...]]:
-    """가져오기 때의 구성 이유 문장(매핑·순서·체인·방식)을 같은 규칙(`compose`)으로 다시 만든다 — 저장하지 않으므로.
+def _composition_reasons(conn: Connection, chain: Row, tasks: list[Row]) -> dict[str, tuple[str, ...]]:
+    """가져오기 때의 구성 이유 문장(매핑·순서·체인·방식)을 같은 규칙(`compose`)과 세션 등록부로 다시 만든다 — 저장하지 않으므로.
     배정 이유(마지막 문장)는 저장된 `SelectionRecord.reason` 이 기준이라 뺀다. 후보 없이 돌려도 나머지 문장은 같다."""
     if chain["source"] not in SOURCES:
         return {}
     keys = {t["source_ref"] for t in tasks} | {s["key"] for s in json.loads(chain["skipped_json"])}
     plan = compose(
         [i for i in load_issues(chain["source"]) if i.key in keys], candidates=(), prefer=(),
-        kinds=BUILTIN_KINDS, rules=BUILTIN_RULES,
+        kinds=repo.list_kinds(conn, chain["session_id"]),
+        rules=[rule for _, rule in repo.list_rules(conn, chain["session_id"])],
     )
     reasons = {node.issue.key: node.reasons[:-1] for node in plan.nodes}
     reasons.update({item.issue.key: (item.reason,) for item in plan.standalone})
@@ -372,17 +403,19 @@ def _composition_reasons(chain: Row, tasks: list[Row]) -> dict[str, tuple[str, .
 
 
 def _chain_node(
-    conn: Connection, task: Row, reasons: tuple[str, ...], *, now: str, settings: Settings
+    conn: Connection, task: Row, reasons: tuple[str, ...], kinds: Sequence[KindSpec], *, now: str, settings: Settings
 ) -> dict[str, Any]:
-    """노드 하나 — `task_summary` 에 담당·방식·선택 기록·이유를 얹는다. 상태는 task_summary 의 것 그대로."""
+    """노드 하나 — `task_summary` 에 종류 라벨·담당·방식·선택 기록·이유를 얹는다. 상태는 task_summary 의 것 그대로."""
     selection = repo.get_selection(conn, task["task_id"])
     agent = (
         repo.get_agent(conn, selection.selected_agent_id)
         if selection is not None and selection.selected_agent_id is not None
         else None
     )
+    spec = get_kind(kinds, task["kind"])
     return {
         **task_summary(conn, task, now=now, settings=settings),
+        "kind_label": spec.label if spec is not None else task["kind"],
         "source_ref": task["source_ref"],
         "run_mode": task["run_mode"],
         "completion_mode": task["completion_mode"],
@@ -432,9 +465,10 @@ def _chain_progress(nodes: list[dict[str, Any]], started: bool) -> str:
 def chain_summary(conn: Connection, chain: Row, *, now: str, settings: Settings) -> dict[str, Any]:
     """워크플로우 화면·홈 목록 컨텍스트. 노드는 `repo.tasks_of_chain` 순서, 상태는 `task_summary` 판정 그대로."""
     tasks = repo.tasks_of_chain(conn, chain["chain_id"])
-    reasons = _composition_reasons(chain, tasks)
+    reasons = _composition_reasons(conn, chain, tasks)
+    kinds = repo.list_kinds(conn, chain["session_id"])
     nodes = [
-        _chain_node(conn, t, reasons.get(t["source_ref"], ()), now=now, settings=settings) for t in tasks
+        _chain_node(conn, t, reasons.get(t["source_ref"], ()), kinds, now=now, settings=settings) for t in tasks
     ]
     started = chain["started_at"] is not None
     selected = [n["selection"] is not None and n["selection"].status == "selected" for n in nodes]
@@ -613,7 +647,7 @@ def _response_pair(
 def viewer_context(
     conn: Connection, store: ArtifactStore, result: dict[str, Any] | None, *, session_id: str
 ) -> dict[str, Any] | None:
-    """오른쪽 열(진단 결과 / 검증 요약) 과 결과 카드 메타의 재료. `result` 는 `task_context()["result"]`."""
+    """오른쪽 열(진단 결과 / 검증 요약 / 결과 봉투) 과 결과 카드 메타의 재료. `result` 는 `task_context()["result"]`."""
     if result is None:
         return None
     data = result["data"] or {}
@@ -639,6 +673,8 @@ def viewer_context(
         viewer["excerpts"] = evidence_excerpts(conn, store, data, session_id=session_id)
         viewer["compare"] = _response_pair(conn, store, data, session_id=session_id)
         return viewer
+    if result["kind"] == "generic_result":
+        return viewer  # 결과 봉투는 outcome·summary·산출물 ID 뿐 — 검증 요약(diff·로그·보고서)이 없다
 
     latest: dict[str, Row] = {}
     for artifact in repo.artifacts_of(conn, result["execution_id"]):

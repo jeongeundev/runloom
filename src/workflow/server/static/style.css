@@ -142,6 +142,7 @@ details.row .row-note { font-size: 13px; color: var(--text-body); padding: 0 0 8
 .chip:hover { background: var(--bg-bubble); text-decoration: none; }
 .chip-mono { font-family: var(--mono); }
 .chip-active { background: var(--bg-inflight); border-color: var(--accent); }
+.kind-chip { margin-left: 6px; font-weight: 400; }  /* 업무 상세 브레드크럼의 종류 라벨 */
 .task-chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border-radius: 6px;
              border: 1px solid var(--border-strong); font-size: 12px; color: var(--text); }
 .task-chip:hover { background: var(--bg-bubble); text-decoration: none; }

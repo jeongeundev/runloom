@@ -49,6 +49,7 @@
     <li>
       <span><strong>{{ a.name }}</strong> <span class="mono small">{{ a.agent_id }}</span></span>
       <span class="small">{{ a.owner_scope }} · {{ a.connection_type }}</span>
+      <span>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if c.kind_label %} <span class="small">({{ c.kind_label }})</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</span>
       {{ st.connection(a) }}
       <form method="post" action="/operator/agents/{{ a.agent_id }}/delete" class="inline-form" style="margin-left:auto"><button class="btn btn-danger btn-small" type="submit">삭제</button></form>
     </li>
@@ -68,7 +69,17 @@
     <div class="field"><label for="connection_type">연결 유형</label><select id="connection_type" name="connection_type">{% for t in connection_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select></div>
   </div>
   <div class="field-row">
-    <div class="field"><label for="op_capability_code">능력</label><select id="op_capability_code" name="capability_code">{% for code in capability_codes %}<option value="{{ code }}">{{ code }} ({{ scope_keys[code] }})</option>{% endfor %}</select></div>
+    <div class="field">
+      <label for="op_capability_code">능력 코드</label>
+      <input type="text" id="op_capability_code" name="capability_code" list="builtin-codes" required placeholder="code.modify">
+      <datalist id="builtin-codes">{% for k in builtin_kinds %}<option value="{{ k.capability_code }}">{{ k.label }} · scope {{ k.scope_key }}</option>{% endfor %}</datalist>
+      <div class="help">내장: {% for k in builtin_kinds %}<span class="mono">{{ k.capability_code }}</span> ({{ k.scope_key }}){% if not loop.last %}, {% endif %}{% endfor %}. 사용자 정의 종류의 코드는 그 종류의 능력 코드를 적습니다.</div>
+    </div>
+    <div class="field">
+      <label for="op_scope_key">scope 키</label>
+      <input type="text" id="op_scope_key" name="scope_key" placeholder="비우면 내장 코드의 키">
+      <div class="help">내장 코드면 비워도 됩니다. 사용자 정의 코드는 그 종류의 scope_key 를 적습니다.</div>
+    </div>
     <div class="field"><label for="op_scope_value">범위 값</label><input type="text" id="op_scope_value" name="scope_value" required></div>
   </div>
   <div class="field">

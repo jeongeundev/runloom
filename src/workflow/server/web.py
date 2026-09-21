@@ -41,10 +41,10 @@ from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
     BUILTIN_KINDS,
-    BUILTIN_RULES,
     ArtifactMeta,
     Capability,
     CodeChangeResult,
+    CodeChangeTarget,
     ExecutionRequest,
     KindSpec,
     ReviewComment,
@@ -53,7 +53,13 @@ from workflow.contracts.v1 import (
 from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
-from workflow.domain.kinds import can_auto_complete, get_kind, kind_for_capability, validate_rule
+from workflow.domain.kinds import (
+    can_auto_complete,
+    get_kind,
+    kind_for_capability,
+    validate_capability,
+    validate_rule,
+)
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
@@ -66,9 +72,6 @@ from workflow.server.settings import Settings
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
-# 요구 능력 코드 → scope 키 (ARCHITECTURE "능력 필드 — 첫 구현"). 등록 폼은 값 하나만 받는다.
-SCOPE_KEYS = {"operations.diagnose": "workflow_id", "code.modify": "repository_id"}
-CAPABILITY_CODES = tuple(SCOPE_KEYS)
 OWNER_SCOPES = ("personal", "team", "company")
 CONNECTION_TYPES = ("local", "api")
 REVIEW_DECISIONS = ("approve", "request_changes", "close")
@@ -231,25 +234,67 @@ def _refresh_status(
     repo.update_task_status(conn, task_id, status.label, status.reason, review_decision=review_decision)
 
 
-def _target_for(kind: str, run_id: str, agent: Row | None) -> dict[str, Any]:
-    """Task 의 target. 코드 수정은 선택된 Agent 의 등록값(연결 프로그램이 보고한 값)에서 온다. 폼에서 받지 않는다."""
-    if kind == "diagnosis":
+# --- 업무 종류 등록부 (ADR-0009) — 요구 능력·종류 판단은 세션 등록부 + domain.kinds 로만 한다 ---------------
+
+
+def _kinds(conn: Connection, session_id: str) -> list[KindSpec]:
+    return repo.list_kinds(conn, session_id)
+
+
+def _unknown_kind() -> PageError:
+    return PageError(422, "invalid_field", "등록되지 않은 업무 종류입니다.", field="capability_code")
+
+
+def _kind_of(conn: Connection, session_id: str, kind: str) -> KindSpec:
+    spec = repo.get_kind(conn, session_id, kind)
+    if spec is None:
+        raise _unknown_kind()
+    return spec
+
+
+def _kind_for_code(conn: Connection, session_id: str, code: str) -> KindSpec:
+    """능력 코드가 어느 종류의 `capability_code` 인가 — 등록부에 없으면 422."""
+    spec = kind_for_capability(_kinds(conn, session_id), code)
+    if spec is None:
+        raise _unknown_kind()
+    return spec
+
+
+def _target_for(spec: KindSpec, run_id: str, agent: Row | None) -> dict[str, Any]:
+    """Task 의 target. 진단은 `run_id`, 그 외는 선택된 Agent 의 등록값(연결 프로그램이 보고한 값)에서 온다 — 폼에서 받지 않는다.
+    내장이 아닌 종류는 `LocalTarget`(등록 ID 하나, 읽기 전용 실행). Agent 가 아직 없으면 비워 두고 선택 뒤에 채운다."""
+    if spec.kind == "diagnosis":
         return {"run_id": run_id}
     if agent is None:
         return {}
-    profiles = json.loads(agent["verification_profile_ids_json"])
-    return {
-        "local_registration_id": agent["local_registration_id"],
-        "base_commit": agent["base_commit"],
-        "verification_profile_id": profiles[0] if profiles else None,
-    }
+    if spec.kind == "code_change":
+        profiles = json.loads(agent["verification_profile_ids_json"])
+        return {
+            "local_registration_id": agent["local_registration_id"],
+            "base_commit": agent["base_commit"],
+            "verification_profile_id": profiles[0] if profiles else None,
+        }
+    return {"local_registration_id": agent["local_registration_id"]}
+
+
+def _awaits_merge(kind: str) -> bool:
+    """코드 수정만 검토 승인 뒤 기준 브랜치 병합(운영자 확인) 단계가 있다 (ADR-0005)."""
+    return kind == "code_change"
+
+
+def _offers_demo_successor(conn: Connection, session_id: str, kind: str) -> bool:
+    """시연 전용 — 진단 A 등록 폼에서 후속 B(`EXAMPLES["fix"]`) 동시 등록을 제안한다. 세션에 내장 규칙 진단 → 코드 수정이
+    있을 때만. 일반화하지 않는다 — 후속의 요청·범위는 추측할 수 없다 (ADR-0009 트레이드오프)."""
+    return kind == "diagnosis" and repo.get_rule(conn, session_id, "diagnosis", "code_change") is not None
 
 
 # --- 실행 생성 -----------------------------------------------------------------------
 
 
-def _check_diagnosis_limits(conn: Connection, session_id: str, now: str, settings: Settings) -> None:
-    """CONTRACT 10절. 세션 일일 → 전체 일일 순으로 검사한다. 총액 상한은 진단 서비스가 판단한다."""
+def _check_diagnosis_limits(conn: Connection, session_id: str, kind: str, now: str, settings: Settings) -> None:
+    """CONTRACT 10절 — 내장 진단만 상한이 있다. 세션 일일 → 전체 일일 순으로 검사한다. 총액 상한은 진단 서비스가 판단한다."""
+    if kind != "diagnosis":
+        return
     since, resets_at = views.kst_day_bounds(now)
     limits = settings.limits
     if repo.count_diagnosis_started(conn, session_id=session_id, since=since) >= limits.per_session_daily:
@@ -268,17 +313,6 @@ def _check_diagnosis_limits(conn: Connection, session_id: str, now: str, setting
         )
 
 
-def _handoff_inputs(conn: Connection, task: Row) -> tuple[list[str], str | None]:
-    """선행 Task 의 가장 최근 `handoff_bundle` 산출물과 그것을 만든 실행 ID. 없으면 ([], None)."""
-    if task["predecessor_task_id"] is None:
-        return [], None
-    for execution in reversed(repo.list_executions(conn, task["predecessor_task_id"])):
-        for artifact in reversed(repo.artifacts_of(conn, execution["execution_id"])):
-            if artifact["kind"] == "handoff_bundle":
-                return [artifact["artifact_id"]], execution["execution_id"]
-    return [], None
-
-
 def _start_execution(
     conn: Connection,
     task: Row,
@@ -291,10 +325,13 @@ def _start_execution(
     predecessor_execution_id: str | None,
     target: dict[str, Any],
 ) -> str:
-    """새 시도를 `queued` 로 만든다. 요청은 여기서 고정되고 이후 바뀌지 않는다. 반환은 execution_id."""
+    """새 시도를 `queued` 로 만든다. 요청은 여기서 고정되고 이후 바뀌지 않는다 — 종류 봉투(`kind_spec`)도 등록부에서
+    이때 채운다. 반환은 execution_id."""
     kind = task["kind"]
-    if kind == "diagnosis":
-        _check_diagnosis_limits(conn, session_id, now, settings)
+    _check_diagnosis_limits(conn, session_id, kind, now, settings)
+    spec = repo.get_kind(conn, session_id, kind)
+    if spec is None:
+        raise PageError(409, "request_incomplete", "실행 요청을 만들 수 없습니다. 업무 종류가 등록돼 있지 않습니다.")
     attempts = repo.list_executions(conn, task["task_id"])
     attempt_no = attempts[-1]["attempt_no"] + 1 if attempts else 1
     execution_id = f"exec-{secrets.token_hex(8)}"
@@ -309,6 +346,7 @@ def _start_execution(
             "request": task["request"],
             "input_artifact_ids": list(input_artifact_ids),
             "target": target,
+            "kind_spec": spec.model_dump(),
         })
     except ValidationError:
         raise PageError(
@@ -366,15 +404,20 @@ def _form_context(
     request: Request, conn: Connection, session_id: str, now: str, form: dict[str, str]
 ) -> dict[str, Any]:
     settings = _settings(request)
+    kinds = _kinds(conn, session_id)
+    form_spec = kind_for_capability(kinds, form["capability_code"])
+    if form_spec is None:
+        raise _unknown_kind()
     return {
         **_base(request, conn, session_id, now),
         "form": form,
         "agents": [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)],
-        "capability_codes": CAPABILITY_CODES,
-        "scope_keys": SCOPE_KEYS,
-        "criteria_templates": {spec.kind: [c.text for c in criteria_template(spec)] for spec in BUILTIN_KINDS},
-        "auto_completion_kinds": [spec.kind for spec in BUILTIN_KINDS if can_auto_complete(spec)],
-        "form_kind": kind_for_capability(BUILTIN_KINDS, form["capability_code"]).kind,
+        # 요구 능력 select 는 세션 등록부에서 — 종류를 고르면 capability_code·scope_key 가 정해진다 (ARCHITECTURE "화면")
+        "kind_options": [views.kind_public(spec) for spec in kinds],
+        "criteria_templates": {spec.kind: [c.text for c in criteria_template(spec)] for spec in kinds},
+        "auto_completion_kinds": [spec.kind for spec in kinds if can_auto_complete(spec)],
+        "form_kind": form_spec.kind,
+        "form_scope_key": form_spec.scope_key,
     }
 
 
@@ -395,9 +438,12 @@ def task_new(
     if predecessor:
         _own_task(conn, session_id, predecessor)
         form["predecessor_task_id"] = predecessor
+    context = _form_context(request, conn, session_id, now, form)
     # 시연 A 폼에서만 후속 B 동시 등록을 제안한다 — 심사자가 A 실행만으로 A → B 자동 착수를 보게 하기 위해
-    form["offer_successor"] = "1" if example == "diagnose" else ""
-    return _render("task_new.html", **_form_context(request, conn, session_id, now, form))
+    form["offer_successor"] = (
+        "1" if example == "diagnose" and _offers_demo_successor(conn, session_id, context["form_kind"]) else ""
+    )
+    return _render("task_new.html", **context)
 
 
 @router.post("/tasks")
@@ -427,8 +473,7 @@ def task_create(
 
     if not title or not request_text:
         raise PageError(422, "invalid_field", "제목과 요청 내용을 입력하세요.", field="title")
-    if capability_code not in SCOPE_KEYS:
-        raise PageError(422, "invalid_field", "지원하지 않는 능력 코드입니다.", field="capability_code")
+    spec = _kind_for_code(conn, session_id, capability_code)
     if not scope_value:
         raise PageError(422, "invalid_field", "능력 범위 값을 입력하세요.", field="scope_value")
     if selection_mode not in ("auto", "manual"):
@@ -442,20 +487,18 @@ def task_create(
     if selection_mode == "manual":
         _require_registered(conn, session_id, chosen_agent_id)
 
-    spec = kind_for_capability(BUILTIN_KINDS, capability_code)  # SCOPE_KEYS 검사를 지나 내장 코드만 온다
-    kind = spec.kind
     if completion_mode == "auto" and not can_auto_complete(spec):
         raise PageError(
             422, "invalid_field",
             "이 업무 종류는 자동 완료를 지원하지 않습니다. 검토 후 완료를 선택하세요.",
             field="completion_mode",
         )
-    if kind == "diagnosis" and not run_id:
+    if spec.kind == "diagnosis" and not run_id:
         raise PageError(422, "invalid_field", "조사할 run_id 를 입력하세요.", field="run_id")
     if predecessor_task_id:
         _own_task(conn, session_id, predecessor_task_id)
 
-    successor = bool(with_successor) and kind == "diagnosis"
+    successor = bool(with_successor) and _offers_demo_successor(conn, session_id, spec.kind)
     active = [t for t in repo.list_tasks(conn, session_id) if t["finished_at"] is None]
     limit = settings.limits.active_tasks_per_session
     if len(active) + (2 if successor else 1) > limit:
@@ -466,19 +509,18 @@ def task_create(
 
     task_id = _insert_new_task(
         conn, session_id, now, settings,
-        title=title, request_text=request_text, kind=kind, capability_code=capability_code,
-        scope_value=scope_value, selection_mode=selection_mode, chosen_agent_id=chosen_agent_id,
+        title=title, request_text=request_text, spec=spec, scope_value=scope_value,
+        selection_mode=selection_mode, chosen_agent_id=chosen_agent_id,
         run_mode=run_mode, completion_mode=completion_mode, criteria_extra=criteria_extra,
         predecessor_task_id=predecessor_task_id, run_id=run_id,
     )
     if successor:
-        # 시연 후속 B — fix 예시 그대로, A 를 선행으로. A 가 완료되면 워커가 별도 조작 없이 착수한다.
+        # 시연 후속 B — fix 예시 그대로, A 를 선행으로. A 결과가 규칙에 맞으면 워커가 별도 조작 없이 착수한다.
         fix = EXAMPLES["fix"]
         _insert_new_task(
             conn, session_id, now, settings,
             title=fix["title"], request_text=fix["request"],
-            kind=kind_for_capability(BUILTIN_KINDS, fix["capability_code"]).kind,
-            capability_code=fix["capability_code"], scope_value=fix["scope_value"],
+            spec=_kind_for_code(conn, session_id, fix["capability_code"]), scope_value=fix["scope_value"],
             selection_mode=fix["selection_mode"], chosen_agent_id="", run_mode=fix["run_mode"],
             completion_mode=fix["completion_mode"], criteria_extra="", predecessor_task_id=task_id, run_id="",
         )
@@ -487,22 +529,26 @@ def task_create(
 
 def _insert_new_task(
     conn: Connection, session_id: str, now: str, settings: Settings, *,
-    title: str, request_text: str, kind: str, capability_code: str, scope_value: str,
+    title: str, request_text: str, spec: KindSpec, scope_value: str,
     selection_mode: str, chosen_agent_id: str, run_mode: str, completion_mode: str,
     criteria_extra: str, predecessor_task_id: str, run_id: str,
     chain_id: str | None = None, source_ref: str | None = None, prefer: Sequence[str] | None = None,
 ) -> str:
     """검증이 끝난 값으로 Task 1개를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다.
+    요구 능력은 종류 봉투(`spec.capability_code` + `spec.scope_key`)에서 만들고 등록부로 한 번 더 검사한다.
 
     `prefer` 는 세션 등록 순서(동률 기본 선택, step 4). 직접 등록은 넘기지 않아 동률이면 확인 필요다."""
     task_id = f"task-{secrets.token_hex(6)}"
-    capability = Capability(code=capability_code, scope={SCOPE_KEYS[capability_code]: scope_value})
+    capability = Capability(code=spec.capability_code, scope={spec.scope_key: scope_value})
+    reason = validate_capability(_kinds(conn, session_id), capability)
+    if reason is not None:
+        raise PageError(422, "invalid_field", reason, field="capability_code")
     selection = select_agent(
         task_id, capability, _candidates(conn, session_id), mode=selection_mode,
         chosen_agent_id=chosen_agent_id or None, prefer=prefer,
     )
     agent = repo.get_agent(conn, selection.selected_agent_id) if selection.selected_agent_id else None
-    criteria = merge_criteria(criteria_template(get_kind(BUILTIN_KINDS, kind)), criteria_extra.splitlines())
+    criteria = merge_criteria(criteria_template(spec), criteria_extra.splitlines())
     repo.insert_task(
         conn,
         {
@@ -510,7 +556,7 @@ def _insert_new_task(
             "session_id": session_id,
             "title": title,
             "request": request_text,
-            "kind": kind,
+            "kind": spec.kind,
             "required_capability": capability.model_dump(),
             "selection_mode": selection_mode,
             "chosen_agent_id": chosen_agent_id or None,
@@ -519,7 +565,7 @@ def _insert_new_task(
             "criteria": [c.__dict__ for c in criteria],
             "predecessor_task_id": predecessor_task_id or None,
             "revision": 1,
-            "target": _target_for(kind, run_id, agent),
+            "target": _target_for(spec, run_id, agent),
             "status": "대기",
             "status_reason": "등록 중",
             "chain_id": chain_id,
@@ -535,14 +581,14 @@ def _insert_new_task(
 # --- 업무 가져오기 — GitHub·Jira fixture 이슈 → 체인 (phase 5 step 5, ADR-0004) ------------------
 
 
-def _issue_view(issue: Issue) -> dict[str, Any]:
-    """가져오기 표의 한 행. 배정 미리보기는 `map_issue` 결과 그대로 — 여기서 추론하지 않는다."""
-    mapping = map_issue(issue, BUILTIN_KINDS)
+def _issue_view(issue: Issue, kinds: Sequence[KindSpec]) -> dict[str, Any]:
+    """가져오기 표의 한 행. 배정 미리보기는 `map_issue`(세션 등록부) 결과 그대로 — 여기서 추론하지 않는다."""
+    mapping = map_issue(issue, kinds)
     if mapping.capability is None:
         preview = f"맡을 에이전트 없음 · {mapping.reason}"
     else:
-        scope_value = mapping.capability.scope[SCOPE_KEYS[mapping.capability.code]]
-        preview = f"{mapping.capability.code} · {scope_value}"
+        spec = kind_for_capability(kinds, mapping.capability.code)
+        preview = f"{mapping.capability.code} · {mapping.capability.scope[spec.scope_key]}"
     return {
         "key": issue.key,
         "title": issue.title,
@@ -568,10 +614,11 @@ def tasks_import_page(
     """출처 탭 + 이슈 표. 체크는 전부 기본 체크. 세션 등록 Agent 가 0개면 버튼 비활성."""
     _require_source(source)
     now = utc_now()
+    kinds = _kinds(conn, session_id)
     return _render(
         "tasks_import.html", **_base(request, conn, session_id, now),
         source=source, sources=[(key, SOURCE_LABELS[key]) for key in SOURCES],
-        issues=[_issue_view(issue) for issue in load_issues(source)],
+        issues=[_issue_view(issue, kinds) for issue in load_issues(source)],
         can_import=bool(_session_agents(conn, session_id)),
     )
 
@@ -597,8 +644,10 @@ def tasks_import(
     if not registered:
         raise PageError(422, "agent_not_registered", "에이전트를 먼저 등록하세요.", field="agent_id")
     prefer = [a["agent_id"] for a in registered]
+    kinds = _kinds(conn, session_id)
+    rules = [rule for _, rule in repo.list_rules(conn, session_id)]
     try:
-        plan = compose(issues, _candidates(conn, session_id), prefer=prefer, kinds=BUILTIN_KINDS, rules=BUILTIN_RULES)
+        plan = compose(issues, _candidates(conn, session_id), prefer=prefer, kinds=kinds, rules=rules)
     except ValueError as exc:
         raise PageError(422, "dependency_cycle", str(exc), field="issue_keys") from None
 
@@ -626,11 +675,11 @@ def tasks_import(
     # PlanNode.selection 은 임시 task_id(issue.key) 라 저장하지 않는다 — 실제 task_id 로 다시 계산한다
     task_ids: dict[str, str] = {}
     for node in plan.nodes:
+        spec = get_kind(kinds, node.kind)
         task_ids[node.issue.key] = _insert_new_task(
             conn, session_id, now, settings,
-            title=node.issue.title, request_text=node.issue.body, kind=node.kind,
-            capability_code=node.capability.code,
-            scope_value=node.capability.scope[SCOPE_KEYS[node.capability.code]],
+            title=node.issue.title, request_text=node.issue.body, spec=spec,
+            scope_value=node.capability.scope[spec.scope_key],
             selection_mode="auto", chosen_agent_id="", run_mode=node.run_mode,
             completion_mode=node.completion_mode, criteria_extra="",
             predecessor_task_id=task_ids[node.predecessor_key] if node.predecessor_key else "",
@@ -638,11 +687,11 @@ def tasks_import(
         )
     for item in capable_standalone:
         capability = item.mapping.capability
-        spec = kind_for_capability(BUILTIN_KINDS, capability.code)
+        spec = _kind_for_code(conn, session_id, capability.code)
         _insert_new_task(
             conn, session_id, now, settings,
-            title=item.issue.title, request_text=item.issue.body, kind=spec.kind,
-            capability_code=capability.code, scope_value=capability.scope[SCOPE_KEYS[capability.code]],
+            title=item.issue.title, request_text=item.issue.body, spec=spec,
+            scope_value=capability.scope[spec.scope_key],
             selection_mode="auto", chosen_agent_id="", run_mode="manual",
             completion_mode="auto" if can_auto_complete(spec) else "review", criteria_extra="",
             predecessor_task_id="", run_id=item.mapping.run_id or "",
@@ -765,7 +814,8 @@ def task_run(
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
-    """직접 실행. 활성 실행 없음 · 선택됨 · 선행 완료가 조건이다. run_mode 와 무관하게 사용자 조작으로 시작할 수 있다."""
+    """직접 실행. 활성 실행 없음 · 선택됨 · (선행이 있으면) 선행 결과 + 판정 + 인계 묶음이 조건이다 (ADR-0009 (3)).
+    run_mode 와 무관하게 사용자 조작으로 시작할 수 있다."""
     now = utc_now()
     task = _own_task(conn, session_id, task_id)
     _run_task(conn, task, session_id=session_id, now=now, settings=_settings(request))
@@ -782,17 +832,23 @@ def _run_task(conn: Connection, task: Row, *, session_id: str, now: str, setting
     selection = repo.get_selection(conn, task_id)
     if selection is None or selection.status != "selected":
         raise PageError(409, "invalid_transition", "에이전트가 아직 선택되지 않았습니다.")
-    if task["predecessor_task_id"] is not None:
+    # 선행이 있으면 선행 결과가 판정되고 인계 묶음이 있어야 한다 — 선행 `완료`(사람 승인)를 기다리지 않는다 (ADR-0009 (3)).
+    # 묶음은 워커가 규칙 `handoff_kinds` 로 조립하므로 규칙이 없으면 생기지 않는다.
+    inputs, predecessor_execution_id = views.predecessor_handoff(conn, task)
+    if task["predecessor_task_id"] is not None and not inputs:
         predecessor = repo.get_task(conn, task["predecessor_task_id"])
-        if predecessor is None or predecessor["status"] != "완료":
-            raise PageError(409, "invalid_transition", "선행 업무가 완료되지 않았습니다.")
+        if predecessor is not None and repo.get_rule(conn, session_id, predecessor["kind"], task["kind"]) is None:
+            raise PageError(
+                409, "invalid_transition", "후속 규칙이 없어 인계 자료가 없습니다. /kinds 에서 규칙을 등록하세요.",
+            )
+        raise PageError(
+            409, "invalid_transition",
+            "선행 업무의 결과와 인계 자료가 아직 준비되지 않았습니다. 선행 결과가 판정을 통과하고 규칙에 맞으면 워커가 조립합니다.",
+        )
     agent = repo.get_agent(conn, selection.selected_agent_id)
     if agent is None:
         raise PageError(409, "invalid_transition", "선택된 에이전트가 더 이상 등록돼 있지 않습니다.")
 
-    inputs, predecessor_execution_id = (
-        _handoff_inputs(conn, task) if task["kind"] == "code_change" else ([], None)
-    )
     _start_execution(
         conn, task, agent, session_id=session_id, now=now, settings=settings,
         input_artifact_ids=inputs, predecessor_execution_id=predecessor_execution_id,
@@ -842,7 +898,7 @@ def task_select(
     run_id = json.loads(task["target_json"]).get("run_id", "")
     repo.update_task_choice(
         conn, task_id, chosen_agent_id=agent_id.strip(),
-        target=_target_for(task["kind"], run_id, agent),
+        target=_target_for(_kind_of(conn, session_id, task["kind"]), run_id, agent),
     )
     _refresh_status(conn, task_id, now, settings)
     if return_to == "chain" and task["chain_id"] is not None:
@@ -879,7 +935,7 @@ def task_review(
     execution_id = execution["execution_id"]
 
     if decision == "approve":
-        reason = "검토 승인 · 병합: 운영자 확인 대기" if task["kind"] == "code_change" else "검토 승인"
+        reason = "검토 승인 · 병합: 운영자 확인 대기" if _awaits_merge(task["kind"]) else "검토 승인"
         repo.update_task_status(
             conn, task_id, "완료", reason, finished_at=now, review_decision="approve"
         )
@@ -897,8 +953,7 @@ def task_review(
     agent = repo.get_agent(conn, execution["agent_id"])
     if agent is None:
         raise PageError(409, "invalid_transition", "실행했던 에이전트가 더 이상 등록돼 있지 않습니다.")
-    if task["kind"] == "diagnosis":
-        _check_diagnosis_limits(conn, session_id, now, settings)  # 이전 시도를 해제하기 전에 확인
+    _check_diagnosis_limits(conn, session_id, task["kind"], now, settings)  # 이전 시도를 해제하기 전에 확인
     review = ReviewComment(
         contract_version=1,
         task_id=task_id,
@@ -923,9 +978,9 @@ def task_review(
     inputs = list(
         dict.fromkeys([*previous.input_artifact_ids, execution["result_artifact_id"], created.artifact_id])
     )
-    # 대상은 이전 시도의 요청을 잇는다. 코드 수정은 base_commit 만 이전 시도가 보존한 result_commit 으로.
+    # 대상은 이전 시도의 요청을 잇는다 (종류 무관). 코드 수정 대상은 base_commit 만 이전 시도가 보존한 result_commit 으로.
     target = previous.target.model_dump()
-    if task["kind"] == "code_change":
+    if isinstance(previous.target, CodeChangeTarget):
         result_commit = _result_commit(conn, store, execution["result_artifact_id"])
         if result_commit is not None:
             target["base_commit"] = result_commit
@@ -1013,7 +1068,8 @@ def agents_register_page(
     """카탈로그 목록. 카드마다 발견된 정보 요약과 등록/해제 버튼. 새 Agent 를 만드는 폼은 없다 (운영자 전용)."""
     now = utc_now()
     settings = _settings(request)
-    catalog = [views.agent_public(a, now=now, settings=settings) for a in _catalog_agents(conn)]
+    kinds = _kinds(conn, session_id)
+    catalog = [views.agent_public(a, now=now, settings=settings, kinds=kinds) for a in _catalog_agents(conn)]
     registered_ids = {a["agent_id"] for a in _session_agents(conn, session_id)}
     return _render(
         "agents_register.html", **_base(request, conn, session_id, now),
@@ -1077,7 +1133,7 @@ def agent_detail(
     row = repo.get_agent(conn, agent_id)
     if row is None or not (row["shared_to_all_sessions"] or repo.is_session_agent(conn, session_id, agent_id)):
         raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
-    agent = views.agent_public(row, now=now, settings=_settings(request))
+    agent = views.agent_public(row, now=now, settings=_settings(request), kinds=_kinds(conn, session_id))
     return _render("agent_detail.html", **_base(request, conn, session_id, now), agent=agent)
 
 
@@ -1249,19 +1305,20 @@ def _operator_context(
     tasks = [views.task_summary(conn, t, now=now, settings=settings) for t in repo.list_tasks(conn, None)]
     merge_queue = [
         t for t in repo.list_tasks(conn, None)
-        if t["status"] == "완료" and t["kind"] == "code_change" and t["merge_confirmed_at"] is None
+        if t["status"] == "완료" and _awaits_merge(t["kind"]) and t["merge_confirmed_at"] is None
     ]
     since, _ = views.kst_day_bounds(now)
+    kinds = _kinds(conn, session_id)
     return {
         **_base(request, conn, session_id, now),
-        "agents": [views.agent_public(a, now=now, settings=settings) for a in repo.list_agents(conn)],
+        "agents": [views.agent_public(a, now=now, settings=settings, kinds=kinds) for a in repo.list_agents(conn)],
         "all_tasks": tasks,
         "merge_queue": [dict(t) for t in merge_queue],
         "connect_codes": [dict(c) for c in repo.list_connect_codes(conn)],
         "issued": issued,
         "diagnosis_today": repo.count_diagnosis_started(conn, session_id=None, since=since),
-        "capability_codes": CAPABILITY_CODES,
-        "scope_keys": SCOPE_KEYS,
+        # 카탈로그 능력 폼의 안내 — 운영자는 세션 무관이라 내장 종류만 보인다. 사용자 정의 코드는 scope 키를 직접 적는다
+        "builtin_kinds": [views.kind_public(spec) for spec in BUILTIN_KINDS],
         "owner_scopes": OWNER_SCOPES,
         "connection_types": CONNECTION_TYPES,
     }
@@ -1305,6 +1362,7 @@ def operator_register_agent(
     owner_scope: str = Form(""),
     connection_type: str = Form(""),
     capability_code: str = Form(""),
+    scope_key: str = Form(""),
     scope_value: str = Form(""),
     local_registration_id: str = Form(""),
     api_url: str = Form(""),
@@ -1312,9 +1370,12 @@ def operator_register_agent(
     session_id: str = Depends(require_operator),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
-    """운영자 등록. 자동 파악값은 연결 프로그램의 registrations 가 채우므로 기존 보고값은 유지한다."""
+    """운영자 등록. 자동 파악값은 연결 프로그램의 registrations 가 채우므로 기존 보고값은 유지한다.
+    능력은 계약 패턴으로만 검사한다 — 운영자는 세션 무관이라 어느 세션의 종류와 맞는지는 그 세션의 선택 시점에 정해진다.
+    `scope_key` 를 비우면 내장 종류의 코드일 때만 그 종류의 scope 키를 쓴다."""
     agent_id, name = agent_id.strip(), name.strip()
-    scope_value, local_registration_id = scope_value.strip(), local_registration_id.strip()
+    capability_code, scope_key, scope_value = capability_code.strip(), scope_key.strip(), scope_value.strip()
+    local_registration_id = local_registration_id.strip()
     api_url, credential_ref = api_url.strip(), credential_ref.strip()
     if not agent_id or not name:
         raise PageError(422, "invalid_field", "에이전트 ID 와 이름을 입력하세요.", field="agent_id")
@@ -1322,8 +1383,17 @@ def operator_register_agent(
         raise PageError(422, "invalid_field", "소유 구분이 올바르지 않습니다.", field="owner_scope")
     if connection_type not in CONNECTION_TYPES:
         raise PageError(422, "invalid_field", "연결 유형이 올바르지 않습니다.", field="connection_type")
-    if capability_code not in SCOPE_KEYS or not scope_value:
+    if not capability_code or not scope_value:
         raise PageError(422, "invalid_field", "능력 코드와 범위 값을 입력하세요.", field="capability_code")
+    if not scope_key:
+        builtin = kind_for_capability(BUILTIN_KINDS, capability_code)
+        if builtin is None:
+            raise PageError(422, "invalid_field", "scope 키를 입력하세요.", field="scope_key")
+        scope_key = builtin.scope_key
+    try:
+        capability = Capability.model_validate({"code": capability_code, "scope": {scope_key: scope_value}})
+    except ValidationError as exc:
+        raise _validation_page_error(exc) from None
     if connection_type == "local" and not local_registration_id:
         raise PageError(
             422, "invalid_field", "로컬 에이전트는 local_registration_id 가 필요합니다.",
@@ -1356,7 +1426,7 @@ def operator_register_agent(
         "name": name,
         "owner_scope": owner_scope,
         "connection_type": connection_type,
-        "capabilities": [{"code": capability_code, "scope": {SCOPE_KEYS[capability_code]: scope_value}}],
+        "capabilities": [capability.model_dump()],
         "local_registration_id": local_registration_id or None,
         "api_url": api_url or None,
         "credential_ref": credential_ref or None,
@@ -1419,7 +1489,7 @@ def operator_confirm_merge(
     if (
         task is None
         or task["status"] != "완료"
-        or task["kind"] != "code_change"
+        or not _awaits_merge(task["kind"])
         or task["merge_confirmed_at"] is not None
     ):
         raise PageError(409, "invalid_transition", "병합 확인 대기 상태의 코드 수정 업무가 아닙니다.")

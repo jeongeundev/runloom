@@ -24,7 +24,7 @@
       <div class="card node-body">
         <div class="node-head">
           <span class="mono">{{ n.source_ref }}</span><a href="/tasks/{{ n.task_id }}">{{ n.title }}</a>
-          <span class="chip">{{ '진단' if n.kind == 'diagnosis' else '코드 수정' }}</span>
+          <span class="chip">{{ n.kind_label }}</span>
         </div>
         <div class="node-meta">
           담당 {% if n.agent %}<b>{{ n.agent.name }}</b>{% if n.agent.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}{% else %}미정{% endif %}

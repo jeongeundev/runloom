@@ -15,7 +15,20 @@ from workflow.contracts.v1 import ArtifactMeta, ExecutionRequest
 from workflow.server.auth import SESSION_COOKIE, verify_session
 
 from .conftest import BASE_COMMIT, NOW, code_change_result, meta_for, seed_agents, seed_result_ready
-from .test_web import create_task, diagnose_form, fix_form, import_chain, login_operator, register_agents
+from .test_web import (
+    LOCAL_REVIEW,
+    REVIEW_AGENT,
+    create_task,
+    diagnose_form,
+    fix_form,
+    import_chain,
+    login_operator,
+    register_agents,
+    register_kind,
+    register_rule,
+    review_form,
+    seed_review_agent,
+)
 
 SERVER_DIR = Path(__file__).resolve().parents[3] / "src" / "workflow" / "server"
 STYLE = SERVER_DIR / "static" / "style.css"
@@ -345,6 +358,110 @@ def test_code_change_result_card_and_verification_summary(web, conn, store, sett
     assert "일일 업무 보고서 — 2026-09-19" in viewer
     assert 'class="diff-add"' in html and 'class="diff-del"' in html
     assert "검토 의견" in text and 'value="request_changes"' in html
+
+
+# --- 결과 카드·뷰어 — 사용자 정의 종류(결과 봉투) · 종류 라벨 · 3노드 체인 (phase 6 step 7) -----------
+
+
+def seed_generic_result(client, conn, store, settings) -> tuple[str, str]:
+    """종류 review 를 등록하고 검토 Claude 로 선행 없는 검토 업무를 만든 뒤 CONTRACT 11.3 결과와 원시 로그를 넣는다."""
+    seed_review_agent(conn)
+    register_agents(client, REVIEW_AGENT)
+    register_kind(client)
+    task_id = create_task(client, review_form())
+    session_id = session_id_of(client, settings)
+    execution_id = "exec-review-001"
+    spec = repo.get_kind(conn, session_id, "review")
+    repo.create_execution(
+        conn, execution_id=execution_id, task_id=task_id, attempt_no=1, start_key=f"auto:{task_id}:r1",
+        agent_id=REVIEW_AGENT, kind="review",
+        request=ExecutionRequest.model_validate({
+            "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": "review",
+            "agent_id": REVIEW_AGENT, "task_revision": 1, "request": "검토", "input_artifact_ids": ["art-handoff-002"],
+            "target": {"local_registration_id": LOCAL_REVIEW}, "kind_spec": spec.model_dump(),
+        }),
+        assigned_connector_id=None, predecessor_execution_id=None, now=NOW,
+    )
+    data = b'{"type":"result","subtype":"success"}\n'
+    log, _ = repo.store_artifact(
+        conn, store, execution_id=execution_id, session_id=session_id,
+        meta=ArtifactMeta.model_validate(meta_for(data, kind="claude_jsonl", name="claude.jsonl")), data=data, now=NOW,
+    )
+    seed_result_ready(
+        conn, store, execution_id, kind="generic_result",
+        body={
+            "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": "review",
+            "outcome": "approved", "summary": "diff 는 최소 변경이며 재현 테스트가 무력화되지 않았습니다.",
+            "artifact_ids": [log.artifact_id],
+        },
+        session_id=session_id,
+    )
+    return task_id, execution_id
+
+
+def test_generic_result_card_shows_outcome_code_summary_and_raw_log_chip(web, conn, store, settings):
+    task_id, _ = seed_generic_result(web, conn, store, settings)
+    html = web.get(f"/tasks/{task_id}").text
+    card_html = html[html.index('class="result-card'):html.index('class="viewer')]
+    card = visible_text(card_html)
+    assert 'data-outcome="approved"' in card_html and "approved" in card  # OUTCOME_LABELS 에 없는 outcome 은 코드 그대로
+    assert "demo-report-repo" in card and task_id in card
+    assert "diff 는 최소 변경이며 재현 테스트가 무력화되지 않았습니다." in card
+    assert "결과 봉투" in card and "커밋 없음" not in card and "←" not in card
+    chips = html[html.index('class="result-card'):html.index('class="status-line')]
+    assert "Claude JSONL" in chips and "결과 봉투" in chips  # 원시 로그 · 결과 봉투 칩
+
+    viewer = visible_text(viewer_of(html))
+    assert "결과 봉투" in viewer and "approved" in viewer and "검증 요약" not in viewer and "수정 전 테스트" not in viewer
+    assert "diff 는 최소 변경이며" in viewer
+    line = status_line(html)
+    assert 'data-status="확인 필요"' in line and "검토 대기" in visible_text(line)
+    assert 'value="approve"' in html
+
+    web.post(f"/tasks/{task_id}/review", data={"decision": "approve"}, follow_redirects=False)
+    text = visible_text(web.get(f"/tasks/{task_id}").text)
+    assert "검토 승인" in text and "병합" not in text  # 사용자 정의 종류에는 병합 단계가 없다
+
+
+def test_task_detail_shows_kind_label_from_registry(web, conn, store, settings):
+    task_a = create_task(web, diagnose_form())
+    crumb = web.get(f"/tasks/{task_a}").text
+    crumb = crumb[crumb.index('class="crumbs"'):crumb.index('class="bubble"')]
+    assert 'class="chip kind-chip">진단<' in crumb
+    task_b = create_task(web, fix_form(task_a))
+    crumb = web.get(f"/tasks/{task_b}").text
+    assert 'class="chip kind-chip">코드 수정<' in crumb[crumb.index('class="crumbs"'):crumb.index('class="bubble"')]
+    task_c, _ = seed_generic_result(web, conn, store, settings)
+    crumb = web.get(f"/tasks/{task_c}").text
+    assert 'class="chip kind-chip">검토<' in crumb[crumb.index('class="crumbs"'):crumb.index('class="bubble"')]
+
+
+def test_chain_renders_three_nodes_in_order_with_kind_labels(web, conn, settings):
+    """직접 등록한 A → B → C(review) 는 체인이 아니지만, 가져오기 체인 뒤에 등록부 종류가 셋 이상이어도 화면은 노드를
+    순서대로 그린다 — 체인 템플릿이 2개를 가정하지 않는다. 노드 3개는 review 이슈를 흉내 낸 Task 로 만든다."""
+    seed_review_agent(conn)
+    register_agents(web, REVIEW_AGENT)
+    register_kind(web)
+    register_rule(web)
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    session_id = session_id_of(web, settings)
+    repo.insert_task(conn, {
+        "task_id": "task-c45", "session_id": session_id, "title": "보고서 수정 검토", "request": "검토",
+        "kind": "review", "required_capability": {"code": "review", "scope": {"repository_id": "demo-report-repo"}},
+        "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "auto", "completion_mode": "review",
+        "criteria": [], "predecessor_task_id": task_b, "revision": 1,
+        "target": {"local_registration_id": LOCAL_REVIEW}, "status": "대기", "status_reason": "선행 대기",
+        "chain_id": chain_id, "source_ref": "#45",
+    }, NOW)
+    html = web.get(f"/chains/{chain_id}").text
+    nodes = re.findall(r'<li class="chain-node"[^>]*>(.*?)</li>', html, re.DOTALL)
+    assert len(nodes) == 3
+    assert [re.search(r'class="node-no">(\d)<', n).group(1) for n in nodes] == ["1", "2", "3"]
+    labels = [re.search(r'<span class="chip">([^<]+)</span>', n).group(1) for n in nodes]
+    assert labels == ["진단", "코드 수정", "검토"]
+    assert "#45" in nodes[2] and "후보 없음" in visible_text(nodes[2])
+    human = html[html.index('class="chain-node chain-node-human"'):]
+    assert 'class="node-no">4<' in human and "검토 승인 (사람) · 병합은 운영자 확인" in visible_text(human)
 
 
 # --- 라이브 조각 -----------------------------------------------------------------

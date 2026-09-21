@@ -961,9 +961,9 @@ def test_manual_c_gets_bundle_without_execution(conn, client, clock, make_worker
     bundles = [x for x in repo.artifacts_of(conn, b) if x["kind"] == "handoff_bundle"]
     assert len(bundles) == 1
     assert worker.tick().inputs_prepared == 0
-    # 사용자 상태는 domain/status.py 가 정한다 — 선행 B 가 사람 검토 전(확인 필요)이라 아직 '선행 대기'.
-    # 직접 실행 경로에서 이 상태를 어떻게 보일지는 step 7(web-task-kinds) 의 몫이다
-    assert _status(conn, TASK_C) == ("대기", "선행 대기")
+    # 선행 B 는 사람 검토 전(확인 필요)이지만 결과·판정·인계 묶음이 준비됐으므로 직접 실행 후속은 '실행 가능' 이다
+    # (ADR-0009 (3) — views.predecessor_handoff 가 선행 조건을 푼다, step 7)
+    assert _status(conn, TASK_C) == ("실행 가능", "agent-claude-mac 선택됨")
 
 
 # --- phase 6: 사용자 정의 종류의 결과 판정 — outcome ∈ KindSpec.outcomes 만, 완료는 사람 ---------------------

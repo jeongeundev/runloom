@@ -1,4 +1,6 @@
-{# 업무 등록 — PRD 2절 입력 항목. `example` 미리 채움은 web.EXAMPLES. 코드 수정 대상은 폼에서 받지 않는다. #}
+{# 업무 등록 — PRD 2절 입력 항목. `example` 미리 채움은 web.EXAMPLES. 코드 수정 대상은 폼에서 받지 않는다.
+   요구 능력 select 는 세션의 종류 등록부(kind_options)에서 온다 — 종류를 고르면 capability_code·scope_key 가 정해진다 (ADR-0009).
+   인라인 스크립트 하나: 종류를 바꾸면 범위 값 라벨의 scope 키(option 의 data-scope-key)를 바꾼다. #}
 {% extends "base.html" %}
 {% block title %}업무 등록 — Runloom{% endblock %}
 {% block content %}
@@ -15,17 +17,18 @@
   </div>
   <div class="field-row">
     <div class="field">
-      <label for="capability_code">요구 능력</label>
+      <label for="capability_code">업무 종류 · 요구 능력</label>
       <select id="capability_code" name="capability_code">
-        {% for code in capability_codes %}
-        <option value="{{ code }}"{% if code == form.capability_code %} selected{% endif %}>{{ code }} ({{ scope_keys[code] }})</option>
+        {% for k in kind_options %}
+        <option value="{{ k.capability_code }}" data-scope-key="{{ k.scope_key }}"{% if k.capability_code == form.capability_code %} selected{% endif %}>{{ k.label }} ({{ k.kind }}) · {{ k.capability_code }} · {{ k.scope_key }}</option>
         {% endfor %}
       </select>
+      <div class="help">종류 목록은 <a href="/kinds">종류·규칙</a>에서 등록합니다.</div>
     </div>
     <div class="field">
-      <label for="scope_value">범위 값</label>
+      <label for="scope_value">범위 값 (<span class="mono" id="scope-key">{{ form_scope_key }}</span>)</label>
       <input type="text" id="scope_value" name="scope_value" value="{{ form.scope_value }}" required>
-      <div class="help">operations.diagnose 는 workflow_id, code.modify 는 repository_id</div>
+      <div class="help">선택한 종류의 scope 키에 해당하는 값. 예: daily-report, demo-report-repo</div>
     </div>
   </div>
   <div class="field-row">
@@ -87,12 +90,12 @@
         <option value="{{ t.task_id }}"{% if t.task_id == form.predecessor_task_id %} selected{% endif %}>{{ t.title }} — {{ t.status.label }}</option>
         {% endfor %}
       </select>
-      <div class="help">선행 업무가 완료돼야 이 업무가 시작됩니다 (A → B).</div>
+      <div class="help">선행 결과가 후속 규칙에 맞으면 이 업무가 시작됩니다 (A → B). 선행 승인을 기다리지 않습니다.</div>
     </div>
     <div class="field">
       <label for="run_id">조사할 run_id (진단 업무)</label>
       <input type="text" id="run_id" name="run_id" value="{{ form.run_id }}">
-      <div class="help">코드 수정 업무의 대상(저장소·기준 커밋·검증 프로필)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
+      <div class="help">진단이 아닌 업무의 대상(저장소·기준 커밋·검증 프로필 또는 로컬 등록)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
     </div>
   </div>
   {% if form.offer_successor %}
@@ -106,4 +109,15 @@
     <a class="btn btn-secondary" href="/tasks">취소</a>
   </div>
 </form>
+<script>
+(function () {
+  var select = document.getElementById('capability_code');
+  var key = document.getElementById('scope-key');
+  if (!select || !key) { return; }
+  select.addEventListener('change', function () {
+    var option = select.options[select.selectedIndex];
+    key.textContent = option ? (option.getAttribute('data-scope-key') || '') : '';
+  });
+})();
+</script>
 {% endblock %}

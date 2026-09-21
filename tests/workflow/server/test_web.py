@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
-from workflow.contracts.v1 import ExecutionRequest
+from workflow.contracts.v1 import BUILTIN_KINDS, ArtifactMeta, ExecutionRequest
 from workflow.server.auth import SESSION_COOKIE, verify_session
 from workflow.server.web import EXAMPLES
 
@@ -17,6 +17,7 @@ from .conftest import (
     NOW,
     RESULT_COMMIT,
     code_change_result,
+    meta_for,
     seed_agents,
     seed_result_ready,
 )
@@ -231,6 +232,16 @@ def test_diagnose_example_form_offers_successor_checked(web):
     assert 'name="with_successor"' not in web.get(f"/tasks/new?example=fix&predecessor={task_a}").text
 
 
+def test_diagnose_example_form_offers_successor_only_with_builtin_rule(web, conn, settings):
+    """세션이 규칙 diagnosis → code_change 를 지웠으면 체크박스를 보이지 않고, 보내도 B 를 만들지 않는다."""
+    session_id = session_id_of(web, settings)
+    (rule_id, _), = repo.list_rules(conn, session_id)
+    repo.delete_rule(conn, session_id, rule_id)
+    assert 'name="with_successor"' not in web.get("/tasks/new?example=diagnose").text
+    task_a = create_task(web, diagnose_form(with_successor="1"))
+    assert [t["task_id"] for t in repo.list_tasks(conn, session_id)] == [task_a]
+
+
 def test_create_diagnose_with_successor_registers_b_waiting_on_a(web, conn):
     """with_successor 면 A 와 fix 예시 B 가 한 번에 만들어지고 B 는 A 를 선행으로 자동 실행 대기한다."""
     task_a = create_task(web, diagnose_form(with_successor="1"))
@@ -366,6 +377,8 @@ def test_create_task_manual_selection_records_reason(web, conn):
 def test_create_task_rejects_bad_form_with_422(web, overrides):
     response = web.post("/tasks", data=diagnose_form(**overrides), follow_redirects=False)
     assert response.status_code == 422, overrides
+    if "capability_code" in overrides:
+        assert "등록되지 않은 업무 종류입니다." in response.text
 
 
 def test_create_code_change_task_cannot_be_auto_completed(web):
@@ -421,7 +434,7 @@ def test_run_creates_queued_execution_with_frozen_request(web, conn, settings):
         "request": DIAGNOSE_REQUEST,
         "input_artifact_ids": [],
         "target": {"run_id": "daily-0920-0900"},
-        "kind_spec": None,
+        "kind_spec": BUILTIN_KINDS[0].model_dump(),  # 서버가 등록부에서 채운다 (ADR-0009)
     }
     since = "2026-01-01T00:00:00Z"
     assert repo.count_diagnosis_started(conn, session_id=session_id_of(web, settings), since=since) == 1
@@ -474,19 +487,42 @@ def test_run_diagnosis_global_daily_limit_429(web, conn):
     assert "오늘 전체 진단 실행 한도(60회)에 도달했습니다." in response.text
 
 
-def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, settings):
-    """선행 A 가 완료되고 handoff_bundle 산출물이 있으면, B 직접 실행 요청의 입력에 그 ID 가 고정된다."""
-    task_a = create_task(web, diagnose_form())
-    web.post(f"/tasks/{task_a}/run", follow_redirects=False)
+def seed_judged_predecessor(client, conn, store, settings, task_a: str, *, bundle: bool = True) -> tuple[str, str | None]:
+    """A 를 실행해 결과(result_ready)와 판정 `passed` 를 넣는다 — 사람 승인 전 `확인 필요` 상태. `bundle` 이면 워커가
+    조립했을 handoff_bundle 산출물도 넣는다. (exec_a, bundle_id)."""
+    client.post(f"/tasks/{task_a}/run", follow_redirects=False)
     exec_a = repo.active_execution(conn, task_a)["execution_id"]
-    bundle_id = seed_result_ready(
-        conn, store, exec_a, kind="handoff_bundle",
-        body={"contract_version": 1, "source_execution_id": exec_a, "source_kind": "diagnosis",
-              "source_result_artifact_id": "art-diag-result-001", "inputs": [], "attachments": []},
-        session_id=session_id_of(web, settings),
+    session_id = session_id_of(client, settings)
+    seed_result_ready(
+        conn, store, exec_a, kind="diagnosis_result",
+        body={"outcome": "ready_for_handoff", "summary": "응답 경로 변경"}, session_id=session_id,
     )
-    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
-    repo.release_execution(conn, exec_a, NOW)
+    repo.record_verdict(
+        conn, task_id=task_a, execution_id=exec_a,
+        verdict={"outcome": "passed", "checks": [{"code": "response_path_changed", "passed": True, "detail": "확인"}]},
+        status="확인 필요", reason="검토 대기", finish=False, now=NOW,
+    )
+    if not bundle:
+        return exec_a, None
+    data = json.dumps({
+        "contract_version": 1, "source_execution_id": exec_a, "source_kind": "diagnosis",
+        "source_result_artifact_id": "art-diag-result-001", "inputs": [], "attachments": [],
+    }).encode()
+    created, _ = repo.store_artifact(
+        conn, store, execution_id=exec_a, session_id=session_id,
+        meta=ArtifactMeta.model_validate(meta_for(data, kind="handoff_bundle", name="manifest.json",
+                                                   content_type="application/json")),
+        data=data, now=NOW,
+    )
+    return exec_a, created.artifact_id
+
+
+def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, settings):
+    """선행 A 의 결과가 판정되고(사람 승인 전) handoff_bundle 산출물이 있으면, B 직접 실행 요청의 입력에 그 ID 가 고정된다
+    (ADR-0009 (3) — 선행 `완료` 를 기다리지 않는다)."""
+    task_a = create_task(web, diagnose_form())
+    exec_a, bundle_id = seed_judged_predecessor(web, conn, store, settings, task_a)
+    assert repo.get_task(conn, task_a)["finished_at"] is None
     # 온라인 판정이 서버 시각 기준 heartbeat_offline_seconds 이내인지 보므로 last_seen 은 실제 시각으로 둔다
     from workflow.server.auth import utc_now
     repo.update_registration(
@@ -494,7 +530,8 @@ def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, setti
         base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest"], discovered={}, now=utc_now(),
     )
     task_b = create_task(web, fix_form(task_a, run_mode="manual"))
-    assert "실행 가능" in detail(web, task_b)
+    text = detail(web, task_b)
+    assert "실행 가능" in text and "선행 대기" not in text and f'action="/tasks/{task_b}/run"' in text
 
     response = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
     assert response.status_code == 303, response.text
@@ -503,11 +540,13 @@ def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, setti
     assert execution["predecessor_execution_id"] == exec_a
     request = ExecutionRequest.model_validate_json(execution["request_json"])
     assert request.input_artifact_ids == [bundle_id]
+    assert request.kind_spec == BUILTIN_KINDS[1]
     assert request.target.model_dump() == {
         "local_registration_id": "local-demo-report",
         "base_commit": BASE_COMMIT,
         "verification_profile_id": "vp-pytest",
     }
+    assert repo.get_task(conn, task_a)["status"] == "확인 필요"  # A 는 여전히 사람 검토 전
 
 
 def test_run_code_change_without_registration_or_handoff_409(web, conn):
@@ -517,6 +556,25 @@ def test_run_code_change_without_registration_or_handoff_409(web, conn):
     response = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
     assert response.status_code == 409
     assert "인계 자료" in response.text or "등록 정보" in response.text
+
+
+def test_run_successor_waits_for_bundle_and_says_so_without_rule(web, conn, store, settings):
+    """선행 결과가 판정됐어도 인계 묶음이 없으면 409. 규칙이 없으면 /kinds 로 안내한다."""
+    task_a = create_task(web, diagnose_form())
+    seed_judged_predecessor(web, conn, store, settings, task_a, bundle=False)
+    task_b = create_task(web, fix_form(task_a, run_mode="manual"))
+    text = detail(web, task_b)
+    assert "선행 대기" in text and f'action="/tasks/{task_b}/run"' not in text
+    waiting = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
+    assert waiting.status_code == 409 and "인계 자료" in alert_of(waiting) and "/kinds" not in alert_of(waiting)
+
+    session_id = session_id_of(web, settings)
+    (rule_id, _), = repo.list_rules(conn, session_id)
+    repo.delete_rule(conn, session_id, rule_id)
+    without_rule = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
+    assert without_rule.status_code == 409
+    assert "후속 규칙이 없어 인계 자료가 없습니다. /kinds 에서 규칙을 등록하세요." in html_lib.unescape(without_rule.text)
+    assert repo.active_execution(conn, task_b) is None
 
 
 # --- 검토 ------------------------------------------------------------------------
@@ -1562,3 +1620,289 @@ def test_other_session_cannot_delete_my_kind_or_rule(app, web, conn, settings):
     assert other.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
     assert repo.get_kind(conn, session_id, "review") is not None
     assert len(repo.list_rules(conn, session_id)) == 1
+
+
+# --- 업무 등록·가져오기·실행이 등록부를 본다 (phase 6 step 7) ------------------------------------
+
+REVIEW_AGENT = "agent-review-mac"
+LOCAL_REVIEW = "local-demo-report-claude"
+REVIEW_REQUEST = "인계된 diff 와 코드 수정 결과를 검토하고 승인 여부를 판단해 주세요."
+
+
+def seed_review_agent(conn) -> None:
+    """능력 `review`(repository_id=demo-report-repo) 만 가진 로컬 Claude — 사용자 정의 종류 `review` 의 유일한 후보.
+    code.modify 를 갖지 않아 B 의 자동 선택(개인 Codex 1개)을 흔들지 않는다."""
+    repo.upsert_agent(conn, {
+        "agent_id": REVIEW_AGENT, "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": LOCAL_REVIEW,
+        "capabilities": [{"code": "review", "scope": {"repository_id": "demo-report-repo"}}],
+        "connection_state": "unknown", "shared_to_all_sessions": True,
+    })
+
+
+def review_form(predecessor: str = "", **overrides) -> dict:
+    form = {
+        "title": "보고서 수정 검토",
+        "request": REVIEW_REQUEST,
+        "capability_code": "review",
+        "scope_value": "demo-report-repo",
+        "selection_mode": "auto",
+        "chosen_agent_id": "",
+        "run_mode": "manual" if not predecessor else "auto",
+        "completion_mode": "review",
+        "criteria_extra": "",
+        "predecessor_task_id": predecessor,
+        "run_id": "",
+    }
+    form.update(overrides)
+    return form
+
+
+@pytest.fixture
+def review_web(web, conn):
+    """`web` + 종류 review·규칙 code_change → review 등록 + 검토 Claude 세션 등록."""
+    seed_review_agent(conn)
+    register_agents(web, REVIEW_AGENT)
+    register_kind(web)
+    register_rule(web)
+    return web
+
+
+def test_new_task_form_lists_session_kinds_with_scope_key(review_web, conn, settings):
+    text = html_lib.unescape(review_web.get("/tasks/new").text)
+    select = text[text.index('id="capability_code"'):text.index("</select>", text.index('id="capability_code"'))]
+    assert 'value="operations.diagnose" data-scope-key="workflow_id"' in select and "진단 (diagnosis)" in select
+    assert 'value="code.modify" data-scope-key="repository_id"' in select and "코드 수정 (code_change)" in select
+    assert 'value="review" data-scope-key="repository_id"' in select and "검토 (review) · review · repository_id" in select
+    assert 'value="operations.diagnose" data-scope-key="workflow_id" selected' in select  # 빈 폼의 기본값
+    assert 'id="scope-key">workflow_id<' in text  # 선택한 종류의 scope 키가 범위 값 라벨에
+    assert "결과 outcome 이 허용 목록 안 · 사람 검토 승인" in text  # review 의 완료 기준 템플릿
+    # 다른 세션에는 review 가 없다
+    session_id = session_id_of(review_web, settings)
+    assert repo.get_kind(conn, session_id, "review") is not None
+    other_form = review_web.get("/tasks/new?example=fix").text
+    assert 'value="code.modify" data-scope-key="repository_id" selected' in other_form
+
+
+def test_create_review_task_targets_local_registration_and_needs_no_run_id(review_web, conn, settings):
+    task_id = create_task(review_web, review_form())
+    row = repo.get_task(conn, task_id)
+    assert row["kind"] == "review" and row["run_mode"] == "manual" and row["completion_mode"] == "review"
+    assert json.loads(row["required_capability_json"]) == {"code": "review", "scope": {"repository_id": "demo-report-repo"}}
+    assert json.loads(row["target_json"]) == {"local_registration_id": LOCAL_REVIEW}  # 자동 선택 뒤 등록값에서
+    criteria = json.loads(row["criteria_json"])
+    assert [c["code"] for c in criteria] == ["outcome_in_spec"] and criteria[0]["structured"] is False
+    selection = repo.get_selection(conn, task_id)
+    assert selection.status == "selected" and selection.selected_agent_id == REVIEW_AGENT
+    text = detail(review_web, task_id)
+    assert "검토" in text and "review · repository_id=demo-report-repo 일치 후보 1개" in text
+    assert "대기" in text and "연결 끊김" in text  # 로컬 에이전트라 종류와 무관하게 연결 상태를 본다
+
+    auto = review_web.post("/tasks", data=review_form(completion_mode="auto"), follow_redirects=False)
+    assert auto.status_code == 422 and "자동 완료" in auto.text
+
+
+def test_create_review_task_in_session_without_the_kind_is_422(app, conn):
+    """종류는 세션별이다 — review 를 등록하지 않은 세션의 폼에는 없고 보내도 422."""
+    seed_review_agent(conn)
+    other = TestClient(app)
+    other.get("/tasks")
+    register_agents(other, REVIEW_AGENT)
+    assert 'value="review" data-scope-key' not in other.get("/tasks/new").text
+    gone = other.post("/tasks", data=review_form(), follow_redirects=False)
+    assert gone.status_code == 422 and "등록되지 않은 업무 종류입니다." in gone.text
+
+
+def test_create_review_task_after_fix_waits_and_runs_with_kind_spec(review_web, conn, store, settings):
+    """A → B → C(review) 를 직접 등록. C 는 B 결과가 판정되고 인계 묶음이 생기면 실행 가능이고,
+    실행 요청에는 등록부의 KindSpec 과 LocalTarget 이 들어간다."""
+    task_a = create_task(review_web, diagnose_form())
+    task_b = create_task(review_web, fix_form(task_a))
+    task_c = create_task(review_web, review_form(task_b, run_mode="manual"))
+    assert repo.get_task(conn, task_c)["predecessor_task_id"] == task_b
+    assert "선행 대기" in detail(review_web, task_c)
+
+    session_id = session_id_of(review_web, settings)
+    repo.create_execution(
+        conn, execution_id="exec-fix-001", task_id=task_b, attempt_no=1, start_key=f"auto:{task_b}:r1",
+        agent_id="agent-codex-mac", kind="code_change",
+        request=ExecutionRequest.model_validate({
+            "contract_version": 1, "execution_id": "exec-fix-001", "task_id": task_b, "kind": "code_change",
+            "agent_id": "agent-codex-mac", "task_revision": 1, "request": FIX_REQUEST,
+            "input_artifact_ids": ["art-handoff-001"],
+            "target": {"local_registration_id": "local-demo-report", "base_commit": BASE_COMMIT,
+                       "verification_profile_id": "vp-pytest"},
+        }),
+        assigned_connector_id=None, predecessor_execution_id=None, now=NOW,
+    )
+    seed_result_ready(
+        conn, store, "exec-fix-001", kind="code_change_result",
+        body=code_change_result("exec-fix-001", task_b), session_id=session_id,
+    )
+    repo.record_verdict(
+        conn, task_id=task_b, execution_id="exec-fix-001",
+        verdict={"outcome": "passed", "checks": [{"code": "verification_passed", "passed": True, "detail": "exit 0"}]},
+        status="확인 필요", reason="검토 대기", finish=False, now=NOW,
+    )
+    data = json.dumps({
+        "contract_version": 1, "source_execution_id": "exec-fix-001", "source_kind": "code_change",
+        "source_result_artifact_id": "art-fix-result-001", "inputs": [], "attachments": [],
+    }).encode()
+    bundle, _ = repo.store_artifact(
+        conn, store, execution_id="exec-fix-001", session_id=session_id,
+        meta=ArtifactMeta.model_validate(meta_for(data, kind="handoff_bundle", name="manifest.json",
+                                                   content_type="application/json")),
+        data=data, now=NOW,
+    )
+    from workflow.server.auth import utc_now
+    repo.update_registration(
+        conn, LOCAL_REVIEW, connector_id="conn-mac-01", repository_id="demo-report-repo",
+        base_commit=BASE_COMMIT, verification_profile_ids=[], discovered={}, now=utc_now(),
+    )
+    text = detail(review_web, task_c)
+    assert "실행 가능" in text and f"{REVIEW_AGENT} 선택됨" in text and f'action="/tasks/{task_c}/run"' in text
+
+    response = review_web.post(f"/tasks/{task_c}/run", follow_redirects=False)
+    assert response.status_code == 303, response.text
+    execution = repo.active_execution(conn, task_c)
+    assert execution["kind"] == "review" and execution["predecessor_execution_id"] == "exec-fix-001"
+    request = ExecutionRequest.model_validate_json(execution["request_json"])
+    assert request.input_artifact_ids == [bundle.artifact_id]
+    assert request.target.model_dump() == {"local_registration_id": LOCAL_REVIEW}
+    assert request.kind_spec == repo.get_kind(conn, session_id, "review")
+    assert request.kind_spec.builtin is False and request.kind_spec.outcomes == ["approved", "changes_requested", "needs_information"]
+    assert "실행 요청됨" in detail(review_web, task_c)
+
+
+REVIEW_ISSUE = {
+    "key": "#45", "title": "보고서 수정 검토", "body": REVIEW_REQUEST,
+    "labels": ["kind:review", "repository_id:demo-report-repo"], "blocked_by": ["#42"], "url": None,
+}
+
+
+@pytest.fixture
+def review_issue(monkeypatch):
+    """fixture 이슈에 `kind:review` 이슈 #45(#42 뒤)를 덧붙인다 — 파일은 고치지 않는다 (공개 데모 e2e 가 4개를 센다)."""
+    from workflow.adapters.task_sources import load_issues as real_load
+    from workflow.domain.task_sources import Issue
+    from workflow.server import views, web
+
+    def patched(source: str):
+        issues = real_load(source)
+        return [*issues, Issue(source=source, **REVIEW_ISSUE)] if source == "github" else issues
+
+    monkeypatch.setattr(web, "load_issues", patched)
+    monkeypatch.setattr(views, "load_issues", patched)
+
+
+def test_import_kind_label_issue_becomes_third_node_with_rule(review_web, review_issue, conn):
+    page = html_lib.unescape(review_web.get("/tasks/import").text)
+    assert "review · demo-report-repo" in page and 'value="#45" checked' in page
+    response = import_issues(review_web, "github", "#41", "#42", "#45")
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    tasks = repo.tasks_of_chain(conn, chain_id)
+    assert [(t["source_ref"], t["kind"]) for t in tasks] == [("#41", "diagnosis"), ("#42", "code_change"), ("#45", "review")]
+    task_b, task_c = tasks[1], tasks[2]
+    assert task_c["predecessor_task_id"] == task_b["task_id"]
+    assert task_c["run_mode"] == "auto" and task_c["completion_mode"] == "review"
+    assert json.loads(task_c["target_json"]) == {"local_registration_id": LOCAL_REVIEW}
+    assert repo.get_selection(conn, task_c["task_id"]).selected_agent_id == REVIEW_AGENT
+    assert json.loads(repo.get_chain(conn, chain_id)["skipped_json"]) == []
+
+    text = html_lib.unescape(chain_page(review_web, chain_id))
+    nodes = text.split('<li class="chain-node" data-task-id=')[1:]  # 이유 목록의 </li> 때문에 정규식 대신 분할
+    assert len(nodes) == 3 and "#45" in nodes[2] and "검토</span>" in nodes[2]
+    assert "라벨 kind:review + repository_id:demo-report-repo → review" in nodes[2]
+    assert "선행 #42 (code.modify) → review 인계" in nodes[2]
+    assert "3단계 중" not in text and "검토 승인 (사람) · 병합은 운영자 확인" in text
+
+
+def test_import_kind_label_issue_is_standalone_without_rule_or_kind(review_web, review_issue, conn, settings):
+    session_id = session_id_of(review_web, settings)
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.to_kind == "review"]
+    repo.delete_rule(conn, session_id, rule_id)
+    response = import_issues(review_web, "github", "#41", "#42", "#45")
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    tasks = repo.tasks_of_chain(conn, chain_id)
+    assert sorted(t["source_ref"] for t in tasks) == ["#41", "#42", "#45"]  # #45 는 체인 안의 단독 노드 (순서는 동률)
+    standalone = next(t for t in tasks if t["source_ref"] == "#45")
+    assert standalone["kind"] == "review" and standalone["predecessor_task_id"] is None
+    assert standalone["run_mode"] == "manual" and standalone["chain_id"] == chain_id
+    assert "후속 규칙 없음: code_change → review" in html_lib.unescape(chain_page(review_web, chain_id))
+
+
+def test_import_page_marks_unknown_kind_label_unassignable(web, review_issue):
+    """종류 review 가 없는 세션에서는 kind:review 이슈를 맡을 수 없다고 미리 보인다."""
+    page = html_lib.unescape(web.get("/tasks/import").text)
+    assert "맡을 에이전트 없음 · 등록되지 않은 종류 kind:review" in page
+
+
+def test_agent_pages_show_kind_label_next_to_capability_code(review_web):
+    detail_text = html_lib.unescape(review_web.get(f"/agents/{REVIEW_AGENT}").text)
+    assert "review · repository_id=demo-report-repo" in detail_text and "검토" in detail_text
+    ops = html_lib.unescape(review_web.get("/agents/agent-ops-demo").text)
+    assert "operations.diagnose · workflow_id=daily-report" in ops and "(진단)" in ops
+    catalog = html_lib.unescape(review_web.get("/agents/register").text)
+    assert "(코드 수정)" in catalog and "(검토)" in catalog
+
+
+def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_otherwise(web, conn):
+    login_operator(web)
+    page = web.get("/operator").text
+    assert 'name="scope_key"' in page and 'name="capability_code"' in page
+    assert "operations.diagnose" in page and "workflow_id" in page  # 내장 코드 안내
+
+    builtin = web.post("/operator/agents", data={
+        "agent_id": "agent-api-2", "name": "둘째 진단", "owner_scope": "company", "connection_type": "api",
+        "capability_code": "operations.diagnose", "scope_key": "", "scope_value": "daily-report",
+        "local_registration_id": "", "api_url": "http://127.0.0.1:8101", "credential_ref": "env:DIAG_API_TOKEN",
+    }, follow_redirects=False)
+    assert builtin.status_code == 303, builtin.text
+    assert json.loads(repo.get_agent(conn, "agent-api-2")["capabilities_json"]) == [
+        {"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}
+    ]
+
+    custom = web.post("/operator/agents", data={
+        "agent_id": REVIEW_AGENT, "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
+        "capability_code": "review", "scope_key": "", "scope_value": "demo-report-repo",
+        "local_registration_id": LOCAL_REVIEW, "api_url": "", "credential_ref": "",
+    }, follow_redirects=False)
+    assert custom.status_code == 422 and "scope 키를 입력하세요" in custom.text
+    assert repo.get_agent(conn, REVIEW_AGENT) is None
+
+    ok = web.post("/operator/agents", data={
+        "agent_id": REVIEW_AGENT, "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
+        "capability_code": "review", "scope_key": "repository_id", "scope_value": "demo-report-repo",
+        "local_registration_id": LOCAL_REVIEW, "api_url": "", "credential_ref": "",
+    }, follow_redirects=False)
+    assert ok.status_code == 303, ok.text
+    assert json.loads(repo.get_agent(conn, REVIEW_AGENT)["capabilities_json"]) == [
+        {"code": "review", "scope": {"repository_id": "demo-report-repo"}}
+    ]
+    page = html_lib.unescape(web.get("/operator").text)
+    assert "review · repository_id=demo-report-repo" in page  # 운영자 목록의 능력 표시
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"capability_code": "Code.Modify"},
+        {"capability_code": "review", "scope_key": "Repo-ID"},
+        {"capability_code": "", "scope_key": ""},
+        {"scope_value": ""},
+    ],
+)
+def test_operator_register_agent_rejects_bad_capability_422(web, conn, overrides):
+    login_operator(web)
+    data = {
+        "agent_id": "agent-x", "name": "x", "owner_scope": "personal", "connection_type": "local",
+        "capability_code": "code.modify", "scope_key": "", "scope_value": "other-repo",
+        "local_registration_id": "local-x", "api_url": "", "credential_ref": "",
+    }
+    data.update(overrides)
+    response = web.post("/operator/agents", data=data, follow_redirects=False)
+    assert response.status_code == 422, overrides
+    assert "invalid_field" in response.text
+    assert repo.get_agent(conn, "agent-x") is None

@@ -11,7 +11,7 @@
   <div class="card agent-card">
     <div class="name"><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a>{% if a.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}</div>
     <div class="meta mono">{{ a.agent_id }} · {{ a.owner_scope }} · {{ a.connection_type }}</div>
-    <div>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+    <div>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if c.kind_label %} <span class="small">({{ c.kind_label }})</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
     <div style="margin-top:8px">{{ st.connection(a) }}</div>
     <div class="found">
       <span class="small">발견된 정보</span>

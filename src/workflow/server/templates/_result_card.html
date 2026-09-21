@@ -1,4 +1,5 @@
 {# 결과 카드 — UI_GUIDE "결과 카드". PR 카드 형식: outcome 배지 + 대상 / 요약 / 모노스페이스 메타. `viewer` 는 views.viewer_context.
+   결과 봉투(generic_result, 사용자 정의 종류)는 outcome 코드 그대로 + summary + 산출물 수 — 내용은 정의하지 않는다 (ADR-0009).
    실행한 Agent 가 대본(`agent_scripted`) 이면 메타 끝에 "대본 재생" 을 붙인다 — 실제 모델이 돈 것처럼 보이지 않게. #}
 {% import "_status.html" as st %}
 {% if result %}
@@ -10,7 +11,7 @@
     {% if result.kind == 'diagnosis_result' %}
     <span class="mono">{{ task.required_capability.scope.workflow_id }} · {{ d.run_id }}</span>
     {% else %}
-    <span class="mono">{{ task.required_capability.scope.repository_id }} · {{ task.task_id }}</span>
+    <span class="mono">{{ task.required_capability.scope.values()|join(', ') }} · {{ task.task_id }}</span>
     {% endif %}
   </div>
   <div class="line2">{{ d.summary }}</div>
@@ -18,6 +19,8 @@
     {%- if result.kind == 'diagnosis_result' -%}
     {{ d.diagnosis.code if d.diagnosis else '원인 미확정' }} · 근거 {{ d.findings|length }} · 첨부 {{ d.attachments|length }}
     {%- if viewer and viewer.verdict %} · 검증 {{ viewer.verdict_passed }}/{{ viewer.verdict_total }} 통과{% endif -%}
+    {%- elif result.kind == 'generic_result' -%}
+    {{ result.kind|kind_label }} · {{ d.kind }} · 산출물 {{ d.artifact_ids|length }}
     {%- else -%}
     {{ (d.result_commit or '')[:7] or '커밋 없음' }} ← {{ d.base_commit[:7] }}
     {%- if viewer and viewer.diff %} · {{ viewer.diff.stats[0] }} files · <span class="plus-n">+{{ viewer.diff.stats[1] }}</span> <span class="minus-n">-{{ viewer.diff.stats[2] }}</span>{% endif -%}
