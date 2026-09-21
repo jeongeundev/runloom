@@ -6,10 +6,10 @@
     {
       "step": 0,
       "name": "adr-kind-rules",
-      "status": "blocked",
+      "status": "completed",
       "started_at": "2026-09-21T20:57:57+0900",
-      "summary": "문서 정본 완성: docs/adr/0009-registered-kinds-and-succession-rules.md(신규), GLOSSARY 용어 표 8행 추가·outcome 행 갱신·경계 개념 2항목, ARCHITECTURE '## 업무 종류와 후속 규칙 — 2026-09-21 확정'(봉투와 내장 값·저장·워커 후속 스캔과 인계 조립·사용자 정의 종류의 실행·화면·한계) + 데이터 모델 표 2행 + 상태·재접속·완료 4번 + 결과 인계 행, CONTRACT '## 11. 업무 종류·후속 규칙·범용 결과'(11.1~11.5) + 4절 generic_result + 2절 handoff_bundle 예시(source_kind·source_result_artifact_id·inputs). 코드·테스트 미수정.",
-      "blocked_reason": "step 요구사항이 서로 충돌해 사용자 결정이 필요함. tests/workflow/contracts/test_v1.py 는 docs/CONTRACT.md 의 ```json 블록을 fixture 로 읽어 블록 수(24)와 현재 모델 대응을 검사한다. 이 step 이 요구한 CONTRACT 수정(11절 JSON 7개 추가, 2절 handoff_bundle 에 source_kind·source_result_artifact_id·inputs)은 새 모델(KindSpec·SuccessorRule·GenericResult·LocalTarget·InputRef)이 없는 현재 코드와 필연적으로 충돌해 test_v1.py 14건이 실패한다(그 외 1269 passed, ruff 통과). 금지사항(코드·테스트 수정 금지)과 AC(pytest 통과)를 동시에 만족할 방법이 없다. 문서 작업은 모두 완료·커밋했다. 선택지: (a) 이 red 를 step 1 이 해소하는 것으로 받아들이고 step 0 을 completed 로 바꿔 진행 — step1.md 는 이미 test_v1.py 갱신과 전체 pytest 통과를 AC 로 둔다(권장); (b) step 0 의 금지사항을 완화해 test_v1.py 의 블록 수·서명만 임시 갱신 — 단 새 모델이 없어 11절 블록은 검증할 수 없으므로 skip 처리가 필요해 권장하지 않음. Stop 훅 verify.sh 도 같은 14건으로 실패해 harness-verified 마커를 갱신하지 않았다 — 문서만으로도, 테스트만으로도 green 이 불가능하며(HandoffBundle·ExecutionRequest 모델이 새 필드를 거부) step 1 이 모델을 추가하면서 해소된다."
+      "summary": "문서 정본 완성: docs/adr/0009-registered-kinds-and-succession-rules.md(신규), GLOSSARY 용어 표 8행 추가·outcome 행 갱신·경계 개념 2항목, ARCHITECTURE '## 업무 종류와 후속 규칙 — 2026-09-21 확정'(봉투와 내장 값·저장·워커 후속 스캔과 인계 조립·사용자 정의 종류의 실행·화면·한계) + 데이터 모델 표 2행 + 상태·재접속·완료 4번 + 결과 인계 행, CONTRACT '## 11. 업무 종류·후속 규칙·범용 결과'(11.1~11.5) + 4절 generic_result + 2절 handoff_bundle 예시(source_kind·source_result_artifact_id·inputs). 코드·테스트 미수정. | 주의: CONTRACT 11절 JSON 블록이 test_v1.py fixture 로 읽히므로 새 모델이 생기기 전까지 test_v1.py 14건 red (그 외 1269 passed). step 1 이 모델 추가 + fixture 테스트 갱신으로 해소한다 (사용자 결정 2026-09-21).",
+      "completed_at": "2026-09-21T21:11:54+0900"
     },
     {
       "step": 1,

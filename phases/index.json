@@ -33,7 +33,8 @@
     },
     {
       "dir": "6-typed-handoff",
-      "status": "pending"
+      "status": "blocked",
+      "blocked_at": "2026-09-21T21:11:54+0900"
     }
   ]
 }

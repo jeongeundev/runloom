@@ -52,6 +52,10 @@
 - 증명 기준(step 8): e2e 가 화면으로 종류 `review`(diff·code_change_result 를 받아 `approved`/`changes_requested`/`needs_information` 을 냄)와
   규칙 `code_change --[ready_for_review]--> review` 를 등록하면, 진단 → 수정 → 검토가 `composition.py`·`worker.py` 를 고치지 않고 자동 착수한다.
 
+## 시작 상태 (step 0 의 결과)
+
+step 0 이 `docs/CONTRACT.md` 에 11절(새 모델 JSON 예시 7개)을 넣고 2절 `handoff_bundle` 예시를 `source_kind`·`source_result_artifact_id`·`inputs` 로 바꿨다. `tests/workflow/contracts/test_v1.py` 는 CONTRACT 의 ```json 블록을 **fixture 로 읽어** 블록 수와 모델 대응을 검사하므로, 이 step 을 시작하는 시점에 `test_v1.py` 14건이 red 다(그 외 전부 green). 이건 예상된 상태이며 **이 step 이 새 모델을 추가하고 그 fixture 테스트(블록 수·블록→모델 대응표)를 갱신해 전부 green 으로 만든다.** CONTRACT 의 JSON 을 고쳐서 맞추지 말고 모델을 CONTRACT 에 맞춰라(문서가 정본). 11절 예시가 모델 검증을 통과하지 못하는 부분이 있으면 그때만 CONTRACT 예시를 최소로 고치고 summary 에 적어라.
+
 ## 작업
 
 계약 층(`src/workflow/contracts/v1.py`)만 바꾼다. 다른 층은 **필드명 변경에 따른 기계적 치환**만 허용한다(논리 변경 금지 — 그건 step 2~7).
