@@ -5,6 +5,9 @@
 - test_12 ~ test_21: **주 경로** (phase 5, UI_GUIDE "심사자 첫 방문 흐름") — 랜딩 → 에이전트 등록(카탈로그 3개) → 업무 가져오기
   (GitHub fixture) → 워크플로우 확인(순서·담당·이유) → 시작 → A 완료 → B 자동 착수 → 검토 승인 → 저장소 검사 → Jira·다른 세션
   → Claude 먼저 등록한 세션(대본 Claude 경로, `slow`).
+- test_22 ~ test_28: **세 번째 종류** (phase 6 step 8, ADR-0009) — 별도 세션이 `/kinds`·`/rules` 폼으로 종류 `review` 와 규칙
+  `code_change --[ready_for_review]--> review` 를 등록하면 진단 → 수정 → 검토가 사람 조작 없이 이어진다 (B 승인 전에 C 착수).
+  `composition.py`·`worker.py` 는 이 절을 위해 바뀌지 않았다 — 등록만으로 붙는다는 증명. 규칙을 지우면 C' 는 착수하지 않는다.
 
 `WORKFLOW_E2E=1` 일 때만 돈다 (verify.sh 가 매 턴 도는 pytest 에서 제외). 실제 Codex·Claude·OpenAI 는 호출하지 않는다:
 진단은 `DIAG_MODEL=fake`(fixture 대본), 코드 수정은 `workflow.scripted.codex`/`.claude` 래퍼(`LocalStack(scripted=True)`).
@@ -13,12 +16,14 @@
 테스트 함수는 번호 순으로 이어지며 앞 단계의 결과(`ctx`·`chain_ctx`)를 쓴다 — `-x` 로 첫 실패에서 멈춘다.
 """
 
+import json
 import os
 import re
 import sqlite3
 import subprocess
 import sys
 import time
+from html import unescape as html_unescape
 from pathlib import Path
 
 import httpx
@@ -27,6 +32,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 from local_stack import LocalStack  # noqa: E402
+from seed_demo import REVIEW_CAPABILITY_CODE  # noqa: E402
 
 pytestmark = [
     pytest.mark.e2e,
@@ -691,3 +697,249 @@ def test_21_chain_claude_first_session_runs_fix_with_scripted_claude(chain_stack
         assert _git(repo, "rev-parse", f"task/{task_b}") == result_commit
         assert _git(repo, "rev-parse", "main") == chain_stack.base_commit
         assert task_b not in _git(repo, "worktree", "list")
+
+
+# --- 세 번째 종류: review — 화면으로 등록한 종류·규칙만으로 진단 → 수정 → 검토 (phase 6 step 8, ADR-0009) ---------------
+
+# /kinds 폼 — 세 번째 종류. seed·코드 상수가 아니라 화면으로 등록한다 (이 절의 증명 조건)
+REVIEW_KIND_FORM = {
+    "kind": "review",
+    "label": "검토",
+    "capability_code": REVIEW_CAPABILITY_CODE,  # seed_demo 의 Claude 능력 코드와 같은 값
+    "scope_key": "repository_id",
+    "input_kinds": ["diff", "code_change_result"],
+    "outcomes": "approved, changes_requested, needs_information",
+    "instructions": "인계 디렉터리의 diff 와 code_change_result 를 읽고 변경이 진단의 수정 요청을 충족하는지 검토하세요. "
+                    "저장소를 수정하지 마세요.",
+}
+# /rules 폼 — 코드 수정 결과가 ready_for_review 면 diff·수정 결과·수정 후 테스트 기록을 넘겨 검토를 시작한다
+REVIEW_RULE_FORM = {
+    "from_kind": "code_change",
+    "on_outcomes": ["ready_for_review"],
+    "to_kind": "review",
+    "handoff_kinds": ["diff", "code_change_result", "test_log_after"],
+}
+REVIEW_RULE_TEXT = "코드 수정 --[ready_for_review]--> 검토"
+BUILTIN_RULE_TEXT = "진단 --[ready_for_handoff]--> 코드 수정"
+FORM_C = {
+    "title": "변경 검토",
+    "request": "인계된 diff 와 코드 수정 결과를 검토하고 승인 여부를 판단해 주세요.",
+    "capability_code": REVIEW_CAPABILITY_CODE,
+    "scope_value": "demo-report-repo",
+    "selection_mode": "auto",
+    "run_mode": "auto",
+    "completion_mode": "review",
+}
+_RULE_ROW = re.compile(r'<td class="rule-text">(.*?)</td>.*?action="/rules/([^"]+)/delete"', re.S)
+_REVIEW_DONE = ("확인 필요", "검토 대기")
+
+
+@pytest.fixture(scope="module")
+def reviewer(chain_stack) -> httpx.Client:
+    """세 번째 종류 절의 세션 — 종류·규칙은 세션별이라 앞 절의 세션들(`client`·`judge`)의 등록부를 건드리지 않는다."""
+    with httpx.Client(base_url=chain_stack.central_url, follow_redirects=False, timeout=10.0) as session:
+        yield session
+
+
+@pytest.fixture(scope="module")
+def review_ctx() -> dict:
+    return {}
+
+
+def _rules(html: str) -> dict[str, str]:
+    """규칙 표의 한 줄 텍스트(`-->` 는 HTML 이스케이프를 되돌려) → rule_id."""
+    return {html_unescape(text.strip()): rule_id for text, rule_id in _RULE_ROW.findall(html)}
+
+
+def _executions(stack: LocalStack, task_id: str) -> list[tuple[str, str | None]]:
+    """(status, failed_code) — 중앙 DB 의 executions 행. 실행 수·실패 코드 확인용."""
+    conn = sqlite3.connect(stack.central_db)
+    try:
+        return conn.execute(
+            "SELECT status, failed_code FROM executions WHERE task_id = ? ORDER BY attempt_no", (task_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _wait_verdict(stack: LocalStack, task_id: str, timeout: float) -> dict:
+    """중앙 워커가 그 업무의 활성 실행에 남긴 판정(`task_verdicts`). 화면에는 진단 판정만 보이므로 DB 로 읽는다."""
+    deadline = time.monotonic() + timeout
+    while True:
+        conn = sqlite3.connect(stack.central_db)
+        try:
+            row = conn.execute(
+                "SELECT v.verdict_json FROM task_verdicts v JOIN executions e ON e.execution_id = v.execution_id "
+                "WHERE e.task_id = ? AND e.released_at IS NULL", (task_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is not None:
+            return json.loads(row[0])
+        assert time.monotonic() < deadline, f"{task_id} 의 판정이 {timeout}초 안에 기록되지 않음"
+        time.sleep(0.5)
+
+
+def _stored_status(stack: LocalStack, task_id: str) -> tuple[str, str]:
+    """워커가 남긴 저장 상태·이유 (`tasks.status`·`status_reason`). 화면은 마감 전엔 실시간 판정이라 여기서 읽는다."""
+    conn = sqlite3.connect(stack.central_db)
+    try:
+        return tuple(conn.execute("SELECT status, status_reason FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def _run_a_then_wait_b_review(client: httpx.Client, task_a: str, task_b: str) -> None:
+    """A 실행 → A `완료`(검증기) → B 가 내장 규칙으로 자동 착수 → `확인 필요 · 검토 대기` (test_04·05 와 같은 흐름)."""
+    assert client.post(f"/tasks/{task_a}/run").status_code == 303
+    seen = _watch(client, task_a, until=lambda label, _: label in ("완료", "실패", "확인 필요"), timeout=60)
+    assert seen[-1][0] == "완료", seen
+    seen = _watch(
+        client, task_b, until=lambda label, reason: (label, reason) == _REVIEW_DONE or label in ("실패", "완료"),
+        timeout=120,
+    )
+    assert seen[-1] == _REVIEW_DONE, seen
+    _assert_in_order(_labels(seen), ["대기", "실행 요청됨", "실행 중", "확인 필요"])
+
+
+def test_22_review_register_kind_and_rule_via_pages(reviewer, review_ctx):
+    """종류 `review` 와 규칙 `code_change → review` 를 /kinds·/rules 폼으로 등록한다. 등록 전엔 내장 2종·내장 규칙 1개뿐."""
+    _register_all(reviewer, CATALOG)
+    _wait_agent(reviewer, "agent-claude-mac", "연결됨", timeout=30)
+    page = reviewer.get("/kinds")
+    assert page.status_code == 200
+    assert page.text.count('class="tag-builtin"') == 2 and "review · review · repository_id" not in page.text
+    assert set(_rules(page.text)) == {BUILTIN_RULE_TEXT}
+
+    response = reviewer.post("/kinds", data=REVIEW_KIND_FORM)
+    assert response.status_code == 303 and response.headers["location"] == "/kinds", response.text[:500]
+    response = reviewer.post("/rules", data=REVIEW_RULE_FORM)
+    assert response.status_code == 303 and response.headers["location"] == "/kinds", response.text[:500]
+
+    page = reviewer.get("/kinds").text
+    assert "review · review · repository_id" in page and 'action="/kinds/review/delete"' in page  # 사용자 정의 — 삭제 가능
+    assert page.count('class="tag-builtin"') == 2
+    assert REVIEW_KIND_FORM["instructions"] in page
+    rules = _rules(page)
+    assert set(rules) == {BUILTIN_RULE_TEXT, REVIEW_RULE_TEXT}, rules
+    review_ctx["rule_id"] = rules[REVIEW_RULE_TEXT]
+    # 업무 등록 폼의 종류 목록도 등록부에서 온다 — 세 번째 종류가 바로 보인다
+    form = reviewer.get("/tasks/new").text
+    assert "검토 (review) · review · repository_id" in form
+    # 카탈로그의 Claude 능력 review 가 이 세션에서는 종류 라벨을 얻는다
+    assert "review · repository_id=demo-report-repo</span> <span class=\"small\">(검토)</span>" in reviewer.get("/agents/agent-claude-mac").text
+
+
+def test_23_review_register_a_b_then_review_task_c_after_b(reviewer, review_ctx):
+    """A(진단)·B(코드 수정, 선행 A) 는 test_02·03 방식. C(검토, 선행 B) 는 능력 review 라 Claude 만 후보 — 자동 선택."""
+    review_ctx["A"] = _create_task(reviewer, FORM_A)
+    assert _status(_live(reviewer, review_ctx["A"])) == ("실행 가능", "agent-ops-demo 선택됨")
+    review_ctx["B"] = _create_task(reviewer, {**FORM_B, "predecessor_task_id": review_ctx["A"]})
+    _select(reviewer, review_ctx["B"], "agent-codex-mac")  # code.modify 는 후보 2개 — 수정은 Codex, 검토는 Claude 가 맡게
+    assert _status(_live(reviewer, review_ctx["B"])) == ("대기", "선행 대기")
+
+    review_ctx["C"] = _create_task(reviewer, {**FORM_C, "predecessor_task_id": review_ctx["B"]})
+    html = _live(reviewer, review_ctx["C"])
+    assert _status(html) == ("대기", "선행 대기")  # 선행 결과 대기
+    assert "자동 선택 · agent-claude-mac" in html and "review · repository_id=demo-report-repo 일치 후보 1개" in html
+    assert '<span class="chip kind-chip">검토</span>' in html
+    assert f'href="/tasks/{review_ctx["B"]}"' in html  # 선행 칩
+
+
+def test_24_review_a_then_b_then_c_start_without_human_click(reviewer, review_ctx):
+    """A 실행 한 번 → A 완료 → B 자동 착수 → B 검토 대기 → **B 를 승인하기 전에** C 가 실행 요청됨 → 실행 중 → 확인 필요."""
+    task_b, task_c = review_ctx["B"], review_ctx["C"]
+    _run_a_then_wait_b_review(reviewer, review_ctx["A"], task_b)
+
+    seen = _watch(
+        reviewer, task_c, until=lambda label, reason: (label, reason) == _REVIEW_DONE or label in ("실패", "완료"),
+        timeout=120,
+    )
+    assert seen[-1] == _REVIEW_DONE, seen
+    _assert_in_order(_labels(seen), ["대기", "실행 요청됨", "실행 중", "확인 필요"])
+    assert _status(_live(reviewer, task_b)) == _REVIEW_DONE  # B 는 여전히 사람 검토 전 — 승인이 후속 착수를 막지 않는다
+
+    html = _live(reviewer, task_c)
+    types = _EVENT_TYPE.findall(html)
+    assert types[:2] == ["accepted", "started"] and types[-1] == "result_ready", types
+    assert 'data-outcome="approved"' in html and "결과 봉투 · review" in html
+    assert "대본 재생 (실제 모델 호출 없음)" in html
+    assert "병합" not in html  # 사용자 정의 종류 — 검토 승인만, 병합 단계 없음
+
+
+def test_25_review_c_inputs_and_result(chain_stack, reviewer, review_ctx):
+    """C 산출물은 결과 봉투 + Claude 원시 로그뿐(코드 수정 산출물 없음). 인계 묶음은 규칙 handoff_kinds 대로, 선행은 code_change.
+    중앙은 결과 봉투의 `outcome ∈ KindSpec.outcomes` 만 판정한다 — 내용은 보지 않는다 (ADR-0009 (5))."""
+    task_b, task_c = review_ctx["B"], review_ctx["C"]
+    chips = _chips(_live(reviewer, task_c))
+    assert {"결과 봉투", "Claude JSONL", "Claude stderr"} <= set(chips), chips
+    assert not ({"diff", "테스트 전", "테스트 후", "보고서", "수정 결과", "Codex JSONL"} & set(chips)), chips
+    result = json.loads(_raw(reviewer, task_c, chips["결과 봉투"]))
+    assert (result["kind"], result["outcome"], result["task_id"]) == ("review", "approved", task_c)
+    assert "diff.patch" in result["summary"] and "code_change_result.json" in result["summary"], result["summary"]
+    assert set(result["artifact_ids"]) == {chips["Claude JSONL"], chips["Claude stderr"]}  # 원시 로그만 — 파일 산출물 없음
+    jsonl = _raw(reviewer, task_c, chips["Claude JSONL"])
+    assert "scripted-claude" in jsonl and "scripted-demo-agent" in jsonl  # 실제 Claude 가 아니라 대본
+    verdict = _wait_verdict(chain_stack, task_c, timeout=15)
+    assert verdict["outcome"] == "passed"
+    assert [(c["code"], c["passed"]) for c in verdict["checks"]] == [
+        ("envelope_valid", True), ("ids_match", True), ("outcome_in_spec", True),
+    ], verdict
+
+    b_chips = _chips(_live(reviewer, task_b))
+    assert "인계 묶음" in b_chips, b_chips
+    bundle = json.loads(_raw(reviewer, task_b, b_chips["인계 묶음"]))
+    assert bundle["source_kind"] == "code_change"
+    assert {i["kind"] for i in bundle["inputs"]} == set(REVIEW_RULE_FORM["handoff_kinds"])
+    assert bundle["source_result_artifact_id"] == b_chips["수정 결과"] and bundle["attachments"] == []
+    review_ctx["B_result"] = _raw(reviewer, task_b, b_chips["수정 결과"])
+
+
+def test_26_review_approve_b_then_c_and_no_duplicate(chain_stack, reviewer, review_ctx):
+    """B 승인 → 완료(병합 대기), C 승인 → 완료(병합 없음). 워커가 더 돌아도 A·B·C 실행은 각각 하나."""
+    task_a, task_b, task_c = review_ctx["A"], review_ctx["B"], review_ctx["C"]
+    assert reviewer.post(f"/tasks/{task_b}/review", data={"decision": "approve", "comment": ""}).status_code == 303
+    assert _status(_live(reviewer, task_b)) == ("완료", "검토 승인 · 병합: 운영자 확인 대기")
+    assert reviewer.post(f"/tasks/{task_c}/review", data={"decision": "approve", "comment": ""}).status_code == 303
+    assert _status(_live(reviewer, task_c)) == ("완료", "검토 승인")
+
+    time.sleep(10)  # 중앙 워커 몇 바퀴 — 마감된 선행·후속에 실행을 다시 만들지 않는다
+    assert {t: _executions(chain_stack, t) for t in (task_a, task_b, task_c)} == {
+        task_a: [("result_ready", None)], task_b: [("result_ready", None)], task_c: [("result_ready", None)],
+    }
+
+
+def test_27_review_rule_removed_stops_new_succession(chain_stack, reviewer, review_ctx):
+    """규칙을 지우면 A' → B' 는 내장 규칙으로 여전히 잇지만 C' 는 착수하지 않는다 — 이유 `후속 규칙 없음: code_change → review`."""
+    assert reviewer.post(f"/rules/{review_ctx['rule_id']}/delete").status_code == 303
+    assert set(_rules(reviewer.get("/kinds").text)) == {BUILTIN_RULE_TEXT}
+
+    task_a = _create_task(reviewer, FORM_A)
+    task_b = _create_task(reviewer, {**FORM_B, "predecessor_task_id": task_a})
+    _select(reviewer, task_b, "agent-codex-mac")
+    task_c = _create_task(reviewer, {**FORM_C, "predecessor_task_id": task_b})
+    _run_a_then_wait_b_review(reviewer, task_a, task_b)
+
+    time.sleep(7)  # 워커 두 바퀴 — B' 결과가 판정됐어도 규칙이 없으니 C' 실행을 만들지 않는다
+    assert _status(_live(reviewer, task_c))[0] == "대기"
+    assert _executions(chain_stack, task_c) == []
+    status, reason = _stored_status(chain_stack, task_c)
+    assert status == "대기" and reason.startswith("후속 규칙 없음: code_change → review"), (status, reason)
+    assert "인계 묶음" not in _chips(_live(reviewer, task_b))  # 규칙이 없으면 묶음도 조립하지 않는다
+    response = reviewer.post(f"/tasks/{task_c}/run")  # 직접 실행도 규칙 없이는 인계 자료가 없다
+    assert response.status_code == 409 and "후속 규칙이 없어 인계 자료가 없습니다" in response.text
+    review_ctx["C2"] = task_c
+
+
+def test_28_review_demo_repo_untouched_by_review(chain_stack, review_ctx):
+    """검토(C)는 읽기 전용 — main·task/{B} 는 B 의 결과 커밋 그대로, C 의 브랜치·worktree·인계 디렉터리 없음."""
+    repo, task_b, task_c = chain_stack.repo_path, review_ctx["B"], review_ctx["C"]
+    assert _git(repo, "rev-parse", "main") == chain_stack.base_commit
+    assert _git(repo, "status", "--porcelain") == ""
+    result_commit = re.search(r'"result_commit":\s*"([0-9a-f]{40})"', review_ctx["B_result"]).group(1)
+    assert _git(repo, "rev-parse", f"task/{task_b}") == result_commit  # C 실행 뒤에도 B 의 결과 커밋 그대로
+    assert _git(repo, "branch", "--list", f"task/{task_c}") == "" and task_c not in _git(repo, "worktree", "list")
+    worktrees = repo.parent / f"{repo.name}-worktrees"
+    assert not (worktrees / task_c).exists() and not (worktrees / f"{task_c}.handoff").exists()
+    # 인계 디렉터리에 새 파일이 생겼다면 연결 프로그램이 `readonly_violation` 으로 실패시켰을 것이다 — C 는 result_ready 였다
+    assert _executions(chain_stack, task_c) == [("result_ready", None)]
