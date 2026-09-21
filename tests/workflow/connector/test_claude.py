@@ -15,10 +15,11 @@ from pathlib import Path
 import pytest
 
 from workflow.connector import git_ops, state
-from workflow.connector.claude import ALLOWED_TOOLS, ClaudeAdapter
-from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun
+from workflow.connector.claude import ALLOWED_TOOLS, READONLY_TOOLS, ClaudeAdapter
+from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun, generic_result_schema
 from workflow.scripted._common import FIXED_TRANSFORMER, REPRO_TEST
 
+from .conftest import REVIEW_SPEC, make_local_request
 from .test_codex import RESPONSE_AFTER, Progress, _git, by_kind, make_repo, request_for
 
 WFC = "wfc_" + "a" * 43
@@ -46,6 +47,23 @@ prompt = sys.stdin.read()
 worktree = Path.cwd()
 fake = {"argv": args, "env": dict(os.environ), "cwd": str(worktree),
         "prompt_chars": len(prompt), "prompt_head": prompt[:60]}
+
+if MODE.startswith("generic"):
+    # 사용자 정의 종류 — `--json-schema` 의 enum 을 읽고 structured_output 에 {outcome, summary} 만 낸다.
+    schema = json.loads(args[args.index("--json-schema") + 1])
+    fake["schema"] = schema
+    fake["prompt_first_line"] = prompt.splitlines()[0]
+    outcome = "rejected" if MODE == "generic_bad_outcome" else schema["properties"]["outcome"]["enum"][0]
+    if MODE == "generic_writes":
+        (worktree / "notes.md").write_text("must not happen")
+    structured = {"outcome": outcome, "summary": "대본 검토: 인계 자료를 읽고 승인"}
+    print(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "session_id": "fake-session",
+        "usage": {"input_tokens": 10, "output_tokens": 5}, "api_error_status": None,
+        "result": json.dumps(structured, ensure_ascii=False), "structured_output": structured, "_fake": fake,
+    }, ensure_ascii=False))
+    print("fake claude: done", file=sys.stderr)
+    sys.exit(0)
 
 if MODE == "sleep":
     time.sleep(60)
@@ -436,3 +454,128 @@ def test_classify_failure_is_none_for_a_successful_result(state_conn):
     )
 
     assert adapter(state_conn).classify_failure(run) is None
+
+
+# --- 사용자 정의 종류 — 읽기 전용 실행 (`--allowedTools Read Glob Grep`, cwd = 인계 디렉터리) --------------------
+
+
+@pytest.fixture
+def review_handoff(tmp_path) -> Path:
+    handoff = tmp_path / "review-daily-0920.handoff"
+    handoff.mkdir()
+    (handoff / "manifest.json").write_text('{"source_kind": "code_change"}')
+    (handoff / "diff.patch").write_text("--- a\n+++ b\n")
+    (handoff / "code_change_result.json").write_text('{"outcome": "ready_for_review"}')
+    return handoff
+
+
+def test_build_readonly_argv_allows_only_read_tools(state_conn, tmp_path):
+    handoff = tmp_path / "review.handoff"
+    schema_json = json.dumps(generic_result_schema(REVIEW_SPEC.outcomes), ensure_ascii=False)
+
+    argv = adapter(state_conn).build_readonly_argv(handoff, schema_json)
+
+    assert argv == [
+        "claude", "-p", "--output-format", "json", "--no-session-persistence",
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", "Read", "Glob", "Grep",
+        "--json-schema", schema_json,
+    ]
+    assert READONLY_TOOLS == ("Read", "Glob", "Grep")
+    tools = argv[argv.index("--allowedTools") + 1:argv.index("--json-schema")]
+    assert not any(t.startswith(("Edit", "Write", "Bash", "NotebookEdit")) for t in tools)
+    joined = " ".join(argv)
+    assert "bypassPermissions" not in joined and "dangerously" not in joined
+    assert str(handoff) not in joined and "-C" not in argv and "--add-dir" not in argv
+    assert json.loads(argv[-1])["properties"]["outcome"]["enum"] == REVIEW_SPEC.outcomes
+
+
+def test_generic_run_is_readonly_in_handoff_dir_with_outcome_schema(state_conn, repo, review_handoff, fake_bin):
+    write_fake_claude(fake_bin, "generic")
+    register(state_conn, repo)
+    request = make_local_request()
+    progress = Progress()
+    before = sorted(p.name for p in review_handoff.iterdir())
+
+    output = adapter(state_conn).run(request, review_handoff, progress)
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.kind, result.outcome) == ("review", "approved")
+    assert result.summary == "대본 검토: 인계 자료를 읽고 승인" and result.artifact_ids == []
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    fake = envelope_of(output)["_fake"]
+    assert Path(fake["cwd"]).resolve() == review_handoff.resolve()
+    assert fake["argv"] == adapter(state_conn).build_readonly_argv(
+        review_handoff, json.dumps(generic_result_schema(REVIEW_SPEC.outcomes), ensure_ascii=False),
+    )[1:]
+    assert fake["schema"]["properties"]["outcome"]["enum"] == REVIEW_SPEC.outcomes
+    assert fake["prompt_first_line"] == "# 업무 종류: review (검토)"
+    assert request.request not in " ".join(fake["argv"]) and REVIEW_SPEC.instructions not in " ".join(fake["argv"])
+    assert "OPENAI_API_KEY" not in fake["env"] and not any(k.startswith("WORKFLOW_") for k in fake["env"])
+    # worktree·커밋 없음, 인계 디렉터리 그대로
+    assert not (repo.parent / "demo-report-repo-worktrees").exists()
+    assert _git(repo, "worktree", "list").count("\n") == 0 and _git(repo, "status", "--porcelain") == ""
+    assert sorted(p.name for p in review_handoff.iterdir()) == before
+    assert progress.runtime_refs and progress.runtime_refs[0].startswith("pid:")
+    assert output.runtime_ref == progress.runtime_refs[0]
+
+
+def test_generic_outcome_outside_spec_is_result_invalid(state_conn, repo, review_handoff, fake_bin):
+    write_fake_claude(fake_bin, "generic_bad_outcome")
+    register(state_conn, repo)
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, Progress())
+
+    assert output.result is None
+    code, message, stopped = output.failed
+    assert code == "result_invalid" and stopped is True and "rejected" in message
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+
+
+def test_generic_write_into_handoff_dir_is_readonly_violation(state_conn, repo, review_handoff, fake_bin):
+    write_fake_claude(fake_bin, "generic_writes")
+    register(state_conn, repo)
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, Progress())
+
+    assert output.result is None and output.failed[0] == "readonly_violation" and "notes.md" in output.failed[1]
+
+
+def test_generic_usage_limit_is_failed_usage_limit(state_conn, repo, review_handoff, fake_bin):
+    write_fake_claude(fake_bin, "usage_limit")
+    register(state_conn, repo)
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, Progress())
+
+    assert output.result is None and output.failed[0] == "usage_limit"
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+
+
+def test_generic_missing_executable_is_claude_unavailable(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+
+    output = adapter(state_conn, claude_bin="/nonexistent/claude").run(make_local_request(), review_handoff, Progress())
+
+    assert output.result is None and output.failed[0] == "claude_unavailable" and output.failed[2] is True
+
+
+@pytest.mark.parametrize("raw, outcome, note", [
+    (_envelope(structured_output={"outcome": "approved", "summary": "좋다"}), "approved", None),
+    (_envelope(structured_output={"outcome": "rejected", "summary": "나쁘다"}), "rejected",
+     "허용되지 않은 outcome 'rejected'"),
+    (_envelope(structured_output={"summary": "outcome 없음"}), "", "허용되지 않은 outcome ''"),
+    (_envelope(structured_output={"outcome": 7, "summary": "형식 오류"}), "", "구조화 출력 스키마 불일치"),
+    (_envelope(result="text only"), "", "구조화 출력 없음"),
+    (_envelope(is_error=True, result="Error: boom"), "", "is_error: Error: boom"),
+    ("not json", "", "결과 형식 불일치"),
+    (None, "", "결과 JSON 없음"),
+])
+def test_parse_generic_message(state_conn, raw, outcome, note):
+    parsed = adapter(state_conn).parse_generic_message(raw, ["approved", "changes_requested"])
+
+    assert parsed.outcome == outcome
+    if note is None:
+        assert parsed.parse_note is None and parsed.summary == "좋다"
+    else:
+        assert parsed.parse_note is not None and note in parsed.parse_note

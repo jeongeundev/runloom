@@ -7,6 +7,7 @@ runner 와의 약속:
   어댑터는 비워 두고(`[]`, kind 이름 `"verification_log"`), runner 가 중앙 ID 로 채운다.
 - 산출물의 `sha256`·`size` 는 마스킹 뒤 runner 가 다시 계산한다.
 - 요청·인계 자료에서 셸 명령·경로를 받아 실행하지 않는다. 검증 명령은 로컬 등록값에서만 온다.
+- `AdapterOutput.result` 는 내장 `code_change` 면 `CodeChangeResult`, 내장이 아닌 종류(`LocalTarget`)면 `GenericResult`.
 """
 
 import hashlib
@@ -20,6 +21,8 @@ from workflow.contracts.v1 import (
     CodeChangeResult,
     CodeChangeTarget,
     ExecutionRequest,
+    GenericResult,
+    LocalTarget,
     Verification,
 )
 
@@ -28,7 +31,7 @@ Progress = Callable[..., None]  # progress(message: str, *, runtime_ref: str | N
 
 @dataclass
 class AdapterOutput:
-    result: CodeChangeResult | None  # None 이면 실패
+    result: CodeChangeResult | GenericResult | None  # None 이면 실패
     artifacts: list[tuple[ArtifactMeta, bytes]] = field(default_factory=list)
     failed: tuple[str, str, bool] | None = None  # (code, message, process_stopped)
     runtime_ref: str = ""
@@ -47,17 +50,20 @@ def make_meta(kind: str, name: str, data: bytes, content_type: str) -> tuple[Art
 
 
 class EchoAdapter:
-    """테스트·e2e 용. 인계 자료 목록을 읽고 고정된 산출물을 돌려준다. 실제 도구를 띄우지 않고 코드를 바꾸지 않는다."""
+    """테스트·e2e 용. 인계 자료 목록을 읽고 고정된 산출물을 돌려준다. 실제 도구를 띄우지 않고 코드를 바꾸지 않는다.
+    내장이 아닌 종류(`LocalTarget`)는 인계 자료 목록을 요약에 담은 `GenericResult`(outcome 은 `kind_spec.outcomes[0]`)."""
 
     def run(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
         runtime_ref = f"echo:{request.execution_id}"
         progress("EchoAdapter 시작 — 실제 도구를 띄우지 않는다", runtime_ref=runtime_ref)
+        if isinstance(request.target, LocalTarget):
+            return self._run_generic(request, handoff_dir, progress, runtime_ref)
         if not isinstance(request.target, CodeChangeTarget):
             return AdapterOutput(
                 result=None, failed=("unsupported_kind", f"EchoAdapter 는 {request.kind} 를 처리하지 않는다", True),
                 runtime_ref=runtime_ref,
             )
-        names = sorted(p.name for p in handoff_dir.iterdir()) if handoff_dir.is_dir() else []
+        names = _listing(handoff_dir)
         progress(f"인계 자료 {len(names)}개 확인")
         listing = ("\n".join(names) + "\n").encode()
         base = request.target.base_commit
@@ -84,3 +90,25 @@ class EchoAdapter:
             ),
         )
         return AdapterOutput(result=result, artifacts=artifacts, failed=None, runtime_ref=runtime_ref)
+
+    @staticmethod
+    def _run_generic(request: ExecutionRequest, handoff_dir: Path, progress: Progress, runtime_ref: str) -> AdapterOutput:
+        spec = request.kind_spec
+        if spec is None:
+            return AdapterOutput(
+                result=None, failed=("kind_spec_missing", f"{request.kind} 요청에 kind_spec 이 없다", True),
+                runtime_ref=runtime_ref,
+            )
+        names = _listing(handoff_dir)
+        progress(f"인계 자료 {len(names)}개 확인")
+        result = GenericResult(
+            contract_version=1, execution_id=request.execution_id, task_id=request.task_id, kind=request.kind,
+            outcome=spec.outcomes[0],
+            summary=f"EchoAdapter: 인계 자료 {len(names)}개를 읽었고 파일을 만들지 않았다 — {', '.join(names) or '없음'}",
+            artifact_ids=[],
+        )
+        return AdapterOutput(result=result, artifacts=[], failed=None, runtime_ref=runtime_ref)
+
+
+def _listing(handoff_dir: Path) -> list[str]:
+    return sorted(p.name for p in handoff_dir.iterdir()) if handoff_dir.is_dir() else []

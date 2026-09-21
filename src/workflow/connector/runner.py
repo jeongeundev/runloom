@@ -11,6 +11,8 @@
   하나를 고른다 (`select_adapter`). 요청 본문의 값으로 실행 대상을 고르지 않는다.
 - 종료 이벤트(result_ready·failed)를 중앙이 받은 뒤 worktree·인계 디렉터리를 지운다 (`_cleanup_workdirs`). 결과는
   `task/{task_id}` 브랜치의 커밋으로 남아 있다. 지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다.
+- 내장이 아닌 종류(`LocalTarget`, ADR-0009)도 등록의 `tool`·`repo_path` 로 어댑터·인계 디렉터리를 정하지만 worktree 는
+  없다. 결과는 `GenericResult` 를 kind `generic_result` 로 올리고 같은 `result_ready` 를 보낸다.
 """
 
 import hashlib
@@ -39,18 +41,21 @@ from workflow.connector.config import ConnectorPaths
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import mask_secrets
 from workflow.contracts.v1 import (
+    BUILTIN_KIND_NAMES,
     CONTRACT_VERSION,
     ArtifactMeta,
     CodeChangeResult,
     CodeChangeTarget,
     ExecutionEvent,
     ExecutionRequest,
+    GenericResult,
     HandoffBundle,
+    LocalTarget,
 )
 
 log = logging.getLogger(__name__)
 
-_EXTENSIONS = {"application/json": "json", "text/plain": "txt", "text/markdown": "md"}
+_EXTENSIONS = {"application/json": "json", "text/plain": "txt", "text/markdown": "md", "text/x-diff": "patch"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 MESSAGE_MAX = 500
 
@@ -79,6 +84,22 @@ def _process_stopped(row: dict) -> bool:
     return bool(json.loads(row["failed_json"])[2])
 
 
+def _code_change_result(result_json: str, uploaded: list[dict], artifact_ids: list[str]) -> CodeChangeResult:
+    """어댑터가 비워 둔 `artifact_ids` 와 `verification.log_artifact_id` 를 업로드된 중앙 ID 로 채운다."""
+    by_kind: dict[str, str] = {}
+    for output in uploaded:
+        by_kind.setdefault(output["meta"].kind, output["artifact_id"])
+    result = CodeChangeResult.model_validate_json(result_json)
+    verification = result.verification
+    if verification is not None and "verification_log" in by_kind:
+        verification = verification.model_copy(update={"log_artifact_id": by_kind["verification_log"]})
+    return CodeChangeResult.model_validate({
+        **result.model_dump(),
+        "artifact_ids": artifact_ids,
+        "verification": None if verification is None else verification.model_dump(),
+    })
+
+
 class HandoffHashMismatch(Exception):
     pass
 
@@ -95,11 +116,11 @@ class AdapterNotSelected(Exception):
 def select_adapter(
     conn, adapters: Mapping[str, ExecutionAdapter], request: ExecutionRequest
 ) -> ExecutionAdapter:
-    """`target.local_registration_id` 의 로컬 등록이 가진 `tool` 로 어댑터를 고른다.
+    """`target.local_registration_id` 의 로컬 등록이 가진 `tool` 로 어댑터를 고른다 (코드 수정·사용자 정의 종류).
     등록 없음 → `registration_missing`, 그 도구의 어댑터 없음 → `adapter_missing`.
     로컬 등록이 없는 종류(진단)는 지금처럼 첫 어댑터에 넘긴다 — 어댑터가 `unsupported_kind` 로 답한다."""
     target = request.target
-    if not isinstance(target, CodeChangeTarget):
+    if not isinstance(target, (CodeChangeTarget, LocalTarget)):
         return next(iter(adapters.values()))
     registration = state.get_registration(conn, target.local_registration_id)
     if registration is None:
@@ -310,21 +331,18 @@ class Runner:
             return
 
         uploaded = self._upload_outputs(row)
-        by_kind: dict[str, str] = {}
-        for output in uploaded:
-            by_kind.setdefault(output["meta"].kind, output["artifact_id"])
-        result = CodeChangeResult.model_validate_json(row["result_json"])
-        verification = result.verification
-        if verification is not None and "verification_log" in by_kind:
-            verification = verification.model_copy(update={"log_artifact_id": by_kind["verification_log"]})
-        result = CodeChangeResult.model_validate({
-            **result.model_dump(),
-            "artifact_ids": [o["artifact_id"] for o in uploaded],
-            "verification": None if verification is None else verification.model_dump(),
-        })
+        artifact_ids = [o["artifact_id"] for o in uploaded]
+        if ExecutionRequest.model_validate_json(row["request_json"]).kind in BUILTIN_KIND_NAMES:
+            result = _code_change_result(row["result_json"], uploaded, artifact_ids)
+            kind = "code_change_result"
+        else:  # 사용자 정의 종류 — 봉투는 그대로, 산출물 ID 만 채운다
+            result = GenericResult.model_validate({
+                **GenericResult.model_validate_json(row["result_json"]).model_dump(), "artifact_ids": artifact_ids,
+            })
+            kind = "generic_result"
         data = result.model_dump_json(indent=2).encode()
         meta = ArtifactMeta(
-            contract_version=CONTRACT_VERSION, kind="code_change_result", name="code_change_result.json",
+            contract_version=CONTRACT_VERSION, kind=kind, name=f"{kind}.json",
             content_type="application/json", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
         )
         created = self._client.upload_artifact(execution_id, meta, data)
@@ -389,6 +407,8 @@ class Runner:
         execution_id = row["execution_id"]
         request = ExecutionRequest.model_validate_json(row["request_json"])
         repo = self._registered_repo(request)
+        if not isinstance(request.target, CodeChangeTarget):
+            repo = None  # 사용자 정의 종류(LocalTarget)는 worktree 가 없다 — 인계 디렉터리만 지운다
         cleaned = True
         if repo is not None:
             worktree = git_ops.worktree_path(repo, request.task_id)
@@ -416,8 +436,9 @@ class Runner:
     # --- 인계 자료 -----------------------------------------------------------------------------
 
     def _registered_repo(self, request: ExecutionRequest) -> Path | None:
-        """`target.local_registration_id` 의 로컬 등록이 가리키는 저장소 경로. 등록이 없거나 코드 수정이 아니면 None."""
-        if not isinstance(request.target, CodeChangeTarget):
+        """`target.local_registration_id` 의 로컬 등록이 가리키는 저장소 경로. 등록이 없거나 로컬 등록이 없는 종류(진단)면
+        None. 사용자 정의 종류(`LocalTarget`)도 이 경로 옆에 인계 디렉터리를 둔다 — worktree 는 만들지 않는다."""
+        if not isinstance(request.target, (CodeChangeTarget, LocalTarget)):
             return None
         registration = state.get_registration(self._conn, request.target.local_registration_id)
         return None if registration is None else Path(registration["repo_path"])
@@ -431,8 +452,10 @@ class Runner:
         return root / f"{_safe(request.task_id)}.handoff"
 
     def _download_handoff(self, request: ExecutionRequest, handoff_dir: Path) -> None:
-        """입력 산출물 중 handoff_bundle manifest 와 그 attachments 만 내려받아 해시를 확인하고 저장한다.
-        파일명 `{evidence_id}@{version}.{ext}`, manifest 는 `manifest.json`. 다른 입력은 `input-{artifact_id}.{ext}`."""
+        """입력 산출물 중 handoff_bundle manifest 와 그 attachments·inputs 만 내려받아 해시를 확인하고 저장한다.
+        manifest 는 `manifest.json`, 근거 첨부는 `{evidence_id}@{version}.{ext}`, 규칙으로 모은 입력은 `{kind}.{ext}`
+        (같은 kind 가 둘 이상이면 두 번째부터 `{kind}-{artifact_id 앞 8자}.{ext}`). 선행 결과 봉투가 inputs 에 없으면
+        `{source_kind}_result.{ext}` 로 더 내려받는다. 다른 입력은 `input-{artifact_id}.{ext}`."""
         handoff_dir.mkdir(parents=True, exist_ok=True)
         for artifact_id in request.input_artifact_ids:
             data, content_type = self._client.download_artifact(request.execution_id, artifact_id)
@@ -443,12 +466,28 @@ class Runner:
                 continue
             (handoff_dir / "manifest.json").write_bytes(data)
             for attachment in bundle.attachments:
-                blob, _ = self._client.download_artifact(request.execution_id, attachment.artifact_id)
-                digest = hashlib.sha256(blob).hexdigest()
-                if digest != attachment.sha256:
-                    raise HandoffHashMismatch(
-                        f"{attachment.evidence_id}@{attachment.version}: manifest 해시 {attachment.sha256[:12]}… "
-                        f"실제 {digest[:12]}…"
-                    )
+                blob = self._download_checked(
+                    request.execution_id, attachment.artifact_id, attachment.sha256,
+                    f"{attachment.evidence_id}@{attachment.version}",
+                )
                 name = f"{_safe(attachment.evidence_id)}@{_safe(attachment.version)}.{_extension(attachment.content_type)}"
                 (handoff_dir / name).write_bytes(blob)
+            seen_kinds: set[str] = set()
+            for ref in bundle.inputs:
+                blob = self._download_checked(request.execution_id, ref.artifact_id, ref.sha256, ref.kind)
+                stem = ref.kind if ref.kind not in seen_kinds else f"{ref.kind}-{_safe(ref.artifact_id)[:8]}"
+                seen_kinds.add(ref.kind)
+                (handoff_dir / f"{stem}.{_extension(ref.content_type)}").write_bytes(blob)
+            if bundle.source_result_artifact_id not in {ref.artifact_id for ref in bundle.inputs}:
+                blob, content_type = self._client.download_artifact(
+                    request.execution_id, bundle.source_result_artifact_id,
+                )
+                (handoff_dir / f"{bundle.source_kind}_result.{_extension(content_type)}").write_bytes(blob)
+
+    def _download_checked(self, execution_id: str, artifact_id: str, sha256: str, label: str) -> bytes:
+        """manifest 가 적은 해시와 다르면 `HandoffHashMismatch` — 인계 자료를 어댑터에 넘기지 않는다."""
+        blob, _ = self._client.download_artifact(execution_id, artifact_id)
+        digest = hashlib.sha256(blob).hexdigest()
+        if digest != sha256:
+            raise HandoffHashMismatch(f"{label}: manifest 해시 {sha256[:12]}… 실제 {digest[:12]}…")
+        return blob

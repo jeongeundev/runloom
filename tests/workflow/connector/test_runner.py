@@ -15,9 +15,19 @@ from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
 from workflow.connector.client import Unreachable
 from workflow.connector.git_ops import GitError
 from workflow.connector.runner import Runner
-from workflow.contracts.v1 import CodeChangeResult, ExecutionRequest, Verification
+from workflow.contracts.v1 import CodeChangeResult, ExecutionRequest, GenericResult, Verification
 
-from .conftest import BASE_COMMIT, CONNECTOR_ID, NOW, FakeCentral, assign_with_handoff, make_request
+from .conftest import (
+    BASE_COMMIT,
+    CONNECTOR_ID,
+    NOW,
+    REVIEW_SPEC,
+    FakeCentral,
+    assign_with_generic_handoff,
+    assign_with_handoff,
+    make_local_request,
+    make_request,
+)
 
 
 class StubAdapter:
@@ -127,10 +137,11 @@ def test_handoff_dir_has_manifest_and_attachments_named_by_evidence(fake, client
     _, handoff_dir = adapter.calls[0]
     assert handoff_dir.name == f"{request.task_id}.handoff"
     files = adapter.handoff_files[0]
-    assert sorted(files) == ["log-daily-0920@1.txt", "manifest.json", "response-after@1.json"]
+    assert sorted(files) == ["diagnosis_result.json", "log-daily-0920@1.txt", "manifest.json", "response-after@1.json"]
     manifest = json.loads(files["manifest.json"])
     assert manifest["source_execution_id"] == "exec-diagnose-001"
     assert json.loads(files["response-after@1.json"])["report_date"] == "2026-09-19"
+    assert json.loads(files["diagnosis_result.json"])["outcome"] == "ready_for_handoff"  # inputs 의 diagnosis_result
 
 
 def test_handoff_dir_is_next_to_registered_repo(fake, client, state_conn, paths, tmp_path):
@@ -591,3 +602,188 @@ def test_cleanup_passes_quietly_when_worktree_never_existed(fake, client, state_
     assert not adapter.calls[0][1].exists()
     assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
     assert caplog.records == []
+
+
+# --- 사용자 정의 종류 (`LocalTarget`) — 인계 입력 내려받기·어댑터 선택·generic_result 업로드·정리 ----------------
+
+
+def generic_output(request: ExecutionRequest, outcome: str = "approved", extra_artifacts=()) -> AdapterOutput:
+    result = GenericResult(
+        contract_version=1, execution_id=request.execution_id, task_id=request.task_id, kind=request.kind,
+        outcome=outcome, summary="stub 검토", artifact_ids=[],
+    )
+    artifacts = [
+        make_meta("claude_jsonl", "claude.jsonl", b'{"type":"result"}\n', "application/x-ndjson"),
+        make_meta("claude_stderr", "claude-stderr.txt", b"fake claude: done\n", "text/plain"),
+        *extra_artifacts,
+    ]
+    return AdapterOutput(result=result, artifacts=artifacts, failed=None, runtime_ref="stub:x")
+
+
+class GenericStubAdapter(StubAdapter):
+    """`LocalTarget` 요청에 `GenericResult` 를 돌려주는 stub. 인계 디렉터리에 파일을 만들지 않는다."""
+
+    def run(self, request, handoff_dir, progress):
+        self._output = self._output or generic_output(request)
+        return super().run(request, handoff_dir, progress)
+
+
+def test_generic_handoff_inputs_are_saved_by_kind_with_extension(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_generic_handoff(fake)
+    adapter = GenericStubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    (called_request, handoff_dir), = adapter.calls
+    assert called_request.kind == "review" and called_request.kind_spec == REVIEW_SPEC
+    assert handoff_dir == tmp_path / f"{REPO}-worktrees" / f"{request.task_id}.handoff"  # 등록 repo 옆
+    files = adapter.handoff_files[0]
+    assert sorted(files) == ["code_change_result.json", "diff.patch", "manifest.json", "test_log_after.txt"]
+    assert files["diff.patch"].startswith(b"--- a/daily_report/transformer.py")
+    assert json.loads(files["code_change_result.json"])["outcome"] == "ready_for_review"
+    assert files["test_log_after.txt"].startswith(b"exit_code=0")
+    assert json.loads(files["manifest.json"])["source_kind"] == "code_change"
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_generic_handoff_input_hash_mismatch_fails_before_adapter(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_generic_handoff(fake, tamper=True)
+    adapter = GenericStubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert adapter.calls == []
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "failed"]
+    assert events[-1]["data"]["code"] == "handoff_hash_mismatch"
+    assert events[-1]["data"]["process_stopped"] is True
+    assert "diff" in events[-1]["data"]["message"]
+    assert fake.executions[request.execution_id]["status"] == "failed"
+
+
+def test_generic_handoff_second_input_of_same_kind_gets_artifact_id_suffix(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_generic_handoff(fake, duplicate_kind=True)
+    adapter = GenericStubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    manifest = json.loads(adapter.handoff_files[0]["manifest.json"])
+    second = [i for i in manifest["inputs"] if i["kind"] == "test_log_after"][1]
+    expected = f"test_log_after-{second['artifact_id'][:8]}.txt"
+    assert sorted(adapter.handoff_files[0]) == sorted([
+        "code_change_result.json", "diff.patch", "manifest.json", "test_log_after.txt", expected,
+    ])
+    assert adapter.handoff_files[0][expected].endswith(b"(2)\n")
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_source_result_outside_inputs_is_saved_as_source_kind_result(fake, client, state_conn, paths, tmp_path):
+    """규칙 handoff_kinds 에 선행 결과 kind 가 없어도 선행 결과 봉투는 `{source_kind}_result.{ext}` 로 내려받는다."""
+    request = assign_with_generic_handoff(fake, source_result_in_inputs=False)
+    adapter = GenericStubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    files = adapter.handoff_files[0]
+    assert sorted(files) == ["code_change_result.json", "diff.patch", "manifest.json", "test_log_after.txt"]
+    assert json.loads(files["code_change_result.json"])["summary"] == "(테스트 수정 결과)"
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_local_target_adapter_is_chosen_by_registered_tool(fake, client, state_conn, paths, tmp_path):
+    register(state_conn, tmp_path, "local-codex", tool="codex")
+    register(state_conn, tmp_path, "local-claude", tool="claude")
+    codex, claude = GenericStubAdapter(), GenericStubAdapter()
+    runner = Runner(client, state_conn, paths, {"codex": codex, "claude": claude}, CONNECTOR_ID, lambda: NOW,
+                    tmp_path / "handoff")
+    request = assign_with_generic_handoff(fake, make_local_request(local_registration_id="local-claude"))
+
+    runner.tick()
+
+    assert [r.execution_id for r, _ in claude.calls] == [request.execution_id] and codex.calls == []
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_local_target_missing_registration_fails_before_download(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_generic_handoff(fake)  # local-demo-report 등록 없음
+    adapter = GenericStubAdapter()
+    runner = Runner(client, state_conn, paths, {"claude": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    assert adapter.calls == []
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "failed"]
+    assert events[-1]["data"]["code"] == "registration_missing"
+    assert not any("/artifacts/" in str(r.url) for r in fake.requests)
+
+
+def test_finalize_uploads_generic_result_and_sends_result_ready(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_generic_handoff(fake)
+    adapter = GenericStubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "started", "result_ready"]
+    uploaded = fake.artifacts_of(request.execution_id)
+    assert set(uploaded) == {"claude_jsonl", "claude_stderr", "generic_result"}
+    assert "code_change_result" not in uploaded
+    assert uploaded["generic_result"]["name"] == "generic_result.json"
+    assert uploaded["generic_result"]["content_type"] == "application/json"
+    result = GenericResult.model_validate_json(uploaded["generic_result"]["data"])
+    assert (result.kind, result.outcome, result.summary) == ("review", "approved", "stub 검토")
+    assert (result.execution_id, result.task_id) == (request.execution_id, request.task_id)
+    assert sorted(result.artifact_ids) == sorted(
+        a_id for a_id, a in fake.artifacts.items()
+        if a["execution_id"] == request.execution_id and a["kind"] != "generic_result"
+    )
+    result_artifact_id = events[-1]["data"]["result_artifact_id"]
+    assert fake.artifacts[result_artifact_id]["kind"] == "generic_result"
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    row = state.get_execution(state_conn, request.execution_id)
+    assert GenericResult.model_validate_json(row["result_json"]).kind == "review"  # 로컬 기록은 문자열 그대로
+    assert state.active_execution(state_conn) is None
+
+
+def test_echo_adapter_completes_generic_flow(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_generic_handoff(fake)
+
+    make_runner(client, state_conn, paths, EchoAdapter(), tmp_path).tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    result = GenericResult.model_validate_json(fake.artifacts_of(request.execution_id)["generic_result"]["data"])
+    assert result.outcome == "approved" and "diff.patch" in result.summary and result.artifact_ids == []
+
+
+def test_local_target_cleanup_removes_handoff_dir_without_worktree(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    base = git_ops.head_sha(repo)
+    request = assign_with_generic_handoff(fake)
+    adapter = GenericStubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    handoff_dir = adapter.calls[0][1]
+    assert handoff_dir == repo.parent / f"{REPO}-worktrees" / f"{request.task_id}.handoff"
+    assert not handoff_dir.exists()
+    assert not git_ops.worktree_path(repo, request.task_id).exists()  # worktree 는 만들지 않았다
+    assert _git(repo, "worktree", "list").count("\n") == 0 and _git(repo, "branch", "--list", "task/*") == ""
+    assert _git(repo, "rev-parse", "HEAD") == base and _git(repo, "status", "--porcelain") == ""
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+
+
+def test_local_target_keep_workdirs_leaves_handoff_dir(fake, client, state_conn, paths, tmp_path):
+    make_git_repo(tmp_path)
+    request = assign_with_generic_handoff(fake)
+    adapter = GenericStubAdapter()
+    register(state_conn, tmp_path)
+    runner = Runner(client, state_conn, paths, {"stub": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff",
+                    keep_workdirs=True)
+
+    runner.tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    assert adapter.calls[0][1].exists()
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] is None

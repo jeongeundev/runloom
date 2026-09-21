@@ -7,33 +7,39 @@
 - 도구의 말을 믿지 않는다: 변경 없음·재현 테스트 없음이면 `needs_information`, 검증은 별도 체크아웃에서 다시 실행한다.
 
 하위 클래스는 `tool_name`·`raw_kinds` 와 `launch`(프로세스를 띄우고 `ToolRun` 을 돌려준다)·`parse_last_message`
-(도구의 마지막 구조화 메시지를 `ToolResult` 로)만 구현한다. 도구 출력에서 실패 사유(사용량 한도 등)를 읽어야 하면
-`classify_failure` 를 덮어쓴다 — 기본은 None(판정 없음)이다.
+(도구의 마지막 구조화 메시지를 `ToolResult` 로), 그리고 읽기 전용 실행의 `launch_readonly`·`parse_generic_message` 만
+구현한다. 도구 출력에서 실패 사유(사용량 한도 등)를 읽어야 하면 `classify_failure` 를 덮어쓴다 — 기본은 None(판정 없음)이다.
+
+내장이 아닌 종류(`LocalTarget`, ADR-0009)는 `_run_generic` 이 **읽기 전용**으로 돌린다: worktree·커밋·검증 프로필 없이
+인계 디렉터리(handoff dir)에서 `launch_readonly` → 원시 로그 보존 → 인계 파일 변경 확인(`readonly_violation`) →
+`{outcome, summary}` 를 읽어 `GenericResult`. `outcome ∉ kind_spec.outcomes` 면 `result_invalid` 로 실패한다.
 
 셸 명령은 로컬 등록의 검증 프로필에서만 온다. 요청·인계 자료·모델 출력에서 명령·경로를 받아 실행하지 않는다.
 도구·검증 프로세스의 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐이다 — 연결 토큰·API 키를 상속하지 않는다.
 """
 
+import hashlib
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import AdapterOutput, Progress, make_meta
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import codex_env, mask_secrets
-from workflow.connector.prompt import build_prompt
+from workflow.connector.prompt import build_generic_prompt, build_prompt
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
     CodeChangeResult,
     CodeChangeTarget,
     ExecutionRequest,
+    GenericResult,
+    LocalTarget,
     Verification,
 )
 
@@ -59,6 +65,24 @@ RESULT_SCHEMA = {
 }
 
 
+def outcome_note(outcome: str, outcomes: Sequence[str]) -> str:
+    """`parse_generic_message` 가 허용 목록 밖 outcome 에 남기는 사유 — 실패 메시지(`result_invalid`)가 된다."""
+    return f"허용되지 않은 outcome {outcome!r} — 허용: {', '.join(outcomes)}"
+
+
+def generic_result_schema(outcomes: Sequence[str]) -> dict:
+    """사용자 정의 종류의 마지막 메시지 스키마 — `outcome` 은 `kind_spec.outcomes` 중 하나, `summary` 는 문자열."""
+    return {
+        "type": "object",
+        "properties": {
+            "outcome": {"type": "string", "enum": list(outcomes)},
+            "summary": {"type": "string"},
+        },
+        "required": ["outcome", "summary"],
+        "additionalProperties": False,
+    }
+
+
 @dataclass(frozen=True)
 class ToolRun:
     """도구 프로세스 한 번의 원시 결과. 어댑터가 커밋·검증·판정을 하기 전의 재료다."""
@@ -75,15 +99,18 @@ class ToolRun:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """`parse_last_message` 의 결과 — 도구의 주장이다. 공통 흐름이 변경·재현 테스트 유무로 다시 판정한다."""
+    """`parse_last_message`·`parse_generic_message` 의 결과 — 도구의 주장이다. 코드 수정은 공통 흐름이 변경·재현 테스트
+    유무로 다시 판정하고(outcome 은 `ready_for_review`|`needs_information`), 사용자 정의 종류는 `outcome ∈ kind_spec.outcomes`
+    를 확인한다."""
 
-    outcome: Literal["ready_for_review", "needs_information"]
+    outcome: str
     summary: str
-    parse_note: str | None  # 마지막 메시지를 못 읽었을 때 사유
+    parse_note: str | None  # 마지막 메시지를 못 읽었거나 outcome 이 허용 목록 밖일 때 사유
 
 
 class LocalToolAdapter:
-    """로컬 도구 공통 흐름. 하위 클래스는 `tool_name`·`raw_kinds`·`launch`·`parse_last_message` 만 구현한다."""
+    """로컬 도구 공통 흐름. 하위 클래스는 `tool_name`·`raw_kinds`·`launch`·`parse_last_message` 와 읽기 전용 실행의
+    `launch_readonly`·`parse_generic_message` 만 구현한다."""
 
     tool_name: str  # "codex" | "claude" — 실패 코드 `{tool}_unavailable` 와 로그 이름에 쓴다
     raw_kinds: tuple[str, str]  # ("codex_jsonl", "codex_stderr") 처럼 원시 stdout/stderr 산출물 kind
@@ -111,6 +138,16 @@ class LocalToolAdapter:
     def parse_last_message(self, raw: str | None) -> ToolResult:
         raise NotImplementedError
 
+    def launch_readonly(self, cwd: Path, prompt_text: str, schema: dict, progress: Progress) -> ToolRun:
+        """읽기 전용으로 도구를 `cwd`(인계 디렉터리)에서 띄운다. `schema` 는 마지막 메시지의 JSON Schema
+        (`generic_result_schema`). 시작 직후 `progress(..., runtime_ref=...)` 한 번. 실행 파일이 없으면 OSError."""
+        raise NotImplementedError
+
+    def parse_generic_message(self, raw: str | None, outcomes: Sequence[str]) -> ToolResult:
+        """마지막 메시지에서 `{outcome, summary}` 를 읽는다. `outcome ∉ outcomes` 면 `parse_note` 에 사유를 적고 outcome 은
+        그대로 둔다 — 공통 흐름이 `result_invalid` 로 실패시킨다. 못 읽으면 outcome 은 빈 문자열."""
+        raise NotImplementedError
+
     def classify_failure(self, run: ToolRun) -> tuple[str, str] | None:
         """도구 출력에서 실패 사유를 읽는 훅 — `(code, message)` 면 공통 흐름이 그 자리에서 `failed` 로 끝낸다
         (`process_stopped` 는 `run.stopped`). 시간 초과는 이 훅보다 먼저 판정한다. 기본은 None (Codex)."""
@@ -124,6 +161,8 @@ class LocalToolAdapter:
 
     def run(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
         target = request.target
+        if isinstance(target, LocalTarget):
+            return self._run_generic(request, handoff_dir, progress)
         if not isinstance(target, CodeChangeTarget):
             return _failed("unsupported_kind", f"{type(self).__name__} 는 {request.kind} 를 처리하지 않는다")
         registration = state.get_registration(self._conn, target.local_registration_id)
@@ -147,11 +186,7 @@ class LocalToolAdapter:
         except OSError as exc:  # 실행 파일 없음 등 — 프로세스가 시작되지 않았다
             return _failed(f"{self.tool_name}_unavailable", f"{self.tool_name} 을 시작하지 못함: {exc}")
         runtime_ref = f"pid:{run.pid};start:{run.started_at}"
-        stdout_kind, stderr_kind = self.raw_kinds
-        raw_artifacts = [
-            make_meta(stdout_kind, f"{self.tool_name}.jsonl", _masked(run.stdout), "application/x-ndjson"),
-            make_meta(stderr_kind, f"{self.tool_name}-stderr.txt", _masked(run.stderr), "text/plain"),
-        ]
+        raw_artifacts = self._raw_artifacts(run)
         if run.timed_out:
             return AdapterOutput(
                 result=None, artifacts=raw_artifacts,
@@ -210,6 +245,61 @@ class LocalToolAdapter:
             *raw_artifacts,
         ]
         return AdapterOutput(result=result, artifacts=artifacts, runtime_ref=runtime_ref)
+
+    # --- 사용자 정의 종류 — 읽기 전용 -----------------------------------------------------------------
+
+    def _run_generic(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
+        """`LocalTarget` 실행. 등록 확인 → 인계 디렉터리에서 `launch_readonly` → 원시 로그 → 시간 초과·`classify_failure`
+        → 인계 파일 변경 확인 → `{outcome, summary}` → `GenericResult`. worktree·커밋·검증 프로필은 없다."""
+        target = request.target
+        registration = state.get_registration(self._conn, target.local_registration_id)
+        if registration is None:
+            return _failed("registration_missing", f"로컬 등록 {target.local_registration_id} 이 없다")
+        spec = request.kind_spec
+        if spec is None:
+            return _failed("kind_spec_missing", f"{request.kind} 요청에 kind_spec 이 없다")
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+        before = _snapshot(handoff_dir)
+
+        try:
+            run = self.launch_readonly(
+                handoff_dir, build_generic_prompt(request, handoff_dir), generic_result_schema(spec.outcomes), progress,
+            )
+        except OSError as exc:  # 실행 파일 없음 등 — 프로세스가 시작되지 않았다
+            return _failed(f"{self.tool_name}_unavailable", f"{self.tool_name} 을 시작하지 못함: {exc}")
+        runtime_ref = f"pid:{run.pid};start:{run.started_at}"
+        raw_artifacts = self._raw_artifacts(run)
+
+        def failed(code: str, message: str) -> AdapterOutput:
+            return AdapterOutput(
+                result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
+            )
+
+        if run.timed_out:
+            return failed("timeout", f"{self.tool_name} 실행이 {self._timeout}초를 초과해 종료했습니다.")
+        failure = self.classify_failure(run)
+        if failure is not None:
+            return failed(*failure)
+        changed = _changed_files(before, _snapshot(handoff_dir))
+        if changed:
+            return failed("readonly_violation", f"읽기 전용 실행이 인계 디렉터리의 파일을 바꿨다: {', '.join(changed)}")
+
+        parsed = self.parse_generic_message(run.last_message, spec.outcomes)
+        if parsed.outcome not in spec.outcomes:
+            return failed("result_invalid", parsed.parse_note or f"허용되지 않은 outcome {parsed.outcome!r}")
+        result = GenericResult(
+            contract_version=CONTRACT_VERSION, execution_id=request.execution_id, task_id=request.task_id,
+            kind=request.kind, outcome=parsed.outcome, summary=parsed.summary, artifact_ids=[],
+        )
+        return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref)
+
+    def _raw_artifacts(self, run: ToolRun) -> list[tuple]:
+        """도구의 원시 stdout/stderr — `raw_kinds` 의 kind 로, 마스킹해서 보존한다."""
+        stdout_kind, stderr_kind = self.raw_kinds
+        return [
+            make_meta(stdout_kind, f"{self.tool_name}.jsonl", _masked(run.stdout), "application/x-ndjson"),
+            make_meta(stderr_kind, f"{self.tool_name}-stderr.txt", _masked(run.stderr), "text/plain"),
+        ]
 
     # --- 검증 프로필 ----------------------------------------------------------------------------
 
@@ -288,6 +378,19 @@ def communicate_or_stop(
 def _failed(code: str, message: str) -> AdapterOutput:
     """도구를 띄우기 전의 실패 — 프로세스가 없으므로 process_stopped=True."""
     return AdapterOutput(result=None, failed=(code, message, True))
+
+
+def _snapshot(root: Path) -> dict[str, str]:
+    """인계 디렉터리 안 파일의 상대 경로 → sha256. 읽기 전용 실행 전후를 비교하는 데 쓴다."""
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+
+
+def _changed_files(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """추가·삭제·수정된 파일 이름 (정렬)."""
+    return sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
 
 
 def _masked(data: bytes) -> bytes:

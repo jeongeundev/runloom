@@ -3,9 +3,9 @@
 import hashlib
 
 from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
-from workflow.contracts.v1 import ExecutionRequest
+from workflow.contracts.v1 import ExecutionRequest, GenericResult
 
-from .conftest import BASE_COMMIT, make_request
+from .conftest import BASE_COMMIT, make_local_request, make_request
 
 
 class Progress:
@@ -76,3 +76,36 @@ def test_echo_adapter_refuses_diagnosis_kind(tmp_path):
 
     assert output.result is None
     assert output.failed[0] == "unsupported_kind" and output.failed[2] is True
+
+
+# --- 사용자 정의 종류 (`LocalTarget`) -----------------------------------------------------------------
+
+
+def test_echo_adapter_local_target_returns_generic_result_without_writing(tmp_path):
+    request = make_local_request()
+    handoff_dir = tmp_path / f"{request.task_id}.handoff"
+    handoff_dir.mkdir()
+    for name in ("manifest.json", "diff.patch", "code_change_result.json"):
+        (handoff_dir / name).write_text("{}")
+    progress = Progress()
+
+    output = EchoAdapter().run(request, handoff_dir, progress)
+
+    assert progress.calls[0] == ("EchoAdapter 시작 — 실제 도구를 띄우지 않는다", f"echo:{request.execution_id}")
+    assert output.failed is None and output.runtime_ref == f"echo:{request.execution_id}"
+    result = output.result
+    assert isinstance(result, GenericResult)
+    assert (result.execution_id, result.task_id, result.kind) == (request.execution_id, request.task_id, "review")
+    assert result.outcome == "approved"  # kind_spec.outcomes[0]
+    assert "code_change_result.json" in result.summary and "diff.patch" in result.summary and "3개" in result.summary
+    assert result.artifact_ids == [] and output.artifacts == []
+    assert sorted(p.name for p in handoff_dir.iterdir()) == ["code_change_result.json", "diff.patch", "manifest.json"]
+
+
+def test_echo_adapter_local_target_without_kind_spec_is_kind_spec_missing(tmp_path):
+    request = make_local_request().model_copy(update={"kind_spec": None})
+
+    output = EchoAdapter().run(request, tmp_path, Progress())
+
+    assert output.result is None
+    assert output.failed[0] == "kind_spec_missing" and output.failed[2] is True and "review" in output.failed[1]
