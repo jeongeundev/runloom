@@ -83,6 +83,7 @@ def request_body(execution_id: str, task_id: str, kind: str = "code_change", inp
         "request": "인계된 진단 근거로 보고서 변환 실패를 재현하는 테스트를 먼저 작성하세요.",
         "input_artifact_ids": list(inputs),
         "target": target,
+        "kind_spec": None,
     }
 
 

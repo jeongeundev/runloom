@@ -13,18 +13,26 @@ from workflow.adapters.db import connect
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     ArtifactMissing,
+    DuplicateKind,
+    DuplicateRule,
     DuplicateStartKey,
     EventConflict,
     HashMismatch,
     InvalidTransition,
+    KindInUse,
+    KindProtected,
     NotFound,
     SequenceGap,
 )
 from workflow.contracts.v1 import (
+    BUILTIN_KINDS,
+    BUILTIN_RULES,
     ArtifactMeta,
     ExecutionEvent,
     ExecutionRequest,
+    KindSpec,
     SelectionRecord,
+    SuccessorRule,
 )
 
 from .conftest import NOW
@@ -647,10 +655,15 @@ def test_download_allowed_three_paths_and_denial(seeded, store):
     result = b'{"outcome": "ready_for_handoff"}'
     res, _ = repo.store_artifact(conn, store, execution_id="exec-diag", session_id=SESSION,
                                  meta=_meta(result, "diagnosis_result"), data=result, now=NOW)
+    trace_bytes = b"[]"
+    trace, _ = repo.store_artifact(conn, store, execution_id="exec-diag", session_id=SESSION,
+                                   meta=_meta(trace_bytes, "tool_trace"), data=trace_bytes, now=NOW)
     manifest = json.dumps({
         "contract_version": 1,
         "source_execution_id": "exec-diag",
-        "diagnosis_result_artifact_id": res.artifact_id,
+        "source_kind": "diagnosis",
+        "source_result_artifact_id": res.artifact_id,
+        "inputs": [],
         "attachments": [{"evidence_id": "response-after", "version": "1",
                          "content_type": "application/json", "artifact_id": ev.artifact_id,
                          "sha256": ev.sha256}],
@@ -668,7 +681,8 @@ def test_download_allowed_three_paths_and_denial(seeded, store):
     assert repo.download_allowed(conn, store, "exec-fix", bundle.artifact_id)  # 입력
     assert repo.download_allowed(conn, store, "exec-fix", ev.artifact_id)  # manifest 첨부
     assert repo.download_allowed(conn, store, "exec-fix", mine.artifact_id)  # 자기 산출물
-    assert not repo.download_allowed(conn, store, "exec-fix", res.artifact_id)  # 나열되지 않은 A 산출물
+    assert repo.download_allowed(conn, store, "exec-fix", res.artifact_id)  # source_result_artifact_id
+    assert not repo.download_allowed(conn, store, "exec-fix", trace.artifact_id)  # 나열되지 않은 A 산출물
     assert not repo.download_allowed(conn, store, "exec-fix", "art-none")
     assert not repo.download_allowed(conn, store, "exec-none", mine.artifact_id)
 
@@ -831,6 +845,7 @@ def test_results_awaiting_verdict_lists_result_ready_without_verdict(seeded, sto
     )
     assert [r["execution_id"] for r in repo.results_awaiting_verdict(conn, "diagnosis")] == ["exec-1"]
     assert repo.results_awaiting_verdict(conn, "code_change") == []
+    assert [r["execution_id"] for r in repo.results_awaiting_verdict(conn)] == ["exec-1"]  # 모든 종류
     conn.execute(
         "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
         (TASK_A, "exec-1", json.dumps({"outcome": "passed", "checks": []}), NOW),
@@ -838,16 +853,16 @@ def test_results_awaiting_verdict_lists_result_ready_without_verdict(seeded, sto
     assert repo.results_awaiting_verdict(conn, "diagnosis") == []
 
 
-def test_tasks_with_completed_predecessor(seeded):
+def test_tasks_with_ready_predecessor_by_completed_predecessor(seeded):
     conn = seeded
     repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
-    assert repo.tasks_with_completed_predecessor(conn) == []
+    assert repo.tasks_with_ready_predecessor(conn) == []
     repo.update_task_status(conn, TASK_A, "완료", "판정 근거: 12/12")
-    assert repo.tasks_with_completed_predecessor(conn) == []  # finished_at 이 없으면 완료로 보지 않는다
+    assert repo.tasks_with_ready_predecessor(conn) == []  # finished_at 이 없으면 완료로 보지 않는다
     repo.update_task_status(conn, TASK_A, "완료", "판정 근거: 12/12", finished_at=LATER)
-    assert [r["task_id"] for r in repo.tasks_with_completed_predecessor(conn)] == [TASK_B]
+    assert [r["task_id"] for r in repo.tasks_with_ready_predecessor(conn)] == [TASK_B]
     repo.update_task_status(conn, TASK_B, "실패", "검토 거절", finished_at=LATER)
-    assert repo.tasks_with_completed_predecessor(conn) == []
+    assert repo.tasks_with_ready_predecessor(conn) == []
 
 
 def test_get_connector(conn):
@@ -1026,3 +1041,302 @@ def test_list_tasks_is_unchanged_by_chain_columns(seeded):
     repo.insert_chain(conn, _chain(), NOW)
     repo.insert_task(conn, {**_task("t-imported"), "chain_id": "chain-1", "source_ref": "OPS-42"}, LATER)
     assert [r["task_id"] for r in repo.list_tasks(conn, SESSION)] == [TASK_A, "t-imported"]
+
+
+# --- phase 6: 업무 종류·후속 규칙 (ADR-0009) -------------------------------------
+
+
+REVIEW = KindSpec(
+    kind="review", label="검토", capability_code="review", scope_key="repository_id",
+    input_kinds=["diff", "code_change_result"], output_kind="generic_result",
+    outcomes=["approved", "changes_requested", "needs_information"],
+    instructions="diff 를 읽고 검토하세요.", builtin=False,
+)
+FIX_TO_REVIEW = SuccessorRule(
+    from_kind="code_change", on_outcomes=["ready_for_review"], to_kind="review",
+    handoff_kinds=["diff", "code_change_result", "test_log_after"],
+)
+
+
+def _verdict_row(conn, task_id: str, execution_id: str, outcome: str = "passed") -> None:
+    conn.execute(
+        "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
+        (task_id, execution_id, json.dumps({"outcome": outcome, "checks": []}), NOW),
+    )
+
+
+def _to_result_ready(conn, store, execution_id: str, kind: str = "diagnosis_result") -> str:
+    """queued 실행을 accepted → started → result_ready 로. 결과 산출물 ID 를 돌려준다."""
+    repo.append_event(conn, execution_id, _event(execution_id, 1, "accepted", {}), "conn", NOW)
+    repo.append_event(conn, execution_id, _event(execution_id, 2, "started", {"runtime_ref": "pid:1"}), "conn", NOW)
+    data = json.dumps({"outcome": "ready_for_handoff", "id": execution_id}).encode()
+    created, _ = repo.store_artifact(conn, store, execution_id=execution_id, session_id=SESSION,
+                                     meta=_meta(data, kind), data=data, now=NOW)
+    repo.append_event(conn, execution_id, _event(execution_id, 3, "result_ready",
+                                                 {"result_artifact_id": created.artifact_id}), "conn", NOW)
+    return created.artifact_id
+
+
+def test_create_session_seeds_builtin_kinds_and_rule_per_session(conn):
+    repo.create_session(conn, SESSION, NOW)
+    assert repo.list_kinds(conn, SESSION) == list(BUILTIN_KINDS)
+    rules = repo.list_rules(conn, SESSION)
+    assert [rule for _, rule in rules] == list(BUILTIN_RULES)
+    assert all(rule_id.startswith("rule-") for rule_id, _ in rules)
+    assert repo.list_kinds(conn, OTHER_SESSION) == [] and repo.list_rules(conn, OTHER_SESSION) == []
+    repo.create_session(conn, OTHER_SESSION, LATER)
+    assert repo.list_kinds(conn, OTHER_SESSION) == list(BUILTIN_KINDS)
+    assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
+    assert repo.get_kind(conn, SESSION, "diagnosis") == BUILTIN_KINDS[0]
+    assert repo.get_kind(conn, SESSION, "review") is None
+
+
+def test_create_session_is_atomic_with_seed(conn):
+    repo.create_session(conn, SESSION, NOW)
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.create_session(conn, SESSION, LATER)
+    assert len(repo.list_kinds(conn, SESSION)) == 2 and len(repo.list_rules(conn, SESSION)) == 1
+
+
+def test_insert_kind_roundtrip_ordering_and_duplicate(seeded):
+    conn = seeded
+    zebra = REVIEW.model_copy(update={"kind": "zebra", "capability_code": "zebra"})
+    repo.insert_kind(conn, SESSION, zebra, NOW)
+    repo.insert_kind(conn, SESSION, REVIEW, LATER)
+    apple = REVIEW.model_copy(update={"kind": "apple", "capability_code": "apple"})
+    repo.insert_kind(conn, SESSION, apple, NOW)
+    assert repo.get_kind(conn, SESSION, "review") == REVIEW
+    assert repo.get_kind(conn, OTHER_SESSION, "review") is None  # 세션 격리
+    # 내장 먼저(BUILTIN_KINDS 순), 그 다음 created_at·kind 순
+    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == [
+        "diagnosis", "code_change", "apple", "zebra", "review"]
+    with pytest.raises(DuplicateKind):
+        repo.insert_kind(conn, SESSION, REVIEW, LATER)
+    with pytest.raises(DuplicateKind):  # 내장 이름 재등록도 중복
+        repo.insert_kind(conn, SESSION, BUILTIN_KINDS[0], LATER)
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 세션
+        repo.insert_kind(conn, "no-such-session", REVIEW, NOW)
+
+
+def test_delete_kind_protects_builtin_and_in_use(seeded):
+    conn = seeded
+    with pytest.raises(KindProtected):
+        repo.delete_kind(conn, SESSION, "diagnosis")
+    with pytest.raises(NotFound):
+        repo.delete_kind(conn, SESSION, "review")
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    repo.insert_kind(conn, OTHER_SESSION, REVIEW, NOW)
+    rule_id = repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, NOW)
+    with pytest.raises(KindInUse):  # 규칙이 참조
+        repo.delete_kind(conn, SESSION, "review")
+    repo.delete_rule(conn, SESSION, rule_id)
+    repo.insert_task(conn, _task("review-1", kind="review", predecessor=TASK_A), NOW)
+    with pytest.raises(KindInUse):  # Task 가 사용
+        repo.delete_kind(conn, SESSION, "review")
+    repo.delete_kind(conn, OTHER_SESSION, "review")  # 다른 세션의 같은 이름은 무관
+    assert repo.get_kind(conn, OTHER_SESSION, "review") is None
+    assert repo.get_kind(conn, SESSION, "review") == REVIEW
+
+
+def test_delete_kind_success(seeded):
+    conn = seeded
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    repo.delete_kind(conn, SESSION, "review")
+    assert repo.get_kind(conn, SESSION, "review") is None
+    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["diagnosis", "code_change"]
+
+
+def test_rule_insert_get_list_duplicate_and_delete(seeded):
+    conn = seeded
+    with pytest.raises(NotFound):  # to_kind 미등록
+        repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, NOW)
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    rule_id = repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, LATER)
+    assert rule_id.startswith("rule-")
+    assert repo.get_rule(conn, SESSION, "code_change", "review") == FIX_TO_REVIEW
+    assert repo.get_rule(conn, SESSION, "diagnosis", "code_change") == BUILTIN_RULES[0]
+    assert repo.get_rule(conn, SESSION, "review", "code_change") is None
+    assert repo.get_rule(conn, OTHER_SESSION, "code_change", "review") is None
+    rules = repo.list_rules(conn, SESSION)
+    assert [(rid == rule_id, rule) for rid, rule in rules] == [(False, BUILTIN_RULES[0]), (True, FIX_TO_REVIEW)]
+    with pytest.raises(DuplicateRule):  # 같은 (from, to) — on_outcomes 가 달라도
+        repo.insert_rule(conn, SESSION, FIX_TO_REVIEW.model_copy(update={"on_outcomes": ["needs_information"]}), LATER)
+    with pytest.raises(NotFound):  # from_kind 미등록
+        repo.insert_rule(conn, SESSION, SuccessorRule(from_kind="nope", on_outcomes=["x"], to_kind="review",
+                                                      handoff_kinds=["diff"]), NOW)
+    repo.delete_rule(conn, SESSION, rule_id)
+    assert repo.get_rule(conn, SESSION, "code_change", "review") is None
+    with pytest.raises(NotFound):
+        repo.delete_rule(conn, SESSION, rule_id)
+    with pytest.raises(NotFound):  # 다른 세션의 rule_id 로는 지울 수 없다
+        [(builtin_id, _)] = repo.list_rules(conn, SESSION)
+        repo.delete_rule(conn, OTHER_SESSION, builtin_id)
+
+
+def test_builtin_rule_can_be_deleted(seeded):
+    conn = seeded
+    [(rule_id, _)] = repo.list_rules(conn, SESSION)
+    repo.delete_rule(conn, SESSION, rule_id)
+    assert repo.list_rules(conn, SESSION) == []
+    assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
+    assert repo.get_rule(conn, SESSION, "diagnosis", "code_change") is None
+
+
+def test_list_rules_orders_by_created_at_then_rule_id(seeded):
+    conn = seeded
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    later_rule = repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, LATER)
+    earlier = SuccessorRule(from_kind="review", on_outcomes=["changes_requested"], to_kind="code_change",
+                            handoff_kinds=["diagnosis_result", "evidence", "generic_result"])
+    earlier_rule = repo.insert_rule(conn, SESSION, earlier, NOW)
+    ids = [rid for rid, _ in repo.list_rules(conn, SESSION)]
+    assert ids[-1] == later_rule and earlier_rule in ids[:-1]
+
+
+def test_insert_task_requires_registered_kind(seeded):
+    conn = seeded
+    with pytest.raises(NotFound) as info:
+        repo.insert_task(conn, _task("review-1", kind="review"), NOW)
+    assert "review" in str(info.value) and "등록되지 않음" in str(info.value)
+    assert repo.get_task(conn, "review-1") is None
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    repo.insert_task(conn, _task("review-1", kind="review"), NOW)
+    assert repo.get_task(conn, "review-1")["kind"] == "review"
+    with pytest.raises(NotFound):  # 다른 세션의 등록은 세지 않는다
+        repo.insert_task(conn, _task("review-2", session_id=OTHER_SESSION, kind="review"), NOW)
+
+
+def test_tasks_with_ready_predecessor_by_result_ready_with_verdict(seeded, store):
+    conn = seeded
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-1")
+    _to_result_ready(conn, store, "exec-1")
+    assert repo.tasks_with_ready_predecessor(conn) == []  # 판정 없음 → 제외
+    repo.record_verdict(conn, task_id=TASK_A, execution_id="exec-1", verdict={"outcome": "passed", "checks": []},
+                        status="확인 필요", reason="검토 대기", finish=False, now=LATER)
+    assert [r["task_id"] for r in repo.tasks_with_ready_predecessor(conn)] == [TASK_B]  # 사람 승인 전
+    repo.update_task_status(conn, TASK_A, "완료", "검토 승인", finished_at=LATER, review_decision="approve")
+    repo.release_execution(conn, "exec-1", LATER)
+    assert [r["task_id"] for r in repo.tasks_with_ready_predecessor(conn)] == [TASK_B]
+    repo.update_task_status(conn, TASK_B, "완료", "검토 승인", finished_at=LATER)
+    assert repo.tasks_with_ready_predecessor(conn) == []  # 마감된 후속은 제외
+
+
+def test_tasks_with_ready_predecessor_excludes_failed_predecessor(seeded, store):
+    conn = seeded
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-1")
+    _to_result_ready(conn, store, "exec-1")
+    _verdict_row(conn, TASK_A, "exec-1")
+    assert [r["task_id"] for r in repo.tasks_with_ready_predecessor(conn)] == [TASK_B]
+    repo.update_task_status(conn, TASK_A, "실패", "검토 거절", finished_at=LATER, review_decision="close")
+    assert repo.tasks_with_ready_predecessor(conn) == []  # 실행이 아직 활성이어도 선행 실패면 제외
+
+
+def test_tasks_with_ready_predecessor_ignores_released_result_without_completion(seeded, store):
+    conn = seeded
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-1")
+    _to_result_ready(conn, store, "exec-1")
+    _verdict_row(conn, TASK_A, "exec-1")
+    repo.release_execution(conn, "exec-1", LATER)  # 활성 실행이 아니고 선행도 완료가 아님
+    assert repo.tasks_with_ready_predecessor(conn) == []
+
+
+def test_tasks_with_ready_predecessor_orders_by_created_at_then_task_id(seeded, store):
+    conn = seeded
+    repo.insert_task(conn, _task("fix-z", kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_task(conn, _task("fix-a", kind="code_change", predecessor=TASK_A), LATER)
+    repo.insert_task(conn, _task("fix-m", kind="code_change", predecessor=TASK_A), NOW)
+    repo.update_task_status(conn, TASK_A, "완료", "판정 근거: 12/12", finished_at=LATER)
+    assert [r["task_id"] for r in repo.tasks_with_ready_predecessor(conn)] == ["fix-m", "fix-z", "fix-a"]
+
+
+def test_predecessor_ready_execution_picks_latest_attempt_with_verdict(seeded, store):
+    conn = seeded
+    assert repo.predecessor_ready_execution(conn, TASK_A) is None
+    _create_execution(conn, "exec-1")
+    _to_result_ready(conn, store, "exec-1")
+    assert repo.predecessor_ready_execution(conn, TASK_A) is None  # 판정 없음
+    _verdict_row(conn, TASK_A, "exec-1", "failed")
+    assert repo.predecessor_ready_execution(conn, TASK_A)["execution_id"] == "exec-1"
+    repo.release_execution(conn, "exec-1", LATER)
+    assert repo.predecessor_ready_execution(conn, TASK_A)["execution_id"] == "exec-1"  # 해제돼도 결과는 남는다
+    _create_execution(conn, "exec-2", attempt_no=2, start_key="req:retry-1")
+    _to_result_ready(conn, store, "exec-2")
+    assert repo.predecessor_ready_execution(conn, TASK_A)["execution_id"] == "exec-1"  # 2차는 아직 판정 없음
+    _verdict_row(conn, TASK_A, "exec-2")
+    assert repo.predecessor_ready_execution(conn, TASK_A)["execution_id"] == "exec-2"
+    assert repo.predecessor_ready_execution(conn, "nope") is None
+
+
+def test_predecessor_ready_execution_ignores_failed_attempt(seeded, store):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    repo.append_event(conn, "exec-1", _event("exec-1", 1, "accepted", {}), "conn", NOW)
+    repo.append_event(conn, "exec-1", _event("exec-1", 2, "failed",
+                                             {"code": "timeout", "message": "x", "process_stopped": True}),
+                      "conn", NOW)
+    _verdict_row(conn, TASK_A, "exec-1")
+    assert repo.predecessor_ready_execution(conn, TASK_A) is None
+
+
+def test_artifacts_of_kinds_filters_and_orders(seeded, store):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    ids = {}
+    for kind, data, now in (("evidence", b"e1", LATER), ("diff", b"d", NOW), ("evidence", b"e0", NOW),
+                            ("tool_trace", b"[]", NOW)):
+        created, _ = repo.store_artifact(conn, store, execution_id="exec-1", session_id=SESSION,
+                                         meta=_meta(data, kind), data=data, now=now)
+        ids[data] = created.artifact_id
+    rows = repo.artifacts_of_kinds(conn, "exec-1", ["diff", "evidence"])
+    expected_first_two = sorted([ids[b"d"], ids[b"e0"]])  # 같은 created_at 은 artifact_id 순
+    assert [r["artifact_id"] for r in rows] == expected_first_two + [ids[b"e1"]]
+    assert repo.artifacts_of_kinds(conn, "exec-1", []) == []
+    assert repo.artifacts_of_kinds(conn, "exec-1", ("generic_result",)) == []
+    assert repo.artifacts_of_kinds(conn, "exec-none", ["diff"]) == []
+
+
+def test_download_allowed_includes_bundle_inputs(seeded, store):
+    conn = seeded
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-fix", TASK_B, kind="code_change", inputs=["art-handoff-000"])
+    stored = {}
+    for kind, data in (("diff", b"--- a\n+++ b\n"), ("code_change_result", b'{"outcome": "ready_for_review"}'),
+                       ("test_log_after", b"exit_code=0\n"), ("test_log_before", b"exit_code=1\n")):
+        created, _ = repo.store_artifact(conn, store, execution_id="exec-fix", session_id=SESSION,
+                                         meta=_meta(data, kind), data=data, now=NOW)
+        stored[kind] = created
+    manifest = json.dumps({
+        "contract_version": 1,
+        "source_execution_id": "exec-fix",
+        "source_kind": "code_change",
+        "source_result_artifact_id": stored["code_change_result"].artifact_id,
+        "inputs": [
+            {"kind": k, "artifact_id": stored[k].artifact_id, "sha256": stored[k].sha256,
+             "content_type": "text/plain"}
+            for k in ("diff", "test_log_after")
+        ],
+        "attachments": [],
+    }).encode()
+    bundle, _ = repo.store_artifact(conn, store, execution_id="exec-fix", session_id=SESSION,
+                                    meta=_meta(manifest, "handoff_bundle", "manifest.json"),
+                                    data=manifest, now=NOW)
+    repo.insert_task(conn, _task("review-1", kind="review", predecessor=TASK_B), NOW)
+    request = ExecutionRequest.model_validate({
+        "contract_version": 1, "execution_id": "exec-review", "task_id": "review-1", "kind": "review",
+        "agent_id": "agent-claude-mac", "task_revision": 1, "request": "검토해 주세요.",
+        "input_artifact_ids": [bundle.artifact_id], "target": {"local_registration_id": "local-demo-report"},
+        "kind_spec": REVIEW.model_dump(),
+    })
+    repo.create_execution(conn, execution_id="exec-review", task_id="review-1", attempt_no=1,
+                          start_key="auto:review-1:r1", agent_id="agent-claude-mac", kind="review",
+                          request=request, assigned_connector_id=CONNECTOR,
+                          predecessor_execution_id="exec-fix", now=NOW)
+    assert repo.download_allowed(conn, store, "exec-review", bundle.artifact_id)
+    assert repo.download_allowed(conn, store, "exec-review", stored["diff"].artifact_id)  # inputs
+    assert repo.download_allowed(conn, store, "exec-review", stored["test_log_after"].artifact_id)  # inputs
+    assert repo.download_allowed(conn, store, "exec-review", stored["code_change_result"].artifact_id)  # source result
+    assert not repo.download_allowed(conn, store, "exec-review", stored["test_log_before"].artifact_id)  # 무관

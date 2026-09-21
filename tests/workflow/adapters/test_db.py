@@ -24,7 +24,17 @@ TABLES = {
     "diagnosis_usage",
     "session_agents",
     "chains",
+    "kinds",
+    "succession_rules",
 }
+
+
+def _seed_kind(conn, session_id: str, kind: str = "diagnosis") -> None:
+    """tasks.kind 가 kinds 를 참조하므로 원시 SQL 로 Task 를 넣는 테스트는 종류 행을 먼저 둔다."""
+    conn.execute(
+        "INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, '{}', ?)",
+        (session_id, kind, NOW),
+    )
 
 
 def test_connect_applies_pragmas(db_path):
@@ -60,6 +70,7 @@ def test_foreign_key_violation_raises(conn):
 
 def test_check_constraints(conn):
     conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    _seed_kind(conn, "s1")
     with pytest.raises(sqlite3.IntegrityError):  # 자기 자신을 선행 업무로 지정 금지
         conn.execute(
             "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,"
@@ -130,6 +141,7 @@ def test_schema_version_mismatch_raises(db_path):
 
 def test_phase5_check_and_key_constraints(conn):
     conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    _seed_kind(conn, "s1")
     conn.execute(
         "INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
         " connection_state) VALUES ('a1','n','company','api','[]','online')"
@@ -166,5 +178,114 @@ def test_phase5_check_and_key_constraints(conn):
             " status, status_reason, created_at, chain_id) VALUES"
             " ('t1','s1','t','r','diagnosis','{}','auto','manual','review','[]',1,'{}',"
             " '대기','선행 대기',?, 'no-such-chain')",
+            (NOW,),
+        )
+
+
+# --- phase 6: 업무 종류·후속 규칙 (ADR-0009, ARCHITECTURE "저장") ---------------
+
+
+def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
+    """(참조 테이블, 자식 컬럼, 부모 컬럼) 집합."""
+    return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
+
+
+def test_schema_version_is_3():
+    assert SCHEMA_VERSION == 3
+
+
+def test_phase6_tables_and_foreign_keys(conn):
+    assert _columns(conn, "kinds") == {"session_id", "kind", "spec_json", "created_at"}
+    assert _columns(conn, "succession_rules") == {
+        "rule_id", "session_id", "from_kind", "to_kind", "rule_json", "created_at",
+    }
+    assert {("sessions", "session_id", "session_id")} <= _foreign_keys(conn, "kinds")
+    assert {
+        ("sessions", "session_id", "session_id"),
+        ("kinds", "session_id", "session_id"), ("kinds", "from_kind", "kind"),
+        ("kinds", "to_kind", "kind"),
+    } <= _foreign_keys(conn, "succession_rules")
+    assert {("kinds", "session_id", "session_id"), ("kinds", "kind", "kind")} <= _foreign_keys(conn, "tasks")
+
+
+def _insert_task(conn, task_id: str, session_id: str, kind: str) -> None:
+    conn.execute(
+        "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,"
+        " selection_mode, run_mode, completion_mode, criteria_json, revision, target_json,"
+        " status, status_reason, created_at) VALUES (?, ?, 't', 'r', ?, '{}', 'auto', 'manual',"
+        " 'review', '[]', 1, '{}', '대기', '선행 대기', ?)",
+        (task_id, session_id, kind, NOW),
+    )
+
+
+def test_task_kind_must_be_registered_in_the_same_session(conn):
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    for session_id in ("s1", "s2"):
+        conn.execute("INSERT INTO sessions (session_id, created_at) VALUES (?, ?)", (session_id, NOW))
+    _seed_kind(conn, "s1", "review")
+    _insert_task(conn, "t1", "s1", "review")
+    with pytest.raises(sqlite3.IntegrityError):  # 이전 CHECK 목록에 있던 이름이어도 등록이 없으면 거부
+        _insert_task(conn, "t2", "s1", "diagnosis")
+    with pytest.raises(sqlite3.IntegrityError):  # 다른 세션의 등록은 세지 않는다
+        _insert_task(conn, "t3", "s2", "review")
+    with pytest.raises(sqlite3.IntegrityError):  # 참조되는 종류는 지울 수 없다
+        conn.execute("DELETE FROM kinds WHERE session_id = 's1' AND kind = 'review'")
+
+
+def test_execution_kind_accepts_any_registered_name(conn):
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    _seed_kind(conn, "s1", "review")
+    _insert_task(conn, "t1", "s1", "review")
+    conn.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind,"
+        " request_json, status, created_at) VALUES ('e1', 't1', 1, 'k', 'a', 'review', '{}', 'queued', ?)",
+        (NOW,),
+    )
+    assert conn.execute("SELECT kind FROM executions WHERE execution_id = 'e1'").fetchone()[0] == "review"
+
+
+def test_succession_rule_constraints(conn):
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    _seed_kind(conn, "s1", "diagnosis")
+    _seed_kind(conn, "s1", "code_change")
+    conn.execute(
+        "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+        " VALUES ('r1', 's1', 'diagnosis', 'code_change', '{}', ?)",
+        (NOW,),
+    )
+    with pytest.raises(sqlite3.IntegrityError):  # (session_id, from_kind, to_kind) 유일
+        conn.execute(
+            "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+            " VALUES ('r2', 's1', 'diagnosis', 'code_change', '{}', ?)",
+            (NOW,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # to_kind 가 이 세션에 없다
+        conn.execute(
+            "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+            " VALUES ('r3', 's1', 'code_change', 'review', '{}', ?)",
+            (NOW,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # 규칙이 참조하는 종류는 지울 수 없다
+        conn.execute("DELETE FROM kinds WHERE session_id = 's1' AND kind = 'diagnosis'")
+
+
+def test_artifact_kind_accepts_generic_result(conn):
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    _seed_kind(conn, "s1", "review")
+    _insert_task(conn, "t1", "s1", "review")
+    conn.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind,"
+        " request_json, status, created_at) VALUES ('e1', 't1', 1, 'k', 'a', 'review', '{}', 'queued', ?)",
+        (NOW,),
+    )
+    conn.execute(
+        "INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256,"
+        " size, store_ref, created_at) VALUES ('a1', 'e1', 's1', 'generic_result', 'n', 'c', 'h', 0, 'r', ?)",
+        (NOW,),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type,"
+            " sha256, size, store_ref, created_at) VALUES ('a2', 'e1', 's1', 'nope', 'n', 'c', 'h', 0, 'r', ?)",
             (NOW,),
         )

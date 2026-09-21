@@ -14,12 +14,14 @@ from pathlib import Path
 
 import pytest
 
+from tests.workflow.connector.conftest import REVIEW_SPEC
 from workflow.connector.codex import CodexAdapter
+from workflow.connector.local_tool import generic_result_schema
 from workflow.scripted import SCRIPT_MODEL_ID, _common
 from workflow.scripted import codex as scripted_codex
 from workflow.scripted._common import PACE_ENV
 
-from .conftest import prompt_for
+from .conftest import generic_prompt_for, prompt_for
 
 
 def argv_for(worktree: Path, tmp_path: Path) -> tuple[list[str], Path]:
@@ -114,3 +116,66 @@ def test_without_output_option_exits_nonzero_without_reading_stdin(tmp_path):
     )
     assert completed.returncode != 0
     assert "--output-last-message" in completed.stderr
+
+
+# --- 사용자 정의 종류 — `build_readonly_argv`(--sandbox read-only, -C 인계 디렉터리) 를 그대로 받는다 ---------
+
+
+def readonly_argv_for(handoff: Path, tmp_path: Path) -> tuple[list[str], Path]:
+    schema = tmp_path / "codex_result_schema.json"
+    schema.write_text(json.dumps(generic_result_schema(REVIEW_SPEC.outcomes), ensure_ascii=False))
+    last_message = tmp_path / "last_message.json"
+    return CodexAdapter(None).build_readonly_argv(handoff, schema, last_message), last_message
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_generic_kind_answers_first_outcome_from_schema_and_writes_nothing(review_handoff, tmp_path, monkeypatch, capsys):
+    argv, last_message = readonly_argv_for(review_handoff, tmp_path)
+    before = _snapshot(review_handoff)
+
+    code, lines, err, elapsed = run_main(monkeypatch, capsys, argv, generic_prompt_for(review_handoff))
+
+    assert code == 0 and elapsed < 1.0
+    assert [line["type"] for line in lines] == ["thread.started", "item", "turn.completed"]
+    assert lines[0]["thread_id"] == "scripted-codex" and lines[0]["model"] == SCRIPT_MODEL_ID
+    assert _snapshot(review_handoff) == before  # 읽기 전용 — 인계 디렉터리에 파일을 만들거나 고치지 않는다
+    assert not (tmp_path / "tests").exists() and not (tmp_path / "daily_report").exists()
+    last = json.loads(last_message.read_text(encoding="utf-8"))
+    assert set(last) == {"outcome", "summary"}  # 스키마(additionalProperties: false)와 같은 두 키
+    assert last["outcome"] == REVIEW_SPEC.outcomes[0] == "approved"
+    assert "diff.patch" in last["summary"] and "code_change_result.json" in last["summary"]
+    assert str(review_handoff) not in last["summary"]  # 파일 이름만
+    parsed = CodexAdapter(None).parse_generic_message(last_message.read_text(encoding="utf-8"), REVIEW_SPEC.outcomes)
+    assert parsed.outcome == "approved" and parsed.parse_note is None and parsed.summary == last["summary"]
+    assert "scripted codex: approved" in err
+
+
+def test_generic_kind_follows_the_schema_enum_not_a_fixed_word(review_handoff, tmp_path, monkeypatch, capsys):
+    schema = tmp_path / "codex_result_schema.json"
+    schema.write_text(json.dumps(generic_result_schema(["looks_fine", "rework"]), ensure_ascii=False))
+    last_message = tmp_path / "last_message.json"
+    argv = CodexAdapter(None).build_readonly_argv(review_handoff, schema, last_message)
+
+    code, _, _, _ = run_main(monkeypatch, capsys, argv, generic_prompt_for(review_handoff))
+
+    assert code == 0
+    assert json.loads(last_message.read_text(encoding="utf-8"))["outcome"] == "looks_fine"
+
+
+def test_generic_kind_runs_as_module_in_handoff_cwd_and_leaves_it_untouched(review_handoff, tmp_path):
+    argv, last_message = readonly_argv_for(review_handoff, tmp_path)
+    before = _snapshot(review_handoff)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "workflow.scripted.codex", *argv[1:]], input=generic_prompt_for(review_handoff),
+        capture_output=True, text=True, env={**os.environ, PACE_ENV: "0"}, cwd=review_handoff,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    lines = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert [line["type"] for line in lines] == ["thread.started", "item", "turn.completed"]
+    assert json.loads(last_message.read_text(encoding="utf-8"))["outcome"] == "approved"
+    assert _snapshot(review_handoff) == before

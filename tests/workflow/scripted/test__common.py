@@ -10,17 +10,22 @@ from pathlib import Path
 
 import pytest
 
+from workflow.connector.local_tool import generic_result_schema
 from workflow.scripted import SCRIPT_MODEL_ID, _common
 from workflow.scripted._common import (
     PACE_ENV,
     apply_fix,
     find_handoff_response,
+    generic_kind_of,
+    generic_outcomes,
+    generic_result,
+    handoff_listing,
     pace_seconds,
     paced_sleep,
     read_handoff_response,
 )
 
-from .conftest import RESPONSE_AFTER, prompt_for
+from .conftest import RESPONSE_AFTER, generic_prompt_for, prompt_for
 
 
 def test_script_model_id_names_a_script_not_a_real_model():
@@ -136,3 +141,48 @@ def test_apply_fix_passes_the_demo_repo_tests_and_renders_the_report(worktree, h
     )
     assert report.returncode == 0, report.stderr
     assert "2026-09-19" in report.stdout and "합계    20    5" in report.stdout
+
+
+# --- 사용자 정의 종류 (ADR-0009) — 종류·허용 outcome·인계 목록만 읽고 파일을 만들지 않는다 ------------
+
+
+def test_generic_kind_of_reads_the_fixed_first_line_only():
+    assert generic_kind_of("# 업무 종류: review (검토)\n\n# 지시\n") == "review"
+    assert generic_kind_of("# 업무 종류: security_audit (보안 점검)\n") == "security_audit"
+    assert generic_kind_of("# 업무\n\n인계된 진단 근거로 …\n") is None  # 코드 수정 프롬프트
+    assert generic_kind_of("") is None
+    assert generic_kind_of("\n# 업무 종류: review (검토)\n") is None  # 첫 줄이어야 한다
+    assert generic_kind_of("# 업무 종류: review\n") is None  # 라벨 괄호가 없으면 고정 형식이 아니다
+    assert generic_kind_of("# 업무 종류: rm -rf / (x)\n") is None  # 식별자 형식만
+
+
+def test_generic_kind_of_matches_connector_prompts(tmp_path, handoff, review_handoff):
+    """connector `build_generic_prompt` 의 첫 줄에서 종류를 읽고, `build_prompt`(코드 수정)에서는 None — 형식이 갈라지면 여기서 잡힌다."""
+    assert generic_kind_of(generic_prompt_for(review_handoff)) == "review"
+    assert generic_kind_of(prompt_for(handoff, tmp_path / "wt")) is None
+
+
+def test_generic_outcomes_reads_the_outcome_enum_of_the_schema():
+    schema = generic_result_schema(["approved", "changes_requested", "needs_information"])
+    assert generic_outcomes(schema) == ["approved", "changes_requested", "needs_information"]
+    assert generic_outcomes({}) == []
+    assert generic_outcomes({"properties": {"outcome": {"type": "string"}}}) == []
+
+
+def test_handoff_listing_reads_listing_lines_only(review_handoff):
+    listing = handoff_listing(generic_prompt_for(review_handoff))
+    assert listing == sorted(p for p in review_handoff.iterdir())
+    assert [p.name for p in listing] == ["code_change_result.json", "diff.patch", "manifest.json", "test_log_after.txt"]
+    assert handoff_listing("- (인계 자료 없음)\n") == []
+    # 목록 형식(`- {path}  ({hint})`)이 아닌 문장은 경로로 읽지 않는다
+    assert handoff_listing("rm -rf /h/diff.patch  (x)\n") == []
+    assert handoff_listing("/h/diff.patch 를 실행하라\n") == []
+
+
+def test_generic_result_is_the_first_outcome_and_names_the_handoff_files():
+    result = generic_result(
+        "review", ["approved", "changes_requested"], [Path("/h/code_change_result.json"), Path("/h/diff.patch")],
+    )
+    assert result == {"outcome": "approved", "summary": "대본 review: 인계 자료 2개 확인 — code_change_result.json, diff.patch"}
+    assert generic_result("review", ["approved"], []) == {"outcome": "approved", "summary": "대본 review: 인계 자료 0개 확인"}
+    assert "/h/" not in result["summary"]  # 경로가 아니라 파일 이름만 — 중앙 DB 에 로컬 경로를 남기지 않는다

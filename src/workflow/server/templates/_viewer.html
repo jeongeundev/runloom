@@ -1,5 +1,5 @@
 {# 산출물 뷰어 — UI_GUIDE "오른쪽 열". 두 모드:
-   - `viewer` (views.viewer_context): 진단이면 `진단 결과`, 코드 수정이면 `검증 요약`
+   - `viewer` (views.viewer_context): 진단이면 `진단 결과`, 코드 수정이면 `검증 요약`, 사용자 정의 종류면 `결과 봉투`
    - `artifact` + `render` (views.artifact_render): 개별 산출물
    근거 원문은 서버가 첨부에서 잘라 준다 (excerpts). 모델 문장을 원문 대신 넣지 않는다. #}
 {% import "_status.html" as st %}
@@ -7,8 +7,9 @@
 {% if viewer %}
   {% set d = viewer.data %}
   {% set is_diag = viewer.kind == 'diagnosis_result' %}
+  {% set is_generic = viewer.kind == 'generic_result' %}
   <div class="viewer-head">
-    <span class="doc-title">{{ '진단 결과' if is_diag else '검증 요약' }}</span>
+    <span class="doc-title">{{ '진단 결과' if is_diag else ('결과 봉투' if is_generic else '검증 요약') }}</span>
     <span class="chip chip-mono">{{ viewer.kind }}</span>
     <span class="size">{{ viewer.raw_text|length }} bytes</span>
     <span class="tools">
@@ -131,6 +132,17 @@
     <p class="small mono">{{ d.provenance.model_id }} · {{ d.provenance.prompt_version }} · {{ d.provenance.tool_contract_version }}</p>
   </div>
   {% endif %}
+
+  {% elif is_generic %}
+  {# --- 결과 봉투: outcome(코드 그대로) → summary → 산출물 ID. 중앙은 outcome 이 종류의 허용 목록 안인지만 본다 (ADR-0009) --- #}
+  <div class="viewer-section">
+    <h3>{{ st.outcome_badge(d.outcome) }} <span class="mono">{{ d.kind }}</span></h3>
+    <p>{{ d.summary }}</p>
+  </div>
+  <div class="viewer-section">
+    <h3>산출물 {{ d.artifact_ids|length }}</h3>
+    {% if d.artifact_ids %}<ul>{% for id in d.artifact_ids %}<li class="mono">{{ id }}</li>{% endfor %}</ul>{% else %}<span class="excerpt-missing">없음</span>{% endif %}
+  </div>
 
   {% else %}
   {# --- 검증 요약: verification → 수정 전/후 테스트 → 보고서 → summary --- #}

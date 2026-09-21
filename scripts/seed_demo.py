@@ -5,7 +5,9 @@
 
 카탈로그: `agent-ops-demo`(진단 API) · `agent-codex-mac`(로컬, tool codex) · `agent-claude-mac`(로컬, tool claude).
 두 로컬 Agent 는 같은 데모 저장소·기준 커밋·검증 프로필을 맡고 로컬 등록 ID(`LOCAL_REGISTRATION_IDS`)만 다르다 —
-연결 프로그램은 등록의 tool 로 어댑터를 고른다 (`connector/runner.select_adapter`).
+연결 프로그램은 등록의 tool 로 어댑터를 고른다 (`connector/runner.select_adapter`). Claude 는 능력 `review`
+(`REVIEW_CAPABILITY_CODE`)도 갖는다 — e2e 가 화면으로 등록하는 세 번째 종류 `review` 의 capability_code 와 같은 값
+(ADR-0009, phase 6 step 8). 공개 데모에는 `review` 종류가 등록되지 않으므로 매칭되지 않고 카탈로그 카드에 코드만 보인다.
 
 로컬 e2e(`scripts/local_stack.py`)와 배포 런북이 쓴다. 멱등이다 — 다시 실행해도 에이전트는 3개이고,
 연결 프로그램이 이미 보고한 연결 정보(connector_id·연결 상태·마지막 확인·discovered)는 지우지 않는다.
@@ -30,9 +32,12 @@ DEFAULT_DIAG_API_URL = "http://127.0.0.1:8100"
 LOCAL_REGISTRATION_IDS = {"codex": "local-demo-report", "claude": "local-demo-report-claude"}
 REPOSITORY_ID = "demo-report-repo"
 VERIFICATION_PROFILE_IDS = ["vp-pytest", "vp-report"]
+REVIEW_CAPABILITY_CODE = "review"  # e2e 가 /kinds 로 등록하는 종류 `review` 의 capability_code — 여기와 e2e 가 같은 값
+_CODE_MODIFY = {"code": "code.modify", "scope": {"repository_id": REPOSITORY_ID}}
+_REVIEW = {"code": REVIEW_CAPABILITY_CODE, "scope": {"repository_id": REPOSITORY_ID}}
 LOCAL_AGENTS = (
-    {"agent_id": "agent-codex-mac", "name": "개인 Codex", "tool": "codex"},
-    {"agent_id": "agent-claude-mac", "name": "Claude Code", "tool": "claude"},
+    {"agent_id": "agent-codex-mac", "name": "개인 Codex", "tool": "codex", "capabilities": [_CODE_MODIFY]},
+    {"agent_id": "agent-claude-mac", "name": "Claude Code", "tool": "claude", "capabilities": [_CODE_MODIFY, _REVIEW]},
 )
 
 
@@ -86,7 +91,7 @@ def seed(
                 "repository_id": REPOSITORY_ID,
                 "base_commit": base_commit,
                 "verification_profile_ids": VERIFICATION_PROFILE_IDS,
-                "capabilities": [{"code": "code.modify", "scope": {"repository_id": REPOSITORY_ID}}],
+                "capabilities": local["capabilities"],
                 "shared_to_all_sessions": True,
                 "demo_scripted": scripted,
             })

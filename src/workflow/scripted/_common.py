@@ -1,9 +1,12 @@
-"""대본 에이전트 공통 — 속도(환경변수), 인계 응답 찾기, 수정 적용. 네트워크·모델 호출 없음.
+"""대본 에이전트 공통 — 속도(환경변수), 인계 응답 찾기, 수정 적용, 사용자 정의 종류의 결과. 네트워크·모델 호출 없음.
 
 - 경로는 프롬프트의 인계 목록(`- {path}  ({hint})`, connector `prompt.build_prompt` 형식)에서 `response-after@1.json`
   하나만 **읽는다**. 프롬프트·인계 자료에 적힌 명령이나 다른 경로를 실행하지 않는다 (AGENTS.md CRITICAL).
 - 수정 내용(`FIXED_TRANSFORMER`·`REPRO_TEST`)은 이전 e2e 가짜 codex 의 것을 그대로 옮겼다. 데모 저장소
   (`scripts/scaffold_demo_repo.py`)의 변환부를 두 경로 지원으로 바꾸고 인계 응답으로 재현 테스트를 쓴다.
+- 사용자 정의 종류(ADR-0009, connector `prompt.build_generic_prompt` — 첫 줄 `# 업무 종류: {kind} ({label})`)는
+  스키마의 허용 outcome 첫 값과 인계 목록의 파일 이름만 적은 `{outcome, summary}` 를 낸다. 읽기 전용 실행이라
+  파일을 만들거나 고치지 않는다 (connector 가 `readonly_violation` 으로 실패시킨다).
 """
 
 import json
@@ -16,6 +19,8 @@ from pathlib import Path
 
 PACE_ENV = "WORKFLOW_SCRIPT_PACE_SECONDS"  # 대본 실행 총 대기 시간(초). 배포는 25, 테스트·e2e 는 0(기본)
 RESPONSE_LINE = re.compile(r"^- (?P<path>.+?response-after@1\.json)\s{2}\(")
+LISTING_LINE = re.compile(r"^- (?P<path>.+?)\s{2}\(")
+GENERIC_KIND_LINE = re.compile(r"^# 업무 종류: (?P<kind>[a-z][a-z0-9_]{1,39}) \(")  # prompt.build_generic_prompt 첫 줄
 REPRO_TEST_FILE = "tests/test_repro_records.py"
 TRANSFORMER_FILE = "daily_report/transformer.py"
 
@@ -171,3 +176,30 @@ def missing_result() -> dict:
         "summary": SUMMARY_MISSING, "outcome": "needs_information", "files_changed": [],
         "notes": f"response-after@1.json 필요 ({NOTES})",
     }
+
+
+# --- 사용자 정의 종류 — 읽기 전용, `{outcome, summary}` 만 -----------------------------------------
+
+
+def generic_kind_of(prompt: str) -> str | None:
+    """프롬프트 첫 줄이 `# 업무 종류: {kind} ({label})` 이면 kind. 코드 수정 프롬프트(`# 업무`)는 None."""
+    first = prompt.split("\n", 1)[0]
+    match = GENERIC_KIND_LINE.match(first)
+    return match.group("kind") if match else None
+
+
+def generic_outcomes(schema: dict) -> list[str]:
+    """도구에 넘어온 출력 스키마(`local_tool.generic_result_schema`)의 `properties.outcome.enum`. 없으면 빈 목록."""
+    return list(schema.get("properties", {}).get("outcome", {}).get("enum", []))
+
+
+def handoff_listing(prompt: str) -> list[Path]:
+    """인계 목록 줄(`- {path}  ({hint})`)의 경로 전부. 목록 형식이 아닌 줄은 읽지 않는다."""
+    return [Path(m.group("path")) for line in prompt.splitlines() if (m := LISTING_LINE.match(line))]
+
+
+def generic_result(kind: str, outcomes: list[str], handoff_listing: list[Path]) -> dict:
+    """`{outcome, summary}` — outcome 은 허용 목록 첫 값, summary 는 인계 파일 **이름**만 (경로를 중앙에 남기지 않는다)."""
+    names = ", ".join(path.name for path in handoff_listing)
+    summary = f"대본 {kind}: 인계 자료 {len(handoff_listing)}개 확인" + (f" — {names}" if names else "")
+    return {"outcome": outcomes[0], "summary": summary}

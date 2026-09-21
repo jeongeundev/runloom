@@ -30,6 +30,12 @@
       "dir": "5-scripted-demo",
       "status": "completed",
       "completed_at": "2026-09-21T13:45:14+0900"
+    },
+    {
+      "dir": "6-typed-handoff",
+      "status": "completed",
+      "blocked_at": "2026-09-21T21:11:54+0900",
+      "completed_at": "2026-09-22T02:43:28+0900"
     }
   ]
 }

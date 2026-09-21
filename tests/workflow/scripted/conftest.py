@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.workflow.connector.conftest import make_request
-from workflow.connector.prompt import build_prompt
+from tests.workflow.connector.conftest import make_local_request, make_request
+from workflow.connector.prompt import build_generic_prompt, build_prompt
 from workflow.scripted._common import PACE_ENV
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
@@ -49,6 +49,23 @@ def handoff(tmp_path) -> Path:
     return handoff
 
 
+@pytest.fixture
+def review_handoff(tmp_path) -> Path:
+    """규칙 `code_change → review` 로 connector 가 내려받은 인계 디렉터리 (`runner._download_handoff` 의 파일 이름)."""
+    handoff = tmp_path / "review-daily-0920.handoff"
+    handoff.mkdir()
+    (handoff / "manifest.json").write_text('{"source_kind": "code_change"}')
+    (handoff / "diff.patch").write_text("--- a/daily_report/transformer.py\n+++ b/daily_report/transformer.py\n")
+    (handoff / "code_change_result.json").write_text('{"outcome": "ready_for_review"}')
+    (handoff / "test_log_after.txt").write_text("exit_code=0\n")
+    return handoff
+
+
 def prompt_for(handoff: Path, worktree: Path) -> str:
     """connector 가 실제로 stdin 에 넣는 프롬프트 (`prompt.build_prompt`)."""
     return build_prompt(make_request(), handoff, worktree)
+
+
+def generic_prompt_for(handoff: Path) -> str:
+    """사용자 정의 종류(`review`)의 읽기 전용 프롬프트 (`prompt.build_generic_prompt`) — 첫 줄 `# 업무 종류: review (검토)`."""
+    return build_generic_prompt(make_local_request(), handoff)

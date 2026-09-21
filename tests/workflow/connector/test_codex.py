@@ -16,7 +16,7 @@ from workflow.connector import git_ops, state
 from workflow.connector.codex import CodexAdapter
 from workflow.contracts.v1 import ExecutionRequest
 
-from .conftest import make_request
+from .conftest import REVIEW_SPEC, make_local_request, make_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from scaffold_demo_repo import scaffold
@@ -70,6 +70,22 @@ emit({"type": "thread.started", "thread_id": "fake-thread"})
 emit({"type": "argv", "argv": args})
 emit({"type": "env", "env": dict(os.environ)})
 emit({"type": "prompt", "chars": len(prompt), "head": prompt[:60]})
+
+if MODE.startswith("generic"):
+    # 사용자 정의 종류 — 스키마 파일의 enum 을 읽고 {outcome, summary} 만 낸다. cwd 는 인계 디렉터리.
+    with open(opt("--output-schema"), encoding="utf-8") as f:
+        schema = json.load(f)
+    emit({"type": "readonly", "cwd": os.getcwd(), "schema": schema, "prompt_first_line": prompt.splitlines()[0]})
+    enum = schema["properties"]["outcome"]["enum"]
+    outcome = "rejected" if MODE == "generic_bad_outcome" else enum[0]
+    if MODE == "generic_writes":
+        with open(os.path.join(worktree, "notes.md"), "w", encoding="utf-8") as f:
+            f.write("must not happen")
+    with open(last_message, "w", encoding="utf-8") as f:
+        json.dump({"outcome": outcome, "summary": "대본 검토: 인계 자료를 읽고 승인"}, f, ensure_ascii=False)
+    emit({"type": "turn.completed"})
+    print("fake codex: done", file=sys.stderr)
+    sys.exit(0)
 
 FIXED = """\\"\\"\\"응답 변환부 — items 또는 data.records 중 정확히 하나를 읽는다.\\"\\"\\"
 
@@ -483,3 +499,126 @@ def test_diagnosis_request_is_unsupported(state_conn, handoff):
     output = adapter(state_conn).run(request, handoff, Progress())
 
     assert output.result is None and output.failed[0] == "unsupported_kind"
+
+
+# --- 사용자 정의 종류 — 읽기 전용 실행 (`--sandbox read-only`, cwd = 인계 디렉터리) ----------------------------
+
+
+@pytest.fixture
+def review_handoff(tmp_path) -> Path:
+    handoff = tmp_path / "review-daily-0920.handoff"
+    handoff.mkdir()
+    (handoff / "manifest.json").write_text('{"source_kind": "code_change"}')
+    (handoff / "diff.patch").write_text("--- a\n+++ b\n")
+    (handoff / "code_change_result.json").write_text('{"outcome": "ready_for_review"}')
+    return handoff
+
+
+def test_build_readonly_argv_uses_read_only_sandbox_and_handoff_cwd(state_conn, tmp_path):
+    handoff = tmp_path / "review.handoff"
+    codex = adapter(state_conn)
+
+    argv = codex.build_readonly_argv(handoff, tmp_path / "schema.json", tmp_path / "last.json")
+
+    assert argv == [
+        "codex", "exec", "--json", "-C", str(handoff), "--sandbox", "read-only",
+        "-c", 'approval_policy="never"',
+        "--output-schema", str(tmp_path / "schema.json"), "--output-last-message", str(tmp_path / "last.json"),
+        "-",
+    ]
+    assert "workspace-write" not in argv and "--worktree" not in argv
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+    # 기존 코드 수정 argv 는 그대로
+    assert codex.build_argv(handoff, tmp_path / "schema.json", tmp_path / "last.json")[5:7] == [
+        "--sandbox", "workspace-write",
+    ]
+
+
+def test_generic_run_is_readonly_in_handoff_dir_with_outcome_schema(state_conn, repo, review_handoff, fake_bin):
+    write_fake_codex(fake_bin, "generic")
+    register(state_conn, repo)
+    request = make_local_request()
+    progress = Progress()
+    before = sorted(p.name for p in review_handoff.iterdir())
+
+    output = adapter(state_conn).run(request, review_handoff, progress)
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.kind, result.outcome) == ("review", "approved")
+    assert result.summary == "대본 검토: 인계 자료를 읽고 승인" and result.artifact_ids == []
+    assert [meta.kind for meta, _ in output.artifacts] == ["codex_jsonl", "codex_stderr"]
+    lines = [json.loads(line) for line in by_kind(output)["codex_jsonl"].decode().splitlines()]
+    argv = next(line["argv"] for line in lines if line["type"] == "argv")
+    readonly = next(line for line in lines if line["type"] == "readonly")
+    assert argv[argv.index("--sandbox") + 1] == "read-only" and argv[argv.index("-C") + 1] == str(review_handoff)
+    assert Path(readonly["cwd"]).resolve() == review_handoff.resolve()
+    assert readonly["schema"]["properties"]["outcome"]["enum"] == REVIEW_SPEC.outcomes
+    assert readonly["schema"]["required"] == ["outcome", "summary"]
+    assert readonly["prompt_first_line"] == "# 업무 종류: review (검토)"
+    assert request.request not in " ".join(argv) and REVIEW_SPEC.instructions not in " ".join(argv)
+    # worktree·커밋 없음, 인계 디렉터리 그대로
+    assert not (repo.parent / "demo-report-repo-worktrees").exists()
+    assert _git(repo, "worktree", "list").count("\n") == 0 and _git(repo, "status", "--porcelain") == ""
+    assert sorted(p.name for p in review_handoff.iterdir()) == before
+    assert progress.runtime_refs and progress.runtime_refs[0].startswith("pid:")
+    assert output.runtime_ref == progress.runtime_refs[0]
+
+
+def test_generic_env_is_allowlisted_without_secrets(state_conn, repo, review_handoff, fake_bin, monkeypatch):
+    write_fake_codex(fake_bin, "generic")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "x" * 20)
+    monkeypatch.setenv("WORKFLOW_CONNECTOR_TOKEN", "wfc_" + "t" * 43)
+    register(state_conn, repo)
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, Progress())
+
+    lines = [json.loads(line) for line in by_kind(output)["codex_jsonl"].decode().splitlines()]
+    env = next(line["env"] for line in lines if line["type"] == "env")
+    assert "PATH" in env and "OPENAI_API_KEY" not in env and "WORKFLOW_CONNECTOR_TOKEN" not in env
+
+
+def test_generic_outcome_outside_spec_is_result_invalid(state_conn, repo, review_handoff, fake_bin):
+    write_fake_codex(fake_bin, "generic_bad_outcome")
+    register(state_conn, repo)
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, Progress())
+
+    assert output.result is None
+    code, message, stopped = output.failed
+    assert code == "result_invalid" and stopped is True and "rejected" in message
+    assert [meta.kind for meta, _ in output.artifacts] == ["codex_jsonl", "codex_stderr"]
+
+
+def test_generic_write_into_handoff_dir_is_readonly_violation(state_conn, repo, review_handoff, fake_bin):
+    write_fake_codex(fake_bin, "generic_writes")
+    register(state_conn, repo)
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, Progress())
+
+    assert output.result is None and output.failed[0] == "readonly_violation" and "notes.md" in output.failed[1]
+
+
+def test_generic_missing_registration_fails_before_launching_codex(state_conn, review_handoff):
+    progress = Progress()
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, progress)
+
+    assert output.failed[0] == "registration_missing" and progress.runtime_refs == [] and output.artifacts == []
+
+
+@pytest.mark.parametrize("raw, outcome, note", [
+    ('{"outcome": "approved", "summary": "좋다"}', "approved", None),
+    ('{"outcome": "rejected", "summary": "나쁘다"}', "rejected", "허용되지 않은 outcome 'rejected'"),
+    ('{"summary": "outcome 없음"}', "", "허용되지 않은 outcome ''"),
+    ("not json", "", "스키마 불일치"),
+    (None, "", "파일 없음"),
+])
+def test_parse_generic_message(state_conn, raw, outcome, note):
+    parsed = adapter(state_conn).parse_generic_message(raw, ["approved", "changes_requested"])
+
+    assert parsed.outcome == outcome
+    if note is None:
+        assert parsed.parse_note is None and parsed.summary == "좋다"
+    else:
+        assert parsed.parse_note is not None and note in parsed.parse_note

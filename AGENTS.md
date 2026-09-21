@@ -18,6 +18,7 @@
 - CRITICAL: 비밀값(연결 토큰 `wfc_…`, `OPERATOR_TOKEN`, `DIAG_API_TOKEN`, `OPENAI_API_KEY`, `SESSION_SECRET`)은 환경변수에서만 읽는다. DB·로그·응답·템플릿·Codex 프로세스 환경에 넣지 않는다.
 - 상태 전환·중복 방지·완료 판정은 `docs/ARCHITECTURE.md` 계약 v1 과 `docs/CONTRACT.md` 예시를 따른다. 모델의 "완료했다" 응답이나 프로세스 종료 코드만으로 완료 처리하지 않는다.
 - 이름은 `docs/GLOSSARY.md` 의 코드 식별자를 그대로 쓴다 (`Execution` ≠ `run`, `Agent` ≠ `connector`, `outcome` ≠ 상태).
+- 업무 종류·후속 규칙은 워크스페이스 등록 데이터다(ADR-0009). 새 단계를 붙일 때 `composition.py`·`worker.py` 에 종류 이름 분기를 늘리지 않는다 — 규칙 행으로 되는지가 설계 기준.
 - 테스트 배치: `tests/` 가 `src/` 구조를 따라간다. `src/workflow/domain/selection.py` → `tests/workflow/domain/test_selection.py`. `tdd-guard.sh` 가 이 배치를 인식한다.
 
 ## 제품 코드와 진단 데모의 경계

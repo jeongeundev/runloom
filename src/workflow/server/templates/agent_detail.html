@@ -24,7 +24,7 @@
 </div>
 <h2>능력</h2>
 <div class="card">
-  <ul>{% for c in agent.capabilities %}<li><span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span></li>{% endfor %}</ul>
+  <ul>{% for c in agent.capabilities %}<li><span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if c.kind_label %} <span class="small">({{ c.kind_label }})</span>{% endif %}</li>{% endfor %}</ul>
 </div>
 <h2>파악된 정보</h2>
 <div class="card">

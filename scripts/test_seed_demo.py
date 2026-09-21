@@ -1,6 +1,7 @@
 """seed_demo.py — 운영자 카탈로그 에이전트 3개 등록과 연결 코드 발급. 멱등이며 비밀값을 DB 에 넣지 않는다."""
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import seed_demo
 from workflow.adapters import repo
 from workflow.adapters.db import connect
 from workflow.adapters.errors import NotFound
+from workflow.contracts.v1 import CAPABILITY_CODE_PATTERN
 
 BASE_COMMIT = "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e"
 NOW = "2026-09-20T00:00:00Z"
@@ -61,11 +63,16 @@ def test_seed_registers_three_catalog_agents_shared_to_all_sessions(tmp_path):
     assert codex["connector_id"] is None
     assert codex["shared_to_all_sessions"] == 1
 
-    # 세 번째 — 같은 저장소·기준 커밋·검증 프로필을 맡는 Claude Code. 등록 ID 만 다르다 (connector 가 tool 로 어댑터를 고른다)
+    # 세 번째 — 같은 저장소·기준 커밋·검증 프로필을 맡는 Claude Code. 등록 ID 만 다르다 (connector 가 tool 로 어댑터를 고른다).
+    # 능력은 code.modify 에 더해 review — e2e 가 화면으로 등록하는 세 번째 종류 `review` 의 capability_code (phase 6 step 8).
+    # 공개 데모에는 review 종류가 등록되지 않으므로 이 능력은 매칭되지 않고 카탈로그 카드에 코드만 보인다.
     claude = agents["agent-claude-mac"]
     assert claude["name"] == "Claude Code"
     assert (claude["connection_type"], claude["owner_scope"], claude["connection_state"]) == ("local", "personal", "offline")
-    assert json.loads(claude["capabilities_json"]) == json.loads(codex["capabilities_json"])
+    assert json.loads(claude["capabilities_json"]) == [
+        {"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}},
+        {"code": "review", "scope": {"repository_id": "demo-report-repo"}},
+    ]
     assert claude["local_registration_id"] == "local-demo-report-claude"
     assert claude["local_registration_id"] != codex["local_registration_id"]
     assert (claude["repository_id"], claude["base_commit"]) == (codex["repository_id"], codex["base_commit"])
@@ -80,6 +87,14 @@ def test_seed_registers_three_catalog_agents_shared_to_all_sessions(tmp_path):
 def test_local_registration_ids_are_one_per_tool():
     assert seed_demo.LOCAL_REGISTRATION_IDS == {"codex": "local-demo-report", "claude": "local-demo-report-claude"}
     assert seed_demo.REPOSITORY_ID == "demo-report-repo"
+
+
+def test_review_capability_code_is_a_valid_capability_code_only_claude_has():
+    """`REVIEW_CAPABILITY_CODE` 는 e2e 가 등록하는 종류 `review` 의 capability_code 와 같은 값이어야 한다."""
+    assert seed_demo.REVIEW_CAPABILITY_CODE == "review"
+    assert re.fullmatch(CAPABILITY_CODE_PATTERN, seed_demo.REVIEW_CAPABILITY_CODE)
+    codes = {a["agent_id"]: [c["code"] for c in a["capabilities"]] for a in seed_demo.LOCAL_AGENTS}
+    assert codes == {"agent-codex-mac": ["code.modify"], "agent-claude-mac": ["code.modify", "review"]}
 
 
 def test_diag_api_url_is_a_parameter(tmp_path):

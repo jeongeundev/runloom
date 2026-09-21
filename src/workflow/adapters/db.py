@@ -10,7 +10,7 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
@@ -101,12 +101,33 @@ CREATE TABLE IF NOT EXISTS chains (
   started_at   TEXT
 );
 
+-- 업무 종류·후속 규칙은 워크스페이스(세션)별 등록이다 (ADR-0009). 내장은 세션 생성 시 seed 된다.
+CREATE TABLE IF NOT EXISTS kinds (
+  session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+  kind        TEXT NOT NULL,
+  spec_json   TEXT NOT NULL,      -- KindSpec JSON. kind 필드는 컬럼과 같다
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (session_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS succession_rules (
+  rule_id     TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL REFERENCES sessions(session_id),
+  from_kind   TEXT NOT NULL,
+  to_kind     TEXT NOT NULL,
+  rule_json   TEXT NOT NULL,      -- SuccessorRule JSON. from_kind·to_kind 는 컬럼과 같다
+  created_at  TEXT NOT NULL,
+  UNIQUE (session_id, from_kind, to_kind),
+  FOREIGN KEY (session_id, from_kind) REFERENCES kinds(session_id, kind),
+  FOREIGN KEY (session_id, to_kind)   REFERENCES kinds(session_id, kind)
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   task_id                  TEXT PRIMARY KEY,
   session_id               TEXT NOT NULL REFERENCES sessions(session_id),
   title                    TEXT NOT NULL,
   request                  TEXT NOT NULL,
-  kind                     TEXT NOT NULL CHECK (kind IN ('diagnosis', 'code_change')),
+  kind                     TEXT NOT NULL,
   required_capability_json TEXT NOT NULL,
   selection_mode           TEXT NOT NULL CHECK (selection_mode IN ('auto', 'manual')),
   chosen_agent_id          TEXT,
@@ -124,7 +145,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at               TEXT NOT NULL,
   chain_id                 TEXT REFERENCES chains(chain_id),  -- 직접 등록 Task 는 NULL
   source_ref               TEXT,                              -- 가져온 이슈 키 (#42, OPS-42)
-  CHECK (predecessor_task_id IS NULL OR predecessor_task_id != task_id)
+  CHECK (predecessor_task_id IS NULL OR predecessor_task_id != task_id),
+  FOREIGN KEY (session_id, kind) REFERENCES kinds(session_id, kind)
 );
 
 CREATE TABLE IF NOT EXISTS selection_records (
@@ -138,7 +160,7 @@ CREATE TABLE IF NOT EXISTS executions (
   attempt_no               INTEGER NOT NULL CHECK (attempt_no >= 1),
   start_key                TEXT NOT NULL,
   agent_id                 TEXT NOT NULL,
-  kind                     TEXT NOT NULL CHECK (kind IN ('diagnosis', 'code_change')),
+  kind                     TEXT NOT NULL,                     -- Task 에서 복사된다
   request_json             TEXT NOT NULL,
   status                   TEXT NOT NULL CHECK (status IN ({_in(EXECUTION_STATUSES)})),
   last_event_seq           INTEGER NOT NULL DEFAULT 0,

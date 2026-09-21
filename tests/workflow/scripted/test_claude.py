@@ -14,13 +14,14 @@ from pathlib import Path
 
 import pytest
 
+from tests.workflow.connector.conftest import REVIEW_SPEC
 from workflow.connector.claude import ClaudeAdapter, _result_envelope
-from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun
+from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun, generic_result_schema
 from workflow.scripted import SCRIPT_MODEL_ID, _common
 from workflow.scripted import claude as scripted_claude
 from workflow.scripted._common import PACE_ENV
 
-from .conftest import prompt_for
+from .conftest import generic_prompt_for, prompt_for
 
 
 def argv_for(worktree: Path) -> list[str]:
@@ -119,3 +120,75 @@ def test_without_print_flag_exits_nonzero_without_reading_stdin(tmp_path):
     )
     assert completed.returncode != 0
     assert "-p" in completed.stderr
+
+
+# --- 사용자 정의 종류 — `build_readonly_argv`(--allowedTools Read Glob Grep, --json-schema) 를 그대로 받는다 ------
+
+
+def readonly_argv_for(handoff: Path, outcomes: list[str] = REVIEW_SPEC.outcomes) -> list[str]:
+    return ClaudeAdapter(None).build_readonly_argv(handoff, json.dumps(generic_result_schema(outcomes), ensure_ascii=False))
+
+
+def run_generic(monkeypatch, capsys, handoff: Path, argv: list[str]) -> tuple[int, str, str, float]:
+    monkeypatch.chdir(handoff)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(generic_prompt_for(handoff)))
+    started = time.perf_counter()
+    code = scripted_claude.main(argv)
+    elapsed = time.perf_counter() - started
+    out, err = capsys.readouterr()
+    return code, out, err, elapsed
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_generic_kind_answers_first_outcome_from_schema_and_writes_nothing(review_handoff, monkeypatch, capsys):
+    before = _snapshot(review_handoff)
+
+    code, out, err, elapsed = run_generic(monkeypatch, capsys, review_handoff, readonly_argv_for(review_handoff))
+
+    assert code == 0 and elapsed < 1.0
+    assert out.count("\n") == 1  # 봉투 한 덩어리
+    assert _snapshot(review_handoff) == before  # 읽기 전용 — cwd(인계 디렉터리)에 파일을 만들거나 고치지 않는다
+    raw = _result_envelope(out.encode("utf-8"))
+    assert raw is not None
+    envelope = json.loads(raw)
+    assert envelope["type"] == "result" and envelope["subtype"] == "success" and envelope["is_error"] is False
+    assert envelope["session_id"] == "scripted-claude" and envelope["model"] == SCRIPT_MODEL_ID
+    structured = envelope["structured_output"]
+    assert set(structured) == {"outcome", "summary"}  # 스키마(additionalProperties: false)와 같은 두 키
+    assert structured["outcome"] == REVIEW_SPEC.outcomes[0] == "approved"
+    assert "diff.patch" in structured["summary"] and "code_change_result.json" in structured["summary"]
+    assert str(review_handoff) not in structured["summary"]  # 파일 이름만
+    assert envelope["result"] == structured["summary"]
+    assert "scripted claude: approved" in err
+
+    adapter = ClaudeAdapter(None)
+    parsed = adapter.parse_generic_message(raw, REVIEW_SPEC.outcomes)
+    assert parsed.outcome == "approved" and parsed.parse_note is None and parsed.summary == structured["summary"]
+    run = ToolRun(pid=1, started_at="2026-09-21T00:00:00Z", exit_code=0, stdout=out.encode(), stderr=err.encode(),
+                  timed_out=False, stopped=True, last_message=raw)
+    assert adapter.classify_failure(run) is None
+
+
+def test_generic_kind_follows_the_schema_enum_not_a_fixed_word(review_handoff, monkeypatch, capsys):
+    code, out, _, _ = run_generic(monkeypatch, capsys, review_handoff, readonly_argv_for(review_handoff, ["looks_fine", "rework"]))
+
+    assert code == 0
+    assert json.loads(out)["structured_output"]["outcome"] == "looks_fine"
+
+
+def test_generic_kind_runs_as_module_in_handoff_cwd_and_leaves_it_untouched(review_handoff):
+    before = _snapshot(review_handoff)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "workflow.scripted.claude", *readonly_argv_for(review_handoff)[1:]],
+        input=generic_prompt_for(review_handoff), capture_output=True, text=True,
+        env={**os.environ, PACE_ENV: "0"}, cwd=review_handoff,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    envelope = json.loads(completed.stdout)
+    assert envelope["type"] == "result" and envelope["structured_output"]["outcome"] == "approved"
+    assert _snapshot(review_handoff) == before

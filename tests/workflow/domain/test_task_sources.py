@@ -2,7 +2,7 @@
 
 import pytest
 
-from workflow.contracts.v1 import Capability
+from workflow.contracts.v1 import BUILTIN_KINDS, Capability, KindSpec
 from workflow.domain.task_sources import Issue, IssueMapping, map_issue
 
 DIAGNOSE = Capability(code="operations.diagnose", scope={"workflow_id": "daily-report"})
@@ -25,7 +25,7 @@ def _issue(labels: tuple[str, ...], *, title: str = "제목", body: str = "본�
 
 
 def test_incident_with_workflow_and_run_maps_to_diagnose():
-    mapping = map_issue(_issue(("incident", "workflow:daily-report", "run:daily-0920-0900")))
+    mapping = map_issue(_issue(("incident", "workflow:daily-report", "run:daily-0920-0900")), BUILTIN_KINDS)
 
     assert isinstance(mapping, IssueMapping)
     assert mapping.capability == DIAGNOSE
@@ -34,7 +34,7 @@ def test_incident_with_workflow_and_run_maps_to_diagnose():
 
 
 def test_incident_without_run_label_is_unassignable():
-    mapping = map_issue(_issue(("incident", "workflow:daily-report")))
+    mapping = map_issue(_issue(("incident", "workflow:daily-report")), BUILTIN_KINDS)
 
     assert mapping.capability is None
     assert mapping.run_id is None
@@ -42,7 +42,7 @@ def test_incident_without_run_label_is_unassignable():
 
 
 def test_incident_without_workflow_label_has_no_capability():
-    mapping = map_issue(_issue(("incident", "run:daily-0920-0900")))
+    mapping = map_issue(_issue(("incident", "run:daily-0920-0900")), BUILTIN_KINDS)
 
     assert mapping.capability is None
     assert mapping.run_id is None
@@ -50,7 +50,7 @@ def test_incident_without_workflow_label_has_no_capability():
 
 
 def test_label_order_does_not_matter():
-    mapping = map_issue(_issue(("run:daily-0920-0900", "workflow:daily-report", "incident")))
+    mapping = map_issue(_issue(("run:daily-0920-0900", "workflow:daily-report", "incident")), BUILTIN_KINDS)
 
     assert mapping.capability == DIAGNOSE
     assert mapping.run_id == "daily-0920-0900"
@@ -60,7 +60,7 @@ def test_label_order_does_not_matter():
 
 
 def test_bug_with_repo_maps_to_modify():
-    mapping = map_issue(_issue(("bug", "repo:demo-report-repo")))
+    mapping = map_issue(_issue(("bug", "repo:demo-report-repo")), BUILTIN_KINDS)
 
     assert mapping.capability == MODIFY
     assert mapping.run_id is None
@@ -68,7 +68,7 @@ def test_bug_with_repo_maps_to_modify():
 
 
 def test_bug_without_repo_label_has_no_capability():
-    mapping = map_issue(_issue(("bug",)))
+    mapping = map_issue(_issue(("bug",)), BUILTIN_KINDS)
 
     assert mapping.capability is None
     assert mapping.reason == "맞는 능력 코드 없음 (라벨: bug)"
@@ -78,7 +78,7 @@ def test_bug_without_repo_label_has_no_capability():
 
 
 def test_docs_label_has_no_capability():
-    mapping = map_issue(_issue(("docs",)))
+    mapping = map_issue(_issue(("docs",)), BUILTIN_KINDS)
 
     assert mapping.capability is None
     assert mapping.run_id is None
@@ -87,14 +87,14 @@ def test_docs_label_has_no_capability():
 
 def test_enhancement_with_repo_has_no_capability():
     # repo 라벨이 있어도 bug 가 아니면 code.modify 가 아니다.
-    mapping = map_issue(_issue(("enhancement", "repo:demo-report-repo")))
+    mapping = map_issue(_issue(("enhancement", "repo:demo-report-repo")), BUILTIN_KINDS)
 
     assert mapping.capability is None
     assert mapping.reason == "맞는 능력 코드 없음 (라벨: enhancement, repo:demo-report-repo)"
 
 
 def test_no_labels_has_no_capability():
-    mapping = map_issue(_issue(()))
+    mapping = map_issue(_issue(()), BUILTIN_KINDS)
 
     assert mapping.capability is None
     assert mapping.reason == "맞는 능력 코드 없음 (라벨: 없음)"
@@ -103,21 +103,81 @@ def test_no_labels_has_no_capability():
 def test_title_and_body_are_not_used_for_mapping():
     # ADR-0004: 자유 문장에서 능력을 추론하지 않는다.
     mapping = map_issue(
-        _issue((), title="일일 보고서 생성 실패", body="incident workflow:daily-report run:daily-0920-0900")
+        _issue((), title="일일 보고서 생성 실패", body="incident workflow:daily-report run:daily-0920-0900"),
+        BUILTIN_KINDS,
     )
 
     assert mapping.capability is None
 
 
 def test_labels_are_compared_case_sensitively():
-    assert map_issue(_issue(("Incident", "workflow:daily-report", "run:x"))).capability is None
-    assert map_issue(_issue(("BUG", "repo:demo-report-repo"))).capability is None
+    assert map_issue(_issue(("Incident", "workflow:daily-report", "run:x")), BUILTIN_KINDS).capability is None
+    assert map_issue(_issue(("BUG", "repo:demo-report-repo")), BUILTIN_KINDS).capability is None
 
 
 def test_empty_label_value_is_treated_as_missing():
-    assert map_issue(_issue(("incident", "workflow:", "run:x"))).capability is None
-    assert map_issue(_issue(("incident", "workflow:daily-report", "run:"))).reason == "run 라벨 없음"
-    assert map_issue(_issue(("bug", "repo:"))).capability is None
+    assert map_issue(_issue(("incident", "workflow:", "run:x")), BUILTIN_KINDS).capability is None
+    assert map_issue(_issue(("incident", "workflow:daily-report", "run:")), BUILTIN_KINDS).reason == "run 라벨 없음"
+    assert map_issue(_issue(("bug", "repo:")), BUILTIN_KINDS).capability is None
+
+
+# --- kind:<kind> + <scope_key>:<value> → 등록된 종류의 capability_code (일반 규칙) --------------
+
+REVIEW = KindSpec(
+    kind="review", label="검토", capability_code="review", scope_key="repository_id",
+    input_kinds=["diff", "code_change_result"], output_kind="generic_result",
+    outcomes=["approved", "changes_requested", "needs_information"], instructions="", builtin=False,
+)
+KINDS = [*BUILTIN_KINDS, REVIEW]
+
+
+def test_kind_label_maps_to_registered_kind():
+    mapping = map_issue(_issue(("kind:review", "repository_id:demo-report-repo")), KINDS)
+
+    assert mapping.capability == Capability(code="review", scope={"repository_id": "demo-report-repo"})
+    assert mapping.run_id is None
+    assert mapping.reason == "라벨 kind:review + repository_id:demo-report-repo → review"
+
+
+def test_kind_label_of_unregistered_kind_is_unassignable():
+    mapping = map_issue(_issue(("kind:review", "repository_id:demo-report-repo")), BUILTIN_KINDS)
+
+    assert mapping.capability is None
+    assert mapping.reason == "등록되지 않은 종류 kind:review"
+
+
+def test_kind_label_without_scope_label_is_unassignable():
+    mapping = map_issue(_issue(("kind:review",)), KINDS)
+
+    assert mapping.capability is None
+    assert mapping.reason == "repository_id 라벨 없음"
+
+
+def test_kind_label_takes_priority_over_builtin_label_rules():
+    # kind: 라벨이 있으면 일반 규칙만 본다 — bug·repo: 가 같이 있어도 code.modify 로 가지 않는다
+    mapping = map_issue(_issue(("bug", "repo:demo-report-repo", "kind:review", "repository_id:other")), KINDS)
+
+    assert mapping.capability == Capability(code="review", scope={"repository_id": "other"})
+
+
+def test_kind_label_uses_spec_capability_code_and_scope_key():
+    spec = KindSpec(
+        kind="lint", label="린트", capability_code="code.lint", scope_key="repository_id",
+        input_kinds=[], output_kind="generic_result", outcomes=["clean", "dirty"], instructions="", builtin=False,
+    )
+    mapping = map_issue(_issue(("kind:lint", "repository_id:demo-report-repo")), [spec])
+
+    assert mapping.capability == Capability(code="code.lint", scope={"repository_id": "demo-report-repo"})
+    assert mapping.reason == "라벨 kind:lint + repository_id:demo-report-repo → lint"
+
+
+def test_builtin_label_rules_need_builtin_kinds_registered():
+    # 내장 종류가 등록부에 없으면 incident·bug 규칙도 적용하지 않는다
+    assert map_issue(_issue(("incident", "workflow:daily-report", "run:x")), [REVIEW]).capability is None
+    assert map_issue(_issue(("bug", "repo:demo-report-repo")), [REVIEW]).capability is None
+    assert map_issue(_issue(("bug", "repo:demo-report-repo")), []).reason == (
+        "맞는 능력 코드 없음 (라벨: bug, repo:demo-report-repo)"
+    )
 
 
 # --- 계약 ------------------------------------------------------------------------------
@@ -131,7 +191,7 @@ def test_empty_label_value_is_treated_as_missing():
     ],
 )
 def test_mapped_capability_passes_contract_validation(labels, code, scope_key):
-    capability = map_issue(_issue(labels)).capability
+    capability = map_issue(_issue(labels), BUILTIN_KINDS).capability
 
     assert capability is not None
     assert capability.code == code
@@ -142,7 +202,7 @@ def test_mapped_capability_passes_contract_validation(labels, code, scope_key):
 
 def test_issue_and_mapping_are_immutable():
     issue = _issue(("docs",))
-    mapping = map_issue(issue)
+    mapping = map_issue(issue, BUILTIN_KINDS)
 
     with pytest.raises(AttributeError):
         issue.key = "#2"  # type: ignore[misc]

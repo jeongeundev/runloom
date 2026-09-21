@@ -17,9 +17,16 @@ import pytest
 
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import Progress
-from workflow.connector.local_tool import RESULT_SCHEMA, LocalToolAdapter, ToolResult, ToolRun
+from workflow.connector.local_tool import (
+    RESULT_SCHEMA,
+    LocalToolAdapter,
+    ToolResult,
+    ToolRun,
+    generic_result_schema,
+)
+from workflow.contracts.v1 import ExecutionRequest, GenericResult
 
-from .conftest import make_request
+from .conftest import REVIEW_SPEC, make_local_request, make_request
 
 WFC = "wfc_" + "a" * 43
 SK = "sk-" + "b" * 20
@@ -108,7 +115,8 @@ def _message(outcome: str = "ready_for_review", summary: str = "src.py 를 고�
 
 
 class ScriptedTool(LocalToolAdapter):
-    """가짜 로컬 도구. `script(worktree)` 가 worktree 를 바꾸고 ToolRun 을 돌려준다 (또는 예외를 던진다)."""
+    """가짜 로컬 도구. `script(cwd)` 가 worktree(또는 읽기 전용 실행의 인계 디렉터리)를 바꾸고 ToolRun 을 돌려준다
+    (또는 예외를 던진다). `launch` 와 `launch_readonly` 가 같은 대본을 쓴다."""
 
     tool_name = "fake"
     raw_kinds = ("claude_jsonl", "claude_stderr")  # codex_* 가 아닌 kind 로 공통 흐름이 raw_kinds 를 따르는지 본다
@@ -117,17 +125,30 @@ class ScriptedTool(LocalToolAdapter):
         super().__init__(state_conn, verification_timeout=60, **kwargs)
         self.script = script
         self.launched_with: list[tuple[Path, str]] = []
+        self.launched_readonly_with: list[tuple[Path, str, dict]] = []
 
     def launch(self, worktree: Path, prompt_text: str, progress: Progress) -> ToolRun:
         self.launched_with.append((worktree, prompt_text))
         progress("fake 시작", runtime_ref="pid:4242;start:2026-09-20T01:00:00Z")
         return self.script(worktree)
 
+    def launch_readonly(self, cwd: Path, prompt_text: str, schema: dict, progress: Progress) -> ToolRun:
+        self.launched_readonly_with.append((cwd, prompt_text, schema))
+        progress("fake 시작", runtime_ref="pid:4242;start:2026-09-20T01:00:00Z")
+        return self.script(cwd)
+
     def parse_last_message(self, raw: str | None) -> ToolResult:
         if raw is None:
             return ToolResult("needs_information", "fake 마지막 메시지를 읽지 못함 (파일 없음)", "파일 없음")
         data = json.loads(raw)
         return ToolResult(data["outcome"], data["summary"], None)
+
+    def parse_generic_message(self, raw: str | None, outcomes) -> ToolResult:
+        if raw is None:
+            return ToolResult("", "fake 마지막 메시지를 읽지 못함 (파일 없음)", "파일 없음")
+        data = json.loads(raw)
+        note = None if data["outcome"] in outcomes else f"허용되지 않은 outcome {data['outcome']!r}"
+        return ToolResult(data["outcome"], data["summary"], note)
 
 
 def fix_and_add_test(worktree: Path) -> ToolRun:
@@ -397,3 +418,209 @@ def test_verification_profile_runs_with_child_env(state_conn, repo, handoff, mon
 
     log = by_kind(output)["test_log_after"].decode()
     assert log.startswith("exit_code=0") and "'PATH'" in log and "OPENAI_API_KEY" not in log
+
+
+# --- 사용자 정의 종류 — `LocalTarget` 읽기 전용 흐름 (worktree·커밋·검증 없음) ----------------------------------
+
+
+@pytest.fixture
+def review_handoff(tmp_path: Path) -> Path:
+    handoff = tmp_path / "review-daily-0920.handoff"
+    handoff.mkdir()
+    (handoff / "manifest.json").write_text('{"source_kind": "code_change"}')
+    (handoff / "diff.patch").write_text("--- a\n+++ b\n")
+    (handoff / "code_change_result.json").write_text('{"outcome": "ready_for_review"}')
+    return handoff
+
+
+def _generic_message(outcome: str = "approved", summary: str = "diff 가 repair_request 를 충족한다") -> str:
+    return json.dumps({"outcome": outcome, "summary": summary}, ensure_ascii=False)
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_generic_flow_returns_generic_result_with_raw_logs_only(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+    request = make_local_request()
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(
+        stdout=b'{"type":"result"}\n', stderr=b"fake: done\n", last_message=_generic_message(),
+    ))
+    progress = Recorder()
+    before = _snapshot(review_handoff)
+
+    output = adapter.run(request, review_handoff, progress)
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert isinstance(result, GenericResult)
+    assert (result.kind, result.outcome, result.summary) == ("review", "approved", "diff 가 repair_request 를 충족한다")
+    assert (result.execution_id, result.task_id, result.artifact_ids) == (request.execution_id, request.task_id, [])
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    assert by_kind(output) == {"claude_jsonl": b'{"type":"result"}\n', "claude_stderr": b"fake: done\n"}
+    assert output.runtime_ref == progress.runtime_refs[0] == "pid:4242;start:2026-09-20T01:00:00Z"
+    # 읽기 전용 실행: 인계 디렉터리에서, 스키마 enum 은 종류의 outcomes, 프롬프트 첫 줄은 종류 표시
+    (cwd, prompt_text, schema), = adapter.launched_readonly_with
+    assert cwd == review_handoff and adapter.launched_with == []
+    assert schema == generic_result_schema(REVIEW_SPEC.outcomes)
+    assert schema["properties"]["outcome"]["enum"] == ["approved", "changes_requested", "needs_information"]
+    assert prompt_text.splitlines()[0] == "# 업무 종류: review (검토)"
+    assert request.request in prompt_text and str(review_handoff / "diff.patch") in prompt_text
+    # worktree·커밋·검증 없음 — 저장소와 인계 디렉터리는 그대로
+    assert not (repo.parent / "mini-repo-worktrees").exists()
+    assert _git(repo, "worktree", "list").count("\n") == 0 and _git(repo, "status", "--porcelain") == ""
+    assert _snapshot(review_handoff) == before
+
+
+def test_generic_flow_without_kind_spec_is_kind_spec_missing(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+    request = make_local_request().model_copy(update={"kind_spec": None})  # 계약 검증을 우회한 잘못된 요청
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(last_message=_generic_message()))
+
+    output = adapter.run(request, review_handoff, Recorder())
+
+    assert output.result is None and output.failed[0] == "kind_spec_missing" and output.failed[2] is True
+    assert "review" in output.failed[1] and adapter.launched_readonly_with == [] and output.artifacts == []
+
+
+def test_generic_flow_missing_registration_fails_before_launch(state_conn, review_handoff):
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(last_message=_generic_message()))
+
+    output = adapter.run(make_local_request(), review_handoff, Recorder())
+
+    assert output.failed[0] == "registration_missing" and "local-demo-report" in output.failed[1]
+    assert adapter.launched_readonly_with == []
+
+
+def test_generic_flow_creates_missing_handoff_dir(state_conn, repo, tmp_path):
+    register(state_conn, repo)
+    handoff = tmp_path / "없던.handoff"
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(last_message=_generic_message()))
+
+    output = adapter.run(make_local_request(), handoff, Recorder())
+
+    assert output.failed is None and handoff.is_dir() and adapter.launched_readonly_with[0][0] == handoff
+    assert "(인계 자료 없음)" in adapter.launched_readonly_with[0][1]
+
+
+@pytest.mark.parametrize("last_message, note", [
+    (_generic_message("rejected"), "rejected"),
+    (_generic_message(""), "''"),
+    (None, "파일 없음"),
+])
+def test_generic_outcome_outside_spec_is_result_invalid_with_raw_logs(state_conn, repo, review_handoff, last_message,
+                                                                      note):
+    register(state_conn, repo)
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(stdout=b"out\n", stderr=b"err\n", last_message=last_message))
+    progress = Recorder()
+
+    output = adapter.run(make_local_request(), review_handoff, progress)
+
+    assert output.result is None
+    code, message, stopped = output.failed
+    assert code == "result_invalid" and stopped is True and note in message
+    assert by_kind(output) == {"claude_jsonl": b"out\n", "claude_stderr": b"err\n"}  # 원시 로그는 남긴다
+    assert output.runtime_ref == progress.runtime_refs[0]
+
+
+def test_generic_flow_that_changes_handoff_files_is_readonly_violation(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+
+    def script(cwd: Path) -> ToolRun:
+        (cwd / "diff.patch").write_text("--- a\n+++ b\n+tampered\n")
+        (cwd / "notes.md").write_text("새 파일")
+        return _run(stdout=b"out\n", last_message=_generic_message())
+
+    output = ScriptedTool(state_conn, script).run(make_local_request(), review_handoff, Recorder())
+
+    assert output.result is None
+    code, message, stopped = output.failed
+    assert code == "readonly_violation" and stopped is True
+    assert "diff.patch" in message and "notes.md" in message
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+
+
+def test_generic_flow_that_deletes_a_handoff_file_is_readonly_violation(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+
+    def script(cwd: Path) -> ToolRun:
+        (cwd / "code_change_result.json").unlink()
+        return _run(last_message=_generic_message())
+
+    output = ScriptedTool(state_conn, script).run(make_local_request(), review_handoff, Recorder())
+
+    assert output.failed[0] == "readonly_violation" and "code_change_result.json" in output.failed[1]
+
+
+def test_generic_flow_timeout_and_classify_failure_keep_their_order(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+    request = make_local_request()
+
+    timed_out = ScriptedTool(state_conn, lambda _cwd: _run(stdout=b"partial\n", timed_out=True, stopped=False),
+                             timeout_seconds=7).run(request, review_handoff, Recorder())
+    limited = LimitedTool(state_conn, lambda _cwd: _run(stderr=b"rate limit\n", last_message=_generic_message())).run(
+        request, review_handoff, Recorder(),
+    )
+    limited_but_timed_out = LimitedTool(state_conn, lambda _cwd: _run(stderr=b"limit\n", timed_out=True)).run(
+        request, review_handoff, Recorder(),
+    )
+
+    assert timed_out.result is None and timed_out.failed[0] == "timeout" and "7" in timed_out.failed[1]
+    assert timed_out.failed[2] is False and by_kind(timed_out)["claude_jsonl"] == b"partial\n"
+    assert limited.result is None and limited.failed == ("usage_limit", "fake 사용량 한도", True)
+    assert [meta.kind for meta, _ in limited.artifacts] == ["claude_jsonl", "claude_stderr"]
+    assert limited_but_timed_out.failed[0] == "timeout"  # 시간 초과가 먼저다
+
+
+def test_generic_flow_missing_executable_is_tool_unavailable(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+
+    def script(_cwd: Path) -> ToolRun:
+        raise FileNotFoundError(2, "No such file or directory", "fake")
+
+    output = ScriptedTool(state_conn, script).run(make_local_request(), review_handoff, Recorder())
+
+    assert output.result is None and output.failed[0] == "fake_unavailable" and output.artifacts == []
+
+
+def test_generic_raw_logs_are_masked(state_conn, repo, review_handoff):
+    register(state_conn, repo)
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(
+        stdout=f"token {WFC}\n".encode(), stderr=f"key {SK}\n".encode(), last_message=_generic_message(),
+    ))
+
+    output = adapter.run(make_local_request(), review_handoff, Recorder())
+
+    artifacts = by_kind(output)
+    assert WFC not in artifacts["claude_jsonl"].decode() and "wfc_***" in artifacts["claude_jsonl"].decode()
+    assert SK not in artifacts["claude_stderr"].decode() and "sk-***" in artifacts["claude_stderr"].decode()
+
+
+def test_generic_result_schema_is_strict_object_with_outcome_enum():
+    schema = generic_result_schema(["approved", "changes_requested"])
+
+    assert schema == {
+        "type": "object",
+        "properties": {
+            "outcome": {"type": "string", "enum": ["approved", "changes_requested"]},
+            "summary": {"type": "string"},
+        },
+        "required": ["outcome", "summary"],
+        "additionalProperties": False,
+    }
+    json.dumps(schema)
+
+
+def test_diagnosis_request_is_still_unsupported(state_conn, review_handoff):
+    request = ExecutionRequest.model_validate({
+        "contract_version": 1, "execution_id": "exec-diagnose-001", "task_id": "diagnose-daily-0920",
+        "kind": "diagnosis", "agent_id": "agent-ops-demo", "task_revision": 1, "request": "조사",
+        "input_artifact_ids": [], "target": {"run_id": "daily-0920-0900"},
+    })
+    adapter = ScriptedTool(state_conn, fix_only)
+
+    output = adapter.run(request, review_handoff, Recorder())
+
+    assert output.result is None and output.failed[0] == "unsupported_kind"
+    assert adapter.launched_with == [] and adapter.launched_readonly_with == []

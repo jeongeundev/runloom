@@ -23,6 +23,8 @@ from workflow.contracts.v1 import (
     ExecutionEvent,
     ExecutionRequest,
     HandoffBundle,
+    InputRef,
+    KindSpec,
 )
 
 TOKEN = "wfc_" + "t" * 43
@@ -249,11 +251,23 @@ RESPONSE_AFTER = json.dumps({
 LOG_0920 = b"2026-09-20T09:00:00+09:00 INFO  run_id=daily-0920-0900 stage=fetch http_status=200\n"
 
 
+DIAGNOSIS_RESULT = json.dumps({"contract_version": 1, "outcome": "ready_for_handoff", "summary": "(테스트 진단 결과)"},
+                              ensure_ascii=False).encode()
+
+
+def _input(fake: FakeCentral, source: str, kind: str, data: bytes, content_type: str, name: str) -> InputRef:
+    artifact_id = fake.add_artifact(source, kind, data, content_type, name=name)
+    return InputRef(kind=kind, artifact_id=artifact_id, sha256=hashlib.sha256(data).hexdigest(),
+                    content_type=content_type)
+
+
 def assign_with_handoff(fake: FakeCentral, request: ExecutionRequest | None = None, *,
                         tamper: bool = False) -> ExecutionRequest:
-    """A 실행(exec-diagnose-001)이 만든 인계 묶음(manifest + 첨부 2개)을 두고 B 요청을 배정한다.
-    `tamper=True` 면 첨부 하나의 실제 바이트를 manifest 해시와 다르게 둔다."""
+    """A 실행(exec-diagnose-001)이 만든 인계 묶음(manifest + 입력 diagnosis_result + 첨부 2개)을 두고 B 요청을
+    배정한다 — 워커 `assemble_handoff` 가 내장 규칙으로 만드는 것과 같은 모양. `tamper=True` 면 첨부 하나의 실제
+    바이트를 manifest 해시와 다르게 둔다."""
     source = "exec-diagnose-001"
+    diagnosis = _input(fake, source, "diagnosis_result", DIAGNOSIS_RESULT, "application/json", "diagnosis_result.json")
     response_id = fake.add_artifact(source, "evidence", RESPONSE_AFTER, name="response-after.json")
     log_id = fake.add_artifact(source, "evidence", LOG_0920, "text/plain", name="log-daily-0920.txt")
     attachments = [
@@ -264,13 +278,75 @@ def assign_with_handoff(fake: FakeCentral, request: ExecutionRequest | None = No
     ]
     if tamper:
         fake.artifacts[log_id]["data"] = LOG_0920 + b"tampered\n"
-    bundle = HandoffBundle(contract_version=1, source_execution_id=source,
-                           diagnosis_result_artifact_id="art-diag-result-001", attachments=attachments)
+    bundle = HandoffBundle(contract_version=1, source_execution_id=source, source_kind="diagnosis",
+                           source_result_artifact_id=diagnosis.artifact_id, inputs=[diagnosis],
+                           attachments=attachments)
     bundle_id = fake.add_artifact(source, "handoff_bundle", bundle.model_dump_json().encode(), name="handoff.json")
     request = request or make_request(input_artifact_ids=[bundle_id])
     if bundle_id not in request.input_artifact_ids:
         request = request.model_copy(update={"input_artifact_ids": [bundle_id]})
-    fake.assign(request, {bundle_id, response_id, log_id})
+    fake.assign(request, {bundle_id, diagnosis.artifact_id, response_id, log_id})
+    return request
+
+
+# --- 사용자 정의 종류 (CONTRACT 11절 `review`) ------------------------------------------------
+
+REVIEW_SPEC = KindSpec(
+    kind="review", label="검토", capability_code="review", scope_key="repository_id",
+    input_kinds=["diff", "code_change_result"], output_kind="generic_result",
+    outcomes=["approved", "changes_requested", "needs_information"],
+    instructions="인계 디렉터리의 diff 와 code_change_result 를 읽고 변경이 진단의 repair_request 를 충족하는지 검토하세요. "
+                 "저장소를 수정하지 마세요.",
+    builtin=False,
+)
+DIFF = b"--- a/daily_report/transformer.py\n+++ b/daily_report/transformer.py\n@@ -1 +1 @@\n-items\n+records\n"
+CODE_CHANGE_RESULT = json.dumps({"contract_version": 1, "outcome": "ready_for_review", "summary": "(테스트 수정 결과)"},
+                                ensure_ascii=False).encode()
+TEST_LOG_AFTER = b"exit_code=0\n2 passed\n"
+
+
+def make_local_request(execution_id: str = "exec-review-001", task_id: str = "review-daily-0920",
+                       input_artifact_ids: list[str] | None = None, kind_spec: KindSpec = REVIEW_SPEC,
+                       local_registration_id: str = "local-demo-report") -> ExecutionRequest:
+    """내장이 아닌 종류(`review`)의 요청 — target 은 `LocalTarget`, `kind_spec` 은 서버가 채운 값."""
+    return ExecutionRequest.model_validate({
+        "contract_version": 1,
+        "execution_id": execution_id,
+        "task_id": task_id,
+        "kind": kind_spec.kind,
+        "agent_id": "agent-claude-mac",
+        "task_revision": 1,
+        "request": "인계된 diff 와 코드 수정 결과를 검토하고 승인 여부를 판단해 주세요.",
+        "input_artifact_ids": input_artifact_ids if input_artifact_ids is not None else ["art-handoff-002"],
+        "target": {"local_registration_id": local_registration_id},
+        "kind_spec": kind_spec.model_dump(),
+    })
+
+
+def assign_with_generic_handoff(fake: FakeCentral, request: ExecutionRequest | None = None, *,
+                                tamper: bool = False, duplicate_kind: bool = False,
+                                source_result_in_inputs: bool = True) -> ExecutionRequest:
+    """B 실행(exec-fix-001)의 산출물을 규칙 `code_change → review` 의 handoff_kinds [diff, code_change_result,
+    test_log_after] 로 모은 인계 묶음(attachments 없음)을 두고 C(`review`) 요청을 배정한다.
+    `tamper=True` 면 diff 의 실제 바이트를 manifest 해시와 다르게, `duplicate_kind=True` 면 test_log_after 를 둘,
+    `source_result_in_inputs=False` 면 code_change_result 를 inputs 에서 빼고 source_result_artifact_id 로만 둔다."""
+    source = "exec-fix-001"
+    diff = _input(fake, source, "diff", DIFF, "text/x-diff", "fix.diff")
+    result = _input(fake, source, "code_change_result", CODE_CHANGE_RESULT, "application/json",
+                    "code_change_result.json")
+    log = _input(fake, source, "test_log_after", TEST_LOG_AFTER, "text/plain", "pytest-after.txt")
+    inputs = [diff, result, log] if source_result_in_inputs else [diff, log]
+    if duplicate_kind:
+        inputs.append(_input(fake, source, "test_log_after", TEST_LOG_AFTER + b"(2)\n", "text/plain", "again.txt"))
+    if tamper:
+        fake.artifacts[diff.artifact_id]["data"] = DIFF + b"tampered\n"
+    bundle = HandoffBundle(contract_version=1, source_execution_id=source, source_kind="code_change",
+                           source_result_artifact_id=result.artifact_id, inputs=inputs, attachments=[])
+    bundle_id = fake.add_artifact(source, "handoff_bundle", bundle.model_dump_json().encode(), name="handoff.json")
+    request = request or make_local_request(input_artifact_ids=[bundle_id])
+    if bundle_id not in request.input_artifact_ids:
+        request = request.model_copy(update={"input_artifact_ids": [bundle_id]})
+    fake.assign(request, {bundle_id, result.artifact_id, *(i.artifact_id for i in inputs)})
     return request
 
 

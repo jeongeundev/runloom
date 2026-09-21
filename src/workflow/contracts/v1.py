@@ -18,7 +18,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 
 CONTRACT_VERSION = 1
 
-# CONTRACT.md 4절의 산출물 kind 15종
+# CONTRACT.md 4절의 산출물 kind 16종
 ARTIFACT_KINDS: tuple[str, ...] = (
     "handoff_bundle",
     "diagnosis_result",
@@ -35,6 +35,7 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     "review_comment",
     "claude_jsonl",
     "claude_stderr",
+    "generic_result",
 )
 
 _RFC3339 = re.compile(
@@ -73,8 +74,18 @@ def _validate_location(value: str) -> str:
     return value
 
 
+# 업무 종류·능력 코드·scope 키·outcome 식별자 — ARCHITECTURE "업무 종류와 후속 규칙". 경로·파일명·SQL 로 흘러가므로
+# 소문자 식별자만 허용한다.
+KIND_PATTERN = r"^[a-z][a-z0-9_]{1,39}$"
+CAPABILITY_CODE_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$"
+IDENTIFIER_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
+
 ContractVersion = Literal[1]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
+KindId = Annotated[str, Field(pattern=KIND_PATTERN)]
+CapabilityCode = Annotated[str, Field(pattern=CAPABILITY_CODE_PATTERN)]
+Identifier = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
+Outcome = Identifier
 Rfc3339 = Annotated[str, AfterValidator(parse_rfc3339_aware)]
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 CommitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
@@ -110,28 +121,119 @@ class CodeChangeTarget(_Contract):
     verification_profile_id: NonEmptyStr
 
 
+class LocalTarget(_Contract):
+    """내장이 아닌 종류를 로컬 도구가 읽기 전용으로 수행할 때의 target. worktree·커밋·검증 프로필이 없다."""
+
+    local_registration_id: NonEmptyStr
+
+
+# --- 업무 종류와 후속 규칙 (CONTRACT 11절) ---------------------------------
+
+BUILTIN_KIND_NAMES: tuple[str, ...] = ("diagnosis", "code_change")
+
+
+class KindSpec(_Contract):
+    """업무 종류의 봉투. 내용은 정의하지 않는다 — 중앙은 입력 kind·출력 kind·outcome 목록만 본다."""
+
+    kind: KindId
+    label: NonEmptyStr
+    capability_code: CapabilityCode
+    scope_key: Identifier
+    input_kinds: list[ArtifactKind]
+    output_kind: Literal["diagnosis_result", "code_change_result", "generic_result"]
+    outcomes: list[Outcome] = Field(min_length=1)
+    instructions: str
+    builtin: bool
+
+    @model_validator(mode="after")
+    def _check_builtin(self) -> "KindSpec":
+        if len(set(self.input_kinds)) != len(self.input_kinds):
+            raise ValueError("input_kinds 에 중복이 있습니다")
+        if len(set(self.outcomes)) != len(self.outcomes):
+            raise ValueError("outcomes 에 중복이 있습니다")
+        if self.builtin and self.kind not in BUILTIN_KIND_NAMES:
+            raise ValueError(f"내장 종류는 {list(BUILTIN_KIND_NAMES)} 뿐입니다")
+        if not self.builtin and self.output_kind != "generic_result":
+            raise ValueError("사용자 정의 종류의 output_kind 는 generic_result 여야 합니다")
+        return self
+
+
+BUILTIN_KINDS: tuple[KindSpec, ...] = (
+    KindSpec(
+        kind="diagnosis", label="진단", capability_code="operations.diagnose", scope_key="workflow_id",
+        input_kinds=[], output_kind="diagnosis_result",
+        outcomes=["ready_for_handoff", "needs_information"], instructions="", builtin=True,
+    ),
+    KindSpec(
+        kind="code_change", label="코드 수정", capability_code="code.modify", scope_key="repository_id",
+        input_kinds=["diagnosis_result", "evidence"], output_kind="code_change_result",
+        outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
+    ),
+)
+
+
+class SuccessorRule(_Contract):
+    """선행 결과의 outcome 이 `on_outcomes` 에 있으면 `handoff_kinds` 산출물을 넘겨 `to_kind` 를 시작한다.
+    `on_outcomes ⊆ from_kind.outcomes`·`handoff_kinds ⊇ to_kind.input_kinds` 는 서버가 등록부로 검사한다."""
+
+    from_kind: KindId
+    on_outcomes: list[Outcome] = Field(min_length=1)
+    to_kind: KindId
+    handoff_kinds: list[ArtifactKind]
+
+    @model_validator(mode="after")
+    def _check_rule(self) -> "SuccessorRule":
+        if self.from_kind == self.to_kind:
+            raise ValueError("from_kind 와 to_kind 가 같습니다")
+        if len(set(self.on_outcomes)) != len(self.on_outcomes):
+            raise ValueError("on_outcomes 에 중복이 있습니다")
+        if len(set(self.handoff_kinds)) != len(self.handoff_kinds):
+            raise ValueError("handoff_kinds 에 중복이 있습니다")
+        if "handoff_bundle" in self.handoff_kinds:
+            raise ValueError("handoff_kinds 에 handoff_bundle 은 넣을 수 없습니다 — 묶음 자체입니다")
+        return self
+
+
+BUILTIN_RULES: tuple[SuccessorRule, ...] = (
+    SuccessorRule(
+        from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
+        handoff_kinds=["diagnosis_result", "evidence"],
+    ),
+)
+
+
 class ExecutionRequest(_Contract):
     contract_version: ContractVersion
     execution_id: NonEmptyStr
     task_id: NonEmptyStr
-    kind: Literal["diagnosis", "code_change"]
+    kind: KindId
     agent_id: NonEmptyStr
     task_revision: int = Field(ge=1)
     request: NonEmptyStr
     input_artifact_ids: list[NonEmptyStr]
-    target: DiagnosisTarget | CodeChangeTarget
+    target: DiagnosisTarget | CodeChangeTarget | LocalTarget
+    kind_spec: KindSpec | None = None
 
     @model_validator(mode="after")
     def _check_kind_target(self) -> "ExecutionRequest":
         if len(set(self.input_artifact_ids)) != len(self.input_artifact_ids):
             raise ValueError("input_artifact_ids 에 중복이 있습니다")
-        if self.kind == "diagnosis" and not isinstance(self.target, DiagnosisTarget):
-            raise ValueError("kind diagnosis 의 target 은 run_id 만 가집니다")
-        if self.kind == "code_change":
+        if self.kind_spec is not None and self.kind_spec.kind != self.kind:
+            raise ValueError("kind_spec.kind 는 kind 와 같아야 합니다")
+        if self.kind == "diagnosis":
+            if not isinstance(self.target, DiagnosisTarget):
+                raise ValueError("kind diagnosis 의 target 은 run_id 만 가집니다")
+        elif self.kind == "code_change":
             if not isinstance(self.target, CodeChangeTarget):
                 raise ValueError("kind code_change 의 target 은 local_registration_id 를 가집니다")
             if not self.input_artifact_ids:
                 raise ValueError("code_change 는 input_artifact_ids 가 비어 있으면 안 됩니다")
+        else:
+            # 내장이 아닌 종류. kind_spec.builtin 은 KindSpec 검증(내장 이름만 builtin)과 위의 kind 일치로 이미 False 다.
+            if not isinstance(self.target, LocalTarget):
+                raise ValueError("내장이 아닌 kind 의 target 은 local_registration_id 하나입니다")
+            if self.kind_spec is None:
+                raise ValueError("내장이 아닌 kind 는 kind_spec 이 있어야 합니다")
         return self
 
 
@@ -240,14 +342,28 @@ class AttachmentRef(_Contract):
     sha256: Sha256
 
 
+class InputRef(_Contract):
+    """인계 묶음의 입력 항목 — 규칙 `handoff_kinds` 로 모은 선행 실행의 산출물."""
+
+    kind: ArtifactKind
+    artifact_id: NonEmptyStr
+    sha256: Sha256
+    content_type: NonEmptyStr
+
+
 class HandoffBundle(_Contract):
     contract_version: ContractVersion
     source_execution_id: NonEmptyStr
-    diagnosis_result_artifact_id: NonEmptyStr
+    source_kind: KindId
+    source_result_artifact_id: NonEmptyStr
+    inputs: list[InputRef]
     attachments: list[AttachmentRef]
 
     @model_validator(mode="after")
-    def _check_unique_evidence(self) -> "HandoffBundle":
+    def _check_unique(self) -> "HandoffBundle":
+        input_ids = [i.artifact_id for i in self.inputs]
+        if len(set(input_ids)) != len(input_ids):
+            raise ValueError("inputs 에 같은 artifact_id 가 중복됩니다")
         pairs = [(a.evidence_id, a.version) for a in self.attachments]
         if len(set(pairs)) != len(pairs):
             raise ValueError("attachments 에 같은 evidence_id@version 이 중복됩니다")
@@ -375,6 +491,27 @@ class CodeChangeResult(_Contract):
         return self
 
 
+# --- 범용 결과 (CONTRACT 11절) ---------------------------------------------
+
+
+class GenericResult(_Contract):
+    """내장이 아닌 종류의 결과 봉투. 중앙은 `outcome ∈ KindSpec.outcomes` 만 판정하고 완료는 사람이 한다."""
+
+    contract_version: ContractVersion
+    execution_id: NonEmptyStr
+    task_id: NonEmptyStr
+    kind: KindId
+    outcome: Outcome
+    summary: str
+    artifact_ids: list[NonEmptyStr]
+
+    @model_validator(mode="after")
+    def _check_unique_artifacts(self) -> "GenericResult":
+        if len(set(self.artifact_ids)) != len(self.artifact_ids):
+            raise ValueError("artifact_ids 에 중복이 있습니다")
+        return self
+
+
 # --- 검토 (CONTRACT 8절) ---------------------------------------------------
 
 
@@ -389,22 +526,13 @@ class ReviewComment(_Contract):
 
 # --- 능력과 자동 선택 기록 (CONTRACT 9절) ----------------------------------
 
-_CAPABILITY_SCOPE_KEYS: dict[str, frozenset[str]] = {
-    "operations.diagnose": frozenset({"workflow_id"}),
-    "code.modify": frozenset({"repository_id"}),
-}
-
 
 class Capability(_Contract):
-    code: Literal["operations.diagnose", "code.modify"]
-    scope: dict[str, str]
+    """계약은 형태만 본다 — `code` 가 어느 종류의 `capability_code` 이고 scope 키가 그 종류의 `scope_key` 인지는
+    서버가 등록부(`KindSpec`)로 검사한다."""
 
-    @model_validator(mode="after")
-    def _check_scope_keys(self) -> "Capability":
-        expected = _CAPABILITY_SCOPE_KEYS[self.code]
-        if set(self.scope) != expected:
-            raise ValueError(f"{self.code} 의 scope 키는 {sorted(expected)} 여야 합니다")
-        return self
+    code: CapabilityCode
+    scope: dict[Identifier, NonEmptyStr] = Field(min_length=1, max_length=1)
 
 
 class SelectionRecord(_Contract):

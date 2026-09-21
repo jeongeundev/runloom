@@ -1,8 +1,8 @@
 # 문서 안내
 
-갱신일: 2026-09-20
+갱신일: 2026-09-22
 
-설계 문서(PRD·ARCHITECTURE·CONTRACT·ADR)가 있고 구현은 `phases/0-mvp`(18 step)·`phases/1-diag-fix`(4 step)·`phases/2-model-compare`(3 step, 진단 모델 비교) 까지 끝났다. 먼저 [현재 인계](CURRENT_HANDOFF.md)의 "지금 상태" 표를 읽는다.
+설계 문서(PRD·ARCHITECTURE·CONTRACT·ADR)가 있고 구현은 `phases/0-mvp`(18 step)·`phases/1-diag-fix`(4 step)·`phases/2-model-compare`(3 step, 진단 모델 비교)·`phases/4-claude-issues`(4 step)·`phases/5-scripted-demo`(12 step, 공개 데모 — VM 배포됨)·`phases/6-typed-handoff`(10 step, 업무 종류·후속 규칙 등록 — 브랜치, 심사 이후 배포) 까지 끝났다. 먼저 [현재 인계](CURRENT_HANDOFF.md)의 "지금 상태" 표를 읽는다.
 
 ## 현재 문서의 구분
 
@@ -12,9 +12,9 @@
 | [product/PRODUCT_BRIEF.md](product/PRODUCT_BRIEF.md) | 최신 제품 방향, 기존 서비스와의 차별성 가설, 검증할 사항 |
 | [archive/2026-09-16-gateless/](archive/2026-09-16-gateless/README.md) | 이전 Gateless 기획·도메인·아키텍처와 조사·실험 자료. 현행 요구사항이 아닌 참고 이력 |
 | [PRD.md](PRD.md) | 검토용 v0.1. MVP 범위·사용자 흐름·공모전 시연·수용 기준 제안 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 기술 설계 v0.3 제안. 스택·모델 평가안·계약 필드·이벤트 순서·DB 제약·검증 기준. 구현·실연동 검증 전 |
-| [CONTRACT.md](CONTRACT.md) | 계약 v1의 완전한 요청·이벤트·결과·오류 예시. 계약 테스트 fixture로 사용 |
-| [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록. 2026-09-20 Codex CLI 실연동 1회(Step 15) |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 기술 설계 v0.3. 스택·모델 평가안·계약 필드·이벤트 순서·DB 제약·검증 기준·배포·업무 종류와 후속 규칙(ADR-0009, 2026-09-22 구현대로 정정) |
+| [CONTRACT.md](CONTRACT.md) | 계약 v1의 완전한 요청·이벤트·결과·오류 예시. 11절이 `KindSpec`·`SuccessorRule`·`GenericResult`·일반화된 `HandoffBundle`·`LocalTarget` 요청. 계약 테스트 fixture로 사용 |
+| [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록. 2026-09-20 Codex CLI 실연동 1회(Step 15), 2026-09-21 대본 e2e·VM 배포, 2026-09-22 세 번째 종류 `review` 자동 착수(대본 e2e) |
 | [DIAG_EVAL.md](DIAG_EVAL.md) | 진단 모델 비교 평가 종합(phase 2-model-compare Step 2). 같은 하네스·프롬프트 v3·도구 v2 로 gpt-4.1-mini 와 gpt-4.1 을 5사례 × 3회씩 실행. mini `normal` 0/3(네 번째 미달)·gpt-4.1 `normal` 3/3·잘못된 수정 착수 둘 다 0/12·의도한 사유의 보류 mini 0/12·gpt-4.1 2/12·비용 US$0.13 / US$0.74. 네 평가의 조건 표·모델 비교표·지표 비교·모델별 통과 기준 판정·ADR-0003 을 gpt-4.1 로 갱신(또는 ADR-0007)하자는 제안과 비용 추정(진단 1회 US$0.049, 하루 60회 월 US$88.7). ADR 파일은 미수정 |
 | [DIAG_EVAL_prompt-v3_gpt-4.1.md](DIAG_EVAL_prompt-v3_gpt-4.1.md) | 스크립트 산출 원본 — `gpt-4.1-2025-04-14` · 프롬프트 v3 · 도구 v2, 15회, `normal` 3/3, 통과 기준 충족, US$0.7394 |
 | [DIAG_EVAL_prompt-v3_gpt-4.1-mini.md](DIAG_EVAL_prompt-v3_gpt-4.1-mini.md) | 스크립트 산출 원본 — `gpt-4.1-mini-2025-04-14` · 프롬프트 v3 · 도구 v2, 15회, `normal` 0/3, 계약 거부 3(`baseline_run_id=''`), 연도 오기 0/12, US$0.1305 |
@@ -22,9 +22,9 @@
 | [DIAG_EVAL_2026-09-20_prompt-v1.md](DIAG_EVAL_2026-09-20_prompt-v1.md) | 이전 평가(Step 17, 프롬프트 v1·도구 v1, mini). 5사례 × 3회 두 번 실행, `normal` 1/3·잘못된 수정 착수 0/12·총 US$0.23. 도구 반환·계약·프롬프트·모델 분리 분석의 원본 |
 | [DEPLOY.md](DEPLOY.md) | 배포 런북. 공개 데모는 VM 한 대(systemd 5개 — 중앙 2·진단 2·연결 프로그램 + Caddy + 백업 타이머)에서 대본 에이전트로 돈다(ADR-0008). 설치·seed·연결·점검·`WORKFLOW_RESET_DB=1` 초기화. 설정 파일은 `deploy/`. VM·도메인은 미지정 |
 | [등록 방향 정리 전 원문](archive/2026-09-19-before-agent-registration/README.md) | 이전 제품 개요와 handoff. 현행 요구사항과 구분 |
-| [GLOSSARY.md](GLOSSARY.md) | 코드 식별자와 일치하는 도메인 용어와 금지 표현. 2026-09-20 채움 |
-| [UI_GUIDE.md](UI_GUIDE.md) | 화면 가이드 제안. 심사자 첫 방문 흐름, 화면 목록, 상태 배지·색·컴포넌트·폴링 규칙. 2026-09-20 채움, 경로는 구현 시 확정 |
-| [adr/](adr/0000-principles.md) | 프로젝트 원칙·공모전 제약(0000)과 결정별 ADR. 0001 Codex 우선, 0002 서버 스택, 0004 중앙 규칙 기반, 0005 접근 모델, 0006 배포 구성, 0008 공개 데모 대본 에이전트는 확정, 0003 진단 모델은 gpt-4.1 확정, 0007 사용량 한도 대기는 심사 이후 적용 |
+| [GLOSSARY.md](GLOSSARY.md) | 코드 식별자와 일치하는 도메인 용어와 금지 표현. 2026-09-22 종류·규칙·읽기 전용 실행 용어 반영 |
+| [UI_GUIDE.md](UI_GUIDE.md) | 화면 가이드. 심사자 첫 방문 흐름, 화면 목록(`/kinds` 포함), 결과 카드(결과 봉투 포함), 상태 배지·색·컴포넌트·폴링 규칙. 경로·문구는 구현된 템플릿과 같다 |
+| [adr/](adr/0000-principles.md) | 프로젝트 원칙·공모전 제약(0000)과 결정별 ADR. 0001 Codex 우선, 0002 서버 스택, 0004 중앙 규칙 기반, 0005 접근 모델, 0006 배포 구성, 0008 공개 데모 대본 에이전트, [0009](adr/0009-registered-kinds-and-succession-rules.md) 업무 종류·후속 규칙은 워크스페이스 등록(흐름을 그리지 않는다)은 확정, 0003 진단 모델은 gpt-4.1 확정, 0007 사용량 한도 대기는 심사 이후 적용 |
 | [presets/nextjs.md](presets/nextjs.md) | 재사용 가능한 스택 프리셋. Next.js 채택을 뜻하지 않음 |
 
 ## 이전 자료를 사용할 때

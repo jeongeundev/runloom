@@ -3,7 +3,7 @@
 import json
 
 from workflow.adapters import repo
-from workflow.contracts.v1 import ExecutionEvent, SelectionRecord
+from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES, ExecutionEvent, KindSpec, SelectionRecord
 from workflow.server import views
 
 from .conftest import (
@@ -598,3 +598,207 @@ def test_artifact_render_context_by_kind():
     assert js["mode"] == "json" and js["text"] == '{\n  "a": 1\n}'
     broken = views.artifact_render({"kind": "evidence", "content_type": "application/json"}, b"{oops")
     assert broken["mode"] == "text" and broken["text"] == "{oops"
+
+
+# --- 업무 종류·후속 규칙 화면 컨텍스트 (phase 6 step 6) -------------------------------
+
+REVIEW_SPEC = KindSpec(
+    kind="review", label="검토", capability_code="review", scope_key="repository_id",
+    input_kinds=["diff", "code_change_result"], output_kind="generic_result",
+    outcomes=["approved", "changes_requested", "needs_information"], instructions="diff 를 읽고 검토하세요.",
+    builtin=False,
+)
+
+
+def test_kind_public_labels_chips_and_builtin_flag():
+    code_change = views.kind_public(BUILTIN_KINDS[1])
+    assert (code_change["kind"], code_change["label"]) == ("code_change", "코드 수정")
+    assert (code_change["capability_code"], code_change["scope_key"]) == ("code.modify", "repository_id")
+    assert code_change["input_kinds"] == ["diagnosis_result", "evidence"]
+    assert code_change["input_labels"] == ["진단 결과", "근거"]
+    assert (code_change["output_kind"], code_change["output_label"]) == ("code_change_result", "수정 결과")
+    assert code_change["outcomes"] == ["ready_for_review", "needs_information"]
+    assert code_change["builtin"] is True and code_change["instructions"] == ""
+
+    review = views.kind_public(REVIEW_SPEC)
+    assert review["input_labels"] == ["diff", "수정 결과"]
+    assert (review["output_kind"], review["output_label"]) == ("generic_result", "결과 봉투")
+    assert review["builtin"] is False and review["instructions"] == "diff 를 읽고 검토하세요."
+
+
+def test_rule_public_one_line_text_with_labels():
+    rule = views.rule_public("rule-1", BUILTIN_RULES[0], BUILTIN_KINDS)
+    assert rule["rule_id"] == "rule-1"
+    assert (rule["from_kind"], rule["to_kind"]) == ("diagnosis", "code_change")
+    assert rule["text"] == "진단 --[ready_for_handoff]--> 코드 수정"
+    assert rule["handoff_kinds"] == ["diagnosis_result", "evidence"]
+    assert rule["handoff_labels"] == ["진단 결과", "근거"]
+
+    custom = views.rule_public(
+        "rule-2",
+        BUILTIN_RULES[0].model_copy(update={"on_outcomes": ["ready_for_handoff", "needs_information"]}),
+        [*BUILTIN_KINDS, REVIEW_SPEC],
+    )
+    assert custom["text"] == "진단 --[ready_for_handoff, needs_information]--> 코드 수정"
+    # 등록부에 없는 종류는 라벨 대신 코드 그대로
+    assert views.rule_public("rule-3", BUILTIN_RULES[0], ())["text"] == "diagnosis --[ready_for_handoff]--> code_change"
+
+
+# --- 등록부를 보는 화면 컨텍스트 (phase 6 step 7) --------------------------------------
+
+CAP_C = {"code": "review", "scope": {"repository_id": "demo-report-repo"}}
+LOCAL_REVIEW = "local-demo-report-claude"
+TASK_C = "review-daily-0920"
+
+
+def _seed_review_task(conn, *, predecessor: str | None = TASK_B) -> None:
+    """세션에 종류 review 를 등록하고 검토 Claude(로컬, 능력 review)와 Task C 를 만든다."""
+    repo.insert_kind(conn, SESSION, REVIEW_SPEC, NOW)
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-review-mac", "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": LOCAL_REVIEW, "capabilities": [CAP_C], "connection_state": "unknown",
+        "shared_to_all_sessions": True,
+    })
+    repo.register_session_agent(conn, SESSION, "agent-review-mac", NOW)
+    from .conftest import task_row
+    repo.insert_task(conn, {
+        **task_row(TASK_C, kind="review", predecessor=predecessor), "title": "보고서 수정 검토",
+        "required_capability": CAP_C, "run_mode": "manual", "criteria": [],
+        "target": {"local_registration_id": LOCAL_REVIEW},
+    }, NOW)
+
+
+def _judge(conn, task_id: str, execution_id: str) -> None:
+    repo.record_verdict(
+        conn, task_id=task_id, execution_id=execution_id,
+        verdict={"outcome": "passed", "checks": [{"code": "verification_passed", "passed": True, "detail": "exit 0"}]},
+        status="확인 필요", reason="검토 대기", finish=False, now=NOW,
+    )
+
+
+def _store_bundle(conn, store, execution_id: str, source_kind: str) -> str:
+    from workflow.contracts.v1 import ArtifactMeta
+
+    from .conftest import meta_for
+    data = json.dumps({
+        "contract_version": 1, "source_execution_id": execution_id, "source_kind": source_kind,
+        "source_result_artifact_id": "art-result-001", "inputs": [], "attachments": [],
+    }).encode()
+    created, _ = repo.store_artifact(
+        conn, store, execution_id=execution_id, session_id=SESSION,
+        meta=ArtifactMeta.model_validate(meta_for(data, kind="handoff_bundle", name="manifest.json",
+                                                   content_type="application/json")),
+        data=data, now=NOW,
+    )
+    return created.artifact_id
+
+
+def test_connector_online_follows_selected_local_agent_regardless_of_kind(seeded, settings):
+    """연결 상태는 종류 이름이 아니라 선택된 Agent 의 connection_type 으로 본다 — 사용자 정의 종류도 로컬이면 계산한다."""
+    _seed_review_task(seeded)
+    _select(seeded, TASK_C, "agent-review-mac", CAP_C)
+    view = _view(seeded, settings, TASK_C)
+    assert view.kind == "review" and view.connector_online is False and view.connector_last_seen == "없음"
+    repo.set_agent_connection(seeded, "agent-review-mac", "online", NOW)
+    assert _view(seeded, settings, TASK_C).connector_online is True
+    # API 에이전트를 고른 업무는 종류와 무관하게 None
+    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
+    assert _view(seeded, settings, TASK_A).connector_online is None
+
+
+def test_predecessor_handoff_needs_judged_result_and_bundle(seeded, settings, store):
+    """ADR-0009 (3): 선행 결과가 판정되고 인계 묶음이 있으면 (선행 `완료` 전이라도) 선행 조건이 풀린다."""
+    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
+    _select(seeded, TASK_B, "agent-codex-mac", CAP_B)
+    repo.set_agent_connection(seeded, "agent-codex-mac", "online", NOW)
+    task_b = repo.get_task(seeded, TASK_B)
+    assert views.predecessor_handoff(seeded, task_b) == ([], None)
+    assert views.predecessor_handoff(seeded, repo.get_task(seeded, TASK_A)) == ([], None)  # 선행 없음
+    assert _view(seeded, settings, TASK_B).predecessor_status == "실행 가능"
+
+    seed_execution(seeded, "exec-a", TASK_A, kind="diagnosis", inputs=())
+    seed_result_ready(seeded, store, "exec-a", kind="diagnosis_result", body={"outcome": "ready_for_handoff"})
+    assert views.predecessor_handoff(seeded, task_b) == ([], None)  # 판정 전
+    _judge(seeded, TASK_A, "exec-a")
+    assert views.predecessor_handoff(seeded, task_b) == ([], None)  # 판정됐지만 묶음 없음
+    view = _view(seeded, settings, TASK_B)
+    assert view.predecessor_status == "확인 필요"
+    assert views.status_of(task_b, view).reason == "선행 대기"
+
+    bundle_id = _store_bundle(seeded, store, "exec-a", "diagnosis")
+    assert views.predecessor_handoff(seeded, task_b) == ([bundle_id], "exec-a")
+    view = _view(seeded, settings, TASK_B)
+    assert view.predecessor_status is None  # 선행 조건 충족 — 선행 `완료` 를 기다리지 않는다
+    status = views.status_of(task_b, view)
+    assert (status.label, status.reason) == ("대기", "자동 실행 대기")  # B 는 run_mode auto — 워커가 잇는다
+    ctx = views.task_context(seeded, store, task_b, now=NOW, settings=settings)
+    assert ctx["can_run"] is True  # 직접 실행도 열려 있다
+
+    # 선행이 검토 거절(실패)로 마감되면 새로 착수하지 않는다
+    repo.update_task_status(seeded, TASK_A, "실패", "검토 거절", finished_at=NOW, review_decision="close")
+    assert views.predecessor_handoff(seeded, task_b) == ([], None)
+    assert _view(seeded, settings, TASK_B).predecessor_status == "실패"
+
+
+def test_task_context_kind_label_from_registry(seeded, settings, store):
+    _seed_review_task(seeded)
+    assert views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)["kind_label"] == "진단"
+    assert views.task_context(seeded, store, repo.get_task(seeded, TASK_B), now=NOW, settings=settings)["kind_label"] == "코드 수정"
+    assert views.task_context(seeded, store, repo.get_task(seeded, TASK_C), now=NOW, settings=settings)["kind_label"] == "검토"
+
+
+def test_generic_result_card_and_viewer_context(seeded, settings, store):
+    """generic_result 는 결과 봉투로 파싱된다 — outcome 은 코드 그대로, summary, 산출물 ID. 검증 요약(diff·로그)은 만들지 않는다."""
+    _seed_review_task(seeded, predecessor=None)
+    _select(seeded, TASK_C, "agent-review-mac", CAP_C)
+    from workflow.contracts.v1 import ExecutionRequest
+    repo.create_execution(
+        seeded, execution_id="exec-review-001", task_id=TASK_C, attempt_no=1, start_key=f"auto:{TASK_C}:r1",
+        agent_id="agent-review-mac", kind="review",
+        request=ExecutionRequest.model_validate({
+            "contract_version": 1, "execution_id": "exec-review-001", "task_id": TASK_C, "kind": "review",
+            "agent_id": "agent-review-mac", "task_revision": 1, "request": "검토", "input_artifact_ids": ["art-handoff-002"],
+            "target": {"local_registration_id": LOCAL_REVIEW}, "kind_spec": REVIEW_SPEC.model_dump(),
+        }),
+        assigned_connector_id=None, predecessor_execution_id=None, now=NOW,
+    )
+    body = {
+        "contract_version": 1, "execution_id": "exec-review-001", "task_id": TASK_C, "kind": "review",
+        "outcome": "approved", "summary": "diff 는 최소 변경이며 재현 테스트가 무력화되지 않았습니다.",
+        "artifact_ids": ["art-claude-jsonl-003"],
+    }
+    artifact_id = seed_result_ready(seeded, store, "exec-review-001", kind="generic_result", body=body)
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_C), now=NOW, settings=settings)
+    assert ctx["result"]["kind"] == "generic_result" and ctx["result"]["artifact_id"] == artifact_id
+    assert ctx["result"]["data"]["outcome"] == "approved"
+    assert (ctx["status"].label, ctx["status"].reason) == ("확인 필요", "검토 대기")
+    assert ctx["can_review"] is True
+
+    viewer = views.viewer_context(seeded, store, ctx["result"], session_id=SESSION)
+    assert viewer["kind"] == "generic_result" and viewer["data"]["summary"] == body["summary"]
+    assert viewer["verdict"] is None
+    assert "diff" not in viewer and "test_before" not in viewer and "excerpts" not in viewer
+
+
+def test_chain_node_kind_label_and_reasons_use_session_registry(seeded, settings):
+    """체인 노드의 종류 라벨과 구성 이유는 세션 등록부로 만든다 — 규칙을 지우면 이유가 바뀐다."""
+    task_a, task_b = _seed_chain(seeded)
+    _select(seeded, task_a, "agent-ops-demo", CAP_A)
+    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    first, second = _chain(seeded, settings)["tasks"]
+    assert (first["kind_label"], second["kind_label"]) == ("진단", "코드 수정")
+    assert "선행 #41 (operations.diagnose) → code.modify 인계" in second["reasons"]
+
+    (rule_id, _), = repo.list_rules(seeded, SESSION)
+    repo.delete_rule(seeded, SESSION, rule_id)
+    second = _chain(seeded, settings)["tasks"][1]
+    assert second["reasons"][0] == "후속 규칙 없음: diagnosis → code_change"
+
+
+def test_agent_public_annotates_capabilities_with_kind_labels(seeded, settings):
+    ops = views.agent_public(repo.get_agent(seeded, "agent-ops-demo"), now=NOW, settings=settings, kinds=BUILTIN_KINDS)
+    assert ops["capabilities"][0]["kind_label"] == "진단"
+    unknown = views.agent_public(repo.get_agent(seeded, "agent-ops-demo"), now=NOW, settings=settings, kinds=())
+    assert unknown["capabilities"][0]["kind_label"] is None
+    default = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
+    assert default["capabilities"][0] == {"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}, "kind_label": None}

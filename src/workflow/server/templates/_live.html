@@ -6,7 +6,7 @@
 
   {# 1. 브레드크럼 + 연결 업무 칩 + 뷰어 열기 #}
   <div class="crumbs">
-    <div class="crumb">{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }}</div>
+    <div class="crumb">{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }} <span class="chip kind-chip">{{ kind_label }}</span></div>
     <div class="crumb-side">
       {% if chain %}<a class="task-chip" href="/chains/{{ chain.chain_id }}" title="{{ chain.title }}">워크플로우 {{ chain.title }}</a>{% endif %}
       {% if predecessor %}<a class="task-chip" href="/tasks/{{ predecessor.task_id }}" title="{{ predecessor.title }}">선행 · {{ st.mini(predecessor.status.label) }}</a>{% endif %}

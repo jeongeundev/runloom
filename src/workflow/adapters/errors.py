@@ -53,3 +53,19 @@ class HashMismatch(AdapterError):
 
 class ArtifactMissing(AdapterError):
     """DB 행은 있으나 저장소에 파일이 없다."""
+
+
+class KindProtected(AdapterError):
+    """내장 종류(`builtin`)는 삭제할 수 없다."""
+
+
+class KindInUse(AdapterError):
+    """Task 또는 후속 규칙이 참조하는 종류는 삭제할 수 없다."""
+
+
+class DuplicateKind(AdapterError):
+    """같은 세션에 같은 `kind` 가 이미 등록돼 있다."""
+
+
+class DuplicateRule(AdapterError):
+    """같은 세션에 같은 `(from_kind, to_kind)` 규칙이 이미 등록돼 있다."""

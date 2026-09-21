@@ -1,6 +1,6 @@
 # 배포 런북 — VM 한 대, 대본 에이전트 (공개 데모)
 
-갱신일: 2026-09-21
+갱신일: 2026-09-22 (phase 6-typed-handoff docs-sync — 7b·10 에 스키마 버전 3 반영)
 상태: [ADR-0008](adr/0008-public-demo-scripted-agents.md)의 공개 데모 구성을 올리는 절차. [ADR-0006](adr/0006-deployment-vm-caddy-mac-connector.md)의 VM + Caddy 는 그대로이고, 운영자 Mac 의 연결 프로그램 대신 **같은 VM 의 systemd 유닛**이 대본 에이전트(`workflow.scripted.*`)를 돌린다. 실제 Codex/Claude·OpenAI 키는 이 VM 에 없다. 설정 파일은 `deploy/` 에 있고 `tests/test_deploy_files.py` 가 AGENTS.md 명령어·settings 환경변수·seed 인자·아래 명령과의 일치를 검사한다. `{domain}`·`{vm-ip}` 는 사용자가 정한 값으로 바꾼다. 이 문서를 만든 세션은 VM 에 접속하지 않았다.
 
 | 위치 | 프로세스 | 파일 |
@@ -190,6 +190,8 @@ sudo WORKFLOW_RESET_DB=1 bash /opt/workflow/deploy/update-vm.sh
 
 초기화 뒤에는 카탈로그·연결 프로그램 등록이 중앙 DB 에서 사라졌으므로 5 단계의 seed(`--base-commit` 은 기존 저장소 HEAD)와 6 단계의 `connect`·`register` ×2 를 다시 하고 `sudo systemctl restart workflow-connector` 한다. 데모 저장소와 연결 프로그램 상태 디렉터리는 그대로 둔다. 심사자 세션 쿠키는 남아 있지만 그 세션의 업무는 사라진다.
 
+**phase 6-typed-handoff(브랜치 `feat-6-typed-handoff`, [ADR-0009](adr/0009-registered-kinds-and-succession-rules.md))는 `SCHEMA_VERSION` 을 2 → 3 으로 올렸다**(`kinds`·`succession_rules` 테이블, `tasks.kind` FK). VM 의 DB 는 버전 2 이므로 이 phase 를 배포할 때는 반드시 `WORKFLOW_RESET_DB=1` 이 필요하고(백업 절차는 위와 같다), 심사 기간(2026-09-21 ~ 10-05)에는 공개 데모를 동결하므로 **심사 이후**에 배포한다. 그 전까지 `main` 에 병합·푸시하더라도 VM 에서 `update-vm.sh` 를 돌리지 않는다 — 플래그 없이 돌리면 버전 불일치로 중앙·워커가 시작하지 못한다.
+
 ## 8. 백업 타이머
 
 ```bash
@@ -224,3 +226,4 @@ curl -sS -H "Authorization: Bearer $(sudo grep '^DIAG_API_TOKEN=' /etc/workflow/
 - 연결 프로그램이 멈추면 코드 수정 노드는 `대기 · 연결 끊김, 마지막 확인 {시각}` 으로 남고 시작했다고 표시하지 않는다. `systemctl restart workflow-connector` 로 재접속하면 claim 한 실행부터 이어간다. 진단(A)은 연결 프로그램과 무관하게 동작한다.
 - 연결 코드는 10분, 세션 쿠키는 14일이다. 결과 업로드 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`run --keep-workdirs` 로 보존).
 - 데모 저장소의 결과 커밋은 `task/{task_id}` 브랜치에만 남는다. 기준 브랜치 병합은 운영자 확인 대기로 표시될 뿐 자동으로 하지 않는다.
+- 업무 종류·후속 규칙([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md), 심사 이후 배포): API 에이전트(진단 API)는 `diagnosis` 종류만 받는다 — 사용자 정의 종류는 로컬 도구(Codex·Claude)가 읽기 전용으로만 수행한다. 완료 시 새 업무를 생성하는 규칙은 없다 — 미리 등록된 업무 사이를 규칙으로 이을 뿐이다. 사람이 선행 업무를 종료해도 이미 시작한 후속은 계속된다(멈추려면 후속 업무를 따로 종료). 사용자 정의 종류는 자동 완료 검증기가 없어 항상 사람 검토다.
