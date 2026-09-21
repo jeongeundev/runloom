@@ -1,0 +1,13 @@
+{# 워크플로우 (`/chains/{chain_id}`) — 심사자 흐름 3·4단계. 가져오기 직후 열리며 구성 결과(순서·담당·이유)를 보이고
+   `워크플로우 시작` 한 번으로 첫 Task 를 실행한다. 나머지는 워커가 선행 완료를 보고 잇는다 — 뒤 노드를 직접 실행하는
+   버튼은 두지 않는다. 노드 목록·사람 단계·넣지 않은 이슈·동작 영역은 라이브 조각(_chain_live.html). #}
+{% extends "base.html" %}
+{% block title %}{{ chain.title or '워크플로우' }} — Runloom{% endblock %}
+{% block content %}
+{# 1. 브레드크럼 + 출처 라벨 #}
+<div class="crumbs">
+  <div class="crumb">워크플로우<span class="sep">/</span>{{ chain.title or '업무 없음' }}</div>
+  <div class="crumb-side"><span class="chip">{{ chain.source_label }}</span><span class="tag-scripted">시연 데이터</span></div>
+</div>
+{% include "_chain_live.html" %}
+{% endblock %}

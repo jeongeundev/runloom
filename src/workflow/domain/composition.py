@@ -98,6 +98,12 @@ def _mode_reasons(has_predecessor: bool, completion_mode: str) -> list[str]:
     return [run, completion]
 
 
+def human_gate_label(completion_mode: str) -> str:
+    """마지막 노드 뒤 사람 단계 문구. 검토 후 완료면 승인 + 병합은 운영자 확인(ADR-0005), 자동 완료면 완료 확인.
+    체인 화면(`server/views.chain_summary`)도 이 문구를 쓴다."""
+    return "검토 승인 (사람) · 병합은 운영자 확인" if completion_mode == "review" else "완료 확인 (사람)"
+
+
 def _assignment_reason(selection: SelectionRecord) -> str:
     if selection.status == "needs_selection" and selection.candidate_count == 0:
         return "후보 없음 — 에이전트를 등록하거나 직접 지정"
@@ -168,9 +174,7 @@ def compose(issues: Sequence[Issue], candidates: Sequence[Candidate], prefer: Se
 
     # 6. 사람 단계  7. 제목
     if nodes:
-        human_gate = (
-            "검토 승인 (사람) · 병합은 운영자 확인" if nodes[-1].completion_mode == "review" else "완료 확인 (사람)"
-        )
+        human_gate = human_gate_label(nodes[-1].completion_mode)
         title = nodes[0].issue.title if len(nodes) == 1 else f"{nodes[0].issue.title} → {nodes[-1].issue.title}"
     else:
         human_gate = ""

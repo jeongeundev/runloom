@@ -1,5 +1,5 @@
-{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 세션이 등록한 에이전트 카드, 업무 목록과 다음 행동 버튼. 랜딩은 landing.html.
-   등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `업무 가져오기` 는 비활성이다 (phase 5 step 2·5). #}
+{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 세션이 등록한 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록과 다음 행동 버튼.
+   랜딩은 landing.html. 등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `업무 가져오기` 는 비활성이다 (phase 5 step 2·5·6). #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}업무 — Runloom{% endblock %}
@@ -22,6 +22,18 @@
   <p>먼저 에이전트를 등록하세요.</p>
   <p class="small" style="margin-top:8px">운영자가 준비한 카탈로그에서 이미 쓰는 에이전트를 골라 등록합니다. 등록한 에이전트만 이 세션의 업무에 배정됩니다.</p>
   <div class="actions"><a class="btn" href="/agents/register">에이전트 등록</a></div>
+</div>
+{% endif %}
+
+{% if chains %}
+<div class="section-head"><h2>워크플로우</h2></div>
+<div>
+  {% for c in chains|reverse %}
+  <div class="card">
+    <div class="card-title"><a href="/chains/{{ c.chain_id }}">{{ c.title or '업무 없음' }}</a></div>
+    <div class="small">{{ c.source_label }} · {{ c.done_count }}/{{ c.total }} 완료 · {{ c.progress }}</div>
+  </div>
+  {% endfor %}
 </div>
 {% endif %}
 

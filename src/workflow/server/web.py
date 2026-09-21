@@ -8,7 +8,8 @@
   대상 정보는 선택된 Agent 등록값에서, 인계 자료는 선행 Task 의 `handoff_bundle` 산출물에서 온다.
 - 진단 API·연결 프로그램에 직접 보내지 않는다. `queued` 로 남기면 워커(Step 8)·claim(Step 5) 이 가져간다.
 - 화면은 UI_GUIDE 의 3열 셸이다. `GET /tasks/{id}/live` 는 상세의 라이브 조각(`_live.html`)만 돌려주고
-  `base.html` 의 스크립트가 3초(마감 후 10초)마다 교체한다.
+  `base.html` 의 스크립트가 3초(마감 후 10초)마다 교체한다. 워크플로우 화면(`/chains/{id}`, phase 5 step 6)도
+  같은 방식으로 `_chain_live.html` 을 교체하되, 실행 중·실행 요청됨·대기 노드가 없으면 폴링을 멈춘다(`data-poll`).
 """
 
 import hashlib
@@ -199,6 +200,13 @@ def _own_task(conn: Connection, session_id: str, task_id: str) -> Row:
     return row
 
 
+def _own_chain(conn: Connection, session_id: str, chain_id: str) -> Row:
+    row = repo.get_chain(conn, chain_id)
+    if row is None or row["session_id"] != session_id:
+        raise PageError(404, "not_found", f"워크플로우 {chain_id}을 찾을 수 없습니다.", field="chain_id")
+    return row
+
+
 def _refresh_status(
     conn: Connection, task_id: str, now: str, settings: Settings, *, review_decision: str | None = None
 ) -> None:
@@ -333,7 +341,10 @@ def home(
     now = utc_now()
     settings = _settings(request)
     agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
-    return _render("home.html", **_base(request, conn, session_id, now), agents=agents)
+    chains = [
+        views.chain_summary(conn, c, now=now, settings=settings) for c in repo.list_chains(conn, session_id)
+    ]
+    return _render("home.html", **_base(request, conn, session_id, now), agents=agents, chains=chains)
 
 
 def _form_context(
@@ -625,18 +636,77 @@ def tasks_import(
     return _redirect(f"/chains/{chain_id}", response)
 
 
-@router.get("/chains/{chain_id}")
+# --- 워크플로우 화면 — 체인 상세·시작·라이브 (phase 5 step 6). 화면 라벨은 "워크플로우", 경로·코드는 chain ------
+
+
+def _chain_context(request: Request, conn: Connection, session_id: str, chain: Row, now: str) -> dict[str, Any]:
+    """체인 화면·라이브 조각 공통. 인라인 담당 선택 폼의 후보는 세션 등록 Agent (등록 순)."""
+    settings = _settings(request)
+    return {
+        "chain": views.chain_summary(conn, chain, now=now, settings=settings),
+        "candidates": [
+            views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)
+        ],
+    }
+
+
+@router.get("/chains/{chain_id}", response_class=HTMLResponse)
 def chain_page(
+    request: Request,
+    chain_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """구성 결과(순서·담당·이유)와 `워크플로우 시작`. 두 번째 노드부터는 워커가 선행 완료를 보고 자동으로 잇는다."""
+    now = utc_now()
+    chain = _own_chain(conn, session_id, chain_id)
+    return _render(
+        "chain_detail.html", **_base(request, conn, session_id, now),
+        **_chain_context(request, conn, session_id, chain, now),
+    )
+
+
+@router.get("/chains/{chain_id}/live", response_class=HTMLResponse)
+def chain_live(
+    request: Request,
+    response: Response,
+    chain_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """노드 목록 + 사람 단계 + 동작 영역 조각만 (`_chain_live.html`)."""
+    now = utc_now()
+    chain = _own_chain(conn, session_id, chain_id)
+    response.headers["Cache-Control"] = "no-store"
+    return _render(
+        "_chain_live.html", request=request, now=now, **_chain_context(request, conn, session_id, chain, now)
+    )
+
+
+@router.post("/chains/{chain_id}/start")
+def chain_start(
+    request: Request,
     response: Response,
     chain_id: str,
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
-    """임시 — step 6 이 체인 화면으로 바꾼다. 지금은 세션 소유만 확인하고 홈으로 보낸다."""
-    chain = repo.get_chain(conn, chain_id)
-    if chain is None or chain["session_id"] != session_id:
-        raise PageError(404, "not_found", f"체인 {chain_id}을 찾을 수 없습니다.", field="chain_id")
-    return _redirect("/tasks", response)
+    """첫 노드를 `task_run` 과 같은 경로로 실행하고 `started_at` 을 기록한다. 이미 시작했으면 그대로 303 (멱등)."""
+    now = utc_now()
+    settings = _settings(request)
+    chain = _own_chain(conn, session_id, chain_id)
+    tasks = repo.tasks_of_chain(conn, chain_id)
+    if not tasks:
+        raise PageError(409, "invalid_transition", "시작할 업무가 없습니다.")
+    first = tasks[0]
+    # 첫 노드가 이미 실행된 적 있으면(업무 상세의 `실행` 등) 새 실행 없이 시작 기록만 맞춘다
+    if chain["started_at"] is None and not repo.list_executions(conn, first["task_id"]):
+        selection = repo.get_selection(conn, first["task_id"])
+        if selection is None or selection.status != "selected":
+            raise PageError(409, "selection_required", "담당 에이전트를 먼저 확정하세요.")
+        _run_task(conn, first, session_id=session_id, now=now, settings=settings)
+    repo.mark_chain_started(conn, chain_id, now)
+    return _redirect(f"/chains/{chain_id}", response)
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -682,8 +752,14 @@ def task_run(
 ) -> RedirectResponse:
     """직접 실행. 활성 실행 없음 · 선택됨 · 선행 완료가 조건이다. run_mode 와 무관하게 사용자 조작으로 시작할 수 있다."""
     now = utc_now()
-    settings = _settings(request)
     task = _own_task(conn, session_id, task_id)
+    _run_task(conn, task, session_id=session_id, now=now, settings=_settings(request))
+    return _redirect(f"/tasks/{task_id}", response)
+
+
+def _run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings: Settings) -> None:
+    """`task_run` 과 `chain_start` 의 공통 경로 — 조건 검사, 실행 생성(진단 한도 포함), 상태 갱신."""
+    task_id = task["task_id"]
     if task["finished_at"] is not None:
         raise PageError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
     if repo.active_execution(conn, task_id) is not None:
@@ -708,7 +784,14 @@ def task_run(
         target=json.loads(task["target_json"]),
     )
     _refresh_status(conn, task_id, now, settings)
-    return _redirect(f"/tasks/{task_id}", response)
+
+
+def _in_unstarted_chain(conn: Connection, task: Row) -> bool:
+    """워크플로우 시작 전의 노드인가 — 이때만 이미 선택된 담당을 바꿀 수 있다 (시작 후에는 워커가 선택 기록을 보고 착수)."""
+    if task["chain_id"] is None:
+        return False
+    chain = repo.get_chain(conn, task["chain_id"])
+    return chain is not None and chain["started_at"] is None
 
 
 @router.post("/tasks/{task_id}/select")
@@ -717,17 +800,19 @@ def task_select(
     response: Response,
     task_id: str,
     agent_id: str = Form(""),
+    return_to: str = Form(""),
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
-    """`needs_selection` 인 업무에 에이전트를 직접 지정한다. 판단은 `select_agent(mode="manual")` 이 한다."""
+    """`needs_selection` 인 업무(또는 시작 전 워크플로우 노드)에 에이전트를 직접 지정한다. 판단은 `select_agent(mode="manual")`.
+    `return_to=chain` 이면 워크플로우 화면으로 돌아간다 — 값은 열거형이며 URL 을 받지 않는다."""
     now = utc_now()
     settings = _settings(request)
     task = _own_task(conn, session_id, task_id)
     selection = repo.get_selection(conn, task_id)
     if task["finished_at"] is not None or repo.active_execution(conn, task_id) is not None:
         raise PageError(409, "invalid_transition", "실행 중이거나 마감된 업무는 선택을 바꿀 수 없습니다.")
-    if selection is not None and selection.status == "selected":
+    if selection is not None and selection.status == "selected" and not _in_unstarted_chain(conn, task):
         raise PageError(409, "invalid_transition", "이미 에이전트가 선택된 업무입니다.")
     if not agent_id.strip():
         raise PageError(422, "invalid_field", "에이전트를 지정하세요.", field="agent_id")
@@ -745,6 +830,8 @@ def task_select(
         target=_target_for(task["kind"], run_id, agent),
     )
     _refresh_status(conn, task_id, now, settings)
+    if return_to == "chain" and task["chain_id"] is not None:
+        return _redirect(f"/chains/{task['chain_id']}", response)
     return _redirect(f"/tasks/{task_id}", response)
 
 

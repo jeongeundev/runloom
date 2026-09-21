@@ -950,13 +950,237 @@ def test_import_counts_all_new_tasks_against_active_limit(app, web, conn, settin
 def test_import_chain_is_isolated_per_session(app, web, conn, agents):
     chain_id = import_issues(web, "github", "#41", "#42").headers["location"].removeprefix("/chains/")
     task_id = repo.tasks_of_chain(conn, chain_id)[0]["task_id"]
-    stub = web.get(f"/chains/{chain_id}", follow_redirects=False)
-    assert stub.status_code == 303 and stub.headers["location"] == "/tasks"  # step 6 전 임시
+    assert web.get(f"/chains/{chain_id}").status_code == 200
     other = TestClient(app)
     assert other.get(f"/chains/{chain_id}").status_code == 404
+    assert other.get(f"/chains/{chain_id}/live").status_code == 404
+    assert other.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 404
     assert other.get(f"/tasks/{task_id}").status_code == 404
     assert "일일 보고서 생성 실패" not in other.get("/tasks").text
     assert web.get("/chains/chain-none").status_code == 404
+    assert web.get("/chains/chain-none/live").status_code == 404
+
+
+# --- 워크플로우 화면 — 체인 상세·시작·라이브 (phase 5 step 6) --------------------------------
+
+
+def import_chain(client, conn, *keys: str) -> tuple[str, list[str]]:
+    """가져오기 뒤 (chain_id, 체인 순서의 task_id 목록)."""
+    response = import_issues(client, "github", *(keys or ("#41", "#42", "#43", "#44")))
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    return chain_id, [t["task_id"] for t in repo.tasks_of_chain(conn, chain_id)]
+
+
+def chain_page(client, chain_id: str) -> str:
+    response = client.get(f"/chains/{chain_id}")
+    assert response.status_code == 200, response.text
+    return response.text
+
+
+def start_button(text: str):
+    return re.search(r"<button[^>]*>워크플로우 시작</button>", text)
+
+
+def test_chain_page_shows_nodes_in_order_with_assignment_reasons_and_start_button(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn)
+    text = chain_page(web, chain_id)
+
+    assert "워크플로우" in text and "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
+    assert "GitHub Issues" in text and "시연 데이터" in text
+    assert text.index("#41") < text.index("#42")
+    assert f'href="/tasks/{task_a}"' in text and f'href="/tasks/{task_b}"' in text
+    assert "운영 진단 데모" in text and "개인 Codex" in text
+    assert "진단" in text and "코드 수정" in text
+    assert "직접" in text and "선행 완료 시 자동" in text
+    assert "자동 완료" in text and "검토 후 완료" in text
+    assert 'data-status="실행 가능"' in text and "agent-ops-demo 선택됨" in text
+    assert 'data-status="대기"' in text and "선행 대기" in text
+    # 접이식 이유 — 구성 이유 문장 + SelectionRecord.reason
+    assert "체인의 첫 업무 — 선행 없음" in text
+    assert "선행 #41 (operations.diagnose) → code.modify 인계" in text
+    assert "operations.diagnose · workflow_id=daily-report 일치 후보 1개" in text
+    # 사람 단계
+    assert "검토 승인 (사람) · 병합은 운영자 확인" in text
+    # 넣지 않은 이슈
+    assert "워크플로우에 넣지 않은 이슈" in text
+    assert "#43" in text and "변경 응답 형식 모니터링 알림 추가" in text
+    assert "맞는 능력 코드 없음 (라벨: enhancement, repo:demo-report-repo)" in text
+    assert "#44" in text and "README 오타 수정" in text
+    # 동작 영역 — 시작 버튼만. 두 번째 노드를 직접 실행하는 버튼은 없다 (워커가 잇는다)
+    button = start_button(text)
+    assert button and "disabled" not in button.group(0)
+    assert f'action="/chains/{chain_id}/start"' in text
+    assert f'action="/tasks/{task_b}/run"' not in text and f'action="/tasks/{task_a}/run"' not in text
+    assert f'data-live="/chains/{chain_id}/live"' in text
+
+
+def test_chain_start_runs_first_task_once_and_marks_started(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    response = web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == f"/chains/{chain_id}"
+
+    execution = repo.active_execution(conn, task_a)
+    assert execution is not None and execution["status"] == "queued"
+    assert repo.active_execution(conn, task_b) is None  # 후속은 워커가 선행 완료를 보고 잇는다
+    assert repo.get_chain(conn, chain_id)["started_at"] is not None
+    text = chain_page(web, chain_id)
+    assert 'data-status="실행 요청됨"' in text and "접수 대기" in text
+    assert start_button(text) is None
+    assert "2단계 중 1단계 실행 요청됨" in text
+    assert "담당 변경" not in text
+
+    again = web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert again.status_code == 303  # 멱등
+    assert len(repo.list_executions(conn, task_a)) == 1
+
+
+def test_chain_start_diagnosis_limit_429(web, conn, settings):
+    chain_id, _ = import_chain(web, conn, "#41", "#42")
+    from workflow.server.auth import utc_now
+    for n in range(10):
+        repo.record_diagnosis_start(conn, session_id_of(web, settings), f"exec-seed-{n}", utc_now())
+    response = web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert response.status_code == 429
+    assert "오늘 이 세션의 진단 실행 한도(10회)에 도달했습니다." in response.text
+    assert repo.get_chain(conn, chain_id)["started_at"] is None
+
+
+def test_chain_start_requires_first_node_selection(client, conn, agents):
+    client.get("/tasks")
+    register_agents(client, "agent-codex-mac")  # 진단 Agent 미등록 → #41 후보 없음
+    chain_id, (task_a, task_b) = import_chain(client, conn, "#41", "#42")
+    text = chain_page(client, chain_id)
+    assert 'data-status="확인 필요"' in text and "후보 없음" in text
+    button = start_button(text)
+    assert button and "disabled" in button.group(0)
+    assert "담당 에이전트를 먼저 확정하세요" in text
+    assert f'action="/tasks/{task_a}/select"' in text
+
+    blocked = client.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert blocked.status_code == 409 and "selection_required" in blocked.text
+    assert repo.get_chain(conn, chain_id)["started_at"] is None
+
+    # 진단 Agent 를 등록하고 체인 화면의 인라인 폼으로 확정하면 체인 화면으로 돌아오고 시작할 수 있다
+    register_agents(client, "agent-ops-demo")
+    chosen = client.post(
+        f"/tasks/{task_a}/select", data={"agent_id": "agent-ops-demo", "return_to": "chain"}, follow_redirects=False,
+    )
+    assert chosen.status_code == 303 and chosen.headers["location"] == f"/chains/{chain_id}"
+    text = chain_page(client, chain_id)
+    assert "disabled" not in start_button(text).group(0)
+    assert client.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
+    assert repo.active_execution(conn, task_a) is not None
+
+
+def test_chain_reassigns_tied_node_before_start_only(web, conn):
+    seed_claude_agent(conn)
+    register_agents(web, "agent-claude-mac")
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    text = chain_page(web, chain_id)
+    assert "먼저 등록한 agent-codex-mac 를 기본 선택" in text
+    assert "담당 변경" in text and f'action="/tasks/{task_b}/select"' in text
+    assert "disabled" not in start_button(text).group(0)  # 동률이라도 기본 선택돼 시작 가능
+
+    response = web.post(
+        f"/tasks/{task_b}/select", data={"agent_id": "agent-claude-mac", "return_to": "chain"}, follow_redirects=False,
+    )
+    assert response.status_code == 303 and response.headers["location"] == f"/chains/{chain_id}"
+    selection = repo.get_selection(conn, task_b)
+    assert selection.mode == "manual" and selection.selected_agent_id == "agent-claude-mac"
+    assert repo.get_task(conn, task_b)["selection_mode"] == "manual"
+    assert json.loads(repo.get_task(conn, task_b)["target_json"])["local_registration_id"] == "local-demo-report-claude"
+    assert "개인 Claude Code" in chain_page(web, chain_id)
+
+    assert web.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
+    assert "담당 변경" not in chain_page(web, chain_id)
+    after = web.post(f"/tasks/{task_b}/select", data={"agent_id": "agent-codex-mac", "return_to": "chain"}, follow_redirects=False)
+    assert after.status_code == 409
+    assert repo.get_selection(conn, task_b).selected_agent_id == "agent-claude-mac"
+
+
+def test_chain_live_fragment_carries_node_status(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    response = web.get(f"/chains/{chain_id}/live")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert "<html" not in response.text and "<script" not in response.text
+    assert f'data-live="/chains/{chain_id}/live"' in response.text
+    assert 'data-status="실행 가능"' in response.text and 'data-status="대기"' in response.text
+    assert 'data-poll="1"' in response.text  # 대기 노드가 있는 동안 폴링
+    assert f'action="/chains/{chain_id}/start"' in response.text
+
+    web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert 'data-status="실행 요청됨"' in web.get(f"/chains/{chain_id}/live").text
+
+
+def test_chain_human_gate_follows_last_task_review(web, conn, store, settings):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    exec_a = repo.active_execution(conn, task_a)["execution_id"]
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.release_execution(conn, exec_a, NOW)
+    repo.create_execution(
+        conn, execution_id="exec-fix-001", task_id=task_b, attempt_no=1, start_key=f"auto:{task_b}:r1",
+        agent_id="agent-codex-mac", kind="code_change",
+        request=ExecutionRequest.model_validate({
+            "contract_version": 1, "execution_id": "exec-fix-001", "task_id": task_b, "kind": "code_change",
+            "agent_id": "agent-codex-mac", "task_revision": 1, "request": FIX_REQUEST,
+            "input_artifact_ids": ["art-handoff-001"],
+            "target": {"local_registration_id": "local-demo-report", "base_commit": BASE_COMMIT,
+                       "verification_profile_id": "vp-pytest"},
+        }),
+        assigned_connector_id=None, predecessor_execution_id=exec_a, now=NOW,
+    )
+    seed_result_ready(
+        conn, store, "exec-fix-001", kind="code_change_result",
+        body=code_change_result("exec-fix-001", task_b), session_id=session_id_of(web, settings),
+    )
+    text = chain_page(web, chain_id)
+    gate = text[text.index("검토 승인 (사람)"):]
+    assert 'data-status="확인 필요"' in gate and "검토 대기" in gate
+    assert f'href="/tasks/{task_b}"' in gate  # Task 상세의 검토 폼으로
+    assert "2단계 중 2단계 확인 필요" in text
+    assert 'data-poll="0"' in text  # 사람 차례 — 폴링 없음
+
+    web.post(f"/tasks/{task_b}/review", data={"decision": "approve", "comment": ""}, follow_redirects=False)
+    text = chain_page(web, chain_id)
+    gate = text[text.index("검토 승인 (사람)"):]
+    assert 'data-status="완료"' in gate and "병합: 운영자 확인 대기" in gate
+    assert "병합 확인됨" not in gate
+    assert "2단계 모두 완료" in text
+
+    login_operator(web)
+    web.post(f"/operator/merges/{task_b}/confirm", follow_redirects=False)
+    gate = chain_page(web, chain_id)
+    assert "병합 확인됨" in gate[gate.index("검토 승인 (사람)"):]
+
+
+def test_home_lists_chains_with_progress(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn)
+    home = web.get("/tasks").text
+    assert "워크플로우" in home and f'href="/chains/{chain_id}"' in home
+    assert "0/2 완료" in home and "시작 전" in home
+    main = home[home.index('class="main'):]
+    assert main.index("<h2>워크플로우</h2>") < main.index("<h2>업무</h2>")  # 업무 구역 위에
+
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.mark_chain_started(conn, chain_id, NOW)
+    home = web.get("/tasks").text
+    assert "1/2 완료" in home and "2단계 중 2단계 대기" in home
+    # 왼쪽 목록에는 Task 그대로
+    sidebar = home[home.index('class="sidebar'):home.index('class="main')]
+    assert f'href="/tasks/{task_a}"' in sidebar and f'href="/tasks/{task_b}"' in sidebar
+    assert "/chains/" not in sidebar
+
+
+def test_task_detail_links_to_its_chain(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    text = detail(web, task_b)
+    assert f'href="/chains/{chain_id}"' in text
+    assert "워크플로우 일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
+    assert f'href="/chains/{chain_id}"' in web.get(f"/tasks/{task_b}/live").text
+    assert "/chains/" not in detail(web, create_task(web, diagnose_form()))
 
 
 # --- 운영자 ----------------------------------------------------------------------
