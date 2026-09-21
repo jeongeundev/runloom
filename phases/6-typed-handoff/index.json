@@ -14,7 +14,10 @@
     {
       "step": 1,
       "name": "contracts-kinds",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-21T21:12:52+0900",
+      "summary": "계약 층 확장(src/workflow/contracts/v1.py): 패턴 상수 KIND_PATTERN·CAPABILITY_CODE_PATTERN·IDENTIFIER_PATTERN, 타입 별칭 KindId·CapabilityCode·Identifier·Outcome, ARTIFACT_KINDS 16종(generic_result 추가), 새 모델 LocalTarget·KindSpec·SuccessorRule·InputRef·GenericResult, 상수 BUILTIN_KIND_NAMES·BUILTIN_KINDS(2)·BUILTIN_RULES(1). ExecutionRequest.kind 는 KindId + kind_spec: KindSpec | None = None, target 에 LocalTarget 추가(_check_kind_target: 내장 아니면 LocalTarget + kind_spec 필수 + kind 일치). HandoffBundle 은 source_kind·source_result_artifact_id(이전 diagnosis_result_artifact_id)·inputs(artifact_id 중복 거부). Capability 는 code 패턴 + scope 식별자 키 정확히 1개·값 비어 있지 않음으로 일반화, _CAPABILITY_SCOPE_KEYS 삭제(다른 층에서 import 하던 곳 없음 — web.py 의 SCOPE_KEYS 는 자체 사전이라 그대로). tests/workflow/contracts/test_v1.py: fixture 블록 31개·모델 대응표 3개(KindSpec·SuccessorRule·GenericResult) 추가, 새 거부 사례 82건, ExecutionRequest 왕복은 kind_spec null 을 허용. 기계적 치환(source_kind=\"diagnosis\", inputs=[] 추가): src/workflow/server/worker.py, scripts/make_handoff_dir.py·test_make_handoff_dir.py, tests/workflow/connector/conftest.py, tests/workflow/server/test_machine_api.py·test_web.py·test_worker.py, tests/workflow/adapters/test_repo.py. kind_spec 선택 필드가 dump 에 null 로 나오므로 tests/workflow/server/conftest.py request_body·test_web.py 기대 dict 에 \"kind_spec\": None 추가. CONTRACT 예시는 고치지 않았다(11절 전부 모델 검증 통과). 결과: pytest 1365 passed·22 skipped, ruff 통과, grep 0/0.",
+      "completed_at": "2026-09-21T21:21:35+0900"
     },
     {
       "step": 2,

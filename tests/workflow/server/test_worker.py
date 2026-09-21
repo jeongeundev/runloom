@@ -394,7 +394,7 @@ def test_diagnosis_flow_completes_a_and_spawns_b(flow, worker, server, conn, sto
     assert (bundle_row["kind"], bundle_row["execution_id"], bundle_row["session_id"]) == ("handoff_bundle", EXEC_A, SESSION)
     bundle = HandoffBundle.model_validate_json(repo.read_artifact(conn, store, bundle_row["artifact_id"]))
     assert bundle.source_execution_id == EXEC_A
-    assert bundle.diagnosis_result_artifact_id == a["result_artifact_id"]
+    assert bundle.source_result_artifact_id == a["result_artifact_id"]
     assert [(x.evidence_id, x.artifact_id) for x in bundle.attachments[:8]] == [
         (r["evidence_id"], r["artifact_id"]) for r in result["attachments"]
     ]

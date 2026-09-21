@@ -420,6 +420,7 @@ def test_run_creates_queued_execution_with_frozen_request(web, conn, settings):
         "request": DIAGNOSE_REQUEST,
         "input_artifact_ids": [],
         "target": {"run_id": "daily-0920-0900"},
+        "kind_spec": None,
     }
     since = "2026-01-01T00:00:00Z"
     assert repo.count_diagnosis_started(conn, session_id=session_id_of(web, settings), since=since) == 1
@@ -479,8 +480,8 @@ def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, setti
     exec_a = repo.active_execution(conn, task_a)["execution_id"]
     bundle_id = seed_result_ready(
         conn, store, exec_a, kind="handoff_bundle",
-        body={"contract_version": 1, "source_execution_id": exec_a,
-              "diagnosis_result_artifact_id": "art-diag-result-001", "attachments": []},
+        body={"contract_version": 1, "source_execution_id": exec_a, "source_kind": "diagnosis",
+              "source_result_artifact_id": "art-diag-result-001", "inputs": [], "attachments": []},
         session_id=session_id_of(web, settings),
     )
     repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)

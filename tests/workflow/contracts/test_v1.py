@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 24개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 31개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -15,6 +15,9 @@ from pydantic import ValidationError
 from workflow.contracts import v1
 from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
+    BUILTIN_KIND_NAMES,
+    BUILTIN_KINDS,
+    BUILTIN_RULES,
     CONTRACT_VERSION,
     ArtifactCreated,
     ArtifactMeta,
@@ -28,11 +31,16 @@ from workflow.contracts.v1 import (
     EvidenceRef,
     ExecutionEvent,
     ExecutionRequest,
+    GenericResult,
     HandoffBundle,
     HeartbeatRequest,
+    InputRef,
+    KindSpec,
+    LocalTarget,
     ReviewComment,
     RunStatus,
     SelectionRecord,
+    SuccessorRule,
     parse_rfc3339_aware,
 )
 from workflow.server.machine_api import RegistrationRequest
@@ -62,9 +70,12 @@ _SIGNATURES = [
     ),
     ("DiagnosisResult", lambda k: {"outcome", "findings"} <= k, DiagnosisResult),
     ("CodeChangeResult", lambda k: {"outcome", "base_commit"} <= k, CodeChangeResult),
+    ("GenericResult", lambda k: {"outcome", "kind"} <= k, GenericResult),
     ("ReviewComment", lambda k: "decision" in k, ReviewComment),
     ("SelectionRecord", lambda k: "required_capability" in k, SelectionRecord),
     ("ErrorBody", lambda k: {"code", "message"} <= k, ErrorBody),
+    ("KindSpec", lambda k: "capability_code" in k, KindSpec),
+    ("SuccessorRule", lambda k: "from_kind" in k, SuccessorRule),
 ]
 
 
@@ -90,7 +101,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 24
+    assert len(FENCED) == 31
     assert len(INLINE) == 8
 
 
@@ -135,8 +146,9 @@ def test_constants():
         "review_comment",
         "claude_jsonl",
         "claude_stderr",
+        "generic_result",
     )
-    assert len(ARTIFACT_KINDS) == 15
+    assert len(ARTIFACT_KINDS) == 16
 
 
 def test_artifact_kinds_match_contract_md_list():
@@ -310,15 +322,25 @@ def test_location_schema_pattern_is_the_validator_grammar():
         assert compiled.match(location) is None, location
 
 
-def test_rejects_capability_scope_key_mismatch():
+@pytest.mark.parametrize("code", ["review", "code.modify", "operations.diagnose", "a1.b_2"])
+def test_capability_accepts_code_pattern(code):
+    assert Capability.model_validate({"code": code, "scope": {"repository_id": "x"}}).code == code
+
+
+@pytest.mark.parametrize("code", ["Code.Modify", "a.b.c", "", ".a", "a.", "1a", "a-b", "a b"])
+def test_capability_rejects_bad_code(code):
     with pytest.raises(ValidationError):
-        Capability.model_validate({"code": "operations.diagnose", "scope": {"repository_id": "x"}})
+        Capability.model_validate({"code": code, "scope": {"repository_id": "x"}})
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [{}, {"repository_id": "x", "workflow_id": "y"}, {"repository_id": ""}, {"Repo": "x"}, {"repo-id": "x"}],
+)
+def test_capability_rejects_bad_scope(scope):
+    """scope 는 식별자 키 정확히 하나와 비어 있지 않은 값. 코드 ↔ 키 대응은 서버가 등록부로 검사한다."""
     with pytest.raises(ValidationError):
-        Capability.model_validate({"code": "code.modify", "scope": {"workflow_id": "x"}})
-    with pytest.raises(ValidationError):
-        Capability.model_validate(
-            {"code": "code.modify", "scope": {"repository_id": "x", "workflow_id": "y"}}
-        )
+        Capability.model_validate({"code": "code.modify", "scope": scope})
 
 
 def test_rejects_code_change_request_without_input_artifacts():
@@ -445,5 +467,310 @@ def test_json_roundtrip(model_name):
             continue
         parsed = model.model_validate(block)
         dumped = parsed.model_dump(mode="json")
-        assert dumped == block
+        expected = dict(block)
+        if model is ExecutionRequest:
+            expected.setdefault("kind_spec", None)  # 내장 종류 요청은 생략 가능, dump 에는 null
+        assert dumped == expected
         assert model.model_validate(dumped) == parsed
+
+
+# --- 업무 종류·후속 규칙·범용 결과 (CONTRACT 11절) ---------------------------
+
+
+def _kind_spec(**overrides) -> dict:
+    spec = next(
+        json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is KindSpec and not b["builtin"]
+    )
+    spec.update(overrides)
+    return spec
+
+
+def _rule(**overrides) -> dict:
+    rule = next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is SuccessorRule)
+    rule.update(overrides)
+    return rule
+
+
+def _review_request() -> dict:
+    return next(
+        json.loads(json.dumps(b))
+        for b in FENCED
+        if _model_for(b) is ExecutionRequest and b["kind"] == "review"
+    )
+
+
+def test_builtin_kinds_match_concept_table():
+    assert BUILTIN_KIND_NAMES == ("diagnosis", "code_change")
+    assert tuple(k.kind for k in BUILTIN_KINDS) == BUILTIN_KIND_NAMES
+    diagnosis, code_change = BUILTIN_KINDS
+    assert diagnosis == KindSpec(
+        kind="diagnosis", label="진단", capability_code="operations.diagnose", scope_key="workflow_id",
+        input_kinds=[], output_kind="diagnosis_result",
+        outcomes=["ready_for_handoff", "needs_information"], instructions="", builtin=True,
+    )
+    assert code_change == KindSpec(
+        kind="code_change", label="코드 수정", capability_code="code.modify", scope_key="repository_id",
+        input_kinds=["diagnosis_result", "evidence"], output_kind="code_change_result",
+        outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
+    )
+
+
+def test_builtin_rules_match_concept_table():
+    assert BUILTIN_RULES == (
+        SuccessorRule(
+            from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
+            handoff_kinds=["diagnosis_result", "evidence"],
+        ),
+    )
+
+
+def test_builtin_code_change_kind_equals_contract_md_example():
+    block = next(b for b in FENCED if _model_for(b) is KindSpec and b["builtin"])
+    assert KindSpec.model_validate(block) == BUILTIN_KINDS[1]
+
+
+def test_builtin_rule_equals_contract_md_example():
+    block = next(b for b in FENCED if _model_for(b) is SuccessorRule and b["from_kind"] == "diagnosis")
+    assert SuccessorRule.model_validate(block) == BUILTIN_RULES[0]
+
+
+@pytest.mark.parametrize("kind", ["Review", "re view", "r" * 41, "r", "1review", "review-x", ""])
+def test_kind_spec_rejects_bad_kind(kind):
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(kind=kind))
+
+
+@pytest.mark.parametrize("capability_code", ["Code.Modify", "a.b.c", "review-x", ""])
+def test_kind_spec_rejects_bad_capability_code(capability_code):
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(capability_code=capability_code))
+
+
+@pytest.mark.parametrize("scope_key", ["Repository", "repo id", "r" * 41, ""])
+def test_kind_spec_rejects_bad_scope_key(scope_key):
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(scope_key=scope_key))
+
+
+@pytest.mark.parametrize("outcomes", [[], ["approved", "approved"], ["Approved"], ["needs info"]])
+def test_kind_spec_rejects_bad_outcomes(outcomes):
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(outcomes=outcomes))
+
+
+@pytest.mark.parametrize("input_kinds", [["diff", "diff"], ["not_a_kind"]])
+def test_kind_spec_rejects_bad_input_kinds(input_kinds):
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(input_kinds=input_kinds))
+
+
+def test_kind_spec_accepts_empty_input_kinds():
+    assert KindSpec.model_validate(_kind_spec(input_kinds=[])).input_kinds == []
+
+
+@pytest.mark.parametrize("output_kind", ["diagnosis_result", "code_change_result"])
+def test_kind_spec_rejects_user_defined_with_builtin_output(output_kind):
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(output_kind=output_kind))
+
+
+def test_kind_spec_rejects_unknown_builtin_name():
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(builtin=True))
+
+
+def test_kind_spec_rejects_unknown_output_kind():
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(output_kind="review_result"))
+
+
+def test_successor_rule_rejects_same_from_and_to():
+    with pytest.raises(ValidationError):
+        SuccessorRule.model_validate(_rule(to_kind=_rule()["from_kind"]))
+
+
+def test_successor_rule_rejects_handoff_bundle_in_handoff_kinds():
+    with pytest.raises(ValidationError):
+        SuccessorRule.model_validate(_rule(handoff_kinds=["diagnosis_result", "handoff_bundle"]))
+
+
+@pytest.mark.parametrize("handoff_kinds", [["diff", "diff"], ["not_a_kind"]])
+def test_successor_rule_rejects_bad_handoff_kinds(handoff_kinds):
+    with pytest.raises(ValidationError):
+        SuccessorRule.model_validate(_rule(handoff_kinds=handoff_kinds))
+
+
+def test_successor_rule_accepts_empty_handoff_kinds():
+    assert SuccessorRule.model_validate(_rule(handoff_kinds=[])).handoff_kinds == []
+
+
+@pytest.mark.parametrize("on_outcomes", [[], ["ready_for_handoff", "ready_for_handoff"], ["Ready"]])
+def test_successor_rule_rejects_bad_on_outcomes(on_outcomes):
+    with pytest.raises(ValidationError):
+        SuccessorRule.model_validate(_rule(on_outcomes=on_outcomes))
+
+
+@pytest.mark.parametrize("field", ["from_kind", "to_kind"])
+def test_successor_rule_rejects_bad_kind_identifier(field):
+    with pytest.raises(ValidationError):
+        SuccessorRule.model_validate(_rule(**{field: "Bad Kind"}))
+
+
+@pytest.mark.parametrize(
+    ("target", "model"),
+    [
+        ({"run_id": "daily-0920-0900"}, DiagnosisTarget),
+        (
+            {
+                "local_registration_id": "local-demo-report",
+                "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
+                "verification_profile_id": "vp-pytest",
+            },
+            CodeChangeTarget,
+        ),
+        ({"local_registration_id": "local-demo-report-claude"}, LocalTarget),
+    ],
+)
+def test_execution_request_target_roundtrips_to_same_class(target, model):
+    """`extra="forbid"` 라 LocalTarget 이 CodeChangeTarget 으로(또는 반대로) 읽히지 않는다."""
+    kind = {DiagnosisTarget: "diagnosis", CodeChangeTarget: "code_change", LocalTarget: "review"}[model]
+    block = _review_request() if model is LocalTarget else _first("ExecutionRequest")
+    block.update(kind=kind, target=target)
+    if model is CodeChangeTarget:
+        block["input_artifact_ids"] = ["art-handoff-001"]
+    parsed = ExecutionRequest.model_validate(block)
+    assert type(parsed.target) is model
+    dumped = parsed.model_dump(mode="json")
+    assert dumped["target"] == target
+    assert type(ExecutionRequest.model_validate(dumped).target) is model
+
+
+def test_execution_request_review_with_local_target_and_kind_spec_passes():
+    request = ExecutionRequest.model_validate(_review_request())
+    assert request.kind == "review"
+    assert isinstance(request.target, LocalTarget)
+    assert request.kind_spec is not None and request.kind_spec.kind == "review"
+
+
+def test_execution_request_review_requires_kind_spec():
+    block = _review_request()
+    block["kind_spec"] = None
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+    del block["kind_spec"]
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+def test_execution_request_rejects_kind_spec_kind_mismatch():
+    block = _review_request()
+    block["kind_spec"]["kind"] = "audit"
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+    diagnosis = _first("ExecutionRequest")
+    diagnosis["kind_spec"] = BUILTIN_KINDS[1].model_dump()  # code_change 봉투를 diagnosis 요청에
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(diagnosis)
+
+
+def test_execution_request_accepts_builtin_kind_spec_when_it_matches():
+    diagnosis = _first("ExecutionRequest")
+    diagnosis["kind_spec"] = BUILTIN_KINDS[0].model_dump()
+    assert ExecutionRequest.model_validate(diagnosis).kind_spec == BUILTIN_KINDS[0]
+
+
+def test_execution_request_rejects_builtin_kind_spec_with_local_target():
+    block = _review_request()
+    block["kind_spec"]["builtin"] = True
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+def test_execution_request_rejects_local_target_for_builtin_kind():
+    diagnosis = _first("ExecutionRequest")
+    diagnosis["target"] = {"local_registration_id": "local-demo-report"}
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(diagnosis)
+    code_change = _first("ExecutionRequest")
+    code_change.update(kind="code_change", input_artifact_ids=["art-handoff-001"],
+                       target={"local_registration_id": "local-demo-report"})
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(code_change)
+
+
+def test_execution_request_rejects_builtin_target_for_user_kind():
+    block = _review_request()
+    block["target"] = {"run_id": "daily-0920-0900"}
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+@pytest.mark.parametrize("kind", ["Review", "re view", "r" * 41, "r", ""])
+def test_execution_request_rejects_bad_kind_identifier(kind):
+    block = _review_request()
+    block["kind"] = kind
+    block["kind_spec"]["kind"] = kind
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+def test_handoff_bundle_rejects_duplicate_input_artifact_id():
+    block = next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is HandoffBundle and b["inputs"])
+    block["inputs"].append(dict(block["inputs"][0]))
+    with pytest.raises(ValidationError):
+        HandoffBundle.model_validate(block)
+
+
+def test_handoff_bundle_rejects_bad_source_kind():
+    block = _first("HandoffBundle")
+    block["source_kind"] = "Diagnosis"
+    with pytest.raises(ValidationError):
+        HandoffBundle.model_validate(block)
+
+
+def test_handoff_bundle_accepts_empty_inputs_and_attachments():
+    block = _first("HandoffBundle")
+    block["inputs"] = []
+    block["attachments"] = []
+    bundle = HandoffBundle.model_validate(block)
+    assert bundle.inputs == [] and bundle.attachments == []
+
+
+def test_input_ref_rejects_bad_fields():
+    good = {"kind": "diff", "artifact_id": "art-diff-001", "sha256": "c" * 64, "content_type": "text/x-diff"}
+    InputRef.model_validate(good)
+    for bad in ({"kind": "not_a_kind"}, {"sha256": "C" * 64}, {"artifact_id": ""}, {"content_type": ""}):
+        with pytest.raises(ValidationError):
+            InputRef.model_validate({**good, **bad})
+
+
+def test_generic_result_roundtrip():
+    block = _first("GenericResult")
+    parsed = GenericResult.model_validate(block)
+    assert parsed.kind == "review" and parsed.outcome == "approved"
+    dumped = parsed.model_dump(mode="json")
+    assert dumped == block
+    assert GenericResult.model_validate(dumped) == parsed
+
+
+def test_generic_result_rejects_duplicate_artifact_ids():
+    block = _first("GenericResult")
+    block["artifact_ids"] = ["a", "a"]
+    with pytest.raises(ValidationError):
+        GenericResult.model_validate(block)
+
+
+@pytest.mark.parametrize("outcome", ["Approved", "needs info", "", "o" * 41])
+def test_generic_result_rejects_bad_outcome(outcome):
+    block = _first("GenericResult")
+    block["outcome"] = outcome
+    with pytest.raises(ValidationError):
+        GenericResult.model_validate(block)
+
+
+def test_local_target_shape():
+    LocalTarget.model_validate({"local_registration_id": "local-demo-report-claude"})
+    with pytest.raises(ValidationError):
+        LocalTarget.model_validate({"local_registration_id": ""})
+    with pytest.raises(ValidationError):
+        LocalTarget.model_validate({"local_registration_id": "l", "base_commit": "3" * 40})

@@ -63,7 +63,7 @@ def test_manifest_is_contract_2_bundle_with_matching_hashes(handoff):
     bundle = HandoffBundle.model_validate_json((handoff / "manifest.json").read_text())
     assert bundle.contract_version == 1
     assert bundle.source_execution_id == "exec-diagnose-001"
-    assert bundle.diagnosis_result_artifact_id == "art-diag-result-001"
+    assert bundle.source_result_artifact_id == "art-diag-result-001"
     assert len(bundle.attachments) == 9
     for ref in bundle.attachments:
         ext = {"application/json": "json", "text/plain": "txt"}[ref.content_type]

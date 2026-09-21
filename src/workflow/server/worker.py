@@ -216,7 +216,9 @@ def assemble_handoff(conn: Connection, store: ArtifactStore, a_execution: Row, b
     bundle = HandoffBundle(
         contract_version=1,
         source_execution_id=execution_id,
-        diagnosis_result_artifact_id=result_id,
+        source_kind="diagnosis",
+        source_result_artifact_id=result_id,
+        inputs=[],
         attachments=attachments,
     )
     return _store(

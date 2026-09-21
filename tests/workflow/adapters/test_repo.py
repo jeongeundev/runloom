@@ -650,7 +650,9 @@ def test_download_allowed_three_paths_and_denial(seeded, store):
     manifest = json.dumps({
         "contract_version": 1,
         "source_execution_id": "exec-diag",
-        "diagnosis_result_artifact_id": res.artifact_id,
+        "source_kind": "diagnosis",
+        "source_result_artifact_id": res.artifact_id,
+        "inputs": [],
         "attachments": [{"evidence_id": "response-after", "version": "1",
                          "content_type": "application/json", "artifact_id": ev.artifact_id,
                          "sha256": ev.sha256}],

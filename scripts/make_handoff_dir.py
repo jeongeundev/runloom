@@ -72,7 +72,9 @@ def make_handoff_dir(dest: Path, *, force: bool = False) -> HandoffBundle:
     bundle = HandoffBundle(
         contract_version=1,
         source_execution_id=result["execution_id"],
-        diagnosis_result_artifact_id="art-diag-result-001",
+        source_kind="diagnosis",
+        source_result_artifact_id="art-diag-result-001",
+        inputs=[],
         attachments=attachments,
     )
     (dest / "manifest.json").write_text(bundle.model_dump_json(indent=2), encoding="utf-8")

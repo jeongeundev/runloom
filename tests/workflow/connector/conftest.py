@@ -264,8 +264,8 @@ def assign_with_handoff(fake: FakeCentral, request: ExecutionRequest | None = No
     ]
     if tamper:
         fake.artifacts[log_id]["data"] = LOG_0920 + b"tampered\n"
-    bundle = HandoffBundle(contract_version=1, source_execution_id=source,
-                           diagnosis_result_artifact_id="art-diag-result-001", attachments=attachments)
+    bundle = HandoffBundle(contract_version=1, source_execution_id=source, source_kind="diagnosis",
+                           source_result_artifact_id="art-diag-result-001", inputs=[], attachments=attachments)
     bundle_id = fake.add_artifact(source, "handoff_bundle", bundle.model_dump_json().encode(), name="handoff.json")
     request = request or make_request(input_artifact_ids=[bundle_id])
     if bundle_id not in request.input_artifact_ids:
