@@ -379,7 +379,7 @@ def test_runbook_covers_every_step_and_known_limits():
         "openssl rand -hex 32",
         "chmod 600",
         "WORKFLOW_DOMAIN",
-        "curl -I https://",
+        "curl -s -o /dev/null -w '%{http_code}\\n' https://",  # HEAD 는 405 — GET 으로 확인
         "/agents/register",
         "systemctl is-active workflow-central workflow-worker workflow-diag workflow-diag-worker workflow-connector",
         "systemctl list-timers",

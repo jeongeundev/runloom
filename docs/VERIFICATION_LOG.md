@@ -94,3 +94,13 @@ line 24 item_12 exit=1: python3 -m pytest -q        (→ line 43 item_23 exit=0:
 - 제품 코드(`src/`) 결함: **없음**. 상태 규칙·워커·연결 프로그램 변경 없이 통과했다.
 - 추가한 것: `LocalStack.start_service(name)`(`scripts/local_stack.py`) — 직접 등록 경로의 마지막(test_11)이 연결 프로그램을 내리므로 주 경로가 같은 계획으로 다시 띄운다. 그 결과 test_11 이 `대기` 로 남긴 C 가 연결 복구 뒤 자동 실행됐다(정상 동작 — "재접속 시 claim").
 - 메모(결함 아님): 가짜 진단은 폴링 간격 안에 끝나 A 의 `실행 중` 은 화면에 잡히지 않을 수 있다(기존 test_04 와 같은 이유로 관측을 강제하지 않고 순서만 확인). B 는 `실행 중` 관측을 요구한다.
+
+## 2026-09-21 — 공개 VM 배포와 심사자 흐름 완주 (phase 5 배포)
+
+| 항목 | 내용 |
+|---|---|
+| 대상 | `https://runloom.duckdns.org`, main `46175d0` (phase 5 병합). `install-vm.sh` 재실행(connector 유닛·`[dev]`·connector.env) → `WORKFLOW_RESET_DB=1 update-vm.sh`(스키마 1→2, 백업 `/var/backups/workflow/reset-2026-09-21-055158`) → 런북 5·6(scaffold base_commit `3e285f5`, seed `--scripted`, connect `conn-77453b93`, register codex·claude) |
+| env 정정 | `diag.env`: `DIAG_MODEL` openai→fake, `OPENAI_API_KEY` 주석 처리, `DIAG_FAKE_TURN_SECONDS=2.5` 추가, `DIAG_PRICE_*` 2.00/8.00→비움, `DIAG_GLOBAL_DAILY` 36→5000. `central.env`: `WORKFLOW_LIMIT_PER_SESSION_DAILY` 10→200, `GLOBAL_DAILY` 36→5000. 원본은 `/etc/workflow/*.bak-*` |
+| 실행 | 런북 7 을 익명 세션에서 HTTP 로 3회(등록 3 → GitHub #41~#44 가져오기 → 시작 → 승인). 진단 A `ready_for_handoff` 25~30초, 코드 수정 B `ready_for_review` 56~61초(사람 조작 없음), 승인 → 체인 `병합: 운영자 확인 대기`, 홈 `2/2 완료`, 결과 카드 `대본 재생 (실제 모델 호출 없음)`, #43·#44 제외 표시 |
+| 확인 | 유닛 5개 active, `/agents/register` 연결됨 3, worker·connector ERROR 0, 진단 워커 `model=fake`, 데모 저장소 `main`==base_commit·`task/*` 브랜치만 증가·worktree 는 main 하나 |
+| 발견 | 단가가 남아 있던 동안 대본 3회에 `estimated_usd` 0.33 이 쌓임 — 단가를 비운 뒤 4회째는 0 증가(runs_today 4, 0.33 유지). 예산 한도 `30×0.9` 와 일일 36회는 심사 중 429 를 냈을 값. 런북 3·9 절에 대조 항목을 적었다 |

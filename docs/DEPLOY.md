@@ -50,7 +50,7 @@ sudo -u workflow -H /opt/workflow/venv/bin/python -c "import workflow, workflow.
 
 ## 3. 환경변수 파일 채우기
 
-`/etc/workflow/central.env`·`diag.env`·`connector.env` 는 예시를 복사한 상태다. 키 목록은 `src/workflow/server/settings.py`·`src/diagnostic_demo/settings.py` 의 `ENV_KEYS`, `src/workflow/connector/config.py` 와 같다.
+`/etc/workflow/central.env`·`diag.env`·`connector.env` 는 예시를 복사한 상태다. **이전 배포(실제 모델 시절)의 파일이 남아 있으면** 예시와 키·값을 대조한다 — 특히 `DIAG_MODEL=fake`, `OPENAI_API_KEY` 비움, `DIAG_PRICE_*` 비움(단가가 있으면 대본의 기록된 토큰 수에 곱해져 예산 추정이 쌓인다), `DIAG_GLOBAL_DAILY`·`WORKFLOW_LIMIT_*_DAILY` 를 예시 값(5000·200)으로. 2026-09-21 배포에서 36·10 이 남아 있었다. 키 목록은 `src/workflow/server/settings.py`·`src/diagnostic_demo/settings.py` 의 `ENV_KEYS`, `src/workflow/connector/config.py` 와 같다.
 
 ```bash
 openssl rand -hex 32   # SESSION_SECRET
@@ -93,7 +93,7 @@ sudo systemctl reload caddy
 확인:
 
 ```bash
-curl -I https://{domain}          # HTTP/2 200. 첫 요청은 인증서 발급으로 몇 초 걸릴 수 있다
+curl -s -o /dev/null -w '%{http_code}\n' https://{domain}/   # 200 (HEAD 는 405). 첫 요청은 인증서 발급으로 몇 초 걸릴 수 있다
 curl -I http://{domain}           # 308 → https 리다이렉트
 curl -m 5 http://{vm-ip}:8100/capabilities || echo "외부에서 닫힘 (정상)"
 ```
@@ -171,7 +171,7 @@ sudo -u workflow -H env PATH=/opt/workflow/deploy/bin:$PATH which codex claude  
 ```bash
 sudo -u workflow -H git -C /var/lib/workflow/demo/demo-report-repo branch      # main 과 task/{#42 task_id}. main 은 report-base 그대로
 sudo -u workflow -H git -C /var/lib/workflow/demo/demo-report-repo worktree list   # main 하나 — 결과 업로드 뒤 worktree 는 정리된다
-ls /var/lib/workflow/demo/                                                     # demo-report-repo 만 (worktrees 디렉터리 없음)
+sudo ls /var/lib/workflow/demo/demo-report-repo-worktrees/                     # 비어 있음 (결과 업로드 뒤 worktree 는 지운다 — 디렉터리 자체는 남는다)
 ```
 
 ## 7b. 코드 갱신 — 이후 배포
@@ -203,15 +203,15 @@ ls -l /var/backups/workflow/$(date +%F)/           # central.sqlite, diag.sqlite
 ## 9. 심사 기간 점검 목록 — 매일 (2026-09-21 ~ 10-05)
 
 ```bash
-curl -I https://{domain} | head -1                                  # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://{domain}/          # 200 (HEAD 는 405)
 systemctl is-active workflow-central workflow-worker workflow-diag workflow-diag-worker workflow-connector   # 5줄 active
 curl -s https://{domain}/agents/register | grep -o 'data-status="연결됨"' | wc -l   # 3 — 카탈로그 3개 모두 연결됨
 journalctl -u workflow-worker --since -1d | grep -c ERROR            # 0 이 정상. 늘면 journalctl -u workflow-worker --since -1d 로 본다
 journalctl -u workflow-connector --since -1d | grep -c ERROR         # 0 이 정상 (401 이면 토큰 취소 — 6 단계 connect 부터)
 df -h /var/lib/workflow /var/backups                                 # 여유 공간
-du -sh /var/lib/workflow/demo                                        # 결과 업로드 뒤 worktree·인계 디렉터리를 지우므로 커지지 않아야 한다 (브랜치만 늘어난다)
+sudo du -sh /var/lib/workflow/demo                                   # 결과 업로드 뒤 worktree·인계 디렉터리를 지우므로 커지지 않아야 한다 (브랜치만 늘어난다)
 curl -sS -H "Authorization: Bearer $(sudo grep '^DIAG_API_TOKEN=' /etc/workflow/diag.env | cut -d= -f2-)" \
-  http://127.0.0.1:8100/budget                                       # estimated_usd 0 (fake 는 토큰을 쓰지 않는다) / runs_today
+  http://127.0.0.1:8100/budget                                       # runs_today 만 는다. estimated_usd 는 DIAG_PRICE_* 가 비어 있으면 늘지 않는다 (fake 도 기록된 토큰 수를 보고한다)
 ```
 
 `runs_today` 가 `DIAG_GLOBAL_DAILY=5000` 에 닿으면 새 진단은 `429 daily_limit_reached` 다 — 대본이라 비용은 없으니 필요하면 `diag.env`·`central.env` 의 값을 같이 올리고 `systemctl restart workflow-diag workflow-central workflow-worker`.
