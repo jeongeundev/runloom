@@ -1,5 +1,6 @@
 """git_ops — 업무별 worktree, 결과 커밋, diff. 원본 저장소의 작업 트리·기준 브랜치는 건드리지 않는다."""
 
+import shutil
 import subprocess
 
 import pytest
@@ -148,3 +149,23 @@ def test_export_checkout_gives_clean_copy_at_commit_and_remove(repo, tmp_path):
     assert not dest.exists()
     assert _git(path, "rev-parse", "HEAD") == head  # 업무 worktree 는 남는다
     assert "at-base" not in _git(repo, "worktree", "list")
+
+
+def test_prune_worktrees_drops_entries_whose_directory_is_gone(repo):
+    base = git_ops.head_sha(repo)
+    path = git_ops.ensure_worktree(repo, "fix-a", base)
+    shutil.rmtree(path)  # 디렉터리만 사라지고 관리 항목은 남은 상태
+    assert "fix-a" in _git(repo, "worktree", "list")
+
+    git_ops.prune_worktrees(repo)
+
+    assert "fix-a" not in _git(repo, "worktree", "list")
+    assert _git(repo, "rev-parse", "task/fix-a") == base  # 브랜치는 남는다
+
+
+def test_prune_worktrees_is_quiet_when_nothing_is_stale(repo):
+    path = git_ops.ensure_worktree(repo, "fix-a", git_ops.head_sha(repo))
+
+    git_ops.prune_worktrees(repo)
+
+    assert path.exists() and "fix-a" in _git(repo, "worktree", "list")

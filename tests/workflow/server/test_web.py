@@ -1,5 +1,6 @@
 """web.py — 심사자 세션·운영자 웹 라우트. 마크업이 아니라 렌더된 텍스트·리다이렉트·상태 코드를 본다 (Step 7 이 화면을 꾸민다)."""
 
+import json
 import re
 
 import pytest
@@ -34,10 +35,18 @@ def agents(conn):
     return conn
 
 
+def register_agents(client, *agent_ids: str) -> None:
+    """세션이 카탈로그에서 Agent 를 등록한다 (`POST /agents/register`). 기본은 운영 진단·개인 Codex 둘 다."""
+    for agent_id in agent_ids or ("agent-ops-demo", "agent-codex-mac"):
+        response = client.post("/agents/register", data={"agent_id": agent_id}, follow_redirects=False)
+        assert response.status_code == 303, response.text
+
+
 @pytest.fixture
 def web(client, agents):
-    """홈을 한 번 열어 세션 쿠키를 받은 클라이언트."""
+    """홈을 한 번 열어 세션 쿠키를 받고, 카탈로그 2개를 등록한 클라이언트."""
     assert client.get("/tasks").status_code == 200
+    register_agents(client)
     return client
 
 
@@ -137,17 +146,34 @@ def seed_reviewable_fix(client, conn, store, settings) -> tuple[str, str]:
 
 
 def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
+    """새 세션 홈: 등록 Agent 0개 → 안내 문장과 `에이전트 등록` 링크, `업무 가져오기` 는 비활성."""
     first = client.get("/tasks")
     assert first.status_code == 200
     assert SESSION_COOKIE in first.cookies
     assert "아직 업무가 없습니다." in first.text
-    assert "시연 업무 만들기" in first.text
-    assert "/tasks/new?example=diagnose" in first.text
-    assert "운영 진단 데모" in first.text and "개인 Codex" in first.text
+    assert "GitHub·Jira 이슈를 가져오면 순서와 담당 에이전트가 자동으로 구성됩니다." in first.text
+    assert "먼저 에이전트를 등록하세요." in first.text
+    assert 'href="/agents/register"' in first.text
+    assert "운영 진단 데모" not in first.text and "개인 Codex" not in first.text  # 등록 전에는 카드 없음
+    button = re.search(r"<button[^>]*>업무 가져오기</button>", first.text)
+    assert button and "disabled" in button.group(0), first.text
+    assert "에이전트를 먼저 등록하세요" in first.text
+    assert 'class="btn" href="/tasks/import"' not in first.text
+    assert "시연 업무 만들기" not in first.text
 
     second = client.get("/tasks")
     assert "set-cookie" not in second.headers
     assert second.status_code == 200
+
+
+def test_home_after_registration_shows_cards_and_enables_import_button(web):
+    text = web.get("/tasks").text
+    assert "운영 진단 데모" in text and "개인 Codex" in text
+    assert "먼저 에이전트를 등록하세요." not in text
+    assert 'class="btn" href="/tasks/import"' in text and "에이전트를 먼저 등록하세요" not in text
+    assert 'href="/tasks/new"' in text  # 직접 등록은 보조 버튼
+    assert "시연 업무 만들기" not in text
+    assert 'href="/agents/register"' in text  # 더 등록할 수 있다
 
 
 def test_landing_is_public_and_links_to_app(client, agents):
@@ -299,6 +325,7 @@ def test_create_task_needs_selection_when_two_candidates_then_manual_select(web,
         "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
         "shared_to_all_sessions": True,
     })
+    register_agents(web, "agent-ops-second")
     task_id = create_task(web, diagnose_form())
     text = detail(web, task_id)
     assert "확인 필요" in text and "후보 2개 — 선택 필요" in text
@@ -416,6 +443,7 @@ def test_run_requires_selection_and_finished_predecessor(web, conn):
         "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
         "shared_to_all_sessions": True,
     })
+    register_agents(web, "agent-ops-second")
     unselected = create_task(web, diagnose_form())
     assert web.post(f"/tasks/{unselected}/run", follow_redirects=False).status_code == 409
 
@@ -610,6 +638,550 @@ def test_agents_pages_hide_credentials(web, conn):
     assert web.get("/agents/nope").status_code == 404
 
 
+# --- 에이전트 등록 — 카탈로그에서 세션이 고른다 (phase 5 step 2, ADR-0005) --------------------
+
+
+DISCOVERED = {
+    "found": {
+        "AGENTS.md": "# demo-report-repo 지침 본문 …",
+        "codex_config": False,
+        "claude_config": False,
+        "pyproject": {"name": "demo-report", "pytest_configured": True},
+        "tests_dir": True,
+        "git": {"remotes": [], "head": "0c1ddcf6ecd35d20c49dc9b0868f3cabf1f2afa0"},
+    },
+    "not_read": ["CLAUDE.md"],
+    "verification_level": "설정 발견",
+}
+
+
+def test_register_page_lists_catalog_with_discovered_summary_and_no_secrets(client, conn, agents):
+    client.get("/tasks")
+    repo.update_registration(
+        conn, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
+        base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest", "vp-report"],
+        discovered=DISCOVERED, now=NOW,
+    )
+    page = client.get("/agents/register")
+    assert page.status_code == 200
+    text = page.text
+    assert "이미 쓰는 에이전트를 골라 등록합니다." in text
+    assert "운영 진단 데모" in text and "개인 Codex" in text
+    assert text.count('action="/agents/register"') == 2  # 카드마다 등록 버튼, 아직 등록됨 없음
+    assert "등록됨" not in text and "/unregister" not in text
+    # 발견된 정보 요약 — 키만. 값(파일 본문·커밋)은 넣지 않는다
+    assert "AGENTS.md" in text and "git.head" in text and "tests_dir" in text and "pyproject.name" in text
+    assert "codex_config" not in text and "git.remotes" not in text  # False·빈 목록은 발견이 아니다
+    assert "지침 본문" not in text and "0c1ddcf6" not in text
+    assert "vp-pytest" in text and "vp-report" in text
+    assert "operations.diagnose · workflow_id=daily-report" in text  # API 에이전트는 능력 역할·범위
+    for secret in ("api_url", "credential_ref", "env:DIAG_API_TOKEN", "http://127.0.0.1:8100", "wfc_"):
+        assert secret not in text, secret
+
+
+def test_register_agent_appears_on_home_and_list_and_is_idempotent(client, conn, agents, settings):
+    client.get("/tasks")
+    listing = client.get("/agents").text
+    assert "등록한 에이전트가 없습니다." in listing and 'href="/agents/register"' in listing
+    assert "agent-ops-demo" not in listing
+
+    response = client.post("/agents/register", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/tasks"
+    home = client.get("/tasks").text
+    assert "운영 진단 데모" in home and "개인 Codex" not in home
+    listing = client.get("/agents").text
+    assert "agent-ops-demo" in listing and "agent-codex-mac" not in listing
+    assert "등록한 에이전트가 없습니다." not in listing
+
+    register = client.get("/agents/register").text
+    assert "등록됨" in register and 'action="/agents/agent-ops-demo/unregister"' in register
+    assert 'action="/agents/register"' in register  # 아직 안 한 Codex 는 등록 버튼
+
+    client.post("/agents/register", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert len(repo.list_session_agents(conn, session_id_of(client, settings))) == 1
+    assert client.post("/agents/register", data={"agent_id": "agent-none"}, follow_redirects=False).status_code == 404
+    assert client.post("/agents/register", data={"agent_id": ""}, follow_redirects=False).status_code == 404
+
+
+def test_agent_detail_opens_for_catalog_and_registered_only(client, conn, agents):
+    client.get("/tasks")
+    assert client.get("/agents/agent-ops-demo").status_code == 200  # 카탈로그 — 등록 전에도 열린다
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-private", "name": "비공개", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": "local-private",
+        "capabilities": [{"code": "code.modify", "scope": {"repository_id": "other"}}],
+        "shared_to_all_sessions": False,
+    })
+    assert client.get("/agents/agent-private").status_code == 404
+    assert client.post("/agents/register", data={"agent_id": "agent-private"}, follow_redirects=False).status_code == 404
+
+
+def test_manual_choice_of_unregistered_agent_is_422(client, agents):
+    client.get("/tasks")
+    register_agents(client, "agent-ops-demo")
+    response = client.post(
+        "/tasks", data=diagnose_form(selection_mode="manual", chosen_agent_id="agent-codex-mac"),
+        follow_redirects=False,
+    )
+    assert response.status_code == 422
+    assert "agent_not_registered" in response.text and "등록하지 않은 에이전트입니다" in response.text
+    # 등록 폼의 직접 선택 목록에도 등록한 것만
+    form = client.get("/tasks/new").text
+    assert 'value="agent-ops-demo"' in form and 'value="agent-codex-mac"' not in form
+
+
+def test_auto_selection_counts_only_registered_agents(client, conn, agents):
+    """운영 진단을 등록하지 않으면 진단 업무는 카탈로그에 있어도 `확인 필요 · 후보 없음`. 직접 선택도 등록한 것만."""
+    client.get("/tasks")
+    register_agents(client, "agent-codex-mac")
+    task_id = create_task(client, diagnose_form())
+    text = detail(client, task_id)
+    assert "확인 필요" in text and "후보 없음" in text
+    assert f'action="/tasks/{task_id}/select"' in text
+    assert 'value="agent-ops-demo"' not in text and 'value="agent-codex-mac"' in text  # 선택 목록도 세션 등록만
+    blocked = client.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert blocked.status_code == 422 and "agent_not_registered" in blocked.text
+    assert repo.get_selection(conn, task_id).status == "needs_selection"
+
+    register_agents(client, "agent-ops-demo")
+    chosen = client.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert chosen.status_code == 303
+    assert "실행 가능" in detail(client, task_id)
+
+
+def test_unregister_agent_and_409_when_task_in_progress(web, conn, settings):
+    task_id = create_task(web, diagnose_form())  # agent-ops-demo 선택됨, 미완료
+    blocked = web.post("/agents/agent-ops-demo/unregister", follow_redirects=False)
+    assert blocked.status_code == 409
+    assert "agent_in_use" in blocked.text and "진행 중인 업무가 있어 해제할 수 없습니다" in blocked.text
+    assert repo.is_session_agent(conn, session_id_of(web, settings), "agent-ops-demo")
+
+    response = web.post("/agents/agent-codex-mac/unregister", follow_redirects=False)  # 선택된 업무 없음
+    assert response.status_code == 303
+    assert not repo.is_session_agent(conn, session_id_of(web, settings), "agent-codex-mac")
+    assert "개인 Codex" not in web.get("/tasks").text
+    assert web.post("/agents/agent-codex-mac/unregister", follow_redirects=False).status_code == 303  # 멱등
+    assert web.post("/agents/agent-none/unregister", follow_redirects=False).status_code == 404
+
+    repo.update_task_status(conn, task_id, "실패", "검토 거절", finished_at=NOW)
+    assert web.post("/agents/agent-ops-demo/unregister", follow_redirects=False).status_code == 303
+    assert "먼저 에이전트를 등록하세요." in web.get("/tasks").text
+
+
+def test_registration_is_isolated_per_session(app, web, conn, settings):
+    other = TestClient(app)
+    home = other.get("/tasks").text
+    assert "먼저 에이전트를 등록하세요." in home
+    assert "운영 진단 데모" not in home and "개인 Codex" not in home
+    assert "등록됨" not in other.get("/agents/register").text
+    assert len(repo.list_session_agents(conn, session_id_of(web, settings))) == 2
+    # 다른 세션의 해제는 이 세션에 영향 없음
+    other.post("/agents/register", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert other.post("/agents/agent-ops-demo/unregister", follow_redirects=False).status_code == 303
+    assert repo.is_session_agent(conn, session_id_of(web, settings), "agent-ops-demo")
+
+
+def test_scripted_agent_is_labelled_on_cards_and_result_card(web, conn, store, settings):
+    codex = repo.get_agent(conn, "agent-codex-mac")
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-codex-mac", "name": codex["name"], "owner_scope": codex["owner_scope"],
+        "connection_type": "local", "local_registration_id": codex["local_registration_id"],
+        "capabilities": [{"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}}],
+        "connection_state": codex["connection_state"], "shared_to_all_sessions": True, "demo_scripted": True,
+    })
+    for path in ("/tasks", "/agents/register", "/agents/agent-codex-mac"):
+        text = web.get(path).text
+        assert "시연용 · 대본 재생" in text, path
+        assert text.count("시연용 · 대본 재생") == 1, path  # 운영 진단은 대본이 아니다
+    assert "시연용 · 대본 재생" not in web.get("/agents/agent-ops-demo").text
+
+    task_b, _ = seed_reviewable_fix(web, conn, store, settings)
+    text = detail(web, task_b)
+    card = text[text.index('class="result-card'):text.index('class="viewer')]
+    assert "대본 재생 (실제 모델 호출 없음)" in card
+    assert "대본 재생" not in detail(web, create_task(web, diagnose_form()))  # 결과 없음
+
+
+# --- 업무 가져오기 — GitHub·Jira fixture → 체인 (phase 5 step 5) -------------------------
+
+
+def import_issues(client, source: str, *keys: str):
+    return client.post(
+        "/tasks/import", data={"source": source, "issue_keys": list(keys)}, follow_redirects=False,
+    )
+
+
+def test_import_page_defaults_to_github_tab_with_mapping_preview(web):
+    text = web.get("/tasks/import").text
+    assert "시연 데이터입니다 — 실제 GitHub·Jira 에 연결하지 않습니다." in text
+    assert 'href="/tasks/import?source=github"' in text and 'href="/tasks/import?source=jira"' in text
+    assert "GitHub Issues" in text and "Jira" in text
+    for key in ("#41", "#42", "#43", "#44"):
+        assert f'value="{key}" checked' in text, key
+    assert "OPS-41" not in text
+    assert "일일 보고서 생성 실패 (09-20 09:00)" in text and "README 오타 수정" in text
+    assert "operations.diagnose · daily-report" in text
+    assert "code.modify · demo-report-repo" in text
+    assert "맡을 에이전트 없음 · 맞는 능력 코드 없음 (라벨: enhancement, repo:demo-report-repo)" in text
+    assert "맡을 에이전트 없음 · 맞는 능력 코드 없음 (라벨: docs)" in text
+    assert "blocked by #41" in text and "blocked by #42" in text
+    assert "workflow:daily-report" in text and "run:daily-0920-0900" in text  # 라벨 칩
+    button = re.search(r"<button[^>]*>가져와서 워크플로우 구성</button>", text)
+    assert button and "disabled" not in button.group(0)
+    assert web.get("/tasks/import?source=svn").status_code == 422
+
+
+def test_import_page_jira_tab_lists_ops_keys(web):
+    text = web.get("/tasks/import?source=jira").text
+    for key in ("OPS-41", "OPS-42", "OPS-43", "OPS-44"):
+        assert f'value="{key}" checked' in text, key
+    assert 'value="#41"' not in text
+    assert "blocked by OPS-41" in text
+    assert "operations.diagnose · daily-report" in text
+
+
+def test_import_page_disables_button_without_registered_agent(client, agents):
+    client.get("/tasks")
+    text = client.get("/tasks/import").text
+    button = re.search(r"<button[^>]*>가져와서 워크플로우 구성</button>", text)
+    assert button and "disabled" in button.group(0), text
+    assert "에이전트를 먼저 등록하세요" in text and 'href="/agents/register"' in text
+    assert import_issues(client, "github", "#41", "#42").status_code == 422
+
+
+def test_import_fixture_builds_chain_of_two_tasks_and_skips_the_rest(web, conn, settings):
+    response = import_issues(web, "github", "#41", "#42", "#43", "#44")
+    assert response.status_code == 303, response.text
+    location = response.headers["location"]
+    assert location.startswith("/chains/chain-")
+    chain_id = location.removeprefix("/chains/")
+    session_id = session_id_of(web, settings)
+
+    chain = repo.get_chain(conn, chain_id)
+    assert chain["session_id"] == session_id and chain["source"] == "github"
+    assert chain["title"] == "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응"
+    assert chain["started_at"] is None
+    skipped = json.loads(chain["skipped_json"])
+    assert [s["key"] for s in skipped] == ["#43", "#44"]
+    assert skipped[0]["title"] == "변경 응답 형식 모니터링 알림 추가"
+    assert "맞는 능력 코드 없음" in skipped[0]["reason"] and "docs" in skipped[1]["reason"]
+
+    tasks = repo.tasks_of_chain(conn, chain_id)
+    assert [t["source_ref"] for t in tasks] == ["#41", "#42"]
+    assert {t["chain_id"] for t in tasks} == {chain_id}
+    task_a, task_b = tasks
+    assert task_a["title"] == "일일 보고서 생성 실패 (09-20 09:00)" and task_a["request"] == DIAGNOSE_REQUEST
+    assert task_a["kind"] == "diagnosis" and task_a["run_mode"] == "manual"
+    assert task_a["completion_mode"] == "auto" and task_a["selection_mode"] == "auto"
+    assert task_a["predecessor_task_id"] is None and task_a["status"] == "실행 가능"
+    assert json.loads(task_a["target_json"]) == {"run_id": "daily-0920-0900"}
+    assert task_b["title"] == "집계 API 응답 형식 변경 대응" and task_b["request"] == FIX_REQUEST
+    assert task_b["kind"] == "code_change" and task_b["run_mode"] == "auto"
+    assert task_b["completion_mode"] == "review"
+    assert task_b["predecessor_task_id"] == task_a["task_id"]
+    assert task_b["status"] == "대기" and task_b["status_reason"] == "선행 대기"
+    assert repo.get_selection(conn, task_a["task_id"]).selected_agent_id == "agent-ops-demo"
+    assert repo.get_selection(conn, task_b["task_id"]).selected_agent_id == "agent-codex-mac"
+    assert len(repo.list_tasks(conn, session_id)) == 2  # #43·#44 는 Task 가 아니다
+    assert repo.active_execution(conn, task_a["task_id"]) is None  # 실행은 체인 화면(step 6)에서만
+
+    home = web.get("/tasks").text
+    assert "일일 보고서 생성 실패 (09-20 09:00)" in home and "집계 API 응답 형식 변경 대응" in home
+    assert "README 오타 수정" not in home
+
+
+def test_import_with_codex_and_claude_picks_first_registered_agent(web, conn):
+    seed_agents(conn, with_claude=True)
+    register_agents(web, "agent-claude-mac")  # 등록 순서: ops → codex → claude
+    response = import_issues(web, "github", "#41", "#42")
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    task_b = repo.tasks_of_chain(conn, chain_id)[1]
+    selection = repo.get_selection(conn, task_b["task_id"])
+    assert selection.task_id == task_b["task_id"]  # PlanNode 의 임시 task_id(issue.key) 가 아니다
+    assert selection.status == "selected" and selection.selected_agent_id == "agent-codex-mac"
+    assert selection.candidate_count == 1
+    assert "먼저 등록한 agent-codex-mac" in selection.reason
+    assert json.loads(task_b["target_json"])["local_registration_id"] == "local-demo-report"
+    assert "먼저 등록한 agent-codex-mac" in detail(web, task_b["task_id"])
+    # 직접 등록 경로는 그대로 — 동률이면 확인 필요
+    task_c = create_task(web, fix_form(""))
+    assert repo.get_selection(conn, task_c).status == "needs_selection"
+
+
+def test_import_single_fix_issue_is_standalone_manual_task(web, conn):
+    response = import_issues(web, "github", "#42")
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    chain = repo.get_chain(conn, chain_id)
+    assert chain["title"] == "집계 API 응답 형식 변경 대응" and json.loads(chain["skipped_json"]) == []
+    (task,) = repo.tasks_of_chain(conn, chain_id)
+    assert task["kind"] == "code_change" and task["predecessor_task_id"] is None
+    assert task["run_mode"] == "manual" and task["completion_mode"] == "review"
+    assert task["source_ref"] == "#42"
+    # 선행 대기가 아니라 연결 프로그램 오프라인(conftest 의 Codex 는 unknown) 때문에 대기 — PRD 3절
+    assert task["status"] == "대기" and task["status_reason"].startswith("연결 끊김")
+    assert repo.get_selection(conn, task["task_id"]).selected_agent_id == "agent-codex-mac"
+
+
+@pytest.mark.parametrize("keys", [(), ("#99",), ("OPS-41",)])
+def test_import_without_known_issue_is_422(web, conn, settings, keys):
+    response = import_issues(web, "github", *keys)
+    assert response.status_code == 422, keys
+    assert "no_issues" in response.text
+    assert repo.list_chains(conn, session_id_of(web, settings)) == []
+    assert import_issues(web, "svn", "#41").status_code == 422
+
+
+def test_import_counts_all_new_tasks_against_active_limit(app, web, conn, settings):
+    limit = app.state.settings.limits.active_tasks_per_session
+    for _ in range(limit - 1):
+        create_task(web, diagnose_form())
+    response = import_issues(web, "github", "#41", "#42", "#43", "#44")
+    assert response.status_code == 429
+    assert f"세션당 활성 업무 한도({limit}개)에 도달했습니다." in response.text
+    session_id = session_id_of(web, settings)
+    assert len(repo.list_tasks(conn, session_id)) == limit - 1
+    assert repo.list_chains(conn, session_id) == []
+    assert import_issues(web, "github", "#41").status_code == 303  # 노드 1개는 들어간다
+
+
+def test_import_chain_is_isolated_per_session(app, web, conn, agents):
+    chain_id = import_issues(web, "github", "#41", "#42").headers["location"].removeprefix("/chains/")
+    task_id = repo.tasks_of_chain(conn, chain_id)[0]["task_id"]
+    assert web.get(f"/chains/{chain_id}").status_code == 200
+    other = TestClient(app)
+    assert other.get(f"/chains/{chain_id}").status_code == 404
+    assert other.get(f"/chains/{chain_id}/live").status_code == 404
+    assert other.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 404
+    assert other.get(f"/tasks/{task_id}").status_code == 404
+    assert "일일 보고서 생성 실패" not in other.get("/tasks").text
+    assert web.get("/chains/chain-none").status_code == 404
+    assert web.get("/chains/chain-none/live").status_code == 404
+
+
+# --- 워크플로우 화면 — 체인 상세·시작·라이브 (phase 5 step 6) --------------------------------
+
+
+def import_chain(client, conn, *keys: str) -> tuple[str, list[str]]:
+    """가져오기 뒤 (chain_id, 체인 순서의 task_id 목록)."""
+    response = import_issues(client, "github", *(keys or ("#41", "#42", "#43", "#44")))
+    assert response.status_code == 303, response.text
+    chain_id = response.headers["location"].removeprefix("/chains/")
+    return chain_id, [t["task_id"] for t in repo.tasks_of_chain(conn, chain_id)]
+
+
+def chain_page(client, chain_id: str) -> str:
+    response = client.get(f"/chains/{chain_id}")
+    assert response.status_code == 200, response.text
+    return response.text
+
+
+def start_button(text: str):
+    return re.search(r"<button[^>]*>워크플로우 시작</button>", text)
+
+
+def test_chain_page_shows_nodes_in_order_with_assignment_reasons_and_start_button(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn)
+    text = chain_page(web, chain_id)
+
+    assert "워크플로우" in text and "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
+    assert "GitHub Issues" in text and "시연 데이터" in text
+    assert text.index("#41") < text.index("#42")
+    assert f'href="/tasks/{task_a}"' in text and f'href="/tasks/{task_b}"' in text
+    assert "운영 진단 데모" in text and "개인 Codex" in text
+    assert "진단" in text and "코드 수정" in text
+    assert "직접" in text and "선행 완료 시 자동" in text
+    assert "자동 완료" in text and "검토 후 완료" in text
+    assert 'data-status="실행 가능"' in text and "agent-ops-demo 선택됨" in text
+    assert 'data-status="대기"' in text and "선행 대기" in text
+    # 접이식 이유 — 구성 이유 문장 + SelectionRecord.reason
+    assert "체인의 첫 업무 — 선행 없음" in text
+    assert "선행 #41 (operations.diagnose) → code.modify 인계" in text
+    assert "operations.diagnose · workflow_id=daily-report 일치 후보 1개" in text
+    # 사람 단계
+    assert "검토 승인 (사람) · 병합은 운영자 확인" in text
+    # 넣지 않은 이슈
+    assert "워크플로우에 넣지 않은 이슈" in text
+    assert "#43" in text and "변경 응답 형식 모니터링 알림 추가" in text
+    assert "맞는 능력 코드 없음 (라벨: enhancement, repo:demo-report-repo)" in text
+    assert "#44" in text and "README 오타 수정" in text
+    # 동작 영역 — 시작 버튼만. 두 번째 노드를 직접 실행하는 버튼은 없다 (워커가 잇는다)
+    button = start_button(text)
+    assert button and "disabled" not in button.group(0)
+    assert f'action="/chains/{chain_id}/start"' in text
+    assert f'action="/tasks/{task_b}/run"' not in text and f'action="/tasks/{task_a}/run"' not in text
+    assert f'data-live="/chains/{chain_id}/live"' in text
+
+
+def test_chain_start_runs_first_task_once_and_marks_started(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    response = web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == f"/chains/{chain_id}"
+
+    execution = repo.active_execution(conn, task_a)
+    assert execution is not None and execution["status"] == "queued"
+    assert repo.active_execution(conn, task_b) is None  # 후속은 워커가 선행 완료를 보고 잇는다
+    assert repo.get_chain(conn, chain_id)["started_at"] is not None
+    text = chain_page(web, chain_id)
+    assert 'data-status="실행 요청됨"' in text and "접수 대기" in text
+    assert start_button(text) is None
+    assert "2단계 중 1단계 실행 요청됨" in text
+    assert "담당 변경" not in text
+
+    again = web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert again.status_code == 303  # 멱등
+    assert len(repo.list_executions(conn, task_a)) == 1
+
+
+def test_chain_start_diagnosis_limit_429(web, conn, settings):
+    chain_id, _ = import_chain(web, conn, "#41", "#42")
+    from workflow.server.auth import utc_now
+    for n in range(10):
+        repo.record_diagnosis_start(conn, session_id_of(web, settings), f"exec-seed-{n}", utc_now())
+    response = web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert response.status_code == 429
+    assert "오늘 이 세션의 진단 실행 한도(10회)에 도달했습니다." in response.text
+    assert repo.get_chain(conn, chain_id)["started_at"] is None
+
+
+def test_chain_start_requires_first_node_selection(client, conn, agents):
+    client.get("/tasks")
+    register_agents(client, "agent-codex-mac")  # 진단 Agent 미등록 → #41 후보 없음
+    chain_id, (task_a, task_b) = import_chain(client, conn, "#41", "#42")
+    text = chain_page(client, chain_id)
+    assert 'data-status="확인 필요"' in text and "후보 없음" in text
+    button = start_button(text)
+    assert button and "disabled" in button.group(0)
+    assert "담당 에이전트를 먼저 확정하세요" in text
+    assert f'action="/tasks/{task_a}/select"' in text
+
+    blocked = client.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert blocked.status_code == 409 and "selection_required" in blocked.text
+    assert repo.get_chain(conn, chain_id)["started_at"] is None
+
+    # 진단 Agent 를 등록하고 체인 화면의 인라인 폼으로 확정하면 체인 화면으로 돌아오고 시작할 수 있다
+    register_agents(client, "agent-ops-demo")
+    chosen = client.post(
+        f"/tasks/{task_a}/select", data={"agent_id": "agent-ops-demo", "return_to": "chain"}, follow_redirects=False,
+    )
+    assert chosen.status_code == 303 and chosen.headers["location"] == f"/chains/{chain_id}"
+    text = chain_page(client, chain_id)
+    assert "disabled" not in start_button(text).group(0)
+    assert client.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
+    assert repo.active_execution(conn, task_a) is not None
+
+
+def test_chain_reassigns_tied_node_before_start_only(web, conn):
+    seed_agents(conn, with_claude=True)
+    register_agents(web, "agent-claude-mac")
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    text = chain_page(web, chain_id)
+    assert "먼저 등록한 agent-codex-mac 를 기본 선택" in text
+    assert "담당 변경" in text and f'action="/tasks/{task_b}/select"' in text
+    assert "disabled" not in start_button(text).group(0)  # 동률이라도 기본 선택돼 시작 가능
+
+    response = web.post(
+        f"/tasks/{task_b}/select", data={"agent_id": "agent-claude-mac", "return_to": "chain"}, follow_redirects=False,
+    )
+    assert response.status_code == 303 and response.headers["location"] == f"/chains/{chain_id}"
+    selection = repo.get_selection(conn, task_b)
+    assert selection.mode == "manual" and selection.selected_agent_id == "agent-claude-mac"
+    assert repo.get_task(conn, task_b)["selection_mode"] == "manual"
+    assert json.loads(repo.get_task(conn, task_b)["target_json"])["local_registration_id"] == "local-demo-report-claude"
+    assert "Claude Code" in chain_page(web, chain_id)
+
+    assert web.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
+    assert "담당 변경" not in chain_page(web, chain_id)
+    after = web.post(f"/tasks/{task_b}/select", data={"agent_id": "agent-codex-mac", "return_to": "chain"}, follow_redirects=False)
+    assert after.status_code == 409
+    assert repo.get_selection(conn, task_b).selected_agent_id == "agent-claude-mac"
+
+
+def test_chain_live_fragment_carries_node_status(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    response = web.get(f"/chains/{chain_id}/live")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert "<html" not in response.text and "<script" not in response.text
+    assert f'data-live="/chains/{chain_id}/live"' in response.text
+    assert 'data-status="실행 가능"' in response.text and 'data-status="대기"' in response.text
+    assert 'data-poll="1"' in response.text  # 대기 노드가 있는 동안 폴링
+    assert f'action="/chains/{chain_id}/start"' in response.text
+
+    web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    assert 'data-status="실행 요청됨"' in web.get(f"/chains/{chain_id}/live").text
+
+
+def test_chain_human_gate_follows_last_task_review(web, conn, store, settings):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    web.post(f"/chains/{chain_id}/start", follow_redirects=False)
+    exec_a = repo.active_execution(conn, task_a)["execution_id"]
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.release_execution(conn, exec_a, NOW)
+    repo.create_execution(
+        conn, execution_id="exec-fix-001", task_id=task_b, attempt_no=1, start_key=f"auto:{task_b}:r1",
+        agent_id="agent-codex-mac", kind="code_change",
+        request=ExecutionRequest.model_validate({
+            "contract_version": 1, "execution_id": "exec-fix-001", "task_id": task_b, "kind": "code_change",
+            "agent_id": "agent-codex-mac", "task_revision": 1, "request": FIX_REQUEST,
+            "input_artifact_ids": ["art-handoff-001"],
+            "target": {"local_registration_id": "local-demo-report", "base_commit": BASE_COMMIT,
+                       "verification_profile_id": "vp-pytest"},
+        }),
+        assigned_connector_id=None, predecessor_execution_id=exec_a, now=NOW,
+    )
+    seed_result_ready(
+        conn, store, "exec-fix-001", kind="code_change_result",
+        body=code_change_result("exec-fix-001", task_b), session_id=session_id_of(web, settings),
+    )
+    text = chain_page(web, chain_id)
+    gate = text[text.index("검토 승인 (사람)"):]
+    assert 'data-status="확인 필요"' in gate and "검토 대기" in gate
+    assert f'href="/tasks/{task_b}"' in gate  # Task 상세의 검토 폼으로
+    assert "2단계 중 2단계 확인 필요" in text
+    assert 'data-poll="0"' in text  # 사람 차례 — 폴링 없음
+
+    web.post(f"/tasks/{task_b}/review", data={"decision": "approve", "comment": ""}, follow_redirects=False)
+    text = chain_page(web, chain_id)
+    gate = text[text.index("검토 승인 (사람)"):]
+    assert 'data-status="완료"' in gate and "병합: 운영자 확인 대기" in gate
+    assert "병합 확인됨" not in gate
+    assert "2단계 모두 완료" in text
+
+    login_operator(web)
+    web.post(f"/operator/merges/{task_b}/confirm", follow_redirects=False)
+    gate = chain_page(web, chain_id)
+    assert "병합 확인됨" in gate[gate.index("검토 승인 (사람)"):]
+
+
+def test_home_lists_chains_with_progress(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn)
+    home = web.get("/tasks").text
+    assert "워크플로우" in home and f'href="/chains/{chain_id}"' in home
+    assert "0/2 완료" in home and "시작 전" in home
+    main = home[home.index('class="main'):]
+    assert main.index("<h2>워크플로우</h2>") < main.index("<h2>업무</h2>")  # 업무 구역 위에
+
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.mark_chain_started(conn, chain_id, NOW)
+    home = web.get("/tasks").text
+    assert "1/2 완료" in home and "2단계 중 2단계 대기" in home
+    # 왼쪽 목록에는 Task 그대로
+    sidebar = home[home.index('class="sidebar'):home.index('class="main')]
+    assert f'href="/tasks/{task_a}"' in sidebar and f'href="/tasks/{task_b}"' in sidebar
+    assert "/chains/" not in sidebar
+
+
+def test_task_detail_links_to_its_chain(web, conn):
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    text = detail(web, task_b)
+    assert f'href="/chains/{chain_id}"' in text
+    assert "워크플로우 일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
+    assert f'href="/chains/{chain_id}"' in web.get(f"/tasks/{task_b}/live").text
+    assert "/chains/" not in detail(web, create_task(web, diagnose_form()))
+
+
 # --- 운영자 ----------------------------------------------------------------------
 
 
@@ -682,7 +1254,8 @@ def test_operator_registers_and_deletes_agent(web, conn):
     row = repo.get_agent(conn, "agent-claude-mac")
     assert row["shared_to_all_sessions"] == 1 and row["connection_state"] == "unknown"
     assert row["local_registration_id"] == "local-other"
-    assert "agent-claude-mac" in web.get("/agents").text
+    assert "agent-claude-mac" in web.get("/agents/register").text  # 카탈로그에 바로 보인다 (세션 등록 전)
+    assert "agent-claude-mac" not in web.get("/agents").text  # 세션 목록은 등록한 것만
 
     bad = web.post("/operator/agents", data={
         "agent_id": "agent-api-2", "name": "x", "owner_scope": "company", "connection_type": "api",
@@ -721,8 +1294,9 @@ def test_operator_sees_all_sessions_tasks_merge_queue_and_usage(app, web, conn, 
     web.post(f"/tasks/{task_b}/review", data={"decision": "approve"}, follow_redirects=False)
     other = TestClient(app)
     other.get("/tasks")
+    register_agents(other, "agent-ops-demo")  # 다른 세션도 카탈로그에서 등록해야 후보가 생긴다
     other_task = create_task(other, diagnose_form())
-    other.post(f"/tasks/{other_task}/run", follow_redirects=False)
+    assert other.post(f"/tasks/{other_task}/run", follow_redirects=False).status_code == 303
 
     login_operator(web)
     page = web.get("/operator").text

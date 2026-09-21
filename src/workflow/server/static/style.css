@@ -208,6 +208,41 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .agent-card .name { font-size: 15px; font-weight: 600; color: var(--text); }
 .agent-card .meta { font-size: 12px; color: var(--text-muted); margin: 2px 0 8px; }
 .cap { font-family: var(--mono); font-size: 12px; color: var(--text-body); }
+/* 대본 에이전트 라벨 — 작은 회색 텍스트. 배지 색을 쓰지 않는다 (상태가 아니다) */
+.tag-scripted { font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
+/* 등록 카탈로그 카드의 "발견된 정보" — 키 요약만 */
+.found { margin-top: 10px; }
+.found-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
+/* 업무 가져오기 — 출처 탭(링크 2개, 활성 탭 밑줄)과 이슈 표 */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.tabs a { padding: 8px 12px; font-size: 13px; color: var(--text-muted); border-bottom: 2px solid transparent;
+          margin-bottom: -1px; }
+.tabs a:hover { color: var(--text); text-decoration: none; }
+.tabs a.active { color: var(--text); border-bottom-color: var(--text); }
+.import-table td .chip { margin: 2px 4px 2px 0; }
+.import-table input[type="checkbox"] { margin: 0; }
+/* 워크플로우 — 세로 노드 목록. 왼쪽 순번 원(단색 테두리) + 상태 점, 노드 사이 세로 연결선(border-left).
+   상태는 색으로만 표시하지 않는다 — 카드 안의 배지 텍스트 + 한글 이유가 항상 함께 있다 */
+.chain { list-style: none; margin: 0 0 4px; padding: 0; }
+.chain-node { display: grid; grid-template-columns: 36px 1fr; column-gap: 12px; }
+.node-index { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 14px; }
+.node-no { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%;
+           border: 1.5px solid var(--border-strong); background: var(--bg-page); font-family: var(--mono); font-size: 12px;
+           color: var(--text); }
+.chain-node:not(:last-child) .node-index::after { content: ""; flex: 1 1 auto; min-height: 16px; border-left: 1px solid var(--border-strong); }
+.node-body { margin-bottom: 12px; }
+.node-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; font-weight: 600; color: var(--text); }
+.node-head .mono { font-weight: 400; color: var(--text-muted); }
+.node-meta { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+.node-meta b { font-weight: 500; color: var(--text-body); }
+.chain-node .status-line { margin: 10px 0 6px; }
+.chain-node details.row:last-child { border-bottom: 0; }
+.reasons { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-body); }
+.reasons li { padding: 2px 0; }
+.node-select { margin-top: 0; }
+.node-select select { width: auto; min-width: 0; flex: 1 1 200px; }
+.skipped-list { list-style: none; margin: 0 0 12px; padding: 0; font-size: 13px; color: var(--text-body); }
+.skipped-list li { padding: 4px 0; }
 .agent-list { list-style: none; margin: 0; padding: 0; }
 .agent-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0;
                  border-bottom: 1px solid var(--border); }

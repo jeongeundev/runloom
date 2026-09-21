@@ -28,7 +28,10 @@ packages = ["src/workflow", "src/diagnostic_demo"]
 testpaths = ["scripts", "tests"]
 pythonpath = ["src"]
 # e2e 는 WORKFLOW_E2E=1 일 때만 돈다 (tests/e2e). verify.sh 의 매 턴 pytest 에서는 건너뛴다
-markers = ["e2e: 로컬 5-프로세스 전체 시나리오 (수 분)"]
+markers = [
+  "e2e: 로컬 5-프로세스 전체 시나리오 (수 분)",
+  "slow: e2e 안에서도 오래 걸리는 케이스 — 기본 실행에 포함, 급할 때 -m 'not slow' 로 제외",
+]
 
 [tool.ruff]
 target-version = "py313"

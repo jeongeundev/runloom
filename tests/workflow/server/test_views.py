@@ -9,6 +9,7 @@ from workflow.server import views
 from .conftest import (
     NOW,
     RESULT_COMMIT,
+    SESSION,
     TASK_A,
     TASK_B,
     code_change_result,
@@ -178,16 +179,24 @@ def test_task_context_collects_executions_result_and_actions(seeded, settings, s
 def test_task_context_flags_run_and_selection(seeded, settings, store):
     ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
     assert ctx["needs_selection"] is True
-    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac", "agent-ops-demo"]
+    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac", "agent-ops-demo"]  # 세션 등록 순
     assert ctx["can_run"] is False
     assert ctx["result"] is None
     assert ctx["executions"] == []
+    assert ctx["agent_scripted"] is False
+
+    # 후보는 세션이 등록한 Agent 만 — 해제하면 카탈로그에 있어도 후보에서 빠진다
+    repo.unregister_session_agent(seeded, SESSION, "agent-ops-demo")
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
+    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac"]
+    repo.register_session_agent(seeded, SESSION, "agent-ops-demo", NOW)
 
     _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
     ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
     assert ctx["needs_selection"] is False
     assert ctx["can_run"] is True
     assert ctx["successors"][0]["task_id"] == TASK_B
+    assert ctx["chain"] is None  # 직접 등록 — 워크플로우 칩 없음
 
 
 # --- 보조 ------------------------------------------------------------------------
@@ -206,8 +215,48 @@ def test_task_summary_and_agent_public(seeded, settings):
     assert agent["capabilities"][0]["code"] == "operations.diagnose"
     assert agent["discovered"] == {}
     assert agent["online"] is True  # API 에이전트는 heartbeat 가 없으므로 connection_state 만 본다
+    assert agent["demo_scripted"] is False
+    assert agent["discovered_summary"] == ["operations.diagnose · workflow_id=daily-report"]  # API: 역할·자료 범위
     assert "credential_ref" not in agent
     assert not any("wfc_" in str(v) for v in agent.values())
+
+
+def test_agent_public_discovered_summary_lists_found_keys_and_profiles_only(seeded, settings):
+    """로컬 Agent 의 요약은 `discovered.found` 의 truthy 키(중첩은 `git.head`)와 검증 프로필. 값·URL·비밀 참조는 없다."""
+    codex = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
+    assert codex["demo_scripted"] is False and codex["discovered_summary"] == []
+
+    repo.update_registration(
+        seeded, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
+        base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e", verification_profile_ids=["vp-pytest", "vp-report"],
+        discovered={
+            "found": {"AGENTS.md": "# 본문", "codex_config": False, "tests_dir": True,
+                      "pyproject": {"name": "demo-report", "pytest_configured": False},
+                      "git": {"remotes": [], "head": "0c1ddcf6"}},
+            "not_read": ["CLAUDE.md"], "verification_level": "설정 발견",
+        },
+        now=NOW,
+    )
+    codex = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
+    assert codex["discovered_summary"] == [
+        "AGENTS.md", "tests_dir", "pyproject.name", "git.head", "검증 프로필 vp-pytest", "검증 프로필 vp-report",
+    ]
+
+    # `found` 가 없는 임의 형태(이전 테스트 시드)도 빈 목록으로
+    repo.update_registration(
+        seeded, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
+        base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e", verification_profile_ids=[],
+        discovered={"instructions": ["AGENTS.md"], "confirmed": False}, now=NOW,
+    )
+    assert views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)["discovered_summary"] == []
+
+    scripted = dict(repo.get_agent(seeded, "agent-codex-mac"))
+    repo.upsert_agent(seeded, {
+        "agent_id": "agent-codex-mac", "name": scripted["name"], "owner_scope": scripted["owner_scope"],
+        "connection_type": "local", "local_registration_id": scripted["local_registration_id"],
+        "capabilities": [CAP_B], "shared_to_all_sessions": True, "demo_scripted": True,
+    })
+    assert views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)["demo_scripted"] is True
 
 
 def test_agent_online_rule_by_connection_type(seeded, settings):
@@ -235,6 +284,133 @@ def test_kst_day_bounds():
     since, resets_at = views.kst_day_bounds("2026-09-20T15:00:00Z")  # 다음 날 00:00 KST
     assert since == "2026-09-20T15:00:00.000000Z"
     assert resets_at == "2026-09-22T00:00:00+09:00"
+
+
+# --- chain_summary — 워크플로우 화면 (phase 5 step 6) ---------------------------------
+
+CHAIN = "chain-abc123"
+
+
+def _seed_chain(conn, *, skipped=None) -> tuple[str, str]:
+    """github #41 → #42 체인. Task 는 conftest 의 task_row 에 chain_id·source_ref 만 얹는다. (task_a, task_b)."""
+    repo.insert_chain(conn, {
+        "chain_id": CHAIN, "session_id": SESSION, "source": "github",
+        "title": "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응",
+        "skipped": skipped if skipped is not None else [
+            {"key": "#43", "title": "변경 응답 형식 모니터링 알림 추가",
+             "reason": "맞는 능력 코드 없음 (라벨: enhancement, repo:demo-report-repo)"},
+        ],
+    }, NOW)
+    from .conftest import task_row
+    repo.insert_task(conn, {**task_row("task-c41"), "chain_id": CHAIN, "source_ref": "#41",
+                            "completion_mode": "auto"}, NOW)
+    repo.insert_task(conn, {**task_row("task-c42", kind="code_change", predecessor="task-c41"),
+                            "chain_id": CHAIN, "source_ref": "#42"}, NOW)
+    return "task-c41", "task-c42"
+
+
+def _chain(conn, settings, now: str = NOW) -> dict:
+    return views.chain_summary(conn, repo.get_chain(conn, CHAIN), now=now, settings=settings)
+
+
+def test_chain_summary_orders_nodes_and_recomposes_reasons(seeded, settings):
+    task_a, task_b = _seed_chain(seeded)
+    _select(seeded, task_a, "agent-ops-demo", CAP_A)
+    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    summary = _chain(seeded, settings)
+
+    assert summary["chain_id"] == CHAIN
+    assert summary["title"] == "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응"
+    assert (summary["source"], summary["source_label"]) == ("github", "GitHub Issues")
+    assert [t["task_id"] for t in summary["tasks"]] == [task_a, task_b]
+    assert [t["source_ref"] for t in summary["tasks"]] == ["#41", "#42"]
+    assert (summary["done_count"], summary["total"], summary["started"]) == (0, 2, False)
+    assert summary["all_selected"] is True and summary["can_start"] is True
+    assert summary["skipped"][0]["key"] == "#43"
+    assert summary["progress"] == "시작 전"
+    assert summary["polling"] is True  # #42 가 대기
+
+    first, second = summary["tasks"]
+    assert first["status"].label == "실행 가능" and first["kind"] == "diagnosis"
+    assert first["agent"]["name"] == "운영 진단 데모" and first["agent"]["demo_scripted"] is False
+    assert "credential_ref" not in first["agent"]
+    assert (first["run_mode"], first["completion_mode"]) == ("manual", "auto")
+    assert first["selection"].status == "selected"
+    # 구성 이유는 가져오기 때와 같은 규칙으로 다시 만들고, 배정 이유는 저장된 선택 기록이 기준
+    assert first["reasons"] == [
+        "라벨 incident·workflow:daily-report → operations.diagnose",
+        "blocked_by 없음 — 가져온 순서대로 배치",
+        "체인의 첫 업무 — 선행 없음",
+        "직접 실행 — 흐름의 첫 업무는 사람이 시작",
+        "자동 완료 — 진단 자동 판정기 있음",
+        "operations.diagnose 일치 후보 1개",
+    ]
+    assert (second["status"].label, second["status"].reason) == ("대기", "선행 대기")
+    assert second["reasons"][1:3] == ["blocked_by #41 — #41 뒤에 배치", "선행 #41 (operations.diagnose) → code.modify 인계"]
+    assert second["reasons"][-1] == "code.modify 일치 후보 1개"
+
+    gate = summary["human_gate"]
+    assert gate["label"] == "검토 승인 (사람) · 병합은 운영자 확인"
+    assert (gate["status_label"], gate["reason"], gate["task_id"]) == ("대기", "선행 대기", task_b)
+
+
+def test_chain_summary_without_selection_cannot_start(seeded, settings):
+    task_a, _ = _seed_chain(seeded)
+    summary = _chain(seeded, settings)
+    assert summary["all_selected"] is False and summary["can_start"] is False
+    assert summary["tasks"][0]["agent"] is None
+    assert summary["tasks"][0]["status"].label == "확인 필요"
+    assert summary["tasks"][0]["reasons"][-1] == "후보 없음"
+
+
+def test_chain_summary_progress_and_human_gate_follow_last_task(seeded, settings, store):
+    task_a, task_b = _seed_chain(seeded)
+    _select(seeded, task_a, "agent-ops-demo", CAP_A)
+    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    repo.mark_chain_started(seeded, CHAIN, NOW)
+    seed_execution(seeded, "exec-a", task_a, kind="diagnosis", inputs=())
+    summary = _chain(seeded, settings)
+    assert summary["started"] is True and summary["can_start"] is False
+    assert summary["progress"] == "2단계 중 1단계 실행 요청됨"
+
+    repo.update_task_status(seeded, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.release_execution(seeded, "exec-a", NOW)
+    seed_execution(seeded, "exec-b", task_b)
+    seed_result_ready(seeded, store, "exec-b", kind="code_change_result", body=code_change_result("exec-b", task_b))
+    summary = _chain(seeded, settings)
+    assert (summary["done_count"], summary["total"]) == (1, 2)
+    assert summary["progress"] == "2단계 중 2단계 확인 필요"
+    assert summary["polling"] is False
+    gate = summary["human_gate"]
+    assert (gate["status_label"], gate["reason"]) == ("확인 필요", "검토 대기")
+
+    repo.update_task_status(seeded, task_b, "완료", "검토 승인 · 병합: 운영자 확인 대기", finished_at=NOW, review_decision="approve")
+    summary = _chain(seeded, settings)
+    assert summary["done_count"] == 2 and summary["progress"] == "2단계 모두 완료"
+    gate = summary["human_gate"]
+    assert (gate["status_label"], gate["reason"]) == ("완료", "병합: 운영자 확인 대기")  # ADR-0005: 세션 화면에는 대기만
+
+    repo.confirm_merge(seeded, task_b, NOW)
+    gate = _chain(seeded, settings)["human_gate"]
+    assert (gate["status_label"], gate["reason"]) == ("완료", "병합 확인됨")
+
+
+def test_chain_summary_single_auto_node_gate_and_empty_chain(seeded, settings):
+    repo.insert_chain(seeded, {"chain_id": CHAIN, "session_id": SESSION, "source": "github",
+                               "title": "일일 보고서 생성 실패 (09-20 09:00)"}, NOW)
+    from .conftest import task_row
+    repo.insert_task(seeded, {**task_row("task-c41"), "chain_id": CHAIN, "source_ref": "#41",
+                              "completion_mode": "auto"}, NOW)
+    _select(seeded, "task-c41", "agent-ops-demo", CAP_A)
+    summary = _chain(seeded, settings)
+    assert summary["human_gate"]["label"] == "완료 확인 (사람)"
+    assert summary["polling"] is False  # 실행 가능뿐 — 사용자 조작 전에는 갱신할 게 없다
+
+    repo.insert_chain(seeded, {"chain_id": "chain-empty", "session_id": SESSION, "source": "github", "title": "",
+                               "skipped": [{"key": "#44", "title": "README 오타 수정", "reason": "맞는 능력 코드 없음 (라벨: docs)"}]}, NOW)
+    empty = views.chain_summary(seeded, repo.get_chain(seeded, "chain-empty"), now=NOW, settings=settings)
+    assert empty["tasks"] == [] and empty["human_gate"] is None and empty["can_start"] is False
+    assert empty["skipped"][0]["key"] == "#44"
 
 
 # --- Step 7: 화면 헬퍼 -----------------------------------------------------------

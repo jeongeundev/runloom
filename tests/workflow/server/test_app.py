@@ -4,7 +4,7 @@ import importlib
 
 from fastapi import FastAPI
 
-from workflow.adapters.db import connect
+from workflow.adapters.db import SCHEMA_VERSION, connect
 from workflow.server import app as app_module
 from workflow.server.app import create_app
 from workflow.server.settings import Settings
@@ -21,7 +21,7 @@ def test_create_app_initialises_schema_and_directories(settings):
     assert settings.artifact_dir.is_dir()
     conn = connect(settings.db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 1
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     finally:
         conn.close()
 

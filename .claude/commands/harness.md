@@ -92,7 +92,7 @@
 
 먼저 아래 파일들을 읽고 프로젝트의 아키텍처와 설계 의도를 파악하라:
 
-- `/docs/ARCHITECTURE.md`
+- `/docs/ARCHITECTURE.md` ({이 step 에 필요한 절 이름})
 - `/docs/adr/` (하위 파일 전부)
 - `/docs/GLOSSARY.md`
 - {이전 step에서 생성/수정된 파일 경로}
@@ -144,7 +144,7 @@ python3 scripts/execute.py {task-name} --push           # 실행 후 push
 execute.py가 자동으로 처리하는 것:
 
 - `feat-{task-name}` 브랜치 생성/checkout
-- 가드레일 주입 — AGENTS.md + docs/*.md 내용을 매 step 프롬프트에 포함
+- 가드레일 주입 — AGENTS.md 만 매 step 프롬프트에 포함. docs/ 는 주입하지 않으며, 각 step.md 의 "읽어야 할 파일" 절이 필요한 문서·절을 가리킨다
 - 컨텍스트 누적 — 완료된 step의 summary를 다음 step 프롬프트에 전달
 - 자가 교정 — 실패 시 최대 3회 재시도하며, 이전 에러 메시지를 프롬프트에 피드백
 - 엔진 폴백 — codex 가 사용량 한도로 실패하면 같은 step 부터 claude 독립 세션으로 전환

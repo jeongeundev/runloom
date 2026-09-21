@@ -2,7 +2,8 @@
 
 - `DIAG_MODEL=openai`(기본): `OPENAI_API_KEY` 가 없으면 시작하지 않고 stderr 에 이유를 적고 exit 2.
   ADR-0003 확정 조건(키·예산 확인) 전에는 유료 호출을 하지 않는다.
-- `DIAG_MODEL=fake`: fixture 기반 대본(`worker/fake_script.py`). 테스트·로컬 e2e 전용이며 실제 진단이 아니다.
+- `DIAG_MODEL=fake`: fixture 기반 대본(`worker/fake_script.py`). 테스트·로컬 e2e·공개 데모(대본 재생) 전용이며 실제
+  진단이 아니다. `DIAG_FAKE_TURN_SECONDS` 로 턴당 지연을 두면 진단이 화면에서 눈에 보인다 (배포 2.5 → 약 25초).
 """
 
 import sys
@@ -20,7 +21,7 @@ def model_factory(settings: Settings):
         from diagnostic_demo.worker.fake_script import fixture_script
         from diagnostic_demo.worker.model import FakeModelClient
 
-        return lambda: FakeModelClient(fixture_script())
+        return lambda: FakeModelClient(fixture_script(), turn_seconds=settings.fake_turn_seconds)
 
     import openai
 

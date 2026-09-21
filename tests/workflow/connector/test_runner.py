@@ -6,10 +6,14 @@
 """
 
 import json
+import logging
+import subprocess
 from pathlib import Path
 
-from workflow.connector import state
+from workflow.connector import git_ops, state
 from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
+from workflow.connector.client import Unreachable
+from workflow.connector.git_ops import GitError
 from workflow.connector.runner import Runner
 from workflow.contracts.v1 import CodeChangeResult, ExecutionRequest, Verification
 
@@ -21,12 +25,14 @@ class StubAdapter:
 
     def __init__(self, *, output=None, during=None, raises: Exception | None = None):
         self.calls: list[tuple[ExecutionRequest, Path]] = []
+        self.handoff_files: list[dict[str, bytes]] = []  # 실행 시점의 인계 자료 — 종료 뒤엔 디렉터리가 지워진다
         self._output = output
         self._during = during
         self._raises = raises
 
     def run(self, request, handoff_dir, progress):
         self.calls.append((request, handoff_dir))
+        self.handoff_files.append({p.name: p.read_bytes() for p in handoff_dir.iterdir()})
         progress("stub 시작", runtime_ref=f"stub:{request.execution_id}")
         if self._during is not None:
             self._during(progress)
@@ -120,11 +126,11 @@ def test_handoff_dir_has_manifest_and_attachments_named_by_evidence(fake, client
 
     _, handoff_dir = adapter.calls[0]
     assert handoff_dir.name == f"{request.task_id}.handoff"
-    names = sorted(p.name for p in handoff_dir.iterdir())
-    assert names == ["log-daily-0920@1.txt", "manifest.json", "response-after@1.json"]
-    manifest = json.loads((handoff_dir / "manifest.json").read_text())
+    files = adapter.handoff_files[0]
+    assert sorted(files) == ["log-daily-0920@1.txt", "manifest.json", "response-after@1.json"]
+    manifest = json.loads(files["manifest.json"])
     assert manifest["source_execution_id"] == "exec-diagnose-001"
-    assert json.loads((handoff_dir / "response-after@1.json").read_text())["report_date"] == "2026-09-19"
+    assert json.loads(files["response-after@1.json"])["report_date"] == "2026-09-19"
 
 
 def test_handoff_dir_is_next_to_registered_repo(fake, client, state_conn, paths, tmp_path):
@@ -411,3 +417,177 @@ def test_progress_messages_are_masked(fake, client, state_conn, paths, tmp_path)
 
     messages = [e["data"]["message"] for e in fake.events_of(request.execution_id) if e["type"] == "progress"]
     assert any("sk-***" in m for m in messages) and all(secret not in m for m in messages)
+
+
+# --- 작업 디렉터리 정리 — 결과가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지우고 브랜치·커밋은 남긴다 ----------
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def make_git_repo(tmp_path) -> Path:
+    """등록 `repo_path` 자리(`tmp_path/demo-report-repo`)에 실제 Git 저장소 — worktree 정리 규칙 테스트용."""
+    repo = tmp_path / REPO
+    repo.mkdir()
+    (repo / "pkg.py").write_text("X = 1\n")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    return repo
+
+
+class WorktreeAdapter(StubAdapter):
+    """`LocalToolAdapter` 처럼 업무 worktree 를 만들고 결과 커밋을 남긴 뒤 output 을 돌려준다."""
+
+    def __init__(self, repo: Path, **kwargs):
+        super().__init__(**kwargs)
+        self.repo = repo
+        self.result_commit: str | None = None
+
+    def run(self, request, handoff_dir, progress):
+        worktree = git_ops.ensure_worktree(self.repo, request.task_id, git_ops.head_sha(self.repo))
+        (worktree / "pkg.py").write_text("X = 2\n")
+        self.result_commit = git_ops.commit_all(worktree, f"fix({request.task_id}): 수정")
+        return super().run(request, handoff_dir, progress)
+
+
+def _workdirs(repo: Path, adapter: StubAdapter, request: ExecutionRequest) -> tuple[Path, Path]:
+    return git_ops.worktree_path(repo, request.task_id), adapter.calls[0][1]
+
+
+def test_workdirs_are_removed_after_result_ready_and_task_branch_remains(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    base = git_ops.head_sha(repo)
+    request = assign_with_handoff(fake)
+    adapter = WorktreeAdapter(repo)
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    worktree, handoff_dir = _workdirs(repo, adapter, request)
+    assert not worktree.exists() and not handoff_dir.exists()
+    assert request.task_id not in _git(repo, "worktree", "list")
+    # 브랜치와 결과 커밋은 남는다 — 병합은 운영자 확인 뒤 사람이 한다
+    assert _git(repo, "rev-parse", f"task/{request.task_id}") == adapter.result_commit
+    assert _git(repo, "rev-parse", f"task/{request.task_id}^") == base
+    assert _git(repo, "rev-parse", "main") == base and _git(repo, "status", "--porcelain") == ""
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+
+
+def test_keep_workdirs_leaves_worktree_and_handoff_dir(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    adapter = WorktreeAdapter(repo)
+    register(state_conn, tmp_path)
+    runner = Runner(client, state_conn, paths, {"stub": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff",
+                    keep_workdirs=True)
+
+    runner.tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    worktree, handoff_dir = _workdirs(repo, adapter, request)
+    assert worktree.exists() and handoff_dir.exists()
+    assert _git(worktree, "rev-parse", "HEAD") == adapter.result_commit
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] is None
+
+
+def test_failed_with_process_stopped_removes_workdirs(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    output = AdapterOutput(result=None, artifacts=[], failed=("timeout", "20분 초과", True), runtime_ref="stub:x")
+    adapter = WorktreeAdapter(repo, output=output)
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert fake.events_of(request.execution_id)[-1]["data"]["process_stopped"] is True
+    worktree, handoff_dir = _workdirs(repo, adapter, request)
+    assert not worktree.exists() and not handoff_dir.exists()
+    assert _git(repo, "rev-parse", f"task/{request.task_id}") == adapter.result_commit
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+
+
+def test_failed_without_process_stopped_keeps_workdirs(fake, client, state_conn, paths, tmp_path):
+    """프로세스 종료를 확인하지 못한 실패 — 살아 있는 프로세스의 cwd 일 수 있으므로 지우지 않는다."""
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    output = AdapterOutput(result=None, artifacts=[], failed=("timeout", "20분 초과", False), runtime_ref="stub:x")
+    adapter = WorktreeAdapter(repo, output=output)
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert fake.events_of(request.execution_id)[-1]["data"]["process_stopped"] is False
+    worktree, handoff_dir = _workdirs(repo, adapter, request)
+    assert worktree.exists() and handoff_dir.exists()
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] is None
+
+
+def test_cleanup_waits_until_result_ready_is_delivered(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    """결과 업로드 뒤 result_ready 전송이 끊기면 다음 tick 에 재전송이 확인된 뒤에야 지운다."""
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    adapter = WorktreeAdapter(repo)
+    original = client.post_event
+    dropped: list[str] = []
+
+    def flaky(event):
+        if event.type == "result_ready" and not dropped:
+            dropped.append(event.type)
+            raise Unreachable("끊김")
+        return original(event)
+
+    monkeypatch.setattr(client, "post_event", flaky)
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path)
+    runner.tick()
+
+    worktree, handoff_dir = _workdirs(repo, adapter, request)
+    assert "code_change_result" in fake.artifacts_of(request.execution_id)  # 업로드는 끝났지만
+    assert fake.executions[request.execution_id]["status"] == "running"  # result_ready 는 아직 중앙에 없다
+    assert worktree.exists() and handoff_dir.exists()
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] is None
+
+    runner.tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    assert not worktree.exists() and not handoff_dir.exists()
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+    assert len(adapter.calls) == 1
+
+
+def test_cleanup_failure_is_only_logged_after_result_ready(fake, client, state_conn, paths, tmp_path, monkeypatch,
+                                                            caplog):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    adapter = WorktreeAdapter(repo)
+
+    def denied(repo_, path):
+        raise GitError("worktree remove: Permission denied")
+
+    monkeypatch.setattr(git_ops, "remove_worktree", denied)
+    caplog.set_level(logging.WARNING, logger="workflow.connector.runner")
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready"
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    worktree, handoff_dir = _workdirs(repo, adapter, request)
+    assert worktree.exists() and not handoff_dir.exists()  # 인계 디렉터리 정리는 worktree 와 독립
+    assert "Permission denied" in caplog.text
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] is None
+    assert state.active_execution(state_conn) is None
+
+
+def test_cleanup_passes_quietly_when_worktree_never_existed(fake, client, state_conn, paths, tmp_path, caplog):
+    request = assign_with_handoff(fake)  # StubAdapter 는 worktree 를 만들지 않고 등록 repo_path 도 없다
+    adapter = StubAdapter()
+    caplog.set_level(logging.WARNING, logger="workflow.connector.runner")
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert not adapter.calls[0][1].exists()
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+    assert caplog.records == []

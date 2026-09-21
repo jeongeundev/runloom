@@ -26,9 +26,17 @@ def _matched_capability(required: Capability, candidate: Candidate) -> Capabilit
     return None
 
 
+def _capability_text(capability: Capability) -> str:
+    scope = " · ".join(f"{key}={value}" for key, value in sorted(capability.scope.items()))
+    return f"{capability.code} · {scope}"
+
+
 def _match_reason(matched: Capability) -> str:
-    scope = " · ".join(f"{key}={value}" for key, value in sorted(matched.scope.items()))
-    return f"{matched.code} · {scope} 일치 후보 1개"
+    return f"{_capability_text(matched)} 일치 후보 1개"
+
+
+def _tie_reason(matched: Capability, count: int, agent_id: str) -> str:
+    return f"{_capability_text(matched)} 일치 후보 {count}개 — 먼저 등록한 {agent_id} 를 기본 선택 (변경 가능)"
 
 
 def select_agent(
@@ -37,11 +45,17 @@ def select_agent(
     candidates: Sequence[Candidate],
     mode: Literal["auto", "manual"] = "auto",
     chosen_agent_id: str | None = None,
+    prefer: Sequence[str] | None = None,
 ) -> SelectionRecord:
     """허용된 후보 중 요구 능력과 일치하는 Agent 를 고른다.
 
     직접 선택(`manual`)에서는 지정한 에이전트만 후보로 세므로 `candidate_count` 는
     선택되면 1, 아니면 0 이다.
+
+    `prefer` 는 세션이 먼저 등록한 순서의 agent_id 목록이다. 자동 선택에서 일치 후보가
+    2개 이상일 때 `prefer` 에서 가장 앞에 오는 후보를 기본 선택한다 — 동률 규칙은 이 명시적
+    순서 하나뿐이며 점수·최근 사용·모델 판단은 쓰지 않는다 (ADR-0004). 일치 후보가 `prefer`
+    에 없으면 지금처럼 `needs_selection` 이다.
     """
     allowed = [c for c in candidates if c.allowed]
 
@@ -59,6 +73,20 @@ def select_agent(
                 status="selected",
                 reason=_match_reason(matched),
             )
+        if len(matches) >= 2 and prefer:
+            by_id = {c.agent_id: m for c, m in matches}
+            first = next((agent_id for agent_id in prefer if agent_id in by_id), None)
+            if first is not None:
+                return SelectionRecord(
+                    task_id=task_id,
+                    mode="auto",
+                    required_capability=required,
+                    candidate_count=1,
+                    selected_agent_id=first,
+                    matched=by_id[first],
+                    status="selected",
+                    reason=_tie_reason(by_id[first], len(matches), first),
+                )
         return SelectionRecord(
             task_id=task_id,
             mode="auto",

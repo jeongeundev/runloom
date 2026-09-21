@@ -12,6 +12,8 @@ from typing import Any
 from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
+from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
+from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.server.filters import KIND_LABELS, KST, kst
@@ -64,6 +66,30 @@ def agent_online(agent: Row, *, now: str, settings: Settings) -> bool:
     return age <= timedelta(seconds=settings.limits.heartbeat_offline_seconds)
 
 
+def _found_keys(found: Any, prefix: str = "") -> list[str]:
+    """`discovered.found` 의 truthy 항목 키만 (중첩은 `git.head`). 파일 본문·커밋 같은 값은 넣지 않는다."""
+    keys: list[str] = []
+    if not isinstance(found, dict):
+        return keys
+    for key, value in found.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            keys.extend(_found_keys(value, f"{path}."))
+        elif value:
+            keys.append(path)
+    return keys
+
+
+def discovered_summary(agent: dict[str, Any]) -> list[str]:
+    """등록 카탈로그 카드의 "발견된 정보" 요약. API 는 능력의 역할·자료 범위, 로컬은 발견된 설정 키와 검증 프로필."""
+    if agent["connection_type"] == "api":
+        return [
+            c["code"] + "".join(f" · {k}={v}" for k, v in c["scope"].items()) for c in agent["capabilities"]
+        ]
+    found = agent["discovered"].get("found") if isinstance(agent["discovered"], dict) else None
+    return [*_found_keys(found), *(f"검증 프로필 {p}" for p in agent["verification_profile_ids"])]
+
+
 def agent_public(agent: Row, *, now: str, settings: Settings) -> dict[str, Any]:
     """화면용 Agent. JSON 컬럼은 풀고 비밀 참조는 뺀다."""
     data = {k: agent[k] for k in agent.keys() if k not in _AGENT_PRIVATE}
@@ -71,7 +97,9 @@ def agent_public(agent: Row, *, now: str, settings: Settings) -> dict[str, Any]:
     data["verification_profile_ids"] = json.loads(data.pop("verification_profile_ids_json"))
     data["discovered"] = json.loads(data.pop("discovered_json"))
     data["shared_to_all_sessions"] = bool(data["shared_to_all_sessions"])
+    data["demo_scripted"] = bool(data["demo_scripted"])
     data["online"] = agent_online(agent, now=now, settings=settings)
+    data["discovered_summary"] = discovered_summary(data)
     return data
 
 
@@ -232,6 +260,10 @@ def task_context(
     )
     executions = [_execution_context(conn, e, now) for e in repo.list_executions(conn, task_row["task_id"])]
     active = next((e for e in executions if e["released_at"] is None), None)
+    result = _result_context(conn, store, executions)
+    # 결과 카드의 "대본 재생" 표시는 결과를 만든 실행의 Agent 기준. 결과가 없으면 선택된 Agent
+    producer = next((e for e in executions if result is not None and e["execution_id"] == result["execution_id"]), None)
+    result_agent = repo.get_agent(conn, producer["agent_id"]) if producer is not None else agent_row
     finished = task_row["finished_at"] is not None
     selected = selection is not None and selection.status == "selected"
     predecessor = (
@@ -241,15 +273,19 @@ def task_context(
     )
 
     needs_selection = not finished and active is None and not selected
+    chain = repo.get_chain(conn, task_row["chain_id"]) if task_row["chain_id"] is not None else None
     return {
         "task": task,
         "view": view,
         "status": status,
         "selection": selection,
+        # 가져오기로 만든 Task 면 브레드크럼에 워크플로우 칩 (phase 5 step 6)
+        "chain": {"chain_id": chain["chain_id"], "title": chain["title"]} if chain is not None else None,
         "agent": agent_public(agent_row, now=now, settings=settings) if agent_row is not None else None,
         "executions": executions,
         "active_execution": active,
-        "result": _result_context(conn, store, executions),
+        "result": result,
+        "agent_scripted": bool(result_agent["demo_scripted"]) if result_agent is not None else False,
         "predecessor": predecessor,
         "successors": [
             task_summary(conn, s, now=now, settings=settings)
@@ -268,11 +304,115 @@ def task_context(
             and status.label == "확인 필요"
         ),
         "needs_selection": needs_selection,
+        # 후보는 이 세션이 카탈로그에서 등록한 Agent 만 (phase 5 step 2). 등록 순서대로
         "candidates": [
             agent_public(a, now=now, settings=settings)
-            for a in repo.list_agents(conn)
-            if a["shared_to_all_sessions"]
+            for a in repo.list_session_agents(conn, task_row["session_id"])
         ] if needs_selection else [],
+    }
+
+
+# --- 워크플로우 화면 (phase 5 step 6) --------------------------------------------------
+
+# 이 상태의 노드가 하나라도 있으면 화면이 3초 폴링한다. 나머지(실행 가능·확인 필요·완료·실패)는 사람 조작 전에는 바뀌지 않는다
+_LIVE_LABELS = ("실행 중", "실행 요청됨", "대기")
+
+
+def _composition_reasons(chain: Row, tasks: list[Row]) -> dict[str, tuple[str, ...]]:
+    """가져오기 때의 구성 이유 문장(매핑·순서·체인·방식)을 같은 규칙(`compose`)으로 다시 만든다 — 저장하지 않으므로.
+    배정 이유(마지막 문장)는 저장된 `SelectionRecord.reason` 이 기준이라 뺀다. 후보 없이 돌려도 나머지 문장은 같다."""
+    if chain["source"] not in SOURCES:
+        return {}
+    keys = {t["source_ref"] for t in tasks} | {s["key"] for s in json.loads(chain["skipped_json"])}
+    plan = compose([i for i in load_issues(chain["source"]) if i.key in keys], candidates=(), prefer=())
+    reasons = {node.issue.key: node.reasons[:-1] for node in plan.nodes}
+    reasons.update({item.issue.key: (item.reason,) for item in plan.standalone})
+    return reasons
+
+
+def _chain_node(
+    conn: Connection, task: Row, reasons: tuple[str, ...], *, now: str, settings: Settings
+) -> dict[str, Any]:
+    """노드 하나 — `task_summary` 에 담당·방식·선택 기록·이유를 얹는다. 상태는 task_summary 의 것 그대로."""
+    selection = repo.get_selection(conn, task["task_id"])
+    agent = (
+        repo.get_agent(conn, selection.selected_agent_id)
+        if selection is not None and selection.selected_agent_id is not None
+        else None
+    )
+    return {
+        **task_summary(conn, task, now=now, settings=settings),
+        "source_ref": task["source_ref"],
+        "run_mode": task["run_mode"],
+        "completion_mode": task["completion_mode"],
+        "selection": selection,
+        "agent": agent_public(agent, now=now, settings=settings) if agent is not None else None,
+        "reasons": [*reasons, selection.reason if selection is not None else "후보 없음"],
+    }
+
+
+def _human_gate(conn: Connection, last: Row, node: dict[str, Any]) -> dict[str, Any]:
+    """마지막 Task 에서 파생한 사람 단계. 상태 판정은 `node["status"]`(domain.status) 그대로이고 여기서는 문구만 고른다.
+    병합은 운영자 전용이라 세션 화면에는 "운영자 확인 대기" 와 "확인됨" 만 보인다 (ADR-0005)."""
+    status: UserStatus = node["status"]
+    if status.label == "완료":
+        if last["kind"] == "code_change":
+            reason = "병합 확인됨" if last["merge_confirmed_at"] else "병합: 운영자 확인 대기"
+        else:
+            reason = status.reason
+        gate = ("완료", reason)
+    elif status.label == "실패" and last["review_decision"] == "close":
+        gate = ("실패", status.reason)
+    elif status.label == "확인 필요" and (
+        (execution := repo.active_execution(conn, last["task_id"])) is not None
+        and execution["status"] == "result_ready"
+    ):
+        gate = ("확인 필요", status.reason)  # 검토 대기 / 판정 불가·미충족
+    else:
+        gate = ("대기", "선행 대기")
+    return {
+        "label": human_gate_label(last["completion_mode"]),
+        "status_label": gate[0],
+        "reason": gate[1],
+        "task_id": last["task_id"],
+    }
+
+
+def _chain_progress(nodes: list[dict[str, Any]], started: bool) -> str:
+    """동작 영역·홈의 진행 한 줄. 첫 미완료 노드의 사용자 상태를 그대로 쓴다."""
+    if not started:
+        return "시작 전"
+    for index, node in enumerate(nodes, 1):
+        if node["status"].label != "완료":
+            return f"{len(nodes)}단계 중 {index}단계 {node['status'].label}"
+    return f"{len(nodes)}단계 모두 완료"
+
+
+def chain_summary(conn: Connection, chain: Row, *, now: str, settings: Settings) -> dict[str, Any]:
+    """워크플로우 화면·홈 목록 컨텍스트. 노드는 `repo.tasks_of_chain` 순서, 상태는 `task_summary` 판정 그대로."""
+    tasks = repo.tasks_of_chain(conn, chain["chain_id"])
+    reasons = _composition_reasons(chain, tasks)
+    nodes = [
+        _chain_node(conn, t, reasons.get(t["source_ref"], ()), now=now, settings=settings) for t in tasks
+    ]
+    started = chain["started_at"] is not None
+    selected = [n["selection"] is not None and n["selection"].status == "selected" for n in nodes]
+    return {
+        "chain_id": chain["chain_id"],
+        "title": chain["title"],
+        "source": chain["source"],
+        "source_label": SOURCE_LABELS.get(chain["source"], chain["source"]),
+        "tasks": nodes,
+        "done_count": sum(1 for n in nodes if n["status"].label == "완료"),
+        "total": len(nodes),
+        "started": started,
+        "human_gate": _human_gate(conn, tasks[-1], nodes[-1]) if nodes else None,
+        "skipped": json.loads(chain["skipped_json"]),
+        "all_selected": all(selected),
+        # 시작은 첫 노드만 본다 — 뒤 노드는 시작 후에도 확정할 수 있다 (워커가 선택 기록을 보고 착수)
+        "can_start": not started and bool(nodes) and selected[0],
+        "progress": _chain_progress(nodes, started),
+        "polling": any(n["status"].label in _LIVE_LABELS for n in nodes),
     }
 
 

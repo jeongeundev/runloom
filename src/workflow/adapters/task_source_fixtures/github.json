@@ -1,0 +1,34 @@
+[
+  {
+    "key": "#41",
+    "title": "일일 보고서 생성 실패 (09-20 09:00)",
+    "body": "일일 보고서 생성 실패를 조사하고, 로컬 개발 에이전트가 재현·수정할 수 있도록 근거와 기대 동작을 정리해 주세요.",
+    "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
+    "blocked_by": [],
+    "url": null
+  },
+  {
+    "key": "#42",
+    "title": "집계 API 응답 형식 변경 대응",
+    "body": "인계된 진단 근거로 보고서 변환 실패를 재현하는 테스트를 먼저 작성하고, 실패를 확인한 뒤 두 응답 형식을 모두 처리하도록 최소 수정하세요.",
+    "labels": ["bug", "repo:demo-report-repo"],
+    "blocked_by": ["#41"],
+    "url": null
+  },
+  {
+    "key": "#43",
+    "title": "변경 응답 형식 모니터링 알림 추가",
+    "body": "집계 응답의 목록 위치(items 또는 data.records)를 실행마다 기록하고, 둘 다 없거나 둘 다 있으면 알림을 보내도록 해 주세요.",
+    "labels": ["enhancement", "repo:demo-report-repo"],
+    "blocked_by": ["#42"],
+    "url": null
+  },
+  {
+    "key": "#44",
+    "title": "README 오타 수정",
+    "body": "README 의 실행 명령 예시에 오타가 있습니다. 고쳐 주세요.",
+    "labels": ["docs"],
+    "blocked_by": [],
+    "url": null
+  }
+]

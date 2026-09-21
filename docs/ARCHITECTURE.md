@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-20
+갱신일: 2026-09-21
 상태: 기술 설계 v0.3. [PRD](PRD.md)의 합의된 동작을 위한 초안이다. 첫 로컬 도구와 서버 스택은 [ADR-0001](adr/0001-first-local-agent-codex.md)·[ADR-0002](adr/0002-server-stack-python-fastapi-sqlite.md)로 확정했고, 진단 모델은 [ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md)으로 확정했다(gpt-4.1). 그 외 실행 계약·DB 제약은 assistant 제안이며 구현 착수 승인은 아니다. 코드·서비스 연결 실험은 수행하지 않았다.
 
 ## 첫 선택과 전제
@@ -135,7 +135,7 @@ Agent는 `capabilities` 배열, Task는 `required_capability` 객체 하나를 �
 | 운영자 | `OPERATOR_TOKEN` 환경변수 값을 운영자 화면(`/operator`)에 입력 → 같은 쿠키에 operator 표시 | 에이전트 등록·수정·삭제, 연결 코드 발급·취소, 병합 확인, 모든 세션 업무 열람 | — |
 | 로컬 연결 프로그램 | `connector_id` + 연결 토큰(Bearer) | 자기 `connector_id`의 claim·heartbeat, 배정된 실행의 events·artifacts | 다른 실행·다른 프로그램 자료(403), 웹 동작 전부 |
 | 중앙 워커 → 진단 API | `DIAG_API_TOKEN`(양쪽 환경변수) Bearer | `/runs` 접수·조회, `/capabilities` | 그 외 없음 |
-| 진단 워커 → OpenAI | `OPENAI_API_KEY` 진단 워커 환경변수 | 모델 호출 | — |
+| 진단 워커 → OpenAI | `OPENAI_API_KEY` 진단 워커 환경변수 | 모델 호출. 공개 데모에서는 호출하지 않음(`DIAG_MODEL=fake`, 키 없음 — [ADR-0008](adr/0008-public-demo-scripted-agents.md)) | — |
 
 연결 코드: 운영자가 운영자 화면에서 발급한다. 1회용, 발급 후 10분 만료, 교환 즉시 무효, 미사용 코드는 취소할 수 있다. 교환 시 연결 프로그램은 `connector_id`와 연결 토큰을 받는다. 토큰은 무작위 32바이트에 접두사 `wfc_`를 붙인 값이며 서버는 SHA-256 해시만 저장한다. 운영자가 연결을 취소하면 다음 요청부터 401이다. 프로그램은 토큰을 사용자 홈의 0600 파일에 보관한다.
 
@@ -344,6 +344,20 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 
 중앙과 진단은 같은 VM에 있지만 환경변수 파일(0600)과 데이터 디렉터리를 분리한다. 진단 API는 Caddy 뒤에 두지 않으며 중앙 워커만 localhost로 호출한다. 시스템 사용자는 하나여도 된다.
 
+### 공개 데모 구성 — VM 한 대, 대본 에이전트 (2026-09-21 확정)
+
+심사 기간의 공개 데모는 [ADR-0008](adr/0008-public-demo-scripted-agents.md)을 따른다. 위 표의 Mac 두 행이 VM 으로 옮겨오고 실제 모델·실제 Codex/Claude 는 돌지 않는다. 절차는 [DEPLOY](DEPLOY.md), 파일은 `deploy/`.
+
+| 구성 | 위치 | 실행 방식 | 데이터 |
+|---|---|---|---|
+| Caddy | VM | systemd, 도메인 인증서 자동 발급 | — |
+| 중앙 웹/API · 중앙 워커 | VM, `127.0.0.1:8000` | systemd `workflow-central`·`workflow-worker`, env `/etc/workflow/central.env`(한도 200/5000 — 비용 0) | `/var/lib/workflow/central/` |
+| 진단 API · 진단 워커 | VM, `127.0.0.1:8100`, 외부 비공개 | systemd `workflow-diag`·`workflow-diag-worker`, env `/etc/workflow/diag.env`(`DIAG_MODEL=fake`, `OPENAI_API_KEY` 비움) | `/var/lib/workflow/diag/` |
+| 연결 프로그램 + 대본 에이전트 | VM | systemd `workflow-connector`, env `/etc/workflow/connector.env`(`WORKFLOW_CONNECTOR_HOME`, `WORKFLOW_SCRIPT_PACE_SECONDS=25`). PATH 앞의 `deploy/bin/{codex,claude}` 래퍼가 `workflow.scripted.*` 를 띄운다 | `/var/lib/workflow/connector/` (state.sqlite, 토큰 0600) |
+| 데모 저장소 | VM | `scripts/scaffold_demo_repo.py`, 기준 커밋 `report-base` 고정 | `/var/lib/workflow/demo/demo-report-repo`, worktree 는 옆 `demo-report-repo-worktrees/`(결과 업로드 뒤 정리) |
+
+카탈로그 세 Agent(`agent-ops-demo`·`agent-codex-mac`·`agent-claude-mac`)는 `seed_demo.py --scripted` 로 `demo_scripted=1` 이며 화면에 `시연용 · 대본 재생` 을 표시한다. 계약·검증기·worktree·실제 pytest·상태 규칙은 실제 어댑터와 같다. `deploy/launchd/`(운영자 Mac)는 셀프호스트 실사용용으로 남기고 공개 데모에서는 쓰지 않는다.
+
 ### 연결 끊김과 Mac 오프라인
 
 연결 프로그램 heartbeat 30초, 90초 미수신이면 Agent 연결 상태를 `offline`으로 바꾼다. offline인 동안 B 업무는 `대기`(연결 끊김, 마지막 확인 시각)로 남고 실행을 생성하지 않는다. 재접속하면 이미 claim한 실행부터 이어간다. 진단(A)은 Mac과 무관하게 동작한다.
@@ -380,8 +394,8 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 ### 재시작·백업·보존
 
 - systemd `Restart=always`, launchd `KeepAlive`. 워커는 시작 시 DB의 활성 실행을 스캔해 이어간다.
-- 매일 03:00(VM 시각) `sqlite3 .backup`으로 두 DB를 복사하고 `artifacts/`·`traces/`를 tar로 묶어 `/var/backups/workflow/`에 7일 보관한다. 진단 fixture는 저장소에 있으므로 백업 대상이 아니다. Mac의 연결 프로그램 상태는 백업하지 않는다(재등록 가능).
-- 심사 기간 중 데이터 리셋은 없다. 세션 데이터는 14일 보존한다. worktree는 자동 삭제하지 않고 심사 종료 후 수동으로 정리한다.
+- 매일 03:00(VM 시각) `sqlite3 .backup`으로 중앙·진단 DB 와 VM 연결 프로그램의 상태 DB(`state.sqlite`, ADR-0008 구성)를 복사하고 `artifacts/`·`traces/`를 tar로 묶어 `/var/backups/workflow/`에 7일 보관한다. 진단 fixture는 저장소에 있으므로 백업 대상이 아니다. 연결 토큰 파일은 백업하지 않는다(재연결 가능).
+- 심사 기간 중 데이터 리셋은 없다. 예외는 스키마 버전이 바뀐 배포뿐이며 `WORKFLOW_RESET_DB=1` 을 명시한 `update-vm.sh` 만 데이터를 `/var/backups/workflow/reset-{시각}/` 로 옮긴다(삭제 아님). 세션 데이터는 14일 보존한다. 결과 업로드 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`--keep-workdirs` 로 보존).
 
 ## 상태·재접속·완료
 
@@ -392,7 +406,7 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 3. 결과 보존과 기준 검증 후 자동 완료하거나 사람 검토를 기다린다. 검토 대기는 확인 필요와 이유로 표시한다.
 4. A 완료 후 B의 입력을 고정하고 실행을 생성한다. DB 제약과 조건부 상태 전환으로 완료 이벤트 중복에도 한 번만 실행한다.
 
-로컬 프로그램은 ID별 `accepted/launching/running/finished`, PID·프로세스 시작 식별정보, 미전송 이벤트를 디스크에 보존한다. 네트워크 단절 중 이미 시작한 작업은 계속하고 결과를 저장해 재접속 때 업로드하는 안이다. 화면에는 마지막 확인 시각과 연결 끊김을 표시한다.
+로컬 프로그램은 ID별 `accepted/launching/running/finished`, PID·프로세스 시작 식별정보, 미전송 이벤트를 디스크에 보존한다. 네트워크 단절 중 이미 시작한 작업은 계속하고 결과를 저장해 재접속 때 업로드하는 안이다. 화면에는 마지막 확인 시각과 연결 끊김을 표시한다. 종료 이벤트(`result_ready`·`failed`)가 중앙에 닿은 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`--keep-workdirs` 로 보존). 프로세스 종료를 확인하지 못한 실패는 지우지 않는다.
 
 프로세스 생성 직후 프로그램이 죽을 수 있으므로 “기록 없음 = 시작 안 됨”으로 판단하지 않는다. `launching`만 남거나 프로세스 동일성을 확인할 수 없으면 `unknown`으로 보고 확인 필요로 둔다. 연결 만료만으로 다른 프로그램에 재배정하거나 다시 시작하지 않는다. 자동 복구 범위를 줄여 중복 실행을 방지하는 선택이다.
 
@@ -417,7 +431,7 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 
 코드 기준은 시작 시 고정한 커밋이다. 미커밋 변경은 자동 포함하지 않고 제외 사실을 표시한다. 첫 데모는 깨끗한 별도 저장소에서 시작한다. 결과는 전용 작업 브랜치의 로컬 커밋으로 보존하는 안을 제안한다. 보존 대상 파일을 확인하고 실패하면 완료하지 않는다. 기준 브랜치 병합·원격 푸시는 별도다.
 
-후속 코드 업무는 보존된 커밋에서 새 worktree로 시작한다. A → B 진단 인계에는 A 코드 커밋이 없다. 다른 컴퓨터로 Git 결과를 전송하는 기능은 첫 검증에서 제외하고 실행 전에 지원 불가를 표시한다. worktree 자동 삭제는 보류하고 결과 확인 후 사용자가 정리하도록 한다.
+후속 코드 업무는 보존된 커밋에서 새 worktree로 시작한다. A → B 진단 인계에는 A 코드 커밋이 없다. 다른 컴퓨터로 Git 결과를 전송하는 기능은 첫 검증에서 제외하고 실행 전에 지원 불가를 표시한다. 결과 업로드 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`--keep-workdirs` 로 보존). 브랜치·커밋은 지우지 않는다.
 
 ## 진단 완료 검증
 

@@ -6,7 +6,9 @@
                                                      예: --verify "vp-pytest=python3 -m pytest -q"
                                                          --verify "vp-report=python3 -m daily_report {response}"
     run       [--adapter auto|codex|claude|echo]     claim 루프. 기본 auto: codex·claude 어댑터를 둘 다 만들고
-                                                     실행마다 등록의 tool 로 고른다 (runner.select_adapter)
+              [--keep-workdirs]                      실행마다 등록의 tool 로 고른다 (runner.select_adapter).
+                                                     --keep-workdirs 는 결과 업로드 뒤에도 worktree·인계 디렉터리를
+                                                     남긴다 (디버깅용, 기본은 정리)
     run-local --request FILE --handoff-dir DIR --out DIR [--adapter auto|codex|claude|echo]
                                                      중앙 없이 어댑터 한 번 실행, 산출물을 --out 에 파일로 (Step 15 실연동 확인용)
 
@@ -80,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--adapter", default="auto", choices=["auto", *sorted(ADAPTERS)])
     run.add_argument("--claim-interval", type=float, default=5.0)
     run.add_argument("--heartbeat-interval", type=float, default=30.0)
+    run.add_argument(
+        "--keep-workdirs", action="store_true",
+        help="결과 업로드 뒤에도 worktree·인계 디렉터리를 남긴다 (디버깅용). 기본은 정리",
+    )
 
     local = sub.add_parser("run-local", help="중앙 없이 어댑터를 한 번 실행하고 산출물을 파일로 남긴다")
     local.add_argument("--request", required=True, type=Path, help="ExecutionRequest JSON 파일")
@@ -174,6 +180,7 @@ def _run(args, paths: ConnectorPaths, transport, env: Mapping[str, str]) -> int:
         connector_id=stored.connector_id,
         clock=utc_now,
         handoff_root=paths.home / "handoff",
+        keep_workdirs=args.keep_workdirs,
     )
     logging.getLogger(__name__).info(
         "연결 프로그램 시작: connector_id=%s server=%s adapter=%s",

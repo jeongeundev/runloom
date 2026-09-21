@@ -1,0 +1,43 @@
+{# 업무 가져오기 (`/tasks/import`) — 심사자 흐름 2단계. 출처 탭에서 이슈를 체크해 가져오면 step 4 규칙(composition)으로
+   체인이 구성된다. fixture 이슈뿐이며 실제 GitHub·Jira 에 연결하지 않는다. 여기서 Task 를 실행하지 않는다 (체인 화면, step 6). #}
+{% extends "base.html" %}
+{% block title %}업무 가져오기 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">업무 가져오기</div></div>
+<p class="small" style="margin-bottom:12px"><span class="tag-scripted">시연 데이터</span> · 시연 데이터입니다 — 실제 GitHub·Jira 에 연결하지 않습니다.</p>
+<nav class="tabs" aria-label="출처">
+  {% for key, label in sources %}<a href="/tasks/import?source={{ key }}"{% if key == source %} class="active" aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</nav>
+<form method="post" action="/tasks/import" class="card">
+  <input type="hidden" name="source" value="{{ source }}">
+  <div class="table-wrap">
+    <table class="import-table">
+      <thead>
+        <tr><th></th><th>key</th><th>제목</th><th>라벨</th><th>선행</th><th>배정 미리보기</th></tr>
+      </thead>
+      <tbody>
+        {% for i in issues %}
+        <tr>
+          <td><input type="checkbox" name="issue_keys" value="{{ i.key }}" checked aria-label="{{ i.key }} 가져오기"></td>
+          <td class="mono">{{ i.key }}</td>
+          <td>{{ i.title }}</td>
+          <td>{% for label in i.labels %}<span class="chip chip-mono">{{ label }}</span>{% endfor %}</td>
+          <td class="small">{% if i.blocked_by %}blocked by {{ i.blocked_by|join(', ') }}{% else %}없음{% endif %}</td>
+          <td>{% if i.assignable %}<span class="cap">{{ i.preview }}</span>{% else %}<span class="small">{{ i.preview }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="help" style="margin-top:8px">체크한 이슈만 가져옵니다. 순서는 blocked by, 담당은 라벨과 등록 에이전트의 능력으로 정하며 이유를 함께 기록합니다.</div>
+  <div class="actions">
+    {% if can_import %}
+    <button class="btn" type="submit">가져와서 워크플로우 구성</button>
+    {% else %}
+    <button class="btn" type="submit" disabled>가져와서 워크플로우 구성</button>
+    <span class="action-note">에이전트를 먼저 등록하세요 · <a href="/agents/register">에이전트 등록</a></span>
+    {% endif %}
+    <a class="btn btn-secondary" href="/tasks">취소</a>
+  </div>
+</form>
+{% endblock %}

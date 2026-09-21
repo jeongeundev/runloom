@@ -15,7 +15,7 @@ from workflow.contracts.v1 import ArtifactMeta, ExecutionRequest
 from workflow.server.auth import SESSION_COOKIE, verify_session
 
 from .conftest import BASE_COMMIT, NOW, code_change_result, meta_for, seed_agents, seed_result_ready
-from .test_web import create_task, diagnose_form, fix_form, login_operator
+from .test_web import create_task, diagnose_form, fix_form, import_chain, login_operator, register_agents
 
 SERVER_DIR = Path(__file__).resolve().parents[3] / "src" / "workflow" / "server"
 STYLE = SERVER_DIR / "static" / "style.css"
@@ -56,7 +56,9 @@ def agents(conn):
 
 @pytest.fixture
 def web(client, agents):
+    """세션 쿠키를 받고 카탈로그 2개를 등록한 클라이언트 (test_web 과 같다)."""
     assert client.get("/tasks").status_code == 200
+    register_agents(client)
     return client
 
 
@@ -175,8 +177,12 @@ def status_line(html: str) -> str:
 
 def test_pages_render_three_column_shell(web, conn, store, settings):
     task_id, _ = seed_diagnosis_result(web, conn, store, settings)
+    chain_id, _ = import_chain(web, conn, "#41", "#42")
     login_operator(web)
-    for path in ("/tasks", f"/tasks/{task_id}", "/agents", "/agents/agent-ops-demo", "/operator", "/tasks/new"):
+    for path in (
+        "/tasks", f"/tasks/{task_id}", "/agents", "/agents/register", "/agents/agent-ops-demo", "/operator",
+        "/tasks/new", "/tasks/import", f"/chains/{chain_id}",
+    ):
         html = web.get(path).text
         assert 'class="shell' in html, path
         shell = html[html.index('class="shell'):]
@@ -199,7 +205,8 @@ def test_sidebar_lists_my_tasks_with_status_dot_and_relative_time(web):
     assert "일일 보고서 실패 진단" in sidebar
     assert 'data-status="실행 가능"' in sidebar
     assert "전" in sidebar  # 상대 시각 "n분 전"
-    assert "/tasks/new?example=diagnose" in sidebar
+    assert 'href="/tasks/import"' in sidebar  # `+` 는 업무 가져오기
+    assert "/tasks/new?example=diagnose" not in sidebar
     assert "운영자" not in sidebar  # 운영자 쿠키 없음
     login_operator(web)
     assert 'href="/operator"' in web.get("/tasks").text
@@ -236,6 +243,24 @@ def test_badge_dot_fill_follows_ui_guide(web, conn, store, settings):
     done = status_line(web.get(f"/tasks/{task_c}").text)
     assert 'data-status="완료"' in done and "dot-filled" in done
     assert "병합: 운영자 확인 대기" in visible_text(web.get(f"/tasks/{task_c}").text)
+
+
+def test_chain_nodes_show_status_as_badge_text_with_reason(web, conn):
+    """워크플로우 노드는 색만이 아니라 배지 텍스트 + 한글 이유로 상태를 보인다 (UI_GUIDE "하지 마라")."""
+    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+    html = web.get(f"/chains/{chain_id}").text
+    nodes = re.findall(r'<li class="chain-node"[^>]*>(.*?)</li>', html, re.DOTALL)
+    assert len(nodes) == 2
+    for node, label, reason in ((nodes[0], "실행 가능", "agent-ops-demo 선택됨"), (nodes[1], "대기", "선행 대기")):
+        line = status_line(node)
+        assert f'data-status="{label}"' in line
+        assert label in visible_text(line) and reason in visible_text(line)
+    assert "dot-filled" not in status_line(nodes[0])  # 실행 가능은 빈 점
+    human = html[html.index('class="chain-node chain-node-human"'):]
+    assert "검토 승인 (사람) · 병합은 운영자 확인" in visible_text(human)
+    assert 'data-status="대기"' in status_line(human)
+    for label in ("진단", "코드 수정", "직접", "선행 완료 시 자동", "자동 완료", "검토 후 완료"):
+        assert label in visible_text(html), label
 
 
 def test_api_agent_card_shows_connected_without_last_seen(web):
@@ -343,8 +368,12 @@ def test_live_fragment_shows_successor_chip(web):
 
 def test_visible_text_has_no_forbidden_phrases(web, conn, store, settings):
     task_id, _ = seed_code_change_result(web, conn, store, settings)
+    chain_id, _ = import_chain(web, conn, "#41", "#42")
     login_operator(web)
-    for path in ("/tasks", f"/tasks/{task_id}", "/tasks/new", "/agents", "/agents/agent-codex-mac", "/operator"):
+    for path in (
+        "/tasks", f"/tasks/{task_id}", "/tasks/new", "/tasks/import", "/agents", "/agents/register",
+        "/agents/agent-codex-mac", "/operator", f"/chains/{chain_id}",
+    ):
         text = visible_text(web.get(path).text)
         for phrase in ("대기 중", "Powered by"):
             assert phrase not in text, (path, phrase)

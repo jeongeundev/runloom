@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """로컬 5-프로세스 기동기 — 클라우드·API 키·실제 Codex 없이 전체 흐름을 한 컴퓨터에서 띄운다.
 
-    python3 scripts/local_stack.py [--workdir DIR] [--central-port 18000] [--diag-port 18100] [--fake-codex PATH]
+    python3 scripts/local_stack.py [--workdir DIR] [--central-port 18000] [--diag-port 18100] [--fake-codex PATH] [--scripted]
 
-기동 순서: 데모 저장소 scaffold → 진단 API → 진단 워커(`DIAG_MODEL=fake`) → 중앙 API → seed → 중앙 워커 →
-connector connect / register / run. 프로세스는 AGENTS.md 명령어 절의 모듈 경로 그대로 `python3 -m …` 로 띄우고
+기동 순서: 데모 저장소 scaffold → 진단 API → 진단 워커(`DIAG_MODEL=fake`) → 중앙 API → seed(카탈로그 3개) → 중앙 워커 →
+connector connect / register ×2(codex·claude, 같은 폴더) / run(`--adapter auto` — 등록의 tool 로 어댑터를 고른다).
+프로세스는 AGENTS.md 명령어 절의 모듈 경로 그대로 `python3 -m …` 로 띄우고
 로그는 `workdir/logs/{name}.log` 에 남긴다. 심사 배포가 아니다 (배포는 Step 16 의 systemd·launchd).
 
 - 비밀값(`SESSION_SECRET`·`OPERATOR_TOKEN`·`DIAG_API_TOKEN`)은 시작마다 무작위로 만들어 두 서비스에 같은 값을 준다.
 - 부모 환경의 `WORKFLOW_*`·`DIAG_*`·`OPENAI_*` 는 자식에 물려주지 않는다 (pytest 의 `WORKFLOW_SKIP_APP=1`, 실제 키).
 - `fake_codex` 를 주면 그 스크립트를 `codex` 로 감싼 디렉터리를 connector 의 PATH 앞에 둔다. 없으면 PATH 의 실제 codex.
+- `scripted` 면 `codex`·`claude` 둘 다 대본 에이전트(`python3 -m workflow.scripted.{codex,claude}`)로 감싸고 seed 도
+  `--scripted`(세 Agent 에 "시연용 · 대본 재생")로 돈다. 둘 다 주면 `scripted` 가 우선. 대본 속도
+  `WORKFLOW_SCRIPT_PACE_SECONDS` 는 부모 환경에 있으면 connector 자식에 그대로 넘긴다 (기본 0 이라 e2e 속도는 그대로).
 - heartbeat 오프라인 판정은 10초로 줄이고 connector heartbeat 는 3초 — e2e 가 연결 끊김을 100초 안에 보기 위해서다.
 """
 
@@ -28,8 +32,9 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).parent))
 from scaffold_demo_repo import scaffold  # noqa: E402
-from seed_demo import seed  # noqa: E402
+from seed_demo import LOCAL_REGISTRATION_IDS, REPOSITORY_ID, seed  # noqa: E402
 
+from workflow.scripted._common import PACE_ENV  # noqa: E402
 from workflow.server.auth import utc_now  # noqa: E402
 
 SERVICE_NAMES = ("diag_api", "diag_worker", "central_api", "central_worker", "connector")
@@ -61,6 +66,7 @@ class LocalStack:
         central_port: int = 18000,
         diag_port: int = 18100,
         fake_codex: Path | None,
+        scripted: bool = False,
         heartbeat_offline_seconds: int = 10,
     ):
         self.workdir = Path(workdir).resolve()
@@ -74,7 +80,11 @@ class LocalStack:
         self.diag_db = self.workdir / "diag" / "db.sqlite"
         self.diag_artifacts = self.workdir / "diag" / "artifacts"
         self._secrets = {key: secrets.token_urlsafe(32) for key in SECRET_KEYS}
-        self.fake_bin = self._install_fake_codex(Path(fake_codex)) if fake_codex else None
+        self.scripted = scripted
+        if scripted:
+            self.fake_bin: Path | None = self._install_scripted()
+        else:
+            self.fake_bin = self._install_fake_codex(Path(fake_codex)) if fake_codex else None
         self.services = self._plan(central_port, diag_port, heartbeat_offline_seconds)
         self.base_commit: str | None = None
         self.connect_code: str | None = None
@@ -98,6 +108,16 @@ class LocalStack:
         wrapper = bin_dir / "codex"
         wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script.resolve()}" "$@"\n')
         wrapper.chmod(0o755)
+        return bin_dir
+
+    def _install_scripted(self) -> Path:
+        """`codex`·`claude` 를 대본 에이전트(`workflow.scripted.*`)로 감싼다. 실제 도구는 connector 의 PATH 에서만 가려진다."""
+        bin_dir = self.workdir / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("codex", "claude"):
+            wrapper = bin_dir / name
+            wrapper.write_text(f'#!/usr/bin/env bash\nexec "{sys.executable}" -m workflow.scripted.{name} "$@"\n')
+            wrapper.chmod(0o755)
         return bin_dir
 
     @staticmethod
@@ -128,6 +148,8 @@ class LocalStack:
             "DIAG_API_TOKEN": self._secrets["DIAG_API_TOKEN"],
         }
         connector_env = {**base, "WORKFLOW_CONNECTOR_HOME": str(self.connector_home)}
+        if os.environ.get(PACE_ENV):  # 대본 속도만 통과 — 나머지 WORKFLOW_* 는 위에서 빠졌다
+            connector_env[PACE_ENV] = os.environ[PACE_ENV]
         if self.fake_bin is not None:
             connector_env["PATH"] = f"{self.fake_bin}{os.pathsep}{base.get('PATH', '')}"
         services = [
@@ -137,21 +159,24 @@ class LocalStack:
             Service("central_api", [py, "-m", "uvicorn", "workflow.server.app:app",
                                     "--host", "127.0.0.1", "--port", str(central_port)], central_env),
             Service("central_worker", [py, "-m", "workflow.server.worker"], central_env),
-            Service("connector", [py, "-m", "workflow.connector", "run", "--adapter", "codex",
+            Service("connector", [py, "-m", "workflow.connector", "run", "--adapter", "auto",
                                   "--claim-interval", str(CONNECTOR_CLAIM_INTERVAL),
                                   "--heartbeat-interval", str(CONNECTOR_HEARTBEAT_INTERVAL)], connector_env),
         ]
         return {s.name: s for s in services}
 
-    def connector_bootstrap(self, connect_code: str) -> tuple[list[str], list[str]]:
-        """`run` 전에 한 번씩 도는 `connect`·`register` 명령."""
+    def connector_bootstrap(self, connect_code: str) -> tuple[list[str], list[list[str]]]:
+        """`run` 전에 한 번씩 도는 `connect` 명령과 `register` 명령들 — tool 마다 하나(codex·claude), 같은 폴더·검증 프로필."""
         py = sys.executable
         connect = [py, "-m", "workflow.connector", "connect", "--server", self.central_url, "--code", connect_code]
-        register = [py, "-m", "workflow.connector", "register", "--id", "local-demo-report",
-                    "--repo", str(self.repo_path), "--repository-id", "demo-report-repo"]
-        for profile in VERIFY_PROFILES:
-            register += ["--verify", profile]
-        return connect, register
+        registers = []
+        for tool, registration_id in LOCAL_REGISTRATION_IDS.items():
+            register = [py, "-m", "workflow.connector", "register", "--id", registration_id, "--tool", tool,
+                        "--repo", str(self.repo_path), "--repository-id", REPOSITORY_ID]
+            for profile in VERIFY_PROFILES:
+                register += ["--verify", profile]
+            registers.append(register)
+        return connect, registers
 
     # --- 기동·종료 ---------------------------------------------------------------------------
 
@@ -166,12 +191,13 @@ class LocalStack:
         self._wait_http("central_api", f"{self.central_url}/", {})
         self.connect_code = seed(
             self.central_db, self.central_artifacts, base_commit=self.base_commit, now=utc_now(),
-            diag_api_url=self.diag_url,
+            diag_api_url=self.diag_url, scripted=self.scripted,
         )["connect_code"]
         self._spawn("central_worker")
-        connect, register = self.connector_bootstrap(self.connect_code)
+        connect, registers = self.connector_bootstrap(self.connect_code)
         self._run_once("connector-connect", connect)
-        self._run_once("connector-register", register)
+        for register in registers:
+            self._run_once(f"connector-register-{register[register.index('--tool') + 1]}", register)
         self._spawn("connector")
 
     def stop(self) -> None:
@@ -191,6 +217,11 @@ class LocalStack:
         handle = self._log_files.pop(name, None)
         if handle is not None:
             handle.close()
+
+    def start_service(self, name: str) -> None:
+        """`stop_service` 로 내린 프로세스를 같은 계획으로 다시 띄운다 (e2e 의 연결 끊김 시나리오 뒤). 도는 중이면 no-op."""
+        if not self.running(name):
+            self._spawn(name)
 
     def running(self, name: str) -> bool:
         proc = self._procs.get(name)
@@ -260,20 +291,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diag-port", type=int, default=18100)
     parser.add_argument("--fake-codex", type=Path, default=None,
                         help="이 스크립트를 codex 로 쓴다 (예: tests/e2e/fake_codex.py). 없으면 PATH 의 실제 codex")
+    parser.add_argument("--scripted", action="store_true",
+                        help="codex·claude 를 대본 에이전트(workflow.scripted)로 쓴다. --fake-codex 보다 우선")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="workflow-local-stack-"))
-    stack = LocalStack(workdir, central_port=args.central_port, diag_port=args.diag_port, fake_codex=args.fake_codex)
+    stack = LocalStack(workdir, central_port=args.central_port, diag_port=args.diag_port, fake_codex=args.fake_codex,
+                       scripted=args.scripted)
     try:
         with stack:
             print(f"중앙 웹: {stack.central_url}")
             print(f"진단 API: {stack.diag_url} (localhost 전용, Bearer 필요)")
             print(f"작업 디렉터리: {stack.workdir} (로그 {stack.logs_dir}, 데모 저장소 {stack.repo_path})")
             print(f"운영자 토큰: {stack.operator_token}")
-            print(f"codex: {'가짜 ' + str(args.fake_codex) if args.fake_codex else 'PATH 의 실제 codex'}")
+            if args.scripted:
+                print("codex·claude: 대본 에이전트 (workflow.scripted)")
+            else:
+                print(f"codex: {'가짜 ' + str(args.fake_codex) if args.fake_codex else 'PATH 의 실제 codex'}")
             print("Ctrl-C 로 종료", flush=True)
             while True:
                 time.sleep(1)

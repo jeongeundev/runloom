@@ -103,6 +103,7 @@ _AGENT_OPTIONAL = {
     "connection_state": "unknown",
     "last_seen_at": None,
     "shared_to_all_sessions": False,
+    "demo_scripted": False,
 }
 
 
@@ -122,8 +123,8 @@ def upsert_agent(conn: Connection, agent: dict) -> None:
         INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id,
           local_registration_id, repository_id, base_commit, verification_profile_ids_json, api_url,
           credential_ref, capabilities_json, discovered_json, connection_state, last_seen_at,
-          shared_to_all_sessions)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          shared_to_all_sessions, demo_scripted)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(agent_id) DO UPDATE SET
           name = excluded.name, owner_scope = excluded.owner_scope,
           connection_type = excluded.connection_type, connector_id = excluded.connector_id,
@@ -133,7 +134,8 @@ def upsert_agent(conn: Connection, agent: dict) -> None:
           api_url = excluded.api_url, credential_ref = excluded.credential_ref,
           capabilities_json = excluded.capabilities_json, discovered_json = excluded.discovered_json,
           connection_state = excluded.connection_state, last_seen_at = excluded.last_seen_at,
-          shared_to_all_sessions = excluded.shared_to_all_sessions
+          shared_to_all_sessions = excluded.shared_to_all_sessions,
+          demo_scripted = excluded.demo_scripted
         """,
         (
             a["agent_id"], a["name"], a["owner_scope"], a["connection_type"], a["connector_id"],
@@ -141,6 +143,7 @@ def upsert_agent(conn: Connection, agent: dict) -> None:
             json.dumps(list(a["verification_profile_ids"])), a["api_url"], a["credential_ref"],
             json.dumps(caps, ensure_ascii=False), json.dumps(a["discovered"], ensure_ascii=False),
             a["connection_state"], a["last_seen_at"], int(bool(a["shared_to_all_sessions"])),
+            int(bool(a["demo_scripted"])),
         ),
     )
 
@@ -154,8 +157,11 @@ def get_agent(conn: Connection, agent_id: str) -> Row | None:
 
 
 def delete_agent(conn: Connection, agent_id: str) -> None:
-    cur = conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
-    _require_rowcount(cur, f"agent {agent_id}")
+    """세션 등록(`session_agents`)도 함께 지운다."""
+    with _tx(conn):
+        conn.execute("DELETE FROM session_agents WHERE agent_id = ?", (agent_id,))
+        cur = conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+        _require_rowcount(cur, f"agent {agent_id}")
 
 
 def set_agent_connection(
@@ -208,6 +214,42 @@ def update_registration(
             ),
         )
     return row["agent_id"]
+
+
+# --- 세션 등록 (phase 5: 심사자 세션이 카탈로그에서 고른 Agent) ---------------
+
+
+def register_session_agent(conn: Connection, session_id: str, agent_id: str, now: str) -> None:
+    """멱등. 이미 등록돼 있으면 처음 `registered_at` 을 유지한다."""
+    conn.execute(
+        "INSERT OR IGNORE INTO session_agents (session_id, agent_id, registered_at) VALUES (?, ?, ?)",
+        (session_id, agent_id, now),
+    )
+
+
+def unregister_session_agent(conn: Connection, session_id: str, agent_id: str) -> None:
+    conn.execute(
+        "DELETE FROM session_agents WHERE session_id = ? AND agent_id = ?", (session_id, agent_id)
+    )
+
+
+def list_session_agents(conn: Connection, session_id: str) -> list[Row]:
+    """agents 행 + `registered_at`. 먼저 등록한 순서(같은 시각이면 삽입 순서)가 뒤 step 의 동률 규칙에 쓰인다."""
+    return conn.execute(
+        """
+        SELECT a.*, sa.registered_at FROM session_agents sa JOIN agents a ON a.agent_id = sa.agent_id
+        WHERE sa.session_id = ? ORDER BY sa.registered_at, sa.rowid
+        """,
+        (session_id,),
+    ).fetchall()
+
+
+def is_session_agent(conn: Connection, session_id: str, agent_id: str) -> bool:
+    row = _one(
+        conn,
+        "SELECT 1 FROM session_agents WHERE session_id = ? AND agent_id = ?", (session_id, agent_id)
+    )
+    return row is not None
 
 
 # --- 연결 코드·연결 프로그램 (ARCHITECTURE 인증 절) -------------------------
@@ -306,8 +348,9 @@ def insert_task(conn: Connection, task: dict, now: str) -> None:
             """
             INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,
               selection_mode, chosen_agent_id, run_mode, completion_mode, criteria_json,
-              predecessor_task_id, revision, target_json, status, status_reason, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              predecessor_task_id, revision, target_json, status, status_reason, created_at,
+              chain_id, source_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task["task_id"], task["session_id"], task["title"], task["request"], task["kind"],
@@ -315,7 +358,7 @@ def insert_task(conn: Connection, task: dict, now: str) -> None:
                 task.get("chosen_agent_id"), task["run_mode"], task["completion_mode"],
                 json.dumps(task["criteria"], ensure_ascii=False), predecessor, task["revision"],
                 json.dumps(task["target"], ensure_ascii=False), task["status"],
-                task["status_reason"], now,
+                task["status_reason"], now, task.get("chain_id"), task.get("source_ref"),
             ),
         )
 
@@ -396,6 +439,61 @@ def tasks_with_completed_predecessor(conn: Connection) -> list[Row]:
 def confirm_merge(conn: Connection, task_id: str, now: str) -> None:
     cur = conn.execute("UPDATE tasks SET merge_confirmed_at = ? WHERE task_id = ?", (now, task_id))
     _require_rowcount(cur, f"task {task_id}")
+
+
+# --- Chain (phase 5: "업무 가져오기" 로 만든 Task 묶음) ------------------------
+
+
+def insert_chain(conn: Connection, chain: dict, now: str) -> None:
+    """키: chain_id, session_id, title, source, skipped(list[dict], 기본 [])."""
+    conn.execute(
+        "INSERT INTO chains (chain_id, session_id, title, source, skipped_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            chain["chain_id"], chain["session_id"], chain["title"], chain["source"],
+            json.dumps(list(chain.get("skipped", [])), ensure_ascii=False), now,
+        ),
+    )
+
+
+def get_chain(conn: Connection, chain_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM chains WHERE chain_id = ?", (chain_id,))
+
+
+def list_chains(conn: Connection, session_id: str) -> list[Row]:
+    return conn.execute(
+        "SELECT * FROM chains WHERE session_id = ? ORDER BY created_at, chain_id", (session_id,)
+    ).fetchall()
+
+
+def mark_chain_started(conn: Connection, chain_id: str, now: str) -> None:
+    """`started_at` 이 NULL 일 때만 기록한다. 없는 chain 은 NotFound."""
+    with _tx(conn):
+        if get_chain(conn, chain_id) is None:
+            raise NotFound(f"chain {chain_id}")
+        conn.execute(
+            "UPDATE chains SET started_at = ? WHERE chain_id = ? AND started_at IS NULL", (now, chain_id)
+        )
+
+
+def tasks_of_chain(conn: Connection, chain_id: str) -> list[Row]:
+    """predecessor 체인 순서: 선행이 없거나 체인 밖인 Task 부터, 그 Task 를 선행으로 갖는 Task 순.
+    created_at·task_id 는 동률(같은 선행을 가진 Task 들)에서만 순서를 정한다."""
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE chain_id = ? ORDER BY created_at, task_id", (chain_id,)
+    ).fetchall()
+    in_chain = {r["task_id"] for r in rows}
+    successors: dict[str | None, list[Row]] = {}
+    for r in rows:
+        pred = r["predecessor_task_id"]
+        successors.setdefault(pred if pred in in_chain else None, []).append(r)
+    ordered: list[Row] = []
+    stack = list(reversed(successors.get(None, [])))
+    while stack:
+        r = stack.pop()
+        ordered.append(r)
+        stack.extend(reversed(successors.get(r["task_id"], [])))
+    return ordered
 
 
 # --- 실행·이벤트 ---------------------------------------------------------------

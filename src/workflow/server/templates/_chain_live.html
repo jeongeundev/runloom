@@ -1,0 +1,90 @@
+{# 워크플로우의 라이브 조각 — 2. 노드 목록 · 3. 사람 단계 · 4. 넣지 않은 이슈 · 5. 동작 영역. `GET /chains/{id}/live` 가 이것만
+   돌려주고 base.html 의 스크립트가 교체한다. 실행 중·실행 요청됨·대기 노드가 없으면 `data-poll="0"` 으로 폴링을 멈춘다
+   (그 뒤 상태는 사람 조작으로만 바뀌고, 조작은 페이지를 다시 연다). 상태는 색만이 아니라 배지 텍스트 + 이유로 보인다. #}
+{% import "_status.html" as st %}
+
+{% macro select_form(node) -%}
+<form method="post" action="/tasks/{{ node.task_id }}/select" class="actions node-select">
+  <input type="hidden" name="return_to" value="chain">
+  <label class="small" for="agent-{{ node.task_id }}">담당 에이전트</label>
+  <select id="agent-{{ node.task_id }}" name="agent_id">
+    {% for c in candidates %}<option value="{{ c.agent_id }}"{% if node.agent and c.agent_id == node.agent.agent_id %} selected{% endif %}>{{ c.name }} ({{ c.agent_id }}) · {% for cap in c.capabilities %}{{ cap.code }}{% if not loop.last %}, {% endif %}{% endfor %}</option>{% endfor %}
+  </select>
+  <button class="btn btn-small" type="submit">확정</button>
+</form>
+{%- endmacro %}
+
+<div class="live" data-live="/chains/{{ chain.chain_id }}/live" data-poll="{{ '1' if chain.polling else '0' }}">
+
+  {# 2. 노드 목록 — 순서대로. 순번 원 + 상태 점, 노드 사이 세로 연결선 #}
+  <ol class="chain">
+    {% for n in chain.tasks %}
+    <li class="chain-node" data-task-id="{{ n.task_id }}">
+      <div class="node-index"><span class="node-no">{{ loop.index }}</span><span class="mini-status st-{{ st.STATUS_CLASS.get(n.status.label, 'wait') }}">{{ st.dot(n.status.label) }}</span></div>
+      <div class="card node-body">
+        <div class="node-head">
+          <span class="mono">{{ n.source_ref }}</span><a href="/tasks/{{ n.task_id }}">{{ n.title }}</a>
+          <span class="chip">{{ '진단' if n.kind == 'diagnosis' else '코드 수정' }}</span>
+        </div>
+        <div class="node-meta">
+          담당 {% if n.agent %}<b>{{ n.agent.name }}</b>{% if n.agent.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}{% else %}미정{% endif %}
+          · 실행 {{ '선행 완료 시 자동' if n.run_mode == 'auto' else '직접' }}
+          · {{ '자동 완료' if n.completion_mode == 'auto' else '검토 후 완료' }}
+        </div>
+        <div class="status-line">{{ st.badge(n.status.label) }}<span class="reason">{{ n.status.reason }}</span></div>
+        <details class="row" data-key="reasons-{{ n.task_id }}">
+          <summary>이유 · {{ n.reasons|length }}건</summary>
+          <div class="row-body"><ul class="reasons">{% for r in n.reasons %}<li>{{ r }}</li>{% endfor %}</ul></div>
+        </details>
+        {% if not n.selection or n.selection.status == 'needs_selection' %}
+        {{ select_form(n) }}
+        {% elif not chain.started %}
+        <details class="row" data-key="select-{{ n.task_id }}">
+          <summary>담당 변경</summary>
+          <div class="row-body">{{ select_form(n) }}</div>
+        </details>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+
+    {# 3. 사람 단계 — 상태는 마지막 Task 에서 파생 (views._human_gate). 병합은 운영자 확인 (ADR-0005) #}
+    {% if chain.human_gate %}
+    {% set gate = chain.human_gate %}
+    <li class="chain-node chain-node-human">
+      <div class="node-index"><span class="node-no">{{ chain.total + 1 }}</span><span class="mini-status st-{{ st.STATUS_CLASS.get(gate.status_label, 'wait') }}">{{ st.dot(gate.status_label) }}</span></div>
+      <div class="card node-body">
+        <div class="node-head">{{ gate.label }}</div>
+        <div class="status-line">{{ st.badge(gate.status_label) }}<span class="reason">{{ gate.reason }}</span>{% if gate.status_label == '확인 필요' %}<a href="/tasks/{{ gate.task_id }}">검토하기</a>{% endif %}</div>
+      </div>
+    </li>
+    {% endif %}
+  </ol>
+
+  {# 4. 넣지 않은 이슈 #}
+  {% if chain.skipped %}
+  <div class="section-head"><h2>워크플로우에 넣지 않은 이슈</h2></div>
+  <ul class="skipped-list">
+    {% for s in chain.skipped %}<li><span class="mono">{{ s.key }}</span> {{ s.title }} · <span class="small">{{ s.reason }}</span></li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {# 5. 동작 영역 — 시작 전에는 버튼 하나, 시작 후에는 진행 요약 한 줄 #}
+  <div class="action-area">
+    {% if not chain.started %}
+    {% if chain.can_start %}
+    <form method="post" action="/chains/{{ chain.chain_id }}/start" class="actions">
+      <button class="btn" type="submit">워크플로우 시작</button>
+      <span class="action-note">첫 업무를 실행합니다. 다음 업무는 선행이 완료되면 자동으로 이어집니다.</span>
+    </form>
+    {% else %}
+    <div class="actions">
+      <button class="btn" type="button" disabled>워크플로우 시작</button>
+      <span class="action-note">{{ '담당 에이전트를 먼저 확정하세요' if chain.tasks else '시작할 업무가 없습니다' }}</span>
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="status-line" style="margin:0"><span class="reason">{{ chain.progress }}</span><span class="live-stamp" id="live-stamp"></span></div>
+    {% endif %}
+  </div>
+</div>

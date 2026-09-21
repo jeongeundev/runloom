@@ -167,8 +167,9 @@ def bearer(token: str) -> dict:
 # --- 시드 ------------------------------------------------------------------
 
 
-def seed_agents(conn) -> None:
-    """운영자 등록 에이전트 2개(진단 API·로컬 Codex). 둘 다 모든 세션에 사용 허용."""
+def seed_agents(conn, *, with_claude: bool = False) -> None:
+    """운영자 카탈로그 — 진단 API·로컬 Codex, `with_claude` 면 같은 저장소를 맡는 Claude Code 까지 3개
+    (scripts/seed_demo.py 와 같은 구성). 전부 모든 세션에 사용 허용. 기본 2개는 기존 카드 수 테스트를 위해 유지한다."""
     repo.upsert_agent(conn, {
         "agent_id": "agent-ops-demo",
         "name": "운영 진단 데모",
@@ -190,13 +191,34 @@ def seed_agents(conn) -> None:
         "connection_state": "unknown",
         "shared_to_all_sessions": True,
     })
+    if not with_claude:
+        return
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-claude-mac",
+        "name": "Claude Code",
+        "owner_scope": "personal",
+        "connection_type": "local",
+        "local_registration_id": "local-demo-report-claude",
+        "repository_id": "demo-report-repo",
+        "base_commit": BASE_COMMIT,
+        "capabilities": [{"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}}],
+        "connection_state": "unknown",
+        "shared_to_all_sessions": True,
+    })
+
+
+def register_catalog(conn, session_id: str, *agent_ids: str, now: str = NOW) -> None:
+    """세션이 카탈로그 Agent 를 등록한 상태 (phase 5 step 2). 기본은 둘 다, codex → ops 순."""
+    for agent_id in agent_ids or ("agent-codex-mac", "agent-ops-demo"):
+        repo.register_session_agent(conn, session_id, agent_id, now)
 
 
 @pytest.fixture
 def seeded(conn):
-    """세션 1개, 운영자 등록 에이전트 2개, 업무 A → B."""
+    """세션 1개, 운영자 등록 에이전트 2개(세션이 둘 다 등록), 업무 A → B."""
     repo.create_session(conn, SESSION, NOW)
     seed_agents(conn)
+    register_catalog(conn, SESSION)
     repo.insert_task(conn, task_row(TASK_A), NOW)
     repo.insert_task(conn, task_row(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     return conn

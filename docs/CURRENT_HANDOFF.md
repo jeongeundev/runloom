@@ -1,37 +1,43 @@
 # 현재 인계 — 이종 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-20 (phase 0-mvp·1-diag-fix 완료, 2-model-compare 계획 커밋)
-상태: 제품 코드·진단 데모·연결 프로그램·배포 설정까지 구현 완료(`phases/0-mvp` 18 step). Codex CLI 실연동 1회 성공. 진단 모델(gpt-4.1-mini) 실호출 평가는 세 번 모두 통과 기준 미달 → 사용자가 `gpt-4.1` 비교 평가를 결정했고 그 계획(`phases/2-model-compare`)만 커밋했다. 브랜치 `feat-1-diag-fix`, 푸시 안 함.
+갱신일: 2026-09-21 (phase 5-scripted-demo step 0~11 완료)
+상태: 제품 코드·진단 데모·연결 프로그램·배포 설정에 더해 공개 데모용 구성(대본 에이전트·카탈로그 등록·GitHub/Jira fixture 가져오기·워크플로우 자동 구성·VM 한 대 배포 설정)까지 구현 완료. 진단 모델은 gpt-4.1 로 확정(ADR-0003), 공개 데모는 실제 모델·실제 Codex/Claude 를 돌리지 않는다(ADR-0008). 브랜치 `feat-5-scripted-demo`, 푸시 안 함, 실제 배포 안 함.
 
 ## 지금 상태 — 새 세션이 먼저 볼 것
 
 | 항목 | 상태 |
 |---|---|
-| 브랜치 | `feat-1-diag-fix` (main → `feat-0-mvp` → 여기. main 은 그대로. 푸시 안 함) |
-| `phases/0-mvp` step 0~17 | **완료.** contracts·domain·adapters·server(web/API/워커)·connector(Codex 어댑터·worktree)·diagnostic_demo(fixture·도구·워커)·deploy 설정·런북. 각 step 은 `feat(0-mvp): step N` + `chore` 로 커밋 |
+| 브랜치 | `feat-5-scripted-demo` (main `6e9f337` → 여기. main 은 그대로이고 `origin/main` 과 같다. 푸시 안 함) |
+| `phases/0-mvp` step 0~17 | **완료.** contracts·domain·adapters·server(web/API/워커)·connector(Codex 어댑터·worktree)·diagnostic_demo(fixture·도구·워커)·deploy 설정·런북 |
 | `phases/1-diag-fix` step 0~3 | **완료.** location 배열 인덱스 `[N]` + JSON Schema `pattern`, 도구 텍스트 반환에 줄 번호(`tools-v2`), 프롬프트 v2, 재평가 |
-| `phases/2-model-compare` step 0~2 | **계획만 커밋 (`645538e`). 실행 전.** 프롬프트 v3(`list_runs.before` 인자 규칙) → `DraftInvalid` 턴 사용량 집계 수정 → mini·gpt-4.1 을 같은 v3 로 5사례 × 3회 비교 |
-| 검증 | `python3 -m pytest -q` 1018 passed + 11 skipped(e2e), `ruff` 통과. 하네스 테스트 포함 |
-| Codex 실연동 (step 15) | 성공 — codex-cli 0.155.1, ChatGPT 로그인 재사용, 승인 요청 0건, 데모 저장소 3 failed → 17 passed. 기록 [VERIFICATION_LOG](VERIFICATION_LOG.md) |
-| 진단 모델 평가 | 세 번(v1 2회, v2 1회) 모두 `normal` 3/3 미달, 잘못된 수정 착수 0회는 검증기 덕. 종합 [DIAG_EVAL](DIAG_EVAL.md). **ADR-0003 은 여전히 작업 가정** |
-| 배포 | `deploy/` 설정·[DEPLOY](DEPLOY.md) 런북만 있음. VM·도메인 미지정, 실제 배포 안 함 |
+| `phases/2-model-compare` step 0~2 | **완료.** 프롬프트 v3, `DraftInvalid` 턴 사용량 집계, mini·gpt-4.1 5사례 × 3회 비교 → gpt-4.1 `normal` 3/3, [DIAG_EVAL](DIAG_EVAL.md). ADR-0003 을 gpt-4.1 로 확정 |
+| `phases/3-limit-wait` step 0~7 | **계획만. 심사 이후 실행** ([ADR-0007](adr/0007-usage-limit-wait-policy.md)). 그 전까지 사용량 한도는 `실패` 로 기록 |
+| `phases/4-claude-issues` step 0~3 | **완료·main 병합(`f6a3b43`).** 도구 계약·`LocalToolAdapter`·`ClaudeAdapter`·Runner 디스패치. step 4~11 은 5-scripted-demo 로 대체 |
+| `phases/5-scripted-demo` step 0~11 | **완료.** 대본 에이전트(`src/workflow/scripted/`)·스키마 v2(`session_agents`·`chains`)·카탈로그 등록(`/agents/register`)·이슈 fixture 와 라벨 매핑(`domain/task_sources.py`)·워크플로우 구성(`domain/composition.py`)·가져오기(`/tasks/import`)·체인 화면(`/chains/{chain_id}`)·seed 3개·connector worktree 정리·e2e 주 경로 test_12~21·VM 배포 설정([ADR-0008](adr/0008-public-demo-scripted-agents.md))·문서(이 갱신) |
+| 공개 데모 구성 | [ADR-0008](adr/0008-public-demo-scripted-agents.md): VM 한 대, systemd 5개(중앙 2·진단 2·연결 프로그램) + Caddy, 카탈로그 3개 `demo_scripted=1`, `DIAG_MODEL=fake`, `deploy/bin/{codex,claude}` 래퍼 → `workflow.scripted.*`, 실제 codex/claude 바이너리·`OPENAI_API_KEY` 없음, 한도 200/5000(비용 0). 절차 [DEPLOY](DEPLOY.md). VM·도메인은 미지정(`{$WORKFLOW_DOMAIN}`; 예정 주소는 phase 5 index.json 의 `runloom.duckdns.org`), **실제 배포 안 함** |
+| 검증 | `python3 -m pytest -q` 1276 passed + 22 skipped(e2e), `ruff` 통과. e2e 는 `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` 로 22 passed(55.6초, 대본 스택) — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-21 절 |
+| 실연동 증거 | 실제 Codex CLI 로 B 1회(2026-09-20, [VERIFICATION_LOG](VERIFICATION_LOG.md) Step 15)와 실제 gpt-4.1 진단 평가([DIAG_EVAL](DIAG_EVAL.md))가 따로 있다. 실제 모델 + 실제 Codex 로 A → B 를 한 번에 완료한 기록은 없다. 실제 Claude Code 실연동은 없다(phase 4 의 남은 step 이 5-scripted-demo 로 대체되며 빠짐) |
+| 남은 것 | 실제 GitHub/Jira API 연동(지금은 `adapters/task_source_fixtures/` fixture 뿐), 새 업무 종류(리뷰 단계 — 지금은 진단 → 코드 수정 인계 쌍 하나), 셀프호스트 1인용 패키징(ADR-0006 Mac 구성은 코드로 남아 있으나 설치 절차·문서 없음), A2A. 사용량 한도 대기는 phase 3(심사 이후) |
 | 로컬 산출물(커밋 안 됨) | `.env`(비밀값, gitignore), `data/`(sqlite·산출물·평가 workdir), `../demo-report-repo`(B 가 수정하는 데모 저장소, `scripts/scaffold_demo_repo.py` 로 재생성 가능) |
 
-### 재개 방법 — phase 2-model-compare
+### 재개 방법 — 하네스
 
 ```bash
 cd /Users/kje/00_Workspace/01_Coding/project/workflow
-set -a && . ./.env && set +a && python3 scripts/execute.py 2-model-compare --engine claude
+python3 scripts/execute.py 5-scripted-demo --engine claude          # 완료된 step 은 건너뛴다. 새 step 을 추가하면 이어서 돈다
+python3 scripts/execute.py 3-limit-wait --engine claude             # 심사 이후 (ADR-0007). 실행 전 step 파일을 사용자가 검토·승인
+python3 scripts/local_stack.py --scripted                           # 로컬에서 공개 데모와 같은 대본 스택 5-프로세스
+WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q                       # 대본 e2e 22건 (약 1분)
 ```
 
-- `.env` 는 프로젝트 루트에 있고 gitignore 된다(`.gitignore` 의 `.env` 행 — execute.py 가 `git add -A` 하므로 필수). 내용: `OPENAI_API_KEY`, `DIAG_PRICE_INPUT_PER_M=0.40`, `DIAG_PRICE_OUTPUT_PER_M=1.60`(gpt-4.1-mini 단가), `DIAG_EVAL_BUDGET_USD=2`. 키 값은 채팅에 붙이지 않는다.
-- `set -a && . ./.env` 없이 돌리면 step 2 가 `blocked` 로 멈춘다. gpt-4.1 단가(2.00/8.00)는 step 2 커맨드 안에서 덮어쓴다. 예상 비용 약 US$0.6.
-- `claude -p` 세션 한도(429 "session limit")로 step 이 3회 실패하면 코드 문제가 아니다. `index.json` 의 그 step 을 `pending` 으로 되돌리고 `error_message` 를 지운 뒤 같은 명령으로 재개한다 (0-mvp step 8 에서 한 번 겪음).
-- step 파일은 사용자가 검토·승인했다 (0-mvp 는 실행 전 승인, 1-diag-fix·2-model-compare 는 초안 제시 후 "진행해").
+- 새 phase 는 `phases/{task-name}/index.json` + `step{N}.md` 를 만들고 같은 명령으로 돈다. 워크플로우 전체는 `.claude/commands/harness.md`.
+- `--engine claude` 를 쓴다(2026-09-20 기준 Codex 사용량 소진). `claude -p` 세션 한도(429 "session limit")로 step 이 3회 실패하면 코드 문제가 아니다. `index.json` 의 그 step 을 `pending` 으로 되돌리고 `error_message` 를 지운 뒤 같은 명령으로 재개한다.
+- `.env`(`OPENAI_API_KEY`·단가·`DIAG_EVAL_BUDGET_USD`)는 실제 모델 평가(`scripts/diag_eval.py`)에만 필요하다. 공개 데모·e2e·하네스 step 은 키 없이 돈다. 키 값은 채팅에 붙이지 않는다.
+- step 파일은 사용자가 검토·승인했다 (0-mvp 는 실행 전 승인, 1·2·4·5 는 초안 제시 후 "진행해").
 
 주의: 하네스가 도는 동안 같은 작업 트리에서 다른 Claude Code 세션의 Stop 훅(`verify.sh`)이 검증 실패를 낼 수 있다. 실패가 하네스의 미완성 파일 때문이면 기다리고, 커밋된 코드의 실제 결함이면(0-mvp step 7 의 시각 의존 테스트가 그 예) 테스트 파일만 따로 고쳐 커밋한다.
 
-리스크 (사용자에게 알린 것): 제품의 B 실행은 연결 프로그램이 띄우는 Codex 이고 하네스 Codex 엔진과 같은 사용량을 쓴다. 하네스는 `--engine claude` 로 돌리므로 Codex 사용량은 B 실연동에만 쓰인다. Claude Code 어댑터(`src/workflow/connector/` 경계에 추가)는 여전히 대안이다.
+리스크 (사용자에게 알린 것): 공개 데모는 대본이라 모델·구독 사용량을 쓰지 않는다. 셀프호스트로 실제 Codex/Claude 를 돌리면 연결 프로그램이 띄우는 도구가 하네스 엔진과 같은 구독 사용량을 쓰고, 한도 도달은 심사 이후 phase 3 전까지 `실패` 로 기록된다.
 
 ## 진단 모델 — 지금까지의 판단 (2026-09-20)
 
@@ -46,7 +52,7 @@ set -a && . ./.env && set +a && python3 scripts/execute.py 2-model-compare --eng
 
 1. 루트 AGENTS.md(스택·규칙·명령어 채움)와 [ADR 목록](adr/0000-principles.md)을 읽는다. ADR-0000~0006이 확정 사항이며 0003만 작업 가정이다.
 2. [PRD](PRD.md)·[ARCHITECTURE](ARCHITECTURE.md)·[CONTRACT](CONTRACT.md)·[GLOSSARY](GLOSSARY.md)를 읽는다. "2026-09-20 확정"으로 표시한 절은 재질문하지 않는다.
-3. 위 "지금 상태" 표와 "재개 방법" 을 본다. 사용자가 재개를 지시하면 `phases/2-model-compare` 를 실행한다. 사용자에게 제품 방향·시연 사례·진단 모델 비교 여부를 다시 고르도록 요구하지 않는다.
+3. 위 "지금 상태" 표와 "재개 방법" 을 본다. 사용자가 재개를 지시하면 "재개 방법" 의 명령으로 하네스를 돌린다. 사용자에게 제품 방향·시연 사례·진단 모델·공개 데모 방식(대본)을 다시 고르도록 요구하지 않는다.
 
 구현은 사용자가 "진행해" 로 지시했을 때만 하네스로 실행한다. 실배포·유료 호출·모델 교체는 별도 지시 없이 시작하지 않는다. 결정 질문은 압축 용어 대신 "누가 무엇을 하면 어떤 일이 생기는지" 장면으로 풀어 설명한 뒤 2~3개씩 묻는다.
 
@@ -127,8 +133,8 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 
 ## 다음 세션에서 할 일
 
-1. 사용자가 지시하면 위 "재개 방법" 대로 `2-model-compare` 를 돌린다. 끝나면 `docs/DIAG_EVAL.md`(종합) 의 모델별 판정과 총비용을 보고하고, ADR-0003 갱신(또는 ADR-0007 대체) 여부를 사용자에게 묻는다. ADR 파일은 사용자 확정 후에만 고친다.
-2. 그 다음은 사용자 결정: 배포(VM·도메인 지정 → [DEPLOY](DEPLOY.md)) 또는 정리·푸시·PR.
+1. 사용자 결정: 배포(VM·도메인 지정 → [DEPLOY](DEPLOY.md), 대본 구성) 또는 정리·푸시·PR(`feat-5-scripted-demo` → main).
+2. 심사 이후: `phases/3-limit-wait`(ADR-0007), 그 다음은 "지금 상태" 표의 "남은 것". ADR 파일은 사용자 확정 후에만 고친다.
 3. 인계 문서를 갱신할 때 "지금 상태" 표를 먼저 고친다.
 
 ### 이전 세션의 기술 설계 진행 내용 — 확정 전 기록 (위 표가 우선)

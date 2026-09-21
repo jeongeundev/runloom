@@ -28,7 +28,8 @@
     },
     {
       "dir": "5-scripted-demo",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-21T13:45:14+0900"
     }
   ]
 }

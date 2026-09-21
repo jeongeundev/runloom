@@ -1,15 +1,19 @@
-{# 에이전트 목록 — 세션은 읽기 전용. 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). #}
+{# 에이전트 목록 — 이 세션이 카탈로그에서 등록한 것만. 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}에이전트 — Runloom{% endblock %}
 {% block content %}
-<div class="crumbs"><div class="crumb">에이전트</div></div>
+<div class="crumbs">
+  <div class="crumb">에이전트</div>
+  <div class="crumb-side"><a class="btn btn-secondary btn-small" href="/agents/register">에이전트 등록</a></div>
+</div>
+{% if agents %}
 <div class="table-wrap">
 <table>
   <tr><th>이름</th><th>ID</th><th>소유</th><th>연결</th><th>능력</th><th>상태</th></tr>
   {% for a in agents %}
   <tr>
-    <td><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></td>
+    <td><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a>{% if a.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}</td>
     <td class="mono">{{ a.agent_id }}</td>
     <td>{{ a.owner_scope }}</td>
     <td>{{ a.connection_type }}</td>
@@ -19,4 +23,10 @@
   {% endfor %}
 </table>
 </div>
+{% else %}
+<div class="empty" style="padding-top:0">
+  <p>등록한 에이전트가 없습니다.</p>
+  <div class="actions"><a class="btn" href="/agents/register">에이전트 등록</a></div>
+</div>
+{% endif %}
 {% endblock %}
