@@ -9,12 +9,15 @@
 - 산출물·진행 메시지·오류 메시지는 `mask_secrets` 를 거친다. 연결 토큰은 이 모듈이 알지 못한다 (client 안).
 - 어댑터는 도구 이름 → 어댑터 매핑이며, 실행마다 `target.local_registration_id` 로 찾은 로컬 등록의 `tool` 로
   하나를 고른다 (`select_adapter`). 요청 본문의 값으로 실행 대상을 고르지 않는다.
+- 종료 이벤트(result_ready·failed)를 중앙이 받은 뒤 worktree·인계 디렉터리를 지운다 (`_cleanup_workdirs`). 결과는
+  `task/{task_id}` 브랜치의 커밋으로 남아 있다. 지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다.
 """
 
 import hashlib
 import json
 import logging
 import re
+import shutil
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -22,7 +25,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from workflow.connector import state
+from workflow.connector import git_ops, state
 from workflow.connector.adapter import AdapterOutput, ExecutionAdapter
 from workflow.connector.client import (
     CentralClient,
@@ -33,6 +36,7 @@ from workflow.connector.client import (
     Unreachable,
 )
 from workflow.connector.config import ConnectorPaths
+from workflow.connector.git_ops import GitError
 from workflow.connector.masking import mask_secrets
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
@@ -66,6 +70,13 @@ def _safe(name: str) -> str:
 
 def _masked_text(text: str) -> str:
     return mask_secrets(text)[0][:MESSAGE_MAX]
+
+
+def _process_stopped(row: dict) -> bool:
+    """실패 기록의 process_stopped. 실패가 아니거나 프로세스를 띄우기 전의 실패(failed_json 없음)는 True."""
+    if not row["failed_json"]:
+        return True
+    return bool(json.loads(row["failed_json"])[2])
 
 
 class HandoffHashMismatch(Exception):
@@ -113,6 +124,7 @@ class Runner:
         connector_id: str,
         clock: Callable[[], str],
         handoff_root: Path,
+        keep_workdirs: bool = False,
     ):
         self._client = client
         self._conn = state_conn
@@ -121,6 +133,7 @@ class Runner:
         self._connector_id = connector_id
         self._clock = clock
         self._handoff_root = handoff_root
+        self._keep_workdirs = keep_workdirs  # 디버깅용 — worktree·인계 디렉터리를 남긴다
         self._heartbeat_interval = 30.0
         self._last_heartbeat: float | None = None
 
@@ -204,6 +217,7 @@ class Runner:
             except CentralError as exc:
                 log.error("이벤트 %s seq %s 거부 — 폐기: %s", event.type, event.seq, exc)
             state.ack_event(self._conn, execution_id, event.seq, self._clock())
+        self._cleanup_if_delivered(execution_id)
 
     # --- 실행 ---------------------------------------------------------------------------------
 
@@ -314,14 +328,14 @@ class Runner:
             content_type="application/json", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
         )
         created = self._client.upload_artifact(execution_id, meta, data)
-        self._emit(
+        self._emit(  # 중앙이 받으면 `_flush` 끝의 `_cleanup_if_delivered` 가 작업 디렉터리를 지운다
             execution_id, "result_ready", {"result_artifact_id": created.artifact_id},
             finished_at=self._clock(),
         )
 
     def _finish_failed(self, execution_id: str, failed: tuple[str, str, bool]) -> None:
         code, message, stopped = failed
-        self._emit(
+        self._emit(  # 중앙이 받으면 정리 — 단 process_stopped=False 면 `_cleanup_workdirs` 가 건너뛴다
             execution_id, "failed",
             {"code": code, "message": _masked_text(message), "process_stopped": bool(stopped)},
             finished_at=self._clock(),
@@ -356,16 +370,64 @@ class Runner:
         meta = meta.model_copy(update={"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
         return meta, data
 
+    # --- 작업 디렉터리 정리 ----------------------------------------------------------------------
+
+    def _cleanup_if_delivered(self, execution_id: str) -> None:
+        """미전송 이벤트가 없고 종료 이벤트를 큐에 넣은 실행이면 한 번만 정리한다 (`_flush` 가 다 보낸 직후)."""
+        row = state.get_execution(self._conn, execution_id)
+        if row is None or row["finished_at"] is None or row["cleaned_at"] is not None:
+            return
+        self._cleanup_workdirs(row)
+
+    def _cleanup_workdirs(self, row: dict) -> None:
+        """결과가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지운다. 브랜치 `task/{task_id}` 와 결과 커밋은 남긴다.
+        지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다. 프로세스 종료를 확인하지 못한 실패(process_stopped
+        False)는 살아 있는 프로세스의 cwd 일 수 있어 지우지 않는다. 실패는 경고만 남기고 실행 결과에 영향을 주지 않는다.
+        이미 없는 디렉터리는 조용히 지나가며, 다 지웠을 때만 `cleaned_at` 을 적는다."""
+        if self._keep_workdirs or not _process_stopped(row):
+            return
+        execution_id = row["execution_id"]
+        request = ExecutionRequest.model_validate_json(row["request_json"])
+        repo = self._registered_repo(request)
+        cleaned = True
+        if repo is not None:
+            worktree = git_ops.worktree_path(repo, request.task_id)
+            if worktree.exists():
+                try:
+                    git_ops.remove_worktree(repo, worktree)
+                except GitError as exc:
+                    cleaned = False
+                    log.warning("%s: worktree 정리 실패 (%s): %s", execution_id, worktree, exc)
+        handoff_dir = self._handoff_dir(request)
+        if handoff_dir.exists():
+            try:
+                shutil.rmtree(handoff_dir)
+            except OSError as exc:
+                cleaned = False
+                log.warning("%s: 인계 디렉터리 정리 실패 (%s): %s", execution_id, handoff_dir, exc)
+        if repo is not None and repo.is_dir():
+            try:
+                git_ops.prune_worktrees(repo)
+            except GitError as exc:
+                log.warning("%s: worktree prune 실패 (%s): %s", execution_id, repo, exc)
+        if cleaned:
+            state.update_execution(self._conn, execution_id, cleaned_at=self._clock())
+
     # --- 인계 자료 -----------------------------------------------------------------------------
+
+    def _registered_repo(self, request: ExecutionRequest) -> Path | None:
+        """`target.local_registration_id` 의 로컬 등록이 가리키는 저장소 경로. 등록이 없거나 코드 수정이 아니면 None."""
+        if not isinstance(request.target, CodeChangeTarget):
+            return None
+        registration = state.get_registration(self._conn, request.target.local_registration_id)
+        return None if registration is None else Path(registration["repo_path"])
 
     def _handoff_dir(self, request: ExecutionRequest) -> Path:
         """`<repo>-worktrees/<task_id>.handoff/` (등록이 있으면). 없으면 handoff_root 아래. worktree 밖이다."""
         root = self._handoff_root
-        if isinstance(request.target, CodeChangeTarget):
-            registration = state.get_registration(self._conn, request.target.local_registration_id)
-            if registration is not None:
-                repo = Path(registration["repo_path"])
-                root = repo.parent / f"{repo.name}-worktrees"
+        repo = self._registered_repo(request)
+        if repo is not None:
+            root = repo.parent / f"{repo.name}-worktrees"
         return root / f"{_safe(request.task_id)}.handoff"
 
     def _download_handoff(self, request: ExecutionRequest, handoff_dir: Path) -> None:

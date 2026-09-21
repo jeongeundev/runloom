@@ -325,6 +325,10 @@ def test_10_demo_repo_main_untouched_and_result_on_task_branch(stack, ctx):
     changed = _git(repo, "diff", "--name-only", stack.base_commit, branch).splitlines()
     assert sorted(changed) == ["daily_report/transformer.py", "tests/test_repro_records.py"]
     assert re.search(rf'"result_commit":\s*"{result_commit}"', ctx["B_result"]), ctx["B_result"]
+    # 결과 업로드 뒤 worktree·인계 디렉터리는 지워지고 브랜치만 남는다 (연결 프로그램 기본 동작, --keep-workdirs 없음)
+    worktrees = repo.parent / f"{repo.name}-worktrees"
+    assert not (worktrees / ctx["B"]).exists() and not (worktrees / f"{ctx['B']}.handoff").exists()
+    assert ctx["B"] not in _git(repo, "worktree", "list")
 
 
 def test_11_offline_connector_leaves_new_fix_task_waiting(stack, client, ctx):

@@ -209,5 +209,5 @@ tail -1 ~/Library/Application\ Support/workflow-connector/logs/connector.log
 - Codex 사용량 한도에 걸리면 B 는 `실패` 다. 다른 엔진으로 자동 대체하지 않는다(ARCHITECTURE 상태·재접속·완료 절).
 - 진단 총액 상한은 US$30 이며 90% 에서 새 접수를 멈춘다. 단가(`DIAG_PRICE_*`)를 비워 두면 이 상한이 동작하지 않는다.
 - `OPENAI_API_KEY` 가 없으면 진단 워커가 멈춰 A 는 접수(`accepted`)에서 2분 뒤 `확인 필요 · 시작 여부 불명` 이 된다. 재실행하지 않는다.
-- 연결 코드는 10분, 세션 쿠키는 14일이다. 심사 기간 중 데이터 리셋은 없고 worktree 는 자동 삭제하지 않는다.
+- 연결 코드는 10분, 세션 쿠키는 14일이다. 심사 기간 중 데이터 리셋은 없다. 결과 업로드 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`run --keep-workdirs` 로 보존).
 - 데모 저장소의 결과 커밋은 `task/{task_id}` 브랜치에만 남는다. 기준 브랜치 병합은 운영자 확인 대기로 표시될 뿐 자동으로 하지 않는다.

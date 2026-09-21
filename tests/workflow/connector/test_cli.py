@@ -195,6 +195,24 @@ def test_run_with_explicit_adapter_builds_only_that_one(env, connected, monkeypa
     assert "adapter=echo" in caplog.text and "codex" not in caplog.text
 
 
+def test_run_passes_keep_workdirs_to_runner(env, connected, monkeypatch):
+    built: list[dict] = []
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+
+        def run_forever(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr("workflow.connector.cli.Runner", FakeRunner)
+
+    assert main(["run", "--adapter", "echo"], env=env, transport=connected.transport()) == 0
+    assert main(["run", "--adapter", "echo", "--keep-workdirs"], env=env, transport=connected.transport()) == 0
+
+    assert [kwargs["keep_workdirs"] for kwargs in built] == [False, True]  # 기본은 정리, 플래그는 디버깅용 보존
+
+
 def test_run_requires_connect_first(env, capsys):
     assert main(["run", "--adapter", "echo"], env=env) == 2
     assert "connect" in capsys.readouterr().err

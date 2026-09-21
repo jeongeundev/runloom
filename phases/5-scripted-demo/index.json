@@ -78,7 +78,11 @@
     {
       "step": 8,
       "name": "connector-cleanup",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-21T12:43:20+0900",
+      "completed_at": "2026-09-21T12:57:06+0900",
+      "engine": "claude",
+      "summary": "connector/runner.py: Runner(..., keep_workdirs=False); 정리 시점은 `_flush` 끝 `_cleanup_if_delivered` — 미전송 이벤트가 없고 finished_at 이 있고 cleaned_at 이 없을 때 한 번(정상 경로 `_emit(result_ready|failed)`→`_flush` 와, 끊겼다가 다음 tick `_flush_all` 이 재전송해 ack 한 경로가 같은 지점을 지난다 — 결과 업로드 뒤에만). `_cleanup_workdirs(row)`: keep_workdirs 또는 failed_json 의 process_stopped=False 면 건너뜀(프로세스를 띄우기 전 실패는 failed_json 없음 → 정리); 등록 repo_path+task_id 로 git_ops.worktree_path 가 있으면 remove_worktree, `_handoff_dir(request)` 가 있으면 rmtree, repo 가 디렉터리면 prune_worktrees; 각 실패는 경고 로그만, 모두 지웠을 때만 cleaned_at 기록; 이미 없는 디렉터리는 조용히 통과. `_registered_repo` 추출(`_handoff_dir` 공용). git_ops.prune_worktrees(repo). state: executions.cleaned_at 열 + init_schema 가 기존 DB 에 ALTER TABLE ADD COLUMN(운영자 Mac 의 로컬 DB), _EXECUTION_FIELDS 에 추가. cli: run --keep-workdirs(store_true) → Runner. 문서: ARCHITECTURE 재시작·백업·보존(384)·상태·재접속·완료 로컬 프로그램 문단(395)·Codex와 worktree(420), DEPLOY 10절 — '결과 업로드 뒤 worktree·인계 디렉터리는 지우고 task/{task_id} 브랜치만 남긴다(--keep-workdirs 로 보존)'. step 지시와 다른 점: '상태·재접속·완료' 절에는 worktree 문장이 원래 없어(있던 곳은 재시작·백업·보존 절과 Codex와 worktree 절) 그 두 문장을 고치고 상태·재접속·완료 로컬 프로그램 문단에 한 문장 추가. 테스트: test_runner +7(정상 종료 → worktree·handoff 삭제·task 브랜치=result_commit·main 불변·cleaned_at=NOW / keep_workdirs 보존 / failed stopped=True 삭제 / stopped=False 보존 / result_ready 전송 끊김 → 업로드는 끝났어도 보존, 다음 tick 재전송 뒤 삭제 / remove_worktree 권한 실패 → result_ready 전송됨·경고·cleaned_at None·handoff 는 독립 삭제 / worktree 없던 경우 조용히 cleaned_at), StubAdapter 가 실행 시점 handoff 파일을 스냅샷(기존 handoff 테스트 1건이 디렉터리 대신 스냅샷 확인), test_git_ops +2(prune), test_state +2(ALTER·cleaned_at 왕복), test_cli +1(--keep-workdirs → Runner kwargs False/True), e2e test_10 에 worktree·handoff 없음·worktree list 에 없음 추가. 검증: connector 166 passed, 전체 1266 passed + 12 skipped, ruff 통과, e2e 12 passed × 2(shim·WORKFLOW_E2E_SCRIPTED=1). local_tool.py·server/·domain/ 미변경."
     },
     {
       "step": 9,

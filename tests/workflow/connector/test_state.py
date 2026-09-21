@@ -25,6 +25,15 @@ def test_init_schema_is_idempotent(state_conn):
     assert {"registrations", "executions", "pending_events", "outputs"} <= tables
 
 
+def test_init_schema_adds_cleaned_at_to_executions_made_before_the_column(state_conn):
+    state_conn.execute("ALTER TABLE executions DROP COLUMN cleaned_at")  # 이 열이 생기기 전의 로컬 DB
+
+    state.init_schema(state_conn)
+
+    columns = {r[1] for r in state_conn.execute("PRAGMA table_info(executions)")}
+    assert "cleaned_at" in columns
+
+
 # --- 등록 ----------------------------------------------------------------------------
 
 
@@ -88,6 +97,16 @@ def test_set_phase_updates_phase_and_fields(state_conn):
 
     row = state.get_execution(state_conn, request.execution_id)
     assert (row["phase"], row["runtime_ref"], row["pid"]) == ("running", "pid:1;start:x", 1)
+
+
+def test_cleaned_at_is_null_until_recorded(state_conn):
+    request = make_request()
+    state.record_claim(state_conn, request, NOW)
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] is None
+
+    state.update_execution(state_conn, request.execution_id, cleaned_at=NOW)
+
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
 
 
 def test_set_phase_rejects_unknown_phase_and_field(state_conn):

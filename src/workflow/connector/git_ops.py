@@ -102,3 +102,8 @@ def export_checkout(repo: Path, commit: str, dest: Path) -> None:
 
 def remove_worktree(repo: Path, path: Path) -> None:
     _git(["worktree", "remove", "--force", str(path)], repo)
+
+
+def prune_worktrees(repo: Path) -> None:
+    """디렉터리가 사라진 worktree 의 관리 항목을 지운다 (`git worktree prune`). 브랜치는 건드리지 않는다."""
+    _git(["worktree", "prune"], repo)
