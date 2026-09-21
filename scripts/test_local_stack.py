@@ -182,6 +182,22 @@ def test_log_tails_is_empty_before_start(stack):
     assert stack.log_tails() == {}
 
 
+def test_start_service_respawns_a_stopped_service_only(stack, monkeypatch):
+    """e2e 가 connector 를 내렸다가(`stop_service`) 다음 시나리오에서 다시 띄운다. 이미 도는 것은 건드리지 않는다."""
+    spawned: list[str] = []
+    monkeypatch.setattr(LocalStack, "_spawn", lambda self, name: spawned.append(name))
+    stack.start_service("connector")
+    assert spawned == ["connector"]
+
+    class Alive:
+        def poll(self):
+            return None
+
+    stack._procs["connector"] = Alive()
+    stack.start_service("connector")
+    assert spawned == ["connector"]  # 도는 중이면 no-op
+
+
 def test_main_parser_defaults():
     args = local_stack.build_parser().parse_args([])
     assert args.workdir is None and args.central_port == 18000 and args.diag_port == 18100

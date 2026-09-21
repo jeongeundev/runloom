@@ -218,6 +218,11 @@ class LocalStack:
         if handle is not None:
             handle.close()
 
+    def start_service(self, name: str) -> None:
+        """`stop_service` 로 내린 프로세스를 같은 계획으로 다시 띄운다 (e2e 의 연결 끊김 시나리오 뒤). 도는 중이면 no-op."""
+        if not self.running(name):
+            self._spawn(name)
+
     def running(self, name: str) -> bool:
         proc = self._procs.get(name)
         return proc is not None and proc.poll() is None

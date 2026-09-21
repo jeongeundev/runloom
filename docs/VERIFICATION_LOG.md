@@ -67,3 +67,30 @@ line 24 item_12 exit=1: python3 -m pytest -q        (→ line 43 item_23 exit=0:
 - 어댑터·연결 프로그램 결함: **없음**. `src/` 변경 없음.
 - 추가한 파일: `scripts/make_handoff_dir.py`(인계 디렉터리 생성, `scripts/test_make_handoff_dir.py` 8건), 이 문서.
 - 메모(결함 아님): `run-local` 만 쓰려 해도 로컬 등록이 필요하고 `register` 는 연결 토큰을 요구한다. 이번에는 `state.save_registration` 으로 넣었다. 커밋 제목은 Codex 요약의 첫 60자를 잘라 쓰므로 단어 중간에서 끊길 수 있다 (`fix(fix-daily-0920): … 확인한 뒤, item`).
+
+## 2026-09-21 — 대본 데모 e2e (phase 5 step 9)
+
+목적: 심사자 흐름 전체(랜딩 → 에이전트 등록 → 업무 가져오기 → 워크플로우 시작 → A 완료 → B 자동 착수 → 검토 승인)를 **로컬 5-프로세스 스택에서 대본 에이전트로** 끝까지 돌린다. 실제 모델·실제 Codex·실제 Claude 는 **돌지 않았다** — 진단은 `DIAG_MODEL=fake`(fixture 대본), 코드 수정은 `workflow.scripted.codex`·`.claude`(connector PATH 앞의 래퍼). 이 절은 실연동 기록이 아니라 대본 경로의 통합 기록이다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-21 13:08:08 ~ 13:09:04 KST (전체 55.6초, 22 passed; 직전 첫 실행도 55.9초 22 passed) |
+| 명령 | `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q -x` (`--durations=0` 로 단계별 시간 채집) |
+| 스택 | `LocalStack(scripted=True)` — `tests/e2e/conftest.py` 의 `stack` fixture. `WORKFLOW_SCRIPT_PACE_SECONDS=0`, `DIAG_MODEL=fake`, seed `--scripted`(카탈로그 3개 `시연용 · 대본 재생`), 부모 환경의 `WORKFLOW_*`·`DIAG_*`·`OPENAI_*` 미전달 |
+| 에이전트 실행 파일 | `workdir/bin/codex`·`workdir/bin/claude` → `python3 -m workflow.scripted.{codex,claude}` (connector 의 PATH 앞에만). connector 로그 `adapter=codex,claude`, `Codex 실행 시작 pid=…`·`Claude 실행 시작 pid=…` 는 이 래퍼의 pid |
+| 시나리오 | test_01~11 직접 등록 경로(기존) → test_12~21 주 경로(등록 → GitHub 가져오기 → 워크플로우) → Jira·다른 세션 → Claude 먼저 등록한 세션(`slow`) |
+| 주 경로 A (`#41`, agent-ops-demo) | Execution 생성 04:08:47.48Z → `result_ready` 04:08:52.12Z — **약 4.6초**. 화면 `실행 요청됨 → 완료 · 판정 근거: 14/14` (test_16 4.75초) |
+| 주 경로 B (`#42`, agent-codex-mac) | A 완료 직후 04:08:52.13Z 중앙 워커가 Execution 생성(사람 조작 없음) → 시작 확인 04:08:54.41Z → `result_ready` 04:08:55.96Z — **약 3.8초** (worktree 체크아웃, 대본 수정, 재현 pytest 2회, 보고서). 화면 `대기 → 실행 요청됨 → 실행 중 → 확인 필요 · 검토 대기` (test_17 3.78초) |
+| Claude 세션 (`slow`) | A 약 5.1초, B(agent-claude-mac) 약 2.8초 — `Claude JSONL` 산출물, `Codex JSONL` 없음 (test_21 7.92초) |
+| 산출물 — 진단 | `diagnosis_result`, `evidence` ×8, `handoff_bundle`, `tool_trace`. provenance `model_id=fake-fixture-script` |
+| 산출물 — 코드 수정 (Codex 대본) | `code_change_result`, `diff`, `test_log_before`(exit_code=1), `test_log_after`(exit_code=0), `report_output`(합계 20 5), `verification_log`, `codex_jsonl`(thread_id `scripted-codex`), `codex_stderr` |
+| 산출물 — 코드 수정 (Claude 대본) | 같은 6종 + `claude_jsonl`(session_id `scripted-claude`, model `scripted-demo-agent`), `claude_stderr` |
+| 저장소 | `main` == `report-base` == base_commit (불변, 작업 트리 깨끗). `task/{task_id}` 브랜치 4개(직접 등록 B, test_11 의 C — 연결 복구 뒤 실행됨, 주 경로 #42, Claude 세션 #42), 각 결과 커밋의 부모는 base_commit, 변경 파일 `daily_report/transformer.py`·`tests/test_repro_records.py` 2개. `git worktree list` 는 main 하나, `demo-report-repo-worktrees/` 디렉터리 없음 (step 8 정리) |
+| 세션 격리 | 다른 세션의 Jira 워크플로우(OPS-41 → OPS-42, OPS-43·OPS-44 제외)와 서로 404, 홈 목록에 안 보임 |
+| 근거 | pytest basetemp `…/pytest-of-kje/pytest-449/stack0/` 의 `central/db.sqlite`(`executions`·`artifacts` 표)·`logs/connector.log`·`demo-report-repo` — 임시 디렉터리라 재실행하면 바뀐다. 재현은 위 명령 |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드(`src/`) 결함: **없음**. 상태 규칙·워커·연결 프로그램 변경 없이 통과했다.
+- 추가한 것: `LocalStack.start_service(name)`(`scripts/local_stack.py`) — 직접 등록 경로의 마지막(test_11)이 연결 프로그램을 내리므로 주 경로가 같은 계획으로 다시 띄운다. 그 결과 test_11 이 `대기` 로 남긴 C 가 연결 복구 뒤 자동 실행됐다(정상 동작 — "재접속 시 claim").
+- 메모(결함 아님): 가짜 진단은 폴링 간격 안에 끝나 A 의 `실행 중` 은 화면에 잡히지 않을 수 있다(기존 test_04 와 같은 이유로 관측을 강제하지 않고 순서만 확인). B 는 `실행 중` 관측을 요구한다.
