@@ -276,3 +276,12 @@ def test_every_label_is_in_glossary():
 def test_task_view_is_immutable():
     with pytest.raises(dataclasses.FrozenInstanceError):
         BASE.kind = "code_change"  # type: ignore[misc]
+
+
+def test_user_defined_kind_follows_same_rows():
+    # `kind` 는 등록된 종류 식별자 문자열이다 — 내장 두 값에 묶이지 않고, 상태 판정은 종류와 무관하다
+    assert dataclasses.fields(TaskView)[0].type is str
+    assert user_status(view(kind="review", run_mode="auto", predecessor_status="실행 중")) == UserStatus(
+        "대기", "선행 대기"
+    )
+    assert user_status(view(kind="review", execution_status="result_ready")) == UserStatus("확인 필요", "검토 대기")

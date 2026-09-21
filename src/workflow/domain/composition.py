@@ -1,32 +1,29 @@
 """워크플로우 자동 구성 — 가져온 이슈의 순서 배치와 Agent 배정 (심사자 흐름 3단계).
 
 규칙 기반이며 LLM 을 쓰지 않는다 (ADR-0004). 그래서 모든 결정에 사람이 읽는 이유 문장이
-붙는다. 순서는 `blocked_by` 위상 정렬, 체인은 `operations.diagnose → code.modify` 인접 쌍만
-(인계 자료가 정의된 유일한 쌍), 방식은 `defaults`·`completion` 의 기본값, 배정은 `select_agent`.
+붙는다. 순서는 `blocked_by` 위상 정렬, 체인은 인접 쌍에 등록된 후속 규칙(`SuccessorRule`)이 있을 때만
+(ADR-0009 — 종류·규칙 등록부는 인자로 받는다), 방식은 `defaults`·`kinds`·`completion` 의 기본값,
+배정은 `select_agent`.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from workflow.contracts.v1 import Capability, SelectionRecord
-from workflow.domain.completion import Criterion, can_auto_complete, criteria_template
-from workflow.domain.defaults import default_run_mode, kind_for_capability
+from workflow.contracts.v1 import Capability, KindSpec, SelectionRecord, SuccessorRule
+from workflow.domain.completion import Criterion, criteria_template
+from workflow.domain.defaults import default_run_mode
+from workflow.domain.kinds import can_auto_complete, kind_for_capability
 from workflow.domain.selection import Candidate, select_agent
+from workflow.domain.succession import rule_for
 from workflow.domain.task_sources import Issue, IssueMapping, map_issue
-
-Kind = Literal["diagnosis", "code_change"]
-
-# 인계 자료가 정의된 선행 → 후속 능력 쌍. 이 phase 는 진단 → 코드 수정 하나뿐이다.
-_HANDOFF_PAIRS: frozenset[tuple[str, str]] = frozenset({("operations.diagnose", "code.modify")})
-_UNSUPPORTED_PAIR_REASON = "진단 → 코드 수정 인계만 지원"
 
 
 @dataclass(frozen=True)
 class PlanNode:
     issue: Issue
     capability: Capability
-    kind: Kind
+    kind: str  # 등록된 종류 식별자 (`KindSpec.kind`)
     run_id: str | None
     predecessor_key: str | None  # 체인 안의 바로 앞 노드 key
     run_mode: Literal["manual", "auto"]
@@ -90,7 +87,7 @@ def _order_reasons(issue: Issue, capable_keys: set[str], all_keys: set[str]) -> 
 
 def _mode_reasons(has_predecessor: bool, completion_mode: str) -> list[str]:
     run = (
-        "자동 실행 — 선행 완료 후 별도 조작 없이 착수"
+        "자동 실행 — 선행 결과가 규칙에 맞으면 별도 조작 없이 착수"
         if has_predecessor
         else "직접 실행 — 흐름의 첫 업무는 사람이 시작"
     )
@@ -110,10 +107,19 @@ def _assignment_reason(selection: SelectionRecord) -> str:
     return selection.reason
 
 
-def compose(issues: Sequence[Issue], candidates: Sequence[Candidate], prefer: Sequence[str]) -> ChainPlan:
-    """이슈 목록을 체인 하나(+ Standalone)로 구성한다. 규칙 1~7 은 모듈 docstring·step 정의 순서다."""
+def compose(
+    issues: Sequence[Issue],
+    candidates: Sequence[Candidate],
+    prefer: Sequence[str],
+    *,
+    kinds: Sequence[KindSpec],
+    rules: Sequence[SuccessorRule],
+) -> ChainPlan:
+    """이슈 목록을 체인 하나(+ Standalone)로 구성한다. 규칙 1~7 은 모듈 docstring·step 정의 순서다.
+
+    `kinds`·`rules` 는 워크스페이스의 종류·후속 규칙 등록부다."""
     # 1. 매핑
-    mappings = {issue.key: map_issue(issue) for issue in issues}
+    mappings = {issue.key: map_issue(issue, kinds) for issue in issues}
     standalone: dict[str, Standalone] = {}
     capable: list[Issue] = []
     capabilities: dict[str, Capability] = {}
@@ -136,8 +142,16 @@ def compose(issues: Sequence[Issue], candidates: Sequence[Candidate], prefer: Se
         mapping = mappings[issue.key]
         capability = capabilities[issue.key]
         prev = nodes[-1] if nodes else None
-        if prev is not None and (prev.capability.code, capability.code) not in _HANDOFF_PAIRS:
-            standalone[issue.key] = Standalone(issue=issue, mapping=mapping, reason=_UNSUPPORTED_PAIR_REASON)
+        spec = kind_for_capability(kinds, capability.code)
+        if spec is None:
+            standalone[issue.key] = Standalone(
+                issue=issue, mapping=mapping, reason=f"등록되지 않은 능력 코드 {capability.code}"
+            )
+            continue
+        if prev is not None and rule_for(rules, prev.kind, spec.kind) is None:
+            standalone[issue.key] = Standalone(
+                issue=issue, mapping=mapping, reason=f"후속 규칙 없음: {prev.kind} → {spec.kind}"
+            )
             continue
 
         reasons = [mapping.reason, *_order_reasons(issue, capable_keys, all_keys)]
@@ -146,12 +160,9 @@ def compose(issues: Sequence[Issue], candidates: Sequence[Candidate], prefer: Se
         else:
             reasons.append(f"선행 {prev.issue.key} ({prev.capability.code}) → {capability.code} 인계")
 
-        kind = kind_for_capability(capability.code)
         has_predecessor = prev is not None
         run_mode = default_run_mode(has_predecessor)
-        completion_mode: Literal["auto", "review"] = (
-            "auto" if kind == "diagnosis" and can_auto_complete(kind) else "review"
-        )
+        completion_mode: Literal["auto", "review"] = "auto" if can_auto_complete(spec) else "review"
         reasons.extend(_mode_reasons(has_predecessor, completion_mode))
 
         selection = select_agent(issue.key, capability, candidates, prefer=prefer)
@@ -161,12 +172,12 @@ def compose(issues: Sequence[Issue], candidates: Sequence[Candidate], prefer: Se
             PlanNode(
                 issue=issue,
                 capability=capability,
-                kind=kind,
+                kind=spec.kind,
                 run_id=mapping.run_id,
                 predecessor_key=prev.issue.key if prev is not None else None,
                 run_mode=run_mode,
                 completion_mode=completion_mode,
-                criteria=tuple(criteria_template(kind)),
+                criteria=tuple(criteria_template(spec)),
                 selection=selection,
                 reasons=tuple(reasons),
             )

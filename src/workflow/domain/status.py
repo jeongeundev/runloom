@@ -43,7 +43,7 @@ USER_STATUS_LABELS = ("대기", "실행 가능", "실행 요청됨", "실행 중
 
 @dataclass(frozen=True)
 class TaskView:
-    kind: Literal["diagnosis", "code_change"]
+    kind: str  # 등록된 종류 식별자 (`KindSpec.kind`). 내장 두 값에 묶이지 않는다
     run_mode: Literal["manual", "auto"]
     completion_mode: Literal["auto", "review"]
     selection_status: Literal["selected", "needs_selection"]

@@ -13,6 +13,7 @@ from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
+from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
 from workflow.domain.status import TaskView, UserStatus, user_status
@@ -324,7 +325,10 @@ def _composition_reasons(chain: Row, tasks: list[Row]) -> dict[str, tuple[str, .
     if chain["source"] not in SOURCES:
         return {}
     keys = {t["source_ref"] for t in tasks} | {s["key"] for s in json.loads(chain["skipped_json"])}
-    plan = compose([i for i in load_issues(chain["source"]) if i.key in keys], candidates=(), prefer=())
+    plan = compose(
+        [i for i in load_issues(chain["source"]) if i.key in keys], candidates=(), prefer=(),
+        kinds=BUILTIN_KINDS, rules=BUILTIN_RULES,
+    )
     reasons = {node.issue.key: node.reasons[:-1] for node in plan.nodes}
     reasons.update({item.issue.key: (item.reason,) for item in plan.standalone})
     return reasons

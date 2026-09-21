@@ -32,15 +32,18 @@ from workflow.adapters import repo
 from workflow.adapters.errors import ActiveExecutionExists, NotFound
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.v1 import (
+    BUILTIN_KINDS,
+    BUILTIN_RULES,
     ArtifactMeta,
     Capability,
     CodeChangeResult,
     ExecutionRequest,
     ReviewComment,
 )
-from workflow.domain.completion import can_auto_complete, criteria_template, merge_criteria
+from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
-from workflow.domain.defaults import default_run_mode, kind_for_capability
+from workflow.domain.defaults import default_run_mode
+from workflow.domain.kinds import can_auto_complete, get_kind, kind_for_capability
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
@@ -357,11 +360,9 @@ def _form_context(
         "agents": [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)],
         "capability_codes": CAPABILITY_CODES,
         "scope_keys": SCOPE_KEYS,
-        "criteria_templates": {
-            kind: [c.text for c in criteria_template(kind)] for kind in ("diagnosis", "code_change")
-        },
-        "auto_completion_kinds": [k for k in ("diagnosis", "code_change") if can_auto_complete(k)],
-        "form_kind": kind_for_capability(form["capability_code"]),
+        "criteria_templates": {spec.kind: [c.text for c in criteria_template(spec)] for spec in BUILTIN_KINDS},
+        "auto_completion_kinds": [spec.kind for spec in BUILTIN_KINDS if can_auto_complete(spec)],
+        "form_kind": kind_for_capability(BUILTIN_KINDS, form["capability_code"]).kind,
     }
 
 
@@ -429,8 +430,9 @@ def task_create(
     if selection_mode == "manual":
         _require_registered(conn, session_id, chosen_agent_id)
 
-    kind = kind_for_capability(capability_code)
-    if completion_mode == "auto" and not can_auto_complete(kind):
+    spec = kind_for_capability(BUILTIN_KINDS, capability_code)  # SCOPE_KEYS 검사를 지나 내장 코드만 온다
+    kind = spec.kind
+    if completion_mode == "auto" and not can_auto_complete(spec):
         raise PageError(
             422, "invalid_field",
             "이 업무 종류는 자동 완료를 지원하지 않습니다. 검토 후 완료를 선택하세요.",
@@ -462,7 +464,8 @@ def task_create(
         fix = EXAMPLES["fix"]
         _insert_new_task(
             conn, session_id, now, settings,
-            title=fix["title"], request_text=fix["request"], kind=kind_for_capability(fix["capability_code"]),
+            title=fix["title"], request_text=fix["request"],
+            kind=kind_for_capability(BUILTIN_KINDS, fix["capability_code"]).kind,
             capability_code=fix["capability_code"], scope_value=fix["scope_value"],
             selection_mode=fix["selection_mode"], chosen_agent_id="", run_mode=fix["run_mode"],
             completion_mode=fix["completion_mode"], criteria_extra="", predecessor_task_id=task_id, run_id="",
@@ -487,7 +490,7 @@ def _insert_new_task(
         chosen_agent_id=chosen_agent_id or None, prefer=prefer,
     )
     agent = repo.get_agent(conn, selection.selected_agent_id) if selection.selected_agent_id else None
-    criteria = merge_criteria(criteria_template(kind), criteria_extra.splitlines())
+    criteria = merge_criteria(criteria_template(get_kind(BUILTIN_KINDS, kind)), criteria_extra.splitlines())
     repo.insert_task(
         conn,
         {
@@ -522,7 +525,7 @@ def _insert_new_task(
 
 def _issue_view(issue: Issue) -> dict[str, Any]:
     """가져오기 표의 한 행. 배정 미리보기는 `map_issue` 결과 그대로 — 여기서 추론하지 않는다."""
-    mapping = map_issue(issue)
+    mapping = map_issue(issue, BUILTIN_KINDS)
     if mapping.capability is None:
         preview = f"맡을 에이전트 없음 · {mapping.reason}"
     else:
@@ -583,7 +586,7 @@ def tasks_import(
         raise PageError(422, "agent_not_registered", "에이전트를 먼저 등록하세요.", field="agent_id")
     prefer = [a["agent_id"] for a in registered]
     try:
-        plan = compose(issues, _candidates(conn, session_id), prefer=prefer)
+        plan = compose(issues, _candidates(conn, session_id), prefer=prefer, kinds=BUILTIN_KINDS, rules=BUILTIN_RULES)
     except ValueError as exc:
         raise PageError(422, "dependency_cycle", str(exc), field="issue_keys") from None
 
@@ -623,13 +626,13 @@ def tasks_import(
         )
     for item in capable_standalone:
         capability = item.mapping.capability
-        kind = kind_for_capability(capability.code)
+        spec = kind_for_capability(BUILTIN_KINDS, capability.code)
         _insert_new_task(
             conn, session_id, now, settings,
-            title=item.issue.title, request_text=item.issue.body, kind=kind,
+            title=item.issue.title, request_text=item.issue.body, kind=spec.kind,
             capability_code=capability.code, scope_value=capability.scope[SCOPE_KEYS[capability.code]],
             selection_mode="auto", chosen_agent_id="", run_mode="manual",
-            completion_mode="auto" if can_auto_complete(kind) else "review", criteria_extra="",
+            completion_mode="auto" if can_auto_complete(spec) else "review", criteria_extra="",
             predecessor_task_id="", run_id=item.mapping.run_id or "",
             chain_id=chain_id, source_ref=item.issue.key, prefer=prefer,
         )

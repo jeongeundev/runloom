@@ -7,7 +7,7 @@ import pytest
 
 from workflow.adapters import task_sources
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
-from workflow.contracts.v1 import Capability
+from workflow.contracts.v1 import BUILTIN_KINDS, Capability
 from workflow.domain.task_sources import Issue, map_issue
 from workflow.server.web import EXAMPLES
 
@@ -128,16 +128,16 @@ def test_issue_contents(source):
 def test_issue_mapping_per_source(source):
     issues = _by_number(source)
 
-    m41 = map_issue(issues[41])
+    m41 = map_issue(issues[41], BUILTIN_KINDS)
     assert m41.capability == DIAGNOSE
     assert m41.run_id == "daily-0920-0900"
 
-    m42 = map_issue(issues[42])
+    m42 = map_issue(issues[42], BUILTIN_KINDS)
     assert m42.capability == MODIFY
     assert m42.run_id is None
 
-    assert map_issue(issues[43]).capability is None
-    assert map_issue(issues[44]).capability is None
+    assert map_issue(issues[43], BUILTIN_KINDS).capability is None
+    assert map_issue(issues[44], BUILTIN_KINDS).capability is None
 
 
 # --- fixture 파일 검증 -----------------------------------------------------------------
