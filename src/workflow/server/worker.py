@@ -1,11 +1,13 @@
 """중앙 워커 — ARCHITECTURE "실행 조정 워커". `python3 -m workflow.server.worker`.
 
 DB 를 기준으로 상태를 전진시킨다: 연결 상태 → 서버 관찰(unknown·heartbeat) → 진단 전달 → 진단 폴링 →
-A 판정 → B 생성 스캔 → B 결과 확인 → 실패 반영. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
-HTTP(진단 API 호출·다운로드)는 트랜잭션 밖에서 한다.
+A 판정 → B 결과 확인 → 범용 결과 판정 → 후속 스캔 → 실패 반영. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
+HTTP(진단 API 호출·다운로드)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에 오므로 같은 tick 에 판정이 나면 바로 잇는다.
 
 - 모델을 호출하지 않는다 (ADR-0004). A 완료는 `verify_diagnosis` 의 `passed` 로만 결정한다.
-- 자동 재시도는 같은 execution_id 의 재전송(`DiagUnavailable`)뿐이다. 새 실행을 만드는 곳은 B 생성 스캔 하나이고,
+- 후속 착수 조건은 선행 결과 + 판정 `passed` + 결과 `outcome` ∈ 등록된 규칙 `on_outcomes` 다 (ADR-0009). 선행 Task 의
+  `완료`(사람 승인)를 기다리지 않고, 규칙에 없는 결과는 착수하지 않고 이유를 남긴다. 인계 묶음은 규칙 `handoff_kinds` 로 모은다.
+- 자동 재시도는 같은 execution_id 의 재전송(`DiagUnavailable`)뿐이다. 새 실행을 만드는 곳은 후속 스캔 하나이고,
   `start_key` 유일성이 재시작·이벤트 중복에도 실행을 한 번으로 묶는다.
 - 시간 초과·heartbeat 상실은 `unknown`·관찰 기록으로 두고 재실행하지 않는다.
 - 진단 API 는 이벤트를 push 하지 않으므로 워커가 `status()` 로 받은 이벤트를 actor `diag` 로 대신 저장한다.
@@ -46,15 +48,19 @@ from workflow.adapters.errors import (
     NotFound,
 )
 from workflow.contracts.v1 import (
+    BUILTIN_KIND_NAMES,
     ArtifactMeta,
     AttachmentRef,
     CodeChangeResult,
     DiagnosisResult,
     ExecutionEvent,
     ExecutionRequest,
+    GenericResult,
     HandoffBundle,
+    InputRef,
     ResultReadyData,
     RunStatus,
+    SuccessorRule,
 )
 from workflow.domain.report_expectation import (
     ExpectedReport,
@@ -63,6 +69,7 @@ from workflow.domain.report_expectation import (
 )
 from workflow.domain.start_key import auto_start_key
 from workflow.domain.status import user_status
+from workflow.domain.succession import continue_reason, may_continue
 from workflow.domain.verification import (
     Check,
     LoadedEvidence,
@@ -94,6 +101,7 @@ class TickReport:
     successors_created: int = 0
     inputs_prepared: int = 0
     results_checked: int = 0
+    generic_checked: int = 0  # 사용자 정의 종류의 결과 판정 (outcome ∈ KindSpec.outcomes)
     failures_reflected: int = 0
     retries: int = 0  # DiagUnavailable — 다음 tick 에 같은 실행 ID 로 재시도
 
@@ -184,45 +192,77 @@ def _expected_from_result(
         return None
 
 
-def assemble_handoff(conn: Connection, store: ArtifactStore, a_execution: Row, b_task: Row, now: str) -> str:
-    """A 결과와 근거 원문을 묶은 `handoff_bundle` manifest 를 B 세션 소유 산출물로 저장한다 (execution_id 는 A 실행).
-    첨부는 A 결과의 attachments 그대로(이미 중앙 ID) + `expected_report.json`. 이미 있으면 그 ID 를 돌려준다."""
-    execution_id = a_execution["execution_id"]
+def _result_outcome(conn: Connection, store: ArtifactStore, execution: Row) -> str | None:
+    """결과 산출물 JSON 의 최상위 `outcome` 문자열 — 세 결과 봉투(진단·코드 수정·범용) 모두 가진다. 읽지 못하면 None."""
+    try:
+        data = json.loads(repo.read_artifact(conn, store, execution["result_artifact_id"]))
+    except (ValueError, NotFound, ArtifactMissing):
+        return None
+    outcome = data.get("outcome") if isinstance(data, dict) else None
+    return outcome if isinstance(outcome, str) else None
+
+
+def _diagnosis_attachments(
+    conn: Connection, store: ArtifactStore, source_execution: Row, successor_task: Row, now: str
+) -> list[AttachmentRef]:
+    """진단 결과의 근거 원문 참조(이미 중앙 ID) + 계산한 `expected_report.json` 을 `evidence` 산출물로 저장해 덧붙인다.
+    결과를 읽을 수 없으면(사람이 승인한 깨진 결과) 빈 목록 — 근거 없이 결과 참조만 넘긴다."""
+    execution_id = source_execution["execution_id"]
+    try:
+        result = DiagnosisResult.model_validate_json(
+            repo.read_artifact(conn, store, source_execution["result_artifact_id"])
+        )
+    except (ValidationError, ValueError, NotFound, ArtifactMissing):
+        return []
+    attachments = list(result.attachments)
+    expected = _expected_from_result(conn, store, execution_id, result)
+    if expected is not None:
+        data = json.dumps(expected.to_dict(), ensure_ascii=False, indent=2).encode()
+        artifact_id = _store(
+            conn, store, execution_id=execution_id, session_id=successor_task["session_id"],
+            kind="evidence", name="expected_report.json", content_type="application/json",
+            data=data, now=now,
+        )
+        attachments.append(AttachmentRef(
+            evidence_id=EXPECTED_REPORT_EVIDENCE[0], version=EXPECTED_REPORT_EVIDENCE[1],
+            content_type="application/json", artifact_id=artifact_id,
+            sha256=hashlib.sha256(data).hexdigest(),
+        ))
+    return attachments
+
+
+def assemble_handoff(
+    conn: Connection, store: ArtifactStore, source_execution: Row, successor_task: Row, rule: SuccessorRule, now: str
+) -> str:
+    """규칙 `handoff_kinds` 로 선행 실행의 산출물을 모아 `handoff_bundle` manifest 를 후속 세션 소유 산출물로 저장한다
+    (execution_id 는 선행 실행). 근거 첨부는 진단 결과에서만 채워지고, 첨부에 이미 있는 산출물은 `inputs` 에 다시 넣지 않는다.
+    이미 있으면 그 ID 를 돌려준다."""
+    execution_id = source_execution["execution_id"]
     existing = [a for a in repo.artifacts_of(conn, execution_id) if a["kind"] == "handoff_bundle"]
     if existing:
         return existing[-1]["artifact_id"]
 
-    result_id = a_execution["result_artifact_id"]
-    attachments: list[AttachmentRef] = []
-    try:
-        result = DiagnosisResult.model_validate_json(repo.read_artifact(conn, store, result_id))
-    except (ValidationError, ValueError, NotFound, ArtifactMissing):
-        result = None  # 사람이 승인한 깨진 결과 — 근거 없이 결과 참조만 넘긴다
-    if result is not None:
-        attachments = list(result.attachments)
-        expected = _expected_from_result(conn, store, execution_id, result)
-        if expected is not None:
-            data = json.dumps(expected.to_dict(), ensure_ascii=False, indent=2).encode()
-            artifact_id = _store(
-                conn, store, execution_id=execution_id, session_id=b_task["session_id"],
-                kind="evidence", name="expected_report.json", content_type="application/json",
-                data=data, now=now,
-            )
-            attachments.append(AttachmentRef(
-                evidence_id=EXPECTED_REPORT_EVIDENCE[0], version=EXPECTED_REPORT_EVIDENCE[1],
-                content_type="application/json", artifact_id=artifact_id,
-                sha256=hashlib.sha256(data).hexdigest(),
-            ))
+    source_kind = source_execution["kind"]
+    attachments = (
+        _diagnosis_attachments(conn, store, source_execution, successor_task, now)
+        if source_kind == "diagnosis" else []
+    )
+    attached = {a.artifact_id for a in attachments}
+    inputs = [
+        InputRef(kind=row["kind"], artifact_id=row["artifact_id"], sha256=row["sha256"], content_type=row["content_type"])
+        for row in repo.artifacts_of_kinds(conn, execution_id, rule.handoff_kinds)
+        if row["artifact_id"] not in attached and row["kind"] != "handoff_bundle"
+    ]
     bundle = HandoffBundle(
         contract_version=1,
         source_execution_id=execution_id,
-        source_kind="diagnosis",
-        source_result_artifact_id=result_id,
-        inputs=[],
+        source_kind=source_kind,
+        source_result_artifact_id=source_execution["result_artifact_id"],
+        inputs=inputs,
         attachments=attachments,
     )
     return _store(
-        conn, store, execution_id=execution_id, session_id=b_task["session_id"],
+        conn, store, execution_id=execution_id, session_id=successor_task["session_id"],
         kind="handoff_bundle", name="handoff.json", content_type="application/json",
         data=bundle.model_dump_json(indent=2).encode(), now=now,
     )
@@ -247,7 +287,7 @@ class Worker:
         self._clock = clock
 
     def tick(self) -> TickReport:
-        """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, B 스캔은 판정 뒤)."""
+        """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다)."""
         report = TickReport()
         conn = self._conn_factory()
         try:
@@ -256,8 +296,9 @@ class Worker:
             self._submit_diagnoses(conn, report)
             self._poll_diagnoses(conn, report)
             self._judge_diagnoses(conn, report)
-            self._spawn_successors(conn, report)
             self._check_code_results(conn, report)
+            self._check_generic_results(conn, report)
+            self._spawn_successors(conn, report)
             self._reflect_failures(conn, report)
         finally:
             conn.close()
@@ -313,11 +354,10 @@ class Worker:
                     f"accepted 후 {int(age)}초 동안 started 없음", now,
                 )
                 report.observations += 1
-        for execution in repo.executions_by(conn, statuses=("running",), kind="code_change"):
-            connector = (
-                repo.get_connector(conn, execution["assigned_connector_id"])
-                if execution["assigned_connector_id"] else None
-            )
+        for execution in repo.executions_by(conn, statuses=("running",)):
+            if execution["assigned_connector_id"] is None:
+                continue  # 진단 API 실행은 heartbeat 가 없다 — 연결 프로그램이 맡은 실행(종류 무관)만 본다
+            connector = repo.get_connector(conn, execution["assigned_connector_id"])
             last_seen = connector["last_seen_at"] if connector else None
             age = _age_seconds(now, last_seen)
             if age is not None and age <= limits.heartbeat_offline_seconds:
@@ -563,81 +603,7 @@ class Worker:
         except (ValueError, KeyError, TypeError, AttributeError):
             return None
 
-    # --- 6. B 생성 스캔 -----------------------------------------------------------------
-
-    def _spawn_successors(self, conn: Connection, report: TickReport) -> None:
-        now = self._clock()
-        for task in repo.tasks_with_ready_predecessor(conn):
-            task_id = task["task_id"]
-            predecessor = repo.get_task(conn, task["predecessor_task_id"])
-            if predecessor is None or predecessor["status"] != "완료":
-                continue  # 선행 결과·판정·outcome 으로 착수하는 조건은 phase 6 step 4 가 넣는다 — 그때까지 선행 완료만
-            if repo.active_execution(conn, task_id) is not None:
-                continue
-            selection = repo.get_selection(conn, task_id)
-            if selection is None or selection.status != "selected":
-                continue  # 확인 필요(후보 0·N) — 사용자 선택을 기다린다
-            agent = repo.get_agent(conn, selection.selected_agent_id)
-            a_execution = self._completed_execution(conn, task["predecessor_task_id"])
-            if agent is None or a_execution is None or task["kind"] != "code_change":
-                # 진단 후속 업무는 첫 구현 범위 밖 (상한·usage 기록이 웹 경로에만 있다). 직접 실행으로 시작한다
-                self._refresh_task(conn, task_id)
-                continue
-            if task["run_mode"] == "manual":
-                before = repo.artifacts_of(conn, a_execution["execution_id"])
-                assemble_handoff(conn, self._store, a_execution, task, now)
-                if len(repo.artifacts_of(conn, a_execution["execution_id"])) > len(before):
-                    report.inputs_prepared += 1
-                self._refresh_task(conn, task_id)  # → 실행 가능. 사용자 조작 전에는 실행을 만들지 않는다
-                continue
-            if agent["connection_type"] == "local" and not views.agent_online(agent, now=now, settings=self._settings):
-                self._refresh_task(conn, task_id)  # → 대기 · 연결 끊김, 마지막 확인 …
-                continue
-            bundle_id = assemble_handoff(conn, self._store, a_execution, task, now)
-            try:
-                request = ExecutionRequest.model_validate({
-                    "contract_version": 1,
-                    "execution_id": f"exec-{secrets.token_hex(8)}",
-                    "task_id": task_id,
-                    "kind": task["kind"],
-                    "agent_id": agent["agent_id"],
-                    "task_revision": task["revision"],
-                    "request": task["request"],
-                    "input_artifact_ids": [bundle_id],
-                    "target": json.loads(task["target_json"]),
-                })
-            except ValidationError as exc:
-                log.warning("후속 업무 %s 의 실행 요청을 만들 수 없음: %s", task_id, exc)
-                self._refresh_task(conn, task_id)
-                continue
-            attempts = repo.list_executions(conn, task_id)
-            try:
-                repo.create_execution(
-                    conn,
-                    execution_id=request.execution_id, task_id=task_id,
-                    attempt_no=attempts[-1]["attempt_no"] + 1 if attempts else 1,
-                    start_key=auto_start_key(task_id, task["revision"]),
-                    agent_id=agent["agent_id"], kind=task["kind"], request=request,
-                    assigned_connector_id=agent["connector_id"],
-                    predecessor_execution_id=a_execution["execution_id"],
-                    now=now,
-                )
-            except (DuplicateStartKey, ActiveExecutionExists) as exc:
-                log.info("후속 업무 %s 는 이미 자동 실행을 만들었음: %s", task_id, exc)
-                self._refresh_task(conn, task_id)
-                continue
-            report.successors_created += 1
-            self._refresh_task(conn, task_id)  # → 실행 요청됨 · 접수 대기
-
-    @staticmethod
-    def _completed_execution(conn: Connection, task_id: str) -> Row | None:
-        """선행 Task 를 완료시킨 실행 — 결과가 보존된 가장 최근 `result_ready` 시도."""
-        for execution in reversed(repo.list_executions(conn, task_id)):
-            if execution["status"] == "result_ready" and execution["result_artifact_id"]:
-                return execution
-        return None
-
-    # --- 7. B 결과 확인 -----------------------------------------------------------------
+    # --- 6. B 결과 확인 -----------------------------------------------------------------
 
     def _check_code_results(self, conn: Connection, report: TickReport) -> None:
         for execution in repo.results_awaiting_verdict(conn, "code_change"):
@@ -722,7 +688,145 @@ class Worker:
                 continue
         return None
 
-    # --- 8. 실패 반영 -------------------------------------------------------------------
+    # --- 7. 범용 결과 판정 (사용자 정의 종류) ------------------------------------------------
+
+    def _check_generic_results(self, conn: Connection, report: TickReport) -> None:
+        """`result_ready` 이고 판정 없는 실행 중 내장이 아닌 종류. `GenericResult` 봉투를 검사해 판정을 기록한다.
+        중앙은 봉투와 `outcome ∈ kind_spec.outcomes` 만 보고, 완료는 어느 쪽이든 사람이 한다 (ADR-0009)."""
+        for execution in repo.results_awaiting_verdict(conn):
+            if execution["kind"] in BUILTIN_KIND_NAMES:
+                continue
+            checks = self._generic_result_checks(conn, execution)
+            failed = [c for c in checks if not c["passed"]]
+            reason = "검토 대기" if not failed else " · ".join(c["detail"] for c in failed)
+            repo.record_verdict(
+                conn, task_id=execution["task_id"], execution_id=execution["execution_id"],
+                verdict={"outcome": "passed" if not failed else "failed", "checks": checks},
+                status="확인 필요", reason=reason, finish=False, now=self._clock(),
+            )
+            report.generic_checked += 1
+
+    def _generic_result_checks(self, conn: Connection, execution: Row) -> list[dict[str, Any]]:
+        """envelope_valid(파싱) → ids_match(execution_id·task_id·kind) → outcome_in_spec(요청에 고정된 kind_spec.outcomes)."""
+        try:
+            result = GenericResult.model_validate_json(
+                repo.read_artifact(conn, self._store, execution["result_artifact_id"])
+            )
+        except (ValidationError, ValueError, NotFound, ArtifactMissing) as exc:
+            return [_check_dict("envelope_valid", False, f"결과를 계약 v1 GenericResult 로 읽을 수 없음: {type(exc).__name__}")]
+        checks = [_check_dict("envelope_valid", True, f"outcome={result.outcome}")]
+
+        expected_ids = (execution["execution_id"], execution["task_id"], execution["kind"])
+        actual_ids = (result.execution_id, result.task_id, result.kind)
+        if actual_ids != expected_ids:
+            checks.append(_check_dict("ids_match", False, f"결과의 execution_id·task_id·kind {actual_ids} ≠ 요청 {expected_ids}"))
+            return checks
+        checks.append(_check_dict("ids_match", True, "execution_id·task_id·kind 가 요청과 일치"))
+
+        spec = ExecutionRequest.model_validate_json(execution["request_json"]).kind_spec
+        if spec is None:
+            checks.append(_check_dict("outcome_in_spec", False, "요청에 kind_spec 이 없어 허용 outcome 을 알 수 없음"))
+        elif result.outcome not in spec.outcomes:
+            checks.append(_check_dict(
+                "outcome_in_spec", False, f"허용되지 않은 outcome {result.outcome} — 허용: {', '.join(spec.outcomes)}",
+            ))
+        else:
+            checks.append(_check_dict("outcome_in_spec", True, f"outcome {result.outcome} 이 허용 목록 안"))
+        return checks
+
+    # --- 8. 후속 스캔 -------------------------------------------------------------------
+
+    def _spawn_successors(self, conn: Connection, report: TickReport) -> None:
+        """선행 실행이 `result_ready` + 판정 `passed` + 결과 `outcome` ∈ 규칙 `on_outcomes` 면 규칙 `handoff_kinds` 로 입력을
+        고정하고 실행을 만든다 (ADR-0009 (3)). 선행 Task 의 `완료` 를 기다리지 않는다. 규칙·outcome 이 맞지 않으면 이유를 남긴다."""
+        now = self._clock()
+        for task in repo.tasks_with_ready_predecessor(conn):
+            task_id = task["task_id"]
+            if repo.active_execution(conn, task_id) is not None:
+                continue
+            selection = repo.get_selection(conn, task_id)
+            if selection is None or selection.status != "selected":
+                continue  # 확인 필요(후보 0·N) — 사용자 선택을 기다린다
+            source = repo.predecessor_ready_execution(conn, task["predecessor_task_id"])
+            if source is None:
+                self._refresh_task(conn, task_id)
+                continue
+            rule = repo.get_rule(conn, task["session_id"], source["kind"], task["kind"])
+            if rule is None:
+                self._write_status(
+                    conn, task, "대기",
+                    f"후속 규칙 없음: {source['kind']} → {task['kind']} — 규칙을 등록하거나 직접 실행",
+                )
+                continue
+            verdict = repo.get_verdict(conn, source["execution_id"])
+            if verdict is None or json.loads(verdict["verdict_json"]).get("outcome") != "passed":
+                self._refresh_task(conn, task_id)  # 판정 실패·보류인 선행은 사람이 본다
+                continue
+            outcome = _result_outcome(conn, self._store, source)
+            if outcome is None:
+                self._refresh_task(conn, task_id)
+                continue
+            if not may_continue(rule, outcome):
+                self._write_status(conn, task, "확인 필요", continue_reason(rule, outcome))
+                continue
+            agent = repo.get_agent(conn, selection.selected_agent_id)
+            if agent is None or agent["connection_type"] == "api":
+                # 진단 API 후속은 이번에도 웹 경로에서만 시작한다 (상한·usage 기록이 거기 있다 — ADR-0009 한계)
+                self._refresh_task(conn, task_id)
+                continue
+            if task["run_mode"] == "manual":
+                before = repo.artifacts_of(conn, source["execution_id"])
+                assemble_handoff(conn, self._store, source, task, rule, now)
+                if len(repo.artifacts_of(conn, source["execution_id"])) > len(before):
+                    report.inputs_prepared += 1
+                self._refresh_task(conn, task_id)  # → 실행 가능. 사용자 조작 전에는 실행을 만들지 않는다
+                continue
+            if not views.agent_online(agent, now=now, settings=self._settings):
+                self._refresh_task(conn, task_id)  # → 대기 · 연결 끊김, 마지막 확인 …
+                continue
+            spec = repo.get_kind(conn, task["session_id"], task["kind"])
+            if spec is None:
+                log.warning("후속 업무 %s 의 종류 %s 가 등록부에 없음", task_id, task["kind"])
+                self._refresh_task(conn, task_id)
+                continue
+            bundle_id = assemble_handoff(conn, self._store, source, task, rule, now)
+            try:
+                request = ExecutionRequest.model_validate({
+                    "contract_version": 1,
+                    "execution_id": f"exec-{secrets.token_hex(8)}",
+                    "task_id": task_id,
+                    "kind": task["kind"],
+                    "agent_id": agent["agent_id"],
+                    "task_revision": task["revision"],
+                    "request": task["request"],
+                    "input_artifact_ids": [bundle_id],
+                    "target": json.loads(task["target_json"]),
+                    "kind_spec": spec.model_dump(),
+                })
+            except ValidationError as exc:
+                log.warning("후속 업무 %s 의 실행 요청을 만들 수 없음: %s", task_id, exc)
+                self._refresh_task(conn, task_id)
+                continue
+            attempts = repo.list_executions(conn, task_id)
+            try:
+                repo.create_execution(
+                    conn,
+                    execution_id=request.execution_id, task_id=task_id,
+                    attempt_no=attempts[-1]["attempt_no"] + 1 if attempts else 1,
+                    start_key=auto_start_key(task_id, task["revision"]),
+                    agent_id=agent["agent_id"], kind=task["kind"], request=request,
+                    assigned_connector_id=agent["connector_id"],
+                    predecessor_execution_id=source["execution_id"],
+                    now=now,
+                )
+            except (DuplicateStartKey, ActiveExecutionExists) as exc:
+                log.info("후속 업무 %s 는 이미 자동 실행을 만들었음: %s", task_id, exc)
+                self._refresh_task(conn, task_id)
+                continue
+            report.successors_created += 1
+            self._refresh_task(conn, task_id)  # → 실행 요청됨 · 접수 대기
+
+    # --- 9. 실패 반영 -------------------------------------------------------------------
 
     def _reflect_failures(self, conn: Connection, report: TickReport) -> None:
         for execution in repo.executions_by(conn, statuses=("failed", "unknown")):
