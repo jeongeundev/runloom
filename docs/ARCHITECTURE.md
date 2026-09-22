@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-22 (ADR-0011 실서비스 전환 방향 반영)
+갱신일: 2026-09-23 (phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료, 실제 GitHub·Agent 미검증)
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -41,6 +41,192 @@ n8n 입구·callback은 현재 계약을 유지한다. n8n이 더 많은 실행�
 4. 실제 외부 업무 도구 한 종류와 실제 Agent로 전체 순환을 검증한다. 검증: PRD 수용 시나리오와 병목 지표를 기록한다. 구체적인 첫 도구·업무 사례·비용은 실행 전 정한다.
 
 각 단계는 `service`에서 분기하고 TDD를 적용한다. DB 변경은 기존 데이터 보존과 마이그레이션을 설계한 뒤 수행하며, 공개 데모의 초기화 배포 방식을 실서비스에 자동 적용하지 않는다. 현 단계에서는 계약 v1 예시·코드 식별자·스키마 버전을 바꾸지 않는다.
+
+## GitHub 업무 순환 — phase 8 계약
+
+상태(2026-09-23 step 15): 아래 step 1~13 이 구현되어 있고 step 14 의 대역 e2e(`tests/e2e/test_github_cycle.py`)를 통과했다. 실제 GitHub·실제 Agent 는 아직 쓰지 않았다(step 16). 운영 절차·미검증 항목·계획과 구현의 차이는 [GitHub 런북](github/README.md).
+
+[ADR-0014](adr/0014-github-task-cycle.md)를 따른다. 위 구현 순서 1~4를 GitHub Issues 버그 수정 → 커밋 검토 한 유형으로 구체화한 것이며 아래 이름은 구현 step 표기를 따른다. 예시 payload 는 [CONTRACT](CONTRACT.md) 13절. 계약 버전은 1 그대로이고 기존 v1 payload 는 바뀌지 않는다.
+
+step 1 구현 상태: 위치가 `contracts/`(1) 인 모델은 있다 — `BUILTIN_KIND_NAMES`·`BUILTIN_KINDS` 4종, `BUILTIN_RULES` 에 `bug_fix → code_review`, 산출물 kind `code_review_result`, `ExecutionRequest` 의 종류별 target 규칙(`bug_fix` 는 `CodeChangeTarget`·입력 비어도 됨, `code_review` 는 `CommitReviewTarget`·입력 필수). 내장 이름은 예약어다 — 계약은 사용자 정의 `KindSpec` 이 내장 이름이면 거부하고, 화면 `POST /kinds` 는 409 `kind_exists`.
+
+step 4 구현 상태: 새 세션(`repo.create_session`)은 내장 종류 4개·내장 규칙 2개를 seed 하고, 기존 세션은 아래 "저장 — v5 마이그레이션" 이 넣는다. 완료 기준 템플릿(`domain/completion`)에 `bug_fix`·`code_review` 항목을 더했다. 실행·판정 경로(step 8~10)는 아직 없어, 지금 만든 `bug_fix`·`code_review` Task 는 실행되지 않고 머문다 — phase 가 끝나기 전 `service` 에 병합하지 않는다.
+
+step 5 구현 상태: `adapters/github_client.py` 의 `HttpGitHubClient`(HTTPX, transport 주입)가 있다. 아직 부르는 곳은 없다(수집 step 7, 댓글 전달 step 12). 아래 "GitHub REST 경계" 참고.
+
+step 6 구현 상태: `server/github_api.py` 가 운영자 설정 API(`/github/sources`·미리보기·변경·중지·담당 연결, 요청·오류는 [CONTRACT](CONTRACT.md) 13.10)를 제공한다. 운영자 세션만, 소스는 만든 세션 소유, 다른 세션이 이미 GitHub 소스를 가지면 새 소스를 거부한다(셀프호스트 1개 워크스페이스 — 전역 토큰을 두 워크스페이스가 나눠 쓰지 않게). 설정은 `Settings.github_token`(`WORKFLOW_GITHUB_TOKEN`, `OPTIONAL_SECRET_KEYS` — 비면 기능만 꺼지고 `WORKFLOW_DEV` 도 만들지 않음, `repr` 제외)·`Settings.github_repos`(`WORKFLOW_GITHUB_REPOS`)에서 읽고 응답은 `token_configured` 만 보인다. 저장소는 허용 목록 안(대소문자 무시, 저장은 목록 표기)에서만, 변경 시 저장소는 바꿀 수 없다(커서·원본 매핑이 그 저장소 것). `config_revision` 잠금은 `repo.save_github_source(..., expected_revision=)` 가 같은 트랜잭션에서 검사한다(`StaleConfig` → 409 `stale_config`). 검토 Agent·담당 Agent 는 세션 등록 + `code.review`/`code.fix {repository_id}` 능력 + (담당) 소스 검증 프로필 보고를 요구한다. 설정 변경은 이미 만든 Task·Execution 입력을 바꾸지 않는다. GitHub 클라이언트는 워커가 만든다(step 7).
+
+step 7 구현 상태: `server/github_sync.sync_source` 가 소스 하나를 목록 폴링으로 수집한다(webhook 없음). 워커는 `settings.github_token` 이 있을 때만 `HttpGitHubClient(settings.github_token, settings.github_repos)` 를 만들고, tick 첫 단계에서 켜진 소스마다 `GITHUB_SYNC_INTERVAL_SECONDS`(60초) 간격으로 부른다(rate limit 이면 알려준 시간, 없으면 60초 쉰다. 간격은 메모리 값이라 재시작하면 바로 한 번 부른다). 수집은 Task 만 만들고 착수하지 않는다 — 준비 판정·착수는 step 10.
+- 범위(`domain/issue_intake.intake_scope`, 아직 Task 가 없는 이슈만): 다른 저장소·PR 은 언제나 제외. `selected_issue_numbers` 로 고른 이슈는 명시적 선택이라 라벨·시작 시각·닫힘과 무관하게 받는다(닫혀 있으면 준비 판정이 `source_closed`). 그 밖은 open 이고 `label_filter` 라벨을 모두 가지며(대소문자 무시) `created_at >= start_at` 이어야 한다 — 시작 전 백로그(`before_start`)·라벨 불일치·닫힘·필터 없음(`not_selected`)은 받지 않고 `SyncReport.skipped` 에 사유별로 센다. 이미 받은 이슈는 범위를 벗어나도(라벨 제거 등) 계속 갱신한다.
+- 매핑(`snapshot_to_task_spec`): `bug_fix`, 요구 능력 `code.fix {repository_id: workflow_repository_id}`, 제목 = 이슈 제목, 요청 = 본문(앞뒤 공백 제거, 명령·경로로 해석하지 않음), `run_mode` = 그 시점 설정, 선택 `auto`·완료 `review`, 완료 기준 = 내장 템플릿, target `{}`(실행 생성 때 등록값으로 고정), `source_ref` = `owner/name#번호`, 상태 `대기 · 준비 판정 대기`.
+- 커서: 최초는 `IssueCursor(since=start_at)`. 한 페이지의 이슈를 모두 저장한 뒤에 다음 페이지 커서를 저장한다 — GitHub 오류(`SyncReport.error`)나 저장 중 예외면 커서가 그 페이지에 남아 다음 호출이 다시 받고, 다시 받은 이슈는 `unchanged`. 마지막 페이지 뒤 `since` = 이번에 본 가장 늦은 `updated_at`(포함 경계). since 가 그대로이고 1페이지뿐이었을 때만 ETag 를 남겨 다음 요청이 304 가 된다. 한 호출은 최대 `MAX_PAGES_PER_SYNC`(10) 페이지. 아직 받지 않은 선택 이슈는 목록 뒤에 `get_issue` 로 받는다(404 는 `not_found` 로 세고 넘어감). 알려진 한계: 페이지를 넘기는 사이 다른 이슈가 수정돼 뒤로 밀리면 번호 기반 페이지에서 한 건이 빠질 수 있다 — 그 이슈가 다음에 수정되거나 선택 번호로 지정되면 들어온다.
+- 원본 변경(`repo.upsert_source_issue`): 제목·요청이 바뀌면 같은 트랜잭션에서 Task 제목·요청을 바꾸고 `revision`+1(`SourceIssueUpsert.input_changed`, `SyncReport.input_changed` — 재평가 필요). 마감된 Task 는 바꾸지 않는다. 진행 중 Execution 의 `request_json`·`task_revision` 은 그대로라서 "Task revision > 실행의 task_revision" 이 재평가 필요 기록이다. 담당·라벨·상태·`updated_at`(원본 댓글로 인한 변경 포함)만 바뀐 것은 원본 스냅샷의 `source_revision` 만 올린다. 닫힘·재오픈은 Task 를 마감·재생성하지 않는다.
+- 준비 판정 입력(`github_sync.task_intake_facts` → `domain/issue_intake.IntakeFacts`, `TaskFacts(**facts.as_kwargs())`): 가져온 Task 와 직접 등록 Task 가 같은 함수를 거친다. 원본 매핑이 있으면 스냅샷의 담당자·`AssigneeBinding`·원본 상태·소스 `max_rework_rounds`, 없으면(직접 등록) `assignee_ids=None`(직접·자동 선택). 요청은 언제나 필수(`request_required`).
+- 댓글은 읽지 않고 GitHub 에 쓰지 않는다 — 원본 댓글이 업무를 만들거나 명령이 되는 경로는 없다.
+
+step 8 구현 상태: 연결 프로그램이 `bug_fix` 를 실행한다 — 도구별 `launch` 는 그대로, 공통 `LocalToolAdapter.run` 이 `request.kind ∈ DEMO_REPORT_KINDS`(`code_change`)일 때만 데모 프롬프트(`build_prompt`)·`vp-report` 보고서(`report_output`)를 쓰고, 그 밖(`bug_fix`)은 `build_bug_fix_prompt`(요청 원문 + 저장소 규칙, 데모 문구 없음, 인계 디렉터리의 `CodeReviewResult` JSON 을 "이전 검토 지적" 절로) + 등록된 `verification_profile_id` 하나로 `diff`·`test_log_before`(결과 커밋의 새 테스트만 `base_commit` 체크아웃에서)·`test_log_after`·`verification_log`(결과 커밋의 깨끗한 체크아웃)를 남긴다. 기준 커밋 고정: 도구를 띄우기 전 worktree HEAD ≠ `base_commit` 이면 `base_commit_mismatch`, 미커밋 잔여 변경이면 `worktree_dirty`, 도구가 직접 커밋해 HEAD 가 움직였으면 `commit_mismatch`(원시 로그 보존, `process_stopped` = 도구 종료 확인값). 재작업은 `base_commit` = 이전 `result_commit` 이라 남은 `task/<id>` 브랜치에서 이어진다. 도구·검증 환경은 기존 허용 목록(`codex_env`)이라 `WORKFLOW_GITHUB_TOKEN`·`GITHUB_TOKEN`·`GH_TOKEN` 이 없다. 연결 프로그램은 claim 에 `supported_kinds = SUPPORTED_BUILTIN_KINDS`(`code_change`·`bug_fix`)를 보내고 서버 claim 은 `repo.record_supported_kinds` 로 `connectors.supported_kinds_json` 에 남긴다(생략 claim 은 NULL). 중앙의 `bug_fix` 결과 판정(`required_artifacts` 에서 `report_output` 제외·`commit_matches`)과 실행 생성은 step 10 이다.
+
+step 9 구현 상태: 연결 프로그램이 `code_review` 를 실행한다. `LocalToolAdapter.run` 은 target 이 `CommitReviewTarget` 이면 `_run_commit_review` 로 간다 — 인계 디렉터리만 읽는 `_run_generic` 이 아니다. 착수 전(도구를 띄우지 않음): 검토 등록(`registration_missing`) → `result_commit`·`base_commit` 이 그 등록 저장소에 있음(`git_ops.has_commit`, 없으면 `commit_missing` — 수정·검토 등록이 같은 로컬 저장소를 봐야 하고 다른 기기·클론으로 커밋을 옮기지 않는다) → `base_commit` 이 `result_commit` 의 조상(`git_ops.is_ancestor`, `commit_mismatch`) → 인계 디렉터리의 `CodeChangeResult` 중 `execution_id == source_execution_id` 가 있고 그 `base_commit`·`result_commit` 이 target 과 같음(`source_mismatch`). 그 뒤 결과 커밋의 깨끗한 임시 체크아웃(`_in_clean_checkout`, 시스템 임시 디렉터리의 detached worktree)에서 도구별 `launch_readonly`(Codex `--sandbox read-only -C <체크아웃>`, Claude `Read Glob Grep`, cwd 체크아웃) + 스키마 `REVIEW_RESULT_SCHEMA`, 프롬프트 `build_review_prompt`(첫 줄 `# 커밋 검토`, 요청·두 커밋·수정 결과 요약·검증 기록, 저장소에서 직접 뽑은 `base..result` diff — 60,000자 초과분은 잘라 체크아웃에서 읽게 함 — 인계 목록, 읽기 전용·실행 금지 규칙). 실행 뒤: 시간 초과·`classify_failure` → 체크아웃 HEAD ≠ `result_commit`·체크아웃 변경(`git status`)·인계 파일 변경은 `readonly_violation` → `read_structured_message`(Codex 마지막 메시지 파일, Claude `structured_output`)를 `CodeReviewResult` 로 검증(`result_invalid`). `reviewed_commit` 은 도구가 적은 값이 아니라 검토 뒤 확인한 체크아웃 HEAD 다. 체크아웃은 성공·실패와 관계없이 지우고, 원본 저장소 작업 트리·수정 Task 의 `task/<id>` 브랜치는 건드리지 않는다. runner 는 target 모양으로 결과 봉투를 고른다(`CodeChangeTarget` → `code_change_result`, `CommitReviewTarget` → `code_review_result`, 그 외 `generic_result`) — 종류 이름 분기 없음. 검토 Task 는 업무 worktree 가 없어 인계 디렉터리만 정리한다. `SUPPORTED_BUILTIN_KINDS` 에 `code_review` 를 더했다. 중앙의 검토 결과 판정(`reviewed_commit` = 최신 수정 결과 · `stale_review`)과 검토 실행 생성은 step 10 이다. 실제 Codex·Claude 가 git worktree 체크아웃에서 이 인자로 도는 동작은 가짜 실행 파일로만 확인했다.
+
+step 10 구현 상태: 중앙 워커가 업무 순환을 돈다. 종류 이름 분기 대신 `domain/execution_policy.BUILTIN_POLICIES` 를 조회한다 — `verifier` 가 `report_code_change`(데모 `code_change`, 기존 검사 그대로)·`code_change`(`bug_fix`)·`commit_review`(`code_review`)·`generic`(사용자 정의)·`diagnosis`, `cycle` 이 참인 종류(`bug_fix`·`code_review`)만 아래 순환을 타고 기존 후속 스캔(`_spawn_successors`)에서는 빠진다. tick 순서: … 코드 수정 결과 확인 → 커밋 검토 결과 확인 → 범용 판정 → `_advance_cycle`(결과 → `decide_followup` → 저장 → 준비 판정 → 착수, 그다음 실행 없는 Task 의 준비 판정 → 착수) → 후속 스캔 → 실패 반영 → callback. 트랜잭션 중 HTTP·도구를 기다리지 않고 GitHub 에 쓰지 않는다(원본 반영은 tick 마지막 단계 — step 12).
+- 판정: `bug_fix` 는 `result_parsed`·`result_ids_match`(결과의 execution_id·task_id)·`commit_matches`(결과 `base_commit` = 요청 target)·`required_artifacts`(정책 표 — `report_output` 없음)·`test_before_failed`·`verification_passed`. `needs_information` 결과는 수정·검증이 없는 정상 제출이라 앞의 셋만 보고 통과시킨다 — 그래야 `decide_followup` 이 `fix_verification_failed` 가 아니라 `fix_needs_information` 사람 요청을 만든다. `code_review` 는 `result_parsed`·`result_ids_match`·`source_matches`(결과 `source_execution_id` = target)·`commit_matches`(`reviewed_commit` = target `result_commit`). 최신 수정 결과인지는 판정이 아니라 후속 결정(`stale_review`)이 본다.
+- 준비 판정 재료(`server/task_cycle.task_facts`·`evaluate`): 세션 등록 Agent·연결 프로그램의 마지막 `supported_kinds`·heartbeat, `github_sync.task_intake_facts`(담당·요청·실행 방식), 사람 요청(열린 요청 → `decision_pending`, `*_needs_information` 요청 당시 revision → `input_missing`), 원본 이슈 상태·허용 저장소(`Settings.github_repos`)·재작업 상한은 Task 또는 선행을 따라 올라간 원본 매핑(`origin_source` — 검토 Task 는 수정 Task 의 원본을 따른다). 실행 Agent 가 정해진 뒤 그 로컬 등록에서 아직 도는(`queued`·`accepted`·`running`·`unknown`) 다른 수정 실행을 `repo.busy_executions` 로 넣어 다시 평가한다 — `result_ready`(검토·사람 대기)는 저장소를 쓰지 않으므로 다른 업무를 막지 않는다. 대기면 Task 상태를 `대기 · <사유 · 사유>`(직접 실행 모드만 남으면 `실행 가능 · 직접 실행 모드`)로 쓴다.
+- 착수: 실행 없는 `bug_fix` Task 는 `auto_start_key(task_id, revision)`, target = 실행 Agent 의 `local_registration_id` + 기준 커밋(재작업이면 검토한 결과 커밋, 아니면 이 Task 의 마지막 결과 커밋, 없으면 등록 보고값) + 소스 `fix_verification_profile_id`(원본이 없으면 Agent 의 첫 보고 프로필). 이슈 본문은 `request` 문자열일 뿐 target·Agent·프로필을 바꾸지 않는다. 실행 중 원본 편집(Task revision+1)은 활성 실행이 있는 동안 새 실행을 만들지 않는다.
+- 후속: 결과마다 `FollowupContext` 를 DB 에서 다시 계산한다 — 기존 후속은 `predecessor_task_id` 가 이 수정 Task 이고 규칙 `to_kind` 인 마감 전 Task(미리 등록된 것 포함), 이미 처리한 원인은 그 Task 들의 실행 `start_key` 와 사람 요청 `cause_key`. `create_task` 는 `repo.create_followup_once`(검토 Task: `<종류 label>: <수정 제목>`, 요구 능력 = 후속 종류 능력 + 수정 Task 의 같은 범위 값, 실행 Agent = 소스 `review_agent_id`, 실행 방식 = 그 시점 소스 설정) 뒤 착수, `link_existing` 은 그 Task 에 착수 — 둘 다 `start_key` `review:<fix_execution_id>`, target `CommitReviewTarget`(검토 Agent 등록 + 수정 결과의 두 커밋), 입력은 규칙 `handoff_kinds` 인계 묶음(`assemble_handoff`), 준비 판정에 `pair_agent_id`(같은 연결 프로그램·저장소)를 넣는다. 진행 중인 이전 검토 실행은 끊지 않고 끝나기를 기다린다. `rework` 는 같은 수정 Task 의 다음 시도(`rework:<review_execution_id>`, 입력 = 이전 수정 결과·검토 결과 산출물, 기준 커밋 = 검토한 결과 커밋)이고 이전 시도의 잠금 해제와 새 시도 생성은 `repo.create_execution(..., release_execution_id=)` 한 트랜잭션이다. 검토 Task 는 `대기 · 수정 요청 — 재작업 결과 대기`. `request_human` 은 `repo.create_human_request_once` + 대상 Task `확인 필요 · <이유>`(재개는 아래 step 11). `approved` 는 검토 Task 를 `완료 · 검토 승인` 으로 마감하고 수정 Task 는 `확인 필요 · 검토 승인 — 병합·이슈 종료는 사람`(잠금 유지). 보류: `source_closed` → `대기`, `stale_review` → 검토 Task `확인 필요`, 운영자 종료(`실패` 마감)면 아무 것도 만들지 않는다. 규칙 revision 개념은 아직 없어 `followup_links.rules_revision` 은 1 이다.
+
+step 11 구현 상태: 사람 요청과 응답 후 재개. 응답 권한은 운영자 세션뿐이다(MVP) — GitHub 담당자를 웹 인증 사용자로 보지 않고 GitHub 댓글을 응답·승인 명령으로 읽지 않는다(댓글에는 응답 위치 안내만 쓴다 — step 12). API 는 `server/human_api.py`(CONTRACT 13.11).
+- 요청이 생기는 곳: (1) 후속 결정 `request_human`(step 10 — `fix_verification_failed`·`fix_needs_information`·`review_*`·`rework_limit_reached`), (2) 준비 판정 대기 중 운영자가 정해야 풀리는 사유 `task_cycle.READINESS_REQUEST_CODES`(`assignee_multiple`·`delegation_denied`·`input_missing`) — 워커 `_write_blocked` 가 cause_key `ready:<code>:r<revision>` 로 revision 마다 한 번 만든다. 이미 다른 요청을 기다리면(`decision_pending`) 더 묻지 않는다. (2)는 그 대기 사유가 이미 막고 있으므로 `decision_pending` 에 세지 않는다 — 담당자를 한 명으로 줄이는 식으로 사유가 사라지면 응답 없이도 착수한다.
+- 응답(`human_api.respond_to_request` → `repo.record_human_response_once`): `response_id` 멱등, `expected_revision` 잠금, 요청 `answered`·Task `revision`+1 을 한 트랜잭션에서. `action` 은 요청 code 별 허용(`assignee_multiple` → `choose_agent`·`close`, 그 밖 → `resume`·`close`), 정보 요청(`input_missing`·`*_needs_information`)은 빈 답을 받지 않는다. `choose_agent` 는 세션 등록 Agent 만 받아 같은 트랜잭션에서 `chosen_agent_id` 로 두고, 담당자 연결·능력·위임 범위는 재평가가 다시 본다 — 응답은 권한·소스 설정을 바꾸지 않는다(위임 밖은 설정 API 가 따로). `close` 는 같은 트랜잭션에서 `실패 · 운영자 종료 — 사람 요청 응답` 마감 + 활성 실행 해제. 마감된 Task 는 `repo.create_execution` 도 같은 트랜잭션에서 `TaskClosed` 로 거부해 종료와 착수가 겹쳐도 실행이 붙지 않는다.
+- 응답 내용: `task_cycle.request_text` 가 Task 요청 원문 뒤에 글이 있는 응답을 `## 사람 응답 (운영자)` 절로 붙여 다음 실행 `request` 와 준비 판정의 `request_text` 로 쓴다. Task 요청 원문·원본 스냅샷은 바꾸지 않는다.
+- 재개: 응답은 실행을 만들지 않는다. 실행이 없던 Task 는 다음 tick 의 준비 판정이 새 revision 의 `auto_start_key` 로 착수한다. 결과를 기다리던 시도(`result_ready`, 잠금 유지)는 그 시도 이후에 물은 요청(ready: 제외)의 응답이 시도의 `task_revision` 보다 새 revision 을 만들었을 때만 `_resume` 이 해제 + 새 시도를 한 트랜잭션으로 만든다(`auto_start_key`, 준비 판정 통과 필요) — 수정은 입력 = 이전 입력 + 이전 결과, 기준 커밋 = 마지막 결과 커밋, 검토는 같은 수정 결과(`source_execution_id`)를 다시 본다. 응답이 없으면(원본 편집만으로 revision 이 올라도) 결과를 기다리는 시도를 다시 돌리지 않는다. `TickReport.tasks_resumed`.
+- 스키마: v5 는 아직 배포 전이라 `human_responses.agent_id`(nullable)를 v5 DDL 에 더했다 — 이 브랜치로 이미 v5 를 만든 로컬 개발 DB 는 다시 만들어야 한다.
+
+### 현재 코드와의 간극 (step 0 확인)
+
+| 영역 | 현재 코드 | phase 8 에서 바꿀 것 |
+|---|---|---|
+| 외부 업무 | `adapters/task_sources.py` 의 GitHub·Jira 는 fixture, 수집·원본 ID 저장 없음 | `adapters/github_client.py`(step 5) + `server/github_sync.py`(step 7) + 원본 매핑 저장(step 4) |
+| 코드 수정 판정 | `worker._code_result_checks` 가 `report_output`·expected-report 를 항상 요구, `LocalToolAdapter.run` 이 `vp-report` 로 보고서 생성 | `bug_fix` 는 `BUILTIN_POLICIES` 의 필수 산출물만 요구(step 8·10). `code_change` 경로는 그대로 |
+| 검토 | 사용자 정의 종류는 `_run_generic` 으로 인계 디렉터리만 읽음 — 결과 커밋을 보지 않음 | `code_review` 가 `CommitReviewTarget` 의 결과 커밋을 깨끗한 읽기 전용 체크아웃에서 읽음(step 9) |
+| 후속 | `_spawn_successors` 는 미리 등록된 후속 Task 만 착수 | `decide_followup` 으로 기존 연결·새 Task 생성·재작업·사람 요청(step 3·10) |
+| 담당 | Agent 능력 선택만 있음. GitHub 담당자 개념 없음 | `AssigneeBinding`, `TaskReadiness`(step 2·6) |
+| 사람 개입 | 검토 승인·수정 요청·종료 버튼뿐 | `HumanRequest`·응답 후 재평가(step 11 구현 — `server/human_api.py`) |
+| 원본 반영 | n8n callback(체인당 1회)만 | Task 별 댓글 outbox `SourceDelivery`(step 12) |
+| DB | `SCHEMA_VERSION` 4, 마이그레이션 없음(`WORKFLOW_RESET_DB`) | 데이터 보존 트랜잭션 마이그레이션 4 → 5(step 4 구현됨) |
+
+### 진단 데모 코드 수정과 일반 버그 수정 비교
+
+| 항목 | 데모 `code_change`(유지) | 일반 `bug_fix`(신규) |
+|---|---|---|
+| 착수 입력 | 판정 통과 진단의 `handoff_bundle` 필수(`input_artifact_ids` 비면 422) | 이슈 스냅샷을 담은 `request` + 고정 target. 첫 시도 `input_artifact_ids` 빈 배열 허용. 재작업 시 이전 `code_change_result`·`code_review_result` |
+| target | `CodeChangeTarget` | `CodeChangeTarget` 재사용 — `base_commit` 은 실행 생성 시 그 로컬 등록이 마지막으로 보고한 커밋 |
+| 검증 프로필 | `vp-pytest` + 보고서용 `vp-report` | 소스 설정의 `fix_verification_profile_id` 하나(등록된 ID만, 명령은 로컬 등록에만 있음). `vp-report` 사용 안 함 |
+| 결과 봉투 | `CodeChangeResult` | `CodeChangeResult` 재사용 |
+| 필수 산출물 | `diff`·`test_log_before`·`test_log_after`·`report_output`·`verification_log` | `diff`·`test_log_before`·`test_log_after`·`verification_log` |
+| 판정 checks | `result_parsed`·`required_artifacts`·`test_before_failed`·`verification_passed`·`report_matches` | `result_parsed`·`result_ids_match`·`commit_matches`·`required_artifacts`·`test_before_failed`·`verification_passed` |
+| 재현 테스트 없음·변경 없음 | `needs_information` | 같음 |
+| 다음 단계 | 사람 검토(웹 승인·수정 요청) | 판정 통과 + `ready_for_review` 면 `code_review` 자동 연결 |
+
+### 인터페이스 — 이름·소유·책임
+
+| 이름 | 위치(step) | 필드·시그니처 | 책임과 오류 |
+|---|---|---|---|
+| `GitHubIssueSnapshot` | `contracts/github.py`(1) | `repository_id: int`, `repository_full_name`, `issue_id: int`, `number: int`, `title`, `body`, `state: open\|closed`, `labels: list[str]`, `assignee_ids: list[int]`, `assignee_logins: list[str]`, `html_url`, `created_at`, `updated_at`(RFC 3339), `is_pull_request: bool` | GitHub 응답에서 필요한 값만. `snapshot_digest(snapshot)`(sha256, 정렬된 JSON)로 같은 내용 판정. `body` 는 `Task.request` 재료일 뿐 명령·경로로 해석하지 않음 |
+| `GitHubSourceConfig` | `contracts/github.py`(1) | `source_id`(`ghs-` + 8 hex), `repository_full_name`, `workflow_repository_id`(이 제품 scope 값), `label_filter: list[str]`, `selected_issue_numbers: list[int]`, `start_at`, `fix_verification_profile_id`, `review_agent_id`, `run_mode: auto\|manual`, `max_rework_rounds: int`(0~3, 기본 1), `enabled: bool`, `config_revision: int` | 토큰 필드 없음. `repository_full_name ∉ WORKFLOW_GITHUB_REPOS` 는 422 `repository_not_allowed`. `label_filter`·`selected_issue_numbers` 가 둘 다 비면 422(전체 백로그 금지) |
+| `AssigneeBinding` | `contracts/github.py`(1) | `source_id`, `github_user_id: int`, `github_login`(표시용), `agent_id` | 운영자가 등록. Agent 가 없거나 `code.fix {repository_id}` 능력이 없으면 422. 같은 `(source_id, github_user_id)` 는 하나 |
+| `CommitReviewTarget` | `contracts/v1.py`(1) | `local_registration_id`, `source_execution_id`, `base_commit`, `result_commit`(전체 SHA) | `code_review` 전용 target |
+| `CodeReviewResult` | `contracts/v1.py`(1) | `contract_version`, `execution_id`, `task_id`, `source_execution_id`, `reviewed_commit`, `outcome: approved\|changes_requested\|needs_information`, `summary`, `findings: list[ReviewFinding]`, `missing_information: list[str]`, `artifact_ids` | 검증: `changes_requested` → `blocking` finding 1개 이상, `approved` → `blocking` 없음, `needs_information` ↔ `missing_information` 비어 있지 않음. `ReviewFinding(severity: blocking\|non_blocking, path: str\|None, line: int\|None, message)` — `path` 는 표시용 문자열 |
+| `ClaimRequest.supported_kinds` | `contracts/v1.py`(1) | `list[KindId] \| None = None` | null 이면 구버전 — 내장 중 `diagnosis`·`code_change`(`LEGACY_BUILTIN_KINDS`)만. 서버가 `connectors.supported_kinds_json` 에 저장 |
+| `ExecutionPolicy` / `BUILTIN_POLICIES` | `domain/execution_policy.py`(10) | `kind`, `target: diagnosis\|code_change\|commit_review\|local`, `result_kind`, `required_artifacts`, `verifier: diagnosis\|report_code_change\|code_change\|commit_review\|generic`, `cycle: bool`, `starts_from_result`(= target `commit_review`). `policy_for(kind)` | 종류 이름 분기 대신 조회하는 표. 사용자 정의 종류는 `GENERIC_POLICY`. 후속 종류는 규칙 표(`SuccessorRule`), 재작업 여부는 `decide_followup` 이 정하므로 step 0 초안의 `requires_report`·`followup_on_ready`·`rework_outcome` 은 두지 않았다(보고서 요구는 `verifier` `report_code_change`). step 10 구현됨 |
+| `TaskFacts` → `TaskReadiness` | `domain/task_readiness.py`(2) | `evaluate_readiness(facts: TaskFacts) -> TaskReadiness`. `TaskReadiness(ready: bool, blockers: tuple[Blocker, ...], agent_id: str \| None)`, `Blocker(code, reason, actor: operator\|assignee\|system)` | DB Row 가 아닌 값(현재 시각도 `TaskFacts.now`). 아래 대기 코드 표를 모두 평가해 한 번에 돌려준다(첫 사유에서 멈추지 않음, 운영자 종료만 `task_closed` 하나). `agent_id` 는 담당 연결·`select_agent` 능력 검사를 통과한 실행 Agent. 사람이 지정한 Agent 도 같은 검사를 다시 거친다. step 2 구현됨 |
+| `FollowupContext` → `FollowupDecision` | `domain/task_followup.py`(3) | `decide_followup(context: FollowupContext) -> FollowupDecision`. `FollowupDecision(action: link_existing\|create_task\|rework\|request_human\|none, reason, target_task_id, create: FollowupTaskSpec \| None, cause_key, request_code, hold_code, review_commit, base_commit, input_execution_ids)`. `FollowupContext` 는 결과 `execution_id`·`outcome`·`verdict`·`result_commit`·`rules`·`rules_revision`, 검토 결과면 `ReviewFacts(fix_task_id, source_execution_id, reviewed_commit, latest_fix_execution_id, latest_fix_commit, rounds_used, max_rework_rounds)`, 명시적 원인 참조 `existing_followup_task_id`, 이미 처리한 `handled_cause_keys` | 후속 종류는 규칙 표에서 찾는다(종류 이름 분기 없음). `cause_key` 는 `review:<fix_exec>`·`rework:<review_exec>`·`<request_code>:<exec>` — 이미 처리한 키면 `none`. `hold_code` 는 `stale_review`·`source_closed`·`task_closed`. 저장·착수는 워커. step 3 구현됨 |
+| `HumanRequest` / `respond_to_request` | `adapters/repo.py`(4)·`server/`(11) | repo: `create_human_request_once(conn, task_id, code, question, cause_key, now) -> (request_id, created)`, `get_human_request(conn, session_id, request_id)`, `record_human_response_once(conn, session_id, request_id, *, response_id, expected_revision, action, text, now, agent_id=None, close_reason=None) -> (task_revision, created)`, `list_human_requests`·`list_open_human_requests(conn, session_id)`·`list_human_responses(conn, task_id)`(11). 서버: `human_api.respond_to_request(conn, session_id, request_id, body: ResponseBody, now) -> dict`(11) | 운영자만. 같은 `response_id`·같은 내용(`action`·`text`·`agent_id`) 재전송은 같은 결과, 다른 내용 `ResponseConflict` → 409 `response_conflict`, `expected_revision` 불일치·이미 응답됨 `StaleRequest(current_revision)` → 409 `stale_request`, 마감된 Task `TaskClosed` → 409 `task_closed`. 응답은 요청을 `answered` 로, Task `revision` 을 +1(다음 실행 입력). `action` 허용 값(`resume`·`choose_agent`·`close`)은 서버가 요청 code 로 검사 |
+| `SourceDelivery` | `contracts/github.py`(1)·`server/github_delivery.py`(12) | `delivery_id`, `source_id`, `task_id`, `issue_number`, `body_revision: int`, `body_digest`, `state: pending\|sending\|delivered\|unknown\|failed`, `comment_id: int \| None`, `attempts`, `next_at`, `last_error` | `deliver_source_updates(conn, client, now) -> DeliveryReport`, `queue_source_updates(conn, store, public_url, now) -> int`, `marker(task_id)`. marker 조정, 최신 revision 만 전송, claim fence. step 12 구현됨 |
+| `GitHubClient` | `adapters/github_client.py`(5) | Protocol `list_issues(repo, cursor: IssueCursor \| None) -> IssuePage`, `get_issue(repo, number) -> GitHubIssueSnapshot`, `list_comments(repo, number, cursor: int \| None) -> CommentPage`, `create_comment(repo, number, body) -> int`, `update_comment(repo, comment_id, body) -> None` | `api.github.com` 만, 리다이렉트 따라가지 않음, 허용 저장소 밖은 요청 전 `GitHubRepositoryNotAllowed`. 오류 `GitHubRateLimited`·`GitHubForbidden`·`GitHubNotFound`·`GitHubUnavailable`(5xx·timeout) 구분, 그 밖은 `GitHubError`. 토큰·헤더를 메시지·로그에 넣지 않음. step 5 구현됨 |
+| `sync_source` | `server/github_sync.py`(7) | `sync_source(conn, client, source_id, now) -> SyncReport(source_id, disabled, pages, not_modified, created, updated, input_changed, unchanged, stale, skipped, error, retry_after_seconds)`. 순수 매핑 `domain/issue_intake.py`: `intake_scope(config, snapshot) -> IntakeScope(accept, reason, explicit)`, `snapshot_to_task_spec(config, snapshot, *, session_id, task_id) -> dict`, `intake_facts(...) -> IntakeFacts`. `task_intake_facts(conn, session_id, task_id) -> IntakeFacts` | 페이지별 커서 저장. 실패 페이지는 커서를 넘기지 않음. GitHub 오류는 `error`, DB 오류는 예외. step 7 구현됨 |
+
+### GitHub REST 경계 (step 5)
+
+`HttpGitHubClient(token, allowed_repos, *, transport, timeout)` — 운영은 `HttpGitHubClient.from_env()` 가 `WORKFLOW_GITHUB_TOKEN`·`WORKFLOW_GITHUB_REPOS` 를 환경변수에서만 읽는다. 중앙 서버는 같은 두 값을 `Settings.github_token`·`github_repos` 로 읽는다(step 6, 토큰은 선택 비밀값 `OPTIONAL_SECRET_KEYS`). 요청 헤더는 `Authorization: Bearer`·`Accept: application/vnd.github+json`·`X-GitHub-Api-Version: 2022-11-28`.
+
+| 동작 | 요청 | 필요한 권한(fine-grained PAT) | 처리 |
+|---|---|---|---|
+| `list_issues` | `GET /repos/{o}/{r}/issues?state=all&sort=updated&direction=asc&per_page=100&page=N[&since=…]` | Issues read | `pull_request` 키가 있는 항목은 빼고 `skipped_pull_requests` 로 센다. `IssueCursor(since, page, etag)` — `etag` 가 있으면 `If-None-Match`, 304 는 빈 `IssuePage(not_modified=True)`. 다음 페이지는 Link 헤더 `rel="next"` 의 `page` 값만 꺼낸다(다른 host 면 `GitHubError`, URL 자체는 쓰지 않음). DB 에는 `IssueCursor.to_str()`(JSON, URL 없음), 읽을 때 `IssueCursor.parse` 가 키·타입을 검사한다. `state=all` 은 닫힌 이슈를 `source_closed` 로 보기 위해서다 |
+| `get_issue` | `GET /repos/{o}/{r}/issues/{n}` | Issues read | PR 이면 `is_pull_request: true` 스냅샷(거를지는 수집기 몫) |
+| 저장소 ID | `GET /repos/{o}/{r}` | Metadata read | 스냅샷 `repository_id` 용, 클라이언트 인스턴스당 한 번 |
+| `list_comments` | `GET /repos/{o}/{r}/issues/{n}/comments?per_page=100&page=N` | Issues read | id 오름차순. marker 조정(step 12)용 `IssueComment(comment_id, body, author_id, author_login, updated_at)` |
+| `create_comment` | `POST …/issues/{n}/comments` `{"body"}` → 201 | Issues write | 새 댓글 ID. 너무 빠른 생성은 secondary rate limit — 전달은 직렬로 |
+| `update_comment` | `PATCH /repos/{o}/{r}/issues/comments/{id}` `{"body"}` | Issues write | |
+
+오류 분류: 429, 또는 403 이면서 `x-ratelimit-remaining: 0` 이나 `retry-after` 가 있으면 `GitHubRateLimited(retry_after_seconds, reset_epoch)`(둘 다 없으면 호출자가 최소 1분 대기). 나머지 401·403 `GitHubForbidden`, 404·410 `GitHubNotFound`(410 = 삭제된 이슈, 권한 없는 비공개 저장소도 404), 5xx·연결 오류·timeout `GitHubUnavailable`, 3xx·422·응답 형식 오류는 `GitHubError`. 메시지는 `메서드 경로: HTTP 상태`(또는 예외 클래스 이름)뿐이다. 재시도·대기는 호출자가 정한다.
+
+공식 문서와 다르게 정한 것: GitHub 는 301·302·307 리다이렉트를 따르라고 권하지만(저장소 이름 변경·이슈 이전), 허용 host·저장소 범위를 지키려고 따라가지 않는다 — 이전된 이슈·바뀐 저장소 이름은 오류로 드러나고 운영자가 설정을 고친다.
+
+출처(2026-09-23 확인, API 버전 2022-11-28): [Issues](https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28)(목록 파라미터·PR 포함·301/304/404/410), [Issue comments](https://docs.github.com/en/rest/issues/comments?apiVersion=2022-11-28)(id 오름차순·생성 시 secondary rate limit), [Best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api?apiVersion=2022-11-28)(ETag·304 는 primary 한도 미차감·Link 헤더·직렬 요청·rate limit 대기), [Rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28)(403/429·`x-ratelimit-*`·`retry-after`), [fine-grained PAT 권한](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens?apiVersion=2022-11-28)(Issues read/write, Metadata read).
+
+### 준비 판정 — 대기 코드 (`Blocker.code`)
+
+독립 Task 는 서로의 대기에 막히지 않는다. 사유는 모두 모아 보여주고, `ready` 는 blocker 가 없을 때만 참이다.
+
+| code | 조건 | 응답할 주체 | 해소 |
+|---|---|---|---|
+| `assignee_missing` | GitHub 담당자 0명 | operator | GitHub 에서 배정 후 다음 동기화 |
+| `assignee_multiple` | 담당자 2명 이상 | operator | 한 명으로 줄이거나 사람 요청 응답으로 Agent 지정 |
+| `assignee_unbound` | 담당자에 `AssigneeBinding` 없음 | operator | 연결 등록 |
+| `input_missing` | 필수 입력(재현 정보 등) 없음 — 규칙: 본문이 비었거나 `needs_information` 결과 | assignee(응답은 operator 가 기록) | 사람 요청 응답 |
+| `delegation_denied` | 위임 밖 — 능력·scope 불일치, 허용 저장소 밖 | operator | 설정 변경(별도 권한) |
+| `decision_pending` | 열린 `HumanRequest` 있음 | operator | 응답 |
+| `executor_offline` | 선택 Agent 연결 끊김 | system | 재연결 |
+| `executor_outdated` | 연결 프로그램이 이 종류를 `supported_kinds` 에 선언하지 않음 | operator | 연결 프로그램 업데이트 |
+| `repository_busy` | 같은 로컬 등록에서 다른 수정 Execution 활성 | system | 앞 실행 종료 |
+| `review_repository_mismatch` | 검토 Agent 가 수정 Agent 와 다른 연결 프로그램·`repository_id` | operator | 검토 Agent 변경 |
+| `manual_mode` | `run_mode = manual` | operator | 직접 실행 |
+| `awaiting_result` | 필요한 선행 결과(검토의 수정 결과 등) 없음 | system | 결과 도착 |
+| `rework_limit_reached` | 재작업 상한 도달 | operator | 사람 요청 응답 |
+| `source_closed` | 원본 이슈 closed | operator | 재오픈 |
+| `task_closed` | 운영자 종료 | — | 없음(마감) |
+
+### 후속 결정 표 (`decide_followup`)
+
+| 원인 | 조건 | `action` | 결과 |
+|---|---|---|---|
+| `bug_fix` 판정 `passed` + `ready_for_review` | 수정 Task 의 검토 Task 없음 | `create_task` | 검토 Task 1개(원인 키 `(session_id, cause_execution_id, "code_review")` 유일), 준비 판정 후 착수 |
+| 같음 | 검토 Task 있음(이전 라운드에서 만든 것, 또는 `predecessor_task_id` 로 미리 등록된 것) | `link_existing` | 기존 검토 Task 에 새 Execution(`start_key` = `review:<fix_execution_id>`) |
+| `bug_fix` `needs_information` | — | `request_human` | `fix_needs_information` |
+| `bug_fix` 판정 `failed` | — | `request_human` | `fix_verification_failed`. 자동 재시도 없음 |
+| `code_review` `approved` | 최신 수정 결과를 검토함 | `none` | 검토 Task `완료`, 수정 Task `확인 필요 · 검토 승인 — 병합·이슈 종료는 사람`. close·merge·push 없음 |
+| `code_review` `changes_requested` | `rounds_used < max_rework_rounds` | `rework` | 수정 Task 의 다음 Execution(`attempt_no + 1`, `base_commit` = 이전 `result_commit`, 입력 += 이전 결과·검토 결과) |
+| 같음 | `rounds_used >= max_rework_rounds` | `request_human` | `rework_limit_reached` |
+| `code_review` `needs_information` | — | `request_human` | `review_needs_information` |
+| `code_review` 결과 | `reviewed_commit` ≠ 최신 수정 결과 커밋 | `none` | `stale_review` 기록만 |
+| 모든 결과 | 원본 closed | `none`(보류) | `source_closed` 대기, 재오픈 시 재평가 |
+| 모든 결과 | Task 운영자 종료 | `none` | 새 후속 없음 |
+
+### 중복 키
+
+| 대상 | 유일 키 | 재처리 동작 |
+|---|---|---|
+| 원본 이슈 → Task | `(source_id, github_issue_id)` | 같은 digest 는 무시, 다른 digest 는 새 `source_revision` |
+| Execution | 기존 `UNIQUE(task_id, start_key)` | 자동 착수 `auto_start_key(task_id, revision)`, 검토 `review:<fix_execution_id>`, 재작업 `rework:<review_execution_id>` |
+| 후속 Task | `(session_id, cause_execution_id, to_kind)` | 기존 Task 반환 |
+| 사람 요청 | `(task_id, cause_key)` | 기존 요청 반환 |
+| 사람 응답 | `(request_id, response_id)` | 같은 응답 반환, 다른 내용은 409 |
+| 원본 댓글 | Task 당 marker 1개 + `(task_id, body_revision)` | 최신 revision 만 전송, `unknown` 은 marker 조회로 조정 |
+
+### 저장 — v5 마이그레이션 (step 4 구현됨)
+
+`adapters/db.py` `SCHEMA_VERSION` 4 → 5. `init_schema` 가 시작할 때 `BEGIN IMMEDIATE` 한 트랜잭션으로 올린다 — `WORKFLOW_RESET_DB` 가 필요 없고, 실패하면 4 그대로 남는다(DDL 도 되돌린다). 빈 DB 는 v5 로 바로 만든다. 3 이하·6 이상은 여전히 `RuntimeError`(2 인 공개 데모 VM 은 첫 갱신 때 `WORKFLOW_RESET_DB=1`). 원본 v4 스키마는 `tests/workflow/adapters/fixtures/schema_v4.sql`(`service` cf90517 에서 뽑음)에 고정해 마이그레이션 테스트가 쓴다.
+
+마이그레이션 순서: (1) 기존 `kinds` 에 `bug_fix`·`code_review` 이름이 있으면 `세션:종류` 목록을 담은 `RuntimeError` 로 전체 취소 → (2) `connectors.supported_kinds_json TEXT`(NULL = 구버전) 추가 → (3) `artifacts` 를 새 테이블로 옮겨 kind CHECK 에 `code_review_result` 추가(phase 7 DB 에는 없다. `artifacts` 를 참조하는 FK 는 없다) → (4) 아래 새 테이블 → (5) 세션마다 `bug_fix`·`code_review` 와 규칙 `bug_fix → code_review` seed(지운 기존 내장 규칙은 되살리지 않음) → (6) `PRAGMA foreign_key_check` → 버전 5.
+
+| 테이블 | 핵심 열 | 유일·제약 |
+|---|---|---|
+| `github_sources` | `source_id`, `session_id`, `repository_full_name`, `config_json`(`GitHubSourceConfig`, 토큰 없음), `cursor`, `cursor_updated_at` | `UNIQUE(session_id, repository_full_name)` |
+| `github_assignee_bindings` | `source_id`, `github_user_id`, `github_login`(표시용), `agent_id` → `agents` | `PK(source_id, github_user_id)` |
+| `source_issues` | `source_id`, `github_issue_id`, `issue_number`, `task_id`, `source_revision`, `snapshot_json`, `snapshot_digest`, `issue_updated_at`, `state` | `PK(source_id, github_issue_id)`, `task_id` UNIQUE |
+| `followup_links` | `session_id`, `cause_execution_id` → `executions`, `to_kind`, `task_id`, `rules_revision` | `PK(session_id, cause_execution_id, to_kind)`, `(session_id, to_kind)` → `kinds` |
+| `human_requests` | `request_id`(`hr-`), `task_id`, `code`, `question`, `cause_key`, `task_revision`(요청 당시), `revision`, `state: open\|answered`, `answered_at` | `UNIQUE(task_id, cause_key)` |
+| `human_responses` | `request_id`, `response_id`, `action`, `text`, `expected_revision`, `task_revision`(응답이 만든 것) | `PK(request_id, response_id)` |
+| `source_deliveries` | `delivery_id`(`dlv-`), `source_id`, `task_id`, `issue_number`, `body_revision`, `body_digest`, `body`, `state`, `comment_id`, `attempts`, `next_at`, `last_error` | `UNIQUE(task_id, body_revision)`, `delivered` → `comment_id` NOT NULL |
+
+repo 함수(세션 소유는 source·Task 에서 따라가며 같은 트랜잭션에서 검사 — 다른 세션이면 `NotFound` 또는 `None`): `save_github_source`(교체, 커서 유지)·`get_github_source`·`save_source_cursor`·`get_source_cursor`·`bind_assignee`(같은 GitHub 사용자는 한 행)·`list_assignee_bindings`·`upsert_source_issue(conn, session_id, source_id, snapshot, *, task, now) -> SourceIssueUpsert(action: created|updated|unchanged|stale, task_id, source_revision)`(처음이면 `task` 를 같은 트랜잭션에 만든다. 저장값보다 이른 `updated_at` 은 `stale`, 같은 digest 는 `unchanged`, 같은 시각·다른 digest 는 `updated`. step 7 부터 `updated` 때 `task` 의 제목·요청이 저장값과 다르고 마감 전이면 같은 트랜잭션에서 Task revision+1, `input_changed`)·`get_source_issue_by_task`·`list_source_issues`·`github_source_session`(step 7)·`create_followup_once(conn, spec: FollowupTaskSpec, task, now) -> (task_id, created)`(원인 실행이 같은 세션이어야 함)·사람 요청 셋(위 인터페이스 표)·`enqueue_source_delivery_once(conn, task_id, body, now) -> (SourceDelivery, created)`(원본 이슈에 연결된 Task 만, 최신 본문과 같으면 새 revision 없음). 비밀값 열은 없다 — `WORKFLOW_GITHUB_TOKEN` 이 DB·WAL 바이트에 없음을 테스트한다.
+
+### 원본 반영 상태 (`SourceDelivery.state`)
+
+`pending` → claim → `sending` → 2xx `delivered`(`comment_id` 저장) / POST 응답 유실(연결 오류·timeout·5xx) `unknown` / PATCH 연결 오류·5xx `pending`(`next_at` 백오프 30·2^(n-1)초, 최대 1시간 — 같은 댓글을 덮어쓰므로 다시 보내도 중복 없음) / rate limit(429·403+한도) `pending`(`retry-after`·reset, 최소 60초) 후 그 바퀴 중단 / 401·403·404·410·422 등 `failed`. `unknown` 은 다음 tick 에 댓글 목록(전 페이지, 최대 30페이지)에서 첫 줄이 marker 인 댓글을 찾는다: 있으면 `delivered`, 전 페이지를 봤는데 없으면 `pending`(같은 바퀴에 다시 POST), 조회 실패면 `unknown` 유지(백오프). `sending` 이 claim 만료 시각(`next_at`, `CLAIM_SECONDS` 120초)을 넘기면 `comment_id` 없는 것(POST)은 `unknown` 과 같이 조정하고, 있는 것(PATCH)은 다시 보낸다. 새 `body_revision` 이 생기면 아직 안 보낸 이전 revision 은 `pending` 으로 남고 보내지 않는다 — Task 의 반영 상태는 최신 revision 행이다. 화면은 `반영 대기`·`반영됨`·`반영 불확실`·`반영 실패` 로 Task 상태와 따로 보인다.
+
+step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이언트가 있을 때 tick 마지막 단계(`_deliver_github`, callback 뒤)에서 `queue_source_updates` → `deliver_source_updates` 를 부른다. `TickReport.deliveries_queued`·`deliveries_sent`·`deliveries_failed`.
+- 본문(`source_update_body`): 첫 줄 marker `<!-- runloom:task=<task_id> -->`, 제목, 수정 Task 상태·사유, 판정 통과한 최신 수정 결과(요약·기준 커밋 → 결과 커밋 전체 SHA, "로컬 저장소에만 있고 자동 푸시 없음"), 업무 순환 후속(`ExecutionPolicy.cycle`)의 상태·판정 통과 검토 결과(`outcome`·요약·검토 커밋·차단 지적 수), 열린 사람 요청 질문과 "응답은 Runloom 운영자 화면에서 — 이 댓글 답글은 반영되지 않음", 링크 `WORKFLOW_PUBLIC_URL/tasks/<id>`(운영자 로그인 필요 — 공개 링크로 가정하지 않음, 설정이 없으면 Task ID 만), "PR·푸시·병합·이슈 종료를 자동으로 하지 않음". 시각을 넣지 않아 상태가 같으면 본문이 같고 새 revision 이 없다. 결과·검토 요약은 한 줄로 접고 500자에서 자른다. 실행도 사람 요청도 없는 Task(담당 없음 대기 등)에는 댓글을 달지 않는다.
+- 전달(`deliver_source_updates(conn, client, now) -> DeliveryReport(created, updated, reconciled, requeued, uncertain, deferred, failed, rate_limited)`): 끝나지 않은 반영이 있는 Task 마다 (1) 닿았는지 모르는 POST 부터 조정하고 그동안 그 Task 에는 보내지 않음, (2) 최신 revision 만 claim — 알려진 `comment_id`(이전 revision 포함 가장 최근 값)가 있으면 PATCH, 없으면 POST. 여러 소비자: `repo.claim_source_delivery`(조건부 UPDATE, `attempts + 1` 이 fence, 전송 claim 은 최신 revision 이고 같은 Task 의 다른 행이 `sending`·`unknown` 이 아닐 때만) → HTTP(트랜잭션 밖) → `repo.record_source_delivery`(같은 fence 일 때만 — 만료 뒤 늦게 끝난 소비자의 기록은 버림). `attempts` 는 claim(전송·조회) 횟수다.
+- 사람이 지운 댓글(PATCH 404)은 다시 만들지 않고 `failed`. 중지된 소스(`enabled=false`)에는 본문을 만들지도 보내지도 않는다. 반영 실패·불확실은 Task 상태·실행·판정을 바꾸지 않는다.
+- 한계(원격 exactly-once 아님): marker 가 첫 줄인 다른 사람의 댓글을 우리 댓글로 볼 수 있다. 조회로 "없음"을 확인한 뒤 POST 하기 전에 늦게 도착한 이전 POST 가 생기면 댓글이 둘이 될 수 있다. 전송 후 claim 만료(120초) 전에는 crash 를 알 수 없어 그동안 반영이 멈춘다. 30페이지(3,000개)를 넘는 댓글에서는 marker 를 확인하지 못해 `unknown` 에 머문다. 결과 요약의 `@멘션`은 그대로 GitHub 알림이 된다.
+
+### 화면 (step 13 구현 상태)
+
+- 운영자 `GET /operator/github`(`operator_github.html`, 비운영자 403): 토큰 `토큰 설정됨`/`토큰 없음`(값은 없음)·허용 저장소, 소스 설정(미리보기·변경·중지), 담당 연결(GitHub 사용자 숫자 ID → 수정 Agent), 수집한 실제 이슈 목록(원본 링크·Task 상태와 이유·GitHub 반영 상태), 열린 사람 요청. 쓰기 폼은 `data-json-action` 으로 `base.html` 스크립트가 기존 JSON API(`/github/sources…`·`/human-requests/{id}/responses`)에 보낸다 — 화면 전용 쓰기 경로는 없다. CSRF: 세션 쿠키 SameSite=Lax + 이 API 들은 JSON 본문만 받는다(폼·text/plain 본문은 422). 고급 규칙 JSON·자연어 워크플로우 입력은 없다.
+- 업무 상세 `_cycle.html`(`views.cycle_context`): 업무 순환 종류이거나 원본 이슈가 있는 Task 에만. `실제 GitHub 이슈` 표시와 원본 링크(`https://github.com/{owner/name}/issues/{n}` — 응답의 `html_url` 을 링크로 쓰지 않음), GitHub 담당 → 연결 Agent, 대기 사유(워커와 같은 `task_cycle.evaluate` 의 `Blocker` 코드·문구·행동 주체), 사람 요청(운영자에게만 응답 폼 — 허용 동작은 `human_api.allowed_actions`, 폼마다 새 `response_id` 라 두 번 눌러도 한 번 반영), 입력 보충(응답 목록), 생성 근거(`repo.get_followup_link` — 어느 수정 실행 결과가 이 검토 Task 를 만들었나), 실행 횟수·자동 재작업 `사용/상한`, 검토 결과(`CodeReviewResult` outcome·요약·검토 커밋·지적), GitHub 반영(최신 `SourceDelivery` 의 `반영 대기`·`반영됨`·`반영 불확실`·`반영 실패`·시도 횟수·마지막 오류). 반영 줄·사람 요청·Task 상태 줄(Agent 작업)은 서로 다른 줄이다. fixture 가져오기 Task 는 `시연 데이터 · 실제 이슈 아님`.
+- 업무 순환 종류의 상태는 워커가 저장한 값(`views.status_of`)이다 — 선택 기록 기반 `user_status` 로 다시 판정하지 않는다. 선택 폼·데모 후속 등록 칩은 보이지 않고, 열린 사람 요청이 있으면 검토 폼 대신 응답 폼만 보인다.
+- 직접 실행 모드: 준비 판정에 `manual_mode` 만 남았거나(실행 없음), 결과 뒤 다음 실행을 워커가 직접 실행 모드로 멈춰 둔 때(`실행 가능`) `실행` 버튼. `POST /tasks/{id}/run` 은 업무 순환 종류면 `Worker.start_manually` — 이 Task 와 선행·후속만 tick 과 같은 규칙(`_cycle_followups`·`_start_ready_tasks`)으로 돌리고 이 Task 의 준비 판정에서만 `manual_mode` 를 뺀다. start_key(`auto:`·`review:`·`rework:`)가 같아 두 번 눌러도 실행은 하나, 새 실행이 없으면 지금 대기 사유로 409.
 
 ## 기존 구현과 초기 설계 기록
 

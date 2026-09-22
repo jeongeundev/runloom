@@ -39,7 +39,7 @@ def contract_request() -> dict:
 
 def contract_results() -> tuple[dict, dict]:
     """CONTRACT 5절(ready_for_handoff)·6절(needs_information) 결과."""
-    results = [b for b in contract_blocks() if {"outcome", "findings"} <= set(b)]
+    results = [b for b in contract_blocks() if {"outcome", "findings", "run_id"} <= set(b)]
     assert [r["outcome"] for r in results] == ["ready_for_handoff", "needs_information"]
     return results[0], results[1]
 

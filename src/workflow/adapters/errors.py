@@ -69,3 +69,28 @@ class DuplicateKind(AdapterError):
 
 class DuplicateRule(AdapterError):
     """같은 세션에 같은 `(from_kind, to_kind)` 규칙이 이미 등록돼 있다."""
+
+
+class StaleRequest(AdapterError):
+    """사람 요청의 revision 이 `expected_revision` 과 다르거나 이미 응답됐다 (409 `stale_request`)."""
+
+    def __init__(self, request_id: str, current_revision: int):
+        super().__init__(f"사람 요청 {request_id} 가 이미 revision {current_revision} 입니다")
+        self.current_revision = current_revision
+
+
+class StaleConfig(AdapterError):
+    """소스 설정의 저장된 `config_revision` 이 `expected_revision` 과 다르다 (409 `stale_config`)."""
+
+    def __init__(self, source_id: str, current_revision: int):
+        super().__init__(f"source {source_id} revision {current_revision}")
+        self.source_id = source_id
+        self.current_revision = current_revision
+
+
+class TaskClosed(AdapterError):
+    """마감된 Task 에 새 실행·사람 응답을 붙이려 했다 (409 `task_closed`)."""
+
+
+class ResponseConflict(AdapterError):
+    """같은 `(request_id, response_id)` 에 다른 내용의 응답이 이미 저장돼 있다."""

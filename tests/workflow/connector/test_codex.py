@@ -16,7 +16,7 @@ from workflow.connector import git_ops, state
 from workflow.connector.codex import CodexAdapter
 from workflow.contracts.v1 import ExecutionRequest
 
-from .conftest import REVIEW_SPEC, make_local_request, make_request
+from .conftest import REVIEW_SPEC, make_local_request, make_request, make_review_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 from scaffold_demo_repo import scaffold
@@ -70,6 +70,18 @@ emit({"type": "thread.started", "thread_id": "fake-thread"})
 emit({"type": "argv", "argv": args})
 emit({"type": "env", "env": dict(os.environ)})
 emit({"type": "prompt", "chars": len(prompt), "head": prompt[:60]})
+
+if MODE == "review":
+    # 커밋 검토 — cwd 는 결과 커밋의 체크아웃. 수정이 남긴 표식 파일을 읽어 요약에 담는다.
+    with open(opt("--output-schema"), encoding="utf-8") as f:
+        schema = json.load(f)
+    mark = open(os.path.join(worktree, "REVIEW_MARK.md"), encoding="utf-8").read().strip()
+    emit({"type": "readonly", "cwd": os.getcwd(), "schema": schema, "prompt_first_line": prompt.splitlines()[0]})
+    with open(last_message, "w", encoding="utf-8") as f:
+        json.dump({"outcome": "approved", "summary": f"표식 {mark} 확인", "findings": [],
+                   "missing_information": []}, f, ensure_ascii=False)
+    print("fake codex: reviewed", file=sys.stderr)
+    sys.exit(0)
 
 if MODE.startswith("generic"):
     # 사용자 정의 종류 — 스키마 파일의 enum 을 읽고 {outcome, summary} 만 낸다. cwd 는 인계 디렉터리.
@@ -622,3 +634,60 @@ def test_parse_generic_message(state_conn, raw, outcome, note):
         assert parsed.parse_note is None and parsed.summary == "좋다"
     else:
         assert parsed.parse_note is not None and note in parsed.parse_note
+
+
+# --- 커밋 검토 `code_review` ------------------------------------------------------------------------------
+
+
+def make_review_fixture(state_conn, repo: Path, tmp_path: Path):
+    """수정 결과 커밋(표식 파일 추가)과 그 결과 봉투가 든 인계 디렉터리. 검토 등록은 같은 저장소를 가리킨다."""
+    base = register(state_conn, repo)
+    state.save_registration(state_conn, {
+        "local_registration_id": "local-billing-claude", "repo_path": str(repo), "tool": "codex",
+        "repository_id": "demo-report-repo", "base_commit": base, "verification_profiles": {},
+    })
+    worktree = git_ops.ensure_worktree(repo, "task-gh-41", base)
+    (worktree / "REVIEW_MARK.md").write_text("fixed-by-fix\n")
+    result = git_ops.commit_all(worktree, "fix")
+    git_ops.remove_worktree(repo, worktree)
+    handoff = tmp_path / "task-gh-41-review.handoff"
+    handoff.mkdir()
+    (handoff / "code_change_result.json").write_text(json.dumps({
+        "contract_version": 1, "execution_id": "exec-gh-fix-001", "task_id": "task-gh-41",
+        "outcome": "ready_for_review", "summary": "표식 추가", "base_commit": base, "result_commit": result,
+        "artifact_ids": [], "verification": {"profile_id": "vp-pytest", "result_commit": result, "exit_code": 0,
+                                             "log_artifact_id": "art-verify"},
+    }))
+    return base, result, handoff
+
+
+def test_code_review_runs_readonly_codex_in_result_checkout(state_conn, repo, tmp_path, fake_bin):
+    write_fake_codex(fake_bin, "review")
+    base, result_commit, handoff = make_review_fixture(state_conn, repo, tmp_path)
+
+    output = adapter(state_conn).run(make_review_request(base, result_commit), handoff, Progress())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.outcome, result.summary, result.reviewed_commit) == ("approved", "표식 fixed-by-fix 확인",
+                                                                          result_commit)
+    lines = [json.loads(line) for line in by_kind(output)["codex_jsonl"].decode().splitlines()]
+    argv = next(line["argv"] for line in lines if line["type"] == "argv")
+    readonly = next(line for line in lines if line["type"] == "readonly")
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    checkout = Path(argv[argv.index("-C") + 1])
+    assert checkout.resolve() == Path(readonly["cwd"]).resolve() and checkout.resolve() != repo.resolve()
+    assert readonly["schema"]["properties"]["outcome"]["enum"] == ["approved", "changes_requested",
+                                                                   "needs_information"]
+    assert readonly["prompt_first_line"] == "# 커밋 검토"
+    assert not checkout.exists() and _git(repo, "worktree", "list").count("\n") == 0
+
+
+@pytest.mark.parametrize("raw, data, note", [
+    ('{"outcome": "approved", "findings": []}', {"outcome": "approved", "findings": []}, None),
+    ("[1]", None, "객체 아님"),
+    ("not json", None, "JSON 아님"),
+    (None, None, "파일 없음"),
+])
+def test_read_structured_message(state_conn, raw, data, note):
+    assert adapter(state_conn).read_structured_message(raw) == (data, note)

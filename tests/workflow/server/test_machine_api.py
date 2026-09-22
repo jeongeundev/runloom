@@ -126,6 +126,22 @@ def test_claim_204_then_assignment_then_204_after_accepted(client, seeded, conne
     assert client.post("/connector/claim", json=claim, headers=headers).status_code == 204
 
 
+def test_claim_records_supported_kinds_declaration(client, seeded, connector, headers):
+    """claim 본문의 `supported_kinds` 를 connectors 에 남긴다 — 준비 판정(executor_outdated)의 입력. 생략하면 NULL."""
+    connector_id, _ = connector
+
+    def stored():
+        return repo.get_connector(seeded, connector_id)["supported_kinds_json"]
+
+    declared = {"contract_version": 1, "connector_id": connector_id, "supported_kinds": ["code_change", "bug_fix"]}
+    assert client.post("/connector/claim", json=declared, headers=headers).status_code == 204
+    assert json.loads(stored()) == ["code_change", "bug_fix"]
+
+    legacy = {"contract_version": 1, "connector_id": connector_id}
+    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert stored() is None
+
+
 def test_claim_connector_id_must_match_token(client, connector, headers):
     response = client.post(
         "/connector/claim", json={"contract_version": 1, "connector_id": "conn-someone-else"}, headers=headers

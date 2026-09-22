@@ -729,6 +729,8 @@ REVIEW_RULE_FORM = {
 }
 REVIEW_RULE_TEXT = "코드 수정 --[ready_for_review]--> 검토"
 BUILTIN_RULE_TEXT = "진단 --[ready_for_handoff]--> 코드 수정"
+BUG_FIX_RULE_TEXT = "버그 수정 --[ready_for_review]--> 커밋 검토"  # phase 8 내장 규칙
+BUILTIN_RULE_TEXTS = {BUILTIN_RULE_TEXT, BUG_FIX_RULE_TEXT}
 FORM_C = {
     "title": "변경 검토",
     "request": "인계된 diff 와 코드 수정 결과를 검토하고 승인 여부를 판단해 주세요.",
@@ -811,13 +813,13 @@ def _run_a_then_wait_b_review(client: httpx.Client, task_a: str, task_b: str) ->
 
 
 def test_22_review_register_kind_and_rule_via_pages(reviewer, review_ctx):
-    """종류 `review` 와 규칙 `code_change → review` 를 /kinds·/rules 폼으로 등록한다. 등록 전엔 내장 2종·내장 규칙 1개뿐."""
+    """종류 `review` 와 규칙 `code_change → review` 를 /kinds·/rules 폼으로 등록한다. 등록 전엔 내장 4종·내장 규칙 2개뿐."""
     _register_all(reviewer, CATALOG)
     _wait_agent(reviewer, "agent-claude-mac", "연결됨", timeout=30)
     page = reviewer.get("/kinds")
     assert page.status_code == 200
-    assert page.text.count('class="tag-builtin"') == 2 and "review · review · repository_id" not in page.text
-    assert set(_rules(page.text)) == {BUILTIN_RULE_TEXT}
+    assert page.text.count('class="tag-builtin"') == 4 and "review · review · repository_id" not in page.text
+    assert set(_rules(page.text)) == BUILTIN_RULE_TEXTS
 
     response = reviewer.post("/kinds", data=REVIEW_KIND_FORM)
     assert response.status_code == 303 and response.headers["location"] == "/kinds", response.text[:500]
@@ -826,10 +828,10 @@ def test_22_review_register_kind_and_rule_via_pages(reviewer, review_ctx):
 
     page = reviewer.get("/kinds").text
     assert "review · review · repository_id" in page and 'action="/kinds/review/delete"' in page  # 사용자 정의 — 삭제 가능
-    assert page.count('class="tag-builtin"') == 2
+    assert page.count('class="tag-builtin"') == 4
     assert REVIEW_KIND_FORM["instructions"] in page
     rules = _rules(page)
-    assert set(rules) == {BUILTIN_RULE_TEXT, REVIEW_RULE_TEXT}, rules
+    assert set(rules) == BUILTIN_RULE_TEXTS | {REVIEW_RULE_TEXT}, rules
     review_ctx["rule_id"] = rules[REVIEW_RULE_TEXT]
     # 업무 등록 폼의 종류 목록도 등록부에서 온다 — 세 번째 종류가 바로 보인다
     form = reviewer.get("/tasks/new").text
@@ -920,7 +922,7 @@ def test_26_review_approve_b_then_c_and_no_duplicate(chain_stack, reviewer, revi
 def test_27_review_rule_removed_stops_new_succession(chain_stack, reviewer, review_ctx):
     """규칙을 지우면 A' → B' 는 내장 규칙으로 여전히 잇지만 C' 는 착수하지 않는다 — 이유 `후속 규칙 없음: code_change → review`."""
     assert reviewer.post(f"/rules/{review_ctx['rule_id']}/delete").status_code == 303
-    assert set(_rules(reviewer.get("/kinds").text)) == {BUILTIN_RULE_TEXT}
+    assert set(_rules(reviewer.get("/kinds").text)) == BUILTIN_RULE_TEXTS
 
     task_a = _create_task(reviewer, FORM_A)
     task_b = _create_task(reviewer, {**FORM_B, "predecessor_task_id": task_a})

@@ -13,8 +13,10 @@ import secrets
 import sqlite3
 from collections.abc import Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
+from typing import Literal
 
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import (
@@ -29,7 +31,18 @@ from workflow.adapters.errors import (
     KindInUse,
     KindProtected,
     NotFound,
+    ResponseConflict,
     SequenceGap,
+    StaleConfig,
+    StaleRequest,
+    TaskClosed,
+)
+from workflow.contracts.github import (
+    AssigneeBinding,
+    GitHubIssueSnapshot,
+    GitHubSourceConfig,
+    SourceDelivery,
+    snapshot_digest,
 )
 from workflow.contracts.v1 import (
     BUILTIN_KIND_NAMES,
@@ -48,6 +61,7 @@ from workflow.contracts.v1 import (
 )
 from workflow.domain import status as domain_status
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
+from workflow.domain.task_followup import FollowupTaskSpec
 
 TOKEN_PREFIX = "wfc_"
 SOURCE_TOKEN_PREFIX = "wfs_"
@@ -89,7 +103,8 @@ def _require_rowcount(cursor: sqlite3.Cursor, what: str) -> None:
 
 
 def create_session(conn: Connection, session_id: str, now: str) -> None:
-    """세션 생성과 함께 내장 종류(`BUILTIN_KINDS`)·내장 규칙(`BUILTIN_RULES`)을 이 세션에 seed 한다 (ADR-0009)."""
+    """세션 생성과 함께 내장 종류(`BUILTIN_KINDS`)·내장 규칙(`BUILTIN_RULES`)을 이 세션에 seed 한다 (ADR-0009).
+    이미 있는 세션에는 v4 → v5 마이그레이션(`db._seed_phase8_kinds`)이 phase 8 종류를 넣는다."""
     with _tx(conn):
         conn.execute("INSERT INTO sessions (session_id, created_at) VALUES (?, ?)", (session_id, now))
         for spec in BUILTIN_KINDS:
@@ -450,6 +465,15 @@ def touch_connector(
     _require_rowcount(cur, f"connector {connector_id}")
 
 
+def record_supported_kinds(conn: Connection, connector_id: str, kinds: Sequence[str] | None) -> None:
+    """마지막 claim 의 `supported_kinds` 선언. None(구버전 claim)이면 NULL 로 되돌린다. 없는 connector 는 NotFound."""
+    cur = conn.execute(
+        "UPDATE connectors SET supported_kinds_json = ? WHERE connector_id = ?",
+        (None if kinds is None else json.dumps(list(kinds)), connector_id),
+    )
+    _require_rowcount(cur, f"connector {connector_id}")
+
+
 def get_connector(conn: Connection, connector_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM connectors WHERE connector_id = ?", (connector_id,))
 
@@ -521,32 +545,37 @@ def insert_task(conn: Connection, task: dict, now: str) -> None:
     """JSON 컬럼은 `required_capability`(Capability 로 검증)·`criteria`·`target` 로 받는다.
     종류는 이 세션의 등록부(`kinds`)에 있어야 한다 (없으면 NotFound — FK 오류를 기다리지 않는다).
     선행 Task 는 같은 세션의 것만 허용한다 (ARCHITECTURE "선행 연결 변경 시 같은 소유 범위 검사")."""
-    capability = Capability.model_validate(task["required_capability"]).model_dump()
     with _tx(conn):
-        if get_kind(conn, task["session_id"], task["kind"]) is None:
-            raise NotFound(f"종류 {task['kind']} 이 등록되지 않음")
-        predecessor = task.get("predecessor_task_id")
-        if predecessor is not None:
-            prev = _one(conn, "SELECT session_id FROM tasks WHERE task_id = ?", (predecessor,))
-            if prev is None or prev["session_id"] != task["session_id"]:
-                raise NotFound(f"predecessor task {predecessor}")
-        conn.execute(
-            """
-            INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,
-              selection_mode, chosen_agent_id, run_mode, completion_mode, criteria_json,
-              predecessor_task_id, revision, target_json, status, status_reason, created_at,
-              chain_id, source_ref)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task["task_id"], task["session_id"], task["title"], task["request"], task["kind"],
-                json.dumps(capability, ensure_ascii=False), task["selection_mode"],
-                task.get("chosen_agent_id"), task["run_mode"], task["completion_mode"],
-                json.dumps(task["criteria"], ensure_ascii=False), predecessor, task["revision"],
-                json.dumps(task["target"], ensure_ascii=False), task["status"],
-                task["status_reason"], now, task.get("chain_id"), task.get("source_ref"),
-            ),
-        )
+        _insert_task_row(conn, task, now)
+
+
+def _insert_task_row(conn: Connection, task: dict, now: str) -> None:
+    """`insert_task` 의 트랜잭션 안쪽 — 원본 이슈·후속 Task 를 매핑 행과 한 트랜잭션에 넣을 때 쓴다."""
+    capability = Capability.model_validate(task["required_capability"]).model_dump()
+    if get_kind(conn, task["session_id"], task["kind"]) is None:
+        raise NotFound(f"종류 {task['kind']} 이 등록되지 않음")
+    predecessor = task.get("predecessor_task_id")
+    if predecessor is not None:
+        prev = _one(conn, "SELECT session_id FROM tasks WHERE task_id = ?", (predecessor,))
+        if prev is None or prev["session_id"] != task["session_id"]:
+            raise NotFound(f"predecessor task {predecessor}")
+    conn.execute(
+        """
+        INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,
+          selection_mode, chosen_agent_id, run_mode, completion_mode, criteria_json,
+          predecessor_task_id, revision, target_json, status, status_reason, created_at,
+          chain_id, source_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task["task_id"], task["session_id"], task["title"], task["request"], task["kind"],
+            json.dumps(capability, ensure_ascii=False), task["selection_mode"],
+            task.get("chosen_agent_id"), task["run_mode"], task["completion_mode"],
+            json.dumps(task["criteria"], ensure_ascii=False), predecessor, task["revision"],
+            json.dumps(task["target"], ensure_ascii=False), task["status"],
+            task["status_reason"], now, task.get("chain_id"), task.get("source_ref"),
+        ),
+    )
 
 
 def get_task(conn: Connection, task_id: str) -> Row | None:
@@ -760,11 +789,22 @@ def create_execution(
     assigned_connector_id: str | None,
     predecessor_execution_id: str | None,
     now: str,
+    release_execution_id: str | None = None,
 ) -> None:
-    """활성 잠금(`ux_executions_active`) 위반 → ActiveExecutionExists, `(task_id, start_key)` 중복 →
-    DuplicateStartKey. 잠금이 우선한다 (sqlite 가 부분 인덱스를 먼저 검사한다)."""
+    """마감된 Task → TaskClosed, 활성 잠금(`ux_executions_active`) 위반 → ActiveExecutionExists, `(task_id, start_key)` 중복 →
+    DuplicateStartKey. 잠금이 우선한다 (sqlite 가 부분 인덱스를 먼저 검사한다).
+    `release_execution_id` 를 주면 그 이전 시도의 잠금 해제와 새 시도 생성을 한 트랜잭션에서 한다 — 새 시도가
+    거부되면 해제도 되돌린다(워커의 재작업·검토 재연결)."""
     request_json = request.model_dump_json()
     with _tx(conn):
+        closed = _one(conn, "SELECT finished_at FROM tasks WHERE task_id = ?", (task_id,))
+        if closed is not None and closed["finished_at"] is not None:
+            raise TaskClosed(task_id)  # 종료와 착수가 겹쳐도 마감된 Task 에 실행을 붙이지 않는다
+        if release_execution_id is not None:
+            conn.execute(
+                "UPDATE executions SET released_at = ? WHERE execution_id = ? AND task_id = ? AND released_at IS NULL",
+                (now, release_execution_id, task_id),
+            )
         try:
             conn.execute(
                 """
@@ -960,6 +1000,24 @@ def executions_by(
         sql += " AND kind = ?"
         params += (kind,)
     return conn.execute(sql + " ORDER BY created_at, execution_id", params).fetchall()
+
+
+def busy_executions(
+    conn: Connection, local_registration_id: str, kinds: Sequence[str], *, exclude_task_id: str
+) -> list[str]:
+    """같은 로컬 등록(같은 저장소 작업 트리)에서 아직 도는 — 결과·실패 전인 — `kinds` 실행 ID. 준비 판정의
+    `repository_busy` 재료다. `result_ready`(검토·사람 대기)는 저장소를 쓰지 않으므로 세지 않는다."""
+    kind_marks = ", ".join("?" for _ in kinds)
+    rows = conn.execute(
+        f"""
+        SELECT e.execution_id FROM executions e JOIN agents a ON a.agent_id = e.agent_id
+        WHERE e.released_at IS NULL AND e.status IN ('queued', 'accepted', 'running', 'unknown')
+          AND a.local_registration_id = ? AND e.kind IN ({kind_marks}) AND e.task_id != ?
+        ORDER BY e.created_at, e.execution_id
+        """,
+        (local_registration_id, *kinds, exclude_task_id),
+    ).fetchall()
+    return [r["execution_id"] for r in rows]
 
 
 def results_awaiting_verdict(conn: Connection, kind: str | None = None) -> list[Row]:
@@ -1204,3 +1262,416 @@ def record_diagnosis_start(
         "INSERT INTO diagnosis_usage (session_id, execution_id, started_at) VALUES (?, ?, ?)",
         (session_id, execution_id, now),
     )
+
+
+# --- GitHub 업무 순환 (phase 8, ADR-0014: 소스·담당 연결·원본 매핑·후속 원인·사람 요청·반영 outbox) ------------
+# 세션 소유: source → github_sources.session_id, Task → tasks.session_id. 다른 세션이면 NotFound(또는 None).
+
+
+def _source_row(conn: Connection, session_id: str, source_id: str) -> Row:
+    row = _one(
+        conn, "SELECT * FROM github_sources WHERE source_id = ? AND session_id = ?", (source_id, session_id)
+    )
+    if row is None:
+        raise NotFound(f"source {source_id}")
+    return row
+
+
+def save_github_source(
+    conn: Connection, session_id: str, config: GitHubSourceConfig, now: str, *, expected_revision: int | None = None
+) -> None:
+    """저장 또는 교체. 수집 커서는 유지한다. 다른 세션의 source_id → NotFound, 같은 세션에 같은 저장소 → IntegrityError.
+    `expected_revision` 을 주면 기존 소스만 갱신하고, 저장된 `config_revision` 이 다르면 같은 트랜잭션에서 StaleConfig.
+    `WORKFLOW_GITHUB_REPOS` 허용은 서버 몫."""
+    with _tx(conn):
+        owner = _one(
+            conn, "SELECT session_id, config_json FROM github_sources WHERE source_id = ?", (config.source_id,)
+        )
+        if owner is not None and owner["session_id"] != session_id:
+            raise NotFound(f"source {config.source_id}")
+        if expected_revision is not None:
+            if owner is None:
+                raise NotFound(f"source {config.source_id}")
+            current = GitHubSourceConfig.model_validate_json(owner["config_json"]).config_revision
+            if current != expected_revision:
+                raise StaleConfig(config.source_id, current)
+        conn.execute(
+            "INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, created_at,"
+            " updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(source_id) DO UPDATE SET repository_full_name = excluded.repository_full_name,"
+            " config_json = excluded.config_json, updated_at = excluded.updated_at",
+            (config.source_id, session_id, config.repository_full_name, config.model_dump_json(), now, now),
+        )
+
+
+def get_github_source(conn: Connection, session_id: str, source_id: str) -> GitHubSourceConfig | None:
+    row = _one(
+        conn, "SELECT config_json FROM github_sources WHERE source_id = ? AND session_id = ?",
+        (source_id, session_id),
+    )
+    return GitHubSourceConfig.model_validate_json(row["config_json"]) if row else None
+
+
+def list_github_sources(conn: Connection, session_id: str) -> list[GitHubSourceConfig]:
+    return [
+        GitHubSourceConfig.model_validate_json(r["config_json"])
+        for r in conn.execute(
+            "SELECT config_json FROM github_sources WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+        )
+    ]
+
+
+def github_source_session(conn: Connection, source_id: str) -> str | None:
+    """소스를 가진 세션. 수집기(워커)가 source_id 로 소유 세션을 찾을 때 쓴다."""
+    row = _one(conn, "SELECT session_id FROM github_sources WHERE source_id = ?", (source_id,))
+    return row["session_id"] if row else None
+
+
+def github_source_sessions(conn: Connection) -> list[str]:
+    """GitHub 소스를 가진 세션들. 운영자 API 는 이것이 한 세션뿐이도록 지킨다(셀프호스트 1개 워크스페이스)."""
+    return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM github_sources ORDER BY session_id")]
+
+
+def save_source_cursor(conn: Connection, session_id: str, source_id: str, cursor: str, now: str) -> None:
+    cur = conn.execute(
+        "UPDATE github_sources SET cursor = ?, cursor_updated_at = ? WHERE source_id = ? AND session_id = ?",
+        (cursor, now, source_id, session_id),
+    )
+    _require_rowcount(cur, f"source {source_id}")
+
+
+def get_source_cursor(conn: Connection, session_id: str, source_id: str) -> str | None:
+    return _source_row(conn, session_id, source_id)["cursor"]
+
+
+def bind_assignee(conn: Connection, session_id: str, binding: AssigneeBinding, now: str) -> None:
+    """`(source_id, github_user_id)` 당 하나 — 다시 부르면 Agent·login 을 바꾼다. 소스·Agent 가 없으면 NotFound.
+    Agent 능력(`code.fix {repository_id}`) 검사는 서버 몫."""
+    with _tx(conn):
+        _source_row(conn, session_id, binding.source_id)
+        if get_agent(conn, binding.agent_id) is None:
+            raise NotFound(f"agent {binding.agent_id}")
+        conn.execute(
+            "INSERT INTO github_assignee_bindings (source_id, github_user_id, github_login, agent_id, updated_at)"
+            " VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_id, github_user_id) DO UPDATE SET"
+            " github_login = excluded.github_login, agent_id = excluded.agent_id, updated_at = excluded.updated_at",
+            (binding.source_id, binding.github_user_id, binding.github_login, binding.agent_id, now),
+        )
+
+
+def list_assignee_bindings(conn: Connection, session_id: str, source_id: str) -> list[AssigneeBinding]:
+    _source_row(conn, session_id, source_id)
+    return [
+        AssigneeBinding(source_id=r["source_id"], github_user_id=r["github_user_id"],
+                        github_login=r["github_login"], agent_id=r["agent_id"])
+        for r in conn.execute(
+            "SELECT * FROM github_assignee_bindings WHERE source_id = ? ORDER BY github_user_id", (source_id,)
+        )
+    ]
+
+
+@dataclass(frozen=True)
+class SourceIssueUpsert:
+    """`created` 새 Task · `updated` 새 source_revision · `unchanged` 같은 digest · `stale` 저장값보다 오래된 스냅샷."""
+
+    action: Literal["created", "updated", "unchanged", "stale"]
+    task_id: str
+    source_revision: int
+    input_changed: bool = False  # Task 제목·요청이 바뀌어 Task revision 이 올랐다
+
+
+def upsert_source_issue(
+    conn: Connection, session_id: str, source_id: str, snapshot: GitHubIssueSnapshot, *, task: dict, now: str
+) -> SourceIssueUpsert:
+    """원본 이슈 하나를 `(source_id, github_issue_id)` 로 Task 하나에 잇는다. 처음 보면 `task`(insert_task 와 같은 dict)를
+    같은 트랜잭션에 만든다. `updated_at` 이 저장값보다 이르면 버리고, 같은 시각이라도 digest 가 다르면 새 revision 이다
+    (ADR-0014 결정 9). 이미 있는 Task 는 `task` 의 제목·요청만 본다 — 마감 전이고 둘 중 하나가 다르면 같은 트랜잭션에서
+    바꾸고 Task revision+1(다음 실행 입력, 진행 중 실행의 요청은 그대로). 담당·라벨·상태는 원본 스냅샷에만 남는다."""
+    digest = snapshot_digest(snapshot)
+    with _tx(conn):
+        source = _source_row(conn, session_id, source_id)
+        if snapshot.repository_full_name != source["repository_full_name"]:
+            raise ValueError(f"{snapshot.repository_full_name} 은 source {source_id} 의 저장소가 아닙니다")
+        row = _one(
+            conn, "SELECT * FROM source_issues WHERE source_id = ? AND github_issue_id = ?",
+            (source_id, snapshot.issue_id),
+        )
+        if row is None:
+            if task["session_id"] != session_id:
+                raise ValueError(f"task {task['task_id']} 의 세션이 source {source_id} 의 세션과 다릅니다")
+            _insert_task_row(conn, task, now)
+            conn.execute(
+                "INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
+                " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                (source_id, snapshot.issue_id, snapshot.number, task["task_id"], snapshot.model_dump_json(),
+                 digest, snapshot.updated_at, snapshot.state, now, now),
+            )
+            return SourceIssueUpsert("created", task["task_id"], 1)
+        stored_at, incoming_at = _parse(row["issue_updated_at"]), _parse(snapshot.updated_at)
+        if incoming_at < stored_at:
+            return SourceIssueUpsert("stale", row["task_id"], row["source_revision"])
+        if digest == row["snapshot_digest"]:
+            return SourceIssueUpsert("unchanged", row["task_id"], row["source_revision"])
+        revision = row["source_revision"] + 1
+        conn.execute(
+            "UPDATE source_issues SET issue_number = ?, source_revision = ?, snapshot_json = ?, snapshot_digest = ?,"
+            " issue_updated_at = ?, state = ?, updated_at = ? WHERE source_id = ? AND github_issue_id = ?",
+            (snapshot.number, revision, snapshot.model_dump_json(), digest, snapshot.updated_at, snapshot.state,
+             now, source_id, snapshot.issue_id),
+        )
+        cur = conn.execute(
+            "UPDATE tasks SET title = ?, request = ?, revision = revision + 1"
+            " WHERE task_id = ? AND finished_at IS NULL AND (title != ? OR request != ?)",
+            (task["title"], task["request"], row["task_id"], task["title"], task["request"]),
+        )
+        return SourceIssueUpsert("updated", row["task_id"], revision, input_changed=cur.rowcount == 1)
+
+
+def list_source_issues(conn: Connection, session_id: str, source_id: str) -> list[Row]:
+    """이 소스가 받은 이슈 전부(번호 순). 다른 세션의 소스면 NotFound."""
+    _source_row(conn, session_id, source_id)
+    return conn.execute(
+        "SELECT * FROM source_issues WHERE source_id = ? ORDER BY issue_number", (source_id,)
+    ).fetchall()
+
+
+def get_source_issue_by_task(conn: Connection, session_id: str, task_id: str) -> Row | None:
+    return _one(
+        conn,
+        "SELECT si.* FROM source_issues si JOIN github_sources gs ON gs.source_id = si.source_id"
+        " WHERE si.task_id = ? AND gs.session_id = ?",
+        (task_id, session_id),
+    )
+
+
+def create_followup_once(
+    conn: Connection, spec: FollowupTaskSpec, task: dict, now: str
+) -> tuple[str, bool]:
+    """(task_id, created). 같은 `(session_id, cause_execution_id, kind)` 가 있으면 그 Task 를 돌려주고 만들지 않는다.
+    `task` 는 spec 과 세션·종류·선행이 같아야 하고(ValueError), 원인 실행은 같은 세션 것이어야 한다(NotFound)."""
+    if (task["session_id"], task["kind"], task.get("predecessor_task_id")) != (
+        spec.session_id, spec.kind, spec.predecessor_task_id,
+    ):
+        raise ValueError(f"task {task['task_id']} 가 후속 spec 과 다릅니다")
+    with _tx(conn):
+        cause = _one(
+            conn,
+            "SELECT 1 FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+            " WHERE e.execution_id = ? AND t.session_id = ?",
+            (spec.cause_execution_id, spec.session_id),
+        )
+        if cause is None:
+            raise NotFound(f"execution {spec.cause_execution_id}")
+        existing = _one(
+            conn,
+            "SELECT task_id FROM followup_links WHERE session_id = ? AND cause_execution_id = ? AND to_kind = ?",
+            (spec.session_id, spec.cause_execution_id, spec.kind),
+        )
+        if existing is not None:
+            return existing["task_id"], False
+        _insert_task_row(conn, task, now)
+        conn.execute(
+            "INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (spec.session_id, spec.cause_execution_id, spec.kind, task["task_id"], spec.rules_revision, now),
+        )
+        return task["task_id"], True
+
+
+def get_followup_link(conn: Connection, task_id: str) -> Row | None:
+    """결과가 만든 후속 Task 의 원인(`cause_execution_id`·`to_kind`). 결과로 만들지 않은 Task 면 None."""
+    return _one(conn, "SELECT * FROM followup_links WHERE task_id = ?", (task_id,))
+
+
+def create_human_request_once(
+    conn: Connection, task_id: str, code: str, question: str, cause_key: str, now: str
+) -> tuple[str, bool]:
+    """(request_id, created). 같은 `(task_id, cause_key)` 는 기존 요청을 돌려준다. 요청 당시 Task revision 을 남긴다."""
+    with _tx(conn):
+        task = get_task(conn, task_id)
+        if task is None:
+            raise NotFound(f"task {task_id}")
+        existing = _one(
+            conn, "SELECT request_id FROM human_requests WHERE task_id = ? AND cause_key = ?", (task_id, cause_key)
+        )
+        if existing is not None:
+            return existing["request_id"], False
+        request_id = f"hr-{secrets.token_hex(4)}"
+        conn.execute(
+            "INSERT INTO human_requests (request_id, task_id, code, question, cause_key, task_revision, revision,"
+            " state, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, 'open', ?)",
+            (request_id, task_id, code, question, cause_key, task["revision"], now),
+        )
+        return request_id, True
+
+
+def get_human_request(conn: Connection, session_id: str, request_id: str) -> Row | None:
+    return _one(
+        conn,
+        "SELECT hr.* FROM human_requests hr JOIN tasks t ON t.task_id = hr.task_id"
+        " WHERE hr.request_id = ? AND t.session_id = ?",
+        (request_id, session_id),
+    )
+
+
+def list_human_requests(conn: Connection, task_id: str) -> list[Row]:
+    """Task 의 사람 요청 전부(만든 순). 준비 판정(열린 요청·정보 요청 revision)과 후속 원인 키 재료."""
+    return conn.execute(
+        "SELECT * FROM human_requests WHERE task_id = ? ORDER BY created_at, rowid", (task_id,)
+    ).fetchall()
+
+
+def list_open_human_requests(conn: Connection, session_id: str) -> list[Row]:
+    """세션의 열린 요청(만든 순) — 운영자 응답 목록."""
+    return conn.execute(
+        "SELECT hr.* FROM human_requests hr JOIN tasks t ON t.task_id = hr.task_id"
+        " WHERE t.session_id = ? AND hr.state = 'open' ORDER BY hr.created_at, hr.rowid",
+        (session_id,),
+    ).fetchall()
+
+
+def list_human_responses(conn: Connection, task_id: str) -> list[Row]:
+    """Task 의 응답(응답 순)과 그 요청의 code·question·cause_key·asked_revision(요청 당시 Task revision).
+    다음 실행 입력과 응답 후 재개의 재료."""
+    return conn.execute(
+        "SELECT r.*, hr.code, hr.question, hr.cause_key, hr.task_revision AS asked_revision"
+        " FROM human_responses r JOIN human_requests hr ON hr.request_id = r.request_id"
+        " WHERE hr.task_id = ? ORDER BY r.created_at, r.rowid",
+        (task_id,),
+    ).fetchall()
+
+
+def record_human_response_once(
+    conn: Connection, session_id: str, request_id: str, *, response_id: str, expected_revision: int,
+    action: str, text: str, now: str, agent_id: str | None = None, close_reason: str | None = None,
+) -> tuple[int, bool]:
+    """(task_revision, created). 응답은 요청을 `answered` 로, Task revision 을 +1 한다(다음 실행 입력).
+    `agent_id` 는 같은 트랜잭션에서 Task 의 실행 Agent 로 지정하고, `close_reason` 은 Task 를 `실패` 로 마감하고
+    활성 실행을 해제한다(운영자 종료). 같은 response_id·같은 내용 재전송은 처음 결과, 다른 내용은 ResponseConflict,
+    revision 불일치·이미 응답됨은 StaleRequest, 마감된 Task 는 TaskClosed, 다른 세션이면 NotFound.
+    `action` 의 허용 값 검사는 서버 몫."""
+    with _tx(conn):
+        request = get_human_request(conn, session_id, request_id)
+        if request is None:
+            raise NotFound(f"human request {request_id}")
+        previous = _one(
+            conn, "SELECT * FROM human_responses WHERE request_id = ? AND response_id = ?", (request_id, response_id)
+        )
+        if previous is not None:
+            if (previous["action"], previous["text"], previous["agent_id"]) != (action, text, agent_id):
+                raise ResponseConflict(response_id)
+            return previous["task_revision"], False
+        if request["state"] != "open" or request["revision"] != expected_revision:
+            raise StaleRequest(request_id, request["revision"])
+        task_id = request["task_id"]
+        if get_task(conn, task_id)["finished_at"] is not None:
+            raise TaskClosed(task_id)
+        conn.execute("UPDATE tasks SET revision = revision + 1 WHERE task_id = ?", (task_id,))
+        if agent_id is not None:
+            conn.execute(
+                "UPDATE tasks SET chosen_agent_id = ?, selection_mode = 'manual' WHERE task_id = ?", (agent_id, task_id)
+            )
+        if close_reason is not None:
+            conn.execute(
+                "UPDATE tasks SET status = '실패', status_reason = ?, finished_at = ? WHERE task_id = ?",
+                (close_reason, now, task_id),
+            )
+            conn.execute("UPDATE executions SET released_at = ? WHERE task_id = ? AND released_at IS NULL", (now, task_id))
+        task_revision = get_task(conn, task_id)["revision"]
+        conn.execute(
+            "UPDATE human_requests SET state = 'answered', revision = revision + 1, answered_at = ?"
+            " WHERE request_id = ?",
+            (now, request_id),
+        )
+        conn.execute(
+            "INSERT INTO human_responses (request_id, response_id, action, text, agent_id, expected_revision,"
+            " task_revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (request_id, response_id, action, text, agent_id, expected_revision, task_revision, now),
+        )
+        return task_revision, True
+
+
+def _delivery(row: Row) -> SourceDelivery:
+    return SourceDelivery.model_validate(
+        {k: row[k] for k in SourceDelivery.model_fields}
+    )
+
+
+def enqueue_source_delivery_once(conn: Connection, task_id: str, body: str, now: str) -> tuple[SourceDelivery, bool]:
+    """(delivery, created). 원본 이슈에 연결된 Task 만(없으면 NotFound). 최신 revision 과 본문이 같으면 그것을 돌려주고,
+    다르면 `body_revision + 1` 의 pending 을 만든다. 전송·조정은 step 12 의 워커 몫."""
+    digest = _sha256(body)
+    with _tx(conn):
+        issue = _one(conn, "SELECT source_id, issue_number FROM source_issues WHERE task_id = ?", (task_id,))
+        if issue is None:
+            raise NotFound(f"source issue of task {task_id}")
+        latest = _one(
+            conn, "SELECT * FROM source_deliveries WHERE task_id = ? ORDER BY body_revision DESC LIMIT 1", (task_id,)
+        )
+        if latest is not None and latest["body_digest"] == digest:
+            return _delivery(latest), False
+        delivery_id = f"dlv-{secrets.token_hex(4)}"
+        conn.execute(
+            "INSERT INTO source_deliveries (delivery_id, source_id, task_id, issue_number, body_revision, body_digest,"
+            " body, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (delivery_id, issue["source_id"], task_id, issue["issue_number"],
+             (latest["body_revision"] if latest else 0) + 1, digest, body, now, now),
+        )
+        return _delivery(_one(conn, "SELECT * FROM source_deliveries WHERE delivery_id = ?", (delivery_id,))), True
+
+
+def list_source_deliveries(conn: Connection, task_id: str) -> list[SourceDelivery]:
+    """Task 의 반영 기록 전부(body_revision 순). 마지막이 화면에 보이는 반영 상태다."""
+    return [
+        _delivery(r) for r in conn.execute(
+            "SELECT * FROM source_deliveries WHERE task_id = ? ORDER BY body_revision", (task_id,)
+        )
+    ]
+
+
+def delivery_targets(conn: Connection) -> list[Row]:
+    """아직 끝나지 않은 반영(pending·sending·unknown)이 있는 Task 와 그 원본 — (task_id, source_id, issue_number,
+    repository_full_name, config_json). 세션을 가리지 않는다(워커 전용). 소스 켜짐 여부는 호출자가 본다."""
+    return conn.execute(
+        "SELECT DISTINCT d.task_id, d.source_id, d.issue_number, gs.repository_full_name, gs.config_json"
+        " FROM source_deliveries d JOIN github_sources gs ON gs.source_id = d.source_id"
+        " WHERE d.state IN ('pending', 'sending', 'unknown') ORDER BY d.task_id"
+    ).fetchall()
+
+
+def claim_source_delivery(
+    conn: Connection, delivery_id: str, *, expected_state: str, now: str, claim_until: str,
+    comment_id: int | None, for_send: bool,
+) -> int | None:
+    """`expected_state` 이고 `next_at` 이 지난(또는 없는) 행을 `sending` 으로 가져간다 — 여러 소비자 중 하나만 성공한다.
+    `next_at` 은 claim 만료 시각, `attempts + 1` 은 이 claim 의 fence(반환값). 실패면 None.
+    `for_send` 면 그 Task 의 최신 revision 이고 다른 revision 이 전송 중·불확실하지 않을 때만 가져간다(중복 POST 방지)."""
+    guard = (
+        " AND NOT EXISTS (SELECT 1 FROM source_deliveries o WHERE o.task_id = d.task_id AND ("
+        "o.body_revision > d.body_revision OR (o.delivery_id != d.delivery_id AND o.state IN ('sending', 'unknown'))))"
+        if for_send else ""
+    )
+    with _tx(conn):
+        cur = conn.execute(
+            "UPDATE source_deliveries AS d SET state = 'sending', attempts = attempts + 1, next_at = ?,"
+            " comment_id = ?, updated_at = ?"
+            " WHERE delivery_id = ? AND state = ? AND (next_at IS NULL OR next_at <= ?)" + guard,
+            (claim_until, comment_id, now, delivery_id, expected_state, now),
+        )
+        if cur.rowcount != 1:
+            return None
+        return _one(conn, "SELECT attempts FROM source_deliveries WHERE delivery_id = ?", (delivery_id,))["attempts"]
+
+
+def record_source_delivery(
+    conn: Connection, delivery_id: str, *, attempts: int, state: str, comment_id: int | None,
+    next_at: str | None, last_error: str | None, now: str,
+) -> bool:
+    """claim(`attempts` fence)의 결과를 남긴다. 그 사이 claim 이 만료돼 다른 소비자가 가져갔으면 False — 늦은 기록은 버린다."""
+    cur = conn.execute(
+        "UPDATE source_deliveries SET state = ?, comment_id = ?, next_at = ?, last_error = ?, updated_at = ?"
+        " WHERE delivery_id = ? AND state = 'sending' AND attempts = ?",
+        (state, comment_id, next_at, last_error, now, delivery_id, attempts),
+    )
+    return cur.rowcount == 1

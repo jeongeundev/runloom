@@ -13,6 +13,9 @@ from pathlib import Path
 from workflow.domain.callback_policy import parse_hosts
 
 SECRET_KEYS = ("SESSION_SECRET", "OPERATOR_TOKEN", "DIAG_API_TOKEN")
+# 비밀값이지만 선택 — 비면 그 기능만 꺼진다. WORKFLOW_DEV 도 무작위 값을 만들지 않는다.
+# WORKFLOW_GITHUB_TOKEN: GitHub 업무 순환(ADR-0014)의 저장소 한정 토큰. 운영자 API 는 "있음/없음"만 응답한다.
+OPTIONAL_SECRET_KEYS = ("WORKFLOW_GITHUB_TOKEN",)
 
 # `load_settings` 가 읽는 환경변수 전부 (개발 플래그 `WORKFLOW_DEV` 제외).
 # deploy/env/central.env.example 의 키 목록이 이것과 일치해야 한다 (tests/test_deploy_files.py).
@@ -30,6 +33,9 @@ ENV_KEYS = (
     # n8n 입구·출구 (ADR-0010) — 비밀값이 아니다
     "WORKFLOW_CALLBACK_HOSTS",
     "WORKFLOW_PUBLIC_URL",
+    # GitHub 업무 순환 (ADR-0014) — 토큰은 비밀값, 허용 저장소 목록(owner/name 콤마 구분)은 아니다
+    *OPTIONAL_SECRET_KEYS,
+    "WORKFLOW_GITHUB_REPOS",
 )
 
 
@@ -56,6 +62,9 @@ class Settings:
     # callback 허용 목록(`parse_hosts` 결과, 비면 callback 없음)과 chain_url·task_url 앞의 공개 주소(끝 `/` 없음, 비면 null)
     callback_hosts: tuple[str, ...] = ()
     public_url: str = ""
+    # GitHub 업무 순환: 토큰(비면 연결 불가, repr 에 넣지 않음)과 연결을 허용한 저장소 `owner/name` 목록
+    github_token: str = field(default="", repr=False)
+    github_repos: tuple[str, ...] = ()
 
 
 def _int(env: Mapping[str, str], key: str, default: int) -> int:
@@ -107,4 +116,6 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         ),
         callback_hosts=parse_hosts(env.get("WORKFLOW_CALLBACK_HOSTS") or ""),
         public_url=(env.get("WORKFLOW_PUBLIC_URL") or "").rstrip("/"),
+        github_token=env.get("WORKFLOW_GITHUB_TOKEN") or "",
+        github_repos=tuple(r.strip() for r in (env.get("WORKFLOW_GITHUB_REPOS") or "").split(",") if r.strip()),
     )

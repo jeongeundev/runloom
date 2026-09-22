@@ -1,5 +1,5 @@
 {# 3열 셸 — UI_GUIDE "앱 셸". 왼쪽 목록 · 가운데 본문 · 오른쪽 산출물 뷰어. 대화 입력창은 없다.
-   스크립트는 여기 인라인 하나뿐이다 (폴링·뷰어 열기·목록 서랍·복사·원문 토글). 외부 자원 없음. #}
+   스크립트는 여기 인라인 하나뿐이다 (폴링·뷰어 열기·목록 서랍·복사·원문 토글·JSON 폼). 외부 자원 없음. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -92,6 +92,64 @@
     }
   }
   bindViewer();
+
+  // --- JSON 폼: `data-json-action` 폼은 운영자 JSON API 로 보낸다(GitHub 설정·담당 연결·사람 응답). 누른 버튼의
+  //     data-json-action/-method/-omit 이 폼 값보다 앞선다. 필드 형식은 data-json-type(int·bool·list·int-list·optional).
+  //     성공이면 새로 연다(미리보기는 problems 만 보인다). 보내는 동안 버튼을 막고, 응답 ID 는 서버가 폼에 심은 값이다 ---
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target.closest('form[data-json-action]');
+    if (!form) { return; }
+    ev.preventDefault();
+    var by = ev.submitter;
+    function pick(name, fallback) {
+      return (by && by.getAttribute(name)) || form.getAttribute(name) || fallback;
+    }
+    var action = pick('data-json-action', '');
+    var omit = pick('data-json-omit', '').split(' ');
+    var body = {};
+    form.querySelectorAll('input[name], select[name], textarea[name]').forEach(function (el) {
+      if (el.disabled || omit.indexOf(el.name) >= 0) { return; }
+      var type = el.getAttribute('data-json-type') || 'str';
+      var value = el.value;
+      if (type === 'bool') { body[el.name] = el.checked; return; }
+      if (type === 'int') { if (value.trim() !== '') { body[el.name] = Number(value); } return; }
+      if (type === 'list' || type === 'int-list') {
+        var items = value.split(/[\s,]+/).filter(Boolean);
+        body[el.name] = type === 'int-list' ? items.map(Number) : items;
+        return;
+      }
+      if (type === 'optional' && value.trim() === '') { return; }
+      body[el.name] = value;
+    });
+    if (by && by.name) { body[by.name] = by.value; }
+    if (body.action && body.action !== 'choose_agent') { delete body.agent_id; }
+    var pathField = form.getAttribute('data-json-path-field');
+    if (pathField) { action += '/' + encodeURIComponent(body[pathField]); delete body[pathField]; }
+    var out = form.querySelector('[data-json-result]');
+    function say(text) { if (out) { out.textContent = text; } }
+    var buttons = form.querySelectorAll('button');
+    buttons.forEach(function (b) { b.disabled = true; });
+    fetch(action, {
+      method: pick('data-json-method', 'POST'),
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) { return { ok: r.ok, data: data }; });
+    }).then(function (res) {
+      buttons.forEach(function (b) { b.disabled = false; });
+      if (res.ok && res.data.problems) {
+        say(res.data.problems.length ? res.data.problems.map(function (p) { return p.message; }).join(' / ') : '문제 없음');
+      } else if (res.ok) {
+        window.location.reload();
+      } else {
+        say(res.data.message || '요청이 거부되었습니다');
+      }
+    }).catch(function () {
+      buttons.forEach(function (b) { b.disabled = false; });
+      say('연결 실패 — 다시 보내도 같은 응답 ID 라 한 번만 반영됩니다');
+    });
+  });
 
   // --- 라이브 조각: 3초(완료·실패면 10초)마다 교체. 입력 중이면 건너뛴다. 결과 산출물이 바뀌면 뷰어를 위해 다시 연다.
   //     조각이 data-poll="0" 이면(워크플로우: 실행 중·실행 요청됨·대기 노드 없음) 다음 갱신을 잡지 않는다 ---

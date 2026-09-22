@@ -7,6 +7,8 @@ Codex 프로세스 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐
 
 사용자 정의 종류(`LocalTarget`)는 `launch_readonly` 가 같은 구조에서 `--sandbox read-only` 로 인계 디렉터리에서 띄우고
 (`build_readonly_argv`), `parse_generic_message` 가 `{outcome, summary}` 만 읽는다. 인자 배열은 여전히 고정이다.
+커밋 검토(`code_review`)도 같은 `launch_readonly` 로 결과 커밋의 체크아웃에서 띄우고, `read_structured_message` 가 같은
+파일을 객체로 꺼낸다.
 """
 
 import json
@@ -134,6 +136,16 @@ class CodexAdapter(LocalToolAdapter):
             else:
                 return ToolResult(last.outcome, last.summary or "(요약 없음)", None)
         return ToolResult("needs_information", f"Codex 마지막 메시지를 읽지 못함 ({note})", note)
+
+    def read_structured_message(self, raw: str | None) -> tuple[dict | None, str | None]:
+        """`--output-last-message` 파일을 객체로. 형식 검사는 공통 흐름(`CodeReviewResult`)이 한다."""
+        if raw is None:
+            return None, "파일 없음"
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None, "JSON 아님"
+        return (data, None) if isinstance(data, dict) else (None, "객체 아님")
 
     def parse_generic_message(self, raw: str | None, outcomes: Sequence[str]) -> ToolResult:
         """같은 파일에서 `{outcome, summary}` 만 읽는다. `outcome ∉ outcomes` 면 그대로 두고 사유를 남긴다 —

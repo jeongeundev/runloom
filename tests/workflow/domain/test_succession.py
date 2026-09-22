@@ -6,7 +6,7 @@
 from workflow.contracts.v1 import BUILTIN_RULES, SuccessorRule
 from workflow.domain.succession import continue_reason, may_continue, rule_for
 
-(DIAGNOSIS_TO_CODE_CHANGE,) = BUILTIN_RULES
+DIAGNOSIS_TO_CODE_CHANGE = BUILTIN_RULES[0]
 CODE_CHANGE_TO_REVIEW = SuccessorRule(
     from_kind="code_change", on_outcomes=["ready_for_review"], to_kind="review",
     handoff_kinds=["diff", "code_change_result"],

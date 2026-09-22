@@ -12,7 +12,9 @@ from workflow.adapters.errors import (
     HashMismatch,
     InvalidTransition,
     NotFound,
+    ResponseConflict,
     SequenceGap,
+    StaleRequest,
 )
 
 
@@ -49,3 +51,14 @@ def test_invalid_transition_carries_current_status_event_type_and_optional_reaso
     exc = InvalidTransition("running", event_type="result_ready", reason="result_artifact_missing")
     assert (exc.current_status, exc.event_type, exc.reason) == (
         "running", "result_ready", "result_artifact_missing")
+
+
+def test_stale_request_carries_current_revision():
+    exc = StaleRequest("hr-3c2b1a0f", 3)
+    assert isinstance(exc, AdapterError)
+    assert exc.current_revision == 3
+    assert "hr-3c2b1a0f" in str(exc) and "3" in str(exc)
+
+
+def test_response_conflict_is_adapter_error():
+    assert isinstance(ResponseConflict("resp-1"), AdapterError)

@@ -1,8 +1,8 @@
 # 계약 v1 예시집
 
-> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답 계약은 아직 설계 중이며 아래 예시에 포함되지 않는다. 제품 방향 변경만으로 기존 payload나 계약 버전이 바뀌지는 않는다.
+> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고, 13.9 오류 본문도 서버 경로(step 6·11)가 생겨 모두 일반 `json` 펜스다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
-갱신일: 2026-09-22 (phase 6-typed-handoff docs-sync)
+갱신일: 2026-09-23 (phase 8 step 1 — 13절 모델 구현)
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -216,7 +216,7 @@
 
 본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
-산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`.
+산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`.
 
 로컬 도구의 원시 로그 산출물 — 생산자와 내용:
 
@@ -225,6 +225,7 @@
 | `codex_jsonl` / `codex_stderr` | 연결 프로그램 Codex 어댑터 | `codex exec --json` 의 원문 stdout(JSONL) / stderr. 업로드 전 `wfc_`·`sk-` 마스킹 적용 |
 | `claude_jsonl` / `claude_stderr` | 연결 프로그램 Claude 어댑터 | `claude -p --output-format json` 의 원문 stdout / stderr. 같은 마스킹 적용 |
 | `generic_result` | 연결 프로그램 | 사용자 정의 종류의 결과 봉투(`GenericResult`, 11절). 내장 종류의 `diagnosis_result`·`code_change_result` 와 구분 |
+| `code_review_result` | 연결 프로그램 | 내장 `code_review` 의 결과 봉투(`CodeReviewResult`, 13.4절) |
 
 ## 5. 진단 결과 — `ready_for_handoff` 전체
 
@@ -513,7 +514,7 @@
 }
 ```
 
-위 JSON 은 `KindSpec.model_dump_json()` 의 필드 순서 그대로다(기본값 없음 — 아홉 필드 모두 필수). `kind` 는 `^[a-z][a-z0-9_]{1,39}$`, `capability_code` 는 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`, `scope_key`·`outcomes` 항목은 `^[a-z][a-z0-9_]{0,39}$`. 등록은 화면 `POST /kinds`(폼 — `output_kind`·`builtin` 은 서버가 `generic_result`·`false` 로 고정, `capability_code` 를 비우면 `kind`): 이미 있는 `kind` 재등록은 `409 kind_exists`, 내장 삭제는 `409 kind_protected`, 업무나 규칙이 참조하는 종류 삭제는 `409 kind_in_use`, `input_kinds` 에 4절 목록 밖의 값·`input_kinds`/`outcomes` 중복·패턴 위반·빈 라벨·(계약 직접 사용 시) 사용자 정의인데 `output_kind` 가 `generic_result` 가 아니거나 내장 이름이 아닌데 `builtin: true` 면 `422 invalid_field`.
+위 JSON 은 `KindSpec.model_dump_json()` 의 필드 순서 그대로다(기본값 없음 — 아홉 필드 모두 필수). `kind` 는 `^[a-z][a-z0-9_]{1,39}$`, `capability_code` 는 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`, `scope_key`·`outcomes` 항목은 `^[a-z][a-z0-9_]{0,39}$`. 등록은 화면 `POST /kinds`(폼 — `output_kind`·`builtin` 은 서버가 `generic_result`·`false` 로 고정, `capability_code` 를 비우면 `kind`): 이미 있는 `kind` 재등록은 `409 kind_exists`, 내장 삭제는 `409 kind_protected`, 업무나 규칙이 참조하는 종류 삭제는 `409 kind_in_use`, `input_kinds` 에 4절 목록 밖의 값·`input_kinds`/`outcomes` 중복·패턴 위반·빈 라벨·(계약 직접 사용 시) 사용자 정의인데 `output_kind` 가 `generic_result` 가 아니거나 내장 이름이 아닌데 `builtin: true` 거나 내장 이름(`BUILTIN_KIND_NAMES` — 13절의 `bug_fix`·`code_review` 포함)인데 `builtin: false` 면 `422 invalid_field`. 화면에서 내장 이름을 등록하면 세션에 seed 됐는지와 관계없이 `409 kind_exists`.
 
 ### 11.2 `SuccessorRule`
 
@@ -733,3 +734,244 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 | 경로의 출처가 `n8n` 이 아님 | 404 | `{ "code": "not_found", "message": "입구 jira을 찾을 수 없습니다.", "field": "source", "details": null }` — `POST /sources/jira/chains` 처럼 `n8n` 이 아닌 경로. 토큰 검사 뒤에 본다 |
 
 첫 업무 시작만 거부된 경우(409 `selection_required`·429 `daily_limit_reached` — 체인은 이미 있음)는 오류가 아니라 위 `started: false` 응답이다.
+
+## 13. GitHub 업무 순환 — 확장 계약 (contract-pending)
+
+[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 13.1~13.8 의 모델은 step 1 에서 구현했다 — `contracts/v1.py`(종류·규칙·target·`CodeReviewResult`·`ClaimRequest.supported_kinds`)와 `contracts/github.py`(`GitHubSourceConfig`·`AssigneeBinding`·`GitHubIssueSnapshot`·`SourceDelivery`). 이 블록들은 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽는다. 13.9 오류 본문은 그 오류를 내는 서버 경로가 생기며 일반 `json` 펜스로 바꿨다(`repository_not_allowed` step 6, `stale_request` step 11). 13.10 은 step 6 의 운영자 설정 API, 13.11 은 step 11 의 사람 요청 응답 API 다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
+
+### 13.1 새 내장 종류와 규칙
+
+`bug_fix` — 진단 인계 없이 이슈 요청과 등록된 검증 프로필로 고친다. 결과 봉투는 7절 `CodeChangeResult` 재사용, 필수 산출물에서 `report_output` 이 빠진다.
+
+```json
+{
+  "kind": "bug_fix",
+  "label": "버그 수정",
+  "capability_code": "code.fix",
+  "scope_key": "repository_id",
+  "input_kinds": [],
+  "output_kind": "code_change_result",
+  "outcomes": ["ready_for_review", "needs_information"],
+  "instructions": "",
+  "builtin": true
+}
+```
+
+`code_review` — 결과 커밋을 직접 읽는다. `output_kind` 는 새 값 `code_review_result`.
+
+```json
+{
+  "kind": "code_review",
+  "label": "커밋 검토",
+  "capability_code": "code.review",
+  "scope_key": "repository_id",
+  "input_kinds": ["code_change_result"],
+  "output_kind": "code_review_result",
+  "outcomes": ["approved", "changes_requested", "needs_information"],
+  "instructions": "",
+  "builtin": true
+}
+```
+
+```json
+{ "from_kind": "bug_fix", "on_outcomes": ["ready_for_review"], "to_kind": "code_review", "handoff_kinds": ["code_change_result", "diff", "test_log_after", "verification_log"] }
+```
+
+### 13.2 `ExecutionRequest` — `bug_fix` 첫 시도
+
+target 은 2절 `CodeChangeTarget` 과 같은 모양이다. `request` 는 이슈 스냅샷(제목·본문·링크)을 `task_revision` 에 고정한 문자열이며 명령·경로로 해석하지 않는다. 첫 시도는 입력이 없어도 된다(`code_change` 는 여전히 비면 422). 재작업 시도는 8절처럼 이전 `code_change_result` 와 `code_review_result` 가 입력에 붙고 `base_commit` 은 이전 `result_commit` 이다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-fix-001",
+  "task_id": "task-gh-41",
+  "kind": "bug_fix",
+  "agent_id": "agent-codex-mac",
+  "task_revision": 1,
+  "request": "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.\n\nhttps://github.com/acme/billing/issues/41",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "verification_profile_id": "vp-pytest"
+  }
+}
+```
+
+### 13.3 `ExecutionRequest` — `code_review`
+
+target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한다. 연결 프로그램은 같은 로컬 등록 저장소에서 `result_commit` 의 깨끗한 체크아웃을 만들어 읽기 전용으로 검토하고, 커밋이 없으면 실패 코드 `commit_missing` 이다. 도구를 띄우기 전 실패 코드: 등록 없음 `registration_missing`, 두 커밋 중 하나가 그 저장소에 없음 `commit_missing`(다른 기기·클론의 커밋은 전송하지 않는다), `base_commit` 이 `result_commit` 의 조상이 아님 `commit_mismatch`, 인계 자료에 `source_execution_id` 의 `CodeChangeResult` 가 없거나 그 두 커밋이 target 과 다름 `source_mismatch`. 실행 뒤: 체크아웃 HEAD 가 움직였거나 파일·인계 파일이 바뀜 `readonly_violation`, 마지막 메시지가 `CodeReviewResult` 가 되지 않음 `result_invalid`(시간 초과·사용량 한도는 다른 종류와 같다). 도구는 `outcome`·`summary`·`findings`·`missing_information` 만 내고(`local_tool.REVIEW_RESULT_SCHEMA`), 실행·커밋 ID 는 연결 프로그램이 채운다 — `reviewed_commit` 은 검토 뒤 확인한 체크아웃 HEAD 다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-review-001",
+  "task_id": "task-gh-41-review",
+  "kind": "code_review",
+  "agent_id": "agent-claude-mac",
+  "task_revision": 1,
+  "request": "task-gh-41 의 결과 커밋이 이슈의 재현 조건을 고치는지, 테스트가 무력화되지 않았는지 검토해 주세요.",
+  "input_artifact_ids": ["art-handoff-gh-001"],
+  "target": {
+    "local_registration_id": "local-billing-claude",
+    "source_execution_id": "exec-gh-fix-001",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "result_commit": "8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a"
+  }
+}
+```
+
+### 13.4 `CodeReviewResult`
+
+`art-gh-review-result-001`(kind `code_review_result`). `reviewed_commit` 은 target `result_commit` 과 같아야 하고 중앙은 그것이 수정 Task 의 최신 결과 커밋인지 다시 본다(아니면 `stale_review`). `changes_requested` 는 `blocking` 지적이 1개 이상, `approved` 는 0개, `needs_information` 은 `missing_information` 이 비어 있지 않아야 한다. `path` 는 표시용 문자열이다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-review-001",
+  "task_id": "task-gh-41-review",
+  "source_execution_id": "exec-gh-fix-001",
+  "reviewed_commit": "8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a",
+  "outcome": "changes_requested",
+  "summary": "쿠폰 중복 적용은 막았지만 동시에 두 요청이 들어오는 경우의 테스트가 없습니다.",
+  "findings": [
+    { "severity": "blocking", "path": "billing/coupon.py", "line": 42, "message": "잠금 없이 사용 여부를 읽고 쓰므로 동시 요청에서 다시 두 번 적용될 수 있습니다." },
+    { "severity": "non_blocking", "path": null, "line": null, "message": "테스트 이름이 재현 조건을 설명하면 좋겠습니다." }
+  ],
+  "missing_information": [],
+  "artifact_ids": ["art-claude-jsonl-010", "art-claude-stderr-010"]
+}
+```
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-review-002",
+  "task_id": "task-gh-41-review",
+  "source_execution_id": "exec-gh-fix-002",
+  "reviewed_commit": "1f3b5d7e9a8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c",
+  "outcome": "approved",
+  "summary": "동시 요청 재현 테스트가 수정 전 실패·수정 후 통과하며 기존 테스트는 바뀌지 않았습니다.",
+  "findings": [],
+  "missing_information": [],
+  "artifact_ids": ["art-claude-jsonl-011", "art-claude-stderr-011"]
+}
+```
+
+### 13.5 `ClaimRequest` — 지원 종류 선언
+
+`supported_kinds` 는 선택(기본 null)이다. null 이면 구버전 연결 프로그램으로 보고 내장 중 `diagnosis`·`code_change`(`domain/task_readiness.LEGACY_BUILTIN_KINDS`)와 사용자 정의 종류만 배정한다. 서버는 마지막 선언을 저장해 준비 판정의 `executor_outdated` 에 쓴다. 구버전 서버는 이 필드를 422 로 거부하므로 서버를 먼저 올린다. step 9 부터 연결 프로그램은 아래 예시처럼 `["code_change", "bug_fix", "code_review"]` 를 보낸다(step 8 은 `code_review` 없이 둘).
+
+```json
+{ "contract_version": 1, "connector_id": "conn-mac-01", "supported_kinds": ["code_change", "bug_fix", "code_review"] }
+```
+
+### 13.6 소스 설정과 담당 연결 — 운영자 API
+
+`GitHubSourceConfig`. 토큰 필드는 없다 — 값은 서버 환경변수 `WORKFLOW_GITHUB_TOKEN` 에만 있고, `repository_full_name` 은 `WORKFLOW_GITHUB_REPOS` 에 있어야 한다(아니면 422 `repository_not_allowed`). `label_filter` 와 `selected_issue_numbers` 가 둘 다 비면 422.
+
+```json
+{
+  "source_id": "ghs-1a2b3c4d",
+  "repository_full_name": "acme/billing",
+  "workflow_repository_id": "billing",
+  "label_filter": ["bug", "runloom"],
+  "selected_issue_numbers": [],
+  "start_at": "2026-10-06T09:00:00+09:00",
+  "fix_verification_profile_id": "vp-pytest",
+  "review_agent_id": "agent-claude-mac",
+  "run_mode": "auto",
+  "max_rework_rounds": 1,
+  "enabled": true,
+  "config_revision": 3
+}
+```
+
+`AssigneeBinding` — GitHub 사용자 숫자 ID 로 잇는다(`login` 은 바뀔 수 있어 표시용).
+
+```json
+{ "source_id": "ghs-1a2b3c4d", "github_user_id": 5812345, "github_login": "kim-dev", "agent_id": "agent-codex-mac" }
+```
+
+### 13.7 `GitHubIssueSnapshot`
+
+GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` 항목은 업무로 받지 않는다.
+
+```json
+{
+  "repository_id": 700112233,
+  "repository_full_name": "acme/billing",
+  "issue_id": 2456789012,
+  "number": 41,
+  "title": "할인 쿠폰이 두 번 적용됨",
+  "body": "재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.",
+  "state": "open",
+  "labels": ["bug", "runloom"],
+  "assignee_ids": [5812345],
+  "assignee_logins": ["kim-dev"],
+  "html_url": "https://github.com/acme/billing/issues/41",
+  "created_at": "2026-10-06T10:12:00Z",
+  "updated_at": "2026-10-06T10:15:30Z",
+  "is_pull_request": false
+}
+```
+
+### 13.8 `SourceDelivery` — 반영 불확실
+
+댓글 POST 뒤 응답을 잃은 상태. 다음 tick 은 재POST 전에 이슈 댓글에서 marker `<!-- runloom:task=task-gh-41 -->` 를 찾는다.
+
+```json
+{
+  "delivery_id": "dlv-9f8e7d6c",
+  "source_id": "ghs-1a2b3c4d",
+  "task_id": "task-gh-41",
+  "issue_number": 41,
+  "body_revision": 2,
+  "body_digest": "7c4e1a9d3b6f0e2c5a8d1b4f7e0a3c6d9b2e5f8a1c4d7b0e3f6a9c2d5b8e1f4a",
+  "state": "unknown",
+  "comment_id": null,
+  "attempts": 1,
+  "next_at": "2026-10-06T10:31:00Z",
+  "last_error": "연결 오류: ReadTimeout"
+}
+```
+
+### 13.9 새 오류 본문
+
+`repository_not_allowed` 는 운영자 설정 API(`server/github_api.py`, step 6)가, `stale_request` 는 사람 응답 API(`server/human_api.py`, step 11)가 낸다.
+
+```json
+{ "code": "repository_not_allowed", "message": "저장소 acme/other 는 WORKFLOW_GITHUB_REPOS 에 없습니다.", "field": "repository_full_name", "details": null }
+```
+
+```json
+{ "code": "stale_request", "message": "사람 요청 hr-3c2b1a0f 가 이미 revision 3 입니다.", "field": "expected_revision", "details": { "current_revision": 3 } }
+```
+
+### 13.10 운영자 GitHub 설정 API (step 6)
+
+운영자 세션 쿠키(`/operator/login`)만 통과한다 — 없거나 공개 세션이면 403 `forbidden`, 다른 세션의 소스는 404 `not_found`. 요청 본문은 13.6 `GitHubSourceConfig` 에서 서버가 정하는 `source_id`·`config_revision` 을 뺀 것이고(`label_filter`·`selected_issue_numbers` 기본 `[]`, `max_rework_rounds` 기본 1, `enabled` 기본 true), 토큰 필드를 보내면 422 `unknown_field` 다. 응답은 토큰 값 대신 `token_configured: bool` 만 담는다. GitHub 를 호출하지 않는다.
+
+| 요청 | 응답 | 오류 |
+|---|---|---|
+| `GET /github/sources` | `token_configured`·`allowed_repositories`·`sources`(`GitHubSourceConfig` 목록) | |
+| `POST /github/sources/preview` | `token_configured`·`problems`(`ErrorBody` 목록) — 저장하지 않고 아래 422 문제를 모두 모은다 | 형식 오류만 422 |
+| `POST /github/sources` | 201 `source`·`token_configured` — `source_id` `ghs-`+8 hex, `config_revision` 1, 저장소 표기는 허용 목록의 것 | 422 `repository_not_allowed`·`agent_not_registered`·`agent_capability_mismatch`·`verification_profile_unknown`, 409 `source_exists`(같은 워크스페이스에 같은 저장소)·`github_workspace_taken`(다른 세션이 이미 GitHub 소스를 가짐 — 셀프호스트 1개 워크스페이스) |
+| `GET /github/sources/{source_id}` | `source`·`token_configured`·`assignees`(`AssigneeBinding` 목록) | 404 |
+| `PUT /github/sources/{source_id}` | 본문 + `expected_revision` → `source`·`token_configured`(`config_revision` +1) | 409 `stale_config`(`details.current_revision`), 저장소 변경 422 `invalid_field`, 나머지는 생성과 같음 |
+| `POST /github/sources/{source_id}/stop` | `enabled: false`, `config_revision` +1(이미 멈췄으면 그대로) | 404 |
+| `PUT /github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
+
+Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review · repository_id=<workflow_repository_id>`, 소스의 `fix_verification_profile_id` 는 같은 범위의 `code.fix` Agent 중 하나가 보고한 프로필이어야 한다. 설정 변경·중지는 이미 만든 Task·Execution 의 입력을 바꾸지 않는다.
+
+### 13.11 운영자 사람 요청 응답 API (step 11)
+
+응답 권한은 운영자 세션 쿠키뿐이다 — 없거나 공개 세션이면 403 `forbidden`, 다른 세션의 요청은 404 `not_found`. GitHub 담당자를 웹 인증 사용자로 보지 않고, GitHub 댓글 내용을 응답·승인 명령으로 읽지 않는다. 응답은 요청을 `answered` 로, Task `revision` 을 +1 할 뿐 실행을 만들지 않는다 — 워커가 새 revision 을 준비 판정으로 다시 본다.
+
+| 요청 | 응답 | 오류 |
+|---|---|---|
+| `GET /human-requests` | `requests` — 이 세션의 열린 요청(`request_id`·`task_id`·`code`·`question`·`revision`·`state`·`created_at`, 만든 순) | |
+| `POST /human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
+
+응답의 효과: `resume` 의 `text` 는 다음 실행 요청 문구 끝의 `## 사람 응답 (운영자)` 절로 붙는다(Task 요청 원문·원본 스냅샷은 그대로). `choose_agent` 는 같은 트랜잭션에서 Task 의 실행 Agent 를 지정하지만 담당자 연결·능력·위임 범위는 재평가가 다시 검사한다 — 응답은 권한이나 소스 설정을 바꾸지 않는다(위임 밖은 13.10 설정 API 로 따로 고친다). `close` 는 Task 를 `실패 · 운영자 종료 — 사람 요청 응답` 으로 마감하고 활성 실행을 해제한다. 같은 트랜잭션이라 착수와 겹쳐도 마감된 Task 에 실행이 붙지 않는다.

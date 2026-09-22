@@ -9,7 +9,7 @@ from workflow.domain.kinds import (
     validate_rule,
 )
 
-DIAGNOSIS, CODE_CHANGE = BUILTIN_KINDS
+DIAGNOSIS, CODE_CHANGE = BUILTIN_KINDS[:2]
 
 # 개념 절의 사용자 정의 종류 `review` — diff·code_change_result 를 받아 검토 의견을 낸다
 REVIEW = KindSpec(

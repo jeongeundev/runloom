@@ -241,3 +241,19 @@ Claude 의 summary(원문은 `evidence/C_결과_봉투.json`): 진단 원문이 
 - 메모(결함 아님): `n8nEventLog.log` 의 시각 표기가 실행 도중 `+00:00` 에서 `-04:00` 으로 바뀐다(같은 순간을 다른 오프셋으로 찍은 것 — 위 표는 모두 UTC 로 환산).
 - 메모(하네스, 미수정): `scripts/local_stack.py` 를 비대화형 셸에서 `nohup … &` 로 띄우면 SIGINT 가 무시돼 `Ctrl-C` 경로(`KeyboardInterrupt` → `stack.stop()`)가 없고, SIGTERM 은 부모만 죽여 자식 5개가 남는다 — 이번엔 자식 PID 를 직접 종료했다. 대화형 터미널에서 `Ctrl-C` 로 쓰는 원래 용법에는 영향 없다.
 - 변경 파일: [docs/n8n/README.md](n8n/README.md), [docs/n8n/runloom-handoff.json](n8n/runloom-handoff.json)(`id` 1줄), 이 문서, [ARCHITECTURE](ARCHITECTURE.md) "검증 순서" 7번, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) "지금 상태" phase 7 행.
+
+## 2026-09-23 — GitHub 업무 순환 대역 e2e (phase 8 step 14 작성, step 15 재실행)
+
+목적: [ADR-0014](adr/0014-github-task-cycle.md)의 수집 → `bug_fix` → 판정 → `code_review` 연결·생성 → 재작업·사람 요청·응답 후 재개 → 원본 댓글 반영을 프로세스 경계를 넘어 끝까지 돌린다. **실제 외부 도구 호출은 없다** — 이 절은 대역 검증 기록이며 실연동(step 16)을 대신하지 않는다.
+
+| 항목 | 값 |
+|---|---|
+| 명령·결과 | `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **49 passed** 148.69초(2026-09-23 step 15 실행, `tests/e2e/test_github_cycle.py` 13 + 기존 대본·n8n 36). `python3 -m pytest -q` 2164 passed·49 skipped, `python3 -m ruff check .` 통과 |
+| 실제 제품 코드 | uvicorn 중앙 API, `HttpGitHubClient`(transport 만 가짜 서버로), 테스트 프로세스 안 `Worker`(재시작 = 새 인스턴스), 하위 프로세스 `workflow.connector connect/register/run`, 임시 Git 저장소 2개, 검증 프로필의 실제 `pytest` |
+| 대역 | GitHub = 127.0.0.1 `ThreadingHTTPServer`(이슈 목록 since·2개 단위 페이지·Link·ETag/304·PR 항목·댓글 생성/조회/수정, 5xx·POST 응답 유실·오래된 스냅샷 주입). 수정·검토 도구 = PATH 가짜 `codex`(시나리오 표대로 재현 테스트·수정 커밋, 검토는 결과 커밋 체크아웃의 `TODO(review)` 로 `changes_requested`/`approved`). 실제 GitHub·Codex·Claude·모델 호출 없음, 비용 0 |
+| 확인한 것 | 범위 이슈 4건만 접수(백로그·PR·다른 라벨 제외) → A·B 서로 다른 등록에서 같은 tick 착수 → D 위임 밖·E 담당 2명 사람 요청 1건씩 → G 같은 등록 잠금 대기 → 웹 등록 기존 검토 C 에 A 결과 연결(워커 재시작 뒤에도 1회) → C `changes_requested` → A 재작업 1회(base = 이전 결과 커밋) → 재검토 `approved`, A `확인 필요 · 검토 승인 — 병합·이슈 종료는 사람`, 기준 브랜치 불변 → B 결과로 새 검토 F 생성·승인 → G 상한 0 `rework_limit_reached` → E `choose_agent` 응답(재전송 멱등·`response_conflict`·`stale_request`) 후 r2 착수 → D 는 응답만으로 미착수·Agent 범위 변경 후 착수 → 재시작 tick 에도 Task·실행 수 불변, 이슈마다 marker 댓글 1개, GitHub 쓰기는 댓글 POST/PATCH 뿐, 토큰이 DB·산출물·로그·댓글에 없음. B 의 POST 응답 유실은 marker 조회로 `delivered`(재POST 없음) |
+| 확인하지 않은 것 | 실제 `api.github.com`·fine-grained PAT 권한·rate limit 헤더·댓글 목록 페이지네이션, 실제 Codex/Claude 의 `bug_fix`·`code_review` 동작, 브라우저의 `data-json-action` 스크립트 — [GitHub 런북](github/README.md) 10절 |
+
+### 발견한 결함과 고친 파일
+
+- step 15 재실행에서 새 결함 없음. step 14 에서 기존 `tests/e2e/test_scenario.py` test_22~28 의 기대값을 내장 4종·규칙 2개로 갱신했다(제품 소스 무변경).

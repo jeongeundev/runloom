@@ -6,13 +6,29 @@
   → `test_log_after`(worktree) → `verification_log`·`report_output`(결과 커밋의 깨끗한 체크아웃) → diff → outcome
 - 도구의 말을 믿지 않는다: 변경 없음·재현 테스트 없음이면 `needs_information`, 검증은 별도 체크아웃에서 다시 실행한다.
 
+보고서 데모(`DEMO_REPORT_KINDS` = `code_change`)만 진단 인계 프롬프트(`build_prompt`)와 `vp-report` 보고서(`report_output`)를
+쓴다. 일반 버그 수정(`bug_fix`, ADR-0014)은 같은 흐름에서 보고서 없이 등록된 검증 프로필 하나로 판정 재료를 남기고, 기준
+커밋을 더 엄격히 고정한다: 도구를 띄우기 전 worktree HEAD 가 `base_commit` 이 아니면 `base_commit_mismatch`, 이전 시도의
+미커밋 변경이 남아 있으면 `worktree_dirty`, 도구가 직접 커밋해 HEAD 가 움직였으면 `commit_mismatch` 로 실패한다. 재작업
+시도는 `base_commit` = 이전 `result_commit` 이라 남아 있는 `task/<id>` 브랜치 위에서 그대로 이어진다.
+
 하위 클래스는 `tool_name`·`raw_kinds` 와 `launch`(프로세스를 띄우고 `ToolRun` 을 돌려준다)·`parse_last_message`
-(도구의 마지막 구조화 메시지를 `ToolResult` 로), 그리고 읽기 전용 실행의 `launch_readonly`·`parse_generic_message` 만
-구현한다. 도구 출력에서 실패 사유(사용량 한도 등)를 읽어야 하면 `classify_failure` 를 덮어쓴다 — 기본은 None(판정 없음)이다.
+(도구의 마지막 구조화 메시지를 `ToolResult` 로), 그리고 읽기 전용 실행의 `launch_readonly`·`parse_generic_message`·
+`read_structured_message`(마지막 구조화 메시지를 객체 그대로) 만 구현한다. 도구 출력에서 실패 사유(사용량 한도 등)를
+읽어야 하면 `classify_failure` 를 덮어쓴다 — 기본은 None(판정 없음)이다.
 
 내장이 아닌 종류(`LocalTarget`, ADR-0009)는 `_run_generic` 이 **읽기 전용**으로 돌린다: worktree·커밋·검증 프로필 없이
 인계 디렉터리(handoff dir)에서 `launch_readonly` → 원시 로그 보존 → 인계 파일 변경 확인(`readonly_violation`) →
 `{outcome, summary}` 를 읽어 `GenericResult`. `outcome ∉ kind_spec.outcomes` 면 `result_invalid` 로 실패한다.
+
+내장 `code_review`(`CommitReviewTarget`, ADR-0014 3항)는 `_run_commit_review` 가 같은 로컬 등록 저장소에서 결과 커밋의
+깨끗한 임시 체크아웃을 만들어 읽기 전용으로 돌린다 — 인계 디렉터리만 읽는 `_run_generic` 이 아니다. 착수 전 확인: 등록
+(`registration_missing`) → 두 커밋이 그 저장소에 있음(`commit_missing`, 다른 기기·클론의 커밋은 전송하지 않는다) →
+`base_commit` 이 `result_commit` 의 조상(`commit_mismatch`) → 인계된 수정 결과 봉투의 실행·커밋이 target 과 같음
+(`source_mismatch`). 그 뒤 체크아웃에서 `launch_readonly`(스키마 `REVIEW_RESULT_SCHEMA`) → 원시 로그 → 시간 초과·
+`classify_failure` → 체크아웃 HEAD·파일과 인계 파일이 그대로인지(`readonly_violation`) → `read_structured_message` 를
+`CodeReviewResult` 로(`result_invalid`). `reviewed_commit` 은 도구의 말이 아니라 검토 뒤 확인한 체크아웃 HEAD 다.
+체크아웃은 끝나면 지우고 원본 저장소·수정 브랜치는 건드리지 않는다.
 
 셸 명령은 로컬 등록의 검증 프로필에서만 온다. 요청·인계 자료·모델 출력에서 명령·경로를 받아 실행하지 않는다.
 도구·검증 프로세스의 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐이다 — 연결 토큰·API 키를 상속하지 않는다.
@@ -28,15 +44,19 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import AdapterOutput, Progress, make_meta
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import codex_env, mask_secrets
-from workflow.connector.prompt import build_generic_prompt, build_prompt
+from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt, build_prompt, build_review_prompt
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
     CodeChangeResult,
     CodeChangeTarget,
+    CodeReviewResult,
+    CommitReviewTarget,
     ExecutionRequest,
     GenericResult,
     LocalTarget,
@@ -46,6 +66,7 @@ from workflow.contracts.v1 import (
 log = logging.getLogger(__name__)
 
 REPORT_PROFILE_ID = "vp-report"
+DEMO_REPORT_KINDS = frozenset({"code_change"})  # 진단 인계·보고서 데모 경로. 나머지 코드 수정 종류는 보고서가 없다
 RESPONSE_PLACEHOLDER = "{response}"
 RESPONSE_FILE = "response-after@1.json"
 NO_REPRO_TEST_LOG = "exit_code=0\n(재현 테스트 없음)\n"
@@ -61,6 +82,33 @@ RESULT_SCHEMA = {
         "notes": {"type": "string", "description": "남은 사항·확인이 필요한 점. 없으면 빈 문자열"},
     },
     "required": ["summary", "outcome", "files_changed", "notes"],
+    "additionalProperties": False,
+}
+
+# 커밋 검토의 마지막 메시지 스키마 — `CodeReviewResult` 중 도구가 채우는 네 필드. 나머지(실행·커밋·산출물 ID)는 연결 프로그램이
+# 채운다. strict 출력(Codex `--output-schema`)을 위해 모든 키가 필수이고 null 은 타입 배열로 적는다.
+REVIEW_RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "outcome": {"type": "string", "enum": ["approved", "changes_requested", "needs_information"]},
+        "summary": {"type": "string"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["blocking", "non_blocking"]},
+                    "path": {"type": ["string", "null"]},
+                    "line": {"type": ["integer", "null"]},
+                    "message": {"type": "string"},
+                },
+                "required": ["severity", "path", "line", "message"],
+                "additionalProperties": False,
+            },
+        },
+        "missing_information": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["outcome", "summary", "findings", "missing_information"],
     "additionalProperties": False,
 }
 
@@ -110,7 +158,7 @@ class ToolResult:
 
 class LocalToolAdapter:
     """로컬 도구 공통 흐름. 하위 클래스는 `tool_name`·`raw_kinds`·`launch`·`parse_last_message` 와 읽기 전용 실행의
-    `launch_readonly`·`parse_generic_message` 만 구현한다."""
+    `launch_readonly`·`parse_generic_message`·`read_structured_message` 만 구현한다."""
 
     tool_name: str  # "codex" | "claude" — 실패 코드 `{tool}_unavailable` 와 로그 이름에 쓴다
     raw_kinds: tuple[str, str]  # ("codex_jsonl", "codex_stderr") 처럼 원시 stdout/stderr 산출물 kind
@@ -148,6 +196,11 @@ class LocalToolAdapter:
         그대로 둔다 — 공통 흐름이 `result_invalid` 로 실패시킨다. 못 읽으면 outcome 은 빈 문자열."""
         raise NotImplementedError
 
+    def read_structured_message(self, raw: str | None) -> tuple[dict | None, str | None]:
+        """마지막 구조화 메시지를 객체 그대로 꺼낸다 (커밋 검토). 못 꺼내면 `(None, 사유)`. 형식 검사는 공통 흐름이
+        `CodeReviewResult` 로 한다."""
+        raise NotImplementedError
+
     def classify_failure(self, run: ToolRun) -> tuple[str, str] | None:
         """도구 출력에서 실패 사유를 읽는 훅 — `(code, message)` 면 공통 흐름이 그 자리에서 `failed` 로 끝낸다
         (`process_stopped` 는 `run.stopped`). 시간 초과는 이 훅보다 먼저 판정한다. 기본은 None (Codex)."""
@@ -163,6 +216,8 @@ class LocalToolAdapter:
         target = request.target
         if isinstance(target, LocalTarget):
             return self._run_generic(request, handoff_dir, progress)
+        if isinstance(target, CommitReviewTarget):
+            return self._run_commit_review(request, handoff_dir, progress)
         if not isinstance(target, CodeChangeTarget):
             return _failed("unsupported_kind", f"{type(self).__name__} 는 {request.kind} 를 처리하지 않는다")
         registration = state.get_registration(self._conn, target.local_registration_id)
@@ -176,13 +231,24 @@ class LocalToolAdapter:
                 f"검증 프로필 {target.verification_profile_id} 이 등록 {target.local_registration_id} 에 없다",
             )
         repo = Path(registration["repo_path"])
+        demo = request.kind in DEMO_REPORT_KINDS
         try:
             worktree = git_ops.ensure_worktree(repo, request.task_id, target.base_commit)
         except GitError as exc:
             return _failed("base_commit_missing", str(exc))
+        if not demo:
+            head = git_ops.head_sha(worktree)
+            if head != target.base_commit:
+                return _failed(
+                    "base_commit_mismatch",
+                    f"worktree {worktree.name} 의 HEAD {head[:12]} 가 요청 base_commit {target.base_commit[:12]} 이 아니다",
+                )
+            if git_ops.is_dirty(worktree):
+                return _failed("worktree_dirty", f"worktree {worktree.name} 에 이전 시도의 미커밋 변경이 남아 있다")
 
+        build = build_prompt if demo else build_bug_fix_prompt
         try:
-            run = self.launch(worktree, build_prompt(request, handoff_dir, worktree), progress)
+            run = self.launch(worktree, build(request, handoff_dir, worktree), progress)
         except OSError as exc:  # 실행 파일 없음 등 — 프로세스가 시작되지 않았다
             return _failed(f"{self.tool_name}_unavailable", f"{self.tool_name} 을 시작하지 못함: {exc}")
         runtime_ref = f"pid:{run.pid};start:{run.started_at}"
@@ -200,9 +266,17 @@ class LocalToolAdapter:
                 result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
             )
 
+        base_commit = target.base_commit
+        if not demo and (head := git_ops.head_sha(worktree)) != base_commit:
+            return AdapterOutput(
+                result=None, artifacts=raw_artifacts, runtime_ref=runtime_ref,
+                failed=("commit_mismatch",
+                        f"{self.tool_name} 가 직접 커밋해 HEAD 가 {head[:12]} 로 움직였다 (base_commit {base_commit[:12]})",
+                        run.stopped),
+            )
+
         parsed = self.parse_last_message(run.last_message)
         summary = parsed.summary
-        base_commit = target.base_commit
         if not git_ops.is_dirty(worktree):
             result = self._result(request, "needs_information", f"변경 없음: {summary}", None, None)
             return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref)
@@ -218,8 +292,9 @@ class LocalToolAdapter:
         after_code, after_out, after_err = self._run_argv(profile, worktree)
         progress(f"수정 후 테스트 exit_code={after_code}")
 
-        def in_result_checkout(dest: Path) -> tuple[tuple[int, str, str], str]:
-            return self._run_argv(profile, dest), self._report(dest, profiles.get(REPORT_PROFILE_ID), handoff_dir)
+        def in_result_checkout(dest: Path) -> tuple[tuple[int, str, str], str | None]:
+            report = self._report(dest, profiles.get(REPORT_PROFILE_ID), handoff_dir) if demo else None
+            return self._run_argv(profile, dest), report
 
         (verify_code, verify_out, verify_err), report = _in_clean_checkout(repo, result_commit, in_result_checkout)
         progress(f"검증 프로필 {target.verification_profile_id} exit_code={verify_code} @ {result_commit[:12]}")
@@ -241,7 +316,7 @@ class LocalToolAdapter:
                       "text/plain"),
             make_meta("verification_log", "verification.txt",
                       _log_text(verify_code, verify_out, verify_err).encode(), "text/plain"),
-            make_meta("report_output", "report.txt", report.encode(), "text/plain"),
+            *([] if report is None else [make_meta("report_output", "report.txt", report.encode(), "text/plain")]),
             *raw_artifacts,
         ]
         return AdapterOutput(result=result, artifacts=artifacts, runtime_ref=runtime_ref)
@@ -291,6 +366,86 @@ class LocalToolAdapter:
             contract_version=CONTRACT_VERSION, execution_id=request.execution_id, task_id=request.task_id,
             kind=request.kind, outcome=parsed.outcome, summary=parsed.summary, artifact_ids=[],
         )
+        return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref)
+
+    # --- 내장 `code_review` — 결과 커밋의 읽기 전용 체크아웃 ---------------------------------------------
+
+    def _run_commit_review(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
+        """`CommitReviewTarget` 실행. 착수 전 확인 → 결과 커밋의 깨끗한 체크아웃에서 `launch_readonly` → 원시 로그 →
+        시간 초과·`classify_failure` → 체크아웃·인계 파일 불변 확인 → `CodeReviewResult`. 체크아웃은 반드시 지운다."""
+        target = request.target
+        registration = state.get_registration(self._conn, target.local_registration_id)
+        if registration is None:
+            return _failed("registration_missing", f"로컬 등록 {target.local_registration_id} 이 없다")
+        repo = Path(registration["repo_path"])
+        for label, commit in (("result_commit", target.result_commit), ("base_commit", target.base_commit)):
+            if not git_ops.has_commit(repo, commit):
+                return _failed(
+                    "commit_missing",
+                    f"{label} {commit[:12]} 이 등록 {target.local_registration_id} 의 저장소에 없다 — "
+                    "다른 기기·저장소의 커밋은 전송하지 않는다",
+                )
+        if not git_ops.is_ancestor(repo, target.base_commit, target.result_commit):
+            return _failed(
+                "commit_mismatch",
+                f"base_commit {target.base_commit[:12]} 이 result_commit {target.result_commit[:12]} 의 조상이 아니다",
+            )
+        source = _source_result(handoff_dir, target.source_execution_id)
+        if source is None:
+            return _failed("source_mismatch", f"인계 자료에 수정 실행 {target.source_execution_id} 의 결과 봉투가 없다")
+        if (source.base_commit, source.result_commit) != (target.base_commit, target.result_commit):
+            return _failed(
+                "source_mismatch",
+                f"수정 실행 {target.source_execution_id} 의 커밋 {source.base_commit[:12]}..{(source.result_commit or '없음')[:12]}"
+                f" 이 검토 대상 {target.base_commit[:12]}..{target.result_commit[:12]} 과 다르다",
+            )
+        diff = git_ops.diff_text(repo, target.base_commit, target.result_commit)
+        handoff_before = _snapshot(handoff_dir)
+
+        def review(checkout: Path) -> tuple[ToolRun, str, bool]:
+            prompt_text = build_review_prompt(request, handoff_dir, checkout, diff, source)
+            run = self.launch_readonly(checkout, prompt_text, REVIEW_RESULT_SCHEMA, progress)
+            return run, git_ops.head_sha(checkout), git_ops.is_dirty(checkout)
+
+        try:
+            run, head, dirty = _in_clean_checkout(repo, target.result_commit, review)
+        except OSError as exc:  # 실행 파일 없음 등 — 프로세스가 시작되지 않았다
+            return _failed(f"{self.tool_name}_unavailable", f"{self.tool_name} 을 시작하지 못함: {exc}")
+        except GitError as exc:
+            return _failed("checkout_failed", f"결과 커밋 {target.result_commit[:12]} 체크아웃 실패: {exc}")
+        runtime_ref = f"pid:{run.pid};start:{run.started_at}"
+        raw_artifacts = self._raw_artifacts(run)
+
+        def failed(code: str, message: str) -> AdapterOutput:
+            return AdapterOutput(
+                result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
+            )
+
+        if run.timed_out:
+            return failed("timeout", f"{self.tool_name} 실행이 {self._timeout}초를 초과해 종료했습니다.")
+        failure = self.classify_failure(run)
+        if failure is not None:
+            return failed(*failure)
+        if head != target.result_commit:
+            return failed("readonly_violation",
+                          f"검토 체크아웃의 HEAD 가 {head[:12]} 로 움직였다 (result_commit {target.result_commit[:12]})")
+        if dirty:
+            return failed("readonly_violation", "읽기 전용 검토가 검토 체크아웃의 파일을 바꿨다")
+        changed = _changed_files(handoff_before, _snapshot(handoff_dir))
+        if changed:
+            return failed("readonly_violation", f"읽기 전용 검토가 인계 디렉터리의 파일을 바꿨다: {', '.join(changed)}")
+
+        data, note = self.read_structured_message(run.last_message)
+        if data is None:
+            return failed("result_invalid", f"{self.tool_name} 검토 결과를 읽지 못함 ({note})")
+        try:
+            result = CodeReviewResult.model_validate({
+                "contract_version": CONTRACT_VERSION, "execution_id": request.execution_id, "task_id": request.task_id,
+                "source_execution_id": target.source_execution_id, "reviewed_commit": head,
+                **{key: data.get(key) for key in REVIEW_RESULT_SCHEMA["required"]}, "artifact_ids": [],
+            })
+        except ValidationError as exc:
+            return failed("result_invalid", f"검토 결과 형식 오류: {_first_error(exc)}")
         return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref)
 
     def _raw_artifacts(self, run: ToolRun) -> list[tuple]:
@@ -386,6 +541,24 @@ def _snapshot(root: Path) -> dict[str, str]:
         str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted(root.rglob("*")) if path.is_file()
     }
+
+
+def _source_result(handoff_dir: Path, execution_id: str) -> CodeChangeResult | None:
+    """인계 디렉터리의 JSON 중 `execution_id` 의 `CodeChangeResult` (이름 순 첫 번째). 못 읽는 파일은 건너뛴다."""
+    for path in sorted(handoff_dir.glob("*.json")) if handoff_dir.is_dir() else []:
+        try:
+            result = CodeChangeResult.model_validate_json(path.read_bytes())
+        except (ValidationError, ValueError):
+            continue
+        if result.execution_id == execution_id:
+            return result
+    return None
+
+
+def _first_error(exc: ValidationError) -> str:
+    error = exc.errors()[0]
+    where = ".".join(str(part) for part in error["loc"])
+    return f"{where}: {error['msg']}" if where else error["msg"]
 
 
 def _changed_files(before: dict[str, str], after: dict[str, str]) -> list[str]:

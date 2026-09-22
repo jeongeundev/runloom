@@ -13,6 +13,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import ValidationError
 
+from workflow.connector.adapter import SUPPORTED_BUILTIN_KINDS
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
     ArtifactCreated,
@@ -112,7 +113,10 @@ class CentralClient:
     def claim(self, connector_id: str) -> ExecutionRequest | None:
         response = self._call(
             "POST", "/connector/claim",
-            json={"contract_version": CONTRACT_VERSION, "connector_id": connector_id},
+            json={
+                "contract_version": CONTRACT_VERSION, "connector_id": connector_id,
+                "supported_kinds": list(SUPPORTED_BUILTIN_KINDS),
+            },
         )
         if response.status_code == 204:
             return None

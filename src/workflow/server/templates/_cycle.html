@@ -1,0 +1,80 @@
+{# 업무 순환 영역 — 업무 상세 라이브 조각 안(phase 8 step 13, ADR-0014). `cycle` 은 views.cycle_context.
+   판정하지 않는다: 대기 사유는 워커와 같은 준비 판정, 응답 동작은 human_api 의 허용 목록, 반영 상태는 SourceDelivery.state.
+   GitHub 반영(댓글)·Agent 작업(상태 줄)·사람 대기(사람 요청)는 서로 다른 줄로 보인다. #}
+{% macro response_form(r) -%}
+<form class="card" data-json-action="/human-requests/{{ r.request_id }}/responses" data-request-id="{{ r.request_id }}">
+  <input type="hidden" name="response_id" value="{{ r.response_id }}">
+  <input type="hidden" name="expected_revision" value="{{ r.revision }}" data-json-type="int">
+  {% if r.agent_choices %}
+  <div class="field">
+    <label for="agent-{{ r.request_id }}">지정할 Agent</label>
+    <select id="agent-{{ r.request_id }}" name="agent_id" data-json-type="optional">
+      {% for a in r.agent_choices %}<option value="{{ a.agent_id }}">{{ a.name }} ({{ a.agent_id }})</option>{% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  <div class="field">
+    <label for="text-{{ r.request_id }}">{{ '요청한 정보' if r.asks_information else '응답 메모' }}</label>
+    <textarea id="text-{{ r.request_id }}" name="text" rows="2"{% if r.asks_information %} placeholder="다음 실행 요청에 붙습니다. 원본 이슈는 바뀌지 않습니다."{% endif %}></textarea>
+  </div>
+  <div class="actions">
+    {% for value, label in r.actions %}<button class="btn{% if value == 'close' %} btn-danger{% elif not loop.first %} btn-secondary{% endif %}" type="submit" name="action" value="{{ value }}">{{ label }}</button>{% endfor %}
+    <span class="action-note" data-json-result></span>
+  </div>
+  <div class="help">응답은 실행을 바로 만들지 않습니다 — 워커가 다음 revision 을 다시 준비 판정합니다. 권한·위임 범위는 바뀌지 않습니다.</div>
+</form>
+{%- endmacro %}
+{% if cycle %}
+<div class="card cycle-card" data-cycle>
+  {% if cycle.origin %}
+  {% set o = cycle.origin %}
+  <p><span class="tag-real">실제 GitHub 이슈</span>
+    <a href="{{ o.url }}" rel="noopener noreferrer" target="_blank">{{ o.repository }}#{{ o.number }}</a>
+    · {{ '원본 열림' if o.state == 'open' else '원본 닫힘' }}{% if not o.own %} · 수정 업무의 원본{% endif %}
+    · 원본 revision {{ o.source_revision }}{% if not o.enabled %} · 소스 중지됨{% endif %}</p>
+  <p class="small">GitHub 담당:
+    {% for a in o.assignees %}<span class="mono">{{ a.login }}</span> → {% if a.agent_id %}<span class="mono">{{ a.agent_id }}</span>{% else %}연결된 Agent 없음{% endif %}{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</p>
+  {% endif %}
+  {% if cycle.followup %}
+  <p class="small">생성 근거: 수정 실행 <span class="mono">{{ cycle.followup.cause_execution_id }}</span> 의 판정 통과 결과에서 만든 업무{% if cycle.followup.cause_task_id %} — <a href="/tasks/{{ cycle.followup.cause_task_id }}">{{ cycle.followup.cause_task_title }}</a>{% endif %} · {{ cycle.followup.created_at|kst }}</p>
+  {% endif %}
+  <p class="small">실행 {{ cycle.attempts }}회{% if cycle.rework %} · 자동 재작업 {{ cycle.rework.used }}/{{ cycle.rework.max }}회{% endif %}</p>
+
+  {% if cycle.blockers %}
+  <div class="small">대기 사유</div>
+  <ul class="blockers">
+    {% for b in cycle.blockers %}<li data-blocker="{{ b.code }}">{{ b.reason }} <span class="small">· {{ b.actor_label }}</span></li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if cycle.review %}
+  {% set rv = cycle.review %}
+  <div class="review-result" data-review-outcome="{{ rv.outcome }}">
+    <p><strong>검토 결과</strong> <span class="mono">{{ rv.outcome }}</span>{% if rv.verdict %} · 판정 {{ rv.verdict }}{% endif %} · 차단 지적 {{ rv.blocking_count }}건</p>
+    <p>{{ rv.summary }}</p>
+    <p class="small mono">검토 커밋 {{ rv.reviewed_commit }} · 수정 실행 {{ rv.source_execution_id }}</p>
+    {% if rv.findings %}<ul>{% for f in rv.findings %}<li><span class="mono">{{ f.severity }}</span> {% if f.path %}<span class="mono">{{ f.path }}{% if f.line %}:{{ f.line }}{% endif %}</span> {% endif %}{{ f.message }}</li>{% endfor %}</ul>{% endif %}
+    {% if rv.missing_information %}<p class="small">필요한 정보: {{ rv.missing_information|join(', ') }}</p>{% endif %}
+  </div>
+  {% endif %}
+
+  {% for r in cycle.open_requests %}
+  <div class="human-request" data-human-request="{{ r.code }}">
+    <p><strong>사람 응답 대기</strong> <span class="mono small">{{ r.code }}</span> · {{ r.question }} <span class="small">· {{ r.created_at|kst }}</span></p>
+    {% if r.response_id %}{{ response_form(r) }}{% else %}<p class="small">운영자만 응답할 수 있습니다. GitHub 댓글 답글은 응답으로 읽지 않습니다.</p>{% endif %}
+  </div>
+  {% endfor %}
+
+  {% if cycle.responses %}
+  <div class="small">입력 보충 (운영자 응답)</div>
+  <ul>
+    {% for a in cycle.responses %}<li>{{ a.question }} → <span class="mono">{{ a.action }}</span>{% if a.agent_id %} <span class="mono">{{ a.agent_id }}</span>{% endif %}{% if a.text %} · {{ a.text }}{% endif %} <span class="small">· r{{ a.task_revision }} · {{ a.created_at|kst }}</span></li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if cycle.origin and cycle.origin.own %}
+  {% set d = cycle.delivery %}
+  <p class="small" data-delivery="{{ d.state if d else 'none' }}">GitHub 반영: {% if d %}<strong>{{ d.label }}</strong> · 시도 {{ d.attempts }}회 · 본문 revision {{ d.body_revision }}{% if d.comment_url %} · <a href="{{ d.comment_url }}" rel="noopener noreferrer" target="_blank">댓글</a>{% endif %}{% if d.last_error %} · {{ d.last_error }}{% endif %}{% else %}아직 없음 (실행·사람 요청이 생기면 댓글 하나를 만들고 고쳐 씁니다){% endif %}</p>
+  {% endif %}
+</div>
+{% endif %}

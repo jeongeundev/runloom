@@ -8,10 +8,10 @@
   <div class="crumbs">
     <div class="crumb">{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }} <span class="chip kind-chip">{{ kind_label }}</span></div>
     <div class="crumb-side">
-      {% if chain %}<a class="task-chip" href="/chains/{{ chain.chain_id }}" title="{{ chain.title }}">워크플로우 {{ chain.title }}</a>{% endif %}
+      {% if chain %}<a class="task-chip" href="/chains/{{ chain.chain_id }}" title="{{ chain.title }}">워크플로우 {{ chain.title }}</a>{% if chain.demo_data %} <span class="tag-scripted">시연 데이터 · 실제 이슈 아님</span>{% endif %}{% endif %}
       {% if predecessor %}<a class="task-chip" href="/tasks/{{ predecessor.task_id }}" title="{{ predecessor.title }}">선행 · {{ st.mini(predecessor.status.label) }}</a>{% endif %}
       {% for s in successors %}<a class="task-chip" href="/tasks/{{ s.task_id }}" title="{{ s.title }}">후속 · {{ st.mini(s.status.label) }}</a>{% endfor %}
-      {% if not successors and not task.finished_at %}<a class="task-chip" href="/tasks/new?example=fix&amp;predecessor={{ task.task_id }}">후속 업무 B 등록</a>{% endif %}
+      {% if not successors and not task.finished_at and not cycle %}<a class="task-chip" href="/tasks/new?example=fix&amp;predecessor={{ task.task_id }}">후속 업무 B 등록</a>{% endif %}
       {% if viewer %}<button type="button" class="icon-btn" data-viewer-open title="뷰어 열기" aria-label="뷰어 열기"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM10 3v10"/></svg></button>{% endif %}
     </div>
   </div>
@@ -19,7 +19,11 @@
   {# 2. 요청 말풍선 #}
   <div class="bubble">{{ task.request }}<span class="stamp">{{ task.created_at|kst }}</span></div>
 
-  {# 3. 선택 기록 (CONTRACT 9절) #}
+  {# 업무 순환 — 원본·담당·대기 사유·사람 요청·검토 결과·GitHub 반영 (phase 8 step 13) #}
+  {% include "_cycle.html" %}
+
+  {# 3. 선택 기록 (CONTRACT 9절) — 업무 순환 Task 는 선택 기록 대신 위의 GitHub 담당 연결·준비 판정을 쓴다 #}
+  {% if not (cycle and cycle.cycle) %}
   <details class="row" data-key="selection">
     <summary>{{ '자동 선택' if selection and selection.mode == 'auto' else '직접 선택' }} · {{ selection.selected_agent_id if selection and selection.selected_agent_id else '미선택' }} · {{ selection.reason if selection else '후보 없음' }}</summary>
     <div class="row-body">
@@ -36,6 +40,7 @@
       {% endif %}
     </div>
   </details>
+  {% endif %}
 
   {# 4. 완료 기준 #}
   <details class="row" data-key="criteria">
@@ -103,7 +108,7 @@
     {% if can_run %}
     <form method="post" action="/tasks/{{ task.task_id }}/run" class="actions">
       <button class="btn" type="submit">실행</button>
-      <span class="action-note">{{ agent.name if agent else '' }} 에서 새 실행을 시작합니다. 접수·시작은 실행 블록에서 확인합니다.</span>
+      <span class="action-note">{% if cycle and cycle.cycle %}직접 실행 모드 — 자동 착수와 같은 준비 판정으로 시작합니다.{% else %}{{ agent.name if agent else '' }} 에서 새 실행을 시작합니다.{% endif %} 접수·시작은 실행 블록에서 확인합니다.</span>
     </form>
     {% elif needs_selection %}
     <form method="post" action="/tasks/{{ task.task_id }}/select">

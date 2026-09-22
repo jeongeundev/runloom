@@ -24,6 +24,8 @@ from workflow.adapters import repo
 from workflow.adapters.callback_client import CallbackFailed
 from workflow.adapters.db import connect
 from workflow.adapters.diag_client import HttpDiagClient
+from workflow.adapters.github_client import GitHubRateLimited, IssuePage
+from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import (
     BUILTIN_RULES,
     ArtifactMeta,
@@ -37,7 +39,7 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.server.auth import SESSION_COOKIE, sign_session
-from workflow.server.worker import TickReport, Worker, assemble_handoff
+from workflow.server.worker import GITHUB_SYNC_INTERVAL_SECONDS, TickReport, Worker, assemble_handoff
 
 from .conftest import (
     BASE_COMMIT,
@@ -1411,9 +1413,10 @@ def test_public_url_fills_chain_and_task_urls(conn, client, clock, make_worker, 
 
 
 def test_callback_stage_runs_after_successor_scan_and_failure_reflection():
-    """(b) 의 근거 — tick 의 마지막 단계다. 순서가 바뀌면 A 판정 → B 착수 사이에 보낼 수 있다."""
+    """(b) 의 근거 — 후속 스캔·실패 반영 뒤다. 순서가 바뀌면 A 판정 → B 착수 사이에 보낼 수 있다.
+    그 뒤는 외부 반영(GitHub 원본 이슈 댓글, step 12)뿐이다."""
     calls = re.findall(r"self\.(_\w+)\(conn, report\)", inspect.getsource(Worker.tick))
-    assert calls[-3:] == ["_spawn_successors", "_reflect_failures", "_deliver_callbacks"]
+    assert calls[-4:] == ["_spawn_successors", "_reflect_failures", "_deliver_callbacks", "_deliver_github"]
 
 
 # --- TickReport·run_forever -------------------------------------------------------------
@@ -1439,3 +1442,68 @@ def test_run_forever_sleeps_between_ticks(worker, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         worker.run_forever(0.5)
     assert slept == [0.5]
+
+
+# --- GitHub 수집 (phase 8 step 7) ---------------------------------------------------------
+
+
+class _CountingGitHub:
+    """list_issues 호출 수만 센다. 빈 마지막 페이지를 돌려주거나 `failures` 를 하나씩 던진다."""
+
+    def __init__(self, failures=()):
+        self.repos: list[str] = []
+        self.failures = list(failures)
+
+    def list_issues(self, repo_name, cursor):
+        self.repos.append(repo_name)
+        if self.failures:
+            raise self.failures.pop(0)
+        return IssuePage(issues=(), next_cursor=None, etag=None, not_modified=False, skipped_pull_requests=0)
+
+    def get_issue(self, repo_name, number):
+        raise AssertionError("선택 이슈 없음")
+
+
+def _github_source(source_id: str, repository: str, *, enabled: bool = True) -> GitHubSourceConfig:
+    return GitHubSourceConfig(
+        source_id=source_id, repository_full_name=repository, workflow_repository_id="billing",
+        label_filter=["bug"], selected_issue_numbers=[], start_at="2026-09-01T00:00:00Z",
+        fix_verification_profile_id="vp-pytest", review_agent_id="agent-review", run_mode="auto",
+        max_rework_rounds=1, enabled=enabled, config_revision=1,
+    )
+
+
+def test_worker_polls_enabled_github_sources_at_interval_and_waits_on_rate_limit(
+    app, settings, store, clock, server, conn
+):
+    repo.create_session(conn, "sess-gh", clock.now)
+    repo.save_github_source(conn, "sess-gh", _github_source("ghs-00000001", "acme/billing"), clock.now)
+    repo.save_github_source(conn, "sess-gh", _github_source("ghs-00000002", "acme/lib", enabled=False), clock.now)
+    gh = _CountingGitHub(failures=[GitHubRateLimited("GET /repos/acme/billing/issues: HTTP 429", 300, None)])
+    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
+                          transport=httpx.MockTransport(server.handle))
+    worker = Worker(lambda: connect(settings.db_path), store, diag, FakeCallbackClient(), settings, clock, github=gh)
+
+    report = worker.tick()
+    assert gh.repos == ["acme/billing"]  # 멈춘 소스는 부르지 않는다
+    assert (report.sources_synced, report.sync_errors) == (1, 1)
+
+    clock.advance(GITHUB_SYNC_INTERVAL_SECONDS)
+    worker.tick()
+    assert len(gh.repos) == 1  # rate limit 대기(300초) 중
+
+    clock.advance(300)
+    report = worker.tick()
+    assert len(gh.repos) == 2 and report.sync_errors == 0
+
+    worker.tick()
+    assert len(gh.repos) == 2  # 간격 안에서는 다시 부르지 않는다
+    clock.advance(GITHUB_SYNC_INTERVAL_SECONDS)
+    worker.tick()
+    assert len(gh.repos) == 3
+
+
+def test_worker_without_github_client_does_not_sync(worker, conn, clock):
+    repo.create_session(conn, "sess-gh", clock.now)
+    repo.save_github_source(conn, "sess-gh", _github_source("ghs-00000001", "acme/billing"), clock.now)
+    assert worker.tick().sources_synced == 0

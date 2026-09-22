@@ -169,3 +169,22 @@ def test_prune_worktrees_is_quiet_when_nothing_is_stale(repo):
     git_ops.prune_worktrees(repo)
 
     assert path.exists() and "fix-a" in _git(repo, "worktree", "list")
+
+
+def test_has_commit_is_true_only_for_commits_in_the_repo(repo):
+    head = git_ops.head_sha(repo)
+    tree = _git(repo, "rev-parse", "HEAD^{tree}")
+
+    assert git_ops.has_commit(repo, head) is True
+    assert git_ops.has_commit(repo, "0" * 40) is False
+    assert git_ops.has_commit(repo, tree) is False  # 커밋이 아닌 객체
+
+
+def test_is_ancestor_follows_history_direction(repo):
+    base = git_ops.head_sha(repo)
+    path = git_ops.ensure_worktree(repo, "task-a", base)
+    (path / "pkg.py").write_text("X = 2\n")
+    result = git_ops.commit_all(path, "fix")
+
+    assert git_ops.is_ancestor(repo, base, result) is True
+    assert git_ops.is_ancestor(repo, result, base) is False

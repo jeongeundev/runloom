@@ -13,6 +13,8 @@
   `task/{task_id}` 브랜치의 커밋으로 남아 있다. 지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다.
 - 내장이 아닌 종류(`LocalTarget`, ADR-0009)도 등록의 `tool`·`repo_path` 로 어댑터·인계 디렉터리를 정하지만 worktree 는
   없다. 결과는 `GenericResult` 를 kind `generic_result` 로 올리고 같은 `result_ready` 를 보낸다.
+- 커밋 검토(`CommitReviewTarget`, `code_review`)도 같다 — 업무 worktree 가 없고(검토 체크아웃은 어댑터가 만들고 지운다)
+  결과는 `CodeReviewResult` 를 kind `code_review_result` 로 올린다. 결과 봉투 kind 는 target 모양으로 정한다.
 - 어댑터가 도는 동안(tick 이 `adapter.run` 안에 묶인 동안) heartbeat 는 별도 스레드가 주기마다 보낸다. 실제 실행은 대부분
   offline 판정(90초)보다 길다. 그 스레드는 sqlite 연결을 만지지 않는다 — 현재 실행 ID 를 값으로 받아 `client.heartbeat` 만.
 """
@@ -44,11 +46,12 @@ from workflow.connector.config import ConnectorPaths
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import mask_secrets
 from workflow.contracts.v1 import (
-    BUILTIN_KIND_NAMES,
     CONTRACT_VERSION,
     ArtifactMeta,
     CodeChangeResult,
     CodeChangeTarget,
+    CodeReviewResult,
+    CommitReviewTarget,
     ExecutionEvent,
     ExecutionRequest,
     GenericResult,
@@ -103,6 +106,9 @@ def _code_change_result(result_json: str, uploaded: list[dict], artifact_ids: li
     })
 
 
+_LOCAL_TARGETS = (CodeChangeTarget, CommitReviewTarget, LocalTarget)  # 로컬 등록(`local_registration_id`)으로 도는 target
+
+
 class HandoffHashMismatch(Exception):
     pass
 
@@ -119,11 +125,11 @@ class AdapterNotSelected(Exception):
 def select_adapter(
     conn, adapters: Mapping[str, ExecutionAdapter], request: ExecutionRequest
 ) -> ExecutionAdapter:
-    """`target.local_registration_id` 의 로컬 등록이 가진 `tool` 로 어댑터를 고른다 (코드 수정·사용자 정의 종류).
+    """`target.local_registration_id` 의 로컬 등록이 가진 `tool` 로 어댑터를 고른다 (코드 수정·커밋 검토·사용자 정의 종류).
     등록 없음 → `registration_missing`, 그 도구의 어댑터 없음 → `adapter_missing`.
     로컬 등록이 없는 종류(진단)는 지금처럼 첫 어댑터에 넘긴다 — 어댑터가 `unsupported_kind` 로 답한다."""
     target = request.target
-    if not isinstance(target, (CodeChangeTarget, LocalTarget)):
+    if not isinstance(target, _LOCAL_TARGETS):
         return next(iter(adapters.values()))
     registration = state.get_registration(conn, target.local_registration_id)
     if registration is None:
@@ -358,14 +364,18 @@ class Runner:
 
         uploaded = self._upload_outputs(row)
         artifact_ids = [o["artifact_id"] for o in uploaded]
-        if ExecutionRequest.model_validate_json(row["request_json"]).kind in BUILTIN_KIND_NAMES:
+        target = ExecutionRequest.model_validate_json(row["request_json"]).target
+        if isinstance(target, CodeChangeTarget):
             result = _code_change_result(row["result_json"], uploaded, artifact_ids)
             kind = "code_change_result"
-        else:  # 사용자 정의 종류 — 봉투는 그대로, 산출물 ID 만 채운다
-            result = GenericResult.model_validate({
-                **GenericResult.model_validate_json(row["result_json"]).model_dump(), "artifact_ids": artifact_ids,
+        else:  # 커밋 검토·사용자 정의 종류 — 봉투는 그대로, 산출물 ID 만 채운다
+            model, kind = (
+                (CodeReviewResult, "code_review_result") if isinstance(target, CommitReviewTarget)
+                else (GenericResult, "generic_result")
+            )
+            result = model.model_validate({
+                **model.model_validate_json(row["result_json"]).model_dump(), "artifact_ids": artifact_ids,
             })
-            kind = "generic_result"
         data = result.model_dump_json(indent=2).encode()
         meta = ArtifactMeta(
             contract_version=CONTRACT_VERSION, kind=kind, name=f"{kind}.json",
@@ -434,7 +444,7 @@ class Runner:
         request = ExecutionRequest.model_validate_json(row["request_json"])
         repo = self._registered_repo(request)
         if not isinstance(request.target, CodeChangeTarget):
-            repo = None  # 사용자 정의 종류(LocalTarget)는 worktree 가 없다 — 인계 디렉터리만 지운다
+            repo = None  # 커밋 검토·사용자 정의 종류는 업무 worktree 가 없다 — 인계 디렉터리만 지운다
         cleaned = True
         if repo is not None:
             worktree = git_ops.worktree_path(repo, request.task_id)
@@ -463,8 +473,8 @@ class Runner:
 
     def _registered_repo(self, request: ExecutionRequest) -> Path | None:
         """`target.local_registration_id` 의 로컬 등록이 가리키는 저장소 경로. 등록이 없거나 로컬 등록이 없는 종류(진단)면
-        None. 사용자 정의 종류(`LocalTarget`)도 이 경로 옆에 인계 디렉터리를 둔다 — worktree 는 만들지 않는다."""
-        if not isinstance(request.target, (CodeChangeTarget, LocalTarget)):
+        None. 커밋 검토·사용자 정의 종류도 이 경로 옆에 인계 디렉터리를 둔다 — 업무 worktree 는 만들지 않는다."""
+        if not isinstance(request.target, _LOCAL_TARGETS):
             return None
         registration = state.get_registration(self._conn, request.target.local_registration_id)
         return None if registration is None else Path(registration["repo_path"])

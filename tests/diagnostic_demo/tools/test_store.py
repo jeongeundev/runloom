@@ -202,7 +202,7 @@ def test_fixtures_do_not_contain_urls_or_real_company_names(fixture_root):
 
 def contract_results() -> tuple[dict, dict]:
     blocks = [json.loads(m) for m in _FENCE.findall(CONTRACT_MD.read_text(encoding="utf-8"))]
-    results = [b for b in blocks if {"outcome", "findings"} <= set(b)]
+    results = [b for b in blocks if {"outcome", "findings", "run_id"} <= set(b)]
     assert [r["outcome"] for r in results] == ["ready_for_handoff", "needs_information"]
     return results[0], results[1]
 

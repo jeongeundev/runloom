@@ -18,7 +18,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 
 CONTRACT_VERSION = 1
 
-# CONTRACT.md 4절의 산출물 kind 16종
+# CONTRACT.md 4절의 산출물 kind 17종
 ARTIFACT_KINDS: tuple[str, ...] = (
     "handoff_bundle",
     "diagnosis_result",
@@ -36,6 +36,7 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     "claude_jsonl",
     "claude_stderr",
     "generic_result",
+    "code_review_result",
 )
 
 _RFC3339 = re.compile(
@@ -121,6 +122,21 @@ class CodeChangeTarget(_Contract):
     verification_profile_id: NonEmptyStr
 
 
+class CommitReviewTarget(_Contract):
+    """`code_review` 전용 — 검토할 수정 실행과 그 결과 커밋을 고정한다 (CONTRACT 13.3)."""
+
+    local_registration_id: NonEmptyStr
+    source_execution_id: NonEmptyStr
+    base_commit: CommitSha
+    result_commit: CommitSha
+
+    @model_validator(mode="after")
+    def _check_commits(self) -> "CommitReviewTarget":
+        if self.base_commit == self.result_commit:
+            raise ValueError("result_commit 이 base_commit 과 같습니다 — 검토할 변경이 없습니다")
+        return self
+
+
 class LocalTarget(_Contract):
     """내장이 아닌 종류를 로컬 도구가 읽기 전용으로 수행할 때의 target. worktree·커밋·검증 프로필이 없다."""
 
@@ -129,7 +145,7 @@ class LocalTarget(_Contract):
 
 # --- 업무 종류와 후속 규칙 (CONTRACT 11절) ---------------------------------
 
-BUILTIN_KIND_NAMES: tuple[str, ...] = ("diagnosis", "code_change")
+BUILTIN_KIND_NAMES: tuple[str, ...] = ("diagnosis", "code_change", "bug_fix", "code_review")
 
 
 class KindSpec(_Contract):
@@ -140,7 +156,7 @@ class KindSpec(_Contract):
     capability_code: CapabilityCode
     scope_key: Identifier
     input_kinds: list[ArtifactKind]
-    output_kind: Literal["diagnosis_result", "code_change_result", "generic_result"]
+    output_kind: Literal["diagnosis_result", "code_change_result", "code_review_result", "generic_result"]
     outcomes: list[Outcome] = Field(min_length=1)
     instructions: str
     builtin: bool
@@ -153,6 +169,8 @@ class KindSpec(_Contract):
             raise ValueError("outcomes 에 중복이 있습니다")
         if self.builtin and self.kind not in BUILTIN_KIND_NAMES:
             raise ValueError(f"내장 종류는 {list(BUILTIN_KIND_NAMES)} 뿐입니다")
+        if not self.builtin and self.kind in BUILTIN_KIND_NAMES:
+            raise ValueError(f"{self.kind} 은 내장 종류 이름입니다")
         if not self.builtin and self.output_kind != "generic_result":
             raise ValueError("사용자 정의 종류의 output_kind 는 generic_result 여야 합니다")
         return self
@@ -168,6 +186,16 @@ BUILTIN_KINDS: tuple[KindSpec, ...] = (
         kind="code_change", label="코드 수정", capability_code="code.modify", scope_key="repository_id",
         input_kinds=["diagnosis_result", "evidence"], output_kind="code_change_result",
         outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
+    ),
+    KindSpec(
+        kind="bug_fix", label="버그 수정", capability_code="code.fix", scope_key="repository_id",
+        input_kinds=[], output_kind="code_change_result",
+        outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
+    ),
+    KindSpec(
+        kind="code_review", label="커밋 검토", capability_code="code.review", scope_key="repository_id",
+        input_kinds=["code_change_result"], output_kind="code_review_result",
+        outcomes=["approved", "changes_requested", "needs_information"], instructions="", builtin=True,
     ),
 )
 
@@ -199,6 +227,10 @@ BUILTIN_RULES: tuple[SuccessorRule, ...] = (
         from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
         handoff_kinds=["diagnosis_result", "evidence"],
     ),
+    SuccessorRule(
+        from_kind="bug_fix", on_outcomes=["ready_for_review"], to_kind="code_review",
+        handoff_kinds=["code_change_result", "diff", "test_log_after", "verification_log"],
+    ),
 )
 
 
@@ -211,7 +243,7 @@ class ExecutionRequest(_Contract):
     task_revision: int = Field(ge=1)
     request: NonEmptyStr
     input_artifact_ids: list[NonEmptyStr]
-    target: DiagnosisTarget | CodeChangeTarget | LocalTarget
+    target: DiagnosisTarget | CodeChangeTarget | CommitReviewTarget | LocalTarget
     kind_spec: KindSpec | None = None
 
     @model_validator(mode="after")
@@ -228,6 +260,15 @@ class ExecutionRequest(_Contract):
                 raise ValueError("kind code_change 의 target 은 local_registration_id 를 가집니다")
             if not self.input_artifact_ids:
                 raise ValueError("code_change 는 input_artifact_ids 가 비어 있으면 안 됩니다")
+        elif self.kind == "bug_fix":
+            # 진단 인계가 없다 — 첫 시도는 입력이 비어도 된다. 재작업은 이전 결과·검토 결과가 붙는다.
+            if not isinstance(self.target, CodeChangeTarget):
+                raise ValueError("kind bug_fix 의 target 은 local_registration_id·base_commit·verification_profile_id 입니다")
+        elif self.kind == "code_review":
+            if not isinstance(self.target, CommitReviewTarget):
+                raise ValueError("kind code_review 의 target 은 source_execution_id·result_commit 을 가집니다")
+            if not self.input_artifact_ids:
+                raise ValueError("code_review 는 input_artifact_ids 가 비어 있으면 안 됩니다")
         else:
             # 내장이 아닌 종류. kind_spec.builtin 은 KindSpec 검증(내장 이름만 builtin)과 위의 kind 일치로 이미 False 다.
             if not isinstance(self.target, LocalTarget):
@@ -238,8 +279,18 @@ class ExecutionRequest(_Contract):
 
 
 class ClaimRequest(_Contract):
+    """`supported_kinds` 가 null(생략)이면 구버전 연결 프로그램 — 서버는 내장 중 `code_change` 와 사용자 정의 종류만
+    배정한다 (ADR-0014 결정 4)."""
+
     contract_version: ContractVersion
     connector_id: NonEmptyStr
+    supported_kinds: list[KindId] | None = None
+
+    @model_validator(mode="after")
+    def _check_unique_kinds(self) -> "ClaimRequest":
+        if self.supported_kinds is not None and len(set(self.supported_kinds)) != len(self.supported_kinds):
+            raise ValueError("supported_kinds 에 중복이 있습니다")
+        return self
 
 
 class HeartbeatRequest(_Contract):
@@ -507,6 +558,56 @@ class GenericResult(_Contract):
 
     @model_validator(mode="after")
     def _check_unique_artifacts(self) -> "GenericResult":
+        if len(set(self.artifact_ids)) != len(self.artifact_ids):
+            raise ValueError("artifact_ids 에 중복이 있습니다")
+        return self
+
+
+# --- 커밋 검토 결과 (CONTRACT 13.4) -------------------------------------------
+
+
+class ReviewFinding(_Contract):
+    """`path` 는 표시용 문자열이다 — 파일 경로로 열거나 실행하지 않는다."""
+
+    severity: Literal["blocking", "non_blocking"]
+    path: str | None
+    line: Annotated[int, Field(ge=1)] | None
+    message: NonEmptyStr
+
+    @model_validator(mode="after")
+    def _check_line(self) -> "ReviewFinding":
+        if self.line is not None and self.path is None:
+            raise ValueError("line 은 path 가 있을 때만 씁니다")
+        return self
+
+
+class CodeReviewResult(_Contract):
+    """`code_review` 의 결과 봉투. `reviewed_commit` 이 target 의 `result_commit`·최신 수정 결과인지는 중앙이 본다.
+    `approved` 는 검토 완료일 뿐 이슈 종료·병합 권한이 아니다."""
+
+    contract_version: ContractVersion
+    execution_id: NonEmptyStr
+    task_id: NonEmptyStr
+    source_execution_id: NonEmptyStr
+    reviewed_commit: CommitSha
+    outcome: Literal["approved", "changes_requested", "needs_information"]
+    summary: str
+    findings: list[ReviewFinding]
+    missing_information: list[NonEmptyStr]
+    artifact_ids: list[NonEmptyStr]
+
+    @model_validator(mode="after")
+    def _check_outcome(self) -> "CodeReviewResult":
+        blocking = [f for f in self.findings if f.severity == "blocking"]
+        if self.outcome == "changes_requested" and not blocking:
+            raise ValueError("changes_requested 는 blocking 지적이 1개 이상이어야 합니다")
+        if self.outcome == "approved" and blocking:
+            raise ValueError("approved 는 blocking 지적이 없어야 합니다")
+        if self.outcome == "needs_information":
+            if not self.missing_information:
+                raise ValueError("needs_information 은 missing_information 이 하나 이상이어야 합니다")
+        elif self.missing_information:
+            raise ValueError(f"{self.outcome} 는 missing_information 이 빈 배열이어야 합니다")
         if len(set(self.artifact_ids)) != len(self.artifact_ids):
             raise ValueError("artifact_ids 에 중복이 있습니다")
         return self

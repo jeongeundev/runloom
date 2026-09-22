@@ -237,7 +237,7 @@ def test_diagnose_example_form_offers_successor_checked(web):
 def test_diagnose_example_form_offers_successor_only_with_builtin_rule(web, conn, settings):
     """세션이 규칙 diagnosis → code_change 를 지웠으면 체크박스를 보이지 않고, 보내도 B 를 만들지 않는다."""
     session_id = session_id_of(web, settings)
-    (rule_id, _), = repo.list_rules(conn, session_id)
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "diagnosis"]
     repo.delete_rule(conn, session_id, rule_id)
     assert 'name="with_successor"' not in web.get("/tasks/new?example=diagnose").text
     task_a = create_task(web, diagnose_form(with_successor="1"))
@@ -571,7 +571,7 @@ def test_run_successor_waits_for_bundle_and_says_so_without_rule(web, conn, stor
     assert waiting.status_code == 409 and "인계 자료" in alert_of(waiting) and "/kinds" not in alert_of(waiting)
 
     session_id = session_id_of(web, settings)
-    (rule_id, _), = repo.list_rules(conn, session_id)
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "diagnosis"]
     repo.delete_rule(conn, session_id, rule_id)
     without_rule = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
     assert without_rule.status_code == 409
@@ -1446,11 +1446,11 @@ def test_kinds_page_shows_builtin_kinds_and_rule_without_delete_button(web):
     for value in ("진단", "코드 수정", "diagnosis", "code_change", "operations.diagnose", "code.modify",
                   "workflow_id", "repository_id", "ready_for_handoff", "ready_for_review", "needs_information"):
         assert value in text, value
-    assert text.count(">내장<") == 2
+    assert text.count(">내장<") == 4  # diagnosis·code_change·bug_fix·code_review
     assert 'action="/kinds/diagnosis/delete"' not in text and 'action="/kinds/code_change/delete"' not in text
     # 내장 규칙 한 줄 텍스트 — 그래프·화살표 그림 없음, 삭제 가능
     assert "진단 --[ready_for_handoff]--> 코드 수정" in text
-    assert text.count('action="/rules/') == 1 and "/delete" in text
+    assert text.count('action="/rules/') == 2 and "/delete" in text  # 내장 규칙 2개
     assert "규칙이 없으면 그 결과 뒤 후속은 사람이 시작합니다" in text
     assert 'action="/kinds"' in text and 'action="/rules"' in text
     assert 'name="input_kinds"' in text and 'value="handoff_bundle"' not in text
@@ -1476,7 +1476,8 @@ def test_register_kind_appears_on_page_and_is_isolated_per_session(app, web, con
 
     other = TestClient(app)
     assert 'action="/kinds/review/delete"' not in other.get("/kinds").text
-    assert [s.kind for s in repo.list_kinds(conn, session_id_of(other, settings))] == ["diagnosis", "code_change"]
+    assert [s.kind for s in repo.list_kinds(conn, session_id_of(other, settings))] == [
+        "diagnosis", "code_change", "bug_fix", "code_review"]
 
 
 def test_register_kind_defaults_capability_code_to_kind(web, conn, settings):
@@ -1517,16 +1518,24 @@ def test_register_kind_duplicate_and_builtin_name_409(web):
     assert builtin.status_code == 409 and "kind_exists" in builtin.text
 
 
+@pytest.mark.parametrize("kind", ["bug_fix", "code_review"])
+def test_register_kind_with_phase8_builtin_name_409(web, kind):
+    """phase 8 내장 이름은 예약어다 — 사용자 정의로 가로챌 수 없다."""
+    response = web.post("/kinds", data=kind_form(kind=kind, input_kinds=[]), follow_redirects=False)
+    assert response.status_code == 409 and "kind_exists" in response.text
+
+
 def test_register_rule_appears_as_one_line(web, conn, settings):
     register_kind(web)
     register_rule(web)
     text = kinds_page(web)
     assert "코드 수정 --[ready_for_review]--> 검토" in text
-    assert text.count('action="/rules/') == 2
+    assert text.count('action="/rules/') == 3
     rules = repo.list_rules(conn, session_id_of(web, settings))
-    assert [(r.from_kind, r.to_kind) for _, r in rules] == [("diagnosis", "code_change"), ("code_change", "review")]
-    assert rules[1][1].on_outcomes == ["ready_for_review"]
-    assert rules[1][1].handoff_kinds == ["diff", "code_change_result"]
+    assert {(r.from_kind, r.to_kind) for _, r in rules[:2]} == {("diagnosis", "code_change"), ("bug_fix", "code_review")}
+    assert (rules[2][1].from_kind, rules[2][1].to_kind) == ("code_change", "review")
+    assert rules[2][1].on_outcomes == ["ready_for_review"]
+    assert rules[2][1].handoff_kinds == ["diff", "code_change_result"]
 
 
 @pytest.mark.parametrize(
@@ -1546,7 +1555,7 @@ def test_register_rule_rejects_invalid_422(web, conn, settings, overrides, messa
     response = web.post("/rules", data=rule_form(**overrides), follow_redirects=False)
     assert response.status_code == 422, response.text
     assert "invalid_field" in response.text and message in response.text
-    assert len(repo.list_rules(conn, session_id_of(web, settings))) == 1
+    assert len(repo.list_rules(conn, session_id_of(web, settings))) == 2  # 내장 규칙만
 
 
 def test_register_rule_duplicate_409(web):
@@ -1603,10 +1612,10 @@ def test_delete_kind_protected_in_use_then_success(web, conn, settings):
 
 def test_delete_rule_then_404(web, conn, settings):
     session_id = session_id_of(web, settings)
-    (rule_id, _), = repo.list_rules(conn, session_id)
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "diagnosis"]
     response = web.post(f"/rules/{rule_id}/delete", follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == "/kinds"
-    assert repo.list_rules(conn, session_id) == []
+    assert [r.from_kind for _, r in repo.list_rules(conn, session_id)] == ["bug_fix"]
     assert "진단 --[ready_for_handoff]--> 코드 수정" not in kinds_page(web)
     assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
     assert web.post("/rules/rule-none/delete", follow_redirects=False).status_code == 404
@@ -1615,13 +1624,13 @@ def test_delete_rule_then_404(web, conn, settings):
 def test_other_session_cannot_delete_my_kind_or_rule(app, web, conn, settings):
     register_kind(web)
     session_id = session_id_of(web, settings)
-    (rule_id, _), = repo.list_rules(conn, session_id)
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "diagnosis"]
     other = TestClient(app)
     other.get("/tasks")
     assert other.post("/kinds/review/delete", follow_redirects=False).status_code == 404
     assert other.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
     assert repo.get_kind(conn, session_id, "review") is not None
-    assert len(repo.list_rules(conn, session_id)) == 1
+    assert len(repo.list_rules(conn, session_id)) == 2
 
 
 # --- 업무 등록·가져오기·실행이 등록부를 본다 (phase 6 step 7) ------------------------------------

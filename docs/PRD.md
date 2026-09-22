@@ -56,7 +56,40 @@
 
 ### 현재 구현과의 차이
 
-현재는 사전 등록한 체인과 단일 선행 관계, 능력·범위 기반 Agent 선택, 등록 규칙에 따른 인계, n8n 입구·사람 차례 callback을 지원한다. GitHub·Jira 가져오기는 fixture다. 새 업무 생성, 일반적인 조직 담당 관계, 사람 요청·응답, 위 수용 시나리오 전체는 미구현이다. 이 차이를 단순 문서 갱신으로 구현 완료 처리하지 않는다.
+`service`는 사전 등록한 체인과 단일 선행 관계, 능력·범위 기반 Agent 선택, 등록 규칙에 따른 인계, n8n 입구·사람 차례 callback을 지원한다. GitHub·Jira 가져오기는 fixture다. phase 8 브랜치(미병합)가 아래 GitHub 한 유형에 한해 실제 수집·새 검토 Task 생성·사람 요청·응답을 구현했고 대역으로만 검증했다. 새 업무 생성, 일반적인 조직 담당 관계, 사람 요청·응답, 위 수용 시나리오 전체는 미구현이다. 이 차이를 단순 문서 갱신으로 구현 완료 처리하지 않는다.
+
+### GitHub 버그 수정 → 검토 MVP — phase 8 수용 기준 (2026-09-23 확정)
+
+구현 상태(step 15): 아래 A~E·경계 사례는 `feat-8-github-task-cycle` 에 구현되어 대역 단위 테스트와 e2e(`tests/e2e/test_github_cycle.py`, 가짜 GitHub·가짜 Agent)를 통과했다. 실제 GitHub·실제 Agent 전체 순환은 미검증(step 16)이다 — [GitHub 런북](github/README.md).
+
+첫 사례는 GitHub Issues 버그 수정 → 결과 커밋 검토다. 계약은 [ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 셀프호스트 운영자 한 명, 저장소 한정 환경변수 토큰, REST 폴링, 같은 로컬 저장소의 수정·검토 Agent 가 전제다. 실제 계정 정보는 마지막 검증(step 16)에서만 요구하며 그 전 step 은 대역으로 검증한다.
+
+위 5개 업무 시나리오를 이 유형에 대응시킨다:
+
+| 업무 | GitHub 사례 | 기대 결과 |
+|---|---|---|
+| A | 담당자 1명(연결됨), 재현 정보 있는 버그 | 추가 조작 없이 `bug_fix` 착수. 결과가 기존 C 의 입력을 채움 |
+| B | 담당자 1명(연결됨), 다른 저장소 등록의 버그 | A 와 독립 착수. 판정 통과 결과에서 새 검토 Task F 1개 생성·착수 |
+| C | A 의 검토로 미리 등록된 `code_review` Task(`predecessor_task_id` = A — 명시적 원인 참조) | 새 Task 를 만들지 않고 기존 C 에 A 결과를 연결해 착수. 제목 유사도로 짝짓지 않음 |
+| D | 위임 밖 — 허용 저장소·능력 범위 밖 | `delegation_denied` 대기. 운영자가 설정을 바꾸기 전 착수하지 않음 |
+| E | 담당자 2명 — 누구 Agent 로 할지 결정 필요 | `assignee_multiple` + 사람 요청. 응답 후 재평가해 착수, 이슈 재등록 없음 |
+
+반드시 대역 테스트로 확인할 경계 사례:
+
+| 사례 | 기대 결과 |
+|---|---|
+| 담당자 없음 / 연결 없는 담당자 | `assignee_missing` / `assignee_unbound` 대기, 자동 추정 없음 |
+| 검토 `approved` | 검토 Task 완료, 수정 Task 는 `확인 필요`(병합·이슈 종료는 사람). close·merge·push 없음 |
+| 검토 `changes_requested` | 같은 수정 Task 의 다음 Execution, 새 결과 커밋을 다시 검토 |
+| 검토 `needs_information` | 사람 요청, 응답 후 재평가 |
+| 재작업 상한(기본 1회) 도달 | 더 돌리지 않고 `rework_limit_reached` 사람 요청 |
+| 사람 응답 재전송·오래된 revision 응답 | 같은 `response_id` 는 한 번만 반영, revision 불일치 409 |
+| 운영자 종료 / 원본 이슈 닫힘 | 종료는 `실패` 마감·새 후속 없음 / 닫힘은 새 착수 중지·재오픈 시 재평가, 진행 중 실행은 계속 |
+| 실행 중 이슈 편집 | 실행 입력 불변, 새 스냅샷은 다음 revision |
+| 같은 이슈·결과·응답 재수신, 워커 재시작 | Task·Execution·후속·댓글 중복 없음(중복 키 표) |
+| 댓글 POST 응답 유실 | `반영 불확실` 표시, marker 조회로 조정, 확인 전 재POST 없음. 작업 실패와 별도 표시 |
+| 구버전 연결 프로그램 | 새 종류 실행을 받지 않고 `executor_outdated` 대기 |
+| 진단 데모·n8n | 기존 `code_change` 판정(`report_matches` 포함)·입구·callback 회귀 없음 |
 
 ## 위임 판단과 패턴 개선 — 2026-09-23 확정
 
