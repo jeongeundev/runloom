@@ -1,6 +1,6 @@
 # 배포 런북 — VM 한 대, 대본 에이전트 (공개 데모)
 
-갱신일: 2026-09-22 (phase 6-typed-handoff docs-sync — 7b·10 에 스키마 버전 3 반영)
+갱신일: 2026-09-22 (phase 7-n8n-gateway docs-sync — 3절 n8n 환경변수 2개, 7b·10 에 스키마 버전 4 와 공개 데모 callback 없음 반영)
 상태: [ADR-0008](adr/0008-public-demo-scripted-agents.md)의 공개 데모 구성을 올리는 절차. [ADR-0006](adr/0006-deployment-vm-caddy-mac-connector.md)의 VM + Caddy 는 그대로이고, 운영자 Mac 의 연결 프로그램 대신 **같은 VM 의 systemd 유닛**이 대본 에이전트(`workflow.scripted.*`)를 돌린다. 실제 Codex/Claude·OpenAI 키는 이 VM 에 없다. 설정 파일은 `deploy/` 에 있고 `tests/test_deploy_files.py` 가 AGENTS.md 명령어·settings 환경변수·seed 인자·아래 명령과의 일치를 검사한다. `{domain}`·`{vm-ip}` 는 사용자가 정한 값으로 바꾼다. 이 문서를 만든 세션은 VM 에 접속하지 않았다.
 
 | 위치 | 프로세스 | 파일 |
@@ -62,7 +62,7 @@ sudoedit /etc/workflow/diag.env
 
 | 파일 | 채울 값 |
 |---|---|
-| `central.env` | 비밀값 2개 `SESSION_SECRET`, `OPERATOR_TOKEN` + `DIAG_API_TOKEN`. 한도는 예시 값 그대로(`WORKFLOW_LIMIT_PER_SESSION_DAILY=200`, `WORKFLOW_LIMIT_GLOBAL_DAILY=5000` — 대본이라 비용 0) |
+| `central.env` | 비밀값 2개 `SESSION_SECRET`, `OPERATOR_TOKEN` + `DIAG_API_TOKEN`. 한도는 예시 값 그대로(`WORKFLOW_LIMIT_PER_SESSION_DAILY=200`, `WORKFLOW_LIMIT_GLOBAL_DAILY=5000` — 대본이라 비용 0). n8n 입구·출구([ADR-0010](adr/0010-n8n-inbox-and-callback.md), phase 7 — 심사 이후 배포) 키 2개는 비밀값이 아니다: `WORKFLOW_CALLBACK_HOSTS` 는 **공개 데모에서 비워 둔다**(누구나 세션을 만들 수 있어 외부가 준 주소로 서버가 POST 하게 두지 않는다 — `callback_url` 이 있는 접수는 422 `callback_host_not_allowed`, 없는 접수는 된다), `WORKFLOW_PUBLIC_URL` 은 배포 도메인(예시 파일의 `https://runloom.duckdns.org`, 끝 `/` 없음 — 입구 응답·callback 의 `chain_url`·`task_url` 앞에 붙는다). 셀프호스트에서 n8n 을 붙일 때만 `WORKFLOW_CALLBACK_HOSTS=localhost:5678` 처럼 채운다([docs/n8n/README.md](n8n/README.md)) |
 | `diag.env` | `DIAG_API_TOKEN`(위와 같은 값)뿐. `DIAG_MODEL=fake`, `OPENAI_API_KEY` 비움, 단가 비움 — 예시 그대로 둔다. fake 는 키를 읽지 않고 유료 호출을 하지 않는다([ADR-0003](adr/0003-diagnosis-model-openai-gpt41-mini.md) 키·예산 확인 전 호출 금지와 같은 결과) |
 | `connector.env` | 고칠 값 없음. `WORKFLOW_CONNECTOR_HOME=/var/lib/workflow/connector`(토큰·상태 DB 위치), `WORKFLOW_SCRIPT_PACE_SECONDS=25`(대본 실행 시간 — 심사자가 `실행 중` 을 보게) |
 
@@ -192,6 +192,8 @@ sudo WORKFLOW_RESET_DB=1 bash /opt/workflow/deploy/update-vm.sh
 
 **phase 6-typed-handoff(브랜치 `feat-6-typed-handoff`, [ADR-0009](adr/0009-registered-kinds-and-succession-rules.md))는 `SCHEMA_VERSION` 을 2 → 3 으로 올렸다**(`kinds`·`succession_rules` 테이블, `tasks.kind` FK). VM 의 DB 는 버전 2 이므로 이 phase 를 배포할 때는 반드시 `WORKFLOW_RESET_DB=1` 이 필요하고(백업 절차는 위와 같다), 심사 기간(2026-09-21 ~ 10-05)에는 공개 데모를 동결하므로 **심사 이후**에 배포한다. 그 전까지 `main` 에 병합·푸시하더라도 VM 에서 `update-vm.sh` 를 돌리지 않는다 — 플래그 없이 돌리면 버전 불일치로 중앙·워커가 시작하지 못한다.
 
+**phase 7-n8n-gateway(브랜치 `feat-7-n8n-gateway`, [ADR-0010](adr/0010-n8n-inbox-and-callback.md))는 `SCHEMA_VERSION` 을 3 → 4 로 올렸다**(`source_tokens` 테이블, `chains` 에 `items_json`·`callback_*` 열, `source` CHECK 에 `n8n`). 마이그레이션은 없으므로 phase 6·7 을 함께 배포하는 심사 이후 첫 갱신 한 번에 `WORKFLOW_RESET_DB=1`(스키마 2 → 4)이 필요하다. 같은 갱신에서 `central.env` 에 3절의 `WORKFLOW_CALLBACK_HOSTS`(비움)·`WORKFLOW_PUBLIC_URL` 두 줄을 추가한다 — 없으면 기본값(빈 목록·빈 공개 주소)으로 뜨지만 `tests/test_deploy_files.py` 가 예시 파일과 `ENV_KEYS` 의 일치를 검사하므로 예시 파일과 같게 맞춘다.
+
 ## 8. 백업 타이머
 
 ```bash
@@ -227,3 +229,4 @@ curl -sS -H "Authorization: Bearer $(sudo grep '^DIAG_API_TOKEN=' /etc/workflow/
 - 연결 코드는 10분, 세션 쿠키는 14일이다. 결과 업로드 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`run --keep-workdirs` 로 보존).
 - 데모 저장소의 결과 커밋은 `task/{task_id}` 브랜치에만 남는다. 기준 브랜치 병합은 운영자 확인 대기로 표시될 뿐 자동으로 하지 않는다.
 - 업무 종류·후속 규칙([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md), 심사 이후 배포): API 에이전트(진단 API)는 `diagnosis` 종류만 받는다 — 사용자 정의 종류는 로컬 도구(Codex·Claude)가 읽기 전용으로만 수행한다. 완료 시 새 업무를 생성하는 규칙은 없다 — 미리 등록된 업무 사이를 규칙으로 이을 뿐이다. 사람이 선행 업무를 종료해도 이미 시작한 후속은 계속된다(멈추려면 후속 업무를 따로 종료). 사용자 정의 종류는 자동 완료 검증기가 없어 항상 사람 검토다.
+- n8n 입구·출구([ADR-0010](adr/0010-n8n-inbox-and-callback.md), 심사 이후 배포): **공개 데모는 callback 이 없다** — `WORKFLOW_CALLBACK_HOSTS` 를 비워 두므로 `callback_url` 이 있는 접수는 422 이고, `callback_url` 없이 접수한 체인은 화면에서만 진행을 본다. 입구 토큰(`/sources`)은 세션당 활성 5개까지이며 취소는 그 세션의 화면에서만 할 수 있다 — 세션 쿠키(14일)가 만료되면 그 토큰을 취소할 화면이 없어진다(토큰 자체는 DB 에 남아 계속 통한다. 세션 데이터를 지우는 절차는 `WORKFLOW_RESET_DB=1` 뿐). 실제 n8n 과의 실연동은 phase 7 step 10 에서 로컬(Docker n8n + `scripts/local_stack.py --callback-hosts localhost:5678`)로만 한다 — VM 에 n8n 을 두지 않는다.

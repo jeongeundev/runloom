@@ -1,13 +1,13 @@
 # 현재 인계 — 이종 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-22 (phase 6-typed-handoff step 0~9 완료 · service 브랜치 병합 · 실제 Claude 로 review 1회 실연동)
-상태: 공개 데모(phase 5, VM 배포·심사 중)에 더해 실사용 첫 phase — 업무 종류(`KindSpec`)·후속 규칙(`SuccessorRule`)을 워크스페이스가 등록하는 구조([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)) — 를 구현했다. 진단 모델은 gpt-4.1 로 확정(ADR-0003), 공개 데모는 실제 모델·실제 Codex/Claude 를 돌리지 않는다(ADR-0008). 브랜치 `feat-6-typed-handoff`(main `0da3d21` 에서 분기), 푸시 안 함, **VM 에 배포 안 함 — 스키마 버전 3 이라 심사 이후 `WORKFLOW_RESET_DB=1` 로 배포한다**.
+갱신일: 2026-09-22 (phase 7-n8n-gateway step 0~9 완료 — n8n 입구·출구, 대본 e2e 통과. step 10 실제 n8n 실연동 남음)
+상태: 공개 데모(phase 5, VM 배포·심사 중)에 더해 실사용 phase 두 개 — phase 6 업무 종류(`KindSpec`)·후속 규칙(`SuccessorRule`)의 워크스페이스 등록([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md), `service` 병합)과 phase 7 n8n 입구·출구([ADR-0010](adr/0010-n8n-inbox-and-callback.md) — 입구 토큰 `wfs_`·`POST /sources/n8n/chains`·사람 차례 `chain_settled` 에 `ChainCallback` 체인당 1회) — 를 구현했다. 진단 모델은 gpt-4.1 로 확정(ADR-0003), 공개 데모는 실제 모델·실제 Codex/Claude 를 돌리지 않는다(ADR-0008). phase 7 은 브랜치 `feat-7-n8n-gateway`(`service` `5abb134` 에서 분기), `service` 미병합·푸시 안 함, **VM 에 배포 안 함 — 스키마 버전이 4(phase 6 이 3, phase 7 이 4)라 심사 이후 `WORKFLOW_RESET_DB=1` 로 한 번에 배포한다**.
 
 ## 지금 상태 — 새 세션이 먼저 볼 것
 
 | 항목 | 상태 |
 |---|---|
-| 브랜치 | `service` (실서비스 통합 브랜치, 2026-09-22 신설 — `feat-6-typed-handoff` 를 `--no-ff` 로 병합 `9e852f5`, `origin/service` 푸시됨). `main` 은 공개 데모(phase 5 배포 원본, 심사 중 동결). 정책은 AGENTS.md 하네스 절 |
+| 브랜치 | `feat-7-n8n-gateway` (phase 7 작업 브랜치 — `service` `5abb134` 에서 분기, step 0~9 커밋, 미병합·미푸시. step 10 이 끝나면 `service` 에 `--no-ff` 로 병합). `service` 는 실서비스 통합 브랜치(2026-09-22 신설 — `feat-6-typed-handoff` 를 `--no-ff` 로 병합 `9e852f5`, `origin/service` 푸시됨). `main` 은 공개 데모(phase 5 배포 원본, 심사 중 동결). 정책은 AGENTS.md 하네스 절 |
 | `phases/0-mvp` step 0~17 | **완료.** contracts·domain·adapters·server(web/API/워커)·connector(Codex 어댑터·worktree)·diagnostic_demo(fixture·도구·워커)·deploy 설정·런북 |
 | `phases/1-diag-fix` step 0~3 | **완료.** location 배열 인덱스 `[N]` + JSON Schema `pattern`, 도구 텍스트 반환에 줄 번호(`tools-v2`), 프롬프트 v2, 재평가 |
 | `phases/2-model-compare` step 0~2 | **완료.** 프롬프트 v3, `DraftInvalid` 턴 사용량 집계, mini·gpt-4.1 5사례 × 3회 비교 → gpt-4.1 `normal` 3/3, [DIAG_EVAL](DIAG_EVAL.md). ADR-0003 을 gpt-4.1 로 확정 |
@@ -15,20 +15,24 @@
 | `phases/4-claude-issues` step 0~3 | **완료·main 병합(`f6a3b43`).** 도구 계약·`LocalToolAdapter`·`ClaudeAdapter`·Runner 디스패치. step 4~11 은 5-scripted-demo 로 대체 |
 | `phases/5-scripted-demo` step 0~11 | **완료·main 병합·VM 배포(2026-09-21, `https://runloom.duckdns.org`).** 대본 에이전트(`src/workflow/scripted/`)·스키마 v2(`session_agents`·`chains`)·카탈로그 등록(`/agents/register`)·이슈 fixture 와 라벨 매핑(`domain/task_sources.py`)·워크플로우 구성(`domain/composition.py`)·가져오기(`/tasks/import`)·체인 화면(`/chains/{chain_id}`)·seed 3개·connector worktree 정리·e2e 주 경로 test_12~21·VM 배포 설정([ADR-0008](adr/0008-public-demo-scripted-agents.md)) |
 | `phases/6-typed-handoff` step 0~9 | **완료(브랜치, 미배포).** [ADR-0009](adr/0009-registered-kinds-and-succession-rules.md) — 계약 `KindSpec`·`SuccessorRule`·`GenericResult`·`LocalTarget`·`InputRef`·일반화된 `HandoffBundle`(`source_kind`·`source_result_artifact_id`·`inputs`), 도메인 `kinds.py`·`succession.py`(등록부는 인자), 스키마 v3(`kinds`·`succession_rules`, 세션 생성 시 내장 2종·규칙 1개 seed), 워커 후속 조건을 '선행 결과 + 판정 통과 + outcome ∈ 규칙'으로(사람 승인은 후속 착수를 막지 않음)·`_check_generic_results`, 연결 프로그램 읽기 전용 실행(`_run_generic`, Codex `--sandbox read-only`/Claude `Read Glob Grep`), 화면 `/kinds`(종류 카드·한 줄 규칙·등록 폼)와 업무 등록·가져오기·상세의 등록부 연동, e2e test_22~28(세 번째 종류 `review` 를 화면으로 등록하면 진단 → 수정 → 검토가 `composition.py`·`worker.py` 변경 없이 자동 착수), 문서 동기화(step 9). **2026-09-22 실제 Claude 로 검토 C 1회 통과**(outcome `changes_requested`, [VERIFICATION_LOG](VERIFICATION_LOG.md) 실연동 절) — 실제 Codex 로는 미검증 |
-| 공개 데모 구성 | [ADR-0008](adr/0008-public-demo-scripted-agents.md): VM 한 대, systemd 5개(중앙 2·진단 2·연결 프로그램) + Caddy, 카탈로그 3개 `demo_scripted=1`, `DIAG_MODEL=fake`, `deploy/bin/{codex,claude}` 래퍼 → `workflow.scripted.*`, 실제 codex/claude 바이너리·`OPENAI_API_KEY` 없음, 한도 200/5000(비용 0). 절차 [DEPLOY](DEPLOY.md). 2026-09-21 `https://runloom.duckdns.org` 에 main(phase 5, 스키마 2) 배포·심사자 흐름 완주([VERIFICATION_LOG](VERIFICATION_LOG.md)). **심사 기간(~10-05) 동결 — phase 6 는 올리지 않는다** |
-| 검증 | `python3 -m pytest -q` 1545 passed + 29 skipped(e2e), `ruff` 통과. e2e 는 `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` 로 29 passed(약 93초, 대본 스택 — 기존 22 + 세 번째 종류 절 test_22~28) — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 절 |
-| 실연동 증거 | 실제 Codex CLI 로 B 1회(2026-09-20, [VERIFICATION_LOG](VERIFICATION_LOG.md) Step 15)와 실제 gpt-4.1 진단 평가([DIAG_EVAL](DIAG_EVAL.md))가 따로 있다. 실제 모델 + 실제 Codex 로 A → B 를 한 번에 완료한 기록은 없다. 실제 Claude Code 실연동은 **세 번째 종류 `review` 1회**(2026-09-22, 로컬 스택 — A fake 진단·B 대본 codex·C 실제 `claude -p`, 85초·7턴, `changes_requested` 로 대본 수정의 실제 결함을 지적)뿐이다. 실제 Codex `--sandbox read-only` 가 git 저장소가 아닌 인계 디렉터리에서 도는 동작은 미확인. 그 실행에서 **연결 프로그램이 도구 실행 중 heartbeat 를 보내지 않는 결함**(운영 기본값에선 90초 넘는 실행마다 `offline`·`heartbeat_lost`)과 **판정 전 승인이면 `task_verdicts` 가 안 남는 관찰**을 기록했다 — 둘 다 미수정, 사용자 결정 대기 |
-| 남은 것 | 연결 프로그램 실행 중 heartbeat(위 결함, 작은 phase 또는 fix 커밋), n8n 입구 phase(업무 `callback_url` + `TaskSource` n8n — 별도 ADR), 완료 시 새 업무 생성 규칙(ADR-0009 트레이드오프), 범용 API 에이전트 계약(지금 API 는 `diagnosis` 만), 실제 GitHub/Jira API 연동(지금은 `adapters/task_source_fixtures/` fixture 뿐), 셀프호스트 1인용 패키징(ADR-0006 Mac 구성은 코드로 남아 있으나 설치 절차·문서 없음), A2A. 사용량 한도 대기는 phase 3(심사 이후) |
+| `phases/7-n8n-gateway` step 0~9 | **완료(브랜치, 미병합·미배포). step 10 남음.** [ADR-0010](adr/0010-n8n-inbox-and-callback.md) — n8n 은 업무가 들어오는 입구·나가는 출구, 판단은 그대로 Runloom. 계약 `InboundChainRequest`/`InboundItem`·`InboundChainResponse`·`ChainCallback`(CONTRACT 12절), 도메인 `settlement.py`(`chain_settled`·`NodeState`)·`callback_policy.py`(`host_allowed`·`parse_hosts`), 스키마 v4(`source_tokens`, `chains.items_json`·`callback_*`, `source` CHECK `n8n`), 입구 토큰 `wfs_`(세션이 `/sources` 에서 발급·취소, sha256 만 저장, 활성 5개), 입구 API `POST /sources/n8n/chains`(`inbound_api.py` — 가져오기와 같은 본체 `web.create_chain`·`start_chain`, 접수 즉시 첫 업무 시작, 시작 거부는 201 `started=false`+`start_error`), 워커 마지막 단계 `_deliver_callbacks`(사람 차례에 체인당 1회 POST, 30·60·120·240초 재시도 5회, `HttpCallbackClient` 리다이렉트 미추적, 허용 목록 `WORKFLOW_CALLBACK_HOSTS`·공개 주소 `WORKFLOW_PUBLIC_URL`), 화면 `/sources`·사이드바 `입구`·체인 화면 출처 `n8n` 칩과 callback 한 줄, n8n 예시(`docs/n8n/runloom-handoff.json` 노드 4개 + `README.md` 절차서), `scripts/local_stack.py --callback-hosts/--public-url`, e2e test_29~35(테스트 안 HTTP 수신기가 n8n 역할 — callback 1건, B 승인 뒤 두 번째 없음), 문서 동기화(step 9). **실제 n8n(Docker) 미검증 — step 10.** 알려진 간극: 워커가 저장한 `확인 필요 · 선행 outcome … 규칙 대상 아님` 이 화면·callback 의 지금 판정에 반영되지 않아 `대기 · 선행 대기` 로 보임(phase 6 부터, 미수정); 멱등 키 없음(같은 본문 두 번 → 체인 2개) |
+| 공개 데모 구성 | [ADR-0008](adr/0008-public-demo-scripted-agents.md): VM 한 대, systemd 5개(중앙 2·진단 2·연결 프로그램) + Caddy, 카탈로그 3개 `demo_scripted=1`, `DIAG_MODEL=fake`, `deploy/bin/{codex,claude}` 래퍼 → `workflow.scripted.*`, 실제 codex/claude 바이너리·`OPENAI_API_KEY` 없음, 한도 200/5000(비용 0). 절차 [DEPLOY](DEPLOY.md). 2026-09-21 `https://runloom.duckdns.org` 에 main(phase 5, 스키마 2) 배포·심사자 흐름 완주([VERIFICATION_LOG](VERIFICATION_LOG.md)). **심사 기간(~10-05) 동결 — phase 6·7 은 올리지 않는다**(둘 다 스키마가 올라 `WORKFLOW_RESET_DB=1` 이 필요) |
+| 검증 | `python3 -m pytest -q` 1714 passed + 36 skipped(e2e), `ruff` 통과. e2e 는 `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` 로 36 passed(약 130초, 대본 스택 — 기존 22 + 세 번째 종류 절 test_22~28 + n8n 절 test_29~35) — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 절 두 개 |
+| 실연동 증거 | 실제 Codex CLI 로 B 1회(2026-09-20, [VERIFICATION_LOG](VERIFICATION_LOG.md) Step 15)와 실제 gpt-4.1 진단 평가([DIAG_EVAL](DIAG_EVAL.md))가 따로 있다. 실제 모델 + 실제 Codex 로 A → B 를 한 번에 완료한 기록은 없다. 실제 Claude Code 실연동은 **세 번째 종류 `review` 1회**(2026-09-22, 로컬 스택 — A fake 진단·B 대본 codex·C 실제 `claude -p`, 85초·7턴, `changes_requested` 로 대본 수정의 실제 결함을 지적)뿐이다. 실제 Codex `--sandbox read-only` 가 git 저장소가 아닌 인계 디렉터리에서 도는 동작은 미확인. 그 실행에서 **연결 프로그램이 도구 실행 중 heartbeat 를 보내지 않는 결함**(운영 기본값에선 90초 넘는 실행마다 `offline`·`heartbeat_lost`)과 **판정 전 승인이면 `task_verdicts` 가 안 남는 관찰**을 기록했다 — 둘 다 미수정, 사용자 결정 대기. n8n 입구·출구는 실제 n8n 으로 돌린 기록이 없다(e2e 의 수신기가 n8n 역할 — step 10 이 Docker n8n 으로 1회 돌리고 VERIFICATION_LOG 에 남긴다) |
+| 남은 것 | 실제 n8n 실연동(phase 7 step 10 — Docker n8n 으로 [docs/n8n/README.md](n8n/README.md) 절차 1회, 그 뒤 `service` 병합), 연결 프로그램 실행 중 heartbeat(위 결함, 작은 phase 또는 fix 커밋), 업무별 알림(지금은 체인당 사람 차례 1회 callback 뿐 — ADR-0010 트레이드오프), 완료 시 새 업무 생성 규칙(ADR-0009 트레이드오프), 범용 API 에이전트 계약(지금 API 는 `diagnosis` 만), 실제 GitHub/Jira API 연동(지금은 `adapters/task_source_fixtures/` fixture 뿐), 셀프호스트 1인용 패키징(ADR-0006 Mac 구성은 코드로 남아 있으나 설치 절차·문서 없음), A2A. 사용량 한도 대기는 phase 3(심사 이후) |
 | 로컬 산출물(커밋 안 됨) | `.env`(비밀값, gitignore), `data/`(sqlite·산출물·평가 workdir), `../demo-report-repo`(B 가 수정하는 데모 저장소, `scripts/scaffold_demo_repo.py` 로 재생성 가능) |
 
 ### 재개 방법 — 하네스
 
 ```bash
 cd /Users/kje/00_Workspace/01_Coding/project/workflow
-python3 scripts/execute.py 6-typed-handoff --engine claude          # 완료된 step 은 건너뛴다. 새 step 을 추가하면 이어서 돈다
+git checkout feat-7-n8n-gateway
+python3 scripts/execute.py 7-n8n-gateway --engine claude            # step 10(n8n-live-check) 남음 — Docker n8n 이 떠 있어야 한다. 완료된 step 은 건너뛴다
 python3 scripts/execute.py 3-limit-wait --engine claude             # 심사 이후 (ADR-0007). 실행 전 step 파일을 사용자가 검토·승인
 python3 scripts/local_stack.py --scripted                           # 로컬에서 공개 데모와 같은 대본 스택 5-프로세스
-WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q                       # 대본 e2e 29건 (약 1분 30초)
+docker run -d --name runloom-n8n -p 5678:5678 -v runloom_n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n   # 로컬 n8n (step 10·수동 확인용)
+python3 scripts/local_stack.py --scripted --callback-hosts localhost:5678 --public-url http://127.0.0.1:18000   # n8n 을 붙인 대본 스택 — 절차는 docs/n8n/README.md
+WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q                       # 대본 e2e 36건 (약 2분 10초)
 ```
 
 - 새 phase 는 `phases/{task-name}/index.json` + `step{N}.md` 를 만들고 같은 명령으로 돈다. 워크플로우 전체는 `.claude/commands/harness.md`.
@@ -51,7 +55,7 @@ WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q                       # 대본 e2e
 
 ## 새 세션 시작
 
-1. 루트 AGENTS.md(스택·규칙·명령어 채움)와 [ADR 목록](adr/0000-principles.md)을 읽는다. ADR-0000~0009 가 확정 사항이다(0003 은 gpt-4.1 로 확정, 0007 은 심사 이후 적용).
+1. 루트 AGENTS.md(스택·규칙·명령어 채움)와 [ADR 목록](adr/0000-principles.md)을 읽는다. ADR-0000~0010 이 확정 사항이다(0003 은 gpt-4.1 로 확정, 0007 은 심사 이후 적용, 0010 은 n8n 입구·출구).
 2. [PRD](PRD.md)·[ARCHITECTURE](ARCHITECTURE.md)·[CONTRACT](CONTRACT.md)·[GLOSSARY](GLOSSARY.md)를 읽는다. "2026-09-20 확정"으로 표시한 절은 재질문하지 않는다.
 3. 위 "지금 상태" 표와 "재개 방법" 을 본다. 사용자가 재개를 지시하면 "재개 방법" 의 명령으로 하네스를 돌린다. 사용자에게 제품 방향·시연 사례·진단 모델·공개 데모 방식(대본)을 다시 고르도록 요구하지 않는다.
 
@@ -137,9 +141,9 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 ## 다음 세션에서 할 일
 
 1. ~~실제 Claude 로 `review` 종류 1회 실연동~~ — 2026-09-22 완료([VERIFICATION_LOG](VERIFICATION_LOG.md) 실연동 절, ARCHITECTURE "검증 순서" 6번 갱신). 남은 결정 두 가지: (a) 연결 프로그램이 도구 실행 중에도 heartbeat 를 보내게 고칠지(heartbeat 스레드 또는 `communicate_or_stop` 폴링 루프 — 실제 실행은 대부분 90초를 넘긴다), (b) 중앙 판정 전 사람 승인을 막을지. 사용자가 정하면 TDD 로 진행.
-2. n8n 입구 phase — 업무에 `callback_url`, `TaskSource` 에 n8n, 3~4 노드 워크플로우 예시. 별도 ADR 로 결정한 뒤 `phases/` 에 step 을 만든다. n8n 은 업무가 들어오는 입구·나가는 출구로만 쓴다(ADR-0009 참고 절).
+2. ~~n8n 입구 phase~~ — 2026-09-22 phase 7-n8n-gateway step 0~9 완료([ADR-0010](adr/0010-n8n-inbox-and-callback.md), 위 표). **남은 것은 step 10(n8n-live-check)**: Docker 의 실제 n8n 에 `docs/n8n/runloom-handoff.json` 을 import 하고 `docs/n8n/README.md` 절차대로 1회 돌려(Webhook → Runloom 접수 → A → B 검토 대기 → callback 이 Wait 노드를 깨움) [VERIFICATION_LOG](VERIFICATION_LOG.md)에 남긴 뒤 ARCHITECTURE "검증 순서" 7번을 갱신하고 `service` 에 `--no-ff` 병합. Docker·n8n 실행은 사용자가 지시할 때만.
 3. 완료 시 새 업무를 **생성**하는 규칙(대상·범위를 선행 결과에서 파생) — ADR-0009 트레이드오프. 지금은 미리 등록된 업무 사이를 잇는 것만 한다.
-4. 심사 이후(2026-10-05 뒤) VM 배포 — `service` 를 main 에 병합·푸시하고 [DEPLOY](DEPLOY.md) 7b 대로 `WORKFLOW_RESET_DB=1 update-vm.sh`(스키마 2 → 3) 후 seed·connect·register 를 다시 한다. 그 전에는 VM 에서 `update-vm.sh` 를 돌리지 않는다.
+4. 심사 이후(2026-10-05 뒤) VM 배포 — `service` 를 main 에 병합·푸시하고 [DEPLOY](DEPLOY.md) 7b 대로 `WORKFLOW_RESET_DB=1 update-vm.sh`(스키마 2 → 4 — phase 6·7 을 한 번에) 후 `central.env` 에 `WORKFLOW_CALLBACK_HOSTS`(비움)·`WORKFLOW_PUBLIC_URL` 두 줄을 더하고 seed·connect·register 를 다시 한다. 그 전에는 VM 에서 `update-vm.sh` 를 돌리지 않는다.
 5. 심사 이후: `phases/3-limit-wait`(ADR-0007), 그 다음은 "지금 상태" 표의 "남은 것". ADR 파일은 사용자 확정 후에만 고친다.
 6. 인계 문서를 갱신할 때 "지금 상태" 표를 먼저 고친다.
 
@@ -160,7 +164,7 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 
 ## 문서와 작업 상태
 
-- 현행 문서: 제품 개요, PRD, ARCHITECTURE, CONTRACT, GLOSSARY, [UI_GUIDE](UI_GUIDE.md), ADR 0000~0009, [VERIFICATION_LOG](VERIFICATION_LOG.md), [DEPLOY](DEPLOY.md), [DIAG_EVAL](DIAG_EVAL.md)(+ 이전 평가 `DIAG_EVAL_2026-09-20_prompt-v1.md`), 이 handoff, [문서 안내](README.md).
+- 현행 문서: 제품 개요, PRD, ARCHITECTURE, CONTRACT, GLOSSARY, [UI_GUIDE](UI_GUIDE.md), ADR 0000~0010, [VERIFICATION_LOG](VERIFICATION_LOG.md), [DEPLOY](DEPLOY.md), [DIAG_EVAL](DIAG_EVAL.md)(+ 이전 평가 `DIAG_EVAL_2026-09-20_prompt-v1.md`), [n8n 연동 예시](n8n/README.md), 이 handoff, [문서 안내](README.md).
 - [이전 원문 보관](archive/2026-09-19-before-agent-registration/README.md)은 이력이며 현행 요구사항이 아니다.
 - 작업 트리는 HEAD 와 같다(`.env`·`data/` 는 gitignore). 이 세션에서 한 것: 0-mvp step 1~17 하네스 실행, step 7 시각 의존 테스트 수정(`d01773b`), 1-diag-fix 계획·실행, 2-model-compare 계획 커밋, 이 문서 갱신. 푸시하지 않았다.
 - 검증은 `python3 -m pytest -q`(1018 passed, 11 skipped) 와 `python3 -m ruff check .` 통과. 실제 외부 호출 검증은 Codex 1회(step 15)·OpenAI 평가 3회(step 17, 1-diag-fix step 3) 뿐이며 배포·심사 환경 검증은 하지 않았다.
