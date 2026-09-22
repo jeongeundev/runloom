@@ -801,7 +801,7 @@ target 은 2절 `CodeChangeTarget` 과 같은 모양이다. `request` 는 이슈
 
 ### 13.3 `ExecutionRequest` — `code_review`
 
-target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한다. 연결 프로그램은 같은 로컬 등록 저장소에서 `result_commit` 의 깨끗한 체크아웃을 만들어 읽기 전용으로 검토하고, 커밋이 없으면 실패 코드 `commit_missing` 이다.
+target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한다. 연결 프로그램은 같은 로컬 등록 저장소에서 `result_commit` 의 깨끗한 체크아웃을 만들어 읽기 전용으로 검토하고, 커밋이 없으면 실패 코드 `commit_missing` 이다. 도구를 띄우기 전 실패 코드: 등록 없음 `registration_missing`, 두 커밋 중 하나가 그 저장소에 없음 `commit_missing`(다른 기기·클론의 커밋은 전송하지 않는다), `base_commit` 이 `result_commit` 의 조상이 아님 `commit_mismatch`, 인계 자료에 `source_execution_id` 의 `CodeChangeResult` 가 없거나 그 두 커밋이 target 과 다름 `source_mismatch`. 실행 뒤: 체크아웃 HEAD 가 움직였거나 파일·인계 파일이 바뀜 `readonly_violation`, 마지막 메시지가 `CodeReviewResult` 가 되지 않음 `result_invalid`(시간 초과·사용량 한도는 다른 종류와 같다). 도구는 `outcome`·`summary`·`findings`·`missing_information` 만 내고(`local_tool.REVIEW_RESULT_SCHEMA`), 실행·커밋 ID 는 연결 프로그램이 채운다 — `reviewed_commit` 은 검토 뒤 확인한 체크아웃 HEAD 다.
 
 ```json
 {
@@ -861,7 +861,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 
 ### 13.5 `ClaimRequest` — 지원 종류 선언
 
-`supported_kinds` 는 선택(기본 null)이다. null 이면 구버전 연결 프로그램으로 보고 내장 중 `code_change` 와 사용자 정의 종류만 배정한다. 서버는 마지막 선언을 저장해 준비 판정의 `executor_outdated` 에 쓴다. 구버전 서버는 이 필드를 422 로 거부하므로 서버를 먼저 올린다. step 8 부터 연결 프로그램은 `["code_change", "bug_fix"]` 를 보낸다(`code_review` 는 검토 경로가 생기는 step 9).
+`supported_kinds` 는 선택(기본 null)이다. null 이면 구버전 연결 프로그램으로 보고 내장 중 `code_change` 와 사용자 정의 종류만 배정한다. 서버는 마지막 선언을 저장해 준비 판정의 `executor_outdated` 에 쓴다. 구버전 서버는 이 필드를 422 로 거부하므로 서버를 먼저 올린다. step 9 부터 연결 프로그램은 아래 예시처럼 `["code_change", "bug_fix", "code_review"]` 를 보낸다(step 8 은 `code_review` 없이 둘).
 
 ```json
 { "contract_version": 1, "connector_id": "conn-mac-01", "supported_kinds": ["code_change", "bug_fix", "code_review"] }

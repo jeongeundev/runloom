@@ -13,6 +13,8 @@
 - 사용자 정의 종류(`LocalTarget`)는 `launch_readonly` 가 `--allowedTools` 를 `READONLY_TOOLS`(Read·Glob·Grep)로 좁혀
   인계 디렉터리에서 띄우고(`build_readonly_argv`), `parse_generic_message` 가 별도 모델 `ClaudeGenericOutput` 으로
   `{outcome, summary}` 만 읽는다. 내장 흐름의 `ClaudeStructuredOutput` Literal 검증은 그대로다.
+- 커밋 검토(`code_review`)도 같은 `launch_readonly`(`READONLY_TOOLS`)로 결과 커밋의 체크아웃에서 띄우고,
+  `read_structured_message` 가 `structured_output` 을 객체로 꺼낸다.
 """
 
 import json
@@ -176,6 +178,10 @@ class ClaudeAdapter(LocalToolAdapter):
                     return ToolResult(last.outcome, last.summary or "(요약 없음)", None)
                 return ToolResult(last.outcome, last.summary, outcome_note(last.outcome, outcomes))
         return ToolResult("", f"Claude 마지막 메시지를 읽지 못함 ({note})", note)
+
+    def read_structured_message(self, raw: str | None) -> tuple[dict | None, str | None]:
+        """결과 봉투의 `structured_output` 을 객체로. 형식 검사는 공통 흐름(`CodeReviewResult`)이 한다."""
+        return _structured_output(raw)
 
     def classify_failure(self, run: ToolRun) -> tuple[str, str] | None:
         """사용량 한도(구독 창·API 429)면 `usage_limit`. 구조화 출력이 있는 정상 결과는 본문에 무엇이 있든 한도가 아니다."""

@@ -19,8 +19,8 @@ from workflow.connector.claude import ALLOWED_TOOLS, READONLY_TOOLS, ClaudeAdapt
 from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun, generic_result_schema
 from workflow.scripted._common import FIXED_TRANSFORMER, REPRO_TEST
 
-from .conftest import REVIEW_SPEC, make_local_request
-from .test_codex import RESPONSE_AFTER, Progress, _git, by_kind, make_repo, request_for
+from .conftest import REVIEW_SPEC, make_local_request, make_review_request
+from .test_codex import RESPONSE_AFTER, Progress, _git, by_kind, make_repo, make_review_fixture, request_for
 
 WFC = "wfc_" + "a" * 43
 SK = "sk-" + "b" * 20
@@ -47,6 +47,19 @@ prompt = sys.stdin.read()
 worktree = Path.cwd()
 fake = {"argv": args, "env": dict(os.environ), "cwd": str(worktree),
         "prompt_chars": len(prompt), "prompt_head": prompt[:60]}
+
+if MODE == "review":
+    # 커밋 검토 — cwd 는 결과 커밋의 체크아웃. 수정이 남긴 표식 파일을 읽어 요약에 담는다.
+    fake["schema"] = json.loads(args[args.index("--json-schema") + 1])
+    fake["prompt_first_line"] = prompt.splitlines()[0]
+    mark = (worktree / "REVIEW_MARK.md").read_text().strip()
+    structured = {"outcome": "changes_requested", "summary": f"표식 {mark} 확인", "missing_information": [],
+                  "findings": [{"severity": "blocking", "path": "REVIEW_MARK.md", "line": 1, "message": "테스트 없음"}]}
+    print(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False, "api_error_status": None,
+        "result": json.dumps(structured, ensure_ascii=False), "structured_output": structured, "_fake": fake,
+    }, ensure_ascii=False))
+    sys.exit(0)
 
 if MODE.startswith("generic"):
     # 사용자 정의 종류 — `--json-schema` 의 enum 을 읽고 structured_output 에 {outcome, summary} 만 낸다.
@@ -579,3 +592,37 @@ def test_parse_generic_message(state_conn, raw, outcome, note):
         assert parsed.parse_note is None and parsed.summary == "좋다"
     else:
         assert parsed.parse_note is not None and note in parsed.parse_note
+
+
+# --- 커밋 검토 `code_review` ------------------------------------------------------------------------------
+
+
+def test_code_review_runs_readonly_claude_in_result_checkout(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "review")
+    base, result_commit, handoff = make_review_fixture(state_conn, repo, tmp_path)
+
+    output = adapter(state_conn).run(make_review_request(base, result_commit), handoff, Progress())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.outcome, result.summary, result.reviewed_commit) == (
+        "changes_requested", "표식 fixed-by-fix 확인", result_commit)
+    assert [(f.severity, f.path, f.line) for f in result.findings] == [("blocking", "REVIEW_MARK.md", 1)]
+    fake = envelope_of(output)["_fake"]
+    tools = fake["argv"][fake["argv"].index("--allowedTools") + 1:fake["argv"].index("--json-schema")]
+    assert tools == list(READONLY_TOOLS)
+    assert Path(fake["cwd"]).resolve() != repo.resolve() and not Path(fake["cwd"]).exists()
+    assert fake["schema"]["properties"]["outcome"]["enum"] == ["approved", "changes_requested", "needs_information"]
+    assert fake["prompt_first_line"] == "# 커밋 검토"
+    assert not any(k.startswith("WORKFLOW_") for k in fake["env"])
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+@pytest.mark.parametrize("raw, data, note", [
+    (_envelope(structured_output={"outcome": "approved"}), {"outcome": "approved"}, None),
+    (_envelope(result="text only"), None, "구조화 출력 없음"),
+    (_envelope(is_error=True, result="Error: boom"), None, "is_error: Error: boom"),
+    (None, None, "결과 JSON 없음"),
+])
+def test_read_structured_message(state_conn, raw, data, note):
+    assert adapter(state_conn).read_structured_message(raw) == (data, note)

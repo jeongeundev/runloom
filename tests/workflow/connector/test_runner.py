@@ -16,7 +16,7 @@ from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
 from workflow.connector.client import Unreachable
 from workflow.connector.git_ops import GitError
 from workflow.connector.runner import Runner
-from workflow.contracts.v1 import CodeChangeResult, ExecutionRequest, GenericResult, Verification
+from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult, ExecutionRequest, GenericResult, Verification
 
 from .conftest import (
     BASE_COMMIT,
@@ -28,6 +28,7 @@ from .conftest import (
     assign_with_handoff,
     make_local_request,
     make_request,
+    make_review_request,
 )
 
 
@@ -896,4 +897,76 @@ def test_claim_declares_supported_builtin_kinds(fake, client, state_conn, paths,
     runner.tick()
 
     claim = next(r for r in fake.requests if r.url.path == "/connector/claim")
-    assert json.loads(claim.content)["supported_kinds"] == ["code_change", "bug_fix"]
+    assert json.loads(claim.content)["supported_kinds"] == ["code_change", "bug_fix", "code_review"]
+
+
+# --- 커밋 검토 `code_review` ---------------------------------------------------------------------
+
+
+REVIEWED = "8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a"
+
+
+def review_output(request: ExecutionRequest) -> AdapterOutput:
+    """검토 결과 — 산출물은 원시 로그뿐, 봉투는 `CodeReviewResult`."""
+    result = CodeReviewResult.model_validate({
+        "contract_version": 1, "execution_id": request.execution_id, "task_id": request.task_id,
+        "source_execution_id": request.target.source_execution_id, "reviewed_commit": request.target.result_commit,
+        "outcome": "changes_requested", "summary": "stub 검토",
+        "findings": [{"severity": "blocking", "path": "pkg.py", "line": 1, "message": "경계 누락"}],
+        "missing_information": [], "artifact_ids": [],
+    })
+    artifacts = [make_meta("claude_jsonl", "claude.jsonl", b'{"type":"result"}\n', "application/x-ndjson"),
+                 make_meta("claude_stderr", "claude-stderr.txt", b"", "text/plain")]
+    return AdapterOutput(result=result, artifacts=artifacts, runtime_ref="stub:review")
+
+
+def test_code_review_uploads_code_review_result_and_cleans_only_handoff_dir(fake, client, state_conn, paths,
+                                                                           tmp_path):
+    repo = make_git_repo(tmp_path)
+    base = git_ops.head_sha(repo)
+    worktree = git_ops.ensure_worktree(repo, "task-gh-41", base)  # 수정 Task 가 남긴 결과 커밋·브랜치
+    (worktree / "pkg.py").write_text("X = 2\n")
+    result_commit = git_ops.commit_all(worktree, "fix")
+    git_ops.remove_worktree(repo, worktree)
+    register(state_conn, tmp_path, "local-billing-claude", tool="claude")
+    request = make_review_request(base, result_commit)
+    request = assign_with_generic_handoff(fake, request)
+    adapter = StubAdapter(output=review_output(request))
+    runner = Runner(client, state_conn, paths, {"claude": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    (called, handoff_dir), = adapter.calls
+    assert called == request
+    assert handoff_dir == repo.parent / f"{REPO}-worktrees" / "task-gh-41-review.handoff"
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "started", "result_ready"]
+    uploaded = fake.artifacts_of(request.execution_id)
+    assert set(uploaded) == {"claude_jsonl", "claude_stderr", "code_review_result"}
+    assert uploaded["code_review_result"]["name"] == "code_review_result.json"
+    result = CodeReviewResult.model_validate_json(uploaded["code_review_result"]["data"])
+    assert (result.outcome, result.reviewed_commit, result.source_execution_id) == (
+        "changes_requested", result_commit, "exec-gh-fix-001")
+    assert sorted(result.artifact_ids) == sorted(
+        a_id for a_id, a in fake.artifacts.items()
+        if a["execution_id"] == request.execution_id and a["kind"] != "code_review_result"
+    )
+    assert fake.artifacts[events[-1]["data"]["result_artifact_id"]]["kind"] == "code_review_result"
+    # 정리: 인계 디렉터리만 지운다. 수정 Task 의 브랜치·결과 커밋은 그대로
+    assert not handoff_dir.exists()
+    assert _git(repo, "rev-parse", "task/task-gh-41") == result_commit
+    assert _git(repo, "rev-parse", "HEAD") == base and _git(repo, "status", "--porcelain") == ""
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+
+
+def test_code_review_missing_registration_fails_before_download(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_generic_handoff(fake, make_review_request(BASE_COMMIT, REVIEWED))
+    adapter = StubAdapter()
+    runner = Runner(client, state_conn, paths, {"claude": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    assert adapter.calls == []
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "failed"]
+    assert events[-1]["data"]["code"] == "registration_missing"

@@ -323,6 +323,22 @@ def make_local_request(execution_id: str = "exec-review-001", task_id: str = "re
     })
 
 
+REVIEW_REQUEST = "task-gh-41 의 결과 커밋이 이슈의 재현 조건을 고치는지, 테스트가 무력화되지 않았는지 검토해 주세요."
+
+
+def make_review_request(base_commit: str, result_commit: str, *, execution_id: str = "exec-gh-review-001",
+                        task_id: str = "task-gh-41-review", source_execution_id: str = "exec-gh-fix-001",
+                        local_registration_id: str = "local-billing-claude") -> ExecutionRequest:
+    """내장 `code_review` 요청 (CONTRACT 13.3) — target 은 `CommitReviewTarget`, 입력은 수정 결과 인계."""
+    return ExecutionRequest.model_validate({
+        "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": "code_review",
+        "agent_id": "agent-claude-mac", "task_revision": 1, "request": REVIEW_REQUEST,
+        "input_artifact_ids": ["art-handoff-gh-001"],
+        "target": {"local_registration_id": local_registration_id, "source_execution_id": source_execution_id,
+                   "base_commit": base_commit, "result_commit": result_commit},
+    })
+
+
 def assign_with_generic_handoff(fake: FakeCentral, request: ExecutionRequest | None = None, *,
                                 tamper: bool = False, duplicate_kind: bool = False,
                                 source_result_in_inputs: bool = True) -> ExecutionRequest:

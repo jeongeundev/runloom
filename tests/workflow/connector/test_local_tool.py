@@ -19,14 +19,15 @@ from workflow.connector import git_ops, state
 from workflow.connector.adapter import Progress
 from workflow.connector.local_tool import (
     RESULT_SCHEMA,
+    REVIEW_RESULT_SCHEMA,
     LocalToolAdapter,
     ToolResult,
     ToolRun,
     generic_result_schema,
 )
-from workflow.contracts.v1 import ExecutionRequest, GenericResult
+from workflow.contracts.v1 import CodeReviewResult, ExecutionRequest, GenericResult
 
-from .conftest import REVIEW_SPEC, make_local_request, make_request
+from .conftest import REVIEW_REQUEST, REVIEW_SPEC, make_local_request, make_request, make_review_request
 
 WFC = "wfc_" + "a" * 43
 SK = "sk-" + "b" * 20
@@ -151,6 +152,11 @@ class ScriptedTool(LocalToolAdapter):
         data = json.loads(raw)
         note = None if data["outcome"] in outcomes else f"허용되지 않은 outcome {data['outcome']!r}"
         return ToolResult(data["outcome"], data["summary"], note)
+
+    def read_structured_message(self, raw: str | None) -> tuple[dict | None, str | None]:
+        if raw is None:
+            return None, "파일 없음"
+        return json.loads(raw), None
 
 
 def fix_and_add_test(worktree: Path) -> ToolRun:
@@ -868,3 +874,333 @@ def test_demo_code_change_still_generates_report(state_conn, repo, handoff):
 
     assert output.failed is None
     assert by_kind(output)["report_output"].decode().startswith("보고서 {\"report_date\"")
+
+
+# --- 커밋 검토 `code_review` — 결과 커밋의 깨끗한 읽기 전용 체크아웃 (ADR-0014 3항) ------------------------------
+
+REVIEW_TASK = "task-gh-41-review"
+
+
+def register_reviewer(state_conn, repo: Path, local_registration_id: str = "local-billing-claude") -> None:
+    """검토 Agent 의 로컬 등록 — 수정 등록과 같은 로컬 저장소를 가리킨다. 검증 프로필은 쓰지 않는다."""
+    state.save_registration(state_conn, {
+        "local_registration_id": local_registration_id, "repo_path": str(repo), "tool": "claude",
+        "repository_id": "acme-billing", "base_commit": git_ops.head_sha(repo), "verification_profiles": {},
+    })
+
+
+def make_fix_result(state_conn, repo: Path, tmp_path: Path):
+    """수정 Task 한 번을 실제로 돌려 `task/task-gh-41` 브랜치에 결과 커밋을 남기고, runner 처럼 worktree 를 지운다."""
+    fix_handoff = tmp_path / "task-gh-41.handoff"
+    fix_handoff.mkdir(exist_ok=True)
+    base = register_bug(state_conn, repo)
+    result = ScriptedTool(state_conn, fix_and_add_test).run(bug_request(base), fix_handoff, Recorder()).result
+    git_ops.remove_worktree(repo, git_ops.worktree_path(repo, BUG_TASK))
+    return result
+
+
+def review_handoff_for(tmp_path: Path, source) -> Path:
+    """규칙 `bug_fix → code_review` 의 handoff_kinds 로 모인 인계 — 수정 결과 봉투·diff·테스트 로그."""
+    handoff = tmp_path / f"{REVIEW_TASK}.handoff"
+    handoff.mkdir(exist_ok=True)
+    if source is not None:
+        (handoff / "code_change_result.json").write_text(source.model_dump_json())
+    (handoff / "diff.patch").write_text("(인계된 diff)\n")
+    (handoff / "test_log_after.txt").write_text("exit_code=0\n")
+    return handoff
+
+
+def _review_message(outcome: str = "approved", summary: str = "src.py 가 fixed 로 바뀌었다", findings=(),
+                    missing=()) -> str:
+    return json.dumps({"outcome": outcome, "summary": summary, "findings": list(findings),
+                       "missing_information": list(missing)}, ensure_ascii=False)
+
+
+class ReadingReviewer:
+    """실제 체크아웃 내용을 읽는 가짜 검토자 — `src.py` 에 fixed 가 있으면 approved, 아니면 changes_requested."""
+
+    def __init__(self):
+        self.seen: list[dict] = []
+
+    def __call__(self, cwd: Path) -> ToolRun:
+        source = (cwd / "src.py").read_text()
+        self.seen.append({"cwd": cwd, "head": _git(cwd, "rev-parse", "HEAD"), "src": source,
+                          "has_repro": (cwd / "tests" / "test_repro.py").is_file()})
+        if "fixed" in source:
+            return _run(stdout=b'{"type":"result"}\n', stderr=b"review: done\n", last_message=_review_message())
+        return _run(last_message=_review_message(
+            "changes_requested", "수정이 없다",
+            [{"severity": "blocking", "path": "src.py", "line": 1, "message": "VALUE 가 original 그대로"}],
+        ))
+
+
+def test_code_review_reads_result_commit_in_clean_readonly_checkout(state_conn, repo, tmp_path):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    handoff = review_handoff_for(tmp_path, fix)
+    handoff_before = _snapshot(handoff)
+    main_head = _git(repo, "rev-parse", "HEAD")
+    request = make_review_request(fix.base_commit, fix.result_commit)
+    reviewer = ReadingReviewer()
+    adapter = ScriptedTool(state_conn, reviewer)
+    progress = Recorder()
+
+    output = adapter.run(request, handoff, progress)
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert isinstance(result, CodeReviewResult)
+    assert (result.outcome, result.summary, result.findings, result.missing_information) == (
+        "approved", "src.py 가 fixed 로 바뀌었다", [], [])
+    assert (result.execution_id, result.task_id, result.source_execution_id, result.artifact_ids) == (
+        request.execution_id, REVIEW_TASK, "exec-gh-fix-001", [])
+    assert result.reviewed_commit == fix.result_commit
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    assert output.runtime_ref == progress.runtime_refs[0]
+    # 검토자는 결과 커밋의 깨끗한 체크아웃을 읽었다 — 원본 저장소도, 수정 worktree 도 아니다
+    seen, = reviewer.seen
+    assert seen["head"] == fix.result_commit and "fixed" in seen["src"] and seen["has_repro"]
+    (cwd, prompt_text, schema), = adapter.launched_readonly_with
+    assert cwd == seen["cwd"] and cwd != repo and cwd != git_ops.worktree_path(repo, BUG_TASK)
+    assert adapter.launched_with == [] and schema == REVIEW_RESULT_SCHEMA
+    assert REVIEW_REQUEST in prompt_text and fix.result_commit in prompt_text
+    assert "VALUE = 'fixed'" in prompt_text  # diff 는 저장소의 실제 커밋에서 — 인계된 diff.patch 가 아니다
+    # 정리 후에도 결과는 남고, 원본·수정 브랜치·인계 자료는 그대로
+    assert not cwd.exists()
+    assert _git(repo, "worktree", "list").count("\n") == 0
+    assert _git(repo, "rev-parse", "HEAD") == main_head and _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "rev-parse", f"task/{BUG_TASK}") == fix.result_commit
+    assert _snapshot(handoff) == handoff_before
+
+
+@pytest.mark.parametrize("message, outcome, findings, missing", [
+    (_review_message("changes_requested", "동시 요청 테스트가 없다", [
+        {"severity": "blocking", "path": "src.py", "line": 1, "message": "잠금 없이 읽고 쓴다"},
+        {"severity": "non_blocking", "path": None, "line": None, "message": "테스트 이름"},
+    ]), "changes_requested", [("blocking", "src.py", 1), ("non_blocking", None, None)], []),
+    (_review_message("needs_information", "재현 조건이 불명확", missing=["쿠폰 만료 시각 기준"]),
+     "needs_information", [], ["쿠폰 만료 시각 기준"]),
+    (_review_message("approved", "좋다", [{"severity": "non_blocking", "path": "src.py", "line": None,
+                                           "message": "주석"}]), "approved", [("non_blocking", "src.py", None)], []),
+])
+def test_code_review_outcomes_are_parsed_into_code_review_result(state_conn, repo, tmp_path, message, outcome,
+                                                                  findings, missing):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(last_message=message))
+
+    output = adapter.run(make_review_request(fix.base_commit, fix.result_commit),
+                         review_handoff_for(tmp_path, fix), Recorder())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert result.outcome == outcome and result.reviewed_commit == fix.result_commit
+    assert [(f.severity, f.path, f.line) for f in result.findings] == findings
+    assert result.missing_information == missing
+
+
+@pytest.mark.parametrize("message, note", [
+    (_review_message("changes_requested", "지적 없음"), "blocking"),
+    (_review_message("approved", "막는 지적", [{"severity": "blocking", "path": None, "line": None,
+                                               "message": "x"}]), "blocking"),
+    (_review_message("needs_information", "무엇이 없는지 없음"), "missing_information"),
+    (_review_message("merged", "허용 밖"), "outcome"),
+    (None, "파일 없음"),
+])
+def test_code_review_invalid_message_is_result_invalid_with_raw_logs(state_conn, repo, tmp_path, message, note):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(stderr=b"review\n", last_message=message))
+
+    output = adapter.run(make_review_request(fix.base_commit, fix.result_commit),
+                         review_handoff_for(tmp_path, fix), Recorder())
+
+    assert output.result is None
+    code, reason, stopped = output.failed
+    assert code == "result_invalid" and note in reason and stopped is True
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+
+
+def test_code_review_ignores_reviewed_commit_claimed_by_the_tool(state_conn, repo, tmp_path):
+    """reviewed_commit 은 도구의 말이 아니라 검토 체크아웃의 HEAD 다 — 도구가 다른 커밋을 적어도 쓰이지 않는다."""
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    message = json.loads(_review_message())
+    message["reviewed_commit"] = fix.base_commit
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(last_message=json.dumps(message)))
+
+    output = adapter.run(make_review_request(fix.base_commit, fix.result_commit),
+                         review_handoff_for(tmp_path, fix), Recorder())
+
+    assert output.failed is None and output.result.reviewed_commit == fix.result_commit
+
+
+def _edit_checkout(cwd: Path) -> ToolRun:
+    (cwd / "src.py").write_text("VALUE = 'reviewer edit'\n")
+    return _run(last_message=_review_message())
+
+
+def _add_file(cwd: Path) -> ToolRun:
+    (cwd / "notes.md").write_text("검토 메모\n")
+    return _run(last_message=_review_message())
+
+
+def _commit_in_checkout(cwd: Path) -> ToolRun:
+    (cwd / "src.py").write_text("VALUE = 'reviewer commit'\n")
+    _git(cwd, "commit", "-q", "-am", "reviewer")
+    return _run(last_message=_review_message())
+
+
+def _edit_handoff(_cwd: Path) -> ToolRun:
+    (_edit_handoff.handoff / "diff.patch").write_text("changed\n")  # 대본은 인계 위치를 모른다 — 테스트가 넣어 둔다
+    return _run(last_message=_review_message())
+
+
+@pytest.mark.parametrize("script, reason", [
+    (_edit_checkout, "검토 체크아웃"),
+    (_add_file, "검토 체크아웃"),
+    (_commit_in_checkout, "HEAD"),
+    (_edit_handoff, "인계 디렉터리"),
+])
+def test_code_review_that_changes_anything_is_readonly_violation(state_conn, repo, tmp_path, script, reason):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    handoff = review_handoff_for(tmp_path, fix)
+    _edit_handoff.handoff = handoff
+    main_head = _git(repo, "rev-parse", "HEAD")
+    adapter = ScriptedTool(state_conn, script)
+
+    output = adapter.run(make_review_request(fix.base_commit, fix.result_commit), handoff, Recorder())
+
+    assert output.result is None
+    code, message, _stopped = output.failed
+    assert code == "readonly_violation" and reason in message
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    # 검토 환경은 지워졌고, 원본 저장소와 수정 브랜치는 그대로다
+    (cwd, _prompt, _schema), = adapter.launched_readonly_with
+    assert not cwd.exists() and _git(repo, "worktree", "list").count("\n") == 0
+    assert _git(repo, "rev-parse", "HEAD") == main_head and _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "rev-parse", f"task/{BUG_TASK}") == fix.result_commit
+
+
+def test_code_review_commit_missing_fails_before_launch(state_conn, repo, tmp_path):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    unknown = "a" * 40
+    source = fix.model_copy(update={"result_commit": unknown})
+    adapter = ScriptedTool(state_conn, ReadingReviewer())
+    progress = Recorder()
+
+    output = adapter.run(make_review_request(fix.base_commit, unknown), review_handoff_for(tmp_path, source), progress)
+
+    assert output.failed[0] == "commit_missing" and unknown[:12] in output.failed[1] and output.failed[2] is True
+    assert adapter.launched_readonly_with == [] and progress.runtime_refs == [] and output.artifacts == []
+
+
+def test_code_review_in_other_registered_repo_without_the_commit_is_commit_missing(state_conn, repo, tmp_path):
+    """다른 기기·다른 클론의 등록은 결과 커밋을 받지 못한다 — 커밋 전송은 지원하지 않는다."""
+    other = tmp_path / "other-clone"
+    subprocess.run(["git", "clone", "-q", str(repo), str(other)], check=True, capture_output=True)
+    fix = make_fix_result(state_conn, repo, tmp_path)  # 클론 뒤에 만든 커밋 — other 에는 없다
+    register_reviewer(state_conn, other)
+    adapter = ScriptedTool(state_conn, ReadingReviewer())
+
+    output = adapter.run(make_review_request(fix.base_commit, fix.result_commit),
+                         review_handoff_for(tmp_path, fix), Recorder())
+
+    code, message, _ = output.failed
+    assert code == "commit_missing" and "전송" in message
+    assert adapter.launched_readonly_with == []
+    assert _git(other, "worktree", "list").count("\n") == 0
+
+
+def test_code_review_base_not_ancestor_of_result_is_commit_mismatch(state_conn, repo, tmp_path):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    swapped = fix.model_copy(update={"base_commit": fix.result_commit, "result_commit": fix.base_commit})
+    adapter = ScriptedTool(state_conn, ReadingReviewer())
+
+    output = adapter.run(make_review_request(fix.result_commit, fix.base_commit),
+                         review_handoff_for(tmp_path, swapped), Recorder())
+
+    assert output.failed[0] == "commit_mismatch" and adapter.launched_readonly_with == []
+
+
+@pytest.mark.parametrize("change", ["no_source", "other_execution", "other_result_commit", "other_base_commit"])
+def test_code_review_wrong_source_reference_is_source_mismatch(state_conn, repo, tmp_path, change):
+    """target 의 수정 실행·커밋이 인계된 수정 결과 봉투와 맞지 않으면 띄우지 않는다."""
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    base, result, source_execution_id, source = fix.base_commit, fix.result_commit, "exec-gh-fix-001", fix
+    if change == "no_source":
+        source = None
+    elif change == "other_execution":
+        source_execution_id = "exec-gh-fix-999"
+    elif change == "other_result_commit":  # 다른 커밋을 검토하라는 target — 해시 불일치
+        side_tree = git_ops.ensure_worktree(repo, "side-task", base)
+        (side_tree / "src.py").write_text("VALUE = 'side'\n")
+        result = git_ops.commit_all(side_tree, "side")
+    else:
+        source = fix.model_copy(update={"base_commit": git_ops.head_sha(repo)[:39] + "0"})
+    adapter = ScriptedTool(state_conn, ReadingReviewer())
+
+    output = adapter.run(
+        make_review_request(base, result, source_execution_id=source_execution_id),
+        review_handoff_for(tmp_path, source), Recorder(),
+    )
+
+    assert output.failed[0] == "source_mismatch", output.failed
+    assert adapter.launched_readonly_with == [] and output.artifacts == []
+
+
+def test_code_review_missing_registration_fails_before_launch(state_conn, repo, tmp_path):
+    fix = make_fix_result(state_conn, repo, tmp_path)  # local-billing-claude 는 등록하지 않았다
+    adapter = ScriptedTool(state_conn, ReadingReviewer())
+
+    output = adapter.run(make_review_request(fix.base_commit, fix.result_commit),
+                         review_handoff_for(tmp_path, fix), Recorder())
+
+    assert output.failed[0] == "registration_missing" and adapter.launched_readonly_with == []
+
+
+def test_code_review_timeout_and_classify_failure_keep_raw_logs_and_clean_checkout(state_conn, repo, tmp_path):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+    request = make_review_request(fix.base_commit, fix.result_commit)
+    handoff = review_handoff_for(tmp_path, fix)
+
+    timed_out = ScriptedTool(state_conn, lambda _cwd: _run(stderr=b"partial\n", timed_out=True, stopped=False))
+    output = timed_out.run(request, handoff, Recorder())
+    assert output.failed[0] == "timeout" and output.failed[2] is False
+    assert by_kind(output)["claude_stderr"] == b"partial\n"
+
+    limited = LimitedTool(state_conn, lambda _cwd: _run(stderr=b"limit", last_message=_review_message()))
+    output = limited.run(request, handoff, Recorder())
+    assert output.failed[0] == "usage_limit" and output.result is None
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_code_review_missing_executable_is_tool_unavailable_and_cleans_checkout(state_conn, repo, tmp_path):
+    fix = make_fix_result(state_conn, repo, tmp_path)
+    register_reviewer(state_conn, repo)
+
+    def missing(_cwd: Path) -> ToolRun:
+        raise FileNotFoundError("fake")
+
+    output = ScriptedTool(state_conn, missing).run(make_review_request(fix.base_commit, fix.result_commit),
+                                                    review_handoff_for(tmp_path, fix), Recorder())
+
+    assert output.failed[0] == "fake_unavailable" and output.failed[2] is True
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_review_result_schema_is_strict_with_outcomes_findings_and_missing_information():
+    schema = REVIEW_RESULT_SCHEMA
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"]) == {
+        "outcome", "summary", "findings", "missing_information"}
+    assert schema["properties"]["outcome"]["enum"] == ["approved", "changes_requested", "needs_information"]
+    finding = schema["properties"]["findings"]["items"]
+    assert finding["additionalProperties"] is False
+    assert set(finding["required"]) == set(finding["properties"]) == {"severity", "path", "line", "message"}
+    assert finding["properties"]["severity"]["enum"] == ["blocking", "non_blocking"]

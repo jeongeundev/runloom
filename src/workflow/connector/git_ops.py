@@ -38,6 +38,19 @@ def head_sha(repo: Path) -> str:
     return _git(["rev-parse", "HEAD"], repo).strip()
 
 
+def has_commit(repo: Path, commit: str) -> bool:
+    """`commit` 이 이 저장소에 있는 커밋 객체인가. 다른 기기·클론의 커밋은 가져오지 않는다 (fetch 없음)."""
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=repo, capture_output=True,
+    ).returncode == 0
+
+
+def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    return subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=repo, capture_output=True,
+    ).returncode == 0
+
+
 def worktree_path(repo: Path, task_id: str) -> Path:
     return repo.parent / f"{repo.name}-worktrees" / _safe(task_id)
 

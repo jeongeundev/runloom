@@ -3,9 +3,16 @@
 
 import json
 
-from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt, build_prompt
+from workflow.connector.prompt import (
+    MAX_REVIEW_DIFF_CHARS,
+    build_bug_fix_prompt,
+    build_generic_prompt,
+    build_prompt,
+    build_review_prompt,
+)
+from workflow.contracts.v1 import CodeChangeResult
 
-from .conftest import REVIEW_SPEC, make_local_request, make_request
+from .conftest import REVIEW_REQUEST, REVIEW_SPEC, make_local_request, make_request, make_review_request
 
 
 def _handoff(tmp_path):
@@ -180,3 +187,52 @@ def test_bug_fix_prompt_ignores_unreadable_review_files(tmp_path):
     text = build_bug_fix_prompt(_bug_request(), handoff, tmp_path / "wt")
 
     assert "# 이전 검토 지적" not in text
+
+
+# --- 커밋 검토 `build_review_prompt` -------------------------------------------------------------------
+
+REVIEW_BASE = "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c"
+REVIEW_RESULT = "8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a"
+REVIEW_DIFF = "--- a/billing/coupon.py\n+++ b/billing/coupon.py\n@@ -1 +1 @@\n-APPLY = 2\n+APPLY = 1\n"
+
+
+def _source() -> CodeChangeResult:
+    return CodeChangeResult.model_validate({
+        "contract_version": 1, "execution_id": "exec-gh-fix-001", "task_id": "task-gh-41",
+        "outcome": "ready_for_review", "summary": "쿠폰 사용 여부를 먼저 기록하도록 고쳤다",
+        "base_commit": REVIEW_BASE, "result_commit": REVIEW_RESULT, "artifact_ids": [],
+        "verification": {"profile_id": "vp-pytest", "result_commit": REVIEW_RESULT, "exit_code": 0,
+                         "log_artifact_id": "art-verify"},
+    })
+
+
+def test_review_prompt_has_commit_diff_source_result_readonly_rules_and_last_message(tmp_path):
+    handoff = tmp_path / "task-gh-41-review.handoff"
+    handoff.mkdir()
+    (handoff / "code_change_result.json").write_text("{}")
+    (handoff / "test_log_after.txt").write_text("exit_code=0\n")
+    checkout = tmp_path / "checkout"
+    request = make_review_request(REVIEW_BASE, REVIEW_RESULT)
+
+    prompt = build_review_prompt(request, handoff, checkout, REVIEW_DIFF, _source())
+
+    assert prompt.splitlines()[0] == "# 커밋 검토"  # 사용자 정의 종류 표식(`# 업무 종류:`)과 다르다
+    assert REVIEW_REQUEST in prompt
+    assert REVIEW_RESULT in prompt and REVIEW_BASE in prompt and str(checkout) in prompt
+    assert "exec-gh-fix-001" in prompt and "쿠폰 사용 여부를 먼저 기록하도록 고쳤다" in prompt
+    assert "vp-pytest" in prompt and "exit_code=0" in prompt
+    assert REVIEW_DIFF in prompt
+    assert str(handoff / "code_change_result.json") in prompt and str(handoff / "test_log_after.txt") in prompt
+    assert "파일을 만들거나 고치지 않는다" in prompt and "git 명령" in prompt
+    assert '"outcome"' in prompt and "changes_requested" in prompt and '"missing_information"' in prompt
+    assert '"findings"' in prompt and "blocking" in prompt
+
+
+def test_review_prompt_truncates_large_diff(tmp_path):
+    diff = "+" + "x" * (MAX_REVIEW_DIFF_CHARS * 2)
+    request = make_review_request(REVIEW_BASE, REVIEW_RESULT)
+
+    prompt = build_review_prompt(request, tmp_path / "none.handoff", tmp_path / "checkout", diff, _source())
+
+    assert diff not in prompt and diff[:MAX_REVIEW_DIFF_CHARS] in prompt
+    assert "diff 가 길어" in prompt
