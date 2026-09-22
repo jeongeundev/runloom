@@ -1,0 +1,131 @@
+{# 운영자 GitHub 연결 — ADR-0014, CONTRACT 13.10·13.11. 토큰은 환경변수(WORKFLOW_GITHUB_TOKEN)에만 있고 여기에는 있음/없음만.
+   쓰기 폼은 전부 `data-json-action` — base.html 스크립트가 JSON 으로 운영자 API 에 보낸다(쿠키 SameSite=Lax + JSON 본문만 받음).
+   고급 규칙 JSON·자연어 워크플로우 입력은 없다. 업무 목록은 수집한 실제 이슈뿐이다(fixture 는 /tasks/import). #}
+{% extends "base.html" %}
+{% import "_status.html" as st %}
+{% block title %}GitHub 연결 — Runloom{% endblock %}
+{% macro source_fields(c, prefix) -%}
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-repo">저장소</label>
+    {% if c %}<input type="text" id="{{ prefix }}-repo" name="repository_full_name" value="{{ c.repository_full_name }}" readonly>
+    {% else %}<select id="{{ prefix }}-repo" name="repository_full_name">{% for r in allowed_repositories %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select>{% endif %}
+    <div class="help">WORKFLOW_GITHUB_REPOS 안에서만. 연결 뒤에는 바꿀 수 없습니다.</div></div>
+  <div class="field"><label for="{{ prefix }}-wrid">로컬 저장소 ID</label>
+    <input type="text" id="{{ prefix }}-wrid" name="workflow_repository_id" value="{{ c.workflow_repository_id if c else '' }}" required>
+    <div class="help">Agent 능력 범위 repository_id 값.</div></div>
+</div>
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-labels">라벨 (모두 있어야 함)</label>
+    <input type="text" id="{{ prefix }}-labels" name="label_filter" data-json-type="list" value="{{ c.label_filter|join(', ') if c else 'bug' }}"></div>
+  <div class="field"><label for="{{ prefix }}-numbers">고른 이슈 번호</label>
+    <input type="text" id="{{ prefix }}-numbers" name="selected_issue_numbers" data-json-type="int-list" value="{{ c.selected_issue_numbers|join(', ') if c else '' }}">
+    <div class="help">라벨·시작 시각과 무관하게 받습니다.</div></div>
+  <div class="field"><label for="{{ prefix }}-start">시작 시각 (RFC 3339)</label>
+    <input type="text" id="{{ prefix }}-start" name="start_at" value="{{ c.start_at if c else default_start_at }}" required>
+    <div class="help">이보다 먼저 만든 이슈(과거 백로그)는 자동으로 받지 않습니다.</div></div>
+</div>
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-review">검토 Agent</label>
+    <select id="{{ prefix }}-review" name="review_agent_id">{% for a in review_agents %}<option value="{{ a.agent_id }}"{% if c and c.review_agent_id == a.agent_id %} selected{% endif %}>{{ a.name }} ({{ a.agent_id }})</option>{% else %}<option value="">code.review 능력의 등록 Agent 없음</option>{% endfor %}</select></div>
+  <div class="field"><label for="{{ prefix }}-profile">수정 검증 프로필</label>
+    <input type="text" id="{{ prefix }}-profile" name="fix_verification_profile_id" value="{{ c.fix_verification_profile_id if c else '' }}" required>
+    <div class="help">연결 프로그램이 보고한 프로필 ID. 명령이 아닙니다.</div></div>
+  <div class="field"><label for="{{ prefix }}-mode">실행 방식</label>
+    <select id="{{ prefix }}-mode" name="run_mode">{% for m, label in [('auto', '자동 실행'), ('manual', '직접 실행')] %}<option value="{{ m }}"{% if c and c.run_mode == m %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+  <div class="field"><label for="{{ prefix }}-rework">자동 재작업 상한</label>
+    <input type="number" id="{{ prefix }}-rework" name="max_rework_rounds" data-json-type="int" min="0" max="3" value="{{ c.max_rework_rounds if c else 1 }}"></div>
+</div>
+<div class="field"><label><input type="checkbox" name="enabled" data-json-type="bool"{% if not c or c.enabled %} checked{% endif %}> 수집 켜기</label></div>
+{%- endmacro %}
+{% block content %}
+<div class="crumbs"><div class="crumb">운영자<span class="sep">/</span>GitHub 연결</div></div>
+
+<div class="card">
+  <p>토큰: {% if token_configured %}<strong>토큰 설정됨</strong>{% else %}<strong>토큰 없음</strong> — 서버 환경변수 <span class="mono">WORKFLOW_GITHUB_TOKEN</span> 을 넣고 재시작해야 수집·댓글이 동작합니다{% endif %}. 값은 화면·DB 에 두지 않습니다.</p>
+  <p class="small">허용 저장소(<span class="mono">WORKFLOW_GITHUB_REPOS</span>): {% for r in allowed_repositories %}<span class="mono">{{ r }}</span>{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</p>
+  <p class="small">자동으로 하지 않는 일: PR·푸시·병합·이슈 종료. GitHub 에는 업무마다 댓글 하나를 만들고 고쳐 씁니다.</p>
+</div>
+
+{% for s in sources %}
+{% set c = s.config %}
+<h2>{{ c.repository_full_name }} <span class="mono small">{{ c.source_id }} · revision {{ c.config_revision }}</span></h2>
+<div class="card">
+  <p>{{ '수집 중' if c.enabled else '중지됨' }} · 라벨 {{ c.label_filter|join(', ') or '없음' }} · 고른 이슈 {{ c.selected_issue_numbers|join(', ') or '없음' }} · 시작 {{ c.start_at|kst }} · 검토 <span class="mono">{{ c.review_agent_id }}</span> · {{ '자동 실행' if c.run_mode == 'auto' else '직접 실행' }} · 재작업 상한 {{ c.max_rework_rounds }}회</p>
+  {% if c.enabled %}
+  <form data-json-action="/github/sources/{{ c.source_id }}/stop" class="actions">
+    <button class="btn btn-danger btn-small" type="submit">수집 중지</button><span class="action-note" data-json-result></span>
+  </form>
+  {% endif %}
+  <details class="row"><summary>설정 변경</summary>
+    <form data-json-action="/github/sources/{{ c.source_id }}" data-json-method="PUT" class="row-body">
+      <input type="hidden" name="expected_revision" value="{{ c.config_revision }}" data-json-type="int">
+      {{ source_fields(c, c.source_id) }}
+      <div class="actions">
+        <button class="btn btn-secondary" type="submit" data-json-action="/github/sources/preview" data-json-method="POST" data-json-omit="expected_revision">미리보기</button>
+        <button class="btn" type="submit">저장</button>
+        <span class="action-note" data-json-result></span>
+      </div>
+    </form>
+  </details>
+</div>
+
+<h3>담당 연결 (GitHub 사용자 → 수정 Agent)</h3>
+<div class="card">
+  <table>
+    <tr><th>GitHub 사용자</th><th>ID</th><th>Agent</th></tr>
+    {% for b in s.assignees %}<tr><td class="mono">{{ b.github_login }}</td><td class="mono">{{ b.github_user_id }}</td><td class="mono">{{ b.agent_id }}</td></tr>
+    {% else %}<tr><td colspan="3" class="muted">없음 — 담당자가 연결되지 않은 이슈는 대기합니다</td></tr>{% endfor %}
+  </table>
+  <form data-json-action="/github/sources/{{ c.source_id }}/assignees" data-json-method="PUT" data-json-path-field="github_user_id" style="margin-top:12px">
+    <div class="field-row">
+      <div class="field"><label for="uid-{{ c.source_id }}">GitHub 사용자 숫자 ID</label><input type="number" id="uid-{{ c.source_id }}" name="github_user_id" min="1" required></div>
+      <div class="field"><label for="login-{{ c.source_id }}">로그인 (표시용)</label><input type="text" id="login-{{ c.source_id }}" name="github_login" required></div>
+      <div class="field"><label for="fix-{{ c.source_id }}">수정 Agent</label>
+        <select id="fix-{{ c.source_id }}" name="agent_id">{% for a in fix_agents %}<option value="{{ a.agent_id }}">{{ a.name }} ({{ a.agent_id }})</option>{% else %}<option value="">code.fix 능력의 등록 Agent 없음</option>{% endfor %}</select></div>
+    </div>
+    <div class="help">GitHub 담당자와 이 서비스의 사용자는 같은 사람으로 보지 않습니다. 같은 ID 를 다시 연결하면 교체합니다.</div>
+    <div class="actions"><button class="btn" type="submit">연결</button><span class="action-note" data-json-result></span></div>
+  </form>
+</div>
+
+<h3>업무 목록 <span class="tag-real">실제 GitHub 이슈</span></h3>
+<div class="card table-wrap">
+  <table>
+    <tr><th>이슈</th><th>원본</th><th>담당</th><th>업무 상태</th><th>GitHub 반영</th></tr>
+    {% for i in s.issues %}
+    <tr>
+      <td><a href="{{ i.url }}" rel="noopener noreferrer" target="_blank">#{{ i.number }}</a> {{ i.title }}</td>
+      <td>{{ '열림' if i.state == 'open' else '닫힘' }}</td>
+      <td class="mono small">{{ i.assignees|join(', ') or '없음' }}</td>
+      <td><a href="/tasks/{{ i.task.task_id }}">{{ st.badge(i.task.status.label) }}</a> <span class="small">{{ i.task.status.reason }}</span></td>
+      <td class="small" data-delivery="{{ i.delivery.state if i.delivery else 'none' }}">{% if i.delivery %}{{ i.delivery.label }}{% if i.delivery.last_error %} · {{ i.delivery.last_error }}{% endif %}{% else %}—{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">아직 받은 이슈가 없습니다 — 워커가 약 1분마다 수집합니다.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% else %}
+<h2>저장소 연결</h2>
+<form data-json-action="/github/sources" class="card">
+  {{ source_fields(none, 'new') }}
+  <div class="actions">
+    <button class="btn btn-secondary" type="submit" data-json-action="/github/sources/preview">미리보기</button>
+    <button class="btn" type="submit">연결</button>
+    <span class="action-note" data-json-result></span>
+  </div>
+</form>
+{% endfor %}
+
+<h2>사람 응답 대기</h2>
+<div class="card">
+  <ul class="agent-list">
+    {% for r in open_requests %}
+    <li><span><a href="/tasks/{{ r.task_id }}">{{ r.task_title }}</a> <span class="mono small">{{ r.code }}</span></span><span>{{ r.question }}</span><span class="small">{{ r.created_at|kst }}</span></li>
+    {% else %}
+    <li class="muted">없음</li>
+    {% endfor %}
+  </ul>
+  <p class="small">응답은 각 업무 화면에서 합니다. GitHub 댓글 답글은 응답으로 읽지 않습니다.</p>
+</div>
+{% endblock %}

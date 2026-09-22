@@ -1479,6 +1479,11 @@ def create_followup_once(
         return task["task_id"], True
 
 
+def get_followup_link(conn: Connection, task_id: str) -> Row | None:
+    """결과가 만든 후속 Task 의 원인(`cause_execution_id`·`to_kind`). 결과로 만들지 않은 Task 면 None."""
+    return _one(conn, "SELECT * FROM followup_links WHERE task_id = ?", (task_id,))
+
+
 def create_human_request_once(
     conn: Connection, task_id: str, code: str, question: str, cause_key: str, now: str
 ) -> tuple[str, bool]:

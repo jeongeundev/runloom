@@ -136,3 +136,11 @@ def test_close_ends_the_task_and_later_answers_see_it_closed(op, conn, request_i
     assert (task["status"], task["status_reason"]) == ("실패", "운영자 종료 — 사람 요청 응답")
     late = respond(op, other, text="늦은 답")
     assert (late.status_code, late.json()["code"]) == (409, "task_closed")
+
+
+def test_allowed_actions_per_request_code_are_shared_with_the_response_form():
+    from workflow.server.human_api import allowed_actions, asks_information
+
+    assert allowed_actions("assignee_multiple") == {"choose_agent", "close"}
+    assert allowed_actions("rework_limit_reached") == {"resume", "close"}
+    assert asks_information("fix_needs_information") and not asks_information("delegation_denied")

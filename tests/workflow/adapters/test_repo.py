@@ -1775,6 +1775,10 @@ def test_create_followup_once_is_unique_per_cause(cycle):
     task_id, created = repo.create_followup_once(cycle, _review_spec(), _review_task("task-dup"), LATER)
     assert (task_id, created) == ("task-gh-41-review", False)
     assert repo.get_task(cycle, "task-dup") is None
+    # 화면의 생성 근거 — 이 Task 를 만든 원인 실행
+    link = repo.get_followup_link(cycle, "task-gh-41-review")
+    assert (link["cause_execution_id"], link["to_kind"]) == ("exec-fix-1", "code_review")
+    assert repo.get_followup_link(cycle, "task-gh-41") is None
 
 
 def test_create_followup_once_checks_spec_and_ownership(cycle):

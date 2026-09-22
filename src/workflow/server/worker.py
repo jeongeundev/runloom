@@ -359,6 +359,7 @@ class Worker:
     ):
         self._github = github
         self._github_next_at: dict[str, str] = {}  # source_id → 다음 수집 시각(메모리 — 재시작하면 바로 한 번 부른다)
+        self._manual_task_id: str | None = None  # 직접 실행(`start_manually`) 중인 Task — 이 Task 만 `manual_mode` 를 뺀다
         self._conn_factory = conn_factory
         self._store = store
         self._diag = diag
@@ -911,15 +912,35 @@ class Worker:
 
     # --- 7b. GitHub 업무 순환 (ADR-0014) ---------------------------------------------------
 
+    def start_manually(self, conn: Connection, task_id: str) -> bool:
+        """직접 실행(웹의 `실행`) — 이 Task 와 그 선행·후속의 업무 순환 단계를 tick 과 같은 규칙으로 돌리되 이 Task 의
+        준비 판정에서만 `manual_mode` 를 뺀다. start_key·대상·입력은 자동 착수와 같아 같은 원인은 한 번만 실행된다.
+        반환은 이 Task 에 새 실행이 생겼는가."""
+        task = repo.get_task(conn, task_id)
+        before = {e["execution_id"] for e in repo.list_executions(conn, task_id)}
+        scope = {task_id, *(t["task_id"] for t in repo.successors_of(conn, task_id))}
+        if task["predecessor_task_id"]:
+            scope.add(task["predecessor_task_id"])
+        self._manual_task_id = task_id
+        try:
+            self._cycle_followups(conn, TickReport(), only=scope)
+            self._start_ready_tasks(conn, TickReport(), only={task_id})
+        finally:
+            self._manual_task_id = None
+        return any(e["execution_id"] not in before for e in repo.list_executions(conn, task_id))
+
+    def _manual_override(self, task: Row) -> dict[str, Any]:
+        return {"run_mode": "auto"} if task["task_id"] == self._manual_task_id else {}
+
     def _advance_cycle(self, conn: Connection, report: TickReport) -> None:
         """판정된 결과 → `decide_followup` → 저장(후속 Task·사람 요청) → 준비 판정 → 착수, 그다음 아직 실행이 없는 Task 의
         준비 판정 → 착수. 결과에서 잇는 일을 먼저 해 재작업이 같은 저장소의 새 업무보다 앞선다."""
         self._cycle_followups(conn, report)
         self._start_ready_tasks(conn, report)
 
-    def _cycle_followups(self, conn: Connection, report: TickReport) -> None:
+    def _cycle_followups(self, conn: Connection, report: TickReport, only: set[str] | None = None) -> None:
         for row in repo.executions_by(conn, statuses=("result_ready",)):
-            if not policy_for(row["kind"]).cycle:
+            if not policy_for(row["kind"]).cycle or (only is not None and row["task_id"] not in only):
                 continue
             execution = repo.get_execution(conn, row["execution_id"])
             if execution["released_at"] is not None:
@@ -1091,6 +1112,7 @@ class Worker:
             conn, review_task, now=self._clock(), settings=self._settings,
             pair_agent_id=fix_execution["agent_id"],
             result_dependency_task_id=fix_execution["task_id"], result_dependency_ready=True,
+            **self._manual_override(review_task),
         )
         if not readiness.ready:
             self._write_blocked(conn, review_task, readiness, report)
@@ -1113,13 +1135,13 @@ class Worker:
             release_execution_id=active["execution_id"] if active is not None else None,
         )
 
-    def _start_ready_tasks(self, conn: Connection, report: TickReport) -> None:
+    def _start_ready_tasks(self, conn: Connection, report: TickReport, only: set[str] | None = None) -> None:
         """실행이 없는 업무 순환 Task 를 하나씩 따로 평가한다 — 한 Task 의 대기가 다른 Task 를 막지 않는다.
         수정 결과에서 시작하는 종류(검토)는 `_cycle_followups` 가 착수한다. 결과를 기다리던 시도는 사람 응답이 있을 때만
         `_resume` 이 잇는다."""
         for task in repo.list_tasks(conn, None):
             policy = policy_for(task["kind"])
-            if task["finished_at"] is not None or not policy.cycle:
+            if task["finished_at"] is not None or not policy.cycle or (only is not None and task["task_id"] not in only):
                 continue
             active = repo.active_execution(conn, task["task_id"])
             if active is not None:
@@ -1163,7 +1185,9 @@ class Worker:
         """준비 판정을 통과하면 담당 Agent 의 등록값 + 소스의 검증 프로필로 target 을 고정해 실행을 만든다. 기준 커밋은
         주어진 값(재작업: 검토한 결과 커밋), 없으면 이 Task 의 마지막 결과 커밋(남은 task 브랜치), 없으면 등록 보고값."""
         now = self._clock()
-        readiness = task_cycle.evaluate(conn, task, now=now, settings=self._settings, **readiness_overrides)
+        readiness = task_cycle.evaluate(
+            conn, task, now=now, settings=self._settings, **readiness_overrides, **self._manual_override(task),
+        )
         if not readiness.ready:
             self._write_blocked(conn, task, readiness, report)
             return False

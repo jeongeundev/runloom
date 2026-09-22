@@ -10,17 +10,23 @@ from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
+
+from pydantic import ValidationError
 
 from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
-from workflow.contracts.v1 import KindSpec, SuccessorRule
+from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
+from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
+from workflow.domain.execution_policy import policy_for
 from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
+from workflow.server import human_api, task_cycle
 from workflow.server.filters import KIND_LABELS, KST, kind_label, kst
 from workflow.server.settings import Settings
 
@@ -245,8 +251,9 @@ def build_task_view(conn: Connection, task: Row, *, now: str, settings: Settings
 
 def status_of(task: Row, view: TaskView) -> UserStatus:
     """마감된 Task(`finished_at`) 는 저장된 상태·이유가 기준이다 (검토 마감·워커 자동 완료).
-    아니면 현재 실행·연결 상태로 실시간 판정한다."""
-    if task["finished_at"] is not None:
+    업무 순환 종류(`ExecutionPolicy.cycle`)도 저장값이다 — 준비 판정·후속 결정을 내린 워커가 쓴 상태라, 선택 기록 기반의
+    `user_status` 로 다시 판정하면 대기 사유가 달라진다. 그 밖은 현재 실행·연결 상태로 실시간 판정한다."""
+    if task["finished_at"] is not None or policy_for(task["kind"]).cycle:
         return UserStatus(task["status"], task["status_reason"])
     return user_status(view)
 
@@ -312,9 +319,11 @@ def _result_context(
 
 
 def task_context(
-    conn: Connection, store: ArtifactStore, task_row: Row, *, now: str, settings: Settings
+    conn: Connection, store: ArtifactStore, task_row: Row, *, now: str, settings: Settings, is_operator: bool = False
 ) -> dict[str, Any]:
-    """업무 상세 템플릿 컨텍스트 전부. 동작 가능 여부(`can_run`·`can_review`·`needs_selection`)도 여기서 정한다."""
+    """업무 상세 템플릿 컨텍스트 전부. 동작 가능 여부(`can_run`·`can_review`·`needs_selection`)도 여기서 정한다.
+    업무 순환 Task 는 `cycle`(`cycle_context`)의 준비 판정이 직접 실행 여부를 정하고, 담당은 선택 폼이 아니라
+    GitHub 담당 연결·사람 요청 응답으로 바뀐다."""
     task = dict(task_row)
     task["required_capability"] = json.loads(task.pop("required_capability_json"))
     task["criteria"] = json.loads(task.pop("criteria_json"))
@@ -345,14 +354,21 @@ def task_context(
     needs_selection = not finished and active is None and not selected
     chain = repo.get_chain(conn, task_row["chain_id"]) if task_row["chain_id"] is not None else None
     spec = repo.get_kind(conn, task_row["session_id"], task_row["kind"])
+    cycle = cycle_context(conn, store, task_row, now=now, settings=settings, is_operator=is_operator)
+    cycle_task = cycle is not None and cycle["cycle"]
+    if cycle_task:
+        needs_selection = False
     return {
         "task": task,
         "view": view,
         "status": status,
         "selection": selection,
         "kind_label": spec.label if spec is not None else task_row["kind"],
-        # 가져오기로 만든 Task 면 브레드크럼에 워크플로우 칩 (phase 5 step 6)
-        "chain": {"chain_id": chain["chain_id"], "title": chain["title"]} if chain is not None else None,
+        # 가져오기로 만든 Task 면 브레드크럼에 워크플로우 칩 (phase 5 step 6). fixture 출처면 시연 데이터 표시
+        "chain": {
+            "chain_id": chain["chain_id"], "title": chain["title"], "demo_data": chain["source"] in SOURCES,
+        } if chain is not None else None,
+        "cycle": cycle,
         "agent": agent_public(agent_row, now=now, settings=settings) if agent_row is not None else None,
         "executions": executions,
         "active_execution": active,
@@ -364,17 +380,19 @@ def task_context(
             for s in repo.successors_of(conn, task_row["task_id"])
         ],
         # 선행이 있으면 선행 결과 + 판정 + 인계 묶음이 조건이다 (ADR-0009 (3)) — `web._run_task` 와 같은 판단
-        "can_run": (
+        "can_run": cycle["can_start"] if cycle_task else (
             not finished
             and active is None
             and selected
             and (predecessor is None or predecessor_handoff(conn, task_row)[1] is not None)
         ),
+        # 열린 사람 요청이 있으면 검토 폼 대신 요청에 답한다 — 같은 결과에 두 갈래 조작을 두지 않는다
         "can_review": (
             not finished
             and active is not None
             and active["status"] == "result_ready"
             and status.label == "확인 필요"
+            and not (cycle is not None and cycle["open_requests"])
         ),
         "needs_selection": needs_selection,
         # 후보는 이 세션이 카탈로그에서 등록한 Agent 만 (phase 5 step 2). 등록 순서대로
@@ -382,6 +400,214 @@ def task_context(
             agent_public(a, now=now, settings=settings)
             for a in repo.list_session_agents(conn, task_row["session_id"])
         ] if needs_selection else [],
+    }
+
+
+# --- GitHub 업무 순환 화면 (phase 8 step 13) -------------------------------------------------
+#
+# 판정은 하지 않는다 — 대기 사유는 워커와 같은 `task_cycle.evaluate`, 응답 가능 동작은 `human_api.allowed_actions`,
+# 반영 상태는 `SourceDelivery.state` 그대로다. 표시 라벨에서 실행 여부를 거꾸로 추정하지 않는다.
+
+# 원본 반영 상태 라벨 (ARCHITECTURE "원본 반영 상태") — Task(Agent 작업) 상태와 따로 보인다
+DELIVERY_LABELS = {
+    "pending": "반영 대기", "sending": "반영 대기", "delivered": "반영됨", "unknown": "반영 불확실", "failed": "반영 실패",
+}
+# 대기 사유를 풀 주체 (`Blocker.actor`)
+ACTOR_LABELS = {"operator": "운영자", "assignee": "GitHub 담당자", "system": "자동 해소 대기"}
+# 사람 요청 응답 버튼 (`human_api.Action`) — 표시 순서
+RESPONSE_ACTIONS = (("resume", "답하고 다시 판정"), ("choose_agent", "이 Agent 로 지정"), ("close", "업무 종료"))
+
+
+def issue_url(repository_full_name: str, number: int) -> str:
+    """원본 링크는 저장소 이름(계약 패턴 검사)과 번호로 만든다 — 응답의 `html_url` 을 그대로 링크로 쓰지 않는다."""
+    return f"https://github.com/{repository_full_name}/issues/{number}"
+
+
+def delivery_public(delivery: Any, repository_full_name: str) -> dict[str, Any]:
+    return {
+        "state": delivery.state,
+        "label": DELIVERY_LABELS[delivery.state],
+        "attempts": delivery.attempts,
+        "last_error": delivery.last_error,
+        "body_revision": delivery.body_revision,
+        "comment_url": (
+            f"{issue_url(repository_full_name, delivery.issue_number)}#issuecomment-{delivery.comment_id}"
+            if delivery.comment_id is not None else None
+        ),
+    }
+
+
+def _origin(conn: Connection, task: Row, issue: Row, config: GitHubSourceConfig | None) -> dict[str, Any]:
+    snapshot = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"])
+    bindings = (
+        {b.github_user_id: b.agent_id for b in repo.list_assignee_bindings(conn, task["session_id"], issue["source_id"])}
+        if config is not None else {}
+    )
+    return {
+        "repository": snapshot.repository_full_name,
+        "number": issue["issue_number"],
+        "url": issue_url(snapshot.repository_full_name, issue["issue_number"]),
+        "title": snapshot.title,
+        "state": issue["state"],
+        "source_revision": issue["source_revision"],
+        "own": issue["task_id"] == task["task_id"],  # 검토 Task 는 수정 Task 의 원본을 따른다
+        "assignees": [
+            {"login": login, "github_user_id": user_id, "agent_id": bindings.get(user_id)}
+            for user_id, login in zip(snapshot.assignee_ids, snapshot.assignee_logins, strict=True)
+        ],
+        "enabled": config.enabled if config is not None else False,
+    }
+
+
+def _review_result(conn: Connection, store: ArtifactStore, executions: list[Row]) -> dict[str, Any] | None:
+    """가장 최근 검토 결과(`CodeReviewResult`)와 그 판정. 깨진 결과는 None — 판정 단계가 확인 필요로 둔다."""
+    for execution in reversed(executions):
+        if execution["result_artifact_id"] is None:
+            continue
+        try:
+            result = CodeReviewResult.model_validate_json(repo.read_artifact(conn, store, execution["result_artifact_id"]))
+        except (ValidationError, ValueError, NotFound, ArtifactMissing):
+            return None
+        verdict = repo.get_verdict(conn, execution["execution_id"])
+        return {
+            **result.model_dump(mode="json"),
+            "blocking_count": sum(1 for f in result.findings if f.severity == "blocking"),
+            "artifact_id": execution["result_artifact_id"],
+            "verdict": json.loads(verdict["verdict_json"])["outcome"] if verdict is not None else None,
+        }
+    return None
+
+
+def _request_public(
+    conn: Connection, request: Row, *, is_operator: bool, agent_choices: list[dict[str, Any]]
+) -> dict[str, Any]:
+    allowed = human_api.allowed_actions(request["code"])
+    data = {k: request[k] for k in ("request_id", "code", "question", "state", "revision", "created_at", "answered_at")}
+    data["actions"] = [(value, label) for value, label in RESPONSE_ACTIONS if value in allowed]
+    data["asks_information"] = human_api.asks_information(request["code"])
+    data["agent_choices"] = agent_choices if "choose_agent" in allowed else []
+    # 응답 폼마다 새 응답 ID — 같은 폼을 두 번 보내면 서버가 한 번만 반영한다(`response_id` 멱등)
+    data["response_id"] = f"resp-{uuid4().hex}" if request["state"] == "open" and is_operator else None
+    return data
+
+
+def cycle_context(
+    conn: Connection, store: ArtifactStore, task: Row, *, now: str, settings: Settings, is_operator: bool
+) -> dict[str, Any] | None:
+    """업무 상세의 업무 순환 영역 — 원본 링크·담당·대기 사유·사람 요청과 응답(입력 보충)·생성 근거·재시도 횟수·검토 결과·
+    원본 반영 상태. 업무 순환 종류도 아니고 원본 이슈도 없으면 None."""
+    policy = policy_for(task["kind"])
+    issue, config = task_cycle.origin_source(conn, task)
+    if not policy.cycle and issue is None:
+        return None
+    task_id = task["task_id"]
+    finished = task["finished_at"] is not None
+    active = repo.active_execution(conn, task_id)
+    executions = repo.list_executions(conn, task_id)
+    origin = _origin(conn, task, issue, config) if issue is not None else None
+
+    blockers: list[dict[str, Any]] = []
+    if policy.cycle and not finished and active is None:
+        readiness = task_cycle.evaluate(conn, task, now=now, settings=settings)
+        blockers = [
+            {"code": b.code, "reason": b.reason, "actor": b.actor, "actor_label": ACTOR_LABELS[b.actor]}
+            for b in readiness.blockers
+        ]
+    # 직접 실행 — 준비 판정에서 직접 실행 모드만 남았을 때, 또는 결과 뒤 다음 실행(재작업·응답 후 재개)을 워커가
+    # 직접 실행 모드 때문에 멈춰 둔 때(`Worker._write_blocked` 가 그 판정으로 남긴 상태). 착수 여부는 다시 워커 규칙이 정한다
+    can_start = policy.cycle and not finished and task["run_mode"] == "manual" and (
+        (active is None and [b["code"] for b in blockers] == ["manual_mode"])
+        or (active is not None and active["status"] == "result_ready" and task["status"] == "실행 가능")
+    )
+
+    agent_choices = [
+        {"agent_id": a["agent_id"], "name": a["name"]}
+        for a in repo.list_session_agents(conn, task["session_id"])
+        if origin is None or a["agent_id"] in {x["agent_id"] for x in origin["assignees"]}
+    ]
+    requests = [
+        _request_public(conn, r, is_operator=is_operator, agent_choices=agent_choices)
+        for r in repo.list_human_requests(conn, task_id)
+    ]
+    link = repo.get_followup_link(conn, task_id)
+    cause = repo.get_execution(conn, link["cause_execution_id"]) if link is not None else None
+    cause_task = repo.get_task(conn, cause["task_id"]) if cause is not None else None
+
+    rework = None
+    if policy.cycle and policy.target == "code_change":
+        rework = {
+            "used": sum(1 for e in executions if e["start_key"].startswith("rework:")),
+            "max": task_cycle.max_rework_rounds(conn, task),
+        }
+    delivery = None
+    if origin is not None and origin["own"]:
+        deliveries = repo.list_source_deliveries(conn, task_id)
+        delivery = delivery_public(deliveries[-1], origin["repository"]) if deliveries else None
+    return {
+        "cycle": policy.cycle,
+        "origin": origin,
+        "blockers": blockers,
+        "can_start": can_start,
+        "requests": requests,
+        "open_requests": [r for r in requests if r["state"] == "open"],
+        "responses": [
+            {k: r[k] for k in ("question", "action", "text", "agent_id", "created_at", "task_revision")}
+            for r in repo.list_human_responses(conn, task_id)
+        ],
+        "followup": {
+            "cause_execution_id": link["cause_execution_id"],
+            "cause_task_id": cause_task["task_id"] if cause_task is not None else None,
+            "cause_task_title": cause_task["title"] if cause_task is not None else None,
+            "created_at": link["created_at"],
+        } if link is not None else None,
+        "attempts": len(executions),
+        "rework": rework,
+        "review": _review_result(conn, store, executions) if policy.result_kind == "code_review_result" else None,
+        "delivery": delivery,
+    }
+
+
+def github_context(conn: Connection, session_id: str, *, now: str, settings: Settings) -> dict[str, Any]:
+    """운영자 GitHub 화면 — 연결 상태(토큰은 있음/없음만)·소스 설정·담당 연결·실제 업무 목록·열린 사람 요청.
+    쓰기는 화면의 스크립트가 JSON API(`github_api`·`human_api`)로 한다."""
+    agents = [agent_public(a, now=now, settings=settings) for a in repo.list_session_agents(conn, session_id)]
+
+    def able(code: str) -> list[dict[str, Any]]:
+        return [a for a in agents if any(c["code"] == code for c in a["capabilities"])]
+
+    sources = []
+    for config in repo.list_github_sources(conn, session_id):
+        issues = []
+        for row in repo.list_source_issues(conn, session_id, config.source_id):
+            task = repo.get_task(conn, row["task_id"])
+            snapshot = GitHubIssueSnapshot.model_validate_json(row["snapshot_json"])
+            deliveries = repo.list_source_deliveries(conn, row["task_id"])
+            issues.append({
+                "number": row["issue_number"],
+                "url": issue_url(config.repository_full_name, row["issue_number"]),
+                "title": snapshot.title,
+                "state": row["state"],
+                "assignees": snapshot.assignee_logins,
+                "task": task_summary(conn, task, now=now, settings=settings),
+                "delivery": delivery_public(deliveries[-1], config.repository_full_name) if deliveries else None,
+            })
+        sources.append({
+            "config": config.model_dump(mode="json"),
+            "assignees": [b.model_dump(mode="json") for b in repo.list_assignee_bindings(conn, session_id, config.source_id)],
+            "issues": issues,
+        })
+    return {
+        "token_configured": bool(settings.github_token),
+        "allowed_repositories": list(settings.github_repos),
+        "sources": sources,
+        "fix_agents": able("code.fix"),
+        "review_agents": able("code.review"),
+        "open_requests": [
+            {**{k: r[k] for k in ("request_id", "task_id", "code", "question", "created_at")},
+             "task_title": repo.get_task(conn, r["task_id"])["title"]}
+            for r in repo.list_open_human_requests(conn, session_id)
+        ],
+        "default_start_at": now,
     }
 
 

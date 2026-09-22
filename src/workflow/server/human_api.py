@@ -47,12 +47,22 @@ def _request_view(row) -> dict:
     return {k: row[k] for k in ("request_id", "task_id", "code", "question", "revision", "state", "created_at")}
 
 
+def allowed_actions(code: str) -> frozenset[str]:
+    """요청 code 에 허용되는 응답 — 검사와 운영자 화면의 응답 폼이 같이 쓴다."""
+    return _ACTIONS.get(code, frozenset({"resume", "close"}))
+
+
+def asks_information(code: str) -> bool:
+    """`resume` 응답에 글(요청한 정보)이 있어야 하는 요청인가."""
+    return code in _INFORMATION_CODES
+
+
 def _check(conn: Connection, session_id: str, request, body: ResponseBody) -> None:
-    allowed = _ACTIONS.get(request["code"], frozenset({"resume", "close"}))
+    allowed = allowed_actions(request["code"])
     if body.action not in allowed:
         raise ApiError(422, "invalid_field", f"요청 {request['code']} 에는 {body.action} 로 응답할 수 없습니다.",
                        field="action")
-    if body.action == "resume" and request["code"] in _INFORMATION_CODES and not body.text.strip():
+    if body.action == "resume" and asks_information(request["code"]) and not body.text.strip():
         raise ApiError(422, "invalid_field", "요청한 정보를 text 에 적어야 합니다.", field="text")
     if body.action == "choose_agent":
         if body.agent_id is None:

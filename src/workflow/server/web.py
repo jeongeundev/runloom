@@ -55,6 +55,7 @@ from workflow.contracts.v1 import (
 from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
+from workflow.domain.execution_policy import policy_for
 from workflow.domain.kinds import (
     can_auto_complete,
     get_kind,
@@ -66,11 +67,12 @@ from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
 from workflow.domain.task_sources import Issue, map_issue
-from workflow.server import views
+from workflow.server import task_cycle, views
 from workflow.server.auth import get_conn, require_operator, require_session, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
+from workflow.server.worker import Worker
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -821,9 +823,10 @@ def task_detail(
     now = utc_now()
     row = _own_task(conn, session_id, task_id)
     store = request.app.state.store
-    context = views.task_context(conn, store, row, now=now, settings=_settings(request))
+    base = _base(request, conn, session_id, now)
+    context = views.task_context(conn, store, row, now=now, settings=_settings(request), is_operator=base["is_operator"])
     viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
-    return _render("task_detail.html", **_base(request, conn, session_id, now), **context, viewer=viewer)
+    return _render("task_detail.html", **base, **context, viewer=viewer)
 
 
 @router.get("/tasks/{task_id}/live", response_class=HTMLResponse)
@@ -838,7 +841,10 @@ def task_live(
     now = utc_now()
     row = _own_task(conn, session_id, task_id)
     store = request.app.state.store
-    context = views.task_context(conn, store, row, now=now, settings=_settings(request))
+    session = repo.get_session(conn, session_id)
+    context = views.task_context(
+        conn, store, row, now=now, settings=_settings(request), is_operator=bool(session and session["is_operator"]),
+    )
     viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
     response.headers["Cache-Control"] = "no-store"
     return _render("_live.html", request=request, now=now, **context, viewer=viewer)
@@ -856,8 +862,25 @@ def task_run(
     run_mode 와 무관하게 사용자 조작으로 시작할 수 있다."""
     now = utc_now()
     task = _own_task(conn, session_id, task_id)
-    _run_task(conn, task, session_id=session_id, now=now, settings=_settings(request))
+    if policy_for(task["kind"]).cycle:
+        _run_cycle_task(conn, request.app.state.store, task, now=now, settings=_settings(request))
+    else:
+        _run_task(conn, task, session_id=session_id, now=now, settings=_settings(request))
     return _redirect(f"/tasks/{task_id}", response)
+
+
+def _run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, settings: Settings) -> None:
+    """업무 순환 Task 의 직접 실행 — 워커와 같은 준비 판정·후속 결정·start_key 로 착수하고(`Worker.start_manually`)
+    `manual_mode` 만 뺀다. 대상·입력은 워커가 Agent 등록값·원인 결과로 고정한다. 새 실행이 없으면 지금 대기 사유로 409."""
+    if task["finished_at"] is not None:
+        raise PageError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
+    worker = Worker(lambda: conn, store, None, None, settings, lambda: now)  # 착수 단계만 쓴다 — 진단·callback 없음
+    if worker.start_manually(conn, task["task_id"]):
+        return
+    readiness = task_cycle.evaluate(conn, repo.get_task(conn, task["task_id"]), now=now, settings=settings,
+                                    run_mode="auto")
+    reasons = " · ".join(b.reason for b in readiness.blockers) or "이미 실행이 있거나 이어서 시작할 결과가 없습니다"
+    raise PageError(409, "invalid_transition", f"지금 시작할 수 없습니다 — {reasons}.")
 
 
 def _run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings: Settings) -> None:
@@ -1449,6 +1472,23 @@ def operator_page(
     if not base["is_operator"]:
         return _render("operator.html", **base)
     return _render("operator.html", **_operator_context(request, conn, session_id, now))
+
+
+@router.get("/operator/github", response_class=HTMLResponse)
+def operator_github_page(
+    request: Request,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """GitHub 연결(ADR-0014) — 토큰 있음/없음·소스 설정·미리보기·담당 연결·실제 업무 목록·열린 사람 요청.
+    쓰기는 화면 스크립트가 운영자 JSON API(`/github/sources…`·`/human-requests…`)로 한다 — 화면 전용 쓰기 경로가 없다."""
+    now = utc_now()
+    base = _base(request, conn, session_id, now)
+    if not base["is_operator"]:
+        raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
+    return _render(
+        "operator_github.html", **base, **views.github_context(conn, session_id, now=now, settings=_settings(request)),
+    )
 
 
 @router.post("/operator/login")
