@@ -847,3 +847,53 @@ def test_local_target_keep_workdirs_leaves_handoff_dir(fake, client, state_conn,
     assert fake.executions[request.execution_id]["status"] == "result_ready"
     assert adapter.calls[0][1].exists()
     assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] is None
+
+
+# --- 일반 버그 수정 `bug_fix` ---------------------------------------------------------------------
+
+
+def bug_fix_request(execution_id: str = "exec-gh-fix-001") -> ExecutionRequest:
+    """첫 시도 — 입력 없음. target 은 `CodeChangeTarget` 그대로(등록 local-demo-report 를 빌려 쓴다)."""
+    return ExecutionRequest.model_validate({
+        **make_request(execution_id=execution_id, task_id="task-gh-41").model_dump(),
+        "kind": "bug_fix", "request": "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨", "input_artifact_ids": [],
+    })
+
+
+def bug_fix_output(request: ExecutionRequest) -> AdapterOutput:
+    """보고서 없는 일반 버그 결과 — 필수 산출물은 diff·테스트 전후·검증 로그뿐이다."""
+    output = ok_output(request)
+    output.artifacts = [(meta, data) for meta, data in output.artifacts if meta.kind != "report_output"]
+    return output
+
+
+def test_bug_fix_without_inputs_runs_with_heartbeat_and_uploads_code_change_result(
+    fake, client, state_conn, paths, tmp_path,
+):
+    request = bug_fix_request()
+    fake.assign(request)
+    adapter = StubAdapter(
+        output=bug_fix_output(request), during=lambda progress: _wait_until(lambda: len(fake.heartbeats) >= 3),
+    )
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path, heartbeat_interval=0.05)
+
+    runner.tick()
+
+    (called, handoff_dir), = adapter.calls
+    assert called == request and adapter.handoff_files == [{}]  # 입력이 없어도 빈 인계 디렉터리로 돈다
+    assert {h["current_execution_id"] for h in fake.heartbeats[1:]} == {request.execution_id}
+    assert [t for _, t in event_types(fake, request.execution_id)][-1] == "result_ready"
+    uploaded = fake.artifacts_of(request.execution_id)
+    assert set(uploaded) == {"diff", "test_log_before", "test_log_after", "verification_log", "code_change_result"}
+    result = CodeChangeResult.model_validate_json(uploaded["code_change_result"]["data"])
+    assert fake.artifacts[result.verification.log_artifact_id]["kind"] == "verification_log"
+    assert not handoff_dir.exists()  # 종료가 전달된 뒤 정리
+
+
+def test_claim_declares_supported_builtin_kinds(fake, client, state_conn, paths, tmp_path):
+    runner = make_runner(client, state_conn, paths, StubAdapter(), tmp_path)
+
+    runner.tick()
+
+    claim = next(r for r in fake.requests if r.url.path == "/connector/claim")
+    assert json.loads(claim.content)["supported_kinds"] == ["code_change", "bug_fix"]

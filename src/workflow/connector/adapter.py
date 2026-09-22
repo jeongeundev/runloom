@@ -28,6 +28,10 @@ from workflow.contracts.v1 import (
 
 Progress = Callable[..., None]  # progress(message: str, *, runtime_ref: str | None = None)
 
+# claim 때 중앙에 선언하는 내장 종류 — 이 연결 프로그램의 어댑터가 처리한다 (`ClaimRequest.supported_kinds`, ADR-0014 4항).
+# 사용자 정의 종류는 선언과 무관하게 `LocalTarget` 으로 돈다. `code_review` 는 검토 경로가 생기면 더한다.
+SUPPORTED_BUILTIN_KINDS = ("code_change", "bug_fix")
+
 
 @dataclass
 class AdapterOutput:

@@ -33,12 +33,14 @@ SK = "sk-" + "b" * 20
 
 # check.py — 저장소에 커밋되는 고정 검증 스크립트. 재현 테스트가 있고 소스가 안 고쳐졌으면 1, 그 외 0.
 # `_test_before` 가 결과 커밋의 테스트 파일만 기준 코드 위에 놓으면 1(재현 실패), 수정 후 worktree 에서는 0 이어야 한다.
+# 재작업 시도용 `tests/test_round2.py` 는 소스에 "round2" 가 있어야 통과한다.
 _CHECK = """\
 import pathlib, sys
-repro = pathlib.Path("tests/test_repro.py").exists()
-fixed = "fixed" in pathlib.Path("src.py").read_text()
-print(f"repro={repro} fixed={fixed}")
-sys.exit(1 if repro and not fixed else 0)
+src = pathlib.Path("src.py").read_text()
+needs = {"tests/test_repro.py": "fixed", "tests/test_round2.py": "round2"}
+broken = [t for t, word in needs.items() if pathlib.Path(t).exists() and word not in src]
+print(f"broken={broken}")
+sys.exit(1 if broken else 0)
 """
 
 
@@ -624,3 +626,245 @@ def test_diagnosis_request_is_still_unsupported(state_conn, review_handoff):
 
     assert output.result is None and output.failed[0] == "unsupported_kind"
     assert adapter.launched_with == [] and adapter.launched_readonly_with == []
+
+
+# --- 일반 버그 수정 `bug_fix` — 등록된 검증 프로필·고정 기준 커밋, 보고서 없음 (ADR-0014 3항) ----------------------
+
+BUG_TASK = "task-gh-41"
+BUG_REQUEST = "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 두 번 결제하면 총액이 음수가 된다."
+
+
+def register_bug(state_conn, repo: Path) -> str:
+    """일반 저장소 등록 — 검증 프로필 `vp-unit`. `vp-report` 도 등록돼 있지만 `bug_fix` 는 쓰지 않아야 한다."""
+    base = git_ops.head_sha(repo)
+    state.save_registration(state_conn, {
+        "local_registration_id": "local-billing",
+        "repo_path": str(repo),
+        "tool": "codex",
+        "repository_id": "acme-billing",
+        "base_commit": base,
+        "verification_profiles": {
+            "vp-unit": [sys.executable, "check.py"],
+            "vp-report": [sys.executable, "-c", "print('보고서')"],
+        },
+    })
+    return base
+
+
+def bug_request(base_commit: str, *, execution_id: str = "exec-gh-fix-001", profile: str = "vp-unit",
+                input_artifact_ids: list[str] | None = None) -> ExecutionRequest:
+    return ExecutionRequest.model_validate({
+        "contract_version": 1, "execution_id": execution_id, "task_id": BUG_TASK, "kind": "bug_fix",
+        "agent_id": "agent-codex-mac", "task_revision": 1, "request": BUG_REQUEST,
+        "input_artifact_ids": input_artifact_ids or [],
+        "target": {"local_registration_id": "local-billing", "base_commit": base_commit,
+                   "verification_profile_id": profile},
+    })
+
+
+@pytest.fixture
+def bug_handoff(tmp_path: Path) -> Path:
+    """첫 시도의 인계 디렉터리는 비어 있다. 데모 파일 이름이 있어도 `bug_fix` 는 보고서를 만들지 않는다."""
+    handoff = tmp_path / "task-gh-41.handoff"
+    handoff.mkdir()
+    return handoff
+
+
+def test_bug_fix_baseline_fails_result_passes_and_no_report(state_conn, repo, bug_handoff):
+    base = register_bug(state_conn, repo)
+    (bug_handoff / "response-after@1.json").write_text("{}")  # 데모 입력이 우연히 있어도 보고서 경로를 타지 않는다
+    request = bug_request(base)
+    adapter = ScriptedTool(state_conn, fix_and_add_test)
+
+    output = adapter.run(request, bug_handoff, Recorder())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert result.outcome == "ready_for_review" and result.base_commit == base
+    assert _git(repo, "rev-parse", f"{result.result_commit}^") == base  # 결과 커밋은 고정 기준 커밋 바로 위
+    assert [meta.kind for meta, _ in output.artifacts] == [
+        "diff", "test_log_before", "test_log_after", "verification_log", "claude_jsonl", "claude_stderr",
+    ]
+    artifacts = by_kind(output)
+    assert artifacts["test_log_before"].decode().splitlines()[0] == "exit_code=1"  # 기준 커밋 + 새 테스트 → 재현 실패
+    assert artifacts["test_log_after"].decode().splitlines()[0] == "exit_code=0"
+    assert artifacts["verification_log"].decode().splitlines()[0] == "exit_code=0"
+    assert "src.py" in artifacts["diff"].decode() and "test_repro.py" in artifacts["diff"].decode()
+    assert result.verification.profile_id == "vp-unit" and result.verification.result_commit == result.result_commit
+    (_worktree, prompt_text), = adapter.launched_with
+    assert BUG_REQUEST in prompt_text
+    assert "target_component" not in prompt_text and "python3 -m pytest" not in prompt_text  # 데모 규칙 없음
+
+
+def test_bug_fix_without_new_test_is_needs_information(state_conn, repo, bug_handoff):
+    base = register_bug(state_conn, repo)
+
+    output = ScriptedTool(state_conn, fix_only).run(bug_request(base), bug_handoff, Recorder())
+
+    assert output.failed is None and output.result.outcome == "needs_information"
+    assert "재현 테스트 없음" in output.result.summary and output.result.result_commit not in (None, base)
+    assert "report_output" not in by_kind(output)
+
+
+def test_bug_fix_without_change_is_needs_information(state_conn, repo, bug_handoff):
+    base = register_bug(state_conn, repo)
+
+    output = ScriptedTool(state_conn, lambda _wt: _run(last_message=_message())).run(
+        bug_request(base), bug_handoff, Recorder(),
+    )
+
+    assert output.failed is None and output.result.outcome == "needs_information"
+    assert output.result.summary.startswith("변경 없음") and output.result.result_commit is None
+
+
+def test_bug_fix_verification_failure_is_kept_with_logs(state_conn, repo, bug_handoff):
+    """도구가 ready_for_review 라고 해도 검증 프로필이 실패하면 그 exit code·로그를 그대로 보존한다 (판정은 중앙)."""
+    base = register_bug(state_conn, repo)
+
+    def test_only(worktree: Path) -> ToolRun:
+        (worktree / "tests" / "test_repro.py").write_text("def test_repro():\n    assert False\n")
+        return _run(last_message=_message())
+
+    output = ScriptedTool(state_conn, test_only).run(bug_request(base), bug_handoff, Recorder())
+
+    result = output.result
+    assert output.failed is None and result.result_commit is not None
+    assert result.verification.exit_code == 1
+    artifacts = by_kind(output)
+    assert artifacts["verification_log"].decode().startswith("exit_code=1") and "broken=" in artifacts["verification_log"].decode()
+    assert artifacts["test_log_after"].decode().startswith("exit_code=1")
+
+
+def test_bug_fix_unregistered_profile_fails_before_launch(state_conn, repo, bug_handoff):
+    base = register_bug(state_conn, repo)
+    adapter = ScriptedTool(state_conn, fix_and_add_test)
+
+    output = adapter.run(bug_request(base, profile="vp-from-issue"), bug_handoff, Recorder())
+
+    assert output.failed[0] == "verification_profile_missing" and adapter.launched_with == []
+
+
+def test_bug_fix_tool_commit_is_commit_mismatch(state_conn, repo, bug_handoff):
+    """도구가 규칙을 어기고 직접 커밋하면 worktree HEAD 가 기준 커밋이 아니다 — 결과로 받지 않고 실패로 끝낸다."""
+    base = register_bug(state_conn, repo)
+
+    def commits_itself(worktree: Path) -> ToolRun:
+        fix_and_add_test(worktree)
+        _git(worktree, "add", "-A")
+        _git(worktree, "commit", "-q", "-m", "tool commit")
+        return _run(stdout=b"out\n", last_message=_message())
+
+    output = ScriptedTool(state_conn, commits_itself).run(bug_request(base), bug_handoff, Recorder())
+
+    assert output.result is None
+    code, message, stopped = output.failed
+    assert code == "commit_mismatch" and stopped is True and base[:12] in message
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+
+
+def test_bug_fix_branch_at_other_commit_is_base_commit_mismatch(state_conn, repo, bug_handoff):
+    """이전 시도가 남긴 `task/<id>` 브랜치가 요청의 기준 커밋과 다르면 도구를 띄우지 않는다 — 조용히 다른 코드 위에서
+    고치지 않는다."""
+    base = register_bug(state_conn, repo)
+    first = ScriptedTool(state_conn, fix_and_add_test).run(bug_request(base), bug_handoff, Recorder())
+    git_ops.remove_worktree(repo, git_ops.worktree_path(repo, BUG_TASK))
+    adapter = ScriptedTool(state_conn, fix_and_add_test)
+
+    output = adapter.run(bug_request(base, execution_id="exec-gh-fix-002"), bug_handoff, Recorder())
+
+    code, message, stopped = output.failed
+    assert code == "base_commit_mismatch" and stopped is True
+    assert first.result.result_commit[:12] in message and adapter.launched_with == []
+
+
+def test_bug_fix_leftover_dirty_worktree_is_rejected(state_conn, repo, bug_handoff):
+    """중단된 시도(프로세스 종료 미확인이라 worktree 가 남음)의 변경을 다음 시도의 결과로 커밋하지 않는다."""
+    base = register_bug(state_conn, repo)
+    stopped = ScriptedTool(
+        state_conn, lambda wt: (fix_only(wt), _run(stdout=b"partial\n", timed_out=True, stopped=False))[1],
+    ).run(bug_request(base), bug_handoff, Recorder())
+    assert stopped.failed[0] == "timeout" and stopped.failed[2] is False and stopped.result is None
+    worktree = git_ops.worktree_path(repo, BUG_TASK)
+    assert _git(worktree, "rev-parse", "HEAD") == base  # 중단된 시도는 커밋을 만들지 않았다
+    adapter = ScriptedTool(state_conn, fix_and_add_test)
+
+    output = adapter.run(bug_request(base, execution_id="exec-gh-fix-002"), bug_handoff, Recorder())
+
+    assert output.failed[0] == "worktree_dirty" and output.failed[2] is True and adapter.launched_with == []
+
+
+def test_bug_fix_rework_uses_previous_result_as_baseline_and_passes_review_findings(state_conn, repo, bug_handoff):
+    """재작업 시도: base_commit = 이전 result_commit. 새 테스트만 이전 결과 위에서 실패해야 하고, 이전 검토 지적이
+    프롬프트에 들어간다."""
+    base = register_bug(state_conn, repo)
+    first = ScriptedTool(state_conn, fix_and_add_test).run(bug_request(base), bug_handoff, Recorder())
+    previous = first.result.result_commit
+    git_ops.remove_worktree(repo, git_ops.worktree_path(repo, BUG_TASK))  # 종료 뒤 runner 가 worktree 를 지운다
+    (bug_handoff / "code_review_result.json").write_text(json.dumps({
+        "contract_version": 1, "execution_id": "exec-gh-review-001", "task_id": "task-gh-41-review",
+        "source_execution_id": "exec-gh-fix-001", "reviewed_commit": previous, "outcome": "changes_requested",
+        "summary": "음수 총액 경계가 남아 있다",
+        "findings": [{"severity": "blocking", "path": "src.py", "line": 1, "message": "round2 경계를 처리하지 않음"}],
+        "missing_information": [], "artifact_ids": [],
+    }, ensure_ascii=False))
+
+    def round2(worktree: Path) -> ToolRun:
+        (worktree / "src.py").write_text("VALUE = 'fixed round2'\n")
+        (worktree / "tests" / "test_round2.py").write_text("def test_round2():\n    assert True\n")
+        return _run(last_message=_message(summary="round2 경계 처리"))
+
+    adapter = ScriptedTool(state_conn, round2)
+    output = adapter.run(
+        bug_request(previous, execution_id="exec-gh-fix-002", input_artifact_ids=["art-prev", "art-review"]),
+        bug_handoff, Recorder(),
+    )
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert result.outcome == "ready_for_review" and result.base_commit == previous
+    assert _git(repo, "rev-parse", f"{result.result_commit}^") == previous
+    before = by_kind(output)["test_log_before"].decode()
+    assert before.startswith("exit_code=1") and "test_round2.py" in before  # 이전 결과 + 새 테스트만 → 재현 실패
+    assert "test_repro.py'" not in before.split("broken=")[1]  # 이전 시도의 테스트는 이미 통과
+    diff = by_kind(output)["diff"].decode()
+    assert "test_round2.py" in diff and "test_repro.py" not in diff
+    (_worktree, prompt_text), = adapter.launched_with
+    assert "round2 경계를 처리하지 않음" in prompt_text and "src.py:1" in prompt_text
+    assert "음수 총액 경계가 남아 있다" in prompt_text
+
+
+def test_bug_fix_tool_and_profile_env_have_no_github_token(state_conn, repo, bug_handoff):
+    """검증 프로필·도구 프로세스 환경에 GitHub 토큰이 없다 — 서버 비밀값이 운영자 Mac 에 있어도 상속하지 않는다."""
+    (repo / "check.py").write_text("import os, sys\nprint(sorted(os.environ))\nsys.exit(0)\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "env probe")
+    base = register_bug(state_conn, repo)
+    env_base = {**os.environ, "WORKFLOW_GITHUB_TOKEN": "ghp_" + "x" * 36, "GITHUB_TOKEN": "ghs_y",
+                "GH_TOKEN": "gho_z", "WORKFLOW_GITHUB_REPOS": "acme/billing"}
+    adapter = ScriptedTool(state_conn, fix_only, env_base=env_base)
+
+    output = adapter.run(bug_request(base), bug_handoff, Recorder())
+
+    log = by_kind(output)["verification_log"].decode()
+    assert log.startswith("exit_code=0") and "'PATH'" in log
+    for key in ("WORKFLOW_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "WORKFLOW_GITHUB_REPOS"):
+        assert key not in log and key not in adapter.child_env()
+
+
+def test_demo_code_change_still_generates_report(state_conn, repo, handoff):
+    """데모 회귀: `code_change` 는 여전히 `vp-report` 로 보고서를 만든다 (응답 fixture 가 인계 자료에 있을 때)."""
+    base = git_ops.head_sha(repo)
+    state.save_registration(state_conn, {
+        "local_registration_id": "local-demo-report", "repo_path": str(repo), "tool": "codex",
+        "repository_id": "demo-report-repo", "base_commit": base,
+        "verification_profiles": {
+            "vp-pytest": [sys.executable, "check.py"],
+            "vp-report": [sys.executable, "-c", "import sys; print('보고서 ' + open(sys.argv[1]).read())", "{response}"],
+        },
+    })
+    (handoff / "response-after@1.json").write_text('{"report_date": "2026-09-19"}')
+
+    output = ScriptedTool(state_conn, fix_and_add_test).run(request_for(base), handoff, Recorder())
+
+    assert output.failed is None
+    assert by_kind(output)["report_output"].decode().startswith("보고서 {\"report_date\"")

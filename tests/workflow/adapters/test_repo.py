@@ -302,6 +302,25 @@ def test_connector_revoke_and_touch(conn):
     assert repo.authenticate_connector(conn, "wfc_bogus") is None
 
 
+def test_record_supported_kinds_keeps_last_claim_declaration(conn):
+    """마지막 claim 의 `supported_kinds` 선언을 JSON 으로 남긴다. 선언 없는 claim(구버전)은 NULL 로 되돌린다."""
+    code = repo.issue_connect_code(conn, NOW)
+    connector_id, _ = repo.exchange_connect_code(conn, code, NOW)
+
+    def stored():
+        return conn.execute(
+            "SELECT supported_kinds_json FROM connectors WHERE connector_id=?", (connector_id,)
+        ).fetchone()[0]
+
+    assert stored() is None
+    repo.record_supported_kinds(conn, connector_id, ["code_change", "bug_fix"])
+    assert json.loads(stored()) == ["code_change", "bug_fix"]
+    repo.record_supported_kinds(conn, connector_id, None)
+    assert stored() is None
+    with pytest.raises(NotFound):
+        repo.record_supported_kinds(conn, "conn-missing", ["bug_fix"])
+
+
 # --- 업무·선택 ---------------------------------------------------------------
 
 

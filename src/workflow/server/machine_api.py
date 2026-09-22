@@ -97,6 +97,7 @@ def claim(
     conn: Connection = Depends(get_conn),
 ) -> Response:
     _check_connector_id(body.connector_id, connector_id)
+    repo.record_supported_kinds(conn, connector_id, body.supported_kinds)  # 준비 판정(executor_outdated)의 입력
     row = repo.claim_execution(conn, connector_id, utc_now())
     if row is None:
         return Response(status_code=204)

@@ -464,6 +464,15 @@ def touch_connector(
     _require_rowcount(cur, f"connector {connector_id}")
 
 
+def record_supported_kinds(conn: Connection, connector_id: str, kinds: Sequence[str] | None) -> None:
+    """마지막 claim 의 `supported_kinds` 선언. None(구버전 claim)이면 NULL 로 되돌린다. 없는 connector 는 NotFound."""
+    cur = conn.execute(
+        "UPDATE connectors SET supported_kinds_json = ? WHERE connector_id = ?",
+        (None if kinds is None else json.dumps(list(kinds)), connector_id),
+    )
+    _require_rowcount(cur, f"connector {connector_id}")
+
+
 def get_connector(conn: Connection, connector_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM connectors WHERE connector_id = ?", (connector_id,))
 

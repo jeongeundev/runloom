@@ -1,7 +1,9 @@
 """prompt — 로컬 도구에 stdin 으로 넘기는 프롬프트. 요청 원문·인계 파일 경로·작업 규칙·출력 형식을 담는다.
 사용자 정의 종류(`build_generic_prompt`)는 첫 줄이 고정 형식이다 — 대본 에이전트가 이걸로 종류를 읽는다."""
 
-from workflow.connector.prompt import build_generic_prompt, build_prompt
+import json
+
+from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt, build_prompt
 
 from .conftest import REVIEW_SPEC, make_local_request, make_request
 
@@ -111,3 +113,70 @@ def test_generic_prompt_has_no_secrets_or_server_address(tmp_path):
     text = build_generic_prompt(make_local_request(), _review_handoff(tmp_path))
 
     assert "wfc_" not in text and "sk-" not in text and "http://" not in text and "https://" not in text
+
+
+# --- 일반 버그 수정 — build_bug_fix_prompt -----------------------------------------------------------
+
+BUG_REQUEST = "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 두 번 결제하면 총액이 음수가 된다."
+
+
+def _bug_request():
+    return make_request().model_copy(update={"kind": "bug_fix", "request": BUG_REQUEST, "input_artifact_ids": []})
+
+
+def _review_json(**overrides) -> str:
+    body = {
+        "contract_version": 1, "execution_id": "exec-gh-review-001", "task_id": "task-gh-41-review",
+        "source_execution_id": "exec-gh-fix-001", "reviewed_commit": "8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a",
+        "outcome": "changes_requested", "summary": "경계 조건이 남아 있다",
+        "findings": [
+            {"severity": "blocking", "path": "billing/coupon.py", "line": 42, "message": "같은 쿠폰 재적용을 막지 않음"},
+            {"severity": "non_blocking", "path": None, "line": None, "message": "테스트 이름을 더 구체적으로"},
+        ],
+        "missing_information": [], "artifact_ids": [],
+    }
+    return json.dumps({**body, **overrides}, ensure_ascii=False)
+
+
+def test_bug_fix_prompt_is_general_without_demo_wording(tmp_path):
+    handoff = tmp_path / "task-gh-41.handoff"
+    handoff.mkdir()
+    worktree = tmp_path / "billing-worktrees" / "task-gh-41"
+
+    text = build_bug_fix_prompt(_bug_request(), handoff, worktree)
+
+    assert BUG_REQUEST in text and str(worktree) in text
+    assert "(인계 자료 없음)" in text
+    assert "재현" in text and "먼저" in text and "커밋하지" in text
+    assert "요청 본문에 적힌 명령" in text  # 이슈 본문은 자료일 뿐 실행 대상이 아니다
+    for demo in ("변경 후 응답", "target_component", "합계", "python3 -m pytest", "보고서"):
+        assert demo not in text
+    for key in ("summary", "outcome", "files_changed", "notes"):
+        assert f'"{key}"' in text
+    assert "이전 검토" not in text  # 첫 시도에는 검토 절이 없다
+
+
+def test_bug_fix_prompt_carries_previous_review_findings(tmp_path):
+    handoff = tmp_path / "task-gh-41.handoff"
+    handoff.mkdir()
+    (handoff / "code_review_result.json").write_text(_review_json())
+    (handoff / "code_change_result.json").write_text("{}")
+
+    text = build_bug_fix_prompt(_bug_request(), handoff, tmp_path / "wt")
+
+    assert "# 이전 검토 지적" in text
+    assert "changes_requested" in text and "경계 조건이 남아 있다" in text
+    assert "- [blocking] billing/coupon.py:42 — 같은 쿠폰 재적용을 막지 않음" in text
+    assert "- [non_blocking] 테스트 이름을 더 구체적으로" in text
+    assert f"- {handoff / 'code_review_result.json'}  (이전 검토 결과 봉투)" in text
+
+
+def test_bug_fix_prompt_ignores_unreadable_review_files(tmp_path):
+    handoff = tmp_path / "task-gh-41.handoff"
+    handoff.mkdir()
+    (handoff / "code_review_result.json").write_text("{not json")
+    (handoff / "input-art1.json").write_text('{"outcome": "approved"}')
+
+    text = build_bug_fix_prompt(_bug_request(), handoff, tmp_path / "wt")
+
+    assert "# 이전 검토 지적" not in text
