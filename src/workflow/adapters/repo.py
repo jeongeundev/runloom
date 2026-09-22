@@ -35,6 +35,7 @@ from workflow.adapters.errors import (
     SequenceGap,
     StaleConfig,
     StaleRequest,
+    TaskClosed,
 )
 from workflow.contracts.github import (
     AssigneeBinding,
@@ -790,12 +791,15 @@ def create_execution(
     now: str,
     release_execution_id: str | None = None,
 ) -> None:
-    """활성 잠금(`ux_executions_active`) 위반 → ActiveExecutionExists, `(task_id, start_key)` 중복 →
+    """마감된 Task → TaskClosed, 활성 잠금(`ux_executions_active`) 위반 → ActiveExecutionExists, `(task_id, start_key)` 중복 →
     DuplicateStartKey. 잠금이 우선한다 (sqlite 가 부분 인덱스를 먼저 검사한다).
     `release_execution_id` 를 주면 그 이전 시도의 잠금 해제와 새 시도 생성을 한 트랜잭션에서 한다 — 새 시도가
     거부되면 해제도 되돌린다(워커의 재작업·검토 재연결)."""
     request_json = request.model_dump_json()
     with _tx(conn):
+        closed = _one(conn, "SELECT finished_at FROM tasks WHERE task_id = ?", (task_id,))
+        if closed is not None and closed["finished_at"] is not None:
+            raise TaskClosed(task_id)  # 종료와 착수가 겹쳐도 마감된 Task 에 실행을 붙이지 않는다
         if release_execution_id is not None:
             conn.execute(
                 "UPDATE executions SET released_at = ? WHERE execution_id = ? AND task_id = ? AND released_at IS NULL",
@@ -1513,13 +1517,35 @@ def list_human_requests(conn: Connection, task_id: str) -> list[Row]:
     ).fetchall()
 
 
+def list_open_human_requests(conn: Connection, session_id: str) -> list[Row]:
+    """세션의 열린 요청(만든 순) — 운영자 응답 목록."""
+    return conn.execute(
+        "SELECT hr.* FROM human_requests hr JOIN tasks t ON t.task_id = hr.task_id"
+        " WHERE t.session_id = ? AND hr.state = 'open' ORDER BY hr.created_at, hr.rowid",
+        (session_id,),
+    ).fetchall()
+
+
+def list_human_responses(conn: Connection, task_id: str) -> list[Row]:
+    """Task 의 응답(응답 순)과 그 요청의 code·question·cause_key·asked_revision(요청 당시 Task revision).
+    다음 실행 입력과 응답 후 재개의 재료."""
+    return conn.execute(
+        "SELECT r.*, hr.code, hr.question, hr.cause_key, hr.task_revision AS asked_revision"
+        " FROM human_responses r JOIN human_requests hr ON hr.request_id = r.request_id"
+        " WHERE hr.task_id = ? ORDER BY r.created_at, r.rowid",
+        (task_id,),
+    ).fetchall()
+
+
 def record_human_response_once(
     conn: Connection, session_id: str, request_id: str, *, response_id: str, expected_revision: int,
-    action: str, text: str, now: str,
+    action: str, text: str, now: str, agent_id: str | None = None, close_reason: str | None = None,
 ) -> tuple[int, bool]:
     """(task_revision, created). 응답은 요청을 `answered` 로, Task revision 을 +1 한다(다음 실행 입력).
-    같은 response_id·같은 내용 재전송은 처음 결과, 다른 내용은 ResponseConflict, revision 불일치·이미 응답됨은 StaleRequest.
-    다른 세션이면 NotFound. `action` 의 허용 값 검사는 서버 몫."""
+    `agent_id` 는 같은 트랜잭션에서 Task 의 실행 Agent 로 지정하고, `close_reason` 은 Task 를 `실패` 로 마감하고
+    활성 실행을 해제한다(운영자 종료). 같은 response_id·같은 내용 재전송은 처음 결과, 다른 내용은 ResponseConflict,
+    revision 불일치·이미 응답됨은 StaleRequest, 마감된 Task 는 TaskClosed, 다른 세션이면 NotFound.
+    `action` 의 허용 값 검사는 서버 몫."""
     with _tx(conn):
         request = get_human_request(conn, session_id, request_id)
         if request is None:
@@ -1528,22 +1554,35 @@ def record_human_response_once(
             conn, "SELECT * FROM human_responses WHERE request_id = ? AND response_id = ?", (request_id, response_id)
         )
         if previous is not None:
-            if (previous["action"], previous["text"]) != (action, text):
+            if (previous["action"], previous["text"], previous["agent_id"]) != (action, text, agent_id):
                 raise ResponseConflict(response_id)
             return previous["task_revision"], False
         if request["state"] != "open" or request["revision"] != expected_revision:
             raise StaleRequest(request_id, request["revision"])
-        conn.execute("UPDATE tasks SET revision = revision + 1 WHERE task_id = ?", (request["task_id"],))
-        task_revision = get_task(conn, request["task_id"])["revision"]
+        task_id = request["task_id"]
+        if get_task(conn, task_id)["finished_at"] is not None:
+            raise TaskClosed(task_id)
+        conn.execute("UPDATE tasks SET revision = revision + 1 WHERE task_id = ?", (task_id,))
+        if agent_id is not None:
+            conn.execute(
+                "UPDATE tasks SET chosen_agent_id = ?, selection_mode = 'manual' WHERE task_id = ?", (agent_id, task_id)
+            )
+        if close_reason is not None:
+            conn.execute(
+                "UPDATE tasks SET status = '실패', status_reason = ?, finished_at = ? WHERE task_id = ?",
+                (close_reason, now, task_id),
+            )
+            conn.execute("UPDATE executions SET released_at = ? WHERE task_id = ? AND released_at IS NULL", (now, task_id))
+        task_revision = get_task(conn, task_id)["revision"]
         conn.execute(
             "UPDATE human_requests SET state = 'answered', revision = revision + 1, answered_at = ?"
             " WHERE request_id = ?",
             (now, request_id),
         )
         conn.execute(
-            "INSERT INTO human_responses (request_id, response_id, action, text, expected_revision, task_revision,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (request_id, response_id, action, text, expected_revision, task_revision, now),
+            "INSERT INTO human_responses (request_id, response_id, action, text, agent_id, expected_revision,"
+            " task_revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (request_id, response_id, action, text, agent_id, expected_revision, task_revision, now),
         )
         return task_revision, True
 

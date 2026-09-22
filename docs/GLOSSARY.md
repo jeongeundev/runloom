@@ -128,7 +128,7 @@
 | `task_cycle.evaluate` | 준비 판정의 서버 쪽 재료 모음(`server/task_cycle.py`, step 10) — DB 행을 `TaskFacts` 로 모아 `evaluate_readiness` 에 넘기고, 실행 Agent 가 정해지면 같은 로컬 등록에서 도는 수정 실행(`repo.busy_executions`)을 넣어 다시 본다 | `scheduler`, `dispatcher` |
 | `TaskFacts` / `TaskReadiness` / `Blocker` | 준비 판정의 입력 값·결과 (`domain/task_readiness.evaluate_readiness`, step 2). `Blocker(code, reason, actor)` — 코드 목록은 ARCHITECTURE "준비 판정 — 대기 코드". 사용자 상태 라벨이 아니다 | `Status`, `Precondition`, `Gate` |
 | `FollowupContext` / `FollowupDecision` | 후속 결정의 입력·결과 (`domain/task_followup.decide_followup`, step 3). `action` 은 `link_existing`·`create_task`·`rework`·`request_human`·`none`. `SuccessorRule` 은 여전히 착수 조건이고 이것은 생성·재작업까지 정한다 | `Transition`, `Trigger`, `NextStep` |
-| `HumanRequest` / `response_id` | 사람에게 묻는 요청과 그 응답의 멱등 키 (step 4·11). 운영자만 응답. 응답은 새 `task_revision` 의 입력이 되고 원본 스냅샷은 그대로 | `approval`(검토 승인과 혼동), `ticket`, `question` |
+| `HumanRequest` / `response_id` | 사람에게 묻는 요청과 그 응답의 멱등 키 (step 4·11). 운영자만 응답(`POST /human-requests/{id}/responses`, `action` = `resume`·`choose_agent`·`close`). 응답은 새 `task_revision` 의 입력(`task_cycle.request_text`)이 되고 원본 스냅샷은 그대로. 준비 판정 대기에서 생긴 요청은 cause_key `ready:<code>:r<revision>` | `approval`(검토 승인과 혼동), `ticket`, `question` |
 
 ## 경계가 헷갈리는 개념
 

@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS human_responses (
   response_id       TEXT NOT NULL,
   action            TEXT NOT NULL,
   text              TEXT NOT NULL,
+  agent_id          TEXT,                                     -- choose_agent 응답이 지정한 Agent
   expected_revision INTEGER NOT NULL,
   task_revision     INTEGER NOT NULL CHECK (task_revision >= 1), -- 이 응답으로 생긴 Task revision
   created_at        TEXT NOT NULL,

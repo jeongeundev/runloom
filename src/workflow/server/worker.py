@@ -22,6 +22,9 @@ HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 �
   아직 실행이 없는 Task 를 준비 판정으로 착수한다. 이미 한 일은 DB(`start_key`·`followup_links`·사람 요청 `cause_key`)
   에서 다시 계산하므로 재시작·같은 결과 재처리에도 한 번만 일어난다. 트랜잭션 중 HTTP·도구를 기다리지 않고 GitHub 에
   쓰지 않는다(원본 반영은 step 12). 이 종류들은 기존 후속 스캔(`_spawn_successors`)을 타지 않는다.
+  운영자가 정해야 풀리는 대기(담당자 여럿·위임 밖·입력 없음)는 revision 마다 사람 요청 한 건으로 남긴다. 운영자 응답이
+  결과를 기다리던 시도 뒤의 revision 을 만들면 그 시도를 해제하고 새 revision 의 `auto_start_key` 로 다시 착수한다 —
+  응답만으로는 실행하지 않고 언제나 준비 판정을 다시 거친다(step 11).
 - callback 은 체인이 사람 차례(`chain_settled`)가 되면 1회 보낸다 (ADR-0010). tick 의 마지막 단계라 A 판정 → B 착수가
   같은 tick 에 일어나면 그 사이에 보내지 않는다. 실패는 attempts·next_at 으로 물러나 재시도하고 5회 뒤 멈춘다.
 """
@@ -58,6 +61,7 @@ from workflow.adapters.errors import (
     ArtifactMissing,
     DuplicateStartKey,
     NotFound,
+    TaskClosed,
 )
 from workflow.contracts.v1 import (
     ArtifactMeta,
@@ -132,6 +136,7 @@ class TickReport:
     generic_checked: int = 0  # 사용자 정의 종류의 결과 판정 (outcome ∈ KindSpec.outcomes)
     reviews_checked: int = 0  # 커밋 검토 결과 판정 (CodeReviewResult)
     tasks_started: int = 0  # 준비 판정을 통과해 착수한 업무 순환 Task
+    tasks_resumed: int = 0  # 사람 응답 뒤 준비 판정을 다시 통과해 이어 착수한 Task
     followup_tasks_created: int = 0  # 결과에서 새로 만든 후속 Task
     followups_started: int = 0  # 결과에서 이어진 실행(검토 연결·재작업)
     human_requests: int = 0  # 새로 만든 사람 요청
@@ -1000,9 +1005,13 @@ class Worker:
                 return
             followup_id, fresh = created
             report.followup_tasks_created += int(fresh)
-            self._start_review(conn, repo.get_task(conn, followup_id), execution, decision.cause_key, report)
+            started = self._start_review(conn, repo.get_task(conn, followup_id), execution, decision.cause_key, report)
+            report.followups_started += int(started)
         elif decision.action == "link_existing":
-            self._start_review(conn, repo.get_task(conn, decision.target_task_id), execution, decision.cause_key, report)
+            started = self._start_review(
+                conn, repo.get_task(conn, decision.target_task_id), execution, decision.cause_key, report,
+            )
+            report.followups_started += int(started)
         elif decision.action == "rework":
             fix_task = repo.get_task(conn, decision.target_task_id)
             active = repo.active_execution(conn, fix_task["task_id"])
@@ -1066,26 +1075,26 @@ class Worker:
 
     def _start_review(
         self, conn: Connection, review_task: Row, fix_execution: Row, start_key: str, report: TickReport
-    ) -> None:
+    ) -> bool:
         """수정 결과 커밋을 검토 Task 의 새 실행으로 고정한다. 진행 중인 검토는 끊지 않고 끝나기를 기다린다."""
         active = repo.active_execution(conn, review_task["task_id"])
         if active is not None and active["status"] != "result_ready":
-            return
+            return False
         readiness = task_cycle.evaluate(
             conn, review_task, now=self._clock(), settings=self._settings,
             pair_agent_id=fix_execution["agent_id"],
             result_dependency_task_id=fix_execution["task_id"], result_dependency_ready=True,
         )
         if not readiness.ready:
-            self._write_blocked(conn, review_task, readiness)
-            return
+            self._write_blocked(conn, review_task, readiness, report)
+            return False
         agent = repo.get_agent(conn, readiness.agent_id)
         fix_result = CodeChangeResult.model_validate_json(
             repo.read_artifact(conn, self._store, fix_execution["result_artifact_id"])
         )
         rule = repo.get_rule(conn, review_task["session_id"], fix_execution["kind"], review_task["kind"])
         inputs = [assemble_handoff(conn, self._store, fix_execution, review_task, rule, self._clock())] if rule else []
-        started = self._create_cycle_execution(
+        return self._create_cycle_execution(
             conn, review_task, agent,
             target={
                 "local_registration_id": agent["local_registration_id"],
@@ -1096,30 +1105,60 @@ class Worker:
             inputs=inputs, start_key=start_key, predecessor_execution_id=fix_execution["execution_id"],
             release_execution_id=active["execution_id"] if active is not None else None,
         )
-        report.followups_started += int(started)
 
     def _start_ready_tasks(self, conn: Connection, report: TickReport) -> None:
         """실행이 없는 업무 순환 Task 를 하나씩 따로 평가한다 — 한 Task 의 대기가 다른 Task 를 막지 않는다.
-        수정 결과에서 시작하는 종류(검토)는 `_cycle_followups` 가 착수한다."""
+        수정 결과에서 시작하는 종류(검토)는 `_cycle_followups` 가 착수한다. 결과를 기다리던 시도는 사람 응답이 있을 때만
+        `_resume` 이 잇는다."""
         for task in repo.list_tasks(conn, None):
             policy = policy_for(task["kind"])
-            if task["finished_at"] is not None or not policy.cycle or policy.starts_from_result:
+            if task["finished_at"] is not None or not policy.cycle:
                 continue
-            if repo.active_execution(conn, task["task_id"]) is not None:
+            active = repo.active_execution(conn, task["task_id"])
+            if active is not None:
+                if self._resume(conn, task, active, policy, report):
+                    report.tasks_resumed += 1
                 continue
-            if self._start_fix(conn, task, start_key=auto_start_key(task["task_id"], task["revision"])):
+            if policy.starts_from_result:
+                continue
+            if self._start_fix(conn, task, start_key=auto_start_key(task["task_id"], task["revision"]), report=report):
                 report.tasks_started += 1
+
+    def _resume(self, conn: Connection, task: Row, active: Row, policy: ExecutionPolicy, report: TickReport) -> bool:
+        """결과를 기다리던 시도(`result_ready`)에 대해 물은 요청에 운영자가 답해 새 revision 이 생겼으면 그 시도를 해제하고
+        새 revision 의 `auto_start_key` 로 다시 착수한다(준비 판정을 다시 거친다). 준비 판정 대기 요청(`ready:`)은 실행 전의
+        일이라 결과를 기다리는 시도를 다시 돌리지 않는다. 수정은 이전 입력 + 이전 결과를, 검토는 같은 수정 결과를 다시 본다."""
+        if active["status"] != "result_ready":
+            return False
+        previous = ExecutionRequest.model_validate_json(active["request_json"])
+        answered = [
+            r for r in repo.list_human_responses(conn, task["task_id"])
+            if r["task_revision"] > previous.task_revision and r["asked_revision"] >= previous.task_revision
+            and not r["cause_key"].startswith(task_cycle.READINESS_REQUEST_PREFIX)
+        ]
+        if not answered:
+            return False
+        start_key = auto_start_key(task["task_id"], task["revision"])
+        if policy.starts_from_result:
+            fix_execution = repo.get_execution(conn, previous.target.source_execution_id)
+            return self._start_review(conn, task, fix_execution, start_key, report)
+        inputs = [*previous.input_artifact_ids, active["result_artifact_id"]]
+        return self._start_fix(
+            conn, task, start_key=start_key, inputs=list(dict.fromkeys(i for i in inputs if i)),
+            release_execution_id=active["execution_id"], report=report,
+        )
 
     def _start_fix(
         self, conn: Connection, task: Row, *, start_key: str, base_commit: str | None = None,
-        inputs: list[str] | None = None, release_execution_id: str | None = None, **readiness_overrides: Any,
+        inputs: list[str] | None = None, release_execution_id: str | None = None, report: TickReport | None = None,
+        **readiness_overrides: Any,
     ) -> bool:
         """준비 판정을 통과하면 담당 Agent 의 등록값 + 소스의 검증 프로필로 target 을 고정해 실행을 만든다. 기준 커밋은
         주어진 값(재작업: 검토한 결과 커밋), 없으면 이 Task 의 마지막 결과 커밋(남은 task 브랜치), 없으면 등록 보고값."""
         now = self._clock()
         readiness = task_cycle.evaluate(conn, task, now=now, settings=self._settings, **readiness_overrides)
         if not readiness.ready:
-            self._write_blocked(conn, task, readiness)
+            self._write_blocked(conn, task, readiness, report)
             return False
         agent = repo.get_agent(conn, readiness.agent_id)
         _, config = task_cycle.origin_source(conn, task)
@@ -1154,7 +1193,7 @@ class Worker:
                 "kind": task["kind"],
                 "agent_id": agent["agent_id"],
                 "task_revision": task["revision"],
-                "request": task["request"],
+                "request": task_cycle.request_text(conn, task),
                 "input_artifact_ids": inputs,
                 "target": target,
                 "kind_spec": spec.model_dump() if spec is not None else None,
@@ -1175,15 +1214,33 @@ class Worker:
         except (DuplicateStartKey, ActiveExecutionExists) as exc:
             log.info("업무 %s 는 이미 이 원인으로 실행을 만들었음: %s", task_id, exc)
             return False
+        except TaskClosed:
+            log.info("업무 %s 는 착수 직전에 마감됨", task_id)
+            return False
         self._refresh_task(conn, task_id)  # → 실행 요청됨 · 접수 대기
         return True
 
-    def _write_blocked(self, conn: Connection, task: Row, readiness: TaskReadiness) -> None:
-        """대기 사유를 모두 이유 문구로. 직접 실행 모드만 남았으면 `실행 가능`(사람이 누르면 된다)."""
-        if {b.code for b in readiness.blockers} == {"manual_mode"}:
+    def _write_blocked(
+        self, conn: Connection, task: Row, readiness: TaskReadiness, report: TickReport | None = None
+    ) -> None:
+        """대기 사유를 모두 이유 문구로. 직접 실행 모드만 남았으면 `실행 가능`(사람이 누르면 된다). 운영자가 정해야 하는
+        사유는 이 revision 에 한 번 사람 요청으로 남긴다 — 이미 다른 요청을 기다리는 중(`decision_pending`)이면 더 묻지 않는다."""
+        codes = {b.code for b in readiness.blockers}
+        if codes == {"manual_mode"}:
             self._write_status(conn, task, "실행 가능", "직접 실행 모드")
         else:
             self._write_status(conn, task, "대기", " · ".join(b.reason for b in readiness.blockers))
+        if "decision_pending" in codes:
+            return
+        for blocker in readiness.blockers:
+            if blocker.code not in task_cycle.READINESS_REQUEST_CODES:
+                continue
+            _, fresh = repo.create_human_request_once(
+                conn, task["task_id"], blocker.code, blocker.reason,
+                task_cycle.readiness_cause_key(blocker.code, task["revision"]), self._clock(),
+            )
+            if report is not None:
+                report.human_requests += int(fresh)
 
     # --- 8. 후속 스캔 -------------------------------------------------------------------
 

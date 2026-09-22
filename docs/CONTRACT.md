@@ -1,6 +1,6 @@
 # 계약 v1 예시집
 
-> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고(서버·연결 프로그램 동작은 아직 없음), 13.9 오류 본문만 `json contract-pending` 이다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
+> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고, 13.9 오류 본문도 서버 경로(step 6·11)가 생겨 모두 일반 `json` 펜스다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
 갱신일: 2026-09-23 (phase 8 step 1 — 13절 모델 구현)
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
@@ -737,7 +737,7 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 
 ## 13. GitHub 업무 순환 — 확장 계약 (contract-pending)
 
-[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 13.1~13.8 의 모델은 step 1 에서 구현했다 — `contracts/v1.py`(종류·규칙·target·`CodeReviewResult`·`ClaimRequest.supported_kinds`)와 `contracts/github.py`(`GitHubSourceConfig`·`AssigneeBinding`·`GitHubIssueSnapshot`·`SourceDelivery`). 이 블록들은 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽는다. 13.9 오류 본문은 그 오류를 내는 서버 경로가 생기는 step 에서 일반 `json` 펜스로 바꾼다 — 그때까지 `json contract-pending` 이라 테스트가 읽지 않는다(`repository_not_allowed` 는 step 6 에서 바꿨다). 13.10 은 step 6 의 운영자 설정 API 다. 모델만 있고 서버·연결 프로그램·워커 동작(수집·판정·후속·반영)은 아직 없다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
+[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 13.1~13.8 의 모델은 step 1 에서 구현했다 — `contracts/v1.py`(종류·규칙·target·`CodeReviewResult`·`ClaimRequest.supported_kinds`)와 `contracts/github.py`(`GitHubSourceConfig`·`AssigneeBinding`·`GitHubIssueSnapshot`·`SourceDelivery`). 이 블록들은 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽는다. 13.9 오류 본문은 그 오류를 내는 서버 경로가 생기며 일반 `json` 펜스로 바꿨다(`repository_not_allowed` step 6, `stale_request` step 11). 13.10 은 step 6 의 운영자 설정 API, 13.11 은 step 11 의 사람 요청 응답 API 다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
 
 ### 13.1 새 내장 종류와 규칙
 
@@ -939,13 +939,13 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 
 ### 13.9 새 오류 본문
 
-`repository_not_allowed` 는 운영자 설정 API(`server/github_api.py`, step 6)가 낸다. `stale_request` 는 사람 응답 경로(step 11)가 생길 때 일반 `json` 펜스로 바꾼다.
+`repository_not_allowed` 는 운영자 설정 API(`server/github_api.py`, step 6)가, `stale_request` 는 사람 응답 API(`server/human_api.py`, step 11)가 낸다.
 
 ```json
 { "code": "repository_not_allowed", "message": "저장소 acme/other 는 WORKFLOW_GITHUB_REPOS 에 없습니다.", "field": "repository_full_name", "details": null }
 ```
 
-```json contract-pending
+```json
 { "code": "stale_request", "message": "사람 요청 hr-3c2b1a0f 가 이미 revision 3 입니다.", "field": "expected_revision", "details": { "current_revision": 3 } }
 ```
 
@@ -964,3 +964,14 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 | `PUT /github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
 
 Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review · repository_id=<workflow_repository_id>`, 소스의 `fix_verification_profile_id` 는 같은 범위의 `code.fix` Agent 중 하나가 보고한 프로필이어야 한다. 설정 변경·중지는 이미 만든 Task·Execution 의 입력을 바꾸지 않는다.
+
+### 13.11 운영자 사람 요청 응답 API (step 11)
+
+응답 권한은 운영자 세션 쿠키뿐이다 — 없거나 공개 세션이면 403 `forbidden`, 다른 세션의 요청은 404 `not_found`. GitHub 담당자를 웹 인증 사용자로 보지 않고, GitHub 댓글 내용을 응답·승인 명령으로 읽지 않는다. 응답은 요청을 `answered` 로, Task `revision` 을 +1 할 뿐 실행을 만들지 않는다 — 워커가 새 revision 을 준비 판정으로 다시 본다.
+
+| 요청 | 응답 | 오류 |
+|---|---|---|
+| `GET /human-requests` | `requests` — 이 세션의 열린 요청(`request_id`·`task_id`·`code`·`question`·`revision`·`state`·`created_at`, 만든 순) | |
+| `POST /human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
+
+응답의 효과: `resume` 의 `text` 는 다음 실행 요청 문구 끝의 `## 사람 응답 (운영자)` 절로 붙는다(Task 요청 원문·원본 스냅샷은 그대로). `choose_agent` 는 같은 트랜잭션에서 Task 의 실행 Agent 를 지정하지만 담당자 연결·능력·위임 범위는 재평가가 다시 검사한다 — 응답은 권한이나 소스 설정을 바꾸지 않는다(위임 밖은 13.10 설정 API 로 따로 고친다). `close` 는 Task 를 `실패 · 운영자 종료 — 사람 요청 응답` 으로 마감하고 활성 실행을 해제한다. 같은 트랜잭션이라 착수와 겹쳐도 마감된 Task 에 실행이 붙지 않는다.

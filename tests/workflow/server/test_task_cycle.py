@@ -24,7 +24,7 @@ from workflow.contracts.v1 import (
     HandoffBundle,
 )
 from workflow.domain.issue_intake import snapshot_to_task_spec
-from workflow.server import task_cycle
+from workflow.server import human_api, task_cycle
 from workflow.server.worker import Worker
 
 from .conftest import event, exchange
@@ -599,3 +599,186 @@ def test_issue_text_and_later_github_changes_do_not_widen_the_fixed_request(cycl
     (review,) = review_tasks(conn, task_id)
     assert executions(conn, review["task_id"])[0]["agent_id"] == REVIEW
     assert repo.get_task(conn, review["task_id"])["finished_at"] is None
+
+
+# --- 사람 요청과 응답 후 재개 (step 11) ------------------------------------------------------------
+
+
+def answer(conn, request_id: str, response_id: str = "resp-1", *, action: str = "resume", text: str = "",
+           agent_id: str | None = None) -> dict:
+    """운영자 응답 — 서버 경로(`human_api.respond_to_request`) 그대로. 응답만으로 실행을 만들지 않는다."""
+    row = repo.get_human_request(conn, SESSION, request_id)
+    body = human_api.ResponseBody(response_id=response_id, expected_revision=row["revision"], action=action,
+                                  text=text, agent_id=agent_id)
+    return human_api.respond_to_request(conn, SESSION, request_id, body, NOW)
+
+
+def open_requests(conn, task_id: str) -> list:
+    return [r for r in repo.list_human_requests(conn, task_id) if r["state"] == "open"]
+
+
+def test_multiple_assignees_ask_once_and_the_chosen_agent_starts_after_reevaluation(cycle, conn, worker):
+    """E — 담당자 2명. 사람 요청 1건, 응답으로 지정한 Agent 로 다음 revision 에 착수. 이슈 재등록 없음."""
+    repo.bind_assignee(conn, SESSION, AssigneeBinding(source_id=SOURCE, github_user_id=777, github_login="lee-dev",
+                                                      agent_id=FIX_SHOP), NOW)
+    task_id = import_issue(conn, 1, assignee_ids=[ASSIGNEE, 777], assignee_logins=["kim-dev", "lee-dev"])
+    worker.tick()
+    worker.tick()  # 재평가해도 같은 revision 의 요청은 하나
+    (request,) = repo.list_human_requests(conn, task_id)
+    assert (request["code"], request["cause_key"], request["task_revision"]) == (
+        "assignee_multiple", "ready:assignee_multiple:r1", 1,
+    )
+    assert executions(conn, task_id) == []
+
+    result = answer(conn, request["request_id"], action="choose_agent", agent_id=FIX)
+    assert result["task_revision"] == 2
+    assert executions(conn, task_id) == []  # 응답은 재평가를 부를 뿐 바로 실행하지 않는다
+
+    report = worker.tick()
+    (execution,) = executions(conn, task_id)
+    assert report.tasks_started == 1
+    assert (execution["start_key"], execution["agent_id"]) == (f"auto:{task_id}:r2", FIX)
+    assert request_of(execution).task_revision == 2
+    assert conn.execute("SELECT COUNT(*) FROM source_issues").fetchone()[0] == 1
+
+
+def test_choosing_an_agent_outside_the_assignees_is_not_enough(cycle, conn, worker):
+    """불충분 답변 — 담당자에 연결되지 않은 Agent 를 골라도 착수하지 않고 새 revision 에서 다시 묻는다."""
+    repo.bind_assignee(conn, SESSION, AssigneeBinding(source_id=SOURCE, github_user_id=777, github_login="lee-dev",
+                                                      agent_id=FIX_SHOP), NOW)
+    task_id = import_issue(conn, 1, assignee_ids=[ASSIGNEE, 888], assignee_logins=["kim-dev", "park-dev"])
+    worker.tick()
+    (request,) = repo.list_human_requests(conn, task_id)
+    answer(conn, request["request_id"], action="choose_agent", agent_id=FIX_SHOP)
+    worker.tick()
+    assert executions(conn, task_id) == []
+    assert [r["cause_key"] for r in open_requests(conn, task_id)] == ["ready:assignee_multiple:r2"]
+
+
+def test_out_of_scope_answer_does_not_grant_delegation(cycle, conn, worker, settings):
+    """D — 허용 저장소 밖. 응답은 권한을 주지 않는다. 설정(별도 권한) 변경 뒤의 응답만 착수로 이어진다."""
+    task_id = import_issue(conn, 1)
+    narrowed = dataclasses.replace(settings, github_repos=("acme/other",))
+    blocked = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(), narrowed,
+                     worker._clock)
+    blocked.tick()
+    (request,) = repo.list_human_requests(conn, task_id)
+    assert (request["code"], request["question"]) == ("delegation_denied", "허용 저장소 밖")
+
+    answer(conn, request["request_id"], text="진행해 주세요")
+    blocked.tick()
+    assert executions(conn, task_id) == []
+    (again,) = open_requests(conn, task_id)
+    assert again["cause_key"] == "ready:delegation_denied:r2"
+
+    answer(conn, again["request_id"], "resp-2")  # 운영자가 허용 목록을 고친 뒤 응답
+    worker.tick()
+    (execution,) = executions(conn, task_id)
+    assert execution["start_key"] == f"auto:{task_id}:r3"
+
+
+def test_missing_input_answer_becomes_the_next_request_without_touching_the_snapshot(cycle, conn, worker):
+    task_id = import_issue(conn, 1, body="  ")
+    snapshot = conn.execute("SELECT snapshot_json FROM source_issues").fetchone()[0]
+    worker.tick()
+    (request,) = repo.list_human_requests(conn, task_id)
+    assert request["code"] == "input_missing"
+
+    answer(conn, request["request_id"], text="쿠폰 A 를 두 번 적용하면 -500원")
+    worker.tick()
+    (execution,) = executions(conn, task_id)
+    assert "쿠폰 A 를 두 번 적용하면 -500원" in request_of(execution).request
+    assert repo.get_task(conn, task_id)["request"] == ""  # Task 요청 원문과 원본 스냅샷은 그대로
+    assert conn.execute("SELECT snapshot_json FROM source_issues").fetchone()[0] == snapshot
+
+
+def test_fix_needing_information_resumes_with_the_answer_as_input(cycle, conn, store, worker):
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    first = executions(conn, fix_task)[0]
+    result_id = finish_fix(conn, store, first["execution_id"], outcome="needs_information")
+    worker.tick()
+    (request,) = open_requests(conn, fix_task)
+    worker.tick()
+    assert len(executions(conn, fix_task)) == 1  # 응답 전에는 재개하지 않는다
+
+    answer(conn, request["request_id"], text="결제 금액은 10,000원")
+    report = worker.tick()
+
+    old, resumed = executions(conn, fix_task)
+    assert report.tasks_resumed == 1
+    assert old["released_at"] is not None
+    assert (resumed["attempt_no"], resumed["start_key"]) == (2, f"auto:{fix_task}:r2")
+    fixed = request_of(resumed)
+    assert fixed.task_revision == 2
+    assert fixed.request.startswith("재현 절차 1") and "결제 금액은 10,000원" in fixed.request
+    assert fixed.input_artifact_ids == [result_id]  # 이전 시도의 결과를 잇는다
+    again = worker.tick()
+    assert again.tasks_resumed == 0 and len(executions(conn, fix_task)) == 2  # 한 번만
+
+
+def test_review_needing_information_reruns_the_same_fix_result(cycle, conn, store, worker):
+    fix_task, fix_exec, review_task, review_exec = _to_first_review(conn, store, worker)
+    finish_review(conn, store, review_exec, outcome="needs_information")
+    worker.tick()
+    (request,) = open_requests(conn, review_task)
+    assert request["code"] == "review_needs_information"
+
+    answer(conn, request["request_id"], text="재현 금액은 10,000원")
+    worker.tick()
+
+    old, rerun = executions(conn, review_task)
+    assert old["released_at"] is not None
+    assert rerun["start_key"] == f"auto:{review_task}:r2"
+    assert request_of(rerun).target.source_execution_id == fix_exec
+    assert "재현 금액은 10,000원" in request_of(rerun).request
+    assert len(executions(conn, fix_task)) == 1
+
+
+def test_rework_limit_close_answer_ends_the_task_without_new_runs(cycle, conn, store, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, max_rework_rounds=0), NOW)
+    fix_task, _, _, review_exec = _to_first_review(conn, store, worker)
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+    worker.tick()
+    (request,) = open_requests(conn, fix_task)
+
+    answer(conn, request["request_id"], action="close")
+    worker.tick()
+    worker.tick()
+
+    task = repo.get_task(conn, fix_task)
+    assert (task["status"], task["finished_at"] is not None) == ("실패", True)
+    assert len(executions(conn, fix_task)) == 1
+    assert repo.active_execution(conn, fix_task) is None
+
+
+def test_rework_limit_resume_answer_runs_one_more_fix(cycle, conn, store, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, max_rework_rounds=0), NOW)
+    fix_task, _, _, review_exec = _to_first_review(conn, store, worker)
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+    worker.tick()
+    (request,) = open_requests(conn, fix_task)
+    answer(conn, request["request_id"], text="중복 조건만 지우고 다시")
+    worker.tick()
+    assert [e["start_key"] for e in executions(conn, fix_task)][-1] == f"auto:{fix_task}:r2"
+
+
+def test_close_racing_with_start_leaves_no_execution(cycle, conn, worker, monkeypatch):
+    """준비 판정과 실행 생성 사이에 운영자가 종료해도 실행이 붙지 않는다."""
+    repo.bind_assignee(conn, SESSION, AssigneeBinding(source_id=SOURCE, github_user_id=777, github_login="lee-dev",
+                                                      agent_id=FIX_SHOP), NOW)
+    task_id = import_issue(conn, 1, assignee_ids=[ASSIGNEE, 777], assignee_logins=["kim-dev", "lee-dev"])
+    worker.tick()
+    (request,) = repo.list_human_requests(conn, task_id)
+    answer(conn, request["request_id"], action="choose_agent", agent_id=FIX)
+    evaluate = task_cycle.evaluate
+
+    def closing_evaluate(conn_, task, **kwargs):
+        readiness = evaluate(conn_, task, **kwargs)
+        repo.update_task_status(conn, task_id, "실패", "운영자 종료", finished_at=NOW)
+        return readiness
+
+    monkeypatch.setattr(task_cycle, "evaluate", closing_evaluate)
+    report = worker.tick()
+    assert report.tasks_started == 0
+    assert executions(conn, task_id) == []

@@ -4,6 +4,10 @@ DB 행을 `domain.task_readiness.TaskFacts` 값으로 모아 `evaluate_readiness
 다른 Task 에 관한 사실(같은 로컬 등록에서 도는 수정 실행)은 값으로만 넘긴다 — 독립 업무는 서로의 대기에 묶이지 않는다.
 가져온 Task 와 직접 등록 Task 는 같은 `github_sync.task_intake_facts` 를 거친다. 검토 Task 는 원본 이슈가 없으므로
 수정 Task(선행)의 원본 상태·허용 저장소·재작업 상한을 따른다. 착수·후속 저장은 워커가 한다.
+
+사람 요청(step 11): 운영자가 정해야 풀리는 대기(`READINESS_REQUEST_CODES`)는 워커가 revision 마다 한 번 요청으로 남긴다
+(`readiness_cause_key`). 이런 요청은 그 대기 사유가 이미 막고 있으므로 `decision_pending` 에 세지 않는다 — 담당자를
+한 명으로 줄이는 식으로 사유가 사라지면 응답 없이도 착수한다. 응답 내용은 `request_text` 로 다음 실행 요청에 붙는다.
 """
 
 import json
@@ -23,6 +27,27 @@ from workflow.server.settings import Settings
 DEFAULT_MAX_REWORK_ROUNDS: int = GitHubSourceConfig.model_fields["max_rework_rounds"].default
 # 저장소 작업 트리를 쓰는 종류 — 같은 로컬 등록에서 하나씩만 돈다(`repository_busy`)
 _WORKTREE_KINDS = tuple(kind for kind, policy in BUILTIN_POLICIES.items() if policy.target == "code_change")
+
+
+# 운영자가 정해야 풀리는 대기 — 요청으로 남긴다. 그 밖의 대기(연결 끊김·저장소 사용 중 등)는 시스템이 풀린다
+READINESS_REQUEST_CODES = ("assignee_multiple", "delegation_denied", "input_missing")
+READINESS_REQUEST_PREFIX = "ready:"
+
+
+def readiness_cause_key(code: str, task_revision: int) -> str:
+    return f"{READINESS_REQUEST_PREFIX}{code}:r{task_revision}"
+
+
+def request_text(conn: Connection, task: Row) -> str:
+    """다음 실행의 요청 문구 — Task 요청 원문 뒤에 운영자 응답(글이 있는 것, 응답 순)을 붙인다. 원문은 바꾸지 않는다."""
+    answers = [r for r in repo.list_human_responses(conn, task["task_id"]) if r["text"].strip()]
+    if not answers:
+        return task["request"]
+    lines = [task["request"].strip(), ""] if task["request"].strip() else []
+    lines.append("## 사람 응답 (운영자)")
+    for answer in answers:
+        lines += [f"- 질문: {answer['question']}", f"  답: {answer['text'].strip()}"]
+    return "\n".join(lines)
 
 
 def origin_source(conn: Connection, task: Row) -> tuple[Row | None, GitHubSourceConfig | None]:
@@ -82,8 +107,12 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
         "chosen_agent_id": task["chosen_agent_id"],
         "repository_allowed": config is None or config.repository_full_name.lower() in allowed,
         "task_revision": task["revision"],
+        "request_text": request_text(conn, task),
         "information_requested_at_revision": max(asked, default=None),
-        "open_request_ids": tuple(r["request_id"] for r in requests if r["state"] == "open"),
+        "open_request_ids": tuple(
+            r["request_id"] for r in requests
+            if r["state"] == "open" and not r["cause_key"].startswith(READINESS_REQUEST_PREFIX)
+        ),
         "source_state": issue["state"] if issue is not None else None,
         "max_rework_rounds": config.max_rework_rounds if config is not None else DEFAULT_MAX_REWORK_ROUNDS,
     }

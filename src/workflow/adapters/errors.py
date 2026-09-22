@@ -88,5 +88,9 @@ class StaleConfig(AdapterError):
         self.current_revision = current_revision
 
 
+class TaskClosed(AdapterError):
+    """마감된 Task 에 새 실행·사람 응답을 붙이려 했다 (409 `task_closed`)."""
+
+
 class ResponseConflict(AdapterError):
     """같은 `(request_id, response_id)` 에 다른 내용의 응답이 이미 저장돼 있다."""

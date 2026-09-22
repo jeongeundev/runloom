@@ -26,6 +26,7 @@ from workflow.adapters.errors import (
     SequenceGap,
     StaleConfig,
     StaleRequest,
+    TaskClosed,
 )
 from workflow.contracts.github import (
     AssigneeBinding,
@@ -1923,3 +1924,65 @@ def test_busy_executions_counts_only_in_flight_fix_runs_on_the_same_registration
     repo.append_event(conn, "exec-41", _event("exec-41", 2, "failed",
                                               {"code": "timeout", "message": "x", "process_stopped": True}), "conn", NOW)
     assert repo.busy_executions(conn, "local-billing", kinds, exclude_task_id="task-gh-42") == []
+
+
+# --- step 11: 사람 응답 — Agent 지정·종료·재개 입력 -----------------------------------------
+
+
+def _respond(conn, request_id, response_id="resp-1", session_id=SESSION, **overrides):
+    kwargs = {"response_id": response_id, "expected_revision": 1, "action": "resume", "text": "", "now": LATER}
+    return repo.record_human_response_once(conn, session_id, request_id, **{**kwargs, **overrides})
+
+
+def test_response_choosing_an_agent_sets_it_in_the_same_transaction(cycle):
+    request_id, _ = repo.create_human_request_once(cycle, "task-gh-41", "assignee_multiple", "누구?", "ready:x", NOW)
+    assert _respond(cycle, request_id, action="choose_agent", agent_id=FIX_AGENT) == (2, True)
+    task = repo.get_task(cycle, "task-gh-41")
+    assert (task["chosen_agent_id"], task["revision"]) == (FIX_AGENT, 2)
+    # 같은 response_id 는 지정한 Agent 까지 같아야 같은 응답이다
+    assert _respond(cycle, request_id, action="choose_agent", agent_id=FIX_AGENT) == (2, False)
+    with pytest.raises(ResponseConflict):
+        _respond(cycle, request_id, action="choose_agent", agent_id="agent-other")
+
+
+def test_close_response_finishes_the_task_and_releases_its_attempt(cycle):
+    _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    request_id, _ = repo.create_human_request_once(cycle, "task-gh-41", "rework_limit_reached", "q", "k:1", NOW)
+    _respond(cycle, request_id, action="close", close_reason="운영자 종료 — 사람 요청 응답")
+    task = repo.get_task(cycle, "task-gh-41")
+    assert (task["status"], task["status_reason"], task["finished_at"]) == ("실패", "운영자 종료 — 사람 요청 응답", LATER)
+    assert repo.active_execution(cycle, "task-gh-41") is None
+    assert repo.get_human_request(cycle, SESSION, request_id)["state"] == "answered"
+
+
+def test_response_to_a_closed_task_is_rejected_but_a_resend_still_answers(cycle):
+    first, _ = repo.create_human_request_once(cycle, "task-gh-41", "decision", "q", "k:1", NOW)
+    second, _ = repo.create_human_request_once(cycle, "task-gh-41", "decision", "q", "k:2", NOW)
+    _respond(cycle, first, action="close", close_reason="운영자 종료")
+    assert _respond(cycle, first, action="close", close_reason="운영자 종료") == (2, False)  # 재전송
+    with pytest.raises(TaskClosed):  # 마감된 Task 의 다른 열린 요청은 응답해도 재개되지 않는다
+        _respond(cycle, second, response_id="resp-2")
+    assert repo.get_task(cycle, "task-gh-41")["revision"] == 2
+
+
+def test_create_execution_on_a_closed_task_is_refused(cycle):
+    """종료와 착수의 경쟁 — 워커가 종료 전에 읽은 Task 로 실행을 만들려 해도 같은 트랜잭션이 막는다."""
+    repo.update_task_status(cycle, "task-gh-41", "실패", "운영자 종료", finished_at=LATER)
+    with pytest.raises(TaskClosed):
+        _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    assert repo.list_executions(cycle, "task-gh-41") == []
+
+
+def test_list_human_responses_and_open_requests_of_a_session(cycle):
+    first, _ = repo.create_human_request_once(cycle, "task-gh-41", "fix_needs_information", "재현 금액?", "a:1", NOW)
+    second, _ = repo.create_human_request_once(cycle, "task-gh-41", "decision", "q", "b:1", NOW)
+    assert [r["request_id"] for r in repo.list_open_human_requests(cycle, SESSION)] == [first, second]
+    assert repo.list_open_human_requests(cycle, OTHER_SESSION) == []
+    _respond(cycle, first, text="10,000원")
+    rows = repo.list_human_responses(cycle, "task-gh-41")
+    assert [(r["code"], r["question"], r["text"], r["task_revision"]) for r in rows] == [
+        ("fix_needs_information", "재현 금액?", "10,000원", 2),
+    ]
+    assert [r["request_id"] for r in repo.list_open_human_requests(cycle, SESSION)] == [second]
+    # 원본 스냅샷·Task 요청 원문은 응답으로 바뀌지 않는다
+    assert repo.get_task(cycle, "task-gh-41")["request"] == "GitHub acme/billing#41"
