@@ -29,7 +29,10 @@
     {
       "step": 3,
       "name": "db-source-tokens",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-22T11:46:33+0900",
+      "completed_at": "2026-09-22T11:52:26+0900",
+      "summary": "저장 계층만 변경 — db.py: SCHEMA_VERSION 3→4(마이그레이션 없음, init_schema 버전 검사 그대로). 신규 source_tokens(token_id PK 'src-'+8hex, session_id FK sessions, source CHECK IN ('n8n'), token_sha256 UNIQUE, label NOT NULL, created_at, last_used_at, revoked_at). chains: source CHECK 에 'n8n' 추가, items_json·callback_url·callback_sent_at·callback_attempts(NOT NULL DEFAULT 0 CHECK >=0)·callback_next_at·callback_last_error 열 추가. repo.py: SOURCE_TOKEN_PREFIX='wfs_'(한 곳), issue_source_token(conn, session_id, source, label, now) -> (token_id, token_plain) (세션 없으면 NotFound, DB 엔 sha256 만), authenticate_source_token(conn, token_plain) -> Row(token_id·session_id·source)|None, touch_source_token(conn, token_id, now), revoke_source_token(conn, session_id, token_id, now)(다른 세션·없음 NotFound, 재취소 멱등·처음 시각 유지), list_source_tokens(conn, session_id) -> list[Row](created_at, rowid 순·취소 포함), insert_chain 에 선택 키 callback_url·items(→items_json) 추가, chains_awaiting_callback(conn, now, *, max_attempts) -> list[Row](url 있음·미전송·attempts<max·next_at NULL 또는 <=now, created_at 순, 세션 무관), record_callback_attempt(conn, chain_id, *, ok, error, now, next_at)(ok: sent_at=now·last_error NULL / 실패: attempts+1·last_error·next_at, 없으면 NotFound). 테스트: test_db.py 버전 단언 4, phase 5 chains 컬럼 단언은 부분집합으로, phase 7 절 3건(이전 버전 RuntimeError·source_tokens 제약·chains 새 열 기본값/CHECK); test_repo.py phase 7 절 8건(원문 미저장은 DB·WAL 파일 바이트까지 검사). adapters 153 passed, 전체 1634 passed, ruff clean, wfs_ grep 0."
     },
     {
       "step": 4,
