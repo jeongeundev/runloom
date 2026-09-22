@@ -1873,3 +1873,53 @@ def test_github_token_env_never_reaches_db_or_wal(cycle, db_path, monkeypatch):
     for path in (db_path, db_path.with_name(db_path.name + "-wal")):
         if path.exists():
             assert secret.encode() not in path.read_bytes(), path
+
+
+# --- step 10: 업무 순환 워커가 쓰는 조회·원자적 재시도 --------------------------------------
+
+
+def test_create_execution_releases_previous_attempt_in_the_same_transaction(seeded):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    repo.create_execution(
+        conn, execution_id="exec-2", task_id=TASK_A, attempt_no=2, start_key="rework:exec-r1",
+        agent_id="agent-ops-demo", kind="diagnosis", request=_request("exec-2", TASK_A),
+        assigned_connector_id=None, predecessor_execution_id=None, now=LATER, release_execution_id="exec-1",
+    )
+    assert repo.get_execution(conn, "exec-1")["released_at"] == LATER
+    assert repo.active_execution(conn, TASK_A)["execution_id"] == "exec-2"
+    # 새 시도가 거부되면(같은 start_key) 이전 시도의 해제도 되돌린다 — 활성 실행이 사라지지 않는다
+    with pytest.raises(DuplicateStartKey):
+        repo.create_execution(
+            conn, execution_id="exec-3", task_id=TASK_A, attempt_no=3, start_key="rework:exec-r1",
+            agent_id="agent-ops-demo", kind="diagnosis", request=_request("exec-3", TASK_A),
+            assigned_connector_id=None, predecessor_execution_id=None, now=LATER, release_execution_id="exec-2",
+        )
+    assert repo.get_execution(conn, "exec-2")["released_at"] is None
+
+
+def test_list_human_requests_of_task(cycle):
+    assert repo.list_human_requests(cycle, "task-gh-41") == []
+    first, _ = repo.create_human_request_once(cycle, "task-gh-41", "fix_needs_information", "q", "a:1", NOW)
+    second, _ = repo.create_human_request_once(cycle, "task-gh-41", "rework_limit_reached", "q", "b:1", LATER)
+    rows = repo.list_human_requests(cycle, "task-gh-41")
+    assert [(r["request_id"], r["cause_key"], r["state"]) for r in rows] == [(first, "a:1", "open"), (second, "b:1", "open")]
+
+
+def test_busy_executions_counts_only_in_flight_fix_runs_on_the_same_registration(cycle):
+    conn = cycle
+    repo.upsert_agent(conn, _agent("agent-codex-mac", connection_type="local", api_url=None, credential_ref=None,
+                                   local_registration_id="local-billing",
+                                   capabilities=[{"code": "code.fix", "scope": {"repository_id": "billing"}}]))
+    repo.insert_task(conn, _fix_task("task-gh-42", source_ref="#42"), NOW)
+    _create_execution(conn, "exec-41", "task-gh-41", kind="bug_fix", inputs=())
+    kinds = ("bug_fix", "code_change")
+    assert repo.busy_executions(conn, "local-billing", kinds, exclude_task_id="task-gh-42") == ["exec-41"]
+    assert repo.busy_executions(conn, "local-billing", kinds, exclude_task_id="task-gh-41") == []  # 자기 Task 는 제외
+    assert repo.busy_executions(conn, "local-other", kinds, exclude_task_id="task-gh-42") == []
+    assert repo.busy_executions(conn, "local-billing", ("code_review",), exclude_task_id="task-gh-42") == []
+    # 결과가 나와 검토·사람을 기다리는 실행은 저장소를 쓰지 않는다 — 다른 수정 업무를 막지 않는다
+    repo.append_event(conn, "exec-41", _event("exec-41", 1, "accepted", {}), "conn", NOW)
+    repo.append_event(conn, "exec-41", _event("exec-41", 2, "failed",
+                                              {"code": "timeout", "message": "x", "process_stopped": True}), "conn", NOW)
+    assert repo.busy_executions(conn, "local-billing", kinds, exclude_task_id="task-gh-42") == []

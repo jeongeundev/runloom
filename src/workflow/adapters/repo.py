@@ -788,11 +788,19 @@ def create_execution(
     assigned_connector_id: str | None,
     predecessor_execution_id: str | None,
     now: str,
+    release_execution_id: str | None = None,
 ) -> None:
     """활성 잠금(`ux_executions_active`) 위반 → ActiveExecutionExists, `(task_id, start_key)` 중복 →
-    DuplicateStartKey. 잠금이 우선한다 (sqlite 가 부분 인덱스를 먼저 검사한다)."""
+    DuplicateStartKey. 잠금이 우선한다 (sqlite 가 부분 인덱스를 먼저 검사한다).
+    `release_execution_id` 를 주면 그 이전 시도의 잠금 해제와 새 시도 생성을 한 트랜잭션에서 한다 — 새 시도가
+    거부되면 해제도 되돌린다(워커의 재작업·검토 재연결)."""
     request_json = request.model_dump_json()
     with _tx(conn):
+        if release_execution_id is not None:
+            conn.execute(
+                "UPDATE executions SET released_at = ? WHERE execution_id = ? AND task_id = ? AND released_at IS NULL",
+                (now, release_execution_id, task_id),
+            )
         try:
             conn.execute(
                 """
@@ -988,6 +996,24 @@ def executions_by(
         sql += " AND kind = ?"
         params += (kind,)
     return conn.execute(sql + " ORDER BY created_at, execution_id", params).fetchall()
+
+
+def busy_executions(
+    conn: Connection, local_registration_id: str, kinds: Sequence[str], *, exclude_task_id: str
+) -> list[str]:
+    """같은 로컬 등록(같은 저장소 작업 트리)에서 아직 도는 — 결과·실패 전인 — `kinds` 실행 ID. 준비 판정의
+    `repository_busy` 재료다. `result_ready`(검토·사람 대기)는 저장소를 쓰지 않으므로 세지 않는다."""
+    kind_marks = ", ".join("?" for _ in kinds)
+    rows = conn.execute(
+        f"""
+        SELECT e.execution_id FROM executions e JOIN agents a ON a.agent_id = e.agent_id
+        WHERE e.released_at IS NULL AND e.status IN ('queued', 'accepted', 'running', 'unknown')
+          AND a.local_registration_id = ? AND e.kind IN ({kind_marks}) AND e.task_id != ?
+        ORDER BY e.created_at, e.execution_id
+        """,
+        (local_registration_id, *kinds, exclude_task_id),
+    ).fetchall()
+    return [r["execution_id"] for r in rows]
 
 
 def results_awaiting_verdict(conn: Connection, kind: str | None = None) -> list[Row]:
@@ -1478,6 +1504,13 @@ def get_human_request(conn: Connection, session_id: str, request_id: str) -> Row
         " WHERE hr.request_id = ? AND t.session_id = ?",
         (request_id, session_id),
     )
+
+
+def list_human_requests(conn: Connection, task_id: str) -> list[Row]:
+    """Task 의 사람 요청 전부(만든 순). 준비 판정(열린 요청·정보 요청 revision)과 후속 원인 키 재료."""
+    return conn.execute(
+        "SELECT * FROM human_requests WHERE task_id = ? ORDER BY created_at, rowid", (task_id,)
+    ).fetchall()
 
 
 def record_human_response_once(
