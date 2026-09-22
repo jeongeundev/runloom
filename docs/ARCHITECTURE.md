@@ -15,7 +15,7 @@
 | 진단 API | HTTPS 작업 접수 + 상태 조회 | 진단을 HTTP 요청 하나에 묶지 않음. 데모 계약이며 임의 외부 API 범용 호환은 아님 |
 | 저장 | SQLite + 비공개 산출물 디렉터리 | 단일 지속 실행 서버·소규모 데모 전제. 다중 서버·임시 디스크 배포에서는 재검토 |
 | 진단 구현 | 별도 FastAPI 서비스 + OpenAI Responses API + 읽기 전용 도구 4개 | GPT-4.1 mini를 첫 평가 후보로 제안. 실제 진단 품질·계정 접근은 미검증 |
-| n8n·A2A·MCP·OpenArchive | 첫 구현의 필수 의존에서 제외 | 두 실행 계약으로 시연 가능. 등록된 기존 에이전트의 MCP 사용은 별도로 재사용 검증 |
+| n8n·A2A·MCP·OpenArchive | n8n 은 phase 7 에서 입구·출구로 연결([ADR-0010](adr/0010-n8n-inbox-and-callback.md)). A2A·MCP·OpenArchive 는 그대로 제외 | 두 실행 계약으로 시연 가능. 등록된 기존 에이전트의 MCP 사용은 별도로 재사용 검증 |
 
 위 표에서 첫 로컬 도구·중앙 구성·저장·진단 구현의 스택은 ADR-0001·0002로 확정했고, 진단 모델은 ADR-0003으로 확정했다. 나머지 행은 제안이다. 폴링 간격·시간 제한·성능 수치는 측정 전 확정하지 않는다.
 
@@ -136,6 +136,9 @@ Agent는 `capabilities` 배열, Task는 `required_capability` 객체 하나를 �
 | 로컬 연결 프로그램 | `connector_id` + 연결 토큰(Bearer) | 자기 `connector_id`의 claim·heartbeat, 배정된 실행의 events·artifacts | 다른 실행·다른 프로그램 자료(403), 웹 동작 전부 |
 | 중앙 워커 → 진단 API | `DIAG_API_TOKEN`(양쪽 환경변수) Bearer | `/runs` 접수·조회, `/capabilities` | 그 외 없음 |
 | 진단 워커 → OpenAI | `OPENAI_API_KEY` 진단 워커 환경변수 | 모델 호출. 공개 데모에서는 호출하지 않음(`DIAG_MODEL=fake`, 키 없음 — [ADR-0008](adr/0008-public-demo-scripted-agents.md)) | — |
+| n8n(입구) | 입구 토큰 wfs_… (Bearer) | 자기 워크스페이스에 체인 등록·첫 업무 시작 | 웹 동작·다른 워크스페이스·연결 프로그램 API |
+
+입구 토큰: 세션이 `/sources` 에서 발급한다. 원문은 발급 응답에 한 번, 서버에는 sha256 만(`source_tokens`). 취소는 같은 세션만 할 수 있고, 취소 뒤 요청은 401 이다. 토큰은 `source` 하나에 묶이며 경로의 출처(`/sources/n8n/…`)와 다르면 403 이다([ADR-0010](adr/0010-n8n-inbox-and-callback.md), 아래 n8n 입구·출구 절).
 
 연결 코드: 운영자가 운영자 화면에서 발급한다. 1회용, 발급 후 10분 만료, 교환 즉시 무효, 미사용 코드는 취소할 수 있다. 교환 시 연결 프로그램은 `connector_id`와 연결 토큰을 받는다. 토큰은 무작위 32바이트에 접두사 `wfc_`를 붙인 값이며 서버는 SHA-256 해시만 저장한다. 운영자가 연결을 취소하면 다음 요청부터 401이다. 프로그램은 토큰을 사용자 홈의 0600 파일에 보관한다.
 
@@ -225,6 +228,60 @@ B에 전달하는 근거: `attachments`에는 진단 서비스의 조회 이력�
 
 API 에이전트(진단 API)는 이번에도 `diagnosis` 만 받는다 — 범용 API 계약은 다음 ADR. 완료 시 새 업무를 **생성**하는 규칙(대상·범위 파생)은 다음이며, 이번엔 미리 등록된 업무 사이를 잇는 것만 한다. 사용자 정의 종류는 자동 완료 검증기가 없어 항상 사람 검토다. 사람이 선행을 종료해도 이미 시작한 후속은 계속된다. 세 번째 종류는 대본 e2e(test_22~28)로만 검증했고 실제 Claude·Codex 로는 돌리지 않았다. 남은 문자열 비교: 진단 첨부 분기(`assemble_handoff`)·진단 조회·`run_id` 필수·진단 상한 기록·시연 후속 체크박스·병합 문구(`web._awaits_merge`, `code_change` 만)·`_target_for` 의 내장 두 종류.
 
+## n8n 입구와 출구 — 2026-09-22 확정
+
+[ADR-0010](adr/0010-n8n-inbox-and-callback.md)을 따른다. n8n 은 업무가 **들어오는 입구**와 결과가 **나가는 출구**이고, 판단(종류·규칙·판정·인계)은 그대로 이 제품이 한다. 예시는 [CONTRACT](CONTRACT.md) 12절. 이 제품은 "n8n 옆의 에이전트 인계 계층"이며 n8n 을 대체하지 않는다.
+
+### 장면
+
+n8n 쪽은 노드 4개다 — Webhook(또는 Error Trigger) → HTTP Request(이 제품에 POST) → Wait(On Webhook Call — `$execution.resumeUrl` 로 깨어남) → Slack. 역할 분담:
+
+| 단계 | n8n | 이 제품 |
+|---|---|---|
+| 트리거 | 실패 이벤트·Webhook 을 받는다 | — |
+| 접수 | HTTP Request 로 `POST /sources/n8n/chains` | 항목을 라벨 규칙으로 매핑·구성해 체인 + Task 를 만들고 첫 업무를 시작한다 |
+| 실행·인계 | Wait 노드에서 멈춘다 | 계약 판정·근거 인계·후속 착수 — 사람 조작 없이 A → B |
+| 사람 차례 | callback 으로 깨어나 Slack 에 알린다 | `chain_settled` 시점에 `ChainCallback` 을 체인당 1회 POST |
+| 검토·승인 | — | 화면(`chain_url`)에서 사람이 승인·수정 요청·종료 |
+
+### 입구
+
+- **출처**: `n8n` 은 `TaskSource` 하나다 — `chains.source` 값 `'n8n'`, `domain/task_sources.Source` 에 `"n8n"`. 본문 항목 `InboundItem` 은 `Issue` 와 같은 모양(`key`·`title`·`body`·`labels`·`blocked_by`, `url` 은 None)이고 라벨 규칙(`incident`+`workflow:<id>`+`run:<run_id>`, `bug`+`repo:<id>`, `kind:<kind>`+`<scope_key>:<value>`)·`map_issue`·`compose` 를 그대로 쓴다. 매핑·구성·워커 후속 코드에 n8n 분기를 두지 않는다. fixture 출처 목록 `adapters/task_sources.SOURCES`(`github`·`jira`)는 그대로라 n8n 은 가져오기 화면(`/tasks/import`)에 나오지 않는다.
+- **토큰 발급·인증**: 워크스페이스(세션)가 `/sources` 화면에서 입구 토큰을 발급한다. 원문은 `wfs_` + `secrets.token_urlsafe(32)`, 발급 응답에서 한 번만 보이고 서버에는 sha256 만 남는다(`source_tokens`, 연결 토큰 `wfc_` 와 같은 방식). `Authorization: Bearer wfs_…` → `session_id` + `source`. 취소하면 다음 요청부터 401 `unauthenticated`. 토큰의 `source` 가 경로와 다르면 403 `forbidden`.
+- **`POST /sources/n8n/chains`**: JSON 본문 `InboundChainRequest`(`contract_version`, `items` 1~10개 — `key` 유일, `blocked_by` 는 같은 요청의 `key` 만, `callback_url` 선택), 응답 201 `InboundChainResponse`(`chain_id`·`chain_url`·`started`·`start_error`·`tasks`·`skipped`). 항목으로 체인 + Task 들을 가져오기와 같은 규칙으로 만들고 **접수 즉시 첫 업무 시작을 시도한다** — n8n 트리거가 곧 사람의 "워크플로우 시작" 조작이다.
+- **즉시 시작이 거부될 때**: 첫 업무가 후보 없음(409 `selection_required`)·상한(429 `daily_limit_reached` — 진단 상한)·조건 미충족(409)이면 체인은 남기고 `started=false` + `start_error`(오류 본문)로 201 을 돌려준다. 사람이 화면에서 에이전트를 확정하고 시작하면 된다. 체인을 만들기 전의 거부는 오류다 — 세션에 등록된 에이전트가 없으면 422 `agent_not_registered`, `blocked_by` 순환은 422 `dependency_cycle`, 세션 활성 업무 상한은 429 `active_task_limit_reached`(가져오기와 같은 검사).
+- **`callback_url`**: 선택이며 http/https 만. 허용 목록 밖이면 422 `callback_host_not_allowed`(아래 출구). `items_json` 에 n8n 이 보낸 항목 원문을 남겨 체인 화면의 구성 이유를 다시 계산한다(가져오기의 fixture 재조회에 해당).
+
+### 출구
+
+- **시점 — `chain_settled`**: 체인이 **사람 차례**가 되면 워커가 `callback_url` 로 `ChainCallback` 을 **체인당 1회** POST 한다(n8n Wait 노드는 한 번만 깨어난다). `chain_settled(nodes)` 는 도메인 순수 함수(`domain/settlement.py`): (a) 어떤 업무도 `실행 요청됨`·`실행 중` 이 아니고, (b) `대기` 인 업무는 모두 선행 업무의 상태가 `확인 필요` 또는 `실패` 이면(= 사람에게 막힘) 참. 그 밖의 `대기`(자동 실행 대기·연결 끊김·선행 진행 중)와 실행 중은 아직 워커 몫이라 거짓. 빈 목록은 거짓. 남는 상태(`확인 필요`·`완료`·`실패`·`실행 가능`)는 사람 조작 전엔 바뀌지 않는다 — 화면 폴링 규칙(`views._LIVE_LABELS`)과 같은 관찰이다.
+- **워커 마지막 단계**: `Worker.tick` 의 마지막(`_reflect_failures` 뒤)에서 판정한다. A 판정 → B 착수가 같은 tick 에 일어나면 그 사이에 보내지 않는다.
+- **전송·재시도**: 트랜잭션 밖 HTTPX POST(10초). 2xx 면 `callback_sent_at`, 아니면 `callback_attempts`+1 과 `callback_next_at = now + 30·2^(n-1)초`(30·60·120·240초), 5회 실패 후 중단하고 `callback_last_error` 를 화면에 보인다. 사람이 그 뒤 승인·종료해도 다시 보내지 않는다. 직접 등록·가져오기 화면으로 만든 체인은 `callback_url` 이 없으므로 아무것도 보내지 않는다.
+- **본문 `ChainCallback`**: `contract_version`·`chain_id`·`title`·`source`(`"n8n"`)·`chain_url`·`settled_at`·`human_gate: CallbackGate(label, status_label, reason)`·`tasks: list[CallbackTask(task_id, key, kind, title, status, status_reason, outcome, summary, task_url)]`. `outcome`·`summary` 는 그 Task 의 최신 결과 봉투(`diagnosis_result`·`code_change_result`·`generic_result`)에서 읽고 없으면 null. `status` 는 `USER_STATUS_LABELS` 문구, `human_gate` 는 체인 화면의 `views._human_gate` 와 같은 값.
+- **허용 목록 `WORKFLOW_CALLBACK_HOSTS`**: 콤마 구분 `host` 또는 `host:port`(예 `localhost:5678,127.0.0.1`). `host` 만 쓰면 그 호스트의 모든 포트. 비어 있으면 callback 을 받지 않는다(접수 시 422). 이유: 공개 데모 VM 은 누구나 세션을 만들 수 있어, 외부가 준 주소로 서버가 POST 하게 두면 내부 주소(`127.0.0.1:8100` 등)를 찌를 수 있다. 셀프호스트는 `localhost:5678` 한 줄. 판정은 `domain/callback_policy.py` 의 `host_allowed(url, allowed)`·`parse_hosts(raw)`. `WORKFLOW_PUBLIC_URL`(선택, 예 `http://127.0.0.1:8000`, 끝 `/` 없음)은 응답·callback 의 `chain_url`·`task_url` 앞에 붙고 비면 두 필드는 null. 둘 다 비밀값이 아니다.
+
+### 저장
+
+`SCHEMA_VERSION` 3 → 4, 마이그레이션 없음(`WORKFLOW_RESET_DB=1` 재생성 — 공개 데모 VM 은 손대지 않는다).
+
+| 테이블 | 열 | 제약 |
+|---|---|---|
+| `source_tokens`(신규) | `token_id TEXT PRIMARY KEY`(`src-` + 8 hex), `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `source TEXT NOT NULL`, `token_sha256 TEXT NOT NULL UNIQUE`, `label TEXT`, `created_at TEXT NOT NULL`, `last_used_at TEXT`, `revoked_at TEXT` | 원문은 저장하지 않는다. 인증은 `token_sha256` + `revoked_at IS NULL` |
+| `chains`(추가 열) | `items_json TEXT`(n8n 이 보낸 항목 원문 — 체인 화면의 구성 이유 재계산용), `callback_url TEXT`, `callback_sent_at TEXT`, `callback_attempts INTEGER NOT NULL DEFAULT 0`, `callback_next_at TEXT`, `callback_last_error TEXT` | `source` CHECK 에 `'n8n'` 추가. `callback_sent_at` 이 있으면 다시 보내지 않는다 |
+
+### 화면
+
+- `/sources`(사이드바 "입구" 링크, 세션 전용): 입구 URL, 토큰 목록(라벨·발급 시각·마지막 사용·취소), 발급 폼(발급 응답에 원문 한 번), 취소 버튼, curl 예시.
+- 체인 화면: 출처 `n8n` 표시와 callback 상태 한 줄(전송 전 · 전송됨 `callback_sent_at` · 재시도 `callback_attempts`/`callback_next_at` · 중단 `callback_last_error`). 구성 이유는 `items_json` 으로 다시 계산한다.
+
+### 한계
+
+- 업무마다 알림은 없다. 업무별 진행은 n8n 쪽에서 `chain_url` 을 폴링하거나 다음 phase 다.
+- 진단 API 후속(API 에이전트가 두 번째 업무)은 워커가 시작하지 않으므로 `대기` 에 머물러 callback 이 안 온다 — ADR-0009 한계 그대로.
+- `대기 · 연결 끊김` 은 선행이 `확인 필요` 면 사람 차례로 본다. 연결이 돌아와도 다시 보내지 않는다.
+- 공개 데모 VM 은 `WORKFLOW_CALLBACK_HOSTS` 가 비어 있어 callback 이 없다(`callback_url` 이 있는 접수는 422).
+- 입구 본문이 라벨 규칙이라 n8n 쪽 표현식에 라벨을 써야 한다.
+
 ## 최소 데이터 모델과 영속성
 
 | 레코드 | 핵심 필드 |
@@ -236,6 +293,8 @@ API 에이전트(진단 API)는 이번에도 `diagnosis` 만 받는다 — 범�
 | Artifact | ID, 소유 범위, 생성 실행, 종류, 내용 해시, 저장 참조. 생성 후 내용 불변 |
 | KindSpec | 소유 범위(세션), `kind`, 봉투 JSON(`label`·`capability_code`·`scope_key`·`input_kinds`·`output_kind`·`outcomes`·`instructions`·`builtin`), 생성 시각. `Task.kind` 가 참조 |
 | SuccessorRule | ID, 소유 범위(세션), `from_kind`, `to_kind`, 규칙 JSON(`on_outcomes`·`handoff_kinds`), 생성 시각 |
+| source token | `token_id`, 소유 범위(세션), `source`, `token_sha256`(원문 없음), `label`, 생성·마지막 사용·취소 시각 (`source_tokens`) |
+| Chain.callback_* | 체인의 출구 상태 — `callback_url`(없으면 보내지 않음), `callback_sent_at`(1회 전송 기록), `callback_attempts`·`callback_next_at`(재시도), `callback_last_error`(중단 사유). `items_json` 은 n8n 이 보낸 항목 원문 |
 
 Task는 업무이고 Execution은 한 번의 시도다. 같은 Task에 활성 Execution을 둘 수 없다. 실행 중 설정은 고정하고 변경 요청은 다음 시도에 적용한다. B는 판정을 통과한 A 실행의 Artifact ID(규칙 `handoff_kinds` 로 고른 것)를 고정해 받으며 A 재실행이 기존 B 입력을 바꾸지 않는다.
 
@@ -533,5 +592,6 @@ B는 실제 테스트 기록·diff·보고서를 제출한다. 연결 프로그�
 | 4 | 진단 API | 실제 조회·정상 인계·자료 누락/충돌 보류·입력에 따른 진단 변화 |
 | 5 | A → B | 근거 검증 후 자동 착수, 재현 실패 → 수정 후 통과, 정확한 보고서와 사람 검토 대기 |
 | 6 | 세 번째 종류 — 대본 e2e 통과(`tests/e2e/test_scenario.py` test_22~28) + 실제 Claude 1회 통과(C 만 실제 `claude -p`, outcome `changes_requested`; 규칙 삭제 시나리오는 대본만) — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 두 절 | 화면으로 종류 `review` 와 규칙 `code_change --[ready_for_review]--> review` 를 등록하면 `composition.py`·`worker.py` 변경 없이 진단 → 수정 → 검토가 사람 조작 없이 착수(B 승인 전에 C), 규칙 삭제 시 C 대기, 검토는 저장소 불변 |
+| 7 | n8n 입구·출구 — 미검증 | 실제 n8n(Docker)이 POST 한 항목으로 체인이 생겨 A → B 가 사람 조작 없이 돌고, B 검토 대기 시점에 callback 이 n8n Wait 노드를 깨운다(2xx) |
 
 스택·모델 평가안과 계약 v1의 필드·DB 제약을 작성했다. 다음은 중앙 서비스의 자동 정보 제안 방식, 사용자 인증·배포 환경, 실행 예산을 구체화하고 작은 구현 단계로 나누는 것이다. 실제 JSON Schema 생성·DB 마이그레이션·API 구현은 구현 요청 후 시작한다. 새 기능은 TDD로 시작한다. 기존 하네스를 수정하면 `python3 -m pytest scripts/`를 통과시킨다.
