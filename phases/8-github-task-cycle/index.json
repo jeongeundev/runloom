@@ -1,0 +1,91 @@
+{
+  "project": "workflow",
+  "phase": "8-github-task-cycle",
+  "steps": [
+    {
+      "step": 0,
+      "name": "mvp-contract",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "cycle-contracts",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "task-readiness",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "followup-policy",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "cycle-storage",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "github-client",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "source-settings",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "issue-ingestion",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "bug-execution",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "commit-review",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "cycle-worker",
+      "status": "pending"
+    },
+    {
+      "step": 11,
+      "name": "human-resume",
+      "status": "pending"
+    },
+    {
+      "step": 12,
+      "name": "github-results",
+      "status": "pending"
+    },
+    {
+      "step": 13,
+      "name": "cycle-ui",
+      "status": "pending"
+    },
+    {
+      "step": 14,
+      "name": "cycle-e2e",
+      "status": "pending"
+    },
+    {
+      "step": 15,
+      "name": "cycle-runbook",
+      "status": "pending"
+    },
+    {
+      "step": 16,
+      "name": "github-live",
+      "status": "pending"
+    }
+  ]
+}
