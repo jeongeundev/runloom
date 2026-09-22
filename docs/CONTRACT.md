@@ -737,7 +737,7 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 
 ## 13. GitHub 업무 순환 — 확장 계약 (contract-pending)
 
-[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 13.1~13.8 의 모델은 step 1 에서 구현했다 — `contracts/v1.py`(종류·규칙·target·`CodeReviewResult`·`ClaimRequest.supported_kinds`)와 `contracts/github.py`(`GitHubSourceConfig`·`AssigneeBinding`·`GitHubIssueSnapshot`·`SourceDelivery`). 이 블록들은 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽는다. 13.9 오류 본문은 그 오류를 내는 서버 경로가 생기는 step 에서 일반 `json` 펜스로 바꾼다 — 그때까지 `json contract-pending` 이라 테스트가 읽지 않는다. 모델만 있고 서버·연결 프로그램·워커 동작(수집·판정·후속·반영)은 아직 없다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
+[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 13.1~13.8 의 모델은 step 1 에서 구현했다 — `contracts/v1.py`(종류·규칙·target·`CodeReviewResult`·`ClaimRequest.supported_kinds`)와 `contracts/github.py`(`GitHubSourceConfig`·`AssigneeBinding`·`GitHubIssueSnapshot`·`SourceDelivery`). 이 블록들은 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽는다. 13.9 오류 본문은 그 오류를 내는 서버 경로가 생기는 step 에서 일반 `json` 펜스로 바꾼다 — 그때까지 `json contract-pending` 이라 테스트가 읽지 않는다(`repository_not_allowed` 는 step 6 에서 바꿨다). 13.10 은 step 6 의 운영자 설정 API 다. 모델만 있고 서버·연결 프로그램·워커 동작(수집·판정·후속·반영)은 아직 없다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
 
 ### 13.1 새 내장 종류와 규칙
 
@@ -939,10 +939,28 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 
 ### 13.9 새 오류 본문
 
-```json contract-pending
+`repository_not_allowed` 는 운영자 설정 API(`server/github_api.py`, step 6)가 낸다. `stale_request` 는 사람 응답 경로(step 11)가 생길 때 일반 `json` 펜스로 바꾼다.
+
+```json
 { "code": "repository_not_allowed", "message": "저장소 acme/other 는 WORKFLOW_GITHUB_REPOS 에 없습니다.", "field": "repository_full_name", "details": null }
 ```
 
 ```json contract-pending
 { "code": "stale_request", "message": "사람 요청 hr-3c2b1a0f 가 이미 revision 3 입니다.", "field": "expected_revision", "details": { "current_revision": 3 } }
 ```
+
+### 13.10 운영자 GitHub 설정 API (step 6)
+
+운영자 세션 쿠키(`/operator/login`)만 통과한다 — 없거나 공개 세션이면 403 `forbidden`, 다른 세션의 소스는 404 `not_found`. 요청 본문은 13.6 `GitHubSourceConfig` 에서 서버가 정하는 `source_id`·`config_revision` 을 뺀 것이고(`label_filter`·`selected_issue_numbers` 기본 `[]`, `max_rework_rounds` 기본 1, `enabled` 기본 true), 토큰 필드를 보내면 422 `unknown_field` 다. 응답은 토큰 값 대신 `token_configured: bool` 만 담는다. GitHub 를 호출하지 않는다.
+
+| 요청 | 응답 | 오류 |
+|---|---|---|
+| `GET /github/sources` | `token_configured`·`allowed_repositories`·`sources`(`GitHubSourceConfig` 목록) | |
+| `POST /github/sources/preview` | `token_configured`·`problems`(`ErrorBody` 목록) — 저장하지 않고 아래 422 문제를 모두 모은다 | 형식 오류만 422 |
+| `POST /github/sources` | 201 `source`·`token_configured` — `source_id` `ghs-`+8 hex, `config_revision` 1, 저장소 표기는 허용 목록의 것 | 422 `repository_not_allowed`·`agent_not_registered`·`agent_capability_mismatch`·`verification_profile_unknown`, 409 `source_exists`(같은 워크스페이스에 같은 저장소)·`github_workspace_taken`(다른 세션이 이미 GitHub 소스를 가짐 — 셀프호스트 1개 워크스페이스) |
+| `GET /github/sources/{source_id}` | `source`·`token_configured`·`assignees`(`AssigneeBinding` 목록) | 404 |
+| `PUT /github/sources/{source_id}` | 본문 + `expected_revision` → `source`·`token_configured`(`config_revision` +1) | 409 `stale_config`(`details.current_revision`), 저장소 변경 422 `invalid_field`, 나머지는 생성과 같음 |
+| `POST /github/sources/{source_id}/stop` | `enabled: false`, `config_revision` +1(이미 멈췄으면 그대로) | 404 |
+| `PUT /github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
+
+Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review · repository_id=<workflow_repository_id>`, 소스의 `fix_verification_profile_id` 는 같은 범위의 `code.fix` Agent 중 하나가 보고한 프로필이어야 한다. 설정 변경·중지는 이미 만든 Task·Execution 의 입력을 바꾸지 않는다.

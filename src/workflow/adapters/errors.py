@@ -79,5 +79,14 @@ class StaleRequest(AdapterError):
         self.current_revision = current_revision
 
 
+class StaleConfig(AdapterError):
+    """소스 설정의 저장된 `config_revision` 이 `expected_revision` 과 다르다 (409 `stale_config`)."""
+
+    def __init__(self, source_id: str, current_revision: int):
+        super().__init__(f"source {source_id} revision {current_revision}")
+        self.source_id = source_id
+        self.current_revision = current_revision
+
+
 class ResponseConflict(AdapterError):
     """같은 `(request_id, response_id)` 에 다른 내용의 응답이 이미 저장돼 있다."""

@@ -24,6 +24,7 @@ from workflow.adapters.errors import (
     NotFound,
     ResponseConflict,
     SequenceGap,
+    StaleConfig,
     StaleRequest,
 )
 from workflow.contracts.github import (
@@ -1602,6 +1603,28 @@ def test_source_cursor_is_saved_per_source_and_scoped(seeded):
         repo.save_source_cursor(seeded, OTHER_SESSION, SOURCE, "x", LATER)
     with pytest.raises(NotFound):
         repo.get_source_cursor(seeded, OTHER_SESSION, SOURCE)
+
+
+def test_list_github_sources_and_owner_sessions(seeded):
+    """step 6 — 운영자 API 의 목록과 'GitHub 연결은 한 워크스페이스' 검사 재료."""
+    assert repo.list_github_sources(seeded, SESSION) == []
+    assert repo.github_source_sessions(seeded) == []
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    repo.save_github_source(seeded, SESSION, _source(source_id="ghs-00000002", repository_full_name="acme/lib"), NOW)
+    assert [s.source_id for s in repo.list_github_sources(seeded, SESSION)] == [SOURCE, "ghs-00000002"]
+    assert repo.list_github_sources(seeded, OTHER_SESSION) == []
+    assert repo.github_source_sessions(seeded) == [SESSION]
+
+
+def test_save_github_source_expected_revision_is_checked_in_the_transaction(seeded):
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    repo.save_github_source(seeded, SESSION, _source(config_revision=2), LATER, expected_revision=1)
+    with pytest.raises(StaleConfig) as exc:
+        repo.save_github_source(seeded, SESSION, _source(config_revision=2), LATER, expected_revision=1)
+    assert exc.value.current_revision == 2
+    assert repo.get_github_source(seeded, SESSION, SOURCE).config_revision == 2
+    with pytest.raises(NotFound):  # 잠금 갱신은 기존 소스만
+        repo.save_github_source(seeded, SESSION, _source(source_id="ghs-00000009"), LATER, expected_revision=1)
 
 
 def test_bind_assignee_upserts_by_github_user_id(cycle):

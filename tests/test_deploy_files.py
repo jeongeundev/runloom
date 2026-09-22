@@ -19,7 +19,7 @@ from workflow.connector.config import connector_paths
 from workflow.connector.masking import ENV_ALLOWLIST
 from workflow.scripted._common import PACE_ENV
 from workflow.server.settings import ENV_KEYS as CENTRAL_ENV_KEYS
-from workflow.server.settings import SECRET_KEYS, Limits
+from workflow.server.settings import OPTIONAL_SECRET_KEYS, SECRET_KEYS, Limits
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
@@ -180,14 +180,14 @@ def test_connector_env_example_keys_are_what_the_connector_reads():
     assert PACE_ENV in ENV_ALLOWLIST
     text = (DEPLOY / "env" / "connector.env.example").read_text(encoding="utf-8")
     assert "대본" in text and "실제 Codex" in text
-    for key in (*SECRET_KEYS, "DIAG_API_TOKEN", "OPENAI_API_KEY", "WORKFLOW_TOKEN"):
+    for key in (*SECRET_KEYS, *OPTIONAL_SECRET_KEYS, "DIAG_API_TOKEN", "OPENAI_API_KEY", "WORKFLOW_TOKEN"):
         assert key not in env
 
 
 def test_env_examples_leave_secrets_empty():
     central = _env_example("central.env.example")
     diag = _env_example("diag.env.example")
-    for key in SECRET_KEYS:
+    for key in (*SECRET_KEYS, *OPTIONAL_SECRET_KEYS):
         assert central[key] == "", f"central {key} 는 비어 있어야 한다"
     assert diag["DIAG_API_TOKEN"] == ""
     assert diag["OPENAI_API_KEY"] == ""

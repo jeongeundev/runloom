@@ -33,6 +33,7 @@ from workflow.adapters.errors import (
     NotFound,
     ResponseConflict,
     SequenceGap,
+    StaleConfig,
     StaleRequest,
 )
 from workflow.contracts.github import (
@@ -1237,13 +1238,24 @@ def _source_row(conn: Connection, session_id: str, source_id: str) -> Row:
     return row
 
 
-def save_github_source(conn: Connection, session_id: str, config: GitHubSourceConfig, now: str) -> None:
+def save_github_source(
+    conn: Connection, session_id: str, config: GitHubSourceConfig, now: str, *, expected_revision: int | None = None
+) -> None:
     """저장 또는 교체. 수집 커서는 유지한다. 다른 세션의 source_id → NotFound, 같은 세션에 같은 저장소 → IntegrityError.
-    `WORKFLOW_GITHUB_REPOS` 허용·`config_revision` 잠금은 서버 몫."""
+    `expected_revision` 을 주면 기존 소스만 갱신하고, 저장된 `config_revision` 이 다르면 같은 트랜잭션에서 StaleConfig.
+    `WORKFLOW_GITHUB_REPOS` 허용은 서버 몫."""
     with _tx(conn):
-        owner = _one(conn, "SELECT session_id FROM github_sources WHERE source_id = ?", (config.source_id,))
+        owner = _one(
+            conn, "SELECT session_id, config_json FROM github_sources WHERE source_id = ?", (config.source_id,)
+        )
         if owner is not None and owner["session_id"] != session_id:
             raise NotFound(f"source {config.source_id}")
+        if expected_revision is not None:
+            if owner is None:
+                raise NotFound(f"source {config.source_id}")
+            current = GitHubSourceConfig.model_validate_json(owner["config_json"]).config_revision
+            if current != expected_revision:
+                raise StaleConfig(config.source_id, current)
         conn.execute(
             "INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, created_at,"
             " updated_at) VALUES (?, ?, ?, ?, ?, ?)"
@@ -1259,6 +1271,20 @@ def get_github_source(conn: Connection, session_id: str, source_id: str) -> GitH
         (source_id, session_id),
     )
     return GitHubSourceConfig.model_validate_json(row["config_json"]) if row else None
+
+
+def list_github_sources(conn: Connection, session_id: str) -> list[GitHubSourceConfig]:
+    return [
+        GitHubSourceConfig.model_validate_json(r["config_json"])
+        for r in conn.execute(
+            "SELECT config_json FROM github_sources WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+        )
+    ]
+
+
+def github_source_sessions(conn: Connection) -> list[str]:
+    """GitHub 소스를 가진 세션들. 운영자 API 는 이것이 한 세션뿐이도록 지킨다(셀프호스트 1개 워크스페이스)."""
+    return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM github_sources ORDER BY session_id")]
 
 
 def save_source_cursor(conn: Connection, session_id: str, source_id: str, cursor: str, now: str) -> None:

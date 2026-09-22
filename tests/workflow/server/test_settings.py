@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from workflow.server.settings import ENV_KEYS, SECRET_KEYS, Limits, Settings, load_settings
+from workflow.server.settings import (
+    ENV_KEYS,
+    OPTIONAL_SECRET_KEYS,
+    SECRET_KEYS,
+    Limits,
+    Settings,
+    load_settings,
+)
 
 FULL = {
     "SESSION_SECRET": "s",
@@ -116,6 +123,25 @@ def test_public_url_drops_trailing_slash(raw, expected):
     assert s.public_url == expected
 
 
+def test_github_token_is_an_optional_secret():
+    """phase 8 step 6 — 없으면 GitHub 연결이 꺼질 뿐 서버는 뜬다. 개발 모드도 무작위 값을 만들지 않는다(가짜 토큰 금지)."""
+    s = load_settings(FULL)
+    assert s.github_token == ""
+    assert s.github_repos == ()
+    assert load_settings({"WORKFLOW_DEV": "1"}).github_token == ""
+    assert OPTIONAL_SECRET_KEYS == ("WORKFLOW_GITHUB_TOKEN",)
+    assert "WORKFLOW_GITHUB_TOKEN" not in SECRET_KEYS
+    assert {"WORKFLOW_GITHUB_TOKEN", "WORKFLOW_GITHUB_REPOS"} <= set(ENV_KEYS)
+
+
+def test_github_token_and_repos_are_read_and_token_stays_out_of_repr():
+    token = "github_pat_" + "x" * 40
+    s = load_settings({**FULL, "WORKFLOW_GITHUB_TOKEN": token, "WORKFLOW_GITHUB_REPOS": " acme/billing, ,Acme/Lib ,"})
+    assert s.github_token == token
+    assert s.github_repos == ("acme/billing", "Acme/Lib")
+    assert token not in repr(s)
+
+
 def test_non_integer_limit_raises():
     with pytest.raises(ValueError):
         load_settings({**FULL, "WORKFLOW_LIMIT_GLOBAL_DAILY": "many"})
@@ -145,5 +171,5 @@ def test_env_keys_lists_exactly_what_load_settings_reads():
     env = _RecordingEnv(FULL)
     load_settings(env)
     assert env.asked - {"WORKFLOW_DEV"} == set(ENV_KEYS)
-    assert set(SECRET_KEYS) <= set(ENV_KEYS)
+    assert set(SECRET_KEYS) | set(OPTIONAL_SECRET_KEYS) <= set(ENV_KEYS)
     assert len(ENV_KEYS) == len(set(ENV_KEYS))
