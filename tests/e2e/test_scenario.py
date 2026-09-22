@@ -8,6 +8,9 @@
 - test_22 ~ test_28: **세 번째 종류** (phase 6 step 8, ADR-0009) — 별도 세션이 `/kinds`·`/rules` 폼으로 종류 `review` 와 규칙
   `code_change --[ready_for_review]--> review` 를 등록하면 진단 → 수정 → 검토가 사람 조작 없이 이어진다 (B 승인 전에 C 착수).
   `composition.py`·`worker.py` 는 이 절을 위해 바뀌지 않았다 — 등록만으로 붙는다는 증명. 규칙을 지우면 C' 는 착수하지 않는다.
+- test_29 ~ test_35: **n8n 입구·출구** (phase 7 step 8, ADR-0010) — 별도 세션이 `/sources` 에서 입구 토큰을 발급하고, 테스트 안
+  HTTP 수신기(n8n Wait 노드 역할, 127.0.0.1 임시 포트)를 `callback_url` 로 하여 쿠키 없이 `POST /sources/n8n/chains`. 접수 즉시
+  A 가 시작되고 대본 A → B 뒤 사람 차례가 되면 `ChainCallback` 이 정확히 1건 온다 — 승인 뒤에도 두 번째는 없다. 거부 경로·세션 격리.
 
 `WORKFLOW_E2E=1` 일 때만 돈다 (verify.sh 가 매 턴 도는 pytest 에서 제외). 실제 Codex·Claude·OpenAI 는 호출하지 않는다:
 진단은 `DIAG_MODEL=fake`(fixture 대본), 코드 수정은 `workflow.scripted.codex`/`.claude` 래퍼(`LocalStack(scripted=True)`).
@@ -19,11 +22,14 @@
 import json
 import os
 import re
+import socketserver
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from html import unescape as html_unescape
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -33,6 +39,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 from local_stack import LocalStack  # noqa: E402
 from seed_demo import REVIEW_CAPABILITY_CODE  # noqa: E402
+
+from workflow.contracts.v1 import ChainCallback, InboundChainResponse  # noqa: E402
 
 pytestmark = [
     pytest.mark.e2e,
@@ -943,3 +951,318 @@ def test_28_review_demo_repo_untouched_by_review(chain_stack, review_ctx):
     assert not (worktrees / task_c).exists() and not (worktrees / f"{task_c}.handoff").exists()
     # 인계 디렉터리에 새 파일이 생겼다면 연결 프로그램이 `readonly_violation` 으로 실패시켰을 것이다 — C 는 result_ready 였다
     assert _executions(chain_stack, task_c) == [("result_ready", None)]
+
+
+# --- n8n 입구·출구 (phase 7 step 8, ADR-0010) — 입구 토큰 → 쿠키 없는 POST → 대본 A → B → callback 1회 ------------------
+
+# CONTRACT 12절 (a) 의 항목 2개. 라벨은 GitHub 시연 데이터 #41·#42 와 같다 — map_issue·compose 를 그대로 타므로 구성 결과도 같다
+N8N_ITEMS = [
+    {
+        "key": "run-daily-0920",
+        "title": "일일 보고서 2026-09-20 09:00 실행 실패",
+        "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다. 실패 원인과 수정에 필요한 근거를 조사해 주세요.",
+        "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
+        "blocked_by": [],
+    },
+    {
+        "key": "fix-format",
+        "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
+        "body": "진단 결과와 근거를 바탕으로 demo-report-repo 의 변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
+        "labels": ["bug", "repo:demo-report-repo"],
+        "blocked_by": ["run-daily-0920"],
+    },
+]
+N8N_CHAIN_TITLE = "일일 보고서 2026-09-20 09:00 실행 실패 → 응답 형식 변경에 맞춰 보고서 변환 수정"
+_ISSUED_TOKEN = re.compile(
+    r'<code id="issued-token">(wfs_[A-Za-z0-9_-]+)</code> · <span class="mono">(src-[0-9a-f]{8})</span>'
+)
+_CHAIN_LINK = re.compile(r'href="/chains/(chain-[0-9a-f]+)"')
+CALLBACK_WAIT_SECONDS = 30.0  # 사람 차례가 된 뒤 워커 tick(3초) 몇 바퀴 여유
+
+
+class _LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind 는 socket.getfqdn(host) 로 역방향 DNS 를 조회한다 — macOS 에서 30초 넘게 걸릴 수 있다. 루프백이라 필요 없다
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[0], self.server_address[1]
+
+
+class _CallbackReceiver:
+    """n8n Wait 노드 역할 — 127.0.0.1 의 임시 포트에서 POST 를 받아 (path, headers, body) 를 쌓고 200 {"ok": true} 로 답한다.
+    실패 모드는 두지 않는다 (재시도·중단은 워커 단위 테스트가 했다)."""
+
+    def __init__(self):
+        received: list[tuple[str, dict[str, str], dict]] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802 — http.server 의 메서드 이름
+                length = int(self.headers.get("content-length") or 0)
+                body = json.loads(self.rfile.read(length) or b"null")
+                received.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+                payload = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):  # pytest 출력을 어지럽히지 않는다
+                return
+
+        self.received = received
+        self._server = _LoopbackServer(("127.0.0.1", 0), Handler)  # 0.0.0.0 이 아니다 — 외부 접속을 열 이유가 없다
+        self.port = self._server.server_address[1]
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def url(self, path: str) -> str:
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def wait_for(self, count: int, timeout: float, interval: float = 0.3) -> None:
+        deadline = time.monotonic() + timeout
+        while len(self.received) < count:
+            assert time.monotonic() < deadline, (
+                f"{timeout}초 안에 callback {count}건이 오지 않음 (받은 것 {len(self.received)}건)"
+            )
+            time.sleep(interval)
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+@pytest.fixture(scope="module")
+def callback_receiver():
+    receiver = _CallbackReceiver()
+    yield receiver
+    receiver.close()
+
+
+@pytest.fixture(scope="module")
+def n8n_client(chain_stack) -> httpx.Client:
+    """n8n 절의 워크스페이스(세션) — 입구 토큰을 발급하고 체인 화면을 본다. 입구 API 호출은 쿠키 없이 `_inbound` 로 따로 한다."""
+    with httpx.Client(base_url=chain_stack.central_url, follow_redirects=False, timeout=10.0) as session:
+        yield session
+
+
+@pytest.fixture(scope="module")
+def n8n_ctx() -> dict:
+    return {}
+
+
+def _inbound(stack: LocalStack, token: str | None, body: dict) -> httpx.Response:
+    """쿠키 없는 입구 API 호출 — 발신자는 Bearer 입구 토큰으로만 정해진다 (n8n HTTP Request 노드와 같은 모양)."""
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+    return httpx.post(f"{stack.central_url}/sources/n8n/chains", headers=headers, json=body, timeout=10.0)
+
+
+def _chain_row(stack: LocalStack, chain_id: str) -> dict:
+    """중앙 DB 의 chains 행 — callback 열(`callback_sent_at`·`callback_attempts`·…)은 화면에 값 그대로 나오지 않으므로 DB 로 읽는다."""
+    conn = sqlite3.connect(stack.central_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        return dict(conn.execute("SELECT * FROM chains WHERE chain_id = ?", (chain_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def _chain_ids(client: httpx.Client) -> set[str]:
+    return set(_CHAIN_LINK.findall(client.get("/tasks").text))
+
+
+def test_29_n8n_sources_page_and_token_issue(chain_stack, n8n_client, n8n_ctx):
+    """1. 입구 화면 — 입구 주소는 공개 주소(LocalStack 기본 = 중앙 웹 주소) + /sources/n8n/chains. 발급 응답에 원문 한 번, 다시 열면 없다."""
+    _register_all(n8n_client, CATALOG)  # ops → codex → claude: prefer(등록 순) 규칙으로 코드 수정은 codex 가 기본 담당
+    _wait_agent(n8n_client, "agent-codex-mac", "연결됨", timeout=30)
+
+    page = n8n_client.get("/sources")
+    assert page.status_code == 200
+    assert f'<code id="inbound-url">{chain_stack.central_url}/sources/n8n/chains</code>' in page.text
+    assert "아직 발급한 토큰이 없습니다." in page.text
+    assert "허용된 host: <code>127.0.0.1</code>" in page.text  # LocalStack 기본 callback_hosts — 그 호스트의 모든 포트
+    assert 'href="/sources" class="active">입구</a>' in page.text  # 사이드바
+
+    issued = n8n_client.post("/sources/tokens", data={"label": "e2e"})
+    assert issued.status_code == 200, issued.text[:500]
+    match = _ISSUED_TOKEN.search(issued.text)
+    assert match, issued.text[:800]
+    n8n_ctx["token"], n8n_ctx["token_id"] = match.group(1), match.group(2)
+    assert "이 값은 다시 볼 수 없습니다" in issued.text
+
+    again = n8n_client.get("/sources").text
+    assert n8n_ctx["token"] not in again  # 원문은 발급 응답 한 번뿐 — 서버에는 sha256 만
+    assert f'data-token-id="{n8n_ctx["token_id"]}"' in again and "<td>e2e</td>" in again and "<td>없음</td>" in again
+
+
+def test_30_n8n_post_creates_chain_and_starts_first_task(chain_stack, callback_receiver, n8n_client, n8n_ctx):
+    """2. n8n HTTP Request 노드 역할 — 쿠키 없이 Bearer 만으로 POST. 201, 진단은 접수 즉시 실행 요청됨, 수정은 대기. 체인 화면은 callback 대기."""
+    body = {"contract_version": 1, "items": N8N_ITEMS, "callback_url": callback_receiver.url("/webhook-waiting/e2e")}
+    n8n_ctx["body"] = body
+    response = _inbound(chain_stack, n8n_ctx["token"], body)
+    assert response.status_code == 201, response.text
+    data = InboundChainResponse.model_validate(response.json())  # 계약 왕복
+    assert data.started is True and data.start_error is None and data.skipped == []
+    assert data.chain_url == f"{chain_stack.central_url}/chains/{data.chain_id}"
+    assert [(t.key, t.kind, t.status) for t in data.tasks] == [
+        ("run-daily-0920", "diagnosis", "실행 요청됨"), ("fix-format", "code_change", "대기"),
+    ]
+    assert n8n_ctx["token"] not in response.text
+    n8n_ctx["chain"] = data.chain_id
+    n8n_ctx["A"], n8n_ctx["B"] = (t.task_id for t in data.tasks)
+
+    html = _chain_page(n8n_client, data.chain_id)
+    assert f"워크플로우<span class=\"sep\">/</span>{N8N_CHAIN_TITLE}" in html
+    assert '<span class="chip">n8n</span>' in html and "시연 데이터" not in html  # 입구 항목은 fixture 가 아니다
+    assert f'data-callback-state="대기">callback · 127.0.0.1:{callback_receiver.port} · 대기(사람 차례가 되면 보냄)' in html
+    assert "webhook-waiting" not in html  # URL 전체는 찍지 않는다
+    node_b = _node_bodies(html)[n8n_ctx["B"]]
+    assert "일치 후보 2개" in node_b and "먼저 등록한 agent-codex-mac" in node_b  # items_json 으로 구성 이유 재계산
+    assert f'action="/tasks/{n8n_ctx["B"]}/run"' not in html  # 뒤 노드는 워커가 잇는다
+    assert "n8n · 0/2 완료" in re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", n8n_client.get("/tasks").text))
+    assert callback_receiver.received == []
+    _wait_agent(n8n_client, "agent-codex-mac", "연결됨", timeout=30)
+
+
+def test_31_n8n_a_then_b_run_without_human_action_and_b_waits_for_review(n8n_client, n8n_ctx):
+    """3. 사람 조작 없이 진단 완료 → 코드 수정 자동 착수 → 확인 필요 · 검토 대기 (test_16·17 과 같은 시간 한도). 실제 모델·Codex 아님."""
+    chain_id, task_a, task_b = n8n_ctx["chain"], n8n_ctx["A"], n8n_ctx["B"]
+    seen = _watch_chain(
+        n8n_client, chain_id, task_a, until=lambda label, _: label in ("완료", "실패", "확인 필요"), timeout=60,
+    )
+    label, reason = seen[-1]
+    assert label == "완료" and reason.startswith("판정 근거: "), seen
+    assert re.search(r'"model_id":\s*"fake-fixture-script"', _raw(n8n_client, task_a, _chips(_live(n8n_client, task_a))["진단 결과"]))
+
+    seen = _watch_chain(
+        n8n_client, chain_id, task_b,
+        until=lambda label, reason: (label, reason) == ("확인 필요", "검토 대기") or label in ("실패", "완료"),
+        timeout=120,
+    )
+    assert seen[-1] == ("확인 필요", "검토 대기"), seen
+    _assert_in_order(_labels(seen), ["대기", "실행 요청됨", "실행 중", "확인 필요"])
+    html = _chain_page(n8n_client, chain_id, live=True)
+    assert _gate(html) == ("확인 필요", "검토 대기") and 'data-poll="0"' in html  # 사람 차례
+    detail = _live(n8n_client, task_b)
+    assert 'data-outcome="ready_for_review"' in detail and "대본 재생 (실제 모델 호출 없음)" in detail
+    chips = _chips(detail)
+    n8n_ctx["B_result"] = _assert_fix_artifacts(n8n_client, task_b, chips)
+    assert "scripted-codex" in _raw(n8n_client, task_b, chips["Codex JSONL"])  # 실제 Codex 가 아니라 대본
+
+
+def test_32_n8n_callback_arrives_once_with_contract_body(chain_stack, callback_receiver, n8n_client, n8n_ctx):
+    """4. 사람 차례가 된 tick 의 마지막에 ChainCallback 1건 — 계약 왕복, 값, JSON 헤더. 체인 화면은 `전송됨`, DB 는 attempts 0."""
+    chain_id, task_a_id, task_b_id = n8n_ctx["chain"], n8n_ctx["A"], n8n_ctx["B"]
+    callback_receiver.wait_for(1, timeout=CALLBACK_WAIT_SECONDS)
+    path, headers, body = callback_receiver.received[0]
+    assert path == "/webhook-waiting/e2e"
+    assert headers["content-type"] == "application/json"
+    callback = ChainCallback.model_validate(body)
+    assert (callback.contract_version, callback.chain_id, callback.source) == (1, chain_id, "n8n")
+    assert callback.title == N8N_CHAIN_TITLE
+    assert callback.chain_url == f"{chain_stack.central_url}/chains/{chain_id}"
+    assert (callback.human_gate.label, callback.human_gate.status_label, callback.human_gate.reason) == (
+        "검토 승인 (사람) · 병합은 운영자 확인", "확인 필요", "검토 대기",
+    )
+    task_a, task_b = callback.tasks
+    assert (task_a.task_id, task_a.key, task_a.kind, task_a.title) == (task_a_id, "run-daily-0920", "diagnosis", N8N_ITEMS[0]["title"])
+    assert task_a.status == "완료" and task_a.status_reason.startswith("판정 근거: ")
+    assert task_a.outcome == "ready_for_handoff" and task_a.summary
+    assert (task_b.task_id, task_b.key, task_b.kind, task_b.title) == (task_b_id, "fix-format", "code_change", N8N_ITEMS[1]["title"])
+    assert (task_b.status, task_b.status_reason) == ("확인 필요", "검토 대기")
+    assert task_b.outcome == "ready_for_review" and task_b.summary
+    assert re.search(rf'"summary":\s*"{re.escape(task_b.summary)}"', n8n_ctx["B_result"])  # 수정 결과 봉투의 summary 그대로
+    for task in callback.tasks:
+        assert task.task_url == f"{chain_stack.central_url}/tasks/{task.task_id}"
+    assert n8n_ctx["token"] not in json.dumps(body)
+
+    html = _chain_page(n8n_client, chain_id)
+    assert f'data-callback-state="전송됨">callback · 127.0.0.1:{callback_receiver.port} · 전송됨' in html
+    row = _chain_row(chain_stack, chain_id)
+    assert row["callback_sent_at"] is not None
+    assert (row["callback_attempts"], row["callback_next_at"], row["callback_last_error"]) == (0, None, None)
+    n8n_ctx["callback_sent_at"] = row["callback_sent_at"]
+
+
+def test_33_n8n_no_second_callback_after_approve(chain_stack, callback_receiver, n8n_client, n8n_ctx):
+    """5. 승인 뒤 워커가 세 바퀴 넘게 더 돌아도 callback 은 1건 그대로 — 체인당 1회 (n8n Wait 노드는 한 번만 깨어난다)."""
+    chain_id, task_b = n8n_ctx["chain"], n8n_ctx["B"]
+    assert n8n_client.post(f"/tasks/{task_b}/review", data={"decision": "approve", "comment": ""}).status_code == 303
+    assert _status(_live(n8n_client, task_b)) == ("완료", "검토 승인 · 병합: 운영자 확인 대기")
+    assert _gate(_chain_page(n8n_client, chain_id)) == ("완료", "병합: 운영자 확인 대기")
+
+    time.sleep(10)  # 중앙 워커 3바퀴 이상 (3초 간격) — 승인으로 바뀐 상태를 다시 판정해도 보내지 않는다
+    assert len(callback_receiver.received) == 1
+    row = _chain_row(chain_stack, chain_id)
+    assert row["callback_sent_at"] == n8n_ctx["callback_sent_at"] and row["callback_attempts"] == 0
+    assert _executions(chain_stack, task_b) == [("result_ready", None)]
+
+
+def test_34_n8n_rejections_and_chain_without_callback(chain_stack, callback_receiver, n8n_client, n8n_ctx):
+    """6. 거부 경로 — (a) 허용 밖 host 422·체인 안 생김, (c) Bearer 없음 401, (d) callback_url 없이 201·callback 없이 진행,
+    (b) 토큰 취소 뒤 같은 POST 401. (d) 가 토큰을 쓰므로 취소는 마지막에 한다. 앞 체인은 test_33 에서 마감돼 활성 업무는 2개다."""
+    token, body = n8n_ctx["token"], n8n_ctx["body"]
+    chains_before = _chain_ids(n8n_client)
+    assert chains_before == {n8n_ctx["chain"]}
+
+    # (a) 허용 목록(127.0.0.1) 밖 — 접수 전에 거부, 체인 없음
+    response = _inbound(chain_stack, token, {**body, "callback_url": "http://example.com/x"})
+    assert response.status_code == 422, response.text
+    error = response.json()
+    assert (error["code"], error["field"], error["details"]) == (
+        "callback_host_not_allowed", "callback_url", {"allowed": ["127.0.0.1"]},
+    )
+    assert "example.com" in error["message"]
+    assert _chain_ids(n8n_client) == chains_before
+
+    # (c) Bearer 없음 — 세션 쿠키가 있어도 통과하지 않는다 (브라우저 CSRF 경로 없음)
+    response = n8n_client.post("/sources/n8n/chains", json=body)
+    assert response.status_code == 401 and response.json()["code"] == "unauthenticated", response.text
+    assert _inbound(chain_stack, None, body).status_code == 401
+    assert _chain_ids(n8n_client) == chains_before
+
+    # (d) callback_url 없이 — 접수·즉시 시작은 같고 callback 만 없다
+    without = {key: value for key, value in body.items() if key != "callback_url"}
+    response = _inbound(chain_stack, token, without)
+    assert response.status_code == 201, response.text
+    data = InboundChainResponse.model_validate(response.json())
+    assert data.started is True and [t.status for t in data.tasks] == ["실행 요청됨", "대기"]
+    n8n_ctx["chain2"] = data.chain_id
+    _, n8n_ctx["B2"] = (t.task_id for t in data.tasks)
+    html = _chain_page(n8n_client, data.chain_id)
+    assert '<span class="chip">n8n</span>' in html and "callback" not in html
+    assert _chain_row(chain_stack, data.chain_id)["callback_url"] is None
+    assert _chain_ids(n8n_client) == chains_before | {data.chain_id}
+
+    # (b) 토큰 취소 → 다음 요청부터 401
+    response = n8n_client.post(f"/sources/tokens/{n8n_ctx['token_id']}/revoke")
+    assert response.status_code == 303 and response.headers["location"] == "/sources"
+    sources = n8n_client.get("/sources").text
+    assert "취소됨" in sources and "<td>e2e</td>" in sources
+    response = _inbound(chain_stack, token, body)
+    assert response.status_code == 401 and response.json()["code"] == "unauthenticated", response.text
+    assert _chain_ids(n8n_client) == chains_before | {data.chain_id}
+
+    # (d) 의 체인은 callback 없이 A → B 가 그대로 이어지고, 사람 차례가 돼도 수신기에는 아무것도 오지 않는다
+    seen = _watch_chain(
+        n8n_client, data.chain_id, n8n_ctx["B2"],
+        until=lambda label, reason: (label, reason) == ("확인 필요", "검토 대기") or label in ("실패", "완료"),
+        timeout=120,
+    )
+    assert seen[-1] == ("확인 필요", "검토 대기"), seen
+    time.sleep(7)  # 워커 두 바퀴 — callback_url 이 없는 체인은 chains_awaiting_callback 에 들지 않는다
+    assert len(callback_receiver.received) == 1
+    row = _chain_row(chain_stack, data.chain_id)
+    assert (row["callback_sent_at"], row["callback_attempts"]) == (None, 0)
+
+
+def test_35_n8n_other_session_cannot_see_the_chain_or_token(chain_stack, n8n_client, n8n_ctx):
+    """7. 다른 세션은 이 체인·업무·토큰을 보지 못한다 (test_09·20 방식). 발급한 세션의 홈에는 두 체인이 보인다."""
+    with httpx.Client(base_url=chain_stack.central_url, follow_redirects=False, timeout=10.0) as other:
+        assert other.get(f"/chains/{n8n_ctx['chain']}").status_code == 404
+        assert other.get(f"/chains/{n8n_ctx['chain2']}").status_code == 404
+        assert other.get(f"/tasks/{n8n_ctx['B']}").status_code == 404
+        home = other.get("/tasks").text
+        assert "아직 업무가 없습니다." in home and f'href="/chains/{n8n_ctx["chain"]}"' not in home
+        sources = other.get("/sources").text
+        assert n8n_ctx["token_id"] not in sources and "아직 발급한 토큰이 없습니다." in sources
+        assert other.post(f"/sources/tokens/{n8n_ctx['token_id']}/revoke").status_code == 404  # 존재를 알리지 않는다
+    assert _chain_ids(n8n_client) == {n8n_ctx["chain"], n8n_ctx["chain2"]}

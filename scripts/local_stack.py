@@ -2,6 +2,7 @@
 """로컬 5-프로세스 기동기 — 클라우드·API 키·실제 Codex 없이 전체 흐름을 한 컴퓨터에서 띄운다.
 
     python3 scripts/local_stack.py [--workdir DIR] [--central-port 18000] [--diag-port 18100] [--fake-codex PATH] [--scripted]
+                                   [--callback-hosts 127.0.0.1] [--public-url http://127.0.0.1:18000]
 
 기동 순서: 데모 저장소 scaffold → 진단 API → 진단 워커(`DIAG_MODEL=fake`) → 중앙 API → seed(카탈로그 3개) → 중앙 워커 →
 connector connect / register ×2(codex·claude, 같은 폴더) / run(`--adapter auto` — 등록의 tool 로 어댑터를 고른다).
@@ -15,6 +16,8 @@ connector connect / register ×2(codex·claude, 같은 폴더) / run(`--adapter 
   `--scripted`(세 Agent 에 "시연용 · 대본 재생")로 돈다. 둘 다 주면 `scripted` 가 우선. 대본 속도
   `WORKFLOW_SCRIPT_PACE_SECONDS` 는 부모 환경에 있으면 connector 자식에 그대로 넘긴다 (기본 0 이라 e2e 속도는 그대로).
 - heartbeat 오프라인 판정은 10초로 줄이고 connector heartbeat 는 3초 — e2e 가 연결 끊김을 100초 안에 보기 위해서다.
+- `callback_hosts`(기본 `127.0.0.1` — 그 호스트의 모든 포트)·`public_url`(기본 `central_url`)은 중앙 API·중앙 워커의
+  `WORKFLOW_CALLBACK_HOSTS`·`WORKFLOW_PUBLIC_URL` 이 된다 (n8n 출구, ADR-0010). e2e 는 127.0.0.1 의 임시 포트 수신기로 callback 을 받는다.
 """
 
 import argparse
@@ -68,9 +71,13 @@ class LocalStack:
         fake_codex: Path | None,
         scripted: bool = False,
         heartbeat_offline_seconds: int = 10,
+        callback_hosts: str = "127.0.0.1",
+        public_url: str | None = None,
     ):
         self.workdir = Path(workdir).resolve()
         self.central_url = f"http://127.0.0.1:{central_port}"
+        self.callback_hosts = callback_hosts
+        self.public_url = public_url if public_url is not None else self.central_url
         self.diag_url = f"http://127.0.0.1:{diag_port}"
         self.repo_path = self.workdir / "demo-report-repo"
         self.logs_dir = self.workdir / "logs"
@@ -137,6 +144,8 @@ class LocalStack:
             "WORKFLOW_ARTIFACT_DIR": str(self.central_artifacts),
             "DIAG_API_URL": self.diag_url,
             "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS": str(heartbeat_offline_seconds),
+            "WORKFLOW_CALLBACK_HOSTS": self.callback_hosts,
+            "WORKFLOW_PUBLIC_URL": self.public_url,
             **self._secrets,
         }
         diag_env = {
@@ -293,6 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="이 스크립트를 codex 로 쓴다 (예: tests/e2e/fake_codex.py). 없으면 PATH 의 실제 codex")
     parser.add_argument("--scripted", action="store_true",
                         help="codex·claude 를 대본 에이전트(workflow.scripted)로 쓴다. --fake-codex 보다 우선")
+    parser.add_argument("--callback-hosts", default="127.0.0.1",
+                        help="WORKFLOW_CALLBACK_HOSTS — callback 을 보내도 되는 host[:port] 콤마 목록 (예: localhost:5678)")
+    parser.add_argument("--public-url", default=None,
+                        help="WORKFLOW_PUBLIC_URL — 응답·callback 의 chain_url·task_url 앞에 붙는 주소. 기본은 중앙 웹 주소")
     return parser
 
 
@@ -300,13 +313,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="workflow-local-stack-"))
     stack = LocalStack(workdir, central_port=args.central_port, diag_port=args.diag_port, fake_codex=args.fake_codex,
-                       scripted=args.scripted)
+                       scripted=args.scripted, callback_hosts=args.callback_hosts, public_url=args.public_url)
     try:
         with stack:
             print(f"중앙 웹: {stack.central_url}")
             print(f"진단 API: {stack.diag_url} (localhost 전용, Bearer 필요)")
             print(f"작업 디렉터리: {stack.workdir} (로그 {stack.logs_dir}, 데모 저장소 {stack.repo_path})")
             print(f"운영자 토큰: {stack.operator_token}")
+            print(f"callback 허용 목록: {stack.callback_hosts} · 공개 주소: {stack.public_url}")
             if args.scripted:
                 print("codex·claude: 대본 에이전트 (workflow.scripted)")
             else:

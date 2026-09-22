@@ -69,7 +69,10 @@
     {
       "step": 8,
       "name": "e2e-n8n",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-22T12:53:25+0900",
+      "completed_at": "2026-09-22T13:13:37+0900",
+      "summary": "e2e 증명 — 제품 코드(src/) 무변경(git diff --stat HEAD -- src 빈 출력). scripts/local_stack.py: LocalStack(callback_hosts='127.0.0.1', public_url=None→central_url) 이 중앙 API·중앙 워커 공용 central_env 에 WORKFLOW_CALLBACK_HOSTS·WORKFLOW_PUBLIC_URL 을 넣고(진단·연결 프로그램 env 에는 없음), main 에 --callback-hosts(기본 127.0.0.1)·--public-url(기본 없음) 추가, docstring 사용법 반영, 기동 출력 1줄. scripts/test_local_stack.py 5건(기본값·포트 추종·덮어쓰기·parser·main 전달) 28 passed. tests/e2e/conftest.py 무변경. tests/e2e/test_scenario.py 새 절 test_29~35 (7건): _CallbackReceiver(ThreadingHTTPServer 127.0.0.1:0 데몬 스레드, (path, headers, body) 수집, 200 {ok:true}, 0.0.0.0 아님)·n8n_client(chain_stack 위 새 세션)·n8n_ctx·_inbound(쿠키 없는 Bearer POST)·_chain_row(sqlite)·_chain_ids. 29 입구 화면·토큰 발급(원문 1회, 재열람 없음) / 30 POST 201 started=true·tasks[실행 요청됨, 대기]·chain_url=central_url·체인 화면 n8n 칩·callback 대기 줄·items_json 이유 재계산 / 31 A 완료 → B 자동 착수 → 확인 필요·검토 대기(test_16·17 과 같은 60·120초 한도) / 32 callback 1건 30초 폴링 — ChainCallback 왕복, source n8n, human_gate(확인 필요·검토 대기), tasks[0] diagnosis·ready_for_handoff, tasks[1] code_change·확인 필요·ready_for_review·summary=수정 결과 봉투, chain_url·task_url, content-type application/json, 화면 '전송됨', DB attempts 0 / 33 B 승인 후 10초 — 여전히 1건, callback_sent_at 그대로 / 34 (a) example.com 422 callback_host_not_allowed 체인 없음, (c) Bearer 없음 401(쿠키 있어도), (d) callback_url 없이 201·callback 줄 없음·A→B 검토 대기까지 진행해도 수신 없음, (b) 취소 303 후 같은 POST 401 — 순서 (a)(c)(d)(b) 는 (d) 가 토큰을 쓰기 때문 / 35 다른 세션 404·토큰 미노출·취소 404. 실행: 전체 e2e 36 passed 130.31초(13:05:01~13:07:12 KST), 절만 7 passed 36.18초, python3 -m pytest -q 1714 passed·36 skipped, ruff clean. callback 은 B 결과 판정과 같은 tick(13:06:45.754 results_checked 1·callbacks_sent 1)의 마지막 단계에서 전송, 접수부터 7.7초. 고친 결함(테스트 하네스): http.server 의 server_bind 가 getfqdn('127.0.0.1') 역방향 DNS 로 이 Mac 에서 35초 걸려 첫 -k n8n 실행이 71.65초 — _LoopbackServer.server_bind 로 건너뛰어 0초. 주의: AC 의 --help grep -c 는 argparse usage 블록까지 세어 2 가 아니라 4(두 옵션 모두 있음). docs/VERIFICATION_LOG.md 에 '2026-09-22 — n8n 입구·출구 e2e (phase 7 step 8)' 절(대본/실제 구분·시각·테스트 번호·결함). ARCHITECTURE 검증 순서 7번(실제 n8n)은 step 10 몫으로 미갱신, docs/n8n/README.md 는 인자 이름이 이미 같아 무변경."
     },
     {
       "step": 9,
