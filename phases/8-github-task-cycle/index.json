@@ -135,7 +135,8 @@
       "name": "github-live",
       "status": "blocked",
       "started_at": "2026-09-23T06:39:49+0900",
-      "blocked_reason": "실연동에 필요한 운영자 값이 없음(2026-09-23 확인): WORKFLOW_GITHUB_TOKEN·WORKFLOW_GITHUB_REPOS 환경변수 미설정, 테스트 저장소(owner/name)·대상 이슈 번호 또는 라벨+start_at·해당 이슈 댓글 생성/수정 허가·fine-grained PAT(그 저장소만, Issues RW·Metadata R, 짧은 만료, 검증 뒤 폐기 여부)·운영자 Mac 로컬 클론 경로+깨끗한 기준 브랜치+검증 명령·수정/검토 도구(Codex/Claude)와 계정·허용 비용 상한·max_rework_rounds·종료 후 정리 방침(댓글·task/<id> 브랜치·소스·토큰) 미지정. gh CLI 로그인 토큰(OAuth, 넓은 권한)은 권한 확대라 사용하지 않음. docs/github/README.md '실연동 체크리스트 — step 16' 값을 정한 뒤 재실행. 실제 GitHub 쓰기·유료 호출·코드 변경 없음."
+      "blocked_reason": "실연동에 필요한 운영자 값이 없음(2026-09-23 확인): WORKFLOW_GITHUB_TOKEN·WORKFLOW_GITHUB_REPOS 환경변수 미설정, 테스트 저장소(owner/name)·대상 이슈 번호 또는 라벨+start_at·해당 이슈 댓글 생성/수정 허가·fine-grained PAT(그 저장소만, Issues RW·Metadata R, 짧은 만료, 검증 뒤 폐기 여부)·운영자 Mac 로컬 클론 경로+깨끗한 기준 브랜치+검증 명령·수정/검토 도구(Codex/Claude)와 계정·허용 비용 상한·max_rework_rounds·종료 후 정리 방침(댓글·task/<id> 브랜치·소스·토큰) 미지정. gh CLI 로그인 토큰(OAuth, 넓은 권한)은 권한 확대라 사용하지 않음. docs/github/README.md '실연동 체크리스트 — step 16' 값을 정한 뒤 재실행. 실제 GitHub 쓰기·유료 호출·코드 변경 없음.",
+      "blocked_at": "2026-09-23T06:41:39+0900"
     }
   ],
   "created_at": "2026-09-23T03:18:11+0900"

@@ -44,7 +44,8 @@
     },
     {
       "dir": "8-github-task-cycle",
-      "status": "pending"
+      "status": "blocked",
+      "blocked_at": "2026-09-23T06:41:39+0900"
     }
   ]
 }
