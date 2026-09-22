@@ -1141,7 +1141,7 @@ def test_code_review_wrong_source_reference_is_source_mismatch(state_conn, repo,
         (side_tree / "src.py").write_text("VALUE = 'side'\n")
         result = git_ops.commit_all(side_tree, "side")
     else:
-        source = fix.model_copy(update={"base_commit": git_ops.head_sha(repo)[:39] + "0"})
+        source = fix.model_copy(update={"base_commit": "0" * 40})  # 저장소에 없는 고정 값 — 항상 target 과 다르다
     adapter = ScriptedTool(state_conn, ReadingReviewer())
 
     output = adapter.run(
