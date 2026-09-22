@@ -1282,6 +1282,12 @@ def list_github_sources(conn: Connection, session_id: str) -> list[GitHubSourceC
     ]
 
 
+def github_source_session(conn: Connection, source_id: str) -> str | None:
+    """소스를 가진 세션. 수집기(워커)가 source_id 로 소유 세션을 찾을 때 쓴다."""
+    row = _one(conn, "SELECT session_id FROM github_sources WHERE source_id = ?", (source_id,))
+    return row["session_id"] if row else None
+
+
 def github_source_sessions(conn: Connection) -> list[str]:
     """GitHub 소스를 가진 세션들. 운영자 API 는 이것이 한 세션뿐이도록 지킨다(셀프호스트 1개 워크스페이스)."""
     return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM github_sources ORDER BY session_id")]
@@ -1332,14 +1338,16 @@ class SourceIssueUpsert:
     action: Literal["created", "updated", "unchanged", "stale"]
     task_id: str
     source_revision: int
+    input_changed: bool = False  # Task 제목·요청이 바뀌어 Task revision 이 올랐다
 
 
 def upsert_source_issue(
     conn: Connection, session_id: str, source_id: str, snapshot: GitHubIssueSnapshot, *, task: dict, now: str
 ) -> SourceIssueUpsert:
     """원본 이슈 하나를 `(source_id, github_issue_id)` 로 Task 하나에 잇는다. 처음 보면 `task`(insert_task 와 같은 dict)를
-    같은 트랜잭션에 만들고, 이미 있으면 `task` 는 쓰지 않는다. `updated_at` 이 저장값보다 이르면 버리고, 같은 시각이라도
-    digest 가 다르면 새 revision 이다(ADR-0014 결정 9). Task 의 revision·요청 반영은 호출자 몫."""
+    같은 트랜잭션에 만든다. `updated_at` 이 저장값보다 이르면 버리고, 같은 시각이라도 digest 가 다르면 새 revision 이다
+    (ADR-0014 결정 9). 이미 있는 Task 는 `task` 의 제목·요청만 본다 — 마감 전이고 둘 중 하나가 다르면 같은 트랜잭션에서
+    바꾸고 Task revision+1(다음 실행 입력, 진행 중 실행의 요청은 그대로). 담당·라벨·상태는 원본 스냅샷에만 남는다."""
     digest = snapshot_digest(snapshot)
     with _tx(conn):
         source = _source_row(conn, session_id, source_id)
@@ -1373,7 +1381,20 @@ def upsert_source_issue(
             (snapshot.number, revision, snapshot.model_dump_json(), digest, snapshot.updated_at, snapshot.state,
              now, source_id, snapshot.issue_id),
         )
-        return SourceIssueUpsert("updated", row["task_id"], revision)
+        cur = conn.execute(
+            "UPDATE tasks SET title = ?, request = ?, revision = revision + 1"
+            " WHERE task_id = ? AND finished_at IS NULL AND (title != ? OR request != ?)",
+            (task["title"], task["request"], row["task_id"], task["title"], task["request"]),
+        )
+        return SourceIssueUpsert("updated", row["task_id"], revision, input_changed=cur.rowcount == 1)
+
+
+def list_source_issues(conn: Connection, session_id: str, source_id: str) -> list[Row]:
+    """이 소스가 받은 이슈 전부(번호 순). 다른 세션의 소스면 NotFound."""
+    _source_row(conn, session_id, source_id)
+    return conn.execute(
+        "SELECT * FROM source_issues WHERE source_id = ? ORDER BY issue_number", (source_id,)
+    ).fetchall()
 
 
 def get_source_issue_by_task(conn: Connection, session_id: str, task_id: str) -> Row | None:

@@ -1,6 +1,6 @@
 """중앙 워커 — ARCHITECTURE "실행 조정 워커". `python3 -m workflow.server.worker`.
 
-DB 를 기준으로 상태를 전진시킨다: 연결 상태 → 서버 관찰(unknown·heartbeat) → 진단 전달 → 진단 폴링 →
+DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → 연결 상태 → 서버 관찰(unknown·heartbeat) → 진단 전달 → 진단 폴링 →
 A 판정 → B 결과 확인 → 범용 결과 판정 → 후속 스캔 → 실패 반영 → callback 전달. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
 HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에 오므로 같은 tick 에 판정이 나면 바로 잇는다.
 
@@ -14,6 +14,9 @@ HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 �
   결과 안의 진단 API 쪽 산출물 ID 는 중앙에 저장한 산출물 ID 로 치환해 화면·인계가 중앙 ID 만 보게 한다.
 - Task 의 저장 상태는 `domain.status.user_status` 와 같은 문구로 쓴다. `실패`(종료 확인)·`완료`(자동 판정)만
   마감(`finished_at`)하고 잠금을 해제한다. `확인 필요`·`unknown`·검토 대기는 잠금을 유지한다.
+- GitHub 수집(ADR-0014)은 GitHub 클라이언트가 있을 때만(토큰이 설정됐을 때) 켜진 소스마다 `GITHUB_SYNC_INTERVAL_SECONDS`
+  간격으로 `github_sync.sync_source` 를 부른다. rate limit 이면 그 소스는 알려준 시간만큼 쉰다. 수집은 Task 만 만들고
+  착수하지 않는다.
 - callback 은 체인이 사람 차례(`chain_settled`)가 되면 1회 보낸다 (ADR-0010). tick 의 마지막 단계라 A 판정 → B 착수가
   같은 tick 에 일어나면 그 사이에 보내지 않는다. 실패는 attempts·next_at 으로 물러나 재시도하고 5회 뒤 멈춘다.
 """
@@ -43,6 +46,7 @@ from workflow.adapters.diag_client import (
     DiagUnavailable,
     HttpDiagClient,
 )
+from workflow.adapters.github_client import GitHubClient, HttpGitHubClient
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     AdapterError,
@@ -84,7 +88,7 @@ from workflow.domain.verification import (
     TraceEntry,
     verify_diagnosis,
 )
-from workflow.server import views
+from workflow.server import github_sync, views
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
 
@@ -98,12 +102,17 @@ _EXIT_CODE_LINE = re.compile(r"^exit_code=(-?\d+)\s*$")
 # callback 재시도 (ADR-0010): n 회째 실패 뒤 30·2^(n-1) 초 (30·60·120·240), 5회 실패 후 중단
 CALLBACK_MAX_ATTEMPTS = 5
 CALLBACK_BACKOFF_SECONDS = 30
+# GitHub 목록 폴링 간격(소스마다). 변화 없으면 ETag 304 라 primary 한도를 쓰지 않는다
+GITHUB_SYNC_INTERVAL_SECONDS = 60
 
 
 @dataclass
 class TickReport:
     """워커 한 바퀴의 처리 건수 요약. 로그·테스트용이며 상태가 아니다."""
 
+    sources_synced: int = 0  # 이번 바퀴에 수집한 GitHub 소스
+    issues_created: int = 0  # 수집이 새로 만든 Task
+    sync_errors: int = 0  # GitHub 호출 실패(다음 간격에 같은 커서로 다시)
     agents_offline: int = 0
     observations: int = 0
     submitted: int = 0
@@ -313,7 +322,10 @@ class Worker:
         callbacks: CallbackClient,
         settings: Settings,
         clock: Callable[[], str],
+        github: GitHubClient | None = None,
     ):
+        self._github = github
+        self._github_next_at: dict[str, str] = {}  # source_id → 다음 수집 시각(메모리 — 재시작하면 바로 한 번 부른다)
         self._conn_factory = conn_factory
         self._store = store
         self._diag = diag
@@ -327,6 +339,7 @@ class Worker:
         report = TickReport()
         conn = self._conn_factory()
         try:
+            self._sync_github(conn, report)
             self._mark_offline(conn, report)
             self._observe(conn, report)
             self._submit_diagnoses(conn, report)
@@ -350,6 +363,26 @@ class Worker:
             except Exception:  # 한 바퀴의 예외로 워커를 죽이지 않는다. systemd 재시작보다 다음 바퀴가 빠르다
                 log.exception("tick 실패 — 다음 바퀴에 재시도")
             time.sleep(interval_seconds)
+
+    # --- GitHub 수집 ---------------------------------------------------------------------
+
+    def _sync_github(self, conn: Connection, report: TickReport) -> None:
+        if self._github is None:
+            return
+        now = self._clock()
+        for session_id in repo.github_source_sessions(conn):
+            for config in repo.list_github_sources(conn, session_id):
+                due = self._github_next_at.get(config.source_id)
+                if not config.enabled or (due is not None and _parse(now) < _parse(due)):
+                    continue
+                result = github_sync.sync_source(conn, self._github, config.source_id, now)
+                report.sources_synced += 1
+                report.issues_created += len(result.created)
+                if result.error is not None:
+                    report.sync_errors += 1
+                    log.warning("GitHub 수집 실패 %s: %s", config.source_id, result.error)
+                wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
+                self._github_next_at[config.source_id] = _plus_seconds(now, wait)
 
     # --- Task 상태 ---------------------------------------------------------------------
 
@@ -981,6 +1014,8 @@ def main() -> None:
         callbacks=HttpCallbackClient(),
         settings=settings,
         clock=utc_now,
+        # 토큰이 없으면 GitHub 수집만 꺼진다(ADR-0014 결정 1)
+        github=HttpGitHubClient(settings.github_token, settings.github_repos) if settings.github_token else None,
     )
     log.info("중앙 워커 시작 — 복구 스캔 %s", asdict(worker.tick()))
     worker.run_forever(3.0)

@@ -1695,6 +1695,45 @@ def test_upsert_source_issue_rejects_other_session_and_wrong_repository(cycle):
     assert repo.get_task(cycle, "t-9") is None
 
 
+def test_upsert_source_issue_raises_task_revision_only_when_input_changes(cycle):
+    """제목·요청이 바뀌면 Task revision+1(다음 실행 입력). 담당·라벨·시각만 바뀌면 원본 revision 만 오른다."""
+    assigned = _snapshot(assignee_ids=[1, 2], assignee_logins=["a", "b"], updated_at="2026-10-06T10:20:00Z")
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, assigned, task=_fix_task(), now=LATER)
+    assert (result.action, result.source_revision, result.input_changed) == ("updated", 2, False)
+    assert repo.get_task(cycle, "task-gh-41")["revision"] == 1
+
+    edited = _snapshot(body="재현 절차 보강", updated_at="2026-10-06T10:30:00Z")
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, edited,
+                                      task=_fix_task(title="새 제목", request="재현 절차 보강"), now=LATER)
+    assert (result.action, result.source_revision, result.input_changed) == ("updated", 3, True)
+    task = repo.get_task(cycle, "task-gh-41")
+    assert (task["title"], task["request"], task["revision"]) == ("새 제목", "재현 절차 보강", 2)
+
+    stale = _snapshot(updated_at="2026-10-06T10:00:00Z")
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, stale, task=_fix_task(title="옛 제목"), now=LATER)
+    assert (result.action, result.input_changed) == ("stale", False)
+    assert repo.get_task(cycle, "task-gh-41")["title"] == "새 제목"
+
+
+def test_upsert_source_issue_keeps_finished_task_input(cycle):
+    repo.update_task_status(cycle, "task-gh-41", "실패", "운영자 종료", finished_at=LATER)
+    edited = _snapshot(body="다시 편집", updated_at="2026-10-06T10:30:00Z")
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, edited,
+                                      task=_fix_task(request="다시 편집"), now=LATER)
+    assert (result.action, result.input_changed) == ("updated", False)
+    task = repo.get_task(cycle, "task-gh-41")
+    assert (task["request"], task["revision"], task["status"]) == ("GitHub acme/billing#41", 1, "실패")
+
+
+def test_source_issue_lookup_and_source_owner(cycle):
+    assert repo.github_source_session(cycle, SOURCE) == SESSION
+    assert repo.github_source_session(cycle, "ghs-99999999") is None
+    rows = repo.list_source_issues(cycle, SESSION, SOURCE)
+    assert [(r["issue_number"], r["task_id"]) for r in rows] == [(41, "task-gh-41")]
+    with pytest.raises(NotFound):
+        repo.list_source_issues(cycle, OTHER_SESSION, SOURCE)
+
+
 def _review_spec(cause: str = "exec-fix-1", session_id: str = SESSION) -> FollowupTaskSpec:
     return FollowupTaskSpec(session_id=session_id, kind="code_review", cause_execution_id=cause,
                             predecessor_task_id="task-gh-41", rules_revision=1)
