@@ -29,7 +29,10 @@
     {
       "step": 3,
       "name": "followup-policy",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-23T03:48:38+0900",
+      "summary": "domain/task_followup.py 신설: decide_followup(FollowupContext)->FollowupDecision(action, reason, target_task_id, create: FollowupTaskSpec, cause_key, request_code, hold_code, review_commit, base_commit, input_execution_ids), ReviewFacts. 결정: 후속 종류는 rules(SuccessorRule 표)에서 from_kind·outcome 으로 찾음(종류 이름 분기 없음), 수정/검토 구분은 ReviewFacts 유무. 기존 업무 대응은 호출자가 명시적 원인 참조로 existing_followup_task_id 전달(있으면 link_existing, 없으면 create_task — FollowupTaskSpec(session_id, kind, cause_execution_id, predecessor_task_id, rules_revision)). cause_key: review:<fix_exec>·rework:<review_exec>·<request_code>:<exec>, handled_cause_keys 에 있으면 none(동일 결과·재시작 중복 방지). verdict failed→<role>_verification_failed, needs_information→<role>_needs_information(role=fix|review) 사람 요청. approved→none(병합·이슈 종료는 사람). changes_requested→rounds_used<max_rework_rounds 면 같은 수정 Task rework(base_commit=검토한 커밋, 입력=이전 수정·검토 실행), 아니면 rework_limit_reached(max 0=바로 사람). (source_execution_id, reviewed_commit)≠최신 수정 결과면 stale_review. task_closed·source_closed 는 none+hold_code. ARCHITECTURE 인터페이스 행 갱신. 검증: 새 테스트 18개, pytest 1908 passed/36 skipped, ruff 통과. 다음 주의: rounds_used 는 지금까지 돈 자동 재작업 횟수로 readiness 의 rework_rounds_used 와 같은 값을 넘길 것; handled_cause_keys·existing_followup_task_id·latest_fix_* 는 step 10 워커가 DB(UNIQUE start_key·후속 원인 키·HumanRequest cause_key)에서 계산; approved 시 수정 Task '확인 필요' 표시와 검토 Task 완료는 워커 몫; '예산 초과'는 재작업 상한(max_rework_rounds)으로 해석.",
+      "completed_at": "2026-09-23T04:00:00+0900"
     },
     {
       "step": 4,
