@@ -345,11 +345,17 @@ def review_flow(conn, client, clock) -> tuple[str, str]:
 
 
 def n8n_chain(callback_url=CALLBACK_URL) -> dict:
-    """입구 API 가 만든 체인 행 (`source` n8n). `callback_url=None` 이면 출구 없음."""
+    """입구 API 가 만든 체인 행 (`source` n8n). `callback_url=None` 이면 출구 없음. `items` 는 InboundItem 원문 모양 —
+    체인 화면(`views._composition_reasons`)이 이것으로 구성 이유를 다시 만든다."""
     return {
         "chain_id": CHAIN_ID, "session_id": SESSION, "title": "일일 보고서 실패 진단 → 보고서 변환 수정",
         "source": "n8n", "callback_url": callback_url,
-        "items": [{"key": KEY_A}, {"key": KEY_B}],
+        "items": [
+            {"key": KEY_A, "title": "일일 보고서 실패 진단", "body": "조사",
+             "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"], "blocked_by": []},
+            {"key": KEY_B, "title": "보고서 변환 수정", "body": "수정",
+             "labels": ["bug", "repo:demo-report-repo"], "blocked_by": [KEY_A]},
+        ],
     }
 
 

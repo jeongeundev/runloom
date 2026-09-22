@@ -27,7 +27,8 @@ def _by_number(source: str) -> dict[int, Issue]:
 
 def test_sources_and_labels():
     assert SOURCES == ("github", "jira")
-    assert SOURCE_LABELS == {"github": "GitHub Issues", "jira": "Jira"}
+    # n8n 은 라벨만 있고 SOURCES 에 없다 — fixture 파일이 없어 가져오기 화면에 나오지 않는다 (ADR-0010)
+    assert SOURCE_LABELS == {"github": "GitHub Issues", "jira": "Jira", "n8n": "n8n"}
 
 
 def test_unknown_source_raises():

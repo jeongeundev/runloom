@@ -78,6 +78,10 @@ CONNECTION_TYPES = ("local", "api")
 REVIEW_DECISIONS = ("approve", "request_changes", "close")
 # 종류·규칙 폼의 산출물 kind 선택지 — 묶음 자체(`handoff_bundle`)는 받는 산출물도 넘기는 산출물도 아니다
 INPUT_KIND_CHOICES = tuple(k for k in ARTIFACT_KINDS if k != "handoff_bundle")
+# 입구 (ADR-0010) — 토큰은 지금 n8n 하나에 묶이고, 경로는 inbound_api 의 것을 화면에 그대로 적는다
+INBOUND_SOURCE = "n8n"
+INBOUND_PATH = "/sources/n8n/chains"
+SOURCE_TOKEN_LIMIT = 5  # 세션당 활성 입구 토큰 상한
 
 # 등록 폼 미리 채움 (UI_GUIDE "심사자 첫 방문 흐름"). `example` 은 미리 채움 키일 뿐 목표 자동 분해가 아니다.
 EXAMPLES: dict[str, dict[str, str]] = {
@@ -1326,6 +1330,79 @@ def rules_delete(
     except NotFound:
         raise PageError(404, "not_found", f"규칙 {rule_id}을 찾을 수 없습니다.", field="rule_id") from None
     return _redirect("/kinds", response)
+
+
+# --- 입구 (ADR-0010) — 워크스페이스(세션)가 입구 토큰을 발급·취소한다. 운영자 화면이 아니다 ------------------
+
+
+def _sources_context(
+    request: Request, conn: Connection, session_id: str, now: str, issued: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """`/sources` 화면. 토큰 행에서 화면에 필요한 열만 고른다 — 해시는 넘기지 않는다. `issued` 는 발급 응답 한 번뿐."""
+    settings = _settings(request)
+    base_url = settings.public_url or str(request.base_url).rstrip("/")
+    return {
+        **_base(request, conn, session_id, now),
+        "inbound_url": f"{base_url}{INBOUND_PATH}",
+        "tokens": [
+            {
+                "token_id": t["token_id"],
+                "label": t["label"],
+                "created_at": t["created_at"],
+                "last_used_at": t["last_used_at"],
+                "revoked_at": t["revoked_at"],
+            }
+            for t in repo.list_source_tokens(conn, session_id)
+        ],
+        "issued": issued,
+        "token_limit": SOURCE_TOKEN_LIMIT,
+        "callback_hosts": settings.callback_hosts,
+    }
+
+
+@router.get("/sources", response_class=HTMLResponse)
+def sources_page(
+    request: Request,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """입구 주소 · 토큰 목록 · 발급 폼 · 요청 예시 · callback 허용 목록 상태."""
+    return _render("sources.html", **_sources_context(request, conn, session_id, utc_now()))
+
+
+@router.post("/sources/tokens", response_class=HTMLResponse)
+def sources_issue_token(
+    request: Request,
+    label: str = Form(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """발급한 원문은 이 응답 화면에만 보인다 — 303 으로 넘기지 않는다(쿠키·쿼리·flash 에 원문을 두지 않는다).
+    활성 토큰은 세션당 `SOURCE_TOKEN_LIMIT` 개까지."""
+    now = utc_now()
+    active = [t for t in repo.list_source_tokens(conn, session_id) if t["revoked_at"] is None]
+    if len(active) >= SOURCE_TOKEN_LIMIT:
+        raise PageError(
+            422, "invalid_field", f"활성 토큰은 {SOURCE_TOKEN_LIMIT}개까지입니다. 하나를 취소하세요.", field="label",
+        )
+    token_id, token_plain = repo.issue_source_token(conn, session_id, INBOUND_SOURCE, label.strip(), now)
+    issued = {"token_id": token_id, "token": token_plain}
+    return _render("sources.html", **_sources_context(request, conn, session_id, now, issued))
+
+
+@router.post("/sources/tokens/{token_id}/revoke")
+def sources_revoke_token(
+    response: Response,
+    token_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """같은 세션의 토큰만. 다른 세션·없음은 404 로 존재를 알리지 않는다. 재취소는 멱등."""
+    try:
+        repo.revoke_source_token(conn, session_id, token_id, utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", f"토큰 {token_id}을 찾을 수 없습니다.", field="token_id") from None
+    return _redirect("/sources", response)
 
 
 # --- 운영자 (ADR-0005) --------------------------------------------------------------
