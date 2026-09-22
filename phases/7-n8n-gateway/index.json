@@ -16,7 +16,7 @@
       "status": "completed",
       "started_at": "2026-09-22T11:33:09+0900",
       "summary": "contracts/v1.py 에 12절 모델 9종 추가 — InboundItem(key·title·body·labels·blocked_by), InboundChainRequest(items 1~10개·key 유일·blocked_by 자기 참조 금지·같은 요청의 key 만, callback_url 은 CallbackUrl = str + AfterValidator: http/https 시작·공백 없음·2048자 이하, HttpUrl 아님), InboundTaskRef·InboundSkipped·InboundChainResponse(start_error: ErrorBody|None), CallbackGate·CallbackTask·ChainCallback(source Literal['n8n'], settled_at Rfc3339, tasks min 1). 검증기 메시지는 한국어 한 문장. domain/task_sources.Source 에 'n8n' 추가(map_issue 변경 없음). CONTRACT 12절 펜스 4개를 ```json 으로 되돌려 fixture 화 — test_v1 _SIGNATURES 3종 추가, 펜스 31→35, 왕복·필드 순서·거부 사례 테스트, test_task_sources 에 n8n Issue 가 github 과 같은 매핑을 내는 테스트. 1589 passed.",
-      "completed_at": "2026-09-22T11:40:22+0900"
+      "completed_at": "2026-09-22T11:41:43+0900"
     },
     {
       "step": 2,
