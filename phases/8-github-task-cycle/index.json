@@ -117,7 +117,10 @@
     {
       "step": 14,
       "name": "cycle-e2e",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-23T06:05:14+0900",
+      "summary": "tests/e2e/test_github_cycle.py 신설(13개, WORKFLOW_E2E=1): 대본 스택과 분리된 127.0.0.1 가짜 GitHub(ThreadingHTTPServer — 이슈 목록 since·page_size 2 페이지·Link·ETag/304·PR 항목·이슈/저장소·댓글 생성/조회/수정, 요청 기록, 5xx·POST 응답 유실·오래된 스냅샷 1회 주입)+HttpGitHubClient 는 그대로 두고 transport 만 가짜 서버로(제품에 GitHub 주소 설정 추가 없음)+uvicorn 중앙 API·connector connect/register/run 하위 프로세스+PATH 가짜 codex(수정=시나리오 표대로 worktree 에 재현 테스트·수정 기록, 검토=결과 커밋 체크아웃의 TODO(review) 로 changes_requested/approved, 도구 env 에 GitHub 토큰 있으면 실패)+임시 Git 저장소 2개+실제 pytest 검증 subprocess, 워커는 테스트 프로세스 안 Worker(재시작=새 Worker, 수집 간격 0). 시나리오: 운영자 로그인·Agent 5개 등록·연결·소스 2개·담당 연결 → 첫 tick 에 범위 이슈 4건만(백로그·PR·다른 라벨 제외) 접수, A(billing#1)/B(shop#1) 서로 다른 등록으로 동시 착수(target=등록값+vp-pytest), D 위임 밖·E 담당 2명은 요청 1건씩 → 증분 수집 G 가 B 와 같은 등록이라 저장소 잠금 대기 → 웹 등록 기존 검토 C(선행 A) → B 댓글 POST 응답 유실은 marker 조정으로 delivered(재POST 없음)·GitHub 5xx 수집 실패는 순환 무영향·오래된 스냅샷 무시 → A 실제 baseline 실패/수정 후 통과/깨끗한 체크아웃 검증 판정 통과, 워커 재시작 후에도 기존 C 에 1회 연결(새 검토 Task 없음) → C changes_requested → A 재작업 1회(base=이전 result_commit) → 새 커밋 재검토 approved, A '확인 필요 · 검토 승인 — 병합·이슈 종료는 사람', main 불변 → B 결과로 새 F 생성·승인 → G 상한 0 에서 rework_limit_reached 요청 1건·재tick 에도 실행 1개 → E choose_agent 응답(재전송 멱등·response_conflict·stale_request) 후 r2 착수 → D 는 응답만으로 미착수·Agent 범위 변경 후 착수 → 전체 정착 후 재시작 tick 에도 Task 10·실행 수 불변, 이슈마다 marker 댓글 1개·쓰기는 댓글 POST/PATCH 뿐·범위 밖 이슈 무댓글, 토큰이 DB·산출물·로그·연결 상태·저장소·댓글에 없음. 기존 tests/e2e/test_scenario.py test_22~28 이 step 4 의 내장 4종·내장 규칙 2개(bug_fix→code_review)로 깨져 있어 기대값만 갱신(BUG_FIX_RULE_TEXT). 제품 소스·scripts/local_stack.py 변경 없음. 검증: WORKFLOW_E2E=1 pytest tests/e2e 49 passed/0 skipped(새 13 포함), pytest -q 2164 passed/49 skipped(e2e 플래그 없을 때), pytest scripts/ 181 passed, ruff 통과. 실제 GitHub·모델 호출 없음. 다음 주의: 브라우저 스크립트(data-json-action)는 여전히 서버 렌더 테스트로만 확인 — step 16 실연동 때 실제 브라우저로 한 번 확인; 가짜 GitHub 는 댓글 목록 페이지네이션·rate limit 헤더를 흉내 내지 않음(단위 테스트 몫); G 의 저장소 잠금 대기 단언은 B 가 첫 tick 뒤 아직 결과 전일 때만 확인되고 항상 G 착수 시각>=B result_ready 로 재확인.",
+      "completed_at": "2026-09-23T06:40:00+0900"
     },
     {
       "step": 15,
