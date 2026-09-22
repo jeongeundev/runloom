@@ -861,7 +861,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 
 ### 13.5 `ClaimRequest` — 지원 종류 선언
 
-`supported_kinds` 는 선택(기본 null)이다. null 이면 구버전 연결 프로그램으로 보고 내장 중 `code_change` 와 사용자 정의 종류만 배정한다. 서버는 마지막 선언을 저장해 준비 판정의 `executor_outdated` 에 쓴다. 구버전 서버는 이 필드를 422 로 거부하므로 서버를 먼저 올린다. step 9 부터 연결 프로그램은 아래 예시처럼 `["code_change", "bug_fix", "code_review"]` 를 보낸다(step 8 은 `code_review` 없이 둘).
+`supported_kinds` 는 선택(기본 null)이다. null 이면 구버전 연결 프로그램으로 보고 내장 중 `diagnosis`·`code_change`(`domain/task_readiness.LEGACY_BUILTIN_KINDS`)와 사용자 정의 종류만 배정한다. 서버는 마지막 선언을 저장해 준비 판정의 `executor_outdated` 에 쓴다. 구버전 서버는 이 필드를 422 로 거부하므로 서버를 먼저 올린다. step 9 부터 연결 프로그램은 아래 예시처럼 `["code_change", "bug_fix", "code_review"]` 를 보낸다(step 8 은 `code_review` 없이 둘).
 
 ```json
 { "contract_version": 1, "connector_id": "conn-mac-01", "supported_kinds": ["code_change", "bug_fix", "code_review"] }

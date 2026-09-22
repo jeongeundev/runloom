@@ -14,7 +14,7 @@ GitHub·Jira 등에서 이미 관리하는 업무를 쉽게 가져오거나 직�
 
 ## 2. 현재 위치와 버전 지도
 
-`main`의 공개 데모는 phase 5이며 심사 기간 동결한다. `service`에는 phase 6의 종류·후속 규칙, phase 7의 n8n 입구·callback, 로컬 Agent 연결과 결과 검증 기반이 있다. 현재 GitHub·Jira 가져오기는 fixture이고, 사전 등록한 후속 Task의 착수가 중심이다. 실제 외부 업무 왕복 연동·새 Task 생성·일반적인 담당 관계 및 사람 요청·응답은 아래 MVP의 구현 간극이다.
+`main`의 공개 데모는 phase 5이며 심사 기간 동결한다. `service`에는 phase 6의 종류·후속 규칙, phase 7의 n8n 입구·callback, 로컬 Agent 연결과 결과 검증 기반이 있다. `service`의 GitHub·Jira 가져오기는 fixture이고, 사전 등록한 후속 Task의 착수가 중심이다. phase 8 브랜치(미병합)에 GitHub Issues 수집·담당 연결·새 검토 Task 생성·사람 요청·응답·댓글 반영이 구현되어 대역으로 검증됐고, 실제 GitHub·Agent 왕복은 미검증이다(10절).
 
 | 단계 | 사용자에게 약속할 가치 | 핵심 범위 | 제외·후속 |
 |---|---|---|---|
@@ -157,7 +157,7 @@ PRD의 5개 업무 시나리오(A·B 실행, A → 기존 C, B → 새 F, D·E �
 
 ## 10. 바로 다음 작업과 의사결정
 
-2026-09-23 구현 계획: [phase 8](../../phases/8-github-task-cycle/README.md), step 0~16 모두 pending. GitHub Issues를 계획 대상으로 삼았으며 일반 버그 검증·실제 결과 커밋 검토의 기존 코드 간극을 포함했다. 구현·실연동 완료는 아니다. 셀프호스트·같은 로컬 저장소·댓글 반영 등 검토할 기본값은 phase README를 따른다.
+2026-09-23 구현 상태: [phase 8](../../phases/8-github-task-cycle/README.md) step 0~15 완료(`feat-8-github-task-cycle`, `service` 미병합). GitHub Issues 버그 수정 → 커밋 검토 순환이 구현되어 대역 단위·e2e 테스트(가짜 GitHub·가짜 Agent)를 통과했다. 실제 GitHub·실제 Agent 전체 순환(step 16)은 아직이므로 위 MVP 통과 기준의 실연동 조건은 충족하지 않았다. 운영 절차·미검증 항목·실연동 체크리스트는 [GitHub 런북](../github/README.md).
 
 1. 파일럿 도구·업무 유형을 정한다. 기본 제안은 GitHub Issues의 명확한 버그 수정 → 검토이며, 실제 팀이 Jira를 쓰면 Jira 우선으로 바꾼다.
 2. PRD의 MVP 계약을 구체화한다: 가져오기 범위, 담당자 연결, 필수 입력, 허용 행동, 원본 결과 반영, 후속 생성, 사람 응답과 중복 처리.

@@ -56,9 +56,11 @@
 
 ### 현재 구현과의 차이
 
-현재는 사전 등록한 체인과 단일 선행 관계, 능력·범위 기반 Agent 선택, 등록 규칙에 따른 인계, n8n 입구·사람 차례 callback을 지원한다. GitHub·Jira 가져오기는 fixture다. 새 업무 생성, 일반적인 조직 담당 관계, 사람 요청·응답, 위 수용 시나리오 전체는 미구현이다. 이 차이를 단순 문서 갱신으로 구현 완료 처리하지 않는다.
+`service`는 사전 등록한 체인과 단일 선행 관계, 능력·범위 기반 Agent 선택, 등록 규칙에 따른 인계, n8n 입구·사람 차례 callback을 지원한다. GitHub·Jira 가져오기는 fixture다. phase 8 브랜치(미병합)가 아래 GitHub 한 유형에 한해 실제 수집·새 검토 Task 생성·사람 요청·응답을 구현했고 대역으로만 검증했다. 새 업무 생성, 일반적인 조직 담당 관계, 사람 요청·응답, 위 수용 시나리오 전체는 미구현이다. 이 차이를 단순 문서 갱신으로 구현 완료 처리하지 않는다.
 
-### GitHub 버그 수정 → 검토 MVP — phase 8 수용 기준 (2026-09-23 확정, 미구현)
+### GitHub 버그 수정 → 검토 MVP — phase 8 수용 기준 (2026-09-23 확정)
+
+구현 상태(step 15): 아래 A~E·경계 사례는 `feat-8-github-task-cycle` 에 구현되어 대역 단위 테스트와 e2e(`tests/e2e/test_github_cycle.py`, 가짜 GitHub·가짜 Agent)를 통과했다. 실제 GitHub·실제 Agent 전체 순환은 미검증(step 16)이다 — [GitHub 런북](github/README.md).
 
 첫 사례는 GitHub Issues 버그 수정 → 결과 커밋 검토다. 계약은 [ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 셀프호스트 운영자 한 명, 저장소 한정 환경변수 토큰, REST 폴링, 같은 로컬 저장소의 수정·검토 Agent 가 전제다. 실제 계정 정보는 마지막 검증(step 16)에서만 요구하며 그 전 step 은 대역으로 검증한다.
 
