@@ -7,7 +7,8 @@
       "name": "adr-n8n-gateway",
       "status": "completed",
       "started_at": "2026-09-22T11:17:13+0900",
-      "summary": "문서 정본 4건 — docs/adr/0010-n8n-inbox-and-callback.md(결정 6항·이유·트레이드오프), GLOSSARY 용어 표에 source token/wfs_·InboundChainRequest/InboundItem·InboundChainResponse·ChainCallback·chain_settled·WORKFLOW_CALLBACK_HOSTS/host_allowed 행과 TaskSource 행 n8n 갱신, 경계 절 2항목, ARCHITECTURE '## n8n 입구와 출구 — 2026-09-22 확정' 절(장면·입구·출구·저장·화면·한계) + 인증 표 n8n(입구) 행·입구 토큰 문단·첫 선택 표·데이터 모델 표(source token, Chain.callback_*)·검증 순서 7번, CONTRACT '## 12. n8n 입구·callback'(InboundChainRequest·started true/false·ChainCallback·오류표) + 3절 오류표에 callback_host_not_allowed·selection_required. 주의: 12절 JSON 펜스는 'json contract-pending' 태그 — contracts/v1.py 모델이 없어 test_v1 fixture 추출에서 제외. step 1 이 ```json 으로 되돌리고 _SIGNATURES·펜스 개수(31→35)를 갱신한다."
+      "summary": "문서 정본 4건 — docs/adr/0010-n8n-inbox-and-callback.md(결정 6항·이유·트레이드오프), GLOSSARY 용어 표에 source token/wfs_·InboundChainRequest/InboundItem·InboundChainResponse·ChainCallback·chain_settled·WORKFLOW_CALLBACK_HOSTS/host_allowed 행과 TaskSource 행 n8n 갱신, 경계 절 2항목, ARCHITECTURE '## n8n 입구와 출구 — 2026-09-22 확정' 절(장면·입구·출구·저장·화면·한계) + 인증 표 n8n(입구) 행·입구 토큰 문단·첫 선택 표·데이터 모델 표(source token, Chain.callback_*)·검증 순서 7번, CONTRACT '## 12. n8n 입구·callback'(InboundChainRequest·started true/false·ChainCallback·오류표) + 3절 오류표에 callback_host_not_allowed·selection_required. 주의: 12절 JSON 펜스는 'json contract-pending' 태그 — contracts/v1.py 모델이 없어 test_v1 fixture 추출에서 제외. step 1 이 ```json 으로 되돌리고 _SIGNATURES·펜스 개수(31→35)를 갱신한다.",
+      "completed_at": "2026-09-22T11:33:09+0900"
     },
     {
       "step": 1,
