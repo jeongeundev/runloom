@@ -193,6 +193,8 @@
 | 없는 실행 ID | 404 | `{ "code": "not_found", "message": "execution exec-none을 찾을 수 없습니다.", "field": "execution_id", "details": null }` |
 | 지원하지 않는 계약 버전 | 422 | `{ "code": "unsupported_contract_version", "message": "contract_version 2는 지원하지 않습니다.", "field": "contract_version", "details": null }` |
 | 알 수 없는 필드 | 422 | `{ "code": "unknown_field", "message": "필드 extra는 허용되지 않습니다.", "field": "extra", "details": null }` |
+| (12절 입구 API) `callback_url` 호스트가 `WORKFLOW_CALLBACK_HOSTS` 밖·목록이 빔 | 422 | `{ "code": "callback_host_not_allowed", "message": "callback_url 의 호스트 evil.example 은 허용 목록에 없습니다.", "field": "callback_url", "details": { "allowed": ["localhost:5678"] } }` — 12절 |
+| (12절 입구 API·체인 시작) 첫 업무의 담당 에이전트 미확정 | 409 | `{ "code": "selection_required", "message": "담당 에이전트를 먼저 확정하세요.", "field": null, "details": null }` — 입구 API 는 이 본문을 `start_error` 에 담아 201 |
 
 `result_ready`는 `result_artifact_id`가 이미 업로드·해시 확인된 뒤에만 200이다. 아직 없으면 `409 invalid_transition`, `details: { "reason": "result_artifact_missing" }`.
 
@@ -594,3 +596,138 @@
 ```
 
 `ExecutionRequest.model_dump_json()` 의 필드 순서 그대로이며 `kind_spec` 은 유일한 선택 필드(기본 `null`)라 dump 에는 항상 나온다. `kind` 가 `diagnosis`·`code_change` 인 요청은 1·2절과 같고 계약상 `kind_spec` 은 `null` 이어도 되지만, 서버(`web._start_execution`·워커 `_spawn_successors`)는 모든 종류의 요청에 등록부의 봉투를 채워 고정한다 — 1·2절 예시는 그 필드를 생략한 형태다. 그 외 `kind` 인데 `kind_spec` 이 없거나 `kind_spec.kind != kind` 이거나 `builtin: true` 이거나 target 이 `LocalTarget` 이 아니면 `422`. 종류가 세션에 등록돼 있지 않아 봉투를 채울 수 없으면 실행을 만들지 않는다(`409 request_incomplete`).
+
+## 12. n8n 입구·callback
+
+[ARCHITECTURE](ARCHITECTURE.md) "n8n 입구와 출구", 결정은 [ADR-0010](adr/0010-n8n-inbox-and-callback.md).
+
+n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이라 라벨 규칙·`map_issue`·`compose` 가 가져오기(`/tasks/import`)와 같다. 모델은 `contracts/v1.py` 의 `InboundChainRequest`·`InboundChainResponse`·`ChainCallback`.
+
+인증: `Authorization: Bearer wfs_…` — 워크스페이스(세션)가 `/sources` 에서 발급한 입구 토큰(`auth.require_source_token`). 서버는 sha256 만 저장하고, 토큰 → `session_id` + `source`. 세션 쿠키로는 통과하지 않는다. 토큰 없음·취소는 401 `unauthenticated`, 경로의 출처가 `n8n` 이 아니면 404 `not_found`, 토큰의 `source` 가 경로(`/sources/n8n/…`)와 다르면 403 `forbidden`. 라우트는 `server/inbound_api.py`, 체인·Task 생성과 첫 업무 시작은 가져오기와 같은 본체 `web.create_chain`·`web.start_chain`. 멱등 키는 없다 — 같은 본문을 두 번 보내면 체인이 둘 생긴다.
+
+### 입구 요청 `InboundChainRequest` — `POST /sources/n8n/chains`
+
+항목 2개 — 진단(`incident`+`workflow:`+`run:`)과 그 뒤의 수정(`bug`+`repo:`, `blocked_by` 로 순서). `items` 는 1~10개, `key` 는 요청 안에서 유일, `blocked_by` 는 같은 요청의 `key` 만. `callback_url` 은 선택이며 http/https 만, 허용 목록 `WORKFLOW_CALLBACK_HOSTS` 안이어야 한다:
+
+```json
+{
+  "contract_version": 1,
+  "items": [
+    {
+      "key": "run-daily-0920",
+      "title": "일일 보고서 2026-09-20 09:00 실행 실패",
+      "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다. 실패 원인과 수정에 필요한 근거를 조사해 주세요.",
+      "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
+      "blocked_by": []
+    },
+    {
+      "key": "fix-format",
+      "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
+      "body": "진단 결과와 근거를 바탕으로 demo-report-repo 의 변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
+      "labels": ["bug", "repo:demo-report-repo"],
+      "blocked_by": ["run-daily-0920"]
+    }
+  ],
+  "callback_url": "http://localhost:5678/webhook-waiting/1234"
+}
+```
+
+`InboundChainRequest.model_dump_json()` 의 필드 순서 그대로(`contract_version` · `items` · `callback_url`). `InboundItem` 은 `key` · `title` · `body` · `labels` · `blocked_by`(기본값 없음 — 다섯 필드 모두 필수, `labels`·`blocked_by` 는 빈 배열 허용). `body` 는 그대로 `Task.request` 가 되며 명령·경로로 해석하지 않는다. 계약이 검사하는 것: `items` 1~10개, `key` 유일, `blocked_by` 는 같은 요청의 `key` 만(자기 참조 금지), `callback_url` 은 `http://`/`https://` 로 시작·공백 없음·2048자 이하(정규화하지 않는다 — n8n 의 `$execution.resumeUrl` 을 그대로 저장·전송). 허용 목록은 계약이 아니라 서버가 본다.
+
+### 입구 응답 `InboundChainResponse` — `started: true`
+
+201. 체인과 Task 2개가 생기고 첫 업무가 접수 즉시 시작됐다(`실행 요청됨`). 두 번째는 선행을 기다린다(`대기`). `chain_url` 은 `WORKFLOW_PUBLIC_URL` 이 있을 때만 값이 있다:
+
+```json
+{
+  "contract_version": 1,
+  "chain_id": "chain-3f9a1c2b7d4e",
+  "chain_url": "http://127.0.0.1:8000/chains/chain-3f9a1c2b7d4e",
+  "started": true,
+  "start_error": null,
+  "tasks": [
+    { "task_id": "task-8a1b2c3d4e5f", "key": "run-daily-0920", "kind": "diagnosis", "status": "실행 요청됨" },
+    { "task_id": "task-9b2c3d4e5f60", "key": "fix-format", "kind": "code_change", "status": "대기" }
+  ],
+  "skipped": []
+}
+```
+
+`InboundChainResponse.model_dump_json()` 의 필드 순서 그대로(`contract_version` · `chain_id` · `chain_url` · `started` · `start_error` · `tasks` · `skipped`). `tasks[]` 는 `InboundTaskRef`(`task_id` · `key` · `kind` · `status`), `status` 는 `USER_STATUS_LABELS` 의 문구. `skipped[]` 는 `InboundSkipped`(`key` · `reason`) — 라벨로 능력을 정하지 못한 항목(가져오기의 `skipped_json` 과 같은 이유 문장, 예 `맞는 능력 코드 없음 (라벨: docs)`). `items_json` 에는 `skipped` 된 항목까지 원문 전부가 남는다.
+
+### 입구 응답 `InboundChainResponse` — `started: false`
+
+체인은 만들었지만 첫 업무를 시작하지 못했다(여기서는 후보 없음 → 담당 미확정). 그래도 201 이며 `start_error` 에 `start_chain` 이 던진 오류 본문을 담는다. 사람이 `chain_url` 에서 에이전트를 확정하고 시작하면 된다. 진단 상한이면 `start_error.code` 는 `daily_limit_reached`(10절과 같은 본문 — `오늘 이 세션의 진단 실행 한도(10회)에 도달했습니다.`, `details.limit` 10), 항목이 모두 `skipped` 라 시작할 Task 가 없으면 409 `invalid_transition`(`시작할 업무가 없습니다.`):
+
+```json
+{
+  "contract_version": 1,
+  "chain_id": "chain-4a0b1c2d3e5f",
+  "chain_url": "http://127.0.0.1:8000/chains/chain-4a0b1c2d3e5f",
+  "started": false,
+  "start_error": { "code": "selection_required", "message": "담당 에이전트를 먼저 확정하세요.", "field": null, "details": null },
+  "tasks": [
+    { "task_id": "task-0c1d2e3f4a5b", "key": "run-daily-0920", "kind": "diagnosis", "status": "확인 필요" },
+    { "task_id": "task-1d2e3f4a5b6c", "key": "fix-format", "kind": "code_change", "status": "대기" }
+  ],
+  "skipped": []
+}
+```
+
+### 출구 `ChainCallback` — 사람 차례
+
+워커가 체인이 `chain_settled` 가 된 tick 의 마지막(`_deliver_callbacks`)에 `callback_url` 로 POST 한다(체인당 1회, `content-type: application/json`). 여기서는 A 가 자동 완료되고 B 가 `확인 필요 · 검토 대기`(outcome `ready_for_review`)가 된 시점이다 — 2026-09-22 e2e 에서는 B 결과 판정과 같은 tick, 접수부터 7.7초. `settled_at` 은 워커의 `now`(`utc_now` 표기 — UTC·마이크로초·`Z`), `status`·`status_reason` 은 화면과 같은 지금 판정, `human_gate` 는 체인 화면의 사람 단계와 같은 값, `outcome`·`summary` 는 그 Task 의 결과 산출물이 있는 최신 시도의 봉투 최상위 `outcome`·`summary` 에서 읽고 결과가 없으면 null, `chain_url`·`task_url` 은 `WORKFLOW_PUBLIC_URL` 이 없으면 null:
+
+```json
+{
+  "contract_version": 1,
+  "chain_id": "chain-3f9a1c2b7d4e",
+  "title": "일일 보고서 2026-09-20 09:00 실행 실패 → 응답 형식 변경에 맞춰 보고서 변환 수정",
+  "source": "n8n",
+  "chain_url": "http://127.0.0.1:8000/chains/chain-3f9a1c2b7d4e",
+  "settled_at": "2026-09-22T03:34:56.754000Z",
+  "human_gate": { "label": "검토 승인 (사람) · 병합은 운영자 확인", "status_label": "확인 필요", "reason": "검토 대기" },
+  "tasks": [
+    {
+      "task_id": "task-8a1b2c3d4e5f",
+      "key": "run-daily-0920",
+      "kind": "diagnosis",
+      "title": "일일 보고서 2026-09-20 09:00 실행 실패",
+      "status": "완료",
+      "status_reason": "판정 근거: 14/14",
+      "outcome": "ready_for_handoff",
+      "summary": "상류 응답의 항목 경로가 $.items 에서 $.data.records 로 바뀌어 변환이 빈 배열을 읽었습니다.",
+      "task_url": "http://127.0.0.1:8000/tasks/task-8a1b2c3d4e5f"
+    },
+    {
+      "task_id": "task-9b2c3d4e5f60",
+      "key": "fix-format",
+      "kind": "code_change",
+      "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
+      "status": "확인 필요",
+      "status_reason": "검토 대기",
+      "outcome": "ready_for_review",
+      "summary": "report_transformer 가 items 또는 data.records 를 읽도록 수정하고 재현 테스트를 추가했습니다. 수정 전 3 failed → 수정 후 17 passed.",
+      "task_url": "http://127.0.0.1:8000/tasks/task-9b2c3d4e5f60"
+    }
+  ]
+}
+```
+
+`ChainCallback.model_dump_json()` 의 필드 순서 그대로(`contract_version` · `chain_id` · `title` · `source` · `chain_url` · `settled_at` · `human_gate` · `tasks`). `human_gate` 는 `CallbackGate`(`label` · `status_label` · `reason`), `tasks[]` 는 `CallbackTask`(`task_id` · `key` · `kind` · `title` · `status` · `status_reason` · `outcome` · `summary` · `task_url`). 수신 쪽(n8n Wait 노드)이 2xx 를 돌려주면 `callback_sent_at` 을 기록하고 다시 보내지 않는다. 아니면 30·60·120·240초 뒤 재시도, 5회 실패 후 중단(`callback_last_error`). 사람이 그 뒤 승인·종료해도 다시 보내지 않는다.
+
+### 입구 API 오류 본문
+
+| 상황 | HTTP | 본문 |
+|---|---|---|
+| 토큰 없음·취소 | 401 | `{ "code": "unauthenticated", "message": "유효한 입구 토큰이 필요합니다.", "field": null, "details": null }` — 취소된 토큰도 같다 |
+| 토큰의 `source` 가 경로와 다름 | 403 | `{ "code": "forbidden", "message": "이 토큰은 n8n 입구에 쓸 수 없습니다.", "field": null, "details": null }` — 토큰은 발급 때의 `source` 하나에 묶인다 |
+| `callback_url` 호스트가 허용 목록 밖·목록이 빔 | 422 | `{ "code": "callback_host_not_allowed", "message": "callback_url 의 호스트 evil.example 은 허용 목록에 없습니다.", "field": "callback_url", "details": { "allowed": ["localhost:5678"] } }` — `details.allowed` 는 `WORKFLOW_CALLBACK_HOSTS` 를 `parse_hosts` 로 읽은 목록. 목록이 비어 있으면 `details.allowed` 는 `[]` 이고 메시지 끝에 ` 허용 목록(WORKFLOW_CALLBACK_HOSTS)이 비어 있어 callback 을 받지 않습니다.` 가 붙는다(목록 값은 메시지에 넣지 않는다). 체인을 만들기 전 검사라 체인이 생기지 않는다 |
+| 세션에 등록된 에이전트 없음 | 422 | `{ "code": "agent_not_registered", "message": "에이전트를 먼저 등록하세요.", "field": "agent_id", "details": null }` — 가져오기(`/tasks/import`)와 같은 검사 |
+| `blocked_by` 순환 | 422 | `{ "code": "dependency_cycle", "message": "의존 순환: run-daily-0920, fix-format", "field": "items", "details": null }` — `compose` 의 순서 정렬(`_order`)이 낸 문구 그대로(순환에 걸린 `key` 목록). 가져오기 화면은 같은 오류를 `field: issue_keys` 로 낸다 |
+| 세션 활성 업무 상한 | 429 | `{ "code": "active_task_limit_reached", "message": "세션당 활성 업무 한도(5개)에 도달했습니다.", "field": null, "details": { "limit": 5 } }` — 체인을 만들기 전에 검사하므로 이때는 체인이 생기지 않는다 |
+| `items` 0개·11개 이상, `key` 중복, `blocked_by` 가 요청 밖 `key`·자기 참조, `callback_url` 이 http/https 아님 | 422 | `{ "code": "invalid_field", "message": "필드 callback_url: Value error, callback_url 은 http:// 또는 https:// 로 시작해야 합니다", "field": "callback_url", "details": null }` — 3절과 같은 변환(`server/errors.py`). 모델 전체 검증(`items` 개수·`key` 중복·`blocked_by` 참조)은 `field` 가 null 이고 메시지는 `필드 None: Value error, items 는 1개 이상이어야 합니다` 처럼 나온다 |
+| 알 수 없는 필드 / `contract_version` 이 1 이 아님 | 422 | `unknown_field`(`field` 에 그 이름) / `unsupported_contract_version` — 3절과 같다 |
+| 경로의 출처가 `n8n` 이 아님 | 404 | `{ "code": "not_found", "message": "입구 jira을 찾을 수 없습니다.", "field": "source", "details": null }` — `POST /sources/jira/chains` 처럼 `n8n` 이 아닌 경로. 토큰 검사 뒤에 본다 |
+
+첫 업무 시작만 거부된 경우(409 `selection_required`·429 `daily_limit_reached` — 체인은 이미 있음)는 오류가 아니라 위 `started: false` 응답이다.

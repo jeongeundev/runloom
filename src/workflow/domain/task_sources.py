@@ -1,4 +1,4 @@
-"""외부 출처(GitHub·Jira) 이슈 → 이 제품의 능력 매핑 — 라벨의 명시적 비교만 (ADR-0004).
+"""외부 출처(GitHub·Jira·n8n) 이슈 → 이 제품의 능력 매핑 — 라벨의 명시적 비교만 (ADR-0004).
 
 `Issue` 는 Task 가 되기 전의 외부 항목이다. `body` 는 그대로 `Task.request` 문자열이 될 뿐이며
 여기서 명령·경로로 해석하지 않는다. 제목·본문에서 능력을 추론하지 않고 라벨만 본다.
@@ -11,7 +11,7 @@ from typing import Literal
 from workflow.contracts.v1 import Capability, KindSpec
 from workflow.domain.kinds import get_kind
 
-Source = Literal["github", "jira"]
+Source = Literal["github", "jira", "n8n"]
 
 
 @dataclass(frozen=True)

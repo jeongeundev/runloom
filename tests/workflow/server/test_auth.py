@@ -1,4 +1,4 @@
-"""auth.py — 세션 서명 쿠키, 연결 토큰 인증, 운영자 확인 (ADR-0005)."""
+"""auth.py — 세션 서명 쿠키, 연결 토큰 인증, 운영자 확인 (ADR-0005), 입구 토큰 인증 (ADR-0010)."""
 
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -9,6 +9,7 @@ from workflow.server.auth import (
     require_connector,
     require_operator,
     require_session,
+    require_source_token,
     sign_session,
     verify_session,
 )
@@ -55,6 +56,10 @@ def _install_probe_routes(app):
     @app.get("/_probe/connector")
     def _connector(connector_id: str = Depends(require_connector)):
         return {"connector_id": connector_id}
+
+    @app.get("/_probe/source")
+    def _source(token=Depends(require_source_token)):
+        return {"token_id": token["token_id"], "session_id": token["session_id"], "source": token["source"]}
 
 
 def test_require_session_issues_signed_cookie_and_reuses_it(app, conn):
@@ -131,3 +136,53 @@ def test_require_connector_accepts_only_bearer_wfc_token(app, conn):
         response = client.get("/_probe/connector", headers=headers)
         assert response.status_code == 401, headers
         assert response.json() == unauthenticated
+
+
+# --- 입구 토큰 (phase 7, ADR-0010 결정 2) — 세션이 발급한 wfs_ 토큰만. 세션 쿠키로는 통과하지 않는다 ------
+
+
+def test_require_source_token_accepts_only_bearer_wfs_token_and_touches_last_used(app, conn):
+    _install_probe_routes(app)
+    client = TestClient(app)
+    repo.create_session(conn, "sess-1", NOW)
+    token_id, token = repo.issue_source_token(conn, "sess-1", "n8n", "n8n 테스트", NOW)
+    (row,) = repo.list_source_tokens(conn, "sess-1")
+    assert row["last_used_at"] is None
+
+    response = client.get("/_probe/source", headers=bearer(token))
+    assert response.status_code == 200, response.text
+    assert response.json() == {"token_id": token_id, "session_id": "sess-1", "source": "n8n"}
+    (row,) = repo.list_source_tokens(conn, "sess-1")
+    assert row["last_used_at"] is not None and row["last_used_at"] > NOW
+
+    unauthenticated = {
+        "code": "unauthenticated", "message": "유효한 입구 토큰이 필요합니다.", "field": None, "details": None,
+    }
+    session_cookie = client.get("/_probe/session").cookies[SESSION_COOKIE]  # 세션 쿠키는 입구 인증이 아니다
+    client.cookies.set(SESSION_COOKIE, session_cookie)
+    connector_token = exchange(client, conn)[1]  # 연결 토큰(wfc_)도 아니다
+    for headers in (
+        {},
+        {"Authorization": f"Basic {token}"},
+        {"Authorization": "Bearer "},
+        {"Authorization": "Bearer wfs_not-a-real-token"},
+        {"Authorization": f"Bearer {token}x"},
+        bearer(connector_token),
+    ):
+        response = client.get("/_probe/source", headers=headers)
+        assert response.status_code == 401, headers
+        assert response.json() == unauthenticated
+        assert token not in response.text
+
+
+def test_require_source_token_rejects_revoked_token(app, conn):
+    _install_probe_routes(app)
+    client = TestClient(app)
+    repo.create_session(conn, "sess-1", NOW)
+    token_id, token = repo.issue_source_token(conn, "sess-1", "n8n", "n8n 테스트", NOW)
+    assert client.get("/_probe/source", headers=bearer(token)).status_code == 200
+    repo.revoke_source_token(conn, "sess-1", token_id, "2026-09-22T00:00:00Z")
+    response = client.get("/_probe/source", headers=bearer(token))
+    assert response.status_code == 401
+    assert response.json()["code"] == "unauthenticated"
+    assert token not in response.text

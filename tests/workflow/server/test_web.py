@@ -1,5 +1,6 @@
 """web.py — 심사자 세션·운영자 웹 라우트. 마크업이 아니라 렌더된 텍스트·리다이렉트·상태 코드를 본다 (Step 7 이 화면을 꾸민다)."""
 
+import dataclasses
 import html as html_lib
 import json
 import re
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
 from workflow.contracts.v1 import BUILTIN_KINDS, ArtifactMeta, ExecutionRequest
+from workflow.server.app import create_app
 from workflow.server.auth import SESSION_COOKIE, verify_session
 from workflow.server.web import EXAMPLES
 
@@ -1906,3 +1908,180 @@ def test_operator_register_agent_rejects_bad_capability_422(web, conn, overrides
     assert response.status_code == 422, overrides
     assert "invalid_field" in response.text
     assert repo.get_agent(conn, "agent-x") is None
+
+
+# --- 입구 (phase 7 step 6, ADR-0010) — 워크스페이스(세션)가 입구 토큰을 발급·취소한다. 운영자 화면이 아니다 ----------
+
+
+INBOUND_ITEM = {
+    "key": "run-daily-0920",
+    "title": "일일 보고서 2026-09-20 09:00 실행 실패",
+    "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다.",
+    "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
+    "blocked_by": [],
+}
+
+
+def sources_page(client) -> str:
+    """엔티티를 복원한 페이지 텍스트 — curl 예시의 따옴표가 `&#39;` 로 이스케이프되므로."""
+    response = client.get("/sources")
+    assert response.status_code == 200, response.text
+    return html_lib.unescape(response.text)
+
+
+def issue_token(client, label: str = "n8n 테스트"):
+    return client.post("/sources/tokens", data={"label": label}, follow_redirects=False)
+
+
+def issued_token_of(text: str) -> str:
+    match = re.search(r'id="issued-token">([^<]+)<', text)
+    assert match, text
+    return match.group(1)
+
+
+def nav_of(html: str) -> str:
+    return html[html.index('class="nav"'):html.index('class="side-head"')]
+
+
+def token_row_of(html: str, token_id: str) -> str:
+    match = re.search(rf'<tr data-token-id="{token_id}">(.*?)</tr>', html, re.DOTALL)
+    assert match, token_id
+    return match.group(1)
+
+
+def inbound_post(client, token: str):
+    return client.post(
+        "/sources/n8n/chains", json={"contract_version": 1, "items": [INBOUND_ITEM]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def test_sources_page_shows_inbound_url_empty_state_example_and_sidebar_link(web):
+    text = sources_page(web)
+    assert "입구" in text
+    # 입구 주소 — public_url 이 없으면 요청의 스킴+호스트. 경로는 inbound_api 의 것 그대로
+    assert "http://testserver/sources/n8n/chains" in text
+    assert "아직 발급한 토큰이 없습니다." in text
+    assert 'action="/sources/tokens"' in text and 'name="label"' in text
+    # 요청 예시 — 토큰 자리는 플레이스홀더, 본문은 CONTRACT 12절 (a) 와 같은 항목
+    assert "curl -X POST http://testserver/sources/n8n/chains" in text
+    assert "Authorization: Bearer wfs_…" in text and "content-type: application/json" in text
+    assert '"key": "run-daily-0920"' in text and '"blocked_by": ["run-daily-0920"]' in text
+    assert "docs/n8n/README.md" in text
+    # 허용 목록이 비어 있으면 callback_url 은 거부된다는 안내
+    assert "callback 허용 목록이 비어 있어" in text and "WORKFLOW_CALLBACK_HOSTS" in text
+    # 사이드바 — 종류·규칙 다음, 활성 표시
+    nav = nav_of(web.get("/sources").text)
+    assert '<a href="/sources" class="active">입구</a>' in nav
+    assert nav.index('href="/kinds"') < nav.index('href="/sources"')
+    assert '<a href="/sources">입구</a>' in nav_of(web.get("/tasks").text)
+    # GLOSSARY 금지 표현·n8n 비판 문구 없음
+    lowered = text.lower()
+    for phrase in ("webhook secret", "api key", "inbound token", "whitelist"):
+        assert phrase not in lowered, phrase
+
+
+def test_sources_page_uses_public_url_and_lists_callback_hosts(settings, agents):
+    """conftest 의 settings 에 허용 목록·공개 주소를 더한 앱 — 입구 주소는 public_url 을 앞에 쓴다."""
+    custom = dataclasses.replace(
+        settings, callback_hosts=("localhost:5678", "127.0.0.1"), public_url="https://runloom.example",
+    )
+    client = TestClient(create_app(custom))
+    text = sources_page(client)
+    assert "https://runloom.example/sources/n8n/chains" in text
+    assert "http://testserver/sources" not in text
+    assert "callback 허용 목록이 비어 있어" not in text
+    assert "localhost:5678" in text and "127.0.0.1" in text
+
+
+def test_issue_token_shows_plaintext_once_and_never_again(web, conn, settings):
+    response = issue_token(web)
+    assert response.status_code == 200, response.text
+    text = html_lib.unescape(response.text)
+    token = issued_token_of(text)
+    assert token.startswith("wfs_") and len(token) > 20
+    assert text.count(token) == 1
+    assert "이 값은 다시 볼 수 없습니다" in text
+    assert "set-cookie" not in {k.lower() for k in response.headers} or token not in response.headers["set-cookie"]
+
+    session_id = session_id_of(web, settings)
+    [row] = repo.list_source_tokens(conn, session_id)
+    assert (row["source"], row["label"], row["revoked_at"]) == ("n8n", "n8n 테스트", None)
+    assert token not in [str(v) for v in dict(row).values()]  # DB 엔 sha256 만
+
+    # 다시 열면 원문은 없고 목록만 — 플레이스홀더 `wfs_…` 외에 wfs_ 문자열이 없다
+    again = sources_page(web)
+    assert token not in again
+    assert "wfs_" not in again.replace("wfs_…", "")
+    assert "이 값은 다시 볼 수 없습니다" not in again
+    assert row["token_id"] in again and "활성" in again and "n8n 테스트" in again
+    assert f'action="/sources/tokens/{row["token_id"]}/revoke"' in again
+    assert "아직 발급한 토큰이 없습니다." not in again
+
+    # 발급한 토큰으로 입구 API 를 쓸 수 있고, 마지막 사용 시각이 표에 보인다
+    assert token_row_of(again, row["token_id"]).count("없음") == 1  # 아직 마지막 사용 없음
+    assert inbound_post(web, token).status_code == 201
+    assert repo.list_source_tokens(conn, session_id)[0]["last_used_at"] is not None
+    assert "없음" not in token_row_of(sources_page(web), row["token_id"])
+
+
+def test_issue_token_label_is_optional(web, conn, settings):
+    assert web.post("/sources/tokens", follow_redirects=False).status_code == 200
+    [row] = repo.list_source_tokens(conn, session_id_of(web, settings))
+    assert row["label"] == ""
+
+
+def test_sixth_active_token_is_422_until_one_is_revoked(web, conn, settings):
+    for n in range(5):
+        assert issue_token(web, f"토큰 {n}").status_code == 200
+    response = issue_token(web, "여섯째")
+    assert response.status_code == 422
+    assert "활성 토큰은 5개까지입니다. 하나를 취소하세요." in response.text
+    assert "invalid_field" in response.text
+    session_id = session_id_of(web, settings)
+    rows = repo.list_source_tokens(conn, session_id)
+    assert len(rows) == 5
+    # 하나 취소하면 다시 발급할 수 있다 — 취소된 것은 상한에 들지 않는다
+    assert web.post(f"/sources/tokens/{rows[0]['token_id']}/revoke", follow_redirects=False).status_code == 303
+    assert issue_token(web, "여섯째").status_code == 200
+    assert len(repo.list_source_tokens(conn, session_id)) == 6
+
+
+def test_revoke_token_marks_row_and_blocks_inbound_api(web, conn, settings):
+    token = issued_token_of(issue_token(web).text)
+    session_id = session_id_of(web, settings)
+    [row] = repo.list_source_tokens(conn, session_id)
+    token_id = row["token_id"]
+    assert inbound_post(web, token).status_code == 201
+
+    response = web.post(f"/sources/tokens/{token_id}/revoke", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/sources"
+    assert repo.list_source_tokens(conn, session_id)[0]["revoked_at"] is not None
+    text = sources_page(web)
+    assert "취소됨" in text
+    assert f'action="/sources/tokens/{token_id}/revoke"' not in text  # 취소 버튼은 활성만
+    # 취소된 토큰으로는 입구 API 가 401 (step 4 의 라우트)
+    denied = inbound_post(web, token)
+    assert denied.status_code == 401 and denied.json()["code"] == "unauthenticated"
+    # 재취소는 멱등 — 303, 처음 시각 유지
+    revoked_at = repo.list_source_tokens(conn, session_id)[0]["revoked_at"]
+    assert web.post(f"/sources/tokens/{token_id}/revoke", follow_redirects=False).status_code == 303
+    assert repo.list_source_tokens(conn, session_id)[0]["revoked_at"] == revoked_at
+
+
+def test_other_session_cannot_see_or_revoke_my_token(app, web, conn, settings):
+    issue_token(web)
+    [row] = repo.list_source_tokens(conn, session_id_of(web, settings))
+    other = TestClient(app)
+    other.get("/tasks")
+    assert other.post(f"/sources/tokens/{row['token_id']}/revoke", follow_redirects=False).status_code == 404
+    assert repo.list_source_tokens(conn, session_id_of(web, settings))[0]["revoked_at"] is None
+    assert row["token_id"] not in sources_page(other)
+    assert "아직 발급한 토큰이 없습니다." in sources_page(other)
+    assert web.post("/sources/tokens/src-nope/revoke", follow_redirects=False).status_code == 404
+
+
+def test_token_issue_is_not_on_operator_page(web):
+    login_operator(web)
+    text = web.get("/operator").text
+    assert 'action="/sources/tokens"' not in text and "입구 토큰" not in text

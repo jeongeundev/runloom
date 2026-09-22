@@ -1,9 +1,11 @@
 """외부 출처 이슈 → 능력 매핑 규칙 — 라벨의 명시적 비교만 (ADR-0004). 자유 문장에서 추론하지 않는다."""
 
+from typing import get_args
+
 import pytest
 
 from workflow.contracts.v1 import BUILTIN_KINDS, Capability, KindSpec
-from workflow.domain.task_sources import Issue, IssueMapping, map_issue
+from workflow.domain.task_sources import Issue, IssueMapping, Source, map_issue
 
 DIAGNOSE = Capability(code="operations.diagnose", scope={"workflow_id": "daily-report"})
 MODIFY = Capability(code="code.modify", scope={"repository_id": "demo-report-repo"})
@@ -208,3 +210,39 @@ def test_issue_and_mapping_are_immutable():
         issue.key = "#2"  # type: ignore[misc]
     with pytest.raises(AttributeError):
         mapping.reason = "x"  # type: ignore[misc]
+
+
+# --- n8n 은 TaskSource 하나 — 라벨 규칙·매핑이 github 과 같다 (ADR-0010) ------------------
+
+
+def test_source_literal_includes_n8n():
+    assert get_args(Source) == ("github", "jira", "n8n")
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        ("incident", "workflow:daily-report", "run:daily-0920-0900"),
+        ("bug", "repo:demo-report-repo"),
+        ("kind:review", "repository_id:demo-report-repo"),
+        ("docs",),
+    ],
+)
+def test_n8n_issue_maps_exactly_like_github(labels):
+    n8n = Issue(
+        source="n8n", key="run-daily-0920", title="제목", body="본문", labels=labels, blocked_by=(), url=None
+    )
+
+    assert map_issue(n8n, KINDS) == map_issue(_issue(labels), KINDS)
+
+
+def test_n8n_incident_maps_to_diagnose_with_run_id():
+    n8n = Issue(
+        source="n8n", key="run-daily-0920", title="제목", body="본문",
+        labels=("incident", "workflow:daily-report", "run:daily-0920-0900"), blocked_by=(), url=None,
+    )
+    mapping = map_issue(n8n, BUILTIN_KINDS)
+
+    assert mapping.capability == DIAGNOSE
+    assert mapping.run_id == "daily-0920-0900"
+    assert mapping.reason == "라벨 incident·workflow:daily-report → operations.diagnose"

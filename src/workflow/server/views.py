@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
+from urllib.parse import urlsplit
 
 from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
@@ -19,6 +20,7 @@ from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
 from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.status import TaskView, UserStatus, user_status
+from workflow.domain.task_sources import Issue
 from workflow.server.filters import KIND_LABELS, KST, kind_label, kst
 from workflow.server.settings import Settings
 
@@ -41,6 +43,9 @@ LOG_TAIL = 20
 
 # 세션 화면에 넘기지 않는 agents 컬럼. `credential_ref` 는 참조명이지만 이름만으로도 환경 구성이 드러난다.
 _AGENT_PRIVATE = ("credential_ref",)
+
+# callback 중단 횟수 — worker.CALLBACK_MAX_ATTEMPTS 와 같은 값 (worker 가 views 를 import 하므로 여기서 가져오지 않는다)
+_CALLBACK_MAX_ATTEMPTS = 5
 
 
 def _parse(ts: str) -> datetime:
@@ -386,14 +391,31 @@ def task_context(
 _LIVE_LABELS = ("실행 중", "실행 요청됨", "대기")
 
 
+def _chain_issues(chain: Row, tasks: list[Row]) -> list[Issue]:
+    """구성 이유를 다시 만들 재료. fixture 출처는 파일에서 체인의 key 만, n8n 은 접수 때 저장한 항목 원문(`items_json`,
+    ADR-0010) — 파일이 없으므로. 그 밖의 출처·원문 없음은 빈 목록."""
+    if chain["source"] == "n8n":
+        return [
+            Issue(
+                source="n8n", key=item["key"], title=item["title"], body=item["body"],
+                labels=tuple(item["labels"]), blocked_by=tuple(item["blocked_by"]), url=None,
+            )
+            for item in json.loads(chain["items_json"] or "[]")
+        ]
+    if chain["source"] not in SOURCES:
+        return []
+    keys = {t["source_ref"] for t in tasks} | {s["key"] for s in json.loads(chain["skipped_json"])}
+    return [i for i in load_issues(chain["source"]) if i.key in keys]
+
+
 def _composition_reasons(conn: Connection, chain: Row, tasks: list[Row]) -> dict[str, tuple[str, ...]]:
     """가져오기 때의 구성 이유 문장(매핑·순서·체인·방식)을 같은 규칙(`compose`)과 세션 등록부로 다시 만든다 — 저장하지 않으므로.
     배정 이유(마지막 문장)는 저장된 `SelectionRecord.reason` 이 기준이라 뺀다. 후보 없이 돌려도 나머지 문장은 같다."""
-    if chain["source"] not in SOURCES:
+    issues = _chain_issues(chain, tasks)
+    if not issues:
         return {}
-    keys = {t["source_ref"] for t in tasks} | {s["key"] for s in json.loads(chain["skipped_json"])}
     plan = compose(
-        [i for i in load_issues(chain["source"]) if i.key in keys], candidates=(), prefer=(),
+        issues, candidates=(), prefer=(),
         kinds=repo.list_kinds(conn, chain["session_id"]),
         rules=[rule for _, rule in repo.list_rules(conn, chain["session_id"])],
     )
@@ -452,6 +474,30 @@ def _human_gate(conn: Connection, last: Row, node: dict[str, Any]) -> dict[str, 
     }
 
 
+def _callback_state(chain: Row) -> dict[str, Any] | None:
+    """체인 화면의 callback 한 줄 (ADR-0010 출구). `callback_url` 이 없으면 None. `state` 는 전송됨(`sent_at` 있음) ·
+    실패(미전송이고 시도 횟수가 중단 횟수 이상) · 대기. 화면은 `host` 만 보인다 — n8n 내부 경로·실행 ID 는 필요 없다."""
+    url = chain["callback_url"]
+    if url is None:
+        return None
+    sent_at = chain["callback_sent_at"]
+    attempts = chain["callback_attempts"]
+    if sent_at is not None:
+        state = "전송됨"
+    elif attempts >= _CALLBACK_MAX_ATTEMPTS:
+        state = "실패"
+    else:
+        state = "대기"
+    return {
+        "url": url,
+        "host": urlsplit(url).netloc,
+        "state": state,
+        "sent_at": sent_at,
+        "attempts": attempts,
+        "last_error": chain["callback_last_error"],
+    }
+
+
 def _chain_progress(nodes: list[dict[str, Any]], started: bool) -> str:
     """동작 영역·홈의 진행 한 줄. 첫 미완료 노드의 사용자 상태를 그대로 쓴다."""
     if not started:
@@ -488,6 +534,7 @@ def chain_summary(conn: Connection, chain: Row, *, now: str, settings: Settings)
         "can_start": not started and bool(nodes) and selected[0],
         "progress": _chain_progress(nodes, started),
         "polling": any(n["status"].label in _LIVE_LABELS for n in nodes),
+        "callback": _callback_state(chain),
     }
 
 

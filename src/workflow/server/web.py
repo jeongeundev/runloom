@@ -18,6 +18,7 @@ import json
 import re
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Any
@@ -77,6 +78,10 @@ CONNECTION_TYPES = ("local", "api")
 REVIEW_DECISIONS = ("approve", "request_changes", "close")
 # 종류·규칙 폼의 산출물 kind 선택지 — 묶음 자체(`handoff_bundle`)는 받는 산출물도 넘기는 산출물도 아니다
 INPUT_KIND_CHOICES = tuple(k for k in ARTIFACT_KINDS if k != "handoff_bundle")
+# 입구 (ADR-0010) — 토큰은 지금 n8n 하나에 묶이고, 경로는 inbound_api 의 것을 화면에 그대로 적는다
+INBOUND_SOURCE = "n8n"
+INBOUND_PATH = "/sources/n8n/chains"
+SOURCE_TOKEN_LIMIT = 5  # 세션당 활성 입구 토큰 상한
 
 # 등록 폼 미리 채움 (UI_GUIDE "심사자 첫 방문 흐름"). `example` 은 미리 채움 키일 뿐 목표 자동 분해가 아니다.
 EXAMPLES: dict[str, dict[str, str]] = {
@@ -640,16 +645,38 @@ def tasks_import(
     issues = [issue for issue in load_issues(source) if issue.key in selected]  # 모르는 key 는 무시
     if not issues:
         raise PageError(422, "no_issues", "가져올 이슈를 선택하세요.", field="issue_keys")
+    created = create_chain(conn, session_id, issues, source=source, now=now, settings=settings, error=PageError)
+    return _redirect(f"/chains/{created.chain_id}", response)
+
+
+@dataclass(frozen=True)
+class ChainCreated:
+    chain_id: str
+    task_ids: dict[str, str]  # issue key → task_id (체인 노드 + 능력 있는 단독 Task)
+    skipped: list[dict[str, str]]  # {key, title, reason}
+
+
+def create_chain(
+    conn: Connection, session_id: str, issues: Sequence[Issue], *, source: str, now: str, settings: Settings,
+    callback_url: str | None = None, items: list[dict] | None = None, error: type[ApiError] = ApiError,
+    items_field: str = "issue_keys",
+) -> ChainCreated:
+    """이슈들로 체인 하나와 Task 들을 만든다 — 가져오기(`tasks_import`)와 입구 API(`inbound_api`, ADR-0010)의 공통 본체.
+    등록 에이전트 확인 → `compose` → 활성 한도 → `insert_chain` → Task 삽입. 실행은 만들지 않는다.
+
+    오류는 `error(...)` 로 던진다 — 웹은 `PageError`(error.html), 입구 API 는 기본값 `ApiError`(JSON).
+    `items_field` 는 `dependency_cycle` 의 field 이름(폼은 `issue_keys`, 입구 본문은 `items`).
+    `callback_url`·`items` 는 입구 API 만 넘긴다(허용 목록 검사는 호출자가 끝낸 값)."""
     registered = _session_agents(conn, session_id)
     if not registered:
-        raise PageError(422, "agent_not_registered", "에이전트를 먼저 등록하세요.", field="agent_id")
+        raise error(422, "agent_not_registered", "에이전트를 먼저 등록하세요.", field="agent_id")
     prefer = [a["agent_id"] for a in registered]
     kinds = _kinds(conn, session_id)
     rules = [rule for _, rule in repo.list_rules(conn, session_id)]
     try:
         plan = compose(issues, _candidates(conn, session_id), prefer=prefer, kinds=kinds, rules=rules)
     except ValueError as exc:
-        raise PageError(422, "dependency_cycle", str(exc), field="issue_keys") from None
+        raise error(422, "dependency_cycle", str(exc), field=items_field) from None
 
     # Standalone 중 능력이 있는 것(지원 안 되는 인계 쌍)은 선행 없는 단독 Task, 없는 것은 체인의 skipped 로만
     capable_standalone = [item for item in plan.standalone if item.mapping.capability is not None]
@@ -660,7 +687,7 @@ def tasks_import(
     active = [t for t in repo.list_tasks(conn, session_id) if t["finished_at"] is None]
     limit = settings.limits.active_tasks_per_session
     if len(active) + len(plan.nodes) + len(capable_standalone) > limit:
-        raise PageError(
+        raise error(
             429, "active_task_limit_reached",
             f"세션당 활성 업무 한도({limit}개)에 도달했습니다.", details={"limit": limit},
         )
@@ -669,7 +696,7 @@ def tasks_import(
     repo.insert_chain(
         conn,
         {"chain_id": chain_id, "session_id": session_id, "title": plan.title, "source": source,
-         "skipped": skipped},
+         "skipped": skipped, "callback_url": callback_url, "items": items},
         now,
     )
     # PlanNode.selection 은 임시 task_id(issue.key) 라 저장하지 않는다 — 실제 task_id 로 다시 계산한다
@@ -688,7 +715,7 @@ def tasks_import(
     for item in capable_standalone:
         capability = item.mapping.capability
         spec = _kind_for_code(conn, session_id, capability.code)
-        _insert_new_task(
+        task_ids[item.issue.key] = _insert_new_task(
             conn, session_id, now, settings,
             title=item.issue.title, request_text=item.issue.body, spec=spec,
             scope_value=capability.scope[spec.scope_key],
@@ -697,7 +724,7 @@ def tasks_import(
             predecessor_task_id="", run_id=item.mapping.run_id or "",
             chain_id=chain_id, source_ref=item.issue.key, prefer=prefer,
         )
-    return _redirect(f"/chains/{chain_id}", response)
+    return ChainCreated(chain_id=chain_id, task_ids=task_ids, skipped=skipped)
 
 
 # --- 워크플로우 화면 — 체인 상세·시작·라이브 (phase 5 step 6). 화면 라벨은 "워크플로우", 경로·코드는 chain ------
@@ -757,20 +784,30 @@ def chain_start(
 ) -> RedirectResponse:
     """첫 노드를 `task_run` 과 같은 경로로 실행하고 `started_at` 을 기록한다. 이미 시작했으면 그대로 303 (멱등)."""
     now = utc_now()
-    settings = _settings(request)
     chain = _own_chain(conn, session_id, chain_id)
+    start_chain(conn, chain, session_id=session_id, now=now, settings=_settings(request), error=PageError)
+    return _redirect(f"/chains/{chain_id}", response)
+
+
+def start_chain(
+    conn: Connection, chain: Row, *, session_id: str, now: str, settings: Settings,
+    error: type[ApiError] = ApiError,
+) -> None:
+    """체인의 첫 노드를 `task_run` 과 같은 경로로 실행하고 `started_at` 을 기록한다 — `chain_start` 와 입구 API 의 공통 본체.
+    이미 시작했으면 새 실행 없이 시작 기록만 맞춘다(멱등). 오류는 `error(...)` 로 던진다(`_run_task` 의 것은 PageError 그대로 —
+    ApiError 의 하위라 입구 API 는 함께 잡는다)."""
+    chain_id = chain["chain_id"]
     tasks = repo.tasks_of_chain(conn, chain_id)
     if not tasks:
-        raise PageError(409, "invalid_transition", "시작할 업무가 없습니다.")
+        raise error(409, "invalid_transition", "시작할 업무가 없습니다.")
     first = tasks[0]
     # 첫 노드가 이미 실행된 적 있으면(업무 상세의 `실행` 등) 새 실행 없이 시작 기록만 맞춘다
     if chain["started_at"] is None and not repo.list_executions(conn, first["task_id"]):
         selection = repo.get_selection(conn, first["task_id"])
         if selection is None or selection.status != "selected":
-            raise PageError(409, "selection_required", "담당 에이전트를 먼저 확정하세요.")
+            raise error(409, "selection_required", "담당 에이전트를 먼저 확정하세요.")
         _run_task(conn, first, session_id=session_id, now=now, settings=settings)
     repo.mark_chain_started(conn, chain_id, now)
-    return _redirect(f"/chains/{chain_id}", response)
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -1293,6 +1330,79 @@ def rules_delete(
     except NotFound:
         raise PageError(404, "not_found", f"규칙 {rule_id}을 찾을 수 없습니다.", field="rule_id") from None
     return _redirect("/kinds", response)
+
+
+# --- 입구 (ADR-0010) — 워크스페이스(세션)가 입구 토큰을 발급·취소한다. 운영자 화면이 아니다 ------------------
+
+
+def _sources_context(
+    request: Request, conn: Connection, session_id: str, now: str, issued: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """`/sources` 화면. 토큰 행에서 화면에 필요한 열만 고른다 — 해시는 넘기지 않는다. `issued` 는 발급 응답 한 번뿐."""
+    settings = _settings(request)
+    base_url = settings.public_url or str(request.base_url).rstrip("/")
+    return {
+        **_base(request, conn, session_id, now),
+        "inbound_url": f"{base_url}{INBOUND_PATH}",
+        "tokens": [
+            {
+                "token_id": t["token_id"],
+                "label": t["label"],
+                "created_at": t["created_at"],
+                "last_used_at": t["last_used_at"],
+                "revoked_at": t["revoked_at"],
+            }
+            for t in repo.list_source_tokens(conn, session_id)
+        ],
+        "issued": issued,
+        "token_limit": SOURCE_TOKEN_LIMIT,
+        "callback_hosts": settings.callback_hosts,
+    }
+
+
+@router.get("/sources", response_class=HTMLResponse)
+def sources_page(
+    request: Request,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """입구 주소 · 토큰 목록 · 발급 폼 · 요청 예시 · callback 허용 목록 상태."""
+    return _render("sources.html", **_sources_context(request, conn, session_id, utc_now()))
+
+
+@router.post("/sources/tokens", response_class=HTMLResponse)
+def sources_issue_token(
+    request: Request,
+    label: str = Form(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """발급한 원문은 이 응답 화면에만 보인다 — 303 으로 넘기지 않는다(쿠키·쿼리·flash 에 원문을 두지 않는다).
+    활성 토큰은 세션당 `SOURCE_TOKEN_LIMIT` 개까지."""
+    now = utc_now()
+    active = [t for t in repo.list_source_tokens(conn, session_id) if t["revoked_at"] is None]
+    if len(active) >= SOURCE_TOKEN_LIMIT:
+        raise PageError(
+            422, "invalid_field", f"활성 토큰은 {SOURCE_TOKEN_LIMIT}개까지입니다. 하나를 취소하세요.", field="label",
+        )
+    token_id, token_plain = repo.issue_source_token(conn, session_id, INBOUND_SOURCE, label.strip(), now)
+    issued = {"token_id": token_id, "token": token_plain}
+    return _render("sources.html", **_sources_context(request, conn, session_id, now, issued))
+
+
+@router.post("/sources/tokens/{token_id}/revoke")
+def sources_revoke_token(
+    response: Response,
+    token_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """같은 세션의 토큰만. 다른 세션·없음은 404 로 존재를 알리지 않는다. 재취소는 멱등."""
+    try:
+        repo.revoke_source_token(conn, session_id, token_id, utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", f"토큰 {token_id}을 찾을 수 없습니다.", field="token_id") from None
+    return _redirect("/sources", response)
 
 
 # --- 운영자 (ADR-0005) --------------------------------------------------------------

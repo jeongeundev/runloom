@@ -50,6 +50,7 @@ from workflow.domain import status as domain_status
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 
 TOKEN_PREFIX = "wfc_"
+SOURCE_TOKEN_PREFIX = "wfs_"
 
 
 @contextmanager
@@ -453,6 +454,66 @@ def get_connector(conn: Connection, connector_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM connectors WHERE connector_id = ?", (connector_id,))
 
 
+# --- 입구 토큰 (phase 7, ADR-0010: 세션이 발급해 n8n 이 쓴다) ------------------------
+
+
+def issue_source_token(
+    conn: Connection, session_id: str, source: str, label: str, now: str
+) -> tuple[str, str]:
+    """(token_id, token_plain). 원문은 여기서만 만들어 돌려주고 DB 에는 sha256 만 남는다. 세션이 없으면 NotFound."""
+    token_plain = SOURCE_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    token_id = f"src-{secrets.token_hex(4)}"
+    with _tx(conn):
+        if get_session(conn, session_id) is None:
+            raise NotFound(f"session {session_id}")
+        conn.execute(
+            "INSERT INTO source_tokens (token_id, session_id, source, token_sha256, label, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (token_id, session_id, source, _sha256(token_plain), label, now),
+        )
+    return token_id, token_plain
+
+
+def authenticate_source_token(conn: Connection, token_plain: str) -> Row | None:
+    """취소되지 않은 토큰이면 그 행(token_id·session_id·source). 없으면 None. 원문을 로그·예외에 넣지 않는다."""
+    return _one(
+        conn,
+        "SELECT token_id, session_id, source FROM source_tokens"
+        " WHERE token_sha256 = ? AND revoked_at IS NULL",
+        (_sha256(token_plain),),
+    )
+
+
+def touch_source_token(conn: Connection, token_id: str, now: str) -> None:
+    cur = conn.execute(
+        "UPDATE source_tokens SET last_used_at = ? WHERE token_id = ?", (now, token_id)
+    )
+    _require_rowcount(cur, f"source token {token_id}")
+
+
+def revoke_source_token(conn: Connection, session_id: str, token_id: str, now: str) -> None:
+    """같은 세션의 토큰만. 다른 세션이거나 없으면 NotFound. 이미 취소됐으면 그대로(멱등)."""
+    with _tx(conn):
+        row = _one(
+            conn,
+            "SELECT 1 FROM source_tokens WHERE token_id = ? AND session_id = ?",
+            (token_id, session_id),
+        )
+        if row is None:
+            raise NotFound(f"source token {token_id}")
+        conn.execute(
+            "UPDATE source_tokens SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL",
+            (now, token_id),
+        )
+
+
+def list_source_tokens(conn: Connection, session_id: str) -> list[Row]:
+    """발급 순(같은 시각이면 삽입 순서), 취소된 것 포함. `/sources` 화면용."""
+    return conn.execute(
+        "SELECT * FROM source_tokens WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+    ).fetchall()
+
+
 # --- 업무·선택 ---------------------------------------------------------------
 
 
@@ -591,17 +652,21 @@ def confirm_merge(conn: Connection, task_id: str, now: str) -> None:
     _require_rowcount(cur, f"task {task_id}")
 
 
-# --- Chain (phase 5: "업무 가져오기" 로 만든 Task 묶음) ------------------------
+# --- Chain (phase 5: "업무 가져오기" 로 만든 Task 묶음. phase 7: 입구 API 의 callback) -----
 
 
 def insert_chain(conn: Connection, chain: dict, now: str) -> None:
-    """키: chain_id, session_id, title, source, skipped(list[dict], 기본 [])."""
+    """키: chain_id, session_id, title, source, skipped(list[dict], 기본 []).
+    선택 키 `callback_url`(str|None)·`items`(list|None → items_json, n8n 이 보낸 항목 원문). 없으면 NULL."""
+    items = chain.get("items")
     conn.execute(
-        "INSERT INTO chains (chain_id, session_id, title, source, skipped_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO chains (chain_id, session_id, title, source, skipped_json, created_at,"
+        " callback_url, items_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             chain["chain_id"], chain["session_id"], chain["title"], chain["source"],
             json.dumps(list(chain.get("skipped", [])), ensure_ascii=False), now,
+            chain.get("callback_url"),
+            None if items is None else json.dumps(list(items), ensure_ascii=False),
         ),
     )
 
@@ -644,6 +709,39 @@ def tasks_of_chain(conn: Connection, chain_id: str) -> list[Row]:
         ordered.append(r)
         stack.extend(reversed(successors.get(r["task_id"], [])))
     return ordered
+
+
+def chains_awaiting_callback(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:
+    """callback_url 이 있고 callback_sent_at 이 NULL 이고 attempts < max_attempts 이고
+    (next_at IS NULL OR next_at <= now) 인 체인. created_at 순. 세션을 가리지 않는다 — 워커가 전체를 본다."""
+    return conn.execute(
+        """
+        SELECT * FROM chains
+        WHERE callback_url IS NOT NULL AND callback_sent_at IS NULL AND callback_attempts < ?
+          AND (callback_next_at IS NULL OR callback_next_at <= ?)
+        ORDER BY created_at, chain_id
+        """,
+        (max_attempts, now),
+    ).fetchall()
+
+
+def record_callback_attempt(
+    conn: Connection, chain_id: str, *, ok: bool, error: str | None, now: str, next_at: str | None
+) -> None:
+    """ok 면 callback_sent_at = now, last_error = NULL. 아니면 attempts + 1, last_error = error,
+    next_at = next_at. 없는 체인은 NotFound."""
+    if ok:
+        cur = conn.execute(
+            "UPDATE chains SET callback_sent_at = ?, callback_last_error = NULL WHERE chain_id = ?",
+            (now, chain_id),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE chains SET callback_attempts = callback_attempts + 1, callback_last_error = ?,"
+            " callback_next_at = ? WHERE chain_id = ?",
+            (error, next_at, chain_id),
+        )
+    _require_rowcount(cur, f"chain {chain_id}")
 
 
 # --- 실행·이벤트 ---------------------------------------------------------------

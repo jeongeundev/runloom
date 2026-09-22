@@ -1340,3 +1340,157 @@ def test_download_allowed_includes_bundle_inputs(seeded, store):
     assert repo.download_allowed(conn, store, "exec-review", stored["test_log_after"].artifact_id)  # inputs
     assert repo.download_allowed(conn, store, "exec-review", stored["code_change_result"].artifact_id)  # source result
     assert not repo.download_allowed(conn, store, "exec-review", stored["test_log_before"].artifact_id)  # 무관
+
+
+# --- phase 7: 입구 토큰·Chain callback (ADR-0010) --------------------------------
+
+
+def _db_files_contain(db_path, needle: str) -> bool:
+    """DB 본체와 WAL 어디에도 없어야 하는 문자열 검사."""
+    return any(needle.encode() in f.read_bytes() for f in db_path.parent.glob(db_path.name + "*"))
+
+
+def test_source_token_issue_authenticate_touch_revoke(seeded, db_path):
+    conn = seeded
+    token_id, token = repo.issue_source_token(conn, SESSION, "n8n", "n8n 운영", NOW)
+    assert token.startswith("wfs_") and len(token) > 20
+    assert token_id.startswith("src-") and len(token_id) == len("src-") + 8
+    row = conn.execute("SELECT * FROM source_tokens WHERE token_id = ?", (token_id,)).fetchone()
+    assert row["token_sha256"] != token
+    assert row["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
+    assert (row["session_id"], row["source"], row["label"], row["created_at"]) == (
+        SESSION, "n8n", "n8n 운영", NOW)
+    assert row["last_used_at"] is None and row["revoked_at"] is None
+    dumped = " ".join(str(v) for v in tuple(row))
+    assert "wfs_" not in dumped and token[4:] not in dumped
+    assert not _db_files_contain(db_path, token[4:])
+
+    auth = repo.authenticate_source_token(conn, token)
+    assert (auth["token_id"], auth["session_id"], auth["source"]) == (token_id, SESSION, "n8n")
+
+    repo.touch_source_token(conn, token_id, LATER)
+    assert conn.execute(
+        "SELECT last_used_at FROM source_tokens WHERE token_id = ?", (token_id,)
+    ).fetchone()[0] == LATER
+
+    repo.revoke_source_token(conn, SESSION, token_id, LATER)
+    assert repo.authenticate_source_token(conn, token) is None
+    repo.revoke_source_token(conn, SESSION, token_id, "2026-09-20T00:00:09Z")  # 멱등 — 처음 시각 유지
+    assert conn.execute(
+        "SELECT revoked_at FROM source_tokens WHERE token_id = ?", (token_id,)
+    ).fetchone()[0] == LATER
+
+
+def test_source_token_revoke_requires_same_session(seeded):
+    conn = seeded
+    token_id, token = repo.issue_source_token(conn, SESSION, "n8n", "", NOW)
+    with pytest.raises(NotFound):
+        repo.revoke_source_token(conn, OTHER_SESSION, token_id, NOW)
+    with pytest.raises(NotFound):
+        repo.revoke_source_token(conn, SESSION, "src-nope", NOW)
+    assert repo.authenticate_source_token(conn, token) is not None  # 다른 세션의 취소는 영향 없음
+
+
+def test_source_token_issue_requires_session_and_valid_source(conn):
+    with pytest.raises(NotFound):
+        repo.issue_source_token(conn, "no-such-session", "n8n", "", NOW)
+    repo.create_session(conn, SESSION, NOW)
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.issue_source_token(conn, SESSION, "slack", "", NOW)
+    assert conn.execute("SELECT COUNT(*) FROM source_tokens").fetchone()[0] == 0
+
+
+def test_authenticate_source_token_unknown_is_none(seeded):
+    conn = seeded
+    assert repo.authenticate_source_token(conn, "wfs_bogus") is None
+    assert repo.authenticate_source_token(conn, "") is None
+    with pytest.raises(NotFound):
+        repo.touch_source_token(conn, "src-nope", NOW)
+
+
+def test_list_source_tokens_in_issue_order_including_revoked(seeded):
+    conn = seeded
+    id_b, _ = repo.issue_source_token(conn, SESSION, "n8n", "b", LATER)
+    id_a, _ = repo.issue_source_token(conn, SESSION, "n8n", "a", NOW)
+    id_c, _ = repo.issue_source_token(conn, SESSION, "n8n", "c", LATER)  # 같은 시각은 발급 순
+    repo.issue_source_token(conn, OTHER_SESSION, "n8n", "other", NOW)
+    repo.revoke_source_token(conn, SESSION, id_b, LATER)
+    rows = repo.list_source_tokens(conn, SESSION)
+    assert [r["token_id"] for r in rows] == [id_a, id_b, id_c]
+    assert [r["label"] for r in rows] == ["a", "b", "c"]
+    assert [r["revoked_at"] for r in rows] == [None, LATER, None]
+    assert [r["label"] for r in repo.list_source_tokens(conn, OTHER_SESSION)] == ["other"]
+    assert "token_sha256" in rows[0].keys()  # 원문 컬럼은 없다
+
+
+def test_chain_insert_stores_callback_url_and_items(seeded):
+    conn = seeded
+    items = [{"key": "n8n-1", "title": "일일 보고서 실패", "body": "", "labels": ["incident"],
+              "blocked_by": []}]
+    repo.insert_chain(conn, _chain("chain-n8n", source="n8n", callback_url="http://localhost:5678/x",
+                                   items=items), NOW)
+    row = repo.get_chain(conn, "chain-n8n")
+    assert row["source"] == "n8n" and row["callback_url"] == "http://localhost:5678/x"
+    assert json.loads(row["items_json"]) == items
+    assert row["callback_attempts"] == 0
+    assert row["callback_sent_at"] is None and row["callback_next_at"] is None
+    assert row["callback_last_error"] is None
+    repo.insert_chain(conn, _chain("chain-github"), NOW)  # 기존 호출 그대로
+    row = repo.get_chain(conn, "chain-github")
+    assert row["callback_url"] is None and row["items_json"] is None
+    repo.insert_chain(conn, _chain("chain-none", source="n8n", callback_url=None, items=None), NOW)
+    row = repo.get_chain(conn, "chain-none")
+    assert row["callback_url"] is None and row["items_json"] is None
+    assert [r["chain_id"] for r in repo.list_chains(conn, SESSION)] == [
+        "chain-github", "chain-n8n", "chain-none"]
+
+
+def test_record_callback_attempt_ok_and_failure(seeded):
+    conn = seeded
+    repo.insert_chain(conn, _chain("c1", source="n8n", callback_url="http://localhost:5678/x"), NOW)
+    repo.record_callback_attempt(conn, "c1", ok=False, error="connect timeout", now=NOW,
+                                 next_at="2026-09-20T00:00:30Z")
+    row = repo.get_chain(conn, "c1")
+    assert row["callback_attempts"] == 1 and row["callback_sent_at"] is None
+    assert row["callback_last_error"] == "connect timeout"
+    assert row["callback_next_at"] == "2026-09-20T00:00:30Z"
+    repo.record_callback_attempt(conn, "c1", ok=False, error="HTTP 503", now=LATER,
+                                 next_at="2026-09-20T00:01:30Z")
+    row = repo.get_chain(conn, "c1")
+    assert row["callback_attempts"] == 2 and row["callback_last_error"] == "HTTP 503"
+    assert row["callback_next_at"] == "2026-09-20T00:01:30Z"
+    repo.record_callback_attempt(conn, "c1", ok=True, error=None, now=LATER, next_at=None)
+    row = repo.get_chain(conn, "c1")
+    assert row["callback_sent_at"] == LATER and row["callback_last_error"] is None
+    assert row["callback_attempts"] == 2  # 성공은 횟수를 늘리지 않는다
+    with pytest.raises(NotFound):
+        repo.record_callback_attempt(conn, "nope", ok=True, error=None, now=NOW, next_at=None)
+
+
+def test_chains_awaiting_callback_filters_and_orders(seeded):
+    conn = seeded
+    url = "http://localhost:5678/x"
+    repo.insert_chain(conn, _chain("c-fresh", source="n8n", callback_url=url), LATER)
+    repo.insert_chain(conn, _chain("c-past", source="n8n", callback_url=url), NOW)
+    repo.insert_chain(conn, _chain("c-future", source="n8n", callback_url=url), NOW)
+    repo.insert_chain(conn, _chain("c-sent", source="n8n", callback_url=url), NOW)
+    repo.insert_chain(conn, _chain("c-max", source="n8n", callback_url=url), NOW)
+    repo.insert_chain(conn, _chain("c-no-url"), NOW)
+    repo.insert_chain(conn, _chain("c-other", session_id=OTHER_SESSION, source="n8n",
+                                   callback_url=url), NOW)  # 세션 무관 — 워커는 전체를 본다
+    repo.record_callback_attempt(conn, "c-past", ok=False, error="e", now=NOW,
+                                 next_at="2026-09-20T00:00:30Z")
+    repo.record_callback_attempt(conn, "c-future", ok=False, error="e", now=NOW,
+                                 next_at="2026-09-20T00:10:00Z")
+    repo.record_callback_attempt(conn, "c-sent", ok=True, error=None, now=NOW, next_at=None)
+    for _ in range(5):
+        repo.record_callback_attempt(conn, "c-max", ok=False, error="e", now=NOW, next_at=NOW)
+
+    due = "2026-09-20T00:01:00Z"
+    assert [r["chain_id"] for r in repo.chains_awaiting_callback(conn, due, max_attempts=5)] == [
+        "c-other", "c-past", "c-fresh"]
+    assert [r["chain_id"] for r in repo.chains_awaiting_callback(conn, NOW, max_attempts=5)] == [
+        "c-other", "c-fresh"]  # next_at 이 미래면 제외
+    assert [r["chain_id"] for r in repo.chains_awaiting_callback(conn, due, max_attempts=6)] == [
+        "c-max", "c-other", "c-past", "c-fresh"]  # 상한을 올리면 다시 대상
+    assert repo.chains_awaiting_callback(conn, due, max_attempts=0) == []

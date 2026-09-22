@@ -10,7 +10,7 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
@@ -89,16 +89,35 @@ CREATE TABLE IF NOT EXISTS connectors (
   current_execution_id TEXT
 );
 
--- Chain: 세션이 "업무 가져오기" 로 만든 Task 묶음 (화면 라벨 "워크플로우"). 순서는 Task 의
+-- 입구 토큰: 워크스페이스(세션)가 발급해 외부(n8n)가 업무를 넣을 때 쓴다 (ADR-0010). 원문은 저장하지 않는다.
+CREATE TABLE IF NOT EXISTS source_tokens (
+  token_id      TEXT PRIMARY KEY,                       -- 'src-' + 8 hex
+  session_id    TEXT NOT NULL REFERENCES sessions(session_id),
+  source        TEXT NOT NULL CHECK (source IN ('n8n')),
+  token_sha256  TEXT NOT NULL UNIQUE,
+  label         TEXT NOT NULL,                          -- 사람이 붙인 이름 (빈 문자열 허용)
+  created_at    TEXT NOT NULL,
+  last_used_at  TEXT,
+  revoked_at    TEXT
+);
+
+-- Chain: 세션이 "업무 가져오기" 또는 입구 API(n8n) 로 만든 Task 묶음 (화면 라벨 "워크플로우"). 순서는 Task 의
 -- predecessor_task_id 체인으로만 표현한다. `workflow_id` 는 진단 대상 자동화 ID 라 여기 쓰지 않는다.
+-- callback 은 체인당 1회 — `callback_sent_at` 이 차면 끝. 실패는 attempts·next_at 으로 재시도한다 (ADR-0010).
 CREATE TABLE IF NOT EXISTS chains (
-  chain_id     TEXT PRIMARY KEY,
-  session_id   TEXT NOT NULL REFERENCES sessions(session_id),
-  title        TEXT NOT NULL,
-  source       TEXT NOT NULL CHECK (source IN ('github', 'jira', 'manual')),
-  skipped_json TEXT NOT NULL DEFAULT '[]',  -- 체인에 못 들어간 이슈 [{{key, title, reason}}]
-  created_at   TEXT NOT NULL,
-  started_at   TEXT
+  chain_id            TEXT PRIMARY KEY,
+  session_id          TEXT NOT NULL REFERENCES sessions(session_id),
+  title               TEXT NOT NULL,
+  source              TEXT NOT NULL CHECK (source IN ('github', 'jira', 'manual', 'n8n')),
+  skipped_json        TEXT NOT NULL DEFAULT '[]',  -- 체인에 못 들어간 이슈 [{{key, title, reason}}]
+  created_at          TEXT NOT NULL,
+  started_at          TEXT,
+  items_json          TEXT,                        -- n8n 이 보낸 항목 원문 배열 (다른 출처는 NULL)
+  callback_url        TEXT,                        -- 없으면 아무것도 보내지 않는다
+  callback_sent_at    TEXT,
+  callback_attempts   INTEGER NOT NULL DEFAULT 0 CHECK (callback_attempts >= 0),
+  callback_next_at    TEXT,
+  callback_last_error TEXT
 );
 
 -- 업무 종류·후속 규칙은 워크스페이스(세션)별 등록이다 (ADR-0009). 내장은 세션 생성 시 seed 된다.

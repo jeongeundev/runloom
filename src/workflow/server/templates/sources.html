@@ -1,0 +1,89 @@
+{# 입구 (`/sources`) — ADR-0010 결정 2. 워크스페이스(세션)가 n8n 같은 외부 도구용 입구 토큰을 발급·취소한다.
+   발급 원문은 POST 응답 화면(`issued`)에 한 번만 보이고 — 303 없음, 쿠키·쿼리에 넣지 않는다 — 서버에는 sha256 만 남는다.
+   운영자 화면(/operator)에는 두지 않는다. 입구 주소의 경로는 inbound_api 의 것 그대로. #}
+{% extends "base.html" %}
+{% block title %}입구 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">입구</div></div>
+<p class="muted" style="margin-bottom:12px">n8n 같은 외부 도구가 이 워크스페이스에 업무를 넣는 곳입니다. 토큰을 발급해 HTTP 요청의 <code>Authorization: Bearer</code> 에 넣습니다. 종류·순서·담당·판정은 가져오기와 같은 규칙으로 여기서 정합니다.</p>
+
+<h2 style="margin-top:0">입구 주소</h2>
+<div class="card">
+  <div><span class="mono small">POST</span> <code id="inbound-url">{{ inbound_url }}</code></div>
+  <div class="small" style="margin-top:4px">JSON 본문은 아래 요청 예시. 항목은 라벨 규칙으로 종류·순서가 정해지고, 접수 즉시 첫 업무를 시작합니다.</div>
+</div>
+
+<h2>토큰</h2>
+<div class="card">
+  {% if issued %}
+  <div class="alert" style="background:var(--bg-done);color:var(--state-done)">
+    발급된 토큰: <code id="issued-token">{{ issued.token }}</code> · <span class="mono">{{ issued.token_id }}</span><br>
+    이 값은 다시 볼 수 없습니다. 지금 복사해 n8n 의 자격 증명(Header Auth)에 넣으세요. 서버에는 해시만 남습니다.
+  </div>
+  {% endif %}
+  {% if tokens %}
+  <div class="table-wrap">
+  <table>
+    <tr><th>ID</th><th>라벨</th><th>발급</th><th>마지막 사용</th><th>상태</th></tr>
+    {% for t in tokens %}
+    <tr data-token-id="{{ t.token_id }}">
+      <td class="mono">{{ t.token_id }}</td>
+      <td>{{ t.label or '—' }}</td>
+      <td>{{ t.created_at|kst }}</td>
+      <td>{{ t.last_used_at|kst if t.last_used_at else '없음' }}</td>
+      <td>{% if t.revoked_at %}취소됨 {{ t.revoked_at|kst }}{% else %}활성
+        <form method="post" action="/sources/tokens/{{ t.token_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">취소</button></form>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% else %}
+  <p class="muted" style="margin:0">아직 발급한 토큰이 없습니다.</p>
+  {% endif %}
+</div>
+
+<h2>토큰 발급</h2>
+<form method="post" action="/sources/tokens" class="card">
+  <div class="field">
+    <label for="label">라벨 (선택)</label>
+    <input type="text" id="label" name="label" placeholder="n8n 운영 알림">
+    <div class="help">어느 도구·용도의 토큰인지 알아보기 위한 이름. 활성 토큰은 {{ token_limit }}개까지이며, 취소하면 다음 요청부터 401 입니다.</div>
+  </div>
+  <div class="actions"><button class="btn" type="submit">토큰 발급</button></div>
+</form>
+
+<h2>요청 예시</h2>
+<p class="small" style="margin-bottom:8px">진단 항목 하나와 그 뒤의 수정 항목 하나 (CONTRACT 12절). <code>wfs_…</code> 자리에 발급한 토큰을 넣습니다. n8n 쪽 노드 설정은 저장소의 <code>docs/n8n/README.md</code> 를 참고하세요.</p>
+<pre>curl -X POST {{ inbound_url }} \
+  -H 'Authorization: Bearer wfs_…' \
+  -H 'content-type: application/json' \
+  -d '{
+    "contract_version": 1,
+    "items": [
+      {
+        "key": "run-daily-0920",
+        "title": "일일 보고서 2026-09-20 09:00 실행 실패",
+        "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다. 실패 원인과 수정에 필요한 근거를 조사해 주세요.",
+        "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
+        "blocked_by": []
+      },
+      {
+        "key": "fix-format",
+        "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
+        "body": "진단 결과와 근거를 바탕으로 demo-report-repo 의 변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
+        "labels": ["bug", "repo:demo-report-repo"],
+        "blocked_by": ["run-daily-0920"]
+      }
+    ],
+    "callback_url": "http://localhost:5678/webhook-waiting/1234"
+  }'</pre>
+
+<h2>callback 허용 목록</h2>
+<div class="card">
+  {% if callback_hosts %}
+  <p style="margin:0">허용된 host: {% for h in callback_hosts %}<code>{{ h }}</code>{% if not loop.last %}, {% endif %}{% endfor %} — <code>callback_url</code> 의 host 가 이 안에 있으면 체인이 사람 차례가 될 때 1회 POST 합니다 (<code>WORKFLOW_CALLBACK_HOSTS</code>).</p>
+  {% else %}
+  <p style="margin:0">callback 허용 목록이 비어 있어 <code>callback_url</code> 은 거부됩니다 (<code>WORKFLOW_CALLBACK_HOSTS</code>). 접수 자체는 되므로 <code>callback_url</code> 없이 보내세요.</p>
+  {% endif %}
+</div>
+{% endblock %}

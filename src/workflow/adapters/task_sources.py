@@ -13,7 +13,8 @@ from typing import Any
 from workflow.domain.task_sources import Issue
 
 SOURCES: tuple[str, ...] = ("github", "jira")
-SOURCE_LABELS: dict[str, str] = {"github": "GitHub Issues", "jira": "Jira"}
+# 화면 라벨. n8n 은 fixture 가 없어 SOURCES 에 없고 입구 API 로만 들어온다 (ADR-0010) — 라벨만 여기 둔다
+SOURCE_LABELS: dict[str, str] = {"github": "GitHub Issues", "jira": "Jira", "n8n": "n8n"}
 
 FIXTURES_DIR = Path(__file__).parent / "task_source_fixtures"
 

@@ -253,3 +253,64 @@ def test_script_pace_env_is_absent_when_not_set(tmp_path, monkeypatch):
 def test_main_parser_scripted_flag():
     assert local_stack.build_parser().parse_args([]).scripted is False
     assert local_stack.build_parser().parse_args(["--scripted"]).scripted is True
+
+
+# --- --callback-hosts / --public-url: n8n 출구 (phase 7 step 8, ADR-0010) --------------------------
+
+
+def test_callback_hosts_and_public_url_defaults_reach_central_api_and_worker_only(stack):
+    """기본값 — 허용 목록 127.0.0.1(모든 포트), 공개 주소는 central_url. 중앙 API·중앙 워커가 같은 env 를 읽는다."""
+    for name in ("central_api", "central_worker"):
+        env = stack.services[name].env
+        assert env["WORKFLOW_CALLBACK_HOSTS"] == "127.0.0.1"
+        assert env["WORKFLOW_PUBLIC_URL"] == stack.central_url
+    for name in ("diag_api", "diag_worker", "connector"):
+        env = stack.services[name].env
+        assert "WORKFLOW_CALLBACK_HOSTS" not in env and "WORKFLOW_PUBLIC_URL" not in env
+
+
+def test_public_url_default_follows_central_port(tmp_path):
+    stack = LocalStack(tmp_path, central_port=18001, diag_port=18101, fake_codex=None)
+    assert stack.services["central_worker"].env["WORKFLOW_PUBLIC_URL"] == "http://127.0.0.1:18001"
+
+
+def test_callback_hosts_and_public_url_can_be_overridden(tmp_path):
+    stack = LocalStack(
+        tmp_path, fake_codex=None, callback_hosts="localhost:5678", public_url="http://127.0.0.1:18000",
+    )
+    for name in ("central_api", "central_worker"):
+        env = stack.services[name].env
+        assert env["WORKFLOW_CALLBACK_HOSTS"] == "localhost:5678"
+        assert env["WORKFLOW_PUBLIC_URL"] == "http://127.0.0.1:18000"
+
+
+def test_main_parser_callback_hosts_and_public_url():
+    args = local_stack.build_parser().parse_args([])
+    assert args.callback_hosts == "127.0.0.1" and args.public_url is None
+    args = local_stack.build_parser().parse_args(
+        ["--callback-hosts", "localhost:5678", "--public-url", "http://127.0.0.1:18000"]
+    )
+    assert args.callback_hosts == "localhost:5678" and args.public_url == "http://127.0.0.1:18000"
+
+
+def test_main_passes_callback_hosts_and_public_url_to_stack(monkeypatch, tmp_path):
+    """main 의 인자가 LocalStack 생성자까지 간다 — docs/n8n/README.md 2절의 한 줄 명령이 그대로 통한다."""
+    captured: dict = {}
+
+    class Fake:
+        def __init__(self, workdir, **kwargs):
+            captured.update(kwargs)
+
+        def __enter__(self):
+            raise local_stack.StackError("기동 안 함")  # 프로세스는 띄우지 않는다 — main 은 1 로 끝난다
+
+        def __exit__(self, *exc):
+            return None
+
+    monkeypatch.setattr(local_stack, "LocalStack", Fake)
+    code = local_stack.main([
+        "--workdir", str(tmp_path), "--scripted",
+        "--callback-hosts", "localhost:5678", "--public-url", "http://127.0.0.1:18000",
+    ])
+    assert code == 1
+    assert captured["callback_hosts"] == "localhost:5678" and captured["public_url"] == "http://127.0.0.1:18000"

@@ -534,3 +534,85 @@ def test_templates_have_no_external_assets():
     base = (SERVER_DIR / "templates" / "base.html").read_text(encoding="utf-8")
     assert "<script>" in base and "data-live" in base and "3000" in base and "10000" in base
     assert "갱신 실패, 재시도 중" in base and "마지막 갱신" in base
+
+
+# --- n8n 입구 화면·체인 화면의 출처 n8n + callback 한 줄 (phase 7 step 6, ADR-0010) -------------------------
+
+
+def seed_n8n_chain(conn, session_id: str, *, callback_url: str | None) -> str:
+    """입구 API 가 만든 것과 같은 모양의 n8n 체인 하나 (진단 Task 1개, source_ref 는 항목 key)."""
+    chain_id = "chain-n8n-ui"
+    repo.insert_chain(conn, {
+        "chain_id": chain_id, "session_id": session_id, "source": "n8n",
+        "title": "일일 보고서 2026-09-20 09:00 실행 실패", "callback_url": callback_url,
+        "items": [{"key": "run-daily-0920", "title": "일일 보고서 2026-09-20 09:00 실행 실패", "body": "조사",
+                   "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"], "blocked_by": []}],
+    }, NOW)
+    repo.insert_task(conn, {
+        "task_id": "task-n8n-ui", "session_id": session_id, "title": "일일 보고서 2026-09-20 09:00 실행 실패",
+        "request": "조사", "kind": "diagnosis",
+        "required_capability": {"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}},
+        "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "manual", "completion_mode": "auto",
+        "criteria": [], "predecessor_task_id": None, "revision": 1, "target": {"run_id": "daily-0920-0900"},
+        "status": "확인 필요", "status_reason": "후보 없음", "chain_id": chain_id, "source_ref": "run-daily-0920",
+    }, NOW)
+    return chain_id
+
+
+def crumbs_of(html: str) -> str:
+    return html[html.index('class="crumbs"'):html.index("data-live=")]
+
+
+def test_chain_page_shows_n8n_source_and_callback_line(web, conn, settings):
+    session_id = session_id_of(web, settings)
+    callback_url = "http://localhost:5678/webhook-waiting/1234"
+    chain_id = seed_n8n_chain(conn, session_id, callback_url=callback_url)
+    html = web.get(f"/chains/{chain_id}").text
+    head = crumbs_of(html)
+    assert '<span class="chip">n8n</span>' in head
+    assert "시연 데이터" not in head  # n8n 항목은 fixture 가 아니다
+    assert "callback · localhost:5678 · 대기(사람 차례가 되면 보냄)" in visible_text(head)
+    assert "webhook-waiting" not in html and callback_url not in html  # URL 전체·본문은 찍지 않는다
+    assert "run-daily-0920" in visible_text(html)  # 노드의 source_ref 는 항목 key
+    assert "라벨 incident·workflow:daily-report → operations.diagnose" in visible_text(html)
+
+    for _ in range(5):
+        repo.record_callback_attempt(conn, chain_id, ok=False, error="HTTP 503", now=NOW, next_at=None)
+    failed = visible_text(crumbs_of(web.get(f"/chains/{chain_id}").text))
+    assert "callback · localhost:5678 · 실패 5회 · HTTP 503" in failed
+
+    repo.record_callback_attempt(conn, chain_id, ok=True, error=None, now=NOW, next_at=None)
+    sent = visible_text(crumbs_of(web.get(f"/chains/{chain_id}").text))
+    assert "callback · localhost:5678 · 전송됨" in sent and "HTTP 503" not in sent
+    # 홈의 워크플로우 카드도 같은 출처 라벨
+    assert "n8n · 0/1 완료" in visible_text(web.get("/tasks").text)
+
+
+def test_chain_page_without_callback_url_has_no_callback_line(web, conn, settings):
+    chain_id = seed_n8n_chain(conn, session_id_of(web, settings), callback_url=None)
+    html = web.get(f"/chains/{chain_id}").text
+    assert '<span class="chip">n8n</span>' in crumbs_of(html)
+    assert "callback" not in visible_text(html)
+    # fixture 체인은 그대로 시연 데이터 표시
+    fixture_id, _ = import_chain(web, conn, "#41", "#42")
+    fixture = crumbs_of(web.get(f"/chains/{fixture_id}").text)
+    assert "GitHub Issues" in fixture and "시연 데이터" in fixture and "callback" not in fixture
+
+
+def test_sources_page_uses_app_shell(web):
+    html = web.get("/sources").text
+    shell = html[html.index('class="shell'):]
+    for column in ('class="sidebar', 'class="main', 'class="viewer'):
+        assert column in shell, column
+    assert '<link rel="stylesheet" href="/static/style.css">' in html
+    assert '<div class="crumb">입구</div>' in html
+    nav = html[html.index('class="nav"'):html.index('class="side-head"')]
+    assert '<a href="/sources" class="active">입구</a>' in nav
+    main = html[html.index('class="main'):html.index('class="viewer')]
+    assert "<svg" not in main and '<script src=' not in main
+    text = visible_text(html)
+    for phrase in ("대기 중", "Powered by", "webhook secret", "API key"):
+        assert phrase not in text, phrase
+    # 발급 응답도 같은 셸이다
+    issued = web.post("/sources/tokens", data={"label": "n8n"}).text
+    assert 'class="sidebar' in issued and 'id="issued-token"' in issued

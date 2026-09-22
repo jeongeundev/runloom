@@ -802,3 +802,105 @@ def test_agent_public_annotates_capabilities_with_kind_labels(seeded, settings):
     assert unknown["capabilities"][0]["kind_label"] is None
     default = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
     assert default["capabilities"][0] == {"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}, "kind_label": None}
+
+
+# --- n8n 체인 — callback 상태·items_json 으로 구성 이유 재계산 (phase 7 step 6, ADR-0010) --------------------
+
+CALLBACK_URL = "http://localhost:5678/webhook-waiting/1234"
+N8N_ITEMS = [
+    {
+        "key": "run-daily-0920",
+        "title": "일일 보고서 2026-09-20 09:00 실행 실패",
+        "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다.",
+        "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
+        "blocked_by": [],
+    },
+    {
+        "key": "fix-format",
+        "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
+        "body": "진단 결과와 근거를 바탕으로 변환 코드를 수정해 주세요.",
+        "labels": ["bug", "repo:demo-report-repo"],
+        "blocked_by": ["run-daily-0920"],
+    },
+]
+
+
+def _seed_n8n_chain(conn, *, callback_url: str | None = CALLBACK_URL, items=N8N_ITEMS) -> tuple[str, str]:
+    """입구 API 가 만든 것과 같은 모양의 n8n 체인 — source_ref 는 항목 key. (task_a, task_b)."""
+    repo.insert_chain(conn, {
+        "chain_id": CHAIN, "session_id": SESSION, "source": "n8n",
+        "title": "일일 보고서 2026-09-20 09:00 실행 실패 → 응답 형식 변경에 맞춰 보고서 변환 수정",
+        "callback_url": callback_url, "items": items,
+    }, NOW)
+    from .conftest import task_row
+    repo.insert_task(conn, {**task_row("task-n1"), "chain_id": CHAIN, "source_ref": "run-daily-0920",
+                            "completion_mode": "auto"}, NOW)
+    repo.insert_task(conn, {**task_row("task-n2", kind="code_change", predecessor="task-n1"),
+                            "chain_id": CHAIN, "source_ref": "fix-format"}, NOW)
+    return "task-n1", "task-n2"
+
+
+def test_chain_summary_callback_is_none_without_url(seeded, settings):
+    _seed_chain(seeded)
+    assert _chain(seeded, settings)["callback"] is None
+    repo.insert_chain(seeded, {"chain_id": "chain-n8n-plain", "session_id": SESSION, "source": "n8n",
+                               "title": "", "items": []}, NOW)
+    plain = views.chain_summary(seeded, repo.get_chain(seeded, "chain-n8n-plain"), now=NOW, settings=settings)
+    assert plain["callback"] is None and (plain["source"], plain["source_label"]) == ("n8n", "n8n")
+
+
+def test_chain_summary_callback_three_states(seeded, settings):
+    _seed_n8n_chain(seeded)
+    waiting = _chain(seeded, settings)["callback"]
+    assert waiting == {
+        "url": CALLBACK_URL, "host": "localhost:5678", "state": "대기",
+        "sent_at": None, "attempts": 0, "last_error": None,
+    }
+
+    # 재시도 중 — 아직 대기, 횟수·마지막 오류가 남는다
+    for n in range(4):
+        repo.record_callback_attempt(seeded, CHAIN, ok=False, error="HTTP 503", now=NOW, next_at=NOW)
+    retrying = _chain(seeded, settings)["callback"]
+    assert (retrying["state"], retrying["attempts"], retrying["last_error"]) == ("대기", 4, "HTTP 503")
+
+    # 5회 실패·미전송 → 실패
+    repo.record_callback_attempt(seeded, CHAIN, ok=False, error="연결 오류: ConnectError", now=NOW, next_at=None)
+    failed = _chain(seeded, settings)["callback"]
+    assert (failed["state"], failed["attempts"], failed["last_error"]) == ("실패", 5, "연결 오류: ConnectError")
+    assert failed["sent_at"] is None
+
+    # 전송됨 — sent_at 이 있으면 횟수와 무관하게 전송됨, 오류는 지워진다
+    repo.record_callback_attempt(seeded, CHAIN, ok=True, error=None, now="2026-09-20T00:05:00Z", next_at=None)
+    sent = _chain(seeded, settings)["callback"]
+    assert (sent["state"], sent["sent_at"], sent["last_error"]) == ("전송됨", "2026-09-20T00:05:00Z", None)
+
+
+def test_n8n_chain_recomposes_reasons_from_items_json(seeded, settings):
+    """n8n 은 fixture 파일이 없다 — 저장한 항목 원문(items_json)으로 같은 compose 를 돌려 이유를 다시 만든다."""
+    task_a, task_b = _seed_n8n_chain(seeded)
+    _select(seeded, task_a, "agent-ops-demo", CAP_A)
+    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    first, second = _chain(seeded, settings)["tasks"]
+    assert first["reasons"] == [
+        "라벨 incident·workflow:daily-report → operations.diagnose",
+        "blocked_by 없음 — 가져온 순서대로 배치",
+        "체인의 첫 업무 — 선행 없음",
+        "직접 실행 — 흐름의 첫 업무는 사람이 시작",
+        "자동 완료 — 진단 자동 판정기 있음",
+        "operations.diagnose 일치 후보 1개",
+    ]
+    assert second["reasons"][0] == "라벨 bug·repo:demo-report-repo → code.modify"
+    assert second["reasons"][1:3] == [
+        "blocked_by run-daily-0920 — run-daily-0920 뒤에 배치",
+        "선행 run-daily-0920 (operations.diagnose) → code.modify 인계",
+    ]
+    assert second["reasons"][-1] == "code.modify 일치 후보 1개"
+
+
+def test_n8n_chain_without_items_json_keeps_only_selection_reason(seeded, settings):
+    task_a, _ = _seed_n8n_chain(seeded, items=None)
+    _select(seeded, task_a, "agent-ops-demo", CAP_A)
+    assert repo.get_chain(seeded, CHAIN)["items_json"] is None
+    first, second = _chain(seeded, settings)["tasks"]
+    assert first["reasons"] == ["operations.diagnose 일치 후보 1개"]
+    assert second["reasons"] == ["후보 없음"]

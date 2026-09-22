@@ -26,6 +26,7 @@ TABLES = {
     "chains",
     "kinds",
     "succession_rules",
+    "source_tokens",
 }
 
 
@@ -125,9 +126,9 @@ def test_phase5_tables_and_columns(conn):
     assert "demo_scripted" in _columns(conn, "agents")
     assert {"chain_id", "source_ref"} <= _columns(conn, "tasks")
     assert _columns(conn, "session_agents") == {"session_id", "agent_id", "registered_at"}
-    assert _columns(conn, "chains") == {
+    assert {
         "chain_id", "session_id", "title", "source", "skipped_json", "created_at", "started_at",
-    }
+    } <= _columns(conn, "chains")  # phase 7 이 callback 열을 더한다
 
 
 def test_schema_version_mismatch_raises(db_path):
@@ -190,8 +191,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_3():
-    assert SCHEMA_VERSION == 3
+def test_schema_version_is_4():
+    assert SCHEMA_VERSION == 4
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -289,3 +290,82 @@ def test_artifact_kind_accepts_generic_result(conn):
             " sha256, size, store_ref, created_at) VALUES ('a2', 'e1', 's1', 'nope', 'n', 'c', 'h', 0, 'r', ?)",
             (NOW,),
         )
+
+
+# --- phase 7: 입구 토큰·Chain callback (ADR-0010, ARCHITECTURE "n8n 입구와 출구" 저장) ------
+
+
+def _insert_chain(conn, chain_id: str, source: str, **columns) -> None:
+    names = ["chain_id", "session_id", "title", "source", "created_at", *columns]
+    conn.execute(
+        f"INSERT INTO chains ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
+        (chain_id, "s1", "t", source, NOW, *columns.values()),
+    )
+
+
+def test_init_schema_rejects_previous_version_without_migration(db_path):
+    """마이그레이션 도구가 없으므로 3 이 기록된 DB 는 재생성(WORKFLOW_RESET_DB=1) 대상이다."""
+    c = connect(db_path)
+    init_schema(c)
+    c.execute("UPDATE schema_version SET version = 3")
+    with pytest.raises(RuntimeError):
+        init_schema(c)
+    c.close()
+
+
+def test_phase7_source_tokens_table(conn):
+    assert _columns(conn, "source_tokens") == {
+        "token_id", "session_id", "source", "token_sha256", "label", "created_at", "last_used_at",
+        "revoked_at",
+    }
+    assert {("sessions", "session_id", "session_id")} <= _foreign_keys(conn, "source_tokens")
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    conn.execute(
+        "INSERT INTO source_tokens (token_id, session_id, source, token_sha256, label, created_at)"
+        " VALUES ('src-1', 's1', 'n8n', 'hash-1', '', ?)",
+        (NOW,),
+    )
+    row = conn.execute("SELECT * FROM source_tokens WHERE token_id = 'src-1'").fetchone()
+    assert row["last_used_at"] is None and row["revoked_at"] is None
+    with pytest.raises(sqlite3.IntegrityError):  # source 허용 값 밖
+        conn.execute(
+            "INSERT INTO source_tokens (token_id, session_id, source, token_sha256, label, created_at)"
+            " VALUES ('src-2', 's1', 'slack', 'hash-2', '', ?)",
+            (NOW,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # token_sha256 유일
+        conn.execute(
+            "INSERT INTO source_tokens (token_id, session_id, source, token_sha256, label, created_at)"
+            " VALUES ('src-3', 's1', 'n8n', 'hash-1', '', ?)",
+            (NOW,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 세션
+        conn.execute(
+            "INSERT INTO source_tokens (token_id, session_id, source, token_sha256, label, created_at)"
+            " VALUES ('src-4', 'no-such-session', 'n8n', 'hash-4', '', ?)",
+            (NOW,),
+        )
+
+
+def test_phase7_chains_callback_columns_defaults_and_source(conn):
+    assert _columns(conn, "chains") == {
+        "chain_id", "session_id", "title", "source", "skipped_json", "created_at", "started_at",
+        "items_json", "callback_url", "callback_sent_at", "callback_attempts", "callback_next_at",
+        "callback_last_error",
+    }
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    _insert_chain(conn, "c1", "n8n")
+    row = conn.execute("SELECT * FROM chains WHERE chain_id = 'c1'").fetchone()
+    assert row["source"] == "n8n"
+    assert row["callback_attempts"] == 0
+    assert all(
+        row[c] is None
+        for c in ("items_json", "callback_url", "callback_sent_at", "callback_next_at",
+                  "callback_last_error")
+    )
+    for source in ("github", "jira", "manual"):
+        _insert_chain(conn, f"c-{source}", source)
+    with pytest.raises(sqlite3.IntegrityError):  # source 허용 값 밖
+        _insert_chain(conn, "c-slack", "slack")
+    with pytest.raises(sqlite3.IntegrityError):  # callback_attempts >= 0
+        _insert_chain(conn, "c-neg", "n8n", callback_attempts=-1)
