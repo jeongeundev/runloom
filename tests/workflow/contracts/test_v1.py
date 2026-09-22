@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 31개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 35개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -21,7 +21,9 @@ from workflow.contracts.v1 import (
     CONTRACT_VERSION,
     ArtifactCreated,
     ArtifactMeta,
+    CallbackTask,
     Capability,
+    ChainCallback,
     ClaimRequest,
     CodeChangeResult,
     CodeChangeTarget,
@@ -34,6 +36,9 @@ from workflow.contracts.v1 import (
     GenericResult,
     HandoffBundle,
     HeartbeatRequest,
+    InboundChainRequest,
+    InboundChainResponse,
+    InboundItem,
     InputRef,
     KindSpec,
     LocalTarget,
@@ -76,6 +81,9 @@ _SIGNATURES = [
     ("ErrorBody", lambda k: {"code", "message"} <= k, ErrorBody),
     ("KindSpec", lambda k: "capability_code" in k, KindSpec),
     ("SuccessorRule", lambda k: "from_kind" in k, SuccessorRule),
+    ("InboundChainRequest", lambda k: "items" in k, InboundChainRequest),
+    ("InboundChainResponse", lambda k: "started" in k, InboundChainResponse),
+    ("ChainCallback", lambda k: "human_gate" in k, ChainCallback),
 ]
 
 
@@ -101,7 +109,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 31
+    assert len(FENCED) == 35
     assert len(INLINE) == 8
 
 
@@ -459,7 +467,10 @@ def test_targets_are_distinct():
 # --- 왕복 ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("model_name", ["DiagnosisResult", "ExecutionRequest"])
+@pytest.mark.parametrize(
+    "model_name",
+    ["DiagnosisResult", "ExecutionRequest", "InboundChainRequest", "InboundChainResponse", "ChainCallback"],
+)
 def test_json_roundtrip(model_name):
     for block in FENCED:
         model = _model_for(block)
@@ -774,3 +785,180 @@ def test_local_target_shape():
         LocalTarget.model_validate({"local_registration_id": ""})
     with pytest.raises(ValidationError):
         LocalTarget.model_validate({"local_registration_id": "l", "base_commit": "3" * 40})
+
+
+# --- n8n 입구·callback (CONTRACT 12절) ---------------------------------------
+
+
+def _inbound_request() -> dict:
+    return _first("InboundChainRequest")
+
+
+def _item(key: str, blocked_by: list[str] | None = None) -> dict:
+    return {"key": key, "title": f"제목 {key}", "body": "본문", "labels": [], "blocked_by": blocked_by or []}
+
+
+def test_inbound_chain_request_accepts_contract_md_example():
+    block = _inbound_request()
+    request = InboundChainRequest.model_validate(block)
+    assert [item.key for item in request.items] == ["run-daily-0920", "fix-format"]
+    assert request.items[1].blocked_by == ["run-daily-0920"]
+    assert request.callback_url == "http://localhost:5678/webhook-waiting/1234"
+
+
+def test_inbound_chain_request_callback_url_is_optional():
+    block = _inbound_request()
+    del block["callback_url"]
+    assert InboundChainRequest.model_validate(block).callback_url is None
+    block["callback_url"] = None
+    assert InboundChainRequest.model_validate(block).callback_url is None
+
+
+@pytest.mark.parametrize("callback_url", ["https://n8n.example/webhook-waiting/1", "http://localhost:5678"])
+def test_inbound_chain_request_keeps_callback_url_verbatim(callback_url):
+    """HttpUrl 정규화(끝 `/` 추가 등)가 없어야 n8n 의 resume URL 과 같은 문자열로 남는다."""
+    block = _inbound_request()
+    block["callback_url"] = callback_url
+    assert InboundChainRequest.model_validate(block).callback_url == callback_url
+
+
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "ftp://localhost:5678/x",
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "localhost:5678/webhook-waiting/1",
+        "http://localhost:5678/web hook",
+        "http://localhost:5678/x\n",
+        "",
+        "http://" + "a" * 2042,
+    ],
+    ids=["ftp", "javascript", "file", "no-scheme", "space", "newline", "empty", "over-2048"],
+)
+def test_inbound_chain_request_rejects_bad_callback_url(callback_url):
+    block = _inbound_request()
+    block["callback_url"] = callback_url
+    with pytest.raises(ValidationError):
+        InboundChainRequest.model_validate(block)
+
+
+def test_inbound_chain_request_accepts_one_and_ten_items():
+    block = _inbound_request()
+    block["items"] = [_item("only")]
+    assert len(InboundChainRequest.model_validate(block).items) == 1
+    block["items"] = [_item(f"k{i}") for i in range(10)]
+    assert len(InboundChainRequest.model_validate(block).items) == 10
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [],
+        [_item(f"k{i}") for i in range(11)],
+        [_item("a"), _item("a")],
+        [_item("a", ["a"])],
+        [_item("a"), _item("b", ["fix"])],
+    ],
+    ids=["empty", "eleven", "duplicate-key", "self-reference", "unknown-key"],
+)
+def test_inbound_chain_request_rejects_bad_items(items):
+    block = _inbound_request()
+    block["items"] = items
+    with pytest.raises(ValidationError):
+        InboundChainRequest.model_validate(block)
+
+
+def test_inbound_chain_request_rejects_unknown_field():
+    block = _inbound_request()
+    block["kind"] = "diagnosis"
+    with pytest.raises(ValidationError):
+        InboundChainRequest.model_validate(block)
+
+
+def test_inbound_item_rejects_unknown_field_and_non_string_label():
+    # 매핑 경로는 라벨 규칙 하나 — `kind`·`scope`·`run_id` 같은 별도 필드는 없다 (ADR-0010)
+    for extra in ({"kind": "diagnosis"}, {"run_id": "daily-0920-0900"}, {"url": None}):
+        with pytest.raises(ValidationError):
+            InboundItem.model_validate({**_item("a"), **extra})
+    with pytest.raises(ValidationError):
+        InboundItem.model_validate({**_item("a"), "labels": ["incident", 1]})
+
+
+def test_inbound_item_requires_all_five_fields():
+    for missing in ("key", "title", "body", "labels", "blocked_by"):
+        item = _item("a")
+        del item[missing]
+        with pytest.raises(ValidationError):
+            InboundItem.model_validate(item)
+    with pytest.raises(ValidationError):
+        InboundItem.model_validate(_item(""))
+
+
+def test_inbound_chain_response_started_false_carries_error_body():
+    block = next(b for b in FENCED if _model_for(b) is InboundChainResponse and not b["started"])
+    response = InboundChainResponse.model_validate(block)
+    assert response.start_error == ErrorBody(
+        code="selection_required", message="담당 에이전트를 먼저 확정하세요.", field=None, details=None
+    )
+    assert [t.kind for t in response.tasks] == ["diagnosis", "code_change"]
+
+
+def test_inbound_chain_response_rejects_bad_task_ref():
+    block = next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is InboundChainResponse)
+    block["tasks"][0]["kind"] = "Diagnosis"
+    with pytest.raises(ValidationError):
+        InboundChainResponse.model_validate(block)
+    block = next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is InboundChainResponse)
+    block["tasks"][0]["status"] = ""
+    with pytest.raises(ValidationError):
+        InboundChainResponse.model_validate(block)
+
+
+def test_inbound_chain_response_accepts_null_chain_url():
+    block = _first("InboundChainResponse")
+    block["chain_url"] = None
+    assert InboundChainResponse.model_validate(block).chain_url is None
+
+
+@pytest.mark.parametrize("model_name", ["InboundChainRequest", "InboundChainResponse", "ChainCallback"])
+def test_inbound_models_dump_in_contract_md_field_order(model_name):
+    for block in FENCED:
+        model = _model_for(block)
+        if model.__name__ != model_name:
+            continue
+        assert list(model.model_validate(block).model_dump(mode="json")) == list(block)
+
+
+def test_chain_callback_rejects_empty_tasks():
+    block = _first("ChainCallback")
+    block["tasks"] = []
+    with pytest.raises(ValidationError):
+        ChainCallback.model_validate(block)
+
+
+def test_chain_callback_rejects_non_n8n_source():
+    block = _first("ChainCallback")
+    block["source"] = "github"
+    with pytest.raises(ValidationError):
+        ChainCallback.model_validate(block)
+
+
+def test_chain_callback_rejects_naive_settled_at():
+    block = _first("ChainCallback")
+    block["settled_at"] = "2026-09-22T12:34:56"
+    with pytest.raises(ValidationError):
+        ChainCallback.model_validate(block)
+
+
+def test_chain_callback_accepts_null_urls_and_missing_result():
+    block = _first("ChainCallback")
+    block["chain_url"] = None
+    block["tasks"][0].update(outcome=None, summary=None, task_url=None)
+    parsed = ChainCallback.model_validate(block)
+    assert parsed.chain_url is None
+    assert parsed.tasks[0] == CallbackTask(
+        task_id="task-8a1b2c3d4e5f", key="run-daily-0920", kind="diagnosis",
+        title="일일 보고서 2026-09-20 09:00 실행 실패", status="완료", status_reason="판정 근거: 14/14",
+        outcome=None, summary=None, task_url=None,
+    )

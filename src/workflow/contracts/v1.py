@@ -555,3 +555,111 @@ class SelectionRecord(_Contract):
         elif self.selected_agent_id is not None or self.matched is not None:
             raise ValueError("needs_selection 은 selected_agent_id·matched 가 null 이어야 합니다")
         return self
+
+
+# --- n8n 입구·callback (CONTRACT 12절) ---------------------------------------
+
+_CALLBACK_URL_MAX_LENGTH = 2048
+
+
+def _validate_callback_url(value: str) -> str:
+    """http/https 만, 공백 없음, 2048자 이하. 정규화하지 않는다 — n8n 이 준 resume URL 그대로 저장·전송한다."""
+    if not value.startswith(("http://", "https://")):
+        raise ValueError("callback_url 은 http:// 또는 https:// 로 시작해야 합니다")
+    if any(ch.isspace() for ch in value):
+        raise ValueError("callback_url 에 공백이 있습니다")
+    if len(value) > _CALLBACK_URL_MAX_LENGTH:
+        raise ValueError(f"callback_url 은 {_CALLBACK_URL_MAX_LENGTH}자 이하여야 합니다")
+    return value
+
+
+CallbackUrl = Annotated[str, AfterValidator(_validate_callback_url)]
+
+
+class InboundItem(_Contract):
+    """입구 본문의 항목 — `domain/task_sources.Issue` 와 같은 모양(`url` 없음). 라벨 규칙으로만 종류를 정한다."""
+
+    key: NonEmptyStr
+    title: NonEmptyStr
+    body: str  # Task.request 가 된다 — 명령·경로로 해석하지 않는다
+    labels: list[str]
+    blocked_by: list[str]
+
+
+class InboundChainRequest(_Contract):
+    contract_version: ContractVersion
+    items: list[InboundItem]  # 1~10개
+    callback_url: CallbackUrl | None = None
+
+    @model_validator(mode="after")
+    def _check_items(self) -> "InboundChainRequest":
+        if not self.items:
+            raise ValueError("items 는 1개 이상이어야 합니다")
+        if len(self.items) > 10:
+            raise ValueError(f"items 는 10개 이하여야 합니다 (현재 {len(self.items)}개)")
+        keys: set[str] = set()
+        for item in self.items:
+            if item.key in keys:
+                raise ValueError(f"key {item.key} 가 요청 안에서 중복입니다")
+            keys.add(item.key)
+        # adapters/task_sources._check_references 와 같은 규칙 — 자기 참조 금지, 같은 요청의 key 만
+        for item in self.items:
+            for dep in item.blocked_by:
+                if dep == item.key:
+                    raise ValueError(f"항목 {item.key} 가 자기 자신을 blocked_by 로 가리킵니다")
+                if dep not in keys:
+                    raise ValueError(f"blocked_by 의 {dep} 가 같은 요청의 key 가 아닙니다")
+        return self
+
+
+class InboundTaskRef(_Contract):
+    task_id: NonEmptyStr
+    key: NonEmptyStr
+    kind: KindId
+    status: NonEmptyStr  # USER_STATUS_LABELS 의 문구
+
+
+class InboundSkipped(_Contract):
+    key: NonEmptyStr
+    reason: NonEmptyStr
+
+
+class InboundChainResponse(_Contract):
+    contract_version: ContractVersion
+    chain_id: NonEmptyStr
+    chain_url: str | None
+    started: bool
+    start_error: ErrorBody | None
+    tasks: list[InboundTaskRef]
+    skipped: list[InboundSkipped]
+
+
+class CallbackGate(_Contract):
+    label: NonEmptyStr
+    status_label: NonEmptyStr
+    reason: str
+
+
+class CallbackTask(_Contract):
+    task_id: NonEmptyStr
+    key: str  # source_ref. 단독 Task 도 key 가 있다
+    kind: KindId
+    title: NonEmptyStr
+    status: NonEmptyStr
+    status_reason: str
+    outcome: str | None  # 최신 결과 봉투의 outcome — 결과가 없으면 null
+    summary: str | None
+    task_url: str | None
+
+
+class ChainCallback(_Contract):
+    """체인이 사람 차례(`chain_settled`)가 될 때 워커가 `callback_url` 로 보내는 본문. 체인당 1회."""
+
+    contract_version: ContractVersion
+    chain_id: NonEmptyStr
+    title: NonEmptyStr
+    source: Literal["n8n"]
+    chain_url: str | None
+    settled_at: Rfc3339
+    human_gate: CallbackGate
+    tasks: list[CallbackTask] = Field(min_length=1)

@@ -601,7 +601,7 @@
 
 [ARCHITECTURE](ARCHITECTURE.md) "n8n 입구와 출구", 결정은 [ADR-0010](adr/0010-n8n-inbox-and-callback.md).
 
-> 이 절의 예시는 아직 `contracts/v1.py` 에 모델이 없어(phase 7 step 1 이 만든다) 계약 테스트 `tests/workflow/contracts/test_v1.py` 의 fixture 추출에서 빼 두었다 — 펜스 태그가 `json contract-pending` 이고 오류표의 인라인 JSON 뒤에 설명이 붙어 있다. step 1 이 모델을 만들 때 펜스를 ```json 으로 되돌리고 `_SIGNATURES` 에 `InboundChainRequest`·`InboundChainResponse`·`ChainCallback` 을 더하고 펜스 개수(31 → 35)를 맞춘다. 오류표의 인라인 JSON 은 모두 `ErrorBody` 라 그대로 두어도 된다. n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이라 라벨 규칙·`map_issue`·`compose` 가 가져오기(`/tasks/import`)와 같다.
+n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이라 라벨 규칙·`map_issue`·`compose` 가 가져오기(`/tasks/import`)와 같다. 모델은 `contracts/v1.py` 의 `InboundChainRequest`·`InboundChainResponse`·`ChainCallback`.
 
 인증: `Authorization: Bearer wfs_…` — 워크스페이스(세션)가 `/sources` 에서 발급한 입구 토큰. 서버는 sha256 만 저장하고, 토큰 → `session_id` + `source`. 토큰 없음·취소는 401 `unauthenticated`, 토큰의 `source` 가 경로(`/sources/n8n/…`)와 다르면 403 `forbidden`.
 
@@ -609,7 +609,7 @@
 
 항목 2개 — 진단(`incident`+`workflow:`+`run:`)과 그 뒤의 수정(`bug`+`repo:`, `blocked_by` 로 순서). `items` 는 1~10개, `key` 는 요청 안에서 유일, `blocked_by` 는 같은 요청의 `key` 만. `callback_url` 은 선택이며 http/https 만, 허용 목록 `WORKFLOW_CALLBACK_HOSTS` 안이어야 한다:
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "items": [
@@ -638,7 +638,7 @@
 
 201. 체인과 Task 2개가 생기고 첫 업무가 접수 즉시 시작됐다(`실행 요청됨`). 두 번째는 선행을 기다린다(`대기`). `chain_url` 은 `WORKFLOW_PUBLIC_URL` 이 있을 때만 값이 있다:
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "chain_id": "chain-3f9a1c2b7d4e",
@@ -659,7 +659,7 @@
 
 체인은 만들었지만 첫 업무를 시작하지 못했다(여기서는 후보 없음 → 담당 미확정). 그래도 201 이며 `start_error` 에 오류 본문을 담는다. 사람이 `chain_url` 에서 에이전트를 확정하고 시작하면 된다. 진단 상한이면 `start_error.code` 는 `daily_limit_reached`(10절과 같은 본문):
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "chain_id": "chain-4a0b1c2d3e5f",
@@ -678,7 +678,7 @@
 
 워커가 체인이 `chain_settled` 가 된 tick 의 마지막에 `callback_url` 로 POST 한다(체인당 1회). 여기서는 A 가 자동 완료되고 B 가 `확인 필요 · 검토 대기`(outcome `ready_for_review`)가 된 시점이다. `human_gate` 는 체인 화면의 사람 단계와 같은 값, `outcome`·`summary` 는 그 Task 의 최신 결과 봉투에서 읽고 결과가 없으면 null, `task_url` 은 `WORKFLOW_PUBLIC_URL` 이 없으면 null:
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "chain_id": "chain-3f9a1c2b7d4e",
