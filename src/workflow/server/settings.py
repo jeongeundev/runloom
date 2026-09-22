@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from workflow.domain.callback_policy import parse_hosts
+
 SECRET_KEYS = ("SESSION_SECRET", "OPERATOR_TOKEN", "DIAG_API_TOKEN")
 
 # `load_settings` 가 읽는 환경변수 전부 (개발 플래그 `WORKFLOW_DEV` 제외).
@@ -25,6 +27,9 @@ ENV_KEYS = (
     "WORKFLOW_LIMIT_ATTACHMENTS_MAX_BYTES",
     "WORKFLOW_LIMIT_UNKNOWN_AFTER_SECONDS",
     "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS",
+    # n8n 입구·출구 (ADR-0010) — 비밀값이 아니다
+    "WORKFLOW_CALLBACK_HOSTS",
+    "WORKFLOW_PUBLIC_URL",
 )
 
 
@@ -48,6 +53,9 @@ class Settings:
     diag_api_token: str
     session_cookie_days: int = 14
     limits: Limits = field(default_factory=Limits)
+    # callback 허용 목록(`parse_hosts` 결과, 비면 callback 없음)과 chain_url·task_url 앞의 공개 주소(끝 `/` 없음, 비면 null)
+    callback_hosts: tuple[str, ...] = ()
+    public_url: str = ""
 
 
 def _int(env: Mapping[str, str], key: str, default: int) -> int:
@@ -97,4 +105,6 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
             unknown_after_seconds=_int(env, "WORKFLOW_LIMIT_UNKNOWN_AFTER_SECONDS", 120),
             heartbeat_offline_seconds=_int(env, "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS", 90),
         ),
+        callback_hosts=parse_hosts(env.get("WORKFLOW_CALLBACK_HOSTS") or ""),
+        public_url=(env.get("WORKFLOW_PUBLIC_URL") or "").rstrip("/"),
     )

@@ -1,4 +1,5 @@
-"""인증 — 심사자 세션 서명 쿠키, 연결 프로그램 Bearer 토큰, 운영자 확인 (ADR-0005, ARCHITECTURE 인증 절).
+"""인증 — 심사자 세션 서명 쿠키, 연결 프로그램 Bearer 토큰, 운영자 확인 (ADR-0005, ARCHITECTURE 인증 절),
+입구 토큰 (ADR-0010 — 세션이 발급해 n8n 이 쓴다).
 
 요청 범위 의존성(`get_conn`, `utc_now`) 도 여기 둔다. 인증이 가장 먼저 DB 와 시각을 쓴다.
 sqlite 연결은 요청마다 새로 열고 응답 뒤 닫는다 (`get_conn`). 앱 전역 연결을 두지 않는다.
@@ -9,7 +10,7 @@ import hmac
 import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from sqlite3 import Connection
+from sqlite3 import Connection, Row
 
 from fastapi import Depends, Request, Response
 
@@ -66,6 +67,17 @@ def require_connector(request: Request, conn: Connection = Depends(get_conn)) ->
     if connector_id is None:
         raise ApiError(401, "unauthenticated", "유효한 연결 토큰이 필요합니다.")
     return connector_id
+
+
+def require_source_token(request: Request, conn: Connection = Depends(get_conn)) -> Row:
+    """`Authorization: Bearer wfs_…` → source_tokens 행(token_id·session_id·source). 없거나 취소면 401 unauthenticated.
+    성공 시 touch_source_token(last_used_at). 토큰 원문을 메시지에 넣지 않는다. 세션 쿠키로는 통과하지 않는다(CSRF)."""
+    token = _bearer_token(request)
+    row = repo.authenticate_source_token(conn, token) if token else None
+    if row is None:
+        raise ApiError(401, "unauthenticated", "유효한 입구 토큰이 필요합니다.")
+    repo.touch_source_token(conn, row["token_id"], utc_now())
+    return row
 
 
 def _session_from_cookie(request: Request, conn: Connection) -> str | None:

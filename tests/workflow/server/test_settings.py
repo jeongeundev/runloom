@@ -79,6 +79,43 @@ def test_env_overrides():
     assert s.limits == Limits(3, 7, 2, 1024, 30, 45)
 
 
+def test_callback_hosts_and_public_url_default_to_empty():
+    """phase 7 — 둘 다 비밀값이 아니다. 비어 있으면 callback 없음(접수 시 422)·chain_url null."""
+    s = load_settings(FULL)
+    assert s.callback_hosts == ()
+    assert s.public_url == ""
+    assert "WORKFLOW_CALLBACK_HOSTS" not in SECRET_KEYS and "WORKFLOW_PUBLIC_URL" not in SECRET_KEYS
+    assert {"WORKFLOW_CALLBACK_HOSTS", "WORKFLOW_PUBLIC_URL"} <= set(ENV_KEYS)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", ()),
+        ("localhost:5678", ("localhost:5678",)),
+        (" localhost:5678, 127.0.0.1 ,", ("localhost:5678", "127.0.0.1")),
+        ("N8N.Example:5678", ("n8n.example:5678",)),
+    ],
+)
+def test_callback_hosts_parse_with_parse_hosts(raw, expected):
+    s = load_settings({**FULL, "WORKFLOW_CALLBACK_HOSTS": raw})
+    assert s.callback_hosts == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", ""),
+        ("http://127.0.0.1:8000", "http://127.0.0.1:8000"),
+        ("https://runloom.duckdns.org/", "https://runloom.duckdns.org"),
+        ("https://runloom.duckdns.org//", "https://runloom.duckdns.org"),
+    ],
+)
+def test_public_url_drops_trailing_slash(raw, expected):
+    s = load_settings({**FULL, "WORKFLOW_PUBLIC_URL": raw})
+    assert s.public_url == expected
+
+
 def test_non_integer_limit_raises():
     with pytest.raises(ValueError):
         load_settings({**FULL, "WORKFLOW_LIMIT_GLOBAL_DAILY": "many"})

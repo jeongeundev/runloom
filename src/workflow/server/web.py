@@ -18,6 +18,7 @@ import json
 import re
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Any
@@ -640,16 +641,38 @@ def tasks_import(
     issues = [issue for issue in load_issues(source) if issue.key in selected]  # 모르는 key 는 무시
     if not issues:
         raise PageError(422, "no_issues", "가져올 이슈를 선택하세요.", field="issue_keys")
+    created = create_chain(conn, session_id, issues, source=source, now=now, settings=settings, error=PageError)
+    return _redirect(f"/chains/{created.chain_id}", response)
+
+
+@dataclass(frozen=True)
+class ChainCreated:
+    chain_id: str
+    task_ids: dict[str, str]  # issue key → task_id (체인 노드 + 능력 있는 단독 Task)
+    skipped: list[dict[str, str]]  # {key, title, reason}
+
+
+def create_chain(
+    conn: Connection, session_id: str, issues: Sequence[Issue], *, source: str, now: str, settings: Settings,
+    callback_url: str | None = None, items: list[dict] | None = None, error: type[ApiError] = ApiError,
+    items_field: str = "issue_keys",
+) -> ChainCreated:
+    """이슈들로 체인 하나와 Task 들을 만든다 — 가져오기(`tasks_import`)와 입구 API(`inbound_api`, ADR-0010)의 공통 본체.
+    등록 에이전트 확인 → `compose` → 활성 한도 → `insert_chain` → Task 삽입. 실행은 만들지 않는다.
+
+    오류는 `error(...)` 로 던진다 — 웹은 `PageError`(error.html), 입구 API 는 기본값 `ApiError`(JSON).
+    `items_field` 는 `dependency_cycle` 의 field 이름(폼은 `issue_keys`, 입구 본문은 `items`).
+    `callback_url`·`items` 는 입구 API 만 넘긴다(허용 목록 검사는 호출자가 끝낸 값)."""
     registered = _session_agents(conn, session_id)
     if not registered:
-        raise PageError(422, "agent_not_registered", "에이전트를 먼저 등록하세요.", field="agent_id")
+        raise error(422, "agent_not_registered", "에이전트를 먼저 등록하세요.", field="agent_id")
     prefer = [a["agent_id"] for a in registered]
     kinds = _kinds(conn, session_id)
     rules = [rule for _, rule in repo.list_rules(conn, session_id)]
     try:
         plan = compose(issues, _candidates(conn, session_id), prefer=prefer, kinds=kinds, rules=rules)
     except ValueError as exc:
-        raise PageError(422, "dependency_cycle", str(exc), field="issue_keys") from None
+        raise error(422, "dependency_cycle", str(exc), field=items_field) from None
 
     # Standalone 중 능력이 있는 것(지원 안 되는 인계 쌍)은 선행 없는 단독 Task, 없는 것은 체인의 skipped 로만
     capable_standalone = [item for item in plan.standalone if item.mapping.capability is not None]
@@ -660,7 +683,7 @@ def tasks_import(
     active = [t for t in repo.list_tasks(conn, session_id) if t["finished_at"] is None]
     limit = settings.limits.active_tasks_per_session
     if len(active) + len(plan.nodes) + len(capable_standalone) > limit:
-        raise PageError(
+        raise error(
             429, "active_task_limit_reached",
             f"세션당 활성 업무 한도({limit}개)에 도달했습니다.", details={"limit": limit},
         )
@@ -669,7 +692,7 @@ def tasks_import(
     repo.insert_chain(
         conn,
         {"chain_id": chain_id, "session_id": session_id, "title": plan.title, "source": source,
-         "skipped": skipped},
+         "skipped": skipped, "callback_url": callback_url, "items": items},
         now,
     )
     # PlanNode.selection 은 임시 task_id(issue.key) 라 저장하지 않는다 — 실제 task_id 로 다시 계산한다
@@ -688,7 +711,7 @@ def tasks_import(
     for item in capable_standalone:
         capability = item.mapping.capability
         spec = _kind_for_code(conn, session_id, capability.code)
-        _insert_new_task(
+        task_ids[item.issue.key] = _insert_new_task(
             conn, session_id, now, settings,
             title=item.issue.title, request_text=item.issue.body, spec=spec,
             scope_value=capability.scope[spec.scope_key],
@@ -697,7 +720,7 @@ def tasks_import(
             predecessor_task_id="", run_id=item.mapping.run_id or "",
             chain_id=chain_id, source_ref=item.issue.key, prefer=prefer,
         )
-    return _redirect(f"/chains/{chain_id}", response)
+    return ChainCreated(chain_id=chain_id, task_ids=task_ids, skipped=skipped)
 
 
 # --- 워크플로우 화면 — 체인 상세·시작·라이브 (phase 5 step 6). 화면 라벨은 "워크플로우", 경로·코드는 chain ------
@@ -757,20 +780,30 @@ def chain_start(
 ) -> RedirectResponse:
     """첫 노드를 `task_run` 과 같은 경로로 실행하고 `started_at` 을 기록한다. 이미 시작했으면 그대로 303 (멱등)."""
     now = utc_now()
-    settings = _settings(request)
     chain = _own_chain(conn, session_id, chain_id)
+    start_chain(conn, chain, session_id=session_id, now=now, settings=_settings(request), error=PageError)
+    return _redirect(f"/chains/{chain_id}", response)
+
+
+def start_chain(
+    conn: Connection, chain: Row, *, session_id: str, now: str, settings: Settings,
+    error: type[ApiError] = ApiError,
+) -> None:
+    """체인의 첫 노드를 `task_run` 과 같은 경로로 실행하고 `started_at` 을 기록한다 — `chain_start` 와 입구 API 의 공통 본체.
+    이미 시작했으면 새 실행 없이 시작 기록만 맞춘다(멱등). 오류는 `error(...)` 로 던진다(`_run_task` 의 것은 PageError 그대로 —
+    ApiError 의 하위라 입구 API 는 함께 잡는다)."""
+    chain_id = chain["chain_id"]
     tasks = repo.tasks_of_chain(conn, chain_id)
     if not tasks:
-        raise PageError(409, "invalid_transition", "시작할 업무가 없습니다.")
+        raise error(409, "invalid_transition", "시작할 업무가 없습니다.")
     first = tasks[0]
     # 첫 노드가 이미 실행된 적 있으면(업무 상세의 `실행` 등) 새 실행 없이 시작 기록만 맞춘다
     if chain["started_at"] is None and not repo.list_executions(conn, first["task_id"]):
         selection = repo.get_selection(conn, first["task_id"])
         if selection is None or selection.status != "selected":
-            raise PageError(409, "selection_required", "담당 에이전트를 먼저 확정하세요.")
+            raise error(409, "selection_required", "담당 에이전트를 먼저 확정하세요.")
         _run_task(conn, first, session_id=session_id, now=now, settings=settings)
     repo.mark_chain_started(conn, chain_id, now)
-    return _redirect(f"/chains/{chain_id}", response)
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
