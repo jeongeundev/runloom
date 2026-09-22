@@ -27,7 +27,7 @@ n8n 쪽 노드는 4개다:
 docker run -d --name runloom-n8n -p 5678:5678 -v runloom_n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n
 ```
 
-브라우저에서 `http://localhost:5678` 을 열고 첫 실행이면 소유자 계정을 만든다. 컨테이너 안에서 호스트(Runloom)는 `host.docker.internal` 로 보인다 — Docker Desktop(Mac/Windows) 이름이며 Linux 는 7절.
+화면으로 import 하려면(4절 "화면으로") 브라우저에서 `http://localhost:5678` 을 열고 첫 실행이면 소유자 계정을 만든다 — CLI 로 넣는 경로(4절 "CLI 로")는 소유자 계정 없이 된다. 컨테이너 안에서 호스트(Runloom)는 `host.docker.internal` 로 보인다 — Docker Desktop(Mac/Windows) 이름이며 Linux 는 7절.
 
 ### Runloom — 로컬
 
@@ -76,9 +76,13 @@ WORKFLOW_CALLBACK_HOSTS=localhost:5678 WORKFLOW_PUBLIC_URL=http://127.0.0.1:8000
 ### CLI 로 (대안)
 
 ```bash
-docker cp docs/n8n/runloom-handoff.json runloom-n8n:/tmp/runloom-handoff.json
+sed 's#host.docker.internal:8000#host.docker.internal:18000#' docs/n8n/runloom-handoff.json > runloom-handoff.json   # 로컬 스택(18000)이면 포트를 고친 사본. 개발 서버(8000)면 원본 그대로
+docker cp runloom-handoff.json runloom-n8n:/tmp/runloom-handoff.json
+docker exec -u root runloom-n8n chown node:node /tmp/runloom-handoff.json   # docker cp 는 호스트 사용자 소유·권한 그대로 옮긴다 — node 가 읽으려면 필요
 docker exec -u node runloom-n8n n8n import:workflow --input=/tmp/runloom-handoff.json
 ```
+
+`import:workflow` 는 JSON 최상위의 `id` 를 요구한다(2.39.10 에서 없으면 `NOT NULL constraint failed: workflow_entity.id` 로 거부). 예시 파일의 `"id": "runloomHandoff001"` 이 그 값이며 아래 `list:workflow`·`publish:workflow` 에 그대로 쓴다.
 
 자격 증명은 decrypted 형식 파일로 넣는다. `id` 는 JSON 의 참조(`runloom-source-token`)와 같게 둔다:
 
@@ -95,14 +99,15 @@ docker exec -u node runloom-n8n n8n import:workflow --input=/tmp/runloom-handoff
 
 ```bash
 docker cp runloom-credentials.json runloom-n8n:/tmp/runloom-credentials.json
+docker exec -u root runloom-n8n chown node:node /tmp/runloom-credentials.json   # 위와 같은 이유 (0600 파일은 이 줄이 없으면 EACCES)
 docker exec -u node runloom-n8n n8n import:credentials --input=/tmp/runloom-credentials.json
 docker exec -u node runloom-n8n rm /tmp/runloom-credentials.json && rm runloom-credentials.json   # 원문이 든 파일은 지운다
-docker exec -u node runloom-n8n n8n list:workflow                    # "<id>|Runloom handoff"
-docker exec -u node runloom-n8n n8n publish:workflow --id=<id>       # 구버전: n8n update:workflow --id=<id> --active=true
-docker restart runloom-n8n                                           # CLI 로 바꾼 활성 상태는 재시작 뒤 반영된다
+docker exec -u node runloom-n8n n8n list:workflow                    # "runloomHandoff001|Runloom handoff"
+docker exec -u node runloom-n8n n8n publish:workflow --id=runloomHandoff001   # 구버전: n8n update:workflow --id=<id> --active=true
+docker restart runloom-n8n                                           # CLI 로 바꾼 활성 상태는 재시작 뒤 반영된다 — 로그에 `Activated workflow "Runloom handoff"`
 ```
 
-노드 파라미터 이름·`typeVersion` 은 n8n 버전에 따라 다를 수 있다. 예시 파일의 값은 2026-09-22 n8n 저장소(master)에서 확인한 범위 안이다 — Webhook `2`(1~2.1), HTTP Request `4.2`(1~4.5), Wait `1.1`(1~1.1), Slack `2.2`(1~2.7). import 가 거부되면 화면에서 같은 노드 4개를 손으로 만들어도 된다(파라미터는 1절 표와 JSON 참조).
+노드 파라미터 이름·`typeVersion` 은 n8n 버전에 따라 다를 수 있다. 예시 파일의 값은 2026-09-22 n8n 저장소(master)에서 확인한 범위 안이다 — Webhook `2`(1~2.1), HTTP Request `4.2`(1~4.5), Wait `1.1`(1~1.1), Slack `2.2`(1~2.7). import 가 거부되면 화면에서 같은 노드 4개를 손으로 만들어도 된다(파라미터는 1절 표와 JSON 참조). 2026-09-22 n8n **2.39.10**(Docker) 에서 위 CLI 경로로 import·publish 하고 5절의 흐름(Webhook → HTTP Request 201 → Wait 잠듦 → Runloom callback 으로 재개 → Slack 통과)을 1회 확인했다 — [VERIFICATION_LOG](../VERIFICATION_LOG.md) "실제 n8n" 절.
 
 ## 5. 실행
 

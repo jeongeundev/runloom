@@ -284,7 +284,7 @@ n8n 쪽은 노드 4개다 — Webhook(또는 Error Trigger) → HTTP Request(이
 - 멱등 키가 없다 — n8n 이 같은 본문을 재전송하면 체인이 하나 더 생긴다.
 - 입구 토큰은 발급한 세션만 취소할 수 있고 운영자 화면에는 취소가 없다. 세션 쿠키(14일)가 만료되면 그 토큰을 취소할 화면이 없어지지만 토큰은 DB 에 남아 계속 통한다(세션 행을 지우는 절차가 없다).
 - 워커가 후속 Task 에 저장하는 `확인 필요 · 선행 outcome … 규칙 대상 아님` 은 화면·callback 이 쓰는 지금 판정(`user_status`)에 반영되지 않아 그 Task 는 `대기 · 선행 대기` 로 보이고 callback 의 `status_reason` 도 `선행 대기` 다(phase 6 부터 있던 간극, 미수정 — `tests/workflow/server/test_worker.py` 가 저장값·전송값을 둘 다 기록한다).
-- 실제 n8n(Docker)으로는 아직 돌리지 않았다 — phase 7 step 10 몫. 지금 증거는 테스트 안 HTTP 수신기가 n8n 역할을 한 대본 e2e 뿐이다.
+- 실제 n8n 으로는 2026-09-22 Docker n8n 2.39.10 에서 1회만 돌렸다(CLI import·publish, 에이전트는 대본 — [VERIFICATION_LOG](VERIFICATION_LOG.md) 실제 n8n 절). n8n 화면 import·Error Trigger·실제 Slack 자격 증명·다른 n8n 버전은 확인하지 않았다. 그 실행에서 중앙 워커의 httpx INFO 로그가 callback URL 을 `signature` 쿼리까지 그대로 찍는 것을 관찰했다(미수정, 사용자 결정).
 
 ## 최소 데이터 모델과 영속성
 
@@ -586,7 +586,7 @@ B는 실제 테스트 기록·diff·보고서를 제출한다. 연결 프로그�
 
 ## 검증 순서와 다음 결정
 
-다음은 구현 요청 후 수행할 검증이다. 1·2는 2026-09-20 실제 Codex로 통과했고([VERIFICATION_LOG](VERIFICATION_LOG.md)), 3은 가짜 codex 테스트(Step 11·14)로만 확인했다. 4·5는 아직이다. 6은 2026-09-22 대본 e2e 와 실제 Claude 1회(검토 C 만 실제, A 는 fake 진단·B 는 대본 codex)로 통과했다 — 그 실행에서 연결 프로그램이 도구 실행 중 heartbeat 를 보내지 않는 결함을 발견했다([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 실연동 절). 7은 2026-09-22 대본 e2e(테스트 안 HTTP 수신기가 n8n 역할)로 통과했고 실제 n8n(Docker)은 phase 7 step 10 뒤에 갱신한다.
+다음은 구현 요청 후 수행할 검증이다. 1·2는 2026-09-20 실제 Codex로 통과했고([VERIFICATION_LOG](VERIFICATION_LOG.md)), 3은 가짜 codex 테스트(Step 11·14)로만 확인했다. 4·5는 아직이다. 6은 2026-09-22 대본 e2e 와 실제 Claude 1회(검토 C 만 실제, A 는 fake 진단·B 는 대본 codex)로 통과했다 — 그 실행에서 연결 프로그램이 도구 실행 중 heartbeat 를 보내지 않는 결함을 발견했다([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 실연동 절). 7은 2026-09-22 대본 e2e(테스트 안 HTTP 수신기가 n8n 역할)와 같은 날 실제 n8n 2.39.10(Docker, 에이전트는 대본) 1회로 통과했다 — 그 실행에서 절차서 결함 2건(`docker cp` 소유권, CLI import 의 최상위 `id`)을 고쳤고 제품 결함은 없었다([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 실제 n8n 절).
 
 | 순서 | 검증 | 통과 기준 |
 |---|---|---|
@@ -596,6 +596,6 @@ B는 실제 테스트 기록·diff·보고서를 제출한다. 연결 프로그�
 | 4 | 진단 API | 실제 조회·정상 인계·자료 누락/충돌 보류·입력에 따른 진단 변화 |
 | 5 | A → B | 근거 검증 후 자동 착수, 재현 실패 → 수정 후 통과, 정확한 보고서와 사람 검토 대기 |
 | 6 | 세 번째 종류 — 대본 e2e 통과(`tests/e2e/test_scenario.py` test_22~28) + 실제 Claude 1회 통과(C 만 실제 `claude -p`, outcome `changes_requested`; 규칙 삭제 시나리오는 대본만) — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 두 절 | 화면으로 종류 `review` 와 규칙 `code_change --[ready_for_review]--> review` 를 등록하면 `composition.py`·`worker.py` 변경 없이 진단 → 수정 → 검토가 사람 조작 없이 착수(B 승인 전에 C), 규칙 삭제 시 C 대기, 검토는 저장소 불변 |
-| 7 | n8n 입구·출구 — 대본 e2e 통과(`tests/e2e/test_scenario.py` test_29~35: 토큰 발급 → 쿠키 없이 `POST /sources/n8n/chains` 201 → A 완료 → B 자동 착수 → `확인 필요 · 검토 대기` → 수신기가 `ChainCallback` 1건, B 승인 뒤에도 두 번째 없음, 허용 목록 밖 422·토큰 없음 401·취소 뒤 401, 36 passed 130초 — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 n8n 절). **실제 n8n 은 미검증(step 10)** | 실제 n8n(Docker)이 POST 한 항목으로 체인이 생겨 A → B 가 사람 조작 없이 돌고, B 검토 대기 시점에 callback 이 n8n Wait 노드를 깨운다(2xx) |
+| 7 | n8n 입구·출구 — 대본 e2e 통과(`tests/e2e/test_scenario.py` test_29~35: 토큰 발급 → 쿠키 없이 `POST /sources/n8n/chains` 201 → A 완료 → B 자동 착수 → `확인 필요 · 검토 대기` → 수신기가 `ChainCallback` 1건, B 승인 뒤에도 두 번째 없음, 허용 목록 밖 422·토큰 없음 401·취소 뒤 401, 36 passed 130초 — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 n8n 절) + **실제 n8n 1회 통과**(n8n 2.39.10 Docker, CLI import·publish, Webhook → HTTP Request 201 → A → B 대본 → 워커 callback 200 이 Wait 노드를 깨워 Slack 노드까지 `success`, 트리거부터 6.5초, B 승인 뒤 두 번째 없음 — 같은 문서 실제 n8n 절) | 실제 n8n(Docker)이 POST 한 항목으로 체인이 생겨 A → B 가 사람 조작 없이 돌고, B 검토 대기 시점에 callback 이 n8n Wait 노드를 깨운다(2xx) |
 
 스택·모델 평가안과 계약 v1의 필드·DB 제약을 작성했다. 다음은 중앙 서비스의 자동 정보 제안 방식, 사용자 인증·배포 환경, 실행 예산을 구체화하고 작은 구현 단계로 나누는 것이다. 실제 JSON Schema 생성·DB 마이그레이션·API 구현은 구현 요청 후 시작한다. 새 기능은 TDD로 시작한다. 기존 하네스를 수정하면 `python3 -m pytest scripts/`를 통과시킨다.
