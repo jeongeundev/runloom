@@ -8,6 +8,7 @@
 import json
 import logging
 import subprocess
+import time
 from pathlib import Path
 
 from workflow.connector import git_ops, state
@@ -80,10 +81,15 @@ def register(state_conn, tmp_path, local_registration_id: str = "local-demo-repo
     })
 
 
-def make_runner(client, state_conn, paths, adapter, tmp_path, clock=lambda: NOW) -> Runner:
+def make_runner(
+    client, state_conn, paths, adapter, tmp_path, clock=lambda: NOW, heartbeat_interval: float = 30.0,
+) -> Runner:
     """등록 `local-demo-report`(tool `stub`) 하나와 그 도구의 어댑터 하나 — 단일 어댑터 흐름 테스트용."""
     register(state_conn, tmp_path)
-    return Runner(client, state_conn, paths, {"stub": adapter}, CONNECTOR_ID, clock, tmp_path / "handoff")
+    return Runner(
+        client, state_conn, paths, {"stub": adapter}, CONNECTOR_ID, clock, tmp_path / "handoff",
+        heartbeat_interval=heartbeat_interval,
+    )
 
 
 def event_types(fake: FakeCentral, execution_id: str) -> list[tuple[int, str]]:
@@ -184,6 +190,60 @@ def test_heartbeat_is_sent_once_per_interval(fake, client, state_conn, paths, tm
     runner.tick()
 
     assert len(fake.heartbeats) == 1
+
+
+def _wait_until(condition, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_heartbeat_continues_while_adapter_runs(fake, client, state_conn, paths, tmp_path):
+    """도구가 heartbeat 주기보다 오래 돌면 tick 은 어댑터 안에 묶여 있다. 그동안에도 현재 실행 ID 를 담은 heartbeat 가
+    가야 중앙이 Agent 를 offline 으로 보지 않는다 (ARCHITECTURE "연결 생존과 모델 진행 구분")."""
+    request = assign_with_handoff(fake)
+    adapter = StubAdapter(during=lambda progress: _wait_until(lambda: len(fake.heartbeats) >= 3))
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path, heartbeat_interval=0.05)
+
+    runner.tick()
+
+    during_run = fake.heartbeats[1:]  # [0] 은 claim 전 tick 의 것
+    assert len(during_run) >= 2
+    assert {h["current_execution_id"] for h in during_run} == {request.execution_id}
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_heartbeat_thread_stops_when_adapter_finishes(fake, client, state_conn, paths, tmp_path):
+    assign_with_handoff(fake)
+    adapter = StubAdapter(during=lambda progress: _wait_until(lambda: len(fake.heartbeats) >= 2))
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path, heartbeat_interval=0.05)
+
+    runner.tick()
+    sent = len(fake.heartbeats)
+    time.sleep(0.2)
+
+    assert len(fake.heartbeats) == sent
+
+
+def test_heartbeat_failure_during_run_does_not_fail_execution(fake, client, state_conn, paths, tmp_path):
+    """실행 중 중앙이 끊겨 heartbeat 가 실패해도 어댑터·결과 전달은 그대로다 — 스레드는 다음 주기에 다시 시도한다."""
+    request = assign_with_handoff(fake)
+
+    def during(progress):
+        attempts = lambda: sum(1 for r in fake.requests if r.url.path == "/connector/heartbeat")  # noqa: E731
+        before = attempts()
+        fake.reachable = False
+        _wait_until(lambda: attempts() >= before + 2)
+        fake.reachable = True
+        sent = len(fake.heartbeats)
+        _wait_until(lambda: len(fake.heartbeats) > sent)
+
+    runner = make_runner(client, state_conn, paths, StubAdapter(during=during), tmp_path, heartbeat_interval=0.05)
+
+    runner.tick()
+
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    assert fake.heartbeats[-1]["current_execution_id"] == request.execution_id
 
 
 # --- 어댑터 선택 — 등록의 tool ---------------------------------------------------------------

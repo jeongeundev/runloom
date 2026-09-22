@@ -13,6 +13,8 @@
   `task/{task_id}` 브랜치의 커밋으로 남아 있다. 지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다.
 - 내장이 아닌 종류(`LocalTarget`, ADR-0009)도 등록의 `tool`·`repo_path` 로 어댑터·인계 디렉터리를 정하지만 worktree 는
   없다. 결과는 `GenericResult` 를 kind `generic_result` 로 올리고 같은 `result_ready` 를 보낸다.
+- 어댑터가 도는 동안(tick 이 `adapter.run` 안에 묶인 동안) heartbeat 는 별도 스레드가 주기마다 보낸다. 실제 실행은 대부분
+  offline 판정(90초)보다 길다. 그 스레드는 sqlite 연결을 만지지 않는다 — 현재 실행 ID 를 값으로 받아 `client.heartbeat` 만.
 """
 
 import hashlib
@@ -20,6 +22,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -146,6 +149,7 @@ class Runner:
         clock: Callable[[], str],
         handoff_root: Path,
         keep_workdirs: bool = False,
+        heartbeat_interval: float = 30.0,
     ):
         self._client = client
         self._conn = state_conn
@@ -155,7 +159,7 @@ class Runner:
         self._clock = clock
         self._handoff_root = handoff_root
         self._keep_workdirs = keep_workdirs  # 디버깅용 — worktree·인계 디렉터리를 남긴다
-        self._heartbeat_interval = 30.0
+        self._heartbeat_interval = heartbeat_interval
         self._last_heartbeat: float | None = None
 
     # --- 루프 ------------------------------------------------------------------------------
@@ -184,13 +188,26 @@ class Runner:
             time.sleep(claim_interval)
 
     def _heartbeat_if_due(self) -> None:
-        now = time.monotonic()
-        if self._last_heartbeat is not None and now - self._last_heartbeat < self._heartbeat_interval:
+        if self._heartbeat_due_in() > 0:
             return
         active = state.active_execution(self._conn)
         current = active["execution_id"] if active and active["finished_at"] is None else None
         self._client.heartbeat(self._connector_id, current)
-        self._last_heartbeat = now
+        self._last_heartbeat = time.monotonic()
+
+    def _heartbeat_due_in(self) -> float:
+        if self._last_heartbeat is None:
+            return 0.0
+        return max(0.0, self._heartbeat_interval - (time.monotonic() - self._last_heartbeat))
+
+    def _heartbeat_while_running(self, execution_id: str, stop: threading.Event) -> None:
+        """어댑터가 도는 동안 별도 스레드에서. 실패해도 스레드를 죽이지 않고 다음 주기에 다시 보낸다 — 실행 결과와 무관하다."""
+        while not stop.wait(self._heartbeat_due_in()):
+            try:
+                self._client.heartbeat(self._connector_id, execution_id)
+            except Exception as exc:  # Unreachable·CentralError 모두 — tick 의 예외 처리는 이 스레드에 닿지 않는다
+                log.warning("%s: 실행 중 heartbeat 실패 — 다음 주기에 재시도: %s", execution_id, exc)
+            self._last_heartbeat = time.monotonic()
 
     # --- 이벤트 -------------------------------------------------------------------------------
 
@@ -301,6 +318,12 @@ class Runner:
             if message:
                 self._emit(execution_id, "progress", {"message": _masked_text(message)})
 
+        stop_heartbeat = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._heartbeat_while_running, args=(execution_id, stop_heartbeat), daemon=True,
+            name=f"heartbeat-{execution_id}",
+        )
+        heartbeat.start()
         try:
             output = adapter.run(request, handoff_dir, progress)
         except Exception as exc:  # 어댑터 예외 — 프로세스 종료를 확인하지 못했으므로 process_stopped=False
@@ -308,6 +331,9 @@ class Runner:
             output = AdapterOutput(
                 result=None, failed=("adapter_error", _masked_text(f"{type(exc).__name__}: {exc}"), False),
             )
+        finally:
+            stop_heartbeat.set()
+            heartbeat.join()
 
         if output.failed is None and output.result is not None and not started:
             # 어댑터가 runtime_ref 를 콜백으로 주지 않았다 — 반환값으로 started 를 보낸다
