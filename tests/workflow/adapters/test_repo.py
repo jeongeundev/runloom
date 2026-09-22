@@ -22,7 +22,15 @@ from workflow.adapters.errors import (
     KindInUse,
     KindProtected,
     NotFound,
+    ResponseConflict,
     SequenceGap,
+    StaleRequest,
+)
+from workflow.contracts.github import (
+    AssigneeBinding,
+    GitHubIssueSnapshot,
+    GitHubSourceConfig,
+    snapshot_digest,
 )
 from workflow.contracts.v1 import (
     BUILTIN_KINDS,
@@ -34,6 +42,7 @@ from workflow.contracts.v1 import (
     SelectionRecord,
     SuccessorRule,
 )
+from workflow.domain.task_followup import FollowupTaskSpec
 
 from .conftest import NOW
 
@@ -1078,18 +1087,18 @@ def _to_result_ready(conn, store, execution_id: str, kind: str = "diagnosis_resu
 
 
 def test_create_session_seeds_builtin_kinds_and_rule_per_session(conn):
-    """phase 8 의 bug_fix·code_review 와 그 규칙은 실행 경로가 생기기 전까지 seed 하지 않는다."""
-    seeded_kinds = [spec for spec in BUILTIN_KINDS if spec.kind in ("diagnosis", "code_change")]
+    """내장 종류 4개(phase 8 의 bug_fix·code_review 포함)와 내장 규칙 2개를 세션마다 seed 한다."""
     repo.create_session(conn, SESSION, NOW)
-    assert repo.list_kinds(conn, SESSION) == seeded_kinds
+    assert repo.list_kinds(conn, SESSION) == list(BUILTIN_KINDS)
     rules = repo.list_rules(conn, SESSION)
-    assert [rule for _, rule in rules] == [BUILTIN_RULES[0]]
+    assert sorted((rule for _, rule in rules), key=lambda r: r.from_kind) == sorted(
+        BUILTIN_RULES, key=lambda r: r.from_kind
+    )
     assert all(rule_id.startswith("rule-") for rule_id, _ in rules)
-    assert repo.get_kind(conn, SESSION, "bug_fix") is None and repo.get_kind(conn, SESSION, "code_review") is None
     assert repo.list_kinds(conn, OTHER_SESSION) == [] and repo.list_rules(conn, OTHER_SESSION) == []
     repo.create_session(conn, OTHER_SESSION, LATER)
-    assert repo.list_kinds(conn, OTHER_SESSION) == seeded_kinds
-    assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
+    assert repo.list_kinds(conn, OTHER_SESSION) == list(BUILTIN_KINDS)
+    assert len(repo.list_rules(conn, OTHER_SESSION)) == 2
     assert repo.get_kind(conn, SESSION, "diagnosis") == BUILTIN_KINDS[0]
     assert repo.get_kind(conn, SESSION, "review") is None
 
@@ -1098,7 +1107,7 @@ def test_create_session_is_atomic_with_seed(conn):
     repo.create_session(conn, SESSION, NOW)
     with pytest.raises(sqlite3.IntegrityError):
         repo.create_session(conn, SESSION, LATER)
-    assert len(repo.list_kinds(conn, SESSION)) == 2 and len(repo.list_rules(conn, SESSION)) == 1
+    assert len(repo.list_kinds(conn, SESSION)) == 4 and len(repo.list_rules(conn, SESSION)) == 2
 
 
 def test_insert_kind_roundtrip_ordering_and_duplicate(seeded):
@@ -1112,7 +1121,7 @@ def test_insert_kind_roundtrip_ordering_and_duplicate(seeded):
     assert repo.get_kind(conn, OTHER_SESSION, "review") is None  # 세션 격리
     # 내장 먼저(BUILTIN_KINDS 순), 그 다음 created_at·kind 순
     assert [k.kind for k in repo.list_kinds(conn, SESSION)] == [
-        "diagnosis", "code_change", "apple", "zebra", "review"]
+        "diagnosis", "code_change", "bug_fix", "code_review", "apple", "zebra", "review"]
     with pytest.raises(DuplicateKind):
         repo.insert_kind(conn, SESSION, REVIEW, LATER)
     with pytest.raises(DuplicateKind):  # 내장 이름 재등록도 중복
@@ -1146,7 +1155,7 @@ def test_delete_kind_success(seeded):
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
     repo.delete_kind(conn, SESSION, "review")
     assert repo.get_kind(conn, SESSION, "review") is None
-    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["diagnosis", "code_change"]
+    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["diagnosis", "code_change", "bug_fix", "code_review"]
 
 
 def test_rule_insert_get_list_duplicate_and_delete(seeded):
@@ -1161,7 +1170,9 @@ def test_rule_insert_get_list_duplicate_and_delete(seeded):
     assert repo.get_rule(conn, SESSION, "review", "code_change") is None
     assert repo.get_rule(conn, OTHER_SESSION, "code_change", "review") is None
     rules = repo.list_rules(conn, SESSION)
-    assert [(rid == rule_id, rule) for rid, rule in rules] == [(False, BUILTIN_RULES[0]), (True, FIX_TO_REVIEW)]
+    # 내장 2개(같은 시각 — rule_id 순)가 먼저, 나중에 넣은 규칙이 끝
+    assert sorted(rule.from_kind for _, rule in rules[:2]) == ["bug_fix", "diagnosis"]
+    assert rules[2] == (rule_id, FIX_TO_REVIEW)
     with pytest.raises(DuplicateRule):  # 같은 (from, to) — on_outcomes 가 달라도
         repo.insert_rule(conn, SESSION, FIX_TO_REVIEW.model_copy(update={"on_outcomes": ["needs_information"]}), LATER)
     with pytest.raises(NotFound):  # from_kind 미등록
@@ -1172,16 +1183,16 @@ def test_rule_insert_get_list_duplicate_and_delete(seeded):
     with pytest.raises(NotFound):
         repo.delete_rule(conn, SESSION, rule_id)
     with pytest.raises(NotFound):  # 다른 세션의 rule_id 로는 지울 수 없다
-        [(builtin_id, _)] = repo.list_rules(conn, SESSION)
+        builtin_id = repo.list_rules(conn, SESSION)[0][0]
         repo.delete_rule(conn, OTHER_SESSION, builtin_id)
 
 
 def test_builtin_rule_can_be_deleted(seeded):
     conn = seeded
-    [(rule_id, _)] = repo.list_rules(conn, SESSION)
+    [rule_id] = [rid for rid, rule in repo.list_rules(conn, SESSION) if rule.from_kind == "diagnosis"]
     repo.delete_rule(conn, SESSION, rule_id)
-    assert repo.list_rules(conn, SESSION) == []
-    assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
+    assert [rule for _, rule in repo.list_rules(conn, SESSION)] == [BUILTIN_RULES[1]]
+    assert len(repo.list_rules(conn, OTHER_SESSION)) == 2
     assert repo.get_rule(conn, SESSION, "diagnosis", "code_change") is None
 
 
@@ -1497,3 +1508,287 @@ def test_chains_awaiting_callback_filters_and_orders(seeded):
     assert [r["chain_id"] for r in repo.chains_awaiting_callback(conn, due, max_attempts=6)] == [
         "c-max", "c-other", "c-past", "c-fresh"]  # 상한을 올리면 다시 대상
     assert repo.chains_awaiting_callback(conn, due, max_attempts=0) == []
+
+
+# --- phase 8: GitHub 업무 순환 저장 (ADR-0014, ARCHITECTURE "GitHub 업무 순환" 중복 키) ------------
+
+SOURCE = "ghs-1a2b3c4d"
+FIX_AGENT = "agent-codex-mac"
+
+
+def _source(**overrides) -> GitHubSourceConfig:
+    data = {
+        "source_id": SOURCE,
+        "repository_full_name": "acme/billing",
+        "workflow_repository_id": "billing",
+        "label_filter": ["bug"],
+        "selected_issue_numbers": [],
+        "start_at": "2026-10-06T00:00:00Z",
+        "fix_verification_profile_id": "vp-pytest",
+        "review_agent_id": "agent-claude-mac",
+        "run_mode": "auto",
+        "max_rework_rounds": 1,
+        "enabled": True,
+        "config_revision": 1,
+    }
+    return GitHubSourceConfig.model_validate({**data, **overrides})
+
+
+def _snapshot(**overrides) -> GitHubIssueSnapshot:
+    data = {
+        "repository_id": 700112233,
+        "repository_full_name": "acme/billing",
+        "issue_id": 2456789012,
+        "number": 41,
+        "title": "할인 쿠폰이 두 번 적용됨",
+        "body": "재현: 같은 쿠폰으로 두 번 결제",
+        "state": "open",
+        "labels": ["bug"],
+        "assignee_ids": [5812345],
+        "assignee_logins": ["kim-dev"],
+        "html_url": "https://github.com/acme/billing/issues/41",
+        "created_at": "2026-10-06T10:12:00Z",
+        "updated_at": "2026-10-06T10:15:30Z",
+        "is_pull_request": False,
+    }
+    return GitHubIssueSnapshot.model_validate({**data, **overrides})
+
+
+def _fix_task(task_id: str = "task-gh-41", session_id: str = SESSION, **overrides) -> dict:
+    task = {
+        **_task(task_id, session_id, kind="bug_fix"),
+        "title": "할인 쿠폰이 두 번 적용됨",
+        "request": "GitHub acme/billing#41",
+        "required_capability": {"code": "code.fix", "scope": {"repository_id": "billing"}},
+        "target": {"local_registration_id": "local-billing", "base_commit": "a" * 40,
+                   "verification_profile_id": "vp-pytest"},
+        "source_ref": "#41",
+    }
+    return {**task, **overrides}
+
+
+@pytest.fixture
+def cycle(seeded):
+    """SESSION 이 acme/billing 을 연결하고 이슈 #41 이 Task 로 들어온 상태."""
+    repo.upsert_agent(seeded, _agent(FIX_AGENT, connection_type="local", api_url=None, credential_ref=None,
+                                     capabilities=[{"code": "code.fix", "scope": {"repository_id": "billing"}}]))
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    result = repo.upsert_source_issue(seeded, SESSION, SOURCE, _snapshot(), task=_fix_task(), now=NOW)
+    assert result.action == "created"
+    return seeded
+
+
+def test_github_source_save_get_and_session_scope(seeded):
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    assert repo.get_github_source(seeded, SESSION, SOURCE) == _source()
+    assert repo.get_github_source(seeded, OTHER_SESSION, SOURCE) is None  # 다른 세션에는 없다
+    repo.save_github_source(seeded, SESSION, _source(label_filter=["bug", "p1"], config_revision=2), LATER)
+    assert repo.get_github_source(seeded, SESSION, SOURCE).label_filter == ["bug", "p1"]
+    with pytest.raises(NotFound):  # 다른 세션이 같은 source_id 를 덮어쓰지 못한다
+        repo.save_github_source(seeded, OTHER_SESSION, _source(), LATER)
+    with pytest.raises(sqlite3.IntegrityError):  # 세션당 저장소 하나
+        repo.save_github_source(seeded, SESSION, _source(source_id="ghs-00000002"), LATER)
+    repo.save_github_source(seeded, OTHER_SESSION, _source(source_id="ghs-00000003"), LATER)  # 세션이 다르면 됨
+
+
+def test_source_cursor_is_saved_per_source_and_scoped(seeded):
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    assert repo.get_source_cursor(seeded, SESSION, SOURCE) is None
+    repo.save_source_cursor(seeded, SESSION, SOURCE, "2026-10-06T10:15:30Z", LATER)
+    assert repo.get_source_cursor(seeded, SESSION, SOURCE) == "2026-10-06T10:15:30Z"
+    repo.save_github_source(seeded, SESSION, _source(config_revision=2), LATER)  # 설정 변경은 커서를 지우지 않는다
+    assert repo.get_source_cursor(seeded, SESSION, SOURCE) == "2026-10-06T10:15:30Z"
+    with pytest.raises(NotFound):
+        repo.save_source_cursor(seeded, OTHER_SESSION, SOURCE, "x", LATER)
+    with pytest.raises(NotFound):
+        repo.get_source_cursor(seeded, OTHER_SESSION, SOURCE)
+
+
+def test_bind_assignee_upserts_by_github_user_id(cycle):
+    binding = AssigneeBinding(source_id=SOURCE, github_user_id=5812345, github_login="kim-dev", agent_id=FIX_AGENT)
+    repo.bind_assignee(cycle, SESSION, binding, NOW)
+    renamed = binding.model_copy(update={"github_login": "kim-renamed"})
+    repo.bind_assignee(cycle, SESSION, renamed, LATER)  # login 은 표시용 — 같은 ID 는 한 행
+    assert repo.list_assignee_bindings(cycle, SESSION, SOURCE) == [renamed]
+    with pytest.raises(NotFound):
+        repo.bind_assignee(cycle, OTHER_SESSION, binding, LATER)
+    with pytest.raises(NotFound):
+        repo.list_assignee_bindings(cycle, OTHER_SESSION, SOURCE)
+    with pytest.raises(NotFound):  # 없는 Agent
+        repo.bind_assignee(cycle, SESSION, binding.model_copy(update={"agent_id": "nope"}), LATER)
+
+
+def test_upsert_source_issue_creates_one_task_per_remote_issue(cycle):
+    row = repo.get_source_issue_by_task(cycle, SESSION, "task-gh-41")
+    assert (row["source_id"], row["github_issue_id"], row["issue_number"], row["source_revision"]) == (
+        SOURCE, 2456789012, 41, 1,
+    )
+    assert row["snapshot_digest"] == snapshot_digest(_snapshot())
+    assert GitHubIssueSnapshot.model_validate_json(row["snapshot_json"]) == _snapshot()
+    task = repo.get_task(cycle, "task-gh-41")
+    assert task["kind"] == "bug_fix" and task["source_ref"] == "#41"
+
+    again = repo.upsert_source_issue(cycle, SESSION, SOURCE, _snapshot(), task=_fix_task("task-other"), now=LATER)
+    assert (again.action, again.task_id, again.source_revision) == ("unchanged", "task-gh-41", 1)
+    assert repo.get_task(cycle, "task-other") is None  # 같은 이슈를 다시 받아도 Task 는 하나
+    assert repo.get_source_issue_by_task(cycle, OTHER_SESSION, "task-gh-41") is None
+
+
+def test_upsert_source_issue_revisions_and_out_of_order_snapshots(cycle):
+    edited = _snapshot(body="재현 절차 보강", updated_at="2026-10-06T10:20:00Z")
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, edited, task=_fix_task(), now=LATER)
+    assert (result.action, result.source_revision) == ("updated", 2)
+
+    older = _snapshot(title="옛 제목", updated_at="2026-10-06T10:16:00Z")  # 늦게 도착한 이전 스냅샷
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, older, task=_fix_task(), now=LATER)
+    assert (result.action, result.source_revision) == ("stale", 2)
+
+    same_time = _snapshot(body="재현 절차 보강", labels=["bug", "p1"], updated_at="2026-10-06T19:20:00+09:00")
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, same_time, task=_fix_task(), now=LATER)
+    assert (result.action, result.source_revision) == ("updated", 3)  # 같은 시각·다른 digest 는 새 revision
+
+    result = repo.upsert_source_issue(cycle, SESSION, SOURCE, same_time, task=_fix_task(), now=LATER)
+    assert result.action == "unchanged"
+    row = repo.get_source_issue_by_task(cycle, SESSION, "task-gh-41")
+    assert row["source_revision"] == 3 and row["snapshot_digest"] == snapshot_digest(same_time)
+
+    closed = _snapshot(body="재현 절차 보강", labels=["bug", "p1"], state="closed",
+                       updated_at="2026-10-06T11:00:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, closed, task=_fix_task(), now=LATER)
+    assert repo.get_source_issue_by_task(cycle, SESSION, "task-gh-41")["state"] == "closed"
+
+
+def test_upsert_source_issue_rejects_other_session_and_wrong_repository(cycle):
+    with pytest.raises(NotFound):
+        repo.upsert_source_issue(cycle, OTHER_SESSION, SOURCE, _snapshot(issue_id=9, number=9),
+                                 task=_fix_task("t-9", OTHER_SESSION), now=LATER)
+    with pytest.raises(ValueError):  # Task 의 세션이 소스의 세션과 다르다
+        repo.upsert_source_issue(cycle, SESSION, SOURCE, _snapshot(issue_id=9, number=9),
+                                 task=_fix_task("t-9", OTHER_SESSION), now=LATER)
+    with pytest.raises(ValueError):  # 소스에 연결된 저장소가 아니다
+        repo.upsert_source_issue(cycle, SESSION, SOURCE,
+                                 _snapshot(issue_id=9, number=9, repository_full_name="acme/other"),
+                                 task=_fix_task("t-9"), now=LATER)
+    assert repo.get_task(cycle, "t-9") is None
+
+
+def _review_spec(cause: str = "exec-fix-1", session_id: str = SESSION) -> FollowupTaskSpec:
+    return FollowupTaskSpec(session_id=session_id, kind="code_review", cause_execution_id=cause,
+                            predecessor_task_id="task-gh-41", rules_revision=1)
+
+
+def _review_task(task_id: str = "task-gh-41-review") -> dict:
+    return {
+        **_fix_task(task_id), "kind": "code_review", "predecessor_task_id": "task-gh-41", "source_ref": None,
+        "required_capability": {"code": "code.review", "scope": {"repository_id": "billing"}},
+    }
+
+
+def test_create_followup_once_is_unique_per_cause(cycle):
+    _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    task_id, created = repo.create_followup_once(cycle, _review_spec(), _review_task(), NOW)
+    assert (task_id, created) == ("task-gh-41-review", True)
+    assert repo.get_task(cycle, task_id)["predecessor_task_id"] == "task-gh-41"
+    # 같은 원인 재처리(재시작·중복 결과)는 기존 Task 를 돌려주고 새로 만들지 않는다
+    task_id, created = repo.create_followup_once(cycle, _review_spec(), _review_task("task-dup"), LATER)
+    assert (task_id, created) == ("task-gh-41-review", False)
+    assert repo.get_task(cycle, "task-dup") is None
+
+
+def test_create_followup_once_checks_spec_and_ownership(cycle):
+    _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    with pytest.raises(ValueError):  # spec 과 Task 의 종류가 다르다
+        repo.create_followup_once(cycle, _review_spec(), {**_review_task(), "kind": "bug_fix"}, NOW)
+    with pytest.raises(ValueError):  # spec 과 Task 의 선행이 다르다
+        repo.create_followup_once(cycle, _review_spec(), {**_review_task(), "predecessor_task_id": TASK_A}, NOW)
+    with pytest.raises(NotFound):  # 원인 실행이 이 세션 것이 아니다
+        repo.create_followup_once(cycle, _review_spec(session_id=OTHER_SESSION),
+                                  {**_review_task(), "session_id": OTHER_SESSION}, NOW)
+    with pytest.raises(NotFound):  # 없는 원인 실행
+        repo.create_followup_once(cycle, _review_spec("exec-none"), _review_task(), NOW)
+    assert repo.get_task(cycle, "task-gh-41-review") is None
+
+
+def test_human_request_once_per_cause_key(cycle):
+    request_id, created = repo.create_human_request_once(
+        cycle, "task-gh-41", "fix_needs_information", "재현 절차가 필요합니다", "fix_needs_information:exec-1", NOW,
+    )
+    assert created and request_id.startswith("hr-")
+    again, created = repo.create_human_request_once(
+        cycle, "task-gh-41", "fix_needs_information", "다른 문구", "fix_needs_information:exec-1", LATER,
+    )
+    assert (again, created) == (request_id, False)
+    row = repo.get_human_request(cycle, SESSION, request_id)
+    assert (row["state"], row["revision"], row["task_revision"], row["question"]) == (
+        "open", 1, 1, "재현 절차가 필요합니다",
+    )
+    assert repo.get_human_request(cycle, OTHER_SESSION, request_id) is None
+    with pytest.raises(NotFound):
+        repo.create_human_request_once(cycle, "no-task", "x", "q", "k", NOW)
+
+
+def test_human_response_once_is_idempotent_and_locked_by_revision(cycle):
+    request_id, _ = repo.create_human_request_once(
+        cycle, "task-gh-41", "fix_needs_information", "재현 절차?", "fix_needs_information:exec-1", NOW,
+    )
+    kwargs = {"response_id": "resp-1", "expected_revision": 1, "action": "answer", "text": "두 번 클릭", "now": LATER}
+    task_revision, created = repo.record_human_response_once(cycle, SESSION, request_id, **kwargs)
+    assert (task_revision, created) == (2, True)  # 응답이 다음 실행 입력(새 task_revision)이 된다
+    assert repo.get_task(cycle, "task-gh-41")["revision"] == 2
+    row = repo.get_human_request(cycle, SESSION, request_id)
+    assert (row["state"], row["revision"], row["answered_at"]) == ("answered", 2, LATER)
+
+    # 같은 response_id 재전송(응답 유실 뒤 재시도)은 같은 결과, revision 은 다시 오르지 않는다
+    assert repo.record_human_response_once(cycle, SESSION, request_id, **kwargs) == (2, False)
+    assert repo.get_task(cycle, "task-gh-41")["revision"] == 2
+    with pytest.raises(ResponseConflict):  # 같은 response_id 에 다른 내용
+        repo.record_human_response_once(cycle, SESSION, request_id, **{**kwargs, "text": "세 번 클릭"})
+    with pytest.raises(StaleRequest) as err:  # 이미 응답된 요청에 다른 응답
+        repo.record_human_response_once(cycle, SESSION, request_id, **{**kwargs, "response_id": "resp-2"})
+    assert err.value.current_revision == 2
+    with pytest.raises(NotFound):  # 다른 세션
+        repo.record_human_response_once(cycle, OTHER_SESSION, request_id, **{**kwargs, "response_id": "resp-3"})
+
+
+def test_human_response_with_stale_expected_revision_is_rejected(cycle):
+    request_id, _ = repo.create_human_request_once(cycle, "task-gh-41", "decision", "q", "decision:1", NOW)
+    with pytest.raises(StaleRequest) as err:
+        repo.record_human_response_once(cycle, SESSION, request_id, response_id="r", expected_revision=0,
+                                        action="answer", text="t", now=LATER)
+    assert err.value.current_revision == 1
+    assert repo.get_task(cycle, "task-gh-41")["revision"] == 1
+    assert repo.get_human_request(cycle, SESSION, request_id)["state"] == "open"
+
+
+def test_enqueue_source_delivery_once_by_body_digest(cycle):
+    delivery, created = repo.enqueue_source_delivery_once(cycle, "task-gh-41", "<!-- runloom:task=task-gh-41 -->\n착수", NOW)
+    assert created
+    assert (delivery.source_id, delivery.issue_number, delivery.body_revision, delivery.state) == (SOURCE, 41, 1, "pending")
+    assert (delivery.comment_id, delivery.attempts, delivery.next_at, delivery.last_error) == (None, 0, None, None)
+    assert delivery.delivery_id.startswith("dlv-")
+    same, created = repo.enqueue_source_delivery_once(cycle, "task-gh-41", "<!-- runloom:task=task-gh-41 -->\n착수", LATER)
+    assert (same, created) == (delivery, False)  # 같은 본문은 새 revision 을 만들지 않는다
+    newer, created = repo.enqueue_source_delivery_once(cycle, "task-gh-41", "<!-- runloom:task=task-gh-41 -->\n완료", LATER)
+    assert created and newer.body_revision == 2
+    with pytest.raises(NotFound):  # 원본 이슈가 없는 Task 는 반영할 곳이 없다
+        repo.enqueue_source_delivery_once(cycle, TASK_A, "본문", LATER)
+
+
+def test_github_token_env_never_reaches_db_or_wal(cycle, db_path, monkeypatch):
+    secret = "ghp_" + "S3cr3tT0kenValue" * 3
+    monkeypatch.setenv("WORKFLOW_GITHUB_TOKEN", secret)
+    _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    repo.save_github_source(cycle, SESSION, _source(config_revision=2), LATER)
+    repo.save_source_cursor(cycle, SESSION, SOURCE, "cursor-1", LATER)
+    repo.bind_assignee(cycle, SESSION, AssigneeBinding(source_id=SOURCE, github_user_id=5812345,
+                                                       github_login="kim-dev", agent_id=FIX_AGENT), LATER)
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, _snapshot(body="edit", updated_at="2026-10-07T00:00:00Z"),
+                             task=_fix_task(), now=LATER)
+    repo.create_followup_once(cycle, _review_spec(), _review_task(), LATER)
+    request_id, _ = repo.create_human_request_once(cycle, "task-gh-41", "decision", "q", "decision:1", LATER)
+    repo.record_human_response_once(cycle, SESSION, request_id, response_id="r", expected_revision=1,
+                                    action="answer", text="t", now=LATER)
+    repo.enqueue_source_delivery_once(cycle, "task-gh-41", "본문", LATER)
+    for path in (db_path, db_path.with_name(db_path.name + "-wal")):
+        if path.exists():
+            assert secret.encode() not in path.read_bytes(), path

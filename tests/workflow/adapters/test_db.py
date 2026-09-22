@@ -1,11 +1,14 @@
 """db.py — 연결 설정과 스키마 (ARCHITECTURE "DB 제약과 실행 잠금")."""
 
+import json
 import sqlite3
 import threading
+from pathlib import Path
 
 import pytest
 
 from workflow.adapters.db import SCHEMA_VERSION, connect, init_schema
+from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
 
 from .conftest import NOW
 
@@ -27,6 +30,13 @@ TABLES = {
     "kinds",
     "succession_rules",
     "source_tokens",
+    "github_sources",
+    "github_assignee_bindings",
+    "source_issues",
+    "followup_links",
+    "human_requests",
+    "human_responses",
+    "source_deliveries",
 }
 
 
@@ -191,8 +201,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_4():
-    assert SCHEMA_VERSION == 4
+def test_schema_version_is_5():
+    assert SCHEMA_VERSION == 5
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -303,12 +313,12 @@ def _insert_chain(conn, chain_id: str, source: str, **columns) -> None:
     )
 
 
-def test_init_schema_rejects_previous_version_without_migration(db_path):
-    """마이그레이션 도구가 없으므로 3 이 기록된 DB 는 재생성(WORKFLOW_RESET_DB=1) 대상이다."""
+def test_init_schema_rejects_versions_without_migration(db_path):
+    """마이그레이션은 4 → 5 하나뿐이다. 3 이하가 기록된 DB 는 재생성(WORKFLOW_RESET_DB=1) 대상이다."""
     c = connect(db_path)
     init_schema(c)
     c.execute("UPDATE schema_version SET version = 3")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="3"):
         init_schema(c)
     c.close()
 
@@ -369,3 +379,282 @@ def test_phase7_chains_callback_columns_defaults_and_source(conn):
         _insert_chain(conn, "c-slack", "slack")
     with pytest.raises(sqlite3.IntegrityError):  # callback_attempts >= 0
         _insert_chain(conn, "c-neg", "n8n", callback_attempts=-1)
+
+
+# --- phase 8: v4 → v5 데이터 보존 마이그레이션 (ADR-0014 결과, ARCHITECTURE "GitHub 업무 순환" 저장) ------
+
+V4_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v4.sql").read_text()
+V4_TABLES = TABLES - {
+    "github_sources", "github_assignee_bindings", "source_issues", "followup_links", "human_requests",
+    "human_responses", "source_deliveries",
+}
+PHASE8_KINDS = {spec.kind: spec for spec in BUILTIN_KINDS if spec.kind in ("bug_fix", "code_review")}
+
+
+def _v4_db(db_path, *, extra_kind: str | None = None):
+    """phase 7 서버가 남긴 모양의 v4 DB — 세션 2개, 내장·사용자 정의 종류, 규칙, 업무·실행·이벤트·산출물·판정."""
+    c = connect(db_path)
+    c.executescript(V4_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (4)")
+    for sid in ("s1", "s2"):
+        c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, ?)",
+                  (sid, NOW, int(sid == "s1")))
+        for spec in BUILTIN_KINDS[:2]:
+            c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                      (sid, spec.kind, spec.model_dump_json(), NOW))
+        c.execute(
+            "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+            " VALUES (?, ?, 'diagnosis', 'code_change', ?, ?)",
+            (f"rule-{sid}", sid, BUILTIN_RULES[0].model_dump_json(), NOW),
+        )
+    c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', 'review', ?, ?)",
+              (json.dumps({"kind": "review", "builtin": False}), NOW))
+    if extra_kind is not None:  # phase 8 이전에 사용자가 만든 같은 이름 종류
+        c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s2', ?, ?, ?)",
+                  (extra_kind, json.dumps({"kind": extra_kind, "builtin": False}), NOW))
+    c.execute(
+        "INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id, capabilities_json,"
+        " connection_state) VALUES ('a1', 'codex', 'personal', 'local', 'conn-1', '[]', 'online')"
+    )
+    c.execute("INSERT INTO connectors (connector_id, token_sha256, created_at) VALUES ('conn-1', 'h', ?)", (NOW,))
+    c.execute("INSERT INTO source_tokens (token_id, session_id, source, token_sha256, label, created_at)"
+              " VALUES ('src-1', 's1', 'n8n', 'th', '', ?)", (NOW,))
+    c.execute("INSERT INTO chains (chain_id, session_id, title, source, created_at, callback_url)"
+              " VALUES ('c1', 's1', 't', 'n8n', ?, 'http://localhost:5678/cb')", (NOW,))
+    c.execute(
+        "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,"
+        " selection_mode, run_mode, completion_mode, criteria_json, revision, target_json,"
+        " status, status_reason, created_at, chain_id) VALUES ('t1', 's1', 't', 'r', 'review', '{}',"
+        " 'auto', 'manual', 'review', '[]', 2, '{}', '확인 필요', '검토 대기', ?, 'c1')",
+        (NOW,),
+    )
+    c.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+        " status, created_at, result_artifact_id) VALUES ('e1', 't1', 1, 'k', 'a1', 'review', '{}',"
+        " 'result_ready', ?, 'art-1')",
+        (NOW,),
+    )
+    c.execute("INSERT INTO execution_events (execution_id, seq, type, occurred_at, received_at, data_json,"
+              " actor) VALUES ('e1', 1, 'accepted', ?, ?, '{}', 'conn-1')", (NOW, NOW))
+    c.execute(
+        "INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256,"
+        " size, store_ref, created_at) VALUES ('art-1', 'e1', 's1', 'generic_result', 'r.json',"
+        " 'application/json', 'abc', 3, 'ab/abc', ?)",
+        (NOW,),
+    )
+    c.execute("INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at)"
+              " VALUES ('t1', 'e1', '{}', ?)", (NOW,))
+    return c
+
+
+def _dump(conn, tables) -> dict[str, list[tuple]]:
+    return {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY rowid")] for t in sorted(tables)}
+
+
+def _table_names(conn) -> set[str]:
+    return {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def _insert_artifact(conn, artifact_id: str, kind: str) -> None:
+    conn.execute(
+        "INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256,"
+        " size, store_ref, created_at) VALUES (?, 'e1', 's1', ?, 'n', 'c', ?, 0, 'r', ?)",
+        (artifact_id, kind, artifact_id, NOW),
+    )
+
+
+def test_v4_fixture_is_the_phase7_schema(db_path):
+    """고정한 v4 원문이 실제 phase 7 모양인지 — code_review_result 산출물을 모른다."""
+    c = _v4_db(db_path)
+    assert _table_names(c) - {"sqlite_sequence"} == V4_TABLES | {"schema_version"}
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_artifact(c, "art-review", "code_review_result")
+    c.close()
+
+
+def test_migrates_v4_to_v5_preserving_data(db_path):
+    c = _v4_db(db_path)
+    before = _dump(c, V4_TABLES - {"kinds", "succession_rules", "connectors"})
+    kinds_before = _dump(c, {"kinds", "succession_rules"})
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    assert TABLES <= _table_names(c)
+    assert _dump(c, V4_TABLES - {"kinds", "succession_rules", "connectors"}) == before
+    for table, rows in kinds_before.items():  # 기존 종류·규칙 행은 그대로, 새 내장만 더해진다
+        assert set(rows) <= set(_dump(c, {table})[table])
+    row = c.execute("SELECT connector_id, token_sha256, supported_kinds_json FROM connectors").fetchone()
+    assert tuple(row) == ("conn-1", "h", None)  # null = 구버전 연결 프로그램
+    for sid in ("s1", "s2"):
+        seeded = {
+            r["kind"]: r["spec_json"]
+            for r in c.execute("SELECT kind, spec_json FROM kinds WHERE session_id = ?", (sid,))
+            if r["kind"] in PHASE8_KINDS
+        }
+        assert seeded == {k: spec.model_dump_json() for k, spec in PHASE8_KINDS.items()}
+        rules = c.execute(
+            "SELECT rule_id, rule_json FROM succession_rules WHERE session_id = ? AND from_kind = 'bug_fix'",
+            (sid,),
+        ).fetchall()
+        assert [r["rule_json"] for r in rules] == [BUILTIN_RULES[1].model_dump_json()]
+        assert rules[0]["rule_id"].startswith("rule-")
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    _insert_artifact(c, "art-review", "code_review_result")  # 재생성한 artifacts CHECK
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_artifact(c, "art-bad", "nope")
+    with pytest.raises(sqlite3.IntegrityError):  # UNIQUE (execution_id, kind, sha256) 유지
+        c.execute(
+            "INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256,"
+            " size, store_ref, created_at) VALUES ('art-dup', 'e1', 's1', 'generic_result', 'n', 'c', 'abc',"
+            " 0, 'r', ?)",
+            (NOW,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # artifacts.execution_id FK 유지
+        c.execute(
+            "INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256,"
+            " size, store_ref, created_at) VALUES ('art-x', 'no-exec', 's1', 'diff', 'n', 'c', 'x', 0, 'r', ?)",
+            (NOW,),
+        )
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_migration_rolls_back_on_builtin_name_conflict(db_path):
+    """phase 8 이전에 사용자가 만든 bug_fix 가 있으면 전체를 되돌리고 충돌 목록을 알린다."""
+    c = _v4_db(db_path, extra_kind="bug_fix")
+    before = _dump(c, V4_TABLES)
+    c.close()
+
+    c = connect(db_path)
+    with pytest.raises(RuntimeError, match=r"s2.*bug_fix"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 4
+    assert _table_names(c) - {"sqlite_sequence"} == V4_TABLES | {"schema_version"}
+    assert _dump(c, V4_TABLES) == before
+    assert "supported_kinds_json" not in _columns(c, "connectors")
+    with pytest.raises(sqlite3.IntegrityError):  # artifacts 도 v4 그대로
+        _insert_artifact(c, "art-review", "code_review_result")
+    assert not c.in_transaction
+    c.close()
+
+
+def test_migration_rolls_back_when_a_later_statement_fails(db_path, monkeypatch):
+    from workflow.adapters import db
+
+    c = _v4_db(db_path)
+    before = _dump(c, V4_TABLES)
+
+    def boom(conn, now):
+        raise sqlite3.OperationalError("중간 실패")
+
+    monkeypatch.setattr(db, "_seed_phase8_kinds", boom)
+    with pytest.raises(sqlite3.OperationalError, match="중간 실패"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 4
+    assert _table_names(c) - {"sqlite_sequence"} == V4_TABLES | {"schema_version"}
+    assert _dump(c, V4_TABLES) == before
+    assert not c.in_transaction
+    monkeypatch.undo()
+    init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    c.close()
+
+
+def test_fresh_schema_matches_migrated_schema(tmp_path):
+    """새로 만든 DB 와 v4 에서 올린 DB 의 테이블·열 정의가 같다(순서 무관)."""
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = _v4_db(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    for table in TABLES:
+        cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY name"
+        assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
+        assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    fresh.close()
+    migrated.close()
+
+
+def _cycle_base(conn) -> None:
+    """새 테이블 제약 확인용 최소 행 — 세션·종류·에이전트·소스·업무·실행."""
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s1', ?)", (NOW,))
+    _seed_kind(conn, "s1", "bug_fix")
+    _seed_kind(conn, "s1", "code_review")
+    conn.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
+                 " connection_state) VALUES ('a1', 'n', 'personal', 'local', '[]', 'online')")
+    conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json,"
+                 " created_at, updated_at) VALUES ('ghs-00000001', 's1', 'acme/billing', '{}', ?, ?)", (NOW, NOW))
+    _insert_task(conn, "t1", "s1", "bug_fix")
+    _insert_task(conn, "t2", "s1", "code_review")
+    conn.execute("INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind,"
+                 " request_json, status, created_at) VALUES ('e1', 't1', 1, 'k', 'a1', 'bug_fix', '{}',"
+                 " 'result_ready', ?)", (NOW,))
+
+
+def test_phase8_table_keys_and_checks(conn):
+    _cycle_base(conn)
+    with pytest.raises(sqlite3.IntegrityError):  # 세션당 저장소 하나
+        conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json,"
+                     " created_at, updated_at) VALUES ('ghs-00000002', 's1', 'acme/billing', '{}', ?, ?)",
+                     (NOW, NOW))
+    conn.execute("INSERT INTO github_assignee_bindings (source_id, github_user_id, github_login, agent_id,"
+                 " updated_at) VALUES ('ghs-00000001', 7, 'kim', 'a1', ?)", (NOW,))
+    with pytest.raises(sqlite3.IntegrityError):  # (source_id, github_user_id) 하나
+        conn.execute("INSERT INTO github_assignee_bindings (source_id, github_user_id, github_login, agent_id,"
+                     " updated_at) VALUES ('ghs-00000001', 7, 'lee', 'a1', ?)", (NOW,))
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 Agent
+        conn.execute("INSERT INTO github_assignee_bindings (source_id, github_user_id, github_login, agent_id,"
+                     " updated_at) VALUES ('ghs-00000001', 8, 'lee', 'nope', ?)", (NOW,))
+
+    issue = ("INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
+             " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at)"
+             " VALUES ('ghs-00000001', ?, ?, ?, ?, '{}', 'd', ?, ?, ?, ?)")
+    conn.execute(issue, (100, 41, "t1", 1, NOW, "open", NOW, NOW))
+    for params in (
+        (100, 42, "t2", 1, NOW, "open", NOW, NOW),  # (source_id, github_issue_id) 유일
+        (101, 43, "t1", 1, NOW, "open", NOW, NOW),  # Task 하나에 이슈 하나
+        (102, 44, "t2", 0, NOW, "open", NOW, NOW),  # source_revision >= 1
+        (103, 45, "t2", 1, NOW, "merged", NOW, NOW),  # state 허용 값 밖
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(issue, params)
+
+    link = ("INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision,"
+            " created_at) VALUES ('s1', 'e1', ?, ?, 1, ?)")
+    conn.execute(link, ("code_review", "t2", NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # (session_id, cause_execution_id, to_kind) 유일
+        conn.execute(link, ("code_review", "t1", NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # to_kind 는 이 세션에 등록된 종류
+        conn.execute(link, ("diagnosis", "t1", NOW))
+
+    request = ("INSERT INTO human_requests (request_id, task_id, code, question, cause_key, task_revision,"
+               " revision, state, created_at) VALUES (?, 't1', 'fix_needs_information', 'q', ?, 1, 1, ?, ?)")
+    conn.execute(request, ("hr-00000001", "fix_needs_information:e1", "open", NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # (task_id, cause_key) 유일
+        conn.execute(request, ("hr-00000002", "fix_needs_information:e1", "open", NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(request, ("hr-00000003", "other", "pending", NOW))
+    response = ("INSERT INTO human_responses (request_id, response_id, action, text, expected_revision,"
+                " task_revision, created_at) VALUES ('hr-00000001', 'resp-1', 'answer', ?, 1, 2, ?)")
+    conn.execute(response, ("재현 절차", NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # (request_id, response_id) 유일
+        conn.execute(response, ("다른 내용", NOW))
+
+    delivery = ("INSERT INTO source_deliveries (delivery_id, source_id, task_id, issue_number, body_revision,"
+                " body_digest, body, state, comment_id, created_at, updated_at)"
+                " VALUES (?, 'ghs-00000001', 't1', 41, ?, 'd', 'b', ?, ?, ?, ?)")
+    conn.execute(delivery, ("dlv-00000001", 1, "pending", None, NOW, NOW))
+    for params in (
+        ("dlv-00000002", 1, "pending", None, NOW, NOW),  # (task_id, body_revision) 유일
+        ("dlv-00000003", 2, "delivered", None, NOW, NOW),  # delivered 는 comment_id 필수
+        ("dlv-00000004", 3, "lost", None, NOW, NOW),  # state 허용 값 밖
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(delivery, params)
+    row = conn.execute("SELECT attempts, next_at, last_error FROM source_deliveries").fetchone()
+    assert tuple(row) == (0, None, None)

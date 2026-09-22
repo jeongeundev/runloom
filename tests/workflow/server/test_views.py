@@ -789,7 +789,7 @@ def test_chain_node_kind_label_and_reasons_use_session_registry(seeded, settings
     assert (first["kind_label"], second["kind_label"]) == ("진단", "코드 수정")
     assert "선행 #41 (operations.diagnose) → code.modify 인계" in second["reasons"]
 
-    (rule_id, _), = repo.list_rules(seeded, SESSION)
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(seeded, SESSION) if r.from_kind == "diagnosis"]
     repo.delete_rule(seeded, SESSION, rule_id)
     second = _chain(seeded, settings)["tasks"][1]
     assert second["reasons"][0] == "후속 규칙 없음: diagnosis → code_change"

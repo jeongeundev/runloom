@@ -1,6 +1,6 @@
 """완료 기준 템플릿 — PRD 4절, ADR-0004, ADR-0009.
 
-템플릿은 업무 종류별 고정 문구다. 내장 두 종류는 검증기 항목, 사용자 정의 종류는 사람 검토 항목 하나다.
+템플릿은 업무 종류별 고정 문구다. 내장 종류는 검증기 항목, 사용자 정의 종류는 사람 검토 항목 하나다.
 사용자가 추가한 자유 텍스트는 자동 판정에 쓰지 않고 검토자에게만 표시한다 (`structured=False`).
 자동 완료 가능 여부는 `domain/kinds.can_auto_complete`.
 """
@@ -26,6 +26,15 @@ _TEMPLATES: dict[str, tuple[Criterion, ...]] = {
     "code_change": (
         Criterion("code_change.verification_passed", "등록된 검증 프로필이 결과 커밋에서 통과함", True),
         Criterion("code_change.result_preserved", "결과가 보존됨", True),
+    ),
+    "bug_fix": (
+        Criterion("bug_fix.test_before_failed", "재현 테스트가 수정 전에 실패함", True),
+        Criterion("bug_fix.verification_passed", "등록된 검증 프로필이 결과 커밋에서 통과함", True),
+        Criterion("bug_fix.result_preserved", "결과가 보존됨", True),
+    ),
+    "code_review": (
+        Criterion("code_review.commit_matches", "검토한 커밋이 최신 수정 결과 커밋과 같음", True),
+        Criterion("code_review.result_preserved", "검토 결과가 보존됨", True),
     ),
 }
 _USER_DEFINED = Criterion("outcome_in_spec", "결과 outcome 이 허용 목록 안 · 사람 검토 승인", False)

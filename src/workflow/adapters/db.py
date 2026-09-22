@@ -4,13 +4,18 @@
 상수에서 만들어 문자열을 두 곳에 적지 않는다.
 """
 
+import secrets
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
-from workflow.contracts.v1 import ARTIFACT_KINDS
+from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+
+# phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
+PHASE8_KIND_NAMES = ("bug_fix", "code_review")
 
 OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
@@ -31,6 +36,123 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 def _in(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{v}'" for v in values)
+
+
+def _artifacts_table(name: str) -> str:
+    """v4 → v5 가 kind CHECK 를 넓히려고 같은 정의로 다시 만든다(SQLite 는 CHECK 를 바꾸지 못한다)."""
+    return f"""CREATE TABLE IF NOT EXISTS {name} (
+  artifact_id  TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL REFERENCES executions(execution_id),
+  session_id   TEXT NOT NULL REFERENCES sessions(session_id),
+  kind         TEXT NOT NULL CHECK (kind IN ({_in(ARTIFACT_KINDS)})),
+  name         TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  sha256       TEXT NOT NULL,
+  size         INTEGER NOT NULL CHECK (size >= 0),
+  store_ref    TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  UNIQUE (execution_id, kind, sha256)
+);"""
+
+
+# v5 (phase 8, ADR-0014): GitHub 업무 순환. 중복 키는 ARCHITECTURE "GitHub 업무 순환 — 중복 키" 표.
+# 세션 소유는 source → session, Task → session 으로 따라가며 repo 가 같은 트랜잭션에서 검사한다.
+_V5_TABLES = """
+-- 운영자가 연결한 저장소. config_json 은 GitHubSourceConfig JSON(토큰 필드 없음 — 값은 WORKFLOW_GITHUB_TOKEN 에만).
+CREATE TABLE IF NOT EXISTS github_sources (
+  source_id            TEXT PRIMARY KEY,                    -- 'ghs-' + 8 hex
+  session_id           TEXT NOT NULL REFERENCES sessions(session_id),
+  repository_full_name TEXT NOT NULL,                       -- config_json 과 같다
+  config_json          TEXT NOT NULL,
+  cursor               TEXT,                                -- 수집 커서. 실패 페이지는 넘기지 않는다
+  cursor_updated_at    TEXT,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  UNIQUE (session_id, repository_full_name)
+);
+
+CREATE TABLE IF NOT EXISTS github_assignee_bindings (
+  source_id      TEXT NOT NULL REFERENCES github_sources(source_id),
+  github_user_id INTEGER NOT NULL CHECK (github_user_id >= 1),
+  github_login   TEXT NOT NULL,                             -- 표시용 (바뀔 수 있다)
+  agent_id       TEXT NOT NULL REFERENCES agents(agent_id),
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (source_id, github_user_id)
+);
+
+-- 원본 이슈 → Task. 같은 digest 는 무시, 다른 digest 는 source_revision + 1, 오래된 updated_at 은 버린다.
+CREATE TABLE IF NOT EXISTS source_issues (
+  source_id        TEXT NOT NULL REFERENCES github_sources(source_id),
+  github_issue_id  INTEGER NOT NULL CHECK (github_issue_id >= 1),
+  issue_number     INTEGER NOT NULL CHECK (issue_number >= 1),
+  task_id          TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  source_revision  INTEGER NOT NULL CHECK (source_revision >= 1),
+  snapshot_json    TEXT NOT NULL,                           -- GitHubIssueSnapshot JSON
+  snapshot_digest  TEXT NOT NULL,
+  issue_updated_at TEXT NOT NULL,
+  state            TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (source_id, github_issue_id)
+);
+
+-- 결과가 만든 후속 Task. 같은 원인 실행·같은 종류는 하나.
+CREATE TABLE IF NOT EXISTS followup_links (
+  session_id         TEXT NOT NULL REFERENCES sessions(session_id),
+  cause_execution_id TEXT NOT NULL REFERENCES executions(execution_id),
+  to_kind            TEXT NOT NULL,
+  task_id            TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  rules_revision     INTEGER NOT NULL,
+  created_at         TEXT NOT NULL,
+  PRIMARY KEY (session_id, cause_execution_id, to_kind),
+  FOREIGN KEY (session_id, to_kind) REFERENCES kinds(session_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS human_requests (
+  request_id    TEXT PRIMARY KEY,                           -- 'hr-' + 8 hex
+  task_id       TEXT NOT NULL REFERENCES tasks(task_id),
+  code          TEXT NOT NULL,
+  question      TEXT NOT NULL,
+  cause_key     TEXT NOT NULL,
+  task_revision INTEGER NOT NULL CHECK (task_revision >= 1), -- 요청을 만든 때의 Task revision
+  revision      INTEGER NOT NULL CHECK (revision >= 1),      -- 낙관적 잠금 (expected_revision)
+  state         TEXT NOT NULL CHECK (state IN ('open', 'answered')),
+  created_at    TEXT NOT NULL,
+  answered_at   TEXT,
+  UNIQUE (task_id, cause_key)
+);
+
+CREATE TABLE IF NOT EXISTS human_responses (
+  request_id        TEXT NOT NULL REFERENCES human_requests(request_id),
+  response_id       TEXT NOT NULL,
+  action            TEXT NOT NULL,
+  text              TEXT NOT NULL,
+  expected_revision INTEGER NOT NULL,
+  task_revision     INTEGER NOT NULL CHECK (task_revision >= 1), -- 이 응답으로 생긴 Task revision
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (request_id, response_id)
+);
+
+-- 원본 이슈 댓글 outbox (SourceDelivery). 워커 트랜잭션 밖에서 보낸다.
+CREATE TABLE IF NOT EXISTS source_deliveries (
+  delivery_id   TEXT PRIMARY KEY,                           -- 'dlv-' + 8 hex
+  source_id     TEXT NOT NULL REFERENCES github_sources(source_id),
+  task_id       TEXT NOT NULL REFERENCES tasks(task_id),
+  issue_number  INTEGER NOT NULL CHECK (issue_number >= 1),
+  body_revision INTEGER NOT NULL CHECK (body_revision >= 1),
+  body_digest   TEXT NOT NULL,
+  body          TEXT NOT NULL,
+  state         TEXT NOT NULL CHECK (state IN ('pending', 'sending', 'delivered', 'unknown', 'failed')),
+  comment_id    INTEGER,
+  attempts      INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_at       TEXT,
+  last_error    TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE (task_id, body_revision),
+  CHECK (state != 'delivered' OR comment_id IS NOT NULL)
+);
+"""
 
 
 _SCHEMA = f"""
@@ -86,7 +208,8 @@ CREATE TABLE IF NOT EXISTS connectors (
   created_at           TEXT NOT NULL,
   revoked_at           TEXT,
   last_seen_at         TEXT,
-  current_execution_id TEXT
+  current_execution_id TEXT,
+  supported_kinds_json TEXT                -- 마지막 claim 의 ClaimRequest.supported_kinds. NULL = 구버전 (v5)
 );
 
 -- 입구 토큰: 워크스페이스(세션)가 발급해 외부(n8n)가 업무를 넣을 때 쓴다 (ADR-0010). 원문은 저장하지 않는다.
@@ -223,20 +346,7 @@ CREATE TABLE IF NOT EXISTS execution_observations (
   detail       TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS artifacts (
-  artifact_id  TEXT PRIMARY KEY,
-  execution_id TEXT NOT NULL REFERENCES executions(execution_id),
-  session_id   TEXT NOT NULL REFERENCES sessions(session_id),
-  kind         TEXT NOT NULL CHECK (kind IN ({_in(ARTIFACT_KINDS)})),
-  name         TEXT NOT NULL,
-  content_type TEXT NOT NULL,
-  sha256       TEXT NOT NULL,
-  size         INTEGER NOT NULL CHECK (size >= 0),
-  store_ref    TEXT NOT NULL,
-  created_at   TEXT NOT NULL,
-  UNIQUE (execution_id, kind, sha256)
-);
-
+{_artifacts_table("artifacts")}
 CREATE TABLE IF NOT EXISTS task_verdicts (
   task_id      TEXT NOT NULL REFERENCES tasks(task_id),
   execution_id TEXT NOT NULL REFERENCES executions(execution_id),
@@ -250,14 +360,87 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-"""
+""" + _V5_TABLES
+
+
+def _statements(script: str) -> list[str]:
+    """스크립트를 문장 단위로 — `executescript` 는 먼저 COMMIT 하므로 트랜잭션 안에서 쓸 수 없다."""
+    out, buf = [], ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            out.append(buf.strip())
+            buf = ""
+    return out
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _seed_phase8_kinds(conn: sqlite3.Connection, now: str) -> None:
+    """기존 세션마다 phase 8 내장 종류와 그 둘을 잇는 내장 규칙을 넣는다. 이미 지운 기존 내장 규칙은 되살리지 않는다."""
+    specs = [spec for spec in BUILTIN_KINDS if spec.kind in PHASE8_KIND_NAMES]
+    rules = [rule for rule in BUILTIN_RULES if {rule.from_kind, rule.to_kind} <= set(PHASE8_KIND_NAMES)]
+    for (session_id,) in conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall():
+        for spec in specs:
+            conn.execute(
+                "INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                (session_id, spec.kind, spec.model_dump_json(), now),
+            )
+        for rule in rules:
+            conn.execute(
+                "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (f"rule-{secrets.token_hex(6)}", session_id, rule.from_kind, rule.to_kind,
+                 rule.model_dump_json(), now),
+            )
+
+
+def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 실패하면 호출자가 전체를 되돌린다."""
+    placeholders = ", ".join("?" * len(PHASE8_KIND_NAMES))
+    conflicts = conn.execute(
+        f"SELECT session_id, kind FROM kinds WHERE kind IN ({placeholders}) ORDER BY session_id, kind",
+        PHASE8_KIND_NAMES,
+    ).fetchall()
+    if conflicts:
+        listed = ", ".join(f"{r[0]}:{r[1]}" for r in conflicts)
+        raise RuntimeError(
+            f"schema_version 4 → {SCHEMA_VERSION} 마이그레이션 중단 — 내장 종류와 이름이 같은 사용자 정의 종류: {listed}"
+        )
+    conn.execute("ALTER TABLE connectors ADD COLUMN supported_kinds_json TEXT")
+    # artifacts.kind CHECK 에 code_review_result 추가 — 새 테이블로 옮긴다. artifacts 를 참조하는 FK 는 없다.
+    conn.execute(_artifacts_table("artifacts_v5"))
+    conn.execute("INSERT INTO artifacts_v5 SELECT * FROM artifacts")
+    conn.execute("DROP TABLE artifacts")
+    conn.execute("ALTER TABLE artifacts_v5 RENAME TO artifacts")
+    for statement in _statements(_V5_TABLES):
+        conn.execute(statement)
+    _seed_phase8_kinds(conn, _now())
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 다른 버전이 기록돼 있으면 마이그레이션 도구가 없으므로 실패시킨다."""
-    conn.executescript(_SCHEMA)
-    row = conn.execute("SELECT version FROM schema_version").fetchone()
-    if row is None:
-        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-    elif row[0] != SCHEMA_VERSION:
-        raise RuntimeError(f"schema_version {row[0]} 은 지원하지 않습니다 (기대 {SCHEMA_VERSION})")
+    """멱등. 빈 DB 는 새로 만들고, 4 는 한 트랜잭션으로 5 로 올린다(데이터 보존, 실패하면 4 그대로).
+    그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()
+    if exists is None:
+        conn.executescript(_SCHEMA)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        if row is None:
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+        elif row[0] == 4:
+            _migrate_4_to_5(conn)
+        elif row[0] != SCHEMA_VERSION:
+            raise RuntimeError(f"schema_version {row[0]} 은 지원하지 않습니다 (기대 {SCHEMA_VERSION})")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")

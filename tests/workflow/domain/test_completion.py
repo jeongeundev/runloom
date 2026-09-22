@@ -65,3 +65,10 @@ def test_user_defined_kind_template_is_single_review_item():
     template = criteria_template(REVIEW)
 
     assert template == [Criterion(code="outcome_in_spec", text="결과 outcome 이 허용 목록 안 · 사람 검토 승인", structured=False)]
+
+
+def test_every_builtin_kind_has_structured_template():
+    """phase 8 의 bug_fix·code_review 도 세션에 seed 되므로 화면이 템플릿을 그릴 수 있어야 한다 (ADR-0014)."""
+    for spec in BUILTIN_KINDS:
+        items = criteria_template(spec)
+        assert items and all(c.structured and c.code.startswith(f"{spec.kind}.") for c in items), spec.kind
