@@ -115,7 +115,7 @@
 | `AssigneeBinding` | GitHub 사용자 숫자 ID → 수정 Agent 연결 (`contracts/github.py`. 저장 step 4, 운영자 API `PUT /github/sources/{source_id}/assignees/{github_user_id}` step 6 — 세션 등록·`code.fix` 능력·소스 검증 프로필 필요). 담당자는 Agent 소유자·인증 사용자와 같은 사람으로 보지 않는다 | `owner`, `user mapping`, `assignment` |
 | `sync_source` / `SyncReport` | GitHub 소스 하나의 목록 폴링 수집과 그 결과 요약(`server/github_sync.py`, step 7). 새 Task·원본 갱신·입력 변경(재평가 필요)·건너뛴 사유별 개수·GitHub 오류. 상태는 DB 의 커서·원본 매핑이며 보고서는 로그용. 착수하지 않는다 | `import`(fixture 가져오기 `/tasks/import` 와 혼동), `webhook` |
 | `intake_scope` | 아직 Task 가 없는 이슈를 받을지(`domain/issue_intake.py`). PR·다른 저장소 제외, `selected_issue_numbers` 는 명시적 선택, 그 밖은 open·라벨 전부·`created_at >= start_at`. 사유 `before_start`·`label_mismatch`·`closed`·`not_selected`·`pull_request`·`other_repository` | `filter`, `backlog import` |
-| `SourceDelivery` / 반영 상태 | 원본 이슈 댓글 outbox 한 행 (`contracts/github.py`. 저장·전달은 step 4·12). `state` 는 `pending`·`sending`·`delivered`·`unknown`·`failed`, 화면 `반영 대기`·`반영됨`·`반영 불확실`·`반영 실패`. Task 상태·n8n `ChainCallback` 과 다르다 | `notification`, `callback`, `sync` |
+| `SourceDelivery` / 반영 상태 | 원본 이슈 댓글 outbox 한 행 (`contracts/github.py`. 저장·전달은 step 4·12 — `server/github_delivery.py` 의 `deliver_source_updates`, Task 당 최신 revision 만, marker `<!-- runloom:task=<task_id> -->` 로 조정). `state` 는 `pending`·`sending`·`delivered`·`unknown`·`failed`, 화면 `반영 대기`·`반영됨`·`반영 불확실`·`반영 실패`. Task 상태·n8n `ChainCallback` 과 다르다 | `notification`, `callback`, `sync` |
 | `max_rework_rounds` | 검토 `changes_requested` 뒤 자동 재작업 상한(기본 1, 0~3). 넘으면 `rework_limit_reached` 사람 요청 | `retry_limit`(실패 재시도와 혼동), `max_attempts` |
 
 ## 계획 용어 — phase 8 GitHub 업무 순환 (미구현 부분)

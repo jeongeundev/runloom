@@ -14,6 +14,7 @@ import pytest
 from workflow.adapters import repo
 from workflow.adapters.db import connect
 from workflow.adapters.diag_client import HttpDiagClient
+from workflow.adapters.github_client import CommentPage, GitHubForbidden, GitHubNotFound, IssueComment, IssuePage
 from workflow.contracts.github import AssigneeBinding
 from workflow.contracts.v1 import (
     ArtifactMeta,
@@ -782,3 +783,114 @@ def test_close_racing_with_start_leaves_no_execution(cycle, conn, worker, monkey
     report = worker.tick()
     assert report.tasks_started == 0
     assert executions(conn, task_id) == []
+
+
+# --- 원본 이슈 반영 (step 12) ---------------------------------------------------------------
+
+
+class RecordingGitHub:
+    """`GitHubClient` 대역 — 수집은 빈 목록, 댓글은 메모리. 댓글 API 말고는 GitHub 에 쓰는 동작이 없다(PR·병합·종료 없음)."""
+
+    def __init__(self):
+        self.comments: dict[int, tuple[int, str]] = {}  # comment_id → (issue number, body)
+        self.fail: Exception | None = None
+
+    def list_issues(self, repo_name, cursor):
+        return IssuePage((), None, None, False, 0)
+
+    def get_issue(self, repo_name, number):
+        raise GitHubNotFound("GET: HTTP 404")
+
+    def list_comments(self, repo_name, number, cursor):
+        return CommentPage(tuple(
+            IssueComment(i, b, 1, "bot", NOW) for i, (n, b) in sorted(self.comments.items()) if n == number
+        ), None)
+
+    def create_comment(self, repo_name, number, body):
+        if self.fail is not None:
+            raise self.fail
+        comment_id = 500 + len(self.comments)
+        self.comments[comment_id] = (number, body)
+        return comment_id
+
+    def update_comment(self, repo_name, comment_id, body):
+        if self.fail is not None:
+            raise self.fail
+        self.comments[comment_id] = (self.comments[comment_id][0], body)
+
+    def bodies(self, number: int) -> list[str]:
+        return [b for n, b in self.comments.values() if n == number]
+
+
+@pytest.fixture
+def github() -> RecordingGitHub:
+    return RecordingGitHub()
+
+
+@pytest.fixture
+def github_worker(app, settings, store, clock, github) -> Worker:
+    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
+                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
+    settings = dataclasses.replace(settings, public_url="https://runloom.example")
+    return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock, github=github)
+
+
+def test_source_issue_gets_one_comment_that_follows_fix_and_review(cycle, conn, store, github_worker, github):
+    fix_task = import_issue(conn, 1)
+    report = github_worker.tick()
+    assert (report.deliveries_queued, report.deliveries_sent) == (1, 1)
+    (first,) = github.bodies(1)
+    assert first.splitlines()[0] == "<!-- runloom:task=task-gh-1 -->"
+    assert "진행 중" in first or "대기" in first
+
+    fix_exec = executions(conn, fix_task)[0]["execution_id"]
+    finish_fix(conn, store, fix_exec)
+    github_worker.tick()
+    (after_fix,) = github.bodies(1)
+    assert "쿠폰 중복 적용 수정" in after_fix
+    assert C1 in after_fix and BASE in after_fix  # 결과 커밋·기준 커밋 전체 SHA
+    assert "푸시하지 않" in after_fix
+
+    review_exec = executions(conn, review_tasks(conn, fix_task)[0]["task_id"])[0]["execution_id"]
+    finish_review(conn, store, review_exec, outcome="approved")
+    github_worker.tick()
+    github_worker.tick()
+
+    (final,) = github.bodies(1)  # 댓글은 하나 — 고쳐 쓴다
+    assert "approved" in final and "검토 의견" in final
+    assert "병합·이슈 종료는 사람" in final
+    # 링크는 공개로 가정하지 않는다 — 운영자 로그인이 필요하다고 적는다
+    assert "https://runloom.example/tasks/task-gh-1" in final and "로그인" in final
+    assert repo.list_source_deliveries(conn, fix_task)[-1].state == "delivered"
+    # 원본 반영은 Task 상태를 바꾸지 않는다 — 승인 뒤에도 수정 Task 는 사람 확인
+    assert status(conn, fix_task) == ("확인 필요", "검토 승인 — 병합·이슈 종료는 사람")
+
+
+def test_human_request_is_shown_with_where_to_answer(cycle, conn, store, github_worker, github):
+    fix_task = import_issue(conn, 1)
+    github_worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], outcome="needs_information")
+    github_worker.tick()
+    github_worker.tick()
+
+    (request,) = repo.list_human_requests(conn, fix_task)
+    (text,) = github.bodies(1)
+    assert request["question"] in text
+    assert "이 댓글에 답해도 반영되지 않습니다" in text
+
+
+def test_issue_without_any_run_gets_no_comment(cycle, conn, github_worker, github):
+    import_issue(conn, 1, assignee_ids=[], assignee_logins=[])  # 담당 없음 — 대기
+    report = github_worker.tick()
+    assert report.deliveries_queued == 0 and github.comments == {}
+
+
+def test_delivery_failure_is_separate_from_task_state(cycle, conn, github_worker, github):
+    github.fail = GitHubForbidden("POST /repos/acme/billing/issues/1/comments: HTTP 403")
+    fix_task = import_issue(conn, 1)
+
+    report = github_worker.tick()
+
+    assert report.tasks_started == 1 and report.deliveries_failed == 1
+    assert repo.list_source_deliveries(conn, fix_task)[-1].state == "failed"
+    assert executions(conn, fix_task)[0]["status"] == "queued"

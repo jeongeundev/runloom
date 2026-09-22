@@ -1614,3 +1614,59 @@ def enqueue_source_delivery_once(conn: Connection, task_id: str, body: str, now:
              (latest["body_revision"] if latest else 0) + 1, digest, body, now, now),
         )
         return _delivery(_one(conn, "SELECT * FROM source_deliveries WHERE delivery_id = ?", (delivery_id,))), True
+
+
+def list_source_deliveries(conn: Connection, task_id: str) -> list[SourceDelivery]:
+    """Task 의 반영 기록 전부(body_revision 순). 마지막이 화면에 보이는 반영 상태다."""
+    return [
+        _delivery(r) for r in conn.execute(
+            "SELECT * FROM source_deliveries WHERE task_id = ? ORDER BY body_revision", (task_id,)
+        )
+    ]
+
+
+def delivery_targets(conn: Connection) -> list[Row]:
+    """아직 끝나지 않은 반영(pending·sending·unknown)이 있는 Task 와 그 원본 — (task_id, source_id, issue_number,
+    repository_full_name, config_json). 세션을 가리지 않는다(워커 전용). 소스 켜짐 여부는 호출자가 본다."""
+    return conn.execute(
+        "SELECT DISTINCT d.task_id, d.source_id, d.issue_number, gs.repository_full_name, gs.config_json"
+        " FROM source_deliveries d JOIN github_sources gs ON gs.source_id = d.source_id"
+        " WHERE d.state IN ('pending', 'sending', 'unknown') ORDER BY d.task_id"
+    ).fetchall()
+
+
+def claim_source_delivery(
+    conn: Connection, delivery_id: str, *, expected_state: str, now: str, claim_until: str,
+    comment_id: int | None, for_send: bool,
+) -> int | None:
+    """`expected_state` 이고 `next_at` 이 지난(또는 없는) 행을 `sending` 으로 가져간다 — 여러 소비자 중 하나만 성공한다.
+    `next_at` 은 claim 만료 시각, `attempts + 1` 은 이 claim 의 fence(반환값). 실패면 None.
+    `for_send` 면 그 Task 의 최신 revision 이고 다른 revision 이 전송 중·불확실하지 않을 때만 가져간다(중복 POST 방지)."""
+    guard = (
+        " AND NOT EXISTS (SELECT 1 FROM source_deliveries o WHERE o.task_id = d.task_id AND ("
+        "o.body_revision > d.body_revision OR (o.delivery_id != d.delivery_id AND o.state IN ('sending', 'unknown'))))"
+        if for_send else ""
+    )
+    with _tx(conn):
+        cur = conn.execute(
+            "UPDATE source_deliveries AS d SET state = 'sending', attempts = attempts + 1, next_at = ?,"
+            " comment_id = ?, updated_at = ?"
+            " WHERE delivery_id = ? AND state = ? AND (next_at IS NULL OR next_at <= ?)" + guard,
+            (claim_until, comment_id, now, delivery_id, expected_state, now),
+        )
+        if cur.rowcount != 1:
+            return None
+        return _one(conn, "SELECT attempts FROM source_deliveries WHERE delivery_id = ?", (delivery_id,))["attempts"]
+
+
+def record_source_delivery(
+    conn: Connection, delivery_id: str, *, attempts: int, state: str, comment_id: int | None,
+    next_at: str | None, last_error: str | None, now: str,
+) -> bool:
+    """claim(`attempts` fence)의 결과를 남긴다. 그 사이 claim 이 만료돼 다른 소비자가 가져갔으면 False — 늦은 기록은 버린다."""
+    cur = conn.execute(
+        "UPDATE source_deliveries SET state = ?, comment_id = ?, next_at = ?, last_error = ?, updated_at = ?"
+        " WHERE delivery_id = ? AND state = 'sending' AND attempts = ?",
+        (state, comment_id, next_at, last_error, now, delivery_id, attempts),
+    )
+    return cur.rowcount == 1

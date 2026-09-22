@@ -1,7 +1,8 @@
 """중앙 워커 — ARCHITECTURE "실행 조정 워커". `python3 -m workflow.server.worker`.
 
 DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → 연결 상태 → 서버 관찰(unknown·heartbeat) → 진단 전달 → 진단 폴링 →
-A 판정 → 코드 수정 결과 확인 → 커밋 검토 결과 확인 → 범용 결과 판정 → 업무 순환 → 후속 스캔 → 실패 반영 → callback 전달. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
+A 판정 → 코드 수정 결과 확인 → 커밋 검토 결과 확인 → 범용 결과 판정 → 업무 순환 → 후속 스캔 → 실패 반영 → callback 전달 →
+원본 이슈 반영. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
 HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에 오므로 같은 tick 에 판정이 나면 바로 잇는다.
 
 - 모델을 호출하지 않는다 (ADR-0004). A 완료는 `verify_diagnosis` 의 `passed` 로만 결정한다.
@@ -21,12 +22,14 @@ HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 �
   한 결과마다 판정 → `decide_followup` → 저장(후속 Task·사람 요청, repo 트랜잭션) → 준비 판정 → 착수 순이고, 그 뒤
   아직 실행이 없는 Task 를 준비 판정으로 착수한다. 이미 한 일은 DB(`start_key`·`followup_links`·사람 요청 `cause_key`)
   에서 다시 계산하므로 재시작·같은 결과 재처리에도 한 번만 일어난다. 트랜잭션 중 HTTP·도구를 기다리지 않고 GitHub 에
-  쓰지 않는다(원본 반영은 step 12). 이 종류들은 기존 후속 스캔(`_spawn_successors`)을 타지 않는다.
+  쓰지 않는다(원본 반영은 tick 마지막 단계). 이 종류들은 기존 후속 스캔(`_spawn_successors`)을 타지 않는다.
   운영자가 정해야 풀리는 대기(담당자 여럿·위임 밖·입력 없음)는 revision 마다 사람 요청 한 건으로 남긴다. 운영자 응답이
   결과를 기다리던 시도 뒤의 revision 을 만들면 그 시도를 해제하고 새 revision 의 `auto_start_key` 로 다시 착수한다 —
   응답만으로는 실행하지 않고 언제나 준비 판정을 다시 거친다(step 11).
 - callback 은 체인이 사람 차례(`chain_settled`)가 되면 1회 보낸다 (ADR-0010). tick 의 마지막 단계라 A 판정 → B 착수가
   같은 tick 에 일어나면 그 사이에 보내지 않는다. 실패는 attempts·next_at 으로 물러나 재시도하고 5회 뒤 멈춘다.
+- 원본 이슈 반영(ADR-0014 결정 8)은 GitHub 클라이언트가 있을 때 맨 끝에 `github_delivery` 로 Task 당 댓글 하나를
+  만들거나 고친다. 워커 판정·착수와 외부 반영은 분리돼 있다 — 반영 실패·불확실은 `source_deliveries` 에만 남는다.
 """
 
 import hashlib
@@ -102,7 +105,7 @@ from workflow.domain.verification import (
     TraceEntry,
     verify_diagnosis,
 )
-from workflow.server import github_sync, task_cycle, views
+from workflow.server import github_delivery, github_sync, task_cycle, views
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
 
@@ -144,6 +147,9 @@ class TickReport:
     retries: int = 0  # DiagUnavailable — 다음 tick 에 같은 실행 ID 로 재시도
     callbacks_sent: int = 0  # 사람 차례가 된 체인에 ChainCallback 전송 (체인당 1회)
     callbacks_failed: int = 0  # 전송 실패·허용 목록 밖 — attempts 로 기록
+    deliveries_queued: int = 0  # 원본 이슈 댓글 본문의 새 revision
+    deliveries_sent: int = 0  # 댓글 생성·수정 성공(응답을 잃은 POST 를 marker 로 찾은 것 포함)
+    deliveries_failed: int = 0  # 반영 실패(403·404·삭제된 댓글) — Task 상태와 따로
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -379,6 +385,7 @@ class Worker:
             self._spawn_successors(conn, report)
             self._reflect_failures(conn, report)
             self._deliver_callbacks(conn, report)
+            self._deliver_github(conn, report)
         finally:
             conn.close()
         return report
@@ -1393,6 +1400,22 @@ class Worker:
                 continue
             repo.record_callback_attempt(conn, chain_id, ok=True, error=None, now=now, next_at=None)
             report.callbacks_sent += 1
+
+    # --- 11. 원본 이슈 반영 -------------------------------------------------------------
+
+    def _deliver_github(self, conn: Connection, report: TickReport) -> None:
+        """원본 이슈 댓글 outbox (ADR-0014 결정 8). 반영 실패는 기록만 하고 Task·실행을 바꾸지 않는다."""
+        if self._github is None:
+            return
+        now = self._clock()
+        report.deliveries_queued += github_delivery.queue_source_updates(
+            conn, self._store, self._settings.public_url, now
+        )
+        result = github_delivery.deliver_source_updates(conn, self._github, now)
+        report.deliveries_sent += result.created + result.updated + result.reconciled
+        report.deliveries_failed += result.failed
+        if result.rate_limited:
+            log.warning("GitHub 반영 rate limit — 다음 시각까지 물러남")
 
     def _task_state(self, conn: Connection, task: Row, now: str) -> UserStatus:
         """체인 화면과 같은 판정 — 마감된 Task 는 저장 상태, 아니면 지금 실행·연결 상태로 판정 (`views.status_of`)."""
