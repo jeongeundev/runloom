@@ -21,6 +21,7 @@
 | [DIAG_EVAL_2026-09-20_prompt-v2.md](DIAG_EVAL_2026-09-20_prompt-v2.md) | 이전 평가(phase 1-diag-fix Step 3, 프롬프트 v2·도구 v2, mini). `normal` 0/3·잘못된 수정 착수 0/12·US$0.10. 문법 거부·줄 범위 초과는 0 이 됐으나 결론 규칙 미준수·읽지 않은 근거 인용·`list_runs.before` 연도 오기(7/15)가 남아 상위 모델 비교를 판단한 원본 |
 | [DIAG_EVAL_2026-09-20_prompt-v1.md](DIAG_EVAL_2026-09-20_prompt-v1.md) | 이전 평가(Step 17, 프롬프트 v1·도구 v1, mini). 5사례 × 3회 두 번 실행, `normal` 1/3·잘못된 수정 착수 0/12·총 US$0.23. 도구 반환·계약·프롬프트·모델 분리 분석의 원본 |
 | [DEPLOY.md](DEPLOY.md) | 배포 런북. 공개 데모는 VM 한 대(systemd 5개 — 중앙 2·진단 2·연결 프로그램 + Caddy + 백업 타이머)에서 대본 에이전트로 돈다(ADR-0008). 설치·seed·연결·점검·`WORKFLOW_RESET_DB=1` 초기화. 설정 파일은 `deploy/`. VM·도메인은 미지정 |
+| [n8n/](n8n/README.md) | n8n 연동 예시([ADR-0010](adr/0010-n8n-inbox-and-callback.md)). import 가능한 워크플로우 JSON `runloom-handoff.json`(노드 4개 — Webhook → HTTP Request → Wait → Slack)과 로컬 절차서(Docker n8n · 토큰 발급 · import · 실행 · callback 규칙 · 한계). 공개 데모 VM 은 허용 목록이 비어 대상이 아니다 |
 | [등록 방향 정리 전 원문](archive/2026-09-19-before-agent-registration/README.md) | 이전 제품 개요와 handoff. 현행 요구사항과 구분 |
 | [GLOSSARY.md](GLOSSARY.md) | 코드 식별자와 일치하는 도메인 용어와 금지 표현. 2026-09-22 종류·규칙·읽기 전용 실행 용어 반영 |
 | [UI_GUIDE.md](UI_GUIDE.md) | 화면 가이드. 심사자 첫 방문 흐름, 화면 목록(`/kinds` 포함), 결과 카드(결과 봉투 포함), 상태 배지·색·컴포넌트·폴링 규칙. 경로·문구는 구현된 템플릿과 같다 |

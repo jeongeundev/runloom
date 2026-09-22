@@ -1,0 +1,126 @@
+{
+  "name": "Runloom handoff",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "runloom-demo",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "48d9fc5c-90ca-484f-adc9-dcc3d6bf8f1d",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "35110484-9511-4b60-9b36-029c99b8138f"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/sources/n8n/chains",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  contract_version: 1,\n  callback_url: $execution.resumeUrl,\n  items: [\n    {\n      key: \"run-\" + $json.body.run_id,\n      title: \"일일 보고서 생성 실패 (\" + $json.body.run_id + \")\",\n      body: \"실행 \" + $json.body.run_id + \" 의 실패 원인을 진단해 주세요.\",\n      labels: [\"incident\", \"workflow:daily-report\", \"run:\" + $json.body.run_id],\n      blocked_by: []\n    },\n    {\n      key: \"fix-\" + $json.body.run_id,\n      title: \"집계 API 응답 형식 변경 대응\",\n      body: \"진단 결과를 근거로 demo-report-repo 를 수정하고 테스트를 통과시켜 주세요.\",\n      labels: [\"bug\", \"repo:demo-report-repo\"],\n      blocked_by: [\"run-\" + $json.body.run_id]\n    }\n  ]\n}) }}",
+        "options": {}
+      },
+      "id": "d1226fef-8d89-483c-8143-fad61eae27a7",
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "runloom-source-token",
+          "name": "Runloom source token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "options": {}
+      },
+      "id": "9d35daad-d947-475b-a5f6-f418c91f06d3",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        0
+      ],
+      "webhookId": "3f854403-fa53-4782-9495-aa60ee38e6ec"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#runloom"
+        },
+        "text": "={{ $json.body.title }} — {{ $json.body.human_gate.status_label }} · {{ $json.body.human_gate.reason }}\n{{ $json.body.chain_url }}",
+        "otherOptions": {}
+      },
+      "id": "770438aa-afd8-4090-bbf4-33b0a7b6b0b9",
+      "name": "Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
