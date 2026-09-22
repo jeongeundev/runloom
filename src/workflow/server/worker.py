@@ -1,8 +1,8 @@
 """중앙 워커 — ARCHITECTURE "실행 조정 워커". `python3 -m workflow.server.worker`.
 
 DB 를 기준으로 상태를 전진시킨다: 연결 상태 → 서버 관찰(unknown·heartbeat) → 진단 전달 → 진단 폴링 →
-A 판정 → B 결과 확인 → 범용 결과 판정 → 후속 스캔 → 실패 반영. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
-HTTP(진단 API 호출·다운로드)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에 오므로 같은 tick 에 판정이 나면 바로 잇는다.
+A 판정 → B 결과 확인 → 범용 결과 판정 → 후속 스캔 → 실패 반영 → callback 전달. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
+HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에 오므로 같은 tick 에 판정이 나면 바로 잇는다.
 
 - 모델을 호출하지 않는다 (ADR-0004). A 완료는 `verify_diagnosis` 의 `passed` 로만 결정한다.
 - 후속 착수 조건은 선행 결과 + 판정 `passed` + 결과 `outcome` ∈ 등록된 규칙 `on_outcomes` 다 (ADR-0009). 선행 Task 의
@@ -14,6 +14,8 @@ HTTP(진단 API 호출·다운로드)는 트랜잭션 밖에서 한다. 후속 �
   결과 안의 진단 API 쪽 산출물 ID 는 중앙에 저장한 산출물 ID 로 치환해 화면·인계가 중앙 ID 만 보게 한다.
 - Task 의 저장 상태는 `domain.status.user_status` 와 같은 문구로 쓴다. `실패`(종료 확인)·`완료`(자동 판정)만
   마감(`finished_at`)하고 잠금을 해제한다. `확인 필요`·`unknown`·검토 대기는 잠금을 유지한다.
+- callback 은 체인이 사람 차례(`chain_settled`)가 되면 1회 보낸다 (ADR-0010). tick 의 마지막 단계라 A 판정 → B 착수가
+  같은 tick 에 일어나면 그 사이에 보내지 않는다. 실패는 attempts·next_at 으로 물러나 재시도하고 5회 뒤 멈춘다.
 """
 
 import hashlib
@@ -25,7 +27,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
 
@@ -33,6 +35,7 @@ from pydantic import ValidationError
 
 from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
+from workflow.adapters.callback_client import CallbackClient, CallbackFailed, HttpCallbackClient
 from workflow.adapters.db import connect, init_schema
 from workflow.adapters.diag_client import (
     DiagClient,
@@ -51,6 +54,9 @@ from workflow.contracts.v1 import (
     BUILTIN_KIND_NAMES,
     ArtifactMeta,
     AttachmentRef,
+    CallbackGate,
+    CallbackTask,
+    ChainCallback,
     CodeChangeResult,
     DiagnosisResult,
     ExecutionEvent,
@@ -62,13 +68,15 @@ from workflow.contracts.v1 import (
     RunStatus,
     SuccessorRule,
 )
+from workflow.domain.callback_policy import host_allowed
 from workflow.domain.report_expectation import (
     ExpectedReport,
     expected_report,
     report_text_matches,
 )
+from workflow.domain.settlement import NodeState, chain_settled
 from workflow.domain.start_key import auto_start_key
-from workflow.domain.status import user_status
+from workflow.domain.status import UserStatus, user_status
 from workflow.domain.succession import continue_reason, may_continue
 from workflow.domain.verification import (
     Check,
@@ -87,6 +95,9 @@ EXPECTED_REPORT_EVIDENCE = ("expected-report", "1")
 # CONTRACT 7절 정상 제출의 필수 산출물
 REQUIRED_CODE_ARTIFACTS = ("diff", "test_log_before", "test_log_after", "report_output", "verification_log")
 _EXIT_CODE_LINE = re.compile(r"^exit_code=(-?\d+)\s*$")
+# callback 재시도 (ADR-0010): n 회째 실패 뒤 30·2^(n-1) 초 (30·60·120·240), 5회 실패 후 중단
+CALLBACK_MAX_ATTEMPTS = 5
+CALLBACK_BACKOFF_SECONDS = 30
 
 
 @dataclass
@@ -104,6 +115,8 @@ class TickReport:
     generic_checked: int = 0  # 사용자 정의 종류의 결과 판정 (outcome ∈ KindSpec.outcomes)
     failures_reflected: int = 0
     retries: int = 0  # DiagUnavailable — 다음 tick 에 같은 실행 ID 로 재시도
+    callbacks_sent: int = 0  # 사람 차례가 된 체인에 ChainCallback 전송 (체인당 1회)
+    callbacks_failed: int = 0  # 전송 실패·허용 목록 밖 — attempts 로 기록
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -115,6 +128,12 @@ def _parse(ts: str) -> datetime:
 
 def _age_seconds(now: str, then: str | None) -> float | None:
     return None if not then else (_parse(now) - _parse(then)).total_seconds()
+
+
+def _plus_seconds(now: str, seconds: int) -> str:
+    """`now` 뒤 `seconds` 초 — `utc_now` 와 같은 표기(UTC, 마이크로초, `Z`)라 repo 의 문자열 비교와 맞는다."""
+    moved = (_parse(now) + timedelta(seconds=seconds)).astimezone(UTC)
+    return moved.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _check_dict(code: str, passed: bool, detail: str) -> dict[str, Any]:
@@ -202,6 +221,20 @@ def _result_outcome(conn: Connection, store: ArtifactStore, execution: Row) -> s
     return outcome if isinstance(outcome, str) else None
 
 
+def _result_envelope(conn: Connection, store: ArtifactStore, execution: Row) -> tuple[str | None, str | None]:
+    """결과 봉투(진단·코드 수정·범용)의 최상위 `outcome`·`summary` 문자열 — callback 본문용.
+    이 실행의 산출물이 아니거나 읽지 못하면 (None, None). `_result_outcome`(후속 착수 판단)과 별개다."""
+    content = _read_owned(conn, store, execution["execution_id"], execution["result_artifact_id"])
+    try:
+        data = json.loads(content) if content is not None else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        return None, None
+    outcome, summary = data.get("outcome"), data.get("summary")
+    return (outcome if isinstance(outcome, str) else None, summary if isinstance(summary, str) else None)
+
+
 def _diagnosis_attachments(
     conn: Connection, store: ArtifactStore, source_execution: Row, successor_task: Row, now: str
 ) -> list[AttachmentRef]:
@@ -277,17 +310,20 @@ class Worker:
         conn_factory: Callable[[], sqlite3.Connection],
         store: ArtifactStore,
         diag: DiagClient,
+        callbacks: CallbackClient,
         settings: Settings,
         clock: Callable[[], str],
     ):
         self._conn_factory = conn_factory
         self._store = store
         self._diag = diag
+        self._callbacks = callbacks
         self._settings = settings
         self._clock = clock
 
     def tick(self) -> TickReport:
-        """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다)."""
+        """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다.
+        callback 전달은 맨 뒤 — 후속 착수·실패 반영까지 끝난 상태로 사람 차례를 판정한다)."""
         report = TickReport()
         conn = self._conn_factory()
         try:
@@ -300,6 +336,7 @@ class Worker:
             self._check_generic_results(conn, report)
             self._spawn_successors(conn, report)
             self._reflect_failures(conn, report)
+            self._deliver_callbacks(conn, report)
         finally:
             conn.close()
         return report
@@ -848,6 +885,84 @@ class Worker:
             if self._write_status(conn, task, "확인 필요", reason):
                 report.failures_reflected += 1
 
+    # --- 10. callback 전달 ---------------------------------------------------------------
+
+    def _deliver_callbacks(self, conn: Connection, report: TickReport) -> None:
+        """callback_url 이 있고 아직 안 보낸 체인 중 `chain_settled` 인 것에 ChainCallback 을 1회 POST 한다 (ADR-0010).
+        HTTP 는 트랜잭션 밖. 실패는 attempts·next_at 으로 물러나 재시도하고 CALLBACK_MAX_ATTEMPTS 뒤 멈춘다."""
+        now = self._clock()
+        for chain in repo.chains_awaiting_callback(conn, now, max_attempts=CALLBACK_MAX_ATTEMPTS):
+            chain_id = chain["chain_id"]
+            tasks = repo.tasks_of_chain(conn, chain_id)
+            states = {t["task_id"]: self._task_state(conn, t, now) for t in tasks}
+            nodes = [
+                NodeState(states[t["task_id"]].label, self._predecessor_label(conn, t, states, now)) for t in tasks
+            ]
+            if not chain_settled(nodes):
+                continue
+            url = chain["callback_url"]
+            if not host_allowed(url, self._settings.callback_hosts):
+                # 접수 뒤 허용 목록이 바뀐 경우 — 보내지 않고 기록만 (화면의 callback_last_error)
+                repo.record_callback_attempt(conn, chain_id, ok=False, error="허용 목록 밖", now=now, next_at=None)
+                report.callbacks_failed += 1
+                continue
+            payload = self._chain_callback(conn, chain, tasks, states, now)
+            try:
+                self._callbacks.post(url, payload.model_dump(mode="json"))
+            except CallbackFailed as exc:
+                attempts = chain["callback_attempts"] + 1
+                repo.record_callback_attempt(
+                    conn, chain_id, ok=False, error=str(exc), now=now,
+                    next_at=_plus_seconds(now, CALLBACK_BACKOFF_SECONDS * 2 ** (attempts - 1)),
+                )
+                report.callbacks_failed += 1
+                log.warning("callback 전송 실패 chain %s (%s회): %s", chain_id, attempts, exc)
+                continue
+            repo.record_callback_attempt(conn, chain_id, ok=True, error=None, now=now, next_at=None)
+            report.callbacks_sent += 1
+
+    def _task_state(self, conn: Connection, task: Row, now: str) -> UserStatus:
+        """체인 화면과 같은 판정 — 마감된 Task 는 저장 상태, 아니면 지금 실행·연결 상태로 판정 (`views.status_of`)."""
+        return views.status_of(task, views.build_task_view(conn, task, now=now, settings=self._settings))
+
+    def _predecessor_label(self, conn: Connection, task: Row, states: dict[str, UserStatus], now: str) -> str | None:
+        predecessor_id = task["predecessor_task_id"]
+        if predecessor_id is None:
+            return None
+        if predecessor_id in states:
+            return states[predecessor_id].label
+        predecessor = repo.get_task(conn, predecessor_id)  # 체인 밖 선행
+        return None if predecessor is None else self._task_state(conn, predecessor, now).label
+
+    def _chain_callback(
+        self, conn: Connection, chain: Row, tasks: list[Row], states: dict[str, UserStatus], now: str
+    ) -> ChainCallback:
+        """CONTRACT 12절 ChainCallback. human_gate 는 체인 화면(`views.chain_summary`)의 값 그대로, outcome·summary 는
+        결과 산출물이 있는 최신 시도의 봉투에서 읽는다 (없으면 null). 모델을 부르지 않는다."""
+        public_url = self._settings.public_url
+        gate = views.chain_summary(conn, chain, now=now, settings=self._settings)["human_gate"]
+        entries: list[CallbackTask] = []
+        for task in tasks:
+            task_id = task["task_id"]
+            state = states[task_id]
+            with_result = [e for e in repo.list_executions(conn, task_id) if e["result_artifact_id"] is not None]
+            outcome, summary = _result_envelope(conn, self._store, with_result[-1]) if with_result else (None, None)
+            entries.append(CallbackTask(
+                task_id=task_id, key=task["source_ref"] or "", kind=task["kind"], title=task["title"],
+                status=state.label, status_reason=state.reason, outcome=outcome, summary=summary,
+                task_url=f"{public_url}/tasks/{task_id}" if public_url else None,
+            ))
+        return ChainCallback(
+            contract_version=1,
+            chain_id=chain["chain_id"],
+            title=chain["title"],
+            source="n8n",
+            chain_url=f"{public_url}/chains/{chain['chain_id']}" if public_url else None,
+            settled_at=now,
+            human_gate=CallbackGate(label=gate["label"], status_label=gate["status_label"], reason=gate["reason"]),
+            tasks=entries,
+        )
+
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -863,6 +978,7 @@ def main() -> None:
         conn_factory=lambda: connect(settings.db_path),
         store=ArtifactStore(settings.artifact_dir),
         diag=HttpDiagClient(settings.diag_api_url, settings.diag_api_token),
+        callbacks=HttpCallbackClient(),
         settings=settings,
         clock=utc_now,
     )

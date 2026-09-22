@@ -5,7 +5,9 @@
 """
 
 import dataclasses
+import inspect
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -19,11 +21,13 @@ from tests.workflow.domain.test_verification import (
     with_hashes,
 )
 from workflow.adapters import repo
+from workflow.adapters.callback_client import CallbackFailed
 from workflow.adapters.db import connect
 from workflow.adapters.diag_client import HttpDiagClient
 from workflow.contracts.v1 import (
     BUILTIN_RULES,
     ArtifactMeta,
+    ChainCallback,
     ExecutionEvent,
     ExecutionRequest,
     HandoffBundle,
@@ -80,6 +84,11 @@ REPORT_TEXT = """일일 업무 보고서 — 2026-09-19
 개발    8     2
 합계    20    5
 """
+
+# phase 7: n8n 입구로 들어온 체인 (ADR-0010). key 는 CONTRACT 12절, callback 은 허용 목록 localhost:5678 안.
+CHAIN_ID = "chain-n8n-0920"
+CALLBACK_URL = "http://localhost:5678/webhook-waiting/1234"
+KEY_A, KEY_B, KEY_C = "run-daily-0920", "fix-format", "review-fix"
 
 
 # --- 시계·진단 API 흉내 -------------------------------------------------------------------
@@ -209,6 +218,19 @@ class FakeDiagServer:
         return httpx.Response(404, json={"code": "not_found", "message": request.url.path, "field": None, "details": None})
 
 
+class FakeCallbackClient:
+    """워커 → n8n callback 을 기록한다. `fail` 이면 기록한 뒤 `CallbackFailed("HTTP 503")` — 시도 횟수는 `posts` 로 센다."""
+
+    def __init__(self, fail: bool = False):
+        self.posts: list[tuple[str, dict]] = []
+        self.fail = fail
+
+    def post(self, url: str, payload: dict) -> None:
+        self.posts.append((url, payload))
+        if self.fail:
+            raise CallbackFailed("HTTP 503")
+
+
 # --- fixture ------------------------------------------------------------------------------
 
 
@@ -226,13 +248,13 @@ def server() -> FakeDiagServer:
 def make_worker(app, settings, store, clock):
     """`app` 이 스키마를 만든 뒤에 워커를 연다. 워커는 자기 conn_factory 로 tick 마다 연결을 연다."""
 
-    def _make(diag_server: FakeDiagServer, overrides=None) -> Worker:
+    def _make(diag_server: FakeDiagServer, overrides=None, callbacks=None) -> Worker:
         used = settings if overrides is None else overrides
         client = HttpDiagClient(
             used.diag_api_url, used.diag_api_token,
             transport=httpx.MockTransport(diag_server.handle),
         )
-        return Worker(lambda: connect(used.db_path), store, client, used, clock)
+        return Worker(lambda: connect(used.db_path), store, client, callbacks or FakeCallbackClient(), used, clock)
 
     return _make
 
@@ -251,16 +273,23 @@ def _selection(task_id: str, agent_id: str, capability: dict) -> SelectionRecord
 
 
 def seed_flow(
-    conn, client, clock, *, a_completion="auto", b_run_mode="auto", with_claude=False
+    conn, client, clock, *, a_completion="auto", b_run_mode="auto", with_claude=False, chain=None
 ) -> tuple[str, str]:
     """세션·에이전트 2개·A(진단, 자동 완료)→B(코드 수정)·선택 기록·A queued 실행. 연결 프로그램은 등록·온라인.
-    `with_claude` 면 같은 연결 프로그램이 Claude 등록(`LOCAL_REVIEW`)도 보고한 상태. 반환은 (connector_id, token)."""
+    `with_claude` 면 같은 연결 프로그램이 Claude 등록(`LOCAL_REVIEW`)도 보고한 상태. 반환은 (connector_id, token).
+    `chain`(`insert_chain` 행)을 주면 그 체인을 시작된 상태로 넣고 A·B 를 그 노드(`source_ref` KEY_A·KEY_B)로 만든다."""
     now = clock()
     repo.create_session(conn, SESSION, now)
     seed_agents(conn, with_claude=with_claude)
-    repo.insert_task(conn, {**task_row(TASK_A), "completion_mode": a_completion}, now)
+    if chain is not None:
+        repo.insert_chain(conn, chain, now)
+        repo.mark_chain_started(conn, chain["chain_id"], now)  # 입구 API 는 접수 즉시 첫 업무를 시작한다
+    link_a = {"chain_id": chain["chain_id"], "source_ref": KEY_A} if chain else {}
+    link_b = {"chain_id": chain["chain_id"], "source_ref": KEY_B} if chain else {}
+    repo.insert_task(conn, {**task_row(TASK_A), "completion_mode": a_completion, **link_a}, now)
     repo.insert_task(conn, {
         **task_row(TASK_B, kind="code_change", predecessor=TASK_A),
+        **link_b,
         "run_mode": b_run_mode,
         "target": {
             "local_registration_id": LOCAL_REGISTRATION,
@@ -283,14 +312,15 @@ def seed_flow(
     return connector_id, token
 
 
-def seed_review_successor(conn, now, *, rule=REVIEW_RULE, run_mode="auto") -> None:
+def seed_review_successor(conn, now, *, rule=REVIEW_RULE, run_mode="auto", chain_id=None) -> None:
     """세션에 종류 `review` 와 (기본) 규칙 code_change → review 를 등록하고 B 의 후속 C(검토, Claude) 를 만든다.
-    `rule=None` 이면 규칙 없이 종류만 등록한다."""
+    `rule=None` 이면 규칙 없이 종류만 등록한다. `chain_id` 를 주면 C 도 그 체인의 노드(`source_ref` KEY_C)다."""
     repo.insert_kind(conn, SESSION, REVIEW_KIND, now)
     if rule is not None:
         repo.insert_rule(conn, SESSION, rule, now)
     repo.insert_task(conn, {
         **task_row(TASK_C, kind="review", predecessor=TASK_B),
+        **({"chain_id": chain_id, "source_ref": KEY_C} if chain_id else {}),
         "title": "보고서 수정 검토",
         "required_capability": CAP_C,
         "run_mode": run_mode,
@@ -312,6 +342,21 @@ def review_flow(conn, client, clock) -> tuple[str, str]:
     ids = seed_flow(conn, client, clock, with_claude=True)
     seed_review_successor(conn, clock())
     return ids
+
+
+def n8n_chain(callback_url=CALLBACK_URL) -> dict:
+    """입구 API 가 만든 체인 행 (`source` n8n). `callback_url=None` 이면 출구 없음."""
+    return {
+        "chain_id": CHAIN_ID, "session_id": SESSION, "title": "일일 보고서 실패 진단 → 보고서 변환 수정",
+        "source": "n8n", "callback_url": callback_url,
+        "items": [{"key": KEY_A}, {"key": KEY_B}],
+    }
+
+
+@pytest.fixture
+def n8n_settings(settings):
+    """callback 허용 목록에 localhost:5678 이 있고 public_url 은 비어 있다 (chain_url·task_url null)."""
+    return dataclasses.replace(settings, callback_hosts=("localhost:5678",))
 
 
 def run_to_result(worker: Worker, server: FakeDiagServer) -> TickReport:
@@ -1137,11 +1182,240 @@ def test_heartbeat_loss_is_observed_once_and_never_restarts(flow, worker, server
     assert len(_executions(conn, TASK_B)) == 1
 
 
+# --- phase 7: callback — 체인이 사람 차례(chain_settled)가 되면 1회 POST (ADR-0010) --------------------------
+
+
+def _chain_row(conn):
+    return repo.get_chain(conn, CHAIN_ID)
+
+
+def _at(ts: str) -> datetime:
+    return datetime.fromisoformat(ts)
+
+
+def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock, make_worker, server, store, n8n_settings):
+    """(a) A 실행 중 0 → (b) A 판정·B 착수 tick 0 (B 실행 요청됨) → (c) B 결과·판정 tick 1회 → (d) 이후·승인 뒤에도 1회."""
+    seed_flow(conn, client, clock, chain=n8n_chain())
+    callbacks = FakeCallbackClient()
+    worker = make_worker(server, n8n_settings, callbacks)
+
+    worker.tick()  # A 접수
+    server.visible = 3
+    report = worker.tick()  # A 실행 중
+    assert _status(conn, TASK_A)[0] == "실행 중"
+    assert (report.callbacks_sent, report.callbacks_failed, callbacks.posts) == (0, 0, [])
+
+    server.visible = 4
+    report = worker.tick()  # A 결과 → 완료 → B 착수 — 같은 tick 의 마지막 단계는 B 가 실행 요청됨이라 보내지 않는다
+    assert report.successors_created == 1 and _status(conn, TASK_B) == ("실행 요청됨", "접수 대기")
+    assert (report.callbacks_sent, callbacks.posts) == (0, [])
+
+    b = _executions(conn, TASK_B)[0]["execution_id"]
+    seed_code_result(conn, store, b, clock())
+    report = worker.tick()  # B 결과 확인 → 확인 필요 · 검토 대기 → 사람 차례
+
+    assert (report.results_checked, report.callbacks_sent, report.callbacks_failed) == (1, 1, 0)
+    assert report.any()
+    assert len(callbacks.posts) == 1
+    url, payload = callbacks.posts[0]
+    assert url == CALLBACK_URL
+    body = ChainCallback.model_validate(payload)
+    assert (body.contract_version, body.chain_id, body.source, body.settled_at) == (1, CHAIN_ID, "n8n", clock())
+    assert body.title == "일일 보고서 실패 진단 → 보고서 변환 수정"
+    assert body.chain_url is None
+    assert (body.human_gate.label, body.human_gate.status_label, body.human_gate.reason) == (
+        "검토 승인 (사람) · 병합은 운영자 확인", "확인 필요", "검토 대기"
+    )
+    task_a, task_b = body.tasks
+    assert (task_a.task_id, task_a.key, task_a.kind, task_a.title) == (TASK_A, KEY_A, "diagnosis", "일일 보고서 실패 진단")
+    assert (task_a.status, task_a.status_reason) == ("완료", "판정 근거: 14/14")
+    assert task_a.outcome == "ready_for_handoff"
+    assert task_a.summary == contract_results()[0]["summary"]
+    assert (task_b.task_id, task_b.key, task_b.kind, task_b.title) == (TASK_B, KEY_B, "code_change", "보고서 변환 수정")
+    assert (task_b.status, task_b.status_reason) == ("확인 필요", "검토 대기")
+    assert task_b.outcome == "ready_for_review"
+    assert task_b.summary == "report_transformer가 items 또는 data.records 중 정확히 하나의 목록을 읽도록 수정했습니다."
+    assert task_a.task_url is None and task_b.task_url is None
+    chain = _chain_row(conn)
+    assert chain["callback_sent_at"] == clock()
+    assert (chain["callback_attempts"], chain["callback_next_at"], chain["callback_last_error"]) == (0, None, None)
+
+    for _ in range(2):
+        assert worker.tick().callbacks_sent == 0
+    repo.update_task_status(conn, TASK_B, "완료", "검토 승인", finished_at=clock(), review_decision="approve")
+    repo.release_execution(conn, b, clock())
+    clock.advance(600)
+    report = worker.tick()
+    assert (report.callbacks_sent, report.callbacks_failed) == (0, 0)
+    assert len(callbacks.posts) == 1
+    assert _chain_row(conn)["callback_sent_at"] != clock()
+
+
+def test_failed_callback_backs_off_and_stops_after_five_attempts(conn, client, clock, make_worker, server, store, n8n_settings):
+    """(e) 실패 → attempts 1·next_at now+30s·last_error. 29초 뒤 재시도 없음, 31초 뒤 재시도 → 60초. 5회 뒤 중단."""
+    seed_flow(conn, client, clock, chain=n8n_chain())
+    callbacks = FakeCallbackClient(fail=True)
+    worker = make_worker(server, n8n_settings, callbacks)
+    run_to_b_result(worker, server, conn, store, clock)
+
+    report = worker.tick()
+
+    assert (report.callbacks_sent, report.callbacks_failed) == (0, 1)
+    assert len(callbacks.posts) == 1
+    chain = _chain_row(conn)
+    assert chain["callback_sent_at"] is None
+    assert (chain["callback_attempts"], chain["callback_last_error"]) == (1, "HTTP 503")
+    assert _at(chain["callback_next_at"]) == _at(clock()) + timedelta(seconds=30)
+
+    clock.advance(29)
+    assert worker.tick().callbacks_failed == 0 and len(callbacks.posts) == 1
+
+    clock.advance(2)
+    assert worker.tick().callbacks_failed == 1 and len(callbacks.posts) == 2
+    chain = _chain_row(conn)
+    assert chain["callback_attempts"] == 2
+    assert _at(chain["callback_next_at"]) == _at(clock()) + timedelta(seconds=60)
+
+    for attempts, backoff in ((3, 120), (4, 240), (5, 480)):
+        clock.advance(backoff // 2 + 1)  # 직전 대기(backoff/2)를 넘긴다
+        assert worker.tick().callbacks_failed == 1
+        chain = _chain_row(conn)
+        assert chain["callback_attempts"] == attempts
+        assert _at(chain["callback_next_at"]) == _at(clock()) + timedelta(seconds=backoff)
+    assert len(callbacks.posts) == 5
+
+    clock.advance(3600)
+    for _ in range(3):
+        assert worker.tick().callbacks_failed == 0
+    assert len(callbacks.posts) == 5
+    chain = _chain_row(conn)
+    assert chain["callback_sent_at"] is None and chain["callback_last_error"] == "HTTP 503"
+
+
+def test_callback_succeeds_on_retry_and_clears_error(conn, client, clock, make_worker, server, store, n8n_settings):
+    seed_flow(conn, client, clock, chain=n8n_chain())
+    callbacks = FakeCallbackClient(fail=True)
+    worker = make_worker(server, n8n_settings, callbacks)
+    run_to_b_result(worker, server, conn, store, clock)
+    worker.tick()
+    assert _chain_row(conn)["callback_attempts"] == 1
+
+    callbacks.fail = False
+    clock.advance(31)
+    report = worker.tick()
+
+    assert (report.callbacks_sent, report.callbacks_failed) == (1, 0)
+    chain = _chain_row(conn)
+    assert chain["callback_sent_at"] == clock()
+    assert (chain["callback_attempts"], chain["callback_last_error"]) == (1, None)
+    assert len(callbacks.posts) == 2
+    assert ChainCallback.model_validate(callbacks.posts[1][1]).settled_at == clock()
+    assert worker.tick().callbacks_sent == 0 and len(callbacks.posts) == 2
+
+
+def test_callback_when_successor_is_blocked_by_outcome_outside_rule(conn, client, clock, make_worker, server, store, n8n_settings):
+    """(f) B 가 needs_information 으로 판정 통과 → 규칙 밖 outcome 이라 C 는 착수하지 않는다 → 사람 차례.
+    워커는 C 에 `확인 필요` + 규칙 이유를 저장하지만, callback 의 status 는 체인 화면과 같은 지금 판정(`views.status_of`)이라
+    C 는 `대기 · 선행 대기`(선행 B 가 `확인 필요`)로 실린다 — 화면이 보이는 값과 같다."""
+    seed_flow(conn, client, clock, with_claude=True, chain=n8n_chain())
+    seed_review_successor(conn, clock(), chain_id=CHAIN_ID)
+    callbacks = FakeCallbackClient()
+    worker = make_worker(server, n8n_settings, callbacks)
+    run_to_b_result(worker, server, conn, store, clock, outcome="needs_information")
+
+    report = worker.tick()
+
+    assert (report.results_checked, report.successors_created, report.callbacks_sent) == (1, 0, 1)
+    assert _status(conn, TASK_C) == ("확인 필요", "선행 outcome needs_information 은 규칙 대상 아님 — 확인 필요")
+    body = ChainCallback.model_validate(callbacks.posts[0][1])
+    assert [t.key for t in body.tasks] == [KEY_A, KEY_B, KEY_C]
+    assert (body.tasks[1].status, body.tasks[1].status_reason, body.tasks[1].outcome) == ("확인 필요", "검토 대기", "needs_information")
+    assert (body.tasks[2].status, body.tasks[2].status_reason) == ("대기", "선행 대기")
+    assert (body.tasks[2].outcome, body.tasks[2].summary) == (None, None)  # 결과 없음
+    assert (body.human_gate.status_label, body.human_gate.reason) == ("대기", "선행 대기")  # 체인 화면의 사람 단계와 같은 값
+    assert worker.tick().callbacks_sent == 0 and len(callbacks.posts) == 1
+
+
+def test_callback_when_first_task_is_undecidable_and_successor_waits(conn, client, clock, make_worker, n8n_settings):
+    """A 가 needs_information(판정 불가) → A `확인 필요`, B `대기 · 선행 대기` — 선행이 사람에게 막혔으니 사람 차례다."""
+    seed_flow(conn, client, clock, chain=n8n_chain())
+    server = FakeDiagServer(diag_data(result_raw=contract_results()[1]))
+    callbacks = FakeCallbackClient()
+    worker = make_worker(server, n8n_settings, callbacks)
+
+    report = run_to_result(worker, server)
+
+    assert (report.verdicts, report.successors_created, report.callbacks_sent) == (1, 0, 1)
+    body = ChainCallback.model_validate(callbacks.posts[0][1])
+    assert (body.tasks[0].status, body.tasks[0].status_reason, body.tasks[0].outcome) == ("확인 필요", "판정 불가", "needs_information")
+    assert (body.tasks[1].status, body.tasks[1].status_reason, body.tasks[1].outcome) == ("대기", "선행 대기", None)
+    assert worker.tick().callbacks_sent == 0
+
+
+def test_chain_without_callback_url_sends_nothing(conn, client, clock, make_worker, server, store, n8n_settings):
+    """(g) 가져오기·직접 등록처럼 callback_url 이 없는 체인은 사람 차례가 돼도 아무것도 보내지 않는다."""
+    seed_flow(conn, client, clock, chain=n8n_chain(callback_url=None))
+    callbacks = FakeCallbackClient()
+    worker = make_worker(server, n8n_settings, callbacks)
+    run_to_b_result(worker, server, conn, store, clock)
+
+    report = worker.tick()
+
+    assert _status(conn, TASK_B) == ("확인 필요", "검토 대기")
+    assert (report.callbacks_sent, report.callbacks_failed, callbacks.posts) == (0, 0, [])
+    chain = _chain_row(conn)
+    assert (chain["callback_attempts"], chain["callback_sent_at"]) == (0, None)
+
+
+def test_empty_allow_list_records_failure_without_posting(conn, client, clock, make_worker, server, store, settings):
+    """(h) 허용 목록이 비면(접수 뒤 설정이 바뀐 경우) 보내지 않고 실패로 기록한다. 5회 뒤 멈춘다."""
+    assert settings.callback_hosts == ()
+    seed_flow(conn, client, clock, chain=n8n_chain())
+    callbacks = FakeCallbackClient()
+    worker = make_worker(server, settings, callbacks)
+    run_to_b_result(worker, server, conn, store, clock)
+
+    report = worker.tick()
+
+    assert (report.callbacks_sent, report.callbacks_failed, callbacks.posts) == (0, 1, [])
+    chain = _chain_row(conn)
+    assert (chain["callback_attempts"], chain["callback_last_error"], chain["callback_next_at"]) == (1, "허용 목록 밖", None)
+    assert chain["callback_sent_at"] is None
+    for _ in range(4):
+        assert worker.tick().callbacks_failed == 1
+    assert _chain_row(conn)["callback_attempts"] == 5
+    assert worker.tick().callbacks_failed == 0
+    assert _chain_row(conn)["callback_attempts"] == 5 and callbacks.posts == []
+
+
+def test_public_url_fills_chain_and_task_urls(conn, client, clock, make_worker, server, store, n8n_settings):
+    """(i) WORKFLOW_PUBLIC_URL 이 있으면 chain_url·task_url 이 그 앞에 붙는다."""
+    seed_flow(conn, client, clock, chain=n8n_chain())
+    callbacks = FakeCallbackClient()
+    worker = make_worker(server, dataclasses.replace(n8n_settings, public_url="http://127.0.0.1:8000"), callbacks)
+    run_to_b_result(worker, server, conn, store, clock)
+
+    worker.tick()
+
+    body = ChainCallback.model_validate(callbacks.posts[0][1])
+    assert body.chain_url == f"http://127.0.0.1:8000/chains/{CHAIN_ID}"
+    assert [t.task_url for t in body.tasks] == [
+        f"http://127.0.0.1:8000/tasks/{TASK_A}", f"http://127.0.0.1:8000/tasks/{TASK_B}",
+    ]
+
+
+def test_callback_stage_runs_after_successor_scan_and_failure_reflection():
+    """(b) 의 근거 — tick 의 마지막 단계다. 순서가 바뀌면 A 판정 → B 착수 사이에 보낼 수 있다."""
+    calls = re.findall(r"self\.(_\w+)\(conn, report\)", inspect.getsource(Worker.tick))
+    assert calls[-3:] == ["_spawn_successors", "_reflect_failures", "_deliver_callbacks"]
+
+
 # --- TickReport·run_forever -------------------------------------------------------------
 
 
 def test_tick_report_defaults_to_zero():
     assert all(v == 0 for v in dataclasses.asdict(TickReport()).values())
+    assert not TickReport().any() and TickReport(callbacks_sent=1).any() and TickReport(callbacks_failed=1).any()
 
 
 def test_empty_db_tick_is_noop(worker):
