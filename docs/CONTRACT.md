@@ -1,6 +1,6 @@
 # 계약 v1 예시집
 
-> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답 계약은 아직 설계 중이며 아래 예시에 포함되지 않는다. 제품 방향 변경만으로 기존 payload나 계약 버전이 바뀌지는 않는다.
+> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절에 `json contract-pending` 으로만 있다(미구현 — fixture 테스트 대상 아님). 1~12절 payload 와 계약 버전은 바뀌지 않는다.
 
 갱신일: 2026-09-22 (phase 6-typed-handoff docs-sync)
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
@@ -733,3 +733,215 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 | 경로의 출처가 `n8n` 이 아님 | 404 | `{ "code": "not_found", "message": "입구 jira을 찾을 수 없습니다.", "field": "source", "details": null }` — `POST /sources/jira/chains` 처럼 `n8n` 이 아닌 경로. 토큰 검사 뒤에 본다 |
 
 첫 업무 시작만 거부된 경우(409 `selection_required`·429 `daily_limit_reached` — 체인은 이미 있음)는 오류가 아니라 위 `started: false` 응답이다.
+
+## 13. GitHub 업무 순환 — 확장 계약 (contract-pending)
+
+[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". **아직 구현되지 않은 예시**다. 펜스가 `json contract-pending` 이라 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽지 않는다. 모델을 구현한 step 이 해당 블록만 일반 `json` 펜스로 바꾸고 키 서명을 테스트에 추가한다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
+
+### 13.1 새 내장 종류와 규칙
+
+`bug_fix` — 진단 인계 없이 이슈 요청과 등록된 검증 프로필로 고친다. 결과 봉투는 7절 `CodeChangeResult` 재사용, 필수 산출물에서 `report_output` 이 빠진다.
+
+```json contract-pending
+{
+  "kind": "bug_fix",
+  "label": "버그 수정",
+  "capability_code": "code.fix",
+  "scope_key": "repository_id",
+  "input_kinds": [],
+  "output_kind": "code_change_result",
+  "outcomes": ["ready_for_review", "needs_information"],
+  "instructions": "",
+  "builtin": true
+}
+```
+
+`code_review` — 결과 커밋을 직접 읽는다. `output_kind` 는 새 값 `code_review_result`.
+
+```json contract-pending
+{
+  "kind": "code_review",
+  "label": "커밋 검토",
+  "capability_code": "code.review",
+  "scope_key": "repository_id",
+  "input_kinds": ["code_change_result"],
+  "output_kind": "code_review_result",
+  "outcomes": ["approved", "changes_requested", "needs_information"],
+  "instructions": "",
+  "builtin": true
+}
+```
+
+```json contract-pending
+{ "from_kind": "bug_fix", "on_outcomes": ["ready_for_review"], "to_kind": "code_review", "handoff_kinds": ["code_change_result", "diff", "test_log_after", "verification_log"] }
+```
+
+### 13.2 `ExecutionRequest` — `bug_fix` 첫 시도
+
+target 은 2절 `CodeChangeTarget` 과 같은 모양이다. `request` 는 이슈 스냅샷(제목·본문·링크)을 `task_revision` 에 고정한 문자열이며 명령·경로로 해석하지 않는다. 첫 시도는 입력이 없어도 된다(`code_change` 는 여전히 비면 422). 재작업 시도는 8절처럼 이전 `code_change_result` 와 `code_review_result` 가 입력에 붙고 `base_commit` 은 이전 `result_commit` 이다.
+
+```json contract-pending
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-fix-001",
+  "task_id": "task-gh-41",
+  "kind": "bug_fix",
+  "agent_id": "agent-codex-mac",
+  "task_revision": 1,
+  "request": "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.\n\nhttps://github.com/acme/billing/issues/41",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "verification_profile_id": "vp-pytest"
+  }
+}
+```
+
+### 13.3 `ExecutionRequest` — `code_review`
+
+target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한다. 연결 프로그램은 같은 로컬 등록 저장소에서 `result_commit` 의 깨끗한 체크아웃을 만들어 읽기 전용으로 검토하고, 커밋이 없으면 실패 코드 `commit_missing` 이다.
+
+```json contract-pending
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-review-001",
+  "task_id": "task-gh-41-review",
+  "kind": "code_review",
+  "agent_id": "agent-claude-mac",
+  "task_revision": 1,
+  "request": "task-gh-41 의 결과 커밋이 이슈의 재현 조건을 고치는지, 테스트가 무력화되지 않았는지 검토해 주세요.",
+  "input_artifact_ids": ["art-handoff-gh-001"],
+  "target": {
+    "local_registration_id": "local-billing-claude",
+    "source_execution_id": "exec-gh-fix-001",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "result_commit": "8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a"
+  }
+}
+```
+
+### 13.4 `CodeReviewResult`
+
+`art-gh-review-result-001`(kind `code_review_result`). `reviewed_commit` 은 target `result_commit` 과 같아야 하고 중앙은 그것이 수정 Task 의 최신 결과 커밋인지 다시 본다(아니면 `stale_review`). `changes_requested` 는 `blocking` 지적이 1개 이상, `approved` 는 0개, `needs_information` 은 `missing_information` 이 비어 있지 않아야 한다. `path` 는 표시용 문자열이다.
+
+```json contract-pending
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-review-001",
+  "task_id": "task-gh-41-review",
+  "source_execution_id": "exec-gh-fix-001",
+  "reviewed_commit": "8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a",
+  "outcome": "changes_requested",
+  "summary": "쿠폰 중복 적용은 막았지만 동시에 두 요청이 들어오는 경우의 테스트가 없습니다.",
+  "findings": [
+    { "severity": "blocking", "path": "billing/coupon.py", "line": 42, "message": "잠금 없이 사용 여부를 읽고 쓰므로 동시 요청에서 다시 두 번 적용될 수 있습니다." },
+    { "severity": "non_blocking", "path": null, "line": null, "message": "테스트 이름이 재현 조건을 설명하면 좋겠습니다." }
+  ],
+  "missing_information": [],
+  "artifact_ids": ["art-claude-jsonl-010", "art-claude-stderr-010"]
+}
+```
+
+```json contract-pending
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-review-002",
+  "task_id": "task-gh-41-review",
+  "source_execution_id": "exec-gh-fix-002",
+  "reviewed_commit": "1f3b5d7e9a8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c",
+  "outcome": "approved",
+  "summary": "동시 요청 재현 테스트가 수정 전 실패·수정 후 통과하며 기존 테스트는 바뀌지 않았습니다.",
+  "findings": [],
+  "missing_information": [],
+  "artifact_ids": ["art-claude-jsonl-011", "art-claude-stderr-011"]
+}
+```
+
+### 13.5 `ClaimRequest` — 지원 종류 선언
+
+`supported_kinds` 는 선택(기본 null)이다. null 이면 구버전 연결 프로그램으로 보고 내장 중 `code_change` 와 사용자 정의 종류만 배정한다. 서버는 마지막 선언을 저장해 준비 판정의 `executor_outdated` 에 쓴다. 구버전 서버는 이 필드를 422 로 거부하므로 서버를 먼저 올린다.
+
+```json contract-pending
+{ "contract_version": 1, "connector_id": "conn-mac-01", "supported_kinds": ["code_change", "bug_fix", "code_review"] }
+```
+
+### 13.6 소스 설정과 담당 연결 — 운영자 API
+
+`GitHubSourceConfig`. 토큰 필드는 없다 — 값은 서버 환경변수 `WORKFLOW_GITHUB_TOKEN` 에만 있고, `repository_full_name` 은 `WORKFLOW_GITHUB_REPOS` 에 있어야 한다(아니면 422 `repository_not_allowed`). `label_filter` 와 `selected_issue_numbers` 가 둘 다 비면 422.
+
+```json contract-pending
+{
+  "source_id": "ghs-1a2b3c4d",
+  "repository_full_name": "acme/billing",
+  "workflow_repository_id": "billing",
+  "label_filter": ["bug", "runloom"],
+  "selected_issue_numbers": [],
+  "start_at": "2026-10-06T09:00:00+09:00",
+  "fix_verification_profile_id": "vp-pytest",
+  "review_agent_id": "agent-claude-mac",
+  "run_mode": "auto",
+  "max_rework_rounds": 1,
+  "enabled": true,
+  "config_revision": 3
+}
+```
+
+`AssigneeBinding` — GitHub 사용자 숫자 ID 로 잇는다(`login` 은 바뀔 수 있어 표시용).
+
+```json contract-pending
+{ "source_id": "ghs-1a2b3c4d", "github_user_id": 5812345, "github_login": "kim-dev", "agent_id": "agent-codex-mac" }
+```
+
+### 13.7 `GitHubIssueSnapshot`
+
+GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` 항목은 업무로 받지 않는다.
+
+```json contract-pending
+{
+  "repository_id": 700112233,
+  "repository_full_name": "acme/billing",
+  "issue_id": 2456789012,
+  "number": 41,
+  "title": "할인 쿠폰이 두 번 적용됨",
+  "body": "재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.",
+  "state": "open",
+  "labels": ["bug", "runloom"],
+  "assignee_ids": [5812345],
+  "assignee_logins": ["kim-dev"],
+  "html_url": "https://github.com/acme/billing/issues/41",
+  "created_at": "2026-10-06T10:12:00Z",
+  "updated_at": "2026-10-06T10:15:30Z",
+  "is_pull_request": false
+}
+```
+
+### 13.8 `SourceDelivery` — 반영 불확실
+
+댓글 POST 뒤 응답을 잃은 상태. 다음 tick 은 재POST 전에 이슈 댓글에서 marker `<!-- runloom:task=task-gh-41 -->` 를 찾는다.
+
+```json contract-pending
+{
+  "delivery_id": "dlv-9f8e7d6c",
+  "source_id": "ghs-1a2b3c4d",
+  "task_id": "task-gh-41",
+  "issue_number": 41,
+  "body_revision": 2,
+  "body_digest": "7c4e1a9d3b6f0e2c5a8d1b4f7e0a3c6d9b2e5f8a1c4d7b0e3f6a9c2d5b8e1f4a",
+  "state": "unknown",
+  "comment_id": null,
+  "attempts": 1,
+  "next_at": "2026-10-06T10:31:00Z",
+  "last_error": "연결 오류: ReadTimeout"
+}
+```
+
+### 13.9 새 오류 본문
+
+```json contract-pending
+{ "code": "repository_not_allowed", "message": "저장소 acme/other 는 WORKFLOW_GITHUB_REPOS 에 없습니다.", "field": "repository_full_name", "details": null }
+```
+
+```json contract-pending
+{ "code": "stale_request", "message": "사람 요청 hr-3c2b1a0f 가 이미 revision 3 입니다.", "field": "expected_revision", "details": { "current_revision": 3 } }
+```

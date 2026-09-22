@@ -106,6 +106,27 @@
 | callback 화면 문구 | 체인 화면의 한 줄 (`views._callback_state(chain)` → `chain_summary["callback"]` = None 또는 `{url, host(netloc), state, sent_at, attempts, last_error}`, `state` 는 `대기`·`전송됨`(`callback_sent_at` 있음)·`실패`(미전송이고 `attempts >= 5`)). `chain_detail.html` 의 `<p class="callback-line" data-callback-state="…">`: `callback · {host} · 대기(사람 차례가 되면 보냄)` / `callback · {host} · 대기 · 재시도 {n}회 · {last_error}` / `callback · {host} · 전송됨 {n분 전}` / `callback · {host} · 실패 {n}회 · {last_error}`. URL 전체·본문은 화면에 찍지 않는다. `callback_url` 이 없으면 줄 자체가 없다 | `webhook 상태`, `알림 전송됨`, `notified` |
 | `/sources` 화면 문구 | 입구 화면 (`server/web.py` `sources_page`·`sources_issue_token`·`sources_revoke_token`, `templates/sources.html`, 컨텍스트 `_sources_context`). 사이드바·브레드크럼 `입구`, 절 `입구 주소`(`<code id="inbound-url">` = `WORKFLOW_PUBLIC_URL` 또는 요청 base URL + `INBOUND_PATH`)·`토큰`(표: ID·라벨·발급·마지막 사용·상태 — `활성` + `취소` 버튼 / `취소됨 {시각}`; 없으면 `아직 발급한 토큰이 없습니다.`)·`토큰 발급`(라벨 선택)·`요청 예시`(CONTRACT 12절 (a) curl, 토큰 자리는 `wfs_…` 플레이스홀더)·`callback 허용 목록`(허용 host 목록 또는 `비어 있어 … 거부됩니다`). 발급 응답은 `<code id="issued-token">` 에 원문 1회 + `이 값은 다시 볼 수 없습니다`. 토큰 행에 해시는 넘기지 않는다. 운영자 화면에는 없다 | `API 키`, `webhook secret`, `integrations`, `connections`(연결 프로그램과 혼동) |
 
+## 계획 용어 — phase 8 GitHub 업무 순환 (미구현)
+
+2026-09-23 [ADR-0014](adr/0014-github-task-cycle.md)에서 이름을 고정했다. 아직 코드에 없다 — 괄호의 step 이 구현하면서 위 표로 옮기고 실제 시그니처로 검증한다. 이름을 바꾸려면 ADR·ARCHITECTURE·CONTRACT 13절·이 표를 같이 고친다.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| `bug_fix` | 새 내장 종류(step 1) — 진단 인계 없이 이슈 요청과 등록된 검증 프로필로 고친다. `code.fix`·`repository_id`, target `CodeChangeTarget`, 결과 `CodeChangeResult`, `report_output` 불필요. 데모 `code_change` 와 다른 종류다 | `code_change`(데모 경로와 혼동), `fix`, `patch` |
+| `code_review` | 새 내장 종류(step 1) — 결과 커밋을 깨끗한 읽기 전용 체크아웃에서 검토. `code.review`·`repository_id`, outcomes `approved`·`changes_requested`·`needs_information`. 사용자 정의 예시 `review`(인계 디렉터리만 읽음)와 다르다 | `review`(사용자 정의 예시와 혼동), `PR review` |
+| `CommitReviewTarget` | `code_review` 의 target — `local_registration_id`·`source_execution_id`·`base_commit`·`result_commit` (step 1) | `ReviewTarget`, `GenericTarget` |
+| `CodeReviewResult` / `ReviewFinding` | 검토 결과 봉투(kind `code_review_result`) — `reviewed_commit`·`outcome`·`findings`·`missing_information`. 지적 하나는 `severity`(`blocking`/`non_blocking`)·`path`(표시용)·`line`·`message` (step 1). 사람의 수정 요청 `ReviewComment` 와 다르다 | `ReviewComment`(사람 의견), `GenericResult` |
+| `supported_kinds` | `ClaimRequest` 의 선택 필드 — 연결 프로그램이 처리할 수 있는 종류 선언. null 이면 구버전으로 보고 새 내장 종류를 배정하지 않는다 (step 1) | `capabilities`(Agent 능력과 혼동), `features` |
+| `GitHubIssueSnapshot` / `snapshot_digest` | GitHub 이슈 한 건에서 필요한 값만 뽑은 스냅샷과 그 sha256. Task 가 되기 전의 원본이며 fixture `Issue` 와 다르다 (step 1·5) | `Issue`(fixture·n8n 항목), `Ticket` |
+| `GitHubSourceConfig` / `source_id` | 운영자가 저장한 GitHub 연결 설정(`ghs-` + 8 hex). 토큰 필드 없음 — 값은 `WORKFLOW_GITHUB_TOKEN` 환경변수에만 (step 1·6). n8n 입구 토큰 `source token` 과 다르다 | `integration`, `connection`(연결 프로그램과 혼동), `source token` |
+| `AssigneeBinding` | GitHub 사용자 숫자 ID → 수정 Agent 연결 (step 1·6). 담당자는 Agent 소유자·인증 사용자와 같은 사람으로 보지 않는다 | `owner`, `user mapping`, `assignment` |
+| `ExecutionPolicy` / `BUILTIN_POLICIES` | 내장 종류별 target·결과·필수 산출물·판정기·후속 동작 표 (`domain/execution_policy.py`, step 10). worker·connector 가 종류 이름 분기 대신 조회한다 | `handler`, `strategy`, `plugin` |
+| `TaskFacts` / `TaskReadiness` / `Blocker` | 준비 판정의 입력 값·결과 (`domain/task_readiness.evaluate_readiness`, step 2). `Blocker(code, reason, actor)` — 코드 목록은 ARCHITECTURE "준비 판정 — 대기 코드". 사용자 상태 라벨이 아니다 | `Status`, `Precondition`, `Gate` |
+| `FollowupContext` / `FollowupDecision` | 후속 결정의 입력·결과 (`domain/task_followup.decide_followup`, step 3). `action` 은 `link_existing`·`create_task`·`rework`·`request_human`·`none`. `SuccessorRule` 은 여전히 착수 조건이고 이것은 생성·재작업까지 정한다 | `Transition`, `Trigger`, `NextStep` |
+| `HumanRequest` / `response_id` | 사람에게 묻는 요청과 그 응답의 멱등 키 (step 4·11). 운영자만 응답. 응답은 새 `task_revision` 의 입력이 되고 원본 스냅샷은 그대로 | `approval`(검토 승인과 혼동), `ticket`, `question` |
+| `SourceDelivery` / 반영 상태 | 원본 이슈 댓글 outbox 한 행 (step 4·12). `state` 는 `pending`·`sending`·`delivered`·`unknown`·`failed`, 화면 `반영 대기`·`반영됨`·`반영 불확실`·`반영 실패`. Task 상태·n8n `ChainCallback` 과 다르다 | `notification`, `callback`, `sync` |
+| `max_rework_rounds` | 검토 `changes_requested` 뒤 자동 재작업 상한(기본 1, 0~3). 넘으면 `rework_limit_reached` 사람 요청 | `retry_limit`(실패 재시도와 혼동), `max_attempts` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
