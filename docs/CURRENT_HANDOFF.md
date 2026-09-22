@@ -1,24 +1,24 @@
 # 현재 인계 — 이종 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-22 (phase 6-typed-handoff step 0~9 완료)
+갱신일: 2026-09-22 (phase 6-typed-handoff step 0~9 완료 · service 브랜치 병합 · 실제 Claude 로 review 1회 실연동)
 상태: 공개 데모(phase 5, VM 배포·심사 중)에 더해 실사용 첫 phase — 업무 종류(`KindSpec`)·후속 규칙(`SuccessorRule`)을 워크스페이스가 등록하는 구조([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)) — 를 구현했다. 진단 모델은 gpt-4.1 로 확정(ADR-0003), 공개 데모는 실제 모델·실제 Codex/Claude 를 돌리지 않는다(ADR-0008). 브랜치 `feat-6-typed-handoff`(main `0da3d21` 에서 분기), 푸시 안 함, **VM 에 배포 안 함 — 스키마 버전 3 이라 심사 이후 `WORKFLOW_RESET_DB=1` 로 배포한다**.
 
 ## 지금 상태 — 새 세션이 먼저 볼 것
 
 | 항목 | 상태 |
 |---|---|
-| 브랜치 | `feat-6-typed-handoff` (main `0da3d21` = `origin/main` 에서 분기, 그 위 phase 6 커밋들. phase 5 는 main 에 병합·배포됨. 푸시 안 함) |
+| 브랜치 | `service` (실서비스 통합 브랜치, 2026-09-22 신설 — `feat-6-typed-handoff` 를 `--no-ff` 로 병합 `9e852f5`, `origin/service` 푸시됨). `main` 은 공개 데모(phase 5 배포 원본, 심사 중 동결). 정책은 AGENTS.md 하네스 절 |
 | `phases/0-mvp` step 0~17 | **완료.** contracts·domain·adapters·server(web/API/워커)·connector(Codex 어댑터·worktree)·diagnostic_demo(fixture·도구·워커)·deploy 설정·런북 |
 | `phases/1-diag-fix` step 0~3 | **완료.** location 배열 인덱스 `[N]` + JSON Schema `pattern`, 도구 텍스트 반환에 줄 번호(`tools-v2`), 프롬프트 v2, 재평가 |
 | `phases/2-model-compare` step 0~2 | **완료.** 프롬프트 v3, `DraftInvalid` 턴 사용량 집계, mini·gpt-4.1 5사례 × 3회 비교 → gpt-4.1 `normal` 3/3, [DIAG_EVAL](DIAG_EVAL.md). ADR-0003 을 gpt-4.1 로 확정 |
 | `phases/3-limit-wait` step 0~7 | **계획만. 심사 이후 실행** ([ADR-0007](adr/0007-usage-limit-wait-policy.md)). 그 전까지 사용량 한도는 `실패` 로 기록 |
 | `phases/4-claude-issues` step 0~3 | **완료·main 병합(`f6a3b43`).** 도구 계약·`LocalToolAdapter`·`ClaudeAdapter`·Runner 디스패치. step 4~11 은 5-scripted-demo 로 대체 |
 | `phases/5-scripted-demo` step 0~11 | **완료·main 병합·VM 배포(2026-09-21, `https://runloom.duckdns.org`).** 대본 에이전트(`src/workflow/scripted/`)·스키마 v2(`session_agents`·`chains`)·카탈로그 등록(`/agents/register`)·이슈 fixture 와 라벨 매핑(`domain/task_sources.py`)·워크플로우 구성(`domain/composition.py`)·가져오기(`/tasks/import`)·체인 화면(`/chains/{chain_id}`)·seed 3개·connector worktree 정리·e2e 주 경로 test_12~21·VM 배포 설정([ADR-0008](adr/0008-public-demo-scripted-agents.md)) |
-| `phases/6-typed-handoff` step 0~9 | **완료(브랜치, 미배포).** [ADR-0009](adr/0009-registered-kinds-and-succession-rules.md) — 계약 `KindSpec`·`SuccessorRule`·`GenericResult`·`LocalTarget`·`InputRef`·일반화된 `HandoffBundle`(`source_kind`·`source_result_artifact_id`·`inputs`), 도메인 `kinds.py`·`succession.py`(등록부는 인자), 스키마 v3(`kinds`·`succession_rules`, 세션 생성 시 내장 2종·규칙 1개 seed), 워커 후속 조건을 '선행 결과 + 판정 통과 + outcome ∈ 규칙'으로(사람 승인은 후속 착수를 막지 않음)·`_check_generic_results`, 연결 프로그램 읽기 전용 실행(`_run_generic`, Codex `--sandbox read-only`/Claude `Read Glob Grep`), 화면 `/kinds`(종류 카드·한 줄 규칙·등록 폼)와 업무 등록·가져오기·상세의 등록부 연동, e2e test_22~28(세 번째 종류 `review` 를 화면으로 등록하면 진단 → 수정 → 검토가 `composition.py`·`worker.py` 변경 없이 자동 착수), 문서 동기화(step 9). 실제 Claude·Codex 로는 미검증 |
+| `phases/6-typed-handoff` step 0~9 | **완료(브랜치, 미배포).** [ADR-0009](adr/0009-registered-kinds-and-succession-rules.md) — 계약 `KindSpec`·`SuccessorRule`·`GenericResult`·`LocalTarget`·`InputRef`·일반화된 `HandoffBundle`(`source_kind`·`source_result_artifact_id`·`inputs`), 도메인 `kinds.py`·`succession.py`(등록부는 인자), 스키마 v3(`kinds`·`succession_rules`, 세션 생성 시 내장 2종·규칙 1개 seed), 워커 후속 조건을 '선행 결과 + 판정 통과 + outcome ∈ 규칙'으로(사람 승인은 후속 착수를 막지 않음)·`_check_generic_results`, 연결 프로그램 읽기 전용 실행(`_run_generic`, Codex `--sandbox read-only`/Claude `Read Glob Grep`), 화면 `/kinds`(종류 카드·한 줄 규칙·등록 폼)와 업무 등록·가져오기·상세의 등록부 연동, e2e test_22~28(세 번째 종류 `review` 를 화면으로 등록하면 진단 → 수정 → 검토가 `composition.py`·`worker.py` 변경 없이 자동 착수), 문서 동기화(step 9). **2026-09-22 실제 Claude 로 검토 C 1회 통과**(outcome `changes_requested`, [VERIFICATION_LOG](VERIFICATION_LOG.md) 실연동 절) — 실제 Codex 로는 미검증 |
 | 공개 데모 구성 | [ADR-0008](adr/0008-public-demo-scripted-agents.md): VM 한 대, systemd 5개(중앙 2·진단 2·연결 프로그램) + Caddy, 카탈로그 3개 `demo_scripted=1`, `DIAG_MODEL=fake`, `deploy/bin/{codex,claude}` 래퍼 → `workflow.scripted.*`, 실제 codex/claude 바이너리·`OPENAI_API_KEY` 없음, 한도 200/5000(비용 0). 절차 [DEPLOY](DEPLOY.md). 2026-09-21 `https://runloom.duckdns.org` 에 main(phase 5, 스키마 2) 배포·심사자 흐름 완주([VERIFICATION_LOG](VERIFICATION_LOG.md)). **심사 기간(~10-05) 동결 — phase 6 는 올리지 않는다** |
 | 검증 | `python3 -m pytest -q` 1545 passed + 29 skipped(e2e), `ruff` 통과. e2e 는 `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` 로 29 passed(약 93초, 대본 스택 — 기존 22 + 세 번째 종류 절 test_22~28) — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 절 |
-| 실연동 증거 | 실제 Codex CLI 로 B 1회(2026-09-20, [VERIFICATION_LOG](VERIFICATION_LOG.md) Step 15)와 실제 gpt-4.1 진단 평가([DIAG_EVAL](DIAG_EVAL.md))가 따로 있다. 실제 모델 + 실제 Codex 로 A → B 를 한 번에 완료한 기록은 없다. 실제 Claude Code 실연동은 없다(phase 4 의 남은 step 이 5-scripted-demo 로 대체되며 빠짐). 세 번째 종류(`review`, 읽기 전용 `LocalTarget`)도 대본 e2e 뿐 — 실제 Codex `--sandbox read-only` 가 git 저장소가 아닌 인계 디렉터리에서 도는 동작은 미확인 |
-| 남은 것 | 실제 Claude 로 `review` 종류 1회 실연동, n8n 입구 phase(업무 `callback_url` + `TaskSource` n8n — 별도 ADR), 완료 시 새 업무 생성 규칙(ADR-0009 트레이드오프), 범용 API 에이전트 계약(지금 API 는 `diagnosis` 만), 실제 GitHub/Jira API 연동(지금은 `adapters/task_source_fixtures/` fixture 뿐), 셀프호스트 1인용 패키징(ADR-0006 Mac 구성은 코드로 남아 있으나 설치 절차·문서 없음), A2A. 사용량 한도 대기는 phase 3(심사 이후) |
+| 실연동 증거 | 실제 Codex CLI 로 B 1회(2026-09-20, [VERIFICATION_LOG](VERIFICATION_LOG.md) Step 15)와 실제 gpt-4.1 진단 평가([DIAG_EVAL](DIAG_EVAL.md))가 따로 있다. 실제 모델 + 실제 Codex 로 A → B 를 한 번에 완료한 기록은 없다. 실제 Claude Code 실연동은 **세 번째 종류 `review` 1회**(2026-09-22, 로컬 스택 — A fake 진단·B 대본 codex·C 실제 `claude -p`, 85초·7턴, `changes_requested` 로 대본 수정의 실제 결함을 지적)뿐이다. 실제 Codex `--sandbox read-only` 가 git 저장소가 아닌 인계 디렉터리에서 도는 동작은 미확인. 그 실행에서 **연결 프로그램이 도구 실행 중 heartbeat 를 보내지 않는 결함**(운영 기본값에선 90초 넘는 실행마다 `offline`·`heartbeat_lost`)과 **판정 전 승인이면 `task_verdicts` 가 안 남는 관찰**을 기록했다 — 둘 다 미수정, 사용자 결정 대기 |
+| 남은 것 | 연결 프로그램 실행 중 heartbeat(위 결함, 작은 phase 또는 fix 커밋), n8n 입구 phase(업무 `callback_url` + `TaskSource` n8n — 별도 ADR), 완료 시 새 업무 생성 규칙(ADR-0009 트레이드오프), 범용 API 에이전트 계약(지금 API 는 `diagnosis` 만), 실제 GitHub/Jira API 연동(지금은 `adapters/task_source_fixtures/` fixture 뿐), 셀프호스트 1인용 패키징(ADR-0006 Mac 구성은 코드로 남아 있으나 설치 절차·문서 없음), A2A. 사용량 한도 대기는 phase 3(심사 이후) |
 | 로컬 산출물(커밋 안 됨) | `.env`(비밀값, gitignore), `data/`(sqlite·산출물·평가 workdir), `../demo-report-repo`(B 가 수정하는 데모 저장소, `scripts/scaffold_demo_repo.py` 로 재생성 가능) |
 
 ### 재개 방법 — 하네스
@@ -136,10 +136,10 @@ MCP는 도구 연결, RAG는 검색 근거를 이용한 생성 방식이다. 개
 
 ## 다음 세션에서 할 일
 
-1. 실제 Claude 로 `review` 종류 1회 실연동 — 사용량(구독 한도) 확인 후, 사람이 지시할 때만. 로컬 스택(`scripts/local_stack.py`, `--scripted` 없이)에서 `/kinds` 로 `review` 와 규칙 `code_change --[ready_for_review]--> review` 를 등록하고 A → B → C 를 돌려 `generic_result`·`readonly_violation` 없음·저장소 불변을 [VERIFICATION_LOG](VERIFICATION_LOG.md) 에 기록한다. ARCHITECTURE "검증 순서" 6번을 갱신한다.
+1. ~~실제 Claude 로 `review` 종류 1회 실연동~~ — 2026-09-22 완료([VERIFICATION_LOG](VERIFICATION_LOG.md) 실연동 절, ARCHITECTURE "검증 순서" 6번 갱신). 남은 결정 두 가지: (a) 연결 프로그램이 도구 실행 중에도 heartbeat 를 보내게 고칠지(heartbeat 스레드 또는 `communicate_or_stop` 폴링 루프 — 실제 실행은 대부분 90초를 넘긴다), (b) 중앙 판정 전 사람 승인을 막을지. 사용자가 정하면 TDD 로 진행.
 2. n8n 입구 phase — 업무에 `callback_url`, `TaskSource` 에 n8n, 3~4 노드 워크플로우 예시. 별도 ADR 로 결정한 뒤 `phases/` 에 step 을 만든다. n8n 은 업무가 들어오는 입구·나가는 출구로만 쓴다(ADR-0009 참고 절).
 3. 완료 시 새 업무를 **생성**하는 규칙(대상·범위를 선행 결과에서 파생) — ADR-0009 트레이드오프. 지금은 미리 등록된 업무 사이를 잇는 것만 한다.
-4. 심사 이후(2026-10-05 뒤) VM 배포 — `feat-6-typed-handoff` 를 main 에 병합·푸시하고 [DEPLOY](DEPLOY.md) 7b 대로 `WORKFLOW_RESET_DB=1 update-vm.sh`(스키마 2 → 3) 후 seed·connect·register 를 다시 한다. 그 전에는 VM 에서 `update-vm.sh` 를 돌리지 않는다.
+4. 심사 이후(2026-10-05 뒤) VM 배포 — `service` 를 main 에 병합·푸시하고 [DEPLOY](DEPLOY.md) 7b 대로 `WORKFLOW_RESET_DB=1 update-vm.sh`(스키마 2 → 3) 후 seed·connect·register 를 다시 한다. 그 전에는 VM 에서 `update-vm.sh` 를 돌리지 않는다.
 5. 심사 이후: `phases/3-limit-wait`(ADR-0007), 그 다음은 "지금 상태" 표의 "남은 것". ADR 파일은 사용자 확정 후에만 고친다.
 6. 인계 문서를 갱신할 때 "지금 상태" 표를 먼저 고친다.
 

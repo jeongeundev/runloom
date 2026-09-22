@@ -129,3 +129,45 @@ line 24 item_12 exit=1: python3 -m pytest -q        (→ line 43 item_23 exit=0:
 - 제품 코드(`src/workflow/` 중 `scripted/` 제외) 결함: **없음**. 도메인·워커·연결 프로그램·웹 변경 없이 통과했다.
 - 이 step 의 변경: `src/workflow/scripted/_common.py`(`generic_kind_of`·`generic_outcomes`·`handoff_listing`·`generic_result`)·`codex.py`(`--output-schema` 읽기, 사용자 정의 종류 분기 — 같은 JSONL 3줄 봉투)·`claude.py`(`--json-schema`, `structured_output = {outcome, summary}`), `scripts/seed_demo.py`(Claude 능력 `code.modify` + `review`, 상수 `REVIEW_CAPABILITY_CODE`), 테스트(`tests/workflow/scripted/` 60건, `scripts/test_seed_demo.py`, `tests/e2e/test_scenario.py` test_22~28 — 파일에 test_12~21 주 경로가 이미 있어 번호가 22 부터다).
 - 메모(결함 아님): 결과 봉투 summary 에 `manifest.json` 이 들어간다 — connector 가 인계 디렉터리에 두는 목록 파일도 프롬프트의 인계 목록에 나열되고, 대본은 목록의 파일 이름만 적기 때문. 공개 데모에는 `review` 종류가 등록되지 않으므로 Claude 카드의 능력 `review` 는 매칭되지 않고 코드만 보인다(허용, seed 주석).
+
+## 2026-09-22 — 실제 Claude 로 세 번째 종류 review 1회 (phase 6 실연동)
+
+목적: phase 6 step 8 의 세 번째 종류 흐름을 대본이 아닌 **실제 `claude` CLI** 로 한 번 돌려, 연결 프로그램의 읽기 전용 실행(`LocalToolAdapter._run_generic` → `ClaudeAdapter.launch_readonly`)이 실제 도구·실제 모델과 맞물리는지 확인한다. 실행은 1회다. 진단은 `DIAG_MODEL=fake`, 코드 수정(B)은 대본 codex(`tests/e2e/fake_codex.py` shim)이고 **검토(C)만 실제 Claude** 다 — Codex 사용량이 없어 B 는 대본으로 뒀다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-22 09:42:31 ~ 09:44:19 KST (A 실행 클릭부터 C 검토 대기까지 98.0초, Claude 프로세스 85.0초) |
+| Claude | `2.1.278 (Claude Code)`, `/opt/homebrew/bin/claude`, 운영자 로그인(구독) 재사용. 모델은 운영자 기본값 `claude-opus-5[1m]` (`modelUsage`) |
+| 스택 | `LocalStack(workdir=../workflow-live-review-2026-09-22, fake_codex=tests/e2e/fake_codex.py, scripted=False)` — connector PATH 앞에 `codex` 래퍼만, `claude` 는 PATH 의 실제 바이너리. 작업 디렉터리를 이 저장소 밖에 둬 Claude 가 이 저장소의 CLAUDE.md·훅을 프로젝트 설정으로 읽지 않게 했다. 기동 세션(Claude Code)의 `CLAUDECODE`·`CLAUDE_CODE_*` 는 지우고 띄웠다 |
+| 드라이버 | e2e `tests/e2e/test_scenario.py` 의 test_22~28 흐름과 폼(`REVIEW_KIND_FORM`·`REVIEW_RULE_FORM`·`FORM_A/B/C`)을 그대로 HTTP 로 재생한 1회성 스크립트(저장소 밖). 종류·규칙 등록 → A·B(Codex 직접 선택)·C 등록 → A 실행 클릭 1회 → 관찰 → 승인 |
+| Claude argv (어댑터 고정) | `claude -p --output-format json --no-session-persistence --permission-mode acceptEdits --allowedTools Read Glob Grep --json-schema {"type":"object","properties":{"outcome":{"enum":[approved, changes_requested, needs_information]},…}}` — cwd = 인계 디렉터리 `<repo>-worktrees/task-4d11c1412fef.handoff/`, 프롬프트는 stdin (`ps` 로 확인) |
+| Claude 결과 봉투 | `subtype=success`, `is_error=false`, `num_turns=7`, `duration_ms=81692`(api 79206), `permission_denials=[]`, `api_error_status=null`. 토큰: input 6 · cache_creation 36,255(1h) · cache_read 67,659 · output 6,160(thinking 3,745). `total_cost_usd=0.5504`(`costBasis: list` — 구독이라 청구 아님, 참고값). stderr 0 바이트 |
+| 결과 (`generic_result.json`, 1,518B) | kind `review` · **outcome `changes_requested`** · execution/task id 일치 · `artifact_ids` = Claude JSONL·stderr 2개. summary 는 아래 "검토 내용" |
+| 화면 | C 상태 순서 `대기·선행 대기` → `실행 요청됨·접수 대기` → `접수 확인` → `실행 중·시작 확인` → `확인 필요·검토 대기`. 이벤트 `accepted, started, progress("Claude 종료 exit=0"), result_ready`. `data-outcome="changes_requested"`, `결과 봉투 · review`, **`대본 재생` 문구 없음**, 병합 문구 없음. C 가 검토 대기가 됐을 때 B 는 아직 `확인 필요 · 검토 대기`(승인 전 착수) |
+| 시각 (UTC) | A exec 00:42:31.267 → `result_ready` 36.690 → tick 36.697 `verdicts 1 · successors_created 1`(14/14 완료). B exec 36.693 → 시작 37.545(대본 codex pid 23121) → `result_ready` 39.746. tick 42.724 `results_checked 1 · successors_created 1` → C exec 42.718 → accepted 43.791 → started 43.813(**Claude pid 23454**) → progress `Claude 종료 exit=0` 44:08.840 → `result_ready` 44:08.853 |
+| 인계 묶음 (B) | `source_kind=code_change`, `source_result_artifact_id` = B 수정 결과, `inputs` = {`diff`, `code_change_result`, `test_log_after`} (규칙 `handoff_kinds` 그대로), `attachments []`. 인계 디렉터리에는 이 3개 + `manifest.json` |
+| 저장소 불변 | `main` == base_commit `0b05eb99…`, 작업 트리 깨끗, `task/{B}` == B 결과 커밋 `07ba467e…`(C 뒤에도 동일), `task/{C}` 브랜치 없음, `git worktree list` main 하나, `demo-report-repo-worktrees/` 비어 있음(C 인계 디렉터리 정리됨). C 실행 `result_ready`·`failed_code NULL` → `readonly_violation` 없음 |
+| 승인·중복 | B 승인 → `완료 · 검토 승인 · 병합: 운영자 확인 대기`, C 승인 → `완료 · 검토 승인`. 10초 뒤 `executions` A·B·C 각 1건(`result_ready`, NULL) |
+| 비밀값 | 증거 파일에서 `wfc_` 0건, `sk-` 는 `task-…` 식별자 안의 부분 문자열뿐 |
+| 세션 저장 | `--no-session-persistence` — `~/.claude/projects/<인계 디렉터리 경로>/` 가 생겼으나 빈 `memory/` 뿐, 대화 기록 파일 없음 |
+| 근거 | `../workflow-live-review-2026-09-22/` — `report.json`(드라이버 요약; 끝의 `error: SystemExit(0)` 은 정상 종료를 드라이버가 잘못 적은 것), `evidence/`(`C_결과_봉투.json`·`C_Claude_JSONL.jsonl`·`C_live.html`·`B_diff.patch`·`B_code_change_result.json`·`B_handoff_bundle.json`·`C_offline_generic_checks.json`), `central/db.sqlite`, `logs/{central_worker,connector}.log`. 커밋하지 않는다 |
+
+### 검토 내용 — 실제 모델이 대본 수정에서 결함을 찾았다
+
+Claude 의 summary(원문은 `evidence/C_결과_봉투.json`): 진단 원문이 인계 자료에 없어 `code_change_result.summary` 와 docstring 을 기준으로 대조했고, 핵심 요구(`$.items`/`$.data.records` 중 하나, 둘 다면 `AMBIGUOUS_RECORDS_FIELD`, 없으면 `MISSING_RECORDS_FIELD`, 테스트 3개 추가·14 passed)는 충족. **그러나** `transformer.py` 의 `(data or {}).get("records")` 는 `data` 가 truthy 비-dict(`"oops"`, `[1]`, `1`)일 때 `AttributeError` 로 크래시해, 수정 전엔 모든 비정상 형태를 `TransformError(MISSING_RECORDS_FIELD)` 로 바꾸던 계약을 깨뜨린다 → `changes_requested`. 바로 위의 `has_records` 를 재사용하면 한 줄. 비차단: `docs/contract.md` 가 diff 에 없어 계약 문구 일치는 미확인.
+
+- `evidence/B_diff.patch` 로 확인: 지적이 맞다. 대본 codex(`workflow.scripted.codex`)의 고정 수정안이 가진 실제 결함이다 (공개 데모의 B 결과에도 같은 코드가 들어간다 — 데모 대본의 결함이지 제품 코드 결함은 아님).
+- 대본 e2e 는 항상 `approved`(스키마 enum 첫 값)였다. 실제 모델은 `changes_requested` 를 냈고 중앙은 봉투·id·`outcome ∈ spec` 만 보므로 그대로 `확인 필요 · 검토 대기` 가 됐다 — ADR-0009 (5) 대로 내용은 보지 않는다.
+- 규칙 `handoff_kinds` 에 진단 결과가 없어 검토자가 "진단 원문 없음" 을 명시했다. 규칙 등록 데이터의 문제이지 코드 문제가 아니다 — 검토 규칙에 `diagnosis_result` 를 넣을지는 운영자 선택.
+
+### ARCHITECTURE "검증 순서" 6번
+
+| 순서 | 검증 | 결과 | 근거 |
+|---|---|---|---|
+| 6 | 세 번째 종류 — 실제 Claude | **통과** (C 만 실제 Claude, A 는 fake 진단, B 는 대본 codex). 화면 등록만으로 A → B → C 자동 착수(B 승인 전), 실제 `claude -p` 가 `Read Glob Grep` 만으로 인계 자료를 읽고 `{outcome, summary}` 봉투를 냈으며(`permission_denials []`), 인계 디렉터리·저장소 불변, `readonly_violation`·`result_invalid`·`usage_limit` 없음. 규칙 삭제 시나리오(test_27)는 이번엔 돌리지 않았다(대본 e2e 로만) | 위 표 |
+
+### 발견한 결함과 고친 파일
+
+- **연결 프로그램은 도구가 도는 동안 heartbeat 를 보내지 않는다** (제품 결함, 미수정). `runner.tick` 이 단일 스레드로 `_claim_and_start` → 어댑터 → `communicate_or_stop`(`proc.communicate(timeout=1200)`) 를 동기로 돌리므로 `_heartbeat_if_due` 가 실행 중엔 호출되지 않는다. 이번 실행: 마지막 heartbeat 09:42:41.775, claim 43.788, 다음 heartbeat **09:44:10.862** (Claude 가 끝난 뒤). 중앙 워커 tick 09:42:54.751 `agents_offline 2 · observations 1` — 로컬 Agent 둘(같은 연결 프로그램)이 `offline` 이 되고 C 실행에 `execution_observations` `heartbeat_lost`("연결 프로그램 heartbeat 미수신 (마지막 확인 …43.785Z)") 가 남았다. 결과 자체는 정상 수신·판정됐다(재실행 없음, 재접속 후 online). 로컬 스택은 offline 판정 10초·heartbeat 3초라 바로 드러났고, 운영 기본값(30초/90초)에서는 **90초 넘는 실제 실행**(Step 15 의 Codex B 2분 35초가 이미 그렇다)마다 같은 일이 난다. 대본 e2e(실행 1초 미만)와 `run-local`(중앙 없음)로는 보이지 않던 것. ARCHITECTURE 의 "연결 생존과 모델 진행 구분" 은 실행 중엔 성립하지 않는다. 고치려면 도구 실행 중 heartbeat 스레드(또는 `communicate` 를 폴링 루프로) — 사용자 결정 후.
+- **사람 승인이 중앙 판정보다 먼저 오면 판정이 기록되지 않는다** (관찰, 결함 여부는 결정 필요). `/live` 는 `result_ready` 직후 `확인 필요 · 검토 대기` 를 실시간으로 보여주고 검토 폼을 열지만, 워커의 `_check_generic_results` 는 다음 tick(≤3초)에 돈다. 드라이버가 0.4초 만에 승인해 `released_at` 이 찍혔고 `results_awaiting_verdict`(`released_at IS NULL`)에서 빠져 C 의 `task_verdicts` 행이 **없다** (worker.log 에 `generic_checked` 0). 같은 검사를 보존된 DB·산출물에 오프라인으로 적용하면 `envelope_valid`·`ids_match`·`outcome_in_spec` 모두 통과 (`evidence/C_offline_generic_checks.json`). 대본 e2e(test_25)는 판정을 기다린 뒤 승인하므로 드러나지 않는다. 사람이 3초 안에 승인하는 일은 드물지만, 판정 전 승인을 막을지(폼 비활성) 또는 승인 시 판정을 같이 남길지는 사용자 결정.
+- 어댑터·워커·웹 코드 변경: **없음**. 이 항목의 변경은 이 문서, [ARCHITECTURE](ARCHITECTURE.md) "검증 순서" 6번, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 뿐.
