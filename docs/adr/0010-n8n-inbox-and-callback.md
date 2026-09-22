@@ -1,5 +1,7 @@
 # ADR-0010: n8n 은 업무가 들어오는 입구와 나가는 출구다 — 판단은 Runloom 이 한다
 
+> 2026-09-22 부분 대체: [ADR-0011](0011-task-driven-work-cycle.md)에 따라 n8n의 입구·출구 한정과 후속 업무 생성 제외는 영구 제품 원칙이 아니다. 아래 입구·callback 계약은 현재 구현으로 유지한다. n8n 역할 확대나 워크플로우 JSON 생성 채택을 결정한 것은 아니며, 실행 책임 변경은 후속 설계에서 정한다.
+
 결정일: 2026-09-22. 사용자 확정. 적용 범위는 제품(`src/workflow/`)의 셀프호스트 실사용이며, 공개 데모(VM, [ADR-0008](0008-public-demo-scripted-agents.md))는 심사 기간 동안 건드리지 않는다. [ADR-0009](0009-registered-kinds-and-succession-rules.md) 참고 절의 "n8n 은 업무가 들어오는 입구·나가는 출구로만 쓴다"를 구체화한 것이다. 이 제품은 "n8n 옆의 에이전트 인계 계층"이며 n8n 을 대체하지 않는다.
 
 장면: n8n 쪽은 노드 4개다 — Webhook(또는 Error Trigger) → HTTP Request(Runloom 에 POST) → Wait(On Webhook Call — `$execution.resumeUrl` 로 깨어남) → Slack. Runloom 은 그 사이에서 종류·규칙·판정·인계·사람 게이트를 맡는다.

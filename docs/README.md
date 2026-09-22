@@ -1,18 +1,25 @@
 # 문서 안내
 
+출시 계획 기준(2026-09-23): [제품 로드맵](product/ROADMAP.md)에 MVP → 반복 사용 → 기록 기반 설정 추천 → 검증된 자동화 확대 → v1.0의 범위·통과 기준·벤치마킹을 정리했다. [ADR-0013](adr/0013-existing-tasks-first-staged-rollout.md)에 따라 기존 업무 가져오기가 초기 경험이고, 자연어 워크플로우 생성·기록 분석은 필수 시작점이 아니다. 제품 개요 → ROADMAP → 해당 단계의 PRD 순서로 읽는다.
+
+최신 제품 확장(2026-09-23): [ADR-0012](adr/0012-delegated-decisions-and-pattern-feedback.md). 위임된 AI 판단, 기존 업무 로그·개인 패턴·접근 가능한 LLM 메모리에서 자동화 후보 발견, 도입 전후 효과 비교와 개선을 포함한다. ADR-0011의 업무 순환을 유지·확장하며 Jev 채택과 모델 재학습은 미확정이다. 새 기능은 미구현이다.
+
 갱신일: 2026-09-22
 
-설계 문서(PRD·ARCHITECTURE·CONTRACT·ADR)가 있고 구현은 `phases/0-mvp`(18 step)·`phases/1-diag-fix`(4 step)·`phases/2-model-compare`(3 step, 진단 모델 비교)·`phases/4-claude-issues`(4 step)·`phases/5-scripted-demo`(12 step, 공개 데모 — VM 배포됨)·`phases/6-typed-handoff`(10 step, 업무 종류·후속 규칙 등록 — `service` 병합, 심사 이후 배포)·`phases/7-n8n-gateway`(step 0~9, n8n 입구·출구 — 브랜치 `feat-7-n8n-gateway`, 실제 n8n 실연동 step 10 남음) 까지 끝났다. 먼저 [현재 인계](CURRENT_HANDOFF.md)의 "지금 상태" 표를 읽는다.
+실서비스의 제품 기준은 [제품 개요](product/PRODUCT_BRIEF.md) → [PRD의 실서비스 업무 순환](PRD.md#실서비스-업무-순환--2026-09-22-확정) → [ADR-0011](adr/0011-task-driven-work-cycle.md) 순서로 읽는다. 업무 목록에서 준비된 일을 실행하고, 결과로 기존 업무를 연결하거나 새 업무를 생성하며, 사람 응답 후 재개하는 것이 목표다.
+
+현재 `service`에는 phase 6 종류·후속 규칙과 phase 7 n8n 입구·출구가 병합되어 있다(phase 7 병합 `1ddc712`, heartbeat 수정 `0fc679a`). 새 업무 순환 전체는 미구현이다. 현재 계약은 [CONTRACT](CONTRACT.md), 전환 설계·검증 순서는 [ARCHITECTURE](ARCHITECTURE.md#실서비스-전환-설계--adr-0011), 실행 이력과 다음 작업은 [현재 인계](CURRENT_HANDOFF.md)를 따른다. 공개 데모 `main`은 phase 5이며 심사 기간 동결한다.
 
 ## 현재 문서의 구분
 
 | 위치 | 상태와 용도 |
 |---|---|
+| [product/ROADMAP.md](product/ROADMAP.md) | 버전별 포함·제외·진입 및 통과 기준, 공식 자료 기반 벤치마킹과 실험 방법, 지표·다음 작업 |
 | [CURRENT_HANDOFF.md](CURRENT_HANDOFF.md) | 지금 상태 표, 하네스 재개 방법, 미결 사항, 진단 모델 판단 경위 |
 | [product/PRODUCT_BRIEF.md](product/PRODUCT_BRIEF.md) | 최신 제품 방향, 기존 서비스와의 차별성 가설, 검증할 사항 |
 | [archive/2026-09-16-gateless/](archive/2026-09-16-gateless/README.md) | 이전 Gateless 기획·도메인·아키텍처와 조사·실험 자료. 현행 요구사항이 아닌 참고 이력 |
-| [PRD.md](PRD.md) | 검토용 v0.1. MVP 범위·사용자 흐름·공모전 시연·수용 기준 제안 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 기술 설계 v0.3. 스택·모델 평가안·계약 필드·이벤트 순서·DB 제약·검증 기준·배포·업무 종류와 후속 규칙(ADR-0009)·n8n 입구와 출구(ADR-0010) — 2026-09-22 구현대로 정정 |
+| [PRD.md](PRD.md) | 첫 절은 새 실서비스 요구·5개 업무 수용 시나리오. 이후 절은 이전 MVP·공모전 시연 기록 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 첫 절은 미구현 전환 설계와 구현 순서. 이후는 현재 스택·계약·DB·검증·phase 6·7 및 초기 설계 기록 |
 | [CONTRACT.md](CONTRACT.md) | 계약 v1의 완전한 요청·이벤트·결과·오류 예시. 11절이 `KindSpec`·`SuccessorRule`·`GenericResult`·일반화된 `HandoffBundle`·`LocalTarget` 요청, 12절이 n8n 입구(`InboundChainRequest`·`InboundChainResponse`)·출구(`ChainCallback`)·오류표. 계약 테스트 fixture로 사용 |
 | [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록. 2026-09-20 Codex CLI 실연동 1회(Step 15), 2026-09-21 대본 e2e·VM 배포, 2026-09-22 세 번째 종류 `review` 자동 착수(대본 e2e)·실제 Claude 1회·n8n 입구·출구 e2e(테스트 안 수신기가 n8n 역할 — 실제 n8n 은 step 10) |
 | [DIAG_EVAL.md](DIAG_EVAL.md) | 진단 모델 비교 평가 종합(phase 2-model-compare Step 2). 같은 하네스·프롬프트 v3·도구 v2 로 gpt-4.1-mini 와 gpt-4.1 을 5사례 × 3회씩 실행. mini `normal` 0/3(네 번째 미달)·gpt-4.1 `normal` 3/3·잘못된 수정 착수 둘 다 0/12·의도한 사유의 보류 mini 0/12·gpt-4.1 2/12·비용 US$0.13 / US$0.74. 네 평가의 조건 표·모델 비교표·지표 비교·모델별 통과 기준 판정·ADR-0003 을 gpt-4.1 로 갱신(또는 ADR-0007)하자는 제안과 비용 추정(진단 1회 US$0.049, 하루 60회 월 US$88.7). ADR 파일은 미수정 |
@@ -28,12 +35,18 @@
 | [adr/](adr/0000-principles.md) | 프로젝트 원칙·공모전 제약(0000)과 결정별 ADR. 0001 Codex 우선, 0002 서버 스택, 0004 중앙 규칙 기반, 0005 접근 모델, 0006 배포 구성, 0008 공개 데모 대본 에이전트, [0009](adr/0009-registered-kinds-and-succession-rules.md) 업무 종류·후속 규칙은 워크스페이스 등록(흐름을 그리지 않는다), [0010](adr/0010-n8n-inbox-and-callback.md) n8n 은 입구·출구이고 판단은 Runloom 이 한다 — 여기까지 확정, 0003 진단 모델은 gpt-4.1 확정, 0007 사용량 한도 대기는 심사 이후 적용 |
 | [presets/nextjs.md](presets/nextjs.md) | 재사용 가능한 스택 프리셋. Next.js 채택을 뜻하지 않음 |
 
+## 문서의 기준과 이력
+
+- 제품 목표는 PRODUCT_BRIEF·PRD의 실서비스 절과 ADR-0011을 따른다. ADR-0009·0010의 부분 대체 범위는 각 문서 상단에 표시했다.
+- CONTRACT·GLOSSARY·UI_GUIDE는 현재 구현을 설명한다. 새 방향의 미구현 필드·화면을 현재 지원하는 것으로 해석하지 않는다.
+- 아래 문서 표의 과거 phase 설명과 각 문서의 이전 MVP 절은 이력이다. 새 제품의 지원 범위를 제한하는 근거로 사용하지 않는다.
+
 ## 이전 자료를 사용할 때
 
 - 보관 문서의 `확정`, `freeze`, `source of truth`, `다음 세션`은 당시 맥락이다. 현재 구현 지시로 적용하지 않는다.
 - 이전 설계의 재사용 여부는 새 제품 범위가 정해진 뒤 판단한다. 보관은 모든 과거 결정의 폐기를 뜻하지 않는다.
 - 실험 결과와 원시 자료는 보존했다. 당시 검증한 사실·한계는 참고할 수 있지만 새 서비스의 구현이나 검증 완료를 뜻하지 않는다.
-- `scripts/execute.py`는 `docs/*.md`와 `docs/adr/*.md`를 비재귀적으로 주입한다. 보관 폴더는 이 자동 주입 대상에서 제외된다. 수동으로 전체 문서를 읽을 때에도 현행 문서와 이력을 구분한다.
+- 루트 AGENTS.md가 매 step에 전달되고, 그 밖의 문서는 각 step의 "읽어야 할 파일"에서 지정한다. 새 실서비스 step은 ADR-0011과 PRD의 실서비스 절을 명시적으로 가리켜야 한다. 수동으로 전체 문서를 읽을 때에도 현행 문서와 이력을 구분한다.
 
 ## 새 문서 작성 순서 — 논의안
 

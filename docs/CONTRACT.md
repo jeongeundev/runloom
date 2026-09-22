@@ -1,5 +1,7 @@
 # 계약 v1 예시집
 
+> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답 계약은 아직 설계 중이며 아래 예시에 포함되지 않는다. 제품 방향 변경만으로 기존 payload나 계약 버전이 바뀌지는 않는다.
+
 갱신일: 2026-09-22 (phase 6-typed-handoff docs-sync)
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
