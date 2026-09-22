@@ -36,6 +36,10 @@
       "status": "completed",
       "blocked_at": "2026-09-21T21:11:54+0900",
       "completed_at": "2026-09-22T02:43:28+0900"
+    },
+    {
+      "dir": "7-n8n-gateway",
+      "status": "pending"
     }
   ]
 }

@@ -1,0 +1,17 @@
+{
+  "project": "workflow",
+  "phase": "7-n8n-gateway",
+  "steps": [
+    { "step": 0, "name": "adr-n8n-gateway", "status": "pending" },
+    { "step": 1, "name": "contracts-inbound", "status": "pending" },
+    { "step": 2, "name": "domain-settlement", "status": "pending" },
+    { "step": 3, "name": "db-source-tokens", "status": "pending" },
+    { "step": 4, "name": "server-inbound-api", "status": "pending" },
+    { "step": 5, "name": "worker-callback", "status": "pending" },
+    { "step": 6, "name": "web-sources-page", "status": "pending" },
+    { "step": 7, "name": "n8n-example", "status": "pending" },
+    { "step": 8, "name": "e2e-n8n", "status": "pending" },
+    { "step": 9, "name": "docs-sync", "status": "pending" },
+    { "step": 10, "name": "n8n-live-check", "status": "pending" }
+  ]
+}
