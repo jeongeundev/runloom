@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 35개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 47개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -27,6 +27,8 @@ from workflow.contracts.v1 import (
     ClaimRequest,
     CodeChangeResult,
     CodeChangeTarget,
+    CodeReviewResult,
+    CommitReviewTarget,
     DiagnosisResult,
     DiagnosisTarget,
     ErrorBody,
@@ -43,11 +45,13 @@ from workflow.contracts.v1 import (
     KindSpec,
     LocalTarget,
     ReviewComment,
+    ReviewFinding,
     RunStatus,
     SelectionRecord,
     SuccessorRule,
     parse_rfc3339_aware,
 )
+from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig, SourceDelivery
 from workflow.server.machine_api import RegistrationRequest
 
 CONTRACT_MD = Path(__file__).resolve().parents[3] / "docs" / "CONTRACT.md"
@@ -65,7 +69,7 @@ _SIGNATURES = [
         ClaimRequest,
     ),
     ("RegistrationRequest", lambda k: {"local_registration_id", "tool"} <= k, RegistrationRequest),
-    ("HandoffBundle", lambda k: "source_execution_id" in k, HandoffBundle),
+    ("HandoffBundle", lambda k: "source_execution_id" in k and "reviewed_commit" not in k, HandoffBundle),
     ("ExecutionEvent", lambda k: {"seq", "type"} <= k, ExecutionEvent),
     ("ArtifactMeta", lambda k: {"kind", "sha256", "size", "contract_version"} <= k, ArtifactMeta),
     (
@@ -73,7 +77,8 @@ _SIGNATURES = [
         lambda k: {"artifact_id", "sha256"} <= k and "contract_version" not in k,
         ArtifactCreated,
     ),
-    ("DiagnosisResult", lambda k: {"outcome", "findings"} <= k, DiagnosisResult),
+    ("DiagnosisResult", lambda k: {"outcome", "findings", "run_id"} <= k, DiagnosisResult),
+    ("CodeReviewResult", lambda k: "reviewed_commit" in k, CodeReviewResult),
     ("CodeChangeResult", lambda k: {"outcome", "base_commit"} <= k, CodeChangeResult),
     ("GenericResult", lambda k: {"outcome", "kind"} <= k, GenericResult),
     ("ReviewComment", lambda k: "decision" in k, ReviewComment),
@@ -84,6 +89,10 @@ _SIGNATURES = [
     ("InboundChainRequest", lambda k: "items" in k, InboundChainRequest),
     ("InboundChainResponse", lambda k: "started" in k, InboundChainResponse),
     ("ChainCallback", lambda k: "human_gate" in k, ChainCallback),
+    ("GitHubSourceConfig", lambda k: "label_filter" in k, GitHubSourceConfig),
+    ("AssigneeBinding", lambda k: "github_user_id" in k, AssigneeBinding),
+    ("GitHubIssueSnapshot", lambda k: "is_pull_request" in k, GitHubIssueSnapshot),
+    ("SourceDelivery", lambda k: "delivery_id" in k, SourceDelivery),
 ]
 
 
@@ -109,7 +118,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 35
+    assert len(FENCED) == 47
     assert len(INLINE) == 8
 
 
@@ -155,8 +164,9 @@ def test_constants():
         "claude_jsonl",
         "claude_stderr",
         "generic_result",
+        "code_review_result",
     )
-    assert len(ARTIFACT_KINDS) == 16
+    assert len(ARTIFACT_KINDS) == 17
 
 
 def test_artifact_kinds_match_contract_md_list():
@@ -511,9 +521,9 @@ def _review_request() -> dict:
 
 
 def test_builtin_kinds_match_concept_table():
-    assert BUILTIN_KIND_NAMES == ("diagnosis", "code_change")
+    assert BUILTIN_KIND_NAMES == ("diagnosis", "code_change", "bug_fix", "code_review")
     assert tuple(k.kind for k in BUILTIN_KINDS) == BUILTIN_KIND_NAMES
-    diagnosis, code_change = BUILTIN_KINDS
+    diagnosis, code_change, bug_fix, code_review = BUILTIN_KINDS
     assert diagnosis == KindSpec(
         kind="diagnosis", label="진단", capability_code="operations.diagnose", scope_key="workflow_id",
         input_kinds=[], output_kind="diagnosis_result",
@@ -524,6 +534,16 @@ def test_builtin_kinds_match_concept_table():
         input_kinds=["diagnosis_result", "evidence"], output_kind="code_change_result",
         outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
     )
+    assert bug_fix == KindSpec(
+        kind="bug_fix", label="버그 수정", capability_code="code.fix", scope_key="repository_id",
+        input_kinds=[], output_kind="code_change_result",
+        outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
+    )
+    assert code_review == KindSpec(
+        kind="code_review", label="커밋 검토", capability_code="code.review", scope_key="repository_id",
+        input_kinds=["code_change_result"], output_kind="code_review_result",
+        outcomes=["approved", "changes_requested", "needs_information"], instructions="", builtin=True,
+    )
 
 
 def test_builtin_rules_match_concept_table():
@@ -531,6 +551,10 @@ def test_builtin_rules_match_concept_table():
         SuccessorRule(
             from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
             handoff_kinds=["diagnosis_result", "evidence"],
+        ),
+        SuccessorRule(
+            from_kind="bug_fix", on_outcomes=["ready_for_review"], to_kind="code_review",
+            handoff_kinds=["code_change_result", "diff", "test_log_after", "verification_log"],
         ),
     )
 
@@ -579,7 +603,7 @@ def test_kind_spec_accepts_empty_input_kinds():
     assert KindSpec.model_validate(_kind_spec(input_kinds=[])).input_kinds == []
 
 
-@pytest.mark.parametrize("output_kind", ["diagnosis_result", "code_change_result"])
+@pytest.mark.parametrize("output_kind", ["diagnosis_result", "code_change_result", "code_review_result"])
 def test_kind_spec_rejects_user_defined_with_builtin_output(output_kind):
     with pytest.raises(ValidationError):
         KindSpec.model_validate(_kind_spec(output_kind=output_kind))
@@ -962,3 +986,316 @@ def test_chain_callback_accepts_null_urls_and_missing_result():
         title="일일 보고서 2026-09-20 09:00 실행 실패", status="완료", status_reason="판정 근거: 14/14",
         outcome=None, summary=None, task_url=None,
     )
+
+
+# --- GitHub 업무 순환 확장 (CONTRACT 13절) -------------------------------------
+
+
+def _request_of(kind: str) -> dict:
+    return next(
+        json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ExecutionRequest and b["kind"] == kind
+    )
+
+
+def _review_result(outcome: str) -> dict:
+    return next(
+        json.loads(json.dumps(b))
+        for b in FENCED
+        if _model_for(b) is CodeReviewResult and b["outcome"] == outcome
+    )
+
+
+def _needs_information_review() -> dict:
+    block = _review_result("approved")
+    block.update(outcome="needs_information", findings=[], missing_information=["재현 조건이 이슈에 없습니다."])
+    return block
+
+
+def test_sections_1_to_12_fixtures_are_unchanged():
+    """추가형 확장 — 13절 이전의 json 블록 수는 phase 7 그대로다."""
+    text = CONTRACT_MD.read_text(encoding="utf-8")
+    before_13 = text.split("## 13. GitHub 업무 순환", 1)[0]
+    assert len(_FENCE.findall(before_13)) == 35
+
+
+def test_builtin_cycle_kinds_equal_contract_md_examples():
+    blocks = {b["kind"]: b for b in FENCED if _model_for(b) is KindSpec and b["builtin"]}
+    assert KindSpec.model_validate(blocks["bug_fix"]) == BUILTIN_KINDS[2]
+    assert KindSpec.model_validate(blocks["code_review"]) == BUILTIN_KINDS[3]
+
+
+def test_builtin_bug_fix_rule_equals_contract_md_example():
+    block = next(b for b in FENCED if _model_for(b) is SuccessorRule and b["from_kind"] == "bug_fix")
+    assert SuccessorRule.model_validate(block) == BUILTIN_RULES[1]
+
+
+def test_artifact_meta_accepts_code_review_result_kind():
+    meta = _first("ArtifactMeta")
+    meta["kind"] = "code_review_result"
+    assert ArtifactMeta.model_validate(meta).kind == "code_review_result"
+
+
+def test_bug_fix_request_roundtrip_with_empty_inputs():
+    """일반 버그 수정은 진단 인계가 없다 — 첫 시도의 입력이 비어도 된다 (code_change 는 여전히 422)."""
+    block = _request_of("bug_fix")
+    assert block["input_artifact_ids"] == []
+    parsed = ExecutionRequest.model_validate(block)
+    assert type(parsed.target) is CodeChangeTarget
+    dumped = parsed.model_dump(mode="json")
+    assert dumped == {**block, "kind_spec": None}
+    assert ExecutionRequest.model_validate(dumped) == parsed
+
+
+def test_bug_fix_request_accepts_rework_inputs():
+    block = _request_of("bug_fix")
+    block["input_artifact_ids"] = ["art-fix-result-001", "art-gh-review-result-001"]
+    assert ExecutionRequest.model_validate(block).input_artifact_ids == block["input_artifact_ids"]
+
+
+def test_code_review_request_roundtrip():
+    block = _request_of("code_review")
+    parsed = ExecutionRequest.model_validate(block)
+    assert parsed.target == CommitReviewTarget(
+        local_registration_id="local-billing-claude", source_execution_id="exec-gh-fix-001",
+        base_commit="5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+        result_commit="8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a",
+    )
+    dumped = parsed.model_dump(mode="json")
+    assert dumped == {**block, "kind_spec": None}
+    assert type(ExecutionRequest.model_validate(dumped).target) is CommitReviewTarget
+
+
+def test_code_review_request_requires_input_artifacts():
+    block = _request_of("code_review")
+    block["input_artifact_ids"] = []
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"local_registration_id": "local-billing"},
+        {"run_id": "daily-0920-0900"},
+        {
+            "local_registration_id": "local-billing", "source_execution_id": "exec-gh-fix-001",
+            "base_commit": "5" * 40, "result_commit": "8" * 40,
+        },
+    ],
+    ids=["local", "diagnosis", "commit-review"],
+)
+def test_bug_fix_request_rejects_other_targets(target):
+    block = _request_of("bug_fix")
+    block["target"] = target
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"local_registration_id": "local-billing-claude"},
+        {"local_registration_id": "l", "base_commit": "5" * 40, "verification_profile_id": "vp-pytest"},
+    ],
+    ids=["local", "code-change"],
+)
+def test_code_review_request_rejects_other_targets(target):
+    block = _request_of("code_review")
+    block["target"] = target
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+def test_existing_kinds_reject_commit_review_target():
+    commit_review = _request_of("code_review")["target"]
+    code_change = _request_of("code_change")
+    code_change["target"] = commit_review
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(code_change)
+    review = _review_request()
+    review["target"] = commit_review
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(review)
+
+
+@pytest.mark.parametrize("profile", [None, "", 7], ids=["null", "empty", "int"])
+def test_bug_fix_request_rejects_bad_verification_profile_reference(profile):
+    """검증 프로필은 로컬 등록에 있는 ID 문자열 참조뿐이다 — 명령·빈 값·다른 타입은 계약에서 거부."""
+    block = _request_of("bug_fix")
+    block["target"]["verification_profile_id"] = profile
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+    del block["target"]["verification_profile_id"]
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+def test_bug_fix_request_rejects_command_in_target():
+    block = _request_of("bug_fix")
+    block["target"]["verification_command"] = "pytest -q"
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate(block)
+
+
+@pytest.mark.parametrize("version", [2, 0, "1"])
+def test_cycle_payloads_reject_other_contract_versions(version):
+    for block in (_request_of("bug_fix"), _request_of("code_review")):
+        block["contract_version"] = version
+        with pytest.raises(ValidationError):
+            ExecutionRequest.model_validate(block)
+    result = _review_result("approved")
+    result["contract_version"] = version
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(result)
+
+
+def test_commit_review_target_rules():
+    good = _request_of("code_review")["target"]
+    CommitReviewTarget.model_validate(good)
+    for bad in (
+        {"result_commit": "8e2a4c6f"},
+        {"base_commit": "Z" * 40},
+        {"source_execution_id": ""},
+        {"local_registration_id": ""},
+        {"result_commit": good["base_commit"]},  # 바뀐 커밋이 없는 검토
+    ):
+        with pytest.raises(ValidationError):
+            CommitReviewTarget.model_validate({**good, **bad})
+    missing = dict(good)
+    del missing["source_execution_id"]
+    with pytest.raises(ValidationError):
+        CommitReviewTarget.model_validate(missing)
+
+
+@pytest.mark.parametrize("outcome", ["changes_requested", "approved"])
+def test_code_review_result_roundtrip_in_contract_md_field_order(outcome):
+    block = _review_result(outcome)
+    parsed = CodeReviewResult.model_validate(block)
+    dumped = parsed.model_dump(mode="json")
+    assert dumped == block
+    assert list(dumped) == list(block)
+    assert CodeReviewResult.model_validate(dumped) == parsed
+
+
+def test_code_review_result_needs_information_accepted():
+    parsed = CodeReviewResult.model_validate(_needs_information_review())
+    assert parsed.missing_information == ["재현 조건이 이슈에 없습니다."]
+
+
+@pytest.mark.parametrize("outcome", ["rejected", "ready_for_review", "Approved", "", None])
+def test_code_review_result_rejects_unknown_outcome(outcome):
+    block = _review_result("approved")
+    block["outcome"] = outcome
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(block)
+
+
+def test_changes_requested_requires_blocking_finding():
+    block = _review_result("changes_requested")
+    block["findings"] = [f for f in block["findings"] if f["severity"] != "blocking"]
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(block)
+
+
+def test_approved_rejects_blocking_finding_but_allows_non_blocking():
+    block = _review_result("approved")
+    block["findings"] = [{"severity": "non_blocking", "path": None, "line": None, "message": "사소함"}]
+    CodeReviewResult.model_validate(block)
+    block["findings"].append({"severity": "blocking", "path": "a.py", "line": 1, "message": "막힘"})
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(block)
+
+
+def test_needs_information_requires_missing_information():
+    block = _needs_information_review()
+    block["missing_information"] = []
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(block)
+
+
+@pytest.mark.parametrize("outcome", ["approved", "changes_requested"])
+def test_decided_review_rejects_missing_information(outcome):
+    block = _review_result(outcome)
+    block["missing_information"] = ["무언가 없음"]
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(block)
+
+
+def test_code_review_result_rejects_bad_fields():
+    for bad in (
+        {"reviewed_commit": "8e2a4c6f"},
+        {"source_execution_id": ""},
+        {"artifact_ids": ["a", "a"]},
+        {"missing_information": [""]},
+    ):
+        with pytest.raises(ValidationError):
+            CodeReviewResult.model_validate({**_review_result("approved"), **bad})
+
+
+@pytest.mark.parametrize("field", ["agent_id", "assignee", "command", "workdir", "local_path", "merge"])
+def test_review_and_fix_results_do_not_carry_authority_fields(field):
+    """모델이 담당자·셸 명령·로컬 경로를 출력해도 계약 필드가 아니다 — 권한으로 해석되지 않고 거부된다."""
+    review = _review_result("approved")
+    review[field] = "x"
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(review)
+    finding = _review_result("changes_requested")
+    finding["findings"][0][field] = "x"
+    with pytest.raises(ValidationError):
+        CodeReviewResult.model_validate(finding)
+    fix = next(
+        json.loads(json.dumps(b))
+        for b in FENCED
+        if _model_for(b) is CodeChangeResult and b["outcome"] == "ready_for_review"
+    )
+    fix[field] = "x"
+    with pytest.raises(ValidationError):
+        CodeChangeResult.model_validate(fix)
+
+
+def test_review_finding_path_is_display_text_only():
+    finding = ReviewFinding.model_validate(
+        {"severity": "blocking", "path": "../../etc/passwd; rm -rf /", "line": 3, "message": "m"}
+    )
+    assert finding.path == "../../etc/passwd; rm -rf /"
+
+
+def test_review_finding_rules():
+    good = {"severity": "blocking", "path": "billing/coupon.py", "line": 42, "message": "m"}
+    ReviewFinding.model_validate(good)
+    for bad in (
+        {"severity": "critical"},
+        {"line": 0},
+        {"line": "42"},
+        {"path": None},  # 줄 번호는 파일이 있을 때만
+        {"message": ""},
+    ):
+        with pytest.raises(ValidationError):
+            ReviewFinding.model_validate({**good, **bad})
+
+
+def test_claim_request_supported_kinds_optional_for_old_connectors():
+    old = _first("ClaimRequest")
+    assert "supported_kinds" not in old
+    assert ClaimRequest.model_validate(old).supported_kinds is None
+    new = next(b for b in FENCED if _model_for(b) is ClaimRequest and "supported_kinds" in b)
+    parsed = ClaimRequest.model_validate(new)
+    assert parsed.supported_kinds == ["code_change", "bug_fix", "code_review"]
+    assert parsed.model_dump(mode="json") == new
+
+
+@pytest.mark.parametrize(
+    "kinds", [["bug_fix", "bug_fix"], ["Bug Fix"], ["bug-fix"], "bug_fix"], ids=["dup", "space", "dash", "str"]
+)
+def test_claim_request_rejects_bad_supported_kinds(kinds):
+    block = _first("ClaimRequest")
+    block["supported_kinds"] = kinds
+    with pytest.raises(ValidationError):
+        ClaimRequest.model_validate(block)
+
+
+@pytest.mark.parametrize("kind", ["bug_fix", "code_review", "diagnosis", "code_change"])
+def test_user_defined_kind_cannot_take_builtin_name(kind):
+    """내장 이름은 예약어다 — 사용자 정의 `bug_fix` 가 있으면 ExecutionRequest 의 target 규칙과 어긋난다."""
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(kind=kind))

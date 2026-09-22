@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-23 (phase 8 step 0 — ADR-0014 GitHub 업무 순환 계약 추가, 미구현)
+갱신일: 2026-09-23 (phase 8 step 1 — GitHub 업무 순환 계약 모델 구현, 동작 미구현)
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -42,9 +42,11 @@ n8n 입구·callback은 현재 계약을 유지한다. n8n이 더 많은 실행�
 
 각 단계는 `service`에서 분기하고 TDD를 적용한다. DB 변경은 기존 데이터 보존과 마이그레이션을 설계한 뒤 수행하며, 공개 데모의 초기화 배포 방식을 실서비스에 자동 적용하지 않는다. 현 단계에서는 계약 v1 예시·코드 식별자·스키마 버전을 바꾸지 않는다.
 
-## GitHub 업무 순환 — phase 8 계약 (2026-09-23 확정, 미구현)
+## GitHub 업무 순환 — phase 8 계약 (2026-09-23 확정, 계약 모델만 구현)
 
-[ADR-0014](adr/0014-github-task-cycle.md)를 따른다. 위 구현 순서 1~4를 GitHub Issues 버그 수정 → 커밋 검토 한 유형으로 구체화한 것이며 아래 이름은 모두 **계획**이다(구현 step 표기). 예시 payload 는 [CONTRACT](CONTRACT.md) 13절(`json contract-pending`). 계약 버전은 1 그대로이고 기존 v1 payload 는 바뀌지 않는다.
+[ADR-0014](adr/0014-github-task-cycle.md)를 따른다. 위 구현 순서 1~4를 GitHub Issues 버그 수정 → 커밋 검토 한 유형으로 구체화한 것이며 아래 이름은 구현 step 표기를 따른다. 예시 payload 는 [CONTRACT](CONTRACT.md) 13절. 계약 버전은 1 그대로이고 기존 v1 payload 는 바뀌지 않는다.
+
+step 1 구현 상태: 위치가 `contracts/`(1) 인 모델은 있다 — `BUILTIN_KIND_NAMES`·`BUILTIN_KINDS` 4종, `BUILTIN_RULES` 에 `bug_fix → code_review`, 산출물 kind `code_review_result`, `ExecutionRequest` 의 종류별 target 규칙(`bug_fix` 는 `CodeChangeTarget`·입력 비어도 됨, `code_review` 는 `CommitReviewTarget`·입력 필수). 새 두 종류는 아직 세션에 seed 하지 않는다(`adapters/repo._SEEDED_KIND_NAMES` — 실행·판정 경로가 없어 만들면 끝나지 않는 Task 가 된다). 기존 세션·새 세션 seed 는 step 4 마이그레이션에서 연다. 내장 이름은 예약어다 — 계약은 사용자 정의 `KindSpec` 이 내장 이름이면 거부하고, 화면 `POST /kinds` 는 seed 여부와 관계없이 409 `kind_exists`.
 
 ### 현재 코드와의 간극 (step 0 확인)
 

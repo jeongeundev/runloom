@@ -1,8 +1,8 @@
 # 계약 v1 예시집
 
-> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절에 `json contract-pending` 으로만 있다(미구현 — fixture 테스트 대상 아님). 1~12절 payload 와 계약 버전은 바뀌지 않는다.
+> 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고(서버·연결 프로그램 동작은 아직 없음), 13.9 오류 본문만 `json contract-pending` 이다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
-갱신일: 2026-09-22 (phase 6-typed-handoff docs-sync)
+갱신일: 2026-09-23 (phase 8 step 1 — 13절 모델 구현)
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -216,7 +216,7 @@
 
 본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
-산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`.
+산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`.
 
 로컬 도구의 원시 로그 산출물 — 생산자와 내용:
 
@@ -225,6 +225,7 @@
 | `codex_jsonl` / `codex_stderr` | 연결 프로그램 Codex 어댑터 | `codex exec --json` 의 원문 stdout(JSONL) / stderr. 업로드 전 `wfc_`·`sk-` 마스킹 적용 |
 | `claude_jsonl` / `claude_stderr` | 연결 프로그램 Claude 어댑터 | `claude -p --output-format json` 의 원문 stdout / stderr. 같은 마스킹 적용 |
 | `generic_result` | 연결 프로그램 | 사용자 정의 종류의 결과 봉투(`GenericResult`, 11절). 내장 종류의 `diagnosis_result`·`code_change_result` 와 구분 |
+| `code_review_result` | 연결 프로그램 | 내장 `code_review` 의 결과 봉투(`CodeReviewResult`, 13.4절) |
 
 ## 5. 진단 결과 — `ready_for_handoff` 전체
 
@@ -513,7 +514,7 @@
 }
 ```
 
-위 JSON 은 `KindSpec.model_dump_json()` 의 필드 순서 그대로다(기본값 없음 — 아홉 필드 모두 필수). `kind` 는 `^[a-z][a-z0-9_]{1,39}$`, `capability_code` 는 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`, `scope_key`·`outcomes` 항목은 `^[a-z][a-z0-9_]{0,39}$`. 등록은 화면 `POST /kinds`(폼 — `output_kind`·`builtin` 은 서버가 `generic_result`·`false` 로 고정, `capability_code` 를 비우면 `kind`): 이미 있는 `kind` 재등록은 `409 kind_exists`, 내장 삭제는 `409 kind_protected`, 업무나 규칙이 참조하는 종류 삭제는 `409 kind_in_use`, `input_kinds` 에 4절 목록 밖의 값·`input_kinds`/`outcomes` 중복·패턴 위반·빈 라벨·(계약 직접 사용 시) 사용자 정의인데 `output_kind` 가 `generic_result` 가 아니거나 내장 이름이 아닌데 `builtin: true` 면 `422 invalid_field`.
+위 JSON 은 `KindSpec.model_dump_json()` 의 필드 순서 그대로다(기본값 없음 — 아홉 필드 모두 필수). `kind` 는 `^[a-z][a-z0-9_]{1,39}$`, `capability_code` 는 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`, `scope_key`·`outcomes` 항목은 `^[a-z][a-z0-9_]{0,39}$`. 등록은 화면 `POST /kinds`(폼 — `output_kind`·`builtin` 은 서버가 `generic_result`·`false` 로 고정, `capability_code` 를 비우면 `kind`): 이미 있는 `kind` 재등록은 `409 kind_exists`, 내장 삭제는 `409 kind_protected`, 업무나 규칙이 참조하는 종류 삭제는 `409 kind_in_use`, `input_kinds` 에 4절 목록 밖의 값·`input_kinds`/`outcomes` 중복·패턴 위반·빈 라벨·(계약 직접 사용 시) 사용자 정의인데 `output_kind` 가 `generic_result` 가 아니거나 내장 이름이 아닌데 `builtin: true` 거나 내장 이름(`BUILTIN_KIND_NAMES` — 13절의 `bug_fix`·`code_review` 포함)인데 `builtin: false` 면 `422 invalid_field`. 화면에서 내장 이름을 등록하면 세션에 seed 됐는지와 관계없이 `409 kind_exists`.
 
 ### 11.2 `SuccessorRule`
 
@@ -736,13 +737,13 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 
 ## 13. GitHub 업무 순환 — 확장 계약 (contract-pending)
 
-[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". **아직 구현되지 않은 예시**다. 펜스가 `json contract-pending` 이라 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽지 않는다. 모델을 구현한 step 이 해당 블록만 일반 `json` 펜스로 바꾸고 키 서명을 테스트에 추가한다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
+[ADR-0014](adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "GitHub 업무 순환". 13.1~13.8 의 모델은 step 1 에서 구현했다 — `contracts/v1.py`(종류·규칙·target·`CodeReviewResult`·`ClaimRequest.supported_kinds`)와 `contracts/github.py`(`GitHubSourceConfig`·`AssigneeBinding`·`GitHubIssueSnapshot`·`SourceDelivery`). 이 블록들은 계약 fixture 테스트(`tests/workflow/contracts/test_v1.py`)가 읽는다. 13.9 오류 본문은 그 오류를 내는 서버 경로가 생기는 step 에서 일반 `json` 펜스로 바꾼다 — 그때까지 `json contract-pending` 이라 테스트가 읽지 않는다. 모델만 있고 서버·연결 프로그램·워커 동작(수집·판정·후속·반영)은 아직 없다. 계약 버전은 1 그대로이며 1~12절 payload 는 바뀌지 않는다 — 아래는 모두 추가형이다.
 
 ### 13.1 새 내장 종류와 규칙
 
 `bug_fix` — 진단 인계 없이 이슈 요청과 등록된 검증 프로필로 고친다. 결과 봉투는 7절 `CodeChangeResult` 재사용, 필수 산출물에서 `report_output` 이 빠진다.
 
-```json contract-pending
+```json
 {
   "kind": "bug_fix",
   "label": "버그 수정",
@@ -758,7 +759,7 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 
 `code_review` — 결과 커밋을 직접 읽는다. `output_kind` 는 새 값 `code_review_result`.
 
-```json contract-pending
+```json
 {
   "kind": "code_review",
   "label": "커밋 검토",
@@ -772,7 +773,7 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 }
 ```
 
-```json contract-pending
+```json
 { "from_kind": "bug_fix", "on_outcomes": ["ready_for_review"], "to_kind": "code_review", "handoff_kinds": ["code_change_result", "diff", "test_log_after", "verification_log"] }
 ```
 
@@ -780,7 +781,7 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 
 target 은 2절 `CodeChangeTarget` 과 같은 모양이다. `request` 는 이슈 스냅샷(제목·본문·링크)을 `task_revision` 에 고정한 문자열이며 명령·경로로 해석하지 않는다. 첫 시도는 입력이 없어도 된다(`code_change` 는 여전히 비면 422). 재작업 시도는 8절처럼 이전 `code_change_result` 와 `code_review_result` 가 입력에 붙고 `base_commit` 은 이전 `result_commit` 이다.
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-gh-fix-001",
@@ -802,7 +803,7 @@ target 은 2절 `CodeChangeTarget` 과 같은 모양이다. `request` 는 이슈
 
 target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한다. 연결 프로그램은 같은 로컬 등록 저장소에서 `result_commit` 의 깨끗한 체크아웃을 만들어 읽기 전용으로 검토하고, 커밋이 없으면 실패 코드 `commit_missing` 이다.
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-gh-review-001",
@@ -825,7 +826,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 
 `art-gh-review-result-001`(kind `code_review_result`). `reviewed_commit` 은 target `result_commit` 과 같아야 하고 중앙은 그것이 수정 Task 의 최신 결과 커밋인지 다시 본다(아니면 `stale_review`). `changes_requested` 는 `blocking` 지적이 1개 이상, `approved` 는 0개, `needs_information` 은 `missing_information` 이 비어 있지 않아야 한다. `path` 는 표시용 문자열이다.
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-gh-review-001",
@@ -843,7 +844,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 }
 ```
 
-```json contract-pending
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-gh-review-002",
@@ -862,7 +863,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 
 `supported_kinds` 는 선택(기본 null)이다. null 이면 구버전 연결 프로그램으로 보고 내장 중 `code_change` 와 사용자 정의 종류만 배정한다. 서버는 마지막 선언을 저장해 준비 판정의 `executor_outdated` 에 쓴다. 구버전 서버는 이 필드를 422 로 거부하므로 서버를 먼저 올린다.
 
-```json contract-pending
+```json
 { "contract_version": 1, "connector_id": "conn-mac-01", "supported_kinds": ["code_change", "bug_fix", "code_review"] }
 ```
 
@@ -870,7 +871,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 
 `GitHubSourceConfig`. 토큰 필드는 없다 — 값은 서버 환경변수 `WORKFLOW_GITHUB_TOKEN` 에만 있고, `repository_full_name` 은 `WORKFLOW_GITHUB_REPOS` 에 있어야 한다(아니면 422 `repository_not_allowed`). `label_filter` 와 `selected_issue_numbers` 가 둘 다 비면 422.
 
-```json contract-pending
+```json
 {
   "source_id": "ghs-1a2b3c4d",
   "repository_full_name": "acme/billing",
@@ -889,7 +890,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 
 `AssigneeBinding` — GitHub 사용자 숫자 ID 로 잇는다(`login` 은 바뀔 수 있어 표시용).
 
-```json contract-pending
+```json
 { "source_id": "ghs-1a2b3c4d", "github_user_id": 5812345, "github_login": "kim-dev", "agent_id": "agent-codex-mac" }
 ```
 
@@ -897,7 +898,7 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
 
 GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` 항목은 업무로 받지 않는다.
 
-```json contract-pending
+```json
 {
   "repository_id": 700112233,
   "repository_full_name": "acme/billing",
@@ -920,7 +921,7 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 
 댓글 POST 뒤 응답을 잃은 상태. 다음 tick 은 재POST 전에 이슈 댓글에서 marker `<!-- runloom:task=task-gh-41 -->` 를 찾는다.
 
-```json contract-pending
+```json
 {
   "delivery_id": "dlv-9f8e7d6c",
   "source_id": "ghs-1a2b3c4d",

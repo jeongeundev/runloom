@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "cycle-contracts",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-23T03:27:24+0900",
+      "summary": "contracts/v1.py 확장: CommitReviewTarget(base≠result)·ReviewFinding·CodeReviewResult(changes_requested↔blocking 1+·approved↔blocking 0·needs_information↔missing_information)·ClaimRequest.supported_kinds(선택, 중복 거부)·산출물 kind code_review_result(17종)·BUILTIN_KIND_NAMES/KINDS 4종·BUILTIN_RULES bug_fix→code_review·ExecutionRequest 종류별 target(bug_fix=CodeChangeTarget 입력 비어도 됨, code_review=CommitReviewTarget 입력 필수)·사용자 정의 KindSpec 의 내장 이름 거부. contracts/github.py 신설: GitHubSourceConfig(토큰 필드 없음, label_filter·selected 둘 다 비면 거부, max_rework_rounds 0~3 기본 1)·AssigneeBinding·GitHubIssueSnapshot(+snapshot_digest)·SourceDelivery(delivered→comment_id). CONTRACT 13.1~13.8 을 json 펜스로 전환(47블록, 1~12절 35블록 불변), 13.9 오류 본문은 서버 경로가 생길 때까지 pending. 결정: 새 두 종류는 세션에 아직 seed 하지 않음(adapters/repo._SEEDED_KIND_NAMES — 실행·판정 경로 없음), 웹 POST /kinds 는 내장 이름을 seed 여부와 무관하게 409 kind_exists. 검증: pytest 1858 passed/36 skipped, ruff 통과. 다음 주의: step 4 가 _SEEDED_KIND_NAMES 게이트를 풀고 기존 세션 seed·이름 충돌(기존 사용자 정의 bug_fix/code_review 행은 이제 KindSpec 검증 실패) 처리; connector/runner.py·worker.py 의 `kind in BUILTIN_KIND_NAMES` 분기는 새 종류를 code_change 결과 경로로 보내므로 step 8~10 에서 BUILTIN_POLICIES 로 교체; 연결 프로그램은 아직 supported_kinds 를 보내지 않음(null=구버전).",
+      "completed_at": "2026-09-23T03:41:41+0900"
     },
     {
       "step": 2,

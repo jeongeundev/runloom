@@ -41,6 +41,7 @@ from workflow.adapters.errors import (
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
+    BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
     ArtifactMeta,
     Capability,
@@ -1245,6 +1246,8 @@ def kinds_create(
     """사용자 정의 종류. `output_kind` 는 항상 `generic_result`(내장 결과 봉투는 검증기가 딸려 있다), `builtin` 은 False.
     능력 코드를 비우면 종류 이름과 같다 (ARCHITECTURE "봉투와 내장 값")."""
     kind = kind.strip()
+    if kind in BUILTIN_KIND_NAMES:  # 세션에 아직 seed 되지 않은 내장 이름도 예약어다
+        raise PageError(409, "kind_exists", f"종류 {kind} 은 이미 등록돼 있습니다.", field="kind")
     try:
         spec = KindSpec.model_validate({
             "kind": kind,

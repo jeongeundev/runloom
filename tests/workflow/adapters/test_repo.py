@@ -1078,14 +1078,17 @@ def _to_result_ready(conn, store, execution_id: str, kind: str = "diagnosis_resu
 
 
 def test_create_session_seeds_builtin_kinds_and_rule_per_session(conn):
+    """phase 8 의 bug_fix·code_review 와 그 규칙은 실행 경로가 생기기 전까지 seed 하지 않는다."""
+    seeded_kinds = [spec for spec in BUILTIN_KINDS if spec.kind in ("diagnosis", "code_change")]
     repo.create_session(conn, SESSION, NOW)
-    assert repo.list_kinds(conn, SESSION) == list(BUILTIN_KINDS)
+    assert repo.list_kinds(conn, SESSION) == seeded_kinds
     rules = repo.list_rules(conn, SESSION)
-    assert [rule for _, rule in rules] == list(BUILTIN_RULES)
+    assert [rule for _, rule in rules] == [BUILTIN_RULES[0]]
     assert all(rule_id.startswith("rule-") for rule_id, _ in rules)
+    assert repo.get_kind(conn, SESSION, "bug_fix") is None and repo.get_kind(conn, SESSION, "code_review") is None
     assert repo.list_kinds(conn, OTHER_SESSION) == [] and repo.list_rules(conn, OTHER_SESSION) == []
     repo.create_session(conn, OTHER_SESSION, LATER)
-    assert repo.list_kinds(conn, OTHER_SESSION) == list(BUILTIN_KINDS)
+    assert repo.list_kinds(conn, OTHER_SESSION) == seeded_kinds
     assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
     assert repo.get_kind(conn, SESSION, "diagnosis") == BUILTIN_KINDS[0]
     assert repo.get_kind(conn, SESSION, "review") is None

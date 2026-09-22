@@ -88,14 +88,22 @@ def _require_rowcount(cursor: sqlite3.Cursor, what: str) -> None:
 # --- 세션·운영자·에이전트 ---------------------------------------------------
 
 
+# 세션에 seed 하는 내장 종류. phase 8 의 `bug_fix`·`code_review` 는 계약만 있고 실행·판정 경로(step 8~10)와
+# 기존 세션 마이그레이션(step 4)이 아직 없어, 지금 seed 하면 만들 수는 있지만 끝나지 않는 Task 가 생긴다.
+_SEEDED_KIND_NAMES = ("diagnosis", "code_change")
+
+
 def create_session(conn: Connection, session_id: str, now: str) -> None:
-    """세션 생성과 함께 내장 종류(`BUILTIN_KINDS`)·내장 규칙(`BUILTIN_RULES`)을 이 세션에 seed 한다 (ADR-0009)."""
+    """세션 생성과 함께 내장 종류(`BUILTIN_KINDS`)·내장 규칙(`BUILTIN_RULES`)을 이 세션에 seed 한다 (ADR-0009).
+    `_SEEDED_KIND_NAMES` 밖의 종류와 그 종류를 잇는 규칙은 아직 넣지 않는다."""
     with _tx(conn):
         conn.execute("INSERT INTO sessions (session_id, created_at) VALUES (?, ?)", (session_id, now))
         for spec in BUILTIN_KINDS:
-            _insert_kind_row(conn, session_id, spec, now)
+            if spec.kind in _SEEDED_KIND_NAMES:
+                _insert_kind_row(conn, session_id, spec, now)
         for rule in BUILTIN_RULES:
-            _insert_rule_row(conn, session_id, rule, now)
+            if {rule.from_kind, rule.to_kind} <= set(_SEEDED_KIND_NAMES):
+                _insert_rule_row(conn, session_id, rule, now)
 
 
 def get_session(conn: Connection, session_id: str) -> Row | None:

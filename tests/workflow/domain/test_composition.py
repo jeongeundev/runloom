@@ -8,7 +8,7 @@ from workflow.domain.composition import ChainPlan, PlanNode, Standalone, compose
 from workflow.domain.selection import Candidate
 from workflow.domain.task_sources import Issue
 
-DIAGNOSIS, CODE_CHANGE = BUILTIN_KINDS
+DIAGNOSIS, CODE_CHANGE = BUILTIN_KINDS[:2]
 
 DIAGNOSE = Capability(code="operations.diagnose", scope={"workflow_id": "daily-report"})
 MODIFY = Capability(code="code.modify", scope={"repository_id": "demo-report-repo"})

@@ -3,7 +3,7 @@
 from workflow.contracts.v1 import BUILTIN_KINDS, KindSpec
 from workflow.domain.completion import Criterion, criteria_template, merge_criteria
 
-DIAGNOSIS, CODE_CHANGE = BUILTIN_KINDS
+DIAGNOSIS, CODE_CHANGE = BUILTIN_KINDS[:2]
 REVIEW = KindSpec(
     kind="review", label="검토", capability_code="review", scope_key="repository_id",
     input_kinds=["diff", "code_change_result"], output_kind="generic_result",

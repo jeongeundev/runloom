@@ -1517,6 +1517,13 @@ def test_register_kind_duplicate_and_builtin_name_409(web):
     assert builtin.status_code == 409 and "kind_exists" in builtin.text
 
 
+@pytest.mark.parametrize("kind", ["bug_fix", "code_review"])
+def test_register_kind_with_unseeded_builtin_name_409(web, kind):
+    """phase 8 내장 이름은 세션에 아직 seed 되지 않았어도 예약어다 — 사용자 정의로 가로챌 수 없다."""
+    response = web.post("/kinds", data=kind_form(kind=kind, input_kinds=[]), follow_redirects=False)
+    assert response.status_code == 409 and "kind_exists" in response.text
+
+
 def test_register_rule_appears_as_one_line(web, conn, settings):
     register_kind(web)
     register_rule(web)

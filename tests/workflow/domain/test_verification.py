@@ -48,7 +48,7 @@ DEMO_CHECKS = (
 def contract_results() -> tuple[dict, dict]:
     """CONTRACT.md 의 DiagnosisResult 블록 2개: (5절 ready_for_handoff, 6절 needs_information)."""
     blocks = [json.loads(m) for m in _FENCE.findall(CONTRACT_MD.read_text(encoding="utf-8"))]
-    results = [b for b in blocks if {"outcome", "findings"} <= set(b)]
+    results = [b for b in blocks if {"outcome", "findings", "run_id"} <= set(b)]
     assert [r["outcome"] for r in results] == ["ready_for_handoff", "needs_information"]
     return results[0], results[1]
 
