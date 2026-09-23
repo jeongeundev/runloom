@@ -133,10 +133,11 @@
     {
       "step": 16,
       "name": "github-live",
-      "status": "blocked",
+      "status": "completed",
       "started_at": "2026-09-23T06:39:49+0900",
-      "blocked_reason": "실연동에 필요한 운영자 값이 없음(2026-09-23 확인): WORKFLOW_GITHUB_TOKEN·WORKFLOW_GITHUB_REPOS 환경변수 미설정, 테스트 저장소(owner/name)·대상 이슈 번호 또는 라벨+start_at·해당 이슈 댓글 생성/수정 허가·fine-grained PAT(그 저장소만, Issues RW·Metadata R, 짧은 만료, 검증 뒤 폐기 여부)·운영자 Mac 로컬 클론 경로+깨끗한 기준 브랜치+검증 명령·수정/검토 도구(Codex/Claude)와 계정·허용 비용 상한·max_rework_rounds·종료 후 정리 방침(댓글·task/<id> 브랜치·소스·토큰) 미지정. gh CLI 로그인 토큰(OAuth, 넓은 권한)은 권한 확대라 사용하지 않음. docs/github/README.md '실연동 체크리스트 — step 16' 값을 정한 뒤 재실행. 실제 GitHub 쓰기·유료 호출·코드 변경 없음.",
-      "blocked_at": "2026-09-23T06:41:39+0900"
+      "blocked_at": "2026-09-23T06:41:39+0900",
+      "completed_at": "2026-09-23T10:05:00+0900",
+      "summary": "실제 GitHub(jeongeundev/runloom-live-test, 비공개)·실제 claude 2.1.280 으로 업무 순환 1회 통과. 버그 이슈 2건 접수 → 같은 로컬 등록이라 순차 착수(repository_busy) → 재현 테스트 선작성·수정(커밋 aa9dd40·95b642d) → 판정 passed(test_before_failed exit 1, verification_passed exit 0) → code_review 2건 자동 생성 → 실제 Claude 가 approved 제출 → 이슈마다 marker 댓글 1개 POST 후 body_revision 1→3 을 PATCH 로 갱신. 순환 본체 09:35:58~09:37:57 KST(약 2분), 사람 조작 0회. 기준 브랜치 main=c204e0db8005 불변, 원격에 task 브랜치 없음(push·PR·merge·이슈 종료 없음), 이슈 둘 다 open. 독립 검증: 결과 커밋에서 11·12 passed, base 에 Agent 테스트만 얹으면 새 2·3개만 실패. 비용 CLI 보고 합계 약 $1.19. 토큰은 DB·산출물·로그·댓글·테스트 저장소에 0건. 미관찰: changes_requested 재작업(두 검토 모두 승인), 담당자 없음/복수·위임 밖·사람 응답 후 재개·POST 유실 조정(대역 e2e 에만), v4→v5 마이그레이션(DB 신규 생성), 실제 Codex, 비 Python 저장소, 브라우저 JS. 제품 코드 결함 없음·무변경. 기록은 docs/VERIFICATION_LOG.md 실연동 절, ARCHITECTURE 검증 순서 8번, docs/github/README.md 10절."
     }
   ],
   "created_at": "2026-09-23T03:18:11+0900"

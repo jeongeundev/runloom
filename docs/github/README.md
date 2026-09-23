@@ -2,7 +2,7 @@
 
 작성일: 2026-09-23 (phase 8 step 15). 계약은 [ADR-0014](../adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](../ARCHITECTURE.md#github-업무-순환--phase-8-계약), 예시 payload 는 [CONTRACT](../CONTRACT.md) 13절, 용어는 [GLOSSARY](../GLOSSARY.md).
 
-상태: `feat-8-github-task-cycle` 에 구현되어 있다(`service` 미병합·미배포). **대역(MockTransport·127.0.0.1 가짜 GitHub·가짜 codex·임시 Git 저장소)으로만 검증했고 실제 GitHub·실제 Agent 로는 아직 한 번도 돌리지 않았다** — 실연동은 phase 8 step 16 이며 아래 [실연동 체크리스트](#실연동-체크리스트--step-16)의 값을 운영자가 정해야 시작한다. 공개 데모(`main`·VM)는 이 기능을 쓰지 않는다 — 두 환경변수를 비워 둔다.
+상태: `service` 에 병합되어 있다(미배포). 대역(MockTransport·127.0.0.1 가짜 GitHub·가짜 codex·임시 Git 저장소) 검증에 이어 **2026-09-23 실제 GitHub·실제 Claude 로 1회 통과했다**(step 16, `claude` 2.1.280, 비공개 테스트 저장소의 버그 이슈 2건 → 수정 → 검토 승인 → 원본 댓글, 사람 조작 0회) — [VERIFICATION_LOG 실연동 절](../VERIFICATION_LOG.md). **다만 `changes_requested` 재작업 경로는 실연동에서 관찰되지 않았다**(두 검토가 모두 승인). 다른 저장소로 시작할 때는 아래 [실연동 체크리스트](#실연동-체크리스트--step-16)의 값을 운영자가 먼저 정한다. 공개 데모(`main`·VM)는 이 기능을 쓰지 않는다 — 두 환경변수를 비워 둔다.
 
 ## 무엇을 하고 무엇을 하지 않나
 
@@ -140,13 +140,24 @@ phase 8 은 `SCHEMA_VERSION` 을 4 → 5 로 올리며 **처음으로 데이터 
 
 대역으로 확인한 것: GitHub REST 요청·오류 분류·페이지·ETag(MockTransport), 수집 범위·중복·편집·닫힘, 준비 판정 15종, 후속 결정·재작업 상한, 사람 요청·응답 멱등, 댓글 outbox·marker 조정, 화면·API 권한, 그리고 `tests/e2e/test_github_cycle.py` 13개 — 127.0.0.1 가짜 GitHub + 실제 `HttpGitHubClient` + uvicorn 중앙 + 하위 프로세스 연결 프로그램 + 가짜 `codex` + 임시 Git 저장소 2개 + 실제 pytest 검증으로 A~G 전체 순환(수정 → 검토 수정 요청 → 재작업 → 승인, 상한 0 사람 요청, 담당 2명·위임 밖 응답 후 재개, POST 응답 유실 조정, 5xx 수집 실패, 재시작 멱등, 토큰 비노출).
 
-실제로 확인하지 않은 것(step 16 전까지 미검증):
+2026-09-23 실제 연동에서 확인한 것(step 16 — [VERIFICATION_LOG 실연동 절](../VERIFICATION_LOG.md)):
 
-- 실제 `api.github.com` 호출 — fine-grained PAT 권한이 위 표로 충분한지, 실제 rate limit·secondary rate limit 헤더, 실제 Link·ETag 동작, 실제 댓글 목록 페이지네이션.
-- 실제 Codex·Claude 가 `bug_fix` 프롬프트로 재현 테스트를 먼저 쓰고 고치는지, 실제 검토 도구가 git worktree 체크아웃에서 `REVIEW_RESULT_SCHEMA` 로 답하는지(가짜 실행 파일로만 확인).
+- 실제 `api.github.com` — fine-grained PAT(Issues RW·Metadata R)로 수집·댓글 POST·PATCH 가 되고 그 밖의 쓰기는 필요하지 않았다. rate limit 5000/h 는 근처에도 가지 않았다(요청 10여 건).
+- 실제 `claude` 2.1.280 이 `bug_fix` 에서 재현 테스트를 먼저 쓰고 고쳤다 — 그 테스트가 base 커밋에서만 실패함을 제품 판정과 별개로 직접 확인했다. 실제 검토 도구가 결과 커밋을 읽고 `REVIEW_RESULT_SCHEMA` 대로 `approved` 를 제출했다.
+- 이슈마다 댓글 1개가 만들어져 `body_revision` 1→3 이 같은 댓글 PATCH 로 반영됐다. 기준 브랜치·원격은 변하지 않았고 이슈는 열린 채였다.
+- 비용은 CLI 보고값으로 4회 합계 약 $1.19(수정 $0.34·$0.32, 검토 $0.32·$0.21).
+
+여전히 확인하지 않은 것:
+
+- **`changes_requested` → 재작업 → 재검토** — 실제 검토가 두 번 다 승인해서 관찰되지 않았다. 대역 e2e 에만 있다.
+- 담당자 없음/복수, 위임 밖, 사람 요청·응답 후 재개, 이슈 편집·닫힘, POST 응답 유실 조정 — 모두 대역 e2e 에만 있다.
+- 실제 rate limit·secondary rate limit 헤더, 실제 댓글 목록 페이지네이션(댓글이 1개뿐이었다).
+- v4 → v5 데이터 보존 마이그레이션 — 실연동 DB 는 새로 만들어져 처음부터 v5 였다.
+- 실제 Codex — 수정·검토 모두 Claude 로 돌렸다.
 - 비 Python 저장소의 재현 테스트 인식.
-- 브라우저에서 `data-json-action` 스크립트(서버 렌더 테스트로만 확인).
-- 실제 모델 비용.
+- 브라우저에서 `data-json-action` 스크립트(서버 렌더만 확인).
+
+실제 Link·ETag 동작은 수집 2회로는 페이지·304 경로를 밟지 않았으므로 대역 확인에 머문다.
 
 ## 11. 계획과 구현의 차이
 

@@ -257,3 +257,44 @@ Claude 의 summary(원문은 `evidence/C_결과_봉투.json`): 진단 원문이 
 ### 발견한 결함과 고친 파일
 
 - step 15 재실행에서 새 결함 없음. step 14 에서 기존 `tests/e2e/test_scenario.py` test_22~28 의 기대값을 내장 4종·규칙 2개로 갱신했다(제품 소스 무변경).
+
+## 2026-09-23 — 실제 GitHub·실제 Claude 로 업무 순환 1회 (phase 8 step 16)
+
+목적: [ADR-0014](adr/0014-github-task-cycle.md) 의 GitHub 업무 순환을 대역이 아닌 **실제 `api.github.com` + 실제 `claude -p`** 로 1회 돌린다 — 지정한 이슈만 접수해 담당 Agent 가 재현 테스트를 먼저 쓰고 고치는지, 검토 Agent 가 결과 커밋을 읽고 스키마대로 답하는지, 원본 이슈에 댓글 하나가 만들어지고 갱신되는지. 절차는 [GitHub 런북](github/README.md) 의 실연동 체크리스트를 따랐다. 무엇이 실제이고 무엇이 대본인지: **실제** — GitHub REST(이슈 수집·댓글 POST/PATCH), 수정 2건·검토 2건 모두 실제 `claude -p`(대본 에이전트·가짜 실행 파일 없음), 검증 프로필의 실제 `pytest`, 실제 Git 커밋. **대본** — 없음. 진단 데모·n8n·공개 데모 VM 은 이 검증에 쓰지 않았고 `main` 은 건드리지 않았다. 제품 코드(`src/`)·테스트는 한 줄도 바꾸지 않았다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-23. 준비(저장소·이슈·스택·연결) 09:0x~09:35, **순환 본체 09:35:58 → 09:37:57 KST (약 2분)** |
+| 도구 | `claude` **2.1.280 (Claude Code)** — 수정·검토 모두. Codex 는 쓰지 않았다(사용량 소진 — 수정·검토 모두 Claude 로 두는 것은 사용자 결정) |
+| 테스트 저장소 | `jeongeundev/runloom-live-test` (**비공개**, 이 검증용으로 새로 만듦). 작은 `billing` 패키지 — `billing/invoice.py`·`billing/period.py` + `tests/` 9개, base 커밋 `c204e0db8005` 에서 `python3 -m pytest -q` **9 passed**. 버그 2개를 심고 그것을 드러내는 테스트는 넣지 않았다(재현 테스트 작성은 Agent 의 몫이므로) |
+| 이슈 | `#1` `line_total` 이 할인 적용 후 수량을 곱하기 전에 버림(333×3×10% → 897, 899 여야 함), `#2` `billing_days` 가 종료일을 빠뜨림(1/1~1/31 → 30, 31 이어야 함). 둘 다 assignee `jeongeundev`. 라벨 대신 `selected_issue_numbers [1,2]` 로 명시 선택 |
+| 토큰 | fine-grained PAT, Repository access = 그 저장소만, **Issues: Read and write · Metadata: Read-only** 만. 값은 `~/.runloom-live.env`(0600) → 서버·워커 프로세스 환경변수에만. 사전 확인: 저장소 조회 200(`private=true`), 이슈 목록 200, 댓글 POST 201 → 그 댓글 DELETE 204(권한 확인용 임시 댓글, 즉시 삭제해 검증 시작 시점 댓글 0개). `gh` CLI 의 OAuth 토큰(`repo` scope)은 권한이 넓어 제품에 주지 않았다 |
+| 스택 | 저장소 밖 `../runloom-live-state/`(`live.env` 0600, `db.sqlite`, `artifacts/`, `connector/`). 중앙 `uvicorn workflow.server.app:app 127.0.0.1:8000` + `python3 -m workflow.server.worker` + `python3 -m workflow.connector run --adapter claude`. `WORKFLOW_GITHUB_REPOS=jeongeundev/runloom-live-test` 하나만, `WORKFLOW_PUBLIC_URL=http://127.0.0.1:8000`. **DB 는 새로 만들어져 `schema_version` = 5**(v4 데이터 보존 경로는 이번에 타지 않았다 — 기존 v4 DB 승격은 미검증) |
+| 등록·설정 | Agent `fix-billing`(`code.fix billing`, 로컬 등록 `local-billing-fix`)·`review-billing`(`code.review billing`, `local-billing-review`) — 둘 다 같은 연결 프로그램·**같은 로컬 클론** `../runloom-live-test`, 도구 `claude`. 검증 프로필은 수정 등록에만 `vp-pytest=python3 -m pytest -q`. 첫 claim 이 `supported_kinds ["code_change","bug_fix","code_review"]` 를 선언(v5 신버전). 소스 `ghs-0e68cffe`(`run_mode auto`, `max_rework_rounds 1`), 담당 연결 `PUT …/assignees/284910647` `{jeongeundev, fix-billing}` 200 — 숫자 ID 는 공개 API `users/jeongeundev` 의 `id` |
+| 수집 | 워커 첫 tick(복구 스캔) `sources_synced 1 · issues_created 2 · sync_errors 0 · tasks_started 1 · deliveries_queued 1 · deliveries_sent 1`. 이슈 `#1 → task-80e9ab2f3c59`, `#2 → task-3df94f548d78`(둘 다 `bug_fix`). **지정 범위 밖 접수 없음**(저장소에 다른 이슈·PR 이 없어 배제 경로는 관찰 대상이 아니었다) |
+| 순차 착수 | 같은 로컬 등록이라 하나씩 — `#2` 착수, `#1` 은 `대기 · 같은 저장소에서 다른 수정 실행 중`(`repository_busy`). 예상된 동작이며 병렬 착수는 이번 구성에서 관찰할 수 없다 |
+| 수정 `#2` | `exec-fde64c5764121884` try1, 09:35:58.39 → 09:36:23.31(**24.9초**). 결과 `ready_for_review`, 커밋 `aa9dd403bd93`(브랜치 `task/task-3df94f548d78`, base `c204e0db8005`). `(end - start).days` → `+ 1` 한 줄, 재현 테스트 2개 선작성. 판정 09:36:25.48 **passed** — `test_before_failed`(수정 전 exit_code=1: 새 테스트 2개만 실패, 기존 9개 통과), `verification_passed`(`vp-pytest` exit 0 @ `aa9dd40`, 11 passed), `required_artifacts`(diff·test_log_before·test_log_after·verification_log) |
+| 검토 `#2` | 후속 `code_review` `task-b93926f57374` 자동 생성(`followup_links.cause_execution_id = exec-fde64c5764121884`) → `exec-1a1229ca82b2b148` 09:36:28.43 → 09:36:46.45(**18.0초**) → `code_review_result` **`approved`**, 차단 지적 0건. 판정 `source_matches`·`commit_matches aa9dd40` 통과. 검토 본문이 실제로 커밋을 읽은 내용 — `billing/period.py:10` 의 새 반환식, docstring 과의 일치, `end < start` 거절 유지, 기존 테스트 약화 없음, 저장소 안 호출자(테스트·`__init__` 재수출)뿐이라 영향 없음 |
+| 수정 `#1` | `exec-67341614c35a0e23` try1, 09:36:51.55 → 09:37:30.65(**39.1초**). 커밋 `95b642dac4db`. `int(단가×할인)×수량` → `(단가 × 수량 × (100-할인) + 50) // 100` — 정수 연산으로 한 번만 반올림해 float 오차까지 피했다. 재현 테스트 3개 선작성(897/29900/13 → 899/29970/14). 판정 09:37:31.74 passed(`test_before_failed` exit 1: 새 3개만 실패, `verification_passed` exit 0 @ `95b642d`, 12 passed) |
+| 검토 `#1` | `task-31ffedc675b4` 자동 생성 → `exec-e5b872f8d56057fd` 09:37:35.75 → 09:37:54.25(**18.5초**) → **`approved`**. 검토 본문에 새 공식의 기대값 재계산(`89910+50→899`, `2997000+50→29970`, `1350+50→14`)과 기존 5개 테스트가 새 공식에서도 통과함(3000·1600·0·ValueError·3000)을 직접 확인한 내용 |
+| 원본 반영 | **이슈마다 댓글 정확히 1개.** `#2` id `5786944577` created 00:35:58Z → updated 00:36:48Z, `#1` id `5786949941` created 00:36:26Z → updated 00:37:56Z — `body_revision` 1 → 2 → 3 이 모두 같은 댓글 **PATCH** 로 반영(`source_deliveries` 6행 전부 `delivered`, `attempts 1`, `last_error` 없음). 첫 줄 marker `<!-- runloom:task=… -->`, 기준 커밋 → 결과 커밋 SHA, 후속 `code_review` 상태, 검토 결과 요약, `_Runloom 은 PR 생성·푸시·병합·이슈 종료를 자동으로 하지 않습니다._`, 운영자 전용 상세 링크. GitHub 쓰기는 댓글 POST 2회 + PATCH 4회뿐 |
+| 끝 상태 | 수정 Task 둘 다 `확인 필요 · 검토 승인 — 병합·이슈 종료는 사람`, 검토 Task 둘 다 `완료 · 검토 승인`. **이슈 둘 다 `open`**(자동 종료 없음), 기준 브랜치 `main` = `c204e0db8005` 그대로, 결과 커밋은 로컬 `task/<id>` 브랜치 2개에만 — `git ls-remote --heads origin` 에 `main` 만(**push·PR·merge 없음**). 사람 조작은 0회(승인·재개·응답 없이 자동으로 여기까지) |
+| 독립 검증 (제품 판정과 별개로 직접 확인) | 각 결과 커밋을 별도 worktree 에 체크아웃해 `python3 -m pytest -q` → **11 passed · 12 passed**. base 커밋에 Agent 가 쓴 테스트만 얹어 실행 → `#2` 의 2개·`#1` 의 3개가 **실패**하고 기존 9개는 통과 → 재현 테스트가 실제로 그 버그를 겨냥했음이 확인됨(제품의 `test_before_failed` 와 일치). 두 수정의 코드 변경 내용도 직접 읽어 버그가 실제로 고쳐졌음을 확인 |
+| 비용 | `claude.jsonl` 의 `total_cost_usd` — 수정 `#2` **$0.3403**, 검토 `#2` **$0.3207**, 수정 `#1` **$0.3208**, 검토 `#1` **$0.2064** → **합계 약 $1.19**(CLI 보고값. 구독 사용량으로 실제 청구액과 다를 수 있어 "확인된 값" 은 CLI 보고치까지다). 캐시 읽기가 큰 비중(예 수정 `#1` `cache_read_input_tokens` 326,960) |
+| 미관찰 (이번 실연동에서 확인하지 못한 것) | **재작업 경로** — 검토 둘 다 `approved` 라서 `changes_requested` → 재작업 → 재검토는 대역 e2e 에서만 확인됐다(`max_rework_rounds 1` 은 설정만 됨). 담당자 없음/복수, 위임 밖, 사람 요청·응답 후 재개, 이슈 편집·닫힘, rate limit·secondary rate limit, 댓글 목록 페이지네이션(댓글 1개뿐), POST 응답 유실 조정, v4 → v5 데이터 보존 마이그레이션, 비 Python 저장소의 재현 테스트 인식, 브라우저의 `data-json-action` 스크립트 |
+| 화면 | 서버 렌더 확인만 — `/operator/github` 에 `토큰 설정됨`·저장소·`확인 필요`·`반영됨`, 업무 상세에 `검토 승인 — 병합·이슈 종료는 사람`·기준/결과 커밋 SHA·`반영됨`. 브라우저로 열어 보지는 않았다 |
+| 비밀값 | PAT 원문은 `~/.runloom-live.env`(0600)와 프로세스 환경변수에만. 검사: 토큰 문자열이 `db.sqlite`·`artifacts/`(17파일)·`connector/`·테스트 저장소·중앙 서버 로그·워커 로그·연결 프로그램 로그에 **0건**(텍스트·바이너리). 산출물에 `GITHUB_TOKEN`·`OPERATOR_TOKEN`·`SESSION_SECRET` 이라는 **키 이름조차 없음**. GitHub 댓글 본문에도 없음. 이 문서·커밋에도 원문 없음 |
+| 근거 | `../runloom-live-state/` — `db.sqlite`(`github_sources`·`github_assignee_bindings`·`source_issues`·`tasks`·`executions`·`task_verdicts`·`followup_links`·`source_deliveries`), `artifacts/`(diff·test_log_before/after·verification_log·claude.jsonl·code_change_result·code_review_result·handoff_bundle). `../runloom-live-test/` — `task/task-3df94f548d78`(`aa9dd40`)·`task/task-80e9ab2f3c59`(`95b642d`). GitHub 이슈 `#1`·`#2` 의 댓글 각 1개. 모두 커밋하지 않는다 |
+
+### ARCHITECTURE "검증 순서" 8번
+
+| 순서 | 검증 | 결과 | 근거 |
+|---|---|---|---|
+| 8 | GitHub 업무 순환 — 실제 GitHub·실제 Claude | **통과(단, 재작업 경로는 미관찰)**. 지정한 이슈 2건만 `bug_fix` 로 접수되어 담당 Agent 가 재현 테스트를 먼저 쓰고 고쳤고(base 에서만 실패함을 독립 확인), 판정 통과 결과마다 `code_review` 가 자동 생성되어 실제 Claude 가 결과 커밋을 읽고 `approved` 를 스키마대로 제출했으며, 이슈마다 댓글 하나가 만들어져 PATCH 로 갱신됐다. push·PR·merge·이슈 종료 없음, 사람 조작 0회, 토큰 비노출 | 위 표 |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드(`src/`) 결함: **없음**. 수집·준비 판정·착수·판정·후속 생성·검토·댓글 outbox·화면이 대역 e2e(step 14)와 같은 동작으로 실제 GitHub·실제 Claude 를 통과했다. 고친 파일도 없다.
+- **검증 절차 실수 (내 쪽, 복원함)** — base 커밋에 재현 테스트만 얹어 실행하려고 `git --work-tree=<별도 경로> --git-dir=<등록 폴더>/.git checkout <task 브랜치> -- tests/` 를 썼는데, 이 조합은 **등록 폴더의 인덱스를 공유**해서 `tests/test_invoice.py` 가 `MM` 로 남았다. 등록 폴더는 깨끗해야 하므로(`worktree_dirty`) `git reset HEAD && git checkout -- .` 로 복원했다(이후 `main` = `c204e0db8005`, base 와 diff 없음, `task/*` 브랜치 보존). 제품과 무관한 조작 실수이며, 다음에는 `git worktree add` 한 경로에서 그 worktree 의 `git` 으로만 체크아웃한다.
+- 메모(결함 아님): `test_log_after` 와 `verification_log` 의 sha256 이 같다(`cf0efb98…`, 111바이트). Agent 가 돌린 `pytest` 와 제품이 `vp-pytest` 로 돌린 `pytest` 의 출력이 같아서 내용 주소 저장이 한 파일을 가리키는 것이고, 검증이 생략된 것이 아니다(판정의 `verification_passed` 는 별도 실행 결과).
+- 메모(결함 아님): 이슈가 2건뿐이고 둘 다 같은 로컬 등록이라 `repository_busy` 로 순차 실행됐다. 서로 다른 등록의 병렬 착수는 대역 e2e 에만 있다.
