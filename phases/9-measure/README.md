@@ -1,6 +1,6 @@
 # Phase 9 — 측정: 업무 이벤트 보충·지표·기준선
 
-작성일: 2026-09-27. 상태: step 0~10 완료(2026-09-27). step 11~13 추가(같은 날 사용자 합의) — 완료 시각을 GitHub 병합 시각으로 맞추기, 재작업 상한 요청 중복 결함 수정. 근거: [MVP 계획](../../docs/product/MVP_PLAN.md) 6절(측정 설계)·10절·11절, [ROADMAP](../../docs/product/ROADMAP.md) 9절(지표 정의).
+작성일: 2026-09-27. 상태: step 0~13 완료(2026-09-27, `feat-9-measure`). step 11~13 은 같은 날 사용자 합의로 추가 — 완료 시각을 GitHub 병합 시각으로 맞추기, 재작업 상한 요청 중복 결함 수정. 근거: [MVP 계획](../../docs/product/MVP_PLAN.md) 6절(측정 설계)·10절·11절, [ROADMAP](../../docs/product/ROADMAP.md) 9절(지표 정의).
 
 ## 목표
 
