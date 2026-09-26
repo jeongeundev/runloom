@@ -6,7 +6,7 @@
 
 [MVP 계획](product/MVP_PLAN.md)이 최신 기준이다(2026-09-25~26 사용자 합의). 목표: **2026-10-02 까지 Runloom 단독으로 OpenArchive(`jeongeundev/OpenArchive`) 실제 이슈를 순환 처리하고, 셀프호스트로 배포하며, 도입 전후를 지표로 보여준다.**
 
-제안 phase 순서는 `9-measure`(이벤트 보충·지표 화면/API·GitHub 이력 기준선) → `10-selfhost`(한 명령 설치·데이터 보존·새 ADR) → `11-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). 새 세션은 `9-measure` 설계부터 시작한다 — 먼저 `executions`·`execution_events`·`task_verdicts`·`human_requests`·`human_responses` 에 이미 있는 시각·버전과 빠진 것을 코드로 확인한다.
+제안 phase 순서는 `9-measure`(이벤트 보충·지표 화면/API·GitHub 이력 기준선) → `10-selfhost`(한 명령 설치·데이터 보존·새 ADR) → `11-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). `11-real-repo` 에 넣을 것(2026-09-27 확인·합의): 새 업무의 기준 커밋은 러너 `register` 때 읽은 HEAD(`connector/cli.py:124` → `agents.base_commit`)로 고정돼, 등록 뒤 생긴 커밋(직접 작업·병합·pull)을 따라가지 않는다(`server/worker.py:1203`). 러너가 현재 HEAD 를 중앙에 다시 보고해 그 값을 기준으로 쓰게 고친다. 새 세션은 `9-measure` 설계부터 시작한다 — 먼저 `executions`·`execution_events`·`task_verdicts`·`human_requests`·`human_responses` 에 이미 있는 시각·버전과 빠진 것을 코드로 확인한다.
 
 공모전 관련 작업은 더 하지 않는다(2026-09-27 사용자 결정). 공개 데모 VM 과 `main` 은 그대로 두고 손대지 않는다. 공모전 문서는 [보관 자료](archive/2026-09-27-contest-and-history/)로 옮겼다.
 

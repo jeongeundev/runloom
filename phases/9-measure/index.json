@@ -1,0 +1,61 @@
+{
+  "project": "workflow",
+  "phase": "9-measure",
+  "steps": [
+    {
+      "step": 0,
+      "name": "measure-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "contract-usage",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "connector-report",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "schema-v6",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "repo-events",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "worker-ready",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "metrics-domain",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "baseline-import",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "metrics-api",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "metrics-view",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "measure-verify",
+      "status": "pending"
+    }
+  ]
+}
