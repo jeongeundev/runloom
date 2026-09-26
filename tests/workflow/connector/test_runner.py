@@ -16,7 +16,14 @@ from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
 from workflow.connector.client import Unreachable
 from workflow.connector.git_ops import GitError
 from workflow.connector.runner import Runner
-from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult, ExecutionRequest, GenericResult, Verification
+from workflow.contracts.v1 import (
+    CodeChangeResult,
+    CodeReviewResult,
+    ExecutionRequest,
+    ExecutionUsage,
+    GenericResult,
+    Verification,
+)
 
 from .conftest import (
     BASE_COMMIT,
@@ -970,3 +977,146 @@ def test_code_review_missing_registration_fails_before_download(fake, client, st
     events = fake.events_of(request.execution_id)
     assert [e["type"] for e in events] == ["accepted", "failed"]
     assert events[-1]["data"]["code"] == "registration_missing"
+
+
+# --- 측정 (phase 9) — started 의 등록 폴더 커밋, 종료 이벤트의 사용량 ---------------------------------------
+
+
+def _started(fake: FakeCentral, execution_id: str) -> dict:
+    return next(e["data"] for e in fake.events_of(execution_id) if e["type"] == "started")
+
+
+def test_started_carries_registered_folder_head_and_clean_state(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+
+    make_runner(client, state_conn, paths, StubAdapter(), tmp_path).tick()
+
+    assert _started(fake, request.execution_id) == {
+        "runtime_ref": f"stub:{request.execution_id}", "folder_commit": _git(repo, "rev-parse", "HEAD"),
+        "folder_dirty": False,
+    }
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_started_marks_folder_dirty_with_uncommitted_change(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    (repo / "CLAUDE.md").write_text("# 로컬 에이전트 설정 — 아직 커밋 안 함\n")
+    request = assign_with_handoff(fake)
+
+    make_runner(client, state_conn, paths, StubAdapter(), tmp_path).tick()
+
+    started = _started(fake, request.execution_id)
+    assert started["folder_commit"] == _git(repo, "rev-parse", "HEAD") and started["folder_dirty"] is True
+
+
+def test_started_reads_registered_folder_not_task_worktree(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    request = assign_with_handoff(fake)
+    adapter = WorktreeAdapter(repo)  # worktree 에 결과 커밋을 만든 뒤 started 를 알린다
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    started = _started(fake, request.execution_id)
+    assert adapter.result_commit != base
+    assert (started["folder_commit"], started["folder_dirty"]) == (base, False)
+
+
+def test_started_omits_folder_fields_when_folder_is_not_git(fake, client, state_conn, paths, tmp_path):
+    (tmp_path / REPO).mkdir()  # 등록 폴더는 있지만 Git 저장소가 아니다
+    request = assign_with_handoff(fake)
+
+    make_runner(client, state_conn, paths, StubAdapter(), tmp_path).tick()
+
+    assert _started(fake, request.execution_id) == {"runtime_ref": f"stub:{request.execution_id}"}
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_started_from_adapter_return_also_carries_folder_fields(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+
+    class SilentAdapter:  # progress 로 runtime_ref 를 주지 않는다 — 반환값으로 started 를 보낸다
+        def run(self, request, handoff_dir, progress):
+            return ok_output(request)
+
+    make_runner(client, state_conn, paths, SilentAdapter(), tmp_path).tick()
+
+    started = _started(fake, request.execution_id)
+    assert started == {"runtime_ref": "stub:x", "folder_commit": _git(repo, "rev-parse", "HEAD"),
+                       "folder_dirty": False}
+
+
+def test_result_ready_carries_adapter_usage(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    output = ok_output(request)
+    output.usage = ExecutionUsage(cost_usd=0.25, input_tokens=1200, output_tokens=None)
+
+    make_runner(client, state_conn, paths, StubAdapter(output=output), tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready"
+    assert events[-1]["data"]["usage"] == {"cost_usd": 0.25, "input_tokens": 1200, "output_tokens": None}
+
+
+def test_result_ready_without_usage_omits_the_field(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+
+    make_runner(client, state_conn, paths, StubAdapter(), tmp_path).tick()
+
+    assert set(fake.events_of(request.execution_id)[-1]["data"]) == {"result_artifact_id"}
+
+
+def test_failed_carries_adapter_usage(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    output = AdapterOutput(result=None, failed=("usage_limit", "한도", True), runtime_ref="stub:x",
+                           usage=ExecutionUsage(cost_usd=0.01, input_tokens=429, output_tokens=67))
+
+    make_runner(client, state_conn, paths, StubAdapter(output=output), tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "failed"
+    assert events[-1]["data"] == {
+        "code": "usage_limit", "message": "한도", "process_stopped": True,
+        "usage": {"cost_usd": 0.01, "input_tokens": 429, "output_tokens": 67},
+    }
+
+
+def test_usage_survives_restart_before_result_ready_is_sent(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    request = assign_with_handoff(fake)
+    output = ok_output(request)
+    output.usage = ExecutionUsage(input_tokens=5, output_tokens=6)
+    adapter = StubAdapter(output=output)
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path)
+    original = client.upload_artifact
+    calls = {"n": 0}
+
+    def flaky_upload(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 6:  # 결과 봉투 업로드에서 끊긴다 — 어댑터 산출물 5개는 올라갔다
+            raise Unreachable("끊김")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(client, "upload_artifact", flaky_upload)
+    runner.tick()
+    assert fake.events_of(request.execution_id)[-1]["type"] == "started"
+
+    Runner(client, state_conn, paths, {"stub": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff").tick()
+
+    events = fake.events_of(request.execution_id)
+    assert len(adapter.calls) == 1 and events[-1]["type"] == "result_ready"
+    assert events[-1]["data"]["usage"] == {"cost_usd": None, "input_tokens": 5, "output_tokens": 6}
+
+
+def test_no_event_carries_registered_folder_path(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    output = ok_output(request)
+    output.usage = ExecutionUsage(cost_usd=0.1)
+
+    make_runner(client, state_conn, paths, StubAdapter(output=output), tmp_path).tick()
+
+    dumped = json.dumps(fake.events_of(request.execution_id), ensure_ascii=False)
+    assert "folder_commit" in dumped and "usage" in dumped
+    assert str(repo) not in dumped and str(repo.resolve()) not in dumped and REPO not in dumped

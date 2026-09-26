@@ -15,7 +15,8 @@
 하위 클래스는 `tool_name`·`raw_kinds` 와 `launch`(프로세스를 띄우고 `ToolRun` 을 돌려준다)·`parse_last_message`
 (도구의 마지막 구조화 메시지를 `ToolResult` 로), 그리고 읽기 전용 실행의 `launch_readonly`·`parse_generic_message`·
 `read_structured_message`(마지막 구조화 메시지를 객체 그대로) 만 구현한다. 도구 출력에서 실패 사유(사용량 한도 등)를
-읽어야 하면 `classify_failure` 를 덮어쓴다 — 기본은 None(판정 없음)이다.
+읽어야 하면 `classify_failure` 를, 도구가 보고한 비용·토큰을 읽을 수 있으면 `read_usage` 를 덮어쓴다 — 둘 다 기본은
+None(판정 없음·모름)이다. 사용량은 도구를 띄운 뒤의 모든 결과·실패에 싣고, 시간 초과면 싣지 않는다(ADR-0015).
 
 내장이 아닌 종류(`LocalTarget`, ADR-0009)는 `_run_generic` 이 **읽기 전용**으로 돌린다: worktree·커밋·검증 프로필 없이
 인계 디렉터리(handoff dir)에서 `launch_readonly` → 원시 로그 보존 → 인계 파일 변경 확인(`readonly_violation`) →
@@ -58,6 +59,7 @@ from workflow.contracts.v1 import (
     CodeReviewResult,
     CommitReviewTarget,
     ExecutionRequest,
+    ExecutionUsage,
     GenericResult,
     LocalTarget,
     Verification,
@@ -206,6 +208,10 @@ class LocalToolAdapter:
         (`process_stopped` 는 `run.stopped`). 시간 초과는 이 훅보다 먼저 판정한다. 기본은 None (Codex)."""
         return None
 
+    def read_usage(self, run: ToolRun) -> ExecutionUsage | None:
+        """도구 출력에서 비용·토큰을 읽는 훅. 모르는 칸은 null, 전부 모르면 None. 기본은 None."""
+        return None
+
     # --- 공통 ------------------------------------------------------------------------------------
 
     def child_env(self) -> dict[str, str]:
@@ -259,17 +265,19 @@ class LocalToolAdapter:
                 failed=("timeout", f"{self.tool_name} 실행이 {self._timeout}초를 초과해 종료했습니다.", run.stopped),
                 runtime_ref=runtime_ref,
             )
+        usage = self.read_usage(run)
         failure = self.classify_failure(run)
         if failure is not None:
             code, message = failure
             return AdapterOutput(
                 result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
+                usage=usage,
             )
 
         base_commit = target.base_commit
         if not demo and (head := git_ops.head_sha(worktree)) != base_commit:
             return AdapterOutput(
-                result=None, artifacts=raw_artifacts, runtime_ref=runtime_ref,
+                result=None, artifacts=raw_artifacts, runtime_ref=runtime_ref, usage=usage,
                 failed=("commit_mismatch",
                         f"{self.tool_name} 가 직접 커밋해 HEAD 가 {head[:12]} 로 움직였다 (base_commit {base_commit[:12]})",
                         run.stopped),
@@ -279,7 +287,7 @@ class LocalToolAdapter:
         summary = parsed.summary
         if not git_ops.is_dirty(worktree):
             result = self._result(request, "needs_information", f"변경 없음: {summary}", None, None)
-            return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref)
+            return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref, usage=usage)
 
         result_commit = git_ops.commit_all(
             worktree, f"fix({request.task_id}): {_first_line(summary, self.tool_name)[:60]}"
@@ -319,7 +327,7 @@ class LocalToolAdapter:
             *([] if report is None else [make_meta("report_output", "report.txt", report.encode(), "text/plain")]),
             *raw_artifacts,
         ]
-        return AdapterOutput(result=result, artifacts=artifacts, runtime_ref=runtime_ref)
+        return AdapterOutput(result=result, artifacts=artifacts, runtime_ref=runtime_ref, usage=usage)
 
     # --- 사용자 정의 종류 — 읽기 전용 -----------------------------------------------------------------
 
@@ -345,9 +353,12 @@ class LocalToolAdapter:
         runtime_ref = f"pid:{run.pid};start:{run.started_at}"
         raw_artifacts = self._raw_artifacts(run)
 
+        usage = None if run.timed_out else self.read_usage(run)
+
         def failed(code: str, message: str) -> AdapterOutput:
             return AdapterOutput(
                 result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
+                usage=usage,
             )
 
         if run.timed_out:
@@ -366,7 +377,7 @@ class LocalToolAdapter:
             contract_version=CONTRACT_VERSION, execution_id=request.execution_id, task_id=request.task_id,
             kind=request.kind, outcome=parsed.outcome, summary=parsed.summary, artifact_ids=[],
         )
-        return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref)
+        return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref, usage=usage)
 
     # --- 내장 `code_review` — 결과 커밋의 읽기 전용 체크아웃 ---------------------------------------------
 
@@ -416,9 +427,12 @@ class LocalToolAdapter:
         runtime_ref = f"pid:{run.pid};start:{run.started_at}"
         raw_artifacts = self._raw_artifacts(run)
 
+        usage = None if run.timed_out else self.read_usage(run)
+
         def failed(code: str, message: str) -> AdapterOutput:
             return AdapterOutput(
                 result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
+                usage=usage,
             )
 
         if run.timed_out:
@@ -446,7 +460,7 @@ class LocalToolAdapter:
             })
         except ValidationError as exc:
             return failed("result_invalid", f"검토 결과 형식 오류: {_first_error(exc)}")
-        return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref)
+        return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref, usage=usage)
 
     def _raw_artifacts(self, run: ToolRun) -> list[tuple]:
         """도구의 원시 stdout/stderr — `raw_kinds` 의 kind 로, 마스킹해서 보존한다."""
@@ -505,6 +519,19 @@ class LocalToolAdapter:
             outcome=outcome, summary=summary, base_commit=request.target.base_commit,
             result_commit=result_commit, artifact_ids=[], verification=verification,
         )
+
+
+def usage_from(cost_usd: object, input_tokens: object, output_tokens: object) -> ExecutionUsage | None:
+    """도구가 보고한 값에서 형식이 맞는 칸만 — 비용은 0 이상의 수, 토큰은 0 이상의 정수(bool 제외). 나머지는 null(모름),
+    전부 모르면 None. 모르는 값을 0 으로 채우지 않는다."""
+    def number(value: object, types: tuple[type, ...]) -> float | int | None:
+        return value if isinstance(value, types) and not isinstance(value, bool) and value >= 0 else None
+
+    usage = ExecutionUsage(
+        cost_usd=number(cost_usd, (int, float)), input_tokens=number(input_tokens, (int,)),
+        output_tokens=number(output_tokens, (int,)),
+    )
+    return None if usage == ExecutionUsage() else usage
 
 
 def communicate_or_stop(

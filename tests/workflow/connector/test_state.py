@@ -34,6 +34,15 @@ def test_init_schema_adds_cleaned_at_to_executions_made_before_the_column(state_
     assert "cleaned_at" in columns
 
 
+def test_init_schema_adds_usage_json_to_executions_made_before_the_column(state_conn):
+    state_conn.execute("ALTER TABLE executions DROP COLUMN usage_json")  # phase 9 이전의 로컬 DB
+
+    state.init_schema(state_conn)
+
+    columns = {r[1] for r in state_conn.execute("PRAGMA table_info(executions)")}
+    assert "usage_json" in columns
+
+
 # --- 등록 ----------------------------------------------------------------------------
 
 
@@ -107,6 +116,16 @@ def test_cleaned_at_is_null_until_recorded(state_conn):
     state.update_execution(state_conn, request.execution_id, cleaned_at=NOW)
 
     assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+
+
+def test_usage_json_is_null_until_finished_with_usage(state_conn):
+    request = make_request()
+    state.record_claim(state_conn, request, NOW)
+    assert state.get_execution(state_conn, request.execution_id)["usage_json"] is None
+
+    state.set_phase(state_conn, request.execution_id, "finished", usage_json='{"input_tokens": 3}')
+
+    assert state.get_execution(state_conn, request.execution_id)["usage_json"] == '{"input_tokens": 3}'
 
 
 def test_set_phase_rejects_unknown_phase_and_field(state_conn):

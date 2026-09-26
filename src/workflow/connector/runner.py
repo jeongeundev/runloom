@@ -17,6 +17,9 @@
   결과는 `CodeReviewResult` 를 kind `code_review_result` 로 올린다. 결과 봉투 kind 는 target 모양으로 정한다.
 - 어댑터가 도는 동안(tick 이 `adapter.run` 안에 묶인 동안) heartbeat 는 별도 스레드가 주기마다 보낸다. 실제 실행은 대부분
   offline 판정(90초)보다 길다. 그 스레드는 sqlite 연결을 만지지 않는다 — 현재 실행 ID 를 값으로 받아 `client.heartbeat` 만.
+- 측정(ADR-0015): `started` 에 로컬 등록 폴더(worktree 아님)의 HEAD·미커밋 변경 여부를 `folder_commit`·`folder_dirty` 로
+  싣는다. 못 읽거나 로컬 등록이 없으면 두 칸을 뺀다. 경로·폴더 이름은 보내지 않는다. 어댑터가 돌려준 사용량은 로컬
+  `usage_json` 에 보존했다가 `result_ready`·`failed` 의 `usage` 로 싣는다(모르면 뺀다).
 """
 
 import hashlib
@@ -54,6 +57,7 @@ from workflow.contracts.v1 import (
     CommitReviewTarget,
     ExecutionEvent,
     ExecutionRequest,
+    ExecutionUsage,
     GenericResult,
     HandoffBundle,
     LocalTarget,
@@ -61,6 +65,7 @@ from workflow.contracts.v1 import (
 
 log = logging.getLogger(__name__)
 
+_SHA1 = re.compile(r"^[0-9a-f]{40}$")  # 계약의 `CommitSha` — SHA-256 저장소의 HEAD 는 보내지 않는다
 _EXTENSIONS = {"application/json": "json", "text/plain": "txt", "text/markdown": "md", "text/x-diff": "patch"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 MESSAGE_MAX = 500
@@ -104,6 +109,11 @@ def _code_change_result(result_json: str, uploaded: list[dict], artifact_ids: li
         "artifact_ids": artifact_ids,
         "verification": None if verification is None else verification.model_dump(),
     })
+
+
+def _usage_data(usage: ExecutionUsage | None) -> dict:
+    """종료 이벤트의 `usage` 칸 — 모르면 칸을 뺀다."""
+    return {} if usage is None else {"usage": usage.model_dump()}
 
 
 _LOCAL_TARGETS = (CodeChangeTarget, CommitReviewTarget, LocalTarget)  # 로컬 등록(`local_registration_id`)으로 도는 target
@@ -314,7 +324,8 @@ class Runner:
             nonlocal started
             if runtime_ref is not None and not started:
                 started = True
-                self._emit(execution_id, "started", {"runtime_ref": runtime_ref}, runtime_ref=runtime_ref)
+                self._emit(execution_id, "started", {"runtime_ref": runtime_ref, **self._folder_state(request)},
+                           runtime_ref=runtime_ref)
                 state.set_phase(self._conn, execution_id, "running")
                 log.info("%s 시작 확인 %s: %s", execution_id, runtime_ref, _masked_text(message))
                 return  # 시작 알림은 started 이벤트가 그 기록이다
@@ -343,7 +354,8 @@ class Runner:
 
         if output.failed is None and output.result is not None and not started:
             # 어댑터가 runtime_ref 를 콜백으로 주지 않았다 — 반환값으로 started 를 보낸다
-            self._emit(execution_id, "started", {"runtime_ref": output.runtime_ref or "unknown"},
+            self._emit(execution_id, "started",
+                       {"runtime_ref": output.runtime_ref or "unknown", **self._folder_state(request)},
                        runtime_ref=output.runtime_ref or "unknown")
         with state.transaction(self._conn):
             state.save_outputs(self._conn, execution_id, output.artifacts)
@@ -351,15 +363,17 @@ class Runner:
                 self._conn, execution_id, "finished",
                 result_json=output.result.model_dump_json() if output.result else None,
                 failed_json=json.dumps(output.failed) if output.failed else None,
+                usage_json=output.usage.model_dump_json() if output.usage else None,
             )
         self._finalize(state.get_execution(self._conn, execution_id))
 
     def _finalize(self, row: dict) -> None:
         """어댑터가 끝난 실행의 업로드와 종료 이벤트. 끊기면(`Unreachable`) 다음 tick 에 남은 업로드부터 잇는다."""
         execution_id = row["execution_id"]
+        usage = ExecutionUsage.model_validate_json(row["usage_json"]) if row["usage_json"] else None
         if row["failed_json"]:
             self._upload_outputs(row)  # 실패 산출물(stderr 등)도 보존한다
-            self._finish_failed(execution_id, tuple(json.loads(row["failed_json"])))
+            self._finish_failed(execution_id, tuple(json.loads(row["failed_json"])), usage)
             return
 
         uploaded = self._upload_outputs(row)
@@ -383,15 +397,17 @@ class Runner:
         )
         created = self._client.upload_artifact(execution_id, meta, data)
         self._emit(  # 중앙이 받으면 `_flush` 끝의 `_cleanup_if_delivered` 가 작업 디렉터리를 지운다
-            execution_id, "result_ready", {"result_artifact_id": created.artifact_id},
+            execution_id, "result_ready", {"result_artifact_id": created.artifact_id, **_usage_data(usage)},
             finished_at=self._clock(),
         )
 
-    def _finish_failed(self, execution_id: str, failed: tuple[str, str, bool]) -> None:
+    def _finish_failed(
+        self, execution_id: str, failed: tuple[str, str, bool], usage: ExecutionUsage | None = None,
+    ) -> None:
         code, message, stopped = failed
         self._emit(  # 중앙이 받으면 정리 — 단 process_stopped=False 면 `_cleanup_workdirs` 가 건너뛴다
             execution_id, "failed",
-            {"code": code, "message": _masked_text(message), "process_stopped": bool(stopped)},
+            {"code": code, "message": _masked_text(message), "process_stopped": bool(stopped), **_usage_data(usage)},
             finished_at=self._clock(),
         )
         state.set_phase(self._conn, execution_id, "finished")
@@ -468,6 +484,23 @@ class Runner:
                 log.warning("%s: worktree prune 실패 (%s): %s", execution_id, repo, exc)
         if cleaned:
             state.update_execution(self._conn, execution_id, cleaned_at=self._clock())
+
+    # --- 측정 --------------------------------------------------------------------------------
+
+    def _folder_state(self, request: ExecutionRequest) -> dict:
+        """로컬 등록 폴더의 `folder_commit`·`folder_dirty`. 등록이 없거나 Git 으로 읽지 못하면 빈 dict — 실행은 계속된다."""
+        repo = self._registered_repo(request)
+        if repo is None:
+            return {}
+        try:
+            head = git_ops.head_sha(repo)
+            dirty = git_ops.is_dirty(repo)
+        except GitError as exc:
+            log.info("%s: 등록 폴더 커밋을 읽지 못함 — 비워 보낸다: %s", request.execution_id, exc)
+            return {}
+        if not _SHA1.match(head):
+            return {}
+        return {"folder_commit": head, "folder_dirty": dirty}
 
     # --- 인계 자료 -----------------------------------------------------------------------------
 

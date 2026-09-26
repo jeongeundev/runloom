@@ -9,6 +9,8 @@ runner 와의 약속:
 - 요청·인계 자료에서 셸 명령·경로를 받아 실행하지 않는다. 검증 명령은 로컬 등록값에서만 온다.
 - `AdapterOutput.result` 는 코드 수정(`CodeChangeTarget` — `code_change`·`bug_fix`)이면 `CodeChangeResult`, 커밋 검토
   (`CommitReviewTarget` — `code_review`)면 `CodeReviewResult`, 내장이 아닌 종류(`LocalTarget`)면 `GenericResult`.
+- `AdapterOutput.usage` 는 도구가 보고한 비용·토큰(ADR-0015). 모르면 None 이며 0 으로 채우지 않는다. runner 가
+  `result_ready`·`failed` 에 싣는다.
 """
 
 import hashlib
@@ -23,6 +25,7 @@ from workflow.contracts.v1 import (
     CodeChangeTarget,
     CodeReviewResult,
     ExecutionRequest,
+    ExecutionUsage,
     GenericResult,
     LocalTarget,
     Verification,
@@ -41,6 +44,7 @@ class AdapterOutput:
     artifacts: list[tuple[ArtifactMeta, bytes]] = field(default_factory=list)
     failed: tuple[str, str, bool] | None = None  # (code, message, process_stopped)
     runtime_ref: str = ""
+    usage: ExecutionUsage | None = None  # 도구가 보고한 사용량. None = 모름
 
 
 class ExecutionAdapter(Protocol):
