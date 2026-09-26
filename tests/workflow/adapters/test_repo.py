@@ -2400,11 +2400,12 @@ def test_list_metric_facts_reads_the_session_rows_as_domain_values(cycle, store)
     assert set(tasks) == {TASK_A, "task-gh-41", "task-gh-41-review"}
     assert tasks["task-gh-41"] == TaskFact(
         task_id="task-gh-41", kind="bug_fix", created_at=NOW, status="확인 필요",
-        issue_opened_at="2026-10-06T10:12:00Z",
+        issue_opened_at="2026-10-06T10:12:00Z", issue_state="open",
     )
     assert tasks["task-gh-41-review"].predecessor_task_id == "task-gh-41"
     assert tasks["task-gh-41-review"].issue_opened_at is None
     assert tasks[TASK_A].issue_opened_at is None
+    assert tasks[TASK_A].issue_state is None and tasks["task-gh-41-review"].issue_state is None
 
     executions = {e.execution_id: e for e in facts.executions}
     assert executions["exec-fix-1"] == ExecutionFact(
@@ -2425,6 +2426,16 @@ def test_list_metric_facts_reads_the_session_rows_as_domain_values(cycle, store)
         HumanRequestFact(request_id=request_id, task_id="task-gh-41", created_at="2026-10-06T10:35:00Z"),
     )
     assert repo.list_metric_facts(cycle, OTHER_SESSION, store=store).executions == ()
+
+
+def test_list_metric_facts_carries_the_source_issue_merge(cycle, store):
+    """묶음 시작 Task 의 완료 시각 원천 — 원본 이슈 상태·병합 시각·마지막 조회 시각(step 12)."""
+    closed = _snapshot(state="closed", updated_at="2026-10-06T11:00:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, closed, task=_fix_task(), now=LATER)
+    repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                            link=_merge_link(), now=LATER)
+    fact = next(t for t in repo.list_metric_facts(cycle, SESSION, store=store).tasks if t.task_id == "task-gh-41")
+    assert (fact.issue_state, fact.pr_merged_at, fact.merge_checked_at) == ("closed", "2026-10-07T09:00:00Z", LATER)
 
 
 def test_list_metric_facts_review_outcome_needs_a_passed_verdict(cycle, store):

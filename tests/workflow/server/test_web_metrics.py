@@ -12,7 +12,17 @@ from fastapi.testclient import TestClient
 from workflow.domain.metrics import BASELINE_NOTE
 
 from .test_github_api import login
-from .test_metrics_api import SOURCE, TOKEN, fake, op, operator, settings  # noqa: F401 — fixture
+from .test_metrics_api import (  # noqa: F401 — fixture
+    MERGE_7,
+    SOURCE,
+    TOKEN,
+    fake,
+    op,
+    operator,
+    record_merge,
+    seed_github_bundle,
+    settings,
+)
 
 CAUSAL_NOTE = "관측값이며 인과 효과로 단정하지 않는다"
 BASELINE_ACTION = f'data-json-action="/operator/github/sources/{SOURCE}/baseline"'
@@ -85,7 +95,9 @@ def test_top_compares_baseline_and_after_with_button_for_operator(op, fake):
     assert BASELINE_ACTION in text
     assert "가져온 적 없음" in text
     top = text.split('id="compare"', 1)[1].split("</section>", 1)[0]
-    assert "이슈 열림 → 병합" in top and "도입 후" in top and "미완료 2" in top
+    assert "이슈 열림 → 병합" in top and "도입 후" in top
+    assert "n 0" in top and "미완료 2" not in top  # 직접 등록 업무 2개는 이슈 열림 → 병합 비교에 들어가지 않는다
+    assert "승인" not in top  # 승인 지표는 아래 속도 표에
 
     assert op.post(f"/operator/github/sources/{SOURCE}/baseline").status_code == 200
     text = page(op)
@@ -95,6 +107,19 @@ def test_top_compares_baseline_and_after_with_button_for_operator(op, fake):
     assert BASELINE_NOTE in top
     assert "마지막 가져옴" in text and "KST" in text and "2건" in text
     assert BASELINE_ACTION in text
+
+
+def test_top_compares_merge_only_and_approval_goes_to_speed_table(operator, conn):
+    op, session_id = operator
+    seed_github_bundle(conn, session_id)  # GitHub 묶음: 열림 00:00 → 승인 02:00 → 병합 04:00
+    record_merge(conn, session_id, MERGE_7, "2026-09-26T06:00:00Z")
+    text = page(op, {"from": "2026-09-26T00:00:00Z"})
+    top = text.split('id="compare"', 1)[1].split("</section>", 1)[0]
+    assert "4시간 0분" in top and "2시간 0분" not in top
+    assert "병합 PR" in top
+    approval = row(text, "접수 → 승인")
+    assert "2시간 0분" in approval and "n 1" in approval
+    assert "4시간 0분" in row(text, "접수 → 완료")
 
 
 # --- 기간·그룹 ---------------------------------------------------------------------------------------

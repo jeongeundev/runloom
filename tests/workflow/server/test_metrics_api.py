@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
 from workflow.adapters.github_client import GitHubForbidden, GitHubRateLimited, GitHubUnavailable
-from workflow.contracts.github import GitHubSourceConfig, IssuePrLink
+from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink
 from workflow.contracts.v1 import ArtifactMeta, ExecutionEvent, ExecutionRequest
 from workflow.domain.metrics import BASELINE_NOTE
 
@@ -191,6 +191,54 @@ def test_metrics_json_filters_by_period_and_groups_by_config_revision(op):
     assert [(g["key"], g["bundles"], g["cost_usd"]["total"]) for g in body["groups"]] == [("1", 1, 0.5), ("2", 1, None)]
 
 
+GH_ISSUE_ID = 5001
+
+
+def seed_github_bundle(conn, session_id: str) -> None:
+    """닫힌 원본 이슈 #7 에서 온 묶음: 열림 09-26 00:00 → 운영자 승인 02:00. 병합은 아직 모름."""
+    snapshot = GitHubIssueSnapshot.model_validate({
+        "repository_id": 700112233, "repository_full_name": "acme/billing", "issue_id": GH_ISSUE_ID, "number": 7,
+        "title": "버그 7", "body": "재현", "state": "closed", "labels": ["bug"], "assignee_ids": [],
+        "assignee_logins": [], "html_url": "https://github.com/acme/billing/issues/7",
+        "created_at": "2026-09-26T00:00:00Z", "updated_at": "2026-09-26T05:00:00Z", "is_pull_request": False,
+    })
+    repo.upsert_source_issue(conn, session_id, SOURCE, snapshot, task=_task("task-gh", session_id),
+                             now="2026-09-26T00:01:00Z")
+    repo.update_task_status(conn, "task-gh", "완료", "검토 승인", finished_at="2026-09-26T02:00:00Z",
+                            review_decision="approve", now="2026-09-26T02:00:00Z")
+
+
+def record_merge(conn, session_id: str, link: IssuePrLink | None, now: str) -> None:
+    repo.record_issue_merge(conn, session_id=session_id, source_id=SOURCE, github_issue_id=GH_ISSUE_ID, link=link,
+                            now=now)
+
+
+MERGE_7 = IssuePrLink(issue_number=7, issue_title="버그 7", issue_opened_at="2026-09-26T00:00:00Z", pr_number=70,
+                      pr_merged_at="2026-09-26T04:00:00Z")
+
+
+def test_github_bundle_is_done_at_merge_not_at_approval(operator, conn):
+    """GitHub 이슈 묶음의 접수 → 완료는 병합 시각(ADR-0015 결정 9). 승인은 접수 → 승인 으로 따로."""
+    op, session_id = operator
+    seed_github_bundle(conn, session_id)
+    params = {"from": "2026-09-26T00:00:00Z"}
+
+    [group] = op.get("/metrics.json", params=params).json()["groups"]
+    assert group["intake_to_done"] == {"median": None, "n": 0, "incomplete": 1, "unknown": 0, "total": None}
+    assert group["intake_to_merge"]["incomplete"] == 1
+    assert (group["intake_to_approval"]["median"], group["intake_to_approval"]["n"]) == (7200.0, 1)
+
+    record_merge(conn, session_id, None, "2026-09-26T03:00:00Z")  # 조회했지만 병합 없음
+    [group] = op.get("/metrics.json", params=params).json()["groups"]
+    assert group["closed_unmerged"] == 1
+
+    record_merge(conn, session_id, MERGE_7, "2026-09-26T06:00:00Z")
+    [group] = op.get("/metrics.json", params=params).json()["groups"]
+    assert (group["intake_to_done"]["median"], group["intake_to_done"]["n"]) == (14400.0, 1)
+    assert (group["intake_to_merge"]["median"], group["intake_to_merge"]["n"]) == (14400.0, 1)
+    assert group["closed_unmerged"] == 0
+
+
 @pytest.mark.parametrize("params", [
     {"group_by": "agent"},
     {"from": "어제"},
@@ -228,7 +276,9 @@ def test_metrics_csv_has_one_row_per_metric_with_blank_unknowns(op):
     assert by_metric["execution_time"]["unit"] == "seconds" and by_metric["execution_time"]["median"] == "1200.0"
     assert {"handoff_wait", "handoff_blocked:operator", "intake_to_human", "intake_to_done", "interventions",
             "response_time", "first_pass", "rework", "human_rejection", "input_tokens", "reruns",
-            "bundles", "done_by_finished_at", "closed_failed"} <= set(by_metric)
+            "bundles", "done_by_finished_at", "closed_failed", "intake_to_merge", "intake_to_approval",
+            "closed_unmerged"} <= set(by_metric)
+    assert by_metric["intake_to_approval"]["area"] == "speed" and by_metric["closed_unmerged"]["unit"] == "count"
 
 
 def test_metrics_csv_follows_the_same_parameters(op):

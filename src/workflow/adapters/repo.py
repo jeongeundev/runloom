@@ -1517,17 +1517,20 @@ def _execution_outcome(conn: Connection, store: ArtifactStore, row: Row) -> str 
 
 def list_metric_facts(conn: Connection, session_id: str, *, store: ArtifactStore) -> MetricFacts:
     """세션의 Task·실행·업무 이벤트·사람 요청을 도메인 값 객체로 옮긴다(계산 없음). NULL 은 None 그대로(모름).
+    원본 이슈에서 온 Task 는 이슈 상태·병합 시각·마지막 조회 시각(`source_issues`)도 싣는다.
     `store` 는 검토 결과 산출물의 outcome 을 읽는 데만 쓴다."""
     tasks = tuple(
         TaskFact(
             task_id=r["task_id"], kind=r["kind"], created_at=r["created_at"], status=r["status"],
             predecessor_task_id=r["predecessor_task_id"],
             issue_opened_at=json.loads(r["snapshot_json"])["created_at"] if r["snapshot_json"] else None,
+            issue_state=r["issue_state"], pr_merged_at=r["pr_merged_at"], merge_checked_at=r["merge_checked_at"],
             finished_at=r["finished_at"], merge_confirmed_at=r["merge_confirmed_at"],
             review_decision=r["review_decision"],
         )
         for r in conn.execute(
-            "SELECT t.*, si.snapshot_json FROM tasks t LEFT JOIN source_issues si ON si.task_id = t.task_id"
+            "SELECT t.*, si.snapshot_json, si.state AS issue_state, si.pr_merged_at, si.merge_checked_at"
+            " FROM tasks t LEFT JOIN source_issues si ON si.task_id = t.task_id"
             " WHERE t.session_id = ? ORDER BY t.created_at, t.rowid",
             (session_id,),
         )

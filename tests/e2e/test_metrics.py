@@ -1,16 +1,18 @@
-"""측정 e2e — 이슈 1건의 수정 → 검토(수정 요청) → 재작업 → 검토 승인 → 운영자 승인을 대역으로 돌린 뒤 지표·기준선을 본다
-(phase 9 step 10).
+"""측정 e2e — 이슈 1건의 수정 → 검토(수정 요청) → 재작업 → 검토 승인 → 운영자 승인 → GitHub 병합·이슈 닫힘을 대역으로
+돌린 뒤 지표·기준선을 본다(phase 9 step 10·12).
 
 `test_github_cycle` 의 가짜 GitHub·임시 Git 저장소·가짜 codex 를 다시 쓰고, 이 모듈이 더하는 것:
 - **가짜 claude** — 수정 담당 등록의 도구. 가짜 codex 와 같은 시나리오 파일을 쓰고 결과 JSON 에 `total_cost_usd`·`usage` 를
   싣는다(첫 수정 0.25, 재작업 0.35). 검토는 가짜 codex 라 비용·토큰을 보고하지 않는다(= 모름).
 - **GraphQL 기준선** — 가짜 GitHub 가 `POST /graphql` 의 `repository.issues` 를 두 건씩 커서로 나눠 준다.
+- **GraphQL 병합 조회** — 같은 가짜가 `repository.issue(number)` 에 그 이슈의 상태와 닫은 PR(`merged_prs`)을 준다.
 - **중앙 API 는 이 프로세스 안의 uvicorn 스레드** — 기준선 가져오기의 `HttpGitHubClient` 는 그대로(`api.github.com` 고정) 두고
   `app.state.github_client` 의 transport 만 가짜 GitHub 로 넘기기 위해서다. 연결 프로그램은 하위 프로세스, 워커는 테스트가
   tick 을 돌린다.
 
-bug_fix 는 `merge_confirmed_at` 경로가 없다 — "병합·이슈 종료는 사람" 단계는 운영자의 검토 승인(`/tasks/{id}/review`
-approve → `완료`)이고, 접수 → 완료는 그 `status_changed` 시각으로 잰다(ARCHITECTURE "측정 — phase 9" 지표 표).
+bug_fix 의 "병합·이슈 종료는 사람" 단계는 운영자의 검토 승인(`/tasks/{id}/review` approve → `완료`)이지만, GitHub 이슈
+묶음의 접수 → 완료는 승인이 아니라 그 이슈를 닫은 병합 PR 의 병합 시각으로 잰다(ADR-0015 결정 9). 승인 직후에는 미완료이고,
+가짜 GitHub 에서 병합·닫힘 뒤 워커 수집이 병합 시각을 저장하면 완료가 된다. 승인 시각은 접수 → 승인 으로 따로 본다.
 
 `WORKFLOW_E2E=1` 일 때만 돈다. 실제 GitHub·모델 호출 없음 — 네트워크는 127.0.0.1 뿐이다.
 """
@@ -110,10 +112,17 @@ BASELINE_ISSUES = [
      "prs": [{"number": 20, "merged": True, "mergedAt": "2999-01-01T01:00:00Z"}]},
 ]
 GRAPHQL_PAGE = 2
+ISSUE_OPENED_AT = "2026-09-10T00:00:00Z"  # gh_issue 의 기본 created_at
+MERGED_AT = "2026-09-12T00:00:00Z"  # 이슈 #1 을 닫은 PR 의 병합 시각 — 열림에서 2일
 
 
 class FakeGitHubWithGraphQL(FakeGitHub):
-    """`POST /graphql` 의 기준선 질의(`repository.issues`)만 더한다. 나머지는 `FakeGitHub` 그대로."""
+    """`POST /graphql` 의 기준선 질의(`repository.issues`)와 병합 조회(`repository.issue`)만 더한다. 나머지는 `FakeGitHub`
+    그대로. `merged_prs` = 이슈 번호 → 그 이슈를 닫은 PR 노드 목록."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.merged_prs: dict[int, list[dict]] = {}
 
     def handle(self, method, path, query, headers, body):
         if (method, path) != ("POST", "/graphql"):
@@ -126,6 +135,14 @@ class FakeGitHubWithGraphQL(FakeGitHub):
         variables = json.loads(body)["variables"]
         if f"{variables['owner']}/{variables['name']}" != REPO:
             return 200, {}, {"data": None, "errors": [{"type": "NOT_FOUND"}]}
+        if "number" in variables:
+            item = self.issues[REPO].get(variables["number"])
+            if item is None:
+                return 200, {}, {"data": {"repository": {"issue": None}}, "errors": [{"type": "NOT_FOUND"}]}
+            node = {"number": item["number"], "title": item["title"], "createdAt": item["created_at"],
+                    "state": item["state"].upper(),
+                    "closedByPullRequestsReferences": {"nodes": self.merged_prs.get(item["number"], [])}}
+            return 200, {}, {"data": {"repository": {"issue": node}}}
         start = int(variables["cursor"] or 0)
         chunk = BASELINE_ISSUES[start:start + GRAPHQL_PAGE]
         end = start + len(chunk)
@@ -289,7 +306,11 @@ def test_03_metrics_json_reflects_rework_handoff_cost_and_versions(world):
     assert (group["rework"]["n"], group["rework"]["total"]) == (1, 1)
     assert (group["first_pass"]["numerator"], group["first_pass"]["denominator"]) == (0, 1)  # 첫 검토가 수정 요청
     assert group["handoff_wait"]["n"] >= 1  # 후속 검토 Task 생성 → 첫 시작
-    assert (group["intake_to_done"]["n"], group["done_by_finished_at"]) == (1, 0)  # status_changed → 완료 로 잼
+    # GitHub 이슈 묶음 — 운영자 승인만으로는 완료가 아니다(병합 전 = 미완료). 승인은 접수 → 승인 으로 따로
+    assert (group["intake_to_done"]["n"], group["intake_to_done"]["incomplete"]) == (0, 1)
+    assert (group["intake_to_merge"]["n"], group["intake_to_merge"]["incomplete"]) == (0, 1)
+    assert group["done_by_finished_at"] == 0
+    assert group["intake_to_approval"]["n"] == 1
     # 개입 = 사람 요청 + 운영자 검토 결정(승인 1). 요청 수는 DB 그대로 — 재작업 착수 뒤 첫 검토를 다시 평가해
     # rework_limit_reached 요청이 하나 더 생기는 결함이 있다(CURRENT_HANDOFF 참고). 지표는 그 사실을 셀 뿐이다
     requests = q(world, "SELECT COUNT(*) FROM human_requests WHERE task_id IN (?, ?)", a_id, f_id)[0][0]
@@ -320,16 +341,44 @@ def test_03_metrics_json_reflects_rework_handoff_cost_and_versions(world):
     assert {"status_changed", "ready"} <= events
 
 
-def test_04_baseline_import_shows_before_and_after_on_the_page(world):
+def test_04_github_merge_and_close_completes_the_bundle_at_merge_time(world):
+    a_id = world.tasks["A"]
+    world.fake.merged_prs[1] = [{"number": 7, "merged": False, "mergedAt": None},
+                                {"number": 8, "merged": True, "mergedAt": MERGED_AT}]
+    item = gh_issue(REPO, 1, "쿠폰이 두 번 차감됩니다", assignees=[KIM], state="closed",
+                    updated_at="2026-09-12T00:05:00Z", body="쿠폰 1장이 두 번 빠집니다. [scenario:coupon]")
+    world.fake.add(REPO, item)
+
+    report = world.worker.tick()
+    assert report.sync_errors == 0
+    (row,) = q(world, "SELECT task_id, state, merged_pr_number, pr_merged_at, merge_checked_at FROM source_issues")
+    assert (row["task_id"], row["state"], row["merged_pr_number"], row["pr_merged_at"]) == (a_id, "closed", 8, MERGED_AT)
+    assert row["merge_checked_at"] is not None
+
+    (group,) = metrics(world)["groups"]
+    expected = 2 * 24 * 3600  # 이슈 열림 → 병합 — 승인 시각이 아니다
+    assert (group["intake_to_done"]["median"], group["intake_to_done"]["n"]) == (expected, 1)
+    assert (group["intake_to_merge"]["median"], group["intake_to_merge"]["n"]) == (expected, 1)
+    assert group["intake_to_done"]["incomplete"] == 0 and group["closed_unmerged"] == 0
+    approval = group["intake_to_approval"]
+    assert approval["n"] == 1 and approval["median"] != expected  # 승인은 실제 시계, 병합은 GitHub 시각
+
+    lookups = len([r for r in world.fake.requests if r[1] == "/graphql"])
+    world.worker.tick()  # 병합을 안 뒤에는 다시 조회하지 않는다
+    assert len([r for r in world.fake.requests if r[1] == "/graphql"]) == lookups
+
+
+def test_05_baseline_import_shows_before_and_after_on_the_page(world):
     source_id = world.sources[REPO]
     before = world.http.get("/metrics")
     assert before.status_code == 200 and "가져온 적 없음" in before.text
+    earlier = len([r for r in world.fake.requests if r[1] == "/graphql"])  # 병합 조회
 
     for _ in range(2):  # 멱등 — 다시 가져와도 같은 건수
         response = world.http.post(f"/operator/github/sources/{source_id}/baseline")
         assert response.status_code == 200, response.text
         assert response.json()["item_count"] == 2
-    graphql = [r for r in world.fake.requests if r[1] == "/graphql"]
+    graphql = [r for r in world.fake.requests if r[1] == "/graphql"][earlier:]
     assert len(graphql) == 2 * 3 and all(authorized for _, _, authorized in graphql)  # 두 번 × 3 페이지
 
     (baseline,) = metrics(world)["baselines"]
@@ -341,6 +390,8 @@ def test_04_baseline_import_shows_before_and_after_on_the_page(world):
     assert page.status_code == 200
     top = page.text.split('id="compare"', 1)[1].split("</section>", 1)[0]
     assert REPO in top and "n 2" in top and "4시간 0분" in top and BASELINE_NOTE in top
+    assert "48시간 0분" in top and "승인" not in top  # 도입 후도 이슈 열림 → 병합. 승인 지표는 아래 속도 표에
+    assert "접수 → 승인" in page.text
     csv_text = world.http.get("/metrics.csv").text
     assert f"baseline:{source_id},speed,intake_to_merge,seconds,14400.0,2" in csv_text
 

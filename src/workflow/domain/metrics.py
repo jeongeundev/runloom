@@ -23,6 +23,7 @@ BASELINE_NOTE = "하네스·Claude 사용 시기 이력 — 순수 수작업 기
 _TERMINAL = ("result_ready", "failed")
 _HUMAN_TURN = "확인 필요"
 _DONE = "완료"
+_CLOSED = "closed"
 _FAILED = "실패"
 _REVIEW_KIND = "code_review"
 _REWORK_PREFIX = "rework:"
@@ -39,6 +40,9 @@ class TaskFact:
     status: str  # USER_STATUS_LABELS
     predecessor_task_id: str | None = None
     issue_opened_at: str | None = None  # 원본 이슈 스냅샷의 created_at. 없으면 None
+    issue_state: str | None = None  # 원본 이슈 상태(open·closed). None = 직접 등록 Task
+    pr_merged_at: str | None = None  # 원본 이슈를 닫은 병합 PR 의 병합 시각(source_issues). None = 모름/병합 없음
+    merge_checked_at: str | None = None  # 병합 PR 을 마지막으로 조회한 시각. None = 조회 전
     finished_at: str | None = None
     merge_confirmed_at: str | None = None
     review_decision: str | None = None  # tasks.review_decision(마지막 값)
@@ -128,8 +132,11 @@ class MetricsGroup:
     handoff_blocked: Mapping[str, Stat]  # actor → 후속 Task 당 대기 구간 합
     intake_to_human: Stat
     intake_to_done: Stat
+    intake_to_merge: Stat  # GitHub 이슈 묶음만 — 기준선과 같은 구간(이슈 열림 → 병합)
+    intake_to_approval: Stat
     done_by_finished_at: int  # 완료 시각을 v6 이전 finished_at 으로 대신한 묶음
     closed_failed: int  # 실패로 마감된 묶음(intake_to_done 미완료에 포함)
+    closed_unmerged: int  # 원본 이슈가 병합 PR 없이 닫힌 묶음(조회로 확인, intake_to_done 미완료에 포함)
     interventions: Stat
     response_time: Stat
     first_pass: Ratio
@@ -283,7 +290,12 @@ def _bundle_metrics(bundles: Sequence[_Bundle], index: _Index) -> dict[str, Any]
     to_done: list[float] = []
     done_by_finished_at = 0
     closed_failed = 0
+    closed_unmerged = 0
     to_done_incomplete = 0
+    to_merge: list[float] = []
+    to_merge_incomplete = 0
+    to_approval: list[float] = []
+    to_approval_incomplete = 0
     interventions: list[float] = []
     response: list[float] = []
     response_incomplete = 0
@@ -323,20 +335,39 @@ def _bundle_metrics(bundles: Sequence[_Bundle], index: _Index) -> dict[str, Any]
         else:
             to_human.append(_seconds(intake, human_at))
 
-        # 접수 → 완료 — 시작 Task 의 병합 확인, 없으면 `완료` 로 바뀐 시각, v6 이전은 finished_at
+        # 접수 → 완료 — GitHub 이슈 묶음은 원본 이슈를 닫은 PR 의 병합 시각만(승인 시각은 쓰지 않는다).
+        # 직접 등록은 시작 Task 의 병합 확인, 없으면 `완료` 로 바뀐 시각, v6 이전은 finished_at
         root = bundle.root
-        done_at = root.merge_confirmed_at or _earliest(
-            ev.occurred_at for ev in index.events.get(root.task_id, ())
-            if ev.type == "status_changed" and ev.data.get("to") == _DONE
-        )
-        if done_at is None and root.status == _DONE and root.finished_at is not None:
-            done_at = root.finished_at
-            done_by_finished_at += 1
+        if root.issue_state is not None:
+            done_at = root.pr_merged_at
+            if done_at is None:
+                to_merge_incomplete += 1
+                closed_unmerged += root.issue_state == _CLOSED and root.merge_checked_at is not None
+            else:
+                to_merge.append(_seconds(intake, done_at))
+        else:
+            done_at = root.merge_confirmed_at or _earliest(
+                ev.occurred_at for ev in index.events.get(root.task_id, ())
+                if ev.type == "status_changed" and ev.data.get("to") == _DONE
+            )
+            if done_at is None and root.status == _DONE and root.finished_at is not None:
+                done_at = root.finished_at
+                done_by_finished_at += 1
         if done_at is None:
             to_done_incomplete += 1
             closed_failed += root.status == _FAILED
         else:
             to_done.append(_seconds(intake, done_at))
+
+        # 접수 → 승인 — 묶음에서 처음 운영자 승인 또는 `완료` 로 바뀐 시각
+        approved_at = _earliest(
+            ev.occurred_at for ev in events
+            if ev.type == "status_changed" and (ev.data.get("review_decision") == "approve" or ev.data.get("to") == _DONE)
+        )
+        if approved_at is None:
+            to_approval_incomplete += 1
+        else:
+            to_approval.append(_seconds(intake, approved_at))
 
         # 사람 부담
         decision_events = [ev for ev in events if ev.type == "status_changed" and ev.data.get("review_decision")]
@@ -366,8 +397,11 @@ def _bundle_metrics(bundles: Sequence[_Bundle], index: _Index) -> dict[str, Any]
         "handoff_blocked": {a: _stat(v, unknown=unsplit, with_total=True) for a, v in blocked.items()},
         "intake_to_human": _stat(to_human, incomplete=to_human_incomplete),
         "intake_to_done": _stat(to_done, incomplete=to_done_incomplete),
+        "intake_to_merge": _stat(to_merge, incomplete=to_merge_incomplete),
+        "intake_to_approval": _stat(to_approval, incomplete=to_approval_incomplete),
         "done_by_finished_at": done_by_finished_at,
         "closed_failed": closed_failed,
+        "closed_unmerged": closed_unmerged,
         "interventions": _stat(interventions, with_total=True),
         "response_time": _stat(response, incomplete=response_incomplete),
         "first_pass": Ratio(first_pass_yes, first_pass_total, incomplete=first_pass_missing),

@@ -1001,7 +1001,8 @@ UNKNOWN_TEXT = "모름"
 # 영역 → (칸 이름, 이름표, 단위). 매핑 칸(handoff_blocked·failed_codes)은 아래에서 따로 펼친다.
 METRIC_AREAS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
     ("병목", (("handoff_wait", "인계 대기", "seconds"),)),
-    ("속도", (("intake_to_human", "접수 → 사람 차례", "seconds"), ("intake_to_done", "접수 → 완료", "seconds"))),
+    ("속도", (("intake_to_human", "접수 → 사람 차례", "seconds"), ("intake_to_done", "접수 → 완료", "seconds"),
+             ("intake_to_approval", "접수 → 승인", "seconds"))),
     ("사람 부담", (("interventions", "개입 횟수", "count"), ("response_time", "응답 시간", "seconds"))),
     ("품질", (("first_pass", "1회 통과율", "ratio"), ("rework", "재작업 횟수", "count"),
              ("human_rejection", "사람 거부 비율", "ratio"))),
@@ -1081,8 +1082,8 @@ def metrics_context(report: MetricsReport, baselines: Sequence[dict[str, Any]]) 
                       "cells": [_stat_cell(g.handoff_blocked[actor], "seconds") for g in groups]}
                      for actor in ACTORS]
         areas.append({"title": title, "rows": rows})
-    after = [{"label": group_label(g.key, report.group_by), "cell": _stat_cell(g.intake_to_done, "seconds"),
-              "done_by_finished_at": g.done_by_finished_at, "closed_failed": g.closed_failed} for g in groups]
+    after = [{"label": group_label(g.key, report.group_by), "cell": _stat_cell(g.intake_to_merge, "seconds"),
+              "closed_unmerged": g.closed_unmerged} for g in groups]
     baseline_rows = [
         {**b, "cell": None if b["intake_to_merge"] is None else _stat_cell(Stat(**b["intake_to_merge"]), "seconds")}
         for b in baselines

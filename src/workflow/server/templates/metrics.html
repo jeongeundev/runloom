@@ -48,7 +48,7 @@
     <tr>
       <td>도입 후 · {{ a.label }}</td>
       <td>{{ cell(a.cell) }}</td>
-      <td class="small">완료 시각은 병합 확인, 없으면 묶음 시작 업무의 완료 전환 시각{% if a.done_by_finished_at %} · 종료 시각으로 대신한 묶음 {{ a.done_by_finished_at }}{% endif %}{% if a.closed_failed %} · 실패 마감 {{ a.closed_failed }}(미완료에 포함){% endif %}</td>
+      <td class="small">GitHub 이슈 묶음만 · 끝점은 그 이슈를 닫은 병합 PR 의 병합 시각(병합 전은 미완료){% if a.closed_unmerged %} · 병합 없이 닫힘 {{ a.closed_unmerged }}(미완료에 포함){% endif %}</td>
     </tr>
     {% endfor %}
   </table>

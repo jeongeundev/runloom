@@ -388,3 +388,74 @@ def test_summarize_baseline_even_and_empty():
     )
     assert summarize_baseline(items, opened_before=t(9), fetched_at=t(9)).intake_to_merge.median == 1.5 * H
     assert summarize_baseline((), opened_before=t(9), fetched_at=t(9)).intake_to_merge == Stat(median=None, n=0)
+
+
+# ── 완료 = GitHub 병합 시각 (step 12, ADR-0015 결정 9) ────────────────
+
+
+def gh_task(task_id, *, opened=t(0), state="open", **kw) -> TaskFact:
+    return task(task_id, issue_opened_at=opened, issue_state=state, **kw)
+
+
+def test_github_bundle_is_not_done_by_approval_alone():
+    facts = MetricFacts(
+        tasks=(gh_task("t1", status="완료", finished_at=t(2)),),
+        events=(ev("t1", "status_changed", t(2), to="완료", review_decision="approve"),),
+    )
+    group = only(compute(facts))
+    assert group.intake_to_done == Stat(median=None, n=0, incomplete=1)
+    assert group.intake_to_merge == Stat(median=None, n=0, incomplete=1)
+    assert group.done_by_finished_at == 0
+    assert group.intake_to_approval == Stat(median=2 * H, n=1)
+
+
+def test_github_bundle_is_done_at_merge_time():
+    facts = MetricFacts(
+        tasks=(gh_task("t1", state="closed", status="완료", pr_merged_at=t(5), merge_checked_at=t(6)),),
+        events=(ev("t1", "status_changed", t(2), to="완료", review_decision="approve"),),
+    )
+    group = only(compute(facts))
+    assert group.intake_to_done == Stat(median=5 * H, n=1)
+    assert group.intake_to_merge == Stat(median=5 * H, n=1)
+    assert group.intake_to_approval == Stat(median=2 * H, n=1)
+    assert group.closed_unmerged == 0
+
+
+def test_github_issue_closed_without_merge_is_counted_apart():
+    facts = MetricFacts(tasks=(
+        gh_task("t1", state="closed", merge_checked_at=t(3)),  # 조회했지만 병합 없음
+        gh_task("t2", state="closed"),  # 아직 조회 전 — 모름이라 따로 세지 않는다
+        gh_task("t3", state="open"),
+    ))
+    group = only(compute(facts))
+    assert group.closed_unmerged == 1
+    assert group.intake_to_done == Stat(median=None, n=0, incomplete=3)
+    assert group.intake_to_merge == Stat(median=None, n=0, incomplete=3)
+
+
+def test_direct_task_keeps_previous_done_rule_and_is_not_in_merge_metric():
+    facts = MetricFacts(
+        tasks=(task("t1", created=t(0), status="완료"),),
+        events=(ev("t1", "status_changed", t(3), to="완료"),),
+    )
+    group = only(compute(facts))
+    assert group.intake_to_done == Stat(median=3 * H, n=1)
+    assert group.intake_to_merge == Stat(median=None, n=0)  # 이슈 열림 → 병합 은 GitHub 묶음만
+    assert group.closed_unmerged == 0
+
+
+def test_intake_to_approval_uses_first_approval_or_done_in_bundle():
+    facts = MetricFacts(
+        tasks=(
+            gh_task("t1", opened=t(0)),
+            task("t2", created=t(1), pred="t1", kind="code_review"),
+            task("t3", created=t(0)),  # 승인 없음
+        ),
+        events=(
+            ev("t1", "status_changed", t(2), to="확인 필요", review_decision="request_changes"),
+            ev("t2", "status_changed", t(4), to="완료"),
+            ev("t1", "status_changed", t(6), to="완료", review_decision="approve"),
+        ),
+    )
+    stat = only(compute(facts)).intake_to_approval
+    assert stat == Stat(median=4 * H, n=1, incomplete=1)

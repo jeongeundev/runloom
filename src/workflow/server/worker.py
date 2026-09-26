@@ -418,6 +418,8 @@ class Worker:
                 if result.error is not None:
                     report.sync_errors += 1
                     log.warning("GitHub 수집 실패 %s: %s", config.source_id, result.error)
+                if result.merge_error is not None:
+                    log.warning("GitHub 병합 PR 조회 실패 %s: %s", config.source_id, result.merge_error)
                 wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
                 self._github_next_at[config.source_id] = _plus_seconds(now, wait)
 
