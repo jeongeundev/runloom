@@ -224,7 +224,7 @@ curl -sS -H "Authorization: Bearer $(sudo grep '^DIAG_API_TOKEN=' /etc/workflow/
 
 ## 10. 알려진 한계
 
-- 대본이라 진단 내용·수정 diff 가 매번 같다. 실제 모델의 오류·보류 사례는 공개 데모에 없고 [DIAG_EVAL](DIAG_EVAL.md)·[VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-20 기록으로 대신한다([ADR-0008](adr/0008-public-demo-scripted-agents.md) 트레이드오프).
+- 대본이라 진단 내용·수정 diff 가 매번 같다. 실제 모델의 오류·보류 사례는 공개 데모에 없고 [DIAG_EVAL](archive/2026-09-27-contest-and-history/DIAG_EVAL.md)·[VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-20 기록으로 대신한다([ADR-0008](adr/0008-public-demo-scripted-agents.md) 트레이드오프).
 - 실제 모델·실제 Codex 로 바꾸려면 env 3개를 고치고 Mac 을 연결한다: `diag.env` 의 `DIAG_MODEL=openai`·`OPENAI_API_KEY`·`DIAG_PRICE_*`·`DIAG_GLOBAL_DAILY=36`, `central.env` 의 한도 `10/36`, `connector.env` 는 쓰지 않고 `systemctl disable --now workflow-connector` 한 뒤 `seed_demo.py` 를 `--scripted` 없이 다시 돌리고 운영자 Mac 에서 `deploy/launchd/com.workflow.connector.plist` 로 연결 프로그램을 띄운다([ADR-0006](adr/0006-deployment-vm-caddy-mac-connector.md), 총액 US$30 상한). 키·예산 확인 전에는 하지 않는다(ADR-0003).
 - DB 초기화는 `WORKFLOW_RESET_DB=1` 로만 한다(7b). 그 외 경로로 데이터를 지우는 스크립트는 없다.
 - 연결 프로그램이 멈추면 코드 수정 노드는 `대기 · 연결 끊김, 마지막 확인 {시각}` 으로 남고 시작했다고 표시하지 않는다. `systemctl restart workflow-connector` 로 재접속하면 claim 한 실행부터 이어간다. 진단(A)은 연결 프로그램과 무관하게 동작한다.

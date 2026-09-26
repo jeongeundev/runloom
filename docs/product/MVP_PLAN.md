@@ -101,7 +101,7 @@ n8n 만으로 구성하면 바깥 연결은 쉽지만 "내 구독 에이전트�
 | 사람 담당자 | 요청에 응답(운영자, 웹) | 사람을 담당자로 둘 수 없음, 결과물 수정 단계 없음, 알림 없음 |
 | 템플릿 | 없음 | 묶음 가져오기·내보내기 |
 | 측정 | 실행·판정 기록은 DB 에 있음 | 업무 단위 이벤트 정리, 지표 화면·API, 기준선 |
-| 배포 | VM(systemd, 공개 데모), 로컬 데모 기동기 | 제품용 한 명령 셀프호스트 없음 |
+| 배포 | 이전 공모전용 VM 구성(systemd), 로컬 데모 기동기 | 제품용 한 명령 셀프호스트 없음 |
 | 팀 | 익명 세션 + 운영자 토큰 | 계정·멤버·권한 |
 
 ## 8. 배포 경로 — n8n 을 벤치마킹
@@ -114,7 +114,7 @@ n8n 은 1인 사이드 프로젝트로 시작해(2019) 셀프호스트로 사용
 
 같은 계열 사례: 중앙 조율 + 사용자 인프라 실행 — [Buildkite](https://buildkite.com/about/company/)(보안 제약으로 클라우드 CI 를 못 쓰는 팀에서 출발, 사용자 수 과금), [Prefect hybrid](https://medium.com/the-prefect-blog/the-prefect-hybrid-model-1b70c7fd296), [Dagster+ Hybrid](https://docs.dagster.io/deployment/dagster-plus/hybrid). 실행량 과금은 사용자가 컴퓨팅을 부담하는 구조에서 반발을 부른다([GitHub self-hosted runner 과금 보류](https://github.com/orgs/community/discussions/182186)). 실행 위치를 벤더 쪽으로 옮기는 것([Trigger.dev v3](https://trigger.dev/blog/v3-developer-preview-launch))은 Runloom 의 존재 이유와 반대 방향이다.
 
-공개 데모 VM(ADR-0006, systemd·컨테이너 없음)은 심사(~10/5) 동안 동결이므로 10/2 배포는 VM 이 아닌 셀프호스트다. 셀프호스트 패키징 결정은 새 ADR 로 남긴다.
+이전 공모전용 VM 구성(ADR-0006·0008)은 이어서 쓰지 않는다. 10/2 배포는 셀프호스트다. 셀프호스트 패키징 결정은 새 ADR 로 남긴다.
 
 ## 9. 구독 에이전트와 약관
 

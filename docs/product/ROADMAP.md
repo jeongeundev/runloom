@@ -14,11 +14,10 @@ GitHub·Jira 등에서 이미 관리하는 업무를 쉽게 가져오거나 직�
 
 ## 2. 현재 위치와 버전 지도
 
-`main`의 공개 데모는 phase 5이며 심사 기간 동결한다. `service`에는 phase 6의 종류·후속 규칙, phase 7의 n8n 입구·callback, 로컬 Agent 연결과 결과 검증 기반이 있다. `service`의 GitHub·Jira 가져오기는 fixture이고, 사전 등록한 후속 Task의 착수가 중심이다. phase 8 브랜치(미병합)에 GitHub Issues 수집·담당 연결·새 검토 Task 생성·사람 요청·응답·댓글 반영이 구현되어 대역으로 검증됐고, 실제 GitHub·Agent 왕복은 미검증이다(10절).
+`service`에는 phase 6의 종류·후속 규칙, phase 7의 n8n 입구·callback, 로컬 Agent 연결과 결과 검증 기반이 있다. `service`의 GitHub·Jira 가져오기는 fixture이고, 사전 등록한 후속 Task의 착수가 중심이다. phase 8(GitHub Issues 수집·담당 연결·새 검토 Task 생성·사람 요청·응답·댓글 반영)은 `service`에 병합됐고 2026-09-23 실제 GitHub·실제 Claude 로 1회 통과했다. `changes_requested` 재작업의 실연동은 미관찰이다.
 
 | 단계 | 사용자에게 약속할 가치 | 핵심 범위 | 제외·후속 |
 |---|---|---|---|
-| 공개 데모(기존) | 연결·인계 흐름을 체험 | 대본 에이전트·fixture·시연 | 실제 팀 효과의 증거로 사용하지 않음 |
 | MVP / v0.1 | 가져온 업무가 담당 Agent로 실행되고 후속 작업까지 이어짐 | 외부 도구 1종·업무 유형 1종·기본 위임·결과 반영·제한된 후속 생성 | 범용 업무 해석·자동 패턴 발견·분석 대시보드 |
 | v0.2 / 반복 사용 | 같은 팀이 매번 다시 설정하지 않고 운영 | 재사용 설정·예외 재개 개선·운영 신뢰성·기본 집계 | 전사 프로세스 분석·광범위한 자율 판단 |
 | v0.3 / 설정 추천 | 기존 기록이 있으면 설정이 쉬워짐 | 유사 업무·담당·필수 입력·후속 규칙 추천·근거와 수정 피드백 | 기록 필수 온보딩·추천의 무조건 자동 적용 |
@@ -157,7 +156,7 @@ PRD의 5개 업무 시나리오(A·B 실행, A → 기존 C, B → 새 F, D·E �
 
 ## 10. 바로 다음 작업과 의사결정
 
-2026-09-23 구현 상태: [phase 8](../../phases/8-github-task-cycle/README.md) step 0~15 완료(`feat-8-github-task-cycle`, `service` 미병합). GitHub Issues 버그 수정 → 커밋 검토 순환이 구현되어 대역 단위·e2e 테스트(가짜 GitHub·가짜 Agent)를 통과했다. 실제 GitHub·실제 Agent 전체 순환(step 16)은 아직이므로 위 MVP 통과 기준의 실연동 조건은 충족하지 않았다. 운영 절차·미검증 항목·실연동 체크리스트는 [GitHub 런북](../github/README.md).
+2026-09-23 구현 상태: [phase 8](../../phases/8-github-task-cycle/README.md) step 0~16 완료·`service` 병합. GitHub Issues 버그 수정 → 커밋 검토 순환이 대역 테스트와 실제 GitHub·실제 Claude 1회 실연동을 통과했다. 운영 절차·미검증 항목은 [GitHub 런북](../github/README.md).
 
 2026-09-26: 10/2 까지의 구체 범위(측정·셀프호스트·OpenArchive 실연동)와 phase 계획은 [MVP 계획](MVP_PLAN.md)에 둔다.
 

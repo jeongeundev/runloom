@@ -272,7 +272,7 @@ FastAPI `BackgroundTasks`만으로 장시간 실행을 관리하지 않는다. D
 
 ### 진단 모델과 평가 기준
 
-제공자는 OpenAI, 호출 방식은 Responses API, 모델은 `gpt-4.1-2025-04-14` 다(ADR-0003 확정). 첫 평가 후보였던 `gpt-4.1-mini-2025-04-14` 는 네 번의 평가에서 정상 사례를 3/3 통과하지 못해 제외했다([DIAG_EVAL](DIAG_EVAL.md)). 최신·최고 성능 모델이라는 주장은 아니다. [모델 문서](https://developers.openai.com/api/docs/models/gpt-4.1)
+제공자는 OpenAI, 호출 방식은 Responses API, 모델은 `gpt-4.1-2025-04-14` 다(ADR-0003 확정). 첫 평가 후보였던 `gpt-4.1-mini-2025-04-14` 는 네 번의 평가에서 정상 사례를 3/3 통과하지 못해 제외했다([DIAG_EVAL](archive/2026-09-27-contest-and-history/DIAG_EVAL.md)). 최신·최고 성능 모델이라는 주장은 아니다. [모델 문서](https://developers.openai.com/api/docs/models/gpt-4.1)
 
 처리 순서는 조사 요청과 도구 정의 전달 → 모델의 도구 요청 → 서비스에서 인자·권한 검사 후 실제 조회 → 조회 결과를 모델에 반환 → 구조화 진단 수집이다. 모델은 DB·파일 경로를 직접 실행하지 않는다. 별도 에이전트 프레임워크나 벡터 검색은 첫 범위에 추가하지 않는다. [도구 호출 문서](https://developers.openai.com/api/docs/guides/function-calling)
 
@@ -714,25 +714,9 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 
 중앙과 진단은 같은 VM에 있지만 환경변수 파일(0600)과 데이터 디렉터리를 분리한다. 진단 API는 Caddy 뒤에 두지 않으며 중앙 워커만 localhost로 호출한다. 시스템 사용자는 하나여도 된다.
 
-### 공개 데모 구성 — VM 한 대, 대본 에이전트 (2026-09-21 확정)
-
-심사 기간의 공개 데모는 [ADR-0008](adr/0008-public-demo-scripted-agents.md)을 따른다. 위 표의 Mac 두 행이 VM 으로 옮겨오고 실제 모델·실제 Codex/Claude 는 돌지 않는다. 절차는 [DEPLOY](DEPLOY.md), 파일은 `deploy/`.
-
-| 구성 | 위치 | 실행 방식 | 데이터 |
-|---|---|---|---|
-| Caddy | VM | systemd, 도메인 인증서 자동 발급 | — |
-| 중앙 웹/API · 중앙 워커 | VM, `127.0.0.1:8000` | systemd `workflow-central`·`workflow-worker`, env `/etc/workflow/central.env`(한도 200/5000 — 비용 0) | `/var/lib/workflow/central/` |
-| 진단 API · 진단 워커 | VM, `127.0.0.1:8100`, 외부 비공개 | systemd `workflow-diag`·`workflow-diag-worker`, env `/etc/workflow/diag.env`(`DIAG_MODEL=fake`, `OPENAI_API_KEY` 비움) | `/var/lib/workflow/diag/` |
-| 연결 프로그램 + 대본 에이전트 | VM | systemd `workflow-connector`, env `/etc/workflow/connector.env`(`WORKFLOW_CONNECTOR_HOME`, `WORKFLOW_SCRIPT_PACE_SECONDS=25`). PATH 앞의 `deploy/bin/{codex,claude}` 래퍼가 `workflow.scripted.*` 를 띄운다 | `/var/lib/workflow/connector/` (state.sqlite, 토큰 0600) |
-| 데모 저장소 | VM | `scripts/scaffold_demo_repo.py`, 기준 커밋 `report-base` 고정 | `/var/lib/workflow/demo/demo-report-repo`, worktree 는 옆 `demo-report-repo-worktrees/`(결과 업로드 뒤 정리) |
-
-`central.env` 의 n8n 키 두 개(`WORKFLOW_CALLBACK_HOSTS`·`WORKFLOW_PUBLIC_URL`, 비밀값 아님)는 공개 데모에서 허용 목록을 **비워** callback 을 받지 않고(`callback_url` 이 있는 접수는 422), 공개 주소는 배포 도메인으로 둔다(`deploy/env/central.env.example`). 카탈로그 세 Agent(`agent-ops-demo`·`agent-codex-mac`·`agent-claude-mac`)는 `seed_demo.py --scripted` 로 `demo_scripted=1` 이며 화면에 `시연용 · 대본 재생` 을 표시한다. 계약·검증기·worktree·실제 pytest·상태 규칙은 실제 어댑터와 같다. `deploy/launchd/`(운영자 Mac)는 셀프호스트 실사용용으로 남기고 공개 데모에서는 쓰지 않는다.
-
 ### 연결 끊김과 Mac 오프라인
 
 연결 프로그램 heartbeat 30초, 90초 미수신이면 Agent 연결 상태를 `offline`으로 바꾼다. 도구가 도는 동안(실행 루프가 어댑터 안에 묶인 동안)에도 별도 스레드가 현재 실행 ID 를 담아 같은 주기로 보낸다 — 2026-09-22 실제 Claude 실연동에서 실행 중 heartbeat 가 끊기는 결함을 발견해 고쳤다. offline인 동안 B 업무는 `대기`(연결 끊김, 마지막 확인 시각)로 남고 실행을 생성하지 않는다. 재접속하면 이미 claim한 실행부터 이어간다. 진단(A)은 Mac과 무관하게 동작한다.
-
-제안 — 사용자 확인 전: Mac 오프라인 동안에도 심사자가 B 결과를 볼 수 있도록, 운영자 세션에서 실제로 완료한 A → B 업무 한 쌍을 "예시 실행"으로 읽기 전용 공개한다. "운영자가 {날짜}에 실행한 기록"으로 표시하며 고정 답변 재생이 아니다. 구현 범위가 늘어나므로 채택 여부는 별도 확인한다.
 
 ### 모델 호출 예산 — 총액 US$30
 
