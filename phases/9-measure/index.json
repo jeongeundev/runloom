@@ -93,7 +93,9 @@
     {
       "step": 11,
       "name": "merge-link-storage",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T05:35:29+0900",
+      "summary": "github_client.get_issue_pr_link(repo, number)(+GitHubClient Protocol): GraphQL repository.issue(number) 의 closedByPullRequestsReferences(first 25, includeClosedPrs) 중 가장 이른 병합 하나, CLOSED 아니거나 병합 없으면 None — list_issue_pr_links 와 노드 해석 _earliest_merge·_graphql(query, variables, field) 공유(이슈 null 은 GitHubError), 허용 저장소·오류 분류 동일; db.py: _SOURCE_ISSUE_MERGE_COLUMNS(merged_pr_number·pr_merged_at·merge_checked_at, NULL 허용) — SCHEMA_VERSION 6 유지, _V5_TABLES 를 4→5 가 그대로 쓰므로 빈 DB(_SCHEMA 끝)·5→6 모두 _V6_SOURCE_ISSUE_ALTERS(ALTER ADD COLUMN)로 추가; repo.record_issue_merge(conn,*,session_id,source_id,github_issue_id,link,now)(자체 _tx, merge_checked_at=now, 병합 칸은 COALESCE 로 비었을 때만 — 다른 값·None 으로 덮지 않음, 다른 세션·없는 이슈 NotFound, 이슈 번호 다른 링크 ValueError)·list_issues_needing_merge_check(closed·pr_merged_at NULL, 번호순); 문서: ADR-0015 결정 9(완료=병합 PR 병합 시각, 승인 시각은 별도 지표)·결과 bullet, ARCHITECTURE 측정 절 저장 표·단락·이름표 3행, github_client docstring. 테스트: test_github_client 18·test_db 칸 검사 4곳·test_repo 4. 검증: pytest 2358 passed/53 skipped, ruff 통과. 다음 step 주의: 조회 대상은 state='closed' 만이라 수집이 state 를 갱신해야 잡힘; link None 이어도 merge_checked_at 은 갱신되므로 재조회 간격은 step 12 가 정할 것; 지표(list_metric_facts·compute_metrics)는 아직 pr_merged_at 을 안 씀; e2e FakeGitHub 등 GitHubClient 가짜는 get_issue_pr_link 없음"
     },
     {
       "step": 12,

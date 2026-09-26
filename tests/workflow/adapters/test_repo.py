@@ -1811,6 +1811,80 @@ def test_source_issue_lookup_and_source_owner(cycle):
         repo.list_source_issues(cycle, OTHER_SESSION, SOURCE)
 
 
+
+# --- phase 9 step 11: 이슈를 닫은 병합 PR 의 병합 시각 --------------------------------------------------
+
+
+def _merge_row(conn, issue_id: int = 2456789012):
+    return tuple(conn.execute(
+        "SELECT merged_pr_number, pr_merged_at, merge_checked_at FROM source_issues WHERE github_issue_id = ?",
+        (issue_id,),
+    ).fetchone())
+
+
+def _merge_link(pr: int = 77, merged_at: str = "2026-10-07T09:00:00Z", issue: int = 41) -> IssuePrLink:
+    return IssuePrLink(issue_number=issue, issue_title="할인 쿠폰이 두 번 적용됨",
+                       issue_opened_at="2026-10-06T10:12:00Z", pr_number=pr, pr_merged_at=merged_at)
+
+
+def test_record_issue_merge_stores_link_and_check_time_idempotently(cycle):
+    assert _merge_row(cycle) == (None, None, None)  # 아직 모름
+
+    repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                            link=None, now=NOW)
+    assert _merge_row(cycle) == (None, None, NOW)  # 조회했지만 병합 없음 — 시각을 지어내지 않는다
+
+    repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                            link=_merge_link(), now=LATER)
+    assert _merge_row(cycle) == (77, "2026-10-07T09:00:00Z", LATER)
+
+    repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                            link=_merge_link(), now=LATER)  # 같은 값 재기록은 멱등
+    assert _merge_row(cycle) == (77, "2026-10-07T09:00:00Z", LATER)
+
+
+def test_record_issue_merge_never_overwrites_a_recorded_merge(cycle):
+    record = dict(session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012)
+    repo.record_issue_merge(cycle, **record, link=_merge_link(), now=NOW)
+
+    repo.record_issue_merge(cycle, **record, link=_merge_link(pr=78, merged_at="2026-10-08T00:00:00Z"), now=LATER)
+    assert _merge_row(cycle)[:2] == (77, "2026-10-07T09:00:00Z")
+    repo.record_issue_merge(cycle, **record, link=None, now=LATER)  # 나중 조회가 비어도 지우지 않는다
+    assert _merge_row(cycle)[:2] == (77, "2026-10-07T09:00:00Z")
+
+
+def test_record_issue_merge_rejects_other_session_unknown_issue_and_wrong_number(cycle):
+    with pytest.raises(NotFound):
+        repo.record_issue_merge(cycle, session_id=OTHER_SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                                link=_merge_link(), now=LATER)
+    with pytest.raises(NotFound):
+        repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=1,
+                                link=_merge_link(), now=LATER)
+    with pytest.raises(ValueError):  # 다른 이슈의 링크
+        repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                                link=_merge_link(issue=42), now=LATER)
+    assert _merge_row(cycle) == (None, None, None)
+
+
+def test_list_issues_needing_merge_check_is_closed_without_merge(cycle):
+    closed = _snapshot(state="closed", updated_at="2026-10-06T11:00:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, closed, task=_fix_task(), now=LATER)
+    other = _snapshot(issue_id=9, number=9, state="closed")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, other, task=_fix_task("task-gh-9"), now=LATER)
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, _snapshot(issue_id=10, number=10),
+                             task=_fix_task("task-gh-10"), now=LATER)  # 열린 이슈 — 대상 아님
+
+    rows = repo.list_issues_needing_merge_check(cycle, SESSION, SOURCE)
+    assert [r["issue_number"] for r in rows] == [9, 41]
+
+    repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=9, link=None, now=LATER)
+    assert [r["issue_number"] for r in repo.list_issues_needing_merge_check(cycle, SESSION, SOURCE)] == [9, 41]
+    repo.record_issue_merge(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                            link=_merge_link(), now=LATER)
+    assert [r["issue_number"] for r in repo.list_issues_needing_merge_check(cycle, SESSION, SOURCE)] == [9]
+    with pytest.raises(NotFound):
+        repo.list_issues_needing_merge_check(cycle, OTHER_SESSION, SOURCE)
+
 def _review_spec(cause: str = "exec-fix-1", session_id: str = SESSION) -> FollowupTaskSpec:
     return FollowupTaskSpec(session_id=session_id, kind="code_review", cause_execution_id=cause,
                             predecessor_task_id="task-gh-41", rules_revision=1)

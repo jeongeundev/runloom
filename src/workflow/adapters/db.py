@@ -170,6 +170,12 @@ _EXECUTION_MEASURE_COLUMNS = (
     "input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0)",
     "output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0)",
 )
+# 원본 이슈를 닫은 병합 PR (step 11 — 도입 후 완료 시각). NULL = 아직 모름/병합 없음, merge_checked_at = 마지막 조회.
+_SOURCE_ISSUE_MERGE_COLUMNS = (
+    "merged_pr_number INTEGER",
+    "pr_merged_at TEXT",
+    "merge_checked_at TEXT",
+)
 
 _V6_TABLES = f"""
 -- Task 상태·준비 이력. 추가 전용 — UPDATE·DELETE 경로 없음. revision 들은 기록 시점의 Task·세션 값.
@@ -207,6 +213,11 @@ CREATE TABLE IF NOT EXISTS baseline_imports (
   item_count    INTEGER NOT NULL
 );
 """
+
+# source_issues 는 v5 정의(_V5_TABLES)를 4 → 5 가 그대로 쓰므로, v6 칸은 빈 DB·5 → 6 모두 ALTER 로 더한다.
+_V6_SOURCE_ISSUE_ALTERS = "".join(
+    f"ALTER TABLE source_issues ADD COLUMN {column};\n" for column in _SOURCE_ISSUE_MERGE_COLUMNS
+)
 
 
 _SCHEMA = f"""
@@ -416,7 +427,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS
 
 
 def _statements(script: str) -> list[str]:
@@ -481,10 +492,12 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
 
 def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
     """호출자가 연 트랜잭션 안에서 실행한다. 기존 행은 건드리지 않고 칸·테이블만 더한다 —
-    세션 config_revision 은 1, 실행 측정 칸은 NULL(모름). 과거 이벤트를 추정해 채우지 않는다."""
+    세션 config_revision 은 1, 실행 측정 칸·원본 이슈 병합 칸은 NULL(모름). 과거 이벤트를 추정해 채우지 않는다."""
     conn.execute(f"ALTER TABLE sessions ADD COLUMN {_SESSION_CONFIG_REVISION}")
     for column in _EXECUTION_MEASURE_COLUMNS:
         conn.execute(f"ALTER TABLE executions ADD COLUMN {column}")
+    for statement in _statements(_V6_SOURCE_ISSUE_ALTERS):
+        conn.execute(statement)
     for statement in _statements(_V6_TABLES):
         conn.execute(statement)
     if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:

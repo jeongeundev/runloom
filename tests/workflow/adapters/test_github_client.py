@@ -376,6 +376,98 @@ def test_graphql_request_body_and_logs_have_no_token(caplog):
         assert TOKEN not in text
 
 
+
+# ── 이슈 하나의 병합 PR (phase 9, step 11) ─────────────────────────────────
+
+
+def _gql_one(state: str | None, prs: list[dict], number: int = 7) -> dict:
+    issue = None if state is None else {**_gql_issue(number, "2026-10-01T00:00:00Z", prs), "state": state}
+    return {"data": {"repository": {"issue": issue}}}
+
+
+def test_issue_pr_link_picks_earliest_merged_pr_of_closed_issue():
+    rec = _graphql(_gql_one("CLOSED", [
+        _pr(30, "2026-10-09T00:00:00Z"), _pr(31, None), _pr(32, "2026-10-05T00:00:00Z"),
+    ]))
+
+    link = _client(rec).get_issue_pr_link(REPO, 7)
+
+    assert link == IssuePrLink(issue_number=7, issue_title="이슈 7", issue_opened_at="2026-10-01T00:00:00Z",
+                               pr_number=32, pr_merged_at="2026-10-05T00:00:00Z")
+    (call,) = rec.calls
+    assert call.url.host == "api.github.com" and call.url.path == "/graphql"
+    assert _body(call)["variables"] == {"owner": "acme", "name": "app", "number": 7}
+    query = _body(call)["query"]
+    assert "issue(number: $number)" in query and "includeClosedPrs: true" in query
+
+
+def test_issue_pr_link_single_merged_pr():
+    rec = _graphql(_gql_one("CLOSED", [_pr(12, "2026-10-02T03:00:00Z")]))
+    link = _client(rec).get_issue_pr_link(REPO, 7)
+    assert (link.pr_number, link.pr_merged_at) == (12, "2026-10-02T03:00:00Z")
+
+
+@pytest.mark.parametrize(
+    ("state", "prs"),
+    [
+        ("CLOSED", [_pr(20, None)]),  # 병합 안 된 PR 만
+        ("CLOSED", []),  # PR 없이 닫힘
+        ("OPEN", [_pr(21, "2026-10-02T00:00:00Z")]),  # 아직 열려 있음 — 병합됐어도 완료가 아니다
+    ],
+)
+def test_issue_pr_link_is_none_without_merge_or_while_open(state, prs):
+    assert _client(_graphql(_gql_one(state, prs))).get_issue_pr_link(REPO, 7) is None
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected"),
+    [("NOT_FOUND", GitHubNotFound), ("FORBIDDEN", GitHubForbidden), ("RATE_LIMITED", GitHubRateLimited),
+     ("SOMETHING_ELSE", GitHubError)],
+)
+def test_issue_pr_link_graphql_errors_are_classified_without_body(error_type, expected):
+    rec = _graphql({"data": None, "errors": [{"type": error_type, "message": f"secret detail {TOKEN}"}]})
+
+    with pytest.raises(expected) as info:
+        _client(rec).get_issue_pr_link(REPO, 7)
+
+    assert type(info.value) is expected
+    assert "secret detail" not in str(info.value) and TOKEN not in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": {"repository": None}},
+        _gql_one(None, []),  # 이슈 없음(오류 없이 null)
+        {"data": {"repository": {"issue": {"number": 7, "state": "CLOSED"}}}},
+        _gql_one("CLOSED", [_pr(2, "어제")]),
+    ],
+)
+def test_issue_pr_link_bad_shape_is_github_error(payload):
+    with pytest.raises(GitHubError):
+        _client(_graphql(payload)).get_issue_pr_link(REPO, 7)
+
+
+@pytest.mark.parametrize("repo", ["acme/other", "../etc", "https://evil.example/acme/app"])
+def test_issue_pr_link_refuses_repository_outside_allowed_list(repo):
+    rec = Recorder({})
+
+    with pytest.raises(GitHubRepositoryNotAllowed):
+        _client(rec).get_issue_pr_link(repo, 7)
+    assert rec.calls == []
+
+
+def test_issue_pr_link_request_body_and_errors_have_no_token(caplog):
+    caplog.set_level(logging.DEBUG)
+    rec = _graphql({"errors": [{"type": "FORBIDDEN", "message": "no"}]})
+
+    with pytest.raises(GitHubForbidden) as info:
+        _client(rec).get_issue_pr_link(REPO, 7)
+
+    assert TOKEN not in rec.calls[0].content.decode()
+    for text in (str(info.value), repr(info.value), caplog.text):
+        assert TOKEN not in text
+
 # ── 오류 분류 ─────────────────────────────────────────────────────────────
 
 

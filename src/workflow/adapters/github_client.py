@@ -7,7 +7,7 @@
 - 오류: `GitHubRateLimited`(429, 또는 403 + `x-ratelimit-remaining: 0`/`retry-after`)·`GitHubForbidden`(401·403)·
   `GitHubNotFound`(404·410)·`GitHubUnavailable`(5xx·연결 오류·timeout)·그 밖(3xx·422·응답 형식)은 `GitHubError`.
   재시도 여부·간격은 호출자(step 7 수집·step 12 전달)가 정한다.
-- 기준선(ADR-0015)만 GraphQL(`POST /graphql`)을 쓴다. 같은 헤더·허용 저장소·오류 분류이고, 200 응답의 `errors` 는
+- 기준선과 이슈별 병합 PR 조회(ADR-0015)만 GraphQL(`POST /graphql`)을 쓴다. 같은 헤더·허용 저장소·오류 분류이고, 200 응답의 `errors` 는
   `type` 으로 분류한다(`RATE_LIMITED`·`FORBIDDEN`·`NOT_FOUND`). 메시지는 여기도 `POST /graphql: …` 뿐이다.
 """
 
@@ -45,6 +45,23 @@ query($owner: String!, $name: String!, $cursor: String) {
         closedByPullRequestsReferences(first: 25, includeClosedPrs: true) {
           nodes { number merged mergedAt }
         }
+      }
+    }
+  }
+}
+"""
+
+# 이슈 하나(phase 9 step 11 — 도입 후 완료 시각). PR 노드 모양은 위 질의와 같다 — `_earliest_merge` 가 함께 해석한다.
+_ONE_ISSUE_PR_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      number
+      title
+      createdAt
+      state
+      closedByPullRequestsReferences(first: 25, includeClosedPrs: true) {
+        nodes { number merged mergedAt }
       }
     }
   }
@@ -154,12 +171,27 @@ class GitHubClient(Protocol):
 
     def list_issue_pr_links(self, repo: str, *, opened_before: str) -> list[IssuePrLink]: ...
 
+    def get_issue_pr_link(self, repo: str, number: int) -> IssuePrLink | None: ...
+
 
 def _header_int(response: httpx.Response, name: str) -> int | None:
     try:
         return int(response.headers[name])
     except (KeyError, ValueError):
         return None
+
+
+def _earliest_merge(node: Any) -> IssuePrLink | None:
+    """이슈 노드 → 그 이슈를 닫은 병합 PR 중 가장 이른 병합 하나. 병합 PR 이 없으면 None.
+    형식 오류는 KeyError·TypeError·ValueError·ValidationError 로 올린다 — 호출자가 GitHubError 로 바꾼다."""
+    merged = [pr for pr in node["closedByPullRequestsReferences"]["nodes"] if pr["merged"]]
+    if not merged:
+        return None
+    first = min(merged, key=lambda pr: datetime.fromisoformat(parse_rfc3339_aware(pr["mergedAt"])))
+    return IssuePrLink(
+        issue_number=node["number"], issue_title=node["title"], issue_opened_at=node["createdAt"],
+        pr_number=first["number"], pr_merged_at=first["mergedAt"],
+    )
 
 
 class HttpGitHubClient:
@@ -270,17 +302,13 @@ class HttpGitHubClient:
         links: list[IssuePrLink] = []
         cursor: str | None = None
         while True:
-            issues = self._graphql({"owner": owner, "name": short, "cursor": cursor})
+            issues = self._graphql(_ISSUE_PR_QUERY, {"owner": owner, "name": short, "cursor": cursor}, "issues")
             try:
                 for node in issues["nodes"]:
-                    merged = [pr for pr in node["closedByPullRequestsReferences"]["nodes"] if pr["merged"]]
-                    if not merged or datetime.fromisoformat(parse_rfc3339_aware(node["createdAt"])) >= boundary:
+                    link = _earliest_merge(node)
+                    if link is None or datetime.fromisoformat(parse_rfc3339_aware(node["createdAt"])) >= boundary:
                         continue
-                    first = min(merged, key=lambda pr: datetime.fromisoformat(parse_rfc3339_aware(pr["mergedAt"])))
-                    links.append(IssuePrLink(
-                        issue_number=node["number"], issue_title=node["title"], issue_opened_at=node["createdAt"],
-                        pr_number=first["number"], pr_merged_at=first["mergedAt"],
-                    ))
+                    links.append(link)
                 page = issues["pageInfo"]
                 has_next, cursor = page["hasNextPage"], page["endCursor"]
             except (KeyError, TypeError, ValueError, ValidationError):
@@ -289,6 +317,15 @@ class HttpGitHubClient:
                 return sorted(links, key=lambda link: link.issue_number)
             if not isinstance(cursor, str) or not cursor:
                 raise GitHubError("POST /graphql: 다음 페이지 커서가 없습니다")
+
+    def get_issue_pr_link(self, repo: str, number: int) -> IssuePrLink | None:
+        """이슈 하나를 닫은 병합 PR 중 가장 이른 병합. 이슈가 열려 있거나 병합 PR 이 없으면 None."""
+        owner, short = self._repo(repo).split("/")
+        node = self._graphql(_ONE_ISSUE_PR_QUERY, {"owner": owner, "name": short, "number": int(number)}, "issue")
+        try:
+            return None if node["state"] != "CLOSED" else _earliest_merge(node)
+        except (KeyError, TypeError, ValueError, ValidationError):
+            raise GitHubError("POST /graphql: 응답 형식 오류") from None
 
     # ── 내부 ──
 
@@ -321,9 +358,9 @@ class HttpGitHubClient:
             raise GitHubUnavailable(message)
         raise GitHubError(message)  # 3xx(리다이렉트는 따라가지 않는다)·422 등
 
-    def _graphql(self, variables: dict[str, Any]) -> Any:
-        """기준선 질의 한 페이지 → `repository.issues`. `errors` 는 type 으로만 분류하고 message 는 버린다."""
-        response = self._call("POST", "/graphql", json={"query": _ISSUE_PR_QUERY, "variables": variables})
+    def _graphql(self, query: str, variables: dict[str, Any], field: str) -> dict:
+        """질의 한 번 → `repository.{field}` 객체. `errors` 는 type 으로만 분류하고 message 는 버린다."""
+        response = self._call("POST", "/graphql", json={"query": query, "variables": variables})
         try:
             payload = response.json()
         except ValueError:
@@ -344,12 +381,12 @@ class HttpGitHubClient:
                 raise GitHubNotFound("POST /graphql: NOT_FOUND")
             raise GitHubError("POST /graphql: GraphQL 오류")
         try:
-            issues = payload["data"]["repository"]["issues"]
+            value = payload["data"]["repository"][field]
         except (KeyError, TypeError):
             raise GitHubError("POST /graphql: 응답 형식 오류") from None
-        if not isinstance(issues, dict):
+        if not isinstance(value, dict):  # 이슈가 null 이어도 — 없는 이슈는 GitHub 가 NOT_FOUND 오류로 준다
             raise GitHubError("POST /graphql: 응답 형식 오류")
-        return issues
+        return value
 
     def _json_list(self, response: httpx.Response, path: str) -> list:
         try:

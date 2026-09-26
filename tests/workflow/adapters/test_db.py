@@ -692,6 +692,7 @@ V5_TABLES = TABLES - PHASE9_TABLES
 EXECUTION_MEASURE_COLUMNS = (
     "config_revision", "folder_commit", "folder_dirty", "cost_usd", "input_tokens", "output_tokens",
 )
+SOURCE_ISSUE_MERGE_COLUMNS = ("merged_pr_number", "pr_merged_at", "merge_checked_at")
 
 
 def _v5_db(db_path):
@@ -758,6 +759,7 @@ def test_v5_fixture_is_the_phase8_schema(db_path):
     assert _table_names(c) - {"sqlite_sequence"} == V5_TABLES | {"schema_version"}
     assert "config_revision" not in _columns(c, "sessions")
     assert not set(EXECUTION_MEASURE_COLUMNS) & _columns(c, "executions")
+    assert not set(SOURCE_ISSUE_MERGE_COLUMNS) & _columns(c, "source_issues")
     c.close()
 
 
@@ -766,6 +768,7 @@ def test_fresh_db_is_v6_with_measure_tables(conn):
     assert TABLES <= _table_names(conn)
     assert "config_revision" in _columns(conn, "sessions")
     assert set(EXECUTION_MEASURE_COLUMNS) <= _columns(conn, "executions")
+    assert set(SOURCE_ISSUE_MERGE_COLUMNS) <= _columns(conn, "source_issues")
     assert _columns(conn, "task_events") == {
         "id", "task_id", "session_id", "type", "task_revision", "config_revision", "occurred_at", "data_json",
     }
@@ -842,6 +845,8 @@ def test_migrates_v5_to_v6_preserving_data(db_path):
     ]
     row = c.execute(f"SELECT {', '.join(EXECUTION_MEASURE_COLUMNS)} FROM executions").fetchone()
     assert tuple(row) == (None,) * len(EXECUTION_MEASURE_COLUMNS)
+    row = c.execute(f"SELECT {', '.join(SOURCE_ISSUE_MERGE_COLUMNS)} FROM source_issues").fetchone()
+    assert tuple(row) == (None,) * len(SOURCE_ISSUE_MERGE_COLUMNS)  # 병합은 아직 모름 — 추정해 채우지 않는다
     for table in PHASE9_TABLES:  # 과거 이벤트를 추정해 채우지 않는다
         assert c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -900,6 +905,7 @@ def test_v5_migration_rolls_back_when_a_later_statement_fails(db_path, monkeypat
     assert _dump(c, V5_TABLES) == before
     assert "config_revision" not in _columns(c, "sessions")
     assert not set(EXECUTION_MEASURE_COLUMNS) & _columns(c, "executions")
+    assert not set(SOURCE_ISSUE_MERGE_COLUMNS) & _columns(c, "source_issues")
     assert not c.in_transaction
     monkeypatch.undo()
     init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다

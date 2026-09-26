@@ -18,6 +18,7 @@
 6. **스키마 v5 → v6 는 데이터 보존·한 트랜잭션 마이그레이션**(ADR-0014 의 v4 → v5 와 같은 방식). 기존 실행의 새 칸은 NULL(= 모름), 기존 세션의 `config_revision` 은 1. 과거 이벤트를 추정해 채우지 않는다.
 7. **기준선 = 도입 전 GitHub 이력 "이슈 열림 → 그 이슈를 닫은(연결된) 병합 PR".** GitHub GraphQL(이슈의 `closedByPullRequestsReferences` 또는 PR 의 `closingIssuesReferences`)로 가져온다. 도입 전 = 해당 GitHub 소스 연결 시각(`github_sources.created_at`) 이전에 열린 이슈. 가져오기는 운영자가 명시적으로 실행하고, 소스 단위 전체 교체라 멱등이다(`baseline_items`·`baseline_imports`). 화면·API 에 "하네스·Claude 사용 시기 이력 — 순수 수작업 기준 아님" 주석과 n 을 붙인다. OpenArchive 는 2026-09-27 조회 기준 약 19건이다. 이 phase 는 대역으로만 검증하고 실제 가져오기는 phase 뒤 사용자 지시로 한다.
 8. **지표는 순수 도메인 계산.** `workflow.domain.metrics` 가 DB 행이 아닌 값 객체를 받아 `compute_metrics(...)`·`summarize_baseline(...)` 로 계산한다. 모든 수치는 중앙값·n·미완료 건수·"모름" 건수를 함께 낸다. 기간(from/to)과 묶음 기준(`config_revision` 또는 `folder_commit`)으로 나눌 수 있다. 관측한 차이를 인과적 효과로 단정하는 문구를 쓰지 않는다.
+9. **도입 후 완료 = 그 이슈를 닫은 병합 PR 의 병합 시각**(2026-09-27 사용자 합의, step 11·12). 기준선이 "이슈 열림 → 병합"인데 도입 후 `bug_fix` 묶음의 완료가 운영자 검토 승인 시각이면, 승인 뒤 사람이 하는 push·PR·병합이 빠져 도입 후 수치가 짧게 나온다. 그래서 도입 후 완료도 GitHub 에서 원본 이슈를 닫은 병합 PR 중 가장 이른 병합 시각(`source_issues.pr_merged_at`, 기준선과 같은 해석)으로 맞춘다. 운영자 승인 시각은 버리지 않고 별도 지표로 둔다. 병합 칸은 v6 에 더하고(v6 는 아직 배포 전이라 새 버전을 만들지 않는다) NULL = 아직 모름/병합 없음, 한 번 기록한 병합은 덮지 않는다. step 11 은 조회·저장, 동기화와 지표 연결은 step 12.
 
 ## 대안
 
@@ -30,6 +31,6 @@
 ## 결과
 
 - 이 phase 이전 데이터는 버전·커밋·비용·준비 판정 기록이 없다 — 지표에서 "모름"으로 따로 센다.
-- 완료 시각의 비대칭: 기준선의 끝은 PR 병합이지만, 도입 후 `bug_fix` 는 자동 push·PR·merge 를 하지 않고(ADR-0014 6) 병합 확인(`merge_confirmed_at`)을 지금 `code_change` 에만 제공한다. 도입 후 "접수 → 완료"는 `merge_confirmed_at`, 없으면 묶음 시작 Task 가 `완료` 로 바뀐 `status_changed` 시각을 쓰고, 화면에 그 차이를 적는다.
+- 완료 시각의 비대칭: 기준선의 끝은 PR 병합이지만, 도입 후 `bug_fix` 는 자동 push·PR·merge 를 하지 않고(ADR-0014 6) 병합 확인(`merge_confirmed_at`)을 지금 `code_change` 에만 제공한다. 도입 후 "접수 → 완료"는 `merge_confirmed_at`, 없으면 묶음 시작 Task 가 `완료` 로 바뀐 `status_changed` 시각을 쓰고, 화면에 그 차이를 적는다. 결정 9 로 원본 이슈가 있는 묶음은 병합 PR 병합 시각으로 바꾼다(step 12).
 - `GitHubSourceConfig.config_revision`(소스 설정의 낙관적 잠금 번호)과 `sessions.config_revision`(워크스페이스 설정 번호)은 이름이 같지만 다른 값이다. 소스 설정이 바뀔 때 둘 다 오른다.
 - 공개 데모(`main`)·n8n 입구·callback 계약은 바뀌지 않는다.

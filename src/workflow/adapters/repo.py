@@ -1672,6 +1672,40 @@ def list_source_issues(conn: Connection, session_id: str, source_id: str) -> lis
     ).fetchall()
 
 
+def record_issue_merge(
+    conn: Connection, *, session_id: str, source_id: str, github_issue_id: int, link: IssuePrLink | None, now: str
+) -> None:
+    """원본 이슈를 닫은 병합 PR 을 기록하고 `merge_checked_at` 을 `now` 로 (ADR-0015 — 도입 후 완료 시각).
+    `link` None = 조회했지만 병합 없음 — 병합 칸은 그대로 둔다. 한 번 기록된 병합은 다른 값·None 으로 덮지 않는다
+    (같은 값 재기록은 멱등). 다른 세션 소스·없는 이슈 → NotFound, 다른 번호의 링크 → ValueError."""
+    with _tx(conn):
+        _source_row(conn, session_id, source_id)
+        row = _one(
+            conn, "SELECT issue_number FROM source_issues WHERE source_id = ? AND github_issue_id = ?",
+            (source_id, github_issue_id),
+        )
+        if row is None:
+            raise NotFound(f"source issue {source_id}/{github_issue_id}")
+        if link is not None and link.issue_number != row["issue_number"]:
+            raise ValueError(f"링크 이슈 #{link.issue_number} 는 #{row['issue_number']} 가 아닙니다")
+        conn.execute(
+            "UPDATE source_issues SET merge_checked_at = ?,"
+            " merged_pr_number = COALESCE(merged_pr_number, ?), pr_merged_at = COALESCE(pr_merged_at, ?)"
+            " WHERE source_id = ? AND github_issue_id = ?",
+            (now, link and link.pr_number, link and link.pr_merged_at, source_id, github_issue_id),
+        )
+
+
+def list_issues_needing_merge_check(conn: Connection, session_id: str, source_id: str) -> list[Row]:
+    """닫혔지만 병합 시각을 아직 모르는 원본 이슈(번호 순). 다른 세션 소스 → NotFound."""
+    _source_row(conn, session_id, source_id)
+    return conn.execute(
+        "SELECT * FROM source_issues WHERE source_id = ? AND state = 'closed' AND pr_merged_at IS NULL"
+        " ORDER BY issue_number",
+        (source_id,),
+    ).fetchall()
+
+
 def get_source_issue_by_task(conn: Connection, session_id: str, task_id: str) -> Row | None:
     return _one(
         conn,
