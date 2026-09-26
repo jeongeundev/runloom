@@ -1,4 +1,4 @@
-"""GitHub 업무 순환 계약 — 소스 설정·담당 연결·이슈 스냅샷·원본 반영 (CONTRACT 13.6~13.8, ADR-0014).
+"""GitHub 업무 순환 계약 — 소스 설정·담당 연결·이슈 스냅샷·원본 반영 (CONTRACT 13.6~13.8, ADR-0014), 기준선 (ADR-0015).
 
 중앙 서버 안에서만 쓰는 모델이다(연결 프로그램은 모른다). 규칙은 v1 과 같다 — 알 수 없는 필드 거부, 자동 변환 없음.
 토큰 필드는 없다: 값은 서버 환경변수 `WORKFLOW_GITHUB_TOKEN` 에만 있다. 이슈 제목·본문·URL 은 표시·요청 재료일 뿐
@@ -120,3 +120,13 @@ class SourceDelivery(_Contract):
         if self.state == "delivered" and self.comment_id is None:
             raise ValueError("delivered 는 comment_id 가 있어야 합니다")
         return self
+
+
+class IssuePrLink(_Contract):
+    """기준선 한 건 — 닫힌 이슈와 그 이슈를 닫은 **병합된** PR (ADR-0015). 병합 안 된 PR 은 만들지 않는다."""
+
+    issue_number: PositiveInt
+    issue_title: NonEmptyStr
+    issue_opened_at: Rfc3339
+    pr_number: PositiveInt
+    pr_merged_at: Rfc3339

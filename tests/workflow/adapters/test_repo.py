@@ -32,6 +32,7 @@ from workflow.contracts.github import (
     AssigneeBinding,
     GitHubIssueSnapshot,
     GitHubSourceConfig,
+    IssuePrLink,
     snapshot_digest,
 )
 from workflow.contracts.v1 import (
@@ -1623,6 +1624,62 @@ def test_source_cursor_is_saved_per_source_and_scoped(seeded):
         repo.save_source_cursor(seeded, OTHER_SESSION, SOURCE, "x", LATER)
     with pytest.raises(NotFound):
         repo.get_source_cursor(seeded, OTHER_SESSION, SOURCE)
+
+
+def _link(issue: int, pr: int, merged_at: str = "2026-08-02T00:00:00Z") -> IssuePrLink:
+    return IssuePrLink(issue_number=issue, issue_title=f"이슈 {issue}", issue_opened_at="2026-08-01T00:00:00Z",
+                       pr_number=pr, pr_merged_at=merged_at)
+
+
+def test_replace_baseline_replaces_items_and_records_import_idempotently(seeded):
+    """step 7 — 소스 단위 전체 교체. 같은 결과로 다시 가져와도 행이 늘지 않고, 설정 번호는 그대로다."""
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    revision = repo.get_config_revision(seeded, SESSION)
+    assert repo.list_baseline(seeded, SESSION, SOURCE) == (None, [])
+
+    links = [_link(3, 30), _link(1, 10)]
+    assert repo.replace_baseline(seeded, SESSION, SOURCE, links, opened_before=NOW, now=NOW) == 2
+    assert repo.replace_baseline(seeded, SESSION, SOURCE, links, opened_before=NOW, now=LATER) == 2
+
+    record, items = repo.list_baseline(seeded, SESSION, SOURCE)
+    assert (record["opened_before"], record["fetched_at"], record["item_count"]) == (NOW, LATER, 2)
+    assert [(r["issue_number"], r["issue_title"], r["issue_opened_at"], r["pr_number"], r["pr_merged_at"],
+             r["fetched_at"]) for r in items] == [
+        (1, "이슈 1", "2026-08-01T00:00:00Z", 10, "2026-08-02T00:00:00Z", LATER),
+        (3, "이슈 3", "2026-08-01T00:00:00Z", 30, "2026-08-02T00:00:00Z", LATER),
+    ]
+
+    assert repo.replace_baseline(seeded, SESSION, SOURCE, [_link(5, 50)], opened_before=NOW, now=LATER) == 1
+    record, items = repo.list_baseline(seeded, SESSION, SOURCE)
+    assert record["item_count"] == 1 and [r["issue_number"] for r in items] == [5]
+    assert repo.replace_baseline(seeded, SESSION, SOURCE, [], opened_before=NOW, now=LATER) == 0
+    assert repo.list_baseline(seeded, SESSION, SOURCE)[1] == []
+    assert repo.get_config_revision(seeded, SESSION) == revision
+
+
+def test_baseline_is_scoped_to_the_source_owner_session(seeded):
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    repo.replace_baseline(seeded, SESSION, SOURCE, [_link(1, 10)], opened_before=NOW, now=NOW)
+
+    with pytest.raises(NotFound):
+        repo.replace_baseline(seeded, OTHER_SESSION, SOURCE, [], opened_before=NOW, now=LATER)
+    with pytest.raises(NotFound):
+        repo.list_baseline(seeded, OTHER_SESSION, SOURCE)
+    with pytest.raises(NotFound):
+        repo.list_baseline(seeded, SESSION, "ghs-00000009")
+    assert [r["issue_number"] for r in repo.list_baseline(seeded, SESSION, SOURCE)[1]] == [1]
+
+
+def test_replace_baseline_failure_keeps_previous_items(seeded):
+    """한 트랜잭션 — 중간 INSERT 가 실패하면 이전 기준선이 그대로 남는다."""
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    repo.replace_baseline(seeded, SESSION, SOURCE, [_link(1, 10)], opened_before=NOW, now=NOW)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.replace_baseline(seeded, SESSION, SOURCE, [_link(2, 20), _link(2, 20)], opened_before=NOW, now=LATER)
+
+    record, items = repo.list_baseline(seeded, SESSION, SOURCE)
+    assert record["fetched_at"] == NOW and [r["issue_number"] for r in items] == [1]
 
 
 def test_list_github_sources_and_owner_sessions(seeded):

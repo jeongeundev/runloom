@@ -16,6 +16,7 @@ from workflow.contracts.github import (
     AssigneeBinding,
     GitHubIssueSnapshot,
     GitHubSourceConfig,
+    IssuePrLink,
     SourceDelivery,
     snapshot_digest,
 )
@@ -247,3 +248,37 @@ def test_delivery_accepts_states(state):
 def test_delivery_rejects_bad_fields(overrides):
     with pytest.raises(ValidationError):
         SourceDelivery.model_validate(_delivery(**overrides))
+
+
+# --- IssuePrLink (phase 9 기준선) ---------------------------------------------------------
+
+_LINK = {
+    "issue_number": 12,
+    "issue_title": "목록 정렬 오류",
+    "issue_opened_at": "2026-08-01T09:00:00Z",
+    "pr_number": 15,
+    "pr_merged_at": "2026-08-02T10:30:00Z",
+}
+
+
+def test_issue_pr_link_roundtrip():
+    parsed = IssuePrLink.model_validate(_LINK)
+    assert parsed.model_dump(mode="json") == _LINK
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"issue_number": 0},
+        {"issue_number": "12"},
+        {"issue_title": ""},
+        {"issue_opened_at": "2026-08-01T09:00:00"},
+        {"pr_number": 0},
+        {"pr_merged_at": None},
+        {"pr_merged_at": "어제"},
+        {"extra": 1},
+    ],
+)
+def test_issue_pr_link_rejects_bad_fields(overrides):
+    with pytest.raises(ValidationError):
+        IssuePrLink.model_validate({**_LINK, **overrides})

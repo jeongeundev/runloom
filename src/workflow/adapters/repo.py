@@ -41,6 +41,7 @@ from workflow.contracts.github import (
     AssigneeBinding,
     GitHubIssueSnapshot,
     GitHubSourceConfig,
+    IssuePrLink,
     SourceDelivery,
     snapshot_digest,
 )
@@ -1444,6 +1445,41 @@ def github_source_session(conn: Connection, source_id: str) -> str | None:
 def github_source_sessions(conn: Connection) -> list[str]:
     """GitHub 소스를 가진 세션들. 운영자 API 는 이것이 한 세션뿐이도록 지킨다(셀프호스트 1개 워크스페이스)."""
     return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM github_sources ORDER BY session_id")]
+
+
+def replace_baseline(
+    conn: Connection, session_id: str, source_id: str, items: Sequence[IssuePrLink], *, opened_before: str, now: str
+) -> int:
+    """소스의 기준선 전체 교체 + 가져오기 기록, 한 트랜잭션 (ADR-0015). 다시 불러도 같은 결과 — 멱등.
+    설정이 아니라 관측 이력이므로 `config_revision` 은 올리지 않는다. 다른 세션 소스 → NotFound."""
+    with _tx(conn):
+        _source_row(conn, session_id, source_id)
+        conn.execute("DELETE FROM baseline_items WHERE source_id = ?", (source_id,))
+        conn.executemany(
+            "INSERT INTO baseline_items (source_id, issue_number, issue_title, issue_opened_at, pr_number,"
+            " pr_merged_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (source_id, i.issue_number, i.issue_title, i.issue_opened_at, i.pr_number, i.pr_merged_at, now)
+                for i in items
+            ],
+        )
+        conn.execute(
+            "INSERT INTO baseline_imports (source_id, opened_before, fetched_at, item_count) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(source_id) DO UPDATE SET opened_before = excluded.opened_before,"
+            " fetched_at = excluded.fetched_at, item_count = excluded.item_count",
+            (source_id, opened_before, now, len(items)),
+        )
+    return len(items)
+
+
+def list_baseline(conn: Connection, session_id: str, source_id: str) -> tuple[Row | None, list[Row]]:
+    """(마지막 가져오기 기록 또는 None, 항목 — 이슈·PR 번호순). 다른 세션 소스 → NotFound."""
+    _source_row(conn, session_id, source_id)
+    record = _one(conn, "SELECT * FROM baseline_imports WHERE source_id = ?", (source_id,))
+    items = conn.execute(
+        "SELECT * FROM baseline_items WHERE source_id = ? ORDER BY issue_number, pr_number", (source_id,)
+    ).fetchall()
+    return record, items
 
 
 def save_source_cursor(conn: Connection, session_id: str, source_id: str, cursor: str, now: str) -> None:

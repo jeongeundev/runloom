@@ -20,7 +20,7 @@ from workflow.adapters.github_client import (
     IssueCursor,
     IssuePage,
 )
-from workflow.contracts.github import GitHubIssueSnapshot
+from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink
 
 TOKEN = "github_pat_11TESTSECRETVALUE0123456789"
 REPO = "acme/app"
@@ -220,6 +220,160 @@ def test_create_and_update_comment():
     assert client.update_comment(REPO, 99, "b2") is None
 
     assert [json.loads(r.content) for r in rec.calls] == [{"body": "b"}, {"body": "b2"}]
+
+
+# ── 기준선: GraphQL 이슈 → 병합 PR (phase 9, step 7) ────────────────────────
+
+OPENED_BEFORE = "2026-09-22T00:00:00Z"
+
+
+def _pr(number: int, merged_at: str | None) -> dict:
+    return {"number": number, "merged": merged_at is not None, "mergedAt": merged_at}
+
+
+def _gql_issue(number: int, created_at: str, prs: list[dict]) -> dict:
+    return {"number": number, "title": f"이슈 {number}", "createdAt": created_at,
+            "closedByPullRequestsReferences": {"nodes": prs}}
+
+
+def _gql_page(nodes: list[dict], end_cursor: str | None) -> dict:
+    return {"data": {"repository": {"issues": {
+        "pageInfo": {"hasNextPage": end_cursor is not None, "endCursor": end_cursor}, "nodes": nodes,
+    }}}}
+
+
+def _graphql(*pages: dict, status: int = 200, headers=None) -> Recorder:
+    """부를 때마다 다음 페이지를 준다."""
+    queue = list(pages)
+    return Recorder({("POST", "/graphql"): lambda request: httpx.Response(status, json=queue.pop(0), headers=headers)})
+
+
+def _body(request: httpx.Request) -> dict:
+    return json.loads(request.content)
+
+
+def test_issue_pr_links_follow_pages_with_end_cursor():
+    rec = _graphql(
+        _gql_page([_gql_issue(1, "2026-08-01T00:00:00Z", [_pr(10, "2026-08-02T00:00:00Z")])], "c1"),
+        _gql_page([_gql_issue(2, "2026-08-03T00:00:00Z", [_pr(11, "2026-08-04T00:00:00Z")])], None),
+    )
+
+    links = _client(rec).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+
+    assert links == [
+        IssuePrLink(issue_number=1, issue_title="이슈 1", issue_opened_at="2026-08-01T00:00:00Z",
+                    pr_number=10, pr_merged_at="2026-08-02T00:00:00Z"),
+        IssuePrLink(issue_number=2, issue_title="이슈 2", issue_opened_at="2026-08-03T00:00:00Z",
+                    pr_number=11, pr_merged_at="2026-08-04T00:00:00Z"),
+    ]
+    first, second = rec.calls
+    assert first.url.host == "api.github.com" and first.url.path == "/graphql"
+    assert first.headers["authorization"] == f"Bearer {TOKEN}"
+    assert _body(first)["variables"] == {"owner": "acme", "name": "app", "cursor": None}
+    assert _body(second)["variables"] == {"owner": "acme", "name": "app", "cursor": "c1"}
+    query = _body(first)["query"]
+    assert "states: CLOSED" in query and "closedByPullRequestsReferences" in query and "includeClosedPrs: true" in query
+
+
+def test_issue_pr_links_skip_unmerged_and_pick_earliest_merge():
+    rec = _graphql(_gql_page([
+        _gql_issue(1, "2026-08-01T00:00:00Z", [_pr(20, None)]),  # 병합 안 된 PR 만 — 제외
+        _gql_issue(2, "2026-08-01T00:00:00Z", []),  # PR 없음 — 제외
+        _gql_issue(3, "2026-08-01T00:00:00Z", [
+            _pr(30, "2026-08-09T00:00:00Z"), _pr(31, None), _pr(32, "2026-08-05T00:00:00Z"),
+        ]),
+    ], None))
+
+    links = _client(rec).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+
+    assert [(link.issue_number, link.pr_number, link.pr_merged_at) for link in links] == [
+        (3, 32, "2026-08-05T00:00:00Z"),
+    ]
+
+
+def test_issue_pr_links_keep_only_issues_opened_before_boundary():
+    merged = [_pr(40, "2026-09-25T00:00:00Z")]
+    rec = _graphql(_gql_page([
+        _gql_issue(1, "2026-09-21T23:59:59Z", merged),
+        _gql_issue(2, "2026-09-22T00:00:00Z", merged),  # 경계와 같음 — 도입 뒤
+        _gql_issue(3, "2026-09-23T00:00:00Z", merged),
+        _gql_issue(4, "2026-09-22T08:30:00+09:00", merged),  # UTC 로 21일 23:30 — 도입 전
+    ], None))
+
+    links = _client(rec).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+
+    assert [link.issue_number for link in links] == [1, 4]
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected"),
+    [("NOT_FOUND", GitHubNotFound), ("FORBIDDEN", GitHubForbidden), ("SOMETHING_ELSE", GitHubError)],
+)
+def test_graphql_errors_are_classified_without_body(error_type, expected):
+    rec = _graphql({"data": None, "errors": [{"type": error_type, "message": f"secret detail {TOKEN}"}]})
+
+    with pytest.raises(expected) as info:
+        _client(rec).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+
+    assert type(info.value) is expected
+    assert "secret detail" not in str(info.value) and TOKEN not in str(info.value)
+
+
+def test_graphql_rate_limit_error_and_http_limit_are_rate_limited():
+    rec = _graphql({"errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]},
+                   headers={"x-ratelimit-reset": "1790000000"})
+    with pytest.raises(GitHubRateLimited) as info:
+        _client(rec).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+    assert info.value.reset_epoch == 1790000000
+
+    rec = _graphql({"message": "limit"}, status=403, headers={"x-ratelimit-remaining": "0", "retry-after": "60"})
+    with pytest.raises(GitHubRateLimited) as info:
+        _client(rec).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+    assert info.value.retry_after_seconds == 60
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data": {"repository": None}},
+        {"data": {"repository": {"issues": {"pageInfo": {"hasNextPage": True, "endCursor": None}, "nodes": []}}}},
+        _gql_page([{"number": 1}], None),
+        _gql_page([_gql_issue(1, "어제", [_pr(2, "2026-08-02T00:00:00Z")])], None),
+    ],
+)
+def test_graphql_bad_shape_is_plain_github_error(payload):
+    with pytest.raises(GitHubError) as info:
+        _client(_graphql(payload)).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+    assert type(info.value) is GitHubError
+
+
+@pytest.mark.parametrize("repo", ["acme/other", "../etc", "https://evil.example/acme/app"])
+def test_issue_pr_links_refuse_repository_outside_allowed_list(repo):
+    rec = Recorder({})
+
+    with pytest.raises(GitHubRepositoryNotAllowed):
+        _client(rec).list_issue_pr_links(repo, opened_before=OPENED_BEFORE)
+    assert rec.calls == []
+
+
+def test_issue_pr_links_rejects_bad_opened_before_before_request():
+    rec = Recorder({})
+
+    with pytest.raises(ValueError):
+        _client(rec).list_issue_pr_links(REPO, opened_before="2026-09-22")
+    assert rec.calls == []
+
+
+def test_graphql_request_body_and_logs_have_no_token(caplog):
+    caplog.set_level(logging.DEBUG)
+    rec = _graphql({"errors": [{"type": "FORBIDDEN", "message": "no"}]})
+
+    with pytest.raises(GitHubForbidden) as info:
+        _client(rec).list_issue_pr_links(REPO, opened_before=OPENED_BEFORE)
+
+    assert TOKEN not in rec.calls[0].content.decode()
+    for text in (str(info.value), repr(info.value), caplog.text):
+        assert TOKEN not in text
 
 
 # ── 오류 분류 ─────────────────────────────────────────────────────────────
