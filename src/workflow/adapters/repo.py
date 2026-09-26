@@ -692,6 +692,12 @@ def append_task_event(conn: Connection, *, task_id: str, type: str, data: dict, 
     return True
 
 
+def record_blocked(conn: Connection, task_id: str, blockers: list[dict], *, now: str) -> bool:
+    """워커의 준비 판정 대기 기록 — `append_task_event` 를 자체 트랜잭션으로 감싼다. `blockers` 는 `{"code", "actor"}`."""
+    with _tx(conn):
+        return append_task_event(conn, task_id=task_id, type="blocked", data={"blockers": blockers}, now=now)
+
+
 def list_task_events(conn: Connection, task_id: str) -> list[Row]:
     return conn.execute("SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)).fetchall()
 
@@ -877,11 +883,12 @@ def create_execution(
     predecessor_execution_id: str | None,
     now: str,
     release_execution_id: str | None = None,
+    ready: bool = False,
 ) -> None:
     """마감된 Task → TaskClosed, 활성 잠금(`ux_executions_active`) 위반 → ActiveExecutionExists, `(task_id, start_key)` 중복 →
     DuplicateStartKey. 잠금이 우선한다 (sqlite 가 부분 인덱스를 먼저 검사한다).
     `release_execution_id` 를 주면 그 이전 시도의 잠금 해제와 새 시도 생성을 한 트랜잭션에서 한다 — 새 시도가
-    거부되면 해제도 되돌린다(워커의 재작업·검토 재연결)."""
+    거부되면 해제도 되돌린다(워커의 재작업·검토 재연결). `ready` 면 같은 트랜잭션에 `ready` 이벤트(업무 순환 착수)."""
     request_json = request.model_dump_json()
     with _tx(conn):
         closed = _one(conn, "SELECT finished_at FROM tasks WHERE task_id = ?", (task_id,))
@@ -914,6 +921,9 @@ def create_execution(
             if message.endswith("executions.task_id"):
                 raise ActiveExecutionExists(task_id) from exc
             raise
+        if ready:
+            data = {"execution_id": execution_id, "agent_id": agent_id, "start_key": start_key}
+            append_task_event(conn, task_id=task_id, type="ready", data=data, now=now)
 
 
 def get_execution(conn: Connection, execution_id: str) -> Row | None:

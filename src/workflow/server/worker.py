@@ -963,7 +963,7 @@ class Worker:
             "execution_id": execution["execution_id"],
             "outcome": _result_outcome(conn, self._store, execution) or "",
             "verdict": "passed" if verdict == "passed" else "failed",
-            "rules": rules, "rules_revision": 1,  # 규칙 revision 개념은 아직 없다 — followup_links 기록용 1
+            "rules": rules, "rules_revision": repo.get_config_revision(conn, task["session_id"]),
             "source_state": issue["state"] if issue is not None else None,
         }
         if isinstance(request.target, CommitReviewTarget):
@@ -1240,7 +1240,7 @@ class Worker:
                 attempt_no=attempts[-1]["attempt_no"] + 1 if attempts else 1,
                 start_key=start_key, agent_id=agent["agent_id"], kind=task["kind"], request=request,
                 assigned_connector_id=agent["connector_id"], predecessor_execution_id=predecessor_execution_id,
-                now=self._clock(), release_execution_id=release_execution_id,
+                now=self._clock(), release_execution_id=release_execution_id, ready=True,
             )
         except (DuplicateStartKey, ActiveExecutionExists) as exc:
             log.info("업무 %s 는 이미 이 원인으로 실행을 만들었음: %s", task_id, exc)
@@ -1254,13 +1254,17 @@ class Worker:
     def _write_blocked(
         self, conn: Connection, task: Row, readiness: TaskReadiness, report: TickReport | None = None
     ) -> None:
-        """대기 사유를 모두 이유 문구로. 직접 실행 모드만 남았으면 `실행 가능`(사람이 누르면 된다). 운영자가 정해야 하는
-        사유는 이 revision 에 한 번 사람 요청으로 남긴다 — 이미 다른 요청을 기다리는 중(`decision_pending`)이면 더 묻지 않는다."""
+        """대기 사유를 모두 이유 문구로. 직접 실행 모드만 남았으면 `실행 가능`(사람이 누르면 된다). 대기 코드 목록이
+        직전 기록과 다를 때만 `blocked` 이벤트를 남긴다(ADR-0015). 운영자가 정해야 하는 사유는 이 revision 에 한 번 사람
+        요청으로 남긴다 — 이미 다른 요청을 기다리는 중(`decision_pending`)이면 더 묻지 않는다."""
         codes = {b.code for b in readiness.blockers}
         if codes == {"manual_mode"}:
             self._write_status(conn, task, "실행 가능", "직접 실행 모드")
         else:
             self._write_status(conn, task, "대기", " · ".join(b.reason for b in readiness.blockers))
+        if task["finished_at"] is None:
+            blockers = sorted({(b.code, b.actor) for b in readiness.blockers})
+            repo.record_blocked(conn, task["task_id"], [{"code": c, "actor": a} for c, a in blockers], now=self._clock())
         if "decision_pending" in codes:
             return
         for blocker in readiness.blockers:

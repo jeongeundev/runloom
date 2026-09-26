@@ -2084,6 +2084,35 @@ def test_append_task_event_reads_session_and_revisions_and_dedupes(seeded):
         repo.append_task_event(seeded, task_id="nope", type="ready", data=ready, now=LATER)
 
 
+def test_create_execution_with_ready_records_the_event_in_the_same_transaction(seeded):
+    _create_execution(seeded, "exec-0", start_key="plain")  # 기본값 ready=False — 기록 없음
+    seeded.execute("UPDATE executions SET released_at = ? WHERE execution_id = 'exec-0'", (NOW,))
+    assert _events(seeded) == []
+    repo.create_execution(
+        seeded, execution_id="exec-1", task_id=TASK_A, attempt_no=2, start_key="auto:x", agent_id="agent-ops-demo",
+        kind="diagnosis", request=_request("exec-1", TASK_A, "diagnosis", ()), assigned_connector_id=None,
+        predecessor_execution_id=None, now=LATER, ready=True,
+    )
+    assert _events(seeded) == [("ready", {"execution_id": "exec-1", "agent_id": "agent-ops-demo", "start_key": "auto:x"})]
+    assert repo.list_task_events(seeded, TASK_A)[0]["occurred_at"] == LATER
+    # 실행이 거부되면(활성 잠금) 이벤트도 없다
+    with pytest.raises(ActiveExecutionExists):
+        repo.create_execution(
+            seeded, execution_id="exec-2", task_id=TASK_A, attempt_no=3, start_key="auto:y",
+            agent_id="agent-ops-demo", kind="diagnosis", request=_request("exec-2", TASK_A, "diagnosis", ()),
+            assigned_connector_id=None, predecessor_execution_id=None, now=LATER, ready=True,
+        )
+    assert len(_events(seeded)) == 1
+
+
+def test_record_blocked_writes_in_its_own_transaction_and_dedupes(seeded):
+    blockers = [{"code": "input_missing", "actor": "assignee"}]
+    assert repo.record_blocked(seeded, TASK_A, blockers, now=NOW) is True
+    assert repo.record_blocked(seeded, TASK_A, blockers, now=LATER) is False
+    assert _events(seeded) == [("blocked", {"blockers": blockers})]
+    assert not seeded.in_transaction
+
+
 def _revision(conn, session_id=SESSION):
     return repo.get_config_revision(conn, session_id)
 

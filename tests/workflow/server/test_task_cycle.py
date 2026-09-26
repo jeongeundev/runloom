@@ -305,6 +305,78 @@ def test_evaluate_collects_every_blocker_for_one_task(cycle, conn, settings):
     assert [b.code for b in readiness.blockers] == ["source_closed", "assignee_missing"]
 
 
+# --- 착수 가능·대기 기록 (phase 9 step 5, ADR-0015) ---------------------------------------------
+
+
+def readiness_events(conn, task_id: str) -> list[tuple[str, dict]]:
+    return [(row["type"], json.loads(row["data_json"])) for row in repo.list_task_events(conn, task_id)
+            if row["type"] != "status_changed"]
+
+
+def test_blocked_is_recorded_once_per_reason_set_then_ready_with_the_execution(cycle, conn, worker, make_worker):
+    repo.record_supported_kinds(conn, cycle["billing"], None)  # 구버전 claim
+    task_id = import_issue(conn, 1)
+    worker.tick()
+    worker.tick()  # 같은 사유 반복 — 새 기록 없음
+    make_worker().tick()  # 재시작(메모리 초기화)해도 DB 의 직전 기록으로 판단한다
+    outdated = {"code": "executor_outdated", "actor": "operator"}
+    assert readiness_events(conn, task_id) == [("blocked", {"blockers": [outdated]})]
+
+    _reopen(conn, 1, "closed", "2026-10-06T05:00:00Z")
+    worker.tick()
+    worker.tick()
+    closed = {"code": "source_closed", "actor": "operator"}
+    assert readiness_events(conn, task_id)[1:] == [("blocked", {"blockers": [outdated, closed]})]
+
+    _reopen(conn, 1, "open", "2026-10-06T06:00:00Z")
+    repo.record_supported_kinds(conn, cycle["billing"], ALL_KINDS)
+    worker.tick()
+    make_worker().tick()
+    (execution,) = executions(conn, task_id)
+    assert readiness_events(conn, task_id)[2:] == [("ready", {
+        "execution_id": execution["execution_id"], "agent_id": FIX, "start_key": execution["start_key"],
+    })]
+    ready_row = [r for r in repo.list_task_events(conn, task_id) if r["type"] == "ready"][0]
+    assert ready_row["occurred_at"] == execution["created_at"]
+
+
+def test_rejected_start_leaves_no_ready_event(cycle, conn, worker, monkeypatch):
+    task_id = import_issue(conn, 1)
+    evaluate = task_cycle.evaluate
+
+    def closing_evaluate(conn_, task, **kwargs):
+        readiness = evaluate(conn_, task, **kwargs)
+        repo.update_task_status(conn, task_id, "실패", "운영자 종료", finished_at=NOW, now=NOW)
+        return readiness
+
+    monkeypatch.setattr(task_cycle, "evaluate", closing_evaluate)
+    worker.tick()
+    assert executions(conn, task_id) == []
+    assert readiness_events(conn, task_id) == []
+
+
+def test_manual_mode_only_is_recorded_as_blocked(cycle, conn, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, run_mode="manual"), NOW)
+    task_id = import_issue(conn, 1)
+    worker.tick()
+    worker.tick()
+    assert readiness_events(conn, task_id) == [
+        ("blocked", {"blockers": [{"code": "manual_mode", "actor": "operator"}]}),
+    ]
+
+
+def test_followup_link_records_the_current_config_revision(cycle, conn, store, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW), NOW)  # 설정 변경 → 번호 +1
+    revision = repo.get_config_revision(conn, SESSION)
+    assert revision > 1
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"])
+    worker.tick()
+    (link,) = conn.execute("SELECT rules_revision FROM followup_links").fetchall()
+    assert link["rules_revision"] == revision
+
+
 # --- 수정 결과 판정 → 검토 생성·연결 ---------------------------------------------------------
 
 
