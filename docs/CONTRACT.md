@@ -2,7 +2,7 @@
 
 > 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고, 13.9 오류 본문도 서버 경로(step 6·11)가 생겨 모두 일반 `json` 펜스다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
-갱신일: 2026-09-23 (phase 8 step 1 — 13절 모델 구현)
+갱신일: 2026-09-27 (phase 9 step 0 — 3.1절 측정 칸 예시, `json contract-pending`). 이전: 2026-09-23 phase 8 step 1 — 13절 모델 구현
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -199,6 +199,26 @@
 | (12절 입구 API·체인 시작) 첫 업무의 담당 에이전트 미확정 | 409 | `{ "code": "selection_required", "message": "담당 에이전트를 먼저 확정하세요.", "field": null, "details": null }` — 입구 API 는 이 본문을 `start_error` 에 담아 201 |
 
 `result_ready`는 `result_artifact_id`가 이미 업로드·해시 확인된 뒤에만 200이다. 아직 없으면 `409 invalid_transition`, `details: { "reason": "result_artifact_missing" }`.
+
+### 3.1 측정 칸 — phase 9 (contract-pending)
+
+[ADR-0015](adr/0015-measurement-events-and-baseline.md). 계약 버전은 1 그대로이고 위 다섯 예시는 그대로 유효하다 — 아래는 추가형 선택 칸이다. `started` 의 `folder_commit`·`folder_dirty` 는 러너 로컬 등록 폴더(worktree 아님)의 HEAD·미커밋 변경 여부, `result_ready`·`failed` 의 `usage`(`ExecutionUsage`)는 도구가 보고한 비용·토큰이다. 모르는 값은 null 이며 0 이 아니다(`usage` 자체가 null 이면 전부 모름). 모델은 step 1 에서 구현하고 이 펜스를 `json` 으로 바꿔 계약 fixture 테스트에 넣는다.
+
+```json contract-pending
+{ "contract_version": 1, "execution_id": "exec-fix-001", "seq": 2, "occurred_at": "2026-09-20T01:00:03+09:00", "type": "started", "data": { "runtime_ref": "pid:48213;start:2026-09-20T01:00:03+09:00", "folder_commit": "9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345", "folder_dirty": false } }
+```
+
+```json contract-pending
+{ "contract_version": 1, "execution_id": "exec-fix-001", "seq": 4, "occurred_at": "2026-09-20T01:09:41+09:00", "type": "result_ready", "data": { "result_artifact_id": "art-fix-result-001", "usage": { "cost_usd": 0.4213, "input_tokens": 18342, "output_tokens": 5120 } } }
+```
+
+실패 예 — Codex 처럼 토큰만 알고 비용은 모르는 경우:
+
+```json contract-pending
+{ "contract_version": 1, "execution_id": "exec-fix-001", "seq": 4, "occurred_at": "2026-09-20T01:20:05+09:00", "type": "failed", "data": { "code": "timeout", "message": "Codex 실행이 20분을 초과해 종료했습니다.", "process_stopped": true, "usage": { "cost_usd": null, "input_tokens": 90211, "output_tokens": null } } }
+```
+
+구버전 서버는 이 칸들을 알 수 없는 필드(422 `unknown_field`)로 거부한다 — 업그레이드 순서는 서버 → 연결 프로그램. 새 서버는 칸이 없는 구버전 이벤트를 그대로 받고 그 실행의 값을 모름(NULL)으로 둔다.
 
 ## 4. 산출물 업로드·다운로드
 

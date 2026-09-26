@@ -10,7 +10,7 @@
 4. [제품 개요](product/PRODUCT_BRIEF.md) — 문제, 가설, 차별성, 사용자와 에이전트.
 5. [PRD](PRD.md) — 실서비스 업무 순환 요구와 수용 시나리오.
 6. [ARCHITECTURE](ARCHITECTURE.md) · [CONTRACT](CONTRACT.md) — 전환 설계, 현재 구현·계약 v1(CONTRACT 는 계약 테스트 fixture).
-7. [ADR](adr/) — 결정 기록. 0011(업무 순환)·0012(위임 판단·효과 검증)·0013(기존 업무에서 시작)·0014(GitHub 순환)가 최신 제품 기준.
+7. [ADR](adr/) — 결정 기록. 0011(업무 순환)·0012(위임 판단·효과 검증)·0013(기존 업무에서 시작)·0014(GitHub 순환)·0015(측정 — phase 9, 미구현)가 최신 제품 기준.
 
 ## 문서 목록
 
