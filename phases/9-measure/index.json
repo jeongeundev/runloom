@@ -7,7 +7,8 @@
       "name": "measure-design",
       "status": "completed",
       "started_at": "2026-09-27T00:51:20+0900",
-      "summary": "문서만: ADR-0015 신설, ARCHITECTURE '측정 — phase 9' 절(간극·v6 스키마·이벤트 기록 규칙·설정 번호 대상·지표 표·이름/시그니처·API 인증·CLI 비용 키), CONTRACT 3.1절 json contract-pending 3블록(started folder_commit, result_ready usage, failed usage 일부 null), GLOSSARY phase 9 용어·경계 3개, docs/README ADR 목록. 검증: pytest 2164 passed/49 skipped, ruff 통과(contract-pending 은 _FENCE 정규식에 안 잡힘 — FENCED 49·before_13 35 그대로). 다음 step 주의: step 1 은 3.1 펜스를 json 으로 바꾸면 test_v1 의 49→52·before_13 35→38 을 함께 고칠 것; update_task_status 는 now 인자·자체 트랜잭션이 없고 delete_rule 도 _tx 없음(step 4); _tx 는 중첩 불가라 bump_config_revision 은 호출자 트랜잭션 안에서만; sessions.config_revision 과 GitHubSourceConfig.config_revision 은 다른 값; bug_fix 는 merge_confirmed_at 경로가 없어 완료=status_changed→완료 대체; Codex 토큰 키는 미확인(null 허용); 기준선 가져오기 경로는 계획대로 /operator/github/sources/{id}/baseline(기존 JSON API 접두어는 /github)"
+      "summary": "문서만: ADR-0015 신설, ARCHITECTURE '측정 — phase 9' 절(간극·v6 스키마·이벤트 기록 규칙·설정 번호 대상·지표 표·이름/시그니처·API 인증·CLI 비용 키), CONTRACT 3.1절 json contract-pending 3블록(started folder_commit, result_ready usage, failed usage 일부 null), GLOSSARY phase 9 용어·경계 3개, docs/README ADR 목록. 검증: pytest 2164 passed/49 skipped, ruff 통과(contract-pending 은 _FENCE 정규식에 안 잡힘 — FENCED 49·before_13 35 그대로). 다음 step 주의: step 1 은 3.1 펜스를 json 으로 바꾸면 test_v1 의 49→52·before_13 35→38 을 함께 고칠 것; update_task_status 는 now 인자·자체 트랜잭션이 없고 delete_rule 도 _tx 없음(step 4); _tx 는 중첩 불가라 bump_config_revision 은 호출자 트랜잭션 안에서만; sessions.config_revision 과 GitHubSourceConfig.config_revision 은 다른 값; bug_fix 는 merge_confirmed_at 경로가 없어 완료=status_changed→완료 대체; Codex 토큰 키는 미확인(null 허용); 기준선 가져오기 경로는 계획대로 /operator/github/sources/{id}/baseline(기존 JSON API 접두어는 /github)",
+      "completed_at": "2026-09-27T01:00:21+0900"
     },
     {
       "step": 1,
