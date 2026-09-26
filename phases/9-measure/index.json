@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "repo-events",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T01:22:58+0900",
+      "summary": "repo.py: append_task_event(자체 BEGIN 없음 — 호출자 트랜잭션, 세션·task_revision·config_revision DB 에서 읽음, blocked 는 직전 blocked/ready 가 같은 목록이면·ready 는 직전 행이 ready 면 생략, 없는 Task NotFound)·list_task_events·get_config_revision·bump_config_revision(호출자 트랜잭션 안) 추가; status_changed 를 update_task_status(now 필수 키워드+자체 _tx, review_decision 있으면 상태 같아도 기록)·finish_task·record_verdict·record_human_response_once(close) 의 같은 트랜잭션에 — UPDATE tasks SET status 4곳 전부; insert_kind·delete_kind·insert_rule·delete_rule(_tx 로 감쌈)·save_github_source 가 성공 시 config_revision +1(bind_assignee 등은 불변); create_execution 이 INSERT 서브쿼리로 세션 config_revision 을 찍음; append_event 가 started 의 folder_commit·folder_dirty, result_ready·failed 의 usage 를 executions 칸에(없으면 NULL, 재전송은 기존 멱등 경로로 불변); followup 은 create_followup_once 불변 — 호출자가 get_config_revision 값을 spec.rules_revision 으로 넘기면 됨(테스트로 확인). machine_api 는 이벤트를 그대로 넘겨 변경 없음. update_task_status 호출자(worker._write_status=self._clock(), web _refresh_status·검토 승인/거절=now)와 테스트 호출 now 추가. ARCHITECTURE 이름표·blocked 행을 '호출자 트랜잭션'으로 갱신. 검증: pytest 2252 passed/49 skipped, ruff 통과. 다음 step 주의: append_task_event 는 BEGIN 을 열지 않으므로 워커의 blocked 기록은 트랜잭션을 여는 repo 함수로 감쌀 것(_tx 중첩 불가); create_execution 의 ready 인자·ready 이벤트는 아직 없음(step 5); worker._advance_cycle 의 rules_revision 1 고정과 worker._apply_event 가 result_ready 재구성 시 usage 를 버리는 문제는 그대로(worker 는 step 5)"
     },
     {
       "step": 5,

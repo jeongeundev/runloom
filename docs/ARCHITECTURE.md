@@ -264,7 +264,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 | type | 어디서 | 트랜잭션 | 중복 방지 | `data_json` |
 |---|---|---|---|---|
 | `status_changed` | 상태를 바꾸는 repo 함수 안: `update_task_status`(step 4 가 `now` 키워드와 자체 트랜잭션을 더한다 — 호출자 `worker._write_status`·`web._refresh_status`·`web` 검토 승인·거절)·`finish_task`·`record_verdict`·`record_human_response_once`(`close`) | 상태 UPDATE 와 같은 트랜잭션 | 저장된 `status` 와 새 값이 다를 때만. 단 `review_decision` 이 주어지면 상태가 같아도 쓴다(운영자 검토 결정 한 번 = 한 행). 사유 문구만 바뀐 것은 쓰지 않는다 | `{"from", "to", "reason", "review_decision"}`(`review_decision` 은 `approve`·`request_changes`·`close`·null) |
-| `blocked` | `worker._write_blocked`(준비 판정 `ready=false` — `manual_mode` 만 남은 `실행 가능` 도 포함) → `repo.append_task_event` | 자체 트랜잭션(상태 쓰기 직후) | 그 Task 의 가장 최근 `blocked`·`ready` 행이 같은 목록의 `blocked` 면 쓰지 않는다 | `{"blockers": [{"code", "actor"}, …]}` — `code` 로 정렬. 사유 문구는 넣지 않는다(코드가 원천) |
+| `blocked` | `worker._write_blocked`(준비 판정 `ready=false` — `manual_mode` 만 남은 `실행 가능` 도 포함) → `repo.append_task_event` | 상태 쓰기 직후. `append_task_event` 는 BEGIN 을 열지 않으므로 step 5 가 트랜잭션을 여는 repo 함수로 감싼다 | 그 Task 의 가장 최근 `blocked`·`ready` 행이 같은 목록의 `blocked` 면 쓰지 않는다 | `{"blockers": [{"code", "actor"}, …]}` — `code` 로 정렬. 사유 문구는 넣지 않는다(코드가 원천) |
 | `ready` | `worker._create_cycle_execution` → `repo.create_execution(..., ready=True)` | 실행 INSERT 와 같은 트랜잭션 — 실행이 거부되면(`DuplicateStartKey`·`ActiveExecutionExists`·`TaskClosed`) 이벤트도 없다 | 그 Task 의 가장 최근 행(종류 무관)이 `ready` 면 쓰지 않는다 | `{"execution_id", "agent_id", "start_key"}` |
 
 - `ready` 는 준비 판정을 거치는 업무 순환 종류(`ExecutionPolicy.cycle`)만 쓴다. 그 밖 경로(웹 시작·데모 후속 스캔)는 실행 생성 시각(`executions.created_at`)이 곧 착수 가능 시각이다.
@@ -310,7 +310,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 | `StartedData` 추가 칸 | `contracts/v1.py`(1) | `folder_commit: str \| None = None`(소문자 hex 40자), `folder_dirty: bool \| None = None` | 러너 등록 폴더의 HEAD·미커밋 변경 |
 | `ResultReadyData.usage` / `FailedData.usage` | `contracts/v1.py`(1) | `usage: ExecutionUsage \| None = None` | null = 전부 모름 |
 | 러너 보고 | `connector/`(2) | `git_ops.head_sha`·`git_ops.is_dirty` 를 등록 경로에, 도구별 사용량 파서 | 읽기 실패는 null, 실행을 막지 않음 |
-| `append_task_event` | `adapters/repo.py`(4) | `append_task_event(conn, *, task_id, type, data: dict, now) -> bool` | 자체 트랜잭션. 위 중복 방지 규칙을 적용하고 썼으면 True. 세션·`task_revision`·`config_revision` 은 DB 에서 읽는다 |
+| `append_task_event` | `adapters/repo.py`(4) | `append_task_event(conn, *, task_id, type, data: dict, now) -> bool` | 자체 BEGIN 없음 — 호출자 트랜잭션 안에서 쓴다(상태 변경 repo 함수·실행 생성). 위 중복 방지 규칙을 적용하고 썼으면 True. 세션·`task_revision`·`config_revision` 은 DB 에서 읽는다. 없는 Task 는 `NotFound` |
 | `list_task_events` | `adapters/repo.py`(4) | `list_task_events(conn, task_id) -> list[Row]` | `id` 순 |
 | `update_task_status` | `adapters/repo.py`(4) | 기존 인자 + `now: str`(키워드) | `status_changed` 를 같은 트랜잭션에 |
 | `create_execution` | `adapters/repo.py`(4·5) | 기존 인자 + `ready: bool = False` | `executions.config_revision` 을 찍고, `ready` 면 `ready` 이벤트를 같은 트랜잭션에 |

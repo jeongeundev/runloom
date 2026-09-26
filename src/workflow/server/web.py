@@ -239,7 +239,9 @@ def _refresh_status(
     """실행·선택·선행 상태를 보고 Task 의 사용자 상태를 다시 저장한다 (PRD 3절 대응표)."""
     row = repo.get_task(conn, task_id)
     status = user_status(views.build_task_view(conn, row, now=now, settings=settings))
-    repo.update_task_status(conn, task_id, status.label, status.reason, review_decision=review_decision)
+    repo.update_task_status(
+        conn, task_id, status.label, status.reason, review_decision=review_decision, now=now
+    )
 
 
 # --- 업무 종류 등록부 (ADR-0009) — 요구 능력·종류 판단은 세션 등록부 + domain.kinds 로만 한다 ---------------
@@ -998,14 +1000,14 @@ def task_review(
     if decision == "approve":
         reason = "검토 승인 · 병합: 운영자 확인 대기" if _awaits_merge(task["kind"]) else "검토 승인"
         repo.update_task_status(
-            conn, task_id, "완료", reason, finished_at=now, review_decision="approve"
+            conn, task_id, "완료", reason, finished_at=now, review_decision="approve", now=now
         )
         repo.release_execution(conn, execution_id, now)
         return _redirect(f"/tasks/{task_id}", response)
 
     if decision == "close":
         repo.update_task_status(
-            conn, task_id, "실패", "검토 거절", finished_at=now, review_decision="close"
+            conn, task_id, "실패", "검토 거절", finished_at=now, review_decision="close", now=now
         )
         repo.release_execution(conn, execution_id, now)
         return _redirect(f"/tasks/{task_id}", response)

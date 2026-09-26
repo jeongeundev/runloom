@@ -776,7 +776,7 @@ def test_close_racing_with_start_leaves_no_execution(cycle, conn, worker, monkey
 
     def closing_evaluate(conn_, task, **kwargs):
         readiness = evaluate(conn_, task, **kwargs)
-        repo.update_task_status(conn, task_id, "실패", "운영자 종료", finished_at=NOW)
+        repo.update_task_status(conn, task_id, "실패", "운영자 종료", finished_at=NOW, now=NOW)
         return readiness
 
     monkeypatch.setattr(task_cycle, "evaluate", closing_evaluate)

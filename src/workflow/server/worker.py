@@ -426,7 +426,7 @@ class Worker:
     def _write_status(self, conn: Connection, task: Row, status: str, reason: str) -> bool:
         if task["finished_at"] is not None or (task["status"], task["status_reason"]) == (status, reason):
             return False
-        repo.update_task_status(conn, task["task_id"], status, reason)
+        repo.update_task_status(conn, task["task_id"], status, reason, now=self._clock())
         return True
 
     def _refresh_task(self, conn: Connection, task_id: str) -> bool:

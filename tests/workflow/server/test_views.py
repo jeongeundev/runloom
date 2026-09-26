@@ -69,7 +69,7 @@ def test_view_code_change_reads_predecessor_status_and_connector_heartbeat(seede
     assert view.connector_online is False  # last_seen_at 없음
     assert view.connector_last_seen == "없음"
 
-    repo.update_task_status(seeded, TASK_A, "완료", "검토 승인", finished_at=NOW, review_decision="approve")
+    repo.update_task_status(seeded, TASK_A, "완료", "검토 승인", finished_at=NOW, review_decision="approve", now=NOW)
     repo.set_agent_connection(seeded, "agent-codex-mac", "online", "2026-09-20T00:00:00Z")
     fresh = _view(seeded, settings, TASK_B, now="2026-09-20T00:01:00Z")  # 60초 뒤: 90초 이내
     assert fresh.predecessor_status == "완료"
@@ -134,7 +134,7 @@ def test_view_summarises_verdict_from_task_verdicts(seeded, settings, store):
 
 
 def test_status_of_uses_stored_status_once_finished(seeded, settings):
-    repo.update_task_status(seeded, TASK_A, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.update_task_status(seeded, TASK_A, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
     row = repo.get_task(seeded, TASK_A)
     status = views.status_of(row, _view(seeded, settings, TASK_A))
     assert (status.label, status.reason) == ("완료", "판정 근거: 12/12")
@@ -373,7 +373,7 @@ def test_chain_summary_progress_and_human_gate_follow_last_task(seeded, settings
     assert summary["started"] is True and summary["can_start"] is False
     assert summary["progress"] == "2단계 중 1단계 실행 요청됨"
 
-    repo.update_task_status(seeded, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.update_task_status(seeded, task_a, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
     repo.release_execution(seeded, "exec-a", NOW)
     seed_execution(seeded, "exec-b", task_b)
     seed_result_ready(seeded, store, "exec-b", kind="code_change_result", body=code_change_result("exec-b", task_b))
@@ -384,7 +384,7 @@ def test_chain_summary_progress_and_human_gate_follow_last_task(seeded, settings
     gate = summary["human_gate"]
     assert (gate["status_label"], gate["reason"]) == ("확인 필요", "검토 대기")
 
-    repo.update_task_status(seeded, task_b, "완료", "검토 승인 · 병합: 운영자 확인 대기", finished_at=NOW, review_decision="approve")
+    repo.update_task_status(seeded, task_b, "완료", "검토 승인 · 병합: 운영자 확인 대기", finished_at=NOW, review_decision="approve", now=NOW)
     summary = _chain(seeded, settings)
     assert summary["done_count"] == 2 and summary["progress"] == "2단계 모두 완료"
     gate = summary["human_gate"]
@@ -735,7 +735,7 @@ def test_predecessor_handoff_needs_judged_result_and_bundle(seeded, settings, st
     assert ctx["can_run"] is True  # 직접 실행도 열려 있다
 
     # 선행이 검토 거절(실패)로 마감되면 새로 착수하지 않는다
-    repo.update_task_status(seeded, TASK_A, "실패", "검토 거절", finished_at=NOW, review_decision="close")
+    repo.update_task_status(seeded, TASK_A, "실패", "검토 거절", finished_at=NOW, review_decision="close", now=NOW)
     assert views.predecessor_handoff(seeded, task_b) == ([], None)
     assert _view(seeded, settings, TASK_B).predecessor_status == "실패"
 
