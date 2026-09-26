@@ -230,7 +230,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ## 측정 — phase 9
 
-상태(2026-09-27 step 0): 설계만 고정했고 구현은 없다. [ADR-0015](adr/0015-measurement-events-and-baseline.md)를 따른다. 기본값·step 목록은 [phase 9 README](../phases/9-measure/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0015·이 절·[CONTRACT](CONTRACT.md) 3절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 예시 payload 는 CONTRACT 3절의 `json contract-pending` 블록(step 1 이 `json` 으로 바꾼다).
+상태(2026-09-27 step 0): 설계만 고정했고 구현은 없다. [ADR-0015](adr/0015-measurement-events-and-baseline.md)를 따른다. 기본값·step 목록은 [phase 9 README](../phases/9-measure/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0015·이 절·[CONTRACT](CONTRACT.md) 3절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 예시 payload 는 CONTRACT 3.1절의 `json` 블록(step 1 에서 계약 모델 구현·fixture 편입).
 
 ### 현재 코드와의 간극 (step 0 확인)
 

@@ -13,7 +13,9 @@
     {
       "step": 1,
       "name": "contract-usage",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T01:00:21+0900",
+      "summary": "contracts/v1.py: ExecutionUsage(cost_usd float≥0·input/output_tokens int≥0, 모두 None 기본) 신설, StartedData.folder_commit(CommitSha)·folder_dirty(bool, folder_commit 없이 단독이면 거부), ResultReadyData·FailedData.usage 추가 — contract_version 1 유지. 결정: strict 에서도 float 칸은 JSON 정수 0 을 받음(bool 거부, 테스트로 고정); 새 칸이 null 이면 _OmitUnknownMeasure wrap serializer 로 직렬화에서 뺌(구버전 서버 422·repo._event_content 중복 비교·connector 발신 모양 보존 — 없으면 기존 테스트 4개 깨졌음). CONTRACT 3.1 펜스 json 으로 전환·설명 갱신, ARCHITECTURE 측정 절 안내 문구 갱신, test_v1 블록 수 49→52·before_13 35→38 + 측정 칸 테스트. 검증: pytest 2193 passed/49 skipped, ruff 통과. 다음 step 주의: usage=null 과 칸 없음은 같은 뜻(모름)이라 직렬화상 구분 안 됨; ExecutionUsage 안의 null 칸은 그대로 직렬화됨; worker._apply_event 가 result_ready 를 ResultReadyData(result_artifact_id=central_id) 로 새로 만들며 usage 를 버리므로 step 4 에서 보존 필요"
     },
     {
       "step": 2,

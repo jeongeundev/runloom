@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 49개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 52개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -35,6 +35,7 @@ from workflow.contracts.v1 import (
     EvidenceRef,
     ExecutionEvent,
     ExecutionRequest,
+    ExecutionUsage,
     GenericResult,
     HandoffBundle,
     HeartbeatRequest,
@@ -118,7 +119,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 49
+    assert len(FENCED) == 52
     assert len(INLINE) == 8
 
 
@@ -281,6 +282,144 @@ def test_rejects_event_data_with_extra_key():
     block["data"] = {"message": "m", "runtime_ref": "r"}
     with pytest.raises(ValidationError):
         ExecutionEvent.model_validate(block)
+
+
+# --- 측정 칸 (CONTRACT 3.1절, ADR-0015) ---------------------------------------
+
+_SHA40 = "9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+
+
+def _event(type_: str, data: dict) -> dict:
+    return {
+        "contract_version": 1,
+        "execution_id": "exec-fix-001",
+        "seq": 2,
+        "occurred_at": "2026-09-20T01:00:03+09:00",
+        "type": type_,
+        "data": data,
+    }
+
+
+def _measure_blocks(type_: str) -> list[dict]:
+    return [b for b in FENCED if _model_for(b) is ExecutionEvent and b["type"] == type_]
+
+
+def test_contract_md_has_measure_field_examples():
+    assert any("folder_commit" in b["data"] for b in _measure_blocks("started"))
+    assert any(b["data"].get("usage") for b in _measure_blocks("result_ready"))
+    failed = [b for b in _measure_blocks("failed") if "usage" in b["data"]]
+    assert failed and failed[0]["data"]["usage"]["cost_usd"] is None
+
+
+@pytest.mark.parametrize(
+    ("type_", "data"),
+    [
+        ("started", {"runtime_ref": "pid:1"}),
+        ("result_ready", {"result_artifact_id": "art-1"}),
+        ("failed", {"code": "timeout", "message": "m", "process_stopped": True}),
+    ],
+)
+def test_events_without_measure_fields_still_pass(type_, data):
+    event = ExecutionEvent.model_validate(_event(type_, data))
+    if type_ == "started":
+        assert event.data.folder_commit is None and event.data.folder_dirty is None
+    else:
+        assert event.data.usage is None
+
+
+def test_started_accepts_folder_commit_and_dirty():
+    event = ExecutionEvent.model_validate(
+        _event("started", {"runtime_ref": "pid:1", "folder_commit": _SHA40, "folder_dirty": True})
+    )
+    assert event.data.folder_commit == _SHA40 and event.data.folder_dirty is True
+
+
+def test_started_accepts_folder_commit_without_dirty():
+    event = ExecutionEvent.model_validate(_event("started", {"runtime_ref": "pid:1", "folder_commit": _SHA40}))
+    assert event.data.folder_dirty is None
+
+
+def test_started_rejects_folder_dirty_without_commit():
+    with pytest.raises(ValidationError):
+        ExecutionEvent.model_validate(_event("started", {"runtime_ref": "pid:1", "folder_dirty": False}))
+
+
+@pytest.mark.parametrize("commit", ["abc", _SHA40.upper(), _SHA40 + "0"])
+def test_started_rejects_malformed_folder_commit(commit):
+    with pytest.raises(ValidationError):
+        ExecutionEvent.model_validate(_event("started", {"runtime_ref": "pid:1", "folder_commit": commit}))
+
+
+@pytest.mark.parametrize("type_", ["result_ready", "failed"])
+def test_terminal_events_accept_usage(type_):
+    base = (
+        {"result_artifact_id": "art-1"}
+        if type_ == "result_ready"
+        else {"code": "timeout", "message": "m", "process_stopped": True}
+    )
+    usage = {"cost_usd": 0.42, "input_tokens": 10, "output_tokens": 5}
+    event = ExecutionEvent.model_validate(_event(type_, {**base, "usage": usage}))
+    assert event.data.usage == ExecutionUsage(**usage)
+
+
+def test_usage_fields_default_to_unknown():
+    usage = ExecutionUsage.model_validate({})
+    assert (usage.cost_usd, usage.input_tokens, usage.output_tokens) == (None, None, None)
+
+
+def test_usage_accepts_integer_cost_from_json():
+    usage = ExecutionUsage.model_validate_json('{"cost_usd": 0, "input_tokens": 0, "output_tokens": 0}')
+    assert usage.cost_usd == 0.0 and isinstance(usage.cost_usd, float)
+    assert ExecutionUsage.model_validate({"cost_usd": 1}).cost_usd == 1.0
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"cost_usd": -0.01},
+        {"input_tokens": -1},
+        {"output_tokens": -1},
+        {"input_tokens": 1.5},
+        {"input_tokens": "10"},
+        {"cost_usd": True},
+        {"cost_usd": 0.1, "cache_tokens": 3},
+    ],
+)
+def test_usage_rejects_invalid_values(usage):
+    with pytest.raises(ValidationError):
+        ExecutionEvent.model_validate(_event("result_ready", {"result_artifact_id": "art-1", "usage": usage}))
+
+
+@pytest.mark.parametrize(
+    ("type_", "data"),
+    [
+        ("started", {"runtime_ref": "pid:1"}),
+        ("result_ready", {"result_artifact_id": "art-1"}),
+        ("failed", {"code": "timeout", "message": "m", "process_stopped": True}),
+    ],
+)
+def test_events_without_measure_fields_serialize_unchanged(type_, data):
+    """구버전 서버는 새 칸을 null 이라도 422 로 거부한다 — 값이 없으면 직렬화에서 뺀다."""
+    event = ExecutionEvent.model_validate(_event(type_, {**data}))
+    assert event.data.model_dump() == data
+    assert json.loads(event.model_dump_json())["data"] == data
+
+
+def test_measure_fields_serialize_when_present():
+    started = ExecutionEvent.model_validate(
+        _event("started", {"runtime_ref": "pid:1", "folder_commit": _SHA40, "folder_dirty": False})
+    )
+    assert started.data.model_dump(mode="json")["folder_dirty"] is False
+    usage = {"cost_usd": None, "input_tokens": 3, "output_tokens": None}
+    ready = ExecutionEvent.model_validate(_event("result_ready", {"result_artifact_id": "a", "usage": usage}))
+    assert ready.data.model_dump(mode="json")["usage"] == usage
+
+
+def test_measure_fields_rejected_on_other_event_types():
+    with pytest.raises(ValidationError):
+        ExecutionEvent.model_validate(_event("progress", {"message": "m", "usage": None}))
+    with pytest.raises(ValidationError):
+        ExecutionEvent.model_validate(_event("result_ready", {"result_artifact_id": "a", "folder_commit": _SHA40}))
 
 
 def test_rejects_ready_for_handoff_without_diagnosis():
@@ -1012,10 +1151,10 @@ def _needs_information_review() -> dict:
 
 
 def test_sections_1_to_12_fixtures_are_unchanged():
-    """추가형 확장 — 13절 이전의 json 블록 수는 phase 7 그대로다."""
+    """추가형 확장 — 13절 이전의 json 블록 수는 phase 7 의 35개 + phase 9 3.1절 측정 예시 3개다."""
     text = CONTRACT_MD.read_text(encoding="utf-8")
     before_13 = text.split("## 13. GitHub 업무 순환", 1)[0]
-    assert len(_FENCE.findall(before_13)) == 35
+    assert len(_FENCE.findall(before_13)) == 38
 
 
 def test_builtin_cycle_kinds_equal_contract_md_examples():
