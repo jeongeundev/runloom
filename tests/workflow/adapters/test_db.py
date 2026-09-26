@@ -37,7 +37,11 @@ TABLES = {
     "human_requests",
     "human_responses",
     "source_deliveries",
+    "task_events",
+    "baseline_items",
+    "baseline_imports",
 }
+PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 
 
 def _seed_kind(conn, session_id: str, kind: str = "diagnosis") -> None:
@@ -201,8 +205,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_5():
-    assert SCHEMA_VERSION == 5
+def test_schema_version_is_6():
+    assert SCHEMA_VERSION == 6
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -384,7 +388,7 @@ def test_phase7_chains_callback_columns_defaults_and_source(conn):
 # --- phase 8: v4 → v5 데이터 보존 마이그레이션 (ADR-0014 결과, ARCHITECTURE "GitHub 업무 순환" 저장) ------
 
 V4_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v4.sql").read_text()
-V4_TABLES = TABLES - {
+V4_TABLES = TABLES - PHASE9_TABLES - {
     "github_sources", "github_assignee_bindings", "source_issues", "followup_links", "human_requests",
     "human_responses", "source_deliveries",
 }
@@ -447,8 +451,17 @@ def _v4_db(db_path, *, extra_kind: str | None = None):
     return c
 
 
-def _dump(conn, tables) -> dict[str, list[tuple]]:
-    return {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY rowid")] for t in sorted(tables)}
+def _dump(conn, tables, columns: dict[str, list[str]] | None = None) -> dict[str, list[tuple]]:
+    """`columns` 를 주면 그 열만 — 마이그레이션이 열을 더해도 기존 열 값이 그대로인지 비교한다."""
+    def select(t: str) -> str:
+        return ", ".join(columns[t]) if columns else "*"
+    return {
+        t: [tuple(r) for r in conn.execute(f"SELECT {select(t)} FROM {t} ORDER BY rowid")] for t in sorted(tables)
+    }
+
+
+def _column_lists(conn, tables) -> dict[str, list[str]]:
+    return {t: [r["name"] for r in conn.execute(f"PRAGMA table_info({t})")] for t in tables}
 
 
 def _table_names(conn) -> set[str]:
@@ -474,7 +487,9 @@ def test_v4_fixture_is_the_phase7_schema(db_path):
 
 def test_migrates_v4_to_v5_preserving_data(db_path):
     c = _v4_db(db_path)
-    before = _dump(c, V4_TABLES - {"kinds", "succession_rules", "connectors"})
+    kept = V4_TABLES - {"kinds", "succession_rules", "connectors"}
+    kept_columns = _column_lists(c, kept)
+    before = _dump(c, kept)
     kinds_before = _dump(c, {"kinds", "succession_rules"})
     c.close()
 
@@ -482,7 +497,7 @@ def test_migrates_v4_to_v5_preserving_data(db_path):
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
     assert TABLES <= _table_names(c)
-    assert _dump(c, V4_TABLES - {"kinds", "succession_rules", "connectors"}) == before
+    assert _dump(c, kept, kept_columns) == before
     for table, rows in kinds_before.items():  # 기존 종류·규칙 행은 그대로, 새 내장만 더해진다
         assert set(rows) <= set(_dump(c, {table})[table])
     row = c.execute("SELECT connector_id, token_sha256, supported_kinds_json FROM connectors").fetchone()
@@ -566,16 +581,26 @@ def test_migration_rolls_back_when_a_later_statement_fails(db_path, monkeypatch)
     c.close()
 
 
-def test_fresh_schema_matches_migrated_schema(tmp_path):
-    """새로 만든 DB 와 v4 에서 올린 DB 의 테이블·열 정의가 같다(순서 무관)."""
+def _indexes(conn) -> set[tuple[str, str]]:
+    return {
+        (r["name"], r["sql"])
+        for r in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL")
+    }
+
+
+@pytest.mark.parametrize("old", ["v4", "v5"])
+def test_fresh_schema_matches_migrated_schema(tmp_path, old):
+    """새로 만든 DB 와 v4·v5 에서 올린 DB 의 테이블·열·외래키·인덱스 정의가 같다(순서 무관)."""
     fresh = connect(tmp_path / "fresh.sqlite")
     init_schema(fresh)
-    migrated = _v4_db(tmp_path / "old.sqlite")
+    migrated = (_v4_db if old == "v4" else _v5_db)(tmp_path / "old.sqlite")
     init_schema(migrated)
+    assert _table_names(fresh) == _table_names(migrated)
     for table in TABLES:
         cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY name"
         assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
         assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    assert _indexes(fresh) == _indexes(migrated)
     fresh.close()
     migrated.close()
 
@@ -658,3 +683,225 @@ def test_phase8_table_keys_and_checks(conn):
             conn.execute(delivery, params)
     row = conn.execute("SELECT attempts, next_at, last_error FROM source_deliveries").fetchone()
     assert tuple(row) == (0, None, None)
+
+
+# --- phase 9: v5 → v6 측정 스키마 (ADR-0015, ARCHITECTURE "측정 — phase 9" 저장) -----------------------
+
+V5_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v5.sql").read_text()
+V5_TABLES = TABLES - PHASE9_TABLES
+EXECUTION_MEASURE_COLUMNS = (
+    "config_revision", "folder_commit", "folder_dirty", "cost_usd", "input_tokens", "output_tokens",
+)
+
+
+def _v5_db(db_path):
+    """phase 8 서버가 남긴 모양의 v5 DB — v4 데이터에 GitHub 순환 행을 더한다."""
+    c = connect(db_path)
+    c.executescript(V5_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (5)")
+    for sid in ("s1", "s2"):
+        c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, ?)",
+                  (sid, NOW, int(sid == "s1")))
+        for spec in BUILTIN_KINDS:
+            c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                      (sid, spec.kind, spec.model_dump_json(), NOW))
+    c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', 'review', ?, ?)",
+              (json.dumps({"kind": "review", "builtin": False}), NOW))
+    c.execute(
+        "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+        " VALUES ('rule-1', 's1', 'bug_fix', 'code_review', ?, ?)",
+        (BUILTIN_RULES[1].model_dump_json(), NOW),
+    )
+    c.execute(
+        "INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id, capabilities_json,"
+        " connection_state) VALUES ('a1', 'claude', 'personal', 'local', 'conn-1', '[]', 'online')"
+    )
+    c.execute("INSERT INTO connectors (connector_id, token_sha256, created_at, supported_kinds_json)"
+              " VALUES ('conn-1', 'h', ?, '[\"bug_fix\"]')", (NOW,))
+    c.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json,"
+              " created_at, updated_at) VALUES ('ghs-00000001', 's1', 'acme/billing', '{}', ?, ?)", (NOW, NOW))
+    task = (
+        "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,"
+        " selection_mode, run_mode, completion_mode, criteria_json, revision, target_json,"
+        " status, status_reason, created_at, predecessor_task_id, review_decision) VALUES (?, 's1', 't', 'r', ?,"
+        " '{}', 'auto', 'auto', 'review', '[]', 2, '{}', ?, '검토 대기', ?, ?, ?)"
+    )
+    c.execute(task, ("t1", "bug_fix", "확인 필요", NOW, None, "approve"))
+    c.execute(task, ("t2", "code_review", "대기", NOW, "t1", None))
+    c.execute(task, ("t3", "review", "대기", NOW, None, None))
+    c.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+        " status, created_at, started_at, finished_at, released_at, result_artifact_id)"
+        " VALUES ('e1', 't1', 1, 'k', 'a1', 'bug_fix', '{}', 'result_ready', ?, ?, ?, ?, 'art-1')",
+        (NOW, NOW, NOW, NOW),
+    )
+    c.execute("INSERT INTO execution_events (execution_id, seq, type, occurred_at, received_at, data_json,"
+              " actor) VALUES ('e1', 1, 'started', ?, ?, '{}', 'conn-1')", (NOW, NOW))
+    c.execute(
+        "INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256,"
+        " size, store_ref, created_at) VALUES ('art-1', 'e1', 's1', 'code_review_result', 'r.json',"
+        " 'application/json', 'abc', 3, 'ab/abc', ?)",
+        (NOW,),
+    )
+    c.execute("INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at)"
+              " VALUES ('t1', 'e1', '{}', ?)", (NOW,))
+    c.execute("INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
+              " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at)"
+              " VALUES ('ghs-00000001', 100, 41, 't1', 1, '{}', 'd', ?, 'open', ?, ?)", (NOW, NOW, NOW))
+    c.execute("INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision,"
+              " created_at) VALUES ('s1', 'e1', 'code_review', 't2', 1, ?)", (NOW,))
+    return c
+
+
+def test_v5_fixture_is_the_phase8_schema(db_path):
+    c = _v5_db(db_path)
+    assert _table_names(c) - {"sqlite_sequence"} == V5_TABLES | {"schema_version"}
+    assert "config_revision" not in _columns(c, "sessions")
+    assert not set(EXECUTION_MEASURE_COLUMNS) & _columns(c, "executions")
+    c.close()
+
+
+def test_fresh_db_is_v6_with_measure_tables(conn):
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+    assert TABLES <= _table_names(conn)
+    assert "config_revision" in _columns(conn, "sessions")
+    assert set(EXECUTION_MEASURE_COLUMNS) <= _columns(conn, "executions")
+    assert _columns(conn, "task_events") == {
+        "id", "task_id", "session_id", "type", "task_revision", "config_revision", "occurred_at", "data_json",
+    }
+    assert _columns(conn, "baseline_items") == {
+        "source_id", "issue_number", "issue_title", "issue_opened_at", "pr_number", "pr_merged_at", "fetched_at",
+    }
+    assert _columns(conn, "baseline_imports") == {"source_id", "opened_before", "fetched_at", "item_count"}
+    assert {("tasks", "task_id", "task_id"), ("sessions", "session_id", "session_id")} <= _foreign_keys(
+        conn, "task_events")
+    assert {("github_sources", "source_id", "source_id")} <= _foreign_keys(conn, "baseline_items")
+    assert {("github_sources", "source_id", "source_id")} <= _foreign_keys(conn, "baseline_imports")
+    indexed = {
+        tuple(r["name"] for r in conn.execute(f"PRAGMA index_info({i['name']})"))
+        for i in conn.execute("PRAGMA index_list(task_events)")
+    }
+    assert {("task_id", "id"), ("session_id", "occurred_at")} <= indexed
+
+
+def test_task_event_types_constant():
+    from workflow.adapters.db import TASK_EVENT_TYPES
+
+    assert TASK_EVENT_TYPES == ("status_changed", "blocked", "ready")
+
+
+def test_phase9_checks(conn):
+    _cycle_base(conn)
+    assert conn.execute("SELECT config_revision FROM sessions WHERE session_id = 's1'").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError):  # config_revision >= 1
+        conn.execute("UPDATE sessions SET config_revision = 0 WHERE session_id = 's1'")
+    row = conn.execute(f"SELECT {', '.join(EXECUTION_MEASURE_COLUMNS)} FROM executions").fetchone()
+    assert tuple(row) == (None,) * len(EXECUTION_MEASURE_COLUMNS)  # NULL = 모름
+    for column, value in (("folder_dirty", 2), ("cost_usd", -0.01), ("input_tokens", -1), ("output_tokens", -1)):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(f"UPDATE executions SET {column} = ? WHERE execution_id = 'e1'", (value,))
+    conn.execute("UPDATE executions SET folder_dirty = 1, cost_usd = 0, input_tokens = 0, output_tokens = 5,"
+                 " folder_commit = ?, config_revision = 1 WHERE execution_id = 'e1'", ("a" * 40,))
+
+    event = ("INSERT INTO task_events (task_id, session_id, type, task_revision, config_revision, occurred_at,"
+             " data_json) VALUES (?, 's1', ?, 1, 1, ?, '{}')")
+    for event_type in ("status_changed", "blocked", "ready"):
+        conn.execute(event, ("t1", event_type, NOW))
+    for params in (("t1", "started", NOW), ("nope", "ready", NOW), ("t1", "ready", None)):
+        with pytest.raises(sqlite3.IntegrityError):  # type 허용 값 밖 / 없는 Task / NOT NULL
+            conn.execute(event, params)
+
+    item = ("INSERT INTO baseline_items (source_id, issue_number, issue_title, issue_opened_at, pr_number,"
+            " pr_merged_at, fetched_at) VALUES (?, 41, 't', ?, ?, ?, ?)")
+    conn.execute(item, ("ghs-00000001", NOW, 7, NOW, NOW))
+    conn.execute(item, ("ghs-00000001", NOW, 8, NOW, NOW))  # 이슈 하나에 병합 PR 여럿
+    for params in (("ghs-00000001", NOW, 7, NOW, NOW), ("ghs-nope", NOW, 9, NOW, NOW)):
+        with pytest.raises(sqlite3.IntegrityError):  # (source_id, issue_number, pr_number) 유일 / 없는 소스
+            conn.execute(item, params)
+    imports = ("INSERT INTO baseline_imports (source_id, opened_before, fetched_at, item_count)"
+               " VALUES (?, ?, ?, 2)")
+    conn.execute(imports, ("ghs-00000001", NOW, NOW))
+    for source_id in ("ghs-00000001", "ghs-nope"):
+        with pytest.raises(sqlite3.IntegrityError):  # 소스당 하나 / 없는 소스
+            conn.execute(imports, (source_id, NOW, NOW))
+
+
+def test_migrates_v5_to_v6_preserving_data(db_path):
+    c = _v5_db(db_path)
+    columns = _column_lists(c, V5_TABLES)
+    before = _dump(c, V5_TABLES)
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(6,)]
+    assert TABLES <= _table_names(c)
+    assert _dump(c, V5_TABLES, columns) == before  # 기존 행·열 값은 하나도 바뀌지 않는다
+    assert [tuple(r) for r in c.execute("SELECT session_id, config_revision FROM sessions ORDER BY 1")] == [
+        ("s1", 1), ("s2", 1),
+    ]
+    row = c.execute(f"SELECT {', '.join(EXECUTION_MEASURE_COLUMNS)} FROM executions").fetchone()
+    assert tuple(row) == (None,) * len(EXECUTION_MEASURE_COLUMNS)
+    for table in PHASE9_TABLES:  # 과거 이벤트를 추정해 채우지 않는다
+        assert c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_migrates_v4_to_v6_in_one_go(db_path):
+    c = _v4_db(db_path)
+    c.close()
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+    assert TABLES <= _table_names(c)
+    assert "supported_kinds_json" in _columns(c, "connectors")
+    assert [r[0] for r in c.execute("SELECT DISTINCT config_revision FROM sessions")] == [1]
+    assert [tuple(r) for r in c.execute("SELECT config_revision, cost_usd FROM executions")] == [(None, None)]
+    c.close()
+
+
+def test_v4_migration_rolls_back_entirely_when_5_to_6_fails(db_path, monkeypatch):
+    """4 → 5 → 6 은 한 트랜잭션 — 뒤쪽이 실패하면 5 로도 남지 않고 4 그대로다."""
+    from workflow.adapters import db
+
+    c = _v4_db(db_path)
+    before = _dump(c, V4_TABLES)
+
+    def boom(conn):
+        raise sqlite3.OperationalError("5→6 실패")
+
+    monkeypatch.setattr(db, "_migrate_5_to_6", boom)
+    with pytest.raises(sqlite3.OperationalError, match="5→6 실패"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 4
+    assert _table_names(c) - {"sqlite_sequence"} == V4_TABLES | {"schema_version"}
+    assert _dump(c, V4_TABLES) == before
+    assert not c.in_transaction
+    c.close()
+
+
+def test_v5_migration_rolls_back_when_a_later_statement_fails(db_path, monkeypatch):
+    from workflow.adapters import db
+
+    c = _v5_db(db_path)
+    before = _dump(c, V5_TABLES)
+    # 새 칸을 더한 뒤 마지막 새 테이블 문장에서 실패하게 한다(이미 있는 이름).
+    monkeypatch.setattr(db, "_V6_TABLES", db._V6_TABLES + "\nCREATE TABLE sessions (x TEXT);\n")
+    with pytest.raises(sqlite3.OperationalError):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 5
+    assert _table_names(c) - {"sqlite_sequence"} == V5_TABLES | {"schema_version"}
+    assert _dump(c, V5_TABLES) == before
+    assert "config_revision" not in _columns(c, "sessions")
+    assert not set(EXECUTION_MEASURE_COLUMNS) & _columns(c, "executions")
+    assert not c.in_transaction
+    monkeypatch.undo()
+    init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+    c.close()

@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "schema-v6",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T01:17:27+0900",
+      "summary": "db.py 만 변경: SCHEMA_VERSION 6, TASK_EVENT_TYPES 상수(task_events.type CHECK 원천), _SESSION_CONFIG_REVISION·_EXECUTION_MEASURE_COLUMNS 정의를 CREATE TABLE 과 ALTER 가 공유, _V6_TABLES(task_events+인덱스 ix_task_events_task(task_id,id)·ix_task_events_session(session_id,occurred_at), baseline_items, baseline_imports), _migrate_5_to_6(ALTER ADD COLUMN 만 — 기존 행 불변, config_revision 1·측정 칸 NULL, FK 검사), init_schema 는 4→5→6·5→6 을 한 BEGIN IMMEDIATE 트랜잭션(실패 시 원래 버전), _migrate_4_to_5 는 이제 version 5 를 쓰고 이어서 5→6. 테스트: fixtures/schema_v5.sql(현 v5 원문 고정) 신설, test_db 에 v5 fixture·빈 DB v6·CHECK/PK/FK·v5→v6 보존+멱등·v4→v6 한 번에·4→6 중 5→6 실패 시 4 그대로·v5 중간 실패 되돌림 추가, fresh=migrated 비교를 v4·v5 파라미터화+인덱스 비교, _dump 에 열 목록 인자(열 추가 후 기존 값 비교). 검증: pytest 2235 passed/49 skipped, ruff 통과. 다음 step 주의: repo 는 아직 새 칸·task_events 를 쓰지 않음(step 4); sessions.config_revision 기본 1 이라 create_session 은 그대로 둬도 1 로 시작; baseline 테이블 TEXT 칸은 NOT NULL"
     },
     {
       "step": 4,
