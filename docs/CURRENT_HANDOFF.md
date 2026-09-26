@@ -1,5 +1,9 @@
 # 현재 인계 — 업무 목록과 결과 기반 자동 실행
 
+## 다음 작업: 10/2 MVP phase 설계 — 2026-09-26
+
+[MVP 계획](product/MVP_PLAN.md)이 최신 기준이다(2026-09-25~26 사용자 합의). 목표: **2026-10-02 까지 Runloom 단독으로 OpenArchive(`jeongeundev/OpenArchive`) 실제 이슈를 순환 처리하고, 셀프호스트로 배포하며, 도입 전후를 지표로 보여준다.** 제안 phase 순서는 `9-measure`(이벤트 보충·지표 화면/API·GitHub 이력 기준선) → `10-selfhost`(한 명령 설치·데이터 보존·새 ADR) → `11-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). 새 세션은 `9-measure` 설계부터 시작한다 — 먼저 `executions`·`execution_events`·`task_verdicts`·`human_requests`·`human_responses` 에 이미 있는 시각·버전과 빠진 것을 코드로 확인한다. 공개 데모 VM 은 심사(~10/5) 동안 동결이라 10/2 배포는 셀프호스트다. 아래 절들은 이전 기록이다.
+
 ## Phase 8 완료 — 2026-09-23
 
 [8-github-task-cycle](../phases/8-github-task-cycle/README.md) step 0~16 **모두 완료**. `feat-8-github-task-cycle`(service 에서 분기) → **`service` 에 `--no-ff` 병합 `dc5aa5b`**. 미푸시·미배포. GitHub Issues 수집 → 담당 Agent `bug_fix` → 판정 → `code_review` 연결·생성 → 재작업·사람 요청·응답 후 재개 → 원본 댓글 반영. 검증: pytest 2164 passed/49 skipped, ruff 통과, `WORKFLOW_E2E=1` e2e 49 passed(대역), 그리고 **step 16 실제 GitHub·실제 Claude 1회 통과**.

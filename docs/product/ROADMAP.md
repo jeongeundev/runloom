@@ -159,6 +159,8 @@ PRD의 5개 업무 시나리오(A·B 실행, A → 기존 C, B → 새 F, D·E �
 
 2026-09-23 구현 상태: [phase 8](../../phases/8-github-task-cycle/README.md) step 0~15 완료(`feat-8-github-task-cycle`, `service` 미병합). GitHub Issues 버그 수정 → 커밋 검토 순환이 구현되어 대역 단위·e2e 테스트(가짜 GitHub·가짜 Agent)를 통과했다. 실제 GitHub·실제 Agent 전체 순환(step 16)은 아직이므로 위 MVP 통과 기준의 실연동 조건은 충족하지 않았다. 운영 절차·미검증 항목·실연동 체크리스트는 [GitHub 런북](../github/README.md).
 
+2026-09-26: 10/2 까지의 구체 범위(측정·셀프호스트·OpenArchive 실연동)와 phase 계획은 [MVP 계획](MVP_PLAN.md)에 둔다.
+
 1. 파일럿 도구·업무 유형을 정한다. 기본 제안은 GitHub Issues의 명확한 버그 수정 → 검토이며, 실제 팀이 Jira를 쓰면 Jira 우선으로 바꾼다.
 2. PRD의 MVP 계약을 구체화한다: 가져오기 범위, 담당자 연결, 필수 입력, 허용 행동, 원본 결과 반영, 후속 생성, 사람 응답과 중복 처리.
 3. 현재 코드와의 간극을 확인하고 TDD step으로 나눈다. 기존 실행 엔진을 재사용하고 전면 재작성이나 모든 도구 추상화를 먼저 만들지 않는다.
