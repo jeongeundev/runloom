@@ -109,7 +109,9 @@
     {
       "step": 13,
       "name": "rework-request-dedup",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T05:57:37+0900",
+      "summary": "domain/task_followup._after_review: changes_requested 검토의 rework:{검토 실행} 이 handled_cause_keys 에 있으면 상한 판단 전에 none('이미 재작업을 시작한 검토', hold_code 없음) — 상한 도달 요청은 아직 재작업을 일으키지 않은 새 수정 요청 검토에만; 워커는 이미 수정 Task 실행 start_key 를 handled_cause_keys 에 넣고 있어 변경 없음. 테스트: test_task_followup 3(재현·다른 검토 실행은 상한 요청·stale_review 유지), test_task_cycle 재작업 착수 뒤 판정 전 tick 2회에 사람 요청 없음; e2e test_metrics 요청 0·개입 1 단정·결함 주석 삭제; CURRENT_HANDOFF 결함 단락 '수정됨(step 13)'. 검증: pytest 2374 passed/54 skipped, ruff 통과, WORKFLOW_E2E=1 e2e 54 passed. 주의: phases/9-measure/README 상태 줄은 여전히 step 0~10 완료 문구"
     }
   ],
   "created_at": "2026-09-27T00:51:20+0900"

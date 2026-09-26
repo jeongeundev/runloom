@@ -120,6 +120,9 @@ def _after_review(ctx: FollowupContext, review: ReviewFacts) -> FollowupDecision
         return FollowupDecision("none", "검토 승인 — 병합·이슈 종료는 사람")
     if ctx.outcome != "changes_requested":
         return FollowupDecision("none", f"검토 outcome {ctx.outcome} 은 후속 대상 아님")
+    if f"rework:{ctx.execution_id}" in ctx.handled_cause_keys:
+        # 그 재작업이 rounds_used 에 이미 들어 있다 — 상한 판단은 아직 재작업을 일으키지 않은 검토에만
+        return FollowupDecision("none", "이미 재작업을 시작한 검토")
     if review.rounds_used >= review.max_rework_rounds:
         return _request(
             ctx, "rework_limit_reached", review.fix_task_id,

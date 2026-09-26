@@ -311,10 +311,9 @@ def test_03_metrics_json_reflects_rework_handoff_cost_and_versions(world):
     assert (group["intake_to_merge"]["n"], group["intake_to_merge"]["incomplete"]) == (0, 1)
     assert group["done_by_finished_at"] == 0
     assert group["intake_to_approval"]["n"] == 1
-    # 개입 = 사람 요청 + 운영자 검토 결정(승인 1). 요청 수는 DB 그대로 — 재작업 착수 뒤 첫 검토를 다시 평가해
-    # rework_limit_reached 요청이 하나 더 생기는 결함이 있다(CURRENT_HANDOFF 참고). 지표는 그 사실을 셀 뿐이다
-    requests = q(world, "SELECT COUNT(*) FROM human_requests WHERE task_id IN (?, ?)", a_id, f_id)[0][0]
-    assert group["interventions"]["total"] == requests + 1
+    # 개입 = 사람 요청 + 운영자 검토 결정(승인 1). 재작업 1회로 승인까지 가서 사람 요청은 없다
+    assert q(world, "SELECT COUNT(*) FROM human_requests WHERE task_id IN (?, ?)", a_id, f_id)[0][0] == 0
+    assert group["interventions"]["total"] == 1
     cost = group["cost_usd"]
     assert cost["total"] == pytest.approx(COSTS["first"] + COSTS["rework"])  # 가짜 claude 가 보고한 값 합
     assert (cost["n"], cost["unknown"], cost["incomplete"]) == (2, 2, 0)  # 검토(codex)는 비용 모름 — 0 아님

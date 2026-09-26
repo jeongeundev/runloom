@@ -538,6 +538,12 @@ def test_changes_requested_reworks_the_same_fix_task_then_stops_at_the_limit(cyc
     assert rework.input_artifact_ids == [first["result_artifact_id"], review_result_id]
     assert status(conn, review_task) == ("대기", "수정 요청 — 재작업 결과 대기")
 
+    # 재작업 판정 전 tick 반복 — 재작업을 일으킨 검토를 상한 도달로 다시 세지 않는다
+    worker.tick()
+    worker.tick()
+    assert repo.list_human_requests(conn, fix_task) == []
+    assert len(executions(conn, fix_task)) == 2
+
     # 재작업 결과 → 같은 검토 Task 에 새 검토 실행(이전 검토 실행은 해제)
     finish_fix(conn, store, second["execution_id"], result_commit=C2)
     worker.tick()
