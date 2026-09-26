@@ -8,7 +8,8 @@
     <a href="/kinds"{% if request.url.path.startswith('/kinds') %} class="active"{% endif %}>종류·규칙</a>
     <a href="/sources"{% if request.url.path.startswith('/sources') %} class="active"{% endif %}>입구</a>
     {% if is_operator %}<a href="/operator"{% if request.url.path == '/operator' %} class="active"{% endif %}>운영자</a>
-    <a href="/operator/github"{% if request.url.path.startswith('/operator/github') %} class="active"{% endif %}>GitHub</a>{% endif %}
+    <a href="/operator/github"{% if request.url.path.startswith('/operator/github') %} class="active"{% endif %}>GitHub</a>
+    <a href="/metrics"{% if request.url.path == '/metrics' %} class="active"{% endif %}>지표</a>{% endif %}
   </nav>
   <div class="side-head"><span>최근</span><a class="plus" href="/tasks/import" title="업무 가져오기" aria-label="업무 가져오기">+</a></div>
   {% if my_tasks %}

@@ -77,7 +77,9 @@
     {
       "step": 9,
       "name": "metrics-view",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T02:02:33+0900",
+      "summary": "GET /metrics 화면: web.metrics_page(운영자 아니면 PageError 403 — /operator/github 과 같음, GET 쿼리 from·to·group_by 빈 값=지정 안 함, RFC3339·group_by 어긋남·from>=to 는 422 오류 화면, 계산은 metrics_api._report·_baselines 재사용), views.metrics_context·group_label(영역 6개 표: 행=지표·열=그룹 — 칸마다 중앙값/비율 + 'n·합계·미완료·모름', 모르는 값은 '모름'(0 아님), 대기 actor 3행, 실패 사유 코드별; 맨 위 #compare 기준선(소스별, 가져온 적 없으면 모름) 대 도입 후 그룹별 이슈 열림→병합 중앙값·n·미완료·완료 시각 대체 설명), templates/metrics.html 신설(기간·그룹 폼, 같은 쿼리의 JSON·CSV 링크, 인과 단정 안 함 안내, CLI 보고 비용 주석, 소스별 기준선 가져오기 버튼 data-json-action + 마지막 가져온 시각·건수, 토큰 없으면 안내), _sidebar 에 운영자만 '지표' 링크, ARCHITECTURE /metrics 행 보강. 테스트: test_web_metrics 9(권한·사이드바, 데이터 없음/있음, 모름·n, 기준선 전후·버튼, 기간·그룹 반영·링크 쿼리, 빈 폼 값, 422, 비밀값·경로 없음 — test_metrics_api 픽스처 재사용). 검증: pytest 2337 passed/49 skipped, ruff 통과. 다음 step 주의: 화면은 운영자 전용이라 '운영자에게만 버튼'은 페이지 403 으로 보장; 그룹 열은 folder_commit 이면 앞 7자(title 에 전체); 기준선 건수는 intake_to_merge.n(이슈 수)"
     },
     {
       "step": 10,
