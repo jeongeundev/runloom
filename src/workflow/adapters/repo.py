@@ -62,6 +62,7 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain import status as domain_status
+from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
 
@@ -1480,6 +1481,91 @@ def list_baseline(conn: Connection, session_id: str, source_id: str) -> tuple[Ro
         "SELECT * FROM baseline_items WHERE source_id = ? ORDER BY issue_number, pr_number", (source_id,)
     ).fetchall()
     return record, items
+
+
+def github_source_created_at(conn: Connection, session_id: str, source_id: str) -> str:
+    """소스를 처음 연결한 시각(`github_sources.created_at` — 설정 변경에도 그대로). 기준선의 `opened_before`.
+    다른 세션 소스 → NotFound."""
+    return _source_row(conn, session_id, source_id)["created_at"]
+
+
+# --- 지표 입력 (phase 9 step 8, ADR-0015 8항) -----------------------------------------------------------------
+
+
+def _json_outcome(conn: Connection, store: ArtifactStore, artifact_id: str | None) -> str | None:
+    """결과 산출물 JSON 의 최상위 `outcome` 문자열. 읽지 못하면 None."""
+    if artifact_id is None:
+        return None
+    try:
+        data = json.loads(read_artifact(conn, store, artifact_id))
+    except (ValueError, NotFound, ArtifactMissing):
+        return None
+    outcome = data.get("outcome") if isinstance(data, dict) else None
+    return outcome if isinstance(outcome, str) else None
+
+
+def _execution_outcome(conn: Connection, store: ArtifactStore, row: Row) -> str | None:
+    """가장 최근 판정의 outcome. 검토(`code_review`)는 판정이 `passed` 일 때만 결과 산출물(`CodeReviewResult`)의
+    outcome — 판정 JSON 에는 통과 여부만 있고 approved·changes_requested 는 산출물에만 있다."""
+    if row["verdict_json"] is None:
+        return None
+    verdict = json.loads(row["verdict_json"]).get("outcome")
+    if row["kind"] != "code_review":
+        return verdict
+    return _json_outcome(conn, store, row["result_artifact_id"]) if verdict == "passed" else None
+
+
+def list_metric_facts(conn: Connection, session_id: str, *, store: ArtifactStore) -> MetricFacts:
+    """세션의 Task·실행·업무 이벤트·사람 요청을 도메인 값 객체로 옮긴다(계산 없음). NULL 은 None 그대로(모름).
+    `store` 는 검토 결과 산출물의 outcome 을 읽는 데만 쓴다."""
+    tasks = tuple(
+        TaskFact(
+            task_id=r["task_id"], kind=r["kind"], created_at=r["created_at"], status=r["status"],
+            predecessor_task_id=r["predecessor_task_id"],
+            issue_opened_at=json.loads(r["snapshot_json"])["created_at"] if r["snapshot_json"] else None,
+            finished_at=r["finished_at"], merge_confirmed_at=r["merge_confirmed_at"],
+            review_decision=r["review_decision"],
+        )
+        for r in conn.execute(
+            "SELECT t.*, si.snapshot_json FROM tasks t LEFT JOIN source_issues si ON si.task_id = t.task_id"
+            " WHERE t.session_id = ? ORDER BY t.created_at, t.rowid",
+            (session_id,),
+        )
+    )
+    executions = tuple(
+        ExecutionFact(
+            execution_id=r["execution_id"], task_id=r["task_id"], kind=r["kind"], attempt_no=r["attempt_no"],
+            status=r["status"], start_key=r["start_key"], created_at=r["created_at"], started_at=r["started_at"],
+            finished_at=r["finished_at"], failed_code=r["failed_code"], outcome=_execution_outcome(conn, store, r),
+            config_revision=r["config_revision"], folder_commit=r["folder_commit"], cost_usd=r["cost_usd"],
+            input_tokens=r["input_tokens"], output_tokens=r["output_tokens"],
+        )
+        for r in conn.execute(
+            "SELECT e.*, (SELECT v.verdict_json FROM task_verdicts v WHERE v.execution_id = e.execution_id"
+            "  ORDER BY v.decided_at DESC, v.rowid DESC LIMIT 1) AS verdict_json"
+            " FROM executions e JOIN tasks t ON t.task_id = e.task_id WHERE t.session_id = ?"
+            " ORDER BY e.created_at, e.rowid",
+            (session_id,),
+        ).fetchall()
+    )
+    events = tuple(
+        TaskEventFact(task_id=r["task_id"], type=r["type"], occurred_at=r["occurred_at"],
+                      data=json.loads(r["data_json"]))
+        for r in conn.execute(
+            "SELECT task_id, type, occurred_at, data_json FROM task_events WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        )
+    )
+    requests = tuple(
+        HumanRequestFact(request_id=r["request_id"], task_id=r["task_id"], created_at=r["created_at"],
+                         answered_at=r["answered_at"])
+        for r in conn.execute(
+            "SELECT h.request_id, h.task_id, h.created_at, h.answered_at FROM human_requests h"
+            " JOIN tasks t ON t.task_id = h.task_id WHERE t.session_id = ? ORDER BY h.created_at, h.rowid",
+            (session_id,),
+        )
+    )
+    return MetricFacts(tasks=tasks, executions=executions, events=events, human_requests=requests)
 
 
 def save_source_cursor(conn: Connection, session_id: str, source_id: str, cursor: str, now: str) -> None:

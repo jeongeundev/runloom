@@ -1,0 +1,305 @@
+"""metrics_api.py — 지표 JSON·CSV 와 기준선 가져오기 (phase 9 step 8, ADR-0015, ARCHITECTURE "측정 — phase 9").
+
+운영자 세션만 쓰고 그 세션의 데이터만 보인다. GitHub 는 가짜 클라이언트(`app.state.github_client`)로 대신한다.
+모르는 값은 JSON null·CSV 빈 칸이며 0 으로 채우지 않는다.
+"""
+
+import csv
+import dataclasses
+import io
+import json
+
+import pytest
+from fastapi.testclient import TestClient
+
+from workflow.adapters import repo
+from workflow.adapters.github_client import GitHubForbidden, GitHubRateLimited, GitHubUnavailable
+from workflow.contracts.github import GitHubSourceConfig, IssuePrLink
+from workflow.contracts.v1 import ArtifactMeta, ExecutionEvent, ExecutionRequest
+from workflow.domain.metrics import BASELINE_NOTE
+
+from .conftest import event, meta_for, request_body, seed_execution, task_row
+from .test_github_api import login
+
+TOKEN = "github_pat_" + "M3tr1c" * 10
+SOURCE = "ghs-1a2b3c4d"
+OPENED_BEFORE = "2026-09-01T00:00:00Z"
+
+
+@pytest.fixture
+def settings(settings):
+    return dataclasses.replace(settings, github_token=TOKEN, github_repos=("acme/billing",))
+
+
+class FakeGitHub:
+    def __init__(self, links=(), error: Exception | None = None):
+        self.links = list(links)
+        self.error = error
+        self.calls: list[tuple[str, str]] = []
+
+    def list_issue_pr_links(self, repo_name: str, *, opened_before: str) -> list[IssuePrLink]:
+        self.calls.append((repo_name, opened_before))
+        if self.error is not None:
+            raise self.error
+        return self.links
+
+
+def _link(issue: int, pr: int, opened: str, merged: str) -> IssuePrLink:
+    return IssuePrLink(issue_number=issue, issue_title=f"이슈 {issue}", issue_opened_at=opened,
+                       pr_number=pr, pr_merged_at=merged)
+
+
+LINKS = [
+    _link(1, 10, "2026-08-01T00:00:00Z", "2026-08-01T02:00:00Z"),  # 2시간
+    _link(2, 20, "2026-08-02T00:00:00Z", "2026-08-02T06:00:00Z"),  # 6시간
+]
+
+
+def _source(**overrides) -> GitHubSourceConfig:
+    data = {
+        "source_id": SOURCE,
+        "repository_full_name": "acme/billing",
+        "workflow_repository_id": "billing",
+        "label_filter": ["bug"],
+        "selected_issue_numbers": [],
+        "start_at": "2026-10-06T00:00:00Z",
+        "fix_verification_profile_id": "vp-pytest",
+        "review_agent_id": "agent-claude-mac",
+        "run_mode": "auto",
+        "max_rework_rounds": 1,
+        "enabled": True,
+        "config_revision": 1,
+    }
+    return GitHubSourceConfig.model_validate({**data, **overrides})
+
+
+def _advance(conn, store, session_id: str, execution_id: str, *, ok: bool, started: str, finished: str,
+             usage=None) -> None:
+    def apply(seq: int, type_: str, data: dict, at: str) -> None:
+        repo.append_event(conn, execution_id, ExecutionEvent.model_validate(event(execution_id, seq, type_, data, at)),
+                          actor="connector:conn-1", now=at)
+
+    apply(1, "accepted", {}, started)
+    apply(2, "started", {"runtime_ref": "pid:1"}, started)
+    extra = {"usage": usage} if usage is not None else {}
+    if ok:
+        data = b'{"outcome": "ready_for_review"}'
+        created, _ = repo.store_artifact(
+            conn, store, execution_id=execution_id, session_id=session_id,
+            meta=ArtifactMeta.model_validate(meta_for(data, kind="code_change_result", name="r.json",
+                                                      content_type="application/json")),
+            data=data, now=finished,
+        )
+        apply(3, "result_ready", {"result_artifact_id": created.artifact_id, **extra}, finished)
+    else:
+        apply(3, "failed", {"code": "timeout", "message": "시간 초과", "process_stopped": True, **extra}, finished)
+
+
+def _task(task_id: str, session_id: str) -> dict:
+    return {**task_row(task_id, kind="code_change"), "session_id": session_id}
+
+
+@pytest.fixture
+def operator(app, conn, store) -> tuple[TestClient, str]:
+    """운영자 세션: Task 2개(각 실행 1개 — 성공(비용 0.5·토큰 모름)·실패(사용량 모름)), 설정 변경 1번 사이에 둠."""
+    client = TestClient(app)
+    session_id = login(client)
+    repo.insert_task(conn, _task("task-1", session_id), "2026-09-20T00:00:00Z")
+    seed_execution(conn, "exec-1", "task-1")
+    _advance(conn, store, session_id, "exec-1", ok=True, started="2026-09-20T00:10:00Z", finished="2026-09-20T00:20:00Z",
+             usage={"cost_usd": 0.5, "input_tokens": 100})
+    repo.save_github_source(conn, session_id, _source(), OPENED_BEFORE)  # config_revision 1 → 2
+    repo.insert_task(conn, _task("task-2", session_id), "2026-09-25T00:00:00Z")
+    repo.create_execution(conn, execution_id="exec-2", task_id="task-2", attempt_no=2, start_key="rework:1",
+                          agent_id="agent-codex-mac", kind="code_change",
+                          request=ExecutionRequest.model_validate(request_body("exec-2", "task-2")), assigned_connector_id=None,
+                          predecessor_execution_id=None, now="2026-09-25T00:00:00Z")
+    _advance(conn, store, session_id, "exec-2", ok=False, started="2026-09-25T00:00:00Z", finished="2026-09-25T00:30:00Z")
+    return client, session_id
+
+
+@pytest.fixture
+def op(operator) -> TestClient:
+    return operator[0]
+
+
+@pytest.fixture
+def fake(app) -> FakeGitHub:
+    app.state.github_client = FakeGitHub(LINKS)
+    return app.state.github_client
+
+
+def error(response, status: int, code: str) -> dict:
+    assert response.status_code == status, response.text
+    data = response.json()
+    assert data["code"] == code, data
+    return data
+
+
+# --- 인증·세션 범위 -------------------------------------------------------------------------
+
+
+def test_every_endpoint_requires_operator_session(client, conn):
+    client.get("/")  # 공개 세션 쿠키만 받는다
+    for anonymous in (TestClient(client.app), client):
+        error(anonymous.get("/metrics.json"), 403, "forbidden")
+        error(anonymous.get("/metrics.csv"), 403, "forbidden")
+        error(anonymous.post(f"/operator/github/sources/{SOURCE}/baseline"), 403, "forbidden")
+
+
+def test_other_operator_session_sees_only_its_own_data(app, operator, conn, fake):
+    op, _ = operator
+    op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    other = TestClient(app)
+    login(other)  # 새 운영자 세션 — 데이터 없음
+    body = other.get("/metrics.json").json()
+    group = body["groups"][0]
+    assert (group["bundles"], group["failure"]["denominator"]) == (0, 0)
+    assert body["baselines"] == []
+    error(other.post(f"/operator/github/sources/{SOURCE}/baseline"), 404, "not_found")
+    assert "이슈" not in other.get("/metrics.csv").text
+
+
+# --- JSON ---------------------------------------------------------------------------------
+
+
+def test_metrics_json_reports_values_with_unknowns_apart(op):
+    response = op.get("/metrics.json")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["from"], body["to"], body["group_by"]) == (None, None, None)
+    [group] = body["groups"]
+    assert group["key"] == "all" and group["bundles"] == 2
+    assert group["execution_time"] == {"median": 1200.0, "n": 2, "incomplete": 0, "unknown": 0, "total": None}
+    assert group["cost_usd"] == {"median": 0.5, "n": 1, "incomplete": 0, "unknown": 1, "total": 0.5}
+    assert group["output_tokens"] == {"median": None, "n": 0, "incomplete": 0, "unknown": 2, "total": None}
+    assert group["failure"] == {"numerator": 1, "denominator": 2, "rate": 0.5, "incomplete": 0, "unknown": 0}
+    assert group["failed_codes"] == {"timeout": 1}
+    assert group["reruns"]["numerator"] == 1
+    assert group["first_pass"]["rate"] is None  # 검토 결과가 없다 — 0 이 아니라 모름
+    assert set(group["handoff_blocked"]) == {"operator", "assignee", "system"}
+
+
+def test_metrics_json_filters_by_period_and_groups_by_config_revision(op):
+    body = op.get("/metrics.json", params={"from": "2026-09-21T00:00:00Z", "to": "2026-10-01T00:00:00+09:00"}).json()
+    assert (body["from"], body["to"]) == ("2026-09-21T00:00:00Z", "2026-10-01T00:00:00+09:00")
+    [group] = body["groups"]
+    assert (group["bundles"], group["failure"]["denominator"], group["failed_codes"]) == (1, 1, {"timeout": 1})
+
+    body = op.get("/metrics.json", params={"group_by": "config_revision"}).json()
+    assert body["group_by"] == "config_revision"
+    assert [(g["key"], g["bundles"], g["cost_usd"]["total"]) for g in body["groups"]] == [("1", 1, 0.5), ("2", 1, None)]
+
+
+@pytest.mark.parametrize("params", [
+    {"group_by": "agent"},
+    {"from": "어제"},
+    {"to": "2026-09-21"},  # 시간대 없는 날짜
+    {"from": "2026-09-21T00:00:00Z", "to": "2026-09-21T00:00:00Z"},  # 빈 기간
+    {"from": "2026-09-22T00:00:00Z", "to": "2026-09-21T00:00:00Z"},
+])
+def test_invalid_parameters_are_rejected(op, params):
+    for path in ("/metrics.json", "/metrics.csv"):
+        error(op.get(path, params=params), 422, "invalid_field")
+
+
+# --- CSV ----------------------------------------------------------------------------------
+
+
+def _rows(response) -> list[dict]:
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+    return list(csv.DictReader(io.StringIO(response.text)))
+
+
+def test_metrics_csv_has_one_row_per_metric_with_blank_unknowns(op):
+    rows = _rows(op.get("/metrics.csv"))
+    assert list(rows[0]) == ["group", "area", "metric", "unit", "median", "n", "incomplete", "unknown", "total",
+                             "numerator", "denominator", "note"]
+    by_metric = {r["metric"]: r for r in rows if r["group"] == "all"}
+    assert by_metric["cost_usd"] == {
+        "group": "all", "area": "cost", "metric": "cost_usd", "unit": "usd", "median": "0.5", "n": "1",
+        "incomplete": "0", "unknown": "1", "total": "0.5", "numerator": "", "denominator": "", "note": "",
+    }
+    assert by_metric["output_tokens"]["median"] == "" and by_metric["output_tokens"]["total"] == ""
+    assert (by_metric["failure"]["numerator"], by_metric["failure"]["denominator"], by_metric["failure"]["median"]) \
+        == ("1", "2", "")
+    assert by_metric["failed_code:timeout"]["total"] == "1"
+    assert by_metric["execution_time"]["unit"] == "seconds" and by_metric["execution_time"]["median"] == "1200.0"
+    assert {"handoff_wait", "handoff_blocked:operator", "intake_to_human", "intake_to_done", "interventions",
+            "response_time", "first_pass", "rework", "human_rejection", "input_tokens", "reruns",
+            "bundles", "done_by_finished_at", "closed_failed"} <= set(by_metric)
+
+
+def test_metrics_csv_follows_the_same_parameters(op):
+    rows = _rows(op.get("/metrics.csv", params={"group_by": "config_revision"}))
+    assert {r["group"] for r in rows} == {"1", "2", f"baseline:{SOURCE}"}  # 기준선은 그룹과 무관한 행 하나
+
+
+# --- 기준선 가져오기 ------------------------------------------------------------------------
+
+
+def test_baseline_import_uses_source_created_at_and_is_idempotent(op, fake, conn, operator):
+    response = op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"source_id": SOURCE, "opened_before": OPENED_BEFORE, "item_count": 2}
+    assert fake.calls == [("acme/billing", OPENED_BEFORE)]
+    revision = repo.get_config_revision(conn, operator[1])
+
+    again = op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    assert again.json() == response.json()
+    assert len(repo.list_baseline(conn, operator[1], SOURCE)[1]) == 2
+    assert repo.get_config_revision(conn, operator[1]) == revision  # 관측 이력이라 설정 번호 불변
+
+    [baseline] = op.get("/metrics.json").json()["baselines"]
+    assert baseline["source_id"] == SOURCE and baseline["repository_full_name"] == "acme/billing"
+    assert baseline["opened_before"] == OPENED_BEFORE and baseline["fetched_at"] is not None
+    assert baseline["intake_to_merge"]["median"] == 4 * 3600 and baseline["intake_to_merge"]["n"] == 2
+    assert baseline["note"] == BASELINE_NOTE
+
+    [row] = [r for r in _rows(op.get("/metrics.csv")) if r["group"] == f"baseline:{SOURCE}"]
+    assert (row["metric"], row["median"], row["n"], row["note"]) == ("intake_to_merge", "14400.0", "2", BASELINE_NOTE)
+
+
+def test_baseline_before_import_is_shown_as_unknown(op):
+    [baseline] = op.get("/metrics.json").json()["baselines"]
+    assert baseline["imported"] is False
+    assert (baseline["opened_before"], baseline["fetched_at"], baseline["intake_to_merge"]) == (None, None, None)
+    assert baseline["note"] == BASELINE_NOTE
+
+
+@pytest.mark.parametrize(("exc", "status", "code"), [
+    (GitHubRateLimited("limit", retry_after_seconds=60, reset_epoch=None), 429, "github_rate_limited"),
+    (GitHubForbidden("forbidden"), 502, "github_forbidden"),
+    (GitHubUnavailable("down"), 502, "github_unavailable"),
+])
+def test_github_errors_keep_the_previous_baseline(app, op, fake, conn, operator, exc, status, code):
+    op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    app.state.github_client = FakeGitHub(error=exc)
+    data = error(op.post(f"/operator/github/sources/{SOURCE}/baseline"), status, code)
+    if code == "github_rate_limited":
+        assert data["details"] == {"retry_after_seconds": 60}
+    assert len(repo.list_baseline(conn, operator[1], SOURCE)[1]) == 2
+
+
+def test_baseline_needs_a_token_and_an_owned_source(app, settings, op, fake):
+    error(op.post("/operator/github/sources/ghs-00000009/baseline"), 404, "not_found")
+    app.state.settings = dataclasses.replace(settings, github_token="")
+    error(op.post(f"/operator/github/sources/{SOURCE}/baseline"), 409, "github_token_missing")
+    assert fake.calls == []
+
+
+def test_responses_carry_no_token_or_paths(app, op, fake, settings):
+    app.state.github_client = FakeGitHub(error=GitHubForbidden(f"Bearer {TOKEN}"))
+    texts = [
+        op.post(f"/operator/github/sources/{SOURCE}/baseline").text,
+        op.get("/metrics.json").text,
+        op.get("/metrics.csv").text,
+    ]
+    app.state.github_client = fake
+    texts.append(op.post(f"/operator/github/sources/{SOURCE}/baseline").text)
+    for text in texts:
+        assert TOKEN not in text
+        assert str(settings.db_path.parent) not in text and str(settings.artifact_dir) not in text
+        assert "local-demo-report" not in text  # 로컬 등록(저장소 폴더) 식별자도 내지 않는다
+    json.loads(texts[1])

@@ -2270,3 +2270,105 @@ def test_failed_event_usage_is_stored(running):
     repo.append_event(running, "exec-1", _event("exec-1", 3, "failed", {
         "code": "timeout", "message": "x", "process_stopped": True, "usage": {"cost_usd": 0.5}}), "conn", NOW)
     assert _measure(running) == (None, None, 0.5, None, None)
+
+
+# --- 지표 입력 (phase 9 step 8) ----------------------------------------------
+
+
+def _store_result(conn, store, execution_id: str, body: dict, kind: str = "code_review_result") -> str:
+    data = json.dumps(body).encode()
+    created, _ = repo.store_artifact(conn, store, execution_id=execution_id, meta=_meta(data, kind=kind),
+                                     data=data, session_id=SESSION, now=NOW)
+    return created.artifact_id
+
+
+def _finish(conn, store, execution_id: str, body: dict, *, usage=None, folder_commit=None, kind="code_review_result"):
+    repo.append_event(conn, execution_id, _event(execution_id, 1, "accepted", {}), "conn", NOW)
+    started = {"runtime_ref": "pid:1"}
+    if folder_commit:
+        started |= {"folder_commit": folder_commit, "folder_dirty": True}
+    repo.append_event(conn, execution_id, _event(execution_id, 2, "started", started, "2026-10-06T10:20:00Z"),
+                      "conn", "2026-10-06T10:20:00Z")
+    ready = {"result_artifact_id": _store_result(conn, store, execution_id, body, kind)}
+    if usage:
+        ready["usage"] = usage
+    repo.append_event(conn, execution_id, _event(execution_id, 3, "result_ready", ready, "2026-10-06T10:30:00Z"),
+                      "conn", "2026-10-06T10:30:00Z")
+
+
+def test_list_metric_facts_reads_the_session_rows_as_domain_values(cycle, store):
+    """세션의 Task·실행·이벤트·사람 요청을 값 객체로. 검토 outcome 은 판정이 통과한 결과 산출물에서 읽는다."""
+    from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
+
+    repo.insert_task(cycle, _task("task-other", OTHER_SESSION), NOW)  # 다른 세션은 보이지 않는다
+    _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    _finish(cycle, store, "exec-fix-1", {"outcome": "ready_for_review"}, kind="code_change_result",
+            usage={"cost_usd": 0.25, "input_tokens": 10}, folder_commit="c" * 40)
+    repo.record_verdict(cycle, task_id="task-gh-41", execution_id="exec-fix-1", verdict={"outcome": "passed"},
+                        status="확인 필요", reason="판정 통과", finish=False, now="2026-10-06T10:31:00Z")
+    spec = _review_spec()
+    repo.create_followup_once(cycle, spec, _review_task(), "2026-10-06T10:32:00Z")
+    repo.create_execution(cycle, execution_id="exec-rev-1", task_id="task-gh-41-review", attempt_no=1,
+                          start_key="auto:task-gh-41-review:r1", agent_id="agent-claude-mac", kind="code_review",
+                          request=_request("exec-rev-1", "task-gh-41-review", "code_change", ("art-x",)),
+                          assigned_connector_id=None, predecessor_execution_id=None, now="2026-10-06T10:33:00Z")
+    _finish(cycle, store, "exec-rev-1", {"outcome": "approved"})
+    repo.record_verdict(cycle, task_id="task-gh-41-review", execution_id="exec-rev-1",
+                        verdict={"outcome": "passed"}, status="확인 필요", reason="판정 통과", finish=False,
+                        now="2026-10-06T10:34:00Z")
+    request_id, _ = repo.create_human_request_once(cycle, "task-gh-41", "decision", "q", "decision:1",
+                                                   "2026-10-06T10:35:00Z")
+
+    facts = repo.list_metric_facts(cycle, SESSION, store=store)
+
+    assert isinstance(facts, MetricFacts)
+    tasks = {t.task_id: t for t in facts.tasks}
+    assert set(tasks) == {TASK_A, "task-gh-41", "task-gh-41-review"}
+    assert tasks["task-gh-41"] == TaskFact(
+        task_id="task-gh-41", kind="bug_fix", created_at=NOW, status="확인 필요",
+        issue_opened_at="2026-10-06T10:12:00Z",
+    )
+    assert tasks["task-gh-41-review"].predecessor_task_id == "task-gh-41"
+    assert tasks["task-gh-41-review"].issue_opened_at is None
+    assert tasks[TASK_A].issue_opened_at is None
+
+    executions = {e.execution_id: e for e in facts.executions}
+    assert executions["exec-fix-1"] == ExecutionFact(
+        execution_id="exec-fix-1", task_id="task-gh-41", kind="code_change", attempt_no=1, status="result_ready",
+        start_key="auto:task-gh-41:r1", created_at=NOW, started_at="2026-10-06T10:20:00Z",
+        finished_at="2026-10-06T10:30:00Z", outcome="passed", config_revision=2, folder_commit="c" * 40,
+        cost_usd=0.25, input_tokens=10,
+    )
+    assert executions["exec-rev-1"].outcome == "approved"  # 판정(passed)이 아니라 검토 결과
+    assert executions["exec-rev-1"].output_tokens is None  # 모름은 None 그대로
+
+    assert [(e.task_id, e.type, e.data["to"]) for e in facts.events] == [
+        ("task-gh-41", "status_changed", "확인 필요"),
+        ("task-gh-41-review", "status_changed", "확인 필요"),
+    ]
+    assert isinstance(facts.events[0], TaskEventFact)
+    assert facts.human_requests == (
+        HumanRequestFact(request_id=request_id, task_id="task-gh-41", created_at="2026-10-06T10:35:00Z"),
+    )
+    assert repo.list_metric_facts(cycle, OTHER_SESSION, store=store).executions == ()
+
+
+def test_list_metric_facts_review_outcome_needs_a_passed_verdict(cycle, store):
+    """판정 전·판정 실패(결과가 요청과 안 맞음)인 검토는 outcome 을 모른다 — 1회 통과율에서 '검토 결과 없음'."""
+    repo.create_execution(cycle, execution_id="exec-rev-1", task_id="task-gh-41", attempt_no=1,
+                          start_key="auto:task-gh-41:r1", agent_id="agent-claude-mac", kind="code_review",
+                          request=_request("exec-rev-1", "task-gh-41", "code_change", ("art-x",)),
+                          assigned_connector_id=None, predecessor_execution_id=None, now=NOW)
+    _finish(cycle, store, "exec-rev-1", {"outcome": "approved"})
+    assert repo.list_metric_facts(cycle, SESSION, store=store).executions[0].outcome is None
+    repo.record_verdict(cycle, task_id="task-gh-41", execution_id="exec-rev-1", verdict={"outcome": "failed"},
+                        status="확인 필요", reason="x", finish=False, now=LATER)
+    assert repo.list_metric_facts(cycle, SESSION, store=store).executions[0].outcome is None
+
+
+def test_github_source_created_at_is_the_first_connection_time(seeded):
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    repo.save_github_source(seeded, SESSION, _source(config_revision=2), LATER)  # 설정 변경은 연결 시각을 바꾸지 않는다
+    assert repo.github_source_created_at(seeded, SESSION, SOURCE) == NOW
+    with pytest.raises(NotFound):
+        repo.github_source_created_at(seeded, OTHER_SESSION, SOURCE)
