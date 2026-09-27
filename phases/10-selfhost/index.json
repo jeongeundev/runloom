@@ -61,7 +61,9 @@
     {
       "step": 7,
       "name": "selfhost-docs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T10:07:17+0900",
+      "summary": "docs/SELFHOST.md 신설(요구 사항·설치 한 명령·로그인(grep OPERATOR_TOKEN)·러너 연결(연결 코드→pip install -e→connect→register→install-runner.sh, Agent 등록)·GitHub 연결(토큰 권한 Issues RW+Metadata R, 기준선은 Pull requests R 추가·WORKFLOW_GITHUB_REPOS·WORKFLOW_PUBLIC_URL·/metrics 기준선)·백업·복원(exec central … backup create/list, cp 로 호스트 반출, 복원은 stop central worker → run --rm central … restore <이름> --force → up -d)·업그레이드(백업→git pull→install.sh→install-runner.sh)·제거(down -v 는 runloom_workflow-data 삭제 경고)·문제 해결 표·알려진 한계(원격 없음·새 커밋 미추적→11-real-repo 등), 상태 줄에 실제 Docker 기동은 step 8 검증 전이라 명시); 모든 compose 명령은 'docker compose -p runloom -f deploy/selfhost/compose.yaml' 접두(install.sh 와 같은 프로젝트), 컨테이너 안은 python3; AGENTS.md 명령어 절에 install.sh·install-runner.sh·백업 create 3줄, docs/README.md 문서 목록에 SELFHOST 행·DEPLOY 설명 갱신, docs/DEPLOY.md 제목 아래 '공개 데모 VM 런북 — 셀프호스트는 SELFHOST.md' 한 줄. 테스트 tests/test_selfhost_files.py 13개 추가(절 구성·경로 존재·모듈 find_spec·connector/backup argparse 로 문서 명령 인자 파싱·compose 접두와 서비스명·복원 전 stop 순서·환경변수 실재·볼륨 삭제 경고·비밀값 미기재·SELFHOST/README/DEPLOY 상대 링크(파일만, 앵커 미검사)·AGENTS.md·README·DEPLOY 연결), pytest 2464 passed/54 skipped, ruff 통과. 다음 step 주의: 문서 절차는 실제 Docker 로 미검증 — step 8 결과에 맞춰 SELFHOST.md 상태 줄·문제 해결을 고칠 것, 문서의 docker compose 줄은 접두 규칙을 테스트가 강제(격리 프로젝트명은 문서가 아니라 테스트 쪽에서 바꿀 것), 복원 명령은 대상 DB 가 있으므로 --force 포함"
     },
     {
       "step": 8,

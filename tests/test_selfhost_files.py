@@ -455,3 +455,151 @@ def test_install_runner_help(tmp_path):
     res = _run_runner(tmp_path, "--help")
     assert res.returncode == 0
     assert "DRY_RUN" in res.stdout and _calls(tmp_path) == []
+
+
+# --- docs/SELFHOST.md (step 7) ------------------------------------------------------------------
+# 문서의 명령이 실제 파일·모듈·CLI 인자와 맞는지 본다. 명령을 실행하지는 않는다 — argparse 로 인자만 확인한다.
+
+SELFHOST_MD = ROOT / "docs" / "SELFHOST.md"
+AGENTS_MD = ROOT / "AGENTS.md"
+COMPOSE_PREFIX = "docker compose -p runloom -f deploy/selfhost/compose.yaml"
+
+
+def _selfhost_md() -> str:
+    return SELFHOST_MD.read_text(encoding="utf-8")
+
+
+def _code_lines(text: str) -> list[str]:
+    """```bash 블록의 명령 줄 (주석·빈 줄 제외, 줄 끝 주석 제거)."""
+    lines, inside = [], False
+    for raw in text.splitlines():
+        if raw.lstrip().startswith("```"):  # 목록 안 들여쓴 블록 포함
+            inside = not inside
+            continue
+        line = raw.split(" # ")[0].strip()
+        if inside and line and not line.startswith("#"):
+            lines.append(line)
+    return lines
+
+
+def _args_after(line: str, marker: str) -> list[str]:
+    """`marker` 뒤 인자. `<자리 표시>` 는 값 하나로 바꾼다."""
+    import shlex
+
+    rest = line.split(marker, 1)[1]
+    return shlex.split(re.sub(r"<[^>]+>", "X", rest))
+
+
+def test_selfhost_md_covers_every_section():
+    text = _selfhost_md()
+    for heading in (
+        "## 요구 사항", "## 설치", "## 로그인", "## 러너 연결", "## GitHub 연결", "## 백업·복원",
+        "## 업그레이드", "## 제거", "## 문제 해결", "## 알려진 한계",
+    ):
+        assert heading in text, heading
+    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "11-real-repo"):
+        assert needle in text, needle
+
+
+def test_selfhost_md_paths_exist():
+    text = _selfhost_md()
+    paths = set(re.findall(r"(?<![\w/.])((?:deploy|src|docs|tests)/[\w./-]+[\w])", text))
+    assert "deploy/selfhost/install.sh" in paths and "deploy/selfhost/install-runner.sh" in paths
+    generated = {"deploy/selfhost/.env"}  # install.sh 가 만드는 파일
+    missing = [p for p in sorted(paths - generated) if not (ROOT / p).exists()]
+    assert missing == []
+
+
+def test_selfhost_md_modules_exist():
+    import importlib.util
+
+    modules = set(re.findall(r"-m ([a-z_][\w.]*)", "\n".join(_code_lines(_selfhost_md()))))
+    assert {"workflow.connector", "workflow.server.backup"} <= modules
+    assert [m for m in sorted(modules) if importlib.util.find_spec(m) is None] == []
+
+
+def test_selfhost_md_cli_arguments_parse():
+    from workflow.connector.cli import build_parser as connector_parser
+    from workflow.server.backup import _parser as backup_parser
+
+    seen = set()
+    for line in _code_lines(_selfhost_md()):
+        for marker, parser in (("-m workflow.connector", connector_parser), ("-m workflow.server.backup", backup_parser)):
+            if marker in line:
+                args = _args_after(line, marker)
+                parser().parse_args(args)  # 인자가 틀리면 SystemExit
+                seen.add((marker, args[0]))
+    for command in ("connect", "register"):
+        assert ("-m workflow.connector", command) in seen, command
+    for command in ("create", "list", "restore"):
+        assert ("-m workflow.server.backup", command) in seen, command
+
+
+def test_selfhost_md_compose_commands_use_install_project_and_services():
+    compose = _compose()
+    lines = [
+        line for line in _code_lines(_selfhost_md())
+        if line.startswith("docker compose") and line != "docker compose version"  # 요구 사항 확인
+    ]
+    assert lines
+    for line in lines:
+        assert line.startswith(COMPOSE_PREFIX), line
+        args = line[len(COMPOSE_PREFIX):].split()
+        if args and args[0] in ("exec", "run", "logs", "stop", "restart", "cp"):
+            services = [a.split(":")[0] for a in args[1:] if not a.startswith("-")]
+            assert services and services[0] in compose["services"], line
+    # 복원은 서비스를 멈춘 뒤
+    text = "\n".join(lines)
+    assert text.index(f"{COMPOSE_PREFIX} stop central worker") < text.index("backup restore")
+
+
+def test_selfhost_md_env_names_are_real():
+    known = set(ENV_KEYS) | set(FIXED_ENV) | set(_env_example())
+    for script in (SELFHOST / "install.sh", SELFHOST / "install-runner.sh"):
+        known |= set(re.findall(r"\b[A-Z][A-Z0-9_]+\b", script.read_text(encoding="utf-8")))
+    known |= {"WORKFLOW_CONNECTOR_HOME"}  # connector/config.py
+    names = set(re.findall(r"\b(?:WORKFLOW|RUNLOOM|DIAG|OPERATOR|SESSION|HEALTH|SKIP|DRY)_[A-Z0-9_]+\b", _selfhost_md()))
+    assert names and sorted(names - known) == []
+
+
+def test_selfhost_md_warns_that_volume_removal_deletes_data():
+    text = _selfhost_md()
+    assert f"{COMPOSE_PREFIX} down -v" in text
+    assert "runloom_workflow-data" in text
+    section = text[text.index("## 제거"):text.index("## 문제 해결")]
+    assert "데이터" in section and "삭제" in section
+
+
+def test_selfhost_md_never_prints_secret_values():
+    text = _selfhost_md()
+    assert "grep OPERATOR_TOKEN deploy/selfhost/.env" in text
+    assert not re.search(r"\b[0-9a-f]{32,}\b", text)
+    assert "wfc_" not in text.replace("wfc_…", "")
+
+
+@pytest.mark.parametrize("doc", ["docs/SELFHOST.md", "docs/README.md", "docs/DEPLOY.md"])
+def test_doc_relative_links_resolve(doc):
+    path = ROOT / doc
+    text = path.read_text(encoding="utf-8")
+    targets = re.findall(r"\]\(([^)\s]+)\)", text)
+    broken = []
+    for target in targets:
+        if re.match(r"[a-z]+://|mailto:|#", target):
+            continue
+        if not (path.parent / target.split("#")[0]).exists():
+            broken.append(target)
+    assert broken == []
+
+
+def test_agents_md_commands_include_selfhost_install_and_backup():
+    text = AGENTS_MD.read_text(encoding="utf-8")
+    section = text[text.index("## 명령어"):text.index("## 하네스")]
+    assert "deploy/selfhost/install.sh" in section
+    assert "deploy/selfhost/install-runner.sh" in section
+    assert f"{COMPOSE_PREFIX} exec central python3 -m workflow.server.backup create" in section
+
+
+def test_docs_index_and_public_demo_runbook_point_at_selfhost():
+    assert "](SELFHOST.md)" in (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    head = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8").splitlines()[:3]
+    assert any("공개 데모 VM 런북" in line and "SELFHOST.md" in line for line in head)

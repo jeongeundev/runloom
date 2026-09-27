@@ -43,6 +43,9 @@ python3 -m workflow.connector                                     # 로컬 연�
 python3 -m ruff check .                                           # 린트
 python3 -m pytest -q                                              # 테스트 — scripts/ + tests/ (pyproject testpaths)
 python3 -m pytest scripts/ -q                                     # 하네스 테스트만
+deploy/selfhost/install.sh                                        # 셀프호스트 설치·업그레이드 (Docker compose central·worker, docs/SELFHOST.md)
+deploy/selfhost/install-runner.sh                                 # 셀프호스트 러너 launchd 설치 (호스트 Mac)
+docker compose -p runloom -f deploy/selfhost/compose.yaml exec central python3 -m workflow.server.backup create  # 셀프호스트 백업 (list · restore <이름> 은 SELFHOST.md)
 ```
 
 > `scripts/hooks/verify.sh` 는 소스가 바뀐 턴에 `python3 -m pytest -q` 와 `python3 -m ruff check .` 를 실행한다. 2026-09-20 `scripts/test_hooks.py` 로 감지를 확인했다.

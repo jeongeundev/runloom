@@ -24,7 +24,8 @@
 | [UI_GUIDE.md](UI_GUIDE.md) | 구현된 화면·상태 표시·컴포넌트 규칙 |
 | [github/](github/README.md) | GitHub 업무 순환 운영 런북 |
 | [n8n/](n8n/README.md) | n8n 입구·출구 연동 예시와 절차 |
-| [DEPLOY.md](DEPLOY.md) | 기존 VM 배포 런북(`deploy/` 파일과 테스트가 참조). 셀프호스트 문서는 `10-selfhost` 에서 새로 쓴다 |
+| [SELFHOST.md](SELFHOST.md) | 셀프호스트 설치·러너 연결·백업·업그레이드·문제 해결(`deploy/selfhost/`, phase 10) |
+| [DEPLOY.md](DEPLOY.md) | 공개 데모 VM 배포 런북(`deploy/` 파일과 테스트가 참조). 셀프호스트는 [SELFHOST.md](SELFHOST.md) |
 | [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록 |
 | [adr/](adr/) | 결정 기록. 0003(진단 모델)·0005(익명 세션)·0006(VM 배포)·0008(대본 데모)은 공모전 데모 구성의 기록이다 |
 | [archive/](archive/) | 이력. 현행 요구사항이 아니다 |
