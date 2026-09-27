@@ -10,10 +10,10 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from workflow.adapters import repo
-from workflow.adapters.errors import NotFound
+from workflow.adapters.errors import NotFound, RegistrationTaken
 from workflow.contracts.v1 import (
     ArtifactMeta,
     ClaimRequest,
@@ -24,7 +24,7 @@ from workflow.contracts.v1 import (
     HeartbeatRequest,
     NonEmptyStr,
 )
-from workflow.server.auth import get_conn, require_connector, utc_now
+from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace, get_conn, require_connector, utc_now
 from workflow.server.errors import ApiError
 
 DISCOVERED_MAX_BYTES = 64 * 1024
@@ -50,6 +50,14 @@ class RegistrationRequest(_Body):
     base_commit: CommitSha
     verification_profile_ids: list[NonEmptyStr]
     discovered: dict[str, Any]
+    agent_name: NonEmptyStr | None = Field(default=None, max_length=100)  # Agent 를 새로 만들 때의 이름(ADR-0018)
+
+
+class RegistrationResponse(_Body):
+    """CONTRACT 14.4 — `created` 는 이번 요청이 Agent 를 만들었는가. 구버전 러너는 `agent_id` 만 읽는다."""
+
+    agent_id: NonEmptyStr
+    created: bool
 
 
 def _json(model: BaseModel, status: int = 200) -> JSONResponse:
@@ -121,23 +129,32 @@ def heartbeat(
 @router.post("/connector/registrations")
 def register(
     body: RegistrationRequest,
+    request: Request,
     connector_id: str = Depends(require_connector),
     conn: Connection = Depends(get_conn),
-) -> dict[str, str]:
-    """운영자가 미리 등록한 agent(`local_registration_id` 일치) 의 연결 정보를 채운다."""
+) -> JSONResponse:
+    """`local_registration_id` 가 일치하는 Agent 의 연결 정보를 채운다. 없으면 selfhost 에서만 고정 워크스페이스에
+    `code.fix`·`code.review` Agent 를 만든다(ADR-0018 결정 1). demo 는 지금처럼 404."""
     _check_connector_id(body.connector_id, connector_id)
     if len(json.dumps(body.discovered, ensure_ascii=False).encode()) > DISCOVERED_MAX_BYTES:
         raise ApiError(422, "invalid_field", "discovered는 64KB를 넘을 수 없습니다.", field="discovered")
+    now = utc_now()
+    session_id = None
+    if request.app.state.settings.mode == "selfhost":
+        ensure_workspace(conn, now)
+        session_id = SELFHOST_SESSION_ID
     try:
-        agent_id = repo.update_registration(
+        agent_id, created = repo.register_local_agent(
             conn,
-            body.local_registration_id,
             connector_id=connector_id,
+            local_registration_id=body.local_registration_id,
+            agent_name=body.agent_name,
             repository_id=body.repository_id,
             base_commit=body.base_commit,
             verification_profile_ids=body.verification_profile_ids,
             discovered=body.discovered,
-            now=utc_now(),
+            session_id=session_id,
+            now=now,
         )
     except NotFound:
         raise ApiError(
@@ -146,7 +163,14 @@ def register(
             f"local_registration_id {body.local_registration_id}에 해당하는 에이전트가 없습니다.",
             field="local_registration_id",
         ) from None
-    return {"agent_id": agent_id}
+    except RegistrationTaken:
+        raise ApiError(
+            409,
+            "registration_taken",
+            f"local_registration_id {body.local_registration_id}는 다른 연결 프로그램이 쓰고 있습니다.",
+            field="local_registration_id",
+        ) from None
+    return _json(RegistrationResponse(agent_id=agent_id, created=created))
 
 
 # --- 실행 이벤트·산출물 ---------------------------------------------------------

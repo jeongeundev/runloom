@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 53개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 56개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -53,7 +53,7 @@ from workflow.contracts.v1 import (
     parse_rfc3339_aware,
 )
 from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig, SourceDelivery
-from workflow.server.machine_api import RegistrationRequest
+from workflow.server.machine_api import RegistrationRequest, RegistrationResponse
 
 CONTRACT_MD = Path(__file__).resolve().parents[3] / "docs" / "CONTRACT.md"
 
@@ -70,6 +70,7 @@ _SIGNATURES = [
         ClaimRequest,
     ),
     ("RegistrationRequest", lambda k: {"local_registration_id", "tool"} <= k, RegistrationRequest),
+    ("RegistrationResponse", lambda k: k == {"agent_id", "created"}, RegistrationResponse),
     ("HandoffBundle", lambda k: "source_execution_id" in k and "reviewed_commit" not in k, HandoffBundle),
     ("ExecutionEvent", lambda k: {"seq", "type"} <= k, ExecutionEvent),
     ("ArtifactMeta", lambda k: {"kind", "sha256", "size", "contract_version"} <= k, ArtifactMeta),
@@ -119,7 +120,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 53
+    assert len(FENCED) == 56
     assert len(INLINE) == 8
 
 

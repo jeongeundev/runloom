@@ -22,6 +22,7 @@ from workflow.adapters.errors import (
     KindInUse,
     KindProtected,
     NotFound,
+    RegistrationTaken,
     ResponseConflict,
     SequenceGap,
     StaleConfig,
@@ -256,6 +257,124 @@ def test_update_registration_fills_connector_fields_and_keeps_capabilities(conn)
         repo.update_registration(conn, "local-none", connector_id=CONNECTOR, repository_id="r",
                                  base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
                                  verification_profile_ids=[], discovered={}, now=LATER)
+
+
+
+# --- 러너 등록이 Agent 를 만든다 (phase 12 step 1, ADR-0018 결정 1) ------------
+
+REG_COMMIT = "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e"
+
+
+def _register(conn, *, connector_id=CONNECTOR, local_registration_id="OpenArchive", agent_name="OpenArchive",
+              repository_id="jeongeundev/OpenArchive", base_commit=REG_COMMIT, session_id=SESSION, now=LATER):
+    return repo.register_local_agent(
+        conn, connector_id=connector_id, local_registration_id=local_registration_id, agent_name=agent_name,
+        repository_id=repository_id, base_commit=base_commit, verification_profile_ids=["vp-check"],
+        discovered={"found": {"github_repository": "jeongeundev/OpenArchive"}}, session_id=session_id, now=now,
+    )
+
+
+def _issue_connector(conn, connector_id: str) -> None:
+    conn.execute("INSERT INTO connectors (connector_id, token_sha256, created_at) VALUES (?, ?, ?)",
+                 (connector_id, hashlib.sha256(connector_id.encode()).hexdigest(), NOW))
+
+
+def test_register_local_agent_creates_agent_with_fix_and_review_in_workspace(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+
+    agent_id, created = _register(conn)
+
+    assert created is True
+    assert agent_id.startswith("agt-") and len(agent_id) == len("agt-") + 8
+    row = repo.get_agent(conn, agent_id)
+    assert (row["name"], row["owner_scope"], row["connection_type"]) == ("OpenArchive", "personal", "local")
+    assert row["local_registration_id"] == "OpenArchive"
+    assert json.loads(row["capabilities_json"]) == [
+        {"code": "code.fix", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+        {"code": "code.review", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+    ]
+    assert (row["connector_id"], row["repository_id"], row["base_commit"]) == (
+        CONNECTOR, "jeongeundev/OpenArchive", REG_COMMIT)
+    assert json.loads(row["verification_profile_ids_json"]) == ["vp-check"]
+    assert json.loads(row["discovered_json"])["found"]["github_repository"] == "jeongeundev/OpenArchive"
+    assert (row["connection_state"], row["last_seen_at"]) == ("online", LATER)
+    assert row["shared_to_all_sessions"] == 0
+    assert repo.is_session_agent(conn, SESSION, agent_id)
+
+
+def test_register_local_agent_without_name_uses_local_registration_id(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+
+    agent_id, _ = _register(conn, agent_name=None)
+
+    assert repo.get_agent(conn, agent_id)["name"] == "OpenArchive"
+
+
+def test_register_local_agent_is_idempotent_and_updates(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    first, _ = _register(conn)
+
+    again, created = _register(conn, agent_name="다른 이름", base_commit="a" * 40, repository_id="other/repo")
+
+    assert (again, created) == (first, False)
+    assert len([a for a in repo.list_agents(conn) if a["local_registration_id"] == "OpenArchive"]) == 1
+    row = repo.get_agent(conn, first)
+    assert (row["base_commit"], row["repository_id"]) == ("a" * 40, "other/repo")
+    assert row["name"] == "OpenArchive"  # 이름·능력은 만들 때 값 그대로
+    assert json.loads(row["capabilities_json"])[0]["scope"] == {"repository_id": "jeongeundev/OpenArchive"}
+
+
+def test_register_local_agent_fills_preregistered_agent_without_creating(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    repo.upsert_agent(conn, _agent("agent-codex-mac", connection_type="local", owner_scope="personal",
+                                   local_registration_id="OpenArchive",
+                                   capabilities=[{"code": "code.modify", "scope": {"repository_id": "r"}}]))
+
+    agent_id, created = _register(conn)
+
+    assert (agent_id, created) == ("agent-codex-mac", False)
+    assert len(repo.list_agents(conn)) == 1
+    row = repo.get_agent(conn, agent_id)
+    assert row["connector_id"] == CONNECTOR
+    assert json.loads(row["capabilities_json"])[0]["code"] == "code.modify"
+
+
+def test_register_local_agent_without_workspace_does_not_create(conn):
+    """demo 모드 — 만들지 않고 지금처럼 NotFound."""
+    with pytest.raises(NotFound):
+        _register(conn, session_id=None)
+    assert repo.list_agents(conn) == []
+
+
+def test_register_local_agent_rejects_name_used_by_another_connector(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    _issue_connector(conn, "conn-other")
+    agent_id, _ = _register(conn)
+
+    with pytest.raises(RegistrationTaken):
+        _register(conn, connector_id="conn-other", base_commit="b" * 40)
+
+    row = repo.get_agent(conn, agent_id)
+    assert (row["connector_id"], row["base_commit"]) == (CONNECTOR, REG_COMMIT)
+
+
+def test_register_local_agent_takes_over_from_revoked_connector(conn):
+    """취소된 연결 프로그램은 그 이름을 더 쓰지 않는다 — 새 연결 프로그램이 이어받는다."""
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    _issue_connector(conn, "conn-new")
+    agent_id, _ = _register(conn)
+    repo.revoke_connector(conn, CONNECTOR, LATER)
+
+    again, created = _register(conn, connector_id="conn-new")
+
+    assert (again, created) == (agent_id, False)
+    assert repo.get_agent(conn, agent_id)["connector_id"] == "conn-new"
 
 
 # --- 연결 코드·연결 프로그램 ------------------------------------------------

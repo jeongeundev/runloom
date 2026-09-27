@@ -1,10 +1,15 @@
 """machine_api.py — 연결 프로그램이 쓰는 중앙 API. CONTRACT 2절(claim)·3절(이벤트·오류표)·4절(산출물)."""
 
+import dataclasses
 import hashlib
 import json
 
+import pytest
+from fastapi.testclient import TestClient
+
 from workflow.adapters import repo
-from workflow.server.auth import utc_now
+from workflow.server.app import create_app
+from workflow.server.auth import SELFHOST_SESSION_ID, utc_now
 
 from .conftest import (
     BASE_COMMIT,
@@ -513,7 +518,7 @@ def test_registration_updates_preregistered_agent(client, seeded, connector, hea
     connector_id, _ = connector
     response = client.post("/connector/registrations", json=_registration(connector_id), headers=headers)
     assert response.status_code == 200
-    assert response.json() == {"agent_id": "agent-codex-mac"}
+    assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
     agent = repo.get_agent(seeded, "agent-codex-mac")
     assert agent["connector_id"] == connector_id
     assert agent["repository_id"] == "demo-report-repo"
@@ -551,7 +556,7 @@ def test_registration_accepts_claude_tool(client, seeded, connector, headers):
     connector_id, _ = connector
     response = client.post("/connector/registrations", json=_registration(connector_id, tool="claude"), headers=headers)
     assert response.status_code == 200
-    assert response.json() == {"agent_id": "agent-codex-mac"}
+    assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
     agent = repo.get_agent(seeded, "agent-codex-mac")
     assert agent["connector_id"] == connector_id
     assert agent["connection_state"] == "online"
@@ -571,6 +576,109 @@ def test_registration_rejects_short_commit(client, connector, headers):
     response = client.post("/connector/registrations", json=_registration(connector_id, base_commit="3f9c2e1"), headers=headers)
     assert response.status_code == 422
     assert response.json()["field"] == "base_commit"
+
+
+
+# --- 러너 등록이 Agent 를 만든다 (phase 12 step 1, ADR-0018 결정 1 · CONTRACT 14.3·14.4) ---
+
+OPEN_ARCHIVE = {
+    "local_registration_id": "OpenArchive",
+    "agent_name": "OpenArchive",
+    "tool": "claude",
+    "repository_id": "jeongeundev/OpenArchive",
+    "verification_profile_ids": ["vp-check"],
+    "discovered": {"found": {"github_repository": "jeongeundev/OpenArchive"}, "not_read": []},
+}
+
+
+@pytest.fixture
+def selfhost(settings, conn):
+    """같은 DB 를 selfhost 모드로 여는 클라이언트와 그 클라이언트로 교환한 연결 프로그램."""
+    client = TestClient(create_app(dataclasses.replace(settings, mode="selfhost")))
+    connector_id, token = exchange(client, conn)
+    return client, connector_id, bearer(token)
+
+
+def test_selfhost_registration_creates_agent_for_unknown_name(selfhost, conn):
+    client, connector_id, headers = selfhost
+
+    response = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
+                           headers=headers)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["created"] is True and set(body) == {"agent_id", "created"}
+    agent = repo.get_agent(conn, body["agent_id"])
+    assert agent["name"] == "OpenArchive"
+    assert json.loads(agent["capabilities_json"]) == [
+        {"code": "code.fix", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+        {"code": "code.review", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+    ]
+    assert (agent["connector_id"], agent["repository_id"], agent["base_commit"]) == (
+        connector_id, "jeongeundev/OpenArchive", BASE_COMMIT)
+    assert json.loads(agent["verification_profile_ids_json"]) == ["vp-check"]
+    assert json.loads(agent["discovered_json"])["found"]["github_repository"] == "jeongeundev/OpenArchive"
+    assert agent["connection_state"] == "online"
+    assert repo.is_session_agent(conn, SELFHOST_SESSION_ID, body["agent_id"])
+
+
+def test_selfhost_registration_twice_is_idempotent(selfhost, conn):
+    client, connector_id, headers = selfhost
+    first = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
+
+    second = client.post("/connector/registrations",
+                         json=_registration(connector_id, **{**OPEN_ARCHIVE, "base_commit": "a" * 40}), headers=headers)
+
+    assert second.status_code == 200
+    assert second.json() == {"agent_id": first.json()["agent_id"], "created": False}
+    assert [a["agent_id"] for a in repo.list_agents(conn) if a["local_registration_id"] == "OpenArchive"] == [
+        first.json()["agent_id"]]
+    assert repo.get_agent(conn, first.json()["agent_id"])["base_commit"] == "a" * 40
+
+
+def test_selfhost_registration_of_preregistered_agent_keeps_existing_behavior(selfhost, seeded):
+    client, connector_id, headers = selfhost
+    before = len(repo.list_agents(seeded))
+
+    response = client.post("/connector/registrations", json=_registration(connector_id), headers=headers)
+
+    assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
+    assert len(repo.list_agents(seeded)) == before
+
+
+def test_selfhost_registration_name_used_by_another_connector_409(selfhost, conn):
+    client, connector_id, headers = selfhost
+    first = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
+    other_id, other_token = exchange(client, conn)
+
+    response = client.post("/connector/registrations", json=_registration(other_id, **OPEN_ARCHIVE),
+                           headers=bearer(other_token))
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "registration_taken"
+    assert response.json()["field"] == "local_registration_id"
+    assert repo.get_agent(conn, first.json()["agent_id"])["connector_id"] == connector_id
+
+
+def test_demo_registration_of_unknown_name_is_still_404(client, connector, headers):
+    connector_id, _ = connector
+
+    response = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
+                           headers=headers)
+
+    assert response.status_code == 404
+    assert response.json()["field"] == "local_registration_id"
+
+
+def test_registration_agent_name_is_limited_to_100_chars(selfhost):
+    client, connector_id, headers = selfhost
+
+    response = client.post("/connector/registrations",
+                           json=_registration(connector_id, **{**OPEN_ARCHIVE, "agent_name": "x" * 101}),
+                           headers=headers)
+
+    assert response.status_code == 422
+    assert response.json()["field"] == "agent_name"
 
 
 # --- 측정 칸 (phase 9 step 4, ADR-0015) ------------------------------------------
