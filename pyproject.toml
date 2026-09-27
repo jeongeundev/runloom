@@ -16,6 +16,7 @@ dependencies = [
   "jinja2>=3.1",
   "python-multipart>=0.0.20",
   "openai>=1.0",
+  "PyJWT[crypto]>=2.10,<3",  # GitHub App JWT(RS256) — ADR-0017
 ]
 
 [project.optional-dependencies]

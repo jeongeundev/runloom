@@ -19,6 +19,7 @@ from workflow.adapters.github_client import (
     IssueComment,
     IssueCursor,
     IssuePage,
+    InstallationTokenProvider,
 )
 from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink
 
@@ -590,3 +591,105 @@ def test_from_env_reads_token_and_repos_only_from_env():
     assert rec.calls[0].headers["authorization"] == f"Bearer {TOKEN}"
     with pytest.raises(ValueError, match="WORKFLOW_GITHUB_TOKEN"):
         HttpGitHubClient.from_env({"WORKFLOW_GITHUB_REPOS": REPO})
+
+
+# ── 토큰 공급자 (phase 11 step 2) ─────────────────────────────────────────
+
+
+class FakeProvider:
+    def __init__(self, tokens):
+        self.tokens = list(tokens)
+        self.invalidated = 0
+
+    def token(self) -> str:
+        return self.tokens[0]
+
+    def invalidate(self) -> None:
+        self.invalidated += 1
+        self.tokens.pop(0)
+
+
+def test_token_provider_is_asked_on_every_request():
+    rec = Recorder({("GET", f"/repos/{REPO}/issues/1"): httpx.Response(200, json=_issue(1))})
+    provider = FakeProvider(["ghs_ONE"])
+    client = HttpGitHubClient(provider, [REPO], transport=httpx.MockTransport(rec))
+
+    client.get_issue(REPO, 1)
+    provider.tokens[0] = "ghs_TWO"
+    client.get_issue(REPO, 1)
+
+    assert [r.headers["authorization"] for r in rec.calls if r.url.path.endswith("/issues/1")] == [
+        "Bearer ghs_ONE", "Bearer ghs_TWO",
+    ]
+
+
+def test_token_provider_401_invalidates_and_retries_once():
+    def handler(request):
+        if request.headers["authorization"] == "Bearer ghs_OLD":
+            return httpx.Response(401, json={})
+        return httpx.Response(200, json=_issue(1))
+
+    rec = Recorder({("GET", f"/repos/{REPO}/issues/1"): handler, ("GET", f"/repos/{REPO}"): lambda r: (
+        httpx.Response(401, json={}) if r.headers["authorization"] == "Bearer ghs_OLD"
+        else httpx.Response(200, json=REPO_JSON))})
+    provider = FakeProvider(["ghs_OLD", "ghs_NEW"])
+
+    assert HttpGitHubClient(provider, [REPO], transport=httpx.MockTransport(rec)).get_issue(REPO, 1).number == 1
+    assert provider.invalidated == 1
+
+
+def test_token_provider_401_twice_is_forbidden():
+    rec = _failing(401)
+    provider = FakeProvider(["ghs_OLD", "ghs_NEW"])
+
+    with pytest.raises(GitHubForbidden):
+        HttpGitHubClient(provider, [REPO], transport=httpx.MockTransport(rec)).get_issue(REPO, 1)
+    assert len(rec.calls) == 2 and provider.invalidated == 1
+
+
+def test_fixed_token_401_is_not_retried():
+    rec = _failing(401)
+    with pytest.raises(GitHubForbidden):
+        _client(rec).get_issue(REPO, 1)
+    assert len(rec.calls) == 1
+
+
+def test_provider_token_not_in_repr_or_errors(caplog):
+    caplog.set_level(logging.DEBUG)
+    client = HttpGitHubClient(FakeProvider(["ghs_SECRET_PROVIDED", "ghs_SECRET_AGAIN"]), [REPO],
+                              transport=httpx.MockTransport(_failing(401)))
+    with pytest.raises(GitHubForbidden) as info:
+        client.get_issue(REPO, 1)
+    for text in (str(info.value), repr(info.value), caplog.text, repr(client)):
+        assert "ghs_SECRET" not in text
+
+
+def test_installation_token_provider_delegates_to_app_auth():
+    class Auth:
+        def __init__(self):
+            self.calls = []
+
+        def installation_token(self, installation_id):
+            self.calls.append(("token", installation_id))
+            return f"ghs_{installation_id}"
+
+        def invalidate(self, installation_id):
+            self.calls.append(("invalidate", installation_id))
+
+    auth = Auth()
+    provider = InstallationTokenProvider(auth, 77)
+
+    assert provider.token() == "ghs_77"
+    provider.invalidate()
+    assert auth.calls == [("token", 77), ("invalidate", 77)]
+    assert "ghs_" not in repr(provider)
+
+
+def test_allowed_repos_can_be_installation_repositories():
+    installed = ["acme/app", "acme/lib"]  # 호출자가 설치 저장소 목록을 허용 목록으로 넘긴다
+    rec = Recorder({("GET", f"/repos/{REPO}/issues/1"): httpx.Response(200, json=_issue(1))})
+    client = HttpGitHubClient(FakeProvider(["ghs_X"]), installed, transport=httpx.MockTransport(rec))
+
+    assert client.get_issue(REPO, 1).number == 1
+    with pytest.raises(GitHubRepositoryNotAllowed, match="허용 저장소"):
+        client.get_issue("acme/other", 1)
