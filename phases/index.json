@@ -54,7 +54,8 @@
     },
     {
       "dir": "10-selfhost",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-27T10:26:32+0900"
     }
   ]
 }
