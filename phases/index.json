@@ -61,6 +61,10 @@
       "dir": "11-github-app",
       "status": "completed",
       "completed_at": "2026-09-27T19:39:11+0900"
+    },
+    {
+      "dir": "12-real-repo",
+      "status": "pending"
     }
   ]
 }

@@ -1,0 +1,61 @@
+{
+  "project": "workflow",
+  "phase": "12-real-repo",
+  "steps": [
+    {
+      "step": 0,
+      "name": "real-repo-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "self-register-api",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "connector-setup",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "base-tracking",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "worktree-env",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "branch-push",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "draft-pr",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "notify-core",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "notify-ui",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "runner-ui",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "real-repo-verify",
+      "status": "pending"
+    }
+  ]
+}
