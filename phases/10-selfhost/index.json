@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "settings-mode",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:29:40+0900",
+      "summary": "settings.py: Settings.mode(Literal demo|selfhost, WORKFLOW_MODE, 비면 demo·다른 값 ValueError)·ENV_KEYS 에 WORKFLOW_MODE·SELFHOST_OPTIONAL_KEYS=(DIAG_API_TOKEN,)(selfhost 에선 비어도 로드, WORKFLOW_DEV 도 생성 안 함)·Settings.diagnosis_enabled 프로퍼티(토큰 유무); web._start_execution 이 진단 꺼짐이면 kind=diagnosis 실행을 409 diagnosis_disabled '진단 기능이 꺼져 있습니다' 로 거부(실행·진단 시작 기록 없음); worker: diag: DiagClient|None, None 이면 _submit/_poll_diagnoses 건너뜀, main 은 diagnosis_enabled 일 때만 HttpDiagClient; central.env.example 에 WORKFLOW_MODE= 빈 줄; ARCHITECTURE 모드 표 진단 행 확정. 테스트: test_settings 7·test_app 1·test_web 1·test_worker 1·test_deploy_files 1 추가, pytest 2385 passed/54 skipped, ruff 통과. 다음 step 주의: 진단 거부 테스트(test_run_diagnosis_rejected_when_diagnosis_is_off)는 모드 기본(demo)+토큰 빈 Settings 로 쓴다 — 분기는 모드가 아니라 토큰; worker 후속 자동 착수 경로는 진단 종류를 막지 않음(진단은 첫 단계라 해당 없음); Settings 는 dataclasses.replace(settings, mode='selfhost') 로 테스트에서 바꾼다",
+      "completed_at": "2026-09-27T09:34:58+0900"
     },
     {
       "step": 2,
