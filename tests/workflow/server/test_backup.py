@@ -87,6 +87,23 @@ def test_backup_does_not_include_env_or_token_files(src, capsys):
     assert not any(b"secret-value" in p.read_bytes() for p in made.iterdir())
 
 
+def test_backup_does_not_include_the_secret_directory(src, capsys):
+    """ADR-0017 — 비밀 저장소(WORKFLOW_SECRET_DIR)는 백업에 들어가지 않는다. 볼륨 안 artifacts 옆에 있어도."""
+    from workflow.adapters.secret_store import GITHUB_APP_PRIVATE_KEY, SecretStore
+
+    SecretStore(src / "secrets").write(GITHUB_APP_PRIVATE_KEY, "PEM-SECRET-VALUE")
+    backup.main(["create"], env={**_env(src), "WORKFLOW_SECRET_DIR": str(src / "secrets")}, now=lambda: T1)
+    made = src / "backups" / "20260927T010000Z"
+    import tarfile
+
+    with tarfile.open(made / "artifacts.tar.gz") as tar:
+        names = tar.getnames()
+        blobs = [tar.extractfile(m).read() for m in tar.getmembers() if m.isfile()]
+    assert all("secrets" not in n and GITHUB_APP_PRIVATE_KEY not in n for n in names)
+    assert not any(b"PEM-SECRET-VALUE" in b for b in blobs)
+    assert not any(b"PEM-SECRET-VALUE" in p.read_bytes() for p in made.iterdir())
+
+
 def test_create_includes_rows_still_in_wal_and_survives_concurrent_writes(src):
     db_path = src / "central.sqlite"
     holder = connect(db_path)

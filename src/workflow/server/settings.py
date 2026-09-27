@@ -27,6 +27,8 @@ ENV_KEYS = (
     "WORKFLOW_MODE",
     "WORKFLOW_DB_PATH",
     "WORKFLOW_ARTIFACT_DIR",
+    # 비밀 파일 디렉터리 (ADR-0017) — 경로라 비밀값이 아니다
+    "WORKFLOW_SECRET_DIR",
     *SECRET_KEYS,
     "DIAG_API_URL",
     "WORKFLOW_LIMIT_PER_SESSION_DAILY",
@@ -72,6 +74,8 @@ class Settings:
     github_repos: tuple[str, ...] = ()
     # 실행 모드(ADR-0016). 미설정 = demo(공개 데모)
     mode: Literal["demo", "selfhost"] = "demo"
+    # 비밀 파일 저장소 루트(ADR-0017, `adapters/secret_store.py`). 백업에 들어가지 않는다
+    secret_dir: Path = Path("data/secrets")
 
     @property
     def diagnosis_enabled(self) -> bool:
@@ -135,4 +139,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         github_token=env.get("WORKFLOW_GITHUB_TOKEN") or "",
         github_repos=tuple(r.strip() for r in (env.get("WORKFLOW_GITHUB_REPOS") or "").split(",") if r.strip()),
         mode=mode,
+        secret_dir=Path(env.get("WORKFLOW_SECRET_DIR") or "data/secrets"),
     )

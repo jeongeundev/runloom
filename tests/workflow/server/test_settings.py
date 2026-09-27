@@ -54,6 +54,7 @@ def test_defaults():
     s = load_settings(FULL)
     assert s.db_path == Path("data/central.sqlite")
     assert s.artifact_dir == Path("data/artifacts")
+    assert s.secret_dir == Path("data/secrets")
     assert s.diag_api_url == "http://127.0.0.1:8100"
     assert s.session_cookie_days == 14
     assert s.limits == Limits()
@@ -72,6 +73,7 @@ def test_env_overrides():
         **FULL,
         "WORKFLOW_DB_PATH": "/tmp/x/db.sqlite",
         "WORKFLOW_ARTIFACT_DIR": "/tmp/x/art",
+        "WORKFLOW_SECRET_DIR": "/tmp/x/secrets",
         "DIAG_API_URL": "http://127.0.0.1:9100",
         "WORKFLOW_LIMIT_PER_SESSION_DAILY": "3",
         "WORKFLOW_LIMIT_GLOBAL_DAILY": "7",
@@ -82,6 +84,7 @@ def test_env_overrides():
     })
     assert s.db_path == Path("/tmp/x/db.sqlite")
     assert s.artifact_dir == Path("/tmp/x/art")
+    assert s.secret_dir == Path("/tmp/x/secrets")
     assert s.diag_api_url == "http://127.0.0.1:9100"
     assert s.limits == Limits(3, 7, 2, 1024, 30, 45)
 

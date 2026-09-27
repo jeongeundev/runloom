@@ -29,6 +29,8 @@ FIXED_ENV = {
     "WORKFLOW_DB_PATH": "/data/central.sqlite",
     "WORKFLOW_ARTIFACT_DIR": "/data/artifacts",
     "WORKFLOW_BACKUP_DIR": "/data/backups",
+    # 비밀 파일(ADR-0017) — 볼륨 안, artifacts 밖이라 백업에 들어가지 않는다
+    "WORKFLOW_SECRET_DIR": "/data/secrets",
 }
 SERVICES = ("central", "worker")
 
