@@ -29,7 +29,10 @@
     {
       "step": 3,
       "name": "selfhost-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:41:40+0900",
+      "summary": "web._base·/tasks/{id}/live 컨텍스트에 mode 추가, 템플릿 분기는 mode 하나: login.html 을 card·field·help·alert 로 다듬고 안내 한 줄(.env 의 OPERATOR_TOKEN, 값 없음), _sidebar selfhost 에서 `+`→/tasks/new·하단 '셀프호스트 워크스페이스'+로그아웃 폼(지표·GitHub 링크는 기존 is_operator 로 보임). 숨긴 데모 전용 목록: 사이드바 `+` fixture 가져오기·'세션 · 익명, 14일 보존', 홈 `업무 가져오기` 버튼·GitHub·Jira 안내, _live `후속 업무 B 등록` 칩, task_new `run_id (진단 업무)` 칸·범위 예시, operator `진단 사용량`·'데모 저장소' 안내, sources 진단→수정 요청 예시(selfhost 는 수정 항목 하나). 결정: 진단 입력은 compose 에 진단 데모가 없어 토큰과 무관하게 selfhost 에서 숨김, '시연용 · 대본 재생'·'시연 데이터' 표시는 데이터가 정하는 사실 표시라 유지, /tasks/import 경로 자체는 그대로(링크만 숨김). ARCHITECTURE 모드 표 갱신. 테스트: test_web 4 추가(로그인 화면·내비게이션·selfhost 숨김·demo 유지·비밀값 없음), pytest 2403 passed/54 skipped, ruff 통과. 다음 step 주의: 새 화면 요소를 demo 전용으로 만들면 test_web 의 DEMO_ONLY_* 목록에 추가, 업무 등록 폼 기본 종류는 여전히 operations.diagnose(_EMPTY_FORM)",
+      "completed_at": "2026-09-27T09:48:06+0900"
     },
     {
       "step": 4,
