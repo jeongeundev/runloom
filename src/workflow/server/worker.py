@@ -39,6 +39,7 @@ HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 �
 import hashlib
 import json
 import logging
+import math
 import re
 import secrets
 import sqlite3
@@ -69,7 +70,8 @@ from workflow.adapters.github_client import (
     GitHubRepositoryNotAllowed,
     GitHubUnavailable,
 )
-from workflow.adapters.secret_store import SecretStore
+from workflow.adapters.notify_sender import NotifyFailed, NotifySender
+from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     AdapterError,
@@ -100,7 +102,7 @@ from workflow.contracts.v1 import (
 )
 from workflow.domain.callback_policy import host_allowed
 from workflow.domain.completion import criteria_template, merge_criteria
-from workflow.domain import pull_request
+from workflow.domain import notification, pull_request
 from workflow.domain.execution_policy import ExecutionPolicy, policy_for
 from workflow.domain.report_expectation import (
     ExpectedReport,
@@ -137,6 +139,9 @@ GITHUB_SYNC_INTERVAL_SECONDS = 60
 # 초안 PR 열기 재시도 (ADR-0018 결정 4): callback 과 같은 30·2^(n-1) 초, 5회 실패 후 사람 요청
 PR_MAX_ATTEMPTS = 5
 PR_BACKOFF_SECONDS = 30
+# 알림 웹훅 재시도 (ADR-0018 결정 5): callback 과 같은 30·2^(n-1) 초(429 면 retry_after 와 큰 쪽), 5회 실패 후 포기
+NOTIFY_MAX_ATTEMPTS = 5
+NOTIFY_BACKOFF_SECONDS = 30
 
 
 @dataclass
@@ -171,6 +176,8 @@ class TickReport:
     prs_opened: int = 0  # 검토 승인 뒤 연(또는 이미 있던) 초안 PR
     prs_failed: int = 0  # PR 을 끝내 열지 못해 사람 요청으로 넘긴 수정 Task
     prs_merged: int = 0  # 병합을 보고 완료한 수정 Task
+    notifications_sent: int = 0  # 알림 웹훅 2xx
+    notifications_failed: int = 0  # 알림 전송 실패(재시도 대기·포기) — 업무 상태와 따로
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -378,6 +385,8 @@ class Worker:
         clock: Callable[[], str],
         github: GitHubClient | None = None,
         github_for: Callable[[GitHubSourceConfig], GitHubClient | None] | None = None,
+        secrets: SecretStore | None = None,
+        notifier: NotifySender | None = None,
     ):
         # 소스별 클라이언트(ADR-0017). `github` 하나만 주면 모든 소스가 그것을 쓴다(환경변수 토큰·테스트)
         if github_for is None and github is not None:
@@ -391,10 +400,13 @@ class Worker:
         self._callbacks = callbacks
         self._settings = settings
         self._clock = clock
+        # 알림 웹훅(ADR-0018 결정 5). URL 은 비밀 파일에서 그때그때 읽는다 — 없으면 쌓지도 보내지도 않는다
+        self._secrets = secrets
+        self._notifier = notifier
 
     def tick(self) -> TickReport:
         """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다.
-        callback 전달은 맨 뒤 — 후속 착수·실패 반영까지 끝난 상태로 사람 차례를 판정한다)."""
+        callback 전달은 후속 착수·실패 반영 뒤 — 끝난 상태로 사람 차례를 판정한다. 알림은 맨 뒤 — 같은 tick 에 쌓인 것을 보낸다)."""
         report = TickReport()
         conn = self._conn_factory()
         try:
@@ -413,6 +425,7 @@ class Worker:
             self._deliver_callbacks(conn, report)
             self._deliver_pull_requests(conn, report)
             self._deliver_github(conn, report)
+            self._deliver_notifications(conn, report)
         finally:
             conn.close()
         return report
@@ -1097,10 +1110,9 @@ class Worker:
                 self._write_status(conn, task, "대기", "수정 요청 — 재작업 결과 대기")
         elif decision.action == "request_human":
             target = repo.get_task(conn, decision.target_task_id)
-            _, fresh = repo.create_human_request_once(
+            report.human_requests += int(self._request_human(
                 conn, target["task_id"], decision.request_code, decision.reason, decision.cause_key, now,
-            )
-            report.human_requests += int(fresh)
+            ))
             self._write_status(conn, target, "확인 필요", decision.reason)
         elif decision.hold_code in _HOLD_LABELS:
             self._write_status(conn, task, _HOLD_LABELS[decision.hold_code], decision.reason)
@@ -1124,11 +1136,10 @@ class Worker:
             return None
         if not pushed:
             question = pull_request.not_pushed_question(fix_task["task_id"])
-            _, fresh = repo.create_human_request_once(
+            report.human_requests += int(self._request_human(
                 conn, fix_task["task_id"], pull_request.PR_REQUEST_CODE, question,
                 pull_request.pr_request_cause_key(review_execution["execution_id"]), self._clock(),
-            )
-            report.human_requests += int(fresh)
+            ))
             return question
         snapshot = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"])
         repo.enqueue_pull_request(
@@ -1343,7 +1354,7 @@ class Worker:
         for blocker in readiness.blockers:
             if blocker.code not in task_cycle.READINESS_REQUEST_CODES:
                 continue
-            _, fresh = repo.create_human_request_once(
+            fresh = self._request_human(
                 conn, task["task_id"], blocker.code, blocker.reason,
                 task_cycle.readiness_cause_key(blocker.code, task["revision"]), self._clock(),
             )
@@ -1453,10 +1464,13 @@ class Worker:
                 continue
             if execution["status"] == "failed" and execution["process_stopped"]:
                 # 프로세스 종료를 확인한 실패 — 마감(실패)하고 잠금을 푼다. 재실행은 새 업무·명시적 재시도만
+                reason = f"{execution['failed_code']} · {execution['failed_message']}"
                 repo.finish_task(
                     conn, task_id=task["task_id"], execution_id=execution["execution_id"], status="실패",
-                    reason=f"{execution['failed_code']} · {execution['failed_message']}", now=self._clock(),
+                    reason=reason, now=self._clock(),
                 )
+                self._notify(conn, "task_failed", task["task_id"], f"task_failed:{execution['execution_id']}",
+                             detail=reason)
                 report.failures_reflected += 1
                 continue
             reason = (
@@ -1551,6 +1565,8 @@ class Worker:
             repo.record_pull_request(conn, task_id, state="open", now=now, pr=pr)
             report.prs_opened += 1
             self._write_status(conn, repo.get_task(conn, task_id), "확인 필요", pull_request.open_reason(pr.number))
+            if pr.state == "open":
+                self._notify(conn, "pr_opened", task_id, f"pr_opened:{task_id}:{pr.number}", pr_url=pr.html_url)
             if pr.state == "closed":  # 같은 head 의 PR 이 이미 병합·닫힘
                 self._apply_pull_request_state(conn, repo.get_pull_request_row(conn, task_id), pr, now, report)
 
@@ -1560,11 +1576,10 @@ class Worker:
         """PR 을 열지 않고 사람에게 넘긴다 — 사유에 직접 push·PR 여는 안내 한 줄."""
         task_id = row["task_id"]
         repo.record_pull_request(conn, task_id, state="failed", now=now, error=error)
-        _, fresh = repo.create_human_request_once(
+        report.human_requests += int(self._request_human(
             conn, task_id, pull_request.PR_REQUEST_CODE, pull_request.failed_question(task_id, cause),
             pull_request.pr_request_cause_key(row["review_execution_id"]), now,
-        )
-        report.human_requests += int(fresh)
+        ))
         report.prs_failed += 1
         self._write_status(conn, repo.get_task(conn, task_id), "확인 필요", pull_request.PR_FAILED_REASON)
 
@@ -1638,6 +1653,80 @@ class Worker:
             if result.rate_limited:
                 log.warning("GitHub 반영 rate limit %s — 다음 시각까지 물러남", source_id)
 
+    # --- 13. 알림 웹훅 (ADR-0018 결정 5) ------------------------------------------------
+
+    def _webhook_url(self) -> str | None:
+        value = self._secrets.read(NOTIFY_WEBHOOK_URL) if self._secrets is not None else None
+        return (value or "").strip() or None
+
+    def _request_human(self, conn: Connection, task_id: str, code: str, question: str, cause_key: str,
+                       now: str) -> bool:
+        """`create_human_request_once` + 새로 만든 요청이면 알림 한 건. 새로 만들었는지 돌려준다."""
+        request_id, fresh = repo.create_human_request_once(conn, task_id, code, question, cause_key, now)
+        if fresh:
+            self._notify(conn, "human_request", task_id, f"human_request:{request_id}", detail=question)
+        return fresh
+
+    def _notify(self, conn: Connection, event: str, task_id: str, dedupe_key: str, *, detail: str | None = None,
+                pr_url: str | None = None) -> None:
+        """알림 대기열에 한 건(중복 키로 한 번만). URL 이 설정되지 않았으면 쌓지 않는다."""
+        if self._webhook_url() is None:
+            return
+        task = repo.get_task(conn, task_id)
+        public_url = self._settings.public_url
+        task_url = f"{public_url}/tasks/{task_id}" if public_url else None
+        content = notification.notification_text(
+            event, title=task["title"], detail=detail, pr_url=pr_url, task_url=task_url,
+        )
+        repo.enqueue_notification(
+            conn, session_id=task["session_id"], event=event, task_id=task_id, dedupe_key=dedupe_key,
+            content=content, payload={"title": task["title"], "task_url": task_url, "pr_url": pr_url},
+            now=self._clock(),
+        )
+
+    def _deliver_notifications(self, conn: Connection, report: TickReport) -> None:
+        """대기열의 알림을 트랜잭션 밖에서 보낸다. URL 이 지워졌으면 `skipped`, 형식이 깨졌으면 `failed`.
+        실패는 attempts·next_at 으로 물러나고 NOTIFY_MAX_ATTEMPTS 뒤 포기한다. 업무 상태는 바꾸지 않는다.
+        URL 은 로그·DB·예외 문구에 넣지 않는다 — 호스트만."""
+        if self._notifier is None:
+            return
+        now = self._clock()
+        due = repo.notifications_due(conn, now, max_attempts=NOTIFY_MAX_ATTEMPTS)
+        if not due:
+            return
+        url = self._webhook_url()
+        for row in due:
+            ntf_id = row["notification_id"]
+            if url is None:
+                repo.record_notification_attempt(conn, ntf_id, state="skipped", error=None, now=now, next_at=None)
+                continue
+            if not notification.webhook_url_valid(url):
+                repo.record_notification_attempt(conn, ntf_id, state="failed", error="URL 형식 오류", now=now,
+                                                 next_at=None)
+                report.notifications_failed += 1
+                continue
+            payload = json.loads(row["payload_json"])
+            message = notification.NotificationMessage(
+                event=row["event"], task_id=row["task_id"], title=payload["title"], content=row["content"],
+                task_url=payload["task_url"], pr_url=payload["pr_url"],
+            )
+            try:
+                self._notifier.post(url, notification.notification_body(url, message))
+            except NotifyFailed as exc:
+                attempts = row["attempts"] + 1
+                report.notifications_failed += 1
+                log.warning("알림 전송 실패 %s → %s (%s회): %s", ntf_id, notification.webhook_host(url), attempts, exc)
+                if attempts >= NOTIFY_MAX_ATTEMPTS:
+                    repo.record_notification_attempt(conn, ntf_id, state="failed", error=str(exc), now=now,
+                                                     next_at=None)
+                    continue
+                wait = max(NOTIFY_BACKOFF_SECONDS * 2 ** (attempts - 1), math.ceil(exc.retry_after or 0))
+                repo.record_notification_attempt(conn, ntf_id, state="pending", error=str(exc), now=now,
+                                                 next_at=_plus_seconds(now, wait))
+                continue
+            repo.record_notification_attempt(conn, ntf_id, state="sent", error=None, now=now, next_at=None)
+            report.notifications_sent += 1
+
     def _task_state(self, conn: Connection, task: Row, now: str) -> UserStatus:
         """체인 화면과 같은 판정 — 마감된 Task 는 저장 상태, 아니면 지금 실행·연결 상태로 판정 (`views.status_of`)."""
         return views.status_of(task, views.build_task_view(conn, task, now=now, settings=self._settings))
@@ -1701,6 +1790,9 @@ def main() -> None:
         clock=utc_now,
         # 소스별 자격(App 설치 → 붙여 넣은 PAT → 환경변수). 없으면 그 소스의 수집·반영만 꺼진다(ADR-0014 결정 1, ADR-0017)
         github_for=SourceClients(settings, SecretStore(settings.secret_dir)),
+        # 알림 웹훅 URL 은 비밀 파일(ADR-0018 결정 5). 없으면 알림을 쌓지 않는다
+        secrets=SecretStore(settings.secret_dir),
+        notifier=NotifySender(),
     )
     log.info("중앙 워커 시작 — 복구 스캔 %s", asdict(worker.tick()))
     worker.run_forever(3.0)

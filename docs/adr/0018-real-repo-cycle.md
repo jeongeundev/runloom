@@ -23,7 +23,7 @@
 5. **알림 웹훅.** 사람 차례와 업무 실패를 등록된 URL 하나로 POST 한다. 대상 사건: 새 사람 요청(`human_request`), PR 열림(`pr_opened`), 실행 실패 반영(`task_failed` — 사람이 닫은 PR·운영자 종료는 제외).
    - URL 은 토큰을 담으므로(Discord 웹훅 URL 자체가 비밀) 비밀 저장소 파일 `notify_webhook_url` 에 둔다. DB·로그·응답·템플릿·백업에 넣지 않고 화면은 "설정됨/없음"과 호스트 이름만 보인다.
    - 본문: 호스트가 `discord.com`·`discordapp.com`(하위 도메인 포함)이면 `{"content": 문구}`(2000자에서 자른다) 만, 그 밖은 `{"content", "event", "task_id", "task_url", "title", "pr_url"}` JSON(모르는 값은 null).
-   - 전달: 사건이 생기는 워커 트랜잭션 안에서 DB 대기열(`notifications`, 스키마 v8)에 넣고(중복 키로 한 번만), 워커가 트랜잭션 밖에서 보낸다. 2xx 면 보냄, 실패는 callback 과 같은 백오프(30초 × 2^(n−1))로 최대 5회, Discord 429 는 `retry_after`(초) 와 백오프 중 큰 값 뒤에 다시. 보낼 때 URL 이 없으면 `skipped`(나중에 URL 을 넣어도 옛 알림을 몰아 보내지 않는다). 알림 실패는 업무 상태를 바꾸지 않는다.
+   - 전달: 알림 URL 이 설정돼 있으면 사건이 생기는 워커 트랜잭션 안에서 DB 대기열(`notifications`, 스키마 v8)에 넣고(중복 키로 한 번만 — URL 이 없으면 쌓지 않는다, step 7), 워커가 트랜잭션 밖에서 보낸다. 2xx 면 보냄, 실패는 callback 과 같은 백오프(30초 × 2^(n−1))로 최대 5회, Discord 429 는 `retry_after`(초) 와 백오프 중 큰 값 뒤에 다시. 보낼 때 URL 이 없으면 `skipped`(나중에 URL 을 넣어도 옛 알림을 몰아 보내지 않는다). 알림 실패는 업무 상태를 바꾸지 않는다.
    - [테스트 보내기] 는 대기열을 거치지 않고 즉시 한 번 보내 결과(성공/HTTP 상태)를 화면에 보인다.
 6. **[러너 붙이기].** `/operator/github` 저장소 카드의 "이 저장소를 등록한 러너 없음" 안내를 [러너 붙이기] 버튼으로 바꾼다. 누르면 연결 코드(1회용·10분, 기존 `connect_codes`)를 발급하고 복사할 명령 한 줄 `deploy/selfhost/install-runner.sh --server <서버 주소> --code <코드> --repo <폴더>` 를 그 자리에서 보여 준다(리다이렉트 URL 에 코드를 싣지 않는다). 사용자는 `<폴더>` 만 채워 Runloom 설치 폴더에서 실행한다. 서버 주소는 `WORKFLOW_PUBLIC_URL` 이 있으면 그것, 없으면 요청의 base URL.
 
@@ -42,7 +42,7 @@
 - 스키마 v8(step 6·7): PR 대기열 `task_pull_requests`, 알림 대기열 `notifications`, `executions.branch_pushed`. v7 데이터는 보존 마이그레이션.
 - 비밀 파일 하나 추가(`notify_webhook_url`). `SecretStore.NAMES` 가 여섯 개가 된다.
 - 러너 로컬 상태 DB `registrations` 에 `links_json`·`env_json` 칸(기존 DB 는 `ALTER TABLE … ADD COLUMN` 기본값 `'[]'`·`'{}'`).
-- 기본 모드(demo)·공개 데모·phase 8 `filtered` 소스·phase 11 순환은 그대로 동작한다: 구버전 러너는 `registration_heads`·`branch_pushed` 를 보내지 않아 기준 커밋·PR 경로가 지금 그대로이고, 알림 URL 이 없으면 알림은 `skipped` 로만 쌓인다.
+- 기본 모드(demo)·공개 데모·phase 8 `filtered` 소스·phase 11 순환은 그대로 동작한다: 구버전 러너는 `registration_heads`·`branch_pushed` 를 보내지 않아 기준 커밋·PR 경로가 지금 그대로이고, 알림 URL 이 없으면 알림은 쌓이지 않는다(step 7).
 - 모든 step 은 가짜 GitHub(`MockTransport`)·임시 bare 저장소·가짜 알림 수신으로 검증한다. 실제 App 권한 올리기·PR·Discord 는 phase 뒤 사용자와 함께 한다.
 
 ## 사실 확인 (2026-09-27, 공식 문서)

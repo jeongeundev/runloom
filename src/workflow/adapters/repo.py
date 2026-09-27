@@ -2122,3 +2122,52 @@ def record_pull_request(
         f"UPDATE task_pull_requests SET {assignments}{attempts} WHERE task_id = ?", (*columns.values(), task_id)
     )
     _require_rowcount(cur, f"pull request of {task_id}")
+
+
+# --- 알림 대기열 (ADR-0018 결정 5, ARCHITECTURE "알림 (step 7·8)") ---------------------------------
+
+
+def enqueue_notification(
+    conn: Connection, *, session_id: str, event: str, task_id: str | None, dedupe_key: str, content: str,
+    payload: dict, now: str,
+) -> bool:
+    """`pending` 한 행. 같은 `dedupe_key` 가 이미 있으면 그대로 두고 False — 재평가·재시작에도 사건당 한 번.
+    URL 은 넣지 않는다(보낼 때 비밀 파일에서 읽는다)."""
+    cur = conn.execute(
+        "INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content, payload_json,"
+        " state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT (dedupe_key) DO NOTHING",
+        (f"ntf-{secrets.token_hex(4)}", session_id, event, task_id, dedupe_key, content,
+         json.dumps(payload, ensure_ascii=False), now),
+    )
+    return cur.rowcount == 1
+
+
+def notifications_due(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:
+    """보낼 차례인 행 — `pending` 이고 attempts < max_attempts 이고 (next_at IS NULL OR next_at <= now). 만든 순."""
+    return conn.execute(
+        "SELECT * FROM notifications WHERE state = 'pending' AND attempts < ?"
+        " AND (next_at IS NULL OR next_at <= ?) ORDER BY created_at, rowid",
+        (max_attempts, now),
+    ).fetchall()
+
+
+def record_notification_attempt(
+    conn: Connection, notification_id: str, *, state: str, error: str | None, now: str, next_at: str | None
+) -> None:
+    """전송 결과. `sent`·`failed`·(재시도할) `pending` 은 시도 한 번(attempts + 1), `skipped` 는 보내지 않았으니 그대로.
+    `error` 는 분류 문구만(URL·응답 본문 없음). 없는 행은 NotFound."""
+    attempts = ", attempts = attempts + 1" if state != "skipped" else ""
+    cur = conn.execute(
+        f"UPDATE notifications SET state = ?, last_error = ?, next_at = ?, sent_at = ?{attempts}"
+        " WHERE notification_id = ?",
+        (state, error, next_at, now if state == "sent" else None, notification_id),
+    )
+    _require_rowcount(cur, f"notification {notification_id}")
+
+
+def list_notifications(conn: Connection, session_id: str, limit: int = 20) -> list[Row]:
+    """세션의 최근 알림(새것 먼저)."""
+    return conn.execute(
+        "SELECT * FROM notifications WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (session_id, limit),
+    ).fetchall()

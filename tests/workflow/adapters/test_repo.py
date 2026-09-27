@@ -2728,3 +2728,56 @@ def test_closed_without_merge_records_closed_at(cycle):
 def test_record_pull_request_unknown_task_is_not_found(cycle):
     with pytest.raises(NotFound):
         repo.record_pull_request(cycle, "task-nope", state="failed", now=NOW, error="x")
+
+
+# --- phase 12 step 7: 알림 대기열 (ADR-0018 결정 5, ARCHITECTURE "알림 (step 7·8)") -----------------------------
+
+
+def _notify(conn, key: str = "human_request:hr-1", now: str = NOW, event: str = "human_request") -> bool:
+    return repo.enqueue_notification(
+        conn, session_id=SESSION, event=event, task_id="task-gh-41", dedupe_key=key,
+        content="[Runloom] 사람 차례 — 버그: 질문", payload={"title": "버그", "task_url": None, "pr_url": None}, now=now,
+    )
+
+
+def test_enqueue_notification_once_per_dedupe_key(cycle):
+    assert _notify(cycle) is True
+    assert _notify(cycle, now=LATER) is False  # 재평가·재시작에도 한 번
+    assert _notify(cycle, "task_failed:exec-1", event="task_failed") is True
+    rows = repo.notifications_due(cycle, NOW, max_attempts=5)
+    assert [(r["dedupe_key"], r["state"], r["attempts"]) for r in rows] == [
+        ("human_request:hr-1", "pending", 0), ("task_failed:exec-1", "pending", 0),
+    ]
+    assert rows[0]["notification_id"].startswith("ntf-") and len(rows[0]["notification_id"]) == 12
+    assert json.loads(rows[0]["payload_json"]) == {"title": "버그", "task_url": None, "pr_url": None}
+
+
+def test_notification_attempts_back_off_and_finish(cycle):
+    _notify(cycle)
+    (row,) = repo.notifications_due(cycle, NOW, max_attempts=5)
+    later = "2026-09-20T00:01:00Z"
+    repo.record_notification_attempt(cycle, row["notification_id"], state="pending", error="HTTP 500", now=NOW,
+                                     next_at=later)
+    assert repo.notifications_due(cycle, NOW, max_attempts=5) == []
+    (row,) = repo.notifications_due(cycle, later, max_attempts=5)
+    assert (row["attempts"], row["last_error"], row["sent_at"]) == (1, "HTTP 500", None)
+    assert repo.notifications_due(cycle, later, max_attempts=1) == []
+
+    repo.record_notification_attempt(cycle, row["notification_id"], state="sent", error=None, now=later, next_at=None)
+    assert repo.notifications_due(cycle, LATER, max_attempts=5) == []
+    (row,) = repo.list_notifications(cycle, SESSION)
+    assert (row["state"], row["attempts"], row["sent_at"], row["next_at"]) == ("sent", 2, later, None)
+
+
+def test_skipped_notification_does_not_count_an_attempt(cycle):
+    _notify(cycle)
+    (row,) = repo.notifications_due(cycle, NOW, max_attempts=5)
+    repo.record_notification_attempt(cycle, row["notification_id"], state="skipped", error=None, now=NOW, next_at=None)
+    (row,) = repo.list_notifications(cycle, SESSION)
+    assert (row["state"], row["attempts"], row["sent_at"]) == ("skipped", 0, None)
+    assert repo.list_notifications(cycle, OTHER_SESSION) == []
+
+
+def test_record_notification_unknown_id_is_not_found(cycle):
+    with pytest.raises(NotFound):
+        repo.record_notification_attempt(cycle, "ntf-nope", state="failed", error="x", now=NOW, next_at=None)

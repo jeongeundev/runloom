@@ -12,6 +12,8 @@ from workflow.adapters.secret_store import (
     GITHUB_APP_PRIVATE_KEY,
     GITHUB_APP_WEBHOOK_SECRET,
     GITHUB_TOKEN,
+    NOTIFY_WEBHOOK_URL,
+    NAMES,
     SecretStore,
 )
 
@@ -30,6 +32,11 @@ def test_constants_are_the_architecture_file_names():
         "github_app_webhook_secret",
         "github_token",
     )
+
+
+def test_notify_webhook_url_is_the_sixth_secret_file():
+    assert NOTIFY_WEBHOOK_URL == "notify_webhook_url"
+    assert NOTIFY_WEBHOOK_URL in NAMES and len(NAMES) == 6
 
 
 def test_write_read_exists_delete_round_trip(tmp_path):

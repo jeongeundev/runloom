@@ -7,6 +7,7 @@
 import dataclasses
 import hashlib
 import json
+import logging
 
 import httpx
 import pytest
@@ -22,6 +23,8 @@ from workflow.adapters.github_client import (
     IssueComment,
     IssuePage,
 )
+from workflow.adapters.notify_sender import NotifyFailed
+from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore
 from workflow.contracts.github import AssigneeBinding, PullRequestRef
 from workflow.contracts.v1 import (
     ArtifactMeta,
@@ -1397,3 +1400,181 @@ def test_pr_merge_does_not_touch_an_already_closed_task(cycle, conn, store, pr_w
     pr_worker.tick()
     assert status(conn, fix_task) == ("실패", "운영자 종료")
     assert repo.get_pull_request_row(conn, fix_task)["state"] == "merged"
+
+
+# --- 알림 웹훅 (phase 12 step 7, ADR-0018 결정 5) ---------------------------------------------------------
+
+WEBHOOK = "https://discord.com/api/webhooks/123/tok-secret-path"
+
+
+class FakeNotifier:
+    """`NotifySender` 대역 — 보낸 (url, body) 를 쌓는다. `fail` 에 넣은 예외를 차례로 던진다."""
+
+    def __init__(self):
+        self.sent: list[tuple[str, dict]] = []
+        self.fail: list[Exception] = []
+
+    def post(self, url, body):
+        if self.fail:
+            raise self.fail.pop(0)
+        self.sent.append((url, body))
+
+
+@pytest.fixture
+def secrets(tmp_path) -> SecretStore:
+    store = SecretStore(tmp_path / "secrets")
+    store.write(NOTIFY_WEBHOOK_URL, WEBHOOK + "\n")
+    return store
+
+
+@pytest.fixture
+def notifier() -> FakeNotifier:
+    return FakeNotifier()
+
+
+@pytest.fixture
+def notify_worker(app, settings, store, clock, pr_github, secrets, notifier) -> Worker:
+    settings = dataclasses.replace(settings, public_url="https://runloom.example")
+    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
+                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
+    return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock,
+                  github_for=lambda config: pr_github, secrets=secrets, notifier=notifier)
+
+
+def notifications(conn) -> list:
+    return list(reversed(repo.list_notifications(conn, SESSION)))
+
+
+def fail_fix(conn, store, worker, number: int = 1) -> tuple[str, str]:
+    """(fix_task, execution_id) — 러너가 프로세스 종료를 확인한 실패를 보고하고 워커가 반영한 상태."""
+    fix_task = import_issue(conn, number)
+    worker.tick()
+    execution_id = executions(conn, fix_task)[0]["execution_id"]
+    _append(conn, execution_id, 1, "accepted", {})
+    _append(conn, execution_id, 2, "failed", {"code": "timeout", "message": "20분 초과", "process_stopped": True})
+    worker.tick()
+    return fix_task, execution_id
+
+
+def test_pr_opened_is_notified_once_with_the_links(cycle, conn, store, notify_worker, notifier, clock):
+    fix_task, _ = _approved(conn, store, notify_worker)
+    clock.now = "2026-10-06T13:00:00Z"
+    notify_worker.tick()
+    notify_worker.tick()
+
+    (row,) = notifications(conn)
+    assert (row["event"], row["dedupe_key"], row["state"], row["task_id"]) == (
+        "pr_opened", f"pr_opened:{fix_task}:31", "sent", fix_task,
+    )
+    ((url, body),) = notifier.sent
+    assert url == WEBHOOK  # 비밀 파일 끝 줄바꿈은 뗀다
+    assert set(body) == {"content"}  # Discord 호스트
+    assert body["content"].splitlines() == [
+        "[Runloom] PR 확인 — 버그 1 https://github.com/acme/billing/pull/31",
+        "https://runloom.example/tasks/task-gh-1",
+    ]
+
+
+def test_new_human_request_is_notified_once(cycle, conn, store, notify_worker, notifier, clock):
+    fix_task, _ = _approved(conn, store, notify_worker, branch_pushed=False)
+    clock.now = "2026-10-06T13:00:00Z"
+    notify_worker.tick()
+    notify_worker.tick()
+
+    (request,) = repo.list_human_requests(conn, fix_task)
+    (row,) = notifications(conn)
+    assert (row["event"], row["dedupe_key"], row["state"]) == (
+        "human_request", f"human_request:{request['request_id']}", "sent",
+    )
+    ((_, body),) = notifier.sent
+    assert body["content"].startswith("[Runloom] 사람 차례 — 버그 1: ")
+    assert "git push origin task/task-gh-1" in body["content"]
+
+
+def test_failed_fix_is_notified_once_even_after_restart(cycle, conn, store, notify_worker, notifier, settings,
+                                                        clock, secrets):
+    fix_task, execution_id = fail_fix(conn, store, notify_worker)
+    assert status(conn, fix_task)[0] == "실패"
+    restarted = Worker(lambda: connect(settings.db_path), store, None, NoCallbacks(), settings, clock,
+                       secrets=secrets, notifier=notifier)
+    restarted.tick()
+
+    (row,) = notifications(conn)
+    assert (row["event"], row["dedupe_key"], row["state"]) == ("task_failed", f"task_failed:{execution_id}", "sent")
+    ((_, body),) = notifier.sent
+    assert body["content"].splitlines()[0] == "[Runloom] 실패 — 버그 1: timeout · 20분 초과"
+
+
+def test_without_a_url_nothing_is_queued(cycle, conn, store, pr_worker):
+    _approved(conn, store, pr_worker, branch_pushed=False)
+    fail_fix(conn, store, pr_worker, number=2)
+    assert repo.list_notifications(conn, SESSION) == []
+
+
+def test_empty_secret_store_queues_nothing(cycle, conn, store, notify_worker, notifier, secrets):
+    secrets.delete(NOTIFY_WEBHOOK_URL)
+    fail_fix(conn, store, notify_worker)
+    assert repo.list_notifications(conn, SESSION) == [] and notifier.sent == []
+
+
+def test_rate_limit_waits_for_retry_after(cycle, conn, store, notify_worker, notifier, clock):
+    notifier.fail = [NotifyFailed("HTTP 429", retry_after=90.5)]
+    fail_fix(conn, store, notify_worker)
+
+    (row,) = notifications(conn)
+    assert (row["state"], row["attempts"], row["last_error"]) == ("pending", 1, "HTTP 429")
+    assert row["next_at"] == "2026-10-06T12:01:31.000000Z"  # max(30초, 90.5초 올림)
+    clock.now = "2026-10-06T12:01:00Z"
+    notify_worker.tick()
+    assert notifier.sent == []
+    clock.now = "2026-10-06T12:01:31Z"
+    notify_worker.tick()
+    assert notifications(conn)[0]["state"] == "sent" and len(notifier.sent) == 1
+
+
+def test_gives_up_after_five_attempts_without_touching_the_task(cycle, conn, store, notify_worker, notifier, clock):
+    notifier.fail = [NotifyFailed("HTTP 500", retry_after=None) for _ in range(6)]
+    fix_task, _ = fail_fix(conn, store, notify_worker)
+    task_before = dict(repo.get_task(conn, fix_task))
+    for minute in (1, 3, 6, 11):  # 30·60·120·240초 백오프
+        clock.now = f"2026-10-06T12:{minute:02d}:00Z"
+        notify_worker.tick()
+
+    (row,) = notifications(conn)
+    assert (row["state"], row["attempts"], row["last_error"], row["next_at"]) == ("failed", 5, "HTTP 500", None)
+    clock.now = "2026-10-06T13:00:00Z"
+    notify_worker.tick()
+    assert notifications(conn)[0]["attempts"] == 5 and notifier.sent == []
+    assert dict(repo.get_task(conn, fix_task)) == task_before
+
+
+def test_url_removed_before_sending_is_skipped(cycle, conn, store, notify_worker, notifier, secrets, clock):
+    notifier.fail = [NotifyFailed("HTTP 500", retry_after=None)]
+    fail_fix(conn, store, notify_worker)
+    secrets.delete(NOTIFY_WEBHOOK_URL)
+    clock.now = "2026-10-06T12:05:00Z"
+    notify_worker.tick()
+    assert notifications(conn)[0]["state"] == "skipped" and notifier.sent == []
+
+
+def test_broken_url_gives_up_without_sending(cycle, conn, store, notify_worker, notifier, secrets, clock):
+    notifier.fail = [NotifyFailed("HTTP 500", retry_after=None)]
+    fail_fix(conn, store, notify_worker)
+    secrets.write(NOTIFY_WEBHOOK_URL, "ftp://discord.com/tok-secret-path")
+    clock.now = "2026-10-06T12:05:00Z"
+    notify_worker.tick()
+    (row,) = notifications(conn)
+    assert (row["state"], row["last_error"]) == ("failed", "URL 형식 오류")
+    assert notifier.sent == []
+
+
+def test_webhook_url_stays_out_of_the_db_and_logs(cycle, conn, store, notify_worker, notifier, caplog):
+    caplog.set_level(logging.DEBUG)
+    notifier.fail = [NotifyFailed("HTTP 500", retry_after=None)]
+    _approved(conn, store, notify_worker, branch_pushed=False)
+    fail_fix(conn, store, notify_worker, number=2)
+
+    assert {r["event"] for r in notifications(conn)} == {"human_request", "task_failed"}
+    assert not any("tok-secret" in line for line in conn.iterdump())
+    assert "tok-secret" not in caplog.text
+    assert "discord.com" in caplog.text  # 실패 로그는 호스트만

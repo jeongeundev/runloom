@@ -1425,10 +1425,12 @@ def test_public_url_fills_chain_and_task_urls(conn, client, clock, make_worker, 
 
 def test_callback_stage_runs_after_successor_scan_and_failure_reflection():
     """(b) 의 근거 — 후속 스캔·실패 반영 뒤다. 순서가 바뀌면 A 판정 → B 착수 사이에 보낼 수 있다.
-    그 뒤는 외부 반영(초안 PR — phase 12, GitHub 원본 이슈 댓글 — step 12)뿐이다."""
+    그 뒤는 외부 반영(초안 PR — phase 12, GitHub 원본 이슈 댓글 — step 12, 알림 웹훅 — phase 12 step 7)뿐이다.
+    알림은 맨 뒤 — 같은 tick 에 쌓인 사람 요청·PR 열림·실패를 바로 보낸다."""
     calls = re.findall(r"self\.(_\w+)\(conn, report\)", inspect.getsource(Worker.tick))
-    assert calls[-5:] == [
+    assert calls[-6:] == [
         "_spawn_successors", "_reflect_failures", "_deliver_callbacks", "_deliver_pull_requests", "_deliver_github",
+        "_deliver_notifications",
     ]
 
 
