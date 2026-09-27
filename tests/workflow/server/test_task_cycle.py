@@ -656,6 +656,28 @@ def _to_first_review(conn, store, worker, number: int = 1) -> tuple[str, str, st
     return fix_task, fix_exec, review["task_id"], executions(conn, review["task_id"])[0]["execution_id"]
 
 
+def test_new_fix_starts_from_the_reported_origin_head(cycle, conn, worker):
+    latest = "e" * 40
+    repo.update_registration_heads(conn, cycle["billing"], {REG_FIX: latest})
+    fix_task = import_issue(conn, 1)
+
+    worker.tick()
+
+    (fix_exec,) = executions(conn, fix_task)
+    assert request_of(fix_exec).target.base_commit == latest
+
+
+def test_rework_keeps_the_reviewed_result_commit_after_a_newer_head_report(cycle, conn, store, worker):
+    fix_task, _, _, review_exec = _to_first_review(conn, store, worker)
+    repo.update_registration_heads(conn, cycle["billing"], {REG_FIX: "e" * 40})
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+
+    worker.tick()
+
+    _, rework = executions(conn, fix_task)
+    assert request_of(rework).target.base_commit == C1
+
+
 def test_approved_review_completes_review_and_leaves_merge_to_a_human(cycle, conn, store, worker):
     fix_task, fix_exec, review_task, review_exec = _to_first_review(conn, store, worker)
     finish_review(conn, store, review_exec, outcome="approved")

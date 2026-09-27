@@ -20,6 +20,9 @@
 - 측정(ADR-0015): `started` 에 로컬 등록 폴더(worktree 아님)의 HEAD·미커밋 변경 여부를 `folder_commit`·`folder_dirty` 로
   싣는다. 못 읽거나 로컬 등록이 없으면 두 칸을 뺀다. 경로·폴더 이름은 보내지 않는다. 어댑터가 돌려준 사용량은 로컬
   `usage_json` 에 보존했다가 `result_ready`·`failed` 의 `usage` 로 싣는다(모르면 뺀다).
+- 기준 커밋 보고(ADR-0018 결정 2): claim 전에 등록마다 `BASE_FETCH_INTERVAL_SECONDS` 간격으로 `git fetch origin` 하고
+  `origin/HEAD` 커밋을 claim 의 `registration_heads` 로 보낸다. fetch 에 실패한 등록은 빼고 로그만 남긴다. 실행 중에는
+  claim 을 하지 않으므로 fetch 도 없다.
 """
 
 import hashlib
@@ -69,6 +72,8 @@ _SHA1 = re.compile(r"^[0-9a-f]{40}$")  # 계약의 `CommitSha` — SHA-256 저�
 _EXTENSIONS = {"application/json": "json", "text/plain": "txt", "text/markdown": "md", "text/x-diff": "patch"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 MESSAGE_MAX = 500
+BASE_FETCH_INTERVAL_SECONDS = 60
+MAX_REGISTRATION_HEADS = 50  # 계약 `ClaimRequest.registration_heads` 항목 상한
 
 
 def utc_now() -> str:
@@ -177,6 +182,8 @@ class Runner:
         self._keep_workdirs = keep_workdirs  # 디버깅용 — worktree·인계 디렉터리를 남긴다
         self._heartbeat_interval = heartbeat_interval
         self._last_heartbeat: float | None = None
+        self._heads: dict[str, str] = {}  # local_registration_id → 마지막으로 fetch 에 성공한 origin/HEAD 커밋
+        self._fetched_at: dict[str, float] = {}
 
     # --- 루프 ------------------------------------------------------------------------------
 
@@ -276,11 +283,37 @@ class Runner:
     # --- 실행 ---------------------------------------------------------------------------------
 
     def _claim_and_start(self) -> None:
-        request = self._client.claim(self._connector_id)
+        request = self._client.claim(self._connector_id, registration_heads=self._registration_heads())
         if request is None:
             return
         state.record_claim(self._conn, request, self._clock())  # 로컬 접수 기록이 먼저
         self._start(state.get_execution(self._conn, request.execution_id))
+
+    def _registration_heads(self) -> dict[str, str]:
+        """등록마다 간격이 지났으면 fetch 하고, 성공한 등록의 origin 기본 브랜치 커밋을 돌려준다."""
+        registrations = state.list_registrations(self._conn)[:MAX_REGISTRATION_HEADS]
+        for registration in registrations:
+            reg_id = registration["local_registration_id"]
+            now = time.monotonic()
+            last = self._fetched_at.get(reg_id)
+            if last is not None and now - last < BASE_FETCH_INTERVAL_SECONDS:
+                continue
+            self._fetched_at[reg_id] = now
+            repo = Path(registration["repo_path"])
+            try:
+                git_ops.fetch_origin(repo)
+            except GitError as exc:
+                self._heads.pop(reg_id, None)
+                log.info("%s: git fetch origin 실패 — 기준 커밋을 보고하지 않는다: %s", reg_id, _masked_text(str(exc)))
+                continue
+            head = git_ops.origin_head(repo)
+            if head is not None and _SHA1.match(head):
+                self._heads[reg_id] = head
+            else:
+                self._heads.pop(reg_id, None)
+                log.info("%s: origin 기본 브랜치 커밋을 읽지 못함 — 기준 커밋을 보고하지 않는다", reg_id)
+        return {r["local_registration_id"]: self._heads[r["local_registration_id"]]
+                for r in registrations if r["local_registration_id"] in self._heads}
 
     def _continue(self, active: dict) -> None:
         phase = active["phase"]

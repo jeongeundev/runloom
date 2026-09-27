@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "base-tracking",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T23:41:43+0900",
+      "summary": "기준 커밋 추적: git_ops.fetch_origin(고정 인자 git fetch --quiet origin, GIT_TERMINAL_PROMPT=0, 120초 제한, 실패 GitError)·origin_head(origin/HEAD 없으면 set-head --auto 한 번, origin 없음·실패 None) — step 문서의 fetch_default 대신 ARCHITECTURE 이름을 따름; state.list_registrations; Runner._registration_heads(등록별 BASE_FETCH_INTERVAL_SECONDS=60 monotonic 간격, 실패 등록은 빼고 INFO 로그, 최대 50) → CentralClient.claim(registration_heads=) 값 있을 때만 칸; contracts ClaimRequest.registration_heads dict[NonEmptyStr, CommitSha](≤50, 선택); repo.update_registration_heads(connector_id 같은 Agent 만, 바뀐 수 반환)를 machine_api claim 이 배정 전에 호출; _start_fix 우선순위 그대로(새 수정=보고된 최신, 재작업=검토한 결과 커밋 테스트). CONTRACT 14.1 펜스 json(test_v1 블록 57), ARCHITECTURE step 3 구현 메모. pytest 2754 passed/61 skipped, ruff 통과. 다음 step 주의: 기존 ClaimRequest model_dump 에 registration_heads=None 이 끼므로 비교는 exclude_none; 러너 테스트의 등록 repo_path 는 대개 없는 폴더라 매 tick fetch 실패 INFO 로그가 남음(WARNING 0건 검사와 무관); ensure_worktree 는 fetch 로 받은 커밋에서 동작 확인됨"
     },
     {
       "step": 4,

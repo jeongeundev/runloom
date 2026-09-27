@@ -71,6 +71,16 @@ def test_claim_sends_bearer_and_body_and_returns_request(fake, client):
     }
 
 
+def test_claim_sends_registration_heads_only_when_given(fake, client):
+    client.claim(CONNECTOR_ID, registration_heads={"OpenArchive": "a" * 40})
+    client.claim(CONNECTOR_ID, registration_heads={})
+    client.claim(CONNECTOR_ID)
+
+    first, empty, legacy = fake.claim_bodies
+    assert first["registration_heads"] == {"OpenArchive": "a" * 40}
+    assert "registration_heads" not in empty and "registration_heads" not in legacy  # 구버전 서버 호환
+
+
 def test_claim_204_is_none(fake, client):
     assert client.claim(CONNECTOR_ID) is None
 

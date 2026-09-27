@@ -11,7 +11,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -276,6 +276,19 @@ def _fill_registration(
         ),
     )
 
+
+
+def update_registration_heads(conn: Connection, connector_id: str, heads: Mapping[str, str]) -> int:
+    """claim 때 보고된 기준 커밋(ADR-0018 결정 2)으로 이 연결 프로그램 Agent 의 `base_commit` 을 바꾼다.
+    다른 연결 프로그램의 Agent·모르는 등록은 건드리지 않는다. 반환은 바뀐 Agent 수."""
+    changed = 0
+    with _tx(conn):
+        for local_registration_id, commit in heads.items():
+            changed += conn.execute(
+                "UPDATE agents SET base_commit = ? WHERE connector_id = ? AND local_registration_id = ?",
+                (commit, connector_id, local_registration_id),
+            ).rowcount
+    return changed
 
 
 def register_local_agent(

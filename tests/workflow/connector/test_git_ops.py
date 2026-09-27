@@ -188,3 +188,65 @@ def test_is_ancestor_follows_history_direction(repo):
 
     assert git_ops.is_ancestor(repo, base, result) is True
     assert git_ops.is_ancestor(repo, result, base) is False
+
+
+# --- 기준 커밋 추적 (phase 12 step 3, ADR-0018 결정 2) ------------------------------------
+
+
+@pytest.fixture
+def origin_clone(repo, tmp_path):
+    """(bare origin, 그 클론). 클론은 `refs/remotes/origin/HEAD` 를 가진다."""
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(repo), str(bare))
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(bare), str(clone))
+    return bare, clone
+
+
+def _push_new_commit(bare, tmp_path) -> str:
+    """다른 곳에서 개발해 origin 기본 브랜치에 push 한 상황."""
+    other = tmp_path / "elsewhere"
+    _git(tmp_path, "clone", "-q", str(bare), str(other))
+    (other / "pkg.py").write_text("X = 3\n")
+    _git(other, "commit", "-q", "-am", "upstream")
+    _git(other, "push", "-q", "origin", "main")
+    return _git(other, "rev-parse", "HEAD")
+
+
+def test_fetch_origin_then_origin_head_returns_the_new_default_branch_commit(origin_clone, tmp_path):
+    bare, clone = origin_clone
+    local_head = git_ops.head_sha(clone)
+    pushed = _push_new_commit(bare, tmp_path)
+    assert git_ops.origin_head(clone) == local_head  # fetch 전에는 옛 값
+
+    git_ops.fetch_origin(clone)
+
+    assert git_ops.origin_head(clone) == pushed
+    assert git_ops.head_sha(clone) == local_head  # 작업 트리·로컬 브랜치는 그대로
+    assert git_ops.has_commit(clone, pushed)
+    path = git_ops.ensure_worktree(clone, "task-up", pushed)  # fetch 로 받은 커밋에서 worktree 를 만든다
+    assert _git(path, "rev-parse", "HEAD") == pushed
+
+
+def test_origin_head_sets_missing_symbolic_ref_from_the_remote(repo, origin_clone, tmp_path):
+    bare, _ = origin_clone
+    _git(repo, "remote", "add", "origin", str(bare))
+    git_ops.fetch_origin(repo)
+    _git(repo, "remote", "set-head", "origin", "--delete")  # 원격을 나중에 붙인 저장소(git 버전에 따라)는 origin/HEAD 가 없다
+    assert subprocess.run(["git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], cwd=repo).returncode != 0
+
+    assert git_ops.origin_head(repo) == _git(bare, "rev-parse", "main")
+
+
+def test_origin_head_without_origin_is_none(repo):
+    assert git_ops.origin_head(repo) is None
+
+
+def test_fetch_origin_failures_raise_git_error(repo, tmp_path):
+    with pytest.raises(GitError):
+        git_ops.fetch_origin(repo)  # origin 없음
+    with pytest.raises(GitError):
+        git_ops.fetch_origin(tmp_path / "없는 폴더")
+    _git(repo, "remote", "add", "origin", str(tmp_path / "없는-origin.git"))
+    with pytest.raises(GitError):
+        git_ops.fetch_origin(repo)

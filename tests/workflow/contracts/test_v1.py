@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 56개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 57개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -120,7 +120,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 56
+    assert len(FENCED) == 57
     assert len(INLINE) == 8
 
 
@@ -246,6 +246,17 @@ def test_rejects_unknown_field():
     block["extra"] = 1
     with pytest.raises(ValidationError):
         ClaimRequest.model_validate(block)
+
+
+def test_claim_registration_heads_are_optional_commit_shas():
+    block = _first("ClaimRequest")
+    assert ClaimRequest.model_validate(block).registration_heads is None
+    heads = ClaimRequest.model_validate({**block, "registration_heads": {"OpenArchive": "a" * 40}})
+    assert heads.registration_heads == {"OpenArchive": "a" * 40}
+    for bad in ({"OpenArchive": "A" * 40}, {"OpenArchive": "a" * 39}, {"": "a" * 40},
+                {f"reg-{i}": "a" * 40 for i in range(51)}):
+        with pytest.raises(ValidationError):
+            ClaimRequest.model_validate({**block, "registration_heads": bad})
 
 
 def test_rejects_unsupported_contract_version():
@@ -1421,7 +1432,7 @@ def test_claim_request_supported_kinds_optional_for_old_connectors():
     new = next(b for b in FENCED if _model_for(b) is ClaimRequest and "supported_kinds" in b)
     parsed = ClaimRequest.model_validate(new)
     assert parsed.supported_kinds == ["code_change", "bug_fix", "code_review"]
-    assert parsed.model_dump(mode="json") == new
+    assert parsed.model_dump(mode="json", exclude_none=True) == new
 
 
 @pytest.mark.parametrize(

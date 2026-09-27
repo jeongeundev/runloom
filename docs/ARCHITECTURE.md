@@ -700,6 +700,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 - `git_ops.fetch_origin(repo) -> None`(`git fetch --quiet origin`, 환경 `GIT_TERMINAL_PROMPT=0`, 제한 시간 `GIT_NETWORK_TIMEOUT_SECONDS` = 120), `git_ops.origin_head(repo) -> str | None`(`git symbolic-ref --quiet refs/remotes/origin/HEAD` 가 없으면 `git remote set-head origin --auto` 한 번, 그다음 `git rev-parse --verify refs/remotes/origin/HEAD^{commit}`; `origin` 원격이 없거나 실패면 None). 실패는 `GitError` 로 올리고 러너가 로그만 남긴다.
 - `Runner` 가 claim 전에 `_registration_heads() -> dict[str, str]` 를 만든다: 등록마다 마지막 fetch 뒤 `BASE_FETCH_INTERVAL_SECONDS`(60) 가 지났으면 fetch, 성공한 등록의 커밋을 메모리에 두고 매 claim 에 실어 보낸다. 실행 중에는 claim 을 하지 않으므로 fetch 도 없다.
 - 서버(`/connector/claim`): `repo.update_registration_heads(conn, connector_id, heads) -> int`(바뀐 Agent 수) — `UPDATE agents SET base_commit = ? WHERE connector_id = ? AND local_registration_id = ?`. 배정 판단보다 먼저 한다. `_start_fix` 의 우선순위(주어진 값 → 이 Task 의 마지막 결과 커밋 → `agents.base_commit`)는 바꾸지 않는다.
+- 구현: step 3 (2026-09-27). `origin_head` 는 origin 없음·읽기 실패를 None 으로 돌려준다(`fetch_origin` 만 GitError). 러너는 `state.list_registrations` 로 등록(최대 50)을 돌고, fetch 실패·커밋 못 읽음은 그 등록을 빼고 INFO 로그만 남긴다(origin 없는 로컬 저장소는 정상이라 경고하지 않음). `CentralClient.claim` 은 보고할 것이 없으면 칸을 뺀다. 최신 git 은 fetch 때 `origin/HEAD` 를 스스로 만들기도 한다 — `set-head --auto` 는 없을 때만.
 
 ### 브랜치 push (step 5)
 

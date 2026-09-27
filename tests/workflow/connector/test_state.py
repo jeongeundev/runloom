@@ -85,6 +85,19 @@ def test_registration_without_links_and_env_reads_back_empty(state_conn, tmp_pat
     assert reg["links"] == [] and reg["env"] == {}
 
 
+def test_list_registrations_returns_all_in_id_order(state_conn, tmp_path):
+    for reg_id in ("b-reg", "a-reg"):
+        state.save_registration(state_conn, {
+            "local_registration_id": reg_id, "repo_path": str(tmp_path / reg_id), "tool": "codex",
+            "repository_id": "r", "base_commit": "a" * 40, "verification_profiles": {},
+        })
+
+    regs = state.list_registrations(state_conn)
+
+    assert [r["local_registration_id"] for r in regs] == ["a-reg", "b-reg"]
+    assert regs[0] == state.get_registration(state_conn, "a-reg")
+
+
 def test_init_schema_adds_links_and_env_to_registrations_made_before_the_columns(tmp_path):
     path = tmp_path / "old.sqlite"
     old = state.connect(path)  # phase 12 이전의 로컬 DB — registrations 에 두 칸이 없다

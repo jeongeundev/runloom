@@ -3,13 +3,18 @@
 - 업무별 worktree 는 저장소 옆 `<repo>-worktrees/<task_id>/`, 브랜치 `task/<task_id>`. 재시도는 같은 worktree.
 - 원본 저장소의 작업 트리·기준 브랜치는 건드리지 않는다. 결과는 작업 브랜치의 로컬 커밋으로만 남긴다.
 - 모든 명령은 고정 인자 배열이다. task_id·커밋 ID 는 불투명 문자열이며 경로로 해석하지 않는다.
+- 기준 커밋 추적(ADR-0018 결정 2): `fetch_origin`·`origin_head` 만 네트워크에 닿는다. 원격 이름 `origin`·`refs/remotes/origin/HEAD`
+  는 코드 상수이고, 자격 입력 프롬프트 없이(`GIT_TERMINAL_PROMPT=0`) 제한 시간 안에 끝낸다.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
 
 DEFAULT_AUTHOR = "workflow-connector <connector@localhost>"
+GIT_NETWORK_TIMEOUT_SECONDS = 120
+_ORIGIN_HEAD = "refs/remotes/origin/HEAD"
 _TEST_FILE = re.compile(r"(^|/)test_[^/]*\.py$")
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -18,11 +23,14 @@ class GitError(Exception):
     pass
 
 
-def _git(args: list[str], cwd: Path) -> str:
+def _git(args: list[str], cwd: Path, *, network: bool = False) -> str:
+    extra = {"env": {**os.environ, "GIT_TERMINAL_PROMPT": "0"}, "timeout": GIT_NETWORK_TIMEOUT_SECONDS} if network else {}
     try:
-        result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+        result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True, **extra)
     except subprocess.CalledProcessError as exc:
         raise GitError(f"git {' '.join(args)}: {exc.stderr.strip() or exc.stdout.strip()}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git {' '.join(args)}: {GIT_NETWORK_TIMEOUT_SECONDS}초 안에 끝나지 않음") from exc
     except OSError as exc:
         raise GitError(f"git {' '.join(args)}: {exc}") from exc
     return result.stdout
@@ -39,7 +47,8 @@ def head_sha(repo: Path) -> str:
 
 
 def has_commit(repo: Path, commit: str) -> bool:
-    """`commit` 이 이 저장소에 있는 커밋 객체인가. 다른 기기·클론의 커밋은 가져오지 않는다 (fetch 없음)."""
+    """`commit` 이 이 저장소에 있는 커밋 객체인가. 다른 기기·클론의 커밋은 가져오지 않는다 (fetch 없음).
+    `fetch_origin` 으로 받은 원격 추적 커밋도 같은 객체 저장소에 있으므로 찾는다."""
     return subprocess.run(
         ["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=repo, capture_output=True,
     ).returncode == 0
@@ -49,6 +58,25 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=repo, capture_output=True,
     ).returncode == 0
+
+
+def fetch_origin(repo: Path) -> None:
+    """`git fetch --quiet origin`. origin 없음·연결 실패·시간 초과는 GitError. 작업 트리·로컬 브랜치는 건드리지 않는다."""
+    _git(["fetch", "--quiet", "origin"], repo, network=True)
+
+
+def origin_head(repo: Path) -> str | None:
+    """`refs/remotes/origin/HEAD` 가 가리키는 커밋 — 마지막 fetch 기준 origin 기본 브랜치 최신. 심볼릭 ref 가 없으면
+    (원격을 나중에 붙인 저장소) `git remote set-head origin --auto` 를 한 번 한다. origin 없음·실패면 None."""
+    try:
+        _git(["remote", "get-url", "origin"], repo)
+        if subprocess.run(
+            ["git", "symbolic-ref", "--quiet", _ORIGIN_HEAD], cwd=repo, capture_output=True,
+        ).returncode != 0:
+            _git(["remote", "set-head", "origin", "--auto"], repo, network=True)
+        return _git(["rev-parse", "--verify", f"{_ORIGIN_HEAD}^{{commit}}"], repo).strip()
+    except GitError:
+        return None
 
 
 def worktree_path(repo: Path, task_id: str) -> Path:

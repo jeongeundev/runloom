@@ -106,6 +106,8 @@ def claim(
 ) -> Response:
     _check_connector_id(body.connector_id, connector_id)
     repo.record_supported_kinds(conn, connector_id, body.supported_kinds)  # 준비 판정(executor_outdated)의 입력
+    if body.registration_heads:  # 배정 판단보다 먼저 — 새 업무의 기준 커밋 (ADR-0018 결정 2)
+        repo.update_registration_heads(conn, connector_id, body.registration_heads)
     row = repo.claim_execution(conn, connector_id, utc_now())
     if row is None:
         return Response(status_code=204)

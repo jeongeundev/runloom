@@ -20,6 +20,7 @@ from workflow.connector.config import ConnectorPaths
 from workflow.contracts.v1 import (
     ArtifactMeta,
     AttachmentRef,
+    ClaimRequest,
     ExecutionEvent,
     ExecutionRequest,
     HandoffBundle,
@@ -69,6 +70,7 @@ class FakeCentral:
         self.artifacts: dict[str, dict] = {}
         self.allowed: dict[str, set[str]] = {}
         self.claims = 0
+        self.claim_bodies: list[dict] = []
         self.heartbeats: list[dict] = []
         self.registrations: list[dict] = []
         self.requests: list[httpx.Request] = []
@@ -146,6 +148,8 @@ class FakeCentral:
 
     def _claim(self, body: dict) -> httpx.Response:
         self.claims += 1
+        self.claim_bodies.append(body)
+        ClaimRequest.model_validate(body)  # 서버 모델(extra=forbid) 그대로 통과해야 한다
         if body.get("connector_id") != self.connector_id:
             return _error(403, "forbidden", "connector_id 불일치", field="connector_id")
         if self.current is None and self.assignments:

@@ -110,14 +110,14 @@ class CentralClient:
         data = response.json()
         return data["connector_id"], data["token"]
 
-    def claim(self, connector_id: str) -> ExecutionRequest | None:
-        response = self._call(
-            "POST", "/connector/claim",
-            json={
-                "contract_version": CONTRACT_VERSION, "connector_id": connector_id,
-                "supported_kinds": list(SUPPORTED_BUILTIN_KINDS),
-            },
-        )
+    def claim(self, connector_id: str, *, registration_heads: dict[str, str] | None = None) -> ExecutionRequest | None:
+        body: dict[str, Any] = {
+            "contract_version": CONTRACT_VERSION, "connector_id": connector_id,
+            "supported_kinds": list(SUPPORTED_BUILTIN_KINDS),
+        }
+        if registration_heads:  # 보고할 것이 있을 때만 — 구버전 서버(extra=forbid)와 호환 (ADR-0018)
+            body["registration_heads"] = registration_heads
+        response = self._call("POST", "/connector/claim", json=body)
         if response.status_code == 204:
             return None
         return ExecutionRequest.model_validate(response.json())

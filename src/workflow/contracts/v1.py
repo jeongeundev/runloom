@@ -280,11 +280,13 @@ class ExecutionRequest(_Contract):
 
 class ClaimRequest(_Contract):
     """`supported_kinds` 가 null(생략)이면 구버전 연결 프로그램 — 서버는 내장 중 `code_change` 와 사용자 정의 종류만
-    배정한다 (ADR-0014 결정 4)."""
+    배정한다 (ADR-0014 결정 4). `registration_heads` 는 `local_registration_id` → fetch 뒤 `origin` 기본 브랜치 커밋 —
+    서버가 이 연결 프로그램 Agent 의 `base_commit` 을 갱신한다. null(생략)이면 보고 없음 (ADR-0018 결정 2)."""
 
     contract_version: ContractVersion
     connector_id: NonEmptyStr
     supported_kinds: list[KindId] | None = None
+    registration_heads: Annotated[dict[NonEmptyStr, CommitSha], Field(max_length=50)] | None = None
 
     @model_validator(mode="after")
     def _check_unique_kinds(self) -> "ClaimRequest":

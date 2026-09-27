@@ -145,8 +145,15 @@ def get_registration(conn: sqlite3.Connection, local_registration_id: str) -> di
     row = conn.execute(
         "SELECT * FROM registrations WHERE local_registration_id = ?", (local_registration_id,)
     ).fetchone()
-    if row is None:
-        return None
+    return None if row is None else _registration(row)
+
+
+def list_registrations(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM registrations ORDER BY local_registration_id").fetchall()
+    return [_registration(row) for row in rows]
+
+
+def _registration(row: sqlite3.Row) -> dict:
     return {
         "local_registration_id": row["local_registration_id"],
         "repo_path": row["repo_path"],

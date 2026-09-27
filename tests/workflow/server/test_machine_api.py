@@ -171,6 +171,39 @@ def test_claim_returns_only_own_assignments(client, seeded, connector):
     assert other.json()["execution_id"] == EXEC_FIX
 
 
+def test_claim_registration_heads_update_only_own_agents_base_commit(client, seeded, connector, headers):
+    """CONTRACT 14.1 — 보고된 origin 기본 브랜치 커밋이 이 연결 프로그램 Agent 의 `base_commit` 이 된다."""
+    mine_id, _ = connector
+    other_id, other_token = exchange(client, seeded)
+    repo.update_registration(seeded, LOCAL_REGISTRATION, connector_id=mine_id, repository_id="demo-report-repo",
+                             base_commit=BASE_COMMIT, verification_profile_ids=[], discovered={}, now=utc_now())
+    latest = "7c1d9e2f4a6b8c0d1e3f5a7b9c2d4e6f8a0b1c3d"
+
+    def base() -> str:
+        return repo.get_agent(seeded, "agent-codex-mac")["base_commit"]
+
+    stolen = {"contract_version": 1, "connector_id": other_id, "registration_heads": {LOCAL_REGISTRATION: "e" * 40}}
+    assert client.post("/connector/claim", json=stolen, headers=bearer(other_token)).status_code == 204
+    assert base() == BASE_COMMIT  # 다른 연결 프로그램의 보고는 무시
+
+    body = {"contract_version": 1, "connector_id": mine_id,
+            "registration_heads": {LOCAL_REGISTRATION: latest, "local-unknown": "e" * 40}}
+    assert client.post("/connector/claim", json=body, headers=headers).status_code == 204
+    assert base() == latest
+
+    legacy = {"contract_version": 1, "connector_id": mine_id}  # 칸 없는 구버전 요청 — 이전 값 유지
+    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert base() == latest
+
+
+def test_claim_rejects_bad_registration_head(client, seeded, connector, headers):
+    connector_id, _ = connector
+    for bad in ("E" * 40, "e" * 39, "main"):
+        body = {"contract_version": 1, "connector_id": connector_id, "registration_heads": {LOCAL_REGISTRATION: bad}}
+        response = client.post("/connector/claim", json=body, headers=headers)
+        assert response.status_code == 422, bad
+
+
 # --- 이벤트 (CONTRACT 3절) ----------------------------------------------------
 
 

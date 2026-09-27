@@ -1120,3 +1120,102 @@ def test_no_event_carries_registered_folder_path(fake, client, state_conn, paths
     dumped = json.dumps(fake.events_of(request.execution_id), ensure_ascii=False)
     assert "folder_commit" in dumped and "usage" in dumped
     assert str(repo) not in dumped and str(repo.resolve()) not in dumped and REPO not in dumped
+
+
+# --- 기준 커밋 보고 (phase 12 step 3, ADR-0018 결정 2) --------------------------------------
+
+
+class FakeFetch:
+    """`git_ops.fetch_origin`·`origin_head` 대역. `heads` 에 없는 저장소는 fetch 가 실패한다."""
+
+    def __init__(self, heads: dict[str, str]):
+        self.heads = heads
+        self.fetched: list[str] = []
+
+    def fetch_origin(self, repo):
+        self.fetched.append(Path(repo).name)
+        if Path(repo).name not in self.heads:
+            raise GitError("git fetch --quiet origin: 연결 실패")
+
+    def origin_head(self, repo):
+        return self.heads.get(Path(repo).name)
+
+
+def _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, heads):
+    fetch = FakeFetch(heads)
+    monkeypatch.setattr(git_ops, "fetch_origin", fetch.fetch_origin)
+    monkeypatch.setattr(git_ops, "origin_head", fetch.origin_head)
+    for reg_id in ("reg-ok", "reg-broken"):
+        state.save_registration(state_conn, {
+            "local_registration_id": reg_id, "repo_path": str(tmp_path / reg_id), "tool": "stub",
+            "repository_id": REPO, "base_commit": BASE_COMMIT, "verification_profiles": {},
+        })
+    runner = Runner(client, state_conn, paths, {"stub": StubAdapter()}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+    return runner, fetch
+
+
+def test_claim_reports_fetched_origin_heads_and_skips_failed_registrations(
+    fake, client, state_conn, paths, tmp_path, monkeypatch, caplog,
+):
+    runner, fetch = _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, {"reg-ok": "e" * 40})
+    caplog.set_level(logging.INFO, logger="workflow.connector.runner")
+
+    runner.tick()
+
+    assert sorted(fetch.fetched) == ["reg-broken", "reg-ok"]
+    assert fake.claim_bodies[-1]["registration_heads"] == {"reg-ok": "e" * 40}
+    assert "reg-broken" in caplog.text  # 실패는 로그에만
+
+
+def test_fetch_is_not_repeated_within_the_interval_but_heads_are_resent(
+    fake, client, state_conn, paths, tmp_path, monkeypatch,
+):
+    runner, fetch = _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, {"reg-ok": "e" * 40})
+    runner.tick()
+    fetch.heads["reg-ok"] = "f" * 40
+
+    runner.tick()
+
+    assert len(fetch.fetched) == 2  # 두 번째 tick 은 fetch 하지 않는다
+    assert fake.claim_bodies[-1]["registration_heads"] == {"reg-ok": "e" * 40}
+
+    monkeypatch.setattr("workflow.connector.runner.BASE_FETCH_INTERVAL_SECONDS", 0)
+    runner.tick()
+
+    assert len(fetch.fetched) == 4
+    assert fake.claim_bodies[-1]["registration_heads"] == {"reg-ok": "f" * 40}
+
+
+def test_claim_without_any_head_omits_the_field(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    runner, _ = _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, {})
+
+    runner.tick()
+
+    assert "registration_heads" not in fake.claim_bodies[-1]
+
+
+def test_claim_reports_the_real_origin_default_branch_after_upstream_push(fake, client, state_conn, paths, tmp_path):
+    def git(cwd, *args):
+        return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd,
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "init", "-q", "-b", "main")
+    (seed / "a.txt").write_text("1\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "base")
+    git(tmp_path, "clone", "-q", "--bare", str(seed), str(tmp_path / "origin.git"))
+    git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(tmp_path / "OpenArchive"))
+    (seed / "a.txt").write_text("2\n")
+    git(seed, "commit", "-q", "-am", "upstream")
+    git(seed, "push", "-q", str(tmp_path / "origin.git"), "main")
+    state.save_registration(state_conn, {
+        "local_registration_id": "OpenArchive", "repo_path": str(tmp_path / "OpenArchive"), "tool": "stub",
+        "repository_id": "jeongeundev/OpenArchive", "base_commit": BASE_COMMIT, "verification_profiles": {},
+    })
+    runner = Runner(client, state_conn, paths, {"stub": StubAdapter()}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    assert fake.claim_bodies[-1]["registration_heads"] == {"OpenArchive": git(seed, "rev-parse", "HEAD")}

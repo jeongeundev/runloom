@@ -260,6 +260,23 @@ def test_update_registration_fills_connector_fields_and_keeps_capabilities(conn)
 
 
 
+def test_update_registration_heads_changes_only_that_connectors_agents(conn):
+    repo.upsert_agent(conn, _agent("agent-a", connection_type="local", owner_scope="personal",
+                                   local_registration_id="reg-a"))
+    repo.upsert_agent(conn, _agent("agent-b", connection_type="local", owner_scope="personal",
+                                   local_registration_id="reg-b"))
+    for agent_id, reg, connector in (("agent-a", "reg-a", CONNECTOR), ("agent-b", "reg-b", "conn-other")):
+        repo.update_registration(conn, reg, connector_id=connector, repository_id="r", base_commit="a" * 40,
+                                 verification_profile_ids=[], discovered={}, now=LATER)
+
+    changed = repo.update_registration_heads(conn, CONNECTOR, {"reg-a": "c" * 40, "reg-b": "d" * 40, "reg-x": "e" * 40})
+
+    assert changed == 1
+    assert repo.get_agent(conn, "agent-a")["base_commit"] == "c" * 40
+    assert repo.get_agent(conn, "agent-b")["base_commit"] == "a" * 40
+    assert repo.update_registration_heads(conn, CONNECTOR, {}) == 0
+
+
 # --- 러너 등록이 Agent 를 만든다 (phase 12 step 1, ADR-0018 결정 1) ------------
 
 REG_COMMIT = "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e"
