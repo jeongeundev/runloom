@@ -101,26 +101,39 @@ deploy/selfhost/install.sh
 
 ## GitHub 연결
 
-GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. 선택 기능이다 — 토큰이 비면 꺼진다. 자세한 동작·중지·복구는 [GitHub 런북](github/README.md).
+GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. 선택 기능이다. 기본은 **버튼 연결** — 내 GitHub 계정에 이 서버 전용 GitHub App 을 하나 만들어 설치한다([ADR-0017](adr/0017-github-app-connection.md)). 내부 ID·토큰을 입력하지 않는다. 자세한 동작·중지·복구는 [GitHub 런북](github/README.md).
 
-1. **토큰** — fine-grained personal access token, *Only select repositories* 로 대상 저장소만.
-   - **Issues: Read and write**, **Metadata: Read-only**(자동 포함).
-   - 기준선 가져오기를 쓸 때만 **Pull requests: Read-only** 를 더한다(GraphQL 로 이슈를 닫은 병합 PR 을 읽는다).
-   - Contents·Actions 등 그 밖의 권한, classic PAT 은 쓰지 않는다.
-2. **`.env` 에 적는다** — `WORKFLOW_GITHUB_TOKEN`(토큰), `WORKFLOW_GITHUB_REPOS`(허용할 `owner/name`, 콤마 구분), `WORKFLOW_PUBLIC_URL`(댓글의 업무 링크 앞부분, 예 `http://127.0.0.1:8000`). 그리고 반영:
+상태: 이 흐름은 가짜 GitHub 로만 검증했다(`tests/e2e/test_github_app.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-27 phase 11 절). 실제 github.com 에서 App 만들기·설치는 아직 해 보지 않았다 — 아래 화면 이름은 GitHub 문서 기준이고 실제 문구가 조금 다를 수 있다.
 
-   ```bash
-   deploy/selfhost/install.sh
-   ```
+### 버튼으로 연결 (기본)
 
-3. **소스 설정** — `/operator/github` 에서 저장소·이슈 범위(라벨·시작 시각·번호)·검증 프로필·검토 Agent 를 정하고, 담당자(GitHub 숫자 ID)를 Agent 에 잇는다.
-4. **기준선 가져오기** — `/metrics` 의 `기준선 대 도입 후` 표에서 소스마다 가져온다(운영자 API `POST /operator/github/sources/{source_id}/baseline`). 소스 연결 전에 열린 이슈 → 병합 PR 시간을 기준선으로 쓴다. 다시 가져오면 전체를 바꾼다.
+준비: 로그인한 브라우저에 GitHub 도 로그인돼 있어야 한다. 서버 주소는 `http://127.0.0.1:<포트>` 그대로 둔다(`WORKFLOW_PUBLIC_URL` 이 있으면 그 주소로 돌아온다 — 브라우저에서 여는 주소와 같게 맞춘다).
 
-토큰 값은 `.env` 에만 둔다. 화면·API 는 `토큰 설정됨`/`토큰 없음`만 보이고, 러너가 띄우는 `claude`·`codex` 프로세스 환경에도 들어가지 않는다.
+1. `/operator/github` 에서 **[GitHub 연결]** 을 누른다. Runloom 이 App 설정(이름·권한)을 채워 GitHub 로 보낸다.
+2. GitHub 의 **App 만들기 화면**에서 확인할 것:
+   - App 이름 `runloom-xxxxxx`(무작위 6자 — GitHub 전역에서 겹치지 않게). 바꿔도 된다.
+   - 권한: Issues 읽기·쓰기, Pull requests 읽기, Metadata 읽기. 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
+   - 그대로 **[Create GitHub App]** 을 누른다. 조직 저장소면 `/operator/github/app/new?org=<조직 이름>` 으로 시작한다.
+3. Runloom 이 App 개인 키·비밀을 받아 저장하고 GitHub 의 **설치 화면**으로 다시 보낸다. **Only select repositories** 로 대상 저장소(예: OpenArchive)를 고르고 **[Install]** 을 누른다.
+4. `/operator/github` 로 돌아오면 고른 저장소마다 카드가 생긴다. 약 1분 안에 열린 이슈가 **전부** 업무 목록에 `대기 · 지시 전` 으로 들어온다(PR·닫힌 이슈 제외).
+5. **러너 연결** — 위 "러너 연결" 대로 수정(`code.fix`)·검토(`code.review`) Agent 를 만들고 register 를 그 저장소의 로컬 클론 폴더로 한다(Agent 능력 범위 값 = register 의 `--repository-id`). 폴더의 `origin` 이 `github.com/<owner>/<name>` 이면 서버가 알아서 짝을 짓는다 — 카드의 러너 매칭에 로컬 저장소·수정 Agent·검증 프로필·검토 Agent 가 `(자동)` 으로 보인다. `이 저장소를 등록한 러너 없음` 이면 register 가 안 됐거나 `origin` 이 다른 저장소다. 수정용 등록에는 `--verify` 가 있어야 한다.
+6. **실행은 지시한 것만** — 업무 목록의 **[에이전트에게 맡기기]** 를 누르거나 GitHub 이슈에 `runloom` 라벨을 붙인다. 그 뒤 수정 → 검토 → 재작업은 자동이다. PR·푸시·병합·이슈 종료는 하지 않는다.
+7. **기준선 가져오기** — 카드의 [기준선 가져오기] 또는 `/metrics` 의 `기준선 대 도입 후` 표에서. 소스 연결 전에 열린 이슈 → 병합 PR 시간을 기준선으로 쓴다. 다시 가져오면 전체를 바꾼다.
+
+저장소를 더하거나 빼려면 카드 위 **[저장소 추가/변경]**(GitHub 의 App 설치 설정)에서 고르고 저장한다. 돌아오면 카드가 맞춰진다 — 설치에서 뺀 저장소는 수집이 멈춘다.
+
+비밀값: App 개인 키·client secret·webhook secret 은 데이터 볼륨의 비밀 파일(`/data/secrets`, 디렉터리 0700·파일 0600)에만 있다. 설치 토큰은 파일에 쓰지 않고 메모리에만 둔다(1시간마다 새로 받음). DB·화면·로그·백업에는 없고, 러너가 띄우는 `claude`·`codex` 프로세스 환경에도 들어가지 않는다. **백업에 들어가지 않으므로** 볼륨을 지우면(`down -v`) App 을 다시 연결해야 한다 — GitHub 의 옛 App 은 GitHub 설정(Settings → Developer settings → GitHub Apps)에서 지운다.
+
+### 고급 — 토큰으로 연결
+
+App 을 만들 수 없을 때. `/operator/github` 의 접힌 **고급 — 토큰으로 연결** 에 fine-grained personal access token 과 저장소(`owner/name`)를 넣는다. 서버가 그 토큰으로 저장소를 읽을 수 있는지 확인한 뒤 비밀 파일(`github_token`)에 저장하고 그 저장소 카드를 만든다. 이후 흐름(맡기기·라벨·자동 매칭)은 같다.
+
+- 토큰: *Only select repositories* 로 대상 저장소만, **Issues: Read and write**, **Metadata: Read-only**(자동). 기준선 가져오기를 쓰면 **Pull requests: Read-only** 도. Contents·Actions 등 그 밖의 권한, classic PAT 은 쓰지 않는다.
+- 예전 방식(`.env` 의 `WORKFLOW_GITHUB_TOKEN`·`WORKFLOW_GITHUB_REPOS` + 라벨 범위 소스)도 그대로 동작한다 — [GitHub 런북](github/README.md) 1~4절. 화면에서 넣은 토큰이 환경변수보다 우선한다.
 
 ## 백업·복원
 
-데이터는 볼륨 `runloom_workflow-data` 의 `/data/central.sqlite`(DB)와 `/data/artifacts/`(산출물)다. 백업은 `/data/backups/{이름}/` 에 쌓인다(이름 = UTC 시각 `YYYYMMDDTHHMMSSZ`). `.env`·연결 토큰 파일은 백업하지 않는다 — 따로 보관한다.
+데이터는 볼륨 `runloom_workflow-data` 의 `/data/central.sqlite`(DB)와 `/data/artifacts/`(산출물)다. 백업은 `/data/backups/{이름}/` 에 쌓인다(이름 = UTC 시각 `YYYYMMDDTHHMMSSZ`). `.env`·연결 토큰 파일·GitHub 비밀 파일(`/data/secrets`)은 백업하지 않는다 — 따로 보관하거나 다시 연결한다.
 
 백업 만들기(서버·워커가 돌아도 된다 — SQLite 온라인 백업):
 

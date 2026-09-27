@@ -1,6 +1,6 @@
 # GitHub 업무 순환 — 셀프호스트 운영자 런북
 
-작성일: 2026-09-23 (phase 8 step 15). 계약은 [ADR-0014](../adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](../ARCHITECTURE.md#github-업무-순환--phase-8-계약), 예시 payload 는 [CONTRACT](../CONTRACT.md) 13절, 용어는 [GLOSSARY](../GLOSSARY.md).
+작성일: 2026-09-23 (phase 8 step 15). 갱신: 2026-09-27 (phase 11 step 9 — 0절 GitHub App 연결). 계약은 [ADR-0014](../adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](../ARCHITECTURE.md#github-업무-순환--phase-8-계약), 예시 payload 는 [CONTRACT](../CONTRACT.md) 13절, 용어는 [GLOSSARY](../GLOSSARY.md).
 
 상태: `service` 에 병합되어 있다(미배포). 대역(MockTransport·127.0.0.1 가짜 GitHub·가짜 codex·임시 Git 저장소) 검증에 이어 **2026-09-23 실제 GitHub·실제 Claude 로 1회 통과했다**(step 16, `claude` 2.1.280, 비공개 테스트 저장소의 버그 이슈 2건 → 수정 → 검토 승인 → 원본 댓글, 사람 조작 0회) — [VERIFICATION_LOG 실연동 절](../VERIFICATION_LOG.md). **다만 `changes_requested` 재작업 경로는 실연동에서 관찰되지 않았다**(두 검토가 모두 승인). 다른 저장소로 시작할 때는 아래 [실연동 체크리스트](#실연동-체크리스트--step-16)의 값을 운영자가 먼저 정한다. 공개 데모(`main`·VM)는 이 기능을 쓰지 않는다 — 두 환경변수를 비워 둔다.
 
@@ -8,13 +8,30 @@
 
 | 한다 | 하지 않는다 |
 |---|---|
-| 허용한 저장소의 open Issue 중 지정한 범위만 REST 폴링으로 가져와 `bug_fix` Task 로 만든다 | webhook·OAuth·GitHub App·여러 워크스페이스 공유 |
+| 허용한 저장소의 open Issue 를 REST 폴링으로 가져와 `bug_fix` Task 로 만든다 — App·붙여 넣은 토큰 연결은 열린 이슈 전부(실행은 지시한 것만), 환경변수 토큰의 라벨 범위 소스는 지정한 범위만 | webhook·OAuth 로그인·여러 워크스페이스 공유 |
 | 담당자(GitHub 사용자 숫자 ID)에 연결된 로컬 Agent 가 같은 기기의 저장소에서 수정·검증한다 | 담당자를 자동 추정하거나 웹 사용자와 같은 사람으로 보기 |
 | 판정 통과한 결과 커밋을 같은 로컬 저장소의 검토 Agent 가 읽기 전용으로 검토한다(`code_review`) | 커밋을 다른 기기로 옮기기, push·PR·merge·이슈 종료 |
 | `changes_requested` 면 같은 수정 Task 를 `max_rework_rounds` 번까지 재작업하고, 넘으면 사람에게 묻는다 | 검토 승인만으로 업무를 끝내기 — 수정 Task 는 `확인 필요 · 검토 승인 — 병합·이슈 종료는 사람` 으로 남는다 |
 | Task 마다 원본 이슈에 댓글 하나를 만들고 갱신한다(marker `<!-- runloom:task=<task_id> -->`) | 댓글 내용을 명령·응답·승인으로 읽기, 후속 Task 를 GitHub 이슈로 복제 |
 
 GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수정(`PATCH …/issues/comments/{id}`) 두 가지뿐이다(`adapters/github_client.py` 에 다른 쓰기 메서드가 없다).
+
+## 0. GitHub App 연결 — 기본 (phase 11)
+
+2026-09-27 phase 11 부터 연결의 기본은 사용자 자신의 GitHub App 이다([ADR-0017](../adr/0017-github-app-connection.md), [ARCHITECTURE "GitHub App 연결 — phase 11"](../ARCHITECTURE.md#github-app-연결--phase-11)). 1~4절(환경변수 토큰·라벨 범위 소스·담당자 숫자 ID)은 그대로 동작하는 **예전·고급 방식**이다. 버튼 순서(사용자가 GitHub 화면에서 누르는 것)는 [SELFHOST "GitHub 연결"](../SELFHOST.md#github-연결).
+
+| 무엇 | App 연결(`intake: all_open`) | 예전 방식(`intake: filtered`) |
+|---|---|---|
+| 자격 | App 개인 키 → App JWT → 설치 토큰(메모리, 만료 5분 전 갱신). 비밀은 `WORKFLOW_SECRET_DIR` 의 0600 파일 | `WORKFLOW_GITHUB_TOKEN` 또는 화면에서 붙여 넣은 PAT(비밀 파일 `github_token`, 환경변수보다 우선) |
+| 허용 저장소 | App 설치에서 고른 저장소 | `WORKFLOW_GITHUB_REPOS`(붙여 넣은 PAT 는 확인한 저장소도) |
+| 가져오는 이슈 | 열린 이슈 전부(PR·닫힘 제외, 연결 전 백로그 포함) | 라벨·시작 시각·고른 번호 |
+| 실행 | 지시한 것만 — [에이전트에게 맡기기](`POST /tasks/{id}/delegate`) 또는 트리거 라벨 `runloom`(대소문자 무시). 지시 전은 `not_delegated` 대기 | 가져온 것 전부(수집 = 지시) |
+| 수정·검토 Agent·로컬 저장소·검증 프로필 | 러너가 보고한 `origin` 의 `owner/name` 으로 자동 매칭(비워 둔 칸만). 못 정하면 `repository_*`·`fix_agent_*`·`profile_*`·`review_agent_*` 대기 — 카드의 고급 설정에서 하나 고른다 | 소스 설정의 세 ID + 담당자 연결 |
+
+- 수집 주기·댓글 반영·후속(검토·재작업·사람 요청)은 5절 이후 그대로다. 소스별로 자기 자격의 클라이언트를 쓴다.
+- 저장소 추가·제거는 GitHub 의 App 설치 설정에서 하고 돌아오면(`/operator/github/app/setup`) 카드가 맞춰진다. 설치에서 빠진 저장소는 수집이 멈추고, 다시 넣어도 멈춘 채다 — 카드의 고급 설정 `수집 켜기` 로 다시 켠다.
+- 수집 실패(rate limit·권한)는 카드에 보이지 않는다 — 워커 로그를 본다.
+- 검증: 가짜 GitHub 로만(`tests/e2e/test_github_app.py`). 실제 App 생성·설치·`setup_action` 값·설치 URL 의 `state` 복귀는 미확인 — 10절.
 
 ## 1. GitHub 토큰 — 최소 권한
 
@@ -159,6 +176,8 @@ phase 8 은 `SCHEMA_VERSION` 을 4 → 5 로 올리며 **처음으로 데이터 
 - 브라우저에서 `data-json-action` 스크립트(서버 렌더만 확인).
 
 실제 Link·ETag 동작은 수집 2회로는 페이지·304 경로를 밟지 않았으므로 대역 확인에 머문다.
+
+2026-09-27 phase 11(GitHub App 연결) — **대역만**: `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_github_app.py` 6개. 가짜 GitHub 가 manifest 교환·App JWT(공개 키로 서명 검증)·설치 토큰·설치 저장소를 흉내 내고, [GitHub 연결] → callback → setup → 소스 자동 생성 → 열린 이슈 3건 `지시 전` → 러너 register(`origin` = `git@github.com:acme/billing.git`) → 자동 매칭 → [맡기기] 한 건 수정·검토 승인·운영자 승인 → 라벨 붙인 다른 이슈 자동 착수·검토 승인까지 돌렸다. 비밀 파일 0700/0600, 비밀값이 DB·산출물·로그·화면·댓글·도구 환경에 없음. 실제 github.com 의 App 만들기·설치 화면은 밟지 않았다([VERIFICATION_LOG](../VERIFICATION_LOG.md) 2026-09-27 phase 11 절).
 
 ## 11. 계획과 구현의 차이
 
