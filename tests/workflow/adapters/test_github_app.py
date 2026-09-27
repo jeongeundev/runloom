@@ -390,13 +390,13 @@ def test_list_installation_repositories_refuses_next_link_to_other_host(key_pair
 # ── manifest (step 7) ──────────────────────────────────────────────────
 
 
-def test_build_manifest_has_minimal_permissions_and_no_active_webhook():
+def test_build_manifest_has_minimal_permissions_and_no_webhook():
+    """GitHub 는 active=false 여도 공개 인터넷에서 닿지 않는 hook url(127.0.0.1)을 거부한다(2026-09-27 실제 확인) — 웹훅 항목을 뺀다."""
     manifest = build_manifest("http://127.0.0.1:8000", "runloom-a1b2c3")
 
     assert manifest == {
         "name": "runloom-a1b2c3",
         "url": "http://127.0.0.1:8000",
-        "hook_attributes": {"url": "http://127.0.0.1:8000/", "active": False},
         "redirect_url": "http://127.0.0.1:8000/operator/github/app/callback",
         "setup_url": "http://127.0.0.1:8000/operator/github/app/setup",
         "setup_on_update": True,
@@ -411,7 +411,7 @@ def test_build_manifest_strips_trailing_slash():
     manifest = build_manifest("https://runloom.example/", "runloom-zz9999")
 
     assert manifest["redirect_url"] == "https://runloom.example/operator/github/app/callback"
-    assert manifest["hook_attributes"]["url"] == "https://runloom.example/"
+    assert "hook_attributes" not in manifest
 
 
 # ── 비밀이 새지 않음 ─────────────────────────────────────────────────────

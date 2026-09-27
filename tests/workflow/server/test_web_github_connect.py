@@ -192,7 +192,7 @@ def test_new_renders_manifest_form_with_state_cookie(op):
     assert html_lib.unescape(action).startswith("https://github.com/settings/apps/new?state=")
     assert manifest["redirect_url"] == f"{BASE}/operator/github/app/callback"
     assert manifest["setup_url"] == f"{BASE}/operator/github/app/setup"
-    assert manifest["hook_attributes"]["active"] is False and manifest["public"] is False
+    assert "hook_attributes" not in manifest and manifest["public"] is False
     assert re.fullmatch(r"runloom-[a-z0-9]{6}", manifest["name"])
     cookie = response.headers["set-cookie"]
     assert cookie.startswith(f"{STATE_COOKIE}=")

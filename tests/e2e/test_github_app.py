@@ -290,7 +290,7 @@ def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     manifest = json.loads(unescape(re.search(r'name="manifest" value="([^"]+)"', new.text).group(1)))
     assert manifest["redirect_url"] == f"{world.central_url}/operator/github/app/callback"
     assert manifest["setup_url"] == f"{world.central_url}/operator/github/app/setup"
-    assert manifest["hook_attributes"]["active"] is False and manifest["public"] is False
+    assert "hook_attributes" not in manifest and manifest["public"] is False
     assert manifest["default_permissions"] == {"issues": "write", "pull_requests": "read", "metadata": "read"}
 
     # (GitHub 에서 사용자가 [Create]) → callback — code 교환·비밀 저장 → 설치 화면으로

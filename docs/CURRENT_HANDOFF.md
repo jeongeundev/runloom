@@ -10,7 +10,7 @@
 
 다음 순서:
 1. `feat-11-github-app` → `service` `--no-ff` 병합, `deploy/selfhost/install.sh` 재실행으로 셀프호스트에 반영(사용자 지시 때).
-2. **사용자 브라우저로 실제 App 생성·설치** — [SELFHOST "GitHub 연결"](SELFHOST.md#github-연결) 순서: `/operator/github` [GitHub 연결] → GitHub 에서 App 이름 확인 → [Create GitHub App] → 설치 화면에서 *Only select repositories* 로 `jeongeundev/OpenArchive` 선택 → [Install] → 카드 확인 → 러너에서 OpenArchive 클론 폴더 register(`origin` 이 GitHub 인지) → 자동 매칭 `(자동)` 확인. 이때 확인할 미확인 항목: `setup_action` 실제 값, 127.0.0.1 `hook_attributes.url`(비활성 웹훅) 수락 여부, 설치 URL 의 `state` 가 setup 으로 돌아오는지, 실제 GitHub 화면 문구. 결과는 VERIFICATION_LOG 에 실연동으로 기록한다.
+2. **사용자 브라우저로 실제 App 생성·설치** — [SELFHOST "GitHub 연결"](SELFHOST.md#github-연결) 순서: `/operator/github` [GitHub 연결] → GitHub 에서 App 이름 확인 → [Create GitHub App] → 설치 화면에서 *Only select repositories* 로 `jeongeundev/OpenArchive` 선택 → [Install] → 카드 확인 → 러너에서 OpenArchive 클론 폴더 register(`origin` 이 GitHub 인지) → 자동 매칭 `(자동)` 확인. 이때 확인할 미확인 항목: `setup_action` 실제 값, 설치 URL 의 `state` 가 setup 으로 돌아오는지, 실제 GitHub 화면 문구. 결과는 VERIFICATION_LOG 에 실연동으로 기록한다.
 3. 실제 OpenArchive 기준선 가져오기 — **사용자 지시 후에만**. App 권한에 Pull requests 읽기가 들어 있다. 도입 전 경계는 소스 연결 시각(`github_sources.created_at`)이다.
 4. `12-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). `12-real-repo` 에 넣을 것(2026-09-27 확인·합의): 새 업무의 기준 커밋은 러너 `register` 때 읽은 HEAD(`connector/cli.py:124` → `agents.base_commit`)로 고정돼, 등록 뒤 생긴 커밋(직접 작업·병합·pull)을 따라가지 않는다(`server/worker.py:1203`). 러너가 현재 HEAD 를 중앙에 다시 보고해 그 값을 기준으로 쓰게 고친다.
 

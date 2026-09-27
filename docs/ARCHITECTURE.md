@@ -531,7 +531,6 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 {
   "name": "runloom-<6자 무작위 소문자·숫자>",
   "url": "<base>",
-  "hook_attributes": {"url": "<base>/", "active": false},
   "redirect_url": "<base>/operator/github/app/callback",
   "setup_url": "<base>/operator/github/app/setup",
   "setup_on_update": true,
@@ -639,7 +638,7 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 | 쿠키 | `server/web.py`(7) | `wf_gh_state` |
 | 대기 코드 | `domain/task_readiness.py`(5·6) | `not_delegated`, `repository_unmatched`·`repository_ambiguous`, `profile_unmatched`·`profile_ambiguous`, `fix_agent_unmatched`·`fix_agent_ambiguous`, `review_agent_unmatched`·`review_agent_ambiguous` |
 
-미확인(실제 App 생성 때 확인): `setup_action` 값(`install`·`update` 로 알려져 있으나 공식 문서에서 확인 못 함 — 서버는 값에 따라 분기하지 않는다), 127.0.0.1 `hook_attributes.url` 수락 여부, 설치 URL 의 `state` 가 setup 으로 돌아오는지.
+미확인(실제 App 생성 때 확인): `setup_action` 값(`install`·`update` 로 알려져 있으나 공식 문서에서 확인 못 함 — 서버는 값에 따라 분기하지 않는다), 설치 URL 의 `state` 가 setup 으로 돌아오는지.
 
 ## 기존 구현과 초기 설계 기록
 
