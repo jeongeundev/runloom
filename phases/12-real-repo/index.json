@@ -16,7 +16,7 @@
       "status": "completed",
       "started_at": "2026-09-27T23:25:10+0900",
       "summary": "register 가 에이전트 생성: repo.register_local_agent(→(agent_id, created), update_registration 과 UPDATE 공유 _fill_registration)·errors.RegistrationTaken, machine_api RegistrationRequest.agent_name(≤100)·RegistrationResponse{agent_id,created}, selfhost 만 ensure_workspace 후 sess-selfhost 에 code.fix+code.review(scope=repository_id) Agent 생성(agt-8hex, personal/local, session_agents 등록), demo 는 404 유지, selfhost 에서 취소 안 된 다른 connector 가 쓰는 이름은 409 registration_taken. 수정·검토 같은 Agent 는 매칭·준비 판정이 이미 허용(테스트로 확인, 코드 변경 없음). CONTRACT 14.3·14.4 펜스 json(test_v1 블록 56, 서명 RegistrationResponse), ARCHITECTURE·ADR-0018 409 반영. pytest 2710 passed/61 skipped, ruff 통과. 다음 step 주의: 새 연결 코드로 러너를 다시 붙이면 새 connector_id 라 옛 연결이 취소될 때까지 409 — step 2 setup 은 저장된 토큰이 있으면 재사용하거나 step 9 에서 옛 연결 취소 경로 필요; 러너는 agent_name 을 값 있을 때만 보낸다",
-      "completed_at": "2026-09-27T23:50:00+0900"
+      "completed_at": "2026-09-27T23:33:26+0900"
     },
     {
       "step": 2,
