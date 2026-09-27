@@ -205,8 +205,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_6():
-    assert SCHEMA_VERSION == 6
+def test_schema_version_is_7():
+    assert SCHEMA_VERSION == 7
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -764,7 +764,7 @@ def test_v5_fixture_is_the_phase8_schema(db_path):
 
 
 def test_fresh_db_is_v6_with_measure_tables(conn):
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert TABLES <= _table_names(conn)
     assert "config_revision" in _columns(conn, "sessions")
     assert set(EXECUTION_MEASURE_COLUMNS) <= _columns(conn, "executions")
@@ -837,7 +837,7 @@ def test_migrates_v5_to_v6_preserving_data(db_path):
 
     c = connect(db_path)
     init_schema(c)
-    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(6,)]
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
     assert TABLES <= _table_names(c)
     assert _dump(c, V5_TABLES, columns) == before  # 기존 행·열 값은 하나도 바뀌지 않는다
     assert [tuple(r) for r in c.execute("SELECT session_id, config_revision FROM sessions ORDER BY 1")] == [
@@ -863,7 +863,7 @@ def test_migrates_v4_to_v6_in_one_go(db_path):
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert TABLES <= _table_names(c)
     assert "supported_kinds_json" in _columns(c, "connectors")
     assert [r[0] for r in c.execute("SELECT DISTINCT config_revision FROM sessions")] == [1]
@@ -909,5 +909,64 @@ def test_v5_migration_rolls_back_when_a_later_statement_fails(db_path, monkeypat
     assert not c.in_transaction
     monkeypatch.undo()
     init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    c.close()
+
+
+# --- phase 11: v6 → v7 실행 지시 (ADR-0017, ARCHITECTURE "실행 지시") --------------------------------------
+
+SOURCE_ISSUE_DELEGATION_COLUMNS = ("delegated_at", "delegated_by")
+
+
+def _v6_db(db_path):
+    """phase 9·10 서버가 남긴 모양의 v6 DB — v5 fixture 를 그때의 5 → 6 마이그레이션으로 올린다."""
+    from workflow.adapters import db
+
+    c = _v5_db(db_path)
+    c.execute("BEGIN IMMEDIATE")
+    db._migrate_5_to_6(c)
+    c.execute("COMMIT")
+    return c
+
+
+def test_v6_fixture_has_no_delegation_columns(db_path):
+    c = _v6_db(db_path)
     assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+    assert not set(SOURCE_ISSUE_DELEGATION_COLUMNS) & _columns(c, "source_issues")
+    c.close()
+
+
+def test_fresh_db_has_delegation_columns_with_check(conn):
+    _cycle_base(conn)
+    assert set(SOURCE_ISSUE_DELEGATION_COLUMNS) <= _columns(conn, "source_issues")
+    conn.execute("INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
+                 " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at)"
+                 " VALUES ('ghs-00000001', 100, 41, 't1', 1, '{}', 'd', ?, 'open', ?, ?)", (NOW, NOW, NOW))
+    row = conn.execute("SELECT delegated_at, delegated_by FROM source_issues").fetchone()
+    assert tuple(row) == (None, None)  # 지시 전
+    for by in ("operator", "label"):
+        conn.execute("UPDATE source_issues SET delegated_at = ?, delegated_by = ?", (NOW, by))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE source_issues SET delegated_by = 'agent'")
+
+
+def test_migrates_v6_to_v7_preserving_data(db_path):
+    c = _v6_db(db_path)
+    before = _dump(c, TABLES)
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(7,)]
+    columns = _column_lists(c, TABLES)
+    for table, names in columns.items():
+        if table == "source_issues":
+            columns[table] = [n for n in names if n not in SOURCE_ISSUE_DELEGATION_COLUMNS]
+    assert _dump(c, TABLES, columns) == before  # 기존 행·열 값은 그대로
+    row = c.execute("SELECT delegated_at, delegated_by FROM source_issues").fetchone()
+    assert tuple(row) == (None, None)  # 옛 소스는 filtered 라 지시 칸을 보지 않는다 — 추정해 채우지 않는다
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    after = _dump(c, TABLES)
+    init_schema(c)
+    assert _dump(c, TABLES) == after
     c.close()

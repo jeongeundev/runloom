@@ -204,9 +204,14 @@ def _uncertain(row: SourceDelivery, now: str) -> bool:
     return row.state == "unknown" or (row.state == "sending" and row.comment_id is None and _due(row.next_at, now))
 
 
-def deliver_source_updates(conn: Connection, client: GitHubClient, now: str) -> DeliveryReport:
+def deliver_source_updates(
+    conn: Connection, client: GitHubClient, now: str, *, source_id: str | None = None
+) -> DeliveryReport:
+    """`source_id` 를 주면 그 소스의 반영만 보낸다 — 소스마다 자격(클라이언트)이 다를 수 있다(ADR-0017)."""
     report = DeliveryReport()
     for target in repo.delivery_targets(conn):
+        if source_id is not None and target["source_id"] != source_id:
+            continue
         if not GitHubSourceConfig.model_validate_json(target["config_json"]).enabled:
             continue
         try:

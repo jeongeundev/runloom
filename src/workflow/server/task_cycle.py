@@ -105,7 +105,10 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
         ],
         "executors": {a["agent_id"]: _executor(conn, a) for a in agents},
         "chosen_agent_id": task["chosen_agent_id"],
-        "repository_allowed": config is None or config.repository_full_name.lower() in allowed,
+        # App 설치 소스는 설치 저장소 자체가 허용 범위다(ADR-0017) — 환경변수 허용 목록은 토큰 연결 소스에만
+        "repository_allowed": (
+            config is None or config.installation_id is not None or config.repository_full_name.lower() in allowed
+        ),
         "task_revision": task["revision"],
         "request_text": request_text(conn, task),
         "information_requested_at_revision": max(asked, default=None),

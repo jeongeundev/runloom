@@ -2,7 +2,13 @@
 
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import Capability
-from workflow.domain.issue_intake import intake_facts, intake_scope, snapshot_to_task_spec, task_input
+from workflow.domain.issue_intake import (
+    intake_facts,
+    intake_scope,
+    label_delegated,
+    snapshot_to_task_spec,
+    task_input,
+)
 from workflow.domain.selection import Candidate
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, evaluate_readiness
 
@@ -159,3 +165,56 @@ def test_direct_and_imported_tasks_get_the_same_readiness():
     codes = [sorted(x.code for x in evaluate_readiness(_facts(**f.as_kwargs())).blockers)
              for f in (empty_imported, empty_direct)]
     assert codes[0] == codes[1] == ["input_missing", "manual_mode"]
+
+
+# --- all_open 접수와 실행 지시 (phase 11 step 5, ADR-0017) ---
+
+
+def _all_open(**overrides) -> GitHubSourceConfig:
+    data = {"intake": "all_open", "label_filter": [], "trigger_label": "runloom", "workflow_repository_id": None,
+            "fix_verification_profile_id": None, "review_agent_id": None}
+    return _config(**{**data, **overrides})
+
+
+def test_all_open_accepts_every_open_issue_regardless_of_labels_and_start():
+    config = _all_open()
+    assert intake_scope(config, _snapshot(labels=[])).accept
+    assert intake_scope(config, _snapshot(labels=["ui"], created_at="2020-01-01T00:00:00Z")).accept
+
+
+def test_all_open_still_rejects_closed_pull_requests_and_other_repositories():
+    config = _all_open()
+    assert intake_scope(config, _snapshot(state="closed")).reason == "closed"
+    assert intake_scope(config, _snapshot(is_pull_request=True)).reason == "pull_request"
+    assert intake_scope(config, _snapshot(repository_full_name="acme/other")).reason == "other_repository"
+
+
+def test_trigger_label_delegates_only_all_open_sources_case_insensitively():
+    assert label_delegated(_all_open(), _snapshot(labels=["bug", "RunLoom"]))
+    assert not label_delegated(_all_open(), _snapshot(labels=["bug"]))
+    assert not label_delegated(_all_open(trigger_label=None), _snapshot(labels=["runloom"]))
+    assert not label_delegated(_config(trigger_label="runloom"), _snapshot(labels=["runloom"]))  # filtered = 수집이 지시
+
+
+def test_undelegated_all_open_task_waits_for_instruction():
+    facts = intake_facts(request="재현 절차", run_mode="auto", snapshot=_snapshot(),
+                         bindings={5812345: FIX_AGENT}, max_rework_rounds=1, needs_delegation=True)
+    assert facts.delegated is False
+    readiness = evaluate_readiness(_facts(**facts.as_kwargs()))
+    assert [(b.code, b.actor) for b in readiness.blockers] == [("not_delegated", "operator")]
+
+
+def test_label_delegation_follows_run_mode_and_operator_delegation_skips_manual_mode():
+    label = intake_facts(request="재현 절차", run_mode="manual", snapshot=_snapshot(), bindings={5812345: FIX_AGENT},
+                         max_rework_rounds=1, needs_delegation=True, delegated_by="label")
+    assert [b.code for b in evaluate_readiness(_facts(**label.as_kwargs())).blockers] == ["manual_mode"]
+    operator = intake_facts(request="재현 절차", run_mode="manual", snapshot=_snapshot(),
+                            bindings={5812345: FIX_AGENT}, max_rework_rounds=1, needs_delegation=True,
+                            delegated_by="operator")
+    assert evaluate_readiness(_facts(**operator.as_kwargs())).ready
+
+
+def test_sources_without_delegation_step_are_delegated_by_default():
+    direct = intake_facts(request="r", run_mode="auto", snapshot=None, bindings={}, max_rework_rounds=None)
+    assert direct.delegated is True
+    assert TaskFacts.__dataclass_fields__["delegated"].default is True

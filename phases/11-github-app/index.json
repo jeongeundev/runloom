@@ -45,7 +45,9 @@
     {
       "step": 5,
       "name": "intake-all",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:34:49+0900",
+      "summary": "all_open 수집·트리거 라벨·소스별 클라이언트: domain/issue_intake(all_open 은 열린 Issue 전부·PR/닫힘/다른 저장소 제외, label_delegated(config, snapshot) 대소문자 무시·filtered 는 항상 False, intake_facts(needs_delegation, delegated_by) → IntakeFacts.delegated·operator 지시는 run_mode auto 로 봄·label 은 소스 run_mode 따름), task_readiness TaskFacts.delegated(기본 True)·대기 코드 not_delegated(operator, manual_mode 앞), 스키마 v7(source_issues.delegated_at·delegated_by CHECK operator|label, _migrate_6_to_7, 4·5 도 7 까지), repo.mark_issue_delegated(처음 지시만·멱등·bool), github_sync(all_open 최초 커서 since=None — 오래된 열린 이슈도, 닫힌 이력 페이지도 한 번 훑음; take 마다 라벨이면 label 지시 기록; task_intake_facts 가 delegated_by 전달), task_cycle repository_allowed 는 installation_id 소스면 통과, 신설 server/github_clients.py(client_for(source, settings, secrets, *, app, transport): 설치+App 자격→InstallationTokenProvider·허용=소스 저장소 / 비밀 PAT→허용=WORKFLOW_GITHUB_REPOS+소스 저장소 / 환경변수 토큰 / 없음 None; SourceClients 는 App 인증 1개 공유·자격 같으면 클라이언트 재사용·나중 저장된 App/PAT 따라감), worker Worker(github=… 또는 github_for=callable) 소스별 수집(자격 없으면 간격만 미룸)·반영(deliver_source_updates(…, source_id=), 자격 있는 소스가 없으면 outbox 도 안 쌓음), main 은 SourceClients(settings, SecretStore(settings.secret_dir)); ARCHITECTURE 대기 코드 표·클라이언트 선택·실행 지시 절 갱신. 검증: pytest 2603 passed/55 skipped, ruff 통과. 주의: POST /tasks/{id}/delegate(operator 지시)는 step 7 — repo.mark_issue_delegated(by='operator') 를 쓰면 됨; 기존 [직접 실행](start_manually)은 manual_mode 만 빼므로 not_delegated 는 못 넘음; all_open 소스의 Task 는 workflow_repository_id None 이면 required_capability scope 가 None 이라 step 6 자동 매칭 전엔 delegation_denied; PAT 소스의 허용 저장소 판정(task_cycle)은 여전히 WORKFLOW_GITHUB_REPOS 만 봄 — step 7 토큰 연결 때 처리 필요; 소스 오류 github_not_connected 는 기록 없이 건너뜀(화면 표시는 step 8)."
     },
     {
       "step": 6,

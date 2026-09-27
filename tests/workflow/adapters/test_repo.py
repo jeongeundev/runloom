@@ -1812,6 +1812,39 @@ def test_source_issue_lookup_and_source_owner(cycle):
 
 
 
+# --- phase 11 step 5: all_open 소스의 실행 지시 ---------------------------------------------------------
+
+
+def _delegation(conn):
+    return tuple(conn.execute(
+        "SELECT delegated_at, delegated_by FROM source_issues WHERE github_issue_id = 2456789012").fetchone())
+
+
+def test_mark_issue_delegated_records_first_instruction_only(cycle):
+    assert _delegation(cycle) == (None, None)  # 지시 전
+    record = dict(session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012)
+    assert repo.mark_issue_delegated(cycle, **record, by="label", now=NOW) is True
+    assert _delegation(cycle) == (NOW, "label")
+    assert repo.mark_issue_delegated(cycle, **record, by="operator", now=LATER) is False  # 멱등 — 처음 지시가 남는다
+    assert _delegation(cycle) == (NOW, "label")
+    # 재동기화(같은 스냅샷·새 revision)도 지시를 지우지 않는다
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, _snapshot(labels=[], updated_at="2026-10-06T11:00:00Z"),
+                             task=_fix_task(), now=LATER)
+    assert _delegation(cycle) == (NOW, "label")
+
+
+def test_mark_issue_delegated_rejects_other_session_unknown_issue_and_bad_actor(cycle):
+    with pytest.raises(NotFound):
+        repo.mark_issue_delegated(cycle, session_id=OTHER_SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                                  by="label", now=NOW)
+    with pytest.raises(NotFound):
+        repo.mark_issue_delegated(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=1, by="label", now=NOW)
+    with pytest.raises(ValueError):
+        repo.mark_issue_delegated(cycle, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                                  by="agent", now=NOW)
+    assert _delegation(cycle) == (None, None)
+
+
 # --- phase 9 step 11: 이슈를 닫은 병합 PR 의 병합 시각 --------------------------------------------------
 
 

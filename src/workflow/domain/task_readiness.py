@@ -75,6 +75,7 @@ class TaskFacts:
     rework_rounds_used: int = 0
     max_rework_rounds: int | None = None
     source_state: Literal["open", "closed"] | None = None  # 원본 이슈 상태. 원본 없으면 None
+    delegated: bool = True  # `all_open` 소스 Task 의 실행 지시(맡기기·트리거 라벨). 지시 단계가 없으면 True
     closed: bool = False  # 운영자 종료
 
 
@@ -200,6 +201,10 @@ def evaluate_readiness(facts: TaskFacts) -> TaskReadiness:
     ):
         blockers.append(
             Blocker("rework_limit_reached", f"자동 재작업 상한 {facts.max_rework_rounds}회 도달", "operator")
+        )
+    if not facts.delegated:
+        blockers.append(
+            Blocker("not_delegated", "실행 지시 전 — [에이전트에게 맡기기] 또는 `runloom` 라벨", "operator")
         )
     if facts.run_mode == "manual":
         blockers.append(Blocker("manual_mode", "직접 실행 모드", "operator"))

@@ -298,6 +298,31 @@ def test_repository_outside_the_allow_list_is_not_delegated(cycle, conn, worker,
     assert status(conn, task_id) == ("대기", "허용 저장소 밖")
 
 
+def test_app_installation_source_is_allowed_without_the_env_allow_list(cycle, conn, worker, settings):
+    """설치 저장소는 App 설치가 허용 목록이다(ADR-0017) — `WORKFLOW_GITHUB_REPOS` 에 없어도 막지 않는다."""
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, installation_id=42), NOW)
+    task_id = import_issue(conn, 1)
+    narrowed = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(),
+                      dataclasses.replace(settings, github_repos=()), worker._clock)
+    narrowed.tick()
+    assert len(executions(conn, task_id)) == 1
+
+
+def test_all_open_task_waits_for_delegation_then_starts(cycle, conn, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, intake="all_open", label_filter=[],
+                                                  trigger_label="runloom"), NOW)
+    task_id = import_issue(conn, 1, labels=[])
+    worker.tick()
+    assert executions(conn, task_id) == []
+    assert status(conn, task_id) == ("대기", "실행 지시 전 — [에이전트에게 맡기기] 또는 `runloom` 라벨")
+
+    issue_id = repo.get_source_issue_by_task(conn, SESSION, task_id)["github_issue_id"]
+    repo.mark_issue_delegated(conn, session_id=SESSION, source_id=SOURCE, github_issue_id=issue_id,
+                              by="label", now=NOW)
+    worker.tick()
+    assert len(executions(conn, task_id)) == 1
+
+
 def test_evaluate_collects_every_blocker_for_one_task(cycle, conn, settings):
     task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], state="closed")
     readiness = task_cycle.evaluate(conn, repo.get_task(conn, task_id), now=NOW, settings=settings)
@@ -972,3 +997,24 @@ def test_delivery_failure_is_separate_from_task_state(cycle, conn, github_worker
     assert report.tasks_started == 1 and report.deliveries_failed == 1
     assert repo.list_source_deliveries(conn, fix_task)[-1].state == "failed"
     assert executions(conn, fix_task)[0]["status"] == "queued"
+
+
+def _worker_with_clients(settings, store, clock, github_for) -> Worker:
+    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
+                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
+    return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock,
+                  github_for=github_for)
+
+
+def test_source_issue_comment_goes_through_the_sources_own_client(cycle, conn, settings, store, clock, github):
+    import_issue(conn, 1)
+    report = _worker_with_clients(settings, store, clock, lambda config: github).tick()
+    assert (report.deliveries_queued, report.deliveries_sent) == (1, 1)
+    assert len(github.bodies(1)) == 1
+
+
+def test_source_without_credentials_gets_no_comment(cycle, conn, settings, store, clock, github):
+    import_issue(conn, 1)
+    report = _worker_with_clients(settings, store, clock, lambda config: None).tick()
+    assert (report.deliveries_queued, report.deliveries_sent) == (0, 0)
+    assert github.comments == {}
