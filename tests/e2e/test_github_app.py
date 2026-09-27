@@ -79,7 +79,6 @@ MANIFEST_CODE = "e2e-manifest-code-1"
 CLIENT_ID = "Iv1.e2eclient0001"
 SLUG = "runloom-e2eapp"
 CLIENT_SECRET = "e2e-client-secret-" + "c" * 24
-WEBHOOK_SECRET = "e2e-webhook-secret-" + "w" * 24
 INSTALL_TOKEN = "ghs_e2eInstallToken" + "Q7" * 12
 FIX, REVIEW = "agent-fix-billing", "agent-review-billing"
 
@@ -123,7 +122,7 @@ class FakeGitHubApp(FakeGitHub):
                 return 201, {}, {
                     "id": 424242, "client_id": CLIENT_ID, "slug": SLUG, "name": SLUG,
                     "owner": {"login": "acme"}, "html_url": f"https://github.com/apps/{SLUG}",
-                    "client_secret": CLIENT_SECRET, "webhook_secret": WEBHOOK_SECRET, "pem": PEM,
+                    "client_secret": CLIENT_SECRET, "webhook_secret": None, "pem": PEM,  # 웹훅 없는 manifest → null(실제 GitHub)
                 }
             if path.startswith("/app-manifests/"):
                 self.app_requests.append((method, path, "none"))
@@ -327,7 +326,7 @@ def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     names = {p.name for p in root.iterdir()}
     assert names == {secret_store.GITHUB_APP_INFO, secret_store.GITHUB_APP_PRIVATE_KEY,
-                     secret_store.GITHUB_APP_CLIENT_SECRET, secret_store.GITHUB_APP_WEBHOOK_SECRET}
+                     secret_store.GITHUB_APP_CLIENT_SECRET}
     assert all(stat.S_IMODE((root / name).stat().st_mode) == 0o600 for name in names)
     assert (root / secret_store.GITHUB_APP_PRIVATE_KEY).read_text() == PEM
 
@@ -448,7 +447,7 @@ def test_05_trigger_label_starts_another_issue_without_the_button(world):
 def test_06_secrets_stay_in_the_secret_files(world):
     """App 개인 키·client secret·webhook secret·설치 토큰은 비밀 파일(설치 토큰은 메모리)에만 — DB·산출물·로그·연결
     프로그램 상태·저장소·댓글·화면에 없다(도구 환경은 가짜 codex 가 설치 토큰을 검사)."""
-    needles = [PEM_BODY, CLIENT_SECRET, WEBHOOK_SECRET, INSTALL_TOKEN]
+    needles = [PEM_BODY, CLIENT_SECRET, INSTALL_TOKEN]
     root = secret_dir(world)
     leaked = []
     for path in world.workdir.rglob("*"):

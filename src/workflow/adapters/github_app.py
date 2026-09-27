@@ -7,6 +7,7 @@
 """
 
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -29,6 +30,8 @@ from workflow.adapters.github_client import (
 )
 from workflow.adapters.secret_store import SecretStore
 
+logger = logging.getLogger(__name__)
+
 JWT_BACKDATE_SECONDS = 60
 JWT_LIFETIME_SECONDS = 9 * 60
 TOKEN_REFRESH_MARGIN_SECONDS = 5 * 60
@@ -48,7 +51,7 @@ class AppCredentials:
     owner_login: str
     html_url: str
     client_secret: str = field(repr=False)
-    webhook_secret: str = field(repr=False)
+    webhook_secret: str | None = field(repr=False)  # manifest 에 웹훅이 없으면 GitHub 가 null 로 준다
     pem: str = field(repr=False)
 
 
@@ -116,6 +119,12 @@ def exchange_manifest_code(code: str, *, transport: httpx.BaseTransport | None =
         response = _send(client, "POST", f"/app-manifests/{code}/conversions", _CONVERSION_PATH)
         check_response("POST", _CONVERSION_PATH, response)
         data = _json_object(response, "POST", _CONVERSION_PATH)
+    required = ("id", "client_id", "slug", "client_secret", "pem")
+    missing = [key for key in required if not data.get(key)]
+    if missing:
+        # 이름만 남긴다 — 값(비밀)은 남기지 않는다
+        logger.warning("GitHub App manifest 교환 응답에 없는 항목: %s", ", ".join(missing))
+        raise GitHubError(f"POST {_CONVERSION_PATH}: 응답 형식 오류")
     try:
         creds = AppCredentials(
             app_id=int(data["id"]),
@@ -125,13 +134,13 @@ def exchange_manifest_code(code: str, *, transport: httpx.BaseTransport | None =
             owner_login=(data.get("owner") or {}).get("login") or "",
             html_url=data.get("html_url") or "",
             client_secret=data["client_secret"],
-            webhook_secret=data["webhook_secret"],
+            webhook_secret=data.get("webhook_secret") or None,
             pem=data["pem"],
         )
-    except (KeyError, TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError):
         raise GitHubError(f"POST {_CONVERSION_PATH}: 응답 형식 오류") from None
-    required = (creds.client_id, creds.slug, creds.client_secret, creds.webhook_secret, creds.pem)
-    if not all(isinstance(value, str) and value for value in required):
+    values = (creds.client_id, creds.slug, creds.client_secret, creds.pem)
+    if not all(isinstance(value, str) and value for value in values):
         raise GitHubError(f"POST {_CONVERSION_PATH}: 응답 형식 오류")
     return creds
 
@@ -139,7 +148,8 @@ def exchange_manifest_code(code: str, *, transport: httpx.BaseTransport | None =
 def save_credentials(store: SecretStore, creds: AppCredentials, now: str) -> None:
     """비밀이 아닌 App 정보는 `github_app.json`, 비밀은 파일 하나씩. 개인 키를 마지막에 써 `load_app` 이 반쪽을 읽지 않게 한다."""
     store.write(secret_store.GITHUB_APP_CLIENT_SECRET, creds.client_secret)
-    store.write(secret_store.GITHUB_APP_WEBHOOK_SECRET, creds.webhook_secret)
+    if creds.webhook_secret:
+        store.write(secret_store.GITHUB_APP_WEBHOOK_SECRET, creds.webhook_secret)
     store.write(secret_store.GITHUB_APP_INFO, json.dumps({
         "app_id": creds.app_id, "client_id": creds.client_id, "slug": creds.slug, "name": creds.name,
         "owner_login": creds.owner_login, "html_url": creds.html_url, "created_at": now,

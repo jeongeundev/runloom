@@ -135,7 +135,35 @@ def test_exchange_manifest_code_errors_are_classified_without_code_or_body(statu
     assert f"HTTP {status}" in str(info.value)
 
 
-@pytest.mark.parametrize("missing", ["id", "slug", "client_id", "client_secret", "webhook_secret", "pem"])
+@pytest.mark.parametrize("webhook_secret", [None, ""])
+def test_exchange_manifest_code_accepts_missing_webhook_secret(webhook_secret):
+    """manifest 에 웹훅이 없으면 GitHub 는 webhook_secret 을 null 로 준다(2026-09-27 실제 확인)."""
+    body = {**CONVERSION, "webhook_secret": webhook_secret}
+    creds = exchange_manifest_code("abc123", transport=httpx.MockTransport(lambda r: httpx.Response(201, json=body)))
+    assert creds.webhook_secret is None and creds.pem == CONVERSION["pem"]
+
+
+def test_exchange_manifest_code_bad_shape_names_missing_fields_only(caplog):
+    body = {k: v for k, v in CONVERSION.items() if k not in ("client_secret", "pem")}
+    with caplog.at_level("WARNING"), pytest.raises(GitHubError):
+        exchange_manifest_code("abc123", transport=httpx.MockTransport(lambda r: httpx.Response(201, json=body)))
+    assert "client_secret" in caplog.text and "pem" in caplog.text
+    assert CONVERSION["webhook_secret"] not in caplog.text
+
+
+def test_save_credentials_without_webhook_secret_writes_no_file(tmp_path, key_pair):
+    pem, _ = key_pair
+    store = SecretStore(tmp_path / "secrets")
+    creds = AppCredentials(
+        app_id=1, client_id=CLIENT_ID, slug="runloom-a1b2c3", name="runloom-a1b2c3", owner_login="acme",
+        html_url="", client_secret="CS", webhook_secret=None, pem=pem,
+    )
+    save_credentials(store, creds, "2026-09-27T09:00:00Z")
+    assert not store.exists(secret_store.GITHUB_APP_WEBHOOK_SECRET)
+    assert store.read(secret_store.GITHUB_APP_PRIVATE_KEY) == pem
+
+
+@pytest.mark.parametrize("missing", ["id", "slug", "client_id", "client_secret", "pem"])
 def test_exchange_manifest_code_bad_shape_is_github_error(missing):
     body = {k: v for k, v in CONVERSION.items() if k != missing}
     with pytest.raises(GitHubError) as info:
