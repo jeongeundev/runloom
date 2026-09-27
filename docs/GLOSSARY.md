@@ -147,6 +147,19 @@
 | `intake_to_done` / `intake_to_merge` / `intake_to_approval` / `closed_unmerged` | 속도 지표(step 6·12). 접수 → 완료(`intake_to_done`)의 끝점은 GitHub 이슈 묶음이면 그 이슈를 닫은 병합 PR 의 병합 시각(`source_issues.pr_merged_at`)뿐이고 운영자 승인은 완료가 아니다, 직접 등록 묶음은 병합 확인·`완료` 전환. `intake_to_merge` 는 GitHub 이슈 묶음만 — 기준선과 같은 "이슈 열림 → 병합". 접수 → 승인(`intake_to_approval`)은 묶음의 첫 운영자 승인 또는 `완료` 전환. `closed_unmerged` = 조회했지만 병합 PR 없이 닫힌 이슈 묶음 수(미완료에 포함). 화면 라벨 `접수 → 완료`·`이슈 열림 → 병합`·`접수 → 승인`·`병합 없이 닫힘` | `lead_time`, `cycle_time`(정의가 다른 업계 용어), 승인 시각을 `완료` 로 부르기 |
 | `compute_metrics` / `summarize_baseline` / `Stat` | 지표 순수 계산(`domain/metrics.py`, step 6). 값 객체를 받아 중앙값·n·미완료·모름(`Stat(median, n, incomplete, unknown, total)`, 비율은 `Ratio`)을 낸다. 현재 시각을 읽지 않는다. API `GET /metrics.json`·`/metrics.csv`(step 8), 화면 `GET /metrics`(step 9) — 운영자만 | `analytics`, `score`, `KPI`(인과 효과처럼 읽히는 표현) |
 
+## 계획 용어 — phase 10 셀프호스트 (미구현)
+
+[ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md), [ARCHITECTURE](ARCHITECTURE.md) "셀프호스트 — phase 10". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| `WORKFLOW_MODE` / `Settings.mode` / 셀프호스트 모드 | 중앙 서버·워커의 실행 모드(step 1). `demo`(미설정 기본 — 공개 데모, 익명 세션) 또는 `selfhost`(고정 워크스페이스 + 워크스페이스 로그인, 진단 선택). 분기는 인증·화면 노출·진단 켜짐에만. 화면 라벨 없음(사용자에게 모드를 보이지 않는다) | `env`, `profile`, `production` 모드 |
+| `SELFHOST_SESSION_ID` / 고정 워크스페이스 | selfhost 모드의 유일한 워크스페이스 — `sessions` 행 하나, id `sess-selfhost`(step 2). 첫 로그인 성공 때 `is_operator=1` 로 만들고 이후 재사용. 새 테이블이 아니라 기존 세션 행이다. 화면 라벨 `워크스페이스` | `default session`, `tenant`, `account` |
+| 워크스페이스 로그인 | selfhost 에서 `OPERATOR_TOKEN` 을 `POST /login` 에 넣어 고정 워크스페이스 쿠키(`wf_session`, `SESSION_SECRET` 서명)를 받는 것(step 2). 로그인 = 운영자. `POST /logout` 은 쿠키만 지운다. 화면 라벨 `로그인`·`로그아웃`, 입력 칸 `운영자 토큰` | `sign in`(계정 로그인처럼 읽힘), `운영자 로그인`(demo 의 `/operator/login` 과 혼동) |
+| `/healthz` | 인증 없는 헬스 확인(step 5). 200 `{"status":"ok","mode":…,"schema_version":…}`, DB 실패 503 `{"status":"error","mode":…}` | `/health`, `/status`, `/ping` |
+| 백업 CLI / `workflow.server.backup` | `create`·`list`·`restore <이름>`(step 4). DB 는 SQLite 온라인 백업, 산출물은 tar, `WORKFLOW_BACKUP_DIR/{YYYYMMDDTHHMMSSZ}/`. 비밀값 제외. 공개 데모 VM 의 `deploy/backup.sh` 와 별개 | `dump`, `snapshot`, `export` |
+| `workflow-data` | compose named volume. `central`·`worker` 가 `/data` 에 같이 붙인다(`/data/central.sqlite`·`/data/artifacts`·`/data/backups`). bind mount 아님 | `data dir`(호스트 `data/` 와 혼동) |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
@@ -165,3 +178,4 @@
 - `sessions.config_revision`(설정 번호)과 `GitHubSourceConfig.config_revision`: 이름이 같지만 다르다. 전자는 워크스페이스 설정 전체의 번호로 지표를 나누는 기준이고, 후자는 소스 설정 하나의 낙관적 잠금 번호(`expected_revision`, 409 `stale_config`)다. 소스 설정을 바꾸면 둘 다 오른다.
 - `TaskEvent`와 `ExecutionEvent`: 전자는 중앙이 Task 단위로 남기는 추가 전용 기록(상태 변화·준비 판정), 후자는 실행 주체(연결 프로그램·진단 API)가 `seq` 로 보내는 실행 이벤트다. `task_events` 에 실행 시각을 다시 쓰지 않는다.
 - `folder_commit`과 `base_commit`: 전자는 러너 등록 폴더의 실행 시작 시점 HEAD(에이전트 설정 버전), 후자는 실행 target 이 고정한 작업 기준 커밋이다.
+- 워크스페이스 로그인(selfhost `POST /login`)과 운영자 로그인(demo `POST /operator/login`): 둘 다 `OPERATOR_TOKEN` 을 받지만, 전자는 고정 워크스페이스 쿠키를 새로 발급하고, 후자는 이미 발급된 익명 세션 쿠키에 운영자 표시만 붙인다. 한 모드에서는 한쪽만 열린다.

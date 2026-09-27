@@ -57,3 +57,67 @@ def test_module_import_creates_app_when_not_skipped(monkeypatch, tmp_path):
     finally:
         monkeypatch.setenv("WORKFLOW_SKIP_APP", "1")
         importlib.reload(app_module)
+
+
+def test_selfhost_without_diag_token_starts(settings):
+    """phase 10 — 진단 토큰 없이도 앱이 만들어지고 스키마를 연다."""
+    from dataclasses import replace
+
+    app = create_app(replace(settings, mode="selfhost", diag_api_token=""))
+    assert isinstance(app, FastAPI)
+    assert settings.db_path.exists()
+
+
+# --- GET /healthz (phase 10 step 5) ------------------------------------------------------------
+
+
+def test_healthz_reports_schema_version_and_mode_without_auth(settings):
+    """인증 없이 200. 비밀값·경로를 싣지 않는다 (ARCHITECTURE "헬스 확인")."""
+    from fastapi.testclient import TestClient
+
+    res = TestClient(create_app(settings)).get("/healthz")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok", "mode": "demo", "schema_version": SCHEMA_VERSION}
+    for secret in (settings.session_secret, settings.operator_token, settings.diag_api_token):
+        assert secret not in res.text
+    assert str(settings.db_path) not in res.text
+    assert "set-cookie" not in res.headers  # demo 에서도 익명 세션을 만들지 않는다
+
+
+def test_healthz_is_public_in_selfhost_mode(settings):
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(replace(settings, mode="selfhost")), follow_redirects=False)
+    res = client.get("/healthz")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ok", "mode": "selfhost", "schema_version": SCHEMA_VERSION}
+
+
+def test_healthz_errors_without_details_when_db_is_missing(settings):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(settings))
+    settings.db_path.unlink()
+    for suffix in ("-wal", "-shm"):
+        settings.db_path.with_name(settings.db_path.name + suffix).unlink(missing_ok=True)
+    res = client.get("/healthz")
+    assert res.status_code == 503
+    assert res.json() == {"status": "error", "mode": "demo"}
+    assert not settings.db_path.exists()  # 확인만 한다 — 빈 DB 를 만들지 않는다
+
+
+def test_healthz_errors_on_unexpected_schema_version(settings):
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(settings))
+    conn = connect(settings.db_path)
+    try:
+        conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION + 1,))
+    finally:
+        conn.close()
+    res = client.get("/healthz")
+    assert res.status_code == 503
+    assert res.json() == {"status": "error", "mode": "demo"}
+    assert str(settings.db_path) not in res.text

@@ -2,7 +2,7 @@
 
 갱신일: 2026-09-27. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 실제 OpenArchive 기준선 가져오기(사용자 지시 후) → `10-selfhost`
+## 다음 작업: 실제 OpenArchive 기준선 가져오기(사용자 지시 후) → `11-real-repo`
 
 [MVP 계획](product/MVP_PLAN.md)이 최신 기준이다(2026-09-25~26 사용자 합의). 목표: **2026-10-02 까지 Runloom 단독으로 OpenArchive(`jeongeundev/OpenArchive`) 실제 이슈를 순환 처리하고, 셀프호스트로 배포하며, 도입 전후를 지표로 보여준다.**
 
@@ -11,7 +11,7 @@
 다음 순서:
 1. `feat-9-measure` → `service` `--no-ff` 병합(사용자 지시 때).
 2. 실제 OpenArchive 기준선 가져오기 — **사용자 지시 후에만**. 토큰에 Issues·Pull requests 읽기 권한이 필요하다([GitHub 런북](github/README.md) 1절). 도입 전 경계는 소스 연결 시각(`github_sources.created_at`)이다.
-3. `10-selfhost`(한 명령 설치·데이터 보존·새 ADR) → `11-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). `11-real-repo` 에 넣을 것(2026-09-27 확인·합의): 새 업무의 기준 커밋은 러너 `register` 때 읽은 HEAD(`connector/cli.py:124` → `agents.base_commit`)로 고정돼, 등록 뒤 생긴 커밋(직접 작업·병합·pull)을 따라가지 않는다(`server/worker.py:1203`). 러너가 현재 HEAD 를 중앙에 다시 보고해 그 값을 기준으로 쓰게 고친다.
+3. `10-selfhost` 는 2026-09-27 step 0~8 완료(`feat-10-selfhost`, `service` 병합 전 — 사용자 지시 때 `--no-ff`). 한 명령 설치(`deploy/selfhost/install.sh`)·고정 워크스페이스 로그인(`WORKFLOW_MODE=selfhost`)·백업 CLI·러너 launchd, [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)·[SELFHOST](SELFHOST.md). 실제 Docker 로 설치·재시작 보존·백업 복원 확인([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-27 phase 10 절). 러너 launchd 실제 적재는 미확인. 다음은 `11-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). `11-real-repo` 에 넣을 것(2026-09-27 확인·합의): 새 업무의 기준 커밋은 러너 `register` 때 읽은 HEAD(`connector/cli.py:124` → `agents.base_commit`)로 고정돼, 등록 뒤 생긴 커밋(직접 작업·병합·pull)을 따라가지 않는다(`server/worker.py:1203`). 러너가 현재 HEAD 를 중앙에 다시 보고해 그 값을 기준으로 쓰게 고친다.
 
 phase 9 e2e 에서 발견한 결함 — 수정됨(step 13): 재작업 상한 1 에서 수정 요청 검토가 재작업을 시작시킨 뒤, 재작업 결과가 판정되기 전 tick 이 같은 검토를 다시 평가하면 `domain/task_followup.py` `_after_review` 가 `rounds_used(1) >= 상한(1)` 으로 `rework_limit_reached` 사람 요청을 하나 더 만들던 문제. 이제 그 검토가 이미 재작업(`rework:{검토 실행}`, 워커가 수정 Task 실행의 `start_key` 로 `handled_cause_keys` 에 넣음)을 일으켰으면 상한 판단 전에 `none`("이미 재작업을 시작한 검토") 을 낸다. 회귀: `tests/workflow/domain/test_task_followup.py`·`tests/workflow/server/test_task_cycle.py`, e2e `tests/e2e/test_metrics.py` 는 사람 요청 0·개입 1 로 단정.
 
@@ -22,9 +22,9 @@ phase 9 e2e 에서 발견한 결함 — 수정됨(step 13): 재작업 상한 1 �
 | 항목 | 상태 |
 |---|---|
 | 브랜치 | `service` 가 실서비스 통합 브랜치. phase 6·7·8 과 문서 정리 포함. 새 phase 는 `service` 에서 `feat-*` 로 분기하고 끝나면 `--no-ff` 병합. 원격 푸시는 사용자 지시 때만 |
-| 완료 phase | 0-mvp, 1-diag-fix, 2-model-compare, 5-scripted-demo(공모전 데모), 6-typed-handoff([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)), 7-n8n-gateway([ADR-0010](adr/0010-n8n-inbox-and-callback.md)), 8-github-task-cycle([ADR-0014](adr/0014-github-task-cycle.md)), 9-measure([ADR-0015](adr/0015-measurement-events-and-baseline.md), `feat-9-measure` — `service` 병합 전). 4-claude-issues 는 step 3 에서 종료 |
+| 완료 phase | 0-mvp, 1-diag-fix, 2-model-compare, 5-scripted-demo(공모전 데모), 6-typed-handoff([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)), 7-n8n-gateway([ADR-0010](adr/0010-n8n-inbox-and-callback.md)), 8-github-task-cycle([ADR-0014](adr/0014-github-task-cycle.md)), 9-measure([ADR-0015](adr/0015-measurement-events-and-baseline.md), `feat-9-measure` — `service` 병합 전), 10-selfhost([ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md), `feat-10-selfhost` — `service` 병합 전). 4-claude-issues 는 step 3 에서 종료 |
 | 계획만 | `3-limit-wait`([ADR-0007](adr/0007-usage-limit-wait-policy.md), 사용량 한도 대기). 실사용에서 한도에 걸리는 빈도를 보고 당긴다 |
-| 검증 | phase 9 기준(2026-09-27) `python3 -m pytest -q` 2337 passed/53 skipped, `ruff` 통과, `WORKFLOW_E2E=1` e2e 53 passed(측정 e2e 4 포함, 대역) |
+| 검증 | phase 10 기준(2026-09-27) `python3 -m pytest -q` 2464 passed/55 skipped, `ruff` 통과, `WORKFLOW_E2E=1` e2e 54 passed/1 skipped, `WORKFLOW_DOCKER=1` 셀프호스트 e2e 1 passed(실제 Docker) |
 | 실연동 | 2026-09-23 실제 GitHub·실제 Claude 로 `bug_fix` → `code_review` 1회 통과([VERIFICATION_LOG](VERIFICATION_LOG.md)). `changes_requested` 재작업은 실연동 미관찰. 측정·기준선은 실연동 없음(대역만) |
 | 사용자 결정 대기 | 실연동 자원 정리(`jeongeundev/runloom-live-test`, `../runloom-live-test`, `../runloom-live-state/`, `~/.runloom-live.env`), 워커 httpx 로그의 callback URL `signature` 노출 처리 |
 

@@ -1,0 +1,21 @@
+# 셀프호스트 이미지 빌드 컨텍스트 (deploy/selfhost/Dockerfile). 이미지에는 pyproject.toml 과 src/ 만 들어간다.
+.git
+data/
+phases/
+docs/
+tests/
+scripts/
+deploy/
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.venv
+node_modules
+.claude

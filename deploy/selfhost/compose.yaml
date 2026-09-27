@@ -1,0 +1,43 @@
+# 셀프호스트 중앙 (ADR-0016, ARCHITECTURE "셀프호스트 — phase 10").
+# central(웹/API)·worker 두 서비스가 named volume workflow-data 하나를 /data 에 붙인다.
+# 포트는 호스트 127.0.0.1 에만 연다. 비밀값은 .env(0600, install.sh 가 생성)에서 env_file 로 받는다.
+
+x-workflow: &workflow
+  build:
+    context: ../..
+    dockerfile: deploy/selfhost/Dockerfile
+  image: workflow-selfhost:local
+  env_file: .env
+  # .env 로 바꾸지 않는 고정값
+  environment:
+    WORKFLOW_MODE: selfhost
+    WORKFLOW_DB_PATH: /data/central.sqlite
+    WORKFLOW_ARTIFACT_DIR: /data/artifacts
+    WORKFLOW_BACKUP_DIR: /data/backups
+  volumes:
+    - workflow-data:/data
+  restart: unless-stopped
+
+services:
+  central:
+    <<: *workflow
+    command: ["uvicorn", "workflow.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:${WORKFLOW_PORT:-8000}:8000"
+    healthcheck:
+      # slim 이미지에 curl 이 없다. 503 이면 urlopen 이 예외 → 비정상
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    <<: *workflow
+    command: ["python3", "-m", "workflow.server.worker"]
+    depends_on:
+      central:
+        condition: service_healthy
+
+volumes:
+  workflow-data:

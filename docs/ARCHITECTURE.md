@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
+갱신일: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -353,6 +353,127 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 | Claude(`claude -p --output-format json`) | `connector/claude.py` 모듈 설명(2026-09-20 `claude 2.1.278` 1회 실행으로 결과 키 확인 — `usage` 포함), `tests/workflow/connector/test_claude.py` fixture(`"total_cost_usd": 0.01`, `"usage": {"input_tokens": 429, "output_tokens": 67}`) | `total_cost_usd` → `cost_usd`, `usage.input_tokens` → `input_tokens`, `usage.output_tokens` → `output_tokens` | `ClaudeResult` 가 지금은 읽지 않는다(`extra="ignore"`). 값이 없거나 숫자가 아니면 그 칸만 null. `usage.input_tokens` 는 CLI 가 보고한 값 그대로(캐시 생성·읽기 토큰은 별도 키라 더하지 않는다). 시간 초과·결과 JSON 없음이면 `usage` 전체 null. `total_cost_usd` 는 CLI 계산값이며 구독 사용 시 실제 청구액이 아니다 |
 | Codex(`codex exec --json`) | `connector/codex.py` 는 `--output-last-message` 파일만 읽고 stdout JSONL 은 원시 로그(`codex_jsonl`)로만 둔다. `tests/workflow/connector/test_codex.py` fixture 의 `turn.completed` 에는 `usage` 가 없다. 실제 실행으로 토큰 키를 확인한 기록이 없다 | 확인 못 함. 후보: `turn.completed` 의 `usage.input_tokens`·`usage.output_tokens` | step 2 는 stdout JSONL 에 `turn.completed.usage` 가 정수로 있으면 턴별 합, 없거나 형식이 다르면 null. 비용은 보고하지 않으므로 항상 null. 실제 키 확인은 실연동 때 VERIFICATION_LOG 에 남긴다 |
 | 대본 에이전트(`scripted/`)·`EchoAdapter` | — | — | 보내지 않음(null) |
+
+## 셀프호스트 — phase 10
+
+상태(2026-09-27 step 0): 설계만 고정, 구현 없음. [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)을 따른다. 기본값·step 목록은 [phase 10 README](../phases/10-selfhost/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0016·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 공개 데모 구성(아래 "배포와 실행 예산", [DEPLOY](DEPLOY.md))은 바뀌지 않는다.
+
+### 구성
+
+```
+호스트 Mac
+├─ Docker (compose 프로젝트, deploy/selfhost/compose.yaml)
+│   ├─ central  : uvicorn workflow.server.app:app --host 0.0.0.0 --port 8000
+│   │             ports "127.0.0.1:${WORKFLOW_PORT:-8000}:8000"
+│   ├─ worker   : python3 -m workflow.server.worker
+│   └─ volume workflow-data → 두 서비스 모두 /data
+│         /data/central.sqlite (WAL) · /data/artifacts/ · /data/backups/
+└─ 네이티브
+    ├─ 브라우저 → http://127.0.0.1:<포트>  (/login)
+    └─ launchd 러너: python3 -m workflow.connector run
+          → http://127.0.0.1:<포트> (/connector/*, Bearer wfc_…)
+          → claude / codex (호스트 로그인), 등록 작업 폴더
+```
+
+- 이미지: `deploy/selfhost/Dockerfile` 하나(저장소 루트에는 두지 않는다), 빌드 컨텍스트는 저장소 루트. `python:3.13-slim`, 비 root 사용자 `workflow`(uid 1000, `/data` 소유), `pyproject.toml`·`src/` 만 복사해 `pip install --no-cache-dir`(dev 의존성 없음). compose 는 두 서비스에 같은 `build`·`image: workflow-selfhost:local` 을 준다. central `healthcheck` 는 이미지 안 `python3` 의 `urllib` 로 `/healthz` 를 부르고(slim 에 curl 없음), worker 는 `depends_on: central: service_healthy`(step 5). `central`·`worker` 가 같은 이미지를 명령만 달리 쓴다. 이미지 안에 비밀값을 넣지 않는다 — `.env` 는 compose `env_file` 로 실행 때 주입, 저장소 루트 `.dockerignore` 가 `.env`·`data/`·`.git` 을 뺀다(step 5).
+- 컨테이너 환경변수 고정값(compose `environment`): `WORKFLOW_MODE=selfhost`, `WORKFLOW_DB_PATH=/data/central.sqlite`, `WORKFLOW_ARTIFACT_DIR=/data/artifacts`, `WORKFLOW_BACKUP_DIR=/data/backups`.
+- `deploy/selfhost/.env`(0600, git 에 넣지 않음, `install.sh` 가 생성): `SESSION_SECRET`·`OPERATOR_TOKEN`(생성), `WORKFLOW_PORT`(기본 8000), 선택 `WORKFLOW_PUBLIC_URL`·`WORKFLOW_CALLBACK_HOSTS`·`WORKFLOW_GITHUB_TOKEN`·`WORKFLOW_GITHUB_REPOS`·`DIAG_API_TOKEN`·`DIAG_API_URL`. 키 목록 원본은 `deploy/selfhost/.env.example` 이고, `settings.ENV_KEYS` 에서 compose 고정값(`WORKFLOW_MODE`·`WORKFLOW_DB_PATH`·`WORKFLOW_ARTIFACT_DIR`)을 빼고 `WORKFLOW_PORT` 를 더한 것과 같은지 `tests/test_selfhost_files.py` 가 본다(step 5). 빈 칸은 코드 기본값(상한 `settings.Limits`)이다.
+- compose 에 진단 API·진단 워커·Caddy·대본 에이전트(`deploy/bin`)는 없다. 재시작 정책은 `restart: unless-stopped`.
+
+### 모드 — `WORKFLOW_MODE` (step 1·2·3)
+
+`Settings.mode` 는 `"demo"`(미설정 기본) 또는 `"selfhost"`. 그 밖의 값은 `load_settings` 가 `ValueError`.
+
+| 항목 | demo (기본, 공개 데모) | selfhost |
+|---|---|---|
+| 세션 생성 | 첫 방문에 익명 세션을 만들고 서명 쿠키 발급(`require_session`) | 만들지 않는다. 워크스페이스는 첫 로그인 때 한 번 만든 고정 워크스페이스뿐 |
+| 로그인 | 없음. `/operator` 에서 `OPERATOR_TOKEN` 입력(`POST /operator/login`) → 그 쿠키 세션에 `is_operator=1` | `GET /login` 화면, `POST /login`(폼 `token`) → 고정 워크스페이스 쿠키. `POST /operator/login` 은 `POST /login` 과 같은 동작(step 2) |
+| 운영자 판정 | 쿠키 세션의 `is_operator` | 로그인 = 운영자(고정 워크스페이스는 `is_operator=1`). `require_operator` 규칙은 같다 |
+| 미인증 | 해당 없음(세션 자동 발급). 운영자 전용은 403 | 화면 → `/login` 303, JSON API → 401 `unauthenticated` |
+| 로그아웃 | 없음(`/login`·`/logout` 은 404) | `POST /logout` → 쿠키 삭제, `/login` 303. DB 는 건드리지 않는다 |
+| `/` 랜딩 | 공개 랜딩(`landing.html`) | 로그인 상태면 `/tasks`, 아니면 `/login` 으로 303 |
+| 진단 | `DIAG_API_TOKEN` 필수, 진단 API 호출 | `DIAG_API_TOKEN` 선택(`WORKFLOW_DEV` 도 만들지 않음). 비면 `Settings.diagnosis_enabled=False` — `worker.main` 이 진단 클라이언트 없이(`diag=None`) 워커를 만들어 진단 접수·폴링을 건너뛰고, 진단 실행 요청(`POST /tasks/{id}/run`)은 409 `diagnosis_disabled` "진단 기능이 꺼져 있습니다" 로 거부한다(실행·진단 시작 기록 없음) |
+| 데모 전용 화면 요소 | 그대로(랜딩·"시연용" 표시·데모 후속 등록 칩·fixture 가져오기 등) | 숨긴다(step 3, 템플릿 컨텍스트 `mode` 하나로 분기): 왼쪽 목록 `+`(fixture 가져오기 → 직접 등록 `/tasks/new`)·"세션 · 익명, 14일 보존"(→ "셀프호스트 워크스페이스" + 로그아웃 버튼), 홈 `업무 가져오기` 버튼·GitHub·Jira 가져오기 안내, 업무 상세 `후속 업무 B 등록` 칩(데모 예시 미리 채움), 업무 등록 `run_id (진단 업무)` 칸·범위 예시(daily-report·demo-report-repo), 운영자 `진단 사용량`(데모 예산)·"데모 저장소" 병합 안내, 입구 요청 예시(진단→수정 시연 데이터 → 수정 항목 하나). 진단 데모는 compose 에 없으므로 진단 입력은 토큰 유무와 상관없이 selfhost 에서 숨긴다. "시연용 · 대본 재생"·"시연 데이터" 표시는 데이터(`demo_scripted`·fixture 출처)가 정하는 사실 표시라 그대로 둔다 |
+| 러너·n8n·`/healthz` | 연결 토큰 `wfc_`·입구 토큰 `wfs_`·공개 | 같다 |
+
+분기는 인증(`server/auth.py`)·화면 노출(템플릿 컨텍스트)·진단 켜짐(`settings`·`worker.main`)에만 둔다. 업무·실행·후속 규칙 코드에 모드 분기를 두지 않는다.
+
+### 고정 워크스페이스와 워크스페이스 로그인 (step 2)
+
+- 식별: 세션 id 고정값 `SELFHOST_SESSION_ID = "sess-selfhost"`(`server/auth.py`). `sessions` 테이블에 이 id 행 하나다. 스키마는 바꾸지 않는다.
+- 생성: 첫 `POST /login` 성공 때 행이 없으면 `repo.create_session`(내장 종류·규칙 seed) + `repo.mark_operator` 를 한 번 한다. 이후 로그인은 같은 행을 재사용한다(멱등). 로그인 전에는 행을 만들지 않는다.
+- 쿠키: 이름은 기존 `wf_session`, 값은 `sign_session("sess-selfhost", SESSION_SECRET)`. HttpOnly, SameSite=Lax, 유효기간 `session_cookie_days`(14일). 127.0.0.1 http 이므로 `Secure` 는 붙이지 않는다. `SESSION_SECRET` 을 바꾸면 모든 로그인이 풀린다.
+- 인증: selfhost 의 세션 의존성은 쿠키 서명이 맞고 id 가 `sess-selfhost` 이며 그 행이 있을 때만 통과한다. 다른 id(예: demo DB 에서 가져온 익명 세션 쿠키)는 미인증이다.
+- 토큰 비교는 `hmac.compare_digest`. 실패는 로그인 화면을 403 으로 다시 보여주고("토큰이 올바르지 않습니다"), 로그에는 실패 사실만 남긴다 — 입력한 토큰 값·길이를 로그·응답·템플릿에 넣지 않는다.
+- 시도 제한(step 2 구현): 프로세스 메모리 카운터 `auth.LoginThrottle`(`app.state.login_throttle`). 최근 `LOGIN_FAILURE_WINDOW_SECONDS`(60초) 안 실패가 `LOGIN_MAX_FAILURES`(5회)에 닿으면 창이 지날 때까지 맞는 토큰도 로그인 화면 429("잠시 후 다시 시도하세요"). 성공하면 카운터를 비운다. 재시작하면 초기화된다(127.0.0.1 전용이라 충분).
+- 구현(step 2): `auth.workspace_session`(로그인 판정)·`auth.ensure_workspace`(행 1회 생성)·`require_session`(selfhost 미로그인 → `HTTPException` 303 `Location: /login`)·`require_operator`(selfhost 미로그인 → 401). 화면 라우트는 `require_session`, JSON API 는 `require_operator` 를 쓰므로 화면 303·API 401 이 의존성으로 갈린다. `GET /login` 은 최소 화면(`login.html`)이고 step 3 이 다듬는다.
+- CSRF: 로그인·로그아웃은 폼 POST, 쿠키 SameSite=Lax 에 기댄다(기존 운영자 폼과 같음).
+
+### 헬스 확인 — `GET /healthz` (step 5)
+
+인증 없음, 두 모드 모두. DB 에 연결해 `schema_version` 을 읽는다.
+
+- 정상: 200 `{"status": "ok", "mode": "selfhost", "schema_version": 6}`
+- DB 를 열 수 없거나 읽기 실패, `schema_version` 이 코드의 `SCHEMA_VERSION` 과 다름: 503 `{"status": "error", "mode": "selfhost"}` — 예외 메시지·경로를 싣지 않는다.
+- 구현(step 5): `app._healthz` 가 DB 를 읽기 전용 URI(`mode=ro`)로 연다 — 파일이 없어도 빈 DB 를 만들지 않는다. demo 에서도 세션 쿠키를 발급하지 않는다.
+
+compose `healthcheck` 와 `install.sh` 가 이것을 본다. 워커 상태는 싣지 않는다(워커는 별도 컨테이너, 상태는 `docker compose ps`).
+
+### 백업·복원 CLI — `python3 -m workflow.server.backup` (step 4)
+
+`WORKFLOW_DB_PATH`·`WORKFLOW_ARTIFACT_DIR`·`WORKFLOW_BACKUP_DIR`(기본 `data/backups`, 컨테이너 `/data/backups`)를 환경변수에서 읽는다. 비밀값을 요구하지 않는다(`load_settings` 를 거치지 않는다).
+
+| 명령 | 동작 |
+|---|---|
+| `create [--dest DIR] [--keep N]` | 이름 = UTC 시각 `YYYYMMDDTHHMMSSZ`. `{백업}/{이름}/central.sqlite`(SQLite 온라인 백업 API — 서버·워커가 돌아도 안전, 복사본은 `journal_mode=DELETE` 단일 파일)와 `{백업}/{이름}/artifacts.tar.gz`(최상위 `artifacts/`). 숨은 임시 디렉터리에서 만들고 복사본 `PRAGMA integrity_check` 가 `ok` 일 때만 이름을 붙인다. `--dest` 는 백업 디렉터리를 바꾸고, `--keep N` 은 최근 N 개(복원 전 백업 포함)만 남기고 오래된 것부터 지운다. 마지막 줄에 이름 출력. DB 가 없으면 종료 코드 1 |
+| `list` | 새것부터 한 줄에 하나: `이름<TAB>시각(ISO UTC)<TAB>크기(바이트)<TAB>schema N` |
+| `restore <이름> [--force]` | central·worker 를 멈춘 뒤 실행한다(도움말에도 적음). 먼저 대상 백업을 검사한다(DB `integrity_check`, tar 읽기 — 손상이면 종료 코드 1, 아무것도 바꾸지 않음). 대상 DB 가 있으면 `--force` 없이 거부(종료 코드 1). `--force` 면 현재 DB·산출물을 `{백업}/pre-restore-{시각}/` 로 먼저 백업하고(`list`·`restore` 대상), 남은 `-wal`·`-shm` 을 지운 뒤 DB·산출물을 바꾸고 `init_schema` 가 통과하는지 확인한다. 없는 이름(이름 규칙 밖 포함)이면 종료 코드 2, 아무것도 바꾸지 않는다 |
+
+compose 에서는 `docker compose exec central python3 -m workflow.server.backup create`, 복원은 `docker compose stop central worker` → `docker compose run --rm central python3 -m workflow.server.backup restore <이름>` → `docker compose up -d`. 백업을 호스트로 꺼내는 방법은 `docker compose cp`(step 7 문서). `.env`·연결 토큰 파일은 백업하지 않는다.
+
+### SQLite 두 프로세스와 named volume
+
+`central`·`worker` 두 컨테이너가 같은 `/data/central.sqlite` 를 연다(`adapters/db.connect` — WAL, `busy_timeout` 5초). 조건:
+
+- 두 컨테이너가 **같은 Docker 호스트(같은 Linux 커널)** 에서 **같은 named volume** 을 쓴다. Docker Desktop 에서는 named volume 이 Linux VM 안의 로컬 파일시스템이라 WAL 의 `-shm` 공유 메모리(mmap)와 POSIX 파일 잠금이 한 커널 안에서 맞게 동작한다 — 두 프로세스가 한 머신에서 도는 공개 데모 VM 과 같은 조건이다.
+- 네트워크 파일시스템·원격 볼륨 드라이버를 쓰지 않는다. 컨테이너를 여러 호스트에 나누지 않는다.
+- 파일 복사로 백업하지 않는다(WAL 미반영 위험). 백업 CLI 가 온라인 백업 API 를 쓴다.
+
+Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Desktop 의 파일 공유 계층(virtiofs·gRPC FUSE)을 거친다. 이 계층은 컨테이너 사이 mmap 공유 메모리와 잠금의 일관성을 보장하지 않아 WAL 이 깨질 수 있고, 쓰기 성능도 떨어진다. 호스트에서 파일이 필요하면 백업 CLI + `docker compose cp` 로 꺼낸다.
+
+### 러너 붙이기 — compose 밖 (step 6)
+
+아래 순서로 붙인다. 러너 코드·계약은 바꾸지 않는다. `deploy/selfhost/install-runner.sh`(step 6)는 패키지 설치·plist·launchd 적재만 하고, 2·3 의 명령은 사용자가 치도록 출력만 한다 — 스크립트는 연결 코드·토큰을 다루지 않는다.
+
+1. 사용자가 브라우저에서 로그인 → `/operator` 에서 연결 코드 발급(1회용·10분).
+2. `python3 -m workflow.connector connect --server http://127.0.0.1:<포트> --code <코드>` — 연결 토큰을 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다(기존 `connector_paths`).
+3. `python3 -m workflow.connector register --id … --repo … --repository-id … --tool claude|codex [--verify NAME=COMMAND]` — 폴더 + 도구 로컬 등록.
+4. launchd: `~/Library/LaunchAgents/com.workflow.selfhost.connector.plist`(`KeepAlive`, `<python 절대 경로> -m workflow.connector run`, `WorkingDirectory`=저장소, 로그 `~/Library/Logs/workflow-connector-selfhost/`). 공개 데모용 `deploy/launchd/com.workflow.connector.plist` 와 라벨이 달라 한 Mac 에 같이 있어도 겹치지 않는다(단 연결 토큰 파일 위치는 같다 — 두 러너를 동시에 쓰려면 한쪽에 `WORKFLOW_CONNECTOR_HOME`). plist 에 토큰·API 키를 넣지 않는다.
+
+`install-runner.sh`(step 6 구현): `python3 -m pip install -e <저장소>`(`SKIP_PIP_INSTALL=1` 로 건너뜀) → python 은 `sys.executable` 로 실제 인터프리터 경로를 적고(pyenv shim 회피), plist `PATH` 는 python·`claude`·`codex` 위치 + `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin` → plist 는 `plistlib` 로 쓴다(홈은 실제 값) → 연결 토큰 파일(`WORKFLOW_CONNECTOR_HOME` 또는 기본 위치의 `token.json`)이 **있을 때만** `launchctl bootout`(있으면) + `bootstrap gui/<uid>` 한다. 없으면 적재하지 않고 connect 뒤 다시 실행하라고 안내한다(토큰 없이 KeepAlive 가 재시작을 반복하지 않게). 서버 주소는 `http://127.0.0.1:${WORKFLOW_PORT}`(환경변수 > `deploy/selfhost/.env` > 8000). macOS 전용, `--help`·`DRY_RUN=1`(할 일과 plist 내용만 출력).
+
+### 설치 스크립트 — `deploy/selfhost/install.sh` (step 6)
+
+멱등. `docker`·`docker compose` 가 없으면 설치 안내 후 종료 1. `deploy/selfhost/.env` 가 없을 때만 `.env.example` 을 복사하고 `SESSION_SECRET`·`OPERATOR_TOKEN` 을 `openssl rand -hex 32`(없으면 python `secrets`)로 채워 0600 으로 만든다 — 있으면 건드리지 않는다. 이어서 `docker compose -p ${RUNLOOM_PROJECT:-runloom} -f deploy/selfhost/compose.yaml up -d --build`(재실행 = 재빌드·재기동 = 업그레이드, 볼륨은 `down -v` 하지 않으므로 유지) → `curl http://127.0.0.1:<포트>/healthz` 가 `"status":"ok"` 일 때까지 1초 간격으로 `HEALTH_TIMEOUT`(기본 120)초 대기, 넘기면 `logs central worker` 명령을 안내하고 종료 1. 포트는 환경변수 `WORKFLOW_PORT` > `.env` 의 값 > 8000(compose 치환 규칙과 같다). 끝나면 접속 주소(`/login`)·로그인 토큰이 있는 **파일 위치**(값은 출력하지 않는다)·다음 할 일(로그인 → 연결 코드 → `install-runner.sh`)을 출력한다. `--help`·`DRY_RUN=1`(할 일만 출력, `.env`·컨테이너 변경 없음). compose 프로젝트 이름이 `runloom` 이므로 볼륨 실제 이름은 `runloom_workflow-data` 다.
+
+러너는 `127.0.0.1` 로 붙으므로 compose 포트는 호스트 루프백에만 열어도 된다.
+
+### 이름 고정
+
+| 대상 | 이름 |
+|---|---|
+| 모드 환경변수 | `WORKFLOW_MODE` = `demo` \| `selfhost` (미설정 = `demo`), `Settings.mode` |
+| 포트 환경변수 | `WORKFLOW_PORT`(compose 치환 전용, 기본 8000). 컨테이너 안은 항상 8000 |
+| compose 프로젝트 이름 | `RUNLOOM_PROJECT`(install.sh 전용, 기본 `runloom` → 볼륨 `runloom_workflow-data`) |
+| 백업 경로 환경변수 | `WORKFLOW_BACKUP_DIR` |
+| 파일 | `deploy/selfhost/compose.yaml`, `deploy/selfhost/Dockerfile`, `deploy/selfhost/install.sh`, `deploy/selfhost/install-runner.sh`, `deploy/selfhost/.env.example`, 생성물 `deploy/selfhost/.env`(0600), 저장소 루트 `.dockerignore` |
+| compose 서비스·볼륨 | `central`, `worker`, volume `workflow-data` |
+| 컨테이너 데이터 경로 | `/data/central.sqlite`, `/data/artifacts`, `/data/backups` |
+| 고정 워크스페이스 | `SELFHOST_SESSION_ID = "sess-selfhost"` |
+| 경로 | `GET /login`·`POST /login`·`POST /logout`·`GET /healthz` |
+| 백업 CLI | `python3 -m workflow.server.backup create` · `list` · `restore <이름>` |
+| launchd 라벨 | `com.workflow.selfhost.connector` |
+| 문서 | `docs/SELFHOST.md`(step 7) |
 
 ## 기존 구현과 초기 설계 기록
 

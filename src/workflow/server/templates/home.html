@@ -1,5 +1,5 @@
 {# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 세션이 등록한 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록과 다음 행동 버튼.
-   랜딩은 landing.html. 등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `업무 가져오기` 는 비활성이다 (phase 5 step 2·5·6). #}
+   랜딩은 landing.html. selfhost 는 fixture `업무 가져오기` 를 숨긴다. 등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `업무 가져오기` 는 비활성이다 (phase 5 step 2·5·6). #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}업무 — Runloom{% endblock %}
@@ -39,7 +39,8 @@
 
 <div class="section-head"><h2>업무</h2></div>
 <div class="actions" style="margin-bottom:12px">
-  {% if agents %}
+  {% if mode == 'selfhost' %}
+  {% elif agents %}
   <a class="btn" href="/tasks/import">업무 가져오기</a>
   {% else %}
   <button class="btn" type="button" disabled>업무 가져오기</button>
@@ -59,7 +60,7 @@
 {% else %}
 <div class="empty" style="padding-top:0">
   <p>아직 업무가 없습니다.</p>
-  <p class="small" style="margin-top:8px">GitHub·Jira 이슈를 가져오면 순서와 담당 에이전트가 자동으로 구성됩니다.</p>
+  {% if mode != 'selfhost' %}<p class="small" style="margin-top:8px">GitHub·Jira 이슈를 가져오면 순서와 담당 에이전트가 자동으로 구성됩니다.</p>{% endif %}
 </div>
 {% endif %}
 {% endblock %}

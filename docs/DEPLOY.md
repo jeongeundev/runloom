@@ -1,5 +1,7 @@
 # 배포 런북 — VM 한 대, 대본 에이전트 (공개 데모)
 
+> 공개 데모 VM 런북 — 셀프호스트는 [SELFHOST.md](SELFHOST.md)
+
 갱신일: 2026-09-22 (phase 7-n8n-gateway docs-sync — 3절 n8n 환경변수 2개, 7b·10 에 스키마 버전 4 와 공개 데모 callback 없음 반영)
 상태: [ADR-0008](adr/0008-public-demo-scripted-agents.md)의 공개 데모 구성을 올리는 절차. [ADR-0006](adr/0006-deployment-vm-caddy-mac-connector.md)의 VM + Caddy 는 그대로이고, 운영자 Mac 의 연결 프로그램 대신 **같은 VM 의 systemd 유닛**이 대본 에이전트(`workflow.scripted.*`)를 돌린다. 실제 Codex/Claude·OpenAI 키는 이 VM 에 없다. 설정 파일은 `deploy/` 에 있고 `tests/test_deploy_files.py` 가 AGENTS.md 명령어·settings 환경변수·seed 인자·아래 명령과의 일치를 검사한다. `{domain}`·`{vm-ip}` 는 사용자가 정한 값으로 바꾼다. 이 문서를 만든 세션은 VM 에 접속하지 않았다.
 

@@ -204,6 +204,11 @@ def test_env_examples_point_at_architecture_paths():
     assert diag["DIAG_BUDGET_USD"] == "30"
 
 
+def test_central_env_example_keeps_demo_mode():
+    """phase 10 — 공개 데모 VM 은 WORKFLOW_MODE 를 비워 기본(demo)으로 돈다."""
+    assert _env_example("central.env.example")["WORKFLOW_MODE"] == ""
+
+
 def test_env_examples_run_the_public_demo_on_scripted_diagnosis():
     """공개 데모는 대본 진단(fake) — 비용 0 이라 한도를 올린다 (phase 5 step 7). 코드 기본값(Limits)은 그대로."""
     central = _env_example("central.env.example")

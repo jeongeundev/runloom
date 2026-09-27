@@ -1,4 +1,5 @@
-{# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무 · 세션. 상태 점은 _status.html 규칙. #}
+{# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무 · 세션. 상태 점은 _status.html 규칙.
+   selfhost(ADR-0016): `+` 는 직접 등록(fixture 가져오기 없음), 아래는 워크스페이스 + 로그아웃. #}
 {% import "_status.html" as st %}
 <aside class="sidebar">
   <a class="brand" href="/">Runloom</a>
@@ -11,7 +12,7 @@
     <a href="/operator/github"{% if request.url.path.startswith('/operator/github') %} class="active"{% endif %}>GitHub</a>
     <a href="/metrics"{% if request.url.path == '/metrics' %} class="active"{% endif %}>지표</a>{% endif %}
   </nav>
-  <div class="side-head"><span>최근</span><a class="plus" href="/tasks/import" title="업무 가져오기" aria-label="업무 가져오기">+</a></div>
+  <div class="side-head"><span>최근</span>{% if mode == 'selfhost' %}<a class="plus" href="/tasks/new" title="업무 등록" aria-label="업무 등록">+</a>{% else %}<a class="plus" href="/tasks/import" title="업무 가져오기" aria-label="업무 가져오기">+</a>{% endif %}</div>
   {% if my_tasks %}
   <ul class="task-list">
     {% for t in my_tasks|reverse %}
@@ -24,5 +25,11 @@
   {% else %}
   <div class="side-empty">아직 업무가 없습니다.</div>
   {% endif %}
+  {% if mode == 'selfhost' %}
+  <div class="side-foot">셀프호스트 워크스페이스
+    <form method="post" action="/logout" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">로그아웃</button></form>
+  </div>
+  {% else %}
   <div class="side-foot">세션 · 익명, 14일 보존</div>
+  {% endif %}
 </aside>

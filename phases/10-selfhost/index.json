@@ -5,47 +5,76 @@
     {
       "step": 0,
       "name": "selfhost-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:23:25+0900",
+      "summary": "ADR-0016 신설(compose central·worker+named volume workflow-data, 127.0.0.1:WORKFLOW_PORT, 러너 launchd 네이티브, WORKFLOW_MODE=demo|selfhost, 고정 워크스페이스 sess-selfhost=첫 POST /login 때 create_session+mark_operator, 진단 선택, 백업 CLI create|list|restore, 빈 DB), ADR-0005·0006 에 '범위: 공개 데모' 한 줄, ARCHITECTURE '셀프호스트 — phase 10' 절(구성도·모드 표·로그인 규칙·/healthz 형식·백업 CLI·WAL/bind mount·러너 붙이기·이름 고정표: deploy/selfhost/{compose.yaml,Dockerfile,install.sh,install-runner.sh,.env.example}, 루트 .dockerignore, launchd 라벨 com.workflow.selfhost.connector, WORKFLOW_BACKUP_DIR), GLOSSARY phase 10 용어. 문서만 변경, pytest 2374 passed/54 skipped, ruff 통과. 다음 step 주의: selfhost 에서 POST /operator/login 은 404·다른 세션 id 쿠키는 미인증, demo 기본 동작·기존 테스트 불변, 진단 꺼짐의 세부(워커 diag 클라이언트 없음·진단 실행 미생성)는 step 1 이 확정해 ARCHITECTURE 모드 표를 갱신",
+      "completed_at": "2026-09-27T09:29:40+0900"
     },
     {
       "step": 1,
       "name": "settings-mode",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:29:40+0900",
+      "summary": "settings.py: Settings.mode(Literal demo|selfhost, WORKFLOW_MODE, 비면 demo·다른 값 ValueError)·ENV_KEYS 에 WORKFLOW_MODE·SELFHOST_OPTIONAL_KEYS=(DIAG_API_TOKEN,)(selfhost 에선 비어도 로드, WORKFLOW_DEV 도 생성 안 함)·Settings.diagnosis_enabled 프로퍼티(토큰 유무); web._start_execution 이 진단 꺼짐이면 kind=diagnosis 실행을 409 diagnosis_disabled '진단 기능이 꺼져 있습니다' 로 거부(실행·진단 시작 기록 없음); worker: diag: DiagClient|None, None 이면 _submit/_poll_diagnoses 건너뜀, main 은 diagnosis_enabled 일 때만 HttpDiagClient; central.env.example 에 WORKFLOW_MODE= 빈 줄; ARCHITECTURE 모드 표 진단 행 확정. 테스트: test_settings 7·test_app 1·test_web 1·test_worker 1·test_deploy_files 1 추가, pytest 2385 passed/54 skipped, ruff 통과. 다음 step 주의: 진단 거부 테스트(test_run_diagnosis_rejected_when_diagnosis_is_off)는 모드 기본(demo)+토큰 빈 Settings 로 쓴다 — 분기는 모드가 아니라 토큰; worker 후속 자동 착수 경로는 진단 종류를 막지 않음(진단은 첫 단계라 해당 없음); Settings 는 dataclasses.replace(settings, mode='selfhost') 로 테스트에서 바꾼다",
+      "completed_at": "2026-09-27T09:34:58+0900"
     },
     {
       "step": 2,
       "name": "workspace-login",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:34:58+0900",
+      "summary": "auth.py: SELFHOST_SESSION_ID='sess-selfhost'·workspace_session·ensure_workspace(create_session+mark_operator 1회)·set_session_cookie·LoginThrottle(60초 안 5회 실패→429, 성공 시 초기화, app.state.login_throttle)·require_session(selfhost 미로그인→HTTPException 303 Location /login, 세션 생성 없음)·require_operator(selfhost 미로그인→401 unauthenticated, 로그인=운영자); web.py: GET/POST /login·POST /logout(demo 404), POST /operator/login 은 selfhost 에서 /login 과 같은 동작(ARCHITECTURE 의 '404' 를 갱신), selfhost '/' → 로그인 상태면 /tasks 아니면 /login, 실패는 logger 에 '로그인 실패'만; 최소 login.html 신설; ARCHITECTURE 셀프호스트 절에 시도 제한 값·구현 이름 기록. 테스트: test_auth 6·test_web 8 추가, pytest 2399 passed/54 skipped, ruff 통과. 다음 step 주의: login.html 은 앱 셸 없는 최소 화면(step 3 이 다듬음), 화면 라우트=require_session(303)·JSON API=require_operator(401)로 갈림, _base 의 is_operator 는 selfhost 에서 항상 True, 라이브 조각 폴링(/tasks/{id}/live)은 로그아웃 뒤 303 → 로그인 화면을 받음",
+      "completed_at": "2026-09-27T09:41:40+0900"
     },
     {
       "step": 3,
       "name": "selfhost-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:41:40+0900",
+      "summary": "web._base·/tasks/{id}/live 컨텍스트에 mode 추가, 템플릿 분기는 mode 하나: login.html 을 card·field·help·alert 로 다듬고 안내 한 줄(.env 의 OPERATOR_TOKEN, 값 없음), _sidebar selfhost 에서 `+`→/tasks/new·하단 '셀프호스트 워크스페이스'+로그아웃 폼(지표·GitHub 링크는 기존 is_operator 로 보임). 숨긴 데모 전용 목록: 사이드바 `+` fixture 가져오기·'세션 · 익명, 14일 보존', 홈 `업무 가져오기` 버튼·GitHub·Jira 안내, _live `후속 업무 B 등록` 칩, task_new `run_id (진단 업무)` 칸·범위 예시, operator `진단 사용량`·'데모 저장소' 안내, sources 진단→수정 요청 예시(selfhost 는 수정 항목 하나). 결정: 진단 입력은 compose 에 진단 데모가 없어 토큰과 무관하게 selfhost 에서 숨김, '시연용 · 대본 재생'·'시연 데이터' 표시는 데이터가 정하는 사실 표시라 유지, /tasks/import 경로 자체는 그대로(링크만 숨김). ARCHITECTURE 모드 표 갱신. 테스트: test_web 4 추가(로그인 화면·내비게이션·selfhost 숨김·demo 유지·비밀값 없음), pytest 2403 passed/54 skipped, ruff 통과. 다음 step 주의: 새 화면 요소를 demo 전용으로 만들면 test_web 의 DEMO_ONLY_* 목록에 추가, 업무 등록 폼 기본 종류는 여전히 operations.diagnose(_EMPTY_FORM)",
+      "completed_at": "2026-09-27T09:48:06+0900"
     },
     {
       "step": 4,
       "name": "backup-cli",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:48:06+0900",
+      "summary": "src/workflow/server/backup.py 신설(python3 -m workflow.server.backup create [--dest DIR] [--keep N]|list|restore <이름> [--force]): 경로는 WORKFLOW_DB_PATH·WORKFLOW_ARTIFACT_DIR·WORKFLOW_BACKUP_DIR(기본 data/backups, load_settings·비밀값 안 거침) env 에서 읽음, create=sqlite3 backup API 복사본(journal_mode=DELETE 단일 파일)+integrity_check 통과 뒤에만 숨은 임시 디렉터리를 {YYYYMMDDTHHMMSSZ} 로 rename, artifacts.tar.gz(최상위 artifacts/), 백업 디렉터리 0700, DB 없으면 종료 1; list=새것부터 '이름\\t시각\\t크기\\tschema N'; restore=백업 검사(DB 무결성·tar 읽기, 손상→1 무변경)→대상 DB 있으면 --force 없이 거부(1)→pre-restore-{시각} 백업→-wal/-shm 삭제·DB 교체·tar filter=data 로 산출물 교체→init_schema 확인, 없는/규칙 밖 이름→2; --keep 은 pre-restore 포함 최근 N 개; 도움말에 'central·worker 를 멈춘 뒤'. ARCHITECTURE 백업 CLI 표를 구현대로 갱신. 테스트 tests/workflow/server/test_backup.py 13개(왕복·다른 위치 복원·WAL 미체크포인트+동시 쓰기·--keep·--dest·--force 거부·복원 전 백업·없는 이름·DB/tar 손상·init_schema·비밀값 미포함·도움말), pytest 2416 passed/54 skipped, ruff 통과. 다음 step 주의: Dockerfile·compose 는 WORKFLOW_BACKUP_DIR=/data/backups 를 넘겨야 기본(data/backups 상대경로)을 벗어남, 같은 초에 create 두 번이면 '이미 있음' 종료 1, 대상 DB 없이 산출물만 있으면 --force 없이도 산출물을 덮어씀",
+      "completed_at": "2026-09-27T09:54:00+0900"
     },
     {
       "step": 5,
       "name": "docker-image",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:54:00+0900",
+      "summary": "GET /healthz(app._healthz, 인증 없음·두 모드, DB 를 읽기 전용 mode=ro 로 열어 schema_version 확인 → 200 {status:ok,mode,schema_version}, DB 없음·버전 불일치 → 503 {status:error,mode}, 빈 DB 생성·쿠키 발급·경로 노출 없음; ARCHITECTURE 대로 mode 포함) + deploy/selfhost/Dockerfile(python:3.13-slim, 비 root workflow uid 1000·/data 소유, pyproject.toml·src 만 COPY 후 pip install --no-cache-dir /build, 비밀 ARG/ENV 없음) + deploy/selfhost/compose.yaml(x-workflow 앵커: 두 서비스 같은 build context ../..·image workflow-selfhost:local·env_file .env·environment 고정 WORKFLOW_MODE=selfhost·/data/central.sqlite·/data/artifacts·/data/backups·volume workflow-data:/data·restart unless-stopped; central 127.0.0.1:${WORKFLOW_PORT:-8000}:8000 + python3 urllib healthcheck, worker depends_on service_healthy) + deploy/selfhost/.env.example(ENV_KEYS−compose 고정 3개+WORKFLOW_PORT=8000, 비밀값 빈 칸, 키마다 설명) + 루트 .dockerignore(.git·data/·phases/·docs/·tests/·scripts/·deploy/·.env*·sqlite·캐시). 포트 변수는 step 지시의 RUNLOOM_PORT 가 아니라 ADR-0016·ARCHITECTURE 가 고정한 WORKFLOW_PORT 를 따름. pyproject dev 에 pyyaml 추가(compose 파싱). ARCHITECTURE 이미지·.env 키 규칙·healthz 구현 갱신. 테스트: test_app 4·tests/test_selfhost_files.py 17(docker compose config 는 임시 디렉터리에 compose+.env 복사해 실제 통과), 로컬 wheel 빌드로 templates·static 포함 확인, pytest 2437 passed/54 skipped, ruff 통과. 다음 step 주의: compose 에 name: 이 없어 기본 프로젝트명=selfhost(볼륨 selfhost_workflow-data) — install.sh 가 -p 를 정하면 문서·step 8 과 맞출 것, env_file .env 가 없으면 compose 가 실패하므로 install.sh 가 먼저 만들어야 함, 이미지 빌드·기동은 아직 검증 안 함(step 8)",
+      "completed_at": "2026-09-27T10:00:21+0900"
     },
     {
       "step": 6,
       "name": "install-script",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T10:00:21+0900",
+      "summary": "deploy/selfhost/install.sh(멱등·set -euo pipefail, chmod +x): docker·docker compose 없으면 안내 후 종료 1, .env 없을 때만 .env.example 복사+SESSION_SECRET·OPERATOR_TOKEN openssl rand -hex 32(없으면 python secrets)·mktemp→0600→mv, 있으면 불변; docker compose -p ${RUNLOOM_PROJECT:-runloom} -f <abs>/compose.yaml up -d --build(down·-v 없음=볼륨 유지) → curl /healthz 에 \"status\":\"ok\" 까지 1초 간격 HEALTH_TIMEOUT(기본 120)초, 넘으면 'logs central worker' 안내·종료 1; 포트=env WORKFLOW_PORT>.env>8000(step 지시의 RUNLOOM_PORT 대신 ADR 고정 WORKFLOW_PORT); 끝에 /login 주소·토큰 파일 위치(값 미출력)·다음 할 일. deploy/selfhost/install-runner.sh(macOS): pip install -e 저장소(SKIP_PIP_INSTALL=1 건너뜀), python 은 sys.executable 실제 경로, PATH=python·claude·codex 위치+기본 경로, plistlib 로 ~/Library/LaunchAgents/com.workflow.selfhost.connector.plist(KeepAlive·WorkingDirectory=저장소·로그 ~/Library/Logs/workflow-connector-selfhost), 연결 토큰 파일(WORKFLOW_CONNECTOR_HOME 또는 기본 token.json)이 있을 때만 launchctl bootout+bootstrap gui/uid(없으면 적재 안 하고 connect 뒤 재실행 안내), connect·register 명령은 출력만. 두 스크립트 --help·DRY_RUN=1. ARCHITECTURE 러너 붙이기·설치 스크립트 절·이름표(RUNLOOM_PROJECT→볼륨 runloom_workflow-data), ADR-0016 결정 6 러너 문장 갱신. 테스트 tests/test_selfhost_files.py 14개 추가(가짜 docker·curl·launchctl, 임시 복사본에서 실행), pytest 2451 passed/54 skipped, ruff 통과. 다음 step 주의: 실제 docker compose up·launchctl 은 미검증(step 8 은 RUNLOOM_PROJECT·WORKFLOW_PORT 로 격리, HEALTH_TIMEOUT 조절 가능), demo 용 launchd 러너와 연결 토큰 파일 위치가 같음(동시 사용 시 WORKFLOW_CONNECTOR_HOME), 문서(step 7)는 토큰 확인을 'grep OPERATOR_TOKEN deploy/selfhost/.env' 식으로 안내",
+      "completed_at": "2026-09-27T10:07:17+0900"
     },
     {
       "step": 7,
       "name": "selfhost-docs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T10:07:17+0900",
+      "summary": "docs/SELFHOST.md 신설(요구 사항·설치 한 명령·로그인(grep OPERATOR_TOKEN)·러너 연결(연결 코드→pip install -e→connect→register→install-runner.sh, Agent 등록)·GitHub 연결(토큰 권한 Issues RW+Metadata R, 기준선은 Pull requests R 추가·WORKFLOW_GITHUB_REPOS·WORKFLOW_PUBLIC_URL·/metrics 기준선)·백업·복원(exec central … backup create/list, cp 로 호스트 반출, 복원은 stop central worker → run --rm central … restore <이름> --force → up -d)·업그레이드(백업→git pull→install.sh→install-runner.sh)·제거(down -v 는 runloom_workflow-data 삭제 경고)·문제 해결 표·알려진 한계(원격 없음·새 커밋 미추적→11-real-repo 등), 상태 줄에 실제 Docker 기동은 step 8 검증 전이라 명시); 모든 compose 명령은 'docker compose -p runloom -f deploy/selfhost/compose.yaml' 접두(install.sh 와 같은 프로젝트), 컨테이너 안은 python3; AGENTS.md 명령어 절에 install.sh·install-runner.sh·백업 create 3줄, docs/README.md 문서 목록에 SELFHOST 행·DEPLOY 설명 갱신, docs/DEPLOY.md 제목 아래 '공개 데모 VM 런북 — 셀프호스트는 SELFHOST.md' 한 줄. 테스트 tests/test_selfhost_files.py 13개 추가(절 구성·경로 존재·모듈 find_spec·connector/backup argparse 로 문서 명령 인자 파싱·compose 접두와 서비스명·복원 전 stop 순서·환경변수 실재·볼륨 삭제 경고·비밀값 미기재·SELFHOST/README/DEPLOY 상대 링크(파일만, 앵커 미검사)·AGENTS.md·README·DEPLOY 연결), pytest 2464 passed/54 skipped, ruff 통과. 다음 step 주의: 문서 절차는 실제 Docker 로 미검증 — step 8 결과에 맞춰 SELFHOST.md 상태 줄·문제 해결을 고칠 것, 문서의 docker compose 줄은 접두 규칙을 테스트가 강제(격리 프로젝트명은 문서가 아니라 테스트 쪽에서 바꿀 것), 복원 명령은 대상 DB 가 있으므로 --force 포함",
+      "completed_at": "2026-09-27T10:14:37+0900"
     },
     {
       "step": 8,
       "name": "selfhost-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T10:14:37+0900",
+      "summary": "tests/e2e/test_selfhost.py 신설(WORKFLOW_DOCKER=1 게이트: 커밋된 HEAD 를 임시 디렉터리에 git clone --no-local → RUNLOOM_PROJECT=runloom-e2e-<랜덤>·WORKFLOW_PORT=<빈 포트>(step 지시의 RUNLOOM_PORT 대신 ADR 고정 이름) 로 install.sh → .env 0600·토큰 미출력·/healthz ok·mode selfhost → httpx 로 /login(OPERATOR_TOKEN) → 종류 등록 → down(볼륨 유지)·install.sh 재실행 → 보존 → exec -T central backup create·list → 종류 추가 → stop central worker → run --rm -T central restore <이름> --force → up -d → 백업 시점(추가 종류 없음)·pre-restore 백업 확인, finally 에서 그 프로젝트만 down -v --remove-orphans, 이미지는 남김). 실제 Docker Desktop 24.0.2·compose v2.19.1 에서 1 passed 72.6초, 정리 후 runloom-e2e 컨테이너·볼륨 0. 제품·배포 파일 수정 없음. 문서: VERIFICATION_LOG 실행 기록, CURRENT_HANDOFF phase 10 완료·다음 11-real-repo, MVP_PLAN 7절 배포 행, SELFHOST 상태 줄(실제 Docker 확인, 러너 launchd 미확인 — WORKFLOW_DOCKER 이름은 SELFHOST 의 환경변수 실재 테스트 때문에 문서에 쓰지 않음). pytest 2464 passed/55 skipped, ruff 통과, WORKFLOW_E2E=1 e2e 54 passed/1 skipped. 다음 주의: Docker Desktop 이 꺼져 있으면 셀프호스트 e2e 는 fail(skip 아님), 러너 launchd 실제 적재·첫 빌드 시간·스키마 버전 변경 업그레이드는 미검증, service 병합은 사용자 지시 때",
+      "completed_at": "2026-09-27T10:26:32+0900"
     }
-  ]
+  ],
+  "created_at": "2026-09-27T09:23:25+0900",
+  "completed_at": "2026-09-27T10:26:32+0900"
 }

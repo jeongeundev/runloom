@@ -173,3 +173,49 @@ def test_env_keys_lists_exactly_what_load_settings_reads():
     assert env.asked - {"WORKFLOW_DEV"} == set(ENV_KEYS)
     assert set(SECRET_KEYS) | set(OPTIONAL_SECRET_KEYS) <= set(ENV_KEYS)
     assert len(ENV_KEYS) == len(set(ENV_KEYS))
+
+
+# --- 셀프호스트 모드 (phase 10, ADR-0016) ----------------------------------------------
+
+
+def test_mode_defaults_to_demo():
+    assert load_settings(FULL).mode == "demo"
+    assert load_settings({**FULL, "WORKFLOW_MODE": ""}).mode == "demo"
+    assert "WORKFLOW_MODE" in ENV_KEYS and "WORKFLOW_MODE" not in SECRET_KEYS
+
+
+def test_mode_selfhost_is_read():
+    assert load_settings({**FULL, "WORKFLOW_MODE": "selfhost"}).mode == "selfhost"
+
+
+def test_unknown_mode_raises():
+    with pytest.raises(ValueError) as exc:
+        load_settings({**FULL, "WORKFLOW_MODE": "prod"})
+    assert "WORKFLOW_MODE" in str(exc.value)
+
+
+def test_selfhost_loads_without_diag_token_and_diagnosis_is_off():
+    s = load_settings({"SESSION_SECRET": "s", "OPERATOR_TOKEN": "o", "WORKFLOW_MODE": "selfhost"})
+    assert s.diag_api_token == ""
+    assert s.diagnosis_enabled is False
+    assert load_settings({**FULL, "WORKFLOW_MODE": "selfhost"}).diagnosis_enabled is True
+
+
+def test_selfhost_still_requires_session_secret_and_operator_token():
+    with pytest.raises(ValueError) as exc:
+        load_settings({"WORKFLOW_MODE": "selfhost"})
+    assert "SESSION_SECRET" in str(exc.value) and "OPERATOR_TOKEN" in str(exc.value)
+    assert "DIAG_API_TOKEN" not in str(exc.value)
+
+
+def test_selfhost_dev_mode_does_not_invent_a_diag_token(capsys):
+    """개발 모드여도 가짜 진단 토큰을 만들면 없는 진단 API 를 부르게 된다 — 비워 두어 기능을 끈다."""
+    s = load_settings({"WORKFLOW_DEV": "1", "WORKFLOW_MODE": "selfhost"})
+    assert s.session_secret and s.operator_token
+    assert s.diag_api_token == ""
+
+
+def test_demo_without_diag_token_still_fails():
+    with pytest.raises(ValueError) as exc:
+        load_settings({"SESSION_SECRET": "s", "OPERATOR_TOKEN": "o"})
+    assert "DIAG_API_TOKEN" in str(exc.value)

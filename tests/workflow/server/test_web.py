@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.contracts.v1 import BUILTIN_KINDS, ArtifactMeta, ExecutionRequest
 from workflow.server.app import create_app
-from workflow.server.auth import SESSION_COOKIE, verify_session
+from workflow.server.auth import LOGIN_MAX_FAILURES, SELFHOST_SESSION_ID, SESSION_COOKIE, verify_session
 from workflow.server.web import EXAMPLES
 
 from .conftest import (
@@ -487,6 +487,20 @@ def test_run_diagnosis_global_daily_limit_429(web, conn):
     response = web.post(f"/tasks/{task_id}/run", follow_redirects=False)
     assert response.status_code == 429
     assert "오늘 전체 진단 실행 한도(60회)에 도달했습니다." in response.text
+
+
+def test_run_diagnosis_rejected_when_diagnosis_is_off(agents, settings, conn):
+    """phase 10 — 진단 토큰이 비면(셀프호스트 선택) 진단 실행을 만들지 않고 명확히 거부한다. 분기는 모드가 아니라 토큰."""
+    off = TestClient(create_app(dataclasses.replace(settings, diag_api_token="")))
+    assert off.get("/tasks").status_code == 200
+    register_agents(off)
+    task_id = create_task(off, diagnose_form())
+    response = off.post(f"/tasks/{task_id}/run", follow_redirects=False)
+    assert response.status_code == 409
+    assert "diagnosis_disabled" in response.text
+    assert "진단 기능이 꺼져 있습니다" in response.text
+    assert repo.active_execution(conn, task_id) is None
+    assert repo.count_diagnosis_started(conn, session_id=None, since="2000-01-01T00:00:00Z") == 0
 
 
 def seed_judged_predecessor(client, conn, store, settings, task_a: str, *, bundle: bool = True) -> tuple[str, str | None]:
@@ -2094,3 +2108,194 @@ def test_token_issue_is_not_on_operator_page(web):
     login_operator(web)
     text = web.get("/operator").text
     assert 'action="/sources/tokens"' not in text and "입구 토큰" not in text
+
+
+# --- selfhost 로그인 (phase 10 step 2, ADR-0016 결정 3) ------------------------------------
+
+OPERATOR_TOKEN = "test-operator-token"
+
+
+@pytest.fixture
+def selfhost(settings):
+    return create_app(dataclasses.replace(settings, mode="selfhost"))
+
+
+def session_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+
+def login(client, token: str = OPERATOR_TOKEN, path: str = "/login"):
+    return client.post(path, data={"token": token}, follow_redirects=False)
+
+
+def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn):
+    client = TestClient(selfhost)
+    for path in ("/", "/tasks", "/tasks/new", "/agents", "/operator", "/metrics"):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303, path
+        assert response.headers["location"] == "/login", path
+    for path in ("/metrics.json", "/github/sources", "/human-requests"):
+        response = client.get(path)
+        assert response.status_code == 401, path
+        assert response.json()["code"] == "unauthenticated", path
+    assert client.post("/tasks", data={}, follow_redirects=False).status_code == 303
+    assert session_count(conn) == 0
+    page = client.get("/login")
+    assert page.status_code == 200
+    assert 'name="token"' in page.text and 'action="/login"' in page.text
+
+
+def test_selfhost_login_sets_workspace_cookie_and_shares_workspace_across_browsers(selfhost, conn, settings):
+    first = TestClient(selfhost)
+    response = login(first)
+    assert response.status_code == 303 and response.headers["location"] == "/"
+    set_cookie = response.headers["set-cookie"].lower()
+    assert "httponly" in set_cookie and "samesite=lax" in set_cookie and "max-age=1209600" in set_cookie
+    assert verify_session(response.cookies[SESSION_COOKIE], settings.session_secret) == SELFHOST_SESSION_ID
+    assert repo.get_session(conn, SELFHOST_SESSION_ID)["is_operator"] == 1
+    assert first.get("/", follow_redirects=False).headers["location"] == "/tasks"
+    assert first.get("/tasks").status_code == 200
+    assert first.get("/metrics.json").status_code == 200  # 로그인 = 운영자
+
+    shared = kind_form(kind="shared_check", label="브라우저 공유 확인", capability_code="shared_check")
+    assert first.post("/kinds", data=shared, follow_redirects=False).status_code == 303
+    second = TestClient(selfhost)  # 다른 브라우저 — 쿠키 없음
+    assert second.get("/kinds", follow_redirects=False).status_code == 303
+    assert login(second).status_code == 303
+    assert "브라우저 공유 확인" in second.get("/kinds").text
+    assert session_count(conn) == 1
+
+
+def test_selfhost_wrong_token_is_rejected_without_leaking(selfhost, conn, caplog):
+    client = TestClient(selfhost)
+    secret_guess = "guess-" + OPERATOR_TOKEN[::-1]
+    with caplog.at_level("DEBUG"):
+        response = login(client, secret_guess)
+    assert response.status_code == 403
+    assert "토큰이 올바르지 않습니다" in response.text
+    assert secret_guess not in response.text and OPERATOR_TOKEN not in response.text
+    assert SESSION_COOKIE not in response.cookies
+    assert all(secret_guess not in r.getMessage() and OPERATOR_TOKEN not in r.getMessage() for r in caplog.records)
+    assert session_count(conn) == 0
+    assert client.get("/tasks", follow_redirects=False).status_code == 303
+
+
+def test_selfhost_logout_clears_cookie(selfhost, conn):
+    client = TestClient(selfhost)
+    login(client)
+    response = client.post("/logout", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/login"
+    assert SESSION_COOKIE in response.headers["set-cookie"] and "max-age=0" in response.headers["set-cookie"].lower()
+    assert client.get("/tasks", follow_redirects=False).headers["location"] == "/login"
+    assert repo.get_session(conn, SELFHOST_SESSION_ID) is not None  # DB 는 그대로
+
+
+def test_selfhost_login_throttles_repeated_failures(selfhost):
+    client = TestClient(selfhost)
+    for _ in range(LOGIN_MAX_FAILURES):
+        assert login(client, "wrong").status_code == 403
+    blocked = login(client)  # 맞는 토큰이어도 창이 지날 때까지 거부
+    assert blocked.status_code == 429
+    assert SESSION_COOKIE not in blocked.cookies
+    assert "잠시 후" in blocked.text
+
+
+def test_selfhost_login_success_resets_failure_count(selfhost):
+    client = TestClient(selfhost)
+    for _ in range(LOGIN_MAX_FAILURES - 1):
+        login(client, "wrong")
+    assert login(client).status_code == 303
+    for _ in range(LOGIN_MAX_FAILURES - 1):
+        assert login(client, "wrong").status_code == 403
+
+
+def test_selfhost_operator_login_acts_as_login(selfhost, conn):
+    client = TestClient(selfhost)
+    assert login(client, "wrong", "/operator/login").status_code == 403
+    response = login(client, path="/operator/login")
+    assert response.status_code == 303
+    assert client.get("/operator").status_code == 200
+    assert session_count(conn) == 1
+
+
+def test_demo_mode_has_no_login_routes(client, conn):
+    assert client.get("/login").status_code == 404
+    assert client.post("/login", data={"token": OPERATOR_TOKEN}, follow_redirects=False).status_code == 404
+    assert client.post("/logout", follow_redirects=False).status_code == 404
+    assert client.get("/", follow_redirects=False).status_code == 200  # 공개 랜딩 그대로
+
+
+# --- selfhost 화면 — 로그인·내비게이션·데모 전용 요소 (phase 10 step 3) ----------------------------
+
+# demo 에서만 보이는 문구·링크. selfhost 는 템플릿이 `mode` 하나로 숨긴다.
+DEMO_ONLY_TASKS = ('href="/tasks/import"', "업무 가져오기", "세션 · 익명")
+DEMO_ONLY_TASK_NEW = ('name="run_id"', "demo-report-repo", "daily-report")
+DEMO_ONLY_OPERATOR = ("진단 사용량", "데모 저장소")
+DEMO_ONLY_SOURCES = ("demo-report-repo", "daily-0920-0900", "진단 항목")
+DEMO_ONLY_DETAIL = ("후속 업무 B 등록",)
+
+
+def assert_no_secrets(text: str, settings) -> None:
+    for secret in (settings.operator_token, settings.session_secret, settings.diag_api_token):
+        assert secret not in text
+
+
+def test_selfhost_login_page_is_one_token_field_with_notice(selfhost, settings):
+    client = TestClient(selfhost)
+    page = client.get("/login").text
+    assert page.count("<input") == 1 and 'type="password"' in page and 'name="token"' in page
+    assert "/static/style.css" in page
+    assert "셀프호스트" in page and "OPERATOR_TOKEN" in page
+    assert 'class="alert"' not in page
+    failed = login(client, "wrong").text
+    assert 'class="alert"' in failed and "토큰이 올바르지 않습니다" in failed
+    assert_no_secrets(page + failed, settings)
+
+
+def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, settings):
+    client = TestClient(selfhost)
+    login(client)
+    html = client.get("/tasks").text
+    sidebar = html[html.index('class="sidebar'):html.index('class="main')]
+    assert 'action="/logout"' in sidebar and "로그아웃" in sidebar
+    assert 'href="/metrics"' in sidebar and 'href="/operator/github"' in sidebar
+    assert 'href="/tasks/new"' in sidebar  # `+` 는 직접 등록
+    assert_no_secrets(html, settings)
+
+
+def test_selfhost_hides_demo_only_elements(selfhost, settings):
+    client = TestClient(selfhost)
+    login(client)
+    task_id = create_task(client, fix_form("", scope_value="my-repo"))
+    pages = {
+        "/tasks": DEMO_ONLY_TASKS,
+        "/tasks/new": DEMO_ONLY_TASK_NEW,
+        "/operator": DEMO_ONLY_OPERATOR,
+        "/sources": DEMO_ONLY_SOURCES,
+        f"/tasks/{task_id}": DEMO_ONLY_DETAIL,
+        f"/tasks/{task_id}/live": DEMO_ONLY_DETAIL,
+    }
+    for path, needles in pages.items():
+        response = client.get(path)
+        assert response.status_code == 200, path
+        for needle in needles:
+            assert needle not in response.text, (path, needle)
+        assert_no_secrets(response.text, settings)
+
+
+def test_demo_mode_keeps_demo_only_elements(web, settings):
+    task_id = create_task(web, diagnose_form())
+    login_operator(web)
+    pages = {
+        "/tasks": DEMO_ONLY_TASKS,
+        "/tasks/new": DEMO_ONLY_TASK_NEW,
+        "/operator": DEMO_ONLY_OPERATOR,
+        "/sources": DEMO_ONLY_SOURCES,
+        f"/tasks/{task_id}": DEMO_ONLY_DETAIL,
+        f"/tasks/{task_id}/live": DEMO_ONLY_DETAIL,
+    }
+    for path, needles in pages.items():
+        text = web.get(path).text
+        for needle in needles:
+            assert needle in text, (path, needle)
+    assert 'action="/logout"' not in web.get("/tasks").text

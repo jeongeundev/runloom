@@ -1,20 +1,23 @@
 """중앙 웹/API 앱 팩토리.
 
-- `create_app(settings)`: DB 스키마 초기화, 산출물 저장소, 오류 변환, 기계 API 라우터, 입구 API 라우터, GitHub 설정 API 라우터, 사람 요청 응답 API 라우터, 지표 API 라우터, 웹 라우터.
+- `create_app(settings)`: DB 스키마 초기화, 산출물 저장소, 오류 변환, 기계 API 라우터, 입구 API 라우터, GitHub 설정 API 라우터, 사람 요청 응답 API 라우터, 지표 API 라우터, 웹 라우터, `GET /healthz`.
 - 모듈 변수 `app` 은 `python3 -m uvicorn workflow.server.app:app` 진입점이며 import 시 환경변수를
   읽는다. 비밀값 없이는 뜨지 않는 것이 의도다. 테스트는 `WORKFLOW_SKIP_APP=1` 로 이 호출을 건너뛰고
   `create_app(settings)` 를 직접 쓴다 (tests/conftest.py).
 """
 
 import os
+import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from workflow.adapters.artifact_store import ArtifactStore
-from workflow.adapters.db import connect, init_schema
+from workflow.adapters.db import SCHEMA_VERSION, connect, init_schema
 from workflow.server import github_api, human_api, inbound_api, machine_api, metrics_api, web
+from workflow.server.auth import LoginThrottle
 from workflow.server.errors import install_error_handlers
 from workflow.server.settings import Settings, load_settings
 
@@ -37,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 요청마다 새 연결 (auth.get_conn). sqlite3 연결을 스레드 간 공유하지 않는다.
     app.state.conn_factory = lambda: connect(settings.db_path)
     app.state.store = ArtifactStore(settings.artifact_dir)
+    app.state.login_throttle = LoginThrottle()  # selfhost 로그인 연속 실패 제한 — 프로세스 메모리
     app.state.github_client = None  # 기준선 가져오기 — None 이면 요청 때 Settings 로 만든다. 테스트는 가짜로 바꾼다
     install_error_handlers(app)
     app.include_router(machine_api.router)
@@ -45,8 +49,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(human_api.router)  # 사람 요청 응답 (ADR-0014) — 운영자 세션만
     app.include_router(metrics_api.router)  # 지표·기준선 가져오기 (ADR-0015) — 운영자 세션만
     web.install(app)  # 라우터 + PageError → error.html
+    app.add_api_route("/healthz", lambda: _healthz(settings), methods=["GET"])  # 인증 없음 (ADR-0016)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")  # style.css 만. CDN 없음
     return app
+
+
+def _healthz(settings: Settings) -> JSONResponse:
+    """DB 를 읽기 전용으로 열어 schema_version 을 확인한다. 없는 DB 를 만들지 않고, 오류 내용·경로는 싣지 않는다."""
+    try:
+        conn = sqlite3.connect(f"{settings.db_path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        finally:
+            conn.close()
+    except (sqlite3.Error, TypeError):
+        version = None
+    if version != SCHEMA_VERSION:
+        return JSONResponse({"status": "error", "mode": settings.mode}, status_code=503)
+    return JSONResponse({"status": "ok", "mode": settings.mode, "schema_version": version})
 
 
 app = None if os.environ.get("WORKFLOW_SKIP_APP") == "1" else create_app()

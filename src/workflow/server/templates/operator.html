@@ -1,4 +1,4 @@
-{# 운영자 — ADR-0005. 토큰 입력 → 에이전트 등록·삭제, 연결 코드, 병합 확인 대기, 모든 세션 업무, 진단 사용량.
+{# 운영자 — ADR-0005. 토큰 입력 → 에이전트 등록·삭제, 연결 코드, 병합 확인 대기, 모든 세션 업무, 진단 사용량(demo 만 — 진단 데모의 예산 표시).
    등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
@@ -96,7 +96,7 @@
 
 <h2>병합 확인 대기</h2>
 <div class="card">
-  <p class="small">실제 git 병합은 운영자가 Mac 의 데모 저장소에서 수동으로 합니다. 여기서는 확인 사실만 기록합니다.</p>
+  <p class="small">{% if mode != 'selfhost' %}실제 git 병합은 운영자가 Mac 의 데모 저장소에서 수동으로 합니다. {% endif %}여기서는 확인 사실만 기록합니다.</p>
   <ul class="agent-list">
     {% for t in merge_queue %}
     <li>
@@ -127,10 +127,12 @@
   </table>
 </div>
 
+{% if mode != 'selfhost' %}
 <h2>진단 사용량</h2>
 <div class="card">
   <p>오늘 진단 실행: <strong>{{ diagnosis_today }}</strong>건 (세션당 10회 · 전체 60회 상한)</p>
   <p class="small">총액 상한(US$30)은 진단 서비스가 토큰 사용량으로 추정해 판단합니다.</p>
 </div>
+{% endif %}
 {% endif %}
 {% endblock %}
