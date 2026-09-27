@@ -53,7 +53,10 @@
     {
       "step": 6,
       "name": "install-script",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T10:00:21+0900",
+      "summary": "deploy/selfhost/install.sh(멱등·set -euo pipefail, chmod +x): docker·docker compose 없으면 안내 후 종료 1, .env 없을 때만 .env.example 복사+SESSION_SECRET·OPERATOR_TOKEN openssl rand -hex 32(없으면 python secrets)·mktemp→0600→mv, 있으면 불변; docker compose -p ${RUNLOOM_PROJECT:-runloom} -f <abs>/compose.yaml up -d --build(down·-v 없음=볼륨 유지) → curl /healthz 에 \"status\":\"ok\" 까지 1초 간격 HEALTH_TIMEOUT(기본 120)초, 넘으면 'logs central worker' 안내·종료 1; 포트=env WORKFLOW_PORT>.env>8000(step 지시의 RUNLOOM_PORT 대신 ADR 고정 WORKFLOW_PORT); 끝에 /login 주소·토큰 파일 위치(값 미출력)·다음 할 일. deploy/selfhost/install-runner.sh(macOS): pip install -e 저장소(SKIP_PIP_INSTALL=1 건너뜀), python 은 sys.executable 실제 경로, PATH=python·claude·codex 위치+기본 경로, plistlib 로 ~/Library/LaunchAgents/com.workflow.selfhost.connector.plist(KeepAlive·WorkingDirectory=저장소·로그 ~/Library/Logs/workflow-connector-selfhost), 연결 토큰 파일(WORKFLOW_CONNECTOR_HOME 또는 기본 token.json)이 있을 때만 launchctl bootout+bootstrap gui/uid(없으면 적재 안 하고 connect 뒤 재실행 안내), connect·register 명령은 출력만. 두 스크립트 --help·DRY_RUN=1. ARCHITECTURE 러너 붙이기·설치 스크립트 절·이름표(RUNLOOM_PROJECT→볼륨 runloom_workflow-data), ADR-0016 결정 6 러너 문장 갱신. 테스트 tests/test_selfhost_files.py 14개 추가(가짜 docker·curl·launchctl, 임시 복사본에서 실행), pytest 2451 passed/54 skipped, ruff 통과. 다음 step 주의: 실제 docker compose up·launchctl 은 미검증(step 8 은 RUNLOOM_PROJECT·WORKFLOW_PORT 로 격리, HEALTH_TIMEOUT 조절 가능), demo 용 launchd 러너와 연결 토큰 파일 위치가 같음(동시 사용 시 WORKFLOW_CONNECTOR_HOME), 문서(step 7)는 토큰 확인을 'grep OPERATOR_TOKEN deploy/selfhost/.env' 식으로 안내",
+      "completed_at": "2026-09-27T10:07:17+0900"
     },
     {
       "step": 7,
