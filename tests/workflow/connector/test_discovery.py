@@ -77,3 +77,113 @@ def test_discover_claude_config_from_claude_md_alone(tmp_path):
 
     assert found["claude_config"] is True and found["codex_config"] is False
     assert found["CLAUDE.md"] == "# 지침\n"
+
+
+# --- found.github_repository (phase 11 step 4) ---
+
+TOKEN = "ghs_" + "t" * 36
+
+
+def _set_remotes(repo, *remotes):
+    _git(repo, "remote", "remove", "origin")
+    for name, url in remotes:
+        _git(repo, "remote", "add", name, url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/octo/report-demo",
+        "https://github.com/octo/report-demo.git",
+        "https://github.com/octo/report-demo/",
+        "git@github.com:octo/report-demo.git",
+        "git@github.com:octo/report-demo",
+        "ssh://git@github.com/octo/report-demo",
+        "ssh://git@github.com/octo/report-demo.git",
+        "https://GitHub.COM/octo/report-demo.git",
+    ],
+)
+def test_discover_reports_github_repository_from_remote_url(repo, url):
+    _set_remotes(repo, ("origin", url))
+
+    assert discover(repo)["found"]["github_repository"] == "octo/report-demo"
+
+
+def test_discover_keeps_owner_name_case_as_written(repo):
+    _set_remotes(repo, ("origin", "git@github.com:Octo/Report-Demo.git"))
+
+    assert discover(repo)["found"]["github_repository"] == "Octo/Report-Demo"
+
+
+def test_discover_strips_credentials_from_github_url(repo):
+    _set_remotes(repo, ("origin", f"https://x-access-token:{TOKEN}@github.com/octo/report-demo.git"))
+
+    result = discover(repo)
+    text = json.dumps(result, ensure_ascii=False)
+
+    assert result["found"]["github_repository"] == "octo/report-demo"
+    assert TOKEN not in text and "x-access-token" not in text
+    assert "github.com" not in text and "https://" not in text
+
+
+def test_discover_prefers_origin_over_other_github_remotes(repo):
+    _set_remotes(
+        repo,
+        ("upstream", "https://github.com/upstream/report-demo.git"),
+        ("origin", "git@github.com:octo/report-demo.git"),
+    )
+
+    assert discover(repo)["found"]["github_repository"] == "octo/report-demo"
+
+
+def test_discover_falls_back_to_first_github_remote_without_origin(repo):
+    _set_remotes(
+        repo,
+        ("mirror", "https://gitlab.com/octo/report-demo.git"),
+        ("fork", "https://github.com/fork/report-demo.git"),
+        ("later", "https://github.com/later/report-demo.git"),
+    )
+
+    assert discover(repo)["found"]["github_repository"] == "fork/report-demo"
+
+
+def test_discover_uses_other_github_remote_when_origin_is_not_github(repo):
+    _set_remotes(
+        repo,
+        ("origin", "https://gitlab.com/octo/report-demo.git"),
+        ("gh", "https://github.com/octo/report-demo.git"),
+    )
+
+    assert discover(repo)["found"]["github_repository"] == "octo/report-demo"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.com/octo/report-demo.git",
+        "https://github.com.evil.example/octo/report-demo.git",
+        "https://notgithub.com/octo/report-demo.git",
+        "https://github.com/octo",
+        "https://github.com/octo/report-demo/extra",
+        "/Users/someone/repos/report-demo",
+    ],
+)
+def test_discover_omits_github_repository_for_non_github_remote(repo, url):
+    _set_remotes(repo, ("origin", url))
+
+    assert "github_repository" not in discover(repo)["found"]
+
+
+def test_discover_omits_github_repository_without_remotes(repo):
+    _set_remotes(repo)
+
+    found = discover(repo)["found"]
+
+    assert "github_repository" not in found
+    assert found["git"]["remotes"] == []
+
+
+def test_discover_without_github_remote_leaks_no_url(repo):
+    result = discover(repo)  # fixture origin = https://user:pass@example.com/demo.git
+
+    assert "github_repository" not in result["found"]

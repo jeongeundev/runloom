@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "connector-remote",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:30:14+0900",
+      "summary": "connector/discovery.py: git config --get-regexp remote\\..*\\.url 을 로컬에서만 읽어 GitHub 원격(https·ssh·scp 형식, .git·끝 / 선택, 호스트 대소문자 무시, 사용자 정보·토큰 무시)에서 owner/name 만 뽑아 found.github_repository 로 보냄(origin 우선, 없거나 GitHub 아니면 설정 순서상 첫 GitHub 원격, 없으면 키 없음, owner/name 은 표기 그대로) — URL 원문은 결과에 없음, 모듈·_git_summary 주석 갱신, 계약 변경 없음; ARCHITECTURE '러너 보고' 단락을 origin 우선+대체 규칙으로 갱신. 테스트: test_discovery.py 21개 추가(형식 8·대소문자·토큰 URL 미노출·origin 우선·대체·비 GitHub 6·remote 없음). 검증: pytest 2572 passed/55 skipped, ruff 통과. 주의: 키는 discovered['found']['github_repository'] 에 있음(최상위 아님) — 서버 자동 매칭(step 6)은 agents.discovered_json 의 found 에서 읽고 비교는 대소문자 무시로."
     },
     {
       "step": 5,
