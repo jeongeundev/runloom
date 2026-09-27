@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "secret-store",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:10:19+0900",
+      "summary": "신설 src/workflow/adapters/secret_store.py(SecretStore(root)·from_env(WORKFLOW_SECRET_DIR 기본 data/secrets)·read/write/delete/exists — ARCHITECTURE 시그니처 표를 따름(step.md 의 get/put/has 아님), 이름은 상수 5개 NAMES 허용 목록만(그 밖·../·절대경로 ValueError, ARCHITECTURE 표도 정규식→허용 목록으로 갱신), mkstemp 0600→fsync→os.replace, 디렉터리 0700 강제, 실패 시 임시 파일 삭제·이전 값 유지, repr·예외에 값 없음) + tests/workflow/adapters/test_secret_store.py; settings: ENV_KEYS 에 WORKFLOW_SECRET_DIR, Settings.secret_dir(기본 data/secrets); compose environment 고정값 WORKFLOW_SECRET_DIR=/data/secrets(tests/test_selfhost_files.py FIXED_ENV), selfhost .env.example 주석, central.env.example WORKFLOW_SECRET_DIR=/var/lib/workflow/central/secrets; 백업은 DB+artifact_dir 만 담아 코드 변경 없음 — test_backup 에 비밀 디렉터리 미포함 테스트 추가. 검증: pytest 2483 passed/55 skipped, ruff 통과. 주의: 다음 step 은 SecretStore.from_env 또는 Settings.secret_dir 로 루트를 얻고, 새 비밀 파일 이름이 필요하면 NAMES 와 ARCHITECTURE 표를 함께 늘린다.",
+      "completed_at": "2026-09-27T18:15:41+0900"
     },
     {
       "step": 2,
