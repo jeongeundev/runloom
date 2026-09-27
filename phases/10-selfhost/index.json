@@ -37,7 +37,10 @@
     {
       "step": 4,
       "name": "backup-cli",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:48:06+0900",
+      "summary": "src/workflow/server/backup.py 신설(python3 -m workflow.server.backup create [--dest DIR] [--keep N]|list|restore <이름> [--force]): 경로는 WORKFLOW_DB_PATH·WORKFLOW_ARTIFACT_DIR·WORKFLOW_BACKUP_DIR(기본 data/backups, load_settings·비밀값 안 거침) env 에서 읽음, create=sqlite3 backup API 복사본(journal_mode=DELETE 단일 파일)+integrity_check 통과 뒤에만 숨은 임시 디렉터리를 {YYYYMMDDTHHMMSSZ} 로 rename, artifacts.tar.gz(최상위 artifacts/), 백업 디렉터리 0700, DB 없으면 종료 1; list=새것부터 '이름\\t시각\\t크기\\tschema N'; restore=백업 검사(DB 무결성·tar 읽기, 손상→1 무변경)→대상 DB 있으면 --force 없이 거부(1)→pre-restore-{시각} 백업→-wal/-shm 삭제·DB 교체·tar filter=data 로 산출물 교체→init_schema 확인, 없는/규칙 밖 이름→2; --keep 은 pre-restore 포함 최근 N 개; 도움말에 'central·worker 를 멈춘 뒤'. ARCHITECTURE 백업 CLI 표를 구현대로 갱신. 테스트 tests/workflow/server/test_backup.py 13개(왕복·다른 위치 복원·WAL 미체크포인트+동시 쓰기·--keep·--dest·--force 거부·복원 전 백업·없는 이름·DB/tar 손상·init_schema·비밀값 미포함·도움말), pytest 2416 passed/54 skipped, ruff 통과. 다음 step 주의: Dockerfile·compose 는 WORKFLOW_BACKUP_DIR=/data/backups 를 넘겨야 기본(data/backups 상대경로)을 벗어남, 같은 초에 create 두 번이면 '이미 있음' 종료 1, 대상 DB 없이 산출물만 있으면 --force 없이도 산출물을 덮어씀",
+      "completed_at": "2026-09-27T09:54:00+0900"
     },
     {
       "step": 5,
