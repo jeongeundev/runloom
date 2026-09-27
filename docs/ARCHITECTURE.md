@@ -741,7 +741,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 - 넣기: 워커의 `create_human_request_once` 호출부가 `fresh` 일 때(`human_request`), PR 이 열렸을 때(`pr_opened`), `_reflect_failures` 가 실행 실패를 반영할 때(`task_failed`) — 같은 트랜잭션에서 `repo.enqueue_notification(...)`. 알림 URL(비밀 파일)이 설정되지 않았으면 쌓지 않는다(step 7 결정 — demo 모드·URL 없는 설치의 DB 가 그대로다). 사람이 닫은 PR·운영자 종료(이미 마감된 Task)는 넣지 않는다. 사람 요청은 `Worker._request_human`(= `create_human_request_once` + `fresh` 면 알림) 한 곳을 지난다. PR 은 열린 상태로 찾거나 연 경우만(이미 병합·닫힌 PR 은 알리지 않음).
 - 문구(`domain/notification.py`, 순수): `notification_text(event, *, title, detail, pr_url) -> str` — `[Runloom] 사람 차례 — <title>: <detail>`, `[Runloom] PR 확인 — <title> <pr_url>`, `[Runloom] 실패 — <title>: <detail>`. `notification_body(url, message: NotificationMessage) -> dict` — 호스트(소문자)가 `discord.com`·`discordapp.com` 이거나 그 하위 도메인이면 `{"content": text[:2000]}`, 그 밖은 `{"content", "event", "task_id", "task_url", "title", "pr_url"}`. `task_url` = `Settings.public_url` 이 있으면 `<public_url>/tasks/<task_id>`, 없으면 null.
 - 전달(`Worker._deliver_notifications`, 트랜잭션 밖, `adapters/notify_sender.py` `NotifySender(*, transport=None).post(url, body) -> None`, httpx 제한 시간 10초, 리다이렉트 따라가지 않음): 2xx = `sent`. 실패는 `NotifyFailed(message, retry_after: float | None)` — `attempts`+1, `next_at` = max(30초 × 2^(n−1), `retry_after`), `NOTIFY_MAX_ATTEMPTS`(5) 뒤 `failed`. 오류 문구·로그에 URL 을 넣지 않는다(호스트만 — `webhook_host`). httpx 가 요청마다 남기는 URL INFO 로그는 보내는 동안 `notify_sender` 의 로그 필터가 막는다. 보낼 때 URL 이 지워졌으면 `skipped`(attempts 불변), 형식이 깨졌으면(`webhook_url_valid` 거짓) 보내지 않고 `failed`·`last_error='URL 형식 오류'`. 업무 상태는 바꾸지 않는다. 워커는 `Worker(..., secrets=SecretStore, notifier=NotifySender)` 로 받고, 둘 중 없으면 쌓지도 보내지도 않는다(기존 테스트·demo 구성).
-- URL 검사(저장·테스트 때, 전송 때도 한 번 더): `notification.webhook_url_valid(url)` — `http`·`https`, 호스트 있음, 2048자 이하. 사용자 정보(`user:pass@`)는 거부.
+- URL 검사(저장·테스트 때, 전송 때도 한 번 더): `notification.webhook_url_valid(url)` — `http`·`https`, 호스트 있음, 2048자 이하. 사용자 정보(`user:pass@`)는 거부. 저장 때는 더해 `https` 또는 루프백 호스트(`127.0.0.1`·`localhost`·`::1`)의 `http` 만 받는다(`web._webhook_url_savable`, step 8).
 
 ### 비밀 파일 (step 7)
 
@@ -757,10 +757,10 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 | 경로 | 동작 | 실패 |
 |---|---|---|
-| `GET /operator/notifications` | 알림 설정 화면(`operator_notifications.html`): 설정됨/없음·호스트, 최근 알림 20건(사건·상태·시각·오류 분류 — URL·본문 없음), URL 폼·[테스트 보내기]·[지우기] | |
+| `GET /operator/notifications` | 알림 설정 화면(`operator_notifications.html`): 설정됨/없음·호스트, 최근 알림 20건(사건·상태·시각·오류 분류 — URL·본문 없음), URL 폼(`type=password`)·[테스트 보내기]·[삭제] — 버튼 둘은 URL 이 설정됐을 때만. 운영자 왼쪽 목록에 "알림" | |
 | `POST /operator/notifications/webhook` (폼 `url`) | 검사 뒤 비밀 파일 `notify_webhook_url` 에 저장 → 303 `/operator/notifications` | 형식 오류 422 `invalid_field`(`url`) — 값을 되돌려 보이지 않는다 |
 | `POST /operator/notifications/webhook/delete` | 비밀 파일 삭제 → 303 | |
-| `POST /operator/notifications/test` | 저장된 URL 로 대기열 없이 한 번 보내고 결과를 화면에 표시(200) | URL 없음 409 `notify_not_configured`, 전송 실패는 화면 메시지(HTTP 상태·분류, URL 없음) |
+| `POST /operator/notifications/test` | 저장된 URL 로 대기열 없이 한 번 보내고(`NotifySender(transport=app.state.notify_transport)`, 본문은 `notification_body` — 사건 `test`) 결과를 화면에 표시(200, `data-notify-test="sent\|failed"`) | URL 없음 409 `notify_not_configured`, 전송 실패는 화면 메시지(`HTTP 404`·`시간 초과`·`연결 오류: <클래스>`, URL 없음) |
 | `POST /operator/github/sources/{source_id}/runner` | 연결 코드 발급(`repo.issue_connect_code`) → `/operator/github` 를 그 카드에 명령 한 줄(`runner_command`)을 넣어 그대로 렌더(200, 리다이렉트 없음 — 코드가 URL·기록에 남지 않게) | 남의 소스 404, 운영자 아님 403 `forbidden` |
 
 명령 한 줄: `deploy/selfhost/install-runner.sh --server <base> --code <코드> --repo <폴더>` — `<base>` = `WORKFLOW_PUBLIC_URL` 또는 요청 base URL, `<폴더>` 는 글자 그대로 둔다(사용자가 채움). 카드에 "Runloom 설치 폴더에서 실행, 코드는 10분 유효" 안내. 러너가 이미 매칭된 카드에는 버튼이 없다(고급 설정 안에 [러너 다시 붙이기]).

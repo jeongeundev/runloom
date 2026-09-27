@@ -35,6 +35,7 @@ from workflow.domain.metrics import (
     Stat,
     summarize_baseline,
 )
+from workflow.domain.notification import webhook_host
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.server import github_clients, human_api, task_cycle
@@ -669,6 +670,19 @@ def _baseline_summary(conn: Connection, session_id: str, source_id: str) -> dict
         "n": summary.intake_to_merge.n,
         "median": duration(int(median)) if median is not None else "모름",
         "fetched_at": summary.fetched_at,
+    }
+
+
+def notifications_context(conn: Connection, session_id: str, *, secrets: SecretStore) -> dict[str, Any]:
+    """운영자 알림 화면 — URL 은 설정됨/없음·호스트만, 최근 알림은 사건·상태·시각·오류 분류만(URL·본문 없음)."""
+    url = secrets.read(secret_store.NOTIFY_WEBHOOK_URL)
+    return {
+        "notify_configured": url is not None,
+        "notify_host": webhook_host(url) if url is not None else None,
+        "notifications": [
+            {k: row[k] for k in ("event", "state", "attempts", "last_error", "created_at", "sent_at")}
+            for row in repo.list_notifications(conn, session_id)
+        ],
     }
 
 

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Query, Request, Response
@@ -50,6 +50,7 @@ from workflow.adapters.github_client import (
     GitHubUnavailable,
     HttpGitHubClient,
 )
+from workflow.adapters.notify_sender import NotifyFailed, NotifySender
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.github import RepositoryFullName
 from workflow.contracts.v1 import (
@@ -70,6 +71,7 @@ from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
 from workflow.domain.execution_policy import policy_for
+from workflow.domain import notification
 from workflow.domain.kinds import (
     can_auto_complete,
     get_kind,
@@ -1812,6 +1814,97 @@ def github_token_connect(
     request.app.state.secrets.write(secret_store.GITHUB_TOKEN, token)
     github_connect.ensure_token_source(conn, session_id, name, utc_now())
     return _redirect("/operator/github", response)
+
+
+# --- 알림 설정 (phase 12 step 8, ADR-0018 결정 5, ARCHITECTURE "새 경로 (step 8·9)") ------------------------------
+# URL 은 토큰을 담는다(Discord 웹훅 URL 자체가 비밀). 비밀 파일 `notify_webhook_url` 에만 쓰고 화면·로그·오류 문구에는 호스트만.
+
+_TEST_MESSAGE = "[Runloom] 테스트 알림 — 이 주소로 사람 차례·PR 확인·실패 알림을 보냅니다."
+
+
+def _webhook_url_savable(url: str) -> bool:
+    """저장 검사 — 형식(`webhook_url_valid`) + `https`, 또는 루프백 호스트의 `http`(같은 Mac 의 n8n 등)."""
+    if not notification.webhook_url_valid(url):
+        return False
+    parts = urlsplit(url)
+    return parts.scheme == "https" or parts.hostname in _LOOPBACK_HOSTS
+
+
+def _notifications_page(request: Request, conn: Connection, session_id: str,
+                        test_result: dict[str, str] | None = None) -> str:
+    now = utc_now()
+    return _render(
+        "operator_notifications.html", **_base(request, conn, session_id, now),
+        **views.notifications_context(conn, session_id, secrets=request.app.state.secrets), test_result=test_result,
+    )
+
+
+@router.get("/operator/notifications", response_class=HTMLResponse)
+def operator_notifications_page(
+    request: Request,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """알림 웹훅 설정 — 설정됨/없음·호스트, 최근 알림 20건, URL 폼·[테스트 보내기]·[삭제]."""
+    _require_operator_page(conn, session_id)
+    return _notifications_page(request, conn, session_id)
+
+
+@router.post("/operator/notifications/webhook")
+def operator_notifications_save(
+    request: Request,
+    response: Response,
+    url: str = Form(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """검사 뒤 비밀 파일에 저장. 형식 오류 문구에 값을 되돌려 싣지 않는다."""
+    _require_operator_page(conn, session_id)
+    url = url.strip()
+    if not _webhook_url_savable(url):
+        raise PageError(422, "invalid_field",
+                        f"https:// 주소(같은 컴퓨터는 http:// 도 가능)를 {notification.WEBHOOK_URL_MAX_LENGTH}자 이하로 "
+                        "입력하세요. 사용자 이름·비밀번호가 든 주소는 받지 않습니다.", field="url")
+    request.app.state.secrets.write(secret_store.NOTIFY_WEBHOOK_URL, url)
+    logger.info("알림 웹훅 저장: %s", notification.webhook_host(url))
+    return _redirect("/operator/notifications", response)
+
+
+@router.post("/operator/notifications/webhook/delete")
+def operator_notifications_delete(
+    request: Request,
+    response: Response,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    _require_operator_page(conn, session_id)
+    request.app.state.secrets.delete(secret_store.NOTIFY_WEBHOOK_URL)
+    return _redirect("/operator/notifications", response)
+
+
+@router.post("/operator/notifications/test", response_class=HTMLResponse)
+def operator_notifications_test(
+    request: Request,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """저장된 URL 로 대기열 없이 한 번 보내고 결과(보냄·HTTP 상태·시간 초과·연결 오류)만 보인다."""
+    _require_operator_page(conn, session_id)
+    url = request.app.state.secrets.read(secret_store.NOTIFY_WEBHOOK_URL)
+    if url is None:
+        raise PageError(409, "notify_not_configured", "저장된 알림 주소가 없습니다. 먼저 웹훅 URL 을 저장하세요.")
+    message = notification.NotificationMessage(
+        event="test", task_id=None, title="테스트 알림", content=_TEST_MESSAGE, task_url=None, pr_url=None,
+    )
+    try:
+        NotifySender(transport=request.app.state.notify_transport).post(url, notification.notification_body(url, message))
+    except NotifyFailed as exc:
+        reason = "시간 초과" if "Timeout" in str(exc) else str(exc)
+        logger.info("알림 테스트 실패 → %s: %s", notification.webhook_host(url), reason)
+        result = {"state": "failed", "text": f"보내지 못했습니다 — {reason}"}
+    else:
+        result = {"state": "sent", "text": "보냈습니다 — 받는 쪽에서 메시지를 확인하세요."}
+    return _notifications_page(request, conn, session_id, test_result=result)
 
 
 @router.get("/metrics", response_class=HTMLResponse)

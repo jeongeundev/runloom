@@ -69,7 +69,9 @@
     {
       "step": 8,
       "name": "notify-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-28T00:39:08+0900",
+      "summary": "알림 설정 화면: web.py 에 GET /operator/notifications·POST /operator/notifications/webhook(폼 url, strip 후 _webhook_url_savable = webhook_url_valid + https 또는 루프백 http, 실패 422 invalid_field 값 되돌리지 않음, 비밀 파일 notify_webhook_url 0600 저장·로그는 호스트만)·/webhook/delete(파일 삭제)·/test(대기열 없이 NotifySender(transport=app.state.notify_transport) 한 번, 본문 notification_body 사건 test, 결과 data-notify-test sent|failed·'HTTP n'·'시간 초과'(NotifyFailed 문구에 Timeout)·연결 오류, URL 없음 409 notify_not_configured), 모두 _require_operator_page(운영자 폼 규칙 — 별도 CSRF 토큰 없음, 세션 쿠키 SameSite=lax 그대로); views.notifications_context(설정됨/없음·호스트·최근 20건 사건·상태·시각·오류 분류, URL·본문 없음); 템플릿 operator_notifications.html(type=password, '설정됨 · 호스트 discord.com', 테스트·삭제 버튼은 설정됐을 때만); _sidebar 운영자 목록에 '알림'; app.state.notify_transport=None; ARCHITECTURE 저장 검사·경로 표 갱신. 테스트 tests/workflow/server/test_web_notifications.py 20건(권한 403·selfhost 로그인 리다이렉트·0600·호스트만·삭제·잘못된 URL 422·루프백 http 허용·테스트 보내기 성공/404/시간 초과/409·로그·HTML 에 URL 없음). pytest 2901 passed/61 skipped, ruff 통과. 다음 step 주의: 워커 전송 검사는 여전히 webhook_url_valid(http 비루프백도 통과)라 저장 검사만 더 엄격함, 테스트 알림은 notifications 테이블에 남지 않음"
     },
     {
       "step": 9,
