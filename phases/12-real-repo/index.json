@@ -7,7 +7,8 @@
       "name": "real-repo-design",
       "status": "completed",
       "started_at": "2026-09-27T23:13:19+0900",
-      "summary": "문서만: ADR-0018 신설(러너 setup·selfhost 에서 register 가 Agent 생성·fetch 후 origin/HEAD 를 ClaimRequest.registration_heads 로 보고·--link 심볼릭 링크+info/exclude·--env(RESERVED_ENV_NAMES)·push 결과 ResultReadyData.branch_pushed·approved 뒤 초안 PR(task_pull_requests)·병합 추적·알림 notifications+비밀 notify_webhook_url·[러너 붙이기] POST /operator/github/sources/{id}/runner), ADR-0014 대체 줄, ARCHITECTURE '실제 저장소 순환 — phase 12'(스키마 v8·이름 표), CONTRACT 14절(json contract-pending 6블록), GLOSSARY·CURRENT_HANDOFF. pytest 2692 passed/61 skipped, ruff 통과. 다음 step 주의: 14절 펜스를 json 으로 바꿀 때 test_v1.py 블록 수(53)·_SIGNATURES(등록 응답 {agent_id,created} 는 새 서명 필요)를 함께 갱신, Agent 자동 생성은 selfhost 모드만(demo 404 유지), 422 본문 문구는 미확인이라 해석하지 말고 목록 재조회"
+      "summary": "문서만: ADR-0018 신설(러너 setup·selfhost 에서 register 가 Agent 생성·fetch 후 origin/HEAD 를 ClaimRequest.registration_heads 로 보고·--link 심볼릭 링크+info/exclude·--env(RESERVED_ENV_NAMES)·push 결과 ResultReadyData.branch_pushed·approved 뒤 초안 PR(task_pull_requests)·병합 추적·알림 notifications+비밀 notify_webhook_url·[러너 붙이기] POST /operator/github/sources/{id}/runner), ADR-0014 대체 줄, ARCHITECTURE '실제 저장소 순환 — phase 12'(스키마 v8·이름 표), CONTRACT 14절(json contract-pending 6블록), GLOSSARY·CURRENT_HANDOFF. pytest 2692 passed/61 skipped, ruff 통과. 다음 step 주의: 14절 펜스를 json 으로 바꿀 때 test_v1.py 블록 수(53)·_SIGNATURES(등록 응답 {agent_id,created} 는 새 서명 필요)를 함께 갱신, Agent 자동 생성은 selfhost 모드만(demo 404 유지), 422 본문 문구는 미확인이라 해석하지 말고 목록 재조회",
+      "completed_at": "2026-09-27T23:25:10+0900"
     },
     {
       "step": 1,
