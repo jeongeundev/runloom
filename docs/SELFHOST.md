@@ -2,7 +2,7 @@
 
 작성일: 2026-09-27 (phase 10 step 7). 결정은 [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md), 구성·이름은 [ARCHITECTURE "셀프호스트 — phase 10"](ARCHITECTURE.md#셀프호스트--phase-10), 용어는 [GLOSSARY](GLOSSARY.md). 공개 데모 VM 은 이 문서가 아니라 [DEPLOY](DEPLOY.md)다.
 
-상태: 파일(`deploy/selfhost/`)과 스크립트는 가짜 `docker`·`curl`·`launchctl` 로 테스트했다(`tests/test_selfhost_files.py`). 실제 Docker 로 설치·재시작 보존·백업 복원을 확인하는 검증은 phase 10 step 8 에서 한다 — 그 결과가 나오기 전에는 아래 절차가 실제 기동으로 확인되지 않았다.
+상태: 파일(`deploy/selfhost/`)과 스크립트는 가짜 `docker`·`curl`·`launchctl` 로 테스트했다(`tests/test_selfhost_files.py`). 2026-09-27 phase 10 step 8 에서 실제 Docker(Docker Desktop 24.0.2, compose v2.19.1)로 설치 → 로그인 → `down`·재설치 뒤 데이터 보존 → 컨테이너 안 백업 → 정지·복원 → 백업 시점으로 돌아옴을 확인했다(`tests/e2e/test_selfhost.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md)). 러너(`install-runner.sh`·launchd)의 실제 적재는 아직 확인하지 않았다.
 
 구성 한눈에:
 

@@ -101,7 +101,7 @@ n8n 만으로 구성하면 바깥 연결은 쉽지만 "내 구독 에이전트�
 | 사람 담당자 | 요청에 응답(운영자, 웹) | 사람을 담당자로 둘 수 없음, 결과물 수정 단계 없음, 알림 없음 |
 | 템플릿 | 없음 | 묶음 가져오기·내보내기 |
 | 측정 | 2026-09-27 phase 9 완료(대역 검증): `task_events`(상태 변화·막힘·착수 가능), 설정 번호·러너 폴더 커밋·CLI 보고 비용/토큰, `/metrics` 화면·`/metrics.json`·`/metrics.csv`, GitHub 이력 기준선 가져오기([ADR-0015](../adr/0015-measurement-events-and-baseline.md)) | 실제 OpenArchive 기준선 가져오기(사용자 지시 후), 실제 순환 데이터로 도입 후 지표 채우기, v6 이전 실행은 비용·커밋 모름 |
-| 배포 | 이전 공모전용 VM 구성(systemd), 로컬 데모 기동기 | 제품용 한 명령 셀프호스트 없음 |
+| 배포 | 2026-09-27 phase 10 완료: 셀프호스트 한 명령 설치(`deploy/selfhost/install.sh`, Docker compose central·worker + named volume), 고정 워크스페이스 로그인(`WORKFLOW_MODE=selfhost`), 백업·복원 CLI, 러너 launchd(`install-runner.sh`) — [SELFHOST](../SELFHOST.md)·[ADR-0016](../adr/0016-selfhost-docker-fixed-workspace.md). 실제 Docker 로 설치·재시작 보존·백업 복원 확인. 공개 데모는 이전 VM 구성 그대로 | 원격 접속(Cloudflare Tunnel 등), 러너 launchd 실제 적재 미확인, 기존 DB 이전 도구 없음 |
 | 팀 | 익명 세션 + 운영자 토큰 | 계정·멤버·권한 |
 
 ## 8. 배포 경로 — n8n 을 벤치마킹

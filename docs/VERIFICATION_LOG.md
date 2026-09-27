@@ -314,3 +314,20 @@ Claude 의 summary(원문은 `evidence/C_결과_봉투.json`): 진단 원문이 
 ### 발견한 결함과 고친 파일
 
 - 고친 파일 없음(이 step 은 e2e·문서만). 발견: 재작업 상한 1 에서 재작업 착수 뒤 재작업 결과 판정 전 tick 이 첫 검토(`changes_requested`)를 다시 평가해 `rework_limit_reached` 사람 요청을 하나 더 만든다(`domain/task_followup.py` `_after_review` 가 `rework:{검토 실행}` 착수 여부를 보지 않음). e2e 는 요청 수를 DB 그대로 세어 지표와 맞춘다. 수정은 [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 에 남겼다.
+
+## 2026-09-27 — 셀프호스트 실제 Docker 설치·보존·백업 복원 (phase 10 step 8)
+
+목적: [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)의 한 명령 설치·재시작 뒤 데이터 보존·백업 복원이 실제 Docker 에서 되는지 확인한다. 외부 호출·비용 없음 — 네트워크는 127.0.0.1 뿐이다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-27 KST, 이 Mac(Darwin 25.6.0) |
+| Docker | Docker Desktop 서버 24.0.2, Docker Compose v2.19.1 (Docker Desktop 이 꺼져 있어 `open -a Docker` 로 켠 뒤 실행) |
+| 명령·결과 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — **1 passed** 72.62초(이미지 캐시 있는 상태. 첫 실행은 로그인 호출 방식 테스트 오류로 실패 — 설치·healthz 는 36초 안에 통과, 제품 코드 수정 없음). `python3 -m pytest -q` 2464 passed·55 skipped, `ruff` 통과, `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` 54 passed·1 skipped(셀프호스트 e2e 는 `WORKFLOW_DOCKER` 게이트) |
+| 격리 | 커밋된 HEAD 를 임시 디렉터리에 `git clone --no-local` → 그 복사본의 `deploy/selfhost/install.sh` 를 `RUNLOOM_PROJECT=runloom-e2e-<랜덤 8자리>`·`WORKFLOW_PORT=<빈 포트>` 로 실행. 끝나면 finally 에서 그 프로젝트만 `down -v --remove-orphans`. 실행 뒤 `runloom-e2e` 이름의 컨테이너·볼륨 0개 확인. 이미지 `workflow-selfhost:local` 은 남긴다(지우지 않음) |
+| 확인한 것 | 1) install.sh → `.env` 0600·`OPERATOR_TOKEN` 64자 생성, 출력에 토큰 값 없음, `/healthz` `{status: ok, mode: selfhost}`, `/login`(httpx 폼) 303 → `/` 가 `/tasks` 로, `/kinds` 에 종류 `selfhost_before_restart` 등록. 2) `docker compose down`(볼륨 유지) → install.sh 재실행 → 새 로그인에서 같은 종류가 보임. 3) `exec -T central … backup create`·`list`(첫 줄 이름 = create 출력의 이름) → 종류 `selfhost_after_backup` 추가 → `stop central worker` → `run --rm -T central … restore <이름> --force` → `up -d` → healthz ok → `selfhost_before_restart` 있음·`selfhost_after_backup` 없음, `list` 에 `pre-restore-…` 백업 |
+| 확인하지 않은 것 | 러너 `install-runner.sh` 의 실제 launchd 적재·호스트 러너 연결, 브라우저 화면 로그인, 이미지 없는 첫 빌드 소요 시간(pip 설치 포함), `cp` 로 호스트 반출, 업그레이드 시 스키마 버전이 바뀌는 경우 |
+
+### 발견한 결함과 고친 파일
+
+- 제품·배포 파일 수정 없음. 추가 파일: `tests/e2e/test_selfhost.py`. 문서: [SELFHOST](SELFHOST.md) 상태 줄.
