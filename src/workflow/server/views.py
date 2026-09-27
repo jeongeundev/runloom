@@ -25,7 +25,16 @@ from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.kinds import get_kind, kind_for_capability
-from workflow.domain.metrics import ACTORS, ALL_GROUP, UNKNOWN, MetricsReport, Ratio, Stat
+from workflow.domain.metrics import (
+    ACTORS,
+    ALL_GROUP,
+    UNKNOWN,
+    BaselineItemFact,
+    MetricsReport,
+    Ratio,
+    Stat,
+    summarize_baseline,
+)
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.server import github_clients, human_api, task_cycle
@@ -624,6 +633,24 @@ def _match_rows(config: GitHubSourceConfig, match: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _baseline_summary(conn: Connection, session_id: str, source_id: str) -> dict[str, Any] | None:
+    """저장소 카드의 기준선 한 줄 — 가져온 적이 없으면 None. 중앙값은 `/metrics` 와 같은 계산."""
+    record, items = repo.list_baseline(conn, session_id, source_id)
+    if record is None:
+        return None
+    summary = summarize_baseline(
+        [BaselineItemFact(issue_number=i["issue_number"], issue_opened_at=i["issue_opened_at"],
+                          pr_number=i["pr_number"], pr_merged_at=i["pr_merged_at"]) for i in items],
+        opened_before=record["opened_before"], fetched_at=record["fetched_at"],
+    )
+    median = summary.intake_to_merge.median
+    return {
+        "n": summary.intake_to_merge.n,
+        "median": duration(int(median)) if median is not None else "모름",
+        "fetched_at": summary.fetched_at,
+    }
+
+
 def github_context(
     conn: Connection, session_id: str, *, now: str, settings: Settings, secrets: SecretStore
 ) -> dict[str, Any]:
@@ -662,6 +689,7 @@ def github_context(
             "match": _match_rows(config, match),
             "runner_missing": any(b.code == "repository_unmatched" for b in match.blockers),
             "match_blockers": [b.reason for b in match.blockers if b.code != "repository_unmatched"],
+            "baseline": _baseline_summary(conn, session_id, config.source_id),
         })
     return {
         "token_configured": bool(settings.github_token),

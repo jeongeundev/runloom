@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo, secret_store
 from workflow.adapters.github_app import AppCredentials, save_credentials
 from workflow.adapters.secret_store import SecretStore
+from workflow.contracts.github import IssuePrLink
 from workflow.server import web
 from workflow.server.app import create_app
 from workflow.server.auth import SESSION_COOKIE, sign_session
@@ -567,6 +568,44 @@ def test_page_after_app_setup_shows_a_card_per_repository(op, conn, secrets, pem
         assert 'name="workflow_repository_id"' in advanced and "비워 두면 자동" in advanced
         assert 'name="intake" value="all_open"' in advanced
         assert f'data-json-action="/github/sources/{source.source_id}/assignees"' in advanced
+
+
+def test_card_explains_the_baseline_before_it_is_imported(op, conn, secrets, pem):
+    connect_app(op, secrets, pem)
+    text = op.get("/operator/github").text
+    for source in names(conn, op_session(op)).values():
+        card = card_of(visible(text), source.source_id)
+        assert "Runloom 도입 전 GitHub 이력으로 비교 기준을 만듭니다" in card
+        assert "중앙값" not in card
+
+
+def test_card_shows_the_imported_baseline_summary(op, conn, secrets, pem):
+    """[기준선 가져오기] 뒤 새로고침된 카드에 결과가 보인다 — 2026-09-27 실제 사용에서 '뭐가 나오는지 모르겠다'."""
+    connect_app(op, secrets, pem)
+    session_id = op_session(op)
+    source = names(conn, session_id)["acme/billing"]
+    links = [
+        IssuePrLink(issue_number=1, issue_title="a", issue_opened_at="2026-08-01T00:00:00Z", pr_number=10,
+                    pr_merged_at="2026-08-01T02:00:00Z"),
+        IssuePrLink(issue_number=2, issue_title="b", issue_opened_at="2026-08-02T00:00:00Z", pr_number=20,
+                    pr_merged_at="2026-08-02T06:00:00Z"),
+    ]
+    repo.replace_baseline(conn, session_id, source.source_id, links, opened_before="2026-09-27T00:00:00Z",
+                          now="2026-09-27T11:20:00Z")
+
+    card = card_of(visible(op.get("/operator/github").text), source.source_id)
+
+    assert "기준선 2건" in card and "이슈 열림 → 병합 중앙값 4시간 0분" in card
+    assert "2026-09-27 20:20" in card  # 가져온 시각(KST)
+    assert 'href="/metrics"' in card
+
+
+def test_card_title_hides_internal_ids(op, conn, secrets, pem):
+    connect_app(op, secrets, pem)
+    text = op.get("/operator/github").text
+    for source in names(conn, op_session(op)).values():
+        shown = re.sub(r"<[^>]+>", " ", card_of(visible(text), source.source_id))  # 보이는 글자만(요청 주소 속성 제외)
+        assert source.source_id not in shown and "revision" not in shown
 
 
 def test_card_shows_the_automatically_matched_agents_and_profile(client, auto_source, conn):

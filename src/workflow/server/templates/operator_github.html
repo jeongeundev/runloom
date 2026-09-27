@@ -78,7 +78,7 @@
 {% for s in sources %}
 {% set c = s.config %}
 <section class="card" data-source-card="{{ c.source_id }}">
-  <div class="card-title">{{ c.repository_full_name }} <span class="mono small">{{ c.source_id }} · revision {{ c.config_revision }}</span></div>
+  <div class="card-title">{{ c.repository_full_name }}</div>
   <p class="small">{% if not c.enabled %}<strong>수집 중지됨</strong> · {% endif %}{% if s.synced_at %}마지막 동기화 {{ s.synced_at|kst }}{% else %}아직 동기화 전{% endif %} · 가져온 이슈 {{ s.issues|length }}건 ·
     {% if s.credential %}{{ s.credential }}{% else %}<strong>GitHub 자격 없음</strong> — 수집하지 않습니다. [GitHub 연결] 또는 고급 — 토큰으로 연결{% endif %}</p>
   <p class="small">{% if c.intake == 'all_open' %}열린 이슈 전부 · 트리거 라벨 {% if c.trigger_label %}<span class="mono">{{ c.trigger_label }}</span>{% else %}없음{% endif %}{% else %}라벨 {{ c.label_filter|join(', ') or '없음' }} · 고른 이슈 {{ c.selected_issue_numbers|join(', ') or '없음' }} · 시작 {{ c.start_at|kst }}{% endif %} · {{ '자동 실행' if c.run_mode == 'auto' else '직접 실행' }} · 재작업 상한 {{ c.max_rework_rounds }}회</p>
@@ -92,7 +92,10 @@
   {% if s.match_blockers %}<ul class="blockers">{% for reason in s.match_blockers %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
   <div class="actions">
     <form data-json-action="/operator/github/sources/{{ c.source_id }}/baseline" class="actions">
-      <button class="btn btn-secondary btn-small" type="submit">기준선 가져오기</button><span class="action-note" data-json-result></span>
+      <button class="btn btn-secondary btn-small" type="submit">{{ '기준선 다시 가져오기' if s.baseline else '기준선 가져오기' }}</button>
+      {% if s.baseline %}<span class="small" data-baseline-summary>기준선 {{ s.baseline.n }}건 · 이슈 열림 → 병합 중앙값 {{ s.baseline.median }} · {{ s.baseline.fetched_at|kst }} 가져옴 · <a href="/metrics">지표에서 비교</a></span>
+      {% else %}<span class="small">Runloom 도입 전 GitHub 이력으로 비교 기준을 만듭니다 (연결 전에 열려 PR 병합으로 닫힌 이슈)</span>{% endif %}
+      <span class="action-note" data-json-result></span>
     </form>
     {% if c.enabled %}
     <form data-json-action="/github/sources/{{ c.source_id }}/stop" class="actions">
