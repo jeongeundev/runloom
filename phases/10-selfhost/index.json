@@ -45,7 +45,10 @@
     {
       "step": 5,
       "name": "docker-image",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:54:00+0900",
+      "summary": "GET /healthz(app._healthz, 인증 없음·두 모드, DB 를 읽기 전용 mode=ro 로 열어 schema_version 확인 → 200 {status:ok,mode,schema_version}, DB 없음·버전 불일치 → 503 {status:error,mode}, 빈 DB 생성·쿠키 발급·경로 노출 없음; ARCHITECTURE 대로 mode 포함) + deploy/selfhost/Dockerfile(python:3.13-slim, 비 root workflow uid 1000·/data 소유, pyproject.toml·src 만 COPY 후 pip install --no-cache-dir /build, 비밀 ARG/ENV 없음) + deploy/selfhost/compose.yaml(x-workflow 앵커: 두 서비스 같은 build context ../..·image workflow-selfhost:local·env_file .env·environment 고정 WORKFLOW_MODE=selfhost·/data/central.sqlite·/data/artifacts·/data/backups·volume workflow-data:/data·restart unless-stopped; central 127.0.0.1:${WORKFLOW_PORT:-8000}:8000 + python3 urllib healthcheck, worker depends_on service_healthy) + deploy/selfhost/.env.example(ENV_KEYS−compose 고정 3개+WORKFLOW_PORT=8000, 비밀값 빈 칸, 키마다 설명) + 루트 .dockerignore(.git·data/·phases/·docs/·tests/·scripts/·deploy/·.env*·sqlite·캐시). 포트 변수는 step 지시의 RUNLOOM_PORT 가 아니라 ADR-0016·ARCHITECTURE 가 고정한 WORKFLOW_PORT 를 따름. pyproject dev 에 pyyaml 추가(compose 파싱). ARCHITECTURE 이미지·.env 키 규칙·healthz 구현 갱신. 테스트: test_app 4·tests/test_selfhost_files.py 17(docker compose config 는 임시 디렉터리에 compose+.env 복사해 실제 통과), 로컬 wheel 빌드로 templates·static 포함 확인, pytest 2437 passed/54 skipped, ruff 통과. 다음 step 주의: compose 에 name: 이 없어 기본 프로젝트명=selfhost(볼륨 selfhost_workflow-data) — install.sh 가 -p 를 정하면 문서·step 8 과 맞출 것, env_file .env 가 없으면 compose 가 실패하므로 install.sh 가 먼저 만들어야 함, 이미지 빌드·기동은 아직 검증 안 함(step 8)",
+      "completed_at": "2026-09-27T10:00:21+0900"
     },
     {
       "step": 6,
