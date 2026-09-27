@@ -69,7 +69,10 @@
     {
       "step": 8,
       "name": "selfhost-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T10:14:37+0900",
+      "summary": "tests/e2e/test_selfhost.py 신설(WORKFLOW_DOCKER=1 게이트: 커밋된 HEAD 를 임시 디렉터리에 git clone --no-local → RUNLOOM_PROJECT=runloom-e2e-<랜덤>·WORKFLOW_PORT=<빈 포트>(step 지시의 RUNLOOM_PORT 대신 ADR 고정 이름) 로 install.sh → .env 0600·토큰 미출력·/healthz ok·mode selfhost → httpx 로 /login(OPERATOR_TOKEN) → 종류 등록 → down(볼륨 유지)·install.sh 재실행 → 보존 → exec -T central backup create·list → 종류 추가 → stop central worker → run --rm -T central restore <이름> --force → up -d → 백업 시점(추가 종류 없음)·pre-restore 백업 확인, finally 에서 그 프로젝트만 down -v --remove-orphans, 이미지는 남김). 실제 Docker Desktop 24.0.2·compose v2.19.1 에서 1 passed 72.6초, 정리 후 runloom-e2e 컨테이너·볼륨 0. 제품·배포 파일 수정 없음. 문서: VERIFICATION_LOG 실행 기록, CURRENT_HANDOFF phase 10 완료·다음 11-real-repo, MVP_PLAN 7절 배포 행, SELFHOST 상태 줄(실제 Docker 확인, 러너 launchd 미확인 — WORKFLOW_DOCKER 이름은 SELFHOST 의 환경변수 실재 테스트 때문에 문서에 쓰지 않음). pytest 2464 passed/55 skipped, ruff 통과, WORKFLOW_E2E=1 e2e 54 passed/1 skipped. 다음 주의: Docker Desktop 이 꺼져 있으면 셀프호스트 e2e 는 fail(skip 아님), 러너 launchd 실제 적재·첫 빌드 시간·스키마 버전 변경 업그레이드는 미검증, service 병합은 사용자 지시 때",
+      "completed_at": "2026-09-27T10:26:32+0900"
     }
   ],
   "created_at": "2026-09-27T09:23:25+0900"
