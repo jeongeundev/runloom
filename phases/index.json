@@ -56,6 +56,10 @@
       "dir": "10-selfhost",
       "status": "completed",
       "completed_at": "2026-09-27T10:26:32+0900"
+    },
+    {
+      "dir": "11-github-app",
+      "status": "pending"
     }
   ]
 }

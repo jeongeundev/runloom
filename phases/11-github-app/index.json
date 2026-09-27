@@ -1,0 +1,56 @@
+{
+  "project": "workflow",
+  "phase": "11-github-app",
+  "steps": [
+    {
+      "step": 0,
+      "name": "app-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "secret-store",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "app-auth",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "source-config",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "connector-remote",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "intake-all",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "auto-match",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "connect-flow",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "connect-ui",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "app-verify",
+      "status": "pending"
+    }
+  ]
+}
