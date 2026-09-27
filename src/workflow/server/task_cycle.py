@@ -112,6 +112,12 @@ def source_match(conn: Connection, task: Row) -> SourceMatch | None:
     return _match(config, repo.list_session_agents(conn, task["session_id"]), intake)
 
 
+def match_for_source(conn: Connection, session_id: str, config: GitHubSourceConfig) -> SourceMatch:
+    """소스 단위 자동 매칭 — 연결 화면의 저장소 카드. 이슈가 없으니 담당 연결 없이(담당자 없는 이슈 기준) 계산한다."""
+    local = [_match_agent(a) for a in repo.list_session_agents(conn, session_id) if a["connection_type"] == "local"]
+    return match_source(config, local)
+
+
 def _match(config: GitHubSourceConfig, agents: list[Row], intake: IntakeFacts) -> SourceMatch:
     local = [_match_agent(a) for a in agents if a["connection_type"] == "local"]
     return match_source(config, local, assignee_ids=intake.assignee_ids or (), bindings=intake.bindings)

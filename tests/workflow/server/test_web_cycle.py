@@ -81,14 +81,15 @@ def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, 
 
     text = page(operator, "/operator/github")
 
-    assert "토큰 설정됨" in text
+    assert "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 연결됨" in text
     assert "acme/billing" in text and SOURCE in text
-    # 설정·미리보기·담당 연결 폼은 JSON API 로 보낸다 — 토큰 입력칸은 없다
+    # 설정·미리보기·담당 연결 폼은 저장소 카드의 접힌 고급 설정에서 JSON API 로 보낸다 — 토큰 입력칸은 접힌 고급 연결 폼 하나뿐,
+    # 값을 채우지 않는다(phase 11 step 8)
     assert 'data-json-action="/github/sources/preview"' in text
     assert f'data-json-action="/github/sources/{SOURCE}"' in text and 'data-json-method="PUT"' in text
     assert f'data-json-action="/github/sources/{SOURCE}/stop"' in text
     assert f'data-json-action="/github/sources/{SOURCE}/assignees"' in text
-    assert 'name="token"' not in text.split("<main", 1)[1]
+    assert re.findall(r'<input[^>]*name="token"[^>]*>', text) == ['<input type="password" id="gh-token" name="token" autocomplete="off" required>']
     assert "kim-dev" in text and FIX in text  # 담당 연결
     # 실제 업무 목록 — 원본 링크는 저장소 이름·번호로 만든다, Task 상태·대기 사유와 함께
     assert 'href="https://github.com/acme/billing/issues/1"' in text
@@ -100,7 +101,7 @@ def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, 
 def test_github_page_without_token_says_so(operator, settings, app):
     app.state.settings = dataclasses.replace(settings, github_token="")
     text = page(operator, "/operator/github")
-    assert "토큰 없음" in text and "WORKFLOW_GITHUB_TOKEN" in text
+    assert "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 없음" in text
 
 
 def test_sidebar_links_github_page_for_operator(operator):

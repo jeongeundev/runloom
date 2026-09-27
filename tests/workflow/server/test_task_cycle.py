@@ -447,6 +447,19 @@ def test_fix_agent_without_a_single_profile_waits(auto_source, conn, worker):
     assert blocked_codes(conn, task_id) == ["profile_unmatched"]
 
 
+def test_match_for_source_is_the_source_level_match_for_the_connect_screen(auto_source, conn):
+    """phase 11 step 8 — 저장소 카드의 러너 매칭 상태. 이슈 없이(담당자 없음) 소스 설정과 러너 보고만으로 계산한다."""
+    source = repo.get_github_source(conn, SESSION, SOURCE)
+    match = task_cycle.match_for_source(conn, SESSION, source)
+    assert (match.workflow_repository_id, match.fix_agent_id, match.review_agent_id,
+            match.fix_verification_profile_id, match.blockers) == ("billing", FIX, REVIEW, "vp-pytest", ())
+
+    _report(conn, REG_FIX, auto_source["billing"], "billing", ["vp-pytest"], "acme/other")
+    _report(conn, REG_REVIEW, auto_source["billing"], "billing", [], "acme/other")
+    match = task_cycle.match_for_source(conn, SESSION, source)
+    assert [b.code for b in match.blockers] == ["repository_unmatched"]
+
+
 def test_evaluate_collects_every_blocker_for_one_task(cycle, conn, settings):
     task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], state="closed")
     readiness = task_cycle.evaluate(conn, repo.get_task(conn, task_id), now=NOW, settings=settings)

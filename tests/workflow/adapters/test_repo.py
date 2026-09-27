@@ -1626,6 +1626,17 @@ def test_source_cursor_is_saved_per_source_and_scoped(seeded):
         repo.get_source_cursor(seeded, OTHER_SESSION, SOURCE)
 
 
+def test_source_synced_at_is_the_last_cursor_save(seeded):
+    """phase 11 step 8 — 연결 화면의 "마지막 동기화". 커서를 저장한(수집이 끝난) 시각이고, 설정 변경은 바꾸지 않는다."""
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    assert repo.get_source_synced_at(seeded, SESSION, SOURCE) is None
+    repo.save_source_cursor(seeded, SESSION, SOURCE, "c", LATER)
+    repo.save_github_source(seeded, SESSION, _source(config_revision=2), NOW)
+    assert repo.get_source_synced_at(seeded, SESSION, SOURCE) == LATER
+    with pytest.raises(NotFound):
+        repo.get_source_synced_at(seeded, OTHER_SESSION, SOURCE)
+
+
 def _link(issue: int, pr: int, merged_at: str = "2026-08-02T00:00:00Z") -> IssuePrLink:
     return IssuePrLink(issue_number=issue, issue_title=f"이슈 {issue}", issue_opened_at="2026-08-01T00:00:00Z",
                        pr_number=pr, pr_merged_at=merged_at)

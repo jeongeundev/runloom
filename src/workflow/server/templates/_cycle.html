@@ -46,6 +46,12 @@
     {% for b in cycle.blockers %}<li data-blocker="{{ b.code }}">{{ b.reason }} <span class="small">· {{ b.actor_label }}</span></li>{% endfor %}
   </ul>
   {% endif %}
+  {% if cycle.can_delegate %}
+  <form method="post" action="/tasks/{{ task.task_id }}/delegate" class="actions">
+    <button class="btn" type="submit">에이전트에게 맡기기</button>
+    <span class="action-note">실행 지시를 남기고 준비되면 바로 시작합니다. 아직 못 시작하면 위 사유가 풀리는 대로 워커가 시작합니다.</span>
+  </form>
+  {% endif %}
 
   {% if cycle.review %}
   {% set rv = cycle.review %}

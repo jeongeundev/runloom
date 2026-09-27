@@ -28,6 +28,18 @@ def _choose(
     return None
 
 
+def credential_kind(source: GitHubSourceConfig, settings: Settings, secrets: SecretStore) -> str | None:
+    """`client_for` 가 이 소스에 쓸 자격의 종류 — `app`·`pat`·`env`·None(수집 안 함). 연결 화면 표시용이라 값은 돌려주지
+    않고 App 은 파일이 있는지만 본다."""
+    if source.installation_id is not None and all(
+        secrets.exists(name) for name in (secret_store.GITHUB_APP_INFO, secret_store.GITHUB_APP_PRIVATE_KEY)
+    ):
+        return "app"
+    if (secrets.read(secret_store.GITHUB_TOKEN) or "").strip():
+        return "pat"
+    return "env" if settings.github_token else None
+
+
 def client_for(
     source: GitHubSourceConfig,
     settings: Settings,

@@ -1,5 +1,5 @@
 {# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 세션이 등록한 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록과 다음 행동 버튼.
-   랜딩은 landing.html. selfhost 는 fixture `업무 가져오기` 를 숨긴다. 등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `업무 가져오기` 는 비활성이다 (phase 5 step 2·5·6). #}
+   랜딩은 landing.html. selfhost 는 fixture `업무 가져오기` 를 숨긴다. 지시 전 GitHub 업무는 운영자에게 [에이전트에게 맡기기] (phase 11 step 8). 등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `업무 가져오기` 는 비활성이다 (phase 5 step 2·5·6). #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}업무 — Runloom{% endblock %}
@@ -54,6 +54,7 @@
   <div class="card">
     <div class="card-title"><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a></div>
     <div class="status-line" style="margin:0">{{ st.badge(t.status.label) }}<span class="reason">{{ t.status.reason }}</span><span class="small">{{ t.created_at|ago(now) }}</span></div>
+    {% if is_operator and t.delegatable %}<form method="post" action="/tasks/{{ t.task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
   </div>
   {% endfor %}
 </div>

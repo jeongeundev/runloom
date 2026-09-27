@@ -1,5 +1,6 @@
 # ruff: noqa: F811 — test_task_cycle 픽스처(cycle)를 가져와 인자로 쓴다
-"""GitHub 연결 경로 — App 만들기·callback·setup·PAT·[에이전트에게 맡기기] (phase 11 step 7, ADR-0017, ARCHITECTURE "경로").
+"""GitHub 연결 경로 — App 만들기·callback·setup·PAT·[에이전트에게 맡기기] (phase 11 step 7, ADR-0017, ARCHITECTURE "경로")
+와 연결 화면·[에이전트에게 맡기기] 버튼 (step 8).
 
 실제 GitHub 는 부르지 않는다 — `app.state.github_transport` 에 가짜 GitHub(MockTransport)를 넣는다. 개인 키는 테스트 안에서
 만든다. state 는 쿠키 `wf_gh_state`(서명·발급 시각 포함)와 쿼리를 비교한다. 비밀값은 응답·로그·DB 어디에도 없다.
@@ -28,6 +29,7 @@ from workflow.server.auth import SESSION_COOKIE, sign_session
 from .test_task_cycle import SESSION as CYCLE_SESSION
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     SOURCE,
+    auto_source,
     config,
     cycle,
     direct_shop_task,
@@ -498,3 +500,162 @@ def test_delegate_needs_the_owning_operator(cycle_op, app, conn):
     conn.commit()
     error(cycle_op.post(f"/tasks/{task_id}/delegate"), 403, "forbidden")
     assert delegated(conn, task_id) == (None, None)
+
+
+# --- 연결 화면 (phase 11 step 8) ------------------------------------------------------------------------
+# 기본 화면(접힌 <details> 밖)에는 내부 ID·토큰 입력 칸이 없다. 저장소 카드는 `data-source-card`, 고급 설정은 카드 안에 접혀 있다.
+
+ID_FIELDS = ("workflow_repository_id", "fix_verification_profile_id", "review_agent_id", "default_fix_agent_id",
+             "github_user_id", "start_at", "token")
+
+
+def visible(text: str) -> str:
+    """본문에서 접힌 영역(<details>)을 뺀 것 — 템플릿은 details 를 겹치지 않는다."""
+    return re.sub(r"<details\b.*?</details>", "", text.split("<main", 1)[1], flags=re.S)
+
+
+def folded(text: str, summary: str) -> str:
+    for block in re.findall(r"<details\b.*?</details>", text, flags=re.S):
+        if summary in block.split("</summary>", 1)[0]:
+            return block
+    raise AssertionError(f"접힌 영역 없음: {summary}")
+
+
+def card_of(text: str, source_id: str) -> str:
+    return text.split(f'data-source-card="{source_id}"', 1)[1].split("</section>", 1)[0]
+
+
+def connect_app(op, secrets, pem) -> None:
+    save_app(secrets, pem)
+    response = op.get("/operator/github/app/setup", params={"installation_id": 42}, follow_redirects=False)
+    assert response.status_code == 303, response.text
+
+
+def test_page_before_connecting_is_one_button_and_a_folded_token_form(op):
+    text = op.get("/operator/github").text
+
+    shown = visible(text)
+    assert 'href="/operator/github/app/new"' in shown and "GitHub 연결" in shown
+    for name in ID_FIELDS:
+        assert f'name="{name}"' not in shown, name
+    token = folded(text, "고급 — 토큰으로 연결")
+    assert 'action="/operator/github/token"' in token and 'type="password"' in token
+    assert "저장소 추가/변경" not in text and "data-source-card" not in text
+
+
+def test_page_after_app_setup_shows_a_card_per_repository(op, conn, secrets, pem):
+    connect_app(op, secrets, pem)
+
+    text = op.get("/operator/github").text
+
+    shown = visible(text)
+    for name in ID_FIELDS:
+        assert f'name="{name}"' not in shown, name
+    assert f'href="https://github.com/apps/{SLUG}/installations/new"' in shown and "저장소 추가/변경" in shown
+    assert f"GitHub App <span class=\"mono\">{SLUG}</span>" in shown and "kim-dev" in shown
+    sources = names(conn, op_session(op))
+    assert sorted(sources) == ["acme/billing", "acme/shop"]
+    for full_name, source in sources.items():
+        card = card_of(text, source.source_id)
+        assert full_name in card
+        assert "runloom" in card  # 트리거 라벨
+        assert "가져온 이슈 0건" in card and "아직 동기화 전" in card
+        assert "GitHub App 설치" in card  # 수집 자격 — 종류만
+        assert "이 저장소를 등록한 러너 없음" in card and "register" in card
+        assert f'data-json-action="/operator/github/sources/{source.source_id}/baseline"' in card
+        advanced = folded(card, "고급 설정")
+        assert 'name="workflow_repository_id"' in advanced and "비워 두면 자동" in advanced
+        assert 'name="intake" value="all_open"' in advanced
+        assert f'data-json-action="/github/sources/{source.source_id}/assignees"' in advanced
+
+
+def test_card_shows_the_automatically_matched_agents_and_profile(client, auto_source, conn):
+    repo.mark_operator(conn, CYCLE_SESSION)
+    client.cookies.set(SESSION_COOKIE, sign_session(CYCLE_SESSION, "test-session-secret"))
+
+    card = card_of(client.get("/operator/github").text, SOURCE)
+
+    for value in ("billing", "agent-fix", "agent-review", "vp-pytest"):
+        assert f'<span class="mono">{value}</span> (자동)' in card, value
+    assert "러너 없음" not in card
+
+
+def test_card_says_when_no_credential_can_collect(op, conn, app):
+    op.post("/operator/github/token", data={"token": PAT, "repository_full_name": "acme/lib"})
+    (source,) = names(conn, op_session(op)).values()
+    app.state.secrets.delete(secret_store.GITHUB_TOKEN)
+
+    card = card_of(op.get("/operator/github").text, source.source_id)
+    assert "GitHub 자격 없음" in card
+
+
+def test_secret_status_is_only_connected_or_missing(op, conn, secrets, pem):
+    connect_app(op, secrets, pem)
+    op.post("/operator/github/token", data={"token": PAT, "repository_full_name": "acme/lib"})
+
+    text = op.get("/operator/github").text
+
+    assert "붙여 넣은 토큰 연결됨" in text and "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 없음" in text
+    for secret in (PAT, CLIENT_SECRET, WEBHOOK_SECRET, INSTALL_TOKEN, pem.splitlines()[1]):
+        assert secret not in text
+
+
+# --- [에이전트에게 맡기기] 버튼 (step 8) ---------------------------------------------------------------
+
+
+def delegate_form(task_id: str) -> str:
+    return f'action="/tasks/{task_id}/delegate"'
+
+
+def test_delegate_button_only_for_open_tasks_without_an_instruction(cycle_op, conn):
+    waiting = import_issue(conn, 1, labels=[])
+    labelled = import_issue(conn, 2, labels=["runloom"])
+    issue_id = repo.get_source_issue_by_task(conn, CYCLE_SESSION, labelled)["github_issue_id"]
+    repo.mark_issue_delegated(conn, session_id=CYCLE_SESSION, source_id=SOURCE, github_issue_id=issue_id,
+                              by="label", now="2026-10-06T12:00:00Z")
+    closed = import_issue(conn, 3, labels=[])
+    conn.execute("UPDATE tasks SET finished_at = ? WHERE task_id = ?", ("2026-10-06T12:00:00Z", closed))
+    conn.commit()
+
+    for url in ("/tasks", "/operator/github"):
+        text = cycle_op.get(url).text
+        assert delegate_form(waiting) in text and "에이전트에게 맡기기" in text, url
+        assert delegate_form(labelled) not in text and delegate_form(closed) not in text, url
+
+    detail = cycle_op.get(f"/tasks/{waiting}").text
+    assert delegate_form(waiting) in detail
+    assert 'data-blocker="not_delegated"' in detail and "실행 지시 전" in detail
+    assert delegate_form(labelled) not in cycle_op.get(f"/tasks/{labelled}").text
+
+
+def test_list_groups_undelegated_tasks_as_waiting_for_an_instruction(cycle_op, conn):
+    waiting = import_issue(conn, 1, labels=[], assignee_ids=[], assignee_logins=[])
+    conn.execute("UPDATE tasks SET status = ?, status_reason = ? WHERE task_id = ?",
+                 ("대기", "실행 지시 전 — [에이전트에게 맡기기] 또는 `runloom` 라벨 · 다른 사유", waiting))
+    conn.commit()
+
+    home = cycle_op.get("/tasks").text
+    card = home.split(f'href="/tasks/{waiting}"', 2)[2].split("</div>\n  </div>", 1)[0]
+    assert "지시 전" in card and "다른 사유" not in card
+    assert "다른 사유" in cycle_op.get(f"/tasks/{waiting}").text  # 다른 사유는 상세에서
+
+
+def test_no_delegate_button_for_filtered_sources_or_non_operators(client, cycle, conn):
+    task_id = import_issue(conn, 1)  # filtered 소스 — 수집 = 지시
+    repo.mark_operator(conn, CYCLE_SESSION)
+    client.cookies.set(SESSION_COOKIE, sign_session(CYCLE_SESSION, "test-session-secret"))
+    assert "/delegate" not in client.get("/tasks").text
+    assert "/delegate" not in client.get(f"/tasks/{task_id}").text
+
+
+def test_detail_hides_the_delegate_button_from_a_non_operator(cycle_op, conn):
+    task_id = import_issue(conn, 1, labels=[])
+    conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (CYCLE_SESSION,))
+    conn.commit()
+    assert delegate_form(task_id) not in cycle_op.get(f"/tasks/{task_id}").text
+    assert delegate_form(task_id) not in cycle_op.get("/tasks").text
+
+
+def test_demo_home_without_github_is_unchanged(client):
+    text = client.get("/tasks").text
+    assert "/delegate" not in text and "지시 전" not in text

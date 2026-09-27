@@ -1583,6 +1583,11 @@ def get_source_cursor(conn: Connection, session_id: str, source_id: str) -> str 
     return _source_row(conn, session_id, source_id)["cursor"]
 
 
+def get_source_synced_at(conn: Connection, session_id: str, source_id: str) -> str | None:
+    """마지막으로 커서를 저장한 시각 — 수집이 끝난(또는 페이지를 넘긴) 때. 실패한 수집은 바꾸지 않는다."""
+    return _source_row(conn, session_id, source_id)["cursor_updated_at"]
+
+
 def bind_assignee(conn: Connection, session_id: str, binding: AssigneeBinding, now: str) -> None:
     """`(source_id, github_user_id)` 당 하나 — 다시 부르면 Agent·login 을 바꾼다. 소스·Agent 가 없으면 NotFound.
     Agent 능력(`code.fix {repository_id}`) 검사는 서버 몫."""

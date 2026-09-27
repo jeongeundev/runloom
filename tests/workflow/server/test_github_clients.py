@@ -15,7 +15,7 @@ from workflow.adapters import secret_store
 from workflow.adapters.github_client import GitHubRepositoryNotAllowed, IssueCursor
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubSourceConfig
-from workflow.server.github_clients import SourceClients, client_for
+from workflow.server.github_clients import SourceClients, client_for, credential_kind
 from workflow.server.settings import Settings
 
 REPO = "acme/billing"
@@ -167,3 +167,16 @@ def test_client_repr_and_errors_hold_no_secret(tmp_path, pem):
     for client in (clients(source(installation_id=42)), clients(source(source_id="ghs-00000002"))):
         assert PAT not in repr(client) and ENV_TOKEN not in repr(client) and "PRIVATE" not in repr(client)
     assert PAT not in repr(clients) and "PRIVATE" not in repr(clients)
+
+
+def test_credential_kind_follows_the_client_order_without_reading_values_into_the_answer(tmp_path, pem):
+    """phase 11 step 8 — 연결 화면이 소스마다 "어떤 자격으로 수집하는지"(값 없이 종류만)를 보인다. 순서는 client_for 와 같다."""
+    store = SecretStore(tmp_path / "secrets")
+    bare = settings(tmp_path, github_token="")
+    assert credential_kind(source(installation_id=42), bare, store) is None
+    assert credential_kind(source(), settings(tmp_path), store) == "env"
+    store.write(secret_store.GITHUB_TOKEN, PAT)
+    assert credential_kind(source(installation_id=42), bare, store) == "pat"  # App 없으면 PAT 로 내려간다
+    with_app(store, pem)
+    assert credential_kind(source(installation_id=42), bare, store) == "app"
+    assert credential_kind(source(), bare, store) == "pat"  # 설치 소스가 아니면 App 을 쓰지 않는다

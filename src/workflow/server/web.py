@@ -1592,14 +1592,16 @@ def operator_github_page(
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """GitHub 연결(ADR-0014) — 토큰 있음/없음·소스 설정·미리보기·담당 연결·실제 업무 목록·열린 사람 요청.
-    쓰기는 화면 스크립트가 운영자 JSON API(`/github/sources…`·`/human-requests…`)로 한다 — 화면 전용 쓰기 경로가 없다."""
+    """GitHub 연결(ADR-0014·0017) — 연결 전엔 [GitHub 연결] 버튼, 연결 뒤엔 저장소 카드(동기화·러너 매칭·트리거 라벨)와
+    접힌 고급 설정·실제 업무 목록·열린 사람 요청. 비밀은 연결됨/없음만. 설정 쓰기는 화면 스크립트가 운영자 JSON API
+    (`/github/sources…`·`/human-requests…`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 으로 한다."""
     now = utc_now()
     base = _base(request, conn, session_id, now)
     if not base["is_operator"]:
         raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
     return _render(
-        "operator_github.html", **base, **views.github_context(conn, session_id, now=now, settings=_settings(request)),
+        "operator_github.html", **base,
+        **views.github_context(conn, session_id, now=now, settings=_settings(request), secrets=request.app.state.secrets),
     )
 
 
