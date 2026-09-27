@@ -2,7 +2,7 @@
 
 갱신일: 2026-09-27. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 실제 OpenArchive 기준선 가져오기(사용자 지시 후) → `11-real-repo`
+## 다음 작업: `11-github-app`(GitHub App 버튼 연결) → 실제 OpenArchive 기준선 가져오기(사용자 지시 후) → `12-real-repo`
 
 [MVP 계획](product/MVP_PLAN.md)이 최신 기준이다(2026-09-25~26 사용자 합의). 목표: **2026-10-02 까지 Runloom 단독으로 OpenArchive(`jeongeundev/OpenArchive`) 실제 이슈를 순환 처리하고, 셀프호스트로 배포하며, 도입 전후를 지표로 보여준다.**
 
@@ -11,7 +11,7 @@
 다음 순서:
 1. `feat-9-measure` → `service` `--no-ff` 병합(사용자 지시 때).
 2. 실제 OpenArchive 기준선 가져오기 — **사용자 지시 후에만**. 토큰에 Issues·Pull requests 읽기 권한이 필요하다([GitHub 런북](github/README.md) 1절). 도입 전 경계는 소스 연결 시각(`github_sources.created_at`)이다.
-3. `10-selfhost` 는 2026-09-27 step 0~8 완료(`feat-10-selfhost`, `service` 병합 전 — 사용자 지시 때 `--no-ff`). 한 명령 설치(`deploy/selfhost/install.sh`)·고정 워크스페이스 로그인(`WORKFLOW_MODE=selfhost`)·백업 CLI·러너 launchd, [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)·[SELFHOST](SELFHOST.md). 실제 Docker 로 설치·재시작 보존·백업 복원 확인([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-27 phase 10 절). 러너 launchd 실제 적재는 미확인. 다음은 `11-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). `11-real-repo` 에 넣을 것(2026-09-27 확인·합의): 새 업무의 기준 커밋은 러너 `register` 때 읽은 HEAD(`connector/cli.py:124` → `agents.base_commit`)로 고정돼, 등록 뒤 생긴 커밋(직접 작업·병합·pull)을 따라가지 않는다(`server/worker.py:1203`). 러너가 현재 HEAD 를 중앙에 다시 보고해 그 값을 기준으로 쓰게 고친다.
+3. `10-selfhost` 는 2026-09-27 step 0~8 완료(`feat-10-selfhost`, `service` 병합 전 — 사용자 지시 때 `--no-ff`). 한 명령 설치(`deploy/selfhost/install.sh`)·고정 워크스페이스 로그인(`WORKFLOW_MODE=selfhost`)·백업 CLI·러너 launchd, [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)·[SELFHOST](SELFHOST.md). 실제 Docker 로 설치·재시작 보존·백업 복원 확인([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-27 phase 10 절). 러너 launchd 실제 적재는 미확인. 다음은 `11-github-app`(2026-09-27 계획 — GitHub 연결 화면의 내부 ID·`.env` 토큰 입력을 사용자 자신의 GitHub App 버튼 연결·열린 이슈 전부 가져오기·지시 실행·러너 원격 자동 매칭으로 바꾼다, [ADR-0017](adr/0017-github-app-connection.md)·ARCHITECTURE "GitHub App 연결 — phase 11", `feat-11-github-app`), 그 뒤 `12-real-repo`(알림 웹훅·검증 환경변수 선언·worktree 에 없는 `.venv`/`node_modules` 처리·실연동 3건 이상). `12-real-repo` 에 넣을 것(2026-09-27 확인·합의): 새 업무의 기준 커밋은 러너 `register` 때 읽은 HEAD(`connector/cli.py:124` → `agents.base_commit`)로 고정돼, 등록 뒤 생긴 커밋(직접 작업·병합·pull)을 따라가지 않는다(`server/worker.py:1203`). 러너가 현재 HEAD 를 중앙에 다시 보고해 그 값을 기준으로 쓰게 고친다.
 
 phase 9 e2e 에서 발견한 결함 — 수정됨(step 13): 재작업 상한 1 에서 수정 요청 검토가 재작업을 시작시킨 뒤, 재작업 결과가 판정되기 전 tick 이 같은 검토를 다시 평가하면 `domain/task_followup.py` `_after_review` 가 `rounds_used(1) >= 상한(1)` 으로 `rework_limit_reached` 사람 요청을 하나 더 만들던 문제. 이제 그 검토가 이미 재작업(`rework:{검토 실행}`, 워커가 수정 Task 실행의 `start_key` 로 `handled_cause_keys` 에 넣음)을 일으켰으면 상한 판단 전에 `none`("이미 재작업을 시작한 검토") 을 낸다. 회귀: `tests/workflow/domain/test_task_followup.py`·`tests/workflow/server/test_task_cycle.py`, e2e `tests/e2e/test_metrics.py` 는 사람 요청 0·개입 1 로 단정.
 

@@ -33,3 +33,5 @@
 - step 1~13 은 대역(MockTransport·임시 Git 저장소·fake 도구)으로 검증하고, 실제 GitHub 쓰기·실제 Agent 는 step 16 에서만 한다. 실제 저장소·이슈·댓글 허가·비용 범위가 없으면 step 16 만 blocked 이다.
 - DB 는 phase 7(`SCHEMA_VERSION` 4) 데이터를 보존하는 트랜잭션 마이그레이션으로 바꾼다(step 4). 기존 세션에 새 내장 종류·규칙을 seed 하며, 같은 이름의 사용자 정의 종류가 있으면 마이그레이션 전체를 되돌리고 충돌 목록을 알린다.
 - 공개 데모(`main`)·n8n 입구·callback 계약은 바뀌지 않는다.
+
+> 범위 갱신(2026-09-27, [ADR-0017](0017-github-app-connection.md)): GitHub App 으로 연결한 소스(`intake: all_open`)는 설치 저장소의 열린 이슈를 **전부 목록에 가져오되 실행은 지시한 것만**([에이전트에게 맡기기] 또는 트리거 라벨) 한다. 결정 1 의 "OAuth·GitHub App 은 범위 밖"과 결정 2 의 "범위 밖 백로그는 받지 않는다"는 이 소스에 한해 바뀌고, 기존 `filtered` 소스·환경변수 토큰은 이 문서 그대로다.

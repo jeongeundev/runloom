@@ -497,7 +497,7 @@ def test_selfhost_md_covers_every_section():
         "## 업그레이드", "## 제거", "## 문제 해결", "## 알려진 한계",
     ):
         assert heading in text, heading
-    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "11-real-repo"):
+    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "12-real-repo"):
         assert needle in text, needle
 
 

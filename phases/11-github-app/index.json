@@ -5,7 +5,9 @@
     {
       "step": 0,
       "name": "app-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T17:58:46+0900",
+      "summary": "ADR-0017 신설(사용자 자신의 GitHub App manifest→설치, App JWT→설치 토큰 메모리 캐시, 0600 SecretStore WORKFLOW_SECRET_DIR 기본 data/secrets·compose /data/secrets, intake all_open+지시 실행(POST /tasks/{id}/delegate·trigger_label runloom), 러너 found.github_repository 자동 매칭, 웹훅 없음, PAT 고급 경로, 기존 filtered 소스·환경변수 호환) + ADR-0014 범위 갱신 줄, AGENTS.md 비밀값 규칙(환경변수 또는 비밀 저장소, 백업 제외), ARCHITECTURE \"GitHub App 연결 — phase 11\"(흐름·경로 표·state 쿠키 wf_gh_state·manifest·비밀 파일 이름·소스 새 칸·클라이언트 선택 순서·자동 매칭 대기 코드·source_issues delegated_at/by v7·시그니처 표), GLOSSARY phase 11 용어, CURRENT_HANDOFF·MVP_PLAN·SELFHOST 의 phase 순서 11-github-app → 12-real-repo(tests/test_selfhost_files.py 고정 문자열도 12 로). 검증: pytest 2464 passed/55 skipped, ruff 통과. 주의: filtered 소스는 세 ID 필수·assignee_* 대기 그대로 유지, setup 의 installation_id 는 JWT 로 GET /app/installations/{id} 확인 전 쓰지 않음, setup_action 값·127.0.0.1 hook url 수락·설치 URL state 반환은 공식 문서 미확인."
     },
     {
       "step": 1,
@@ -52,5 +54,6 @@
       "name": "app-verify",
       "status": "pending"
     }
-  ]
+  ],
+  "created_at": "2026-09-27T17:58:46+0900"
 }
