@@ -5,7 +5,9 @@ from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
 from workflow.server.auth import (
+    SELFHOST_SESSION_ID,
     SESSION_COOKIE,
+    ensure_workspace,
     require_connector,
     require_operator,
     require_session,
@@ -186,3 +188,81 @@ def test_require_source_token_rejects_revoked_token(app, conn):
     assert response.status_code == 401
     assert response.json()["code"] == "unauthenticated"
     assert token not in response.text
+
+
+# --- selfhost (phase 10 step 2, ADR-0016 결정 3) — 고정 워크스페이스, 익명 세션 없음 ---------
+
+
+def _selfhost_app(settings):
+    import dataclasses
+
+    from workflow.server.app import create_app
+
+    app = create_app(dataclasses.replace(settings, mode="selfhost"))
+    _install_probe_routes(app)
+    return app
+
+
+def _session_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+
+def test_selfhost_require_session_redirects_to_login_without_creating_session(settings, conn):
+    client = TestClient(_selfhost_app(settings))
+    response = client.get("/_probe/session", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+    assert "set-cookie" not in response.headers
+    assert _session_count(conn) == 0
+
+
+def test_selfhost_require_operator_is_401_without_login(settings, conn):
+    client = TestClient(_selfhost_app(settings))
+    response = client.get("/_probe/operator")
+    assert response.status_code == 401
+    assert response.json()["code"] == "unauthenticated"
+    assert _session_count(conn) == 0
+
+
+def test_selfhost_accepts_only_the_fixed_workspace_cookie(settings, conn):
+    """서명이 맞아도 다른 세션 id(예: demo 에서 쓰던 익명 세션)는 미인증. 고정 워크스페이스는 운영자다."""
+    client = TestClient(_selfhost_app(settings))
+    repo.create_session(conn, "sess-anon", NOW)
+    repo.mark_operator(conn, "sess-anon")
+    client.cookies.set(SESSION_COOKIE, sign_session("sess-anon", SECRET))
+    assert client.get("/_probe/session", follow_redirects=False).status_code == 303
+    assert client.get("/_probe/operator").status_code == 401
+
+    ensure_workspace(conn, NOW)
+    client.cookies.set(SESSION_COOKIE, sign_session(SELFHOST_SESSION_ID, SECRET))
+    assert client.get("/_probe/session").json() == {"session_id": SELFHOST_SESSION_ID}
+    assert client.get("/_probe/operator").json() == {"session_id": SELFHOST_SESSION_ID}
+
+
+def test_selfhost_workspace_cookie_without_row_is_unauthenticated(settings, conn):
+    client = TestClient(_selfhost_app(settings))
+    client.cookies.set(SESSION_COOKIE, sign_session(SELFHOST_SESSION_ID, SECRET))
+    assert client.get("/_probe/session", follow_redirects=False).status_code == 303
+    assert _session_count(conn) == 0
+
+
+def test_ensure_workspace_creates_operator_session_once(conn, app):
+    ensure_workspace(conn, NOW)
+    ensure_workspace(conn, "2026-09-21T00:00:00Z")
+    row = repo.get_session(conn, SELFHOST_SESSION_ID)
+    assert row["is_operator"] == 1
+    assert row["created_at"] == NOW
+    assert _session_count(conn) == 1
+    assert repo.list_kinds(conn, SELFHOST_SESSION_ID)  # 내장 종류 seed — create_session 경로 그대로
+
+
+def test_selfhost_connector_and_source_tokens_unchanged(settings, conn):
+    client = TestClient(_selfhost_app(settings))
+    ensure_workspace(conn, NOW)
+    connector_id, connector_token = exchange(client, conn)
+    assert client.get("/_probe/connector", headers=bearer(connector_token)).json() == {"connector_id": connector_id}
+    token_id, token = repo.issue_source_token(conn, SELFHOST_SESSION_ID, "n8n", "n8n", NOW)
+    assert client.get("/_probe/source", headers=bearer(token)).json() == {
+        "token_id": token_id, "session_id": SELFHOST_SESSION_ID, "source": "n8n",
+    }
+    assert client.get("/_probe/connector").status_code == 401

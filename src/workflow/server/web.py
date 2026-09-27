@@ -15,6 +15,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 from collections.abc import Sequence
@@ -70,7 +71,17 @@ from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
 from workflow.domain.task_sources import Issue, map_issue
 from workflow.server import metrics_api, task_cycle, views
-from workflow.server.auth import get_conn, require_operator, require_session, utc_now
+from workflow.server.auth import (
+    SELFHOST_SESSION_ID,
+    SESSION_COOKIE,
+    ensure_workspace,
+    get_conn,
+    require_operator,
+    require_session,
+    set_session_cookie,
+    utc_now,
+    workspace_session,
+)
 from workflow.server.errors import ApiError
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
@@ -139,6 +150,7 @@ _EMPTY_FORM: dict[str, str] = {
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _env = Environment(loader=FileSystemLoader(TEMPLATE_DIR), autoescape=True)
 _env.filters.update({
@@ -393,10 +405,67 @@ def _start_execution(
 # --- 홈·업무 ----------------------------------------------------------------------
 
 
-@router.get("/", response_class=HTMLResponse)
-def landing(request: Request) -> str:
-    """랜딩 — 세션을 만들지 않는다. `서비스 바로 가기` 가 `/tasks` 로 보낸다."""
+@router.get("/", response_class=HTMLResponse, response_model=None)
+def landing(request: Request, conn: Connection = Depends(get_conn)) -> str | RedirectResponse:
+    """랜딩 — 세션을 만들지 않는다. `서비스 바로 가기` 가 `/tasks` 로 보낸다.
+    selfhost 는 랜딩 없이 로그인 상태면 `/tasks`, 아니면 `/login` 으로 303."""
+    if _settings(request).mode == "selfhost":
+        return RedirectResponse("/tasks" if workspace_session(request, conn) else "/login", status_code=303)
     return _render("landing.html", request=request)
+
+
+# --- selfhost 로그인 (ADR-0016 결정 3) — demo 에는 없는 경로(404) ---------------------------
+
+
+def _require_selfhost(request: Request) -> None:
+    if _settings(request).mode != "selfhost":
+        raise PageError(404, "not_found", "페이지를 찾을 수 없습니다.")
+
+
+@router.get("/login", response_class=HTMLResponse)
+def login_page(request: Request) -> str:
+    _require_selfhost(request)
+    return _render("login.html", request=request, error=None)
+
+
+def _workspace_login(request: Request, conn: Connection, token: str) -> HTMLResponse | RedirectResponse:
+    """`OPERATOR_TOKEN` 과 비교해 맞으면 고정 워크스페이스 쿠키. 입력한 토큰 값은 응답·로그에 넣지 않는다."""
+    throttle = request.app.state.login_throttle
+    if throttle.blocked():
+        logger.warning("로그인 거부: 연속 실패 제한")
+        return HTMLResponse(
+            _render("login.html", request=request, error="로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."),
+            status_code=429,
+        )
+    settings = _settings(request)
+    if not hmac.compare_digest(token.encode(), settings.operator_token.encode()):
+        throttle.fail()
+        logger.warning("로그인 실패")
+        return HTMLResponse(
+            _render("login.html", request=request, error="토큰이 올바르지 않습니다."), status_code=403,
+        )
+    throttle.reset()
+    ensure_workspace(conn, utc_now())
+    redirect = RedirectResponse("/", status_code=303)
+    set_session_cookie(redirect, SELFHOST_SESSION_ID, settings)
+    return redirect
+
+
+@router.post("/login", response_model=None)
+def login(
+    request: Request, token: str = Form(""), conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    _require_selfhost(request)
+    return _workspace_login(request, conn, token)
+
+
+@router.post("/logout")
+def logout(request: Request) -> RedirectResponse:
+    """쿠키만 지운다. 워크스페이스 행은 그대로."""
+    _require_selfhost(request)
+    redirect = RedirectResponse("/login", status_code=303)
+    redirect.delete_cookie(SESSION_COOKIE, httponly=True, samesite="lax")
+    return redirect
 
 
 @router.get("/tasks", response_class=HTMLResponse)
@@ -1534,14 +1603,17 @@ def metrics_page(
     )
 
 
-@router.post("/operator/login")
+@router.post("/operator/login", response_model=None)
 def operator_login(
     request: Request,
     response: Response,
     token: str = Form(""),
-    session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
-) -> RedirectResponse:
+) -> HTMLResponse | RedirectResponse:
+    """demo: 이 쿠키 세션을 운영자로 표시. selfhost: `/login` 과 같은 동작."""
+    if _settings(request).mode == "selfhost":
+        return _workspace_login(request, conn, token)
+    session_id = require_session(request, response, conn)
     expected = _settings(request).operator_token
     if not hmac.compare_digest(token.encode(), expected.encode()):
         raise PageError(403, "forbidden", "운영자 토큰이 올바르지 않습니다.")

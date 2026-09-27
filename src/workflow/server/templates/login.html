@@ -1,0 +1,22 @@
+{# 셀프호스트 로그인 (`/login`, ADR-0016 결정 3) — 토큰 한 칸. 앱 셸 없음. 입력한 토큰 값은 다시 싣지 않는다. #}
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로그인 — Runloom</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="main">
+  <div class="main-inner">
+    <h1>Runloom 로그인</h1>
+    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="/login">
+      <label>운영자 토큰 <input type="password" name="token" autocomplete="current-password" required></label>
+      <button class="btn" type="submit">로그인</button>
+    </form>
+  </div>
+</main>
+</body>
+</html>

@@ -21,7 +21,9 @@
     {
       "step": 2,
       "name": "workspace-login",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:34:58+0900",
+      "summary": "auth.py: SELFHOST_SESSION_ID='sess-selfhost'·workspace_session·ensure_workspace(create_session+mark_operator 1회)·set_session_cookie·LoginThrottle(60초 안 5회 실패→429, 성공 시 초기화, app.state.login_throttle)·require_session(selfhost 미로그인→HTTPException 303 Location /login, 세션 생성 없음)·require_operator(selfhost 미로그인→401 unauthenticated, 로그인=운영자); web.py: GET/POST /login·POST /logout(demo 404), POST /operator/login 은 selfhost 에서 /login 과 같은 동작(ARCHITECTURE 의 '404' 를 갱신), selfhost '/' → 로그인 상태면 /tasks 아니면 /login, 실패는 logger 에 '로그인 실패'만; 최소 login.html 신설; ARCHITECTURE 셀프호스트 절에 시도 제한 값·구현 이름 기록. 테스트: test_auth 6·test_web 8 추가, pytest 2399 passed/54 skipped, ruff 통과. 다음 step 주의: login.html 은 앱 셸 없는 최소 화면(step 3 이 다듬음), 화면 라우트=require_session(303)·JSON API=require_operator(401)로 갈림, _base 의 is_operator 는 selfhost 에서 항상 True, 라이브 조각 폴링(/tasks/{id}/live)은 로그아웃 뒤 303 → 로그인 화면을 받음"
     },
     {
       "step": 3,

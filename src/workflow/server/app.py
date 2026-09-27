@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import connect, init_schema
 from workflow.server import github_api, human_api, inbound_api, machine_api, metrics_api, web
+from workflow.server.auth import LoginThrottle
 from workflow.server.errors import install_error_handlers
 from workflow.server.settings import Settings, load_settings
 
@@ -37,6 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 요청마다 새 연결 (auth.get_conn). sqlite3 연결을 스레드 간 공유하지 않는다.
     app.state.conn_factory = lambda: connect(settings.db_path)
     app.state.store = ArtifactStore(settings.artifact_dir)
+    app.state.login_throttle = LoginThrottle()  # selfhost 로그인 연속 실패 제한 — 프로세스 메모리
     app.state.github_client = None  # 기준선 가져오기 — None 이면 요청 때 Settings 로 만든다. 테스트는 가짜로 바꾼다
     install_error_handlers(app)
     app.include_router(machine_api.router)
