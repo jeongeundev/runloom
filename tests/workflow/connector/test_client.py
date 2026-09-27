@@ -107,6 +107,23 @@ def test_report_registration_matches_server_model_and_omits_local_commands(fake,
     assert body["connector_id"] == CONNECTOR_ID
     assert body["verification_profile_ids"] == ["vp-pytest"]
     assert "repo_path" not in json.dumps(body) and "pytest -q" not in json.dumps(body)
+    assert "agent_name" not in body  # 값이 없으면 보내지 않는다 (구버전 서버 호환)
+
+
+def test_report_registration_sends_agent_name_when_given(fake, client):
+    client.report_registration(CONNECTOR_ID, {
+        "local_registration_id": "openarchive",
+        "tool": "claude",
+        "repository_id": "jeongeundev/OpenArchive",
+        "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
+        "verification_profile_ids": [],
+        "discovered": {"found": {}, "not_read": [], "verification_level": "설정 발견"},
+        "agent_name": "OpenArchive",
+    })
+
+    body = fake.registrations[0]
+    RegistrationRequest.model_validate(body)
+    assert body["agent_name"] == "OpenArchive"
 
 
 # --- events ----------------------------------------------------------------------------

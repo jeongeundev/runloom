@@ -143,6 +143,8 @@ class CentralClient:
             "verification_profile_ids": list(registration["verification_profile_ids"]),
             "discovered": registration["discovered"],
         }
+        if registration.get("agent_name"):  # 값이 있을 때만 — 구버전 서버(extra=forbid)와 호환
+            body["agent_name"] = registration["agent_name"]
         return self._call("POST", "/connector/registrations", json=body).json()
 
     def post_event(self, event: ExecutionEvent) -> EventAck:
