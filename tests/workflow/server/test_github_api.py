@@ -325,6 +325,117 @@ def test_bind_assignee_checks_agent_ownership_capability_and_profile(op, conn):
     assert op.get(f"/github/sources/{source['source_id']}").json()["assignees"] == []
 
 
+# --- 새 칸: intake·trigger_label·기본 수정 Agent·자동 결정 칸 (phase 11 step 3) ---------------------
+
+
+FIXED_NOW = "2026-10-07T01:02:03.000000Z"
+
+
+@pytest.fixture
+def fixed_now(monkeypatch):
+    monkeypatch.setattr("workflow.server.github_api.utc_now", lambda: FIXED_NOW)
+    return FIXED_NOW
+
+
+def test_all_open_source_needs_only_repository_and_run_mode(op, operator, conn, fixed_now):
+    response = op.post("/github/sources", json={
+        "repository_full_name": "acme/billing", "intake": "all_open", "run_mode": "auto"})
+    assert response.status_code == 201, response.text
+    source = response.json()["source"]
+    assert {k: source[k] for k in (
+        "intake", "label_filter", "selected_issue_numbers", "start_at", "trigger_label", "workflow_repository_id",
+        "fix_verification_profile_id", "review_agent_id", "default_fix_agent_id", "installation_id",
+        "max_rework_rounds", "enabled", "config_revision")} == {
+        "intake": "all_open", "label_filter": [], "selected_issue_numbers": [], "start_at": fixed_now,
+        "trigger_label": "runloom", "workflow_repository_id": None, "fix_verification_profile_id": None,
+        "review_agent_id": None, "default_fix_agent_id": None, "installation_id": None,
+        "max_rework_rounds": 1, "enabled": True, "config_revision": 1}
+    assert repo.get_github_source(conn, operator[1], source["source_id"]).model_dump() == source
+
+
+def test_start_at_defaults_to_now_for_filtered_too(op, fixed_now):
+    data = body()
+    del data["start_at"]
+    response = op.post("/github/sources", json=data)
+    assert response.status_code == 201, response.text
+    assert response.json()["source"]["start_at"] == fixed_now
+
+
+def test_trigger_label_can_be_chosen_or_cleared(op):
+    minimal = {"repository_full_name": "acme/billing", "intake": "all_open", "run_mode": "auto"}
+    error(op.post("/github/sources", json={**minimal, "trigger_label": ""}), 422, "invalid_field", "trigger_label")
+    source = op.post("/github/sources", json={**minimal, "trigger_label": None}).json()["source"]
+    assert source["trigger_label"] is None
+    url = f"/github/sources/{source['source_id']}"
+    updated = op.put(url, json={**minimal, "trigger_label": "go-runloom", "expected_revision": 1})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["source"]["trigger_label"] == "go-runloom"
+    # filtered 는 기본 None 그대로(phase 8 동작)
+    assert create(op, repository_full_name="acme/lib", workflow_repository_id="billing")["trigger_label"] is None
+
+
+def test_filtered_still_requires_the_three_ids(op):
+    for field in ("workflow_repository_id", "fix_verification_profile_id", "review_agent_id"):
+        data = body()
+        del data[field]
+        error(op.post("/github/sources", json=data), 422, "invalid_field", field)
+        error(op.post("/github/sources", json=body(**{field: None})), 422, "invalid_field", field)
+    error(op.post("/github/sources", json=body(intake="filtered", label_filter=[])), 422, "invalid_field")
+    error(op.post("/github/sources", json=body(intake="everything")), 422, "invalid_field", "intake")
+
+
+def test_installation_id_is_not_accepted_from_the_body(op):
+    error(op.post("/github/sources", json=body(installation_id=1)), 422, "unknown_field", "installation_id")
+
+
+def test_all_open_checks_only_the_ids_it_is_given(op, conn):
+    minimal = {"repository_full_name": "acme/billing", "intake": "all_open", "run_mode": "auto"}
+    error(op.post("/github/sources", json={**minimal, "default_fix_agent_id": "agent-nope"}),
+          422, "agent_not_registered", "default_fix_agent_id")
+    error(op.post("/github/sources", json={**minimal, "workflow_repository_id": "billing",
+                                           "default_fix_agent_id": REVIEW_AGENT}),
+          422, "agent_capability_mismatch", "default_fix_agent_id")
+    error(op.post("/github/sources", json={**minimal, "review_agent_id": "agent-nope"}),
+          422, "agent_not_registered", "review_agent_id")
+    error(op.post("/github/sources", json={**minimal, "workflow_repository_id": "billing",
+                                           "fix_verification_profile_id": "vp-x"}),
+          422, "verification_profile_unknown", "fix_verification_profile_id")
+    preview = op.post("/github/sources/preview", json=minimal)
+    assert preview.json() == {"token_configured": True, "problems": []}
+    source = op.post("/github/sources", json={**minimal, "workflow_repository_id": "billing",
+                                              "default_fix_agent_id": FIX_AGENT}).json()["source"]
+    assert (source["workflow_repository_id"], source["default_fix_agent_id"]) == ("billing", FIX_AGENT)
+
+
+def test_update_keeps_installation_id_and_skips_allowlist_for_installed_source(op, operator, conn):
+    """App 설치가 만든 소스(installation_id)는 WORKFLOW_GITHUB_REPOS 밖이어도 설정을 바꿀 수 있고, 설치 ID 는 유지된다."""
+    from workflow.contracts.github import GitHubSourceConfig
+
+    installed = GitHubSourceConfig(
+        source_id="ghs-0000abcd", repository_full_name="kim/notes", intake="all_open", label_filter=[],
+        selected_issue_numbers=[], start_at=NOW, run_mode="auto", trigger_label="runloom", installation_id=777,
+        enabled=True, config_revision=1)
+    repo.save_github_source(conn, operator[1], installed, NOW, expected_revision=None)
+    url = "/github/sources/ghs-0000abcd"
+    response = op.put(url, json={"repository_full_name": "kim/notes", "intake": "all_open", "run_mode": "manual",
+                                 "expected_revision": 1})
+    assert response.status_code == 200, response.text
+    source = response.json()["source"]
+    assert (source["installation_id"], source["run_mode"], source["config_revision"]) == (777, "manual", 2)
+    # 설치 소스가 아니면 허용 목록 검사 그대로
+    error(op.post("/github/sources", json={"repository_full_name": "kim/other", "intake": "all_open",
+                                           "run_mode": "auto"}), 422, "repository_not_allowed")
+
+
+def test_bind_assignee_on_undecided_all_open_source(op):
+    source = op.post("/github/sources", json={
+        "repository_full_name": "acme/billing", "intake": "all_open", "run_mode": "auto"}).json()["source"]
+    url = f"/github/sources/{source['source_id']}/assignees/5812345"
+    response = op.put(url, json={"github_login": "kim", "agent_id": FIX_AGENT})
+    assert response.status_code == 200, response.text
+    error(op.put(url, json={"github_login": "kim", "agent_id": "agent-nope"}), 422, "agent_not_registered", "agent_id")
+
+
 # --- 비밀값 --------------------------------------------------------------------------------
 
 

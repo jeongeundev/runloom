@@ -7,6 +7,9 @@
 - Agent 는 이 세션에 등록된 것만. 검토 Agent 는 `code.review {repository_id}`, 담당 Agent 는 `code.fix {repository_id}` 와
   로컬 등록이 보고한 검증 프로필 `fix_verification_profile_id` 가 있어야 한다. 프로필은 ID 일 뿐 명령이 아니다.
 - 설정 변경은 `config_revision` 을 올릴 뿐 이미 만든 Task·Execution 입력을 바꾸지 않는다. GitHub 호출은 하지 않는다(수집은 step 7).
+- phase 11(ADR-0017): `intake: all_open` 소스는 범위·세 ID 가 비어도 된다(None 은 자동 매칭 몫이라 검사하지 않는다).
+  `start_at` 생략은 서버 수신 시각, `all_open` 의 `trigger_label` 생략은 `runloom`. `installation_id` 는 본문으로 받지 않고
+  (App 설치 흐름이 정한다) 변경 때 유지하며, 설치 소스의 변경은 허용 목록 검사를 하지 않는다.
 """
 
 import json
@@ -21,7 +24,13 @@ from pydantic import BaseModel, ConfigDict
 
 from workflow.adapters import repo
 from workflow.adapters.errors import StaleConfig
-from workflow.contracts.github import AssigneeBinding, GitHubSourceConfig, PositiveInt, RepositoryFullName
+from workflow.contracts.github import (
+    FILTERED_REQUIRED,
+    AssigneeBinding,
+    GitHubSourceConfig,
+    PositiveInt,
+    RepositoryFullName,
+)
 from workflow.contracts.v1 import NonEmptyStr, Rfc3339
 from workflow.server.auth import get_conn, require_operator, utc_now
 from workflow.server.errors import ApiError
@@ -29,23 +38,28 @@ from workflow.server.settings import Settings
 
 router = APIRouter(prefix="/github")
 
+DEFAULT_TRIGGER_LABEL = "runloom"
+
 
 class _Body(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class SourceSettingsRequest(_Body):
-    """`GitHubSourceConfig` 에서 서버가 정하는 `source_id`·`config_revision` 을 뺀 것. 토큰 필드는 없다."""
+    """`GitHubSourceConfig` 에서 서버가 정하는 `source_id`·`config_revision`·`installation_id` 를 뺀 것. 토큰 필드는 없다."""
 
     repository_full_name: RepositoryFullName
-    workflow_repository_id: NonEmptyStr
+    intake: Literal["filtered", "all_open"] = "filtered"
+    workflow_repository_id: NonEmptyStr | None = None  # filtered 필수 여부는 _config 가 검사한다
     label_filter: list[NonEmptyStr] = []
     selected_issue_numbers: list[PositiveInt] = []
-    start_at: Rfc3339
-    fix_verification_profile_id: NonEmptyStr
-    review_agent_id: NonEmptyStr
+    start_at: Rfc3339 | None = None  # 생략하면 서버 수신 시각
+    fix_verification_profile_id: NonEmptyStr | None = None
+    review_agent_id: NonEmptyStr | None = None
     run_mode: Literal["auto", "manual"]
     max_rework_rounds: int = 1  # 0~3 범위는 GitHubSourceConfig 가 검사한다
+    trigger_label: NonEmptyStr | None = None  # 생략하면 all_open 은 DEFAULT_TRIGGER_LABEL, 명시한 null 은 그대로
+    default_fix_agent_id: NonEmptyStr | None = None
     enabled: bool = True
 
 
@@ -62,10 +76,20 @@ def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def _config(body: SourceSettingsRequest, source_id: str, revision: int, repository: str) -> GitHubSourceConfig:
+def _config(
+    body: SourceSettingsRequest, source_id: str, revision: int, repository: str, installation_id: int | None = None
+) -> GitHubSourceConfig:
+    if body.intake == "filtered":  # phase 8 요청에서 빠졌을 때와 같은 오류 — 그 필드의 invalid_field
+        for name in FILTERED_REQUIRED:
+            if getattr(body, name) is None:
+                raise ApiError(422, "invalid_field", f"필드 {name}: intake filtered 에는 필요합니다", field=name)
     data = body.model_dump(exclude={"expected_revision"})
+    if data["start_at"] is None:
+        data["start_at"] = utc_now()
+    if body.intake == "all_open" and "trigger_label" not in body.model_fields_set:
+        data["trigger_label"] = DEFAULT_TRIGGER_LABEL
     return GitHubSourceConfig(**{**data, "repository_full_name": repository}, source_id=source_id,
-                              config_revision=revision)
+                              config_revision=revision, installation_id=installation_id)
 
 
 def _source_view(config: GitHubSourceConfig, settings: Settings) -> dict:
@@ -111,23 +135,33 @@ def _capability_error(agent_id: str, code: str, repository_id: str, field: str) 
                     f"에이전트 {agent_id} 에 {code} · repository_id={repository_id} 능력이 없습니다.", field=field)
 
 
+def _agent_problem(
+    conn: Connection, session_id: str, agent_id: str | None, code: str, repository_id: str | None, field: str
+) -> ApiError | None:
+    """None 이면 자동 매칭 몫이라 검사하지 않는다. 저장소가 None 이면 등록 여부만 본다."""
+    if agent_id is None:
+        return None
+    agent, problem = _session_agent(conn, session_id, agent_id, field)
+    if problem is None and repository_id is not None and not _has_capability(agent, code, repository_id):
+        problem = _capability_error(agent_id, code, repository_id, field)
+    return problem
+
+
 def _source_problems(
-    conn: Connection, session_id: str, body: SourceSettingsRequest, settings: Settings
+    conn: Connection, session_id: str, body: SourceSettingsRequest, settings: Settings, *, installed: bool = False
 ) -> list[ApiError]:
-    """모든 문제를 모은다 — 미리보기는 목록을 그대로, 저장은 첫 문제를 422 로."""
+    """모든 문제를 모은다 — 미리보기는 목록을 그대로, 저장은 첫 문제를 422 로. `installed` 는 App 설치 소스 변경."""
     problems: list[ApiError] = []
     name = body.repository_full_name
-    if _allowed_name(name, settings) is None:
+    if not installed and _allowed_name(name, settings) is None:
         problems.append(ApiError(422, "repository_not_allowed", f"저장소 {name} 는 WORKFLOW_GITHUB_REPOS 에 없습니다.",
                                  field="repository_full_name"))
     repository_id = body.workflow_repository_id
-    agent, problem = _session_agent(conn, session_id, body.review_agent_id, "review_agent_id")
-    if problem is None and not _has_capability(agent, "code.review", repository_id):
-        problem = _capability_error(body.review_agent_id, "code.review", repository_id, "review_agent_id")
+    problem = _agent_problem(conn, session_id, body.review_agent_id, "code.review", repository_id, "review_agent_id")
     if problem is not None:
         problems.append(problem)
     profile = body.fix_verification_profile_id
-    if not any(
+    if profile is not None and repository_id is not None and not any(
         _has_capability(a, "code.fix", repository_id) and profile in json.loads(a["verification_profile_ids_json"])
         for a in repo.list_session_agents(conn, session_id)
     ):
@@ -136,6 +170,10 @@ def _source_problems(
             f"검증 프로필 {profile} 을 보고한 code.fix · repository_id={repository_id} 에이전트가 이 워크스페이스에 없습니다.",
             field="fix_verification_profile_id",
         ))
+    problem = _agent_problem(conn, session_id, body.default_fix_agent_id, "code.fix", repository_id,
+                             "default_fix_agent_id")
+    if problem is not None:
+        problems.append(problem)
     return problems
 
 
@@ -192,8 +230,9 @@ def create_source(
     settings = _settings(request)
     if any(owner != session_id for owner in repo.github_source_sessions(conn)):
         raise ApiError(409, "github_workspace_taken", "GitHub 연결은 이미 다른 운영자 워크스페이스가 쓰고 있습니다.")
+    config = _config(body, f"ghs-{secrets.token_hex(4)}", 1, body.repository_full_name)
     _raise_first(_source_problems(conn, session_id, body, settings))
-    config = _config(body, f"ghs-{secrets.token_hex(4)}", 1, _allowed_name(body.repository_full_name, settings))
+    config = config.model_copy(update={"repository_full_name": _allowed_name(body.repository_full_name, settings)})
     _save(conn, session_id, config, expected_revision=None)
     return JSONResponse(_source_view(config, settings), status_code=201)
 
@@ -222,8 +261,9 @@ def update_source(
     if body.repository_full_name.lower() != current.repository_full_name.lower():
         raise ApiError(422, "invalid_field", "repository_full_name 은 바꿀 수 없습니다 — 새 소스로 연결하세요.",
                        field="repository_full_name")
-    _raise_first(_source_problems(conn, session_id, body, settings))
-    config = _config(body, source_id, body.expected_revision + 1, current.repository_full_name)
+    config = _config(body, source_id, body.expected_revision + 1, current.repository_full_name,
+                     current.installation_id)
+    _raise_first(_source_problems(conn, session_id, body, settings, installed=current.installation_id is not None))
     _save(conn, session_id, config, expected_revision=body.expected_revision)
     return JSONResponse(_source_view(config, settings))
 
@@ -256,9 +296,12 @@ def bind_assignee(
     agent, problem = _session_agent(conn, session_id, body.agent_id, "agent_id")
     if problem is not None:
         raise problem
-    if not _has_capability(agent, "code.fix", config.workflow_repository_id):
-        raise _capability_error(body.agent_id, "code.fix", config.workflow_repository_id, "agent_id")
-    if config.fix_verification_profile_id not in json.loads(agent["verification_profile_ids_json"]):
+    # all_open 소스에서 아직 정해지지 않은 칸(None)은 검사하지 않는다 — 자동 매칭 몫
+    repository_id = config.workflow_repository_id
+    if repository_id is not None and not _has_capability(agent, "code.fix", repository_id):
+        raise _capability_error(body.agent_id, "code.fix", repository_id, "agent_id")
+    profile = config.fix_verification_profile_id
+    if profile is not None and profile not in json.loads(agent["verification_profile_ids_json"]):
         raise ApiError(422, "verification_profile_unknown",
                        f"에이전트 {body.agent_id} 의 로컬 등록에 검증 프로필 {config.fix_verification_profile_id} 이 없습니다.",
                        field="agent_id")
