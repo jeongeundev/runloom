@@ -517,3 +517,93 @@ def test_no_merge_is_not_rechecked_until_issue_changes(conn, session_id):
     sync_source(conn, gh, SOURCE, "2026-10-06T16:00:00Z")
     assert gh.link_calls == [1, 1]  # 확인 뒤 이슈가 바뀌었다 — 다시 조회
     assert source_issue(conn, session_id, 1)["pr_merged_at"] == "2026-10-06T14:30:00Z"
+
+
+# --- all_open 소스: 열린 이슈 전부 + 트리거 라벨 (phase 11 step 5, ADR-0017) ---
+
+
+def open_all(conn, sid: str, **overrides) -> None:
+    reconfigure(conn, sid, **{"intake": "all_open", "label_filter": [], "trigger_label": "runloom", **overrides})
+
+
+def codes_by_ref(conn, sid: str) -> dict[str, list[str]]:
+    return {ref: [b.code for b in _readiness(conn, sid, t["task_id"]).blockers]
+            for ref, t in tasks_by_ref(conn, sid).items()}
+
+
+def test_all_open_imports_every_open_issue_from_the_whole_history(conn, session_id):
+    open_all(conn, session_id)
+    gh = FakeGitHub()
+    gh.put(issue(1, labels=[]))
+    gh.put(issue(2, labels=["ui"], created_at="2024-01-01T00:00:00Z", updated_at="2024-02-01T00:00:00Z"))  # 오래된 백로그
+    gh.put(issue(3, is_pull_request=True))
+    gh.put(issue(4, state="closed"))
+
+    report = sync_source(conn, gh, SOURCE, NOW)
+
+    assert gh.list_calls[0] == IssueCursor(since=None, page=1, etag=None)  # start_at 이 아니라 처음부터
+    assert report.error is None
+    assert report.skipped == {"pull_request": 1, "closed": 1}
+    assert sorted(tasks_by_ref(conn, session_id)) == ["acme/billing#1", "acme/billing#2"]
+
+    again = sync_source(conn, gh, SOURCE, NOW)
+    assert again.created == [] and sorted(tasks_by_ref(conn, session_id)) == ["acme/billing#1", "acme/billing#2"]
+
+
+def test_all_open_closing_a_tracked_issue_only_updates_source_state(conn, session_id):
+    open_all(conn, session_id)
+    gh = FakeGitHub()
+    gh.put(issue(1, labels=[]))
+    sync_source(conn, gh, SOURCE, NOW)
+    gh.put(issue(1, labels=[], state="closed", updated_at="2026-10-06T03:00:00Z"))
+    report = sync_source(conn, gh, SOURCE, NOW)
+    assert report.created == [] and len(report.updated) == 1
+    assert source_issue(conn, session_id, 1)["state"] == "closed"
+
+
+def test_trigger_label_delegates_and_unlabelled_issue_waits(conn, session_id):
+    open_all(conn, session_id)
+    gh = FakeGitHub()
+    gh.put(issue(1, labels=["bug", "RunLoom"]))
+    gh.put(issue(2, labels=["bug"]))
+    sync_source(conn, gh, SOURCE, NOW)
+
+    assert codes_by_ref(conn, session_id) == {"acme/billing#1": [], "acme/billing#2": ["not_delegated"]}
+    assert (source_issue(conn, session_id, 1)["delegated_by"], source_issue(conn, session_id, 1)["delegated_at"]) == (
+        "label", NOW)
+    assert source_issue(conn, session_id, 2)["delegated_at"] is None
+
+
+def test_label_added_later_switches_to_auto_and_removing_it_does_not_undo(conn, session_id):
+    open_all(conn, session_id)
+    gh = FakeGitHub()
+    gh.put(issue(1, labels=[]))
+    sync_source(conn, gh, SOURCE, NOW)
+    assert codes_by_ref(conn, session_id) == {"acme/billing#1": ["not_delegated"]}
+
+    gh.put(issue(1, labels=["runloom"], updated_at="2026-10-06T03:00:00Z"))
+    sync_source(conn, gh, SOURCE, "2026-10-06T13:00:00Z")
+    assert codes_by_ref(conn, session_id) == {"acme/billing#1": []}
+
+    gh.put(issue(1, labels=[], updated_at="2026-10-06T04:00:00Z"))
+    sync_source(conn, gh, SOURCE, "2026-10-06T14:00:00Z")
+    assert codes_by_ref(conn, session_id) == {"acme/billing#1": []}
+    assert source_issue(conn, session_id, 1)["delegated_at"] == "2026-10-06T13:00:00Z"
+
+
+def test_label_delegation_still_honours_manual_run_mode(conn, session_id):
+    open_all(conn, session_id, run_mode="manual")
+    gh = FakeGitHub()
+    gh.put(issue(1, labels=["runloom"]))
+    sync_source(conn, gh, SOURCE, NOW)
+    assert codes_by_ref(conn, session_id) == {"acme/billing#1": ["manual_mode"]}
+
+
+def test_filtered_source_ignores_trigger_label_and_needs_no_delegation(conn, session_id):
+    reconfigure(conn, session_id, trigger_label="runloom")
+    gh = FakeGitHub()
+    gh.put(issue(1))
+    sync_source(conn, gh, SOURCE, NOW)
+    assert gh.list_calls[0] == IssueCursor(since=START, page=1, etag=None)
+    assert codes_by_ref(conn, session_id) == {"acme/billing#1": []}
+    assert source_issue(conn, session_id, 1)["delegated_at"] is None

@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import SCHEMA_VERSION, connect, init_schema
+from workflow.adapters.secret_store import SecretStore
 from workflow.server import github_api, human_api, inbound_api, machine_api, metrics_api, web
 from workflow.server.auth import LoginThrottle
 from workflow.server.errors import install_error_handlers
@@ -42,6 +43,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.store = ArtifactStore(settings.artifact_dir)
     app.state.login_throttle = LoginThrottle()  # selfhost 로그인 연속 실패 제한 — 프로세스 메모리
     app.state.github_client = None  # 기준선 가져오기 — None 이면 요청 때 Settings 로 만든다. 테스트는 가짜로 바꾼다
+    app.state.secrets = SecretStore(settings.secret_dir)  # GitHub App·PAT 비밀 파일 (ADR-0017)
+    app.state.github_transport = None  # GitHub 연결 경로의 httpx transport — 테스트는 가짜 GitHub 로 바꾼다
     install_error_handlers(app)
     app.include_router(machine_api.router)
     app.include_router(inbound_api.router)  # n8n 입구 (ADR-0010) — 입구 토큰만, 세션 쿠키 없음

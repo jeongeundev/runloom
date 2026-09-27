@@ -1,15 +1,24 @@
 """등록 폴더의 설정 존재 여부와 요약 — 능력 설명 제안의 재료 (ARCHITECTURE "등록·선택·권한").
 
 읽기 전용이며 존재 여부와 짧은 요약만 남긴다. 파일 전체, `.env`, 인증 파일(`.codex/auth.json`, `~/.claude/…` 등),
-원격 URL(자격 증명이 섞일 수 있다)은 절대 포함하지 않는다. "설정 발견" 이지 "실제 사용 확인" 이 아니다.
+원격 URL 원문(자격 증명이 섞일 수 있다)은 절대 포함하지 않는다 — GitHub 원격이면 `owner/name` 만 뽑아
+`github_repository` 로 보낸다. "설정 발견" 이지 "실제 사용 확인" 이 아니다.
 """
 
+import re
 import subprocess
 import tomllib
 from pathlib import Path
 
 SUMMARY_CHARS = 200
 VERIFICATION_LEVEL = "설정 발견"
+
+# https://[user@]github.com/o/n · ssh://[user@]github.com[:port]/o/n · [user@]github.com:o/n — 뒤의 .git·/ 는 선택
+_GITHUB_REMOTE = re.compile(
+    r"^(?:(?:https?|ssh|git)://(?:[^@/]*@)?github\.com(?::\d+)?/|(?:[^@/:]+@)?github\.com:)"
+    r"(?P<owner>[A-Za-z0-9-]+)/(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?/?$",
+    re.IGNORECASE,
+)
 
 
 def _head(path: Path) -> str:
@@ -30,8 +39,20 @@ def _git_summary(repo_path: Path) -> dict | None:
     head = _git(repo_path, "rev-parse", "HEAD")
     if head is None:
         return None
-    remotes = _git(repo_path, "remote") or ""  # 이름만. URL 은 `git remote -v` 라 읽지 않는다
+    remotes = _git(repo_path, "remote") or ""  # 이름만. URL 은 아래 _github_repository 가 owner/name 만 뽑는다
     return {"remotes": remotes.split(), "head": head.strip()}
+
+
+def _github_repository(repo_path: Path) -> str | None:
+    """GitHub 원격의 `owner/name` 만 — origin 우선, 없으면 설정 순서상 첫 GitHub 원격. URL 원문은 밖으로 내지 않는다."""
+    lines = _git(repo_path, "config", "--get-regexp", r"^remote\..*\.url$") or ""
+    found: dict[str, str] = {}
+    for line in lines.splitlines():
+        key, _, url = line.partition(" ")
+        match = _GITHUB_REMOTE.match(url.strip())
+        if match:
+            found.setdefault(key[len("remote."):-len(".url")], f"{match['owner']}/{match['name']}")
+    return found.get("origin") or next(iter(found.values()), None)
 
 
 def discover(repo_path: Path) -> dict:
@@ -69,5 +90,8 @@ def discover(repo_path: Path) -> dict:
         not_read.append("git")
     else:
         found["git"] = git
+        github_repository = _github_repository(repo_path)
+        if github_repository is not None:
+            found["github_repository"] = github_repository
 
     return {"found": found, "not_read": not_read, "verification_level": VERIFICATION_LEVEL}

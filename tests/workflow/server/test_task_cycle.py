@@ -298,6 +298,168 @@ def test_repository_outside_the_allow_list_is_not_delegated(cycle, conn, worker,
     assert status(conn, task_id) == ("대기", "허용 저장소 밖")
 
 
+def test_app_installation_source_is_allowed_without_the_env_allow_list(cycle, conn, worker, settings):
+    """설치 저장소는 App 설치가 허용 목록이다(ADR-0017) — `WORKFLOW_GITHUB_REPOS` 에 없어도 막지 않는다."""
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, installation_id=42), NOW)
+    task_id = import_issue(conn, 1)
+    narrowed = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(),
+                      dataclasses.replace(settings, github_repos=()), worker._clock)
+    narrowed.tick()
+    assert len(executions(conn, task_id)) == 1
+
+
+def test_pasted_token_source_is_allowed_without_the_env_allow_list(cycle, conn, worker, settings):
+    """화면에서 붙여 넣은 PAT 가 있으면 그 토큰의 클라이언트가 소스 저장소를 허용하듯 준비 판정도 막지 않는다(ADR-0017)."""
+    from workflow.adapters import secret_store
+    from workflow.adapters.secret_store import SecretStore
+
+    task_id = import_issue(conn, 1)
+    narrowed = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(),
+                      dataclasses.replace(settings, github_repos=()), worker._clock)
+    narrowed.tick()
+    assert executions(conn, task_id) == []
+
+    SecretStore(settings.secret_dir).write(secret_store.GITHUB_TOKEN, "github_pat_TESTVALUE")
+    narrowed.tick()
+    assert len(executions(conn, task_id)) == 1
+
+
+def test_all_open_task_waits_for_delegation_then_starts(cycle, conn, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, intake="all_open", label_filter=[],
+                                                  trigger_label="runloom"), NOW)
+    task_id = import_issue(conn, 1, labels=[])
+    worker.tick()
+    assert executions(conn, task_id) == []
+    assert status(conn, task_id) == ("대기", "실행 지시 전 — [에이전트에게 맡기기] 또는 `runloom` 라벨")
+
+    issue_id = repo.get_source_issue_by_task(conn, SESSION, task_id)["github_issue_id"]
+    repo.mark_issue_delegated(conn, session_id=SESSION, source_id=SOURCE, github_issue_id=issue_id,
+                              by="label", now=NOW)
+    worker.tick()
+    assert len(executions(conn, task_id)) == 1
+
+
+# --- 자동 매칭 (phase 11 step 6, ADR-0017) ------------------------------------------------------
+
+
+def _report(conn, registration: str, connector: str, repository: str, profiles: list[str], github: str) -> None:
+    """러너 등록 보고 — `found.github_repository` 에 GitHub 원격 owner/name."""
+    repo.update_registration(conn, registration, connector_id=connector, repository_id=repository, base_commit=BASE,
+                             verification_profile_ids=profiles, discovered={"found": {"github_repository": github}},
+                             now=NOW)
+
+
+@pytest.fixture
+def auto_source(cycle, conn):
+    """App 연결이 만든 것처럼 빈 칸만 있는 all_open 소스 + billing 폴더를 등록한 러너(두 등록 모두 acme/billing 보고)."""
+    _report(conn, REG_FIX, cycle["billing"], "billing", ["vp-pytest"], "acme/billing")
+    _report(conn, REG_REVIEW, cycle["billing"], "billing", [], "Acme/Billing")
+    _report(conn, REG_SHOP, cycle["shop"], "shop", ["vp-shop"], "acme/shop")
+    repo.save_github_source(conn, SESSION, config(intake="all_open", label_filter=[], trigger_label="runloom",
+                                                  workflow_repository_id=None, fix_verification_profile_id=None,
+                                                  review_agent_id=None), NOW)
+    return cycle
+
+
+def delegate(conn, task_id: str) -> None:
+    issue_id = repo.get_source_issue_by_task(conn, SESSION, task_id)["github_issue_id"]
+    repo.mark_issue_delegated(conn, session_id=SESSION, source_id=SOURCE, github_issue_id=issue_id,
+                              by="operator", now=NOW)
+
+
+def blocked_codes(conn, task_id: str) -> list[str]:
+    events = [json.loads(r["data_json"]) for r in repo.list_task_events(conn, task_id) if r["type"] == "blocked"]
+    return [b["code"] for b in events[-1]["blockers"]] if events else []
+
+
+def test_auto_matched_fix_and_review_run_without_assignee_or_ids(auto_source, conn, store, worker):
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    worker.tick()
+
+    (fix,) = executions(conn, task_id)
+    assert fix["agent_id"] == FIX
+    assert request_of(fix).target == CodeChangeTarget(local_registration_id=REG_FIX, base_commit=BASE,
+                                                      verification_profile_id="vp-pytest")
+
+    finish_fix(conn, store, fix["execution_id"])
+    worker.tick()
+    (review_task,) = review_tasks(conn, task_id)
+    assert review_task["chosen_agent_id"] is None  # 저장하지 않는다 — 판정 때마다 매칭
+    (review,) = executions(conn, review_task["task_id"])
+    assert review["agent_id"] == REVIEW
+    assert request_of(review).target.local_registration_id == REG_REVIEW
+
+
+def test_no_runner_for_the_repository_waits_for_registration(auto_source, conn, worker):
+    _report(conn, REG_FIX, auto_source["billing"], "billing", ["vp-pytest"], "acme/other")
+    _report(conn, REG_REVIEW, auto_source["billing"], "billing", [], "acme/other")
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    worker.tick()
+
+    assert executions(conn, task_id) == []
+    assert status(conn, task_id) == ("대기", "acme/billing 을 등록한 러너 없음 — 러너에서 이 저장소 폴더를 등록하세요")
+    assert blocked_codes(conn, task_id) == ["repository_unmatched"]
+
+
+def test_two_fix_agents_wait_until_a_default_is_chosen(auto_source, conn, worker):
+    second = _agent("agent-fix-2", "local-billing-2", "code.fix", "billing")
+    repo.upsert_agent(conn, second)
+    repo.register_session_agent(conn, SESSION, second["agent_id"], NOW)
+    _report(conn, "local-billing-2", auto_source["billing"], "billing", ["vp-pytest"], "acme/billing")
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    worker.tick()
+
+    assert executions(conn, task_id) == []
+    assert blocked_codes(conn, task_id) == ["fix_agent_ambiguous"]
+    assert repo.list_human_requests(conn, task_id) == []  # 설정에서 고른다 — 사람 요청 아님
+
+    source = repo.get_github_source(conn, SESSION, SOURCE)
+    repo.save_github_source(conn, SESSION, source.model_copy(update={"default_fix_agent_id": "agent-fix-2"}), NOW)
+    worker.tick()
+    (fix,) = executions(conn, task_id)
+    assert fix["agent_id"] == "agent-fix-2"
+
+
+def test_bound_assignee_still_wins_on_an_auto_matched_source(auto_source, conn, worker):
+    repo.upsert_agent(conn, _agent(FIX_SHOP, REG_SHOP, "code.fix", "billing"))
+    repo.update_registration(conn, REG_SHOP, connector_id=auto_source["shop"], repository_id="billing",
+                             base_commit=BASE, verification_profile_ids=["vp-shop"], discovered={}, now=NOW)
+    repo.bind_assignee(conn, SESSION, AssigneeBinding(source_id=SOURCE, github_user_id=7, github_login="lee",
+                                                      agent_id=FIX_SHOP), NOW)
+    task_id = import_issue(conn, 1, assignee_ids=[7], assignee_logins=["lee"], labels=[])
+    delegate(conn, task_id)
+    worker.tick()
+
+    (fix,) = executions(conn, task_id)
+    assert (fix["agent_id"], request_of(fix).target.verification_profile_id) == (FIX_SHOP, "vp-shop")
+
+
+def test_fix_agent_without_a_single_profile_waits(auto_source, conn, worker):
+    _report(conn, REG_FIX, auto_source["billing"], "billing", [], "acme/billing")
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    worker.tick()
+
+    assert executions(conn, task_id) == []
+    assert blocked_codes(conn, task_id) == ["profile_unmatched"]
+
+
+def test_match_for_source_is_the_source_level_match_for_the_connect_screen(auto_source, conn):
+    """phase 11 step 8 — 저장소 카드의 러너 매칭 상태. 이슈 없이(담당자 없음) 소스 설정과 러너 보고만으로 계산한다."""
+    source = repo.get_github_source(conn, SESSION, SOURCE)
+    match = task_cycle.match_for_source(conn, SESSION, source)
+    assert (match.workflow_repository_id, match.fix_agent_id, match.review_agent_id,
+            match.fix_verification_profile_id, match.blockers) == ("billing", FIX, REVIEW, "vp-pytest", ())
+
+    _report(conn, REG_FIX, auto_source["billing"], "billing", ["vp-pytest"], "acme/other")
+    _report(conn, REG_REVIEW, auto_source["billing"], "billing", [], "acme/other")
+    match = task_cycle.match_for_source(conn, SESSION, source)
+    assert [b.code for b in match.blockers] == ["repository_unmatched"]
+
+
 def test_evaluate_collects_every_blocker_for_one_task(cycle, conn, settings):
     task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], state="closed")
     readiness = task_cycle.evaluate(conn, repo.get_task(conn, task_id), now=NOW, settings=settings)
@@ -972,3 +1134,24 @@ def test_delivery_failure_is_separate_from_task_state(cycle, conn, github_worker
     assert report.tasks_started == 1 and report.deliveries_failed == 1
     assert repo.list_source_deliveries(conn, fix_task)[-1].state == "failed"
     assert executions(conn, fix_task)[0]["status"] == "queued"
+
+
+def _worker_with_clients(settings, store, clock, github_for) -> Worker:
+    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
+                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
+    return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock,
+                  github_for=github_for)
+
+
+def test_source_issue_comment_goes_through_the_sources_own_client(cycle, conn, settings, store, clock, github):
+    import_issue(conn, 1)
+    report = _worker_with_clients(settings, store, clock, lambda config: github).tick()
+    assert (report.deliveries_queued, report.deliveries_sent) == (1, 1)
+    assert len(github.bodies(1)) == 1
+
+
+def test_source_without_credentials_gets_no_comment(cycle, conn, settings, store, clock, github):
+    import_issue(conn, 1)
+    report = _worker_with_clients(settings, store, clock, lambda config: None).tick()
+    assert (report.deliveries_queued, report.deliveries_sent) == (0, 0)
+    assert github.comments == {}

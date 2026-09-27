@@ -1518,3 +1518,23 @@ def test_worker_without_github_client_does_not_sync(worker, conn, clock):
     repo.create_session(conn, "sess-gh", clock.now)
     repo.save_github_source(conn, "sess-gh", _github_source("ghs-00000001", "acme/billing"), clock.now)
     assert worker.tick().sources_synced == 0
+
+
+def test_worker_syncs_each_source_with_its_own_client_and_skips_unconnected(app, settings, store, clock, conn):
+    """소스별 자격(ADR-0017): App 설치·PAT·환경변수 중 소스에 맞는 클라이언트. 자격이 없는 소스는 수집하지 않는다."""
+    repo.create_session(conn, "sess-gh", clock.now)
+    repo.save_github_source(conn, "sess-gh", _github_source("ghs-00000001", "acme/billing"), clock.now)
+    repo.save_github_source(conn, "sess-gh", _github_source("ghs-00000002", "acme/lib"), clock.now)
+    billing = _CountingGitHub()
+    asked: list[str] = []
+
+    def github_for(config):
+        asked.append(config.source_id)
+        return billing if config.repository_full_name == "acme/billing" else None
+
+    worker = Worker(lambda: connect(settings.db_path), store, None, FakeCallbackClient(), settings, clock,
+                    github_for=github_for)
+    report = worker.tick()
+    assert billing.repos == ["acme/billing"]
+    assert (report.sources_synced, report.sync_errors) == (1, 0)
+    assert {"ghs-00000001", "ghs-00000002"} <= set(asked)

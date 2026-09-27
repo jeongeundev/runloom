@@ -5,52 +5,84 @@
     {
       "step": 0,
       "name": "app-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T17:58:46+0900",
+      "summary": "ADR-0017 신설(사용자 자신의 GitHub App manifest→설치, App JWT→설치 토큰 메모리 캐시, 0600 SecretStore WORKFLOW_SECRET_DIR 기본 data/secrets·compose /data/secrets, intake all_open+지시 실행(POST /tasks/{id}/delegate·trigger_label runloom), 러너 found.github_repository 자동 매칭, 웹훅 없음, PAT 고급 경로, 기존 filtered 소스·환경변수 호환) + ADR-0014 범위 갱신 줄, AGENTS.md 비밀값 규칙(환경변수 또는 비밀 저장소, 백업 제외), ARCHITECTURE \"GitHub App 연결 — phase 11\"(흐름·경로 표·state 쿠키 wf_gh_state·manifest·비밀 파일 이름·소스 새 칸·클라이언트 선택 순서·자동 매칭 대기 코드·source_issues delegated_at/by v7·시그니처 표), GLOSSARY phase 11 용어, CURRENT_HANDOFF·MVP_PLAN·SELFHOST 의 phase 순서 11-github-app → 12-real-repo(tests/test_selfhost_files.py 고정 문자열도 12 로). 검증: pytest 2464 passed/55 skipped, ruff 통과. 주의: filtered 소스는 세 ID 필수·assignee_* 대기 그대로 유지, setup 의 installation_id 는 JWT 로 GET /app/installations/{id} 확인 전 쓰지 않음, setup_action 값·127.0.0.1 hook url 수락·설치 URL state 반환은 공식 문서 미확인.",
+      "completed_at": "2026-09-27T18:10:18+0900"
     },
     {
       "step": 1,
       "name": "secret-store",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:10:19+0900",
+      "summary": "신설 src/workflow/adapters/secret_store.py(SecretStore(root)·from_env(WORKFLOW_SECRET_DIR 기본 data/secrets)·read/write/delete/exists — ARCHITECTURE 시그니처 표를 따름(step.md 의 get/put/has 아님), 이름은 상수 5개 NAMES 허용 목록만(그 밖·../·절대경로 ValueError, ARCHITECTURE 표도 정규식→허용 목록으로 갱신), mkstemp 0600→fsync→os.replace, 디렉터리 0700 강제, 실패 시 임시 파일 삭제·이전 값 유지, repr·예외에 값 없음) + tests/workflow/adapters/test_secret_store.py; settings: ENV_KEYS 에 WORKFLOW_SECRET_DIR, Settings.secret_dir(기본 data/secrets); compose environment 고정값 WORKFLOW_SECRET_DIR=/data/secrets(tests/test_selfhost_files.py FIXED_ENV), selfhost .env.example 주석, central.env.example WORKFLOW_SECRET_DIR=/var/lib/workflow/central/secrets; 백업은 DB+artifact_dir 만 담아 코드 변경 없음 — test_backup 에 비밀 디렉터리 미포함 테스트 추가. 검증: pytest 2483 passed/55 skipped, ruff 통과. 주의: 다음 step 은 SecretStore.from_env 또는 Settings.secret_dir 로 루트를 얻고, 새 비밀 파일 이름이 필요하면 NAMES 와 ARCHITECTURE 표를 함께 늘린다.",
+      "completed_at": "2026-09-27T18:15:41+0900"
     },
     {
       "step": 2,
       "name": "app-auth",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:15:41+0900",
+      "summary": "신설 src/workflow/adapters/github_app.py — AppCredentials(비밀 3칸 repr 제외)·exchange_manifest_code(code 는 [A-Za-z0-9_-] 만, 오류 문구에 code·본문 없음, 404 GitHubNotFound·422 GitHubError)·save_credentials(store, creds, now)(github_app.json + 비밀 파일, 개인 키 마지막)·load_app(store, *, transport)·GitHubAppAuth(client_id, pem, *, transport, clock) — ARCHITECTURE 표를 따름(step.md 의 app_id·installation_id 생성자 아님): app_jwt(RS256, iat-60, exp+9분, iss=client_id), installation_token(id)(설치별 메모리 캐시, 만료 5분 전 갱신), invalidate(id), get_installation(id)->Installation, list_installation_repositories(id)->[InstalledRepository](per_page 100, Link 페이지, 다른 host 거부); JWT 호출 401 은 JWT 재생성 1회, 설치 토큰 호출 401 은 캐시 버리고 1회 재시도. github_client: TokenProvider Protocol(token·invalidate — ARCHITECTURE 표에 invalidate 추가)·InstallationTokenProvider(auth, id)·HttpGitHubClient(token: str | TokenProvider) — Authorization 을 요청마다 채움, 공급자면 401 에 invalidate 후 1회 재시도(문자열 토큰은 재시도 없음, _FixedToken 으로 repr 숨김), 오류 분류·Link 페이지를 모듈 함수 check_response·next_page 로 빼 github_app 과 공유, 허용 저장소 오류 문구 'WORKFLOW_GITHUB_REPOS 에 없습니다'→'허용 저장소 목록에 없습니다'(허용 목록은 호출자가 환경변수 또는 설치 저장소로 넘김), from_env 그대로. pyproject PyJWT[crypto]>=2.10,<3(설치본 2.15.0). 테스트: tests/workflow/adapters/test_github_app.py 37개(테스트 안 RSA 키 생성·공개 키로 서명 검증, manifest 파싱·오류, 캐시·만료·401, 페이지, 비밀 미노출) + test_github_client.py 토큰 공급자 7개. 검증: pytest 2527 passed/55 skipped, ruff 통과. 주의: build_manifest 는 step 7(ARCHITECTURE 표에 명시), client_for 는 설치 소스에 InstallationTokenProvider(load_app(store), installation_id) 를 쓰고 허용 목록에 설치 저장소 이름을 넘긴다. load_app 은 호출마다 새 GitHubAppAuth(새 캐시)라 워커·central 은 프로세스당 하나를 재사용해야 토큰 캐시가 산다.",
+      "completed_at": "2026-09-27T18:23:06+0900"
     },
     {
       "step": 3,
       "name": "source-config",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:23:06+0900",
+      "summary": "GitHubSourceConfig 확장(contracts/github.py): intake filtered|all_open 기본 filtered, trigger_label·default_fix_agent_id·installation_id 기본 None, workflow_repository_id·fix_verification_profile_id·review_agent_id 를 None 허용(기본 None) — filtered 는 범위+세 ID 필수(FILTERED_REQUIRED 상수), all_open 은 둘 다 비어도 됨; 필드 순서는 max_rework_rounds 뒤에 새 칸 4개. server/github_api.py: 요청 본문에 intake·trigger_label·default_fix_agent_id(installation_id 는 받지 않고 PUT 에서 유지), start_at 생략=utc_now(), all_open 에서 trigger_label 생략=DEFAULT_TRIGGER_LABEL 'runloom'(명시 null 유지), filtered 에서 세 ID 없으면 그 필드 invalid_field(phase 8 과 같은 오류), None ID 는 검사 생략·workflow_repository_id None 이면 능력·프로필 범위 검사 생략, default_fix_agent_id 는 code.fix 검사, 설치 소스(installation_id) 변경은 허용 목록 검사 생략, bind_assignee 도 None 칸 검사 생략; create/update 는 _config(형식) → _source_problems 순서. CONTRACT 13.6 블록에 새 칸 추가 + all_open 예시 블록(펜스 52→53, test_v1 갱신)·13.10 본문 기본값 설명, ARCHITECTURE 소스 새 칸 절에 API 규칙 한 단락. 테스트: test_github.py 새 칸 16개(phase 8 JSON 호환·all_open·filtered 거부·잘못된 값·예시 블록), test_github_api.py 8개. 검증: pytest 2551 passed/55 skipped, ruff 통과. 주의: issue_intake 는 아직 all_open 을 모름(빈 label_filter → not_selected 로 아무것도 안 받음 — step 5), worker 의 config.review_agent_id·fix_verification_profile_id 는 이제 None 일 수 있음(all_open 은 step 6 자동 매칭으로 채울 것).",
+      "completed_at": "2026-09-27T18:30:14+0900"
     },
     {
       "step": 4,
       "name": "connector-remote",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:30:14+0900",
+      "summary": "connector/discovery.py: git config --get-regexp remote\\..*\\.url 을 로컬에서만 읽어 GitHub 원격(https·ssh·scp 형식, .git·끝 / 선택, 호스트 대소문자 무시, 사용자 정보·토큰 무시)에서 owner/name 만 뽑아 found.github_repository 로 보냄(origin 우선, 없거나 GitHub 아니면 설정 순서상 첫 GitHub 원격, 없으면 키 없음, owner/name 은 표기 그대로) — URL 원문은 결과에 없음, 모듈·_git_summary 주석 갱신, 계약 변경 없음; ARCHITECTURE '러너 보고' 단락을 origin 우선+대체 규칙으로 갱신. 테스트: test_discovery.py 21개 추가(형식 8·대소문자·토큰 URL 미노출·origin 우선·대체·비 GitHub 6·remote 없음). 검증: pytest 2572 passed/55 skipped, ruff 통과. 주의: 키는 discovered['found']['github_repository'] 에 있음(최상위 아님) — 서버 자동 매칭(step 6)은 agents.discovered_json 의 found 에서 읽고 비교는 대소문자 무시로.",
+      "completed_at": "2026-09-27T18:34:49+0900"
     },
     {
       "step": 5,
       "name": "intake-all",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:34:49+0900",
+      "summary": "all_open 수집·트리거 라벨·소스별 클라이언트: domain/issue_intake(all_open 은 열린 Issue 전부·PR/닫힘/다른 저장소 제외, label_delegated(config, snapshot) 대소문자 무시·filtered 는 항상 False, intake_facts(needs_delegation, delegated_by) → IntakeFacts.delegated·operator 지시는 run_mode auto 로 봄·label 은 소스 run_mode 따름), task_readiness TaskFacts.delegated(기본 True)·대기 코드 not_delegated(operator, manual_mode 앞), 스키마 v7(source_issues.delegated_at·delegated_by CHECK operator|label, _migrate_6_to_7, 4·5 도 7 까지), repo.mark_issue_delegated(처음 지시만·멱등·bool), github_sync(all_open 최초 커서 since=None — 오래된 열린 이슈도, 닫힌 이력 페이지도 한 번 훑음; take 마다 라벨이면 label 지시 기록; task_intake_facts 가 delegated_by 전달), task_cycle repository_allowed 는 installation_id 소스면 통과, 신설 server/github_clients.py(client_for(source, settings, secrets, *, app, transport): 설치+App 자격→InstallationTokenProvider·허용=소스 저장소 / 비밀 PAT→허용=WORKFLOW_GITHUB_REPOS+소스 저장소 / 환경변수 토큰 / 없음 None; SourceClients 는 App 인증 1개 공유·자격 같으면 클라이언트 재사용·나중 저장된 App/PAT 따라감), worker Worker(github=… 또는 github_for=callable) 소스별 수집(자격 없으면 간격만 미룸)·반영(deliver_source_updates(…, source_id=), 자격 있는 소스가 없으면 outbox 도 안 쌓음), main 은 SourceClients(settings, SecretStore(settings.secret_dir)); ARCHITECTURE 대기 코드 표·클라이언트 선택·실행 지시 절 갱신. 검증: pytest 2603 passed/55 skipped, ruff 통과. 주의: POST /tasks/{id}/delegate(operator 지시)는 step 7 — repo.mark_issue_delegated(by='operator') 를 쓰면 됨; 기존 [직접 실행](start_manually)은 manual_mode 만 빼므로 not_delegated 는 못 넘음; all_open 소스의 Task 는 workflow_repository_id None 이면 required_capability scope 가 None 이라 step 6 자동 매칭 전엔 delegation_denied; PAT 소스의 허용 저장소 판정(task_cycle)은 여전히 WORKFLOW_GITHUB_REPOS 만 봄 — step 7 토큰 연결 때 처리 필요; 소스 오류 github_not_connected 는 기록 없이 건너뜀(화면 표시는 step 8).",
+      "completed_at": "2026-09-27T18:48:37+0900"
     },
     {
       "step": 6,
       "name": "auto-match",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:48:37+0900",
+      "summary": "자동 매칭: 신설 domain/github_match.py(MatchAgent·SourceMatch(workflow_repository_id, fix_verification_profile_id, fix_agent_id, review_agent_id, blockers)+fix_blockers·review_blockers·match_source(source, agents, *, assignee_ids, bindings) — ARCHITECTURE 코드명 repository_/fix_agent_/profile_/review_agent_ unmatched·ambiguous 를 따름(step.md 예시 runner_unmatched·verification_profile_missing 아님), 설정값 우선·None 칸만 채움, 로컬 저장소=found.github_repository 대소문자 무시 일치 Agent 들의 repository_id 하나, 수정=①담당 1명 연결 ②default_fix_agent_id ③code.fix 후보 하나(all_open 만), 검증 프로필=정해진 수정 Agent 등록의 프로필이 하나일 때(ARCHITECTURE 의 '저장소 후보 합집합'을 이 규칙으로 갱신 — 연결 프로그램은 자기 등록 프로필만 실행), 검토=code.review 후보 하나, 저장소 미정이면 repository_* 하나만) + tests/workflow/domain/test_github_match.py 17개; task_readiness TaskFacts.matched_agent_id·match_blockers·auto_match(auto 면 매칭 결과만, filtered 는 담당 미해결 시 기본 수정 Agent 후 기존 assignee_*) + 테스트 7개; issue_intake: workflow_repository_id None 소스의 Task scope 는 owner/name(Capability 가 None 을 못 받아 수집이 깨지던 문제) — 준비 판정이 매칭 저장소로 바꿔 봄; task_cycle.source_match(conn, task)·task_facts 가 수정 Task 는 fix_blockers, chosen 없는 검토 Task 는 review_blockers 로 auto_match; worker._start_fix 의 검증 프로필 = source_match 값(원본 없으면 기존 첫 프로필); 매칭 대기는 사람 요청 안 만듦; ARCHITECTURE 대기 코드 표 5행·자동 매칭 구현 단락·시그니처 표. 통합 테스트 5개(담당·ID 없이 수정→검토 target, 러너 없음, 수정 Agent 2개→기본 지정 후 착수, 담당 연결 우선·그 등록 프로필, 프로필 없음). 검증: pytest 2633 passed/55 skipped, ruff 통과. 주의: 저장하지 않고 매번 계산 — step 8 화면은 task_cycle.source_match 로 결정값 표시·'설정에서 고르기'는 소스 설정 칸(default_fix_agent_id·workflow_repository_id·fix_verification_profile_id·review_agent_id) 저장; 옛 Task scope 값이 owner/name 인 경우가 있음(표시 주의); POST /tasks/{id}/delegate 는 step 7.",
+      "completed_at": "2026-09-27T19:00:58+0900"
     },
     {
       "step": 7,
       "name": "connect-flow",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T19:00:58+0900",
+      "summary": "연결 경로: web.py 에 GET /operator/github/app/new(manifest 자동 제출 폼 operator_github_app_new.html, App 있으면 설치 URL 303, ?org= 조직 URL, WORKFLOW_PUBLIC_URL 없으면 루프백 호스트만 — 아니면 400 public_url_required)·/callback(state 확인→exchange_manifest_code→save_credentials→설치 URL 303 새 state, 실패 400 github_manifest_failed)·/setup(state 있으면 확인, github_workspace_taken 409, App 없음 409 github_app_missing, JWT 설치 확인 404→400 github_installation_invalid, 그 밖 502 github_unavailable, 소스 맞춤 후 쿠키 삭제·/operator/github 303)·POST /operator/github/token(ARCHITECTURE 대로 폼 token+repository_full_name 한 저장소 — step.md 의 목록 선택 아님, HttpGitHubClient.repository_id 로 확인 후 비밀 파일 github_token 저장·ensure_token_source, 400 github_token_invalid/422 invalid_field/502)·POST /tasks/{id}/delegate(운영자·자기 Task, 원본 이슈 없으면 409 not_delegatable, 마감 409 task_closed, mark_issue_delegated(by=operator) 멱등 후 /run 과 같은 Worker.start_manually 착수 시도); state 는 ARCHITECTURE 대로 서버 저장 없이 쿠키 wf_gh_state=<state>.<epoch>.<HMAC(SESSION_SECRET)>(Path=/operator/github/app, HttpOnly, Lax, Max-Age 3600, 서버도 3600초 초과 거부, callback 은 새 state 로 교체해 재사용 거부); 신설 server/github_connect.py(sync_installation_sources — 새 소스 all_open·runloom·auto·빈 자동 칸, 기존 소스는 installation_id 만, 설치에서 빠진 소스는 enabled=false, 다시 부르면 [] / ensure_token_source), adapters/github_app.build_manifest, github_client.HttpGitHubClient.repository_id(public), app.state.secrets(SecretStore)·app.state.github_transport(테스트 가짜 GitHub), task_cycle repository_allowed 는 붙여 넣은 PAT 가 있으면 통과(step 5 가 남긴 일), 서버 conftest settings.secret_dir=tmp_path/secrets; ARCHITECTURE 경로 표·state 규칙·소스 맞춤·허용 규칙 갱신. 테스트: test_web_github_connect.py 29·test_github_connect.py 5·build_manifest 2·repository_id 2·PAT 허용 1. 검증: pytest 2672 passed/55 skipped, ruff 통과. 주의(step 8): 설치에서 빠졌다 다시 들어온 저장소의 멈춘 소스는 그대로 멈춤(다시 켜기는 화면 몫); /operator/github 에 [GitHub 연결](GET /operator/github/app/new 링크)·PAT 폼(POST /operator/github/token, 폼 전송 303)·업무 목록 [에이전트에게 맡기기](POST /tasks/{id}/delegate 폼) 를 붙일 것; manifest code 는 callback URL 이라 접근 로그엔 남음(응답·DB 엔 없음); 실제 App 생성·설치·setup_action·state 복귀 여부는 미확인.",
+      "completed_at": "2026-09-27T19:14:38+0900"
     },
     {
       "step": 8,
       "name": "connect-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T19:14:39+0900",
+      "summary": "연결 화면·[에이전트에게 맡기기]: operator_github.html 재작성 — 연결 전(소스 없음)은 설명 한 줄+[GitHub 연결](/operator/github/app/new)+접힌 '고급 — 토큰으로 연결'(PAT 폼 POST /operator/github/token·type=password, 비밀 연결됨/없음, WORKFLOW_GITHUB_REPOS 있으면 phase 8 라벨 범위 소스 만들기 폼), 연결 후는 App slug·owner+[저장소 추가/변경](views 가 만든 https://github.com/apps/{slug}/installations/new — 템플릿에 외부 URL 직접 금지 test_ui 규칙, App 없으면 [GitHub 연결])+저장소 카드 section[data-source-card](마지막 동기화=커서 저장 시각·가져온 이슈 수·수집 자격 종류 App 설치/붙여 넣은 토큰/서버 환경변수 토큰/'GitHub 자격 없음'·트리거 라벨·러너 매칭 값마다 (설정)/(자동)·repository_unmatched 면 '이 저장소를 등록한 러너 없음 — register' 안내·기준선 가져오기·수집 중지)+카드마다 접힌 '고급 설정'(소스 PUT 폼 — hidden intake, all_open 은 자동 칸 optional '비워 두면 자동'·hidden start_at·trigger_label, 두 intake 모두 기본 수정 Agent 칸 / 담당 연결); details 는 겹치지 않음; views: undelegated(conn, task)(all_open 이슈 수정 Task·지시 없음·마감 전) → task_summary.delegatable 이면 상태 '대기 · 지시 전'(다른 사유는 상세만), cycle_context.can_delegate(운영자만), github_context(…, secrets) 에 github_app·pat_connected·카드 값; 새 함수 task_cycle.match_for_source·github_clients.credential_kind·repo.get_source_synced_at; [에이전트에게 맡기기] 폼은 /tasks 목록·/operator/github 업무 목록·상세(_cycle.html) — 운영자·all_open·지시 전만; ARCHITECTURE '연결 화면 (step 8)' 절·시그니처 표. 테스트: test_web_github_connect 12개(연결 전 버튼만·ID 칸 없음, 카드·러너 없음·고급 접힘, 자동 매칭 표시, 자격 없음, 비밀 연결됨/없음만, 맡기기 노출 조건·목록 '지시 전'·filtered·비운영자·demo 회귀)+repo·clients·task_cycle 각 1, test_web_cycle 문구 갱신. 검증: pytest 2685 passed/55 skipped, ruff 통과. 주의(step 9): 수집 실패(rate limit·권한)는 DB 에 저장하지 않아 카드에 안 보임(워커 로그만); 설치에서 빠진 멈춘 소스 다시 켜기는 고급 설정의 '수집 켜기' 체크로; 브라우저 스크립트·실제 GitHub 화면은 미확인.",
+      "completed_at": "2026-09-27T19:28:13+0900"
     },
     {
       "step": 9,
       "name": "app-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T19:28:13+0900",
+      "summary": "e2e 와 문서: 신설 tests/e2e/test_github_app.py 6개(WORKFLOW_E2E) — test_github_cycle 의 FakeGitHub 를 상속한 FakeGitHubApp 에 manifest 교환(테스트 안 RSA 키 pem)·GET /app/installations/{id}·POST access_tokens(App JWT 공개 키 검증)·GET /installation/repositories 추가, 저장소 경로는 설치 토큰만; 중앙 API 는 테스트 프로세스 uvicorn 스레드(app.state.github_transport=가짜), 워커는 SourceClients, 환경변수 토큰·REPOS 없음; 흐름 운영자 로그인→[GitHub 연결] manifest 폼(redirect/setup URL·권한 확인)→callback(state 재사용 403)→setup→all_open 소스 자동 생성(세 ID null)→비밀 디렉터리 0700·파일 4개 0600→첫 수집 열린 이슈 3건(오래된 백로그 포함, PR·닫힘 제외) '실행 지시 전'·사람 요청 0→러너 register(origin git@github.com:acme/billing.git)→카드 네 값 (자동)→지시 전 착수 0→#1 [맡기기](delegated_by operator, 멱등)→수정→검토 승인→운영자 승인 완료→#2 'Runloom' 라벨→자동 착수·검토 승인, #3 계속 대기→비밀(개인 키·client/webhook secret·설치 토큰)이 비밀 디렉터리 밖 파일·로그(루트 로거 파일)·화면·댓글·도구 환경에 없음. 제품 코드 변경 없음. 문서: SELFHOST GitHub 절을 버튼 흐름(App 이름 확인→Create→Only select repositories→Install→러너 register→맡기기/라벨→기준선)+고급 토큰으로 재작성·백업 제외에 /data/secrets, github/README 0절(App 연결 vs 예전 방식 표)·10절 대역 결과, CURRENT_HANDOFF(phase 11 완료·service 병합 전, 다음=사용자 브라우저 실제 App 생성·설치(OpenArchive)→기준선→12-real-repo, 9·10 병합됨 반영), VERIFICATION_LOG 대역 e2e 절(실연동 아님 명시). 검증: pytest 2685 passed/61 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 60 passed/1 skipped. 주의: 실제 github.com App 생성·설치·setup_action·state 복귀·비활성 웹훅 127.0.0.1 수락은 미확인; PAT·설치 변경 경로는 e2e 없음; 셀프호스트 Docker e2e 는 재실행 안 함.",
+      "completed_at": "2026-09-27T19:39:11+0900"
     }
-  ]
+  ],
+  "created_at": "2026-09-27T17:58:46+0900",
+  "completed_at": "2026-09-27T19:39:11+0900"
 }

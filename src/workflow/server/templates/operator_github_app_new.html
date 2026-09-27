@@ -1,0 +1,14 @@
+{# GitHub App 만들기 (ADR-0017, ARCHITECTURE "경로") — manifest 를 GitHub 의 App 만들기 화면으로 자동 제출한다.
+   [Create] 는 사용자가 GitHub 에서 누른다. manifest 에 비밀값은 없다. 스크립트가 꺼져 있으면 버튼으로 보낸다. #}
+{% extends "base.html" %}
+{% block title %}GitHub 연결 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb"><a href="/operator/github">GitHub 연결</a></div><div class="crumb">App 만들기</div></div>
+<h1>GitHub App 만들기</h1>
+<p>GitHub 로 이동합니다. 이름·권한이 채워진 화면에서 [Create GitHub App] 을 누르면 설치 화면으로 이어집니다.</p>
+<form id="gh-manifest-form" method="post" action="{{ action }}" class="card">
+  <input type="hidden" name="manifest" value="{{ manifest_json }}">
+  <div class="actions"><button class="btn" type="submit">GitHub 에서 App 만들기</button></div>
+</form>
+<script>document.getElementById("gh-manifest-form").submit();</script>
+{% endblock %}

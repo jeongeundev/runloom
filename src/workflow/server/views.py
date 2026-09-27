@@ -9,14 +9,15 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from pydantic import ValidationError
 
-from workflow.adapters import repo
+from workflow.adapters import repo, secret_store
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
+from workflow.adapters.secret_store import SecretStore
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule
@@ -27,7 +28,7 @@ from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.metrics import ACTORS, ALL_GROUP, UNKNOWN, MetricsReport, Ratio, Stat
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
-from workflow.server import human_api, task_cycle
+from workflow.server import github_clients, human_api, task_cycle
 from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst
 from workflow.server.settings import Settings
 
@@ -259,14 +260,30 @@ def status_of(task: Row, view: TaskView) -> UserStatus:
     return user_status(view)
 
 
+def undelegated(conn: Connection, task: Row) -> bool:
+    """`intake: all_open` 소스 이슈의 (수정) Task 인데 실행 지시가 없다 — [에이전트에게 맡기기] 대상
+    (ARCHITECTURE "실행 지시"). 마감된 Task·검토 Task·`filtered` 소스(수집 = 지시)는 아니다."""
+    if task["finished_at"] is not None:
+        return False
+    issue = repo.get_source_issue_by_task(conn, task["session_id"], task["task_id"])
+    if issue is None or issue["delegated_at"] is not None:
+        return False
+    config = repo.get_github_source(conn, task["session_id"], issue["source_id"])
+    return config is not None and config.intake == "all_open"
+
+
 def task_summary(conn: Connection, task: Row, *, now: str, settings: Settings) -> dict[str, Any]:
-    """목록·링크용 요약 (왼쪽 목록, 선행·후속 칩)."""
+    """목록·링크용 요약 (왼쪽 목록, 선행·후속 칩). 지시 전 업무는 "대기 · 지시 전" 하나로 보인다 — 다른 대기 사유는
+    상세에서만(ARCHITECTURE "실행 지시")."""
+    delegatable = undelegated(conn, task)
     return {
         "task_id": task["task_id"],
         "title": task["title"],
         "kind": task["kind"],
         "created_at": task["created_at"],
-        "status": status_of(task, build_task_view(conn, task, now=now, settings=settings)),
+        "status": (UserStatus("대기", "지시 전") if delegatable
+                   else status_of(task, build_task_view(conn, task, now=now, settings=settings))),
+        "delegatable": delegatable,
     }
 
 
@@ -549,6 +566,7 @@ def cycle_context(
         "origin": origin,
         "blockers": blockers,
         "can_start": can_start,
+        "can_delegate": is_operator and undelegated(conn, task),
         "requests": requests,
         "open_requests": [r for r in requests if r["state"] == "open"],
         "responses": [
@@ -568,9 +586,50 @@ def cycle_context(
     }
 
 
-def github_context(conn: Connection, session_id: str, *, now: str, settings: Settings) -> dict[str, Any]:
-    """운영자 GitHub 화면 — 연결 상태(토큰은 있음/없음만)·소스 설정·담당 연결·실제 업무 목록·열린 사람 요청.
-    쓰기는 화면의 스크립트가 JSON API(`github_api`·`human_api`)로 한다."""
+# 연결 화면의 수집 자격 종류(`github_clients.credential_kind`) — 값은 보이지 않는다
+CREDENTIAL_LABELS = {"app": "GitHub App 설치", "pat": "붙여 넣은 토큰", "env": "서버 환경변수 토큰"}
+
+
+def _saved_app(secrets: SecretStore) -> dict[str, str] | None:
+    """저장된 App 의 공개 정보(slug·owner·설치 설정 URL) — 개인 키와 정보가 모두 있을 때만. 비밀 파일은 읽지 않는다."""
+    if not secrets.exists(secret_store.GITHUB_APP_PRIVATE_KEY):
+        return None
+    try:
+        info = json.loads(secrets.read(secret_store.GITHUB_APP_INFO) or "")
+    except ValueError:
+        return None
+    if not isinstance(info, dict) or not isinstance(info.get("slug"), str) or not info["slug"]:
+        return None
+    return {
+        "slug": info["slug"],
+        "owner_login": str(info.get("owner_login") or ""),
+        # [저장소 추가/변경] — GitHub 설치 설정 화면. 돌아오면 state 없는 setup(허용)으로 소스를 맞춘다
+        "install_url": f"https://github.com/apps/{quote(info['slug'], safe='')}/installations/new",
+    }
+
+
+def _match_rows(config: GitHubSourceConfig, match: Any) -> list[dict[str, Any]]:
+    """저장소 카드의 러너 매칭 줄 — 설정값이 있으면 "설정", 자동 매칭이 정했으면 "자동", 아니면 정해지지 않음."""
+    rows = []
+    for label, configured, matched in (
+        ("로컬 저장소", config.workflow_repository_id, match.workflow_repository_id),
+        ("수정 에이전트", config.default_fix_agent_id, match.fix_agent_id),
+        ("검증 프로필", config.fix_verification_profile_id, match.fix_verification_profile_id),
+        ("검토 에이전트", config.review_agent_id, match.review_agent_id),
+    ):
+        how = "설정" if configured is not None else "자동" if matched is not None else None
+        rows.append({"label": label, "value": configured or matched, "how": how})
+    if config.intake == "filtered" and rows[1]["value"] is None:
+        rows[1]["note"] = "이슈 GitHub 담당자에 연결한 Agent"  # filtered 는 담당 연결로 정한다(phase 8)
+    return rows
+
+
+def github_context(
+    conn: Connection, session_id: str, *, now: str, settings: Settings, secrets: SecretStore
+) -> dict[str, Any]:
+    """운영자 GitHub 화면 — 연결 상태(비밀은 연결됨/없음만)·저장소 카드(동기화·수집 자격·러너 매칭·트리거 라벨)·
+    접힌 고급 설정(소스 설정·담당 연결)·실제 업무 목록·열린 사람 요청. 쓰기는 화면의 스크립트가 JSON API
+    (`github_api`·`human_api`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 폼으로 한다."""
     agents = [agent_public(a, now=now, settings=settings) for a in repo.list_session_agents(conn, session_id)]
 
     def able(code: str) -> list[dict[str, Any]]:
@@ -592,13 +651,22 @@ def github_context(conn: Connection, session_id: str, *, now: str, settings: Set
                 "task": task_summary(conn, task, now=now, settings=settings),
                 "delivery": delivery_public(deliveries[-1], config.repository_full_name) if deliveries else None,
             })
+        match = task_cycle.match_for_source(conn, session_id, config)
+        credential = github_clients.credential_kind(config, settings, secrets)
         sources.append({
             "config": config.model_dump(mode="json"),
             "assignees": [b.model_dump(mode="json") for b in repo.list_assignee_bindings(conn, session_id, config.source_id)],
             "issues": issues,
+            "synced_at": repo.get_source_synced_at(conn, session_id, config.source_id),
+            "credential": CREDENTIAL_LABELS.get(credential) if credential else None,
+            "match": _match_rows(config, match),
+            "runner_missing": any(b.code == "repository_unmatched" for b in match.blockers),
+            "match_blockers": [b.reason for b in match.blockers if b.code != "repository_unmatched"],
         })
     return {
         "token_configured": bool(settings.github_token),
+        "pat_connected": secrets.exists(secret_store.GITHUB_TOKEN),
+        "github_app": _saved_app(secrets),
         "allowed_repositories": list(settings.github_repos),
         "sources": sources,
         "fix_agents": able("code.fix"),

@@ -59,7 +59,8 @@
     },
     {
       "dir": "11-github-app",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-27T19:39:11+0900"
     }
   ]
 }

@@ -1583,6 +1583,11 @@ def get_source_cursor(conn: Connection, session_id: str, source_id: str) -> str 
     return _source_row(conn, session_id, source_id)["cursor"]
 
 
+def get_source_synced_at(conn: Connection, session_id: str, source_id: str) -> str | None:
+    """마지막으로 커서를 저장한 시각 — 수집이 끝난(또는 페이지를 넘긴) 때. 실패한 수집은 바꾸지 않는다."""
+    return _source_row(conn, session_id, source_id)["cursor_updated_at"]
+
+
 def bind_assignee(conn: Connection, session_id: str, binding: AssigneeBinding, now: str) -> None:
     """`(source_id, github_user_id)` 당 하나 — 다시 부르면 Agent·login 을 바꾼다. 소스·Agent 가 없으면 NotFound.
     Agent 능력(`code.fix {repository_id}`) 검사는 서버 몫."""
@@ -1665,6 +1670,29 @@ def upsert_source_issue(
             (task["title"], task["request"], row["task_id"], task["title"], task["request"]),
         )
         return SourceIssueUpsert("updated", row["task_id"], revision, input_changed=cur.rowcount == 1)
+
+
+def mark_issue_delegated(
+    conn: Connection, *, session_id: str, source_id: str, github_issue_id: int, by: str, now: str
+) -> bool:
+    """원본 이슈 Task 에 실행 지시를 기록한다(ADR-0017 — `all_open` 소스). 처음 지시만 남기고 이미 있으면 그대로(False).
+    라벨을 떼거나 이슈가 바뀌어도 지우지 않는다. 다른 세션 소스·없는 이슈 → NotFound, `by` 가 operator·label 밖 → ValueError."""
+    if by not in ("operator", "label"):
+        raise ValueError(f"지시 주체 {by!r} 는 operator·label 이 아닙니다")
+    with _tx(conn):
+        _source_row(conn, session_id, source_id)
+        row = _one(
+            conn, "SELECT delegated_at FROM source_issues WHERE source_id = ? AND github_issue_id = ?",
+            (source_id, github_issue_id),
+        )
+        if row is None:
+            raise NotFound(f"source issue {source_id}/{github_issue_id}")
+        cur = conn.execute(
+            "UPDATE source_issues SET delegated_at = ?, delegated_by = ?"
+            " WHERE source_id = ? AND github_issue_id = ? AND delegated_at IS NULL",
+            (now, by, source_id, github_issue_id),
+        )
+        return cur.rowcount == 1
 
 
 def list_source_issues(conn: Connection, session_id: str, source_id: str) -> list[Row]:

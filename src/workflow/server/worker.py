@@ -15,7 +15,8 @@ HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 �
   결과 안의 진단 API 쪽 산출물 ID 는 중앙에 저장한 산출물 ID 로 치환해 화면·인계가 중앙 ID 만 보게 한다.
 - Task 의 저장 상태는 `domain.status.user_status` 와 같은 문구로 쓴다. `실패`(종료 확인)·`완료`(자동 판정)만
   마감(`finished_at`)하고 잠금을 해제한다. `확인 필요`·`unknown`·검토 대기는 잠금을 유지한다.
-- GitHub 수집(ADR-0014)은 GitHub 클라이언트가 있을 때만(토큰이 설정됐을 때) 켜진 소스마다 `GITHUB_SYNC_INTERVAL_SECONDS`
+- GitHub 수집(ADR-0014)은 소스의 GitHub 클라이언트가 있을 때만(`github_clients` — App 설치 토큰·붙여 넣은 PAT·환경변수 토큰,
+  ADR-0017) 켜진 소스마다 `GITHUB_SYNC_INTERVAL_SECONDS`
   간격으로 `github_sync.sync_source` 를 부른다. rate limit 이면 그 소스는 알려준 시간만큼 쉰다. 수집은 Task 만 만들고
   착수하지 않는다.
 - GitHub 업무 순환(ADR-0014 결정 5·6·10)은 `domain.execution_policy` 의 `cycle` 종류(`bug_fix`·`code_review`)만 다룬다.
@@ -57,7 +58,8 @@ from workflow.adapters.diag_client import (
     DiagUnavailable,
     HttpDiagClient,
 )
-from workflow.adapters.github_client import GitHubClient, HttpGitHubClient
+from workflow.adapters.github_client import GitHubClient
+from workflow.adapters.secret_store import SecretStore
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     AdapterError,
@@ -66,6 +68,7 @@ from workflow.adapters.errors import (
     NotFound,
     TaskClosed,
 )
+from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import (
     ArtifactMeta,
     AttachmentRef,
@@ -106,6 +109,7 @@ from workflow.domain.verification import (
     verify_diagnosis,
 )
 from workflow.server import github_delivery, github_sync, task_cycle, views
+from workflow.server.github_clients import SourceClients
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
 
@@ -356,8 +360,12 @@ class Worker:
         settings: Settings,
         clock: Callable[[], str],
         github: GitHubClient | None = None,
+        github_for: Callable[[GitHubSourceConfig], GitHubClient | None] | None = None,
     ):
-        self._github = github
+        # 소스별 클라이언트(ADR-0017). `github` 하나만 주면 모든 소스가 그것을 쓴다(환경변수 토큰·테스트)
+        if github_for is None and github is not None:
+            github_for = lambda _config: github  # noqa: E731
+        self._github_for = github_for
         self._github_next_at: dict[str, str] = {}  # source_id → 다음 수집 시각(메모리 — 재시작하면 바로 한 번 부른다)
         self._manual_task_id: str | None = None  # 직접 실행(`start_manually`) 중인 Task — 이 Task 만 `manual_mode` 를 뺀다
         self._conn_factory = conn_factory
@@ -403,25 +411,34 @@ class Worker:
 
     # --- GitHub 수집 ---------------------------------------------------------------------
 
+    def _enabled_sources(self, conn: Connection) -> list[GitHubSourceConfig]:
+        return [
+            config for session_id in repo.github_source_sessions(conn)
+            for config in repo.list_github_sources(conn, session_id) if config.enabled
+        ]
+
     def _sync_github(self, conn: Connection, report: TickReport) -> None:
-        if self._github is None:
+        if self._github_for is None:
             return
         now = self._clock()
-        for session_id in repo.github_source_sessions(conn):
-            for config in repo.list_github_sources(conn, session_id):
-                due = self._github_next_at.get(config.source_id)
-                if not config.enabled or (due is not None and _parse(now) < _parse(due)):
-                    continue
-                result = github_sync.sync_source(conn, self._github, config.source_id, now)
-                report.sources_synced += 1
-                report.issues_created += len(result.created)
-                if result.error is not None:
-                    report.sync_errors += 1
-                    log.warning("GitHub 수집 실패 %s: %s", config.source_id, result.error)
-                if result.merge_error is not None:
-                    log.warning("GitHub 병합 PR 조회 실패 %s: %s", config.source_id, result.merge_error)
-                wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
-                self._github_next_at[config.source_id] = _plus_seconds(now, wait)
+        for config in self._enabled_sources(conn):
+            due = self._github_next_at.get(config.source_id)
+            if due is not None and _parse(now) < _parse(due):
+                continue
+            client = self._github_for(config)
+            if client is None:  # 자격 없음(github_not_connected) — 다음 간격에 다시 본다
+                self._github_next_at[config.source_id] = _plus_seconds(now, GITHUB_SYNC_INTERVAL_SECONDS)
+                continue
+            result = github_sync.sync_source(conn, client, config.source_id, now)
+            report.sources_synced += 1
+            report.issues_created += len(result.created)
+            if result.error is not None:
+                report.sync_errors += 1
+                log.warning("GitHub 수집 실패 %s: %s", config.source_id, result.error)
+            if result.merge_error is not None:
+                log.warning("GitHub 병합 PR 조회 실패 %s: %s", config.source_id, result.merge_error)
+            wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
+            self._github_next_at[config.source_id] = _plus_seconds(now, wait)
 
     # --- Task 상태 ---------------------------------------------------------------------
 
@@ -1188,7 +1205,7 @@ class Worker:
         inputs: list[str] | None = None, release_execution_id: str | None = None, report: TickReport | None = None,
         **readiness_overrides: Any,
     ) -> bool:
-        """준비 판정을 통과하면 담당 Agent 의 등록값 + 소스의 검증 프로필로 target 을 고정해 실행을 만든다. 기준 커밋은
+        """준비 판정을 통과하면 담당 Agent 의 등록값 + 소스의 검증 프로필(빈 칸이면 자동 매칭 값)로 target 을 고정해 실행을 만든다. 기준 커밋은
         주어진 값(재작업: 검토한 결과 커밋), 없으면 이 Task 의 마지막 결과 커밋(남은 task 브랜치), 없으면 등록 보고값."""
         now = self._clock()
         readiness = task_cycle.evaluate(
@@ -1198,7 +1215,7 @@ class Worker:
             self._write_blocked(conn, task, readiness, report)
             return False
         agent = repo.get_agent(conn, readiness.agent_id)
-        _, config = task_cycle.origin_source(conn, task)
+        match = task_cycle.source_match(conn, task)
         profiles = json.loads(agent["verification_profile_ids_json"])
         previous = [e for e in repo.list_executions(conn, task["task_id"]) if e["result_artifact_id"] is not None]
         latest_commit = next((c for c in map(lambda e: self._result_commit(conn, e), reversed(previous)) if c), None)
@@ -1207,7 +1224,7 @@ class Worker:
             target={
                 "local_registration_id": agent["local_registration_id"],
                 "base_commit": base_commit or latest_commit or agent["base_commit"],
-                "verification_profile_id": config.fix_verification_profile_id if config is not None
+                "verification_profile_id": match.fix_verification_profile_id if match is not None
                 else (profiles[0] if profiles else None),
             },
             inputs=inputs or [], start_key=start_key, predecessor_execution_id=None,
@@ -1438,18 +1455,24 @@ class Worker:
     # --- 11. 원본 이슈 반영 -------------------------------------------------------------
 
     def _deliver_github(self, conn: Connection, report: TickReport) -> None:
-        """원본 이슈 댓글 outbox (ADR-0014 결정 8). 반영 실패는 기록만 하고 Task·실행을 바꾸지 않는다."""
-        if self._github is None:
+        """원본 이슈 댓글 outbox (ADR-0014 결정 8). 반영 실패는 기록만 하고 Task·실행을 바꾸지 않는다.
+        소스마다 그 소스의 클라이언트로 보낸다 — 자격이 있는 소스가 하나도 없으면 쌓지도 않는다."""
+        if self._github_for is None:
+            return
+        clients = {config.source_id: self._github_for(config) for config in self._enabled_sources(conn)}
+        clients = {source_id: client for source_id, client in clients.items() if client is not None}
+        if not clients:
             return
         now = self._clock()
         report.deliveries_queued += github_delivery.queue_source_updates(
             conn, self._store, self._settings.public_url, now
         )
-        result = github_delivery.deliver_source_updates(conn, self._github, now)
-        report.deliveries_sent += result.created + result.updated + result.reconciled
-        report.deliveries_failed += result.failed
-        if result.rate_limited:
-            log.warning("GitHub 반영 rate limit — 다음 시각까지 물러남")
+        for source_id, client in clients.items():
+            result = github_delivery.deliver_source_updates(conn, client, now, source_id=source_id)
+            report.deliveries_sent += result.created + result.updated + result.reconciled
+            report.deliveries_failed += result.failed
+            if result.rate_limited:
+                log.warning("GitHub 반영 rate limit %s — 다음 시각까지 물러남", source_id)
 
     def _task_state(self, conn: Connection, task: Row, now: str) -> UserStatus:
         """체인 화면과 같은 판정 — 마감된 Task 는 저장 상태, 아니면 지금 실행·연결 상태로 판정 (`views.status_of`)."""
@@ -1512,8 +1535,8 @@ def main() -> None:
         callbacks=HttpCallbackClient(),
         settings=settings,
         clock=utc_now,
-        # 토큰이 없으면 GitHub 수집만 꺼진다(ADR-0014 결정 1)
-        github=HttpGitHubClient(settings.github_token, settings.github_repos) if settings.github_token else None,
+        # 소스별 자격(App 설치 → 붙여 넣은 PAT → 환경변수). 없으면 그 소스의 수집·반영만 꺼진다(ADR-0014 결정 1, ADR-0017)
+        github_for=SourceClients(settings, SecretStore(settings.secret_dir)),
     )
     log.info("중앙 워커 시작 — 복구 스캔 %s", asdict(worker.tick()))
     worker.run_forever(3.0)

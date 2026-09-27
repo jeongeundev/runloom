@@ -349,3 +349,67 @@ def test_facts_are_values_not_rows():
     with pytest.raises(AttributeError):
         facts.kind = "code_review"  # frozen
     assert replace(facts, kind="code_change").kind == "code_change"
+
+
+# --- 자동 매칭 결과 (phase 11 step 6, ADR-0017) ----------------------------------------------
+
+
+def _unmatched(code: str) -> Blocker:
+    return Blocker(code, f"{code} 사유", "operator")
+
+
+def test_auto_matched_agent_is_ready_without_assignee():
+    for assignees in ((), (101, 102), (999,)):
+        readiness = evaluate_readiness(_fix(assignee_ids=assignees, auto_match=True, matched_agent_id="agent-a"))
+        assert readiness == TaskReadiness(ready=True, blockers=(), agent_id="agent-a")
+
+
+def test_auto_match_blockers_replace_assignee_blockers():
+    readiness = evaluate_readiness(
+        _fix(assignee_ids=(), auto_match=True, match_blockers=(_unmatched("fix_agent_ambiguous"),))
+    )
+
+    assert _codes(readiness) == ["fix_agent_ambiguous"]
+    assert readiness.agent_id is None
+
+
+def test_auto_match_blockers_are_collected_with_other_blockers():
+    readiness = evaluate_readiness(
+        _fix(auto_match=True, match_blockers=(_unmatched("repository_unmatched"),), source_state="closed",
+             delegated=False)
+    )
+
+    assert _codes(readiness) == ["source_closed", "repository_unmatched", "not_delegated"]
+
+
+def test_auto_matched_agent_still_passes_capability_and_executor_checks():
+    wrong = evaluate_readiness(_fix(auto_match=True, matched_agent_id="agent-b"))  # repo-b 만
+    offline = evaluate_readiness(_fix(
+        auto_match=True, matched_agent_id="agent-a",
+        executors={**EXECUTORS, "agent-a": _executor("agent-a", connection_state="offline")},
+    ))
+
+    assert _codes(wrong) == ["delegation_denied"]
+    assert _codes(offline) == ["executor_offline"]
+
+
+def test_auto_matched_review_agent_skips_automatic_selection():
+    review = _review(chosen_agent_id=None, auto_match=True, match_blockers=(_unmatched("review_agent_unmatched"),))
+
+    assert _codes(evaluate_readiness(review)) == ["review_agent_unmatched"]
+    ready = evaluate_readiness(_review(chosen_agent_id=None, auto_match=True, matched_agent_id="agent-review"))
+    assert ready.agent_id == "agent-review"
+
+
+def test_default_agent_covers_filtered_assignee_gaps_but_binding_wins():
+    assert evaluate_readiness(_fix(assignee_ids=(), matched_agent_id="agent-a")).agent_id == "agent-a"
+    assert evaluate_readiness(_fix(assignee_ids=(999,), matched_agent_id="agent-a")).agent_id == "agent-a"
+    assert evaluate_readiness(_fix(assignee_ids=(101, 102), matched_agent_id="agent-a")).agent_id == "agent-a"
+    bound = evaluate_readiness(_fix(required=FIX_B, assignee_ids=(102,), matched_agent_id="agent-a"))
+    assert bound.agent_id == "agent-b"
+
+
+def test_without_match_input_assignee_blockers_are_unchanged():
+    assert _codes(evaluate_readiness(_fix(assignee_ids=()))) == ["assignee_missing"]
+    assert _codes(evaluate_readiness(_fix(assignee_ids=(101, 102)))) == ["assignee_multiple"]
+    assert _codes(evaluate_readiness(_fix(assignee_ids=(999,)))) == ["assignee_unbound"]

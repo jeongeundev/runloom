@@ -29,6 +29,8 @@ FIXED_ENV = {
     "WORKFLOW_DB_PATH": "/data/central.sqlite",
     "WORKFLOW_ARTIFACT_DIR": "/data/artifacts",
     "WORKFLOW_BACKUP_DIR": "/data/backups",
+    # 비밀 파일(ADR-0017) — 볼륨 안, artifacts 밖이라 백업에 들어가지 않는다
+    "WORKFLOW_SECRET_DIR": "/data/secrets",
 }
 SERVICES = ("central", "worker")
 
@@ -497,7 +499,7 @@ def test_selfhost_md_covers_every_section():
         "## 업그레이드", "## 제거", "## 문제 해결", "## 알려진 한계",
     ):
         assert heading in text, heading
-    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "11-real-repo"):
+    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "12-real-repo"):
         assert needle in text, needle
 
 

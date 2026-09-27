@@ -12,7 +12,7 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -217,6 +217,15 @@ CREATE TABLE IF NOT EXISTS baseline_imports (
 # source_issues 는 v5 정의(_V5_TABLES)를 4 → 5 가 그대로 쓰므로, v6 칸은 빈 DB·5 → 6 모두 ALTER 로 더한다.
 _V6_SOURCE_ISSUE_ALTERS = "".join(
     f"ALTER TABLE source_issues ADD COLUMN {column};\n" for column in _SOURCE_ISSUE_MERGE_COLUMNS
+)
+
+# v7 (phase 11, ADR-0017): `all_open` 소스 Task 의 실행 지시. NULL = 지시 전. 빈 DB·6 → 7 모두 ALTER 로 더한다.
+_SOURCE_ISSUE_DELEGATION_COLUMNS = (
+    "delegated_at TEXT",
+    "delegated_by TEXT CHECK (delegated_by IS NULL OR delegated_by IN ('operator', 'label'))",
+)
+_V7_SOURCE_ISSUE_ALTERS = "".join(
+    f"ALTER TABLE source_issues ADD COLUMN {column};\n" for column in _SOURCE_ISSUE_DELEGATION_COLUMNS
 )
 
 
@@ -427,7 +436,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS
 
 
 def _statements(script: str) -> list[str]:
@@ -505,8 +514,15 @@ def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 6")
 
 
+def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 지시 칸만 더한다 — 기존 원본 이슈는 NULL(옛 소스는 `filtered` 라 보지 않는다)."""
+    for statement in _statements(_V7_SOURCE_ISSUE_ALTERS):
+        conn.execute(statement)
+    conn.execute("UPDATE schema_version SET version = 7")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4 는 4 → 5 → 6, 5 는 5 → 6 을 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4 는 4 → 5 → 6 → 7, 5 는 5 → 6 → 7, 6 은 6 → 7 을 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
@@ -522,8 +538,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
         elif row[0] == 4:
             _migrate_4_to_5(conn)
             _migrate_5_to_6(conn)
+            _migrate_6_to_7(conn)
         elif row[0] == 5:
             _migrate_5_to_6(conn)
+            _migrate_6_to_7(conn)
+        elif row[0] == 6:
+            _migrate_6_to_7(conn)
         elif row[0] != SCHEMA_VERSION:
             raise RuntimeError(f"schema_version {row[0]} 은 지원하지 않습니다 (기대 {SCHEMA_VERSION})")
     except BaseException:

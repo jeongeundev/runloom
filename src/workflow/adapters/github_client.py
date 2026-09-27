@@ -2,7 +2,8 @@
 
 - host 는 `https://api.github.com` 고정. 리다이렉트를 따라가지 않고(`follow_redirects=False`), Link 헤더의 다음 페이지는
   같은 host 일 때 그 `page` 값만 꺼내 쓴다. 저장소는 생성자로 받은 허용 목록(`WORKFLOW_GITHUB_REPOS`) 안에서만 부른다.
-- 토큰은 `from_env` 가 환경변수 `WORKFLOW_GITHUB_TOKEN` 에서만 읽는다. 오류 메시지는 `메서드 경로: HTTP 상태` 뿐 —
+- 토큰은 `from_env` 가 환경변수 `WORKFLOW_GITHUB_TOKEN` 에서만 읽거나, 생성자에 `TokenProvider`(설치 토큰 — ADR-0017)를
+  넘긴다. 공급자는 요청마다 부르고, 401 이면 `invalidate()` 뒤 한 번만 다시 보낸다. 오류 메시지는 `메서드 경로: HTTP 상태` 뿐 —
   토큰·헤더·응답 본문을 넣지 않는다. 프로세스를 띄우지 않으므로 도구 프로세스 환경으로 넘어갈 경로도 없다.
 - 오류: `GitHubRateLimited`(429, 또는 403 + `x-ratelimit-remaining: 0`/`retry-after`)·`GitHubForbidden`(401·403)·
   `GitHubNotFound`(404·410)·`GitHubUnavailable`(5xx·연결 오류·timeout)·그 밖(3xx·422·응답 형식)은 `GitHubError`.
@@ -158,6 +159,47 @@ class CommentPage:
     next_cursor: int | None
 
 
+class TokenProvider(Protocol):
+    """요청마다 부르는 토큰 공급자. `invalidate()` 는 401 을 받았을 때 캐시를 버리게 한다."""
+
+    def token(self) -> str: ...
+
+    def invalidate(self) -> None: ...
+
+
+class _FixedToken:
+    """문자열 토큰(PAT·환경변수). repr 에 값이 없고, 401 에 다시 보내지 않는다."""
+
+    def __init__(self, value: str):
+        self._value = value
+
+    def __repr__(self) -> str:
+        return "_FixedToken(***)"
+
+    def token(self) -> str:
+        return self._value
+
+    def invalidate(self) -> None:
+        pass
+
+
+class InstallationTokenProvider:
+    """`GitHubAppAuth` 의 설치 토큰(설치별 메모리 캐시)을 공급한다. repr 에 토큰이 없다."""
+
+    def __init__(self, auth: Any, installation_id: int):
+        self._auth = auth
+        self.installation_id = installation_id
+
+    def __repr__(self) -> str:
+        return f"InstallationTokenProvider(installation_id={self.installation_id})"
+
+    def token(self) -> str:
+        return self._auth.installation_token(self.installation_id)
+
+    def invalidate(self) -> None:
+        self._auth.invalidate(self.installation_id)
+
+
 class GitHubClient(Protocol):
     def list_issues(self, repo: str, cursor: IssueCursor | None) -> IssuePage: ...
 
@@ -181,6 +223,41 @@ def _header_int(response: httpx.Response, name: str) -> int | None:
         return None
 
 
+def check_response(method: str, path: str, response: httpx.Response) -> httpx.Response:
+    """상태 코드 → 오류 분류. 메시지는 `메서드 경로: HTTP 상태` 뿐이다(github_app 도 같이 쓴다)."""
+    status = response.status_code
+    if 200 <= status < 300 or status == 304:
+        return response
+    message = f"{method} {path}: HTTP {status}"
+    retry_after = _header_int(response, "retry-after")
+    if status == 429 or (status == 403 and (retry_after is not None or response.headers.get("x-ratelimit-remaining") == "0")):
+        raise GitHubRateLimited(message, retry_after, _header_int(response, "x-ratelimit-reset"))
+    if status in (401, 403):
+        raise GitHubForbidden(message)
+    if status in (404, 410):
+        raise GitHubNotFound(message)
+    if status >= 500:
+        raise GitHubUnavailable(message)
+    raise GitHubError(message)  # 3xx(리다이렉트는 따라가지 않는다)·422 등
+
+
+def next_page(response: httpx.Response, path: str) -> int | None:
+    """Link 헤더의 rel="next" 에서 page 만 꺼내 같은 경로로 부른다(URL 자체는 쓰지 않음). 다른 host 는 거부한다."""
+    link = response.links.get("next")
+    if link is None:
+        return None
+    url = urlsplit(link["url"])
+    if url.scheme != "https" or url.hostname != API_HOST:
+        raise GitHubError(f"GET {path}: 다음 페이지가 {API_HOST} 밖을 가리킵니다")
+    try:
+        page = int(parse_qs(url.query)["page"][0])
+    except (KeyError, ValueError):
+        raise GitHubError(f"GET {path}: 다음 페이지 번호가 없습니다") from None
+    if page < 1:
+        raise GitHubError(f"GET {path}: 다음 페이지 번호가 없습니다")
+    return page
+
+
 def _earliest_merge(node: Any) -> IssuePrLink | None:
     """이슈 노드 → 그 이슈를 닫은 병합 PR 중 가장 이른 병합 하나. 병합 PR 이 없으면 None.
     형식 오류는 KeyError·TypeError·ValueError·ValidationError 로 올린다 — 호출자가 GitHubError 로 바꾼다."""
@@ -197,18 +274,20 @@ def _earliest_merge(node: Any) -> IssuePrLink | None:
 class HttpGitHubClient:
     def __init__(
         self,
-        token: str,
+        token: str | TokenProvider,
         allowed_repos: Iterable[str],
         *,
         transport: httpx.BaseTransport | None = None,
         timeout: float = 10.0,
     ):
+        # 허용 목록은 호출자가 고른다 — 환경변수 `WORKFLOW_GITHUB_REPOS` 또는 설치 저장소 목록
+        self._retry_on_401 = not isinstance(token, str)
+        self._token: TokenProvider = _FixedToken(token) if isinstance(token, str) else token
         self._allowed = frozenset(_REPO_NAME.validate_python(repo).lower() for repo in allowed_repos)
         self._repository_ids: dict[str, int] = {}
         self._client = httpx.Client(
             base_url=f"https://{API_HOST}",
             headers={
-                "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": API_VERSION,
                 "User-Agent": "runloom",
@@ -327,6 +406,10 @@ class HttpGitHubClient:
         except (KeyError, TypeError, ValueError, ValidationError):
             raise GitHubError("POST /graphql: 응답 형식 오류") from None
 
+    def repository_id(self, repo: str) -> int:
+        """`GET /repos/{o}/{r}` — 이 토큰으로 저장소를 볼 수 있는지 확인한다(PAT 연결). 못 보면 분류된 오류."""
+        return self._repository_id(self._repo(repo))
+
     # ── 내부 ──
 
     def _repo(self, repo: str) -> str:
@@ -335,28 +418,22 @@ class HttpGitHubClient:
         except ValidationError:
             raise GitHubRepositoryNotAllowed("저장소 이름은 owner/name 이어야 합니다") from None
         if name.lower() not in self._allowed:
-            raise GitHubRepositoryNotAllowed(f"저장소 {name} 는 WORKFLOW_GITHUB_REPOS 에 없습니다")
+            raise GitHubRepositoryNotAllowed(f"저장소 {name} 는 허용 저장소 목록에 없습니다")
         return name
 
     def _call(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        response = self._send(method, path, kwargs)
+        if response.status_code == 401 and self._retry_on_401:
+            self._token.invalidate()
+            response = self._send(method, path, kwargs)
+        return check_response(method, path, response)
+
+    def _send(self, method: str, path: str, kwargs: dict[str, Any]) -> httpx.Response:
+        headers = {**kwargs.get("headers", {}), "Authorization": f"Bearer {self._token.token()}"}
         try:
-            response = self._client.request(method, path, **kwargs)
+            return self._client.request(method, path, **{**kwargs, "headers": headers})
         except httpx.HTTPError as exc:
             raise GitHubUnavailable(f"{method} {path}: {type(exc).__name__}") from None
-        status = response.status_code
-        if 200 <= status < 300 or status == 304:
-            return response
-        message = f"{method} {path}: HTTP {status}"
-        retry_after = _header_int(response, "retry-after")
-        if status == 429 or (status == 403 and (retry_after is not None or response.headers.get("x-ratelimit-remaining") == "0")):
-            raise GitHubRateLimited(message, retry_after, _header_int(response, "x-ratelimit-reset"))
-        if status in (401, 403):
-            raise GitHubForbidden(message)
-        if status in (404, 410):
-            raise GitHubNotFound(message)
-        if status >= 500:
-            raise GitHubUnavailable(message)
-        raise GitHubError(message)  # 3xx(리다이렉트는 따라가지 않는다)·422 등
 
     def _graphql(self, query: str, variables: dict[str, Any], field: str) -> dict:
         """질의 한 번 → `repository.{field}` 객체. `errors` 는 type 으로만 분류하고 message 는 버린다."""
@@ -398,20 +475,7 @@ class HttpGitHubClient:
         return data
 
     def _next_page(self, response: httpx.Response, path: str) -> int | None:
-        """Link 헤더의 rel="next" 에서 page 만 꺼내 같은 경로로 부른다(URL 자체는 쓰지 않음). 다른 host 는 거부한다."""
-        link = response.links.get("next")
-        if link is None:
-            return None
-        url = urlsplit(link["url"])
-        if url.scheme != "https" or url.hostname != API_HOST:
-            raise GitHubError(f"GET {path}: 다음 페이지가 {API_HOST} 밖을 가리킵니다")
-        try:
-            page = int(parse_qs(url.query)["page"][0])
-        except (KeyError, ValueError):
-            raise GitHubError(f"GET {path}: 다음 페이지 번호가 없습니다") from None
-        if page < 1:
-            raise GitHubError(f"GET {path}: 다음 페이지 번호가 없습니다")
-        return page
+        return next_page(response, path)
 
     def _repository_id(self, repo: str) -> int:
         key = repo.lower()

@@ -1,12 +1,15 @@
 """GitHub 이슈 수집 — 워커가 소스마다 부르는 목록 폴링 (ADR-0014 결정 2·9, ARCHITECTURE "GitHub 업무 순환").
 
-- webhook 없이 `GitHubClient.list_issues`(updated 오름차순) 만 쓴다. 최초 커서는 `since = start_at` 이다.
+- webhook 없이 `GitHubClient.list_issues`(updated 오름차순) 만 쓴다. 최초 커서는 `since = start_at` 이다 — `intake: all_open`
+  소스(ADR-0017)는 처음부터(`since` 없음) 받아 오래된 열린 이슈도 들어온다.
 - 한 페이지의 이슈를 모두 저장(이슈마다 repo 트랜잭션)한 뒤에 커서를 다음 페이지로 넘긴다. 호출이 실패하거나 저장 도중
   멈추면 커서는 그 페이지에 남고, 다음 호출이 같은 페이지를 다시 받는다 — 다시 받은 이슈는 digest 가 같아 `unchanged` 다.
 - 마지막 페이지 뒤 새 `since` 는 이번에 본 이슈의 가장 늦은 `updated_at`(포함 경계라 그 이슈는 다음에 한 번 더 온다).
   같은 요청을 다시 보낼 때만(since 그대로·1페이지) ETag 를 남겨 304 로 받는다.
 - 새 이슈는 `domain.issue_intake.intake_scope` 범위 안만 Task 로 만든다. 이미 받은 이슈는 범위와 무관하게 갱신한다 —
   닫힘·재오픈·담당 변경은 원본 스냅샷에, 제목·본문 변경은 Task revision 에 반영된다(진행 중 실행의 입력은 그대로).
+- `all_open` 소스에서 트리거 라벨이 붙은 이슈는 볼 때마다 실행 지시(`delegated_by=label`)를 기록한다 — 처음 한 번만
+  남고 라벨을 떼도 지우지 않는다. 지시 전 Task 는 준비 판정의 `not_delegated` 로 기다린다.
 - `selected_issue_numbers` 중 아직 받지 않은 이슈는 `get_issue` 로 따로 받는다(`since` 밖의 오래된 이슈도 명시적 선택이면).
 - 댓글은 읽지 않는다 — 원본 댓글이 업무를 만들거나 명령이 되는 경로는 없다. GitHub 에 쓰지 않는다.
 - 수집 뒤 닫혔지만 병합 시각을 모르는 이슈마다 그 이슈를 닫은 병합 PR 을 조회해 저장한다(ADR-0015 결정 9 — 도입 후 완료
@@ -31,7 +34,13 @@ from workflow.adapters.github_client import (
     IssueCursor,
 )
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
-from workflow.domain.issue_intake import IntakeFacts, intake_facts, intake_scope, snapshot_to_task_spec
+from workflow.domain.issue_intake import (
+    IntakeFacts,
+    intake_facts,
+    intake_scope,
+    label_delegated,
+    snapshot_to_task_spec,
+)
 
 # 한 번의 호출에서 넘길 최대 페이지 수. 남은 페이지는 저장된 커서로 다음 호출이 잇는다.
 MAX_PAGES_PER_SYNC = 10
@@ -86,6 +95,9 @@ class _Intake:
         result = repo.upsert_source_issue(self.conn, self.session_id, self.config.source_id, snapshot,
                                           task=task, now=self.now)
         self.tracked.add(snapshot.issue_id)
+        if label_delegated(self.config, snapshot):
+            repo.mark_issue_delegated(self.conn, session_id=self.session_id, source_id=self.config.source_id,
+                                      github_issue_id=snapshot.issue_id, by="label", now=self.now)
         if result.action == "created":
             self.report.created.append(result.task_id)
         elif result.action == "updated":
@@ -115,7 +127,7 @@ def _poll(client: GitHubClient, intake: _Intake, report: SyncReport) -> None:
     """목록 페이지를 따라가며 저장·커서 전진. 실패하면 `report.error` 만 남긴다(커서는 실패한 페이지에 남는다)."""
     config, conn, session_id, now = intake.config, intake.conn, intake.session_id, intake.now
     raw = repo.get_source_cursor(conn, session_id, config.source_id)
-    cursor = IssueCursor.parse(raw) if raw else IssueCursor(since=config.start_at)
+    cursor = IssueCursor.parse(raw) if raw else IssueCursor(since=None if config.intake == "all_open" else config.start_at)
     latest: str | None = None
     for _ in range(MAX_PAGES_PER_SYNC):
         try:
@@ -223,4 +235,6 @@ def task_intake_facts(conn: Connection, session_id: str, task_id: str) -> Intake
         snapshot=GitHubIssueSnapshot.model_validate_json(source_issue["snapshot_json"]),
         bindings={b.github_user_id: b.agent_id for b in bindings},
         max_rework_rounds=config.max_rework_rounds,
+        needs_delegation=config.intake == "all_open",
+        delegated_by=source_issue["delegated_by"],
     )

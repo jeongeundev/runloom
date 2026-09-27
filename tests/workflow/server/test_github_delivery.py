@@ -410,3 +410,11 @@ def test_stopped_source_is_not_written(db, client, fake):
     assert deliver_source_updates(db, client, NOW).any() is False
     assert fake.calls == []
     assert latest(db).state == "pending"
+
+
+def test_source_filter_writes_only_that_sources_issues(db, client, fake):
+    """소스마다 자격이 다를 수 있어(ADR-0017) 워커는 소스별 클라이언트로 그 소스의 반영만 보낸다."""
+    enqueue(db, "착수")
+    assert deliver_source_updates(db, client, NOW, source_id="ghs-00000009").any() is False
+    assert fake.calls == [] and latest(db).state == "pending"
+    assert deliver_source_updates(db, client, NOW, source_id=SOURCE).created == 1

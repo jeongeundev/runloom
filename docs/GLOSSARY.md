@@ -160,6 +160,23 @@
 | 백업 CLI / `workflow.server.backup` | `create`·`list`·`restore <이름>`(step 4). DB 는 SQLite 온라인 백업, 산출물은 tar, `WORKFLOW_BACKUP_DIR/{YYYYMMDDTHHMMSSZ}/`. 비밀값 제외. 공개 데모 VM 의 `deploy/backup.sh` 와 별개 | `dump`, `snapshot`, `export` |
 | `workflow-data` | compose named volume. `central`·`worker` 가 `/data` 에 같이 붙인다(`/data/central.sqlite`·`/data/artifacts`·`/data/backups`). bind mount 아님 | `data dir`(호스트 `data/` 와 혼동) |
 
+## 계획 용어 — phase 11 GitHub App 연결 (미구현)
+
+[ADR-0017](adr/0017-github-app-connection.md), [ARCHITECTURE](ARCHITECTURE.md) "GitHub App 연결 — phase 11". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| GitHub App / `github_app.json` | 사용자가 manifest 흐름으로 자기 계정에 만든 비공개 App(step 7). 이 제품이 운영하는 공용 App 이 아니다. App 정보(`app_id`·`client_id`·`slug`…)는 비밀 저장소에 개인 키와 함께 둔다. 화면 라벨 `GitHub 연결` | `OAuth 앱`, `봇 계정`, `공용 앱` |
+| 설치 / `installation_id` | GitHub App 을 계정의 저장소(전체/선택)에 설치한 것. 소스 설정의 `installation_id` 가 있으면 그 소스는 설치 토큰을 쓴다(step 3). `setup_url` 로 온 값은 App JWT 로 확인하기 전에는 믿지 않는다 | `연동`, `integration` |
+| App JWT / 설치 토큰 | `GitHubAppAuth` 가 개인 키로 만든 RS256 JWT(10분 이하)와, 그것으로 받은 설치별 접근 토큰(1시간, 프로세스 메모리 캐시)(step 2). 설치 토큰은 파일·DB 에 쓰지 않는다 | `access key`, `API 키` |
+| `SecretStore` / 비밀 저장소 | `WORKFLOW_SECRET_DIR`(기본 `data/secrets`, compose `/data/secrets`) 아래 0600 파일(step 1). App 개인 키·client secret·webhook secret·붙여 넣은 PAT. DB·백업·로그·응답 밖 | `vault`, `keychain`, `설정 파일` |
+| `TokenProvider` | 요청마다 GitHub 토큰을 돌려주는 `token() -> str`(step 2). `InstallationTokenProvider` 가 설치 토큰을 공급한다. 고정 문자열 토큰도 그대로 받는다 | `credential`, `auth provider` |
+| `intake` / 가져오기 범위 | 소스가 받는 이슈 범위(step 3). `filtered`(phase 8 — 라벨·시작 시각·고른 번호) 또는 `all_open`(열린 이슈 전부, PR 제외). 가져오기 ≠ 실행 | `sync mode`, `import all` |
+| 실행 지시 / `delegated_by` / [에이전트에게 맡기기] | `all_open` 소스의 업무를 실행해도 된다는 표시(step 5). `operator`(`POST /tasks/{id}/delegate`) 또는 `label`(트리거 라벨). 한 번 기록되면 유지. 지시 전 대기 코드 `not_delegated`. 화면 라벨 `에이전트에게 맡기기`, 상태 표시 `대기 · 지시 전` | `assign`(GitHub 담당자 배정과 혼동), `승인`, `run` |
+| `trigger_label` / 트리거 라벨 | GitHub 이슈에 붙이면 실행 지시가 되는 라벨(기본 `runloom`, 대소문자 무시)(step 3·5). phase 8 의 `label_filter`(가져오기 범위)와 다르다 | `run label`, `라벨 필터` |
+| 자동 매칭 / `match_source` | 러너가 보고한 `found.github_repository`(owner/name)로 소스의 로컬 저장소 ID·검증 프로필·수정/검토 Agent 를 정하는 것(step 6). 후보가 없거나 여럿이면 `*_unmatched`·`*_ambiguous` 대기 | `추정`, `auto assign` |
+| `default_fix_agent_id` / 기본 담당 에이전트 | 담당자 연결(`AssigneeBinding`)이 없을 때 쓰는 수정 Agent(step 3). GitHub 담당자와 같은 사람이라는 뜻이 아니다 | `default assignee` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
@@ -179,3 +196,5 @@
 - `TaskEvent`와 `ExecutionEvent`: 전자는 중앙이 Task 단위로 남기는 추가 전용 기록(상태 변화·준비 판정), 후자는 실행 주체(연결 프로그램·진단 API)가 `seq` 로 보내는 실행 이벤트다. `task_events` 에 실행 시각을 다시 쓰지 않는다.
 - `folder_commit`과 `base_commit`: 전자는 러너 등록 폴더의 실행 시작 시점 HEAD(에이전트 설정 버전), 후자는 실행 target 이 고정한 작업 기준 커밋이다.
 - 워크스페이스 로그인(selfhost `POST /login`)과 운영자 로그인(demo `POST /operator/login`): 둘 다 `OPERATOR_TOKEN` 을 받지만, 전자는 고정 워크스페이스 쿠키를 새로 발급하고, 후자는 이미 발급된 익명 세션 쿠키에 운영자 표시만 붙인다. 한 모드에서는 한쪽만 열린다.
+- `label_filter`와 `trigger_label`: 전자는 `filtered` 소스가 어떤 이슈를 가져올지 정하는 범위(가져오면 곧 실행 대상), 후자는 `all_open` 소스에서 이미 가져온 이슈 중 무엇을 실행할지 지시하는 라벨이다. 전자는 여러 개 모두 일치, 후자는 하나다.
+- GitHub 담당자 배정(assignee)과 실행 지시(`delegated_by`): 전자는 GitHub 에서 사람이 이슈 담당을 정한 것으로 어느 Agent 가 할지를 고르는 재료(`AssigneeBinding`)이고, 후자는 그 업무를 지금 실행해도 된다는 표시다. 담당자가 있어도 지시가 없으면 `all_open` 업무는 착수하지 않는다.

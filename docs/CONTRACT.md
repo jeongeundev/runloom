@@ -903,8 +903,35 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
   "review_agent_id": "agent-claude-mac",
   "run_mode": "auto",
   "max_rework_rounds": 1,
+  "intake": "filtered",
+  "trigger_label": null,
+  "default_fix_agent_id": null,
+  "installation_id": null,
   "enabled": true,
   "config_revision": 3
+}
+```
+
+phase 11(ADR-0017)의 새 칸 `intake`·`trigger_label`·`default_fix_agent_id`·`installation_id` 는 모두 기본값이 있다(`"filtered"`·`null`·`null`·`null`) — 새 칸이 없는 phase 8 설정도 그대로 유효하다. `intake: filtered` 는 위와 같이 범위와 세 ID(`workflow_repository_id`·`fix_verification_profile_id`·`review_agent_id`)가 필수다. `intake: all_open` 은 열린 이슈 전부를 가져오고 실행은 지시한 것만 한다 — 범위는 비어도 되고, `null` 인 ID 는 자동 매칭이 정한다. `trigger_label` 이 붙은 이슈는 지시된 것으로 본다(API 로 만든 `all_open` 소스의 기본 `"runloom"`). `installation_id` 는 App 설치가 만든 소스에만 있고 API 본문으로 받지 않는다.
+
+```json
+{
+  "source_id": "ghs-5e6f7a8b",
+  "repository_full_name": "kim/notes",
+  "workflow_repository_id": null,
+  "label_filter": [],
+  "selected_issue_numbers": [],
+  "start_at": "2026-10-07T01:02:03Z",
+  "fix_verification_profile_id": null,
+  "review_agent_id": null,
+  "run_mode": "auto",
+  "max_rework_rounds": 1,
+  "intake": "all_open",
+  "trigger_label": "runloom",
+  "default_fix_agent_id": null,
+  "installation_id": 51234567,
+  "enabled": true,
+  "config_revision": 1
 }
 ```
 
@@ -971,7 +998,7 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 
 ### 13.10 운영자 GitHub 설정 API (step 6)
 
-운영자 세션 쿠키(`/operator/login`)만 통과한다 — 없거나 공개 세션이면 403 `forbidden`, 다른 세션의 소스는 404 `not_found`. 요청 본문은 13.6 `GitHubSourceConfig` 에서 서버가 정하는 `source_id`·`config_revision` 을 뺀 것이고(`label_filter`·`selected_issue_numbers` 기본 `[]`, `max_rework_rounds` 기본 1, `enabled` 기본 true), 토큰 필드를 보내면 422 `unknown_field` 다. 응답은 토큰 값 대신 `token_configured: bool` 만 담는다. GitHub 를 호출하지 않는다.
+운영자 세션 쿠키(`/operator/login`)만 통과한다 — 없거나 공개 세션이면 403 `forbidden`, 다른 세션의 소스는 404 `not_found`. 요청 본문은 13.6 `GitHubSourceConfig` 에서 서버가 정하는 `source_id`·`config_revision`·`installation_id` 를 뺀 것이고(`label_filter`·`selected_issue_numbers` 기본 `[]`, `max_rework_rounds` 기본 1, `enabled` 기본 true, `intake` 기본 `filtered`, `start_at` 생략 시 서버 수신 시각, `trigger_label` 생략 시 `all_open` 은 `"runloom"`·`filtered` 는 `null` — 명시한 `null` 은 그대로, 세 ID·`default_fix_agent_id` 기본 `null`. `filtered` 에서 세 ID 가 없으면 422 `invalid_field`(그 필드)), 토큰 필드를 보내면 422 `unknown_field` 다. 응답은 토큰 값 대신 `token_configured: bool` 만 담는다. GitHub 를 호출하지 않는다.
 
 | 요청 | 응답 | 오류 |
 |---|---|---|
@@ -983,7 +1010,7 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 | `POST /github/sources/{source_id}/stop` | `enabled: false`, `config_revision` +1(이미 멈췄으면 그대로) | 404 |
 | `PUT /github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
 
-Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review · repository_id=<workflow_repository_id>`, 소스의 `fix_verification_profile_id` 는 같은 범위의 `code.fix` Agent 중 하나가 보고한 프로필이어야 한다. 설정 변경·중지는 이미 만든 Task·Execution 의 입력을 바꾸지 않는다.
+Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review · repository_id=<workflow_repository_id>`, 소스의 `fix_verification_profile_id` 는 같은 범위의 `code.fix` Agent 중 하나가 보고한 프로필이어야 한다. `default_fix_agent_id` 는 `code.fix · repository_id=<workflow_repository_id>`. `all_open` 에서 `null` 인 칸은 검사하지 않고, `workflow_repository_id` 가 `null` 이면 능력·프로필 범위 검사를 건너뛴다(등록 여부만). `installation_id` 가 있는 소스(App 설치가 만든 것)의 변경은 `WORKFLOW_GITHUB_REPOS` 검사를 하지 않는다. 설정 변경·중지는 이미 만든 Task·Execution 의 입력을 바꾸지 않는다.
 
 ### 13.11 운영자 사람 요청 응답 API (step 11)
 

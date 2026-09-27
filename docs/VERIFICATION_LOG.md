@@ -331,3 +331,19 @@ Claude 의 summary(원문은 `evidence/C_결과_봉투.json`): 진단 원문이 
 ### 발견한 결함과 고친 파일
 
 - 제품·배포 파일 수정 없음. 추가 파일: `tests/e2e/test_selfhost.py`. 문서: [SELFHOST](SELFHOST.md) 상태 줄.
+
+## 2026-09-27 — GitHub App 버튼 연결 대역 e2e (phase 11 step 9)
+
+목적: [ADR-0017](adr/0017-github-app-connection.md)의 [GitHub 연결] → App 만들기 → 설치 → 소스 자동 생성 → 열린 이슈 전부 가져오기 → 러너 원격 자동 매칭 → 지시 실행([맡기기]·트리거 라벨)이 프로세스 경계를 넘어 이어지는지 확인한다. **실제 외부 호출은 없다** — 이 절은 대역 검증 기록이며 실연동이 아니다. github.com 의 App 만들기·설치 화면은 밟지 않았고 테스트가 그 뒤의 callback·setup 을 직접 불렀다.
+
+| 항목 | 값 |
+|---|---|
+| 명령·결과 | `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **60 passed·1 skipped** 164초(`tests/e2e/test_github_app.py` 6 + 기존 54, skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e). `python3 -m pytest -q` 2685 passed·61 skipped, `python3 -m ruff check .` 통과 |
+| 실제 제품 코드 | 중앙 API(`create_app`, 이 테스트 프로세스 안 uvicorn 스레드 — `app.state.github_transport` 만 가짜 GitHub 로), `exchange_manifest_code`·`save_credentials`·`GitHubAppAuth`(PyJWT RS256)·`SecretStore`, `github_connect.sync_installation_sources`, 테스트 프로세스 안 `Worker` + `SourceClients`(설치 토큰 공급자), 하위 프로세스 `workflow.connector connect/register/run --adapter codex`, 임시 Git 저장소 1개(`origin` = `git@github.com:acme/billing.git`), 검증 프로필의 실제 `pytest` |
+| 대역 | GitHub = `test_github_cycle` 의 127.0.0.1 가짜 서버 + App 경로: `POST /app-manifests/{code}/conversions`(테스트 안에서 만든 RSA 2048 개인 키를 pem 으로), `GET /app/installations/{id}`·`POST …/access_tokens`(App JWT 를 공개 키로 검증, `iss` = client ID), `GET /installation/repositories`. 저장소·이슈·댓글 경로는 설치 토큰만 받는다. 도구 = PATH 가짜 `codex`(도구 환경에 설치 토큰이 있으면 실패). 키 파일은 저장소에 없다 |
+| 확인한 것 | 1) 연결 전 화면은 [GitHub 연결] 링크뿐, 카드 없음. `/operator/github/app/new` → manifest 폼(`redirect_url`·`setup_url` = `WORKFLOW_PUBLIC_URL` 기준, 웹훅 비활성, 권한 issues write·pull_requests read·metadata read) → callback(state 일치) → 설치 URL 로 303 + 새 state, 같은 state 재사용 403 → setup(`setup_action=install`) → `/operator/github` 303. 설치 확인은 JWT, 저장소 목록은 설치 토큰. 소스 1개 `all_open`·`runloom`·`installation_id`·`auto`, 세 ID 는 `null`. 2) 비밀 디렉터리 0700, 파일 4개(App 정보·개인 키·client secret·webhook secret) 0600, PAT 파일 없음. 3) 첫 수집: 열린 이슈 3건(연결 전 2025년 백로그 포함) → Task, PR·닫힌 이슈 제외, 착수 0·사람 요청 0, 상태 사유 "실행 지시 전", `/tasks` 에 "지시 전"·[에이전트에게 맡기기]. 4) 러너 register 뒤 `discovered.found.github_repository` = `acme/billing`(URL 원문 없음), 카드에 로컬 저장소 `billing`·수정 Agent·`vp-pytest`·검토 Agent 모두 `(자동)`. 지시 전이라 tick 2회에도 착수 0. 5) #1 [맡기기] → `delegated_by=operator`(다시 눌러도 실행 1개), start_key `auto:{task}:r{revision}` → 수정(판정 통과) → 후속 `code_review` 자동 생성·자동 매칭된 검토 Agent 가 `approved` → 수정 Task "검토 승인 — 병합·이슈 종료는 사람" → 운영자 승인 `완료`, 이슈 댓글 1개(marker). 6) #2 에 `Runloom` 라벨(대소문자 다름) → 다음 수집에서 `delegated_by=label`·자동 착수 → 검토 승인. #3 은 끝까지 착수 없음. 기준 브랜치 그대로. 7) 개인 키 본문·client secret·webhook secret·설치 토큰이 비밀 디렉터리 밖 파일(DB·WAL·산출물·중앙/워커 로그 파일·연결 프로그램 상태·로그·저장소)·댓글·화면(`/operator/github`·`/tasks`·`/github/sources`)에 없음. 실패 실행 0 |
+| 확인하지 않은 것 | 실제 github.com App 만들기 화면(manifest 폼 수락·이름 중복 처리·조직 경로), 실제 설치 화면과 `setup_action` 값·설치 URL `state` 복귀, 127.0.0.1 비활성 웹훅 URL 수락, 실제 `api.github.com` 의 JWT·설치 토큰 발급·만료 갱신·rate limit, 브라우저 자동 제출 스크립트, 붙여 넣은 PAT 경로·App 설치 변경(저장소 제거) 경로의 e2e(단위·서버 테스트에만 있음), 재작업 경로(이 e2e 의 두 이슈는 첫 검토 승인) |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 수정 없음. 추가 파일: `tests/e2e/test_github_app.py`. 문서: [SELFHOST](SELFHOST.md) GitHub 절(버튼 흐름·토큰은 고급), [GitHub 런북](github/README.md) 0절·10절, [CURRENT_HANDOFF](CURRENT_HANDOFF.md).

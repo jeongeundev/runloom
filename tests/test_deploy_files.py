@@ -198,6 +198,7 @@ def test_env_examples_point_at_architecture_paths():
     diag = _env_example("diag.env.example")
     assert central["WORKFLOW_DB_PATH"] == "/var/lib/workflow/central/db.sqlite"
     assert central["WORKFLOW_ARTIFACT_DIR"].startswith("/var/lib/workflow/central/")
+    assert central["WORKFLOW_SECRET_DIR"] == "/var/lib/workflow/central/secrets"
     assert central["DIAG_API_URL"] == "http://127.0.0.1:8100"
     assert diag["DIAG_DB_PATH"] == "/var/lib/workflow/diag/db.sqlite"
     assert diag["DIAG_ARTIFACT_DIR"].startswith("/var/lib/workflow/diag/")

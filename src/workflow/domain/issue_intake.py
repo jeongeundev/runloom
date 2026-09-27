@@ -5,6 +5,8 @@ DB·HTTP 를 보지 않는다. 수집(`server/github_sync`)이 스냅샷과 설�
 - 새 이슈의 자동 접수 범위: 설정 저장소의 open Issue 중 `label_filter` 라벨을 모두 가지고(대소문자 무시)
   `created_at >= start_at` 인 것. `selected_issue_numbers` 로 고른 이슈는 명시적 선택이라 라벨·시작 시각·닫힘과
   무관하게 받는다(닫혀 있으면 준비 판정이 `source_closed` 로 막는다). Pull request 와 다른 저장소는 어떤 경우에도 받지 않는다.
+- `intake: all_open` 소스(ADR-0017)는 열린 Issue 를 전부 받는다 — `label_filter`·`start_at` 은 보지 않는다. 대신 실행은
+  지시된 것만: `trigger_label` 이 붙은 이슈(`label_delegated`) 또는 운영자 [맡기기]. 지시 전 Task 는 `not_delegated` 대기다.
 - 이슈 제목·본문은 Task 의 제목·요청 재료일 뿐 명령·경로·URL 로 해석하지 않는다. 실행 대상(target)은 이슈에서 받지 않고
   실행 생성 때 등록값으로 고정한다.
 - 준비 판정 입력(`intake_facts`)은 가져온 업무와 직접 등록 업무가 같은 함수를 쓴다 — 차이는 원본 스냅샷 유무뿐이다.
@@ -47,6 +49,8 @@ def intake_scope(config: GitHubSourceConfig, snapshot: GitHubIssueSnapshot) -> I
         return IntakeScope(True, None, True)
     if snapshot.state == "closed":
         return IntakeScope(False, "closed", False)
+    if config.intake == "all_open":
+        return IntakeScope(True, None, False)
     if not config.label_filter:
         return IntakeScope(False, "not_selected", False)
     labels = {label.casefold() for label in snapshot.labels}
@@ -55,6 +59,13 @@ def intake_scope(config: GitHubSourceConfig, snapshot: GitHubIssueSnapshot) -> I
     if _parse(snapshot.created_at) < _parse(config.start_at):
         return IntakeScope(False, "before_start", False)
     return IntakeScope(True, None, False)
+
+
+def label_delegated(config: GitHubSourceConfig, snapshot: GitHubIssueSnapshot) -> bool:
+    """`all_open` 소스에서 이슈에 트리거 라벨이 있는지(대소문자 무시). `filtered` 소스는 수집이 곧 지시라 보지 않는다."""
+    if config.intake != "all_open" or config.trigger_label is None:
+        return False
+    return config.trigger_label.casefold() in {label.casefold() for label in snapshot.labels}
 
 
 def task_input(snapshot: GitHubIssueSnapshot) -> tuple[str, str]:
@@ -76,7 +87,8 @@ def snapshot_to_task_spec(
         "kind": ISSUE_KIND.kind,
         "required_capability": {
             "code": ISSUE_KIND.capability_code,
-            "scope": {ISSUE_KIND.scope_key: config.workflow_repository_id},
+            # 로컬 저장소를 자동 매칭하는 소스는 GitHub 저장소 이름을 둔다 — 준비 판정이 매칭 값으로 바꿔 본다(github_match)
+            "scope": {ISSUE_KIND.scope_key: config.workflow_repository_id or config.repository_full_name},
         },
         "selection_mode": "auto",
         "chosen_agent_id": None,
@@ -104,6 +116,7 @@ class IntakeFacts:
     run_mode: Literal["auto", "manual"]
     max_rework_rounds: int | None
     source_state: Literal["open", "closed"] | None
+    delegated: bool  # 실행 지시가 있다(또는 지시 단계가 없는 소스·직접 등록)
 
     def as_kwargs(self) -> dict:
         return asdict(self)
@@ -116,14 +129,19 @@ def intake_facts(
     snapshot: GitHubIssueSnapshot | None,
     bindings: Mapping[int, str],
     max_rework_rounds: int | None,
+    needs_delegation: bool = False,
+    delegated_by: Literal["operator", "label"] | None = None,
 ) -> IntakeFacts:
-    """원본이 없으면(직접 등록) 담당 개념이 없다 — 직접 선택·자동 선택으로 Agent 를 정한다. 요청은 언제나 필수다."""
+    """원본이 없으면(직접 등록) 담당 개념이 없다 — 직접 선택·자동 선택으로 Agent 를 정한다. 요청은 언제나 필수다.
+    `needs_delegation`(`all_open` 소스)이면 `delegated_by` 가 있어야 착수한다. 운영자 지시는 직접 지시라 `manual` 이어도
+    자동 착수처럼 보고, 라벨 지시는 소스의 `run_mode` 를 따른다."""
     return IntakeFacts(
         assignee_ids=tuple(snapshot.assignee_ids) if snapshot is not None else None,
         bindings=dict(bindings),
         request_text=request,
         request_required=True,
-        run_mode=run_mode,
+        run_mode="auto" if delegated_by == "operator" else run_mode,
         max_rework_rounds=max_rework_rounds,
         source_state=snapshot.state if snapshot is not None else None,
+        delegated=not needs_delegation or delegated_by is not None,
     )

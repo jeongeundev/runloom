@@ -134,6 +134,98 @@ def test_config_rejects_bad_fields(overrides):
         GitHubSourceConfig.model_validate(_config(**overrides))
 
 
+# --- GitHubSourceConfig 새 칸 (phase 11 step 3, ARCHITECTURE "소스 설정 새 칸") -----------
+
+# phase 8 에 저장된 config_json 모양 그대로 — 새 칸이 없다.
+PHASE8_CONFIG = {
+    "source_id": "ghs-1a2b3c4d",
+    "repository_full_name": "acme/billing",
+    "workflow_repository_id": "billing",
+    "label_filter": ["bug", "runloom"],
+    "selected_issue_numbers": [],
+    "start_at": "2026-10-06T09:00:00+09:00",
+    "fix_verification_profile_id": "vp-pytest",
+    "review_agent_id": "agent-claude-mac",
+    "run_mode": "auto",
+    "max_rework_rounds": 1,
+    "enabled": True,
+    "config_revision": 3,
+}
+
+
+def _all_open(**overrides) -> dict:
+    return {**_config(
+        intake="all_open", label_filter=[], selected_issue_numbers=[], trigger_label="runloom",
+        workflow_repository_id=None, fix_verification_profile_id=None, review_agent_id=None,
+        default_fix_agent_id=None, installation_id=12345678,
+    ), **overrides}
+
+
+def test_phase8_config_json_still_validates_with_defaults():
+    config = GitHubSourceConfig.model_validate_json(json.dumps(PHASE8_CONFIG))
+    assert config.intake == "filtered"
+    assert (config.trigger_label, config.default_fix_agent_id, config.installation_id) == (None, None, None)
+    assert config.workflow_repository_id == "billing"
+    dumped = config.model_dump(mode="json")
+    assert {k: dumped[k] for k in PHASE8_CONFIG} == PHASE8_CONFIG
+
+
+def test_all_open_accepts_empty_scope_and_undecided_ids():
+    config = GitHubSourceConfig.model_validate(_all_open())
+    assert config.intake == "all_open"
+    assert (config.label_filter, config.selected_issue_numbers) == ([], [])
+    assert (config.workflow_repository_id, config.fix_verification_profile_id, config.review_agent_id) == (
+        None, None, None)
+    assert (config.trigger_label, config.installation_id) == ("runloom", 12345678)
+    # 결정된 값·기본 수정 Agent 도 받는다
+    config = GitHubSourceConfig.model_validate(_all_open(
+        workflow_repository_id="billing", default_fix_agent_id="agent-codex-mac", trigger_label=None))
+    assert (config.workflow_repository_id, config.default_fix_agent_id, config.trigger_label) == (
+        "billing", "agent-codex-mac", None)
+
+
+def test_filtered_keeps_scope_and_id_requirements():
+    with pytest.raises(ValidationError):
+        GitHubSourceConfig.model_validate(_config(intake="filtered", label_filter=[], selected_issue_numbers=[]))
+    for field in ("workflow_repository_id", "fix_verification_profile_id", "review_agent_id"):
+        with pytest.raises(ValidationError):
+            GitHubSourceConfig.model_validate(_config(**{field: None}))
+        block = _config()
+        del block[field]
+        with pytest.raises(ValidationError):
+            GitHubSourceConfig.model_validate(block)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"intake": "all"},
+        {"intake": None},
+        {"trigger_label": ""},
+        {"trigger_label": 1},
+        {"default_fix_agent_id": ""},
+        {"installation_id": 0},
+        {"installation_id": "12345678"},
+        {"workflow_repository_id": ""},
+        {"review_agent_id": ""},
+        {"fix_verification_profile_id": ""},
+        {"label_filter": ["bug", "bug"]},
+    ],
+)
+def test_new_fields_reject_bad_values(overrides):
+    with pytest.raises(ValidationError):
+        GitHubSourceConfig.model_validate(_all_open(**overrides))
+
+
+def test_contract_md_has_an_all_open_example():
+    text = CONTRACT_MD.read_text(encoding="utf-8")
+    blocks = [json.loads(m) for m in _FENCE.findall(text)]
+    examples = [b for b in blocks if b.get("intake") == "all_open"]
+    assert len(examples) == 1
+    config = GitHubSourceConfig.model_validate(examples[0])
+    assert config.model_dump(mode="json") == examples[0]
+
+
 @pytest.mark.parametrize("name", ["acme/billing", "a-b/c.d_e", "Acme-2/Repo.Name"])
 def test_config_accepts_repository_full_names(name):
     assert GitHubSourceConfig.model_validate(_config(repository_full_name=name)).repository_full_name == name

@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
+갱신일: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -161,6 +161,12 @@ step 11 구현 상태: 사람 요청과 응답 후 재개. 응답 권한은 운�
 | `executor_outdated` | 연결 프로그램이 이 종류를 `supported_kinds` 에 선언하지 않음 | operator | 연결 프로그램 업데이트 |
 | `repository_busy` | 같은 로컬 등록에서 다른 수정 Execution 활성 | system | 앞 실행 종료 |
 | `review_repository_mismatch` | 검토 Agent 가 수정 Agent 와 다른 연결 프로그램·`repository_id` | operator | 검토 Agent 변경 |
+| `not_delegated` | `intake: all_open` 소스 Task 에 실행 지시(`delegated_at`) 없음 — phase 11 step 5 | operator | [에이전트에게 맡기기] 또는 트리거 라벨 |
+| `repository_unmatched` | 소스 저장소(owner/name)를 보고한 로컬 Agent 없음 — 자동 매칭, phase 11 step 6. 문구 "{owner/name} 을 등록한 러너 없음 — 러너에서 이 저장소 폴더를 등록하세요" | operator | 러너에서 저장소 폴더 등록 |
+| `repository_ambiguous` | 같은 GitHub 저장소를 보고한 로컬 저장소 ID 가 둘 이상 | operator | 설정에서 로컬 저장소 고르기 |
+| `fix_agent_unmatched`·`fix_agent_ambiguous` | `all_open` 수정 Task 에서 담당 연결·기본 수정 Agent 없이 `code.fix {repository_id}` 후보가 0·2+ | operator | 러너 등록 또는 설정의 기본 수정 Agent |
+| `profile_unmatched`·`profile_ambiguous` | 소스에 검증 프로필이 없고 수정 Agent 등록이 보고한 프로필이 0·2+ | operator | 러너 등록에 검증 프로필 추가 또는 설정에서 고르기 |
+| `review_agent_unmatched`·`review_agent_ambiguous` | 검토 Task(설정·Task 에 검토 Agent 없음)에서 `code.review {repository_id}` 후보가 0·2+ | operator | 러너 등록 또는 설정의 검토 Agent |
 | `manual_mode` | `run_mode = manual` | operator | 직접 실행 |
 | `awaiting_result` | 필요한 선행 결과(검토의 수정 결과 등) 없음 | system | 결과 도착 |
 | `rework_limit_reached` | 재작업 상한 도달 | operator | 사람 요청 응답 |
@@ -474,6 +480,166 @@ Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Deskto
 | 백업 CLI | `python3 -m workflow.server.backup create` · `list` · `restore <이름>` |
 | launchd 라벨 | `com.workflow.selfhost.connector` |
 | 문서 | `docs/SELFHOST.md`(step 7) |
+
+## GitHub App 연결 — phase 11
+
+상태(2026-09-27 step 0): 설계만 고정, 구현 없음. [ADR-0017](adr/0017-github-app-connection.md)을 따른다. 기본값·step 목록은 [phase 11 README](../phases/11-github-app/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0017·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8 계약("GitHub 업무 순환 — phase 8 계약")은 `intake: filtered` 소스에 그대로다.
+
+### 흐름
+
+```
+/operator/github [GitHub 연결]
+  → GET /operator/github/app/new            state 쿠키 발급, manifest 폼 자동 제출 화면
+  → (브라우저) POST github.com/settings/apps/new?state=S1   manifest=…     [Create] 은 사용자
+  → GET /operator/github/app/callback?code=C&state=S1
+        state 확인 → POST /app-manifests/C/conversions (인증 없음, 1시간 안)
+        → SecretStore 에 App 정보·개인 키·client secret·webhook secret 저장
+  → 303 github.com/apps/{slug}/installations/new?state=S2                    [Install] 은 사용자
+  → GET /operator/github/app/setup?installation_id=I[&setup_action=…][&state=S2]
+        App JWT 로 GET /app/installations/I 확인(우리 App 의 설치인지)
+        → 설치 토큰으로 GET /installation/repositories (페이지)
+        → 저장소마다 소스 생성·갱신(intake all_open, installation_id=I) → 303 /operator/github
+  → 워커 주기 조회(60초): 소스별 클라이언트(설치 토큰) → 열린 이슈 전부 Task(대기 · 실행 지시 전)
+  → [에이전트에게 맡기기] POST /tasks/{id}/delegate  또는  이슈에 `runloom` 라벨 → 지시 기록
+  → 준비 판정(자동 매칭) → 수정 → 검토 → 재작업 (phase 8 그대로)
+```
+
+App 이 이미 저장돼 있으면 `GET /operator/github/app/new` 는 manifest 단계를 건너뛰고 설치 화면으로 303 한다(App 다시 만들기는 범위 밖).
+
+### 경로 (step 7·8)
+
+모두 운영자 전용(selfhost 로그인, demo 는 운영자 세션). 화면 경로는 미로그인 시 기존 규칙(selfhost `/login` 303, demo 403).
+
+| 경로 | 동작 | 실패 |
+|---|---|---|
+| `GET /operator/github/app/new[?org=<login>]` | state 발급 + manifest 를 담은 자동 제출 폼 화면(`operator_github_app_new.html`). `org` 가 있으면 조직 URL. App 이 있으면 설치 URL 로 303 | `org` 형식 오류 422 `invalid_field`, `WORKFLOW_PUBLIC_URL` 없이 루프백(127.0.0.1·localhost·::1) 밖 주소로 열면 400 `public_url_required`(Host 헤더를 믿지 않는다) |
+| `GET /operator/github/app/callback?code&state` | state 확인 → code 교환 → 비밀 저장 → 설치 URL 로 303(새 state) | state 불일치 403 `github_state_invalid`, 교환 실패(만료·404·422) 400 `github_manifest_failed` "다시 [GitHub 연결]" — 응답 본문·code 는 싣지 않는다 |
+| `GET /operator/github/app/setup?installation_id[&setup_action][&state]` | JWT 로 설치 확인 → 설치 저장소 목록 → 소스 맞춤 → `/operator/github` 303 | App 없음 409 `github_app_missing`, 우리 App 의 설치가 아님(404) 400 `github_installation_invalid`, GitHub 오류 502 `github_unavailable` |
+| `POST /operator/github/token` (폼 `token`, `repository_full_name`) | 고급: PAT 붙여 넣기. `GET /repos/{o}/{r}`(`HttpGitHubClient.repository_id`)로 확인 뒤 비밀 파일 `github_token` 에 저장, 그 저장소 소스가 없으면 생성(`intake: all_open`, `github_connect.ensure_token_source`) → `/operator/github` 303 | 빈 토큰·접근 불가 400 `github_token_invalid`(토큰 값·길이를 응답·로그에 넣지 않음), 저장소 형식 422 `invalid_field`, rate limit·연결 실패 502 `github_unavailable`. 확인 실패면 저장하지 않는다 |
+| `POST /tasks/{task_id}/delegate` | GitHub 소스 Task 에 실행 지시 기록(`delegated_by=operator`) → `/tasks/{id}/run` 과 같은 착수 시도(`Worker.start_manually`) → 업무 상세 303. 못 시작하면 대기 사유가 상세에 남고 워커가 풀리는 대로 착수한다. 이미 지시됐으면 기록은 그대로(멱등, 라벨 지시도 유지) | 남의 Task 404, 운영자 아님 403 `forbidden`, 원본 이슈가 없는 Task 409 `not_delegatable`, 마감된 Task 409 `task_closed` |
+
+state(CSRF) 규칙:
+- 값은 `secrets.token_urlsafe(32)`. 쿠키 `wf_gh_state`(HttpOnly, SameSite=Lax, `Path=/operator/github/app`, Max-Age 3600 — manifest code 1시간과 같음, 127.0.0.1 http 라 `Secure` 없음)에 `<state>.<발급 epoch>.<HMAC(SESSION_SECRET)>` 로 두고 쿼리 `state` 와 `hmac.compare_digest` 로 비교한다. 발급 뒤 3600초가 지나면 서버도 거부한다(브라우저 Max-Age 에만 기대지 않음). 서버 메모리·DB 에 두지 않는다(central 재시작과 무관). GitHub 에서 돌아오는 top-level GET 이라 Lax 쿠키가 실린다. 운영자 세션 확인이 state 보다 먼저다.
+- setup 이 끝나면 쿠키를 지운다. manifest code 는 응답·DB 에 싣지 않는다(GitHub 가 준 callback URL 이라 접근 로그에는 남는다 — 한 번 쓰면 무효).
+- callback 은 state 가 반드시 맞아야 한다(한 번 쓰면 새 값으로 교체).
+- setup 은 state 가 있으면 맞아야 하고, 없으면(GitHub 설정 화면에서 설치를 바꾸고 돌아온 경우) 허용한다. 어느 경우든 `installation_id` 는 결정 3 대로 JWT 로 확인하기 전에는 쓰지 않는다.
+- 요청 Host 대신 `WORKFLOW_PUBLIC_URL` 이 있으면 그것으로 `redirect_url`·`setup_url`·`url` 을 만든다. 없으면 요청의 base URL(셀프호스트 `http://127.0.0.1:<포트>`).
+
+manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
+
+```json
+{
+  "name": "runloom-<6자 무작위 소문자·숫자>",
+  "url": "<base>",
+  "hook_attributes": {"url": "<base>/", "active": false},
+  "redirect_url": "<base>/operator/github/app/callback",
+  "setup_url": "<base>/operator/github/app/setup",
+  "setup_on_update": true,
+  "public": false,
+  "default_permissions": {"issues": "write", "pull_requests": "read", "metadata": "read"},
+  "default_events": []
+}
+```
+
+이름은 GitHub 전역에서 유일해야 해 무작위 접미사를 붙인다. 권한 근거: 이슈 목록·댓글 쓰기(Issues write), 이슈를 닫은 병합 PR 조회(`list_issue_pr_links`·`get_issue_pr_link`, Pull requests read), 저장소 ID(Metadata read). Contents 는 주지 않는다.
+
+### 비밀 파일 (step 1·7)
+
+`SecretStore` 루트 = `WORKFLOW_SECRET_DIR`(기본 `data/secrets`, compose 고정값 `/data/secrets` — `workflow-data` 볼륨 안, `artifacts` 밖이라 백업에 들어가지 않는다).
+
+| 이름(상수) | 내용 | 비밀 |
+|---|---|---|
+| `github_app.json` | `{"app_id", "client_id", "slug", "name", "owner_login", "html_url", "created_at"}` — 개인 키와 함께 있어야 쓸모 있어 같은 곳에 둔다. 화면에 slug·owner 만 보인다 | 아니오(0600 은 같게) |
+| `github_app_private_key.pem` | conversion 의 `pem` | 예 |
+| `github_app_client_secret` | `client_secret` | 예 |
+| `github_app_webhook_secret` | `webhook_secret`(웹훅은 끄지만 GitHub 가 발급한 값이라 버리지 않는다) | 예 |
+| `github_token` | 고급 설정에서 붙여 넣은 PAT | 예 |
+
+설치 토큰은 파일에 쓰지 않는다(프로세스 메모리 캐시). 백업·복원은 이 디렉터리를 건드리지 않는다.
+
+### 소스 설정 새 칸 (step 3)
+
+`GitHubSourceConfig` 에 추가(모두 기본값 있음 — 저장된 옛 `config_json`·옛 API 본문이 그대로 유효):
+
+| 칸 | 타입·기본 | 의미 |
+|---|---|---|
+| `intake` | `"filtered" \| "all_open"`, 기본 `"filtered"` | `filtered` = phase 8 그대로(라벨·시작 시각·고른 번호, 둘 다 비면 거부). `all_open` = 열린 이슈 전부(PR 제외, `label_filter`·`start_at` 무시, 둘 다 비어도 됨) |
+| `trigger_label` | `NonEmptyStr \| None`, 기본 `None`. App·PAT 연결이 만든 소스는 `"runloom"` | `all_open` 에서 이 라벨이 붙은 이슈는 지시된 것으로 본다(대소문자 무시) |
+| `default_fix_agent_id` | `NonEmptyStr \| None`, 기본 `None` | 담당자 연결이 없을 때 쓸 수정 Agent |
+| `workflow_repository_id` | `NonEmptyStr \| None`(기존 필수 → 선택) | `None` 이면 자동 매칭 |
+| `fix_verification_profile_id` | `NonEmptyStr \| None`(기존 필수 → 선택) | `None` 이면 자동 매칭 |
+| `review_agent_id` | `NonEmptyStr \| None`(기존 필수 → 선택) | `None` 이면 자동 매칭 |
+| `installation_id` | `PositiveInt \| None`, 기본 `None` | App 설치에서 만든 소스. 있으면 클라이언트가 설치 토큰을 쓴다 |
+
+호환 규칙: `intake: filtered` 소스는 세 ID 가 여전히 필수다(검증기가 거부 — phase 8 요청과 같은 오류). `start_at` 은 타입을 바꾸지 않는다 — `all_open` 에서는 연결 시각 기록일 뿐 범위에 쓰지 않는다. 허용 저장소는 `WORKFLOW_GITHUB_REPOS` ∪ 설치 저장소 ∪ PAT 로 확인한 저장소다. 기존 "다른 세션이 소스를 가지면 409 `github_workspace_taken`" 은 그대로다.
+
+운영자 API(`server/github_api.py`, step 3): 본문의 새 칸은 `intake`·`trigger_label`·`default_fix_agent_id`(`installation_id` 는 본문으로 받지 않고 변경 때 유지). `start_at` 생략 = 서버 수신 시각, `all_open` 의 `trigger_label` 생략 = `"runloom"`(명시한 `null` 은 그대로). `filtered` 에서 세 ID 가 없으면 그 필드의 422 `invalid_field`. `None` 인 ID 는 검사하지 않고, `workflow_repository_id` 가 `None` 이면 능력·프로필 범위 검사를 건너뛴다(등록 여부만). `installation_id` 가 있는 소스의 변경은 `WORKFLOW_GITHUB_REPOS` 검사를 하지 않는다. 계약 예시는 [CONTRACT 13.6·13.10](CONTRACT.md).
+
+### 클라이언트 선택 (step 2·5)
+
+`HttpGitHubClient(token: str | TokenProvider, allowed_repos, …)` — 문자열이면 지금처럼 고정 헤더, `TokenProvider` 면 요청마다 `token()` 을 불러 `Authorization: Bearer` 를 채운다. 워커의 소스별 선택(`server/github_clients.client_for(source, settings, secrets, *, app=None, transport=None)`, 워커는 프로세스당 하나인 `SourceClients(settings, secrets)` 로 부른다 — App 인증(설치 토큰 캐시)을 소스끼리 같이 쓰고, 자격이 같으면 클라이언트를 재사용하며, App·PAT 이 나중에 저장돼도 재시작 없이 따라간다):
+
+1. `installation_id` 있음 + 저장된 App 자격 → `InstallationTokenProvider(GitHubAppAuth, installation_id)`, 허용 목록 = 그 소스 저장소(설치 저장소). App 자격이 없으면 2 로 내려간다
+2. 비밀 파일 `github_token` 있음 → 그 PAT(화면에서 넣은 값이 환경변수보다 우선), 허용 목록 = `WORKFLOW_GITHUB_REPOS` + 그 소스 저장소
+3. `Settings.github_token`(`WORKFLOW_GITHUB_TOKEN`) → 지금 동작(허용 목록 `WORKFLOW_GITHUB_REPOS`)
+4. 없음 → 그 소스는 수집·전달하지 않는다(소스 오류 `github_not_connected` — step 5 는 로그 없이 건너뛰고 다음 간격에 다시 본다)
+
+워커는 수집·원본 반영 모두 소스마다 그 소스의 클라이언트를 쓴다(`deliver_source_updates(…, source_id=)`). 자격 있는 소스가 하나도 없으면 댓글 outbox 도 쌓지 않는다(토큰 없을 때의 기존 동작). 준비 판정의 허용 저장소 검사(`delegation_denied` "허용 저장소 밖")는 `installation_id` 가 있는 소스는 통과 — 설치 자체가 허용 범위다. 비밀 파일 `github_token`(붙여 넣은 PAT)이 있으면 모든 소스가 통과한다 — 2 의 클라이언트가 소스 저장소를 허용하는 것과 같은 규칙(step 7).
+
+`GITHUB_SYNC_INTERVAL_SECONDS`·rate limit 대기·오류 분류(`GitHubRateLimited`·`GitHubForbidden`…)는 그대로다. 설치 토큰 발급 실패도 같은 분류를 쓴다.
+
+### 러너 보고 — `github_repository` (step 4)
+
+`connector/discovery.discover` 가 `found.github_repository` 를 더한다: 등록 폴더의 원격 URL(`git config --get-regexp remote\..*\.url`, 로컬만) 중 `https://github.com/{o}/{r}(.git)`, `git@github.com:{o}/{r}(.git)`, `ssh://git@github.com/{o}/{r}(.git)` 형식인 것에서 `"{o}/{r}"`(원격 표기 그대로, 호스트는 대소문자 무시) — origin 우선, origin 이 GitHub 가 아니거나 없으면 설정 순서상 첫 GitHub 원격. 없으면 키 없음. URL 원문·사용자 정보(`user:token@`)는 보내지 않는다. `RegistrationRequest.discovered` 는 이미 자유 dict 라 계약 변경이 없다 — 서버는 `agents.discovered_json` 에서 읽는다. 옛 러너(키 없음)는 자동 매칭 후보가 되지 않을 뿐이다.
+
+### 자동 매칭 (step 6)
+
+`domain/github_match.py` 의 순수 함수 `match_source(source, agents) -> SourceMatch`. 후보 = 이 워크스페이스의 로컬 Agent 중 `discovered.found.github_repository` 가 소스 저장소와 같은 것(대소문자 무시). 설정에 값이 있으면 그 값이 우선이다(자동 매칭은 `None` 칸만 채운다).
+
+| 결정 | 규칙 | 없음 | 둘 이상 |
+|---|---|---|---|
+| 로컬 저장소 ID | 후보들의 `repository_id` 가 하나로 모임 | `repository_unmatched` | `repository_ambiguous` |
+| 검증 프로필 | 정해진 수정 Agent 의 등록이 보고한 프로필이 하나(연결 프로그램은 자기 등록의 프로필만 실행한다) | `profile_unmatched` | `profile_ambiguous` |
+| 수정 Agent | ① 담당자 1명 + `AssigneeBinding` ② `default_fix_agent_id` ③ `code.fix {repository_id}` 후보가 하나 | `fix_agent_unmatched` | `fix_agent_ambiguous` |
+| 검토 Agent | `code.review {repository_id}` 후보가 하나(같은 연결 프로그램 조건은 기존 `review_repository_mismatch` 그대로) | `review_agent_unmatched` | `review_agent_ambiguous` |
+
+모든 대기 코드는 actor `operator`, 해소는 "러너에서 이 저장소 폴더 등록" 또는 "설정에서 하나 고르기"(고른 값은 소스 설정에 저장, `config_revision` + 1). `intake: filtered` 소스는 ①~③ 중 ③(자동 하나 선택)을 하지 않고 기존 `assignee_missing`·`assignee_multiple`·`assignee_unbound` 를 그대로 낸다 — 기존 설정 동작을 바꾸지 않기 위해서다. `all_open` 소스에서 담당자가 0명·여러 명이어도 ②·③ 으로 정해지면 막지 않는다.
+
+구현(step 6): 저장하지 않고 판정 때마다 계산한다 — `task_cycle.source_match(conn, task)` 가 세션의 로컬 Agent 행(`discovered_json` 의 `found.github_repository`·`repository_id`·능력·`verification_profile_ids_json`)을 `MatchAgent` 로 넘기고, 워커는 같은 값의 `fix_verification_profile_id` 로 실행 target 을 고정한다. 로컬 저장소가 정해지지 않으면 Agent·프로필도 정하지 않고 `repository_*` 하나만 낸다. 사유는 Task 별로 나눈다(`SourceMatch.fix_blockers`·`review_blockers`) — 수정 Task 는 `repository_*`·`fix_agent_*`·`profile_*`, 검토 Task 는 `repository_*`·`review_agent_*`. 검토 Agent 가 없어도 수정은 먼저 돈다. 준비 판정 입력은 `TaskFacts.matched_agent_id`·`match_blockers`·`auto_match`: `all_open` 수정 Task 와 `chosen_agent_id` 없는 검토 Task 는 `auto_match` 로 매칭 결과만 쓰고(담당 대기·기존 자동 선택 없음), `filtered` 수정 Task 는 담당 연결이 풀리지 않을 때 `default_fix_agent_id` 를 쓴 뒤 기존 `assignee_*` 를 낸다. `workflow_repository_id` 가 빈 소스의 Task 는 저장 scope 값이 GitHub 저장소 이름(`owner/name`, 수집 때 로컬 저장소를 모르므로)이고, 준비 판정이 매칭한 로컬 저장소로 바꿔 능력을 본다. 매칭 대기는 설정에서 고르는 일이라 사람 요청(`READINESS_REQUEST_CODES`)을 만들지 않는다.
+
+### 실행 지시 (step 5·7)
+
+- 저장: `source_issues` 에 `delegated_at TEXT NULL`, `delegated_by TEXT NULL CHECK (delegated_by IN ('operator', 'label'))`(스키마 v7, step 5 — v6 데이터 보존 ALTER). 기록은 `repo.mark_issue_delegated(conn, *, session_id, source_id, github_issue_id, by, now) -> bool`(처음 지시만, 멱등).
+- 수집: `all_open` 소스의 최초 커서는 `since` 없음(처음부터 — 오래된 열린 이슈도 받는다. 닫힌 이력 페이지도 한 번 훑는다). 이슈 라벨에 `trigger_label` 이 있으면(`domain.issue_intake.label_delegated`) 처음 본 때 `delegated_by=label` 로 기록. 한 번 기록되면 라벨을 떼도 지우지 않는다.
+- 준비 판정: `all_open` 이고 지시가 없으면 대기 코드 `not_delegated`("실행 지시 전 — [에이전트에게 맡기기] 또는 `runloom` 라벨", actor `operator`). `filtered` 소스에는 이 코드가 없다(수집 = 지시, phase 8 그대로).
+- `run_mode`: [맡기기](`operator`)는 직접 지시라 `manual_mode` 로 막지 않는다. 라벨 지시는 `run_mode: auto` 일 때만 착수, `manual` 이면 `manual_mode` 대기. App 이 만든 소스는 `auto`.
+- 목록 화면은 지시 전 업무를 "대기 · 지시 전" 하나로 묶어 보이고 다른 대기 사유는 상세에서만 보인다(step 8). 준비 판정 자체는 모든 사유를 계산한다.
+- 화면(step 8, `views.undelegated(conn, task)`): `all_open` 소스 이슈의 수정 Task 이고 지시 없음·마감 전이면 업무 목록(`/tasks`)·`/operator/github` 업무 목록·업무 상세에 운영자에게만 [에이전트에게 맡기기](`POST /tasks/{id}/delegate` 폼)를 보인다. 라벨로 지시된 것·`filtered` 소스·검토 Task 에는 없다.
+
+### 연결 화면 `/operator/github` (step 8)
+
+- 소스가 없으면(연결 전) 설명 한 줄 + [GitHub 연결](`/operator/github/app/new`) + 접힌 "고급 — 토큰으로 연결"(PAT 폼, 비밀 연결됨/없음, `WORKFLOW_GITHUB_REPOS` 가 있으면 phase 8 라벨 범위 소스 만들기 폼). 기본 화면(접힌 `<details>` 밖)에 내부 ID·토큰 입력 칸이 없다.
+- 소스가 있으면 App slug·owner 와 [저장소 추가/변경](App 설치 설정 `https://github.com/apps/{slug}/installations/new`, App 없으면 [GitHub 연결]) + 저장소 카드(`data-source-card`): 마지막 동기화(`repo.get_source_synced_at` = 커서 저장 시각)·가져온 이슈 수·수집 자격 종류(`github_clients.credential_kind` → App 설치·붙여 넣은 토큰·서버 환경변수 토큰, 없으면 "GitHub 자격 없음")·트리거 라벨·러너 매칭(`task_cycle.match_for_source` — 담당 연결 없는 이슈 기준, 값마다 "설정"·"자동", `repository_unmatched` 면 "이 저장소를 등록한 러너 없음 — 러너에서 register" 안내)·기준선 가져오기·수집 중지, 카드마다 접힌 "고급 설정"(소스 설정 PUT·담당 연결 — `all_open` 의 자동 결정 칸은 "비워 두면 자동").
+- 수집 실패(rate limit·권한 오류)는 저장하지 않아 카드에 없다(워커 로그만) — 카드의 오류는 자격 없음·수집 중지뿐이다.
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 비밀 저장소 | `adapters/secret_store.py`(1) | `SecretStore(root: Path)`, `SecretStore.from_env(env=os.environ)`(`WORKFLOW_SECRET_DIR`, 기본 `data/secrets`), `read(name) -> str \| None`, `write(name, value: str) -> None`(디렉터리 0700·파일 0600·원자 교체), `delete(name) -> None`, `exists(name) -> bool`. 이름은 다섯 상수(`NAMES`)만 — 그 밖(`../`·절대 경로 포함)은 `ValueError`, 상수 `GITHUB_APP_INFO`·`GITHUB_APP_PRIVATE_KEY`·`GITHUB_APP_CLIENT_SECRET`·`GITHUB_APP_WEBHOOK_SECRET`·`GITHUB_TOKEN`. `repr` 에 내용 없음 |
+| App 자격 | `adapters/github_app.py`(2) | `AppCredentials(app_id: int, client_id, slug, name, owner_login, html_url, client_secret, webhook_secret, pem)`(`repr` 에 비밀 제외), `exchange_manifest_code(code, *, transport=None) -> AppCredentials`(code 는 `[A-Za-z0-9_-]` 만, 오류 문구에 code 없음), `save_credentials(store, creds, now)`, `load_app(store, *, transport=None) -> GitHubAppAuth \| None`. `build_manifest(base_url, name) -> dict` 는 step 7 |
+| App 인증 | `adapters/github_app.py`(2) | `GitHubAppAuth(client_id, private_key_pem, *, transport=None, clock=time.time)`, `app_jwt() -> str`, `installation_token(installation_id) -> str`(캐시, 만료 5분 전 갱신), `invalidate(installation_id)`(캐시 버림). JWT 호출이 401 이면 JWT 를 새로 만들어, 설치 토큰 호출이 401 이면 캐시를 버리고 한 번만 다시 보낸다. `get_installation(installation_id) -> Installation(installation_id, account_login, repository_selection)`, `list_installation_repositories(installation_id) -> list[InstalledRepository(repository_id, full_name)]` |
+| 토큰 공급자 | `adapters/github_client.py`(2) | Protocol `TokenProvider: token() -> str, invalidate() -> None`, `InstallationTokenProvider(auth, installation_id)`. 클라이언트는 공급자면 401 에 `invalidate()` 뒤 한 번 다시 보낸다(문자열 토큰은 다시 보내지 않음). 오류 분류는 `check_response(method, path, response)`·Link 페이지는 `next_page(response, path)` 로 github_app 과 같이 쓴다 |
+| 클라이언트 선택 | `server/github_clients.py`(5) | `client_for(source: GitHubSourceConfig, settings, secrets: SecretStore, *, app=None, transport=None) -> HttpGitHubClient \| None`, `SourceClients(settings, secrets, *, transport=None)(source) -> HttpGitHubClient \| None`(워커 `Worker(…, github_for=)`) |
+| 소스 맞춤 | `server/github_connect.py`(7) | `sync_installation_sources(conn, session_id, installation_id, repositories, now) -> list[str]`(새로 만든·`installation_id` 를 바꾼·수집을 멈춘 source_id — 다시 부르면 `[]`), `ensure_token_source(conn, session_id, repository_full_name, now) -> str \| None`(없을 때만 만든 source_id). 새 소스 = `all_open`·`runloom`·`auto`·빈 자동 결정 칸·`start_at`=연결 시각. 저장소 비교는 대소문자 무시. 설치에서 빠졌다 다시 들어온 저장소의 멈춘 소스는 그대로 멈춰 있다(`installation_id` 가 같으면 바꿀 것이 없다 — 다시 켜기는 화면 몫) |
+| 자동 매칭 | `domain/github_match.py`(6) | `match_source(source, agents: Sequence[MatchAgent], *, assignee_ids=(), bindings=None) -> SourceMatch(workflow_repository_id, fix_verification_profile_id, fix_agent_id, review_agent_id, blockers)`, `MatchAgent(agent_id, github_repository, repository_id, capabilities, verification_profile_ids)`, `SourceMatch.fix_blockers`·`review_blockers`, `server/task_cycle.source_match(conn, task) -> SourceMatch \| None` |
+| 연결 화면 | `server/views.py`·`server/task_cycle.py`·`server/github_clients.py`·`adapters/repo.py`(8) | `views.github_context(conn, session_id, *, now, settings, secrets)`, `views.undelegated(conn, task) -> bool`(`task_summary`·`cycle_context` 의 `delegatable`·`can_delegate`), `task_cycle.match_for_source(conn, session_id, config) -> SourceMatch`, `github_clients.credential_kind(source, settings, secrets) -> "app" \| "pat" \| "env" \| None`, `repo.get_source_synced_at(conn, session_id, source_id) -> str \| None` |
+| 러너 보고 키 | `connector/discovery.py`(4) | `found.github_repository` = `"owner/name"` |
+| 환경변수 | `settings`(1) | `WORKFLOW_SECRET_DIR`(비밀 아님, compose 고정값 `/data/secrets`) |
+| 쿠키 | `server/web.py`(7) | `wf_gh_state` |
+| 대기 코드 | `domain/task_readiness.py`(5·6) | `not_delegated`, `repository_unmatched`·`repository_ambiguous`, `profile_unmatched`·`profile_ambiguous`, `fix_agent_unmatched`·`fix_agent_ambiguous`, `review_agent_unmatched`·`review_agent_ambiguous` |
+
+미확인(실제 App 생성 때 확인): `setup_action` 값(`install`·`update` 로 알려져 있으나 공식 문서에서 확인 못 함 — 서버는 값에 따라 분기하지 않는다), 127.0.0.1 `hook_attributes.url` 수락 여부, 설치 URL 의 `state` 가 setup 으로 돌아오는지.
 
 ## 기존 구현과 초기 설계 기록
 

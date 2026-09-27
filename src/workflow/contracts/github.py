@@ -1,7 +1,7 @@
 """GitHub 업무 순환 계약 — 소스 설정·담당 연결·이슈 스냅샷·원본 반영 (CONTRACT 13.6~13.8, ADR-0014), 기준선 (ADR-0015).
 
 중앙 서버 안에서만 쓰는 모델이다(연결 프로그램은 모른다). 규칙은 v1 과 같다 — 알 수 없는 필드 거부, 자동 변환 없음.
-토큰 필드는 없다: 값은 서버 환경변수 `WORKFLOW_GITHUB_TOKEN` 에만 있다. 이슈 제목·본문·URL 은 표시·요청 재료일 뿐
+토큰 필드는 없다: 값은 서버 환경변수 `WORKFLOW_GITHUB_TOKEN` 또는 비밀 저장소에만 있다(ADR-0017). 이슈 제목·본문·URL 은 표시·요청 재료일 뿐
 명령·경로로 해석하지 않는다.
 """
 
@@ -36,18 +36,27 @@ def _unique(values: list, name: str) -> None:
 
 
 class GitHubSourceConfig(_Contract):
-    """운영자가 연결한 저장소 하나. `repository_full_name ∈ WORKFLOW_GITHUB_REPOS` 는 서버가 검사한다."""
+    """운영자가 연결한 저장소 하나. `repository_full_name ∈ WORKFLOW_GITHUB_REPOS` 는 서버가 검사한다.
+
+    `intake: filtered`(기본) 는 phase 8 그대로 — 범위(라벨·고른 이슈)와 세 ID 가 필수다. `all_open` 은 열린 이슈 전부를
+    가져오고 실행은 지시한 것만 한다(ADR-0017) — 범위는 비어도 되고, None 인 ID 는 자동 매칭이 정한다.
+    새 칸은 모두 기본값이 있어 phase 8 에 저장된 config_json 이 그대로 유효하다.
+    """
 
     source_id: SourceId
     repository_full_name: RepositoryFullName
-    workflow_repository_id: NonEmptyStr  # 이 제품의 scope 값(`repository_id`)
+    workflow_repository_id: NonEmptyStr | None = None  # 이 제품의 scope 값(`repository_id`)
     label_filter: list[NonEmptyStr]
     selected_issue_numbers: list[PositiveInt]
-    start_at: Rfc3339
-    fix_verification_profile_id: NonEmptyStr  # 로컬 등록의 검증 프로필 ID — 명령이 아니다
-    review_agent_id: NonEmptyStr
+    start_at: Rfc3339  # all_open 에서는 연결 시각 기록일 뿐 범위에 쓰지 않는다
+    fix_verification_profile_id: NonEmptyStr | None = None  # 로컬 등록의 검증 프로필 ID — 명령이 아니다
+    review_agent_id: NonEmptyStr | None = None
     run_mode: Literal["auto", "manual"]
     max_rework_rounds: Annotated[int, Field(ge=0, le=3)] = 1
+    intake: Literal["filtered", "all_open"] = "filtered"
+    trigger_label: NonEmptyStr | None = None  # all_open 에서 이 라벨이 붙은 이슈는 지시된 것으로 본다
+    default_fix_agent_id: NonEmptyStr | None = None  # 담당자 연결이 없을 때 쓸 수정 Agent
+    installation_id: PositiveInt | None = None  # App 설치가 만든 소스 — 클라이언트가 설치 토큰을 쓴다
     enabled: bool
     config_revision: PositiveInt
 
@@ -55,9 +64,16 @@ class GitHubSourceConfig(_Contract):
     def _check_scope(self) -> "GitHubSourceConfig":
         _unique(self.label_filter, "label_filter")
         _unique(self.selected_issue_numbers, "selected_issue_numbers")
-        if not self.label_filter and not self.selected_issue_numbers:
-            raise ValueError("label_filter 와 selected_issue_numbers 가 둘 다 비었습니다 — 전체 백로그는 받지 않습니다")
+        if self.intake == "filtered":
+            if not self.label_filter and not self.selected_issue_numbers:
+                raise ValueError("label_filter 와 selected_issue_numbers 가 둘 다 비었습니다 — 전체 백로그는 받지 않습니다")
+            missing = [name for name in FILTERED_REQUIRED if getattr(self, name) is None]
+            if missing:
+                raise ValueError(f"intake filtered 는 {', '.join(missing)} 가 필요합니다")
         return self
+
+
+FILTERED_REQUIRED = ("workflow_repository_id", "fix_verification_profile_id", "review_agent_id")
 
 
 class AssigneeBinding(_Contract):
