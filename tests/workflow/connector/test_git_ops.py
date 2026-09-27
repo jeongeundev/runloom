@@ -1,5 +1,6 @@
 """git_ops — 업무별 worktree, 결과 커밋, diff. 원본 저장소의 작업 트리·기준 브랜치는 건드리지 않는다."""
 
+import os
 import shutil
 import subprocess
 
@@ -188,3 +189,219 @@ def test_is_ancestor_follows_history_direction(repo):
 
     assert git_ops.is_ancestor(repo, base, result) is True
     assert git_ops.is_ancestor(repo, result, base) is False
+
+
+# --- 기준 커밋 추적 (phase 12 step 3, ADR-0018 결정 2) ------------------------------------
+
+
+@pytest.fixture
+def origin_clone(repo, tmp_path):
+    """(bare origin, 그 클론). 클론은 `refs/remotes/origin/HEAD` 를 가진다."""
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(repo), str(bare))
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(bare), str(clone))
+    return bare, clone
+
+
+def _push_new_commit(bare, tmp_path) -> str:
+    """다른 곳에서 개발해 origin 기본 브랜치에 push 한 상황."""
+    other = tmp_path / "elsewhere"
+    _git(tmp_path, "clone", "-q", str(bare), str(other))
+    (other / "pkg.py").write_text("X = 3\n")
+    _git(other, "commit", "-q", "-am", "upstream")
+    _git(other, "push", "-q", "origin", "main")
+    return _git(other, "rev-parse", "HEAD")
+
+
+def test_fetch_origin_then_origin_head_returns_the_new_default_branch_commit(origin_clone, tmp_path):
+    bare, clone = origin_clone
+    local_head = git_ops.head_sha(clone)
+    pushed = _push_new_commit(bare, tmp_path)
+    assert git_ops.origin_head(clone) == local_head  # fetch 전에는 옛 값
+
+    git_ops.fetch_origin(clone)
+
+    assert git_ops.origin_head(clone) == pushed
+    assert git_ops.head_sha(clone) == local_head  # 작업 트리·로컬 브랜치는 그대로
+    assert git_ops.has_commit(clone, pushed)
+    path = git_ops.ensure_worktree(clone, "task-up", pushed)  # fetch 로 받은 커밋에서 worktree 를 만든다
+    assert _git(path, "rev-parse", "HEAD") == pushed
+
+
+def test_origin_head_sets_missing_symbolic_ref_from_the_remote(repo, origin_clone, tmp_path):
+    bare, _ = origin_clone
+    _git(repo, "remote", "add", "origin", str(bare))
+    git_ops.fetch_origin(repo)
+    _git(repo, "remote", "set-head", "origin", "--delete")  # 원격을 나중에 붙인 저장소(git 버전에 따라)는 origin/HEAD 가 없다
+    assert subprocess.run(["git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], cwd=repo).returncode != 0
+
+    assert git_ops.origin_head(repo) == _git(bare, "rev-parse", "main")
+
+
+def test_origin_head_without_origin_is_none(repo):
+    assert git_ops.origin_head(repo) is None
+
+
+def test_fetch_origin_failures_raise_git_error(repo, tmp_path):
+    with pytest.raises(GitError):
+        git_ops.fetch_origin(repo)  # origin 없음
+    with pytest.raises(GitError):
+        git_ops.fetch_origin(tmp_path / "없는 폴더")
+    _git(repo, "remote", "add", "origin", str(tmp_path / "없는-origin.git"))
+    with pytest.raises(GitError):
+        git_ops.fetch_origin(repo)
+
+
+# --- 작업 복사본 준비물: 원본 폴더 링크 (ADR-0018 결정 3, phase 12 step 4) ----------------------------------------
+
+
+@pytest.fixture
+def prepared_repo(repo):
+    """원본 폴더에만 있는 설치물 — `.gitignore` 의 `node_modules/`(끝 `/`)는 심볼릭 링크에 맞지 않는다."""
+    (repo / ".gitignore").write_text("node_modules/\n.venv/\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-q", "-m", "ignore")
+    (repo / "backend" / ".venv" / "bin").mkdir(parents=True)
+    (repo / "backend" / ".venv" / "bin" / "x").write_text("venv\n")
+    (repo / "frontend" / "node_modules").mkdir(parents=True)
+    (repo / "frontend" / "node_modules" / "y").write_text("module\n")
+    return repo
+
+
+def test_link_prepared_paths_links_origin_folders_and_keeps_them_out_of_git(prepared_repo):
+    worktree = git_ops.ensure_worktree(prepared_repo, "t1", git_ops.head_sha(prepared_repo))
+
+    linked = git_ops.link_prepared_paths(prepared_repo, worktree, ["backend/.venv", "frontend/node_modules"])
+
+    assert linked == ["backend/.venv", "frontend/node_modules"]
+    for rel in linked:
+        assert (worktree / rel).is_symlink()
+        assert (worktree / rel).resolve() == (prepared_repo / rel).resolve()
+    assert (worktree / "backend/.venv/bin/x").read_text() == "venv\n"
+    assert git_ops.is_dirty(worktree) is False
+    (worktree / "pkg.py").write_text("X = 2\n")
+    commit = git_ops.commit_all(worktree, "fix")
+    assert _git(worktree, "show", "--name-only", "--format=", commit).splitlines() == ["pkg.py"]
+    assert (prepared_repo / "frontend/node_modules/y").read_text() == "module\n"  # 원본은 그대로
+
+
+def test_link_prepared_paths_writes_exclude_rule_once(prepared_repo):
+    base = git_ops.head_sha(prepared_repo)
+    first = git_ops.ensure_worktree(prepared_repo, "t1", base)
+    second = git_ops.ensure_worktree(prepared_repo, "t2", base)
+
+    git_ops.link_prepared_paths(prepared_repo, first, ["frontend/node_modules"])
+    git_ops.link_prepared_paths(prepared_repo, second, ["frontend/node_modules"])
+    again = git_ops.link_prepared_paths(prepared_repo, first, ["frontend/node_modules"])  # 이어 쓰기 — 이미 있다
+
+    exclude = (prepared_repo / ".git" / "info" / "exclude").read_text().splitlines()
+    assert exclude.count("/frontend/node_modules") == 1
+    assert again == []
+    assert git_ops.is_dirty(second) is False
+
+
+def test_link_prepared_paths_skips_missing_origin_and_tracked_paths(prepared_repo, caplog):
+    worktree = git_ops.ensure_worktree(prepared_repo, "t1", git_ops.head_sha(prepared_repo))
+
+    with caplog.at_level("INFO", logger="workflow.connector.git_ops"):
+        linked = git_ops.link_prepared_paths(prepared_repo, worktree, ["pkg.py", "tests", "absent/dir"])
+
+    assert linked == []
+    assert not (worktree / "pkg.py").is_symlink() and (worktree / "pkg.py").read_text() == "X = 1\n"
+    assert not (worktree / "tests").is_symlink()
+    assert not os.path.lexists(worktree / "absent")
+    assert git_ops.is_dirty(worktree) is False
+    text = caplog.text
+    assert "pkg.py" in text and "tests" in text and "absent/dir" in text
+
+
+# --- 결과 브랜치 push (ADR-0018 결정 4, phase 12 step 5) ------------------------------------------------
+
+
+def _fix_commit(clone, task_id: str, text: str) -> str:
+    worktree = git_ops.ensure_worktree(clone, task_id, git_ops.head_sha(clone))
+    (worktree / "pkg.py").write_text(text)
+    return git_ops.commit_all(worktree, f"fix({task_id})")
+
+
+def test_push_task_branch_creates_then_fast_forwards_remote_branch(origin_clone):
+    bare, clone = origin_clone
+    main_before = _git(bare, "rev-parse", "main")
+    first = _fix_commit(clone, "task-abc", "X = 2\n")
+
+    assert git_ops.push_task_branch(clone, "task-abc") is True
+    assert _git(bare, "rev-parse", "refs/heads/task/task-abc") == first
+
+    second = _fix_commit(clone, "task-abc", "X = 3\n")  # 재작업 — 같은 브랜치를 앞으로
+    assert git_ops.push_task_branch(clone, "task-abc") is True
+    assert _git(bare, "rev-parse", "refs/heads/task/task-abc") == second
+    assert _git(bare, "rev-parse", "main") == main_before  # 기본 브랜치는 그대로
+
+
+def test_push_task_branch_uses_fixed_args_without_force(origin_clone, monkeypatch):
+    _, clone = origin_clone
+    _fix_commit(clone, "task/../x y", "X = 2\n")
+    calls: list[list[str]] = []
+    original = subprocess.run
+
+    def recording(args, *a, **kw):
+        calls.append(list(args))
+        return original(args, *a, **kw)
+
+    monkeypatch.setattr(git_ops.subprocess, "run", recording)
+
+    assert git_ops.push_task_branch(clone, "task/../x y") is True
+
+    push = [c for c in calls if c[:2] == ["git", "push"]]
+    branch = f"refs/heads/task/{git_ops._safe('task/../x y')}"  # ensure_worktree 와 같은 이름
+    assert push == [["git", "push", "--quiet", "origin", f"{branch}:{branch}"]]
+    assert not any(arg in ("-f", "--force", "--force-with-lease") or arg.startswith("+") for arg in push[0])
+
+
+def test_push_task_branch_rejected_when_remote_diverged(origin_clone):
+    bare, clone = origin_clone
+    _fix_commit(clone, "task-div", "X = 2\n")
+    assert git_ops.push_task_branch(clone, "task-div") is True
+    other = git_ops.worktree_path(clone, "task-div")
+    _git(other, "reset", "-q", "--hard", "HEAD^")
+    (other / "pkg.py").write_text("X = 9\n")
+    git_ops.commit_all(other, "갈라진 커밋")
+
+    assert git_ops.push_task_branch(clone, "task-div") is False  # force 없음 — 원격은 그대로
+
+
+def test_push_task_branch_unwritable_origin_is_false(origin_clone):
+    bare, clone = origin_clone
+    _fix_commit(clone, "task-ro", "X = 2\n")
+    modes = {p: p.stat().st_mode for p in [bare, *bare.rglob("*")]}
+    for p in modes:
+        p.chmod(modes[p] & ~0o222)
+    try:
+        assert git_ops.push_task_branch(clone, "task-ro") is False
+    finally:
+        for p, mode in modes.items():
+            p.chmod(mode)
+    assert subprocess.run(["git", "show-ref", "--verify", "--quiet", "refs/heads/task/task-ro"], cwd=bare).returncode != 0
+
+
+def test_push_task_branch_failure_log_hides_remote_credentials(repo, caplog):
+    _fix_commit(repo, "task-cred", "X = 2\n")
+    _git(repo, "remote", "add", "origin", "https://user:s3cr3t-token@127.0.0.1:9/o/r.git")
+
+    with caplog.at_level("INFO", logger="workflow.connector.git_ops"):
+        assert git_ops.push_task_branch(repo, "task-cred") is False
+
+    assert caplog.records
+    assert "s3cr3t-token" not in caplog.text and "127.0.0.1:9" not in caplog.text
+
+
+def test_push_task_branch_without_origin_is_false(repo):
+    _fix_commit(repo, "task-none", "X = 2\n")
+    assert git_ops.push_task_branch(repo, "task-none") is False
+
+
+def test_has_origin(repo, origin_clone):
+    _, clone = origin_clone
+    assert git_ops.has_origin(clone) is True
+    assert git_ops.has_origin(repo) is False

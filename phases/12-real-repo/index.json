@@ -5,57 +5,92 @@
     {
       "step": 0,
       "name": "real-repo-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T23:13:19+0900",
+      "summary": "문서만: ADR-0018 신설(러너 setup·selfhost 에서 register 가 Agent 생성·fetch 후 origin/HEAD 를 ClaimRequest.registration_heads 로 보고·--link 심볼릭 링크+info/exclude·--env(RESERVED_ENV_NAMES)·push 결과 ResultReadyData.branch_pushed·approved 뒤 초안 PR(task_pull_requests)·병합 추적·알림 notifications+비밀 notify_webhook_url·[러너 붙이기] POST /operator/github/sources/{id}/runner), ADR-0014 대체 줄, ARCHITECTURE '실제 저장소 순환 — phase 12'(스키마 v8·이름 표), CONTRACT 14절(json contract-pending 6블록), GLOSSARY·CURRENT_HANDOFF. pytest 2692 passed/61 skipped, ruff 통과. 다음 step 주의: 14절 펜스를 json 으로 바꿀 때 test_v1.py 블록 수(53)·_SIGNATURES(등록 응답 {agent_id,created} 는 새 서명 필요)를 함께 갱신, Agent 자동 생성은 selfhost 모드만(demo 404 유지), 422 본문 문구는 미확인이라 해석하지 말고 목록 재조회",
+      "completed_at": "2026-09-27T23:25:10+0900"
     },
     {
       "step": 1,
       "name": "self-register-api",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T23:25:10+0900",
+      "summary": "register 가 에이전트 생성: repo.register_local_agent(→(agent_id, created), update_registration 과 UPDATE 공유 _fill_registration)·errors.RegistrationTaken, machine_api RegistrationRequest.agent_name(≤100)·RegistrationResponse{agent_id,created}, selfhost 만 ensure_workspace 후 sess-selfhost 에 code.fix+code.review(scope=repository_id) Agent 생성(agt-8hex, personal/local, session_agents 등록), demo 는 404 유지, selfhost 에서 취소 안 된 다른 connector 가 쓰는 이름은 409 registration_taken. 수정·검토 같은 Agent 는 매칭·준비 판정이 이미 허용(테스트로 확인, 코드 변경 없음). CONTRACT 14.3·14.4 펜스 json(test_v1 블록 56, 서명 RegistrationResponse), ARCHITECTURE·ADR-0018 409 반영. pytest 2710 passed/61 skipped, ruff 통과. 다음 step 주의: 새 연결 코드로 러너를 다시 붙이면 새 connector_id 라 옛 연결이 취소될 때까지 409 — step 2 setup 은 저장된 토큰이 있으면 재사용하거나 step 9 에서 옛 연결 취소 경로 필요; 러너는 agent_name 을 값 있을 때만 보낸다",
+      "completed_at": "2026-09-27T23:33:26+0900"
     },
     {
       "step": 2,
       "name": "connector-setup",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T23:33:26+0900",
+      "summary": "connector setup·로컬 등록 새 칸: cli.py 에 setup(--server [--code] --repo, 같은 서버 token.json 이 있으면 connect 생략, 없는데 코드 없으면 exit 2, --tool 기본 PATH claude→codex→claude)·register 의 --id/--repository-id 선택(default_registration_id=폴더 이름 소문자+a-z0-9._- 밖은 '-', default_repository_id=found.github_repository 없으면 폴더 이름)·--link(_link_arg 상대 경로만, 절대·..·.git 거부, 정규화·중복 제거)·--env(_env_arg [A-Za-z_][A-Za-z0-9_]*, RESERVED_ENV_NAMES+WORKFLOW_ 접두사 거부, 중복 이름 exit 2, 오류 문구에 값 없음)·끝 한 줄 요약(이름·GitHub·검증 프로필·링크 수·env 이름·다음 할 일); state.py registrations.links_json/env_json(기존 DB 는 PRAGMA table_info 후 ALTER), save/get_registration 이 links/env 키(없으면 빈 값); client.report_registration 이 agent_name 을 값 있을 때만 보냄(러너는 폴더 이름 전송), links/env 는 이름도 중앙에 안 보냄. ADR-0018·ARCHITECTURE 이름 표에 --tool 기본·connect 생략 규칙 반영(env 이름 규칙은 문서대로 대소문자 허용). pytest 2737 passed/61 skipped, ruff 통과. 다음 step 주의: step 4 는 get_registration 의 links·env 를 쓰면 됨(옛 DB 도 init_schema 후 빈 값), env 값은 명령행 인자라 ps 에는 보임, setup 은 다른 서버로 바꿀 때만 재연결(옛 connector 취소는 step 9 몫)",
+      "completed_at": "2026-09-27T23:41:43+0900"
     },
     {
       "step": 3,
       "name": "base-tracking",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T23:41:43+0900",
+      "summary": "기준 커밋 추적: git_ops.fetch_origin(고정 인자 git fetch --quiet origin, GIT_TERMINAL_PROMPT=0, 120초 제한, 실패 GitError)·origin_head(origin/HEAD 없으면 set-head --auto 한 번, origin 없음·실패 None) — step 문서의 fetch_default 대신 ARCHITECTURE 이름을 따름; state.list_registrations; Runner._registration_heads(등록별 BASE_FETCH_INTERVAL_SECONDS=60 monotonic 간격, 실패 등록은 빼고 INFO 로그, 최대 50) → CentralClient.claim(registration_heads=) 값 있을 때만 칸; contracts ClaimRequest.registration_heads dict[NonEmptyStr, CommitSha](≤50, 선택); repo.update_registration_heads(connector_id 같은 Agent 만, 바뀐 수 반환)를 machine_api claim 이 배정 전에 호출; _start_fix 우선순위 그대로(새 수정=보고된 최신, 재작업=검토한 결과 커밋 테스트). CONTRACT 14.1 펜스 json(test_v1 블록 57), ARCHITECTURE step 3 구현 메모. pytest 2754 passed/61 skipped, ruff 통과. 다음 step 주의: 기존 ClaimRequest model_dump 에 registration_heads=None 이 끼므로 비교는 exclude_none; 러너 테스트의 등록 repo_path 는 대개 없는 폴더라 매 tick fetch 실패 INFO 로그가 남음(WARNING 0건 검사와 무관); ensure_worktree 는 fetch 로 받은 커밋에서 동작 확인됨",
+      "completed_at": "2026-09-27T23:53:39+0900"
     },
     {
       "step": 4,
       "name": "worktree-env",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T23:53:39+0900",
+      "summary": "worktree 준비물: git_ops.link_prepared_paths(repo, checkout, links)(원본 폴더로 향하는 심볼릭 링크, 원본에 없음·체크아웃에 이미 있음은 건너뛰고 INFO 로그, git rev-parse --git-path info/exclude 에 /<경로> 한 번·glob 문자 \\ 이스케이프)를 fix 경로의 ensure_worktree 뒤(이어 쓰기도 — 빠진 링크만 채움)와 검증용 깨끗한 체크아웃(test_before·verification)에 호출, 커밋 검토 체크아웃은 제외; masking.registered_env(허용 목록·XDG_·RESERVED_ENV_NAMES·WORKFLOW_·형식 위반 제거)·mask_secrets(text, extra)(8자 이상 값→<env:이름>, 긴 값 먼저), RESERVED_ENV_NAMES·ENV_NAME 을 cli.py→masking.py 로 옮김(cli 가 import); LocalToolAdapter.child_env = codex_env + 등록 env(run 마다 요청 등록으로 설정, 수정·검토·사용자 정의 모두); Runner._registered_env 로 산출물 업로드·진행·실패 문구·결과 봉투 가림(어댑터 로컬 원시 산출물은 원문); ARCHITECTURE step 4 구현 메모. pytest 2769 passed/61 skipped, ruff 통과. 다음 step 주의: step 5 push 는 링크가 info/exclude 로 빠져 커밋에 없음을 전제로 해도 됨, 링크 대상은 원본과 공유(에이전트가 .venv 를 바꾸면 원본도 바뀜), 커밋 검토 체크아웃에는 링크·검증 없음",
+      "completed_at": "2026-09-28T00:04:17+0900"
     },
     {
       "step": 5,
       "name": "branch-push",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-28T00:04:17+0900",
+      "summary": "결과 브랜치 push: git_ops.push_task_branch(repo, task_id)->bool(고정 인자 git push --quiet origin refs/heads/task/<_safe>:같은 ref, force·+ 없음, GIT_TERMINAL_PROMPT=0·120초, 실패 False+INFO 로그에서 원격 URL·user@host: 를 <원격> 으로 가림, 브랜치 이름은 ensure_worktree 와 같은 _task_branch)·has_origin; Runner._finalize→_push_result: CodeChangeResult ready_for_review+result_commit+등록 폴더 origin 있음일 때만 push 해 result_ready.branch_pushed(true/false), 그 밖(검토·사용자 정의·origin 없음)은 칸 없음, 실패해도 ready_for_review 그대로; contracts ResultReadyData.branch_pushed(bool|None, _MEASURE_FIELDS 로 null 생략); 서버는 execution_events.data_json 에 그대로 저장(옛 러너 이벤트도 받음). 결정: origin URL 이 GitHub 형식인지 보지 않음(대상 ref 고정·로컬 bare 테스트) — ADR-0018·ARCHITECTURE 반영, 문서의 -> None 을 -> bool 로. CONTRACT 14.2 펜스 json(test_v1 블록 59). pytest 2787 passed/61 skipped, ruff 통과. 다음 step 주의: executions.branch_pushed 칸은 없음 — step 6 이 스키마 v8 에서 칸을 만들고 append_event result_ready 에서 event.data.branch_pushed 를 옮겨 써야 함(기존 v7 행은 data_json 에서 채울지 결정); 재작업 push 는 ff 만이라 원격 task 브랜치가 갈라지면 false",
+      "completed_at": "2026-09-28T00:12:16+0900"
     },
     {
       "step": 6,
       "name": "draft-pr",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-28T00:12:16+0900",
+      "summary": "초안 PR·병합 추적: contracts/github.PullRequestRef, github_client.default_branch·find_pull_request·create_pull_request(422 초안 미지원→draft=False 한 번 더, 그 밖 422→같은 head 재조회, GitHubUnprocessable 은 PR 생성에서만·str 은 'POST 경로: HTTP 422' 뿐)·get_pull_request; 스키마 v8(db._migrate_7_to_8, 4~7→8 연쇄): executions.branch_pushed(기존 result_ready 이벤트 data_json 에서 true/false 만 옮김)·task_pull_requests·notifications(step 7 용, 테이블만), append_event 가 branch_pushed 저장; repo.enqueue_pull_request(ON CONFLICT 멱등)·get_pull_request_row·pull_requests_due·open_pull_requests·record_pull_request; domain/pull_request.py(pr_body Fixes #N+검토 요약 2000자+업무 링크/ID+marker, head_branch, 사유 문구, PR_REQUEST_CODE pr_unavailable·원인 키 pr:<검토 실행>); worker: approved 때 원본 이슈 있는 수정 Task 만 — branch_pushed 1→대기열·'검토 승인 — PR 여는 중', 0→바로 사람 요청(push 명령 안내), NULL→phase 8 그대로; _deliver_pull_requests(_deliver_callbacks 뒤·_deliver_github 앞, 403·허용 밖·자격 없음·소스 중지→바로 failed+요청 'GitHub App 권한(Pull requests 쓰기) 승인 필요', 그 밖 30·2^(n-1)초 백오프 PR_MAX_ATTEMPTS=5 뒤 failed+요청), 열림→'확인 필요 · 사람 차례 · PR 확인 — #n'; _sync_pull_requests(소스 수집 성공 주기에 같은 클라이언트) 병합→완료 'PR 병합'+원본 이슈 pr_merged_at 비었으면 record_issue_merge, 닫힘→실패 'PR 이 병합 없이 닫힘', 마감된 Task 불변; _resume 이 pr: 원인 키 요청 응답으로 수정을 다시 돌리지 않음; TickReport.prs_opened·prs_failed·prs_merged; manifest pull_requests write(SELFHOST 권한 문구 갱신); 화면 업무 상세 PR 줄(data-pull-request, 링크는 저장소·번호로 구성); metrics._blocked_seconds 빈 marks 크래시 수정(후속 Task 가 만든 초에 시작하면 ValueError — 테스트 추가). ARCHITECTURE·ADR-0018·GLOSSARY 구현 메모. pytest 2839 passed/61 skipped, ruff 통과. 다음 step 주의: notifications 테이블은 이미 있음(step 7 은 쓰기·전달만, SCHEMA_VERSION 8 유지), pr_opened 알림은 _deliver_pull_requests 의 record open 자리·human_request 는 create_human_request_once fresh 자리(worker 두 곳 + _pull_request_failed)에 넣으면 됨; github_delivery 댓글의 '자동으로 푸시하지 않습니다' 문구는 그대로라 step 10 에서 문서·문구 정리 필요; e2e FakeGitHub 에 PR 엔드포인트는 아직 없음(step 10)",
+      "completed_at": "2026-09-28T00:29:24+0900"
     },
     {
       "step": 7,
       "name": "notify-core",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-28T00:29:25+0900",
+      "summary": "알림 대기열·전송: domain/notification.py(NotificationMessage·notification_text '[Runloom] 사람 차례|PR 확인|실패 — 제목…'+업무 링크 줄·notification_body Discord(하위 도메인 포함)면 {content} 2000자 자름, 그 밖 content/event/task_id/task_url/title/pr_url·webhook_url_valid(http/https·호스트·2048자·userinfo 거부)·webhook_host), adapters/notify_sender.py(NotifySender(timeout 10s, 리다이렉트 안 따름).post, NotifyFailed(msg, retry_after — 429 본문 retry_after 또는 Retry-After 헤더), 연결 오류는 클래스 이름만·from None, 보내는 동안 httpx URL INFO 로그를 필터로 막음) — 모듈 이름은 step 문서의 notify_client 대신 ARCHITECTURE 의 notify_sender; secret_store.NOTIFY_WEBHOOK_URL(NAMES 6개); repo.enqueue_notification(dedupe_key ON CONFLICT 멱등)·notifications_due·record_notification_attempt(skipped 외 attempts+1)·list_notifications(새것 먼저 20); worker: Worker(secrets=, notifier=) 선택 인자(main 에서 연결, 없으면 쌓지도 보내지도 않음), _request_human(create_human_request_once 네 호출부 통합, fresh 면 human_request:<request_id>), _deliver_pull_requests 열림(pr.state open 일 때만)→pr_opened:<task>:<n>, _reflect_failures 실패 마감→task_failed:<execution_id>(종류 분기 없음 — 모든 실패 반영), _notify 는 URL 없으면 쌓지 않음(결정: step 문서대로, ADR·ARCHITECTURE 의 '무관하게 넣고 skipped' 문구를 고침), _deliver_notifications tick 맨 뒤(보낼 때 URL 없음→skipped, 형식 깨짐→failed 'URL 형식 오류', 실패 30·2^(n-1)초와 ceil(retry_after) 중 큰 값, NOTIFY_MAX_ATTEMPTS=5 뒤 failed, 로그는 호스트만, 업무 상태 불변), TickReport.notifications_sent·failed; SCHEMA_VERSION 8 유지(테이블은 step 6). 테스트: test_notification·test_notify_sender·test_repo·test_secret_store·test_task_cycle(세 원인 1회·재시작·URL 없음·429·5회 포기·skipped·형식 오류·DB dump/로그에 URL 없음)·test_worker tick 순서. pytest 2881 passed/61 skipped, ruff 통과. 다음 step 주의: step 8 은 webhook_url_valid·webhook_host·list_notifications·NotifySender 를 그대로 쓰면 됨(테스트 보내기는 notification_body+post 직접), URL 저장 시 끝 공백은 워커가 strip 함; notify_sender import 시 httpx 로거에 필터가 붙음",
+      "completed_at": "2026-09-28T00:39:08+0900"
     },
     {
       "step": 8,
       "name": "notify-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-28T00:39:08+0900",
+      "summary": "알림 설정 화면: web.py 에 GET /operator/notifications·POST /operator/notifications/webhook(폼 url, strip 후 _webhook_url_savable = webhook_url_valid + https 또는 루프백 http, 실패 422 invalid_field 값 되돌리지 않음, 비밀 파일 notify_webhook_url 0600 저장·로그는 호스트만)·/webhook/delete(파일 삭제)·/test(대기열 없이 NotifySender(transport=app.state.notify_transport) 한 번, 본문 notification_body 사건 test, 결과 data-notify-test sent|failed·'HTTP n'·'시간 초과'(NotifyFailed 문구에 Timeout)·연결 오류, URL 없음 409 notify_not_configured), 모두 _require_operator_page(운영자 폼 규칙 — 별도 CSRF 토큰 없음, 세션 쿠키 SameSite=lax 그대로); views.notifications_context(설정됨/없음·호스트·최근 20건 사건·상태·시각·오류 분류, URL·본문 없음); 템플릿 operator_notifications.html(type=password, '설정됨 · 호스트 discord.com', 테스트·삭제 버튼은 설정됐을 때만); _sidebar 운영자 목록에 '알림'; app.state.notify_transport=None; ARCHITECTURE 저장 검사·경로 표 갱신. 테스트 tests/workflow/server/test_web_notifications.py 20건(권한 403·selfhost 로그인 리다이렉트·0600·호스트만·삭제·잘못된 URL 422·루프백 http 허용·테스트 보내기 성공/404/시간 초과/409·로그·HTML 에 URL 없음). pytest 2901 passed/61 skipped, ruff 통과. 다음 step 주의: 워커 전송 검사는 여전히 webhook_url_valid(http 비루프백도 통과)라 저장 검사만 더 엄격함, 테스트 알림은 notifications 테이블에 남지 않음",
+      "completed_at": "2026-09-28T00:46:27+0900"
     },
     {
       "step": 9,
       "name": "runner-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-28T00:46:27+0900",
+      "summary": "[러너 붙이기]·install-runner 한 명령: web.operator_attach_runner POST /operator/github/sources/{id}/runner(require_session+_require_operator_page — selfhost 미로그인 /login·demo 비운영자 403, 남의 소스 404, repo.issue_connect_code 뒤 operator_github.html 을 runner_issued{source_id,command,expires_at} 로 200 렌더·리다이렉트 없음, 서버=WORKFLOW_PUBLIC_URL 또는 요청 base URL, 명령 'deploy/selfhost/install-runner.sh --server S --code C --repo <이 저장소를 클론한 폴더>'); 템플릿: runner_missing 카드는 data-runner-missing 줄에 [러너 붙이기](발급 뒤 [다시 발급]) 폼, 발급 카드만 data-runner-command(10분·1회용·만료 KST), 매칭된 카드는 고급 설정 안 [러너 다시 붙이기]; install-runner.sh: --server·--code·--repo(셋 다/셋 다 없음, 아니면 종료 2)+--tool·--verify·--link·--env 전달, pip → connector setup(실패 시 plist·적재 없이 종료 1) → plist → 적재(토큰 파일 확인 생략), DRY_RUN 은 setup 줄에 --code ***·--env 이름=***, plist EnvironmentVariables 에 HOME 추가(인자 없을 때도), 인자 없으면 기존 동작·안내; SELFHOST 러너 절 버튼 흐름+옵션+git 자격(HOME·SSH_AUTH_SOCK 없음→ssh 원격 실패 가능)·고급 수동 connect/register, GitHub 절 5 갱신; ARCHITECTURE step 9 구현 메모. 테스트 tests/workflow/server/test_web_runner.py 7건·test_selfhost_files install-runner 8건 추가, test_web_github_connect 카드 문구 갱신. pytest 2916 passed/61 skipped, ruff 통과. 다음 step 주의: 실제 setup 성공→launchctl 적재 경로는 가짜 서버 없이 DRY_RUN 으로만 확인(실연동 때 확인), plist 에 WORKFLOW_CONNECTOR_HOME 은 여전히 안 들어감(기본 위치 전제), 페이지 상단 '자동으로 하지 않는 일: PR·푸시' 문구와 SELFHOST 알려진 한계(기준 커밋 미추적)는 step 10 문서 정리 몫",
+      "completed_at": "2026-09-28T00:54:32+0900"
     },
     {
       "step": 10,
       "name": "real-repo-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-28T00:54:32+0900",
+      "summary": "e2e 한 줄기·문서: 신설 tests/e2e/test_real_repo.py 7건(selfhost 중앙 in-process·가짜 App+PR 경로(GET repo default_branch·GET/POST pulls·GET pulls/n, head 가 bare 에 없으면 422)·origin=임시 bare(원본 폴더 remote.origin.url=git@github.com:acme/billing.git + url.<bare>.insteadOf)·원본에만 deps/·127.0.0.1 알림 수신): 로그인→App 연결→알림 URL 저장→[러너 붙이기] 화면 명령에서 서버·코드 읽어 connector setup --tool codex --verify check --link deps --env CHECK_DB→자동 매칭→다른 클론에서 새 커밋 push→base_commit 보고(러너는 BASE_FETCH_INTERVAL_SECONDS=0.5 런처)→#1 맡기기→기준=새 커밋·검증이 링크 deps·CHECK_DB(해시) 봄→bare 에 task/<id>(부모=새 커밋)→검토 승인→초안 PR #101 Fixes #1→PR 확인 알림 1→병합→완료 'PR 병합'·metrics intake_to_merge n 1→#2 도구 직접 커밋 commit_mismatch→실패 알림 1, 비밀(연결 코드·러너 토큰·env 값·URL 경로·설치 토큰·키) DB 덤프(connect_codes 행 제외 — 기존 설계, used_at 확인)·산출물·로그·화면 7·PR·알림에 없음. e2e 가 드러낸 결함 수정(재현 테스트 먼저): masking sk- 패턴이 task-<12hex> 안의 sk- 를 가려 결과 봉투 task_id=task-*** → 모든 수정 결과 판정 실패(step 4 회귀, 낱말 경계 추가, test_masking), github_delivery 댓글이 branch_pushed=1 이면 'task/<id> 를 원격에 올렸습니다·초안 PR' (test_task_cycle), operator_github.html 상단 문구(PR·푸시 안 함 제거, test_web_github_connect), test_github_app e2e 가 origin=github.com 이라 러너가 실제 github.com 에 fetch/push 시도 → 원격 이름 upstream 으로(phase 11 동작 유지)·manifest 권한 단정 write. 문서: SELFHOST(App 권한 올리기 절·알림 절·6번 흐름·상태·알려진 한계), github/README(표·쓰기 요청·5절·10절·12절 초안 PR), CURRENT_HANDOFF(12 완료·실연동 준비 7항목), VERIFICATION_LOG(phase 12 대역 절+실연동 기록 틀), ARCHITECTURE 상태·댓글·sk- 메모, test_selfhost_files 절 목록. 검증: pytest 2918 passed/68 skipped, ruff 통과, WORKFLOW_E2E=1 e2e 67 passed/1 skipped. 다음 주의: exit 1 도구는 실패가 아니라 needs_information, 실제 github.com PR·Discord·launchd git 자격은 실연동에서 확인",
+      "completed_at": "2026-09-28T01:19:04+0900"
     }
-  ]
+  ],
+  "created_at": "2026-09-27T23:13:19+0900",
+  "completed_at": "2026-09-28T01:19:05+0900"
 }

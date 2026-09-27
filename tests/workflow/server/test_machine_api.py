@@ -1,10 +1,15 @@
 """machine_api.py — 연결 프로그램이 쓰는 중앙 API. CONTRACT 2절(claim)·3절(이벤트·오류표)·4절(산출물)."""
 
+import dataclasses
 import hashlib
 import json
 
+import pytest
+from fastapi.testclient import TestClient
+
 from workflow.adapters import repo
-from workflow.server.auth import utc_now
+from workflow.server.app import create_app
+from workflow.server.auth import SELFHOST_SESSION_ID, utc_now
 
 from .conftest import (
     BASE_COMMIT,
@@ -164,6 +169,39 @@ def test_claim_returns_only_own_assignments(client, seeded, connector):
     )
     assert other.status_code == 200
     assert other.json()["execution_id"] == EXEC_FIX
+
+
+def test_claim_registration_heads_update_only_own_agents_base_commit(client, seeded, connector, headers):
+    """CONTRACT 14.1 — 보고된 origin 기본 브랜치 커밋이 이 연결 프로그램 Agent 의 `base_commit` 이 된다."""
+    mine_id, _ = connector
+    other_id, other_token = exchange(client, seeded)
+    repo.update_registration(seeded, LOCAL_REGISTRATION, connector_id=mine_id, repository_id="demo-report-repo",
+                             base_commit=BASE_COMMIT, verification_profile_ids=[], discovered={}, now=utc_now())
+    latest = "7c1d9e2f4a6b8c0d1e3f5a7b9c2d4e6f8a0b1c3d"
+
+    def base() -> str:
+        return repo.get_agent(seeded, "agent-codex-mac")["base_commit"]
+
+    stolen = {"contract_version": 1, "connector_id": other_id, "registration_heads": {LOCAL_REGISTRATION: "e" * 40}}
+    assert client.post("/connector/claim", json=stolen, headers=bearer(other_token)).status_code == 204
+    assert base() == BASE_COMMIT  # 다른 연결 프로그램의 보고는 무시
+
+    body = {"contract_version": 1, "connector_id": mine_id,
+            "registration_heads": {LOCAL_REGISTRATION: latest, "local-unknown": "e" * 40}}
+    assert client.post("/connector/claim", json=body, headers=headers).status_code == 204
+    assert base() == latest
+
+    legacy = {"contract_version": 1, "connector_id": mine_id}  # 칸 없는 구버전 요청 — 이전 값 유지
+    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert base() == latest
+
+
+def test_claim_rejects_bad_registration_head(client, seeded, connector, headers):
+    connector_id, _ = connector
+    for bad in ("E" * 40, "e" * 39, "main"):
+        body = {"contract_version": 1, "connector_id": connector_id, "registration_heads": {LOCAL_REGISTRATION: bad}}
+        response = client.post("/connector/claim", json=body, headers=headers)
+        assert response.status_code == 422, bad
 
 
 # --- 이벤트 (CONTRACT 3절) ----------------------------------------------------
@@ -513,7 +551,7 @@ def test_registration_updates_preregistered_agent(client, seeded, connector, hea
     connector_id, _ = connector
     response = client.post("/connector/registrations", json=_registration(connector_id), headers=headers)
     assert response.status_code == 200
-    assert response.json() == {"agent_id": "agent-codex-mac"}
+    assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
     agent = repo.get_agent(seeded, "agent-codex-mac")
     assert agent["connector_id"] == connector_id
     assert agent["repository_id"] == "demo-report-repo"
@@ -551,7 +589,7 @@ def test_registration_accepts_claude_tool(client, seeded, connector, headers):
     connector_id, _ = connector
     response = client.post("/connector/registrations", json=_registration(connector_id, tool="claude"), headers=headers)
     assert response.status_code == 200
-    assert response.json() == {"agent_id": "agent-codex-mac"}
+    assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
     agent = repo.get_agent(seeded, "agent-codex-mac")
     assert agent["connector_id"] == connector_id
     assert agent["connection_state"] == "online"
@@ -571,6 +609,109 @@ def test_registration_rejects_short_commit(client, connector, headers):
     response = client.post("/connector/registrations", json=_registration(connector_id, base_commit="3f9c2e1"), headers=headers)
     assert response.status_code == 422
     assert response.json()["field"] == "base_commit"
+
+
+
+# --- 러너 등록이 Agent 를 만든다 (phase 12 step 1, ADR-0018 결정 1 · CONTRACT 14.3·14.4) ---
+
+OPEN_ARCHIVE = {
+    "local_registration_id": "OpenArchive",
+    "agent_name": "OpenArchive",
+    "tool": "claude",
+    "repository_id": "jeongeundev/OpenArchive",
+    "verification_profile_ids": ["vp-check"],
+    "discovered": {"found": {"github_repository": "jeongeundev/OpenArchive"}, "not_read": []},
+}
+
+
+@pytest.fixture
+def selfhost(settings, conn):
+    """같은 DB 를 selfhost 모드로 여는 클라이언트와 그 클라이언트로 교환한 연결 프로그램."""
+    client = TestClient(create_app(dataclasses.replace(settings, mode="selfhost")))
+    connector_id, token = exchange(client, conn)
+    return client, connector_id, bearer(token)
+
+
+def test_selfhost_registration_creates_agent_for_unknown_name(selfhost, conn):
+    client, connector_id, headers = selfhost
+
+    response = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
+                           headers=headers)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["created"] is True and set(body) == {"agent_id", "created"}
+    agent = repo.get_agent(conn, body["agent_id"])
+    assert agent["name"] == "OpenArchive"
+    assert json.loads(agent["capabilities_json"]) == [
+        {"code": "code.fix", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+        {"code": "code.review", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+    ]
+    assert (agent["connector_id"], agent["repository_id"], agent["base_commit"]) == (
+        connector_id, "jeongeundev/OpenArchive", BASE_COMMIT)
+    assert json.loads(agent["verification_profile_ids_json"]) == ["vp-check"]
+    assert json.loads(agent["discovered_json"])["found"]["github_repository"] == "jeongeundev/OpenArchive"
+    assert agent["connection_state"] == "online"
+    assert repo.is_session_agent(conn, SELFHOST_SESSION_ID, body["agent_id"])
+
+
+def test_selfhost_registration_twice_is_idempotent(selfhost, conn):
+    client, connector_id, headers = selfhost
+    first = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
+
+    second = client.post("/connector/registrations",
+                         json=_registration(connector_id, **{**OPEN_ARCHIVE, "base_commit": "a" * 40}), headers=headers)
+
+    assert second.status_code == 200
+    assert second.json() == {"agent_id": first.json()["agent_id"], "created": False}
+    assert [a["agent_id"] for a in repo.list_agents(conn) if a["local_registration_id"] == "OpenArchive"] == [
+        first.json()["agent_id"]]
+    assert repo.get_agent(conn, first.json()["agent_id"])["base_commit"] == "a" * 40
+
+
+def test_selfhost_registration_of_preregistered_agent_keeps_existing_behavior(selfhost, seeded):
+    client, connector_id, headers = selfhost
+    before = len(repo.list_agents(seeded))
+
+    response = client.post("/connector/registrations", json=_registration(connector_id), headers=headers)
+
+    assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
+    assert len(repo.list_agents(seeded)) == before
+
+
+def test_selfhost_registration_name_used_by_another_connector_409(selfhost, conn):
+    client, connector_id, headers = selfhost
+    first = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
+    other_id, other_token = exchange(client, conn)
+
+    response = client.post("/connector/registrations", json=_registration(other_id, **OPEN_ARCHIVE),
+                           headers=bearer(other_token))
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "registration_taken"
+    assert response.json()["field"] == "local_registration_id"
+    assert repo.get_agent(conn, first.json()["agent_id"])["connector_id"] == connector_id
+
+
+def test_demo_registration_of_unknown_name_is_still_404(client, connector, headers):
+    connector_id, _ = connector
+
+    response = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
+                           headers=headers)
+
+    assert response.status_code == 404
+    assert response.json()["field"] == "local_registration_id"
+
+
+def test_registration_agent_name_is_limited_to_100_chars(selfhost):
+    client, connector_id, headers = selfhost
+
+    response = client.post("/connector/registrations",
+                           json=_registration(connector_id, **{**OPEN_ARCHIVE, "agent_name": "x" * 101}),
+                           headers=headers)
+
+    assert response.status_code == 422
+    assert response.json()["field"] == "agent_name"
 
 
 # --- 측정 칸 (phase 9 step 4, ADR-0015) ------------------------------------------
@@ -597,6 +738,39 @@ def test_events_with_measure_fields_store_folder_commit_and_usage(client, header
     # 같은 seq 재전송은 값을 바꾸지 않는다
     assert _post_event(client, headers, exec_fix, ready).status_code == 200
     assert _measure(seeded, exec_fix) == (FOLDER_COMMIT, 1, 0.25, 1200, None)
+
+
+def _result_ready_data(conn, execution_id) -> dict:
+    row = conn.execute(
+        "SELECT data_json FROM execution_events WHERE execution_id = ? AND type = 'result_ready'", (execution_id,)
+    ).fetchone()
+    return json.loads(row["data_json"])
+
+
+@pytest.mark.parametrize("pushed", [True, False])
+def test_result_ready_branch_pushed_is_stored(client, headers, exec_fix, seeded, pushed):
+    """ADR-0018 결정 4: 러너의 push 결과는 실행의 result_ready 기록에 남는다 (executions 칸은 스키마 v8, step 6)."""
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 1, "accepted", {})).status_code == 200
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 2, "started", {"runtime_ref": "pid:1"})).status_code == 200
+    artifact_id = _upload(client, headers, exec_fix, b"diff --git a/x b/x\n").json()["artifact_id"]
+    ready = event(exec_fix, 3, "result_ready", {"result_artifact_id": artifact_id, "branch_pushed": pushed})
+
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200  # 같은 seq 재전송
+
+    assert _result_ready_data(seeded, exec_fix)["branch_pushed"] is pushed
+    assert repo.get_execution(seeded, exec_fix)["status"] == "result_ready"
+
+
+def test_result_ready_without_branch_pushed_from_old_runner_is_accepted(client, headers, exec_fix, seeded):
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 1, "accepted", {})).status_code == 200
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 2, "started", {"runtime_ref": "pid:1"})).status_code == 200
+    artifact_id = _upload(client, headers, exec_fix, b"diff --git a/x b/x\n").json()["artifact_id"]
+
+    ready = event(exec_fix, 3, "result_ready", {"result_artifact_id": artifact_id})
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200
+
+    assert "branch_pushed" not in _result_ready_data(seeded, exec_fix)
 
 
 def test_events_without_measure_fields_keep_null(client, headers, running, seeded):

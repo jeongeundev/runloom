@@ -30,9 +30,12 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     finish_review,
     import_issue,
     make_worker,
+    pr_github,
+    pr_worker,
     review_tasks,
     worker,
 )
+from .test_task_cycle import _approved
 
 TOKEN = "ghp_uiTestSecretValue123"
 
@@ -358,3 +361,30 @@ def test_fixture_import_is_marked_as_demo_data_not_a_real_issue(client, conn, se
     text = client.get(f"/tasks/{task['task_id']}").text
     assert "시연 데이터" in text
     assert "실제 GitHub 이슈" not in text
+
+
+
+# --- 초안 PR (phase 12 step 6) ----------------------------------------------------------------------
+
+
+def test_open_pr_shows_human_turn_and_the_pr_link_then_done_after_merge(operator, conn, store, pr_worker, pr_github,
+                                                                        clock):
+    fix_task, _ = _approved(conn, store, pr_worker)
+
+    text = page(operator, f"/tasks/{fix_task}")
+    assert "사람 차례 · PR 확인" in text
+    assert 'href="https://github.com/acme/billing/pull/31"' in text
+    assert 'data-pull-request="open"' in text
+    assert "사람 차례 · PR 확인" in page(operator, "/tasks")
+
+    pr_github.merge(31)
+    clock.now = "2026-10-06T13:00:00Z"
+    pr_worker.tick()
+    text = page(operator, f"/tasks/{fix_task}")
+    assert 'data-pull-request="merged"' in text and "PR 병합" in text
+
+
+def test_task_without_pr_has_no_pr_line(operator, conn, worker):
+    task_id = import_issue(conn, 1)
+    worker.tick()
+    assert "data-pull-request" not in page(operator, f"/tasks/{task_id}")

@@ -429,7 +429,7 @@ def test_build_manifest_has_minimal_permissions_and_no_webhook():
         "setup_url": "http://127.0.0.1:8000/operator/github/app/setup",
         "setup_on_update": True,
         "public": False,
-        "default_permissions": {"issues": "write", "pull_requests": "read", "metadata": "read"},
+        "default_permissions": {"issues": "write", "pull_requests": "write", "metadata": "read"},
         "default_events": [],
     }
     assert "contents" not in manifest["default_permissions"]

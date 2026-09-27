@@ -78,6 +78,12 @@
   </ul>
   {% endif %}
 
+  {% if cycle.pull_request %}
+  {% set pr = cycle.pull_request %}
+  <p data-pull-request="{{ pr.state }}"><strong>{{ pr.label }}</strong>{% if pr.url %} · <a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pr.number }}</a>{% if pr.draft %} (초안){% endif %}{% endif %}{% if pr.state == 'pending' and pr.attempts %} · 시도 {{ pr.attempts }}회{% endif %}
+    <span class="small">· 병합·이슈 종료는 사람만 합니다</span></p>
+  {% endif %}
+
   {% if cycle.origin and cycle.origin.own %}
   {% set d = cycle.delivery %}
   <p class="small" data-delivery="{{ d.state if d else 'none' }}">GitHub 반영: {% if d %}<strong>{{ d.label }}</strong> · 시도 {{ d.attempts }}회 · 본문 revision {{ d.body_revision }}{% if d.comment_url %} · <a href="{{ d.comment_url }}" rel="noopener noreferrer" target="_blank">댓글</a>{% endif %}{% if d.last_error %} · {{ d.last_error }}{% endif %}{% else %}아직 없음 (실행·사람 요청이 생기면 댓글 하나를 만들고 고쳐 씁니다){% endif %}</p>

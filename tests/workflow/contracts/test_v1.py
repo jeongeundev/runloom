@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 53개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 59개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -53,7 +53,7 @@ from workflow.contracts.v1 import (
     parse_rfc3339_aware,
 )
 from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig, SourceDelivery
-from workflow.server.machine_api import RegistrationRequest
+from workflow.server.machine_api import RegistrationRequest, RegistrationResponse
 
 CONTRACT_MD = Path(__file__).resolve().parents[3] / "docs" / "CONTRACT.md"
 
@@ -70,6 +70,7 @@ _SIGNATURES = [
         ClaimRequest,
     ),
     ("RegistrationRequest", lambda k: {"local_registration_id", "tool"} <= k, RegistrationRequest),
+    ("RegistrationResponse", lambda k: k == {"agent_id", "created"}, RegistrationResponse),
     ("HandoffBundle", lambda k: "source_execution_id" in k and "reviewed_commit" not in k, HandoffBundle),
     ("ExecutionEvent", lambda k: {"seq", "type"} <= k, ExecutionEvent),
     ("ArtifactMeta", lambda k: {"kind", "sha256", "size", "contract_version"} <= k, ArtifactMeta),
@@ -119,7 +120,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 53
+    assert len(FENCED) == 59
     assert len(INLINE) == 8
 
 
@@ -245,6 +246,17 @@ def test_rejects_unknown_field():
     block["extra"] = 1
     with pytest.raises(ValidationError):
         ClaimRequest.model_validate(block)
+
+
+def test_claim_registration_heads_are_optional_commit_shas():
+    block = _first("ClaimRequest")
+    assert ClaimRequest.model_validate(block).registration_heads is None
+    heads = ClaimRequest.model_validate({**block, "registration_heads": {"OpenArchive": "a" * 40}})
+    assert heads.registration_heads == {"OpenArchive": "a" * 40}
+    for bad in ({"OpenArchive": "A" * 40}, {"OpenArchive": "a" * 39}, {"": "a" * 40},
+                {f"reg-{i}": "a" * 40 for i in range(51)}):
+        with pytest.raises(ValidationError):
+            ClaimRequest.model_validate({**block, "registration_heads": bad})
 
 
 def test_rejects_unsupported_contract_version():
@@ -413,6 +425,24 @@ def test_measure_fields_serialize_when_present():
     usage = {"cost_usd": None, "input_tokens": 3, "output_tokens": None}
     ready = ExecutionEvent.model_validate(_event("result_ready", {"result_artifact_id": "a", "usage": usage}))
     assert ready.data.model_dump(mode="json")["usage"] == usage
+
+
+def test_result_ready_accepts_branch_pushed_and_omits_it_when_unknown():
+    """ADR-0018 결정 4: push 결과는 선택 칸 — 칸 없는 옛 러너 이벤트도 받고, 모르면 직렬화에서 뺀다."""
+    for value in (True, False):
+        event = ExecutionEvent.model_validate(
+            _event("result_ready", {"result_artifact_id": "a", "branch_pushed": value})
+        )
+        assert event.data.branch_pushed is value
+        assert event.data.model_dump(mode="json")["branch_pushed"] is value
+    old = ExecutionEvent.model_validate(_event("result_ready", {"result_artifact_id": "a"}))
+    assert old.data.branch_pushed is None
+    assert "branch_pushed" not in old.data.model_dump()
+
+
+def test_result_ready_rejects_non_bool_branch_pushed():
+    with pytest.raises(ValidationError):
+        ExecutionEvent.model_validate(_event("result_ready", {"result_artifact_id": "a", "branch_pushed": "yes"}))
 
 
 def test_measure_fields_rejected_on_other_event_types():
@@ -1420,7 +1450,7 @@ def test_claim_request_supported_kinds_optional_for_old_connectors():
     new = next(b for b in FENCED if _model_for(b) is ClaimRequest and "supported_kinds" in b)
     parsed = ClaimRequest.model_validate(new)
     assert parsed.supported_kinds == ["code_change", "bug_fix", "code_review"]
-    assert parsed.model_dump(mode="json") == new
+    assert parsed.model_dump(mode="json", exclude_none=True) == new
 
 
 @pytest.mark.parametrize(

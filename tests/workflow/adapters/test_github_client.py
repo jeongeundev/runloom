@@ -15,13 +15,14 @@ from workflow.adapters.github_client import (
     GitHubRateLimited,
     GitHubRepositoryNotAllowed,
     GitHubUnavailable,
+    GitHubUnprocessable,
     HttpGitHubClient,
     IssueComment,
     IssueCursor,
     IssuePage,
     InstallationTokenProvider,
 )
-from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink
+from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink, PullRequestRef
 
 TOKEN = "github_pat_11TESTSECRETVALUE0123456789"
 REPO = "acme/app"
@@ -712,3 +713,119 @@ def test_allowed_repos_can_be_installation_repositories():
     assert client.get_issue(REPO, 1).number == 1
     with pytest.raises(GitHubRepositoryNotAllowed, match="허용 저장소"):
         client.get_issue("acme/other", 1)
+
+
+# ── 초안 PR (phase 12 step 6, ADR-0018 결정 4) ─────────────────────────────
+
+PULLS = f"/repos/{REPO}/pulls"
+
+
+def _pull(number: int = 31, **overrides) -> dict:
+    item = {
+        "number": number, "html_url": f"https://github.com/{REPO}/pull/{number}", "state": "open",
+        "draft": True, "merged_at": None, "head": {"ref": "task/task-1"}, "base": {"ref": "main"},
+    }
+    item.update(overrides)
+    return item
+
+
+def _unprocessable(message: str, *errors: str) -> httpx.Response:
+    return httpx.Response(422, json={"message": message, "errors": [{"message": e} for e in errors]})
+
+
+def _create_args(**overrides) -> dict:
+    return {"head": "task/task-1", "base": "main", "title": "쿠폰 중복", "body": "Fixes #7\n요약", "draft": True,
+            **overrides}
+
+
+def test_default_branch_reads_the_repository():
+    rec = Recorder({("GET", f"/repos/{REPO}"): httpx.Response(200, json={**REPO_JSON, "default_branch": "trunk"})})
+    assert _client(rec).default_branch(REPO) == "trunk"
+
+
+def test_default_branch_missing_is_a_format_error():
+    rec = Recorder({})
+    with pytest.raises(GitHubError, match="응답 형식 오류"):
+        _client(rec).default_branch(REPO)
+
+
+def test_create_pull_request_posts_head_base_draft_and_body():
+    rec = Recorder({("POST", PULLS): httpx.Response(201, json=_pull())})
+    pr = _client(rec).create_pull_request(REPO, **_create_args())
+    assert pr == PullRequestRef(number=31, html_url=f"https://github.com/{REPO}/pull/31", state="open", draft=True,
+                                merged_at=None)
+    (call,) = rec.calls
+    body = json.loads(call.content)
+    assert body == {"head": "task/task-1", "base": "main", "title": "쿠폰 중복", "body": "Fixes #7\n요약",
+                    "draft": True}
+    assert body["body"].startswith("Fixes #7")
+
+
+def test_create_pull_request_existing_head_returns_the_existing_pr():
+    def pulls(request):
+        assert _query(request) == {"head": "acme:task/task-1", "state": "all", "per_page": "100"}
+        return httpx.Response(200, json=[_pull(40, draft=False)])
+
+    rec = Recorder({
+        ("POST", PULLS): _unprocessable("Validation Failed", "A pull request already exists for acme:task/task-1."),
+        ("GET", PULLS): pulls,
+    })
+    pr = _client(rec).create_pull_request(REPO, **_create_args())
+    assert (pr.number, pr.draft) == (40, False)
+    assert [c.method for c in rec.calls] == ["POST", "GET"]
+
+
+def test_create_pull_request_retries_without_draft_when_drafts_are_unsupported():
+    answers = iter([
+        _unprocessable("Validation Failed", "Draft pull requests are not supported in this repository."),
+        httpx.Response(201, json=_pull(32, draft=False)),
+    ])
+    rec = Recorder({("POST", PULLS): lambda request: next(answers)})
+    pr = _client(rec).create_pull_request(REPO, **_create_args())
+    assert (pr.number, pr.draft) == (32, False)
+    assert [json.loads(c.content)["draft"] for c in rec.calls] == [True, False]
+
+
+def test_create_pull_request_other_422_without_existing_pr_is_unprocessable():
+    rec = Recorder({
+        ("POST", PULLS): _unprocessable("Validation Failed", "No commits between main and task/task-1"),
+        ("GET", PULLS): httpx.Response(200, json=[]),
+    })
+    with pytest.raises(GitHubUnprocessable) as info:
+        _client(rec).create_pull_request(REPO, **_create_args())
+    assert str(info.value) == f"POST {PULLS}: HTTP 422"  # 본문은 메시지에 싣지 않는다
+    assert "No commits" in info.value.message
+
+
+def test_create_pull_request_403_is_forbidden():
+    rec = Recorder({("POST", PULLS): httpx.Response(403, json={"message": "Resource not accessible by integration"})})
+    with pytest.raises(GitHubForbidden) as info:
+        _client(rec).create_pull_request(REPO, **_create_args())
+    assert str(info.value) == f"POST {PULLS}: HTTP 403"
+
+
+def test_find_pull_request_takes_the_newest_or_none():
+    rec = Recorder({("GET", PULLS): httpx.Response(200, json=[_pull(41, state="closed"), _pull(40)])})
+    assert _client(rec).find_pull_request(REPO, "task/task-1").number == 41
+    rec = Recorder({("GET", PULLS): httpx.Response(200, json=[])})
+    assert _client(rec).find_pull_request(REPO, "task/task-1") is None
+
+
+def test_get_pull_request_reports_merge():
+    merged = _pull(31, state="closed", draft=False, merged_at="2026-10-06T12:00:00Z")
+    rec = Recorder({("GET", f"{PULLS}/31"): httpx.Response(200, json=merged)})
+    pr = _client(rec).get_pull_request(REPO, 31)
+    assert (pr.state, pr.merged_at) == ("closed", "2026-10-06T12:00:00Z")
+
+
+def test_pull_request_bad_shape_is_a_format_error():
+    rec = Recorder({("GET", f"{PULLS}/31"): httpx.Response(200, json={"number": 31})})
+    with pytest.raises(GitHubError, match="응답 형식 오류"):
+        _client(rec).get_pull_request(REPO, 31)
+
+
+def test_pull_request_calls_stay_inside_allowed_repositories():
+    rec = Recorder({})
+    with pytest.raises(GitHubRepositoryNotAllowed):
+        _client(rec).create_pull_request("acme/other", **_create_args())
+    assert rec.calls == []

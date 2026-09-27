@@ -413,3 +413,12 @@ def test_without_match_input_assignee_blockers_are_unchanged():
     assert _codes(evaluate_readiness(_fix(assignee_ids=()))) == ["assignee_missing"]
     assert _codes(evaluate_readiness(_fix(assignee_ids=(101, 102)))) == ["assignee_multiple"]
     assert _codes(evaluate_readiness(_fix(assignee_ids=(999,)))) == ["assignee_unbound"]
+
+
+def test_review_by_the_fix_agent_itself_is_ready():
+    """ADR-0018 결정 1: 수정과 검토를 같은 Agent 가 맡는다(실행·worktree 는 따로). 짝 검사는 자기 자신이라 통과한다."""
+    both = Candidate(agent_id="agent-a", capabilities=(FIX_A, REVIEW_A))
+
+    readiness = evaluate_readiness(_review(candidates=(both,), chosen_agent_id="agent-a", pair_agent_id="agent-a"))
+
+    assert readiness == TaskReadiness(ready=True, blockers=(), agent_id="agent-a")

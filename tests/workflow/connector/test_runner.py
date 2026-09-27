@@ -498,6 +498,51 @@ def test_progress_messages_are_masked(fake, client, state_conn, paths, tmp_path)
     assert any("sk-***" in m for m in messages) and all(secret not in m for m in messages)
 
 
+def _register_env(state_conn, tmp_path, env: dict[str, str]) -> None:
+    registration = state.get_registration(state_conn, "local-demo-report")
+    state.save_registration(state_conn, {**registration, "env": env})
+
+
+DB_URL = "postgresql://agent:pw-local-5434@localhost:5434/openarchive"
+
+
+def test_registered_env_values_are_masked_in_artifacts_progress_and_result(fake, client, state_conn, paths, tmp_path):
+    """러너 로컬 등록의 `--env` 값(8자 이상)은 산출물·진행 메시지·결과 봉투에서 `<env:이름>` 으로 가린다."""
+    request = assign_with_handoff(fake)
+    log = make_meta("verification_log", "verify.txt", f"exit_code=1\nconnect {DB_URL} refused\n".encode(), "text/plain")
+    output = ok_output(request, extra_artifacts=[log])
+    output = AdapterOutput(
+        result=output.result.model_copy(update={"summary": f"DB {DB_URL} 로 테스트"}), artifacts=output.artifacts,
+        failed=None, runtime_ref="stub:x",
+    )
+    runner = make_runner(client, state_conn, paths, StubAdapter(output=output, during=lambda p: p(f"DB {DB_URL}")),
+                         tmp_path)
+    _register_env(state_conn, tmp_path, {"DATABASE_URL": DB_URL, "DEBUG": "1"})
+
+    runner.tick()
+
+    dumped = json.dumps([a["data"].decode("utf-8", "replace") for a in fake.artifacts.values()])
+    assert DB_URL not in dumped and "<env:DATABASE_URL>" in dumped
+    assert "<env:DEBUG>" not in dumped  # 짧은 값은 가리지 않는다
+    events = fake.events_of(request.execution_id)
+    assert DB_URL not in json.dumps(events, ensure_ascii=False)
+    assert any("<env:DATABASE_URL>" in e["data"].get("message", "") for e in events if e["type"] == "progress")
+    assert events[-1]["type"] == "result_ready"
+
+
+def test_registered_env_values_are_masked_in_failed_message(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    output = AdapterOutput(result=None, artifacts=[], failed=("adapter_error", f"연결 실패 {DB_URL}", True),
+                           runtime_ref="stub:x")
+    runner = make_runner(client, state_conn, paths, StubAdapter(output=output), tmp_path)
+    _register_env(state_conn, tmp_path, {"DATABASE_URL": DB_URL})
+
+    runner.tick()
+
+    failed = fake.events_of(request.execution_id)[-1]
+    assert failed["type"] == "failed" and failed["data"]["message"] == "연결 실패 <env:DATABASE_URL>"
+
+
 # --- 작업 디렉터리 정리 — 결과가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지우고 브랜치·커밋은 남긴다 ----------
 
 
@@ -1120,3 +1165,181 @@ def test_no_event_carries_registered_folder_path(fake, client, state_conn, paths
     dumped = json.dumps(fake.events_of(request.execution_id), ensure_ascii=False)
     assert "folder_commit" in dumped and "usage" in dumped
     assert str(repo) not in dumped and str(repo.resolve()) not in dumped and REPO not in dumped
+
+
+# --- 기준 커밋 보고 (phase 12 step 3, ADR-0018 결정 2) --------------------------------------
+
+
+class FakeFetch:
+    """`git_ops.fetch_origin`·`origin_head` 대역. `heads` 에 없는 저장소는 fetch 가 실패한다."""
+
+    def __init__(self, heads: dict[str, str]):
+        self.heads = heads
+        self.fetched: list[str] = []
+
+    def fetch_origin(self, repo):
+        self.fetched.append(Path(repo).name)
+        if Path(repo).name not in self.heads:
+            raise GitError("git fetch --quiet origin: 연결 실패")
+
+    def origin_head(self, repo):
+        return self.heads.get(Path(repo).name)
+
+
+def _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, heads):
+    fetch = FakeFetch(heads)
+    monkeypatch.setattr(git_ops, "fetch_origin", fetch.fetch_origin)
+    monkeypatch.setattr(git_ops, "origin_head", fetch.origin_head)
+    for reg_id in ("reg-ok", "reg-broken"):
+        state.save_registration(state_conn, {
+            "local_registration_id": reg_id, "repo_path": str(tmp_path / reg_id), "tool": "stub",
+            "repository_id": REPO, "base_commit": BASE_COMMIT, "verification_profiles": {},
+        })
+    runner = Runner(client, state_conn, paths, {"stub": StubAdapter()}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+    return runner, fetch
+
+
+def test_claim_reports_fetched_origin_heads_and_skips_failed_registrations(
+    fake, client, state_conn, paths, tmp_path, monkeypatch, caplog,
+):
+    runner, fetch = _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, {"reg-ok": "e" * 40})
+    caplog.set_level(logging.INFO, logger="workflow.connector.runner")
+
+    runner.tick()
+
+    assert sorted(fetch.fetched) == ["reg-broken", "reg-ok"]
+    assert fake.claim_bodies[-1]["registration_heads"] == {"reg-ok": "e" * 40}
+    assert "reg-broken" in caplog.text  # 실패는 로그에만
+
+
+def test_fetch_is_not_repeated_within_the_interval_but_heads_are_resent(
+    fake, client, state_conn, paths, tmp_path, monkeypatch,
+):
+    runner, fetch = _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, {"reg-ok": "e" * 40})
+    runner.tick()
+    fetch.heads["reg-ok"] = "f" * 40
+
+    runner.tick()
+
+    assert len(fetch.fetched) == 2  # 두 번째 tick 은 fetch 하지 않는다
+    assert fake.claim_bodies[-1]["registration_heads"] == {"reg-ok": "e" * 40}
+
+    monkeypatch.setattr("workflow.connector.runner.BASE_FETCH_INTERVAL_SECONDS", 0)
+    runner.tick()
+
+    assert len(fetch.fetched) == 4
+    assert fake.claim_bodies[-1]["registration_heads"] == {"reg-ok": "f" * 40}
+
+
+def test_claim_without_any_head_omits_the_field(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    runner, _ = _fetch_runner(monkeypatch, client, state_conn, paths, tmp_path, {})
+
+    runner.tick()
+
+    assert "registration_heads" not in fake.claim_bodies[-1]
+
+
+def test_claim_reports_the_real_origin_default_branch_after_upstream_push(fake, client, state_conn, paths, tmp_path):
+    def git(cwd, *args):
+        return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd,
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "init", "-q", "-b", "main")
+    (seed / "a.txt").write_text("1\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "base")
+    git(tmp_path, "clone", "-q", "--bare", str(seed), str(tmp_path / "origin.git"))
+    git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(tmp_path / "OpenArchive"))
+    (seed / "a.txt").write_text("2\n")
+    git(seed, "commit", "-q", "-am", "upstream")
+    git(seed, "push", "-q", str(tmp_path / "origin.git"), "main")
+    state.save_registration(state_conn, {
+        "local_registration_id": "OpenArchive", "repo_path": str(tmp_path / "OpenArchive"), "tool": "stub",
+        "repository_id": "jeongeundev/OpenArchive", "base_commit": BASE_COMMIT, "verification_profiles": {},
+    })
+    runner = Runner(client, state_conn, paths, {"stub": StubAdapter()}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    assert fake.claim_bodies[-1]["registration_heads"] == {"OpenArchive": git(seed, "rev-parse", "HEAD")}
+
+
+# --- 결과 브랜치 push (ADR-0018 결정 4, phase 12 step 5) ------------------------------------------------
+
+
+def _with_bare_origin(repo: Path, tmp_path) -> Path:
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(repo), str(bare))
+    _git(repo, "remote", "add", "origin", str(bare))
+    return bare
+
+
+def test_fix_result_pushes_task_branch_and_reports_branch_pushed(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    bare = _with_bare_origin(repo, tmp_path)
+    main_before = _git(bare, "rev-parse", "main")
+    request = assign_with_handoff(fake)
+    adapter = WorktreeAdapter(repo)
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready" and events[-1]["data"]["branch_pushed"] is True
+    assert _git(bare, "rev-parse", f"refs/heads/task/{request.task_id}") == adapter.result_commit
+    assert _git(bare, "rev-parse", "main") == main_before
+
+
+def test_fix_result_push_failure_still_reports_result_ready(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    bare = _with_bare_origin(repo, tmp_path)
+    modes = {p: p.stat().st_mode for p in [bare, *bare.rglob("*")]}
+    for p in modes:
+        p.chmod(modes[p] & ~0o222)  # origin 쓰기 불가
+    request = assign_with_handoff(fake)
+    try:
+        make_runner(client, state_conn, paths, WorktreeAdapter(repo), tmp_path).tick()
+    finally:
+        for p, mode in modes.items():
+            p.chmod(mode)
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready" and events[-1]["data"]["branch_pushed"] is False
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    result = CodeChangeResult.model_validate_json(fake.artifacts_of(request.execution_id)["code_change_result"]["data"])
+    assert result.outcome == "ready_for_review"
+
+
+def test_fix_result_without_origin_omits_branch_pushed(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    pushed: list = []
+    monkeypatch.setattr(git_ops, "push_task_branch", lambda *a: pushed.append(a) or True)
+
+    make_runner(client, state_conn, paths, WorktreeAdapter(repo), tmp_path).tick()
+
+    assert "branch_pushed" not in fake.events_of(request.execution_id)[-1]["data"]
+    assert pushed == []
+
+
+def test_code_review_does_not_push(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    repo = make_git_repo(tmp_path)
+    _with_bare_origin(repo, tmp_path)
+    base = git_ops.head_sha(repo)
+    worktree = git_ops.ensure_worktree(repo, "task-gh-41", base)
+    (worktree / "pkg.py").write_text("X = 2\n")
+    result_commit = git_ops.commit_all(worktree, "fix")
+    git_ops.remove_worktree(repo, worktree)
+    register(state_conn, tmp_path, "local-billing-claude", tool="claude")
+    request = assign_with_generic_handoff(fake, make_review_request(base, result_commit))
+    pushed: list = []
+    monkeypatch.setattr(git_ops, "push_task_branch", lambda *a: pushed.append(a) or True)
+    runner = Runner(client, state_conn, paths, {"claude": StubAdapter(output=review_output(request))}, CONNECTOR_ID,
+                    lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready" and "branch_pushed" not in events[-1]["data"]
+    assert pushed == []

@@ -65,37 +65,40 @@ deploy/selfhost/install.sh
 
 ## 러너 연결
 
-러너는 컨테이너가 아니라 호스트 Mac 에서 돈다 — `claude`·`codex` 로그인과 작업 폴더가 호스트에 있기 때문이다. 순서는 연결 코드 → connect → register → install-runner.
+러너는 컨테이너가 아니라 호스트 Mac 에서 돈다 — `claude`·`codex` 로그인과 작업 폴더가 호스트에 있기 때문이다. 저장소를 연결한 뒤([GitHub 연결](#github-연결)) 저장소 카드에서 붙인다.
 
-1. **연결 코드** — 로그인한 화면에서 `/operator` → `연결 코드 발급`. 1회용, 10분 유효.
-2. **패키지 설치** — 호스트 `python3` 에 이 저장소를 설치한다(install-runner.sh 도 같은 설치를 한다).
-
-   ```bash
-   python3 -m pip install -e .
-   ```
-
-3. **connect** — 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다.
+1. **[러너 붙이기]** — `/operator/github` 의 저장소 카드에 `이 저장소를 등록한 러너 없음` 과 [러너 붙이기] 버튼이 보인다. 누르면 그 카드에 명령 한 줄이 나온다. 연결 코드가 들어 있고 1회용·10분 유효다(지나면 [다시 발급]).
 
    ```bash
-   python3 -m workflow.connector connect --server http://127.0.0.1:8000 --code <연결 코드>
+   deploy/selfhost/install-runner.sh --server http://127.0.0.1:8000 --code <연결 코드> --repo <이 저장소를 클론한 폴더>
    ```
 
-4. **register** — 작업 폴더와 도구를 이 Mac 에 등록한다. 폴더마다, 도구마다 한 번. 검증 명령(`--verify 이름=명령`)은 이 Mac 의 로컬 상태에만 저장되고 서버에는 이름만 보고된다.
+2. **실행** — Runloom 을 설치한 폴더(이 저장소)에서 `<이 저장소를 클론한 폴더>` 만 바꿔 실행한다. 스크립트가 순서대로: 패키지 설치(`pip install -e`) → `python3 -m workflow.connector setup`(연결 + 저장소 등록 — 등록 이름=폴더 이름, 저장소=`origin` 의 GitHub owner/name, 도구=PATH 의 `claude`, 없으면 `codex`) → launchd 적재(라벨 `com.workflow.selfhost.connector`, 로그 `~/Library/Logs/workflow-connector-selfhost/`). 로그인 때 자동 시작되고 꺼지면 다시 뜬다. 서버가 수정·검토 Agent 를 알아서 만든다.
+3. **확인** — 카드를 새로고침하면 러너 매칭에 로컬 저장소·수정 Agent·검토 Agent 가 `(자동)` 으로 보인다.
 
-   ```bash
-   python3 -m workflow.connector register --id <등록 id> --repo <작업 폴더> --repository-id <저장소 id> --tool claude
-   python3 -m workflow.connector register --id <등록 id> --repo <작업 폴더> --repository-id <저장소 id> --tool codex --verify "vp-pytest=python3 -m pytest -q"
-   ```
+명령 끝에 등록 옵션을 더할 수 있다 — 스크립트가 setup 에 그대로 넘긴다:
 
-5. **install-runner** — launchd 에 러너를 올린다. 로그인 때 자동 시작되고 꺼지면 다시 뜬다(라벨 `com.workflow.selfhost.connector`, 로그 `~/Library/Logs/workflow-connector-selfhost/`).
+- `--tool claude|codex` — 도구를 고른다.
+- `--verify 이름=명령` — 검증 프로필. 수정 업무에는 하나 있어야 한다. 명령은 이 Mac 에만 저장되고 서버에는 이름만 보고된다.
+- `--link 경로` — worktree 에 원본 폴더로 심볼릭 링크할 git 무시 대상(예: `--link backend/.venv --link frontend/node_modules`).
+- `--env 이름=값` — 검증·도구 프로세스 환경에 더할 값(예: 에이전트 전용 테스트 DB 주소). 값은 이 Mac 의 러너 상태에만 저장된다.
 
-   ```bash
-   deploy/selfhost/install-runner.sh
-   ```
+연결 코드와 `--env` 값은 plist·스크립트 출력에 쓰지 않는다(`DRY_RUN=1` 도 `***` 로 가린다). 명령행 인자라 실행하는 동안 같은 Mac 의 `ps` 에는 보인다. `DRY_RUN=1` 은 할 일과 plist 내용만 보여 준다. setup 이 실패하면(코드 만료·서버 주소 틀림) launchd 에 적재하지 않고 종료 코드 1 — 카드에서 [다시 발급] 뒤 다시 실행한다. 이미 붙은 저장소를 다른 폴더·Mac 으로 옮길 때는 카드의 고급 설정 → [러너 다시 붙이기].
 
-   연결 토큰 파일이 없으면 plist 만 쓰고 적재하지 않는다 — 3 을 한 뒤 다시 실행한다. `DRY_RUN=1` 은 할 일과 plist 내용만 보여 준다. plist 에 토큰·API 키는 들어가지 않는다.
+**git 자격.** 러너는 결과 브랜치 `task/<업무 id>` 를 `origin` 에 push 하고 기준 커밋을 fetch 한다. launchd 는 로그인 셸 설정을 읽지 않으므로 plist 에 `HOME` 을 넣어 `~/.gitconfig`·자격 도우미(`osxkeychain`)·`~/.ssh` 를 찾게 한다. `SSH_AUTH_SOCK`(ssh-agent)은 들어가지 않아 **ssh 원격(`git@github.com:…`)은 암호 걸린 키면 실패할 수 있다** — `origin` 을 https 로 쓰고 `osxkeychain` 에 자격을 두거나, 암호 없는 배포 키를 `~/.ssh/config` 에 지정한다. push 실패는 업무를 막지 않고 사람 요청(`pr_unavailable`)으로 안내된다.
 
-그다음 화면에서 Agent 를 만들고(`/operator/agents`, 연결 방식 `local`, 로컬 등록 ID = 4 의 `--id`) 워크스페이스에 등록한다(`/agents/register`). Agent·능력 범위를 고르는 방법은 [GitHub 런북 3절](github/README.md#3-agent-와-로컬-등록--같은-기기에서-수정검토)과 같다.
+### 고급 — 손으로 connect·register
+
+버튼 없이 붙이거나 한 러너에 여러 폴더를 등록할 때. 연결 코드는 `/operator` → `연결 코드 발급`(1회용, 10분).
+
+```bash
+python3 -m pip install -e .
+python3 -m workflow.connector connect --server http://127.0.0.1:8000 --code <연결 코드>
+python3 -m workflow.connector register --repo <작업 폴더> --tool claude --verify "vp-pytest=python3 -m pytest -q"
+deploy/selfhost/install-runner.sh
+```
+
+connect 는 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다. register 는 폴더마다 한 번(`--id`·`--repository-id` 를 빼면 폴더 이름·GitHub owner/name). 인자 없는 `install-runner.sh` 는 plist 를 쓰고 연결 토큰 파일이 있을 때만 적재한다 — 없으면 connect 뒤 다시 실행한다.
 
 공개 데모용 러너(`com.workflow.connector`)를 같은 Mac 에서 같이 쓰면 연결 토큰 파일 위치가 겹친다. 그때는 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
 
@@ -103,7 +106,7 @@ deploy/selfhost/install.sh
 
 GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. 선택 기능이다. 기본은 **버튼 연결** — 내 GitHub 계정에 이 서버 전용 GitHub App 을 하나 만들어 설치한다([ADR-0017](adr/0017-github-app-connection.md)). 내부 ID·토큰을 입력하지 않는다. 자세한 동작·중지·복구는 [GitHub 런북](github/README.md).
 
-상태: 이 흐름은 가짜 GitHub 로만 검증했다(`tests/e2e/test_github_app.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-27 phase 11 절). 실제 github.com 에서 App 만들기·설치는 아직 해 보지 않았다 — 아래 화면 이름은 GitHub 문서 기준이고 실제 문구가 조금 다를 수 있다.
+상태: 버튼 연결은 가짜 GitHub(`tests/e2e/test_github_app.py`)에 이어 2026-09-27 실제 github.com 에서 App 만들기·설치·이슈 수집까지 했다([CURRENT_HANDOFF](CURRENT_HANDOFF.md)). 결과 브랜치 push → 초안 PR → 병합 추적 → 알림(phase 12)은 가짜 GitHub·로컬 bare 저장소로만 검증했다(`tests/e2e/test_real_repo.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-28 phase 12 절). 아래 GitHub 화면 이름은 GitHub 문서 기준이고 실제 문구가 조금 다를 수 있다.
 
 ### 버튼으로 연결 (기본)
 
@@ -112,17 +115,27 @@ GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. �
 1. `/operator/github` 에서 **[GitHub 연결]** 을 누른다. Runloom 이 App 설정(이름·권한)을 채워 GitHub 로 보낸다.
 2. GitHub 의 **App 만들기 화면**에서 확인할 것:
    - App 이름 `runloom-xxxxxx`(무작위 6자 — GitHub 전역에서 겹치지 않게). 바꿔도 된다.
-   - 권한: Issues 읽기·쓰기, Pull requests 읽기, Metadata 읽기. 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
+   - 권한: Issues 읽기·쓰기, Pull requests 읽기·쓰기(검토 승인 뒤 초안 PR — ADR-0018. phase 12 전에 만든 App 은 [권한 올리기](#app-권한-올리기--phase-12-전에-만든-app)), Metadata 읽기. 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
    - 그대로 **[Create GitHub App]** 을 누른다. 조직 저장소면 `/operator/github/app/new?org=<조직 이름>` 으로 시작한다.
 3. Runloom 이 App 개인 키·비밀을 받아 저장하고 GitHub 의 **설치 화면**으로 다시 보낸다. **Only select repositories** 로 대상 저장소(예: OpenArchive)를 고르고 **[Install]** 을 누른다.
 4. `/operator/github` 로 돌아오면 고른 저장소마다 카드가 생긴다. 약 1분 안에 열린 이슈가 **전부** 업무 목록에 `대기 · 지시 전` 으로 들어온다(PR·닫힌 이슈 제외).
-5. **러너 연결** — 위 "러너 연결" 대로 수정(`code.fix`)·검토(`code.review`) Agent 를 만들고 register 를 그 저장소의 로컬 클론 폴더로 한다(Agent 능력 범위 값 = register 의 `--repository-id`). 폴더의 `origin` 이 `github.com/<owner>/<name>` 이면 서버가 알아서 짝을 짓는다 — 카드의 러너 매칭에 로컬 저장소·수정 Agent·검증 프로필·검토 Agent 가 `(자동)` 으로 보인다. `이 저장소를 등록한 러너 없음` 이면 register 가 안 됐거나 `origin` 이 다른 저장소다. 수정용 등록에는 `--verify` 가 있어야 한다.
-6. **실행은 지시한 것만** — 업무 목록의 **[에이전트에게 맡기기]** 를 누르거나 GitHub 이슈에 `runloom` 라벨을 붙인다. 그 뒤 수정 → 검토 → 재작업은 자동이다. PR·푸시·병합·이슈 종료는 하지 않는다.
+5. **러너 연결** — 저장소 카드의 [러너 붙이기] 로 그 저장소의 로컬 클론 폴더를 붙인다(위 "러너 연결"). 서버가 수정(`code.fix`)·검토(`code.review`) Agent 를 만든다. 폴더의 `origin` 이 `github.com/<owner>/<name>` 이면 서버가 알아서 짝을 짓는다 — 카드의 러너 매칭에 로컬 저장소·수정 Agent·검증 프로필·검토 Agent 가 `(자동)` 으로 보인다. `이 저장소를 등록한 러너 없음` 이면 register 가 안 됐거나 `origin` 이 다른 저장소다. 수정용 등록에는 `--verify` 가 있어야 한다.
+6. **실행은 지시한 것만** — 업무 목록의 **[에이전트에게 맡기기]** 를 누르거나 GitHub 이슈에 `runloom` 라벨을 붙인다. 그 뒤는 자동이다: 수정(기준 = GitHub 기본 브랜치 최신) → 러너가 결과 브랜치 `task/<업무 id>` 를 `origin` 에 push → 검토(재작업 포함) → 검토 승인이면 서버가 초안 PR(`Fixes #<이슈>`)을 연다 → 업무는 `확인 필요 · PR 확인 — #<번호>`. **병합·이슈 종료는 사람이 GitHub 에서 한다** — 병합하면 다음 수집 주기에 업무가 `완료`(사유 `PR 병합`)가 되고 지표의 "이슈 열림 → 병합" 에 들어간다. 병합 없이 PR 을 닫으면 업무는 `실패`. push 가 안 됐거나(원격 자격) PR 을 못 열면(App 권한) 업무에 사람 요청이 남고 직접 push·PR 하는 안내가 붙는다.
 7. **기준선 가져오기** — 카드의 [기준선 가져오기] 또는 `/metrics` 의 `기준선 대 도입 후` 표에서. 소스 연결 전에 열린 이슈 → 병합 PR 시간을 기준선으로 쓴다. 다시 가져오면 전체를 바꾼다.
 
 저장소를 더하거나 빼려면 카드 위 **[저장소 추가/변경]**(GitHub 의 App 설치 설정)에서 고르고 저장한다. 돌아오면 카드가 맞춰진다 — 설치에서 뺀 저장소는 수집이 멈춘다.
 
 비밀값: App 개인 키·client secret·webhook secret 은 데이터 볼륨의 비밀 파일(`/data/secrets`, 디렉터리 0700·파일 0600)에만 있다. 설치 토큰은 파일에 쓰지 않고 메모리에만 둔다(1시간마다 새로 받음). DB·화면·로그·백업에는 없고, 러너가 띄우는 `claude`·`codex` 프로세스 환경에도 들어가지 않는다. **백업에 들어가지 않으므로** 볼륨을 지우면(`down -v`) App 을 다시 연결해야 한다 — GitHub 의 옛 App 은 GitHub 설정(Settings → Developer settings → GitHub Apps)에서 지운다.
+
+### App 권한 올리기 — phase 12 전에 만든 App
+
+phase 11 에서 만든 App 은 Pull requests 가 읽기뿐이라 초안 PR 을 열 때 GitHub 가 403 을 준다 — 업무에 `GitHub App 권한(Pull requests 쓰기) 승인 필요` 사람 요청이 남는다. 새로 만드는 App 은 처음부터 쓰기 권한이다. 올리는 순서([GitHub 문서](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration) 기준):
+
+1. GitHub → **Settings → Developer settings → GitHub Apps** → 이 서버의 App(`runloom-xxxxxx`) → **Edit** → **Permissions & events**.
+2. **Repository permissions → Pull requests** 를 **Read and write** 로 바꾸고 맨 아래 **Save changes**. 바뀐 권한은 설치한 계정이 승인해야 적용된다.
+3. 설치한 계정(개인이면 본인)의 **Settings → Applications → Installed GitHub Apps** → 이 App 의 **Configure** → 권한 변경 요청을 검토하고 **Accept new permissions**. 조직 설치면 조직 관리자가 조직 설정에서 승인한다.
+
+승인 전에 이미 실패한 업무는 PR 을 다시 열지 않는다 — 사람 요청의 안내대로 `task/<업무 id>` 로 직접 PR 을 연다. 승인 뒤 새로 검토 승인되는 업무부터 자동으로 열린다.
 
 ### 고급 — 토큰으로 연결
 
@@ -130,6 +143,20 @@ App 을 만들 수 없을 때. `/operator/github` 의 접힌 **고급 — 토큰
 
 - 토큰: *Only select repositories* 로 대상 저장소만, **Issues: Read and write**, **Metadata: Read-only**(자동). 기준선 가져오기를 쓰면 **Pull requests: Read-only** 도. Contents·Actions 등 그 밖의 권한, classic PAT 은 쓰지 않는다.
 - 예전 방식(`.env` 의 `WORKFLOW_GITHUB_TOKEN`·`WORKFLOW_GITHUB_REPOS` + 라벨 범위 소스)도 그대로 동작한다 — [GitHub 런북](github/README.md) 1~4절. 화면에서 넣은 토큰이 환경변수보다 우선한다.
+
+## 알림
+
+사람 차례가 되거나 업무가 실패하면 웹훅 URL 하나로 알린다(선택 기능, [ADR-0018](adr/0018-real-repo-cycle.md) 결정 5). Discord 채널 웹훅을 그대로 넣을 수 있다.
+
+1. **URL 만들기** — Discord 면 채널 설정 → **연동(Integrations) → 웹후크 → 새 웹후크** → **웹후크 URL 복사**. 그 밖의 서비스는 JSON POST 를 받는 URL 이면 된다.
+2. **등록** — `/operator/notifications`(왼쪽 목록 "알림")에 붙여 넣고 저장. `https` 만 받는다(같은 Mac 의 수신기는 `http://127.0.0.1…` 도 허용). 저장 뒤 화면에는 `설정됨 · 호스트 <이름>` 만 보인다.
+3. **[테스트 보내기]** — 한 번 보내 보고 결과(`보냄`·`HTTP 404`·`시간 초과` 등)를 바로 보여 준다.
+
+언제 오나: 새 사람 요청(`[Runloom] 사람 차례 — 제목: 사유`), 초안 PR 이 열림(`[Runloom] PR 확인 — 제목 <PR 주소>`), 실행 실패로 업무가 끝남(`[Runloom] 실패 — 제목: 사유`). 각 줄 아래 업무 링크(`WORKFLOW_PUBLIC_URL` 기준 — 로그인 필요). 같은 사건은 한 번만 보낸다. Discord 호스트면 `{"content": …}`(2000자), 그 밖은 `content`·`event`·`task_id`·`task_url`·`title`·`pr_url` JSON.
+
+전송 실패(수신 서버 오류·429·연결 실패)는 30초부터 두 배씩 물러나 5번까지 다시 보내고 그 뒤 포기한다 — 화면의 최근 알림 20건에 상태(보냄·대기·실패·건너뜀)와 오류 분류가 보인다. 알림 실패는 업무 상태를 바꾸지 않는다. URL 이 없으면 알림을 쌓지 않는다(나중에 등록해도 지난 사건은 오지 않는다).
+
+URL 은 그 자체가 비밀(아는 사람은 채널에 글을 쓸 수 있다)이라 데이터 볼륨의 비밀 파일(`notify_webhook_url`, 0600)에만 둔다. DB·화면·로그·백업에 없다 — 볼륨을 지우면 다시 등록한다. 바꾸려면 새 URL 을 저장, 끄려면 [삭제].
 
 ## 백업·복원
 
@@ -210,7 +237,10 @@ docker compose -p runloom -f deploy/selfhost/compose.yaml down -v
 
 - **원격 접속 없음.** 포트는 `127.0.0.1` 에만 열린다. 다른 기기·휴대폰에서 접속하려면 터널(Cloudflare Tunnel 등)이 필요하고 이 phase 범위 밖이다.
 - **워크스페이스 하나, 로그인 한 종류.** 팀 계정·권한 없음.
-- **등록 뒤 새 커밋을 따라가지 않는다.** 업무의 기준 커밋은 등록 때 정해진다. 저장소에 새 커밋이 생겨도 기준을 옮기지 않아 러너가 `base_commit_mismatch` 로 멈출 수 있다 — 새 기준 커밋 추적·알림 웹훅·검증 환경은 `12-real-repo`.
+- **기준 커밋은 러너가 볼 때만 따라간다.** 러너가 60초마다 `git fetch origin` 해 기본 브랜치 최신을 보고한다. 러너가 꺼져 있거나 실행 중인 동안은 fetch 하지 않으므로, 그 사이 push 된 커밋은 다음 보고 뒤의 새 업무부터 기준이 된다. 재작업은 검토한 결과 커밋에서 이어 간다.
+- **`--link` 는 원본 폴더와 공유한다.** worktree 의 `backend/.venv` 등은 원본 폴더로 향하는 심볼릭 링크라 에이전트가 설치물을 바꾸면 원본도 바뀐다. 링크된 편집 설치(`pip install -e`)는 원본 코드를 가리키므로 검증은 `python -m pytest` 처럼 작업 폴더를 경로 앞에 두는 명령으로 한다.
+- **PR 을 한 번 못 열면 다시 열지 않는다.** App 권한·push 실패로 사람 요청이 된 업무는 사람이 직접 PR 을 연다. 그 PR 의 병합은 업무에 자동으로 반영되지 않는다 — 업무 상세의 운영자 검토 승인으로 마감한다(이슈가 병합 PR 로 닫히면 지표의 병합 시각은 채워진다).
+- **알림 URL 은 하나.** 사건 종류·저장소별로 나눠 보내지 않는다.
 - **진단 데모 없음.** compose 에 진단 API 가 없어 진단 기능은 꺼져 있다.
 - **자동 백업 일정 없음.** 백업은 위 명령으로 직접 만든다.
 - **러너는 macOS 전용**(launchd). 연결 프로그램 하나는 한 번에 실행 하나만 돈다.

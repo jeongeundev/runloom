@@ -35,6 +35,7 @@ from workflow.domain.metrics import (
     Stat,
     summarize_baseline,
 )
+from workflow.domain.notification import webhook_host
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.server import github_clients, human_api, task_cycle
@@ -450,6 +451,26 @@ def issue_url(repository_full_name: str, number: int) -> str:
     return f"https://github.com/{repository_full_name}/issues/{number}"
 
 
+# 초안 PR 대기열 상태(`task_pull_requests.state`) → 화면 문구
+PULL_REQUEST_LABELS = {
+    "pending": "PR 여는 중", "open": "사람 차례 · PR 확인", "merged": "PR 병합됨", "closed": "PR 닫힘(병합 없음)",
+    "failed": "PR 을 열지 못함",
+}
+
+
+def pull_request_public(row: Row) -> dict[str, Any]:
+    """PR 링크는 저장소 이름과 번호로 만든다 — 응답의 `html_url` 을 그대로 링크로 쓰지 않는다(`issue_url` 과 같은 규칙)."""
+    number = row["pr_number"]
+    return {
+        "state": row["state"],
+        "label": PULL_REQUEST_LABELS[row["state"]],
+        "number": number,
+        "url": f"https://github.com/{row['repository_full_name']}/pull/{number}" if number is not None else None,
+        "draft": row["draft"] == 1,
+        "attempts": row["attempts"],
+    }
+
+
 def delivery_public(delivery: Any, repository_full_name: str) -> dict[str, Any]:
     return {
         "state": delivery.state,
@@ -592,6 +613,7 @@ def cycle_context(
         "rework": rework,
         "review": _review_result(conn, store, executions) if policy.result_kind == "code_review_result" else None,
         "delivery": delivery,
+        "pull_request": pull_request_public(pr) if (pr := repo.get_pull_request_row(conn, task_id)) else None,
     }
 
 
@@ -648,6 +670,19 @@ def _baseline_summary(conn: Connection, session_id: str, source_id: str) -> dict
         "n": summary.intake_to_merge.n,
         "median": duration(int(median)) if median is not None else "모름",
         "fetched_at": summary.fetched_at,
+    }
+
+
+def notifications_context(conn: Connection, session_id: str, *, secrets: SecretStore) -> dict[str, Any]:
+    """운영자 알림 화면 — URL 은 설정됨/없음·호스트만, 최근 알림은 사건·상태·시각·오류 분류만(URL·본문 없음)."""
+    url = secrets.read(secret_store.NOTIFY_WEBHOOK_URL)
+    return {
+        "notify_configured": url is not None,
+        "notify_host": webhook_host(url) if url is not None else None,
+        "notifications": [
+            {k: row[k] for k in ("event", "state", "attempts", "last_error", "created_at", "sent_at")}
+            for row in repo.list_notifications(conn, session_id)
+        ],
     }
 
 

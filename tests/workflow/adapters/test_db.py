@@ -40,8 +40,11 @@ TABLES = {
     "task_events",
     "baseline_items",
     "baseline_imports",
+    "task_pull_requests",
+    "notifications",
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
+PHASE12_TABLES = {"task_pull_requests", "notifications"}
 
 
 def _seed_kind(conn, session_id: str, kind: str = "diagnosis") -> None:
@@ -205,8 +208,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_7():
-    assert SCHEMA_VERSION == 7
+def test_schema_version_is_8():
+    assert SCHEMA_VERSION == 8
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -388,7 +391,7 @@ def test_phase7_chains_callback_columns_defaults_and_source(conn):
 # --- phase 8: v4 → v5 데이터 보존 마이그레이션 (ADR-0014 결과, ARCHITECTURE "GitHub 업무 순환" 저장) ------
 
 V4_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v4.sql").read_text()
-V4_TABLES = TABLES - PHASE9_TABLES - {
+V4_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES - {
     "github_sources", "github_assignee_bindings", "source_issues", "followup_links", "human_requests",
     "human_responses", "source_deliveries",
 }
@@ -688,7 +691,7 @@ def test_phase8_table_keys_and_checks(conn):
 # --- phase 9: v5 → v6 측정 스키마 (ADR-0015, ARCHITECTURE "측정 — phase 9" 저장) -----------------------
 
 V5_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v5.sql").read_text()
-V5_TABLES = TABLES - PHASE9_TABLES
+V5_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES
 EXECUTION_MEASURE_COLUMNS = (
     "config_revision", "folder_commit", "folder_dirty", "cost_usd", "input_tokens", "output_tokens",
 )
@@ -952,17 +955,17 @@ def test_fresh_db_has_delegation_columns_with_check(conn):
 
 def test_migrates_v6_to_v7_preserving_data(db_path):
     c = _v6_db(db_path)
-    before = _dump(c, TABLES)
+    v6_tables = TABLES - PHASE12_TABLES
+    before = _dump(c, v6_tables)
     c.close()
 
     c = connect(db_path)
     init_schema(c)
-    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(7,)]
-    columns = _column_lists(c, TABLES)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    columns = _column_lists(c, v6_tables)
     for table, names in columns.items():
-        if table == "source_issues":
-            columns[table] = [n for n in names if n not in SOURCE_ISSUE_DELEGATION_COLUMNS]
-    assert _dump(c, TABLES, columns) == before  # 기존 행·열 값은 그대로
+        columns[table] = [n for n in names if n not in SOURCE_ISSUE_DELEGATION_COLUMNS and n != "branch_pushed"]
+    assert _dump(c, v6_tables, columns) == before  # 기존 행·열 값은 그대로
     row = c.execute("SELECT delegated_at, delegated_by FROM source_issues").fetchone()
     assert tuple(row) == (None, None)  # 옛 소스는 filtered 라 지시 칸을 보지 않는다 — 추정해 채우지 않는다
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -970,3 +973,114 @@ def test_migrates_v6_to_v7_preserving_data(db_path):
     init_schema(c)
     assert _dump(c, TABLES) == after
     c.close()
+
+
+# --- phase 12: v7 → v8 초안 PR·알림 대기열 (ADR-0018, ARCHITECTURE "스키마 v8") ---------------------------
+
+
+def _v7_db(db_path):
+    """phase 11 서버가 남긴 모양의 v7 DB — v6 fixture 를 그때의 6 → 7 로 올리고, step 5 러너가 보낸 push 결과를
+    이벤트에만 남긴 실행을 하나 더한다(v7 에는 `executions.branch_pushed` 칸이 없다)."""
+    from workflow.adapters import db
+
+    c = _v6_db(db_path)
+    c.execute("BEGIN IMMEDIATE")
+    db._migrate_6_to_7(c)
+    c.execute("COMMIT")
+    c.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+        " status, created_at) VALUES ('e2', 't1', 2, 'k2', 'a1', 'bug_fix', '{}', 'result_ready', ?)", (NOW,)
+    )
+    c.execute("INSERT INTO execution_events (execution_id, seq, type, occurred_at, received_at, data_json, actor)"
+              " VALUES ('e2', 1, 'result_ready', ?, ?, ?, 'conn-1')",
+              (NOW, NOW, json.dumps({"result_artifact_id": "art-2", "branch_pushed": True})))
+    return c
+
+
+def test_v7_fixture_has_no_phase12_tables(db_path):
+    c = _v7_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+    assert not PHASE12_TABLES & _table_names(c)
+    assert "branch_pushed" not in _columns(c, "executions")
+    c.close()
+
+
+def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
+    c = _v7_db(db_path)
+    v7_tables = TABLES - PHASE12_TABLES
+    columns = _column_lists(c, v7_tables)
+    before = _dump(c, v7_tables)
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(8,)]
+    assert TABLES <= _table_names(c)
+    assert _dump(c, v7_tables, columns) == before  # 기존 행·열 값은 그대로
+    pushed = dict(c.execute("SELECT execution_id, branch_pushed FROM executions").fetchall())
+    assert pushed == {"e1": None, "e2": 1}  # 이벤트에 남은 보고만 옮긴다 — 없으면 모름
+    for table in PHASE12_TABLES:
+        assert c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    after = _dump(c, TABLES)
+    init_schema(c)
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_migrates_v4_all_the_way_to_v8(db_path):
+    c = _v4_db(db_path)
+    c.close()
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert TABLES <= _table_names(c)
+    assert "branch_pushed" in _columns(c, "executions")
+    c.close()
+
+
+_PR_INSERT = (
+    "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number, head_branch,"
+    " fix_execution_id, review_execution_id, state, pr_number, created_at, updated_at)"
+    " VALUES (?, 's1', ?, 'acme/billing', 41, 'task/t1', 'e1', 'e1', ?, ?, ?, ?)"
+)
+
+
+def test_fresh_db_task_pull_requests_checks(conn):
+    _cycle_base(conn)
+    assert "branch_pushed" in _columns(conn, "executions")
+    for value in (None, 0, 1):
+        conn.execute("UPDATE executions SET branch_pushed = ? WHERE execution_id = 'e1'", (value,))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE executions SET branch_pushed = 2 WHERE execution_id = 'e1'")
+
+    conn.execute(_PR_INSERT, ("t1", "ghs-00000001", "pending", None, NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # 수정 Task 하나에 PR 하나
+        conn.execute(_PR_INSERT, ("t1", "ghs-00000001", "pending", None, NOW, NOW))
+    conn.execute("DELETE FROM task_pull_requests")
+    for params in (
+        ("t1", "ghs-00000001", "open", None, NOW, NOW),  # 열림·병합·닫힘은 번호가 있어야 한다
+        ("t1", "ghs-00000001", "draft", 3, NOW, NOW),  # 상태 허용 값 밖
+        ("nope", "ghs-00000001", "pending", None, NOW, NOW),  # 없는 Task
+        ("t1", "ghs-nope", "pending", None, NOW, NOW),  # 없는 소스
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_PR_INSERT, params)
+    conn.execute(_PR_INSERT, ("t1", "ghs-00000001", "merged", 7, NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE task_pull_requests SET draft = 2")
+
+
+def test_fresh_db_notifications_checks(conn):
+    _cycle_base(conn)
+    insert = ("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+              " payload_json, state, created_at) VALUES (?, 's1', ?, 't1', ?, 'c', '{}', ?, ?)")
+    conn.execute(insert, ("ntf-1", "human_request", "human_request:hr-1", "pending", NOW))
+    for params in (
+        ("ntf-2", "human_request", "human_request:hr-1", "pending", NOW),  # 중복 키
+        ("ntf-3", "done", "k3", "pending", NOW),  # 사건 허용 값 밖
+        ("ntf-4", "pr_opened", "k4", "queued", NOW),  # 상태 허용 값 밖
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+    assert "url" not in " ".join(_columns(conn, "notifications"))  # URL 은 비밀 파일에만

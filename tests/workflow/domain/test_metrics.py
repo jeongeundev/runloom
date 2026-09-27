@@ -287,6 +287,18 @@ def test_blocked_segment_is_clipped_at_first_start():
     assert group.handoff_blocked["system"].total == 0
 
 
+def test_events_only_at_or_after_first_start_leave_no_blocked_time():
+    """후속 Task 가 만들어진 초에 바로 시작하면 시작 전 blocked·ready 표시가 없다 — 대기 구간 0(실패하지 않는다)."""
+    facts = MetricFacts(
+        tasks=(task("t1"), task("t2", pred="t1", created=t(1))),
+        executions=(exe("e2", "t2", started_at=t(1)),),
+        events=(ev("t2", "ready", t(1)), ev("t2", "status_changed", t(2), to="완료")),
+    )
+    group = only(compute(facts))
+    assert group.handoff_wait == Stat(median=0, n=1)
+    assert group.handoff_blocked["operator"] == Stat(median=0, n=1, total=0)
+
+
 # ── 기간 필터 경계 ────────────────────────────────────────────────────
 
 

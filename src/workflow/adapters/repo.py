@@ -11,7 +11,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,6 +31,7 @@ from workflow.adapters.errors import (
     KindInUse,
     KindProtected,
     NotFound,
+    RegistrationTaken,
     ResponseConflict,
     SequenceGap,
     StaleConfig,
@@ -42,6 +43,7 @@ from workflow.contracts.github import (
     GitHubIssueSnapshot,
     GitHubSourceConfig,
     IssuePrLink,
+    PullRequestRef,
     SourceDelivery,
     snapshot_digest,
 )
@@ -63,6 +65,7 @@ from workflow.contracts.v1 import (
 )
 from workflow.domain import status as domain_status
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
+from workflow.domain.pull_request import head_branch
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
 
@@ -253,19 +256,95 @@ def update_registration(
         )
         if row is None:
             raise NotFound(f"local registration {local_registration_id}")
-        conn.execute(
-            """
-            UPDATE agents SET connector_id = ?, repository_id = ?, base_commit = ?,
-              verification_profile_ids_json = ?, discovered_json = ?,
-              connection_state = 'online', last_seen_at = ?
-            WHERE agent_id = ?
-            """,
-            (
-                connector_id, repository_id, base_commit, json.dumps(list(verification_profile_ids)),
-                json.dumps(discovered, ensure_ascii=False), now, row["agent_id"],
-            ),
-        )
+        _fill_registration(conn, row["agent_id"], connector_id, repository_id, base_commit,
+                           verification_profile_ids, discovered, now)
     return row["agent_id"]
+
+
+def _fill_registration(
+    conn: Connection, agent_id: str, connector_id: str, repository_id: str, base_commit: str,
+    verification_profile_ids: list[str], discovered: dict, now: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE agents SET connector_id = ?, repository_id = ?, base_commit = ?,
+          verification_profile_ids_json = ?, discovered_json = ?,
+          connection_state = 'online', last_seen_at = ?
+        WHERE agent_id = ?
+        """,
+        (
+            connector_id, repository_id, base_commit, json.dumps(list(verification_profile_ids)),
+            json.dumps(discovered, ensure_ascii=False), now, agent_id,
+        ),
+    )
+
+
+
+def update_registration_heads(conn: Connection, connector_id: str, heads: Mapping[str, str]) -> int:
+    """claim 때 보고된 기준 커밋(ADR-0018 결정 2)으로 이 연결 프로그램 Agent 의 `base_commit` 을 바꾼다.
+    다른 연결 프로그램의 Agent·모르는 등록은 건드리지 않는다. 반환은 바뀐 Agent 수."""
+    changed = 0
+    with _tx(conn):
+        for local_registration_id, commit in heads.items():
+            changed += conn.execute(
+                "UPDATE agents SET base_commit = ? WHERE connector_id = ? AND local_registration_id = ?",
+                (commit, connector_id, local_registration_id),
+            ).rowcount
+    return changed
+
+
+def register_local_agent(
+    conn: Connection,
+    *,
+    connector_id: str,
+    local_registration_id: str,
+    agent_name: str | None,
+    repository_id: str,
+    base_commit: str,
+    verification_profile_ids: list[str],
+    discovered: dict,
+    session_id: str | None,
+    now: str,
+) -> tuple[str, bool]:
+    """러너 등록 (ADR-0018 결정 1). 반환 (agent_id, created).
+
+    같은 `local_registration_id` 의 Agent 가 있으면 `update_registration` 과 같은 갱신(이름·소유 구분·능력 유지).
+    없으면 `session_id`(selfhost 고정 워크스페이스)가 있을 때만 `code.fix`·`code.review` 능력의 Agent 를 만들어
+    그 워크스페이스에 등록한다 — 한 트랜잭션. `session_id` 가 None(demo)이면 지금처럼 NotFound.
+    selfhost 에서는 취소되지 않은 다른 연결 프로그램이 이미 쓰는 이름이면 RegistrationTaken."""
+    with _tx(conn):
+        row = _one(
+            conn,
+            "SELECT agent_id, connector_id FROM agents WHERE local_registration_id = ? ORDER BY agent_id",
+            (local_registration_id,),
+        )
+        if row is None and session_id is None:
+            raise NotFound(f"local registration {local_registration_id}")
+        if row is not None and session_id is not None and row["connector_id"] not in (None, connector_id):
+            owner = _one(
+                conn, "SELECT 1 FROM connectors WHERE connector_id = ? AND revoked_at IS NULL", (row["connector_id"],)
+            )
+            if owner is not None:
+                raise RegistrationTaken(local_registration_id)
+        if row is None:
+            agent_id = f"agt-{secrets.token_hex(4)}"
+            upsert_agent(conn, {
+                "agent_id": agent_id,
+                "name": agent_name or local_registration_id,
+                "owner_scope": "personal",
+                "connection_type": "local",
+                "capabilities": [
+                    {"code": "code.fix", "scope": {"repository_id": repository_id}},
+                    {"code": "code.review", "scope": {"repository_id": repository_id}},
+                ],
+                "local_registration_id": local_registration_id,
+            })
+            register_session_agent(conn, session_id, agent_id, now)
+        else:
+            agent_id = row["agent_id"]
+        _fill_registration(conn, agent_id, connector_id, repository_id, base_commit,
+                           verification_profile_ids, discovered, now)
+    return agent_id, row is None
 
 
 # --- 업무 종류·후속 규칙 (phase 6, ADR-0009: 워크스페이스별 등록부) ---------------
@@ -1036,6 +1115,8 @@ def append_event(
             updates["result_artifact_id"] = artifact_id
             updates["finished_at"] = now
             updates.update(_usage_columns(event.data.usage))
+            pushed = event.data.branch_pushed
+            updates["branch_pushed"] = None if pushed is None else int(pushed)
         elif event.type == "failed":
             updates["failed_code"] = event.data.code
             updates["failed_message"] = event.data.message
@@ -1978,3 +2059,115 @@ def record_source_delivery(
         (state, comment_id, next_at, last_error, now, delivery_id, attempts),
     )
     return cur.rowcount == 1
+
+
+# --- 초안 PR 대기열 (phase 12 step 6, ADR-0018 결정 4) ---------------------------------------------------
+
+
+def enqueue_pull_request(
+    conn: Connection, *, task_id: str, session_id: str, source_id: str, repository_full_name: str, issue_number: int,
+    fix_execution_id: str, review_execution_id: str, now: str,
+) -> bool:
+    """수정 Task 하나에 한 행(`pending`). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다."""
+    cur = conn.execute(
+        "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+        " head_branch, fix_execution_id, review_execution_id, state, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) ON CONFLICT (task_id) DO NOTHING",
+        (task_id, session_id, source_id, repository_full_name, issue_number, head_branch(task_id),
+         fix_execution_id, review_execution_id, now, now),
+    )
+    return cur.rowcount == 1
+
+
+def get_pull_request_row(conn: Connection, task_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM task_pull_requests WHERE task_id = ?", (task_id,))
+
+
+def pull_requests_due(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:
+    """열 차례인 행 — `pending` 이고 attempts < max_attempts 이고 (next_at IS NULL OR next_at <= now). 만든 순."""
+    return conn.execute(
+        "SELECT * FROM task_pull_requests WHERE state = 'pending' AND attempts < ?"
+        " AND (next_at IS NULL OR next_at <= ?) ORDER BY created_at, task_id",
+        (max_attempts, now),
+    ).fetchall()
+
+
+def open_pull_requests(conn: Connection) -> list[Row]:
+    """병합·닫힘을 지켜볼 행(`open`). 만든 순."""
+    return conn.execute(
+        "SELECT * FROM task_pull_requests WHERE state = 'open' ORDER BY created_at, task_id"
+    ).fetchall()
+
+
+def record_pull_request(
+    conn: Connection, task_id: str, *, state: str, now: str, pr: PullRequestRef | None = None,
+    error: str | None = None, next_at: str | None = None,
+) -> None:
+    """상태 기록. `error` 가 있으면 시도 실패 — attempts + 1, last_error·next_at. `pr` 이 있으면 번호·URL·초안 여부,
+    `merged` 는 PR 의 병합 시각, `closed` 는 `now` 를 닫힌 시각으로. 없는 행은 NotFound."""
+    columns: dict[str, object] = {"state": state, "updated_at": now, "next_at": next_at}
+    if error is not None:
+        columns["last_error"] = error
+    if pr is not None:
+        columns.update(pr_number=pr.number, pr_url=pr.html_url, draft=int(pr.draft))
+    if state == "open":
+        columns["last_error"] = None
+    elif state == "merged":
+        columns["merged_at"] = pr.merged_at if pr is not None else now
+    elif state == "closed":
+        columns["closed_at"] = now
+    assignments = ", ".join(f"{name} = ?" for name in columns)
+    attempts = ", attempts = attempts + 1" if error is not None else ""
+    cur = conn.execute(
+        f"UPDATE task_pull_requests SET {assignments}{attempts} WHERE task_id = ?", (*columns.values(), task_id)
+    )
+    _require_rowcount(cur, f"pull request of {task_id}")
+
+
+# --- 알림 대기열 (ADR-0018 결정 5, ARCHITECTURE "알림 (step 7·8)") ---------------------------------
+
+
+def enqueue_notification(
+    conn: Connection, *, session_id: str, event: str, task_id: str | None, dedupe_key: str, content: str,
+    payload: dict, now: str,
+) -> bool:
+    """`pending` 한 행. 같은 `dedupe_key` 가 이미 있으면 그대로 두고 False — 재평가·재시작에도 사건당 한 번.
+    URL 은 넣지 않는다(보낼 때 비밀 파일에서 읽는다)."""
+    cur = conn.execute(
+        "INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content, payload_json,"
+        " state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT (dedupe_key) DO NOTHING",
+        (f"ntf-{secrets.token_hex(4)}", session_id, event, task_id, dedupe_key, content,
+         json.dumps(payload, ensure_ascii=False), now),
+    )
+    return cur.rowcount == 1
+
+
+def notifications_due(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:
+    """보낼 차례인 행 — `pending` 이고 attempts < max_attempts 이고 (next_at IS NULL OR next_at <= now). 만든 순."""
+    return conn.execute(
+        "SELECT * FROM notifications WHERE state = 'pending' AND attempts < ?"
+        " AND (next_at IS NULL OR next_at <= ?) ORDER BY created_at, rowid",
+        (max_attempts, now),
+    ).fetchall()
+
+
+def record_notification_attempt(
+    conn: Connection, notification_id: str, *, state: str, error: str | None, now: str, next_at: str | None
+) -> None:
+    """전송 결과. `sent`·`failed`·(재시도할) `pending` 은 시도 한 번(attempts + 1), `skipped` 는 보내지 않았으니 그대로.
+    `error` 는 분류 문구만(URL·응답 본문 없음). 없는 행은 NotFound."""
+    attempts = ", attempts = attempts + 1" if state != "skipped" else ""
+    cur = conn.execute(
+        f"UPDATE notifications SET state = ?, last_error = ?, next_at = ?, sent_at = ?{attempts}"
+        " WHERE notification_id = ?",
+        (state, error, next_at, now if state == "sent" else None, notification_id),
+    )
+    _require_rowcount(cur, f"notification {notification_id}")
+
+
+def list_notifications(conn: Connection, session_id: str, limit: int = 20) -> list[Row]:
+    """세션의 최근 알림(새것 먼저)."""
+    return conn.execute(
+        "SELECT * FROM notifications WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (session_id, limit),
+    ).fetchall()

@@ -1204,3 +1204,121 @@ def test_review_result_schema_is_strict_with_outcomes_findings_and_missing_infor
     assert finding["additionalProperties"] is False
     assert set(finding["required"]) == set(finding["properties"]) == {"severity", "path", "line", "message"}
     assert finding["properties"]["severity"]["enum"] == ["blocking", "non_blocking"]
+
+
+# --- 작업 복사본 준비물: 링크와 환경변수 (ADR-0018 결정 3, phase 12 step 4) ---------------------------------------
+
+DB_URL = "postgresql://agent:pw-local-5434@localhost:5434/openarchive"
+
+# 검증 스크립트 — 등록 env 와 링크된 설치물이 보이는지 찍는다. 재현 테스트 판정은 `_CHECK` 와 같다.
+_PROBE = """\
+import os, pathlib
+print("DATABASE_URL=" + os.environ.get("DATABASE_URL", "-"))
+print("PATH=" + os.environ.get("PATH", "-"))
+print("VENV=" + str(pathlib.Path("backend/.venv/bin/x").is_file()))
+""" + _CHECK
+
+
+def register_prepared(state_conn, repo: Path, *, env: dict[str, str] | None = None) -> str:
+    """`backend/.venv`·`frontend/node_modules` 는 원본 폴더에만 있다(git 무시 대상). 등록이 둘을 링크로 선언한다."""
+    (repo / "check.py").write_text(_PROBE)
+    (repo / ".gitignore").write_text("node_modules/\n.venv/\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "probe")
+    (repo / "backend" / ".venv" / "bin").mkdir(parents=True)
+    (repo / "backend" / ".venv" / "bin" / "x").write_text("venv\n")
+    (repo / "frontend" / "node_modules").mkdir(parents=True)
+    (repo / "frontend" / "node_modules" / "y").write_text("module\n")
+    base = register_bug(state_conn, repo)
+    registration = state.get_registration(state_conn, "local-billing")
+    state.save_registration(state_conn, {
+        **registration, "links": ["backend/.venv", "frontend/node_modules", "absent/dir"],
+        "env": env if env is not None else {"DATABASE_URL": DB_URL},
+    })
+    return base
+
+
+def test_bug_fix_links_prepared_paths_into_new_worktree_without_committing_them(state_conn, repo, bug_handoff):
+    base = register_prepared(state_conn, repo)
+    seen: dict[str, object] = {}
+
+    def script(worktree: Path) -> ToolRun:
+        seen["venv"] = (worktree / "backend/.venv").is_symlink() and (worktree / "backend/.venv/bin/x").is_file()
+        seen["modules"] = (worktree / "frontend/node_modules").is_symlink()
+        seen["dirty"] = git_ops.is_dirty(worktree)
+        return fix_and_add_test(worktree)
+
+    output = ScriptedTool(state_conn, script).run(bug_request(base), bug_handoff, Recorder())
+
+    assert output.failed is None, output.failed
+    assert seen == {"venv": True, "modules": True, "dirty": False}
+    result = output.result
+    files = _git(repo, "show", "--name-only", "--format=", result.result_commit).splitlines()
+    assert sorted(files) == ["src.py", "tests/test_repro.py"]  # 링크는 결과 커밋에 없다
+    assert "node_modules" not in by_kind(output)["diff"].decode()
+    # 검증(깨끗한 체크아웃)도 링크된 설치물을 본다
+    assert "VENV=True" in by_kind(output)["verification_log"].decode()
+    assert "VENV=True" in by_kind(output)["test_log_after"].decode()
+    # 원본 폴더는 그대로 — 링크 대상을 쓰거나 지우지 않는다
+    assert (repo / "frontend/node_modules/y").read_text() == "module\n"
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert _git(repo, "worktree", "list").count("\n") == 1  # 임시 체크아웃은 정리됐다
+
+
+def test_bug_fix_retry_on_existing_worktree_keeps_links_and_stays_clean(state_conn, repo, bug_handoff):
+    base = register_prepared(state_conn, repo)
+    worktree = git_ops.ensure_worktree(repo, BUG_TASK, base)  # 이전 시도가 링크 없이 남긴 worktree
+
+    output = ScriptedTool(state_conn, fix_and_add_test).run(bug_request(base), bug_handoff, Recorder())
+
+    assert output.failed is None, output.failed
+    assert (worktree / "backend/.venv").is_symlink()
+
+
+def test_registered_env_reaches_verification_and_tool_but_not_allowlist_names(state_conn, repo, bug_handoff):
+    base = register_prepared(state_conn, repo, env={"DATABASE_URL": DB_URL, "PATH": "/evil", "LANG": "evil"})
+    env_base = {**os.environ, "LANG": "ko_KR.UTF-8"}
+    tool_env: dict[str, str] = {}
+    adapter = ScriptedTool(state_conn, lambda wt: (tool_env.update(adapter.child_env()), fix_and_add_test(wt))[1],
+                           env_base=env_base)
+
+    output = adapter.run(bug_request(base), bug_handoff, Recorder())
+
+    assert output.failed is None, output.failed
+    assert tool_env["DATABASE_URL"] == DB_URL
+    assert tool_env["PATH"] == os.environ["PATH"] and tool_env["LANG"] == "ko_KR.UTF-8"
+    for kind in ("test_log_after", "verification_log"):
+        log = by_kind(output)[kind].decode()
+        assert f"DATABASE_URL={DB_URL}" in log  # 어댑터 산출물은 원문 — 값 가림은 업로드 전 러너가 한다
+        assert f"PATH={os.environ['PATH']}\n" in log and "/evil" not in log
+    assert "/evil" not in json.dumps(tool_env)
+
+
+def test_registered_env_applies_to_readonly_review_tool(state_conn, repo, tmp_path):
+    """커밋 검토·사용자 정의 종류의 도구 프로세스도 같은 등록의 env 를 받는다."""
+    base = register_prepared(state_conn, repo)
+    request = make_local_request(local_registration_id="local-billing")
+    handoff = tmp_path / "generic.handoff"
+    tool_env: dict[str, str] = {}
+
+    def script(cwd: Path) -> ToolRun:
+        tool_env.update(adapter.child_env())
+        return _run(last_message=_generic_message())
+
+    adapter = ScriptedTool(state_conn, script)
+    output = adapter.run(request, handoff, Recorder())
+
+    assert base and output.failed is None, output.failed
+    assert tool_env.get("DATABASE_URL") == DB_URL
+
+
+def test_child_env_without_registration_run_has_no_registered_env(state_conn, repo, bug_handoff):
+    base = register_prepared(state_conn, repo)
+    adapter = ScriptedTool(state_conn, fix_and_add_test)
+    adapter.run(bug_request(base), bug_handoff, Recorder())
+
+    output = adapter.run(request_for(base), bug_handoff, Recorder())  # 등록 local-demo-report 는 없다
+
+    assert output.failed[0] == "registration_missing"
+
+    assert "DATABASE_URL" not in adapter.child_env()

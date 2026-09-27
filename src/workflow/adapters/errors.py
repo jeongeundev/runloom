@@ -94,3 +94,7 @@ class TaskClosed(AdapterError):
 
 class ResponseConflict(AdapterError):
     """같은 `(request_id, response_id)` 에 다른 내용의 응답이 이미 저장돼 있다."""
+
+
+class RegistrationTaken(AdapterError):
+    """같은 `local_registration_id` 의 Agent 를 취소되지 않은 다른 연결 프로그램이 쓰고 있다 (409 `registration_taken`)."""

@@ -15,6 +15,7 @@ GITHUB_APP_PRIVATE_KEY = "github_app_private_key.pem"
 GITHUB_APP_CLIENT_SECRET = "github_app_client_secret"
 GITHUB_APP_WEBHOOK_SECRET = "github_app_webhook_secret"
 GITHUB_TOKEN = "github_token"
+NOTIFY_WEBHOOK_URL = "notify_webhook_url"  # 알림 웹훅 URL 한 줄 (ADR-0018 결정 5)
 
 NAMES = frozenset({
     GITHUB_APP_INFO,
@@ -22,6 +23,7 @@ NAMES = frozenset({
     GITHUB_APP_CLIENT_SECRET,
     GITHUB_APP_WEBHOOK_SECRET,
     GITHUB_TOKEN,
+    NOTIFY_WEBHOOK_URL,
 })
 
 

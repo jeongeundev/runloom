@@ -180,3 +180,21 @@ def test_reasons_are_plain_sentences():
     reasons = {b.code: b.reason for b in match_source(_source(), []).blockers}
 
     assert reasons == {"repository_unmatched": "acme/billing 을 등록한 러너 없음 — 러너에서 이 저장소 폴더를 등록하세요"}
+
+
+def test_one_agent_with_fix_and_review_takes_both_roles():
+    """러너 한 명령으로 만든 Agent(ADR-0018 결정 1) — 능력 두 개, 수정·검토 모두 그 Agent 이고 대기 코드 없음."""
+    both = MatchAgent(
+        agent_id="agent-runner",
+        github_repository=REPO,
+        repository_id=REPO,
+        capabilities=(
+            Capability(code="code.fix", scope={"repository_id": REPO}),
+            Capability(code="code.review", scope={"repository_id": REPO}),
+        ),
+        verification_profile_ids=("vp-check",),
+    )
+
+    match = match_source(_source(), [both])
+
+    assert match == SourceMatch(REPO, "vp-check", "agent-runner", "agent-runner", ())

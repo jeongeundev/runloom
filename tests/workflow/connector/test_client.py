@@ -71,6 +71,16 @@ def test_claim_sends_bearer_and_body_and_returns_request(fake, client):
     }
 
 
+def test_claim_sends_registration_heads_only_when_given(fake, client):
+    client.claim(CONNECTOR_ID, registration_heads={"OpenArchive": "a" * 40})
+    client.claim(CONNECTOR_ID, registration_heads={})
+    client.claim(CONNECTOR_ID)
+
+    first, empty, legacy = fake.claim_bodies
+    assert first["registration_heads"] == {"OpenArchive": "a" * 40}
+    assert "registration_heads" not in empty and "registration_heads" not in legacy  # 구버전 서버 호환
+
+
 def test_claim_204_is_none(fake, client):
     assert client.claim(CONNECTOR_ID) is None
 
@@ -107,6 +117,23 @@ def test_report_registration_matches_server_model_and_omits_local_commands(fake,
     assert body["connector_id"] == CONNECTOR_ID
     assert body["verification_profile_ids"] == ["vp-pytest"]
     assert "repo_path" not in json.dumps(body) and "pytest -q" not in json.dumps(body)
+    assert "agent_name" not in body  # 값이 없으면 보내지 않는다 (구버전 서버 호환)
+
+
+def test_report_registration_sends_agent_name_when_given(fake, client):
+    client.report_registration(CONNECTOR_ID, {
+        "local_registration_id": "openarchive",
+        "tool": "claude",
+        "repository_id": "jeongeundev/OpenArchive",
+        "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
+        "verification_profile_ids": [],
+        "discovered": {"found": {}, "not_read": [], "verification_level": "설정 발견"},
+        "agent_name": "OpenArchive",
+    })
+
+    body = fake.registrations[0]
+    RegistrationRequest.model_validate(body)
+    assert body["agent_name"] == "OpenArchive"
 
 
 # --- events ----------------------------------------------------------------------------

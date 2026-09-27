@@ -54,6 +54,8 @@ def test_registration_roundtrip(state_conn, tmp_path):
         "repository_id": "demo-report-repo",
         "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
         "verification_profiles": {"vp-pytest": ["python3", "-m", "pytest", "-q"]},
+        "links": ["backend/.venv", "frontend/node_modules"],
+        "env": {"DATABASE_URL": "postgresql://localhost:5434/test"},
     }
 
     state.save_registration(state_conn, reg)
@@ -71,6 +73,53 @@ def test_save_registration_overwrites_same_id(state_conn, tmp_path):
     state.save_registration(state_conn, {**base, "base_commit": "b" * 40})
 
     assert state.get_registration(state_conn, "local-demo-report")["base_commit"] == "b" * 40
+
+
+def test_registration_without_links_and_env_reads_back_empty(state_conn, tmp_path):
+    state.save_registration(state_conn, {
+        "local_registration_id": "local-demo-report", "repo_path": str(tmp_path), "tool": "codex",
+        "repository_id": "demo-report-repo", "base_commit": "a" * 40, "verification_profiles": {},
+    })
+
+    reg = state.get_registration(state_conn, "local-demo-report")
+    assert reg["links"] == [] and reg["env"] == {}
+
+
+def test_list_registrations_returns_all_in_id_order(state_conn, tmp_path):
+    for reg_id in ("b-reg", "a-reg"):
+        state.save_registration(state_conn, {
+            "local_registration_id": reg_id, "repo_path": str(tmp_path / reg_id), "tool": "codex",
+            "repository_id": "r", "base_commit": "a" * 40, "verification_profiles": {},
+        })
+
+    regs = state.list_registrations(state_conn)
+
+    assert [r["local_registration_id"] for r in regs] == ["a-reg", "b-reg"]
+    assert regs[0] == state.get_registration(state_conn, "a-reg")
+
+
+def test_init_schema_adds_links_and_env_to_registrations_made_before_the_columns(tmp_path):
+    path = tmp_path / "old.sqlite"
+    old = state.connect(path)  # phase 12 이전의 로컬 DB — registrations 에 두 칸이 없다
+    old.executescript("""
+        CREATE TABLE registrations (
+          local_registration_id TEXT PRIMARY KEY, repo_path TEXT NOT NULL, tool TEXT NOT NULL,
+          repository_id TEXT NOT NULL, base_commit TEXT NOT NULL, verification_profiles_json TEXT NOT NULL
+        );
+        INSERT INTO registrations VALUES ('local-old', '/tmp/repo', 'codex', 'repo-r', 'aaaa', '{}');
+    """)
+    old.close()
+
+    conn = state.connect(path)
+    try:
+        state.init_schema(conn)
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(registrations)")}
+        reg = state.get_registration(conn, "local-old")
+    finally:
+        conn.close()
+
+    assert {"links_json", "env_json"} <= columns
+    assert reg["repository_id"] == "repo-r" and reg["links"] == [] and reg["env"] == {}
 
 
 # --- 실행 기록 -----------------------------------------------------------------------

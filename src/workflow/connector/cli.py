@@ -1,10 +1,16 @@
 """`python3 -m workflow.connector` — 운영자 Mac 의 연결 프로그램 CLI.
 
     connect   --server URL --code CONNECT_CODE       연결 코드 교환 → 토큰 파일(0600)
-    register  --id ID --repo PATH --repository-id RID [--tool codex|claude] [--verify NAME=CMD ...]
+    register  --repo PATH [--id ID] [--repository-id RID] [--tool codex|claude] [--verify NAME=CMD ...]
+              [--link PATH ...] [--env NAME=VALUE ...]
                                                      로컬 등록 저장 + discovery 결과를 중앙에 보고
                                                      예: --verify "vp-pytest=python3 -m pytest -q"
                                                          --verify "vp-report=python3 -m daily_report {response}"
+                                                     --id 기본 = 폴더 이름, --repository-id 기본 = GitHub owner/name
+                                                     (없으면 폴더 이름). --link·--env 는 로컬에만 둔다 (ADR-0018)
+    setup     --server URL [--code CODE] --repo PATH [register 인자 ...]
+                                                     connect + register 를 한 번에. 같은 서버의 토큰이 있으면
+                                                     connect 를 건너뛴다. --tool 기본 = PATH 의 claude, 없으면 codex
     run       [--adapter auto|codex|claude|echo]     claim 루프. 기본 auto: codex·claude 어댑터를 둘 다 만들고
               [--keep-workdirs]                      실행마다 등록의 tool 로 고른다 (runner.select_adapter).
                                                      --keep-workdirs 는 결과 업로드 뒤에도 worktree·인계 디렉터리를
@@ -19,10 +25,12 @@ import argparse
 import json
 import logging
 import os
+import re
 import shlex
+import shutil
 import sys
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 from pydantic import ValidationError
@@ -35,6 +43,7 @@ from workflow.connector.codex import CodexAdapter
 from workflow.connector.config import ConnectorPaths, connector_paths, read_token, write_token
 from workflow.connector.discovery import discover
 from workflow.connector.git_ops import GitError
+from workflow.connector.masking import ENV_NAME, RESERVED_ENV_NAMES
 from workflow.connector.runner import AdapterNotSelected, Runner, select_adapter, utc_now
 from workflow.contracts.v1 import ExecutionRequest
 
@@ -46,6 +55,8 @@ ADAPTERS = {
     "echo": lambda conn, env: EchoAdapter(),
 }
 AUTO_ADAPTERS = ("codex", "claude")  # `--adapter auto` 가 만드는 것. 실제 도구 둘 — echo 는 명시할 때만
+
+# `--env` 로 받지 않는 이름 (AGENTS.md 비밀값 환경변수 + 러너가 정하는 것). 접두사 `WORKFLOW_` 도 거부
 
 
 def _build_adapters(name: str, conn, env: Mapping[str, str]) -> dict[str, ExecutionAdapter]:
@@ -60,6 +71,61 @@ def _verify_arg(value: str) -> tuple[str, list[str]]:
     return name.strip(), shlex.split(command)
 
 
+def _link_arg(value: str) -> str:
+    """등록 폴더 기준 상대 경로만. 절대 경로·`..`·`.git` 구성 요소는 거부하고 정규화한 문자열을 돌려준다."""
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or ".git" in path.parts or str(path) in ("", "."):
+        raise argparse.ArgumentTypeError("등록 폴더 기준 상대 경로여야 합니다 (절대 경로·'..'·'.git' 불가)")
+    return str(path)
+
+
+def _env_arg(value: str) -> tuple[str, str]:
+    """NAME=VALUE. 오류 문구에 값을 넣지 않는다 — 비밀일 수 있다."""
+    name, sep, env_value = value.partition("=")
+    if not sep or not ENV_NAME.match(name):
+        raise argparse.ArgumentTypeError("형식은 NAME=VALUE, 이름은 영문자·숫자·밑줄 (숫자로 시작 불가)")
+    if name in RESERVED_ENV_NAMES or name.startswith("WORKFLOW_"):
+        raise argparse.ArgumentTypeError(f"{name} 은 --env 로 넘길 수 없습니다 (비밀값·러너 예약 이름)")
+    return name, env_value
+
+
+def default_registration_id(repo: Path) -> str:
+    """폴더 이름을 소문자로, 파일 이름 안전 문자(`a-z0-9._-`) 밖은 `-` 로."""
+    return re.sub(r"[^a-z0-9._-]", "-", repo.name.lower()).strip("-.") or "repo"
+
+
+def default_repository_id(repo: Path, discovered: dict) -> str:
+    """discovery 가 찾은 GitHub `owner/name`, 없으면 폴더 이름."""
+    return discovered.get("found", {}).get("github_repository") or repo.name
+
+
+def _default_tool(env: Mapping[str, str]) -> str:
+    """setup 의 `--tool` 기본 — PATH 에 있는 claude 우선, 그다음 codex. 둘 다 없으면 claude (ADR-0018)."""
+    for tool in ("claude", "codex"):
+        if shutil.which(tool, path=env.get("PATH")):
+            return tool
+    return "claude"
+
+
+def _add_registration_args(parser: argparse.ArgumentParser, *, tool_default: str | None) -> None:
+    parser.add_argument("--id", dest="local_registration_id", help="로컬 등록 이름. 기본 = 폴더 이름")
+    parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument("--repository-id", help="기본 = GitHub owner/name, 없으면 폴더 이름")
+    parser.add_argument("--tool", default=tool_default, choices=["codex", "claude"])
+    parser.add_argument(
+        "--verify", action="append", default=[], type=_verify_arg, metavar="NAME=COMMAND",
+        help="검증 프로필. 여러 번 지정 가능",
+    )
+    parser.add_argument(
+        "--link", action="append", default=[], type=_link_arg, metavar="PATH",
+        help="worktree 에 원본 폴더로 심볼릭 링크할 상대 경로 (예: backend/.venv). 여러 번 지정 가능",
+    )
+    parser.add_argument(
+        "--env", action="append", default=[], type=_env_arg, metavar="NAME=VALUE",
+        help="검증·도구 프로세스 환경에 더할 값. 러너 로컬에만 저장. 여러 번 지정 가능",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python3 -m workflow.connector", description="workflow 로컬 연결 프로그램")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -69,14 +135,12 @@ def build_parser() -> argparse.ArgumentParser:
     connect.add_argument("--code", required=True, help="운영자 화면에서 발급한 1회용 연결 코드")
 
     register = sub.add_parser("register", help="폴더 + 도구를 로컬 등록하고 중앙에 보고한다")
-    register.add_argument("--id", required=True, dest="local_registration_id")
-    register.add_argument("--repo", required=True, type=Path)
-    register.add_argument("--repository-id", required=True)
-    register.add_argument("--tool", default="codex", choices=["codex", "claude"])
-    register.add_argument(
-        "--verify", action="append", default=[], type=_verify_arg, metavar="NAME=COMMAND",
-        help="검증 프로필. 여러 번 지정 가능",
-    )
+    _add_registration_args(register, tool_default="codex")
+
+    setup = sub.add_parser("setup", help="connect + register 를 한 번에")
+    setup.add_argument("--server", required=True, help="중앙 서버 URL (https://…)")
+    setup.add_argument("--code", help="1회용 연결 코드. 같은 서버의 토큰이 이미 있으면 생략 가능")
+    _add_registration_args(setup, tool_default=None)
 
     run = sub.add_parser("run", help="claim 루프를 돈다")
     run.add_argument("--adapter", default="auto", choices=["auto", *sorted(ADAPTERS)])
@@ -125,14 +189,21 @@ def _register(args, paths: ConnectorPaths, transport) -> int:
     except GitError as exc:
         print(f"저장소 HEAD 를 읽지 못했습니다 ({repo}): {exc}", file=sys.stderr)
         return 1
+    discovered = discover(repo)
+    local_registration_id = args.local_registration_id or default_registration_id(repo)
+    repository_id = args.repository_id or default_repository_id(repo, discovered)
     profiles = dict(args.verify)
+    links = list(dict.fromkeys(args.link))
+    env = dict(args.env)
     registration = {
-        "local_registration_id": args.local_registration_id,
+        "local_registration_id": local_registration_id,
         "repo_path": str(repo),
         "tool": args.tool,
-        "repository_id": args.repository_id,
+        "repository_id": repository_id,
         "base_commit": base_commit,
         "verification_profiles": profiles,
+        "links": links,
+        "env": env,
     }
     conn = state.connect(paths.state_db)
     try:
@@ -142,22 +213,43 @@ def _register(args, paths: ConnectorPaths, transport) -> int:
         conn.close()
     client = CentralClient(stored.server, stored.token, transport=transport)
     try:
-        reply = client.report_registration(stored.connector_id, {
-            "local_registration_id": args.local_registration_id,
+        reply = client.report_registration(stored.connector_id, {  # links·env 는 이름도 보내지 않는다
+            "local_registration_id": local_registration_id,
             "tool": args.tool,
-            "repository_id": args.repository_id,
+            "repository_id": repository_id,
             "base_commit": base_commit,
             "verification_profile_ids": list(profiles),
-            "discovered": discover(repo),
+            "discovered": discovered,
+            "agent_name": repo.name[:100],
         })
     except (CentralError, Unreachable) as exc:
         print(f"로컬 등록은 저장했지만 중앙 보고에 실패했습니다: {exc}", file=sys.stderr)
         return 1
+    github = discovered.get("found", {}).get("github_repository") or "없음"
     print(
-        f"등록됨: {args.local_registration_id} → agent {reply.get('agent_id')} "
-        f"(base_commit {base_commit[:12]}, 검증 프로필 {', '.join(profiles) or '없음'})"
+        f"등록됨: {local_registration_id} → agent {reply.get('agent_id')} · GitHub {github} "
+        f"· 도구 {args.tool} · base_commit {base_commit[:12]} · 검증 프로필 {', '.join(profiles) or '없음'} "
+        f"· 링크 {len(links)}개 · 환경변수 {', '.join(env) or '없음'} "
+        "· 다음: `python3 -m workflow.connector run` 또는 deploy/selfhost/install-runner.sh"
     )
     return 0
+
+
+def _setup(args, paths: ConnectorPaths, transport, env: Mapping[str, str]) -> int:
+    """같은 서버의 토큰이 있으면 connect 를 건너뛴다 — 코드는 1회용이고, 새 연결은 옛 등록과 409 로 부딪힌다."""
+    stored = read_token(paths)
+    if stored is not None and stored.server.rstrip("/") == args.server.rstrip("/"):
+        print(f"저장된 토큰을 씁니다: connector_id={stored.connector_id} (connect 건너뜀)")
+    elif not args.code:
+        print(f"{args.server} 의 토큰이 없습니다. 운영자 화면에서 발급한 --code 를 함께 주세요.", file=sys.stderr)
+        return 2
+    else:
+        code = _connect(args, paths, transport)
+        if code != 0:
+            return code
+    if args.tool is None:
+        args.tool = _default_tool(env)
+    return _register(args, paths, transport)
 
 
 def _run(args, paths: ConnectorPaths, transport, env: Mapping[str, str]) -> int:
@@ -244,13 +336,21 @@ def main(
     transport: httpx.BaseTransport | None = None,
 ) -> int:
     env = os.environ if env is None else env
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command in ("register", "setup"):
+        names = [name for name, _ in args.env]
+        duplicated = sorted({name for name in names if names.count(name) > 1})
+        if duplicated:
+            parser.error(f"--env 이름이 두 번 나왔습니다: {', '.join(duplicated)}")
     paths = connector_paths(env)
     paths.home.mkdir(parents=True, exist_ok=True)
     if args.command == "connect":
         return _connect(args, paths, transport)
     if args.command == "register":
         return _register(args, paths, transport)
+    if args.command == "setup":
+        return _setup(args, paths, transport, env)
     if args.command == "run-local":
         return _run_local(args, paths, env)
     return _run(args, paths, transport, env)

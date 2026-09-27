@@ -22,6 +22,7 @@ from workflow.adapters.errors import (
     KindInUse,
     KindProtected,
     NotFound,
+    RegistrationTaken,
     ResponseConflict,
     SequenceGap,
     StaleConfig,
@@ -33,6 +34,7 @@ from workflow.contracts.github import (
     GitHubIssueSnapshot,
     GitHubSourceConfig,
     IssuePrLink,
+    PullRequestRef,
     snapshot_digest,
 )
 from workflow.contracts.v1 import (
@@ -256,6 +258,141 @@ def test_update_registration_fills_connector_fields_and_keeps_capabilities(conn)
         repo.update_registration(conn, "local-none", connector_id=CONNECTOR, repository_id="r",
                                  base_commit="3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
                                  verification_profile_ids=[], discovered={}, now=LATER)
+
+
+
+def test_update_registration_heads_changes_only_that_connectors_agents(conn):
+    repo.upsert_agent(conn, _agent("agent-a", connection_type="local", owner_scope="personal",
+                                   local_registration_id="reg-a"))
+    repo.upsert_agent(conn, _agent("agent-b", connection_type="local", owner_scope="personal",
+                                   local_registration_id="reg-b"))
+    for agent_id, reg, connector in (("agent-a", "reg-a", CONNECTOR), ("agent-b", "reg-b", "conn-other")):
+        repo.update_registration(conn, reg, connector_id=connector, repository_id="r", base_commit="a" * 40,
+                                 verification_profile_ids=[], discovered={}, now=LATER)
+
+    changed = repo.update_registration_heads(conn, CONNECTOR, {"reg-a": "c" * 40, "reg-b": "d" * 40, "reg-x": "e" * 40})
+
+    assert changed == 1
+    assert repo.get_agent(conn, "agent-a")["base_commit"] == "c" * 40
+    assert repo.get_agent(conn, "agent-b")["base_commit"] == "a" * 40
+    assert repo.update_registration_heads(conn, CONNECTOR, {}) == 0
+
+
+# --- 러너 등록이 Agent 를 만든다 (phase 12 step 1, ADR-0018 결정 1) ------------
+
+REG_COMMIT = "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e"
+
+
+def _register(conn, *, connector_id=CONNECTOR, local_registration_id="OpenArchive", agent_name="OpenArchive",
+              repository_id="jeongeundev/OpenArchive", base_commit=REG_COMMIT, session_id=SESSION, now=LATER):
+    return repo.register_local_agent(
+        conn, connector_id=connector_id, local_registration_id=local_registration_id, agent_name=agent_name,
+        repository_id=repository_id, base_commit=base_commit, verification_profile_ids=["vp-check"],
+        discovered={"found": {"github_repository": "jeongeundev/OpenArchive"}}, session_id=session_id, now=now,
+    )
+
+
+def _issue_connector(conn, connector_id: str) -> None:
+    conn.execute("INSERT INTO connectors (connector_id, token_sha256, created_at) VALUES (?, ?, ?)",
+                 (connector_id, hashlib.sha256(connector_id.encode()).hexdigest(), NOW))
+
+
+def test_register_local_agent_creates_agent_with_fix_and_review_in_workspace(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+
+    agent_id, created = _register(conn)
+
+    assert created is True
+    assert agent_id.startswith("agt-") and len(agent_id) == len("agt-") + 8
+    row = repo.get_agent(conn, agent_id)
+    assert (row["name"], row["owner_scope"], row["connection_type"]) == ("OpenArchive", "personal", "local")
+    assert row["local_registration_id"] == "OpenArchive"
+    assert json.loads(row["capabilities_json"]) == [
+        {"code": "code.fix", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+        {"code": "code.review", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+    ]
+    assert (row["connector_id"], row["repository_id"], row["base_commit"]) == (
+        CONNECTOR, "jeongeundev/OpenArchive", REG_COMMIT)
+    assert json.loads(row["verification_profile_ids_json"]) == ["vp-check"]
+    assert json.loads(row["discovered_json"])["found"]["github_repository"] == "jeongeundev/OpenArchive"
+    assert (row["connection_state"], row["last_seen_at"]) == ("online", LATER)
+    assert row["shared_to_all_sessions"] == 0
+    assert repo.is_session_agent(conn, SESSION, agent_id)
+
+
+def test_register_local_agent_without_name_uses_local_registration_id(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+
+    agent_id, _ = _register(conn, agent_name=None)
+
+    assert repo.get_agent(conn, agent_id)["name"] == "OpenArchive"
+
+
+def test_register_local_agent_is_idempotent_and_updates(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    first, _ = _register(conn)
+
+    again, created = _register(conn, agent_name="다른 이름", base_commit="a" * 40, repository_id="other/repo")
+
+    assert (again, created) == (first, False)
+    assert len([a for a in repo.list_agents(conn) if a["local_registration_id"] == "OpenArchive"]) == 1
+    row = repo.get_agent(conn, first)
+    assert (row["base_commit"], row["repository_id"]) == ("a" * 40, "other/repo")
+    assert row["name"] == "OpenArchive"  # 이름·능력은 만들 때 값 그대로
+    assert json.loads(row["capabilities_json"])[0]["scope"] == {"repository_id": "jeongeundev/OpenArchive"}
+
+
+def test_register_local_agent_fills_preregistered_agent_without_creating(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    repo.upsert_agent(conn, _agent("agent-codex-mac", connection_type="local", owner_scope="personal",
+                                   local_registration_id="OpenArchive",
+                                   capabilities=[{"code": "code.modify", "scope": {"repository_id": "r"}}]))
+
+    agent_id, created = _register(conn)
+
+    assert (agent_id, created) == ("agent-codex-mac", False)
+    assert len(repo.list_agents(conn)) == 1
+    row = repo.get_agent(conn, agent_id)
+    assert row["connector_id"] == CONNECTOR
+    assert json.loads(row["capabilities_json"])[0]["code"] == "code.modify"
+
+
+def test_register_local_agent_without_workspace_does_not_create(conn):
+    """demo 모드 — 만들지 않고 지금처럼 NotFound."""
+    with pytest.raises(NotFound):
+        _register(conn, session_id=None)
+    assert repo.list_agents(conn) == []
+
+
+def test_register_local_agent_rejects_name_used_by_another_connector(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    _issue_connector(conn, "conn-other")
+    agent_id, _ = _register(conn)
+
+    with pytest.raises(RegistrationTaken):
+        _register(conn, connector_id="conn-other", base_commit="b" * 40)
+
+    row = repo.get_agent(conn, agent_id)
+    assert (row["connector_id"], row["base_commit"]) == (CONNECTOR, REG_COMMIT)
+
+
+def test_register_local_agent_takes_over_from_revoked_connector(conn):
+    """취소된 연결 프로그램은 그 이름을 더 쓰지 않는다 — 새 연결 프로그램이 이어받는다."""
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    _issue_connector(conn, "conn-new")
+    agent_id, _ = _register(conn)
+    repo.revoke_connector(conn, CONNECTOR, LATER)
+
+    again, created = _register(conn, connector_id="conn-new")
+
+    assert (again, created) == (agent_id, False)
+    assert repo.get_agent(conn, agent_id)["connector_id"] == "conn-new"
 
 
 # --- 연결 코드·연결 프로그램 ------------------------------------------------
@@ -2501,3 +2638,146 @@ def test_github_source_created_at_is_the_first_connection_time(seeded):
     assert repo.github_source_created_at(seeded, SESSION, SOURCE) == NOW
     with pytest.raises(NotFound):
         repo.github_source_created_at(seeded, OTHER_SESSION, SOURCE)
+
+
+
+# --- phase 12 step 6: push 결과·초안 PR 대기열 (ADR-0018 결정 4, ARCHITECTURE "스키마 v8") ---------------------
+
+
+@pytest.mark.parametrize(("data", "expected"), [({"branch_pushed": True}, 1), ({"branch_pushed": False}, 0), ({}, None)])
+def test_result_ready_copies_branch_pushed(running, store, data, expected):
+    conn = running
+    payload = b'{"outcome": "ready_for_handoff"}'
+    created, _ = repo.store_artifact(conn, store, execution_id="exec-1", session_id=SESSION,
+                                     meta=_meta(payload, "diagnosis_result"), data=payload, now=LATER)
+    repo.append_event(conn, "exec-1", _event("exec-1", 3, "result_ready",
+                                             {"result_artifact_id": created.artifact_id, **data}), "conn", LATER)
+    assert repo.get_execution(conn, "exec-1")["branch_pushed"] == expected
+
+
+def _fix_execution(conn) -> None:
+    repo.create_execution(conn, execution_id="exec-fix-1", task_id="task-gh-41", attempt_no=1,
+                          start_key="auto:task-gh-41:r1", agent_id=FIX_AGENT, kind="bug_fix",
+                          request=_request("exec-fix-1", "task-gh-41", "code_change", ("art-x",)),
+                          assigned_connector_id=None, predecessor_execution_id=None, now=NOW)
+
+
+def _enqueue(conn, now: str = NOW) -> bool:
+    return repo.enqueue_pull_request(
+        conn, task_id="task-gh-41", session_id=SESSION, source_id=SOURCE, repository_full_name="acme/billing",
+        issue_number=41, fix_execution_id="exec-fix-1", review_execution_id="exec-rev-1", now=now,
+    )
+
+
+def _pr(number: int = 31, **overrides) -> PullRequestRef:
+    return PullRequestRef.model_validate({
+        "number": number, "html_url": f"https://github.com/acme/billing/pull/{number}", "state": "open",
+        "draft": True, "merged_at": None, **overrides,
+    })
+
+
+def test_enqueue_pull_request_once_per_fix_task(cycle):
+    _fix_execution(cycle)
+    assert _enqueue(cycle) is True
+    assert _enqueue(cycle, LATER) is False  # 재평가·재시작에도 한 행
+    (row,) = repo.pull_requests_due(cycle, NOW, max_attempts=5)
+    assert (row["task_id"], row["head_branch"], row["state"], row["attempts"]) == (
+        "task-gh-41", "task/task-gh-41", "pending", 0,
+    )
+    assert repo.get_pull_request_row(cycle, "task-gh-41")["created_at"] == NOW
+
+
+def test_failed_attempt_backs_off_and_stops_at_the_limit(cycle):
+    _fix_execution(cycle)
+    _enqueue(cycle)
+    later = "2026-09-20T00:01:00Z"
+    repo.record_pull_request(cycle, "task-gh-41", state="pending", now=NOW, error="GitHub 응답 없음", next_at=later)
+    assert repo.pull_requests_due(cycle, NOW, max_attempts=5) == []
+    (row,) = repo.pull_requests_due(cycle, later, max_attempts=5)
+    assert (row["attempts"], row["last_error"]) == (1, "GitHub 응답 없음")
+    assert repo.pull_requests_due(cycle, later, max_attempts=1) == []
+
+
+def test_open_pr_is_recorded_then_merged(cycle):
+    _fix_execution(cycle)
+    _enqueue(cycle)
+    repo.record_pull_request(cycle, "task-gh-41", state="open", now=NOW, pr=_pr())
+    row = repo.get_pull_request_row(cycle, "task-gh-41")
+    assert (row["state"], row["pr_number"], row["pr_url"], row["draft"], row["last_error"]) == (
+        "open", 31, "https://github.com/acme/billing/pull/31", 1, None,
+    )
+    assert repo.pull_requests_due(cycle, LATER, max_attempts=5) == []  # 열린 PR 은 다시 열지 않는다
+    assert [r["task_id"] for r in repo.open_pull_requests(cycle)] == ["task-gh-41"]
+
+    merged = _pr(state="closed", draft=False, merged_at="2026-09-21T00:00:00Z")
+    repo.record_pull_request(cycle, "task-gh-41", state="merged", now=LATER, pr=merged)
+    row = repo.get_pull_request_row(cycle, "task-gh-41")
+    assert (row["state"], row["merged_at"], row["updated_at"]) == ("merged", "2026-09-21T00:00:00Z", LATER)
+    assert repo.open_pull_requests(cycle) == []
+
+
+def test_closed_without_merge_records_closed_at(cycle):
+    _fix_execution(cycle)
+    _enqueue(cycle)
+    repo.record_pull_request(cycle, "task-gh-41", state="open", now=NOW, pr=_pr())
+    repo.record_pull_request(cycle, "task-gh-41", state="closed", now=LATER, pr=_pr(state="closed"))
+    row = repo.get_pull_request_row(cycle, "task-gh-41")
+    assert (row["state"], row["closed_at"], row["merged_at"]) == ("closed", LATER, None)
+
+
+def test_record_pull_request_unknown_task_is_not_found(cycle):
+    with pytest.raises(NotFound):
+        repo.record_pull_request(cycle, "task-nope", state="failed", now=NOW, error="x")
+
+
+# --- phase 12 step 7: 알림 대기열 (ADR-0018 결정 5, ARCHITECTURE "알림 (step 7·8)") -----------------------------
+
+
+def _notify(conn, key: str = "human_request:hr-1", now: str = NOW, event: str = "human_request") -> bool:
+    return repo.enqueue_notification(
+        conn, session_id=SESSION, event=event, task_id="task-gh-41", dedupe_key=key,
+        content="[Runloom] 사람 차례 — 버그: 질문", payload={"title": "버그", "task_url": None, "pr_url": None}, now=now,
+    )
+
+
+def test_enqueue_notification_once_per_dedupe_key(cycle):
+    assert _notify(cycle) is True
+    assert _notify(cycle, now=LATER) is False  # 재평가·재시작에도 한 번
+    assert _notify(cycle, "task_failed:exec-1", event="task_failed") is True
+    rows = repo.notifications_due(cycle, NOW, max_attempts=5)
+    assert [(r["dedupe_key"], r["state"], r["attempts"]) for r in rows] == [
+        ("human_request:hr-1", "pending", 0), ("task_failed:exec-1", "pending", 0),
+    ]
+    assert rows[0]["notification_id"].startswith("ntf-") and len(rows[0]["notification_id"]) == 12
+    assert json.loads(rows[0]["payload_json"]) == {"title": "버그", "task_url": None, "pr_url": None}
+
+
+def test_notification_attempts_back_off_and_finish(cycle):
+    _notify(cycle)
+    (row,) = repo.notifications_due(cycle, NOW, max_attempts=5)
+    later = "2026-09-20T00:01:00Z"
+    repo.record_notification_attempt(cycle, row["notification_id"], state="pending", error="HTTP 500", now=NOW,
+                                     next_at=later)
+    assert repo.notifications_due(cycle, NOW, max_attempts=5) == []
+    (row,) = repo.notifications_due(cycle, later, max_attempts=5)
+    assert (row["attempts"], row["last_error"], row["sent_at"]) == (1, "HTTP 500", None)
+    assert repo.notifications_due(cycle, later, max_attempts=1) == []
+
+    repo.record_notification_attempt(cycle, row["notification_id"], state="sent", error=None, now=later, next_at=None)
+    assert repo.notifications_due(cycle, LATER, max_attempts=5) == []
+    (row,) = repo.list_notifications(cycle, SESSION)
+    assert (row["state"], row["attempts"], row["sent_at"], row["next_at"]) == ("sent", 2, later, None)
+
+
+def test_skipped_notification_does_not_count_an_attempt(cycle):
+    _notify(cycle)
+    (row,) = repo.notifications_due(cycle, NOW, max_attempts=5)
+    repo.record_notification_attempt(cycle, row["notification_id"], state="skipped", error=None, now=NOW, next_at=None)
+    (row,) = repo.list_notifications(cycle, SESSION)
+    assert (row["state"], row["attempts"], row["sent_at"]) == ("skipped", 0, None)
+    assert repo.list_notifications(cycle, OTHER_SESSION) == []
+
+
+def test_record_notification_unknown_id_is_not_found(cycle):
+    with pytest.raises(NotFound):
+        repo.record_notification_attempt(cycle, "ntf-nope", state="failed", error="x", now=NOW, next_at=None)

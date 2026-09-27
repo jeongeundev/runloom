@@ -459,6 +459,82 @@ def test_install_runner_help(tmp_path):
     assert "DRY_RUN" in res.stdout and _calls(tmp_path) == []
 
 
+# --- install-runner.sh --server --code --repo (phase 12 step 9, ADR-0018) ------------------------------
+
+RUNNER_CODE = "AbCdEfGhIjKlMnOpQrStUvWx0123"
+ENV_VALUE = "postgresql://agent:s3cretPW@127.0.0.1:5434/oa"
+
+
+def _plist_in(out: str) -> tuple[dict, str]:
+    start, end = out.index("<?xml"), out.index("</plist>") + len("</plist>")
+    return plistlib.loads(out[start:end].encode()), out[start:end]
+
+
+def test_install_runner_with_code_dry_run_prints_setup_then_launchd(tmp_path):
+    folder = tmp_path / "OpenArchive"
+    res = _run_runner(
+        tmp_path, "--server", "http://127.0.0.1:8000", "--code", RUNNER_CODE, "--repo", str(folder),
+        "--tool", "claude", "--verify", "check=scripts/check.sh", "--link", "backend/.venv",
+        "--env", f"DATABASE_URL={ENV_VALUE}", DRY_RUN="1",
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    out = res.stdout
+    assert _calls(tmp_path) == []
+    lines = out.splitlines()
+    pip = next(i for i, line in enumerate(lines) if "pip install -e" in line)
+    setup = next(i for i, line in enumerate(lines) if "-m workflow.connector setup" in line)
+    boot = next(i for i, line in enumerate(lines) if "launchctl bootstrap" in line)
+    assert pip < setup < boot
+    setup_line = lines[setup]
+    for part in ("--server http://127.0.0.1:8000", f"--repo {folder}", "--tool claude",
+                 "--verify check=scripts/check.sh", "--link backend/.venv", "--env DATABASE_URL="):
+        assert part in setup_line, part
+    # 코드·env 값은 출력하지 않는다
+    assert RUNNER_CODE not in out and ENV_VALUE not in out and "s3cretPW" not in out
+    plist, raw = _plist_in(out)
+    assert plist["ProgramArguments"][1:] == ["-m", "workflow.connector", "run"]
+    assert plist["EnvironmentVariables"]["HOME"] == str(tmp_path / "home")  # git push·fetch 자격 위치
+    assert "--code" not in raw and "DATABASE_URL" not in raw
+    # 인자로 붙였으면 수동 connect/register 안내는 없다
+    assert "workflow.connector connect" not in out
+
+
+def test_install_runner_plist_has_home_without_args_too(tmp_path):
+    res = _run_runner(tmp_path, DRY_RUN="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    plist, _ = _plist_in(res.stdout)
+    assert plist["EnvironmentVariables"]["HOME"] == str(tmp_path / "home")
+    assert "workflow.connector setup" not in res.stdout
+
+
+@pytest.mark.parametrize("args", [
+    ("--server", "http://127.0.0.1:8000"),
+    ("--server", "http://127.0.0.1:8000", "--code", RUNNER_CODE),
+    ("--repo", "/tmp/x", "--code", RUNNER_CODE),
+    ("--tool", "claude"),
+    ("--bogus",),
+])
+def test_install_runner_needs_server_code_repo_together(tmp_path, args):
+    res = _run_runner(tmp_path, *args, DRY_RUN="1")
+    assert res.returncode == 2
+    assert "--server" in res.stderr and _calls(tmp_path) == []
+    assert RUNNER_CODE not in res.stdout + res.stderr
+
+
+def test_install_runner_stops_before_launchd_when_setup_fails(tmp_path):
+    folder = tmp_path / "repo"
+    folder.mkdir()
+    subprocess.run(["git", "init", "-q", str(folder)], check=True)
+    res = _run_runner(
+        tmp_path, "--server", "http://127.0.0.1:1", "--code", RUNNER_CODE, "--repo", str(folder),
+        SKIP_PIP_INSTALL="1", WORKFLOW_CONNECTOR_HOME=str(tmp_path / "connector"),
+    )
+    assert res.returncode != 0
+    assert not (tmp_path / "home" / "Library" / "LaunchAgents" / "com.workflow.selfhost.connector.plist").exists()
+    assert not any(c.startswith("launchctl") for c in _calls(tmp_path))
+    assert RUNNER_CODE not in res.stdout + res.stderr
+
+
 # --- docs/SELFHOST.md (step 7) ------------------------------------------------------------------
 # 문서의 명령이 실제 파일·모듈·CLI 인자와 맞는지 본다. 명령을 실행하지는 않는다 — argparse 로 인자만 확인한다.
 
@@ -496,10 +572,11 @@ def test_selfhost_md_covers_every_section():
     text = _selfhost_md()
     for heading in (
         "## 요구 사항", "## 설치", "## 로그인", "## 러너 연결", "## GitHub 연결", "## 백업·복원",
-        "## 업그레이드", "## 제거", "## 문제 해결", "## 알려진 한계",
+        "## 업그레이드", "## 제거", "## 문제 해결", "## 알려진 한계", "## 알림", "### App 권한 올리기",
     ):
         assert heading in text, heading
-    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "12-real-repo"):
+    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "초안 PR",
+                   "Accept new permissions", "/operator/notifications"):
         assert needle in text, needle
 
 

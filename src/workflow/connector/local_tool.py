@@ -32,7 +32,9 @@ None(판정 없음·모름)이다. 사용량은 도구를 띄운 뒤의 모든 �
 체크아웃은 끝나면 지우고 원본 저장소·수정 브랜치는 건드리지 않는다.
 
 셸 명령은 로컬 등록의 검증 프로필에서만 온다. 요청·인계 자료·모델 출력에서 명령·경로를 받아 실행하지 않는다.
-도구·검증 프로세스의 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐이다 — 연결 토큰·API 키를 상속하지 않는다.
+도구·검증 프로세스의 환경은 `child_env`(= `masking.codex_env` 허용 목록 + 이 실행 로컬 등록의 `env`)뿐이다 — 연결 토큰·API
+키를 상속하지 않는다. 코드 수정은 worktree 와 검증용 깨끗한 체크아웃에 등록의 `links`(원본 폴더 설치물)를 링크로 건다
+(ADR-0018 결정 3). 등록 `env` 값 가림은 업로드 전 러너가 한다.
 """
 
 import hashlib
@@ -50,7 +52,7 @@ from pydantic import ValidationError
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import AdapterOutput, Progress, make_meta
 from workflow.connector.git_ops import GitError
-from workflow.connector.masking import codex_env, mask_secrets
+from workflow.connector.masking import codex_env, mask_secrets, registered_env
 from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt, build_prompt, build_review_prompt
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
@@ -177,6 +179,7 @@ class LocalToolAdapter:
         self._timeout = timeout_seconds
         self._env_base = env_base
         self._verification_timeout = verification_timeout
+        self._registered_env: dict[str, str] = {}  # 지금 실행 중인 요청의 로컬 등록 env — `run` 이 매번 정한다
 
     # --- 하위 클래스가 구현 ---------------------------------------------------------------------
 
@@ -215,11 +218,17 @@ class LocalToolAdapter:
     # --- 공통 ------------------------------------------------------------------------------------
 
     def child_env(self) -> dict[str, str]:
-        """도구·검증 프로세스에 넘기는 환경. 허용 목록만 남기고 연결 토큰·API 키·중앙 설정을 제거한다."""
-        return codex_env(self._env_base)
+        """도구·검증 프로세스에 넘기는 환경. 허용 목록만 남기고 연결 토큰·API 키·중앙 설정을 제거한 뒤, 지금 실행의
+        로컬 등록 env 를 더한다 — `registered_env` 가 허용 목록·예약 이름을 빼므로 허용 목록 값을 덮지 못한다."""
+        return {**codex_env(self._env_base), **registered_env(self._registered_env)}
 
     def run(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
         target = request.target
+        registration = (
+            state.get_registration(self._conn, target.local_registration_id)
+            if isinstance(target, (LocalTarget, CommitReviewTarget, CodeChangeTarget)) else None
+        )
+        self._registered_env = registration["env"] if registration else {}
         if isinstance(target, LocalTarget):
             return self._run_generic(request, handoff_dir, progress)
         if isinstance(target, CommitReviewTarget):
@@ -242,6 +251,8 @@ class LocalToolAdapter:
             worktree = git_ops.ensure_worktree(repo, request.task_id, target.base_commit)
         except GitError as exc:
             return _failed("base_commit_missing", str(exc))
+        links: list[str] = registration["links"]
+        git_ops.link_prepared_paths(repo, worktree, links)  # 이어 쓰는 worktree 는 이미 있는 링크를 건너뛴다
         if not demo:
             head = git_ops.head_sha(worktree)
             if head != target.base_commit:
@@ -295,7 +306,7 @@ class LocalToolAdapter:
         progress(f"결과 커밋 {result_commit[:12]} (task/{request.task_id})")
 
         test_files = git_ops.changed_test_files(repo, base_commit, result_commit)
-        before = self._test_before(repo, worktree, base_commit, test_files, profile)
+        before = self._test_before(repo, worktree, base_commit, test_files, profile, links)
         progress(f"수정 전 재현 테스트 {before.splitlines()[0]} (테스트 파일 {len(test_files)}개)")
         after_code, after_out, after_err = self._run_argv(profile, worktree)
         progress(f"수정 후 테스트 exit_code={after_code}")
@@ -304,7 +315,9 @@ class LocalToolAdapter:
             report = self._report(dest, profiles.get(REPORT_PROFILE_ID), handoff_dir) if demo else None
             return self._run_argv(profile, dest), report
 
-        (verify_code, verify_out, verify_err), report = _in_clean_checkout(repo, result_commit, in_result_checkout)
+        (verify_code, verify_out, verify_err), report = _in_clean_checkout(
+            repo, result_commit, in_result_checkout, links,
+        )
         progress(f"검증 프로필 {target.verification_profile_id} exit_code={verify_code} @ {result_commit[:12]}")
         diff = git_ops.diff_text(repo, base_commit, result_commit)
 
@@ -486,7 +499,8 @@ class LocalToolAdapter:
         return proc.returncode, proc.stdout, proc.stderr
 
     def _test_before(
-        self, repo: Path, worktree: Path, base_commit: str, test_files: list[str], profile: list[str]
+        self, repo: Path, worktree: Path, base_commit: str, test_files: list[str], profile: list[str],
+        links: list[str],
     ) -> str:
         if not test_files:
             return NO_REPRO_TEST_LOG
@@ -497,7 +511,7 @@ class LocalToolAdapter:
                 shutil.copyfile(worktree / rel, dest / rel)
             return _log_text(*self._run_argv(profile, dest))
 
-        return _in_clean_checkout(repo, base_commit, inside)
+        return _in_clean_checkout(repo, base_commit, inside, links)
 
     def _report(self, checkout: Path, report_profile: list[str] | None, handoff_dir: Path) -> str:
         if report_profile is None:
@@ -612,12 +626,14 @@ def _text(value: str | bytes | None) -> str:
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
 
 
-def _in_clean_checkout[T](repo: Path, commit: str, fn: Callable[[Path], T]) -> T:
-    """`commit` 의 깨끗한 임시 체크아웃에서 fn 을 실행하고 반드시 정리한다. 업무 worktree 는 건드리지 않는다."""
+def _in_clean_checkout[T](repo: Path, commit: str, fn: Callable[[Path], T], links: Sequence[str] = ()) -> T:
+    """`commit` 의 깨끗한 임시 체크아웃에서 fn 을 실행하고 반드시 정리한다. 업무 worktree 는 건드리지 않는다.
+    `links` 는 검증이 원본 폴더 설치물을 쓰도록 체크아웃에 거는 링크다 — 정리(`worktree remove`)는 링크만 지운다."""
     with tempfile.TemporaryDirectory(prefix="workflow-checkout-") as tmp:
         dest = Path(tmp) / "checkout"
         git_ops.export_checkout(repo, commit, dest)
         try:
+            git_ops.link_prepared_paths(repo, dest, list(links))
             return fn(dest)
         finally:
             try:

@@ -6,7 +6,8 @@
 - 재시작 후 `launching`/`running` 인 실행은 프로세스 동일성을 확인할 수 없으므로 아무 이벤트도 보내지 않고
   `unknown_local_at` 만 적어 사람 확인을 기다린다 (중앙은 2분 규칙으로 `unknown`). 재실행하지 않는다.
 - 어댑터가 돌려준 산출물은 로컬 DB 에 보존한 뒤 업로드한다. 업로드 중 끊겨도 어댑터를 다시 돌리지 않는다.
-- 산출물·진행 메시지·오류 메시지는 `mask_secrets` 를 거친다. 연결 토큰은 이 모듈이 알지 못한다 (client 안).
+- 산출물·진행 메시지·오류 메시지·결과 봉투는 `mask_secrets` 를 거친다. 연결 토큰은 이 모듈이 알지 못한다 (client 안).
+  실행의 로컬 등록 `env` 값(8자 이상)도 `<env:이름>` 으로 가린다 (ADR-0018 결정 3).
 - 어댑터는 도구 이름 → 어댑터 매핑이며, 실행마다 `target.local_registration_id` 로 찾은 로컬 등록의 `tool` 로
   하나를 고른다 (`select_adapter`). 요청 본문의 값으로 실행 대상을 고르지 않는다.
 - 종료 이벤트(result_ready·failed)를 중앙이 받은 뒤 worktree·인계 디렉터리를 지운다 (`_cleanup_workdirs`). 결과는
@@ -20,6 +21,11 @@
 - 측정(ADR-0015): `started` 에 로컬 등록 폴더(worktree 아님)의 HEAD·미커밋 변경 여부를 `folder_commit`·`folder_dirty` 로
   싣는다. 못 읽거나 로컬 등록이 없으면 두 칸을 뺀다. 경로·폴더 이름은 보내지 않는다. 어댑터가 돌려준 사용량은 로컬
   `usage_json` 에 보존했다가 `result_ready`·`failed` 의 `usage` 로 싣는다(모르면 뺀다).
+- 기준 커밋 보고(ADR-0018 결정 2): claim 전에 등록마다 `BASE_FETCH_INTERVAL_SECONDS` 간격으로 `git fetch origin` 하고
+  `origin/HEAD` 커밋을 claim 의 `registration_heads` 로 보낸다. fetch 에 실패한 등록은 빼고 로그만 남긴다. 실행 중에는
+  claim 을 하지 않으므로 fetch 도 없다.
+- 결과 브랜치 push(ADR-0018 결정 4): 수정 결과가 `ready_for_review`·결과 커밋이면 `result_ready` 전에 등록 폴더에서
+  `task/<task_id>` 를 origin 에 push 하고 `branch_pushed` 로 보고한다. 검토·사용자 정의 종류는 push 하지 않는다.
 """
 
 import hashlib
@@ -69,6 +75,8 @@ _SHA1 = re.compile(r"^[0-9a-f]{40}$")  # 계약의 `CommitSha` — SHA-256 저�
 _EXTENSIONS = {"application/json": "json", "text/plain": "txt", "text/markdown": "md", "text/x-diff": "patch"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 MESSAGE_MAX = 500
+BASE_FETCH_INTERVAL_SECONDS = 60
+MAX_REGISTRATION_HEADS = 50  # 계약 `ClaimRequest.registration_heads` 항목 상한
 
 
 def utc_now() -> str:
@@ -84,8 +92,8 @@ def _safe(name: str) -> str:
     return _SAFE_NAME.sub("_", name) or "_"
 
 
-def _masked_text(text: str) -> str:
-    return mask_secrets(text)[0][:MESSAGE_MAX]
+def _masked_text(text: str, env: Mapping[str, str] | None = None) -> str:
+    return mask_secrets(text, env)[0][:MESSAGE_MAX]
 
 
 def _process_stopped(row: dict) -> bool:
@@ -177,6 +185,8 @@ class Runner:
         self._keep_workdirs = keep_workdirs  # 디버깅용 — worktree·인계 디렉터리를 남긴다
         self._heartbeat_interval = heartbeat_interval
         self._last_heartbeat: float | None = None
+        self._heads: dict[str, str] = {}  # local_registration_id → 마지막으로 fetch 에 성공한 origin/HEAD 커밋
+        self._fetched_at: dict[str, float] = {}
 
     # --- 루프 ------------------------------------------------------------------------------
 
@@ -276,11 +286,37 @@ class Runner:
     # --- 실행 ---------------------------------------------------------------------------------
 
     def _claim_and_start(self) -> None:
-        request = self._client.claim(self._connector_id)
+        request = self._client.claim(self._connector_id, registration_heads=self._registration_heads())
         if request is None:
             return
         state.record_claim(self._conn, request, self._clock())  # 로컬 접수 기록이 먼저
         self._start(state.get_execution(self._conn, request.execution_id))
+
+    def _registration_heads(self) -> dict[str, str]:
+        """등록마다 간격이 지났으면 fetch 하고, 성공한 등록의 origin 기본 브랜치 커밋을 돌려준다."""
+        registrations = state.list_registrations(self._conn)[:MAX_REGISTRATION_HEADS]
+        for registration in registrations:
+            reg_id = registration["local_registration_id"]
+            now = time.monotonic()
+            last = self._fetched_at.get(reg_id)
+            if last is not None and now - last < BASE_FETCH_INTERVAL_SECONDS:
+                continue
+            self._fetched_at[reg_id] = now
+            repo = Path(registration["repo_path"])
+            try:
+                git_ops.fetch_origin(repo)
+            except GitError as exc:
+                self._heads.pop(reg_id, None)
+                log.info("%s: git fetch origin 실패 — 기준 커밋을 보고하지 않는다: %s", reg_id, _masked_text(str(exc)))
+                continue
+            head = git_ops.origin_head(repo)
+            if head is not None and _SHA1.match(head):
+                self._heads[reg_id] = head
+            else:
+                self._heads.pop(reg_id, None)
+                log.info("%s: origin 기본 브랜치 커밋을 읽지 못함 — 기준 커밋을 보고하지 않는다", reg_id)
+        return {r["local_registration_id"]: self._heads[r["local_registration_id"]]
+                for r in registrations if r["local_registration_id"] in self._heads}
 
     def _continue(self, active: dict) -> None:
         phase = active["phase"]
@@ -310,6 +346,7 @@ class Runner:
             self._finish_failed(execution_id, (exc.code, exc.message, True))
             return
 
+        env = self._registered_env(request)
         handoff_dir = self._handoff_dir(request)
         try:
             self._download_handoff(request, handoff_dir)
@@ -327,13 +364,13 @@ class Runner:
                 self._emit(execution_id, "started", {"runtime_ref": runtime_ref, **self._folder_state(request)},
                            runtime_ref=runtime_ref)
                 state.set_phase(self._conn, execution_id, "running")
-                log.info("%s 시작 확인 %s: %s", execution_id, runtime_ref, _masked_text(message))
+                log.info("%s 시작 확인 %s: %s", execution_id, runtime_ref, _masked_text(message, env))
                 return  # 시작 알림은 started 이벤트가 그 기록이다
             if not started:
-                log.info("%s (시작 전 메시지, 중앙에 보내지 않음): %s", execution_id, _masked_text(message))
+                log.info("%s (시작 전 메시지, 중앙에 보내지 않음): %s", execution_id, _masked_text(message, env))
                 return
             if message:
-                self._emit(execution_id, "progress", {"message": _masked_text(message)})
+                self._emit(execution_id, "progress", {"message": _masked_text(message, env)})
 
         stop_heartbeat = threading.Event()
         heartbeat = threading.Thread(
@@ -346,7 +383,7 @@ class Runner:
         except Exception as exc:  # 어댑터 예외 — 프로세스 종료를 확인하지 못했으므로 process_stopped=False
             log.exception("%s: 어댑터 예외", execution_id)
             output = AdapterOutput(
-                result=None, failed=("adapter_error", _masked_text(f"{type(exc).__name__}: {exc}"), False),
+                result=None, failed=("adapter_error", _masked_text(f"{type(exc).__name__}: {exc}", env), False),
             )
         finally:
             stop_heartbeat.set()
@@ -378,9 +415,11 @@ class Runner:
 
         uploaded = self._upload_outputs(row)
         artifact_ids = [o["artifact_id"] for o in uploaded]
-        target = ExecutionRequest.model_validate_json(row["request_json"]).target
+        request = ExecutionRequest.model_validate_json(row["request_json"])
+        target = request.target
+        result_json = mask_secrets(row["result_json"], self._registered_env(request))[0]
         if isinstance(target, CodeChangeTarget):
-            result = _code_change_result(row["result_json"], uploaded, artifact_ids)
+            result = _code_change_result(result_json, uploaded, artifact_ids)
             kind = "code_change_result"
         else:  # 커밋 검토·사용자 정의 종류 — 봉투는 그대로, 산출물 ID 만 채운다
             model, kind = (
@@ -388,7 +427,7 @@ class Runner:
                 else (GenericResult, "generic_result")
             )
             result = model.model_validate({
-                **model.model_validate_json(row["result_json"]).model_dump(), "artifact_ids": artifact_ids,
+                **model.model_validate_json(result_json).model_dump(), "artifact_ids": artifact_ids,
             })
         data = result.model_dump_json(indent=2).encode()
         meta = ArtifactMeta(
@@ -397,17 +436,30 @@ class Runner:
         )
         created = self._client.upload_artifact(execution_id, meta, data)
         self._emit(  # 중앙이 받으면 `_flush` 끝의 `_cleanup_if_delivered` 가 작업 디렉터리를 지운다
-            execution_id, "result_ready", {"result_artifact_id": created.artifact_id, **_usage_data(usage)},
+            execution_id, "result_ready",
+            {"result_artifact_id": created.artifact_id, **_usage_data(usage), **self._push_result(request, result)},
             finished_at=self._clock(),
         )
+
+    def _push_result(self, request: ExecutionRequest, result: CodeChangeResult | CodeReviewResult | GenericResult) -> dict:
+        """수정 결과(`ready_for_review`·결과 커밋 있음)면 등록 폴더에서 `task/<task_id>` 를 origin 에 push 하고
+        `branch_pushed` 칸을 돌려준다. origin 이 없거나 push 대상이 아니면 칸을 뺀다. 실패해도 결과는 그대로다."""
+        if not (isinstance(result, CodeChangeResult) and result.outcome == "ready_for_review" and result.result_commit):
+            return {}
+        repo = self._registered_repo(request)
+        if repo is None or not repo.is_dir() or not git_ops.has_origin(repo):
+            return {}
+        return {"branch_pushed": git_ops.push_task_branch(repo, request.task_id)}
 
     def _finish_failed(
         self, execution_id: str, failed: tuple[str, str, bool], usage: ExecutionUsage | None = None,
     ) -> None:
         code, message, stopped = failed
+        row = state.get_execution(self._conn, execution_id)
+        env = self._registered_env(ExecutionRequest.model_validate_json(row["request_json"]))
         self._emit(  # 중앙이 받으면 정리 — 단 process_stopped=False 면 `_cleanup_workdirs` 가 건너뛴다
             execution_id, "failed",
-            {"code": code, "message": _masked_text(message), "process_stopped": bool(stopped), **_usage_data(usage)},
+            {"code": code, "message": _masked_text(message, env), "process_stopped": bool(stopped), **_usage_data(usage)},
             finished_at=self._clock(),
         )
         state.set_phase(self._conn, execution_id, "finished")
@@ -415,22 +467,27 @@ class Runner:
     def _upload_outputs(self, row: dict) -> list[dict]:
         """보존된 산출물 중 아직 업로드하지 않은 것을 마스킹해 올린다. 재업로드는 서버가 같은 ID 를 돌려준다."""
         execution_id = row["execution_id"]
+        env = self._registered_env(ExecutionRequest.model_validate_json(row["request_json"]))
         outputs = state.list_outputs(self._conn, execution_id)
         for output in outputs:
             if output["artifact_id"] is not None:
                 continue
-            meta, data = self._masked(execution_id, output["meta"], output["data"], row["runtime_ref"] is not None)
+            meta, data = self._masked(
+                execution_id, output["meta"], output["data"], row["runtime_ref"] is not None, env,
+            )
             created = self._client.upload_artifact(execution_id, meta, data)
             state.set_output_artifact(self._conn, execution_id, output["idx"], created.artifact_id)
             output["artifact_id"] = created.artifact_id
         return outputs
 
-    def _masked(self, execution_id: str, meta: ArtifactMeta, data: bytes, running: bool) -> tuple[ArtifactMeta, bytes]:
+    def _masked(
+        self, execution_id: str, meta: ArtifactMeta, data: bytes, running: bool, env: Mapping[str, str],
+    ) -> tuple[ArtifactMeta, bytes]:
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             return meta, data  # 이진 산출물은 그대로
-        masked, count = mask_secrets(text)
+        masked, count = mask_secrets(text, env)
         if count == 0:
             return meta, data
         data = masked.encode("utf-8")
@@ -503,6 +560,13 @@ class Runner:
         return {"folder_commit": head, "folder_dirty": dirty}
 
     # --- 인계 자료 -----------------------------------------------------------------------------
+
+    def _registered_env(self, request: ExecutionRequest) -> dict[str, str]:
+        """실행의 로컬 등록 `env` — 값 가림에만 쓴다. 등록이 없거나 로컬 등록이 없는 종류(진단)면 빈 값."""
+        if not isinstance(request.target, _LOCAL_TARGETS):
+            return {}
+        registration = state.get_registration(self._conn, request.target.local_registration_id)
+        return {} if registration is None else registration["env"]
 
     def _registered_repo(self, request: ExecutionRequest) -> Path | None:
         """`target.local_registration_id` 의 로컬 등록이 가리키는 저장소 경로. 등록이 없거나 로컬 등록이 없는 종류(진단)면

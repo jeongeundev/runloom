@@ -362,7 +362,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ## 셀프호스트 — phase 10
 
-상태(2026-09-27 step 0): 설계만 고정, 구현 없음. [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)을 따른다. 기본값·step 목록은 [phase 10 README](../phases/10-selfhost/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0016·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 공개 데모 구성(아래 "배포와 실행 예산", [DEPLOY](DEPLOY.md))은 바뀌지 않는다.
+상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)을 따른다. 기본값·step 목록은 [phase 10 README](../phases/10-selfhost/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0016·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 공개 데모 구성(아래 "배포와 실행 예산", [DEPLOY](DEPLOY.md))은 바뀌지 않는다.
 
 ### 구성
 
@@ -449,7 +449,7 @@ Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Deskto
 
 ### 러너 붙이기 — compose 밖 (step 6)
 
-아래 순서로 붙인다. 러너 코드·계약은 바꾸지 않는다. `deploy/selfhost/install-runner.sh`(step 6)는 패키지 설치·plist·launchd 적재만 하고, 2·3 의 명령은 사용자가 치도록 출력만 한다 — 스크립트는 연결 코드·토큰을 다루지 않는다.
+아래 순서로 붙인다. 러너 코드·계약은 바꾸지 않는다. `deploy/selfhost/install-runner.sh`(step 6)는 패키지 설치·plist·launchd 적재만 하고, 2·3 의 명령은 사용자가 치도록 출력만 한다 — 스크립트는 연결 코드·토큰을 다루지 않는다. (phase 12 step 9 부터 기본 흐름은 저장소 카드 [러너 붙이기] → `install-runner.sh --server --code --repo` 한 명령 — "실제 저장소 순환 — phase 12" 의 경로 절. 아래는 인자 없는 호출·수동 흐름.)
 
 1. 사용자가 브라우저에서 로그인 → `/operator` 에서 연결 코드 발급(1회용·10분).
 2. `python3 -m workflow.connector connect --server http://127.0.0.1:<포트> --code <코드>` — 연결 토큰을 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다(기존 `connector_paths`).
@@ -483,7 +483,7 @@ Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Deskto
 
 ## GitHub App 연결 — phase 11
 
-상태(2026-09-27 step 0): 설계만 고정, 구현 없음. [ADR-0017](adr/0017-github-app-connection.md)을 따른다. 기본값·step 목록은 [phase 11 README](../phases/11-github-app/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0017·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8 계약("GitHub 업무 순환 — phase 8 계약")은 `intake: filtered` 소스에 그대로다.
+상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0017](adr/0017-github-app-connection.md)을 따른다. 기본값·step 목록은 [phase 11 README](../phases/11-github-app/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0017·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8 계약("GitHub 업무 순환 — phase 8 계약")은 `intake: filtered` 소스에 그대로다.
 
 ### 흐름
 
@@ -625,7 +625,7 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 
 | 대상 | 위치(step) | 이름·시그니처 |
 |---|---|---|
-| 비밀 저장소 | `adapters/secret_store.py`(1) | `SecretStore(root: Path)`, `SecretStore.from_env(env=os.environ)`(`WORKFLOW_SECRET_DIR`, 기본 `data/secrets`), `read(name) -> str \| None`, `write(name, value: str) -> None`(디렉터리 0700·파일 0600·원자 교체), `delete(name) -> None`, `exists(name) -> bool`. 이름은 다섯 상수(`NAMES`)만 — 그 밖(`../`·절대 경로 포함)은 `ValueError`, 상수 `GITHUB_APP_INFO`·`GITHUB_APP_PRIVATE_KEY`·`GITHUB_APP_CLIENT_SECRET`·`GITHUB_APP_WEBHOOK_SECRET`·`GITHUB_TOKEN`. `repr` 에 내용 없음 |
+| 비밀 저장소 | `adapters/secret_store.py`(1) | `SecretStore(root: Path)`, `SecretStore.from_env(env=os.environ)`(`WORKFLOW_SECRET_DIR`, 기본 `data/secrets`), `read(name) -> str \| None`, `write(name, value: str) -> None`(디렉터리 0700·파일 0600·원자 교체), `delete(name) -> None`, `exists(name) -> bool`. 이름은 여섯 상수(`NAMES`)만 — 그 밖(`../`·절대 경로 포함)은 `ValueError`, 상수 `GITHUB_APP_INFO`·`GITHUB_APP_PRIVATE_KEY`·`GITHUB_APP_CLIENT_SECRET`·`GITHUB_APP_WEBHOOK_SECRET`·`GITHUB_TOKEN`·`NOTIFY_WEBHOOK_URL`(phase 12 step 7). `repr` 에 내용 없음 |
 | App 자격 | `adapters/github_app.py`(2) | `AppCredentials(app_id: int, client_id, slug, name, owner_login, html_url, client_secret, webhook_secret, pem)`(`repr` 에 비밀 제외), `exchange_manifest_code(code, *, transport=None) -> AppCredentials`(code 는 `[A-Za-z0-9_-]` 만, 오류 문구에 code 없음), `save_credentials(store, creds, now)`, `load_app(store, *, transport=None) -> GitHubAppAuth \| None`. `build_manifest(base_url, name) -> dict` 는 step 7 |
 | App 인증 | `adapters/github_app.py`(2) | `GitHubAppAuth(client_id, private_key_pem, *, transport=None, clock=time.time)`, `app_jwt() -> str`, `installation_token(installation_id) -> str`(캐시, 만료 5분 전 갱신), `invalidate(installation_id)`(캐시 버림). JWT 호출이 401 이면 JWT 를 새로 만들어, 설치 토큰 호출이 401 이면 캐시를 버리고 한 번만 다시 보낸다. `get_installation(installation_id) -> Installation(installation_id, account_login, repository_selection)`, `list_installation_repositories(installation_id) -> list[InstalledRepository(repository_id, full_name)]` |
 | 토큰 공급자 | `adapters/github_client.py`(2) | Protocol `TokenProvider: token() -> str, invalidate() -> None`, `InstallationTokenProvider(auth, installation_id)`. 클라이언트는 공급자면 401 에 `invalidate()` 뒤 한 번 다시 보낸다(문자열 토큰은 다시 보내지 않음). 오류 분류는 `check_response(method, path, response)`·Link 페이지는 `next_page(response, path)` 로 github_app 과 같이 쓴다 |
@@ -639,6 +639,169 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 | 대기 코드 | `domain/task_readiness.py`(5·6) | `not_delegated`, `repository_unmatched`·`repository_ambiguous`, `profile_unmatched`·`profile_ambiguous`, `fix_agent_unmatched`·`fix_agent_ambiguous`, `review_agent_unmatched`·`review_agent_ambiguous` |
 
 미확인(실제 App 생성 때 확인): `setup_action` 값(`install`·`update` 로 알려져 있으나 공식 문서에서 확인 못 함 — 서버는 값에 따라 분기하지 않는다), 설치 URL 의 `state` 가 setup 으로 돌아오는지.
+
+## 실제 저장소 순환 — phase 12
+
+상태(2026-09-28 step 10): step 0 설계, step 1~9 구현(아래 각 절의 구현 메모), step 10 대역 e2e `tests/e2e/test_real_repo.py`([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-28 절). [ADR-0018](adr/0018-real-repo-cycle.md)을 따른다. 기본값·step 목록은 [phase 12 README](../phases/12-real-repo/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0018·이 절·[CONTRACT](CONTRACT.md) 14절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8·11 계약은 구버전 러너(새 선택 칸을 보내지 않음)에 그대로다.
+
+### 흐름
+
+```
+/operator/github 저장소 카드 [러너 붙이기]                                    (step 9)
+  → 연결 코드 발급 + 명령 한 줄 표시: install-runner.sh --server S --code C --repo <폴더>
+  → (호스트 Mac) install-runner.sh → pip install → connector setup → launchd 적재   (step 2·9)
+        setup = connect(코드 → 토큰) + register(폴더 이름·GitHub owner/name 기본값, --link·--env 로컬 저장)
+        → POST /connector/registrations: Agent 없으면 selfhost 에서 새로 만듦(code.fix+code.review)   (step 1)
+  → 자동 매칭(phase 11): 소스 저장소 = found.github_repository → 같은 Agent 가 수정·검토 후보
+  → 러너 claim 루프: 60초마다 등록별 git fetch origin → origin/HEAD 커밋                   (step 3)
+        → POST /connector/claim { registration_heads } → agents.base_commit 갱신
+  → [에이전트에게 맡기기]/runloom 라벨 → 수정 실행(base_commit = 기본 브랜치 최신)
+        worktree 생성 직후 --link 심볼릭 링크 + info/exclude, --env 는 검증·도구 환경    (step 4)
+  → ready_for_review 결과 커밋 → git push origin task/<id>:task/<id> (force 없음)            (step 5)
+        → result_ready { branch_pushed: true } → executions.branch_pushed = 1
+  → 검토(phase 8 그대로) → approved
+        → task_pull_requests 대기열 → 워커가 기존 PR 조회 / 초안 PR 생성(Fixes #N)        (step 6)
+        → 수정 Task "확인 필요 · 사람 차례 · PR 확인" + 알림 pr_opened                   (step 7)
+  → 사람이 GitHub 에서 병합 → 주기 조회가 병합을 봄 → 수정 Task 완료(병합 시각)         (step 6)
+```
+
+### 계약 변경 (모두 선택 칸 — `contract_version` 1 그대로)
+
+| 대상 | 위치(step) | 추가 | 의미·호환 |
+|---|---|---|---|
+| `ClaimRequest` | `contracts/v1.py`(3) | `registration_heads: dict[NonEmptyStr, CommitSha] \| None = None`(항목 최대 50) | 키 = 이 연결 프로그램의 `local_registration_id`, 값 = fetch 뒤 `refs/remotes/origin/HEAD` 커밋. 서버는 `connector_id` 가 같은 Agent 만 갱신하고 모르는 키는 무시한다. null·생략 = 보고 없음(이전 값 유지). 새 러너는 보고할 것이 없으면 칸을 뺀다 |
+| `ResultReadyData` | `contracts/v1.py`(5) | `branch_pushed: bool \| None = None` | `true` push 성공, `false` 시도했으나 실패, 생략 = 시도 안 함(원격 없음·결과 커밋 없음·구버전). `_OmitUnknownMeasure` 처럼 null 이면 직렬화에서 뺀다(구버전 서버 422·중복 이벤트 비교 보호). 서버는 `executions.branch_pushed` 에 옮긴다 |
+| `RegistrationRequest` | `server/machine_api.py`(1) | `agent_name: NonEmptyStr \| None = None`(100자 이하) | Agent 를 새로 만들 때의 이름(러너는 폴더 이름을 보냄). 기존 Agent 갱신에는 쓰지 않는다(이름은 운영자 값) |
+| 등록 응답 | `server/machine_api.py`(1) | `{"agent_id", "created": bool}` | `created` = 이번 요청이 Agent 를 만들었는가. 구버전 러너는 `agent_id` 만 읽는다 |
+
+등록 요청의 `repository_id`·`base_commit` 은 여전히 필수다 — 러너가 기본값(GitHub `owner/name` 또는 폴더 이름, 폴더 HEAD)을 채워 보낸다. `base_commit` 은 첫 fetch 보고 전까지의 값이다.
+
+### Agent 자동 생성 (step 1)
+
+`repo.register_local_agent(conn, *, connector_id, local_registration_id, agent_name, repository_id, base_commit, verification_profile_ids, discovered, session_id, now) -> tuple[str, bool]`(agent_id, created). 같은 `local_registration_id` 의 Agent 가 있으면 기존 `update_registration` 과 같은 갱신(이름·소유 구분·능력 유지). 없으면 `session_id` 가 있을 때만 만든다: `agent_id` = `agt-` + 8 hex, 이름 = `agent_name` 또는 `local_registration_id`, `owner_scope` `personal`, `connection_type` `local`, 능력 `[{"code": "code.fix", "scope": {"repository_id": R}}, {"code": "code.review", "scope": {"repository_id": R}}]`, `shared_to_all_sessions` 0, `session_agents` 에 `session_id` 로 등록 — 한 트랜잭션. 경로는 `Settings.mode == "selfhost"` 면 `session_id = SELFHOST_SESSION_ID`, `demo` 면 `None`(없으면 지금처럼 404 `not_found`). 수정·검토가 같은 Agent 여도 준비 판정·자동 매칭이 막지 않는다 — step 1 에서 확인했다(막는 검사 없음: `match_source` 는 수정·검토 후보를 따로 세고, 검토 짝 검사 `review_repository_mismatch` 는 같은 Agent 면 같은 연결 프로그램·저장소라 통과). selfhost 에서 같은 `local_registration_id` 의 Agent 가 이미 있고 그 `connector_id` 가 취소되지 않은(`revoked_at IS NULL`) 다른 연결 프로그램이면 `RegistrationTaken` → 409 `registration_taken`(`field` = `local_registration_id`). demo 는 이 검사 없이 지금처럼 덮어쓴다. 응답 모델 `RegistrationResponse`(`server/machine_api.py`). 구현: step 1 (2026-09-27). 주의: 러너를 새 연결 코드로 다시 붙이면 새 `connector_id` 라 옛 연결 프로그램이 취소되기 전까지 409 — step 2·9 가 저장된 토큰 재사용 또는 옛 연결 취소 경로를 정한다.
+
+### 러너 로컬 등록 새 칸 (step 2·4)
+
+로컬 상태 DB(`connector/state.py`) `registrations` 에 칸 추가 — `init_schema` 가 기존 `executions` 칸처럼 `PRAGMA table_info` 로 보고 없으면 `ALTER TABLE registrations ADD COLUMN`:
+
+| 칸 | 타입·기본 | 의미 |
+|---|---|---|
+| `links_json` | `TEXT NOT NULL DEFAULT '[]'` | `--link` 상대 경로 목록(정규화, 중복 제거, 선언 순서) |
+| `env_json` | `TEXT NOT NULL DEFAULT '{}'` | `--env` 이름 → 값. 중앙에 보내지 않는다 |
+
+`save_registration`·`get_registration` 이 `links: list[str]`·`env: dict[str, str]` 로 주고받는다. `register` 를 다시 하면 두 칸은 이번 인자로 바뀐다(인자가 없으면 빈 값 — 등록은 선언 전체를 다시 쓰는 것). 검사(`connector/cli.py`, 인자 파싱 때 거부 → exit 2):
+- link: 빈 값·절대 경로·`..`·`.git` 구성 요소 거부.
+- env: 이름 `^[A-Za-z_][A-Za-z0-9_]*$`, 거부 이름 `RESERVED_ENV_NAMES` = `OPERATOR_TOKEN`·`DIAG_API_TOKEN`·`OPENAI_API_KEY`·`SESSION_SECRET`·`WORKFLOW_GITHUB_TOKEN`·`PATH`·`HOME` + 접두사 `WORKFLOW_`. 같은 이름을 두 번 주면 거부.
+
+worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> list[str]` = 건 링크): `ensure_worktree` 가 **새로 만든 경우에만** 부른다(재시도로 기존 worktree 를 쓰면 이미 있다). 경로마다 원본 `repo/<p>` 가 없거나 `worktree/<p>` 가 이미 있으면 건너뛰고 로그. 부모 디렉터리를 만들고 `os.symlink(repo/<p>, worktree/<p>)`. `git rev-parse --git-common-dir` 의 `info/exclude` 에 `/<p>` 줄이 없으면 덧붙인다(끝 `/` 없는 규칙이라 심볼릭 링크에도 맞는다). 환경: `child_env()` = `codex_env(env_base)` + 등록의 `env`(검증·테스트 전후·도구 프로세스 모두). 값 가림: `masking.mask_secrets(text, extra: Mapping[str, str] | None = None)` — `extra` 값(8자 이상)을 `<env:이름>` 으로 바꾼다. 러너가 업로드 전 산출물·진행 메시지·실패 문구에 등록 `env` 를 넘긴다.
+
+구현: step 4 (2026-09-27). `link_prepared_paths` 는 worktree 를 이어 쓸 때도 부른다 — 이미 있는 경로(이전 시도의 링크·추적 파일)는 건너뛰므로 링크가 빠진 worktree 만 채운다. 검증용 깨끗한 체크아웃(`test_log_before`·`verification_log`)에도 같은 링크를 건다 — 검증도 원본 폴더 설치물(`.venv`)이 있어야 돌기 때문이다(정리 `worktree remove --force` 는 링크만 지우고 대상은 따라가지 않는다). 커밋 검토 체크아웃에는 걸지 않는다. `info/exclude` 경로는 `git rev-parse --git-path info/exclude`(공용 git 디렉터리), 규칙의 glob 특수 문자(`\*?[`)는 `\` 로 막는다. 환경 결합은 `child_env()` = `codex_env(env_base)` + `masking.registered_env(등록 env)` — 실행 때 허용 목록 이름(`ENV_ALLOWLIST`·`XDG_*`)·`RESERVED_ENV_NAMES`·`WORKFLOW_*`·형식 위반을 다시 뺀다(등록 env 가 허용 목록 값을 덮지 못함). 어댑터는 `run` 마다 요청의 로컬 등록 env 를 정하고(코드 수정·커밋 검토·사용자 정의 종류 모두), Claude `tool_env` 는 그 위에 부모 `CLAUDE_*`·`ANTHROPIC_*` 를 더한다. 값 가림은 러너 한 곳(`Runner._registered_env`): 산출물 업로드·진행 메시지·실패 문구·결과 봉투(`result_json`). 어댑터가 로컬 DB 에 보존한 원시 산출물은 원문이다(러너 Mac 안). `RESERVED_ENV_NAMES`·`ENV_NAME` 은 `connector/masking.py` 로 옮겼고 `cli.py` 가 가져다 쓴다.
+
+### 기준 커밋 보고 (step 3)
+
+- `git_ops.fetch_origin(repo) -> None`(`git fetch --quiet origin`, 환경 `GIT_TERMINAL_PROMPT=0`, 제한 시간 `GIT_NETWORK_TIMEOUT_SECONDS` = 120), `git_ops.origin_head(repo) -> str | None`(`git symbolic-ref --quiet refs/remotes/origin/HEAD` 가 없으면 `git remote set-head origin --auto` 한 번, 그다음 `git rev-parse --verify refs/remotes/origin/HEAD^{commit}`; `origin` 원격이 없거나 실패면 None). 실패는 `GitError` 로 올리고 러너가 로그만 남긴다.
+- `Runner` 가 claim 전에 `_registration_heads() -> dict[str, str]` 를 만든다: 등록마다 마지막 fetch 뒤 `BASE_FETCH_INTERVAL_SECONDS`(60) 가 지났으면 fetch, 성공한 등록의 커밋을 메모리에 두고 매 claim 에 실어 보낸다. 실행 중에는 claim 을 하지 않으므로 fetch 도 없다.
+- 서버(`/connector/claim`): `repo.update_registration_heads(conn, connector_id, heads) -> int`(바뀐 Agent 수) — `UPDATE agents SET base_commit = ? WHERE connector_id = ? AND local_registration_id = ?`. 배정 판단보다 먼저 한다. `_start_fix` 의 우선순위(주어진 값 → 이 Task 의 마지막 결과 커밋 → `agents.base_commit`)는 바꾸지 않는다.
+- 구현: step 3 (2026-09-27). `origin_head` 는 origin 없음·읽기 실패를 None 으로 돌려준다(`fetch_origin` 만 GitError). 러너는 `state.list_registrations` 로 등록(최대 50)을 돌고, fetch 실패·커밋 못 읽음은 그 등록을 빼고 INFO 로그만 남긴다(origin 없는 로컬 저장소는 정상이라 경고하지 않음). `CentralClient.claim` 은 보고할 것이 없으면 칸을 뺀다. 최신 git 은 fetch 때 `origin/HEAD` 를 스스로 만들기도 한다 — `set-head --auto` 는 없을 때만.
+
+### 브랜치 push (step 5)
+
+`git_ops.push_task_branch(repo, task_id) -> bool` — `git push --quiet origin refs/heads/task/<safe>:refs/heads/task/<safe>`(`<safe>` = `worktree_path` 와 같은 `_safe(task_id)`, force·`+` 없음, `GIT_TERMINAL_PROMPT=0`, 제한 시간 `GIT_NETWORK_TIMEOUT_SECONDS`). 조건: 결과 봉투가 `CodeChangeResult` 이고 `outcome == "ready_for_review"`·`result_commit` 있음 + 등록 폴더에 `origin` 이 있음(`git_ops.has_origin`). 종류 이름으로 분기하지 않는다. 재작업 커밋은 같은 브랜치를 앞으로 옮기므로 fast-forward push 다 — 원격이 갈라졌으면 거부되고 `branch_pushed: false`. 서버가 발급하는 `task_id`(`task-` + 12 hex)는 `_safe` 로 바뀌지 않으므로 중앙은 `task/<task_id>` 로 같은 이름을 계산한다.
+
+- 구현: step 5 (2026-09-28). push 는 `Runner._finalize` 가 결과 봉투를 올린 뒤 `result_ready` 직전에 한다(`_push_result`, 재시도 때 다시 push 해도 같은 커밋이면 성공). origin URL 모양(GitHub 여부)은 보지 않는다 — 대상 ref 가 `refs/heads/task/…` 로 고정이라 원격 종류와 무관하게 안전하고, 테스트는 로컬 bare origin 으로 한다. 실패는 `False` + INFO 로그(원격 URL·`user@host:` 는 `<원격>` 으로 가림). 사용자 git 훅(pre-push)은 그대로 돈다. 서버는 받은 값을 `execution_events.data_json` 에 그대로 남긴다 — `executions.branch_pushed` 칸과 옮겨 쓰기는 스키마 v8 을 올리는 step 6 이 한다.
+
+### 초안 PR (step 6)
+
+- 워커 검토 `approved` 처리(`hold_code is None and outcome == "approved"`): 기존 동작(검토 Task 완료, 수정 Task `확인 필요`)에 더해, 수정 Task 에 원본 이슈가 있고 검토 target 의 `source_execution_id` 실행이 `branch_pushed = 1` 이면 같은 트랜잭션에서 `repo.enqueue_pull_request(...)` 하고 수정 Task 문구를 `검토 승인 — PR 여는 중` 으로 둔다. 조건이 안 맞으면 지금 문구(`검토 승인 — 병합·이슈 종료는 사람`) 그대로.
+- 전달 `Worker._deliver_pull_requests`(트랜잭션 밖, `_deliver_github` 옆): 소스의 클라이언트(`github_for`)로 ① `find_pull_request` ② 없으면 `default_branch` → `create_pull_request(draft=True)` ③ `GitHubUnprocessable` 이고 문구에 `draft` 가 있으면 `draft=False` 로 한 번 더 ④ 그 밖의 `GitHubUnprocessable` 은 ① 재조회. 성공 → `state='open'`, `pr_number`·`pr_url`·`draft` 저장, 수정 Task `확인 필요 · 사람 차례 · PR 확인 — #<n>`, 알림 `pr_opened`. 실패 → `attempts`+1, `next_at` = 30초 × 2^(n−1), `PR_MAX_ATTEMPTS`(5) 뒤 `failed` + 수정 Task `검토 승인 — PR 을 열지 못함, 병합·이슈 종료는 사람`. 자격 없는 소스는 시도하지 않고 `failed`(`github_not_connected`).
+- PR 본문(`domain/pull_request.pr_body(issue_number, review_summary, task_url) -> str`): 첫 줄 `Fixes #<N>`, 검토 요약(검토 결과 `summary`), `Runloom 업무: <task_url>`(`task_url` 이 없으면 `Runloom 업무: <task_id>`), 끝에 marker `<!-- runloom:task=<task_id> -->`. 제목 = 원본 이슈 제목.
+- 추적 `Worker._sync_pull_requests`(GitHub 주기 조회와 같은 간격): `state='open'` 행마다 `get_pull_request` → `merged_at` 있으면 `state='merged'`·`merged_at` 저장·수정 Task `완료`(사유 `PR 병합`), 병합 없이 `closed` 면 `state='closed'`·`closed_at`·수정 Task `실패`(사유 `PR 이 병합 없이 닫힘`). 이슈 닫힘에 따른 `source_closed` 대기·지표의 이슈 병합 PR 조회(`record_issue_merge`)는 그대로다.
+- 구현: step 6 (2026-09-28). 달라진 점·더한 점:
+  - 422 처리는 클라이언트 `create_pull_request` 안에 있다 — 초안 미지원(`GitHubUnprocessable.message` 에 `draft`)이면 `draft=False` 로 한 번 더, 그 밖의 422 는 `find_pull_request` 재조회(없으면 `GitHubUnprocessable`). 워커는 ① `find_pull_request` ② 없으면 `default_branch` → `create_pull_request` 만 부른다. `GitHubUnprocessable` 은 PR 생성 호출(`_call(..., unprocessable=True)`)에서만 나고, `str()` 은 다른 오류처럼 `POST 경로: HTTP 422` 뿐이다(`.message` 는 판단용, 저장·로그 안 함).
+  - 사람 요청: 코드 `pr_unavailable`(`domain/pull_request.PR_REQUEST_CODE`), 원인 키 `pr:<검토 execution_id>`. ① 검토한 수정 실행이 `branch_pushed = 0` → 대기열 없이 바로 요청(사유에 `git push origin task/<id>` 뒤 PR 을 직접 열라는 안내) ② 403·허용 저장소 밖 → 바로 `failed` + 요청(사유 `GitHub App 권한(Pull requests 쓰기) 승인 필요`) ③ 자격 없음·소스 중지 → 바로 `failed` + 요청 ④ 그 밖의 GitHub 오류 → 백오프 재시도, `PR_MAX_ATTEMPTS` 뒤 `failed` + 요청. 이 요청에 `resume` 으로 답해도 수정을 다시 돌리지 않는다(`Worker._resume` 이 `pr:` 원인 키를 `ready:` 처럼 뺀다). `branch_pushed` 가 NULL(보고 없음 — 구버전 러너·origin 없음)이면 phase 8 그대로 PR·요청 없음.
+  - `last_error` 는 오류 `str()`(`메서드 경로: HTTP 상태`) — 본문·토큰 없음. 조회용 `repo.get_pull_request_row(conn, task_id)`.
+  - 병합을 보면 원본 이슈의 `merged_pr_number`·`pr_merged_at` 이 비어 있을 때 `record_issue_merge` 로 채운다(그 PR 번호·병합 시각 — 지표 "이슈 열림 → 병합"). 이미 마감된 수정 Task(운영자 종료 등)는 PR 행만 `merged`·`closed` 로 바꾸고 Task 는 그대로 둔다. `_sync_pull_requests` 는 소스 수집이 성공한 주기에만 같은 클라이언트로 부르고(rate limit·연결 오류면 그 소스의 나머지 PR 조회를 멈춘다), 같은 head 의 PR 을 찾았는데 이미 끝났으면 연 직후 같은 규칙으로 반영한다. tick 순서는 `_deliver_callbacks` → `_deliver_pull_requests` → `_deliver_github`.
+  - 화면: 업무 상세 업무 순환 영역에 PR 줄(`data-pull-request` = 대기열 상태, 문구 `views.PULL_REQUEST_LABELS`, 링크는 저장소 이름·번호로 만든 `https://github.com/<o>/<r>/pull/<n>`).
+  - 스키마 7 → 8 은 `executions.branch_pushed` 를 이미 받은 `result_ready` 이벤트의 `data_json.branch_pushed`(true/false 일 때만)로 채운다. 원본 이슈 댓글(`github_delivery`)의 "자동으로 푸시하지 않습니다" 문구는 step 10 에서 고쳤다 — 판정 통과 수정 실행의 `branch_pushed = 1` 이면 "결과 브랜치 `task/<id>` 를 원격에 올렸습니다. 검토 승인 뒤 초안 PR 을 엽니다.", 아니면 예전 문구.
+
+### 스키마 v8 (step 6·7)
+
+`SCHEMA_VERSION` 7 → 8. v7 데이터를 보존하는 트랜잭션 마이그레이션(새 테이블 `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE … ADD COLUMN`). step 6 이 버전을 올리고 두 테이블을 모두 만든다(step 7 은 쓰기·전달만).
+
+| 대상 | 칸 | 제약·의미 |
+|---|---|---|
+| `executions` 새 칸 | `branch_pushed INTEGER` | `NULL` = 보고 없음, `CHECK (branch_pushed IS NULL OR branch_pushed IN (0, 1))` |
+| `task_pull_requests`(새) | `task_id TEXT PRIMARY KEY REFERENCES tasks`(수정 Task), `session_id TEXT NOT NULL`, `source_id TEXT NOT NULL REFERENCES github_sources`, `repository_full_name TEXT NOT NULL`, `issue_number INTEGER NOT NULL`, `head_branch TEXT NOT NULL`(`task/<task_id>`), `fix_execution_id TEXT NOT NULL`, `review_execution_id TEXT NOT NULL`, `state TEXT NOT NULL CHECK (state IN ('pending','open','merged','closed','failed'))`, `pr_number INTEGER`, `pr_url TEXT`, `draft INTEGER CHECK (draft IS NULL OR draft IN (0,1))`, `attempts INTEGER NOT NULL DEFAULT 0`, `next_at TEXT`, `last_error TEXT`, `created_at`·`updated_at TEXT NOT NULL`, `merged_at TEXT`, `closed_at TEXT` | 수정 Task 하나에 PR 하나(재작업은 같은 브랜치라 같은 PR). `CHECK (state NOT IN ('open','merged','closed') OR pr_number IS NOT NULL)`. `last_error` 는 분류 문구만(응답 본문·토큰 없음) |
+| `notifications`(새) | `notification_id TEXT PRIMARY KEY`(`ntf-` + 8 hex), `session_id TEXT NOT NULL`, `event TEXT NOT NULL CHECK (event IN ('human_request','pr_opened','task_failed'))`, `task_id TEXT REFERENCES tasks`, `dedupe_key TEXT NOT NULL UNIQUE`, `content TEXT NOT NULL`, `payload_json TEXT NOT NULL`, `state TEXT NOT NULL CHECK (state IN ('pending','sent','failed','skipped'))`, `attempts INTEGER NOT NULL DEFAULT 0`, `next_at TEXT`, `last_error TEXT`, `created_at TEXT NOT NULL`, `sent_at TEXT` | 중복 키: `human_request:<request_id>`, `pr_opened:<task_id>:<pr_number>`, `task_failed:<execution_id>`. URL 은 칸이 없다(보낼 때 비밀 파일에서 읽는다) |
+
+백업은 DB 를 담으므로 두 테이블도 담긴다 — 비밀이 없다.
+
+### 알림 (step 7·8)
+
+- 넣기: 워커의 `create_human_request_once` 호출부가 `fresh` 일 때(`human_request`), PR 이 열렸을 때(`pr_opened`), `_reflect_failures` 가 실행 실패를 반영할 때(`task_failed`) — 같은 트랜잭션에서 `repo.enqueue_notification(...)`. 알림 URL(비밀 파일)이 설정되지 않았으면 쌓지 않는다(step 7 결정 — demo 모드·URL 없는 설치의 DB 가 그대로다). 사람이 닫은 PR·운영자 종료(이미 마감된 Task)는 넣지 않는다. 사람 요청은 `Worker._request_human`(= `create_human_request_once` + `fresh` 면 알림) 한 곳을 지난다. PR 은 열린 상태로 찾거나 연 경우만(이미 병합·닫힌 PR 은 알리지 않음).
+- 문구(`domain/notification.py`, 순수): `notification_text(event, *, title, detail, pr_url) -> str` — `[Runloom] 사람 차례 — <title>: <detail>`, `[Runloom] PR 확인 — <title> <pr_url>`, `[Runloom] 실패 — <title>: <detail>`. `notification_body(url, message: NotificationMessage) -> dict` — 호스트(소문자)가 `discord.com`·`discordapp.com` 이거나 그 하위 도메인이면 `{"content": text[:2000]}`, 그 밖은 `{"content", "event", "task_id", "task_url", "title", "pr_url"}`. `task_url` = `Settings.public_url` 이 있으면 `<public_url>/tasks/<task_id>`, 없으면 null.
+- 전달(`Worker._deliver_notifications`, 트랜잭션 밖, `adapters/notify_sender.py` `NotifySender(*, transport=None).post(url, body) -> None`, httpx 제한 시간 10초, 리다이렉트 따라가지 않음): 2xx = `sent`. 실패는 `NotifyFailed(message, retry_after: float | None)` — `attempts`+1, `next_at` = max(30초 × 2^(n−1), `retry_after`), `NOTIFY_MAX_ATTEMPTS`(5) 뒤 `failed`. 오류 문구·로그에 URL 을 넣지 않는다(호스트만 — `webhook_host`). httpx 가 요청마다 남기는 URL INFO 로그는 보내는 동안 `notify_sender` 의 로그 필터가 막는다. 보낼 때 URL 이 지워졌으면 `skipped`(attempts 불변), 형식이 깨졌으면(`webhook_url_valid` 거짓) 보내지 않고 `failed`·`last_error='URL 형식 오류'`. 업무 상태는 바꾸지 않는다. 워커는 `Worker(..., secrets=SecretStore, notifier=NotifySender)` 로 받고, 둘 중 없으면 쌓지도 보내지도 않는다(기존 테스트·demo 구성).
+- URL 검사(저장·테스트 때, 전송 때도 한 번 더): `notification.webhook_url_valid(url)` — `http`·`https`, 호스트 있음, 2048자 이하. 사용자 정보(`user:pass@`)는 거부. 저장 때는 더해 `https` 또는 루프백 호스트(`127.0.0.1`·`localhost`·`::1`)의 `http` 만 받는다(`web._webhook_url_savable`, step 8).
+
+### 비밀 파일 (step 7)
+
+`SecretStore.NAMES` 에 하나 추가(상수 `NOTIFY_WEBHOOK_URL`):
+
+| 이름(상수) | 내용 | 비밀 |
+|---|---|---|
+| `notify_webhook_url` | 알림 웹훅 URL 한 줄 | 예 — 화면은 "설정됨/없음"·호스트 이름만 |
+
+### 새 경로 (step 8·9)
+
+모두 운영자 전용(selfhost 로그인, demo 는 운영자 세션). 미로그인 규칙은 phase 11 과 같다.
+
+| 경로 | 동작 | 실패 |
+|---|---|---|
+| `GET /operator/notifications` | 알림 설정 화면(`operator_notifications.html`): 설정됨/없음·호스트, 최근 알림 20건(사건·상태·시각·오류 분류 — URL·본문 없음), URL 폼(`type=password`)·[테스트 보내기]·[삭제] — 버튼 둘은 URL 이 설정됐을 때만. 운영자 왼쪽 목록에 "알림" | |
+| `POST /operator/notifications/webhook` (폼 `url`) | 검사 뒤 비밀 파일 `notify_webhook_url` 에 저장 → 303 `/operator/notifications` | 형식 오류 422 `invalid_field`(`url`) — 값을 되돌려 보이지 않는다 |
+| `POST /operator/notifications/webhook/delete` | 비밀 파일 삭제 → 303 | |
+| `POST /operator/notifications/test` | 저장된 URL 로 대기열 없이 한 번 보내고(`NotifySender(transport=app.state.notify_transport)`, 본문은 `notification_body` — 사건 `test`) 결과를 화면에 표시(200, `data-notify-test="sent\|failed"`) | URL 없음 409 `notify_not_configured`, 전송 실패는 화면 메시지(`HTTP 404`·`시간 초과`·`연결 오류: <클래스>`, URL 없음) |
+| `POST /operator/github/sources/{source_id}/runner` | 연결 코드 발급(`repo.issue_connect_code`) → `/operator/github` 를 그 카드에 명령 한 줄(`runner_command`)을 넣어 그대로 렌더(200, 리다이렉트 없음 — 코드가 URL·기록에 남지 않게) | 남의 소스 404, 운영자 아님 403 `forbidden` |
+
+명령 한 줄: `deploy/selfhost/install-runner.sh --server <base> --code <코드> --repo <폴더>` — `<base>` = `WORKFLOW_PUBLIC_URL` 또는 요청 base URL, `<폴더>` 는 글자 그대로 둔다(사용자가 채움). 카드에 "Runloom 설치 폴더에서 실행, 코드는 10분 유효" 안내. 러너가 이미 매칭된 카드에는 버튼이 없다(고급 설정 안에 [러너 다시 붙이기]).
+
+`install-runner.sh`(step 9): `--server`·`--code`·`--repo`(셋 다 있거나 셋 다 없음, 하나만·모르는 인자는 종료 2)·`--tool`·`--verify`·`--link`·`--env`(반복, setup 에 그대로). 있으면 pip 설치 뒤 `<python> -m workflow.connector setup --server … --code … --repo … [나머지]` 를 실행하고 성공하면 plist 를 쓰고 토큰 파일 확인 없이 적재까지 한다(실패하면 plist·적재 없이 종료 1). 인자가 없으면 지금 동작(토큰 파일이 있을 때만 적재, connect·register 안내 출력). 코드·`--env` 값은 plist·출력에 쓰지 않는다 — `DRY_RUN=1` 의 setup 줄도 `--code ***`·`--env 이름=***`. plist `EnvironmentVariables` 는 `PATH`·`HOME`(실제 값 — git push·fetch 가 `~/.gitconfig`·osxkeychain·`~/.ssh` 를 찾게)·`LANG`. `SSH_AUTH_SOCK` 은 넣지 않는다(ssh 원격은 실패할 수 있음 — SELFHOST 러너 절).
+
+구현 메모(step 9): 경로 `web.operator_attach_runner` 는 `require_session` + `_require_operator_page`(selfhost 미로그인 → `/login`, demo 비운영자 403), 소스는 `repo.get_github_source(conn, session_id, …)` 로 찾아 없으면 404 `not_found`. 템플릿 변수 `runner_issued = {source_id, command, expires_at}` — 그 카드에만 `data-runner-command` 블록(명령 `<pre>`, "10분 유효·1회용", 만료 시각 KST). 러너 없는 카드(`runner_missing`)는 `data-runner-missing` 줄에 [러너 붙이기](발급 뒤엔 [다시 발급]) POST 폼, 매칭된 카드는 접힌 "고급 설정" 맨 위에 [러너 다시 붙이기]. `<폴더>` 자리 글자는 `<이 저장소를 클론한 폴더>`.
+
+### 업무 상태 문구
+
+| 시점 | 수정 Task 상태 · 사유 |
+|---|---|
+| 검토 승인, push 보고 없음 | `확인 필요` · `검토 승인 — 병합·이슈 종료는 사람`(지금 그대로) |
+| 검토 승인, push 실패 보고 | `확인 필요` · `검토 승인 — 결과 브랜치 task/<id> 가 GitHub 에 push 되지 않음. …`(사람 요청 `pr_unavailable` 과 같은 문구) |
+| 검토 승인, PR 대기열 | `확인 필요` · `검토 승인 — PR 여는 중` |
+| PR 열림 | `확인 필요` · `사람 차례 · PR 확인 — #<n>` (목록 표시 "사람 차례 · PR 확인") |
+| PR 열기 실패(상한) | `확인 필요` · `검토 승인 — PR 을 열지 못함, 병합·이슈 종료는 사람` |
+| PR 병합 | `완료` · `PR 병합` |
+| PR 병합 없이 닫힘 | `실패` · `PR 이 병합 없이 닫힘` |
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 러너 CLI | `connector/cli.py`(2) | `setup --server URL [--code CODE] --repo PATH [--id ID] [--repository-id RID] [--tool claude\|codex] [--verify N=CMD]… [--link PATH]… [--env N=V]…`(같은 서버의 `token.json` 이 있으면 connect 생략, 없는데 `--code` 도 없으면 exit 2; `--tool` 기본 = PATH 의 `claude` → `codex` → `claude`), `register` 에 `--link`·`--env` 추가·`--id`·`--repository-id` 선택. 기본값 함수 `default_registration_id(repo: Path) -> str`(소문자, `a-z0-9._-` 밖은 `-`), `default_repository_id(repo: Path, discovered: dict) -> str`. 등록 보고에 `agent_name` = 폴더 이름(100자까지)을 싣는다(`CentralClient.report_registration` 은 값이 있을 때만 보냄). 끝에 한 줄 요약(등록 이름·GitHub·검증 프로필·링크 수·환경변수 이름·다음 할 일). 구현: step 2 |
+| 로컬 등록 | `connector/state.py`(2) | `registrations.links_json`·`env_json`, `save_registration(conn, reg)` 의 `reg["links"]`·`reg["env"]`, `get_registration` 이 같은 키로 돌려줌 |
+| env 거부 목록 | `connector/masking.py`(2·4, `cli.py` 가 가져다 씀) | `RESERVED_ENV_NAMES`, 접두사 `WORKFLOW_` |
+| fetch·기준 | `connector/git_ops.py`·`connector/runner.py`(3) | `fetch_origin(repo)`, `origin_head(repo) -> str \| None`, `BASE_FETCH_INTERVAL_SECONDS = 60`, `GIT_NETWORK_TIMEOUT_SECONDS = 120`, `Runner._registration_heads() -> dict[str, str]`, `CentralClient.claim(connector_id, *, registration_heads=None)` |
+| 서버 반영 | `adapters/repo.py`(3) | `update_registration_heads(conn, connector_id: str, heads: Mapping[str, str]) -> int` |
+| Agent 생성 | `adapters/repo.py`·`server/machine_api.py`(1) | `register_local_agent(...) -> tuple[str, bool]`(위 절), 능력 상수 `SELF_REGISTER_CAPABILITIES = ("code.fix", "code.review")` |
+| 준비물 | `connector/git_ops.py`·`connector/masking.py`·`connector/local_tool.py`(4) | `link_prepared_paths(repo, worktree, links) -> list[str]`, `mask_secrets(text, extra=...)`, `child_env()` 가 등록 `env` 를 더함 |
+| push | `connector/git_ops.py`·`connector/local_tool.py`(5) | `push_task_branch(repo, task_id) -> bool`, `ResultReadyData.branch_pushed`, `executions.branch_pushed` |
+| GitHub PR | `adapters/github_client.py`·`contracts/github.py`(6) | `PullRequestRef(number: int, html_url: str, state: Literal["open","closed"], draft: bool, merged_at: Rfc3339 \| None)`, `HttpGitHubClient.default_branch(repo) -> str`, `find_pull_request(repo, head_branch) -> PullRequestRef \| None`(head = `<owner>:<branch>`, `state=all`, 가장 최근), `create_pull_request(repo, *, head, base, title, body, draft) -> PullRequestRef`, `get_pull_request(repo, number) -> PullRequestRef`, 예외 `GitHubUnprocessable(GitHubError)`(422, `.message` = 응답 `message`+`errors[].message` 요약) — 구현 step 6, 422 재시도·재조회는 `create_pull_request` 안 |
+| PR 대기열 | `adapters/repo.py`·`server/worker.py`(6) | `enqueue_pull_request(conn, *, task_id, session_id, source_id, repository_full_name, issue_number, fix_execution_id, review_execution_id, now) -> bool`, `pull_requests_due(conn, now, *, max_attempts) -> list[Row]`, `record_pull_request(conn, task_id, *, state, now, pr=None, error=None, next_at=None)`, `open_pull_requests(conn) -> list[Row]`, `Worker._deliver_pull_requests`·`_sync_pull_requests`, `PR_MAX_ATTEMPTS = 5`, `PR_BACKOFF_SECONDS = 30`, `TickReport.prs_opened`·`prs_failed`·`prs_merged` |
+| PR 본문 | `domain/pull_request.py`(6) | `pr_body(*, issue_number, task_id, review_summary, task_url) -> str`, `head_branch(task_id) -> str`(`"task/" + task_id`) |
+| App 권한 | `adapters/github_app.py`(6) | `build_manifest` 의 `default_permissions` = `{"issues": "write", "pull_requests": "write", "metadata": "read"}` |
+| 알림 | `domain/notification.py`·`adapters/notify_sender.py`·`adapters/repo.py`·`server/worker.py`(7) | `NotificationMessage(event, task_id, title, content, task_url, pr_url)`, `notification_text(...)`, `notification_body(url, message) -> dict`, `is_discord_url(url) -> bool`, `NotifySender.post(url, body)`, `NotifyFailed(message, retry_after)`, `enqueue_notification(conn, *, session_id, event, task_id, dedupe_key, content, payload, now) -> bool`, `notifications_due(conn, now, *, max_attempts) -> list[Row]`, `record_notification_attempt(conn, notification_id, *, state, error, now, next_at)`(`skipped` 외에는 attempts+1), `list_notifications(conn, session_id, limit=20)`(새것 먼저), `webhook_url_valid(url)`, `webhook_host(url)`, `Worker._request_human`·`_notify`·`_deliver_notifications`(tick 맨 뒤), `NOTIFY_MAX_ATTEMPTS = 5`, `NOTIFY_BACKOFF_SECONDS = 30`, `TickReport.notifications_sent`·`notifications_failed` |
+| 비밀 파일 | `adapters/secret_store.py`(7) | `NOTIFY_WEBHOOK_URL = "notify_webhook_url"`(`NAMES` 여섯 개) |
+| 화면 | `server/web.py`·`server/views.py`(8·9) | `operator_notifications.html`, `views.notifications_context(conn, session_id, *, secrets)`, `github_context` 카드의 `runner_command`, `runner_attach` 버튼 |
+| 오류 코드 | `server/web.py`(8) | `notify_not_configured` |
+| 설치 스크립트 | `deploy/selfhost/install-runner.sh`(9) | `--server`·`--code`·`--repo`·`--tool` |
 
 ## 기존 구현과 초기 설계 기록
 
@@ -787,7 +950,7 @@ Agent는 `capabilities` 배열, Task는 `required_capability` 객체 하나를 �
 
 API 에이전트의 자료 범위: 등록된 `capabilities[].scope.workflow_id`가 진단 서비스가 조회할 수 있는 자동화의 전부다. 데모는 `daily-report` 하나다. 조회 도구는 요청의 `run_id`·`workflow_id`가 범위 밖이면 `access_denied`를 반환하고 빈 본문으로 바꾸지 않는다.
 
-로그·산출물의 비밀정보: 모든 구성 요소는 `Authorization` 헤더를 로그에서 마스킹하고 예외 메시지에 요청 헤더를 넣지 않는다. Codex 프로세스에는 환경변수 허용 목록(`HOME`, `PATH`, `LANG`, `TERM`, Codex가 요구하는 변수)만 전달하고 연결 토큰·API 키를 상속하지 않는다. 연결 프로그램은 JSONL·stderr 산출물을 업로드하기 전에 `wfc_`·`sk-` 접두사를 검사해 발견하면 마스킹하고 `progress` 이벤트로 경고를 남긴다.
+로그·산출물의 비밀정보: 모든 구성 요소는 `Authorization` 헤더를 로그에서 마스킹하고 예외 메시지에 요청 헤더를 넣지 않는다. Codex 프로세스에는 환경변수 허용 목록(`HOME`, `PATH`, `LANG`, `TERM`, Codex가 요구하는 변수)만 전달하고 연결 토큰·API 키를 상속하지 않는다. 연결 프로그램은 JSONL·stderr 산출물을 업로드하기 전에 `wfc_`·`sk-` 접두사(`sk-` 는 낱말 첫머리일 때만 — `task-<hex>` 안의 `sk-` 는 아니다, phase 12 step 10)를 검사해 발견하면 마스킹하고 `progress` 이벤트로 경고를 남긴다.
 
 B에 전달하는 근거: `attachments`에는 진단 서비스의 조회 이력에 실제로 있는 evidence만 넣는다. 데모 fixture는 모두 가상 자료이므로 전부 전달 가능하며, 전달 불가 자료 유형은 첫 구현에 없다. 첨부 총 크기 상한은 1MB이고 초과하면 확인 필요로 둔다. B는 사내 조회 권한이 없으며 첨부만으로 재현한다.
 

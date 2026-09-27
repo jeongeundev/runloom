@@ -2,7 +2,7 @@
 
 > 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고, 13.9 오류 본문도 서버 경로(step 6·11)가 생겨 모두 일반 `json` 펜스다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
-갱신일: 2026-09-27 (phase 9 step 1 — 3.1절 측정 칸 모델 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 9 step 0 — 3.1절 측정 칸 예시
+갱신일: 2026-09-28 (phase 12 step 5 — 14.2 `ResultReadyData.branch_pushed` 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 12 step 3 — 14.1 `ClaimRequest.registration_heads` 구현. 그 전: 2026-09-27 phase 12 step 1 — 14.3·14.4 등록 요청 `agent_name`·응답 `RegistrationResponse` 구현. 그 전: 2026-09-27 phase 12 step 0 — 14절 실제 저장소 순환 선택 칸 예시, `json contract-pending`
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -1022,3 +1022,59 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 | `POST /human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
 
 응답의 효과: `resume` 의 `text` 는 다음 실행 요청 문구 끝의 `## 사람 응답 (운영자)` 절로 붙는다(Task 요청 원문·원본 스냅샷은 그대로). `choose_agent` 는 같은 트랜잭션에서 Task 의 실행 Agent 를 지정하지만 담당자 연결·능력·위임 범위는 재평가가 다시 검사한다 — 응답은 권한이나 소스 설정을 바꾸지 않는다(위임 밖은 13.10 설정 API 로 따로 고친다). `close` 는 Task 를 `실패 · 운영자 종료 — 사람 요청 응답` 으로 마감하고 활성 실행을 해제한다. 같은 트랜잭션이라 착수와 겹쳐도 마감된 Task 에 실행이 붙지 않는다.
+
+## 14. 실제 저장소 순환 — 선택 칸
+
+[ADR-0018](adr/0018-real-repo-cycle.md), 이름·표는 [ARCHITECTURE](ARCHITECTURE.md) "실제 저장소 순환 — phase 12". 계약 버전은 1 그대로이고 1~13절 payload 는 바뀌지 않는다 — 아래는 모두 추가형 선택 칸이다. 14.3·14.4 는 step 1 이, 14.1 은 step 3 이, 14.2 는 step 5 가 구현했다(`server/machine_api.py` 의 `RegistrationRequest.agent_name`·`RegistrationResponse`, `contracts/v1.py` 의 `ClaimRequest.registration_heads`·`ResultReadyData.branch_pushed`). 구버전 서버는 새 칸을 422 `unknown_field` 로 거부하므로 업그레이드 순서는 서버 → 러너이고, 새 러너는 값이 없으면 칸을 보내지 않는다.
+
+### 14.1 `ClaimRequest` — 기준 커밋 보고
+
+`registration_heads` 는 `local_registration_id` → 러너가 `git fetch origin` 뒤 읽은 `refs/remotes/origin/HEAD` 커밋(40자 소문자 hex). 서버는 이 연결 프로그램의 Agent 만 `agents.base_commit` 으로 갱신하고 모르는 키는 무시한다. fetch 에 실패한 등록은 빠진다(이전 값 유지).
+
+```json
+{ "contract_version": 1, "connector_id": "conn-mac-01", "supported_kinds": ["code_change", "bug_fix", "code_review"], "registration_heads": { "OpenArchive": "7c1d9e2f4a6b8c0d1e3f5a7b9c2d4e6f8a0b1c3d" } }
+```
+
+### 14.2 `result_ready` — 결과 브랜치 push
+
+`branch_pushed` 는 러너가 `task/<task_id>` 를 등록 폴더의 `origin` 에 push 한 결과다. `true` 성공, `false` 시도했으나 실패(원격 거부·자격 없음·네트워크), 칸 없음 = 시도하지 않음(`origin` 없음·결과 커밋 없음·검토 실행·구버전). null 은 직렬화에서 빠진다. push 실패는 실행 결과를 바꾸지 않는다 — 서버는 `branch_pushed = true` 인 수정 실행이 검토 `approved` 를 받았을 때만 초안 PR 을 연다.
+
+```json
+{ "contract_version": 1, "execution_id": "exec-fix-001", "seq": 4, "occurred_at": "2026-09-20T01:09:41+09:00", "type": "result_ready", "data": { "result_artifact_id": "art-fix-result-001", "branch_pushed": true, "usage": { "cost_usd": 0.4213, "input_tokens": 18342, "output_tokens": 5120 } } }
+```
+
+```json
+{ "contract_version": 1, "execution_id": "exec-fix-002", "seq": 4, "occurred_at": "2026-09-20T02:09:41+09:00", "type": "result_ready", "data": { "result_artifact_id": "art-fix-result-002", "branch_pushed": false } }
+```
+
+### 14.3 등록 — Agent 를 새로 만드는 경우
+
+`connector setup`(또는 `--id`·`--repository-id` 를 생략한 `register`)이 보내는 요청. `local_registration_id` 기본 = 폴더 이름, `repository_id` 기본 = 러너가 찾은 GitHub `owner/name`, `agent_name` = 폴더 이름. 같은 `local_registration_id` 의 Agent 가 없고 서버가 `selfhost` 모드면 Agent 를 만든다(능력 `code.fix`·`code.review`, scope `repository_id`). `demo` 모드는 지금처럼 404.
+
+```json
+{
+  "contract_version": 1,
+  "connector_id": "conn-mac-01",
+  "local_registration_id": "OpenArchive",
+  "agent_name": "OpenArchive",
+  "tool": "claude",
+  "repository_id": "jeongeundev/OpenArchive",
+  "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
+  "verification_profile_ids": ["vp-check"],
+  "discovered": { "found": { "CLAUDE.md": "# OpenArchive …", "claude_config": true, "github_repository": "jeongeundev/OpenArchive" }, "not_read": [], "verification_level": "설정 발견" }
+}
+```
+
+### 14.4 등록 응답 — `created`
+
+`created` 는 이번 요청이 Agent 를 만들었는지다. 같은 요청을 다시 보내면 같은 `agent_id` 에 `created: false`(멱등). 운영자가 미리 만든 Agent 를 채운 경우도 `false`. 구버전 러너는 `agent_id` 만 읽는다. selfhost 에서 같은 `local_registration_id` 의 Agent 를 취소되지 않은 다른 연결 프로그램이 쓰고 있으면 409 `registration_taken`(`field` = `local_registration_id`)이다.
+
+```json
+{ "agent_id": "agt-5e1f0c2a", "created": true }
+```
+
+```json
+{ "agent_id": "agt-5e1f0c2a", "created": false }
+```
+
+러너 로컬 등록의 `--link`·`--env` 는 계약에 없다 — 중앙에 이름도 값도 보내지 않는다(ARCHITECTURE "러너 로컬 등록 새 칸").

@@ -1,0 +1,39 @@
+{# 운영자 알림 — ADR-0018 결정 5, ARCHITECTURE "새 경로 (step 8·9)". 웹훅 URL 은 비밀 파일에만 두고 다시 보이지 않는다 —
+   설정됨/없음·호스트만. 최근 알림은 사건·상태·시각·오류 분류만(URL·본문 없음). [테스트 보내기] 결과는 보냄/HTTP 상태/시간 초과. #}
+{% extends "base.html" %}
+{% block title %}알림 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">운영자<span class="sep">/</span>알림</div></div>
+
+<div class="card" data-notify-configured="{{ 'true' if notify_configured else 'false' }}">
+  <p>{% if notify_configured %}설정됨 · 호스트 {{ notify_host }}{% else %}알림 주소 없음{% endif %}</p>
+  <p class="small">사람 차례(새 사람 요청·PR 열림)와 업무 실패를 이 주소로 보냅니다. Discord 웹훅이면 메시지 한 줄, 그 밖은 JSON 입니다. 주소는 서버의 비밀 파일(0600)에만 두고 화면·DB 에 다시 보이지 않습니다.</p>
+  {% if test_result %}<div class="{{ 'alert' if test_result.state == 'failed' else 'small' }}" data-notify-test="{{ test_result.state }}">{{ test_result.text }}</div>{% endif %}
+  <form method="post" action="/operator/notifications/webhook">
+    <div class="field"><label for="notify-url">웹훅 URL</label>
+      <input type="password" id="notify-url" name="url" autocomplete="off" required placeholder="{{ '새 주소로 바꾸기' if notify_configured else 'https://discord.com/api/webhooks/…' }}">
+      <div class="help">https:// 주소. 같은 컴퓨터의 수신(예: n8n)은 http://127.0.0.1 도 됩니다.</div></div>
+    <div class="actions"><button class="btn" type="submit">저장</button></div>
+  </form>
+  {% if notify_configured %}
+  <div class="actions">
+    <form method="post" action="/operator/notifications/test"><button class="btn btn-secondary" type="submit">테스트 보내기</button></form>
+    <form method="post" action="/operator/notifications/webhook/delete"><button class="btn btn-secondary" type="submit">삭제</button></form>
+  </div>
+  {% endif %}
+</div>
+
+<h2>최근 알림</h2>
+<div class="card">
+  <table>
+    <tr><th>사건</th><th>상태</th><th>만든 시각</th><th>보낸 시각</th><th>오류</th></tr>
+    {% for n in notifications %}
+    <tr data-notification-event="{{ n.event }}"><td>{{ {'human_request': '사람 차례', 'pr_opened': 'PR 확인', 'task_failed': '실패'}[n.event] }}</td>
+      <td>{{ {'pending': '대기', 'sent': '보냄', 'failed': '실패', 'skipped': '건너뜀'}[n.state] }}{% if n.attempts %} · {{ n.attempts }}회{% endif %}</td>
+      <td>{{ n.created_at|kst }}</td><td>{{ n.sent_at|kst if n.sent_at else '' }}</td><td>{{ n.last_error or '' }}</td></tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">아직 보낸 알림이 없습니다.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}
