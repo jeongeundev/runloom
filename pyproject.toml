@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9", "ruff>=0.16"]
+dev = ["pytest>=9", "ruff>=0.16", "pyyaml>=6"]  # pyyaml: tests/test_selfhost_files.py 의 compose 검사
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/workflow", "src/diagnostic_demo"]
