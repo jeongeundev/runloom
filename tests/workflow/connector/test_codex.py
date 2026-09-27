@@ -14,7 +14,8 @@ import pytest
 
 from workflow.connector import git_ops, state
 from workflow.connector.codex import CodexAdapter
-from workflow.contracts.v1 import ExecutionRequest
+from workflow.connector.local_tool import ToolRun
+from workflow.contracts.v1 import ExecutionRequest, ExecutionUsage
 
 from .conftest import REVIEW_SPEC, make_local_request, make_request, make_review_request
 
@@ -691,3 +692,45 @@ def test_code_review_runs_readonly_codex_in_result_checkout(state_conn, repo, tm
 ])
 def test_read_structured_message(state_conn, raw, data, note):
     assert adapter(state_conn).read_structured_message(raw) == (data, note)
+
+
+# --- 사용량 (phase 9) — stdout JSONL 의 `turn.completed.usage` 만, 비용은 항상 모름 ---------------------------
+
+
+def test_full_run_without_turn_usage_has_no_usage(state_conn, repo, handoff, fake_bin):
+    write_fake_codex(fake_bin, "full")  # 가짜의 turn.completed 에는 usage 가 없다
+    base = register(state_conn, repo)
+
+    output = adapter(state_conn).run(request_for(base), handoff, Progress())
+
+    assert output.failed is None, output.failed
+    assert output.usage is None
+
+
+def _jsonl(*events) -> bytes:
+    return b"".join(json.dumps(e).encode() + b"\n" for e in events)
+
+
+def _run_with(stdout: bytes) -> ToolRun:
+    return ToolRun(pid=1, started_at="2026-09-27T01:00:00Z", exit_code=0, stdout=stdout, stderr=b"",
+                   timed_out=False, stopped=True, last_message=None)
+
+
+@pytest.mark.parametrize("stdout, usage", [
+    (_jsonl({"type": "thread.started"},
+            {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 50, "output_tokens": 7}},
+            {"type": "turn.completed", "usage": {"input_tokens": 20, "output_tokens": 3}}),
+     ExecutionUsage(input_tokens=120, output_tokens=10)),  # 턴별 합, 비용은 null
+    (_jsonl({"type": "thread.started"}, {"type": "turn.completed"}), None),
+    (_jsonl({"type": "turn.completed", "usage": {"input_tokens": "100", "output_tokens": 7}}),
+     ExecutionUsage(output_tokens=7)),
+    (_jsonl({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 1}},
+            {"type": "turn.completed", "usage": {"input_tokens": True, "output_tokens": 2}}),
+     ExecutionUsage(output_tokens=3)),  # 한 턴이라도 형식이 다르면 그 칸의 합은 모름
+    (b"not json\n" + _jsonl({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 2}}),
+     ExecutionUsage(input_tokens=1, output_tokens=2)),
+    (_jsonl({"type": "turn.completed", "usage": "many"}), None),
+    (b"", None),
+])
+def test_read_usage_sums_turn_completed_tokens(state_conn, stdout, usage):
+    assert adapter(state_conn).read_usage(_run_with(stdout)) == usage

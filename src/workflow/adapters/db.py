@@ -12,12 +12,15 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
 
 OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
+
+# phase 9 (ADR-0015): Task 이벤트 종류. ARCHITECTURE "측정 — phase 9" 이벤트 기록 규칙.
+TASK_EVENT_TYPES = ("status_changed", "blocked", "ready")
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
@@ -156,6 +159,67 @@ CREATE TABLE IF NOT EXISTS source_deliveries (
 """
 
 
+# v6 (phase 9, ADR-0015): 측정. 새 칸은 CREATE TABLE 과 v5 → v6 ALTER 가 같은 정의를 쓴다.
+# 실행 칸은 모두 NULL 허용 — NULL = 모름(0 과 다름).
+_SESSION_CONFIG_REVISION = "config_revision INTEGER NOT NULL DEFAULT 1 CHECK (config_revision >= 1)"
+_EXECUTION_MEASURE_COLUMNS = (
+    "config_revision INTEGER",
+    "folder_commit TEXT",
+    "folder_dirty INTEGER CHECK (folder_dirty IS NULL OR folder_dirty IN (0, 1))",
+    "cost_usd REAL CHECK (cost_usd IS NULL OR cost_usd >= 0)",
+    "input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0)",
+    "output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0)",
+)
+# 원본 이슈를 닫은 병합 PR (step 11 — 도입 후 완료 시각). NULL = 아직 모름/병합 없음, merge_checked_at = 마지막 조회.
+_SOURCE_ISSUE_MERGE_COLUMNS = (
+    "merged_pr_number INTEGER",
+    "pr_merged_at TEXT",
+    "merge_checked_at TEXT",
+)
+
+_V6_TABLES = f"""
+-- Task 상태·준비 이력. 추가 전용 — UPDATE·DELETE 경로 없음. revision 들은 기록 시점의 Task·세션 값.
+CREATE TABLE IF NOT EXISTS task_events (
+  id              INTEGER PRIMARY KEY,
+  task_id         TEXT NOT NULL REFERENCES tasks(task_id),
+  session_id      TEXT NOT NULL REFERENCES sessions(session_id),
+  type            TEXT NOT NULL CHECK (type IN ({_in(TASK_EVENT_TYPES)})),
+  task_revision   INTEGER NOT NULL,
+  config_revision INTEGER NOT NULL,
+  occurred_at     TEXT NOT NULL,                            -- 서버 시계
+  data_json       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_task_events_task ON task_events(task_id, id);
+CREATE INDEX IF NOT EXISTS ix_task_events_session ON task_events(session_id, occurred_at);
+
+-- 기준선: 도입 전 이슈 → 병합 PR. 이슈 하나에 병합 PR 이 여럿이면 행도 여럿.
+CREATE TABLE IF NOT EXISTS baseline_items (
+  source_id       TEXT NOT NULL REFERENCES github_sources(source_id),
+  issue_number    INTEGER NOT NULL,
+  issue_title     TEXT NOT NULL,
+  issue_opened_at TEXT NOT NULL,
+  pr_number       INTEGER NOT NULL,
+  pr_merged_at    TEXT NOT NULL,
+  fetched_at      TEXT NOT NULL,
+  PRIMARY KEY (source_id, issue_number, pr_number)
+);
+
+-- 소스별 마지막 기준선 가져오기. opened_before = 그 소스의 github_sources.created_at.
+CREATE TABLE IF NOT EXISTS baseline_imports (
+  source_id     TEXT PRIMARY KEY REFERENCES github_sources(source_id),
+  opened_before TEXT NOT NULL,
+  fetched_at    TEXT NOT NULL,
+  item_count    INTEGER NOT NULL
+);
+"""
+
+# source_issues 는 v5 정의(_V5_TABLES)를 4 → 5 가 그대로 쓰므로, v6 칸은 빈 DB·5 → 6 모두 ALTER 로 더한다.
+_V6_SOURCE_ISSUE_ALTERS = "".join(
+    f"ALTER TABLE source_issues ADD COLUMN {column};\n" for column in _SOURCE_ISSUE_MERGE_COLUMNS
+)
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -164,7 +228,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
   session_id  TEXT PRIMARY KEY,
   created_at  TEXT NOT NULL,
-  is_operator INTEGER NOT NULL DEFAULT 0 CHECK (is_operator IN (0, 1))
+  is_operator INTEGER NOT NULL DEFAULT 0 CHECK (is_operator IN (0, 1)),
+  {_SESSION_CONFIG_REVISION}                               -- 워크스페이스 설정 번호 (v6)
 );
 
 CREATE TABLE IF NOT EXISTS agents (
@@ -318,6 +383,7 @@ CREATE TABLE IF NOT EXISTS executions (
   finished_at              TEXT,
   released_at              TEXT,
   predecessor_execution_id TEXT,
+  {",\n  ".join(_EXECUTION_MEASURE_COLUMNS)},               -- 측정 (v6)
   UNIQUE (task_id, attempt_no),
   UNIQUE (task_id, start_key)
 );
@@ -361,7 +427,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS
 
 
 def _statements(script: str) -> list[str]:
@@ -421,11 +487,27 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
     _seed_phase8_kinds(conn, _now())
     if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
-    conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+    conn.execute("UPDATE schema_version SET version = 5")
+
+
+def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 기존 행은 건드리지 않고 칸·테이블만 더한다 —
+    세션 config_revision 은 1, 실행 측정 칸·원본 이슈 병합 칸은 NULL(모름). 과거 이벤트를 추정해 채우지 않는다."""
+    conn.execute(f"ALTER TABLE sessions ADD COLUMN {_SESSION_CONFIG_REVISION}")
+    for column in _EXECUTION_MEASURE_COLUMNS:
+        conn.execute(f"ALTER TABLE executions ADD COLUMN {column}")
+    for statement in _statements(_V6_SOURCE_ISSUE_ALTERS):
+        conn.execute(statement)
+    for statement in _statements(_V6_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 6")
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4 는 한 트랜잭션으로 5 로 올린다(데이터 보존, 실패하면 4 그대로).
+    """멱등. 빈 DB 는 새로 만들고, 4 는 4 → 5 → 6, 5 는 5 → 6 을 한 트랜잭션으로 올린다
+    (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
@@ -439,6 +521,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
         elif row[0] == 4:
             _migrate_4_to_5(conn)
+            _migrate_5_to_6(conn)
+        elif row[0] == 5:
+            _migrate_5_to_6(conn)
         elif row[0] != SCHEMA_VERSION:
             raise RuntimeError(f"schema_version {row[0]} 은 지원하지 않습니다 (기대 {SCHEMA_VERSION})")
     except BaseException:

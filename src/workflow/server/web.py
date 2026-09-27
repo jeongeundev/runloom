@@ -22,9 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader
 from pydantic import ValidationError
@@ -51,6 +52,7 @@ from workflow.contracts.v1 import (
     KindSpec,
     ReviewComment,
     SuccessorRule,
+    parse_rfc3339_aware,
 )
 from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
@@ -67,7 +69,7 @@ from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
 from workflow.domain.task_sources import Issue, map_issue
-from workflow.server import task_cycle, views
+from workflow.server import metrics_api, task_cycle, views
 from workflow.server.auth import get_conn, require_operator, require_session, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
@@ -239,7 +241,9 @@ def _refresh_status(
     """실행·선택·선행 상태를 보고 Task 의 사용자 상태를 다시 저장한다 (PRD 3절 대응표)."""
     row = repo.get_task(conn, task_id)
     status = user_status(views.build_task_view(conn, row, now=now, settings=settings))
-    repo.update_task_status(conn, task_id, status.label, status.reason, review_decision=review_decision)
+    repo.update_task_status(
+        conn, task_id, status.label, status.reason, review_decision=review_decision, now=now
+    )
 
 
 # --- 업무 종류 등록부 (ADR-0009) — 요구 능력·종류 판단은 세션 등록부 + domain.kinds 로만 한다 ---------------
@@ -998,14 +1002,14 @@ def task_review(
     if decision == "approve":
         reason = "검토 승인 · 병합: 운영자 확인 대기" if _awaits_merge(task["kind"]) else "검토 승인"
         repo.update_task_status(
-            conn, task_id, "완료", reason, finished_at=now, review_decision="approve"
+            conn, task_id, "완료", reason, finished_at=now, review_decision="approve", now=now
         )
         repo.release_execution(conn, execution_id, now)
         return _redirect(f"/tasks/{task_id}", response)
 
     if decision == "close":
         repo.update_task_status(
-            conn, task_id, "실패", "검토 거절", finished_at=now, review_decision="close"
+            conn, task_id, "실패", "검토 거절", finished_at=now, review_decision="close", now=now
         )
         repo.release_execution(conn, execution_id, now)
         return _redirect(f"/tasks/{task_id}", response)
@@ -1488,6 +1492,43 @@ def operator_github_page(
         raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
     return _render(
         "operator_github.html", **base, **views.github_context(conn, session_id, now=now, settings=_settings(request)),
+    )
+
+
+@router.get("/metrics", response_class=HTMLResponse)
+def metrics_page(
+    request: Request,
+    since: str = Query("", alias="from"),
+    until: str = Query("", alias="to"),
+    group_by: str = Query(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """지표 화면 — `metrics_api` 와 같은 계산. 폼은 GET 이라 빈 칸은 "지정 안 함" 이다. 기준선 가져오기 버튼은
+    운영자 JSON API(`POST /operator/github/sources/{id}/baseline`)로 보낸다."""
+    now = utc_now()
+    base = _base(request, conn, session_id, now)
+    if not base["is_operator"]:
+        raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
+    for field, value in (("from", since), ("to", until)):
+        if not value:
+            continue
+        try:
+            parse_rfc3339_aware(value)
+        except ValueError:
+            raise PageError(422, "invalid_field", "기간은 시간대가 있는 RFC 3339 시각이어야 합니다.", field=field) from None
+    if group_by not in ("", "config_revision", "folder_commit"):
+        raise PageError(422, "invalid_field", "그룹은 설정 번호 또는 러너 폴더 커밋입니다.", field="group_by")
+    params = {"from": since, "to": until, "group_by": group_by}
+    try:
+        report = metrics_api._report(conn, request, session_id, since or None, until or None, group_by or None)
+    except ApiError as exc:
+        raise PageError(exc.status, exc.code, exc.message, field=exc.field) from None
+    query = urlencode({k: v for k, v in params.items() if v})
+    return _render(
+        "metrics.html", **base, **views.metrics_context(report, metrics_api._baselines(conn, session_id)),
+        params=params, query=f"?{query}" if query else "",
+        token_configured=bool(_settings(request).github_token),
     )
 
 

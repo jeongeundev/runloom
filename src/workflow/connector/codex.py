@@ -9,6 +9,10 @@ Codex 프로세스 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐
 (`build_readonly_argv`), `parse_generic_message` 가 `{outcome, summary}` 만 읽는다. 인자 배열은 여전히 고정이다.
 커밋 검토(`code_review`)도 같은 `launch_readonly` 로 결과 커밋의 체크아웃에서 띄우고, `read_structured_message` 가 같은
 파일을 객체로 꺼낸다.
+
+사용량(`read_usage`, ADR-0015)은 stdout JSONL 의 `turn.completed.usage.input_tokens`·`output_tokens` 턴별 합이다. 실제
+Codex 로 키를 확인한 기록이 없어(ARCHITECTURE "CLI 결과에서 비용·토큰 얻기") 없거나 형식이 다르면 모름으로 둔다.
+Codex 는 비용을 보고하지 않으므로 `cost_usd` 는 항상 null.
 """
 
 import json
@@ -30,7 +34,9 @@ from workflow.connector.local_tool import (
     ToolRun,
     communicate_or_stop,
     outcome_note,
+    usage_from,
 )
+from workflow.contracts.v1 import ExecutionUsage
 
 READONLY_SANDBOX = "read-only"
 
@@ -162,3 +168,25 @@ class CodexAdapter(LocalToolAdapter):
                     return ToolResult(last.outcome, last.summary or "(요약 없음)", None)
                 return ToolResult(last.outcome, last.summary, outcome_note(last.outcome, outcomes))
         return ToolResult("", f"Codex 마지막 메시지를 읽지 못함 ({note})", note)
+
+    def read_usage(self, run: ToolRun) -> ExecutionUsage | None:
+        """`turn.completed` 마다 `usage` 의 두 토큰을 더한다. 한 턴이라도 그 칸이 정수가 아니면 그 칸의 합은 모름."""
+        totals: dict[str, int | None] = {}
+        for line in run.stdout.decode("utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict) or event.get("type") != "turn.completed":
+                continue
+            tokens = event.get("usage")
+            if not isinstance(tokens, dict):
+                continue
+            for key in ("input_tokens", "output_tokens"):
+                value = tokens.get(key)
+                ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                if key not in totals:
+                    totals[key] = value if ok else None
+                elif totals[key] is not None:
+                    totals[key] = totals[key] + value if ok else None
+        return usage_from(None, totals.get("input_tokens"), totals.get("output_tokens"))

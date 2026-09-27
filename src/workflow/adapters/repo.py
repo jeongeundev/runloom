@@ -41,6 +41,7 @@ from workflow.contracts.github import (
     AssigneeBinding,
     GitHubIssueSnapshot,
     GitHubSourceConfig,
+    IssuePrLink,
     SourceDelivery,
     snapshot_digest,
 )
@@ -54,12 +55,14 @@ from workflow.contracts.v1 import (
     EventAck,
     ExecutionEvent,
     ExecutionRequest,
+    ExecutionUsage,
     HandoffBundle,
     KindSpec,
     SelectionRecord,
     SuccessorRule,
 )
 from workflow.domain import status as domain_status
+from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
 
@@ -115,6 +118,23 @@ def create_session(conn: Connection, session_id: str, now: str) -> None:
 
 def get_session(conn: Connection, session_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM sessions WHERE session_id = ?", (session_id,))
+
+
+def get_config_revision(conn: Connection, session_id: str) -> int:
+    """워크스페이스 설정 번호 (ADR-0015). 실행·후속 연결에 찍는 값."""
+    row = _one(conn, "SELECT config_revision FROM sessions WHERE session_id = ?", (session_id,))
+    if row is None:
+        raise NotFound(f"session {session_id}")
+    return row["config_revision"]
+
+
+def bump_config_revision(conn: Connection, session_id: str) -> int:
+    """설정 번호 +1. 자체 BEGIN 이 없다 — 종류·규칙·GitHub 소스를 저장하는 호출자 트랜잭션 안에서만 부른다."""
+    cur = conn.execute(
+        "UPDATE sessions SET config_revision = config_revision + 1 WHERE session_id = ?", (session_id,)
+    )
+    _require_rowcount(cur, f"session {session_id}")
+    return get_config_revision(conn, session_id)
 
 
 def mark_operator(conn: Connection, session_id: str) -> None:
@@ -291,6 +311,7 @@ def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str) -> 
         if get_kind(conn, session_id, spec.kind) is not None:
             raise DuplicateKind(spec.kind)
         _insert_kind_row(conn, session_id, spec, now)
+        bump_config_revision(conn, session_id)
 
 
 def delete_kind(conn: Connection, session_id: str, kind: str) -> None:
@@ -312,6 +333,7 @@ def delete_kind(conn: Connection, session_id: str, kind: str) -> None:
         if used_by_task is not None or used_by_rule is not None:
             raise KindInUse(kind)
         conn.execute("DELETE FROM kinds WHERE session_id = ? AND kind = ?", (session_id, kind))
+        bump_config_revision(conn, session_id)
 
 
 def list_rules(conn: Connection, session_id: str) -> list[tuple[str, SuccessorRule]]:
@@ -343,15 +365,19 @@ def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str
                 raise NotFound(f"kind {kind}")
         if get_rule(conn, session_id, rule.from_kind, rule.to_kind) is not None:
             raise DuplicateRule(f"{rule.from_kind} → {rule.to_kind}")
-        return _insert_rule_row(conn, session_id, rule, now)
+        rule_id = _insert_rule_row(conn, session_id, rule, now)
+        bump_config_revision(conn, session_id)
+        return rule_id
 
 
 def delete_rule(conn: Connection, session_id: str, rule_id: str) -> None:
     """내장 규칙도 삭제할 수 있다 — 팀이 진단 → 코드 수정을 잇지 않을 수 있다."""
-    cur = conn.execute(
-        "DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id)
-    )
-    _require_rowcount(cur, f"rule {rule_id}")
+    with _tx(conn):
+        cur = conn.execute(
+            "DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id)
+        )
+        _require_rowcount(cur, f"rule {rule_id}")
+        bump_config_revision(conn, session_id)
 
 
 # --- 세션 등록 (phase 5: 심사자 세션이 카탈로그에서 고른 Agent) ---------------
@@ -599,14 +625,83 @@ def update_task_status(
     *,
     finished_at: str | None = None,
     review_decision: str | None = None,
+    now: str,
 ) -> None:
-    cur = conn.execute(
-        "UPDATE tasks SET status = ?, status_reason = ?, "
-        "finished_at = COALESCE(?, finished_at), review_decision = COALESCE(?, review_decision) "
-        "WHERE task_id = ?",
-        (status, reason, finished_at, review_decision, task_id),
+    """상태가 실제로 바뀌거나 운영자 검토 결정(`review_decision`)이 주어지면 같은 트랜잭션에 `status_changed`."""
+    with _tx(conn):
+        previous = _status_of(conn, task_id)
+        conn.execute(
+            "UPDATE tasks SET status = ?, status_reason = ?, "
+            "finished_at = COALESCE(?, finished_at), review_decision = COALESCE(?, review_decision) "
+            "WHERE task_id = ?",
+            (status, reason, finished_at, review_decision, task_id),
+        )
+        _status_changed(conn, task_id, previous, status, reason, now, review_decision=review_decision)
+
+
+# --- 업무 이벤트 (phase 9, ADR-0015 — 추가 전용 task_events) -----------------------
+
+
+def _status_of(conn: Connection, task_id: str) -> str:
+    row = _one(conn, "SELECT status FROM tasks WHERE task_id = ?", (task_id,))
+    if row is None:
+        raise NotFound(f"task {task_id}")
+    return row["status"]
+
+
+def _status_changed(
+    conn: Connection, task_id: str, previous: str, status: str, reason: str, now: str,
+    *, review_decision: str | None = None,
+) -> None:
+    """상태 UPDATE 와 같은 트랜잭션에서. 상태가 같고 검토 결정도 없으면(사유 문구만 바뀜) 쓰지 않는다."""
+    if previous == status and review_decision is None:
+        return
+    data = {"from": previous, "to": status, "reason": reason, "review_decision": review_decision}
+    append_task_event(conn, task_id=task_id, type="status_changed", data=data, now=now)
+
+
+def append_task_event(conn: Connection, *, task_id: str, type: str, data: dict, now: str) -> bool:
+    """세션·`task_revision`·현재 `config_revision` 은 DB 에서 읽는다. 자체 BEGIN 이 없다 — 호출자 트랜잭션 안에서 쓴다.
+    `blocked` 는 그 Task 의 최근 `blocked`·`ready` 가 같은 목록의 `blocked` 면, `ready` 는 최근 행이 `ready` 면
+    쓰지 않는다 (ARCHITECTURE "이벤트 기록 규칙"). 썼으면 True."""
+    task = _one(
+        conn,
+        "SELECT t.session_id, t.revision, s.config_revision FROM tasks t"
+        " JOIN sessions s ON s.session_id = t.session_id WHERE t.task_id = ?",
+        (task_id,),
     )
-    _require_rowcount(cur, f"task {task_id}")
+    if task is None:
+        raise NotFound(f"task {task_id}")
+    data_json = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    if type == "blocked":
+        last = _one(
+            conn,
+            "SELECT type, data_json FROM task_events WHERE task_id = ? AND type IN ('blocked', 'ready')"
+            " ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        )
+        if last is not None and (last["type"], last["data_json"]) == ("blocked", data_json):
+            return False
+    elif type == "ready":
+        last = _one(conn, "SELECT type FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,))
+        if last is not None and last["type"] == "ready":
+            return False
+    conn.execute(
+        "INSERT INTO task_events (task_id, session_id, type, task_revision, config_revision, occurred_at, data_json)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (task_id, task["session_id"], type, task["revision"], task["config_revision"], now, data_json),
+    )
+    return True
+
+
+def record_blocked(conn: Connection, task_id: str, blockers: list[dict], *, now: str) -> bool:
+    """워커의 준비 판정 대기 기록 — `append_task_event` 를 자체 트랜잭션으로 감싼다. `blockers` 는 `{"code", "actor"}`."""
+    with _tx(conn):
+        return append_task_event(conn, task_id=task_id, type="blocked", data={"blockers": blockers}, now=now)
+
+
+def list_task_events(conn: Connection, task_id: str) -> list[Row]:
+    return conn.execute("SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)).fetchall()
 
 
 def update_task_choice(
@@ -790,11 +885,12 @@ def create_execution(
     predecessor_execution_id: str | None,
     now: str,
     release_execution_id: str | None = None,
+    ready: bool = False,
 ) -> None:
     """마감된 Task → TaskClosed, 활성 잠금(`ux_executions_active`) 위반 → ActiveExecutionExists, `(task_id, start_key)` 중복 →
     DuplicateStartKey. 잠금이 우선한다 (sqlite 가 부분 인덱스를 먼저 검사한다).
     `release_execution_id` 를 주면 그 이전 시도의 잠금 해제와 새 시도 생성을 한 트랜잭션에서 한다 — 새 시도가
-    거부되면 해제도 되돌린다(워커의 재작업·검토 재연결)."""
+    거부되면 해제도 되돌린다(워커의 재작업·검토 재연결). `ready` 면 같은 트랜잭션에 `ready` 이벤트(업무 순환 착수)."""
     request_json = request.model_dump_json()
     with _tx(conn):
         closed = _one(conn, "SELECT finished_at FROM tasks WHERE task_id = ?", (task_id,))
@@ -809,12 +905,15 @@ def create_execution(
             conn.execute(
                 """
                 INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind,
-                  request_json, status, assigned_connector_id, predecessor_execution_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                  request_json, status, assigned_connector_id, predecessor_execution_id, created_at,
+                  config_revision)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?,
+                  (SELECT s.config_revision FROM sessions s JOIN tasks t ON t.session_id = s.session_id
+                   WHERE t.task_id = ?))
                 """,
                 (
                     execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,
-                    assigned_connector_id, predecessor_execution_id, now,
+                    assigned_connector_id, predecessor_execution_id, now, task_id,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -824,6 +923,9 @@ def create_execution(
             if message.endswith("executions.task_id"):
                 raise ActiveExecutionExists(task_id) from exc
             raise
+        if ready:
+            data = {"execution_id": execution_id, "agent_id": agent_id, "start_key": start_key}
+            append_task_event(conn, task_id=task_id, type="ready", data=data, now=now)
 
 
 def get_execution(conn: Connection, execution_id: str) -> Row | None:
@@ -865,6 +967,13 @@ def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None
             (row["execution_id"], now, connector_id),
         )
     return row
+
+
+def _usage_columns(usage: ExecutionUsage | None) -> dict[str, object]:
+    """모르는 값은 NULL 그대로 — 0 으로 채우지 않는다 (ADR-0015)."""
+    if usage is None:
+        return {"cost_usd": None, "input_tokens": None, "output_tokens": None}
+    return {"cost_usd": usage.cost_usd, "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens}
 
 
 def _event_content(event: ExecutionEvent) -> dict:
@@ -911,6 +1020,8 @@ def append_event(
             updates["accepted_at"] = now
         elif event.type == "started":
             updates["started_at"] = now
+            updates["folder_commit"] = event.data.folder_commit
+            updates["folder_dirty"] = None if event.data.folder_dirty is None else int(event.data.folder_dirty)
         elif event.type == "result_ready":
             artifact_id = event.data.result_artifact_id
             owned = _one(
@@ -924,11 +1035,13 @@ def append_event(
                 )
             updates["result_artifact_id"] = artifact_id
             updates["finished_at"] = now
+            updates.update(_usage_columns(event.data.usage))
         elif event.type == "failed":
             updates["failed_code"] = event.data.code
             updates["failed_message"] = event.data.message
             updates["process_stopped"] = int(event.data.process_stopped)
             updates["finished_at"] = now
+            updates.update(_usage_columns(event.data.usage))
 
         conn.execute(
             "INSERT INTO execution_events (execution_id, seq, type, occurred_at, received_at, "
@@ -1076,11 +1189,12 @@ def finish_task(
 ) -> None:
     """Task 마감(`finished_at`)과 활성 잠금 해제를 한 트랜잭션에서. 워커의 `완료`(자동 판정)·`실패`(종료 확인) 용."""
     with _tx(conn):
-        cur = conn.execute(
+        previous = _status_of(conn, task_id)
+        conn.execute(
             "UPDATE tasks SET status = ?, status_reason = ?, finished_at = ? WHERE task_id = ?",
             (status, reason, now, task_id),
         )
-        _require_rowcount(cur, f"task {task_id}")
+        _status_changed(conn, task_id, previous, status, reason, now)
         conn.execute(
             "UPDATE executions SET released_at = ? WHERE execution_id = ? AND released_at IS NULL",
             (now, execution_id),
@@ -1105,12 +1219,13 @@ def record_verdict(
             "VALUES (?, ?, ?, ?)",
             (task_id, execution_id, json.dumps(verdict, ensure_ascii=False), now),
         )
-        cur = conn.execute(
+        previous = _status_of(conn, task_id)
+        conn.execute(
             "UPDATE tasks SET status = ?, status_reason = ?, "
             "finished_at = CASE WHEN ? THEN ? ELSE finished_at END WHERE task_id = ?",
             (status, reason, int(finish), now, task_id),
         )
-        _require_rowcount(cur, f"task {task_id}")
+        _status_changed(conn, task_id, previous, status, reason, now)
         if finish:
             conn.execute(
                 "UPDATE executions SET released_at = ? WHERE execution_id = ? AND released_at IS NULL",
@@ -1302,6 +1417,7 @@ def save_github_source(
             " config_json = excluded.config_json, updated_at = excluded.updated_at",
             (config.source_id, session_id, config.repository_full_name, config.model_dump_json(), now, now),
         )
+        bump_config_revision(conn, session_id)
 
 
 def get_github_source(conn: Connection, session_id: str, source_id: str) -> GitHubSourceConfig | None:
@@ -1330,6 +1446,129 @@ def github_source_session(conn: Connection, source_id: str) -> str | None:
 def github_source_sessions(conn: Connection) -> list[str]:
     """GitHub 소스를 가진 세션들. 운영자 API 는 이것이 한 세션뿐이도록 지킨다(셀프호스트 1개 워크스페이스)."""
     return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM github_sources ORDER BY session_id")]
+
+
+def replace_baseline(
+    conn: Connection, session_id: str, source_id: str, items: Sequence[IssuePrLink], *, opened_before: str, now: str
+) -> int:
+    """소스의 기준선 전체 교체 + 가져오기 기록, 한 트랜잭션 (ADR-0015). 다시 불러도 같은 결과 — 멱등.
+    설정이 아니라 관측 이력이므로 `config_revision` 은 올리지 않는다. 다른 세션 소스 → NotFound."""
+    with _tx(conn):
+        _source_row(conn, session_id, source_id)
+        conn.execute("DELETE FROM baseline_items WHERE source_id = ?", (source_id,))
+        conn.executemany(
+            "INSERT INTO baseline_items (source_id, issue_number, issue_title, issue_opened_at, pr_number,"
+            " pr_merged_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (source_id, i.issue_number, i.issue_title, i.issue_opened_at, i.pr_number, i.pr_merged_at, now)
+                for i in items
+            ],
+        )
+        conn.execute(
+            "INSERT INTO baseline_imports (source_id, opened_before, fetched_at, item_count) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(source_id) DO UPDATE SET opened_before = excluded.opened_before,"
+            " fetched_at = excluded.fetched_at, item_count = excluded.item_count",
+            (source_id, opened_before, now, len(items)),
+        )
+    return len(items)
+
+
+def list_baseline(conn: Connection, session_id: str, source_id: str) -> tuple[Row | None, list[Row]]:
+    """(마지막 가져오기 기록 또는 None, 항목 — 이슈·PR 번호순). 다른 세션 소스 → NotFound."""
+    _source_row(conn, session_id, source_id)
+    record = _one(conn, "SELECT * FROM baseline_imports WHERE source_id = ?", (source_id,))
+    items = conn.execute(
+        "SELECT * FROM baseline_items WHERE source_id = ? ORDER BY issue_number, pr_number", (source_id,)
+    ).fetchall()
+    return record, items
+
+
+def github_source_created_at(conn: Connection, session_id: str, source_id: str) -> str:
+    """소스를 처음 연결한 시각(`github_sources.created_at` — 설정 변경에도 그대로). 기준선의 `opened_before`.
+    다른 세션 소스 → NotFound."""
+    return _source_row(conn, session_id, source_id)["created_at"]
+
+
+# --- 지표 입력 (phase 9 step 8, ADR-0015 8항) -----------------------------------------------------------------
+
+
+def _json_outcome(conn: Connection, store: ArtifactStore, artifact_id: str | None) -> str | None:
+    """결과 산출물 JSON 의 최상위 `outcome` 문자열. 읽지 못하면 None."""
+    if artifact_id is None:
+        return None
+    try:
+        data = json.loads(read_artifact(conn, store, artifact_id))
+    except (ValueError, NotFound, ArtifactMissing):
+        return None
+    outcome = data.get("outcome") if isinstance(data, dict) else None
+    return outcome if isinstance(outcome, str) else None
+
+
+def _execution_outcome(conn: Connection, store: ArtifactStore, row: Row) -> str | None:
+    """가장 최근 판정의 outcome. 검토(`code_review`)는 판정이 `passed` 일 때만 결과 산출물(`CodeReviewResult`)의
+    outcome — 판정 JSON 에는 통과 여부만 있고 approved·changes_requested 는 산출물에만 있다."""
+    if row["verdict_json"] is None:
+        return None
+    verdict = json.loads(row["verdict_json"]).get("outcome")
+    if row["kind"] != "code_review":
+        return verdict
+    return _json_outcome(conn, store, row["result_artifact_id"]) if verdict == "passed" else None
+
+
+def list_metric_facts(conn: Connection, session_id: str, *, store: ArtifactStore) -> MetricFacts:
+    """세션의 Task·실행·업무 이벤트·사람 요청을 도메인 값 객체로 옮긴다(계산 없음). NULL 은 None 그대로(모름).
+    원본 이슈에서 온 Task 는 이슈 상태·병합 시각·마지막 조회 시각(`source_issues`)도 싣는다.
+    `store` 는 검토 결과 산출물의 outcome 을 읽는 데만 쓴다."""
+    tasks = tuple(
+        TaskFact(
+            task_id=r["task_id"], kind=r["kind"], created_at=r["created_at"], status=r["status"],
+            predecessor_task_id=r["predecessor_task_id"],
+            issue_opened_at=json.loads(r["snapshot_json"])["created_at"] if r["snapshot_json"] else None,
+            issue_state=r["issue_state"], pr_merged_at=r["pr_merged_at"], merge_checked_at=r["merge_checked_at"],
+            finished_at=r["finished_at"], merge_confirmed_at=r["merge_confirmed_at"],
+            review_decision=r["review_decision"],
+        )
+        for r in conn.execute(
+            "SELECT t.*, si.snapshot_json, si.state AS issue_state, si.pr_merged_at, si.merge_checked_at"
+            " FROM tasks t LEFT JOIN source_issues si ON si.task_id = t.task_id"
+            " WHERE t.session_id = ? ORDER BY t.created_at, t.rowid",
+            (session_id,),
+        )
+    )
+    executions = tuple(
+        ExecutionFact(
+            execution_id=r["execution_id"], task_id=r["task_id"], kind=r["kind"], attempt_no=r["attempt_no"],
+            status=r["status"], start_key=r["start_key"], created_at=r["created_at"], started_at=r["started_at"],
+            finished_at=r["finished_at"], failed_code=r["failed_code"], outcome=_execution_outcome(conn, store, r),
+            config_revision=r["config_revision"], folder_commit=r["folder_commit"], cost_usd=r["cost_usd"],
+            input_tokens=r["input_tokens"], output_tokens=r["output_tokens"],
+        )
+        for r in conn.execute(
+            "SELECT e.*, (SELECT v.verdict_json FROM task_verdicts v WHERE v.execution_id = e.execution_id"
+            "  ORDER BY v.decided_at DESC, v.rowid DESC LIMIT 1) AS verdict_json"
+            " FROM executions e JOIN tasks t ON t.task_id = e.task_id WHERE t.session_id = ?"
+            " ORDER BY e.created_at, e.rowid",
+            (session_id,),
+        ).fetchall()
+    )
+    events = tuple(
+        TaskEventFact(task_id=r["task_id"], type=r["type"], occurred_at=r["occurred_at"],
+                      data=json.loads(r["data_json"]))
+        for r in conn.execute(
+            "SELECT task_id, type, occurred_at, data_json FROM task_events WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        )
+    )
+    requests = tuple(
+        HumanRequestFact(request_id=r["request_id"], task_id=r["task_id"], created_at=r["created_at"],
+                         answered_at=r["answered_at"])
+        for r in conn.execute(
+            "SELECT h.request_id, h.task_id, h.created_at, h.answered_at FROM human_requests h"
+            " JOIN tasks t ON t.task_id = h.task_id WHERE t.session_id = ? ORDER BY h.created_at, h.rowid",
+            (session_id,),
+        )
+    )
+    return MetricFacts(tasks=tasks, executions=executions, events=events, human_requests=requests)
 
 
 def save_source_cursor(conn: Connection, session_id: str, source_id: str, cursor: str, now: str) -> None:
@@ -1433,6 +1672,40 @@ def list_source_issues(conn: Connection, session_id: str, source_id: str) -> lis
     _source_row(conn, session_id, source_id)
     return conn.execute(
         "SELECT * FROM source_issues WHERE source_id = ? ORDER BY issue_number", (source_id,)
+    ).fetchall()
+
+
+def record_issue_merge(
+    conn: Connection, *, session_id: str, source_id: str, github_issue_id: int, link: IssuePrLink | None, now: str
+) -> None:
+    """원본 이슈를 닫은 병합 PR 을 기록하고 `merge_checked_at` 을 `now` 로 (ADR-0015 — 도입 후 완료 시각).
+    `link` None = 조회했지만 병합 없음 — 병합 칸은 그대로 둔다. 한 번 기록된 병합은 다른 값·None 으로 덮지 않는다
+    (같은 값 재기록은 멱등). 다른 세션 소스·없는 이슈 → NotFound, 다른 번호의 링크 → ValueError."""
+    with _tx(conn):
+        _source_row(conn, session_id, source_id)
+        row = _one(
+            conn, "SELECT issue_number FROM source_issues WHERE source_id = ? AND github_issue_id = ?",
+            (source_id, github_issue_id),
+        )
+        if row is None:
+            raise NotFound(f"source issue {source_id}/{github_issue_id}")
+        if link is not None and link.issue_number != row["issue_number"]:
+            raise ValueError(f"링크 이슈 #{link.issue_number} 는 #{row['issue_number']} 가 아닙니다")
+        conn.execute(
+            "UPDATE source_issues SET merge_checked_at = ?,"
+            " merged_pr_number = COALESCE(merged_pr_number, ?), pr_merged_at = COALESCE(pr_merged_at, ?)"
+            " WHERE source_id = ? AND github_issue_id = ?",
+            (now, link and link.pr_number, link and link.pr_merged_at, source_id, github_issue_id),
+        )
+
+
+def list_issues_needing_merge_check(conn: Connection, session_id: str, source_id: str) -> list[Row]:
+    """닫혔지만 병합 시각을 아직 모르는 원본 이슈(번호 순). 다른 세션 소스 → NotFound."""
+    _source_row(conn, session_id, source_id)
+    return conn.execute(
+        "SELECT * FROM source_issues WHERE source_id = ? AND state = 'closed' AND pr_merged_at IS NULL"
+        " ORDER BY issue_number",
+        (source_id,),
     ).fetchall()
 
 
@@ -1573,10 +1846,12 @@ def record_human_response_once(
                 "UPDATE tasks SET chosen_agent_id = ?, selection_mode = 'manual' WHERE task_id = ?", (agent_id, task_id)
             )
         if close_reason is not None:
+            previous = _status_of(conn, task_id)
             conn.execute(
                 "UPDATE tasks SET status = '실패', status_reason = ?, finished_at = ? WHERE task_id = ?",
                 (close_reason, now, task_id),
             )
+            _status_changed(conn, task_id, previous, "실패", close_reason, now)
             conn.execute("UPDATE executions SET released_at = ? WHERE task_id = ? AND released_at IS NULL", (now, task_id))
         task_revision = get_task(conn, task_id)["revision"]
         conn.execute(

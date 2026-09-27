@@ -20,6 +20,7 @@ GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수�
 
 - **fine-grained personal access token** 하나. Repository access 는 *Only select repositories* 로 대상 저장소만 고른다.
 - Repository permissions: **Issues: Read and write**, **Metadata: Read-only**(자동 포함). 그 밖(Contents·Pull requests·Actions 등)은 주지 않는다 — 코드 읽기·쓰기는 로컬 저장소에서 하고 GitHub 로 보내지 않는다.
+- 기준선 가져오기(phase 9, `POST /operator/github/sources/{source_id}/baseline`)를 쓸 때만 **Pull requests: Read-only** 를 더한다 — GraphQL 로 이슈를 닫은 병합 PR 의 번호·병합 시각을 읽는다(`list_issue_pr_links`). 쓰기 권한은 늘지 않는다.
 - 만료일을 짧게 둔다. classic PAT(`repo` scope)은 권한이 넓어 쓰지 않는다.
 - 권한 근거: [ARCHITECTURE "GitHub REST 경계"](../ARCHITECTURE.md#github-rest-경계-step-5) 의 요청별 권한 표와 공식 문서 링크(2026-09-23 확인).
 

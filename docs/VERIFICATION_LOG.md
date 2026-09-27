@@ -298,3 +298,19 @@ Claude 의 summary(원문은 `evidence/C_결과_봉투.json`): 진단 원문이 
 - **검증 절차 실수 (내 쪽, 복원함)** — base 커밋에 재현 테스트만 얹어 실행하려고 `git --work-tree=<별도 경로> --git-dir=<등록 폴더>/.git checkout <task 브랜치> -- tests/` 를 썼는데, 이 조합은 **등록 폴더의 인덱스를 공유**해서 `tests/test_invoice.py` 가 `MM` 로 남았다. 등록 폴더는 깨끗해야 하므로(`worktree_dirty`) `git reset HEAD && git checkout -- .` 로 복원했다(이후 `main` = `c204e0db8005`, base 와 diff 없음, `task/*` 브랜치 보존). 제품과 무관한 조작 실수이며, 다음에는 `git worktree add` 한 경로에서 그 worktree 의 `git` 으로만 체크아웃한다.
 - 메모(결함 아님): `test_log_after` 와 `verification_log` 의 sha256 이 같다(`cf0efb98…`, 111바이트). Agent 가 돌린 `pytest` 와 제품이 `vp-pytest` 로 돌린 `pytest` 의 출력이 같아서 내용 주소 저장이 한 파일을 가리키는 것이고, 검증이 생략된 것이 아니다(판정의 `verification_passed` 는 별도 실행 결과).
 - 메모(결함 아님): 이슈가 2건뿐이고 둘 다 같은 로컬 등록이라 `repository_busy` 로 순차 실행됐다. 서로 다른 등록의 병렬 착수는 대역 e2e 에만 있다.
+
+## 2026-09-27 — 측정·기준선 대역 e2e (phase 9 step 10)
+
+목적: [ADR-0015](adr/0015-measurement-events-and-baseline.md)의 이벤트 보충·설정 번호·러너 폴더 커밋·CLI 보고 비용이 실제 순환에서 쌓이고, `/metrics.json`·`/metrics` 화면·기준선 가져오기가 그 기록으로 계산되는지 프로세스 경계를 넘어 확인한다. **실제 외부 도구 호출은 없다** — 이 절은 대역 검증 기록이며 실연동이 아니다. 실제 OpenArchive 기준선은 가져오지 않았다.
+
+| 항목 | 값 |
+|---|---|
+| 명령·결과 | `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **53 passed** 150.39초(`tests/e2e/test_metrics.py` 4 + 기존 49). `python3 -m pytest -q` 2337 passed·53 skipped, `python3 -m ruff check .` 통과 |
+| 실제 제품 코드 | 중앙 API(`create_app`, 이 테스트 프로세스 안 uvicorn 스레드 — 기준선 클라이언트의 transport 만 가짜 GitHub 로), `HttpGitHubClient`(REST 수집·GraphQL 기준선), 테스트 프로세스 안 `Worker`, 하위 프로세스 `workflow.connector connect/register/run --adapter auto`(등록의 tool 로 claude·codex 선택), 임시 Git 저장소 1개, 검증 프로필의 실제 `pytest` |
+| 대역 | GitHub = `test_github_cycle` 의 127.0.0.1 가짜 서버 + `POST /graphql`(`repository.issues`, 2건 단위 커서 페이지). 수정 도구 = PATH 가짜 `claude`(결과 JSON 에 `total_cost_usd` 0.25·재작업 0.35, 토큰 1000/200), 검토 도구 = 가짜 `codex`(비용·토큰 보고 없음). 비용 값은 가짜 도구가 만든 숫자다 — 실제 청구액 아님, 비용 0 |
+| 확인한 것 | 이슈 1건 → `bug_fix`(claude) → 후속 `code_review`(codex) `changes_requested` → 재작업 1회 → 재검토 `approved` → 운영자 검토 승인으로 `완료`(bug_fix 는 `merge_confirmed_at` 경로가 없어 `status_changed → 완료` 로 잼). `/metrics.json`: 묶음 1, 재작업 합 1, 1회 통과 0/1, 인계 대기 n 1 이상, 접수→완료 n 1(`finished_at` 대체 0), 비용 합 0.60·n 2·모름 2(0 이 아님), 입력 토큰 합 2000·모름 2, 재실행 2/4, 개입 = 사람 요청 수 + 승인 1. 실행 4건 모두 `config_revision` = 세션 설정 번호(>1), 후속 링크 `rules_revision` 같음, `folder_commit` = 등록 폴더 HEAD(기준 커밋) — `group_by=config_revision`·`folder_commit` 그룹 키가 그 값 하나. 기준선 가져오기 2회(멱등) 각 2건: PR 없음·미병합 PR·연결 이후 이슈 제외, 두 PR 중 이른 병합 사용 → 화면 비교 절에 `n 2`·중앙값 4시간·기준선 주석, CSV `baseline:<source_id>` 행. GraphQL 요청은 모두 토큰 헤더, 토큰이 화면·CSV·응답에 없음 |
+| 확인하지 않은 것 | 실제 `api.github.com` GraphQL(`closedByPullRequestsReferences` 실제 응답·권한·rate limit), 실제 Claude CLI 의 `total_cost_usd`·토큰 값, 실제 Codex 토큰 키, 브라우저의 기준선 가져오기 버튼 스크립트, 기간(from/to) 필터의 e2e |
+
+### 발견한 결함과 고친 파일
+
+- 고친 파일 없음(이 step 은 e2e·문서만). 발견: 재작업 상한 1 에서 재작업 착수 뒤 재작업 결과 판정 전 tick 이 첫 검토(`changes_requested`)를 다시 평가해 `rework_limit_reached` 사람 요청을 하나 더 만든다(`domain/task_followup.py` `_after_review` 가 `rework:{검토 실행}` 착수 여부를 보지 않음). e2e 는 요청 수를 DB 그대로 세어 지표와 맞춘다. 수정은 [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 에 남겼다.

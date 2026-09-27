@@ -1,0 +1,84 @@
+{# 지표 — ADR-0015, ARCHITECTURE "측정 — phase 9". 운영자만. 계산은 metrics_api 와 같다(JSON·CSV 링크는 같은 쿼리).
+   칸마다 n·미완료·모름을 함께 적고, 모르는 값은 "모름"(0 아님). 기준선 가져오기는 data-json-action 으로 운영자 API 에 보낸다. #}
+{% extends "base.html" %}
+{% block title %}지표 — Runloom{% endblock %}
+{% macro cell(c) -%}
+<strong>{{ c.text }}</strong><div class="small">{{ c.detail }}</div>
+{%- endmacro %}
+{% block content %}
+<div class="crumbs"><div class="crumb">운영자<span class="sep">/</span>지표</div></div>
+
+<p class="muted">관측값이며 인과 효과로 단정하지 않는다. 시스템 기록만으로 계산하고, 모르는 값은 0 이 아니라 "모름" 으로 따로 셉니다.</p>
+
+<form method="get" action="/metrics" class="card">
+  <div class="field-row">
+    <div class="field"><label for="m-from">시작 (RFC 3339)</label>
+      <input type="text" id="m-from" name="from" value="{{ params.from }}" placeholder="2026-09-01T00:00:00+09:00"></div>
+    <div class="field"><label for="m-to">끝 (RFC 3339, 포함 안 함)</label>
+      <input type="text" id="m-to" name="to" value="{{ params.to }}" placeholder="2026-10-01T00:00:00+09:00"></div>
+    <div class="field"><label for="m-group">그룹</label>
+      <select id="m-group" name="group_by">
+        {% for value, label in [('', '나누지 않음'), ('config_revision', '설정 번호'), ('folder_commit', '러너 폴더 커밋')] %}
+        <option value="{{ value }}"{% if params.group_by == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select></div>
+  </div>
+  <div class="actions">
+    <button class="btn btn-small" type="submit">보기</button>
+    <a href="/metrics.json{{ query }}">JSON</a>
+    <a href="/metrics.csv{{ query }}">CSV</a>
+  </div>
+</form>
+
+<section id="compare">
+<h2>기준선 대 도입 후 — 이슈 열림 → 병합</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>구분</th><th>중앙값</th><th>설명</th></tr>
+    {% for b in baselines %}
+    <tr>
+      <td>기준선 · <span class="mono">{{ b.repository_full_name }}</span></td>
+      <td>{% if b.cell %}{{ cell(b.cell) }}{% else %}<strong>모름</strong><div class="small">가져온 적 없음</div>{% endif %}</td>
+      <td class="small">{{ b.note }}{% if b.opened_before %} · 소스 연결({{ b.opened_before|kst }}) 이전에 열린 이슈{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="small">GitHub 소스가 없습니다. 기준선은 소스마다 가져옵니다.</td></tr>
+    {% endfor %}
+    {% for a in after %}
+    <tr>
+      <td>도입 후 · {{ a.label }}</td>
+      <td>{{ cell(a.cell) }}</td>
+      <td class="small">GitHub 이슈 묶음만 · 끝점은 그 이슈를 닫은 병합 PR 의 병합 시각(병합 전은 미완료){% if a.closed_unmerged %} · 병합 없이 닫힘 {{ a.closed_unmerged }}(미완료에 포함){% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+</section>
+
+{% for area in areas %}
+<h2>{{ area.title }}</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>지표</th>{% for g in group_columns %}<th{% if g.label != g.key %} title="{{ g.key }}"{% endif %}>{{ g.label }}</th>{% endfor %}</tr>
+    {% for r in area.rows %}
+    <tr><th>{{ r.label }}</th>{% for c in r.cells %}<td>{{ cell(c) }}</td>{% endfor %}</tr>
+    {% endfor %}
+  </table>
+</div>
+{% endfor %}
+<p class="small">CLI 보고 비용은 CLI 가 계산한 값이며 구독 사용 시 실제 청구액이 아닙니다.</p>
+
+<h2>기준선 가져오기</h2>
+<div class="card">
+  {% if not token_configured %}<p class="small">토큰 없음 — 서버 환경변수 <span class="mono">WORKFLOW_GITHUB_TOKEN</span> 이 있어야 가져올 수 있습니다.</p>{% endif %}
+  {% for b in baselines %}
+  <form data-json-action="/operator/github/sources/{{ b.source_id }}/baseline" class="actions">
+    <span class="mono">{{ b.repository_full_name }}</span>
+    <span class="small">{% if b.fetched_at %}마지막 가져옴 {{ b.fetched_at|kst }} · {{ b.intake_to_merge.n }}건{% else %}가져온 적 없음{% endif %}</span>
+    <button class="btn btn-secondary btn-small" type="submit">기준선 가져오기</button><span class="action-note" data-json-result></span>
+  </form>
+  {% else %}
+  <p class="small">GitHub 소스가 없습니다. <a href="/operator/github">GitHub 연결</a>에서 소스를 만드세요.</p>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -12,9 +12,9 @@
 
 import re
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 CONTRACT_VERSION = 1
 
@@ -306,22 +306,63 @@ class AcceptedData(_Contract):
     pass
 
 
-class StartedData(_Contract):
+class _OmitUnknownMeasure(_Contract):
+    """측정 칸(phase 9)이 null 이면 직렬화에서 뺀다 — 구버전 서버는 null 이라도 모르는 칸을 422 로 거부하고,
+    저장된 이벤트와의 중복 비교(`repo._event_content`)도 기존 모양 그대로여야 한다."""
+
+    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_unknown_measure(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        for name in self._MEASURE_FIELDS:
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
+
+
+class ExecutionUsage(_Contract):
+    """도구가 보고한 실행 사용량 (CONTRACT 3.1절, ADR-0015). 모르는 값은 null 이며 0 이 아니다."""
+
+    # strict 에서도 float 칸은 JSON 정수(`0`)를 받는다 — bool 은 거부된다.
+    cost_usd: float | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+
+
+class StartedData(_OmitUnknownMeasure):
+    _MEASURE_FIELDS = ("folder_commit", "folder_dirty")
+
     runtime_ref: NonEmptyStr
+    # 러너 로컬 등록 폴더(worktree 아님)의 HEAD·미커밋 변경 여부. 못 읽으면 null.
+    folder_commit: CommitSha | None = None
+    folder_dirty: bool | None = None
+
+    @model_validator(mode="after")
+    def _check_dirty_needs_commit(self) -> "StartedData":
+        if self.folder_dirty is not None and self.folder_commit is None:
+            raise ValueError("folder_dirty 는 folder_commit 과 함께만 보낼 수 있습니다")
+        return self
 
 
 class ProgressData(_Contract):
     message: str
 
 
-class ResultReadyData(_Contract):
+class ResultReadyData(_OmitUnknownMeasure):
+    _MEASURE_FIELDS = ("usage",)
+
     result_artifact_id: NonEmptyStr
+    usage: ExecutionUsage | None = None
 
 
-class FailedData(_Contract):
+class FailedData(_OmitUnknownMeasure):
+    _MEASURE_FIELDS = ("usage",)
+
     code: str
     message: str
     process_stopped: bool
+    usage: ExecutionUsage | None = None
 
 
 _EVENT_DATA: dict[str, type[_Contract]] = {

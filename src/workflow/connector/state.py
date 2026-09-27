@@ -8,6 +8,7 @@
 - 이벤트는 ack 뒤에도 남겨 두어 중앙이 `sequence_gap` 을 돌려주면 그 순번부터 다시 보낼 수 있다.
 - 어댑터 산출물은 업로드 전에 `outputs` 에 넣어 업로드 중 끊겨도 어댑터를 다시 돌리지 않는다.
 - `cleaned_at` 은 종료 이벤트가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지운 시각이다. 재시작 뒤 다시 지우지 않는다.
+- `usage_json` 은 어댑터가 돌려준 사용량(`ExecutionUsage`)이다. 종료 이벤트를 보내기 전에 끊겨도 다시 싣는다. NULL = 모름.
 """
 
 import json
@@ -23,7 +24,7 @@ PHASES = ("accepted", "launching", "running", "finished")
 
 _EXECUTION_FIELDS = frozenset({
     "pid", "process_start", "runtime_ref", "result_json", "failed_json", "worktree_path",
-    "handoff_dir", "finished_at", "unknown_local_at", "cleaned_at",
+    "handoff_dir", "finished_at", "unknown_local_at", "cleaned_at", "usage_json",
 })
 
 _SCHEMA = f"""
@@ -51,7 +52,8 @@ CREATE TABLE IF NOT EXISTS executions (
   claimed_at       TEXT NOT NULL,
   finished_at      TEXT,
   unknown_local_at TEXT,
-  cleaned_at       TEXT
+  cleaned_at       TEXT,
+  usage_json       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pending_events (
@@ -91,6 +93,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(executions)")}
     if "cleaned_at" not in columns:  # 이 열이 생기기 전에 만든 로컬 DB
         conn.execute("ALTER TABLE executions ADD COLUMN cleaned_at TEXT")
+    if "usage_json" not in columns:  # phase 9 이전에 만든 로컬 DB
+        conn.execute("ALTER TABLE executions ADD COLUMN usage_json TEXT")
 
 
 @contextmanager

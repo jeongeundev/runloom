@@ -571,3 +571,42 @@ def test_registration_rejects_short_commit(client, connector, headers):
     response = client.post("/connector/registrations", json=_registration(connector_id, base_commit="3f9c2e1"), headers=headers)
     assert response.status_code == 422
     assert response.json()["field"] == "base_commit"
+
+
+# --- 측정 칸 (phase 9 step 4, ADR-0015) ------------------------------------------
+
+FOLDER_COMMIT = "b" * 40
+MEASURE_COLUMNS = ("folder_commit", "folder_dirty", "cost_usd", "input_tokens", "output_tokens")
+
+
+def _measure(conn, execution_id):
+    row = repo.get_execution(conn, execution_id)
+    return tuple(row[c] for c in MEASURE_COLUMNS)
+
+
+def test_events_with_measure_fields_store_folder_commit_and_usage(client, headers, exec_fix, seeded):
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 1, "accepted", {})).status_code == 200
+    started = event(exec_fix, 2, "started", {"runtime_ref": "pid:1", "folder_commit": FOLDER_COMMIT, "folder_dirty": True})
+    assert _post_event(client, headers, exec_fix, started).status_code == 200
+    assert _measure(seeded, exec_fix) == (FOLDER_COMMIT, 1, None, None, None)
+    artifact_id = _upload(client, headers, exec_fix, b"diff --git a/x b/x\n").json()["artifact_id"]
+    usage = {"cost_usd": 0.25, "input_tokens": 1200, "output_tokens": None}
+    ready = event(exec_fix, 3, "result_ready", {"result_artifact_id": artifact_id, "usage": usage})
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200
+    assert _measure(seeded, exec_fix) == (FOLDER_COMMIT, 1, 0.25, 1200, None)
+    # 같은 seq 재전송은 값을 바꾸지 않는다
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200
+    assert _measure(seeded, exec_fix) == (FOLDER_COMMIT, 1, 0.25, 1200, None)
+
+
+def test_events_without_measure_fields_keep_null(client, headers, running, seeded):
+    body = event(running, 4, "failed", {"code": "timeout", "message": "시간 초과", "process_stopped": True})
+    assert _post_event(client, headers, running, body).status_code == 200
+    assert _measure(seeded, running) == (None, None, None, None, None)
+
+
+def test_failed_event_with_usage_stores_known_values_only(client, headers, running, seeded):
+    body = event(running, 4, "failed", {"code": "timeout", "message": "시간 초과", "process_stopped": True,
+                                        "usage": {"input_tokens": 10, "output_tokens": 3}})
+    assert _post_event(client, headers, running, body).status_code == 200
+    assert _measure(seeded, running) == (None, None, None, 10, 3)

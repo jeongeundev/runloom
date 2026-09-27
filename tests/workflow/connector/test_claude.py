@@ -17,6 +17,7 @@ import pytest
 from workflow.connector import git_ops, state
 from workflow.connector.claude import ALLOWED_TOOLS, READONLY_TOOLS, ClaudeAdapter
 from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun, generic_result_schema
+from workflow.contracts.v1 import ExecutionUsage
 from workflow.scripted._common import FIXED_TRANSFORMER, REPRO_TEST
 
 from .conftest import REVIEW_SPEC, make_local_request, make_review_request
@@ -626,3 +627,77 @@ def test_code_review_runs_readonly_claude_in_result_checkout(state_conn, repo, t
 ])
 def test_read_structured_message(state_conn, raw, data, note):
     assert adapter(state_conn).read_structured_message(raw) == (data, note)
+
+
+# --- 사용량 (phase 9, ARCHITECTURE "CLI 결과에서 비용·토큰 얻기") ------------------------------------------
+
+
+def test_full_run_reports_cli_cost_and_tokens(state_conn, repo, handoff, fake_bin):
+    write_fake_claude(fake_bin, "full")
+    base = register(state_conn, repo)
+
+    output = adapter(state_conn).run(request_for(base), handoff, Progress())
+
+    assert output.failed is None, output.failed
+    assert output.usage == ExecutionUsage(cost_usd=0.01, input_tokens=429, output_tokens=67)
+
+
+def test_usage_limit_failure_still_reports_usage_from_result_json(state_conn, repo, handoff, fake_bin):
+    write_fake_claude(fake_bin, "usage_limit")
+    base = register(state_conn, repo)
+
+    output = adapter(state_conn).run(request_for(base), handoff, Progress())
+
+    assert output.failed[0] == "usage_limit"
+    assert output.usage == ExecutionUsage(cost_usd=0.01, input_tokens=429, output_tokens=67)
+
+
+def test_failure_without_result_json_has_no_usage(state_conn, repo, handoff, fake_bin):
+    write_fake_claude(fake_bin, "rate_limit_429")
+    base = register(state_conn, repo)
+
+    output = adapter(state_conn).run(request_for(base), handoff, Progress())
+
+    assert output.failed[0] == "usage_limit" and output.usage is None
+
+
+def test_timeout_has_no_usage(state_conn, repo, handoff, fake_bin):
+    write_fake_claude(fake_bin, "sleep")
+    base = register(state_conn, repo)
+
+    output = adapter(state_conn, timeout_seconds=1).run(request_for(base), handoff, Progress())
+
+    assert output.failed[0] == "timeout" and output.usage is None
+
+
+def test_generic_run_reports_tokens_without_cost(state_conn, repo, review_handoff, fake_bin):
+    write_fake_claude(fake_bin, "generic")  # 결과 JSON 에 usage 만 있고 total_cost_usd 는 없다
+    register(state_conn, repo)
+
+    output = adapter(state_conn).run(make_local_request(), review_handoff, Progress())
+
+    assert output.failed is None, output.failed
+    assert output.usage == ExecutionUsage(cost_usd=None, input_tokens=10, output_tokens=5)
+
+
+def _run_with(last_message: str | None) -> ToolRun:
+    return ToolRun(pid=1, started_at="2026-09-27T01:00:00Z", exit_code=0, stdout=b"", stderr=b"",
+                   timed_out=False, stopped=True, last_message=last_message)
+
+
+@pytest.mark.parametrize("last_message, usage", [
+    (_envelope(total_cost_usd=0.5, usage={"input_tokens": 3, "output_tokens": 4,
+                                          "cache_read_input_tokens": 100}),
+     ExecutionUsage(cost_usd=0.5, input_tokens=3, output_tokens=4)),  # 캐시 토큰은 더하지 않는다
+    (_envelope(total_cost_usd=0, usage={"input_tokens": 0, "output_tokens": 0}),
+     ExecutionUsage(cost_usd=0, input_tokens=0, output_tokens=0)),  # 0 은 보고된 값 그대로
+    (_envelope(total_cost_usd="0.5", usage={"input_tokens": 3.5, "output_tokens": True}), None),
+    (_envelope(total_cost_usd=-1, usage={"input_tokens": -3, "output_tokens": 7}),
+     ExecutionUsage(output_tokens=7)),
+    (_envelope(usage="many"), None),
+    (_envelope(), None),
+    ("not json", None),
+    (None, None),
+])
+def test_read_usage_takes_only_well_formed_fields(state_conn, last_message, usage):
+    assert adapter(state_conn).read_usage(_run_with(last_message)) == usage

@@ -1,6 +1,6 @@
 # Phase 9 — 측정: 업무 이벤트 보충·지표·기준선
 
-작성일: 2026-09-27. 상태: 구현 계획 작성 완료, 모든 step pending. 근거: [MVP 계획](../../docs/product/MVP_PLAN.md) 6절(측정 설계)·10절·11절, [ROADMAP](../../docs/product/ROADMAP.md) 9절(지표 정의).
+작성일: 2026-09-27. 상태: step 0~13 완료(2026-09-27, `feat-9-measure`). step 11~13 은 같은 날 사용자 합의로 추가 — 완료 시각을 GitHub 병합 시각으로 맞추기, 재작업 상한 요청 중복 결함 수정. 근거: [MVP 계획](../../docs/product/MVP_PLAN.md) 6절(측정 설계)·10절·11절, [ROADMAP](../../docs/product/ROADMAP.md) 9절(지표 정의).
 
 ## 목표
 
@@ -42,7 +42,8 @@
 |---|---|---|
 | 병목 | 인계 대기 | 후속 Task 생성(= 선행 판정으로 조건 충족) → 첫 실행 `started_at`. `blocked` 구간을 actor(operator/assignee/system)별로 나눠 입력 부족·승인 대기를 별도 집계 |
 | 속도 | 접수 → 사람 차례 | 이슈 열림(스냅샷의 이슈 생성 시각, 없으면 Task `created_at`) → 묶음에서 처음 사람 차례가 된 시각(첫 `human_requests.created_at` 또는 첫 `status_changed` → `확인 필요` 중 이른 것) |
-| 속도 | 접수 → 완료 | 이슈 열림 → 병합 확인(`merge_confirmed_at`). 기준선의 "이슈 열림 → PR 병합"과 같은 구간 |
+| 속도 | 접수 → 완료 | 이슈 열림 → 그 이슈를 닫은 병합 PR 의 병합 시각(`source_issues.pr_merged_at`, step 11~12). 기준선과 같은 구간. 직접 등록 Task 는 `merge_confirmed_at`/`완료` 전환 |
+| 속도 | 접수 → 승인 | 이슈 열림 → 묶음에서 처음 운영자 승인(`완료` 전환) 시각 |
 | 사람 부담 | 개입 횟수, 응답 시간 | 묶음당 `human_requests` 수 + 운영자 검토 결정 수, 요청 → 응답(`answered_at`) |
 | 품질 | 1회 통과율, 재작업 횟수, 사람 거부 비율 | 첫 `code_review` 결과가 `approved` 인 묶음 비율, 묶음당 `changes_requested` 로 생긴 재작업 수, 운영자 검토 결정 중 `request_changes`·`close` 비율 |
 | 비용 | 실행 시간, 비용, 토큰 | `started_at`→`finished_at`, `cost_usd`·토큰 합계와 "모름" 건수 분리 |
@@ -65,6 +66,9 @@
 | 8 | metrics-api | 지표 API JSON·CSV |
 | 9 | metrics-view | 지표 화면 |
 | 10 | measure-verify | e2e, 문서·인계 갱신 |
+| 11 | merge-link-storage | 이슈 하나의 병합 PR 조회, `source_issues` 병합 칸(v6 안) |
+| 12 | done-from-github | 동기화가 병합 시각 저장, 접수 → 완료 = 병합 시각, 접수 → 승인 별도 |
+| 13 | rework-request-dedup | 재작업을 이미 일으킨 검토가 상한 요청을 또 만드는 결함 수정 |
 
 모든 step 은 실제 GitHub·유료 모델 없이 대역으로 구현·검증한다. 실제 OpenArchive 기준선 가져오기(읽기 전용 GitHub 호출)는 phase 뒤 사용자 지시로 한다.
 

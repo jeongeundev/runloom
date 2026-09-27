@@ -991,7 +991,7 @@ def test_closed_b_does_not_spawn_c(review_flow, worker, server, conn, store, clo
         conn, task_id=TASK_B, execution_id=b, verdict={"outcome": "passed", "checks": []},
         status="확인 필요", reason="검토 대기", finish=False, now=clock(),
     )
-    repo.update_task_status(conn, TASK_B, "실패", "검토 거절", finished_at=clock(), review_decision="close")
+    repo.update_task_status(conn, TASK_B, "실패", "검토 거절", finished_at=clock(), review_decision="close", now=clock())
     repo.release_execution(conn, b, clock())
 
     report = worker.tick()
@@ -1250,7 +1250,7 @@ def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock
 
     for _ in range(2):
         assert worker.tick().callbacks_sent == 0
-    repo.update_task_status(conn, TASK_B, "완료", "검토 승인", finished_at=clock(), review_decision="approve")
+    repo.update_task_status(conn, TASK_B, "완료", "검토 승인", finished_at=clock(), review_decision="approve", now=clock())
     repo.release_execution(conn, b, clock())
     clock.advance(600)
     report = worker.tick()

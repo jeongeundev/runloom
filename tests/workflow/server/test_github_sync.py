@@ -18,12 +18,12 @@ from workflow.adapters.github_client import (
     IssueCursor,
     IssuePage,
 )
-from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig
+from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink
 from workflow.contracts.v1 import Capability, ExecutionRequest
 from workflow.domain.selection import Candidate
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, evaluate_readiness
 from workflow.server.auth import SESSION_COOKIE, verify_session
-from workflow.server.github_sync import sync_source, task_intake_facts
+from workflow.server.github_sync import MAX_MERGE_CHECKS_PER_SYNC, sync_source, task_intake_facts
 
 SOURCE = "ghs-1a2b3c4d"
 FIX_AGENT = "agent-fix"
@@ -41,6 +41,9 @@ class FakeGitHub:
         self.failures: list[Exception | None] = []
         self.list_calls: list[IssueCursor | None] = []
         self.get_calls: list[int] = []
+        self.links: dict[int, IssuePrLink] = {}  # 이슈 번호 → 그 이슈를 닫은 병합 PR. 없으면 병합 없음
+        self.link_failures: dict[int, Exception] = {}
+        self.link_calls: list[int] = []
 
     def put(self, snapshot: GitHubIssueSnapshot) -> None:
         self.issues[snapshot.issue_id] = snapshot
@@ -77,6 +80,12 @@ class FakeGitHub:
             if snapshot.number == number:
                 return snapshot
         raise GitHubNotFound(f"GET /repos/{repo_name}/issues/{number}: HTTP 404")
+
+    def get_issue_pr_link(self, repo_name: str, number: int) -> IssuePrLink | None:
+        self.link_calls.append(number)
+        if number in self.link_failures:
+            raise self.link_failures[number]
+        return self.links.get(number)
 
     def list_comments(self, *args, **kwargs):
         raise AssertionError("수집은 댓글을 읽지 않는다")
@@ -409,3 +418,102 @@ def test_task_intake_facts_hides_other_session_tasks(conn, session_id):
     repo.create_session(conn, "sess-other", NOW)
     with pytest.raises(repo.NotFound):
         task_intake_facts(conn, "sess-other", task_id)
+
+
+# --- 병합 PR 조회 (phase 9 step 12, ADR-0015 결정 9) ---
+
+
+def merged(number: int, pr: int = 90, at: str = "2026-10-06T05:00:00Z") -> IssuePrLink:
+    return IssuePrLink(issue_number=number, issue_title=f"버그 {number}", issue_opened_at="2026-10-06T01:00:00Z",
+                       pr_number=pr, pr_merged_at=at)
+
+
+def source_issue(conn, sid: str, number: int) -> dict:
+    return next(dict(r) for r in repo.list_source_issues(conn, sid, SOURCE) if r["issue_number"] == number)
+
+
+def test_closed_issue_merge_is_looked_up_and_stored(conn, session_id):
+    gh = FakeGitHub()
+    gh.put(issue(1))
+    gh.put(issue(2))
+    sync_source(conn, gh, SOURCE, NOW)
+    assert gh.link_calls == []  # 열린 이슈는 조회하지 않는다
+
+    gh.put(issue(1, state="closed", updated_at="2026-10-06T05:00:00Z"))
+    gh.links[1] = merged(1, pr=91)
+    report = sync_source(conn, gh, SOURCE, "2026-10-06T13:00:00Z")
+    assert gh.link_calls == [1]
+    row = source_issue(conn, session_id, 1)
+    assert (row["merged_pr_number"], row["pr_merged_at"], row["merge_checked_at"]) == \
+        (91, "2026-10-06T05:00:00Z", "2026-10-06T13:00:00Z")
+    assert report.merged == [row["task_id"]] and report.merge_error is None
+
+    sync_source(conn, gh, SOURCE, "2026-10-06T14:00:00Z")
+    assert gh.link_calls == [1]  # 병합을 안 뒤에는 다시 조회하지 않는다
+
+
+def test_merge_lookups_are_capped_per_sync(conn, session_id):
+    gh = FakeGitHub()
+    count = MAX_MERGE_CHECKS_PER_SYNC + 3
+    for n in range(1, count + 1):
+        gh.put(issue(n, state="open", updated_at=f"2026-10-06T02:{n:02d}:00Z"))
+    sync_source(conn, gh, SOURCE, NOW)
+    for n in range(1, count + 1):
+        gh.put(issue(n, state="closed", updated_at=f"2026-10-06T03:{n:02d}:00Z"))
+    sync_source(conn, gh, SOURCE, "2026-10-06T13:00:00Z")
+    assert gh.link_calls == list(range(1, MAX_MERGE_CHECKS_PER_SYNC + 1))
+
+    sync_source(conn, gh, SOURCE, "2026-10-06T14:00:00Z")
+    assert gh.link_calls[MAX_MERGE_CHECKS_PER_SYNC:] == list(range(MAX_MERGE_CHECKS_PER_SYNC + 1, count + 1))
+
+
+def test_merge_lookup_failure_keeps_intake_and_is_reported(conn, session_id):
+    gh = FakeGitHub()
+    gh.put(issue(1, state="closed"))
+    gh.put(issue(2, state="closed"))
+    gh.put(issue(3, state="closed"))
+    reconfigure(conn, session_id, selected_issue_numbers=[1, 2, 3])
+    gh.link_failures[1] = GitHubUnavailable("GitHub 연결 실패")
+    report = sync_source(conn, gh, SOURCE, NOW)
+    assert len(report.created) == 3  # 수집은 그대로 남는다
+    assert len(tasks_by_ref(conn, session_id)) == 3
+    assert report.error is None and report.merge_error is not None
+    assert gh.link_calls == [1]  # 연결 실패는 이번 조회를 멈춘다
+    assert source_issue(conn, session_id, 1)["merge_checked_at"] is None
+
+    gh.link_failures = {1: GitHubNotFound("이슈 없음")}
+    gh.links[3] = merged(3)
+    report = sync_source(conn, gh, SOURCE, "2026-10-06T13:00:00Z")
+    assert gh.link_calls[1:] == [1, 2, 3]  # 한 이슈의 오류는 나머지 조회를 막지 않는다
+    assert report.merge_error is not None
+    assert source_issue(conn, session_id, 3)["pr_merged_at"] == "2026-10-06T05:00:00Z"
+
+
+def test_merge_lookup_rate_limit_backs_off(conn, session_id):
+    gh = FakeGitHub()
+    gh.put(issue(1, state="closed"))
+    reconfigure(conn, session_id, selected_issue_numbers=[1])
+    gh.link_failures[1] = GitHubRateLimited("한도", retry_after_seconds=120, reset_epoch=None)
+    report = sync_source(conn, gh, SOURCE, NOW)
+    assert report.retry_after_seconds == 120 and report.merge_error is not None
+    assert len(report.created) == 1
+
+
+def test_no_merge_is_not_rechecked_until_issue_changes(conn, session_id):
+    gh = FakeGitHub()
+    gh.put(issue(1))
+    sync_source(conn, gh, SOURCE, NOW)
+    gh.put(issue(1, state="closed", updated_at="2026-10-06T05:00:00Z"))
+    sync_source(conn, gh, SOURCE, "2026-10-06T13:00:00Z")
+    assert gh.link_calls == [1]
+    row = source_issue(conn, session_id, 1)
+    assert (row["pr_merged_at"], row["merge_checked_at"]) == (None, "2026-10-06T13:00:00Z")
+
+    sync_source(conn, gh, SOURCE, "2026-10-06T14:00:00Z")
+    assert gh.link_calls == [1]  # 병합 없음을 확인했고 이슈가 그대로 — 다시 조회하지 않는다
+
+    gh.put(issue(1, state="closed", title="고침", updated_at="2026-10-06T15:00:00Z"))
+    gh.links[1] = merged(1, at="2026-10-06T14:30:00Z")
+    sync_source(conn, gh, SOURCE, "2026-10-06T16:00:00Z")
+    assert gh.link_calls == [1, 1]  # 확인 뒤 이슈가 바뀌었다 — 다시 조회
+    assert source_issue(conn, session_id, 1)["pr_merged_at"] == "2026-10-06T14:30:00Z"

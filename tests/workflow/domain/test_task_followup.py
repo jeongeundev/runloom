@@ -177,6 +177,34 @@ def test_review_of_previous_commit_is_stale():
     assert decision.hold_code == "stale_review"
 
 
+def test_review_that_already_started_rework_does_not_request_human_at_limit():
+    # 재작업을 일으킨 뒤 판정 전 재평가 — 그 재작업 자체가 rounds_used 를 1 로 만든다
+    ctx = _review("changes_requested", rounds_used=1, max_rework_rounds=1,
+                  handled_cause_keys=frozenset({"rework:exe-rev-1"}))
+    decision = decide_followup(ctx)
+    assert decision.action == "none"
+    assert decision.request_code is None
+    assert decision.hold_code is None
+
+
+def test_new_changes_requested_review_at_limit_still_requests_human():
+    # 다른 검토 실행이 일으킨 재작업은 이 검토의 상한 판단을 막지 않는다
+    ctx = _review("changes_requested", rounds_used=1, max_rework_rounds=1, execution_id="exe-rev-2",
+                  handled_cause_keys=frozenset({"rework:exe-rev-1"}))
+    decision = decide_followup(ctx)
+    assert decision.action == "request_human"
+    assert decision.request_code == "rework_limit_reached"
+    assert decision.cause_key == "rework_limit_reached:exe-rev-2"
+
+
+def test_stale_review_that_started_rework_stays_stale():
+    ctx = _review("changes_requested", rounds_used=1, handled_cause_keys=frozenset({"rework:exe-rev-1"}))
+    stale = replace(ctx.review, latest_fix_execution_id="exe-fix-2", latest_fix_commit=NEW_FIX_COMMIT)
+    decision = decide_followup(replace(ctx, review=stale))
+    assert decision.action == "none"
+    assert decision.hold_code == "stale_review"
+
+
 def test_same_review_result_again_is_not_reworked_twice():
     decision = decide_followup(_review("changes_requested", handled_cause_keys=frozenset({"rework:exe-rev-1"})))
     assert decision.action == "none"

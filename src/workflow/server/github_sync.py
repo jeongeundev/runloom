@@ -9,6 +9,9 @@
   닫힘·재오픈·담당 변경은 원본 스냅샷에, 제목·본문 변경은 Task revision 에 반영된다(진행 중 실행의 입력은 그대로).
 - `selected_issue_numbers` 중 아직 받지 않은 이슈는 `get_issue` 로 따로 받는다(`since` 밖의 오래된 이슈도 명시적 선택이면).
 - 댓글은 읽지 않는다 — 원본 댓글이 업무를 만들거나 명령이 되는 경로는 없다. GitHub 에 쓰지 않는다.
+- 수집 뒤 닫혔지만 병합 시각을 모르는 이슈마다 그 이슈를 닫은 병합 PR 을 조회해 저장한다(ADR-0015 결정 9 — 도입 후 완료
+  시각). 한 번에 `MAX_MERGE_CHECKS_PER_SYNC` 건까지. 병합 없음으로 확인한 이슈는 그 뒤 이슈가 바뀔 때만 다시 조회한다.
+  조회 실패는 `merge_error` 에 남기고 이미 저장한 수집 결과는 그대로 둔다.
 """
 
 import secrets
@@ -24,6 +27,7 @@ from workflow.adapters.github_client import (
     GitHubError,
     GitHubNotFound,
     GitHubRateLimited,
+    GitHubUnavailable,
     IssueCursor,
 )
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
@@ -33,6 +37,8 @@ from workflow.domain.issue_intake import IntakeFacts, intake_facts, intake_scope
 MAX_PAGES_PER_SYNC = 10
 # rate limit 응답에 대기 시간이 없을 때 최소 대기(GitHub 권고)
 DEFAULT_RETRY_AFTER_SECONDS = 60
+# 한 번의 호출에서 병합 PR 을 조회할 최대 이슈 수. 남은 이슈는 다음 호출이 잇는다.
+MAX_MERGE_CHECKS_PER_SYNC = 20
 
 
 @dataclass
@@ -51,6 +57,8 @@ class SyncReport:
     skipped: dict[str, int] = field(default_factory=dict)  # 받지 않은 이슈 — 사유별 개수
     error: str | None = None
     retry_after_seconds: int | None = None
+    merged: list[str] = field(default_factory=list)  # 병합 PR 을 새로 기록한 Task
+    merge_error: str | None = None  # 병합 PR 조회 실패(마지막 것). 수집 결과는 그대로
 
 
 def _parse(value: str) -> datetime:
@@ -92,6 +100,10 @@ class _Intake:
 
 def _fail(report: SyncReport, exc: GitHubError, now: str) -> None:
     report.error = str(exc)
+    _back_off(report, exc, now)
+
+
+def _back_off(report: SyncReport, exc: GitHubError, now: str) -> None:
     if isinstance(exc, GitHubRateLimited):
         wait = exc.retry_after_seconds
         if wait is None and exc.reset_epoch is not None:
@@ -148,6 +160,30 @@ def _selected(client: GitHubClient, intake: _Intake, report: SyncReport) -> None
         intake.take(snapshot)
 
 
+def _needs_merge_check(row) -> bool:
+    checked = row["merge_checked_at"]
+    return checked is None or _parse(row["issue_updated_at"]) > _parse(checked)
+
+
+def _check_merges(client: GitHubClient, intake: _Intake, report: SyncReport) -> None:
+    """닫힌 이슈의 병합 PR 을 조회·저장. rate limit·연결 실패는 이번 조회를 멈추고, 이슈 하나의 오류는 건너뛴다."""
+    conn, session_id, config, now = intake.conn, intake.session_id, intake.config, intake.now
+    rows = [r for r in repo.list_issues_needing_merge_check(conn, session_id, config.source_id) if _needs_merge_check(r)]
+    for row in rows[:MAX_MERGE_CHECKS_PER_SYNC]:
+        try:
+            link = client.get_issue_pr_link(config.repository_full_name, row["issue_number"])
+        except GitHubError as exc:
+            report.merge_error = str(exc)
+            if isinstance(exc, GitHubRateLimited | GitHubUnavailable):
+                _back_off(report, exc, now)
+                return
+            continue
+        repo.record_issue_merge(conn, session_id=session_id, source_id=config.source_id,
+                                github_issue_id=row["github_issue_id"], link=link, now=now)
+        if link is not None:
+            report.merged.append(row["task_id"])
+
+
 def sync_source(conn: Connection, client: GitHubClient, source_id: str, now: str) -> SyncReport:
     """소스 하나를 한 번 수집한다. GitHub 오류는 예외 대신 `report.error`(rate limit 이면 `retry_after_seconds`)로
     돌려주고, DB 오류는 그대로 올린다(커서가 넘어가지 않았으므로 다음 호출이 같은 페이지부터 다시 한다)."""
@@ -163,6 +199,8 @@ def sync_source(conn: Connection, client: GitHubClient, source_id: str, now: str
     _poll(client, intake, report)
     if report.error is None:
         _selected(client, intake, report)
+    if report.error is None:
+        _check_merges(client, intake, report)
     report.skipped = {reason: count for reason, count in intake.skipped.items() if count}
     return report
 

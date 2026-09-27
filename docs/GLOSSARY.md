@@ -132,6 +132,21 @@
 | `FollowupContext` / `FollowupDecision` | 후속 결정의 입력·결과 (`domain/task_followup.decide_followup`, step 3). `action` 은 `link_existing`·`create_task`·`rework`·`request_human`·`none`. `SuccessorRule` 은 여전히 착수 조건이고 이것은 생성·재작업까지 정한다 | `Transition`, `Trigger`, `NextStep` |
 | `HumanRequest` / `response_id` | 사람에게 묻는 요청과 그 응답의 멱등 키 (step 4·11). 운영자만 응답(`POST /human-requests/{id}/responses`, `action` = `resume`·`choose_agent`·`close`). 응답은 새 `task_revision` 의 입력(`task_cycle.request_text`)이 되고 원본 스냅샷은 그대로. 준비 판정 대기에서 생긴 요청은 cause_key `ready:<code>:r<revision>` | `approval`(검토 승인과 혼동), `ticket`, `question` |
 
+## 계획 용어 — phase 9 측정 (미구현)
+
+2026-09-27 [ADR-0015](adr/0015-measurement-events-and-baseline.md)에서 이름을 고정했다. 아직 코드에 없다 — 괄호의 step 이 구현한다. 표·시그니처는 [ARCHITECTURE](ARCHITECTURE.md) "측정 — phase 9".
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| `TaskEvent` / `task_events` / 업무 이벤트 | Task 단위 추가 전용 기록 한 행(step 3·4·5). `type` 은 `status_changed`(상태 값 변화·운영자 검토 결정)·`blocked`(준비 판정 대기 코드 집합 변화)·`ready`(준비 판정 통과로 실행 생성) 셋뿐. 행마다 `task_revision`·`config_revision`·`occurred_at`(서버 시계)·`data_json`. repo `append_task_event`·`list_task_events`. 생성·판정·사람 요청/응답·실행 시각은 기존 테이블이 원천이라 여기 쓰지 않는다. 화면 라벨 `업무 이벤트` | `task_log`, `audit`, `history`, `ExecutionEvent`(실행 주체가 보내는 것 — 별개) |
+| `config_revision` / 설정 번호 | 워크스페이스(세션)의 설정 번호 `sessions.config_revision`(1 부터, step 3·4). 종류·후속 규칙 추가·삭제, GitHub 소스 설정 생성·변경·중지가 같은 트랜잭션에서 +1(`bump_config_revision`). 실행 생성 때 `executions.config_revision`, 후속 기록 때 `followup_links.rules_revision` 에 찍힌다. 담당자 연결·에이전트 등록은 올리지 않는다. 화면 라벨 `설정 번호` | `rules_version`, `settings_version`, `GitHubSourceConfig.config_revision`(소스 설정 잠금 번호 — 아래 경계 참고) |
+| `folder_commit` / `folder_dirty` / 러너 폴더 커밋 | 러너가 실행 시작 때 읽은 로컬 등록 폴더(worktree 아님)의 HEAD SHA 와 미커밋 변경 여부(step 1·2). `StartedData` 의 선택 칸 → `executions` 칸. 그 폴더의 CLAUDE.md·에이전트 설정 버전을 가리킨다. 읽지 못하면 null. 화면 라벨 `러너 폴더 커밋`(dirty 면 `· 미커밋 변경`) | `base_commit`(실행 target 의 기준 커밋 — 별개), `agent_version` |
+| `ExecutionUsage` / `usage` / 실행 사용량 | `result_ready`·`failed` 의 선택 칸(step 1·2) — `cost_usd`·`input_tokens`·`output_tokens`, 모두 선택. Claude 는 `total_cost_usd`·`usage.*`, Codex 는 확인되는 토큰만. null = 모름이며 0 이 아니다. 화면 라벨 `CLI 보고 비용`·`입력 토큰`·`출력 토큰`, 값이 없으면 `모름` | `cost`(청구액으로 오해), `billing`, `price` |
+| 업무 묶음 | 지표 계산 단위(step 6) — `predecessor_task_id` 를 따라 올라간 선행 없는 시작 Task(원본 이슈의 첫 Task 또는 직접 등록 Task)와 그 후속들. 재작업은 같은 Task 의 다음 Execution. 코드 식별자는 `workflow.domain.metrics` 의 값 객체 안에서 정한다 | `Chain`(가져오기로 만든 체인 — 별개), `workflow`, `pipeline` |
+| `baseline_items` / `baseline_imports` / 기준선 | 도입 전 GitHub 이력 "이슈 열림 → 그 이슈를 닫은 병합 PR"(step 3·7). 도입 전 = 소스 연결 시각(`github_sources.created_at`) 이전에 열린 이슈. 운영자가 `POST /operator/github/sources/{source_id}/baseline` 으로 가져오고 소스 단위 전체 교체(`replace_baseline`). 계약 `IssuePrLink`, 어댑터 `list_issue_pr_links`. 화면 라벨 `기준선(도입 전)` + "하네스·Claude 사용 시기 이력 — 순수 수작업 기준 아님" | `before`, `control group`, `benchmark` |
+| `intake_to_done` / `intake_to_merge` / `intake_to_approval` / `closed_unmerged` | 속도 지표(step 6·12). 접수 → 완료(`intake_to_done`)의 끝점은 GitHub 이슈 묶음이면 그 이슈를 닫은 병합 PR 의 병합 시각(`source_issues.pr_merged_at`)뿐이고 운영자 승인은 완료가 아니다, 직접 등록 묶음은 병합 확인·`완료` 전환. `intake_to_merge` 는 GitHub 이슈 묶음만 — 기준선과 같은 "이슈 열림 → 병합". 접수 → 승인(`intake_to_approval`)은 묶음의 첫 운영자 승인 또는 `완료` 전환. `closed_unmerged` = 조회했지만 병합 PR 없이 닫힌 이슈 묶음 수(미완료에 포함). 화면 라벨 `접수 → 완료`·`이슈 열림 → 병합`·`접수 → 승인`·`병합 없이 닫힘` | `lead_time`, `cycle_time`(정의가 다른 업계 용어), 승인 시각을 `완료` 로 부르기 |
+| `compute_metrics` / `summarize_baseline` / `Stat` | 지표 순수 계산(`domain/metrics.py`, step 6). 값 객체를 받아 중앙값·n·미완료·모름(`Stat(median, n, incomplete, unknown, total)`, 비율은 `Ratio`)을 낸다. 현재 시각을 읽지 않는다. API `GET /metrics.json`·`/metrics.csv`(step 8), 화면 `GET /metrics`(step 9) — 운영자만 | `analytics`, `score`, `KPI`(인과 효과처럼 읽히는 표현) |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
@@ -147,3 +162,6 @@
 - `KindSpec.capability_code`와 `Capability`: 전자는 종류가 요구하는 능력 코드 하나(문자열), 후자는 에이전트가 등록한 능력(`code` + `scope`)이다. 종류의 `scope_key`가 그 능력의 scope 키를 정한다. 사용자 정의 종류의 `capability_code` 기본값은 종류 이름과 같다(`review` → `review`). "코드가 어느 종류의 것인가 · scope 키가 맞는가"는 계약이 아니라 서버가 등록부로 검사한다(422).
 - `source token`(`wfs_`)과 `connect code`/`wfc_`: 전자는 워크스페이스(세션)가 `/sources` 에서 발급해 외부(n8n)가 업무를 넣을 때 쓰고, 후자는 운영자가 발급해 연결 프로그램이 실행을 가져갈 때 쓴다. 둘 다 서버에는 sha256 만 남고 취소하면 401 이지만, 발급 주체·쓰는 쪽·붙는 API 가 다르다(`/sources/n8n/chains` 대 `/connector/*`).
 - `callback_url`과 `ExecutionEvent`: 전자는 체인 단위로 밖(n8n)에 1회 보내는 것(`ChainCallback`, 워커가 POST), 후자는 실행 주체(연결 프로그램·진단 API)가 안으로 보내는 것(`seq` 연속 정수, 실행 단위). 방향·단위·횟수가 다르다.
+- `sessions.config_revision`(설정 번호)과 `GitHubSourceConfig.config_revision`: 이름이 같지만 다르다. 전자는 워크스페이스 설정 전체의 번호로 지표를 나누는 기준이고, 후자는 소스 설정 하나의 낙관적 잠금 번호(`expected_revision`, 409 `stale_config`)다. 소스 설정을 바꾸면 둘 다 오른다.
+- `TaskEvent`와 `ExecutionEvent`: 전자는 중앙이 Task 단위로 남기는 추가 전용 기록(상태 변화·준비 판정), 후자는 실행 주체(연결 프로그램·진단 API)가 `seq` 로 보내는 실행 이벤트다. `task_events` 에 실행 시각을 다시 쓰지 않는다.
+- `folder_commit`과 `base_commit`: 전자는 러너 등록 폴더의 실행 시작 시점 HEAD(에이전트 설정 버전), 후자는 실행 target 이 고정한 작업 기준 커밋이다.

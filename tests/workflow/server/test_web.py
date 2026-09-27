@@ -553,7 +553,7 @@ def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, setti
 
 def test_run_code_change_without_registration_or_handoff_409(web, conn):
     task_a = create_task(web, diagnose_form())
-    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
     task_b = create_task(web, fix_form(task_a, run_mode="manual"))
     response = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
     assert response.status_code == 409
@@ -825,7 +825,7 @@ def test_unregister_agent_and_409_when_task_in_progress(web, conn, settings):
     assert web.post("/agents/agent-codex-mac/unregister", follow_redirects=False).status_code == 303  # 멱등
     assert web.post("/agents/agent-none/unregister", follow_redirects=False).status_code == 404
 
-    repo.update_task_status(conn, task_id, "실패", "검토 거절", finished_at=NOW)
+    repo.update_task_status(conn, task_id, "실패", "검토 거절", finished_at=NOW, now=NOW)
     assert web.post("/agents/agent-ops-demo/unregister", follow_redirects=False).status_code == 303
     assert "먼저 에이전트를 등록하세요." in web.get("/tasks").text
 
@@ -1179,7 +1179,7 @@ def test_chain_human_gate_follows_last_task_review(web, conn, store, settings):
     chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
     web.post(f"/chains/{chain_id}/start", follow_redirects=False)
     exec_a = repo.active_execution(conn, task_a)["execution_id"]
-    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
     repo.release_execution(conn, exec_a, NOW)
     repo.create_execution(
         conn, execution_id="exec-fix-001", task_id=task_b, attempt_no=1, start_key=f"auto:{task_b}:r1",
@@ -1225,7 +1225,7 @@ def test_home_lists_chains_with_progress(web, conn):
     main = home[home.index('class="main'):]
     assert main.index("<h2>워크플로우</h2>") < main.index("<h2>업무</h2>")  # 업무 구역 위에
 
-    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW)
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
     repo.mark_chain_started(conn, chain_id, NOW)
     home = web.get("/tasks").text
     assert "1/2 완료" in home and "2단계 중 2단계 대기" in home

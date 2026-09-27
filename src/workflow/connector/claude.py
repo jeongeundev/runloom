@@ -15,6 +15,8 @@
   `{outcome, summary}` 만 읽는다. 내장 흐름의 `ClaudeStructuredOutput` Literal 검증은 그대로다.
 - 커밋 검토(`code_review`)도 같은 `launch_readonly`(`READONLY_TOOLS`)로 결과 커밋의 체크아웃에서 띄우고,
   `read_structured_message` 가 `structured_output` 을 객체로 꺼낸다.
+- 사용량(`read_usage`, ADR-0015)은 같은 결과 JSON 의 `total_cost_usd`·`usage.input_tokens`·`usage.output_tokens` 만 읽는다.
+  캐시 생성·읽기 토큰은 별도 키라 더하지 않는다. `total_cost_usd` 는 CLI 계산값이며 구독 사용 시 실제 청구액이 아니다.
 """
 
 import json
@@ -36,7 +38,9 @@ from workflow.connector.local_tool import (
     ToolRun,
     communicate_or_stop,
     outcome_note,
+    usage_from,
 )
+from workflow.contracts.v1 import ExecutionUsage
 
 # 고정 허용 도구. 셸은 등록된 검증 명령과 같은 접두 두 개, git 은 읽기만.
 ALLOWED_TOOLS = (
@@ -198,6 +202,18 @@ class ClaudeAdapter(LocalToolAdapter):
             if match is not None:
                 return "usage_limit", f"Claude 사용량 한도: {_around(text, match)}"
         return None
+
+    def read_usage(self, run: ToolRun) -> ExecutionUsage | None:
+        """결과 JSON 이 있으면 실패 결과(`is_error`)에서도 읽는다. 결과 JSON 이 없으면 None."""
+        try:
+            envelope = json.loads(run.last_message) if run.last_message is not None else None
+        except ValueError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        tokens = envelope.get("usage")
+        tokens = tokens if isinstance(tokens, dict) else {}
+        return usage_from(envelope.get("total_cost_usd"), tokens.get("input_tokens"), tokens.get("output_tokens"))
 
 
 def _result_envelope(stdout: bytes) -> str | None:

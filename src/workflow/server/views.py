@@ -5,7 +5,7 @@
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
@@ -24,10 +24,11 @@ from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.evidence_location import resolve_location
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.kinds import get_kind, kind_for_capability
+from workflow.domain.metrics import ACTORS, ALL_GROUP, UNKNOWN, MetricsReport, Ratio, Stat
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.server import human_api, task_cycle
-from workflow.server.filters import KIND_LABELS, KST, kind_label, kst
+from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst
 from workflow.server.settings import Settings
 
 # 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7·11절)
@@ -990,3 +991,104 @@ def artifact_render(artifact: dict[str, Any] | Row, data: bytes) -> dict[str, An
     if kind in LOG_KINDS:
         return {"mode": "log", "text": text, "lines": text.splitlines()}
     return {"mode": "text", "text": text}
+
+
+# --- 지표 화면 (phase 9 step 9, ADR-0015) -------------------------------------------------------------
+# 중앙값(비율) 옆에 n·미완료·모름을 함께 적는다. 모르는 값은 "모름" 이며 0 으로 보이지 않는다.
+
+UNKNOWN_TEXT = "모름"
+
+# 영역 → (칸 이름, 이름표, 단위). 매핑 칸(handoff_blocked·failed_codes)은 아래에서 따로 펼친다.
+METRIC_AREAS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
+    ("병목", (("handoff_wait", "인계 대기", "seconds"),)),
+    ("속도", (("intake_to_human", "접수 → 사람 차례", "seconds"), ("intake_to_done", "접수 → 완료", "seconds"),
+             ("intake_to_approval", "접수 → 승인", "seconds"))),
+    ("사람 부담", (("interventions", "개입 횟수", "count"), ("response_time", "응답 시간", "seconds"))),
+    ("품질", (("first_pass", "1회 통과율", "ratio"), ("rework", "재작업 횟수", "count"),
+             ("human_rejection", "사람 거부 비율", "ratio"))),
+    ("비용", (("execution_time", "실행 시간", "seconds"), ("cost_usd", "CLI 보고 비용", "usd"),
+             ("input_tokens", "입력 토큰", "tokens"), ("output_tokens", "출력 토큰", "tokens"))),
+    ("신뢰성", (("failure", "실패율", "ratio"), ("failed_codes", "실패 사유", "codes"),
+               ("reruns", "재실행", "ratio"))),
+)
+ACTOR_LABELS = {"operator": "운영자", "assignee": "담당자", "system": "시스템"}
+
+
+def _amount(value: float, unit: str) -> str:
+    if unit == "seconds":
+        return duration(round(value))
+    if unit == "usd":
+        return f"${value:.4g}"
+    if unit == "tokens":
+        return f"{value:,.0f}"
+    return f"{value:g}"
+
+
+def _stat_cell(stat: Stat, unit: str) -> dict[str, str]:
+    parts = [f"n {stat.n}"]
+    if stat.total is not None and unit != "seconds":
+        parts.append(f"합계 {_amount(stat.total, unit)}")
+    if stat.incomplete:
+        parts.append(f"미완료 {stat.incomplete}")
+    if stat.unknown:
+        parts.append(f"{UNKNOWN_TEXT} {stat.unknown}")
+    text = UNKNOWN_TEXT if stat.median is None else _amount(stat.median, unit)
+    return {"text": text, "detail": " · ".join(parts)}
+
+
+def _ratio_cell(ratio: Ratio) -> dict[str, str]:
+    parts = [f"n {ratio.denominator}"]
+    if ratio.incomplete:
+        parts.append(f"미완료 {ratio.incomplete}")
+    if ratio.unknown:
+        parts.append(f"{UNKNOWN_TEXT} {ratio.unknown}")
+    rate = ratio.rate
+    text = UNKNOWN_TEXT if rate is None else f"{rate * 100:.0f}% ({ratio.numerator}/{ratio.denominator})"
+    return {"text": text, "detail": " · ".join(parts)}
+
+
+def _codes_cell(codes: Mapping[str, int]) -> dict[str, str]:
+    text = ", ".join(f"{code} {count}" for code, count in codes.items()) or "없음"
+    return {"text": text, "detail": f"n {sum(codes.values())}"}
+
+
+def _cell(value: Any, unit: str) -> dict[str, str]:
+    if unit == "ratio":
+        return _ratio_cell(value)
+    if unit == "codes":
+        return _codes_cell(value)
+    return _stat_cell(value, unit)
+
+
+def group_label(key: str, group_by: str | None) -> str:
+    if key == ALL_GROUP:
+        return "전체"
+    if key == UNKNOWN:
+        return UNKNOWN_TEXT
+    if group_by == "config_revision":
+        return f"설정 번호 {key}"
+    return f"커밋 {key[:7]}"
+
+
+def metrics_context(report: MetricsReport, baselines: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """`metrics.html` 컨텍스트 — 맨 위 기준선 대 도입 후, 영역별 표(행 = 지표, 열 = 그룹)."""
+    groups = report.groups
+    areas = []
+    for title, metrics in METRIC_AREAS:
+        rows = [{"label": label, "cells": [_cell(getattr(g, name), unit) for g in groups]}
+                for name, label, unit in metrics]
+        if title == "병목":
+            rows += [{"label": f"대기 — {ACTOR_LABELS[actor]}",
+                      "cells": [_stat_cell(g.handoff_blocked[actor], "seconds") for g in groups]}
+                     for actor in ACTORS]
+        areas.append({"title": title, "rows": rows})
+    after = [{"label": group_label(g.key, report.group_by), "cell": _stat_cell(g.intake_to_merge, "seconds"),
+              "closed_unmerged": g.closed_unmerged} for g in groups]
+    baseline_rows = [
+        {**b, "cell": None if b["intake_to_merge"] is None else _stat_cell(Stat(**b["intake_to_merge"]), "seconds")}
+        for b in baselines
+    ]
+    return {
+        "group_columns": [{"key": g.key, "label": group_label(g.key, report.group_by)} for g in groups],
+        "areas": areas, "after": after, "baselines": baseline_rows,
+    }

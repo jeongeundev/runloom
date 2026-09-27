@@ -1,6 +1,6 @@
 """중앙 웹/API 앱 팩토리.
 
-- `create_app(settings)`: DB 스키마 초기화, 산출물 저장소, 오류 변환, 기계 API 라우터, 입구 API 라우터, GitHub 설정 API 라우터, 사람 요청 응답 API 라우터, 웹 라우터.
+- `create_app(settings)`: DB 스키마 초기화, 산출물 저장소, 오류 변환, 기계 API 라우터, 입구 API 라우터, GitHub 설정 API 라우터, 사람 요청 응답 API 라우터, 지표 API 라우터, 웹 라우터.
 - 모듈 변수 `app` 은 `python3 -m uvicorn workflow.server.app:app` 진입점이며 import 시 환경변수를
   읽는다. 비밀값 없이는 뜨지 않는 것이 의도다. 테스트는 `WORKFLOW_SKIP_APP=1` 로 이 호출을 건너뛰고
   `create_app(settings)` 를 직접 쓴다 (tests/conftest.py).
@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import connect, init_schema
-from workflow.server import github_api, human_api, inbound_api, machine_api, web
+from workflow.server import github_api, human_api, inbound_api, machine_api, metrics_api, web
 from workflow.server.errors import install_error_handlers
 from workflow.server.settings import Settings, load_settings
 
@@ -37,11 +37,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 요청마다 새 연결 (auth.get_conn). sqlite3 연결을 스레드 간 공유하지 않는다.
     app.state.conn_factory = lambda: connect(settings.db_path)
     app.state.store = ArtifactStore(settings.artifact_dir)
+    app.state.github_client = None  # 기준선 가져오기 — None 이면 요청 때 Settings 로 만든다. 테스트는 가짜로 바꾼다
     install_error_handlers(app)
     app.include_router(machine_api.router)
     app.include_router(inbound_api.router)  # n8n 입구 (ADR-0010) — 입구 토큰만, 세션 쿠키 없음
     app.include_router(github_api.router)  # GitHub 소스 설정 (ADR-0014) — 운영자 세션만
     app.include_router(human_api.router)  # 사람 요청 응답 (ADR-0014) — 운영자 세션만
+    app.include_router(metrics_api.router)  # 지표·기준선 가져오기 (ADR-0015) — 운영자 세션만
     web.install(app)  # 라우터 + PageError → error.html
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")  # style.css 만. CDN 없음
     return app

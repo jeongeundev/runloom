@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-23 (phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료, 실제 GitHub·Agent 미검증)
+갱신일: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -63,6 +63,7 @@ step 7 구현 상태: `server/github_sync.sync_source` 가 소스 하나를 목�
 - 원본 변경(`repo.upsert_source_issue`): 제목·요청이 바뀌면 같은 트랜잭션에서 Task 제목·요청을 바꾸고 `revision`+1(`SourceIssueUpsert.input_changed`, `SyncReport.input_changed` — 재평가 필요). 마감된 Task 는 바꾸지 않는다. 진행 중 Execution 의 `request_json`·`task_revision` 은 그대로라서 "Task revision > 실행의 task_revision" 이 재평가 필요 기록이다. 담당·라벨·상태·`updated_at`(원본 댓글로 인한 변경 포함)만 바뀐 것은 원본 스냅샷의 `source_revision` 만 올린다. 닫힘·재오픈은 Task 를 마감·재생성하지 않는다.
 - 준비 판정 입력(`github_sync.task_intake_facts` → `domain/issue_intake.IntakeFacts`, `TaskFacts(**facts.as_kwargs())`): 가져온 Task 와 직접 등록 Task 가 같은 함수를 거친다. 원본 매핑이 있으면 스냅샷의 담당자·`AssigneeBinding`·원본 상태·소스 `max_rework_rounds`, 없으면(직접 등록) `assignee_ids=None`(직접·자동 선택). 요청은 언제나 필수(`request_required`).
 - 댓글은 읽지 않고 GitHub 에 쓰지 않는다 — 원본 댓글이 업무를 만들거나 명령이 되는 경로는 없다.
+- 병합 PR 조회(phase 9 step 12, ADR-0015 결정 9): 수집(목록·선택 이슈)이 오류 없이 끝나면 `list_issues_needing_merge_check`(닫힘·병합 시각 모름) 중 아직 조회 안 했거나 조회 뒤 이슈가 바뀐(`issue_updated_at > merge_checked_at`) 이슈를 번호순으로 한 호출에 최대 `MAX_MERGE_CHECKS_PER_SYNC`(20) 건 `get_issue_pr_link` → `record_issue_merge`. 병합 없음도 `merge_checked_at` 을 남겨 이슈가 다시 바뀔 때까지 재조회하지 않는다. 조회 실패는 `SyncReport.merge_error`(워커가 경고 로그)에만 남고 이미 저장한 수집 결과는 그대로다 — rate limit·연결 실패는 이번 조회를 멈추고(rate limit 은 `retry_after_seconds`), 이슈 하나의 오류(없는 이슈 등)는 건너뛴다. `SyncReport.merged` = 병합을 새로 기록한 Task.
 
 step 8 구현 상태: 연결 프로그램이 `bug_fix` 를 실행한다 — 도구별 `launch` 는 그대로, 공통 `LocalToolAdapter.run` 이 `request.kind ∈ DEMO_REPORT_KINDS`(`code_change`)일 때만 데모 프롬프트(`build_prompt`)·`vp-report` 보고서(`report_output`)를 쓰고, 그 밖(`bug_fix`)은 `build_bug_fix_prompt`(요청 원문 + 저장소 규칙, 데모 문구 없음, 인계 디렉터리의 `CodeReviewResult` JSON 을 "이전 검토 지적" 절로) + 등록된 `verification_profile_id` 하나로 `diff`·`test_log_before`(결과 커밋의 새 테스트만 `base_commit` 체크아웃에서)·`test_log_after`·`verification_log`(결과 커밋의 깨끗한 체크아웃)를 남긴다. 기준 커밋 고정: 도구를 띄우기 전 worktree HEAD ≠ `base_commit` 이면 `base_commit_mismatch`, 미커밋 잔여 변경이면 `worktree_dirty`, 도구가 직접 커밋해 HEAD 가 움직였으면 `commit_mismatch`(원시 로그 보존, `process_stopped` = 도구 종료 확인값). 재작업은 `base_commit` = 이전 `result_commit` 이라 남은 `task/<id>` 브랜치에서 이어진다. 도구·검증 환경은 기존 허용 목록(`codex_env`)이라 `WORKFLOW_GITHUB_TOKEN`·`GITHUB_TOKEN`·`GH_TOKEN` 이 없다. 연결 프로그램은 claim 에 `supported_kinds = SUPPORTED_BUILTIN_KINDS`(`code_change`·`bug_fix`)를 보내고 서버 claim 은 `repo.record_supported_kinds` 로 `connectors.supported_kinds_json` 에 남긴다(생략 claim 은 NULL). 중앙의 `bug_fix` 결과 판정(`required_artifacts` 에서 `report_output` 제외·`commit_matches`)과 실행 생성은 step 10 이다.
 
@@ -123,7 +124,7 @@ step 11 구현 상태: 사람 요청과 응답 후 재개. 응답 권한은 운�
 | `HumanRequest` / `respond_to_request` | `adapters/repo.py`(4)·`server/`(11) | repo: `create_human_request_once(conn, task_id, code, question, cause_key, now) -> (request_id, created)`, `get_human_request(conn, session_id, request_id)`, `record_human_response_once(conn, session_id, request_id, *, response_id, expected_revision, action, text, now, agent_id=None, close_reason=None) -> (task_revision, created)`, `list_human_requests`·`list_open_human_requests(conn, session_id)`·`list_human_responses(conn, task_id)`(11). 서버: `human_api.respond_to_request(conn, session_id, request_id, body: ResponseBody, now) -> dict`(11) | 운영자만. 같은 `response_id`·같은 내용(`action`·`text`·`agent_id`) 재전송은 같은 결과, 다른 내용 `ResponseConflict` → 409 `response_conflict`, `expected_revision` 불일치·이미 응답됨 `StaleRequest(current_revision)` → 409 `stale_request`, 마감된 Task `TaskClosed` → 409 `task_closed`. 응답은 요청을 `answered` 로, Task `revision` 을 +1(다음 실행 입력). `action` 허용 값(`resume`·`choose_agent`·`close`)은 서버가 요청 code 로 검사 |
 | `SourceDelivery` | `contracts/github.py`(1)·`server/github_delivery.py`(12) | `delivery_id`, `source_id`, `task_id`, `issue_number`, `body_revision: int`, `body_digest`, `state: pending\|sending\|delivered\|unknown\|failed`, `comment_id: int \| None`, `attempts`, `next_at`, `last_error` | `deliver_source_updates(conn, client, now) -> DeliveryReport`, `queue_source_updates(conn, store, public_url, now) -> int`, `marker(task_id)`. marker 조정, 최신 revision 만 전송, claim fence. step 12 구현됨 |
 | `GitHubClient` | `adapters/github_client.py`(5) | Protocol `list_issues(repo, cursor: IssueCursor \| None) -> IssuePage`, `get_issue(repo, number) -> GitHubIssueSnapshot`, `list_comments(repo, number, cursor: int \| None) -> CommentPage`, `create_comment(repo, number, body) -> int`, `update_comment(repo, comment_id, body) -> None` | `api.github.com` 만, 리다이렉트 따라가지 않음, 허용 저장소 밖은 요청 전 `GitHubRepositoryNotAllowed`. 오류 `GitHubRateLimited`·`GitHubForbidden`·`GitHubNotFound`·`GitHubUnavailable`(5xx·timeout) 구분, 그 밖은 `GitHubError`. 토큰·헤더를 메시지·로그에 넣지 않음. step 5 구현됨 |
-| `sync_source` | `server/github_sync.py`(7) | `sync_source(conn, client, source_id, now) -> SyncReport(source_id, disabled, pages, not_modified, created, updated, input_changed, unchanged, stale, skipped, error, retry_after_seconds)`. 순수 매핑 `domain/issue_intake.py`: `intake_scope(config, snapshot) -> IntakeScope(accept, reason, explicit)`, `snapshot_to_task_spec(config, snapshot, *, session_id, task_id) -> dict`, `intake_facts(...) -> IntakeFacts`. `task_intake_facts(conn, session_id, task_id) -> IntakeFacts` | 페이지별 커서 저장. 실패 페이지는 커서를 넘기지 않음. GitHub 오류는 `error`, DB 오류는 예외. step 7 구현됨 |
+| `sync_source` | `server/github_sync.py`(7) | `sync_source(conn, client, source_id, now) -> SyncReport(source_id, disabled, pages, not_modified, created, updated, input_changed, unchanged, stale, skipped, error, retry_after_seconds, merged, merge_error)`. 순수 매핑 `domain/issue_intake.py`: `intake_scope(config, snapshot) -> IntakeScope(accept, reason, explicit)`, `snapshot_to_task_spec(config, snapshot, *, session_id, task_id) -> dict`, `intake_facts(...) -> IntakeFacts`. `task_intake_facts(conn, session_id, task_id) -> IntakeFacts` | 페이지별 커서 저장. 실패 페이지는 커서를 넘기지 않음. GitHub 오류는 `error`, DB 오류는 예외. step 7 구현됨 |
 
 ### GitHub REST 경계 (step 5)
 
@@ -227,6 +228,131 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 - 업무 상세 `_cycle.html`(`views.cycle_context`): 업무 순환 종류이거나 원본 이슈가 있는 Task 에만. `실제 GitHub 이슈` 표시와 원본 링크(`https://github.com/{owner/name}/issues/{n}` — 응답의 `html_url` 을 링크로 쓰지 않음), GitHub 담당 → 연결 Agent, 대기 사유(워커와 같은 `task_cycle.evaluate` 의 `Blocker` 코드·문구·행동 주체), 사람 요청(운영자에게만 응답 폼 — 허용 동작은 `human_api.allowed_actions`, 폼마다 새 `response_id` 라 두 번 눌러도 한 번 반영), 입력 보충(응답 목록), 생성 근거(`repo.get_followup_link` — 어느 수정 실행 결과가 이 검토 Task 를 만들었나), 실행 횟수·자동 재작업 `사용/상한`, 검토 결과(`CodeReviewResult` outcome·요약·검토 커밋·지적), GitHub 반영(최신 `SourceDelivery` 의 `반영 대기`·`반영됨`·`반영 불확실`·`반영 실패`·시도 횟수·마지막 오류). 반영 줄·사람 요청·Task 상태 줄(Agent 작업)은 서로 다른 줄이다. fixture 가져오기 Task 는 `시연 데이터 · 실제 이슈 아님`.
 - 업무 순환 종류의 상태는 워커가 저장한 값(`views.status_of`)이다 — 선택 기록 기반 `user_status` 로 다시 판정하지 않는다. 선택 폼·데모 후속 등록 칩은 보이지 않고, 열린 사람 요청이 있으면 검토 폼 대신 응답 폼만 보인다.
 - 직접 실행 모드: 준비 판정에 `manual_mode` 만 남았거나(실행 없음), 결과 뒤 다음 실행을 워커가 직접 실행 모드로 멈춰 둔 때(`실행 가능`) `실행` 버튼. `POST /tasks/{id}/run` 은 업무 순환 종류면 `Worker.start_manually` — 이 Task 와 선행·후속만 tick 과 같은 규칙(`_cycle_followups`·`_start_ready_tasks`)으로 돌리고 이 Task 의 준비 판정에서만 `manual_mode` 를 뺀다. start_key(`auto:`·`review:`·`rework:`)가 같아 두 번 눌러도 실행은 하나, 새 실행이 없으면 지금 대기 사유로 409.
+
+## 측정 — phase 9
+
+상태(2026-09-27 step 10): step 0~10 구현·대역 검증 완료(`tests/e2e/test_metrics.py`). 실제 GitHub 기준선 가져오기는 미실행. [ADR-0015](adr/0015-measurement-events-and-baseline.md)를 따른다. 기본값·step 목록은 [phase 9 README](../phases/9-measure/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0015·이 절·[CONTRACT](CONTRACT.md) 3절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 예시 payload 는 CONTRACT 3.1절의 `json` 블록(step 1 에서 계약 모델 구현·fixture 편입).
+
+### 현재 코드와의 간극 (step 0 확인)
+
+| 필요한 것 | 지금 | 위치 | 바꿀 것(step) |
+|---|---|---|---|
+| 착수 가능해진 시각, 대기 사유 변화 | 없음. 준비 판정은 매 tick 계산만 하고 결과는 `tasks.status_reason` 문구로 덮어쓴다 | `domain/task_readiness.py`, `server/task_cycle.py`, `server/worker.py` `_write_blocked`·`_create_cycle_execution` | `task_events` `blocked`·`ready`(3·5) |
+| Task 상태 변화 이력 | 없음. `tasks.status` 를 덮어쓴다 | `adapters/repo.py` `update_task_status`(`now` 인자 없음, 자체 트랜잭션 없음)·`finish_task`·`record_verdict`·`record_human_response_once`(`close`) | `status_changed` 를 같은 트랜잭션에(4) |
+| 운영자 검토 결정 이력 | `tasks.review_decision` 한 칸을 덮어쓴다 — `request_changes` 뒤 `approve` 면 앞 결정이 사라진다 | `server/web.py` `_refresh_status`·검토 승인·거절 | `status_changed.data.review_decision`(4) |
+| 규칙/설정 버전 | 없음. `followup_links.rules_revision` 은 1 고정 | `server/worker.py` `_advance_cycle` 의 `"rules_revision": 1` | `sessions.config_revision`·`executions.config_revision`(3·4·5) |
+| 러너 폴더 커밋 | 없음. 등록 때 HEAD 만 `agents.base_commit` 으로 보고 | `connector/cli.py` `_register`, `connector/runner.py` 의 `started` 발신(`progress(..., runtime_ref=)`) | `StartedData.folder_commit`·`folder_dirty`(1·2) |
+| 비용·토큰 | 없음. `ClaudeResult`(`extra="ignore"`)가 `total_cost_usd`·`usage` 를 버린다. 계약에 칸이 없다 | `connector/claude.py`, `contracts/v1.py` | `ExecutionUsage`(1·2), `executions` 칸(3·4) |
+| 기준선 | 없음. GitHub 어댑터는 이슈·댓글 REST 만 있다 | `adapters/github_client.py` | `list_issue_pr_links`(7) |
+| 도입 후 완료 시각 | `merge_confirmed_at`(`repo.confirm_merge`)은 `code_change` 에만 제공(`web._awaits_merge`). `bug_fix` 는 `확인 필요 · 검토 승인 — 병합·이슈 종료는 사람` 에 머물고 운영자 승인으로 `완료` 가 된다 | `server/web.py` | 지표가 두 원천을 차례로 본다(6) — 아래 지표 표 |
+
+### 저장 — v6 마이그레이션 (step 3)
+
+`adapters/db.py` `SCHEMA_VERSION` 5 → 6. v4 → v5 와 같이 `init_schema` 가 `BEGIN IMMEDIATE` 한 트랜잭션으로 올리고, 실패하면 5 그대로다. 빈 DB 는 v6 으로 바로 만든다. 4 는 5 → 6 을 이어서 거친다. 원본 v5 스키마는 `tests/workflow/adapters/fixtures/schema_v5.sql` 로 고정해 마이그레이션 테스트가 쓴다. 기존 실행의 새 칸은 NULL(= 모름), 기존 세션 `config_revision` 은 1, 과거 이벤트를 추정해 채우지 않는다.
+
+| 대상 | 열 | 제약·의미 |
+|---|---|---|
+| `task_events`(새) | `id INTEGER PRIMARY KEY`, `task_id` → `tasks`, `session_id` → `sessions`, `type`, `task_revision INTEGER`, `config_revision INTEGER`, `occurred_at TEXT`, `data_json TEXT` | `type CHECK (type IN ('status_changed','blocked','ready'))`. 모두 NOT NULL. 추가 전용 — UPDATE·DELETE 경로 없음. `task_revision`·`config_revision` 은 기록 시점의 Task·세션 값. `occurred_at` 은 서버 시계(워커 tick·요청 처리 시각). 인덱스 `(task_id, id)`·`(session_id, occurred_at)` |
+| `sessions.config_revision`(새 칸) | `INTEGER NOT NULL DEFAULT 1 CHECK (config_revision >= 1)` | 워크스페이스 설정 번호 |
+| `executions` 새 칸 | `config_revision INTEGER`, `folder_commit TEXT`, `folder_dirty INTEGER CHECK (folder_dirty IS NULL OR folder_dirty IN (0, 1))`, `cost_usd REAL CHECK (cost_usd IS NULL OR cost_usd >= 0)`, `input_tokens INTEGER CHECK (… >= 0)`, `output_tokens INTEGER CHECK (… >= 0)` | 모두 NULL 허용, NULL = 모름(0 과 다름). `config_revision` 은 실행 생성 때, `folder_*` 는 `started` 때, 비용·토큰은 `result_ready`·`failed` 때 채운다 |
+| `baseline_items`(새) | `source_id` → `github_sources`, `issue_number INTEGER`, `issue_title TEXT`, `issue_opened_at TEXT`, `pr_number INTEGER`, `pr_merged_at TEXT`, `fetched_at TEXT` | `PRIMARY KEY (source_id, issue_number, pr_number)`. 이슈 하나에 병합 PR 이 여럿이면 행도 여럿 |
+| `baseline_imports`(새) | `source_id PRIMARY KEY` → `github_sources`, `opened_before TEXT`, `fetched_at TEXT`, `item_count INTEGER` | 마지막 가져오기 기록. `opened_before` = 그 소스의 `github_sources.created_at` |
+| `source_issues` 새 칸(step 11) | `merged_pr_number INTEGER`, `pr_merged_at TEXT`, `merge_checked_at TEXT` | 모두 NULL 허용. NULL = 아직 모름/병합 없음, `merge_checked_at` = 마지막 조회 시각. v6 는 배포 전이라 새 버전 없이 v6 정의에 넣었다 — `source_issues` 의 v5 정의를 4 → 5 가 그대로 쓰므로 빈 DB·5 → 6 모두 `ALTER TABLE … ADD COLUMN` 으로 더한다 |
+
+비밀값 열은 없다. `data_json` 에도 요청 본문·토큰·경로를 넣지 않는다(아래 표의 키만).
+
+도입 후 완료 시각(ADR-0015 결정 9, step 11·12): 기준선이 "이슈 열림 → 그 이슈를 닫은 PR 병합"이므로, 원본 이슈가 있는 묶음의 도입 후 완료도 운영자 검토 승인 시각이 아니라 GitHub 에서 그 이슈를 닫은 병합 PR 중 가장 이른 병합 시각(`source_issues.pr_merged_at`)으로 맞춘다 — 승인 뒤 사람이 하는 push·PR·병합까지 같은 구간에 들어간다. 운영자 승인 시각은 별도 지표로 남긴다. step 11 은 조회(`get_issue_pr_link`)와 저장(`record_issue_merge`·`list_issues_needing_merge_check`), step 12 는 수집 주기 동기화("GitHub 업무 순환" 절의 병합 PR 조회)와 지표 연결(아래 표의 접수 → 완료·접수 → 승인).
+
+### 이벤트 기록 규칙 (step 4·5)
+
+| type | 어디서 | 트랜잭션 | 중복 방지 | `data_json` |
+|---|---|---|---|---|
+| `status_changed` | 상태를 바꾸는 repo 함수 안: `update_task_status`(step 4 가 `now` 키워드와 자체 트랜잭션을 더한다 — 호출자 `worker._write_status`·`web._refresh_status`·`web` 검토 승인·거절)·`finish_task`·`record_verdict`·`record_human_response_once`(`close`) | 상태 UPDATE 와 같은 트랜잭션 | 저장된 `status` 와 새 값이 다를 때만. 단 `review_decision` 이 주어지면 상태가 같아도 쓴다(운영자 검토 결정 한 번 = 한 행). 사유 문구만 바뀐 것은 쓰지 않는다 | `{"from", "to", "reason", "review_decision"}`(`review_decision` 은 `approve`·`request_changes`·`close`·null) |
+| `blocked` | `worker._write_blocked`(준비 판정 `ready=false` — `manual_mode` 만 남은 `실행 가능` 도 포함, 마감된 Task 제외) → `repo.record_blocked` | 상태 쓰기 직후, `record_blocked` 자체 트랜잭션(`append_task_event` 를 감쌈). `(code, actor)` 중복은 하나로 | 그 Task 의 가장 최근 `blocked`·`ready` 행이 같은 목록의 `blocked` 면 쓰지 않는다 | `{"blockers": [{"code", "actor"}, …]}` — `code` 로 정렬. 사유 문구는 넣지 않는다(코드가 원천) |
+| `ready` | `worker._create_cycle_execution` → `repo.create_execution(..., ready=True)` | 실행 INSERT 와 같은 트랜잭션 — 실행이 거부되면(`DuplicateStartKey`·`ActiveExecutionExists`·`TaskClosed`) 이벤트도 없다 | 그 Task 의 가장 최근 행(종류 무관)이 `ready` 면 쓰지 않는다 | `{"execution_id", "agent_id", "start_key"}` |
+
+- `ready` 는 준비 판정을 거치는 업무 순환 종류(`ExecutionPolicy.cycle`)만 쓴다. 그 밖 경로(웹 시작·데모 후속 스캔)는 실행 생성 시각(`executions.created_at`)이 곧 착수 가능 시각이다.
+- Task 생성(`insert_task`·`upsert_source_issue`·`create_followup_once`)은 이벤트를 쓰지 않는다 — `tasks.created_at`·`followup_links.created_at` 이 원천이다. 판정(`task_verdicts`)·사람 요청/응답·실행 시각도 기존 테이블에서 읽는다.
+- 실행 이벤트 저장(`repo.append_event`, step 4): `started` 면 `folder_commit`·`folder_dirty`, `result_ready`·`failed` 면 `usage` 세 값을 `executions` 칸에 같은 트랜잭션으로 옮긴다. `usage` 가 null 이거나 칸이 null 이면 NULL. 서버가 확정하는 실패(`fail_execution`·`mark_unknown`)는 사용량을 모르므로 NULL. 원문은 기존대로 `execution_events.data_json` 에도 남는다.
+
+### 설정 번호 (`config_revision`)
+
+| 올린다(같은 트랜잭션에서 +1) | 올리지 않는다 |
+|---|---|
+| `insert_kind`·`delete_kind`(종류 추가·삭제), `insert_rule`·`delete_rule`(후속 규칙 추가·삭제), `save_github_source`(소스 설정 생성·변경·중지 — 저장이 실제로 일어날 때) | `create_session`(1 로 시작)·마이그레이션 seed, `bind_assignee`(담당자 연결), `upsert_agent`·`register_session_agent`·`update_registration`(에이전트 등록·보고), 연결 코드·연결 토큰·입구 토큰, 수집 커서, Task·실행·사람 응답 |
+
+- 실행 생성(`create_execution`)은 같은 트랜잭션에서 Task 의 세션 값을 `executions.config_revision` 에 찍는다. 후속 결정(`_advance_cycle`)은 `repo.get_config_revision(conn, session_id)` 을 `FollowupContext.rules_revision` 으로 넘겨 `followup_links.rules_revision` 에 남긴다(1 고정 제거).
+- `delete_rule` 은 지금 트랜잭션 없이 DELETE 한 줄이다 — step 4 가 `_tx` 로 감싼다.
+
+### 지표 정의 (step 6)
+
+"업무 묶음" = 묶음 시작 Task 와 그 후속들. 시작 Task 는 `predecessor_task_id` 를 따라 올라가 선행이 없는 Task 다 — 원본 이슈에서 온 첫 Task(`source_issues.task_id`) 또는 직접 등록 Task. 후속은 `predecessor_task_id` 로 이어진 Task(`followup_links` 로 만든 것 포함). 재작업은 같은 Task 의 다음 Execution 이다.
+
+| 영역 | 지표 | 정의 | 원천 칸 | 미완료 | 모름 |
+|---|---|---|---|---|---|
+| 병목 | 인계 대기 | 후속 Task 생성 → 그 Task 첫 실행 `started_at`. 그 사이 `blocked` 구간을 `actor`(operator·assignee·system)별로 나눠 입력 부족(`input_missing`)·승인·결정 대기를 따로 집계 | `tasks.created_at`(후속), `executions.started_at`, `task_events`(`blocked`·`ready`) | 아직 시작 안 한 후속 | v6 이전 후속은 구간 분해 없이 전체만 |
+| 속도 | 접수 → 사람 차례 | 이슈 열림(`source_issues.snapshot_json` 의 `created_at`, 없으면 시작 Task `created_at`) → 묶음에서 처음 사람 차례가 된 시각(첫 `human_requests.created_at` 과 첫 `status_changed.to = '확인 필요'` 중 이른 것) | `source_issues`, `tasks`, `human_requests`, `task_events` | 아직 사람 차례 없음 | — |
+| 속도 | 접수 → 완료 | 이슈 열림 → 완료. GitHub 이슈 묶음(시작 Task 에 원본 이슈가 있음)의 완료 = 그 이슈를 닫은 병합 PR 의 병합 시각(`source_issues.pr_merged_at`) — 운영자 승인 시각은 쓰지 않는다(step 12). 직접 등록 묶음은 시작 Task `merge_confirmed_at`, 없으면 시작 Task 의 `status_changed.to = '완료'` 시각. GitHub 이슈 묶음만 모은 같은 값이 `intake_to_merge`(기준선과 같은 구간 — 화면 맨 위 비교는 이것끼리) | `source_issues.pr_merged_at`·`state`·`merge_checked_at`, `tasks.merge_confirmed_at`, `task_events` | 끝점 없음(실패 마감 `closed_failed`, 병합 없이 닫힘 `closed_unmerged` = 닫혔고 조회했지만 병합 PR 없음 — 둘 다 따로 셈) | 직접 등록의 v6 이전 마감은 `finished_at` 을 쓰고 표시 |
+| 속도 | 접수 → 승인 | 이슈 열림 → 묶음에서 처음 운영자 승인(`status_changed.data.review_decision = 'approve'`) 또는 `완료` 로 바뀐 시각 중 이른 것(`intake_to_approval`, step 12) | `task_events` | 아직 승인·완료 없음 | — |
+| 사람 부담 | 개입 횟수, 응답 시간 | 묶음당 `human_requests` 수 + 운영자 검토 결정 수(`status_changed.data.review_decision` 이 있는 행). 응답 시간 = 요청 `created_at` → `answered_at` | `human_requests`, `task_events` | 열린 요청 | — |
+| 품질 | 1회 통과율 | 첫 `code_review` 결과가 `approved` 인 묶음 비율 | `executions`(kind `code_review`)·결과 산출물·`task_verdicts` | 검토 결과 없는 묶음(분모에서 빼고 따로 셈) | — |
+| 품질 | 재작업 횟수 | 묶음당 `start_key` `rework:` 실행 수 | `executions.start_key` | — | — |
+| 품질 | 사람 거부 비율 | 운영자 검토 결정 중 `request_changes`·`close` 비율 | `task_events` | — | v6 이전 결정은 `tasks.review_decision`(마지막 값)뿐이라 제외 |
+| 비용 | 실행 시간 | `started_at` → `finished_at` | `executions` | 끝나지 않은 실행 | `started_at` 없음 |
+| 비용 | 비용, 토큰 | `cost_usd`·`input_tokens`·`output_tokens` 합계·중앙값, "모름" 건수를 따로 | `executions` | — | NULL — 0 으로 더하지 않는다 |
+| 신뢰성 | 실패율, 실패 사유, 재실행 | 끝난 실행 중 `failed` 비율, `failed_code` 분포, `attempt_no > 1` 건수 | `executions` | 끝나지 않은 실행 | — |
+
+- 모든 수치는 `Stat(median, n, incomplete, unknown, total)` 이다(`total` 은 합계를 내는 비용·토큰·건수·대기 구간만, 그 밖은 null). 비율은 `Ratio(numerator, denominator, incomplete, unknown)` 로 분자·분모를 함께 내고 분모 0 이면 `rate` 가 null. 인계 대기의 actor 별 구간은 후속 Task 당 합이며, 이벤트가 하나도 없는 후속(v6 이전)은 `unknown`. 접수 → 완료는 `finished_at` 으로 대신한 건수(`done_by_finished_at`)와 실패 마감(`closed_failed`)·병합 없이 닫힘(`closed_unmerged`, 둘 다 미완료에 포함)을 따로 낸다. 사람 거부 비율의 `unknown` 은 `tasks.review_decision` 만 있고 결정 이벤트가 없는 Task 수. 표본이 작으면 사례를 보여주고 일반화하지 않는다.
+- 기간(`from` 이상 `to` 미만, RFC 3339): 묶음 지표는 접수 시각, 실행 지표는 `created_at` 으로 거른다.
+- 묶음 기준(`group_by`): `config_revision` 또는 `folder_commit`. 실행 지표는 그 실행의 값, 묶음 지표는 묶음 첫 실행(`created_at` 가장 이른 것)의 값. NULL(실행 없는 묶음 포함)은 "모름" 그룹 하나(`metrics.UNKNOWN`)로 모은다. `group_by` 가 없으면 그룹 하나(`metrics.ALL_GROUP`). 결과는 `MetricsReport.groups`(`MetricsGroup` 튜플, 값 순 — 설정 번호는 수 순서 — 모름은 끝).
+- 기준선(`summarize_baseline`): 이슈별 가장 이른 `pr_merged_at` − `issue_opened_at` 의 중앙값, n = 이슈 수, `opened_before`·`fetched_at` 과 "하네스·Claude 사용 시기 이력 — 순수 수작업 기준 아님" 주석.
+
+### 이름 고정 (시그니처 수준)
+
+| 이름 | 위치(step) | 시그니처·필드 | 책임 |
+|---|---|---|---|
+| `ExecutionUsage` | `contracts/v1.py`(1) | `cost_usd: float \| None = None`(≥ 0), `input_tokens: int \| None = None`(≥ 0), `output_tokens: int \| None = None`(≥ 0) | 실행 사용량. 모르는 값은 null |
+| `StartedData` 추가 칸 | `contracts/v1.py`(1) | `folder_commit: str \| None = None`(소문자 hex 40자), `folder_dirty: bool \| None = None` | 러너 등록 폴더의 HEAD·미커밋 변경 |
+| `ResultReadyData.usage` / `FailedData.usage` | `contracts/v1.py`(1) | `usage: ExecutionUsage \| None = None` | null = 전부 모름 |
+| 러너 보고 | `connector/`(2) | `git_ops.head_sha`·`git_ops.is_dirty` 를 등록 경로에, 도구별 사용량 파서 | 읽기 실패는 null, 실행을 막지 않음 |
+| `append_task_event` | `adapters/repo.py`(4) | `append_task_event(conn, *, task_id, type, data: dict, now) -> bool` | 자체 BEGIN 없음 — 호출자 트랜잭션 안에서 쓴다(상태 변경 repo 함수·실행 생성). 위 중복 방지 규칙을 적용하고 썼으면 True. 세션·`task_revision`·`config_revision` 은 DB 에서 읽는다. 없는 Task 는 `NotFound` |
+| `record_blocked` | `adapters/repo.py`(5) | `record_blocked(conn, task_id, blockers: list[dict], *, now) -> bool` | 자체 트랜잭션으로 `blocked` 한 행(`{"blockers": blockers}`) — 중복 방지는 `append_task_event` 규칙 |
+| `list_task_events` | `adapters/repo.py`(4) | `list_task_events(conn, task_id) -> list[Row]` | `id` 순 |
+| `update_task_status` | `adapters/repo.py`(4) | 기존 인자 + `now: str`(키워드) | `status_changed` 를 같은 트랜잭션에 |
+| `create_execution` | `adapters/repo.py`(4·5) | 기존 인자 + `ready: bool = False` | `executions.config_revision` 을 찍고, `ready` 면 `ready` 이벤트를 같은 트랜잭션에 |
+| `bump_config_revision` / `get_config_revision` | `adapters/repo.py`(4) | `bump_config_revision(conn, session_id) -> int`(호출자 트랜잭션 안에서만 — 자체 BEGIN 없음), `get_config_revision(conn, session_id) -> int` | 위 "올린다" 함수들이 내부에서 부른다 |
+| `replace_baseline` | `adapters/repo.py`(7) | `replace_baseline(conn, session_id, source_id, items: Sequence[IssuePrLink], *, opened_before, now) -> int` | 소스의 `baseline_items` 전체 교체 + `baseline_imports` 기록, 한 트랜잭션. 다른 세션 소스는 `NotFound` |
+| `record_issue_merge` | `adapters/repo.py`(11) | `record_issue_merge(conn, *, session_id, source_id, github_issue_id, link: IssuePrLink \| None, now) -> None` | 자체 트랜잭션. `merge_checked_at = now`, 병합 칸은 비어 있을 때만 채운다 — 한 번 기록한 병합은 다른 값·None 으로 덮지 않는다(같은 값은 멱등). 다른 세션 소스·없는 이슈 `NotFound`, 이슈 번호가 다른 링크 `ValueError` |
+| `list_issues_needing_merge_check` | `adapters/repo.py`(11) | `list_issues_needing_merge_check(conn, session_id, source_id) -> list[Row]` | `state = 'closed'` 이고 `pr_merged_at IS NULL` 인 `source_issues`, 번호순. 다른 세션 소스 `NotFound` |
+| `list_baseline` | `adapters/repo.py`(7) | `list_baseline(conn, session_id, source_id) -> tuple[Row \| None, list[Row]]` | 가져오기 기록과 항목 |
+| `list_metric_facts` | `adapters/repo.py`(8) | `list_metric_facts(conn, session_id, *, store) -> MetricFacts` | 세션의 Task·실행·이벤트·사람 요청을 도메인 값 객체로 옮김(계산 없음). `TaskFact.issue_opened_at` = `source_issues.snapshot_json` 의 `created_at`, `issue_state`·`pr_merged_at`·`merge_checked_at` = `source_issues` 의 `state`·같은 이름 칸(직접 등록은 None, step 12). `ExecutionFact.outcome` = 가장 최근 판정의 outcome, 단 `code_review` 는 판정이 `passed` 일 때 결과 산출물(`CodeReviewResult`)의 outcome(판정 JSON 에는 통과 여부만 있다 — 그래서 `store` 를 받는다), 판정 전·실패면 null |
+| `github_source_created_at` | `adapters/repo.py`(8) | `github_source_created_at(conn, session_id, source_id) -> str` | 소스 연결 시각(설정 변경에도 불변) = 기준선 `opened_before`. 다른 세션 소스 `NotFound` |
+| `workflow.domain.metrics` | `domain/metrics.py`(6) | 값 객체 `TaskFact`·`ExecutionFact`·`TaskEventFact`·`HumanRequestFact`·`MetricFacts`, `BaselineItemFact`, 결과 `Stat`·`Ratio`·`MetricsGroup`·`MetricsReport`·`BaselineSummary`. `compute_metrics(facts: MetricFacts, *, since: str \| None, until: str \| None, group_by: Literal["config_revision", "folder_commit"] \| None) -> MetricsReport`, `summarize_baseline(items: Sequence[BaselineItemFact], *, opened_before: str, fetched_at: str) -> BaselineSummary` | 순수 계산 — FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, 현재 시각을 읽지 않음 |
+| `IssuePrLink` | `contracts/github.py`(7) | `issue_number: int`, `issue_title: str`, `issue_opened_at`, `pr_number: int`, `pr_merged_at`(RFC 3339) | 병합된 PR 만 |
+| `list_issue_pr_links` | `adapters/github_client.py`(7) | `GitHubClient.list_issue_pr_links(repo: str, *, opened_before: str) -> list[IssuePrLink]` | `POST https://api.github.com/graphql`(같은 헤더·허용 저장소·리다이렉트 금지·오류 분류). 이슈의 `closedByPullRequestsReferences`(또는 PR 의 `closingIssuesReferences`)에서 `merged` 인 PR 만, `createdAt < opened_before` 이슈만. step 7 구현: `repository.issues(states: CLOSED, orderBy: CREATED_AT ASC, first: 100)` 를 `pageInfo.endCursor` 로 끝까지, 이슈마다 `closedByPullRequestsReferences(first: 25, includeClosedPrs: true)` 에서 가장 이른 `mergedAt` PR 하나(그래서 `baseline_items` 는 지금 이슈당 한 행), 이슈 번호순. 200 응답의 `errors` 는 `type` 으로 `RATE_LIMITED`→`GitHubRateLimited`·`FORBIDDEN`→`GitHubForbidden`·`NOT_FOUND`→`GitHubNotFound`·그 밖 `GitHubError`(message 는 버림). 권한: 기존 Issues read 에 Pull requests read([docs/github](github/README.md) 1절, 2026-09-27 GitHub 문서 확인) |
+| `get_issue_pr_link` | `adapters/github_client.py`(11) | `GitHubClient.get_issue_pr_link(repo: str, number: int) -> IssuePrLink \| None` | 같은 GraphQL 경계·허용 저장소·오류 분류. `repository.issue(number)` 의 `closedByPullRequestsReferences(first: 25, includeClosedPrs: true)` 에서 병합 PR 중 가장 이른 병합 하나 — `list_issue_pr_links` 와 같은 노드 해석(`_earliest_merge`)을 쓴다. 이슈가 `CLOSED` 가 아니거나 병합 PR 이 없으면 None. 이슈가 null 이면 형식 오류(`GitHubError`) |
+
+### API·화면 (step 7·8·9)
+
+인증은 기존 운영자 GitHub 화면·API 와 같다(코드 확인: `server/web.py` `operator_github_page`, `server/auth.py` `require_operator`, `server/github_api.py`).
+
+| 경로 | 위치 | 인증 | 동작 |
+|---|---|---|---|
+| `GET /metrics` | `server/web.py`(9), `metrics.html` | `require_session` + `_base(...)["is_operator"]` 아니면 `PageError(403, "forbidden")` — `/operator/github` 과 같음 | 맨 위 비교는 기준선과 도입 후 `intake_to_merge`(GitHub 이슈 묶음, 병합 없이 닫힘 건수) — "이슈 열림 → 병합" 끼리만. 접수 → 승인 은 아래 속도 표(step 12). 도입 후 지표와 기준선 나란히, n·미완료·모름·주석. GET 폼 쿼리 `from`·`to`·`group_by` 는 JSON 과 같되 빈 값 = 지정 안 함, 어긋나면 422 오류 화면. 계산은 `metrics_api._report`·`_baselines` 그대로, 표시는 `views.metrics_context`(모름은 "모름", 0 아님). 기준선 가져오기 버튼은 소스마다 `data-json-action` 으로 아래 POST |
+| `GET /metrics.json` | `server/metrics_api.py`(8) | `Depends(require_operator)` — 운영자 세션 쿠키 아니면 `ApiError(403, "forbidden")` | 쿼리 `from`·`to`(RFC 3339, 시간대 필수, `from < to`)·`group_by`(`config_revision`\|`folder_commit`) — 어긋나면 422 `invalid_field`. 운영자 세션(`session_id`)의 데이터만. 응답 `from`·`to`·`group_by`·`groups`(`MetricsGroup` 칸 그대로 — `Stat` 은 `median·n·incomplete·unknown·total`, `Ratio` 는 `numerator·denominator·rate·incomplete·unknown`)·`baselines`(세션 소스마다 `source_id`·`repository_full_name`·`imported`·`opened_before`·`fetched_at`·`intake_to_merge`·`note` — 가져온 적 없으면 null). 기준선은 기간·그룹과 무관 |
+| `GET /metrics.csv` | `server/metrics_api.py`(8) | 같음 | 같은 계산을 행 단위로. 열 `group`·`area`·`metric`·`unit`(`seconds`·`usd`·`tokens`·`count`·`ratio`)·`median`·`n`·`incomplete`·`unknown`·`total`·`numerator`·`denominator`·`note`. 비율 행은 분자·분모, 건수 하나(`bundles`·`done_by_finished_at`·`closed_failed`·`closed_unmerged`·`failed_code:<code>`)는 `total`, actor 별 대기는 `handoff_blocked:<actor>`. 기준선은 `group` = `baseline:<source_id>`, `metric` = `intake_to_merge`, `note` 에 주석. 모름은 빈 칸 |
+| `POST /operator/github/sources/{source_id}/baseline` | `server/metrics_api.py`(8) | `Depends(require_operator)` + 소스가 그 세션 소유(아니면 404 `not_found`, `github_api._existing` 과 같은 규칙). 본문 없음 — `POST /github/sources/{id}/stop` 처럼 세션 쿠키 SameSite=Lax 에 기댄다. 토큰 없으면(`Settings.github_token` 없음) 409 `github_token_missing`(새 코드 — 기존 설정 API 는 `token_configured` 만 보이고 이 경우 오류가 없다) | `list_issue_pr_links` → `replace_baseline`, 응답 `source_id`·`opened_before`·`item_count`. 요청 중 트랜잭션을 잡지 않는다(HTTP 는 트랜잭션 밖). GitHub 오류는 `ErrorBody`(예외 메시지 대신 고정 문구) — `GitHubRateLimited` 429 `github_rate_limited`(`details.retry_after_seconds`, 모르면 60), `GitHubRepositoryNotAllowed` 409 `repository_not_allowed`, `GitHubForbidden` 502 `github_forbidden`, `GitHubNotFound` 502 `github_not_found`, `GitHubUnavailable` 502 `github_unavailable`, 그 밖 502 `github_error`. 실패하면 이전 기준선 그대로. 클라이언트는 `app.state.github_client`(없으면 요청 때 `HttpGitHubClient`) — 테스트가 가짜로 바꾼다 |
+
+- 경로 접두어: 기존 운영자 JSON API 는 `/github/sources…`(`github_api.router`)이지만 기준선 가져오기는 이 phase 계획대로 `/operator/github/sources/{source_id}/baseline` 에 둔다.
+- 화면 문구는 인과를 단정하지 않는다("도입 후 줄었다" 대신 "기준선 중앙값 X, 도입 후 중앙값 Y, n").
+
+### CLI 결과에서 비용·토큰 얻기 (step 2)
+
+| 도구 | 확인한 근거 | 키 | 처리 |
+|---|---|---|---|
+| Claude(`claude -p --output-format json`) | `connector/claude.py` 모듈 설명(2026-09-20 `claude 2.1.278` 1회 실행으로 결과 키 확인 — `usage` 포함), `tests/workflow/connector/test_claude.py` fixture(`"total_cost_usd": 0.01`, `"usage": {"input_tokens": 429, "output_tokens": 67}`) | `total_cost_usd` → `cost_usd`, `usage.input_tokens` → `input_tokens`, `usage.output_tokens` → `output_tokens` | `ClaudeResult` 가 지금은 읽지 않는다(`extra="ignore"`). 값이 없거나 숫자가 아니면 그 칸만 null. `usage.input_tokens` 는 CLI 가 보고한 값 그대로(캐시 생성·읽기 토큰은 별도 키라 더하지 않는다). 시간 초과·결과 JSON 없음이면 `usage` 전체 null. `total_cost_usd` 는 CLI 계산값이며 구독 사용 시 실제 청구액이 아니다 |
+| Codex(`codex exec --json`) | `connector/codex.py` 는 `--output-last-message` 파일만 읽고 stdout JSONL 은 원시 로그(`codex_jsonl`)로만 둔다. `tests/workflow/connector/test_codex.py` fixture 의 `turn.completed` 에는 `usage` 가 없다. 실제 실행으로 토큰 키를 확인한 기록이 없다 | 확인 못 함. 후보: `turn.completed` 의 `usage.input_tokens`·`usage.output_tokens` | step 2 는 stdout JSONL 에 `turn.completed.usage` 가 정수로 있으면 턴별 합, 없거나 형식이 다르면 null. 비용은 보고하지 않으므로 항상 null. 실제 키 확인은 실연동 때 VERIFICATION_LOG 에 남긴다 |
+| 대본 에이전트(`scripted/`)·`EchoAdapter` | — | — | 보내지 않음(null) |
 
 ## 기존 구현과 초기 설계 기록
 
