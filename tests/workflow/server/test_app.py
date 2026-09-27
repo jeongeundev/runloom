@@ -57,3 +57,12 @@ def test_module_import_creates_app_when_not_skipped(monkeypatch, tmp_path):
     finally:
         monkeypatch.setenv("WORKFLOW_SKIP_APP", "1")
         importlib.reload(app_module)
+
+
+def test_selfhost_without_diag_token_starts(settings):
+    """phase 10 — 진단 토큰 없이도 앱이 만들어지고 스키마를 연다."""
+    from dataclasses import replace
+
+    app = create_app(replace(settings, mode="selfhost", diag_api_token=""))
+    assert isinstance(app, FastAPI)
+    assert settings.db_path.exists()

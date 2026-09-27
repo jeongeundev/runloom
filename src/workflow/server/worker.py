@@ -351,7 +351,7 @@ class Worker:
         self,
         conn_factory: Callable[[], sqlite3.Connection],
         store: ArtifactStore,
-        diag: DiagClient,
+        diag: DiagClient | None,
         callbacks: CallbackClient,
         settings: Settings,
         clock: Callable[[], str],
@@ -493,6 +493,8 @@ class Worker:
             log.warning("실행 %s 를 failed 로 확정하지 못함 (이미 최종 상태)", execution_id)
 
     def _submit_diagnoses(self, conn: Connection, report: TickReport) -> None:
+        if self._diag is None:  # 진단 기능 꺼짐(selfhost, 토큰 없음) — 서버가 진단 실행을 받지 않는다
+            return
         for execution in repo.executions_by(conn, statuses=("queued",), kind="diagnosis"):
             execution_id = execution["execution_id"]
             request = ExecutionRequest.model_validate_json(execution["request_json"])
@@ -520,6 +522,8 @@ class Worker:
             self._refresh_task(conn, execution["task_id"])
 
     def _poll_diagnoses(self, conn: Connection, report: TickReport) -> None:
+        if self._diag is None:
+            return
         for execution in repo.executions_by(conn, statuses=("accepted", "running", "unknown"), kind="diagnosis"):
             execution_id = execution["execution_id"]
             try:
@@ -1503,7 +1507,8 @@ def main() -> None:
     worker = Worker(
         conn_factory=lambda: connect(settings.db_path),
         store=ArtifactStore(settings.artifact_dir),
-        diag=HttpDiagClient(settings.diag_api_url, settings.diag_api_token),
+        # 토큰이 없으면 진단만 꺼진다(ADR-0016, selfhost)
+        diag=HttpDiagClient(settings.diag_api_url, settings.diag_api_token) if settings.diagnosis_enabled else None,
         callbacks=HttpCallbackClient(),
         settings=settings,
         clock=utc_now,

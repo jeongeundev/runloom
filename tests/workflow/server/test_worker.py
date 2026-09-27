@@ -599,6 +599,17 @@ def test_bundle_for_code_change_successor_collects_rule_kinds_without_attachment
 # --- 같은 요청·ID 두 번, 연결 불가 재시도 -------------------------------------------------------
 
 
+def test_worker_without_diag_client_leaves_diagnosis_untouched(flow, store, settings, conn, clock):
+    """phase 10 — 진단 기능이 꺼지면 워커는 진단 클라이언트 없이(`diag=None`) 돈다. 진단 실행은 보내지도 폴링하지도 않는다."""
+    worker = Worker(lambda: connect(settings.db_path), store, None, FakeCallbackClient(), settings, clock)
+
+    report = worker.tick()
+
+    assert report.submitted == 0 and report.retries == 0
+    a = repo.get_execution(conn, EXEC_A)
+    assert (a["status"], a["last_event_seq"]) == ("queued", 0)
+
+
 def test_unavailable_diag_api_keeps_state_and_resubmits_same_id(flow, worker, server, conn):
     server.down = True
 

@@ -340,6 +340,8 @@ def _start_execution(
     """새 시도를 `queued` 로 만든다. 요청은 여기서 고정되고 이후 바뀌지 않는다 — 종류 봉투(`kind_spec`)도 등록부에서
     이때 채운다. 반환은 execution_id."""
     kind = task["kind"]
+    if kind == "diagnosis" and not settings.diagnosis_enabled:
+        raise PageError(409, "diagnosis_disabled", "진단 기능이 꺼져 있습니다. DIAG_API_TOKEN 이 설정되지 않았습니다.")
     _check_diagnosis_limits(conn, session_id, kind, now, settings)
     spec = repo.get_kind(conn, session_id, kind)
     if spec is None:

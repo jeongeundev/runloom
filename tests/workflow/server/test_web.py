@@ -489,6 +489,20 @@ def test_run_diagnosis_global_daily_limit_429(web, conn):
     assert "오늘 전체 진단 실행 한도(60회)에 도달했습니다." in response.text
 
 
+def test_run_diagnosis_rejected_when_diagnosis_is_off(agents, settings, conn):
+    """phase 10 — 진단 토큰이 비면(셀프호스트 선택) 진단 실행을 만들지 않고 명확히 거부한다. 분기는 모드가 아니라 토큰."""
+    off = TestClient(create_app(dataclasses.replace(settings, diag_api_token="")))
+    assert off.get("/tasks").status_code == 200
+    register_agents(off)
+    task_id = create_task(off, diagnose_form())
+    response = off.post(f"/tasks/{task_id}/run", follow_redirects=False)
+    assert response.status_code == 409
+    assert "diagnosis_disabled" in response.text
+    assert "진단 기능이 꺼져 있습니다" in response.text
+    assert repo.active_execution(conn, task_id) is None
+    assert repo.count_diagnosis_started(conn, session_id=None, since="2000-01-01T00:00:00Z") == 0
+
+
 def seed_judged_predecessor(client, conn, store, settings, task_a: str, *, bundle: bool = True) -> tuple[str, str | None]:
     """A 를 실행해 결과(result_ready)와 판정 `passed` 를 넣는다 — 사람 승인 전 `확인 필요` 상태. `bundle` 이면 워커가
     조립했을 handoff_bundle 산출물도 넣는다. (exec_a, bundle_id)."""
