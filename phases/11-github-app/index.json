@@ -32,7 +32,7 @@
       "status": "completed",
       "started_at": "2026-09-27T18:23:06+0900",
       "summary": "GitHubSourceConfig 확장(contracts/github.py): intake filtered|all_open 기본 filtered, trigger_label·default_fix_agent_id·installation_id 기본 None, workflow_repository_id·fix_verification_profile_id·review_agent_id 를 None 허용(기본 None) — filtered 는 범위+세 ID 필수(FILTERED_REQUIRED 상수), all_open 은 둘 다 비어도 됨; 필드 순서는 max_rework_rounds 뒤에 새 칸 4개. server/github_api.py: 요청 본문에 intake·trigger_label·default_fix_agent_id(installation_id 는 받지 않고 PUT 에서 유지), start_at 생략=utc_now(), all_open 에서 trigger_label 생략=DEFAULT_TRIGGER_LABEL 'runloom'(명시 null 유지), filtered 에서 세 ID 없으면 그 필드 invalid_field(phase 8 과 같은 오류), None ID 는 검사 생략·workflow_repository_id None 이면 능력·프로필 범위 검사 생략, default_fix_agent_id 는 code.fix 검사, 설치 소스(installation_id) 변경은 허용 목록 검사 생략, bind_assignee 도 None 칸 검사 생략; create/update 는 _config(형식) → _source_problems 순서. CONTRACT 13.6 블록에 새 칸 추가 + all_open 예시 블록(펜스 52→53, test_v1 갱신)·13.10 본문 기본값 설명, ARCHITECTURE 소스 새 칸 절에 API 규칙 한 단락. 테스트: test_github.py 새 칸 16개(phase 8 JSON 호환·all_open·filtered 거부·잘못된 값·예시 블록), test_github_api.py 8개. 검증: pytest 2551 passed/55 skipped, ruff 통과. 주의: issue_intake 는 아직 all_open 을 모름(빈 label_filter → not_selected 로 아무것도 안 받음 — step 5), worker 의 config.review_agent_id·fix_verification_profile_id 는 이제 None 일 수 있음(all_open 은 step 6 자동 매칭으로 채울 것).",
-      "completed_at": "2026-09-27T18:40:00+0900"
+      "completed_at": "2026-09-27T18:30:14+0900"
     },
     {
       "step": 4,
