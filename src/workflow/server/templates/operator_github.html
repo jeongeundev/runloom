@@ -82,8 +82,18 @@
   <p class="small">{% if not c.enabled %}<strong>수집 중지됨</strong> · {% endif %}{% if s.synced_at %}마지막 동기화 {{ s.synced_at|kst }}{% else %}아직 동기화 전{% endif %} · 가져온 이슈 {{ s.issues|length }}건 ·
     {% if s.credential %}{{ s.credential }}{% else %}<strong>GitHub 자격 없음</strong> — 수집하지 않습니다. [GitHub 연결] 또는 고급 — 토큰으로 연결{% endif %}</p>
   <p class="small">{% if c.intake == 'all_open' %}열린 이슈 전부 · 트리거 라벨 {% if c.trigger_label %}<span class="mono">{{ c.trigger_label }}</span>{% else %}없음{% endif %}{% else %}라벨 {{ c.label_filter|join(', ') or '없음' }} · 고른 이슈 {{ c.selected_issue_numbers|join(', ') or '없음' }} · 시작 {{ c.start_at|kst }}{% endif %} · {{ '자동 실행' if c.run_mode == 'auto' else '직접 실행' }} · 재작업 상한 {{ c.max_rework_rounds }}회</p>
+  {% set issued = runner_issued if runner_issued and runner_issued.source_id == c.source_id else none %}
+  {% if issued %}
+  <div data-runner-command>
+    <p class="small">Runloom 설치 폴더에서 아래 한 줄을 실행하세요 — <span class="mono">&lt;이 저장소를 클론한 폴더&gt;</span> 만 바꿉니다. 코드는 10분 유효({{ issued.expires_at|kst }} 만료)·1회용입니다.</p>
+    <pre class="mono">{{ issued.command }}</pre>
+  </div>
+  {% endif %}
   {% if s.runner_missing %}
-  <p data-runner-missing>이 저장소를 등록한 러너 없음 — 러너에서 이 저장소 폴더를 register 하세요 <span class="mono small">python3 -m workflow.connector register --repo &lt;폴더&gt; …</span></p>
+  <div class="actions" data-runner-missing>
+    <span>이 저장소를 등록한 러너 없음</span>
+    <form method="post" action="/operator/github/sources/{{ c.source_id }}/runner" class="inline-form"><button class="btn btn-small" type="submit">{{ '다시 발급' if issued else '러너 붙이기' }}</button></form>
+  </div>
   {% else %}
   <ul class="agent-list">
     {% for m in s.match %}<li><span>{{ m.label }}</span><span>{% if m.value %}<span class="mono">{{ m.value }}</span> ({{ m.how }}){% elif m.note %}{{ m.note }}{% else %}정해지지 않음{% endif %}</span></li>{% endfor %}
@@ -105,6 +115,12 @@
   </div>
   <details class="row"><summary>고급 설정</summary>
     <div class="row-body">
+      {% if not s.runner_missing %}
+      <form method="post" action="/operator/github/sources/{{ c.source_id }}/runner" class="actions">
+        <button class="btn btn-secondary btn-small" type="submit">{{ '다시 발급' if issued else '러너 다시 붙이기' }}</button>
+        <span class="small">새 연결 코드와 명령 한 줄을 발급합니다 — 러너를 다른 Mac·폴더로 옮길 때.</span>
+      </form>
+      {% endif %}
       <form data-json-action="/github/sources/{{ c.source_id }}" data-json-method="PUT">
         <input type="hidden" name="expected_revision" value="{{ c.config_revision }}" data-json-type="int">
         {{ source_fields(c, c.source_id) }}

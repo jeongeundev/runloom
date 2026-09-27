@@ -449,7 +449,7 @@ Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Deskto
 
 ### 러너 붙이기 — compose 밖 (step 6)
 
-아래 순서로 붙인다. 러너 코드·계약은 바꾸지 않는다. `deploy/selfhost/install-runner.sh`(step 6)는 패키지 설치·plist·launchd 적재만 하고, 2·3 의 명령은 사용자가 치도록 출력만 한다 — 스크립트는 연결 코드·토큰을 다루지 않는다.
+아래 순서로 붙인다. 러너 코드·계약은 바꾸지 않는다. `deploy/selfhost/install-runner.sh`(step 6)는 패키지 설치·plist·launchd 적재만 하고, 2·3 의 명령은 사용자가 치도록 출력만 한다 — 스크립트는 연결 코드·토큰을 다루지 않는다. (phase 12 step 9 부터 기본 흐름은 저장소 카드 [러너 붙이기] → `install-runner.sh --server --code --repo` 한 명령 — "실제 저장소 순환 — phase 12" 의 경로 절. 아래는 인자 없는 호출·수동 흐름.)
 
 1. 사용자가 브라우저에서 로그인 → `/operator` 에서 연결 코드 발급(1회용·10분).
 2. `python3 -m workflow.connector connect --server http://127.0.0.1:<포트> --code <코드>` — 연결 토큰을 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다(기존 `connector_paths`).
@@ -765,7 +765,9 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 명령 한 줄: `deploy/selfhost/install-runner.sh --server <base> --code <코드> --repo <폴더>` — `<base>` = `WORKFLOW_PUBLIC_URL` 또는 요청 base URL, `<폴더>` 는 글자 그대로 둔다(사용자가 채움). 카드에 "Runloom 설치 폴더에서 실행, 코드는 10분 유효" 안내. 러너가 이미 매칭된 카드에는 버튼이 없다(고급 설정 안에 [러너 다시 붙이기]).
 
-`install-runner.sh`(step 9): `--server`·`--code`·`--repo`(셋 다 있거나 셋 다 없음)·`--tool`. 있으면 pip 설치 뒤 `<python> -m workflow.connector setup --server … --code … --repo … [--tool …]` 를 실행하고 성공하면 적재까지 한다. 인자가 없으면 지금 동작(토큰 파일이 있을 때만 적재). 코드는 plist·로그에 쓰지 않는다.
+`install-runner.sh`(step 9): `--server`·`--code`·`--repo`(셋 다 있거나 셋 다 없음, 하나만·모르는 인자는 종료 2)·`--tool`·`--verify`·`--link`·`--env`(반복, setup 에 그대로). 있으면 pip 설치 뒤 `<python> -m workflow.connector setup --server … --code … --repo … [나머지]` 를 실행하고 성공하면 plist 를 쓰고 토큰 파일 확인 없이 적재까지 한다(실패하면 plist·적재 없이 종료 1). 인자가 없으면 지금 동작(토큰 파일이 있을 때만 적재, connect·register 안내 출력). 코드·`--env` 값은 plist·출력에 쓰지 않는다 — `DRY_RUN=1` 의 setup 줄도 `--code ***`·`--env 이름=***`. plist `EnvironmentVariables` 는 `PATH`·`HOME`(실제 값 — git push·fetch 가 `~/.gitconfig`·osxkeychain·`~/.ssh` 를 찾게)·`LANG`. `SSH_AUTH_SOCK` 은 넣지 않는다(ssh 원격은 실패할 수 있음 — SELFHOST 러너 절).
+
+구현 메모(step 9): 경로 `web.operator_attach_runner` 는 `require_session` + `_require_operator_page`(selfhost 미로그인 → `/login`, demo 비운영자 403), 소스는 `repo.get_github_source(conn, session_id, …)` 로 찾아 없으면 404 `not_found`. 템플릿 변수 `runner_issued = {source_id, command, expires_at}` — 그 카드에만 `data-runner-command` 블록(명령 `<pre>`, "10분 유효·1회용", 만료 시각 KST). 러너 없는 카드(`runner_missing`)는 `data-runner-missing` 줄에 [러너 붙이기](발급 뒤엔 [다시 발급]) POST 폼, 매칭된 카드는 접힌 "고급 설정" 맨 위에 [러너 다시 붙이기]. `<폴더>` 자리 글자는 `<이 저장소를 클론한 폴더>`.
 
 ### 업무 상태 문구
 

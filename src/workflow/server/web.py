@@ -1607,6 +1607,34 @@ def operator_github_page(
     )
 
 
+@router.post("/operator/github/sources/{source_id}/runner", response_class=HTMLResponse)
+def operator_attach_runner(
+    request: Request,
+    source_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """[러너 붙이기](ADR-0018 결정 6) — 연결 코드(1회용·10분)를 발급해 그 카드에 명령 한 줄을 넣어 그대로 렌더한다.
+    리다이렉트하지 않는다 — 코드가 URL·기록에 남지 않게. 서버 주소는 `WORKFLOW_PUBLIC_URL` 또는 요청 base URL."""
+    _require_operator_page(conn, session_id)
+    if repo.get_github_source(conn, session_id, source_id) is None:
+        raise PageError(404, "not_found", "이 워크스페이스의 저장소 연결이 아닙니다.", field="source_id")
+    now = utc_now()
+    code = repo.issue_connect_code(conn, now)
+    row = next(c for c in repo.list_connect_codes(conn) if c["code"] == code)
+    settings = _settings(request)
+    server = settings.public_url or str(request.base_url).rstrip("/")
+    return _render(
+        "operator_github.html", **_base(request, conn, session_id, now),
+        **views.github_context(conn, session_id, now=now, settings=settings, secrets=request.app.state.secrets),
+        runner_issued={
+            "source_id": source_id,
+            "command": f"deploy/selfhost/install-runner.sh --server {server} --code {code} --repo <이 저장소를 클론한 폴더>",
+            "expires_at": row["expires_at"],
+        },
+    )
+
+
 # --- GitHub 연결 경로 (phase 11 step 7, ADR-0017, ARCHITECTURE "경로") ---------------------------------------
 # state(CSRF): 쿠키 `wf_gh_state` = `<state>.<발급 epoch>.<HMAC>` — 서버 메모리·DB 에 두지 않고, 쿼리 state 와 비교하며
 # 발급 뒤 1시간(manifest code 유효 시간)이 지나면 거부한다. 비밀값(개인 키·client secret·webhook secret·PAT)은

@@ -65,37 +65,40 @@ deploy/selfhost/install.sh
 
 ## 러너 연결
 
-러너는 컨테이너가 아니라 호스트 Mac 에서 돈다 — `claude`·`codex` 로그인과 작업 폴더가 호스트에 있기 때문이다. 순서는 연결 코드 → connect → register → install-runner.
+러너는 컨테이너가 아니라 호스트 Mac 에서 돈다 — `claude`·`codex` 로그인과 작업 폴더가 호스트에 있기 때문이다. 저장소를 연결한 뒤([GitHub 연결](#github-연결)) 저장소 카드에서 붙인다.
 
-1. **연결 코드** — 로그인한 화면에서 `/operator` → `연결 코드 발급`. 1회용, 10분 유효.
-2. **패키지 설치** — 호스트 `python3` 에 이 저장소를 설치한다(install-runner.sh 도 같은 설치를 한다).
-
-   ```bash
-   python3 -m pip install -e .
-   ```
-
-3. **connect** — 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다.
+1. **[러너 붙이기]** — `/operator/github` 의 저장소 카드에 `이 저장소를 등록한 러너 없음` 과 [러너 붙이기] 버튼이 보인다. 누르면 그 카드에 명령 한 줄이 나온다. 연결 코드가 들어 있고 1회용·10분 유효다(지나면 [다시 발급]).
 
    ```bash
-   python3 -m workflow.connector connect --server http://127.0.0.1:8000 --code <연결 코드>
+   deploy/selfhost/install-runner.sh --server http://127.0.0.1:8000 --code <연결 코드> --repo <이 저장소를 클론한 폴더>
    ```
 
-4. **register** — 작업 폴더와 도구를 이 Mac 에 등록한다. 폴더마다, 도구마다 한 번. 검증 명령(`--verify 이름=명령`)은 이 Mac 의 로컬 상태에만 저장되고 서버에는 이름만 보고된다.
+2. **실행** — Runloom 을 설치한 폴더(이 저장소)에서 `<이 저장소를 클론한 폴더>` 만 바꿔 실행한다. 스크립트가 순서대로: 패키지 설치(`pip install -e`) → `python3 -m workflow.connector setup`(연결 + 저장소 등록 — 등록 이름=폴더 이름, 저장소=`origin` 의 GitHub owner/name, 도구=PATH 의 `claude`, 없으면 `codex`) → launchd 적재(라벨 `com.workflow.selfhost.connector`, 로그 `~/Library/Logs/workflow-connector-selfhost/`). 로그인 때 자동 시작되고 꺼지면 다시 뜬다. 서버가 수정·검토 Agent 를 알아서 만든다.
+3. **확인** — 카드를 새로고침하면 러너 매칭에 로컬 저장소·수정 Agent·검토 Agent 가 `(자동)` 으로 보인다.
 
-   ```bash
-   python3 -m workflow.connector register --id <등록 id> --repo <작업 폴더> --repository-id <저장소 id> --tool claude
-   python3 -m workflow.connector register --id <등록 id> --repo <작업 폴더> --repository-id <저장소 id> --tool codex --verify "vp-pytest=python3 -m pytest -q"
-   ```
+명령 끝에 등록 옵션을 더할 수 있다 — 스크립트가 setup 에 그대로 넘긴다:
 
-5. **install-runner** — launchd 에 러너를 올린다. 로그인 때 자동 시작되고 꺼지면 다시 뜬다(라벨 `com.workflow.selfhost.connector`, 로그 `~/Library/Logs/workflow-connector-selfhost/`).
+- `--tool claude|codex` — 도구를 고른다.
+- `--verify 이름=명령` — 검증 프로필. 수정 업무에는 하나 있어야 한다. 명령은 이 Mac 에만 저장되고 서버에는 이름만 보고된다.
+- `--link 경로` — worktree 에 원본 폴더로 심볼릭 링크할 git 무시 대상(예: `--link backend/.venv --link frontend/node_modules`).
+- `--env 이름=값` — 검증·도구 프로세스 환경에 더할 값(예: 에이전트 전용 테스트 DB 주소). 값은 이 Mac 의 러너 상태에만 저장된다.
 
-   ```bash
-   deploy/selfhost/install-runner.sh
-   ```
+연결 코드와 `--env` 값은 plist·스크립트 출력에 쓰지 않는다(`DRY_RUN=1` 도 `***` 로 가린다). 명령행 인자라 실행하는 동안 같은 Mac 의 `ps` 에는 보인다. `DRY_RUN=1` 은 할 일과 plist 내용만 보여 준다. setup 이 실패하면(코드 만료·서버 주소 틀림) launchd 에 적재하지 않고 종료 코드 1 — 카드에서 [다시 발급] 뒤 다시 실행한다. 이미 붙은 저장소를 다른 폴더·Mac 으로 옮길 때는 카드의 고급 설정 → [러너 다시 붙이기].
 
-   연결 토큰 파일이 없으면 plist 만 쓰고 적재하지 않는다 — 3 을 한 뒤 다시 실행한다. `DRY_RUN=1` 은 할 일과 plist 내용만 보여 준다. plist 에 토큰·API 키는 들어가지 않는다.
+**git 자격.** 러너는 결과 브랜치 `task/<업무 id>` 를 `origin` 에 push 하고 기준 커밋을 fetch 한다. launchd 는 로그인 셸 설정을 읽지 않으므로 plist 에 `HOME` 을 넣어 `~/.gitconfig`·자격 도우미(`osxkeychain`)·`~/.ssh` 를 찾게 한다. `SSH_AUTH_SOCK`(ssh-agent)은 들어가지 않아 **ssh 원격(`git@github.com:…`)은 암호 걸린 키면 실패할 수 있다** — `origin` 을 https 로 쓰고 `osxkeychain` 에 자격을 두거나, 암호 없는 배포 키를 `~/.ssh/config` 에 지정한다. push 실패는 업무를 막지 않고 사람 요청(`pr_unavailable`)으로 안내된다.
 
-그다음 화면에서 Agent 를 만들고(`/operator/agents`, 연결 방식 `local`, 로컬 등록 ID = 4 의 `--id`) 워크스페이스에 등록한다(`/agents/register`). Agent·능력 범위를 고르는 방법은 [GitHub 런북 3절](github/README.md#3-agent-와-로컬-등록--같은-기기에서-수정검토)과 같다.
+### 고급 — 손으로 connect·register
+
+버튼 없이 붙이거나 한 러너에 여러 폴더를 등록할 때. 연결 코드는 `/operator` → `연결 코드 발급`(1회용, 10분).
+
+```bash
+python3 -m pip install -e .
+python3 -m workflow.connector connect --server http://127.0.0.1:8000 --code <연결 코드>
+python3 -m workflow.connector register --repo <작업 폴더> --tool claude --verify "vp-pytest=python3 -m pytest -q"
+deploy/selfhost/install-runner.sh
+```
+
+connect 는 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다. register 는 폴더마다 한 번(`--id`·`--repository-id` 를 빼면 폴더 이름·GitHub owner/name). 인자 없는 `install-runner.sh` 는 plist 를 쓰고 연결 토큰 파일이 있을 때만 적재한다 — 없으면 connect 뒤 다시 실행한다.
 
 공개 데모용 러너(`com.workflow.connector`)를 같은 Mac 에서 같이 쓰면 연결 토큰 파일 위치가 겹친다. 그때는 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
 
@@ -116,7 +119,7 @@ GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. �
    - 그대로 **[Create GitHub App]** 을 누른다. 조직 저장소면 `/operator/github/app/new?org=<조직 이름>` 으로 시작한다.
 3. Runloom 이 App 개인 키·비밀을 받아 저장하고 GitHub 의 **설치 화면**으로 다시 보낸다. **Only select repositories** 로 대상 저장소(예: OpenArchive)를 고르고 **[Install]** 을 누른다.
 4. `/operator/github` 로 돌아오면 고른 저장소마다 카드가 생긴다. 약 1분 안에 열린 이슈가 **전부** 업무 목록에 `대기 · 지시 전` 으로 들어온다(PR·닫힌 이슈 제외).
-5. **러너 연결** — 위 "러너 연결" 대로 수정(`code.fix`)·검토(`code.review`) Agent 를 만들고 register 를 그 저장소의 로컬 클론 폴더로 한다(Agent 능력 범위 값 = register 의 `--repository-id`). 폴더의 `origin` 이 `github.com/<owner>/<name>` 이면 서버가 알아서 짝을 짓는다 — 카드의 러너 매칭에 로컬 저장소·수정 Agent·검증 프로필·검토 Agent 가 `(자동)` 으로 보인다. `이 저장소를 등록한 러너 없음` 이면 register 가 안 됐거나 `origin` 이 다른 저장소다. 수정용 등록에는 `--verify` 가 있어야 한다.
+5. **러너 연결** — 저장소 카드의 [러너 붙이기] 로 그 저장소의 로컬 클론 폴더를 붙인다(위 "러너 연결"). 서버가 수정(`code.fix`)·검토(`code.review`) Agent 를 만든다. 폴더의 `origin` 이 `github.com/<owner>/<name>` 이면 서버가 알아서 짝을 짓는다 — 카드의 러너 매칭에 로컬 저장소·수정 Agent·검증 프로필·검토 Agent 가 `(자동)` 으로 보인다. `이 저장소를 등록한 러너 없음` 이면 register 가 안 됐거나 `origin` 이 다른 저장소다. 수정용 등록에는 `--verify` 가 있어야 한다.
 6. **실행은 지시한 것만** — 업무 목록의 **[에이전트에게 맡기기]** 를 누르거나 GitHub 이슈에 `runloom` 라벨을 붙인다. 그 뒤 수정 → 검토 → 재작업은 자동이다. PR·푸시·병합·이슈 종료는 하지 않는다.
 7. **기준선 가져오기** — 카드의 [기준선 가져오기] 또는 `/metrics` 의 `기준선 대 도입 후` 표에서. 소스 연결 전에 열린 이슈 → 병합 PR 시간을 기준선으로 쓴다. 다시 가져오면 전체를 바꾼다.
 

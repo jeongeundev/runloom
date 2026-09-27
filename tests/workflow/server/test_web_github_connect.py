@@ -562,7 +562,7 @@ def test_page_after_app_setup_shows_a_card_per_repository(op, conn, secrets, pem
         assert "runloom" in card  # 트리거 라벨
         assert "가져온 이슈 0건" in card and "아직 동기화 전" in card
         assert "GitHub App 설치" in card  # 수집 자격 — 종류만
-        assert "이 저장소를 등록한 러너 없음" in card and "register" in card
+        assert "이 저장소를 등록한 러너 없음" in card and "러너 붙이기" in card
         assert f'data-json-action="/operator/github/sources/{source.source_id}/baseline"' in card
         advanced = folded(card, "고급 설정")
         assert 'name="workflow_repository_id"' in advanced and "비워 두면 자동" in advanced
