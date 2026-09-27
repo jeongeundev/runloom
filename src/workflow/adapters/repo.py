@@ -43,6 +43,7 @@ from workflow.contracts.github import (
     GitHubIssueSnapshot,
     GitHubSourceConfig,
     IssuePrLink,
+    PullRequestRef,
     SourceDelivery,
     snapshot_digest,
 )
@@ -64,6 +65,7 @@ from workflow.contracts.v1 import (
 )
 from workflow.domain import status as domain_status
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
+from workflow.domain.pull_request import head_branch
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
 
@@ -1113,6 +1115,8 @@ def append_event(
             updates["result_artifact_id"] = artifact_id
             updates["finished_at"] = now
             updates.update(_usage_columns(event.data.usage))
+            pushed = event.data.branch_pushed
+            updates["branch_pushed"] = None if pushed is None else int(pushed)
         elif event.type == "failed":
             updates["failed_code"] = event.data.code
             updates["failed_message"] = event.data.message
@@ -2055,3 +2059,66 @@ def record_source_delivery(
         (state, comment_id, next_at, last_error, now, delivery_id, attempts),
     )
     return cur.rowcount == 1
+
+
+# --- 초안 PR 대기열 (phase 12 step 6, ADR-0018 결정 4) ---------------------------------------------------
+
+
+def enqueue_pull_request(
+    conn: Connection, *, task_id: str, session_id: str, source_id: str, repository_full_name: str, issue_number: int,
+    fix_execution_id: str, review_execution_id: str, now: str,
+) -> bool:
+    """수정 Task 하나에 한 행(`pending`). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다."""
+    cur = conn.execute(
+        "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+        " head_branch, fix_execution_id, review_execution_id, state, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) ON CONFLICT (task_id) DO NOTHING",
+        (task_id, session_id, source_id, repository_full_name, issue_number, head_branch(task_id),
+         fix_execution_id, review_execution_id, now, now),
+    )
+    return cur.rowcount == 1
+
+
+def get_pull_request_row(conn: Connection, task_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM task_pull_requests WHERE task_id = ?", (task_id,))
+
+
+def pull_requests_due(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:
+    """열 차례인 행 — `pending` 이고 attempts < max_attempts 이고 (next_at IS NULL OR next_at <= now). 만든 순."""
+    return conn.execute(
+        "SELECT * FROM task_pull_requests WHERE state = 'pending' AND attempts < ?"
+        " AND (next_at IS NULL OR next_at <= ?) ORDER BY created_at, task_id",
+        (max_attempts, now),
+    ).fetchall()
+
+
+def open_pull_requests(conn: Connection) -> list[Row]:
+    """병합·닫힘을 지켜볼 행(`open`). 만든 순."""
+    return conn.execute(
+        "SELECT * FROM task_pull_requests WHERE state = 'open' ORDER BY created_at, task_id"
+    ).fetchall()
+
+
+def record_pull_request(
+    conn: Connection, task_id: str, *, state: str, now: str, pr: PullRequestRef | None = None,
+    error: str | None = None, next_at: str | None = None,
+) -> None:
+    """상태 기록. `error` 가 있으면 시도 실패 — attempts + 1, last_error·next_at. `pr` 이 있으면 번호·URL·초안 여부,
+    `merged` 는 PR 의 병합 시각, `closed` 는 `now` 를 닫힌 시각으로. 없는 행은 NotFound."""
+    columns: dict[str, object] = {"state": state, "updated_at": now, "next_at": next_at}
+    if error is not None:
+        columns["last_error"] = error
+    if pr is not None:
+        columns.update(pr_number=pr.number, pr_url=pr.html_url, draft=int(pr.draft))
+    if state == "open":
+        columns["last_error"] = None
+    elif state == "merged":
+        columns["merged_at"] = pr.merged_at if pr is not None else now
+    elif state == "closed":
+        columns["closed_at"] = now
+    assignments = ", ".join(f"{name} = ?" for name in columns)
+    attempts = ", attempts = attempts + 1" if error is not None else ""
+    cur = conn.execute(
+        f"UPDATE task_pull_requests SET {assignments}{attempts} WHERE task_id = ?", (*columns.values(), task_id)
+    )
+    _require_rowcount(cur, f"pull request of {task_id}")

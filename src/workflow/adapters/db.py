@@ -12,7 +12,7 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -228,6 +228,56 @@ _V7_SOURCE_ISSUE_ALTERS = "".join(
     f"ALTER TABLE source_issues ADD COLUMN {column};\n" for column in _SOURCE_ISSUE_DELEGATION_COLUMNS
 )
 
+# v8 (phase 12, ADR-0018): 결과 브랜치 push 보고·초안 PR 대기열·알림 대기열. 새 칸은 빈 DB·7 → 8 모두 ALTER 로 더한다.
+_EXECUTION_PUSH_COLUMN = "branch_pushed INTEGER CHECK (branch_pushed IS NULL OR branch_pushed IN (0, 1))"
+_V8_EXECUTION_ALTERS = f"ALTER TABLE executions ADD COLUMN {_EXECUTION_PUSH_COLUMN};\n"
+PULL_REQUEST_STATES = ("pending", "open", "merged", "closed", "failed")
+NOTIFICATION_EVENTS = ("human_request", "pr_opened", "task_failed")
+NOTIFICATION_STATES = ("pending", "sent", "failed", "skipped")
+
+_V8_TABLES = f"""
+-- 수정 Task 당 초안 PR 하나(재작업은 같은 브랜치라 같은 PR). last_error 는 분류 문구만 — 응답 본문·토큰 없음.
+CREATE TABLE IF NOT EXISTS task_pull_requests (
+  task_id              TEXT PRIMARY KEY REFERENCES tasks(task_id),
+  session_id           TEXT NOT NULL,
+  source_id            TEXT NOT NULL REFERENCES github_sources(source_id),
+  repository_full_name TEXT NOT NULL,
+  issue_number         INTEGER NOT NULL,
+  head_branch          TEXT NOT NULL,                       -- task/<task_id>
+  fix_execution_id     TEXT NOT NULL,
+  review_execution_id  TEXT NOT NULL,
+  state                TEXT NOT NULL CHECK (state IN ({_in(PULL_REQUEST_STATES)})),
+  pr_number            INTEGER,
+  pr_url               TEXT,
+  draft                INTEGER CHECK (draft IS NULL OR draft IN (0, 1)),
+  attempts             INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_at              TEXT,
+  last_error           TEXT,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  merged_at            TEXT,
+  closed_at            TEXT,
+  CHECK (state NOT IN ('open', 'merged', 'closed') OR pr_number IS NOT NULL)
+);
+
+-- 알림 대기열(step 7 이 쓰고 보낸다). URL 칸은 없다 — 보낼 때 비밀 파일에서 읽는다.
+CREATE TABLE IF NOT EXISTS notifications (
+  notification_id TEXT PRIMARY KEY,                         -- 'ntf-' + 8 hex
+  session_id      TEXT NOT NULL,
+  event           TEXT NOT NULL CHECK (event IN ({_in(NOTIFICATION_EVENTS)})),
+  task_id         TEXT REFERENCES tasks(task_id),
+  dedupe_key      TEXT NOT NULL UNIQUE,
+  content         TEXT NOT NULL,
+  payload_json    TEXT NOT NULL,
+  state           TEXT NOT NULL CHECK (state IN ({_in(NOTIFICATION_STATES)})),
+  attempts        INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_at         TEXT,
+  last_error      TEXT,
+  created_at      TEXT NOT NULL,
+  sent_at         TEXT
+);
+"""
+
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -436,7 +486,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -521,8 +571,24 @@ def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 7")
 
 
+def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. push 칸·두 대기열을 더하고, 이미 받은 `result_ready` 이벤트에 남은
+    `branch_pushed` 만 칸으로 옮긴다(보고 없으면 NULL — 추정하지 않는다)."""
+    for statement in _statements(_V8_EXECUTION_ALTERS + _V8_TABLES):
+        conn.execute(statement)
+    conn.execute(
+        "UPDATE executions SET branch_pushed = ("
+        " SELECT json_extract(ev.data_json, '$.branch_pushed') FROM execution_events ev"
+        " WHERE ev.execution_id = executions.execution_id AND ev.type = 'result_ready'"
+        " AND json_type(ev.data_json, '$.branch_pushed') IN ('true', 'false'))"
+    )
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 8")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4 는 4 → 5 → 6 → 7, 5 는 5 → 6 → 7, 6 은 6 → 7 을 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4·5·6·7 은 8 까지 차례로(4 → 5 → 6 → 7 → 8) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
@@ -535,15 +601,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] == 4:
-            _migrate_4_to_5(conn)
-            _migrate_5_to_6(conn)
-            _migrate_6_to_7(conn)
-        elif row[0] == 5:
-            _migrate_5_to_6(conn)
-            _migrate_6_to_7(conn)
-        elif row[0] == 6:
-            _migrate_6_to_7(conn)
+        elif row[0] in (4, 5, 6, 7):
+            steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8)
+            for step in steps[row[0] - 4:]:
+                step(conn)
         elif row[0] != SCHEMA_VERSION:
             raise RuntimeError(f"schema_version {row[0]} 은 지원하지 않습니다 (기대 {SCHEMA_VERSION})")
     except BaseException:

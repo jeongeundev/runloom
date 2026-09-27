@@ -270,6 +270,8 @@ def _blocked_seconds(events: Sequence[TaskEventFact], end: str) -> dict[str, flo
     """`blocked` 행이 연 구간을 다음 `blocked`·`ready` 또는 첫 시작(`end`)까지 actor 별로 더한다."""
     totals = dict.fromkeys(ACTORS, 0.0)
     marks = [ev for ev in events if ev.type in ("blocked", "ready") and _parse(ev.occurred_at) < _parse(end)]
+    if not marks:  # 만든 그 초에 시작 — 시작 전 대기 표시가 없다
+        return totals
     for current, following in zip(marks, [*marks[1:], None], strict=True):
         if current.type != "blocked":
             continue

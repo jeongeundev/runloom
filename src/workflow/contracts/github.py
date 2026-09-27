@@ -146,3 +146,13 @@ class IssuePrLink(_Contract):
     issue_opened_at: Rfc3339
     pr_number: PositiveInt
     pr_merged_at: Rfc3339
+
+
+class PullRequestRef(_Contract):
+    """GitHub PR 하나 (ADR-0018 결정 4). 병합 여부는 `merged_at` 으로만 본다 — 병합돼도 `state` 는 `closed` 다."""
+
+    number: PositiveInt
+    html_url: NonEmptyStr
+    state: Literal["open", "closed"]
+    draft: bool
+    merged_at: Rfc3339 | None

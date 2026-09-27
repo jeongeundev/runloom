@@ -34,6 +34,7 @@ from workflow.contracts.github import (
     GitHubIssueSnapshot,
     GitHubSourceConfig,
     IssuePrLink,
+    PullRequestRef,
     snapshot_digest,
 )
 from workflow.contracts.v1 import (
@@ -2637,3 +2638,93 @@ def test_github_source_created_at_is_the_first_connection_time(seeded):
     assert repo.github_source_created_at(seeded, SESSION, SOURCE) == NOW
     with pytest.raises(NotFound):
         repo.github_source_created_at(seeded, OTHER_SESSION, SOURCE)
+
+
+
+# --- phase 12 step 6: push 결과·초안 PR 대기열 (ADR-0018 결정 4, ARCHITECTURE "스키마 v8") ---------------------
+
+
+@pytest.mark.parametrize(("data", "expected"), [({"branch_pushed": True}, 1), ({"branch_pushed": False}, 0), ({}, None)])
+def test_result_ready_copies_branch_pushed(running, store, data, expected):
+    conn = running
+    payload = b'{"outcome": "ready_for_handoff"}'
+    created, _ = repo.store_artifact(conn, store, execution_id="exec-1", session_id=SESSION,
+                                     meta=_meta(payload, "diagnosis_result"), data=payload, now=LATER)
+    repo.append_event(conn, "exec-1", _event("exec-1", 3, "result_ready",
+                                             {"result_artifact_id": created.artifact_id, **data}), "conn", LATER)
+    assert repo.get_execution(conn, "exec-1")["branch_pushed"] == expected
+
+
+def _fix_execution(conn) -> None:
+    repo.create_execution(conn, execution_id="exec-fix-1", task_id="task-gh-41", attempt_no=1,
+                          start_key="auto:task-gh-41:r1", agent_id=FIX_AGENT, kind="bug_fix",
+                          request=_request("exec-fix-1", "task-gh-41", "code_change", ("art-x",)),
+                          assigned_connector_id=None, predecessor_execution_id=None, now=NOW)
+
+
+def _enqueue(conn, now: str = NOW) -> bool:
+    return repo.enqueue_pull_request(
+        conn, task_id="task-gh-41", session_id=SESSION, source_id=SOURCE, repository_full_name="acme/billing",
+        issue_number=41, fix_execution_id="exec-fix-1", review_execution_id="exec-rev-1", now=now,
+    )
+
+
+def _pr(number: int = 31, **overrides) -> PullRequestRef:
+    return PullRequestRef.model_validate({
+        "number": number, "html_url": f"https://github.com/acme/billing/pull/{number}", "state": "open",
+        "draft": True, "merged_at": None, **overrides,
+    })
+
+
+def test_enqueue_pull_request_once_per_fix_task(cycle):
+    _fix_execution(cycle)
+    assert _enqueue(cycle) is True
+    assert _enqueue(cycle, LATER) is False  # 재평가·재시작에도 한 행
+    (row,) = repo.pull_requests_due(cycle, NOW, max_attempts=5)
+    assert (row["task_id"], row["head_branch"], row["state"], row["attempts"]) == (
+        "task-gh-41", "task/task-gh-41", "pending", 0,
+    )
+    assert repo.get_pull_request_row(cycle, "task-gh-41")["created_at"] == NOW
+
+
+def test_failed_attempt_backs_off_and_stops_at_the_limit(cycle):
+    _fix_execution(cycle)
+    _enqueue(cycle)
+    later = "2026-09-20T00:01:00Z"
+    repo.record_pull_request(cycle, "task-gh-41", state="pending", now=NOW, error="GitHub 응답 없음", next_at=later)
+    assert repo.pull_requests_due(cycle, NOW, max_attempts=5) == []
+    (row,) = repo.pull_requests_due(cycle, later, max_attempts=5)
+    assert (row["attempts"], row["last_error"]) == (1, "GitHub 응답 없음")
+    assert repo.pull_requests_due(cycle, later, max_attempts=1) == []
+
+
+def test_open_pr_is_recorded_then_merged(cycle):
+    _fix_execution(cycle)
+    _enqueue(cycle)
+    repo.record_pull_request(cycle, "task-gh-41", state="open", now=NOW, pr=_pr())
+    row = repo.get_pull_request_row(cycle, "task-gh-41")
+    assert (row["state"], row["pr_number"], row["pr_url"], row["draft"], row["last_error"]) == (
+        "open", 31, "https://github.com/acme/billing/pull/31", 1, None,
+    )
+    assert repo.pull_requests_due(cycle, LATER, max_attempts=5) == []  # 열린 PR 은 다시 열지 않는다
+    assert [r["task_id"] for r in repo.open_pull_requests(cycle)] == ["task-gh-41"]
+
+    merged = _pr(state="closed", draft=False, merged_at="2026-09-21T00:00:00Z")
+    repo.record_pull_request(cycle, "task-gh-41", state="merged", now=LATER, pr=merged)
+    row = repo.get_pull_request_row(cycle, "task-gh-41")
+    assert (row["state"], row["merged_at"], row["updated_at"]) == ("merged", "2026-09-21T00:00:00Z", LATER)
+    assert repo.open_pull_requests(cycle) == []
+
+
+def test_closed_without_merge_records_closed_at(cycle):
+    _fix_execution(cycle)
+    _enqueue(cycle)
+    repo.record_pull_request(cycle, "task-gh-41", state="open", now=NOW, pr=_pr())
+    repo.record_pull_request(cycle, "task-gh-41", state="closed", now=LATER, pr=_pr(state="closed"))
+    row = repo.get_pull_request_row(cycle, "task-gh-41")
+    assert (row["state"], row["closed_at"], row["merged_at"]) == ("closed", LATER, None)
+
+
+def test_record_pull_request_unknown_task_is_not_found(cycle):
+    with pytest.raises(NotFound):
+        repo.record_pull_request(cycle, "task-nope", state="failed", now=NOW, error="x")

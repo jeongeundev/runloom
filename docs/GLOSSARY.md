@@ -186,7 +186,7 @@
 | 러너 붙이기 / `setup` | 저장소 카드 `러너 붙이기` 버튼(step 9)이 연결 코드와 명령 한 줄(`install-runner.sh --server --code --repo`)을 주고, 그 명령이 `connector setup`(= `connect` + `register`, step 2)과 launchd 적재를 하는 흐름. selfhost 서버는 없는 Agent 를 만든다(step 1, `created`). 화면 라벨 `러너 붙이기` | `러너 설치`(install-runner.sh 만을 뜻함), `에이전트 등록`(운영자 화면 경로) |
 | 기준 커밋 보고 / `registration_heads` | 러너가 등록 폴더에서 `git fetch origin` 뒤 `refs/remotes/origin/HEAD` 커밋을 claim 때 등록별로 보고하고, 서버가 `agents.base_commit` 을 갱신하는 것(step 3). 새 수정 업무의 출발점 = GitHub 기본 브랜치 최신 | `sync`, `pull`, `HEAD 보고`(로컬 HEAD 가 아님) |
 | 작업 복사본 준비물 / `links`·`env` | 러너 로컬 등록의 `--link 경로`(원본 폴더 설치물을 worktree 에 심볼릭 링크, `info/exclude` 로 커밋 제외)와 `--env 이름=값`(검증·도구 프로세스 환경)(step 2·4). 중앙에 보내지 않는다 | `의존성 설치`, `secrets`, `설정 파일` |
-| 초안 PR / `task_pull_requests` | 검토 `approved` 뒤 중앙이 소스의 GitHub 자격으로 여는 draft PR(head `task/<task_id>`, base 기본 브랜치, 본문 `Fixes #N`)(step 6). 병합되면 수정 Task 완료. 병합·이슈 닫기는 사람만. 러너의 브랜치 push 결과는 `branch_pushed`(step 5) | `자동 병합`, `merge request`, `결과 브랜치`(로컬 `task/<id>` 만을 뜻함) |
+| 초안 PR / `task_pull_requests` | 검토 `approved` 뒤 중앙이 소스의 GitHub 자격으로 여는 draft PR(head `task/<task_id>`, base 기본 브랜치, 본문 `Fixes #N`)(step 6). 병합되면 수정 Task 완료. 병합·이슈 닫기는 사람만. 러너의 브랜치 push 결과는 `branch_pushed`(step 5). 못 열거나 push 실패면 사람 요청 `pr_unavailable`(원인 키 `pr:<검토 실행>`, 답해도 수정을 다시 돌리지 않음) | `자동 병합`, `merge request`, `결과 브랜치`(로컬 `task/<id>` 만을 뜻함) |
 | 알림 웹훅 / `notifications`·`notify_webhook_url` | 사람 차례(`human_request`·`pr_opened`)와 실행 실패(`task_failed`)를 등록된 URL 하나로 보내는 것(step 7·8). URL 은 비밀 파일, 전달은 DB 대기열·재시도. Discord 호스트면 `{"content"}` 만. n8n 입구의 `callback_url`(체인 단위 `ChainCallback`)과 다르다 | `callback`, `이메일`, `push 알림` |
 
 ## 경계가 헷갈리는 개념

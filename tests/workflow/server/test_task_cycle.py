@@ -14,8 +14,15 @@ import pytest
 from workflow.adapters import repo
 from workflow.adapters.db import connect
 from workflow.adapters.diag_client import HttpDiagClient
-from workflow.adapters.github_client import CommentPage, GitHubForbidden, GitHubNotFound, IssueComment, IssuePage
-from workflow.contracts.github import AssigneeBinding
+from workflow.adapters.github_client import (
+    CommentPage,
+    GitHubForbidden,
+    GitHubNotFound,
+    GitHubUnavailable,
+    IssueComment,
+    IssuePage,
+)
+from workflow.contracts.github import AssigneeBinding, PullRequestRef
 from workflow.contracts.v1 import (
     ArtifactMeta,
     CodeChangeTarget,
@@ -25,6 +32,7 @@ from workflow.contracts.v1 import (
     HandoffBundle,
 )
 from workflow.domain.issue_intake import snapshot_to_task_spec
+from workflow.domain.metrics import compute_metrics
 from workflow.server import human_api, task_cycle
 from workflow.server.worker import Worker
 
@@ -176,7 +184,8 @@ def _store(conn, store, execution_id: str, kind: str, data: bytes, content_type=
 
 
 def finish_fix(conn, store, execution_id: str, *, result_commit: str = C1, outcome="ready_for_review",
-               before_exit=1, kinds=FIX_KINDS, base_commit: str | None = None) -> str:
+               before_exit=1, kinds=FIX_KINDS, base_commit: str | None = None,
+               branch_pushed: bool | None = None) -> str:
     """연결 프로그램의 bug_fix 제출(CONTRACT 13.5). 반환은 결과 산출물 ID."""
     request = request_of(repo.get_execution(conn, execution_id))
     _append(conn, execution_id, 1, "accepted", {})
@@ -199,7 +208,8 @@ def finish_fix(conn, store, execution_id: str, *, result_commit: str = C1, outco
         } if ready else None,
     }
     result_id = _store(conn, store, execution_id, "code_change_result", json.dumps(body).encode(), "application/json")
-    _append(conn, execution_id, 3, "result_ready", {"result_artifact_id": result_id})
+    pushed = {} if branch_pushed is None else {"branch_pushed": branch_pushed}
+    _append(conn, execution_id, 3, "result_ready", {"result_artifact_id": result_id, **pushed})
     return result_id
 
 
@@ -1177,3 +1187,213 @@ def test_source_without_credentials_gets_no_comment(cycle, conn, settings, store
     report = _worker_with_clients(settings, store, clock, lambda config: None).tick()
     assert (report.deliveries_queued, report.deliveries_sent) == (0, 0)
     assert github.comments == {}
+
+
+
+# --- 검토 승인 → 초안 PR → 병합 추적 (phase 12 step 6, ADR-0018 결정 4) ---------------------------------------
+
+
+class PullRequestGitHub(RecordingGitHub):
+    """PR 네 동작을 더한 대역. `pulls` 는 번호 → PullRequestRef, `pr_fail` 은 다음 PR 호출 하나를 실패시킨다."""
+
+    def __init__(self):
+        super().__init__()
+        self.pulls: dict[int, PullRequestRef] = {}
+        self.created: list[dict] = []
+        self.pr_fail: Exception | None = None
+
+    def _maybe_fail(self):
+        if self.pr_fail is not None:
+            exc, self.pr_fail = self.pr_fail, None
+            raise exc
+
+    def default_branch(self, repo_name):
+        self._maybe_fail()
+        return "main"
+
+    def find_pull_request(self, repo_name, head_branch):
+        self._maybe_fail()
+        return None
+
+    def create_pull_request(self, repo_name, *, head, base, title, body, draft):
+        self._maybe_fail()
+        number = 31 + len(self.created)
+        self.created.append({"repo": repo_name, "head": head, "base": base, "title": title, "body": body,
+                             "draft": draft})
+        self.pulls[number] = PullRequestRef(number=number, html_url=f"https://github.com/{repo_name}/pull/{number}",
+                                            state="open", draft=draft, merged_at=None)
+        return self.pulls[number]
+
+    def get_pull_request(self, repo_name, number):
+        self._maybe_fail()
+        return self.pulls[number]
+
+    def get_issue_pr_link(self, repo_name, number):
+        return None
+
+    def merge(self, number: int, at: str = "2026-10-06T16:00:00Z") -> None:
+        self.pulls[number] = self.pulls[number].model_copy(update={"state": "closed", "merged_at": at})
+
+    def close(self, number: int) -> None:
+        self.pulls[number] = self.pulls[number].model_copy(update={"state": "closed"})
+
+
+@pytest.fixture
+def pr_github() -> PullRequestGitHub:
+    return PullRequestGitHub()
+
+
+@pytest.fixture
+def pr_worker(app, settings, store, clock, pr_github) -> Worker:
+    return _worker_with_clients(dataclasses.replace(settings, public_url="https://runloom.example"), store, clock,
+                                lambda config: pr_github)
+
+
+def _approved(conn, store, worker, *, branch_pushed: bool | None = True) -> tuple[str, str]:
+    """(fix_task, review_exec) — push 결과를 보고한 수정 결과가 검토 승인을 받고 워커가 반영한 상태."""
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], branch_pushed=branch_pushed)
+    worker.tick()
+    review_exec = executions(conn, review_tasks(conn, fix_task)[0]["task_id"])[0]["execution_id"]
+    finish_review(conn, store, review_exec, outcome="approved")
+    worker.tick()
+    return fix_task, review_exec
+
+
+def test_approved_pushed_fix_opens_one_draft_pr(cycle, conn, store, pr_worker, pr_github, clock):
+    fix_task, _ = _approved(conn, store, pr_worker)
+
+    (created,) = pr_github.created
+    assert created["head"] == "task/task-gh-1" and created["base"] == "main" and created["draft"] is True
+    assert created["title"] == "버그 1"
+    assert created["body"].splitlines()[0] == "Fixes #1"
+    assert "검토 의견" in created["body"]
+    assert "https://runloom.example/tasks/task-gh-1" in created["body"]
+    assert status(conn, fix_task) == ("확인 필요", "사람 차례 · PR 확인 — #31")
+    assert repo.get_task(conn, fix_task)["finished_at"] is None  # 병합은 사람 몫 — 잠금 유지
+    assert repo.list_human_requests(conn, fix_task) == []
+
+    clock.now = "2026-10-06T13:00:00Z"
+    pr_worker.tick()
+    pr_worker.tick()
+    assert len(pr_github.created) == 1  # 재평가·재시작에도 PR 하나
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "open"
+
+
+def test_approved_without_pushed_branch_asks_a_human_to_push(cycle, conn, store, pr_worker, pr_github):
+    fix_task, _ = _approved(conn, store, pr_worker, branch_pushed=False)
+    pr_worker.tick()
+
+    assert pr_github.created == [] and repo.get_pull_request_row(conn, fix_task) is None
+    (request,) = repo.list_human_requests(conn, fix_task)
+    assert request["code"] == "pr_unavailable"
+    assert "git push origin task/task-gh-1" in request["question"]
+    assert status(conn, fix_task)[0] == "확인 필요"
+
+
+def test_approved_without_push_report_keeps_the_phase8_behavior(cycle, conn, store, pr_worker, pr_github):
+    fix_task, _ = _approved(conn, store, pr_worker, branch_pushed=None)
+    pr_worker.tick()
+    assert pr_github.created == [] and repo.list_human_requests(conn, fix_task) == []
+    assert status(conn, fix_task) == ("확인 필요", "검토 승인 — 병합·이슈 종료는 사람")
+
+
+def test_forbidden_pr_asks_for_the_app_permission(cycle, conn, store, pr_worker, pr_github):
+    pr_github.pr_fail = GitHubForbidden("POST /repos/acme/billing/pulls: HTTP 403")
+    fix_task, _ = _approved(conn, store, pr_worker)
+
+    assert pr_github.created == []
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "failed"
+    (request,) = repo.list_human_requests(conn, fix_task)
+    assert request["code"] == "pr_unavailable"
+    assert "GitHub App 권한(Pull requests 쓰기) 승인 필요" in request["question"]
+    assert status(conn, fix_task) == ("확인 필요", "검토 승인 — PR 을 열지 못함, 병합·이슈 종료는 사람")
+
+
+def test_unavailable_github_retries_later_then_opens(cycle, conn, store, pr_worker, pr_github, clock):
+    pr_github.pr_fail = GitHubUnavailable("GET /repos/acme/billing/pulls: HTTP 502")
+    fix_task, _ = _approved(conn, store, pr_worker)
+    row = repo.get_pull_request_row(conn, fix_task)
+    assert (row["state"], row["attempts"]) == ("pending", 1)
+    assert status(conn, fix_task) == ("확인 필요", "검토 승인 — PR 여는 중")
+
+    pr_worker.tick()  # 물러난 시각 전 — 다시 부르지 않는다
+    assert pr_github.created == []
+    clock.now = "2026-10-06T12:01:00Z"
+    pr_worker.tick()
+    assert len(pr_github.created) == 1 and repo.get_pull_request_row(conn, fix_task)["state"] == "open"
+
+
+def test_unavailable_github_gives_up_after_the_limit(cycle, conn, store, pr_worker, pr_github, clock):
+    from workflow.server.worker import PR_MAX_ATTEMPTS
+
+    fix_task = None
+    for attempt in range(PR_MAX_ATTEMPTS):
+        pr_github.pr_fail = GitHubUnavailable("GET /repos/acme/billing/pulls: HTTP 502")
+        if fix_task is None:
+            fix_task, _ = _approved(conn, store, pr_worker)
+        else:
+            clock.now = f"2026-10-{7 + attempt:02d}T12:00:00Z"
+            pr_worker.tick()
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "failed"
+    (request,) = repo.list_human_requests(conn, fix_task)
+    assert "task/task-gh-1" in request["question"]
+
+
+def test_source_without_credentials_does_not_open_a_pr(cycle, conn, store, settings, clock):
+    worker = _worker_with_clients(settings, store, clock, lambda config: None)
+    fix_task, _ = _approved(conn, store, worker)
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "failed"
+    (request,) = repo.list_human_requests(conn, fix_task)
+    assert request["code"] == "pr_unavailable"
+
+
+def test_answering_the_pr_request_does_not_rerun_the_fix(cycle, conn, store, pr_worker, pr_github):
+    fix_task, _ = _approved(conn, store, pr_worker, branch_pushed=False)
+    (request,) = open_requests(conn, fix_task)
+    answer(conn, request["request_id"], text="직접 push 하고 PR 열었음")
+    pr_worker.tick()
+    pr_worker.tick()
+    assert len(executions(conn, fix_task)) == 1
+
+
+def test_merged_pr_completes_the_fix_task_and_counts_as_merge(cycle, conn, store, pr_worker, pr_github, clock):
+    fix_task, _ = _approved(conn, store, pr_worker)
+    pr_github.merge(31)
+    clock.now = "2026-10-06T13:00:00Z"  # 다음 GitHub 조회 간격
+    report = pr_worker.tick()
+
+    assert report.prs_merged == 1
+    row = repo.get_task(conn, fix_task)
+    assert (row["status"], row["status_reason"]) == ("완료", "PR 병합") and row["finished_at"] is not None
+    assert repo.active_execution(conn, fix_task) is None
+    issue_row = repo.get_source_issue_by_task(conn, SESSION, fix_task)
+    assert (issue_row["merged_pr_number"], issue_row["pr_merged_at"]) == (31, "2026-10-06T16:00:00Z")
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "merged"
+
+    facts = repo.list_metric_facts(conn, SESSION, store=store)
+    (group,) = compute_metrics(facts, since=None, until=None, group_by=None).groups
+    assert group.intake_to_merge.n == 1
+
+
+def test_closed_pr_without_merge_fails_the_fix_task(cycle, conn, store, pr_worker, pr_github, clock):
+    fix_task, _ = _approved(conn, store, pr_worker)
+    pr_github.close(31)
+    clock.now = "2026-10-06T13:00:00Z"
+    pr_worker.tick()
+    assert status(conn, fix_task) == ("실패", "PR 이 병합 없이 닫힘")
+    assert repo.get_task(conn, fix_task)["finished_at"] is not None
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "closed"
+
+
+def test_pr_merge_does_not_touch_an_already_closed_task(cycle, conn, store, pr_worker, pr_github, clock):
+    fix_task, _ = _approved(conn, store, pr_worker)
+    active = repo.active_execution(conn, fix_task)
+    repo.finish_task(conn, task_id=fix_task, execution_id=active["execution_id"], status="실패",
+                     reason="운영자 종료", now=clock.now)
+    pr_github.merge(31)
+    clock.now = "2026-10-06T13:00:00Z"
+    pr_worker.tick()
+    assert status(conn, fix_task) == ("실패", "운영자 종료")
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "merged"

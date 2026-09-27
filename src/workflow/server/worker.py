@@ -2,7 +2,7 @@
 
 DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → 연결 상태 → 서버 관찰(unknown·heartbeat) → 진단 전달 → 진단 폴링 →
 A 판정 → 코드 수정 결과 확인 → 커밋 검토 결과 확인 → 범용 결과 판정 → 업무 순환 → 후속 스캔 → 실패 반영 → callback 전달 →
-원본 이슈 반영. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
+초안 PR → 원본 이슈 반영. 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고,
 HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에 오므로 같은 tick 에 판정이 나면 바로 잇는다.
 
 - 모델을 호출하지 않는다 (ADR-0004). A 완료는 `verify_diagnosis` 의 `passed` 로만 결정한다.
@@ -29,6 +29,9 @@ HTTP(진단 API 호출·다운로드·callback POST)는 트랜잭션 밖에서 �
   응답만으로는 실행하지 않고 언제나 준비 판정을 다시 거친다(step 11).
 - callback 은 체인이 사람 차례(`chain_settled`)가 되면 1회 보낸다 (ADR-0010). tick 의 마지막 단계라 A 판정 → B 착수가
   같은 tick 에 일어나면 그 사이에 보내지 않는다. 실패는 attempts·next_at 으로 물러나 재시도하고 5회 뒤 멈춘다.
+- 초안 PR(ADR-0018 결정 4)은 검토 `approved` 가 push 된 수정 결과를 승인하면 대기열(`task_pull_requests`)에 넣고, 원본
+  이슈 반영 앞 단계에서 트랜잭션 밖으로 연다. 열린 PR 은 GitHub 수집 주기에 상태를 보고 병합이면 수정 Task 완료, 병합
+  없이 닫히면 실패로 마감한다. 병합·이슈 닫기는 사람만 한다 — 못 열면 사람 요청(`pr_unavailable`)으로 넘긴다.
 - 원본 이슈 반영(ADR-0014 결정 8)은 GitHub 클라이언트가 있을 때 맨 끝에 `github_delivery` 로 Task 당 댓글 하나를
   만들거나 고친다. 워커 판정·착수와 외부 반영은 분리돼 있다 — 반영 실패·불확실은 `source_deliveries` 에만 남는다.
 """
@@ -58,7 +61,14 @@ from workflow.adapters.diag_client import (
     DiagUnavailable,
     HttpDiagClient,
 )
-from workflow.adapters.github_client import GitHubClient
+from workflow.adapters.github_client import (
+    GitHubClient,
+    GitHubError,
+    GitHubForbidden,
+    GitHubRateLimited,
+    GitHubRepositoryNotAllowed,
+    GitHubUnavailable,
+)
 from workflow.adapters.secret_store import SecretStore
 from workflow.adapters.errors import (
     ActiveExecutionExists,
@@ -68,7 +78,7 @@ from workflow.adapters.errors import (
     NotFound,
     TaskClosed,
 )
-from workflow.contracts.github import GitHubSourceConfig
+from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink, PullRequestRef
 from workflow.contracts.v1 import (
     ArtifactMeta,
     AttachmentRef,
@@ -90,6 +100,7 @@ from workflow.contracts.v1 import (
 )
 from workflow.domain.callback_policy import host_allowed
 from workflow.domain.completion import criteria_template, merge_criteria
+from workflow.domain import pull_request
 from workflow.domain.execution_policy import ExecutionPolicy, policy_for
 from workflow.domain.report_expectation import (
     ExpectedReport,
@@ -123,6 +134,9 @@ CALLBACK_MAX_ATTEMPTS = 5
 CALLBACK_BACKOFF_SECONDS = 30
 # GitHub 목록 폴링 간격(소스마다). 변화 없으면 ETag 304 라 primary 한도를 쓰지 않는다
 GITHUB_SYNC_INTERVAL_SECONDS = 60
+# 초안 PR 열기 재시도 (ADR-0018 결정 4): callback 과 같은 30·2^(n-1) 초, 5회 실패 후 사람 요청
+PR_MAX_ATTEMPTS = 5
+PR_BACKOFF_SECONDS = 30
 
 
 @dataclass
@@ -154,6 +168,9 @@ class TickReport:
     deliveries_queued: int = 0  # 원본 이슈 댓글 본문의 새 revision
     deliveries_sent: int = 0  # 댓글 생성·수정 성공(응답을 잃은 POST 를 marker 로 찾은 것 포함)
     deliveries_failed: int = 0  # 반영 실패(403·404·삭제된 댓글) — Task 상태와 따로
+    prs_opened: int = 0  # 검토 승인 뒤 연(또는 이미 있던) 초안 PR
+    prs_failed: int = 0  # PR 을 끝내 열지 못해 사람 요청으로 넘긴 수정 Task
+    prs_merged: int = 0  # 병합을 보고 완료한 수정 Task
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -394,6 +411,7 @@ class Worker:
             self._spawn_successors(conn, report)
             self._reflect_failures(conn, report)
             self._deliver_callbacks(conn, report)
+            self._deliver_pull_requests(conn, report)
             self._deliver_github(conn, report)
         finally:
             conn.close()
@@ -437,6 +455,8 @@ class Worker:
                 log.warning("GitHub 수집 실패 %s: %s", config.source_id, result.error)
             if result.merge_error is not None:
                 log.warning("GitHub 병합 PR 조회 실패 %s: %s", config.source_id, result.merge_error)
+            if result.error is None and result.retry_after_seconds is None:
+                self._sync_pull_requests(conn, client, config, now, report)
             wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
             self._github_next_at[config.source_id] = _plus_seconds(now, wait)
 
@@ -1088,7 +1108,37 @@ class Worker:
             # 검토 종결일 뿐이다 — 수정 Task 는 사람(병합·이슈 종료) 차례로 남고 잠금도 유지한다
             repo.finish_task(conn, task_id=task["task_id"], execution_id=execution["execution_id"],
                              status="완료", reason="검토 승인", now=now)
-            self._write_status(conn, repo.get_task(conn, context.review.fix_task_id), "확인 필요", decision.reason)
+            fix_task = repo.get_task(conn, context.review.fix_task_id)
+            reason = self._queue_pull_request(conn, fix_task, execution, context.review, report)
+            self._write_status(conn, fix_task, "확인 필요", reason or decision.reason)
+
+    def _queue_pull_request(
+        self, conn: Connection, fix_task: Row, review_execution: Row, review: ReviewFacts, report: TickReport
+    ) -> str | None:
+        """검토 승인 뒤 초안 PR 대기열(ADR-0018 결정 4). 원본 이슈가 있는 수정 Task 만 — 검토한 수정 실행이 push 에
+        성공했으면 PR 한 행, 실패를 보고했으면 push 안내 사람 요청. push 보고가 없으면(구버전 러너·origin 없음) None =
+        지금 동작 그대로. 돌려주는 값은 수정 Task 의 새 상태 이유."""
+        issue = repo.get_source_issue_by_task(conn, fix_task["session_id"], fix_task["task_id"])
+        pushed = repo.get_execution(conn, review.source_execution_id)["branch_pushed"]
+        if issue is None or pushed is None:
+            return None
+        if not pushed:
+            question = pull_request.not_pushed_question(fix_task["task_id"])
+            _, fresh = repo.create_human_request_once(
+                conn, fix_task["task_id"], pull_request.PR_REQUEST_CODE, question,
+                pull_request.pr_request_cause_key(review_execution["execution_id"]), self._clock(),
+            )
+            report.human_requests += int(fresh)
+            return question
+        snapshot = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"])
+        repo.enqueue_pull_request(
+            conn, task_id=fix_task["task_id"], session_id=fix_task["session_id"], source_id=issue["source_id"],
+            repository_full_name=snapshot.repository_full_name, issue_number=issue["issue_number"],
+            fix_execution_id=review.source_execution_id, review_execution_id=review_execution["execution_id"],
+            now=self._clock(),
+        )
+        row = repo.get_pull_request_row(conn, fix_task["task_id"])
+        return pull_request.open_reason(row["pr_number"]) if row["state"] == "open" else pull_request.PR_PENDING_REASON
 
     def _create_followup_task(
         self, conn: Connection, predecessor: Row, spec: FollowupTaskSpec, now: str
@@ -1186,7 +1236,7 @@ class Worker:
         answered = [
             r for r in repo.list_human_responses(conn, task["task_id"])
             if r["task_revision"] > previous.task_revision and r["asked_revision"] >= previous.task_revision
-            and not r["cause_key"].startswith(task_cycle.READINESS_REQUEST_PREFIX)
+            and not r["cause_key"].startswith((task_cycle.READINESS_REQUEST_PREFIX, pull_request.PR_REQUEST_PREFIX))
         ]
         if not answered:
             return False
@@ -1452,7 +1502,121 @@ class Worker:
             repo.record_callback_attempt(conn, chain_id, ok=True, error=None, now=now, next_at=None)
             report.callbacks_sent += 1
 
-    # --- 11. 원본 이슈 반영 -------------------------------------------------------------
+    # --- 11. 초안 PR (ADR-0018 결정 4) ---------------------------------------------------
+
+    def _deliver_pull_requests(self, conn: Connection, report: TickReport) -> None:
+        """대기열의 PR 을 트랜잭션 밖에서 연다 — 같은 head 의 PR 이 있으면 그것, 없으면 기본 브랜치로 초안 PR.
+        권한 부족(403)·자격 없음은 바로, 그 밖의 실패는 PR_MAX_ATTEMPTS 뒤 사람 요청으로 넘긴다. 업무는 계속 사람 차례."""
+        now = self._clock()
+        for row in repo.pull_requests_due(conn, now, max_attempts=PR_MAX_ATTEMPTS):
+            task_id = row["task_id"]
+            config = repo.get_github_source(conn, row["session_id"], row["source_id"])
+            client = (
+                self._github_for(config)
+                if self._github_for is not None and config is not None and config.enabled else None
+            )
+            if client is None:
+                self._pull_request_failed(conn, row, "github_not_connected", "이 저장소의 GitHub 자격 없음", now, report)
+                continue
+            issue = repo.get_source_issue_by_task(conn, row["session_id"], task_id)
+            title = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"]).title
+            _, summary = _result_envelope(conn, self._store, repo.get_execution(conn, row["review_execution_id"]))
+            public_url = self._settings.public_url
+            body = pull_request.pr_body(
+                issue_number=row["issue_number"], task_id=task_id, review_summary=summary or "",
+                task_url=f"{public_url}/tasks/{task_id}" if public_url else None,
+            )
+            name = row["repository_full_name"]
+            try:
+                pr = client.find_pull_request(name, row["head_branch"])
+                if pr is None:
+                    pr = client.create_pull_request(
+                        name, head=row["head_branch"], base=client.default_branch(name), title=title, body=body,
+                        draft=True,
+                    )
+            except (GitHubForbidden, GitHubRepositoryNotAllowed) as exc:
+                self._pull_request_failed(conn, row, str(exc), pull_request.PERMISSION_NEEDED, now, report)
+                continue
+            except GitHubError as exc:
+                attempts = row["attempts"] + 1
+                log.warning("PR 열기 실패 %s (%s회): %s", task_id, attempts, exc)
+                if attempts >= PR_MAX_ATTEMPTS:
+                    self._pull_request_failed(conn, row, str(exc), str(exc), now, report)
+                else:
+                    repo.record_pull_request(
+                        conn, task_id, state="pending", now=now, error=str(exc),
+                        next_at=_plus_seconds(now, PR_BACKOFF_SECONDS * 2 ** (attempts - 1)),
+                    )
+                continue
+            repo.record_pull_request(conn, task_id, state="open", now=now, pr=pr)
+            report.prs_opened += 1
+            self._write_status(conn, repo.get_task(conn, task_id), "확인 필요", pull_request.open_reason(pr.number))
+            if pr.state == "closed":  # 같은 head 의 PR 이 이미 병합·닫힘
+                self._apply_pull_request_state(conn, repo.get_pull_request_row(conn, task_id), pr, now, report)
+
+    def _pull_request_failed(
+        self, conn: Connection, row: Row, error: str, cause: str, now: str, report: TickReport
+    ) -> None:
+        """PR 을 열지 않고 사람에게 넘긴다 — 사유에 직접 push·PR 여는 안내 한 줄."""
+        task_id = row["task_id"]
+        repo.record_pull_request(conn, task_id, state="failed", now=now, error=error)
+        _, fresh = repo.create_human_request_once(
+            conn, task_id, pull_request.PR_REQUEST_CODE, pull_request.failed_question(task_id, cause),
+            pull_request.pr_request_cause_key(row["review_execution_id"]), now,
+        )
+        report.human_requests += int(fresh)
+        report.prs_failed += 1
+        self._write_status(conn, repo.get_task(conn, task_id), "확인 필요", pull_request.PR_FAILED_REASON)
+
+    def _sync_pull_requests(
+        self, conn: Connection, client: GitHubClient, config: GitHubSourceConfig, now: str, report: TickReport
+    ) -> None:
+        """이 소스의 열린 PR 상태를 본다(GitHub 수집과 같은 간격). 병합 → 수정 Task 완료, 병합 없이 닫힘 → 실패."""
+        for row in repo.open_pull_requests(conn):
+            if row["source_id"] != config.source_id:
+                continue
+            try:
+                pr = client.get_pull_request(row["repository_full_name"], row["pr_number"])
+            except GitHubError as exc:
+                log.warning("PR 상태 조회 실패 %s: %s", row["task_id"], exc)
+                if isinstance(exc, GitHubRateLimited | GitHubUnavailable):
+                    return
+                continue
+            self._apply_pull_request_state(conn, row, pr, now, report)
+
+    def _apply_pull_request_state(
+        self, conn: Connection, row: Row, pr: PullRequestRef, now: str, report: TickReport
+    ) -> None:
+        """PR 이 끝났으면 기록하고 수정 Task 를 마감한다. 이미 마감된 Task(운영자 종료 등)는 건드리지 않는다.
+        병합이면 원본 이슈의 병합 시각이 비어 있을 때 채운다(지표 `pr_merged_at`)."""
+        if pr.state != "closed":
+            return
+        task_id = row["task_id"]
+        merged = pr.merged_at is not None
+        repo.record_pull_request(conn, task_id, state="merged" if merged else "closed", now=now, pr=pr)
+        if merged:
+            issue = repo.get_source_issue_by_task(conn, row["session_id"], task_id)
+            snapshot = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"])
+            repo.record_issue_merge(
+                conn, session_id=row["session_id"], source_id=row["source_id"],
+                github_issue_id=issue["github_issue_id"],
+                link=IssuePrLink(issue_number=issue["issue_number"], issue_title=snapshot.title,
+                                 issue_opened_at=snapshot.created_at, pr_number=pr.number,
+                                 pr_merged_at=pr.merged_at),
+                now=now,
+            )
+        task = repo.get_task(conn, task_id)
+        if task["finished_at"] is not None:
+            return
+        active = repo.active_execution(conn, task_id)
+        repo.finish_task(
+            conn, task_id=task_id, execution_id=active["execution_id"] if active else row["fix_execution_id"],
+            status="완료" if merged else "실패",
+            reason=pull_request.PR_MERGED_REASON if merged else pull_request.PR_CLOSED_REASON, now=now,
+        )
+        report.prs_merged += int(merged)
+
+    # --- 12. 원본 이슈 반영 -------------------------------------------------------------
 
     def _deliver_github(self, conn: Connection, report: TickReport) -> None:
         """원본 이슈 댓글 outbox (ADR-0014 결정 8). 반영 실패는 기록만 하고 Task·실행을 바꾸지 않는다.

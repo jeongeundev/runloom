@@ -7,6 +7,7 @@
   토큰·헤더·응답 본문을 넣지 않는다. 프로세스를 띄우지 않으므로 도구 프로세스 환경으로 넘어갈 경로도 없다.
 - 오류: `GitHubRateLimited`(429, 또는 403 + `x-ratelimit-remaining: 0`/`retry-after`)·`GitHubForbidden`(401·403)·
   `GitHubNotFound`(404·410)·`GitHubUnavailable`(5xx·연결 오류·timeout)·그 밖(3xx·422·응답 형식)은 `GitHubError`.
+  PR 생성의 422 만 `GitHubUnprocessable`(초안 미지원·이미 있음 처리, ADR-0018 결정 4).
   재시도 여부·간격은 호출자(step 7 수집·step 12 전달)가 정한다.
 - 기준선과 이슈별 병합 PR 조회(ADR-0015)만 GraphQL(`POST /graphql`)을 쓴다. 같은 헤더·허용 저장소·오류 분류이고, 200 응답의 `errors` 는
   `type` 으로 분류한다(`RATE_LIMITED`·`FORBIDDEN`·`NOT_FOUND`). 메시지는 여기도 `POST /graphql: …` 뿐이다.
@@ -23,7 +24,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 from pydantic import TypeAdapter, ValidationError
 
-from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink, RepositoryFullName
+from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink, PullRequestRef, RepositoryFullName
 from workflow.contracts.v1 import parse_rfc3339_aware
 
 API_HOST = "api.github.com"
@@ -97,6 +98,15 @@ class GitHubNotFound(GitHubError):
 
 class GitHubUnavailable(GitHubError):
     """5xx·연결 오류·timeout. 다음 주기에 같은 커서로 다시 부른다."""
+
+
+class GitHubUnprocessable(GitHubError):
+    """PR 생성의 422. `str()` 은 다른 오류처럼 `메서드 경로: HTTP 422` 뿐이고, `.message` 에 응답 `message`·`errors[].message`
+    요약(초안 미지원 판단용)을 둔다 — 로그·DB 에 싣지 않는다."""
+
+    def __init__(self, text: str, message: str):
+        super().__init__(text)
+        self.message = message
 
 
 @dataclass(frozen=True)
@@ -215,6 +225,16 @@ class GitHubClient(Protocol):
 
     def get_issue_pr_link(self, repo: str, number: int) -> IssuePrLink | None: ...
 
+    def default_branch(self, repo: str) -> str: ...
+
+    def find_pull_request(self, repo: str, head_branch: str) -> PullRequestRef | None: ...
+
+    def create_pull_request(
+        self, repo: str, *, head: str, base: str, title: str, body: str, draft: bool
+    ) -> PullRequestRef: ...
+
+    def get_pull_request(self, repo: str, number: int) -> PullRequestRef: ...
+
 
 def _header_int(response: httpx.Response, name: str) -> int | None:
     try:
@@ -239,6 +259,21 @@ def check_response(method: str, path: str, response: httpx.Response) -> httpx.Re
     if status >= 500:
         raise GitHubUnavailable(message)
     raise GitHubError(message)  # 3xx(리다이렉트는 따라가지 않는다)·422 등
+
+
+def _unprocessable_summary(response: httpx.Response) -> str:
+    """422 응답의 `message`·`errors[].message` 를 한 줄로(200자까지). 형식이 달라도 실패하지 않는다."""
+    try:
+        data = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    parts = [data.get("message")]
+    errors = data.get("errors")
+    if isinstance(errors, list):
+        parts += [e.get("message") for e in errors if isinstance(e, dict)]
+    return " · ".join(p for p in parts if isinstance(p, str))[:200]
 
 
 def next_page(response: httpx.Response, path: str) -> int | None:
@@ -410,6 +445,49 @@ class HttpGitHubClient:
         """`GET /repos/{o}/{r}` — 이 토큰으로 저장소를 볼 수 있는지 확인한다(PAT 연결). 못 보면 분류된 오류."""
         return self._repository_id(self._repo(repo))
 
+    # ── 초안 PR (ADR-0018 결정 4) ──
+
+    def default_branch(self, repo: str) -> str:
+        path = f"/repos/{self._repo(repo)}"
+        try:
+            branch = self._call("GET", path).json()["default_branch"]
+        except (KeyError, TypeError, ValueError):
+            raise GitHubError(f"GET {path}: 응답 형식 오류") from None
+        if not isinstance(branch, str) or not branch:
+            raise GitHubError(f"GET {path}: 응답 형식 오류")
+        return branch
+
+    def find_pull_request(self, repo: str, head_branch: str) -> PullRequestRef | None:
+        """`head` = `<owner>:<branch>`, 닫힌 것까지(`state=all`). 여럿이면 가장 최근(목록 첫 항목 — 기본 정렬은 생성 내림차순)."""
+        name = self._repo(repo)
+        path = f"/repos/{name}/pulls"
+        params = {"head": f"{name.split('/')[0]}:{head_branch}", "state": "all", "per_page": PER_PAGE}
+        items = self._json_list(self._call("GET", path, params=params), path)
+        return self._pull_request(items[0], "GET", path) if items else None
+
+    def create_pull_request(
+        self, repo: str, *, head: str, base: str, title: str, body: str, draft: bool
+    ) -> PullRequestRef:
+        """422 가 초안 미지원(요약에 `draft`)이면 `draft=False` 로 한 번 더, 그 밖의 422 는 같은 head 의 기존 PR 을 찾아
+        돌려준다(없으면 `GitHubUnprocessable`). 422 본문 문구의 모양에는 기대지 않는다(ADR-0018 사실 확인 — 미확인)."""
+        name = self._repo(repo)
+        path = f"/repos/{name}/pulls"
+        payload = {"head": head, "base": base, "title": title, "body": body, "draft": draft}
+        try:
+            response = self._call("POST", path, json=payload, unprocessable=True)
+        except GitHubUnprocessable as exc:
+            if draft and "draft" in exc.message.lower():
+                return self.create_pull_request(repo, head=head, base=base, title=title, body=body, draft=False)
+            existing = self.find_pull_request(repo, head)
+            if existing is None:
+                raise
+            return existing
+        return self._pull_request(self._json(response, "POST", path), "POST", path)
+
+    def get_pull_request(self, repo: str, number: int) -> PullRequestRef:
+        path = f"/repos/{self._repo(repo)}/pulls/{int(number)}"
+        return self._pull_request(self._json(self._call("GET", path), "GET", path), "GET", path)
+
     # ── 내부 ──
 
     def _repo(self, repo: str) -> str:
@@ -421,11 +499,13 @@ class HttpGitHubClient:
             raise GitHubRepositoryNotAllowed(f"저장소 {name} 는 허용 저장소 목록에 없습니다")
         return name
 
-    def _call(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    def _call(self, method: str, path: str, *, unprocessable: bool = False, **kwargs: Any) -> httpx.Response:
         response = self._send(method, path, kwargs)
         if response.status_code == 401 and self._retry_on_401:
             self._token.invalidate()
             response = self._send(method, path, kwargs)
+        if unprocessable and response.status_code == 422:
+            raise GitHubUnprocessable(f"{method} {path}: HTTP 422", _unprocessable_summary(response))
         return check_response(method, path, response)
 
     def _send(self, method: str, path: str, kwargs: dict[str, Any]) -> httpx.Response:
@@ -473,6 +553,21 @@ class HttpGitHubClient:
         if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
             raise GitHubError(f"GET {path}: 응답 형식 오류")
         return data
+
+    def _json(self, response: httpx.Response, method: str, path: str) -> Any:
+        try:
+            return response.json()
+        except ValueError:
+            raise GitHubError(f"{method} {path}: 응답 형식 오류") from None
+
+    def _pull_request(self, item: Any, method: str, path: str) -> PullRequestRef:
+        try:
+            return PullRequestRef(
+                number=item["number"], html_url=item["html_url"], state=item["state"],
+                draft=bool(item.get("draft") or False), merged_at=item.get("merged_at"),
+            )
+        except (KeyError, TypeError, AttributeError, ValidationError):
+            raise GitHubError(f"{method} {path}: 응답 형식 오류") from None
 
     def _next_page(self, response: httpx.Response, path: str) -> int | None:
         return next_page(response, path)

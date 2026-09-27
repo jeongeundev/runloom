@@ -112,7 +112,7 @@ GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. �
 1. `/operator/github` 에서 **[GitHub 연결]** 을 누른다. Runloom 이 App 설정(이름·권한)을 채워 GitHub 로 보낸다.
 2. GitHub 의 **App 만들기 화면**에서 확인할 것:
    - App 이름 `runloom-xxxxxx`(무작위 6자 — GitHub 전역에서 겹치지 않게). 바꿔도 된다.
-   - 권한: Issues 읽기·쓰기, Pull requests 읽기, Metadata 읽기. 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
+   - 권한: Issues 읽기·쓰기, Pull requests 읽기·쓰기(검토 승인 뒤 초안 PR — ADR-0018. phase 12 전에 만든 App 은 App 설정에서 Pull requests 를 Read and write 로 올리고 설치에서 새 권한을 승인해야 한다), Metadata 읽기. 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
    - 그대로 **[Create GitHub App]** 을 누른다. 조직 저장소면 `/operator/github/app/new?org=<조직 이름>` 으로 시작한다.
 3. Runloom 이 App 개인 키·비밀을 받아 저장하고 GitHub 의 **설치 화면**으로 다시 보낸다. **Only select repositories** 로 대상 저장소(예: OpenArchive)를 고르고 **[Install]** 을 누른다.
 4. `/operator/github` 로 돌아오면 고른 저장소마다 카드가 생긴다. 약 1분 안에 열린 이슈가 **전부** 업무 목록에 `대기 · 지시 전` 으로 들어온다(PR·닫힌 이슈 제외).

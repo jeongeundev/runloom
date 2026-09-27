@@ -362,7 +362,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ## 셀프호스트 — phase 10
 
-상태(2026-09-27 step 0): 설계만 고정, 구현 없음. [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)을 따른다. 기본값·step 목록은 [phase 10 README](../phases/10-selfhost/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0016·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 공개 데모 구성(아래 "배포와 실행 예산", [DEPLOY](DEPLOY.md))은 바뀌지 않는다.
+상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)을 따른다. 기본값·step 목록은 [phase 10 README](../phases/10-selfhost/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0016·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 공개 데모 구성(아래 "배포와 실행 예산", [DEPLOY](DEPLOY.md))은 바뀌지 않는다.
 
 ### 구성
 
@@ -483,7 +483,7 @@ Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Deskto
 
 ## GitHub App 연결 — phase 11
 
-상태(2026-09-27 step 0): 설계만 고정, 구현 없음. [ADR-0017](adr/0017-github-app-connection.md)을 따른다. 기본값·step 목록은 [phase 11 README](../phases/11-github-app/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0017·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8 계약("GitHub 업무 순환 — phase 8 계약")은 `intake: filtered` 소스에 그대로다.
+상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0017](adr/0017-github-app-connection.md)을 따른다. 기본값·step 목록은 [phase 11 README](../phases/11-github-app/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0017·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8 계약("GitHub 업무 순환 — phase 8 계약")은 `intake: filtered` 소스에 그대로다.
 
 ### 흐름
 
@@ -642,7 +642,7 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 
 ## 실제 저장소 순환 — phase 12
 
-상태(2026-09-27 step 0): 설계만 고정, 구현 없음. [ADR-0018](adr/0018-real-repo-cycle.md)을 따른다. 기본값·step 목록은 [phase 12 README](../phases/12-real-repo/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0018·이 절·[CONTRACT](CONTRACT.md) 14절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8·11 계약은 구버전 러너(새 선택 칸을 보내지 않음)에 그대로다.
+상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0018](adr/0018-real-repo-cycle.md)을 따른다. 기본값·step 목록은 [phase 12 README](../phases/12-real-repo/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0018·이 절·[CONTRACT](CONTRACT.md) 14절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8·11 계약은 구버전 러너(새 선택 칸을 보내지 않음)에 그대로다.
 
 ### 흐름
 
@@ -716,6 +716,13 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 - 전달 `Worker._deliver_pull_requests`(트랜잭션 밖, `_deliver_github` 옆): 소스의 클라이언트(`github_for`)로 ① `find_pull_request` ② 없으면 `default_branch` → `create_pull_request(draft=True)` ③ `GitHubUnprocessable` 이고 문구에 `draft` 가 있으면 `draft=False` 로 한 번 더 ④ 그 밖의 `GitHubUnprocessable` 은 ① 재조회. 성공 → `state='open'`, `pr_number`·`pr_url`·`draft` 저장, 수정 Task `확인 필요 · 사람 차례 · PR 확인 — #<n>`, 알림 `pr_opened`. 실패 → `attempts`+1, `next_at` = 30초 × 2^(n−1), `PR_MAX_ATTEMPTS`(5) 뒤 `failed` + 수정 Task `검토 승인 — PR 을 열지 못함, 병합·이슈 종료는 사람`. 자격 없는 소스는 시도하지 않고 `failed`(`github_not_connected`).
 - PR 본문(`domain/pull_request.pr_body(issue_number, review_summary, task_url) -> str`): 첫 줄 `Fixes #<N>`, 검토 요약(검토 결과 `summary`), `Runloom 업무: <task_url>`(`task_url` 이 없으면 `Runloom 업무: <task_id>`), 끝에 marker `<!-- runloom:task=<task_id> -->`. 제목 = 원본 이슈 제목.
 - 추적 `Worker._sync_pull_requests`(GitHub 주기 조회와 같은 간격): `state='open'` 행마다 `get_pull_request` → `merged_at` 있으면 `state='merged'`·`merged_at` 저장·수정 Task `완료`(사유 `PR 병합`), 병합 없이 `closed` 면 `state='closed'`·`closed_at`·수정 Task `실패`(사유 `PR 이 병합 없이 닫힘`). 이슈 닫힘에 따른 `source_closed` 대기·지표의 이슈 병합 PR 조회(`record_issue_merge`)는 그대로다.
+- 구현: step 6 (2026-09-28). 달라진 점·더한 점:
+  - 422 처리는 클라이언트 `create_pull_request` 안에 있다 — 초안 미지원(`GitHubUnprocessable.message` 에 `draft`)이면 `draft=False` 로 한 번 더, 그 밖의 422 는 `find_pull_request` 재조회(없으면 `GitHubUnprocessable`). 워커는 ① `find_pull_request` ② 없으면 `default_branch` → `create_pull_request` 만 부른다. `GitHubUnprocessable` 은 PR 생성 호출(`_call(..., unprocessable=True)`)에서만 나고, `str()` 은 다른 오류처럼 `POST 경로: HTTP 422` 뿐이다(`.message` 는 판단용, 저장·로그 안 함).
+  - 사람 요청: 코드 `pr_unavailable`(`domain/pull_request.PR_REQUEST_CODE`), 원인 키 `pr:<검토 execution_id>`. ① 검토한 수정 실행이 `branch_pushed = 0` → 대기열 없이 바로 요청(사유에 `git push origin task/<id>` 뒤 PR 을 직접 열라는 안내) ② 403·허용 저장소 밖 → 바로 `failed` + 요청(사유 `GitHub App 권한(Pull requests 쓰기) 승인 필요`) ③ 자격 없음·소스 중지 → 바로 `failed` + 요청 ④ 그 밖의 GitHub 오류 → 백오프 재시도, `PR_MAX_ATTEMPTS` 뒤 `failed` + 요청. 이 요청에 `resume` 으로 답해도 수정을 다시 돌리지 않는다(`Worker._resume` 이 `pr:` 원인 키를 `ready:` 처럼 뺀다). `branch_pushed` 가 NULL(보고 없음 — 구버전 러너·origin 없음)이면 phase 8 그대로 PR·요청 없음.
+  - `last_error` 는 오류 `str()`(`메서드 경로: HTTP 상태`) — 본문·토큰 없음. 조회용 `repo.get_pull_request_row(conn, task_id)`.
+  - 병합을 보면 원본 이슈의 `merged_pr_number`·`pr_merged_at` 이 비어 있을 때 `record_issue_merge` 로 채운다(그 PR 번호·병합 시각 — 지표 "이슈 열림 → 병합"). 이미 마감된 수정 Task(운영자 종료 등)는 PR 행만 `merged`·`closed` 로 바꾸고 Task 는 그대로 둔다. `_sync_pull_requests` 는 소스 수집이 성공한 주기에만 같은 클라이언트로 부르고(rate limit·연결 오류면 그 소스의 나머지 PR 조회를 멈춘다), 같은 head 의 PR 을 찾았는데 이미 끝났으면 연 직후 같은 규칙으로 반영한다. tick 순서는 `_deliver_callbacks` → `_deliver_pull_requests` → `_deliver_github`.
+  - 화면: 업무 상세 업무 순환 영역에 PR 줄(`data-pull-request` = 대기열 상태, 문구 `views.PULL_REQUEST_LABELS`, 링크는 저장소 이름·번호로 만든 `https://github.com/<o>/<r>/pull/<n>`).
+  - 스키마 7 → 8 은 `executions.branch_pushed` 를 이미 받은 `result_ready` 이벤트의 `data_json.branch_pushed`(true/false 일 때만)로 채운다. 원본 이슈 댓글(`github_delivery`)의 "자동으로 푸시하지 않습니다" 문구는 이 step 에서 바꾸지 않았다.
 
 ### 스키마 v8 (step 6·7)
 
@@ -764,7 +771,8 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 | 시점 | 수정 Task 상태 · 사유 |
 |---|---|
-| 검토 승인, push 보고 없음·실패 | `확인 필요` · `검토 승인 — 병합·이슈 종료는 사람`(지금 그대로) |
+| 검토 승인, push 보고 없음 | `확인 필요` · `검토 승인 — 병합·이슈 종료는 사람`(지금 그대로) |
+| 검토 승인, push 실패 보고 | `확인 필요` · `검토 승인 — 결과 브랜치 task/<id> 가 GitHub 에 push 되지 않음. …`(사람 요청 `pr_unavailable` 과 같은 문구) |
 | 검토 승인, PR 대기열 | `확인 필요` · `검토 승인 — PR 여는 중` |
 | PR 열림 | `확인 필요` · `사람 차례 · PR 확인 — #<n>` (목록 표시 "사람 차례 · PR 확인") |
 | PR 열기 실패(상한) | `확인 필요` · `검토 승인 — PR 을 열지 못함, 병합·이슈 종료는 사람` |
@@ -783,7 +791,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | Agent 생성 | `adapters/repo.py`·`server/machine_api.py`(1) | `register_local_agent(...) -> tuple[str, bool]`(위 절), 능력 상수 `SELF_REGISTER_CAPABILITIES = ("code.fix", "code.review")` |
 | 준비물 | `connector/git_ops.py`·`connector/masking.py`·`connector/local_tool.py`(4) | `link_prepared_paths(repo, worktree, links) -> list[str]`, `mask_secrets(text, extra=...)`, `child_env()` 가 등록 `env` 를 더함 |
 | push | `connector/git_ops.py`·`connector/local_tool.py`(5) | `push_task_branch(repo, task_id) -> bool`, `ResultReadyData.branch_pushed`, `executions.branch_pushed` |
-| GitHub PR | `adapters/github_client.py`·`contracts/github.py`(6) | `PullRequestRef(number: int, html_url: str, state: Literal["open","closed"], draft: bool, merged_at: Rfc3339 \| None)`, `HttpGitHubClient.default_branch(repo) -> str`, `find_pull_request(repo, head_branch) -> PullRequestRef \| None`(head = `<owner>:<branch>`, `state=all`, 가장 최근), `create_pull_request(repo, *, head, base, title, body, draft) -> PullRequestRef`, `get_pull_request(repo, number) -> PullRequestRef`, 예외 `GitHubUnprocessable(GitHubError)`(422, `.message` = 응답 `message`+`errors[].message` 요약) |
+| GitHub PR | `adapters/github_client.py`·`contracts/github.py`(6) | `PullRequestRef(number: int, html_url: str, state: Literal["open","closed"], draft: bool, merged_at: Rfc3339 \| None)`, `HttpGitHubClient.default_branch(repo) -> str`, `find_pull_request(repo, head_branch) -> PullRequestRef \| None`(head = `<owner>:<branch>`, `state=all`, 가장 최근), `create_pull_request(repo, *, head, base, title, body, draft) -> PullRequestRef`, `get_pull_request(repo, number) -> PullRequestRef`, 예외 `GitHubUnprocessable(GitHubError)`(422, `.message` = 응답 `message`+`errors[].message` 요약) — 구현 step 6, 422 재시도·재조회는 `create_pull_request` 안 |
 | PR 대기열 | `adapters/repo.py`·`server/worker.py`(6) | `enqueue_pull_request(conn, *, task_id, session_id, source_id, repository_full_name, issue_number, fix_execution_id, review_execution_id, now) -> bool`, `pull_requests_due(conn, now, *, max_attempts) -> list[Row]`, `record_pull_request(conn, task_id, *, state, now, pr=None, error=None, next_at=None)`, `open_pull_requests(conn) -> list[Row]`, `Worker._deliver_pull_requests`·`_sync_pull_requests`, `PR_MAX_ATTEMPTS = 5`, `PR_BACKOFF_SECONDS = 30`, `TickReport.prs_opened`·`prs_failed`·`prs_merged` |
 | PR 본문 | `domain/pull_request.py`(6) | `pr_body(*, issue_number, task_id, review_summary, task_url) -> str`, `head_branch(task_id) -> str`(`"task/" + task_id`) |
 | App 권한 | `adapters/github_app.py`(6) | `build_manifest` 의 `default_permissions` = `{"issues": "write", "pull_requests": "write", "metadata": "read"}` |

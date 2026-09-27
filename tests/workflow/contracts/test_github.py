@@ -17,6 +17,7 @@ from workflow.contracts.github import (
     GitHubIssueSnapshot,
     GitHubSourceConfig,
     IssuePrLink,
+    PullRequestRef,
     SourceDelivery,
     snapshot_digest,
 )
@@ -374,3 +375,29 @@ def test_issue_pr_link_roundtrip():
 def test_issue_pr_link_rejects_bad_fields(overrides):
     with pytest.raises(ValidationError):
         IssuePrLink.model_validate({**_LINK, **overrides})
+
+
+# --- PullRequestRef (phase 12 초안 PR) ------------------------------------------------------
+
+_PR = {
+    "number": 31,
+    "html_url": "https://github.com/acme/billing/pull/31",
+    "state": "open",
+    "draft": True,
+    "merged_at": None,
+}
+
+
+def test_pull_request_ref_roundtrip():
+    assert PullRequestRef.model_validate(_PR).model_dump(mode="json") == _PR
+    merged = {**_PR, "state": "closed", "draft": False, "merged_at": "2026-10-06T12:00:00Z"}
+    assert PullRequestRef.model_validate(merged).merged_at == "2026-10-06T12:00:00Z"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"number": 0}, {"state": "merged"}, {"html_url": ""}, {"draft": "true"}, {"merged_at": "2026-10-06"}, {"x": 1}],
+)
+def test_pull_request_ref_rejects(overrides):
+    with pytest.raises(ValidationError):
+        PullRequestRef.model_validate({**_PR, **overrides})
