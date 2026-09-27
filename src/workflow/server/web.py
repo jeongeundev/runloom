@@ -190,12 +190,13 @@ def _settings(request: Request) -> Settings:
 
 
 def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict[str, Any]:
-    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용."""
+    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용. 데모 전용 요소는 템플릿이 `mode` 하나로 가린다."""
     session = repo.get_session(conn, session_id)
     settings = _settings(request)
     return {
         "request": request,
         "now": now,
+        "mode": settings.mode,
         "session_id": session_id,
         "is_operator": bool(session["is_operator"]) if session is not None else False,
         "my_tasks": [
@@ -922,7 +923,7 @@ def task_live(
     )
     viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
     response.headers["Cache-Control"] = "no-store"
-    return _render("_live.html", request=request, now=now, **context, viewer=viewer)
+    return _render("_live.html", request=request, now=now, mode=_settings(request).mode, **context, viewer=viewer)
 
 
 @router.post("/tasks/{task_id}/run")

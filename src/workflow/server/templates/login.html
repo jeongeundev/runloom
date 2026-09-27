@@ -1,4 +1,4 @@
-{# 셀프호스트 로그인 (`/login`, ADR-0016 결정 3) — 토큰 한 칸. 앱 셸 없음. 입력한 토큰 값은 다시 싣지 않는다. #}
+{# 셀프호스트 로그인 (`/login`, ADR-0016 결정 3) — 토큰 한 칸 · 오류 문구 · 안내 한 줄. 앱 셸 없음. 입력한 토큰 값은 다시 싣지 않는다. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -12,9 +12,13 @@
   <div class="main-inner">
     <h1>Runloom 로그인</h1>
     {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-    <form method="post" action="/login">
-      <label>운영자 토큰 <input type="password" name="token" autocomplete="current-password" required></label>
-      <button class="btn" type="submit">로그인</button>
+    <form method="post" action="/login" class="card">
+      <div class="field">
+        <label for="token">운영자 토큰</label>
+        <input type="password" id="token" name="token" autocomplete="current-password" required>
+        <div class="help">셀프호스트 설치의 <code>deploy/selfhost/.env</code> 에 있는 <code>OPERATOR_TOKEN</code> 값을 입력합니다.</div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">로그인</button></div>
     </form>
   </div>
 </main>

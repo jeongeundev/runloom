@@ -2223,3 +2223,79 @@ def test_demo_mode_has_no_login_routes(client, conn):
     assert client.post("/login", data={"token": OPERATOR_TOKEN}, follow_redirects=False).status_code == 404
     assert client.post("/logout", follow_redirects=False).status_code == 404
     assert client.get("/", follow_redirects=False).status_code == 200  # 공개 랜딩 그대로
+
+
+# --- selfhost 화면 — 로그인·내비게이션·데모 전용 요소 (phase 10 step 3) ----------------------------
+
+# demo 에서만 보이는 문구·링크. selfhost 는 템플릿이 `mode` 하나로 숨긴다.
+DEMO_ONLY_TASKS = ('href="/tasks/import"', "업무 가져오기", "세션 · 익명")
+DEMO_ONLY_TASK_NEW = ('name="run_id"', "demo-report-repo", "daily-report")
+DEMO_ONLY_OPERATOR = ("진단 사용량", "데모 저장소")
+DEMO_ONLY_SOURCES = ("demo-report-repo", "daily-0920-0900", "진단 항목")
+DEMO_ONLY_DETAIL = ("후속 업무 B 등록",)
+
+
+def assert_no_secrets(text: str, settings) -> None:
+    for secret in (settings.operator_token, settings.session_secret, settings.diag_api_token):
+        assert secret not in text
+
+
+def test_selfhost_login_page_is_one_token_field_with_notice(selfhost, settings):
+    client = TestClient(selfhost)
+    page = client.get("/login").text
+    assert page.count("<input") == 1 and 'type="password"' in page and 'name="token"' in page
+    assert "/static/style.css" in page
+    assert "셀프호스트" in page and "OPERATOR_TOKEN" in page
+    assert 'class="alert"' not in page
+    failed = login(client, "wrong").text
+    assert 'class="alert"' in failed and "토큰이 올바르지 않습니다" in failed
+    assert_no_secrets(page + failed, settings)
+
+
+def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, settings):
+    client = TestClient(selfhost)
+    login(client)
+    html = client.get("/tasks").text
+    sidebar = html[html.index('class="sidebar'):html.index('class="main')]
+    assert 'action="/logout"' in sidebar and "로그아웃" in sidebar
+    assert 'href="/metrics"' in sidebar and 'href="/operator/github"' in sidebar
+    assert 'href="/tasks/new"' in sidebar  # `+` 는 직접 등록
+    assert_no_secrets(html, settings)
+
+
+def test_selfhost_hides_demo_only_elements(selfhost, settings):
+    client = TestClient(selfhost)
+    login(client)
+    task_id = create_task(client, fix_form("", scope_value="my-repo"))
+    pages = {
+        "/tasks": DEMO_ONLY_TASKS,
+        "/tasks/new": DEMO_ONLY_TASK_NEW,
+        "/operator": DEMO_ONLY_OPERATOR,
+        "/sources": DEMO_ONLY_SOURCES,
+        f"/tasks/{task_id}": DEMO_ONLY_DETAIL,
+        f"/tasks/{task_id}/live": DEMO_ONLY_DETAIL,
+    }
+    for path, needles in pages.items():
+        response = client.get(path)
+        assert response.status_code == 200, path
+        for needle in needles:
+            assert needle not in response.text, (path, needle)
+        assert_no_secrets(response.text, settings)
+
+
+def test_demo_mode_keeps_demo_only_elements(web, settings):
+    task_id = create_task(web, diagnose_form())
+    login_operator(web)
+    pages = {
+        "/tasks": DEMO_ONLY_TASKS,
+        "/tasks/new": DEMO_ONLY_TASK_NEW,
+        "/operator": DEMO_ONLY_OPERATOR,
+        "/sources": DEMO_ONLY_SOURCES,
+        f"/tasks/{task_id}": DEMO_ONLY_DETAIL,
+        f"/tasks/{task_id}/live": DEMO_ONLY_DETAIL,
+    }
+    for path, needles in pages.items():
+        text = web.get(path).text
+        for needle in needles:
+            assert needle in text, (path, needle)
+    assert 'action="/logout"' not in web.get("/tasks").text
