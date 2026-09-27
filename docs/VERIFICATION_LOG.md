@@ -347,3 +347,45 @@ Claude 의 summary(원문은 `evidence/C_결과_봉투.json`): 진단 원문이 
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 수정 없음. 추가 파일: `tests/e2e/test_github_app.py`. 문서: [SELFHOST](SELFHOST.md) GitHub 절(버튼 흐름·토큰은 고급), [GitHub 런북](github/README.md) 0절·10절, [CURRENT_HANDOFF](CURRENT_HANDOFF.md).
+
+## 2026-09-28 — 실제 저장소 순환 대역 e2e (phase 12 step 10)
+
+목적: [ADR-0018](adr/0018-real-repo-cycle.md)의 [러너 붙이기] 한 명령 → 기본 브랜치 최신 기준 커밋 → worktree 링크·환경변수 → 결과 브랜치 push → 초안 PR → 병합 추적 → 알림이 프로세스 경계를 넘어 한 줄기로 이어지는지 확인한다. **실제 외부 호출은 없다** — 이 절은 대역 검증 기록이며 실연동이 아니다(github.com·api.github.com·Discord 호출 없음, 네트워크는 127.0.0.1 과 로컬 파일 경로 git 뿐).
+
+| 항목 | 값 |
+|---|---|
+| 명령·결과 | `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_real_repo.py -q` — **7 passed** 약 7초. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **67 passed·1 skipped** 약 164초(`test_real_repo.py` 7 + 기존 60, skip 은 `WORKFLOW_DOCKER` 게이트). `python3 -m pytest -q` 2918 passed·68 skipped, `python3 -m ruff check .` 통과 |
+| 실제 제품 코드 | 중앙 API(`create_app`, selfhost 모드, 이 테스트 프로세스 안 uvicorn 스레드 — `app.state.github_transport` 만 가짜 GitHub 로), 테스트 프로세스 안 `Worker`(`SourceClients` 설치 토큰·`SecretStore` 알림 URL·`NotifySender` — `worker.main` 과 같은 연결), 하위 프로세스 `workflow.connector setup`·`run --adapter codex`, 실제 `git fetch`·`git push`, 검증 프로필의 실제 `pytest` |
+| 대역 | GitHub = `test_github_app` 의 가짜 App + PR 경로(`GET /repos/{r}` 의 `default_branch`, `GET·POST /repos/{r}/pulls`, `GET /repos/{r}/pulls/{n}` — head 브랜치가 bare 에 없으면 422). origin = 임시 bare 저장소: 원본 폴더의 `remote.origin.url` 은 `git@github.com:acme/billing.git`(러너가 owner/name 을 읽음), 저장소 로컬 설정 `url.<bare>.insteadOf` 가 fetch·push 를 bare 로 보낸다. 알림 = 127.0.0.1 수신 서버(경로에 비밀 조각). 도구 = PATH 가짜 `codex`. 러너는 `BASE_FETCH_INTERVAL_SECONDS` 만 0.5초로 줄인 런처(`python -c`)로 띄웠다(제품 기본 60초). 병합은 테스트가 가짜 GitHub 객체에서 했다(사람 몫) |
+| 확인한 것 | 1) `/login` → [GitHub 연결] callback·setup → 소스 1개, manifest 권한 `pull_requests: write`. 알림 URL 저장 → 화면 `설정됨`, URL 경로 없음. 첫 수집 이슈 2건 지시 전. 2) 카드 [러너 붙이기] → 응답 화면의 명령 `install-runner.sh --server <중앙> --code <코드> --repo <…>` 에서 서버·코드를 읽어 `connector setup --repo 원본 --tool codex --verify check=… --link deps --env CHECK_DB=…` → 요약 줄 `GitHub acme/billing · 링크 1개 · 환경변수 CHECK_DB`(값 없음), Agent 이름 `billing` 자동 생성, 러너 run 뒤 카드에 저장소·Agent·`check` 가 `(자동)`. 3) 다른 클론에서 bare `main` 에 새 커밋 push → 러너 fetch 보고로 `agents.base_commit` = 새 커밋(원본 폴더 HEAD 는 그대로 뒤처짐). 4) #1 [맡기기] → 수정 요청 `base_commit` = 새 커밋, 검증 `check` exit 0 — 저장소의 `tests/test_prepared.py` 가 링크된 `deps/marker.txt`(원본 폴더에만, git 무시)와 `CHECK_DB`(해시 비교) 를 보고 통과, 수정 전 로그는 재현 테스트만 실패. `executions.branch_pushed = 1`, bare 에 `task/<id>` = 결과 커밋(부모 = 새 커밋), bare·원본의 `main` 불변. 5) 검토 승인 → 초안 PR #101(`draft`, head `task/<id>`, base `main`, 제목 = 이슈 제목, 본문 첫 줄 `Fixes #1`·marker), `task_pull_requests.state = open`, 수정 Task `확인 필요 · … PR 확인 — #101`, 알림 `[Runloom] PR 확인 — …` 1건(`pr_url`·`task_url`), 원본 이슈 댓글이 `task/<id>` 를 가리킴, 업무 상세에 PR 줄. tick 을 더 돌려도 PR·알림 1건. 6) 가짜 GitHub 에서 병합 → 다음 tick 에 수정 Task `완료 · PR 병합`, 원본 이슈 `merged_pr_number = 101`, `/metrics.json` 의 이슈 열림 → 병합 n 합 1. 7) #2 는 가짜 도구가 직접 커밋 → 러너 `commit_mismatch` 실패 → Task `실패`, 알림 `[Runloom] 실패 — …` 1건. 수신한 알림은 `pr_opened`·`task_failed` 두 건뿐, `notifications` 두 행 모두 `sent`. 8) 연결 코드·러너 연결 토큰·`CHECK_DB` 값·알림 URL 경로 조각·설치 토큰·App 개인 키·client secret 이 중앙 DB 덤프(`connect_codes` 행 제외 — 아래)·중앙 산출물·로그 파일(중앙·러너)·화면 7개·PR 본문·알림 본문에 없음 |
+| 확인하지 않은 것 | 실제 github.com 의 초안 PR 생성·초안 미지원 422·권한 올리기 화면·병합 뒤 이슈 자동 닫힘(`Fixes #N`), 실제 Discord 전송·429, launchd 로 띄운 러너의 git 자격(ssh·https), `install-runner.sh` 실제 실행(명령 문자열에서 서버·코드만 읽어 setup 을 직접 돌림), 실제 `claude`·`codex`, 재작업 경로(이 e2e 의 #1 은 첫 검토 승인), 비 Python 저장소(OpenArchive `scripts/check.sh`) |
+
+### 발견한 결함과 고친 파일
+
+- **결과 봉투의 `task_id` 가 `task-***` 로 가려짐 (step 4 회귀)** — 러너가 결과 봉투에 `mask_secrets` 를 적용하는데(step 4), `sk-[A-Za-z0-9_-]{8,}` 패턴이 서버 발급 `task-<12 hex>` 안의 `sk-<hex>` 에 걸려 `task_id` 가 바뀌었다. 판정 `result_ids_match` 가 실패해 **모든 수정 결과가 "결과 판정 실패"** 로 멈췄다(단위 테스트는 짧은 ID 를 써서 못 잡았다). 고침: `src/workflow/connector/masking.py` 의 `sk-` 앞에 낱말 경계(`(?<![A-Za-z0-9_-])`). 재현: `tests/workflow/connector/test_masking.py::test_ids_ending_in_sk_are_not_openai_keys`.
+- **원본 이슈 댓글·`/operator/github` 문구가 push·PR 을 안 한다고 말함** — 결과 브랜치를 올린 실행이면 댓글이 `결과 브랜치 task/<id> 를 원격에 올렸습니다. 검토 승인 뒤 초안 PR 을 엽니다.` 를 적는다(`src/workflow/server/github_delivery.py`, 재현 `tests/workflow/server/test_task_cycle.py::test_comment_says_where_the_pushed_result_branch_is`). 화면 상단 문구는 "초안 PR 을 엽니다. 병합·이슈 종료는 사람"(`templates/operator_github.html`, `test_web_github_connect` 단정 추가).
+- **`test_github_app` e2e 가 실제 github.com 에 fetch·push 를 시도** — 러너 폴더의 `origin` 이 `git@github.com:acme/billing.git` 라서 phase 12 러너가 실제 원격에 닿으려 했고(실패 → `branch_pushed false` → 사람 요청) 단정이 깨졌다. 원격 이름을 `upstream` 으로 바꿔 origin 없는 폴더(phase 11 동작)로 둔다 — push·PR 은 `test_real_repo` 가 본다. manifest 권한 단정도 `pull_requests: write` 로(step 6 변경).
+- 메모(결함 아님): 연결 코드는 `connect_codes` 테이블에 평문으로 남는다(기본 키, 운영자 화면 목록 — phase 0 설계). 1회용·10분이고 교환 뒤 `used_at` 이 채워져 다시 쓸 수 없다. 비밀 검사는 이 행만 빼고 했고, 러너 연결 토큰(sha256 만 저장)은 DB 전체에 없다.
+- 메모(결함 아님): 도구가 exit 1 로 끝나면(마지막 메시지 없음) 실패가 아니라 `needs_information`(사람 차례 알림)이다. 실패 알림은 실행이 `failed`·프로세스 종료 확인일 때만 — e2e 는 도구가 직접 커밋해 `commit_mismatch` 가 되는 경로를 썼다.
+
+## 실연동 기록 틀 — 실제 저장소 순환 (phase 12 뒤, OpenArchive)
+
+phase 뒤 사용자와 함께 채운다. 결과가 좋게 보이도록 편집하지 않는다. 이슈마다 아래 표 하나.
+
+| 항목 | 값 |
+|---|---|
+| 날짜·시각 | (KST, 맡기기 → PR 병합) |
+| 환경 | 셀프호스트 커밋·스키마 버전, 러너 도구·버전(`claude --version`), App 권한(Pull requests 쓰기 승인 시각), 테스트 DB(pgvector 5434), `setup_action` 값·설치 URL `state` 복귀 여부(phase 11 미확인) |
+| 러너 등록 | [러너 붙이기] 명령(코드는 `***`), `--verify`·`--link`·`--env` 이름(값 없이), 카드 자동 매칭 결과 |
+| 이슈 | `#번호` 제목, 지시 방법([맡기기]/`runloom` 라벨), 사용자가 손대지 않았음 확인 |
+| 기준 커밋 | 수정 요청의 `base_commit` = 그 시각 `origin/main` 인지(원본 폴더 HEAD 와 비교) |
+| 검증 결과 | 수정 전 로그(재현 테스트만 실패?), 수정 후·검증 프로필 exit, 링크(`backend/.venv`·`frontend/node_modules`)·`DATABASE_URL` 이 쓰였는지 |
+| 결과 브랜치 | `branch_pushed`, 원격 `task/<id>` 커밋 |
+| 검토 | 결과(`approved`/`changes_requested`/…), 재작업 횟수·새 커밋 |
+| PR | 번호·초안 여부·본문 첫 줄 `Fixes #N`, 열린 시각, 사람 요청(`pr_unavailable`) 여부 |
+| 병합 | 병합한 사람·시각, 업무 `완료` 반영 시각, 이슈 자동 닫힘 |
+| 알림 | 받은 알림(사람 차례·PR 확인·실패)과 시각, Discord 표시 모양 |
+| 실패·재작업 | 실패 코드·사유, 사람 조작(무엇을 왜) |
+| 비용 | CLI 보고 비용(수정·검토) |
+| 비밀값 | 토큰·URL·env 값이 DB·로그·화면·PR·알림에 없는지 확인 방법 |
+| 근거 | 업무·실행 ID, PR URL, 로그 경로 |

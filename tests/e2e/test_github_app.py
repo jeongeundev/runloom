@@ -10,7 +10,7 @@
   워커는 `SourceClients`(설치 토큰)로 수집·반영한다. 환경변수 토큰·`WORKFLOW_GITHUB_REPOS` 는 없다.
 
 흐름: 운영자 로그인 → [GitHub 연결] → callback → setup → 소스 자동 생성(`all_open`) → 수집: 열린 이슈 전부 "지시 전" 대기 →
-러너 register(origin 이 github.com/acme/billing) → 자동 매칭 → #1 [에이전트에게 맡기기] → 수정 → 검토 승인 → 운영자 승인(완료)
+러너 register(원격 `upstream` 이 github.com/acme/billing) → 자동 매칭 → #1 [에이전트에게 맡기기] → 수정 → 검토 승인 → 운영자 승인(완료)
 → #2 에 `runloom` 라벨 → 자동 착수·검토 승인. 비밀 파일 권한 0600/0700, DB·로그·화면·도구 환경에 비밀 없음.
 
 `WORKFLOW_E2E=1` 일 때만 돈다. 실제 GitHub·모델 호출 없음 — 네트워크는 127.0.0.1 뿐이다.
@@ -163,7 +163,9 @@ def world(tmp_path_factory):
     (workdir / "logs").mkdir()
     billing = workdir / "repos" / "billing"
     base = {"billing": make_repo(billing, BILLING_FILES)}
-    _git(billing, "remote", "add", "origin", "git@github.com:acme/billing.git")  # 러너가 보고할 owner/name
+    # 러너가 보고할 owner/name. `origin` 이 아니라서 러너가 fetch·결과 브랜치 push 를 하지 않는다 — 실제 github.com 에
+    # 닿지 않고, origin 없는 폴더의 phase 11 동작(branch_pushed 보고 없음 → PR 없음)을 본다. push·PR 은 test_real_repo
+    _git(billing, "remote", "add", "upstream", "git@github.com:acme/billing.git")
 
     fake = FakeGitHubApp()
     fake.add(REPO, gh_issue(REPO, 1, "청구서 번호 자릿수", labels=(), updated_at="2026-09-10T01:00:00Z",
@@ -290,7 +292,7 @@ def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     assert manifest["redirect_url"] == f"{world.central_url}/operator/github/app/callback"
     assert manifest["setup_url"] == f"{world.central_url}/operator/github/app/setup"
     assert "hook_attributes" not in manifest and manifest["public"] is False
-    assert manifest["default_permissions"] == {"issues": "write", "pull_requests": "read", "metadata": "read"}
+    assert manifest["default_permissions"] == {"issues": "write", "pull_requests": "write", "metadata": "read"}  # ADR-0018 초안 PR
 
     # (GitHub 에서 사용자가 [Create]) → callback — code 교환·비밀 저장 → 설치 화면으로
     callback = http.get("/operator/github/app/callback", params={"code": MANIFEST_CODE, "state": state1})

@@ -642,7 +642,7 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 
 ## 실제 저장소 순환 — phase 12
 
-상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0018](adr/0018-real-repo-cycle.md)을 따른다. 기본값·step 목록은 [phase 12 README](../phases/12-real-repo/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0018·이 절·[CONTRACT](CONTRACT.md) 14절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8·11 계약은 구버전 러너(새 선택 칸을 보내지 않음)에 그대로다.
+상태(2026-09-28 step 10): step 0 설계, step 1~9 구현(아래 각 절의 구현 메모), step 10 대역 e2e `tests/e2e/test_real_repo.py`([VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-28 절). [ADR-0018](adr/0018-real-repo-cycle.md)을 따른다. 기본값·step 목록은 [phase 12 README](../phases/12-real-repo/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0018·이 절·[CONTRACT](CONTRACT.md) 14절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. phase 8·11 계약은 구버전 러너(새 선택 칸을 보내지 않음)에 그대로다.
 
 ### 흐름
 
@@ -722,7 +722,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
   - `last_error` 는 오류 `str()`(`메서드 경로: HTTP 상태`) — 본문·토큰 없음. 조회용 `repo.get_pull_request_row(conn, task_id)`.
   - 병합을 보면 원본 이슈의 `merged_pr_number`·`pr_merged_at` 이 비어 있을 때 `record_issue_merge` 로 채운다(그 PR 번호·병합 시각 — 지표 "이슈 열림 → 병합"). 이미 마감된 수정 Task(운영자 종료 등)는 PR 행만 `merged`·`closed` 로 바꾸고 Task 는 그대로 둔다. `_sync_pull_requests` 는 소스 수집이 성공한 주기에만 같은 클라이언트로 부르고(rate limit·연결 오류면 그 소스의 나머지 PR 조회를 멈춘다), 같은 head 의 PR 을 찾았는데 이미 끝났으면 연 직후 같은 규칙으로 반영한다. tick 순서는 `_deliver_callbacks` → `_deliver_pull_requests` → `_deliver_github`.
   - 화면: 업무 상세 업무 순환 영역에 PR 줄(`data-pull-request` = 대기열 상태, 문구 `views.PULL_REQUEST_LABELS`, 링크는 저장소 이름·번호로 만든 `https://github.com/<o>/<r>/pull/<n>`).
-  - 스키마 7 → 8 은 `executions.branch_pushed` 를 이미 받은 `result_ready` 이벤트의 `data_json.branch_pushed`(true/false 일 때만)로 채운다. 원본 이슈 댓글(`github_delivery`)의 "자동으로 푸시하지 않습니다" 문구는 이 step 에서 바꾸지 않았다.
+  - 스키마 7 → 8 은 `executions.branch_pushed` 를 이미 받은 `result_ready` 이벤트의 `data_json.branch_pushed`(true/false 일 때만)로 채운다. 원본 이슈 댓글(`github_delivery`)의 "자동으로 푸시하지 않습니다" 문구는 step 10 에서 고쳤다 — 판정 통과 수정 실행의 `branch_pushed = 1` 이면 "결과 브랜치 `task/<id>` 를 원격에 올렸습니다. 검토 승인 뒤 초안 PR 을 엽니다.", 아니면 예전 문구.
 
 ### 스키마 v8 (step 6·7)
 
@@ -950,7 +950,7 @@ Agent는 `capabilities` 배열, Task는 `required_capability` 객체 하나를 �
 
 API 에이전트의 자료 범위: 등록된 `capabilities[].scope.workflow_id`가 진단 서비스가 조회할 수 있는 자동화의 전부다. 데모는 `daily-report` 하나다. 조회 도구는 요청의 `run_id`·`workflow_id`가 범위 밖이면 `access_denied`를 반환하고 빈 본문으로 바꾸지 않는다.
 
-로그·산출물의 비밀정보: 모든 구성 요소는 `Authorization` 헤더를 로그에서 마스킹하고 예외 메시지에 요청 헤더를 넣지 않는다. Codex 프로세스에는 환경변수 허용 목록(`HOME`, `PATH`, `LANG`, `TERM`, Codex가 요구하는 변수)만 전달하고 연결 토큰·API 키를 상속하지 않는다. 연결 프로그램은 JSONL·stderr 산출물을 업로드하기 전에 `wfc_`·`sk-` 접두사를 검사해 발견하면 마스킹하고 `progress` 이벤트로 경고를 남긴다.
+로그·산출물의 비밀정보: 모든 구성 요소는 `Authorization` 헤더를 로그에서 마스킹하고 예외 메시지에 요청 헤더를 넣지 않는다. Codex 프로세스에는 환경변수 허용 목록(`HOME`, `PATH`, `LANG`, `TERM`, Codex가 요구하는 변수)만 전달하고 연결 토큰·API 키를 상속하지 않는다. 연결 프로그램은 JSONL·stderr 산출물을 업로드하기 전에 `wfc_`·`sk-` 접두사(`sk-` 는 낱말 첫머리일 때만 — `task-<hex>` 안의 `sk-` 는 아니다, phase 12 step 10)를 검사해 발견하면 마스킹하고 `progress` 이벤트로 경고를 남긴다.
 
 B에 전달하는 근거: `attachments`에는 진단 서비스의 조회 이력에 실제로 있는 evidence만 넣는다. 데모 fixture는 모두 가상 자료이므로 전부 전달 가능하며, 전달 불가 자료 유형은 첫 구현에 없다. 첨부 총 크기 상한은 1MB이고 초과하면 확인 필요로 둔다. B는 사내 조회 권한이 없으며 첨부만으로 재현한다.
 

@@ -554,6 +554,8 @@ def test_page_after_app_setup_shows_a_card_per_repository(op, conn, secrets, pem
         assert f'name="{name}"' not in shown, name
     assert f'href="https://github.com/apps/{SLUG}/installations/new"' in shown and "저장소 추가/변경" in shown
     assert f"GitHub App <span class=\"mono\">{SLUG}</span>" in shown and "kim-dev" in shown
+    # ADR-0018: 결과 브랜치 push·초안 PR 은 하고, 병합·이슈 종료는 사람
+    assert "PR·푸시" not in shown and "초안 PR" in shown and "병합·이슈 종료" in shown
     sources = names(conn, op_session(op))
     assert sorted(sources) == ["acme/billing", "acme/shop"]
     for full_name, source in sources.items():

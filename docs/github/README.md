@@ -1,6 +1,6 @@
 # GitHub 업무 순환 — 셀프호스트 운영자 런북
 
-작성일: 2026-09-23 (phase 8 step 15). 갱신: 2026-09-27 (phase 11 step 9 — 0절 GitHub App 연결). 계약은 [ADR-0014](../adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](../ARCHITECTURE.md#github-업무-순환--phase-8-계약), 예시 payload 는 [CONTRACT](../CONTRACT.md) 13절, 용어는 [GLOSSARY](../GLOSSARY.md).
+작성일: 2026-09-23 (phase 8 step 15). 갱신: 2026-09-27 (phase 11 step 9 — 0절 GitHub App 연결), 2026-09-28 (phase 12 step 10 — 12절 초안 PR·병합 추적). 계약은 [ADR-0014](../adr/0014-github-task-cycle.md), 이름·표는 [ARCHITECTURE](../ARCHITECTURE.md#github-업무-순환--phase-8-계약), 예시 payload 는 [CONTRACT](../CONTRACT.md) 13절, 용어는 [GLOSSARY](../GLOSSARY.md).
 
 상태: `service` 에 병합되어 있다(미배포). 대역(MockTransport·127.0.0.1 가짜 GitHub·가짜 codex·임시 Git 저장소) 검증에 이어 **2026-09-23 실제 GitHub·실제 Claude 로 1회 통과했다**(step 16, `claude` 2.1.280, 비공개 테스트 저장소의 버그 이슈 2건 → 수정 → 검토 승인 → 원본 댓글, 사람 조작 0회) — [VERIFICATION_LOG 실연동 절](../VERIFICATION_LOG.md). **다만 `changes_requested` 재작업 경로는 실연동에서 관찰되지 않았다**(두 검토가 모두 승인). 다른 저장소로 시작할 때는 아래 [실연동 체크리스트](#실연동-체크리스트--step-16)의 값을 운영자가 먼저 정한다. 공개 데모(`main`·VM)는 이 기능을 쓰지 않는다 — 두 환경변수를 비워 둔다.
 
@@ -10,11 +10,12 @@
 |---|---|
 | 허용한 저장소의 open Issue 를 REST 폴링으로 가져와 `bug_fix` Task 로 만든다 — App·붙여 넣은 토큰 연결은 열린 이슈 전부(실행은 지시한 것만), 환경변수 토큰의 라벨 범위 소스는 지정한 범위만 | webhook·OAuth 로그인·여러 워크스페이스 공유 |
 | 담당자(GitHub 사용자 숫자 ID)에 연결된 로컬 Agent 가 같은 기기의 저장소에서 수정·검증한다 | 담당자를 자동 추정하거나 웹 사용자와 같은 사람으로 보기 |
-| 판정 통과한 결과 커밋을 같은 로컬 저장소의 검토 Agent 가 읽기 전용으로 검토한다(`code_review`) | 커밋을 다른 기기로 옮기기, push·PR·merge·이슈 종료 |
-| `changes_requested` 면 같은 수정 Task 를 `max_rework_rounds` 번까지 재작업하고, 넘으면 사람에게 묻는다 | 검토 승인만으로 업무를 끝내기 — 수정 Task 는 `확인 필요 · 검토 승인 — 병합·이슈 종료는 사람` 으로 남는다 |
+| 판정 통과한 결과 커밋을 같은 로컬 저장소의 검토 Agent 가 읽기 전용으로 검토한다(`code_review`) | 기본 브랜치에 push·force push, merge, 이슈 종료 |
+| 러너가 결과 브랜치 `task/<task_id>` 를 `origin` 에 push 하고(사용자 git 자격, force 없음), 검토 승인 뒤 중앙이 초안 PR(`Fixes #N`)을 연다 — 12절 | 러너가 원격에 올리지 못한 결과로 PR 열기(사람 요청으로 넘긴다) |
+| `changes_requested` 면 같은 수정 Task 를 `max_rework_rounds` 번까지 재작업하고, 넘으면 사람에게 묻는다 | 검토 승인만으로 업무를 끝내기 — 수정 Task 는 `확인 필요 · PR 확인 — #n`(PR 을 못 열었으면 `검토 승인 — 병합·이슈 종료는 사람`)으로 남고, PR 병합을 본 뒤에 `완료` |
 | Task 마다 원본 이슈에 댓글 하나를 만들고 갱신한다(marker `<!-- runloom:task=<task_id> -->`) | 댓글 내용을 명령·응답·승인으로 읽기, 후속 Task 를 GitHub 이슈로 복제 |
 
-GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수정(`PATCH …/issues/comments/{id}`) 두 가지뿐이다(`adapters/github_client.py` 에 다른 쓰기 메서드가 없다).
+GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수정(`PATCH …/issues/comments/{id}`)과 초안 PR 생성(`POST …/pulls`, phase 12) 세 가지뿐이다(`adapters/github_client.py` 에 다른 쓰기 메서드가 없다). 브랜치 push 는 GitHub API 가 아니라 러너의 `git push` 다.
 
 ## 0. GitHub App 연결 — 기본 (phase 11)
 
@@ -101,7 +102,7 @@ GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수�
 워커(`python3 -m workflow.server.worker`)가 tick 마다: 켜진 소스를 60초 간격으로 수집 → 준비 판정 → 착수 → 결과 판정 → 후속(검토 연결·생성, 재작업, 사람 요청) → 마지막에 댓글 반영. 대기 사유(`Blocker.code` 15종, [표](../ARCHITECTURE.md#준비-판정--대기-코드-blockercode))와 사람 요청은 업무 상세와 `/operator/github` 에 보인다.
 
 - 사람 요청 응답은 운영자 웹에서만(CONTRACT 13.11). 응답은 실행을 바로 만들지 않고 다음 tick 의 준비 판정이 새 revision 으로 다시 본다. 응답은 권한을 넓히지 않는다 — 위임 밖(`delegation_denied`)은 Agent 능력·소스 설정을 운영자가 따로 고쳐야 풀린다.
-- 검토 승인 뒤: 결과 커밋은 로컬 `task/<id>` 브랜치에만 있다. 병합·push·이슈 종료는 사람이 직접 한다.
+- 검토 승인 뒤: 러너가 결과 브랜치를 올렸으면 초안 PR 을 열고 병합을 기다린다(12절). 올리지 못했으면(원격 없음·구버전 러너) 결과 커밋은 로컬 `task/<id>` 브랜치에만 있고 병합·push·이슈 종료는 사람이 직접 한다.
 - 실행 중 이슈를 고치면 진행 중 실행 입력은 그대로이고 새 스냅샷이 다음 revision 이 된다. 이슈를 닫으면 새 착수·후속만 멈추고(`source_closed`), 다시 열면 재평가한다.
 
 ## 6. 데이터 보존 업그레이드 (v4 → v5)
@@ -179,6 +180,8 @@ phase 8 은 `SCHEMA_VERSION` 을 4 → 5 로 올리며 **처음으로 데이터 
 
 2026-09-27 phase 11(GitHub App 연결) — **대역만**: `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_github_app.py` 6개. 가짜 GitHub 가 manifest 교환·App JWT(공개 키로 서명 검증)·설치 토큰·설치 저장소를 흉내 내고, [GitHub 연결] → callback → setup → 소스 자동 생성 → 열린 이슈 3건 `지시 전` → 러너 register(`origin` = `git@github.com:acme/billing.git`) → 자동 매칭 → [맡기기] 한 건 수정·검토 승인·운영자 승인 → 라벨 붙인 다른 이슈 자동 착수·검토 승인까지 돌렸다. 비밀 파일 0700/0600, 비밀값이 DB·산출물·로그·화면·댓글·도구 환경에 없음. 실제 github.com 의 App 만들기·설치 화면은 밟지 않았다([VERIFICATION_LOG](../VERIFICATION_LOG.md) 2026-09-27 phase 11 절).
 
+2026-09-28 phase 12(실제 저장소 순환) — **대역만**: `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_real_repo.py` 7개. selfhost 모드 중앙 + 가짜 GitHub App(PR 경로 포함) + origin 이 임시 bare 저장소인 원본 폴더 + 로컬 알림 수신 서버로 [러너 붙이기] → `connector setup` → 자동 매칭 → 다른 곳에서 push 한 새 커밋이 기준 → 링크·env 를 쓰는 검증 → `task/<id>` push → 초안 PR → 알림 → 병합 → 완료·지표 → 실패 알림까지 돌렸다([VERIFICATION_LOG](../VERIFICATION_LOG.md) 2026-09-28 phase 12 절). 실제 github.com 의 PR 생성(초안 미지원 422 문구 포함)·권한 올리기 화면·실제 Discord 는 미확인.
+
 ## 11. 계획과 구현의 차이
 
 phase 8 README·ADR-0014 의 계획과 구현이 다른 곳. 코드 이름은 구현 기준이다.
@@ -196,6 +199,22 @@ phase 8 README·ADR-0014 의 계획과 구현이 다른 곳. 코드 이름은 �
 | 소스 설정 변경(라벨·시작 시각) | 커서를 초기화하지 않음 — 이미 지난 구간의 이슈는 다시 보지 않는다 | 필요하면 `selected_issue_numbers` 로 고른다(step 7) |
 | README "GitHub 담당자 인증 매핑" | 없음 — 운영자가 숫자 ID → Agent 를 직접 연결, 응답도 운영자만 | ADR-0014 5·7 그대로 |
 | `scripts/local_stack.py` | GitHub 순환을 띄우지 않음. e2e 는 자체 가짜 GitHub 를 쓴다 | 제품에 GitHub 주소 설정을 추가하지 않음(step 14) |
+
+## 12. 초안 PR·병합 추적 (phase 12)
+
+[ADR-0018](../adr/0018-real-repo-cycle.md) 결정 4, 이름·표는 [ARCHITECTURE "실제 저장소 순환 — phase 12"](../ARCHITECTURE.md#실제-저장소-순환--phase-12). ADR-0014 의 "자동 push·PR 안 함"을 대체한다. 병합·이슈 종료는 여전히 사람만 한다.
+
+| 단계 | 누가 | 무엇 |
+|---|---|---|
+| 기준 커밋 | 러너 | 60초마다 등록 폴더에서 `git fetch origin` → `origin/HEAD` 커밋을 claim 때 보고 → `agents.base_commit`. 새 수정은 그 커밋에서, 재작업은 검토한 결과 커밋에서 |
+| 결과 브랜치 | 러너 | `ready_for_review` 결과 커밋을 `git push origin task/<task_id>:task/<task_id>`(force 없음, 사용자 git 자격). 결과는 `result_ready.branch_pushed` true/false → `executions.branch_pushed`. 실패해도 검토는 진행한다 |
+| PR 대기열 | 워커 | 검토 `approved` + 원본 이슈 있음 + 검토한 수정 실행 `branch_pushed = 1` → `task_pull_requests`(pending), 수정 Task `검토 승인 — PR 여는 중`. `branch_pushed = 0` 이면 바로 사람 요청(`pr_unavailable`, 직접 push·PR 안내), 보고 없음(NULL)이면 phase 8 그대로 |
+| PR 열기 | 워커(App 설치 토큰) | 같은 head 의 PR 이 있으면 그것, 없으면 `default_branch` 로 초안 PR. 제목 = 이슈 제목, 본문 첫 줄 `Fixes #N` + 검토 요약 + 업무 링크 + marker `<!-- runloom:task=<id> -->`. 열리면 `확인 필요 · PR 확인 — #n` + 알림 `pr_opened`. 403·허용 밖·자격 없음은 바로, 그 밖의 오류는 30초부터 두 배씩 5번 뒤 사람 요청 |
+| 병합 추적 | 워커 | 수집이 성공한 주기마다 열린 PR 을 조회 — 병합이면 수정 Task `완료`(사유 `PR 병합`)·원본 이슈의 병합 PR 번호·시각(지표 "이슈 열림 → 병합"), 병합 없이 닫힘이면 `실패`(사유 `PR 이 병합 없이 닫힘`). 이미 마감된 Task 는 PR 행만 갱신 |
+
+- 원본 이슈 댓글은 결과 브랜치를 올렸으면 `결과 브랜치 task/<id> 를 원격에 올렸습니다` 를, 아니면 예전처럼 "로컬에만" 을 적는다.
+- 운영자 조치: PR 을 못 연 업무(`pr_unavailable` 요청)는 안내대로 직접 PR 을 열고 병합한 뒤 업무 상세에서 검토 승인으로 마감한다 — 이 요청에 `resume` 으로 답해도 수정을 다시 돌리지 않는다. App 권한 부족이면 [SELFHOST "App 권한 올리기"](../SELFHOST.md#app-권한-올리기--phase-12-전에-만든-app).
+- 알림(사람 차례·PR 확인·실패)은 [SELFHOST "알림"](../SELFHOST.md#알림).
 
 ## 실연동 체크리스트 — step 16
 

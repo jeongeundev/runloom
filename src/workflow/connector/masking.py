@@ -12,7 +12,7 @@ from collections.abc import Mapping
 
 SECRET_PATTERNS = (
     re.compile(r"wfc_[A-Za-z0-9_\-]{8,}"),
-    re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{8,}"),  # 낱말 안의 `sk-`(`task-…` 의 끝)는 키가 아니다
 )
 _REPLACEMENTS = ("wfc_***", "sk-***")
 ENV_MASK_MIN_LENGTH = 8  # 이보다 짧은 값(`1`·`dev`)은 흔한 낱말이라 가리면 로그 전체가 망가진다

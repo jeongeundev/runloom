@@ -102,16 +102,21 @@ def _result_lines(conn: Connection, store: ArtifactStore, task: Row) -> list[str
     found = _verified_result(conn, store, task["task_id"])
     if found is None:
         return []
-    _, content = found
+    execution, content = found
     try:
         if verifier == "code_change":
             fix = CodeChangeResult.model_validate_json(content)
             if fix.result_commit is None:
                 return [f"- 수정: 정보 필요 — {_one_line(fix.summary)}"]
+            where = (  # 러너가 결과 브랜치를 origin 에 올렸는가 (ADR-0018 결정 4)
+                f"  - 결과 브랜치 `task/{task['task_id']}` 를 원격에 올렸습니다. 검토 승인 뒤 초안 PR 을 엽니다."
+                if execution["branch_pushed"] == 1
+                else "  - 결과 커밋은 담당자의 로컬 저장소에만 있습니다. 자동으로 푸시하지 않습니다."
+            )
             return [
                 f"- 수정 결과(검증 통과): {_one_line(fix.summary)}",
                 f"  - 기준 커밋 `{fix.base_commit}` → 결과 커밋 `{fix.result_commit}`",
-                "  - 결과 커밋은 담당자의 로컬 저장소에만 있습니다. 자동으로 푸시하지 않습니다.",
+                where,
             ]
         if verifier == "commit_review":
             review = CodeReviewResult.model_validate_json(content)

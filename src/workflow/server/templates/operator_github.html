@@ -64,7 +64,7 @@
 <div class="card">
   {% if sources %}
   <p>{% if github_app %}GitHub App <span class="mono">{{ github_app.slug }}</span>{% if github_app.owner_login %} ({{ github_app.owner_login }}){% endif %} 연결됨{% else %}GitHub App 없음 — 토큰으로 연결됨{% endif %} · 저장소 {{ sources|length }}개</p>
-  <p class="small">열린 이슈는 전부 업무 목록에 들어오고, 실행은 [에이전트에게 맡기기] 또는 트리거 라벨을 붙인 것만 합니다. 자동으로 하지 않는 일: PR·푸시·병합·이슈 종료. GitHub 에는 업무마다 댓글 하나를 만들고 고쳐 씁니다.</p>
+  <p class="small">열린 이슈는 전부 업무 목록에 들어오고, 실행은 [에이전트에게 맡기기] 또는 트리거 라벨을 붙인 것만 합니다. GitHub 에는 업무마다 댓글 하나를 만들고 고쳐 씁니다. 러너가 결과 브랜치를 올리면 검토 승인 뒤 초안 PR 을 엽니다. 병합·이슈 종료는 사람이 합니다.</p>
   <div class="actions">
     {% if github_app %}<a class="btn btn-secondary" href="{{ github_app.install_url }}" rel="noopener noreferrer" target="_blank">저장소 추가/변경</a>
     {% else %}<a class="btn btn-secondary" href="/operator/github/app/new">GitHub 연결</a>{% endif %}

@@ -572,10 +572,11 @@ def test_selfhost_md_covers_every_section():
     text = _selfhost_md()
     for heading in (
         "## 요구 사항", "## 설치", "## 로그인", "## 러너 연결", "## GitHub 연결", "## 백업·복원",
-        "## 업그레이드", "## 제거", "## 문제 해결", "## 알려진 한계",
+        "## 업그레이드", "## 제거", "## 문제 해결", "## 알려진 한계", "## 알림", "### App 권한 올리기",
     ):
         assert heading in text, heading
-    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "12-real-repo"):
+    for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "초안 PR",
+                   "Accept new permissions", "/operator/notifications"):
         assert needle in text, needle
 
 

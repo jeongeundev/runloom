@@ -28,6 +28,14 @@ def test_short_prefixes_are_not_secrets():
     assert (text, count) == ("wfc_ab sk-12 task-sk-x", 0)
 
 
+def test_ids_ending_in_sk_are_not_openai_keys():
+    """서버가 발급하는 `task-` + 12 hex 안의 `sk-…` 는 키가 아니다 — 결과 봉투의 task_id 가 깨지면 판정이 실패한다."""
+    text = '{"task_id": "task-ca9f04487870", "path": "desk-abcdefgh12"}'
+
+    assert mask_secrets(text) == (text, 0)
+    assert mask_secrets(f"task-ca9f04487870 {SK}") == ("task-ca9f04487870 sk-***", 1)
+
+
 def test_clean_text_is_unchanged():
     assert mask_secrets("정상 로그 줄") == ("정상 로그 줄", 0)
 

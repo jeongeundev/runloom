@@ -1141,6 +1141,17 @@ def test_source_issue_gets_one_comment_that_follows_fix_and_review(cycle, conn, 
     assert status(conn, fix_task) == ("확인 필요", "검토 승인 — 병합·이슈 종료는 사람")
 
 
+def test_comment_says_where_the_pushed_result_branch_is(cycle, conn, store, github_worker, github):
+    """러너가 결과 브랜치를 origin 에 올렸으면(ADR-0018) 댓글이 "로컬에만·자동 푸시 안 함" 이라고 하지 않는다."""
+    fix_task = import_issue(conn, 1)
+    github_worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], branch_pushed=True)
+    github_worker.tick()
+    (after_fix,) = github.bodies(1)
+    assert C1 in after_fix
+    assert f"`task/{fix_task}`" in after_fix and "푸시하지 않" not in after_fix
+
+
 def test_human_request_is_shown_with_where_to_answer(cycle, conn, store, github_worker, github):
     fix_task = import_issue(conn, 1)
     github_worker.tick()
