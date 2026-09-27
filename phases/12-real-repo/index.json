@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "worktree-env",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T23:53:39+0900",
+      "summary": "worktree 준비물: git_ops.link_prepared_paths(repo, checkout, links)(원본 폴더로 향하는 심볼릭 링크, 원본에 없음·체크아웃에 이미 있음은 건너뛰고 INFO 로그, git rev-parse --git-path info/exclude 에 /<경로> 한 번·glob 문자 \\ 이스케이프)를 fix 경로의 ensure_worktree 뒤(이어 쓰기도 — 빠진 링크만 채움)와 검증용 깨끗한 체크아웃(test_before·verification)에 호출, 커밋 검토 체크아웃은 제외; masking.registered_env(허용 목록·XDG_·RESERVED_ENV_NAMES·WORKFLOW_·형식 위반 제거)·mask_secrets(text, extra)(8자 이상 값→<env:이름>, 긴 값 먼저), RESERVED_ENV_NAMES·ENV_NAME 을 cli.py→masking.py 로 옮김(cli 가 import); LocalToolAdapter.child_env = codex_env + 등록 env(run 마다 요청 등록으로 설정, 수정·검토·사용자 정의 모두); Runner._registered_env 로 산출물 업로드·진행·실패 문구·결과 봉투 가림(어댑터 로컬 원시 산출물은 원문); ARCHITECTURE step 4 구현 메모. pytest 2769 passed/61 skipped, ruff 통과. 다음 step 주의: step 5 push 는 링크가 info/exclude 로 빠져 커밋에 없음을 전제로 해도 됨, 링크 대상은 원본과 공유(에이전트가 .venv 를 바꾸면 원본도 바뀜), 커밋 검토 체크아웃에는 링크·검증 없음"
     },
     {
       "step": 5,

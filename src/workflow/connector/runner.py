@@ -6,7 +6,8 @@
 - 재시작 후 `launching`/`running` 인 실행은 프로세스 동일성을 확인할 수 없으므로 아무 이벤트도 보내지 않고
   `unknown_local_at` 만 적어 사람 확인을 기다린다 (중앙은 2분 규칙으로 `unknown`). 재실행하지 않는다.
 - 어댑터가 돌려준 산출물은 로컬 DB 에 보존한 뒤 업로드한다. 업로드 중 끊겨도 어댑터를 다시 돌리지 않는다.
-- 산출물·진행 메시지·오류 메시지는 `mask_secrets` 를 거친다. 연결 토큰은 이 모듈이 알지 못한다 (client 안).
+- 산출물·진행 메시지·오류 메시지·결과 봉투는 `mask_secrets` 를 거친다. 연결 토큰은 이 모듈이 알지 못한다 (client 안).
+  실행의 로컬 등록 `env` 값(8자 이상)도 `<env:이름>` 으로 가린다 (ADR-0018 결정 3).
 - 어댑터는 도구 이름 → 어댑터 매핑이며, 실행마다 `target.local_registration_id` 로 찾은 로컬 등록의 `tool` 로
   하나를 고른다 (`select_adapter`). 요청 본문의 값으로 실행 대상을 고르지 않는다.
 - 종료 이벤트(result_ready·failed)를 중앙이 받은 뒤 worktree·인계 디렉터리를 지운다 (`_cleanup_workdirs`). 결과는
@@ -89,8 +90,8 @@ def _safe(name: str) -> str:
     return _SAFE_NAME.sub("_", name) or "_"
 
 
-def _masked_text(text: str) -> str:
-    return mask_secrets(text)[0][:MESSAGE_MAX]
+def _masked_text(text: str, env: Mapping[str, str] | None = None) -> str:
+    return mask_secrets(text, env)[0][:MESSAGE_MAX]
 
 
 def _process_stopped(row: dict) -> bool:
@@ -343,6 +344,7 @@ class Runner:
             self._finish_failed(execution_id, (exc.code, exc.message, True))
             return
 
+        env = self._registered_env(request)
         handoff_dir = self._handoff_dir(request)
         try:
             self._download_handoff(request, handoff_dir)
@@ -360,13 +362,13 @@ class Runner:
                 self._emit(execution_id, "started", {"runtime_ref": runtime_ref, **self._folder_state(request)},
                            runtime_ref=runtime_ref)
                 state.set_phase(self._conn, execution_id, "running")
-                log.info("%s 시작 확인 %s: %s", execution_id, runtime_ref, _masked_text(message))
+                log.info("%s 시작 확인 %s: %s", execution_id, runtime_ref, _masked_text(message, env))
                 return  # 시작 알림은 started 이벤트가 그 기록이다
             if not started:
-                log.info("%s (시작 전 메시지, 중앙에 보내지 않음): %s", execution_id, _masked_text(message))
+                log.info("%s (시작 전 메시지, 중앙에 보내지 않음): %s", execution_id, _masked_text(message, env))
                 return
             if message:
-                self._emit(execution_id, "progress", {"message": _masked_text(message)})
+                self._emit(execution_id, "progress", {"message": _masked_text(message, env)})
 
         stop_heartbeat = threading.Event()
         heartbeat = threading.Thread(
@@ -379,7 +381,7 @@ class Runner:
         except Exception as exc:  # 어댑터 예외 — 프로세스 종료를 확인하지 못했으므로 process_stopped=False
             log.exception("%s: 어댑터 예외", execution_id)
             output = AdapterOutput(
-                result=None, failed=("adapter_error", _masked_text(f"{type(exc).__name__}: {exc}"), False),
+                result=None, failed=("adapter_error", _masked_text(f"{type(exc).__name__}: {exc}", env), False),
             )
         finally:
             stop_heartbeat.set()
@@ -411,9 +413,11 @@ class Runner:
 
         uploaded = self._upload_outputs(row)
         artifact_ids = [o["artifact_id"] for o in uploaded]
-        target = ExecutionRequest.model_validate_json(row["request_json"]).target
+        request = ExecutionRequest.model_validate_json(row["request_json"])
+        target = request.target
+        result_json = mask_secrets(row["result_json"], self._registered_env(request))[0]
         if isinstance(target, CodeChangeTarget):
-            result = _code_change_result(row["result_json"], uploaded, artifact_ids)
+            result = _code_change_result(result_json, uploaded, artifact_ids)
             kind = "code_change_result"
         else:  # 커밋 검토·사용자 정의 종류 — 봉투는 그대로, 산출물 ID 만 채운다
             model, kind = (
@@ -421,7 +425,7 @@ class Runner:
                 else (GenericResult, "generic_result")
             )
             result = model.model_validate({
-                **model.model_validate_json(row["result_json"]).model_dump(), "artifact_ids": artifact_ids,
+                **model.model_validate_json(result_json).model_dump(), "artifact_ids": artifact_ids,
             })
         data = result.model_dump_json(indent=2).encode()
         meta = ArtifactMeta(
@@ -438,9 +442,11 @@ class Runner:
         self, execution_id: str, failed: tuple[str, str, bool], usage: ExecutionUsage | None = None,
     ) -> None:
         code, message, stopped = failed
+        row = state.get_execution(self._conn, execution_id)
+        env = self._registered_env(ExecutionRequest.model_validate_json(row["request_json"]))
         self._emit(  # 중앙이 받으면 정리 — 단 process_stopped=False 면 `_cleanup_workdirs` 가 건너뛴다
             execution_id, "failed",
-            {"code": code, "message": _masked_text(message), "process_stopped": bool(stopped), **_usage_data(usage)},
+            {"code": code, "message": _masked_text(message, env), "process_stopped": bool(stopped), **_usage_data(usage)},
             finished_at=self._clock(),
         )
         state.set_phase(self._conn, execution_id, "finished")
@@ -448,22 +454,27 @@ class Runner:
     def _upload_outputs(self, row: dict) -> list[dict]:
         """보존된 산출물 중 아직 업로드하지 않은 것을 마스킹해 올린다. 재업로드는 서버가 같은 ID 를 돌려준다."""
         execution_id = row["execution_id"]
+        env = self._registered_env(ExecutionRequest.model_validate_json(row["request_json"]))
         outputs = state.list_outputs(self._conn, execution_id)
         for output in outputs:
             if output["artifact_id"] is not None:
                 continue
-            meta, data = self._masked(execution_id, output["meta"], output["data"], row["runtime_ref"] is not None)
+            meta, data = self._masked(
+                execution_id, output["meta"], output["data"], row["runtime_ref"] is not None, env,
+            )
             created = self._client.upload_artifact(execution_id, meta, data)
             state.set_output_artifact(self._conn, execution_id, output["idx"], created.artifact_id)
             output["artifact_id"] = created.artifact_id
         return outputs
 
-    def _masked(self, execution_id: str, meta: ArtifactMeta, data: bytes, running: bool) -> tuple[ArtifactMeta, bytes]:
+    def _masked(
+        self, execution_id: str, meta: ArtifactMeta, data: bytes, running: bool, env: Mapping[str, str],
+    ) -> tuple[ArtifactMeta, bytes]:
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             return meta, data  # 이진 산출물은 그대로
-        masked, count = mask_secrets(text)
+        masked, count = mask_secrets(text, env)
         if count == 0:
             return meta, data
         data = masked.encode("utf-8")
@@ -536,6 +547,13 @@ class Runner:
         return {"folder_commit": head, "folder_dirty": dirty}
 
     # --- 인계 자료 -----------------------------------------------------------------------------
+
+    def _registered_env(self, request: ExecutionRequest) -> dict[str, str]:
+        """실행의 로컬 등록 `env` — 값 가림에만 쓴다. 등록이 없거나 로컬 등록이 없는 종류(진단)면 빈 값."""
+        if not isinstance(request.target, _LOCAL_TARGETS):
+            return {}
+        registration = state.get_registration(self._conn, request.target.local_registration_id)
+        return {} if registration is None else registration["env"]
 
     def _registered_repo(self, request: ExecutionRequest) -> Path | None:
         """`target.local_registration_id` 의 로컬 등록이 가리키는 저장소 경로. 등록이 없거나 로컬 등록이 없는 종류(진단)면

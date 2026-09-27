@@ -5,8 +5,11 @@
 - 모든 명령은 고정 인자 배열이다. task_id·커밋 ID 는 불투명 문자열이며 경로로 해석하지 않는다.
 - 기준 커밋 추적(ADR-0018 결정 2): `fetch_origin`·`origin_head` 만 네트워크에 닿는다. 원격 이름 `origin`·`refs/remotes/origin/HEAD`
   는 코드 상수이고, 자격 입력 프롬프트 없이(`GIT_TERMINAL_PROMPT=0`) 제한 시간 안에 끝낸다.
+- 작업 복사본 준비물(ADR-0018 결정 3): `link_prepared_paths` 가 등록의 `links` 를 원본 폴더로 향하는 심볼릭 링크로 걸고
+  저장소 공용 `info/exclude` 에 넣는다. 원본 폴더의 파일은 읽기만 한다.
 """
 
+import logging
 import os
 import re
 import subprocess
@@ -17,6 +20,9 @@ GIT_NETWORK_TIMEOUT_SECONDS = 120
 _ORIGIN_HEAD = "refs/remotes/origin/HEAD"
 _TEST_FILE = re.compile(r"(^|/)test_[^/]*\.py$")
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+_GITIGNORE_SPECIAL = re.compile(r"([\\*?\[])")
+
+log = logging.getLogger(__name__)
 
 
 class GitError(Exception):
@@ -105,6 +111,42 @@ def ensure_worktree(repo: Path, task_id: str, base_commit: str) -> Path:
     else:
         _git(["worktree", "add", "-b", branch, str(path), base_commit], repo)
     return path
+
+
+def link_prepared_paths(repo: Path, checkout: Path, links: list[str]) -> list[str]:
+    """`checkout/<p>` → `repo/<p>` 심볼릭 링크를 걸고 건 경로를 돌려준다. 원본에 대상이 없거나 체크아웃에 이미 그 경로가
+    있으면(추적 파일·이전 시도의 링크) 건너뛴다. 경로마다 `info/exclude` 에 `/<p>` 를 한 번 넣는다 — `.gitignore` 의
+    `node_modules/` 처럼 끝이 `/` 인 규칙은 링크(디렉터리가 아님)에 맞지 않아 `commit_all`·`is_dirty` 에 잡히기 때문이다.
+    `links` 는 등록 때(cli) 검사한 상대 경로다."""
+    if not links:
+        return []
+    exclude = repo / _git(["rev-parse", "--git-path", "info/exclude"], repo).strip()
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    text = exclude.read_text() if exclude.is_file() else ""
+    rules = text.splitlines()
+    new_rules = [rule for rule in dict.fromkeys(_exclude_rule(p) for p in links) if rule not in rules]
+    if new_rules:
+        with exclude.open("a") as f:
+            f.write(("\n" if text and not text.endswith("\n") else "") + "".join(f"{r}\n" for r in new_rules))
+    linked = []
+    for rel in links:
+        source, dest = repo / rel, checkout / rel
+        if os.path.lexists(dest):
+            if not (dest.is_symlink() and os.readlink(dest) == str(source)):
+                log.info("링크 %s 건너뜀 — 작업 복사본에 이미 있다 (추적 파일은 덮지 않는다)", rel)
+            continue
+        if not source.exists():
+            log.info("링크 %s 건너뜀 — 원본 폴더에 없다", rel)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(source, dest)
+        linked.append(rel)
+    return linked
+
+
+def _exclude_rule(rel: str) -> str:
+    """저장소 뿌리에 고정한 문자 그대로의 규칙 — glob 특수 문자는 `\\` 로 막는다."""
+    return "/" + _GITIGNORE_SPECIAL.sub(r"\\\1", rel)
 
 
 def is_dirty(worktree: Path) -> bool:

@@ -498,6 +498,51 @@ def test_progress_messages_are_masked(fake, client, state_conn, paths, tmp_path)
     assert any("sk-***" in m for m in messages) and all(secret not in m for m in messages)
 
 
+def _register_env(state_conn, tmp_path, env: dict[str, str]) -> None:
+    registration = state.get_registration(state_conn, "local-demo-report")
+    state.save_registration(state_conn, {**registration, "env": env})
+
+
+DB_URL = "postgresql://agent:pw-local-5434@localhost:5434/openarchive"
+
+
+def test_registered_env_values_are_masked_in_artifacts_progress_and_result(fake, client, state_conn, paths, tmp_path):
+    """러너 로컬 등록의 `--env` 값(8자 이상)은 산출물·진행 메시지·결과 봉투에서 `<env:이름>` 으로 가린다."""
+    request = assign_with_handoff(fake)
+    log = make_meta("verification_log", "verify.txt", f"exit_code=1\nconnect {DB_URL} refused\n".encode(), "text/plain")
+    output = ok_output(request, extra_artifacts=[log])
+    output = AdapterOutput(
+        result=output.result.model_copy(update={"summary": f"DB {DB_URL} 로 테스트"}), artifacts=output.artifacts,
+        failed=None, runtime_ref="stub:x",
+    )
+    runner = make_runner(client, state_conn, paths, StubAdapter(output=output, during=lambda p: p(f"DB {DB_URL}")),
+                         tmp_path)
+    _register_env(state_conn, tmp_path, {"DATABASE_URL": DB_URL, "DEBUG": "1"})
+
+    runner.tick()
+
+    dumped = json.dumps([a["data"].decode("utf-8", "replace") for a in fake.artifacts.values()])
+    assert DB_URL not in dumped and "<env:DATABASE_URL>" in dumped
+    assert "<env:DEBUG>" not in dumped  # 짧은 값은 가리지 않는다
+    events = fake.events_of(request.execution_id)
+    assert DB_URL not in json.dumps(events, ensure_ascii=False)
+    assert any("<env:DATABASE_URL>" in e["data"].get("message", "") for e in events if e["type"] == "progress")
+    assert events[-1]["type"] == "result_ready"
+
+
+def test_registered_env_values_are_masked_in_failed_message(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    output = AdapterOutput(result=None, artifacts=[], failed=("adapter_error", f"연결 실패 {DB_URL}", True),
+                           runtime_ref="stub:x")
+    runner = make_runner(client, state_conn, paths, StubAdapter(output=output), tmp_path)
+    _register_env(state_conn, tmp_path, {"DATABASE_URL": DB_URL})
+
+    runner.tick()
+
+    failed = fake.events_of(request.execution_id)[-1]
+    assert failed["type"] == "failed" and failed["data"]["message"] == "연결 실패 <env:DATABASE_URL>"
+
+
 # --- 작업 디렉터리 정리 — 결과가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지우고 브랜치·커밋은 남긴다 ----------
 
 

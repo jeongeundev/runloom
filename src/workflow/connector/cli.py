@@ -43,6 +43,7 @@ from workflow.connector.codex import CodexAdapter
 from workflow.connector.config import ConnectorPaths, connector_paths, read_token, write_token
 from workflow.connector.discovery import discover
 from workflow.connector.git_ops import GitError
+from workflow.connector.masking import ENV_NAME, RESERVED_ENV_NAMES
 from workflow.connector.runner import AdapterNotSelected, Runner, select_adapter, utc_now
 from workflow.contracts.v1 import ExecutionRequest
 
@@ -56,10 +57,6 @@ ADAPTERS = {
 AUTO_ADAPTERS = ("codex", "claude")  # `--adapter auto` 가 만드는 것. 실제 도구 둘 — echo 는 명시할 때만
 
 # `--env` 로 받지 않는 이름 (AGENTS.md 비밀값 환경변수 + 러너가 정하는 것). 접두사 `WORKFLOW_` 도 거부
-RESERVED_ENV_NAMES = frozenset({
-    "OPERATOR_TOKEN", "DIAG_API_TOKEN", "OPENAI_API_KEY", "SESSION_SECRET", "WORKFLOW_GITHUB_TOKEN", "PATH", "HOME",
-})
-_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _build_adapters(name: str, conn, env: Mapping[str, str]) -> dict[str, ExecutionAdapter]:
@@ -85,7 +82,7 @@ def _link_arg(value: str) -> str:
 def _env_arg(value: str) -> tuple[str, str]:
     """NAME=VALUE. 오류 문구에 값을 넣지 않는다 — 비밀일 수 있다."""
     name, sep, env_value = value.partition("=")
-    if not sep or not _ENV_NAME.match(name):
+    if not sep or not ENV_NAME.match(name):
         raise argparse.ArgumentTypeError("형식은 NAME=VALUE, 이름은 영문자·숫자·밑줄 (숫자로 시작 불가)")
     if name in RESERVED_ENV_NAMES or name.startswith("WORKFLOW_"):
         raise argparse.ArgumentTypeError(f"{name} 은 --env 로 넘길 수 없습니다 (비밀값·러너 예약 이름)")

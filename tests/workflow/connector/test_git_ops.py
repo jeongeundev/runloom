@@ -1,5 +1,6 @@
 """git_ops — 업무별 worktree, 결과 커밋, diff. 원본 저장소의 작업 트리·기준 브랜치는 건드리지 않는다."""
 
+import os
 import shutil
 import subprocess
 
@@ -250,3 +251,66 @@ def test_fetch_origin_failures_raise_git_error(repo, tmp_path):
     _git(repo, "remote", "add", "origin", str(tmp_path / "없는-origin.git"))
     with pytest.raises(GitError):
         git_ops.fetch_origin(repo)
+
+
+# --- 작업 복사본 준비물: 원본 폴더 링크 (ADR-0018 결정 3, phase 12 step 4) ----------------------------------------
+
+
+@pytest.fixture
+def prepared_repo(repo):
+    """원본 폴더에만 있는 설치물 — `.gitignore` 의 `node_modules/`(끝 `/`)는 심볼릭 링크에 맞지 않는다."""
+    (repo / ".gitignore").write_text("node_modules/\n.venv/\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-q", "-m", "ignore")
+    (repo / "backend" / ".venv" / "bin").mkdir(parents=True)
+    (repo / "backend" / ".venv" / "bin" / "x").write_text("venv\n")
+    (repo / "frontend" / "node_modules").mkdir(parents=True)
+    (repo / "frontend" / "node_modules" / "y").write_text("module\n")
+    return repo
+
+
+def test_link_prepared_paths_links_origin_folders_and_keeps_them_out_of_git(prepared_repo):
+    worktree = git_ops.ensure_worktree(prepared_repo, "t1", git_ops.head_sha(prepared_repo))
+
+    linked = git_ops.link_prepared_paths(prepared_repo, worktree, ["backend/.venv", "frontend/node_modules"])
+
+    assert linked == ["backend/.venv", "frontend/node_modules"]
+    for rel in linked:
+        assert (worktree / rel).is_symlink()
+        assert (worktree / rel).resolve() == (prepared_repo / rel).resolve()
+    assert (worktree / "backend/.venv/bin/x").read_text() == "venv\n"
+    assert git_ops.is_dirty(worktree) is False
+    (worktree / "pkg.py").write_text("X = 2\n")
+    commit = git_ops.commit_all(worktree, "fix")
+    assert _git(worktree, "show", "--name-only", "--format=", commit).splitlines() == ["pkg.py"]
+    assert (prepared_repo / "frontend/node_modules/y").read_text() == "module\n"  # 원본은 그대로
+
+
+def test_link_prepared_paths_writes_exclude_rule_once(prepared_repo):
+    base = git_ops.head_sha(prepared_repo)
+    first = git_ops.ensure_worktree(prepared_repo, "t1", base)
+    second = git_ops.ensure_worktree(prepared_repo, "t2", base)
+
+    git_ops.link_prepared_paths(prepared_repo, first, ["frontend/node_modules"])
+    git_ops.link_prepared_paths(prepared_repo, second, ["frontend/node_modules"])
+    again = git_ops.link_prepared_paths(prepared_repo, first, ["frontend/node_modules"])  # 이어 쓰기 — 이미 있다
+
+    exclude = (prepared_repo / ".git" / "info" / "exclude").read_text().splitlines()
+    assert exclude.count("/frontend/node_modules") == 1
+    assert again == []
+    assert git_ops.is_dirty(second) is False
+
+
+def test_link_prepared_paths_skips_missing_origin_and_tracked_paths(prepared_repo, caplog):
+    worktree = git_ops.ensure_worktree(prepared_repo, "t1", git_ops.head_sha(prepared_repo))
+
+    with caplog.at_level("INFO", logger="workflow.connector.git_ops"):
+        linked = git_ops.link_prepared_paths(prepared_repo, worktree, ["pkg.py", "tests", "absent/dir"])
+
+    assert linked == []
+    assert not (worktree / "pkg.py").is_symlink() and (worktree / "pkg.py").read_text() == "X = 1\n"
+    assert not (worktree / "tests").is_symlink()
+    assert not os.path.lexists(worktree / "absent")
+    assert git_ops.is_dirty(worktree) is False
+    text = caplog.text
+    assert "pkg.py" in text and "tests" in text and "absent/dir" in text
