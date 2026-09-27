@@ -1,0 +1,51 @@
+{
+  "project": "workflow",
+  "phase": "10-selfhost",
+  "steps": [
+    {
+      "step": 0,
+      "name": "selfhost-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "settings-mode",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "workspace-login",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "selfhost-ui",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "backup-cli",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "docker-image",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "install-script",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "selfhost-docs",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "selfhost-verify",
+      "status": "pending"
+    }
+  ]
+}

@@ -51,6 +51,10 @@
       "dir": "9-measure",
       "status": "completed",
       "completed_at": "2026-09-27T06:03:48+0900"
+    },
+    {
+      "dir": "10-selfhost",
+      "status": "pending"
     }
   ]
 }
