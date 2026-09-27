@@ -4,9 +4,11 @@
 settings 모듈의 ENV_KEYS. 컨테이너는 띄우지 않는다 — 실제 기동은 step 8. 도커가 있으면 `docker compose config` 만 돌린다.
 """
 
+import plistlib
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -203,3 +205,253 @@ def test_docker_compose_config_accepts_the_file(tmp_path):
     )
     assert res.returncode == 0, res.stderr
     assert '"published": "8000"' in res.stdout and '"host_ip": "127.0.0.1"' in res.stdout
+
+
+# --- install.sh (step 6) — 가짜 docker·curl 을 PATH 앞에 두고 임시 디렉터리에서 실행한다 -----------
+
+INSTALL = SELFHOST / "install.sh"
+INSTALL_RUNNER = SELFHOST / "install-runner.sh"
+BASE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+FAKE_DOCKER = """#!/bin/bash
+echo "$*" >> "$FAKE_LOG"
+exit 0
+"""
+# FAKE_CURL_FAIL=1 이면 연결 실패, 아니면 healthz ok
+FAKE_CURL = """#!/bin/bash
+echo "curl $*" >> "$FAKE_LOG"
+if [ "${FAKE_CURL_FAIL:-0}" = 1 ]; then exit 7; fi
+echo '{"status":"ok","mode":"selfhost","schema_version":6}'
+"""
+FAKE_LAUNCHCTL = """#!/bin/bash
+echo "launchctl $*" >> "$FAKE_LOG"
+exit 0
+"""
+
+
+def _fake_bin(tmp_path: Path, **scripts: str) -> Path:
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in scripts.items():
+        path = bin_dir / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+    return bin_dir
+
+
+def _install_copy(tmp_path: Path) -> Path:
+    """저장소의 deploy/selfhost/.env 를 건드리지 않게 install.sh·.env.example·compose.yaml 을 복사한다."""
+    target = tmp_path / "repo" / "deploy" / "selfhost"
+    target.mkdir(parents=True)
+    for src in (INSTALL, ENV_EXAMPLE, COMPOSE):
+        shutil.copy(src, target / src.name)
+    return target
+
+
+def _run_install(tmp_path: Path, selfhost: Path, *args: str, with_docker: bool = True, **env: str):
+    scripts = {"curl": FAKE_CURL}
+    if with_docker:
+        scripts["docker"] = FAKE_DOCKER
+    bin_dir = _fake_bin(tmp_path, **scripts)
+    full_env = {
+        "PATH": f"{bin_dir}:{BASE_PATH}",
+        "HOME": str(tmp_path / "home"),
+        "FAKE_LOG": str(tmp_path / "calls.log"),
+        "HEALTH_TIMEOUT": "2",
+        **env,
+    }
+    return subprocess.run(
+        ["bash", str(selfhost / "install.sh"), *args], capture_output=True, text=True, env=full_env,
+    )
+
+
+def _env_values(path: Path) -> dict[str, str]:
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            out[key] = value
+    return out
+
+
+def _calls(tmp_path: Path) -> list[str]:
+    log = tmp_path / "calls.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+def test_install_scripts_are_executable_bash_with_strict_mode():
+    for script in (INSTALL, INSTALL_RUNNER):
+        assert script.is_file(), script
+        assert script.stat().st_mode & 0o111, f"{script.name} 에 실행 권한이 없다"
+        text = script.read_text(encoding="utf-8")
+        assert text.startswith("#!/usr/bin/env bash") or text.startswith("#!/bin/bash")
+        assert "set -euo pipefail" in text
+
+
+def test_install_creates_env_0600_with_generated_secrets(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    res = _run_install(tmp_path, selfhost)
+    assert res.returncode == 0, res.stdout + res.stderr
+    env_file = selfhost / ".env"
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    values = _env_values(env_file)
+    assert re.fullmatch(r"[0-9a-f]{64}", values["SESSION_SECRET"])
+    assert re.fullmatch(r"[0-9a-f]{64}", values["OPERATOR_TOKEN"])
+    assert values["SESSION_SECRET"] != values["OPERATOR_TOKEN"]
+    # 나머지 키는 .env.example 그대로
+    example = _env_example()
+    assert set(values) == set(example)
+    assert values["WORKFLOW_PORT"] == "8000" and values["DIAG_API_TOKEN"] == ""
+    # 출력에 비밀값이 없고 토큰 파일 위치·접속 주소·다음 할 일이 있다
+    out = res.stdout + res.stderr
+    assert values["OPERATOR_TOKEN"] not in out and values["SESSION_SECRET"] not in out
+    assert str(env_file) in out
+    assert "http://127.0.0.1:8000/login" in out
+    assert "install-runner.sh" in out
+
+
+def test_install_runs_compose_with_project_name_and_file_then_waits_for_healthz(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    res = _run_install(tmp_path, selfhost)
+    assert res.returncode == 0, res.stdout + res.stderr
+    calls = _calls(tmp_path)
+    up = [c for c in calls if " up " in f" {c} "]
+    assert up == [f"compose -p runloom -f {selfhost / 'compose.yaml'} up -d --build"]
+    assert any(c.startswith("curl ") and "http://127.0.0.1:8000/healthz" in c for c in calls)
+    assert calls.index(up[0]) < next(i for i, c in enumerate(calls) if c.startswith("curl "))
+
+
+def test_install_honours_project_name_and_port_from_env_file(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    (selfhost / ".env").write_text("WORKFLOW_PORT=8123\nSESSION_SECRET=a\nOPERATOR_TOKEN=b\n", encoding="utf-8")
+    (selfhost / ".env").chmod(0o600)
+    res = _run_install(tmp_path, selfhost, RUNLOOM_PROJECT="rl-test")
+    assert res.returncode == 0, res.stdout + res.stderr
+    calls = _calls(tmp_path)
+    assert f"compose -p rl-test -f {selfhost / 'compose.yaml'} up -d --build" in calls
+    assert any("http://127.0.0.1:8123/healthz" in c for c in calls)
+    assert "http://127.0.0.1:8123/login" in res.stdout
+
+
+def test_install_rerun_keeps_existing_env_and_rebuilds(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    assert _run_install(tmp_path, selfhost).returncode == 0
+    env_file = selfhost / ".env"
+    before = env_file.read_bytes()
+    res = _run_install(tmp_path, selfhost)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert env_file.read_bytes() == before
+    ups = [c for c in _calls(tmp_path) if " up -d --build" in c]
+    assert len(ups) == 2
+    # 볼륨을 지우는 명령은 없다
+    assert not any(" down" in c or "-v" in c.split() or "volume rm" in c for c in _calls(tmp_path))
+
+
+def test_install_fails_when_healthz_never_ok(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    res = _run_install(tmp_path, selfhost, FAKE_CURL_FAIL="1", HEALTH_TIMEOUT="1")
+    assert res.returncode != 0
+    assert "logs" in res.stdout + res.stderr
+    values = _env_values(selfhost / ".env")
+    assert values["OPERATOR_TOKEN"] not in res.stdout + res.stderr
+
+
+def test_install_without_docker_explains_and_exits(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    res = _run_install(tmp_path, selfhost, with_docker=False)
+    assert res.returncode != 0
+    assert "Docker" in res.stdout + res.stderr
+    assert not (selfhost / ".env").exists()
+
+
+def test_install_dry_run_changes_nothing(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    res = _run_install(tmp_path, selfhost, DRY_RUN="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not (selfhost / ".env").exists()
+    assert not any(" up " in f" {c} " or c.startswith("curl ") for c in _calls(tmp_path))
+    assert "up -d --build" in res.stdout and "-p runloom" in res.stdout
+
+
+def test_install_help(tmp_path):
+    selfhost = _install_copy(tmp_path)
+    res = _run_install(tmp_path, selfhost, "--help")
+    assert res.returncode == 0
+    assert "DRY_RUN" in res.stdout and "RUNLOOM_PROJECT" in res.stdout
+    assert not (selfhost / ".env").exists() and _calls(tmp_path) == []
+
+
+# --- install-runner.sh (step 6) ---------------------------------------------------------------
+
+
+def _run_runner(tmp_path: Path, *args: str, **env: str):
+    bin_dir = _fake_bin(tmp_path, launchctl=FAKE_LAUNCHCTL, claude="#!/bin/bash\n", codex="#!/bin/bash\n")
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    full_env = {
+        "PATH": f"{bin_dir}:{BASE_PATH}",
+        "HOME": str(home),
+        "FAKE_LOG": str(tmp_path / "calls.log"),
+        "PYTHON": sys.executable,
+        **env,
+    }
+    return subprocess.run(["bash", str(INSTALL_RUNNER), *args], capture_output=True, text=True, env=full_env)
+
+
+def test_install_runner_dry_run_prints_plist_with_real_home_and_no_token(tmp_path):
+    res = _run_runner(tmp_path, DRY_RUN="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    home = tmp_path / "home"
+    plist_path = home / "Library" / "LaunchAgents" / "com.workflow.selfhost.connector.plist"
+    out = res.stdout
+    assert str(plist_path) in out
+    assert not plist_path.exists() and _calls(tmp_path) == []
+    start, end = out.index("<?xml"), out.index("</plist>") + len("</plist>")
+    plist = plistlib.loads(out[start:end].encode())
+    assert plist["Label"] == "com.workflow.selfhost.connector"
+    assert plist["ProgramArguments"][1:] == ["-m", "workflow.connector", "run"]
+    assert Path(plist["ProgramArguments"][0]).is_absolute()
+    assert plist["KeepAlive"] is True and plist["RunAtLoad"] is True
+    assert plist["WorkingDirectory"] == str(ROOT)
+    assert plist["StandardOutPath"].startswith(str(home))
+    path_dirs = plist["EnvironmentVariables"]["PATH"].split(":")
+    assert str(tmp_path / "fakebin") in path_dirs  # claude·codex 위치
+    assert "USERNAME" not in out[start:end] and "~" not in out[start:end]
+    assert "TOKEN" not in out[start:end] and "wfc_" not in out[start:end]
+    # 사용자가 할 명령: 연결 코드 교환·저장소 등록 (서버 주소는 127.0.0.1:포트)
+    assert "workflow.connector connect --server http://127.0.0.1:8000" in out
+    assert "workflow.connector register" in out
+    assert "pip install -e" in out
+
+
+def test_install_runner_uses_workflow_port(tmp_path):
+    res = _run_runner(tmp_path, DRY_RUN="1", WORKFLOW_PORT="8123")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "--server http://127.0.0.1:8123" in res.stdout
+
+
+def test_install_runner_writes_plist_and_loads_it_when_connected(tmp_path):
+    connector_home = tmp_path / "connector"
+    connector_home.mkdir()
+    (connector_home / "token.json").write_text("{}", encoding="utf-8")
+    res = _run_runner(tmp_path, WORKFLOW_CONNECTOR_HOME=str(connector_home), SKIP_PIP_INSTALL="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    plist_path = tmp_path / "home" / "Library" / "LaunchAgents" / "com.workflow.selfhost.connector.plist"
+    plist = plistlib.loads(plist_path.read_bytes())
+    assert plist["Label"] == "com.workflow.selfhost.connector"
+    calls = _calls(tmp_path)
+    assert any(c.startswith("launchctl bootstrap") and str(plist_path) in c for c in calls)
+
+
+def test_install_runner_does_not_load_before_connect(tmp_path):
+    res = _run_runner(tmp_path, WORKFLOW_CONNECTOR_HOME=str(tmp_path / "none"), SKIP_PIP_INSTALL="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert (tmp_path / "home" / "Library" / "LaunchAgents" / "com.workflow.selfhost.connector.plist").exists()
+    assert not any(c.startswith("launchctl bootstrap") for c in _calls(tmp_path))
+    assert "connect --server" in res.stdout
+
+
+def test_install_runner_help(tmp_path):
+    res = _run_runner(tmp_path, "--help")
+    assert res.returncode == 0
+    assert "DRY_RUN" in res.stdout and _calls(tmp_path) == []

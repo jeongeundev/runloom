@@ -13,7 +13,7 @@
    - 브라우저·쿠키가 바뀌어도 다시 로그인하면 같은 워크스페이스다.
 4. **기본 모드는 `demo` — 기존 그대로.** `WORKFLOW_MODE` 미설정(또는 `demo`)은 익명 세션 발급·`/operator` 토큰 입력·데모 화면 전부 지금 동작 그대로다. 기존 테스트와 `main` 공개 데모 경로를 지킨다. 그 밖의 값은 설정 오류(`ValueError`)다.
 5. **진단 데모 제외.** selfhost 에서 `DIAG_API_TOKEN` 은 선택이다. 비면 진단 기능(진단 API 호출)이 꺼진다. compose 에 진단 API·진단 워커 서비스를 넣지 않는다. demo 모드에서는 지금처럼 필수다.
-6. **설치 = 한 명령, 재실행 = 업그레이드.** `deploy/selfhost/install.sh` 가 `deploy/selfhost/.env`(0600)를 `.env.example` 에서 만들고 `SESSION_SECRET`·`OPERATOR_TOKEN` 을 무작위로 생성한다. 이미 있으면 덮어쓰지 않는다. 이미지 빌드 → `docker compose up -d` → `/healthz` 확인. 스키마 마이그레이션은 서버·워커 시작 때 기존 `init_schema` 가 한다. 러너는 `deploy/selfhost/install-runner.sh` 가 연결·등록·launchd 설치를 한다.
+6. **설치 = 한 명령, 재실행 = 업그레이드.** `deploy/selfhost/install.sh` 가 `deploy/selfhost/.env`(0600)를 `.env.example` 에서 만들고 `SESSION_SECRET`·`OPERATOR_TOKEN` 을 무작위로 생성한다. 이미 있으면 덮어쓰지 않는다. 이미지 빌드 → `docker compose up -d` → `/healthz` 확인. 스키마 마이그레이션은 서버·워커 시작 때 기존 `init_schema` 가 한다. 러너는 `deploy/selfhost/install-runner.sh` 가 패키지 설치·launchd 설치를 하고, 연결(`connect`)·등록(`register`)은 사용자가 칠 명령으로 안내한다 — 스크립트가 연결 코드·토큰을 다루지 않는다(step 6).
 7. **백업·복원 CLI.** `python3 -m workflow.server.backup create|list|restore`. DB 는 SQLite 온라인 백업 API 로, 산출물은 tar 로 `/data/backups/{이름}/` 에 둔다. 비밀값(`.env`·연결 토큰 파일)은 백업하지 않는다.
 8. **새 설치는 빈 DB.** 기존 `data/central.sqlite`·2026-09-23 실연동 DB 는 옮기지 않는다. 이전 도구는 범위 밖이다.
 9. **비밀값은 이미지 레이어에 넣지 않는다.** `.env` 는 compose `env_file` 로 실행 때만 주입하고 빌드 컨텍스트에서 제외한다(`.dockerignore`). AGENTS.md 비밀값 규칙(DB·로그·응답·템플릿 금지)은 그대로다.
