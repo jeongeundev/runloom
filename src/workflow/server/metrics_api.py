@@ -25,9 +25,9 @@ from workflow.adapters.github_client import (
     GitHubRateLimited,
     GitHubRepositoryNotAllowed,
     GitHubUnavailable,
-    HttpGitHubClient,
 )
 from workflow.contracts.v1 import Rfc3339
+from workflow.server import github_clients
 from workflow.domain.metrics import (
     BASELINE_NOTE,
     BaselineItemFact,
@@ -230,11 +230,13 @@ def import_baseline(
     source = repo.get_github_source(conn, session_id, source_id)
     if source is None:
         raise ApiError(404, "not_found", f"source {source_id}을 찾을 수 없습니다.", field="source_id")
-    settings = request.app.state.settings
-    if not settings.github_token:
-        raise ApiError(409, "github_token_missing", "WORKFLOW_GITHUB_TOKEN 이 설정되지 않았습니다.")
+    # 수집과 같은 자격(App 설치 토큰 → 붙여 넣은 PAT → WORKFLOW_GITHUB_TOKEN). 테스트는 `github_client` 로 바꾼다
+    client = request.app.state.github_client or github_clients.client_for(
+        source, request.app.state.settings, request.app.state.secrets, transport=request.app.state.github_transport,
+    )
+    if client is None:
+        raise ApiError(409, "github_token_missing", "GitHub 자격이 없습니다. /operator/github 에서 GitHub 를 연결하세요.")
     opened_before = repo.github_source_created_at(conn, session_id, source_id)
-    client = request.app.state.github_client or HttpGitHubClient(settings.github_token, settings.github_repos)
     try:
         links = client.list_issue_pr_links(source.repository_full_name, opened_before=opened_before)
     except GitHubError as exc:

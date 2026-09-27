@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
+from workflow.server import metrics_api
 from workflow.adapters.github_client import GitHubForbidden, GitHubRateLimited, GitHubUnavailable
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink
 from workflow.contracts.v1 import ArtifactMeta, ExecutionEvent, ExecutionRequest
@@ -335,8 +336,25 @@ def test_github_errors_keep_the_previous_baseline(app, op, fake, conn, operator,
 def test_baseline_needs_a_token_and_an_owned_source(app, settings, op, fake):
     error(op.post("/operator/github/sources/ghs-00000009/baseline"), 404, "not_found")
     app.state.settings = dataclasses.replace(settings, github_token="")
+    app.state.github_client = None  # 가짜를 치우면 소스 자격 선택으로 — App·PAT·환경변수 토큰 모두 없음
     error(op.post(f"/operator/github/sources/{SOURCE}/baseline"), 409, "github_token_missing")
     assert fake.calls == []
+
+
+def test_baseline_uses_the_source_credentials_without_env_token(app, settings, op, monkeypatch):
+    """GitHub App 으로 연결한 소스는 WORKFLOW_GITHUB_TOKEN 없이 설치 토큰으로 가져온다(2026-09-27 실제 사용에서 발견)."""
+    app.state.settings = dataclasses.replace(settings, github_token="")
+    app.state.github_client = None
+    seen = []
+
+    def client_for(source, _settings, secrets, *, transport=None):
+        seen.append((source.source_id, secrets is app.state.secrets))
+        return FakeGitHub(LINKS)
+
+    monkeypatch.setattr(metrics_api.github_clients, "client_for", client_for)
+    response = op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    assert response.status_code == 200 and response.json()["item_count"] == 2
+    assert seen == [(SOURCE, True)]
 
 
 def test_responses_carry_no_token_or_paths(app, op, fake, settings):
