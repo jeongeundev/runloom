@@ -53,7 +53,10 @@
     {
       "step": 6,
       "name": "auto-match",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:48:37+0900",
+      "summary": "자동 매칭: 신설 domain/github_match.py(MatchAgent·SourceMatch(workflow_repository_id, fix_verification_profile_id, fix_agent_id, review_agent_id, blockers)+fix_blockers·review_blockers·match_source(source, agents, *, assignee_ids, bindings) — ARCHITECTURE 코드명 repository_/fix_agent_/profile_/review_agent_ unmatched·ambiguous 를 따름(step.md 예시 runner_unmatched·verification_profile_missing 아님), 설정값 우선·None 칸만 채움, 로컬 저장소=found.github_repository 대소문자 무시 일치 Agent 들의 repository_id 하나, 수정=①담당 1명 연결 ②default_fix_agent_id ③code.fix 후보 하나(all_open 만), 검증 프로필=정해진 수정 Agent 등록의 프로필이 하나일 때(ARCHITECTURE 의 '저장소 후보 합집합'을 이 규칙으로 갱신 — 연결 프로그램은 자기 등록 프로필만 실행), 검토=code.review 후보 하나, 저장소 미정이면 repository_* 하나만) + tests/workflow/domain/test_github_match.py 17개; task_readiness TaskFacts.matched_agent_id·match_blockers·auto_match(auto 면 매칭 결과만, filtered 는 담당 미해결 시 기본 수정 Agent 후 기존 assignee_*) + 테스트 7개; issue_intake: workflow_repository_id None 소스의 Task scope 는 owner/name(Capability 가 None 을 못 받아 수집이 깨지던 문제) — 준비 판정이 매칭 저장소로 바꿔 봄; task_cycle.source_match(conn, task)·task_facts 가 수정 Task 는 fix_blockers, chosen 없는 검토 Task 는 review_blockers 로 auto_match; worker._start_fix 의 검증 프로필 = source_match 값(원본 없으면 기존 첫 프로필); 매칭 대기는 사람 요청 안 만듦; ARCHITECTURE 대기 코드 표 5행·자동 매칭 구현 단락·시그니처 표. 통합 테스트 5개(담당·ID 없이 수정→검토 target, 러너 없음, 수정 Agent 2개→기본 지정 후 착수, 담당 연결 우선·그 등록 프로필, 프로필 없음). 검증: pytest 2633 passed/55 skipped, ruff 통과. 주의: 저장하지 않고 매번 계산 — step 8 화면은 task_cycle.source_match 로 결정값 표시·'설정에서 고르기'는 소스 설정 칸(default_fix_agent_id·workflow_repository_id·fix_verification_profile_id·review_agent_id) 저장; 옛 Task scope 값이 owner/name 인 경우가 있음(표시 주의); POST /tasks/{id}/delegate 는 step 7.",
+      "completed_at": "2026-09-27T18:58:57+0900"
     },
     {
       "step": 7,

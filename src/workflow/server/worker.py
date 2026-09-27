@@ -1205,7 +1205,7 @@ class Worker:
         inputs: list[str] | None = None, release_execution_id: str | None = None, report: TickReport | None = None,
         **readiness_overrides: Any,
     ) -> bool:
-        """준비 판정을 통과하면 담당 Agent 의 등록값 + 소스의 검증 프로필로 target 을 고정해 실행을 만든다. 기준 커밋은
+        """준비 판정을 통과하면 담당 Agent 의 등록값 + 소스의 검증 프로필(빈 칸이면 자동 매칭 값)로 target 을 고정해 실행을 만든다. 기준 커밋은
         주어진 값(재작업: 검토한 결과 커밋), 없으면 이 Task 의 마지막 결과 커밋(남은 task 브랜치), 없으면 등록 보고값."""
         now = self._clock()
         readiness = task_cycle.evaluate(
@@ -1215,7 +1215,7 @@ class Worker:
             self._write_blocked(conn, task, readiness, report)
             return False
         agent = repo.get_agent(conn, readiness.agent_id)
-        _, config = task_cycle.origin_source(conn, task)
+        match = task_cycle.source_match(conn, task)
         profiles = json.loads(agent["verification_profile_ids_json"])
         previous = [e for e in repo.list_executions(conn, task["task_id"]) if e["result_artifact_id"] is not None]
         latest_commit = next((c for c in map(lambda e: self._result_commit(conn, e), reversed(previous)) if c), None)
@@ -1224,7 +1224,7 @@ class Worker:
             target={
                 "local_registration_id": agent["local_registration_id"],
                 "base_commit": base_commit or latest_commit or agent["base_commit"],
-                "verification_profile_id": config.fix_verification_profile_id if config is not None
+                "verification_profile_id": match.fix_verification_profile_id if match is not None
                 else (profiles[0] if profiles else None),
             },
             inputs=inputs or [], start_key=start_key, predecessor_execution_id=None,

@@ -87,7 +87,8 @@ def snapshot_to_task_spec(
         "kind": ISSUE_KIND.kind,
         "required_capability": {
             "code": ISSUE_KIND.capability_code,
-            "scope": {ISSUE_KIND.scope_key: config.workflow_repository_id},
+            # 로컬 저장소를 자동 매칭하는 소스는 GitHub 저장소 이름을 둔다 — 준비 판정이 매칭 값으로 바꿔 본다(github_match)
+            "scope": {ISSUE_KIND.scope_key: config.workflow_repository_id or config.repository_full_name},
         },
         "selection_mode": "auto",
         "chosen_agent_id": None,

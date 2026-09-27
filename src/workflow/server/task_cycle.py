@@ -5,6 +5,10 @@ DB 행을 `domain.task_readiness.TaskFacts` 값으로 모아 `evaluate_readiness
 가져온 Task 와 직접 등록 Task 는 같은 `github_sync.task_intake_facts` 를 거친다. 검토 Task 는 원본 이슈가 없으므로
 수정 Task(선행)의 원본 상태·허용 저장소·재작업 상한을 따른다. 착수·후속 저장은 워커가 한다.
 
+자동 매칭(phase 11 step 6, ADR-0017): 소스 설정의 빈 칸은 판정 때마다 `github_match.match_source` 로 계산한다(저장하지
+않음). 로컬 저장소를 매칭하는 소스의 Task 는 저장 scope 대신 매칭한 저장소로 능력을 본다. 수정 Task 는 수정 Agent·검증
+프로필, 검토 Task(설정·Task 에 검토 Agent 없음)는 검토 Agent 를 매칭 결과로 정한다.
+
 사람 요청(step 11): 운영자가 정해야 풀리는 대기(`READINESS_REQUEST_CODES`)는 워커가 revision 마다 한 번 요청으로 남긴다
 (`readiness_cause_key`). 이런 요청은 그 대기 사유가 이미 막고 있으므로 `decision_pending` 에 세지 않는다 — 담당자를
 한 명으로 줄이는 식으로 사유가 사라지면 응답 없이도 착수한다. 응답 내용은 `request_text` 로 다음 실행 요청에 붙는다.
@@ -18,6 +22,8 @@ from workflow.adapters import repo
 from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import Capability
 from workflow.domain.execution_policy import BUILTIN_POLICIES, policy_for
+from workflow.domain.github_match import MatchAgent, SourceMatch, match_source
+from workflow.domain.issue_intake import IntakeFacts
 from workflow.domain.selection import Candidate
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, TaskReadiness, evaluate_readiness
 from workflow.server import github_sync
@@ -83,6 +89,46 @@ def _executor(conn: Connection, agent: Row) -> ExecutorFacts:
     )
 
 
+def _match_agent(agent: Row) -> MatchAgent:
+    discovered = json.loads(agent["discovered_json"] or "{}")
+    found = discovered.get("found") if isinstance(discovered, dict) else None
+    github = found.get("github_repository") if isinstance(found, dict) else None
+    return MatchAgent(
+        agent_id=agent["agent_id"],
+        github_repository=github if isinstance(github, str) else None,
+        repository_id=agent["repository_id"],
+        capabilities=tuple(Capability.model_validate(c) for c in json.loads(agent["capabilities_json"])),
+        verification_profile_ids=tuple(json.loads(agent["verification_profile_ids_json"])),
+    )
+
+
+def source_match(conn: Connection, task: Row) -> SourceMatch | None:
+    """Task 의 원본 소스 자동 매칭. 원본이 없으면 None. 담당 연결은 원본 이슈가 이 Task 에 있을 때(수정 Task)만 넘긴다."""
+    _, config = origin_source(conn, task)
+    if config is None:
+        return None
+    intake = github_sync.task_intake_facts(conn, task["session_id"], task["task_id"])
+    return _match(config, repo.list_session_agents(conn, task["session_id"]), intake)
+
+
+def _match(config: GitHubSourceConfig, agents: list[Row], intake: IntakeFacts) -> SourceMatch:
+    local = [_match_agent(a) for a in agents if a["connection_type"] == "local"]
+    return match_source(config, local, assignee_ids=intake.assignee_ids or (), bindings=intake.bindings)
+
+
+def _match_facts(task: Row, config: GitHubSourceConfig, match: SourceMatch, required: Capability, *, fix: bool) -> dict:
+    values: dict = {}
+    if config.workflow_repository_id is None and match.workflow_repository_id is not None:
+        (key,) = required.scope
+        values["required"] = Capability(code=required.code, scope={key: match.workflow_repository_id})
+    if fix:
+        values.update(matched_agent_id=match.fix_agent_id, match_blockers=match.fix_blockers,
+                      auto_match=config.intake == "all_open")
+    elif task["chosen_agent_id"] is None:
+        values.update(matched_agent_id=match.review_agent_id, match_blockers=match.review_blockers, auto_match=True)
+    return values
+
+
 def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **overrides) -> TaskFacts:
     """Task 하나의 준비 판정 입력. `overrides` 는 호출 문맥의 값(검토 짝 Agent·선행 결과·재작업 요청 등)."""
     session_id = task["session_id"]
@@ -92,13 +138,14 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
     requests = repo.list_human_requests(conn, task["task_id"])
     asked = [r["task_revision"] for r in requests if r["code"].endswith("_needs_information")]
     allowed = {name.lower() for name in settings.github_repos}
+    required = Capability.model_validate_json(task["required_capability_json"])
     values = {
         **intake.as_kwargs(),
         "task_id": task["task_id"],
         "kind": task["kind"],
         "now": now,
         "offline_after_seconds": settings.limits.heartbeat_offline_seconds,
-        "required": Capability.model_validate_json(task["required_capability_json"]),
+        "required": required,
         "candidates": [
             Candidate(a["agent_id"], tuple(Capability.model_validate(c) for c in json.loads(a["capabilities_json"])))
             for a in agents
@@ -119,6 +166,9 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
         "source_state": issue["state"] if issue is not None else None,
         "max_rework_rounds": config.max_rework_rounds if config is not None else DEFAULT_MAX_REWORK_ROUNDS,
     }
+    if config is not None:
+        match = _match(config, agents, intake)
+        values.update(_match_facts(task, config, match, required, fix=intake.assignee_ids is not None))
     values.update(overrides)
     return TaskFacts(**values)
 

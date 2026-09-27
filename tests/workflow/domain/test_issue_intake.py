@@ -117,6 +117,15 @@ def test_snapshot_maps_to_bug_fix_task_without_interpreting_body():
     ]
 
 
+def test_auto_matched_source_keeps_the_github_repository_as_scope_until_readiness():
+    """로컬 저장소를 자동 매칭하는 소스(phase 11 step 6)는 저장 scope 에 GitHub 저장소 이름을 둔다 — 준비 판정이
+    매칭한 로컬 저장소로 바꿔 본다."""
+    config = _config(intake="all_open", label_filter=[], workflow_repository_id=None,
+                     fix_verification_profile_id=None, review_agent_id=None)
+    task = snapshot_to_task_spec(config, _snapshot(), session_id=SESSION, task_id="task-1")
+    assert task["required_capability"] == {"code": "code.fix", "scope": {"repository_id": "acme/billing"}}
+
+
 def test_task_input_is_title_and_stripped_body():
     assert task_input(_snapshot(body="  재현 절차 \n")) == ("할인 쿠폰이 두 번 적용됨", "재현 절차")
 

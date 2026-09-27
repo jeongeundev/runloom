@@ -58,6 +58,11 @@ class TaskFacts:
     assignee_ids: tuple[int, ...] | None = None
     bindings: Mapping[int, str] = field(default_factory=dict)  # GitHub 사용자 ID → agent_id
     chosen_agent_id: str | None = None  # 사람 응답으로 지정한 Agent, 또는 설정의 검토 Agent
+    # 소스 자동 매칭(`github_match.match_source`, phase 11 step 6): 담당 연결·기본 수정 Agent·자동 선택 결과와 그 사유.
+    # `auto_match` 면 Agent 는 이 결과로만 정한다(담당 대기·기존 자동 선택 없음). 아니면 담당 대기 전의 기본값일 뿐이다
+    matched_agent_id: str | None = None
+    match_blockers: tuple[Blocker, ...] = ()
+    auto_match: bool = False
     repository_allowed: bool = True  # 저장소가 WORKFLOW_GITHUB_REPOS 안인지
     # 입력
     request_text: str = ""
@@ -102,7 +107,11 @@ def _supports(executor: ExecutorFacts, kind: str) -> bool:
 
 
 def _resolve_agent(facts: TaskFacts, blockers: list[Blocker]) -> str | None:
-    """담당자 → 후보 Agent. 자동 추정은 하지 않는다 — 담당 개념이 없을 때만 기존 자동 선택."""
+    """담당자 → 후보 Agent. 자동 추정은 하지 않는다 — 담당 개념이 없을 때만 기존 자동 선택. 자동 매칭 소스는
+    매칭 결과(사유는 `match_blockers`)를, 담당이 풀리지 않은 filtered 소스는 기본 수정 Agent 를 쓴다."""
+    blockers.extend(facts.match_blockers)
+    if facts.auto_match:
+        return facts.matched_agent_id
     if facts.assignee_ids is None:
         if facts.chosen_agent_id is not None:
             return facts.chosen_agent_id
@@ -111,17 +120,21 @@ def _resolve_agent(facts: TaskFacts, blockers: list[Blocker]) -> str | None:
             blockers.append(Blocker("delegation_denied", record.reason, "operator"))
         return record.selected_agent_id
     if not facts.assignee_ids:
+        if facts.matched_agent_id is not None:
+            return facts.matched_agent_id
         blockers.append(Blocker("assignee_missing", "GitHub 담당자 없음", "operator"))
         return None
     if len(facts.assignee_ids) >= 2:
         bound = {facts.bindings[i] for i in facts.assignee_ids if i in facts.bindings}
         if facts.chosen_agent_id is not None and facts.chosen_agent_id in bound:
             return facts.chosen_agent_id
+        if facts.matched_agent_id is not None:
+            return facts.matched_agent_id
         count = len(facts.assignee_ids)
         blockers.append(Blocker("assignee_multiple", f"GitHub 담당자 {count}명 — Agent 지정 필요", "operator"))
         return None
     (assignee,) = facts.assignee_ids
-    agent_id = facts.bindings.get(assignee)
+    agent_id = facts.bindings.get(assignee, facts.matched_agent_id)
     if agent_id is None:
         blockers.append(Blocker("assignee_unbound", f"GitHub 담당자 {assignee} 에 연결된 Agent 없음", "operator"))
     return agent_id
