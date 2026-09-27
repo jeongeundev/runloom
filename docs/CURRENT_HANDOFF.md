@@ -4,6 +4,8 @@
 
 ## 다음 작업: `12-real-repo` 설계 (새 세션은 여기서 시작)
 
+**12-real-repo 진행 중** (2026-09-27, 브랜치 `feat-12-real-repo`): step 0 에서 [ADR-0018](adr/0018-real-repo-cycle.md)·ARCHITECTURE "실제 저장소 순환 — phase 12"·CONTRACT 14절로 설계 고정. 진행 상태는 `phases/12-real-repo/index.json`.
+
 [MVP 계획](product/MVP_PLAN.md)이 최신 기준이다(2026-09-25~26 사용자 합의). 목표: **2026-10-02 까지 Runloom 단독으로 OpenArchive(`jeongeundev/OpenArchive`) 실제 이슈를 순환 처리하고, 셀프호스트로 배포하며, 도입 전후를 지표로 보여준다.**
 
 2026-09-27 에 한 일: `9-measure`·`10-selfhost`·`11-github-app` 완료·`service` 병합. 이 Mac 에 셀프호스트 설치(`deploy/selfhost/install.sh`, compose 프로젝트 `runloom`, http://127.0.0.1:8000, 스키마 7). 사용자가 브라우저로 실제 GitHub App(`runloom-gwufov`, jeongeundev)을 만들고 OpenArchive 에 설치 → 열린 이슈 17건이 "실행 지시 전"으로 들어옴(에이전트 미시작). 실제 기준선 가져오기 완료: **24건, 이슈 열림 → 병합 중앙값 7시간 28분**(연결 시각 2026-09-27T11:05:13Z 이전). 실제 사용 중 고친 것(모두 `service` 직접 커밋, 재현 테스트 먼저):

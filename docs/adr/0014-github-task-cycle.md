@@ -35,3 +35,5 @@
 - 공개 데모(`main`)·n8n 입구·callback 계약은 바뀌지 않는다.
 
 > 범위 갱신(2026-09-27, [ADR-0017](0017-github-app-connection.md)): GitHub App 으로 연결한 소스(`intake: all_open`)는 설치 저장소의 열린 이슈를 **전부 목록에 가져오되 실행은 지시한 것만**([에이전트에게 맡기기] 또는 트리거 라벨) 한다. 결정 1 의 "OAuth·GitHub App 은 범위 밖"과 결정 2 의 "범위 밖 백로그는 받지 않는다"는 이 소스에 한해 바뀌고, 기존 `filtered` 소스·환경변수 토큰은 이 문서 그대로다.
+
+> 대체(2026-09-27, [ADR-0018](0018-real-repo-cycle.md)): 결정 5 의 "자동 push/PR 은 하지 않는다"는 ADR-0018 결정 4 로 바뀐다 — 수정 결과마다 러너가 `task/<task_id>` 를 `origin` 에 push 하고(force 없음), 검토 `approved` 뒤 중앙이 초안 PR(`Fixes #N`)을 연다. 병합·이슈 닫기는 여전히 사람만 하며, 구버전 러너(push 보고 없음)의 순환은 이 문서 그대로다.
