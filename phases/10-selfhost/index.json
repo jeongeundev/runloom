@@ -5,7 +5,10 @@
     {
       "step": 0,
       "name": "selfhost-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T09:23:25+0900",
+      "summary": "ADR-0016 신설(compose central·worker+named volume workflow-data, 127.0.0.1:WORKFLOW_PORT, 러너 launchd 네이티브, WORKFLOW_MODE=demo|selfhost, 고정 워크스페이스 sess-selfhost=첫 POST /login 때 create_session+mark_operator, 진단 선택, 백업 CLI create|list|restore, 빈 DB), ADR-0005·0006 에 '범위: 공개 데모' 한 줄, ARCHITECTURE '셀프호스트 — phase 10' 절(구성도·모드 표·로그인 규칙·/healthz 형식·백업 CLI·WAL/bind mount·러너 붙이기·이름 고정표: deploy/selfhost/{compose.yaml,Dockerfile,install.sh,install-runner.sh,.env.example}, 루트 .dockerignore, launchd 라벨 com.workflow.selfhost.connector, WORKFLOW_BACKUP_DIR), GLOSSARY phase 10 용어. 문서만 변경, pytest 2374 passed/54 skipped, ruff 통과. 다음 step 주의: selfhost 에서 POST /operator/login 은 404·다른 세션 id 쿠키는 미인증, demo 기본 동작·기존 테스트 불변, 진단 꺼짐의 세부(워커 diag 클라이언트 없음·진단 실행 미생성)는 step 1 이 확정해 ARCHITECTURE 모드 표를 갱신",
+      "completed_at": "2026-09-27T09:29:40+0900"
     },
     {
       "step": 1,
@@ -47,5 +50,6 @@
       "name": "selfhost-verify",
       "status": "pending"
     }
-  ]
+  ],
+  "created_at": "2026-09-27T09:23:25+0900"
 }
