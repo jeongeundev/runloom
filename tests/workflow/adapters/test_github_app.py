@@ -18,6 +18,7 @@ from workflow.adapters.github_app import (
     GitHubAppAuth,
     Installation,
     InstalledRepository,
+    build_manifest,
     exchange_manifest_code,
     load_app,
     save_credentials,
@@ -384,6 +385,33 @@ def test_list_installation_repositories_refuses_next_link_to_other_host(key_pair
     })
     with pytest.raises(GitHubError, match="api.github.com"):
         _auth(key_pair[0], rec).list_installation_repositories(77)
+
+
+# ── manifest (step 7) ──────────────────────────────────────────────────
+
+
+def test_build_manifest_has_minimal_permissions_and_no_active_webhook():
+    manifest = build_manifest("http://127.0.0.1:8000", "runloom-a1b2c3")
+
+    assert manifest == {
+        "name": "runloom-a1b2c3",
+        "url": "http://127.0.0.1:8000",
+        "hook_attributes": {"url": "http://127.0.0.1:8000/", "active": False},
+        "redirect_url": "http://127.0.0.1:8000/operator/github/app/callback",
+        "setup_url": "http://127.0.0.1:8000/operator/github/app/setup",
+        "setup_on_update": True,
+        "public": False,
+        "default_permissions": {"issues": "write", "pull_requests": "read", "metadata": "read"},
+        "default_events": [],
+    }
+    assert "contents" not in manifest["default_permissions"]
+
+
+def test_build_manifest_strips_trailing_slash():
+    manifest = build_manifest("https://runloom.example/", "runloom-zz9999")
+
+    assert manifest["redirect_url"] == "https://runloom.example/operator/github/app/callback"
+    assert manifest["hook_attributes"]["url"] == "https://runloom.example/"
 
 
 # ── 비밀이 새지 않음 ─────────────────────────────────────────────────────

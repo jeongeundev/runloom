@@ -406,6 +406,10 @@ class HttpGitHubClient:
         except (KeyError, TypeError, ValueError, ValidationError):
             raise GitHubError("POST /graphql: 응답 형식 오류") from None
 
+    def repository_id(self, repo: str) -> int:
+        """`GET /repos/{o}/{r}` — 이 토큰으로 저장소를 볼 수 있는지 확인한다(PAT 연결). 못 보면 분류된 오류."""
+        return self._repository_id(self._repo(repo))
+
     # ── 내부 ──
 
     def _repo(self, repo: str) -> str:

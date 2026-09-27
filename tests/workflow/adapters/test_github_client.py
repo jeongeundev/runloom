@@ -129,6 +129,25 @@ def test_repository_id_is_fetched_once_per_client():
     assert [r.url.path for r in rec.calls].count(f"/repos/{REPO}") == 1
 
 
+def test_repository_id_checks_access_to_an_allowed_repository():
+    """PAT 연결(phase 11 step 7)의 확인 — `GET /repos/{o}/{r}` 한 번, 허용 목록 밖은 부르지 않는다."""
+    rec = Recorder({})
+    client = _client(rec)
+
+    assert client.repository_id(REPO) == 9001
+    assert [r.url.path for r in rec.calls] == [f"/repos/{REPO}"]
+    with pytest.raises(GitHubRepositoryNotAllowed):
+        client.repository_id("acme/other")
+    assert len(rec.calls) == 1
+
+
+def test_repository_id_without_access_is_classified():
+    rec = Recorder({("GET", f"/repos/{REPO}"): httpx.Response(404, json={"message": "Not Found"})})
+
+    with pytest.raises(GitHubNotFound):
+        _client(rec).repository_id(REPO)
+
+
 def test_pull_request_items_are_excluded_from_list():
     items = [_issue(1), _issue(2, pull_request={"url": "https://api.github.com/repos/acme/app/pulls/2"})]
     rec = Recorder({("GET", f"/repos/{REPO}/issues"): httpx.Response(200, json=items)})

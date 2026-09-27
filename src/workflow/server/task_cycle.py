@@ -18,7 +18,8 @@ import json
 from dataclasses import replace
 from sqlite3 import Connection, Row
 
-from workflow.adapters import repo
+from workflow.adapters import repo, secret_store
+from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import Capability
 from workflow.domain.execution_policy import BUILTIN_POLICIES, policy_for
@@ -152,9 +153,11 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
         ],
         "executors": {a["agent_id"]: _executor(conn, a) for a in agents},
         "chosen_agent_id": task["chosen_agent_id"],
-        # App 설치 소스는 설치 저장소 자체가 허용 범위다(ADR-0017) — 환경변수 허용 목록은 토큰 연결 소스에만
+        # App 설치 소스는 설치 저장소 자체가, 화면에서 붙여 넣은 PAT 가 있으면 소스 저장소가 허용 범위다(ADR-0017,
+        # `github_clients` 와 같은 규칙) — 환경변수 허용 목록은 환경변수 토큰 연결에만
         "repository_allowed": (
             config is None or config.installation_id is not None or config.repository_full_name.lower() in allowed
+            or SecretStore(settings.secret_dir).exists(secret_store.GITHUB_TOKEN)
         ),
         "task_revision": task["revision"],
         "request_text": request_text(conn, task),

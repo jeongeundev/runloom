@@ -35,6 +35,7 @@ def settings(tmp_path) -> Settings:
         operator_token="test-operator-token",
         diag_api_url="http://127.0.0.1:8100",
         diag_api_token="test-diag-token",
+        secret_dir=tmp_path / "secrets",  # 기본값(data/secrets)은 저장소 작업 폴더라 테스트가 읽지 않게 한다
     )
 
 

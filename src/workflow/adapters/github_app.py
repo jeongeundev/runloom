@@ -92,6 +92,22 @@ def _json_object(response: httpx.Response, method: str, label: str) -> dict:
     return data
 
 
+def build_manifest(base_url: str, name: str) -> dict:
+    """App 만들기 화면에 넘길 manifest. 웹훅은 끄고(127.0.0.1 은 GitHub 가 못 부른다) 권한은 이슈·PR 읽기·메타데이터만."""
+    base = base_url.rstrip("/")
+    return {
+        "name": name,
+        "url": base,
+        "hook_attributes": {"url": f"{base}/", "active": False},
+        "redirect_url": f"{base}/operator/github/app/callback",
+        "setup_url": f"{base}/operator/github/app/setup",
+        "setup_on_update": True,
+        "public": False,
+        "default_permissions": {"issues": "write", "pull_requests": "read", "metadata": "read"},
+        "default_events": [],
+    }
+
+
 def exchange_manifest_code(code: str, *, transport: httpx.BaseTransport | None = None) -> AppCredentials:
     """`POST /app-manifests/{code}/conversions`(인증 없음). 저장하지 않는다 — 호출자가 `save_credentials` 한다."""
     if not isinstance(code, str) or not _MANIFEST_CODE.fullmatch(code):

@@ -512,14 +512,15 @@ App 이 이미 저장돼 있으면 `GET /operator/github/app/new` 는 manifest �
 
 | 경로 | 동작 | 실패 |
 |---|---|---|
-| `GET /operator/github/app/new[?org=<login>]` | state 발급 + manifest 를 담은 자동 제출 폼 화면(`operator_github_app_new.html`). `org` 가 있으면 조직 URL. App 이 있으면 설치 URL 로 303 | — |
+| `GET /operator/github/app/new[?org=<login>]` | state 발급 + manifest 를 담은 자동 제출 폼 화면(`operator_github_app_new.html`). `org` 가 있으면 조직 URL. App 이 있으면 설치 URL 로 303 | `org` 형식 오류 422 `invalid_field`, `WORKFLOW_PUBLIC_URL` 없이 루프백(127.0.0.1·localhost·::1) 밖 주소로 열면 400 `public_url_required`(Host 헤더를 믿지 않는다) |
 | `GET /operator/github/app/callback?code&state` | state 확인 → code 교환 → 비밀 저장 → 설치 URL 로 303(새 state) | state 불일치 403 `github_state_invalid`, 교환 실패(만료·404·422) 400 `github_manifest_failed` "다시 [GitHub 연결]" — 응답 본문·code 는 싣지 않는다 |
 | `GET /operator/github/app/setup?installation_id[&setup_action][&state]` | JWT 로 설치 확인 → 설치 저장소 목록 → 소스 맞춤 → `/operator/github` 303 | App 없음 409 `github_app_missing`, 우리 App 의 설치가 아님(404) 400 `github_installation_invalid`, GitHub 오류 502 `github_unavailable` |
-| `POST /operator/github/token` (폼 `token`, `repository_full_name`) | 고급: PAT 붙여 넣기. `GET /repos/{o}/{r}` 로 확인 뒤 비밀 파일 `github_token` 에 저장, 그 저장소 소스 생성(`intake: all_open`) → `/operator/github` 303 | 접근 불가 400 `github_token_invalid`(토큰 값·길이를 응답·로그에 넣지 않음) |
-| `POST /tasks/{task_id}/delegate` | GitHub 소스 Task 에 실행 지시 기록(`delegated_by=operator`) → 준비 판정 → 업무 상세 303. 이미 지시됐으면 그대로(멱등) | GitHub 소스가 아닌 Task 409 `not_delegatable`, 닫힌 Task 409 `task_closed` |
+| `POST /operator/github/token` (폼 `token`, `repository_full_name`) | 고급: PAT 붙여 넣기. `GET /repos/{o}/{r}`(`HttpGitHubClient.repository_id`)로 확인 뒤 비밀 파일 `github_token` 에 저장, 그 저장소 소스가 없으면 생성(`intake: all_open`, `github_connect.ensure_token_source`) → `/operator/github` 303 | 빈 토큰·접근 불가 400 `github_token_invalid`(토큰 값·길이를 응답·로그에 넣지 않음), 저장소 형식 422 `invalid_field`, rate limit·연결 실패 502 `github_unavailable`. 확인 실패면 저장하지 않는다 |
+| `POST /tasks/{task_id}/delegate` | GitHub 소스 Task 에 실행 지시 기록(`delegated_by=operator`) → `/tasks/{id}/run` 과 같은 착수 시도(`Worker.start_manually`) → 업무 상세 303. 못 시작하면 대기 사유가 상세에 남고 워커가 풀리는 대로 착수한다. 이미 지시됐으면 기록은 그대로(멱등, 라벨 지시도 유지) | 남의 Task 404, 운영자 아님 403 `forbidden`, 원본 이슈가 없는 Task 409 `not_delegatable`, 마감된 Task 409 `task_closed` |
 
 state(CSRF) 규칙:
-- 값은 `secrets.token_urlsafe(32)`. 쿠키 `wf_gh_state`(HttpOnly, SameSite=Lax, `Path=/operator/github/app`, Max-Age 3600 — manifest code 1시간과 같음, 127.0.0.1 http 라 `Secure` 없음)에 두고 쿼리 `state` 와 `hmac.compare_digest` 로 비교한다. 서버 메모리·DB 에 두지 않는다(central 재시작과 무관). GitHub 에서 돌아오는 top-level GET 이라 Lax 쿠키가 실린다.
+- 값은 `secrets.token_urlsafe(32)`. 쿠키 `wf_gh_state`(HttpOnly, SameSite=Lax, `Path=/operator/github/app`, Max-Age 3600 — manifest code 1시간과 같음, 127.0.0.1 http 라 `Secure` 없음)에 `<state>.<발급 epoch>.<HMAC(SESSION_SECRET)>` 로 두고 쿼리 `state` 와 `hmac.compare_digest` 로 비교한다. 발급 뒤 3600초가 지나면 서버도 거부한다(브라우저 Max-Age 에만 기대지 않음). 서버 메모리·DB 에 두지 않는다(central 재시작과 무관). GitHub 에서 돌아오는 top-level GET 이라 Lax 쿠키가 실린다. 운영자 세션 확인이 state 보다 먼저다.
+- setup 이 끝나면 쿠키를 지운다. manifest code 는 응답·DB 에 싣지 않는다(GitHub 가 준 callback URL 이라 접근 로그에는 남는다 — 한 번 쓰면 무효).
 - callback 은 state 가 반드시 맞아야 한다(한 번 쓰면 새 값으로 교체).
 - setup 은 state 가 있으면 맞아야 하고, 없으면(GitHub 설정 화면에서 설치를 바꾸고 돌아온 경우) 허용한다. 어느 경우든 `installation_id` 는 결정 3 대로 JWT 로 확인하기 전에는 쓰지 않는다.
 - 요청 Host 대신 `WORKFLOW_PUBLIC_URL` 이 있으면 그것으로 `redirect_url`·`setup_url`·`url` 을 만든다. 없으면 요청의 base URL(셀프호스트 `http://127.0.0.1:<포트>`).
@@ -583,7 +584,7 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 3. `Settings.github_token`(`WORKFLOW_GITHUB_TOKEN`) → 지금 동작(허용 목록 `WORKFLOW_GITHUB_REPOS`)
 4. 없음 → 그 소스는 수집·전달하지 않는다(소스 오류 `github_not_connected` — step 5 는 로그 없이 건너뛰고 다음 간격에 다시 본다)
 
-워커는 수집·원본 반영 모두 소스마다 그 소스의 클라이언트를 쓴다(`deliver_source_updates(…, source_id=)`). 자격 있는 소스가 하나도 없으면 댓글 outbox 도 쌓지 않는다(토큰 없을 때의 기존 동작). 준비 판정의 허용 저장소 검사(`delegation_denied` "허용 저장소 밖")는 `installation_id` 가 있는 소스는 통과 — 설치 자체가 허용 범위다.
+워커는 수집·원본 반영 모두 소스마다 그 소스의 클라이언트를 쓴다(`deliver_source_updates(…, source_id=)`). 자격 있는 소스가 하나도 없으면 댓글 outbox 도 쌓지 않는다(토큰 없을 때의 기존 동작). 준비 판정의 허용 저장소 검사(`delegation_denied` "허용 저장소 밖")는 `installation_id` 가 있는 소스는 통과 — 설치 자체가 허용 범위다. 비밀 파일 `github_token`(붙여 넣은 PAT)이 있으면 모든 소스가 통과한다 — 2 의 클라이언트가 소스 저장소를 허용하는 것과 같은 규칙(step 7).
 
 `GITHUB_SYNC_INTERVAL_SECONDS`·rate limit 대기·오류 분류(`GitHubRateLimited`·`GitHubForbidden`…)는 그대로다. 설치 토큰 발급 실패도 같은 분류를 쓴다.
 
@@ -623,7 +624,7 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 | App 인증 | `adapters/github_app.py`(2) | `GitHubAppAuth(client_id, private_key_pem, *, transport=None, clock=time.time)`, `app_jwt() -> str`, `installation_token(installation_id) -> str`(캐시, 만료 5분 전 갱신), `invalidate(installation_id)`(캐시 버림). JWT 호출이 401 이면 JWT 를 새로 만들어, 설치 토큰 호출이 401 이면 캐시를 버리고 한 번만 다시 보낸다. `get_installation(installation_id) -> Installation(installation_id, account_login, repository_selection)`, `list_installation_repositories(installation_id) -> list[InstalledRepository(repository_id, full_name)]` |
 | 토큰 공급자 | `adapters/github_client.py`(2) | Protocol `TokenProvider: token() -> str, invalidate() -> None`, `InstallationTokenProvider(auth, installation_id)`. 클라이언트는 공급자면 401 에 `invalidate()` 뒤 한 번 다시 보낸다(문자열 토큰은 다시 보내지 않음). 오류 분류는 `check_response(method, path, response)`·Link 페이지는 `next_page(response, path)` 로 github_app 과 같이 쓴다 |
 | 클라이언트 선택 | `server/github_clients.py`(5) | `client_for(source: GitHubSourceConfig, settings, secrets: SecretStore, *, app=None, transport=None) -> HttpGitHubClient \| None`, `SourceClients(settings, secrets, *, transport=None)(source) -> HttpGitHubClient \| None`(워커 `Worker(…, github_for=)`) |
-| 소스 맞춤 | `server/github_connect.py`(7) | `sync_installation_sources(conn, session_id, installation_id, repositories, now) -> list[str]`(새로 만든·갱신한 source_id) |
+| 소스 맞춤 | `server/github_connect.py`(7) | `sync_installation_sources(conn, session_id, installation_id, repositories, now) -> list[str]`(새로 만든·`installation_id` 를 바꾼·수집을 멈춘 source_id — 다시 부르면 `[]`), `ensure_token_source(conn, session_id, repository_full_name, now) -> str \| None`(없을 때만 만든 source_id). 새 소스 = `all_open`·`runloom`·`auto`·빈 자동 결정 칸·`start_at`=연결 시각. 저장소 비교는 대소문자 무시. 설치에서 빠졌다 다시 들어온 저장소의 멈춘 소스는 그대로 멈춰 있다(`installation_id` 가 같으면 바꿀 것이 없다 — 다시 켜기는 화면 몫) |
 | 자동 매칭 | `domain/github_match.py`(6) | `match_source(source, agents: Sequence[MatchAgent], *, assignee_ids=(), bindings=None) -> SourceMatch(workflow_repository_id, fix_verification_profile_id, fix_agent_id, review_agent_id, blockers)`, `MatchAgent(agent_id, github_repository, repository_id, capabilities, verification_profile_ids)`, `SourceMatch.fix_blockers`·`review_blockers`, `server/task_cycle.source_match(conn, task) -> SourceMatch \| None` |
 | 러너 보고 키 | `connector/discovery.py`(4) | `found.github_repository` = `"owner/name"` |
 | 환경변수 | `settings`(1) | `WORKFLOW_SECRET_DIR`(비밀 아님, compose 고정값 `/data/secrets`) |

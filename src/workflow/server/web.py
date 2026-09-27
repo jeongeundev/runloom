@@ -18,20 +18,22 @@ import json
 import logging
 import re
 import secrets
+import string
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from workflow.adapters import repo
+from workflow.adapters import repo, secret_store
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     DuplicateKind,
@@ -40,7 +42,16 @@ from workflow.adapters.errors import (
     KindProtected,
     NotFound,
 )
+from workflow.adapters.github_app import build_manifest, exchange_manifest_code, load_app, save_credentials
+from workflow.adapters.github_client import (
+    GitHubError,
+    GitHubNotFound,
+    GitHubRateLimited,
+    GitHubUnavailable,
+    HttpGitHubClient,
+)
 from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
+from workflow.contracts.github import RepositoryFullName
 from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
     BUILTIN_KIND_NAMES,
@@ -70,7 +81,7 @@ from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
 from workflow.domain.task_sources import Issue, map_issue
-from workflow.server import metrics_api, task_cycle, views
+from workflow.server import github_connect, metrics_api, task_cycle, views
 from workflow.server.auth import (
     SELFHOST_SESSION_ID,
     SESSION_COOKIE,
@@ -945,6 +956,31 @@ def task_run(
     return _redirect(f"/tasks/{task_id}", response)
 
 
+@router.post("/tasks/{task_id}/delegate")
+def task_delegate(
+    request: Request,
+    response: Response,
+    task_id: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[에이전트에게 맡기기] (ADR-0017) — GitHub 원본 Task 에 운영자 실행 지시를 한 번 기록하고(멱등) `/run` 과 같은
+    착수(`Worker.start_manually`)를 시도한다. 지금 못 시작하면 대기 사유는 상세에 남고 워커가 풀리는 대로 착수한다."""
+    now = utc_now()
+    task = _own_task(conn, session_id, task_id)
+    _require_operator_page(conn, session_id)
+    issue = repo.get_source_issue_by_task(conn, session_id, task_id)
+    if issue is None:
+        raise PageError(409, "not_delegatable", "GitHub 이슈에서 온 업무만 맡길 수 있습니다.")
+    if task["finished_at"] is not None:
+        raise PageError(409, "task_closed", "마감된 업무는 맡길 수 없습니다.")
+    repo.mark_issue_delegated(conn, session_id=session_id, source_id=issue["source_id"],
+                              github_issue_id=issue["github_issue_id"], by="operator", now=now)
+    worker = Worker(lambda: conn, request.app.state.store, None, None, _settings(request), lambda: now)
+    worker.start_manually(conn, task_id)
+    return _redirect(f"/tasks/{task_id}", response)
+
+
 def _run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, settings: Settings) -> None:
     """업무 순환 Task 의 직접 실행 — 워커와 같은 준비 판정·후속 결정·start_key 로 착수하고(`Worker.start_manually`)
     `manual_mode` 만 뺀다. 대상·입력은 워커가 Agent 등록값·원인 결과로 고정한다. 새 실행이 없으면 지금 대기 사유로 409."""
@@ -1565,6 +1601,215 @@ def operator_github_page(
     return _render(
         "operator_github.html", **base, **views.github_context(conn, session_id, now=now, settings=_settings(request)),
     )
+
+
+# --- GitHub 연결 경로 (phase 11 step 7, ADR-0017, ARCHITECTURE "경로") ---------------------------------------
+# state(CSRF): 쿠키 `wf_gh_state` = `<state>.<발급 epoch>.<HMAC>` — 서버 메모리·DB 에 두지 않고, 쿼리 state 와 비교하며
+# 발급 뒤 1시간(manifest code 유효 시간)이 지나면 거부한다. 비밀값(개인 키·client secret·webhook secret·PAT)은
+# SecretStore 에만 쓰고 응답·로그·예외 문구에 넣지 않는다.
+
+GH_STATE_COOKIE = "wf_gh_state"
+GH_STATE_PATH = "/operator/github/app"
+GH_STATE_MAX_AGE = 3600
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+_GITHUB_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+_TOKEN_CHARS = re.compile(r"[\x21-\x7e]{1,500}")  # PAT 는 공백 없는 ASCII — 헤더에 그대로 싣는다
+_REPOSITORY_NAME = TypeAdapter(RepositoryFullName)
+_APP_NAME_CHARS = string.ascii_lowercase + string.digits
+
+
+def _epoch() -> float:
+    return time.time()
+
+
+def _state_mac(value: str, secret: str) -> str:
+    return hmac.new(secret.encode(), f"gh-state:{value}".encode(), hashlib.sha256).hexdigest()
+
+
+def _issue_gh_state(request: Request, response: Response) -> str:
+    state = secrets.token_urlsafe(32)
+    value = f"{state}.{int(_epoch())}"
+    response.set_cookie(
+        GH_STATE_COOKIE, f"{value}.{_state_mac(value, _settings(request).session_secret)}",
+        max_age=GH_STATE_MAX_AGE, path=GH_STATE_PATH, httponly=True, samesite="lax",
+    )
+    return state
+
+
+def _gh_state_valid(request: Request, state: str | None) -> bool:
+    state_part, dot, rest = (request.cookies.get(GH_STATE_COOKIE) or "").partition(".")
+    issued, dot2, mac = rest.partition(".")
+    if not (state and dot and dot2 and issued.isdigit()):
+        return False
+    value = f"{state_part}.{issued}"
+    return (
+        hmac.compare_digest(mac, _state_mac(value, _settings(request).session_secret))
+        and 0 <= _epoch() - int(issued) <= GH_STATE_MAX_AGE
+        and hmac.compare_digest(state_part.encode(), state.encode())
+    )
+
+
+def _invalid_gh_state() -> PageError:
+    return PageError(403, "github_state_invalid",
+                     "GitHub 연결 요청을 확인할 수 없습니다(만료 또는 다른 요청). /operator/github 에서 다시 [GitHub 연결] 을 누르세요.")
+
+
+def _require_operator_page(conn: Connection, session_id: str) -> None:
+    session = repo.get_session(conn, session_id)
+    if session is None or not session["is_operator"]:
+        raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
+
+
+def _require_github_workspace(conn: Connection, session_id: str) -> None:
+    if any(owner != session_id for owner in repo.github_source_sessions(conn)):
+        raise PageError(409, "github_workspace_taken", "GitHub 연결은 이미 다른 운영자 워크스페이스가 쓰고 있습니다.")
+
+
+def _public_base(request: Request) -> str:
+    """App 이 돌아올 주소. `WORKFLOW_PUBLIC_URL` 이 없으면 요청 주소 — Host 헤더를 믿지 않도록 루프백만 받는다."""
+    settings = _settings(request)
+    if settings.public_url:
+        return settings.public_url
+    if request.url.hostname not in _LOOPBACK_HOSTS:
+        raise PageError(400, "public_url_required",
+                        "127.0.0.1·localhost 가 아닌 주소로 열었습니다. WORKFLOW_PUBLIC_URL 을 설정하세요.")
+    return str(request.base_url).rstrip("/")
+
+
+def _saved_app_slug(request: Request) -> str | None:
+    """저장된 App 의 slug — 개인 키와 정보가 모두 있을 때만."""
+    store = request.app.state.secrets
+    if not store.exists(secret_store.GITHUB_APP_PRIVATE_KEY):
+        return None
+    try:
+        slug = json.loads(store.read(secret_store.GITHUB_APP_INFO) or "")["slug"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return slug if isinstance(slug, str) and slug else None
+
+
+def _install_redirect(request: Request, response: Response, slug: str) -> RedirectResponse:
+    state = _issue_gh_state(request, response)
+    return _redirect(f"https://github.com/apps/{quote(slug, safe='')}/installations/new?state={state}", response)
+
+
+@router.get("/operator/github/app/new", response_class=HTMLResponse, response_model=None)
+def github_app_new(
+    request: Request,
+    response: Response,
+    org: str | None = Query(None),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str | RedirectResponse:
+    """[GitHub 연결] — manifest 를 담은 자동 제출 폼. App 이 이미 있으면 설치 화면으로 바로 보낸다."""
+    _require_operator_page(conn, session_id)
+    if org is not None and not _GITHUB_LOGIN.fullmatch(org):
+        raise PageError(422, "invalid_field", "GitHub 조직 이름 형식이 아닙니다.", field="org")
+    slug = _saved_app_slug(request)
+    if slug is not None:
+        return _install_redirect(request, response, slug)
+    base = _public_base(request)
+    manifest = build_manifest(base, "runloom-" + "".join(secrets.choice(_APP_NAME_CHARS) for _ in range(6)))
+    state = _issue_gh_state(request, response)
+    owner = f"organizations/{org}/" if org else ""
+    return _render(
+        "operator_github_app_new.html", **_base(request, conn, session_id, utc_now()),
+        action=f"https://github.com/{owner}settings/apps/new?state={state}",
+        manifest_json=json.dumps(manifest, ensure_ascii=False),
+    )
+
+
+@router.get("/operator/github/app/callback")
+def github_app_callback(
+    request: Request,
+    response: Response,
+    code: str = Query(""),
+    state: str = Query(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """GitHub 가 App 을 만들고 돌아온 곳 — code 교환 → 비밀 저장 → 설치 화면. code·응답 본문은 싣지 않는다."""
+    _require_operator_page(conn, session_id)
+    if not _gh_state_valid(request, state):
+        raise _invalid_gh_state()
+    try:
+        creds = exchange_manifest_code(code, transport=request.app.state.github_transport)
+    except (ValueError, GitHubError) as exc:
+        logger.warning("GitHub App manifest 교환 실패: %s", type(exc).__name__)
+        raise PageError(400, "github_manifest_failed",
+                        "GitHub App 을 만들지 못했습니다. /operator/github 에서 다시 [GitHub 연결] 을 누르세요.") from None
+    save_credentials(request.app.state.secrets, creds, utc_now())
+    return _install_redirect(request, response, creds.slug)
+
+
+@router.get("/operator/github/app/setup")
+def github_app_setup(
+    request: Request,
+    response: Response,
+    installation_id: int = Query(ge=1),
+    setup_action: str | None = Query(None),  # install·update — 값으로 분기하지 않는다
+    state: str | None = Query(None),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """설치 뒤 돌아온 곳 — App JWT 로 우리 App 의 설치인지 확인한 뒤 설치 저장소마다 소스를 맞춘다.
+    state 가 없으면(GitHub 설정 화면에서 설치를 바꾸고 온 경우) 운영자 세션만으로 받는다."""
+    _require_operator_page(conn, session_id)
+    if state is not None and not _gh_state_valid(request, state):
+        raise _invalid_gh_state()
+    _require_github_workspace(conn, session_id)
+    auth = load_app(request.app.state.secrets, transport=request.app.state.github_transport)
+    if auth is None:
+        raise PageError(409, "github_app_missing", "저장된 GitHub App 이 없습니다. /operator/github 에서 [GitHub 연결] 을 누르세요.")
+    try:
+        auth.get_installation(installation_id)
+    except GitHubNotFound:
+        raise PageError(400, "github_installation_invalid", "이 App 의 설치가 아닙니다.") from None
+    except GitHubError as exc:
+        logger.warning("GitHub 설치 확인 실패: %s", exc)
+        raise PageError(502, "github_unavailable", "GitHub 에서 설치를 확인하지 못했습니다. 잠시 뒤 다시 여세요.") from None
+    try:
+        repositories = auth.list_installation_repositories(installation_id)
+    except GitHubError as exc:
+        logger.warning("GitHub 설치 저장소 조회 실패: %s", exc)
+        raise PageError(502, "github_unavailable", "GitHub 에서 설치 저장소를 읽지 못했습니다. 잠시 뒤 다시 여세요.") from None
+    github_connect.sync_installation_sources(conn, session_id, installation_id, repositories, utc_now())
+    response.delete_cookie(GH_STATE_COOKIE, path=GH_STATE_PATH)
+    return _redirect("/operator/github", response)
+
+
+@router.post("/operator/github/token")
+def github_token_connect(
+    request: Request,
+    response: Response,
+    token: str = Form(""),
+    repository_full_name: str = Form(""),
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """고급: 붙여 넣은 PAT 로 저장소를 볼 수 있는지 확인한 뒤 비밀 파일에 쓰고 그 저장소 소스를 만든다.
+    토큰 값·길이는 응답·로그에 싣지 않는다."""
+    _require_operator_page(conn, session_id)
+    try:
+        name = _REPOSITORY_NAME.validate_python(repository_full_name.strip())
+    except ValidationError:
+        raise PageError(422, "invalid_field", "저장소는 owner/name 형식이어야 합니다.",
+                        field="repository_full_name") from None
+    token = token.strip()
+    if not _TOKEN_CHARS.fullmatch(token):
+        raise PageError(400, "github_token_invalid", "GitHub 토큰을 붙여 넣으세요.", field="token")
+    _require_github_workspace(conn, session_id)
+    try:
+        HttpGitHubClient(token, [name], transport=request.app.state.github_transport).repository_id(name)
+    except (GitHubRateLimited, GitHubUnavailable) as exc:
+        logger.warning("GitHub 토큰 확인 실패: %s", exc)
+        raise PageError(502, "github_unavailable", "GitHub 에 연결하지 못했습니다. 잠시 뒤 다시 시도하세요.") from None
+    except GitHubError:
+        raise PageError(400, "github_token_invalid", f"이 토큰으로 저장소 {name} 를 볼 수 없습니다.",
+                        field="token") from None
+    request.app.state.secrets.write(secret_store.GITHUB_TOKEN, token)
+    github_connect.ensure_token_source(conn, session_id, name, utc_now())
+    return _redirect("/operator/github", response)
 
 
 @router.get("/metrics", response_class=HTMLResponse)

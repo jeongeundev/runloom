@@ -308,6 +308,22 @@ def test_app_installation_source_is_allowed_without_the_env_allow_list(cycle, co
     assert len(executions(conn, task_id)) == 1
 
 
+def test_pasted_token_source_is_allowed_without_the_env_allow_list(cycle, conn, worker, settings):
+    """화면에서 붙여 넣은 PAT 가 있으면 그 토큰의 클라이언트가 소스 저장소를 허용하듯 준비 판정도 막지 않는다(ADR-0017)."""
+    from workflow.adapters import secret_store
+    from workflow.adapters.secret_store import SecretStore
+
+    task_id = import_issue(conn, 1)
+    narrowed = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(),
+                      dataclasses.replace(settings, github_repos=()), worker._clock)
+    narrowed.tick()
+    assert executions(conn, task_id) == []
+
+    SecretStore(settings.secret_dir).write(secret_store.GITHUB_TOKEN, "github_pat_TESTVALUE")
+    narrowed.tick()
+    assert len(executions(conn, task_id)) == 1
+
+
 def test_all_open_task_waits_for_delegation_then_starts(cycle, conn, worker):
     repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, intake="all_open", label_filter=[],
                                                   trigger_label="runloom"), NOW)
