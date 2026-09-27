@@ -21,7 +21,10 @@
     {
       "step": 2,
       "name": "app-auth",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-27T18:15:41+0900",
+      "summary": "신설 src/workflow/adapters/github_app.py — AppCredentials(비밀 3칸 repr 제외)·exchange_manifest_code(code 는 [A-Za-z0-9_-] 만, 오류 문구에 code·본문 없음, 404 GitHubNotFound·422 GitHubError)·save_credentials(store, creds, now)(github_app.json + 비밀 파일, 개인 키 마지막)·load_app(store, *, transport)·GitHubAppAuth(client_id, pem, *, transport, clock) — ARCHITECTURE 표를 따름(step.md 의 app_id·installation_id 생성자 아님): app_jwt(RS256, iat-60, exp+9분, iss=client_id), installation_token(id)(설치별 메모리 캐시, 만료 5분 전 갱신), invalidate(id), get_installation(id)->Installation, list_installation_repositories(id)->[InstalledRepository](per_page 100, Link 페이지, 다른 host 거부); JWT 호출 401 은 JWT 재생성 1회, 설치 토큰 호출 401 은 캐시 버리고 1회 재시도. github_client: TokenProvider Protocol(token·invalidate — ARCHITECTURE 표에 invalidate 추가)·InstallationTokenProvider(auth, id)·HttpGitHubClient(token: str | TokenProvider) — Authorization 을 요청마다 채움, 공급자면 401 에 invalidate 후 1회 재시도(문자열 토큰은 재시도 없음, _FixedToken 으로 repr 숨김), 오류 분류·Link 페이지를 모듈 함수 check_response·next_page 로 빼 github_app 과 공유, 허용 저장소 오류 문구 'WORKFLOW_GITHUB_REPOS 에 없습니다'→'허용 저장소 목록에 없습니다'(허용 목록은 호출자가 환경변수 또는 설치 저장소로 넘김), from_env 그대로. pyproject PyJWT[crypto]>=2.10,<3(설치본 2.15.0). 테스트: tests/workflow/adapters/test_github_app.py 37개(테스트 안 RSA 키 생성·공개 키로 서명 검증, manifest 파싱·오류, 캐시·만료·401, 페이지, 비밀 미노출) + test_github_client.py 토큰 공급자 7개. 검증: pytest 2527 passed/55 skipped, ruff 통과. 주의: build_manifest 는 step 7(ARCHITECTURE 표에 명시), client_for 는 설치 소스에 InstallationTokenProvider(load_app(store), installation_id) 를 쓰고 허용 목록에 설치 저장소 이름을 넘긴다. load_app 은 호출마다 새 GitHubAppAuth(새 캐시)라 워커·central 은 프로세스당 하나를 재사용해야 토큰 캐시가 산다.",
+      "completed_at": "2026-09-27T18:23:06+0900"
     },
     {
       "step": 3,
