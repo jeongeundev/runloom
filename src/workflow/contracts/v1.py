@@ -352,10 +352,12 @@ class ProgressData(_Contract):
 
 
 class ResultReadyData(_OmitUnknownMeasure):
-    _MEASURE_FIELDS = ("usage",)
+    _MEASURE_FIELDS = ("usage", "branch_pushed")
 
     result_artifact_id: NonEmptyStr
     usage: ExecutionUsage | None = None
+    # 러너가 `task/<task_id>` 를 origin 에 push 한 결과 (ADR-0018 결정 4). 생략 = 시도 안 함·구버전.
+    branch_pushed: bool | None = None
 
 
 class FailedData(_OmitUnknownMeasure):

@@ -740,6 +740,39 @@ def test_events_with_measure_fields_store_folder_commit_and_usage(client, header
     assert _measure(seeded, exec_fix) == (FOLDER_COMMIT, 1, 0.25, 1200, None)
 
 
+def _result_ready_data(conn, execution_id) -> dict:
+    row = conn.execute(
+        "SELECT data_json FROM execution_events WHERE execution_id = ? AND type = 'result_ready'", (execution_id,)
+    ).fetchone()
+    return json.loads(row["data_json"])
+
+
+@pytest.mark.parametrize("pushed", [True, False])
+def test_result_ready_branch_pushed_is_stored(client, headers, exec_fix, seeded, pushed):
+    """ADR-0018 결정 4: 러너의 push 결과는 실행의 result_ready 기록에 남는다 (executions 칸은 스키마 v8, step 6)."""
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 1, "accepted", {})).status_code == 200
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 2, "started", {"runtime_ref": "pid:1"})).status_code == 200
+    artifact_id = _upload(client, headers, exec_fix, b"diff --git a/x b/x\n").json()["artifact_id"]
+    ready = event(exec_fix, 3, "result_ready", {"result_artifact_id": artifact_id, "branch_pushed": pushed})
+
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200  # 같은 seq 재전송
+
+    assert _result_ready_data(seeded, exec_fix)["branch_pushed"] is pushed
+    assert repo.get_execution(seeded, exec_fix)["status"] == "result_ready"
+
+
+def test_result_ready_without_branch_pushed_from_old_runner_is_accepted(client, headers, exec_fix, seeded):
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 1, "accepted", {})).status_code == 200
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 2, "started", {"runtime_ref": "pid:1"})).status_code == 200
+    artifact_id = _upload(client, headers, exec_fix, b"diff --git a/x b/x\n").json()["artifact_id"]
+
+    ready = event(exec_fix, 3, "result_ready", {"result_artifact_id": artifact_id})
+    assert _post_event(client, headers, exec_fix, ready).status_code == 200
+
+    assert "branch_pushed" not in _result_ready_data(seeded, exec_fix)
+
+
 def test_events_without_measure_fields_keep_null(client, headers, running, seeded):
     body = event(running, 4, "failed", {"code": "timeout", "message": "시간 초과", "process_stopped": True})
     assert _post_event(client, headers, running, body).status_code == 200

@@ -1264,3 +1264,82 @@ def test_claim_reports_the_real_origin_default_branch_after_upstream_push(fake, 
     runner.tick()
 
     assert fake.claim_bodies[-1]["registration_heads"] == {"OpenArchive": git(seed, "rev-parse", "HEAD")}
+
+
+# --- 결과 브랜치 push (ADR-0018 결정 4, phase 12 step 5) ------------------------------------------------
+
+
+def _with_bare_origin(repo: Path, tmp_path) -> Path:
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(repo), str(bare))
+    _git(repo, "remote", "add", "origin", str(bare))
+    return bare
+
+
+def test_fix_result_pushes_task_branch_and_reports_branch_pushed(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    bare = _with_bare_origin(repo, tmp_path)
+    main_before = _git(bare, "rev-parse", "main")
+    request = assign_with_handoff(fake)
+    adapter = WorktreeAdapter(repo)
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready" and events[-1]["data"]["branch_pushed"] is True
+    assert _git(bare, "rev-parse", f"refs/heads/task/{request.task_id}") == adapter.result_commit
+    assert _git(bare, "rev-parse", "main") == main_before
+
+
+def test_fix_result_push_failure_still_reports_result_ready(fake, client, state_conn, paths, tmp_path):
+    repo = make_git_repo(tmp_path)
+    bare = _with_bare_origin(repo, tmp_path)
+    modes = {p: p.stat().st_mode for p in [bare, *bare.rglob("*")]}
+    for p in modes:
+        p.chmod(modes[p] & ~0o222)  # origin 쓰기 불가
+    request = assign_with_handoff(fake)
+    try:
+        make_runner(client, state_conn, paths, WorktreeAdapter(repo), tmp_path).tick()
+    finally:
+        for p, mode in modes.items():
+            p.chmod(mode)
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready" and events[-1]["data"]["branch_pushed"] is False
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+    result = CodeChangeResult.model_validate_json(fake.artifacts_of(request.execution_id)["code_change_result"]["data"])
+    assert result.outcome == "ready_for_review"
+
+
+def test_fix_result_without_origin_omits_branch_pushed(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    repo = make_git_repo(tmp_path)
+    request = assign_with_handoff(fake)
+    pushed: list = []
+    monkeypatch.setattr(git_ops, "push_task_branch", lambda *a: pushed.append(a) or True)
+
+    make_runner(client, state_conn, paths, WorktreeAdapter(repo), tmp_path).tick()
+
+    assert "branch_pushed" not in fake.events_of(request.execution_id)[-1]["data"]
+    assert pushed == []
+
+
+def test_code_review_does_not_push(fake, client, state_conn, paths, tmp_path, monkeypatch):
+    repo = make_git_repo(tmp_path)
+    _with_bare_origin(repo, tmp_path)
+    base = git_ops.head_sha(repo)
+    worktree = git_ops.ensure_worktree(repo, "task-gh-41", base)
+    (worktree / "pkg.py").write_text("X = 2\n")
+    result_commit = git_ops.commit_all(worktree, "fix")
+    git_ops.remove_worktree(repo, worktree)
+    register(state_conn, tmp_path, "local-billing-claude", tool="claude")
+    request = assign_with_generic_handoff(fake, make_review_request(base, result_commit))
+    pushed: list = []
+    monkeypatch.setattr(git_ops, "push_task_branch", lambda *a: pushed.append(a) or True)
+    runner = Runner(client, state_conn, paths, {"claude": StubAdapter(output=review_output(request))}, CONNECTOR_ID,
+                    lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready" and "branch_pushed" not in events[-1]["data"]
+    assert pushed == []

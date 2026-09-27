@@ -24,6 +24,8 @@
 - 기준 커밋 보고(ADR-0018 결정 2): claim 전에 등록마다 `BASE_FETCH_INTERVAL_SECONDS` 간격으로 `git fetch origin` 하고
   `origin/HEAD` 커밋을 claim 의 `registration_heads` 로 보낸다. fetch 에 실패한 등록은 빼고 로그만 남긴다. 실행 중에는
   claim 을 하지 않으므로 fetch 도 없다.
+- 결과 브랜치 push(ADR-0018 결정 4): 수정 결과가 `ready_for_review`·결과 커밋이면 `result_ready` 전에 등록 폴더에서
+  `task/<task_id>` 를 origin 에 push 하고 `branch_pushed` 로 보고한다. 검토·사용자 정의 종류는 push 하지 않는다.
 """
 
 import hashlib
@@ -434,9 +436,20 @@ class Runner:
         )
         created = self._client.upload_artifact(execution_id, meta, data)
         self._emit(  # 중앙이 받으면 `_flush` 끝의 `_cleanup_if_delivered` 가 작업 디렉터리를 지운다
-            execution_id, "result_ready", {"result_artifact_id": created.artifact_id, **_usage_data(usage)},
+            execution_id, "result_ready",
+            {"result_artifact_id": created.artifact_id, **_usage_data(usage), **self._push_result(request, result)},
             finished_at=self._clock(),
         )
+
+    def _push_result(self, request: ExecutionRequest, result: CodeChangeResult | CodeReviewResult | GenericResult) -> dict:
+        """수정 결과(`ready_for_review`·결과 커밋 있음)면 등록 폴더에서 `task/<task_id>` 를 origin 에 push 하고
+        `branch_pushed` 칸을 돌려준다. origin 이 없거나 push 대상이 아니면 칸을 뺀다. 실패해도 결과는 그대로다."""
+        if not (isinstance(result, CodeChangeResult) and result.outcome == "ready_for_review" and result.result_commit):
+            return {}
+        repo = self._registered_repo(request)
+        if repo is None or not repo.is_dir() or not git_ops.has_origin(repo):
+            return {}
+        return {"branch_pushed": git_ops.push_task_branch(repo, request.task_id)}
 
     def _finish_failed(
         self, execution_id: str, failed: tuple[str, str, bool], usage: ExecutionUsage | None = None,

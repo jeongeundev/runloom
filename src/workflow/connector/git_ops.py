@@ -7,6 +7,8 @@
   는 코드 상수이고, 자격 입력 프롬프트 없이(`GIT_TERMINAL_PROMPT=0`) 제한 시간 안에 끝낸다.
 - 작업 복사본 준비물(ADR-0018 결정 3): `link_prepared_paths` 가 등록의 `links` 를 원본 폴더로 향하는 심볼릭 링크로 걸고
   저장소 공용 `info/exclude` 에 넣는다. 원본 폴더의 파일은 읽기만 한다.
+- 결과 브랜치 push(ADR-0018 결정 4): `push_task_branch` 는 `task/<task_id>` 만 같은 이름으로 origin 에 보낸다. force 없음,
+  사용자 로컬 git 자격·훅 그대로. 실패 로그에서 원격 URL 은 가린다(자격이 URL 에 들어 있을 수 있다).
 """
 
 import logging
@@ -21,6 +23,7 @@ _ORIGIN_HEAD = "refs/remotes/origin/HEAD"
 _TEST_FILE = re.compile(r"(^|/)test_[^/]*\.py$")
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 _GITIGNORE_SPECIAL = re.compile(r"([\\*?\[])")
+_REMOTE_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|\S+@\S+:\S*")
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +88,26 @@ def origin_head(repo: Path) -> str | None:
         return None
 
 
+def has_origin(repo: Path) -> bool:
+    return subprocess.run(["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True).returncode == 0
+
+
+def push_task_branch(repo: Path, task_id: str) -> bool:
+    """`task/<task_id>` 를 origin 의 같은 이름 브랜치로 push 한다 (fast-forward 만). 거부·자격 없음·네트워크·시간 초과는
+    False 와 로그 — 호출자는 실행 결과를 바꾸지 않는다. 대상 ref 가 `refs/heads/task/…` 로 고정이라 기본 브랜치에 닿지 않는다."""
+    ref = f"refs/heads/{_task_branch(task_id)}"
+    try:
+        _git(["push", "--quiet", "origin", f"{ref}:{ref}"], repo, network=True)
+    except GitError as exc:
+        log.info("task 브랜치 push 실패 (%s): %s", ref, _REMOTE_URL.sub("<원격>", str(exc)))
+        return False
+    return True
+
+
+def _task_branch(task_id: str) -> str:
+    return f"task/{_safe(task_id)}"
+
+
 def worktree_path(repo: Path, task_id: str) -> Path:
     return repo.parent / f"{repo.name}-worktrees" / _safe(task_id)
 
@@ -92,7 +115,7 @@ def worktree_path(repo: Path, task_id: str) -> Path:
 def ensure_worktree(repo: Path, task_id: str, base_commit: str) -> Path:
     """없으면 `task/<task_id>` 브랜치로 base_commit 에서 만든다. 있으면 그 브랜치인지 확인하고 그대로 쓴다."""
     path = worktree_path(repo, task_id)
-    branch = f"task/{_safe(task_id)}"
+    branch = _task_branch(task_id)
     if path.exists():
         current = _git(["rev-parse", "--abbrev-ref", "HEAD"], path).strip()
         if current != branch:
