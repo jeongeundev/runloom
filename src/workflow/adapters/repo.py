@@ -68,6 +68,7 @@ from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts
 from workflow.domain.pull_request import head_branch
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
+from workflow.domain.work_status import PullRequestFact, RequestFact, StageFact, WorkItemFacts
 
 TOKEN_PREFIX = "wfc_"
 SOURCE_TOKEN_PREFIX = "wfs_"
@@ -110,13 +111,88 @@ def _require_rowcount(cursor: sqlite3.Cursor, what: str) -> None:
 
 def create_session(conn: Connection, session_id: str, now: str) -> None:
     """세션 생성과 함께 내장 종류(`BUILTIN_KINDS`)·내장 규칙(`BUILTIN_RULES`)을 이 세션에 seed 한다 (ADR-0009).
-    이미 있는 세션에는 v4 → v5 마이그레이션(`db._seed_phase8_kinds`)이 phase 8 종류를 넣는다."""
+    이미 있는 세션에는 v4 → v5 마이그레이션(`db._seed_phase8_kinds`)이 phase 8 종류를 넣는다.
+    첫 관리자·기본 매핑도 같은 트랜잭션에서 만든다(ADR-0020) — 기존 세션에는 v9 → v10 이 넣는다."""
     with _tx(conn):
         conn.execute("INSERT INTO sessions (session_id, created_at) VALUES (?, ?)", (session_id, now))
         for spec in BUILTIN_KINDS:
             _insert_kind_row(conn, session_id, spec, now)
         for rule in BUILTIN_RULES:
             _insert_rule_row(conn, session_id, rule, now)
+        ensure_first_admin(conn, session_id, now=now)
+        seed_default_field_mappings(conn, session_id, now=now)
+
+
+# 새 워크스페이스의 기본 매핑 — GitHub 이슈는 라벨과 무관하게 지금처럼 bug_fix (ARCHITECTURE "매핑 표").
+DEFAULT_FIELD_MAPPINGS = (("github", "kind", "*", "bug_fix"),)
+
+
+def ensure_first_admin(conn: Connection, session_id: str, *, now: str) -> str:
+    """워크스페이스의 첫 관리자 id. 없으면 만든다. 자체 BEGIN 이 없다 — `create_session`·마이그레이션이 부른다."""
+    row = _one(conn, "SELECT member_id FROM members WHERE session_id = ? AND role = 'admin'"
+                     " ORDER BY created_at, member_id LIMIT 1", (session_id,))
+    if row is not None:
+        return row["member_id"]
+    member_id = f"mem-{secrets.token_hex(4)}"
+    conn.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+                 " VALUES (?, ?, '관리자', 'admin', ?)", (member_id, session_id, now))
+    return member_id
+
+
+def seed_default_field_mappings(conn: Connection, session_id: str, *, now: str) -> None:
+    """기본 매핑 행을 넣는다. 설정 번호는 올리지 않는다. 자체 BEGIN 이 없다."""
+    for position, (source_type, field, source_value, runloom_value) in enumerate(DEFAULT_FIELD_MAPPINGS, start=1):
+        conn.execute(
+            "INSERT INTO field_mappings (mapping_id, session_id, source_type, field, source_value, runloom_value,"
+            " position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (f"map-{secrets.token_hex(4)}", session_id, source_type, field, source_value, runloom_value, position,
+             now),
+        )
+
+
+def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
+    """업무 상태 판정(`domain/work_status.work_status`)의 재료를 DB 에서 모은다. 사실을 모으는 SQL 은 여기 한 곳."""
+    item = _one(conn, "SELECT status, status_reason, assignee_type FROM work_items WHERE work_item_id = ?",
+                (work_item_id,))
+    if item is None:
+        raise NotFound(f"work item {work_item_id}")
+    stages = conn.execute(
+        "SELECT t.task_id, t.kind, COALESCE(json_extract(k.spec_json, '$.label'), t.kind) AS kind_label, t.status,"
+        " t.status_reason, t.created_at, t.chosen_agent_id,"
+        " EXISTS (SELECT 1 FROM executions e WHERE e.task_id = t.task_id) AS executed"
+        " FROM tasks t JOIN kinds k ON k.session_id = t.session_id AND k.kind = t.kind"
+        " WHERE t.work_item_id = ? ORDER BY t.created_at, t.task_id",
+        (work_item_id,),
+    ).fetchall()
+    requests = conn.execute(
+        "SELECT h.code, h.question FROM human_requests h JOIN tasks t ON t.task_id = h.task_id"
+        " WHERE t.work_item_id = ? AND h.state = 'open' ORDER BY h.created_at, h.request_id",
+        (work_item_id,),
+    ).fetchall()
+    pr = _one(conn, "SELECT p.state, p.pr_number FROM task_pull_requests p JOIN tasks t ON t.task_id = p.task_id"
+                    " WHERE t.work_item_id = ? ORDER BY p.created_at DESC, p.task_id DESC LIMIT 1", (work_item_id,))
+    # 지시 전 = 원본 소스가 all_open 이고 원본 이슈에 지시 기록이 없음
+    undelegated = _one(
+        conn,
+        "SELECT 1 FROM source_issues si JOIN tasks t ON t.task_id = si.task_id"
+        " JOIN github_sources gs ON gs.source_id = si.source_id"
+        " WHERE t.work_item_id = ? AND json_extract(gs.config_json, '$.intake') = 'all_open'"
+        " AND si.delegated_by IS NULL",
+        (work_item_id,),
+    )
+    return WorkItemFacts(
+        stored_status=item["status"],
+        stored_reason=item["status_reason"],
+        assigned=item["assignee_type"] is not None or any(s["chosen_agent_id"] for s in stages),
+        delegated=undelegated is None,
+        stages=tuple(
+            StageFact(task_id=s["task_id"], kind=s["kind"], kind_label=s["kind_label"], status=s["status"],
+                      status_reason=s["status_reason"], created_at=s["created_at"], executed=bool(s["executed"]))
+            for s in stages
+        ),
+        open_requests=tuple(RequestFact(code=r["code"], question=r["question"]) for r in requests),
+        pull_request=PullRequestFact(state=pr["state"], number=pr["pr_number"]) if pr else None,
+    )
 
 
 def get_session(conn: Connection, session_id: str) -> Row | None:

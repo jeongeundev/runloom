@@ -957,9 +957,9 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 1. 새 표 5개·`tasks.work_item_id` 칸·인덱스.
 2. 세션마다 Task 를 `created_at`, `task_id` 순으로 보며 업무를 정한다: `followup_links.task_id` 에 있는 Task 는 그 `cause_execution_id` 실행의 Task 가 속한 업무(원인이 먼저 만들어졌으므로 이미 정해져 있다), 그 밖 Task 는 각자 새 업무.
 3. 업무 키: 업무의 가장 이른 Task `created_at`(같으면 `task_id`) 순으로 세션마다 1 부터.
-4. 업무 칸: 제목·요청·종류 = 첫 단계, 우선순위 `normal`, 담당 = 첫 단계 `chosen_agent_id` 가 있으면 `agent`, 원본 = 첫 단계에 `source_issues` 행이 있으면 `github`(칸은 위 "원본 칸"), `chain_id` 가 있고 `chains.source = 'n8n'` 이면 `n8n`, 그 밖 `manual`. `form_json` `{}`(양식은 새로 가져올 때부터). `created_at` = 첫 단계, `updated_at` = 마이그레이션 시각.
+4. 업무 칸: 제목·요청·종류 = 첫 단계, 우선순위 `normal`, 담당 = 첫 단계 `chosen_agent_id` 가 있으면 `agent`, 원본 = 첫 단계에 `source_issues` 행이 있으면 `github`(칸은 위 "원본 칸"), `chain_id` 가 있고 `chains.source = 'n8n'` 이면 `n8n`, 그 밖 `manual`. `form_json` `{}`(양식은 새로 가져올 때부터). `created_at` = 첫 단계, `updated_at` = 마이그레이션 시각. n8n 업무의 `source_item_id`·`source_key` 는 둘 다 첫 단계 `source_ref`(항목 `key` — 옛 행에 항목 id 가 따로 없다).
 5. 업무 사이 선행: `predecessor_task_id` 가 다른 업무의 Task 를 가리키면 `blocks` 링크(선행 업무 → 이 업무). step 4 가 준비 판정을 링크로 옮길 때 이 Task 들의 `predecessor_task_id` 를 NULL 로 바꾸는 줄을 같은 마이그레이션에 더한다(그 전 step 에서는 남겨 둔다). `predecessor_task_id` 로 미리 등록한 검토 Task 는 `followup_links` 가 없으면 별도 업무 + `blocks` 가 된다.
-6. 업무 상태: `work_status(facts)` 로 계산해 넣는다(이벤트 없음). 워커가 첫 tick 에 다시 계산한다.
+6. 업무 상태: `repo.work_item_facts` → `work_status(facts)` 로 계산해 넣는다(이벤트 없음, 끝 상태면 `closed_at` = 마이그레이션 시각). 워커가 첫 tick 에 다시 계산한다.
 7. 세션마다 첫 관리자·매핑 seed. `config_revision` 은 올리지 않는다.
 8. `PRAGMA foreign_key_check` → 버전 10. 기준선·지표 기록(`baseline_*`·`task_events`·`executions` 측정 칸)은 그대로.
 

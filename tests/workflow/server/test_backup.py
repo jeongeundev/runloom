@@ -246,22 +246,29 @@ def test_help_says_stop_services_before_restore(capsys):
     assert "멈춘" in capsys.readouterr().out
 
 
-# --- phase 13: 셀프호스트 모양 v8 DB 사본 → v9 + 백업 왕복 (ADR-0019, SELFHOST "업그레이드") ---------------------
+# --- phase 13·14: 셀프호스트 모양 v8 DB 사본 → v10 + 백업 왕복 (ADR-0019·0020, SELFHOST "업그레이드") -----------
 
 V8_NOW = "2026-09-28T00:00:00Z"
 LEGACY_KINDS = ("diagnosis", "code_change")
 V8_SESSION = "sess-selfhost"
+V9_SCHEMA = (Path(__file__).parents[2] / "workflow" / "adapters" / "fixtures" / "schema_v9.sql").read_text()
 
 
 def _v8_selfhost(db_path: Path, artifact_dir: Path) -> None:
     """phase 12 셀프호스트가 남긴 모양 — 워크스페이스 하나(운영자), 옛 내장 4종류·규칙 2개, GitHub 순환 행.
-    v8 과 v9 는 표 구조가 같아 새 스키마에 옛 행을 넣고 버전을 8 로 되돌려 만든다."""
-    from workflow.adapters import repo
+    v8 과 v9 는 표 구조가 같아 고정한 v9 스키마 원문에 옛 행을 넣고 버전을 8 로 둔다."""
+    from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
 
     conn = connect(db_path)
-    init_schema(conn)
-    repo.create_session(conn, V8_SESSION, V8_NOW)
-    repo.mark_operator(conn, V8_SESSION)
+    conn.executescript(V9_SCHEMA)
+    conn.execute("INSERT INTO schema_version (version) VALUES (8)")
+    conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (V8_SESSION, V8_NOW))
+    for spec in BUILTIN_KINDS:
+        conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                     (V8_SESSION, spec.kind, spec.model_dump_json(), V8_NOW))
+    conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                 " VALUES ('rule-builtin', ?, 'bug_fix', 'code_review', ?, ?)",
+                 (V8_SESSION, BUILTIN_RULES[0].model_dump_json(), V8_NOW))
     for kind in LEGACY_KINDS:
         conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, '{}', ?)",
                      (V8_SESSION, kind, V8_NOW))
@@ -297,7 +304,6 @@ def _v8_selfhost(db_path: Path, artifact_dir: Path) -> None:
             "INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
             " payload_json, state, created_at) VALUES (?, ?, 'pr_opened', ?, ?, 'c', '{}', 'sent', ?)",
             (f"ntf-0000000{n}", V8_SESSION, f"t-fix-{n}", f"pr_opened:t-fix-{n}", V8_NOW))
-    conn.execute("UPDATE schema_version SET version = 8")
     conn.close()
     (artifact_dir / V8_SESSION).mkdir(parents=True, exist_ok=True)
     (artifact_dir / V8_SESSION / "diff.patch").write_text("--- a\n+++ b\n", encoding="utf-8")
@@ -323,7 +329,7 @@ def _version_and_kinds(db_path: Path) -> tuple[int, list[str]]:
         conn.close()
 
 
-def test_selfhost_v8_copy_upgrades_to_v9_and_backups_round_trip(tmp_path, capsys):
+def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     env = _env(src)
@@ -337,13 +343,17 @@ def test_selfhost_v8_copy_upgrades_to_v9_and_backups_round_trip(tmp_path, capsys
     assert backup.main(["list"], env=env) == 0
     assert capsys.readouterr().out.strip().endswith("schema 8")
 
-    # 2) v9 로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로
+    # 2) v10 으로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로, 이슈마다 수정·검토가 각자 업무
+    #    (후속 연결 없음), 첫 관리자·기본 매핑 하나
     conn = connect(src / "central.sqlite")
     init_schema(conn)
     conn.close()
     v9_counts = _counts(src / "central.sqlite")
-    assert v9_counts == {**v8_counts, "kinds": 2, "succession_rules": 1}
-    assert _version_and_kinds(src / "central.sqlite") == (9, ["bug_fix", "code_review"])
+    assert v9_counts == {
+        **v8_counts, "kinds": 2, "succession_rules": 1,
+        "work_items": 6, "work_item_links": 0, "members": 1, "field_mappings": 1, "work_item_events": 0,
+    }
+    assert _version_and_kinds(src / "central.sqlite") == (10, ["bug_fix", "code_review"])
 
     # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
     assert backup.main(["create"], env=env, now=lambda: T2) == 0
