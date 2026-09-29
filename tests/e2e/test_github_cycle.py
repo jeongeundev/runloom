@@ -992,6 +992,26 @@ def test_12_everything_settles_without_duplicates_and_github_sees_one_comment_pe
     assert _git(world.billing, "rev-parse", "main") == world.base["billing"]
     assert _git(world.shop, "rev-parse", "main") == world.base["shop"]
 
+    # 업무 기준 (phase 14) — 이슈 하나 = 업무 하나. B 의 검토 F 는 같은 업무의 두 번째 단계, 미리 등록한 C 는 A 와
+    # 다른 업무(blocks 연결). 승인 뒤 병합·이슈 종료는 사람이라 B 업무는 내 차례
+    assert q(world, "SELECT COUNT(*) FROM work_items WHERE session_id = ?", world.session_id)[0][0] == 6  # 이슈 5 + C
+    b_work = q(world, "SELECT w.* FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ?", t["B"])[0]
+    stages = q(world, "SELECT task_id FROM tasks WHERE work_item_id = ? ORDER BY created_at, task_id",
+               b_work["work_item_id"])
+    assert [r["task_id"] for r in stages] == [t["B"], t["F"]]
+    assert (b_work["status"], b_work["source_key"]) == ("내 차례", "acme/shop#1")
+    flow = [json.loads(r["data_json"])["to"] for r in q(
+        world, "SELECT data_json FROM work_item_events WHERE work_item_id = ? AND type = 'status_changed' ORDER BY id",
+        b_work["work_item_id"])]
+    assert "에이전트 작업 중" in flow and flow[-1] == "내 차례"
+    assert result_branch_of(world, t["B"]) == f"runloom/RUN-{b_work['key_number']}"
+    assert _git(world.shop, "rev-parse", result_branch_of(world, t["B"])) == fix_result(world, execs(world, t["B"])[0]).result_commit
+    (link,) = q(world, "SELECT l.type FROM work_item_links l JOIN tasks a ON a.work_item_id = l.from_work_item_id"
+                       " JOIN tasks c ON c.work_item_id = l.to_work_item_id WHERE a.task_id = ? AND c.task_id = ?",
+                t["A"], t["C"])
+    assert link["type"] == "blocks"
+
 
 def test_13_github_token_never_leaves_the_central_environment(world):
     """토큰은 가짜 GitHub 요청 헤더에만 — DB·산출물·로그·연결 프로그램 상태·저장소·댓글에 없다(도구 환경은 가짜 codex 가 검사)."""

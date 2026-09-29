@@ -321,6 +321,21 @@ def received(world: World, event: str) -> list[dict]:
     return [b for b in world.ctx["receiver"].bodies() if b.get("event") == event]
 
 
+def work_of(world: World, task_id: str):
+    """단계(Task)가 속한 업무 행 (phase 14)."""
+    (row,) = q(world, "SELECT w.* FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ?", task_id)
+    return row
+
+
+def status_flow(world: World, work_item_id: str) -> list[str]:
+    """업무 상태가 거쳐 온 값 — 처음 값 + `status_changed` 이벤트의 `to` 들."""
+    rows = q(world, "SELECT data_json FROM work_item_events WHERE work_item_id = ? AND type = 'status_changed'"
+                    " ORDER BY id", work_item_id)
+    data = [json.loads(r["data_json"]) for r in rows]
+    return [data[0]["from"], *(d["to"] for d in data)] if data else []
+
+
 # --- 시나리오 ------------------------------------------------------------------------------
 
 
@@ -353,6 +368,10 @@ def test_01_login_connect_github_and_set_the_notification_url(world):
     report = world.worker.tick()
     assert report.sync_errors == 0 and report.issues_created == 2 and report.tasks_started == 0
     assert "data-runner-missing" in source_card(world)
+    # 이슈 하나 = 업무 하나 — 가져온 순서대로 키, 지시 전이라 새로 들어옴
+    works = q(world, "SELECT key_number, status, source_key FROM work_items ORDER BY key_number")
+    assert [(w["key_number"], w["status"], w["source_key"]) for w in works] == [
+        (1, "새로 들어옴", f"{REPO}#1"), (2, "새로 들어옴", f"{REPO}#2")]
 
 
 def test_02_attach_runner_button_gives_one_command_and_setup_registers_the_folder(world):
@@ -483,6 +502,23 @@ def test_05_merging_the_pr_completes_the_task_and_counts_in_metrics(world):
     assert sum(g["intake_to_merge"]["n"] for g in metrics.json()["groups"]) == 1  # 도입 후 1건
     assert bare_git(world, "rev-parse", "refs/heads/main") == world.ctx["upstream"]  # 병합은 사람(가짜 GitHub) 몫
 
+    # 업무 기준 (phase 14) — 이슈 #1 = 업무 RUN-1 하나, 단계 = 수정 + 같은 업무의 검토
+    work = work_of(world, a_id)
+    (review,) = reviews_of(world, a_id)
+    stages = q(world, "SELECT task_id, kind FROM tasks WHERE work_item_id = ? ORDER BY created_at, task_id",
+               work["work_item_id"])
+    assert [(s["task_id"], s["kind"]) for s in stages] == [(a_id, "bug_fix"), (review["task_id"], "code_review")]
+    assert (work["key_number"], work["status"]) == (1, "완료")
+    assert work["closed_at"] is not None
+    flow = status_flow(world, work["work_item_id"])
+    assert flow[0] == "새로 들어옴" and flow[-1] == "완료"
+    wanted = iter(flow)  # 새로 들어옴 → (지시) → 에이전트 작업 중 → PR · 검토 → 완료 순서로 거쳤다
+    assert all(status in wanted for status in ("새로 들어옴", "에이전트 작업 중", "PR · 검토", "완료")), flow
+    assert result_branch_of(world, a_id) == "runloom/RUN-1"
+    assert world.fake.pulls[PR_NUMBER]["title"].startswith("RUN-1 ")
+    home = world.http.get("/tasks").text
+    assert home.count('href="/work/RUN-1"') >= 1 and f'href="/tasks/{review["task_id"]}"' not in home
+
 
 def test_06_a_failed_fix_sends_one_failure_notification(world):
     b_id = issue_task(world, 2)
@@ -501,7 +537,37 @@ def test_06_a_failed_fix_sends_one_failure_notification(world):
     assert [(r["event"], r["state"]) for r in rows] == [("pr_opened", "sent"), ("task_failed", "sent")]
 
 
-def test_07_secrets_stay_out_of_the_central_side(world):
+def test_07_failed_work_is_my_turn_and_retry_adds_a_new_stage_on_a_new_branch(world):
+    """실패한 업무는 내 차례(이유 "실패 — …") — [다시 맡기기] 가 같은 업무에 새 단계를 만들고 `runloom/<키>-2` 로 돈다."""
+    b_id = world.tasks["B"]
+    work = work_of(world, b_id)
+    assert work["key_number"] == 2
+    assert (work["status"], work["status_reason"].startswith("실패 — ")) == ("내 차례", True), dict(work)
+    (request,) = [r for r in world.http.get("/human-requests").json()["requests"] if r["task_id"] == b_id]
+    assert request["code"] == "stage_failed"
+    detail = world.http.get("/work/RUN-2").text
+    assert 'value="retry">다시 맡기기<' in detail and 'value="close">닫기<' in detail
+
+    response = world.http.post(f"/human-requests/{request['request_id']}/responses", json={
+        "response_id": "resp-retry-b", "expected_revision": request["revision"], "action": "retry", "text": ""})
+    assert response.status_code == 200, response.text[:500]
+    stages = q(world, "SELECT * FROM tasks WHERE work_item_id = ? ORDER BY created_at, task_id", work["work_item_id"])
+    assert [s["task_id"] for s in stages][0] == b_id and len(stages) == 2
+    retry = stages[1]
+    assert (retry["kind"], retry["status"] != "실패") == ("bug_fix", True)
+    world.tasks["B2"] = retry["task_id"]
+
+    (run,) = drive(world, lambda: execs(world, retry["task_id"]), "다시 맡긴 단계 착수")
+    sent = request_of(run)
+    assert (sent.work_key, sent.branch_seq) == ("RUN-2", 2)
+    # 같은 도구 실패가 다시 난다 — 새 단계도 실패로 마감되고 업무는 다시 내 차례
+    drive(world, lambda: task(world, retry["task_id"])["finished_at"], "다시 맡긴 단계 마감")
+    world.worker.tick()
+    assert work_of(world, b_id)["status"] == "내 차례"
+    assert len(q(world, "SELECT 1 FROM work_items")) == 2  # 업무는 늘지 않는다
+
+
+def test_08_secrets_stay_out_of_the_central_side(world):
     """연결 코드·러너 토큰·env 값·알림 URL 경로·설치 토큰 — 중앙 DB 덤프·산출물·로그·화면·PR 본문·알림 본문에 없다.
     연결 코드만은 `connect_codes` 에 1회용 기록(사용 처리)으로 남는다 — 기존 설계(운영자 화면 목록)다."""
     code = world.ctx["connect_code"]
