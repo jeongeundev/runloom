@@ -4,6 +4,8 @@
 
 ## 다음 작업: 13 완료 → service 병합 → 14-task-model(phases/14-task-model) (새 세션은 여기서 시작)
 
+**14-task-model 진행 중**(2026-09-30, `feat-14-task-model`): step 0 완료 — [ADR-0020](adr/0020-work-items-and-stages.md)·ARCHITECTURE "업무와 단계 — phase 14"·CONTRACT 15절·GLOSSARY phase 14 용어로 이름 고정. 다음은 step 1(`domain/work_status.py`).
+
 **13-selfhost-only 완료**(2026-09-29, `feat-13-selfhost-only`, [ADR-0019](adr/0019-service-selfhost-only.md), 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "2026-09-29 phase 13 셀프호스트 전용"). 다음: `feat-13-selfhost-only` 를 `service` 에 `--no-ff` 병합 → `python3 scripts/execute.py 14-task-model --engine claude`(`phases/14-task-model`). 셀프호스트는 아직 스키마 8 — 재설치(v9 로 올림)는 백업 뒤 사용자 지시로.
 
 **step 설계 완료(2026-09-29)**: 13-task-model 범위를 두 phase 로 나눴다(사용자 결정 — demo 걷어내기를 먼저).

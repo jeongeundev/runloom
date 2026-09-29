@@ -22,7 +22,7 @@
 | 용어 | 정의 | 금지 표현 |
 |------|------|-----------|
 | `Agent` | 등록된 실행 대상 하나. 로컬은 실행 도구 + 작업 폴더, API는 주소 + 자격 증명. `capabilities`를 가진다 | `Bot`, `Worker`, `Runner` |
-| `Task` | 사용자가 등록했거나 가져오기로 만든 업무 하나. 선행 Task 하나를 가질 수 있고 `required_capability` 하나를 가진다. 가져온 Task 는 `chain_id`·`source_ref` 를 가진다 | `Job`, `Ticket`, `Issue`(가져오기 전의 외부 항목 — 별도 용어) |
+| `Task` | 업무(`WorkItem`)의 한 단계(화면 말 "단계") — 수정·검토·다시 맡긴 수정이 각각 Task 하나다. 재작업은 새 Task 가 아니라 같은 Task 의 새 Execution. `required_capability` 하나를 가지고, `predecessor_task_id` 는 **같은 업무 안** 앞 단계만 가리킨다(업무 사이 선행은 `work_item_links` `blocks`). 표 `tasks`·상태(사용자 상태 7개)는 그대로이며 v10 이후 모든 Task 는 `work_item_id` 를 가진다([ADR-0020](adr/0020-work-items-and-stages.md)). 원본·키·우선순위·담당·양식 같은 가져온 업무의 칸은 `WorkItem` 에 있다(`chain_id`·`source_ref` 는 호환용으로 남음) | `Job`, `Ticket`, `Issue`(가져오기 전의 외부 항목 — 별도 용어), `업무`(목록 한 줄은 `WorkItem`) |
 | `Execution` | Task의 한 번의 시도. `attempt_no`로 구분. 상태는 `queued`, `accepted`, `running`, `result_ready`, `failed`, `unknown` | `Run`, `Job`, `Attempt` |
 | `ExecutionEvent` | 실행 주체가 보내는 이벤트. `seq` 연속 정수, `type`은 `accepted`, `started`, `progress`, `result_ready`, `failed` | `Log`, `Message`, `Notification` |
 | `Artifact` | 실행이 만든 불변 파일. `kind`, `sha256`, `artifact_id`. kind 목록은 CONTRACT 4절 | `File`, `Upload`, `Output` |
@@ -188,6 +188,24 @@
 | 작업 복사본 준비물 / `links`·`env` | 러너 로컬 등록의 `--link 경로`(원본 폴더 설치물을 worktree 에 심볼릭 링크, `info/exclude` 로 커밋 제외)와 `--env 이름=값`(검증·도구 프로세스 환경)(step 2·4). 중앙에 보내지 않는다 | `의존성 설치`, `secrets`, `설정 파일` |
 | 초안 PR / `task_pull_requests` | 검토 `approved` 뒤 중앙이 소스의 GitHub 자격으로 여는 draft PR(head `task/<task_id>`, base 기본 브랜치, 본문 `Fixes #N`)(step 6). 병합되면 수정 Task 완료. 병합·이슈 닫기는 사람만. 러너의 브랜치 push 결과는 `branch_pushed`(step 5). 못 열거나 push 실패면 사람 요청 `pr_unavailable`(원인 키 `pr:<검토 실행>`, 답해도 수정을 다시 돌리지 않음) | `자동 병합`, `merge request`, `결과 브랜치`(로컬 `task/<id>` 만을 뜻함) |
 | 알림 웹훅 / `notifications`·`notify_webhook_url` | 사람 차례(`human_request`·`pr_opened`)와 실행 실패(`task_failed`)를 등록된 URL 하나로 보내는 것(step 7·8). URL 은 비밀 파일, 전달은 DB 대기열·재시도. Discord 호스트면 `{"content"}` 만. n8n 입구의 `callback_url`(체인 단위 `ChainCallback`)과 다르다 | `callback`, `이메일`, `push 알림` |
+
+## 계획 용어 — phase 14 업무와 단계 (미구현)
+
+[ADR-0020](adr/0020-work-items-and-stages.md), [ARCHITECTURE](ARCHITECTURE.md) "업무와 단계 — phase 14", [CONTRACT](CONTRACT.md) 15절. 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| `WorkItem` / `work_items` / 업무 | 목록 한 줄. GitHub 이슈·n8n 항목·직접 등록 하나가 업무 하나가 된다(step 2·3·5). 키·제목·요청 본문·대표 종류(첫 단계 종류)·우선순위·담당·업무 상태·원본 칸·양식 칸을 가진다. 단계(`Task`)를 하나 이상 가지며 수정·검토·재작업·다시 맡기기·판단은 모두 그 업무 안에 있다. 식별자 `work_item_id`(`wi-` + 12 hex) | `Ticket`, `Issue`(외부 원본 항목), `Job`, `Task`(업무의 한 단계) |
+| 업무 키 / `key_number` / `format_work_key` | 워크스페이스마다 1 부터 매기는 `RUN-<번호>`(재사용 없음). DB 에는 번호만, 문자열은 `contracts/v1.format_work_key`(접두 `WORK_KEY_PREFIX = "RUN"`). 결과 브랜치(`runloom/RUN-23`)·PR 제목(`RUN-23 <제목>`)에 쓴다. 목록 "키" 칸은 원본 키(`source_key`)가 있으면 그것 | `task_id`(단계 식별자), `ticket number`, `issue number`(원본 번호) |
+| 업무 상태 / `WorkStatus` | 업무의 저장된 상태 8개 `새로 들어옴`·`대기`·`에이전트 작업 중`·`직접 작업 중`·`내 차례`·`PR · 검토`·`완료`·`종료` 와 이유 문구. 값은 `domain/work_status.work_status(facts)` 순수 함수가 단계·사람 요청·PR 에서 계산하고 바뀔 때만 기록한다(step 1·6). 실행 실패는 `내 차례 · 실패 — …`(끝 상태 아님). 사용자 상태(단계 상태 7개)와 다르다 | `사용자 상태`(단계 상태), `실패`(업무 상태 값이 아님), `open`/`closed`(원본 상태) |
+| `WorkItemFacts` | 업무 상태 판정의 입력 값 객체 — 저장된 상태·담당 여부·지시 여부·단계(`StageFact`)·열린 사람 요청(`RequestFact`)·PR(`PullRequestFact`)(step 1). DB 행이 아니다. `repo.work_item_facts` 가 채운다(step 6) | `WorkItemView`, `Snapshot`, `Context` |
+| `placement` | 후속 규칙(`SuccessorRule`)의 선택 칸 — 후속 Task 를 `same_work`(같은 업무의 다음 단계, 기본) 또는 `new_work`(새 업무 + `spawned_from` 링크)에 둔다(step 4). 규칙 행의 값으로만 정하고 종류 이름으로 분기하지 않는다 | `scope`, `mode`, `target` |
+| `work_item_links` / `blocks` / `spawned_from` | 업무 사이 관계(step 2). 방향은 앞 → 뒤: `blocks` = from 이 끝나야 to 시작(n8n·체인 `blocked_by`, 등록 폼 선행), `spawned_from` = to 가 from 의 실행 결과에서 생김(`new_work` 후속) | `predecessor`(같은 업무 안 단계 순서), `parent`, `dependency` |
+| `Member` / `members` / 멤버 | 워크스페이스의 사람(`member_id` `mem-` + 8 hex, 표시 이름, 역할 `admin`\|`member`)(step 2·3). 이 phase 는 첫 관리자(`관리자`) 하나만. 역할 값 `admin` 은 멤버의 역할이며 `operator`(토큰으로 인증한 운영자)와 다르다. 업무 담당 자리에 Agent 와 같은 모양(`assignee_type`·`assignee_id`)으로 선다. 로그인·초대는 15-team | `User`, `Account`, `operator`(토큰 인증 주체) |
+| 매핑 표 / `field_mappings` / `map_value` | 원본 값 → Runloom 값 표(워크스페이스 등록 데이터, step 5). 필드 `kind`·`priority`, 같은 (원본 종류, 필드) 안에서 `position` 순 첫 일치, `*` 는 나머지 전부. GitHub 은 라벨로 읽는다. 기본 행 `github · kind · * → bug_fix`. 바꾸면 `config_revision` +1 | `label rule`(n8n 의 `kind:<kind>` 라벨 규칙), `transform`, `sync` |
+| 양식 칸 / `form_json` / `extract_form` | GitHub 이슈 본문의 `##`·`###` 절에서 뽑은 목표(`goal`)·재현 절차(`steps_to_reproduce`)·기대 동작(`expected_behavior`)·인수 조건(`acceptance_criteria`)(step 5). 칸마다 `{value, source}`. 참고 정보이며 실행 요청(`request`)은 본문 그대로 | `template`, `custom field`, `criteria`(완료 기준 `Criterion`) |
+| `stage_failed` / 다시 맡기기·닫기 | 실행 실패 때 그 단계에 만드는 사람 요청 코드(원인 키 `stage_failed:<execution_id>`)와 그 응답 `retry`(같은 업무에 같은 종류의 새 단계)·`close`(업무 `종료`)(step 6). 자동 재시도 없음 | `재시도`(자동을 뜻함), `rerun`, `rework`(검토 뒤 같은 단계의 새 Execution) |
+| `work_key` / `branch_seq` / `result_branch` | 실행 요청의 선택 칸 — 업무 키와 그 업무 안 수정 단계 순번(기본 1). 결과 브랜치는 `runloom/<work_key>`, 순번 2 이상은 `runloom/<work_key>-<순번>`, 키 없으면 `task/<task_id>`(`contracts/v1.result_branch`, step 7) | `branch_name`(요청에 브랜치 이름을 싣지 않음), `ref` |
 
 ## 경계가 헷갈리는 개념
 

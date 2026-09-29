@@ -1070,3 +1070,75 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 ```
 
 러너 로컬 등록의 `--link`·`--env` 는 계약에 없다 — 중앙에 이름도 값도 보내지 않는다(ARCHITECTURE "러너 로컬 등록 새 칸").
+
+## 15. 업무와 단계 — 선택 칸 (contract-pending)
+
+[ADR-0020](adr/0020-work-items-and-stages.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "업무와 단계 — phase 14". 계약 버전은 1 그대로이고 1~14절 payload 는 바뀌지 않는다 — 아래는 모두 기본값이 있는 추가형 선택 칸이다. 모델에 칸이 생기기 전이라 블록은 `jsonc` 펜스다(계약 fixture 테스트가 읽지 않는다). 15.1 은 step 4 가, 15.2·15.3 은 step 7 이 모델을 구현하면서 일반 `json` 펜스로 바꾸고 `test_v1.py` 의 블록 수(`test_contract_md_has_expected_block_counts`)를 함께 올린다. step 4 는 11.2 의 "기본값 없음" 문구도 고친다.
+
+### 15.1 `SuccessorRule` — `placement`
+
+`placement` 는 규칙이 만든 후속 Task 를 어디에 두는지다. `same_work`(기본) = 원인 Task 와 같은 업무의 다음 단계, `new_work` = 새 업무의 첫 단계 + 업무 링크 `spawned_from`. 칸이 없는 저장 규칙·요청은 `same_work` 다. 내장 `bug_fix → code_review` 는 `same_work` 이며 13.1 예시와 같은 값이다(dump 하면 `placement` 가 끝에 붙는다):
+
+```jsonc
+{ "from_kind": "bug_fix", "on_outcomes": ["ready_for_review"], "to_kind": "code_review", "handoff_kinds": ["code_change_result", "diff", "test_log_after", "verification_log"], "placement": "same_work" }
+```
+
+사용자 정의 규칙 — 검토에서 나온 후속 문서 작업을 새 업무로 만든다:
+
+```jsonc
+{ "from_kind": "review", "on_outcomes": ["approved"], "to_kind": "doc_update", "handoff_kinds": ["generic_result"], "placement": "new_work" }
+```
+
+`placement` 가 `same_work`·`new_work` 밖이면 422 `invalid_field`.
+
+### 15.2 `ExecutionRequest` — `bug_fix` 첫 시도, 업무 키
+
+13.2 와 같은 요청에 `work_key`(업무 키 — 패턴 `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8}$`)와 `branch_seq`(1 이상, 기본 1)가 붙는다. 러너는 결과 브랜치를 `runloom/RUN-23` 으로 만들고 push 한다. 두 칸이 없는 요청(v10 이전에 시작한 Task·구버전 서버)은 지금처럼 `task/<task_id>` 다. 같은 Task 의 재작업 요청은 첫 요청의 두 칸을 그대로 싣는다.
+
+```jsonc
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-fix-001",
+  "task_id": "task-gh-41",
+  "kind": "bug_fix",
+  "agent_id": "agent-codex-mac",
+  "task_revision": 1,
+  "request": "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.\n\nhttps://github.com/acme/billing/issues/41",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "verification_profile_id": "vp-pytest"
+  },
+  "kind_spec": null,
+  "work_key": "RUN-23",
+  "branch_seq": 1
+}
+```
+
+### 15.3 `ExecutionRequest` — 다시 맡긴 단계
+
+실행 실패 뒤 사람이 [다시 맡기기] 로 만든 같은 업무의 두 번째 수정 단계(새 Task). `branch_seq` 2 → 브랜치 `runloom/RUN-23-2`, 기준 커밋에서 새로 만든다(force push 없음).
+
+```jsonc
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-fix-003",
+  "task_id": "task-gh-41-retry",
+  "kind": "bug_fix",
+  "agent_id": "agent-codex-mac",
+  "task_revision": 1,
+  "request": "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.\n\nhttps://github.com/acme/billing/issues/41",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "verification_profile_id": "vp-pytest"
+  },
+  "kind_spec": null,
+  "work_key": "RUN-23",
+  "branch_seq": 2
+}
+```
+
+`work_key` 가 패턴 밖(소문자·공백·`/`·`..` 포함 등)이거나 `branch_seq` 가 1 미만이거나, `work_key` 없이 `branch_seq` 가 1 이 아니면 422. 구버전 러너는 두 칸을 `extra="forbid"` 로 거부하므로 중앙과 러너를 함께 올린다.

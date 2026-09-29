@@ -837,6 +837,149 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 오류 코드 | `server/web.py`(8) | `notify_not_configured` |
 | 설치 스크립트 | `deploy/selfhost/install-runner.sh`(9) | `--server`·`--code`·`--repo`·`--tool` |
 
+## 업무와 단계 — phase 14
+
+[ADR-0020](adr/0020-work-items-and-stages.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 14 README](../phases/14-task-model/README.md). 이 시점에는 구현이 없다 — 아래 이름·표·시그니처는 step 1~10 이 그대로 만든다. 괄호의 숫자는 만드는 step.
+
+### 한 줄 요약
+
+목록 한 줄 = 업무(`WorkItem`, 표 `work_items`, 키 `RUN-n`). 수정·검토·다시 맡기기는 그 업무의 단계(`Task`, 표 `tasks` 그대로)이고, 재작업은 지금처럼 같은 단계의 새 Execution 이다. 업무 상태(8개)는 저장하고 값은 순수 함수가 단계·사람 요청·PR 에서 계산한다. 단계 상태(`tasks.status`, 사용자 상태 7개)와 그 판정은 바뀌지 않는다.
+
+### 스키마 v10 (step 2)
+
+`adapters/db.py` `SCHEMA_VERSION` 9 → 10. v4 → v5 와 같이 `init_schema` 가 `BEGIN IMMEDIATE` 한 트랜잭션으로 올리고 실패하면 9 그대로다. 빈 DB 는 v10 으로 바로 만든다. 원본 v9 스키마는 `tests/workflow/adapters/fixtures/schema_v9.sql` 로 고정해 마이그레이션 테스트가 쓴다. `tasks` 는 재생성하지 않는다(ALTER 로 칸 하나만 더함).
+
+| 대상 | 칸 | 제약·의미 |
+|---|---|---|
+| `work_items`(새) | `work_item_id TEXT PRIMARY KEY`(`wi-` + 12 hex), `session_id TEXT NOT NULL REFERENCES sessions`, `key_number INTEGER NOT NULL CHECK (key_number >= 1)`, `title TEXT NOT NULL`, `request TEXT NOT NULL`, `kind TEXT NOT NULL`(대표 종류 = 첫 단계 종류), `priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('high','normal','low'))`, `assignee_type TEXT CHECK (assignee_type IS NULL OR assignee_type IN ('member','agent'))`, `assignee_id TEXT`, `status TEXT NOT NULL CHECK (status IN (<업무 상태 8개>))`, `status_reason TEXT NOT NULL`, `source_type TEXT NOT NULL CHECK (source_type IN ('github','n8n','manual'))`, `source_id TEXT`, `source_item_id TEXT`, `source_key TEXT`, `source_url TEXT`, `source_state TEXT`, `form_json TEXT NOT NULL DEFAULT '{}'`, `revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1)`, `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL`, `closed_at TEXT` | `UNIQUE (session_id, key_number)`, `FOREIGN KEY (session_id, kind) REFERENCES kinds(session_id, kind)`, `CHECK ((assignee_type IS NULL) = (assignee_id IS NULL))`, `CHECK ((status IN ('완료','종료')) = (closed_at IS NOT NULL))`. 삭제 경로 없음. 인덱스 `(session_id, status)` |
+| `work_item_links`(새) | `from_work_item_id TEXT NOT NULL REFERENCES work_items`, `to_work_item_id TEXT NOT NULL REFERENCES work_items`, `type TEXT NOT NULL CHECK (type IN ('blocks','spawned_from'))`, `cause_execution_id TEXT REFERENCES executions`(NULL 허용), `created_at TEXT NOT NULL` | `PRIMARY KEY (from_work_item_id, to_work_item_id, type)`, `CHECK (from_work_item_id != to_work_item_id)`. 방향은 늘 앞 → 뒤: `blocks` = from 이 끝나야 to 를 시작, `spawned_from` = to 가 from 의 결과(`cause_execution_id`)에서 생김. 두 업무는 같은 워크스페이스(repo 가 검사) |
+| `members`(새) | `member_id TEXT PRIMARY KEY`(`mem-` + 8 hex), `session_id TEXT NOT NULL REFERENCES sessions`, `display_name TEXT NOT NULL`, `role TEXT NOT NULL CHECK (role IN ('admin','member'))`, `created_at TEXT NOT NULL` | 이 phase 는 첫 관리자(`display_name = '관리자'`, `role = 'admin'`)만 만든다. 로그인 칸 없음(15-team) |
+| `field_mappings`(새) | `mapping_id TEXT PRIMARY KEY`(`map-` + 8 hex), `session_id TEXT NOT NULL REFERENCES sessions`, `source_type TEXT NOT NULL CHECK (source_type IN ('github','n8n'))`, `field TEXT NOT NULL CHECK (field IN ('kind','priority'))`, `source_value TEXT NOT NULL`(`*` = 나머지 전부), `runloom_value TEXT NOT NULL`, `position INTEGER NOT NULL CHECK (position >= 1)`, `created_at TEXT NOT NULL` | `UNIQUE (session_id, source_type, field, source_value)`. `position` 은 유일하지 않다 — 같은 값이면 `created_at`, `mapping_id` 순(순서 바꾸기가 행 하나 UPDATE 로 끝나게). `priority` 행의 `runloom_value` 는 `high`·`normal`·`low`, `kind` 행은 그 워크스페이스에 등록된 종류(repo 가 검사) |
+| `work_item_events`(새) | `id INTEGER PRIMARY KEY`, `work_item_id TEXT NOT NULL REFERENCES work_items`, `session_id TEXT NOT NULL REFERENCES sessions`, `type TEXT NOT NULL CHECK (type IN ('status_changed','assigned'))`, `config_revision INTEGER NOT NULL`, `occurred_at TEXT NOT NULL`, `data_json TEXT NOT NULL` | 추가 전용(UPDATE·DELETE 없음). `status_changed` = `{"from", "to", "reason"}`, `assigned` = `{"from": {"type", "id"} \| null, "to": …}`. 인덱스 `(work_item_id, id)`·`(session_id, occurred_at)`. `task_events` 에 섞지 않는다 — `task_events.task_id` 가 NOT NULL 이고 `type` CHECK 를 바꾸려면 재생성이 필요하다. 업무 생성은 이벤트 없이 `work_items.created_at` 이 원천 |
+| `tasks.work_item_id`(새 칸) | `ALTER TABLE tasks ADD COLUMN work_item_id TEXT REFERENCES work_items(work_item_id)` | NULL 허용(ALTER 제약)이지만 **v10 이후 repo 가 늘 채운다** — `insert_task`·`upsert_source_issue`·`create_followup_once` 가 `work_item_id` 를 필수 키워드로 받는다. 인덱스 `(work_item_id, created_at)`. 불변식 테스트: 마이그레이션·모든 생성 경로 뒤 `SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL` = 0 |
+
+- **업무 키**: DB 에는 번호(`key_number`)만 둔다. 문자열은 계산한다 — `contracts/v1.format_work_key(n) -> "RUN-<n>"`(접두 상수 `WORK_KEY_PREFIX = "RUN"`). 발급은 `create_work_item` 이 같은 트랜잭션에서 `COALESCE(MAX(key_number), 0) + 1`. 삭제 경로가 없으므로 재사용되지 않고, 경쟁은 `UNIQUE(session_id, key_number)` 가 막는다(쓰기는 `BEGIN IMMEDIATE`).
+- **목록 "키" 칸**: `source_key` 가 있으면 그것(GitHub `owner/name#N` — 지금 `tasks.source_ref` 와 같은 값, n8n 항목 `key`), 없으면 업무 키.
+- **원본 칸**: `github` = `source_id`(`github_sources.source_id`)·`source_item_id`(GitHub 이슈 숫자 ID 문자열)·`source_key`·`source_url`(`https://github.com/<owner/name>/issues/<n>` — 응답 `html_url` 을 쓰지 않음)·`source_state`(`open`\|`closed`, 수집 때 갱신). `n8n` = `source_id`(`chain_id`)·`source_item_id`·`source_key`(항목 `key`)·`source_url`(항목 `url`, 없으면 NULL)·`source_state` NULL. `manual` = 모두 NULL. 원본 이슈의 중복 방지는 지금의 `source_issues` PK 가 한다 — `work_items` 에 원본 유일키를 따로 두지 않는다.
+- **원본 갱신**: `upsert_source_issue` 가 `updated` 로 첫 단계의 제목·요청을 바꿀 때 같은 트랜잭션에서 업무의 `title`·`request`·`source_state`·`form_json` 도 바꾸고 업무 `revision` +1.
+- 비밀값 칸은 없다.
+
+### 업무 상태 (step 1·6)
+
+값 8개(`domain/work_status.WORK_STATUSES`, 이 순서가 화면 순서): `새로 들어옴` · `대기` · `에이전트 작업 중` · `직접 작업 중` · `내 차례` · `PR · 검토` · `완료` · `종료`. 끝 상태 `TERMINAL_WORK_STATUSES = ("완료", "종료")`. `직접 작업 중` 은 값만 있고 이 phase 에서 계산하지 않는다(신호는 16-work-ui 이후).
+
+판정은 `work_status(facts: WorkItemFacts) -> WorkStatus` 한 곳이다. 위에서부터 첫 일치:
+
+| 순서 | 조건 | 상태 | 이유 문구 예 |
+|---|---|---|---|
+| 1 | 저장된 상태가 끝 상태 | 그대로 | (저장된 이유 그대로 — 끝 상태는 다시 열지 않는다) |
+| 2 | PR `merged` | `완료` | `PR 병합 — #12` |
+| 3 | PR `closed`(병합 없음) | `종료` | `PR 이 병합 없이 닫힘 — #12` |
+| 4 | 열린 사람 요청이 있음 | `내 차례` | `stage_failed` 면 `실패 — <단계 사유>`, 그 밖 `사람 요청 — <질문 첫 줄, 80자>` |
+| 5 | PR `pending`·`open` | `PR · 검토` | `PR 여는 중` / `PR 확인 — #12` |
+| 6 | `확인 필요` 인 단계가 있음 | `내 차례` | 그 단계의 `status_reason`(예: `검토 승인 — 병합·이슈 종료는 사람`) |
+| 7 | 모든 단계가 마감(`완료`·`실패`)이고 가장 최근 단계가 `완료` | `완료` | `<단계 종류 라벨> 완료` |
+| 8 | 모든 단계가 마감이고 가장 최근 단계가 `실패` | `종료` | 그 단계의 `status_reason`(예: `운영자 종료 — 사람 요청 응답`) |
+| 9 | `실행 요청됨`·`실행 중` 인 단계가 있음 | `에이전트 작업 중` | `<단계 종류 라벨> 실행 중` |
+| 10 | 실행이 한 번도 없고 담당 없음 또는 지시 전 | `새로 들어옴` | `담당 없음` / `지시 전 — [에이전트에게 맡기기]` |
+| 11 | 그 밖 | `대기` | 가장 최근 열린 단계의 `status_reason`(예: `선행 대기`, `연결 끊김`) |
+
+- "실패" 는 끝 상태가 아니다: 실행 실패는 4(열린 `stage_failed`)로 `내 차례` 가 된다. 사람이 `close` 로 답하면 응답 경로가 업무를 `종료`(이유 `닫음 — 실행 실패`)로 직접 기록한다. `retry` 면 새 단계가 생겨 9·10·11 로 간다.
+- "지시 전" = 원본 소스가 `all_open` 이고 `source_issues.delegated_by` 가 NULL. "담당 없음" = 업무 `assignee_*` 가 NULL 이고 어느 단계에도 `chosen_agent_id` 가 없음.
+- 기록 규칙: `set_work_status` 는 값 또는 이유가 저장값과 다를 때만 UPDATE 하고 같은 트랜잭션에 `work_item_events(status_changed)` 한 행을 쓴다. 끝 상태가 되면 `closed_at = now`.
+- 다시 계산하는 곳(`refresh_work_status`): 워커 tick 끝(`Worker._refresh_work_statuses` — 끝나지 않은 업무 전부), 사람 응답(`human_api`), 운영자 검토 결정(`web`), 원본 수집(`upsert_source_issue` 뒤), PR 반영(`_deliver_pull_requests`·`_sync_pull_requests`). 모두 그 변경과 같은 트랜잭션 끝에서 한다.
+
+### 후속 규칙 `placement` (step 4)
+
+`SuccessorRule.placement: Literal["same_work", "new_work"] = "same_work"` — 계약에 선택 칸으로 더한다(`contract_version` 1 그대로). 저장된 `rule_json` 에 칸이 없으면 `same_work`. `POST /rules` 는 선택 필드 `placement` 를 받는다(기본 `same_work`). 내장 `bug_fix → code_review` 는 `same_work`.
+
+| `placement` | 후속 Task | 업무 | 링크 |
+|---|---|---|---|
+| `same_work` | 원인 Task 의 업무에 새 단계(`predecessor_task_id` = 원인 Task — 지금과 같다) | 그대로(상태만 다시 계산) | 없음 |
+| `new_work` | 새 업무의 첫 단계(`predecessor_task_id` NULL) | 새로 만든다 — 제목·요청·종류 = 후속 Task 의 것, 원본 칸은 원인 업무의 `source_type`·`source_id`·`source_key`·`source_url` 복사(`source_item_id` NULL — 원본 이슈의 댓글·PR 은 원인 업무만), 담당 = 후속 Task 의 선택 Agent | `work_item_links(from = 원인 업무, to = 새 업무, type = 'spawned_from', cause_execution_id = 원인 실행)` |
+
+- 중복 방지는 기존 `followup_links` 유일키 `(session_id, cause_execution_id, to_kind)` 그대로다. 새 업무·링크는 `create_followup_once` 가 Task 를 **새로 만들 때만** 같은 트랜잭션에서 만든다(재처리는 기존 Task 반환, 업무도 링크도 새로 없음).
+- 후속을 만드는 두 경로(업무 순환 `_create_followup_task`, 일반 `_spawn_successors`) 모두 규칙 행의 `placement` 를 읽는다. 종류 이름으로 분기하지 않는다(ADR-0009).
+- **선행의 뜻**: `tasks.predecessor_task_id` = 같은 업무 안 단계 순서만. 업무 사이 선행 = `work_item_links(type='blocks')` — n8n·체인 `blocked_by`, 직접 등록 폼의 선행. 준비·인계 판정의 "선행 단계"(`repo.tasks_with_ready_predecessor`·`predecessor_ready_execution`, 체인 정산 `predecessor_status`)는 `predecessor_task_id` 가 있으면 그것, 없으면 이 업무를 막는 앞 업무(`blocks` 가 정확히 하나일 때)의 가장 최근 단계. 둘 이상이면 준비되지 않은 것으로 본다(이 phase 에 생기지 않음).
+- **원본 찾기**: `task_cycle.origin_source(conn, task)` 는 Task 의 업무에서 `source_type = 'github'` 이면 `source_id`·`source_item_id` 로 `source_issues`·소스 설정을 읽는다. 선행 사슬을 거슬러 오르지 않는다. `source_issues.task_id` 는 첫 단계를 그대로 가리킨다(다시 맡긴 단계로 옮기지 않음 — 찾기는 업무로).
+
+### 실패 처리 — 다시 맡기기·닫기 (step 6)
+
+| 시점 | 동작 | 중복 방지 |
+|---|---|---|
+| `worker._reflect_failures` 가 실행 실패를 반영 | 지금처럼 단계 Task 를 `실패` 로 마감 + 같은 트랜잭션에서 그 Task 에 사람 요청 `stage_failed`(질문 `실행 실패 — <failed_code>: <failed_message 첫 줄>`) + 알림(`human_request`, 기존 `task_failed` 대신 — 한 실패에 알림 하나) | 원인 키 `stage_failed:<execution_id>` — 기존 `UNIQUE(task_id, cause_key)` |
+| 응답 `retry`(화면 [다시 맡기기]) | 같은 업무에 새 단계 Task: 종류·제목·요청·`required_capability`·`criteria`·`target_json`·`selection_mode`·`chosen_agent_id`·`run_mode`·`completion_mode`·`predecessor_task_id` 를 실패한 단계에서 복사, `text` 가 있으면 요청 끝에 `## 사람 응답 (운영자)` 절. 요청은 `answered` | 사람 응답 `(request_id, response_id)` + 요청이 `answered` 가 되므로 두 번째 `retry` 는 409 `stale_request` — 새 단계는 하나 |
+| 응답 `close`(화면 [닫기]) | 업무 `종료`(이유 `닫음 — 실행 실패`), 요청 `answered` | 같음 |
+
+- `human_api`: `Action` 에 `retry` 를 더하고 `allowed_actions("stage_failed") = {"retry", "close"}`. `stage_failed` 요청은 Task 가 이미 마감(`실패`)이어도 응답을 받는다 — 기존 409 `task_closed` 검사에서 이 코드만 뺀다. 자동 재시도는 없다(ADR-0014 그대로).
+- 알림 이벤트 `task_failed` 값은 CHECK 에 남는다(기존 행) — 새로 쌓지 않는다.
+
+### 매핑 표 (step 5)
+
+`domain/field_mapping.map_value(rows, source_type, field, values) -> str | None`: `rows` 중 `source_type`·`field` 가 같은 행을 `position` 오름차순으로 보고 첫 일치의 `runloom_value`. `source_value == "*"` 는 무엇이든(값이 없어도) 일치, 그 밖은 `values` 중 하나와 대소문자 무시(`casefold`)로 같으면 일치. 없으면 None.
+
+- GitHub 은 라벨 이름 목록을 `values` 로 넘긴다. `kind` 가 None 이면 그 이슈를 가져오지 않는다 — `intake_scope` 제외와 같이 다루고(`SyncReport.unmapped` 로 셈) 이슈가 갱신되면 다시 본다. 종류 이름으로 기본값을 두지 않는다. `priority` 가 None 이면 `normal`.
+- seed: 새 워크스페이스(`create_session`)와 v10 마이그레이션이 `github · kind · * → bug_fix`(position 1) 한 행을 넣는다 — 지금 동작 그대로. `priority` 행은 seed 하지 않는다.
+- n8n 은 이 phase 에서 매핑 표를 읽지 않는다(라벨 규칙 `kind:<kind>` 그대로, 우선순위 `normal`). 직접 등록은 폼의 종류와 우선순위(기본 `normal`).
+- 설정 번호: `insert_field_mapping`·`update_field_mapping`·`delete_field_mapping` 은 같은 트랜잭션에서 `sessions.config_revision` +1(위 "설정 번호" 표의 "올린다" 열에 더함). seed 는 올리지 않는다. 매핑 변경은 이미 만든 업무를 바꾸지 않는다.
+
+### 양식 칸 (step 5)
+
+`domain/form_sections.extract_form(body: str) -> WorkForm`. 본문을 줄 단위로 보고 `##` 또는 `###` 로 시작하는 줄을 절 제목으로 삼는다. 절 내용은 다음 `#`·`##`·`###` 제목 줄 전까지, 앞뒤 공백을 뺀 것. 제목은 앞뒤 공백과 끝 `:` 를 빼고 `casefold` 해서 아래 동의어 표(`FORM_HEADINGS`, 코드 상수)와 정확히 비교한다. 같은 칸의 절이 여럿이면 첫 절. 내용이 비었거나 `_No response_`(GitHub issue forms 의 빈 답)면 없는 칸이다. 코드 블록 안의 `#` 줄도 제목으로 본다(단순함 우선 — 알려진 한계).
+
+| 칸 키 | 화면 | 제목 동의어 |
+|---|---|---|
+| `goal` | 목표 | 목표, 목적, 요약, Goal, Objective, Summary |
+| `steps_to_reproduce` | 재현 절차 | 재현 절차, 재현 방법, 재현 단계, Steps to reproduce, Reproduction steps, To reproduce |
+| `expected_behavior` | 기대 동작 | 기대 동작, 기대 결과, 예상 동작, Expected behavior, Expected behaviour, Expected result |
+| `acceptance_criteria` | 인수 조건 | 인수 조건, 완료 조건, 수용 기준, Acceptance criteria, Definition of done |
+
+- `form_json` 모양: 찾은 칸만 `{"<칸 키>": {"value": "<절 내용>", "source": "github_body:<원래 제목 줄>"}}`(예: `{"steps_to_reproduce": {"value": "1. 쿠폰 적용\n2. 새로고침", "source": "github_body:### 재현 절차"}}`). 없으면 `{}`. n8n·직접 등록은 `{}`.
+- 양식은 참고 정보다 — 실행 요청(`request`)은 지금처럼 본문 그대로다.
+
+### 실행 요청 `work_key`·`branch_seq`와 브랜치 (step 7)
+
+- 계약: `ExecutionRequest.work_key: str | None = None`(패턴 `WORK_KEY_PATTERN = ^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8}$`), `branch_seq: int = Field(default=1, ge=1)`. `branch_seq != 1` 인데 `work_key` 가 None 이면 422. 두 칸 모두 선택 칸 — `contract_version` 1 그대로. dump 에서 `work_key` None·`branch_seq` 1 은 빼지 않는다(모델 기본 직렬화).
+- 이름 규칙 한 곳: `contracts/v1.result_branch(task_id: str, work_key: str | None, branch_seq: int = 1) -> str` — `work_key` 가 있으면 `runloom/<work_key>`(`branch_seq` 1) 또는 `runloom/<work_key>-<branch_seq>`(2 이상), 없으면 `task/<task_id>`. 러너 `connector/git_ops`(worktree 브랜치 만들기·`push_task_branch`)와 서버 `domain/pull_request.head_branch`, 원본 댓글 문구(`server/github_delivery.py`)가 이 함수를 쓴다. 러너는 요청 모델 검증을 통과한 값만 쓴다 — 외부 입력에서 브랜치 이름을 받지 않고 패턴으로 좁힌 키만 넣는다.
+- 서버가 채우는 값: Task 에 이미 실행이 있으면 **그 Task 의 첫 실행 요청의 두 칸을 그대로 복사**(없으면 빼고 — v10 이전에 시작한 Task 는 끝까지 `task/<task_id>`). 첫 실행이면 `work_key = format_work_key(업무 key_number)`, `branch_seq` = 그 업무의 Task 중 target 이 `CodeChangeTarget` 인 Task 를 `created_at`·`task_id` 순으로 셌을 때 이 Task 의 순번(1부터). 검토(`CommitReviewTarget`)·사용자 정의(`LocalTarget`) Task 요청에도 같은 규칙으로 채우지만 러너는 쓰지 않는다(브랜치를 만들지 않음).
+- 재작업·검토: 재작업은 같은 Task 의 다음 Execution 이라 첫 요청의 두 칸을 그대로 실어 같은 브랜치를 앞으로 옮긴다 — 지금 `task/<id>` 와 같은 규칙(fast-forward push, force 없음). 검토는 `CommitReviewTarget` 의 커밋으로 보고 브랜치를 쓰지 않는다(지금과 같다). 다시 맡기기는 새 Task 라 `branch_seq` 가 올라가 기준 커밋에서 새 브랜치(`runloom/RUN-23-2`)다.
+- PR: `task_pull_requests.head_branch` 에는 검토한 수정 실행 요청의 두 칸으로 `result_branch` 를 계산해 넣는다. 이미 기록된 행은 바꾸지 않는다. 제목 `domain/pull_request.pr_title(work_key: str | None, title: str) -> str` = `<업무 키> <업무 제목>`(키 없으면 업무 제목) — 예 `RUN-23 할인 쿠폰이 두 번 적용됨`. 본문 첫 줄 `Fixes #N`·marker 는 그대로.
+- 업그레이드 순서: 구버전 러너는 새 칸을 `extra="forbid"` 로 거부한다 — 중앙과 러너를 같은 체크아웃으로 함께 올린다(step 10 이 SELFHOST 에 적는다).
+
+### 지표 묶음 (step 8)
+
+"업무 묶음"(위 "측정 — phase 9" 의 지표 정의)을 업무로 바꾼다 — 묶음 = 한 업무의 모든 단계. 시작 Task 는 업무의 가장 이른 단계, 접수 시각은 원본 이슈가 있으면 `source_issues.snapshot_json` 의 `created_at`, 없으면 업무 `created_at`. `predecessor_task_id` 사슬을 거슬러 오르지 않으므로 체인의 여러 업무가 한 묶음이 되지 않는다. `TaskFact` 에 `work_item_id` 를 더하고 `compute_metrics` 는 그것으로 묶는다. 기준선·이벤트 기록은 그대로.
+
+### v9 → v10 마이그레이션 (step 2·4)
+
+한 트랜잭션. 실패하면 v9 그대로(DDL 도 되돌림).
+
+1. 새 표 5개·`tasks.work_item_id` 칸·인덱스.
+2. 세션마다 Task 를 `created_at`, `task_id` 순으로 보며 업무를 정한다: `followup_links.task_id` 에 있는 Task 는 그 `cause_execution_id` 실행의 Task 가 속한 업무(원인이 먼저 만들어졌으므로 이미 정해져 있다), 그 밖 Task 는 각자 새 업무.
+3. 업무 키: 업무의 가장 이른 Task `created_at`(같으면 `task_id`) 순으로 세션마다 1 부터.
+4. 업무 칸: 제목·요청·종류 = 첫 단계, 우선순위 `normal`, 담당 = 첫 단계 `chosen_agent_id` 가 있으면 `agent`, 원본 = 첫 단계에 `source_issues` 행이 있으면 `github`(칸은 위 "원본 칸"), `chain_id` 가 있고 `chains.source = 'n8n'` 이면 `n8n`, 그 밖 `manual`. `form_json` `{}`(양식은 새로 가져올 때부터). `created_at` = 첫 단계, `updated_at` = 마이그레이션 시각.
+5. 업무 사이 선행: `predecessor_task_id` 가 다른 업무의 Task 를 가리키면 `blocks` 링크(선행 업무 → 이 업무). step 4 가 준비 판정을 링크로 옮길 때 이 Task 들의 `predecessor_task_id` 를 NULL 로 바꾸는 줄을 같은 마이그레이션에 더한다(그 전 step 에서는 남겨 둔다). `predecessor_task_id` 로 미리 등록한 검토 Task 는 `followup_links` 가 없으면 별도 업무 + `blocks` 가 된다.
+6. 업무 상태: `work_status(facts)` 로 계산해 넣는다(이벤트 없음). 워커가 첫 tick 에 다시 계산한다.
+7. 세션마다 첫 관리자·매핑 seed. `config_revision` 은 올리지 않는다.
+8. `PRAGMA foreign_key_check` → 버전 10. 기준선·지표 기록(`baseline_*`·`task_events`·`executions` 측정 칸)은 그대로.
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 업무 상태 | `domain/work_status.py`(1) | `WORK_STATUSES`(8개, 위 순서), `TERMINAL_WORK_STATUSES`, `WorkStatus(status: str, reason: str)`, `StageFact(task_id, kind, kind_label, status, status_reason, created_at, executed: bool)`, `RequestFact(code, question)`, `PullRequestFact(state: Literal["pending","open","merged","closed","failed"], number: int \| None)`, `WorkItemFacts(stored_status: str, stored_reason: str, assigned: bool, delegated: bool, stages: tuple[StageFact, ...], open_requests: tuple[RequestFact, ...], pull_request: PullRequestFact \| None)`, `work_status(facts: WorkItemFacts) -> WorkStatus` — 순수, 현재 시각을 읽지 않음 |
+| 업무 키·브랜치 | `contracts/v1.py`(3·7) | `WORK_KEY_PREFIX = "RUN"`, `WORK_KEY_PATTERN`, `format_work_key(n: int) -> str`, `result_branch(task_id, work_key, branch_seq=1) -> str`, `ExecutionRequest.work_key`·`branch_seq` |
+| 후속 규칙 | `contracts/v1.py`(4) | `SuccessorRule.placement: Literal["same_work","new_work"] = "same_work"` |
+| 양식 칸 | `domain/form_sections.py`(5) | `FORM_HEADINGS: dict[str, tuple[str, ...]]`(칸 키 → 동의어), `FormField(value: str, source: str)`, `WorkForm(fields: dict[str, FormField])` + `to_json() -> dict`, `extract_form(body: str) -> WorkForm` |
+| 매핑 | `domain/field_mapping.py`(5) | `MappingRow(source_type, field, source_value, runloom_value, position)`, `map_value(rows: Sequence[MappingRow], source_type: str, field: str, values: Sequence[str]) -> str \| None`, `WILDCARD = "*"` |
+| 업무 저장 | `adapters/repo.py`(3) | `create_work_item(conn, session_id, *, title, request, kind, source_type, source_id=None, source_item_id=None, source_key=None, source_url=None, source_state=None, priority="normal", assignee_type=None, assignee_id=None, form=None, now) -> tuple[str, int]`(`(work_item_id, key_number)`, 자체 BEGIN 없음 — 업무와 첫 단계를 호출자가 한 트랜잭션에), `get_work_item(conn, session_id, work_item_id) -> Row \| None`, `get_work_item_by_key(conn, session_id, key_number) -> Row \| None`, `list_work_items(conn, session_id, *, include_closed=True) -> list[Row]`(`key_number` 내림차순), `list_work_item_tasks(conn, work_item_id) -> list[Row]`(`created_at`, `task_id` 순), `set_work_status(conn, work_item_id, status: WorkStatus, *, now) -> bool`(자체 BEGIN 없음, 바뀌면 이벤트), `assign_work_item(conn, session_id, work_item_id, *, assignee_type, assignee_id, now) -> bool`(자체 트랜잭션, 멤버·세션 Agent 검사, 바뀌면 `assigned` 이벤트), `link_work_items(conn, *, from_work_item_id, to_work_item_id, type, cause_execution_id=None, now) -> bool`(있으면 False), `list_work_item_links(conn, work_item_id) -> list[Row]`, `list_work_item_events(conn, work_item_id) -> list[Row]`. `insert_task`·`upsert_source_issue`·`create_followup_once` 에 `work_item_id` 필수 키워드 |
+| 멤버 | `adapters/repo.py`(3) | `ensure_first_admin(conn, session_id, *, now) -> str`(있으면 그 관리자 id, 자체 BEGIN 없음 — `create_session` 과 마이그레이션이 부름), `list_members(conn, session_id) -> list[Row]` |
+| 매핑 저장 | `adapters/repo.py`(5) | `list_field_mappings(conn, session_id, source_type=None, field=None) -> list[MappingRow]`, `insert_field_mapping(conn, session_id, *, source_type, field, source_value, runloom_value, position=None, now) -> str`(position None 이면 끝), `update_field_mapping(conn, session_id, mapping_id, *, source_value, runloom_value, position) -> None`, `delete_field_mapping(conn, session_id, mapping_id) -> None` — 셋 다 자체 트랜잭션 + `bump_config_revision` |
+| 업무 상태 쓰기 | `adapters/repo.py`·`server/worker.py`(6) | `work_item_facts(conn, work_item_id) -> WorkItemFacts`, `refresh_work_status(conn, work_item_id, *, now) -> bool`(facts → `work_status` → `set_work_status`, 자체 BEGIN 없음), `Worker._refresh_work_statuses`, `TickReport.work_statuses_changed`, 사람 요청 코드 `STAGE_FAILED = "stage_failed"`(`domain/work_status.py`), 응답 action `retry` |
+| PR | `domain/pull_request.py`(7) | `head_branch(task_id, *, work_key=None, branch_seq=1) -> str`(= `result_branch`), `pr_title(work_key: str \| None, title: str) -> str` |
+| 지표 | `domain/metrics.py`·`adapters/repo.py`(8) | `TaskFact.work_item_id`, 묶음 = 업무 |
+| 화면 | `server/web.py`·`server/views.py`(9) | 홈 목록 = `list_work_items` 한 줄(키·제목·종류·업무 상태·이유·담당), 상세에 단계 묶음 — 새 화면 구성은 16-work-ui |
+
 ## 기존 구현과 초기 설계 기록
 
 이하의 첫 범위·후속 제외 표현은 해당 phase의 범위다. 실서비스 제품 목표는 위 전환 설계와 ADR-0011을 따른다.
