@@ -77,7 +77,10 @@
     {
       "step": 9,
       "name": "work-list-minimal",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T02:48:59+0900",
+      "summary": "생성: templates/work_detail.html(GET /work/{key} — 머리(원본 링크·담당·PR·상태)·요청·단계 목록 '단계 N/M · 종류'·단계 상태·실행 횟수·열린 사람 요청(_cycle.html response_form 재사용)·양식 칸(있는 것만)·연결 업무·접힌 '자세히'(업무 id·원본 종류·요청 코드·양식 출처)); 수정: server/web.py(_base.my_work = views.work_summary 업무 한 줄, 등록 폼 선행 select 는 _form_context.my_tasks, /work/{key} 라우트 — RUN-<번호> 형식 밖·없는 번호·다른 워크스페이스 404), server/views.py(work_summary·work_context·assignee_label·FORM_LABELS·_agent_choices 추출, 선행/후속 칩 _chip — 같은 업무면 '단계 N/M', 다른 업무면 '선행|후속 RUN-n', 후속은 followups_of, task_context.work 브레드크럼, RESPONSE_ACTIONS 에 retry '다시 맡기기'·stage_failed 의 close 라벨 '닫기'), templates home.html·_sidebar.html(업무 한 줄 → /work/RUN-n, 지시 전 첫 단계 [에이전트에게 맡기기] 유지)·_live.html(브레드크럼 업무 키·chip 매크로)·_status.html(업무 상태 8개 배지), docs/ARCHITECTURE(step 9 구현 단락·화면 이름 행); 테스트: test_web_cycle 새 5개(fix+review → 한 줄·/work/RUN-1 단계 2개·브레드크럼·단계 칩, 없는·형식 밖·남의 키 404, 실패 → [다시 맡기기]·[닫기] 응답 → 단계 추가/종료) + 기대 갱신(test_web·test_ui·test_web_github_connect·test_web_cycle PR·e2e test_github_app — 목록이 업무 상태를 보이므로 '대기'→'새로 들어옴'·'지시 전'→맡기기 버튼, 단계 상태는 업무 상세 단계 목록에서 단정). 결정: 목록은 저장된 업무 상태를 그대로(화면에서 재판정 안 함 — 수집 직후는 워커 tick 전까지 '새로 들어옴'); 목록에 종류 칸은 step.md 대로 넣지 않음(ARCHITECTURE 행 갱신); 자동 선택만 된 직접 등록은 domain 규칙상 '새로 들어옴 · 담당 없음'; 사이드바에도 키(원본 키) 표시. 검증: pytest 2567 passed/32 skipped, ruff 통과, WORKFLOW_E2E=1 e2e github_app·github_cycle·metrics·real_repo 31 passed(Docker test_selfhost 는 미실행). 다음 step 주의: 테스트 시계가 고정이면 같은 created_at 단계 순서가 task_id 로 갈려 '단계 N/M' 이 뒤바뀜(테스트는 clock 을 옮김); 업무 상세는 폴링 없음; 체인·폼 선행은 다른 업무라 칩이 '후속 RUN-n'.",
+      "completed_at": "2026-09-30T03:06:37+0900"
     },
     {
       "step": 10,
