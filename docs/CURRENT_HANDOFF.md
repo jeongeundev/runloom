@@ -9,9 +9,9 @@
 [MVP 계획](product/MVP_PLAN.md)의 목표: **2026-10-02 까지 Runloom 단독으로 OpenArchive(`jeongeundev/OpenArchive`) 실제 이슈 3건 이상을 이슈 → 수정 → 검토 → 사람 차례 알림까지 사람의 전달 없이 진행하고, 도입 전후를 지표로 보인다.** 남은 것은 사용자와 함께 하는 실연동이다.
 
 실연동 준비 목록(순서대로 — 사용자 지시·확인 뒤에만 한다):
-1. `feat-12-real-repo` → `service` `--no-ff` 병합 → `deploy/selfhost/install.sh` 재실행(스키마 7 → 8 자동 이전. 먼저 `backup create`).
+1. 완료(2026-09-29): `service` 병합(2e06218) → 백업 `20260929T012810Z` → `install.sh` 재실행, 스키마 8, 업무 22·기준선 24 보존.
 2. **App 권한 승인** — 기존 App `runloom-gwufov` 의 Pull requests 를 Read and write 로 올리고 설치(jeongeundev)에서 새 권한 승인([SELFHOST "App 권한 올리기"](SELFHOST.md#app-권한-올리기--phase-12-전에-만든-app)).
-3. **에이전트 전용 테스트 DB** — pgvector 를 **5434** 에 따로 띄운다(5433 은 `opensql-db-1` 이 사용 중). 러너 `--env DATABASE_URL=…:5434/…` 로 넘긴다.
+3. **에이전트 전용 테스트 DB** — 2026-09-29 컨테이너 `runloom-agent-db`(pgvector pg17, vector 0.8.6, `127.0.0.1:5435`, 볼륨 `runloom-agent-db`)로 띄움 — 5433 은 `opensql-db-1`, 5434 는 `application-db-1` 이 사용 중. 러너 `--env DATABASE_URL=postgresql://openarchive:openarchive@localhost:5435/openarchive` 로 넘긴다.
 4. **OpenArchive 준비**(사용자 저장소 — 사용자가 직접 또는 지시로): `scripts/check.sh` 의 pytest 를 `python -m pytest` 로 한 줄 수정(링크된 편집 설치 venv 가 원본 코드를 가리키는 문제), 원본 폴더 `frontend` 에서 `npm install`. Next 가 링크된 `node_modules` 를 거부하면 frontend 만 업무마다 설치로 바꾼다.
 5. **러너 붙이기** — 카드 [러너 붙이기] → 명령에 `--verify check="scripts/check.sh" --link backend/.venv --link frontend/node_modules --env DATABASE_URL=…` 를 더해 실행. `origin` 이 ssh 면 launchd 에 `SSH_AUTH_SOCK` 이 없어 push 가 실패할 수 있다(SELFHOST 러너 절 "git 자격").
 6. **알림** — Discord 웹훅 URL 을 `/operator/notifications` 에 저장 → [테스트 보내기].
