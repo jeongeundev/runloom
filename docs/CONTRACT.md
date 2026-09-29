@@ -542,7 +542,7 @@
 { "from_kind": "code_change", "on_outcomes": ["ready_for_review"], "to_kind": "review", "handoff_kinds": ["diff", "code_change_result", "test_log_after"] }
 ```
 
-`SuccessorRule.model_dump_json()` 의 필드 순서 그대로(`from_kind` · `on_outcomes` · `to_kind` · `handoff_kinds`, 기본값 없음). 계약 자체는 `from_kind == to_kind`·`on_outcomes`/`handoff_kinds` 중복·`handoff_kinds` 에 `handoff_bundle` 을 거부한다. 등록은 `POST /rules`: `on_outcomes` 가 `from_kind.outcomes` 밖이거나 `handoff_kinds` 가 `to_kind.input_kinds` 를 빠뜨리거나 `from_kind`·`to_kind` 가 이 워크스페이스에 없으면 `422 invalid_field`(사유는 `domain/kinds.validate_rule` 문구 — `등록되지 않은 종류 …` / `on_outcomes 에 … 의 outcome 이 아닌 값이 있습니다: …` / `handoff_kinds 에 … 의 input_kinds 가 빠졌습니다: …`), 같은 `from_kind → to_kind` 가 이미 있으면 `409 rule_exists`. 삭제는 `POST /rules/{rule_id}/delete` 이며 내장 규칙도 지울 수 있다.
+`SuccessorRule.model_dump_json()` 의 필드 순서 그대로(`from_kind` · `on_outcomes` · `to_kind` · `handoff_kinds`, 네 필드 모두 필수 — 위 예시처럼 생략한 선택 칸 `placement` 는 기본값 `same_work` 이고 dump 하면 끝에 붙는다, 15.1). 계약 자체는 `from_kind == to_kind`·`on_outcomes`/`handoff_kinds` 중복·`handoff_kinds` 에 `handoff_bundle` 을 거부한다. 등록은 `POST /rules`: `on_outcomes` 가 `from_kind.outcomes` 밖이거나 `handoff_kinds` 가 `to_kind.input_kinds` 를 빠뜨리거나 `from_kind`·`to_kind` 가 이 워크스페이스에 없으면 `422 invalid_field`(사유는 `domain/kinds.validate_rule` 문구 — `등록되지 않은 종류 …` / `on_outcomes 에 … 의 outcome 이 아닌 값이 있습니다: …` / `handoff_kinds 에 … 의 input_kinds 가 빠졌습니다: …`), 같은 `from_kind → to_kind` 가 이미 있으면 `409 rule_exists`. 삭제는 `POST /rules/{rule_id}/delete` 이며 내장 규칙도 지울 수 있다.
 
 ### 11.3 `GenericResult` — `review` 의 `approved`
 
@@ -1011,9 +1011,9 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 | 요청 | 응답 | 오류 |
 |---|---|---|
 | `GET /human-requests` | `requests` — 이 세션의 열린 요청(`request_id`·`task_id`·`code`·`question`·`revision`·`state`·`created_at`, 만든 순) | |
-| `POST /human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
+| `POST /human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`retry`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task — `stage_failed` 는 단계가 이미 `실패` 로 마감이라 예외), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, `stage_failed` 는 `retry`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
 
-응답의 효과: `resume` 의 `text` 는 다음 실행 요청 문구 끝의 `## 사람 응답 (운영자)` 절로 붙는다(Task 요청 원문·원본 스냅샷은 그대로). `choose_agent` 는 같은 트랜잭션에서 Task 의 실행 Agent 를 지정하지만 담당자 연결·능력·위임 범위는 재평가가 다시 검사한다 — 응답은 권한이나 소스 설정을 바꾸지 않는다(위임 밖은 13.10 설정 API 로 따로 고친다). `close` 는 Task 를 `실패 · 운영자 종료 — 사람 요청 응답` 으로 마감하고 활성 실행을 해제한다. 같은 트랜잭션이라 착수와 겹쳐도 마감된 Task 에 실행이 붙지 않는다.
+응답의 효과: `resume` 의 `text` 는 다음 실행 요청 문구 끝의 `## 사람 응답 (운영자)` 절로 붙는다(Task 요청 원문·원본 스냅샷은 그대로). `choose_agent` 는 같은 트랜잭션에서 Task 의 실행 Agent 를 지정하지만 담당자 연결·능력·위임 범위는 재평가가 다시 검사한다 — 응답은 권한이나 소스 설정을 바꾸지 않는다(위임 밖은 13.10 설정 API 로 따로 고친다). `close` 는 Task 를 `실패 · 운영자 종료 — 사람 요청 응답` 으로 마감하고 활성 실행을 해제한다. 같은 트랜잭션이라 착수와 겹쳐도 마감된 Task 에 실행이 붙지 않는다. 실행 실패 요청 `stage_failed`(phase 14 step 6)의 `retry` 는 같은 업무에 실패한 단계를 복사한 새 단계(`text` 는 그 요청 끝의 `## 사람 응답 (운영자)` 절)를, `close` 는 업무 `종료 · 닫음 — 실행 실패` 를 같은 트랜잭션에 기록한다.
 
 ## 14. 실제 저장소 순환 — 선택 칸
 
@@ -1070,3 +1070,75 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 ```
 
 러너 로컬 등록의 `--link`·`--env` 는 계약에 없다 — 중앙에 이름도 값도 보내지 않는다(ARCHITECTURE "러너 로컬 등록 새 칸").
+
+## 15. 업무와 단계 — 선택 칸 (contract-pending)
+
+[ADR-0020](adr/0020-work-items-and-stages.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "업무와 단계 — phase 14". 계약 버전은 1 그대로이고 1~14절 payload 는 바뀌지 않는다 — 아래는 모두 기본값이 있는 추가형 선택 칸이다. 15.1 은 step 4 가 모델을 구현해 일반 `json` 펜스다(계약 fixture 테스트가 읽는다). 15.2·15.3 은 모델에 칸이 생기기 전이라 `jsonc` 펜스이고(fixture 테스트가 읽지 않는다), step 7 이 모델을 구현하면서 `json` 펜스로 바꾸고 `test_v1.py` 의 블록 수(`test_contract_md_has_expected_block_counts`)를 함께 올린다.
+
+### 15.1 `SuccessorRule` — `placement`
+
+`placement` 는 규칙이 만든 후속 Task 를 어디에 두는지다. `same_work`(기본) = 원인 Task 와 같은 업무의 다음 단계, `new_work` = 새 업무의 첫 단계 + 업무 링크 `spawned_from`. 칸이 없는 저장 규칙·요청은 `same_work` 다. 내장 `bug_fix → code_review` 는 `same_work` 이며 13.1 예시와 같은 값이다(dump 하면 `placement` 가 끝에 붙는다):
+
+```json
+{ "from_kind": "bug_fix", "on_outcomes": ["ready_for_review"], "to_kind": "code_review", "handoff_kinds": ["code_change_result", "diff", "test_log_after", "verification_log"], "placement": "same_work" }
+```
+
+사용자 정의 규칙 — 검토에서 나온 후속 문서 작업을 새 업무로 만든다:
+
+```json
+{ "from_kind": "review", "on_outcomes": ["approved"], "to_kind": "doc_update", "handoff_kinds": ["generic_result"], "placement": "new_work" }
+```
+
+`placement` 가 `same_work`·`new_work` 밖이면 422 `invalid_field`. 규칙 등록 화면(`POST /rules`)은 선택 필드 `placement` 를 받고(없으면 `same_work`), 규칙 목록에 "같은 업무의 다음 단계" / "새 업무로 등록" 으로 보인다.
+
+### 15.2 `ExecutionRequest` — `bug_fix` 첫 시도, 업무 키
+
+13.2 와 같은 요청에 `work_key`(업무 키 — 패턴 `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8}$`)와 `branch_seq`(1 이상, 기본 1)가 붙는다. 러너는 결과 브랜치를 `runloom/RUN-23` 으로 만들고 push 한다. 두 칸이 없는 요청(v10 이전에 시작한 Task·구버전 서버)은 지금처럼 `task/<task_id>` 다. 같은 Task 의 재작업 요청은 첫 요청의 두 칸을 그대로 싣는다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-fix-001",
+  "task_id": "task-gh-41",
+  "kind": "bug_fix",
+  "agent_id": "agent-codex-mac",
+  "task_revision": 1,
+  "request": "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.\n\nhttps://github.com/acme/billing/issues/41",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "verification_profile_id": "vp-pytest"
+  },
+  "kind_spec": null,
+  "work_key": "RUN-23",
+  "branch_seq": 1
+}
+```
+
+### 15.3 `ExecutionRequest` — 다시 맡긴 단계
+
+실행 실패 뒤 사람이 [다시 맡기기] 로 만든 같은 업무의 두 번째 수정 단계(새 Task). `branch_seq` 2 → 브랜치 `runloom/RUN-23-2`, 기준 커밋에서 새로 만든다(force push 없음).
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-fix-003",
+  "task_id": "task-gh-41-retry",
+  "kind": "bug_fix",
+  "agent_id": "agent-codex-mac",
+  "task_revision": 1,
+  "request": "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 결제를 두 번 요청하면 총액이 음수가 된다.\n\nhttps://github.com/acme/billing/issues/41",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "verification_profile_id": "vp-pytest"
+  },
+  "kind_spec": null,
+  "work_key": "RUN-23",
+  "branch_seq": 2
+}
+```
+
+`work_key` 가 패턴 밖(소문자·공백·`/`·`..` 포함 등)이거나 `branch_seq` 가 1 미만이거나, `work_key` 없이 `branch_seq` 가 1 이 아니면 422. 구버전 러너는 두 칸을 `extra="forbid"` 로 거부하므로 중앙과 러너를 함께 올린다.

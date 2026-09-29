@@ -3,7 +3,7 @@
 DB 행이 아닌 값 객체를 받아 중앙값·n·미완료·모름을 낸다. 현재 시각·DB·HTTP 를 보지 않는다. 모르는 값
 (NULL)은 0 으로 채우지 않고 `unknown` 으로 따로 센다. 시각은 RFC 3339 문자열.
 
-업무 묶음 = `predecessor_task_id` 를 따라 올라간 선행 없는 시작 Task 와 그 후속들.
+묶음 = 업무(`work_item_id`) 하나의 모든 단계. 시작 Task 는 업무의 가장 이른 단계다(ARCHITECTURE "지표 묶음 (step 8)").
 """
 
 from collections import Counter
@@ -35,10 +35,10 @@ _REWORK_PREFIX = "rework:"
 @dataclass(frozen=True)
 class TaskFact:
     task_id: str
+    work_item_id: str
     kind: str
-    created_at: str
+    created_at: str  # 업무의 첫 단계면 업무 생성 시각과 같다(같은 트랜잭션)
     status: str  # USER_STATUS_LABELS
-    predecessor_task_id: str | None = None
     issue_opened_at: str | None = None  # 원본 이슈 스냅샷의 created_at. 없으면 None
     issue_state: str | None = None  # 원본 이슈 상태(open·closed). None = 직접 등록 Task
     pr_merged_at: str | None = None  # 원본 이슈를 닫은 병합 PR 의 병합 시각(source_issues). None = 모름/병합 없음
@@ -85,7 +85,7 @@ class HumanRequestFact:
 
 @dataclass(frozen=True)
 class MetricFacts:
-    tasks: Sequence[TaskFact] = ()
+    tasks: Sequence[TaskFact] = ()  # 생성 순(created_at, rowid)
     executions: Sequence[ExecutionFact] = ()
     events: Sequence[TaskEventFact] = ()  # task_events.id 순
     human_requests: Sequence[HumanRequestFact] = ()
@@ -215,19 +215,12 @@ class _Index:
         for r in facts.human_requests:
             self.requests.setdefault(r.task_id, []).append(r)
 
-    def root_of(self, task: TaskFact) -> TaskFact:
-        seen = {task.task_id}
-        while task.predecessor_task_id in self.tasks and task.predecessor_task_id not in seen:
-            task = self.tasks[task.predecessor_task_id]
-            seen.add(task.task_id)
-        return task
-
     def bundles(self) -> list[_Bundle]:
-        by_root: dict[str, _Bundle] = {}
+        """업무마다 묶음 하나. 입력이 생성 순이므로 업무에서 처음 나온 단계가 시작 Task 다."""
+        by_work: dict[str, _Bundle] = {}
         for task in self.tasks.values():
-            root = self.root_of(task)
-            by_root.setdefault(root.task_id, _Bundle(root)).tasks.append(task)
-        return list(by_root.values())
+            by_work.setdefault(task.work_item_id, _Bundle(task)).tasks.append(task)
+        return list(by_work.values())
 
     def first_start(self, task_id: str) -> str | None:
         return _earliest(e.started_at for e in self.executions.get(task_id, ()))
@@ -310,9 +303,9 @@ def _bundle_metrics(bundles: Sequence[_Bundle], index: _Index) -> dict[str, Any]
         executions = [e for t in bundle.tasks for e in index.executions.get(t.task_id, ())]
         intake = bundle.intake_at
 
-        # 인계 대기 — 후속 Task 생성 → 첫 시작
+        # 인계 대기 — 같은 업무의 다음 단계 생성 → 첫 시작. 업무 사이 연결(blocks·spawned_from)은 세지 않는다
         for task in bundle.tasks:
-            if task.predecessor_task_id is None:
+            if task is bundle.root:
                 continue
             start = index.first_start(task.task_id)
             if start is None:

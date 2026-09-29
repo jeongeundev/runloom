@@ -35,8 +35,9 @@ from workflow.adapters.github_client import (
     GitHubUnavailable,
 )
 from workflow.contracts.github import GitHubSourceConfig, SourceDelivery
-from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult
+from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult, ExecutionRequest, format_work_key
 from workflow.domain.execution_policy import policy_for
+from workflow.domain.pull_request import head_branch, pr_title
 
 CLAIM_SECONDS = 120  # 한 claim 이 HTTP(댓글 목록 여러 페이지 포함)를 끝낼 시간. 지나면 전송 후 crash 로 본다
 BACKOFF_SECONDS = 30  # n 번째 시도 실패 뒤 30·2^(n-1) 초, 최대 1시간
@@ -108,8 +109,10 @@ def _result_lines(conn: Connection, store: ArtifactStore, task: Row) -> list[str
             fix = CodeChangeResult.model_validate_json(content)
             if fix.result_commit is None:
                 return [f"- 수정: 정보 필요 — {_one_line(fix.summary)}"]
+            request = ExecutionRequest.model_validate_json(execution["request_json"])
+            branch = head_branch(task["task_id"], work_key=request.work_key, branch_seq=request.branch_seq)
             where = (  # 러너가 결과 브랜치를 origin 에 올렸는가 (ADR-0018 결정 4)
-                f"  - 결과 브랜치 `task/{task['task_id']}` 를 원격에 올렸습니다. 검토 승인 뒤 초안 PR 을 엽니다."
+                f"  - 결과 브랜치 `{branch}` 를 원격에 올렸습니다. 검토 승인 뒤 초안 PR 을 엽니다."
                 if execution["branch_pushed"] == 1
                 else "  - 결과 커밋은 담당자의 로컬 저장소에만 있습니다. 자동으로 푸시하지 않습니다."
             )
@@ -133,9 +136,10 @@ def _result_lines(conn: Connection, store: ArtifactStore, task: Row) -> list[str
 def source_update_body(conn: Connection, store: ArtifactStore, task: Row, public_url: str) -> str:
     """원본 이슈 댓글 본문. 시각을 넣지 않는다 — 같은 상태면 같은 본문이라 새 revision 이 생기지 않는다."""
     task_id = task["task_id"]
+    work = repo.work_item_of_task(conn, task_id)
     lines = [
         marker(task_id),
-        f"### Runloom 작업 현황 — {_one_line(task['title'])}",
+        f"### Runloom 작업 현황 — {pr_title(format_work_key(work['key_number']), _one_line(task['title']))}",
         "",
         f"- 상태: **{task['status']}** · {task['status_reason']}",
         *_result_lines(conn, store, task),

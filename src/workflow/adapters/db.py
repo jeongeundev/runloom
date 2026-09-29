@@ -10,9 +10,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
+from workflow.adapters.repo import ensure_first_admin, seed_default_field_mappings, work_item_facts
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
+from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -280,6 +282,95 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 """
 
+# v10 (phase 14, ADR-0020): 업무·단계. ARCHITECTURE "업무와 단계 — phase 14" 스키마 v10 표.
+# tasks 는 재생성하지 않는다 — work_item_id 칸은 빈 DB·9 → 10 모두 ALTER 로 더한다.
+WORK_ITEM_LINK_TYPES = ("blocks", "spawned_from")
+WORK_ITEM_EVENT_TYPES = ("status_changed", "assigned")
+
+_V10_TABLES = f"""
+-- 업무(목록 한 줄). 키 문자열은 계산한다(RUN-<key_number>). 삭제 경로 없음 — 키는 재사용되지 않는다.
+CREATE TABLE IF NOT EXISTS work_items (
+  work_item_id   TEXT PRIMARY KEY,                          -- 'wi-' + 12 hex
+  session_id     TEXT NOT NULL REFERENCES sessions(session_id),
+  key_number     INTEGER NOT NULL CHECK (key_number >= 1),
+  title          TEXT NOT NULL,
+  request        TEXT NOT NULL,
+  kind           TEXT NOT NULL,                             -- 대표 종류 = 첫 단계 종류
+  priority       TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('high', 'normal', 'low')),
+  assignee_type  TEXT CHECK (assignee_type IS NULL OR assignee_type IN ('member', 'agent')),
+  assignee_id    TEXT,
+  status         TEXT NOT NULL CHECK (status IN ({_in(WORK_STATUSES)})),
+  status_reason  TEXT NOT NULL,
+  source_type    TEXT NOT NULL CHECK (source_type IN ('github', 'n8n', 'manual')),
+  source_id      TEXT,
+  source_item_id TEXT,
+  source_key     TEXT,
+  source_url     TEXT,
+  source_state   TEXT,
+  form_json      TEXT NOT NULL DEFAULT '{{}}',
+  revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  closed_at      TEXT,
+  UNIQUE (session_id, key_number),
+  FOREIGN KEY (session_id, kind) REFERENCES kinds(session_id, kind),
+  CHECK ((assignee_type IS NULL) = (assignee_id IS NULL)),
+  CHECK ((status IN ({_in(TERMINAL_WORK_STATUSES)})) = (closed_at IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS ix_work_items_status ON work_items(session_id, status);
+
+-- 업무 사이 관계. 방향은 늘 앞 → 뒤. 두 업무가 같은 워크스페이스인지는 repo 가 검사한다.
+CREATE TABLE IF NOT EXISTS work_item_links (
+  from_work_item_id  TEXT NOT NULL REFERENCES work_items(work_item_id),
+  to_work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
+  type               TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_LINK_TYPES)})),
+  cause_execution_id TEXT REFERENCES executions(execution_id),
+  created_at         TEXT NOT NULL,
+  PRIMARY KEY (from_work_item_id, to_work_item_id, type),
+  CHECK (from_work_item_id != to_work_item_id)
+);
+
+-- 이 phase 는 첫 관리자만 만든다. 로그인 칸 없음(15-team).
+CREATE TABLE IF NOT EXISTS members (
+  member_id    TEXT PRIMARY KEY,                            -- 'mem-' + 8 hex
+  session_id   TEXT NOT NULL REFERENCES sessions(session_id),
+  display_name TEXT NOT NULL,
+  role         TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+  created_at   TEXT NOT NULL
+);
+
+-- 원본 값 → Runloom 값. position 오름차순 첫 일치('*' = 나머지 전부). position 은 유일하지 않다.
+CREATE TABLE IF NOT EXISTS field_mappings (
+  mapping_id    TEXT PRIMARY KEY,                           -- 'map-' + 8 hex
+  session_id    TEXT NOT NULL REFERENCES sessions(session_id),
+  source_type   TEXT NOT NULL CHECK (source_type IN ('github', 'n8n')),
+  field         TEXT NOT NULL CHECK (field IN ('kind', 'priority')),
+  source_value  TEXT NOT NULL,
+  runloom_value TEXT NOT NULL,
+  position      INTEGER NOT NULL CHECK (position >= 1),
+  created_at    TEXT NOT NULL,
+  UNIQUE (session_id, source_type, field, source_value)
+);
+
+-- 업무 상태·담당 이력. 추가 전용 — UPDATE·DELETE 경로 없음. 업무 생성은 work_items.created_at 이 원천.
+CREATE TABLE IF NOT EXISTS work_item_events (
+  id              INTEGER PRIMARY KEY,
+  work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
+  session_id      TEXT NOT NULL REFERENCES sessions(session_id),
+  type            TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_EVENT_TYPES)})),
+  config_revision INTEGER NOT NULL,
+  occurred_at     TEXT NOT NULL,
+  data_json       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_work_item_events_item ON work_item_events(work_item_id, id);
+CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(session_id, occurred_at);
+
+ALTER TABLE tasks ADD COLUMN work_item_id TEXT REFERENCES work_items(work_item_id);
+CREATE INDEX IF NOT EXISTS ix_tasks_work_item ON tasks(work_item_id, created_at);
+"""
+
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -488,7 +579,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -625,8 +716,89 @@ def _migrate_8_to_9(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 9")
 
 
+def _work_roots(conn: sqlite3.Connection) -> dict[str, str]:
+    """Task → 그 업무의 첫 단계 Task. 후속 연결(`followup_links`)로 생긴 Task 는 원인 실행의 Task 를 사슬 끝까지
+    따라간다. 그 밖 Task 는 자기 자신이 첫 단계다(선행 `predecessor_task_id` 는 묶지 않는다)."""
+    cause = dict(conn.execute(
+        "SELECT f.task_id, e.task_id FROM followup_links f JOIN executions e ON e.execution_id = f.cause_execution_id"
+    ).fetchall())
+    roots: dict[str, str] = {}
+    for (task_id,) in conn.execute("SELECT task_id FROM tasks").fetchall():
+        root = task_id
+        while root in cause:
+            root = cause[root]
+        roots[task_id] = root
+    return roots
+
+
+def _migrate_9_to_10(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 단계(Task)를 업무로 묶어 업무 행·키·상태·업무 사이 선행 링크를 만들고,
+    워크스페이스마다 첫 관리자·기본 매핑을 넣는다. 양식 칸은 비워 둔다 — 본문을 다시 해석하지 않는다."""
+    for statement in _statements(_V10_TABLES):
+        conn.execute(statement)
+    now = _now()
+    roots = _work_roots(conn)
+    work_of: dict[str, str] = {}  # 첫 단계 Task → 업무
+    next_key: dict[str, int] = {}
+    firsts = conn.execute(
+        "SELECT t.*, gs.source_id AS gh_source_id, gs.repository_full_name, si.github_issue_id, si.issue_number,"
+        " si.state AS issue_state, ch.source AS chain_source"
+        " FROM tasks t LEFT JOIN source_issues si ON si.task_id = t.task_id"
+        " LEFT JOIN github_sources gs ON gs.source_id = si.source_id"
+        " LEFT JOIN chains ch ON ch.chain_id = t.chain_id"
+        " ORDER BY t.session_id, t.created_at, t.task_id"
+    ).fetchall()
+    for task in firsts:
+        if roots.get(task["task_id"]) != task["task_id"]:
+            continue
+        key = next_key.get(task["session_id"], 0) + 1
+        next_key[task["session_id"]] = key
+        if task["gh_source_id"] is not None:
+            source = ("github", task["gh_source_id"], str(task["github_issue_id"]),
+                      f"{task['repository_full_name']}#{task['issue_number']}",
+                      f"https://github.com/{task['repository_full_name']}/issues/{task['issue_number']}",
+                      task["issue_state"])
+        elif task["chain_source"] == "n8n":
+            source = ("n8n", task["chain_id"], task["source_ref"], task["source_ref"], None, None)
+        else:
+            source = ("manual", None, None, None, None, None)
+        agent = task["chosen_agent_id"]
+        work_item_id = f"wi-{secrets.token_hex(6)}"
+        conn.execute(
+            "INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, assignee_type,"
+            " assignee_id, status, status_reason, source_type, source_id, source_item_id, source_key, source_url,"
+            " source_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (work_item_id, task["session_id"], key, task["title"], task["request"], task["kind"],
+             "agent" if agent else None, agent, WORK_STATUSES[0], *source, task["created_at"], now),
+        )
+        work_of[task["task_id"]] = work_item_id
+    for task_id, root in roots.items():
+        if root in work_of:
+            conn.execute("UPDATE tasks SET work_item_id = ? WHERE task_id = ?", (work_of[root], task_id))
+    missing = conn.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0]
+    if missing:
+        raise RuntimeError(f"schema_version 9 → 10 마이그레이션 중단 — work_item_id 가 비어 있는 Task {missing}건")
+    conn.execute(
+        "INSERT OR IGNORE INTO work_item_links (from_work_item_id, to_work_item_id, type, created_at)"
+        " SELECT p.work_item_id, t.work_item_id, 'blocks', t.created_at FROM tasks t"
+        " JOIN tasks p ON p.task_id = t.predecessor_task_id WHERE p.work_item_id != t.work_item_id"
+        " ORDER BY t.created_at, t.task_id"
+    )
+    for work_item_id in work_of.values():
+        status = work_status(work_item_facts(conn, work_item_id))
+        closed_at = now if status.status in TERMINAL_WORK_STATUSES else None
+        conn.execute("UPDATE work_items SET status = ?, status_reason = ?, closed_at = ? WHERE work_item_id = ?",
+                     (status.status, status.reason, closed_at, work_item_id))
+    for (session_id,) in conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall():
+        ensure_first_admin(conn, session_id, now=now)
+        seed_default_field_mappings(conn, session_id, now=now)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 10")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~8 은 9 까지 차례로(4 → 5 → 6 → 7 → 8 → 9) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~9 는 10 까지 차례로(4 → 5 → 6 → 7 → 8 → 9 → 10) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
@@ -639,8 +811,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] in (4, 5, 6, 7, 8):
-            steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9)
+        elif row[0] in (4, 5, 6, 7, 8, 9):
+            steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
+                     _migrate_9_to_10)
             for step in steps[row[0] - 4:]:
                 step(conn)
         elif row[0] != SCHEMA_VERSION:

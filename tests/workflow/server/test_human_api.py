@@ -95,7 +95,7 @@ def test_other_operator_session_cannot_see_or_answer(op, conn):
     # 다른 워크스페이스(운영자 세션)의 업무와 사람 요청 — DB 에 직접 둔다
     repo.create_session(conn, "sess-other", NOW)
     repo.mark_operator(conn, "sess-other")
-    repo.insert_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
     other_request, _ = repo.create_human_request_once(
         conn, "task-other", "fix_needs_information", "재현 금액이 필요합니다", "fix_needs_information:exec-9", NOW,
     )
@@ -151,3 +151,40 @@ def test_allowed_actions_per_request_code_are_shared_with_the_response_form():
     assert allowed_actions("assignee_multiple") == {"choose_agent", "close"}
     assert allowed_actions("rework_limit_reached") == {"resume", "close"}
     assert asks_information("fix_needs_information") and not asks_information("delegation_denied")
+
+
+@pytest.fixture
+def failed_request(conn, cycle) -> str:  # noqa: F811
+    """실행 실패로 마감된 단계의 `stage_failed` 요청(워커 `_reflect_failures` 가 만드는 모양)."""
+    task_id = import_issue(conn, 3)
+    repo.update_task_status(conn, task_id, "실패", "timeout · 20분 초과", finished_at=NOW, now=NOW)
+    request_id, _ = repo.create_human_request_once(conn, task_id, "stage_failed", "실행 실패 — timeout: 20분 초과",
+                                                   "stage_failed:exec-1", NOW)
+    return request_id
+
+
+def test_stage_failed_accepts_retry_and_close_but_not_resume(op, conn, failed_request):
+    assert respond(op, failed_request, action="resume").json()["field"] == "action"
+    assert respond(op, failed_request, action="choose_agent", agent_id=FIX).status_code == 422
+    retried = respond(op, failed_request, action="retry", text="")
+    assert retried.status_code == 200, retried.text  # 단계가 이미 마감(실패)이어도 받는다
+    assert len(repo.list_work_item_tasks(conn, repo.work_item_of_task(conn, "task-gh-3")["work_item_id"])) == 2
+    again = respond(op, failed_request, response_id="resp-2", action="close", text="")
+    assert (again.status_code, again.json()["code"]) == (409, "stale_request")
+
+
+def test_stage_failed_close_answer_is_accepted_on_a_closed_stage(op, conn, failed_request):
+    closed = respond(op, failed_request, action="close", text="")
+    assert closed.status_code == 200, closed.text
+    assert repo.work_item_of_task(conn, "task-gh-3")["status"] == "종료"
+
+
+def test_retry_is_only_for_failed_stages(op, request_id):
+    wrong = respond(op, request_id, action="retry")
+    assert (wrong.status_code, wrong.json()["field"]) == (422, "action")
+
+
+def test_stage_failed_allows_retry_and_close():
+    from workflow.server.human_api import allowed_actions
+
+    assert allowed_actions("stage_failed") == {"retry", "close"}

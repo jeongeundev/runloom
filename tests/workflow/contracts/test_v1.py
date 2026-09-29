@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 59개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 62개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -120,7 +120,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 58
+    assert len(FENCED) == 62
     assert len(INLINE) == 8
 
 
@@ -660,6 +660,8 @@ def test_json_roundtrip(model_name):
         expected = dict(block)
         if model is ExecutionRequest:
             expected.setdefault("kind_spec", None)  # 내장 종류 요청은 생략 가능, dump 에는 null
+            expected.setdefault("work_key", None)  # 업무 키 칸도 생략 가능 (CONTRACT 15.2)
+            expected.setdefault("branch_seq", 1)
         assert dumped == expected
         assert model.model_validate(dumped) == parsed
 
@@ -713,6 +715,7 @@ def test_builtin_rules_match_concept_table():
             handoff_kinds=["code_change_result", "diff", "test_log_after", "verification_log"],
         ),
     )
+    assert BUILTIN_RULES[0].placement == "same_work"
 
 
 @pytest.mark.parametrize("kind", ["diagnosis", "code_change"])
@@ -798,6 +801,22 @@ def test_successor_rule_rejects_handoff_bundle_in_handoff_kinds():
 def test_successor_rule_rejects_bad_handoff_kinds(handoff_kinds):
     with pytest.raises(ValidationError):
         SuccessorRule.model_validate(_rule(handoff_kinds=handoff_kinds))
+
+
+def test_successor_rule_placement_defaults_to_same_work_and_reads_old_json():
+    """CONTRACT 15.1 — 칸이 없는 저장 규칙(v10 이전 `rule_json`)은 같은 업무의 다음 단계다."""
+    old = _rule()
+    assert "placement" not in old
+    assert SuccessorRule.model_validate(old).placement == "same_work"
+    assert SuccessorRule.model_validate_json(json.dumps(old)).placement == "same_work"
+    assert SuccessorRule.model_validate(_rule(placement="new_work")).placement == "new_work"
+    assert json.loads(SuccessorRule.model_validate(old).model_dump_json())["placement"] == "same_work"
+
+
+@pytest.mark.parametrize("placement", ["other", "", "NEW_WORK", None])
+def test_successor_rule_rejects_bad_placement(placement):
+    with pytest.raises(ValidationError):
+        SuccessorRule.model_validate(_rule(placement=placement))
 
 
 def test_successor_rule_accepts_empty_handoff_kinds():
@@ -1209,7 +1228,7 @@ def test_bug_fix_request_roundtrip_with_empty_inputs():
     parsed = ExecutionRequest.model_validate(block)
     assert type(parsed.target) is CodeChangeTarget
     dumped = parsed.model_dump(mode="json")
-    assert dumped == {**block, "kind_spec": None}
+    assert dumped == {**block, "kind_spec": None, "work_key": None, "branch_seq": 1}
     assert ExecutionRequest.model_validate(dumped) == parsed
 
 
@@ -1228,7 +1247,7 @@ def test_code_review_request_roundtrip():
         result_commit="8e2a4c6f0b1d3e5a7c9f2b4d6e8a0c1f3b5d7e9a",
     )
     dumped = parsed.model_dump(mode="json")
-    assert dumped == {**block, "kind_spec": None}
+    assert dumped == {**block, "kind_spec": None, "work_key": None, "branch_seq": 1}
     assert type(ExecutionRequest.model_validate(dumped).target) is CommitReviewTarget
 
 
@@ -1466,3 +1485,72 @@ def test_user_defined_kind_cannot_take_builtin_name(kind):
     """내장 이름은 예약어다 — 사용자 정의 `bug_fix` 가 있으면 ExecutionRequest 의 target 규칙과 어긋난다."""
     with pytest.raises(ValidationError):
         KindSpec.model_validate(_kind_spec(kind=kind))
+
+
+# --- 업무 키·결과 브랜치 (phase 14 step 7, CONTRACT 15.2·15.3) -----------------------------------
+
+
+def _bug_fix_request() -> dict:
+    return next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ExecutionRequest and b["kind"] == "bug_fix")
+
+
+def test_format_work_key_uses_fixed_prefix():
+    assert v1.WORK_KEY_PREFIX == "RUN"
+    assert v1.format_work_key(23) == "RUN-23"
+    assert re.fullmatch(v1.WORK_KEY_PATTERN, v1.format_work_key(1))
+
+
+def test_execution_request_work_key_is_optional_with_branch_seq_one():
+    """칸이 없는 요청(v10 이전 Task·구버전 서버)은 키 없음·순번 1 — 브랜치는 옛 `task/<task_id>`."""
+    parsed = ExecutionRequest.model_validate(_bug_fix_request())
+    assert (parsed.work_key, parsed.branch_seq) == (None, 1)
+    dumped = parsed.model_dump(mode="json")
+    assert (dumped["work_key"], dumped["branch_seq"]) == (None, 1)
+
+
+def test_contract_examples_carry_work_key_and_branch_seq():
+    keyed = [b for b in FENCED if _model_for(b) is ExecutionRequest and "work_key" in b]
+    assert [(b["work_key"], b["branch_seq"]) for b in keyed] == [("RUN-23", 1), ("RUN-23", 2)]
+    for block in keyed:
+        assert ExecutionRequest.model_validate(block).model_dump(mode="json") == block
+
+
+@pytest.mark.parametrize("key", ["RUN-1", "RUN-23", "AB-999999999", "A1B2C3D4E5-7"])
+def test_execution_request_accepts_work_key_in_pattern(key):
+    assert ExecutionRequest.model_validate({**_bug_fix_request(), "work_key": key}).work_key == key
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["run-1", "RUN-0", "RUN-01", "R-1", "RUN 1", "RUN/1", "RUN-1/..", "../RUN-1", "RUN-1\n", "RUN-1234567890",
+     "ABCDEFGHIJK-1", "1RUN-1", ""],
+)
+def test_execution_request_rejects_work_key_outside_pattern(key):
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**_bug_fix_request(), "work_key": key})
+
+
+@pytest.mark.parametrize("seq", [0, -1, "x", 1.5])
+def test_execution_request_rejects_bad_branch_seq(seq):
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**_bug_fix_request(), "work_key": "RUN-3", "branch_seq": seq})
+
+
+def test_execution_request_rejects_branch_seq_without_work_key():
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**_bug_fix_request(), "branch_seq": 2})
+
+
+def test_result_branch_three_cases():
+    assert v1.result_branch("task-abc", None) == "task/task-abc"
+    assert v1.result_branch("task-abc", None, 1) == "task/task-abc"
+    assert v1.result_branch("task-abc", "RUN-3") == "runloom/RUN-3"
+    assert v1.result_branch("task-abc", "RUN-3", 1) == "runloom/RUN-3"
+    assert v1.result_branch("task-abc", "RUN-3", 2) == "runloom/RUN-3-2"
+
+
+@pytest.mark.parametrize("key,seq", [("run/../x", 1), ("RUN-3", 0), (None, 2)])
+def test_result_branch_refuses_values_outside_the_contract(key, seq):
+    """요청 모델을 거치지 않은 값(model_construct 등)도 브랜치 이름이 되기 전에 막는다."""
+    with pytest.raises(ValueError):
+        v1.result_branch("task-abc", key, seq)

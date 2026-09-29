@@ -53,8 +53,9 @@ class FollowupTaskSpec:
     session_id: str
     kind: str
     cause_execution_id: str  # 유일 키 (session_id, cause_execution_id, kind)
-    predecessor_task_id: str
+    predecessor_task_id: str  # 원인 Task — `new_work` 면 새 Task 의 선행이 아니라 원인 업무를 찾는 데만 쓴다
     rules_revision: int
+    placement: Literal["same_work", "new_work"] = "same_work"  # 규칙 행의 값(ADR-0020)
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ def _after_fix(ctx: FollowupContext) -> FollowupDecision:
         cause_execution_id=ctx.execution_id,
         predecessor_task_id=ctx.task_id,
         rules_revision=ctx.rules_revision,
+        placement=rule.placement,
     )
     return FollowupDecision(
         "create_task",

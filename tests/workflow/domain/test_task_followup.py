@@ -68,6 +68,15 @@ def test_fix_result_without_review_task_creates_one():
     assert decision.cause_key == "review:exe-fix-1"
     assert decision.review_commit == FIX_COMMIT
     assert decision.target_task_id is None
+    assert decision.create.placement == "same_work"  # 내장 규칙
+
+
+def test_created_followup_carries_the_rule_placement():
+    """새 업무로 둘지는 규칙 행의 값이다 — 종류 이름으로 정하지 않는다(ADR-0009)."""
+    rules = [rule.model_copy(update={"placement": "new_work"}) for rule in BUILTIN_RULES]
+    decision = decide_followup(_fix(rules=rules))
+    assert decision.action == "create_task"
+    assert decision.create.placement == "new_work"
 
 
 def test_fix_result_links_existing_review_by_explicit_reference():

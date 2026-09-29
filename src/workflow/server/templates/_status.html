@@ -1,13 +1,15 @@
-{# 상태 배지 매크로 — UI_GUIDE "상태 표시". 점의 채움은 의미다: 빈 점 = 상대 쪽에서 확인된 사실 없음, 채운 점 = 확인된 사실.
+{# 상태 배지 매크로 — UI_GUIDE "상태 표시". 단계 상태 7개와 업무 상태 8개(domain/work_status)를 함께 받는다. 점의 채움은 의미다: 빈 점 = 상대 쪽에서 확인된 사실 없음, 채운 점 = 확인된 사실.
    색만으로 표시하지 않는다: 한글 상태 텍스트가 항상 보이고 `data-status` 에 남는다. #}
 {% set STATUS_CLASS = {
   '대기': 'wait', '실행 가능': 'ready', '실행 요청됨': 'requested', '실행 중': 'running',
   '확인 필요': 'attention', '완료': 'done', '실패': 'failed',
+  '새로 들어옴': 'wait', '에이전트 작업 중': 'running', '직접 작업 중': 'running', '내 차례': 'attention',
+  'PR · 검토': 'ready', '종료': 'wait',
 } %}
-{% set FILLED = ['실행 중', '확인 필요', '완료', '실패'] %}
+{% set FILLED = ['실행 중', '확인 필요', '완료', '실패', '에이전트 작업 중', '직접 작업 중', '내 차례'] %}
 
 {% macro dot(label) -%}
-<span class="dot{% if label in FILLED %} dot-filled{% endif %}{% if label == '실행 중' %} dot-pulse{% endif %}" aria-hidden="true"></span>
+<span class="dot{% if label in FILLED %} dot-filled{% endif %}{% if label in ['실행 중', '에이전트 작업 중'] %} dot-pulse{% endif %}" aria-hidden="true"></span>
 {%- endmacro %}
 
 {% macro badge(label) -%}

@@ -25,9 +25,10 @@ def t(hour: int, minute: int = 0) -> str:
     return f"2026-09-27T{hour:02d}:{minute:02d}:00Z"
 
 
-def task(task_id, *, created=t(0), status="대기", pred=None, **kw) -> TaskFact:
-    return TaskFact(task_id=task_id, kind=kw.pop("kind", "code_change"), created_at=created, status=status,
-                    predecessor_task_id=pred, **kw)
+def task(task_id, *, created=t(0), status="대기", work=None, **kw) -> TaskFact:
+    """`work` 가 없으면 Task 하나가 업무 하나(업무 id = task_id)."""
+    return TaskFact(task_id=task_id, work_item_id=work or task_id, kind=kw.pop("kind", "code_change"),
+                    created_at=created, status=status, **kw)
 
 
 def exe(execution_id, task_id, *, created=t(0), status="result_ready", attempt=1, start_key=None, **kw):
@@ -153,8 +154,8 @@ def test_rework_twice_bundle_and_first_pass():
     # 묶음 C: t5 — 검토 없음
     facts = MetricFacts(
         tasks=(
-            task("t1"), task("t2", pred="t1", kind="code_review"),
-            task("t3"), task("t4", pred="t3", kind="code_review"),
+            task("t1"), task("t2", work="t1", kind="code_review"),
+            task("t3"), task("t4", work="t3", kind="code_review"),
             task("t5"),
         ),
         executions=(
@@ -174,6 +175,59 @@ def test_rework_twice_bundle_and_first_pass():
     assert group.rework == Stat(median=0, n=3, total=2)
 
 
+def test_chain_of_two_work_items_is_two_bundles():
+    # 체인: 업무 w2 의 첫 단계가 다른 업무 w1 의 단계를 선행(predecessor_task_id·blocks)으로 둔다.
+    # 예전 predecessor_task_id 루트 찾기로는 한 묶음이었다 — 이제 업무마다 따로
+    facts = MetricFacts(
+        tasks=(task("t1", work="w1"), task("t2", work="w2", created=t(1))),
+        executions=(exe("e1", "t1", started_at=t(1)), exe("e2", "t2", created=t(2), started_at=t(3))),
+    )
+    group = only(compute(facts))
+    assert group.bundles == 2
+    assert group.handoff_wait == Stat(median=None, n=0)  # 업무 사이 연결은 인계로 세지 않는다
+
+
+def test_fix_review_rework_in_one_work_item_is_one_bundle():
+    # 업무 w1: 수정 t1 → 검토 t2(같은 업무의 다음 단계). 첫 검토 changes_requested → 재작업 1회 → approved
+    facts = MetricFacts(
+        tasks=(task("t1", work="w1"), task("t2", work="w1", created=t(1), kind="code_review")),
+        executions=(
+            exe("a1", "t1", created=t(0), started_at=t(0)),
+            exe("r1", "t2", created=t(1), started_at=t(2), kind="code_review", outcome="changes_requested"),
+            exe("a2", "t1", created=t(3), start_key="rework:r1", attempt=2),
+            exe("r2", "t2", created=t(4), kind="code_review", outcome="approved", attempt=2),
+        ),
+    )
+    group = only(compute(facts))
+    assert group.bundles == 1
+    assert group.rework == Stat(median=1, n=1, total=1)
+    assert group.first_pass == Ratio(numerator=0, denominator=1)
+    assert group.handoff_wait == Stat(median=1 * H, n=1)  # 같은 업무의 다음 단계 생성 → 첫 시작
+
+
+def test_spawned_work_item_is_its_own_bundle():
+    # new_work 후속: 새 업무 w2 의 첫 단계는 선행이 없다(spawned_from 링크만). 원인 업무와 따로 센다
+    facts = MetricFacts(
+        tasks=(gh_task("t1", work="w1", opened=t(0)), task("t2", work="w2", created=t(3))),
+        executions=(exe("e2", "t2", created=t(3), started_at=t(4)),),
+    )
+    group = only(compute(facts))
+    assert group.bundles == 2
+    assert group.handoff_wait == Stat(median=None, n=0)
+    assert group.intake_to_merge == Stat(median=None, n=0, incomplete=1)  # GitHub 원본은 w1 만
+
+
+def test_bundle_start_is_earliest_stage_of_work_item():
+    # 단계 순서는 선행 칸이 아니라 업무 안 생성 순이다 — 다시 맡긴 단계(t2)는 선행이 없어도 w1 의 다음 단계
+    facts = MetricFacts(
+        tasks=(task("t1", work="w1", status="실패"), task("t2", work="w1", created=t(2))),
+        executions=(exe("e2", "t2", created=t(2), started_at=t(3)),),
+    )
+    group = only(compute(facts))
+    assert group.bundles == 1
+    assert group.handoff_wait == Stat(median=1 * H, n=1)
+
+
 def test_human_rejection_ratio_from_decision_events():
     facts = MetricFacts(
         tasks=(task("t1", review_decision="approve"), task("t2", review_decision="close")),
@@ -190,7 +244,7 @@ def test_human_rejection_ratio_from_decision_events():
 
 def test_interventions_and_response_time():
     facts = MetricFacts(
-        tasks=(task("t1"), task("t2", pred="t1"), task("t3")),
+        tasks=(task("t1"), task("t2", work="t1"), task("t3")),
         human_requests=(
             HumanRequestFact("hr1", "t1", created_at=t(1), answered_at=t(3)),
             HumanRequestFact("hr2", "t2", created_at=t(4)),  # 열린 요청
@@ -210,7 +264,7 @@ def test_intake_to_human_uses_earliest_of_request_and_status():
     facts = MetricFacts(
         tasks=(
             task("t1", created=t(1), issue_opened_at=t(0)),
-            task("t2", pred="t1", created=t(2)),
+            task("t2", work="t1", created=t(2)),
             task("t3", created=t(1)),  # 이슈 없음 → 생성 시각
             task("t4", created=t(1)),  # 아직 사람 차례 없음
         ),
@@ -252,9 +306,9 @@ def test_handoff_wait_splits_blocked_segments_by_actor():
     facts = MetricFacts(
         tasks=(
             task("t1"),
-            task("t2", pred="t1", created=t(1)),  # 1→5: operator 1h, operator+assignee 2h, 준비 후 1h
-            task("t3", pred="t1", created=t(1)),  # v6 이전: 이벤트 없음 → 분해 모름
-            task("t4", pred="t1", created=t(1)),  # 아직 시작 안 함
+            task("t2", work="t1", created=t(1)),  # 1→5: operator 1h, operator+assignee 2h, 준비 후 1h
+            task("t3", work="t1", created=t(1)),  # v6 이전: 이벤트 없음 → 분해 모름
+            task("t4", work="t1", created=t(1)),  # 아직 시작 안 함
         ),
         executions=(
             exe("e2", "t2", created=t(4), started_at=t(5)),
@@ -278,7 +332,7 @@ def test_handoff_wait_splits_blocked_segments_by_actor():
 
 def test_blocked_segment_is_clipped_at_first_start():
     facts = MetricFacts(
-        tasks=(task("t1"), task("t2", pred="t1", created=t(1))),
+        tasks=(task("t1"), task("t2", work="t1", created=t(1))),
         executions=(exe("e2", "t2", started_at=t(2)),),  # ready 없이 시작(웹 시작)
         events=(ev("t2", "blocked", t(1), blockers=[{"code": "run_mode_manual", "actor": "operator"}]),
                 ev("t2", "blocked", t(3), blockers=[{"code": "x", "actor": "system"}])),
@@ -291,7 +345,7 @@ def test_blocked_segment_is_clipped_at_first_start():
 def test_events_only_at_or_after_first_start_leave_no_blocked_time():
     """후속 Task 가 만들어진 초에 바로 시작하면 시작 전 blocked·ready 표시가 없다 — 대기 구간 0(실패하지 않는다)."""
     facts = MetricFacts(
-        tasks=(task("t1"), task("t2", pred="t1", created=t(1))),
+        tasks=(task("t1"), task("t2", work="t1", created=t(1))),
         executions=(exe("e2", "t2", started_at=t(1)),),
         events=(ev("t2", "ready", t(1)), ev("t2", "status_changed", t(2), to="완료")),
     )
@@ -361,7 +415,7 @@ def test_group_by_config_revision():
 def test_group_by_folder_commit():
     sha_a, sha_b = "a" * 40, "b" * 40
     facts = MetricFacts(
-        tasks=(task("t1"), task("t2", pred="t1")),
+        tasks=(task("t1"), task("t2", work="t1")),
         executions=(
             exe("e1", "t1", created=t(1), folder_commit=sha_b, cost_usd=1.0),
             exe("e2", "t2", created=t(2), folder_commit=sha_a, cost_usd=2.0),
@@ -466,7 +520,7 @@ def test_intake_to_approval_uses_first_approval_or_done_in_bundle():
     facts = MetricFacts(
         tasks=(
             gh_task("t1", opened=t(0)),
-            task("t2", created=t(1), pred="t1", kind="code_review"),
+            task("t2", created=t(1), work="t1", kind="code_review"),
             task("t3", created=t(0)),  # 승인 없음
         ),
         events=(

@@ -1,6 +1,7 @@
 """Git worktree·커밋·diff — 연결 프로그램이 결과 보존을 관리한다 (ARCHITECTURE "Codex와 worktree").
 
-- 업무별 worktree 는 저장소 옆 `<repo>-worktrees/<task_id>/`, 브랜치 `task/<task_id>`. 재시도는 같은 worktree.
+- 단계(Task)별 worktree 는 저장소 옆 `<repo>-worktrees/<task_id>/`. 브랜치는 `contracts/v1.result_branch` — 업무 키가
+  있으면 `runloom/<키>`(다시 맡긴 단계는 `-<순번>`), 없으면 `task/<task_id>`. 재시도는 같은 worktree·같은 브랜치.
 - 원본 저장소의 작업 트리·기준 브랜치는 건드리지 않는다. 결과는 작업 브랜치의 로컬 커밋으로만 남긴다.
 - 모든 명령은 고정 인자 배열이다. task_id·커밋 ID 는 불투명 문자열이며 경로로 해석하지 않는다.
 - 기준 커밋 추적(ADR-0018 결정 2): `fetch_origin`·`origin_head` 만 네트워크에 닿는다. 원격 이름 `origin`·`refs/remotes/origin/HEAD`
@@ -8,7 +9,7 @@
 - 작업 복사본 준비물(ADR-0018 결정 3): `link_prepared_paths` 가 등록의 `links` 를 원본 폴더로 향하는 심볼릭 링크로 걸고
   저장소 공용 `info/exclude` 에 넣는다. 링크를 거부하는 도구(Next Turbopack 은 작업 복사본 밖을 가리키는 `node_modules`
   링크를 거부한다)용 `copies` 는 `copy_prepared_paths` 가 복사한다(macOS 는 APFS 복제 `cp -Rc`). 원본 폴더의 파일은 읽기만 한다.
-- 결과 브랜치 push(ADR-0018 결정 4): `push_task_branch` 는 `task/<task_id>` 만 같은 이름으로 origin 에 보낸다. force 없음,
+- 결과 브랜치 push(ADR-0018 결정 4): `push_task_branch` 는 결과 브랜치만 같은 이름으로 origin 에 보낸다. force 없음,
   사용자 로컬 git 자격·훅 그대로. 실패 로그에서 원격 URL 은 가린다(자격이 URL 에 들어 있을 수 있다).
 """
 
@@ -19,6 +20,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from workflow.contracts.v1 import result_branch
 
 DEFAULT_AUTHOR = "workflow-connector <connector@localhost>"
 GIT_NETWORK_TIMEOUT_SECONDS = 120
@@ -95,10 +98,11 @@ def has_origin(repo: Path) -> bool:
     return subprocess.run(["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True).returncode == 0
 
 
-def push_task_branch(repo: Path, task_id: str) -> bool:
-    """`task/<task_id>` 를 origin 의 같은 이름 브랜치로 push 한다 (fast-forward 만). 거부·자격 없음·네트워크·시간 초과는
-    False 와 로그 — 호출자는 실행 결과를 바꾸지 않는다. 대상 ref 가 `refs/heads/task/…` 로 고정이라 기본 브랜치에 닿지 않는다."""
-    ref = f"refs/heads/{_task_branch(task_id)}"
+def push_task_branch(repo: Path, task_id: str, *, work_key: str | None = None, branch_seq: int = 1) -> bool:
+    """결과 브랜치를 origin 의 같은 이름 브랜치로 push 한다 (fast-forward 만). 거부·자격 없음·네트워크·시간 초과는
+    False 와 로그 — 호출자는 실행 결과를 바꾸지 않는다. 대상 ref 가 `refs/heads/task/…`·`refs/heads/runloom/…` 로 고정이라
+    기본 브랜치에 닿지 않는다. 계약 밖 키는 ValueError."""
+    ref = f"refs/heads/{_task_branch(task_id, work_key, branch_seq)}"
     try:
         _git(["push", "--quiet", "origin", f"{ref}:{ref}"], repo, network=True)
     except GitError as exc:
@@ -107,18 +111,21 @@ def push_task_branch(repo: Path, task_id: str) -> bool:
     return True
 
 
-def _task_branch(task_id: str) -> str:
-    return f"task/{_safe(task_id)}"
+def _task_branch(task_id: str, work_key: str | None = None, branch_seq: int = 1) -> str:
+    return result_branch(_safe(task_id), work_key, branch_seq)
 
 
 def worktree_path(repo: Path, task_id: str) -> Path:
     return repo.parent / f"{repo.name}-worktrees" / _safe(task_id)
 
 
-def ensure_worktree(repo: Path, task_id: str, base_commit: str) -> Path:
-    """없으면 `task/<task_id>` 브랜치로 base_commit 에서 만든다. 있으면 그 브랜치인지 확인하고 그대로 쓴다."""
+def ensure_worktree(
+    repo: Path, task_id: str, base_commit: str, *, work_key: str | None = None, branch_seq: int = 1,
+) -> Path:
+    """없으면 결과 브랜치로 base_commit 에서 만든다. 있으면 그 브랜치인지 확인하고 그대로 쓴다. 계약 밖 키는 git 을
+    부르기 전에 ValueError."""
+    branch = _task_branch(task_id, work_key, branch_seq)
     path = worktree_path(repo, task_id)
-    branch = _task_branch(task_id)
     if path.exists():
         current = _git(["rev-parse", "--abbrev-ref", "HEAD"], path).strip()
         if current != branch:

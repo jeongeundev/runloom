@@ -593,6 +593,13 @@ def q(world: World, sql: str, *params) -> list[sqlite3.Row]:
         conn.close()
 
 
+def result_branch_of(world: World, task_id: str) -> str:
+    """러너가 만든 결과 브랜치 — 업무 키 `runloom/RUN-<n>` (phase 14 step 7, 첫 수정 단계라 순번 없음)."""
+    (row,) = q(world, "SELECT w.key_number FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ?", task_id)
+    return f"runloom/RUN-{row['key_number']}"
+
+
 def task(world: World, task_id: str) -> sqlite3.Row:
     return q(world, "SELECT * FROM tasks WHERE task_id = ?", task_id)[0]
 
@@ -830,7 +837,7 @@ def test_06_real_fix_is_verified_and_restarted_workers_link_existing_c_once(worl
     assert after.startswith("exit_code=0") and verification.startswith("exit_code=0")
     result = fix_result(world, execs(world, t["A"])[0])
     assert result.base_commit == world.base["billing"]
-    assert _git(world.billing, "rev-parse", f"task/{t['A']}") == result.result_commit  # 실제 커밋
+    assert _git(world.billing, "rev-parse", result_branch_of(world, t["A"])) == result.result_commit  # 실제 커밋
     assert _git(world.billing, "rev-parse", "main") == world.base["billing"]  # 기준 브랜치는 그대로
 
     # 기존 C 에 연결 — 새 검토 Task·후속 링크 없음, 실행 하나
@@ -867,7 +874,7 @@ def test_07_changes_requested_reworks_a_once_and_the_new_commit_is_reviewed(worl
     a = task(world, t["A"])
     assert (a["status"], a["status_reason"], a["finished_at"]) == (
         "확인 필요", "검토 승인 — 병합·이슈 종료는 사람", None)
-    assert _git(world.billing, "rev-parse", f"task/{t['A']}") == second.result_commit
+    assert _git(world.billing, "rev-parse", result_branch_of(world, t["A"])) == second.result_commit  # 재작업은 같은 브랜치
     assert _git(world.billing, "rev-parse", "main") == world.base["billing"]  # 승인은 병합이 아니다
 
 
@@ -984,6 +991,26 @@ def test_12_everything_settles_without_duplicates_and_github_sees_one_comment_pe
     # 기준 브랜치는 어느 저장소에서도 움직이지 않았다(자동 병합·푸시 없음)
     assert _git(world.billing, "rev-parse", "main") == world.base["billing"]
     assert _git(world.shop, "rev-parse", "main") == world.base["shop"]
+
+    # 업무 기준 (phase 14) — 이슈 하나 = 업무 하나. B 의 검토 F 는 같은 업무의 두 번째 단계, 미리 등록한 C 는 A 와
+    # 다른 업무(blocks 연결). 승인 뒤 병합·이슈 종료는 사람이라 B 업무는 내 차례
+    assert q(world, "SELECT COUNT(*) FROM work_items WHERE session_id = ?", world.session_id)[0][0] == 6  # 이슈 5 + C
+    b_work = q(world, "SELECT w.* FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ?", t["B"])[0]
+    stages = q(world, "SELECT task_id FROM tasks WHERE work_item_id = ? ORDER BY created_at, task_id",
+               b_work["work_item_id"])
+    assert [r["task_id"] for r in stages] == [t["B"], t["F"]]
+    assert (b_work["status"], b_work["source_key"]) == ("내 차례", "acme/shop#1")
+    flow = [json.loads(r["data_json"])["to"] for r in q(
+        world, "SELECT data_json FROM work_item_events WHERE work_item_id = ? AND type = 'status_changed' ORDER BY id",
+        b_work["work_item_id"])]
+    assert "에이전트 작업 중" in flow and flow[-1] == "내 차례"
+    assert result_branch_of(world, t["B"]) == f"runloom/RUN-{b_work['key_number']}"
+    assert _git(world.shop, "rev-parse", result_branch_of(world, t["B"])) == fix_result(world, execs(world, t["B"])[0]).result_commit
+    (link,) = q(world, "SELECT l.type FROM work_item_links l JOIN tasks a ON a.work_item_id = l.from_work_item_id"
+                       " JOIN tasks c ON c.work_item_id = l.to_work_item_id WHERE a.task_id = ? AND c.task_id = ?",
+                t["A"], t["C"])
+    assert link["type"] == "blocks"
 
 
 def test_13_github_token_never_leaves_the_central_environment(world):

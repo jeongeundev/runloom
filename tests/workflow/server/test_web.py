@@ -173,13 +173,18 @@ def test_app_home_has_agent_and_task_sections_with_direct_register(web):
     assert '/static/logo.jpg' not in text  # 로고는 랜딩에만
 
 
-def test_home_lists_my_tasks_with_status(web):
+def test_home_lists_my_work_with_status(web):
     task_id = create_task(web, fix_form())
     text = web.get("/tasks").text
     assert "아직 업무가 없습니다." not in text
-    assert f"/tasks/{task_id}" in text
-    assert BUG_FIX_TITLE in text
-    assert "대기" in text and "연결 끊김, 마지막 확인 없음" in text  # conftest 의 Codex 는 아직 보고 전
+    main = text[text.index('class="main'):]
+    assert 'href="/work/RUN-1"' in main and f"/tasks/{task_id}" not in main  # 한 줄 = 업무
+    assert BUG_FIX_TITLE in main
+    assert 'data-status="새로 들어옴"' in main and "담당 없음" in main  # 자동 선택만으로는 담당이 아니다
+    # 단계 상태는 업무 상세의 단계 목록에서
+    stages = web.get("/work/RUN-1").text.split("data-stages", 1)[1].split("</ol>", 1)[0]
+    assert f'href="/tasks/{task_id}"' in stages
+    assert 'data-status="대기"' in stages and "연결 끊김, 마지막 확인 없음" in stages  # conftest 의 Codex 는 아직 보고 전
 
 
 # --- 등록 폼 ---------------------------------------------------------------------
@@ -190,7 +195,7 @@ def other_workspace_task(conn, task_id: str = "task-other") -> str:
     from .conftest import task_row
 
     repo.create_session(conn, "sess-other", NOW)
-    repo.insert_task(conn, {**task_row(task_id), "session_id": "sess-other"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row(task_id), "session_id": "sess-other"}, NOW)
     return task_id
 
 
@@ -227,6 +232,11 @@ def test_create_fix_task_selects_agent_and_waits_for_connection(web, conn):
     selection = repo.get_selection(conn, task_id)
     assert selection.selected_agent_id == "agent-codex-mac" and selection.mode == "auto"
     assert selection.reason == "code.fix · repository_id=demo-report-repo 일치 후보 1개"
+    # 직접 등록 = 업무 하나(원본 manual, 양식 없음) + 그 첫 단계 (ADR-0020)
+    (work,) = repo.list_work_items(conn, row["session_id"])
+    assert [t["task_id"] for t in repo.list_work_item_tasks(conn, work["work_item_id"])] == [task_id]
+    assert (work["source_type"], work["source_id"], work["source_key"], work["priority"], work["form_json"]) == (
+        "manual", None, None, "normal", "{}")
 
 
 def test_create_review_task_waits_for_predecessor(web, conn):
@@ -245,6 +255,10 @@ def test_create_review_task_waits_for_predecessor(web, conn):
     criteria = repo.get_task(conn, task_b)["criteria_json"]
     assert '"user.1"' in criteria and '"structured": false' in criteria
     assert CODE_REVIEW_TITLE in detail(web, task_a)  # 후속 링크
+    # 폼의 선행은 다른 업무 — 업무 사이 `blocks` 링크로도 남는다
+    work_a, work_b = (repo.work_item_of_task(conn, t)["work_item_id"] for t in (task_a, task_b))
+    assert [(link["from_work_item_id"], link["to_work_item_id"], link["type"])
+            for link in repo.list_work_item_links(conn, work_b)] == [(work_a, work_b, "blocks")]
 
 
 def test_create_task_needs_selection_when_two_candidates_then_manual_select(web, conn):
@@ -356,6 +370,8 @@ def test_run_creates_queued_execution_with_frozen_request(review_web, conn, sett
         "input_artifact_ids": [],
         "target": {"local_registration_id": LOCAL_REVIEW},
         "kind_spec": repo.get_kind(conn, session_id_of(review_web, settings), "review").model_dump(),  # 서버가 등록부에서 채운다 (ADR-0009)
+        "work_key": f"RUN-{repo.work_item_of_task(conn, task_id)['key_number']}",  # 업무 키 (phase 14 step 7)
+        "branch_seq": 1,
     }
     assert repo.get_task(conn, task_id)["status"] == "실행 요청됨"
 
@@ -686,7 +702,8 @@ def test_chain_page_shows_nodes_in_order_with_assignment_reasons_and_start_butto
 
     assert "워크플로우" in text and "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
     assert "n8n" in text and "시연 데이터" not in text
-    assert text.index("#41") < text.index("#42")
+    main = text[text.index('class="main'):]  # 왼쪽 목록은 업무 키(원본 키 #41·#42)를 새 업무부터 보인다
+    assert main.index("#41") < main.index("#42")
     assert f'href="/tasks/{task_a}"' in text and f'href="/tasks/{task_b}"' in text
     assert "개인 Codex" in text
     assert "버그 수정" in text and "커밋 검토" in text
@@ -891,9 +908,10 @@ def test_home_lists_chains_with_progress(web, conn):
     repo.mark_chain_started(conn, chain_id, NOW)
     home = web.get("/tasks").text
     assert "1/2 완료" in home and "2단계 중 2단계 대기" in home
-    # 왼쪽 목록에는 Task 그대로
+    # 왼쪽 목록에는 업무 한 줄씩 — 체인 노드는 각자 업무
     sidebar = home[home.index('class="sidebar'):home.index('class="main')]
-    assert f'href="/tasks/{task_a}"' in sidebar and f'href="/tasks/{task_b}"' in sidebar
+    assert 'href="/work/RUN-1"' in sidebar and 'href="/work/RUN-2"' in sidebar
+    assert f'href="/tasks/{task_a}"' not in sidebar and f'href="/tasks/{task_b}"' not in sidebar
     assert "/chains/" not in sidebar
 
 
@@ -1171,6 +1189,18 @@ def test_register_rule_appears_as_one_line(web, conn, settings):
     assert [(r.from_kind, r.to_kind) for _, r in rules] == [("bug_fix", "code_review"), ("bug_fix", "review")]
     assert rules[1][1].on_outcomes == ["ready_for_review"]
     assert rules[1][1].handoff_kinds == ["diff", "code_change_result"]
+    assert rules[1][1].placement == "same_work"  # 폼에 칸이 없으면 같은 업무의 다음 단계
+    assert "같은 업무의 다음 단계" in text
+
+
+def test_register_rule_with_new_work_placement(web, conn, settings):
+    register_kind(web)
+    register_rule(web, placement="new_work")
+    (_, rule), = [r for r in repo.list_rules(conn, session_id_of(web, settings)) if r[1].to_kind == "review"]
+    assert rule.placement == "new_work"
+    text = kinds_page(web)
+    assert "새 업무로 등록" in text
+    assert 'name="placement"' in text
 
 
 @pytest.mark.parametrize(
@@ -1183,6 +1213,7 @@ def test_register_rule_appears_as_one_line(web, conn, settings):
         ({"on_outcomes": []}, "on_outcomes"),
         ({"from_kind": "review", "on_outcomes": ["approved"]}, "from_kind 와 to_kind 가 같습니다"),
         ({"handoff_kinds": ["diff", "code_change_result", "handoff_bundle"]}, "handoff_bundle"),
+        ({"placement": "elsewhere"}, "placement"),
     ],
 )
 def test_register_rule_rejects_invalid_422(web, conn, settings, overrides, message):
@@ -1223,7 +1254,7 @@ def test_delete_kind_protected_in_use_then_success(web, conn, settings):
         "criteria": [], "predecessor_task_id": None, "revision": 1,
         "target": {"local_registration_id": "local-demo-report"}, "status": "확인 필요", "status_reason": "후보 없음",
     }
-    repo.insert_task(conn, row, NOW)
+    repo.insert_work_item_task(conn, row, NOW)
     by_task = web.post("/kinds/review/delete", follow_redirects=False)
     assert by_task.status_code == 409
     alert = alert_of(by_task)

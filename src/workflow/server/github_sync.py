@@ -6,8 +6,11 @@
   멈추면 커서는 그 페이지에 남고, 다음 호출이 같은 페이지를 다시 받는다 — 다시 받은 이슈는 digest 가 같아 `unchanged` 다.
 - 마지막 페이지 뒤 새 `since` 는 이번에 본 이슈의 가장 늦은 `updated_at`(포함 경계라 그 이슈는 다음에 한 번 더 온다).
   같은 요청을 다시 보낼 때만(since 그대로·1페이지) ETag 를 남겨 304 로 받는다.
-- 새 이슈는 `domain.issue_intake.intake_scope` 범위 안만 Task 로 만든다. 이미 받은 이슈는 범위와 무관하게 갱신한다 —
-  닫힘·재오픈·담당 변경은 원본 스냅샷에, 제목·본문 변경은 Task revision 에 반영된다(진행 중 실행의 입력은 그대로).
+- 새 이슈는 `domain.issue_intake.intake_scope` 범위 안만 업무 + 첫 단계 Task 로 만든다(ADR-0020). 종류·우선순위는
+  워크스페이스 매핑 표가 라벨로 정하고, 종류 매핑이 없거나 등록되지 않은 종류면 가져오지 않는다(`unmapped`) — 이슈가
+  바뀌면 다시 본다. 양식 칸은 본문의 절에서 읽는다(`domain.form_sections`).
+  이미 받은 이슈는 범위·매핑과 무관하게 갱신한다 — 닫힘·재오픈·담당 변경은 원본 스냅샷·업무 원본 상태에, 제목·본문
+  변경은 Task·업무 revision 에 반영된다(진행 중 실행의 입력은 그대로).
 - `all_open` 소스에서 트리거 라벨이 붙은 이슈는 볼 때마다 실행 지시(`delegated_by=label`)를 기록한다 — 처음 한 번만
   남고 라벨을 떼도 지우지 않는다. 지시 전 Task 는 준비 판정의 `not_delegated` 로 기다린다.
 - `selected_issue_numbers` 중 아직 받지 않은 이슈는 `get_issue` 로 따로 받는다(`since` 밖의 오래된 이슈도 명시적 선택이면).
@@ -34,10 +37,13 @@ from workflow.adapters.github_client import (
     IssueCursor,
 )
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
+from workflow.domain.form_sections import extract_form
 from workflow.domain.issue_intake import (
     IntakeFacts,
     intake_facts,
     intake_scope,
+    issue_kind,
+    issue_priority,
     label_delegated,
     snapshot_to_task_spec,
 )
@@ -64,6 +70,7 @@ class SyncReport:
     unchanged: int = 0
     stale: int = 0
     skipped: dict[str, int] = field(default_factory=dict)  # 받지 않은 이슈 — 사유별 개수
+    unmapped: int = 0  # 범위 안이지만 종류 매핑이 없어 받지 않은 이슈
     error: str | None = None
     retry_after_seconds: int | None = None
     merged: list[str] = field(default_factory=list)  # 병합 PR 을 새로 기록한 Task
@@ -81,20 +88,31 @@ def _later(a: str | None, b: str) -> str:
 class _Intake:
     def __init__(self, conn: Connection, session_id: str, config: GitHubSourceConfig, now: str, report: SyncReport):
         self.conn, self.session_id, self.config, self.now, self.report = conn, session_id, config, now, report
-        self.tracked = {row["github_issue_id"] for row in repo.list_source_issues(conn, session_id, config.source_id)}
+        self.tracked = {row["github_issue_id"]: row["task_id"]
+                        for row in repo.list_source_issues(conn, session_id, config.source_id)}
         self.skipped: Counter[str] = Counter()
+        self.mappings = repo.list_field_mappings(conn, session_id, "github")
+        self.kinds = {spec.kind: spec for spec in repo.list_kinds(conn, session_id)}
 
     def take(self, snapshot: GitHubIssueSnapshot) -> None:
-        if snapshot.issue_id not in self.tracked:
+        tracked = self.tracked.get(snapshot.issue_id)
+        if tracked is None:
             scope = intake_scope(self.config, snapshot)
             if not scope.accept:
                 self.skipped[scope.reason] += 1
                 return
-        task = snapshot_to_task_spec(self.config, snapshot, session_id=self.session_id,
+            kind = self.kinds.get(issue_kind(self.mappings, snapshot))
+            if kind is None:
+                self.report.unmapped += 1
+                return
+        else:  # 이미 받은 이슈의 갱신은 제목·요청만 본다 — 종류는 첫 단계 그대로
+            kind = self.kinds[repo.get_task(self.conn, tracked)["kind"]]
+        task = snapshot_to_task_spec(self.config, snapshot, kind=kind, session_id=self.session_id,
                                      task_id=f"task-{secrets.token_hex(6)}")
-        result = repo.upsert_source_issue(self.conn, self.session_id, self.config.source_id, snapshot,
-                                          task=task, now=self.now)
-        self.tracked.add(snapshot.issue_id)
+        result = repo.upsert_source_issue(self.conn, self.session_id, self.config.source_id, snapshot, task=task,
+                                          form=extract_form(snapshot.body).to_json(),
+                                          priority=issue_priority(self.mappings, snapshot), now=self.now)
+        self.tracked[snapshot.issue_id] = result.task_id
         if label_delegated(self.config, snapshot):
             repo.mark_issue_delegated(self.conn, session_id=self.session_id, source_id=self.config.source_id,
                                       github_issue_id=snapshot.issue_id, by="label", now=self.now)

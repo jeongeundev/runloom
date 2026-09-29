@@ -278,7 +278,7 @@ def test_config_change_does_not_touch_active_execution_input(op, operator, conn)
                    "verification_profile_id": "vp-pytest"},
         "status": "실행 중", "status_reason": "",
     }
-    repo.insert_task(conn, task, NOW)
+    repo.insert_work_item_task(conn, task, NOW)
     request = ExecutionRequest.model_validate({
         "contract_version": 1, "execution_id": "exec-gh-41", "task_id": "task-gh-41", "kind": "bug_fix",
         "agent_id": FIX_AGENT, "task_revision": 1, "request": "GitHub acme/billing#41",

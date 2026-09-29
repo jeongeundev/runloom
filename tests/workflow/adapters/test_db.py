@@ -42,9 +42,16 @@ TABLES = {
     "baseline_imports",
     "task_pull_requests",
     "notifications",
+    "work_items",
+    "work_item_links",
+    "members",
+    "field_mappings",
+    "work_item_events",
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 PHASE12_TABLES = {"task_pull_requests", "notifications"}
+PHASE14_TABLES = {"work_items", "work_item_links", "members", "field_mappings", "work_item_events"}
+V9_TABLES = TABLES - PHASE14_TABLES
 
 # phase 13 이전(v4~v8) 서버가 모든 세션에 seed 하던 진단 데모 내장 종류·규칙 (ADR-0019). 지금 계약은 이 이름을
 # 내장으로 받지 않으므로 검증 없이 만든다 — 옛 DB 행 모양 그대로다.
@@ -237,8 +244,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_9():
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_10():
+    assert SCHEMA_VERSION == 10
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -420,7 +427,7 @@ def test_phase7_chains_callback_columns_defaults_and_source(conn):
 # --- phase 8: v4 → v5 데이터 보존 마이그레이션 (ADR-0014 결과, ARCHITECTURE "GitHub 업무 순환" 저장) ------
 
 V4_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v4.sql").read_text()
-V4_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES - {
+V4_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES - PHASE14_TABLES - {
     "github_sources", "github_assignee_bindings", "source_issues", "followup_links", "human_requests",
     "human_responses", "source_deliveries",
 }
@@ -721,7 +728,7 @@ def test_phase8_table_keys_and_checks(conn):
 # --- phase 9: v5 → v6 측정 스키마 (ADR-0015, ARCHITECTURE "측정 — phase 9" 저장) -----------------------
 
 V5_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v5.sql").read_text()
-V5_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES
+V5_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES - PHASE14_TABLES
 EXECUTION_MEASURE_COLUMNS = (
     "config_revision", "folder_commit", "folder_dirty", "cost_usd", "input_tokens", "output_tokens",
 )
@@ -985,16 +992,14 @@ def test_fresh_db_has_delegation_columns_with_check(conn):
 
 def test_migrates_v6_to_v7_preserving_data(db_path):
     c = _v6_db(db_path)
-    v6_tables = TABLES - PHASE12_TABLES
+    v6_tables = V9_TABLES - PHASE12_TABLES
+    columns = _column_lists(c, v6_tables)
     before = _dump(c, v6_tables)
     c.close()
 
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    columns = _column_lists(c, v6_tables)
-    for table, names in columns.items():
-        columns[table] = [n for n in names if n not in SOURCE_ISSUE_DELEGATION_COLUMNS and n != "branch_pushed"]
     assert _dump(c, v6_tables, columns) == _without_legacy(before)  # 기존 행·열 값은 그대로
     row = c.execute("SELECT delegated_at, delegated_by FROM source_issues").fetchone()
     assert tuple(row) == (None, None)  # 옛 소스는 filtered 라 지시 칸을 보지 않는다 — 추정해 채우지 않는다
@@ -1037,7 +1042,7 @@ def test_v7_fixture_has_no_phase12_tables(db_path):
 
 def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c = _v7_db(db_path)
-    v7_tables = TABLES - PHASE12_TABLES
+    v7_tables = V9_TABLES - PHASE12_TABLES
     columns = _column_lists(c, v7_tables)
     before = _dump(c, v7_tables)
     c.close()
@@ -1058,14 +1063,15 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c.close()
 
 
-def test_migrates_v4_all_the_way_to_v9(db_path):
+def test_migrates_v4_all_the_way_to_v10(db_path):
     c = _v4_db(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
+    assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
     c.close()
 
 
@@ -1147,7 +1153,7 @@ def test_v8_fixture_has_legacy_kinds(db_path):
 def test_fresh_db_seeds_two_builtin_kinds_and_one_rule(conn):
     from workflow.adapters import repo
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     repo.create_session(conn, "s1", NOW)
     kinds = [r["kind"] for r in conn.execute("SELECT kind FROM kinds WHERE session_id = 's1' ORDER BY kind")]
     assert kinds == ["bug_fix", "code_review"]
@@ -1157,13 +1163,14 @@ def test_fresh_db_seeds_two_builtin_kinds_and_one_rule(conn):
 
 def test_migrates_v8_to_v9_dropping_legacy_kinds_and_rules(db_path):
     c = _v8_db(db_path)
-    before = _dump(c, TABLES)
+    columns = _column_lists(c, V9_TABLES)
+    before = _dump(c, V9_TABLES)
     c.close()
 
     c = connect(db_path)
     init_schema(c)
-    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(9,)]
-    assert _dump(c, TABLES) == _without_legacy(before)  # 두 종류·그 규칙만 사라지고 나머지는 그대로
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    assert _dump(c, V9_TABLES, columns) == _without_legacy(before)  # 두 종류·그 규칙만 사라지고 나머지는 그대로
     for sid in ("s1", "s2"):
         kinds = {r["kind"] for r in c.execute("SELECT kind FROM kinds WHERE session_id = ?", (sid,))}
         assert not set(LEGACY_KIND_NAMES) & kinds and {"bug_fix", "code_review"} <= kinds
@@ -1177,13 +1184,14 @@ def test_migrates_v8_to_v9_dropping_legacy_kinds_and_rules(db_path):
 
 
 def _assert_v9_aborted(db_path, c, match: str) -> None:
-    before = _dump(c, TABLES)
+    before = _dump(c, V9_TABLES)
     c.close()
     c = connect(db_path)
     with pytest.raises(RuntimeError, match=match):
         init_schema(c)
     assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 8
-    assert _dump(c, TABLES) == before
+    assert _dump(c, V9_TABLES) == before
+    assert not PHASE14_TABLES & _table_names(c)
     assert not c.in_transaction
     c.close()
 
@@ -1205,3 +1213,363 @@ def test_v9_migration_aborts_when_a_user_rule_uses_a_legacy_kind(db_path):
         " VALUES ('rule-user', 's1', 'code_change', 'review', '{}', ?)", (NOW,)
     )
     _assert_v9_aborted(db_path, c, r"s1:code_change")
+
+
+# --- phase 14: v9 → v10 업무·링크·멤버·매핑 (ADR-0020, ARCHITECTURE "업무와 단계 — phase 14") ------------------
+
+V9_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v9.sql").read_text()
+WORK_ITEM_COLUMNS = {
+    "work_item_id", "session_id", "key_number", "title", "request", "kind", "priority", "assignee_type",
+    "assignee_id", "status", "status_reason", "source_type", "source_id", "source_item_id", "source_key",
+    "source_url", "source_state", "form_json", "revision", "created_at", "updated_at", "closed_at",
+}
+
+
+def _t(n: int) -> str:
+    return f"2026-09-28T00:00:{n:02d}Z"
+
+
+def _v9_task(c, task_id: str, session_id: str, kind: str, n: int, *, status: str, reason: str,
+             predecessor: str | None = None, agent: str | None = None, chain: str | None = None,
+             source_ref: str | None = None) -> None:
+    c.execute(
+        "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json, selection_mode,"
+        " chosen_agent_id, run_mode, completion_mode, criteria_json, predecessor_task_id, revision, target_json,"
+        " status, status_reason, created_at, chain_id, source_ref) VALUES (?, ?, ?, ?, ?, '{}', 'auto', ?, 'auto',"
+        " 'review', '[]', ?, 1, '{}', ?, ?, ?, ?, ?)",
+        (task_id, session_id, f"제목 {task_id}", f"요청 {task_id}", kind, agent, predecessor, status, reason,
+         _t(n), chain, source_ref),
+    )
+
+
+def _v9_execution(c, execution_id: str, task_id: str, attempt: int, kind: str, status: str, n: int,
+                  start_key: str = "start") -> None:
+    released = None if status in ("queued", "accepted", "running") else _t(n)
+    c.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json, status,"
+        " created_at, released_at) VALUES (?, ?, ?, ?, 'a1', ?, '{}', ?, ?, ?)",
+        (execution_id, task_id, attempt, start_key, kind, status, _t(n), released),
+    )
+
+
+def _v9_issue(c, number: int, task_id: str, state: str = "open") -> None:
+    snapshot = {"number": number, "html_url": f"https://example.invalid/{number}", "state": state}
+    c.execute(
+        "INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision, snapshot_json,"
+        " snapshot_digest, issue_updated_at, state, created_at, updated_at)"
+        " VALUES ('ghs-00000001', ?, ?, ?, 1, ?, 'd', ?, ?, ?, ?)",
+        (1000 + number, number, task_id, json.dumps(snapshot), NOW, state, NOW, NOW),
+    )
+
+
+def _followup(c, cause: str, task_id: str) -> None:
+    c.execute("INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision,"
+              " created_at) VALUES ('s1', ?, 'code_review', ?, 1, ?)", (cause, task_id, NOW))
+
+
+def _v9_db(db_path):
+    """phase 13 서버가 남긴 모양의 v9 DB. 워크스페이스 s1 — GitHub 이슈 41(수정 + 검토 + 재작업·재검토, PR 열림),
+    이슈 42(검토 마감 뒤 두 번째 검토 Task 실행 중), n8n 체인 2업무(선행 있음), 직접 등록 1건(실패).
+    워크스페이스 s2 — 직접 등록 1건(키가 워크스페이스마다 1 부터인지 본다)."""
+    c = connect(db_path)
+    c.executescript(V9_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (9)")
+    for sid in ("s1", "s2"):
+        c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, ?)",
+                  (sid, NOW, int(sid == "s1")))
+        for spec in BUILTIN_KINDS:
+            c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                      (sid, spec.kind, spec.model_dump_json(), NOW))
+        c.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                  " VALUES (?, ?, 'bug_fix', 'code_review', ?, ?)",
+                  (f"rule-{sid}", sid, BUILTIN_RULES[0].model_dump_json(), NOW))
+    c.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id, capabilities_json,"
+              " connection_state) VALUES ('a1', 'claude', 'personal', 'local', 'conn-1', '[]', 'online')")
+    c.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json,"
+              " created_at, updated_at) VALUES ('ghs-00000001', 's1', 'acme/billing', '{}', ?, ?)", (NOW, NOW))
+    c.execute("INSERT INTO chains (chain_id, session_id, title, source, created_at) VALUES ('c1', 's1', 'n8n', 'n8n', ?)",
+              (NOW,))
+
+    # 이슈 41: 수정 → 검토(변경 요청) → 재작업 → 재검토 → PR 열림
+    _v9_task(c, "t-fix-41", "s1", "bug_fix", 1, status="완료", reason="완료", agent="a1",
+             source_ref="acme/billing#41")
+    _v9_issue(c, 41, "t-fix-41")
+    _v9_execution(c, "e-f1", "t-fix-41", 1, "bug_fix", "result_ready", 1)
+    _v9_task(c, "t-rev-41", "s1", "code_review", 2, status="완료", reason="완료", predecessor="t-fix-41", agent="a1")
+    _followup(c, "e-f1", "t-rev-41")
+    _v9_execution(c, "e-r1", "t-rev-41", 1, "code_review", "result_ready", 2)
+    _v9_execution(c, "e-f2", "t-fix-41", 2, "bug_fix", "result_ready", 3, start_key="rework:e-r1")
+    _v9_execution(c, "e-r2", "t-rev-41", 2, "code_review", "result_ready", 4, start_key="rereview")
+    c.execute("INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+              " head_branch, fix_execution_id, review_execution_id, state, pr_number, created_at, updated_at)"
+              " VALUES ('t-fix-41', 's1', 'ghs-00000001', 'acme/billing', 41, 'task/t-fix-41', 'e-f2', 'e-r2',"
+              " 'open', 12, ?, ?)", (NOW, NOW))
+
+    # 이슈 42: 첫 검토 마감 뒤 수정이 다시 결과를 내 두 번째 검토 Task 가 생겼다
+    _v9_task(c, "t-fix-42", "s1", "bug_fix", 5, status="완료", reason="완료", agent="a1",
+             source_ref="acme/billing#42")
+    _v9_issue(c, 42, "t-fix-42")
+    _v9_execution(c, "e-f3", "t-fix-42", 1, "bug_fix", "result_ready", 5)
+    _v9_task(c, "t-rev-42a", "s1", "code_review", 6, status="완료", reason="완료", predecessor="t-fix-42", agent="a1")
+    _followup(c, "e-f3", "t-rev-42a")
+    _v9_execution(c, "e-r3", "t-rev-42a", 1, "code_review", "result_ready", 6)
+    _v9_execution(c, "e-f4", "t-fix-42", 2, "bug_fix", "result_ready", 7, start_key="rerun")
+    _v9_task(c, "t-rev-42b", "s1", "code_review", 8, status="실행 중", reason="실행 중", predecessor="t-fix-42",
+             agent="a1")
+    _followup(c, "e-f4", "t-rev-42b")
+    _v9_execution(c, "e-r4", "t-rev-42b", 1, "code_review", "running", 8)
+
+    # n8n 체인: OPS-2 가 OPS-1 뒤
+    _v9_task(c, "t-n1", "s1", "bug_fix", 10, status="대기", reason="담당 에이전트 없음", chain="c1", source_ref="OPS-1")
+    _v9_task(c, "t-n2", "s1", "bug_fix", 11, status="대기", reason="선행 대기", predecessor="t-n1", agent="a1",
+             chain="c1", source_ref="OPS-2")
+
+    # 직접 등록: 실행 실패로 마감
+    _v9_task(c, "t-m1", "s1", "bug_fix", 12, status="실패", reason="실행 실패 — timeout", agent="a1")
+    _v9_execution(c, "e-m1", "t-m1", 1, "bug_fix", "failed", 12)
+
+    _v9_task(c, "t-s2", "s2", "bug_fix", 13, status="대기", reason="담당 에이전트 없음")
+    return c
+
+
+def _work_of(c, task_id: str):
+    return c.execute("SELECT w.* FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                     " WHERE t.task_id = ?", (task_id,)).fetchone()
+
+
+def test_fresh_db_has_v10_tables_columns_and_checks(conn):
+    from workflow.domain.work_status import WORK_STATUSES
+
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    assert PHASE14_TABLES <= _table_names(conn)
+    assert _columns(conn, "work_items") == WORK_ITEM_COLUMNS
+    assert _columns(conn, "work_item_links") == {
+        "from_work_item_id", "to_work_item_id", "type", "cause_execution_id", "created_at",
+    }
+    assert _columns(conn, "members") == {"member_id", "session_id", "display_name", "role", "created_at"}
+    assert _columns(conn, "field_mappings") == {
+        "mapping_id", "session_id", "source_type", "field", "source_value", "runloom_value", "position", "created_at",
+    }
+    assert _columns(conn, "work_item_events") == {
+        "id", "work_item_id", "session_id", "type", "config_revision", "occurred_at", "data_json",
+    }
+    assert "work_item_id" in _columns(conn, "tasks")
+    assert ("work_items", "work_item_id", "work_item_id") in _foreign_keys(conn, "tasks")
+    assert {("kinds", "session_id", "session_id"), ("kinds", "kind", "kind")} <= _foreign_keys(conn, "work_items")
+    indexed = {
+        (table, tuple(r["name"] for r in conn.execute(f"PRAGMA index_info({i['name']})")))
+        for table in ("tasks", "work_items", "work_item_events")
+        for i in conn.execute(f"PRAGMA index_list({table})")
+    }
+    assert {
+        ("tasks", ("work_item_id", "created_at")), ("work_items", ("session_id", "status")),
+        ("work_item_events", ("work_item_id", "id")), ("work_item_events", ("session_id", "occurred_at")),
+    } <= indexed
+
+    _cycle_base(conn)
+    item = ("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, priority,"
+            " assignee_type, assignee_id, status, status_reason, source_type, created_at, updated_at, closed_at)"
+            " VALUES (?, 's1', ?, 't', 'r', 'bug_fix', ?, ?, ?, ?, '', ?, ?, ?, ?)")
+    for n, status in enumerate(WORK_STATUSES, start=1):  # 업무 상태 8개는 모두 받는다
+        closed = NOW if status in ("완료", "종료") else None
+        conn.execute(item, (f"wi-{n}", n, "normal", None, None, status, "manual", NOW, NOW, closed))
+    row = conn.execute("SELECT priority, form_json, revision FROM work_items WHERE work_item_id = 'wi-1'").fetchone()
+    assert tuple(row) == ("normal", "{}", 1)
+    for params in (
+        ("wi-x", 1, "normal", None, None, "대기", "manual", NOW, NOW, None),  # 키 중복
+        ("wi-x", 0, "normal", None, None, "대기", "manual", NOW, NOW, None),  # 키 >= 1
+        ("wi-x", 20, "urgent", None, None, "대기", "manual", NOW, NOW, None),  # 우선순위 허용 값 밖
+        ("wi-x", 20, "normal", "agent", None, "대기", "manual", NOW, NOW, None),  # 담당 종류·id 는 함께
+        ("wi-x", 20, "normal", "team", "x", "대기", "manual", NOW, NOW, None),  # 담당 종류 허용 값 밖
+        ("wi-x", 20, "normal", None, None, "실패", "manual", NOW, NOW, None),  # 업무 상태 허용 값 밖
+        ("wi-x", 20, "normal", None, None, "완료", "manual", NOW, NOW, None),  # 끝 상태는 마감 시각이 있어야
+        ("wi-x", 20, "normal", None, None, "대기", "manual", NOW, NOW, NOW),  # 열린 상태는 마감 시각이 없어야
+        ("wi-x", 20, "normal", None, None, "대기", "jira", NOW, NOW, None),  # 원본 종류 허용 값 밖
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(item, params)
+    with pytest.raises(sqlite3.IntegrityError):  # 등록되지 않은 종류
+        conn.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status,"
+                     " status_reason, source_type, created_at, updated_at) VALUES ('wi-y', 's1', 30, 't', 'r',"
+                     " 'nope', '대기', '', 'manual', ?, ?)", (NOW, NOW))
+
+    link = ("INSERT INTO work_item_links (from_work_item_id, to_work_item_id, type, cause_execution_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?)")
+    conn.execute(link, ("wi-1", "wi-2", "blocks", None, NOW))
+    conn.execute(link, ("wi-1", "wi-2", "spawned_from", "e1", NOW))
+    for params in (
+        ("wi-1", "wi-2", "blocks", None, NOW),  # 같은 링크 중복
+        ("wi-1", "wi-1", "blocks", None, NOW),  # 자기 자신
+        ("wi-1", "wi-3", "relates", None, NOW),  # 링크 종류 허용 값 밖
+        ("wi-1", "wi-nope", "blocks", None, NOW),  # 없는 업무
+        ("wi-1", "wi-3", "spawned_from", "e-nope", NOW),  # 없는 실행
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(link, params)
+
+    member = "INSERT INTO members (member_id, session_id, display_name, role, created_at) VALUES (?, ?, 'n', ?, ?)"
+    conn.execute(member, ("mem-1", "s1", "admin", NOW))
+    conn.execute(member, ("mem-2", "s1", "member", NOW))
+    for params in (("mem-3", "s1", "owner", NOW), ("mem-4", "s-nope", "member", NOW)):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(member, params)
+
+    mapping = ("INSERT INTO field_mappings (mapping_id, session_id, source_type, field, source_value, runloom_value,"
+               " position, created_at) VALUES (?, 's1', ?, ?, ?, 'bug_fix', ?, ?)")
+    conn.execute(mapping, ("map-1", "github", "kind", "*", 1, NOW))
+    conn.execute(mapping, ("map-2", "github", "kind", "bug", 1, NOW))  # position 은 유일하지 않다
+    for params in (
+        ("map-3", "github", "kind", "*", 2, NOW),  # (세션, 원본, 필드, 원본 값) 중복
+        ("map-4", "jira", "kind", "x", 1, NOW),  # 원본 종류 허용 값 밖
+        ("map-5", "github", "assignee", "x", 1, NOW),  # 필드 허용 값 밖
+        ("map-6", "github", "kind", "y", 0, NOW),  # position >= 1
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(mapping, params)
+
+    event = ("INSERT INTO work_item_events (work_item_id, session_id, type, config_revision, occurred_at, data_json)"
+             " VALUES (?, 's1', ?, 1, ?, '{}')")
+    conn.execute(event, ("wi-1", "status_changed", NOW))
+    conn.execute(event, ("wi-1", "assigned", NOW))
+    for params in (("wi-1", "created", NOW), ("wi-nope", "assigned", NOW)):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(event, params)
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 업무를 가리키는 단계
+        conn.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")
+
+
+def test_create_session_seeds_first_admin_and_default_mapping(conn):
+    from workflow.adapters import repo
+
+    repo.create_session(conn, "s1", NOW)
+    members = [tuple(r) for r in conn.execute("SELECT session_id, display_name, role, created_at FROM members")]
+    assert members == [("s1", "관리자", "admin", NOW)]
+    assert conn.execute("SELECT member_id FROM members").fetchone()[0].startswith("mem-")
+    mappings = [tuple(r) for r in conn.execute(
+        "SELECT session_id, source_type, field, source_value, runloom_value, position FROM field_mappings")]
+    assert mappings == [("s1", "github", "kind", "*", "bug_fix", 1)]
+    assert conn.execute("SELECT mapping_id FROM field_mappings").fetchone()[0].startswith("map-")
+    assert repo.get_config_revision(conn, "s1") == 1  # seed 는 설정 번호를 올리지 않는다
+    assert repo.ensure_first_admin(conn, "s1", now=NOW) == conn.execute("SELECT member_id FROM members").fetchone()[0]
+    assert conn.execute("SELECT COUNT(*) FROM members").fetchone()[0] == 1  # 있으면 그 관리자
+
+
+def test_v9_fixture_is_the_phase13_schema(db_path):
+    c = _v9_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    assert _table_names(c) - {"sqlite_sequence"} == V9_TABLES | {"schema_version"}
+    assert "work_item_id" not in _columns(c, "tasks")
+    c.close()
+
+
+def test_migrates_v9_to_v10_grouping_stages_into_work_items(db_path):
+    c = _v9_db(db_path)
+    columns = _column_lists(c, V9_TABLES)
+    before = _dump(c, V9_TABLES)
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    assert _dump(c, V9_TABLES, columns) == before  # 기존 행·열 값은 그대로
+    assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 6
+
+    # 검토·재검토 Task 는 원인 수정 Task 의 업무에 붙는다(사슬 끝까지)
+    fix41, fix42 = _work_of(c, "t-fix-41"), _work_of(c, "t-fix-42")
+    assert _work_of(c, "t-rev-41")["work_item_id"] == fix41["work_item_id"]
+    assert {_work_of(c, t)["work_item_id"] for t in ("t-rev-42a", "t-rev-42b")} == {fix42["work_item_id"]}
+
+    keys = {t: (_work_of(c, t)["session_id"], _work_of(c, t)["key_number"])
+            for t in ("t-fix-41", "t-fix-42", "t-n1", "t-n2", "t-m1", "t-s2")}
+    assert keys == {"t-fix-41": ("s1", 1), "t-fix-42": ("s1", 2), "t-n1": ("s1", 3), "t-n2": ("s1", 4),
+                    "t-m1": ("s1", 5), "t-s2": ("s2", 1)}
+
+    assert fix41["work_item_id"].startswith("wi-") and len(fix41["work_item_id"]) == 15
+    assert (fix41["title"], fix41["request"], fix41["kind"], fix41["priority"]) == (
+        "제목 t-fix-41", "요청 t-fix-41", "bug_fix", "normal")
+    assert (fix41["assignee_type"], fix41["assignee_id"]) == ("agent", "a1")
+    assert (fix41["source_type"], fix41["source_id"], fix41["source_item_id"], fix41["source_key"],
+            fix41["source_url"], fix41["source_state"]) == (
+        "github", "ghs-00000001", "1041", "acme/billing#41", "https://github.com/acme/billing/issues/41", "open")
+    assert fix41["form_json"] == "{}" and fix41["revision"] == 1
+    assert fix41["created_at"] == _t(1)
+    n1, n2, m1 = _work_of(c, "t-n1"), _work_of(c, "t-n2"), _work_of(c, "t-m1")
+    assert (n1["source_type"], n1["source_id"], n1["source_key"], n1["source_url"], n1["source_state"]) == (
+        "n8n", "c1", "OPS-1", None, None)
+    assert (n1["assignee_type"], n1["assignee_id"]) == (None, None)
+    assert (m1["source_type"], m1["source_id"], m1["source_item_id"], m1["source_key"], m1["source_url"]) == (
+        "manual", None, None, None, None)
+
+    statuses = {t: (_work_of(c, t)["status"], _work_of(c, t)["status_reason"])
+                for t in ("t-fix-41", "t-fix-42", "t-n1", "t-n2", "t-m1", "t-s2")}
+    assert statuses == {
+        "t-fix-41": ("PR · 검토", "PR 확인 — #12"),
+        "t-fix-42": ("에이전트 작업 중", "커밋 검토 실행 중"),
+        "t-n1": ("새로 들어옴", "담당 없음"),
+        "t-n2": ("대기", "선행 대기"),
+        "t-m1": ("종료", "실행 실패 — timeout"),
+        "t-s2": ("새로 들어옴", "담당 없음"),
+    }
+    assert m1["closed_at"] is not None and fix41["closed_at"] is None
+    assert c.execute("SELECT COUNT(*) FROM work_item_events").fetchone()[0] == 0  # 계산값만 넣고 이벤트는 없다
+
+    links = [tuple(r) for r in c.execute(
+        "SELECT from_work_item_id, to_work_item_id, type, cause_execution_id FROM work_item_links")]
+    assert links == [(n1["work_item_id"], n2["work_item_id"], "blocks", None)]  # 같은 업무 안 선행은 링크가 아니다
+
+    members = [tuple(r) for r in c.execute("SELECT session_id, display_name, role FROM members ORDER BY session_id")]
+    assert members == [("s1", "관리자", "admin"), ("s2", "관리자", "admin")]
+    mappings = [tuple(r) for r in c.execute(
+        "SELECT session_id, source_type, field, source_value, runloom_value, position FROM field_mappings"
+        " ORDER BY session_id")]
+    assert mappings == [("s1", "github", "kind", "*", "bug_fix", 1), ("s2", "github", "kind", "*", "bug_fix", 1)]
+    assert [r[0] for r in c.execute("SELECT DISTINCT config_revision FROM sessions")] == [1]
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_v10_migration_rolls_back_when_a_task_is_left_without_work_item(db_path, monkeypatch):
+    from workflow.adapters import db
+
+    c = _v9_db(db_path)
+    before = _dump(c, V9_TABLES)
+    real = db._work_roots
+
+    def drop_one(conn):
+        roots = real(conn)
+        roots.pop("t-m1")
+        return roots
+
+    monkeypatch.setattr(db, "_work_roots", drop_one)
+    with pytest.raises(RuntimeError, match="work_item_id"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    assert _table_names(c) - {"sqlite_sequence"} == V9_TABLES | {"schema_version"}
+    assert "work_item_id" not in _columns(c, "tasks")
+    assert _dump(c, V9_TABLES) == before
+    assert not c.in_transaction
+    monkeypatch.undo()
+    init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    c.close()
+
+
+def test_fresh_schema_matches_v9_migrated_schema(tmp_path):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = _v9_db(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    assert _table_names(fresh) == _table_names(migrated)
+    for table in TABLES:
+        cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY name"
+        assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
+        assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    assert _indexes(fresh) == _indexes(migrated)
+    fresh.close()
+    migrated.close()

@@ -47,7 +47,9 @@ from workflow.contracts.v1 import (
     SelectionRecord,
     SuccessorRule,
 )
+from workflow.domain.field_mapping import MappingRow
 from workflow.domain.task_followup import FollowupTaskSpec
+from workflow.domain.work_status import WorkStatus
 
 from .conftest import NOW
 
@@ -184,6 +186,13 @@ CODE_CHANGE_KIND = KindSpec(
 SEEDED_REVISION = 3
 
 
+@pytest.fixture(autouse=True)
+def every_task_has_work_item(conn):
+    """불변식(ADR-0020) — 어떤 repo 경로로 만든 Task 든 업무에 속한다."""
+    yield
+    assert conn.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
+
+
 @pytest.fixture
 def sessions(conn):
     """내장 종류·규칙만 seed 된 두 세션."""
@@ -197,7 +206,7 @@ def seeded(sessions):
     for session_id in (SESSION, OTHER_SESSION):
         repo.insert_kind(sessions, session_id, DIAGNOSIS_KIND, NOW)
         repo.insert_kind(sessions, session_id, CODE_CHANGE_KIND, NOW)
-    repo.insert_task(sessions, _task(TASK_A), NOW)
+    repo.insert_work_item_task(sessions, _task(TASK_A), NOW)
     return sessions
 
 
@@ -486,7 +495,7 @@ def test_task_insert_get_list_and_status(seeded):
     row = repo.get_task(conn, TASK_A)
     assert row["status"] == "실행 가능" and row["revision"] == 1
     assert json.loads(row["required_capability_json"])["code"] == "operations.diagnose"
-    repo.insert_task(conn, _task("other-task", session_id=OTHER_SESSION), LATER)
+    repo.insert_work_item_task(conn, _task("other-task", session_id=OTHER_SESSION), LATER)
     assert [r["task_id"] for r in repo.list_tasks(conn, SESSION)] == [TASK_A]
     assert len(repo.list_tasks(conn, None)) == 2
     repo.update_task_status(conn, TASK_A, "완료", "검토 승인", finished_at=LATER, review_decision="approve", now=LATER)
@@ -499,10 +508,10 @@ def test_task_insert_get_list_and_status(seeded):
 
 def test_task_predecessor_must_be_same_session(seeded):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     assert [r["task_id"] for r in repo.successors_of(conn, TASK_A)] == [TASK_B]
     with pytest.raises(NotFound):
-        repo.insert_task(conn, _task("fix-2", session_id=OTHER_SESSION, kind="code_change",
+        repo.insert_work_item_task(conn, _task("fix-2", session_id=OTHER_SESSION, kind="code_change",
                                      predecessor=TASK_A), NOW)
 
 
@@ -660,7 +669,7 @@ def test_result_ready_requires_artifact_of_this_execution(running, store):
     assert info.value.current_status == "running" and info.value.reason == "result_artifact_missing"
     assert info.value.event_type == "result_ready"
 
-    repo.insert_task(conn, _task("other-task"), NOW)
+    repo.insert_work_item_task(conn, _task("other-task"), NOW)
     _create_execution(conn, "exec-other", "other-task")
     data = b"other"
     created, _ = repo.store_artifact(conn, store, execution_id="exec-other", session_id=SESSION,
@@ -718,7 +727,7 @@ def test_claim_returns_none_without_assignment(seeded):
 
 def test_claim_same_execution_until_accepted(seeded):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-fix-001", TASK_B, kind="code_change", connector=CONNECTOR,
                       inputs=["art-handoff-001"])
     first = repo.claim_execution(conn, CONNECTOR, NOW)
@@ -732,8 +741,8 @@ def test_claim_same_execution_until_accepted(seeded):
 
 def test_concurrent_claims_hand_out_one_execution(seeded, db_path):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
-    repo.insert_task(conn, _task("fix-2", kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task("fix-2", kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-fix-001", TASK_B, kind="code_change", connector=CONNECTOR,
                       inputs=["art-handoff-001"], now=NOW)
     _create_execution(conn, "exec-fix-002", "fix-2", kind="code_change", connector=CONNECTOR,
@@ -797,7 +806,7 @@ def test_store_artifact_reupload_returns_existing(seeded, store, tmp_path):
 def test_same_bytes_other_session_is_separate_row_but_one_file(seeded, store, tmp_path):
     conn = seeded
     _create_execution(conn, "exec-1")
-    repo.insert_task(conn, _task("other-task", session_id=OTHER_SESSION), NOW)
+    repo.insert_work_item_task(conn, _task("other-task", session_id=OTHER_SESSION), NOW)
     _create_execution(conn, "exec-2", "other-task")
     data = b"shared bytes"
     a, _ = repo.store_artifact(conn, store, execution_id="exec-1", session_id=SESSION,
@@ -847,7 +856,7 @@ def test_download_allowed_three_paths_and_denial(seeded, store):
     bundle, _ = repo.store_artifact(conn, store, execution_id="exec-diag", session_id=SESSION,
                                     meta=_meta(manifest, "handoff_bundle", "manifest.json"),
                                     data=manifest, now=NOW)
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-fix", TASK_B, kind="code_change", connector=CONNECTOR,
                       inputs=[bundle.artifact_id], predecessor="exec-diag")
     own = b"diff"
@@ -979,7 +988,7 @@ def test_finish_task_sets_finished_at_and_releases(seeded):
 
 def test_executions_by_filters_active_status_and_kind(seeded, store):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-1")
     _create_execution(conn, "exec-2", TASK_B, kind="code_change", inputs=("art-1",))
     repo.append_event(conn, "exec-2", _event("exec-2", 1, "accepted", {}), "conn", NOW)
@@ -1016,7 +1025,7 @@ def test_results_awaiting_verdict_lists_result_ready_without_verdict(seeded, sto
 
 def test_tasks_with_ready_predecessor_by_completed_predecessor(seeded):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     assert repo.tasks_with_ready_predecessor(conn) == []
     repo.update_task_status(conn, TASK_A, "완료", "판정 근거: 12/12", now=NOW)
     assert repo.tasks_with_ready_predecessor(conn) == []  # finished_at 이 없으면 완료로 보지 않는다
@@ -1160,11 +1169,11 @@ def test_task_chain_id_and_source_ref_roundtrip(seeded):
     assert row["chain_id"] is None and row["source_ref"] is None  # 직접 등록 Task
     repo.insert_chain(conn, _chain(), NOW)
     task = {**_task("t-imported"), "chain_id": "chain-1", "source_ref": "#42"}
-    repo.insert_task(conn, task, NOW)
+    repo.insert_work_item_task(conn, task, NOW)
     row = repo.get_task(conn, "t-imported")
     assert (row["chain_id"], row["source_ref"]) == ("chain-1", "#42")
     with pytest.raises(sqlite3.IntegrityError):
-        repo.insert_task(conn, {**_task("t-bad"), "chain_id": "no-such-chain"}, NOW)
+        repo.insert_work_item_task(conn, {**_task("t-bad"), "chain_id": "no-such-chain"}, NOW)
     assert repo.get_task(conn, "t-bad") is None  # 롤백됨
 
 
@@ -1174,13 +1183,13 @@ def test_tasks_of_chain_follows_predecessor_order(seeded):
     repo.insert_chain(conn, _chain(), NOW)
     repo.insert_chain(conn, _chain("chain-2"), NOW)
     # A → B → C. 삽입은 선행이 먼저 있어야 하므로 A·B·C 순이지만 created_at 은 거꾸로, ID 는 역순 알파벳.
-    repo.insert_task(conn, {**_task("t-root"), "chain_id": "chain-1"}, "2026-09-20T00:00:09Z")
-    repo.insert_task(conn, {**_task("t-mid", kind="code_change", predecessor="t-root"),
+    repo.insert_work_item_task(conn, {**_task("t-root"), "chain_id": "chain-1"}, "2026-09-20T00:00:09Z")
+    repo.insert_work_item_task(conn, {**_task("t-mid", kind="code_change", predecessor="t-root"),
                             "chain_id": "chain-1"}, "2026-09-20T00:00:05Z")
-    repo.insert_task(conn, {**_task("t-last", kind="code_change", predecessor="t-mid"),
+    repo.insert_work_item_task(conn, {**_task("t-last", kind="code_change", predecessor="t-mid"),
                             "chain_id": "chain-1"}, "2026-09-20T00:00:01Z")
     # 다른 체인·체인 없는 Task 는 섞이지 않는다
-    repo.insert_task(conn, {**_task("t-other"), "chain_id": "chain-2"}, NOW)
+    repo.insert_work_item_task(conn, {**_task("t-other"), "chain_id": "chain-2"}, NOW)
     assert [r["task_id"] for r in repo.tasks_of_chain(conn, "chain-1")] == ["t-root", "t-mid", "t-last"]
     assert [r["task_id"] for r in repo.tasks_of_chain(conn, "chain-2")] == ["t-other"]
     assert repo.tasks_of_chain(conn, "nope") == []
@@ -1190,9 +1199,9 @@ def test_tasks_of_chain_treats_predecessor_outside_chain_as_root(seeded):
     conn = seeded
     repo.insert_chain(conn, _chain(), NOW)
     # TASK_A(체인 없음) 를 선행으로 갖는 B 가 체인의 첫 Task 다
-    repo.insert_task(conn, {**_task("t-b", kind="code_change", predecessor=TASK_A),
+    repo.insert_work_item_task(conn, {**_task("t-b", kind="code_change", predecessor=TASK_A),
                             "chain_id": "chain-1"}, LATER)
-    repo.insert_task(conn, {**_task("t-c", kind="code_change", predecessor="t-b"),
+    repo.insert_work_item_task(conn, {**_task("t-c", kind="code_change", predecessor="t-b"),
                             "chain_id": "chain-1"}, NOW)
     assert [r["task_id"] for r in repo.tasks_of_chain(conn, "chain-1")] == ["t-b", "t-c"]
 
@@ -1200,7 +1209,7 @@ def test_tasks_of_chain_treats_predecessor_outside_chain_as_root(seeded):
 def test_list_tasks_is_unchanged_by_chain_columns(seeded):
     conn = seeded
     repo.insert_chain(conn, _chain(), NOW)
-    repo.insert_task(conn, {**_task("t-imported"), "chain_id": "chain-1", "source_ref": "OPS-42"}, LATER)
+    repo.insert_work_item_task(conn, {**_task("t-imported"), "chain_id": "chain-1", "source_ref": "OPS-42"}, LATER)
     assert [r["task_id"] for r in repo.list_tasks(conn, SESSION)] == [TASK_A, "t-imported"]
 
 
@@ -1292,7 +1301,7 @@ def test_delete_kind_protects_builtin_and_in_use(sessions):
     with pytest.raises(KindInUse):  # 규칙이 참조
         repo.delete_kind(conn, SESSION, "review")
     repo.delete_rule(conn, SESSION, rule_id)
-    repo.insert_task(conn, _task("review-1", kind="review"), NOW)
+    repo.insert_work_item_task(conn, _task("review-1", kind="review"), NOW)
     with pytest.raises(KindInUse):  # Task 가 사용
         repo.delete_kind(conn, SESSION, "review")
     repo.delete_kind(conn, OTHER_SESSION, "review")  # 다른 세션의 같은 이름은 무관
@@ -1360,19 +1369,19 @@ def test_list_rules_orders_by_created_at_then_rule_id(sessions):
 def test_insert_task_requires_registered_kind(seeded):
     conn = seeded
     with pytest.raises(NotFound) as info:
-        repo.insert_task(conn, _task("review-1", kind="review"), NOW)
+        repo.insert_work_item_task(conn, _task("review-1", kind="review"), NOW)
     assert "review" in str(info.value) and "등록되지 않음" in str(info.value)
     assert repo.get_task(conn, "review-1") is None
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
-    repo.insert_task(conn, _task("review-1", kind="review"), NOW)
+    repo.insert_work_item_task(conn, _task("review-1", kind="review"), NOW)
     assert repo.get_task(conn, "review-1")["kind"] == "review"
     with pytest.raises(NotFound):  # 다른 세션의 등록은 세지 않는다
-        repo.insert_task(conn, _task("review-2", session_id=OTHER_SESSION, kind="review"), NOW)
+        repo.insert_work_item_task(conn, _task("review-2", session_id=OTHER_SESSION, kind="review"), NOW)
 
 
 def test_tasks_with_ready_predecessor_by_result_ready_with_verdict(seeded, store):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-1")
     _to_result_ready(conn, store, "exec-1")
     assert repo.tasks_with_ready_predecessor(conn) == []  # 판정 없음 → 제외
@@ -1388,7 +1397,7 @@ def test_tasks_with_ready_predecessor_by_result_ready_with_verdict(seeded, store
 
 def test_tasks_with_ready_predecessor_excludes_failed_predecessor(seeded, store):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-1")
     _to_result_ready(conn, store, "exec-1")
     _verdict_row(conn, TASK_A, "exec-1")
@@ -1399,7 +1408,7 @@ def test_tasks_with_ready_predecessor_excludes_failed_predecessor(seeded, store)
 
 def test_tasks_with_ready_predecessor_ignores_released_result_without_completion(seeded, store):
     conn = seeded
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-1")
     _to_result_ready(conn, store, "exec-1")
     _verdict_row(conn, TASK_A, "exec-1")
@@ -1409,9 +1418,9 @@ def test_tasks_with_ready_predecessor_ignores_released_result_without_completion
 
 def test_tasks_with_ready_predecessor_orders_by_created_at_then_task_id(seeded, store):
     conn = seeded
-    repo.insert_task(conn, _task("fix-z", kind="code_change", predecessor=TASK_A), NOW)
-    repo.insert_task(conn, _task("fix-a", kind="code_change", predecessor=TASK_A), LATER)
-    repo.insert_task(conn, _task("fix-m", kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task("fix-z", kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task("fix-a", kind="code_change", predecessor=TASK_A), LATER)
+    repo.insert_work_item_task(conn, _task("fix-m", kind="code_change", predecessor=TASK_A), NOW)
     repo.update_task_status(conn, TASK_A, "완료", "판정 근거: 12/12", finished_at=LATER, now=LATER)
     assert [r["task_id"] for r in repo.tasks_with_ready_predecessor(conn)] == ["fix-m", "fix-z", "fix-a"]
 
@@ -1465,7 +1474,7 @@ def test_artifacts_of_kinds_filters_and_orders(seeded, store):
 def test_download_allowed_includes_bundle_inputs(seeded, store):
     conn = seeded
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
-    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
     _create_execution(conn, "exec-fix", TASK_B, kind="code_change", inputs=["art-handoff-000"])
     stored = {}
     for kind, data in (("diff", b"--- a\n+++ b\n"), ("code_change_result", b'{"outcome": "ready_for_review"}'),
@@ -1488,7 +1497,7 @@ def test_download_allowed_includes_bundle_inputs(seeded, store):
     bundle, _ = repo.store_artifact(conn, store, execution_id="exec-fix", session_id=SESSION,
                                     meta=_meta(manifest, "handoff_bundle", "manifest.json"),
                                     data=manifest, now=NOW)
-    repo.insert_task(conn, _task("review-1", kind="review", predecessor=TASK_B), NOW)
+    repo.insert_work_item_task(conn, _task("review-1", kind="review", predecessor=TASK_B), NOW)
     request = ExecutionRequest.model_validate({
         "contract_version": 1, "execution_id": "exec-review", "task_id": "review-1", "kind": "review",
         "agent_id": "agent-claude-mac", "task_revision": 1, "request": "검토해 주세요.",
@@ -2057,6 +2066,11 @@ def test_list_issues_needing_merge_check_is_closed_without_merge(cycle):
     with pytest.raises(NotFound):
         repo.list_issues_needing_merge_check(cycle, OTHER_SESSION, SOURCE)
 
+def _wi41(conn) -> str:
+    """이슈 #41 업무 — 후속 검토 단계가 들어갈 곳(same_work)."""
+    return repo.work_item_of_task(conn, "task-gh-41")["work_item_id"]
+
+
 def _review_spec(cause: str = "exec-fix-1", session_id: str = SESSION) -> FollowupTaskSpec:
     return FollowupTaskSpec(session_id=session_id, kind="code_review", cause_execution_id=cause,
                             predecessor_task_id="task-gh-41", rules_revision=1)
@@ -2071,11 +2085,11 @@ def _review_task(task_id: str = "task-gh-41-review") -> dict:
 
 def test_create_followup_once_is_unique_per_cause(cycle):
     _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
-    task_id, created = repo.create_followup_once(cycle, _review_spec(), _review_task(), NOW)
+    task_id, created = repo.create_followup_once(cycle, _review_spec(), _review_task(), NOW, work_item_id=_wi41(cycle))
     assert (task_id, created) == ("task-gh-41-review", True)
     assert repo.get_task(cycle, task_id)["predecessor_task_id"] == "task-gh-41"
     # 같은 원인 재처리(재시작·중복 결과)는 기존 Task 를 돌려주고 새로 만들지 않는다
-    task_id, created = repo.create_followup_once(cycle, _review_spec(), _review_task("task-dup"), LATER)
+    task_id, created = repo.create_followup_once(cycle, _review_spec(), _review_task("task-dup"), LATER, work_item_id=_wi41(cycle))
     assert (task_id, created) == ("task-gh-41-review", False)
     assert repo.get_task(cycle, "task-dup") is None
     # 화면의 생성 근거 — 이 Task 를 만든 원인 실행
@@ -2087,14 +2101,14 @@ def test_create_followup_once_is_unique_per_cause(cycle):
 def test_create_followup_once_checks_spec_and_ownership(cycle):
     _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
     with pytest.raises(ValueError):  # spec 과 Task 의 종류가 다르다
-        repo.create_followup_once(cycle, _review_spec(), {**_review_task(), "kind": "bug_fix"}, NOW)
+        repo.create_followup_once(cycle, _review_spec(), {**_review_task(), "kind": "bug_fix"}, NOW, work_item_id=_wi41(cycle))
     with pytest.raises(ValueError):  # spec 과 Task 의 선행이 다르다
-        repo.create_followup_once(cycle, _review_spec(), {**_review_task(), "predecessor_task_id": TASK_A}, NOW)
+        repo.create_followup_once(cycle, _review_spec(), {**_review_task(), "predecessor_task_id": TASK_A}, NOW, work_item_id=_wi41(cycle))
     with pytest.raises(NotFound):  # 원인 실행이 이 세션 것이 아니다
         repo.create_followup_once(cycle, _review_spec(session_id=OTHER_SESSION),
-                                  {**_review_task(), "session_id": OTHER_SESSION}, NOW)
+                                  {**_review_task(), "session_id": OTHER_SESSION}, NOW, work_item_id=_wi41(cycle))
     with pytest.raises(NotFound):  # 없는 원인 실행
-        repo.create_followup_once(cycle, _review_spec("exec-none"), _review_task(), NOW)
+        repo.create_followup_once(cycle, _review_spec("exec-none"), _review_task(), NOW, work_item_id=_wi41(cycle))
     assert repo.get_task(cycle, "task-gh-41-review") is None
 
 
@@ -2173,7 +2187,7 @@ def test_github_token_env_never_reaches_db_or_wal(cycle, db_path, monkeypatch):
                                                        github_login="kim-dev", agent_id=FIX_AGENT), LATER)
     repo.upsert_source_issue(cycle, SESSION, SOURCE, _snapshot(body="edit", updated_at="2026-10-07T00:00:00Z"),
                              task=_fix_task(), now=LATER)
-    repo.create_followup_once(cycle, _review_spec(), _review_task(), LATER)
+    repo.create_followup_once(cycle, _review_spec(), _review_task(), LATER, work_item_id=_wi41(cycle))
     request_id, _ = repo.create_human_request_once(cycle, "task-gh-41", "decision", "q", "decision:1", LATER)
     repo.record_human_response_once(cycle, SESSION, request_id, response_id="r", expected_revision=1,
                                     action="answer", text="t", now=LATER)
@@ -2219,7 +2233,7 @@ def test_busy_executions_counts_only_in_flight_fix_runs_on_the_same_registration
     repo.upsert_agent(conn, _agent("agent-codex-mac", connection_type="local", api_url=None, credential_ref=None,
                                    local_registration_id="local-billing",
                                    capabilities=[{"code": "code.fix", "scope": {"repository_id": "billing"}}]))
-    repo.insert_task(conn, _fix_task("task-gh-42", source_ref="#42"), NOW)
+    repo.insert_work_item_task(conn, _fix_task("task-gh-42", source_ref="#42"), NOW)
     _create_execution(conn, "exec-41", "task-gh-41", kind="bug_fix", inputs=())
     kinds = ("bug_fix", "code_change")
     assert repo.busy_executions(conn, "local-billing", kinds, exclude_task_id="task-gh-42") == ["exec-41"]
@@ -2479,7 +2493,7 @@ def test_followup_link_can_record_the_session_config_revision(cycle):
     assert revision == SEEDED_REVISION + 1  # cycle 이 소스를 저장했다
     spec = FollowupTaskSpec(session_id=SESSION, kind="code_review", cause_execution_id="exec-fix-1",
                             predecessor_task_id="task-gh-41", rules_revision=revision)
-    repo.create_followup_once(cycle, spec, _review_task(), NOW)
+    repo.create_followup_once(cycle, spec, _review_task(), NOW, work_item_id=_wi41(cycle))
     assert repo.get_followup_link(cycle, "task-gh-41-review")["rules_revision"] == SEEDED_REVISION + 1
 
 
@@ -2548,14 +2562,14 @@ def test_list_metric_facts_reads_the_session_rows_as_domain_values(cycle, store)
     """세션의 Task·실행·이벤트·사람 요청을 값 객체로. 검토 outcome 은 판정이 통과한 결과 산출물에서 읽는다."""
     from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 
-    repo.insert_task(cycle, _task("task-other", OTHER_SESSION), NOW)  # 다른 세션은 보이지 않는다
+    repo.insert_work_item_task(cycle, _task("task-other", OTHER_SESSION), NOW)  # 다른 세션은 보이지 않는다
     _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
     _finish(cycle, store, "exec-fix-1", {"outcome": "ready_for_review"}, kind="code_change_result",
             usage={"cost_usd": 0.25, "input_tokens": 10}, folder_commit="c" * 40)
     repo.record_verdict(cycle, task_id="task-gh-41", execution_id="exec-fix-1", verdict={"outcome": "passed"},
                         status="확인 필요", reason="판정 통과", finish=False, now="2026-10-06T10:31:00Z")
     spec = _review_spec()
-    repo.create_followup_once(cycle, spec, _review_task(), "2026-10-06T10:32:00Z")
+    repo.create_followup_once(cycle, spec, _review_task(), "2026-10-06T10:32:00Z", work_item_id=_wi41(cycle))
     repo.create_execution(cycle, execution_id="exec-rev-1", task_id="task-gh-41-review", attempt_no=1,
                           start_key="auto:task-gh-41-review:r1", agent_id="agent-claude-mac", kind="code_review",
                           request=_request("exec-rev-1", "task-gh-41-review", "code_change", ("art-x",)),
@@ -2573,10 +2587,11 @@ def test_list_metric_facts_reads_the_session_rows_as_domain_values(cycle, store)
     tasks = {t.task_id: t for t in facts.tasks}
     assert set(tasks) == {TASK_A, "task-gh-41", "task-gh-41-review"}
     assert tasks["task-gh-41"] == TaskFact(
-        task_id="task-gh-41", kind="bug_fix", created_at=NOW, status="확인 필요",
+        task_id="task-gh-41", work_item_id=_wi41(cycle), kind="bug_fix", created_at=NOW, status="확인 필요",
         issue_opened_at="2026-10-06T10:12:00Z", issue_state="open",
     )
-    assert tasks["task-gh-41-review"].predecessor_task_id == "task-gh-41"
+    assert tasks["task-gh-41-review"].work_item_id == _wi41(cycle)  # 같은 업무의 다음 단계 = 같은 묶음
+    assert tasks[TASK_A].work_item_id != _wi41(cycle)
     assert tasks["task-gh-41-review"].issue_opened_at is None
     assert tasks[TASK_A].issue_opened_at is None
     assert tasks[TASK_A].issue_state is None and tasks["task-gh-41-review"].issue_state is None
@@ -2680,6 +2695,59 @@ def test_enqueue_pull_request_once_per_fix_task(cycle):
     assert repo.get_pull_request_row(cycle, "task-gh-41")["created_at"] == NOW
 
 
+def test_enqueue_pull_request_head_branch_follows_the_fix_request_work_key(cycle):
+    """phase 14 step 7 — head 는 검토한 수정 실행 요청의 두 칸으로 `result_branch`. 이미 있는 행은 그대로."""
+    keyed = ExecutionRequest.model_validate({
+        **_request("exec-fix-1", "task-gh-41", "code_change", ("art-x",)).model_dump(),
+        "work_key": "RUN-1", "branch_seq": 2,
+    })
+    repo.create_execution(cycle, execution_id="exec-fix-1", task_id="task-gh-41", attempt_no=1,
+                          start_key="auto:task-gh-41:r1", agent_id=FIX_AGENT, kind="bug_fix", request=keyed,
+                          assigned_connector_id=None, predecessor_execution_id=None, now=NOW)
+    assert _enqueue(cycle) is True
+    assert repo.get_pull_request_row(cycle, "task-gh-41")["head_branch"] == "runloom/RUN-1-2"
+
+
+def test_enqueue_pull_request_keeps_existing_row_head_branch(cycle):
+    _fix_execution(cycle)
+    cycle.execute(
+        "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+        " head_branch, fix_execution_id, review_execution_id, state, created_at, updated_at)"
+        " VALUES ('task-gh-41', ?, ?, 'acme/billing', 41, 'task/task-gh-41', 'exec-fix-1', 'exec-rev-0',"
+        " 'pending', ?, ?)", (SESSION, SOURCE, NOW, NOW),
+    )
+    assert _enqueue(cycle, LATER) is False
+    assert repo.get_pull_request_row(cycle, "task-gh-41")["head_branch"] == "task/task-gh-41"
+
+
+def test_execution_branch_fields_new_task_gets_work_key_and_same_kind_sequence(seeded):
+    """첫 실행이면 업무 키 + 그 업무의 같은 종류 단계 중 순번(다시 맡긴 단계는 2, 3 …)."""
+    conn = seeded
+    work = repo.work_item_of_task(conn, TASK_A)
+    key = f"RUN-{work['key_number']}"
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), LATER,
+                     work_item_id=work["work_item_id"])
+    repo.insert_task(conn, _task("diagnose-again"), LATER, work_item_id=work["work_item_id"])
+    assert repo.execution_branch_fields(conn, TASK_A) == {"work_key": key, "branch_seq": 1}
+    assert repo.execution_branch_fields(conn, TASK_B) == {"work_key": key, "branch_seq": 1}  # 종류가 다르면 따로 센다
+    assert repo.execution_branch_fields(conn, "diagnose-again") == {"work_key": key, "branch_seq": 2}
+
+
+def test_execution_branch_fields_copy_the_first_request_of_the_task(seeded):
+    """이미 실행이 있으면 첫 요청의 두 칸 그대로 — 재작업은 같은 브랜치, v10 이전 요청(칸 없음)은 끝까지 `task/<id>`."""
+    conn = seeded
+    _create_execution(conn, "exec-1", TASK_A)
+    assert repo.execution_branch_fields(conn, TASK_A) == {"work_key": None, "branch_seq": 1}
+    keyed = ExecutionRequest.model_validate({**_request("exec-2", TASK_B, "code_change", ("art-x",)).model_dump(),
+                                             "work_key": "RUN-9", "branch_seq": 3})
+    repo.insert_task(conn, _task(TASK_B, kind="code_change"), LATER,
+                     work_item_id=repo.work_item_of_task(conn, TASK_A)["work_item_id"])
+    repo.create_execution(conn, execution_id="exec-2", task_id=TASK_B, attempt_no=1, start_key="auto:b:r1",
+                          agent_id="agent-codex-mac", kind="code_change", request=keyed, assigned_connector_id=None,
+                          predecessor_execution_id=None, now=LATER)
+    assert repo.execution_branch_fields(conn, TASK_B) == {"work_key": "RUN-9", "branch_seq": 3}
+
+
 def test_failed_attempt_backs_off_and_stops_at_the_limit(cycle):
     _fix_execution(cycle)
     _enqueue(cycle)
@@ -2774,3 +2842,444 @@ def test_skipped_notification_does_not_count_an_attempt(cycle):
 def test_record_notification_unknown_id_is_not_found(cycle):
     with pytest.raises(NotFound):
         repo.record_notification_attempt(cycle, "ntf-nope", state="failed", error="x", now=NOW, next_at=None)
+
+
+# --- 업무(WorkItem) — ADR-0020, ARCHITECTURE "업무와 단계 — phase 14" ---------------
+
+
+def _new_work(conn, session_id: str = SESSION, title: str = "업무", **overrides) -> tuple[str, int]:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        created = repo.create_work_item(conn, session_id, title=title, request="요청", kind="bug_fix",
+                                        **{"source_type": "manual", "now": NOW, **overrides})
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    return created
+
+
+def test_create_work_item_issues_keys_per_workspace(sessions):
+    assert [_new_work(sessions)[1] for _ in range(3)] == [1, 2, 3]
+    assert _new_work(sessions, OTHER_SESSION)[1] == 1  # 워크스페이스마다 1 부터
+    work_item_id, key = _new_work(sessions, priority="high", source_type="n8n", source_id="chain-1",
+                                  source_item_id="OPS-1", source_key="OPS-1")
+    row = repo.get_work_item(sessions, SESSION, work_item_id)
+    assert work_item_id.startswith("wi-") and key == 4
+    assert (row["priority"], row["source_type"], row["source_key"], row["status"], row["closed_at"]) == (
+        "high", "n8n", "OPS-1", "새로 들어옴", None)
+    assert repo.get_work_item(sessions, OTHER_SESSION, work_item_id) is None  # 다른 워크스페이스에서는 없다
+    assert repo.get_work_item_by_key(sessions, SESSION, 4)["work_item_id"] == work_item_id
+    assert repo.get_work_item_by_key(sessions, OTHER_SESSION, 4) is None
+
+
+def test_create_work_item_outside_transaction_is_an_error(sessions):
+    with pytest.raises(RuntimeError):
+        repo.create_work_item(sessions, SESSION, title="t", request="r", kind="bug_fix", source_type="manual",
+                              now=NOW)
+    assert sessions.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 0
+
+
+def test_concurrent_work_item_creation_gets_distinct_keys(sessions, db_path):
+    """두 연결이 동시에 만들어도 BEGIN IMMEDIATE 가 번호 계산을 직렬화한다 — 재시도 없이 1·2."""
+    barrier = threading.Barrier(2)
+    keys: list[int] = []
+    errors: list[BaseException] = []
+
+    def create() -> None:
+        c = connect(db_path)
+        try:
+            barrier.wait()
+            keys.append(_new_work(c)[1])
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=create) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and sorted(keys) == [1, 2]
+
+
+def test_insert_task_joins_existing_work_item_of_same_session(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), LATER, work_item_id=work_item_id)
+    assert [t["task_id"] for t in repo.list_work_item_tasks(conn, work_item_id)] == [TASK_A, TASK_B]
+    other_work, _ = _new_work(conn, OTHER_SESSION)
+    with pytest.raises(NotFound):  # 다른 워크스페이스의 업무에 단계를 붙이지 못한다
+        repo.insert_task(conn, _task("t-x"), NOW, work_item_id=other_work)
+    with pytest.raises(NotFound):
+        repo.insert_task(conn, _task("t-y"), NOW, work_item_id="wi-none")
+    assert repo.get_task(conn, "t-x") is None and repo.get_task(conn, "t-y") is None
+
+
+def test_insert_work_item_task_creates_work_item_with_first_stage(seeded):
+    conn = seeded
+    row = repo.work_item_of_task(conn, TASK_A)
+    assert (row["key_number"], row["title"], row["request"], row["kind"], row["source_type"]) == (
+        1, "일일 보고서 실패 진단", "실패 원인을 조사해 주세요.", "diagnosis", "manual")
+    assert (row["assignee_type"], row["created_at"]) == (None, NOW)
+    chosen = {**_task("t-chosen"), "selection_mode": "manual", "chosen_agent_id": "agent-ops-demo"}
+    repo.upsert_agent(conn, _agent())
+    work_item_id = repo.insert_work_item_task(conn, chosen, LATER)
+    assert repo.get_work_item(conn, SESSION, work_item_id)["assignee_id"] == "agent-ops-demo"
+    before = conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0]
+    with pytest.raises(NotFound):  # 첫 단계가 실패하면 업무도 남지 않는다
+        repo.insert_work_item_task(conn, _task("t-bad", kind="review"), NOW)
+    assert conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == before
+
+
+def test_upsert_source_issue_creates_github_work_item_once(cycle):
+    row = repo.work_item_of_task(cycle, "task-gh-41")
+    assert (row["source_type"], row["source_id"], row["source_item_id"], row["source_key"], row["source_url"],
+            row["source_state"]) == ("github", SOURCE, "2456789012", "acme/billing#41",
+                                     "https://github.com/acme/billing/issues/41", "open")
+    before = cycle.execute("SELECT COUNT(*) FROM work_items").fetchone()[0]
+    edited = _snapshot(body="edit", updated_at="2026-10-07T00:00:00Z")
+    assert repo.upsert_source_issue(cycle, SESSION, SOURCE, edited, task=_fix_task("t-2"), now=LATER).action == "updated"
+    assert cycle.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == before
+
+
+def test_create_followup_once_adds_stage_to_given_work_item(cycle):
+    _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    other_work, _ = _new_work(cycle, OTHER_SESSION)
+    with pytest.raises(NotFound):  # 다른 워크스페이스의 업무
+        repo.create_followup_once(cycle, _review_spec(), _review_task(), NOW, work_item_id=other_work)
+    task_id, _ = repo.create_followup_once(cycle, _review_spec(), _review_task(), NOW, work_item_id=_wi41(cycle))
+    assert repo.work_item_of_task(cycle, task_id)["work_item_id"] == _wi41(cycle)
+    assert [t["task_id"] for t in repo.list_work_item_tasks(cycle, _wi41(cycle))] == ["task-gh-41", task_id]
+
+
+def test_list_work_items_filters_and_orders_newest_key_first(sessions):
+    conn = sessions
+    first, _ = _new_work(conn, title="하나")
+    second, _ = _new_work(conn, title="둘")
+    third, _ = _new_work(conn, title="셋")
+    _new_work(conn, OTHER_SESSION)
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    repo.assign_work_item(conn, SESSION, second, assignee_type="member", assignee_id=admin, now=LATER)
+    repo.set_work_status(conn, third, WorkStatus("완료", "PR 병합 — #3"), now=LATER)
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION)] == [third, second, first]
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION, include_closed=False)] == [second, first]
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION, status="완료")] == [third]
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION, assignee=("member", admin))] == [second]
+    assert len(repo.list_work_items(conn, OTHER_SESSION)) == 1
+
+
+def test_assign_work_item_checks_workspace_and_records_event(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    other_admin = repo.ensure_first_admin(conn, OTHER_SESSION, now=NOW)
+    repo.upsert_agent(conn, _agent())
+    repo.register_session_agent(conn, OTHER_SESSION, "agent-ops-demo", NOW)
+    with pytest.raises(NotFound):  # 다른 워크스페이스의 멤버
+        repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=other_admin, now=NOW)
+    with pytest.raises(NotFound):  # 이 워크스페이스에 등록되지 않은 Agent
+        repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="agent", assignee_id="agent-ops-demo",
+                              now=NOW)
+    with pytest.raises(NotFound):  # 다른 워크스페이스의 업무
+        repo.assign_work_item(conn, OTHER_SESSION, work_item_id, assignee_type="member", assignee_id=other_admin,
+                              now=NOW)
+    assert repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=admin, now=LATER)
+    assert not repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=admin,
+                                     now=LATER)  # 같은 담당이면 그대로
+    repo.register_session_agent(conn, SESSION, "agent-ops-demo", NOW)
+    assert repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="agent", assignee_id="agent-ops-demo",
+                                 now=LATER)
+    assert repo.assign_work_item(conn, SESSION, work_item_id, assignee_type=None, assignee_id=None, now=LATER)
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["assignee_type"], row["assignee_id"], row["updated_at"]) == (None, None, LATER)
+    events = repo.list_work_item_events(conn, work_item_id)
+    assert [e["type"] for e in events] == ["assigned"] * 3
+    assert [json.loads(e["data_json"]) for e in events] == [
+        {"from": None, "to": {"type": "member", "id": admin}},
+        {"from": {"type": "member", "id": admin}, "to": {"type": "agent", "id": "agent-ops-demo"}},
+        {"from": {"type": "agent", "id": "agent-ops-demo"}, "to": None},
+    ]
+    assert events[0]["session_id"] == SESSION and events[0]["config_revision"] == SEEDED_REVISION
+
+
+def test_refresh_work_status_writes_only_on_change_and_is_idempotent(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    # TASK_A 는 '실행 가능' 한 단계, 실행 없음·담당 없음 → 새로 들어옴(담당 없음)
+    assert repo.refresh_work_status(conn, work_item_id, now=LATER)
+    assert not repo.refresh_work_status(conn, work_item_id, now=LATER)
+    (event,) = repo.list_work_item_events(conn, work_item_id)
+    assert event["type"] == "status_changed"
+    assert json.loads(event["data_json"]) == {"from": "새로 들어옴", "to": "새로 들어옴", "reason": "담당 없음"}
+    repo.finish_task(conn, task_id=TASK_A, execution_id="exec-none", status="완료", reason="판정 통과", now=LATER)
+    assert not repo.refresh_work_status(conn, work_item_id, now=LATER)  # 단계 마감이 같은 트랜잭션에서 이미 기록했다
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["status"], row["closed_at"], row["updated_at"]) == ("완료", LATER, LATER)
+    assert not repo.refresh_work_status(conn, work_item_id, now="2026-09-21T00:00:00Z")  # 끝 상태는 그대로
+    assert [json.loads(e["data_json"])["to"] for e in repo.list_work_item_events(conn, work_item_id)] == [
+        "새로 들어옴", "완료"]
+    with pytest.raises(NotFound):
+        repo.refresh_work_status(conn, "wi-none", now=LATER)
+
+
+def test_link_work_items_same_workspace_once(sessions):
+    first, _ = _new_work(sessions)
+    second, _ = _new_work(sessions)
+    other, _ = _new_work(sessions, OTHER_SESSION)
+    assert repo.link_work_items(sessions, from_work_item_id=first, to_work_item_id=second, type="blocks", now=NOW)
+    assert not repo.link_work_items(sessions, from_work_item_id=first, to_work_item_id=second, type="blocks",
+                                    now=LATER)
+    with pytest.raises(NotFound):
+        repo.link_work_items(sessions, from_work_item_id=first, to_work_item_id=other, type="blocks", now=NOW)
+    (link,) = repo.list_work_item_links(sessions, second)
+    assert (link["from_work_item_id"], link["to_work_item_id"], link["type"]) == (first, second, "blocks")
+    assert repo.list_work_item_links(sessions, first) == repo.list_work_item_links(sessions, second)
+
+
+def test_members_first_admin_and_added_member(sessions):
+    admin = repo.ensure_first_admin(sessions, SESSION, now=NOW)
+    assert repo.ensure_first_admin(sessions, SESSION, now=LATER) == admin  # 한 명만
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=LATER)
+    assert member.startswith("mem-")
+    rows = repo.list_members(sessions, SESSION)
+    assert [(r["member_id"], r["display_name"], r["role"]) for r in rows] == [
+        (admin, "관리자", "admin"), (member, "김개발", "member")]
+    assert [r["role"] for r in repo.list_members(sessions, OTHER_SESSION)] == ["admin"]
+
+
+# --- phase 14 step 5: 접수 — 업무 양식·우선순위·원본 갱신, blocks 링크, 매핑 표 ---------------------------------
+
+FORM_BODY = "### 목표\n쿠폰 한 번만\n\n### 재현 절차\n1. 쿠폰 적용"
+FORM = {"goal": {"value": "쿠폰 한 번만", "source": "github_body:### 목표"}}
+
+
+def test_upsert_source_issue_new_work_item_takes_form_and_priority(seeded):
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    repo.upsert_source_issue(seeded, SESSION, SOURCE, _snapshot(body=FORM_BODY), task=_fix_task(),
+                             form=FORM, priority="high", now=NOW)
+    work = repo.work_item_of_task(seeded, "task-gh-41")
+    assert json.loads(work["form_json"]) == FORM
+    assert (work["priority"], work["assignee_type"], work["revision"]) == ("high", None, 1)
+
+
+def test_upsert_source_issue_updates_work_item_input_like_the_first_stage(cycle):
+    def work():
+        return repo.work_item_of_task(cycle, "task-gh-41")
+
+    assigned = _snapshot(assignee_ids=[1], assignee_logins=["a"], updated_at="2026-10-06T10:20:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, assigned, task=_fix_task(), form=FORM, now=LATER)
+    assert (work()["revision"], work()["form_json"]) == (1, "{}")  # 입력이 그대로면 업무도 그대로
+
+    edited = _snapshot(body=FORM_BODY, updated_at="2026-10-06T10:30:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, edited,
+                             task=_fix_task(title="새 제목", request=FORM_BODY), form=FORM, now=LATER)
+    row = work()
+    assert (row["title"], row["request"], row["revision"], row["updated_at"]) == ("새 제목", FORM_BODY, 2, LATER)
+    assert json.loads(row["form_json"]) == FORM
+
+    closed = _snapshot(body=FORM_BODY, state="closed", updated_at="2026-10-06T10:40:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, closed,
+                             task=_fix_task(title="새 제목", request=FORM_BODY), form=FORM, now=LATER)
+    assert (work()["source_state"], work()["revision"]) == ("closed", 2)  # 원본 상태만
+
+
+def test_upsert_source_issue_keeps_work_item_input_after_first_stage_closes(cycle):
+    repo.update_task_status(cycle, "task-gh-41", "실패", "운영자 종료", finished_at=LATER, now=LATER)
+    edited = _snapshot(body="다시 편집", updated_at="2026-10-06T10:30:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, edited, task=_fix_task(request="다시 편집"), form=FORM,
+                             now=LATER)
+    row = repo.work_item_of_task(cycle, "task-gh-41")
+    assert (row["request"], row["revision"], row["form_json"]) == ("GitHub acme/billing#41", 1, "{}")
+
+
+def test_mark_issue_delegated_refreshes_work_status(seeded):
+    repo.upsert_agent(seeded, _agent(FIX_AGENT, connection_type="local", api_url=None, credential_ref=None,
+                                     capabilities=[{"code": "code.fix", "scope": {"repository_id": "billing"}}]))
+    repo.save_github_source(seeded, SESSION, _source(intake="all_open", label_filter=[]), NOW)
+    task = _fix_task(selection_mode="manual", chosen_agent_id=FIX_AGENT)
+    repo.upsert_source_issue(seeded, SESSION, SOURCE, _snapshot(), task=task, now=NOW)
+    repo.refresh_open_work_statuses(seeded, now=NOW)
+    assert repo.work_item_of_task(seeded, "task-gh-41")["status"] == "새로 들어옴"  # 지시 전
+    repo.mark_issue_delegated(seeded, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                              by="operator", now=LATER)
+    work = repo.work_item_of_task(seeded, "task-gh-41")
+    assert work["status"] == "대기"
+    assert json.loads(repo.list_work_item_events(seeded, work["work_item_id"])[-1]["data_json"])["to"] == "대기"
+
+
+def test_insert_work_item_task_with_predecessor_links_blocks(seeded):
+    """다른 업무의 Task 를 선행으로 둔 새 업무(체인 `blocked_by`·폼 선행)는 `blocks` 링크(앞 업무 → 새 업무)로도 남는다."""
+    later = repo.insert_work_item_task(seeded, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    first = repo.work_item_of_task(seeded, TASK_A)["work_item_id"]
+    (link,) = repo.list_work_item_links(seeded, later)
+    assert (link["from_work_item_id"], link["to_work_item_id"], link["type"]) == (first, later, "blocks")
+    assert repo.get_task(seeded, TASK_B)["predecessor_task_id"] == TASK_A
+    alone = repo.insert_work_item_task(seeded, _task("t-alone"), NOW)
+    assert repo.list_work_item_links(seeded, alone) == []
+
+
+def _mapping(source_value: str, runloom_value: str, *, field: str = "kind", position: int = 1,
+             source_type: str = "github") -> MappingRow:
+    return MappingRow(source_type, field, source_value, runloom_value, position)
+
+
+def test_field_mappings_start_with_default_and_replace_bumps_config_revision(sessions):
+    assert repo.list_field_mappings(sessions, SESSION) == [_mapping("*", "bug_fix")]
+    revision = repo.get_config_revision(sessions, SESSION)
+    rows = [_mapping("docs", "code_review", position=1), _mapping("*", "bug_fix", position=2),
+            _mapping("P1", "high", field="priority", position=3)]
+    assert repo.replace_field_mappings(sessions, SESSION, rows, now=LATER) == revision + 1
+    assert repo.get_config_revision(sessions, SESSION) == revision + 1
+    assert repo.list_field_mappings(sessions, SESSION) == rows
+    assert repo.list_field_mappings(sessions, SESSION, "github", "priority") == rows[2:]
+    assert repo.list_field_mappings(sessions, OTHER_SESSION) == [_mapping("*", "bug_fix")]  # 다른 워크스페이스는 그대로
+
+
+@pytest.mark.parametrize("rows", [
+    [_mapping("docs", "no_such_kind")],  # 등록되지 않은 종류
+    [_mapping("p1", "urgent", field="priority")],  # 우선순위 값 밖
+    [_mapping("bug", "bug_fix"), _mapping("BUG", "code_review", position=2)],  # 같은 원본 값 두 번(대소문자 무시)
+])
+def test_replace_field_mappings_rejects_invalid_rows_and_keeps_old(sessions, rows):
+    revision = repo.get_config_revision(sessions, SESSION)
+    with pytest.raises(ValueError):
+        repo.replace_field_mappings(sessions, SESSION, rows, now=LATER)
+    assert repo.list_field_mappings(sessions, SESSION) == [_mapping("*", "bug_fix")]
+    assert repo.get_config_revision(sessions, SESSION) == revision
+
+
+# --- 단계 상태를 쓰면 업무 상태도 (phase 14 step 6) ----------------------------------------------
+
+
+def _work(conn, task_id: str = TASK_A):
+    return repo.work_item_of_task(conn, task_id)
+
+
+def _status_events(conn, task_id: str = TASK_A) -> list[str]:
+    events = repo.list_work_item_events(conn, _work(conn, task_id)["work_item_id"])
+    return [json.loads(e["data_json"])["to"] for e in events if e["type"] == "status_changed"]
+
+
+def test_every_stage_status_write_refreshes_the_work_status(seeded, store):
+    conn = seeded
+    repo.update_task_status(conn, TASK_A, "대기", "선행 대기", now=NOW)
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("새로 들어옴", "담당 없음")
+    _create_execution(conn, "exec-1")
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("대기", "선행 대기")  # 실행이 생겼다
+    repo.update_task_status(conn, TASK_A, "실행 요청됨", "접수 대기", now=NOW)
+    assert _work(conn)["status"] == "에이전트 작업 중"
+    repo.create_human_request_once(conn, TASK_A, "decision", "어느 쪽으로 고칠까요?", "decision:1", NOW)
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("내 차례", "사람 요청 — 어느 쪽으로 고칠까요?")
+    repo.record_verdict(conn, task_id=TASK_A, execution_id="exec-1", verdict={"outcome": "passed"}, status="완료",
+                        reason="판정 통과", finish=True, now=LATER)
+    assert _work(conn)["status"] == "내 차례"  # 열린 요청이 앞선다
+    assert _status_events(conn) == ["새로 들어옴", "대기", "에이전트 작업 중", "내 차례"]
+    repo.update_task_status(conn, TASK_A, "대기", "선행 대기", now=LATER)  # 같은 업무 상태 — 재기록 없음
+    assert _status_events(conn) == ["새로 들어옴", "대기", "에이전트 작업 중", "내 차례"]
+
+
+def test_the_first_agent_to_take_a_stage_becomes_the_work_assignee(seeded):
+    conn = seeded
+    assert (_work(conn)["assignee_type"], _work(conn)["assignee_id"]) == (None, None)
+    _create_execution(conn, "exec-1")
+    assert (_work(conn)["assignee_type"], _work(conn)["assignee_id"]) == ("agent", "agent-ops-demo")
+    (event,) = [e for e in repo.list_work_item_events(conn, _work(conn)["work_item_id"]) if e["type"] == "assigned"]
+    assert json.loads(event["data_json"]) == {"from": None, "to": {"type": "agent", "id": "agent-ops-demo"}}
+    repo.release_execution(conn, "exec-1", NOW)
+    repo.create_execution(conn, execution_id="exec-2", task_id=TASK_A, attempt_no=2, start_key="manual:2",
+                          agent_id="agent-other", kind="diagnosis", request=_request("exec-2", TASK_A),
+                          assigned_connector_id=None, predecessor_execution_id=None, now=LATER)
+    assert _work(conn)["assignee_id"] == "agent-ops-demo"  # 이미 담당이 있으면 바꾸지 않는다
+
+
+def test_refresh_open_work_statuses_skips_closed_work_items(seeded):
+    conn = seeded
+    assert repo.refresh_open_work_statuses(conn, now=NOW) == 1  # '' 이유로 시작한 업무에 계산값
+    assert repo.refresh_open_work_statuses(conn, now=NOW) == 0
+    repo.finish_task(conn, task_id=TASK_A, execution_id="exec-none", status="완료", reason="판정 통과", now=LATER)
+    assert _work(conn)["status"] == "완료"
+    assert repo.refresh_open_work_statuses(conn, now=LATER) == 0
+
+
+def test_finish_failed_stage_closes_the_stage_and_asks_once(seeded):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    request_id, fresh = repo.finish_failed_stage(
+        conn, task_id=TASK_A, execution_id="exec-1", reason="timeout · 20분 초과",
+        question="실행 실패 — timeout: 20분 초과", cause_key="stage_failed:exec-1", now=LATER,
+    )
+    assert fresh
+    task = repo.get_task(conn, TASK_A)
+    assert (task["status"], task["status_reason"], task["finished_at"]) == ("실패", "timeout · 20분 초과", LATER)
+    assert repo.get_execution(conn, "exec-1")["released_at"] == LATER
+    (request,) = repo.list_human_requests(conn, TASK_A)
+    assert (request["request_id"], request["code"], request["state"]) == (request_id, "stage_failed", "open")
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("내 차례", "실패 — timeout · 20분 초과")
+    again = repo.finish_failed_stage(
+        conn, task_id=TASK_A, execution_id="exec-1", reason="timeout · 20분 초과",
+        question="실행 실패 — timeout: 20분 초과", cause_key="stage_failed:exec-1", now=LATER,
+    )
+    assert again == (request_id, False) and len(repo.list_human_requests(conn, TASK_A)) == 1
+
+
+def _failed_stage(conn) -> str:
+    _create_execution(conn, "exec-1")
+    request_id, _ = repo.finish_failed_stage(
+        conn, task_id=TASK_A, execution_id="exec-1", reason="timeout · 20분 초과",
+        question="실행 실패 — timeout: 20분 초과", cause_key="stage_failed:exec-1", now=NOW,
+    )
+    return request_id
+
+
+def test_retry_response_copies_the_failed_stage_into_the_same_work_item(seeded):
+    conn = seeded
+    request_id = _failed_stage(conn)
+    repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                    action="retry", text="", now=LATER, retry_task_id="task-retry")
+    retried = repo.get_task(conn, "task-retry")
+    first = repo.get_task(conn, TASK_A)
+    assert retried["work_item_id"] == first["work_item_id"]
+    assert (retried["request"], retried["predecessor_task_id"], retried["status"]) == (
+        first["request"], first["predecessor_task_id"], "대기")
+    assert repo.get_human_request(conn, SESSION, request_id)["state"] == "answered"
+    assert _work(conn)["status"] == "대기"
+    with pytest.raises(StaleRequest):
+        repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-2", expected_revision=2,
+                                        action="retry", text="", now=LATER, retry_task_id="task-retry-2")
+    assert repo.get_task(conn, "task-retry-2") is None
+
+
+def test_close_response_on_a_failed_stage_ends_the_work_item(seeded):
+    conn = seeded
+    request_id = _failed_stage(conn)
+    repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                    action="close", text="", now=LATER, close_work_reason="닫음 — 실행 실패")
+    row = _work(conn)
+    assert (row["status"], row["status_reason"], row["closed_at"]) == ("종료", "닫음 — 실행 실패", LATER)
+
+
+def test_response_to_a_non_stage_failed_request_on_a_closed_task_is_still_rejected(seeded):
+    conn = seeded
+    request_id, _ = repo.create_human_request_once(conn, TASK_A, "decision", "q", "decision:1", NOW)
+    repo.finish_task(conn, task_id=TASK_A, execution_id="exec-none", status="실패", reason="운영자 종료", now=NOW)
+    with pytest.raises(TaskClosed):
+        repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                        action="resume", text="", now=LATER)
+
+
+def test_retried_stage_reads_the_source_issue_of_its_work_item(cycle):
+    """다시 맡긴 단계(같은 업무·원본 이슈 단계와 같은 종류)는 원본 이슈를 그대로 읽는다 — 담당·입력·PR 이 이어진다.
+    같은 업무의 다른 종류 단계(검토)는 원본 이슈가 없다. `source_issues.task_id` 는 첫 단계 그대로."""
+    conn = cycle
+    work_item_id = repo.work_item_of_task(conn, "task-gh-41")["work_item_id"]
+    repo.insert_task(conn, _fix_task("task-gh-41-retry"), LATER, work_item_id=work_item_id)
+    review = {**_fix_task("task-gh-41-review"), "kind": "code_review",
+              "required_capability": {"code": "code.review", "scope": {"repository_id": "billing"}}}
+    repo.insert_task(conn, review, LATER, work_item_id=work_item_id)
+    first = repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")
+    assert first["task_id"] == "task-gh-41"
+    assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41-retry")["github_issue_id"] == first["github_issue_id"]
+    assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41-review") is None
+    assert repo.get_source_issue_by_task(conn, OTHER_SESSION, "task-gh-41-retry") is None

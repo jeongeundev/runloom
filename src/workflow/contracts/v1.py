@@ -91,6 +91,28 @@ Rfc3339 = Annotated[str, AfterValidator(parse_rfc3339_aware)]
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 CommitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 Location = Annotated[str, Field(pattern=LOCATION_PATTERN), AfterValidator(_validate_location)]
+
+# 업무 키·결과 브랜치 — ARCHITECTURE "업무와 단계 — phase 14". 키는 서버가 번호로 만든 값이고, 러너는 이 패턴을 통과한
+# 값만 브랜치 이름에 넣는다(`/`·`..`·공백이 들어갈 수 없다).
+WORK_KEY_PREFIX = "RUN"
+WORK_KEY_PATTERN = r"^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8}$"
+WorkKey = Annotated[str, Field(pattern=WORK_KEY_PATTERN)]
+
+
+def format_work_key(n: int) -> str:
+    return f"{WORK_KEY_PREFIX}-{n}"
+
+
+def result_branch(task_id: str, work_key: str | None, branch_seq: int = 1) -> str:
+    """결과 브랜치 이름의 유일한 규칙 — 러너(worktree·push)와 서버(PR head·원본 댓글)가 함께 쓴다. 키가 있으면
+    `runloom/<키>`(순번 2 이상이면 `-<순번>`), 없으면 옛 `task/<task_id>`. 계약 밖 값은 이름이 되기 전에 ValueError."""
+    if branch_seq < 1 or (work_key is None and branch_seq != 1):
+        raise ValueError(f"branch_seq {branch_seq} 는 업무 키가 있을 때만 1 이상")
+    if work_key is None:
+        return f"task/{task_id}"
+    if not re.fullmatch(WORK_KEY_PATTERN, work_key):
+        raise ValueError(f"업무 키 {work_key!r} 가 패턴 {WORK_KEY_PATTERN} 밖")
+    return f"runloom/{work_key}" if branch_seq == 1 else f"runloom/{work_key}-{branch_seq}"
 ArtifactKind = Literal[*ARTIFACT_KINDS]
 ExecutionStatus = Literal["queued", "accepted", "running", "result_ready", "failed", "unknown"]
 
@@ -193,12 +215,14 @@ BUILTIN_KINDS: tuple[KindSpec, ...] = (
 
 class SuccessorRule(_Contract):
     """선행 결과의 outcome 이 `on_outcomes` 에 있으면 `handoff_kinds` 산출물을 넘겨 `to_kind` 를 시작한다.
-    `on_outcomes ⊆ from_kind.outcomes`·`handoff_kinds ⊇ to_kind.input_kinds` 는 서버가 등록부로 검사한다."""
+    `on_outcomes ⊆ from_kind.outcomes`·`handoff_kinds ⊇ to_kind.input_kinds` 는 서버가 등록부로 검사한다.
+    `placement` 는 후속 Task 를 둘 곳 — `same_work` 원인 Task 업무의 다음 단계, `new_work` 새 업무(ADR-0020)."""
 
     from_kind: KindId
     on_outcomes: list[Outcome] = Field(min_length=1)
     to_kind: KindId
     handoff_kinds: list[ArtifactKind]
+    placement: Literal["same_work", "new_work"] = "same_work"
 
     @model_validator(mode="after")
     def _check_rule(self) -> "SuccessorRule":
@@ -232,11 +256,16 @@ class ExecutionRequest(_Contract):
     input_artifact_ids: list[NonEmptyStr]
     target: DiagnosisTarget | CodeChangeTarget | CommitReviewTarget | LocalTarget
     kind_spec: KindSpec | None = None
+    # 결과 브랜치 `result_branch(task_id, work_key, branch_seq)` 의 두 칸 (CONTRACT 15.2·15.3). 없으면 옛 `task/<task_id>`
+    work_key: WorkKey | None = None
+    branch_seq: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def _check_kind_target(self) -> "ExecutionRequest":
         if len(set(self.input_artifact_ids)) != len(self.input_artifact_ids):
             raise ValueError("input_artifact_ids 에 중복이 있습니다")
+        if self.work_key is None and self.branch_seq != 1:
+            raise ValueError("branch_seq 는 work_key 가 있을 때만 1 이 아닐 수 있습니다")
         if self.kind_spec is not None and self.kind_spec.kind != self.kind:
             raise ValueError("kind_spec.kind 는 kind 와 같아야 합니다")
         # `diagnosis`·`code_change` 는 `main` 의 진단 데모 요청(kind_spec 없음) 모양으로만 남는다 (ADR-0019).
@@ -345,7 +374,7 @@ class ResultReadyData(_OmitUnknownMeasure):
 
     result_artifact_id: NonEmptyStr
     usage: ExecutionUsage | None = None
-    # 러너가 `task/<task_id>` 를 origin 에 push 한 결과 (ADR-0018 결정 4). 생략 = 시도 안 함·구버전.
+    # 러너가 결과 브랜치(`result_branch`)를 origin 에 push 한 결과 (ADR-0018 결정 4). 생략 = 시도 안 함·구버전.
     branch_pushed: bool | None = None
 
 

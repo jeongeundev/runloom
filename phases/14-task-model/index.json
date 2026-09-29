@@ -5,57 +5,92 @@
     {
       "step": 0,
       "name": "task-model-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:02:02+0900",
+      "summary": "문서만: ADR-0020(이전 시도에서 작성) 유지, ARCHITECTURE \"업무와 단계 — phase 14\" 신설(스키마 v10 표 work_items·work_item_links·members·field_mappings·work_item_events·tasks.work_item_id, 업무 상태 11단계 판정 우선순위, placement, stage_failed retry/close, 매핑·양식 칸 규칙, work_key·branch_seq·result_branch, v9→v10 마이그레이션, 이름·시그니처 표), CONTRACT 15절(placement·work_key·branch_seq 예시는 모델 전이라 jsonc 펜스 — step 4·7 이 json 으로 바꾸고 test_v1 블록 수 58 을 올릴 것), GLOSSARY Task 정의 변경 + phase 14 용어, CURRENT_HANDOFF 한 줄. 결정: 키는 번호만 저장·format_work_key 는 contracts/v1, 업무 이벤트는 새 표 work_item_events, 매핑 미일치 이슈는 가져오지 않음(종류 기본값 분기 없음), 교차 업무 predecessor_task_id NULL 화는 step 4 가 마이그레이션에 더함. 검증: pytest 2382 passed/32 skipped, ruff 통과.",
+      "completed_at": "2026-09-30T01:12:50+0900"
     },
     {
       "step": 1,
       "name": "work-status-domain",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:12:50+0900",
+      "summary": "생성: src/workflow/domain/work_status.py(WORK_STATUSES 8개·TERMINAL_WORK_STATUSES·STAGE_FAILED·WorkStatus·StageFact·RequestFact·PullRequestFact·WorkItemFacts·work_status — ARCHITECTURE 이름 표 그대로, step.md 의 WORK_TERMINAL 대신 TERMINAL_WORK_STATUSES, 원본 상태·직접 작업 신호 칸은 이름 표에 없어 두지 않음), tests/workflow/domain/test_work_status.py(33개, 표 기반). 결정: ARCHITECTURE 11단계 우선순위 그대로(끝 상태 유지 > PR merged 완료 > PR closed 종료 > 열린 요청 내 차례 > PR pending·open > 확인 필요 > 전 단계 마감 > 실행 중 > 새로 들어옴 > 대기), stage_failed 요청이 다른 요청보다 먼저이고 이유는 가장 최근 '실패' 단계 status_reason(없으면 질문), 가장 최근 단계는 (created_at, task_id) 최댓값, PR failed 는 무시(아래 규칙으로), 사람 요청 이유는 질문 첫 줄 80자. 검증: pytest 2415 passed/32 skipped, ruff 통과. 다음 step 주의: work_item_facts 가 stages 의 status 에 단계 사용자 상태 라벨을, executed 에 실행 존재 여부를, delegated 에 all_open·delegated_by 를 채울 것; 초기 저장 상태는 끝 상태가 아니어야 계산이 돈다.",
+      "completed_at": "2026-09-30T01:18:31+0900"
     },
     {
       "step": 2,
       "name": "schema-v10",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:18:31+0900",
+      "summary": "수정: adapters/db.py(SCHEMA_VERSION 10, _V10_TABLES — work_items·work_item_links·members·field_mappings·work_item_events + ALTER tasks.work_item_id + 인덱스 4개, 업무 상태 CHECK 는 WORK_STATUSES·TERMINAL_WORK_STATUSES 에서, _work_roots·_migrate_9_to_10), adapters/repo.py(ensure_first_admin, DEFAULT_FIELD_MAPPINGS·seed_default_field_mappings, work_item_facts — 사실 조립 SQL 한 곳, create_session 이 관리자·매핑 seed), tests/workflow/adapters/test_db.py(v10 표·CHECK, create_session seed, v9 픽스처 → v10 묶기·키·원본·상태·blocks 링크·멤버·매핑·행 보존, NULL 남김 → RuntimeError·v9 그대로, 새 DB = 마이그레이션 스키마, v4~v8 기대 버전 갱신), tests/workflow/server/test_backup.py(v8 사본을 고정 v9 원문으로 만들고 v10 행 수 기대), 생성: tests/workflow/adapters/fixtures/schema_v9.sql, docs/ARCHITECTURE 마이그레이션 절 2줄. 결정: 업무 묶기는 followup_links 사슬만(선행만 있는 검토 Task 는 별도 업무 + blocks), source_url 은 ARCHITECTURE 대로 https://github.com/<repo>/issues/<n>(html_url 안 씀), n8n source_item_id = source_ref, 끝 상태 closed_at = 마이그레이션 시각, 상태 계산은 이벤트 없이 직접 UPDATE. 검증: pytest 2421 passed/32 skipped, ruff 통과. 다음 step 주의: 다른 테스트·repo 경로는 아직 work_item_id 없이 Task 를 넣는다(NULL 허용) — step 3 이 insert_task 등에 필수 키워드로 채울 것; work_item_facts 는 repo 에 이미 있으니 set_work_status·refresh_work_status 가 재사용; db.py 가 repo 를 import 하므로 repo 는 db 를 import 하면 순환",
+      "completed_at": "2026-09-30T01:30:12+0900"
     },
     {
       "step": 3,
       "name": "work-item-repo",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:30:12+0900",
+      "summary": "수정: adapters/repo.py(create_work_item — 트랜잭션 밖이면 RuntimeError·종류 검사·키=세션별 MAX+1, get_work_item·get_work_item_by_key·work_item_of_task·list_work_items(include_closed·status·assignee 필터, key_number 내림차순)·list_work_item_tasks·set_work_status·refresh_work_status·assign_work_item·link_work_items·list_work_item_links·list_work_item_events·add_member·list_members, insert_task·create_followup_once 에 work_item_id 필수 키워드(같은 세션 업무 아니면 NotFound), 새 insert_work_item_task(업무+첫 단계 한 트랜잭션, 담당=선택 Agent), upsert_source_issue 는 새 이슈면 github 업무를 스스로 만듦), server/web.py(_insert_new_task → insert_work_item_task, n8n 체인은 source_type n8n·source_id=chain_id·item/key=source_ref), server/worker.py(후속은 선행 Task 의 업무에), docs/ARCHITECTURE 시그니처 표 갱신, 테스트: test_repo 업무 11개 + autouse 불변식(work_item_id NULL 0), test_inbound_api 업무 원본 단정, 모든 tests 의 repo.insert_task → insert_work_item_task. 결정: ARCHITECTURE 이름을 따름(stages_of→list_work_item_tasks, first_admin 은 ensure_first_admin 재사용), upsert_source_issue 는 work_item_id 를 받지 않음(이미 있는 이슈에 빈 업무를 만들지 않으려고 — 문서 반영), 새 업무 상태는 '새로 들어옴'/'' 로 시작하고 생성 때 계산·이벤트 없음, assign 은 상태를 다시 계산하지 않음, format_work_key 는 step 7. 검증: pytest 2433 passed/32 skipped, ruff 통과. 다음 step 주의: 체인 blocked_by 는 아직 predecessor_task_id 만(blocks 링크 없음) — step 4 가 link_work_items 로 옮길 것; worker _create_followup_task 는 predecessor['work_item_id'] 로 same_work 고정 — placement 는 step 4; 테스트의 raw INSERT INTO tasks(test_views·test_db 등)는 work_item_id NULL 이라 그 Task 로 후속을 만들면 NotFound",
+      "completed_at": "2026-09-30T01:42:09+0900"
     },
     {
       "step": 4,
       "name": "succession-placement",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:42:10+0900",
+      "summary": "수정: contracts/v1.py(SuccessorRule.placement Literal same_work|new_work 기본 same_work — 옛 rule_json 그대로 읽힘), domain/task_followup.py(FollowupTaskSpec.placement = 규칙 행 값), adapters/repo.py(create_followup_once 에 placement — new_work 면 원인 업무 원본 칸 복사·source_item_id NULL·담당=선택 Agent 로 새 업무 + spawned_from(cause_execution_id) 링크 + 첫 단계(선행 NULL), 새로 만들 때만·같은 트랜잭션에서 관련 업무 refresh_work_status; 새 followups_of(선행 + followup_links 후속)·refresh_task_work_statuses(자체 트랜잭션)·get_source_issue), server/worker.py(_create_followup_task 가 placement 전달, 기존 후속 찾기를 followups_of 로, _apply_followup 끝·_spawn_successors 실행 생성 뒤 업무 상태 재계산), server/task_cycle.py(origin_source = work_item_of_task → 업무 원본 칸, 선행 사슬 안 따라감, new_work 업무는 (None, 소스 설정)), server/web.py·views.py·kinds.html(POST /rules placement 폼 칸·규칙 목록 '같은 업무의 다음 단계'/'새 업무로 등록'), docs/CONTRACT(15.1 json 펜스·11.2 문구), docs/ARCHITECTURE(step 4 구현 단락·이름 표); 테스트: test_v1(placement 기본·옛 JSON·잘못된 값, 블록 수 60), test_task_followup, test_task_cycle(같은 업무 fix→review, origin_source 검토·재작업·선행 사슬 무시, new_work 새 업무+링크 1·재평가·재작업 중복 없음·상태 기록), test_web(등록·422), test_views, test_worker(_spawn_successors 뒤 업무 상태). 결정: 업무 상태 재계산은 단계 상태 기록 뒤라 워커 쪽은 실행 생성과 별도 트랜잭션; _spawn_successors 는 미리 등록된 Task 에 실행만 만들어 placement 로 옮기지 않음. 검증: pytest 2447 passed/32 skipped, ruff 통과. 다음 step 주의: blocks 링크 기반 준비 판정·교차 업무 predecessor_task_id NULL 화(ARCHITECTURE 마이그레이션 5항)는 하지 않음 — 체인 blocks 링크(step 5)와 함께 처리할 것; views 선행/후속 칩·test 의 review_tasks 헬퍼는 여전히 successors_of(선행) 기준",
+      "completed_at": "2026-09-30T01:52:51+0900"
     },
     {
       "step": 5,
       "name": "intake-work-items",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:52:51+0900",
+      "summary": "생성: domain/form_sections.py(FORM_HEADINGS·FormField·WorkForm.to_json·extract_form — ##/### 절, 동의어 casefold·끝 ':' 무시, 첫 절, _No response_ 빈 칸, 출처 github_body:<제목 줄>, #### 는 내용), domain/field_mapping.py(MappingRow·map_value·WILDCARD·PRIORITIES), server/mapping_api.py(GET·PUT /field-mappings 운영자 세션, Pydantic extra forbid, 검사 실패 422 invalid_field), 테스트 test_form_sections·test_field_mapping·test_mapping_api; 수정: domain/issue_intake.py(ISSUE_KIND 제거, snapshot_to_task_spec(..., kind=KindSpec), issue_kind·issue_priority), server/github_sync.py(소스마다 매핑·등록 종류 읽기, 새 이슈 종류=매핑·없거나 미등록이면 SyncReport.unmapped 로 셈·안 가져옴, 양식·우선순위 전달, 갱신은 첫 단계 종류 그대로), adapters/repo.py(list_field_mappings·replace_field_mappings(+config_revision), upsert_source_issue form·priority — 갱신 때 source_state 늘·입력 바뀐 때만 title·request·form_json·revision+1, mark_issue_delegated 처음 지시면 refresh_work_status, insert_work_item_task 선행 있으면 blocks 링크), server/app.py 라우터, docs/ARCHITECTURE(매핑·양식 절 구현·API·이름 표·설정 번호 표), 테스트 test_repo·test_github_sync·test_inbound_api·test_web·test_issue_intake·test_task_cycle·test_github_delivery(kind= 인자). 결정: 매핑 없음은 step.md 의 '업무만 새로 들어옴' 대신 ARCHITECTURE(step 0) 대로 가져오지 않음 — work_items.kind 가 NOT NULL·등록 종류 FK 라 종류 없는 업무를 둘 수 없음; 매핑 관리는 insert/update/delete 대신 step.md 의 replace(표 전체 PUT); 체인·폼 선행은 predecessor_task_id 유지 + blocks 링크 추가(준비 판정 이전·교차 업무 NULL 화는 안 함); n8n 은 매핑 표를 읽지 않음(ARCHITECTURE). 검증: pytest 2486 passed/32 skipped, ruff 통과. 다음 step 주의: 새 GitHub 업무는 생성 때 상태 계산 없음('새로 들어옴'/'') — 워커(step 6)가 refresh; blocks 링크 기반 준비 판정은 아직 없음; list_work_item_links 는 이제 체인·폼 선행 Task 에도 행이 생김",
+      "completed_at": "2026-09-30T02:04:41+0900"
     },
     {
       "step": 6,
       "name": "work-status-worker",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T02:04:41+0900",
+      "summary": "수정: adapters/repo.py(단계를 쓰는 repo 함수 — update_task_status·finish_task·record_verdict·create_execution·create_human_request_once(새로 만들 때)·record_human_response_once·enqueue_pull_request·record_pull_request(둘 다 이제 자체 트랜잭션) — 가 트랜잭션 끝에 내부 _refresh_stage_work 한 곳을 부름, refresh_task_work_statuses 제거 → refresh_open_work_statuses(tick 끝), finish_failed_stage(실패 마감 + stage_failed 요청 한 트랜잭션), record_human_response_once 에 retry_task_id·close_work_reason 과 stage_failed 는 마감 단계에도 응답 허용, _insert_retry_stage, create_execution 이 빈 업무 담당을 실행 Agent 로 채움(assigned 이벤트), get_source_issue_by_task 가 같은 업무·같은 종류 단계(다시 맡긴 단계)에도 원본 이슈를 돌려줌), server/worker.py(_reflect_failures → finish_failed_stage, 흩어진 refresh 호출 제거, tick 끝 _refresh_work_statuses·TickReport.work_statuses_changed), server/human_api.py(Action 에 retry, _ACTIONS stage_failed={retry,close}, CLOSE_WORK_REASON), docs ARCHITECTURE·CONTRACT 13 응답 행·GLOSSARY; 테스트 test_repo 9개(기존 refresh 멱등 테스트는 finish_task 가 이미 기록하므로 not 으로)·test_task_cycle 10개·test_human_api 4개·test_worker tick 순서. 결정: 원인 키는 step.md 의 failed: 대신 ADR·ARCHITECTURE·GLOSSARY 의 stage_failed:<execution_id>; 알림은 step.md 대로 task_failed 한 번(요청 알림 없음 — ARCHITECTURE 의 human_request 안을 바꿔 적음); retry 의 predecessor_task_id 는 step.md 의 '= 실패 단계' 대신 ARCHITECTURE 대로 실패 단계의 선행 복사(실패한 선행은 tasks_with_ready_predecessor 가 제외해 시작 못 함), chain_id·source_ref 는 복사 안 함; 검토 대기(수정 단계 확인 필요)는 step 1 규칙대로 내 차례. 검증: pytest 2507 passed/32 skipped, ruff 통과. 다음 step 주의: 다시 맡긴 수정 단계는 새 Task 라 task_pull_requests·head_branch 가 task/<새 id> — step 7 이 branch_seq 로 runloom/<키>-<n>; 원본 이슈 댓글(github_delivery)은 여전히 source_issues.task_id(첫 단계) 기준이라 다시 맡긴 단계의 진행을 싣지 않음; 같은 created_at 의 단계 순서는 task_id 로 갈림",
+      "completed_at": "2026-09-30T02:21:09+0900"
     },
     {
       "step": 7,
       "name": "branch-key",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T02:21:09+0900",
+      "summary": "수정: contracts/v1.py(WORK_KEY_PREFIX·WORK_KEY_PATTERN·format_work_key·result_branch — 계약 밖 값은 ValueError, ExecutionRequest.work_key·branch_seq(ge=1, 키 없이 1 아니면 422)), domain/pull_request.py(head_branch(task_id, *, work_key, branch_seq)=result_branch, pr_title, pr_body work_key 줄 '업무 키: RUN-n', not_pushed_question·failed_question 은 브랜치 이름을 받음), adapters/repo.py(execution_branch_fields — 실행 있으면 첫 요청 두 칸 복사, 없으면 업무 키 + 같은 업무·같은 종류 단계 순번(created_at, rowid); enqueue_pull_request head_branch = 수정 실행 요청으로 계산, 기존 행 불변), server/worker.py(_create_cycle_execution·_spawn_successors 에 두 칸, PR 제목 '<키> <원본 제목>'·본문 키, push 안내 문구 새 브랜치), server/web.py(_start_execution 두 칸), server/github_delivery.py(댓글 제목 줄 키·올린 브랜치 새 규칙), connector/git_ops.py(ensure_worktree·push_task_branch 에 work_key·branch_seq, 이름은 result_branch(_safe(task_id), …), worktree 폴더는 단계마다), connector/local_tool.py(패턴 밖 키 → 실행 전 failed invalid_work_key), connector/runner.py(push 에 두 칸), docs CONTRACT 15.2·15.3 json 펜스(블록 62)·ARCHITECTURE step 7 구현 단락·이름 표; 테스트 test_v1·test_pull_request·test_repo·test_task_cycle·test_git_ops·test_local_tool·test_runner·test_web·test_machine_api·e2e test_github_cycle·test_real_repo 갱신. 결정: 순번은 ARCHITECTURE 의 'CodeChangeTarget 인 Task' 대신 같은 종류 단계로 셈(수정 단계 target 은 Task 행에 없음), 같은 시각 단계는 rowid 로 가름; claim 응답은 옛 요청에도 work_key null·branch_seq 1 을 실음(모델 기본 직렬화 — 러너·중앙 함께 업그레이드); PR 제목 키는 수정 실행 요청의 work_key(키 없는 옛 요청은 제목만). 검증: pytest 2558 passed/32 skipped, ruff 통과, WORKFLOW_E2E=1 e2e 31 passed/1 skipped(Docker). 다음 step 주의: 원본 댓글은 여전히 source_issues.task_id(첫 단계) 기준이라 다시 맡긴 단계의 브랜치(runloom/<키>-2)·진행을 싣지 않음; SELFHOST 업그레이드 순서(중앙·러너 함께)는 step 10.",
+      "completed_at": "2026-09-30T02:41:39+0900"
     },
     {
       "step": 8,
       "name": "metrics-by-work",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T02:41:39+0900",
+      "summary": "수정: domain/metrics.py(TaskFact.work_item_id 필수 칸 추가·predecessor_task_id 제거, _Index.bundles = 업무마다 묶음·시작 Task = 입력 생성 순의 첫 단계, root_of 제거, 인계 대기 = 시작 Task 가 아닌 단계 생성 → 첫 시작), adapters/repo.py(list_metric_facts 가 work_item_id 를 싣고 생성 순), templates/metrics.html('GitHub 이슈 업무만'), docs ARCHITECTURE(지표 정의 묶음 문단·인계 대기 행·접수 시각·step 8 구현 단락·list_metric_facts 행)·GLOSSARY 업무 묶음; 테스트: test_metrics 헬퍼 work= (없으면 업무=Task 하나)·새 4개(체인 2업무 → 묶음 2·인계 0, fix+review+재작업 → 묶음 1·재작업 1·1회 통과 False·인계 1h, spawned 업무 별도 묶음·intake_to_merge 는 원인 업무만, 선행 없는 다시 맡긴 단계도 인계), test_repo list_metric_facts work_item_id 단정, test_web_metrics 문구. 결정: 업무 생성 시각 = 첫 단계 created_at(같은 트랜잭션·같은 now)이라 TaskFact 에 업무 시각 칸을 따로 두지 않음; 인계 대기는 predecessor_task_id 대신 '업무의 시작 Task 가 아닌 단계'(체인·폼 업무 사이 선행 제외, 다시 맡긴 단계 포함); 직접 등록 완료 규칙(시작 Task 의 완료 시각)·group_by·기준선·CSV 코드값 bundles 그대로; new_work 업무는 source_issues 행이 없어 GitHub 묶음이 아님. 검증: pytest 2562 passed/32 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e/test_metrics.py 5 passed. 다음 step 주의: 직접 등록 업무에서 첫 단계가 실패하고 다시 맡긴 단계가 완료되면 접수 → 완료는 여전히 시작 Task 기준이라 미완료·closed_failed 로 셈(업무 완료 시각으로 바꾸려면 work_item_events 를 사실에 실어야 함)",
+      "completed_at": "2026-09-30T02:48:59+0900"
     },
     {
       "step": 9,
       "name": "work-list-minimal",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T02:48:59+0900",
+      "summary": "생성: templates/work_detail.html(GET /work/{key} — 머리(원본 링크·담당·PR·상태)·요청·단계 목록 '단계 N/M · 종류'·단계 상태·실행 횟수·열린 사람 요청(_cycle.html response_form 재사용)·양식 칸(있는 것만)·연결 업무·접힌 '자세히'(업무 id·원본 종류·요청 코드·양식 출처)); 수정: server/web.py(_base.my_work = views.work_summary 업무 한 줄, 등록 폼 선행 select 는 _form_context.my_tasks, /work/{key} 라우트 — RUN-<번호> 형식 밖·없는 번호·다른 워크스페이스 404), server/views.py(work_summary·work_context·assignee_label·FORM_LABELS·_agent_choices 추출, 선행/후속 칩 _chip — 같은 업무면 '단계 N/M', 다른 업무면 '선행|후속 RUN-n', 후속은 followups_of, task_context.work 브레드크럼, RESPONSE_ACTIONS 에 retry '다시 맡기기'·stage_failed 의 close 라벨 '닫기'), templates home.html·_sidebar.html(업무 한 줄 → /work/RUN-n, 지시 전 첫 단계 [에이전트에게 맡기기] 유지)·_live.html(브레드크럼 업무 키·chip 매크로)·_status.html(업무 상태 8개 배지), docs/ARCHITECTURE(step 9 구현 단락·화면 이름 행); 테스트: test_web_cycle 새 5개(fix+review → 한 줄·/work/RUN-1 단계 2개·브레드크럼·단계 칩, 없는·형식 밖·남의 키 404, 실패 → [다시 맡기기]·[닫기] 응답 → 단계 추가/종료) + 기대 갱신(test_web·test_ui·test_web_github_connect·test_web_cycle PR·e2e test_github_app — 목록이 업무 상태를 보이므로 '대기'→'새로 들어옴'·'지시 전'→맡기기 버튼, 단계 상태는 업무 상세 단계 목록에서 단정). 결정: 목록은 저장된 업무 상태를 그대로(화면에서 재판정 안 함 — 수집 직후는 워커 tick 전까지 '새로 들어옴'); 목록에 종류 칸은 step.md 대로 넣지 않음(ARCHITECTURE 행 갱신); 자동 선택만 된 직접 등록은 domain 규칙상 '새로 들어옴 · 담당 없음'; 사이드바에도 키(원본 키) 표시. 검증: pytest 2567 passed/32 skipped, ruff 통과, WORKFLOW_E2E=1 e2e github_app·github_cycle·metrics·real_repo 31 passed(Docker test_selfhost 는 미실행). 다음 step 주의: 테스트 시계가 고정이면 같은 created_at 단계 순서가 task_id 로 갈려 '단계 N/M' 이 뒤바뀜(테스트는 clock 을 옮김); 업무 상세는 폴링 없음; 체인·폼 선행은 다른 업무라 칩이 '후속 RUN-n'.",
+      "completed_at": "2026-09-30T03:06:37+0900"
     },
     {
       "step": 10,
       "name": "task-model-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T03:06:37+0900",
+      "summary": "수정: tests/e2e/test_real_repo.py(수집 직후 업무 RUN-1·RUN-2 새로 들어옴, #1 끝 업무 1·단계 2(bug_fix+같은 업무 code_review)·상태 흐름 새로 들어옴→에이전트 작업 중→PR · 검토→완료(work_item_events)·브랜치 runloom/RUN-1·PR 제목 'RUN-1 …'·홈 /work/RUN-1 한 줄, 새 test_07 실패 줄기: commit_mismatch → RUN-2 내 차례 '실패 — …'·stage_failed → /work/RUN-2 [다시 맡기기]·[닫기] → retry 로 같은 업무 새 단계·work_key RUN-2·branch_seq 2 → 다시 실패해 내 차례, 비밀값 테스트는 test_08 로 번호 이동), tests/e2e/test_github_cycle.py(test_12 에 업무 6개·B 업무 단계 B·F·내 차례·runloom/RUN-n·A→C blocks), tests/workflow/server/test_backup.py(새 v9 셀프호스트 모양 사본 — all_open 소스 둘, OpenArchive 류 20건(17 지시 전·3 fix+review+PR 병합)·기준선 24·sandbox 류 1건 → v10 업무 21·키 1~21·새로 들어옴 17(담당 없음)·완료 4('PR 병합 — #n')·기존 행 수·기준선·head_branch 불변·v10 백업 복원·v9 백업 복원도 같은 업무), docs VERIFICATION_LOG 'phase 14 업무·단계' 절·SELFHOST 업그레이드 v10 한 줄·CURRENT_HANDOFF 다음 작업(14 완료 → service 병합 → 셀프호스트 재설치(사용자 지시) → 15-team 설계)·REDESIGN_PLAN 16절 '14 확정' 표시. 결정: 제품 코드 수정 없음(새 단정 모두 처음부터 통과); 지시 전 업무 이유는 domain 규칙대로 '담당 없음'(담당 있을 때만 '지시 전'). 검증: pytest 2568 passed/33 skipped, ruff 통과, WORKFLOW_E2E=1 e2e 32 passed/1 skipped. 셀프호스트 Docker e2e 는 미실행(이유: 프로젝트·포트·볼륨은 격리되지만 이미지 태그 workflow-selfhost:local 을 사용자 runloom 과 공유 — install.sh --build 가 v10 코드로 재빌드해 사용자의 다음 compose up 이 백업 없이 v10 마이그레이션할 수 있음). 다음 주의: service 병합 뒤 셀프호스트 재설치는 사용자 지시로 — 백업 먼저·진행 중 실행 끝난 뒤·러너 함께, 그때 Docker e2e 도 확인.",
+      "completed_at": "2026-09-30T03:17:44+0900"
     }
-  ]
+  ],
+  "created_at": "2026-09-30T00:51:23+0900",
+  "completed_at": "2026-09-30T03:17:44+0900"
 }

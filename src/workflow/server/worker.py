@@ -96,6 +96,7 @@ from workflow.domain.status import UserStatus, user_status
 from workflow.domain.succession import continue_reason, may_continue
 from workflow.domain.task_followup import FollowupContext, FollowupDecision, FollowupTaskSpec, ReviewFacts, decide_followup
 from workflow.domain.task_readiness import TaskReadiness
+from workflow.domain.work_status import STAGE_FAILED
 from workflow.server import github_delivery, github_sync, task_cycle, views
 from workflow.server.github_clients import SourceClients
 from workflow.server.auth import utc_now
@@ -147,6 +148,7 @@ class TickReport:
     prs_merged: int = 0  # 병합을 보고 완료한 수정 Task
     notifications_sent: int = 0  # 알림 웹훅 2xx
     notifications_failed: int = 0  # 알림 전송 실패(재시도 대기·포기) — 업무 상태와 따로
+    work_statuses_changed: int = 0  # tick 끝 재계산에서 바뀐 업무 상태(단계 쓰기와 함께 바뀐 것은 세지 않음)
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -306,7 +308,7 @@ class Worker:
 
     def tick(self) -> TickReport:
         """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다.
-        callback 전달은 후속 착수·실패 반영 뒤 — 끝난 상태로 사람 차례를 판정한다. 알림은 맨 뒤 — 같은 tick 에 쌓인 것을 보낸다)."""
+        callback 전달은 후속 착수·실패 반영 뒤 — 끝난 상태로 사람 차례를 판정한다. 알림은 외부 반영의 맨 뒤 — 같은 tick 에 쌓인 것을 보낸다. 업무 상태 재계산은 tick 끝)."""
         report = TickReport()
         conn = self._conn_factory()
         try:
@@ -323,6 +325,7 @@ class Worker:
             self._deliver_pull_requests(conn, report)
             self._deliver_github(conn, report)
             self._deliver_notifications(conn, report)
+            self._refresh_work_statuses(conn, report)
         finally:
             conn.close()
         return report
@@ -677,7 +680,7 @@ class Worker:
                 task_closed=_operator_closed(task) or _operator_closed(fix_task),
             )
         to_kinds = {rule.to_kind for rule in rules if rule.from_kind == task["kind"]}
-        successors = [t for t in repo.successors_of(conn, task["task_id"]) if t["kind"] in to_kinds]
+        successors = [t for t in repo.followups_of(conn, task["task_id"]) if t["kind"] in to_kinds]
         return FollowupContext(
             **common,
             result_commit=self._result_commit(conn, execution),
@@ -764,11 +767,15 @@ class Worker:
         성공했으면 PR 한 행, 실패를 보고했으면 push 안내 사람 요청. push 보고가 없으면(구버전 러너·origin 없음) None =
         지금 동작 그대로. 돌려주는 값은 수정 Task 의 새 상태 이유."""
         issue = repo.get_source_issue_by_task(conn, fix_task["session_id"], fix_task["task_id"])
-        pushed = repo.get_execution(conn, review.source_execution_id)["branch_pushed"]
+        fix_execution = repo.get_execution(conn, review.source_execution_id)
+        pushed = fix_execution["branch_pushed"]
         if issue is None or pushed is None:
             return None
         if not pushed:
-            question = pull_request.not_pushed_question(fix_task["task_id"])
+            fix = ExecutionRequest.model_validate_json(fix_execution["request_json"])
+            question = pull_request.not_pushed_question(
+                pull_request.head_branch(fix_task["task_id"], work_key=fix.work_key, branch_seq=fix.branch_seq)
+            )
             report.human_requests += int(self._request_human(
                 conn, fix_task["task_id"], pull_request.PR_REQUEST_CODE, question,
                 pull_request.pr_request_cause_key(review_execution["execution_id"]), self._clock(),
@@ -810,13 +817,15 @@ class Worker:
             "run_mode": config.run_mode if config is not None else predecessor["run_mode"],
             "completion_mode": "review",
             "criteria": [c.__dict__ for c in merge_criteria(criteria_template(kind_spec), [])],
-            "predecessor_task_id": spec.predecessor_task_id,
+            "predecessor_task_id": spec.predecessor_task_id if spec.placement == "same_work" else None,
             "revision": 1,
             "target": {},
             "status": "대기",
             "status_reason": "준비 판정 대기",
         }
-        return repo.create_followup_once(conn, spec, row, now)
+        return repo.create_followup_once(
+            conn, spec, row, now, work_item_id=predecessor["work_item_id"], placement=spec.placement,
+        )
 
     def _start_review(
         self, conn: Connection, review_task: Row, fix_execution: Row, start_key: str, report: TickReport
@@ -945,6 +954,7 @@ class Worker:
                 "input_artifact_ids": inputs,
                 "target": target,
                 "kind_spec": spec.model_dump() if spec is not None else None,
+                **repo.execution_branch_fields(conn, task_id),
             })
         except ValidationError as exc:
             log.warning("업무 %s 의 실행 요청을 만들 수 없음: %s", task_id, exc)
@@ -1064,6 +1074,7 @@ class Worker:
                     "input_artifact_ids": [bundle_id],
                     "target": json.loads(task["target_json"]),
                     "kind_spec": spec.model_dump(),
+                    **repo.execution_branch_fields(conn, task_id),
                 })
             except ValidationError as exc:
                 log.warning("후속 업무 %s 의 실행 요청을 만들 수 없음: %s", task_id, exc)
@@ -1096,12 +1107,16 @@ class Worker:
             if task is None or task["finished_at"] is not None:
                 continue
             if execution["status"] == "failed" and execution["process_stopped"]:
-                # 프로세스 종료를 확인한 실패 — 마감(실패)하고 잠금을 푼다. 재실행은 새 업무·명시적 재시도만
+                # 프로세스 종료를 확인한 실패 — 마감(실패)하고 잠금을 푼다. 같은 트랜잭션에서 사람에게 다시 맡기기·닫기를
+                # 묻는다(ADR-0020 결정 5 — 자동 재시도 없음). 알림은 `task_failed` 한 번 — 요청 알림은 따로 보내지 않는다
                 reason = f"{execution['failed_code']} · {execution['failed_message']}"
-                repo.finish_task(
-                    conn, task_id=task["task_id"], execution_id=execution["execution_id"], status="실패",
-                    reason=reason, now=self._clock(),
+                message = (execution["failed_message"] or "").splitlines()[0] if execution["failed_message"] else ""
+                _, fresh = repo.finish_failed_stage(
+                    conn, task_id=task["task_id"], execution_id=execution["execution_id"], reason=reason,
+                    question=f"실행 실패 — {execution['failed_code']}: {message}",
+                    cause_key=f"{STAGE_FAILED}:{execution['execution_id']}", now=self._clock(),
                 )
+                report.human_requests += int(fresh)
                 self._notify(conn, "task_failed", task["task_id"], f"task_failed:{execution['execution_id']}",
                              detail=reason)
                 report.failures_reflected += 1
@@ -1112,6 +1127,13 @@ class Worker:
             )
             if self._write_status(conn, task, "확인 필요", reason):
                 report.failures_reflected += 1
+
+    # --- 업무 상태 (ADR-0020) ---------------------------------------------------------------
+
+    def _refresh_work_statuses(self, conn: Connection, report: TickReport) -> None:
+        """끝나지 않은 업무의 상태를 다시 계산한다. 단계 상태를 쓰는 repo 함수가 같은 트랜잭션에서 이미 계산하므로
+        여기서 바뀌는 것은 단계 쓰기를 거치지 않은 변화(수집이 막 만든 업무 등)뿐이다."""
+        report.work_statuses_changed += repo.refresh_open_work_statuses(conn, now=self._clock())
 
     # --- 10. callback 전달 ---------------------------------------------------------------
 
@@ -1166,12 +1188,15 @@ class Worker:
                 self._pull_request_failed(conn, row, "github_not_connected", "이 저장소의 GitHub 자격 없음", now, report)
                 continue
             issue = repo.get_source_issue_by_task(conn, row["session_id"], task_id)
-            title = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"]).title
+            work_key = ExecutionRequest.model_validate_json(
+                repo.get_execution(conn, row["fix_execution_id"])["request_json"]
+            ).work_key
+            title = pull_request.pr_title(work_key, GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"]).title)
             _, summary = _result_envelope(conn, self._store, repo.get_execution(conn, row["review_execution_id"]))
             public_url = self._settings.public_url
             body = pull_request.pr_body(
                 issue_number=row["issue_number"], task_id=task_id, review_summary=summary or "",
-                task_url=f"{public_url}/tasks/{task_id}" if public_url else None,
+                task_url=f"{public_url}/tasks/{task_id}" if public_url else None, work_key=work_key,
             )
             name = row["repository_full_name"]
             try:
@@ -1214,7 +1239,7 @@ class Worker:
         task_id = row["task_id"]
         repo.record_pull_request(conn, task_id, state="failed", now=now, error=error)
         report.human_requests += int(self._request_human(
-            conn, task_id, pull_request.PR_REQUEST_CODE, pull_request.failed_question(task_id, cause),
+            conn, task_id, pull_request.PR_REQUEST_CODE, pull_request.failed_question(row["head_branch"], cause),
             pull_request.pr_request_cause_key(row["review_execution_id"]), now,
         ))
         report.prs_failed += 1

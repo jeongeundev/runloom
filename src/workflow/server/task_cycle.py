@@ -58,17 +58,16 @@ def request_text(conn: Connection, task: Row) -> str:
 
 
 def origin_source(conn: Connection, task: Row) -> tuple[Row | None, GitHubSourceConfig | None]:
-    """Task 또는 그 선행을 따라 올라가 처음 만나는 원본 이슈 매핑과 소스 설정. 없으면 (None, None)."""
-    seen: set[str] = set()
-    current: Row | None = task
-    while current is not None and current["task_id"] not in seen:
-        seen.add(current["task_id"])
-        issue = repo.get_source_issue_by_task(conn, current["session_id"], current["task_id"])
-        if issue is not None:
-            return issue, repo.get_github_source(conn, current["session_id"], issue["source_id"])
-        predecessor = current["predecessor_task_id"]
-        current = repo.get_task(conn, predecessor) if predecessor else None
-    return None, None
+    """Task 가 속한 업무의 원본 칸으로 찾은 원본 이슈 매핑과 소스 설정(ADR-0020 — 선행 사슬을 거슬러 오르지 않는다).
+    GitHub 원본이 아니면 (None, None). 새 업무로 이어진 후속(원본 이슈 칸 없음)은 (None, 설정)."""
+    work = repo.work_item_of_task(conn, task["task_id"])
+    if work is None or work["source_type"] != "github" or work["source_id"] is None:
+        return None, None
+    issue = (
+        repo.get_source_issue(conn, task["session_id"], work["source_id"], int(work["source_item_id"]))
+        if work["source_item_id"] is not None else None
+    )
+    return issue, repo.get_github_source(conn, task["session_id"], work["source_id"])
 
 
 def max_rework_rounds(conn: Connection, task: Row) -> int:

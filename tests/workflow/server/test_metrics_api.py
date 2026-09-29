@@ -106,12 +106,12 @@ def operator(app, conn, store) -> tuple[TestClient, str]:
     """운영자 세션: Task 2개(각 실행 1개 — 성공(비용 0.5·토큰 모름)·실패(사용량 모름)), 설정 변경 1번 사이에 둠."""
     client = TestClient(app)
     session_id = login(client)
-    repo.insert_task(conn, _task("task-1", session_id), "2026-09-20T00:00:00Z")
+    repo.insert_work_item_task(conn, _task("task-1", session_id), "2026-09-20T00:00:00Z")
     seed_execution(conn, "exec-1", "task-1")
     _advance(conn, store, session_id, "exec-1", ok=True, started="2026-09-20T00:10:00Z", finished="2026-09-20T00:20:00Z",
              usage={"cost_usd": 0.5, "input_tokens": 100})
     repo.save_github_source(conn, session_id, _source(), OPENED_BEFORE)  # config_revision 1 → 2
-    repo.insert_task(conn, _task("task-2", session_id), "2026-09-25T00:00:00Z")
+    repo.insert_work_item_task(conn, _task("task-2", session_id), "2026-09-25T00:00:00Z")
     repo.create_execution(conn, execution_id="exec-2", task_id="task-2", attempt_no=2, start_key="rework:1",
                           agent_id="agent-codex-mac", kind="bug_fix",
                           request=ExecutionRequest.model_validate(request_body("exec-2", "task-2")), assigned_connector_id=None,
@@ -159,7 +159,7 @@ def test_other_operator_session_sees_only_its_own_data(operator, conn, store, fa
     other, other_source = "sess-other", "ghs-0000beef"
     repo.create_session(conn, other, "2026-09-20T00:00:00Z")
     repo.mark_operator(conn, other)
-    repo.insert_task(conn, _task("task-other", other), "2026-09-21T00:00:00Z")
+    repo.insert_work_item_task(conn, _task("task-other", other), "2026-09-21T00:00:00Z")
     seed_execution(conn, "exec-other", "task-other")
     _advance(conn, store, other, "exec-other", ok=True, started="2026-09-21T00:10:00Z",
              finished="2026-09-21T00:20:00Z", usage={"cost_usd": 9.0, "input_tokens": 900})

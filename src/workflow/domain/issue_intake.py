@@ -2,6 +2,7 @@
 
 DB·HTTP 를 보지 않는다. 수집(`server/github_sync`)이 스냅샷과 설정을 넘기고 저장은 repo 가 한다.
 
+- 종류·우선순위는 워크스페이스 매핑 표(`field_mappings`)가 라벨로 정한다(ADR-0020). 종류 이름으로 분기하지 않는다.
 - 새 이슈의 자동 접수 범위: 설정 저장소의 open Issue 중 `label_filter` 라벨을 모두 가지고(대소문자 무시)
   `created_at >= start_at` 인 것. `selected_issue_numbers` 로 고른 이슈는 명시적 선택이라 라벨·시작 시각·닫힘과
   무관하게 받는다(닫혀 있으면 준비 판정이 `source_closed` 로 막는다). Pull request 와 다른 저장소는 어떤 경우에도 받지 않는다.
@@ -17,12 +18,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Literal
 
-from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
-from workflow.contracts.v1 import BUILTIN_KINDS
-from workflow.domain.completion import criteria_template, merge_criteria
+from collections.abc import Sequence
 
-# GitHub 이슈가 되는 업무 종류(ADR-0014 결정 3). 후속·재작업은 규칙 표가 정한다.
-ISSUE_KIND = next(spec for spec in BUILTIN_KINDS if spec.kind == "bug_fix")
+from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
+from workflow.contracts.v1 import KindSpec
+from workflow.domain.completion import criteria_template, merge_criteria
+from workflow.domain.field_mapping import MappingRow, map_value
 
 SkipReason = Literal["other_repository", "pull_request", "closed", "not_selected", "label_mismatch", "before_start"]
 
@@ -73,22 +74,33 @@ def task_input(snapshot: GitHubIssueSnapshot) -> tuple[str, str]:
     return snapshot.title, snapshot.body.strip()
 
 
+def issue_kind(rows: Sequence[MappingRow], snapshot: GitHubIssueSnapshot) -> str | None:
+    """이슈 라벨로 매핑 표(`github · kind`)를 읽은 종류(ADR-0020). None 이면 그 이슈를 가져오지 않는다 — 기본 종류는
+    매핑 행(`*`)으로만 둔다."""
+    return map_value(rows, "github", "kind", snapshot.labels)
+
+
+def issue_priority(rows: Sequence[MappingRow], snapshot: GitHubIssueSnapshot) -> str:
+    return map_value(rows, "github", "priority", snapshot.labels) or "normal"
+
+
 def snapshot_to_task_spec(
-    config: GitHubSourceConfig, snapshot: GitHubIssueSnapshot, *, session_id: str, task_id: str
+    config: GitHubSourceConfig, snapshot: GitHubIssueSnapshot, *, kind: KindSpec, session_id: str, task_id: str
 ) -> dict:
-    """`repo.insert_task` 와 같은 dict. 실행 방식은 이 시점 설정의 `run_mode`, 완료는 사람 검토."""
+    """`repo.insert_task` 와 같은 dict. 종류는 매핑 결과(`issue_kind`)의 등록 봉투, 실행 방식은 이 시점 설정의
+    `run_mode`, 완료는 사람 검토."""
     title, request = task_input(snapshot)
-    criteria = merge_criteria(criteria_template(ISSUE_KIND), [])
+    criteria = merge_criteria(criteria_template(kind), [])
     return {
         "task_id": task_id,
         "session_id": session_id,
         "title": title,
         "request": request,
-        "kind": ISSUE_KIND.kind,
+        "kind": kind.kind,
         "required_capability": {
-            "code": ISSUE_KIND.capability_code,
+            "code": kind.capability_code,
             # 로컬 저장소를 자동 매칭하는 소스는 GitHub 저장소 이름을 둔다 — 준비 판정이 매칭 값으로 바꿔 본다(github_match)
-            "scope": {ISSUE_KIND.scope_key: config.workflow_repository_id or config.repository_full_name},
+            "scope": {kind.scope_key: config.workflow_repository_id or config.repository_full_name},
         },
         "selection_mode": "auto",
         "chosen_agent_id": None,

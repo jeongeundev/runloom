@@ -186,11 +186,11 @@ def seed_user_flow(conn, client, clock, *, rule=REVIEW_RULE, r_run_mode="auto", 
         repo.mark_chain_started(conn, chain["chain_id"], now)  # 입구 API 는 접수 즉시 첫 업무를 시작한다
     link_t = {"chain_id": chain["chain_id"], "source_ref": KEY_T} if chain else None
     link_r = {"chain_id": chain["chain_id"], "source_ref": KEY_R} if chain else None
-    repo.insert_task(conn, _user_task(
+    repo.insert_work_item_task(conn, _user_task(
         TASK_T, TRIAGE_KIND, CAP_T, LOCAL_REGISTRATION, title="보고서 변환 실패 분류",
         status=("실행 요청됨", "접수 대기"), link=link_t,
     ), now)
-    repo.insert_task(conn, _user_task(
+    repo.insert_work_item_task(conn, _user_task(
         TASK_R, REVIEW_KIND, CAP_R, LOCAL_REVIEW, title="분류 결과 검토", predecessor=TASK_T,
         run_mode=r_run_mode, link=link_r,
     ), now)
@@ -345,6 +345,9 @@ def test_triage_result_is_judged_and_spawns_review_in_the_same_tick(flow, worker
     assert r["predecessor_execution_id"] == EXEC_T
     assert r["start_key"] == f"auto:{TASK_R}:r1"
     assert _status(conn, TASK_R) == ("실행 요청됨", "접수 대기")
+    # 후속 실행을 만든 뒤 R 의 업무 상태를 다시 계산해 기록했다(ADR-0020)
+    work = repo.work_item_of_task(conn, TASK_R)
+    assert (work["status"], work["status_reason"]) == ("에이전트 작업 중", "검토 실행 중")
 
     # 사용자 정의 종류의 요청: kind_spec 은 등록부 값, target 은 LocalTarget 하나 (CONTRACT 11.5)
     request = ExecutionRequest.model_validate_json(r["request_json"])
@@ -1032,11 +1035,12 @@ def test_public_url_fills_chain_and_task_urls(conn, client, clock, make_worker, 
 def test_callback_stage_runs_after_successor_scan_and_failure_reflection():
     """(b) 의 근거 — 후속 스캔·실패 반영 뒤다. 순서가 바뀌면 T 판정 → R 착수 사이에 보낼 수 있다.
     그 뒤는 외부 반영(초안 PR — phase 12, GitHub 원본 이슈 댓글 — step 12, 알림 웹훅 — phase 12 step 7)뿐이다.
-    알림은 맨 뒤 — 같은 tick 에 쌓인 사람 요청·PR 열림·실패를 바로 보낸다."""
+    알림은 외부 반영의 맨 뒤 — 같은 tick 에 쌓인 사람 요청·PR 열림·실패를 바로 보낸다. 업무 상태 재계산(ADR-0020)은
+    tick 끝 — 단계 쓰기를 거치지 않은 업무까지 계산값을 갖게 한다."""
     calls = re.findall(r"self\.(_\w+)\(conn, report\)", inspect.getsource(Worker.tick))
-    assert calls[-6:] == [
+    assert calls[-7:] == [
         "_spawn_successors", "_reflect_failures", "_deliver_callbacks", "_deliver_pull_requests", "_deliver_github",
-        "_deliver_notifications",
+        "_deliver_notifications", "_refresh_work_statuses",
     ]
 
 

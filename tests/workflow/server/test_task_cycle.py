@@ -33,8 +33,11 @@ from workflow.contracts.v1 import (
     ExecutionRequest,
     HandoffBundle,
 )
+from workflow.contracts.v1 import BUILTIN_KINDS
 from workflow.domain.issue_intake import snapshot_to_task_spec
+from workflow.domain.kinds import get_kind
 from workflow.domain.metrics import compute_metrics
+from workflow.domain.work_status import work_status
 from workflow.server import human_api, task_cycle
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace
 from workflow.server.worker import Worker
@@ -42,6 +45,7 @@ from workflow.server.worker import Worker
 from .conftest import event, exchange
 from .test_github_sync import config, issue
 
+BUG_FIX = get_kind(BUILTIN_KINDS, "bug_fix")
 SESSION = SELFHOST_SESSION_ID  # 로그인한 클라이언트와 같은 고정 워크스페이스
 SOURCE = "ghs-1a2b3c4d"
 NOW = "2026-10-06T12:00:00Z"
@@ -134,13 +138,13 @@ def cycle(conn, client) -> dict:
 def import_issue(conn, number: int, **overrides) -> str:
     snapshot = issue(number, **overrides)
     source = repo.get_github_source(conn, SESSION, SOURCE)
-    spec = snapshot_to_task_spec(source, snapshot, session_id=SESSION, task_id=f"task-gh-{number}")
+    spec = snapshot_to_task_spec(source, snapshot, kind=BUG_FIX, session_id=SESSION, task_id=f"task-gh-{number}")
     return repo.upsert_source_issue(conn, SESSION, SOURCE, snapshot, task=spec, now=NOW).task_id
 
 
 def direct_shop_task(conn) -> str:
     """웹 직접 등록과 같은 모양의 bug_fix Task — 원본 이슈 없음, Agent 직접 선택."""
-    repo.insert_task(conn, {
+    repo.insert_work_item_task(conn, {
         "task_id": "task-direct-shop", "session_id": SESSION, "title": "주문 합계 반올림 오류",
         "request": "합계가 1원 틀립니다. 재현 테스트 후 수정하세요.", "kind": "bug_fix",
         "required_capability": {"code": "code.fix", "scope": {"repository_id": "shop"}},
@@ -590,7 +594,7 @@ def test_verified_fix_creates_exactly_one_review_task_and_starts_it(cycle, conn,
 
 def test_verified_fix_links_an_existing_review_task_instead_of_creating_one(cycle, conn, store, worker):
     fix_task = import_issue(conn, 1)
-    repo.insert_task(conn, {
+    repo.insert_work_item_task(conn, {
         "task_id": "task-review-c", "session_id": SESSION, "title": "쿠폰 수정 검토", "request": "결제 경로 위주로 봐 주세요.",
         "kind": "code_review", "required_capability": {"code": "code.review", "scope": {"repository_id": "billing"}},
         "selection_mode": "manual", "chosen_agent_id": REVIEW, "run_mode": "auto", "completion_mode": "review",
@@ -684,6 +688,36 @@ def test_rework_keeps_the_reviewed_result_commit_after_a_newer_head_report(cycle
 
     _, rework = executions(conn, fix_task)
     assert request_of(rework).target.base_commit == C1
+
+
+def work_key(conn, task_id: str) -> str:
+    return f"RUN-{repo.work_item_of_task(conn, task_id)['key_number']}"
+
+
+def test_fix_review_and_rework_requests_carry_the_work_key(cycle, conn, store, worker):
+    """phase 14 step 7 — 첫 요청에 업무 키·순번 1, 검토 단계도 같은 키, 재작업은 첫 요청의 두 칸 그대로(같은 브랜치)."""
+    fix_task, fix_exec, review_task, review_exec = _to_first_review(conn, store, worker)
+    key = work_key(conn, fix_task)
+    assert (request_of(repo.get_execution(conn, fix_exec)).work_key,
+            request_of(repo.get_execution(conn, fix_exec)).branch_seq) == (key, 1)
+    review = request_of(repo.get_execution(conn, review_exec))
+    assert (review.work_key, review.branch_seq) == (key, 1)
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+    worker.tick()
+    _, rework = executions(conn, fix_task)
+    assert (request_of(rework).work_key, request_of(rework).branch_seq) == (key, 1)
+
+
+def test_fix_task_started_before_v10_keeps_the_old_branch(cycle, conn, store, worker):
+    """첫 요청에 칸이 없던 Task(v10 이전에 시작)는 재작업도 칸 없이 — 브랜치는 끝까지 `task/<id>`."""
+    fix_task, fix_exec, _, review_exec = _to_first_review(conn, store, worker)
+    old = request_of(repo.get_execution(conn, fix_exec)).model_dump(mode="json")
+    old.pop("work_key"), old.pop("branch_seq")
+    conn.execute("UPDATE executions SET request_json = ? WHERE execution_id = ?", (json.dumps(old), fix_exec))
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+    worker.tick()
+    _, rework = executions(conn, fix_task)
+    assert (request_of(rework).work_key, request_of(rework).branch_seq) == (None, 1)
 
 
 def test_approved_review_completes_review_and_leaves_merge_to_a_human(cycle, conn, store, worker):
@@ -797,8 +831,125 @@ def test_review_of_an_older_fix_result_is_not_applied(cycle, conn, store, worker
 def _reopen(conn, number: int, state: str, updated_at: str) -> None:
     snapshot = issue(number, state=state, updated_at=updated_at)
     source = repo.get_github_source(conn, SESSION, SOURCE)
-    spec = snapshot_to_task_spec(source, snapshot, session_id=SESSION, task_id="unused")
+    spec = snapshot_to_task_spec(source, snapshot, kind=BUG_FIX, session_id=SESSION, task_id="unused")
     repo.upsert_source_issue(conn, SESSION, SOURCE, snapshot, task=spec, now=NOW)
+
+
+# --- 후속 배치(placement) — 같은 업무의 다음 단계 / 새 업무 (phase 14 step 4) ---------------------
+
+
+def _use_placement(conn, placement: str) -> None:
+    """내장 bug_fix → code_review 규칙을 같은 칸에 `placement` 만 바꾼 사용자 규칙으로 갈아 끼운다."""
+    ((rule_id, rule),) = repo.list_rules(conn, SESSION)
+    repo.delete_rule(conn, SESSION, rule_id)
+    repo.insert_rule(conn, SESSION, rule.model_copy(update={"placement": placement}), NOW)
+
+
+def _stored_equals_computed(conn, work_item_id: str) -> bool:
+    row = conn.execute("SELECT status, status_reason FROM work_items WHERE work_item_id = ?",
+                       (work_item_id,)).fetchone()
+    computed = work_status(repo.work_item_facts(conn, work_item_id))
+    return (row["status"], row["status_reason"]) == (computed.status, computed.reason)
+
+
+def _origin_key(conn, task_id: str) -> tuple:
+    issue_row, source = task_cycle.origin_source(conn, repo.get_task(conn, task_id))
+    return (
+        (issue_row["source_id"], issue_row["github_issue_id"]) if issue_row is not None else None,
+        source.source_id if source is not None else None,
+    )
+
+
+def test_builtin_rule_puts_the_review_in_the_same_work_item(cycle, conn, store, worker):
+    fix_task, fix_exec, review_task, _ = _to_first_review(conn, store, worker)
+
+    work = repo.work_item_of_task(conn, fix_task)
+    assert repo.work_item_of_task(conn, review_task)["work_item_id"] == work["work_item_id"]
+    assert {t["task_id"] for t in repo.list_work_item_tasks(conn, work["work_item_id"])} == {fix_task, review_task}
+    assert repo.get_task(conn, review_task)["predecessor_task_id"] == fix_task
+    assert conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 1
+    assert repo.list_work_item_links(conn, work["work_item_id"]) == []
+    # 후속을 만든 뒤 업무 상태를 다시 계산해 기록했다
+    assert [e["type"] for e in repo.list_work_item_events(conn, work["work_item_id"])].count("status_changed") >= 1
+    assert _stored_equals_computed(conn, work["work_item_id"])
+
+
+def test_origin_source_comes_from_the_work_item_for_review_and_rework(cycle, conn, store, worker):
+    fix_task, _, review_task, review_exec = _to_first_review(conn, store, worker)
+    expected = ((SOURCE, 1001), SOURCE)
+    assert _origin_key(conn, fix_task) == expected
+    assert _origin_key(conn, review_task) == expected  # 검토 Task 도 수정의 원본 이슈
+
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+    worker.tick()  # 재작업 — 같은 수정 Task 의 새 실행
+    assert len(executions(conn, fix_task)) == 2
+    assert _origin_key(conn, fix_task) == expected
+    assert _origin_key(conn, review_task) == expected
+    assert _origin_key(conn, direct_shop_task(conn)) == (None, None)  # 직접 등록은 원본 없음
+
+
+def test_origin_source_does_not_climb_the_predecessor_chain(cycle, conn, store, worker):
+    """원본은 업무 칸에서 찾는다 — 다른 업무의 Task 를 선행으로 가진 Task 는 그 이슈를 원본으로 삼지 않는다."""
+    fix_task = import_issue(conn, 1)
+    repo.insert_work_item_task(conn, {
+        "task_id": "task-other-work", "session_id": SESSION, "title": "별도 업무", "request": "r",
+        "kind": "code_review", "required_capability": {"code": "code.review", "scope": {"repository_id": "billing"}},
+        "selection_mode": "manual", "chosen_agent_id": REVIEW, "run_mode": "auto", "completion_mode": "review",
+        "criteria": [], "predecessor_task_id": fix_task, "revision": 1, "target": {},
+        "status": "대기", "status_reason": "선행 대기",
+    }, NOW)
+    assert _origin_key(conn, "task-other-work") == (None, None)
+
+
+def test_new_work_rule_spawns_a_linked_work_item_once(cycle, conn, store, worker, make_worker):
+    _use_placement(conn, "new_work")
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    fix_exec = executions(conn, fix_task)[0]["execution_id"]
+    finish_fix(conn, store, fix_exec)
+
+    report = worker.tick()
+
+    assert report.followup_tasks_created == 1
+    (link,) = conn.execute("SELECT * FROM followup_links").fetchall()
+    review = repo.get_task(conn, link["task_id"])
+    cause, spawned = repo.work_item_of_task(conn, fix_task), repo.work_item_of_task(conn, review["task_id"])
+    assert spawned["work_item_id"] != cause["work_item_id"]
+    assert review["predecessor_task_id"] is None  # 업무 사이는 링크로
+    assert [t["task_id"] for t in repo.list_work_item_tasks(conn, spawned["work_item_id"])] == [review["task_id"]]
+    assert (spawned["title"], spawned["request"], spawned["kind"]) == (review["title"], review["request"], "code_review")
+    assert (spawned["assignee_type"], spawned["assignee_id"]) == ("agent", REVIEW)
+    assert spawned["key_number"] == cause["key_number"] + 1
+    assert (spawned["source_type"], spawned["source_id"], spawned["source_key"], spawned["source_url"]) == (
+        cause["source_type"], cause["source_id"], cause["source_key"], cause["source_url"],
+    )
+    assert spawned["source_item_id"] is None  # 원본 이슈의 댓글·PR 은 원인 업무만
+    (work_link,) = repo.list_work_item_links(conn, spawned["work_item_id"])
+    assert (work_link["from_work_item_id"], work_link["to_work_item_id"], work_link["type"],
+            work_link["cause_execution_id"]) == (cause["work_item_id"], spawned["work_item_id"], "spawned_from", fix_exec)
+    (review_exec,) = executions(conn, review["task_id"])
+    assert review_exec["start_key"] == f"review:{fix_exec}"
+    assert _stored_equals_computed(conn, cause["work_item_id"])
+    assert _stored_equals_computed(conn, spawned["work_item_id"])
+    assert _origin_key(conn, review["task_id"]) == (None, SOURCE)  # 소스 설정은 따라가고 이슈는 원인 업무만
+
+    # 같은 원인 재평가(재전송·tick 반복·워커 재시작)에도 업무·링크·후속은 하나
+    _append(conn, fix_exec, 3, "result_ready", {"result_artifact_id": repo.get_execution(conn, fix_exec)["result_artifact_id"]})
+    worker.tick()
+    make_worker().tick()
+    assert conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM work_item_links").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM followup_links").fetchone()[0] == 1
+
+    # 재작업 결과는 새 업무를 또 만들지 않고 같은 검토 Task 에 잇는다
+    finish_review(conn, store, review_exec["execution_id"], outcome="changes_requested")
+    worker.tick()
+    rework = executions(conn, fix_task)[1]["execution_id"]
+    finish_fix(conn, store, rework, result_commit=C2)
+    worker.tick()
+    assert [e["start_key"] for e in executions(conn, review["task_id"])] == [f"review:{fix_exec}", f"review:{rework}"]
+    assert conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM followup_links").fetchone()[0] == 1
 
 
 def test_closed_source_holds_followup_until_reopened(cycle, conn, store, worker):
@@ -858,7 +1009,7 @@ def test_issue_text_and_later_github_changes_do_not_widen_the_fixed_request(cycl
     snapshot = issue(1, body=body, title="제목 변경", assignee_ids=[999], assignee_logins=["someone"],
                      updated_at="2026-10-06T07:00:00Z")
     source = repo.get_github_source(conn, SESSION, SOURCE)
-    spec = snapshot_to_task_spec(source, snapshot, session_id=SESSION, task_id="unused")
+    spec = snapshot_to_task_spec(source, snapshot, kind=BUG_FIX, session_id=SESSION, task_id="unused")
     assert repo.upsert_source_issue(conn, SESSION, SOURCE, snapshot, task=spec, now=NOW).input_changed
     worker.tick()
     assert [e["execution_id"] for e in executions(conn, task_id)] == [execution["execution_id"]]
@@ -1142,7 +1293,8 @@ def test_comment_says_where_the_pushed_result_branch_is(cycle, conn, store, gith
     github_worker.tick()
     (after_fix,) = github.bodies(1)
     assert C1 in after_fix
-    assert f"`task/{fix_task}`" in after_fix and "푸시하지 않" not in after_fix
+    assert f"`runloom/{work_key(conn, fix_task)}`" in after_fix and "푸시하지 않" not in after_fix
+    assert f"### Runloom 작업 현황 — {work_key(conn, fix_task)} 버그 1" in after_fix.splitlines()  # 업무 키 표시
 
 
 def test_human_request_is_shown_with_where_to_answer(cycle, conn, store, github_worker, github):
@@ -1270,9 +1422,12 @@ def test_approved_pushed_fix_opens_one_draft_pr(cycle, conn, store, pr_worker, p
     fix_task, _ = _approved(conn, store, pr_worker)
 
     (created,) = pr_github.created
-    assert created["head"] == "task/task-gh-1" and created["base"] == "main" and created["draft"] is True
-    assert created["title"] == "버그 1"
+    key = work_key(conn, fix_task)
+    assert created["head"] == f"runloom/{key}" and created["base"] == "main" and created["draft"] is True
+    assert created["title"] == f"{key} 버그 1"
     assert created["body"].splitlines()[0] == "Fixes #1"
+    assert f"업무 키: {key}" in created["body"].splitlines()
+    assert repo.get_pull_request_row(conn, fix_task)["head_branch"] == f"runloom/{key}"
     assert "검토 의견" in created["body"]
     assert "https://runloom.example/tasks/task-gh-1" in created["body"]
     assert status(conn, fix_task) == ("확인 필요", "사람 차례 · PR 확인 — #31")
@@ -1293,7 +1448,7 @@ def test_approved_without_pushed_branch_asks_a_human_to_push(cycle, conn, store,
     assert pr_github.created == [] and repo.get_pull_request_row(conn, fix_task) is None
     (request,) = repo.list_human_requests(conn, fix_task)
     assert request["code"] == "pr_unavailable"
-    assert "git push origin task/task-gh-1" in request["question"]
+    assert f"git push origin runloom/{work_key(conn, fix_task)}" in request["question"]
     assert status(conn, fix_task)[0] == "확인 필요"
 
 
@@ -1366,7 +1521,7 @@ def test_unavailable_github_gives_up_after_the_limit(cycle, conn, store, pr_work
             pr_worker.tick()
     assert repo.get_pull_request_row(conn, fix_task)["state"] == "failed"
     (request,) = repo.list_human_requests(conn, fix_task)
-    assert "task/task-gh-1" in request["question"]
+    assert f"runloom/{work_key(conn, fix_task)}" in request["question"]
 
 
 def test_source_without_credentials_does_not_open_a_pr(cycle, conn, store, settings, clock):
@@ -1511,7 +1666,7 @@ def test_new_human_request_is_notified_once(cycle, conn, store, notify_worker, n
     )
     ((_, body),) = notifier.sent
     assert body["content"].startswith("[Runloom] 사람 차례 — 버그 1: ")
-    assert "git push origin task/task-gh-1" in body["content"]
+    assert f"git push origin runloom/{work_key(conn, fix_task)}" in body["content"]
 
 
 def test_failed_fix_is_notified_once_even_after_restart(cycle, conn, store, notify_worker, notifier, settings,
@@ -1601,3 +1756,157 @@ def test_webhook_url_stays_out_of_the_db_and_logs(cycle, conn, store, notify_wor
     assert not any("tok-secret" in line for line in conn.iterdump())
     assert "tok-secret" not in caplog.text
     assert "discord.com" in caplog.text  # 실패 로그는 호스트만
+
+
+# --- 업무 상태 기록·실패 → 내 차례 · 다시 맡기기/닫기 (phase 14 step 6) ---------------------------
+
+
+def work_of(conn, task_id: str):
+    return repo.work_item_of_task(conn, task_id)
+
+
+def work_state(conn, task_id: str) -> tuple[str, str]:
+    row = work_of(conn, task_id)
+    return row["status"], row["status_reason"]
+
+
+def status_changes(conn, task_id: str) -> list[str]:
+    events = repo.list_work_item_events(conn, work_of(conn, task_id)["work_item_id"])
+    return [json.loads(e["data_json"])["to"] for e in events if e["type"] == "status_changed"]
+
+
+def test_work_status_follows_the_cycle_to_a_merged_pr(cycle, conn, store, pr_worker, pr_github, clock):
+    fix_task = import_issue(conn, 1)
+    pr_worker.tick()
+    assert work_state(conn, fix_task) == ("에이전트 작업 중", "버그 수정 실행 중")
+
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], branch_pushed=True)
+    pr_worker.tick()
+    assert work_state(conn, fix_task) == ("내 차례", "검토 대기")  # 수정 단계가 `확인 필요 · 검토 대기`
+    review_exec = executions(conn, review_tasks(conn, fix_task)[0]["task_id"])[0]["execution_id"]
+    finish_review(conn, store, review_exec, outcome="approved")
+    pr_worker.tick()
+    assert work_state(conn, fix_task) == ("PR · 검토", "PR 확인 — #31")
+
+    pr_github.merge(31)
+    clock.now = "2026-10-06T13:00:00Z"
+    pr_worker.tick()
+    row = work_of(conn, fix_task)
+    assert (row["status"], row["status_reason"], row["closed_at"]) == ("완료", "PR 병합 — #31", clock.now)
+    changes = status_changes(conn, fix_task)
+    assert changes[-1] == "완료" and "PR · 검토" in changes
+    events = [json.loads(e["data_json"]) for e in repo.list_work_item_events(conn, row["work_item_id"])
+              if e["type"] == "status_changed"]
+    pairs = [(e["to"], e["reason"]) for e in events]
+    assert all(a != b for a, b in zip(pairs, pairs[1:]))  # 전환마다 한 행 — 같은 상태·이유 재기록 없음
+    pr_worker.tick()
+    assert status_changes(conn, fix_task) == changes
+
+
+def test_review_approval_without_pr_is_my_turn(cycle, conn, store, worker):
+    fix_task, _ = _approved(conn, store, worker, branch_pushed=None)
+    assert work_state(conn, fix_task) == ("내 차례", status(conn, fix_task)[1])
+
+
+def test_human_request_makes_it_my_turn_and_the_answer_clears_it(cycle, conn, store, worker):
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], outcome="needs_information")
+    worker.tick()
+    assert work_state(conn, fix_task)[0] == "내 차례"
+    assert work_state(conn, fix_task)[1].startswith("사람 요청 — ")
+    (request,) = open_requests(conn, fix_task)
+    answer(conn, request["request_id"], text="10,000원")
+    assert not work_state(conn, fix_task)[1].startswith("사람 요청 — ")  # 응답과 같은 트랜잭션에서 다시 계산
+
+
+def test_tick_end_recomputes_work_status_that_no_stage_write_touched(cycle, conn, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, run_mode="manual"), NOW)
+    fix_task = import_issue(conn, 1)
+    assert work_state(conn, fix_task) == ("새로 들어옴", "")  # 수집은 상태를 계산하지 않는다
+    worker.tick()
+    computed = work_state(conn, fix_task)
+    assert computed[1] != ""
+    # 단계 상태는 그대로인데 저장된 업무 상태만 계산값과 다르다(수집이 막 만든 업무와 같은 경우)
+    conn.execute("UPDATE work_items SET status = '새로 들어옴', status_reason = '' WHERE work_item_id = ?",
+                 (work_of(conn, fix_task)["work_item_id"],))
+    report = worker.tick()
+    assert work_state(conn, fix_task) == computed
+    assert report.work_statuses_changed == 1
+    assert worker.tick().work_statuses_changed == 0
+
+
+def test_auto_matched_agent_becomes_the_work_assignee(auto_source, conn, worker):
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    assert (work_of(conn, task_id)["assignee_type"], work_of(conn, task_id)["assignee_id"]) == (None, None)
+    delegate(conn, task_id)
+    worker.tick()
+    row = work_of(conn, task_id)
+    assert (row["assignee_type"], row["assignee_id"]) == ("agent", FIX)
+    events = [e for e in repo.list_work_item_events(conn, row["work_item_id"]) if e["type"] == "assigned"]
+    assert [json.loads(e["data_json"])["to"] for e in events] == [{"type": "agent", "id": FIX}]
+
+
+def test_existing_work_assignee_is_kept_when_another_agent_runs_a_stage(cycle, conn, store, worker):
+    fix_task, _, review_task, _ = _to_first_review(conn, store, worker)
+    row = work_of(conn, fix_task)
+    assert (row["assignee_type"], row["assignee_id"]) == ("agent", FIX)  # 검토 Agent 로 바꾸지 않는다
+
+
+def test_failed_stage_asks_once_and_is_my_turn(cycle, conn, store, worker):
+    fix_task, execution_id = fail_fix(conn, store, worker)
+
+    assert status(conn, fix_task) == ("실패", "timeout · 20분 초과")
+    (request,) = repo.list_human_requests(conn, fix_task)
+    assert (request["code"], request["cause_key"], request["state"]) == (
+        "stage_failed", f"stage_failed:{execution_id}", "open",
+    )
+    assert request["question"] == "실행 실패 — timeout: 20분 초과"
+    assert work_state(conn, fix_task) == ("내 차례", "실패 — timeout · 20분 초과")
+    worker.tick()
+    worker.tick()
+    assert len(repo.list_human_requests(conn, fix_task)) == 1
+
+
+def test_retry_answer_adds_one_new_stage_in_the_same_work_item(cycle, conn, store, worker):
+    fix_task, _ = fail_fix(conn, store, worker)
+    (request,) = open_requests(conn, fix_task)
+
+    answer(conn, request["request_id"], action="retry", text="시간 제한을 늘려 다시")
+
+    work = work_of(conn, fix_task)
+    stages = {t["task_id"]: t for t in repo.list_work_item_tasks(conn, work["work_item_id"])}
+    first = stages.pop(fix_task)
+    (retried,) = stages.values()
+    for column in ("kind", "title", "required_capability_json", "criteria_json", "target_json", "selection_mode",
+                   "chosen_agent_id", "run_mode", "completion_mode", "predecessor_task_id"):
+        assert retried[column] == first[column], column
+    assert retried["request"] == first["request"] + "\n\n## 사람 응답 (운영자)\n\n시간 제한을 늘려 다시"
+    assert (retried["revision"], retried["finished_at"], retried["status"]) == (1, None, "대기")
+    assert work_state(conn, fix_task)[0] == "대기"
+    assert open_requests(conn, fix_task) == []
+
+    with pytest.raises(human_api.ApiError) as raised:  # 같은 요청에 두 번째 응답 — 새 단계는 하나
+        answer(conn, request["request_id"], "resp-2", action="retry")
+    assert raised.value.status == 409 and raised.value.code == "stale_request"
+    assert len(repo.list_work_item_tasks(conn, work["work_item_id"])) == 2
+
+    worker.tick()
+    (execution,) = executions(conn, retried["task_id"])
+    assert execution["agent_id"] == FIX
+    # 다시 맡긴 단계는 같은 업무의 두 번째 수정 단계 — 기준 커밋에서 새 브랜치 `runloom/<키>-2` (step 7)
+    assert (request_of(execution).work_key, request_of(execution).branch_seq) == (work_key(conn, fix_task), 2)
+    assert work_state(conn, fix_task)[0] == "에이전트 작업 중"
+
+
+def test_close_answer_ends_the_work_item(cycle, conn, store, worker, clock):
+    fix_task, _ = fail_fix(conn, store, worker)
+    (request,) = open_requests(conn, fix_task)
+
+    answer(conn, request["request_id"], action="close")
+    worker.tick()
+
+    row = work_of(conn, fix_task)
+    assert (row["status"], row["status_reason"], row["closed_at"]) == ("종료", "닫음 — 실행 실패", NOW)
+    assert len(repo.list_work_item_tasks(conn, row["work_item_id"])) == 1
+    assert status_changes(conn, fix_task)[-1] == "종료"

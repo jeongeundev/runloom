@@ -435,3 +435,21 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 수정 없음(마이그레이션은 step 3 에서 구현, 새 테스트는 처음부터 통과). 추가: 위 테스트. 문서: [SELFHOST](SELFHOST.md) 업그레이드 절 v9 한 줄, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 phase 표 새 번호, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.
+
+## 2026-09-30 phase 14 업무·단계 (step 10)
+
+목적: [ADR-0020](adr/0020-work-items-and-stages.md)의 업무(`work_items`, 키 `RUN-n`)·단계(Task) 분리가 대역 e2e 한 줄기와 셀프호스트 모양 v9 사본 마이그레이션에서 그대로 도는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 서버, origin 은 임시 bare 저장소다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-30 KST, 이 Mac, 브랜치 `feat-14-task-model` |
+| 명령·결과 | `python3 -m pytest -q` — **2568 passed·33 skipped**. `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **32 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e) |
+| 성공 줄기 | `tests/e2e/test_real_repo.py` — 수집 직후 이슈 2건 = 업무 `RUN-1`·`RUN-2`(`새로 들어옴`, 원본 키 `acme/billing#n`), #1 끝에서 업무 1개·단계 2개(`bug_fix` + 같은 업무 `code_review`), 상태 흐름 `새로 들어옴` → … → `에이전트 작업 중` → … → `PR · 검토` → `완료`(`work_item_events` 순서), 결과 브랜치 `runloom/RUN-1`, PR 제목 `RUN-1 청구서 번호 자릿수`, 홈 목록은 `/work/RUN-1` 한 줄(검토 단계 링크 없음). `tests/e2e/test_github_cycle.py` — 업무 6개(이슈 5 + 웹 등록 검토 C), B 업무 = 단계 B·F, `내 차례`(승인 뒤 병합은 사람), 브랜치 `runloom/RUN-n`, A → C 는 `blocks` 연결 |
+| 실패 줄기 | `test_real_repo.py::test_07_failed_work_is_my_turn_and_retry_adds_a_new_stage_on_a_new_branch` — #2 도구 직접 커밋(`commit_mismatch`) → 업무 `RUN-2` `내 차례`·이유 "실패 — …"·요청 `stage_failed`, `/work/RUN-2` 에 [다시 맡기기]·[닫기] → `retry` 응답 → 같은 업무에 새 `bug_fix` 단계, 실행 요청 `work_key=RUN-2`·`branch_seq=2` → 다시 실패해 다시 `내 차례`, 업무 수 그대로 |
+| v9 → v10 사본 | `tests/workflow/server/test_backup.py::test_selfhost_v9_copy_upgrades_to_v10_work_items_and_backups_round_trip` — 임시 디렉터리에 셀프호스트 모양 v9 DB(운영자 워크스페이스, `all_open` 소스 둘. OpenArchive 류 이슈 20건 — 17건 지시 전, 3건 수정 + 검토 + PR 병합 — 기준선 24행·`baseline_imports`, sandbox 류 1건 병합·이슈 닫힘)를 만들고 `backup create`(schema 9) → `init_schema` → 업무 21개·키 1~21(생성 순)·지시 전 17건 `새로 들어옴`(담당 없음, 단계 1)·병합 4건 `완료`("PR 병합 — #n", 단계 2), 기존 표 행 수·기준선 그대로, 이미 기록된 `head_branch`(`task/…`) 불변, 멤버 1·매핑 1·이벤트 0 → v10 백업을 다른 위치로 복원(행 수·업무·산출물 같음) → v9 백업을 복원해도 v10 으로 올라 같은 업무. 사용자 셀프호스트 볼륨·백업 파일은 읽지 않았다 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — compose 프로젝트(`runloom-e2e-<랜덤>`)·포트(빈 포트)·볼륨은 격리되지만 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 쓴다. `install.sh` 의 `up -d --build` 가 그 태그를 이 브랜치(v10) 코드로 다시 빌드하므로, 사용자가 다음에 `compose up` 하면 백업 없이 DB 가 v10 으로 올라갈 수 있다. 셀프호스트 재설치는 사용자 지시 뒤라 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음(grep + `tests/test_packages.py`) |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 수정 없음 — 추가한 단정·테스트는 처음부터 통과했다(업무 동작은 step 1~9 에서 구현). 추가: 위 e2e 단정·실패 줄기, v9 사본 테스트. 문서: [SELFHOST](SELFHOST.md) 업그레이드 절 v10 한 줄, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 16절 "14 확정" 표시, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.

@@ -7,11 +7,33 @@ from workflow.domain.pull_request import (
     not_pushed_question,
     pr_body,
     pr_request_cause_key,
+    pr_title,
 )
 
 
 def test_head_branch_is_the_runner_task_branch():
     assert head_branch("task-0123456789ab") == "task/task-0123456789ab"
+
+
+def test_head_branch_uses_the_work_key_like_the_runner():
+    """phase 14 step 7 — 러너 `git_ops` 와 같은 `contracts/v1.result_branch`."""
+    assert head_branch("task-1", work_key="RUN-3") == "runloom/RUN-3"
+    assert head_branch("task-1", work_key="RUN-3", branch_seq=1) == "runloom/RUN-3"
+    assert head_branch("task-1", work_key="RUN-3", branch_seq=2) == "runloom/RUN-3-2"
+
+
+def test_pr_title_puts_the_work_key_first():
+    assert pr_title("RUN-23", "할인 쿠폰이 두 번 적용됨") == "RUN-23 할인 쿠폰이 두 번 적용됨"
+    assert pr_title(None, "할인 쿠폰이 두 번 적용됨") == "할인 쿠폰이 두 번 적용됨"
+
+
+def test_body_names_the_work_key_and_keeps_fixes_first():
+    body = pr_body(issue_number=12, task_id="task-1", review_summary="요약", task_url=None, work_key="RUN-3")
+    lines = body.splitlines()
+    assert lines[0] == "Fixes #12"
+    assert "업무 키: RUN-3" in lines
+    assert lines[-1] == "<!-- runloom:task=task-1 -->"
+    assert "업무 키" not in pr_body(issue_number=12, task_id="task-1", review_summary="요약", task_url=None)
 
 
 def test_body_starts_with_fixes_then_summary_link_and_marker():
@@ -42,8 +64,8 @@ def test_empty_summary_leaves_no_summary_section():
 
 
 def test_not_pushed_question_tells_the_push_command():
-    question = not_pushed_question("task-7")
-    assert "git push origin task/task-7" in question
+    question = not_pushed_question("runloom/RUN-7")
+    assert "git push origin runloom/RUN-7" in question
 
 
 def test_pr_request_cause_key_uses_the_prefix():

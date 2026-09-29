@@ -1,4 +1,4 @@
-{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 워크스페이스에 붙은 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록과 다음 행동 버튼.
+{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 워크스페이스에 붙은 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록(한 줄 = 업무, phase 14 step 9)과 다음 행동 버튼.
    지시 전 GitHub 업무는 운영자에게 [에이전트에게 맡기기] (phase 11 step 8). 에이전트가 0개면 러너 연결 안내 (ADR-0018·0019). #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
@@ -39,13 +39,13 @@
 <div class="actions" style="margin-bottom:12px">
   <a class="btn btn-secondary" href="/tasks/new">직접 등록</a>
 </div>
-{% if my_tasks %}
+{% if my_work %}
 <div>
-  {% for t in my_tasks|reverse %}
-  <div class="card">
-    <div class="card-title"><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a></div>
-    <div class="status-line" style="margin:0">{{ st.badge(t.status.label) }}<span class="reason">{{ t.status.reason }}</span><span class="small">{{ t.created_at|ago(now) }}</span></div>
-    {% if is_operator and t.delegatable %}<form method="post" action="/tasks/{{ t.task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
+  {% for w in my_work %}
+  <div class="card" data-work-key="{{ w.work_key }}">
+    <div class="card-title"><a href="/work/{{ w.work_key }}"><span class="mono">{{ w.key }}</span> {{ w.title }}</a></div>
+    <div class="status-line" style="margin:0">{{ st.badge(w.status.label) }}<span class="reason">{{ w.status.reason }}</span><span class="small">{{ w.assignee }} · {{ w.updated_at|ago(now) }}</span></div>
+    {% if is_operator and w.delegate_task_id %}<form method="post" action="/tasks/{{ w.delegate_task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
   </div>
   {% endfor %}
 </div>

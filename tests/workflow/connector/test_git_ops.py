@@ -430,3 +430,56 @@ def test_has_origin(repo, origin_clone):
     _, clone = origin_clone
     assert git_ops.has_origin(clone) is True
     assert git_ops.has_origin(repo) is False
+
+
+# --- 업무 키 브랜치 (phase 14 step 7) ------------------------------------------------------------
+
+
+def test_ensure_worktree_with_work_key_uses_runloom_branch(repo):
+    base = git_ops.head_sha(repo)
+
+    path = git_ops.ensure_worktree(repo, "task-3", base, work_key="RUN-3")
+
+    assert path == git_ops.worktree_path(repo, "task-3")  # 폴더는 여전히 단계(Task)마다
+    assert _git(path, "rev-parse", "--abbrev-ref", "HEAD") == "runloom/RUN-3"
+    assert git_ops.ensure_worktree(repo, "task-3", base, work_key="RUN-3") == path  # 재작업은 같은 브랜치
+
+
+def test_retried_stage_starts_a_numbered_branch_from_the_base_commit(repo):
+    base = git_ops.head_sha(repo)
+    first = git_ops.ensure_worktree(repo, "task-3", base, work_key="RUN-3")
+    (first / "pkg.py").write_text("X = 2\n")
+    old = git_ops.commit_all(first, "fix: 1차")
+
+    second = git_ops.ensure_worktree(repo, "task-3-retry", base, work_key="RUN-3", branch_seq=2)
+
+    assert _git(second, "rev-parse", "--abbrev-ref", "HEAD") == "runloom/RUN-3-2"
+    assert _git(second, "rev-parse", "HEAD") == base
+    assert _git(repo, "rev-parse", "runloom/RUN-3") == old  # 옛 브랜치는 그대로
+
+
+@pytest.mark.parametrize("key,seq", [("run/../x", 1), ("RUN-3 ; rm", 1), ("RUN-3", 0), (None, 2)])
+def test_ensure_worktree_refuses_bad_work_key_before_touching_git(repo, key, seq):
+    base = git_ops.head_sha(repo)
+    with pytest.raises(ValueError):
+        git_ops.ensure_worktree(repo, "task-bad", base, work_key=key, branch_seq=seq)
+    assert not git_ops.worktree_path(repo, "task-bad").exists()
+    assert _git(repo, "branch", "--list") == "* main"
+
+
+def test_push_task_branch_with_work_key_pushes_runloom_branch(origin_clone):
+    bare, clone = origin_clone
+    worktree = git_ops.ensure_worktree(clone, "task-3", git_ops.head_sha(clone), work_key="RUN-3")
+    (worktree / "pkg.py").write_text("X = 2\n")
+    commit = git_ops.commit_all(worktree, "fix(task-3)")
+
+    assert git_ops.push_task_branch(clone, "task-3", work_key="RUN-3") is True
+    assert _git(bare, "rev-parse", "refs/heads/runloom/RUN-3") == commit
+    assert subprocess.run(["git", "show-ref", "--verify", "--quiet", "refs/heads/task/task-3"],
+                          cwd=bare).returncode != 0
+
+
+def test_push_task_branch_refuses_bad_work_key(origin_clone):
+    _, clone = origin_clone
+    with pytest.raises(ValueError):
+        git_ops.push_task_branch(clone, "task-3", work_key="main")

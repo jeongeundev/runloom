@@ -2,7 +2,9 @@
 
 갱신일: 2026-09-29. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 13 완료 → service 병합 → 14-task-model(phases/14-task-model) (새 세션은 여기서 시작)
+## 다음 작업: 14 완료 → service 병합 → 셀프호스트 재설치(사용자 지시) → 15-team 설계 (새 세션은 여기서 시작)
+
+**14-task-model 완료**(2026-09-30, `feat-14-task-model`, [ADR-0020](adr/0020-work-items-and-stages.md), 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 14 업무·단계"): 업무 `work_items`(키 `RUN-n`)·단계 Task 분리, 업무 상태 8개, 실패 → 내 차례·[다시 맡기기]·[닫기], `placement`, 매핑 표·양식 칸, 브랜치 `runloom/<키>`, 지표 묶음 = 업무, 홈 목록 = 업무 한 줄, 스키마 v10. 다음: `feat-14-task-model` 을 `service` 에 `--no-ff` 병합 → 셀프호스트 재설치(백업 먼저, 진행 중 실행이 끝난 뒤, 러너도 함께 — [SELFHOST](SELFHOST.md) 업그레이드 v10, 사용자 지시 뒤) → 15-team 설계(초대·로그인·역할). 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 공유 때문에 미실행 — 재설치 때 함께 확인한다.
 
 **13-selfhost-only 완료**(2026-09-29, `feat-13-selfhost-only`, [ADR-0019](adr/0019-service-selfhost-only.md), 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "2026-09-29 phase 13 셀프호스트 전용"). 다음: `feat-13-selfhost-only` 를 `service` 에 `--no-ff` 병합 → `python3 scripts/execute.py 14-task-model --engine claude`(`phases/14-task-model`). 셀프호스트는 아직 스키마 8 — 재설치(v9 로 올림)는 백업 뒤 사용자 지시로.
 

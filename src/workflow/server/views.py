@@ -19,9 +19,10 @@ from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
-from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule
+from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule, format_work_key
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.execution_policy import policy_for
+from workflow.domain.form_sections import FORM_HEADINGS
 from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.metrics import (
     ACTORS,
@@ -36,6 +37,7 @@ from workflow.domain.metrics import (
 from workflow.domain.notification import webhook_host
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
+from workflow.domain.work_status import STAGE_FAILED
 from workflow.server import github_clients, human_api, task_cycle
 from workflow.server.filters import KIND_LABELS, duration, kind_label, kst
 from workflow.server.settings import Settings
@@ -136,6 +138,9 @@ def kind_public(spec: KindSpec) -> dict[str, Any]:
     }
 
 
+PLACEMENT_LABELS = {"same_work": "같은 업무의 다음 단계", "new_work": "새 업무로 등록"}
+
+
 def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) -> dict[str, Any]:
     """규칙 한 줄 `{from label} --[outcome, …]--> {to label}` (ADR-0009 — 그래프를 그리지 않는다).
     등록부에 없는 종류는 코드 그대로 보인다."""
@@ -151,6 +156,8 @@ def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) ->
         "text": f"{label(rule.from_kind)} --[{', '.join(rule.on_outcomes)}]--> {label(rule.to_kind)}",
         "handoff_kinds": list(rule.handoff_kinds),
         "handoff_labels": [kind_label(k) for k in rule.handoff_kinds],
+        "placement": rule.placement,
+        "placement_label": PLACEMENT_LABELS[rule.placement],
     }
 
 
@@ -332,6 +339,14 @@ def _result_context(
     return None
 
 
+def _chip(conn: Connection, summary: dict[str, Any], stage_ids: list[str]) -> dict[str, Any]:
+    """선행·후속 칩 — 같은 업무의 단계면 `단계 N/M`(단계 상세로), 다른 업무면 그 업무 키(업무 상세로)."""
+    if summary["task_id"] in stage_ids:
+        return {**summary, "stage_label": f"단계 {stage_ids.index(summary['task_id']) + 1}/{len(stage_ids)}"}
+    work = repo.work_item_of_task(conn, summary["task_id"])
+    return {**summary, "work_key": format_work_key(work["key_number"]) if work else None}
+
+
 def task_context(
     conn: Connection, store: ArtifactStore, task_row: Row, *, now: str, settings: Settings, is_operator: bool = False
 ) -> dict[str, Any]:
@@ -361,6 +376,8 @@ def task_context(
         if task_row["predecessor_task_id"] is not None
         else None
     )
+    work = repo.work_item_of_task(conn, task_row["task_id"])
+    stage_ids = [t["task_id"] for t in repo.list_work_item_tasks(conn, work["work_item_id"])] if work else []
 
     needs_selection = not finished and active is None and not selected
     chain = repo.get_chain(conn, task_row["chain_id"]) if task_row["chain_id"] is not None else None
@@ -382,10 +399,11 @@ def task_context(
         "executions": executions,
         "active_execution": active,
         "result": result,
-        "predecessor": predecessor,
+        "work": {"key": format_work_key(work["key_number"]), "title": work["title"]} if work else None,
+        "predecessor": _chip(conn, predecessor, stage_ids) if predecessor is not None else None,
         "successors": [
-            task_summary(conn, s, now=now, settings=settings)
-            for s in repo.successors_of(conn, task_row["task_id"])
+            _chip(conn, task_summary(conn, s, now=now, settings=settings), stage_ids)
+            for s in repo.followups_of(conn, task_row["task_id"])
         ],
         # 선행이 있으면 선행 결과 + 판정 + 인계 묶음이 조건이다 (ADR-0009 (3)) — `web._run_task` 와 같은 판단
         "can_run": cycle["can_start"] if cycle_task else (
@@ -423,7 +441,11 @@ DELIVERY_LABELS = {
 # 대기 사유를 풀 주체 (`Blocker.actor`)
 ACTOR_LABELS = {"operator": "운영자", "assignee": "GitHub 담당자", "system": "자동 해소 대기"}
 # 사람 요청 응답 버튼 (`human_api.Action`) — 표시 순서
-RESPONSE_ACTIONS = (("resume", "답하고 다시 판정"), ("choose_agent", "이 Agent 로 지정"), ("close", "업무 종료"))
+RESPONSE_ACTIONS = (
+    ("resume", "답하고 다시 판정"), ("choose_agent", "이 Agent 로 지정"), ("retry", "다시 맡기기"), ("close", "업무 종료"),
+)
+# 실행 실패 요청의 [닫기] — 업무 `종료`(ARCHITECTURE "실패 단계")
+_FAILED_CLOSE_LABEL = "닫기"
 
 
 def issue_url(repository_full_name: str, number: int) -> str:
@@ -511,12 +533,24 @@ def _request_public(
 ) -> dict[str, Any]:
     allowed = human_api.allowed_actions(request["code"])
     data = {k: request[k] for k in ("request_id", "code", "question", "state", "revision", "created_at", "answered_at")}
-    data["actions"] = [(value, label) for value, label in RESPONSE_ACTIONS if value in allowed]
+    data["actions"] = [
+        (value, _FAILED_CLOSE_LABEL if value == "close" and request["code"] == STAGE_FAILED else label)
+        for value, label in RESPONSE_ACTIONS if value in allowed
+    ]
     data["asks_information"] = human_api.asks_information(request["code"])
     data["agent_choices"] = agent_choices if "choose_agent" in allowed else []
     # 응답 폼마다 새 응답 ID — 같은 폼을 두 번 보내면 서버가 한 번만 반영한다(`response_id` 멱등)
     data["response_id"] = f"resp-{uuid4().hex}" if request["state"] == "open" and is_operator else None
     return data
+
+
+def _agent_choices(conn: Connection, session_id: str, origin: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """사람 요청 `choose_agent` 의 후보 — 원본 이슈가 있으면 그 GitHub 담당에 연결된 Agent 만."""
+    return [
+        {"agent_id": a["agent_id"], "name": a["name"]}
+        for a in repo.list_session_agents(conn, session_id)
+        if origin is None or a["agent_id"] in {x["agent_id"] for x in origin["assignees"]}
+    ]
 
 
 def cycle_context(
@@ -548,11 +582,7 @@ def cycle_context(
         or (active is not None and active["status"] == "result_ready" and task["status"] == "실행 가능")
     )
 
-    agent_choices = [
-        {"agent_id": a["agent_id"], "name": a["name"]}
-        for a in repo.list_session_agents(conn, task["session_id"])
-        if origin is None or a["agent_id"] in {x["agent_id"] for x in origin["assignees"]}
-    ]
+    agent_choices = _agent_choices(conn, task["session_id"], origin)
     requests = [
         _request_public(conn, r, is_operator=is_operator, agent_choices=agent_choices)
         for r in repo.list_human_requests(conn, task_id)
@@ -594,6 +624,115 @@ def cycle_context(
         "review": _review_result(conn, store, executions) if policy.result_kind == "code_review_result" else None,
         "delivery": delivery,
         "pull_request": pull_request_public(pr) if (pr := repo.get_pull_request_row(conn, task_id)) else None,
+    }
+
+
+# --- 업무(WorkItem) 목록·상세 (phase 14 step 9, ADR-0020) ---------------------------------------------
+#
+# 업무 상태·이유는 워커·repo 가 저장한 값 그대로다(`domain/work_status`). 화면은 다시 판정하지 않는다.
+
+# 양식 칸 키 → 화면 이름 (ARCHITECTURE "양식 칸")
+FORM_LABELS = {
+    "goal": "목표", "steps_to_reproduce": "재현 절차", "expected_behavior": "기대 동작", "acceptance_criteria": "인수 조건",
+}
+# 업무 사이 연결(앞 → 뒤)을 이 업무에서 본 이름 — (type, 이 업무가 앞인가)
+_LINK_LABELS = {
+    ("spawned_from", True): "이어서 생긴 업무", ("spawned_from", False): "원인 업무",
+    ("blocks", True): "뒤따르는 업무", ("blocks", False): "선행 업무",
+}
+
+
+def assignee_label(conn: Connection, work: Row) -> str:
+    """담당 표시 — 멤버 표시 이름 / 에이전트 이름 / `담당 없음`."""
+    if work["assignee_type"] == "member":
+        member = next((m for m in repo.list_members(conn, work["session_id"]) if m["member_id"] == work["assignee_id"]),
+                      None)
+        return member["display_name"] if member is not None else work["assignee_id"]
+    if work["assignee_type"] == "agent":
+        agent = repo.get_agent(conn, work["assignee_id"])
+        return agent["name"] if agent is not None else work["assignee_id"]
+    return "담당 없음"
+
+
+def work_summary(conn: Connection, work: Row) -> dict[str, Any]:
+    """목록 한 줄 — 키(원본 키가 있으면 원본 키)·제목·담당·업무 상태·이유·갱신 시각. 첫 단계가 지시 전이면
+    [에이전트에게 맡기기] 대상(`delegate_task_id`)."""
+    stages = repo.list_work_item_tasks(conn, work["work_item_id"])
+    first = stages[0] if stages else None
+    work_key = format_work_key(work["key_number"])
+    return {
+        "work_key": work_key,
+        "key": work["source_key"] or work_key,
+        "title": work["title"],
+        "assignee": assignee_label(conn, work),
+        "status": UserStatus(work["status"], work["status_reason"]),
+        "updated_at": work["updated_at"],
+        "delegate_task_id": first["task_id"] if first is not None and undelegated(conn, first) else None,
+    }
+
+
+def work_context(
+    conn: Connection, work: Row, *, now: str, settings: Settings, is_operator: bool
+) -> dict[str, Any]:
+    """업무 상세 — 머리(키·원본·상태·담당·PR)·단계 목록·양식 칸·연결 업무·열린 사람 요청(응답 폼)."""
+    session_id = work["session_id"]
+    stages = repo.list_work_item_tasks(conn, work["work_item_id"])
+    pull_request = None
+    open_requests: list[dict[str, Any]] = []
+    stage_views = []
+    for stage in stages:
+        summary = task_summary(conn, stage, now=now, settings=settings)
+        spec = repo.get_kind(conn, session_id, stage["kind"])
+        stage_views.append({
+            **summary,
+            "kind_label": spec.label if spec is not None else stage["kind"],
+            "attempts": len(repo.list_executions(conn, stage["task_id"])),
+        })
+        if (pr := repo.get_pull_request_row(conn, stage["task_id"])) is not None:
+            pull_request = pull_request_public(pr)
+        opened = [r for r in repo.list_human_requests(conn, stage["task_id"]) if r["state"] == "open"]
+        if opened:
+            issue, config = task_cycle.origin_source(conn, stage)
+            origin = _origin(conn, stage, issue, config) if issue is not None else None
+            choices = _agent_choices(conn, session_id, origin)
+            open_requests.extend(
+                {**_request_public(conn, r, is_operator=is_operator, agent_choices=choices),
+                 "task_id": stage["task_id"]}
+                for r in opened
+            )
+    form = json.loads(work["form_json"])
+    links = []
+    for link in repo.list_work_item_links(conn, work["work_item_id"]):
+        ahead = link["from_work_item_id"] == work["work_item_id"]
+        other = repo.get_work_item(conn, session_id, link["to_work_item_id" if ahead else "from_work_item_id"])
+        if other is None:
+            continue
+        links.append({
+            "label": _LINK_LABELS[(link["type"], ahead)],
+            "type": link["type"],
+            "key": format_work_key(other["key_number"]),
+            "title": other["title"],
+            "status": UserStatus(other["status"], other["status_reason"]),
+        })
+    return {
+        "work": {
+            **work_summary(conn, work),
+            "work_item_id": work["work_item_id"],
+            "request": work["request"],
+            "source_type": work["source_type"],
+            "source_key": work["source_key"],
+            "source_url": work["source_url"],
+            "created_at": work["created_at"],
+            "closed_at": work["closed_at"],
+        },
+        "stages": stage_views,
+        "pull_request": pull_request,
+        "form_fields": [
+            {"key": key, "label": FORM_LABELS[key], "value": form[key]["value"], "source": form[key]["source"]}
+            for key in FORM_HEADINGS if key in form
+        ],
+        "links": links,
+        "open_requests": open_requests,
     }
 
 

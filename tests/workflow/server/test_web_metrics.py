@@ -123,6 +123,7 @@ def test_top_compares_merge_only_and_approval_goes_to_speed_table(operator, conn
     top = text.split('id="compare"', 1)[1].split("</section>", 1)[0]
     assert "4시간 0분" in top and "2시간 0분" not in top
     assert "병합 PR" in top
+    assert "GitHub 이슈 업무만" in top and "묶음" not in top  # 지표 묶음 = 업무(phase 14 step 8)
     approval = row(text, "접수 → 승인")
     assert "2시간 0분" in approval and "n 1" in approval
     assert "4시간 0분" in row(text, "접수 → 완료")

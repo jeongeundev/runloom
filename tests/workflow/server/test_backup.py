@@ -246,22 +246,29 @@ def test_help_says_stop_services_before_restore(capsys):
     assert "멈춘" in capsys.readouterr().out
 
 
-# --- phase 13: 셀프호스트 모양 v8 DB 사본 → v9 + 백업 왕복 (ADR-0019, SELFHOST "업그레이드") ---------------------
+# --- phase 13·14: 셀프호스트 모양 v8 DB 사본 → v10 + 백업 왕복 (ADR-0019·0020, SELFHOST "업그레이드") -----------
 
 V8_NOW = "2026-09-28T00:00:00Z"
 LEGACY_KINDS = ("diagnosis", "code_change")
 V8_SESSION = "sess-selfhost"
+V9_SCHEMA = (Path(__file__).parents[2] / "workflow" / "adapters" / "fixtures" / "schema_v9.sql").read_text()
 
 
 def _v8_selfhost(db_path: Path, artifact_dir: Path) -> None:
     """phase 12 셀프호스트가 남긴 모양 — 워크스페이스 하나(운영자), 옛 내장 4종류·규칙 2개, GitHub 순환 행.
-    v8 과 v9 는 표 구조가 같아 새 스키마에 옛 행을 넣고 버전을 8 로 되돌려 만든다."""
-    from workflow.adapters import repo
+    v8 과 v9 는 표 구조가 같아 고정한 v9 스키마 원문에 옛 행을 넣고 버전을 8 로 둔다."""
+    from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
 
     conn = connect(db_path)
-    init_schema(conn)
-    repo.create_session(conn, V8_SESSION, V8_NOW)
-    repo.mark_operator(conn, V8_SESSION)
+    conn.executescript(V9_SCHEMA)
+    conn.execute("INSERT INTO schema_version (version) VALUES (8)")
+    conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (V8_SESSION, V8_NOW))
+    for spec in BUILTIN_KINDS:
+        conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                     (V8_SESSION, spec.kind, spec.model_dump_json(), V8_NOW))
+    conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                 " VALUES ('rule-builtin', ?, 'bug_fix', 'code_review', ?, ?)",
+                 (V8_SESSION, BUILTIN_RULES[0].model_dump_json(), V8_NOW))
     for kind in LEGACY_KINDS:
         conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, '{}', ?)",
                      (V8_SESSION, kind, V8_NOW))
@@ -297,7 +304,6 @@ def _v8_selfhost(db_path: Path, artifact_dir: Path) -> None:
             "INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
             " payload_json, state, created_at) VALUES (?, ?, 'pr_opened', ?, ?, 'c', '{}', 'sent', ?)",
             (f"ntf-0000000{n}", V8_SESSION, f"t-fix-{n}", f"pr_opened:t-fix-{n}", V8_NOW))
-    conn.execute("UPDATE schema_version SET version = 8")
     conn.close()
     (artifact_dir / V8_SESSION).mkdir(parents=True, exist_ok=True)
     (artifact_dir / V8_SESSION / "diff.patch").write_text("--- a\n+++ b\n", encoding="utf-8")
@@ -323,7 +329,7 @@ def _version_and_kinds(db_path: Path) -> tuple[int, list[str]]:
         conn.close()
 
 
-def test_selfhost_v8_copy_upgrades_to_v9_and_backups_round_trip(tmp_path, capsys):
+def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     env = _env(src)
@@ -337,13 +343,17 @@ def test_selfhost_v8_copy_upgrades_to_v9_and_backups_round_trip(tmp_path, capsys
     assert backup.main(["list"], env=env) == 0
     assert capsys.readouterr().out.strip().endswith("schema 8")
 
-    # 2) v9 로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로
+    # 2) v10 으로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로, 이슈마다 수정·검토가 각자 업무
+    #    (후속 연결 없음), 첫 관리자·기본 매핑 하나
     conn = connect(src / "central.sqlite")
     init_schema(conn)
     conn.close()
     v9_counts = _counts(src / "central.sqlite")
-    assert v9_counts == {**v8_counts, "kinds": 2, "succession_rules": 1}
-    assert _version_and_kinds(src / "central.sqlite") == (9, ["bug_fix", "code_review"])
+    assert v9_counts == {
+        **v8_counts, "kinds": 2, "succession_rules": 1,
+        "work_items": 6, "work_item_links": 0, "members": 1, "field_mappings": 1, "work_item_events": 0,
+    }
+    assert _version_and_kinds(src / "central.sqlite") == (10, ["bug_fix", "code_review"])
 
     # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
     assert backup.main(["create"], env=env, now=lambda: T2) == 0
@@ -360,3 +370,170 @@ def test_selfhost_v8_copy_upgrades_to_v9_and_backups_round_trip(tmp_path, capsys
     assert backup.main(["restore", v8_backup], env=old_env) == 0
     assert _counts(old / "central.sqlite") == v9_counts
     assert _version_and_kinds(old / "central.sqlite") == (SCHEMA_VERSION, ["bug_fix", "code_review"])
+
+
+V9_NOW = "2026-09-29T00:00:00Z"
+V9_SESSION = "sess-selfhost"
+ARCHIVE, SANDBOX = "ghs-00000001", "ghs-00000002"
+UNDELEGATED = range(1, 18)  # 수집만 되고 지시 전인 이슈 17건
+MERGED = (18, 19, 20)       # 수정 + 검토 + PR 병합
+
+
+def _t9(n: int) -> str:
+    return f"2026-09-29T{n // 60:02d}:{n % 60:02d}:00Z"
+
+
+def _v9_selfhost(db_path: Path, artifact_dir: Path) -> None:
+    """phase 13 셀프호스트가 남긴 모양의 v9 — 워크스페이스 하나(운영자), 내장 2종류·규칙 1개, GitHub App 소스 둘
+    (`all_open`). OpenArchive 류 소스: 이슈 20건(17건 지시 전, 3건 수정 → 검토 → PR 병합) + 기준선 24행.
+    sandbox 류 소스: 이슈 1건 수정 → 검토 → PR 병합·이슈 닫힘. 실제 셀프호스트 볼륨·백업은 읽지 않는다."""
+    import json
+
+    from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
+
+    conn = connect(db_path)
+    conn.executescript(V9_SCHEMA)
+    conn.execute("INSERT INTO schema_version (version) VALUES (9)")
+    conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (V9_SESSION, V9_NOW))
+    for spec in BUILTIN_KINDS:
+        conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                     (V9_SESSION, spec.kind, spec.model_dump_json(), V9_NOW))
+    conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                 " VALUES ('rule-builtin', ?, 'bug_fix', 'code_review', ?, ?)",
+                 (V9_SESSION, BUILTIN_RULES[0].model_dump_json(), V9_NOW))
+    conn.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
+                 " connection_state) VALUES ('agent-runner', 'runner', 'personal', 'local', '[]', 'online')")
+    config = json.dumps({"intake": "all_open"})
+    for source_id, name in ((ARCHIVE, "acme/archive"), (SANDBOX, "acme/sandbox")):
+        conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json,"
+                     " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", (source_id, V9_SESSION, name, config,
+                                                                            V9_NOW, V9_NOW))
+
+    def task(task_id: str, kind: str, n: int, status: str, reason: str, agent: str | None,
+             predecessor: str | None = None, source_ref: str | None = None) -> None:
+        conn.execute(
+            "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json, selection_mode,"
+            " chosen_agent_id, run_mode, completion_mode, criteria_json, predecessor_task_id, revision, target_json,"
+            " status, status_reason, created_at, finished_at, source_ref) VALUES (?, ?, ?, ?, ?, '{}', 'auto', ?,"
+            " 'auto', 'review', '[]', ?, 1, '{}', ?, ?, ?, ?, ?)",
+            (task_id, V9_SESSION, f"제목 {task_id}", f"본문 {task_id}", kind, agent, predecessor, status, reason,
+             _t9(n), _t9(n + 30) if status == "완료" else None, source_ref))
+
+    def execution(execution_id: str, task_id: str, kind: str, n: int) -> None:
+        conn.execute(
+            "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+            " status, created_at, released_at) VALUES (?, ?, 1, 'start', 'agent-runner', ?, '{}', 'result_ready',"
+            " ?, ?)", (execution_id, task_id, kind, _t9(n), _t9(n + 1)))
+
+    def issue(source_id: str, repo_name: str, number: int, task_id: str, n: int, *, state: str = "open",
+              merged: int | None = None) -> None:
+        conn.execute(
+            "INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
+            " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at, merged_pr_number,"
+            " pr_merged_at, delegated_at, delegated_by) VALUES (?, ?, ?, ?, 1, '{}', 'd', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, 5000 + n, number, task_id, _t9(n), state, _t9(n), _t9(n), merged,
+             _t9(n + 40) if merged else None, _t9(n) if merged else None, "operator" if merged else None))
+
+    def merged_cycle(source_id: str, repo_name: str, number: int, n: int, state: str) -> None:
+        fix, review = f"t-fix-{source_id[-1]}-{number}", f"t-rev-{source_id[-1]}-{number}"
+        task(fix, "bug_fix", n, "완료", "PR 병합", "agent-runner", source_ref=f"{repo_name}#{number}")
+        issue(source_id, repo_name, number, fix, n, state=state, merged=300 + number)
+        execution(f"e-f-{fix}", fix, "bug_fix", n)
+        task(review, "code_review", n + 5, "완료", "검토 승인", "agent-runner", predecessor=fix)
+        execution(f"e-r-{fix}", review, "code_review", n + 5)
+        conn.execute("INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision,"
+                     " created_at) VALUES (?, ?, 'code_review', ?, 1, ?)", (V9_SESSION, f"e-f-{fix}", review, _t9(n)))
+        conn.execute(
+            "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+            " head_branch, fix_execution_id, review_execution_id, state, pr_number, created_at, updated_at,"
+            " merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'merged', ?, ?, ?, ?)",
+            (fix, V9_SESSION, source_id, repo_name, number, f"task/{fix}", f"e-f-{fix}", f"e-r-{fix}",
+             300 + number, _t9(n + 10), _t9(n + 40), _t9(n + 40)))
+
+    for number in UNDELEGATED:
+        task_id = f"t-fix-1-{number}"
+        task(task_id, "bug_fix", number, "대기", "실행 지시 전", None, source_ref=f"acme/archive#{number}")
+        issue(ARCHIVE, "acme/archive", number, task_id, number)
+    for number in MERGED:
+        merged_cycle(ARCHIVE, "acme/archive", number, number * 3, "open")
+    merged_cycle(SANDBOX, "acme/sandbox", 1, 100, "closed")
+    for n in range(24):
+        conn.execute(
+            "INSERT INTO baseline_items (source_id, issue_number, issue_title, issue_opened_at, pr_number,"
+            " pr_merged_at, fetched_at) VALUES (?, ?, 'i', ?, ?, ?, ?)",
+            (ARCHIVE, 500 + n, "2026-08-01T00:00:00Z", 900 + n, "2026-08-02T00:00:00Z", V9_NOW))
+    conn.execute("INSERT INTO baseline_imports (source_id, opened_before, fetched_at, item_count)"
+                 " VALUES (?, ?, ?, 24)", (ARCHIVE, V9_NOW, V9_NOW))
+    conn.close()
+    (artifact_dir / V9_SESSION).mkdir(parents=True, exist_ok=True)
+    (artifact_dir / V9_SESSION / "diff.patch").write_text("--- a\n+++ b\n", encoding="utf-8")
+
+
+def _works(db_path: Path) -> list[tuple]:
+    conn = sqlite3.connect(db_path)
+    try:
+        return [tuple(r) for r in conn.execute(
+            "SELECT w.key_number, w.source_key, w.status, w.status_reason, w.closed_at IS NOT NULL,"
+            " (SELECT COUNT(*) FROM tasks t WHERE t.work_item_id = w.work_item_id)"
+            " FROM work_items w ORDER BY w.key_number")]
+    finally:
+        conn.close()
+
+
+def test_selfhost_v9_copy_upgrades_to_v10_work_items_and_backups_round_trip(tmp_path, capsys):
+    src = tmp_path / "src"
+    src.mkdir()
+    env = _env(src)
+    _v9_selfhost(src / "central.sqlite", src / "artifacts")
+    v9_counts = _counts(src / "central.sqlite")
+    assert (v9_counts["tasks"], v9_counts["source_issues"], v9_counts["baseline_items"]) == (25, 21, 24)
+
+    # 1) 업그레이드 전 백업 — 스키마 9
+    assert backup.main(["create"], env=env, now=lambda: T1) == 0
+    v9_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    assert capsys.readouterr().out.strip().endswith("schema 9")
+
+    # 2) v10 — 이슈 하나 = 업무 하나(검토 단계는 수정 업무에), 키는 생성 순, 기존 표 행 수·기준선 그대로
+    conn = connect(src / "central.sqlite")
+    init_schema(conn)
+    conn.close()
+    v10_counts = _counts(src / "central.sqlite")
+    assert v10_counts == {
+        **v9_counts, "work_items": 21, "work_item_links": 0, "members": 1, "field_mappings": 1,
+        "work_item_events": 0,
+    }
+    works = _works(src / "central.sqlite")
+    assert [w[0] for w in works] == list(range(1, 22))
+    assert [w[1] for w in works] == [f"acme/archive#{n}" for n in range(1, 21)] + ["acme/sandbox#1"]
+    assert works[:17] == [(n, f"acme/archive#{n}", "새로 들어옴", "담당 없음", 0, 1) for n in UNDELEGATED]
+    assert works[17:] == [(k, key, "완료", f"PR 병합 — #{pr}", 1, 2) for k, key, pr in (
+        (18, "acme/archive#18", 318), (19, "acme/archive#19", 319), (20, "acme/archive#20", 320),
+        (21, "acme/sandbox#1", 301))]
+    conn = sqlite3.connect(src / "central.sqlite")
+    try:
+        heads = [r[0] for r in conn.execute("SELECT head_branch FROM task_pull_requests ORDER BY task_id")]
+        assert all(h.startswith("task/") for h in heads)  # 이미 기록된 브랜치 이름은 바꾸지 않는다
+        (imported,) = conn.execute("SELECT item_count FROM baseline_imports").fetchone()
+        assert imported == 24
+    finally:
+        conn.close()
+
+    # 3) v10 백업 → 다른 위치 복원: 업무까지 그대로
+    assert backup.main(["create"], env=env, now=lambda: T2) == 0
+    v10_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    assert capsys.readouterr().out.strip().splitlines()[0].endswith(f"schema {SCHEMA_VERSION}")
+    dst = tmp_path / "dst"
+    dst_env = {**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v10_backup], env=dst_env) == 0
+    assert _counts(dst / "central.sqlite") == v10_counts
+    assert _works(dst / "central.sqlite") == works
+    assert _files(dst / "artifacts") == _files(src / "artifacts")
+
+    # 4) 업그레이드 전 v9 백업으로 되돌려도 복원이 v10 으로 올린다 — 같은 업무
+    old = tmp_path / "old"
+    old_env = {**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v9_backup], env=old_env) == 0
+    assert _counts(old / "central.sqlite") == v10_counts
+    assert _works(old / "central.sqlite") == works

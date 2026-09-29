@@ -74,7 +74,8 @@
     },
     {
       "dir": "14-task-model",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-30T03:17:44+0900"
     }
   ]
 }
