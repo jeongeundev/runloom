@@ -7,7 +7,8 @@
       "name": "task-model-design",
       "status": "completed",
       "started_at": "2026-09-30T01:02:02+0900",
-      "summary": "문서만: ADR-0020(이전 시도에서 작성) 유지, ARCHITECTURE \"업무와 단계 — phase 14\" 신설(스키마 v10 표 work_items·work_item_links·members·field_mappings·work_item_events·tasks.work_item_id, 업무 상태 11단계 판정 우선순위, placement, stage_failed retry/close, 매핑·양식 칸 규칙, work_key·branch_seq·result_branch, v9→v10 마이그레이션, 이름·시그니처 표), CONTRACT 15절(placement·work_key·branch_seq 예시는 모델 전이라 jsonc 펜스 — step 4·7 이 json 으로 바꾸고 test_v1 블록 수 58 을 올릴 것), GLOSSARY Task 정의 변경 + phase 14 용어, CURRENT_HANDOFF 한 줄. 결정: 키는 번호만 저장·format_work_key 는 contracts/v1, 업무 이벤트는 새 표 work_item_events, 매핑 미일치 이슈는 가져오지 않음(종류 기본값 분기 없음), 교차 업무 predecessor_task_id NULL 화는 step 4 가 마이그레이션에 더함. 검증: pytest 2382 passed/32 skipped, ruff 통과."
+      "summary": "문서만: ADR-0020(이전 시도에서 작성) 유지, ARCHITECTURE \"업무와 단계 — phase 14\" 신설(스키마 v10 표 work_items·work_item_links·members·field_mappings·work_item_events·tasks.work_item_id, 업무 상태 11단계 판정 우선순위, placement, stage_failed retry/close, 매핑·양식 칸 규칙, work_key·branch_seq·result_branch, v9→v10 마이그레이션, 이름·시그니처 표), CONTRACT 15절(placement·work_key·branch_seq 예시는 모델 전이라 jsonc 펜스 — step 4·7 이 json 으로 바꾸고 test_v1 블록 수 58 을 올릴 것), GLOSSARY Task 정의 변경 + phase 14 용어, CURRENT_HANDOFF 한 줄. 결정: 키는 번호만 저장·format_work_key 는 contracts/v1, 업무 이벤트는 새 표 work_item_events, 매핑 미일치 이슈는 가져오지 않음(종류 기본값 분기 없음), 교차 업무 predecessor_task_id NULL 화는 step 4 가 마이그레이션에 더함. 검증: pytest 2382 passed/32 skipped, ruff 통과.",
+      "completed_at": "2026-09-30T01:12:50+0900"
     },
     {
       "step": 1,
