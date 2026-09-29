@@ -303,7 +303,8 @@ def test_install_creates_env_0600_with_generated_secrets(tmp_path):
     # 나머지 키는 .env.example 그대로
     example = _env_example()
     assert set(values) == set(example)
-    assert values["WORKFLOW_PORT"] == "8000" and values["DIAG_API_TOKEN"] == ""
+    assert values["WORKFLOW_PORT"] == "8000"
+    assert not {"DIAG_API_TOKEN", "DIAG_API_URL"} & set(values)  # 진단 데모는 `main` 전용 (ADR-0019)
     # 출력에 비밀값이 없고 토큰 파일 위치·접속 주소·다음 할 일이 있다
     out = res.stdout + res.stderr
     assert values["OPERATOR_TOKEN"] not in out and values["SESSION_SECRET"] not in out

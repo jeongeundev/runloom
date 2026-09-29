@@ -1,47 +1,41 @@
 """Step 7 화면 — UI_GUIDE 를 테스트로 고정한다. 실제 페이지를 렌더해 셸·배지·결과 카드·뷰어·라이브 조각·금지 사항을 본다.
 
-기본은 셀프호스트(ADR-0019) — 로그인한 고정 워크스페이스, 러너 모양 Agent, 종류 `bug_fix`·`code_review`·사용자 정의 `review`.
-이름 끝이 `_demo` 인 fixture·도우미와 그것을 쓰는 테스트는 진단 → 코드 수정 데이터를 워크스페이스에 넣으며 phase 13 step 3 에서 지운다."""
+셀프호스트(ADR-0019) — 로그인한 고정 워크스페이스, 러너 모양 Agent, 종류 `bug_fix`·`code_review`·사용자 정의 `review`,
+체인 상태 판정은 사용자 정의 `triage` → `patch`(test_views 와 같은 시드)."""
 
-import hashlib
 import html as html_lib
-import json
 import re
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.workflow.domain.test_verification import contract_results, demo_sources
 from workflow.adapters import repo
-from workflow.contracts.v1 import ArtifactMeta, ExecutionRequest
+from workflow.contracts.v1 import ArtifactMeta, ExecutionRequest, SelectionRecord
 from workflow.server.auth import SESSION_COOKIE, ensure_workspace, utc_now, verify_session
 
 from .conftest import (
     LOCAL_REGISTRATION,
     NOW,
+    SESSION,
     code_change_result,
     meta_for,
     seed_agents,
-    seed_agents_demo,
     seed_execution,
     seed_result_ready,
+    task_row,
 )
+from .test_views import API_AGENT, CAP_PATCH, CAP_TRIAGE, PATCH_AGENT, seed_user_kinds, user_task
 from .test_web import (
     BUG_FIX_TITLE,
     LOCAL_REVIEW,
     REVIEW_AGENT,
     code_review_form,
     create_task,
-    diagnose_form_demo,
     fix_form,
-    import_chain_demo,
-    register_agents_demo,
     register_kind,
-    register_rule,
     review_form,
     seed_review_agent,
-    seed_review_agent_demo,
 )
 
 SERVER_DIR = Path(__file__).resolve().parents[3] / "src" / "workflow" / "server"
@@ -89,19 +83,6 @@ def web(logged_in_client, agents):
     return logged_in_client
 
 
-@pytest.fixture
-def agents_demo(conn):
-    seed_agents_demo(conn)
-    return conn
-
-
-@pytest.fixture
-def web_demo(logged_in_client, agents_demo):
-    """로그인한 워크스페이스에 진단 API·`code.modify` Agent 2개를 붙인 클라이언트 (test_web 과 같다)."""
-    register_agents_demo(agents_demo)
-    return logged_in_client
-
-
 def session_id_of(client: TestClient, settings) -> str:
     return verify_session(client.cookies[SESSION_COOKIE], settings.session_secret)
 
@@ -118,54 +99,16 @@ def viewer_of(html: str) -> str:
     return html[html.index('class="viewer'):html.index("<script>")]
 
 
-def store_evidence_demo(conn, store, execution_id: str, session_id: str) -> dict[tuple[str, str], tuple[str, str]]:
-    """demo_sources() 의 근거 8개를 `evidence` 산출물로 저장한다. (evidence_id, version) → (artifact_id, sha256)."""
-    stored = {}
-    for (evidence_id, version), (content_type, source) in demo_sources().items():
-        data = source.encode() if isinstance(source, str) else json.dumps(source, ensure_ascii=False, indent=2).encode()
-        created, _ = repo.store_artifact(
-            conn, store, execution_id=execution_id, session_id=session_id,
-            meta=ArtifactMeta.model_validate(meta_for(data, kind="evidence", name=f"{evidence_id}.txt",
-                                                       content_type=content_type)),
-            data=data, now=NOW,
-        )
-        stored[(evidence_id, version)] = (created.artifact_id, hashlib.sha256(data).hexdigest())
-    return stored
-
-
-def seed_diagnosis_result_demo(client, conn, store, settings, *, needs_information: bool = False) -> tuple[str, str]:
-    """진단 업무 A 에 CONTRACT 5절(또는 6절) 결과를 result_ready 로 넣는다. 첨부는 실제 저장한 근거 산출물을 가리킨다."""
-    task_id = create_task(client, diagnose_form_demo())
-    session_id = session_id_of(client, settings)
-    execution_id = "exec-diagnose-001"
-    repo.create_execution(
-        conn,
-        execution_id=execution_id,
-        task_id=task_id,
-        attempt_no=1,
-        start_key=f"auto:{task_id}:r1",
-        agent_id="agent-ops-demo",
-        kind="diagnosis",
-        request=ExecutionRequest.model_validate({
-            "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": "diagnosis",
-            "agent_id": "agent-ops-demo", "task_revision": 1, "request": "조사", "input_artifact_ids": [],
-            "target": {"run_id": "daily-0920-0900"},
-        }),
-        assigned_connector_id=None,
-        predecessor_execution_id=None,
-        now=NOW,
-    )
-    stored = store_evidence_demo(conn, store, execution_id, session_id)
-    body = json.loads(json.dumps(contract_results()[1 if needs_information else 0]))
-    body["execution_id"], body["task_id"] = execution_id, task_id
-    for ref in body["attachments"]:
-        ref["artifact_id"], ref["sha256"] = stored[(ref["evidence_id"], ref["version"])]
-    seed_result_ready(conn, store, execution_id, kind="diagnosis_result", body=body, session_id=session_id)
-    return task_id, execution_id
+def select(conn, task_id: str, agent_id: str, capability: dict) -> None:
+    repo.save_selection(conn, SelectionRecord.model_validate({
+        "task_id": task_id, "mode": "auto", "required_capability": capability, "candidate_count": 1,
+        "selected_agent_id": agent_id, "matched": capability, "status": "selected",
+        "reason": f"{capability['code']} 일치 후보 1개",
+    }))
 
 
 def seed_code_change_result(client, conn, store, settings) -> tuple[str, str]:
-    """`bug_fix` 업무를 등록하고 CONTRACT 7절 결과와 diff·테스트 로그·보고서 산출물을 넣는다."""
+    """`bug_fix` 업무를 등록하고 CONTRACT 7절 결과와 diff·테스트 로그 산출물을 넣는다."""
     task_id = create_task(client, fix_form())
     session_id = session_id_of(client, settings)
     execution_id = "exec-fix-001"
@@ -174,7 +117,6 @@ def seed_code_change_result(client, conn, store, settings) -> tuple[str, str]:
         ("diff", "change.diff", DIFF),
         ("test_log_before", "pytest-before.txt", "\n".join(f"before line {n}" for n in range(1, 31)) + "\nFAILED 1\n"),
         ("test_log_after", "pytest-after.txt", "collected 3 items\n3 passed\n"),
-        ("report_output", "report.txt", "일일 업무 보고서 — 2026-09-19\n합계    20    5\n"),
     ):
         data = text.encode()
         repo.store_artifact(
@@ -282,14 +224,27 @@ def test_badge_dot_fill_follows_ui_guide(web, conn, store, settings):
     assert "검토 승인" in visible_text(done)
 
 
-def test_chain_nodes_show_status_as_badge_text_with_reason(web_demo, conn):
+def seed_user_chain(conn) -> tuple[str, tuple[str, str]]:
+    """사용자 정의 triage(분류 API 선택) → patch(패치 Codex 선택) 체인. 상태는 선택·선행으로 실시간 판정된다."""
+    seed_user_kinds(conn)
+    chain_id = "chain-user"
+    repo.insert_chain(conn, {"chain_id": chain_id, "session_id": SESSION, "source": "github",
+                             "title": "일일 보고서 실패 분류 → 보고서 변환 패치"}, NOW)
+    repo.insert_task(conn, {**user_task("task-c41", "triage"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
+    repo.insert_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
+                            "chain_id": chain_id, "source_ref": "#42"}, NOW)
+    select(conn, "task-c41", API_AGENT, CAP_TRIAGE)
+    select(conn, "task-c42", PATCH_AGENT, CAP_PATCH)
+    return chain_id, ("task-c41", "task-c42")
+
+
+def test_chain_nodes_show_status_as_badge_text_with_reason(web, conn):
     """워크플로우 노드는 색만이 아니라 배지 텍스트 + 한글 이유로 상태를 보인다 (UI_GUIDE "하지 마라")."""
-    web = web_demo
-    chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
+    chain_id, _ = seed_user_chain(conn)
     html = web.get(f"/chains/{chain_id}").text
     nodes = re.findall(r'<li class="chain-node"[^>]*>(.*?)</li>', html, re.DOTALL)
     assert len(nodes) == 2
-    for node, label, reason in ((nodes[0], "실행 가능", "agent-ops-demo 선택됨"), (nodes[1], "대기", "선행 대기")):
+    for node, label, reason in ((nodes[0], "실행 가능", f"{API_AGENT} 선택됨"), (nodes[1], "대기", "선행 대기")):
         line = status_line(node)
         assert f'data-status="{label}"' in line
         assert label in visible_text(line) and reason in visible_text(line)
@@ -297,62 +252,18 @@ def test_chain_nodes_show_status_as_badge_text_with_reason(web_demo, conn):
     human = html[html.index('class="chain-node chain-node-human"'):]
     assert "검토 승인 (사람) · 병합은 운영자 확인" in visible_text(human)
     assert 'data-status="대기"' in status_line(human)
-    for label in ("진단", "코드 수정", "직접", "선행 완료 시 자동", "자동 완료", "검토 후 완료"):
+    for label in ("분류", "패치", "직접", "선행 완료 시 자동", "검토 후 완료"):
         assert label in visible_text(html), label
 
 
-def test_api_agent_card_shows_connected_without_last_seen(web_demo):
+def test_api_agent_card_shows_connected_without_last_seen(web, conn):
     """API 에이전트는 heartbeat 가 없어도 '연결됨' 이고 '마지막 확인' 을 보이지 않는다. 로컬은 heartbeat 규칙."""
-    web = web_demo
+    seed_user_kinds(conn)  # 분류 API(API)를 워크스페이스에 붙인다
     cards = re.findall(r'<div class="card agent-card">(.*?)</div>\s*</div>', web.get("/tasks").text, re.S)
     by_id = {re.search(r"agent-[a-z-]+", c).group(0): c for c in cards}
-    ops, codex = by_id["agent-ops-demo"], by_id["agent-codex-mac"]
+    ops, codex = by_id[API_AGENT], by_id["agent-codex-mac"]
     assert 'data-status="연결됨"' in ops and "마지막 확인" not in ops
     assert 'data-status="연결 끊김"' in codex and "마지막 확인 없음" in codex
-
-
-# --- 결과 카드·뷰어 — 진단 -----------------------------------------------------------
-
-
-def test_diagnosis_result_card_and_viewer(web_demo, conn, store, settings):
-    web = web_demo
-    task_id, execution_id = seed_diagnosis_result_demo(web, conn, store, settings)
-    conn.execute(
-        "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
-        (task_id, execution_id, json.dumps({"outcome": "passed", "checks": [
-            {"code": "attachments_in_trace", "passed": True, "detail": "8건"},
-            {"code": "paths_differ_as_claimed", "passed": True, "detail": "확인"},
-        ]}), NOW),
-    )
-    html = web.get(f"/tasks/{task_id}").text
-
-    card = visible_text(html[html.index('class="result-card'):html.index('class="viewer')])
-    assert "인계 가능" in card
-    assert "daily-report · daily-0920-0900" in card
-    assert "response_path_changed · 근거 5 · 첨부 8 · 검증 2/2 통과" in card
-
-    viewer = visible_text(viewer_of(html))
-    assert "인계 가능" in viewer
-    chip = "response-after@1 · $.data.records"
-    assert chip in viewer
-    excerpt = viewer[viewer.index(chip):viewer.index("log-daily-0920@1 · lines:1-2")]
-    assert "records" in excerpt and '"team": "운영"' in excerpt
-    # 순서: 검증 결과 → summary → findings → diagnosis → repair_request
-    positions = [viewer.index(s) for s in ("attachments_in_trace", "조회는 성공했으나", "실패 실행과 직전 정상 실행은",
-                                            "baseline_run_id", "target_component")]
-    assert positions == sorted(positions)
-    assert "변경 전 응답" in viewer and "변경 후 응답" in viewer
-    assert "$.items" in viewer and "$.data.records" in viewer
-    assert "첨부 없음" not in viewer and "원문에 없음" not in viewer
-    assert f"/tasks/{task_id}/artifacts/" in html  # 산출물 칩
-
-
-def test_needs_information_puts_missing_information_first(web_demo, conn, store, settings):
-    web = web_demo
-    task_id, _ = seed_diagnosis_result_demo(web, conn, store, settings, needs_information=True)
-    viewer = visible_text(viewer_of(web.get(f"/tasks/{task_id}").text))
-    assert "정보 필요" in viewer
-    assert viewer.index("evidence_unavailable") < viewer.index("응답의 목록 위치 차이")
 
 
 # --- 결과 카드·뷰어 — 수정 결과(`bug_fix`) -------------------------------------------------
@@ -371,7 +282,7 @@ def test_code_change_result_card_and_verification_summary(web, conn, store, sett
     assert "수정 전 테스트" in viewer and "수정 후 테스트" in viewer
     assert "before line 12" in viewer and "before line 11" not in viewer  # 마지막 20줄
     assert "FAILED 1" in viewer and "3 passed" in viewer
-    assert "일일 업무 보고서 — 2026-09-19" in viewer
+    assert "생성된 보고서" not in viewer and "진단 결과" not in viewer  # 진단·보고서 데모 뷰어 절 없음
     assert 'class="diff-add"' in html and 'class="diff-del"' in html
     # `bug_fix` 결과 뒤는 사람 검토 폼이 아니라 후속 규칙의 `code_review` 가 잇는다 (업무 순환)
     assert f'action="/tasks/{task_id}/review"' not in html and 'value="request_changes"' not in html
@@ -453,21 +364,22 @@ def test_task_detail_shows_kind_label_from_registry(web, conn, store, settings):
     assert 'class="chip kind-chip">검토<' in crumb[crumb.index('class="crumbs"'):crumb.index('class="bubble"')]
 
 
-def test_chain_renders_three_nodes_in_order_with_kind_labels(web_demo, conn, settings):
-    """직접 등록한 A → B → C(review) 는 체인이 아니지만, 가져오기 체인 뒤에 등록부 종류가 셋 이상이어도 화면은 노드를
-    순서대로 그린다 — 체인 템플릿이 2개를 가정하지 않는다. 노드 3개는 review 이슈를 흉내 낸 Task 로 만든다."""
-    web = web_demo
-    seed_review_agent_demo(conn)
-    register_agents_demo(conn, REVIEW_AGENT)
+def test_chain_renders_three_nodes_in_order_with_kind_labels(web, conn, settings):
+    """체인 템플릿이 노드 2개를 가정하지 않는다 — bug_fix → code_review 체인 뒤에 등록부의 사용자 정의 종류
+    review Task 를 하나 더 붙여도 노드를 순서대로 그린다."""
     register_kind(web)
-    register_rule(web, from_kind="code_change")
-    chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
+    chain_id = "chain-three"
     session_id = session_id_of(web, settings)
+    repo.insert_chain(conn, {"chain_id": chain_id, "session_id": session_id, "source": "github",
+                             "title": "보고서 변환 수정 → 보고서 수정 검토"}, NOW)
+    repo.insert_task(conn, {**task_row("task-c41"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
+    repo.insert_task(conn, {**task_row("task-c42", kind="code_review", predecessor="task-c41"),
+                            "chain_id": chain_id, "source_ref": "#42"}, NOW)
     repo.insert_task(conn, {
         "task_id": "task-c45", "session_id": session_id, "title": "보고서 수정 검토", "request": "검토",
         "kind": "review", "required_capability": {"code": "review", "scope": {"repository_id": "demo-report-repo"}},
         "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "auto", "completion_mode": "review",
-        "criteria": [], "predecessor_task_id": task_b, "revision": 1,
+        "criteria": [], "predecessor_task_id": "task-c42", "revision": 1,
         "target": {"local_registration_id": LOCAL_REVIEW}, "status": "대기", "status_reason": "선행 대기",
         "chain_id": chain_id, "source_ref": "#45",
     }, NOW)
@@ -476,7 +388,7 @@ def test_chain_renders_three_nodes_in_order_with_kind_labels(web_demo, conn, set
     assert len(nodes) == 3
     assert [re.search(r'class="node-no">(\d)<', n).group(1) for n in nodes] == ["1", "2", "3"]
     labels = [re.search(r'<span class="chip">([^<]+)</span>', n).group(1) for n in nodes]
-    assert labels == ["진단", "코드 수정", "검토"]
+    assert labels == ["버그 수정", "커밋 검토", "검토"]
     assert "#45" in nodes[2] and "후보 없음" in visible_text(nodes[2])
     human = html[html.index('class="chain-node chain-node-human"'):]
     assert 'class="node-no">4<' in human and "검토 승인 (사람) · 병합은 운영자 확인" in visible_text(human)

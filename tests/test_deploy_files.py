@@ -14,12 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from diagnostic_demo.settings import ENV_KEYS as DIAG_ENV_KEYS
 from workflow.connector.config import connector_paths
 from workflow.connector.masking import ENV_ALLOWLIST
 from workflow.scripted._common import PACE_ENV
 from workflow.server.settings import ENV_KEYS as CENTRAL_ENV_KEYS
-from workflow.server.settings import OPTIONAL_SECRET_KEYS, SECRET_KEYS, Limits
+from workflow.server.settings import OPTIONAL_SECRET_KEYS, SECRET_KEYS
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
@@ -36,8 +35,7 @@ import seed_demo  # noqa: E402
 SERVICES = {
     "workflow-central.service": ("workflow.server.app:app", "central.env"),
     "workflow-worker.service": ("workflow.server.worker", "central.env"),
-    "workflow-diag.service": ("diagnostic_demo.api.app:app", "diag.env"),
-    "workflow-diag-worker.service": ("diagnostic_demo.worker", "diag.env"),
+    # 진단 API·진단 워커 유닛은 진단 데모와 함께 `main` 전용이다 (ADR-0019)
     "workflow-connector.service": ("workflow.connector", "connector.env"),
 }
 CONNECTOR_HOME = "/var/lib/workflow/connector"
@@ -124,12 +122,10 @@ def test_scripted_wrapper_execs_the_scripted_module_with_fixed_interpreter(name)
 
 
 def test_http_services_bind_localhost_only():
-    """외부 노출은 Caddy 만. 중앙 8000·진단 8100 모두 127.0.0.1 에 묶는다 (ARCHITECTURE 실행 위치 표)."""
+    """외부 노출은 Caddy 만. 중앙 8000 을 127.0.0.1 에 묶는다 (ARCHITECTURE 실행 위치 표)."""
     central = _unit("workflow-central.service")["ExecStart"][0]
-    diag = _unit("workflow-diag.service")["ExecStart"][0]
     assert "--host 127.0.0.1 --port 8000" in central
-    assert "--host 127.0.0.1 --port 8100" in diag
-    assert "--reload" not in central and "--reload" not in diag
+    assert "--reload" not in central
 
 
 def test_backup_timer_runs_daily_at_0300_as_workflow_user():
@@ -159,13 +155,8 @@ def test_caddyfile_proxies_central_only_and_never_exposes_diag_api():
 # --- 환경변수 예시 -----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "name, expected_keys",
-    [("central.env.example", CENTRAL_ENV_KEYS), ("diag.env.example", DIAG_ENV_KEYS)],
-    ids=["central", "diag"],
-)
-def test_env_example_keys_match_what_load_settings_reads(name, expected_keys):
-    assert set(_env_example(name)) == set(expected_keys)
+def test_env_example_keys_match_what_load_settings_reads():
+    assert set(_env_example("central.env.example")) == set(CENTRAL_ENV_KEYS)
 
 
 def test_connector_env_example_keys_are_what_the_connector_reads():
@@ -186,44 +177,20 @@ def test_connector_env_example_keys_are_what_the_connector_reads():
 
 def test_env_examples_leave_secrets_empty():
     central = _env_example("central.env.example")
-    diag = _env_example("diag.env.example")
     for key in (*SECRET_KEYS, *OPTIONAL_SECRET_KEYS):
         assert central[key] == "", f"central {key} 는 비어 있어야 한다"
-    assert diag["DIAG_API_TOKEN"] == ""
-    assert diag["OPENAI_API_KEY"] == ""
 
 
 def test_env_examples_point_at_architecture_paths():
     central = _env_example("central.env.example")
-    diag = _env_example("diag.env.example")
     assert central["WORKFLOW_DB_PATH"] == "/var/lib/workflow/central/db.sqlite"
     assert central["WORKFLOW_ARTIFACT_DIR"].startswith("/var/lib/workflow/central/")
     assert central["WORKFLOW_SECRET_DIR"] == "/var/lib/workflow/central/secrets"
-    assert central["DIAG_API_URL"] == "http://127.0.0.1:8100"
-    assert diag["DIAG_DB_PATH"] == "/var/lib/workflow/diag/db.sqlite"
-    assert diag["DIAG_ARTIFACT_DIR"].startswith("/var/lib/workflow/diag/")
-    assert diag["DIAG_BUDGET_USD"] == "30"
 
 
 def test_central_env_example_keeps_demo_mode():
     """phase 10 — 공개 데모 VM 은 WORKFLOW_MODE 를 비워 기본(demo)으로 돈다."""
     assert _env_example("central.env.example")["WORKFLOW_MODE"] == ""
-
-
-def test_env_examples_run_the_public_demo_on_scripted_diagnosis():
-    """공개 데모는 대본 진단(fake) — 비용 0 이라 한도를 올린다 (phase 5 step 7). 코드 기본값(Limits)은 그대로."""
-    central = _env_example("central.env.example")
-    diag = _env_example("diag.env.example")
-    assert diag["DIAG_MODEL"] == "fake"
-    assert diag["DIAG_FAKE_TURN_SECONDS"] == "2.5"
-    assert diag["OPENAI_API_KEY"] == ""  # ADR-0003: 키·예산 확인 전 유료 호출 금지
-    assert central["WORKFLOW_LIMIT_PER_SESSION_DAILY"] == "200"
-    assert central["WORKFLOW_LIMIT_GLOBAL_DAILY"] == "5000"
-    # 진단 API 의 하루 접수 상한은 횟수로 세므로 fake 에서도 걸린다 — 중앙과 같은 값이어야 중앙 한도가 의미 있다
-    assert diag["DIAG_GLOBAL_DAILY"] == central["WORKFLOW_LIMIT_GLOBAL_DAILY"]
-    assert (Limits.per_session_daily, Limits.global_daily) == (10, 60)
-    text = (DEPLOY / "env" / "central.env.example").read_text(encoding="utf-8")
-    assert "DIAG_MODEL=fake" in text and "10/36" in text  # 실제 모델을 켜면 되돌릴 ADR-0003 값
 
 
 def test_repo_holds_no_secret_looking_values_under_deploy():

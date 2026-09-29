@@ -1,4 +1,4 @@
-{# 운영자 — 로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드, 병합 확인 대기, 모든 세션 업무, 진단 사용량(진단이 켜져 있을 때만).
+{# 운영자 — 로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드, 모든 세션 업무.
    등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
@@ -62,7 +62,7 @@
   <div class="field-row">
     <div class="field">
       <label for="op_capability_code">능력 코드</label>
-      <input type="text" id="op_capability_code" name="capability_code" list="builtin-codes" required placeholder="code.modify">
+      <input type="text" id="op_capability_code" name="capability_code" list="builtin-codes" required placeholder="code.fix">
       <datalist id="builtin-codes">{% for k in builtin_kinds %}<option value="{{ k.capability_code }}">{{ k.label }} · scope {{ k.scope_key }}</option>{% endfor %}</datalist>
       <div class="help">내장: {% for k in builtin_kinds %}<span class="mono">{{ k.capability_code }}</span> ({{ k.scope_key }}){% if not loop.last %}, {% endif %}{% endfor %}. 사용자 정의 종류의 코드는 그 종류의 능력 코드를 적습니다.</div>
     </div>
@@ -85,22 +85,6 @@
   <div class="actions"><button class="btn" type="submit">등록</button></div>
 </form>
 
-<h2>병합 확인 대기</h2>
-<div class="card">
-  <p class="small">여기서는 확인 사실만 기록합니다.</p>
-  <ul class="agent-list">
-    {% for t in merge_queue %}
-    <li>
-      <span><strong>{{ t.title }}</strong> <span class="mono small">{{ t.task_id }}</span></span>
-      <span class="small mono">{{ t.session_id }}</span>
-      <form method="post" action="/operator/merges/{{ t.task_id }}/confirm" class="inline-form" style="margin-left:auto"><button class="btn btn-small" type="submit">병합 확인</button></form>
-    </li>
-    {% else %}
-    <li class="muted">없음</li>
-    {% endfor %}
-  </ul>
-</div>
-
 <h2>모든 세션 업무</h2>
 <div class="card table-wrap">
   <table>
@@ -118,12 +102,5 @@
   </table>
 </div>
 
-{% if diagnosis_enabled %}
-<h2>진단 사용량</h2>
-<div class="card">
-  <p>오늘 진단 실행: <strong>{{ diagnosis_today }}</strong>건 (세션당 10회 · 전체 60회 상한)</p>
-  <p class="small">총액 상한(US$30)은 진단 서비스가 토큰 사용량으로 추정해 판단합니다.</p>
-</div>
-{% endif %}
 {% endif %}
 {% endblock %}

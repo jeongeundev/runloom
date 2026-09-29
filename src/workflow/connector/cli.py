@@ -5,7 +5,7 @@
               [--link PATH ...] [--env NAME=VALUE ...]
                                                      로컬 등록 저장 + discovery 결과를 중앙에 보고
                                                      예: --verify "vp-pytest=python3 -m pytest -q"
-                                                         --verify "vp-report=python3 -m daily_report {response}"
+                                                         --verify "vp-lint=python3 -m ruff check ."
                                                      --id 기본 = 폴더 이름, --repository-id 기본 = GitHub owner/name
                                                      (없으면 폴더 이름). --link·--env 는 로컬에만 둔다 (ADR-0018)
     setup     --server URL [--code CODE] --repo PATH [register 인자 ...]

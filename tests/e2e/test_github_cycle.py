@@ -42,7 +42,6 @@ from workflow.adapters import repo
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.callback_client import HttpCallbackClient
 from workflow.adapters.db import connect
-from workflow.adapters.diag_client import HttpDiagClient
 from workflow.adapters.github_client import HttpGitHubClient
 from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult, ExecutionRequest
 from workflow.server import worker as worker_module
@@ -464,10 +463,8 @@ class World:
     def make_worker(self) -> Worker:
         """워커 프로세스 한 번의 시작과 같다 — 메모리 상태 없이 DB 만 보고 이어 간다."""
         settings = load_settings(self.central_env)
-        diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
-                              transport=httpx.MockTransport(lambda request: httpx.Response(503)))
         github = HttpGitHubClient(settings.github_token, settings.github_repos, transport=ToFakeGitHub(self.fake_port))
-        return Worker(lambda: connect(settings.db_path), self.store, diag, HttpCallbackClient(), settings, utc_now,
+        return Worker(lambda: connect(settings.db_path), self.store, HttpCallbackClient(), settings, utc_now,
                       github=github)
 
     def spawn(self, name: str, argv: list[str], env: dict) -> None:
@@ -532,14 +529,10 @@ def world(tmp_path_factory):
         "WORKFLOW_ARTIFACT_DIR": str(workdir / "central" / "artifacts"),
         "SESSION_SECRET": "e2e-session-secret-" + "s" * 20,
         "OPERATOR_TOKEN": "e2e-operator-token-" + "o" * 20,
-        "DIAG_API_TOKEN": "e2e-diag-token-" + "d" * 20,
-        "DIAG_API_URL": "http://127.0.0.1:9",
         "WORKFLOW_PUBLIC_URL": f"http://127.0.0.1:{port}",
         "WORKFLOW_GITHUB_TOKEN": TOKEN,
         "WORKFLOW_GITHUB_REPOS": "acme/billing,acme/shop",
         "WORKFLOW_LIMIT_ACTIVE_TASKS_PER_SESSION": "20",
-        "WORKFLOW_LIMIT_PER_SESSION_DAILY": "50",
-        "WORKFLOW_LIMIT_GLOBAL_DAILY": "50",
     }
     fake_bin = install_fake_codex(workdir / "bin")
     connector_env = {

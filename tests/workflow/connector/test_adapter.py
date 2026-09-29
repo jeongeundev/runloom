@@ -2,7 +2,7 @@
 
 import hashlib
 
-from workflow.connector.adapter import AdapterOutput, EchoAdapter, make_meta
+from workflow.connector.adapter import SUPPORTED_BUILTIN_KINDS, AdapterOutput, EchoAdapter, make_meta
 from workflow.contracts.v1 import ExecutionRequest, GenericResult
 
 from .conftest import BASE_COMMIT, make_local_request, make_request
@@ -14,6 +14,12 @@ class Progress:
 
     def __call__(self, message: str, *, runtime_ref: str | None = None) -> None:
         self.calls.append((message, runtime_ref))
+
+
+def test_supported_builtin_kinds_are_bug_fix_and_code_review_only():
+    # 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다 (ADR-0019) — claim 때 지원 종류로 선언하지 않는다
+    assert SUPPORTED_BUILTIN_KINDS == ("bug_fix", "code_review")
+    assert "diagnosis" not in SUPPORTED_BUILTIN_KINDS and "code_change" not in SUPPORTED_BUILTIN_KINDS
 
 
 def test_make_meta_fills_sha256_and_size():
@@ -36,7 +42,6 @@ def test_echo_adapter_reports_runtime_ref_first_then_returns_review_result(tmp_p
     handoff_dir = tmp_path / f"{request.task_id}.handoff"
     handoff_dir.mkdir()
     (handoff_dir / "manifest.json").write_text("{}")
-    (handoff_dir / "response-after@1.json").write_text("{}")
     progress = Progress()
 
     output = EchoAdapter().run(request, handoff_dir, progress)
@@ -50,11 +55,11 @@ def test_echo_adapter_reports_runtime_ref_first_then_returns_review_result(tmp_p
     assert result.artifact_ids == [] and result.verification.log_artifact_id == "verification_log"  # runner 가 채움
     assert result.verification.profile_id == "vp-pytest"
     kinds = [meta.kind for meta, _ in output.artifacts]
-    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log", "report_output"]
+    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log"]
     by_kind = {meta.kind: data for meta, data in output.artifacts}
     assert by_kind["test_log_before"].startswith(b"exit_code=1\n")
     assert by_kind["test_log_after"].startswith(b"exit_code=0\n")
-    assert b"response-after@1.json" in by_kind["report_output"]
+    assert "1개" in result.summary  # 인계 자료 목록을 읽었다
     for meta, data in output.artifacts:
         assert meta.sha256 == hashlib.sha256(data).hexdigest() and meta.size == len(data)
 

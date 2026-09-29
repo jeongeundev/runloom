@@ -2,8 +2,8 @@
 
 규칙 기반이며 LLM 을 쓰지 않는다 (ADR-0004). 그래서 모든 결정에 사람이 읽는 이유 문장이
 붙는다. 순서는 `blocked_by` 위상 정렬, 체인은 인접 쌍에 등록된 후속 규칙(`SuccessorRule`)이 있을 때만
-(ADR-0009 — 종류·규칙 등록부는 인자로 받는다), 방식은 `defaults`·`kinds`·`completion` 의 기본값,
-배정은 `select_agent`.
+(ADR-0009 — 종류·규칙 등록부는 인자로 받는다), 실행 방식은 `defaults` 의 기본값,
+완료 방식은 항상 검토 후 완료, 배정은 `select_agent`.
 """
 
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ from typing import Literal
 from workflow.contracts.v1 import Capability, KindSpec, SelectionRecord, SuccessorRule
 from workflow.domain.completion import Criterion, criteria_template
 from workflow.domain.defaults import default_run_mode
-from workflow.domain.kinds import can_auto_complete, kind_for_capability
+from workflow.domain.kinds import kind_for_capability
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.succession import rule_for
 from workflow.domain.task_sources import Issue, IssueMapping, map_issue
@@ -24,7 +24,6 @@ class PlanNode:
     issue: Issue
     capability: Capability
     kind: str  # 등록된 종류 식별자 (`KindSpec.kind`)
-    run_id: str | None
     predecessor_key: str | None  # 체인 안의 바로 앞 노드 key
     run_mode: Literal["manual", "auto"]
     completion_mode: Literal["auto", "review"]
@@ -85,14 +84,13 @@ def _order_reasons(issue: Issue, capable_keys: set[str], all_keys: set[str]) -> 
     return reasons
 
 
-def _mode_reasons(has_predecessor: bool, completion_mode: str) -> list[str]:
+def _mode_reasons(has_predecessor: bool) -> list[str]:
     run = (
         "자동 실행 — 선행 결과가 규칙에 맞으면 별도 조작 없이 착수"
         if has_predecessor
         else "직접 실행 — 흐름의 첫 업무는 사람이 시작"
     )
-    completion = "자동 완료 — 진단 자동 판정기 있음" if completion_mode == "auto" else "검토 후 완료 — 기본값"
-    return [run, completion]
+    return [run, "검토 후 완료 — 기본값"]
 
 
 def human_gate_label(completion_mode: str) -> str:
@@ -162,8 +160,7 @@ def compose(
 
         has_predecessor = prev is not None
         run_mode = default_run_mode(has_predecessor)
-        completion_mode: Literal["auto", "review"] = "auto" if can_auto_complete(spec) else "review"
-        reasons.extend(_mode_reasons(has_predecessor, completion_mode))
+        reasons.extend(_mode_reasons(has_predecessor))
 
         selection = select_agent(issue.key, capability, candidates, prefer=prefer)
         reasons.append(_assignment_reason(selection))
@@ -173,10 +170,9 @@ def compose(
                 issue=issue,
                 capability=capability,
                 kind=spec.kind,
-                run_id=mapping.run_id,
                 predecessor_key=prev.issue.key if prev is not None else None,
                 run_mode=run_mode,
-                completion_mode=completion_mode,
+                completion_mode="review",
                 criteria=tuple(criteria_template(spec)),
                 selection=selection,
                 reasons=tuple(reasons),

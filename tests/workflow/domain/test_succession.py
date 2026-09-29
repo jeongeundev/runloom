@@ -6,7 +6,7 @@
 from workflow.contracts.v1 import BUILTIN_RULES, SuccessorRule
 from workflow.domain.succession import continue_reason, may_continue, rule_for
 
-DIAGNOSIS_TO_CODE_CHANGE = BUILTIN_RULES[0]
+BUG_FIX_TO_CODE_REVIEW = BUILTIN_RULES[0]
 CODE_CHANGE_TO_REVIEW = SuccessorRule(
     from_kind="code_change", on_outcomes=["ready_for_review"], to_kind="review",
     handoff_kinds=["diff", "code_change_result"],
@@ -14,7 +14,7 @@ CODE_CHANGE_TO_REVIEW = SuccessorRule(
 
 
 def test_rule_for_finds_builtin_rule():
-    assert rule_for(BUILTIN_RULES, "diagnosis", "code_change") is DIAGNOSIS_TO_CODE_CHANGE
+    assert rule_for(BUILTIN_RULES, "bug_fix", "code_review") is BUG_FIX_TO_CODE_REVIEW
 
 
 def test_rule_for_registered_rule():
@@ -25,21 +25,22 @@ def test_rule_for_registered_rule():
 
 def test_rule_for_missing_pair_is_none():
     assert rule_for(BUILTIN_RULES, "code_change", "review") is None
-    assert rule_for(BUILTIN_RULES, "code_change", "diagnosis") is None
-    assert rule_for([], "diagnosis", "code_change") is None
+    assert rule_for(BUILTIN_RULES, "code_review", "bug_fix") is None
+    assert rule_for(BUILTIN_RULES, "diagnosis", "code_change") is None  # 진단 데모 규칙은 main 전용 (ADR-0019)
+    assert rule_for([], "bug_fix", "code_review") is None
 
 
 def test_may_continue_only_on_listed_outcomes():
-    assert may_continue(DIAGNOSIS_TO_CODE_CHANGE, "ready_for_handoff") is True
-    assert may_continue(DIAGNOSIS_TO_CODE_CHANGE, "needs_information") is False
-    assert may_continue(DIAGNOSIS_TO_CODE_CHANGE, "ready_for_review") is False
+    assert may_continue(BUG_FIX_TO_CODE_REVIEW, "ready_for_review") is True
+    assert may_continue(BUG_FIX_TO_CODE_REVIEW, "needs_information") is False
+    assert may_continue(BUG_FIX_TO_CODE_REVIEW, "approved") is False
 
 
 def test_continue_reason_names_rule_and_outcome():
-    assert continue_reason(DIAGNOSIS_TO_CODE_CHANGE, "ready_for_handoff") == (
-        "선행 outcome ready_for_handoff — 규칙 diagnosis → code_change 로 착수"
+    assert continue_reason(BUG_FIX_TO_CODE_REVIEW, "ready_for_review") == (
+        "선행 outcome ready_for_review — 규칙 bug_fix → code_review 로 착수"
     )
-    assert continue_reason(DIAGNOSIS_TO_CODE_CHANGE, "needs_information") == (
+    assert continue_reason(BUG_FIX_TO_CODE_REVIEW, "needs_information") == (
         "선행 outcome needs_information 은 규칙 대상 아님 — 확인 필요"
     )
     assert continue_reason(CODE_CHANGE_TO_REVIEW, "ready_for_review") == (

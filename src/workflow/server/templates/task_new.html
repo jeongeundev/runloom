@@ -1,5 +1,4 @@
 {# 업무 등록 — PRD 2절 입력 항목. 기본 종류는 `bug_fix`(web._EMPTY_FORM). 코드 수정 대상은 폼에서 받지 않는다.
-   진단 입력(run_id)은 진단이 켜져 있을 때(`diagnosis_enabled`)만 보인다 — phase 13 step 3 에서 진단과 함께 사라진다.
    요구 능력 select 는 세션의 종류 등록부(kind_options)에서 온다 — 종류를 고르면 capability_code·scope_key 가 정해진다 (ADR-0009).
    인라인 스크립트 하나: 종류를 바꾸면 범위 값 라벨의 scope 키(option 의 data-scope-key)를 바꾼다. #}
 {% extends "base.html" %}
@@ -64,9 +63,8 @@
       <label for="completion_mode">완료 방식</label>
       <select id="completion_mode" name="completion_mode">
         <option value="review"{% if form.completion_mode == 'review' %} selected{% endif %}>검토 후 완료</option>
-        <option value="auto"{% if form.completion_mode == 'auto' %} selected{% endif %}{% if form_kind not in auto_completion_kinds %} disabled{% endif %}>자동 완료</option>
       </select>
-      <div class="help">{% if form.completion_note %}{{ form.completion_note }}{% else %}자동 완료는 자동 판정기가 있는 업무 종류(진단)에서만 고를 수 있습니다.{% endif %}</div>
+      <div class="help">{% if form.completion_note %}{{ form.completion_note }}{% else %}모든 업무 종류는 사람이 결과를 확인한 뒤 완료합니다.{% endif %}</div>
     </div>
   </div>
   <div class="field">
@@ -94,11 +92,7 @@
       <div class="help">선행 결과가 후속 규칙에 맞으면 이 업무가 시작됩니다 (A → B). 선행 승인을 기다리지 않습니다.</div>
     </div>
     <div class="field">
-      {% if diagnosis_enabled %}
-      <label for="run_id">조사할 run_id (진단 업무)</label>
-      <input type="text" id="run_id" name="run_id" value="{{ form.run_id }}">
-      {% endif %}
-      <div class="help">{% if diagnosis_enabled %}진단이 아닌 {% endif %}업무의 대상(저장소·기준 커밋·검증 프로필 또는 로컬 등록)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
+      <div class="help">업무의 대상(저장소·기준 커밋·검증 프로필 또는 로컬 등록)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
     </div>
   </div>
   <div class="actions">

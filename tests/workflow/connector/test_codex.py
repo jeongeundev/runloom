@@ -1,7 +1,7 @@
 """codex — 실제 Codex 를 띄우는 어댑터. 여기서는 PATH 앞에 둔 **가짜 `codex`** 스크립트로만 돈다 (실연동은 Step 15).
 
 `make_repo` 는 Step 13 의 `scripts/scaffold_demo_repo.py` 로 데모 저장소를 만든다: `daily_report/transformer.py` 는
-수정 전(`items` 만), `python3 -m pytest -q`, `python3 -m daily_report <response.json>`.
+수정 전(`items` 만), 검증은 `python3 -m pytest -q`.
 """
 
 import json
@@ -242,7 +242,6 @@ def register(state_conn, repo: Path, *, profiles: dict | None = None) -> str:
         "base_commit": base,
         "verification_profiles": profiles if profiles is not None else {
             "vp-pytest": [sys.executable, "-m", "pytest", "-q"],
-            "vp-report": [sys.executable, "-m", "daily_report", "{response}"],
         },
     })
     return base
@@ -295,7 +294,7 @@ def test_build_argv_is_fixed_and_carries_no_prompt_or_evidence(state_conn, tmp_p
 # --- 정상 --------------------------------------------------------------------------------
 
 
-def test_full_run_is_ready_for_review_with_seven_artifacts(state_conn, repo, handoff, fake_bin):
+def test_full_run_is_ready_for_review_with_six_artifacts(state_conn, repo, handoff, fake_bin):
     write_fake_codex(fake_bin, "full")
     base = register(state_conn, repo)
     request = request_for(base)
@@ -309,14 +308,11 @@ def test_full_run_is_ready_for_review_with_seven_artifacts(state_conn, repo, han
     assert result.base_commit == base and result.result_commit != base
     assert result.artifact_ids == []  # runner 가 채운다
     kinds = [meta.kind for meta, _ in output.artifacts]
-    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log", "report_output",
-                     "codex_jsonl", "codex_stderr"]
+    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log", "codex_jsonl", "codex_stderr"]
     artifacts = by_kind(output)
     assert artifacts["test_log_before"].decode().splitlines()[0] == "exit_code=1"
     assert artifacts["test_log_after"].decode().splitlines()[0] == "exit_code=0"
     assert artifacts["verification_log"].decode().splitlines()[0] == "exit_code=0"
-    report = artifacts["report_output"].decode()
-    assert "2026-09-19" in report and "합계    20    5" in report
     assert "transformer.py" in artifacts["diff"].decode() and "test_repro.py" in artifacts["diff"].decode()
     assert b"fake codex: done" in artifacts["codex_stderr"]
     lines = [json.loads(line) for line in artifacts["codex_jsonl"].decode().splitlines()]
@@ -484,22 +480,11 @@ def test_missing_base_commit_fails_before_launching_codex(state_conn, repo, hand
 
 
 def test_missing_verification_profile_fails_before_launching_codex(state_conn, repo, handoff):
-    base = register(state_conn, repo, profiles={"vp-report": [sys.executable, "-m", "daily_report", "{response}"]})
+    base = register(state_conn, repo, profiles={"vp-unit": [sys.executable, "-m", "pytest", "-q"]})
 
     output = adapter(state_conn).run(request_for(base), handoff, Progress())
 
     assert output.failed[0] == "verification_profile_missing" and "vp-pytest" in output.failed[1]
-
-
-def test_missing_report_profile_is_recorded_in_report_output(state_conn, repo, handoff, fake_bin):
-    write_fake_codex(fake_bin, "full")
-    base = register(state_conn, repo, profiles={"vp-pytest": [sys.executable, "-m", "pytest", "-q"]})
-
-    output = adapter(state_conn).run(request_for(base), handoff, Progress())
-
-    assert output.failed is None and output.result.outcome == "ready_for_review"
-    report = by_kind(output)["report_output"].decode()
-    assert report.startswith("exit_code=") and "vp-report" in report
 
 
 def test_diagnosis_request_is_unsupported(state_conn, handoff):
@@ -521,7 +506,7 @@ def test_diagnosis_request_is_unsupported(state_conn, handoff):
 def review_handoff(tmp_path) -> Path:
     handoff = tmp_path / "review-daily-0920.handoff"
     handoff.mkdir()
-    (handoff / "manifest.json").write_text('{"source_kind": "code_change"}')
+    (handoff / "manifest.json").write_text('{"source_kind": "bug_fix"}')
     (handoff / "diff.patch").write_text("--- a\n+++ b\n")
     (handoff / "code_change_result.json").write_text('{"outcome": "ready_for_review"}')
     return handoff

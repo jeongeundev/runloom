@@ -50,7 +50,7 @@ class TaskView:
     selection_reason: str
     selected_agent_id: str | None
     predecessor_status: str | None  # 선행 Task 의 사용자 상태. 없으면 None
-    connector_online: bool | None  # code_change 만 의미. 진단은 None
+    connector_online: bool | None  # 로컬 연결 프로그램 실행만 의미. 모르면 None
     connector_last_seen: str | None
     execution_status: str | None  # 활성 Execution 상태. 없으면 None
     last_progress: str | None

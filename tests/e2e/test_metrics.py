@@ -181,8 +181,6 @@ def world(tmp_path_factory):
         "WORKFLOW_ARTIFACT_DIR": str(workdir / "central" / "artifacts"),
         "SESSION_SECRET": "e2e-session-secret-" + "s" * 20,
         "OPERATOR_TOKEN": "e2e-operator-token-" + "o" * 20,
-        "DIAG_API_TOKEN": "e2e-diag-token-" + "d" * 20,
-        "DIAG_API_URL": "http://127.0.0.1:9",
         "WORKFLOW_PUBLIC_URL": f"http://127.0.0.1:{port}",
         "WORKFLOW_GITHUB_TOKEN": TOKEN,
         "WORKFLOW_GITHUB_REPOS": REPO,

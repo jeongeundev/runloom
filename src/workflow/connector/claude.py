@@ -42,10 +42,10 @@ from workflow.connector.local_tool import (
 )
 from workflow.contracts.v1 import ExecutionUsage
 
-# 고정 허용 도구. 셸은 등록된 검증 명령과 같은 접두 두 개, git 은 읽기만.
+# 고정 허용 도구. 셸은 테스트 실행 접두 하나, git 은 읽기만.
 ALLOWED_TOOLS = (
     "Read", "Edit", "Write", "Glob", "Grep",
-    "Bash(python3 -m pytest*)", "Bash(python3 -m daily_report*)", "Bash(git diff*)", "Bash(git status*)",
+    "Bash(python3 -m pytest*)", "Bash(git diff*)", "Bash(git status*)",
 )
 # 읽기 전용 실행(사용자 정의 종류) — 쓰기 도구·셸 없음.
 READONLY_TOOLS = ("Read", "Glob", "Grep")

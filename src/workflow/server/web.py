@@ -72,7 +72,6 @@ from workflow.domain.defaults import default_run_mode
 from workflow.domain.execution_policy import policy_for
 from workflow.domain import notification
 from workflow.domain.kinds import (
-    can_auto_complete,
     get_kind,
     kind_for_capability,
     validate_capability,
@@ -123,7 +122,6 @@ _EMPTY_FORM: dict[str, str] = {
     "completion_mode": "review",
     "criteria_extra": "",
     "predecessor_task_id": "",
-    "run_id": "",
     "completion_note": "",
 }
 
@@ -170,13 +168,12 @@ def _settings(request: Request) -> Settings:
 
 
 def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict[str, Any]:
-    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용. 진단 화면 조각은 `diagnosis_enabled` 일 때만 보인다."""
+    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용."""
     session = repo.get_session(conn, session_id)
     settings = _settings(request)
     return {
         "request": request,
         "now": now,
-        "diagnosis_enabled": settings.diagnosis_enabled,
         "session_id": session_id,
         "is_operator": bool(session["is_operator"]) if session is not None else False,
         "my_tasks": [
@@ -260,14 +257,13 @@ def _kind_for_code(conn: Connection, session_id: str, code: str) -> KindSpec:
     return spec
 
 
-def _target_for(spec: KindSpec, run_id: str, agent: Row | None) -> dict[str, Any]:
-    """Task 의 target. 진단은 `run_id`, 그 외는 선택된 Agent 의 등록값(연결 프로그램이 보고한 값)에서 온다 — 폼에서 받지 않는다.
-    내장이 아닌 종류는 `LocalTarget`(등록 ID 하나, 읽기 전용 실행). Agent 가 아직 없으면 비워 두고 선택 뒤에 채운다."""
-    if spec.kind == "diagnosis":
-        return {"run_id": run_id}
+def _target_for(spec: KindSpec, agent: Row | None) -> dict[str, Any]:
+    """Task 의 target. 선택된 Agent 의 등록값(연결 프로그램이 보고한 값)에서 온다 — 폼에서 받지 않는다.
+    코드 수정 대상(`bug_fix`, 실행 정책 target `code_change`)은 등록·기준 커밋·첫 검증 프로필, 그 밖은 등록 ID 하나.
+    Agent 가 아직 없으면 비워 두고 선택 뒤에 채운다."""
     if agent is None:
         return {}
-    if spec.kind == "code_change":
+    if policy_for(spec.kind).target == "code_change":
         profiles = json.loads(agent["verification_profile_ids_json"])
         return {
             "local_registration_id": agent["local_registration_id"],
@@ -277,34 +273,7 @@ def _target_for(spec: KindSpec, run_id: str, agent: Row | None) -> dict[str, Any
     return {"local_registration_id": agent["local_registration_id"]}
 
 
-def _awaits_merge(kind: str) -> bool:
-    """코드 수정만 검토 승인 뒤 기준 브랜치 병합(운영자 확인) 단계가 있다 (ADR-0005)."""
-    return kind == "code_change"
-
-
 # --- 실행 생성 -----------------------------------------------------------------------
-
-
-def _check_diagnosis_limits(conn: Connection, session_id: str, kind: str, now: str, settings: Settings) -> None:
-    """CONTRACT 10절 — 내장 진단만 상한이 있다. 세션 일일 → 전체 일일 순으로 검사한다. 총액 상한은 진단 서비스가 판단한다."""
-    if kind != "diagnosis":
-        return
-    since, resets_at = views.kst_day_bounds(now)
-    limits = settings.limits
-    if repo.count_diagnosis_started(conn, session_id=session_id, since=since) >= limits.per_session_daily:
-        raise PageError(
-            429,
-            "daily_limit_reached",
-            f"오늘 이 세션의 진단 실행 한도({limits.per_session_daily}회)에 도달했습니다.",
-            details={"limit": limits.per_session_daily, "resets_at": resets_at},
-        )
-    if repo.count_diagnosis_started(conn, session_id=None, since=since) >= limits.global_daily:
-        raise PageError(
-            429,
-            "daily_limit_reached",
-            f"오늘 전체 진단 실행 한도({limits.global_daily}회)에 도달했습니다.",
-            details={"limit": limits.global_daily, "resets_at": resets_at},
-        )
 
 
 def _start_execution(
@@ -322,9 +291,6 @@ def _start_execution(
     """새 시도를 `queued` 로 만든다. 요청은 여기서 고정되고 이후 바뀌지 않는다 — 종류 봉투(`kind_spec`)도 등록부에서
     이때 채운다. 반환은 execution_id."""
     kind = task["kind"]
-    if kind == "diagnosis" and not settings.diagnosis_enabled:
-        raise PageError(409, "diagnosis_disabled", "진단 기능이 꺼져 있습니다. DIAG_API_TOKEN 이 설정되지 않았습니다.")
-    _check_diagnosis_limits(conn, session_id, kind, now, settings)
     spec = repo.get_kind(conn, session_id, kind)
     if spec is None:
         raise PageError(409, "request_incomplete", "실행 요청을 만들 수 없습니다. 업무 종류가 등록돼 있지 않습니다.")
@@ -367,8 +333,6 @@ def _start_execution(
         )
     except ActiveExecutionExists:
         raise PageError(409, "execution_conflict", "이미 활성 실행이 있습니다.") from None
-    if kind == "diagnosis":
-        repo.record_diagnosis_start(conn, session_id, execution_id, now)
     return execution_id
 
 
@@ -457,7 +421,6 @@ def _form_context(
         # 요구 능력 select 는 세션 등록부에서 — 종류를 고르면 capability_code·scope_key 가 정해진다 (ARCHITECTURE "화면")
         "kind_options": [views.kind_public(spec) for spec in kinds],
         "criteria_templates": {spec.kind: [c.text for c in criteria_template(spec)] for spec in kinds},
-        "auto_completion_kinds": [spec.kind for spec in kinds if can_auto_complete(spec)],
         "form_kind": form_spec.kind,
         "form_scope_key": form_spec.scope_key,
     }
@@ -493,14 +456,13 @@ def task_create(
     completion_mode: str = Form("review"),
     criteria_extra: str = Form(""),
     predecessor_task_id: str = Form(""),
-    run_id: str = Form(""),
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     now = utc_now()
     settings = _settings(request)
     title, request_text = title.strip(), request_text.strip()
-    scope_value, run_id, chosen_agent_id = scope_value.strip(), run_id.strip(), chosen_agent_id.strip()
+    scope_value, chosen_agent_id = scope_value.strip(), chosen_agent_id.strip()
     predecessor_task_id = predecessor_task_id.strip()
 
     if not title or not request_text:
@@ -519,14 +481,12 @@ def task_create(
     if selection_mode == "manual":
         _require_registered(conn, session_id, chosen_agent_id)
 
-    if completion_mode == "auto" and not can_auto_complete(spec):
+    if completion_mode == "auto":  # 자동 완료 검증기가 있는 종류가 없다 — 진단 데모는 `main` 전용 (ADR-0019)
         raise PageError(
             422, "invalid_field",
             "이 업무 종류는 자동 완료를 지원하지 않습니다. 검토 후 완료를 선택하세요.",
             field="completion_mode",
         )
-    if spec.kind == "diagnosis" and not run_id:
-        raise PageError(422, "invalid_field", "조사할 run_id 를 입력하세요.", field="run_id")
     if predecessor_task_id:
         _own_task(conn, session_id, predecessor_task_id)
 
@@ -543,7 +503,7 @@ def task_create(
         title=title, request_text=request_text, spec=spec, scope_value=scope_value,
         selection_mode=selection_mode, chosen_agent_id=chosen_agent_id,
         run_mode=run_mode, completion_mode=completion_mode, criteria_extra=criteria_extra,
-        predecessor_task_id=predecessor_task_id, run_id=run_id,
+        predecessor_task_id=predecessor_task_id,
     )
     return _redirect(f"/tasks/{task_id}", response)
 
@@ -552,7 +512,7 @@ def _insert_new_task(
     conn: Connection, session_id: str, now: str, settings: Settings, *,
     title: str, request_text: str, spec: KindSpec, scope_value: str,
     selection_mode: str, chosen_agent_id: str, run_mode: str, completion_mode: str,
-    criteria_extra: str, predecessor_task_id: str, run_id: str,
+    criteria_extra: str, predecessor_task_id: str,
     chain_id: str | None = None, source_ref: str | None = None, prefer: Sequence[str] | None = None,
 ) -> str:
     """검증이 끝난 값으로 Task 1개를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다.
@@ -586,7 +546,7 @@ def _insert_new_task(
             "criteria": [c.__dict__ for c in criteria],
             "predecessor_task_id": predecessor_task_id or None,
             "revision": 1,
-            "target": _target_for(spec, run_id, agent),
+            "target": _target_for(spec, agent),
             "status": "대기",
             "status_reason": "등록 중",
             "chain_id": chain_id,
@@ -660,7 +620,7 @@ def create_chain(
             selection_mode="auto", chosen_agent_id="", run_mode=node.run_mode,
             completion_mode=node.completion_mode, criteria_extra="",
             predecessor_task_id=task_ids[node.predecessor_key] if node.predecessor_key else "",
-            run_id=node.run_id or "", chain_id=chain_id, source_ref=node.issue.key, prefer=prefer,
+            chain_id=chain_id, source_ref=node.issue.key, prefer=prefer,
         )
     for item in capable_standalone:
         capability = item.mapping.capability
@@ -670,8 +630,8 @@ def create_chain(
             title=item.issue.title, request_text=item.issue.body, spec=spec,
             scope_value=capability.scope[spec.scope_key],
             selection_mode="auto", chosen_agent_id="", run_mode="manual",
-            completion_mode="auto" if can_auto_complete(spec) else "review", criteria_extra="",
-            predecessor_task_id="", run_id=item.mapping.run_id or "",
+            completion_mode="review", criteria_extra="",
+            predecessor_task_id="",
             chain_id=chain_id, source_ref=item.issue.key, prefer=prefer,
         )
     return ChainCreated(chain_id=chain_id, task_ids=task_ids, skipped=skipped)
@@ -836,7 +796,7 @@ def task_delegate(
         raise PageError(409, "task_closed", "마감된 업무는 맡길 수 없습니다.")
     repo.mark_issue_delegated(conn, session_id=session_id, source_id=issue["source_id"],
                               github_issue_id=issue["github_issue_id"], by="operator", now=now)
-    worker = Worker(lambda: conn, request.app.state.store, None, None, _settings(request), lambda: now)
+    worker = Worker(lambda: conn, request.app.state.store, None, _settings(request), lambda: now)
     worker.start_manually(conn, task_id)
     return _redirect(f"/tasks/{task_id}", response)
 
@@ -846,7 +806,7 @@ def _run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, settin
     `manual_mode` 만 뺀다. 대상·입력은 워커가 Agent 등록값·원인 결과로 고정한다. 새 실행이 없으면 지금 대기 사유로 409."""
     if task["finished_at"] is not None:
         raise PageError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
-    worker = Worker(lambda: conn, store, None, None, settings, lambda: now)  # 착수 단계만 쓴다 — 진단·callback 없음
+    worker = Worker(lambda: conn, store, None, settings, lambda: now)  # 착수 단계만 쓴다 — callback 없음
     if worker.start_manually(conn, task["task_id"]):
         return
     readiness = task_cycle.evaluate(conn, repo.get_task(conn, task["task_id"]), now=now, settings=settings,
@@ -856,7 +816,7 @@ def _run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, settin
 
 
 def _run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings: Settings) -> None:
-    """`task_run` 과 `chain_start` 의 공통 경로 — 조건 검사, 실행 생성(진단 한도 포함), 상태 갱신."""
+    """`task_run` 과 `chain_start` 의 공통 경로 — 조건 검사, 실행 생성, 상태 갱신."""
     task_id = task["task_id"]
     if task["finished_at"] is not None:
         raise PageError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
@@ -928,10 +888,9 @@ def task_select(
     )
     repo.save_selection(conn, record)
     agent = repo.get_agent(conn, record.selected_agent_id) if record.selected_agent_id else None
-    run_id = json.loads(task["target_json"]).get("run_id", "")
     repo.update_task_choice(
         conn, task_id, chosen_agent_id=agent_id.strip(),
-        target=_target_for(_kind_of(conn, session_id, task["kind"]), run_id, agent),
+        target=_target_for(_kind_of(conn, session_id, task["kind"]), agent),
     )
     _refresh_status(conn, task_id, now, settings)
     if return_to == "chain" and task["chain_id"] is not None:
@@ -968,7 +927,7 @@ def task_review(
     execution_id = execution["execution_id"]
 
     if decision == "approve":
-        reason = "검토 승인 · 병합: 운영자 확인 대기" if _awaits_merge(task["kind"]) else "검토 승인"
+        reason = "검토 승인"
         repo.update_task_status(
             conn, task_id, "완료", reason, finished_at=now, review_decision="approve", now=now
         )
@@ -986,7 +945,6 @@ def task_review(
     agent = repo.get_agent(conn, execution["agent_id"])
     if agent is None:
         raise PageError(409, "invalid_transition", "실행했던 에이전트가 더 이상 등록돼 있지 않습니다.")
-    _check_diagnosis_limits(conn, session_id, task["kind"], now, settings)  # 이전 시도를 해제하기 전에 확인
     review = ReviewComment(
         contract_version=1,
         task_id=task_id,
@@ -1349,20 +1307,13 @@ def _operator_context(
 ) -> dict[str, Any]:
     settings = _settings(request)
     tasks = [views.task_summary(conn, t, now=now, settings=settings) for t in repo.list_tasks(conn, None)]
-    merge_queue = [
-        t for t in repo.list_tasks(conn, None)
-        if t["status"] == "완료" and _awaits_merge(t["kind"]) and t["merge_confirmed_at"] is None
-    ]
-    since, _ = views.kst_day_bounds(now)
     kinds = _kinds(conn, session_id)
     return {
         **_base(request, conn, session_id, now),
         "agents": [views.agent_public(a, now=now, settings=settings, kinds=kinds) for a in repo.list_agents(conn)],
         "all_tasks": tasks,
-        "merge_queue": [dict(t) for t in merge_queue],
         "connect_codes": [dict(c) for c in repo.list_connect_codes(conn)],
         "issued": issued,
-        "diagnosis_today": repo.count_diagnosis_started(conn, session_id=None, since=since),
         # 에이전트 등록 폼의 안내 — 운영자는 세션 무관이라 내장 종류만 보인다. 사용자 정의 코드는 scope 키를 직접 적는다
         "builtin_kinds": [views.kind_public(spec) for spec in BUILTIN_KINDS],
         "owner_scopes": OWNER_SCOPES,
@@ -1890,24 +1841,4 @@ def operator_revoke_connect_code(
         repo.revoke_connect_code(conn, code, utc_now())
     except NotFound:
         raise PageError(404, "not_found", "취소할 수 있는 연결 코드가 아닙니다.", field="code") from None
-    return _redirect("/operator", response)
-
-
-@router.post("/operator/merges/{task_id}/confirm")
-def operator_confirm_merge(
-    response: Response,
-    task_id: str,
-    session_id: str = Depends(require_operator),
-    conn: Connection = Depends(get_conn),
-) -> RedirectResponse:
-    """병합 확인 기록. 실제 git 병합은 운영자가 Mac 의 데모 저장소에서 수동으로 한다."""
-    task = repo.get_task(conn, task_id)
-    if (
-        task is None
-        or task["status"] != "완료"
-        or not _awaits_merge(task["kind"])
-        or task["merge_confirmed_at"] is not None
-    ):
-        raise PageError(409, "invalid_transition", "병합 확인 대기 상태의 코드 수정 업무가 아닙니다.")
-    repo.confirm_merge(conn, task_id, utc_now())
     return _redirect("/operator", response)

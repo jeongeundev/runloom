@@ -447,7 +447,7 @@ def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str
 
 
 def delete_rule(conn: Connection, session_id: str, rule_id: str) -> None:
-    """내장 규칙도 삭제할 수 있다 — 팀이 진단 → 코드 수정을 잇지 않을 수 있다."""
+    """내장 규칙도 삭제할 수 있다 — 팀이 버그 수정 → 커밋 검토를 잇지 않을 수 있다."""
     with _tx(conn):
         cur = conn.execute(
             "DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id)
@@ -845,11 +845,6 @@ def predecessor_ready_execution(conn: Connection, task_id: str) -> Row | None:
         """,
         (task_id,),
     )
-
-
-def confirm_merge(conn: Connection, task_id: str, now: str) -> None:
-    cur = conn.execute("UPDATE tasks SET merge_confirmed_at = ? WHERE task_id = ?", (now, task_id))
-    _require_rowcount(cur, f"task {task_id}")
 
 
 # --- Chain (phase 5: "업무 가져오기" 로 만든 Task 묶음. phase 7: 입구 API 의 callback) -----
@@ -1433,30 +1428,6 @@ def download_allowed(
     return False
 
 
-# --- 상한 (ARCHITECTURE 모델 호출 예산) ----------------------------------------
-
-
-def count_diagnosis_started(conn: Connection, *, session_id: str | None, since: str) -> int:
-    if session_id is None:
-        row = _one(conn, "SELECT COUNT(*) FROM diagnosis_usage WHERE started_at >= ?", (since,))
-    else:
-        row = _one(
-            conn,
-            "SELECT COUNT(*) FROM diagnosis_usage WHERE started_at >= ? AND session_id = ?",
-            (since, session_id),
-        )
-    return row[0]
-
-
-def record_diagnosis_start(
-    conn: Connection, session_id: str, execution_id: str, now: str
-) -> None:
-    conn.execute(
-        "INSERT INTO diagnosis_usage (session_id, execution_id, started_at) VALUES (?, ?, ?)",
-        (session_id, execution_id, now),
-    )
-
-
 # --- GitHub 업무 순환 (phase 8, ADR-0014: 소스·담당 연결·원본 매핑·후속 원인·사람 요청·반영 outbox) ------------
 # 세션 소유: source → github_sources.session_id, Task → tasks.session_id. 다른 세션이면 NotFound(또는 None).
 
@@ -1603,7 +1574,7 @@ def list_metric_facts(conn: Connection, session_id: str, *, store: ArtifactStore
             predecessor_task_id=r["predecessor_task_id"],
             issue_opened_at=json.loads(r["snapshot_json"])["created_at"] if r["snapshot_json"] else None,
             issue_state=r["issue_state"], pr_merged_at=r["pr_merged_at"], merge_checked_at=r["merge_checked_at"],
-            finished_at=r["finished_at"], merge_confirmed_at=r["merge_confirmed_at"],
+            finished_at=r["finished_at"],
             review_decision=r["review_decision"],
         )
         for r in conn.execute(

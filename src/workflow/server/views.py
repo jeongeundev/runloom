@@ -6,7 +6,7 @@
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -21,7 +21,6 @@ from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule
 from workflow.domain.composition import compose, human_gate_label
-from workflow.domain.evidence_location import resolve_location
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.metrics import (
@@ -38,11 +37,11 @@ from workflow.domain.notification import webhook_host
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.server import github_clients, human_api, task_cycle
-from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst
+from workflow.server.filters import KIND_LABELS, duration, kind_label, kst
 from workflow.server.settings import Settings
 
 # 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7·11절)
-RESULT_KINDS = ("diagnosis_result", "code_change_result", "generic_result")
+RESULT_KINDS = ("code_change_result", "generic_result")
 
 # 뷰어가 줄 번호를 붙여 보이는 산출물 종류
 LOG_KINDS = (
@@ -67,16 +66,6 @@ _CALLBACK_MAX_ATTEMPTS = 5
 
 def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
-
-
-def _utc(dt: datetime) -> str:
-    return dt.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-def kst_day_bounds(now: str) -> tuple[str, str]:
-    """(오늘 00:00 KST 의 UTC 시각, 내일 00:00 KST 의 RFC 3339). 일일 상한 계산과 CONTRACT 10절 `resets_at`."""
-    start = _parse(now).astimezone(KST).replace(hour=0, minute=0, second=0, microsecond=0)
-    return _utc(start), (start + timedelta(days=1)).isoformat()
 
 
 def agent_online(agent: Row, *, now: str, settings: Settings) -> bool:
@@ -794,15 +783,10 @@ def _chain_node(
 
 
 def _human_gate(conn: Connection, last: Row, node: dict[str, Any]) -> dict[str, Any]:
-    """마지막 Task 에서 파생한 사람 단계. 상태 판정은 `node["status"]`(domain.status) 그대로이고 여기서는 문구만 고른다.
-    병합은 운영자 전용이라 세션 화면에는 "운영자 확인 대기" 와 "확인됨" 만 보인다 (ADR-0005)."""
+    """마지막 Task 에서 파생한 사람 단계. 상태 판정은 `node["status"]`(domain.status) 그대로이고 여기서는 문구만 고른다."""
     status: UserStatus = node["status"]
     if status.label == "완료":
-        if last["kind"] == "code_change":
-            reason = "병합 확인됨" if last["merge_confirmed_at"] else "병합: 운영자 확인 대기"
-        else:
-            reason = status.reason
-        gate = ("완료", reason)
+        gate = ("완료", status.reason)
     elif status.label == "실패" and last["review_decision"] == "close":
         gate = ("실패", status.reason)
     elif status.label == "확인 필요" and (
@@ -933,117 +917,12 @@ def _read_text(conn: Connection, store: ArtifactStore, artifact_id: str | None) 
         return None
 
 
-def _pretty_json(text: str) -> str:
-    try:
-        return json.dumps(json.loads(text), ensure_ascii=False, indent=2)
-    except ValueError:
-        return text
-
-
-class _AttachmentReader:
-    """결과 봉투의 `attachments` 를 (evidence_id, version) 로 찾아 원문을 읽는다.
-
-    같은 세션의 산출물만 읽는다 — 결과 봉투는 외부(진단 서비스)가 쓴 자료라 다른 세션의 artifact_id 를
-    가리켜도 원문을 보이지 않는다. 읽은 바이트는 artifact_id 별로 한 번만 읽는다."""
-
-    def __init__(self, conn: Connection, store: ArtifactStore, data: dict[str, Any], session_id: str):
-        self._conn, self._store, self._session_id = conn, store, session_id
-        self._by_key = {(a["evidence_id"], a["version"]): a for a in data.get("attachments", [])}
-        self._cache: dict[str, bytes | None] = {}
-
-    def find(self, evidence_id: str, version: str | None = None) -> dict[str, Any] | None:
-        if version is not None:
-            return self._by_key.get((evidence_id, version))
-        return next((a for (e, _), a in self._by_key.items() if e == evidence_id), None)
-
-    def read(self, attachment: dict[str, Any] | None) -> bytes | None:
-        if attachment is None:
-            return None
-        artifact_id = attachment["artifact_id"]
-        if artifact_id not in self._cache:
-            row = repo.get_artifact(self._conn, artifact_id)
-            if row is None or row["session_id"] != self._session_id:
-                self._cache[artifact_id] = None
-            else:
-                try:
-                    self._cache[artifact_id] = self._store.read(row["store_ref"])
-                except FileNotFoundError:
-                    self._cache[artifact_id] = None
-        return self._cache[artifact_id]
-
-
-def evidence_excerpts(
-    conn: Connection, store: ArtifactStore, data: dict[str, Any], *, session_id: str
-) -> dict[str, dict[str, Any]]:
-    """findings 의 evidence_refs 마다 첨부 원문에서 location 을 잘라 낸다 (UI_GUIDE 근거 칩).
-
-    키는 `evidence_id@version · location`. 값은 `{found, text}` — 첨부·산출물이 없으면 "첨부 없음",
-    위치가 원문에 없으면 "원문에 없음". 모델 문장을 원문 대신 넣지 않는다."""
-    reader = _AttachmentReader(conn, store, data, session_id)
-    excerpts: dict[str, dict[str, Any]] = {}
-    for finding in data.get("findings", []):
-        for ref in finding.get("evidence_refs", []):
-            key = f"{ref['evidence_id']}@{ref['version']} · {ref['location']}"
-            if key in excerpts:
-                continue
-            attachment = reader.find(ref["evidence_id"], ref["version"])
-            content = reader.read(attachment)
-            if content is None:
-                excerpts[key] = {"found": False, "text": "첨부 없음"}
-                continue
-            try:
-                resolved = resolve_location(content, attachment["content_type"], ref["location"])
-            except ValueError:
-                resolved = None
-            if resolved is None:
-                excerpts[key] = {"found": False, "text": "원문에 없음"}
-            elif ref["location"].startswith("lines:"):
-                excerpts[key] = {"found": True, "text": "\n".join(resolved.value)}
-            else:
-                excerpts[key] = {"found": True, "text": json.dumps(resolved.value, ensure_ascii=False, indent=2)}
-    return excerpts
-
-
-def _response_pair(
-    conn: Connection, store: ArtifactStore, data: dict[str, Any], *, session_id: str
-) -> dict[str, Any] | None:
-    """두 칸 비교 `변경 전 응답 / 변경 후 응답`. diagnosis 의 baseline/failed 실행 기록(`run-{run_id}`) 의
-    `response_ref` 가 가리키는 첨부 원문이다. 없으면 text None."""
-    diagnosis = data.get("diagnosis")
-    if not diagnosis:
-        return None
-    reader = _AttachmentReader(conn, store, data, session_id)
-
-    def side(run_id: str | None, path: str | None) -> dict[str, Any]:
-        record = reader.read(reader.find(f"run-{run_id}")) if run_id else None
-        ref = None
-        if record is not None:
-            try:
-                ref = json.loads(record).get("response_ref")
-            except (ValueError, AttributeError):
-                ref = None
-        attachment = reader.find(ref["evidence_id"], ref.get("version")) if isinstance(ref, dict) else None
-        content = reader.read(attachment)
-        return {
-            "run_id": run_id,
-            "path": path,
-            "evidence": f"{attachment['evidence_id']}@{attachment['version']}" if attachment else None,
-            "text": _pretty_json(content.decode("utf-8", errors="replace")) if content is not None else None,
-        }
-
-    return {
-        "before": side(diagnosis.get("baseline_run_id"), diagnosis.get("old_path")),
-        "after": side(diagnosis.get("failed_run_id"), diagnosis.get("new_path")),
-    }
-
-
 def viewer_context(
     conn: Connection, store: ArtifactStore, result: dict[str, Any] | None, *, session_id: str
 ) -> dict[str, Any] | None:
-    """오른쪽 열(진단 결과 / 검증 요약 / 결과 봉투) 과 결과 카드 메타의 재료. `result` 는 `task_context()["result"]`."""
+    """오른쪽 열(검증 요약 / 결과 봉투) 과 결과 카드 메타의 재료. `result` 는 `task_context()["result"]`."""
     if result is None:
         return None
-    data = result["data"] or {}
     viewer: dict[str, Any] = {
         "kind": result["kind"],
         "artifact_id": result["artifact_id"],
@@ -1062,10 +941,6 @@ def viewer_context(
         viewer["verdict_passed"] = sum(1 for c in checks if c.get("passed"))
         viewer["verdict_total"] = len(checks)
 
-    if result["kind"] == "diagnosis_result":
-        viewer["excerpts"] = evidence_excerpts(conn, store, data, session_id=session_id)
-        viewer["compare"] = _response_pair(conn, store, data, session_id=session_id)
-        return viewer
     if result["kind"] == "generic_result":
         return viewer  # 결과 봉투는 outcome·summary·산출물 ID 뿐 — 검증 요약(diff·로그·보고서)이 없다
 
@@ -1080,7 +955,6 @@ def viewer_context(
     diff_id, diff_text = text_of("diff")
     before_id, before_text = text_of("test_log_before")
     after_id, after_text = text_of("test_log_after")
-    report_id, report_text = text_of("report_output")
     viewer["diff"] = (
         {"artifact_id": diff_id, "lines": diff_lines(diff_text), "stats": diff_stats(diff_text)}
         if diff_text is not None else None
@@ -1091,7 +965,6 @@ def viewer_context(
     viewer["test_after"] = (
         {"artifact_id": after_id, "lines": tail_lines(after_text, LOG_TAIL)} if after_text is not None else None
     )
-    viewer["report"] = {"artifact_id": report_id, "text": report_text} if report_text is not None else None
     return viewer
 
 

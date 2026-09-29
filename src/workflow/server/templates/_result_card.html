@@ -7,18 +7,11 @@
   {% if d %}
   <div class="line1">
     {{ st.outcome_badge(d.outcome) }}
-    {% if result.kind == 'diagnosis_result' %}
-    <span class="mono">{{ task.required_capability.scope.workflow_id }} · {{ d.run_id }}</span>
-    {% else %}
     <span class="mono">{{ task.required_capability.scope.values()|join(', ') }} · {{ task.task_id }}</span>
-    {% endif %}
   </div>
   <div class="line2">{{ d.summary }}</div>
   <div class="line3">
-    {%- if result.kind == 'diagnosis_result' -%}
-    {{ d.diagnosis.code if d.diagnosis else '원인 미확정' }} · 근거 {{ d.findings|length }} · 첨부 {{ d.attachments|length }}
-    {%- if viewer and viewer.verdict %} · 검증 {{ viewer.verdict_passed }}/{{ viewer.verdict_total }} 통과{% endif -%}
-    {%- elif result.kind == 'generic_result' -%}
+    {%- if result.kind == 'generic_result' -%}
     {{ result.kind|kind_label }} · {{ d.kind }} · 산출물 {{ d.artifact_ids|length }}
     {%- else -%}
     {{ (d.result_commit or '')[:7] or '커밋 없음' }} ← {{ d.base_commit[:7] }}

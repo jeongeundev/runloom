@@ -13,18 +13,18 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.contracts.v1 import InboundChainResponse
 from workflow.server.app import create_app
-from workflow.server.auth import SESSION_COOKIE, ensure_workspace, utc_now
+from workflow.server.auth import SESSION_COOKIE, ensure_workspace
 
 from .conftest import (
+    BASE_COMMIT,
+    LOCAL_REGISTRATION,
     NOW,
     REPOSITORY,
     SESSION,
     bearer,
     exchange,
     log_in,
-    register_catalog_demo,
     seed_agents,
-    seed_agents_demo,
     task_row,
 )
 
@@ -44,21 +44,6 @@ REVIEW_ITEM = {
     "body": "수정 커밋을 검토해 주세요.",
     "labels": ["kind:code_review", f"repository_id:{REPOSITORY}"],
     "blocked_by": ["fix-format"],
-}
-# demo — 진단 → code_change (내장 라벨 규칙 incident·bug)
-DIAGNOSE_ITEM_DEMO = {
-    "key": "run-daily-0920",
-    "title": "일일 보고서 2026-09-20 09:00 실행 실패",
-    "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다. 실패 원인과 수정에 필요한 근거를 조사해 주세요.",
-    "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
-    "blocked_by": [],
-}
-FIX_ITEM_DEMO = {
-    "key": "fix-format",
-    "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
-    "body": "진단 결과와 근거를 바탕으로 demo-report-repo 의 변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
-    "labels": ["bug", "repo:demo-report-repo"],
-    "blocked_by": ["run-daily-0920"],
 }
 DOCS_ITEM = {
     "key": "readme",
@@ -88,12 +73,16 @@ def workspace(conn) -> str:
 
 
 @pytest.fixture
-def workspace_demo(conn) -> str:
-    """고정 워크스페이스 + 진단 API·`code.modify` Agent 2개(codex → ops 순, conftest 기본). 업무는 없다 (step 3 에서 삭제)."""
-    ensure_workspace(conn, NOW)
-    seed_agents_demo(conn)
-    register_catalog_demo(conn, SESSION)
-    return SESSION
+def reported_workspace(conn, workspace) -> str:
+    """러너가 등록 보고(기준 커밋·검증 프로필)까지 마친 워크스페이스 — `bug_fix` 대상이 채워져 첫 업무가 시작된다."""
+    agent = dict(repo.get_agent(conn, "agent-codex-mac"))
+    repo.upsert_agent(conn, {
+        **{k: agent[k] for k in ("agent_id", "name", "owner_scope", "connection_type", "local_registration_id",
+                                 "connection_state")},
+        "capabilities": json.loads(agent["capabilities_json"]),
+        "base_commit": BASE_COMMIT, "verification_profile_ids": ["vp-pytest"],
+    })
+    return workspace
 
 
 def _issue(conn, session_id: str) -> str:
@@ -164,12 +153,11 @@ def test_token_bound_to_another_source_is_403(client, conn, token, workspace):
 # --- 정상 접수 (b) ------------------------------------------------------------------------------
 
 
-def test_two_items_build_chain_and_start_first_task(client, conn, workspace_demo):
-    """demo — 진단 → code_change. 셀프호스트(bug_fix → code_review) 판은 아직 첫 업무가 시작되지 않아 옮기지 못했다
-    (`web._target_for` 가 bug_fix 에 기준 커밋·검증 프로필을 넣지 않아 request_incomplete)."""
-    workspace = workspace_demo
+def test_two_items_build_chain_and_start_first_task(client, conn, reported_workspace):
+    """bug_fix → code_review. 첫 업무의 대상은 담당 Agent 의 등록 보고(등록·기준 커밋·첫 검증 프로필)에서 온다."""
+    workspace = reported_workspace
     token = _issue(conn, workspace)
-    response = post(client, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
+    response = post(client, token)
     assert response.status_code == 201, response.text
     body = response.json()
     assert list(body) == ["contract_version", "chain_id", "chain_url", "started", "start_error", "tasks", "skipped"]
@@ -179,26 +167,28 @@ def test_two_items_build_chain_and_start_first_task(client, conn, workspace_demo
     assert body["chain_url"] == f"{PUBLIC_URL}/chains/{chain_id}"
     assert body["started"] is True and body["start_error"] is None
     assert body["skipped"] == []
-    assert [t["key"] for t in body["tasks"]] == ["run-daily-0920", "fix-format"]
-    assert [t["kind"] for t in body["tasks"]] == ["diagnosis", "code_change"]
+    assert [t["key"] for t in body["tasks"]] == ["fix-format", "review-format"]
+    assert [t["kind"] for t in body["tasks"]] == ["bug_fix", "code_review"]
     assert [t["status"] for t in body["tasks"]] == ["실행 요청됨", "대기"]
 
     chain = repo.get_chain(conn, chain_id)
     assert chain["session_id"] == workspace and chain["source"] == "n8n"
-    assert chain["title"] == "일일 보고서 2026-09-20 09:00 실행 실패 → 응답 형식 변경에 맞춰 보고서 변환 수정"
+    assert chain["title"] == "응답 형식 변경에 맞춰 보고서 변환 수정 → 보고서 변환 수정 검토"
     assert chain["callback_url"] == CALLBACK
-    assert json.loads(chain["items_json"]) == [DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO]
+    assert json.loads(chain["items_json"]) == [FIX_ITEM, REVIEW_ITEM]
     assert chain["started_at"] is not None
     assert chain["callback_sent_at"] is None and chain["callback_attempts"] == 0
 
     task_a, task_b = repo.tasks_of_chain(conn, chain_id)
     assert [t["task_id"] for t in (task_a, task_b)] == [t["task_id"] for t in body["tasks"]]
-    assert task_a["source_ref"] == "run-daily-0920" and task_a["request"] == DIAGNOSE_ITEM_DEMO["body"]
-    assert task_a["kind"] == "diagnosis" and task_a["completion_mode"] == "auto"
-    assert json.loads(task_a["target_json"]) == {"run_id": "daily-0920-0900"}
+    assert task_a["source_ref"] == "fix-format" and task_a["request"] == FIX_ITEM["body"]
+    assert task_a["kind"] == "bug_fix" and task_a["completion_mode"] == "review"
+    assert json.loads(task_a["target_json"]) == {
+        "local_registration_id": LOCAL_REGISTRATION, "base_commit": BASE_COMMIT, "verification_profile_id": "vp-pytest",
+    }
     assert task_b["predecessor_task_id"] == task_a["task_id"] and task_b["run_mode"] == "auto"
     assert task_b["status"] == "대기" and task_b["status_reason"] == "선행 대기"
-    assert repo.get_selection(conn, task_a["task_id"]).selected_agent_id == "agent-ops-demo"
+    assert repo.get_selection(conn, task_a["task_id"]).selected_agent_id == "agent-codex-mac"
     assert repo.get_selection(conn, task_b["task_id"]).selected_agent_id == "agent-codex-mac"
     execution = repo.active_execution(conn, task_a["task_id"])
     assert execution is not None and execution["status"] == "queued"
@@ -206,6 +196,15 @@ def test_two_items_build_chain_and_start_first_task(client, conn, workspace_demo
     (row,) = repo.list_source_tokens(conn, workspace)
     assert row["last_used_at"] is not None
     assert token not in response.text  # 토큰 원문은 응답에 없다
+
+
+def test_first_task_without_registration_report_is_201_started_false_request_incomplete(client, conn, token):
+    """러너가 등록 보고(기준 커밋·검증 프로필)를 아직 하지 않았으면 첫 업무 요청을 만들 수 없다 — 체인은 남는다."""
+    response = post(client, token)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["started"] is False and body["start_error"]["code"] == "request_incomplete"
+    assert repo.active_execution(conn, body["tasks"][0]["task_id"]) is None
 
 
 def test_item_without_capability_is_skipped_with_reason(client, conn, token):
@@ -278,23 +277,6 @@ def test_first_task_without_candidate_returns_201_started_false_selection_requir
     task_a, task_b = repo.tasks_of_chain(conn, body["chain_id"])
     assert repo.get_selection(conn, task_a["task_id"]).status == "needs_selection"
     assert repo.active_execution(conn, task_a["task_id"]) is None
-
-
-def test_diagnosis_daily_limit_returns_201_started_false_with_429_body(client, conn, workspace_demo):
-    """demo — 진단 한도."""
-    token = _issue(conn, workspace_demo)
-    for n in range(10):
-        repo.record_diagnosis_start(conn, workspace_demo, f"exec-seed-{n}", utc_now())
-    response = post(client, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert body["started"] is False
-    assert body["start_error"]["code"] == "daily_limit_reached"
-    assert body["start_error"]["message"] == "오늘 이 세션의 진단 실행 한도(10회)에 도달했습니다."
-    assert body["start_error"]["details"]["limit"] == 10
-    assert [t["status"] for t in body["tasks"]] == ["실행 가능", "대기"]
-    assert repo.get_chain(conn, body["chain_id"])["started_at"] is None
-    assert repo.active_execution(conn, body["tasks"][0]["task_id"]) is None
 
 
 # --- callback_url 허용 목록 (d)·(e) ------------------------------------------------------------

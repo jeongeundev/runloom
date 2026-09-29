@@ -120,7 +120,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 59
+    assert len(FENCED) == 58
     assert len(INLINE) == 8
 
 
@@ -690,19 +690,10 @@ def _review_request() -> dict:
 
 
 def test_builtin_kinds_match_concept_table():
-    assert BUILTIN_KIND_NAMES == ("diagnosis", "code_change", "bug_fix", "code_review")
+    """셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 내장이 아니다."""
+    assert BUILTIN_KIND_NAMES == ("bug_fix", "code_review")
     assert tuple(k.kind for k in BUILTIN_KINDS) == BUILTIN_KIND_NAMES
-    diagnosis, code_change, bug_fix, code_review = BUILTIN_KINDS
-    assert diagnosis == KindSpec(
-        kind="diagnosis", label="진단", capability_code="operations.diagnose", scope_key="workflow_id",
-        input_kinds=[], output_kind="diagnosis_result",
-        outcomes=["ready_for_handoff", "needs_information"], instructions="", builtin=True,
-    )
-    assert code_change == KindSpec(
-        kind="code_change", label="코드 수정", capability_code="code.modify", scope_key="repository_id",
-        input_kinds=["diagnosis_result", "evidence"], output_kind="code_change_result",
-        outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
-    )
+    bug_fix, code_review = BUILTIN_KINDS
     assert bug_fix == KindSpec(
         kind="bug_fix", label="버그 수정", capability_code="code.fix", scope_key="repository_id",
         input_kinds=[], output_kind="code_change_result",
@@ -718,24 +709,29 @@ def test_builtin_kinds_match_concept_table():
 def test_builtin_rules_match_concept_table():
     assert BUILTIN_RULES == (
         SuccessorRule(
-            from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
-            handoff_kinds=["diagnosis_result", "evidence"],
-        ),
-        SuccessorRule(
             from_kind="bug_fix", on_outcomes=["ready_for_review"], to_kind="code_review",
             handoff_kinds=["code_change_result", "diff", "test_log_after", "verification_log"],
         ),
     )
 
 
-def test_builtin_code_change_kind_equals_contract_md_example():
-    block = next(b for b in FENCED if _model_for(b) is KindSpec and b["builtin"])
-    assert KindSpec.model_validate(block) == BUILTIN_KINDS[1]
+@pytest.mark.parametrize("kind", ["diagnosis", "code_change"])
+def test_former_demo_kinds_are_not_builtin(kind):
+    """옛 내장 이름은 builtin 으로 받지 않는다 — 사용자 정의 이름으로는 쓸 수 있다."""
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate(_kind_spec(kind=kind, builtin=True))
+    assert KindSpec.model_validate(_kind_spec(kind=kind)).builtin is False
 
 
-def test_builtin_rule_equals_contract_md_example():
-    block = next(b for b in FENCED if _model_for(b) is SuccessorRule and b["from_kind"] == "diagnosis")
-    assert SuccessorRule.model_validate(block) == BUILTIN_RULES[0]
+def test_user_defined_kind_may_reuse_a_former_demo_name():
+    """kind_spec 이 있으면 옛 진단 데모 요청 모양(DiagnosisTarget·CodeChangeTarget)을 요구하지 않는다."""
+    for kind in ("diagnosis", "code_change"):
+        request = ExecutionRequest.model_validate({
+            "contract_version": 1, "execution_id": "exec-1", "task_id": "task-1", "kind": kind,
+            "agent_id": "agent-1", "task_revision": 1, "request": "r", "input_artifact_ids": [],
+            "target": {"local_registration_id": "local-1"}, "kind_spec": _kind_spec(kind=kind),
+        })
+        assert request.kind_spec.builtin is False
 
 
 @pytest.mark.parametrize("kind", ["Review", "re view", "r" * 41, "r", "1review", "review-x", ""])
@@ -878,9 +874,9 @@ def test_execution_request_rejects_kind_spec_kind_mismatch():
 
 
 def test_execution_request_accepts_builtin_kind_spec_when_it_matches():
-    diagnosis = _first("ExecutionRequest")
-    diagnosis["kind_spec"] = BUILTIN_KINDS[0].model_dump()
-    assert ExecutionRequest.model_validate(diagnosis).kind_spec == BUILTIN_KINDS[0]
+    bug_fix = next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ExecutionRequest and b["kind"] == "bug_fix")
+    bug_fix["kind_spec"] = BUILTIN_KINDS[0].model_dump()
+    assert ExecutionRequest.model_validate(bug_fix).kind_spec == BUILTIN_KINDS[0]
 
 
 def test_execution_request_rejects_builtin_kind_spec_with_local_target():
@@ -1181,21 +1177,23 @@ def _needs_information_review() -> dict:
 
 
 def test_sections_1_to_12_fixtures_are_unchanged():
-    """추가형 확장 — 13절 이전의 json 블록 수는 phase 7 의 35개 + phase 9 3.1절 측정 예시 3개다."""
+    """추가형 확장 — 13절 이전의 json 블록 수는 phase 7 의 35개 + phase 9 3.1절 측정 예시 3개에서 phase 13 이 뺀
+    11.1 내장 `code_change` 예시 하나(ADR-0019)를 제한 37개다."""
     text = CONTRACT_MD.read_text(encoding="utf-8")
     before_13 = text.split("## 13. GitHub 업무 순환", 1)[0]
-    assert len(_FENCE.findall(before_13)) == 38
+    assert len(_FENCE.findall(before_13)) == 37
 
 
 def test_builtin_cycle_kinds_equal_contract_md_examples():
     blocks = {b["kind"]: b for b in FENCED if _model_for(b) is KindSpec and b["builtin"]}
-    assert KindSpec.model_validate(blocks["bug_fix"]) == BUILTIN_KINDS[2]
-    assert KindSpec.model_validate(blocks["code_review"]) == BUILTIN_KINDS[3]
+    assert set(blocks) == set(BUILTIN_KIND_NAMES)  # 옛 내장 code_change 예시는 11.1 에서 뺐다 (ADR-0019)
+    assert KindSpec.model_validate(blocks["bug_fix"]) == BUILTIN_KINDS[0]
+    assert KindSpec.model_validate(blocks["code_review"]) == BUILTIN_KINDS[1]
 
 
 def test_builtin_bug_fix_rule_equals_contract_md_example():
     block = next(b for b in FENCED if _model_for(b) is SuccessorRule and b["from_kind"] == "bug_fix")
-    assert SuccessorRule.model_validate(block) == BUILTIN_RULES[1]
+    assert SuccessorRule.model_validate(block) == BUILTIN_RULES[0]
 
 
 def test_artifact_meta_accepts_code_review_result_kind():
@@ -1463,7 +1461,7 @@ def test_claim_request_rejects_bad_supported_kinds(kinds):
         ClaimRequest.model_validate(block)
 
 
-@pytest.mark.parametrize("kind", ["bug_fix", "code_review", "diagnosis", "code_change"])
+@pytest.mark.parametrize("kind", ["bug_fix", "code_review"])
 def test_user_defined_kind_cannot_take_builtin_name(kind):
     """내장 이름은 예약어다 — 사용자 정의 `bug_fix` 가 있으면 ExecutionRequest 의 target 규칙과 어긋난다."""
     with pytest.raises(ValidationError):

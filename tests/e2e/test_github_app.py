@@ -59,7 +59,6 @@ from tests.e2e.test_github_cycle import (
 from workflow.adapters import secret_store
 from workflow.adapters.callback_client import HttpCallbackClient
 from workflow.adapters.db import connect
-from workflow.adapters.diag_client import HttpDiagClient
 from workflow.adapters.secret_store import SecretStore
 from workflow.server import worker as worker_module
 from workflow.server.app import create_app
@@ -189,8 +188,6 @@ def world(tmp_path_factory):
         "WORKFLOW_SECRET_DIR": str(workdir / "central" / "secrets"),
         "SESSION_SECRET": "e2e-session-secret-" + "s" * 20,
         "OPERATOR_TOKEN": "e2e-operator-token-" + "o" * 20,
-        "DIAG_API_TOKEN": "e2e-diag-token-" + "d" * 20,
-        "DIAG_API_URL": "http://127.0.0.1:9",
         "WORKFLOW_PUBLIC_URL": f"http://127.0.0.1:{port}",
     }
     fake_bin = workdir / "bin"
@@ -241,10 +238,8 @@ def world(tmp_path_factory):
 def make_worker(world: World) -> Worker:
     """워커 프로세스 한 번의 시작과 같다 — 소스별 클라이언트(설치 토큰)는 비밀 저장소에서 읽는다."""
     settings = load_settings(world.central_env)
-    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
-                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
     clients = SourceClients(settings, SecretStore(settings.secret_dir), transport=ToFakeGitHub(world.fake_port))
-    return Worker(lambda: connect(settings.db_path), world.store, diag, HttpCallbackClient(), settings, utc_now,
+    return Worker(lambda: connect(settings.db_path), world.store, HttpCallbackClient(), settings, utc_now,
                   github_for=clients)
 
 

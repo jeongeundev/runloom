@@ -169,7 +169,6 @@ def register(state_conn, repo: Path) -> str:
         "base_commit": base,
         "verification_profiles": {
             "vp-pytest": [sys.executable, "-m", "pytest", "-q"],
-            "vp-report": [sys.executable, "-m", "daily_report", "{response}"],
         },
     })
     return base
@@ -201,7 +200,7 @@ def test_build_argv_is_fixed_and_carries_no_prompt_or_paths(state_conn, tmp_path
     ]
     assert ALLOWED_TOOLS == (
         "Read", "Edit", "Write", "Glob", "Grep",
-        "Bash(python3 -m pytest*)", "Bash(python3 -m daily_report*)", "Bash(git diff*)", "Bash(git status*)",
+        "Bash(python3 -m pytest*)", "Bash(git diff*)", "Bash(git status*)",
     )
     joined = " ".join(argv)
     assert "bypassPermissions" not in joined and "dangerously" not in joined
@@ -212,7 +211,7 @@ def test_build_argv_is_fixed_and_carries_no_prompt_or_paths(state_conn, tmp_path
 # --- 정상 ---------------------------------------------------------------------------------
 
 
-def test_full_run_is_ready_for_review_with_seven_artifacts(state_conn, repo, handoff, fake_bin):
+def test_full_run_is_ready_for_review_with_six_artifacts(state_conn, repo, handoff, fake_bin):
     write_fake_claude(fake_bin, "full")
     base = register(state_conn, repo)
     request = request_for(base)
@@ -226,16 +225,13 @@ def test_full_run_is_ready_for_review_with_seven_artifacts(state_conn, repo, han
     assert result.base_commit == base and result.result_commit != base
     assert result.artifact_ids == []  # runner 가 채운다
     kinds = [meta.kind for meta, _ in output.artifacts]
-    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log", "report_output",
-                     "claude_jsonl", "claude_stderr"]
+    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log", "claude_jsonl", "claude_stderr"]
     names = {meta.kind: meta.name for meta, _ in output.artifacts}
     assert names["claude_jsonl"] == "claude.jsonl" and names["claude_stderr"] == "claude-stderr.txt"
     artifacts = by_kind(output)
     assert artifacts["test_log_before"].decode().splitlines()[0] == "exit_code=1"
     assert artifacts["test_log_after"].decode().splitlines()[0] == "exit_code=0"
     assert artifacts["verification_log"].decode().splitlines()[0] == "exit_code=0"
-    report = artifacts["report_output"].decode()
-    assert "2026-09-19" in report and "합계    20    5" in report
     assert "transformer.py" in artifacts["diff"].decode() and "test_repro.py" in artifacts["diff"].decode()
     assert b"fake claude: done" in artifacts["claude_stderr"]
     # 검증은 별도 실행: verification 은 result_commit 을 가리키고 exit 0
@@ -477,7 +473,7 @@ def test_classify_failure_is_none_for_a_successful_result(state_conn):
 def review_handoff(tmp_path) -> Path:
     handoff = tmp_path / "review-daily-0920.handoff"
     handoff.mkdir()
-    (handoff / "manifest.json").write_text('{"source_kind": "code_change"}')
+    (handoff / "manifest.json").write_text('{"source_kind": "bug_fix"}')
     (handoff / "diff.patch").write_text("--- a\n+++ b\n")
     (handoff / "code_change_result.json").write_text('{"outcome": "ready_for_review"}')
     return handoff

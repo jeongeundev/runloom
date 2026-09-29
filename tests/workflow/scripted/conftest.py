@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests.workflow.connector.conftest import make_local_request, make_request
-from workflow.connector.prompt import build_generic_prompt, build_prompt
+from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt
 from workflow.scripted._common import PACE_ENV
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
@@ -62,8 +62,8 @@ def review_handoff(tmp_path) -> Path:
 
 
 def prompt_for(handoff: Path, worktree: Path) -> str:
-    """connector 가 실제로 stdin 에 넣는 프롬프트 (`prompt.build_prompt`)."""
-    return build_prompt(make_request(), handoff, worktree)
+    """connector 가 실제로 stdin 에 넣는 코드 수정 프롬프트 (`prompt.build_bug_fix_prompt` — 보고서 데모 프롬프트는 ADR-0019 로 삭제)."""
+    return build_bug_fix_prompt(make_request(), handoff, worktree)
 
 
 def generic_prompt_for(handoff: Path) -> str:

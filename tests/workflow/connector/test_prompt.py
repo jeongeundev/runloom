@@ -7,59 +7,11 @@ from workflow.connector.prompt import (
     MAX_REVIEW_DIFF_CHARS,
     build_bug_fix_prompt,
     build_generic_prompt,
-    build_prompt,
     build_review_prompt,
 )
 from workflow.contracts.v1 import CodeChangeResult
 
 from .conftest import REVIEW_REQUEST, REVIEW_SPEC, make_local_request, make_request, make_review_request
-
-
-def _handoff(tmp_path):
-    handoff = tmp_path / "fix-daily-0920.handoff"
-    handoff.mkdir()
-    for name in ("manifest.json", "response-before@1.json", "response-after@1.json", "log-daily-0920@1.txt",
-                 "upstream-response-change@1.json", "expected-report@1.json", "diagnosis_result.json"):
-        (handoff / name).write_text("{}")
-    return handoff
-
-
-def test_prompt_contains_request_handoff_paths_and_rules(tmp_path):
-    request = make_request()
-    handoff = _handoff(tmp_path)
-    worktree = tmp_path / "demo-worktrees" / "fix-daily-0920"
-
-    text = build_prompt(request, handoff, worktree)
-
-    assert request.request in text
-    assert str(worktree) in text
-    for name in sorted(p.name for p in handoff.iterdir()):
-        assert str(handoff / name) in text
-    assert "python3 -m pytest -q" in text
-    assert "커밋하지" in text  # 연결 프로그램이 커밋한다
-    assert "target_component" in text and "단서" in text  # 실제 코드에서 확인
-    assert "재현" in text and "먼저" in text  # 재현 테스트 먼저
-    for key in ("summary", "outcome", "files_changed", "notes"):
-        assert f'"{key}"' in text
-    assert "ready_for_review" in text and "needs_information" in text
-
-
-def test_prompt_lists_only_existing_handoff_files(tmp_path):
-    handoff = tmp_path / "empty.handoff"
-    handoff.mkdir()
-
-    text = build_prompt(make_request(), handoff, tmp_path / "wt")
-
-    assert "response-after@1.json" not in text
-    assert "인계 자료 없음" in text
-
-
-def test_prompt_does_not_leak_secrets_from_request_fields(tmp_path):
-    request = make_request()
-
-    text = build_prompt(request, _handoff(tmp_path), tmp_path / "wt")
-
-    assert "wfc_" not in text and "sk-" not in text
 
 
 # --- 사용자 정의 종류 — build_generic_prompt -----------------------------------------------------
@@ -128,7 +80,7 @@ BUG_REQUEST = "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n
 
 
 def _bug_request():
-    return make_request().model_copy(update={"kind": "bug_fix", "request": BUG_REQUEST, "input_artifact_ids": []})
+    return make_request().model_copy(update={"request": BUG_REQUEST, "input_artifact_ids": []})
 
 
 def _review_json(**overrides) -> str:
@@ -161,6 +113,16 @@ def test_bug_fix_prompt_is_general_without_demo_wording(tmp_path):
     for key in ("summary", "outcome", "files_changed", "notes"):
         assert f'"{key}"' in text
     assert "이전 검토" not in text  # 첫 시도에는 검토 절이 없다
+
+
+def test_bug_fix_prompt_does_not_leak_secrets_from_request_fields(tmp_path):
+    handoff = tmp_path / "fix.handoff"  # "task-" 는 "sk-" 를 품으므로 쓰지 않는다
+    handoff.mkdir()
+    (handoff / "manifest.json").write_text("{}")
+
+    text = build_bug_fix_prompt(_bug_request(), handoff, tmp_path / "wt")
+
+    assert "wfc_" not in text and "sk-" not in text
 
 
 def test_bug_fix_prompt_carries_previous_review_findings(tmp_path):

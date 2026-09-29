@@ -2,8 +2,6 @@
 
 셀프호스트 전용(ADR-0019): 고정 워크스페이스 `SESSION`(= `SELFHOST_SESSION_ID`), 로그인은 `logged_in_client`,
 Agent 는 러너 등록과 같은 모양(`session_agents` 로 워크스페이스에 붙음, `code.fix`·`code.review`), 기본 종류 `bug_fix`.
-이름 끝이 `_demo` 인 fixture·도우미는 진단 → code_change 데이터(진단 API Agent·`code.modify` Agent)를 워크스페이스에 넣으며,
-그것을 쓰는 테스트와 함께 phase 13 step 3 에서 지운다.
 
 시드는 repo 로 직접 넣고, 연결 토큰은 연결 코드 발급·교환 API 로 얻는다.
 """
@@ -27,8 +25,6 @@ SESSION = SELFHOST_SESSION_ID
 OPERATOR_TOKEN = "test-operator-token"
 TASK_A = "fix-daily-0920"  # bug_fix
 TASK_B = "review-daily-0920"  # code_review ← TASK_A
-TASK_A_DEMO = "diagnose-daily-0920"  # diagnosis
-TASK_B_DEMO = "fix-daily-0920"  # code_change ← TASK_A_DEMO
 EXEC_FIX = "exec-fix-001"
 BASE_COMMIT = "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e"
 LOCAL_REGISTRATION = "local-demo-report"
@@ -41,8 +37,6 @@ def _settings(tmp_path) -> Settings:
         artifact_dir=tmp_path / "artifacts",
         session_secret="test-session-secret",
         operator_token=OPERATOR_TOKEN,
-        diag_api_url="http://127.0.0.1:8100",
-        diag_api_token="test-diag-token",
         secret_dir=tmp_path / "secrets",  # 기본값(data/secrets)은 저장소 작업 폴더라 테스트가 읽지 않게 한다
     )
 
@@ -93,26 +87,20 @@ def store(settings) -> ArtifactStore:
 
 
 def request_body(execution_id: str, task_id: str, kind: str = "bug_fix", inputs=()):
-    """기본은 `bug_fix`(첫 시도라 입력 없음). 진단·`code_change` 는 `kind` 와 `inputs` 를 넘긴다(demo)."""
-    if kind == "diagnosis":
-        target = {"run_id": "daily-0920-0900"}
-    else:
-        target = {
-            "local_registration_id": LOCAL_REGISTRATION,
-            "base_commit": BASE_COMMIT,
-            "verification_profile_id": "vp-pytest",
-        }
+    """기본은 `bug_fix`(첫 시도라 입력 없음)."""
+    target = {
+        "local_registration_id": LOCAL_REGISTRATION,
+        "base_commit": BASE_COMMIT,
+        "verification_profile_id": "vp-pytest",
+    }
     return {
         "contract_version": 1,
         "execution_id": execution_id,
         "task_id": task_id,
         "kind": kind,
-        "agent_id": "agent-ops-demo" if kind == "diagnosis" else "agent-codex-mac",
+        "agent_id": "agent-codex-mac",
         "task_revision": 1,
-        "request": (
-            "인계된 진단 근거로 보고서 변환 실패를 재현하는 테스트를 먼저 작성하세요." if kind in ("diagnosis", "code_change")
-            else "보고서 변환 실패를 재현하는 테스트를 먼저 작성하고 고치세요."
-        ),
+        "request": "보고서 변환 실패를 재현하는 테스트를 먼저 작성하고 고치세요.",
         "input_artifact_ids": list(inputs),
         "target": target,
         "kind_spec": None,
@@ -142,10 +130,7 @@ def meta_for(data: bytes, kind: str = "diff", name: str = "change.diff", content
 
 
 def task_row(task_id: str, kind: str = "bug_fix", predecessor=None) -> dict:
-    """기본은 `bug_fix`(검토는 `code_review`). 진단·`code_change`(demo)·사용자 정의 종류는 예전 모양
-    (`code.modify` 능력·`run_id` 대상)으로 만든다."""
-    if kind not in ("bug_fix", "code_review"):
-        return _task_row_demo(task_id, kind, predecessor)
+    """`bug_fix`(기본)·`code_review`. 사용자 정의 종류는 각 테스트가 종류를 등록하고 행을 직접 만든다."""
     capability_code = "code.review" if kind == "code_review" else "code.fix"
     criteria = {
         "bug_fix": [{"code": "bug_fix.verification_passed", "text": "등록된 검증 프로필이 결과 커밋에서 통과함",
@@ -173,31 +158,6 @@ def task_row(task_id: str, kind: str = "bug_fix", predecessor=None) -> dict:
     }
 
 
-def _task_row_demo(task_id: str, kind: str, predecessor) -> dict:
-    if kind == "diagnosis":
-        capability = {"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}
-    else:
-        capability = {"code": "code.modify", "scope": {"repository_id": REPOSITORY}}
-    return {
-        "task_id": task_id,
-        "session_id": SESSION,
-        "title": "일일 보고서 실패 진단" if kind == "diagnosis" else "보고서 변환 수정",
-        "request": "실패 원인을 조사해 주세요.",
-        "kind": kind,
-        "required_capability": capability,
-        "selection_mode": "auto",
-        "chosen_agent_id": None,
-        "run_mode": "manual" if predecessor is None else "auto",
-        "completion_mode": "review",
-        "criteria": [{"code": "handoff_verified", "text": "근거 검증 통과", "structured": True}],
-        "predecessor_task_id": predecessor,
-        "revision": 1,
-        "target": {"run_id": "daily-0920-0900"},
-        "status": "실행 가능",
-        "status_reason": "agent-ops-demo 선택됨",
-    }
-
-
 def seed_execution(conn, execution_id: str, task_id: str, *, kind: str = "bug_fix",
                    connector_id: str | None = None, inputs=(),
                    predecessor: str | None = None, start_key: str | None = None) -> None:
@@ -207,7 +167,7 @@ def seed_execution(conn, execution_id: str, task_id: str, *, kind: str = "bug_fi
         task_id=task_id,
         attempt_no=1,
         start_key=start_key or f"auto:{task_id}:r1",
-        agent_id="agent-ops-demo" if kind == "diagnosis" else "agent-codex-mac",
+        agent_id="agent-codex-mac",
         kind=kind,
         request=ExecutionRequest.model_validate(request_body(execution_id, task_id, kind, inputs)),
         assigned_connector_id=connector_id,
@@ -293,71 +253,6 @@ def running(client, headers, exec_fix) -> str:
         response = client.post(f"/executions/{exec_fix}/events", json=body, headers=headers)
         assert response.status_code == 200, response.text
     return exec_fix
-
-
-# --- 진단 → code_change 시드 (step 3 에서 삭제) ---------------------------------------------
-
-
-def seed_agents_demo(conn, *, with_claude: bool = False) -> None:
-    """진단 API·로컬 Codex(`code.modify`), `with_claude` 면 같은 저장소를 맡는 Claude Code 까지 3개
-    (scripts/seed_demo.py 와 같은 구성). 워크스페이스에 붙이는 것은 `register_catalog_demo`."""
-    repo.upsert_agent(conn, {
-        "agent_id": "agent-ops-demo",
-        "name": "운영 진단 데모",
-        "owner_scope": "company",
-        "connection_type": "api",
-        "api_url": "http://127.0.0.1:8100",
-        "credential_ref": "env:DIAG_API_TOKEN",
-        "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
-        "connection_state": "online",
-    })
-    repo.upsert_agent(conn, {
-        "agent_id": "agent-codex-mac",
-        "name": "개인 Codex",
-        "owner_scope": "personal",
-        "connection_type": "local",
-        "local_registration_id": LOCAL_REGISTRATION,
-        "capabilities": [{"code": "code.modify", "scope": {"repository_id": REPOSITORY}}],
-        "connection_state": "unknown",
-    })
-    if not with_claude:
-        return
-    repo.upsert_agent(conn, {
-        "agent_id": "agent-claude-mac",
-        "name": "Claude Code",
-        "owner_scope": "personal",
-        "connection_type": "local",
-        "local_registration_id": "local-demo-report-claude",
-        "repository_id": REPOSITORY,
-        "base_commit": BASE_COMMIT,
-        "capabilities": [{"code": "code.modify", "scope": {"repository_id": REPOSITORY}}],
-        "connection_state": "unknown",
-    })
-
-
-def register_catalog_demo(conn, session_id: str, *agent_ids: str, now: str = NOW) -> None:
-    """워크스페이스에 Agent 를 붙인 상태. 기본은 둘 다, codex → ops 순."""
-    for agent_id in agent_ids or ("agent-codex-mac", "agent-ops-demo"):
-        repo.register_session_agent(conn, session_id, agent_id, now)
-
-
-@pytest.fixture
-def seeded_demo(conn):
-    """고정 워크스페이스, 에이전트 2개(진단 API·`code.modify`, 둘 다 붙음), 업무 A(진단) → B(code_change)."""
-    ensure_workspace(conn, NOW)
-    seed_agents_demo(conn)
-    register_catalog_demo(conn, SESSION)
-    repo.insert_task(conn, task_row(TASK_A_DEMO, kind="diagnosis"), NOW)
-    repo.insert_task(conn, task_row(TASK_B_DEMO, kind="code_change", predecessor=TASK_A_DEMO), NOW)
-    return conn
-
-
-@pytest.fixture
-def exec_fix_demo(seeded_demo, connector) -> str:
-    """이 connector 에 배정된 queued 실행 exec-fix-001 (업무 B, code_change)."""
-    seed_execution(seeded_demo, EXEC_FIX, TASK_B_DEMO, kind="code_change", connector_id=connector[0],
-                   inputs=("art-handoff-001",))
-    return EXEC_FIX
 
 
 # --- 결과 시드 (Step 6 웹·뷰 테스트) -------------------------------------------

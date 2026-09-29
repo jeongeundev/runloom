@@ -132,8 +132,6 @@
         <button class="btn btn-danger" type="submit" name="decision" value="close">종료</button>
       </div>
     </form>
-    {% elif task.finished_at and task.review_decision == 'approve' and task.kind == 'code_change' %}
-    <p class="action-note">병합: {{ '운영자 확인 완료 ' ~ (task.merge_confirmed_at|kst) if task.merge_confirmed_at else '운영자 확인 대기' }}</p>
     {% endif %}
   </div>
 </div>

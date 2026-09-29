@@ -7,7 +7,7 @@ runner 와의 약속:
   어댑터는 비워 두고(`[]`, kind 이름 `"verification_log"`), runner 가 중앙 ID 로 채운다.
 - 산출물의 `sha256`·`size` 는 마스킹 뒤 runner 가 다시 계산한다.
 - 요청·인계 자료에서 셸 명령·경로를 받아 실행하지 않는다. 검증 명령은 로컬 등록값에서만 온다.
-- `AdapterOutput.result` 는 코드 수정(`CodeChangeTarget` — `code_change`·`bug_fix`)이면 `CodeChangeResult`, 커밋 검토
+- `AdapterOutput.result` 는 코드 수정(`CodeChangeTarget` — `bug_fix`)이면 `CodeChangeResult`, 커밋 검토
   (`CommitReviewTarget` — `code_review`)면 `CodeReviewResult`, 내장이 아닌 종류(`LocalTarget`)면 `GenericResult`.
 - `AdapterOutput.usage` 는 도구가 보고한 비용·토큰(ADR-0015). 모르면 None 이며 0 으로 채우지 않는다. runner 가
   `result_ready`·`failed` 에 싣는다.
@@ -35,7 +35,7 @@ Progress = Callable[..., None]  # progress(message: str, *, runtime_ref: str | N
 
 # claim 때 중앙에 선언하는 내장 종류 — 이 연결 프로그램의 어댑터가 처리한다 (`ClaimRequest.supported_kinds`, ADR-0014 4항).
 # 사용자 정의 종류는 선언과 무관하게 `LocalTarget` 으로 돈다.
-SUPPORTED_BUILTIN_KINDS = ("code_change", "bug_fix", "code_review")
+SUPPORTED_BUILTIN_KINDS = ("bug_fix", "code_review")
 
 
 @dataclass
@@ -75,7 +75,6 @@ class EchoAdapter:
             )
         names = _listing(handoff_dir)
         progress(f"인계 자료 {len(names)}개 확인")
-        listing = ("\n".join(names) + "\n").encode()
         base = request.target.base_commit
         artifacts = [
             make_meta("diff", "echo.diff", "# EchoAdapter: 변경 없음\n".encode(), "text/plain"),
@@ -83,7 +82,6 @@ class EchoAdapter:
                       "exit_code=1\n(EchoAdapter) 재현 테스트 실패 흉내\n".encode(), "text/plain"),
             make_meta("test_log_after", "pytest-after.txt", b"exit_code=0\n(EchoAdapter)\n", "text/plain"),
             make_meta("verification_log", "verification.txt", b"exit_code=0\n(EchoAdapter)\n", "text/plain"),
-            make_meta("report_output", "report.txt", b"(EchoAdapter) handoff files:\n" + listing, "text/plain"),
         ]
         result = CodeChangeResult(
             contract_version=1,

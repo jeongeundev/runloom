@@ -224,16 +224,17 @@ def test_intake_to_human_uses_earliest_of_request_and_status():
     assert stat == Stat(median=2 * H, n=2, incomplete=1)  # [3h, 1h]
 
 
-def test_intake_to_done_merge_status_fallback_and_failed():
+def test_intake_to_done_status_fallback_and_failed():
+    """직접 등록은 `완료` 로 바뀐 시각, v6 이전은 finished_at — 병합 확인 대기열은 없어졌다 (ADR-0019)."""
     facts = MetricFacts(
         tasks=(
-            task("t1", issue_opened_at=t(0), merge_confirmed_at=t(4), status="완료"),
+            task("t1", issue_opened_at=t(0), status="완료"),  # status_changed → 완료 (4시)
             task("t2", created=t(0), status="완료"),  # status_changed → 완료
             task("t3", created=t(0), status="완료", finished_at=t(6)),  # v6 이전: finished_at
             task("t4", created=t(0), status="실패", finished_at=t(1)),  # 실패 마감
             task("t5", created=t(0)),  # 진행 중
         ),
-        events=(ev("t2", "status_changed", t(2), to="완료"),),
+        events=(ev("t1", "status_changed", t(4), to="완료"), ev("t2", "status_changed", t(2), to="완료")),
     )
     group = only(compute(facts))
     assert group.intake_to_done == Stat(median=4 * H, n=3, incomplete=2)
@@ -305,9 +306,14 @@ def test_events_only_at_or_after_first_start_leave_no_blocked_time():
 def test_window_is_since_inclusive_until_exclusive():
     facts = MetricFacts(
         tasks=(
-            task("a", created=t(1), issue_opened_at=t(0), merge_confirmed_at=t(2)),  # 접수 0시 — 제외
-            task("b", created=t(1), merge_confirmed_at=t(2)),  # 접수 1시 — 포함(since)
-            task("c", created=t(2), merge_confirmed_at=t(3)),  # 접수 2시 — 제외(until)
+            task("a", created=t(1), issue_opened_at=t(0), status="완료"),  # 접수 0시 — 제외
+            task("b", created=t(1), status="완료"),  # 접수 1시 — 포함(since)
+            task("c", created=t(2), status="완료"),  # 접수 2시 — 제외(until)
+        ),
+        events=(
+            ev("a", "status_changed", t(2), to="완료"),
+            ev("b", "status_changed", t(2), to="완료"),
+            ev("c", "status_changed", t(3), to="완료"),
         ),
         executions=(
             exe("e0", "a", created=t(0), finished_at=t(5)),

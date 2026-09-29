@@ -166,6 +166,5 @@ def test_invalid_params_render_error_page(op):
 def test_page_has_no_secrets_or_paths(op, fake, settings):
     op.post(f"/operator/github/sources/{SOURCE}/baseline")
     text = page(op, {"group_by": "folder_commit"})
-    for secret in (TOKEN, settings.operator_token, settings.session_secret, settings.diag_api_token,
-                   str(settings.db_path.parent)):
+    for secret in (TOKEN, settings.operator_token, settings.session_secret, str(settings.db_path.parent)):
         assert secret not in text
