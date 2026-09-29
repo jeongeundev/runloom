@@ -9,7 +9,7 @@
 - 어댑터 산출물은 업로드 전에 `outputs` 에 넣어 업로드 중 끊겨도 어댑터를 다시 돌리지 않는다.
 - `cleaned_at` 은 종료 이벤트가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지운 시각이다. 재시작 뒤 다시 지우지 않는다.
 - `usage_json` 은 어댑터가 돌려준 사용량(`ExecutionUsage`)이다. 종료 이벤트를 보내기 전에 끊겨도 다시 싣는다. NULL = 모름.
-- 등록의 `links_json`·`env_json` 은 작업 복사본 준비물(ADR-0018 결정 3)이다. 중앙에 보내지 않는다 — env 값은 비밀일 수 있다.
+- 등록의 `links_json`·`copies_json`·`env_json` 은 작업 복사본 준비물(ADR-0018 결정 3)이다. 중앙에 보내지 않는다 — env 값은 비밀일 수 있다.
 """
 
 import json
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS registrations (
   base_commit                TEXT NOT NULL,
   verification_profiles_json TEXT NOT NULL,
   links_json                 TEXT NOT NULL DEFAULT '[]',
+  copies_json                TEXT NOT NULL DEFAULT '[]',
   env_json                   TEXT NOT NULL DEFAULT '{{}}'
 );
 
@@ -103,6 +104,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE registrations ADD COLUMN links_json TEXT NOT NULL DEFAULT '[]'")
     if "env_json" not in reg_columns:
         conn.execute("ALTER TABLE registrations ADD COLUMN env_json TEXT NOT NULL DEFAULT '{}'")
+    if "copies_json" not in reg_columns:
+        conn.execute("ALTER TABLE registrations ADD COLUMN copies_json TEXT NOT NULL DEFAULT '[]'")
 
 
 @contextmanager
@@ -127,16 +130,16 @@ def save_registration(conn: sqlite3.Connection, reg: dict) -> None:
         conn.execute(
             """
             INSERT INTO registrations (local_registration_id, repo_path, tool, repository_id, base_commit,
-              verification_profiles_json, links_json, env_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              verification_profiles_json, links_json, copies_json, env_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(local_registration_id) DO UPDATE SET repo_path = excluded.repo_path,
               tool = excluded.tool, repository_id = excluded.repository_id, base_commit = excluded.base_commit,
               verification_profiles_json = excluded.verification_profiles_json,
-              links_json = excluded.links_json, env_json = excluded.env_json
+              links_json = excluded.links_json, copies_json = excluded.copies_json, env_json = excluded.env_json
             """,
             (
                 reg["local_registration_id"], reg["repo_path"], reg["tool"], reg["repository_id"],
                 reg["base_commit"], json.dumps(reg["verification_profiles"]),
-                json.dumps(reg.get("links", [])), json.dumps(reg.get("env", {})),
+                json.dumps(reg.get("links", [])), json.dumps(reg.get("copies", [])), json.dumps(reg.get("env", {})),
             ),
         )
 
@@ -162,6 +165,7 @@ def _registration(row: sqlite3.Row) -> dict:
         "base_commit": row["base_commit"],
         "verification_profiles": json.loads(row["verification_profiles_json"]),
         "links": json.loads(row["links_json"]),
+        "copies": json.loads(row["copies_json"]),
         "env": json.loads(row["env_json"]),
     }
 

@@ -80,7 +80,8 @@ deploy/selfhost/install.sh
 
 - `--tool claude|codex` — 도구를 고른다.
 - `--verify 이름=명령` — 검증 프로필. 수정 업무에는 하나 있어야 한다. 명령은 이 Mac 에만 저장되고 서버에는 이름만 보고된다.
-- `--link 경로` — worktree 에 원본 폴더로 심볼릭 링크할 git 무시 대상(예: `--link backend/.venv --link frontend/node_modules`).
+- `--link 경로` — worktree 에 원본 폴더로 심볼릭 링크할 git 무시 대상(예: `--link backend/.venv`).
+- `--copy 경로` — 링크를 거부하는 도구용으로 원본에서 복사할 git 무시 대상(예: `--copy frontend/node_modules` — Next 16 Turbopack 은 작업 복사본 밖을 가리키는 `node_modules` 링크를 "points out of the filesystem root" 로 거부한다). macOS 는 APFS 복제(`cp -Rc`)라 디스크를 거의 쓰지 않고 수 초에 끝난다.
 - `--env 이름=값` — 검증·도구 프로세스 환경에 더할 값(예: 에이전트 전용 테스트 DB 주소). 값은 이 Mac 의 러너 상태에만 저장된다.
 
 연결 코드와 `--env` 값은 plist·스크립트 출력에 쓰지 않는다(`DRY_RUN=1` 도 `***` 로 가린다). 명령행 인자라 실행하는 동안 같은 Mac 의 `ps` 에는 보인다. `DRY_RUN=1` 은 할 일과 plist 내용만 보여 준다. setup 이 실패하면(코드 만료·서버 주소 틀림) launchd 에 적재하지 않고 종료 코드 1 — 카드에서 [다시 발급] 뒤 다시 실행한다. 이미 붙은 저장소를 다른 폴더·Mac 으로 옮길 때는 카드의 고급 설정 → [러너 다시 붙이기].

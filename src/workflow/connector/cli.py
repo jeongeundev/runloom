@@ -121,6 +121,10 @@ def _add_registration_args(parser: argparse.ArgumentParser, *, tool_default: str
         help="worktree 에 원본 폴더로 심볼릭 링크할 상대 경로 (예: backend/.venv). 여러 번 지정 가능",
     )
     parser.add_argument(
+        "--copy", action="append", default=[], type=_link_arg, metavar="PATH",
+        help="worktree 에 원본 폴더에서 복사할 상대 경로 — 링크를 거부하는 도구용 (예: frontend/node_modules). 여러 번 지정 가능",
+    )
+    parser.add_argument(
         "--env", action="append", default=[], type=_env_arg, metavar="NAME=VALUE",
         help="검증·도구 프로세스 환경에 더할 값. 러너 로컬에만 저장. 여러 번 지정 가능",
     )
@@ -194,6 +198,7 @@ def _register(args, paths: ConnectorPaths, transport) -> int:
     repository_id = args.repository_id or default_repository_id(repo, discovered)
     profiles = dict(args.verify)
     links = list(dict.fromkeys(args.link))
+    copies = list(dict.fromkeys(args.copy))
     env = dict(args.env)
     registration = {
         "local_registration_id": local_registration_id,
@@ -203,6 +208,7 @@ def _register(args, paths: ConnectorPaths, transport) -> int:
         "base_commit": base_commit,
         "verification_profiles": profiles,
         "links": links,
+        "copies": copies,
         "env": env,
     }
     conn = state.connect(paths.state_db)
@@ -213,7 +219,7 @@ def _register(args, paths: ConnectorPaths, transport) -> int:
         conn.close()
     client = CentralClient(stored.server, stored.token, transport=transport)
     try:
-        reply = client.report_registration(stored.connector_id, {  # links·env 는 이름도 보내지 않는다
+        reply = client.report_registration(stored.connector_id, {  # links·copies·env 는 이름도 보내지 않는다
             "local_registration_id": local_registration_id,
             "tool": args.tool,
             "repository_id": repository_id,
@@ -229,7 +235,7 @@ def _register(args, paths: ConnectorPaths, transport) -> int:
     print(
         f"등록됨: {local_registration_id} → agent {reply.get('agent_id')} · GitHub {github} "
         f"· 도구 {args.tool} · base_commit {base_commit[:12]} · 검증 프로필 {', '.join(profiles) or '없음'} "
-        f"· 링크 {len(links)}개 · 환경변수 {', '.join(env) or '없음'} "
+        f"· 링크 {len(links)}개 · 복사 {len(copies)}개 · 환경변수 {', '.join(env) or '없음'} "
         "· 다음: `python3 -m workflow.connector run` 또는 deploy/selfhost/install-runner.sh"
     )
     return 0

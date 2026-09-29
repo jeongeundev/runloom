@@ -687,6 +687,7 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
 | 칸 | 타입·기본 | 의미 |
 |---|---|---|
 | `links_json` | `TEXT NOT NULL DEFAULT '[]'` | `--link` 상대 경로 목록(정규화, 중복 제거, 선언 순서) |
+| `copies_json` | `TEXT NOT NULL DEFAULT '[]'` | `--copy` 상대 경로 목록(`--link` 와 같은 검사). `git_ops.copy_prepared_paths` 가 복사한다(2026-09-29 추가) |
 | `env_json` | `TEXT NOT NULL DEFAULT '{}'` | `--env` 이름 → 값. 중앙에 보내지 않는다 |
 
 `save_registration`·`get_registration` 이 `links: list[str]`·`env: dict[str, str]` 로 주고받는다. `register` 를 다시 하면 두 칸은 이번 인자로 바뀐다(인자가 없으면 빈 값 — 등록은 선언 전체를 다시 쓰는 것). 검사(`connector/cli.py`, 인자 파싱 때 거부 → exit 2):

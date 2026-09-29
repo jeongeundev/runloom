@@ -475,7 +475,7 @@ def test_install_runner_with_code_dry_run_prints_setup_then_launchd(tmp_path):
     res = _run_runner(
         tmp_path, "--server", "http://127.0.0.1:8000", "--code", RUNNER_CODE, "--repo", str(folder),
         "--tool", "claude", "--verify", "check=scripts/check.sh", "--link", "backend/.venv",
-        "--env", f"DATABASE_URL={ENV_VALUE}", DRY_RUN="1",
+        "--copy", "frontend/node_modules", "--env", f"DATABASE_URL={ENV_VALUE}", DRY_RUN="1",
     )
     assert res.returncode == 0, res.stdout + res.stderr
     out = res.stdout
@@ -487,7 +487,8 @@ def test_install_runner_with_code_dry_run_prints_setup_then_launchd(tmp_path):
     assert pip < setup < boot
     setup_line = lines[setup]
     for part in ("--server http://127.0.0.1:8000", f"--repo {folder}", "--tool claude",
-                 "--verify check=scripts/check.sh", "--link backend/.venv", "--env DATABASE_URL="):
+                 "--verify check=scripts/check.sh", "--link backend/.venv", "--copy frontend/node_modules",
+                 "--env DATABASE_URL="):
         assert part in setup_line, part
     # 코드·env 값은 출력하지 않는다
     assert RUNNER_CODE not in out and ENV_VALUE not in out and "s3cretPW" not in out

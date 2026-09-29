@@ -1216,6 +1216,8 @@ import os, pathlib
 print("DATABASE_URL=" + os.environ.get("DATABASE_URL", "-"))
 print("PATH=" + os.environ.get("PATH", "-"))
 print("VENV=" + str(pathlib.Path("backend/.venv/bin/x").is_file()))
+m = pathlib.Path("frontend/node_modules")
+print("MODULES=" + str(m.is_dir() and not m.is_symlink() and (m / "y").is_file()))
 """ + _CHECK
 
 
@@ -1263,6 +1265,28 @@ def test_bug_fix_links_prepared_paths_into_new_worktree_without_committing_them(
     assert (repo / "frontend/node_modules/y").read_text() == "module\n"
     assert _git(repo, "rev-parse", "HEAD") == base
     assert _git(repo, "worktree", "list").count("\n") == 1  # 임시 체크아웃은 정리됐다
+
+
+def test_bug_fix_copies_declared_paths_into_worktree_and_clean_checkouts(state_conn, repo, bug_handoff):
+    base = register_prepared(state_conn, repo)
+    registration = state.get_registration(state_conn, "local-billing")
+    state.save_registration(state_conn, {**registration, "links": ["backend/.venv"], "copies": ["frontend/node_modules"]})
+    seen: dict[str, object] = {}
+
+    def script(worktree: Path) -> ToolRun:
+        modules = worktree / "frontend/node_modules"
+        seen["copied"] = modules.is_dir() and not modules.is_symlink() and (modules / "y").is_file()
+        seen["dirty"] = git_ops.is_dirty(worktree)
+        return fix_and_add_test(worktree)
+
+    output = ScriptedTool(state_conn, script).run(bug_request(base), bug_handoff, Recorder())
+
+    assert output.failed is None, output.failed
+    assert seen == {"copied": True, "dirty": False}
+    files = _git(repo, "show", "--name-only", "--format=", output.result.result_commit).splitlines()
+    assert sorted(files) == ["src.py", "tests/test_repro.py"]  # 복사본은 결과 커밋에 없다
+    assert "MODULES=True" in by_kind(output)["verification_log"].decode()
+    assert (repo / "frontend/node_modules/y").read_text() == "module\n"
 
 
 def test_bug_fix_retry_on_existing_worktree_keeps_links_and_stays_clean(state_conn, repo, bug_handoff):

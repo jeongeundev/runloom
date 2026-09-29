@@ -12,7 +12,7 @@ usage() {
   cat <<EOF
 사용법: deploy/selfhost/install-runner.sh [--help]
        deploy/selfhost/install-runner.sh --server URL --code CODE --repo 폴더
-           [--tool claude|codex] [--verify NAME=COMMAND]... [--link PATH]... [--env NAME=VALUE]...
+           [--tool claude|codex] [--verify NAME=COMMAND]... [--link PATH]... [--copy PATH]... [--env NAME=VALUE]...
 
 호스트 Mac 에 셀프호스트 러너(python3 -m workflow.connector run)를 launchd 로 설치한다.
   1. python3 -m pip install -e <저장소>
@@ -31,12 +31,12 @@ EOF
 }
 
 SETUP_SERVER="" SETUP_CODE="" SETUP_REPO=""
-SETUP_EXTRA=()   # --tool·--verify·--link·--env — setup 에 그대로 넘긴다
+SETUP_EXTRA=()   # --tool·--verify·--link·--copy·--env — setup 에 그대로 넘긴다
 SHOWN_EXTRA=()   # 출력용 — --env 값은 가린다
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --server|--code|--repo|--tool|--verify|--link|--env)
+    --server|--code|--repo|--tool|--verify|--link|--copy|--env)
       if [[ $# -lt 2 ]]; then
         echo "$1 에 값이 필요합니다. --help 를 보세요." >&2
         exit 2
@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2 ;;
     *)
-      echo "알 수 없는 인자입니다(--server·--code·--repo·--tool·--verify·--link·--env). --help 를 보세요." >&2
+      echo "알 수 없는 인자입니다(--server·--code·--repo·--tool·--verify·--link·--copy·--env). --help 를 보세요." >&2
       exit 2 ;;
   esac
 done

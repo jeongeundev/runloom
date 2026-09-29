@@ -200,12 +200,14 @@ def test_register_stores_links_and_env_locally_and_rerun_replaces_them(env, repo
     code = main([
         "register", "--id", "local-demo", "--repo", str(repo), "--repository-id", "r",
         "--link", "backend/.venv/", "--link", "./backend/.venv", "--link", "frontend/node_modules",
+        "--copy", "web/node_modules/", "--copy", "web/node_modules",
         "--env", f"DATABASE_URL={SECRET_VALUE}",
     ], env=env, transport=connected.transport())
 
     assert code == 0
     reg = _registration(env, "local-demo")
     assert reg["links"] == ["backend/.venv", "frontend/node_modules"]  # 정규화 · 중복 제거 · 선언 순서
+    assert reg["copies"] == ["web/node_modules"]
     assert reg["env"] == {"DATABASE_URL": SECRET_VALUE}
     sent = json.dumps(connected.registrations[0])
     assert "DATABASE_URL" not in sent and SECRET_VALUE not in sent and "node_modules" not in sent
@@ -213,13 +215,22 @@ def test_register_stores_links_and_env_locally_and_rerun_replaces_them(env, repo
     assert main(["register", "--id", "local-demo", "--repo", str(repo), "--repository-id", "r"],
                 env=env, transport=connected.transport()) == 0
     reg = _registration(env, "local-demo")
-    assert reg["links"] == [] and reg["env"] == {}  # 등록은 선언 전체를 다시 쓴다
+    assert reg["links"] == [] and reg["copies"] == [] and reg["env"] == {}  # 등록은 선언 전체를 다시 쓴다
 
 
 @pytest.mark.parametrize("link", ["../x", "/abs/path", ".git/hooks", "a/.git/config", "", "."])
 def test_register_rejects_unsafe_link(env, repo, connected, link):
     with pytest.raises(SystemExit) as info:
         main(["register", "--id", "x", "--repo", str(repo), "--repository-id", "r", "--link", link],
+             env=env, transport=connected.transport())
+    assert info.value.code == 2
+    assert connected.registrations == []
+
+
+@pytest.mark.parametrize("path", ["../x", "/abs/path", ".git/hooks", ""])
+def test_register_rejects_unsafe_copy(env, repo, connected, path):
+    with pytest.raises(SystemExit) as info:
+        main(["register", "--id", "x", "--repo", str(repo), "--repository-id", "r", "--copy", path],
              env=env, transport=connected.transport())
     assert info.value.code == 2
     assert connected.registrations == []

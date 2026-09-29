@@ -316,6 +316,31 @@ def test_link_prepared_paths_skips_missing_origin_and_tracked_paths(prepared_rep
     assert "pkg.py" in text and "tests" in text and "absent/dir" in text
 
 
+def test_copy_prepared_paths_copies_real_directories_and_keeps_them_out_of_git(prepared_repo):
+    """Next(Turbopack)는 작업 복사본 밖을 가리키는 `node_modules` 링크를 거부한다 — 그런 설치물은 복사한다."""
+    worktree = git_ops.ensure_worktree(prepared_repo, "t1", git_ops.head_sha(prepared_repo))
+
+    copied = git_ops.copy_prepared_paths(prepared_repo, worktree, ["frontend/node_modules", "absent/dir"])
+
+    assert copied == ["frontend/node_modules"]
+    dest = worktree / "frontend/node_modules"
+    assert dest.is_dir() and not dest.is_symlink()
+    assert (dest / "y").read_text() == "module\n"
+    assert not os.path.lexists(worktree / "absent")
+    assert git_ops.is_dirty(worktree) is False
+    (dest / "y").write_text("changed\n")  # 복사본을 고쳐도 원본은 그대로
+    assert (prepared_repo / "frontend/node_modules/y").read_text() == "module\n"
+    assert git_ops.copy_prepared_paths(prepared_repo, worktree, ["frontend/node_modules"]) == []  # 이어 쓰기
+
+
+def test_copy_prepared_paths_does_not_overwrite_tracked_paths(prepared_repo):
+    worktree = git_ops.ensure_worktree(prepared_repo, "t1", git_ops.head_sha(prepared_repo))
+
+    assert git_ops.copy_prepared_paths(prepared_repo, worktree, ["pkg.py"]) == []
+    assert (worktree / "pkg.py").read_text() == "X = 1\n"
+    assert git_ops.is_dirty(worktree) is False
+
+
 # --- 결과 브랜치 push (ADR-0018 결정 4, phase 12 step 5) ------------------------------------------------
 
 

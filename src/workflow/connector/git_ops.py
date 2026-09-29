@@ -6,7 +6,8 @@
 - 기준 커밋 추적(ADR-0018 결정 2): `fetch_origin`·`origin_head` 만 네트워크에 닿는다. 원격 이름 `origin`·`refs/remotes/origin/HEAD`
   는 코드 상수이고, 자격 입력 프롬프트 없이(`GIT_TERMINAL_PROMPT=0`) 제한 시간 안에 끝낸다.
 - 작업 복사본 준비물(ADR-0018 결정 3): `link_prepared_paths` 가 등록의 `links` 를 원본 폴더로 향하는 심볼릭 링크로 걸고
-  저장소 공용 `info/exclude` 에 넣는다. 원본 폴더의 파일은 읽기만 한다.
+  저장소 공용 `info/exclude` 에 넣는다. 링크를 거부하는 도구(Next Turbopack 은 작업 복사본 밖을 가리키는 `node_modules`
+  링크를 거부한다)용 `copies` 는 `copy_prepared_paths` 가 복사한다(macOS 는 APFS 복제 `cp -Rc`). 원본 폴더의 파일은 읽기만 한다.
 - 결과 브랜치 push(ADR-0018 결정 4): `push_task_branch` 는 `task/<task_id>` 만 같은 이름으로 origin 에 보낸다. force 없음,
   사용자 로컬 git 자격·훅 그대로. 실패 로그에서 원격 URL 은 가린다(자격이 URL 에 들어 있을 수 있다).
 """
@@ -14,7 +15,9 @@
 import logging
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 DEFAULT_AUTHOR = "workflow-connector <connector@localhost>"
@@ -143,14 +146,7 @@ def link_prepared_paths(repo: Path, checkout: Path, links: list[str]) -> list[st
     `links` 는 등록 때(cli) 검사한 상대 경로다."""
     if not links:
         return []
-    exclude = repo / _git(["rev-parse", "--git-path", "info/exclude"], repo).strip()
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    text = exclude.read_text() if exclude.is_file() else ""
-    rules = text.splitlines()
-    new_rules = [rule for rule in dict.fromkeys(_exclude_rule(p) for p in links) if rule not in rules]
-    if new_rules:
-        with exclude.open("a") as f:
-            f.write(("\n" if text and not text.endswith("\n") else "") + "".join(f"{r}\n" for r in new_rules))
+    _exclude_paths(repo, links)
     linked = []
     for rel in links:
         source, dest = repo / rel, checkout / rel
@@ -165,6 +161,44 @@ def link_prepared_paths(repo: Path, checkout: Path, links: list[str]) -> list[st
         os.symlink(source, dest)
         linked.append(rel)
     return linked
+
+
+def copy_prepared_paths(repo: Path, checkout: Path, copies: list[str]) -> list[str]:
+    """`repo/<p>` 를 `checkout/<p>` 로 복사하고 복사한 경로를 돌려준다. 건너뛰기·`info/exclude` 규칙은
+    `link_prepared_paths` 와 같다. macOS 는 APFS 복제(`cp -Rc` — 파일 내용을 복사하지 않아 수 초), 그 밖은 일반 복사."""
+    if not copies:
+        return []
+    _exclude_paths(repo, copies)
+    copied = []
+    for rel in copies:
+        source, dest = repo / rel, checkout / rel
+        if os.path.lexists(dest):
+            log.info("복사 %s 건너뜀 — 작업 복사본에 이미 있다 (추적 파일은 덮지 않는다)", rel)
+            continue
+        if not source.exists():
+            log.info("복사 %s 건너뜀 — 원본 폴더에 없다", rel)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "darwin":
+            subprocess.run(["cp", "-Rc", str(source), str(dest)], check=True, capture_output=True)
+        elif source.is_dir():
+            shutil.copytree(source, dest, symlinks=True)
+        else:
+            shutil.copy2(source, dest)
+        copied.append(rel)
+    return copied
+
+
+def _exclude_paths(repo: Path, paths: list[str]) -> None:
+    """경로마다 `info/exclude` 에 `/<p>` 를 한 번 넣는다(저장소 공용 — 모든 worktree 에 적용)."""
+    exclude = repo / _git(["rev-parse", "--git-path", "info/exclude"], repo).strip()
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    text = exclude.read_text() if exclude.is_file() else ""
+    rules = text.splitlines()
+    new_rules = [rule for rule in dict.fromkeys(_exclude_rule(p) for p in paths) if rule not in rules]
+    if new_rules:
+        with exclude.open("a") as f:
+            f.write(("\n" if text and not text.endswith("\n") else "") + "".join(f"{r}\n" for r in new_rules))
 
 
 def _exclude_rule(rel: str) -> str:

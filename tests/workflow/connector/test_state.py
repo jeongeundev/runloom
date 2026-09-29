@@ -54,7 +54,8 @@ def test_registration_roundtrip(state_conn, tmp_path):
         "repository_id": "demo-report-repo",
         "base_commit": "3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e",
         "verification_profiles": {"vp-pytest": ["python3", "-m", "pytest", "-q"]},
-        "links": ["backend/.venv", "frontend/node_modules"],
+        "links": ["backend/.venv"],
+        "copies": ["frontend/node_modules"],
         "env": {"DATABASE_URL": "postgresql://localhost:5434/test"},
     }
 
@@ -82,7 +83,7 @@ def test_registration_without_links_and_env_reads_back_empty(state_conn, tmp_pat
     })
 
     reg = state.get_registration(state_conn, "local-demo-report")
-    assert reg["links"] == [] and reg["env"] == {}
+    assert reg["links"] == [] and reg["copies"] == [] and reg["env"] == {}
 
 
 def test_list_registrations_returns_all_in_id_order(state_conn, tmp_path):
@@ -118,8 +119,8 @@ def test_init_schema_adds_links_and_env_to_registrations_made_before_the_columns
     finally:
         conn.close()
 
-    assert {"links_json", "env_json"} <= columns
-    assert reg["repository_id"] == "repo-r" and reg["links"] == [] and reg["env"] == {}
+    assert {"links_json", "copies_json", "env_json"} <= columns
+    assert reg["repository_id"] == "repo-r" and reg["links"] == [] and reg["copies"] == [] and reg["env"] == {}
 
 
 # --- 실행 기록 -----------------------------------------------------------------------
