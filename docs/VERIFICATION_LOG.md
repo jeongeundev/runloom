@@ -389,3 +389,32 @@ phase 뒤 사용자와 함께 채운다. 결과가 좋게 보이도록 편집하
 | 비용 | CLI 보고 비용(수정·검토) |
 | 비밀값 | 토큰·URL·env 값이 DB·로그·화면·PR·알림에 없는지 확인 방법 |
 | 근거 | 업무·실행 ID, PR URL, 로그 경로 |
+
+## 2026-09-29 실연동 1 — runloom-sandbox #1 (재설계 전 phase 12 순환 확인)
+
+[재설계 계획 16절](product/REDESIGN_PLAN.md#16-설계-검토-2026-09-29) 결정 3. 대상은 비공개 저장소 `jeongeundev/runloom-sandbox`(`service` 82d1bc1 복사). OpenArchive 에는 쓰지 않았다 — 시작 전에 남아 있던 OpenArchive #112 실행(`exec-8a1530fa723a2ff6`, 중앙 `running`)을 `실패 · 운영자 종료 — OpenArchive 쓰기 금지` 로 마감하고 OpenArchive 소스를 중지했다(백업 `20260929T081001Z` 뒤).
+
+| 항목 | 값 |
+|---|---|
+| 날짜·시각 | 2026-09-29 17:26 KST 이슈 수집 → 17:30 맡기기 → 17:44 수정 결과 → 17:47 검토 승인 → 17:52 초안 PR(결함 2 로 5분 지연) → 18:06 병합 |
+| 환경 | 셀프호스트 스키마 8, `service` 82d1bc1 이미지(2e06218 기준 설치), Claude Code 2.1.284, App `runloom-gwufov` — Pull requests 쓰기·Contents 읽기(결함 2 뒤 추가) 승인 |
+| 러너 등록 | [러너 붙이기] 명령(코드 `***`) + `--repo /Users/kje/demo/runloom-sandbox --verify "check=sh -c 'python3 -m pytest -q && python3 -m ruff check .'" --env PYTHONPATH=src`. 카드 자동 매칭: 로컬 저장소·수정·검토 에이전트(`agt-b4929dbc`)·검증 프로필 `check` 모두 `(자동)`. `origin` 은 https + 클론 로컬 `credential.https://github.com.helper = !gh auth git-credential`(osxkeychain 에 GitHub 자격이 없었다) |
+| 이슈 | #1 "워커 로그에 외부 요청 URL 전체가 남아 n8n callback 서명이 노출된다"(실제 결함, 재현·기대·인수 조건 포함), [에이전트에게 맡기기] |
+| 기준 커밋 | `82d1bc16f766` = 그 시각 `origin/main` |
+| 검증 결과 | 수정 실행 `exec-393f44f4a818380d` 14분. 재현 테스트 추가 → 2926 passed/68 skipped, ruff 통과 |
+| 결과 브랜치 | `branch_pushed=1`, 원격 `task/task-b07ed4afa33d` = `79af657` — launchd 환경에서 push 성공(처음 실제 확인) |
+| 검토 | `exec-36316de63142e6f3` 3분, `approved`, 재작업 0 |
+| PR | #2 초안, 작성자 `app/runloom-gwufov`, 본문 `Fixes #1` + 검토 요약. 처음 3회 422(결함 2) |
+| 병합 | 사용자 18:06:04 병합 → 이슈 18:06:05 자동 닫힘 → 업무 `완료 · PR 병합`, 원본 댓글 1개를 4번 고쳐 씀(마지막 "완료") |
+| 알림 | `pr_opened` 1건 17:52:16 전송(Discord) |
+| 실패·재작업 | 결함 1·2(아래). 사람 조작: 러너 로컬 상태의 끊긴 OpenArchive 실행 1건을 종료로 표시(백업 뒤), PR 재시도 소진을 막으려 워커를 권한 승인까지 정지 |
+| 비용 | 수정 US$0.58(출력 6,541 토큰), 검토 US$0.41(2,175) — 구독 CLI 보고값 |
+| 비밀값 | 러너 로그에 `signature`·`wfc_`·`gho_` 없음(grep 0). PR·댓글에 토큰·env 값 없음 |
+| 근거 | 업무 `task-b07ed4afa33d`, https://github.com/jeongeundev/runloom-sandbox/pull/2, `~/Library/Logs/workflow-connector-selfhost/` |
+
+발견한 결함(미수정):
+1. **러너 재시작 뒤 끊긴 실행이 러너를 영구히 막는다.** 로컬 상태에 `running` 으로 남은 실행은 `unknown_local_at` 만 찍고 "사람 확인 필요" 로그를 남긴 채 활성 실행으로 남아 claim 을 하지 않는다(`connector/runner.py` `_continue`, `state.active_execution`). 중앙이 그 실행을 이미 마감(`failed`)했어도 러너는 모르고, 풀어 주는 명령도 없다. 방향: 중앙이 종료로 본 실행은 러너가 내려놓는다(heartbeat 응답 또는 claim 전 조회), 아니면 `connector release <실행>` 명령.
+2. **App 권한에 Contents 읽기가 없어 초안 PR 이 422 `Validation Failed · not all refs are readable`.** `adapters/github_app.py` manifest `default_permissions` 가 issues·pull_requests·metadata 뿐. 가짜 GitHub e2e 로는 드러나지 않았다. 방향: manifest 에 `contents: read`, SELFHOST "App 권한 올리기" 에 Contents 추가, 권한 부족 422 를 `pr_unavailable` 사람 요청(권한 안내)으로 분류.
+3. (개선) PR 생성 422 의 `message` 가 워커 로그에 남지 않아(`str(exc)` 는 `HTTP 422` 뿐) 원인을 컨테이너에서 재현해야 알았다. 로그에 요약(`GitHubUnprocessable.message`, 200자)을 붙인다.
+
+sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 Runloom 본 코드에도 유효한 수정이다 — `service` 에 가져올지 사용자 결정.
