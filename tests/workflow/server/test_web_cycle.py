@@ -3,7 +3,7 @@
 
 서버 렌더만 본다(브라우저 스크립트는 돌리지 않는다). 쓰기는 화면이 부르는 JSON API(`/github/sources…`·
 `/human-requests/…/responses`)를 그대로 부른다 — 화면 전용 쓰기 경로를 따로 두지 않는다. 워커·연결 프로그램 흉내는
-test_task_cycle 의 시드를 그대로 쓴다(세션 `sess-cycle` 을 이 클라이언트의 운영자 세션으로 삼는다).
+test_task_cycle 의 시드를 그대로 쓴다(고정 워크스페이스에 `/login` 으로 로그인한 클라이언트가 소스·업무의 주인).
 """
 
 import dataclasses
@@ -14,7 +14,9 @@ import pytest
 
 from workflow.adapters import repo
 from workflow.server import task_cycle, views
-from workflow.server.auth import SESSION_COOKIE, sign_session
+from workflow.server.auth import SESSION_COOKIE, sign_session, verify_session
+
+from .conftest import log_in
 
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     FIX,
@@ -48,10 +50,21 @@ def settings(settings):
 
 @pytest.fixture
 def operator(client, cycle, conn):
-    """이 클라이언트를 `sess-cycle` 운영자 세션으로 — 소스·업무의 주인."""
-    repo.mark_operator(conn, SESSION)
-    client.cookies.set(SESSION_COOKIE, sign_session(SESSION, "test-session-secret"))
+    """이 클라이언트를 고정 워크스페이스(cycle 의 `SESSION`)에 로그인 — 소스·업무의 주인. 셀프호스트는 로그인 = 운영자."""
+    log_in(client)
+    assert verify_session(client.cookies[SESSION_COOKIE], "test-session-secret") == SESSION
     return client
+
+
+def _stranger(app, conn):
+    """워크스페이스가 아닌 세션 행을 서명한 쿠키를 가진 클라이언트 — 셀프호스트에서는 로그인 안 된 것으로 본다."""
+    from fastapi.testclient import TestClient
+
+    if repo.get_session(conn, "sess-other") is None:
+        repo.create_session(conn, "sess-other", NOW)
+    stranger = TestClient(app)
+    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    return stranger
 
 
 def page(client, url: str) -> str:
@@ -70,11 +83,13 @@ def form_value(text: str, request_id: str, name: str) -> str:
 # --- 운영자 GitHub 화면 ---------------------------------------------------------------------------
 
 
-def test_github_page_is_operator_only(client, cycle):
-    response = client.get("/operator/github")
-    assert response.status_code == 403
-    assert "운영자" in response.text
-    assert 'href="/operator/github"' not in client.get("/tasks").text
+def test_github_page_is_operator_only(client, cycle, conn, app):
+    for anonymous in (client, _stranger(app, conn)):
+        response = anonymous.get("/operator/github", follow_redirects=False)
+        assert (response.status_code, response.headers["location"]) == (303, "/login")
+        assert SOURCE not in response.text
+        tasks = anonymous.get("/tasks", follow_redirects=False)  # 사이드바 링크를 볼 화면도 없다
+        assert (tasks.status_code, tasks.headers["location"]) == (303, "/login")
 
 
 def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, conn, worker):
@@ -163,13 +178,24 @@ def test_views_blockers_are_the_readiness_blockers(operator, conn, worker, setti
 
 
 def test_plain_tasks_have_no_cycle_block(client, conn, store, settings):
-    from .conftest import SESSION as PLAIN_SESSION
-    from .conftest import TASK_A, seed_agents, task_row
+    """업무 순환 종류(bug_fix·code_review)가 아니고 원본 이슈도 없는 업무 — 워크스페이스가 등록한 일반 종류."""
+    from workflow.contracts.v1 import KindSpec
+    from workflow.server.auth import ensure_workspace
 
-    repo.create_session(conn, PLAIN_SESSION, NOW)
+    from .conftest import SESSION as PLAIN_SESSION
+    from .conftest import seed_agents, task_row
+
+    ensure_workspace(conn, NOW)
     seed_agents(conn)
-    repo.insert_task(conn, task_row(TASK_A), NOW)
-    assert views.cycle_context(conn, store, repo.get_task(conn, TASK_A), now=NOW, settings=settings,
+    repo.insert_kind(conn, PLAIN_SESSION, KindSpec(
+        kind="doc_update", label="문서 갱신", capability_code="docs.write", scope_key="repository_id",
+        input_kinds=[], output_kind="generic_result", outcomes=["done"], instructions="문서를 고치세요.",
+        builtin=False,
+    ), NOW)
+    repo.insert_task(conn, {**task_row("task-plain"), "kind": "doc_update",
+                            "required_capability": {"code": "docs.write", "scope": {"repository_id": "docs"}},
+                            "criteria": []}, NOW)
+    assert views.cycle_context(conn, store, repo.get_task(conn, "task-plain"), now=NOW, settings=settings,
                                is_operator=False) is None
 
 
@@ -229,11 +255,22 @@ def test_response_api_rejects_form_posts_and_other_sessions(operator, client, co
     assert plain.status_code == 422 and form.status_code == 422
     assert repo.list_human_responses(conn, task_id) == []
 
-    from fastapi.testclient import TestClient
+    stranger = _stranger(app, conn)
+    assert stranger.post(url, json={"response_id": "x", "expected_revision": 1, "action": "close"}).status_code == 401
+    assert stranger.get(f"/tasks/{task_id}", follow_redirects=False).status_code == 303
+    assert repo.list_human_responses(conn, task_id) == []
 
-    stranger = TestClient(app)
-    assert stranger.post(url, json={"response_id": "x", "expected_revision": 1, "action": "close"}).status_code == 403
-    assert stranger.get(f"/tasks/{task_id}").status_code == 404
+    # 다른 워크스페이스(운영자 세션)의 업무·사람 요청은 로그인 워크스페이스에서 보이지도 응답되지도 않는다
+    from .conftest import task_row
+
+    repo.mark_operator(conn, "sess-other")
+    repo.insert_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
+    other_request, _ = repo.create_human_request_once(conn, "task-other", "decision", "q", "decision:other", NOW)
+    assert operator.get("/tasks/task-other").status_code == 404
+    other = operator.post(f"/human-requests/{other_request}/responses",
+                          json={"response_id": "x", "expected_revision": 1, "action": "close"})
+    assert other.status_code == 404
+    assert repo.get_human_request(conn, "sess-other", other_request)["state"] == "open"
 
 
 def test_non_operator_session_sees_no_response_form(operator, conn, worker, app):
@@ -346,11 +383,13 @@ def test_delivery_state_is_shown_apart_from_the_task_state(operator, conn, worke
     assert "반영 실패" in page(operator, "/operator/github")
 
 
-def test_fixture_import_is_marked_as_demo_data_not_a_real_issue(client, conn, settings):
-    from .conftest import seed_agents
+def test_fixture_import_is_marked_as_demo_data_not_a_real_issue(client_demo, conn):
+    """demo 전용 — 카탈로그 등록·fixture 가져오기(ADR-0019 로 step 2·3 에서 삭제)."""
+    from .conftest import seed_agents_demo
 
+    client = client_demo
     assert client.get("/tasks").status_code == 200
-    seed_agents(conn)
+    seed_agents_demo(conn)
     client.post("/agents/register", data={"agent_id": "agent-codex-mac"})
     client.post("/agents/register", data={"agent_id": "agent-ops-demo"})
     created = client.post("/tasks/import", data={"source": "github", "issue_keys": ["#41"]},

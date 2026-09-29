@@ -4,7 +4,6 @@
 비밀 파일(0600)에만 있고 응답 HTML·로그·DB 에는 호스트만 나온다.
 """
 
-import dataclasses
 import json
 import logging
 import stat
@@ -16,6 +15,9 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo, secret_store
 from workflow.adapters.secret_store import SecretStore
 from workflow.server.app import create_app
+from workflow.server.auth import SESSION_COOKIE, sign_session
+
+from .conftest import log_in
 
 BASE = "http://127.0.0.1:8000"
 URL = "https://discord.com/api/webhooks/123456/SECRETwebhookTOKEN_abcdef"
@@ -54,9 +56,7 @@ def secrets(settings) -> SecretStore:
 
 @pytest.fixture
 def op(app) -> TestClient:
-    client = TestClient(app, base_url=BASE)
-    assert client.post("/operator/login", data={"token": "test-operator-token"}, follow_redirects=False).status_code == 303
-    return client
+    return log_in(TestClient(app, base_url=BASE))
 
 
 def error(response, status: int, code: str) -> None:
@@ -71,19 +71,24 @@ def save(op: TestClient, url: str = URL):
 # --- 권한 ----------------------------------------------------------------------------------------
 
 
-def test_every_path_is_operator_only(app, secrets, receiver):
-    anonymous = TestClient(app, base_url=BASE)
-    error(anonymous.get("/operator/notifications"), 403, "forbidden")
-    for path, data in (("/operator/notifications/webhook", {"url": URL}),
-                       ("/operator/notifications/webhook/delete", {}),
-                       ("/operator/notifications/test", {})):
-        error(anonymous.post(path, data=data, follow_redirects=False), 403, "forbidden")
+def test_every_path_is_operator_only(app, conn, secrets, receiver):
+    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    repo.create_session(conn, "sess-other", "2026-09-28T00:00:00Z")
+    stranger = TestClient(app, base_url=BASE)
+    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    for anonymous in (TestClient(app, base_url=BASE), stranger):
+        response = anonymous.get("/operator/notifications", follow_redirects=False)
+        assert (response.status_code, response.headers["location"]) == (303, "/login")
+        for path, data in (("/operator/notifications/webhook", {"url": URL}),
+                           ("/operator/notifications/webhook/delete", {}),
+                           ("/operator/notifications/test", {})):
+            response = anonymous.post(path, data=data, follow_redirects=False)
+            assert (response.status_code, response.headers["location"]) == (303, "/login")
     assert not secrets.exists(secret_store.NOTIFY_WEBHOOK_URL)
     assert receiver.calls == []
 
 
-def test_selfhost_without_login_redirects_to_login(settings, receiver):
-    app = create_app(dataclasses.replace(settings, mode="selfhost"))
+def test_selfhost_without_login_redirects_to_login(app):
     client = TestClient(app, base_url=BASE)
     response = client.get("/operator/notifications", follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == "/login"

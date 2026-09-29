@@ -10,10 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
+from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import ExecutionRequest
-from workflow.server.auth import SESSION_COOKIE, verify_session
+from workflow.server.auth import SELFHOST_SESSION_ID, SESSION_COOKIE, sign_session, verify_session
 
-from .conftest import BASE_COMMIT, NOW
+from .conftest import BASE_COMMIT, NOW, log_in
 
 TOKEN = "github_pat_" + "S3cr3t" * 10
 FIX_AGENT = "agent-codex-mac"
@@ -35,20 +36,20 @@ def _agent(agent_id: str, *capabilities: tuple[str, str], profiles=("vp-pytest",
         "local_registration_id": f"local-{agent_id}",
         "capabilities": [{"code": code, "scope": {"repository_id": repo_id}} for code, repo_id in capabilities],
         "verification_profile_ids": list(profiles),
-        "shared_to_all_sessions": True,
     }
 
 
 def login(client: TestClient) -> str:
-    """운영자 로그인 → 세션 ID. 쿠키는 client 가 보관한다."""
-    response = client.post("/operator/login", data={"token": "test-operator-token"}, follow_redirects=False)
-    assert response.status_code == 303, response.text
-    return verify_session(client.cookies[SESSION_COOKIE], "test-session-secret")
+    """워크스페이스 로그인(`/login`, 로그인 = 운영자) → 세션 ID(고정 워크스페이스). 쿠키는 client 가 보관한다."""
+    log_in(client)
+    session_id = verify_session(client.cookies[SESSION_COOKIE], "test-session-secret")
+    assert session_id == SELFHOST_SESSION_ID
+    return session_id
 
 
 @pytest.fixture
 def operator(app, conn) -> tuple[TestClient, str]:
-    """운영자 세션 + 수정 Agent(code.fix billing, vp-pytest)·검토 Agent(code.review billing) 등록."""
+    """로그인한 워크스페이스 + 수정 Agent(code.fix billing, vp-pytest)·검토 Agent(code.review billing) 등록."""
     client = TestClient(app)
     session_id = login(client)
     repo.upsert_agent(conn, _agent(FIX_AGENT, ("code.fix", "billing")))
@@ -99,7 +100,9 @@ def error(response, status: int, code: str, field: str | None = "__any__") -> di
 
 
 def test_every_endpoint_requires_operator_session(client, conn):
-    client.get("/")  # 공개 세션 쿠키만 받는다
+    # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 로그인 안 된 것으로 본다
+    repo.create_session(conn, "sess-other", NOW)
+    client.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
     calls = [
         ("GET", "/github/sources", None),
         ("POST", "/github/sources/preview", body()),
@@ -112,24 +115,29 @@ def test_every_endpoint_requires_operator_session(client, conn):
     for anonymous in (TestClient(client.app), client):
         for method, url, payload in calls:
             response = anonymous.request(method, url, json=payload)
-            error(response, 403, "forbidden")
+            error(response, 401, "unauthenticated")
     assert repo.github_source_sessions(conn) == []
 
 
-def test_other_operator_session_cannot_see_or_change_a_source(app, op, conn):
-    source = create(op)
-    other = TestClient(app)
-    login(other)
-    sid = source["source_id"]
-    error(other.get(f"/github/sources/{sid}"), 404, "not_found")
-    error(other.put(f"/github/sources/{sid}", json={**body(), "expected_revision": 1}), 404, "not_found")
-    error(other.post(f"/github/sources/{sid}/stop"), 404, "not_found")
-    error(other.put(f"/github/sources/{sid}/assignees/5812345", json={"github_login": "kim", "agent_id": FIX_AGENT}),
+def test_other_operator_session_cannot_see_or_change_a_source(op, conn):
+    # 다른 워크스페이스(운영자 세션)가 가진 소스 — DB 에 직접 둔다
+    repo.create_session(conn, "sess-other", NOW)
+    repo.mark_operator(conn, "sess-other")
+    sid = "ghs-0000beef"
+    repo.save_github_source(conn, "sess-other", GitHubSourceConfig.model_validate({
+        **body(), "source_id": sid, "start_at": "2026-10-06T00:00:00Z", "config_revision": 1,
+    }), NOW)
+    saved = repo.get_github_source(conn, "sess-other", sid)
+    error(op.get(f"/github/sources/{sid}"), 404, "not_found")
+    error(op.put(f"/github/sources/{sid}", json={**body(), "expected_revision": 1}), 404, "not_found")
+    error(op.post(f"/github/sources/{sid}/stop"), 404, "not_found")
+    error(op.put(f"/github/sources/{sid}/assignees/5812345", json={"github_login": "kim", "agent_id": FIX_AGENT}),
           404, "not_found")
-    assert other.get("/github/sources").json()["sources"] == []
-    # 셀프호스트 1개 워크스페이스 — 다른 세션은 전역 토큰으로 새 연결을 만들 수 없다
-    error(other.post("/github/sources", json=body(repository_full_name="acme/lib")), 409, "github_workspace_taken")
-    assert op.get(f"/github/sources/{sid}").json()["source"] == source
+    assert op.get("/github/sources").json()["sources"] == []
+    # 셀프호스트 1개 워크스페이스 — 다른 세션이 연결을 가지면 전역 토큰으로 새 연결을 만들 수 없다
+    error(op.post("/github/sources", json=body(repository_full_name="acme/lib")), 409, "github_workspace_taken")
+    assert repo.get_github_source(conn, "sess-other", sid) == saved
+    assert repo.github_source_sessions(conn) == ["sess-other"]
 
 
 # --- 저장·조회 ------------------------------------------------------------------------------

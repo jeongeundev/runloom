@@ -38,12 +38,13 @@ from workflow.contracts.v1 import (
 from workflow.domain.issue_intake import snapshot_to_task_spec
 from workflow.domain.metrics import compute_metrics
 from workflow.server import human_api, task_cycle
+from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace
 from workflow.server.worker import Worker
 
 from .conftest import event, exchange
 from .test_github_sync import config, issue
 
-SESSION = "sess-cycle"
+SESSION = SELFHOST_SESSION_ID  # 로그인한 클라이언트와 같은 고정 워크스페이스
 SOURCE = "ghs-1a2b3c4d"
 NOW = "2026-10-06T12:00:00Z"
 FIX, REVIEW, FIX_SHOP = "agent-fix", "agent-review", "agent-fix-shop"
@@ -100,15 +101,14 @@ def _agent(agent_id: str, registration: str, code: str, repository: str) -> dict
         "agent_id": agent_id, "name": agent_id, "owner_scope": "personal", "connection_type": "local",
         "local_registration_id": registration,
         "capabilities": [{"code": code, "scope": {"repository_id": repository}}],
-        "shared_to_all_sessions": True,
     }
 
 
 @pytest.fixture
 def cycle(conn, client) -> dict:
-    """세션 하나: acme/billing 소스(검토 Agent REVIEW, 재작업 1회) + 담당자 → FIX. 연결 프로그램 둘 —
+    """고정 워크스페이스: acme/billing 소스(검토 Agent REVIEW, 재작업 1회) + 담당자 → FIX. 연결 프로그램 둘 —
     billing(수정·검토 등록이 같은 저장소)과 shop(직접 등록 업무용). 둘 다 새 종류를 선언한 온라인 상태."""
-    repo.create_session(conn, SESSION, NOW)
+    ensure_workspace(conn, NOW)
     for agent in (
         _agent(FIX, REG_FIX, "code.fix", "billing"),
         _agent(REVIEW, REG_REVIEW, "code.review", "billing"),

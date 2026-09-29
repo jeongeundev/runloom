@@ -22,7 +22,7 @@ from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitH
 from workflow.contracts.v1 import Capability, ExecutionRequest
 from workflow.domain.selection import Candidate
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, evaluate_readiness
-from workflow.server.auth import SESSION_COOKIE, verify_session
+from workflow.server.auth import SELFHOST_SESSION_ID, SESSION_COOKIE, verify_session
 from workflow.server.github_sync import MAX_MERGE_CHECKS_PER_SYNC, sync_source, task_intake_facts
 
 SOURCE = "ghs-1a2b3c4d"
@@ -136,15 +136,16 @@ def config(**overrides) -> GitHubSourceConfig:
 
 
 @pytest.fixture
-def session_id(client, conn) -> str:
-    """웹 세션(직접 등록에도 쓴다) + 수정 Agent 등록 + 소스 + 담당 연결."""
-    assert client.get("/tasks").status_code == 200
-    sid = verify_session(client.cookies[SESSION_COOKIE], "test-session-secret")
+def session_id(logged_in_client, conn) -> str:
+    """로그인한 워크스페이스(직접 등록에도 쓴다) + 수정 Agent 등록 + 소스 + 담당 연결."""
+    assert logged_in_client.get("/tasks").status_code == 200
+    sid = verify_session(logged_in_client.cookies[SESSION_COOKIE], "test-session-secret")
+    assert sid == SELFHOST_SESSION_ID
     repo.upsert_agent(conn, {
         "agent_id": FIX_AGENT, "name": "수정", "owner_scope": "personal", "connection_type": "local",
         "local_registration_id": "local-billing",
         "capabilities": [{"code": "code.fix", "scope": {"repository_id": "billing"}}],
-        "verification_profile_ids": ["vp-pytest"], "shared_to_all_sessions": True,
+        "verification_profile_ids": ["vp-pytest"],
     })
     repo.register_session_agent(conn, sid, FIX_AGENT, NOW)
     repo.save_github_source(conn, sid, config(), NOW)

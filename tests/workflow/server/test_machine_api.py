@@ -15,6 +15,7 @@ from .conftest import (
     BASE_COMMIT,
     EXEC_FIX,
     LOCAL_REGISTRATION,
+    SESSION,
     TASK_A,
     TASK_B,
     bearer,
@@ -22,6 +23,7 @@ from .conftest import (
     exchange,
     meta_for,
     request_body,
+    seed_agents,
     seed_execution,
 )
 
@@ -138,9 +140,9 @@ def test_claim_records_supported_kinds_declaration(client, seeded, connector, he
     def stored():
         return repo.get_connector(seeded, connector_id)["supported_kinds_json"]
 
-    declared = {"contract_version": 1, "connector_id": connector_id, "supported_kinds": ["code_change", "bug_fix"]}
+    declared = {"contract_version": 1, "connector_id": connector_id, "supported_kinds": ["bug_fix", "code_review"]}
     assert client.post("/connector/claim", json=declared, headers=headers).status_code == 204
-    assert json.loads(stored()) == ["code_change", "bug_fix"]
+    assert json.loads(stored()) == ["bug_fix", "code_review"]
 
     legacy = {"contract_version": 1, "connector_id": connector_id}
     assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
@@ -316,8 +318,8 @@ def test_events_for_other_connectors_execution_403(client, seeded, connector, ex
 
 
 def test_events_for_unassigned_execution_403(client, seeded, connector, headers):
-    seed_execution(seeded, "exec-diagnose-001", TASK_A, kind="diagnosis", connector_id=None, inputs=())
-    response = _post_event(client, headers, "exec-diagnose-001", event("exec-diagnose-001", 1, "accepted", {}))
+    seed_execution(seeded, "exec-unassigned-001", TASK_A, connector_id=None)
+    response = _post_event(client, headers, "exec-unassigned-001", event("exec-unassigned-001", 1, "accepted", {}))
     assert response.status_code == 403
 
 
@@ -426,26 +428,26 @@ def test_download_allows_inputs_manifest_attachments_and_own_outputs(client, see
     """B 실행은 입력 handoff bundle, 그 manifest 의 선행 결과·inputs·첨부, 자기 산출물만 내려받는다 (CONTRACT 4절)."""
     connector_id, token = connector
     headers = bearer(token)
-    seed_execution(seeded, "exec-diag", TASK_A, kind="diagnosis", inputs=())
+    seed_execution(seeded, "exec-a", TASK_A)
     evidence = b'{"report_date": "2026-09-19", "data": {"records": []}}'
     ev, _ = repo.store_artifact(
-        seeded, store, execution_id="exec-diag", session_id="sess-1",
+        seeded, store, execution_id="exec-a", session_id=SESSION,
         meta=_meta_model(evidence, "evidence", "response-after.json"), data=evidence, now=utc_now(),
     )
-    result = b'{"outcome": "ready_for_handoff"}'
+    result = b'{"outcome": "ready_for_review"}'
     res, _ = repo.store_artifact(
-        seeded, store, execution_id="exec-diag", session_id="sess-1",
-        meta=_meta_model(result, "diagnosis_result", "diagnosis.json"), data=result, now=utc_now(),
+        seeded, store, execution_id="exec-a", session_id=SESSION,
+        meta=_meta_model(result, "code_change_result", "code_change_result.json"), data=result, now=utc_now(),
     )
     trace_bytes = b"[]"
     trace, _ = repo.store_artifact(
-        seeded, store, execution_id="exec-diag", session_id="sess-1",
+        seeded, store, execution_id="exec-a", session_id=SESSION,
         meta=_meta_model(trace_bytes, "tool_trace", "trace.json"), data=trace_bytes, now=utc_now(),
     )
     manifest = json.dumps({
         "contract_version": 1,
-        "source_execution_id": "exec-diag",
-        "source_kind": "diagnosis",
+        "source_execution_id": "exec-a",
+        "source_kind": "bug_fix",
         "source_result_artifact_id": res.artifact_id,
         "inputs": [],
         "attachments": [{
@@ -454,10 +456,10 @@ def test_download_allows_inputs_manifest_attachments_and_own_outputs(client, see
         }],
     }).encode()
     bundle, _ = repo.store_artifact(
-        seeded, store, execution_id="exec-diag", session_id="sess-1",
+        seeded, store, execution_id="exec-a", session_id=SESSION,
         meta=_meta_model(manifest, "handoff_bundle", "manifest.json"), data=manifest, now=utc_now(),
     )
-    seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id, inputs=[bundle.artifact_id], predecessor="exec-diag")
+    seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id, inputs=[bundle.artifact_id], predecessor="exec-a")
     own = b"diff"
     mine = _upload(client, headers, EXEC_FIX, own).json()
 
@@ -498,6 +500,7 @@ def _meta_model(data: bytes, kind: str, name: str):
 
 def test_heartbeat_touches_connector_and_marks_its_agents_online(client, seeded, connector, headers):
     connector_id, _ = connector
+    seed_agents(seeded, with_claude=True)  # 이 러너에 묶이지 않은 agent-claude-mac (connection_state unknown)
     repo.update_registration(
         seeded, LOCAL_REGISTRATION, connector_id=connector_id, repository_id="demo-report-repo",
         base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest"], discovered={}, now="2026-09-19T00:00:00Z",
@@ -514,7 +517,7 @@ def test_heartbeat_touches_connector_and_marks_its_agents_online(client, seeded,
     agent = repo.get_agent(seeded, "agent-codex-mac")
     assert agent["connection_state"] == "online"
     assert agent["last_seen_at"] > "2026-09-19T00:00:00Z"
-    assert repo.get_agent(seeded, "agent-ops-demo")["connection_state"] == "online"  # 다른 에이전트는 그대로
+    assert repo.get_agent(seeded, "agent-claude-mac")["connection_state"] == "unknown"  # 다른 에이전트는 그대로
     row = seeded.execute("SELECT * FROM connectors WHERE connector_id = ?", (connector_id,)).fetchone()
     assert row["current_execution_id"] == "exec-fix-001"
     assert row["last_seen_at"] is not None
@@ -592,9 +595,10 @@ def test_registration_updates_preregistered_agent(client, seeded, connector, hea
     assert repo.agents_for_connector(seeded, connector_id)[0]["agent_id"] == "agent-codex-mac"
 
 
-def test_registration_unknown_local_registration_404(client, connector, headers):
+def test_registration_unknown_local_registration_404(client_demo, connector, headers):
+    """demo — 셀프호스트는 모르는 이름이면 Agent 를 만든다(아래 selfhost 테스트)."""
     connector_id, _ = connector
-    response = client.post(
+    response = client_demo.post(
         "/connector/registrations", json=_registration(connector_id, local_registration_id="local-none"), headers=headers
     )
     assert response.status_code == 404
@@ -721,10 +725,10 @@ def test_selfhost_registration_name_used_by_another_connector_409(selfhost, conn
     assert repo.get_agent(conn, first.json()["agent_id"])["connector_id"] == connector_id
 
 
-def test_demo_registration_of_unknown_name_is_still_404(client, connector, headers):
+def test_demo_registration_of_unknown_name_is_still_404(client_demo, connector, headers):
     connector_id, _ = connector
 
-    response = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
+    response = client_demo.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
                            headers=headers)
 
     assert response.status_code == 404

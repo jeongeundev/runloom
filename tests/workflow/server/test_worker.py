@@ -2,6 +2,9 @@
 
 시계는 고정 문자열을 돌려주는 `Clock`. 첨부·결과·조회 이력은 Step 3 테스트의 fixture(`make_demo_attachments`)를
 재사용하고, 진단 API 쪽 산출물 ID(`diag-…`)가 중앙 ID(`art-…`)로 치환되는지도 여기서 확인한다.
+
+진단 → code_change 흐름(`seed_flow_demo`·`flow_demo`·`review_flow_demo`·`client_demo`)을 쓰는 테스트는 demo 전용이다(ADR-0019,
+phase 13 step 2·3 에서 삭제). 셀프호스트 bug_fix·code_review 순환은 `test_task_cycle.py` 가 본다.
 """
 
 import dataclasses
@@ -45,14 +48,14 @@ from .conftest import (
     BASE_COMMIT,
     LOCAL_REGISTRATION,
     SESSION,
-    TASK_A,
-    TASK_B,
+    TASK_A_DEMO,
+    TASK_B_DEMO,
     bearer,
     code_change_result,
     event,
     exchange,
     meta_for,
-    seed_agents,
+    seed_agents_demo,
     seed_execution,
     task_row,
 )
@@ -113,7 +116,7 @@ def diag_data(sources=None, *, result_raw=None, drop_from_trace=(), execution_id
     attachments = make_demo_attachments(sources)
     raw = with_hashes(contract_results()[0] if result_raw is None else result_raw, attachments)
     raw["execution_id"] = execution_id
-    raw["task_id"] = TASK_A
+    raw["task_id"] = TASK_A_DEMO
     for ref in raw["attachments"]:
         ref["artifact_id"] = f"diag-ev-{ref['evidence_id']}"
     raw["provenance"]["tool_trace_artifact_id"] = "diag-art-trace"
@@ -274,7 +277,7 @@ def _selection(task_id: str, agent_id: str, capability: dict) -> SelectionRecord
     })
 
 
-def seed_flow(
+def seed_flow_demo(
     conn, client, clock, *, a_completion="auto", b_run_mode="auto", with_claude=False, chain=None
 ) -> tuple[str, str]:
     """세션·에이전트 2개·A(진단, 자동 완료)→B(코드 수정)·선택 기록·A queued 실행. 연결 프로그램은 등록·온라인.
@@ -282,15 +285,15 @@ def seed_flow(
     `chain`(`insert_chain` 행)을 주면 그 체인을 시작된 상태로 넣고 A·B 를 그 노드(`source_ref` KEY_A·KEY_B)로 만든다."""
     now = clock()
     repo.create_session(conn, SESSION, now)
-    seed_agents(conn, with_claude=with_claude)
+    seed_agents_demo(conn, with_claude=with_claude)
     if chain is not None:
         repo.insert_chain(conn, chain, now)
         repo.mark_chain_started(conn, chain["chain_id"], now)  # 입구 API 는 접수 즉시 첫 업무를 시작한다
     link_a = {"chain_id": chain["chain_id"], "source_ref": KEY_A} if chain else {}
     link_b = {"chain_id": chain["chain_id"], "source_ref": KEY_B} if chain else {}
-    repo.insert_task(conn, {**task_row(TASK_A), "completion_mode": a_completion, **link_a}, now)
+    repo.insert_task(conn, {**task_row(TASK_A_DEMO, kind="diagnosis"), "completion_mode": a_completion, **link_a}, now)
     repo.insert_task(conn, {
-        **task_row(TASK_B, kind="code_change", predecessor=TASK_A),
+        **task_row(TASK_B_DEMO, kind="code_change", predecessor=TASK_A_DEMO),
         **link_b,
         "run_mode": b_run_mode,
         "target": {
@@ -301,9 +304,9 @@ def seed_flow(
         "status": "대기",
         "status_reason": "선행 대기",
     }, now)
-    repo.save_selection(conn, _selection(TASK_A, "agent-ops-demo", CAP_A))
-    repo.save_selection(conn, _selection(TASK_B, "agent-codex-mac", CAP_B))
-    seed_execution(conn, EXEC_A, TASK_A, kind="diagnosis", inputs=())
+    repo.save_selection(conn, _selection(TASK_A_DEMO, "agent-ops-demo", CAP_A))
+    repo.save_selection(conn, _selection(TASK_B_DEMO, "agent-codex-mac", CAP_B))
+    seed_execution(conn, EXEC_A, TASK_A_DEMO, kind="diagnosis", inputs=())
     connector_id, token = exchange(client, conn)
     for registration in (LOCAL_REGISTRATION, *((LOCAL_REVIEW,) if with_claude else ())):
         repo.update_registration(
@@ -314,14 +317,14 @@ def seed_flow(
     return connector_id, token
 
 
-def seed_review_successor(conn, now, *, rule=REVIEW_RULE, run_mode="auto", chain_id=None) -> None:
+def seed_review_successor_demo(conn, now, *, rule=REVIEW_RULE, run_mode="auto", chain_id=None) -> None:
     """세션에 종류 `review` 와 (기본) 규칙 code_change → review 를 등록하고 B 의 후속 C(검토, Claude) 를 만든다.
     `rule=None` 이면 규칙 없이 종류만 등록한다. `chain_id` 를 주면 C 도 그 체인의 노드(`source_ref` KEY_C)다."""
     repo.insert_kind(conn, SESSION, REVIEW_KIND, now)
     if rule is not None:
         repo.insert_rule(conn, SESSION, rule, now)
     repo.insert_task(conn, {
-        **task_row(TASK_C, kind="review", predecessor=TASK_B),
+        **task_row(TASK_C, kind="review", predecessor=TASK_B_DEMO),
         **({"chain_id": chain_id, "source_ref": KEY_C} if chain_id else {}),
         "title": "보고서 수정 검토",
         "required_capability": CAP_C,
@@ -334,19 +337,19 @@ def seed_review_successor(conn, now, *, rule=REVIEW_RULE, run_mode="auto", chain
 
 
 @pytest.fixture
-def flow(conn, client, clock) -> tuple[str, str]:
-    return seed_flow(conn, client, clock)
+def flow_demo(conn, client_demo, clock) -> tuple[str, str]:
+    return seed_flow_demo(conn, client_demo, clock)
 
 
 @pytest.fixture
-def review_flow(conn, client, clock) -> tuple[str, str]:
+def review_flow_demo(conn, client_demo, clock) -> tuple[str, str]:
     """A → B → C. 종류 review·규칙 code_change → review 가 세션에 등록돼 있다."""
-    ids = seed_flow(conn, client, clock, with_claude=True)
-    seed_review_successor(conn, clock())
+    ids = seed_flow_demo(conn, client_demo, clock, with_claude=True)
+    seed_review_successor_demo(conn, clock())
     return ids
 
 
-def n8n_chain(callback_url=CALLBACK_URL) -> dict:
+def n8n_chain_demo(callback_url=CALLBACK_URL) -> dict:
     """입구 API 가 만든 체인 행 (`source` n8n). `callback_url=None` 이면 출구 없음. `items` 는 InboundItem 원문 모양 —
     체인 화면(`views._composition_reasons`)이 이것으로 구성 이유를 다시 만든다."""
     return {
@@ -424,7 +427,7 @@ def seed_code_result(
     }
     for kind in kinds:
         _store(conn, store, execution_id, kind, contents[kind].encode(), now)
-    body = code_change_result(execution_id, TASK_B)
+    body = code_change_result(execution_id, TASK_B_DEMO)
     body["outcome"] = outcome
     body["verification"]["exit_code"] = verification_exit
     result_id = _store(
@@ -437,7 +440,7 @@ def seed_code_result(
 def run_to_b_result(worker: Worker, server: FakeDiagServer, conn, store, clock, **result) -> str:
     """A 결과 → A 완료 → B queued 까지 돌리고 B 결과(CONTRACT 7절)를 심는다. B 판정 tick 은 하지 않는다. 반환은 B 실행 ID."""
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     seed_code_result(conn, store, b, clock(), **result)
     return b
 
@@ -465,15 +468,15 @@ def seed_generic_result(
 # --- 정상 흐름: A queued → 접수 → 실행 중 → 결과 → 완료 → B queued ---------------------------------
 
 
-def test_diagnosis_flow_completes_a_and_spawns_b(flow, worker, server, conn, store, client, clock):
-    connector_id, token = flow
+def test_diagnosis_flow_completes_a_and_spawns_b(flow_demo, worker, server, conn, store, client, clock):
+    connector_id, token = flow_demo
 
     report = worker.tick()
 
     assert report.submitted == 1 and server.posts() == [("POST", "/runs")]
     a = repo.get_execution(conn, EXEC_A)
     assert (a["status"], a["last_event_seq"]) == ("accepted", 1)
-    assert _status(conn, TASK_A) == ("실행 요청됨", "접수 확인")
+    assert _status(conn, TASK_A_DEMO) == ("실행 요청됨", "접수 확인")
 
     server.visible = 3
     report = worker.tick()
@@ -481,7 +484,7 @@ def test_diagnosis_flow_completes_a_and_spawns_b(flow, worker, server, conn, sto
     assert report.events_applied == 2 and server.posts() == [("POST", "/runs")]
     a = repo.get_execution(conn, EXEC_A)
     assert (a["status"], a["last_event_seq"]) == ("running", 3)
-    assert _status(conn, TASK_A) == ("실행 중", "get_run daily-0920-0900 조회 완료")
+    assert _status(conn, TASK_A_DEMO) == ("실행 중", "get_run daily-0920-0900 조회 완료")
 
     server.visible = 4
     report = worker.tick()
@@ -506,19 +509,19 @@ def test_diagnosis_flow_completes_a_and_spawns_b(flow, worker, server, conn, sto
     # A 판정: verify_diagnosis 의 passed 로만 완료
     verdict = _verdict(conn, EXEC_A)
     assert verdict["outcome"] == "passed" and len(verdict["checks"]) == 14  # 워커 사전 검사 2 + 검증기 12
-    task_a = _task(conn, TASK_A)
+    task_a = _task(conn, TASK_A_DEMO)
     assert (task_a["status"], task_a["status_reason"]) == ("완료", "판정 근거: 14/14")
     assert task_a["finished_at"] == clock() and a["released_at"] == clock()
     assert report.verdicts == 1 and report.successors_created == 1
 
     # B: 인계 묶음을 입력으로 고정한 queued 실행 하나
-    executions = _executions(conn, TASK_B)
+    executions = _executions(conn, TASK_B_DEMO)
     assert len(executions) == 1
     b = executions[0]
     assert (b["status"], b["kind"], b["attempt_no"]) == ("queued", "code_change", 1)
     assert b["assigned_connector_id"] == connector_id
     assert b["predecessor_execution_id"] == EXEC_A
-    assert b["start_key"] == f"auto:{TASK_B}:r1"
+    assert b["start_key"] == f"auto:{TASK_B_DEMO}:r1"
     request = ExecutionRequest.model_validate_json(b["request_json"])
     assert request.target.base_commit == BASE_COMMIT and request.agent_id == "agent-codex-mac"
     assert len(request.input_artifact_ids) == 1
@@ -547,7 +550,7 @@ def test_diagnosis_flow_completes_a_and_spawns_b(flow, worker, server, conn, sto
         "total_completed": 20,
         "total_pending": 5,
     }
-    assert _status(conn, TASK_B) == ("실행 요청됨", "접수 대기")
+    assert _status(conn, TASK_B_DEMO) == ("실행 요청됨", "접수 대기")
 
     # 연결 프로그램이 Step 5 API 로 그 실행을 claim 할 수 있다
     response = client.post(
@@ -559,10 +562,10 @@ def test_diagnosis_flow_completes_a_and_spawns_b(flow, worker, server, conn, sto
     assert response.json()["input_artifact_ids"] == request.input_artifact_ids
 
 
-def test_bundle_is_assembled_once_and_reused(flow, worker, server, conn, store, clock):
+def test_bundle_is_assembled_once_and_reused(flow_demo, worker, server, conn, store, clock):
     run_to_result(worker, server)
     a = repo.get_execution(conn, EXEC_A)
-    task_b = _task(conn, TASK_B)
+    task_b = _task(conn, TASK_B_DEMO)
 
     first = assemble_handoff(conn, store, a, task_b, BUILTIN_RULE, clock())
     second = assemble_handoff(conn, store, a, task_b, BUILTIN_RULE, clock())
@@ -573,7 +576,7 @@ def test_bundle_is_assembled_once_and_reused(flow, worker, server, conn, store, 
 
 
 def test_bundle_for_code_change_successor_collects_rule_kinds_without_attachments(
-    review_flow, worker, server, conn, store, clock
+    review_flow_demo, worker, server, conn, store, clock
 ):
     """규칙 code_change → review (handoff diff·code_change_result·test_log_after): B 산출물 3개가 inputs 에, 근거 첨부는 없다."""
     b = run_to_b_result(worker, server, conn, store, clock)
@@ -599,7 +602,7 @@ def test_bundle_for_code_change_successor_collects_rule_kinds_without_attachment
 # --- 같은 요청·ID 두 번, 연결 불가 재시도 -------------------------------------------------------
 
 
-def test_worker_without_diag_client_leaves_diagnosis_untouched(flow, store, settings, conn, clock):
+def test_worker_without_diag_client_leaves_diagnosis_untouched(flow_demo, store, settings, conn, clock):
     """phase 10 — 진단 기능이 꺼지면 워커는 진단 클라이언트 없이(`diag=None`) 돈다. 진단 실행은 보내지도 폴링하지도 않는다."""
     worker = Worker(lambda: connect(settings.db_path), store, None, FakeCallbackClient(), settings, clock)
 
@@ -610,7 +613,7 @@ def test_worker_without_diag_client_leaves_diagnosis_untouched(flow, store, sett
     assert (a["status"], a["last_event_seq"]) == ("queued", 0)
 
 
-def test_unavailable_diag_api_keeps_state_and_resubmits_same_id(flow, worker, server, conn):
+def test_unavailable_diag_api_keeps_state_and_resubmits_same_id(flow_demo, worker, server, conn):
     server.down = True
 
     report = worker.tick()
@@ -630,7 +633,7 @@ def test_unavailable_diag_api_keeps_state_and_resubmits_same_id(flow, worker, se
     assert repo.get_execution(conn, EXEC_A)["status"] == "accepted"
 
 
-def test_resubmission_answered_with_200_still_records_acceptance(flow, worker, server, conn):
+def test_resubmission_answered_with_200_still_records_acceptance(flow_demo, worker, server, conn):
     """중앙이 접수 이벤트를 남기기 전에 죽었다가 재시작한 경우: 같은 ID 재전송에 200 이 와도 접수를 기록하고 이어 간다."""
     server.submitted[EXEC_A] = {}
     server.visible = 2
@@ -645,7 +648,7 @@ def test_resubmission_answered_with_200_still_records_acceptance(flow, worker, s
     assert server.posts() == [("POST", "/runs")]
 
 
-def test_unavailable_during_polling_leaves_execution_unchanged(flow, worker, server, conn):
+def test_unavailable_during_polling_leaves_execution_unchanged(flow_demo, worker, server, conn):
     worker.tick()
     server.visible = 4
     server.down = True
@@ -661,19 +664,19 @@ def test_unavailable_during_polling_leaves_execution_unchanged(flow, worker, ser
     worker.tick()
 
     assert repo.get_execution(conn, EXEC_A)["status"] == "result_ready"
-    assert _status(conn, TASK_A)[0] == "완료"
+    assert _status(conn, TASK_A_DEMO)[0] == "완료"
 
 
 # --- A 완료 직후 재시작, B 종료 뒤 재처리, unknown·검토 대기 잠금 ------------------------------------
 
 
-def test_restart_after_a_completion_creates_b_once(flow, make_worker, server, conn, clock):
+def test_restart_after_a_completion_creates_b_once(flow_demo, make_worker, server, conn, clock):
     repo.set_agent_connection(conn, "agent-codex-mac", "offline", clock())
     report = run_to_result(make_worker(server), server)
 
-    assert _status(conn, TASK_A)[0] == "완료"
-    assert report.successors_created == 0 and _executions(conn, TASK_B) == []
-    status, reason = _status(conn, TASK_B)
+    assert _status(conn, TASK_A_DEMO)[0] == "완료"
+    assert report.successors_created == 0 and _executions(conn, TASK_B_DEMO) == []
+    status, reason = _status(conn, TASK_B_DEMO)
     assert status == "대기" and reason.startswith("연결 끊김, 마지막 확인 ")
 
     repo.set_agent_connection(conn, "agent-codex-mac", "online", clock())
@@ -682,20 +685,20 @@ def test_restart_after_a_completion_creates_b_once(flow, make_worker, server, co
     assert make_worker(server).tick().successors_created == 0
     make_worker(server).tick()
 
-    assert len(_executions(conn, TASK_B)) == 1
-    assert _status(conn, TASK_B) == ("실행 요청됨", "접수 대기")
+    assert len(_executions(conn, TASK_B_DEMO)) == 1
+    assert _status(conn, TASK_B_DEMO) == ("실행 요청됨", "접수 대기")
 
 
-def test_replayed_a_completion_after_b_finished_adds_no_execution(flow, worker, server, conn, clock):
+def test_replayed_a_completion_after_b_finished_adds_no_execution(flow_demo, worker, server, conn, clock):
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     _append(conn, b, 1, "accepted", {}, clock())
     _append(conn, b, 2, "failed", {"code": "timeout", "message": "Codex 실행이 20분을 초과해 종료했습니다.", "process_stopped": True}, clock())
 
     report = worker.tick()
 
     assert report.failures_reflected == 1
-    task_b = _task(conn, TASK_B)
+    task_b = _task(conn, TASK_B_DEMO)
     assert (task_b["status"], task_b["status_reason"]) == ("실패", "timeout · Codex 실행이 20분을 초과해 종료했습니다.")
     assert task_b["finished_at"] == clock()
     assert repo.get_execution(conn, b)["released_at"] == clock()
@@ -704,12 +707,12 @@ def test_replayed_a_completion_after_b_finished_adds_no_execution(flow, worker, 
         report = worker.tick()  # A 완료는 그대로 남아 있다 — start_key 로 B 추가 실행 없음
         assert report.successors_created == 0 and report.failures_reflected == 0
 
-    assert len(_executions(conn, TASK_B)) == 1
+    assert len(_executions(conn, TASK_B_DEMO)) == 1
 
 
-def test_b_unknown_keeps_lock_and_recovers_on_resend(flow, worker, server, conn, clock, settings):
+def test_b_unknown_keeps_lock_and_recovers_on_resend(flow_demo, worker, server, conn, clock, settings):
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     _append(conn, b, 1, "accepted", {}, clock())
     clock.advance(settings.limits.unknown_after_seconds + 1)
 
@@ -719,30 +722,30 @@ def test_b_unknown_keeps_lock_and_recovers_on_resend(flow, worker, server, conn,
     assert repo.get_execution(conn, b)["status"] == "unknown"
     observations = conn.execute("SELECT kind FROM execution_observations WHERE execution_id = ?", (b,)).fetchall()
     assert [o["kind"] for o in observations] == ["unknown_no_start"]
-    assert _status(conn, TASK_B) == ("확인 필요", "시작 여부 불명 — 재실행하지 않음")
-    assert _task(conn, TASK_B)["finished_at"] is None
+    assert _status(conn, TASK_B_DEMO) == ("확인 필요", "시작 여부 불명 — 재실행하지 않음")
+    assert _task(conn, TASK_B_DEMO)["finished_at"] is None
 
     for _ in range(2):
         worker.tick()
-    assert len(_executions(conn, TASK_B)) == 1
+    assert len(_executions(conn, TASK_B_DEMO)) == 1
 
     # 기존 실행 주체의 재전송(started)으로 복원. 새 프로세스를 만들지 않는다
     _append(conn, b, 2, "started", {"runtime_ref": "pid:9"}, clock())
     worker.tick()
     assert repo.get_execution(conn, b)["status"] == "running"
-    assert len(_executions(conn, TASK_B)) == 1
+    assert len(_executions(conn, TASK_B_DEMO)) == 1
 
 
-def test_b_review_wait_keeps_lock(flow, worker, server, conn, store, clock):
+def test_b_review_wait_keeps_lock(flow_demo, worker, server, conn, store, clock):
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     seed_code_result(conn, store, b, clock())
 
     report = worker.tick()
 
     assert report.results_checked == 1
-    assert _status(conn, TASK_B) == ("확인 필요", "검토 대기")
-    task_b = _task(conn, TASK_B)
+    assert _status(conn, TASK_B_DEMO) == ("확인 필요", "검토 대기")
+    task_b = _task(conn, TASK_B_DEMO)
     assert task_b["finished_at"] is None and repo.get_execution(conn, b)["released_at"] is None
     verdict = _verdict(conn, b)
     assert verdict["outcome"] == "passed" and all(c["passed"] for c in verdict["checks"])
@@ -750,43 +753,43 @@ def test_b_review_wait_keeps_lock(flow, worker, server, conn, store, clock):
     for _ in range(2):
         report = worker.tick()
         assert report.results_checked == 0 and report.successors_created == 0
-    assert len(_executions(conn, TASK_B)) == 1
+    assert len(_executions(conn, TASK_B_DEMO)) == 1
 
 
 # --- B 결과 확인: 필수 산출물·수정 전 실패·검증 프로필·보고서 수치 -------------------------------------
 
 
-def test_b_result_missing_artifacts_needs_attention(flow, worker, server, conn, store, clock):
+def test_b_result_missing_artifacts_needs_attention(flow_demo, worker, server, conn, store, clock):
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     seed_code_result(conn, store, b, clock(), kinds=("diff", "report_output"))
 
     worker.tick()
 
-    status, reason = _status(conn, TASK_B)
+    status, reason = _status(conn, TASK_B_DEMO)
     assert status == "확인 필요"
     assert reason == "필수 산출물 누락: test_log_before, test_log_after, verification_log"
     verdict = _verdict(conn, b)
     assert verdict["outcome"] == "failed"
     assert not next(c for c in verdict["checks"] if c["code"] == "required_artifacts")["passed"]
-    assert _task(conn, TASK_B)["finished_at"] is None
+    assert _task(conn, TASK_B_DEMO)["finished_at"] is None
 
 
 def test_b_result_with_passing_before_test_or_failed_verification_needs_attention(
-    flow, worker, server, conn, store, clock
+    flow_demo, worker, server, conn, store, clock
 ):
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     seed_code_result(conn, store, b, clock(), before_exit=0, verification_exit=2)
 
     worker.tick()
 
-    status, reason = _status(conn, TASK_B)
+    status, reason = _status(conn, TASK_B_DEMO)
     assert status == "확인 필요"
     assert "수정 전 테스트가 실패하지 않음" in reason and "vp-pytest exit 2" in reason
 
 
-def test_report_totals_follow_changed_input_rows(flow, make_worker, conn, store, clock):
+def test_report_totals_follow_changed_input_rows(flow_demo, make_worker, conn, store, clock):
     sources = demo_sources()
     sources[("response-after", "1")][1]["data"]["records"][0]["completed"] = 13
     sources[("response-before", "1")][1]["items"][0]["completed"] = 13
@@ -794,7 +797,7 @@ def test_report_totals_follow_changed_input_rows(flow, make_worker, conn, store,
     worker = make_worker(server)
     run_to_result(worker, server)
 
-    b_row = _executions(conn, TASK_B)[0]
+    b_row = _executions(conn, TASK_B_DEMO)[0]
     request = ExecutionRequest.model_validate_json(b_row["request_json"])
     bundle = HandoffBundle.model_validate_json(repo.read_artifact(conn, store, request.input_artifact_ids[0]))
     expected_ref = next(x for x in bundle.attachments if x.evidence_id == "expected-report")
@@ -806,51 +809,51 @@ def test_report_totals_follow_changed_input_rows(flow, make_worker, conn, store,
     seed_code_result(conn, store, b_row["execution_id"], clock(), report_text=REPORT_TEXT)
     worker.tick()
 
-    assert _status(conn, TASK_B) == ("확인 필요", "보고서 수치 불일치")
+    assert _status(conn, TASK_B_DEMO) == ("확인 필요", "보고서 수치 불일치")
 
 
 # --- A 판정 실패·보류 → 확인 필요, B 없음 --------------------------------------------------------
 
 
-def test_needs_information_result_keeps_a_waiting_and_no_b(flow, make_worker, conn):
+def test_needs_information_result_keeps_a_waiting_and_no_b(flow_demo, make_worker, conn):
     server = FakeDiagServer(diag_data(result_raw=contract_results()[1]))
     report = run_to_result(make_worker(server), server)
 
     assert report.verdicts == 1 and report.successors_created == 0
     assert _verdict(conn, EXEC_A)["outcome"] == "undecidable"
-    task_a = _task(conn, TASK_A)
+    task_a = _task(conn, TASK_A_DEMO)
     assert (task_a["status"], task_a["status_reason"]) == ("확인 필요", "판정 불가")
     assert task_a["finished_at"] is None
     assert repo.get_execution(conn, EXEC_A)["released_at"] is None
-    assert _executions(conn, TASK_B) == []
-    assert _status(conn, TASK_B) == ("대기", "선행 대기")
+    assert _executions(conn, TASK_B_DEMO) == []
+    assert _status(conn, TASK_B_DEMO) == ("대기", "선행 대기")
 
 
-def test_attachment_missing_from_trace_fails_verdict_and_no_b(flow, make_worker, conn):
+def test_attachment_missing_from_trace_fails_verdict_and_no_b(flow_demo, make_worker, conn):
     server = FakeDiagServer(diag_data(drop_from_trace=[("upstream-response-change", "1")]))
     run_to_result(make_worker(server), server)
 
     assert _verdict(conn, EXEC_A)["outcome"] == "failed"
-    assert _status(conn, TASK_A) == ("확인 필요", "미충족: attachments_in_trace")
-    assert _executions(conn, TASK_B) == []
+    assert _status(conn, TASK_A_DEMO) == ("확인 필요", "미충족: attachments_in_trace")
+    assert _executions(conn, TASK_B_DEMO) == []
 
 
-def test_review_mode_a_spawns_b_before_human_approval(conn, client, clock, make_worker, server):
+def test_review_mode_a_spawns_b_before_human_approval(conn, client_demo, clock, make_worker, server):
     """ADR-0009 (3): 착수 조건은 선행 결과 + 판정 통과 + outcome 일치. 사람 승인은 A 를 마감할 뿐 B 착수를 막지 않는다."""
-    seed_flow(conn, client, clock, a_completion="review")
+    seed_flow_demo(conn, client_demo, clock, a_completion="review")
     report = run_to_result(make_worker(server), server)
 
     assert _verdict(conn, EXEC_A)["outcome"] == "passed"
-    assert _status(conn, TASK_A) == ("확인 필요", "검토 대기")
-    assert _task(conn, TASK_A)["finished_at"] is None
+    assert _status(conn, TASK_A_DEMO) == ("확인 필요", "검토 대기")
+    assert _task(conn, TASK_A_DEMO)["finished_at"] is None
     assert repo.get_execution(conn, EXEC_A)["released_at"] is None
     assert report.successors_created == 1
-    b = _executions(conn, TASK_B)
+    b = _executions(conn, TASK_B_DEMO)
     assert len(b) == 1 and b[0]["predecessor_execution_id"] == EXEC_A
-    assert _status(conn, TASK_B) == ("실행 요청됨", "접수 대기")
+    assert _status(conn, TASK_B_DEMO) == ("실행 요청됨", "접수 대기")
 
 
-def test_broken_result_is_preserved_and_needs_attention(flow, worker, server, conn, store):
+def test_broken_result_is_preserved_and_needs_attention(flow_demo, worker, server, conn, store):
     server.artifacts["diag-art-result"] = (b"not json {", "application/json")
     run_to_result(worker, server)
 
@@ -859,24 +862,24 @@ def test_broken_result_is_preserved_and_needs_attention(flow, worker, server, co
     assert repo.read_artifact(conn, store, a["result_artifact_id"]) == b"not json {"
     verdict = _verdict(conn, EXEC_A)
     assert verdict["outcome"] == "failed" and verdict["checks"][0]["code"] == "result_parsed"
-    assert _status(conn, TASK_A) == ("확인 필요", "미충족: result_parsed")
-    assert _executions(conn, TASK_B) == []
+    assert _status(conn, TASK_A_DEMO) == ("확인 필요", "미충족: result_parsed")
+    assert _executions(conn, TASK_B_DEMO) == []
 
 
-def test_result_ids_must_match_the_execution(flow, make_worker, conn):
+def test_result_ids_must_match_the_execution(flow_demo, make_worker, conn):
     server = FakeDiagServer(diag_data(execution_id="exec-other"))
     run_to_result(make_worker(server), server)
 
     verdict = _verdict(conn, EXEC_A)
     assert verdict["outcome"] == "failed"
     assert [c["code"] for c in verdict["checks"] if not c["passed"]] == ["result_ids_match"]
-    assert _status(conn, TASK_A)[0] == "확인 필요"
+    assert _status(conn, TASK_A_DEMO)[0] == "확인 필요"
 
 
 # --- 연결 끊김·오프라인, 직접 실행 후속 --------------------------------------------------------
 
 
-def test_offline_connector_holds_b_until_online(flow, worker, server, conn, clock, settings):
+def test_offline_connector_holds_b_until_online(flow_demo, worker, server, conn, clock, settings):
     worker.tick()
     server.visible = 4
     clock.advance(settings.limits.heartbeat_offline_seconds + 1)  # heartbeat 끊김
@@ -886,34 +889,34 @@ def test_offline_connector_holds_b_until_online(flow, worker, server, conn, cloc
     assert report.agents_offline == 1
     assert repo.get_agent(conn, "agent-codex-mac")["connection_state"] == "offline"
     assert repo.get_agent(conn, "agent-ops-demo")["connection_state"] == "online"
-    assert _status(conn, TASK_A)[0] == "완료"
-    assert _executions(conn, TASK_B) == []
-    status, reason = _status(conn, TASK_B)
+    assert _status(conn, TASK_A_DEMO)[0] == "완료"
+    assert _executions(conn, TASK_B_DEMO) == []
+    status, reason = _status(conn, TASK_B_DEMO)
     assert (status, reason) == ("대기", "연결 끊김, 마지막 확인 2026-09-20 09:00:00 KST")
 
     repo.set_agent_connection(conn, "agent-codex-mac", "online", clock())
     assert worker.tick().successors_created == 1
-    assert _status(conn, TASK_B) == ("실행 요청됨", "접수 대기")
+    assert _status(conn, TASK_B_DEMO) == ("실행 요청됨", "접수 대기")
 
 
-def test_manual_successor_gets_bundle_and_is_runnable(conn, client, clock, make_worker, server, store, settings):
-    seed_flow(conn, client, clock, b_run_mode="manual")
+def test_manual_successor_gets_bundle_and_is_runnable(conn, client_demo, clock, make_worker, server, store, settings):
+    seed_flow_demo(conn, client_demo, clock, b_run_mode="manual")
     worker = make_worker(server)
 
     report = run_to_result(worker, server)
 
     assert report.inputs_prepared == 1 and report.successors_created == 0
-    assert _executions(conn, TASK_B) == []
-    assert _status(conn, TASK_B) == ("실행 가능", "agent-codex-mac 선택됨")
+    assert _executions(conn, TASK_B_DEMO) == []
+    assert _status(conn, TASK_B_DEMO) == ("실행 가능", "agent-codex-mac 선택됨")
     bundles = [x for x in repo.artifacts_of(conn, EXEC_A) if x["kind"] == "handoff_bundle"]
     assert len(bundles) == 1
     assert worker.tick().inputs_prepared == 0
 
     # 사용자의 직접 실행(Step 6)이 그 인계 묶음을 입력으로 쓴다
-    client.cookies.set(SESSION_COOKIE, sign_session(SESSION, settings.session_secret))
-    response = client.post(f"/tasks/{TASK_B}/run", follow_redirects=False)
+    client_demo.cookies.set(SESSION_COOKIE, sign_session(SESSION, settings.session_secret))
+    response = client_demo.post(f"/tasks/{TASK_B_DEMO}/run", follow_redirects=False)
     assert response.status_code == 303, response.text
-    b = _executions(conn, TASK_B)[0]
+    b = _executions(conn, TASK_B_DEMO)[0]
     assert ExecutionRequest.model_validate_json(b["request_json"]).input_artifact_ids == [bundles[0]["artifact_id"]]
     assert b["predecessor_execution_id"] == EXEC_A
 
@@ -921,16 +924,16 @@ def test_manual_successor_gets_bundle_and_is_runnable(conn, client, clock, make_
 # --- phase 6: 등록된 규칙으로 세 번째 종류 착수 (B 결과 + 판정 passed + outcome 일치 → C) -------------------
 
 
-def test_b_verdict_and_c_spawn_happen_in_the_same_tick(review_flow, worker, server, conn, store, clock):
+def test_b_verdict_and_c_spawn_happen_in_the_same_tick(review_flow_demo, worker, server, conn, store, clock):
     """tick 순서: B 결과 확인 → 후속 스캔. B 는 사람 검토 전(확인 필요)인데 C 가 착수한다."""
-    connector_id, _ = review_flow
+    connector_id, _ = review_flow_demo
     b = run_to_b_result(worker, server, conn, store, clock)
 
     report = worker.tick()
 
     assert (report.results_checked, report.generic_checked, report.successors_created) == (1, 0, 1)
-    assert _status(conn, TASK_B) == ("확인 필요", "검토 대기")
-    assert _task(conn, TASK_B)["finished_at"] is None
+    assert _status(conn, TASK_B_DEMO) == ("확인 필요", "검토 대기")
+    assert _task(conn, TASK_B_DEMO)["finished_at"] is None
     executions = _executions(conn, TASK_C)
     assert len(executions) == 1
     c = executions[0]
@@ -956,7 +959,7 @@ def test_b_verdict_and_c_spawn_happen_in_the_same_tick(review_flow, worker, serv
     assert len(_executions(conn, TASK_C)) == 1
 
 
-def test_c_waits_while_b_has_no_verdict(review_flow, worker, server, conn, store, clock):
+def test_c_waits_while_b_has_no_verdict(review_flow_demo, worker, server, conn, store, clock):
     """(b) 선행 결과가 있어도 판정이 없으면 착수하지 않는다 — 판정 단계보다 먼저 스캔이 돌아도 같다."""
     run_to_b_result(worker, server, conn, store, clock)
 
@@ -967,24 +970,24 @@ def test_c_waits_while_b_has_no_verdict(review_flow, worker, server, conn, store
     assert _status(conn, TASK_C) == ("대기", "선행 대기")
 
 
-def test_c_needs_attention_when_b_outcome_not_in_rule(review_flow, worker, server, conn, store, clock):
+def test_c_needs_attention_when_b_outcome_not_in_rule(review_flow_demo, worker, server, conn, store, clock):
     """(c) 판정은 통과했지만 outcome 이 규칙 on_outcomes 밖 → 확인 필요 + 이유. 기본 규칙을 추측하지 않는다."""
     run_to_b_result(worker, server, conn, store, clock, outcome="needs_information")
 
     report = worker.tick()
 
     assert report.results_checked == 1 and report.successors_created == 0
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     assert _verdict(conn, b)["outcome"] == "passed"
     assert _executions(conn, TASK_C) == []
     assert _status(conn, TASK_C) == ("확인 필요", "선행 outcome needs_information 은 규칙 대상 아님 — 확인 필요")
     assert worker.tick().successors_created == 0
 
 
-def test_c_waits_with_reason_when_no_rule_registered(conn, client, clock, make_worker, server, store):
+def test_c_waits_with_reason_when_no_rule_registered(conn, client_demo, clock, make_worker, server, store):
     """(d) 종류는 등록됐지만 code_change → review 규칙이 없다 → 대기 + '후속 규칙 없음'."""
-    seed_flow(conn, client, clock, with_claude=True)
-    seed_review_successor(conn, clock(), rule=None)
+    seed_flow_demo(conn, client_demo, clock, with_claude=True)
+    seed_review_successor_demo(conn, clock(), rule=None)
     worker = make_worker(server)
     run_to_b_result(worker, server, conn, store, clock)
 
@@ -995,14 +998,14 @@ def test_c_waits_with_reason_when_no_rule_registered(conn, client, clock, make_w
     assert _status(conn, TASK_C) == ("대기", "후속 규칙 없음: code_change → review — 규칙을 등록하거나 직접 실행")
 
 
-def test_closed_b_does_not_spawn_c(review_flow, worker, server, conn, store, clock):
+def test_closed_b_does_not_spawn_c(review_flow_demo, worker, server, conn, store, clock):
     """(e) 사람이 선행을 종료(close)하면 후속을 새로 착수하지 않는다."""
     b = run_to_b_result(worker, server, conn, store, clock)
     repo.record_verdict(
-        conn, task_id=TASK_B, execution_id=b, verdict={"outcome": "passed", "checks": []},
+        conn, task_id=TASK_B_DEMO, execution_id=b, verdict={"outcome": "passed", "checks": []},
         status="확인 필요", reason="검토 대기", finish=False, now=clock(),
     )
-    repo.update_task_status(conn, TASK_B, "실패", "검토 거절", finished_at=clock(), review_decision="close", now=clock())
+    repo.update_task_status(conn, TASK_B_DEMO, "실패", "검토 거절", finished_at=clock(), review_decision="close", now=clock())
     repo.release_execution(conn, b, clock())
 
     report = worker.tick()
@@ -1011,10 +1014,10 @@ def test_closed_b_does_not_spawn_c(review_flow, worker, server, conn, store, clo
     assert _status(conn, TASK_C) == ("대기", "선행 대기")
 
 
-def test_manual_c_gets_bundle_without_execution(conn, client, clock, make_worker, server, store):
+def test_manual_c_gets_bundle_without_execution(conn, client_demo, clock, make_worker, server, store):
     """직접 실행 후속은 입력(인계 묶음)만 준비하고 사용자 조작 전에는 실행을 만들지 않는다."""
-    seed_flow(conn, client, clock, with_claude=True)
-    seed_review_successor(conn, clock(), run_mode="manual")
+    seed_flow_demo(conn, client_demo, clock, with_claude=True)
+    seed_review_successor_demo(conn, clock(), run_mode="manual")
     worker = make_worker(server)
     b = run_to_b_result(worker, server, conn, store, clock)
 
@@ -1039,7 +1042,7 @@ def _spawn_c(worker, server, conn, store, clock) -> str:
     return _executions(conn, TASK_C)[0]["execution_id"]
 
 
-def test_generic_result_in_spec_passes_and_waits_for_review(review_flow, worker, server, conn, store, clock):
+def test_generic_result_in_spec_passes_and_waits_for_review(review_flow_demo, worker, server, conn, store, clock):
     c = _spawn_c(worker, server, conn, store, clock)
     seed_generic_result(conn, store, c, clock(), outcome="changes_requested")
 
@@ -1056,7 +1059,7 @@ def test_generic_result_in_spec_passes_and_waits_for_review(review_flow, worker,
     assert worker.tick().generic_checked == 0  # 한 번만 판정
 
 
-def test_generic_result_outcome_outside_spec_fails(review_flow, worker, server, conn, store, clock):
+def test_generic_result_outcome_outside_spec_fails(review_flow_demo, worker, server, conn, store, clock):
     c = _spawn_c(worker, server, conn, store, clock)
     seed_generic_result(conn, store, c, clock(), outcome="merged")
 
@@ -1071,7 +1074,7 @@ def test_generic_result_outcome_outside_spec_fails(review_flow, worker, server, 
     assert _task(conn, TASK_C)["finished_at"] is None
 
 
-def test_generic_result_kind_mismatch_fails(review_flow, worker, server, conn, store, clock):
+def test_generic_result_kind_mismatch_fails(review_flow_demo, worker, server, conn, store, clock):
     c = _spawn_c(worker, server, conn, store, clock)
     seed_generic_result(conn, store, c, clock(), kind="audit")
 
@@ -1083,7 +1086,7 @@ def test_generic_result_kind_mismatch_fails(review_flow, worker, server, conn, s
     assert _status(conn, TASK_C)[0] == "확인 필요"
 
 
-def test_generic_check_ignores_builtin_kinds(review_flow, worker, server, conn, store, clock):
+def test_generic_check_ignores_builtin_kinds(review_flow_demo, worker, server, conn, store, clock):
     """B(code_change) 결과는 코드 결과 확인이 판정한다 — 범용 판정은 내장 종류를 건드리지 않는다."""
     b = run_to_b_result(worker, server, conn, store, clock)
 
@@ -1096,7 +1099,7 @@ def test_generic_check_ignores_builtin_kinds(review_flow, worker, server, conn, 
 # --- 상한·실패 반영·관찰 ------------------------------------------------------------------
 
 
-def test_diag_limit_fails_execution_without_resubmit(flow, worker, server, conn, clock):
+def test_diag_limit_fails_execution_without_resubmit(flow_demo, worker, server, conn, clock):
     server.submit_mode = "limit"
 
     report = worker.tick()
@@ -1105,27 +1108,27 @@ def test_diag_limit_fails_execution_without_resubmit(flow, worker, server, conn,
     a = repo.get_execution(conn, EXEC_A)
     assert (a["status"], a["failed_code"], a["process_stopped"]) == ("failed", "daily_limit_reached", 1)
     assert repo.list_events(conn, EXEC_A) == []
-    task_a = _task(conn, TASK_A)
+    task_a = _task(conn, TASK_A_DEMO)
     assert task_a["status"] == "실패"
     assert task_a["status_reason"] == "daily_limit_reached · 오늘 이 세션의 진단 실행 한도(10회)에 도달했습니다."
     assert task_a["finished_at"] == clock() and a["released_at"] == clock()
 
     worker.tick()
     assert server.posts() == [("POST", "/runs")]
-    assert _executions(conn, TASK_B) == []
+    assert _executions(conn, TASK_B_DEMO) == []
 
 
-def test_diag_conflict_fails_execution(flow, worker, server, conn):
+def test_diag_conflict_fails_execution(flow_demo, worker, server, conn):
     server.submit_mode = "conflict"
 
     worker.tick()
 
     a = repo.get_execution(conn, EXEC_A)
     assert (a["status"], a["failed_code"]) == ("failed", "execution_conflict")
-    assert _status(conn, TASK_A)[0] == "실패"
+    assert _status(conn, TASK_A_DEMO)[0] == "실패"
 
 
-def test_attachments_over_limit_fail_execution(flow, make_worker, server, conn, settings):
+def test_attachments_over_limit_fail_execution(flow_demo, make_worker, server, conn, settings):
     small = dataclasses.replace(settings, limits=dataclasses.replace(settings.limits, attachments_max_bytes=100))
     worker = make_worker(server, small)
 
@@ -1135,11 +1138,11 @@ def test_attachments_over_limit_fail_execution(flow, make_worker, server, conn, 
     assert (a["status"], a["failed_code"], a["process_stopped"]) == ("failed", "attachments_too_large", 1)
     assert a["last_event_seq"] == 3  # result_ready 는 반영하지 않았다
     assert repo.artifacts_of(conn, EXEC_A) == []
-    assert _status(conn, TASK_A)[0] == "실패" and "100" in _status(conn, TASK_A)[1]
-    assert _executions(conn, TASK_B) == []
+    assert _status(conn, TASK_A_DEMO)[0] == "실패" and "100" in _status(conn, TASK_A_DEMO)[1]
+    assert _executions(conn, TASK_B_DEMO) == []
 
 
-def test_diag_failed_event_marks_task_failed(flow, worker, server, conn):
+def test_diag_failed_event_marks_task_failed(flow_demo, worker, server, conn):
     server.events[3] = _diag_event(EXEC_A, 4, "failed", {
         "code": "budget_exceeded", "message": "모델 호출 15회를 넘었습니다.", "process_stopped": True,
     })
@@ -1148,24 +1151,24 @@ def test_diag_failed_event_marks_task_failed(flow, worker, server, conn):
 
     a = repo.get_execution(conn, EXEC_A)
     assert (a["status"], a["failed_code"], a["last_event_seq"]) == ("failed", "budget_exceeded", 4)
-    assert _status(conn, TASK_A) == ("실패", "budget_exceeded · 모델 호출 15회를 넘었습니다.")
-    assert _executions(conn, TASK_B) == []
+    assert _status(conn, TASK_A_DEMO) == ("실패", "budget_exceeded · 모델 호출 15회를 넘었습니다.")
+    assert _executions(conn, TASK_B_DEMO) == []
 
 
-def test_failed_without_process_confirmation_needs_attention(flow, worker, server, conn, clock):
+def test_failed_without_process_confirmation_needs_attention(flow_demo, worker, server, conn, clock):
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     _append(conn, b, 1, "accepted", {}, clock())
     _append(conn, b, 2, "failed", {"code": "timeout", "message": "종료 확인 실패", "process_stopped": False}, clock())
 
     worker.tick()
 
-    task_b = _task(conn, TASK_B)
+    task_b = _task(conn, TASK_B_DEMO)
     assert (task_b["status"], task_b["status_reason"]) == ("확인 필요", "종료 미확인 — 재실행하지 않음")
     assert task_b["finished_at"] is None and repo.get_execution(conn, b)["released_at"] is None
 
 
-def test_accepted_without_start_becomes_unknown_then_recovers(flow, worker, server, conn, clock, settings):
+def test_accepted_without_start_becomes_unknown_then_recovers(flow_demo, worker, server, conn, clock, settings):
     worker.tick()
     clock.advance(settings.limits.unknown_after_seconds + 1)
 
@@ -1173,20 +1176,20 @@ def test_accepted_without_start_becomes_unknown_then_recovers(flow, worker, serv
 
     assert report.observations == 1
     assert repo.get_execution(conn, EXEC_A)["status"] == "unknown"
-    assert _status(conn, TASK_A) == ("확인 필요", "시작 여부 불명 — 재실행하지 않음")
+    assert _status(conn, TASK_A_DEMO) == ("확인 필요", "시작 여부 불명 — 재실행하지 않음")
     assert worker.tick().observations == 0  # 한 번만 기록
 
     server.visible = 2  # 진단 API 가 뒤늦게 started 를 냈다 — 같은 실행으로 복원
     worker.tick()
 
     assert repo.get_execution(conn, EXEC_A)["status"] == "running"
-    assert _status(conn, TASK_A)[0] == "실행 중"
+    assert _status(conn, TASK_A_DEMO)[0] == "실행 중"
     assert server.posts() == [("POST", "/runs")]
 
 
-def test_heartbeat_loss_is_observed_once_and_never_restarts(flow, worker, server, conn, clock, settings):
+def test_heartbeat_loss_is_observed_once_and_never_restarts(flow_demo, worker, server, conn, clock, settings):
     run_to_result(worker, server)
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     _append(conn, b, 1, "accepted", {}, clock())
     _append(conn, b, 2, "started", {"runtime_ref": "pid:1"}, clock())
     clock.advance(settings.limits.heartbeat_offline_seconds + 1)
@@ -1198,7 +1201,7 @@ def test_heartbeat_loss_is_observed_once_and_never_restarts(flow, worker, server
     worker.tick()
     rows = conn.execute("SELECT kind FROM execution_observations WHERE execution_id = ?", (b,)).fetchall()
     assert [r["kind"] for r in rows] == ["heartbeat_lost"]
-    assert len(_executions(conn, TASK_B)) == 1
+    assert len(_executions(conn, TASK_B_DEMO)) == 1
 
 
 # --- phase 7: callback — 체인이 사람 차례(chain_settled)가 되면 1회 POST (ADR-0010) --------------------------
@@ -1212,24 +1215,24 @@ def _at(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 
 
-def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock, make_worker, server, store, n8n_settings):
+def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client_demo, clock, make_worker, server, store, n8n_settings):
     """(a) A 실행 중 0 → (b) A 판정·B 착수 tick 0 (B 실행 요청됨) → (c) B 결과·판정 tick 1회 → (d) 이후·승인 뒤에도 1회."""
-    seed_flow(conn, client, clock, chain=n8n_chain())
+    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
 
     worker.tick()  # A 접수
     server.visible = 3
     report = worker.tick()  # A 실행 중
-    assert _status(conn, TASK_A)[0] == "실행 중"
+    assert _status(conn, TASK_A_DEMO)[0] == "실행 중"
     assert (report.callbacks_sent, report.callbacks_failed, callbacks.posts) == (0, 0, [])
 
     server.visible = 4
     report = worker.tick()  # A 결과 → 완료 → B 착수 — 같은 tick 의 마지막 단계는 B 가 실행 요청됨이라 보내지 않는다
-    assert report.successors_created == 1 and _status(conn, TASK_B) == ("실행 요청됨", "접수 대기")
+    assert report.successors_created == 1 and _status(conn, TASK_B_DEMO) == ("실행 요청됨", "접수 대기")
     assert (report.callbacks_sent, callbacks.posts) == (0, [])
 
-    b = _executions(conn, TASK_B)[0]["execution_id"]
+    b = _executions(conn, TASK_B_DEMO)[0]["execution_id"]
     seed_code_result(conn, store, b, clock())
     report = worker.tick()  # B 결과 확인 → 확인 필요 · 검토 대기 → 사람 차례
 
@@ -1246,11 +1249,11 @@ def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock
         "검토 승인 (사람) · 병합은 운영자 확인", "확인 필요", "검토 대기"
     )
     task_a, task_b = body.tasks
-    assert (task_a.task_id, task_a.key, task_a.kind, task_a.title) == (TASK_A, KEY_A, "diagnosis", "일일 보고서 실패 진단")
+    assert (task_a.task_id, task_a.key, task_a.kind, task_a.title) == (TASK_A_DEMO, KEY_A, "diagnosis", "일일 보고서 실패 진단")
     assert (task_a.status, task_a.status_reason) == ("완료", "판정 근거: 14/14")
     assert task_a.outcome == "ready_for_handoff"
     assert task_a.summary == contract_results()[0]["summary"]
-    assert (task_b.task_id, task_b.key, task_b.kind, task_b.title) == (TASK_B, KEY_B, "code_change", "보고서 변환 수정")
+    assert (task_b.task_id, task_b.key, task_b.kind, task_b.title) == (TASK_B_DEMO, KEY_B, "code_change", "보고서 변환 수정")
     assert (task_b.status, task_b.status_reason) == ("확인 필요", "검토 대기")
     assert task_b.outcome == "ready_for_review"
     assert task_b.summary == "report_transformer가 items 또는 data.records 중 정확히 하나의 목록을 읽도록 수정했습니다."
@@ -1261,7 +1264,7 @@ def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock
 
     for _ in range(2):
         assert worker.tick().callbacks_sent == 0
-    repo.update_task_status(conn, TASK_B, "완료", "검토 승인", finished_at=clock(), review_decision="approve", now=clock())
+    repo.update_task_status(conn, TASK_B_DEMO, "완료", "검토 승인", finished_at=clock(), review_decision="approve", now=clock())
     repo.release_execution(conn, b, clock())
     clock.advance(600)
     report = worker.tick()
@@ -1270,9 +1273,9 @@ def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock
     assert _chain_row(conn)["callback_sent_at"] != clock()
 
 
-def test_failed_callback_backs_off_and_stops_after_five_attempts(conn, client, clock, make_worker, server, store, n8n_settings):
+def test_failed_callback_backs_off_and_stops_after_five_attempts(conn, client_demo, clock, make_worker, server, store, n8n_settings):
     """(e) 실패 → attempts 1·next_at now+30s·last_error. 29초 뒤 재시도 없음, 31초 뒤 재시도 → 60초. 5회 뒤 중단."""
-    seed_flow(conn, client, clock, chain=n8n_chain())
+    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient(fail=True)
     worker = make_worker(server, n8n_settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1311,8 +1314,8 @@ def test_failed_callback_backs_off_and_stops_after_five_attempts(conn, client, c
     assert chain["callback_sent_at"] is None and chain["callback_last_error"] == "HTTP 503"
 
 
-def test_callback_succeeds_on_retry_and_clears_error(conn, client, clock, make_worker, server, store, n8n_settings):
-    seed_flow(conn, client, clock, chain=n8n_chain())
+def test_callback_succeeds_on_retry_and_clears_error(conn, client_demo, clock, make_worker, server, store, n8n_settings):
+    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient(fail=True)
     worker = make_worker(server, n8n_settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1332,12 +1335,12 @@ def test_callback_succeeds_on_retry_and_clears_error(conn, client, clock, make_w
     assert worker.tick().callbacks_sent == 0 and len(callbacks.posts) == 2
 
 
-def test_callback_when_successor_is_blocked_by_outcome_outside_rule(conn, client, clock, make_worker, server, store, n8n_settings):
+def test_callback_when_successor_is_blocked_by_outcome_outside_rule(conn, client_demo, clock, make_worker, server, store, n8n_settings):
     """(f) B 가 needs_information 으로 판정 통과 → 규칙 밖 outcome 이라 C 는 착수하지 않는다 → 사람 차례.
     워커는 C 에 `확인 필요` + 규칙 이유를 저장하지만, callback 의 status 는 체인 화면과 같은 지금 판정(`views.status_of`)이라
     C 는 `대기 · 선행 대기`(선행 B 가 `확인 필요`)로 실린다 — 화면이 보이는 값과 같다."""
-    seed_flow(conn, client, clock, with_claude=True, chain=n8n_chain())
-    seed_review_successor(conn, clock(), chain_id=CHAIN_ID)
+    seed_flow_demo(conn, client_demo, clock, with_claude=True, chain=n8n_chain_demo())
+    seed_review_successor_demo(conn, clock(), chain_id=CHAIN_ID)
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock, outcome="needs_information")
@@ -1355,9 +1358,9 @@ def test_callback_when_successor_is_blocked_by_outcome_outside_rule(conn, client
     assert worker.tick().callbacks_sent == 0 and len(callbacks.posts) == 1
 
 
-def test_callback_when_first_task_is_undecidable_and_successor_waits(conn, client, clock, make_worker, n8n_settings):
+def test_callback_when_first_task_is_undecidable_and_successor_waits(conn, client_demo, clock, make_worker, n8n_settings):
     """A 가 needs_information(판정 불가) → A `확인 필요`, B `대기 · 선행 대기` — 선행이 사람에게 막혔으니 사람 차례다."""
-    seed_flow(conn, client, clock, chain=n8n_chain())
+    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
     server = FakeDiagServer(diag_data(result_raw=contract_results()[1]))
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
@@ -1371,25 +1374,25 @@ def test_callback_when_first_task_is_undecidable_and_successor_waits(conn, clien
     assert worker.tick().callbacks_sent == 0
 
 
-def test_chain_without_callback_url_sends_nothing(conn, client, clock, make_worker, server, store, n8n_settings):
+def test_chain_without_callback_url_sends_nothing(conn, client_demo, clock, make_worker, server, store, n8n_settings):
     """(g) 가져오기·직접 등록처럼 callback_url 이 없는 체인은 사람 차례가 돼도 아무것도 보내지 않는다."""
-    seed_flow(conn, client, clock, chain=n8n_chain(callback_url=None))
+    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo(callback_url=None))
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
 
     report = worker.tick()
 
-    assert _status(conn, TASK_B) == ("확인 필요", "검토 대기")
+    assert _status(conn, TASK_B_DEMO) == ("확인 필요", "검토 대기")
     assert (report.callbacks_sent, report.callbacks_failed, callbacks.posts) == (0, 0, [])
     chain = _chain_row(conn)
     assert (chain["callback_attempts"], chain["callback_sent_at"]) == (0, None)
 
 
-def test_empty_allow_list_records_failure_without_posting(conn, client, clock, make_worker, server, store, settings):
+def test_empty_allow_list_records_failure_without_posting(conn, client_demo, clock, make_worker, server, store, settings):
     """(h) 허용 목록이 비면(접수 뒤 설정이 바뀐 경우) 보내지 않고 실패로 기록한다. 5회 뒤 멈춘다."""
     assert settings.callback_hosts == ()
-    seed_flow(conn, client, clock, chain=n8n_chain())
+    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient()
     worker = make_worker(server, settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1407,9 +1410,9 @@ def test_empty_allow_list_records_failure_without_posting(conn, client, clock, m
     assert _chain_row(conn)["callback_attempts"] == 5 and callbacks.posts == []
 
 
-def test_public_url_fills_chain_and_task_urls(conn, client, clock, make_worker, server, store, n8n_settings):
+def test_public_url_fills_chain_and_task_urls(conn, client_demo, clock, make_worker, server, store, n8n_settings):
     """(i) WORKFLOW_PUBLIC_URL 이 있으면 chain_url·task_url 이 그 앞에 붙는다."""
-    seed_flow(conn, client, clock, chain=n8n_chain())
+    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient()
     worker = make_worker(server, dataclasses.replace(n8n_settings, public_url="http://127.0.0.1:8000"), callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1419,7 +1422,7 @@ def test_public_url_fills_chain_and_task_urls(conn, client, clock, make_worker, 
     body = ChainCallback.model_validate(callbacks.posts[0][1])
     assert body.chain_url == f"http://127.0.0.1:8000/chains/{CHAIN_ID}"
     assert [t.task_url for t in body.tasks] == [
-        f"http://127.0.0.1:8000/tasks/{TASK_A}", f"http://127.0.0.1:8000/tasks/{TASK_B}",
+        f"http://127.0.0.1:8000/tasks/{TASK_A_DEMO}", f"http://127.0.0.1:8000/tasks/{TASK_B_DEMO}",
     ]
 
 

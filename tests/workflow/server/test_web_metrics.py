@@ -9,7 +9,9 @@ import re
 
 from fastapi.testclient import TestClient
 
+from workflow.adapters import repo
 from workflow.domain.metrics import BASELINE_NOTE
+from workflow.server.auth import SESSION_COOKIE, sign_session
 
 from .test_github_api import login
 from .test_metrics_api import (  # noqa: F401 — fixture
@@ -44,13 +46,17 @@ def row(text: str, label: str) -> str:
 # --- 권한 ---------------------------------------------------------------------------------------
 
 
-def test_metrics_page_is_operator_only(client):
-    client.get("/")
-    response = client.get("/metrics")
-    assert response.status_code == 403
-    assert "운영자" in response.text
-    assert BASELINE_ACTION not in response.text
-    assert 'href="/metrics"' not in client.get("/tasks").text
+def test_metrics_page_is_operator_only(client, conn):
+    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    repo.create_session(conn, "sess-other", "2026-09-20T00:00:00Z")
+    stranger = TestClient(client.app)
+    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    for anonymous in (client, stranger):
+        response = anonymous.get("/metrics", follow_redirects=False)
+        assert (response.status_code, response.headers["location"]) == (303, "/login")
+        assert BASELINE_ACTION not in response.text
+        tasks = anonymous.get("/tasks", follow_redirects=False)  # 사이드바 링크를 볼 화면도 없다
+        assert (tasks.status_code, tasks.headers["location"]) == (303, "/login")
 
 
 def test_sidebar_links_metrics_page_for_operator(op):
@@ -62,7 +68,7 @@ def test_sidebar_links_metrics_page_for_operator(op):
 
 def test_empty_session_renders_unknowns_not_zero(app):
     client = TestClient(app)
-    login(client)  # 새 운영자 세션 — 업무·소스 없음
+    login(client)  # 빈 워크스페이스 — 업무·소스 없음
     text = page(client)
     assert CAUSAL_NOTE in text
     for area in ("병목", "속도", "사람 부담", "품질", "비용", "신뢰성"):

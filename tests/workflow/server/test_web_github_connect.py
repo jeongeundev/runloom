@@ -27,6 +27,7 @@ from workflow.server import web
 from workflow.server.app import create_app
 from workflow.server.auth import SESSION_COOKIE, sign_session
 
+from .conftest import log_in, task_row
 from .test_task_cycle import SESSION as CYCLE_SESSION
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     SOURCE,
@@ -116,10 +117,8 @@ def secrets(settings) -> SecretStore:
 
 @pytest.fixture
 def op(app) -> TestClient:
-    """demo 모드 운영자 세션(127.0.0.1 요청 주소)."""
-    client = TestClient(app, base_url=BASE)
-    assert client.post("/operator/login", data={"token": "test-operator-token"}, follow_redirects=False).status_code == 303
-    return client
+    """고정 워크스페이스에 `/login` 으로 로그인한 클라이언트(127.0.0.1 요청 주소) — 셀프호스트는 로그인 = 운영자."""
+    return log_in(TestClient(app, base_url=BASE))
 
 
 def op_session(client: TestClient) -> str:
@@ -160,20 +159,23 @@ def names(conn, session_id: str) -> dict:
 
 
 def test_every_path_is_operator_only(app, conn, github):
-    anonymous = TestClient(app, base_url=BASE)
-    for url in ("/operator/github/app/new", f"/operator/github/app/callback?code={CODE}&state=x",
-                "/operator/github/app/setup?installation_id=42"):
-        error(anonymous.get(url, follow_redirects=False), 403, "forbidden")
-    response = anonymous.post("/operator/github/token", data={"token": PAT, "repository_full_name": "acme/lib"},
-                              follow_redirects=False)
-    assert response.status_code == 403
+    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
+    stranger = TestClient(app, base_url=BASE)
+    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    for anonymous in (TestClient(app, base_url=BASE), stranger):
+        for url in ("/operator/github/app/new", f"/operator/github/app/callback?code={CODE}&state=x",
+                    "/operator/github/app/setup?installation_id=42"):
+            response = anonymous.get(url, follow_redirects=False)
+            assert (response.status_code, response.headers["location"]) == (303, "/login"), url
+        response = anonymous.post("/operator/github/token", data={"token": PAT, "repository_full_name": "acme/lib"},
+                                  follow_redirects=False)
+        assert (response.status_code, response.headers["location"]) == (303, "/login")
     assert github.calls == []
     assert repo.github_source_sessions(conn) == []
 
 
-def test_selfhost_without_login_redirects_to_login(settings, github):
-    app = create_app(dataclasses.replace(settings, mode="selfhost"))
-    app.state.github_transport = httpx.MockTransport(github)
+def test_selfhost_without_login_redirects_to_login(app, github):
     client = TestClient(app, base_url=BASE)
     for url in ("/operator/github/app/new", "/operator/github/app/setup?installation_id=42"):
         response = client.get(url, follow_redirects=False)
@@ -213,15 +215,13 @@ def test_new_for_an_organization_uses_the_org_url(op):
 def test_public_url_is_the_base_when_set(settings, github):
     app = create_app(dataclasses.replace(settings, public_url="https://runloom.example"))
     app.state.github_transport = httpx.MockTransport(github)
-    client = TestClient(app)  # 요청 주소 testserver 는 쓰지 않는다
-    client.post("/operator/login", data={"token": "test-operator-token"})
+    client = log_in(TestClient(app))  # 요청 주소 testserver 는 쓰지 않는다
     _, manifest = start(client)
     assert manifest["redirect_url"] == "https://runloom.example/operator/github/app/callback"
 
 
 def test_non_loopback_request_host_needs_public_url(app):
-    client = TestClient(app)  # http://testserver
-    client.post("/operator/login", data={"token": "test-operator-token"})
+    client = log_in(TestClient(app))  # http://testserver
     error(client.get("/operator/github/app/new"), 400, "public_url_required")
     assert STATE_COOKIE not in client.cookies
 
@@ -362,13 +362,14 @@ def test_setup_when_github_is_down(op, conn, github, secrets, pem):
     assert repo.github_source_sessions(conn) == []
 
 
-def test_setup_when_another_workspace_owns_github(op, app, conn, secrets, pem):
+def test_setup_when_another_workspace_owns_github(op, conn, secrets, pem):
     save_app(secrets, pem)
-    other = TestClient(app, base_url=BASE)
-    other.post("/operator/login", data={"token": "test-operator-token"})
-    assert other.get("/operator/github/app/setup", params={"installation_id": 42},
-                     follow_redirects=False).status_code == 303
+    # 다른 워크스페이스(운영자 세션)가 이미 GitHub 연결(소스)을 가짐 — DB 에 직접 둔다
+    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
+    repo.mark_operator(conn, "sess-other")
+    repo.save_github_source(conn, "sess-other", config(), "2026-10-06T12:00:00Z")
     error(op.get("/operator/github/app/setup", params={"installation_id": 42}), 409, "github_workspace_taken")
+    assert repo.github_source_sessions(conn) == ["sess-other"]
 
 
 # --- PAT (고급) -----------------------------------------------------------------------------------
@@ -440,11 +441,11 @@ def test_whole_flow_leaks_no_secret(op, conn, github, secrets, pem, caplog):
 
 @pytest.fixture
 def cycle_op(client, cycle, conn):
-    """이 클라이언트를 `sess-cycle` 운영자 세션으로 — all_open 소스(담당 연결 FIX)의 주인."""
+    """이 클라이언트를 고정 워크스페이스(cycle 의 `SESSION`)에 로그인 — all_open 소스(담당 연결 FIX)의 주인."""
     repo.save_github_source(conn, CYCLE_SESSION, config(review_agent_id="agent-review", intake="all_open",
                                                          label_filter=[], trigger_label="runloom"), "2026-10-06T12:00:00Z")
-    repo.mark_operator(conn, CYCLE_SESSION)
-    client.cookies.set(SESSION_COOKIE, sign_session(CYCLE_SESSION, "test-session-secret"))
+    log_in(client)
+    assert op_session(client) == CYCLE_SESSION
     return client
 
 
@@ -494,9 +495,16 @@ def test_delegate_refuses_a_closed_task(cycle_op, conn):
 
 def test_delegate_needs_the_owning_operator(cycle_op, app, conn):
     task_id = import_issue(conn, 1, labels=[])
-    stranger = TestClient(app)
-    stranger.get("/tasks")
-    assert stranger.post(f"/tasks/{task_id}/delegate").status_code == 404
+    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
+    stranger = TestClient(app)  # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 로그인 안 된 것
+    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    response = stranger.post(f"/tasks/{task_id}/delegate", follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (303, "/login")
+    assert delegated(conn, task_id) == (None, None)
+    # 다른 워크스페이스(운영자 세션)의 업무는 로그인 워크스페이스에서 404
+    repo.mark_operator(conn, "sess-other")
+    repo.insert_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, "2026-10-06T12:00:00Z")
+    assert cycle_op.post("/tasks/task-other/delegate").status_code == 404
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (CYCLE_SESSION,))
     conn.commit()
     error(cycle_op.post(f"/tasks/{task_id}/delegate"), 403, "forbidden")
@@ -611,8 +619,7 @@ def test_card_title_hides_internal_ids(op, conn, secrets, pem):
 
 
 def test_card_shows_the_automatically_matched_agents_and_profile(client, auto_source, conn):
-    repo.mark_operator(conn, CYCLE_SESSION)
-    client.cookies.set(SESSION_COOKIE, sign_session(CYCLE_SESSION, "test-session-secret"))
+    log_in(client)  # auto_source 의 주인 = 고정 워크스페이스
 
     card = card_of(client.get("/operator/github").text, SOURCE)
 
@@ -683,10 +690,11 @@ def test_list_groups_undelegated_tasks_as_waiting_for_an_instruction(cycle_op, c
 
 def test_no_delegate_button_for_filtered_sources_or_non_operators(client, cycle, conn):
     task_id = import_issue(conn, 1)  # filtered 소스 — 수집 = 지시
-    repo.mark_operator(conn, CYCLE_SESSION)
-    client.cookies.set(SESSION_COOKIE, sign_session(CYCLE_SESSION, "test-session-secret"))
-    assert "/delegate" not in client.get("/tasks").text
-    assert "/delegate" not in client.get(f"/tasks/{task_id}").text
+    log_in(client)
+    home, detail = client.get("/tasks"), client.get(f"/tasks/{task_id}")
+    assert home.status_code == detail.status_code == 200
+    assert "/delegate" not in home.text
+    assert "/delegate" not in detail.text
 
 
 def test_detail_hides_the_delegate_button_from_a_non_operator(cycle_op, conn):
@@ -697,6 +705,8 @@ def test_detail_hides_the_delegate_button_from_a_non_operator(cycle_op, conn):
     assert delegate_form(task_id) not in cycle_op.get("/tasks").text
 
 
-def test_demo_home_without_github_is_unchanged(client):
-    text = client.get("/tasks").text
+def test_home_without_github_is_unchanged(logged_in_client):
+    response = logged_in_client.get("/tasks")
+    assert response.status_code == 200
+    text = response.text
     assert "/delegate" not in text and "지시 전" not in text

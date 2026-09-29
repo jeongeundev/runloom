@@ -1,4 +1,8 @@
-"""web.py — 심사자 세션·운영자 웹 라우트. 마크업이 아니라 렌더된 텍스트·리다이렉트·상태 코드를 본다 (Step 7 이 화면을 꾸민다)."""
+"""web.py — 워크스페이스·운영자 웹 라우트. 마크업이 아니라 렌더된 텍스트·리다이렉트·상태 코드를 본다 (Step 7 이 화면을 꾸민다).
+
+기본은 셀프호스트(ADR-0019) — 로그인한 고정 워크스페이스, 러너 모양 Agent(`seed_agents`), 종류 `bug_fix`·`code_review`.
+이름 끝이 `_demo` 인 fixture·도우미와 그것을 쓰는 테스트는 demo 모드(익명 세션·카탈로그·가져오기·진단 → 코드 수정)
+전제이며 phase 13 step 2·3 에서 함께 지운다."""
 
 import dataclasses
 import html as html_lib
@@ -11,16 +15,28 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.contracts.v1 import BUILTIN_KINDS, ArtifactMeta, ExecutionRequest
 from workflow.server.app import create_app
-from workflow.server.auth import LOGIN_MAX_FAILURES, SELFHOST_SESSION_ID, SESSION_COOKIE, verify_session
+from workflow.server.auth import (
+    LOGIN_MAX_FAILURES,
+    SELFHOST_SESSION_ID,
+    SESSION_COOKIE,
+    ensure_workspace,
+    verify_session,
+)
 from workflow.server.web import EXAMPLES
 
 from .conftest import (
     BASE_COMMIT,
+    LOCAL_REGISTRATION,
     NOW,
+    REPOSITORY,
     RESULT_COMMIT,
+    SESSION,
     code_change_result,
+    log_in,
     meta_for,
     seed_agents,
+    seed_agents_demo,
+    seed_execution,
     seed_result_ready,
 )
 
@@ -31,65 +47,55 @@ FIX_REQUEST = (
     "인계된 진단 근거로 보고서 변환 실패를 재현하는 테스트를 먼저 작성하고, "
     "실패를 확인한 뒤 두 응답 형식을 모두 처리하도록 최소 수정하세요."
 )
+BUG_FIX_TITLE = "보고서 변환 실패 수정"
+BUG_FIX_REQUEST = "보고서 변환 실패를 재현하는 테스트를 먼저 작성하고 두 응답 형식을 모두 처리하도록 고치세요."
+CODE_REVIEW_TITLE = "보고서 변환 수정 검토"
+CODE_REVIEW_REQUEST = "수정 결과 커밋을 검토해 주세요."
 
 
 @pytest.fixture
 def agents(conn):
+    """고정 워크스페이스 + 러너 모양 Agent 1개(agent-codex-mac, `code.fix`·`code.review`)."""
+    ensure_workspace(conn, NOW)
     seed_agents(conn)
     return conn
 
 
-def register_agents(client, *agent_ids: str) -> None:
-    """세션이 카탈로그에서 Agent 를 등록한다 (`POST /agents/register`). 기본은 운영 진단·개인 Codex 둘 다."""
-    for agent_id in agent_ids or ("agent-ops-demo", "agent-codex-mac"):
-        response = client.post("/agents/register", data={"agent_id": agent_id}, follow_redirects=False)
-        assert response.status_code == 303, response.text
-
-
 @pytest.fixture
-def web(client, agents):
-    """홈을 한 번 열어 세션 쿠키를 받고, 카탈로그 2개를 등록한 클라이언트."""
-    assert client.get("/tasks").status_code == 200
-    register_agents(client)
-    return client
+def web(logged_in_client, agents):
+    """워크스페이스에 로그인했고 Agent 가 붙어 있는 클라이언트."""
+    return logged_in_client
 
 
 def session_id_of(client: TestClient, settings) -> str:
     return verify_session(client.cookies[SESSION_COOKIE], settings.session_secret)
 
 
-def diagnose_form(**overrides) -> dict:
+def fix_form(**overrides) -> dict:
+    """직접 등록하는 `bug_fix` (선행 없음, 직접 실행, 검토 후 완료)."""
     form = {
-        "title": EXAMPLES["diagnose"]["title"],
-        "request": EXAMPLES["diagnose"]["request"],
-        "capability_code": "operations.diagnose",
-        "scope_value": "daily-report",
+        "title": BUG_FIX_TITLE,
+        "request": BUG_FIX_REQUEST,
+        "capability_code": "code.fix",
+        "scope_value": REPOSITORY,
         "selection_mode": "auto",
         "chosen_agent_id": "",
         "run_mode": "manual",
-        "completion_mode": "auto",
+        "completion_mode": "review",
         "criteria_extra": "",
         "predecessor_task_id": "",
-        "run_id": "daily-0920-0900",
+        "run_id": "",
     }
     form.update(overrides)
     return form
 
 
-def fix_form(predecessor: str, **overrides) -> dict:
-    form = {
-        "title": EXAMPLES["fix"]["title"],
-        "request": EXAMPLES["fix"]["request"],
-        "capability_code": "code.modify",
-        "scope_value": "demo-report-repo",
-        "selection_mode": "auto",
-        "chosen_agent_id": "",
-        "run_mode": "auto",
-        "completion_mode": "review",
-        "criteria_extra": "",
-        "predecessor_task_id": predecessor,
-        "run_id": "",
-    }
+def code_review_form(predecessor: str, **overrides) -> dict:
+    """`bug_fix` 뒤에 붙는 `code_review` (선행 완료 시 자동)."""
+    form = fix_form(
+        title=CODE_REVIEW_TITLE, request=CODE_REVIEW_REQUEST, capability_code="code.review",
+        run_mode="auto", predecessor_task_id=predecessor,
+    )
     form.update(overrides)
     return form
 
@@ -108,10 +114,70 @@ def detail(client, task_id: str) -> str:
     return response.text
 
 
-def seed_reviewable_fix(client, conn, store, settings) -> tuple[str, str]:
+# --- demo 도우미 (step 2·3 에서 삭제) --------------------------------------------------------
+
+
+@pytest.fixture
+def agents_demo(conn):
+    seed_agents_demo(conn)
+    return conn
+
+
+def register_agents_demo(client, *agent_ids: str) -> None:
+    """세션이 카탈로그에서 Agent 를 등록한다 (`POST /agents/register`). 기본은 운영 진단·개인 Codex 둘 다."""
+    for agent_id in agent_ids or ("agent-ops-demo", "agent-codex-mac"):
+        response = client.post("/agents/register", data={"agent_id": agent_id}, follow_redirects=False)
+        assert response.status_code == 303, response.text
+
+
+@pytest.fixture
+def web_demo(client_demo, agents_demo):
+    """홈을 한 번 열어 세션 쿠키를 받고, 카탈로그 2개를 등록한 클라이언트."""
+    assert client_demo.get("/tasks").status_code == 200
+    register_agents_demo(client_demo)
+    return client_demo
+
+
+def diagnose_form_demo(**overrides) -> dict:
+    form = {
+        "title": EXAMPLES["diagnose"]["title"],
+        "request": EXAMPLES["diagnose"]["request"],
+        "capability_code": "operations.diagnose",
+        "scope_value": "daily-report",
+        "selection_mode": "auto",
+        "chosen_agent_id": "",
+        "run_mode": "manual",
+        "completion_mode": "auto",
+        "criteria_extra": "",
+        "predecessor_task_id": "",
+        "run_id": "daily-0920-0900",
+    }
+    form.update(overrides)
+    return form
+
+
+def fix_form_demo(predecessor: str, **overrides) -> dict:
+    form = {
+        "title": EXAMPLES["fix"]["title"],
+        "request": EXAMPLES["fix"]["request"],
+        "capability_code": "code.modify",
+        "scope_value": "demo-report-repo",
+        "selection_mode": "auto",
+        "chosen_agent_id": "",
+        "run_mode": "auto",
+        "completion_mode": "review",
+        "criteria_extra": "",
+        "predecessor_task_id": predecessor,
+        "run_id": "",
+    }
+    form.update(overrides)
+    return form
+
+
+def seed_reviewable_fix_demo(client, conn, store, settings) -> tuple[str, str]:
     """A → B 등록 뒤 B 에 result_ready 실행과 CONTRACT 7절 결과를 넣는다. (task_id, execution_id)."""
-    task_a = create_task(client, diagnose_form())
-    task_b = create_task(client, fix_form(task_a))
+    task_a = create_task(client, diagnose_form_demo())
+    task_b = create_task(client, fix_form_demo(task_a))
     repo.create_execution(
         conn,
         execution_id="exec-fix-001",
@@ -149,8 +215,9 @@ def seed_reviewable_fix(client, conn, store, settings) -> tuple[str, str]:
 # --- 세션·홈 ---------------------------------------------------------------------
 
 
-def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
+def test_home_issues_session_cookie_once_and_shows_empty_state(client_demo, agents_demo):
     """새 세션 홈: 등록 Agent 0개 → 안내 문장과 `에이전트 등록` 링크, `업무 가져오기` 는 비활성."""
+    client = client_demo
     first = client.get("/tasks")
     assert first.status_code == 200
     assert SESSION_COOKIE in first.cookies
@@ -170,8 +237,8 @@ def test_home_issues_session_cookie_once_and_shows_empty_state(client, agents):
     assert second.status_code == 200
 
 
-def test_home_after_registration_shows_cards_and_enables_import_button(web):
-    text = web.get("/tasks").text
+def test_home_after_registration_shows_cards_and_enables_import_button(web_demo):
+    text = web_demo.get("/tasks").text
     assert "운영 진단 데모" in text and "개인 Codex" in text
     assert "먼저 에이전트를 등록하세요." not in text
     assert 'class="btn" href="/tasks/import"' in text and "에이전트를 먼저 등록하세요" not in text
@@ -180,7 +247,8 @@ def test_home_after_registration_shows_cards_and_enables_import_button(web):
     assert 'href="/agents/register"' in text  # 더 등록할 수 있다
 
 
-def test_landing_is_public_and_links_to_app(client, agents):
+def test_landing_is_public_and_links_to_app(client_demo, agents_demo):
+    client = client_demo
     page = client.get("/")
     assert page.status_code == 200
     assert SESSION_COOKIE not in page.cookies  # 랜딩은 세션을 만들지 않는다
@@ -194,28 +262,28 @@ def test_landing_is_public_and_links_to_app(client, agents):
     assert client.get("/static/hero.jpg").status_code == 200
 
 
-def test_app_home_has_agent_and_task_sections_with_direct_register(client, agents):
-    text = client.get("/tasks").text
+def test_app_home_has_agent_and_task_sections_with_direct_register(web):
+    text = web.get("/tasks").text
     assert 'href="/tasks/new"' in text  # 시연 예시 없이 직접 등록
     assert 'href="/agents"' in text
-    assert 'href="/"' in text  # 사이드바 브랜드 → 랜딩
+    assert 'href="/"' in text  # 사이드바 브랜드 → `/` (로그인 상태면 /tasks)
     assert '/static/logo.jpg' not in text  # 로고는 랜딩에만
 
 
 def test_home_lists_my_tasks_with_status(web):
-    task_id = create_task(web, diagnose_form())
+    task_id = create_task(web, fix_form())
     text = web.get("/tasks").text
     assert "아직 업무가 없습니다." not in text
     assert f"/tasks/{task_id}" in text
-    assert "일일 보고서 실패 진단" in text
-    assert "실행 가능" in text
+    assert BUG_FIX_TITLE in text
+    assert "대기" in text and "연결 끊김, 마지막 확인 없음" in text  # conftest 의 Codex 는 아직 보고 전
 
 
 # --- 등록 폼 ---------------------------------------------------------------------
 
 
-def test_new_task_form_prefills_diagnose_example(web):
-    text = web.get("/tasks/new?example=diagnose").text
+def test_new_task_form_prefills_diagnose_example(web_demo):
+    text = web_demo.get("/tasks/new?example=diagnose").text
     assert DIAGNOSE_REQUEST in text
     assert "일일 보고서 실패 진단" in text
     assert "결과가 ready_for_handoff임" in text
@@ -224,29 +292,32 @@ def test_new_task_form_prefills_diagnose_example(web):
     assert "daily-0920-0900" in text
 
 
-def test_diagnose_example_form_offers_successor_checked(web):
+def test_diagnose_example_form_offers_successor_checked(web_demo):
     """시연 폼은 후속 B 동시 등록 체크박스를 기본 체크로 보여 준다. 빈 폼·fix 폼에는 없다."""
+    web = web_demo
     text = web.get("/tasks/new?example=diagnose").text
     assert 'name="with_successor"' in text and "checked" in text.split('name="with_successor"')[1][:80]
     assert "A 완료 시 자동 착수" in text
     assert 'name="with_successor"' not in web.get("/tasks/new").text
-    task_a = create_task(web, diagnose_form())
+    task_a = create_task(web, diagnose_form_demo())
     assert 'name="with_successor"' not in web.get(f"/tasks/new?example=fix&predecessor={task_a}").text
 
 
-def test_diagnose_example_form_offers_successor_only_with_builtin_rule(web, conn, settings):
+def test_diagnose_example_form_offers_successor_only_with_builtin_rule(web_demo, conn, settings):
     """세션이 규칙 diagnosis → code_change 를 지웠으면 체크박스를 보이지 않고, 보내도 B 를 만들지 않는다."""
+    web = web_demo
     session_id = session_id_of(web, settings)
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "diagnosis"]
     repo.delete_rule(conn, session_id, rule_id)
     assert 'name="with_successor"' not in web.get("/tasks/new?example=diagnose").text
-    task_a = create_task(web, diagnose_form(with_successor="1"))
+    task_a = create_task(web, diagnose_form_demo(with_successor="1"))
     assert [t["task_id"] for t in repo.list_tasks(conn, session_id)] == [task_a]
 
 
-def test_create_diagnose_with_successor_registers_b_waiting_on_a(web, conn):
+def test_create_diagnose_with_successor_registers_b_waiting_on_a(web_demo, conn):
     """with_successor 면 A 와 fix 예시 B 가 한 번에 만들어지고 B 는 A 를 선행으로 자동 실행 대기한다."""
-    task_a = create_task(web, diagnose_form(with_successor="1"))
+    web = web_demo
+    task_a = create_task(web, diagnose_form_demo(with_successor="1"))
     tasks = repo.list_tasks(conn, repo.get_task(conn, task_a)["session_id"])
     assert len(tasks) == 2
     task_b = next(t for t in tasks if t["task_id"] != task_a)
@@ -257,21 +328,23 @@ def test_create_diagnose_with_successor_registers_b_waiting_on_a(web, conn):
     text = detail(web, task_a)
     assert "실행 가능" in text and "보고서 변환기 수정" in text  # A 화면에 후속 링크
     # 체크 안 하면 A 만
-    task_c = create_task(web, diagnose_form())
+    task_c = create_task(web, diagnose_form_demo())
     assert len(repo.list_tasks(conn, repo.get_task(conn, task_c)["session_id"])) == 3
 
 
-def test_create_with_successor_counts_both_against_active_limit(app, web, conn):
-    settings = app.state.settings
+def test_create_with_successor_counts_both_against_active_limit(app_demo, web_demo, conn):
+    web = web_demo
+    settings = app_demo.state.settings
     for _ in range(settings.limits.active_tasks_per_session - 1):
-        create_task(web, diagnose_form())
-    response = web.post("/tasks", data=diagnose_form(with_successor="1"), follow_redirects=False)
+        create_task(web, diagnose_form_demo())
+    response = web.post("/tasks", data=diagnose_form_demo(with_successor="1"), follow_redirects=False)
     assert response.status_code == 429
-    assert len(repo.list_tasks(conn, repo.get_task(conn, create_task(web, diagnose_form()))["session_id"])) == settings.limits.active_tasks_per_session
+    assert len(repo.list_tasks(conn, repo.get_task(conn, create_task(web, diagnose_form_demo()))["session_id"])) == settings.limits.active_tasks_per_session
 
 
-def test_new_task_form_prefills_fix_example_with_predecessor(web):
-    task_a = create_task(web, diagnose_form())
+def test_new_task_form_prefills_fix_example_with_predecessor(web_demo):
+    web = web_demo
+    task_a = create_task(web, diagnose_form_demo())
     text = web.get(f"/tasks/new?example=fix&predecessor={task_a}").text
     assert FIX_REQUEST in text
     assert "보고서 변환기 수정" in text
@@ -279,9 +352,9 @@ def test_new_task_form_prefills_fix_example_with_predecessor(web):
     assert f'value="{task_a}" selected' in text
 
 
-def test_new_task_form_rejects_predecessor_of_other_session(app, web, agents):
-    task_a = create_task(web, diagnose_form())
-    other = TestClient(app)
+def test_new_task_form_rejects_predecessor_of_other_session(app_demo, web_demo, agents_demo):
+    task_a = create_task(web_demo, diagnose_form_demo())
+    other = TestClient(app_demo)
     assert other.get(f"/tasks/new?example=fix&predecessor={task_a}").status_code == 404
 
 
@@ -294,74 +367,73 @@ def test_new_task_form_without_example_is_blank(web):
 # --- 등록 ------------------------------------------------------------------------
 
 
-def test_create_diagnose_task_selects_agent_and_is_runnable(web, conn):
-    task_id = create_task(web, diagnose_form())
+def test_create_fix_task_selects_agent_and_waits_for_connection(web, conn):
+    """직접 등록한 `bug_fix` — 자동 선택으로 러너 Agent 를 고르고 대상은 그 등록값. 러너가 보고 전이라 `대기`."""
+    task_id = create_task(web, fix_form())
     text = detail(web, task_id)
-    assert "실행 가능" in text
-    assert "agent-ops-demo 선택됨" in text
-    assert "operations.diagnose · workflow_id=daily-report 일치 후보 1개" in text
-    assert f'action="/tasks/{task_id}/run"' in text
-    assert "자동 완료" in text and "결과가 ready_for_handoff임" in text
+    assert "대기" in text and "연결 끊김, 마지막 확인 없음" in text
+    assert "버그 수정" in text and "검토 후 완료" in text and "재현 테스트가 수정 전에 실패함" in text
+    assert f'action="/tasks/{task_id}/run"' not in text
 
     row = repo.get_task(conn, task_id)
-    assert row["kind"] == "diagnosis"
-    assert row["status"] == "실행 가능"
-    assert row["completion_mode"] == "auto"
+    assert row["kind"] == "bug_fix"
+    assert (row["status"], row["status_reason"]) == ("대기", "연결 끊김, 마지막 확인 없음")
+    assert row["completion_mode"] == "review" and row["run_mode"] == "manual"
+    assert json.loads(row["target_json"]) == {"local_registration_id": LOCAL_REGISTRATION}
     selection = repo.get_selection(conn, task_id)
-    assert selection.selected_agent_id == "agent-ops-demo" and selection.mode == "auto"
+    assert selection.selected_agent_id == "agent-codex-mac" and selection.mode == "auto"
+    assert selection.reason == "code.fix · repository_id=demo-report-repo 일치 후보 1개"
 
 
-def test_create_fix_task_waits_for_predecessor(web, conn):
-    task_a = create_task(web, diagnose_form())
-    task_b = create_task(web, fix_form(task_a, criteria_extra="두 경로 동시 존재 테스트 포함\n\n"))
+def test_create_review_task_waits_for_predecessor(web, conn):
+    task_a = create_task(web, fix_form())
+    task_b = create_task(web, code_review_form(task_a, criteria_extra="두 경로 동시 존재 테스트 포함\n\n"))
     text = detail(web, task_b)
     assert "대기" in text and "선행 대기" in text
-    assert "일일 보고서 실패 진단" in text  # 선행 링크
+    assert BUG_FIX_TITLE in text  # 선행 링크
     assert "두 경로 동시 존재 테스트 포함" in text
     assert f'action="/tasks/{task_b}/run"' not in text
 
     row = repo.get_task(conn, task_b)
-    assert row["predecessor_task_id"] == task_a
+    assert row["kind"] == "code_review" and row["predecessor_task_id"] == task_a
     assert row["run_mode"] == "auto" and row["completion_mode"] == "review"
+    assert (row["status"], row["status_reason"]) == ("대기", "선행 대기")
     criteria = repo.get_task(conn, task_b)["criteria_json"]
     assert '"user.1"' in criteria and '"structured": false' in criteria
-    assert "보고서 변환기 수정" in detail(web, task_a)  # 후속 링크
+    assert CODE_REVIEW_TITLE in detail(web, task_a)  # 후속 링크
 
 
 def test_create_task_needs_selection_when_two_candidates_then_manual_select(web, conn):
-    repo.upsert_agent(conn, {
-        "agent_id": "agent-ops-second",
-        "name": "두 번째 진단",
-        "owner_scope": "company",
-        "connection_type": "api",
-        "api_url": "http://127.0.0.1:8101",
-        "credential_ref": "env:DIAG_API_TOKEN",
-        "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
-        "shared_to_all_sessions": True,
-    })
-    register_agents(web, "agent-ops-second")
-    task_id = create_task(web, diagnose_form())
+    seed_agents(conn, with_claude=True)  # 같은 저장소를 맡는 Claude Code 까지 2개
+    task_id = create_task(web, fix_form())
     text = detail(web, task_id)
     assert "확인 필요" in text and "후보 2개 — 선택 필요" in text
-    assert f'action="/tasks/{task_id}/select"' in text
-    assert "agent-ops-second" in text
+    assert repo.get_selection(conn, task_id).status == "needs_selection"
 
-    response = web.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    response = web.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-codex-mac"}, follow_redirects=False)
     assert response.status_code == 303
-    text = detail(web, task_id)
-    assert "실행 가능" in text and "직접 선택" in text
     row = repo.get_task(conn, task_id)
-    assert row["selection_mode"] == "manual" and row["chosen_agent_id"] == "agent-ops-demo"
+    assert row["selection_mode"] == "manual" and row["chosen_agent_id"] == "agent-codex-mac"
+    assert json.loads(row["target_json"]) == {"local_registration_id": LOCAL_REGISTRATION}
+    selection = repo.get_selection(conn, task_id)
+    assert selection.mode == "manual" and selection.selected_agent_id == "agent-codex-mac"
+    assert "확인 필요" not in repo.get_task(conn, task_id)["status"]
 
-    again = web.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-second"}, follow_redirects=False)
+    again = web.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-claude-mac"}, follow_redirects=False)
     assert again.status_code == 409
 
 
 def test_create_task_manual_selection_records_reason(web, conn):
-    task_id = create_task(web, diagnose_form(selection_mode="manual", chosen_agent_id="agent-codex-mac"))
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-review-only", "name": "검토 전용", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": "local-review-only",
+        "capabilities": [{"code": "code.review", "scope": {"repository_id": REPOSITORY}}],
+    })
+    repo.register_session_agent(conn, SESSION, "agent-review-only", NOW)
+    task_id = create_task(web, fix_form(selection_mode="manual", chosen_agent_id="agent-review-only"))
     text = detail(web, task_id)
     assert "확인 필요" in text
-    assert "선택한 에이전트에 operations.diagnose 능력 없음" in text
+    assert "선택한 에이전트에 code.fix 능력 없음" in text
 
 
 @pytest.mark.parametrize(
@@ -371,36 +443,37 @@ def test_create_task_manual_selection_records_reason(web, conn):
         {"request": ""},
         {"capability_code": "ops.unknown"},
         {"scope_value": ""},
-        {"run_id": ""},
+        {"run_mode": "sometimes"},
         {"selection_mode": "manual", "chosen_agent_id": ""},
         {"completion_mode": "sometimes"},
     ],
 )
 def test_create_task_rejects_bad_form_with_422(web, overrides):
-    response = web.post("/tasks", data=diagnose_form(**overrides), follow_redirects=False)
+    response = web.post("/tasks", data=fix_form(**overrides), follow_redirects=False)
     assert response.status_code == 422, overrides
     if "capability_code" in overrides:
         assert "등록되지 않은 업무 종류입니다." in response.text
 
 
 def test_create_code_change_task_cannot_be_auto_completed(web):
-    task_a = create_task(web, diagnose_form())
-    response = web.post("/tasks", data=fix_form(task_a, completion_mode="auto"), follow_redirects=False)
-    assert response.status_code == 422
-    assert "자동 완료" in response.text
+    for form in (fix_form(completion_mode="auto"), code_review_form(create_task(web, fix_form()), completion_mode="auto")):
+        response = web.post("/tasks", data=form, follow_redirects=False)
+        assert response.status_code == 422
+        assert "자동 완료" in response.text
 
 
 def test_create_task_active_limit_429(web):
     for _ in range(5):
-        create_task(web, diagnose_form())
-    response = web.post("/tasks", data=diagnose_form(), follow_redirects=False)
+        create_task(web, fix_form())
+    response = web.post("/tasks", data=fix_form(), follow_redirects=False)
     assert response.status_code == 429
     assert "세션당 활성 업무 한도(5개)에 도달했습니다." in response.text
 
 
-def test_other_session_cannot_see_task(app, web, agents):
-    task_id = create_task(web, diagnose_form())
-    other = TestClient(app)
+def test_other_session_cannot_see_task(app_demo, web_demo, agents_demo):
+    web = web_demo
+    task_id = create_task(web, diagnose_form_demo())
+    other = TestClient(app_demo)
     assert other.get(f"/tasks/{task_id}").status_code == 404
     assert other.post(f"/tasks/{task_id}/run", follow_redirects=False).status_code == 404
     assert other.post(f"/tasks/{task_id}/review", data={"decision": "approve"}, follow_redirects=False).status_code == 404
@@ -410,8 +483,9 @@ def test_other_session_cannot_see_task(app, web, agents):
 # --- 직접 실행 -------------------------------------------------------------------
 
 
-def test_run_creates_queued_execution_with_frozen_request(web, conn, settings):
-    task_id = create_task(web, diagnose_form())
+def test_run_creates_queued_execution_with_frozen_request(web_demo, conn, settings):
+    web = web_demo
+    task_id = create_task(web, diagnose_form_demo())
     response = web.post(f"/tasks/{task_id}/run", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == f"/tasks/{task_id}"
@@ -448,25 +522,24 @@ def test_run_creates_queued_execution_with_frozen_request(web, conn, settings):
 
 
 def test_run_requires_selection_and_finished_predecessor(web, conn):
-    task_a = create_task(web, diagnose_form())
-    task_b = create_task(web, fix_form(task_a))
+    task_a = create_task(web, fix_form())
+    task_b = create_task(web, code_review_form(task_a, run_mode="manual"))
     blocked = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
     assert blocked.status_code == 409
-    assert "선행" in blocked.text
+    assert "지금 시작할 수 없습니다" in html_lib.unescape(blocked.text)
+    assert repo.get_task(conn, task_b)["status_reason"] == "선행 대기"
+    assert repo.active_execution(conn, task_b) is None
 
-    repo.upsert_agent(conn, {
-        "agent_id": "agent-ops-second", "name": "둘", "owner_scope": "company", "connection_type": "api",
-        "api_url": "http://127.0.0.1:8101", "credential_ref": "env:DIAG_API_TOKEN",
-        "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
-        "shared_to_all_sessions": True,
-    })
-    register_agents(web, "agent-ops-second")
-    unselected = create_task(web, diagnose_form())
+    seed_agents(conn, with_claude=True)
+    unselected = create_task(web, fix_form())
+    assert repo.get_selection(conn, unselected).status == "needs_selection"
     assert web.post(f"/tasks/{unselected}/run", follow_redirects=False).status_code == 409
+    assert repo.active_execution(conn, unselected) is None
 
 
-def test_run_diagnosis_session_daily_limit_429(web, conn, settings):
-    task_id = create_task(web, diagnose_form())
+def test_run_diagnosis_session_daily_limit_429(web_demo, conn, settings):
+    web = web_demo
+    task_id = create_task(web, diagnose_form_demo())
     session_id = session_id_of(web, settings)
     from workflow.server.auth import utc_now
     for n in range(10):
@@ -479,8 +552,9 @@ def test_run_diagnosis_session_daily_limit_429(web, conn, settings):
     assert repo.active_execution(conn, task_id) is None
 
 
-def test_run_diagnosis_global_daily_limit_429(web, conn):
-    task_id = create_task(web, diagnose_form())
+def test_run_diagnosis_global_daily_limit_429(web_demo, conn):
+    web = web_demo
+    task_id = create_task(web, diagnose_form_demo())
     from workflow.server.auth import utc_now
     for n in range(60):
         repo.record_diagnosis_start(conn, f"sess-other-{n}", f"exec-seed-{n}", utc_now())
@@ -489,12 +563,12 @@ def test_run_diagnosis_global_daily_limit_429(web, conn):
     assert "오늘 전체 진단 실행 한도(60회)에 도달했습니다." in response.text
 
 
-def test_run_diagnosis_rejected_when_diagnosis_is_off(agents, settings, conn):
+def test_run_diagnosis_rejected_when_diagnosis_is_off(agents_demo, settings_demo, conn):
     """phase 10 — 진단 토큰이 비면(셀프호스트 선택) 진단 실행을 만들지 않고 명확히 거부한다. 분기는 모드가 아니라 토큰."""
-    off = TestClient(create_app(dataclasses.replace(settings, diag_api_token="")))
+    off = TestClient(create_app(dataclasses.replace(settings_demo, diag_api_token="")))
     assert off.get("/tasks").status_code == 200
-    register_agents(off)
-    task_id = create_task(off, diagnose_form())
+    register_agents_demo(off)
+    task_id = create_task(off, diagnose_form_demo())
     response = off.post(f"/tasks/{task_id}/run", follow_redirects=False)
     assert response.status_code == 409
     assert "diagnosis_disabled" in response.text
@@ -503,7 +577,7 @@ def test_run_diagnosis_rejected_when_diagnosis_is_off(agents, settings, conn):
     assert repo.count_diagnosis_started(conn, session_id=None, since="2000-01-01T00:00:00Z") == 0
 
 
-def seed_judged_predecessor(client, conn, store, settings, task_a: str, *, bundle: bool = True) -> tuple[str, str | None]:
+def seed_judged_predecessor_demo(client, conn, store, settings, task_a: str, *, bundle: bool = True) -> tuple[str, str | None]:
     """A 를 실행해 결과(result_ready)와 판정 `passed` 를 넣는다 — 사람 승인 전 `확인 필요` 상태. `bundle` 이면 워커가
     조립했을 handoff_bundle 산출물도 넣는다. (exec_a, bundle_id)."""
     client.post(f"/tasks/{task_a}/run", follow_redirects=False)
@@ -533,11 +607,12 @@ def seed_judged_predecessor(client, conn, store, settings, task_a: str, *, bundl
     return exec_a, created.artifact_id
 
 
-def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, settings):
+def test_run_code_change_uses_predecessor_handoff_bundle(web_demo, conn, store, settings):
+    web = web_demo
     """선행 A 의 결과가 판정되고(사람 승인 전) handoff_bundle 산출물이 있으면, B 직접 실행 요청의 입력에 그 ID 가 고정된다
     (ADR-0009 (3) — 선행 `완료` 를 기다리지 않는다)."""
-    task_a = create_task(web, diagnose_form())
-    exec_a, bundle_id = seed_judged_predecessor(web, conn, store, settings, task_a)
+    task_a = create_task(web, diagnose_form_demo())
+    exec_a, bundle_id = seed_judged_predecessor_demo(web, conn, store, settings, task_a)
     assert repo.get_task(conn, task_a)["finished_at"] is None
     # 온라인 판정이 서버 시각 기준 heartbeat_offline_seconds 이내인지 보므로 last_seen 은 실제 시각으로 둔다
     from workflow.server.auth import utc_now
@@ -545,7 +620,7 @@ def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, setti
         conn, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
         base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest"], discovered={}, now=utc_now(),
     )
-    task_b = create_task(web, fix_form(task_a, run_mode="manual"))
+    task_b = create_task(web, fix_form_demo(task_a, run_mode="manual"))
     text = detail(web, task_b)
     assert "실행 가능" in text and "선행 대기" not in text and f'action="/tasks/{task_b}/run"' in text
 
@@ -565,20 +640,22 @@ def test_run_code_change_uses_predecessor_handoff_bundle(web, conn, store, setti
     assert repo.get_task(conn, task_a)["status"] == "확인 필요"  # A 는 여전히 사람 검토 전
 
 
-def test_run_code_change_without_registration_or_handoff_409(web, conn):
-    task_a = create_task(web, diagnose_form())
+def test_run_code_change_without_registration_or_handoff_409(web_demo, conn):
+    web = web_demo
+    task_a = create_task(web, diagnose_form_demo())
     repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
-    task_b = create_task(web, fix_form(task_a, run_mode="manual"))
+    task_b = create_task(web, fix_form_demo(task_a, run_mode="manual"))
     response = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
     assert response.status_code == 409
     assert "인계 자료" in response.text or "등록 정보" in response.text
 
 
-def test_run_successor_waits_for_bundle_and_says_so_without_rule(web, conn, store, settings):
+def test_run_successor_waits_for_bundle_and_says_so_without_rule(web_demo, conn, store, settings):
+    web = web_demo
     """선행 결과가 판정됐어도 인계 묶음이 없으면 409. 규칙이 없으면 /kinds 로 안내한다."""
-    task_a = create_task(web, diagnose_form())
-    seed_judged_predecessor(web, conn, store, settings, task_a, bundle=False)
-    task_b = create_task(web, fix_form(task_a, run_mode="manual"))
+    task_a = create_task(web, diagnose_form_demo())
+    seed_judged_predecessor_demo(web, conn, store, settings, task_a, bundle=False)
+    task_b = create_task(web, fix_form_demo(task_a, run_mode="manual"))
     text = detail(web, task_b)
     assert "선행 대기" in text and f'action="/tasks/{task_b}/run"' not in text
     waiting = web.post(f"/tasks/{task_b}/run", follow_redirects=False)
@@ -596,8 +673,9 @@ def test_run_successor_waits_for_bundle_and_says_so_without_rule(web, conn, stor
 # --- 검토 ------------------------------------------------------------------------
 
 
-def test_review_approve_completes_and_marks_merge_pending(web, conn, store, settings):
-    task_b, execution_id = seed_reviewable_fix(web, conn, store, settings)
+def test_review_approve_completes_and_marks_merge_pending(web_demo, conn, store, settings):
+    web = web_demo
+    task_b, execution_id = seed_reviewable_fix_demo(web, conn, store, settings)
     text = detail(web, task_b)
     assert "확인 필요" in text and "검토 대기" in text
     assert f'action="/tasks/{task_b}/review"' in text
@@ -615,8 +693,9 @@ def test_review_approve_completes_and_marks_merge_pending(web, conn, store, sett
     assert web.post(f"/tasks/{task_b}/review", data={"decision": "approve"}, follow_redirects=False).status_code == 409
 
 
-def test_review_request_changes_creates_second_attempt(web, conn, store, settings):
-    task_b, execution_id = seed_reviewable_fix(web, conn, store, settings)
+def test_review_request_changes_creates_second_attempt(web_demo, conn, store, settings):
+    web = web_demo
+    task_b, execution_id = seed_reviewable_fix_demo(web, conn, store, settings)
     response = web.post(
         f"/tasks/{task_b}/review",
         data={"decision": "request_changes", "comment": "두 경로가 동시에 있는 응답 테스트가 없습니다."},
@@ -647,8 +726,9 @@ def test_review_request_changes_creates_second_attempt(web, conn, store, setting
     assert repo.get_task(conn, task_b)["finished_at"] is None
 
 
-def test_review_close_fails_task(web, conn, store, settings):
-    task_b, execution_id = seed_reviewable_fix(web, conn, store, settings)
+def test_review_close_fails_task(web_demo, conn, store, settings):
+    web = web_demo
+    task_b, execution_id = seed_reviewable_fix_demo(web, conn, store, settings)
     response = web.post(f"/tasks/{task_b}/review", data={"decision": "close", "comment": "중단"}, follow_redirects=False)
     assert response.status_code == 303
     text = detail(web, task_b)
@@ -658,40 +738,47 @@ def test_review_close_fails_task(web, conn, store, settings):
     assert repo.get_execution(conn, execution_id)["released_at"] is not None
 
 
-def test_review_rejects_when_nothing_to_review(web, conn, store, settings):
-    task_id = create_task(web, diagnose_form())
+def test_review_rejects_when_nothing_to_review(web_demo, conn, store, settings):
+    web = web_demo
+    task_id = create_task(web, diagnose_form_demo())
     assert web.post(f"/tasks/{task_id}/review", data={"decision": "approve"}, follow_redirects=False).status_code == 409
-    task_b, _ = seed_reviewable_fix(web, conn, store, settings)
+    task_b, _ = seed_reviewable_fix_demo(web, conn, store, settings)
     assert web.post(f"/tasks/{task_b}/review", data={"decision": "maybe"}, follow_redirects=False).status_code == 422
 
 
 # --- 산출물 ----------------------------------------------------------------------
 
 
-def test_artifact_page_and_raw_download_are_session_scoped(app, web, conn, store, settings, agents):
-    task_b, execution_id = seed_reviewable_fix(web, conn, store, settings)
-    [artifact] = repo.artifacts_of(conn, execution_id)
-    page = web.get(f"/tasks/{task_b}/artifacts/{artifact['artifact_id']}")
+def test_artifact_page_and_raw_download_are_session_scoped(client, web, seeded, store):
+    seed_execution(seeded, "exec-fix-001", "fix-daily-0920")
+    seed_result_ready(seeded, store, "exec-fix-001", kind="code_change_result",
+                      body=code_change_result("exec-fix-001", "fix-daily-0920"))
+    [artifact] = repo.artifacts_of(seeded, "exec-fix-001")
+    page = web.get(f"/tasks/fix-daily-0920/artifacts/{artifact['artifact_id']}")
     assert page.status_code == 200
     assert "code_change_result" in page.text and RESULT_COMMIT in page.text
     assert "<pre" in page.text
 
-    raw = web.get(f"/tasks/{task_b}/artifacts/{artifact['artifact_id']}?raw=1")
+    raw = web.get(f"/tasks/fix-daily-0920/artifacts/{artifact['artifact_id']}?raw=1")
     assert raw.status_code == 200
     assert raw.headers["content-type"].startswith("application/json")
-    assert raw.content == repo.read_artifact(conn, store, artifact["artifact_id"])
+    assert raw.content == repo.read_artifact(seeded, store, artifact["artifact_id"])
 
-    other = TestClient(app)
-    assert other.get(f"/tasks/{task_b}/artifacts/{artifact['artifact_id']}").status_code == 404
-    assert web.get(f"/tasks/{task_b}/artifacts/art-none").status_code == 404
-    task_a = create_task(web, diagnose_form())
-    assert web.get(f"/tasks/{task_a}/artifacts/{artifact['artifact_id']}").status_code == 404  # 다른 업무의 산출물
+    web.post("/logout", follow_redirects=False)  # 로그인하지 않은 브라우저는 로그인 화면으로
+    for path in (f"/tasks/fix-daily-0920/artifacts/{artifact['artifact_id']}",
+                 f"/tasks/fix-daily-0920/artifacts/{artifact['artifact_id']}?raw=1"):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303 and response.headers["location"] == "/login", path
+    log_in(web)
+    assert web.get("/tasks/fix-daily-0920/artifacts/art-none").status_code == 404
+    assert web.get(f"/tasks/review-daily-0920/artifacts/{artifact['artifact_id']}").status_code == 404  # 다른 업무의 산출물
 
 
 # --- 에이전트 (읽기 전용) ----------------------------------------------------------
 
 
-def test_agents_pages_hide_credentials(web, conn):
+def test_agents_pages_hide_credentials(web_demo, conn):
+    web = web_demo
     listing = web.get("/agents")
     assert listing.status_code == 200
     assert "agent-ops-demo" in listing.text and "agent-codex-mac" in listing.text
@@ -731,7 +818,8 @@ DISCOVERED = {
 }
 
 
-def test_register_page_lists_catalog_with_discovered_summary_and_no_secrets(client, conn, agents):
+def test_register_page_lists_catalog_with_discovered_summary_and_no_secrets(client_demo, conn, agents_demo):
+    client = client_demo
     client.get("/tasks")
     repo.update_registration(
         conn, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
@@ -755,7 +843,8 @@ def test_register_page_lists_catalog_with_discovered_summary_and_no_secrets(clie
         assert secret not in text, secret
 
 
-def test_register_agent_appears_on_home_and_list_and_is_idempotent(client, conn, agents, settings):
+def test_register_agent_appears_on_home_and_list_and_is_idempotent(client_demo, conn, agents_demo, settings):
+    client = client_demo
     client.get("/tasks")
     listing = client.get("/agents").text
     assert "등록한 에이전트가 없습니다." in listing and 'href="/agents/register"' in listing
@@ -779,7 +868,8 @@ def test_register_agent_appears_on_home_and_list_and_is_idempotent(client, conn,
     assert client.post("/agents/register", data={"agent_id": ""}, follow_redirects=False).status_code == 404
 
 
-def test_agent_detail_opens_for_catalog_and_registered_only(client, conn, agents):
+def test_agent_detail_opens_for_catalog_and_registered_only(client_demo, conn, agents_demo):
+    client = client_demo
     client.get("/tasks")
     assert client.get("/agents/agent-ops-demo").status_code == 200  # 카탈로그 — 등록 전에도 열린다
     repo.upsert_agent(conn, {
@@ -792,41 +882,56 @@ def test_agent_detail_opens_for_catalog_and_registered_only(client, conn, agents
     assert client.post("/agents/register", data={"agent_id": "agent-private"}, follow_redirects=False).status_code == 404
 
 
-def test_manual_choice_of_unregistered_agent_is_422(client, agents):
-    client.get("/tasks")
-    register_agents(client, "agent-ops-demo")
-    response = client.post(
-        "/tasks", data=diagnose_form(selection_mode="manual", chosen_agent_id="agent-codex-mac"),
+def test_manual_choice_of_unregistered_agent_is_422(web, conn):
+    repo.upsert_agent(conn, {  # 워크스페이스(session_agents)에 붙지 않은 Agent
+        "agent_id": "agent-private", "name": "비공개", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": "local-private",
+        "capabilities": [{"code": "code.fix", "scope": {"repository_id": REPOSITORY}}],
+    })
+    response = web.post(
+        "/tasks", data=fix_form(selection_mode="manual", chosen_agent_id="agent-private"),
         follow_redirects=False,
     )
     assert response.status_code == 422
     assert "agent_not_registered" in response.text and "등록하지 않은 에이전트입니다" in response.text
-    # 등록 폼의 직접 선택 목록에도 등록한 것만
-    form = client.get("/tasks/new").text
-    assert 'value="agent-ops-demo"' in form and 'value="agent-codex-mac"' not in form
+    # 등록 폼의 직접 선택 목록에도 워크스페이스에 붙은 것만
+    form = web.get("/tasks/new").text
+    assert 'value="agent-codex-mac"' in form and 'value="agent-private"' not in form
 
 
-def test_auto_selection_counts_only_registered_agents(client, conn, agents):
-    """운영 진단을 등록하지 않으면 진단 업무는 카탈로그에 있어도 `확인 필요 · 후보 없음`. 직접 선택도 등록한 것만."""
-    client.get("/tasks")
-    register_agents(client, "agent-codex-mac")
-    task_id = create_task(client, diagnose_form())
-    text = detail(client, task_id)
+def test_auto_selection_counts_only_registered_agents(web, conn):
+    """워크스페이스에 붙지 않은 Agent 는 능력이 맞아도 후보가 아니다 — `확인 필요 · 후보 없음`. 직접 선택도 붙은 것만."""
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-other", "name": "다른 저장소 Codex", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": "local-other",
+        "capabilities": [{"code": "code.fix", "scope": {"repository_id": "other-repo"}}],
+    })
+    task_id = create_task(web, fix_form(scope_value="other-repo"))
+    text = detail(web, task_id)
     assert "확인 필요" in text and "후보 없음" in text
-    assert f'action="/tasks/{task_id}/select"' in text
-    assert 'value="agent-ops-demo"' not in text and 'value="agent-codex-mac"' in text  # 선택 목록도 세션 등록만
-    blocked = client.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    assert 'value="agent-other"' not in text
+    blocked = web.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-other"}, follow_redirects=False)
     assert blocked.status_code == 422 and "agent_not_registered" in blocked.text
     assert repo.get_selection(conn, task_id).status == "needs_selection"
 
-    register_agents(client, "agent-ops-demo")
-    chosen = client.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-ops-demo"}, follow_redirects=False)
+    repo.register_session_agent(conn, SESSION, "agent-other", NOW)  # 러너 등록이 워크스페이스에 붙인다
+    chosen = web.post(f"/tasks/{task_id}/select", data={"agent_id": "agent-other"}, follow_redirects=False)
     assert chosen.status_code == 303
-    assert "실행 가능" in detail(client, task_id)
+    assert repo.get_selection(conn, task_id).selected_agent_id == "agent-other"
+    assert json.loads(repo.get_task(conn, task_id)["target_json"]) == {"local_registration_id": "local-other"}
+    assert "확인 필요" not in status_of_detail(detail(web, task_id))
 
 
-def test_unregister_agent_and_409_when_task_in_progress(web, conn, settings):
-    task_id = create_task(web, diagnose_form())  # agent-ops-demo 선택됨, 미완료
+def status_of_detail(html: str) -> str:
+    """상세의 상태 줄(`status-line`) 마크업."""
+    match = re.search(r'<[^>]+class="[^"]*status-line[^"]*"[^>]*>(.*?)</(?:div|p)>', html, re.DOTALL)
+    assert match, "status-line 요소 없음"
+    return match.group(1)
+
+
+def test_unregister_agent_and_409_when_task_in_progress(web_demo, conn, settings):
+    web = web_demo
+    task_id = create_task(web, diagnose_form_demo())  # agent-ops-demo 선택됨, 미완료
     blocked = web.post("/agents/agent-ops-demo/unregister", follow_redirects=False)
     assert blocked.status_code == 409
     assert "agent_in_use" in blocked.text and "진행 중인 업무가 있어 해제할 수 없습니다" in blocked.text
@@ -844,7 +949,9 @@ def test_unregister_agent_and_409_when_task_in_progress(web, conn, settings):
     assert "먼저 에이전트를 등록하세요." in web.get("/tasks").text
 
 
-def test_registration_is_isolated_per_session(app, web, conn, settings):
+def test_registration_is_isolated_per_session(app_demo, web_demo, conn, settings):
+    app = app_demo
+    web = web_demo
     other = TestClient(app)
     home = other.get("/tasks").text
     assert "먼저 에이전트를 등록하세요." in home
@@ -857,7 +964,8 @@ def test_registration_is_isolated_per_session(app, web, conn, settings):
     assert repo.is_session_agent(conn, session_id_of(web, settings), "agent-ops-demo")
 
 
-def test_scripted_agent_is_labelled_on_cards_and_result_card(web, conn, store, settings):
+def test_scripted_agent_is_labelled_on_cards_and_result_card(web_demo, conn, store, settings):
+    web = web_demo
     codex = repo.get_agent(conn, "agent-codex-mac")
     repo.upsert_agent(conn, {
         "agent_id": "agent-codex-mac", "name": codex["name"], "owner_scope": codex["owner_scope"],
@@ -871,23 +979,24 @@ def test_scripted_agent_is_labelled_on_cards_and_result_card(web, conn, store, s
         assert text.count("시연용 · 대본 재생") == 1, path  # 운영 진단은 대본이 아니다
     assert "시연용 · 대본 재생" not in web.get("/agents/agent-ops-demo").text
 
-    task_b, _ = seed_reviewable_fix(web, conn, store, settings)
+    task_b, _ = seed_reviewable_fix_demo(web, conn, store, settings)
     text = detail(web, task_b)
     card = text[text.index('class="result-card'):text.index('class="viewer')]
     assert "대본 재생 (실제 모델 호출 없음)" in card
-    assert "대본 재생" not in detail(web, create_task(web, diagnose_form()))  # 결과 없음
+    assert "대본 재생" not in detail(web, create_task(web, diagnose_form_demo()))  # 결과 없음
 
 
 # --- 업무 가져오기 — GitHub·Jira fixture → 체인 (phase 5 step 5) -------------------------
 
 
-def import_issues(client, source: str, *keys: str):
+def import_issues_demo(client, source: str, *keys: str):
     return client.post(
         "/tasks/import", data={"source": source, "issue_keys": list(keys)}, follow_redirects=False,
     )
 
 
-def test_import_page_defaults_to_github_tab_with_mapping_preview(web):
+def test_import_page_defaults_to_github_tab_with_mapping_preview(web_demo):
+    web = web_demo
     text = web.get("/tasks/import").text
     assert "시연 데이터입니다 — 실제 GitHub·Jira 에 연결하지 않습니다." in text
     assert 'href="/tasks/import?source=github"' in text and 'href="/tasks/import?source=jira"' in text
@@ -907,7 +1016,8 @@ def test_import_page_defaults_to_github_tab_with_mapping_preview(web):
     assert web.get("/tasks/import?source=svn").status_code == 422
 
 
-def test_import_page_jira_tab_lists_ops_keys(web):
+def test_import_page_jira_tab_lists_ops_keys(web_demo):
+    web = web_demo
     text = web.get("/tasks/import?source=jira").text
     for key in ("OPS-41", "OPS-42", "OPS-43", "OPS-44"):
         assert f'value="{key}" checked' in text, key
@@ -916,17 +1026,19 @@ def test_import_page_jira_tab_lists_ops_keys(web):
     assert "operations.diagnose · daily-report" in text
 
 
-def test_import_page_disables_button_without_registered_agent(client, agents):
+def test_import_page_disables_button_without_registered_agent(client_demo, agents_demo):
+    client = client_demo
     client.get("/tasks")
     text = client.get("/tasks/import").text
     button = re.search(r"<button[^>]*>가져와서 워크플로우 구성</button>", text)
     assert button and "disabled" in button.group(0), text
     assert "에이전트를 먼저 등록하세요" in text and 'href="/agents/register"' in text
-    assert import_issues(client, "github", "#41", "#42").status_code == 422
+    assert import_issues_demo(client, "github", "#41", "#42").status_code == 422
 
 
-def test_import_fixture_builds_chain_of_two_tasks_and_skips_the_rest(web, conn, settings):
-    response = import_issues(web, "github", "#41", "#42", "#43", "#44")
+def test_import_fixture_builds_chain_of_two_tasks_and_skips_the_rest(web_demo, conn, settings):
+    web = web_demo
+    response = import_issues_demo(web, "github", "#41", "#42", "#43", "#44")
     assert response.status_code == 303, response.text
     location = response.headers["location"]
     assert location.startswith("/chains/chain-")
@@ -966,10 +1078,11 @@ def test_import_fixture_builds_chain_of_two_tasks_and_skips_the_rest(web, conn, 
     assert "README 오타 수정" not in home
 
 
-def test_import_with_codex_and_claude_picks_first_registered_agent(web, conn):
-    seed_agents(conn, with_claude=True)
-    register_agents(web, "agent-claude-mac")  # 등록 순서: ops → codex → claude
-    response = import_issues(web, "github", "#41", "#42")
+def test_import_with_codex_and_claude_picks_first_registered_agent(web_demo, conn):
+    web = web_demo
+    seed_agents_demo(conn, with_claude=True)
+    register_agents_demo(web, "agent-claude-mac")  # 등록 순서: ops → codex → claude
+    response = import_issues_demo(web, "github", "#41", "#42")
     assert response.status_code == 303, response.text
     chain_id = response.headers["location"].removeprefix("/chains/")
     task_b = repo.tasks_of_chain(conn, chain_id)[1]
@@ -981,12 +1094,13 @@ def test_import_with_codex_and_claude_picks_first_registered_agent(web, conn):
     assert json.loads(task_b["target_json"])["local_registration_id"] == "local-demo-report"
     assert "먼저 등록한 agent-codex-mac" in detail(web, task_b["task_id"])
     # 직접 등록 경로는 그대로 — 동률이면 확인 필요
-    task_c = create_task(web, fix_form(""))
+    task_c = create_task(web, fix_form_demo(""))
     assert repo.get_selection(conn, task_c).status == "needs_selection"
 
 
-def test_import_single_fix_issue_is_standalone_manual_task(web, conn):
-    response = import_issues(web, "github", "#42")
+def test_import_single_fix_issue_is_standalone_manual_task(web_demo, conn):
+    web = web_demo
+    response = import_issues_demo(web, "github", "#42")
     assert response.status_code == 303, response.text
     chain_id = response.headers["location"].removeprefix("/chains/")
     chain = repo.get_chain(conn, chain_id)
@@ -1001,29 +1115,34 @@ def test_import_single_fix_issue_is_standalone_manual_task(web, conn):
 
 
 @pytest.mark.parametrize("keys", [(), ("#99",), ("OPS-41",)])
-def test_import_without_known_issue_is_422(web, conn, settings, keys):
-    response = import_issues(web, "github", *keys)
+def test_import_without_known_issue_is_422(web_demo, conn, settings, keys):
+    web = web_demo
+    response = import_issues_demo(web, "github", *keys)
     assert response.status_code == 422, keys
     assert "no_issues" in response.text
     assert repo.list_chains(conn, session_id_of(web, settings)) == []
-    assert import_issues(web, "svn", "#41").status_code == 422
+    assert import_issues_demo(web, "svn", "#41").status_code == 422
 
 
-def test_import_counts_all_new_tasks_against_active_limit(app, web, conn, settings):
+def test_import_counts_all_new_tasks_against_active_limit(app_demo, web_demo, conn, settings):
+    app = app_demo
+    web = web_demo
     limit = app.state.settings.limits.active_tasks_per_session
     for _ in range(limit - 1):
-        create_task(web, diagnose_form())
-    response = import_issues(web, "github", "#41", "#42", "#43", "#44")
+        create_task(web, diagnose_form_demo())
+    response = import_issues_demo(web, "github", "#41", "#42", "#43", "#44")
     assert response.status_code == 429
     assert f"세션당 활성 업무 한도({limit}개)에 도달했습니다." in response.text
     session_id = session_id_of(web, settings)
     assert len(repo.list_tasks(conn, session_id)) == limit - 1
     assert repo.list_chains(conn, session_id) == []
-    assert import_issues(web, "github", "#41").status_code == 303  # 노드 1개는 들어간다
+    assert import_issues_demo(web, "github", "#41").status_code == 303  # 노드 1개는 들어간다
 
 
-def test_import_chain_is_isolated_per_session(app, web, conn, agents):
-    chain_id = import_issues(web, "github", "#41", "#42").headers["location"].removeprefix("/chains/")
+def test_import_chain_is_isolated_per_session(app_demo, web_demo, conn, agents_demo):
+    app = app_demo
+    web = web_demo
+    chain_id = import_issues_demo(web, "github", "#41", "#42").headers["location"].removeprefix("/chains/")
     task_id = repo.tasks_of_chain(conn, chain_id)[0]["task_id"]
     assert web.get(f"/chains/{chain_id}").status_code == 200
     other = TestClient(app)
@@ -1039,9 +1158,9 @@ def test_import_chain_is_isolated_per_session(app, web, conn, agents):
 # --- 워크플로우 화면 — 체인 상세·시작·라이브 (phase 5 step 6) --------------------------------
 
 
-def import_chain(client, conn, *keys: str) -> tuple[str, list[str]]:
+def import_chain_demo(client, conn, *keys: str) -> tuple[str, list[str]]:
     """가져오기 뒤 (chain_id, 체인 순서의 task_id 목록)."""
-    response = import_issues(client, "github", *(keys or ("#41", "#42", "#43", "#44")))
+    response = import_issues_demo(client, "github", *(keys or ("#41", "#42", "#43", "#44")))
     assert response.status_code == 303, response.text
     chain_id = response.headers["location"].removeprefix("/chains/")
     return chain_id, [t["task_id"] for t in repo.tasks_of_chain(conn, chain_id)]
@@ -1057,8 +1176,9 @@ def start_button(text: str):
     return re.search(r"<button[^>]*>워크플로우 시작</button>", text)
 
 
-def test_chain_page_shows_nodes_in_order_with_assignment_reasons_and_start_button(web, conn):
-    chain_id, (task_a, task_b) = import_chain(web, conn)
+def test_chain_page_shows_nodes_in_order_with_assignment_reasons_and_start_button(web_demo, conn):
+    web = web_demo
+    chain_id, (task_a, task_b) = import_chain_demo(web, conn)
     text = chain_page(web, chain_id)
 
     assert "워크플로우" in text and "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
@@ -1090,8 +1210,9 @@ def test_chain_page_shows_nodes_in_order_with_assignment_reasons_and_start_butto
     assert f'data-live="/chains/{chain_id}/live"' in text
 
 
-def test_chain_start_runs_first_task_once_and_marks_started(web, conn):
-    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+def test_chain_start_runs_first_task_once_and_marks_started(web_demo, conn):
+    web = web_demo
+    chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
     response = web.post(f"/chains/{chain_id}/start", follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == f"/chains/{chain_id}"
 
@@ -1110,8 +1231,9 @@ def test_chain_start_runs_first_task_once_and_marks_started(web, conn):
     assert len(repo.list_executions(conn, task_a)) == 1
 
 
-def test_chain_start_diagnosis_limit_429(web, conn, settings):
-    chain_id, _ = import_chain(web, conn, "#41", "#42")
+def test_chain_start_diagnosis_limit_429(web_demo, conn, settings):
+    web = web_demo
+    chain_id, _ = import_chain_demo(web, conn, "#41", "#42")
     from workflow.server.auth import utc_now
     for n in range(10):
         repo.record_diagnosis_start(conn, session_id_of(web, settings), f"exec-seed-{n}", utc_now())
@@ -1121,10 +1243,11 @@ def test_chain_start_diagnosis_limit_429(web, conn, settings):
     assert repo.get_chain(conn, chain_id)["started_at"] is None
 
 
-def test_chain_start_requires_first_node_selection(client, conn, agents):
+def test_chain_start_requires_first_node_selection(client_demo, conn, agents_demo):
+    client = client_demo
     client.get("/tasks")
-    register_agents(client, "agent-codex-mac")  # 진단 Agent 미등록 → #41 후보 없음
-    chain_id, (task_a, task_b) = import_chain(client, conn, "#41", "#42")
+    register_agents_demo(client, "agent-codex-mac")  # 진단 Agent 미등록 → #41 후보 없음
+    chain_id, (task_a, task_b) = import_chain_demo(client, conn, "#41", "#42")
     text = chain_page(client, chain_id)
     assert 'data-status="확인 필요"' in text and "후보 없음" in text
     button = start_button(text)
@@ -1137,7 +1260,7 @@ def test_chain_start_requires_first_node_selection(client, conn, agents):
     assert repo.get_chain(conn, chain_id)["started_at"] is None
 
     # 진단 Agent 를 등록하고 체인 화면의 인라인 폼으로 확정하면 체인 화면으로 돌아오고 시작할 수 있다
-    register_agents(client, "agent-ops-demo")
+    register_agents_demo(client, "agent-ops-demo")
     chosen = client.post(
         f"/tasks/{task_a}/select", data={"agent_id": "agent-ops-demo", "return_to": "chain"}, follow_redirects=False,
     )
@@ -1148,10 +1271,11 @@ def test_chain_start_requires_first_node_selection(client, conn, agents):
     assert repo.active_execution(conn, task_a) is not None
 
 
-def test_chain_reassigns_tied_node_before_start_only(web, conn):
-    seed_agents(conn, with_claude=True)
-    register_agents(web, "agent-claude-mac")
-    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+def test_chain_reassigns_tied_node_before_start_only(web_demo, conn):
+    web = web_demo
+    seed_agents_demo(conn, with_claude=True)
+    register_agents_demo(web, "agent-claude-mac")
+    chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
     text = chain_page(web, chain_id)
     assert "먼저 등록한 agent-codex-mac 를 기본 선택" in text
     assert "담당 변경" in text and f'action="/tasks/{task_b}/select"' in text
@@ -1174,8 +1298,9 @@ def test_chain_reassigns_tied_node_before_start_only(web, conn):
     assert repo.get_selection(conn, task_b).selected_agent_id == "agent-claude-mac"
 
 
-def test_chain_live_fragment_carries_node_status(web, conn):
-    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+def test_chain_live_fragment_carries_node_status(web_demo, conn):
+    web = web_demo
+    chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
     response = web.get(f"/chains/{chain_id}/live")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
@@ -1189,8 +1314,9 @@ def test_chain_live_fragment_carries_node_status(web, conn):
     assert 'data-status="실행 요청됨"' in web.get(f"/chains/{chain_id}/live").text
 
 
-def test_chain_human_gate_follows_last_task_review(web, conn, store, settings):
-    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+def test_chain_human_gate_follows_last_task_review(web_demo, conn, store, settings):
+    web = web_demo
+    chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
     web.post(f"/chains/{chain_id}/start", follow_redirects=False)
     exec_a = repo.active_execution(conn, task_a)["execution_id"]
     repo.update_task_status(conn, task_a, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
@@ -1225,14 +1351,15 @@ def test_chain_human_gate_follows_last_task_review(web, conn, store, settings):
     assert "병합 확인됨" not in gate
     assert "2단계 모두 완료" in text
 
-    login_operator(web)
+    login_operator_demo(web)
     web.post(f"/operator/merges/{task_b}/confirm", follow_redirects=False)
     gate = chain_page(web, chain_id)
     assert "병합 확인됨" in gate[gate.index("검토 승인 (사람)"):]
 
 
-def test_home_lists_chains_with_progress(web, conn):
-    chain_id, (task_a, task_b) = import_chain(web, conn)
+def test_home_lists_chains_with_progress(web_demo, conn):
+    web = web_demo
+    chain_id, (task_a, task_b) = import_chain_demo(web, conn)
     home = web.get("/tasks").text
     assert "워크플로우" in home and f'href="/chains/{chain_id}"' in home
     assert "0/2 완료" in home and "시작 전" in home
@@ -1249,24 +1376,26 @@ def test_home_lists_chains_with_progress(web, conn):
     assert "/chains/" not in sidebar
 
 
-def test_task_detail_links_to_its_chain(web, conn):
-    chain_id, (task_a, task_b) = import_chain(web, conn, "#41", "#42")
+def test_task_detail_links_to_its_chain(web_demo, conn):
+    web = web_demo
+    chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
     text = detail(web, task_b)
     assert f'href="/chains/{chain_id}"' in text
     assert "워크플로우 일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
     assert f'href="/chains/{chain_id}"' in web.get(f"/tasks/{task_b}/live").text
-    assert "/chains/" not in detail(web, create_task(web, diagnose_form()))
+    assert "/chains/" not in detail(web, create_task(web, diagnose_form_demo()))
 
 
 # --- 운영자 ----------------------------------------------------------------------
 
 
-def login_operator(client, token: str = "test-operator-token"):
+def login_operator_demo(client, token: str = "test-operator-token"):
     return client.post("/operator/login", data={"token": token}, follow_redirects=False)
 
 
-def test_operator_login_rejects_wrong_token(web, conn, settings):
-    assert login_operator(web, "wrong").status_code == 403
+def test_operator_login_rejects_wrong_token(web_demo, conn, settings):
+    web = web_demo
+    assert login_operator_demo(web, "wrong").status_code == 403
     assert repo.get_session(conn, session_id_of(web, settings))["is_operator"] == 0
     page = web.get("/operator")
     assert page.status_code == 200
@@ -1276,16 +1405,14 @@ def test_operator_login_rejects_wrong_token(web, conn, settings):
     assert web.post("/operator/connect-codes", follow_redirects=False).status_code == 403
 
 
-def test_operator_login_then_issue_connect_code_and_exchange(app, web, conn, settings):
-    response = login_operator(web)
-    assert response.status_code == 303 and response.headers["location"] == "/operator"
+def test_operator_issues_connect_code_and_exchange(app, web, conn, settings):
+    """셀프호스트 워크스페이스 로그인이 곧 운영자다 — 운영자 화면에서 연결 코드를 발급하고 러너가 교환한다."""
     assert repo.get_session(conn, session_id_of(web, settings))["is_operator"] == 1
-    assert "test-operator-token" not in response.headers.get("set-cookie", "")
 
     page = web.get("/operator")
-    assert 'action="/operator/agents"' in page.text
+    assert page.status_code == 200
     assert 'action="/operator/connect-codes"' in page.text
-    assert "운영 진단 데모" in page.text
+    assert "개인 Codex" in page.text
     assert "test-operator-token" not in page.text
 
     issued = web.post("/operator/connect-codes", follow_redirects=False)
@@ -1303,7 +1430,6 @@ def test_operator_login_then_issue_connect_code_and_exchange(app, web, conn, set
 
 
 def test_operator_revokes_unused_connect_code(web, conn):
-    login_operator(web)
     issued = web.post("/operator/connect-codes")
     code = re.search(r'id="issued-code">([^<]+)<', issued.text).group(1)
     revoked = web.post(f"/operator/connect-codes/{code}/revoke", follow_redirects=False)
@@ -1313,8 +1439,9 @@ def test_operator_revokes_unused_connect_code(web, conn):
     assert web.post(f"/operator/connect-codes/{code}/revoke", follow_redirects=False).status_code == 404
 
 
-def test_operator_registers_and_deletes_agent(web, conn):
-    login_operator(web)
+def test_operator_registers_and_deletes_agent(web_demo, conn):
+    web = web_demo
+    login_operator_demo(web)
     response = web.post("/operator/agents", data={
         "agent_id": "agent-claude-mac",
         "name": "개인 Claude",
@@ -1347,8 +1474,9 @@ def test_operator_registers_and_deletes_agent(web, conn):
     assert web.post("/operator/agents/agent-claude-mac/delete", follow_redirects=False).status_code == 404
 
 
-def test_operator_reregistration_keeps_connector_report(web, conn):
-    login_operator(web)
+def test_operator_reregistration_keeps_connector_report(web_demo, conn):
+    web = web_demo
+    login_operator_demo(web)
     repo.update_registration(
         conn, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
         base_commit=BASE_COMMIT, verification_profile_ids=["vp-pytest"], discovered={"k": 1}, now=NOW,
@@ -1365,16 +1493,18 @@ def test_operator_reregistration_keeps_connector_report(web, conn):
     assert row["connection_state"] == "online"
 
 
-def test_operator_sees_all_sessions_tasks_merge_queue_and_usage(app, web, conn, store, settings, agents):
-    task_b, _ = seed_reviewable_fix(web, conn, store, settings)
+def test_operator_sees_all_sessions_tasks_merge_queue_and_usage(app_demo, web_demo, conn, store, settings, agents_demo):
+    app = app_demo
+    web = web_demo
+    task_b, _ = seed_reviewable_fix_demo(web, conn, store, settings)
     web.post(f"/tasks/{task_b}/review", data={"decision": "approve"}, follow_redirects=False)
     other = TestClient(app)
     other.get("/tasks")
-    register_agents(other, "agent-ops-demo")  # 다른 세션도 카탈로그에서 등록해야 후보가 생긴다
-    other_task = create_task(other, diagnose_form())
+    register_agents_demo(other, "agent-ops-demo")  # 다른 세션도 카탈로그에서 등록해야 후보가 생긴다
+    other_task = create_task(other, diagnose_form_demo())
     assert other.post(f"/tasks/{other_task}/run", follow_redirects=False).status_code == 303
 
-    login_operator(web)
+    login_operator_demo(web)
     page = web.get("/operator").text
     assert task_b in page and other_task in page
     assert f'action="/operator/merges/{task_b}/confirm"' in page
@@ -1388,7 +1518,6 @@ def test_operator_sees_all_sessions_tasks_merge_queue_and_usage(app, web, conn, 
 
 
 def test_operator_token_never_appears_in_html(web):
-    login_operator(web)
     for path in ("/tasks", "/operator", "/agents", "/tasks/new"):
         assert "test-operator-token" not in web.get(path).text
 
@@ -1417,9 +1546,10 @@ def kind_form(**overrides) -> dict:
 
 
 def rule_form(**overrides) -> dict:
-    """CONTRACT 11.2 의 `code_change --[ready_for_review]--> review`."""
+    """CONTRACT 11.2 의 `code_change --[ready_for_review]--> review` 를 셀프호스트 내장 `bug_fix` 에서 잇는다
+    (`bug_fix` 도 `code_change_result` 를 내고 outcome 이 같다). demo 는 `from_kind="code_change"` 를 넘긴다."""
     form = {
-        "from_kind": "code_change",
+        "from_kind": "bug_fix",
         "on_outcomes": ["ready_for_review"],
         "to_kind": "review",
         "handoff_kinds": ["diff", "code_change_result"],
@@ -1457,22 +1587,22 @@ def test_kinds_page_shows_builtin_kinds_and_rule_without_delete_button(web):
     text = kinds_page(web)
     assert "업무 종류" in text and "후속 규칙" in text and "받는 산출물" in text and "내는 산출물" in text
     assert "결과값" in text
-    for value in ("진단", "코드 수정", "diagnosis", "code_change", "operations.diagnose", "code.modify",
-                  "workflow_id", "repository_id", "ready_for_handoff", "ready_for_review", "needs_information"):
+    for value in ("버그 수정", "커밋 검토", "bug_fix", "code_review", "code.fix", "code.review",
+                  "repository_id", "ready_for_review", "approved", "changes_requested", "needs_information"):
         assert value in text, value
-    assert text.count(">내장<") == 4  # diagnosis·code_change·bug_fix·code_review
-    assert 'action="/kinds/diagnosis/delete"' not in text and 'action="/kinds/code_change/delete"' not in text
+    assert text.count(">내장<") == 4  # 지금 등록부의 내장 전부 (diagnosis·code_change 는 step 3 에서 빠진다)
+    assert 'action="/kinds/bug_fix/delete"' not in text and 'action="/kinds/code_review/delete"' not in text
     # 내장 규칙 한 줄 텍스트 — 그래프·화살표 그림 없음, 삭제 가능
-    assert "진단 --[ready_for_handoff]--> 코드 수정" in text
-    assert text.count('action="/rules/') == 2 and "/delete" in text  # 내장 규칙 2개
+    assert "버그 수정 --[ready_for_review]--> 커밋 검토" in text
+    assert text.count('action="/rules/') == 2 and "/delete" in text  # 내장 규칙 전부
     assert "규칙이 없으면 그 결과 뒤 후속은 사람이 시작합니다" in text
     assert 'action="/kinds"' in text and 'action="/rules"' in text
     assert 'name="input_kinds"' in text and 'value="handoff_bundle"' not in text
-    assert 'data-outcomes="ready_for_handoff needs_information"' in text
+    assert 'value="bug_fix" data-outcomes="ready_for_review needs_information"' in text
     assert "<svg" not in text[text.index('class="main'):text.index('class="viewer')]
 
 
-def test_register_kind_appears_on_page_and_is_isolated_per_session(app, web, conn, settings):
+def test_register_kind_appears_on_page_and_is_isolated_per_session(web, conn, settings):
     register_kind(web)
     text = kinds_page(web)
     assert 'action="/kinds/review/delete"' in text
@@ -1488,10 +1618,10 @@ def test_register_kind_appears_on_page_and_is_isolated_per_session(app, web, con
     # 규칙 폼의 선행·후속 select 에도 나타난다
     assert 'value="review" data-outcomes="approved changes_requested needs_information"' in text
 
-    other = TestClient(app)
-    assert 'action="/kinds/review/delete"' not in other.get("/kinds").text
-    assert [s.kind for s in repo.list_kinds(conn, session_id_of(other, settings))] == [
-        "diagnosis", "code_change", "bug_fix", "code_review"]
+    # 등록부는 워크스페이스 키(session_id)별이다 — 다른 워크스페이스 행에는 내장만
+    repo.create_session(conn, "sess-other", NOW)
+    assert repo.get_kind(conn, "sess-other", "review") is None
+    assert [s.kind for s in repo.list_kinds(conn, "sess-other")] == [k.kind for k in BUILTIN_KINDS]
 
 
 def test_register_kind_defaults_capability_code_to_kind(web, conn, settings):
@@ -1528,7 +1658,7 @@ def test_register_kind_duplicate_and_builtin_name_409(web):
     register_kind(web)
     again = web.post("/kinds", data=kind_form(), follow_redirects=False)
     assert again.status_code == 409 and "kind_exists" in again.text
-    builtin = web.post("/kinds", data=kind_form(kind="diagnosis", input_kinds=[]), follow_redirects=False)
+    builtin = web.post("/kinds", data=kind_form(kind="bug_fix", input_kinds=[]), follow_redirects=False)
     assert builtin.status_code == 409 and "kind_exists" in builtin.text
 
 
@@ -1543,11 +1673,11 @@ def test_register_rule_appears_as_one_line(web, conn, settings):
     register_kind(web)
     register_rule(web)
     text = kinds_page(web)
-    assert "코드 수정 --[ready_for_review]--> 검토" in text
+    assert "버그 수정 --[ready_for_review]--> 검토" in text
     assert text.count('action="/rules/') == 3
     rules = repo.list_rules(conn, session_id_of(web, settings))
     assert {(r.from_kind, r.to_kind) for _, r in rules[:2]} == {("diagnosis", "code_change"), ("bug_fix", "code_review")}
-    assert (rules[2][1].from_kind, rules[2][1].to_kind) == ("code_change", "review")
+    assert (rules[2][1].from_kind, rules[2][1].to_kind) == ("bug_fix", "review")
     assert rules[2][1].on_outcomes == ["ready_for_review"]
     assert rules[2][1].handoff_kinds == ["diff", "code_change_result"]
 
@@ -1555,7 +1685,7 @@ def test_register_rule_appears_as_one_line(web, conn, settings):
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"on_outcomes": ["approved"]}, "on_outcomes 에 code_change 의 outcome 이 아닌 값이 있습니다: approved"),
+        ({"on_outcomes": ["approved"]}, "on_outcomes 에 bug_fix 의 outcome 이 아닌 값이 있습니다: approved"),
         ({"handoff_kinds": ["diff"]}, "handoff_kinds 에 review 의 input_kinds 가 빠졌습니다: code_change_result"),
         ({"to_kind": "nope"}, "등록되지 않은 종류 nope"),
         ({"from_kind": "nope"}, "등록되지 않은 종류 nope"),
@@ -1579,8 +1709,8 @@ def test_register_rule_duplicate_409(web):
     assert again.status_code == 409 and "rule_exists" in again.text
     builtin = web.post(
         "/rules",
-        data=rule_form(from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
-                       handoff_kinds=["diagnosis_result", "evidence"]),
+        data=rule_form(from_kind="bug_fix", on_outcomes=["ready_for_review"], to_kind="code_review",
+                       handoff_kinds=["code_change_result", "diff", "test_log_after", "verification_log"]),
         follow_redirects=False,
     )
     assert builtin.status_code == 409 and "rule_exists" in builtin.text
@@ -1588,10 +1718,10 @@ def test_register_rule_duplicate_409(web):
 
 def test_delete_kind_protected_in_use_then_success(web, conn, settings):
     session_id = session_id_of(web, settings)
-    protected = web.post("/kinds/diagnosis/delete", follow_redirects=False)
+    protected = web.post("/kinds/bug_fix/delete", follow_redirects=False)
     assert protected.status_code == 409
     assert "kind_protected" in protected.text and "내장 종류는 삭제할 수 없습니다" in protected.text
-    assert repo.get_kind(conn, session_id, "diagnosis") is not None
+    assert repo.get_kind(conn, session_id, "bug_fix") is not None
 
     # Task 가 쓰는 종류
     register_kind(web)
@@ -1626,16 +1756,18 @@ def test_delete_kind_protected_in_use_then_success(web, conn, settings):
 
 def test_delete_rule_then_404(web, conn, settings):
     session_id = session_id_of(web, settings)
-    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "diagnosis"]
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "bug_fix"]
     response = web.post(f"/rules/{rule_id}/delete", follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == "/kinds"
-    assert [r.from_kind for _, r in repo.list_rules(conn, session_id)] == ["bug_fix"]
-    assert "진단 --[ready_for_handoff]--> 코드 수정" not in kinds_page(web)
+    assert [r.from_kind for _, r in repo.list_rules(conn, session_id)] == ["diagnosis"]  # step 3 에서 빈 목록
+    assert "버그 수정 --[ready_for_review]--> 커밋 검토" not in kinds_page(web)
     assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
     assert web.post("/rules/rule-none/delete", follow_redirects=False).status_code == 404
 
 
-def test_other_session_cannot_delete_my_kind_or_rule(app, web, conn, settings):
+def test_other_session_cannot_delete_my_kind_or_rule(app_demo, web_demo, conn, settings):
+    app = app_demo
+    web = web_demo
     register_kind(web)
     session_id = session_id_of(web, settings)
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "diagnosis"]
@@ -1656,7 +1788,19 @@ REVIEW_REQUEST = "인계된 diff 와 코드 수정 결과를 검토하고 승인
 
 def seed_review_agent(conn) -> None:
     """능력 `review`(repository_id=demo-report-repo) 만 가진 로컬 Claude — 사용자 정의 종류 `review` 의 유일한 후보.
-    code.modify 를 갖지 않아 B 의 자동 선택(개인 Codex 1개)을 흔들지 않는다."""
+    `code.fix`·`code.review` 를 갖지 않아 내장 종류의 자동 선택(개인 Codex 1개)을 흔들지 않는다. 워크스페이스에 붙인다
+    (워크스페이스 행이 먼저 있어야 한다)."""
+    repo.upsert_agent(conn, {
+        "agent_id": REVIEW_AGENT, "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": LOCAL_REVIEW,
+        "capabilities": [{"code": "review", "scope": {"repository_id": "demo-report-repo"}}],
+        "connection_state": "unknown",
+    })
+    repo.register_session_agent(conn, SESSION, REVIEW_AGENT, NOW)
+
+
+def seed_review_agent_demo(conn) -> None:
+    """카탈로그의 검토 Claude — 세션이 `register_agents_demo` 로 등록해야 후보가 된다."""
     repo.upsert_agent(conn, {
         "agent_id": REVIEW_AGENT, "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
         "local_registration_id": LOCAL_REVIEW,
@@ -1685,15 +1829,25 @@ def review_form(predecessor: str = "", **overrides) -> dict:
 
 @pytest.fixture
 def review_web(web, conn):
-    """`web` + 종류 review·규칙 code_change → review 등록 + 검토 Claude 세션 등록."""
+    """`web` + 종류 review·규칙 bug_fix → review 등록 + 검토 Claude 가 워크스페이스에 붙음."""
     seed_review_agent(conn)
-    register_agents(web, REVIEW_AGENT)
     register_kind(web)
     register_rule(web)
     return web
 
 
-def test_new_task_form_lists_session_kinds_with_scope_key(review_web, conn, settings):
+@pytest.fixture
+def review_web_demo(web_demo, conn):
+    """`web_demo` + 종류 review·규칙 code_change → review 등록 + 검토 Claude 세션 등록."""
+    seed_review_agent_demo(conn)
+    register_agents_demo(web_demo, REVIEW_AGENT)
+    register_kind(web_demo)
+    register_rule(web_demo, from_kind="code_change")
+    return web_demo
+
+
+def test_new_task_form_lists_session_kinds_with_scope_key(review_web_demo, conn, settings):
+    review_web = review_web_demo
     text = html_lib.unescape(review_web.get("/tasks/new").text)
     select = text[text.index('id="capability_code"'):text.index("</select>", text.index('id="capability_code"'))]
     assert 'value="operations.diagnose" data-scope-key="workflow_id"' in select and "진단 (diagnosis)" in select
@@ -1727,50 +1881,37 @@ def test_create_review_task_targets_local_registration_and_needs_no_run_id(revie
     assert auto.status_code == 422 and "자동 완료" in auto.text
 
 
-def test_create_review_task_in_session_without_the_kind_is_422(app, conn):
-    """종류는 세션별이다 — review 를 등록하지 않은 세션의 폼에는 없고 보내도 422."""
+def test_create_review_task_in_session_without_the_kind_is_422(logged_in_client, conn):
+    """종류는 워크스페이스 등록부에서 온다 — review 를 등록하지 않았으면 폼에 없고 보내도 422."""
+    ensure_workspace(conn, NOW)
     seed_review_agent(conn)
-    other = TestClient(app)
-    other.get("/tasks")
-    register_agents(other, REVIEW_AGENT)
-    assert 'value="review" data-scope-key' not in other.get("/tasks/new").text
-    gone = other.post("/tasks", data=review_form(), follow_redirects=False)
+    web = logged_in_client
+    assert 'value="review" data-scope-key' not in web.get("/tasks/new").text
+    gone = web.post("/tasks", data=review_form(), follow_redirects=False)
     assert gone.status_code == 422 and "등록되지 않은 업무 종류입니다." in gone.text
 
 
 def test_create_review_task_after_fix_waits_and_runs_with_kind_spec(review_web, conn, store, settings):
-    """A → B → C(review) 를 직접 등록. C 는 B 결과가 판정되고 인계 묶음이 생기면 실행 가능이고,
+    """A(bug_fix) → C(review) 를 직접 등록. C 는 A 결과가 판정되고 인계 묶음이 생기면 실행 가능이고,
     실행 요청에는 등록부의 KindSpec 과 LocalTarget 이 들어간다."""
-    task_a = create_task(review_web, diagnose_form())
-    task_b = create_task(review_web, fix_form(task_a))
-    task_c = create_task(review_web, review_form(task_b, run_mode="manual"))
-    assert repo.get_task(conn, task_c)["predecessor_task_id"] == task_b
+    task_a = create_task(review_web, fix_form())
+    task_c = create_task(review_web, review_form(task_a, run_mode="manual"))
+    assert repo.get_task(conn, task_c)["predecessor_task_id"] == task_a
     assert "선행 대기" in detail(review_web, task_c)
 
     session_id = session_id_of(review_web, settings)
-    repo.create_execution(
-        conn, execution_id="exec-fix-001", task_id=task_b, attempt_no=1, start_key=f"auto:{task_b}:r1",
-        agent_id="agent-codex-mac", kind="code_change",
-        request=ExecutionRequest.model_validate({
-            "contract_version": 1, "execution_id": "exec-fix-001", "task_id": task_b, "kind": "code_change",
-            "agent_id": "agent-codex-mac", "task_revision": 1, "request": FIX_REQUEST,
-            "input_artifact_ids": ["art-handoff-001"],
-            "target": {"local_registration_id": "local-demo-report", "base_commit": BASE_COMMIT,
-                       "verification_profile_id": "vp-pytest"},
-        }),
-        assigned_connector_id=None, predecessor_execution_id=None, now=NOW,
-    )
+    seed_execution(conn, "exec-fix-001", task_a)
     seed_result_ready(
         conn, store, "exec-fix-001", kind="code_change_result",
-        body=code_change_result("exec-fix-001", task_b), session_id=session_id,
+        body=code_change_result("exec-fix-001", task_a), session_id=session_id,
     )
     repo.record_verdict(
-        conn, task_id=task_b, execution_id="exec-fix-001",
+        conn, task_id=task_a, execution_id="exec-fix-001",
         verdict={"outcome": "passed", "checks": [{"code": "verification_passed", "passed": True, "detail": "exit 0"}]},
         status="확인 필요", reason="검토 대기", finish=False, now=NOW,
     )
     data = json.dumps({
-        "contract_version": 1, "source_execution_id": "exec-fix-001", "source_kind": "code_change",
+        "contract_version": 1, "source_execution_id": "exec-fix-001", "source_kind": "bug_fix",
         "source_result_artifact_id": "art-fix-result-001", "inputs": [], "attachments": [],
     }).encode()
     bundle, _ = repo.store_artifact(
@@ -1806,7 +1947,7 @@ REVIEW_ISSUE = {
 
 
 @pytest.fixture
-def review_issue(monkeypatch):
+def review_issue_demo(monkeypatch):
     """fixture 이슈에 `kind:review` 이슈 #45(#42 뒤)를 덧붙인다 — 파일은 고치지 않는다 (공개 데모 e2e 가 4개를 센다)."""
     from workflow.adapters.task_sources import load_issues as real_load
     from workflow.domain.task_sources import Issue
@@ -1820,10 +1961,11 @@ def review_issue(monkeypatch):
     monkeypatch.setattr(views, "load_issues", patched)
 
 
-def test_import_kind_label_issue_becomes_third_node_with_rule(review_web, review_issue, conn):
+def test_import_kind_label_issue_becomes_third_node_with_rule(review_web_demo, review_issue_demo, conn):
+    review_web = review_web_demo
     page = html_lib.unescape(review_web.get("/tasks/import").text)
     assert "review · demo-report-repo" in page and 'value="#45" checked' in page
-    response = import_issues(review_web, "github", "#41", "#42", "#45")
+    response = import_issues_demo(review_web, "github", "#41", "#42", "#45")
     assert response.status_code == 303, response.text
     chain_id = response.headers["location"].removeprefix("/chains/")
     tasks = repo.tasks_of_chain(conn, chain_id)
@@ -1843,11 +1985,12 @@ def test_import_kind_label_issue_becomes_third_node_with_rule(review_web, review
     assert "3단계 중" not in text and "검토 승인 (사람) · 병합은 운영자 확인" in text
 
 
-def test_import_kind_label_issue_is_standalone_without_rule_or_kind(review_web, review_issue, conn, settings):
+def test_import_kind_label_issue_is_standalone_without_rule_or_kind(review_web_demo, review_issue_demo, conn, settings):
+    review_web = review_web_demo
     session_id = session_id_of(review_web, settings)
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.to_kind == "review"]
     repo.delete_rule(conn, session_id, rule_id)
-    response = import_issues(review_web, "github", "#41", "#42", "#45")
+    response = import_issues_demo(review_web, "github", "#41", "#42", "#45")
     assert response.status_code == 303, response.text
     chain_id = response.headers["location"].removeprefix("/chains/")
     tasks = repo.tasks_of_chain(conn, chain_id)
@@ -1858,8 +2001,9 @@ def test_import_kind_label_issue_is_standalone_without_rule_or_kind(review_web, 
     assert "후속 규칙 없음: code_change → review" in html_lib.unescape(chain_page(review_web, chain_id))
 
 
-def test_import_page_marks_unknown_kind_label_unassignable(web, review_issue):
+def test_import_page_marks_unknown_kind_label_unassignable(web_demo, review_issue_demo):
     """종류 review 가 없는 세션에서는 kind:review 이슈를 맡을 수 없다고 미리 보인다."""
+    web = web_demo
     page = html_lib.unescape(web.get("/tasks/import").text)
     assert "맡을 에이전트 없음 · 등록되지 않은 종류 kind:review" in page
 
@@ -1867,14 +2011,16 @@ def test_import_page_marks_unknown_kind_label_unassignable(web, review_issue):
 def test_agent_pages_show_kind_label_next_to_capability_code(review_web):
     detail_text = html_lib.unescape(review_web.get(f"/agents/{REVIEW_AGENT}").text)
     assert "review · repository_id=demo-report-repo" in detail_text and "검토" in detail_text
-    ops = html_lib.unescape(review_web.get("/agents/agent-ops-demo").text)
-    assert "operations.diagnose · workflow_id=daily-report" in ops and "(진단)" in ops
-    catalog = html_lib.unescape(review_web.get("/agents/register").text)
-    assert "(코드 수정)" in catalog and "(검토)" in catalog
+    codex = html_lib.unescape(review_web.get("/agents/agent-codex-mac").text)
+    assert "code.fix · repository_id=demo-report-repo" in codex and "(버그 수정)" in codex
+    assert "code.review · repository_id=demo-report-repo" in codex and "(커밋 검토)" in codex
+    operator = html_lib.unescape(review_web.get("/operator").text)
+    assert "(버그 수정)" in operator and "(검토)" in operator
 
 
-def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_otherwise(web, conn):
-    login_operator(web)
+def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_otherwise(web_demo, conn):
+    web = web_demo
+    login_operator_demo(web)
     page = web.get("/operator").text
     assert 'name="scope_key"' in page and 'name="capability_code"' in page
     assert "operations.diagnose" in page and "workflow_id" in page  # 내장 코드 안내
@@ -1919,8 +2065,9 @@ def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_oth
         {"scope_value": ""},
     ],
 )
-def test_operator_register_agent_rejects_bad_capability_422(web, conn, overrides):
-    login_operator(web)
+def test_operator_register_agent_rejects_bad_capability_422(web_demo, conn, overrides):
+    web = web_demo
+    login_operator_demo(web)
     data = {
         "agent_id": "agent-x", "name": "x", "owner_scope": "personal", "connection_type": "local",
         "capability_code": "code.modify", "scope_key": "", "scope_value": "other-repo",
@@ -1989,7 +2136,7 @@ def test_sources_page_shows_inbound_url_empty_state_example_and_sidebar_link(web
     # 요청 예시 — 토큰 자리는 플레이스홀더, 본문은 CONTRACT 12절 (a) 와 같은 항목
     assert "curl -X POST http://testserver/sources/n8n/chains" in text
     assert "Authorization: Bearer wfs_…" in text and "content-type: application/json" in text
-    assert '"key": "run-daily-0920"' in text and '"blocked_by": ["run-daily-0920"]' in text
+    assert '"key": "issue-1"' in text and '"labels": ["bug", "repo:my-repo"]' in text and '"blocked_by": []' in text
     assert "docs/n8n/README.md" in text
     # 허용 목록이 비어 있으면 callback_url 은 거부된다는 안내
     assert "callback 허용 목록이 비어 있어" in text and "WORKFLOW_CALLBACK_HOSTS" in text
@@ -2009,7 +2156,7 @@ def test_sources_page_uses_public_url_and_lists_callback_hosts(settings, agents)
     custom = dataclasses.replace(
         settings, callback_hosts=("localhost:5678", "127.0.0.1"), public_url="https://runloom.example",
     )
-    client = TestClient(create_app(custom))
+    client = log_in(TestClient(create_app(custom)))
     text = sources_page(client)
     assert "https://runloom.example/sources/n8n/chains" in text
     assert "http://testserver/sources" not in text
@@ -2092,7 +2239,9 @@ def test_revoke_token_marks_row_and_blocks_inbound_api(web, conn, settings):
     assert repo.list_source_tokens(conn, session_id)[0]["revoked_at"] == revoked_at
 
 
-def test_other_session_cannot_see_or_revoke_my_token(app, web, conn, settings):
+def test_other_session_cannot_see_or_revoke_my_token(app_demo, web_demo, conn, settings):
+    app = app_demo
+    web = web_demo
     issue_token(web)
     [row] = repo.list_source_tokens(conn, session_id_of(web, settings))
     other = TestClient(app)
@@ -2105,7 +2254,6 @@ def test_other_session_cannot_see_or_revoke_my_token(app, web, conn, settings):
 
 
 def test_token_issue_is_not_on_operator_page(web):
-    login_operator(web)
     text = web.get("/operator").text
     assert 'action="/sources/tokens"' not in text and "입구 토큰" not in text
 
@@ -2218,7 +2366,8 @@ def test_selfhost_operator_login_acts_as_login(selfhost, conn):
     assert session_count(conn) == 1
 
 
-def test_demo_mode_has_no_login_routes(client, conn):
+def test_demo_mode_has_no_login_routes(client_demo, conn):
+    client = client_demo
     assert client.get("/login").status_code == 404
     assert client.post("/login", data={"token": OPERATOR_TOKEN}, follow_redirects=False).status_code == 404
     assert client.post("/logout", follow_redirects=False).status_code == 404
@@ -2266,7 +2415,7 @@ def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, set
 def test_selfhost_hides_demo_only_elements(selfhost, settings):
     client = TestClient(selfhost)
     login(client)
-    task_id = create_task(client, fix_form("", scope_value="my-repo"))
+    task_id = create_task(client, fix_form(scope_value="my-repo"))
     pages = {
         "/tasks": DEMO_ONLY_TASKS,
         "/tasks/new": DEMO_ONLY_TASK_NEW,
@@ -2283,9 +2432,10 @@ def test_selfhost_hides_demo_only_elements(selfhost, settings):
         assert_no_secrets(response.text, settings)
 
 
-def test_demo_mode_keeps_demo_only_elements(web, settings):
-    task_id = create_task(web, diagnose_form())
-    login_operator(web)
+def test_demo_mode_keeps_demo_only_elements(web_demo, settings):
+    web = web_demo
+    task_id = create_task(web, diagnose_form_demo())
+    login_operator_demo(web)
     pages = {
         "/tasks": DEMO_ONLY_TASKS,
         "/tasks/new": DEMO_ONLY_TASK_NEW,

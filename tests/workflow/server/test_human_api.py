@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.server.auth import SESSION_COOKIE, sign_session
 
+from .conftest import task_row
 from .test_github_api import login
 from .test_task_cycle import FIX, FIX_SHOP, SESSION, cycle, import_issue, settings  # noqa: F401 — 픽스처
 
@@ -18,10 +19,9 @@ NOW = "2026-10-06T12:00:00Z"
 
 @pytest.fixture
 def op(app, conn, cycle) -> TestClient:  # noqa: F811
-    """cycle 세션을 운영자 세션으로 쓰는 클라이언트."""
-    repo.mark_operator(conn, SESSION)
+    """cycle 워크스페이스(고정 워크스페이스)에 로그인한 클라이언트 — 셀프호스트는 로그인 = 운영자."""
     client = TestClient(app)
-    client.cookies.set(SESSION_COOKIE, sign_session(SESSION, "test-session-secret"))
+    assert login(client) == SESSION
     return client
 
 
@@ -81,22 +81,29 @@ def test_stale_revision_and_already_answered_requests_are_rejected(op, request_i
 
 def test_only_the_operator_session_can_answer(app, conn, request_id):
     anonymous = TestClient(app)
-    assert respond(anonymous, request_id).status_code == 403
-    public = TestClient(app)
-    assert public.get("/tasks").status_code == 200  # 공개(심사자) 세션 쿠키
-    assert respond(public, request_id).status_code == 403
-    assert public.get("/human-requests").status_code == 403
+    assert respond(anonymous, request_id).status_code == 401
+    assert anonymous.get("/human-requests").status_code == 401
+    stranger = TestClient(app)  # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 로그인 안 된 것으로 본다
+    repo.create_session(conn, "sess-other", NOW)
+    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    assert respond(stranger, request_id).status_code == 401
+    assert stranger.get("/human-requests").status_code == 401
     assert repo.get_human_request(conn, SESSION, request_id)["state"] == "open"
 
 
-def test_other_operator_session_cannot_see_or_answer(app, conn, request_id):
-    other = TestClient(app)
-    login(other)
-    assert other.get("/human-requests").json()["requests"] == []
-    response = respond(other, request_id)
+def test_other_operator_session_cannot_see_or_answer(op, conn):
+    # 다른 워크스페이스(운영자 세션)의 업무와 사람 요청 — DB 에 직접 둔다
+    repo.create_session(conn, "sess-other", NOW)
+    repo.mark_operator(conn, "sess-other")
+    repo.insert_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
+    other_request, _ = repo.create_human_request_once(
+        conn, "task-other", "fix_needs_information", "재현 금액이 필요합니다", "fix_needs_information:exec-9", NOW,
+    )
+    assert op.get("/human-requests").json()["requests"] == []
+    response = respond(op, other_request)
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
-    assert repo.get_human_request(conn, SESSION, request_id)["state"] == "open"
+    assert repo.get_human_request(conn, "sess-other", other_request)["state"] == "open"
 
 
 def test_information_request_needs_an_actual_answer(op, conn, request_id):

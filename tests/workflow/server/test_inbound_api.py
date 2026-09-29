@@ -13,21 +13,47 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.contracts.v1 import InboundChainResponse
 from workflow.server.app import create_app
-from workflow.server.auth import SESSION_COOKIE, utc_now
+from workflow.server.auth import SESSION_COOKIE, ensure_workspace, utc_now
 
-from .conftest import NOW, SESSION, bearer, exchange, register_catalog, seed_agents, task_row
+from .conftest import (
+    NOW,
+    REPOSITORY,
+    SESSION,
+    bearer,
+    exchange,
+    log_in,
+    register_catalog_demo,
+    seed_agents,
+    seed_agents_demo,
+    task_row,
+)
 
 PUBLIC_URL = "http://127.0.0.1:8000"
 CALLBACK = "http://localhost:5678/webhook-waiting/1234"
 
-DIAGNOSE_ITEM = {
+FIX_ITEM = {
+    "key": "fix-format",
+    "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
+    "body": "demo-report-repo 의 변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
+    "labels": ["kind:bug_fix", f"repository_id:{REPOSITORY}"],
+    "blocked_by": [],
+}
+REVIEW_ITEM = {
+    "key": "review-format",
+    "title": "보고서 변환 수정 검토",
+    "body": "수정 커밋을 검토해 주세요.",
+    "labels": ["kind:code_review", f"repository_id:{REPOSITORY}"],
+    "blocked_by": ["fix-format"],
+}
+# demo — 진단 → code_change (내장 라벨 규칙 incident·bug)
+DIAGNOSE_ITEM_DEMO = {
     "key": "run-daily-0920",
     "title": "일일 보고서 2026-09-20 09:00 실행 실패",
     "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다. 실패 원인과 수정에 필요한 근거를 조사해 주세요.",
     "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
     "blocked_by": [],
 }
-FIX_ITEM = {
+FIX_ITEM_DEMO = {
     "key": "fix-format",
     "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
     "body": "진단 결과와 근거를 바탕으로 demo-report-repo 의 변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
@@ -54,11 +80,25 @@ def settings(settings):
 
 
 @pytest.fixture
+def settings_demo(settings_demo):
+    """demo 도 같은 허용 목록·공개 주소 (진단 한도 테스트용)."""
+    return dataclasses.replace(settings_demo, callback_hosts=("localhost:5678",), public_url=PUBLIC_URL)
+
+
+@pytest.fixture
 def workspace(conn) -> str:
-    """세션 1개 + 카탈로그 2개 등록(codex → ops 순, conftest 기본). 업무는 없다."""
-    repo.create_session(conn, SESSION, NOW)
+    """고정 워크스페이스 + 러너 모양 Agent 1개(`code.fix`·`code.review`). 업무는 없다."""
+    ensure_workspace(conn, NOW)
     seed_agents(conn)
-    register_catalog(conn, SESSION)
+    return SESSION
+
+
+@pytest.fixture
+def workspace_demo(conn) -> str:
+    """demo 세션 1개 + 카탈로그 2개 등록(codex → ops 순, conftest 기본). 업무는 없다."""
+    repo.create_session(conn, SESSION, NOW)
+    seed_agents_demo(conn)
+    register_catalog_demo(conn, SESSION)
     return SESSION
 
 
@@ -73,9 +113,9 @@ def token(conn, workspace) -> str:
 
 
 def post(client, token: str | None, *, source: str = "n8n", body: dict | None = None, **overrides):
-    """기본 본문은 진단 + 수정 2항목 + 허용된 callback_url. `body` 를 주면 그대로 보낸다."""
+    """기본 본문은 수정 + 검토 2항목 + 허용된 callback_url. `body` 를 주면 그대로 보낸다."""
     if body is None:
-        body = {"contract_version": 1, "items": [DIAGNOSE_ITEM, FIX_ITEM], "callback_url": CALLBACK, **overrides}
+        body = {"contract_version": 1, "items": [FIX_ITEM, REVIEW_ITEM], "callback_url": CALLBACK, **overrides}
     headers = bearer(token) if token is not None else {}
     return client.post(f"/sources/{source}/chains", json=body, headers=headers)
 
@@ -86,7 +126,8 @@ def post(client, token: str | None, *, source: str = "n8n", body: dict | None = 
 def test_without_bearer_is_401_even_with_session_cookie(client, conn, workspace):
     assert post(client, None).status_code == 401
     assert post(client, None).json() == UNAUTHENTICATED
-    # 세션 쿠키가 있어도 입구는 Bearer 만 받는다 (브라우저 CSRF 경로를 만들지 않는다)
+    # 로그인 쿠키가 있어도 입구는 Bearer 만 받는다 (브라우저 CSRF 경로를 만들지 않는다)
+    log_in(client)
     assert client.get("/tasks").status_code == 200 and client.cookies.get(SESSION_COOKIE)
     assert post(client, None).status_code == 401
     # 연결 토큰(wfc_)도 아니다
@@ -129,8 +170,12 @@ def test_token_bound_to_another_source_is_403(client, conn, token, workspace):
 # --- 정상 접수 (b) ------------------------------------------------------------------------------
 
 
-def test_two_items_build_chain_and_start_first_task(client, conn, token, workspace):
-    response = post(client, token)
+def test_two_items_build_chain_and_start_first_task(client_demo, conn, workspace_demo):
+    """demo — 진단 → code_change. 셀프호스트(bug_fix → code_review) 판은 아직 첫 업무가 시작되지 않아 옮기지 못했다
+    (`web._target_for` 가 bug_fix 에 기준 커밋·검증 프로필을 넣지 않아 request_incomplete)."""
+    workspace = workspace_demo
+    token = _issue(conn, workspace)
+    response = post(client_demo, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
     assert response.status_code == 201, response.text
     body = response.json()
     assert list(body) == ["contract_version", "chain_id", "chain_url", "started", "start_error", "tasks", "skipped"]
@@ -148,13 +193,13 @@ def test_two_items_build_chain_and_start_first_task(client, conn, token, workspa
     assert chain["session_id"] == workspace and chain["source"] == "n8n"
     assert chain["title"] == "일일 보고서 2026-09-20 09:00 실행 실패 → 응답 형식 변경에 맞춰 보고서 변환 수정"
     assert chain["callback_url"] == CALLBACK
-    assert json.loads(chain["items_json"]) == [DIAGNOSE_ITEM, FIX_ITEM]
+    assert json.loads(chain["items_json"]) == [DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO]
     assert chain["started_at"] is not None
     assert chain["callback_sent_at"] is None and chain["callback_attempts"] == 0
 
     task_a, task_b = repo.tasks_of_chain(conn, chain_id)
     assert [t["task_id"] for t in (task_a, task_b)] == [t["task_id"] for t in body["tasks"]]
-    assert task_a["source_ref"] == "run-daily-0920" and task_a["request"] == DIAGNOSE_ITEM["body"]
+    assert task_a["source_ref"] == "run-daily-0920" and task_a["request"] == DIAGNOSE_ITEM_DEMO["body"]
     assert task_a["kind"] == "diagnosis" and task_a["completion_mode"] == "auto"
     assert json.loads(task_a["target_json"]) == {"run_id": "daily-0920-0900"}
     assert task_b["predecessor_task_id"] == task_a["task_id"] and task_b["run_mode"] == "auto"
@@ -170,10 +215,10 @@ def test_two_items_build_chain_and_start_first_task(client, conn, token, workspa
 
 
 def test_item_without_capability_is_skipped_with_reason(client, conn, token):
-    response = post(client, token, items=[DIAGNOSE_ITEM, FIX_ITEM, DOCS_ITEM])
+    response = post(client, token, items=[FIX_ITEM, REVIEW_ITEM, DOCS_ITEM])
     assert response.status_code == 201, response.text
     body = response.json()
-    assert [t["key"] for t in body["tasks"]] == ["run-daily-0920", "fix-format"]
+    assert [t["key"] for t in body["tasks"]] == ["fix-format", "review-format"]
     assert body["skipped"] == [{"key": "readme", "reason": "맞는 능력 코드 없음 (라벨: docs)"}]
     chain = repo.get_chain(conn, body["chain_id"])
     assert [s["key"] for s in json.loads(chain["skipped_json"])] == ["readme"]
@@ -188,11 +233,11 @@ def test_chain_url_is_null_without_public_url(settings, conn, workspace):
 
 
 def test_without_callback_url_chain_has_null_callback(client, conn, token):
-    response = post(client, token, body={"contract_version": 1, "items": [DIAGNOSE_ITEM, FIX_ITEM]})
+    response = post(client, token, body={"contract_version": 1, "items": [FIX_ITEM, REVIEW_ITEM]})
     assert response.status_code == 201, response.text
     chain = repo.get_chain(conn, response.json()["chain_id"])
     assert chain["callback_url"] is None
-    assert json.loads(chain["items_json"]) == [DIAGNOSE_ITEM, FIX_ITEM]
+    assert json.loads(chain["items_json"]) == [FIX_ITEM, REVIEW_ITEM]
 
 
 def test_same_request_twice_makes_two_chains(client, conn, token, workspace):
@@ -207,8 +252,7 @@ def test_same_request_twice_makes_two_chains(client, conn, token, workspace):
 
 
 def test_no_registered_agent_is_422_without_chain(client, conn):
-    repo.create_session(conn, SESSION, NOW)
-    seed_agents(conn)  # 카탈로그만 있고 세션은 아무것도 등록하지 않았다
+    ensure_workspace(conn, NOW)  # 러너가 아직 Agent 를 등록하지 않았다
     response = post(client, _issue(conn, SESSION))
     assert response.status_code == 422
     assert response.json() == {
@@ -218,10 +262,15 @@ def test_no_registered_agent_is_422_without_chain(client, conn):
 
 
 def test_first_task_without_candidate_returns_201_started_false_selection_required(client, conn):
-    """진단 Agent 미등록 → 첫 업무 후보 없음. 체인·Task 는 남고 사람이 chain_url 에서 확정한다."""
-    repo.create_session(conn, SESSION, NOW)
-    seed_agents(conn)
-    register_catalog(conn, SESSION, "agent-codex-mac")
+    """`code.fix` 를 맡는 Agent 없음 → 첫 업무 후보 없음. 체인·Task 는 남고 사람이 chain_url 에서 확정한다."""
+    ensure_workspace(conn, NOW)
+    repo.upsert_agent(conn, {
+        "agent_id": "agent-reviewer", "name": "검토 전용", "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": "local-reviewer",
+        "capabilities": [{"code": "code.review", "scope": {"repository_id": REPOSITORY}}],
+        "connection_state": "unknown",
+    })
+    repo.register_session_agent(conn, SESSION, "agent-reviewer", NOW)
     response = post(client, _issue(conn, SESSION))
     assert response.status_code == 201, response.text
     body = response.json()
@@ -237,10 +286,12 @@ def test_first_task_without_candidate_returns_201_started_false_selection_requir
     assert repo.active_execution(conn, task_a["task_id"]) is None
 
 
-def test_diagnosis_daily_limit_returns_201_started_false_with_429_body(client, conn, token, workspace):
+def test_diagnosis_daily_limit_returns_201_started_false_with_429_body(client_demo, conn, workspace_demo):
+    """demo — 진단 한도."""
+    token = _issue(conn, workspace_demo)
     for n in range(10):
-        repo.record_diagnosis_start(conn, workspace, f"exec-seed-{n}", utc_now())
-    response = post(client, token)
+        repo.record_diagnosis_start(conn, workspace_demo, f"exec-seed-{n}", utc_now())
+    response = post(client_demo, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["started"] is False
@@ -284,7 +335,7 @@ def test_empty_allow_list_rejects_any_callback_url(settings, conn, workspace):
     assert body["code"] == "callback_host_not_allowed" and body["details"] == {"allowed": []}
     assert "비어" in body["message"]
     assert repo.list_chains(conn, workspace) == []
-    ok = post(client, token, body={"contract_version": 1, "items": [DIAGNOSE_ITEM, FIX_ITEM]})
+    ok = post(client, token, body={"contract_version": 1, "items": [FIX_ITEM, REVIEW_ITEM]})
     assert ok.status_code == 201
 
 
@@ -307,12 +358,12 @@ def test_unknown_field_and_bad_contract_version_are_422(client, conn, token, wor
 
 
 def test_blocked_by_cycle_is_422_dependency_cycle(client, conn, token, workspace):
-    a = {**DIAGNOSE_ITEM, "blocked_by": ["fix-format"]}
-    response = post(client, token, items=[a, FIX_ITEM])
+    a = {**FIX_ITEM, "blocked_by": ["review-format"]}
+    response = post(client, token, items=[a, REVIEW_ITEM])
     assert response.status_code == 422, response.text
     body = response.json()
     assert body["code"] == "dependency_cycle" and body["field"] == "items"
-    assert "run-daily-0920" in body["message"] and "fix-format" in body["message"]
+    assert "fix-format" in body["message"] and "review-format" in body["message"]
     assert repo.list_chains(conn, workspace) == []
 
 
@@ -333,5 +384,5 @@ def test_active_task_limit_is_429_before_chain(app, client, conn, token, workspa
     }
     assert repo.list_chains(conn, workspace) == []
     assert len(repo.list_tasks(conn, workspace)) == limit - 1
-    one = post(client, token, items=[DIAGNOSE_ITEM])  # 노드 1개는 들어간다
+    one = post(client, token, items=[FIX_ITEM])  # 노드 1개는 들어간다
     assert one.status_code == 201, one.text
