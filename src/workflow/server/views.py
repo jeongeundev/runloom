@@ -18,7 +18,6 @@ from workflow.adapters import repo, secret_store
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.secret_store import SecretStore
-from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule
 from workflow.domain.composition import compose, human_gate_label
@@ -107,7 +106,7 @@ def _found_keys(found: Any, prefix: str = "") -> list[str]:
 
 
 def discovered_summary(agent: dict[str, Any]) -> list[str]:
-    """등록 카탈로그 카드의 "발견된 정보" 요약. API 는 능력의 역할·자료 범위, 로컬은 발견된 설정 키와 검증 프로필."""
+    """에이전트 카드의 "발견된 정보" 요약. API 는 능력의 역할·자료 범위, 로컬은 발견된 설정 키와 검증 프로필."""
     if agent["connection_type"] == "api":
         return [
             c["code"] + "".join(f" · {k}={v}" for k, v in c["scope"].items()) for c in agent["capabilities"]
@@ -126,8 +125,6 @@ def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[Ki
     ]
     data["verification_profile_ids"] = json.loads(data.pop("verification_profile_ids_json"))
     data["discovered"] = json.loads(data.pop("discovered_json"))
-    data["shared_to_all_sessions"] = bool(data["shared_to_all_sessions"])
-    data["demo_scripted"] = bool(data["demo_scripted"])
     data["online"] = agent_online(agent, now=now, settings=settings)
     data["discovered_summary"] = discovered_summary(data)
     return data
@@ -368,9 +365,6 @@ def task_context(
     executions = [_execution_context(conn, e, now) for e in repo.list_executions(conn, task_row["task_id"])]
     active = next((e for e in executions if e["released_at"] is None), None)
     result = _result_context(conn, store, executions)
-    # 결과 카드의 "대본 재생" 표시는 결과를 만든 실행의 Agent 기준. 결과가 없으면 선택된 Agent
-    producer = next((e for e in executions if result is not None and e["execution_id"] == result["execution_id"]), None)
-    result_agent = repo.get_agent(conn, producer["agent_id"]) if producer is not None else agent_row
     finished = task_row["finished_at"] is not None
     selected = selection is not None and selection.status == "selected"
     predecessor = (
@@ -392,16 +386,13 @@ def task_context(
         "status": status,
         "selection": selection,
         "kind_label": spec.label if spec is not None else task_row["kind"],
-        # 가져오기로 만든 Task 면 브레드크럼에 워크플로우 칩 (phase 5 step 6). fixture 출처면 시연 데이터 표시
-        "chain": {
-            "chain_id": chain["chain_id"], "title": chain["title"], "demo_data": chain["source"] in SOURCES,
-        } if chain is not None else None,
+        # 입구로 만든 Task 면 브레드크럼에 워크플로우 칩 (phase 5 step 6)
+        "chain": {"chain_id": chain["chain_id"], "title": chain["title"]} if chain is not None else None,
         "cycle": cycle,
         "agent": agent_public(agent_row, now=now, settings=settings) if agent_row is not None else None,
         "executions": executions,
         "active_execution": active,
         "result": result,
-        "agent_scripted": bool(result_agent["demo_scripted"]) if result_agent is not None else False,
         "predecessor": predecessor,
         "successors": [
             task_summary(conn, s, now=now, settings=settings)
@@ -423,7 +414,7 @@ def task_context(
             and not (cycle is not None and cycle["open_requests"])
         ),
         "needs_selection": needs_selection,
-        # 후보는 이 세션이 카탈로그에서 등록한 Agent 만 (phase 5 step 2). 등록 순서대로
+        # 후보는 워크스페이스에 붙은 Agent 만. 등록 순서대로
         "candidates": [
             agent_public(a, now=now, settings=settings)
             for a in repo.list_session_agents(conn, task_row["session_id"])
@@ -750,8 +741,8 @@ _LIVE_LABELS = ("실행 중", "실행 요청됨", "대기")
 
 
 def _chain_issues(chain: Row, tasks: list[Row]) -> list[Issue]:
-    """구성 이유를 다시 만들 재료. fixture 출처는 파일에서 체인의 key 만, n8n 은 접수 때 저장한 항목 원문(`items_json`,
-    ADR-0010) — 파일이 없으므로. 그 밖의 출처·원문 없음은 빈 목록."""
+    """구성 이유를 다시 만들 재료. n8n 은 접수 때 저장한 항목 원문(`items_json`, ADR-0010). 그 밖의 출처·원문 없음은
+    빈 목록."""
     if chain["source"] == "n8n":
         return [
             Issue(
@@ -760,14 +751,11 @@ def _chain_issues(chain: Row, tasks: list[Row]) -> list[Issue]:
             )
             for item in json.loads(chain["items_json"] or "[]")
         ]
-    if chain["source"] not in SOURCES:
-        return []
-    keys = {t["source_ref"] for t in tasks} | {s["key"] for s in json.loads(chain["skipped_json"])}
-    return [i for i in load_issues(chain["source"]) if i.key in keys]
+    return []
 
 
 def _composition_reasons(conn: Connection, chain: Row, tasks: list[Row]) -> dict[str, tuple[str, ...]]:
-    """가져오기 때의 구성 이유 문장(매핑·순서·체인·방식)을 같은 규칙(`compose`)과 세션 등록부로 다시 만든다 — 저장하지 않으므로.
+    """접수 때의 구성 이유 문장(매핑·순서·체인·방식)을 같은 규칙(`compose`)과 세션 등록부로 다시 만든다 — 저장하지 않으므로.
     배정 이유(마지막 문장)는 저장된 `SelectionRecord.reason` 이 기준이라 뺀다. 후보 없이 돌려도 나머지 문장은 같다."""
     issues = _chain_issues(chain, tasks)
     if not issues:
@@ -880,7 +868,7 @@ def chain_summary(conn: Connection, chain: Row, *, now: str, settings: Settings)
         "chain_id": chain["chain_id"],
         "title": chain["title"],
         "source": chain["source"],
-        "source_label": SOURCE_LABELS.get(chain["source"], chain["source"]),
+        "source_label": chain["source"],
         "tasks": nodes,
         "done_count": sum(1 for n in nodes if n["status"].label == "완료"),
         "total": len(nodes),

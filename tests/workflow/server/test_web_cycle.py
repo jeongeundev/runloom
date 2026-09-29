@@ -383,26 +383,6 @@ def test_delivery_state_is_shown_apart_from_the_task_state(operator, conn, worke
     assert "반영 실패" in page(operator, "/operator/github")
 
 
-def test_fixture_import_is_marked_as_demo_data_not_a_real_issue(client_demo, conn):
-    """demo 전용 — 카탈로그 등록·fixture 가져오기(ADR-0019 로 step 2·3 에서 삭제)."""
-    from .conftest import seed_agents_demo
-
-    client = client_demo
-    assert client.get("/tasks").status_code == 200
-    seed_agents_demo(conn)
-    client.post("/agents/register", data={"agent_id": "agent-codex-mac"})
-    client.post("/agents/register", data={"agent_id": "agent-ops-demo"})
-    created = client.post("/tasks/import", data={"source": "github", "issue_keys": ["#41"]},
-                          follow_redirects=False)
-    assert created.status_code == 303, created.text
-    chain_id = created.headers["location"].rsplit("/", 1)[1]
-    (task,) = repo.tasks_of_chain(conn, chain_id)
-    text = client.get(f"/tasks/{task['task_id']}").text
-    assert "시연 데이터" in text
-    assert "실제 GitHub 이슈" not in text
-
-
-
 # --- 초안 PR (phase 12 step 6) ----------------------------------------------------------------------
 
 

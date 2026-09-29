@@ -1,7 +1,7 @@
 """Step 7 화면 — UI_GUIDE 를 테스트로 고정한다. 실제 페이지를 렌더해 셸·배지·결과 카드·뷰어·라이브 조각·금지 사항을 본다.
 
 기본은 셀프호스트(ADR-0019) — 로그인한 고정 워크스페이스, 러너 모양 Agent, 종류 `bug_fix`·`code_review`·사용자 정의 `review`.
-이름 끝이 `_demo` 인 fixture·도우미와 그것을 쓰는 테스트는 demo 모드(카탈로그·가져오기·진단) 전제이며 phase 13 step 2·3 에서 지운다."""
+이름 끝이 `_demo` 인 fixture·도우미와 그것을 쓰는 테스트는 진단 → 코드 수정 데이터를 워크스페이스에 넣으며 phase 13 step 3 에서 지운다."""
 
 import hashlib
 import html as html_lib
@@ -96,11 +96,10 @@ def agents_demo(conn):
 
 
 @pytest.fixture
-def web_demo(client_demo, agents_demo):
-    """세션 쿠키를 받고 카탈로그 2개를 등록한 클라이언트 (test_web 과 같다)."""
-    assert client_demo.get("/tasks").status_code == 200
-    register_agents_demo(client_demo)
-    return client_demo
+def web_demo(logged_in_client, agents_demo):
+    """로그인한 워크스페이스에 진단 API·`code.modify` Agent 2개를 붙인 클라이언트 (test_web 과 같다)."""
+    register_agents_demo(agents_demo)
+    return logged_in_client
 
 
 def session_id_of(client: TestClient, settings) -> str:
@@ -459,7 +458,7 @@ def test_chain_renders_three_nodes_in_order_with_kind_labels(web_demo, conn, set
     순서대로 그린다 — 체인 템플릿이 2개를 가정하지 않는다. 노드 3개는 review 이슈를 흉내 낸 Task 로 만든다."""
     web = web_demo
     seed_review_agent_demo(conn)
-    register_agents_demo(web, REVIEW_AGENT)
+    register_agents_demo(conn, REVIEW_AGENT)
     register_kind(web)
     register_rule(web, from_kind="code_change")
     chain_id, (task_a, task_b) = import_chain_demo(web, conn, "#41", "#42")
@@ -610,16 +609,11 @@ def test_chain_page_shows_n8n_source_and_callback_line(web, conn, settings):
     assert "n8n · 0/1 완료" in visible_text(web.get("/tasks").text)
 
 
-def test_chain_page_without_callback_url_has_no_callback_line(web_demo, conn, settings):
-    web = web_demo
+def test_chain_page_without_callback_url_has_no_callback_line(web, conn, settings):
     chain_id = seed_n8n_chain(conn, session_id_of(web, settings), callback_url=None)
     html = web.get(f"/chains/{chain_id}").text
     assert '<span class="chip">n8n</span>' in crumbs_of(html)
-    assert "callback" not in visible_text(html)
-    # fixture 체인은 그대로 시연 데이터 표시
-    fixture_id, _ = import_chain_demo(web, conn, "#41", "#42")
-    fixture = crumbs_of(web.get(f"/chains/{fixture_id}").text)
-    assert "GitHub Issues" in fixture and "시연 데이터" in fixture and "callback" not in fixture
+    assert "callback" not in visible_text(html) and "시연 데이터" not in visible_text(html)
 
 
 def test_sources_page_uses_app_shell(web):

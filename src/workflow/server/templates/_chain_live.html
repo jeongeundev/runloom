@@ -27,7 +27,7 @@
           <span class="chip">{{ n.kind_label }}</span>
         </div>
         <div class="node-meta">
-          담당 {% if n.agent %}<b>{{ n.agent.name }}</b>{% if n.agent.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}{% else %}미정{% endif %}
+          담당 {% if n.agent %}<b>{{ n.agent.name }}</b>{% else %}미정{% endif %}
           · 실행 {{ '선행 완료 시 자동' if n.run_mode == 'auto' else '직접' }}
           · {{ '자동 완료' if n.completion_mode == 'auto' else '검토 후 완료' }}
         </div>

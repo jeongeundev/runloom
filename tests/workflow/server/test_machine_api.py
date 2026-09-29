@@ -1,6 +1,5 @@
 """machine_api.py — 연결 프로그램이 쓰는 중앙 API. CONTRACT 2절(claim)·3절(이벤트·오류표)·4절(산출물)."""
 
-import dataclasses
 import hashlib
 import json
 
@@ -595,17 +594,6 @@ def test_registration_updates_preregistered_agent(client, seeded, connector, hea
     assert repo.agents_for_connector(seeded, connector_id)[0]["agent_id"] == "agent-codex-mac"
 
 
-def test_registration_unknown_local_registration_404(client_demo, connector, headers):
-    """demo — 셀프호스트는 모르는 이름이면 Agent 를 만든다(아래 selfhost 테스트)."""
-    connector_id, _ = connector
-    response = client_demo.post(
-        "/connector/registrations", json=_registration(connector_id, local_registration_id="local-none"), headers=headers
-    )
-    assert response.status_code == 404
-    assert response.json()["code"] == "not_found"
-    assert response.json()["field"] == "local_registration_id"
-
-
 def test_registration_discovered_size_limit_422(client, connector, headers):
     connector_id, _ = connector
     big = {"blob": "x" * 70_000}
@@ -658,8 +646,8 @@ OPEN_ARCHIVE = {
 
 @pytest.fixture
 def selfhost(settings, conn):
-    """같은 DB 를 selfhost 모드로 여는 클라이언트와 그 클라이언트로 교환한 연결 프로그램."""
-    client = TestClient(create_app(dataclasses.replace(settings, mode="selfhost")))
+    """같은 DB 를 여는 클라이언트와 그 클라이언트로 교환한 연결 프로그램."""
+    client = TestClient(create_app(settings))
     connector_id, token = exchange(client, conn)
     return client, connector_id, bearer(token)
 
@@ -723,16 +711,6 @@ def test_selfhost_registration_name_used_by_another_connector_409(selfhost, conn
     assert response.json()["code"] == "registration_taken"
     assert response.json()["field"] == "local_registration_id"
     assert repo.get_agent(conn, first.json()["agent_id"])["connector_id"] == connector_id
-
-
-def test_demo_registration_of_unknown_name_is_still_404(client_demo, connector, headers):
-    connector_id, _ = connector
-
-    response = client_demo.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
-                           headers=headers)
-
-    assert response.status_code == 404
-    assert response.json()["field"] == "local_registration_id"
 
 
 def test_registration_agent_name_is_limited_to_100_chars(selfhost):

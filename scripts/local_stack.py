@@ -197,7 +197,7 @@ class LocalStack:
         self._wait_http("diag_api", f"{self.diag_url}/capabilities", {"Authorization": f"Bearer {self.diag_api_token}"})
         self._spawn("diag_worker")
         self._spawn("central_api")
-        self._wait_http("central_api", f"{self.central_url}/", {})
+        self._wait_http("central_api", f"{self.central_url}/healthz", {})
         self.connect_code = seed(
             self.central_db, self.central_artifacts, base_commit=self.base_commit, now=utc_now(),
             diag_api_url=self.diag_url, scripted=self.scripted,

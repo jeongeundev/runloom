@@ -183,23 +183,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .empty { padding: 24px 0; }
 .empty p { margin-bottom: 12px; }
 
-/* --- 랜딩 (`/`) ------------------------------------------------------------------- */
-
-.landing-body { background: var(--bg-page); }
-.landing { max-width: 1040px; margin: 0 auto; padding: 20px 24px 64px; text-align: center; }
-.landing-banner { position: relative; height: 420px; overflow: hidden; border-radius: 14px; margin-bottom: 20px; }
-.landing-banner img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 45%; }
-.landing-lead { font-size: 18px; color: var(--text); margin: 0 0 6px; line-height: 1.5; }
-.landing-sub { font-size: 14px; color: var(--text-muted); margin: 0 0 20px; }
-.landing-cta { margin-bottom: 36px; }
-.landing-steps { list-style: none; margin: 0; padding: 0; display: grid;
-                 grid-template-columns: repeat(4, 1fr); gap: 12px; text-align: left; max-width: 760px; margin: 0 auto; }
-.landing-steps li { border: 1px solid var(--border); border-radius: 10px; padding: 14px 14px 12px;
-                    display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-body); }
-.landing-steps .n { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
-.landing-steps b { font-size: 14px; color: var(--text); }
-.landing-cta .small { margin-top: 10px; }
-.btn-large { height: 44px; padding: 0 22px; font-size: 15px; }
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .section-head h2 { margin-bottom: 10px; }
 
@@ -210,7 +193,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .agent-card .meta { font-size: 12px; color: var(--text-muted); margin: 2px 0 8px; }
 .cap { font-family: var(--mono); font-size: 12px; color: var(--text-body); }
 /* 대본 에이전트 라벨 — 작은 회색 텍스트. 배지 색을 쓰지 않는다 (상태가 아니다) */
-.tag-scripted { font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
 /* 등록 카탈로그 카드의 "발견된 정보" — 키 요약만 */
 .found { margin-top: 10px; }
 .found-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
@@ -325,9 +307,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 }
 
 @media (max-width: 799px) {
-  .landing-steps { grid-template-columns: repeat(2, 1fr); }
-  .landing { padding: 12px 16px 48px; }
-  .landing-banner { height: 220px; border-radius: 10px; }
   .shell { flex-direction: column; }
   .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);
             background: var(--bg-side); position: sticky; top: 0; z-index: 10; }

@@ -3,8 +3,8 @@
 시계는 고정 문자열을 돌려주는 `Clock`. 첨부·결과·조회 이력은 Step 3 테스트의 fixture(`make_demo_attachments`)를
 재사용하고, 진단 API 쪽 산출물 ID(`diag-…`)가 중앙 ID(`art-…`)로 치환되는지도 여기서 확인한다.
 
-진단 → code_change 흐름(`seed_flow_demo`·`flow_demo`·`review_flow_demo`·`client_demo`)을 쓰는 테스트는 demo 전용이다(ADR-0019,
-phase 13 step 2·3 에서 삭제). 셀프호스트 bug_fix·code_review 순환은 `test_task_cycle.py` 가 본다.
+진단 → code_change 흐름(`seed_flow_demo`·`flow_demo`·`review_flow_demo`)을 쓰는 테스트는 진단 전용이다(ADR-0019,
+phase 13 step 3 에서 삭제). 셀프호스트 bug_fix·code_review 순환은 `test_task_cycle.py` 가 본다.
 """
 
 import dataclasses
@@ -337,14 +337,14 @@ def seed_review_successor_demo(conn, now, *, rule=REVIEW_RULE, run_mode="auto", 
 
 
 @pytest.fixture
-def flow_demo(conn, client_demo, clock) -> tuple[str, str]:
-    return seed_flow_demo(conn, client_demo, clock)
+def flow_demo(conn, client, clock) -> tuple[str, str]:
+    return seed_flow_demo(conn, client, clock)
 
 
 @pytest.fixture
-def review_flow_demo(conn, client_demo, clock) -> tuple[str, str]:
+def review_flow_demo(conn, client, clock) -> tuple[str, str]:
     """A → B → C. 종류 review·규칙 code_change → review 가 세션에 등록돼 있다."""
-    ids = seed_flow_demo(conn, client_demo, clock, with_claude=True)
+    ids = seed_flow_demo(conn, client, clock, with_claude=True)
     seed_review_successor_demo(conn, clock())
     return ids
 
@@ -838,9 +838,9 @@ def test_attachment_missing_from_trace_fails_verdict_and_no_b(flow_demo, make_wo
     assert _executions(conn, TASK_B_DEMO) == []
 
 
-def test_review_mode_a_spawns_b_before_human_approval(conn, client_demo, clock, make_worker, server):
+def test_review_mode_a_spawns_b_before_human_approval(conn, client, clock, make_worker, server):
     """ADR-0009 (3): 착수 조건은 선행 결과 + 판정 통과 + outcome 일치. 사람 승인은 A 를 마감할 뿐 B 착수를 막지 않는다."""
-    seed_flow_demo(conn, client_demo, clock, a_completion="review")
+    seed_flow_demo(conn, client, clock, a_completion="review")
     report = run_to_result(make_worker(server), server)
 
     assert _verdict(conn, EXEC_A)["outcome"] == "passed"
@@ -899,8 +899,8 @@ def test_offline_connector_holds_b_until_online(flow_demo, worker, server, conn,
     assert _status(conn, TASK_B_DEMO) == ("실행 요청됨", "접수 대기")
 
 
-def test_manual_successor_gets_bundle_and_is_runnable(conn, client_demo, clock, make_worker, server, store, settings):
-    seed_flow_demo(conn, client_demo, clock, b_run_mode="manual")
+def test_manual_successor_gets_bundle_and_is_runnable(conn, client, clock, make_worker, server, store, settings):
+    seed_flow_demo(conn, client, clock, b_run_mode="manual")
     worker = make_worker(server)
 
     report = run_to_result(worker, server)
@@ -913,8 +913,8 @@ def test_manual_successor_gets_bundle_and_is_runnable(conn, client_demo, clock, 
     assert worker.tick().inputs_prepared == 0
 
     # 사용자의 직접 실행(Step 6)이 그 인계 묶음을 입력으로 쓴다
-    client_demo.cookies.set(SESSION_COOKIE, sign_session(SESSION, settings.session_secret))
-    response = client_demo.post(f"/tasks/{TASK_B_DEMO}/run", follow_redirects=False)
+    client.cookies.set(SESSION_COOKIE, sign_session(SESSION, settings.session_secret))
+    response = client.post(f"/tasks/{TASK_B_DEMO}/run", follow_redirects=False)
     assert response.status_code == 303, response.text
     b = _executions(conn, TASK_B_DEMO)[0]
     assert ExecutionRequest.model_validate_json(b["request_json"]).input_artifact_ids == [bundles[0]["artifact_id"]]
@@ -984,9 +984,9 @@ def test_c_needs_attention_when_b_outcome_not_in_rule(review_flow_demo, worker, 
     assert worker.tick().successors_created == 0
 
 
-def test_c_waits_with_reason_when_no_rule_registered(conn, client_demo, clock, make_worker, server, store):
+def test_c_waits_with_reason_when_no_rule_registered(conn, client, clock, make_worker, server, store):
     """(d) 종류는 등록됐지만 code_change → review 규칙이 없다 → 대기 + '후속 규칙 없음'."""
-    seed_flow_demo(conn, client_demo, clock, with_claude=True)
+    seed_flow_demo(conn, client, clock, with_claude=True)
     seed_review_successor_demo(conn, clock(), rule=None)
     worker = make_worker(server)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1014,9 +1014,9 @@ def test_closed_b_does_not_spawn_c(review_flow_demo, worker, server, conn, store
     assert _status(conn, TASK_C) == ("대기", "선행 대기")
 
 
-def test_manual_c_gets_bundle_without_execution(conn, client_demo, clock, make_worker, server, store):
+def test_manual_c_gets_bundle_without_execution(conn, client, clock, make_worker, server, store):
     """직접 실행 후속은 입력(인계 묶음)만 준비하고 사용자 조작 전에는 실행을 만들지 않는다."""
-    seed_flow_demo(conn, client_demo, clock, with_claude=True)
+    seed_flow_demo(conn, client, clock, with_claude=True)
     seed_review_successor_demo(conn, clock(), run_mode="manual")
     worker = make_worker(server)
     b = run_to_b_result(worker, server, conn, store, clock)
@@ -1215,9 +1215,9 @@ def _at(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 
 
-def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client_demo, clock, make_worker, server, store, n8n_settings):
+def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock, make_worker, server, store, n8n_settings):
     """(a) A 실행 중 0 → (b) A 판정·B 착수 tick 0 (B 실행 요청됨) → (c) B 결과·판정 tick 1회 → (d) 이후·승인 뒤에도 1회."""
-    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
+    seed_flow_demo(conn, client, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
 
@@ -1273,9 +1273,9 @@ def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client_demo, 
     assert _chain_row(conn)["callback_sent_at"] != clock()
 
 
-def test_failed_callback_backs_off_and_stops_after_five_attempts(conn, client_demo, clock, make_worker, server, store, n8n_settings):
+def test_failed_callback_backs_off_and_stops_after_five_attempts(conn, client, clock, make_worker, server, store, n8n_settings):
     """(e) 실패 → attempts 1·next_at now+30s·last_error. 29초 뒤 재시도 없음, 31초 뒤 재시도 → 60초. 5회 뒤 중단."""
-    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
+    seed_flow_demo(conn, client, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient(fail=True)
     worker = make_worker(server, n8n_settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1314,8 +1314,8 @@ def test_failed_callback_backs_off_and_stops_after_five_attempts(conn, client_de
     assert chain["callback_sent_at"] is None and chain["callback_last_error"] == "HTTP 503"
 
 
-def test_callback_succeeds_on_retry_and_clears_error(conn, client_demo, clock, make_worker, server, store, n8n_settings):
-    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
+def test_callback_succeeds_on_retry_and_clears_error(conn, client, clock, make_worker, server, store, n8n_settings):
+    seed_flow_demo(conn, client, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient(fail=True)
     worker = make_worker(server, n8n_settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1335,11 +1335,11 @@ def test_callback_succeeds_on_retry_and_clears_error(conn, client_demo, clock, m
     assert worker.tick().callbacks_sent == 0 and len(callbacks.posts) == 2
 
 
-def test_callback_when_successor_is_blocked_by_outcome_outside_rule(conn, client_demo, clock, make_worker, server, store, n8n_settings):
+def test_callback_when_successor_is_blocked_by_outcome_outside_rule(conn, client, clock, make_worker, server, store, n8n_settings):
     """(f) B 가 needs_information 으로 판정 통과 → 규칙 밖 outcome 이라 C 는 착수하지 않는다 → 사람 차례.
     워커는 C 에 `확인 필요` + 규칙 이유를 저장하지만, callback 의 status 는 체인 화면과 같은 지금 판정(`views.status_of`)이라
     C 는 `대기 · 선행 대기`(선행 B 가 `확인 필요`)로 실린다 — 화면이 보이는 값과 같다."""
-    seed_flow_demo(conn, client_demo, clock, with_claude=True, chain=n8n_chain_demo())
+    seed_flow_demo(conn, client, clock, with_claude=True, chain=n8n_chain_demo())
     seed_review_successor_demo(conn, clock(), chain_id=CHAIN_ID)
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
@@ -1358,9 +1358,9 @@ def test_callback_when_successor_is_blocked_by_outcome_outside_rule(conn, client
     assert worker.tick().callbacks_sent == 0 and len(callbacks.posts) == 1
 
 
-def test_callback_when_first_task_is_undecidable_and_successor_waits(conn, client_demo, clock, make_worker, n8n_settings):
+def test_callback_when_first_task_is_undecidable_and_successor_waits(conn, client, clock, make_worker, n8n_settings):
     """A 가 needs_information(판정 불가) → A `확인 필요`, B `대기 · 선행 대기` — 선행이 사람에게 막혔으니 사람 차례다."""
-    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
+    seed_flow_demo(conn, client, clock, chain=n8n_chain_demo())
     server = FakeDiagServer(diag_data(result_raw=contract_results()[1]))
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
@@ -1374,9 +1374,9 @@ def test_callback_when_first_task_is_undecidable_and_successor_waits(conn, clien
     assert worker.tick().callbacks_sent == 0
 
 
-def test_chain_without_callback_url_sends_nothing(conn, client_demo, clock, make_worker, server, store, n8n_settings):
+def test_chain_without_callback_url_sends_nothing(conn, client, clock, make_worker, server, store, n8n_settings):
     """(g) 가져오기·직접 등록처럼 callback_url 이 없는 체인은 사람 차례가 돼도 아무것도 보내지 않는다."""
-    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo(callback_url=None))
+    seed_flow_demo(conn, client, clock, chain=n8n_chain_demo(callback_url=None))
     callbacks = FakeCallbackClient()
     worker = make_worker(server, n8n_settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1389,10 +1389,10 @@ def test_chain_without_callback_url_sends_nothing(conn, client_demo, clock, make
     assert (chain["callback_attempts"], chain["callback_sent_at"]) == (0, None)
 
 
-def test_empty_allow_list_records_failure_without_posting(conn, client_demo, clock, make_worker, server, store, settings):
+def test_empty_allow_list_records_failure_without_posting(conn, client, clock, make_worker, server, store, settings):
     """(h) 허용 목록이 비면(접수 뒤 설정이 바뀐 경우) 보내지 않고 실패로 기록한다. 5회 뒤 멈춘다."""
     assert settings.callback_hosts == ()
-    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
+    seed_flow_demo(conn, client, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient()
     worker = make_worker(server, settings, callbacks)
     run_to_b_result(worker, server, conn, store, clock)
@@ -1410,9 +1410,9 @@ def test_empty_allow_list_records_failure_without_posting(conn, client_demo, clo
     assert _chain_row(conn)["callback_attempts"] == 5 and callbacks.posts == []
 
 
-def test_public_url_fills_chain_and_task_urls(conn, client_demo, clock, make_worker, server, store, n8n_settings):
+def test_public_url_fills_chain_and_task_urls(conn, client, clock, make_worker, server, store, n8n_settings):
     """(i) WORKFLOW_PUBLIC_URL 이 있으면 chain_url·task_url 이 그 앞에 붙는다."""
-    seed_flow_demo(conn, client_demo, clock, chain=n8n_chain_demo())
+    seed_flow_demo(conn, client, clock, chain=n8n_chain_demo())
     callbacks = FakeCallbackClient()
     worker = make_worker(server, dataclasses.replace(n8n_settings, public_url="http://127.0.0.1:8000"), callbacks)
     run_to_b_result(worker, server, conn, store, clock)

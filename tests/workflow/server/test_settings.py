@@ -10,6 +10,7 @@ from workflow.server.settings import (
     SECRET_KEYS,
     Limits,
     Settings,
+    SettingsError,
     load_settings,
 )
 
@@ -24,7 +25,7 @@ def test_missing_secrets_raise_value_error_naming_them():
     with pytest.raises(ValueError) as exc:
         load_settings({"SESSION_SECRET": "s"})
     assert "OPERATOR_TOKEN" in str(exc.value)
-    assert "DIAG_API_TOKEN" in str(exc.value)
+    assert "DIAG_API_TOKEN" not in str(exc.value)  # 선택 — 비면 진단만 꺼진다
     assert "SESSION_SECRET" not in str(exc.value)
 
 
@@ -36,7 +37,7 @@ def test_empty_secret_counts_as_missing():
 def test_dev_mode_generates_random_secrets_and_warns(capsys):
     first = load_settings({"WORKFLOW_DEV": "1"})
     second = load_settings({"WORKFLOW_DEV": "1"})
-    assert first.session_secret and first.operator_token and first.diag_api_token
+    assert first.session_secret and first.operator_token
     assert first.session_secret != second.session_secret
     assert first.operator_token != second.operator_token
     err = capsys.readouterr().err
@@ -178,47 +179,35 @@ def test_env_keys_lists_exactly_what_load_settings_reads():
     assert len(ENV_KEYS) == len(set(ENV_KEYS))
 
 
-# --- 셀프호스트 모드 (phase 10, ADR-0016) ----------------------------------------------
+# --- 셀프호스트 전용 (phase 13, ADR-0019) — 모드 개념 없음 ----------------------------------------
 
 
-def test_mode_defaults_to_demo():
-    assert load_settings(FULL).mode == "demo"
-    assert load_settings({**FULL, "WORKFLOW_MODE": ""}).mode == "demo"
+@pytest.mark.parametrize("value", [None, "", "selfhost"])
+def test_workflow_mode_empty_or_selfhost_is_read_and_ignored(value):
+    env = dict(FULL) if value is None else {**FULL, "WORKFLOW_MODE": value}
+    s = load_settings(env)
+    assert not hasattr(s, "mode")
     assert "WORKFLOW_MODE" in ENV_KEYS and "WORKFLOW_MODE" not in SECRET_KEYS
 
 
-def test_mode_selfhost_is_read():
-    assert load_settings({**FULL, "WORKFLOW_MODE": "selfhost"}).mode == "selfhost"
+@pytest.mark.parametrize("value", ["demo", "prod"])
+def test_workflow_mode_demo_or_other_value_is_a_settings_error(value):
+    with pytest.raises(SettingsError) as exc:
+        load_settings({**FULL, "WORKFLOW_MODE": value})
+    message = str(exc.value)
+    assert "WORKFLOW_MODE" in message and "셀프호스트 전용" in message and "main" in message
+    assert issubclass(SettingsError, ValueError)
 
 
-def test_unknown_mode_raises():
-    with pytest.raises(ValueError) as exc:
-        load_settings({**FULL, "WORKFLOW_MODE": "prod"})
-    assert "WORKFLOW_MODE" in str(exc.value)
-
-
-def test_selfhost_loads_without_diag_token_and_diagnosis_is_off():
-    s = load_settings({"SESSION_SECRET": "s", "OPERATOR_TOKEN": "o", "WORKFLOW_MODE": "selfhost"})
+def test_loads_without_diag_token_and_diagnosis_is_off():
+    s = load_settings({"SESSION_SECRET": "s", "OPERATOR_TOKEN": "o"})
     assert s.diag_api_token == ""
     assert s.diagnosis_enabled is False
-    assert load_settings({**FULL, "WORKFLOW_MODE": "selfhost"}).diagnosis_enabled is True
+    assert load_settings(FULL).diagnosis_enabled is True
 
 
-def test_selfhost_still_requires_session_secret_and_operator_token():
-    with pytest.raises(ValueError) as exc:
-        load_settings({"WORKFLOW_MODE": "selfhost"})
-    assert "SESSION_SECRET" in str(exc.value) and "OPERATOR_TOKEN" in str(exc.value)
-    assert "DIAG_API_TOKEN" not in str(exc.value)
-
-
-def test_selfhost_dev_mode_does_not_invent_a_diag_token(capsys):
+def test_dev_mode_does_not_invent_a_diag_token(capsys):
     """개발 모드여도 가짜 진단 토큰을 만들면 없는 진단 API 를 부르게 된다 — 비워 두어 기능을 끈다."""
-    s = load_settings({"WORKFLOW_DEV": "1", "WORKFLOW_MODE": "selfhost"})
+    s = load_settings({"WORKFLOW_DEV": "1"})
     assert s.session_secret and s.operator_token
     assert s.diag_api_token == ""
-
-
-def test_demo_without_diag_token_still_fails():
-    with pytest.raises(ValueError) as exc:
-        load_settings({"SESSION_SECRET": "s", "OPERATOR_TOKEN": "o"})
-    assert "DIAG_API_TOKEN" in str(exc.value)

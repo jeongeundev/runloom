@@ -1,6 +1,6 @@
 """GitHub 업무 순환 e2e — 가짜 GitHub HTTP 서버·임시 Git 저장소·가짜 도구로 전체 순환과 장애 회귀를 본다 (phase 8 step 14).
 
-기존 대본 스택(`conftest.stack`, `LocalStack(scripted=True)`)과 분리돼 있다. 이 모듈이 직접 띄우는 것:
+이 모듈이 직접 띄우는 것:
 - **가짜 GitHub** — 127.0.0.1 임시 포트의 `ThreadingHTTPServer`. 이슈 목록(since·페이지·ETag·PR 항목)·이슈·저장소·댓글
   생성/조회/수정만 흉내 내고 요청을 모두 기록한다. 장애(5xx·응답 유실)와 오래된 스냅샷을 한 번씩 끼워 넣을 수 있다.
 - **중앙 API** — `python3 -m uvicorn workflow.server.app:app` 하위 프로세스 (운영자 로그인·Agent 등록·소스 설정·사람 응답).
@@ -555,7 +555,7 @@ def world(tmp_path_factory):
         try:
             world.spawn("central_api", [sys.executable, "-m", "uvicorn", "workflow.server.app:app",
                                         "--host", "127.0.0.1", "--port", str(port)], central_env)
-            _wait_http(world, f"{world.central_url}/")
+            _wait_http(world, f"{world.central_url}/healthz")
             world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0)
             yield world
         finally:
@@ -682,14 +682,12 @@ REGISTRATIONS = (  # (agent, 능력, 저장소 ID, 로컬 등록, 폴더 이름,
 
 def test_01_operator_registers_agents_and_connects_the_local_connector(world):
     http = world.http
-    assert http.get("/tasks").status_code == 200  # 세션 쿠키
-    login = http.post("/operator/login", data={"token": world.central_env["OPERATOR_TOKEN"]})
+    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 
     for agent_id, code, scope, registration, _, _ in REGISTRATIONS:
         operator_agent(world, agent_id, code, scope, registration)
-        assert http.post("/agents/register", data={"agent_id": agent_id}).status_code == 303
     issued = http.post("/operator/connect-codes")
     connect_code = re.search(r'<code id="issued-code">([^<]+)</code>', issued.text).group(1)
 

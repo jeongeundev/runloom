@@ -16,7 +16,6 @@ N8N_DIR = ROOT / "docs" / "n8n"
 WORKFLOW_JSON = N8N_DIR / "runloom-handoff.json"
 README = N8N_DIR / "README.md"
 DOCS_README = ROOT / "docs" / "README.md"
-GITHUB_FIXTURE = ROOT / "src" / "workflow" / "adapters" / "task_source_fixtures" / "github.json"
 
 NODE_TYPES = ("n8n-nodes-base.webhook", "n8n-nodes-base.httpRequest", "n8n-nodes-base.wait", "n8n-nodes-base.slack")
 # n8n 저장소 master(2026-09-22)의 version 배열 — 예시 파일의 typeVersion 은 이 안에 있어야 import 된다
@@ -100,18 +99,6 @@ def test_http_request_posts_inbound_chain_request_with_header_auth_credential(no
     assert set(node["credentials"]["httpHeaderAuth"]) == {"id", "name"}
     assert node["credentials"]["httpHeaderAuth"]["name"] == "Runloom source token"
     assert "Bearer" not in json.dumps(node, ensure_ascii=False)
-
-
-def test_http_request_labels_are_the_github_fixture_labels(nodes):
-    """항목 2개의 라벨은 fixture #41·#42 와 같다 — 그래서 매핑·구성 규칙이 가져오기와 같은 결과를 낸다.
-    `run:<run_id>` 만 Webhook 본문에서 오므로 접두사로 본다."""
-    fixture = {issue["key"]: issue for issue in json.loads(GITHUB_FIXTURE.read_text(encoding="utf-8"))}
-    body = nodes[1]["parameters"]["jsonBody"]
-    for key in ("#41", "#42"):
-        for label in fixture[key]["labels"]:
-            needle = '"run:" +' if label.startswith("run:") else f'"{label}"'
-            assert needle in body, (key, label)
-    assert '"kind:' not in body and "scope" not in body  # 입구 계약은 라벨 규칙 하나
 
 
 def test_wait_resumes_on_webhook_post_without_time_limit(nodes):

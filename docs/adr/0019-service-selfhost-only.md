@@ -8,6 +8,8 @@
    - `WORKFLOW_MODE` 는 동작을 정하지 않는다. 빈 값·미설정·`selfhost` 는 허용하되 읽고 버린다(기존 compose·`.env` 가 그대로 뜨게).
    - `WORKFLOW_MODE=demo`(그 밖의 값도)는 `load_settings` 가 시작 때 설정 오류로 멈춘다 — `ValueError` 계열 `SettingsError`, 메시지는 "WORKFLOW_MODE=demo 는 지원하지 않습니다 — service 브랜치는 셀프호스트 전용이며 공개 데모는 main 브랜치입니다" 취지. 조용히 셀프호스트로 뜨지 않는다(공개 데모로 착각한 배포가 로그인 화면으로 바뀌는 것을 막는다).
    - `DIAG_API_TOKEN` 은 요구하지 않는다(진단이 없다). `/healthz` 응답의 `mode` 칸은 호환을 위해 `"selfhost"` 고정값으로 둔다.
+   - `/` 는 로그인 상태면 `/tasks`, 아니면 `/login` 으로 303 한다(랜딩 없음). 예전 `/operator/login` 은 없앤다(404) — 로그인 경로는 `/login` 하나다(step 2).
+   - 카탈로그 등록 단계가 없으므로 `/operator/agents` 로 등록한 Agent 는 그 운영자 워크스페이스(`session_agents`)에 바로 붙는다. 러너 등록(`/connector/registrations`)은 지금처럼 새 Agent 만 워크스페이스에 붙인다(step 2).
 2. **`service` 에서 지우는 것** (phase 13 README "조사로 확인한 현재" 전부, 원본은 `main` 에 남는다):
    - 모드 분기 — `server/auth.py`·`server/web.py`·`server/machine_api.py`·`adapters/repo.py`·`server/app.py` 의 `mode` 분기, 템플릿(`home.html`·`_sidebar.html`·`_live.html`·`operator.html`·`task_new.html`·`sources.html`·`login.html`)의 `mode` 분기, 공개 랜딩(`landing.html`), 익명 세션 발급.
    - 모드 가드 없이 열린 demo 전용 경로 — 카탈로그 등록(`/agents/register`·`/agents/{id}/unregister`, `agents.shared_to_all_sessions` 사용 코드), fixture 업무 가져오기(`/tasks/import`, `adapters/task_sources.py`·`task_source_fixtures/`), 시연 예시 폼(`web.EXAMPLES`·`with_successor`), 진단 기본 폼값(`web._EMPTY_FORM` 의 진단 값).

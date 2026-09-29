@@ -64,61 +64,6 @@ def _install_probe_routes(app):
         return {"token_id": token["token_id"], "session_id": token["session_id"], "source": token["source"]}
 
 
-def test_require_session_issues_signed_cookie_and_reuses_it(app_demo, conn):
-    """demo — 익명 세션 발급(아래 세션·운영자 플래그 테스트 3개도 demo 전용)."""
-    _install_probe_routes(app_demo)
-    client = TestClient(app_demo)
-    first = client.get("/_probe/session")
-    assert first.status_code == 200
-    session_id = first.json()["session_id"]
-    assert session_id.startswith("sess-")
-    assert repo.get_session(conn, session_id) is not None
-
-    cookie = first.cookies[SESSION_COOKIE]
-    assert verify_session(cookie, "test-session-secret") == session_id
-    set_cookie = first.headers["set-cookie"].lower()
-    assert "httponly" in set_cookie
-    assert "samesite=lax" in set_cookie
-    assert "max-age=1209600" in set_cookie  # 14일
-
-    second = client.get("/_probe/session")  # TestClient 가 쿠키를 보관한다
-    assert second.json()["session_id"] == session_id
-    assert "set-cookie" not in second.headers
-
-
-def test_require_session_replaces_forged_cookie_with_new_session(app_demo, conn):
-    _install_probe_routes(app_demo)
-    client = TestClient(app_demo)
-    client.cookies.set(SESSION_COOKIE, sign_session("sess-forged", "wrong-secret"))
-    response = client.get("/_probe/session")
-    assert response.status_code == 200
-    assert response.json()["session_id"] != "sess-forged"
-    assert repo.get_session(conn, "sess-forged") is None
-
-
-def test_require_session_ignores_cookie_for_unknown_session(app_demo, conn):
-    """서명은 맞지만 DB 에 없는 세션(예: DB 초기화 후) 은 새 세션으로 바꾼다."""
-    _install_probe_routes(app_demo)
-    client = TestClient(app_demo)
-    client.cookies.set(SESSION_COOKIE, sign_session("sess-ghost", "test-session-secret"))
-    response = client.get("/_probe/session")
-    assert response.json()["session_id"] != "sess-ghost"
-
-
-def test_require_operator_needs_operator_flag(app_demo, conn):
-    _install_probe_routes(app_demo)
-    client = TestClient(app_demo)
-    assert client.get("/_probe/operator").status_code == 403  # 세션 없음
-    session_id = client.get("/_probe/session").json()["session_id"]
-    denied = client.get("/_probe/operator")
-    assert denied.status_code == 403
-    assert denied.json() == {
-        "code": "forbidden", "message": "운영자 권한이 필요합니다.", "field": None, "details": None,
-    }
-    repo.mark_operator(conn, session_id)
-    assert client.get("/_probe/operator").json() == {"session_id": session_id}
-
-
 def test_require_connector_accepts_only_bearer_wfc_token(app, conn):
     _install_probe_routes(app)
     client = TestClient(app)
@@ -191,15 +136,13 @@ def test_require_source_token_rejects_revoked_token(app, conn):
     assert token not in response.text
 
 
-# --- selfhost (phase 10 step 2, ADR-0016 결정 3) — 고정 워크스페이스, 익명 세션 없음 ---------
+# --- 고정 워크스페이스 (ADR-0016 결정 3, ADR-0019) — 익명 세션 없음 ---------
 
 
 def _selfhost_app(settings):
-    import dataclasses
-
     from workflow.server.app import create_app
 
-    app = create_app(dataclasses.replace(settings, mode="selfhost"))
+    app = create_app(settings)
     _install_probe_routes(app)
     return app
 

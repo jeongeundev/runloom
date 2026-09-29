@@ -188,7 +188,6 @@ def test_task_context_flags_run_and_selection(seeded_demo, settings, store):
     assert ctx["can_run"] is False
     assert ctx["result"] is None
     assert ctx["executions"] == []
-    assert ctx["agent_scripted"] is False
 
     # 후보는 세션이 등록한 Agent 만 — 해제하면 카탈로그에 있어도 후보에서 빠진다
     repo.unregister_session_agent(seeded_demo, SESSION, "agent-ops-demo")
@@ -220,7 +219,6 @@ def test_task_summary_and_agent_public(seeded_demo, settings):
     assert agent["capabilities"][0]["code"] == "operations.diagnose"
     assert agent["discovered"] == {}
     assert agent["online"] is True  # API 에이전트는 heartbeat 가 없으므로 connection_state 만 본다
-    assert agent["demo_scripted"] is False
     assert agent["discovered_summary"] == ["operations.diagnose · workflow_id=daily-report"]  # API: 역할·자료 범위
     assert "credential_ref" not in agent
     assert not any("wfc_" in str(v) for v in agent.values())
@@ -254,20 +252,6 @@ def test_agent_public_discovered_summary_lists_found_keys_and_profiles_only(seed
         discovered={"instructions": ["AGENTS.md"], "confirmed": False}, now=NOW,
     )
     assert views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)["discovered_summary"] == []
-
-
-def test_agent_public_demo_scripted_flag(seeded_demo, settings):
-    """demo — 대본 에이전트 표시 (위 discovered_summary 테스트에서 나눔)."""
-    codex = views.agent_public(repo.get_agent(seeded_demo, "agent-codex-mac"), now=NOW, settings=settings)
-    assert codex["demo_scripted"] is False
-
-    scripted = dict(repo.get_agent(seeded_demo, "agent-codex-mac"))
-    repo.upsert_agent(seeded_demo, {
-        "agent_id": "agent-codex-mac", "name": scripted["name"], "owner_scope": scripted["owner_scope"],
-        "connection_type": "local", "local_registration_id": scripted["local_registration_id"],
-        "capabilities": [CAP_B_DEMO], "shared_to_all_sessions": True, "demo_scripted": True,
-    })
-    assert views.agent_public(repo.get_agent(seeded_demo, "agent-codex-mac"), now=NOW, settings=settings)["demo_scripted"] is True
 
 
 def test_agent_online_rule_by_connection_type(seeded_demo, settings):
@@ -313,10 +297,21 @@ def _seed_chain(conn) -> tuple[str, str]:
     return "task-c41", "task-c42"
 
 
+CHAIN_ITEMS_DEMO = [
+    {"key": "#41", "title": "일일 보고서 생성 실패 (09-20 09:00)", "body": "실패 원인을 조사해 주세요.",
+     "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"], "blocked_by": []},
+    {"key": "#42", "title": "집계 API 응답 형식 변경 대응", "body": "보고서 변환 실패를 고쳐 주세요.",
+     "labels": ["bug", "repo:demo-report-repo"], "blocked_by": ["#41"]},
+    {"key": "#43", "title": "변경 응답 형식 모니터링 알림 추가", "body": "알림을 추가해 주세요.",
+     "labels": ["enhancement", "repo:demo-report-repo"], "blocked_by": ["#42"]},
+]
+
+
 def _seed_chain_demo(conn, *, skipped=None) -> tuple[str, str]:
-    """github #41 → #42 체인(진단 → code_change). Task 는 conftest 의 task_row 에 chain_id·source_ref 만 얹는다."""
+    """n8n #41 → #42 체인(진단 → code_change). 접수 항목 원문(`items`)을 함께 저장해 구성 이유를 다시 만든다.
+    Task 는 conftest 의 task_row 에 chain_id·source_ref 만 얹는다."""
     repo.insert_chain(conn, {
-        "chain_id": CHAIN, "session_id": SESSION, "source": "github",
+        "chain_id": CHAIN, "session_id": SESSION, "source": "n8n", "items": CHAIN_ITEMS_DEMO,
         "title": "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응",
         "skipped": skipped if skipped is not None else [
             {"key": "#43", "title": "변경 응답 형식 모니터링 알림 추가",
@@ -343,7 +338,7 @@ def test_chain_summary_orders_nodes_and_recomposes_reasons(seeded_demo, settings
 
     assert summary["chain_id"] == CHAIN
     assert summary["title"] == "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응"
-    assert (summary["source"], summary["source_label"]) == ("github", "GitHub Issues")
+    assert (summary["source"], summary["source_label"]) == ("n8n", "n8n")
     assert [t["task_id"] for t in summary["tasks"]] == [task_a, task_b]
     assert [t["source_ref"] for t in summary["tasks"]] == ["#41", "#42"]
     assert (summary["done_count"], summary["total"], summary["started"]) == (0, 2, False)
@@ -354,7 +349,7 @@ def test_chain_summary_orders_nodes_and_recomposes_reasons(seeded_demo, settings
 
     first, second = summary["tasks"]
     assert first["status"].label == "실행 가능" and first["kind"] == "diagnosis"
-    assert first["agent"]["name"] == "운영 진단 데모" and first["agent"]["demo_scripted"] is False
+    assert first["agent"]["name"] == "운영 진단 데모"
     assert "credential_ref" not in first["agent"]
     assert (first["run_mode"], first["completion_mode"]) == ("manual", "auto")
     assert first["selection"].status == "selected"
@@ -680,7 +675,6 @@ def _seed_review_task(conn, *, predecessor: str | None = TASK_B) -> None:
     repo.upsert_agent(conn, {
         "agent_id": "agent-review-mac", "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
         "local_registration_id": LOCAL_REVIEW, "capabilities": [CAP_C], "connection_state": "unknown",
-        "shared_to_all_sessions": True,
     })
     repo.register_session_agent(conn, SESSION, "agent-review-mac", NOW)
     from .conftest import task_row

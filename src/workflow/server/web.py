@@ -1,8 +1,8 @@
-"""사람이 쓰는 웹 라우트 — 심사자 익명 세션과 운영자 (ADR-0005, UI_GUIDE "화면 목록", PRD 2·4절).
+"""사람이 쓰는 웹 라우트 — 로그인한 고정 워크스페이스(= 운영자) (ADR-0016 결정 3, ADR-0019, UI_GUIDE "화면 목록", PRD 2·4절).
 
-- 모든 라우트는 `require_session` 을 건다. 세션은 자기 Task 만 보고, 남의 것은 404 로 존재를 알리지 않는다.
-- 화면은 문자열(HTML) 을 돌려준다. 그래야 `require_session` 이 sub-response 에 심은 Set-Cookie 가
-  FastAPI 에서 합쳐진다. 303 은 `_redirect` 가 그 헤더를 옮긴다.
+- `/`·`/login`·`/logout` 밖의 라우트는 `require_session` 을 건다. 워크스페이스는 자기 Task 만 보고, 남의 것은 404 로
+  존재를 알리지 않는다.
+- 화면은 문자열(HTML) 을 돌려준다. 303 은 `_redirect` 가 sub-response 헤더를 옮긴다.
 - 오류는 `PageError` 로 `error.html` 에 렌더한다. 본문 규칙(code·message·details) 은 ApiError 와 같다.
 - 실행 요청(`ExecutionRequest`) 은 여기서 조립해 `request_json` 에 고정한다. 셸 명령·경로는 폼에서 받지 않는다.
   대상 정보는 선택된 Agent 등록값에서, 인계 자료는 선행 Task 의 `handoff_bundle` 산출물에서 온다.
@@ -51,7 +51,6 @@ from workflow.adapters.github_client import (
     HttpGitHubClient,
 )
 from workflow.adapters.notify_sender import NotifyFailed, NotifySender
-from workflow.adapters.task_sources import SOURCE_LABELS, SOURCES, load_issues
 from workflow.contracts.github import RepositoryFullName
 from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
@@ -82,7 +81,7 @@ from workflow.domain.kinds import (
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
-from workflow.domain.task_sources import Issue, map_issue
+from workflow.domain.task_sources import Issue
 from workflow.server import github_connect, metrics_api, task_cycle, views
 from workflow.server.auth import (
     SELFHOST_SESSION_ID,
@@ -112,43 +111,11 @@ INBOUND_SOURCE = "n8n"
 INBOUND_PATH = "/sources/n8n/chains"
 SOURCE_TOKEN_LIMIT = 5  # 세션당 활성 입구 토큰 상한
 
-# 등록 폼 미리 채움 (UI_GUIDE "심사자 첫 방문 흐름"). `example` 은 미리 채움 키일 뿐 목표 자동 분해가 아니다.
-EXAMPLES: dict[str, dict[str, str]] = {
-    "diagnose": {
-        "title": "일일 보고서 실패 진단",
-        "request": (
-            "일일 보고서 생성 실패를 조사하고, 로컬 개발 에이전트가 재현·수정할 수 있도록 "
-            "근거와 기대 동작을 정리해 주세요."
-        ),
-        "capability_code": "operations.diagnose",
-        "scope_value": "daily-report",
-        "selection_mode": "auto",
-        "run_mode": "manual",
-        # A 만 기본값(review)과 다르다. 자동 판정기가 있는 유일한 업무 종류라 인계가 사람 조작 없이 보인다.
-        "completion_mode": "auto",
-        "completion_note": "자동 판정기가 있는 진단 업무라 자동 완료로 미리 채움",
-        "run_id": "daily-0920-0900",
-    },
-    "fix": {
-        "title": "보고서 변환기 수정",
-        "request": (
-            "인계된 진단 근거로 보고서 변환 실패를 재현하는 테스트를 먼저 작성하고, "
-            "실패를 확인한 뒤 두 응답 형식을 모두 처리하도록 최소 수정하세요."
-        ),
-        "capability_code": "code.modify",
-        "scope_value": "demo-report-repo",
-        "selection_mode": "auto",
-        "run_mode": "auto",
-        "completion_mode": "review",
-        "completion_note": "",
-        "run_id": "",
-    },
-}
-
+# 직접 등록 폼 기본값. 기본 종류는 내장 `bug_fix`(능력 `code.fix`) — 셀프호스트 실사용 종류 (ADR-0019)
 _EMPTY_FORM: dict[str, str] = {
     "title": "",
     "request": "",
-    "capability_code": "operations.diagnose",
+    "capability_code": "code.fix",
     "scope_value": "",
     "selection_mode": "auto",
     "chosen_agent_id": "",
@@ -203,13 +170,13 @@ def _settings(request: Request) -> Settings:
 
 
 def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict[str, Any]:
-    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용. 데모 전용 요소는 템플릿이 `mode` 하나로 가린다."""
+    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용. 진단 화면 조각은 `diagnosis_enabled` 일 때만 보인다."""
     session = repo.get_session(conn, session_id)
     settings = _settings(request)
     return {
         "request": request,
         "now": now,
-        "mode": settings.mode,
+        "diagnosis_enabled": settings.diagnosis_enabled,
         "session_id": session_id,
         "is_operator": bool(session["is_operator"]) if session is not None else False,
         "my_tasks": [
@@ -219,13 +186,8 @@ def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict
     }
 
 
-def _catalog_agents(conn: Connection) -> list[Row]:
-    """운영자 카탈로그 — 모든 세션에 사용 허용된 Agent. 세션은 여기서 골라 등록한다 (ADR-0005)."""
-    return [a for a in repo.list_agents(conn) if a["shared_to_all_sessions"]]
-
-
 def _session_agents(conn: Connection, session_id: str) -> list[Row]:
-    """이 세션이 카탈로그에서 등록한 Agent 만. 홈·등록 폼·선택 목록·후보는 전부 이 목록을 쓴다."""
+    """워크스페이스에 붙은 Agent 만(`session_agents` — 러너 등록이 붙인다). 홈·등록 폼·선택 목록·후보는 전부 이 목록을 쓴다."""
     return repo.list_session_agents(conn, session_id)
 
 
@@ -242,7 +204,7 @@ def _candidates(conn: Connection, session_id: str) -> list[Candidate]:
 
 
 def _require_registered(conn: Connection, session_id: str, agent_id: str) -> None:
-    """직접 선택 대상은 세션이 등록한 Agent 여야 한다. 카탈로그에 있어도 등록 전이면 422."""
+    """직접 선택 대상은 워크스페이스에 붙은 Agent 여야 한다. 아니면 422."""
     if not repo.is_session_agent(conn, session_id, agent_id):
         raise PageError(422, "agent_not_registered", "등록하지 않은 에이전트입니다.", field="agent_id")
 
@@ -318,12 +280,6 @@ def _target_for(spec: KindSpec, run_id: str, agent: Row | None) -> dict[str, Any
 def _awaits_merge(kind: str) -> bool:
     """코드 수정만 검토 승인 뒤 기준 브랜치 병합(운영자 확인) 단계가 있다 (ADR-0005)."""
     return kind == "code_change"
-
-
-def _offers_demo_successor(conn: Connection, session_id: str, kind: str) -> bool:
-    """시연 전용 — 진단 A 등록 폼에서 후속 B(`EXAMPLES["fix"]`) 동시 등록을 제안한다. 세션에 내장 규칙 진단 → 코드 수정이
-    있을 때만. 일반화하지 않는다 — 후속의 요청·범위는 추측할 수 없다 (ADR-0009 트레이드오프)."""
-    return kind == "diagnosis" and repo.get_rule(conn, session_id, "diagnosis", "code_change") is not None
 
 
 # --- 실행 생성 -----------------------------------------------------------------------
@@ -419,26 +375,17 @@ def _start_execution(
 # --- 홈·업무 ----------------------------------------------------------------------
 
 
-@router.get("/", response_class=HTMLResponse, response_model=None)
-def landing(request: Request, conn: Connection = Depends(get_conn)) -> str | RedirectResponse:
-    """랜딩 — 세션을 만들지 않는다. `서비스 바로 가기` 가 `/tasks` 로 보낸다.
-    selfhost 는 랜딩 없이 로그인 상태면 `/tasks`, 아니면 `/login` 으로 303."""
-    if _settings(request).mode == "selfhost":
-        return RedirectResponse("/tasks" if workspace_session(request, conn) else "/login", status_code=303)
-    return _render("landing.html", request=request)
+@router.get("/")
+def root(request: Request, conn: Connection = Depends(get_conn)) -> RedirectResponse:
+    """랜딩 없음 (ADR-0019) — 로그인 상태면 업무 목록 `/tasks`, 아니면 `/login` 으로 303. 세션을 만들지 않는다."""
+    return RedirectResponse("/tasks" if workspace_session(request, conn) else "/login", status_code=303)
 
 
-# --- selfhost 로그인 (ADR-0016 결정 3) — demo 에는 없는 경로(404) ---------------------------
-
-
-def _require_selfhost(request: Request) -> None:
-    if _settings(request).mode != "selfhost":
-        raise PageError(404, "not_found", "페이지를 찾을 수 없습니다.")
+# --- 로그인 (ADR-0016 결정 3) ---------------------------------------------------------------
 
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request) -> str:
-    _require_selfhost(request)
     return _render("login.html", request=request, error=None)
 
 
@@ -469,14 +416,12 @@ def _workspace_login(request: Request, conn: Connection, token: str) -> HTMLResp
 def login(
     request: Request, token: str = Form(""), conn: Connection = Depends(get_conn),
 ) -> HTMLResponse | RedirectResponse:
-    _require_selfhost(request)
     return _workspace_login(request, conn, token)
 
 
 @router.post("/logout")
-def logout(request: Request) -> RedirectResponse:
+def logout() -> RedirectResponse:
     """쿠키만 지운다. 워크스페이스 행은 그대로."""
-    _require_selfhost(request)
     redirect = RedirectResponse("/login", status_code=303)
     redirect.delete_cookie(SESSION_COOKIE, httponly=True, samesite="lax")
     return redirect
@@ -521,26 +466,17 @@ def _form_context(
 @router.get("/tasks/new", response_class=HTMLResponse)
 def task_new(
     request: Request,
-    example: str | None = None,
     predecessor: str | None = None,
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> str:
     now = utc_now()
     form = dict(_EMPTY_FORM)
-    if example in EXAMPLES:
-        form.update(EXAMPLES[example])
-    else:
-        form["run_mode"] = default_run_mode(bool(predecessor))
+    form["run_mode"] = default_run_mode(bool(predecessor))
     if predecessor:
         _own_task(conn, session_id, predecessor)
         form["predecessor_task_id"] = predecessor
-    context = _form_context(request, conn, session_id, now, form)
-    # 시연 A 폼에서만 후속 B 동시 등록을 제안한다 — 심사자가 A 실행만으로 A → B 자동 착수를 보게 하기 위해
-    form["offer_successor"] = (
-        "1" if example == "diagnose" and _offers_demo_successor(conn, session_id, context["form_kind"]) else ""
-    )
-    return _render("task_new.html", **context)
+    return _render("task_new.html", **_form_context(request, conn, session_id, now, form))
 
 
 @router.post("/tasks")
@@ -558,7 +494,6 @@ def task_create(
     criteria_extra: str = Form(""),
     predecessor_task_id: str = Form(""),
     run_id: str = Form(""),
-    with_successor: str = Form(""),
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -595,10 +530,9 @@ def task_create(
     if predecessor_task_id:
         _own_task(conn, session_id, predecessor_task_id)
 
-    successor = bool(with_successor) and _offers_demo_successor(conn, session_id, spec.kind)
     active = [t for t in repo.list_tasks(conn, session_id) if t["finished_at"] is None]
     limit = settings.limits.active_tasks_per_session
-    if len(active) + (2 if successor else 1) > limit:
+    if len(active) + 1 > limit:
         raise PageError(
             429, "active_task_limit_reached",
             f"세션당 활성 업무 한도({limit}개)에 도달했습니다.", details={"limit": limit},
@@ -611,16 +545,6 @@ def task_create(
         run_mode=run_mode, completion_mode=completion_mode, criteria_extra=criteria_extra,
         predecessor_task_id=predecessor_task_id, run_id=run_id,
     )
-    if successor:
-        # 시연 후속 B — fix 예시 그대로, A 를 선행으로. A 결과가 규칙에 맞으면 워커가 별도 조작 없이 착수한다.
-        fix = EXAMPLES["fix"]
-        _insert_new_task(
-            conn, session_id, now, settings,
-            title=fix["title"], request_text=fix["request"],
-            spec=_kind_for_code(conn, session_id, fix["capability_code"]), scope_value=fix["scope_value"],
-            selection_mode=fix["selection_mode"], chosen_agent_id="", run_mode=fix["run_mode"],
-            completion_mode=fix["completion_mode"], criteria_extra="", predecessor_task_id=task_id, run_id="",
-        )
     return _redirect(f"/tasks/{task_id}", response)
 
 
@@ -675,72 +599,6 @@ def _insert_new_task(
     return task_id
 
 
-# --- 업무 가져오기 — GitHub·Jira fixture 이슈 → 체인 (phase 5 step 5, ADR-0004) ------------------
-
-
-def _issue_view(issue: Issue, kinds: Sequence[KindSpec]) -> dict[str, Any]:
-    """가져오기 표의 한 행. 배정 미리보기는 `map_issue`(세션 등록부) 결과 그대로 — 여기서 추론하지 않는다."""
-    mapping = map_issue(issue, kinds)
-    if mapping.capability is None:
-        preview = f"맡을 에이전트 없음 · {mapping.reason}"
-    else:
-        spec = kind_for_capability(kinds, mapping.capability.code)
-        preview = f"{mapping.capability.code} · {mapping.capability.scope[spec.scope_key]}"
-    return {
-        "key": issue.key,
-        "title": issue.title,
-        "labels": issue.labels,
-        "blocked_by": issue.blocked_by,
-        "assignable": mapping.capability is not None,
-        "preview": preview,
-    }
-
-
-def _require_source(source: str) -> None:
-    if source not in SOURCES:
-        raise PageError(422, "invalid_field", "지원하지 않는 출처입니다.", field="source")
-
-
-@router.get("/tasks/import", response_class=HTMLResponse)
-def tasks_import_page(
-    request: Request,
-    source: str = "github",
-    session_id: str = Depends(require_session),
-    conn: Connection = Depends(get_conn),
-) -> str:
-    """출처 탭 + 이슈 표. 체크는 전부 기본 체크. 세션 등록 Agent 가 0개면 버튼 비활성."""
-    _require_source(source)
-    now = utc_now()
-    kinds = _kinds(conn, session_id)
-    return _render(
-        "tasks_import.html", **_base(request, conn, session_id, now),
-        source=source, sources=[(key, SOURCE_LABELS[key]) for key in SOURCES],
-        issues=[_issue_view(issue, kinds) for issue in load_issues(source)],
-        can_import=bool(_session_agents(conn, session_id)),
-    )
-
-
-@router.post("/tasks/import")
-def tasks_import(
-    request: Request,
-    response: Response,
-    source: str = Form(""),
-    issue_keys: list[str] = Form(default=[]),
-    session_id: str = Depends(require_session),
-    conn: Connection = Depends(get_conn),
-) -> RedirectResponse:
-    """선택한 이슈로 체인 하나와 Task 들을 만든다. 실행은 만들지 않는다 (체인 화면의 `워크플로우 시작`, step 6)."""
-    now = utc_now()
-    settings = _settings(request)
-    _require_source(source)
-    selected = set(issue_keys)
-    issues = [issue for issue in load_issues(source) if issue.key in selected]  # 모르는 key 는 무시
-    if not issues:
-        raise PageError(422, "no_issues", "가져올 이슈를 선택하세요.", field="issue_keys")
-    created = create_chain(conn, session_id, issues, source=source, now=now, settings=settings, error=PageError)
-    return _redirect(f"/chains/{created.chain_id}", response)
-
-
 @dataclass(frozen=True)
 class ChainCreated:
     chain_id: str
@@ -753,7 +611,7 @@ def create_chain(
     callback_url: str | None = None, items: list[dict] | None = None, error: type[ApiError] = ApiError,
     items_field: str = "issue_keys",
 ) -> ChainCreated:
-    """이슈들로 체인 하나와 Task 들을 만든다 — 가져오기(`tasks_import`)와 입구 API(`inbound_api`, ADR-0010)의 공통 본체.
+    """이슈들로 체인 하나와 Task 들을 만든다 — 입구 API(`inbound_api`, ADR-0010)의 본체.
     등록 에이전트 확인 → `compose` → 활성 한도 → `insert_chain` → Task 삽입. 실행은 만들지 않는다.
 
     오류는 `error(...)` 로 던진다 — 웹은 `PageError`(error.html), 입구 API 는 기본값 `ApiError`(JSON).
@@ -936,7 +794,7 @@ def task_live(
     )
     viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
     response.headers["Cache-Control"] = "no-store"
-    return _render("_live.html", request=request, now=now, mode=_settings(request).mode, **context, viewer=viewer)
+    return _render("_live.html", request=request, now=now, **context, viewer=viewer)
 
 
 @router.post("/tasks/{task_id}/run")
@@ -1218,7 +1076,7 @@ def artifact_view(
     )
 
 
-# --- 에이전트 — 세션은 운영자 카탈로그에서 골라 등록한다 (ADR-0005, phase 5 step 2) --------------
+# --- 에이전트 — 러너 등록이 워크스페이스에 붙인다 (ADR-0018 결정 1) --------------
 
 
 @router.get("/agents", response_class=HTMLResponse)
@@ -1227,73 +1085,11 @@ def agents_list(
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """이 세션이 등록한 Agent 만. 0개면 빈 상태와 `에이전트 등록` 버튼."""
+    """워크스페이스에 붙은 Agent 만. 0개면 빈 상태와 러너 연결 안내."""
     now = utc_now()
     settings = _settings(request)
     agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
     return _render("agents.html", **_base(request, conn, session_id, now), agents=agents)
-
-
-@router.get("/agents/register", response_class=HTMLResponse)
-def agents_register_page(
-    request: Request,
-    session_id: str = Depends(require_session),
-    conn: Connection = Depends(get_conn),
-) -> str:
-    """카탈로그 목록. 카드마다 발견된 정보 요약과 등록/해제 버튼. 새 Agent 를 만드는 폼은 없다 (운영자 전용)."""
-    now = utc_now()
-    settings = _settings(request)
-    kinds = _kinds(conn, session_id)
-    catalog = [views.agent_public(a, now=now, settings=settings, kinds=kinds) for a in _catalog_agents(conn)]
-    registered_ids = {a["agent_id"] for a in _session_agents(conn, session_id)}
-    return _render(
-        "agents_register.html", **_base(request, conn, session_id, now),
-        catalog=catalog, registered_ids=registered_ids,
-    )
-
-
-@router.post("/agents/register")
-def agents_register(
-    response: Response,
-    agent_id: str = Form(""),
-    session_id: str = Depends(require_session),
-    conn: Connection = Depends(get_conn),
-) -> RedirectResponse:
-    """카탈로그 Agent 를 이 세션에 등록한다. 멱등. 카탈로그에 없으면 404."""
-    agent_id = agent_id.strip()
-    row = repo.get_agent(conn, agent_id)
-    if row is None or not row["shared_to_all_sessions"]:
-        raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
-    repo.register_session_agent(conn, session_id, agent_id, utc_now())
-    return _redirect("/tasks", response)
-
-
-def _agent_in_use(conn: Connection, session_id: str, agent_id: str) -> bool:
-    """이 세션의 미완료 Task 중 선택 기록이 이 Agent 를 가리키는 것이 있는가."""
-    for task in repo.list_tasks(conn, session_id):
-        if task["finished_at"] is not None:
-            continue
-        selection = repo.get_selection(conn, task["task_id"])
-        if selection is not None and selection.selected_agent_id == agent_id:
-            return True
-    return False
-
-
-@router.post("/agents/{agent_id}/unregister")
-def agents_unregister(
-    response: Response,
-    agent_id: str,
-    session_id: str = Depends(require_session),
-    conn: Connection = Depends(get_conn),
-) -> RedirectResponse:
-    """세션 등록 해제. 멱등. 그 Agent 가 선택된 미완료 Task 가 있으면 409."""
-    row = repo.get_agent(conn, agent_id)
-    if row is None or not (row["shared_to_all_sessions"] or repo.is_session_agent(conn, session_id, agent_id)):
-        raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
-    if _agent_in_use(conn, session_id, agent_id):
-        raise PageError(409, "agent_in_use", "진행 중인 업무가 있어 해제할 수 없습니다.", field="agent_id")
-    repo.unregister_session_agent(conn, session_id, agent_id)
-    return _redirect("/agents/register", response)
 
 
 @router.get("/agents/{agent_id}", response_class=HTMLResponse)
@@ -1303,10 +1099,10 @@ def agent_detail(
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """카탈로그 Agent 또는 이 세션이 등록한 Agent 만 열린다. 그 외는 404 로 존재를 알리지 않는다."""
+    """워크스페이스에 붙은 Agent 만 열린다. 그 외는 404 로 존재를 알리지 않는다."""
     now = utc_now()
     row = repo.get_agent(conn, agent_id)
-    if row is None or not (row["shared_to_all_sessions"] or repo.is_session_agent(conn, session_id, agent_id)):
+    if row is None or not repo.is_session_agent(conn, session_id, agent_id):
         raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
     agent = views.agent_public(row, now=now, settings=_settings(request), kinds=_kinds(conn, session_id))
     return _render("agent_detail.html", **_base(request, conn, session_id, now), agent=agent)
@@ -1567,7 +1363,7 @@ def _operator_context(
         "connect_codes": [dict(c) for c in repo.list_connect_codes(conn)],
         "issued": issued,
         "diagnosis_today": repo.count_diagnosis_started(conn, session_id=None, since=since),
-        # 카탈로그 능력 폼의 안내 — 운영자는 세션 무관이라 내장 종류만 보인다. 사용자 정의 코드는 scope 키를 직접 적는다
+        # 에이전트 등록 폼의 안내 — 운영자는 세션 무관이라 내장 종류만 보인다. 사용자 정의 코드는 scope 키를 직접 적는다
         "builtin_kinds": [views.kind_public(spec) for spec in BUILTIN_KINDS],
         "owner_scopes": OWNER_SCOPES,
         "connection_types": CONNECTION_TYPES,
@@ -1972,24 +1768,6 @@ def metrics_page(
     )
 
 
-@router.post("/operator/login", response_model=None)
-def operator_login(
-    request: Request,
-    response: Response,
-    token: str = Form(""),
-    conn: Connection = Depends(get_conn),
-) -> HTMLResponse | RedirectResponse:
-    """demo: 이 쿠키 세션을 운영자로 표시. selfhost: `/login` 과 같은 동작."""
-    if _settings(request).mode == "selfhost":
-        return _workspace_login(request, conn, token)
-    session_id = require_session(request, response, conn)
-    expected = _settings(request).operator_token
-    if not hmac.compare_digest(token.encode(), expected.encode()):
-        raise PageError(403, "forbidden", "운영자 토큰이 올바르지 않습니다.")
-    repo.mark_operator(conn, session_id)
-    return _redirect("/operator", response)
-
-
 @router.post("/operator/agents")
 def operator_register_agent(
     request: Request,
@@ -2007,7 +1785,8 @@ def operator_register_agent(
     session_id: str = Depends(require_operator),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
-    """운영자 등록. 자동 파악값은 연결 프로그램의 registrations 가 채우므로 기존 보고값은 유지한다.
+    """운영자 등록. 운영자 = 워크스페이스라 등록한 Agent 를 워크스페이스에 붙인다(ADR-0019 — 카탈로그 등록 단계 없음).
+    자동 파악값은 연결 프로그램의 registrations 가 채우므로 기존 보고값은 유지한다.
     능력은 계약 패턴으로만 검사한다 — 운영자는 세션 무관이라 어느 세션의 종류와 맞는지는 그 세션의 선택 시점에 정해진다.
     `scope_key` 를 비우면 내장 종류의 코드일 때만 그 종류의 scope 키를 쓴다."""
     agent_id, name = agent_id.strip(), name.strip()
@@ -2067,8 +1846,8 @@ def operator_register_agent(
         "local_registration_id": local_registration_id or None,
         "api_url": api_url or None,
         "credential_ref": credential_ref or None,
-        "shared_to_all_sessions": True,
     })
+    repo.register_session_agent(conn, session_id, agent_id, utc_now())  # 카탈로그 없음 — 워크스페이스에 바로 붙인다
     return _redirect("/operator", response)
 
 

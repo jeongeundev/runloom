@@ -63,7 +63,7 @@ def test_selfhost_without_diag_token_starts(settings):
     """phase 10 — 진단 토큰 없이도 앱이 만들어지고 스키마를 연다."""
     from dataclasses import replace
 
-    app = create_app(replace(settings, mode="selfhost", diag_api_token=""))
+    app = create_app(replace(settings, diag_api_token=""))
     assert isinstance(app, FastAPI)
     assert settings.db_path.exists()
 
@@ -82,17 +82,6 @@ def test_healthz_reports_schema_version_and_mode_without_auth(settings):
         assert secret not in res.text
     assert str(settings.db_path) not in res.text
     assert "set-cookie" not in res.headers  # 세션 쿠키를 만들지 않는다
-
-
-def test_healthz_is_public_in_selfhost_mode(settings):
-    from dataclasses import replace
-
-    from fastapi.testclient import TestClient
-
-    client = TestClient(create_app(replace(settings, mode="selfhost")), follow_redirects=False)
-    res = client.get("/healthz")
-    assert res.status_code == 200
-    assert res.json() == {"status": "ok", "mode": "selfhost", "schema_version": SCHEMA_VERSION}
 
 
 def test_healthz_errors_without_details_when_db_is_missing(settings):

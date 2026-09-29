@@ -361,13 +361,6 @@ def test_register_local_agent_fills_preregistered_agent_without_creating(conn):
     assert json.loads(row["capabilities_json"])[0]["code"] == "code.modify"
 
 
-def test_register_local_agent_without_workspace_does_not_create(conn):
-    """demo 모드 — 만들지 않고 지금처럼 NotFound."""
-    with pytest.raises(NotFound):
-        _register(conn, session_id=None)
-    assert repo.list_agents(conn) == []
-
-
 def test_register_local_agent_rejects_name_used_by_another_connector(conn):
     repo.create_session(conn, SESSION, NOW)
     _issue_connector(conn, CONNECTOR)

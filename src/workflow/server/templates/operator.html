@@ -1,20 +1,11 @@
-{# 운영자 — ADR-0005. 토큰 입력 → 에이전트 등록·삭제, 연결 코드, 병합 확인 대기, 모든 세션 업무, 진단 사용량(demo 만 — 진단 데모의 예산 표시).
+{# 운영자 — 로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드, 병합 확인 대기, 모든 세션 업무, 진단 사용량(진단이 켜져 있을 때만).
    등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}운영자 — Runloom{% endblock %}
 {% block content %}
 <div class="crumbs"><div class="crumb">운영자</div></div>
-{% if not is_operator %}
-<form method="post" action="/operator/login" class="card">
-  <div class="field">
-    <label for="token">운영자 토큰</label>
-    <input type="password" id="token" name="token" autocomplete="off">
-    <div class="help">OPERATOR_TOKEN 환경변수 값. 쿠키·HTML 에 남지 않습니다.</div>
-  </div>
-  <div class="actions"><button class="btn" type="submit">열기</button></div>
-</form>
-{% else %}
+{% if is_operator %}
 
 <h2 style="margin-top:0">연결 코드</h2>
 <div class="card">
@@ -96,7 +87,7 @@
 
 <h2>병합 확인 대기</h2>
 <div class="card">
-  <p class="small">{% if mode != 'selfhost' %}실제 git 병합은 운영자가 Mac 의 데모 저장소에서 수동으로 합니다. {% endif %}여기서는 확인 사실만 기록합니다.</p>
+  <p class="small">여기서는 확인 사실만 기록합니다.</p>
   <ul class="agent-list">
     {% for t in merge_queue %}
     <li>
@@ -127,7 +118,7 @@
   </table>
 </div>
 
-{% if mode != 'selfhost' %}
+{% if diagnosis_enabled %}
 <h2>진단 사용량</h2>
 <div class="card">
   <p>오늘 진단 실행: <strong>{{ diagnosis_today }}</strong>건 (세션당 10회 · 전체 60회 상한)</p>

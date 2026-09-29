@@ -303,24 +303,21 @@ def register_local_agent(
     base_commit: str,
     verification_profile_ids: list[str],
     discovered: dict,
-    session_id: str | None,
+    session_id: str,
     now: str,
 ) -> tuple[str, bool]:
     """러너 등록 (ADR-0018 결정 1). 반환 (agent_id, created).
 
     같은 `local_registration_id` 의 Agent 가 있으면 `update_registration` 과 같은 갱신(이름·소유 구분·능력 유지).
-    없으면 `session_id`(selfhost 고정 워크스페이스)가 있을 때만 `code.fix`·`code.review` 능력의 Agent 를 만들어
-    그 워크스페이스에 등록한다 — 한 트랜잭션. `session_id` 가 None(demo)이면 지금처럼 NotFound.
-    selfhost 에서는 취소되지 않은 다른 연결 프로그램이 이미 쓰는 이름이면 RegistrationTaken."""
+    없으면 `code.fix`·`code.review` 능력의 Agent 를 만들어 `session_id`(고정 워크스페이스)에 등록한다 — 한 트랜잭션.
+    취소되지 않은 다른 연결 프로그램이 이미 쓰는 이름이면 RegistrationTaken."""
     with _tx(conn):
         row = _one(
             conn,
             "SELECT agent_id, connector_id FROM agents WHERE local_registration_id = ? ORDER BY agent_id",
             (local_registration_id,),
         )
-        if row is None and session_id is None:
-            raise NotFound(f"local registration {local_registration_id}")
-        if row is not None and session_id is not None and row["connector_id"] not in (None, connector_id):
+        if row is not None and row["connector_id"] not in (None, connector_id):
             owner = _one(
                 conn, "SELECT 1 FROM connectors WHERE connector_id = ? AND revoked_at IS NULL", (row["connector_id"],)
             )

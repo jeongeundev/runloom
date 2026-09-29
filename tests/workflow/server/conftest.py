@@ -1,9 +1,9 @@
 """server 테스트 공용 fixture — tmp_path 의 실제 DB·산출물 디렉터리로 `create_app(settings)` 를 만든다.
 
-기본은 셀프호스트(ADR-0019): 고정 워크스페이스 `SESSION`(= `SELFHOST_SESSION_ID`), 로그인은 `logged_in_client`,
+셀프호스트 전용(ADR-0019): 고정 워크스페이스 `SESSION`(= `SELFHOST_SESSION_ID`), 로그인은 `logged_in_client`,
 Agent 는 러너 등록과 같은 모양(`session_agents` 로 워크스페이스에 붙음, `code.fix`·`code.review`), 기본 종류 `bug_fix`.
-이름 끝이 `_demo` 인 fixture·도우미는 demo 모드(익명 세션·카탈로그·진단 → code_change)를 전제로 하며,
-그것을 쓰는 테스트와 함께 phase 13 step 2·3 에서 지운다.
+이름 끝이 `_demo` 인 fixture·도우미는 진단 → code_change 데이터(진단 API Agent·`code.modify` Agent)를 워크스페이스에 넣으며,
+그것을 쓰는 테스트와 함께 phase 13 step 3 에서 지운다.
 
 시드는 repo 로 직접 넣고, 연결 토큰은 연결 코드 발급·교환 API 로 얻는다.
 """
@@ -35,7 +35,7 @@ LOCAL_REGISTRATION = "local-demo-report"
 REPOSITORY = "demo-report-repo"
 
 
-def _settings(tmp_path, mode: str) -> Settings:
+def _settings(tmp_path) -> Settings:
     return Settings(
         db_path=tmp_path / "central.sqlite",
         artifact_dir=tmp_path / "artifacts",
@@ -43,14 +43,13 @@ def _settings(tmp_path, mode: str) -> Settings:
         operator_token=OPERATOR_TOKEN,
         diag_api_url="http://127.0.0.1:8100",
         diag_api_token="test-diag-token",
-        mode=mode,
         secret_dir=tmp_path / "secrets",  # 기본값(data/secrets)은 저장소 작업 폴더라 테스트가 읽지 않게 한다
     )
 
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return _settings(tmp_path, "selfhost")
+    return _settings(tmp_path)
 
 
 @pytest.fixture
@@ -75,24 +74,6 @@ def log_in(client: TestClient) -> TestClient:
 def logged_in_client(client) -> TestClient:
     """워크스페이스에 로그인한 `client` (같은 객체). 화면·사람 API 테스트의 기본."""
     return log_in(client)
-
-
-# demo 모드 — 익명 세션·랜딩·카탈로그·fixture 가져오기·진단 (step 2·3 에서 테스트와 함께 삭제)
-
-
-@pytest.fixture
-def settings_demo(tmp_path) -> Settings:
-    return _settings(tmp_path, "demo")
-
-
-@pytest.fixture
-def app_demo(settings_demo):
-    return create_app(settings_demo)
-
-
-@pytest.fixture
-def client_demo(app_demo):
-    return TestClient(app_demo)
 
 
 @pytest.fixture
@@ -314,12 +295,12 @@ def running(client, headers, exec_fix) -> str:
     return exec_fix
 
 
-# --- demo 시드 (step 2·3 에서 삭제) ---------------------------------------------
+# --- 진단 → code_change 시드 (step 3 에서 삭제) ---------------------------------------------
 
 
 def seed_agents_demo(conn, *, with_claude: bool = False) -> None:
-    """운영자 카탈로그 — 진단 API·로컬 Codex, `with_claude` 면 같은 저장소를 맡는 Claude Code 까지 3개
-    (scripts/seed_demo.py 와 같은 구성). 전부 모든 세션에 사용 허용. 기본 2개는 기존 카드 수 테스트를 위해 유지한다."""
+    """진단 API·로컬 Codex(`code.modify`), `with_claude` 면 같은 저장소를 맡는 Claude Code 까지 3개
+    (scripts/seed_demo.py 와 같은 구성). 워크스페이스에 붙이는 것은 `register_catalog_demo`."""
     repo.upsert_agent(conn, {
         "agent_id": "agent-ops-demo",
         "name": "운영 진단 데모",
@@ -329,7 +310,6 @@ def seed_agents_demo(conn, *, with_claude: bool = False) -> None:
         "credential_ref": "env:DIAG_API_TOKEN",
         "capabilities": [{"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}],
         "connection_state": "online",
-        "shared_to_all_sessions": True,
     })
     repo.upsert_agent(conn, {
         "agent_id": "agent-codex-mac",
@@ -339,7 +319,6 @@ def seed_agents_demo(conn, *, with_claude: bool = False) -> None:
         "local_registration_id": LOCAL_REGISTRATION,
         "capabilities": [{"code": "code.modify", "scope": {"repository_id": REPOSITORY}}],
         "connection_state": "unknown",
-        "shared_to_all_sessions": True,
     })
     if not with_claude:
         return
@@ -353,20 +332,19 @@ def seed_agents_demo(conn, *, with_claude: bool = False) -> None:
         "base_commit": BASE_COMMIT,
         "capabilities": [{"code": "code.modify", "scope": {"repository_id": REPOSITORY}}],
         "connection_state": "unknown",
-        "shared_to_all_sessions": True,
     })
 
 
 def register_catalog_demo(conn, session_id: str, *agent_ids: str, now: str = NOW) -> None:
-    """세션이 카탈로그 Agent 를 등록한 상태 (phase 5 step 2). 기본은 둘 다, codex → ops 순."""
+    """워크스페이스에 Agent 를 붙인 상태. 기본은 둘 다, codex → ops 순."""
     for agent_id in agent_ids or ("agent-codex-mac", "agent-ops-demo"):
         repo.register_session_agent(conn, session_id, agent_id, now)
 
 
 @pytest.fixture
 def seeded_demo(conn):
-    """demo 세션 1개(`SESSION` 이름 그대로, 운영자 아님), 카탈로그 에이전트 2개(세션이 둘 다 등록), 업무 A(진단) → B(code_change)."""
-    repo.create_session(conn, SESSION, NOW)
+    """고정 워크스페이스, 에이전트 2개(진단 API·`code.modify`, 둘 다 붙음), 업무 A(진단) → B(code_change)."""
+    ensure_workspace(conn, NOW)
     seed_agents_demo(conn)
     register_catalog_demo(conn, SESSION)
     repo.insert_task(conn, task_row(TASK_A_DEMO, kind="diagnosis"), NOW)

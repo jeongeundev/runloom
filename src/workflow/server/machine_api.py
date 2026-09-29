@@ -140,20 +140,16 @@ def heartbeat(
 @router.post("/connector/registrations")
 def register(
     body: RegistrationRequest,
-    request: Request,
     connector_id: str = Depends(require_connector),
     conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
-    """`local_registration_id` 가 일치하는 Agent 의 연결 정보를 채운다. 없으면 selfhost 에서만 고정 워크스페이스에
-    `code.fix`·`code.review` Agent 를 만든다(ADR-0018 결정 1). demo 는 지금처럼 404."""
+    """`local_registration_id` 가 일치하는 Agent 의 연결 정보를 채운다. 없으면 고정 워크스페이스에
+    `code.fix`·`code.review` Agent 를 만든다(ADR-0018 결정 1)."""
     _check_connector_id(body.connector_id, connector_id)
     if len(json.dumps(body.discovered, ensure_ascii=False).encode()) > DISCOVERED_MAX_BYTES:
         raise ApiError(422, "invalid_field", "discovered는 64KB를 넘을 수 없습니다.", field="discovered")
     now = utc_now()
-    session_id = None
-    if request.app.state.settings.mode == "selfhost":
-        ensure_workspace(conn, now)
-        session_id = SELFHOST_SESSION_ID
+    ensure_workspace(conn, now)
     try:
         agent_id, created = repo.register_local_agent(
             conn,
@@ -164,16 +160,9 @@ def register(
             base_commit=body.base_commit,
             verification_profile_ids=body.verification_profile_ids,
             discovered=body.discovered,
-            session_id=session_id,
+            session_id=SELFHOST_SESSION_ID,
             now=now,
         )
-    except NotFound:
-        raise ApiError(
-            404,
-            "not_found",
-            f"local_registration_id {body.local_registration_id}에 해당하는 에이전트가 없습니다.",
-            field="local_registration_id",
-        ) from None
     except RegistrationTaken:
         raise ApiError(
             409,

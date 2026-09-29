@@ -272,8 +272,7 @@ def open_blockers(world: World, task_id: str) -> str:
 
 def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     http = world.http
-    assert http.get("/tasks").status_code == 200  # 세션 쿠키
-    login = http.post("/operator/login", data={"token": world.central_env["OPERATOR_TOKEN"]})
+    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 
@@ -364,7 +363,6 @@ def test_03_runner_registers_the_folder_and_matching_fills_everything(world):
     for agent_id, code, registration in ((FIX, "code.fix", "local-billing-fix"),
                                          (REVIEW, "code.review", "local-billing-review")):
         operator_agent(world, agent_id, code, "billing", registration)
-        assert http.post("/agents/register", data={"agent_id": agent_id}).status_code == 303
     issued = http.post("/operator/connect-codes")
     connect_code = re.search(r'<code id="issued-code">([^<]+)</code>', issued.text).group(1)
     py = sys.executable

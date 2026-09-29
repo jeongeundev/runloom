@@ -80,12 +80,6 @@ def settings(settings):
 
 
 @pytest.fixture
-def settings_demo(settings_demo):
-    """demo 도 같은 허용 목록·공개 주소 (진단 한도 테스트용)."""
-    return dataclasses.replace(settings_demo, callback_hosts=("localhost:5678",), public_url=PUBLIC_URL)
-
-
-@pytest.fixture
 def workspace(conn) -> str:
     """고정 워크스페이스 + 러너 모양 Agent 1개(`code.fix`·`code.review`). 업무는 없다."""
     ensure_workspace(conn, NOW)
@@ -95,8 +89,8 @@ def workspace(conn) -> str:
 
 @pytest.fixture
 def workspace_demo(conn) -> str:
-    """demo 세션 1개 + 카탈로그 2개 등록(codex → ops 순, conftest 기본). 업무는 없다."""
-    repo.create_session(conn, SESSION, NOW)
+    """고정 워크스페이스 + 진단 API·`code.modify` Agent 2개(codex → ops 순, conftest 기본). 업무는 없다 (step 3 에서 삭제)."""
+    ensure_workspace(conn, NOW)
     seed_agents_demo(conn)
     register_catalog_demo(conn, SESSION)
     return SESSION
@@ -170,12 +164,12 @@ def test_token_bound_to_another_source_is_403(client, conn, token, workspace):
 # --- 정상 접수 (b) ------------------------------------------------------------------------------
 
 
-def test_two_items_build_chain_and_start_first_task(client_demo, conn, workspace_demo):
+def test_two_items_build_chain_and_start_first_task(client, conn, workspace_demo):
     """demo — 진단 → code_change. 셀프호스트(bug_fix → code_review) 판은 아직 첫 업무가 시작되지 않아 옮기지 못했다
     (`web._target_for` 가 bug_fix 에 기준 커밋·검증 프로필을 넣지 않아 request_incomplete)."""
     workspace = workspace_demo
     token = _issue(conn, workspace)
-    response = post(client_demo, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
+    response = post(client, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
     assert response.status_code == 201, response.text
     body = response.json()
     assert list(body) == ["contract_version", "chain_id", "chain_url", "started", "start_error", "tasks", "skipped"]
@@ -286,12 +280,12 @@ def test_first_task_without_candidate_returns_201_started_false_selection_requir
     assert repo.active_execution(conn, task_a["task_id"]) is None
 
 
-def test_diagnosis_daily_limit_returns_201_started_false_with_429_body(client_demo, conn, workspace_demo):
+def test_diagnosis_daily_limit_returns_201_started_false_with_429_body(client, conn, workspace_demo):
     """demo — 진단 한도."""
     token = _issue(conn, workspace_demo)
     for n in range(10):
         repo.record_diagnosis_start(conn, workspace_demo, f"exec-seed-{n}", utc_now())
-    response = post(client_demo, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
+    response = post(client, token, items=[DIAGNOSE_ITEM_DEMO, FIX_ITEM_DEMO])
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["started"] is False
