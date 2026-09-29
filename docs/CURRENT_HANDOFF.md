@@ -4,6 +4,8 @@
 
 ## 다음 작업: 13-selfhost-only → 14-task-model 실행 (새 세션은 여기서 시작)
 
+**진행 중**: 13-selfhost-only 진행 중(`phases/13-selfhost-only`, step 0 — [ADR-0019](adr/0019-service-selfhost-only.md) 고정), 그 뒤 14-task-model.
+
 **step 설계 완료(2026-09-29)**: 13-task-model 범위를 두 phase 로 나눴다(사용자 결정 — demo 걷어내기를 먼저).
 - `phases/13-selfhost-only/`(6 step): `service` 에서 demo 모드·진단 데모·대본 에이전트·카탈로그·fixture 가져오기·VM 배포 파일 삭제, 내장 종류 `bug_fix`·`code_review` 둘, 스키마 v9. README "남기는 것" 참고.
 - `phases/14-task-model/`(11 step): 업무 `WorkItem`(`work_items`, 키 `RUN-n`) ↔ 단계 `Task` 분리, 업무 상태 8개(실패 = "내 차례 · 실패" + [다시 맡기기]·[닫기]), 후속 규칙 `placement`(same_work/new_work), `members`(첫 관리자), 매핑 표(`github · kind · * → bug_fix` 기본), 양식 칸 추출, 브랜치 `runloom/RUN-n`, 지표 묶음 = 업무, 홈 목록 = 업무 한 줄, 기존 데이터는 v10 마이그레이션으로 옮김.

@@ -28,6 +28,7 @@
 | [DEPLOY.md](DEPLOY.md) | 공개 데모 VM 배포 런북(`deploy/` 파일과 테스트가 참조). 셀프호스트는 [SELFHOST.md](SELFHOST.md) |
 | [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록 |
 | [adr/](adr/) | 결정 기록. 0003(진단 모델)·0005(익명 세션)·0006(VM 배포)·0008(대본 데모)은 공모전 데모 구성의 기록이다 |
+| [adr/0019](adr/0019-service-selfhost-only.md) | `service` 브랜치는 셀프호스트만 — demo 모드·진단 데모·대본 에이전트 제거, 내장 종류 `bug_fix`·`code_review`, 스키마 v9(phase 13) |
 | [archive/](archive/) | 이력. 현행 요구사항이 아니다 |
 
 ## 보관 자료

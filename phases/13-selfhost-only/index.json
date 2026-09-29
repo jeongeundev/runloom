@@ -5,7 +5,9 @@
     {
       "step": 0,
       "name": "selfhost-only-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-29T20:03:29+0900",
+      "summary": "문서만: docs/adr/0019-service-selfhost-only.md 신설(모드 폐지·WORKFLOW_MODE=demo 는 SettingsError·빈값/selfhost 는 무시, 지울 것/남길 것, 내장 bug_fix·code_review, v9 는 diagnosis·code_change 종류와 (diagnosis,code_change) 규칙 삭제·그 종류 Task 또는 그 쌍 밖 규칙 있으면 중단, 칸 삭제 없음), ADR-0008·0016 끝 대체 표시, ARCHITECTURE 모드 절 폐지 표시·'셀프호스트 전용 — phase 13' 절 신설·진단/배포 절 main 전용 표시, GLOSSARY session_id=워크스페이스 키·진단 용어 main 전용·BUILTIN_* service 값, docs/README·CURRENT_HANDOFF 갱신. pytest 2932 passed/68 skipped, ruff 통과. 다음 step 주의: succession_rules 에 내장 표시 칸이 없어 내장 규칙은 (from,to) 쌍으로 식별, /healthz mode 는 'selfhost' 고정값 유지, GLOSSARY BUILTIN_KINDS 본문은 아직 main 기록(step 3 에서 정리)"
     },
     {
       "step": 1,
@@ -32,5 +34,6 @@
       "name": "selfhost-only-verify",
       "status": "pending"
     }
-  ]
+  ],
+  "created_at": "2026-09-29T20:03:29+0900"
 }
