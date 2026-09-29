@@ -1,16 +1,22 @@
 {# 업무 상세의 라이브 조각 — UI_GUIDE "업무 상세 — 가운데 열의 순서". `GET /tasks/{id}/live` 가 이것만 돌려주고
    base.html 의 스크립트가 통째로 교체한다. `data-result` 가 바뀌면(결과 도착) 페이지를 다시 열어 뷰어를 채운다. #}
 {% import "_status.html" as st %}
+{% macro chip(c, side) -%}
+{% if c.stage_label %}<a class="task-chip" href="/tasks/{{ c.task_id }}" title="{{ c.title }}">{{ c.stage_label }} · {{ st.mini(c.status.label) }}</a>
+{%- elif c.work_key %}<a class="task-chip" href="/work/{{ c.work_key }}" title="{{ c.title }}">{{ side }} {{ c.work_key }}</a>
+{%- else %}<a class="task-chip" href="/tasks/{{ c.task_id }}" title="{{ c.title }}">{{ side }} · {{ st.mini(c.status.label) }}</a>{% endif %}
+{%- endmacro %}
 {% set terminal = status.label in ['완료', '실패'] %}
 <div class="live" data-live="/tasks/{{ task.task_id }}/live" data-result="{{ result.artifact_id if result else '' }}" data-terminal="{{ '1' if terminal else '0' }}" data-status="{{ status.label }}">
 
   {# 1. 브레드크럼 + 연결 업무 칩 + 뷰어 열기 #}
   <div class="crumbs">
-    <div class="crumb">{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }} <span class="chip kind-chip">{{ kind_label }}</span></div>
+    <div class="crumb">{% if work %}<a href="/work/{{ work.key }}" title="{{ work.title }}">{{ work.key }}</a><span class="sep">/</span>{% endif %}{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }} <span class="chip kind-chip">{{ kind_label }}</span></div>
     <div class="crumb-side">
       {% if chain %}<a class="task-chip" href="/chains/{{ chain.chain_id }}" title="{{ chain.title }}">워크플로우 {{ chain.title }}</a>{% endif %}
-      {% if predecessor %}<a class="task-chip" href="/tasks/{{ predecessor.task_id }}" title="{{ predecessor.title }}">선행 · {{ st.mini(predecessor.status.label) }}</a>{% endif %}
-      {% for s in successors %}<a class="task-chip" href="/tasks/{{ s.task_id }}" title="{{ s.title }}">후속 · {{ st.mini(s.status.label) }}</a>{% endfor %}
+      {# 같은 업무의 단계는 "단계 N/M", 다른 업무는 업무 키 링크 (phase 14 step 9) #}
+      {% if predecessor %}{{ chip(predecessor, '선행') }}{% endif %}
+      {% for s in successors %}{{ chip(s, '후속') }}{% endfor %}
       {% if viewer %}<button type="button" class="icon-btn" data-viewer-open title="뷰어 열기" aria-label="뷰어 열기"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v10H2zM10 3v10"/></svg></button>{% endif %}
     </div>
   </div>

@@ -682,9 +682,14 @@ def test_list_groups_undelegated_tasks_as_waiting_for_an_instruction(cycle_op, c
                  ("대기", "실행 지시 전 — [에이전트에게 맡기기] 또는 `runloom` 라벨 · 다른 사유", waiting))
     conn.commit()
 
+    repo.refresh_open_work_statuses(conn, now="2026-10-06T12:00:00Z")  # 워커 tick 끝과 같은 업무 상태 계산
+
     home = cycle_op.get("/tasks").text
-    card = home.split(f'href="/tasks/{waiting}"', 2)[2].split("</div>\n  </div>", 1)[0]
-    assert "지시 전" in card and "다른 사유" not in card
+    main = home[home.index('class="main'):]
+    card = main.split('href="/work/RUN-1"', 1)[1].split("</div>\n  </div>", 1)[0]  # 목록 한 줄 = 업무
+    # 업무 상태는 `새로 들어옴 · 담당 없음`(담당 없음이 지시 전보다 먼저 — domain/work_status), 지시 전은 맡기기 버튼으로
+    assert 'data-status="새로 들어옴"' in card and "담당 없음" in card and "다른 사유" not in card
+    assert delegate_form(waiting) in card and "맡겨야 실행합니다" in card
     assert "다른 사유" in cycle_op.get(f"/tasks/{waiting}").text  # 다른 사유는 상세에서
 
 

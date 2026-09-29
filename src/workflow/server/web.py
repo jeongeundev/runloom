@@ -56,6 +56,7 @@ from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
     BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
+    WORK_KEY_PREFIX,
     ArtifactMeta,
     Capability,
     CodeChangeResult,
@@ -170,16 +171,13 @@ def _settings(request: Request) -> Settings:
 def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict[str, Any]:
     """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용."""
     session = repo.get_session(conn, session_id)
-    settings = _settings(request)
     return {
         "request": request,
         "now": now,
         "session_id": session_id,
         "is_operator": bool(session["is_operator"]) if session is not None else False,
-        "my_tasks": [
-            views.task_summary(conn, t, now=now, settings=settings)
-            for t in repo.list_tasks(conn, session_id)
-        ],
+        # 목록 한 줄 = 업무(ADR-0020) — 새 업무가 위
+        "my_work": [views.work_summary(conn, w) for w in repo.list_work_items(conn, session_id)],
     }
 
 
@@ -418,6 +416,10 @@ def _form_context(
     return {
         **_base(request, conn, session_id, now),
         "form": form,
+        # 선행 업무 select — 단계(Task) 단위
+        "my_tasks": [
+            views.task_summary(conn, t, now=now, settings=settings) for t in repo.list_tasks(conn, session_id)
+        ],
         "agents": [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)],
         # 요구 능력 select 는 세션 등록부에서 — 종류를 고르면 capability_code·scope_key 가 정해진다 (ARCHITECTURE "화면")
         "kind_options": [views.kind_public(spec) for spec in kinds],
@@ -725,6 +727,27 @@ def start_chain(
             raise error(409, "selection_required", "담당 에이전트를 먼저 확정하세요.")
         _run_task(conn, first, session_id=session_id, now=now, settings=settings)
     repo.mark_chain_started(conn, chain_id, now)
+
+
+_WORK_KEY = re.compile(rf"{WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})")
+
+
+@router.get("/work/{key}", response_class=HTMLResponse)
+def work_detail(
+    request: Request,
+    key: str,
+    session_id: str = Depends(require_session),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """업무 상세(`/work/RUN-23`) — 머리·단계 묶음·양식 칸·연결 업무·열린 사람 요청. 다른 워크스페이스의 키는 404."""
+    now = utc_now()
+    match = _WORK_KEY.fullmatch(key)
+    work = repo.get_work_item_by_key(conn, session_id, int(match.group(1))) if match else None
+    if work is None:
+        raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
+    base = _base(request, conn, session_id, now)
+    context = views.work_context(conn, work, now=now, settings=_settings(request), is_operator=base["is_operator"])
+    return _render("work_detail.html", **base, **context)
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)

@@ -962,6 +962,8 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 구현(step 8): `repo.list_metric_facts` 가 `tasks.work_item_id` 를 싣고 Task 를 생성 순으로 넘기며, `metrics._Index.bundles` 는 업무마다 처음 나온 단계를 시작 Task 로 삼는다. 업무 생성 시각은 첫 단계 `created_at` 과 같다(`insert_work_item_task`·`upsert_source_issue`·`create_followup_once(new_work)` 가 같은 `now` 로 한 트랜잭션에 넣고, 마이그레이션도 첫 단계 값) — 그래서 `TaskFact` 에 업무 시각 칸을 따로 두지 않는다. 인계 대기는 시작 Task 가 아닌 단계만 센다(`predecessor_task_id` 를 보지 않음 — 체인·폼의 업무 사이 선행은 제외, 선행 없는 다시 맡긴 단계는 포함). `TaskFact.predecessor_task_id` 는 쓰는 곳이 없어 뺐다. 접수 → 완료의 직접 등록 규칙(시작 Task 의 `완료` 시각)·`group_by`·기준선은 그대로. `new_work` 로 생긴 업무는 원본 칸을 복사해도 `source_issues` 행이 원인 업무의 첫 단계에만 있으므로 GitHub 이슈 묶음이 아니다(`intake_to_merge` 에 들지 않고 직접 등록 규칙으로 잰다). `/metrics` 맨 위 설명은 "GitHub 이슈 업무만".
 
+구현(step 9, 최소 변경): 홈(`/tasks`)·왼쪽 목록은 Task 대신 업무 한 줄(`_base.my_work` = `views.work_summary`, 키 번호 내림차순) — 키(원본 키가 있으면 원본 키, 없으면 `RUN-n`)·제목·담당(`assignee_label`: 멤버 표시 이름 / Agent 이름 / `담당 없음`)·저장된 업무 상태·이유·`updated_at` 경과. 화면은 업무 상태를 다시 판정하지 않는다(수집이 막 만든 업무는 워커 tick 끝까지 `새로 들어옴`). 첫 단계가 지시 전이면 그 줄에 [에이전트에게 맡기기](`/tasks/<첫 단계>/delegate`) 그대로. 줄은 `/work/RUN-n` 으로 간다 — 키 형식(`RUN-<1~9자리>`)이 아니거나 이 워크스페이스에 없는 번호는 404 `not_found`. 업무 상세는 머리(원본 링크·담당·가장 늦은 단계의 PR·상태 줄)·요청·단계 목록(`단계 N/M · 종류 라벨`, 단계 상태·이유·실행 횟수, `/tasks/{id}` 링크)·열린 사람 요청(`_cycle.html` 의 `response_form` 재사용 — `stage_failed` 는 [다시 맡기기]·[닫기])·양식 칸(찾은 칸만)·연결 업무(`work_item_links` — 이어서 생긴 업무/원인 업무/선행 업무/뒤따르는 업무)·접힌 "자세히"(업무 id·원본 종류·요청 코드·양식 출처 — 내부 코드는 여기만). 단계 상세 브레드크럼 맨 앞에 업무 키 링크, 선행·후속 칩은 같은 업무 단계면 `단계 N/M`, 다른 업무면 `선행|후속 RUN-n`(업무 상세로). 후속 칩은 `followups_of`(new_work 후속 포함). 등록 폼의 선행 select 는 여전히 Task 목록(`_form_context.my_tasks`). 상태 배지(`_status.html`)는 업무 상태 8개도 받는다.
+
 ### v9 → v10 마이그레이션 (step 2·4)
 
 한 트랜잭션. 실패하면 v9 그대로(DDL 도 되돌림).
@@ -991,7 +993,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | PR | `domain/pull_request.py`(7) | `head_branch(task_id, *, work_key=None, branch_seq=1) -> str`(= `result_branch`), `pr_title(work_key: str \| None, title: str) -> str`, `pr_body(..., work_key=None)`, `not_pushed_question(branch)`, `failed_question(branch, cause)` |
 | 실행 요청 브랜치 칸 | `adapters/repo.py`·`connector/git_ops.py`(7) | `execution_branch_fields(conn, task_id) -> {"work_key", "branch_seq"}`, `ensure_worktree(repo, task_id, base_commit, *, work_key=None, branch_seq=1)`, `push_task_branch(repo, task_id, *, work_key=None, branch_seq=1)`, 실패 코드 `invalid_work_key` |
 | 지표 | `domain/metrics.py`·`adapters/repo.py`(8) | `TaskFact.work_item_id`, 묶음 = 업무 |
-| 화면 | `server/web.py`·`server/views.py`(9) | 홈 목록 = `list_work_items` 한 줄(키·제목·종류·업무 상태·이유·담당), 상세에 단계 묶음 — 새 화면 구성은 16-work-ui |
+| 화면 | `server/web.py`·`server/views.py`(9) | 홈·왼쪽 목록 = `list_work_items` 한 줄(`views.work_summary` — 키·제목·담당·업무 상태·이유·갱신 경과), `GET /work/{key}`(`views.work_context`, `work_detail.html`), `views.assignee_label`·`FORM_LABELS`, 응답 동작 `retry`(화면 [다시 맡기기]) — 새 화면 구성은 16-work-ui |
 
 ## 기존 구현과 초기 설계 기록
 

@@ -1,4 +1,4 @@
-{# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무 · 세션. 상태 점은 _status.html 규칙.
+{# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무(한 줄 = 업무) · 세션. 상태 점은 _status.html 규칙.
    `+` 는 직접 등록, 아래는 워크스페이스 + 로그아웃 (ADR-0016·0019). #}
 {% import "_status.html" as st %}
 <aside class="sidebar">
@@ -14,12 +14,12 @@
     <a href="/operator/notifications"{% if request.url.path == '/operator/notifications' %} class="active"{% endif %}>알림</a>{% endif %}
   </nav>
   <div class="side-head"><span>최근</span><a class="plus" href="/tasks/new" title="업무 등록" aria-label="업무 등록">+</a></div>
-  {% if my_tasks %}
+  {% if my_work %}
   <ul class="task-list">
-    {% for t in my_tasks|reverse %}
-    <li><a href="/tasks/{{ t.task_id }}"{% if request.url.path == '/tasks/' ~ t.task_id %} class="active"{% endif %} data-task-id="{{ t.task_id }}">
-      <span class="title">{{ t.title }}</span>
-      <span class="sub">{{ t.created_at|ago(now) }} · {{ st.mini(t.status.label) }}</span>
+    {% for w in my_work %}
+    <li><a href="/work/{{ w.work_key }}"{% if request.url.path == '/work/' ~ w.work_key %} class="active"{% endif %} data-work-key="{{ w.work_key }}">
+      <span class="title">{{ w.title }}</span>
+      <span class="sub">{{ w.key }} · {{ w.updated_at|ago(now) }} · {{ st.mini(w.status.label) }}</span>
     </a></li>
     {% endfor %}
   </ul>

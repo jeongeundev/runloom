@@ -173,13 +173,18 @@ def test_app_home_has_agent_and_task_sections_with_direct_register(web):
     assert '/static/logo.jpg' not in text  # 로고는 랜딩에만
 
 
-def test_home_lists_my_tasks_with_status(web):
+def test_home_lists_my_work_with_status(web):
     task_id = create_task(web, fix_form())
     text = web.get("/tasks").text
     assert "아직 업무가 없습니다." not in text
-    assert f"/tasks/{task_id}" in text
-    assert BUG_FIX_TITLE in text
-    assert "대기" in text and "연결 끊김, 마지막 확인 없음" in text  # conftest 의 Codex 는 아직 보고 전
+    main = text[text.index('class="main'):]
+    assert 'href="/work/RUN-1"' in main and f"/tasks/{task_id}" not in main  # 한 줄 = 업무
+    assert BUG_FIX_TITLE in main
+    assert 'data-status="새로 들어옴"' in main and "담당 없음" in main  # 자동 선택만으로는 담당이 아니다
+    # 단계 상태는 업무 상세의 단계 목록에서
+    stages = web.get("/work/RUN-1").text.split("data-stages", 1)[1].split("</ol>", 1)[0]
+    assert f'href="/tasks/{task_id}"' in stages
+    assert 'data-status="대기"' in stages and "연결 끊김, 마지막 확인 없음" in stages  # conftest 의 Codex 는 아직 보고 전
 
 
 # --- 등록 폼 ---------------------------------------------------------------------
@@ -697,7 +702,8 @@ def test_chain_page_shows_nodes_in_order_with_assignment_reasons_and_start_butto
 
     assert "워크플로우" in text and "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응" in text
     assert "n8n" in text and "시연 데이터" not in text
-    assert text.index("#41") < text.index("#42")
+    main = text[text.index('class="main'):]  # 왼쪽 목록은 업무 키(원본 키 #41·#42)를 새 업무부터 보인다
+    assert main.index("#41") < main.index("#42")
     assert f'href="/tasks/{task_a}"' in text and f'href="/tasks/{task_b}"' in text
     assert "개인 Codex" in text
     assert "버그 수정" in text and "커밋 검토" in text
@@ -902,9 +908,10 @@ def test_home_lists_chains_with_progress(web, conn):
     repo.mark_chain_started(conn, chain_id, NOW)
     home = web.get("/tasks").text
     assert "1/2 완료" in home and "2단계 중 2단계 대기" in home
-    # 왼쪽 목록에는 Task 그대로
+    # 왼쪽 목록에는 업무 한 줄씩 — 체인 노드는 각자 업무
     sidebar = home[home.index('class="sidebar'):home.index('class="main')]
-    assert f'href="/tasks/{task_a}"' in sidebar and f'href="/tasks/{task_b}"' in sidebar
+    assert 'href="/work/RUN-1"' in sidebar and 'href="/work/RUN-2"' in sidebar
+    assert f'href="/tasks/{task_a}"' not in sidebar and f'href="/tasks/{task_b}"' not in sidebar
     assert "/chains/" not in sidebar
 
 

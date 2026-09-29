@@ -160,13 +160,13 @@ def test_static_stylesheet_is_served(client):
     assert ":root" in response.text
 
 
-def test_sidebar_lists_my_tasks_with_status_dot_and_relative_time(web):
+def test_sidebar_lists_my_work_with_status_dot_and_relative_time(web):
     task_id = create_task(web, fix_form())
     html = web.get("/tasks").text
     sidebar = html[html.index('class="sidebar'):html.index('class="main')]
-    assert f'href="/tasks/{task_id}"' in sidebar
+    assert 'href="/work/RUN-1"' in sidebar and f'href="/tasks/{task_id}"' not in sidebar  # 한 줄 = 업무
     assert BUG_FIX_TITLE in sidebar
-    assert 'data-status="대기"' in sidebar
+    assert 'data-status="새로 들어옴"' in sidebar  # 업무 상태
     assert "전" in sidebar  # 상대 시각 "n분 전"
     assert 'href="/tasks/new"' in sidebar  # `+` 는 직접 등록
     assert 'href="/tasks/import"' not in sidebar and "/tasks/new?example=diagnose" not in sidebar
@@ -419,7 +419,11 @@ def test_live_fragment_shows_successor_chip(web):
     task_a = create_task(web, fix_form())
     task_b = create_task(web, code_review_form(task_a))
     fragment = web.get(f"/tasks/{task_a}/live").text
-    assert f'href="/tasks/{task_b}"' in fragment and "후속" in fragment
+    # 폼 선행으로 이은 Task 는 다른 업무 — 칩은 그 업무 키로 업무 상세에
+    assert 'href="/work/RUN-2"' in fragment and "후속 RUN-2" in fragment
+    assert 'href="/work/RUN-1"' in fragment  # 브레드크럼의 자기 업무
+    back = web.get(f"/tasks/{task_b}/live").text
+    assert 'href="/work/RUN-1"' in back and "선행 RUN-1" in back
     assert 'data-status="대기"' in fragment
 
 

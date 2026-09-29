@@ -30,6 +30,7 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     executions,
     finish_fix,
     finish_review,
+    fail_fix,
     import_issue,
     make_worker,
     pr_github,
@@ -394,7 +395,7 @@ def test_open_pr_shows_human_turn_and_the_pr_link_then_done_after_merge(operator
     assert "사람 차례 · PR 확인" in text
     assert 'href="https://github.com/acme/billing/pull/31"' in text
     assert 'data-pull-request="open"' in text
-    assert "사람 차례 · PR 확인" in page(operator, "/tasks")
+    assert 'data-status="PR · 검토"' in page(operator, "/tasks")  # 목록은 업무 상태
 
     pr_github.merge(31)
     clock.now = "2026-10-06T13:00:00Z"
@@ -407,3 +408,112 @@ def test_task_without_pr_has_no_pr_line(operator, conn, worker):
     task_id = import_issue(conn, 1)
     worker.tick()
     assert "data-pull-request" not in page(operator, f"/tasks/{task_id}")
+
+
+# --- 업무 목록·상세 (phase 14 step 9) -----------------------------------------------------------------
+
+
+def main_of(text: str) -> str:
+    return text[text.index('class="main'):]
+
+
+def sidebar_of(text: str) -> str:
+    return text[text.index('class="sidebar'):text.index('class="main')]
+
+
+def fix_then_review(conn, store, worker, clock) -> tuple[str, str]:
+    """(fix_task, review_task) — 수정 결과가 판정을 통과해 검토 단계가 한 시간 뒤에 생긴 GitHub 업무 하나."""
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"])
+    clock.now = "2026-10-06T13:00:00Z"
+    worker.tick()
+    (review,) = review_tasks(conn, fix_task)
+    return fix_task, review["task_id"]
+
+
+def test_one_issue_with_fix_and_review_is_one_row_and_one_work_detail(operator, conn, store, worker, clock):
+    fix_task, review_task = fix_then_review(conn, store, worker, clock)
+
+    home = page(operator, "/tasks")
+    main = main_of(home)
+    # 한 줄 = 업무 — 단계(Task) 링크가 아니라 업무 상세 링크 하나
+    assert main.count('href="/work/RUN-1"') == 1
+    assert f'href="/tasks/{fix_task}"' not in main and f'href="/tasks/{review_task}"' not in main
+    row = main.split('href="/work/RUN-1"', 1)[1].split("</div>\n  </div>", 1)[0]
+    assert "acme/billing#1" in row  # 원본 키가 있으면 원본 키
+    assert "버그 1" in row
+    assert FIX in row  # 담당 = 에이전트 이름
+    assert 'data-status="내 차례"' in row and "검토 대기" in row  # 업무 상태 — 수정 단계가 검토를 기다림
+    assert sidebar_of(home).count('href="/work/RUN-1"') == 1
+
+    detail = page(operator, "/work/RUN-1")
+    assert "RUN-1" in detail and 'href="https://github.com/acme/billing/issues/1"' in detail
+    stages = detail.split("data-stages", 1)[1].split("</ol>", 1)[0]
+    assert stages.index(f'href="/tasks/{fix_task}"') < stages.index(f'href="/tasks/{review_task}"')
+    assert "버그 수정" in stages and "커밋 검토" in stages
+    assert "실행 1회" in stages
+
+
+def test_task_detail_links_its_work_item_and_names_stages_by_position(operator, conn, store, worker, clock):
+    fix_task, review_task = fix_then_review(conn, store, worker, clock)
+
+    fix = page(operator, f"/tasks/{fix_task}")
+    crumbs = fix.split('class="crumbs"', 1)[1].split('class="bubble"', 1)[0]
+    assert 'href="/work/RUN-1"' in crumbs
+    assert f'href="/tasks/{review_task}"' in crumbs and "단계 2/2" in crumbs
+    review = page(operator, f"/tasks/{review_task}")
+    crumbs = review.split('class="crumbs"', 1)[1].split('class="bubble"', 1)[0]
+    assert f'href="/tasks/{fix_task}"' in crumbs and "단계 1/2" in crumbs
+
+
+def test_unknown_and_foreign_work_keys_are_404(operator, conn, app):
+    import_issue(conn, 1)
+    assert operator.get("/work/RUN-99").status_code == 404
+    assert operator.get("/work/task-gh-1").status_code == 404
+    assert operator.get("/work/RUN-0").status_code == 404
+    # 다른 워크스페이스의 업무 — 키 번호가 달라도 이 워크스페이스에서는 없는 업무
+    _stranger(app, conn)
+    conn.execute("BEGIN IMMEDIATE")
+    repo.create_work_item(conn, "sess-other", title="남의 업무", request="-", kind="bug_fix", source_type="manual",
+                          now=NOW)
+    conn.execute("UPDATE work_items SET key_number = 7 WHERE session_id = 'sess-other'")
+    conn.commit()
+    response = operator.get("/work/RUN-7")
+    assert response.status_code == 404 and "남의 업무" not in response.text
+    assert "남의 업무" not in page(operator, "/tasks")
+
+
+def test_failed_work_offers_retry_and_close_and_retry_adds_a_stage(operator, conn, store, worker):
+    fix_task, _ = fail_fix(conn, store, worker)
+    (request,) = [r for r in repo.list_human_requests(conn, fix_task) if r["state"] == "open"]
+    request_id = request["request_id"]
+
+    assert 'data-status="내 차례"' in main_of(page(operator, "/tasks"))
+    detail = page(operator, "/work/RUN-1")
+    assert 'data-status="내 차례"' in detail and "실패 — timeout · 20분 초과" in detail
+    block = detail.split(f'data-request-id="{request_id}"', 1)[1].split("</form>", 1)[0]
+    assert re.search(r'value="retry">다시 맡기기<', block) and re.search(r'value="close">닫기<', block)
+    assert 'value="resume"' not in block
+    # 내부 코드(stage_failed)는 "자세히" 안에만
+    assert "stage_failed" not in detail.split("<details", 1)[0]
+
+    body = {"response_id": form_value(detail, request_id, "response_id"),
+            "expected_revision": request["revision"], "action": "retry", "text": ""}
+    assert operator.post(f"/human-requests/{request_id}/responses", json=body).status_code == 200
+
+    detail = page(operator, "/work/RUN-1")
+    stages = detail.split("data-stages", 1)[1].split("</ol>", 1)[0]
+    assert stages.count('href="/tasks/') == 2
+    assert f'data-request-id="{request_id}"' not in detail
+
+
+def test_closing_a_failed_work_ends_it(operator, conn, store, worker):
+    fix_task, _ = fail_fix(conn, store, worker)
+    (request,) = [r for r in repo.list_human_requests(conn, fix_task) if r["state"] == "open"]
+    detail = page(operator, "/work/RUN-1")
+    body = {"response_id": form_value(detail, request["request_id"], "response_id"),
+            "expected_revision": request["revision"], "action": "close", "text": ""}
+    assert operator.post(f"/human-requests/{request['request_id']}/responses", json=body).status_code == 200
+    detail = page(operator, "/work/RUN-1")
+    assert 'data-status="종료"' in detail and "닫음 — 실행 실패" in detail

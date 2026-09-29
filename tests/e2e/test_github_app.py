@@ -349,8 +349,9 @@ def test_02_first_sync_imports_every_open_issue_as_waiting_for_delegation(world)
     assert world.fake.requests and all(authorized for _, _, authorized in world.fake.requests)
 
     listing = world.http.get("/tasks")
-    assert listing.status_code == 200 and "지시 전" in listing.text
-    assert listing.text.count("에이전트에게 맡기기") >= 3
+    # 목록 한 줄 = 업무(phase 14 step 9) — 지시 전 업무는 `새로 들어옴` 에 맡기기 버튼
+    assert listing.status_code == 200 and listing.text.count('data-status="새로 들어옴"') >= 3
+    assert listing.text.count("에이전트에게 맡기기") >= 3 and "맡겨야 실행합니다" in listing.text
 
 
 def test_03_runner_registers_the_folder_and_matching_fills_everything(world):
