@@ -19,7 +19,8 @@ from workflow.adapters.github_client import (
     IssuePage,
 )
 from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink
-from workflow.contracts.v1 import Capability, ExecutionRequest
+from workflow.contracts.v1 import Capability, ExecutionRequest, KindSpec
+from workflow.domain.field_mapping import MappingRow
 from workflow.domain.selection import Candidate
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, evaluate_readiness
 from workflow.server.auth import SELFHOST_SESSION_ID, SESSION_COOKIE, verify_session
@@ -608,3 +609,83 @@ def test_filtered_source_ignores_trigger_label_and_needs_no_delegation(conn, ses
     assert gh.list_calls[0] == IssueCursor(since=START, page=1, etag=None)
     assert codes_by_ref(conn, session_id) == {"acme/billing#1": []}
     assert source_issue(conn, session_id, 1)["delegated_at"] is None
+
+
+# --- 업무 + 첫 단계, 매핑 표, 양식 칸 (phase 14 step 5, ADR-0020) ---
+
+DOCS = KindSpec(kind="write_docs", label="문서 작성", capability_code="docs.write", scope_key="repository_id",
+                input_kinds=[], output_kind="generic_result", outcomes=["done"], instructions="", builtin=False)
+FORM_BODY = "### 목표\n\n쿠폰은 한 번만\n\n### 기대 동작\n\n_No response_\n"
+
+
+def mappings(conn, sid: str, *rows: tuple[str, str, str]) -> None:
+    repo.replace_field_mappings(conn, sid, [MappingRow("github", field, value, result, position)
+                                            for position, (field, value, result) in enumerate(rows, start=1)], now=NOW)
+
+
+def test_new_issue_becomes_work_item_with_first_stage_form_and_priority(conn, session_id):
+    mappings(conn, session_id, ("kind", "*", "bug_fix"), ("priority", "P1", "high"))
+    gh = FakeGitHub()
+    gh.put(issue(1, body=FORM_BODY, labels=["bug", "p1"]))
+    sync_source(conn, gh, SOURCE, NOW)
+
+    (work,) = repo.list_work_items(conn, session_id)
+    (stage,) = repo.list_work_item_tasks(conn, work["work_item_id"])
+    assert (stage["kind"], stage["source_ref"]) == ("bug_fix", "acme/billing#1")
+    assert (work["kind"], work["priority"], work["source_type"], work["source_key"]) == (
+        "bug_fix", "high", "github", "acme/billing#1")
+    assert (work["assignee_type"], work["status"]) == (None, "새로 들어옴")
+    assert json.loads(work["form_json"]) == {"goal": {"value": "쿠폰은 한 번만", "source": "github_body:### 목표"}}
+    assert stage["request"] == FORM_BODY.strip()  # 요청은 본문 그대로
+
+
+def test_label_mapping_picks_another_registered_kind(conn, session_id):
+    repo.insert_kind(conn, session_id, DOCS, NOW)
+    mappings(conn, session_id, ("kind", "docs", "write_docs"), ("kind", "*", "bug_fix"))
+    gh = FakeGitHub()
+    gh.put(issue(1, labels=["bug", "Docs"]))
+    gh.put(issue(2))
+    sync_source(conn, gh, SOURCE, NOW)
+
+    tasks = tasks_by_ref(conn, session_id)
+    assert tasks["acme/billing#1"]["kind"] == "write_docs"
+    assert json.loads(tasks["acme/billing#1"]["required_capability_json"]) == {
+        "code": "docs.write", "scope": {"repository_id": "billing"}}
+    assert tasks["acme/billing#2"]["kind"] == "bug_fix"
+    assert {w["kind"] for w in repo.list_work_items(conn, session_id)} == {"write_docs", "bug_fix"}
+
+
+def test_unmapped_issue_is_not_imported_until_it_maps(conn, session_id):
+    """종류 매핑이 없으면 업무도 단계도 만들지 않는다(`work_items.kind` 는 등록 종류 필수, 기본 종류 없음) — 이슈가
+    바뀌어 매핑되면 다음 수집이 가져온다."""
+    repo.insert_kind(conn, session_id, DOCS, NOW)
+    mappings(conn, session_id, ("kind", "docs", "write_docs"))
+    gh = FakeGitHub()
+    gh.put(issue(1))
+    report = sync_source(conn, gh, SOURCE, NOW)
+    assert (report.unmapped, report.created) == (1, [])
+    assert repo.list_work_items(conn, session_id) == [] and tasks_by_ref(conn, session_id) == {}
+
+    gh.put(issue(1, labels=["bug", "docs"], updated_at="2026-10-06T03:00:00Z"))
+    report = sync_source(conn, gh, SOURCE, NOW)
+    assert (report.unmapped, len(report.created)) == (0, 1)
+    assert tasks_by_ref(conn, session_id)["acme/billing#1"]["kind"] == "write_docs"
+
+
+def test_body_edit_updates_work_item_form_and_revision(conn, session_id):
+    gh = FakeGitHub()
+    gh.put(issue(1))
+    sync_source(conn, gh, SOURCE, NOW)
+    (work,) = repo.list_work_items(conn, session_id)
+    assert (work["revision"], work["form_json"]) == (1, "{}")
+
+    gh.put(issue(1, title="새 제목", body=FORM_BODY, updated_at="2026-10-06T03:00:00Z"))
+    sync_source(conn, gh, SOURCE, NOW)
+    work = repo.get_work_item(conn, session_id, work["work_item_id"])
+    assert (work["title"], work["request"], work["revision"]) == ("새 제목", FORM_BODY.strip(), 2)
+    assert set(json.loads(work["form_json"])) == {"goal"}
+
+    gh.put(issue(1, title="새 제목", body=FORM_BODY, state="closed", updated_at="2026-10-06T03:10:00Z"))
+    sync_source(conn, gh, SOURCE, NOW)
+    work = repo.get_work_item(conn, session_id, work["work_item_id"])
+    assert (work["source_state"], work["revision"]) == ("closed", 2)

@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import SCHEMA_VERSION, connect, init_schema
 from workflow.adapters.secret_store import SecretStore
-from workflow.server import github_api, human_api, inbound_api, machine_api, metrics_api, web
+from workflow.server import github_api, human_api, inbound_api, machine_api, mapping_api, metrics_api, web
 from workflow.server.auth import LoginThrottle
 from workflow.server.errors import install_error_handlers
 from workflow.server.settings import Settings, load_settings
@@ -52,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(github_api.router)  # GitHub 소스 설정 (ADR-0014) — 운영자 세션만
     app.include_router(human_api.router)  # 사람 요청 응답 (ADR-0014) — 운영자 세션만
     app.include_router(metrics_api.router)  # 지표·기준선 가져오기 (ADR-0015) — 운영자 세션만
+    app.include_router(mapping_api.router)  # 매핑 표 (ADR-0020) — 운영자 세션만
     web.install(app)  # 라우터 + PageError → error.html
     app.add_api_route("/healthz", lambda: _healthz(settings), methods=["GET"])  # 인증 없음 (ADR-0016)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")  # style.css 만. CDN 없음

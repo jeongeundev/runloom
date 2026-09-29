@@ -227,6 +227,11 @@ def test_create_fix_task_selects_agent_and_waits_for_connection(web, conn):
     selection = repo.get_selection(conn, task_id)
     assert selection.selected_agent_id == "agent-codex-mac" and selection.mode == "auto"
     assert selection.reason == "code.fix · repository_id=demo-report-repo 일치 후보 1개"
+    # 직접 등록 = 업무 하나(원본 manual, 양식 없음) + 그 첫 단계 (ADR-0020)
+    (work,) = repo.list_work_items(conn, row["session_id"])
+    assert [t["task_id"] for t in repo.list_work_item_tasks(conn, work["work_item_id"])] == [task_id]
+    assert (work["source_type"], work["source_id"], work["source_key"], work["priority"], work["form_json"]) == (
+        "manual", None, None, "normal", "{}")
 
 
 def test_create_review_task_waits_for_predecessor(web, conn):
@@ -245,6 +250,10 @@ def test_create_review_task_waits_for_predecessor(web, conn):
     criteria = repo.get_task(conn, task_b)["criteria_json"]
     assert '"user.1"' in criteria and '"structured": false' in criteria
     assert CODE_REVIEW_TITLE in detail(web, task_a)  # 후속 링크
+    # 폼의 선행은 다른 업무 — 업무 사이 `blocks` 링크로도 남는다
+    work_a, work_b = (repo.work_item_of_task(conn, t)["work_item_id"] for t in (task_a, task_b))
+    assert [(link["from_work_item_id"], link["to_work_item_id"], link["type"])
+            for link in repo.list_work_item_links(conn, work_b)] == [(work_a, work_b, "blocks")]
 
 
 def test_create_task_needs_selection_when_two_candidates_then_manual_select(web, conn):

@@ -47,6 +47,7 @@ from workflow.contracts.v1 import (
     SelectionRecord,
     SuccessorRule,
 )
+from workflow.domain.field_mapping import MappingRow
 from workflow.domain.task_followup import FollowupTaskSpec
 from workflow.domain.work_status import WorkStatus
 
@@ -2992,3 +2993,104 @@ def test_members_first_admin_and_added_member(sessions):
     assert [(r["member_id"], r["display_name"], r["role"]) for r in rows] == [
         (admin, "관리자", "admin"), (member, "김개발", "member")]
     assert [r["role"] for r in repo.list_members(sessions, OTHER_SESSION)] == ["admin"]
+
+
+# --- phase 14 step 5: 접수 — 업무 양식·우선순위·원본 갱신, blocks 링크, 매핑 표 ---------------------------------
+
+FORM_BODY = "### 목표\n쿠폰 한 번만\n\n### 재현 절차\n1. 쿠폰 적용"
+FORM = {"goal": {"value": "쿠폰 한 번만", "source": "github_body:### 목표"}}
+
+
+def test_upsert_source_issue_new_work_item_takes_form_and_priority(seeded):
+    repo.save_github_source(seeded, SESSION, _source(), NOW)
+    repo.upsert_source_issue(seeded, SESSION, SOURCE, _snapshot(body=FORM_BODY), task=_fix_task(),
+                             form=FORM, priority="high", now=NOW)
+    work = repo.work_item_of_task(seeded, "task-gh-41")
+    assert json.loads(work["form_json"]) == FORM
+    assert (work["priority"], work["assignee_type"], work["revision"]) == ("high", None, 1)
+
+
+def test_upsert_source_issue_updates_work_item_input_like_the_first_stage(cycle):
+    def work():
+        return repo.work_item_of_task(cycle, "task-gh-41")
+
+    assigned = _snapshot(assignee_ids=[1], assignee_logins=["a"], updated_at="2026-10-06T10:20:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, assigned, task=_fix_task(), form=FORM, now=LATER)
+    assert (work()["revision"], work()["form_json"]) == (1, "{}")  # 입력이 그대로면 업무도 그대로
+
+    edited = _snapshot(body=FORM_BODY, updated_at="2026-10-06T10:30:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, edited,
+                             task=_fix_task(title="새 제목", request=FORM_BODY), form=FORM, now=LATER)
+    row = work()
+    assert (row["title"], row["request"], row["revision"], row["updated_at"]) == ("새 제목", FORM_BODY, 2, LATER)
+    assert json.loads(row["form_json"]) == FORM
+
+    closed = _snapshot(body=FORM_BODY, state="closed", updated_at="2026-10-06T10:40:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, closed,
+                             task=_fix_task(title="새 제목", request=FORM_BODY), form=FORM, now=LATER)
+    assert (work()["source_state"], work()["revision"]) == ("closed", 2)  # 원본 상태만
+
+
+def test_upsert_source_issue_keeps_work_item_input_after_first_stage_closes(cycle):
+    repo.update_task_status(cycle, "task-gh-41", "실패", "운영자 종료", finished_at=LATER, now=LATER)
+    edited = _snapshot(body="다시 편집", updated_at="2026-10-06T10:30:00Z")
+    repo.upsert_source_issue(cycle, SESSION, SOURCE, edited, task=_fix_task(request="다시 편집"), form=FORM,
+                             now=LATER)
+    row = repo.work_item_of_task(cycle, "task-gh-41")
+    assert (row["request"], row["revision"], row["form_json"]) == ("GitHub acme/billing#41", 1, "{}")
+
+
+def test_mark_issue_delegated_refreshes_work_status(seeded):
+    repo.upsert_agent(seeded, _agent(FIX_AGENT, connection_type="local", api_url=None, credential_ref=None,
+                                     capabilities=[{"code": "code.fix", "scope": {"repository_id": "billing"}}]))
+    repo.save_github_source(seeded, SESSION, _source(intake="all_open", label_filter=[]), NOW)
+    task = _fix_task(selection_mode="manual", chosen_agent_id=FIX_AGENT)
+    repo.upsert_source_issue(seeded, SESSION, SOURCE, _snapshot(), task=task, now=NOW)
+    repo.refresh_task_work_statuses(seeded, ["task-gh-41"], now=NOW)
+    assert repo.work_item_of_task(seeded, "task-gh-41")["status"] == "새로 들어옴"  # 지시 전
+    repo.mark_issue_delegated(seeded, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
+                              by="operator", now=LATER)
+    work = repo.work_item_of_task(seeded, "task-gh-41")
+    assert work["status"] == "대기"
+    assert json.loads(repo.list_work_item_events(seeded, work["work_item_id"])[-1]["data_json"])["to"] == "대기"
+
+
+def test_insert_work_item_task_with_predecessor_links_blocks(seeded):
+    """다른 업무의 Task 를 선행으로 둔 새 업무(체인 `blocked_by`·폼 선행)는 `blocks` 링크(앞 업무 → 새 업무)로도 남는다."""
+    later = repo.insert_work_item_task(seeded, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    first = repo.work_item_of_task(seeded, TASK_A)["work_item_id"]
+    (link,) = repo.list_work_item_links(seeded, later)
+    assert (link["from_work_item_id"], link["to_work_item_id"], link["type"]) == (first, later, "blocks")
+    assert repo.get_task(seeded, TASK_B)["predecessor_task_id"] == TASK_A
+    alone = repo.insert_work_item_task(seeded, _task("t-alone"), NOW)
+    assert repo.list_work_item_links(seeded, alone) == []
+
+
+def _mapping(source_value: str, runloom_value: str, *, field: str = "kind", position: int = 1,
+             source_type: str = "github") -> MappingRow:
+    return MappingRow(source_type, field, source_value, runloom_value, position)
+
+
+def test_field_mappings_start_with_default_and_replace_bumps_config_revision(sessions):
+    assert repo.list_field_mappings(sessions, SESSION) == [_mapping("*", "bug_fix")]
+    revision = repo.get_config_revision(sessions, SESSION)
+    rows = [_mapping("docs", "code_review", position=1), _mapping("*", "bug_fix", position=2),
+            _mapping("P1", "high", field="priority", position=3)]
+    assert repo.replace_field_mappings(sessions, SESSION, rows, now=LATER) == revision + 1
+    assert repo.get_config_revision(sessions, SESSION) == revision + 1
+    assert repo.list_field_mappings(sessions, SESSION) == rows
+    assert repo.list_field_mappings(sessions, SESSION, "github", "priority") == rows[2:]
+    assert repo.list_field_mappings(sessions, OTHER_SESSION) == [_mapping("*", "bug_fix")]  # 다른 워크스페이스는 그대로
+
+
+@pytest.mark.parametrize("rows", [
+    [_mapping("docs", "no_such_kind")],  # 등록되지 않은 종류
+    [_mapping("p1", "urgent", field="priority")],  # 우선순위 값 밖
+    [_mapping("bug", "bug_fix"), _mapping("BUG", "code_review", position=2)],  # 같은 원본 값 두 번(대소문자 무시)
+])
+def test_replace_field_mappings_rejects_invalid_rows_and_keeps_old(sessions, rows):
+    revision = repo.get_config_revision(sessions, SESSION)
+    with pytest.raises(ValueError):
+        repo.replace_field_mappings(sessions, SESSION, rows, now=LATER)
+    assert repo.list_field_mappings(sessions, SESSION) == [_mapping("*", "bug_fix")]
+    assert repo.get_config_revision(sessions, SESSION) == revision

@@ -64,6 +64,7 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain import status as domain_status
+from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
@@ -157,6 +158,50 @@ def seed_default_field_mappings(conn: Connection, session_id: str, *, now: str) 
             (f"map-{secrets.token_hex(4)}", session_id, source_type, field, source_value, runloom_value, position,
              now),
         )
+
+
+def list_field_mappings(
+    conn: Connection, session_id: str, source_type: str | None = None, field: str | None = None
+) -> list[MappingRow]:
+    """워크스페이스 매핑 행(`position`, `created_at`, `mapping_id` 순 — `map_value` 의 순서)."""
+    where, params = ["session_id = ?"], [session_id]
+    if source_type is not None:
+        where.append("source_type = ?")
+        params.append(source_type)
+    if field is not None:
+        where.append("field = ?")
+        params.append(field)
+    rows = conn.execute(
+        f"SELECT * FROM field_mappings WHERE {' AND '.join(where)} ORDER BY position, created_at, mapping_id", params
+    ).fetchall()
+    return [MappingRow(r["source_type"], r["field"], r["source_value"], r["runloom_value"], r["position"])
+            for r in rows]
+
+
+def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[MappingRow], *, now: str) -> int:
+    """워크스페이스 매핑 행 전부를 `rows` 로 바꾸고 설정 번호 +1(새 번호). `kind` 값은 등록된 종류, `priority` 값은
+    high·normal·low, 같은 (원본 종류, 필드, 원본 값 — 대소문자 무시)은 한 번만 — 어기면 ValueError 이고 아무것도 바꾸지
+    않는다. 이미 만든 업무는 바꾸지 않는다."""
+    with _tx(conn):
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            if row.field == "kind" and get_kind(conn, session_id, row.runloom_value) is None:
+                raise ValueError(f"종류 {row.runloom_value} 이 등록되지 않음")
+            if row.field == "priority" and row.runloom_value not in PRIORITIES:
+                raise ValueError(f"우선순위 {row.runloom_value} 는 {', '.join(PRIORITIES)} 중 하나가 아닙니다")
+            key = (row.source_type, row.field, row.source_value.casefold())
+            if key in seen:
+                raise ValueError(f"{row.source_type} {row.field} 의 원본 값 {row.source_value} 이 두 번 있습니다")
+            seen.add(key)
+        conn.execute("DELETE FROM field_mappings WHERE session_id = ?", (session_id,))
+        for row in rows:
+            conn.execute(
+                "INSERT INTO field_mappings (mapping_id, session_id, source_type, field, source_value, runloom_value,"
+                " position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"map-{secrets.token_hex(4)}", session_id, row.source_type, row.field, row.source_value,
+                 row.runloom_value, row.position, now),
+            )
+        return bump_config_revision(conn, session_id)
 
 
 def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
@@ -939,19 +984,25 @@ def insert_work_item_task(
     source_item_id: str | None = None, source_key: str | None = None,
 ) -> str:
     """새 업무와 그 첫 단계 Task 를 한 트랜잭션에 만들고 업무 id 를 돌려준다. 제목·요청·종류는 Task 의 것,
-    담당은 Task 에 고른 Agent 가 있으면 그 Agent(v9 → v10 마이그레이션과 같다). Task 가 실패하면 업무도 남지 않는다."""
+    담당은 Task 에 고른 Agent 가 있으면 그 Agent(v9 → v10 마이그레이션과 같다). Task 가 실패하면 업무도 남지 않는다.
+    선행 Task(체인 `blocked_by`·폼 선행)가 있으면 그 업무 → 새 업무 `blocks` 링크도 같은 트랜잭션에 남긴다 — 준비 판정은
+    아직 `predecessor_task_id` 를 본다."""
     with _tx(conn):
         work_item_id = _work_item_for_task(conn, task, now, source_type=source_type, source_id=source_id,
                                            source_item_id=source_item_id, source_key=source_key)
         _insert_task_row(conn, task, now, work_item_id=work_item_id)
+        predecessor = task.get("predecessor_task_id")
+        if predecessor is not None:
+            link_work_items(conn, from_work_item_id=work_item_of_task(conn, predecessor)["work_item_id"],
+                            to_work_item_id=work_item_id, type="blocks", now=now)
     return work_item_id
 
 
-def _work_item_for_task(conn: Connection, task: dict, now: str, **source) -> str:
+def _work_item_for_task(conn: Connection, task: dict, now: str, **fields) -> str:
     agent = task.get("chosen_agent_id")
     work_item_id, _ = create_work_item(
         conn, task["session_id"], title=task["title"], request=task["request"], kind=task["kind"],
-        assignee_type="agent" if agent else None, assignee_id=agent, now=now, **source,
+        assignee_type="agent" if agent else None, assignee_id=agent, now=now, **fields,
     )
     return work_item_id
 
@@ -1992,12 +2043,15 @@ class SourceIssueUpsert:
 
 
 def upsert_source_issue(
-    conn: Connection, session_id: str, source_id: str, snapshot: GitHubIssueSnapshot, *, task: dict, now: str
+    conn: Connection, session_id: str, source_id: str, snapshot: GitHubIssueSnapshot, *, task: dict,
+    form: dict | None = None, priority: str = "normal", now: str,
 ) -> SourceIssueUpsert:
     """원본 이슈 하나를 `(source_id, github_issue_id)` 로 Task 하나에 잇는다. 처음 보면 원본 칸을 채운 업무(`github`)와
     그 첫 단계 `task`(insert_task 와 같은 dict)를 같은 트랜잭션에 만든다. `updated_at` 이 저장값보다 이르면 버리고, 같은 시각이라도 digest 가 다르면 새 revision 이다
     (ADR-0014 결정 9). 이미 있는 Task 는 `task` 의 제목·요청만 본다 — 마감 전이고 둘 중 하나가 다르면 같은 트랜잭션에서
-    바꾸고 Task revision+1(다음 실행 입력, 진행 중 실행의 요청은 그대로). 담당·라벨·상태는 원본 스냅샷에만 남는다."""
+    바꾸고 Task revision+1(다음 실행 입력, 진행 중 실행의 요청은 그대로). 담당·라벨·상태는 원본 스냅샷에만 남는다.
+    업무(ADR-0020)는 새로 만들 때 양식(`form`, `WorkForm.to_json()`)·우선순위를 받고, 갱신 때 원본 상태를 늘 따르며
+    첫 단계 입력이 바뀐 때만 제목·요청·양식을 같이 바꾸고 업무 revision+1."""
     digest = snapshot_digest(snapshot)
     with _tx(conn):
         source = _source_row(conn, session_id, source_id)
@@ -2014,7 +2068,7 @@ def upsert_source_issue(
             work_item_id = _work_item_for_task(
                 conn, task, now, source_type="github", source_id=source_id, source_item_id=str(snapshot.issue_id),
                 source_key=key, source_url=f"https://github.com/{snapshot.repository_full_name}/issues/{snapshot.number}",
-                source_state=snapshot.state,
+                source_state=snapshot.state, form=form, priority=priority,
             )
             _insert_task_row(conn, task, now, work_item_id=work_item_id)
             conn.execute(
@@ -2042,14 +2096,25 @@ def upsert_source_issue(
             " WHERE task_id = ? AND finished_at IS NULL AND (title != ? OR request != ?)",
             (task["title"], task["request"], row["task_id"], task["title"], task["request"]),
         )
-        return SourceIssueUpsert("updated", row["task_id"], revision, input_changed=cur.rowcount == 1)
+        input_changed = cur.rowcount == 1
+        work_item_id = _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ?", (row["task_id"],))[0]
+        conn.execute("UPDATE work_items SET source_state = ?, updated_at = ? WHERE work_item_id = ?",
+                     (snapshot.state, now, work_item_id))
+        if input_changed:
+            conn.execute(
+                "UPDATE work_items SET title = ?, request = ?, form_json = ?, revision = revision + 1"
+                " WHERE work_item_id = ?",
+                (task["title"], task["request"], json.dumps(form or {}, ensure_ascii=False), work_item_id),
+            )
+        return SourceIssueUpsert("updated", row["task_id"], revision, input_changed=input_changed)
 
 
 def mark_issue_delegated(
     conn: Connection, *, session_id: str, source_id: str, github_issue_id: int, by: str, now: str
 ) -> bool:
     """원본 이슈 Task 에 실행 지시를 기록한다(ADR-0017 — `all_open` 소스). 처음 지시만 남기고 이미 있으면 그대로(False).
-    라벨을 떼거나 이슈가 바뀌어도 지우지 않는다. 다른 세션 소스·없는 이슈 → NotFound, `by` 가 operator·label 밖 → ValueError."""
+    라벨을 떼거나 이슈가 바뀌어도 지우지 않는다. 다른 세션 소스·없는 이슈 → NotFound, `by` 가 operator·label 밖 → ValueError.
+    처음 지시면 같은 트랜잭션에서 그 업무의 상태를 다시 계산한다."""
     if by not in ("operator", "label"):
         raise ValueError(f"지시 주체 {by!r} 는 operator·label 이 아닙니다")
     with _tx(conn):
@@ -2065,7 +2130,12 @@ def mark_issue_delegated(
             " WHERE source_id = ? AND github_issue_id = ? AND delegated_at IS NULL",
             (now, by, source_id, github_issue_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount == 0:
+            return False
+        work = _one(conn, "SELECT t.work_item_id FROM source_issues si JOIN tasks t ON t.task_id = si.task_id"
+                          " WHERE si.source_id = ? AND si.github_issue_id = ?", (source_id, github_issue_id))
+        refresh_work_status(conn, work["work_item_id"], now=now)
+        return True
 
 
 def list_source_issues(conn: Connection, session_id: str, source_id: str) -> list[Row]:

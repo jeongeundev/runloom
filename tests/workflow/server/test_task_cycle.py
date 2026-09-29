@@ -33,7 +33,9 @@ from workflow.contracts.v1 import (
     ExecutionRequest,
     HandoffBundle,
 )
+from workflow.contracts.v1 import BUILTIN_KINDS
 from workflow.domain.issue_intake import snapshot_to_task_spec
+from workflow.domain.kinds import get_kind
 from workflow.domain.metrics import compute_metrics
 from workflow.domain.work_status import work_status
 from workflow.server import human_api, task_cycle
@@ -43,6 +45,7 @@ from workflow.server.worker import Worker
 from .conftest import event, exchange
 from .test_github_sync import config, issue
 
+BUG_FIX = get_kind(BUILTIN_KINDS, "bug_fix")
 SESSION = SELFHOST_SESSION_ID  # 로그인한 클라이언트와 같은 고정 워크스페이스
 SOURCE = "ghs-1a2b3c4d"
 NOW = "2026-10-06T12:00:00Z"
@@ -135,7 +138,7 @@ def cycle(conn, client) -> dict:
 def import_issue(conn, number: int, **overrides) -> str:
     snapshot = issue(number, **overrides)
     source = repo.get_github_source(conn, SESSION, SOURCE)
-    spec = snapshot_to_task_spec(source, snapshot, session_id=SESSION, task_id=f"task-gh-{number}")
+    spec = snapshot_to_task_spec(source, snapshot, kind=BUG_FIX, session_id=SESSION, task_id=f"task-gh-{number}")
     return repo.upsert_source_issue(conn, SESSION, SOURCE, snapshot, task=spec, now=NOW).task_id
 
 
@@ -798,7 +801,7 @@ def test_review_of_an_older_fix_result_is_not_applied(cycle, conn, store, worker
 def _reopen(conn, number: int, state: str, updated_at: str) -> None:
     snapshot = issue(number, state=state, updated_at=updated_at)
     source = repo.get_github_source(conn, SESSION, SOURCE)
-    spec = snapshot_to_task_spec(source, snapshot, session_id=SESSION, task_id="unused")
+    spec = snapshot_to_task_spec(source, snapshot, kind=BUG_FIX, session_id=SESSION, task_id="unused")
     repo.upsert_source_issue(conn, SESSION, SOURCE, snapshot, task=spec, now=NOW)
 
 
@@ -976,7 +979,7 @@ def test_issue_text_and_later_github_changes_do_not_widen_the_fixed_request(cycl
     snapshot = issue(1, body=body, title="제목 변경", assignee_ids=[999], assignee_logins=["someone"],
                      updated_at="2026-10-06T07:00:00Z")
     source = repo.get_github_source(conn, SESSION, SOURCE)
-    spec = snapshot_to_task_spec(source, snapshot, session_id=SESSION, task_id="unused")
+    spec = snapshot_to_task_spec(source, snapshot, kind=BUG_FIX, session_id=SESSION, task_id="unused")
     assert repo.upsert_source_issue(conn, SESSION, SOURCE, snapshot, task=spec, now=NOW).input_changed
     worker.tick()
     assert [e["execution_id"] for e in executions(conn, task_id)] == [execution["execution_id"]]

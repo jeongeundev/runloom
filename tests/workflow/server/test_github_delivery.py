@@ -14,12 +14,15 @@ import pytest
 from workflow.adapters import repo
 from workflow.adapters.db import connect, init_schema
 from workflow.adapters.github_client import HttpGitHubClient
+from workflow.contracts.v1 import BUILTIN_KINDS
 from workflow.domain.issue_intake import snapshot_to_task_spec
+from workflow.domain.kinds import get_kind
 from workflow.server import github_delivery
 from workflow.server.github_delivery import CLAIM_SECONDS, deliver_source_updates, marker
 
 from .test_github_sync import config, issue
 
+BUG_FIX = get_kind(BUILTIN_KINDS, "bug_fix")
 SESSION = "sess-delivery"
 SOURCE = "ghs-1a2b3c4d"
 TASK = "task-gh-41"
@@ -121,7 +124,7 @@ def db(db_path):
     repo.create_session(c, SESSION, NOW)
     repo.save_github_source(c, SESSION, config(), NOW)
     snapshot = issue(41)
-    spec = snapshot_to_task_spec(config(), snapshot, session_id=SESSION, task_id=TASK)
+    spec = snapshot_to_task_spec(config(), snapshot, kind=BUG_FIX, session_id=SESSION, task_id=TASK)
     repo.upsert_source_issue(c, SESSION, SOURCE, snapshot, task=spec, now=NOW)
     yield c
     c.close()
