@@ -1770,8 +1770,15 @@ class Worker:
         )
 
 
-def main() -> None:
+def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx·httpcore 는 요청 URL 을 INFO 로 남긴다 — callback URL 의 서명 같은 비밀값이 로그에 새지 않게 경고 이상만
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def main() -> None:
+    configure_logging()
     settings = load_settings()
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     settings.artifact_dir.mkdir(parents=True, exist_ok=True)
