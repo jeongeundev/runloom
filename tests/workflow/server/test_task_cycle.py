@@ -140,7 +140,7 @@ def import_issue(conn, number: int, **overrides) -> str:
 
 def direct_shop_task(conn) -> str:
     """웹 직접 등록과 같은 모양의 bug_fix Task — 원본 이슈 없음, Agent 직접 선택."""
-    repo.insert_task(conn, {
+    repo.insert_work_item_task(conn, {
         "task_id": "task-direct-shop", "session_id": SESSION, "title": "주문 합계 반올림 오류",
         "request": "합계가 1원 틀립니다. 재현 테스트 후 수정하세요.", "kind": "bug_fix",
         "required_capability": {"code": "code.fix", "scope": {"repository_id": "shop"}},
@@ -590,7 +590,7 @@ def test_verified_fix_creates_exactly_one_review_task_and_starts_it(cycle, conn,
 
 def test_verified_fix_links_an_existing_review_task_instead_of_creating_one(cycle, conn, store, worker):
     fix_task = import_issue(conn, 1)
-    repo.insert_task(conn, {
+    repo.insert_work_item_task(conn, {
         "task_id": "task-review-c", "session_id": SESSION, "title": "쿠폰 수정 검토", "request": "결제 경로 위주로 봐 주세요.",
         "kind": "code_review", "required_capability": {"code": "code.review", "scope": {"repository_id": "billing"}},
         "selection_mode": "manual", "chosen_agent_id": REVIEW, "run_mode": "auto", "completion_mode": "review",

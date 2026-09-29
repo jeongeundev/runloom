@@ -192,7 +192,7 @@ def test_plain_tasks_have_no_cycle_block(client, conn, store, settings):
         input_kinds=[], output_kind="generic_result", outcomes=["done"], instructions="문서를 고치세요.",
         builtin=False,
     ), NOW)
-    repo.insert_task(conn, {**task_row("task-plain"), "kind": "doc_update",
+    repo.insert_work_item_task(conn, {**task_row("task-plain"), "kind": "doc_update",
                             "required_capability": {"code": "docs.write", "scope": {"repository_id": "docs"}},
                             "criteria": []}, NOW)
     assert views.cycle_context(conn, store, repo.get_task(conn, "task-plain"), now=NOW, settings=settings,
@@ -264,7 +264,7 @@ def test_response_api_rejects_form_posts_and_other_sessions(operator, client, co
     from .conftest import task_row
 
     repo.mark_operator(conn, "sess-other")
-    repo.insert_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
     other_request, _ = repo.create_human_request_once(conn, "task-other", "decision", "q", "decision:other", NOW)
     assert operator.get("/tasks/task-other").status_code == 404
     other = operator.post(f"/human-requests/{other_request}/responses",

@@ -230,8 +230,8 @@ def seed_user_chain(conn) -> tuple[str, tuple[str, str]]:
     chain_id = "chain-user"
     repo.insert_chain(conn, {"chain_id": chain_id, "session_id": SESSION, "source": "github",
                              "title": "일일 보고서 실패 분류 → 보고서 변환 패치"}, NOW)
-    repo.insert_task(conn, {**user_task("task-c41", "triage"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
-    repo.insert_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
+    repo.insert_work_item_task(conn, {**user_task("task-c41", "triage"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
+    repo.insert_work_item_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
                             "chain_id": chain_id, "source_ref": "#42"}, NOW)
     select(conn, "task-c41", API_AGENT, CAP_TRIAGE)
     select(conn, "task-c42", PATCH_AGENT, CAP_PATCH)
@@ -372,10 +372,10 @@ def test_chain_renders_three_nodes_in_order_with_kind_labels(web, conn, settings
     session_id = session_id_of(web, settings)
     repo.insert_chain(conn, {"chain_id": chain_id, "session_id": session_id, "source": "github",
                              "title": "보고서 변환 수정 → 보고서 수정 검토"}, NOW)
-    repo.insert_task(conn, {**task_row("task-c41"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
-    repo.insert_task(conn, {**task_row("task-c42", kind="code_review", predecessor="task-c41"),
+    repo.insert_work_item_task(conn, {**task_row("task-c41"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row("task-c42", kind="code_review", predecessor="task-c41"),
                             "chain_id": chain_id, "source_ref": "#42"}, NOW)
-    repo.insert_task(conn, {
+    repo.insert_work_item_task(conn, {
         "task_id": "task-c45", "session_id": session_id, "title": "보고서 수정 검토", "request": "검토",
         "kind": "review", "required_capability": {"code": "review", "scope": {"repository_id": "demo-report-repo"}},
         "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "auto", "completion_mode": "review",
@@ -480,7 +480,7 @@ def seed_n8n_chain(conn, session_id: str, *, callback_url: str | None) -> str:
         "chain_id": chain_id, "session_id": session_id, "source": "n8n",
         "title": N8N_ITEM["title"], "callback_url": callback_url, "items": [N8N_ITEM],
     }, NOW)
-    repo.insert_task(conn, {
+    repo.insert_work_item_task(conn, {
         "task_id": "task-n8n-ui", "session_id": session_id, "title": N8N_ITEM["title"],
         "request": N8N_ITEM["body"], "kind": "bug_fix",
         "required_capability": {"code": "code.fix", "scope": {"repository_id": "demo-report-repo"}},

@@ -126,8 +126,8 @@ def user_task(task_id: str, kind: str, predecessor: str | None = None) -> dict:
 def seed_user_tasks(conn) -> None:
     """종류·Agent(`seed_user_kinds`)와 Task T(triage) → P(patch)."""
     seed_user_kinds(conn)
-    repo.insert_task(conn, user_task(TASK_T, "triage"), NOW)
-    repo.insert_task(conn, user_task(TASK_P, "patch", predecessor=TASK_T), NOW)
+    repo.insert_work_item_task(conn, user_task(TASK_T, "triage"), NOW)
+    repo.insert_work_item_task(conn, user_task(TASK_P, "patch", predecessor=TASK_T), NOW)
 
 
 def seed_user_execution(conn, execution_id: str, task_id: str, kind: str) -> None:
@@ -406,8 +406,8 @@ def _seed_chain(conn) -> tuple[str, str]:
     repo.insert_chain(conn, {"chain_id": CHAIN, "session_id": SESSION, "source": "github",
                              "title": "보고서 변환 수정 → 보고서 변환 수정 검토"}, NOW)
     from .conftest import task_row
-    repo.insert_task(conn, {**task_row("task-c41"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
-    repo.insert_task(conn, {**task_row("task-c42", kind="code_review", predecessor="task-c41"),
+    repo.insert_work_item_task(conn, {**task_row("task-c41"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row("task-c42", kind="code_review", predecessor="task-c41"),
                             "chain_id": CHAIN, "source_ref": "#42"}, NOW)
     return "task-c41", "task-c42"
 
@@ -434,8 +434,8 @@ def _seed_user_chain(conn, *, skipped=None) -> tuple[str, str]:
              "reason": f"맞는 능력 코드 없음 (라벨: enhancement, repository_id:{REPOSITORY})"},
         ],
     }, NOW)
-    repo.insert_task(conn, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
-    repo.insert_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
+    repo.insert_work_item_task(conn, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
+    repo.insert_work_item_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
                             "chain_id": CHAIN, "source_ref": "#42"}, NOW)
     return "task-c41", "task-c42"
 
@@ -526,7 +526,7 @@ def test_chain_summary_single_auto_node_gate_and_empty_chain(seeded, settings):
     seed_user_kinds(seeded)
     repo.insert_chain(seeded, {"chain_id": CHAIN, "session_id": SESSION, "source": "github",
                                "title": "일일 보고서 생성 실패 (09-20 09:00)"}, NOW)
-    repo.insert_task(seeded, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41",
+    repo.insert_work_item_task(seeded, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41",
                               "completion_mode": "auto"}, NOW)
     _select(seeded, "task-c41", API_AGENT, CAP_TRIAGE)
     summary = _chain(seeded, settings)
@@ -718,7 +718,7 @@ def _seed_review_task(conn, *, predecessor: str | None = TASK_B) -> None:
     })
     repo.register_session_agent(conn, SESSION, "agent-review-mac", NOW)
     from .conftest import task_row
-    repo.insert_task(conn, {
+    repo.insert_work_item_task(conn, {
         **task_row(TASK_C, predecessor=predecessor), "kind": "review", "title": "보고서 수정 검토",
         "required_capability": CAP_C, "run_mode": "manual", "criteria": [],
         "target": {"local_registration_id": LOCAL_REVIEW},
@@ -893,8 +893,8 @@ def _seed_n8n_chain(conn, *, callback_url: str | None = CALLBACK_URL, items=N8N_
         "callback_url": callback_url, "items": items,
     }, NOW)
     from .conftest import task_row
-    repo.insert_task(conn, {**task_row("task-n1"), "chain_id": CHAIN, "source_ref": "fix-format"}, NOW)
-    repo.insert_task(conn, {**task_row("task-n2", kind="code_review", predecessor="task-n1"),
+    repo.insert_work_item_task(conn, {**task_row("task-n1"), "chain_id": CHAIN, "source_ref": "fix-format"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row("task-n2", kind="code_review", predecessor="task-n1"),
                             "chain_id": CHAIN, "source_ref": "review-format"}, NOW)
     return "task-n1", "task-n2"
 

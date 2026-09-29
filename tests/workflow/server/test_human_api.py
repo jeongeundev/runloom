@@ -95,7 +95,7 @@ def test_other_operator_session_cannot_see_or_answer(op, conn):
     # 다른 워크스페이스(운영자 세션)의 업무와 사람 요청 — DB 에 직접 둔다
     repo.create_session(conn, "sess-other", NOW)
     repo.mark_operator(conn, "sess-other")
-    repo.insert_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
     other_request, _ = repo.create_human_request_once(
         conn, "task-other", "fix_needs_information", "재현 금액이 필요합니다", "fix_needs_information:exec-9", NOW,
     )

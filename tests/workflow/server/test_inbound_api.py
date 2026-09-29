@@ -188,6 +188,11 @@ def test_two_items_build_chain_and_start_first_task(client, conn, reported_works
     }
     assert task_b["predecessor_task_id"] == task_a["task_id"] and task_b["run_mode"] == "auto"
     assert task_b["status"] == "대기" and task_b["status_reason"] == "선행 대기"
+    # 항목마다 업무 하나 — 원본 칸은 체인·항목 키(ADR-0020, 업무 사이 선행 링크는 phase 14 step 4)
+    work_a, work_b = (repo.work_item_of_task(conn, t["task_id"]) for t in (task_a, task_b))
+    assert (work_a["source_type"], work_a["source_id"], work_a["source_item_id"], work_a["source_key"]) == (
+        "n8n", chain_id, "fix-format", "fix-format")
+    assert work_b["source_key"] == "review-format" and work_a["key_number"] + 1 == work_b["key_number"]
     assert repo.get_selection(conn, task_a["task_id"]).selected_agent_id == "agent-codex-mac"
     assert repo.get_selection(conn, task_b["task_id"]).selected_agent_id == "agent-codex-mac"
     execution = repo.active_execution(conn, task_a["task_id"])
@@ -349,7 +354,7 @@ def test_blocked_by_cycle_is_422_dependency_cycle(client, conn, token, workspace
 def test_active_task_limit_is_429_before_chain(app, client, conn, token, workspace):
     limit = app.state.settings.limits.active_tasks_per_session
     for n in range(limit - 1):
-        repo.insert_task(conn, task_row(f"seed-{n}"), NOW)
+        repo.insert_work_item_task(conn, task_row(f"seed-{n}"), NOW)
     response = post(client, token)
     assert response.status_code == 429
     assert response.json() == {

@@ -503,7 +503,7 @@ def test_delegate_needs_the_owning_operator(cycle_op, app, conn):
     assert delegated(conn, task_id) == (None, None)
     # 다른 워크스페이스(운영자 세션)의 업무는 로그인 워크스페이스에서 404
     repo.mark_operator(conn, "sess-other")
-    repo.insert_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, "2026-10-06T12:00:00Z")
+    repo.insert_work_item_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, "2026-10-06T12:00:00Z")
     assert cycle_op.post("/tasks/task-other/delegate").status_code == 404
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (CYCLE_SESSION,))
     conn.commit()

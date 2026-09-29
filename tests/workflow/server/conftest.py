@@ -220,8 +220,8 @@ def seeded(conn):
     """고정 워크스페이스, 러너 모양 Agent 1개, 업무 A(bug_fix) → B(code_review)."""
     ensure_workspace(conn, NOW)
     seed_agents(conn)
-    repo.insert_task(conn, task_row(TASK_A), NOW)
-    repo.insert_task(conn, task_row(TASK_B, kind="code_review", predecessor=TASK_A), NOW)
+    repo.insert_work_item_task(conn, task_row(TASK_A), NOW)
+    repo.insert_work_item_task(conn, task_row(TASK_B, kind="code_review", predecessor=TASK_A), NOW)
     return conn
 
 

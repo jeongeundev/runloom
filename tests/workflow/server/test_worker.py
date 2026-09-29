@@ -186,11 +186,11 @@ def seed_user_flow(conn, client, clock, *, rule=REVIEW_RULE, r_run_mode="auto", 
         repo.mark_chain_started(conn, chain["chain_id"], now)  # 입구 API 는 접수 즉시 첫 업무를 시작한다
     link_t = {"chain_id": chain["chain_id"], "source_ref": KEY_T} if chain else None
     link_r = {"chain_id": chain["chain_id"], "source_ref": KEY_R} if chain else None
-    repo.insert_task(conn, _user_task(
+    repo.insert_work_item_task(conn, _user_task(
         TASK_T, TRIAGE_KIND, CAP_T, LOCAL_REGISTRATION, title="보고서 변환 실패 분류",
         status=("실행 요청됨", "접수 대기"), link=link_t,
     ), now)
-    repo.insert_task(conn, _user_task(
+    repo.insert_work_item_task(conn, _user_task(
         TASK_R, REVIEW_KIND, CAP_R, LOCAL_REVIEW, title="분류 결과 검토", predecessor=TASK_T,
         run_mode=r_run_mode, link=link_r,
     ), now)

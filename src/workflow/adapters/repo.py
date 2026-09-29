@@ -68,7 +68,16 @@ from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts
 from workflow.domain.pull_request import head_branch
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
-from workflow.domain.work_status import PullRequestFact, RequestFact, StageFact, WorkItemFacts
+from workflow.domain.work_status import (
+    TERMINAL_WORK_STATUSES,
+    WORK_STATUSES,
+    PullRequestFact,
+    RequestFact,
+    StageFact,
+    WorkItemFacts,
+    WorkStatus,
+    work_status,
+)
 
 TOKEN_PREFIX = "wfc_"
 SOURCE_TOKEN_PREFIX = "wfs_"
@@ -193,6 +202,192 @@ def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
         open_requests=tuple(RequestFact(code=r["code"], question=r["question"]) for r in requests),
         pull_request=PullRequestFact(state=pr["state"], number=pr["pr_number"]) if pr else None,
     )
+
+
+# --- 업무(WorkItem)·멤버 — ADR-0020 ---------------------------------------
+
+
+def create_work_item(
+    conn: Connection, session_id: str, *, title: str, request: str, kind: str, source_type: str,
+    source_id: str | None = None, source_item_id: str | None = None, source_key: str | None = None,
+    source_url: str | None = None, source_state: str | None = None, priority: str = "normal",
+    assignee_type: str | None = None, assignee_id: str | None = None, form: dict | None = None, now: str,
+) -> tuple[str, int]:
+    """(work_item_id, key_number). 자체 BEGIN 이 없다 — 호출자가 연 `BEGIN IMMEDIATE` 트랜잭션 안에서 첫 단계와
+    함께 부른다(밖이면 RuntimeError). 키 번호는 같은 트랜잭션에서 워크스페이스별 `MAX + 1` 이라 쓰기 잠금이
+    동시 생성을 직렬화한다. 상태는 `새로 들어옴` 으로 시작하고 `refresh_work_status` 가 계산한다."""
+    if not conn.in_transaction:
+        raise RuntimeError("create_work_item 은 BEGIN IMMEDIATE 트랜잭션 안에서만 부른다")
+    if get_kind(conn, session_id, kind) is None:
+        raise NotFound(f"종류 {kind} 이 등록되지 않음")
+    key_number = conn.execute(
+        "SELECT COALESCE(MAX(key_number), 0) + 1 FROM work_items WHERE session_id = ?", (session_id,)
+    ).fetchone()[0]
+    work_item_id = f"wi-{secrets.token_hex(6)}"
+    conn.execute(
+        "INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, priority, assignee_type,"
+        " assignee_id, status, status_reason, source_type, source_id, source_item_id, source_key, source_url,"
+        " source_state, form_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?,"
+        " ?, ?, ?)",
+        (work_item_id, session_id, key_number, title, request, kind, priority, assignee_type, assignee_id,
+         WORK_STATUSES[0], source_type, source_id, source_item_id, source_key, source_url, source_state,
+         json.dumps(form or {}, ensure_ascii=False), now, now),
+    )
+    return work_item_id, key_number
+
+
+def get_work_item(conn: Connection, session_id: str, work_item_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM work_items WHERE work_item_id = ? AND session_id = ?", (work_item_id, session_id))
+
+
+def get_work_item_by_key(conn: Connection, session_id: str, key_number: int) -> Row | None:
+    return _one(conn, "SELECT * FROM work_items WHERE session_id = ? AND key_number = ?", (session_id, key_number))
+
+
+def work_item_of_task(conn: Connection, task_id: str) -> Row | None:
+    """이 단계(Task)가 속한 업무."""
+    return _one(conn, "SELECT w.* FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ?", (task_id,))
+
+
+def list_work_items(
+    conn: Connection, session_id: str, *, include_closed: bool = True, status: str | None = None,
+    assignee: tuple[str, str] | None = None,
+) -> list[Row]:
+    """워크스페이스의 업무(키 번호 내림차순 — 새 업무가 위). `assignee` 는 `(assignee_type, assignee_id)`."""
+    where, params = ["session_id = ?"], [session_id]
+    if not include_closed:
+        where.append("closed_at IS NULL")
+    if status is not None:
+        where.append("status = ?")
+        params.append(status)
+    if assignee is not None:
+        where.append("assignee_type = ? AND assignee_id = ?")
+        params.extend(assignee)
+    return conn.execute(
+        f"SELECT * FROM work_items WHERE {' AND '.join(where)} ORDER BY key_number DESC", params
+    ).fetchall()
+
+
+def list_work_item_tasks(conn: Connection, work_item_id: str) -> list[Row]:
+    """업무의 단계(Task) — 생성 순."""
+    return conn.execute(
+        "SELECT * FROM tasks WHERE work_item_id = ? ORDER BY created_at, task_id", (work_item_id,)
+    ).fetchall()
+
+
+def _work_item_event(conn: Connection, work_item_id: str, session_id: str, type: str, data: dict, now: str) -> None:
+    conn.execute(
+        "INSERT INTO work_item_events (work_item_id, session_id, type, config_revision, occurred_at, data_json)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (work_item_id, session_id, type, get_config_revision(conn, session_id), now,
+         json.dumps(data, ensure_ascii=False)),
+    )
+
+
+def set_work_status(conn: Connection, work_item_id: str, status: WorkStatus, *, now: str) -> bool:
+    """값 또는 이유가 저장값과 다를 때만 쓰고 `status_changed` 이벤트 한 행을 남긴다. 끝 상태가 되면 `closed_at`.
+    자체 BEGIN 이 없다 — 그 변경과 같은 트랜잭션에서 부른다."""
+    row = _one(conn, "SELECT session_id, status, status_reason FROM work_items WHERE work_item_id = ?",
+               (work_item_id,))
+    if row is None:
+        raise NotFound(f"work item {work_item_id}")
+    if (row["status"], row["status_reason"]) == (status.status, status.reason):
+        return False
+    closed_at = now if status.status in TERMINAL_WORK_STATUSES else None
+    conn.execute(
+        "UPDATE work_items SET status = ?, status_reason = ?, closed_at = ?, updated_at = ? WHERE work_item_id = ?",
+        (status.status, status.reason, closed_at, now, work_item_id),
+    )
+    _work_item_event(conn, work_item_id, row["session_id"], "status_changed",
+                     {"from": row["status"], "to": status.status, "reason": status.reason}, now)
+    return True
+
+
+def refresh_work_status(conn: Connection, work_item_id: str, *, now: str) -> bool:
+    """사실을 모아(`work_item_facts`) 업무 상태를 다시 계산해 바뀌었을 때만 기록한다. 멱등, 자체 BEGIN 없음."""
+    return set_work_status(conn, work_item_id, work_status(work_item_facts(conn, work_item_id)), now=now)
+
+
+def assign_work_item(
+    conn: Connection, session_id: str, work_item_id: str, *, assignee_type: str | None, assignee_id: str | None,
+    now: str,
+) -> bool:
+    """담당을 바꾼다(None = 담당 없음). 멤버는 이 워크스페이스의 멤버, Agent 는 이 워크스페이스에 등록된 Agent 여야
+    한다(아니면 NotFound). 바뀌면 `assigned` 이벤트, 같으면 False."""
+    if (assignee_type is None) != (assignee_id is None) or assignee_type not in (None, "member", "agent"):
+        raise ValueError(f"담당 {assignee_type!r}/{assignee_id!r}")
+    with _tx(conn):
+        row = get_work_item(conn, session_id, work_item_id)
+        if row is None:
+            raise NotFound(f"work item {work_item_id}")
+        if assignee_type == "member" and _one(
+            conn, "SELECT 1 FROM members WHERE member_id = ? AND session_id = ?", (assignee_id, session_id)
+        ) is None:
+            raise NotFound(f"member {assignee_id}")
+        if assignee_type == "agent" and not is_session_agent(conn, session_id, assignee_id):
+            raise NotFound(f"agent {assignee_id}")
+        if (row["assignee_type"], row["assignee_id"]) == (assignee_type, assignee_id):
+            return False
+        conn.execute(
+            "UPDATE work_items SET assignee_type = ?, assignee_id = ?, updated_at = ? WHERE work_item_id = ?",
+            (assignee_type, assignee_id, now, work_item_id),
+        )
+
+        def who(type_: str | None, id_: str | None) -> dict | None:
+            return None if type_ is None else {"type": type_, "id": id_}
+
+        _work_item_event(conn, work_item_id, session_id, "assigned",
+                         {"from": who(row["assignee_type"], row["assignee_id"]),
+                          "to": who(assignee_type, assignee_id)}, now)
+        return True
+
+
+def link_work_items(
+    conn: Connection, *, from_work_item_id: str, to_work_item_id: str, type: str,
+    cause_execution_id: str | None = None, now: str,
+) -> bool:
+    """업무 사이 연결(앞 → 뒤). 이미 있으면 False. 두 업무가 같은 워크스페이스가 아니면 NotFound.
+    자체 BEGIN 이 없다 — 연결을 만드는 변경과 같은 트랜잭션에서 부른다."""
+    ends = [_one(conn, "SELECT session_id FROM work_items WHERE work_item_id = ?", (work_item_id,))
+            for work_item_id in (from_work_item_id, to_work_item_id)]
+    if None in ends or ends[0]["session_id"] != ends[1]["session_id"]:
+        raise NotFound(f"work item {from_work_item_id} → {to_work_item_id}")
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO work_item_links (from_work_item_id, to_work_item_id, type, cause_execution_id,"
+        " created_at) VALUES (?, ?, ?, ?, ?)",
+        (from_work_item_id, to_work_item_id, type, cause_execution_id, now),
+    )
+    return cur.rowcount == 1
+
+
+def list_work_item_links(conn: Connection, work_item_id: str) -> list[Row]:
+    """이 업무가 앞이든 뒤든 걸린 연결(생성 순)."""
+    return conn.execute(
+        "SELECT * FROM work_item_links WHERE from_work_item_id = ? OR to_work_item_id = ?"
+        " ORDER BY created_at, from_work_item_id, to_work_item_id",
+        (work_item_id, work_item_id),
+    ).fetchall()
+
+
+def list_work_item_events(conn: Connection, work_item_id: str) -> list[Row]:
+    return conn.execute(
+        "SELECT * FROM work_item_events WHERE work_item_id = ? ORDER BY id", (work_item_id,)
+    ).fetchall()
+
+
+def add_member(conn: Connection, session_id: str, *, display_name: str, role: str = "member", now: str) -> str:
+    """멤버 추가(초대·로그인은 15-team). 없는 세션은 FK 오류."""
+    member_id = f"mem-{secrets.token_hex(4)}"
+    conn.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+                 (member_id, session_id, display_name, role, now))
+    return member_id
+
+
+def list_members(conn: Connection, session_id: str) -> list[Row]:
+    return conn.execute(
+        "SELECT * FROM members WHERE session_id = ? ORDER BY created_at, member_id", (session_id,)
+    ).fetchall()
 
 
 def get_session(conn: Connection, session_id: str) -> Row | None:
@@ -719,16 +914,42 @@ def list_source_tokens(conn: Connection, session_id: str) -> list[Row]:
 # --- 업무·선택 ---------------------------------------------------------------
 
 
-def insert_task(conn: Connection, task: dict, now: str) -> None:
+def insert_task(conn: Connection, task: dict, now: str, *, work_item_id: str) -> None:
     """JSON 컬럼은 `required_capability`(Capability 로 검증)·`criteria`·`target` 로 받는다.
     종류는 이 세션의 등록부(`kinds`)에 있어야 한다 (없으면 NotFound — FK 오류를 기다리지 않는다).
-    선행 Task 는 같은 세션의 것만 허용한다 (ARCHITECTURE "선행 연결 변경 시 같은 소유 범위 검사")."""
+    선행 Task 는 같은 세션의 것만 허용한다 (ARCHITECTURE "선행 연결 변경 시 같은 소유 범위 검사").
+    `work_item_id` 는 이 Task 가 단계로 들어갈 같은 세션의 업무다(ADR-0020, 없으면 NotFound)."""
     with _tx(conn):
-        _insert_task_row(conn, task, now)
+        _insert_task_row(conn, task, now, work_item_id=work_item_id)
 
 
-def _insert_task_row(conn: Connection, task: dict, now: str) -> None:
+def insert_work_item_task(
+    conn: Connection, task: dict, now: str, *, source_type: str = "manual", source_id: str | None = None,
+    source_item_id: str | None = None, source_key: str | None = None,
+) -> str:
+    """새 업무와 그 첫 단계 Task 를 한 트랜잭션에 만들고 업무 id 를 돌려준다. 제목·요청·종류는 Task 의 것,
+    담당은 Task 에 고른 Agent 가 있으면 그 Agent(v9 → v10 마이그레이션과 같다). Task 가 실패하면 업무도 남지 않는다."""
+    with _tx(conn):
+        work_item_id = _work_item_for_task(conn, task, now, source_type=source_type, source_id=source_id,
+                                           source_item_id=source_item_id, source_key=source_key)
+        _insert_task_row(conn, task, now, work_item_id=work_item_id)
+    return work_item_id
+
+
+def _work_item_for_task(conn: Connection, task: dict, now: str, **source) -> str:
+    agent = task.get("chosen_agent_id")
+    work_item_id, _ = create_work_item(
+        conn, task["session_id"], title=task["title"], request=task["request"], kind=task["kind"],
+        assignee_type="agent" if agent else None, assignee_id=agent, now=now, **source,
+    )
+    return work_item_id
+
+
+def _insert_task_row(conn: Connection, task: dict, now: str, *, work_item_id: str) -> None:
     """`insert_task` 의 트랜잭션 안쪽 — 원본 이슈·후속 Task 를 매핑 행과 한 트랜잭션에 넣을 때 쓴다."""
+    work = _one(conn, "SELECT session_id FROM work_items WHERE work_item_id = ?", (work_item_id,))
+    if work is None or work["session_id"] != task["session_id"]:
+        raise NotFound(f"work item {work_item_id}")
     capability = Capability.model_validate(task["required_capability"]).model_dump()
     if get_kind(conn, task["session_id"], task["kind"]) is None:
         raise NotFound(f"종류 {task['kind']} 이 등록되지 않음")
@@ -742,8 +963,8 @@ def _insert_task_row(conn: Connection, task: dict, now: str) -> None:
         INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,
           selection_mode, chosen_agent_id, run_mode, completion_mode, criteria_json,
           predecessor_task_id, revision, target_json, status, status_reason, created_at,
-          chain_id, source_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          chain_id, source_ref, work_item_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task["task_id"], task["session_id"], task["title"], task["request"], task["kind"],
@@ -751,7 +972,7 @@ def _insert_task_row(conn: Connection, task: dict, now: str) -> None:
             task.get("chosen_agent_id"), task["run_mode"], task["completion_mode"],
             json.dumps(task["criteria"], ensure_ascii=False), predecessor, task["revision"],
             json.dumps(task["target"], ensure_ascii=False), task["status"],
-            task["status_reason"], now, task.get("chain_id"), task.get("source_ref"),
+            task["status_reason"], now, task.get("chain_id"), task.get("source_ref"), work_item_id,
         ),
     )
 
@@ -1752,8 +1973,8 @@ class SourceIssueUpsert:
 def upsert_source_issue(
     conn: Connection, session_id: str, source_id: str, snapshot: GitHubIssueSnapshot, *, task: dict, now: str
 ) -> SourceIssueUpsert:
-    """원본 이슈 하나를 `(source_id, github_issue_id)` 로 Task 하나에 잇는다. 처음 보면 `task`(insert_task 와 같은 dict)를
-    같은 트랜잭션에 만든다. `updated_at` 이 저장값보다 이르면 버리고, 같은 시각이라도 digest 가 다르면 새 revision 이다
+    """원본 이슈 하나를 `(source_id, github_issue_id)` 로 Task 하나에 잇는다. 처음 보면 원본 칸을 채운 업무(`github`)와
+    그 첫 단계 `task`(insert_task 와 같은 dict)를 같은 트랜잭션에 만든다. `updated_at` 이 저장값보다 이르면 버리고, 같은 시각이라도 digest 가 다르면 새 revision 이다
     (ADR-0014 결정 9). 이미 있는 Task 는 `task` 의 제목·요청만 본다 — 마감 전이고 둘 중 하나가 다르면 같은 트랜잭션에서
     바꾸고 Task revision+1(다음 실행 입력, 진행 중 실행의 요청은 그대로). 담당·라벨·상태는 원본 스냅샷에만 남는다."""
     digest = snapshot_digest(snapshot)
@@ -1768,7 +1989,13 @@ def upsert_source_issue(
         if row is None:
             if task["session_id"] != session_id:
                 raise ValueError(f"task {task['task_id']} 의 세션이 source {source_id} 의 세션과 다릅니다")
-            _insert_task_row(conn, task, now)
+            key = f"{snapshot.repository_full_name}#{snapshot.number}"
+            work_item_id = _work_item_for_task(
+                conn, task, now, source_type="github", source_id=source_id, source_item_id=str(snapshot.issue_id),
+                source_key=key, source_url=f"https://github.com/{snapshot.repository_full_name}/issues/{snapshot.number}",
+                source_state=snapshot.state,
+            )
+            _insert_task_row(conn, task, now, work_item_id=work_item_id)
             conn.execute(
                 "INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
                 " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at)"
@@ -1872,10 +2099,11 @@ def get_source_issue_by_task(conn: Connection, session_id: str, task_id: str) ->
 
 
 def create_followup_once(
-    conn: Connection, spec: FollowupTaskSpec, task: dict, now: str
+    conn: Connection, spec: FollowupTaskSpec, task: dict, now: str, *, work_item_id: str
 ) -> tuple[str, bool]:
     """(task_id, created). 같은 `(session_id, cause_execution_id, kind)` 가 있으면 그 Task 를 돌려주고 만들지 않는다.
-    `task` 는 spec 과 세션·종류·선행이 같아야 하고(ValueError), 원인 실행은 같은 세션 것이어야 한다(NotFound)."""
+    `task` 는 spec 과 세션·종류·선행이 같아야 하고(ValueError), 원인 실행은 같은 세션 것이어야 한다(NotFound).
+    새 Task 는 `work_item_id` 업무의 단계가 된다(같은 세션 업무가 아니면 NotFound)."""
     if (task["session_id"], task["kind"], task.get("predecessor_task_id")) != (
         spec.session_id, spec.kind, spec.predecessor_task_id,
     ):
@@ -1896,7 +2124,7 @@ def create_followup_once(
         )
         if existing is not None:
             return existing["task_id"], False
-        _insert_task_row(conn, task, now)
+        _insert_task_row(conn, task, now, work_item_id=work_item_id)
         conn.execute(
             "INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",

@@ -190,7 +190,7 @@ def other_workspace_task(conn, task_id: str = "task-other") -> str:
     from .conftest import task_row
 
     repo.create_session(conn, "sess-other", NOW)
-    repo.insert_task(conn, {**task_row(task_id), "session_id": "sess-other"}, NOW)
+    repo.insert_work_item_task(conn, {**task_row(task_id), "session_id": "sess-other"}, NOW)
     return task_id
 
 
@@ -1223,7 +1223,7 @@ def test_delete_kind_protected_in_use_then_success(web, conn, settings):
         "criteria": [], "predecessor_task_id": None, "revision": 1,
         "target": {"local_registration_id": "local-demo-report"}, "status": "확인 필요", "status_reason": "후보 없음",
     }
-    repo.insert_task(conn, row, NOW)
+    repo.insert_work_item_task(conn, row, NOW)
     by_task = web.post("/kinds/review/delete", follow_redirects=False)
     assert by_task.status_code == 409
     alert = alert_of(by_task)

@@ -816,7 +816,8 @@ class Worker:
             "status": "대기",
             "status_reason": "준비 판정 대기",
         }
-        return repo.create_followup_once(conn, spec, row, now)
+        # 같은 업무의 다음 단계 — placement(같은 업무/새 업무)는 step 4
+        return repo.create_followup_once(conn, spec, row, now, work_item_id=predecessor["work_item_id"])
 
     def _start_review(
         self, conn: Connection, review_task: Row, fix_execution: Row, start_key: str, report: TickReport

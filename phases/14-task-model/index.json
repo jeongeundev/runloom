@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "work-item-repo",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:30:12+0900",
+      "summary": "수정: adapters/repo.py(create_work_item — 트랜잭션 밖이면 RuntimeError·종류 검사·키=세션별 MAX+1, get_work_item·get_work_item_by_key·work_item_of_task·list_work_items(include_closed·status·assignee 필터, key_number 내림차순)·list_work_item_tasks·set_work_status·refresh_work_status·assign_work_item·link_work_items·list_work_item_links·list_work_item_events·add_member·list_members, insert_task·create_followup_once 에 work_item_id 필수 키워드(같은 세션 업무 아니면 NotFound), 새 insert_work_item_task(업무+첫 단계 한 트랜잭션, 담당=선택 Agent), upsert_source_issue 는 새 이슈면 github 업무를 스스로 만듦), server/web.py(_insert_new_task → insert_work_item_task, n8n 체인은 source_type n8n·source_id=chain_id·item/key=source_ref), server/worker.py(후속은 선행 Task 의 업무에), docs/ARCHITECTURE 시그니처 표 갱신, 테스트: test_repo 업무 11개 + autouse 불변식(work_item_id NULL 0), test_inbound_api 업무 원본 단정, 모든 tests 의 repo.insert_task → insert_work_item_task. 결정: ARCHITECTURE 이름을 따름(stages_of→list_work_item_tasks, first_admin 은 ensure_first_admin 재사용), upsert_source_issue 는 work_item_id 를 받지 않음(이미 있는 이슈에 빈 업무를 만들지 않으려고 — 문서 반영), 새 업무 상태는 '새로 들어옴'/'' 로 시작하고 생성 때 계산·이벤트 없음, assign 은 상태를 다시 계산하지 않음, format_work_key 는 step 7. 검증: pytest 2433 passed/32 skipped, ruff 통과. 다음 step 주의: 체인 blocked_by 는 아직 predecessor_task_id 만(blocks 링크 없음) — step 4 가 link_work_items 로 옮길 것; worker _create_followup_task 는 predecessor['work_item_id'] 로 same_work 고정 — placement 는 step 4; 테스트의 raw INSERT INTO tasks(test_views·test_db 등)는 work_item_id NULL 이라 그 Task 로 후속을 만들면 NotFound"
     },
     {
       "step": 4,

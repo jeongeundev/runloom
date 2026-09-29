@@ -514,8 +514,10 @@ def _insert_new_task(
     selection_mode: str, chosen_agent_id: str, run_mode: str, completion_mode: str,
     criteria_extra: str, predecessor_task_id: str,
     chain_id: str | None = None, source_ref: str | None = None, prefer: Sequence[str] | None = None,
+    source_type: str = "manual",
 ) -> str:
-    """검증이 끝난 값으로 Task 1개를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다.
+    """검증이 끝난 값으로 업무 1개와 그 첫 단계 Task 를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다.
+    `source_type="n8n"` 이면 업무 원본 칸이 체인·항목 키(v9 → v10 마이그레이션과 같다).
     요구 능력은 종류 봉투(`spec.capability_code` + `spec.scope_key`)에서 만들고 등록부로 한 번 더 검사한다.
 
     `prefer` 는 세션 등록 순서(동률 기본 선택, step 4). 직접 등록은 넘기지 않아 동률이면 확인 필요다."""
@@ -530,7 +532,8 @@ def _insert_new_task(
     )
     agent = repo.get_agent(conn, selection.selected_agent_id) if selection.selected_agent_id else None
     criteria = merge_criteria(criteria_template(spec), criteria_extra.splitlines())
-    repo.insert_task(
+    n8n = source_type == "n8n"
+    repo.insert_work_item_task(
         conn,
         {
             "task_id": task_id,
@@ -553,6 +556,8 @@ def _insert_new_task(
             "source_ref": source_ref,
         },
         now,
+        source_type=source_type, source_id=chain_id if n8n else None,
+        source_item_id=source_ref if n8n else None, source_key=source_ref if n8n else None,
     )
     repo.save_selection(conn, selection)
     _refresh_status(conn, task_id, now, settings)
@@ -609,6 +614,7 @@ def create_chain(
          "skipped": skipped, "callback_url": callback_url, "items": items},
         now,
     )
+    work_source = "n8n" if source == INBOUND_SOURCE else "manual"
     # PlanNode.selection 은 임시 task_id(issue.key) 라 저장하지 않는다 — 실제 task_id 로 다시 계산한다
     task_ids: dict[str, str] = {}
     for node in plan.nodes:
@@ -620,7 +626,7 @@ def create_chain(
             selection_mode="auto", chosen_agent_id="", run_mode=node.run_mode,
             completion_mode=node.completion_mode, criteria_extra="",
             predecessor_task_id=task_ids[node.predecessor_key] if node.predecessor_key else "",
-            chain_id=chain_id, source_ref=node.issue.key, prefer=prefer,
+            chain_id=chain_id, source_ref=node.issue.key, prefer=prefer, source_type=work_source,
         )
     for item in capable_standalone:
         capability = item.mapping.capability
@@ -632,7 +638,7 @@ def create_chain(
             selection_mode="auto", chosen_agent_id="", run_mode="manual",
             completion_mode="review", criteria_extra="",
             predecessor_task_id="",
-            chain_id=chain_id, source_ref=item.issue.key, prefer=prefer,
+            chain_id=chain_id, source_ref=item.issue.key, prefer=prefer, source_type=work_source,
         )
     return ChainCreated(chain_id=chain_id, task_ids=task_ids, skipped=skipped)
 
