@@ -2,7 +2,11 @@
 
 갱신일: 2026-09-28. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 벤치마킹 → UX 재설계 (2026-09-29 방향 전환, 새 세션은 여기서 시작)
+## 다음 작업: 재설계 계획·설계 검토 (새 세션은 여기서 시작)
+
+**새 세션에서 할 일: [재설계 계획](product/REDESIGN_PLAN.md) 과 설계를 사용자와 함께 검토한 뒤 `13-task-model` step 설계.** 2026-09-29 사용자 결정: 일정과 상관없이 제대로 된 서비스가 목표(10/2 목표는 재설계 뒤로), 팀 계정은 초대 링크 + 이메일·비밀번호, 판단은 로컬 Claude Code 판단 에이전트가 제안만(자동 시작은 업무 종류별 설정), 직접 작업 상태 추적은 Git·GitHub 신호와 Claude Code 훅 둘 다, 수신함은 "담당 없음" 묶음으로. 목업 https://claude.ai/artifact/Jx6Pa7PmRZo1hmvFuiH66C (4판). 실연동은 새 비공개 저장소(runloom `service` 복사, 제안 `jeongeundev/runloom-sandbox`) + 사용자 계정의 새 Jira Cloud 사이트(지인 회사 Jira 는 형식만 참고, 내용 옮기지 않음). 셀프호스트 워커·러너는 꺼져 있다(다시 켜기 전에 대상 연결부터).
+
+## 방향 전환 기록 (2026-09-29)
 
 2026-09-29 실연동 중단. **OpenArchive 는 오픈소스 공모전 출품작이라 커밋·이슈·PR·댓글 하나하나가 심사 대상 — Runloom·에이전트가 쓰지 않는다**(읽기만). #112 를 맡긴 직후 봇 상태 댓글 1개가 달려 삭제했고, 러너(launchd bootout)·중앙 워커(`docker compose -p runloom … stop worker`)를 멈췄다. push·PR 은 없었다. GitHub App `runloom-gwufov` 의 OpenArchive 설치를 제거했다(App 자체는 남음, 설치 0). Runloom DB 의 OpenArchive 업무 22·기준선 24 는 남아 있다. **워커·러너를 다시 켜기 전에 실연동 대상을 정한다.**
 
