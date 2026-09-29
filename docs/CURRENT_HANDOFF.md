@@ -6,6 +6,8 @@
 
 2026-09-29 실연동 중단. **OpenArchive 는 오픈소스 공모전 출품작이라 커밋·이슈·PR·댓글 하나하나가 심사 대상 — Runloom·에이전트가 쓰지 않는다**(읽기만). #112 를 맡긴 직후 봇 상태 댓글 1개가 달려 삭제했고, 러너(launchd bootout)·중앙 워커(`docker compose -p runloom … stop worker`)를 멈췄다. push·PR 은 없었다. GitHub App `runloom-gwufov` 의 OpenArchive 설치를 제거했다(App 자체는 남음, 설치 0). Runloom DB 의 OpenArchive 업무 22·기준선 24 는 남아 있다. **워커·러너를 다시 켜기 전에 실연동 대상을 정한다.**
 
+**설계 계획: [재설계 계획](product/REDESIGN_PLAN.md)**(2026-09-29) — 목업 https://claude.ai/artifact/Jx6Pa7PmRZo1hmvFuiH66C, phase 제안 13-task-model → 14-team → 15-work-ui → 16-jira → 17-triage → 18-monitor. 실연동은 새 비공개 저장소(runloom 복사)·새 Jira Cloud 사이트에서.
+
 사용자 판단(2026-09-29): 앱 사용 자체가 불편해 UX·UI 를 처음부터 다시 봐야 한다. 업무 가져오기가 가장 불편 — GitHub·**Jira 가져오기와 Jira 에 업무 등록**이 필수, 가져올 때 소스별 양식을 Runloom 업무 양식으로 맞춰 등록, 이슈 옆에 PR 도 보여야 한다. 같은 서비스는 없지만 비슷한 서비스를 벤치마킹한다. 조사 문서: `docs/research/2026-09-29-*.md`(로컬 에이전트 보드, 이슈→PR 에이전트, 가져오기·필드 매핑, Jira 연동).
 
 에이전트의 ssh(OpenArchive HA 3노드 VM 실측) 질문: 러너가 사용자 계정으로 Claude Code 를 띄우므로 연결 자체는 사용자 터미널과 같은 조건이다. 막는 것은 `connector/claude.py` `ALLOWED_TOOLS` 고정(파일 편집·pytest·git diff/status)과 환경 허용 목록(`SSH_AUTH_SOCK` 없음)이다 — 등록별 허용 명령 선언으로 열 수 있다(미구현).
