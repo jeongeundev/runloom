@@ -4,11 +4,19 @@
 
 ## 다음 작업: 13-task-model step 설계 (새 세션은 여기서 시작)
 
-**2026-09-29 sandbox 실연동 1 완료** — `runloom-sandbox` #1 이 이슈 → 수정 → 검토 → 초안 PR #2 → 사람 병합 → 업무 완료까지 돌았다([VERIFICATION_LOG](VERIFICATION_LOG.md) "실연동 1"). 결함: (1) 러너 재시작 뒤 끊긴 실행이 claim 을 영구히 막음, (2) App manifest 에 `contents: read` 없음 → PR 422(실제 App 에는 수동 추가함) — 둘 다 `fix-live-1` 에서 고쳐 `service` 병합, 셀프호스트 이미지는 아직 옛 코드. 셀프호스트 워커·러너는 sandbox 대상으로 **켜져 있다**(OpenArchive 소스 중지, #112 운영자 종료).
+**할 일**: `phases/13-task-model/` 의 step 을 설계한다(`.claude/commands/harness.md` 워크플로우). 구현은 사용자가 "진행해" 로 지시한 뒤.
 
-2026-09-29 설계 검토 완료 — [재설계 계획 16절](product/REDESIGN_PLAN.md#16-설계-검토-2026-09-29). 사용자 확정: (1) 목록 한 줄 = 업무, 수정·검토·재작업·판단은 그 업무의 단계(후속 규칙 행이 "같은 업무 단계"/"새 업무" 구분), (2) `service` 는 셀프호스트만 — demo 모드는 `main` 에만, (3) **재설계 전에 지금 화면 그대로 새 비공개 저장소 `jeongeundev/runloom-sandbox` 에서 이슈 → 수정 → 검토 → 실제 초안 PR 1회**. 그 뒤 13-task-model step 설계(16절 제안: Runloom 업무 키, 13 에서 `members`, 상태 모델, 원본 상태 규칙 표, 판단 실행 상한).
+**읽을 것(순서대로)**: [재설계 계획](product/REDESIGN_PLAN.md) — 특히 5절(데이터 모델)·13절(phase 표)·**16절(설계 검토 결정·제안)**, 목업 https://claude.ai/artifact/Jx6Pa7PmRZo1hmvFuiH66C (4판), [ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)(종류·후속 규칙), [ADR-0014](adr/0014-github-task-cycle.md)(GitHub 순환), 벤치마킹 `docs/research/2026-09-29-benchmark-intake-mapping.md`.
 
-이전 결정(2026-09-29): 일정과 상관없이 제대로 된 서비스가 목표, 팀 계정은 초대 링크 + 이메일·비밀번호, 판단은 로컬 Claude Code 판단 에이전트가 제안만(자동 시작은 업무 종류별 설정), 직접 작업 상태 추적은 Git·GitHub 신호와 Claude Code 훅 둘 다, 수신함은 "담당 없음" 묶음으로. 목업 https://claude.ai/artifact/Jx6Pa7PmRZo1hmvFuiH66C (4판). Jira 는 사용자 계정의 새 Jira Cloud 사이트(지인 회사 Jira 는 형식만 참고). 셀프호스트 워커·러너는 꺼져 있다(다시 켜기 전에 대상 연결부터).
+**13-task-model 범위(16절 반영)**: 업무(목록 한 줄) ↔ 단계(Task) 분리 — 후속 규칙 행이 "같은 업무 단계 / 새 업무" 를 가른다, Runloom 업무 키(예 `RUN-23`, 브랜치 이름에 사용), 공통 업무 양식 칸, 소스·매핑 표 일반화(GitHub 를 새 모델로), `members`(첫 관리자 1명) + 담당 = 멤버 또는 에이전트, 상태 모델(`tasks.status` CHECK 재생성 — 새로 들어옴·직접 작업 중·PR·검토, "실패" 자리), 되쓰기 기록, **`service` 에서 demo 모드 제거**. step 0 에서 ADR·GLOSSARY·ARCHITECTURE 로 이름 고정. 데이터 등급은 17 로, 원본 상태 → Runloom 규칙 표는 16-jira 전.
+
+**2026-09-29 확정 사항**: 목록 한 줄 = 업무(수정·검토·재작업·판단은 단계), `service` 는 셀프호스트만(demo 는 `main` 에만), 일정 무관·완성도 우선, 팀 계정 = 초대 링크 + 이메일·비밀번호, 판단 = 로컬 Claude Code 판단 에이전트가 제안만(자동 시작은 업무 종류별 설정), 직접 작업 상태 추적 = Git·GitHub 신호 + Claude Code 훅, 수신함 = "담당 없음" 묶음. Jira 는 사용자 계정의 새 Jira Cloud 사이트(지인 회사 Jira 는 형식만 참고).
+
+**현재 환경(2026-09-29 저녁)**:
+- `service` = `115f529`(실연동 1 결함 수정 병합), 원격 미푸시. 셀프호스트는 이 코드로 재설치(백업 `20260929T093748Z`, 스키마 8), 러너도 새 코드로 재기동.
+- 실연동 대상은 비공개 `jeongeundev/runloom-sandbox`(클론 `/Users/kje/demo/runloom-sandbox`, 클론 로컬 `gh auth git-credential` 자격). App `runloom-gwufov` 설치는 sandbox 만 — 권한 Issues RW·Pull requests RW·Contents R·Metadata R. 워커·러너 **켜져 있음**, 알림(Discord) 설정됨.
+- [실연동 1](VERIFICATION_LOG.md): sandbox #1 → 수정 → 검토 → 초안 PR #2 → 사람 병합 → 업무 완료. 결함 2건(러너 재시작 뒤 영구 정지, App Contents 권한)은 수정됨. 에이전트의 #1 수정도 `service` 로 가져옴(`d5c2568`).
+- OpenArchive: 소스 중지, #112 운영자 종료, App 설치 없음. 쓰기 금지 그대로. 로컬 `/Users/kje/demo/OpenArchive-worktrees/task-e3df709051a2` 에 push 안 된 작업 폴더가 남아 있다(정리는 사용자 결정).
 
 ## 방향 전환 기록 (2026-09-29)
 
@@ -52,8 +60,8 @@ phase 9 e2e 에서 발견한 결함 — 수정됨(step 13): 재작업 상한 1 �
 | 브랜치 | `service` 가 실서비스 통합 브랜치. phase 6·7·8 과 문서 정리 포함. 새 phase 는 `service` 에서 `feat-*` 로 분기하고 끝나면 `--no-ff` 병합. 원격 푸시는 사용자 지시 때만 |
 | 완료 phase | 0-mvp, 1-diag-fix, 2-model-compare, 5-scripted-demo(공모전 데모), 6-typed-handoff([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)), 7-n8n-gateway([ADR-0010](adr/0010-n8n-inbox-and-callback.md)), 8-github-task-cycle([ADR-0014](adr/0014-github-task-cycle.md)), 9-measure([ADR-0015](adr/0015-measurement-events-and-baseline.md)), 10-selfhost([ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)), 11-github-app([ADR-0017](adr/0017-github-app-connection.md)) — 모두 `service` 병합됨(미푸시). 12-real-repo([ADR-0018](adr/0018-real-repo-cycle.md)) — `service` 병합됨(2e06218). 4-claude-issues 는 step 3 에서 종료 |
 | 계획만 | `3-limit-wait`([ADR-0007](adr/0007-usage-limit-wait-policy.md), 사용량 한도 대기). 실사용에서 한도에 걸리는 빈도를 보고 당긴다 |
-| 검증 | 2026-09-28 `feat-12-real-repo` step 10 기준 `python3 -m pytest -q` 2918 passed/68 skipped, `ruff` 통과. `WORKFLOW_E2E=1` e2e 67 passed/1 skipped(`test_real_repo.py` 7 포함), `WORKFLOW_DOCKER=1` 셀프호스트 e2e 는 phase 11 브랜치에서 1 passed(phase 12 에서 다시 돌리지 않음) |
-| 실연동 | 2026-09-23 실제 GitHub·실제 Claude 로 `bug_fix` → `code_review` 1회 통과([VERIFICATION_LOG](VERIFICATION_LOG.md)). `changes_requested` 재작업은 실연동 미관찰. 2026-09-27 실제 GitHub App 생성·설치·이슈 수집(17건)·기준선(24건) 성공 — 에이전트 실행은 아직 없음 |
+| 검증 | 2026-09-29 `service` 115f529 기준 `python3 -m pytest -q` 2932 passed/68 skipped, `ruff` 통과, `WORKFLOW_E2E=1` `test_github_app`·`test_real_repo` 13 passed. 이전: 2026-09-28 `feat-12-real-repo` step 10 기준 2918 passed/68 skipped. `WORKFLOW_E2E=1` e2e 67 passed/1 skipped(`test_real_repo.py` 7 포함), `WORKFLOW_DOCKER=1` 셀프호스트 e2e 는 phase 11 브랜치에서 1 passed(phase 12 에서 다시 돌리지 않음) |
+| 실연동 | 2026-09-23 실제 GitHub·실제 Claude 로 `bug_fix` → `code_review` 1회 통과([VERIFICATION_LOG](VERIFICATION_LOG.md)). `changes_requested` 재작업은 실연동 미관찰. 2026-09-27 실제 GitHub App 생성·설치·이슈 수집(17건)·기준선(24건) 성공. 2026-09-29 실연동 1(sandbox): 실제 push·App 초안 PR·병합 추적·Discord 알림까지 통과 |
 | 사용자 결정 대기 | 실연동 자원 정리(`jeongeundev/runloom-live-test`, `../runloom-live-test`, `../runloom-live-state/`, `~/.runloom-live.env`), 워커 httpx 로그의 callback URL `signature` 노출 처리 |
 
 ## 재개 방법 — 하네스
