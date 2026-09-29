@@ -59,7 +59,6 @@ from tests.e2e.test_github_cycle import (
 from workflow.adapters import secret_store
 from workflow.adapters.callback_client import HttpCallbackClient
 from workflow.adapters.db import connect
-from workflow.adapters.diag_client import HttpDiagClient
 from workflow.adapters.secret_store import SecretStore
 from workflow.server import worker as worker_module
 from workflow.server.app import create_app
@@ -189,8 +188,6 @@ def world(tmp_path_factory):
         "WORKFLOW_SECRET_DIR": str(workdir / "central" / "secrets"),
         "SESSION_SECRET": "e2e-session-secret-" + "s" * 20,
         "OPERATOR_TOKEN": "e2e-operator-token-" + "o" * 20,
-        "DIAG_API_TOKEN": "e2e-diag-token-" + "d" * 20,
-        "DIAG_API_URL": "http://127.0.0.1:9",
         "WORKFLOW_PUBLIC_URL": f"http://127.0.0.1:{port}",
     }
     fake_bin = workdir / "bin"
@@ -241,10 +238,8 @@ def world(tmp_path_factory):
 def make_worker(world: World) -> Worker:
     """워커 프로세스 한 번의 시작과 같다 — 소스별 클라이언트(설치 토큰)는 비밀 저장소에서 읽는다."""
     settings = load_settings(world.central_env)
-    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
-                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
     clients = SourceClients(settings, SecretStore(settings.secret_dir), transport=ToFakeGitHub(world.fake_port))
-    return Worker(lambda: connect(settings.db_path), world.store, diag, HttpCallbackClient(), settings, utc_now,
+    return Worker(lambda: connect(settings.db_path), world.store, HttpCallbackClient(), settings, utc_now,
                   github_for=clients)
 
 
@@ -272,8 +267,7 @@ def open_blockers(world: World, task_id: str) -> str:
 
 def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     http = world.http
-    assert http.get("/tasks").status_code == 200  # 세션 쿠키
-    login = http.post("/operator/login", data={"token": world.central_env["OPERATOR_TOKEN"]})
+    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 
@@ -364,7 +358,6 @@ def test_03_runner_registers_the_folder_and_matching_fills_everything(world):
     for agent_id, code, registration in ((FIX, "code.fix", "local-billing-fix"),
                                          (REVIEW, "code.review", "local-billing-review")):
         operator_agent(world, agent_id, code, "billing", registration)
-        assert http.post("/agents/register", data={"agent_id": agent_id}).status_code == 303
     issued = http.post("/operator/connect-codes")
     connect_code = re.search(r'<code id="issued-code">([^<]+)</code>', issued.text).group(1)
     py = sys.executable

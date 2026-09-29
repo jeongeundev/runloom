@@ -34,7 +34,7 @@ def _executor(agent_id: str, connector_id: str = "conn-1", repository_id: str = 
         connection_type="local",
         connection_state="online",
         last_seen_at="2026-09-23T02:59:30Z",
-        supported_kinds=("code_change", "bug_fix", "code_review"),
+        supported_kinds=("bug_fix", "code_review"),
     )
     values.update(kw)
     return ExecutorFacts(**values)
@@ -252,15 +252,17 @@ def test_legacy_connector_without_supported_kinds_is_outdated_for_new_kinds():
     assert readiness.blockers[0].reason == "연결 프로그램 업데이트 필요 — bug_fix 미지원"
 
 
-def test_legacy_connector_still_runs_code_change_and_user_kinds():
+def test_legacy_connector_runs_only_user_kinds():
     executors = {**EXECUTORS, "agent-a": _executor("agent-a", supported_kinds=None)}
 
-    assert evaluate_readiness(_fix(executors=executors, kind="code_change")).ready
     assert evaluate_readiness(_fix(executors=executors, kind="triage")).ready
+    # 옛 내장 code_change 는 없어졌다(ADR-0019) — 같은 이름이면 사용자 정의 종류로 본다
+    assert evaluate_readiness(_fix(executors=executors, kind="code_change")).ready
+    assert _codes(evaluate_readiness(_fix(executors=executors))) == ["executor_outdated"]
 
 
 def test_declared_kinds_without_this_builtin_is_outdated():
-    executors = {**EXECUTORS, "agent-a": _executor("agent-a", supported_kinds=("code_change",))}
+    executors = {**EXECUTORS, "agent-a": _executor("agent-a", supported_kinds=("code_review",))}
 
     assert _codes(evaluate_readiness(_fix(executors=executors))) == ["executor_outdated"]
 
@@ -348,7 +350,7 @@ def test_facts_are_values_not_rows():
 
     with pytest.raises(AttributeError):
         facts.kind = "code_review"  # frozen
-    assert replace(facts, kind="code_change").kind == "code_change"
+    assert replace(facts, kind="triage").kind == "triage"
 
 
 # --- 자동 매칭 결과 (phase 11 step 6, ADR-0017) ----------------------------------------------

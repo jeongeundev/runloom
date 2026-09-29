@@ -190,8 +190,7 @@ def test_full_flow_commits_verifies_in_clean_checkout_and_uses_raw_kinds(state_c
     assert result.outcome == "ready_for_review" and result.summary == "src.py 를 고쳤다"
     assert result.base_commit == base and result.result_commit != base
     assert [meta.kind for meta, _ in output.artifacts] == [
-        "diff", "test_log_before", "test_log_after", "verification_log", "report_output",
-        "claude_jsonl", "claude_stderr",
+        "diff", "test_log_before", "test_log_after", "verification_log", "claude_jsonl", "claude_stderr",
     ]
     names = {meta.kind: meta.name for meta, _ in output.artifacts}
     assert names["claude_jsonl"] == "fake.jsonl" and names["claude_stderr"] == "fake-stderr.txt"
@@ -199,7 +198,6 @@ def test_full_flow_commits_verifies_in_clean_checkout_and_uses_raw_kinds(state_c
     assert artifacts["test_log_before"].decode().splitlines()[0] == "exit_code=1"  # 기준 코드 + 새 테스트 → 재현 실패
     assert artifacts["test_log_after"].decode().splitlines()[0] == "exit_code=0"
     assert artifacts["verification_log"].decode().splitlines()[0] == "exit_code=0"
-    assert "vp-report" in artifacts["report_output"].decode()  # 보고서 프로필 미등록 사유가 남는다
     assert "src.py" in artifacts["diff"].decode() and "test_repro.py" in artifacts["diff"].decode()
     assert artifacts["claude_jsonl"] == b'{"type":"turn.completed"}\n' and artifacts["claude_stderr"] == b"fake: done\n"
     assert result.verification.profile_id == "vp-pytest"
@@ -634,14 +632,14 @@ def test_diagnosis_request_is_still_unsupported(state_conn, review_handoff):
     assert adapter.launched_with == [] and adapter.launched_readonly_with == []
 
 
-# --- 일반 버그 수정 `bug_fix` — 등록된 검증 프로필·고정 기준 커밋, 보고서 없음 (ADR-0014 3항) ----------------------
+# --- 일반 버그 수정 `bug_fix` — 등록된 검증 프로필·고정 기준 커밋 (ADR-0014 3항) ----------------------------------
 
 BUG_TASK = "task-gh-41"
 BUG_REQUEST = "GitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n재현: 같은 쿠폰으로 두 번 결제하면 총액이 음수가 된다."
 
 
 def register_bug(state_conn, repo: Path) -> str:
-    """일반 저장소 등록 — 검증 프로필 `vp-unit`. `vp-report` 도 등록돼 있지만 `bug_fix` 는 쓰지 않아야 한다."""
+    """일반 저장소 등록 — 검증 프로필 `vp-unit`."""
     base = git_ops.head_sha(repo)
     state.save_registration(state_conn, {
         "local_registration_id": "local-billing",
@@ -649,10 +647,7 @@ def register_bug(state_conn, repo: Path) -> str:
         "tool": "codex",
         "repository_id": "acme-billing",
         "base_commit": base,
-        "verification_profiles": {
-            "vp-unit": [sys.executable, "check.py"],
-            "vp-report": [sys.executable, "-c", "print('보고서')"],
-        },
+        "verification_profiles": {"vp-unit": [sys.executable, "check.py"]},
     })
     return base
 
@@ -670,15 +665,14 @@ def bug_request(base_commit: str, *, execution_id: str = "exec-gh-fix-001", prof
 
 @pytest.fixture
 def bug_handoff(tmp_path: Path) -> Path:
-    """첫 시도의 인계 디렉터리는 비어 있다. 데모 파일 이름이 있어도 `bug_fix` 는 보고서를 만들지 않는다."""
+    """첫 시도의 인계 디렉터리는 비어 있다."""
     handoff = tmp_path / "task-gh-41.handoff"
     handoff.mkdir()
     return handoff
 
 
-def test_bug_fix_baseline_fails_result_passes_and_no_report(state_conn, repo, bug_handoff):
+def test_bug_fix_baseline_fails_and_result_passes(state_conn, repo, bug_handoff):
     base = register_bug(state_conn, repo)
-    (bug_handoff / "response-after@1.json").write_text("{}")  # 데모 입력이 우연히 있어도 보고서 경로를 타지 않는다
     request = bug_request(base)
     adapter = ScriptedTool(state_conn, fix_and_add_test)
 
@@ -709,7 +703,6 @@ def test_bug_fix_without_new_test_is_needs_information(state_conn, repo, bug_han
 
     assert output.failed is None and output.result.outcome == "needs_information"
     assert "재현 테스트 없음" in output.result.summary and output.result.result_commit not in (None, base)
-    assert "report_output" not in by_kind(output)
 
 
 def test_bug_fix_without_change_is_needs_information(state_conn, repo, bug_handoff):
@@ -855,25 +848,6 @@ def test_bug_fix_tool_and_profile_env_have_no_github_token(state_conn, repo, bug
     assert log.startswith("exit_code=0") and "'PATH'" in log
     for key in ("WORKFLOW_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "WORKFLOW_GITHUB_REPOS"):
         assert key not in log and key not in adapter.child_env()
-
-
-def test_demo_code_change_still_generates_report(state_conn, repo, handoff):
-    """데모 회귀: `code_change` 는 여전히 `vp-report` 로 보고서를 만든다 (응답 fixture 가 인계 자료에 있을 때)."""
-    base = git_ops.head_sha(repo)
-    state.save_registration(state_conn, {
-        "local_registration_id": "local-demo-report", "repo_path": str(repo), "tool": "codex",
-        "repository_id": "demo-report-repo", "base_commit": base,
-        "verification_profiles": {
-            "vp-pytest": [sys.executable, "check.py"],
-            "vp-report": [sys.executable, "-c", "import sys; print('보고서 ' + open(sys.argv[1]).read())", "{response}"],
-        },
-    })
-    (handoff / "response-after@1.json").write_text('{"report_date": "2026-09-19"}')
-
-    output = ScriptedTool(state_conn, fix_and_add_test).run(request_for(base), handoff, Recorder())
-
-    assert output.failed is None
-    assert by_kind(output)["report_output"].decode().startswith("보고서 {\"report_date\"")
 
 
 # --- 커밋 검토 `code_review` — 결과 커밋의 깨끗한 읽기 전용 체크아웃 (ADR-0014 3항) ------------------------------

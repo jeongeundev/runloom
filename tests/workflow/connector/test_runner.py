@@ -66,7 +66,6 @@ def ok_output(request: ExecutionRequest, extra_artifacts=()) -> AdapterOutput:
         make_meta("test_log_before", "before.txt", b"exit_code=1\nFAILED\n", "text/plain"),
         make_meta("test_log_after", "after.txt", b"exit_code=0\npassed\n", "text/plain"),
         make_meta("verification_log", "verify.txt", b"exit_code=0\n", "text/plain"),
-        make_meta("report_output", "report.txt", "합계    20    5\n".encode(), "text/plain"),
         *extra_artifacts,
     ]
     result = CodeChangeResult(
@@ -123,8 +122,7 @@ def test_happy_path_sends_events_in_order_and_uploads_result(fake, client, state
     assert fake.executions[request.execution_id]["status"] == "result_ready"
 
     uploaded = fake.artifacts_of(request.execution_id)
-    assert {"diff", "test_log_before", "test_log_after", "verification_log", "report_output",
-            "code_change_result"} <= set(uploaded)
+    assert {"diff", "test_log_before", "test_log_after", "verification_log", "code_change_result"} <= set(uploaded)
     result = CodeChangeResult.model_validate_json(uploaded["code_change_result"]["data"])
     assert events[-1]["data"]["result_artifact_id"] in fake.artifacts
     assert fake.artifacts[events[-1]["data"]["result_artifact_id"]]["kind"] == "code_change_result"
@@ -176,8 +174,7 @@ def test_echo_adapter_completes_flow(fake, client, state_conn, paths, tmp_path):
     result = CodeChangeResult.model_validate_json(
         fake.artifacts_of(request.execution_id)["code_change_result"]["data"]
     )
-    assert result.outcome == "ready_for_review"
-    assert "response-after@1.json" in fake.artifacts_of(request.execution_id)["report_output"]["data"].decode()
+    assert result.outcome == "ready_for_review" and "인계 자료 4개" in result.summary  # 인계 디렉터리를 읽었다
 
 
 def test_no_assignment_is_quiet(fake, client, state_conn, paths, tmp_path):
@@ -956,10 +953,8 @@ def bug_fix_request(execution_id: str = "exec-gh-fix-001") -> ExecutionRequest:
 
 
 def bug_fix_output(request: ExecutionRequest) -> AdapterOutput:
-    """보고서 없는 일반 버그 결과 — 필수 산출물은 diff·테스트 전후·검증 로그뿐이다."""
-    output = ok_output(request)
-    output.artifacts = [(meta, data) for meta, data in output.artifacts if meta.kind != "report_output"]
-    return output
+    """일반 버그 결과 — 필수 산출물은 diff·테스트 전후·검증 로그뿐이다."""
+    return ok_output(request)
 
 
 def test_bug_fix_without_inputs_runs_with_heartbeat_and_uploads_code_change_result(
@@ -991,7 +986,7 @@ def test_claim_declares_supported_builtin_kinds(fake, client, state_conn, paths,
     runner.tick()
 
     claim = next(r for r in fake.requests if r.url.path == "/connector/claim")
-    assert json.loads(claim.content)["supported_kinds"] == ["code_change", "bug_fix", "code_review"]
+    assert json.loads(claim.content)["supported_kinds"] == ["bug_fix", "code_review"]
 
 
 # --- 커밋 검토 `code_review` ---------------------------------------------------------------------
@@ -1181,7 +1176,7 @@ def test_usage_survives_restart_before_result_ready_is_sent(fake, client, state_
 
     def flaky_upload(*args, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 6:  # 결과 봉투 업로드에서 끊긴다 — 어댑터 산출물 5개는 올라갔다
+        if calls["n"] == 5:  # 결과 봉투 업로드에서 끊긴다 — 어댑터 산출물 4개는 올라갔다
             raise Unreachable("끊김")
         return original(*args, **kwargs)
 

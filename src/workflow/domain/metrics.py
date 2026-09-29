@@ -44,7 +44,6 @@ class TaskFact:
     pr_merged_at: str | None = None  # 원본 이슈를 닫은 병합 PR 의 병합 시각(source_issues). None = 모름/병합 없음
     merge_checked_at: str | None = None  # 병합 PR 을 마지막으로 조회한 시각. None = 조회 전
     finished_at: str | None = None
-    merge_confirmed_at: str | None = None
     review_decision: str | None = None  # tasks.review_decision(마지막 값)
 
 
@@ -338,7 +337,7 @@ def _bundle_metrics(bundles: Sequence[_Bundle], index: _Index) -> dict[str, Any]
             to_human.append(_seconds(intake, human_at))
 
         # 접수 → 완료 — GitHub 이슈 묶음은 원본 이슈를 닫은 PR 의 병합 시각만(승인 시각은 쓰지 않는다).
-        # 직접 등록은 시작 Task 의 병합 확인, 없으면 `완료` 로 바뀐 시각, v6 이전은 finished_at
+        # 직접 등록은 시작 Task 가 `완료` 로 바뀐 시각, v6 이전은 finished_at (진단 데모의 병합 확인은 `main` 전용 — ADR-0019)
         root = bundle.root
         if root.issue_state is not None:
             done_at = root.pr_merged_at
@@ -348,7 +347,7 @@ def _bundle_metrics(bundles: Sequence[_Bundle], index: _Index) -> dict[str, Any]
             else:
                 to_merge.append(_seconds(intake, done_at))
         else:
-            done_at = root.merge_confirmed_at or _earliest(
+            done_at = _earliest(
                 ev.occurred_at for ev in index.events.get(root.task_id, ())
                 if ev.type == "status_changed" and ev.data.get("to") == _DONE
             )

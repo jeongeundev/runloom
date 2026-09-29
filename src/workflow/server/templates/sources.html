@@ -1,12 +1,12 @@
 {# 입구 (`/sources`) — ADR-0010 결정 2. 워크스페이스(세션)가 n8n 같은 외부 도구용 입구 토큰을 발급·취소한다.
    발급 원문은 POST 응답 화면(`issued`)에 한 번만 보이고 — 303 없음, 쿠키·쿼리에 넣지 않는다 — 서버에는 sha256 만 남는다.
    운영자 화면(/operator)에는 두지 않는다. 입구 주소의 경로는 inbound_api 의 것 그대로.
-   요청 예시는 demo 가 진단→수정 시연 데이터, selfhost 가 수정 항목 하나. #}
+   요청 예시는 수정 항목 하나. #}
 {% extends "base.html" %}
 {% block title %}입구 — Runloom{% endblock %}
 {% block content %}
 <div class="crumbs"><div class="crumb">입구</div></div>
-<p class="muted" style="margin-bottom:12px">n8n 같은 외부 도구가 이 워크스페이스에 업무를 넣는 곳입니다. 토큰을 발급해 HTTP 요청의 <code>Authorization: Bearer</code> 에 넣습니다. 종류·순서·담당·판정은 가져오기와 같은 규칙으로 여기서 정합니다.</p>
+<p class="muted" style="margin-bottom:12px">n8n 같은 외부 도구가 이 워크스페이스에 업무를 넣는 곳입니다. 토큰을 발급해 HTTP 요청의 <code>Authorization: Bearer</code> 에 넣습니다. 종류·순서·담당·판정은 등록된 종류·후속 규칙으로 여기서 정합니다.</p>
 
 <h2 style="margin-top:0">입구 주소</h2>
 <div class="card">
@@ -54,7 +54,6 @@
 </form>
 
 <h2>요청 예시</h2>
-{% if mode == 'selfhost' %}
 <p class="small" style="margin-bottom:8px">수정 항목 하나 (CONTRACT 12절). <code>wfs_…</code> 자리에 발급한 토큰을, <code>repo:</code> 라벨에 에이전트의 범위 값을 넣습니다. n8n 쪽 노드 설정은 저장소의 <code>docs/n8n/README.md</code> 를 참고하세요.</p>
 <pre>curl -X POST {{ inbound_url }} \
   -H 'Authorization: Bearer wfs_…' \
@@ -72,32 +71,6 @@
     ],
     "callback_url": "http://localhost:5678/webhook-waiting/1234"
   }'</pre>
-{% else %}
-<p class="small" style="margin-bottom:8px">진단 항목 하나와 그 뒤의 수정 항목 하나 (CONTRACT 12절). <code>wfs_…</code> 자리에 발급한 토큰을 넣습니다. n8n 쪽 노드 설정은 저장소의 <code>docs/n8n/README.md</code> 를 참고하세요.</p>
-<pre>curl -X POST {{ inbound_url }} \
-  -H 'Authorization: Bearer wfs_…' \
-  -H 'content-type: application/json' \
-  -d '{
-    "contract_version": 1,
-    "items": [
-      {
-        "key": "run-daily-0920",
-        "title": "일일 보고서 2026-09-20 09:00 실행 실패",
-        "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다. 실패 원인과 수정에 필요한 근거를 조사해 주세요.",
-        "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
-        "blocked_by": []
-      },
-      {
-        "key": "fix-format",
-        "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
-        "body": "진단 결과와 근거를 바탕으로 demo-report-repo 의 변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
-        "labels": ["bug", "repo:demo-report-repo"],
-        "blocked_by": ["run-daily-0920"]
-      }
-    ],
-    "callback_url": "http://localhost:5678/webhook-waiting/1234"
-  }'</pre>
-{% endif %}
 
 <h2>callback 허용 목록</h2>
 <div class="card">

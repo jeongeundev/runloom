@@ -12,10 +12,12 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
+# phase 13 이 모든 세션에서 지우는 진단 데모 내장 종류 (ADR-0019 결정 4). 쓰는 Task·사용자 규칙이 있으면 되돌린다.
+PHASE13_REMOVED_KIND_NAMES = ("diagnosis", "code_change")
 
 OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
@@ -587,8 +589,44 @@ def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 8")
 
 
+def _migrate_8_to_9(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 모든 세션에서 `diagnosis`·`code_change` 종류와 그 둘의 내장 규칙
+    (`diagnosis → code_change`)을 지운다. 그 종류의 Task·실행이 있거나 그 쌍 밖의 규칙(사용자 등록)이 그 종류를
+    가리키면 지우지 않고 중단한다 — 칸·표는 그대로 둔다(ADR-0019 결정 5)."""
+    names = PHASE13_REMOVED_KIND_NAMES
+    placeholders = ", ".join("?" * len(names))
+    in_use = conn.execute(
+        f"SELECT session_id, kind, COUNT(*) FROM tasks WHERE kind IN ({placeholders})"
+        " GROUP BY session_id, kind ORDER BY session_id, kind",
+        names,
+    ).fetchall()
+    executions = conn.execute(
+        f"SELECT t.session_id, e.kind, COUNT(*) FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+        f" WHERE e.kind IN ({placeholders}) GROUP BY t.session_id, e.kind ORDER BY t.session_id, e.kind",
+        names,
+    ).fetchall()
+    rules = conn.execute(
+        f"SELECT session_id, from_kind, to_kind FROM succession_rules"
+        f" WHERE (from_kind IN ({placeholders}) OR to_kind IN ({placeholders}))"
+        " AND NOT (from_kind = 'diagnosis' AND to_kind = 'code_change') ORDER BY session_id, from_kind, to_kind",
+        names + names,
+    ).fetchall()
+    if in_use or executions or rules:
+        listed = [f"{r[0]}:{r[1]} 업무 {r[2]}건" for r in in_use]
+        listed += [f"{r[0]}:{r[1]} 실행 {r[2]}건" for r in executions]
+        listed += [f"{r[0]}:{r[1]}→{r[2]} 규칙" for r in rules]
+        raise RuntimeError(
+            f"schema_version 8 → 9 마이그레이션 중단 — 지울 종류(diagnosis·code_change)를 쓰는 행: {', '.join(listed)}"
+        )
+    conn.execute("DELETE FROM succession_rules WHERE from_kind = 'diagnosis' AND to_kind = 'code_change'")
+    conn.execute(f"DELETE FROM kinds WHERE kind IN ({placeholders})", names)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 9")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4·5·6·7 은 8 까지 차례로(4 → 5 → 6 → 7 → 8) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~8 은 9 까지 차례로(4 → 5 → 6 → 7 → 8 → 9) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
@@ -601,8 +639,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] in (4, 5, 6, 7):
-            steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8)
+        elif row[0] in (4, 5, 6, 7, 8):
+            steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9)
             for step in steps[row[0] - 4:]:
                 step(conn)
         elif row[0] != SCHEMA_VERSION:

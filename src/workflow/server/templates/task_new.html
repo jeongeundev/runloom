@@ -1,5 +1,4 @@
-{# 업무 등록 — PRD 2절 입력 항목. `example` 미리 채움은 web.EXAMPLES. 코드 수정 대상은 폼에서 받지 않는다.
-   selfhost(ADR-0016)는 진단 데모 입력(run_id)과 데모 범위 예시를 숨긴다.
+{# 업무 등록 — PRD 2절 입력 항목. 기본 종류는 `bug_fix`(web._EMPTY_FORM). 코드 수정 대상은 폼에서 받지 않는다.
    요구 능력 select 는 세션의 종류 등록부(kind_options)에서 온다 — 종류를 고르면 capability_code·scope_key 가 정해진다 (ADR-0009).
    인라인 스크립트 하나: 종류를 바꾸면 범위 값 라벨의 scope 키(option 의 data-scope-key)를 바꾼다. #}
 {% extends "base.html" %}
@@ -29,7 +28,7 @@
     <div class="field">
       <label for="scope_value">범위 값 (<span class="mono" id="scope-key">{{ form_scope_key }}</span>)</label>
       <input type="text" id="scope_value" name="scope_value" value="{{ form.scope_value }}" required>
-      <div class="help">선택한 종류의 scope 키에 해당하는 값.{% if mode != 'selfhost' %} 예: daily-report, demo-report-repo{% endif %}</div>
+      <div class="help">선택한 종류의 scope 키에 해당하는 값.</div>
     </div>
   </div>
   <div class="field-row">
@@ -64,9 +63,8 @@
       <label for="completion_mode">완료 방식</label>
       <select id="completion_mode" name="completion_mode">
         <option value="review"{% if form.completion_mode == 'review' %} selected{% endif %}>검토 후 완료</option>
-        <option value="auto"{% if form.completion_mode == 'auto' %} selected{% endif %}{% if form_kind not in auto_completion_kinds %} disabled{% endif %}>자동 완료</option>
       </select>
-      <div class="help">{% if form.completion_note %}{{ form.completion_note }}{% else %}자동 완료는 자동 판정기가 있는 업무 종류(진단)에서만 고를 수 있습니다.{% endif %}</div>
+      <div class="help">{% if form.completion_note %}{{ form.completion_note }}{% else %}모든 업무 종류는 사람이 결과를 확인한 뒤 완료합니다.{% endif %}</div>
     </div>
   </div>
   <div class="field">
@@ -94,19 +92,9 @@
       <div class="help">선행 결과가 후속 규칙에 맞으면 이 업무가 시작됩니다 (A → B). 선행 승인을 기다리지 않습니다.</div>
     </div>
     <div class="field">
-      {% if mode != 'selfhost' %}
-      <label for="run_id">조사할 run_id (진단 업무)</label>
-      <input type="text" id="run_id" name="run_id" value="{{ form.run_id }}">
-      {% endif %}
-      <div class="help">{% if mode != 'selfhost' %}진단이 아닌 {% endif %}업무의 대상(저장소·기준 커밋·검증 프로필 또는 로컬 등록)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
+      <div class="help">업무의 대상(저장소·기준 커밋·검증 프로필 또는 로컬 등록)은 선택된 에이전트의 등록값에서 가져옵니다.</div>
     </div>
   </div>
-  {% if form.offer_successor %}
-  <div class="field">
-    <label><input type="checkbox" name="with_successor" value="1" checked> 후속 업무 B(코드 수정)도 함께 등록</label>
-    <div class="help">B 는 이 업무를 선행으로 두고 「대기 · 선행 대기」로 등록됩니다. A 완료 시 자동 착수해 개인 Codex 가 데모 저장소를 수정합니다.</div>
-  </div>
-  {% endif %}
   <div class="actions">
     <button class="btn" type="submit">등록</button>
     <a class="btn btn-secondary" href="/tasks">취소</a>

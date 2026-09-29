@@ -9,32 +9,25 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from workflow.domain.callback_policy import parse_hosts
 
-SECRET_KEYS = ("SESSION_SECRET", "OPERATOR_TOKEN", "DIAG_API_TOKEN")
-# selfhost 모드(ADR-0016)에서는 DIAG_API_TOKEN 이 선택이다 — 비면 진단 기능만 꺼지고 WORKFLOW_DEV 도 만들지 않는다.
-SELFHOST_OPTIONAL_KEYS = ("DIAG_API_TOKEN",)
-MODES = ("demo", "selfhost")
+SECRET_KEYS = ("SESSION_SECRET", "OPERATOR_TOKEN")
 # 비밀값이지만 선택 — 비면 그 기능만 꺼진다. WORKFLOW_DEV 도 무작위 값을 만들지 않는다.
 # WORKFLOW_GITHUB_TOKEN: GitHub 업무 순환(ADR-0014)의 저장소 한정 토큰. 운영자 API 는 "있음/없음"만 응답한다.
 OPTIONAL_SECRET_KEYS = ("WORKFLOW_GITHUB_TOKEN",)
 
 # `load_settings` 가 읽는 환경변수 전부 (개발 플래그 `WORKFLOW_DEV` 제외).
-# deploy/env/central.env.example 의 키 목록이 이것과 일치해야 한다 (tests/test_deploy_files.py).
+# deploy/selfhost/.env.example 의 키 목록이 이것과 맞아야 한다 (tests/test_selfhost_files.py).
 ENV_KEYS = (
+    # 셀프호스트 전용(ADR-0019) — 빈 값·`selfhost` 는 읽고 버리고, 그 밖의 값(`demo` 등)은 SettingsError
     "WORKFLOW_MODE",
     "WORKFLOW_DB_PATH",
     "WORKFLOW_ARTIFACT_DIR",
     # 비밀 파일 디렉터리 (ADR-0017) — 경로라 비밀값이 아니다
     "WORKFLOW_SECRET_DIR",
     *SECRET_KEYS,
-    "DIAG_API_URL",
-    "WORKFLOW_LIMIT_PER_SESSION_DAILY",
-    "WORKFLOW_LIMIT_GLOBAL_DAILY",
     "WORKFLOW_LIMIT_ACTIVE_TASKS_PER_SESSION",
-    "WORKFLOW_LIMIT_ATTACHMENTS_MAX_BYTES",
     "WORKFLOW_LIMIT_UNKNOWN_AFTER_SECONDS",
     "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS",
     # n8n 입구·출구 (ADR-0010) — 비밀값이 아니다
@@ -48,10 +41,7 @@ ENV_KEYS = (
 
 @dataclass(frozen=True)
 class Limits:
-    per_session_daily: int = 10
-    global_daily: int = 60
     active_tasks_per_session: int = 5
-    attachments_max_bytes: int = 1_048_576
     unknown_after_seconds: int = 120
     heartbeat_offline_seconds: int = 90
 
@@ -62,8 +52,6 @@ class Settings:
     artifact_dir: Path
     session_secret: str
     operator_token: str
-    diag_api_url: str
-    diag_api_token: str
     session_cookie_days: int = 14
     limits: Limits = field(default_factory=Limits)
     # callback 허용 목록(`parse_hosts` 결과, 비면 callback 없음)과 chain_url·task_url 앞의 공개 주소(끝 `/` 없음, 비면 null)
@@ -72,15 +60,12 @@ class Settings:
     # GitHub 업무 순환: 토큰(비면 연결 불가, repr 에 넣지 않음)과 연결을 허용한 저장소 `owner/name` 목록
     github_token: str = field(default="", repr=False)
     github_repos: tuple[str, ...] = ()
-    # 실행 모드(ADR-0016). 미설정 = demo(공개 데모)
-    mode: Literal["demo", "selfhost"] = "demo"
     # 비밀 파일 저장소 루트(ADR-0017, `adapters/secret_store.py`). 백업에 들어가지 않는다
     secret_dir: Path = Path("data/secrets")
 
-    @property
-    def diagnosis_enabled(self) -> bool:
-        """진단 토큰이 있을 때만 진단 클라이언트를 만들고 진단 실행을 받는다 (selfhost 에서 비울 수 있다)."""
-        return bool(self.diag_api_token)
+
+class SettingsError(ValueError):
+    """시작을 막는 설정 오류 — 지금은 `WORKFLOW_MODE` 가 셀프호스트가 아닐 때 (ADR-0019)."""
 
 
 def _int(env: Mapping[str, str], key: str, default: int) -> int:
@@ -94,18 +79,20 @@ def _int(env: Mapping[str, str], key: str, default: int) -> int:
 
 
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
-    """비밀값이 비어 있으면 ValueError(selfhost 의 `DIAG_API_TOKEN` 은 예외). `WORKFLOW_DEV=1` 이면 무작위 값을 만들고 stderr 에 경고한다."""
+    """비밀값이 비어 있으면 ValueError. `WORKFLOW_DEV=1` 이면 무작위 값을 만들고 stderr 에 경고한다.
+    `WORKFLOW_MODE` 는 동작을 정하지 않는다 — 빈 값·`selfhost` 가 아니면 SettingsError (ADR-0019)."""
     dev = env.get("WORKFLOW_DEV") == "1"
-    mode = env.get("WORKFLOW_MODE") or "demo"
-    if mode not in MODES:
-        raise ValueError(f"WORKFLOW_MODE 는 demo 또는 selfhost 여야 합니다: {mode!r}")
-    optional = SELFHOST_OPTIONAL_KEYS if mode == "selfhost" else ()
+    mode = env.get("WORKFLOW_MODE") or ""
+    if mode not in ("", "selfhost"):
+        raise SettingsError(
+            f"WORKFLOW_MODE={mode} 는 지원하지 않습니다 — service 브랜치는 셀프호스트 전용이며 공개 데모는 main 브랜치입니다"
+        )
     secrets_found: dict[str, str] = {}
     missing: list[str] = []
     generated: list[str] = []
     for key in SECRET_KEYS:
         value = env.get(key, "")
-        if value or key in optional:
+        if value:
             secrets_found[key] = value
         elif dev:
             secrets_found[key] = secrets.token_urlsafe(32)
@@ -124,13 +111,8 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         artifact_dir=Path(env.get("WORKFLOW_ARTIFACT_DIR") or "data/artifacts"),
         session_secret=secrets_found["SESSION_SECRET"],
         operator_token=secrets_found["OPERATOR_TOKEN"],
-        diag_api_url=env.get("DIAG_API_URL") or "http://127.0.0.1:8100",
-        diag_api_token=secrets_found["DIAG_API_TOKEN"],
         limits=Limits(
-            per_session_daily=_int(env, "WORKFLOW_LIMIT_PER_SESSION_DAILY", 10),
-            global_daily=_int(env, "WORKFLOW_LIMIT_GLOBAL_DAILY", 60),
             active_tasks_per_session=_int(env, "WORKFLOW_LIMIT_ACTIVE_TASKS_PER_SESSION", 5),
-            attachments_max_bytes=_int(env, "WORKFLOW_LIMIT_ATTACHMENTS_MAX_BYTES", 1_048_576),
             unknown_after_seconds=_int(env, "WORKFLOW_LIMIT_UNKNOWN_AFTER_SECONDS", 120),
             heartbeat_offline_seconds=_int(env, "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS", 90),
         ),
@@ -138,6 +120,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         public_url=(env.get("WORKFLOW_PUBLIC_URL") or "").rstrip("/"),
         github_token=env.get("WORKFLOW_GITHUB_TOKEN") or "",
         github_repos=tuple(r.strip() for r in (env.get("WORKFLOW_GITHUB_REPOS") or "").split(",") if r.strip()),
-        mode=mode,
         secret_dir=Path(env.get("WORKFLOW_SECRET_DIR") or "data/secrets"),
     )

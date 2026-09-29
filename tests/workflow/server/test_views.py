@@ -3,11 +3,21 @@
 import json
 
 from workflow.adapters import repo
-from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES, ExecutionEvent, KindSpec, SelectionRecord
+from workflow.contracts.v1 import (
+    BUILTIN_KINDS,
+    BUILTIN_RULES,
+    ExecutionEvent,
+    ExecutionRequest,
+    KindSpec,
+    SelectionRecord,
+    SuccessorRule,
+)
+from workflow.domain.kinds import get_kind
 from workflow.server import views
 
 from .conftest import (
     NOW,
+    REPOSITORY,
     RESULT_COMMIT,
     SESSION,
     TASK_A,
@@ -18,8 +28,8 @@ from .conftest import (
     seed_result_ready,
 )
 
-CAP_A = {"code": "operations.diagnose", "scope": {"workflow_id": "daily-report"}}
-CAP_B = {"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}}
+CAP_FIX = {"code": "code.fix", "scope": {"repository_id": REPOSITORY}}  # TASK_A (bug_fix)
+CAP_REVIEW = {"code": "code.review", "scope": {"repository_id": REPOSITORY}}  # TASK_B (code_review)
 
 
 def _select(conn, task_id: str, agent_id: str, capability: dict) -> None:
@@ -39,6 +49,110 @@ def _view(conn, settings, task_id: str, now: str = NOW):
     return views.build_task_view(conn, repo.get_task(conn, task_id), now=now, settings=settings)
 
 
+# --- 사용자 정의 종류 triage → patch ---------------------------------------------------
+# 내장 `bug_fix`·`code_review` 는 업무 순환 종류라 `status_of` 가 저장된 상태를 쓴다. 선택·선행·연결·실행으로
+# 상태를 다시 판정하는 경로는 사용자 정의 종류(GENERIC_POLICY)로 본다.
+
+TRIAGE = KindSpec(
+    kind="triage", label="분류", capability_code="ops.triage", scope_key="workflow_id",
+    input_kinds=[], output_kind="generic_result", outcomes=["ready_for_handoff", "needs_information"],
+    instructions="실패 원인을 분류하세요.", builtin=False,
+)
+PATCH = KindSpec(
+    kind="patch", label="패치", capability_code="code.patch", scope_key="repository_id",
+    input_kinds=["generic_result"], output_kind="generic_result", outcomes=["done", "needs_information"],
+    instructions="인계된 분류 결과로 고치세요.", builtin=False,
+)
+TRIAGE_RULE = SuccessorRule(
+    from_kind="triage", on_outcomes=["ready_for_handoff"], to_kind="patch", handoff_kinds=["generic_result"],
+)
+CAP_TRIAGE = {"code": "ops.triage", "scope": {"workflow_id": "daily-report"}}
+CAP_PATCH = {"code": "code.patch", "scope": {"repository_id": REPOSITORY}}
+API_AGENT = "agent-api-ops"  # API 연결 — heartbeat 를 보내지 않는다
+TRIAGE_AGENT = "agent-triage-mac"
+PATCH_AGENT = "agent-patch-mac"
+TASK_T = "triage-daily-0920"  # triage
+TASK_P = "patch-daily-0920"  # patch ← TASK_T
+# kind → (종류, 능력, 제목, 로컬 등록 ID)
+USER_KINDS = {
+    "triage": (TRIAGE, CAP_TRIAGE, "일일 보고서 실패 분류", "local-triage"),
+    "patch": (PATCH, CAP_PATCH, "보고서 변환 패치", "local-patch"),
+}
+
+
+def seed_user_kinds(conn) -> None:
+    """세션에 종류 triage·patch 와 규칙 triage → patch 를 등록하고 분류 API(API)·분류 Codex·패치 Codex(로컬)를
+    워크스페이스에 붙인다. 워크스페이스 행이 먼저 있어야 한다."""
+    repo.insert_kind(conn, SESSION, TRIAGE, NOW)
+    repo.insert_kind(conn, SESSION, PATCH, NOW)
+    repo.insert_rule(conn, SESSION, TRIAGE_RULE, NOW)
+    for agent in (
+        {"agent_id": API_AGENT, "name": "운영 분류 API", "owner_scope": "company", "connection_type": "api",
+         "api_url": "http://127.0.0.1:8100", "credential_ref": "env:OPS_API_TOKEN", "capabilities": [CAP_TRIAGE],
+         "connection_state": "online"},
+        {"agent_id": TRIAGE_AGENT, "name": "분류 Codex", "owner_scope": "personal", "connection_type": "local",
+         "local_registration_id": "local-triage", "capabilities": [CAP_TRIAGE], "connection_state": "unknown"},
+        {"agent_id": PATCH_AGENT, "name": "패치 Codex", "owner_scope": "personal", "connection_type": "local",
+         "local_registration_id": "local-patch", "capabilities": [CAP_PATCH], "connection_state": "unknown"},
+    ):
+        repo.upsert_agent(conn, agent)
+        repo.register_session_agent(conn, SESSION, agent["agent_id"], NOW)
+
+
+def user_task(task_id: str, kind: str, predecessor: str | None = None) -> dict:
+    """사용자 정의 종류 Task 행 (conftest `task_row` 와 같은 모양, target 은 로컬 등록 하나)."""
+    _, capability, title, registration = USER_KINDS[kind]
+    return {
+        "task_id": task_id,
+        "session_id": SESSION,
+        "title": title,
+        "request": "실패 원인을 분류해 주세요." if kind == "triage" else "보고서 변환을 고쳐 주세요.",
+        "kind": kind,
+        "required_capability": capability,
+        "selection_mode": "auto",
+        "chosen_agent_id": None,
+        "run_mode": "manual" if predecessor is None else "auto",
+        "completion_mode": "review",
+        "criteria": [{"code": "outcome_allowed", "text": "결과 봉투 outcome 이 종류의 outcome 목록에 있음",
+                      "structured": True}],
+        "predecessor_task_id": predecessor,
+        "revision": 1,
+        "target": {"local_registration_id": registration},
+        "status": "실행 가능",
+        "status_reason": "선택됨",
+    }
+
+
+def seed_user_tasks(conn) -> None:
+    """종류·Agent(`seed_user_kinds`)와 Task T(triage) → P(patch)."""
+    seed_user_kinds(conn)
+    repo.insert_task(conn, user_task(TASK_T, "triage"), NOW)
+    repo.insert_task(conn, user_task(TASK_P, "patch", predecessor=TASK_T), NOW)
+
+
+def seed_user_execution(conn, execution_id: str, task_id: str, kind: str) -> None:
+    """사용자 정의 종류의 queued 실행 (연결 프로그램 배정 없음)."""
+    spec, _, _, registration = USER_KINDS[kind]
+    agent_id = TRIAGE_AGENT if kind == "triage" else PATCH_AGENT
+    repo.create_execution(
+        conn, execution_id=execution_id, task_id=task_id, attempt_no=1, start_key=f"auto:{task_id}:r1",
+        agent_id=agent_id, kind=kind,
+        request=ExecutionRequest.model_validate({
+            "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": kind,
+            "agent_id": agent_id, "task_revision": 1, "request": "진행", "input_artifact_ids": [],
+            "target": {"local_registration_id": registration}, "kind_spec": spec.model_dump(),
+        }),
+        assigned_connector_id=None, predecessor_execution_id=None, now=NOW,
+    )
+
+
+def user_result(execution_id: str, task_id: str, kind: str, outcome: str) -> dict:
+    return {
+        "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": kind,
+        "outcome": outcome, "summary": f"{kind} 결과", "artifact_ids": [],
+    }
+
+
 # --- build_task_view ----------------------------------------------------------
 
 
@@ -48,57 +162,68 @@ def test_view_without_selection_record_is_needs_selection(seeded, settings):
     assert view.selection_reason == "후보 없음"
     assert view.selected_agent_id is None
     assert view.execution_status is None
-    assert view.connector_online is None  # 진단은 연결 프로그램과 무관
+    assert view.connector_online is None  # 선택된 Agent 가 없으면 연결 상태를 보지 않는다
     assert view.finished is False
 
 
-def test_view_diagnosis_selected_and_runnable(seeded, settings):
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    view = _view(seeded, settings, TASK_A)
-    assert (view.kind, view.run_mode, view.completion_mode) == ("diagnosis", "manual", "review")
+def test_view_user_kind_selected_and_runnable(seeded, settings):
+    seed_user_tasks(seeded)
+    _select(seeded, TASK_T, API_AGENT, CAP_TRIAGE)
+    view = _view(seeded, settings, TASK_T)
+    assert (view.kind, view.run_mode, view.completion_mode) == ("triage", "manual", "review")
     assert view.selection_status == "selected"
-    assert view.selected_agent_id == "agent-ops-demo"
+    assert view.selected_agent_id == API_AGENT
     assert view.predecessor_status is None
-    assert views.status_of(repo.get_task(seeded, TASK_A), view).label == "실행 가능"
+    assert views.status_of(repo.get_task(seeded, TASK_T), view).label == "실행 가능"
 
 
-def test_view_code_change_reads_predecessor_status_and_connector_heartbeat(seeded, settings):
-    _select(seeded, TASK_B, "agent-codex-mac", CAP_B)
-    view = _view(seeded, settings, TASK_B)
-    assert view.predecessor_status == "실행 가능"  # A 는 아직 완료가 아님
+def test_view_user_kind_reads_predecessor_status_and_connector_heartbeat(seeded, settings):
+    seed_user_tasks(seeded)
+    _select(seeded, TASK_P, PATCH_AGENT, CAP_PATCH)
+    view = _view(seeded, settings, TASK_P)
+    assert view.predecessor_status == "실행 가능"  # T 는 아직 완료가 아님
     assert view.connector_online is False  # last_seen_at 없음
     assert view.connector_last_seen == "없음"
 
-    repo.update_task_status(seeded, TASK_A, "완료", "검토 승인", finished_at=NOW, review_decision="approve", now=NOW)
-    repo.set_agent_connection(seeded, "agent-codex-mac", "online", "2026-09-20T00:00:00Z")
-    fresh = _view(seeded, settings, TASK_B, now="2026-09-20T00:01:00Z")  # 60초 뒤: 90초 이내
+    repo.update_task_status(seeded, TASK_T, "완료", "검토 승인", finished_at=NOW, review_decision="approve", now=NOW)
+    repo.set_agent_connection(seeded, PATCH_AGENT, "online", "2026-09-20T00:00:00Z")
+    fresh = _view(seeded, settings, TASK_P, now="2026-09-20T00:01:00Z")  # 60초 뒤: 90초 이내
     assert fresh.predecessor_status == "완료"
     assert fresh.connector_online is True
     assert fresh.connector_last_seen == "2026-09-20 09:00:00 KST"
 
-    stale = _view(seeded, settings, TASK_B, now="2026-09-20T00:02:00Z")  # 120초 뒤: 90초 초과
+    stale = _view(seeded, settings, TASK_P, now="2026-09-20T00:02:00Z")  # 120초 뒤: 90초 초과
     assert stale.connector_online is False
-    assert views.status_of(repo.get_task(seeded, TASK_B), stale).reason == "연결 끊김, 마지막 확인 2026-09-20 09:00:00 KST"
+    assert views.status_of(repo.get_task(seeded, TASK_P), stale).reason == "연결 끊김, 마지막 확인 2026-09-20 09:00:00 KST"
+
+
+def test_status_of_builtin_cycle_kind_uses_stored_status(seeded, settings):
+    """`bug_fix`·`code_review` 는 업무 순환 종류 — 선택·연결로 다시 판정하지 않고 워커가 저장한 상태를 쓴다."""
+    _select(seeded, TASK_B, "agent-codex-mac", CAP_REVIEW)
+    view = _view(seeded, settings, TASK_B)
+    assert view.predecessor_status == "실행 가능" and view.connector_online is False
+    status = views.status_of(repo.get_task(seeded, TASK_B), view)
+    assert (status.label, status.reason) == ("실행 가능", "agent-codex-mac 선택됨")  # task_row 의 저장값
 
 
 def test_view_reads_active_execution_progress_and_failure(seeded, settings):
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
+    _select(seeded, TASK_A, "agent-codex-mac", CAP_FIX)
+    seed_execution(seeded, "exec-1", TASK_A)
     for body in (
         event("exec-1", 1, "accepted", {}),
-        event("exec-1", 2, "started", {"runtime_ref": "diag-run-1"}),
-        event("exec-1", 3, "progress", {"message": "get_run 조회 완료"}),
+        event("exec-1", 2, "started", {"runtime_ref": "pid:1"}),
+        event("exec-1", 3, "progress", {"message": "재현 테스트 실행"}),
     ):
-        repo.append_event(seeded, "exec-1", ExecutionEvent.model_validate(body), actor="diag", now=NOW)
+        repo.append_event(seeded, "exec-1", ExecutionEvent.model_validate(body), actor="connector:conn-1", now=NOW)
     view = _view(seeded, settings, TASK_A)
     assert view.execution_status == "running"
-    assert view.last_progress == "get_run 조회 완료"
+    assert view.last_progress == "재현 테스트 실행"
     assert view.verdict is None
 
     repo.append_event(
         seeded, "exec-1",
         ExecutionEvent.model_validate(event("exec-1", 4, "failed", {"code": "timeout", "message": "5분 초과", "process_stopped": True})),
-        actor="diag", now=NOW,
+        actor="connector:conn-1", now=NOW,
     )
     view = _view(seeded, settings, TASK_A)
     assert (view.execution_status, view.failed_code, view.failed_message, view.process_stopped) == (
@@ -106,9 +231,9 @@ def test_view_reads_active_execution_progress_and_failure(seeded, settings):
 
 
 def test_view_summarises_verdict_from_task_verdicts(seeded, settings, store):
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
-    seed_result_ready(seeded, store, "exec-1", kind="diagnosis_result", body={"outcome": "ready_for_handoff"})
+    _select(seeded, TASK_A, "agent-codex-mac", CAP_FIX)
+    seed_execution(seeded, "exec-1", TASK_A)
+    seed_result_ready(seeded, store, "exec-1", kind="code_change_result", body=code_change_result("exec-1", TASK_A))
     verdict = {"outcome": "passed", "checks": [
         {"code": "attachments_in_trace", "passed": True, "detail": "8건"},
         {"code": "paths_differ_as_claimed", "passed": True, "detail": "확인"},
@@ -144,22 +269,23 @@ def test_status_of_uses_stored_status_once_finished(seeded, settings):
 
 
 def test_task_context_collects_executions_result_and_actions(seeded, settings, store):
-    _select(seeded, TASK_B, "agent-codex-mac", CAP_B)
-    seed_execution(seeded, "exec-fix-001", TASK_B)
+    seed_user_tasks(seeded)
+    _select(seeded, TASK_P, PATCH_AGENT, CAP_PATCH)
+    seed_user_execution(seeded, "exec-patch-001", TASK_P, "patch")
     artifact_id = seed_result_ready(
-        seeded, store, "exec-fix-001", kind="code_change_result",
-        body=code_change_result("exec-fix-001", TASK_B),
+        seeded, store, "exec-patch-001", kind="generic_result",
+        body=user_result("exec-patch-001", TASK_P, "patch", "done"),
     )
-    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_B), now=NOW, settings=settings)
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_P), now=NOW, settings=settings)
 
-    assert ctx["task"]["task_id"] == TASK_B
-    assert ctx["task"]["required_capability"] == CAP_B
-    assert ctx["task"]["criteria"][0]["text"] == "근거 검증 통과"
-    assert ctx["selection"].selected_agent_id == "agent-codex-mac"
-    assert ctx["agent"]["agent_id"] == "agent-codex-mac"
+    assert ctx["task"]["task_id"] == TASK_P
+    assert ctx["task"]["required_capability"] == CAP_PATCH
+    assert ctx["task"]["criteria"][0]["text"] == "결과 봉투 outcome 이 종류의 outcome 목록에 있음"
+    assert ctx["selection"].selected_agent_id == PATCH_AGENT
+    assert ctx["agent"]["agent_id"] == PATCH_AGENT
     assert "credential_ref" not in ctx["agent"]
     assert (ctx["status"].label, ctx["status"].reason) == ("확인 필요", "검토 대기")
-    assert ctx["predecessor"]["task_id"] == TASK_A
+    assert ctx["predecessor"]["task_id"] == TASK_T
     assert ctx["successors"] == []
 
     [execution] = ctx["executions"]
@@ -168,34 +294,36 @@ def test_task_context_collects_executions_result_and_actions(seeded, settings, s
     assert execution["events"][2]["data"] == {"result_artifact_id": artifact_id}
     assert [a["artifact_id"] for a in execution["artifacts"]] == [artifact_id]
 
-    assert ctx["result"]["kind"] == "code_change_result"
+    assert ctx["result"]["kind"] == "generic_result"
     assert ctx["result"]["artifact_id"] == artifact_id
-    assert ctx["result"]["data"]["result_commit"] == RESULT_COMMIT
+    assert ctx["result"]["data"]["outcome"] == "done"
     assert ctx["can_review"] is True
     assert ctx["can_run"] is False
     assert ctx["needs_selection"] is False
 
 
 def test_task_context_flags_run_and_selection(seeded, settings, store):
-    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
+    seed_user_tasks(seeded)
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_T), now=NOW, settings=settings)
     assert ctx["needs_selection"] is True
-    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac", "agent-ops-demo"]  # 세션 등록 순
+    assert [c["agent_id"] for c in ctx["candidates"]] == [  # 세션 등록 순
+        "agent-codex-mac", API_AGENT, TRIAGE_AGENT, PATCH_AGENT,
+    ]
     assert ctx["can_run"] is False
     assert ctx["result"] is None
     assert ctx["executions"] == []
-    assert ctx["agent_scripted"] is False
 
     # 후보는 세션이 등록한 Agent 만 — 해제하면 카탈로그에 있어도 후보에서 빠진다
-    repo.unregister_session_agent(seeded, SESSION, "agent-ops-demo")
-    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
-    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac"]
-    repo.register_session_agent(seeded, SESSION, "agent-ops-demo", NOW)
+    repo.unregister_session_agent(seeded, SESSION, API_AGENT)
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_T), now=NOW, settings=settings)
+    assert [c["agent_id"] for c in ctx["candidates"]] == ["agent-codex-mac", TRIAGE_AGENT, PATCH_AGENT]
+    repo.register_session_agent(seeded, SESSION, API_AGENT, NOW)
 
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
+    _select(seeded, TASK_T, API_AGENT, CAP_TRIAGE)
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_T), now=NOW, settings=settings)
     assert ctx["needs_selection"] is False
     assert ctx["can_run"] is True
-    assert ctx["successors"][0]["task_id"] == TASK_B
+    assert ctx["successors"][0]["task_id"] == TASK_P
     assert ctx["chain"] is None  # 직접 등록 — 워크플로우 칩 없음
 
 
@@ -203,20 +331,20 @@ def test_task_context_flags_run_and_selection(seeded, settings, store):
 
 
 def test_task_summary_and_agent_public(seeded, settings):
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    summary = views.task_summary(seeded, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
-    assert summary["task_id"] == TASK_A
-    assert summary["title"] == "일일 보고서 실패 진단"
+    seed_user_tasks(seeded)
+    _select(seeded, TASK_T, API_AGENT, CAP_TRIAGE)
+    summary = views.task_summary(seeded, repo.get_task(seeded, TASK_T), now=NOW, settings=settings)
+    assert summary["task_id"] == TASK_T
+    assert summary["title"] == "일일 보고서 실패 분류"
     assert summary["status"].label == "실행 가능"
     assert summary["created_at"] == NOW
 
-    agent = views.agent_public(repo.get_agent(seeded, "agent-ops-demo"), now=NOW, settings=settings)
-    assert agent["agent_id"] == "agent-ops-demo"
-    assert agent["capabilities"][0]["code"] == "operations.diagnose"
+    agent = views.agent_public(repo.get_agent(seeded, API_AGENT), now=NOW, settings=settings)
+    assert agent["agent_id"] == API_AGENT
+    assert agent["capabilities"][0]["code"] == "ops.triage"
     assert agent["discovered"] == {}
     assert agent["online"] is True  # API 에이전트는 heartbeat 가 없으므로 connection_state 만 본다
-    assert agent["demo_scripted"] is False
-    assert agent["discovered_summary"] == ["operations.diagnose · workflow_id=daily-report"]  # API: 역할·자료 범위
+    assert agent["discovered_summary"] == ["ops.triage · workflow_id=daily-report"]  # API: 역할·자료 범위
     assert "credential_ref" not in agent
     assert not any("wfc_" in str(v) for v in agent.values())
 
@@ -224,7 +352,7 @@ def test_task_summary_and_agent_public(seeded, settings):
 def test_agent_public_discovered_summary_lists_found_keys_and_profiles_only(seeded, settings):
     """로컬 Agent 의 요약은 `discovered.found` 의 truthy 키(중첩은 `git.head`)와 검증 프로필. 값·URL·비밀 참조는 없다."""
     codex = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
-    assert codex["demo_scripted"] is False and codex["discovered_summary"] == []
+    assert codex["discovered_summary"] == []
 
     repo.update_registration(
         seeded, "local-demo-report", connector_id="conn-mac-01", repository_id="demo-report-repo",
@@ -250,22 +378,15 @@ def test_agent_public_discovered_summary_lists_found_keys_and_profiles_only(seed
     )
     assert views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)["discovered_summary"] == []
 
-    scripted = dict(repo.get_agent(seeded, "agent-codex-mac"))
-    repo.upsert_agent(seeded, {
-        "agent_id": "agent-codex-mac", "name": scripted["name"], "owner_scope": scripted["owner_scope"],
-        "connection_type": "local", "local_registration_id": scripted["local_registration_id"],
-        "capabilities": [CAP_B], "shared_to_all_sessions": True, "demo_scripted": True,
-    })
-    assert views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)["demo_scripted"] is True
-
 
 def test_agent_online_rule_by_connection_type(seeded, settings):
     """로컬은 online + heartbeat 이내, API 는 connection_state 만 (heartbeat 를 보내지 않는다)."""
-    ops = repo.get_agent(seeded, "agent-ops-demo")
+    seed_user_kinds(seeded)
+    ops = repo.get_agent(seeded, API_AGENT)
     assert ops["connection_type"] == "api" and ops["last_seen_at"] is None
     assert views.agent_online(ops, now=NOW, settings=settings) is True
-    repo.set_agent_connection(seeded, "agent-ops-demo", "offline", None)
-    assert views.agent_online(repo.get_agent(seeded, "agent-ops-demo"), now=NOW, settings=settings) is False
+    repo.set_agent_connection(seeded, API_AGENT, "offline", None)
+    assert views.agent_online(repo.get_agent(seeded, API_AGENT), now=NOW, settings=settings) is False
 
     codex = repo.get_agent(seeded, "agent-codex-mac")
     assert codex["connection_type"] == "local"
@@ -275,36 +396,46 @@ def test_agent_online_rule_by_connection_type(seeded, settings):
     assert views.agent_online(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings) is True
 
 
-def test_kst_day_bounds():
-    since, resets_at = views.kst_day_bounds("2026-09-20T00:00:00Z")  # 09:00 KST
-    assert since == "2026-09-19T15:00:00.000000Z"
-    assert resets_at == "2026-09-21T00:00:00+09:00"
-    since, resets_at = views.kst_day_bounds("2026-09-20T14:59:59.999999Z")  # 23:59:59 KST
-    assert since == "2026-09-19T15:00:00.000000Z"
-    since, resets_at = views.kst_day_bounds("2026-09-20T15:00:00Z")  # 다음 날 00:00 KST
-    assert since == "2026-09-20T15:00:00.000000Z"
-    assert resets_at == "2026-09-22T00:00:00+09:00"
-
-
 # --- chain_summary — 워크플로우 화면 (phase 5 step 6) ---------------------------------
 
 CHAIN = "chain-abc123"
 
 
-def _seed_chain(conn, *, skipped=None) -> tuple[str, str]:
-    """github #41 → #42 체인. Task 는 conftest 의 task_row 에 chain_id·source_ref 만 얹는다. (task_a, task_b)."""
+def _seed_chain(conn) -> tuple[str, str]:
+    """github #41(bug_fix) → #42(code_review) 체인. Task 는 conftest 의 task_row 에 chain_id·source_ref 만 얹는다."""
+    repo.insert_chain(conn, {"chain_id": CHAIN, "session_id": SESSION, "source": "github",
+                             "title": "보고서 변환 수정 → 보고서 변환 수정 검토"}, NOW)
+    from .conftest import task_row
+    repo.insert_task(conn, {**task_row("task-c41"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
+    repo.insert_task(conn, {**task_row("task-c42", kind="code_review", predecessor="task-c41"),
+                            "chain_id": CHAIN, "source_ref": "#42"}, NOW)
+    return "task-c41", "task-c42"
+
+
+CHAIN_ITEMS = [
+    {"key": "#41", "title": "일일 보고서 생성 실패 (09-20 09:00)", "body": "실패 원인을 분류해 주세요.",
+     "labels": ["kind:triage", "workflow_id:daily-report"], "blocked_by": []},
+    {"key": "#42", "title": "집계 API 응답 형식 변경 대응", "body": "보고서 변환을 고쳐 주세요.",
+     "labels": ["kind:patch", f"repository_id:{REPOSITORY}"], "blocked_by": ["#41"]},
+    {"key": "#43", "title": "변경 응답 형식 모니터링 알림 추가", "body": "알림을 추가해 주세요.",
+     "labels": ["enhancement", f"repository_id:{REPOSITORY}"], "blocked_by": ["#42"]},
+]
+
+
+def _seed_user_chain(conn, *, skipped=None) -> tuple[str, str]:
+    """n8n #41 → #42 체인(triage → patch). 접수 항목 원문(`items`)을 함께 저장해 구성 이유를 다시 만든다.
+    Task 는 `user_task` 에 chain_id·source_ref 만 얹는다."""
+    seed_user_kinds(conn)
     repo.insert_chain(conn, {
-        "chain_id": CHAIN, "session_id": SESSION, "source": "github",
+        "chain_id": CHAIN, "session_id": SESSION, "source": "n8n", "items": CHAIN_ITEMS,
         "title": "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응",
         "skipped": skipped if skipped is not None else [
             {"key": "#43", "title": "변경 응답 형식 모니터링 알림 추가",
-             "reason": "맞는 능력 코드 없음 (라벨: enhancement, repo:demo-report-repo)"},
+             "reason": f"맞는 능력 코드 없음 (라벨: enhancement, repository_id:{REPOSITORY})"},
         ],
     }, NOW)
-    from .conftest import task_row
-    repo.insert_task(conn, {**task_row("task-c41"), "chain_id": CHAIN, "source_ref": "#41",
-                            "completion_mode": "auto"}, NOW)
-    repo.insert_task(conn, {**task_row("task-c42", kind="code_change", predecessor="task-c41"),
+    repo.insert_task(conn, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
+    repo.insert_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
                             "chain_id": CHAIN, "source_ref": "#42"}, NOW)
     return "task-c41", "task-c42"
 
@@ -314,14 +445,14 @@ def _chain(conn, settings, now: str = NOW) -> dict:
 
 
 def test_chain_summary_orders_nodes_and_recomposes_reasons(seeded, settings):
-    task_a, task_b = _seed_chain(seeded)
-    _select(seeded, task_a, "agent-ops-demo", CAP_A)
-    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    task_a, task_b = _seed_user_chain(seeded)
+    _select(seeded, task_a, API_AGENT, CAP_TRIAGE)
+    _select(seeded, task_b, PATCH_AGENT, CAP_PATCH)
     summary = _chain(seeded, settings)
 
     assert summary["chain_id"] == CHAIN
     assert summary["title"] == "일일 보고서 생성 실패 (09-20 09:00) → 집계 API 응답 형식 변경 대응"
-    assert (summary["source"], summary["source_label"]) == ("github", "GitHub Issues")
+    assert (summary["source"], summary["source_label"]) == ("n8n", "n8n")
     assert [t["task_id"] for t in summary["tasks"]] == [task_a, task_b]
     assert [t["source_ref"] for t in summary["tasks"]] == ["#41", "#42"]
     assert (summary["done_count"], summary["total"], summary["started"]) == (0, 2, False)
@@ -331,23 +462,23 @@ def test_chain_summary_orders_nodes_and_recomposes_reasons(seeded, settings):
     assert summary["polling"] is True  # #42 가 대기
 
     first, second = summary["tasks"]
-    assert first["status"].label == "실행 가능" and first["kind"] == "diagnosis"
-    assert first["agent"]["name"] == "운영 진단 데모" and first["agent"]["demo_scripted"] is False
+    assert first["status"].label == "실행 가능" and first["kind"] == "triage"
+    assert first["agent"]["name"] == "운영 분류 API"
     assert "credential_ref" not in first["agent"]
-    assert (first["run_mode"], first["completion_mode"]) == ("manual", "auto")
+    assert (first["run_mode"], first["completion_mode"]) == ("manual", "review")
     assert first["selection"].status == "selected"
     # 구성 이유는 가져오기 때와 같은 규칙으로 다시 만들고, 배정 이유는 저장된 선택 기록이 기준
     assert first["reasons"] == [
-        "라벨 incident·workflow:daily-report → operations.diagnose",
+        "라벨 kind:triage + workflow_id:daily-report → triage",
         "blocked_by 없음 — 가져온 순서대로 배치",
         "체인의 첫 업무 — 선행 없음",
         "직접 실행 — 흐름의 첫 업무는 사람이 시작",
-        "자동 완료 — 진단 자동 판정기 있음",
-        "operations.diagnose 일치 후보 1개",
+        "검토 후 완료 — 기본값",
+        "ops.triage 일치 후보 1개",
     ]
     assert (second["status"].label, second["status"].reason) == ("대기", "선행 대기")
-    assert second["reasons"][1:3] == ["blocked_by #41 — #41 뒤에 배치", "선행 #41 (operations.diagnose) → code.modify 인계"]
-    assert second["reasons"][-1] == "code.modify 일치 후보 1개"
+    assert second["reasons"][1:3] == ["blocked_by #41 — #41 뒤에 배치", "선행 #41 (ops.triage) → code.patch 인계"]
+    assert second["reasons"][-1] == "code.patch 일치 후보 1개"
 
     gate = summary["human_gate"]
     assert gate["label"] == "검토 승인 (사람) · 병합은 운영자 확인"
@@ -355,7 +486,7 @@ def test_chain_summary_orders_nodes_and_recomposes_reasons(seeded, settings):
 
 
 def test_chain_summary_without_selection_cannot_start(seeded, settings):
-    task_a, _ = _seed_chain(seeded)
+    task_a, _ = _seed_user_chain(seeded)
     summary = _chain(seeded, settings)
     assert summary["all_selected"] is False and summary["can_start"] is False
     assert summary["tasks"][0]["agent"] is None
@@ -364,19 +495,19 @@ def test_chain_summary_without_selection_cannot_start(seeded, settings):
 
 
 def test_chain_summary_progress_and_human_gate_follow_last_task(seeded, settings, store):
-    task_a, task_b = _seed_chain(seeded)
-    _select(seeded, task_a, "agent-ops-demo", CAP_A)
-    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    task_a, task_b = _seed_user_chain(seeded)
+    _select(seeded, task_a, API_AGENT, CAP_TRIAGE)
+    _select(seeded, task_b, PATCH_AGENT, CAP_PATCH)
     repo.mark_chain_started(seeded, CHAIN, NOW)
-    seed_execution(seeded, "exec-a", task_a, kind="diagnosis", inputs=())
+    seed_user_execution(seeded, "exec-a", task_a, "triage")
     summary = _chain(seeded, settings)
     assert summary["started"] is True and summary["can_start"] is False
     assert summary["progress"] == "2단계 중 1단계 실행 요청됨"
 
-    repo.update_task_status(seeded, task_a, "완료", "판정 근거: 12/12", finished_at=NOW, now=NOW)
+    repo.update_task_status(seeded, task_a, "완료", "검토 승인", finished_at=NOW, review_decision="approve", now=NOW)
     repo.release_execution(seeded, "exec-a", NOW)
-    seed_execution(seeded, "exec-b", task_b)
-    seed_result_ready(seeded, store, "exec-b", kind="code_change_result", body=code_change_result("exec-b", task_b))
+    seed_user_execution(seeded, "exec-b", task_b, "patch")
+    seed_result_ready(seeded, store, "exec-b", kind="generic_result", body=user_result("exec-b", task_b, "patch", "done"))
     summary = _chain(seeded, settings)
     assert (summary["done_count"], summary["total"]) == (1, 2)
     assert summary["progress"] == "2단계 중 2단계 확인 필요"
@@ -384,27 +515,28 @@ def test_chain_summary_progress_and_human_gate_follow_last_task(seeded, settings
     gate = summary["human_gate"]
     assert (gate["status_label"], gate["reason"]) == ("확인 필요", "검토 대기")
 
-    repo.update_task_status(seeded, task_b, "완료", "검토 승인 · 병합: 운영자 확인 대기", finished_at=NOW, review_decision="approve", now=NOW)
+    repo.update_task_status(seeded, task_b, "완료", "검토 승인", finished_at=NOW, review_decision="approve", now=NOW)
     summary = _chain(seeded, settings)
     assert summary["done_count"] == 2 and summary["progress"] == "2단계 모두 완료"
     gate = summary["human_gate"]
-    assert (gate["status_label"], gate["reason"]) == ("완료", "병합: 운영자 확인 대기")  # ADR-0005: 세션 화면에는 대기만
-
-    repo.confirm_merge(seeded, task_b, NOW)
-    gate = _chain(seeded, settings)["human_gate"]
-    assert (gate["status_label"], gate["reason"]) == ("완료", "병합 확인됨")
+    assert (gate["status_label"], gate["reason"]) == ("완료", "검토 승인")  # 완료 사유는 저장된 상태 사유 그대로
 
 
 def test_chain_summary_single_auto_node_gate_and_empty_chain(seeded, settings):
+    seed_user_kinds(seeded)
     repo.insert_chain(seeded, {"chain_id": CHAIN, "session_id": SESSION, "source": "github",
                                "title": "일일 보고서 생성 실패 (09-20 09:00)"}, NOW)
-    from .conftest import task_row
-    repo.insert_task(seeded, {**task_row("task-c41"), "chain_id": CHAIN, "source_ref": "#41",
+    repo.insert_task(seeded, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41",
                               "completion_mode": "auto"}, NOW)
-    _select(seeded, "task-c41", "agent-ops-demo", CAP_A)
+    _select(seeded, "task-c41", API_AGENT, CAP_TRIAGE)
     summary = _chain(seeded, settings)
     assert summary["human_gate"]["label"] == "완료 확인 (사람)"
     assert summary["polling"] is False  # 실행 가능뿐 — 사용자 조작 전에는 갱신할 게 없다
+
+    # 검토 거절로 마감되면 사람 단계도 실패
+    repo.update_task_status(seeded, "task-c41", "실패", "검토 거절", finished_at=NOW, review_decision="close", now=NOW)
+    gate = _chain(seeded, settings)["human_gate"]
+    assert (gate["status_label"], gate["reason"]) == ("실패", "검토 거절")
 
     repo.insert_chain(seeded, {"chain_id": "chain-empty", "session_id": SESSION, "source": "github", "title": "",
                                "skipped": [{"key": "#44", "title": "README 오타 수정", "reason": "맞는 능력 코드 없음 (라벨: docs)"}]}, NOW)
@@ -439,138 +571,63 @@ def test_tail_lines_keeps_last_n():
     assert views.tail_lines("", 5) == []
 
 
-def _store_evidence(conn, store, execution_id: str, sources: dict) -> dict:
+def test_viewer_context_for_code_change_reads_logs_and_diff(seeded, settings, store):
     from workflow.contracts.v1 import ArtifactMeta
 
     from .conftest import meta_for
 
-    ids = {}
-    for (evidence_id, version), (content_type, text) in sources.items():
-        data = text.encode()
-        created, _ = repo.store_artifact(
-            conn, store, execution_id=execution_id, session_id="sess-1",
-            meta=ArtifactMeta.model_validate(meta_for(data, kind="evidence", name=evidence_id,
-                                                       content_type=content_type)),
-            data=data, now=NOW,
-        )
-        ids[(evidence_id, version)] = created.artifact_id
-    return ids
-
-
-def test_evidence_excerpts_resolve_locations_from_stored_attachments(seeded, settings, store):
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
-    ids = _store_evidence(seeded, store, "exec-1", {
-        ("response-after", "1"): ("application/json", '{"report_date": "2026-09-19", "data": {"records": [{"team": "운영"}]}}'),
-        ("log-daily-0920", "1"): ("text/plain", "line one\nline two\nline three\n"),
-    })
-    result = {
-        "findings": [
-            {"claim": "a", "evidence_refs": [
-                {"evidence_id": "response-after", "version": "1", "location": "$.data.records"},
-                {"evidence_id": "log-daily-0920", "version": "1", "location": "lines:2-3"},
-                {"evidence_id": "log-daily-0920", "version": "1", "location": "lines:9-9"},
-                {"evidence_id": "missing-doc", "version": "1", "location": "$.x"},
-            ]},
-        ],
-        "attachments": [
-            {"evidence_id": "response-after", "version": "1", "content_type": "application/json",
-             "artifact_id": ids[("response-after", "1")], "sha256": "0" * 64},
-            {"evidence_id": "log-daily-0920", "version": "1", "content_type": "text/plain",
-             "artifact_id": ids[("log-daily-0920", "1")], "sha256": "0" * 64},
-            {"evidence_id": "other-session", "version": "1", "content_type": "text/plain",
-             "artifact_id": ids[("log-daily-0920", "1")], "sha256": "0" * 64},
-        ],
-    }
-    excerpts = views.evidence_excerpts(seeded, store, result, session_id="sess-1")
-    assert excerpts["response-after@1 · $.data.records"] == {"found": True, "text": '[\n  {\n    "team": "운영"\n  }\n]'}
-    assert excerpts["log-daily-0920@1 · lines:2-3"] == {"found": True, "text": "line two\nline three"}
-    assert excerpts["log-daily-0920@1 · lines:9-9"] == {"found": False, "text": "원문에 없음"}
-    assert excerpts["missing-doc@1 · $.x"] == {"found": False, "text": "첨부 없음"}
-    # 다른 세션의 산출물은 읽지 않는다
-    result["findings"][0]["evidence_refs"] = [{"evidence_id": "log-daily-0920", "version": "1", "location": "lines:1-1"}]
-    assert views.evidence_excerpts(seeded, store, result, session_id="sess-other") == {
-        "log-daily-0920@1 · lines:1-1": {"found": False, "text": "첨부 없음"},
-    }
-
-
-def test_viewer_context_for_diagnosis_reads_verdict_and_response_pair(seeded, settings, store):
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
-    ids = _store_evidence(seeded, store, "exec-1", {
-        ("run-daily-0919-0900", "1"): ("application/json", '{"response_ref": {"evidence_id": "response-before", "version": "1"}}'),
-        ("run-daily-0920-0900", "1"): ("application/json", '{"response_ref": {"evidence_id": "response-after", "version": "1"}}'),
-        ("response-before", "1"): ("application/json", '{"items": []}'),
-        ("response-after", "1"): ("application/json", '{"data": {"records": []}}'),
-    })
-    body = {
-        "outcome": "ready_for_handoff", "summary": "s", "findings": [], "missing_information": [],
-        "diagnosis": {"code": "response_path_changed", "baseline_run_id": "daily-0919-0900",
-                      "failed_run_id": "daily-0920-0900", "old_path": "$.items", "new_path": "$.data.records"},
-        "attachments": [
-            {"evidence_id": e, "version": v, "content_type": "application/json", "artifact_id": a, "sha256": "0" * 64}
-            for (e, v), a in ids.items()
-        ],
-    }
-    artifact_id = seed_result_ready(seeded, store, "exec-1", kind="diagnosis_result", body=body)
-    seeded.execute(
-        "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
-        (TASK_A, "exec-1", json.dumps({"outcome": "passed", "checks": [{"code": "c1", "passed": True, "detail": "ok"}]}), NOW),
-    )
-    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
-    viewer = views.viewer_context(seeded, store, ctx["result"], session_id="sess-1")
-    assert viewer["kind"] == "diagnosis_result"
-    assert viewer["artifact_id"] == artifact_id
-    assert viewer["verdict"]["outcome"] == "passed"
-    assert (viewer["verdict_passed"], viewer["verdict_total"]) == (1, 1)
-    assert viewer["compare"]["before"]["path"] == "$.items"
-    assert '"items": []' in viewer["compare"]["before"]["text"]
-    assert viewer["compare"]["after"]["path"] == "$.data.records"
-    assert '"records": []' in viewer["compare"]["after"]["text"]
-    assert viewer["raw_text"].startswith("{")
-    assert views.viewer_context(seeded, store, None, session_id="sess-1") is None
-
-
-def test_viewer_context_for_code_change_reads_logs_diff_and_report(seeded, settings, store):
-    from workflow.contracts.v1 import ArtifactMeta
-
-    from .conftest import meta_for
-
-    _select(seeded, TASK_B, "agent-codex-mac", CAP_B)
-    seed_execution(seeded, "exec-fix-001", TASK_B)
+    _select(seeded, TASK_A, "agent-codex-mac", CAP_FIX)
+    seed_execution(seeded, "exec-fix-001", TASK_A)
     for kind, text in (("diff", DIFF_TEXT), ("test_log_before", "\n".join(str(n) for n in range(30))),
-                       ("test_log_after", "ok\n"), ("report_output", "보고서\n")):
+                       ("test_log_after", "ok\n")):
         data = text.encode()
         repo.store_artifact(
-            seeded, store, execution_id="exec-fix-001", session_id="sess-1",
+            seeded, store, execution_id="exec-fix-001", session_id=SESSION,
             meta=ArtifactMeta.model_validate(meta_for(data, kind=kind, name=kind)), data=data, now=NOW,
         )
-    seed_result_ready(seeded, store, "exec-fix-001", kind="code_change_result",
-                      body=code_change_result("exec-fix-001", TASK_B))
-    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_B), now=NOW, settings=settings)
-    viewer = views.viewer_context(seeded, store, ctx["result"], session_id="sess-1")
+    artifact_id = seed_result_ready(seeded, store, "exec-fix-001", kind="code_change_result",
+                                    body=code_change_result("exec-fix-001", TASK_A))
+    ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)
+    viewer = views.viewer_context(seeded, store, ctx["result"], session_id=SESSION)
     assert viewer["kind"] == "code_change_result"
+    assert viewer["artifact_id"] == artifact_id
+    assert viewer["data"]["result_commit"] == RESULT_COMMIT
+    assert viewer["raw_text"].startswith("{")
     assert viewer["diff"]["stats"] == (2, 3, 1)
     assert viewer["diff"]["lines"][5] == ("del", "-old")
     assert viewer["test_before"]["lines"] == [str(n) for n in range(10, 30)]
     assert viewer["test_after"]["lines"] == ["ok"]
-    assert viewer["report"]["text"] == "보고서\n"
+    assert "report" not in viewer and "compare" not in viewer and "excerpts" not in viewer  # 진단·보고서 데모 뷰어 없음
     assert viewer["verdict"] is None
+    assert (viewer["verdict_passed"], viewer["verdict_total"]) == (0, 0)
+
+    seeded.execute(
+        "INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
+        (TASK_A, "exec-fix-001", json.dumps({"outcome": "failed", "checks": [
+            {"code": "verification_passed", "passed": True, "detail": "exit 0"},
+            {"code": "base_commit_matches", "passed": False, "detail": "다른 기준 커밋"},
+        ]}), NOW),
+    )
+    viewer = views.viewer_context(seeded, store, ctx["result"], session_id=SESSION)
+    assert viewer["verdict"]["outcome"] == "failed"
+    assert (viewer["verdict_passed"], viewer["verdict_total"]) == (1, 2)
+
     empty = views.viewer_context(seeded, store, {"kind": "code_change_result", "artifact_id": "x",
-                                                  "execution_id": "exec-none", "data": None}, session_id="sess-1")
-    assert empty["diff"] is None and empty["test_before"] is None and empty["report"] is None
+                                                  "execution_id": "exec-none", "data": None}, session_id=SESSION)
+    assert empty["diff"] is None and empty["test_before"] is None and empty["test_after"] is None
+    assert views.viewer_context(seeded, store, None, session_id=SESSION) is None
 
 
 def test_execution_context_has_duration_and_progress_count(seeded, settings, store):
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    seed_execution(seeded, "exec-1", TASK_A, kind="diagnosis", inputs=())
+    _select(seeded, TASK_A, "agent-codex-mac", CAP_FIX)
+    seed_execution(seeded, "exec-1", TASK_A)
     for body in (
         event("exec-1", 1, "accepted", {}, occurred_at="2026-09-20T09:00:00+09:00"),
         event("exec-1", 2, "started", {"runtime_ref": "r"}, occurred_at="2026-09-20T09:00:05+09:00"),
         event("exec-1", 3, "progress", {"message": "하나"}, occurred_at="2026-09-20T09:01:00+09:00"),
         event("exec-1", 4, "progress", {"message": "둘"}, occurred_at="2026-09-20T09:02:00+09:00"),
     ):
-        repo.append_event(seeded, "exec-1", ExecutionEvent.model_validate(body), actor="diag", now=NOW)
+        repo.append_event(seeded, "exec-1", ExecutionEvent.model_validate(body), actor="connector:conn-1", now=NOW)
     ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now="2026-09-20T00:04:18Z", settings=settings)
     [execution] = ctx["executions"]
     assert execution["duration_seconds"] == 253  # started 09:00:05 KST → now 09:04:18 KST
@@ -581,7 +638,7 @@ def test_execution_context_has_duration_and_progress_count(seeded, settings, sto
         seeded, "exec-1",
         ExecutionEvent.model_validate(event("exec-1", 5, "failed", {"code": "timeout", "message": "x", "process_stopped": True},
                                             occurred_at="2026-09-20T09:03:00+09:00")),
-        actor="diag", now=NOW,
+        actor="connector:conn-1", now=NOW,
     )
     ctx = views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now="2026-09-20T01:00:00Z", settings=settings)
     assert ctx["executions"][0]["duration_seconds"] == 175  # 종료 이벤트까지
@@ -611,14 +668,14 @@ REVIEW_SPEC = KindSpec(
 
 
 def test_kind_public_labels_chips_and_builtin_flag():
-    code_change = views.kind_public(BUILTIN_KINDS[1])
-    assert (code_change["kind"], code_change["label"]) == ("code_change", "코드 수정")
-    assert (code_change["capability_code"], code_change["scope_key"]) == ("code.modify", "repository_id")
-    assert code_change["input_kinds"] == ["diagnosis_result", "evidence"]
-    assert code_change["input_labels"] == ["진단 결과", "근거"]
-    assert (code_change["output_kind"], code_change["output_label"]) == ("code_change_result", "수정 결과")
-    assert code_change["outcomes"] == ["ready_for_review", "needs_information"]
-    assert code_change["builtin"] is True and code_change["instructions"] == ""
+    code_review = views.kind_public(get_kind(BUILTIN_KINDS, "code_review"))
+    assert (code_review["kind"], code_review["label"]) == ("code_review", "커밋 검토")
+    assert (code_review["capability_code"], code_review["scope_key"]) == ("code.review", "repository_id")
+    assert code_review["input_kinds"] == ["code_change_result"]
+    assert code_review["input_labels"] == ["수정 결과"]
+    assert (code_review["output_kind"], code_review["output_label"]) == ("code_review_result", "code_review_result")  # 칩 라벨 없음 → 코드
+    assert code_review["outcomes"] == ["approved", "changes_requested", "needs_information"]
+    assert code_review["builtin"] is True and code_review["instructions"] == ""
 
     review = views.kind_public(REVIEW_SPEC)
     assert review["input_labels"] == ["diff", "수정 결과"]
@@ -627,28 +684,29 @@ def test_kind_public_labels_chips_and_builtin_flag():
 
 
 def test_rule_public_one_line_text_with_labels():
-    rule = views.rule_public("rule-1", BUILTIN_RULES[0], BUILTIN_KINDS)
+    builtin = next(r for r in BUILTIN_RULES if r.from_kind == "bug_fix")
+    rule = views.rule_public("rule-1", builtin, BUILTIN_KINDS)
     assert rule["rule_id"] == "rule-1"
-    assert (rule["from_kind"], rule["to_kind"]) == ("diagnosis", "code_change")
-    assert rule["text"] == "진단 --[ready_for_handoff]--> 코드 수정"
-    assert rule["handoff_kinds"] == ["diagnosis_result", "evidence"]
-    assert rule["handoff_labels"] == ["진단 결과", "근거"]
+    assert (rule["from_kind"], rule["to_kind"]) == ("bug_fix", "code_review")
+    assert rule["text"] == "버그 수정 --[ready_for_review]--> 커밋 검토"
+    assert rule["handoff_kinds"] == ["code_change_result", "diff", "test_log_after", "verification_log"]
+    assert rule["handoff_labels"] == ["수정 결과", "diff", "테스트 후", "검증 로그"]
 
     custom = views.rule_public(
         "rule-2",
-        BUILTIN_RULES[0].model_copy(update={"on_outcomes": ["ready_for_handoff", "needs_information"]}),
+        builtin.model_copy(update={"on_outcomes": ["ready_for_review", "needs_information"]}),
         [*BUILTIN_KINDS, REVIEW_SPEC],
     )
-    assert custom["text"] == "진단 --[ready_for_handoff, needs_information]--> 코드 수정"
+    assert custom["text"] == "버그 수정 --[ready_for_review, needs_information]--> 커밋 검토"
     # 등록부에 없는 종류는 라벨 대신 코드 그대로
-    assert views.rule_public("rule-3", BUILTIN_RULES[0], ())["text"] == "diagnosis --[ready_for_handoff]--> code_change"
+    assert views.rule_public("rule-3", builtin, ())["text"] == "bug_fix --[ready_for_review]--> code_review"
 
 
 # --- 등록부를 보는 화면 컨텍스트 (phase 6 step 7) --------------------------------------
 
 CAP_C = {"code": "review", "scope": {"repository_id": "demo-report-repo"}}
 LOCAL_REVIEW = "local-demo-report-claude"
-TASK_C = "review-daily-0920"
+TASK_C = "custom-review-0920"  # 사용자 정의 종류 review
 
 
 def _seed_review_task(conn, *, predecessor: str | None = TASK_B) -> None:
@@ -657,12 +715,11 @@ def _seed_review_task(conn, *, predecessor: str | None = TASK_B) -> None:
     repo.upsert_agent(conn, {
         "agent_id": "agent-review-mac", "name": "검토 Claude", "owner_scope": "personal", "connection_type": "local",
         "local_registration_id": LOCAL_REVIEW, "capabilities": [CAP_C], "connection_state": "unknown",
-        "shared_to_all_sessions": True,
     })
     repo.register_session_agent(conn, SESSION, "agent-review-mac", NOW)
     from .conftest import task_row
     repo.insert_task(conn, {
-        **task_row(TASK_C, kind="review", predecessor=predecessor), "title": "보고서 수정 검토",
+        **task_row(TASK_C, predecessor=predecessor), "kind": "review", "title": "보고서 수정 검토",
         "required_capability": CAP_C, "run_mode": "manual", "criteria": [],
         "target": {"local_registration_id": LOCAL_REVIEW},
     }, NOW)
@@ -702,48 +759,51 @@ def test_connector_online_follows_selected_local_agent_regardless_of_kind(seeded
     repo.set_agent_connection(seeded, "agent-review-mac", "online", NOW)
     assert _view(seeded, settings, TASK_C).connector_online is True
     # API 에이전트를 고른 업무는 종류와 무관하게 None
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    assert _view(seeded, settings, TASK_A).connector_online is None
+    seed_user_tasks(seeded)
+    _select(seeded, TASK_T, API_AGENT, CAP_TRIAGE)
+    assert _view(seeded, settings, TASK_T).connector_online is None
 
 
 def test_predecessor_handoff_needs_judged_result_and_bundle(seeded, settings, store):
     """ADR-0009 (3): 선행 결과가 판정되고 인계 묶음이 있으면 (선행 `완료` 전이라도) 선행 조건이 풀린다."""
-    _select(seeded, TASK_A, "agent-ops-demo", CAP_A)
-    _select(seeded, TASK_B, "agent-codex-mac", CAP_B)
-    repo.set_agent_connection(seeded, "agent-codex-mac", "online", NOW)
-    task_b = repo.get_task(seeded, TASK_B)
-    assert views.predecessor_handoff(seeded, task_b) == ([], None)
-    assert views.predecessor_handoff(seeded, repo.get_task(seeded, TASK_A)) == ([], None)  # 선행 없음
-    assert _view(seeded, settings, TASK_B).predecessor_status == "실행 가능"
+    seed_user_tasks(seeded)
+    _select(seeded, TASK_T, API_AGENT, CAP_TRIAGE)
+    _select(seeded, TASK_P, PATCH_AGENT, CAP_PATCH)
+    repo.set_agent_connection(seeded, PATCH_AGENT, "online", NOW)
+    task_p = repo.get_task(seeded, TASK_P)
+    assert views.predecessor_handoff(seeded, task_p) == ([], None)
+    assert views.predecessor_handoff(seeded, repo.get_task(seeded, TASK_T)) == ([], None)  # 선행 없음
+    assert _view(seeded, settings, TASK_P).predecessor_status == "실행 가능"
 
-    seed_execution(seeded, "exec-a", TASK_A, kind="diagnosis", inputs=())
-    seed_result_ready(seeded, store, "exec-a", kind="diagnosis_result", body={"outcome": "ready_for_handoff"})
-    assert views.predecessor_handoff(seeded, task_b) == ([], None)  # 판정 전
-    _judge(seeded, TASK_A, "exec-a")
-    assert views.predecessor_handoff(seeded, task_b) == ([], None)  # 판정됐지만 묶음 없음
-    view = _view(seeded, settings, TASK_B)
+    seed_user_execution(seeded, "exec-a", TASK_T, "triage")
+    seed_result_ready(seeded, store, "exec-a", kind="generic_result",
+                      body=user_result("exec-a", TASK_T, "triage", "ready_for_handoff"))
+    assert views.predecessor_handoff(seeded, task_p) == ([], None)  # 판정 전
+    _judge(seeded, TASK_T, "exec-a")
+    assert views.predecessor_handoff(seeded, task_p) == ([], None)  # 판정됐지만 묶음 없음
+    view = _view(seeded, settings, TASK_P)
     assert view.predecessor_status == "확인 필요"
-    assert views.status_of(task_b, view).reason == "선행 대기"
+    assert views.status_of(task_p, view).reason == "선행 대기"
 
-    bundle_id = _store_bundle(seeded, store, "exec-a", "diagnosis")
-    assert views.predecessor_handoff(seeded, task_b) == ([bundle_id], "exec-a")
-    view = _view(seeded, settings, TASK_B)
+    bundle_id = _store_bundle(seeded, store, "exec-a", "triage")
+    assert views.predecessor_handoff(seeded, task_p) == ([bundle_id], "exec-a")
+    view = _view(seeded, settings, TASK_P)
     assert view.predecessor_status is None  # 선행 조건 충족 — 선행 `완료` 를 기다리지 않는다
-    status = views.status_of(task_b, view)
-    assert (status.label, status.reason) == ("대기", "자동 실행 대기")  # B 는 run_mode auto — 워커가 잇는다
-    ctx = views.task_context(seeded, store, task_b, now=NOW, settings=settings)
+    status = views.status_of(task_p, view)
+    assert (status.label, status.reason) == ("대기", "자동 실행 대기")  # P 는 run_mode auto — 워커가 잇는다
+    ctx = views.task_context(seeded, store, task_p, now=NOW, settings=settings)
     assert ctx["can_run"] is True  # 직접 실행도 열려 있다
 
     # 선행이 검토 거절(실패)로 마감되면 새로 착수하지 않는다
-    repo.update_task_status(seeded, TASK_A, "실패", "검토 거절", finished_at=NOW, review_decision="close", now=NOW)
-    assert views.predecessor_handoff(seeded, task_b) == ([], None)
-    assert _view(seeded, settings, TASK_B).predecessor_status == "실패"
+    repo.update_task_status(seeded, TASK_T, "실패", "검토 거절", finished_at=NOW, review_decision="close", now=NOW)
+    assert views.predecessor_handoff(seeded, task_p) == ([], None)
+    assert _view(seeded, settings, TASK_P).predecessor_status == "실패"
 
 
 def test_task_context_kind_label_from_registry(seeded, settings, store):
     _seed_review_task(seeded)
-    assert views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)["kind_label"] == "진단"
-    assert views.task_context(seeded, store, repo.get_task(seeded, TASK_B), now=NOW, settings=settings)["kind_label"] == "코드 수정"
+    assert views.task_context(seeded, store, repo.get_task(seeded, TASK_A), now=NOW, settings=settings)["kind_label"] == "버그 수정"
+    assert views.task_context(seeded, store, repo.get_task(seeded, TASK_B), now=NOW, settings=settings)["kind_label"] == "커밋 검토"
     assert views.task_context(seeded, store, repo.get_task(seeded, TASK_C), now=NOW, settings=settings)["kind_label"] == "검토"
 
 
@@ -782,26 +842,26 @@ def test_generic_result_card_and_viewer_context(seeded, settings, store):
 
 def test_chain_node_kind_label_and_reasons_use_session_registry(seeded, settings):
     """체인 노드의 종류 라벨과 구성 이유는 세션 등록부로 만든다 — 규칙을 지우면 이유가 바뀐다."""
-    task_a, task_b = _seed_chain(seeded)
-    _select(seeded, task_a, "agent-ops-demo", CAP_A)
-    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    task_a, task_b = _seed_user_chain(seeded)
+    _select(seeded, task_a, API_AGENT, CAP_TRIAGE)
+    _select(seeded, task_b, PATCH_AGENT, CAP_PATCH)
     first, second = _chain(seeded, settings)["tasks"]
-    assert (first["kind_label"], second["kind_label"]) == ("진단", "코드 수정")
-    assert "선행 #41 (operations.diagnose) → code.modify 인계" in second["reasons"]
+    assert (first["kind_label"], second["kind_label"]) == ("분류", "패치")
+    assert "선행 #41 (ops.triage) → code.patch 인계" in second["reasons"]
 
-    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(seeded, SESSION) if r.from_kind == "diagnosis"]
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(seeded, SESSION) if r.from_kind == "triage"]
     repo.delete_rule(seeded, SESSION, rule_id)
     second = _chain(seeded, settings)["tasks"][1]
-    assert second["reasons"][0] == "후속 규칙 없음: diagnosis → code_change"
+    assert second["reasons"][0] == "후속 규칙 없음: triage → patch"
 
 
 def test_agent_public_annotates_capabilities_with_kind_labels(seeded, settings):
-    ops = views.agent_public(repo.get_agent(seeded, "agent-ops-demo"), now=NOW, settings=settings, kinds=BUILTIN_KINDS)
-    assert ops["capabilities"][0]["kind_label"] == "진단"
-    unknown = views.agent_public(repo.get_agent(seeded, "agent-ops-demo"), now=NOW, settings=settings, kinds=())
+    codex = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings, kinds=BUILTIN_KINDS)
+    assert [c["kind_label"] for c in codex["capabilities"]] == ["버그 수정", "커밋 검토"]
+    unknown = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings, kinds=())
     assert unknown["capabilities"][0]["kind_label"] is None
     default = views.agent_public(repo.get_agent(seeded, "agent-codex-mac"), now=NOW, settings=settings)
-    assert default["capabilities"][0] == {"code": "code.modify", "scope": {"repository_id": "demo-report-repo"}, "kind_label": None}
+    assert default["capabilities"][0] == {"code": "code.fix", "scope": {"repository_id": REPOSITORY}, "kind_label": None}
 
 
 # --- n8n 체인 — callback 상태·items_json 으로 구성 이유 재계산 (phase 7 step 6, ADR-0010) --------------------
@@ -809,34 +869,33 @@ def test_agent_public_annotates_capabilities_with_kind_labels(seeded, settings):
 CALLBACK_URL = "http://localhost:5678/webhook-waiting/1234"
 N8N_ITEMS = [
     {
-        "key": "run-daily-0920",
-        "title": "일일 보고서 2026-09-20 09:00 실행 실패",
-        "body": "daily-report 의 daily-0920-0900 실행이 변환 단계에서 실패했습니다.",
-        "labels": ["incident", "workflow:daily-report", "run:daily-0920-0900"],
+        "key": "fix-format",
+        "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
+        "body": "변환 코드를 수정하고 재현 테스트를 추가해 주세요.",
+        "labels": ["kind:bug_fix", f"repository_id:{REPOSITORY}"],
         "blocked_by": [],
     },
     {
-        "key": "fix-format",
-        "title": "응답 형식 변경에 맞춰 보고서 변환 수정",
-        "body": "진단 결과와 근거를 바탕으로 변환 코드를 수정해 주세요.",
-        "labels": ["bug", "repo:demo-report-repo"],
-        "blocked_by": ["run-daily-0920"],
+        "key": "review-format",
+        "title": "보고서 변환 수정 검토",
+        "body": "수정 커밋을 검토해 주세요.",
+        "labels": ["kind:code_review", f"repository_id:{REPOSITORY}"],
+        "blocked_by": ["fix-format"],
     },
 ]
 
 
 def _seed_n8n_chain(conn, *, callback_url: str | None = CALLBACK_URL, items=N8N_ITEMS) -> tuple[str, str]:
-    """입구 API 가 만든 것과 같은 모양의 n8n 체인 — source_ref 는 항목 key. (task_a, task_b)."""
+    """입구 API 가 만든 것과 같은 모양의 n8n 체인(bug_fix → code_review) — source_ref 는 항목 key. (task_a, task_b)."""
     repo.insert_chain(conn, {
         "chain_id": CHAIN, "session_id": SESSION, "source": "n8n",
-        "title": "일일 보고서 2026-09-20 09:00 실행 실패 → 응답 형식 변경에 맞춰 보고서 변환 수정",
+        "title": "응답 형식 변경에 맞춰 보고서 변환 수정 → 보고서 변환 수정 검토",
         "callback_url": callback_url, "items": items,
     }, NOW)
     from .conftest import task_row
-    repo.insert_task(conn, {**task_row("task-n1"), "chain_id": CHAIN, "source_ref": "run-daily-0920",
-                            "completion_mode": "auto"}, NOW)
-    repo.insert_task(conn, {**task_row("task-n2", kind="code_change", predecessor="task-n1"),
-                            "chain_id": CHAIN, "source_ref": "fix-format"}, NOW)
+    repo.insert_task(conn, {**task_row("task-n1"), "chain_id": CHAIN, "source_ref": "fix-format"}, NOW)
+    repo.insert_task(conn, {**task_row("task-n2", kind="code_review", predecessor="task-n1"),
+                            "chain_id": CHAIN, "source_ref": "review-format"}, NOW)
     return "task-n1", "task-n2"
 
 
@@ -878,29 +937,29 @@ def test_chain_summary_callback_three_states(seeded, settings):
 def test_n8n_chain_recomposes_reasons_from_items_json(seeded, settings):
     """n8n 은 fixture 파일이 없다 — 저장한 항목 원문(items_json)으로 같은 compose 를 돌려 이유를 다시 만든다."""
     task_a, task_b = _seed_n8n_chain(seeded)
-    _select(seeded, task_a, "agent-ops-demo", CAP_A)
-    _select(seeded, task_b, "agent-codex-mac", CAP_B)
+    _select(seeded, task_a, "agent-codex-mac", CAP_FIX)
+    _select(seeded, task_b, "agent-codex-mac", CAP_REVIEW)
     first, second = _chain(seeded, settings)["tasks"]
     assert first["reasons"] == [
-        "라벨 incident·workflow:daily-report → operations.diagnose",
+        f"라벨 kind:bug_fix + repository_id:{REPOSITORY} → bug_fix",
         "blocked_by 없음 — 가져온 순서대로 배치",
         "체인의 첫 업무 — 선행 없음",
         "직접 실행 — 흐름의 첫 업무는 사람이 시작",
-        "자동 완료 — 진단 자동 판정기 있음",
-        "operations.diagnose 일치 후보 1개",
+        "검토 후 완료 — 기본값",
+        "code.fix 일치 후보 1개",
     ]
-    assert second["reasons"][0] == "라벨 bug·repo:demo-report-repo → code.modify"
+    assert second["reasons"][0] == f"라벨 kind:code_review + repository_id:{REPOSITORY} → code_review"
     assert second["reasons"][1:3] == [
-        "blocked_by run-daily-0920 — run-daily-0920 뒤에 배치",
-        "선행 run-daily-0920 (operations.diagnose) → code.modify 인계",
+        "blocked_by fix-format — fix-format 뒤에 배치",
+        "선행 fix-format (code.fix) → code.review 인계",
     ]
-    assert second["reasons"][-1] == "code.modify 일치 후보 1개"
+    assert second["reasons"][-1] == "code.review 일치 후보 1개"
 
 
 def test_n8n_chain_without_items_json_keeps_only_selection_reason(seeded, settings):
     task_a, _ = _seed_n8n_chain(seeded, items=None)
-    _select(seeded, task_a, "agent-ops-demo", CAP_A)
+    _select(seeded, task_a, "agent-codex-mac", CAP_FIX)
     assert repo.get_chain(seeded, CHAIN)["items_json"] is None
     first, second = _chain(seeded, settings)["tasks"]
-    assert first["reasons"] == ["operations.diagnose 일치 후보 1개"]
+    assert first["reasons"] == ["code.fix 일치 후보 1개"]
     assert second["reasons"] == ["후보 없음"]

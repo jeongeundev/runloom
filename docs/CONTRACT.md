@@ -508,21 +508,7 @@
 
 ### 11.1 `KindSpec`
 
-내장 `code_change`:
-
-```json
-{
-  "kind": "code_change",
-  "label": "코드 수정",
-  "capability_code": "code.modify",
-  "scope_key": "repository_id",
-  "input_kinds": ["diagnosis_result", "evidence"],
-  "output_kind": "code_change_result",
-  "outcomes": ["ready_for_review", "needs_information"],
-  "instructions": "",
-  "builtin": true
-}
-```
+내장 종류(`BUILTIN_KINDS`)는 13절의 `bug_fix`·`code_review` 둘이다. 예전 내장 `diagnosis`·`code_change` 는 `main` 공개 데모에만 있다([ADR-0019](adr/0019-service-selfhost-only.md)).
 
 사용자 정의 `review` — diff 와 코드 수정 결과를 받아 검토 의견을 낸다. `output_kind` 는 항상 `generic_result`, 완료는 사람 검토:
 
@@ -544,7 +530,7 @@
 
 ### 11.2 `SuccessorRule`
 
-내장 규칙(`BUILTIN_RULES`):
+`main` 공개 데모의 진단 → 코드 수정 규칙(`service` 의 내장 규칙은 13절의 `bug_fix → code_review` 하나 — ADR-0019):
 
 ```json
 { "from_kind": "diagnosis", "on_outcomes": ["ready_for_handoff"], "to_kind": "code_change", "handoff_kinds": ["diagnosis_result", "evidence"] }

@@ -16,6 +16,7 @@ from workflow.adapters import repo
 from workflow.server.app import create_app
 from workflow.server.auth import SESSION_COOKIE, sign_session
 
+from .conftest import log_in
 from .test_task_cycle import SESSION as CYCLE_SESSION
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     SOURCE,
@@ -86,8 +87,7 @@ def test_post_issues_a_code_and_renders_one_command_in_that_card(op, conn, secre
 def test_command_uses_workflow_public_url_when_set(settings, github, conn, secrets, pem):
     app = create_app(dataclasses.replace(settings, public_url="https://runloom.example.com"))
     app.state.github_transport = httpx.MockTransport(github)
-    client = TestClient(app, base_url=BASE)
-    client.post("/operator/login", data={"token": "test-operator-token"})
+    client = log_in(TestClient(app, base_url=BASE))
     source = billing(client, conn, secrets, pem)
 
     text = client.post(f"/operator/github/sources/{source.source_id}/runner").text
@@ -96,8 +96,8 @@ def test_command_uses_workflow_public_url_when_set(settings, github, conn, secre
 
 
 def test_matched_card_has_no_attach_button_only_a_folded_reattach(client, auto_source, conn):
-    repo.mark_operator(conn, CYCLE_SESSION)
-    client.cookies.set(SESSION_COOKIE, sign_session(CYCLE_SESSION, "test-session-secret"))
+    log_in(client)  # auto_source 의 주인 = 고정 워크스페이스
+    assert op_session(client) == CYCLE_SESSION
 
     card = card_of(client.get("/operator/github").text, SOURCE)
 
@@ -106,27 +106,33 @@ def test_matched_card_has_no_attach_button_only_a_folded_reattach(client, auto_s
     assert runner_action(SOURCE) in folded(card, "고급 설정") and "러너 다시 붙이기" in card
 
 
-def test_other_workspace_source_is_404(op, client, auto_source, conn):
-    before = len(repo.list_connect_codes(conn))  # cycle 픽스처가 연결에 쓴 코드
+def test_other_workspace_source_is_404(op, conn):
+    # 다른 워크스페이스(운영자 세션)의 소스 — DB 에 직접 둔다
+    other_source = "ghs-0000beef"
+    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
+    repo.mark_operator(conn, "sess-other")
+    repo.save_github_source(conn, "sess-other", config(source_id=other_source), "2026-10-06T12:00:00Z")
 
-    response = op.post(f"/operator/github/sources/{SOURCE}/runner")
+    response = op.post(f"/operator/github/sources/{other_source}/runner")
 
     assert response.status_code == 404
-    assert len(repo.list_connect_codes(conn)) == before
+    assert repo.list_connect_codes(conn) == []
 
 
 def test_non_operator_is_refused(app, conn, secrets, pem, op):
     source = billing(op, conn, secrets, pem)
-    anonymous = TestClient(app, base_url=BASE)
+    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
+    stranger = TestClient(app, base_url=BASE)
+    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
 
-    response = anonymous.post(f"/operator/github/sources/{source.source_id}/runner", follow_redirects=False)
-
-    assert response.status_code == 403
+    for anonymous in (TestClient(app, base_url=BASE), stranger):
+        response = anonymous.post(f"/operator/github/sources/{source.source_id}/runner", follow_redirects=False)
+        assert (response.status_code, response.headers["location"]) == (303, "/login")
     assert repo.list_connect_codes(conn) == []
 
 
-def test_selfhost_without_login_redirects_to_login(settings, github, conn):
-    app = create_app(dataclasses.replace(settings, mode="selfhost"))
+def test_selfhost_without_login_redirects_to_login(app, conn):
     client = TestClient(app, base_url=BASE)
 
     response = client.post(f"/operator/github/sources/{SOURCE}/runner", follow_redirects=False)

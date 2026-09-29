@@ -1,7 +1,7 @@
 """Codex CLI 어댑터 — `codex exec` 를 업무 worktree 에서 띄우고 마지막 메시지를 읽는다 (ADR-0001, ARCHITECTURE "Codex와 worktree").
 
 프로세스를 띄우는 부분(`build_argv`·`launch`)과 `--output-last-message` 파일을 읽는 부분(`parse_last_message`)만 여기 있다.
-변경 확인 → 결과 커밋 → 수정 전 재현 테스트 → 수정 후 테스트 → 깨끗한 체크아웃에서 검증·보고서 → diff → outcome 판정은
+변경 확인 → 결과 커밋 → 수정 전 재현 테스트 → 수정 후 테스트 → 깨끗한 체크아웃에서 검증 → diff → outcome 판정은
 도구와 무관하므로 `local_tool.LocalToolAdapter` 가 한다. Codex 의 말을 믿지 않는 규칙도 거기 있다.
 Codex 프로세스 환경은 `child_env`(= `masking.codex_env` 허용 목록)뿐이다.
 

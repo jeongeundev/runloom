@@ -1,6 +1,6 @@
-"""인증 — 심사자 세션 서명 쿠키, 연결 프로그램 Bearer 토큰, 운영자 확인 (ADR-0005, ARCHITECTURE 인증 절),
-입구 토큰 (ADR-0010 — 세션이 발급해 n8n 이 쓴다).
-selfhost 모드(ADR-0016 결정 3)는 익명 세션을 만들지 않고 고정 워크스페이스 `SELFHOST_SESSION_ID` 쿠키만 받는다.
+"""인증 — 워크스페이스 서명 쿠키, 연결 프로그램 Bearer 토큰, 운영자 확인 (ARCHITECTURE 인증 절),
+입구 토큰 (ADR-0010 — 워크스페이스가 발급해 n8n 이 쓴다).
+셀프호스트 전용(ADR-0016 결정 3, ADR-0019) — 익명 세션을 만들지 않고 고정 워크스페이스 `SELFHOST_SESSION_ID` 쿠키만 받는다.
 
 요청 범위 의존성(`get_conn`, `utc_now`) 도 여기 둔다. 인증이 가장 먼저 DB 와 시각을 쓴다.
 sqlite 연결은 요청마다 새로 열고 응답 뒤 닫는다 (`get_conn`). 앱 전역 연결을 두지 않는다.
@@ -8,7 +8,6 @@ sqlite 연결은 요청마다 새로 열고 응답 뒤 닫는다 (`get_conn`). �
 
 import hashlib
 import hmac
-import secrets
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -97,12 +96,8 @@ def _session_from_cookie(request: Request, conn: Connection) -> str | None:
     return session_id
 
 
-def _selfhost(request: Request) -> bool:
-    return request.app.state.settings.mode == "selfhost"
-
-
 def workspace_session(request: Request, conn: Connection) -> str | None:
-    """selfhost 로그인 상태 — 쿠키가 고정 워크스페이스를 가리키고 그 행이 있을 때만 그 id."""
+    """로그인 상태 — 쿠키가 고정 워크스페이스를 가리키고 그 행이 있을 때만 그 id."""
     session_id = _session_from_cookie(request, conn)
     return session_id if session_id == SELFHOST_SESSION_ID else None
 
@@ -148,34 +143,20 @@ class LoginThrottle:
         self._failures.clear()
 
 
-def require_session(
-    request: Request, response: Response, conn: Connection = Depends(get_conn)
-) -> str:
-    """심사자 세션. 유효한 쿠키가 없으면 새 세션을 만들고 Set-Cookie(HttpOnly, SameSite=Lax, 14일).
-    selfhost 는 세션을 만들지 않는다 — 로그인 전이면 `/login` 으로 303."""
-    if _selfhost(request):
-        session_id = workspace_session(request, conn)
-        if session_id is None:
-            raise HTTPException(303, "로그인이 필요합니다.", headers={"Location": "/login"})
-        return session_id
-    session_id = _session_from_cookie(request, conn)
+def require_session(request: Request, conn: Connection = Depends(get_conn)) -> str:
+    """로그인한 고정 워크스페이스. 세션을 만들지 않는다 — 로그인 전이면 `/login` 으로 303."""
+    session_id = workspace_session(request, conn)
     if session_id is None:
-        settings = request.app.state.settings
-        session_id = f"sess-{secrets.token_hex(16)}"
-        repo.create_session(conn, session_id, utc_now())
-        set_session_cookie(response, session_id, settings)
+        raise HTTPException(303, "로그인이 필요합니다.", headers={"Location": "/login"})
     return session_id
 
 
 def require_operator(request: Request, conn: Connection = Depends(get_conn)) -> str:
-    """demo: 쿠키 세션의 `is_operator`. selfhost: 로그인 = 운영자, 로그인 전이면 401 unauthenticated."""
-    if _selfhost(request):
-        session_id = workspace_session(request, conn)
-        if session_id is None:
-            raise ApiError(401, "unauthenticated", "로그인이 필요합니다.")
-    else:
-        session_id = _session_from_cookie(request, conn)
-    row = repo.get_session(conn, session_id) if session_id else None
+    """로그인 = 운영자(고정 워크스페이스는 `ensure_workspace` 가 운영자로 만든다). 로그인 전이면 401 unauthenticated."""
+    session_id = workspace_session(request, conn)
+    if session_id is None:
+        raise ApiError(401, "unauthenticated", "로그인이 필요합니다.")
+    row = repo.get_session(conn, session_id)
     if row is None or not row["is_operator"]:
         raise ApiError(403, "forbidden", "운영자 권한이 필요합니다.")
     return session_id

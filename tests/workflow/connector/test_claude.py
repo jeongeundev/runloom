@@ -3,8 +3,8 @@
 가짜는 `claude -p --output-format json` 처럼 stdout 에 결과 JSON 한 덩어리를 쓴다. 키는 2026-09-20 `claude 2.1.278` 로
 한 번 실행해 확인한 형태(`type=result`, `subtype`, `is_error`, `result`, `structured_output`, `usage`, `api_error_status` …)를
 따르고, 받은 argv·env·cwd·프롬프트를 그 안의 `_fake` 키에 남긴다. 어댑터는 모르는 키를 무시하므로 테스트는 보존된
-`claude_jsonl` 산출물에서 이를 읽는다. 데모 저장소는 test_codex 와 같은 `scripts/scaffold_demo_repo.py`,
-수정 대본(고친 변환부·재현 테스트)은 대본 에이전트(`workflow.scripted._common`)의 상수를 재사용한다.
+`claude_jsonl` 산출물에서 이를 읽는다. 데모 저장소와 수정 대본(고친 변환부·재현 테스트)은
+test_codex 와 같은 `demo_repo` 의 것을 쓴다.
 """
 
 import json
@@ -18,9 +18,9 @@ from workflow.connector import git_ops, state
 from workflow.connector.claude import ALLOWED_TOOLS, READONLY_TOOLS, ClaudeAdapter
 from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun, generic_result_schema
 from workflow.contracts.v1 import ExecutionUsage
-from workflow.scripted._common import FIXED_TRANSFORMER, REPRO_TEST
 
 from .conftest import REVIEW_SPEC, make_local_request, make_review_request
+from .demo_repo import FIXED_TRANSFORMER, REPRO_TEST
 from .test_codex import RESPONSE_AFTER, Progress, _git, by_kind, make_repo, make_review_fixture, request_for
 
 WFC = "wfc_" + "a" * 43
@@ -169,7 +169,6 @@ def register(state_conn, repo: Path) -> str:
         "base_commit": base,
         "verification_profiles": {
             "vp-pytest": [sys.executable, "-m", "pytest", "-q"],
-            "vp-report": [sys.executable, "-m", "daily_report", "{response}"],
         },
     })
     return base
@@ -201,7 +200,7 @@ def test_build_argv_is_fixed_and_carries_no_prompt_or_paths(state_conn, tmp_path
     ]
     assert ALLOWED_TOOLS == (
         "Read", "Edit", "Write", "Glob", "Grep",
-        "Bash(python3 -m pytest*)", "Bash(python3 -m daily_report*)", "Bash(git diff*)", "Bash(git status*)",
+        "Bash(python3 -m pytest*)", "Bash(git diff*)", "Bash(git status*)",
     )
     joined = " ".join(argv)
     assert "bypassPermissions" not in joined and "dangerously" not in joined
@@ -212,7 +211,7 @@ def test_build_argv_is_fixed_and_carries_no_prompt_or_paths(state_conn, tmp_path
 # --- 정상 ---------------------------------------------------------------------------------
 
 
-def test_full_run_is_ready_for_review_with_seven_artifacts(state_conn, repo, handoff, fake_bin):
+def test_full_run_is_ready_for_review_with_six_artifacts(state_conn, repo, handoff, fake_bin):
     write_fake_claude(fake_bin, "full")
     base = register(state_conn, repo)
     request = request_for(base)
@@ -226,16 +225,13 @@ def test_full_run_is_ready_for_review_with_seven_artifacts(state_conn, repo, han
     assert result.base_commit == base and result.result_commit != base
     assert result.artifact_ids == []  # runner 가 채운다
     kinds = [meta.kind for meta, _ in output.artifacts]
-    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log", "report_output",
-                     "claude_jsonl", "claude_stderr"]
+    assert kinds == ["diff", "test_log_before", "test_log_after", "verification_log", "claude_jsonl", "claude_stderr"]
     names = {meta.kind: meta.name for meta, _ in output.artifacts}
     assert names["claude_jsonl"] == "claude.jsonl" and names["claude_stderr"] == "claude-stderr.txt"
     artifacts = by_kind(output)
     assert artifacts["test_log_before"].decode().splitlines()[0] == "exit_code=1"
     assert artifacts["test_log_after"].decode().splitlines()[0] == "exit_code=0"
     assert artifacts["verification_log"].decode().splitlines()[0] == "exit_code=0"
-    report = artifacts["report_output"].decode()
-    assert "2026-09-19" in report and "합계    20    5" in report
     assert "transformer.py" in artifacts["diff"].decode() and "test_repro.py" in artifacts["diff"].decode()
     assert b"fake claude: done" in artifacts["claude_stderr"]
     # 검증은 별도 실행: verification 은 result_commit 을 가리키고 exit 0
@@ -477,7 +473,7 @@ def test_classify_failure_is_none_for_a_successful_result(state_conn):
 def review_handoff(tmp_path) -> Path:
     handoff = tmp_path / "review-daily-0920.handoff"
     handoff.mkdir()
-    (handoff / "manifest.json").write_text('{"source_kind": "code_change"}')
+    (handoff / "manifest.json").write_text('{"source_kind": "bug_fix"}')
     (handoff / "diff.patch").write_text("--- a\n+++ b\n")
     (handoff / "code_change_result.json").write_text('{"outcome": "ready_for_review"}')
     return handoff

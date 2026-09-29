@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
-Target = Literal["diagnosis", "code_change", "commit_review", "local"]
-# report_code_change: 데모 코드 수정(보고서·expected-report 대조) / code_change: 일반 버그 수정(요청 ID·기준 커밋 대조)
-Verifier = Literal["diagnosis", "report_code_change", "code_change", "commit_review", "generic"]
+Target = Literal["code_change", "commit_review", "local"]
+# code_change: 버그 수정 결과(요청 ID·기준 커밋 대조). 진단·보고서 데모 판정기는 `main` 전용 (ADR-0019)
+Verifier = Literal["code_change", "commit_review", "generic"]
 
 
 @dataclass(frozen=True)
@@ -32,12 +32,6 @@ class ExecutionPolicy:
 _CODE_ARTIFACTS = ("diff", "test_log_before", "test_log_after", "verification_log")
 
 BUILTIN_POLICIES = MappingProxyType({
-    "diagnosis": ExecutionPolicy("diagnosis", "diagnosis", "diagnosis_result", (), "diagnosis", cycle=False),
-    "code_change": ExecutionPolicy(
-        "code_change", "code_change", "code_change_result",
-        ("diff", "test_log_before", "test_log_after", "report_output", "verification_log"),
-        "report_code_change", cycle=False,
-    ),
     "bug_fix": ExecutionPolicy("bug_fix", "code_change", "code_change_result", _CODE_ARTIFACTS, "code_change", cycle=True),
     "code_review": ExecutionPolicy(
         "code_review", "commit_review", "code_review_result", (), "commit_review", cycle=True,

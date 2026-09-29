@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
 from workflow.server import metrics_api
+from workflow.server.auth import SESSION_COOKIE, sign_session
 from workflow.adapters.github_client import GitHubForbidden, GitHubRateLimited, GitHubUnavailable
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink
 from workflow.contracts.v1 import ArtifactMeta, ExecutionEvent, ExecutionRequest
@@ -97,7 +98,7 @@ def _advance(conn, store, session_id: str, execution_id: str, *, ok: bool, start
 
 
 def _task(task_id: str, session_id: str) -> dict:
-    return {**task_row(task_id, kind="code_change"), "session_id": session_id}
+    return {**task_row(task_id), "session_id": session_id}
 
 
 @pytest.fixture
@@ -112,7 +113,7 @@ def operator(app, conn, store) -> tuple[TestClient, str]:
     repo.save_github_source(conn, session_id, _source(), OPENED_BEFORE)  # config_revision 1 → 2
     repo.insert_task(conn, _task("task-2", session_id), "2026-09-25T00:00:00Z")
     repo.create_execution(conn, execution_id="exec-2", task_id="task-2", attempt_no=2, start_key="rework:1",
-                          agent_id="agent-codex-mac", kind="code_change",
+                          agent_id="agent-codex-mac", kind="bug_fix",
                           request=ExecutionRequest.model_validate(request_body("exec-2", "task-2")), assigned_connector_id=None,
                           predecessor_execution_id=None, now="2026-09-25T00:00:00Z")
     _advance(conn, store, session_id, "exec-2", ok=False, started="2026-09-25T00:00:00Z", finished="2026-09-25T00:30:00Z")
@@ -141,24 +142,38 @@ def error(response, status: int, code: str) -> dict:
 
 
 def test_every_endpoint_requires_operator_session(client, conn):
-    client.get("/")  # 공개 세션 쿠키만 받는다
+    # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 로그인 안 된 것으로 본다
+    repo.create_session(conn, "sess-other", "2026-09-20T00:00:00Z")
+    client.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
     for anonymous in (TestClient(client.app), client):
-        error(anonymous.get("/metrics.json"), 403, "forbidden")
-        error(anonymous.get("/metrics.csv"), 403, "forbidden")
-        error(anonymous.post(f"/operator/github/sources/{SOURCE}/baseline"), 403, "forbidden")
+        error(anonymous.get("/metrics.json"), 401, "unauthenticated")
+        error(anonymous.get("/metrics.csv"), 401, "unauthenticated")
+        error(anonymous.post(f"/operator/github/sources/{SOURCE}/baseline"), 401, "unauthenticated")
 
 
-def test_other_operator_session_sees_only_its_own_data(app, operator, conn, fake):
+def test_other_operator_session_sees_only_its_own_data(operator, conn, store, fake):
     op, _ = operator
     op.post(f"/operator/github/sources/{SOURCE}/baseline")
-    other = TestClient(app)
-    login(other)  # 새 운영자 세션 — 데이터 없음
-    body = other.get("/metrics.json").json()
-    group = body["groups"][0]
-    assert (group["bundles"], group["failure"]["denominator"]) == (0, 0)
-    assert body["baselines"] == []
-    error(other.post(f"/operator/github/sources/{SOURCE}/baseline"), 404, "not_found")
-    assert "이슈" not in other.get("/metrics.csv").text
+    before_json, before_csv = op.get("/metrics.json").json(), op.get("/metrics.csv").text
+    # 다른 워크스페이스(운영자 세션)의 업무·실행·소스·기준선 — DB 에 직접 둔다
+    other, other_source = "sess-other", "ghs-0000beef"
+    repo.create_session(conn, other, "2026-09-20T00:00:00Z")
+    repo.mark_operator(conn, other)
+    repo.insert_task(conn, _task("task-other", other), "2026-09-21T00:00:00Z")
+    seed_execution(conn, "exec-other", "task-other")
+    _advance(conn, store, other, "exec-other", ok=True, started="2026-09-21T00:10:00Z",
+             finished="2026-09-21T00:20:00Z", usage={"cost_usd": 9.0, "input_tokens": 900})
+    repo.save_github_source(conn, other, _source(source_id=other_source, repository_full_name="acme/lib"),
+                            OPENED_BEFORE)
+    repo.replace_baseline(conn, other, other_source, [_link(3, 30, "2026-08-03T00:00:00Z", "2026-08-03T01:00:00Z")],
+                          opened_before=OPENED_BEFORE, now="2026-09-21T00:00:00Z")
+    assert len(repo.list_baseline(conn, other, other_source)[1]) == 1
+
+    assert op.get("/metrics.json").json() == before_json
+    assert op.get("/metrics.csv").text == before_csv
+    assert "이슈 3" not in op.get("/metrics.csv").text
+    error(op.post(f"/operator/github/sources/{other_source}/baseline"), 404, "not_found")
+    assert fake.calls == [("acme/billing", OPENED_BEFORE)]
 
 
 # --- JSON ---------------------------------------------------------------------------------

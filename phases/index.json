@@ -69,7 +69,8 @@
     },
     {
       "dir": "13-selfhost-only",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-09-29T21:51:19+0900"
     },
     {
       "dir": "14-task-model",

@@ -238,10 +238,10 @@ def make_request(execution_id: str = "exec-fix-001", task_id: str = "fix-daily-0
         "contract_version": 1,
         "execution_id": execution_id,
         "task_id": task_id,
-        "kind": "code_change",
+        "kind": "bug_fix",
         "agent_id": "agent-codex-mac",
         "task_revision": 1,
-        "request": "인계된 진단 근거로 보고서 변환 실패를 재현하는 테스트를 먼저 작성하고 최소 수정하세요.",
+        "request": "보고서 변환이 data.records 응답에서 실패한다. 재현 테스트를 먼저 작성하고 최소 수정하세요.",
         "input_artifact_ids": input_artifact_ids if input_artifact_ids is not None else ["art-handoff-001"],
         "target": {
             "local_registration_id": "local-demo-report",

@@ -7,25 +7,22 @@
 ## 기술 스택
 - Python 3.13 계열, 시스템 `python3` 사용 (가상환경 없음). [ADR-0002](docs/adr/0002-server-stack-python-fastapi-sqlite.md)
 - FastAPI + Uvicorn (웹/API), Jinja2 + CSS + 소량 브라우저 JavaScript (화면), Pydantic v2 (계약 검증), 표준 `sqlite3` + 명시적 SQL (저장), HTTPX (HTTP 클라이언트)
-- 진단 데모: OpenAI Python SDK, Responses API — [ADR-0003](docs/adr/0003-diagnosis-model-openai-gpt41-mini.md) 확정 (gpt-4.1). 키·예산 확인 전 유료 호출 금지
+- 진단 데모(OpenAI Responses API, [ADR-0003](docs/adr/0003-diagnosis-model-openai-gpt41-mini.md))는 `main` 전용 — `service` 에는 없다 ([ADR-0019](docs/adr/0019-service-selfhost-only.md))
 - 로컬 에이전트 어댑터: Codex CLI 1종 [ADR-0001](docs/adr/0001-first-local-agent-codex.md)
 - pytest, ruff. 의존성은 `pyproject.toml`
 
 ## 아키텍처 규칙
 - CRITICAL: 도메인 규칙(`src/workflow/domain/`)은 FastAPI·sqlite3·HTTPX·subprocess·Git 을 import 하지 않는다. DB·HTTP·프로세스·Git 은 `adapters/`·`server/`·`connector/` 경계 모듈에서만 다룬다.
-- CRITICAL: `src/workflow/server/` 와 `src/workflow/connector/` 는 서로 import 하지 않고 `src/workflow/contracts/` 만 공유한다. `src/diagnostic_demo/` 는 중앙 DB 에 접근하지 않고 공개 계약만 공유한다.
+- CRITICAL: `src/workflow/server/` 와 `src/workflow/connector/` 는 서로 import 하지 않고 `src/workflow/contracts/` 만 공유한다.
 - CRITICAL: 외부 입력(요청 본문·산출물·근거 문서·모델 응답)에서 셸 명령이나 파일 경로를 받아 실행하지 않는다. 실행 파일과 인자 배열은 어댑터가 고정한다.
-- CRITICAL: 비밀값(연결 토큰 `wfc_…`, `OPERATOR_TOKEN`, `DIAG_API_TOKEN`, `OPENAI_API_KEY`, `SESSION_SECRET`, `WORKFLOW_GITHUB_TOKEN`, GitHub App 개인 키·client secret·webhook secret·설치 토큰, 붙여 넣은 GitHub PAT)은 환경변수 또는 비밀 저장소(`adapters/secret_store.py`, 0600 파일)에서만 읽는다. DB·로그·응답·템플릿·백업·Codex 프로세스 환경에 넣지 않는다. 설치 토큰은 프로세스 메모리에만 둔다. [ADR-0017](docs/adr/0017-github-app-connection.md)
+- CRITICAL: 비밀값(연결 토큰 `wfc_…`, `OPERATOR_TOKEN`, `OPENAI_API_KEY`, `SESSION_SECRET`, `WORKFLOW_GITHUB_TOKEN`, GitHub App 개인 키·client secret·webhook secret·설치 토큰, 붙여 넣은 GitHub PAT)은 환경변수 또는 비밀 저장소(`adapters/secret_store.py`, 0600 파일)에서만 읽는다. DB·로그·응답·템플릿·백업·Codex 프로세스 환경에 넣지 않는다. 설치 토큰은 프로세스 메모리에만 둔다. [ADR-0017](docs/adr/0017-github-app-connection.md)
 - 상태 전환·중복 방지·완료 판정은 `docs/ARCHITECTURE.md` 계약 v1 과 `docs/CONTRACT.md` 예시를 따른다. 모델의 "완료했다" 응답이나 프로세스 종료 코드만으로 완료 처리하지 않는다.
 - 이름은 `docs/GLOSSARY.md` 의 코드 식별자를 그대로 쓴다 (`Execution` ≠ `run`, `Agent` ≠ `connector`, `outcome` ≠ 상태).
 - 업무 종류·후속 규칙은 워크스페이스 등록 데이터다(ADR-0009). 새 단계를 붙일 때 `composition.py`·`worker.py` 에 종류 이름 분기를 늘리지 않는다 — 규칙 행으로 되는지가 설계 기준.
 - 테스트 배치: `tests/` 가 `src/` 구조를 따라간다. `src/workflow/domain/selection.py` → `tests/workflow/domain/test_selection.py`. `tdd-guard.sh` 가 이 배치를 인식한다.
 
-## 제품 코드와 진단 데모의 경계
-- `src/workflow/` 는 제품(중앙 웹/API·워커·연결 프로그램·계약). `src/diagnostic_demo/` 는 "사내 운영 진단 API" 역할을 재현하는 데모 서비스이며 제품의 일부가 아니다.
-- B 가 수정하는 보고서 데모 저장소는 이 저장소 밖에 별도 Git 저장소로 둔다.
-- 진단 fixture(가상 실행 기록·로그·운영 문서)는 `src/diagnostic_demo/fixtures/` 에 두고 실제 운영 데이터로 표시하지 않는다.
-- `src/workflow/scripted/` 는 공개 데모 전용 대본 에이전트다([ADR-0008](docs/adr/0008-public-demo-scripted-agents.md)). 제품 런타임 경로(`connector/`)에서 import 하지 않는다 — 배포·로컬 스택이 `codex`/`claude` 이름의 PATH 래퍼로 앞에 둘 뿐이다.
+## 제품 코드와 데모의 경계
+- `src/workflow/` 는 제품(중앙 웹/API·워커·연결 프로그램·계약). 진단 데모 서비스(`src/diagnostic_demo/`)·진단 fixture·보고서 데모 저장소는 `main` 전용이다 ([ADR-0019](docs/adr/0019-service-selfhost-only.md)).
 
 ## 개발 프로세스
 - CRITICAL: 새 기능 구현 시 반드시 테스트를 먼저 작성하고, 테스트가 통과하는 구현을 작성할 것 (TDD)
@@ -33,11 +30,9 @@
 
 ## 명령어
 ```bash
-python3 -m pip install -e ".[dev]"                               # 의존성 설치 — src/workflow, src/diagnostic_demo 패키지가 있어야 함
+python3 -m pip install -e ".[dev]"                               # 의존성 설치 — src/workflow 패키지가 있어야 함
 python3 -m uvicorn workflow.server.app:app --reload --port 8000  # 개발 서버: 중앙 웹/API
 python3 -m workflow.server.worker                                 # 중앙 워커
-python3 -m uvicorn diagnostic_demo.api.app:app --port 8100       # 진단 API (localhost 전용)
-python3 -m diagnostic_demo.worker                                 # 진단 워커
 python3 -m workflow.connector                                     # 로컬 연결 프로그램 (운영자 Mac)
                                                                   # 빌드: 없음
 python3 -m ruff check .                                           # 린트

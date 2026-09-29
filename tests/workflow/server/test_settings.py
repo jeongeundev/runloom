@@ -10,13 +10,13 @@ from workflow.server.settings import (
     SECRET_KEYS,
     Limits,
     Settings,
+    SettingsError,
     load_settings,
 )
 
 FULL = {
     "SESSION_SECRET": "s",
     "OPERATOR_TOKEN": "o",
-    "DIAG_API_TOKEN": "d",
 }
 
 
@@ -24,7 +24,6 @@ def test_missing_secrets_raise_value_error_naming_them():
     with pytest.raises(ValueError) as exc:
         load_settings({"SESSION_SECRET": "s"})
     assert "OPERATOR_TOKEN" in str(exc.value)
-    assert "DIAG_API_TOKEN" in str(exc.value)
     assert "SESSION_SECRET" not in str(exc.value)
 
 
@@ -36,7 +35,7 @@ def test_empty_secret_counts_as_missing():
 def test_dev_mode_generates_random_secrets_and_warns(capsys):
     first = load_settings({"WORKFLOW_DEV": "1"})
     second = load_settings({"WORKFLOW_DEV": "1"})
-    assert first.session_secret and first.operator_token and first.diag_api_token
+    assert first.session_secret and first.operator_token
     assert first.session_secret != second.session_secret
     assert first.operator_token != second.operator_token
     err = capsys.readouterr().err
@@ -46,7 +45,7 @@ def test_dev_mode_generates_random_secrets_and_warns(capsys):
 
 def test_dev_mode_keeps_provided_secrets(capsys):
     s = load_settings({"WORKFLOW_DEV": "1", **FULL})
-    assert (s.session_secret, s.operator_token, s.diag_api_token) == ("s", "o", "d")
+    assert (s.session_secret, s.operator_token) == ("s", "o")
     assert capsys.readouterr().err == ""
 
 
@@ -55,14 +54,10 @@ def test_defaults():
     assert s.db_path == Path("data/central.sqlite")
     assert s.artifact_dir == Path("data/artifacts")
     assert s.secret_dir == Path("data/secrets")
-    assert s.diag_api_url == "http://127.0.0.1:8100"
     assert s.session_cookie_days == 14
     assert s.limits == Limits()
     assert Limits() == Limits(
-        per_session_daily=10,
-        global_daily=60,
         active_tasks_per_session=5,
-        attachments_max_bytes=1_048_576,
         unknown_after_seconds=120,
         heartbeat_offline_seconds=90,
     )
@@ -74,19 +69,14 @@ def test_env_overrides():
         "WORKFLOW_DB_PATH": "/tmp/x/db.sqlite",
         "WORKFLOW_ARTIFACT_DIR": "/tmp/x/art",
         "WORKFLOW_SECRET_DIR": "/tmp/x/secrets",
-        "DIAG_API_URL": "http://127.0.0.1:9100",
-        "WORKFLOW_LIMIT_PER_SESSION_DAILY": "3",
-        "WORKFLOW_LIMIT_GLOBAL_DAILY": "7",
         "WORKFLOW_LIMIT_ACTIVE_TASKS_PER_SESSION": "2",
-        "WORKFLOW_LIMIT_ATTACHMENTS_MAX_BYTES": "1024",
         "WORKFLOW_LIMIT_UNKNOWN_AFTER_SECONDS": "30",
         "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS": "45",
     })
     assert s.db_path == Path("/tmp/x/db.sqlite")
     assert s.artifact_dir == Path("/tmp/x/art")
     assert s.secret_dir == Path("/tmp/x/secrets")
-    assert s.diag_api_url == "http://127.0.0.1:9100"
-    assert s.limits == Limits(3, 7, 2, 1024, 30, 45)
+    assert s.limits == Limits(2, 30, 45)
 
 
 def test_callback_hosts_and_public_url_default_to_empty():
@@ -147,7 +137,7 @@ def test_github_token_and_repos_are_read_and_token_stays_out_of_repr():
 
 def test_non_integer_limit_raises():
     with pytest.raises(ValueError):
-        load_settings({**FULL, "WORKFLOW_LIMIT_GLOBAL_DAILY": "many"})
+        load_settings({**FULL, "WORKFLOW_LIMIT_ACTIVE_TASKS_PER_SESSION": "many"})
 
 
 def test_settings_is_frozen():
@@ -170,7 +160,7 @@ class _RecordingEnv(dict):
 
 
 def test_env_keys_lists_exactly_what_load_settings_reads():
-    """deploy/env/central.env.example 이 이 목록과 비교된다 (Step 16). 개발 플래그 WORKFLOW_DEV 는 제외."""
+    """deploy/selfhost/.env.example 이 이 목록과 비교된다 (tests/test_selfhost_files.py). 개발 플래그 WORKFLOW_DEV 는 제외."""
     env = _RecordingEnv(FULL)
     load_settings(env)
     assert env.asked - {"WORKFLOW_DEV"} == set(ENV_KEYS)
@@ -178,47 +168,36 @@ def test_env_keys_lists_exactly_what_load_settings_reads():
     assert len(ENV_KEYS) == len(set(ENV_KEYS))
 
 
-# --- 셀프호스트 모드 (phase 10, ADR-0016) ----------------------------------------------
+# --- 셀프호스트 전용 (phase 13, ADR-0019) — 모드 개념 없음 ----------------------------------------
 
 
-def test_mode_defaults_to_demo():
-    assert load_settings(FULL).mode == "demo"
-    assert load_settings({**FULL, "WORKFLOW_MODE": ""}).mode == "demo"
+@pytest.mark.parametrize("value", [None, "", "selfhost"])
+def test_workflow_mode_empty_or_selfhost_is_read_and_ignored(value):
+    env = dict(FULL) if value is None else {**FULL, "WORKFLOW_MODE": value}
+    s = load_settings(env)
+    assert not hasattr(s, "mode")
     assert "WORKFLOW_MODE" in ENV_KEYS and "WORKFLOW_MODE" not in SECRET_KEYS
 
 
-def test_mode_selfhost_is_read():
-    assert load_settings({**FULL, "WORKFLOW_MODE": "selfhost"}).mode == "selfhost"
+@pytest.mark.parametrize("value", ["demo", "prod"])
+def test_workflow_mode_demo_or_other_value_is_a_settings_error(value):
+    with pytest.raises(SettingsError) as exc:
+        load_settings({**FULL, "WORKFLOW_MODE": value})
+    message = str(exc.value)
+    assert "WORKFLOW_MODE" in message and "셀프호스트 전용" in message and "main" in message
+    assert issubclass(SettingsError, ValueError)
 
 
-def test_unknown_mode_raises():
-    with pytest.raises(ValueError) as exc:
-        load_settings({**FULL, "WORKFLOW_MODE": "prod"})
-    assert "WORKFLOW_MODE" in str(exc.value)
+DIAGNOSIS_KEYS = (
+    "DIAG_API_TOKEN", "DIAG_API_URL", "WORKFLOW_LIMIT_PER_SESSION_DAILY", "WORKFLOW_LIMIT_GLOBAL_DAILY",
+    "WORKFLOW_LIMIT_ATTACHMENTS_MAX_BYTES",
+)
 
 
-def test_selfhost_loads_without_diag_token_and_diagnosis_is_off():
-    s = load_settings({"SESSION_SECRET": "s", "OPERATOR_TOKEN": "o", "WORKFLOW_MODE": "selfhost"})
-    assert s.diag_api_token == ""
-    assert s.diagnosis_enabled is False
-    assert load_settings({**FULL, "WORKFLOW_MODE": "selfhost"}).diagnosis_enabled is True
-
-
-def test_selfhost_still_requires_session_secret_and_operator_token():
-    with pytest.raises(ValueError) as exc:
-        load_settings({"WORKFLOW_MODE": "selfhost"})
-    assert "SESSION_SECRET" in str(exc.value) and "OPERATOR_TOKEN" in str(exc.value)
-    assert "DIAG_API_TOKEN" not in str(exc.value)
-
-
-def test_selfhost_dev_mode_does_not_invent_a_diag_token(capsys):
-    """개발 모드여도 가짜 진단 토큰을 만들면 없는 진단 API 를 부르게 된다 — 비워 두어 기능을 끈다."""
-    s = load_settings({"WORKFLOW_DEV": "1", "WORKFLOW_MODE": "selfhost"})
-    assert s.session_secret and s.operator_token
-    assert s.diag_api_token == ""
-
-
-def test_demo_without_diag_token_still_fails():
-    with pytest.raises(ValueError) as exc:
-        load_settings({"SESSION_SECRET": "s", "OPERATOR_TOKEN": "o"})
-    assert "DIAG_API_TOKEN" in str(exc.value)
+def test_diagnosis_settings_are_gone():
+    """진단 데모는 `main` 전용(ADR-0019) — 진단 토큰·주소·진단 한도를 읽지도 들고 있지도 않는다."""
+    env = _RecordingEnv({**FULL, **{key: "1" for key in DIAGNOSIS_KEYS}})
+    s = load_settings(env)
+    assert not set(DIAGNOSIS_KEYS) & (set(ENV_KEYS) | env.asked)
+    assert not {"diag_api_url", "diag_api_token", "diagnosis_enabled"} & set(dir(s))
+    assert not {"per_session_daily", "global_daily", "attachments_max_bytes"} & set(dir(s.limits))

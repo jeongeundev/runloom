@@ -2,7 +2,7 @@
 
 - `workflow.domain` 은 FastAPI·sqlite3·HTTPX·subprocess 를 import 하지 않는다.
 - `workflow.server` 와 `workflow.connector` 는 서로 import 하지 않는다.
-- `diagnostic_demo` 는 `workflow.adapters`·`workflow.server` 를 import 하지 않는다.
+- 진단 데모 패키지 `diagnostic_demo`·대본 에이전트 `workflow.scripted` 는 `main` 전용이라 여기 없다 (ADR-0019).
 
 소스 텍스트를 정규식으로 검사하므로 빈 패키지에서도 자명하게 통과하며,
 이후 step 이 규칙을 어기면 여기서 실패한다.
@@ -38,11 +38,13 @@ def _violations(package_dir: Path, forbidden_prefixes: tuple[str, ...]) -> set[s
 
 
 def test_packages_import():
-    import diagnostic_demo
+    import importlib.util
+
     import workflow
 
     assert workflow is not None
-    assert diagnostic_demo is not None
+    assert importlib.util.find_spec("diagnostic_demo") is None  # 진단 데모는 `main` 전용 (ADR-0019)
+    assert importlib.util.find_spec("workflow.scripted") is None  # 대본 에이전트도 `main` 전용 (ADR-0019)
 
 
 def test_domain_does_not_import_infrastructure():
@@ -54,7 +56,3 @@ def test_server_and_connector_do_not_import_each_other():
     assert _violations(SRC / "workflow" / "server", ("workflow.connector",)) == set()
     assert _violations(SRC / "workflow" / "connector", ("workflow.server",)) == set()
 
-
-def test_diagnostic_demo_shares_only_contracts():
-    forbidden = ("workflow.adapters", "workflow.server")
-    assert _violations(SRC / "diagnostic_demo", forbidden) == set()

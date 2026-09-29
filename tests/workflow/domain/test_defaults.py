@@ -13,6 +13,6 @@ def test_selection_mode_defaults_to_auto():
 
 
 def test_completion_mode_is_review_for_every_kind():
-    assert default_completion_mode("diagnosis") == "review"
-    assert default_completion_mode("code_change") == "review"
+    assert default_completion_mode("bug_fix") == "review"
+    assert default_completion_mode("code_review") == "review"
 

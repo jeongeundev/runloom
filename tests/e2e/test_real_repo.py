@@ -295,7 +295,7 @@ def make_worker(world: World) -> Worker:
     """`worker.main` 과 같은 연결 — 소스별 설치 토큰 클라이언트, 비밀 저장소의 알림 URL, 알림 전송기. 진단은 없음(selfhost)."""
     settings = load_settings(world.central_env)
     store = SecretStore(settings.secret_dir)
-    return Worker(lambda: connect(settings.db_path), world.store, None, HttpCallbackClient(), settings, utc_now,
+    return Worker(lambda: connect(settings.db_path), world.store, HttpCallbackClient(), settings, utc_now,
                   github_for=SourceClients(settings, store, transport=ToFakeGitHub(world.fake_port)),
                   secrets=store, notifier=NotifySender())
 

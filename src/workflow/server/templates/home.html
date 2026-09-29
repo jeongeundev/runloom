@@ -1,5 +1,5 @@
-{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 세션이 등록한 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록과 다음 행동 버튼.
-   랜딩은 landing.html. selfhost 는 fixture `업무 가져오기` 를 숨긴다. 지시 전 GitHub 업무는 운영자에게 [에이전트에게 맡기기] (phase 11 step 8). 등록 Agent 가 0개면 안내와 `에이전트 등록` 버튼만 보이고 `업무 가져오기` 는 비활성이다 (phase 5 step 2·5·6). #}
+{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 워크스페이스에 붙은 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록과 다음 행동 버튼.
+   지시 전 GitHub 업무는 운영자에게 [에이전트에게 맡기기] (phase 11 step 8). 에이전트가 0개면 러너 연결 안내 (ADR-0018·0019). #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}업무 — Runloom{% endblock %}
@@ -9,19 +9,17 @@
 <div class="agent-grid">
   {% for a in agents %}
   <div class="card agent-card">
-    <div class="name"><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a>{% if a.demo_scripted %} <span class="tag-scripted">시연용 · 대본 재생</span>{% endif %}</div>
+    <div class="name"><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></div>
     <div class="meta mono">{{ a.agent_id }} · {{ a.owner_scope }} · {{ a.connection_type }}</div>
     <div>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
     <div style="margin-top:8px">{{ st.connection(a) }}</div>
   </div>
   {% endfor %}
 </div>
-<div class="actions"><a class="btn btn-secondary" href="/agents/register">에이전트 등록</a></div>
 {% else %}
 <div class="empty" style="padding-top:0">
-  <p>먼저 에이전트를 등록하세요.</p>
-  <p class="small" style="margin-top:8px">운영자가 준비한 카탈로그에서 이미 쓰는 에이전트를 골라 등록합니다. 등록한 에이전트만 이 세션의 업무에 배정됩니다.</p>
-  <div class="actions"><a class="btn" href="/agents/register">에이전트 등록</a></div>
+  <p>아직 에이전트가 없습니다.</p>
+  <p class="small" style="margin-top:8px">러너를 연결하면 그 에이전트가 이 워크스페이스에 붙습니다 · <a href="/operator/github">GitHub</a> 에서 러너 연결.</p>
 </div>
 {% endif %}
 
@@ -39,13 +37,6 @@
 
 <div class="section-head"><h2>업무</h2></div>
 <div class="actions" style="margin-bottom:12px">
-  {% if mode == 'selfhost' %}
-  {% elif agents %}
-  <a class="btn" href="/tasks/import">업무 가져오기</a>
-  {% else %}
-  <button class="btn" type="button" disabled>업무 가져오기</button>
-  <span class="action-note">에이전트를 먼저 등록하세요</span>
-  {% endif %}
   <a class="btn btn-secondary" href="/tasks/new">직접 등록</a>
 </div>
 {% if my_tasks %}
@@ -61,7 +52,6 @@
 {% else %}
 <div class="empty" style="padding-top:0">
   <p>아직 업무가 없습니다.</p>
-  {% if mode != 'selfhost' %}<p class="small" style="margin-top:8px">GitHub·Jira 이슈를 가져오면 순서와 담당 에이전트가 자동으로 구성됩니다.</p>{% endif %}
 </div>
 {% endif %}
 {% endblock %}

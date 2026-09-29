@@ -59,13 +59,12 @@ def test_module_import_creates_app_when_not_skipped(monkeypatch, tmp_path):
         importlib.reload(app_module)
 
 
-def test_selfhost_without_diag_token_starts(settings):
-    """phase 10 — 진단 토큰 없이도 앱이 만들어지고 스키마를 연다."""
-    from dataclasses import replace
-
-    app = create_app(replace(settings, mode="selfhost", diag_api_token=""))
+def test_app_starts_without_any_diagnosis_setting(settings):
+    """phase 10 — 진단 설정 없이 앱이 만들어지고 스키마를 연다. 진단은 `main` 전용이라 설정 칸도 없다 (ADR-0019)."""
+    app = create_app(settings)
     assert isinstance(app, FastAPI)
     assert settings.db_path.exists()
+    assert not hasattr(settings, "diag_api_token")
 
 
 # --- GET /healthz (phase 10 step 5) ------------------------------------------------------------
@@ -77,22 +76,11 @@ def test_healthz_reports_schema_version_and_mode_without_auth(settings):
 
     res = TestClient(create_app(settings)).get("/healthz")
     assert res.status_code == 200
-    assert res.json() == {"status": "ok", "mode": "demo", "schema_version": SCHEMA_VERSION}
-    for secret in (settings.session_secret, settings.operator_token, settings.diag_api_token):
+    assert res.json() == {"status": "ok", "mode": "selfhost", "schema_version": SCHEMA_VERSION}
+    for secret in (settings.session_secret, settings.operator_token):
         assert secret not in res.text
     assert str(settings.db_path) not in res.text
-    assert "set-cookie" not in res.headers  # demo 에서도 익명 세션을 만들지 않는다
-
-
-def test_healthz_is_public_in_selfhost_mode(settings):
-    from dataclasses import replace
-
-    from fastapi.testclient import TestClient
-
-    client = TestClient(create_app(replace(settings, mode="selfhost")), follow_redirects=False)
-    res = client.get("/healthz")
-    assert res.status_code == 200
-    assert res.json() == {"status": "ok", "mode": "selfhost", "schema_version": SCHEMA_VERSION}
+    assert "set-cookie" not in res.headers  # 세션 쿠키를 만들지 않는다
 
 
 def test_healthz_errors_without_details_when_db_is_missing(settings):
@@ -104,7 +92,7 @@ def test_healthz_errors_without_details_when_db_is_missing(settings):
         settings.db_path.with_name(settings.db_path.name + suffix).unlink(missing_ok=True)
     res = client.get("/healthz")
     assert res.status_code == 503
-    assert res.json() == {"status": "error", "mode": "demo"}
+    assert res.json() == {"status": "error", "mode": "selfhost"}
     assert not settings.db_path.exists()  # 확인만 한다 — 빈 DB 를 만들지 않는다
 
 
@@ -119,5 +107,5 @@ def test_healthz_errors_on_unexpected_schema_version(settings):
         conn.close()
     res = client.get("/healthz")
     assert res.status_code == 503
-    assert res.json() == {"status": "error", "mode": "demo"}
+    assert res.json() == {"status": "error", "mode": "selfhost"}
     assert str(settings.db_path) not in res.text

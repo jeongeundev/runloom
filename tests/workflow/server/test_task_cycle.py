@@ -9,12 +9,10 @@ import hashlib
 import json
 import logging
 
-import httpx
 import pytest
 
 from workflow.adapters import repo
 from workflow.adapters.db import connect
-from workflow.adapters.diag_client import HttpDiagClient
 from workflow.adapters.github_client import (
     CommentPage,
     GitHubForbidden,
@@ -38,12 +36,13 @@ from workflow.contracts.v1 import (
 from workflow.domain.issue_intake import snapshot_to_task_spec
 from workflow.domain.metrics import compute_metrics
 from workflow.server import human_api, task_cycle
+from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace
 from workflow.server.worker import Worker
 
 from .conftest import event, exchange
 from .test_github_sync import config, issue
 
-SESSION = "sess-cycle"
+SESSION = SELFHOST_SESSION_ID  # 로그인한 클라이언트와 같은 고정 워크스페이스
 SOURCE = "ghs-1a2b3c4d"
 NOW = "2026-10-06T12:00:00Z"
 FIX, REVIEW, FIX_SHOP = "agent-fix", "agent-review", "agent-fix-shop"
@@ -81,11 +80,7 @@ def settings(settings):
 @pytest.fixture
 def make_worker(app, settings, store, clock):
     def _make() -> Worker:
-        diag = HttpDiagClient(
-            settings.diag_api_url, settings.diag_api_token,
-            transport=httpx.MockTransport(lambda request: httpx.Response(503)),
-        )
-        return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock)
+        return Worker(lambda: connect(settings.db_path), store, NoCallbacks(), settings, clock)
 
     return _make
 
@@ -100,15 +95,14 @@ def _agent(agent_id: str, registration: str, code: str, repository: str) -> dict
         "agent_id": agent_id, "name": agent_id, "owner_scope": "personal", "connection_type": "local",
         "local_registration_id": registration,
         "capabilities": [{"code": code, "scope": {"repository_id": repository}}],
-        "shared_to_all_sessions": True,
     }
 
 
 @pytest.fixture
 def cycle(conn, client) -> dict:
-    """세션 하나: acme/billing 소스(검토 Agent REVIEW, 재작업 1회) + 담당자 → FIX. 연결 프로그램 둘 —
+    """고정 워크스페이스: acme/billing 소스(검토 Agent REVIEW, 재작업 1회) + 담당자 → FIX. 연결 프로그램 둘 —
     billing(수정·검토 등록이 같은 저장소)과 shop(직접 등록 업무용). 둘 다 새 종류를 선언한 온라인 상태."""
-    repo.create_session(conn, SESSION, NOW)
+    ensure_workspace(conn, NOW)
     for agent in (
         _agent(FIX, REG_FIX, "code.fix", "billing"),
         _agent(REVIEW, REG_REVIEW, "code.review", "billing"),
@@ -305,7 +299,7 @@ def test_manual_run_mode_is_runnable_but_not_started(cycle, conn, worker):
 
 def test_repository_outside_the_allow_list_is_not_delegated(cycle, conn, worker, settings, make_worker):
     task_id = import_issue(conn, 1)
-    blocked = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(),
+    blocked = Worker(lambda: connect(settings.db_path), worker._store, NoCallbacks(),
                      dataclasses.replace(settings, github_repos=("acme/other",)), worker._clock)
     blocked.tick()
     assert executions(conn, task_id) == []
@@ -316,7 +310,7 @@ def test_app_installation_source_is_allowed_without_the_env_allow_list(cycle, co
     """설치 저장소는 App 설치가 허용 목록이다(ADR-0017) — `WORKFLOW_GITHUB_REPOS` 에 없어도 막지 않는다."""
     repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, installation_id=42), NOW)
     task_id = import_issue(conn, 1)
-    narrowed = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(),
+    narrowed = Worker(lambda: connect(settings.db_path), worker._store, NoCallbacks(),
                       dataclasses.replace(settings, github_repos=()), worker._clock)
     narrowed.tick()
     assert len(executions(conn, task_id)) == 1
@@ -328,7 +322,7 @@ def test_pasted_token_source_is_allowed_without_the_env_allow_list(cycle, conn, 
     from workflow.adapters.secret_store import SecretStore
 
     task_id = import_issue(conn, 1)
-    narrowed = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(),
+    narrowed = Worker(lambda: connect(settings.db_path), worker._store, NoCallbacks(),
                       dataclasses.replace(settings, github_repos=()), worker._clock)
     narrowed.tick()
     assert executions(conn, task_id) == []
@@ -936,7 +930,7 @@ def test_out_of_scope_answer_does_not_grant_delegation(cycle, conn, worker, sett
     """D — 허용 저장소 밖. 응답은 권한을 주지 않는다. 설정(별도 권한) 변경 뒤의 응답만 착수로 이어진다."""
     task_id = import_issue(conn, 1)
     narrowed = dataclasses.replace(settings, github_repos=("acme/other",))
-    blocked = Worker(lambda: connect(settings.db_path), worker._store, worker._diag, NoCallbacks(), narrowed,
+    blocked = Worker(lambda: connect(settings.db_path), worker._store, NoCallbacks(), narrowed,
                      worker._clock)
     blocked.tick()
     (request,) = repo.list_human_requests(conn, task_id)
@@ -1105,10 +1099,8 @@ def github() -> RecordingGitHub:
 
 @pytest.fixture
 def github_worker(app, settings, store, clock, github) -> Worker:
-    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
-                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
     settings = dataclasses.replace(settings, public_url="https://runloom.example")
-    return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock, github=github)
+    return Worker(lambda: connect(settings.db_path), store, NoCallbacks(), settings, clock, github=github)
 
 
 def test_source_issue_gets_one_comment_that_follows_fix_and_review(cycle, conn, store, github_worker, github):
@@ -1184,9 +1176,7 @@ def test_delivery_failure_is_separate_from_task_state(cycle, conn, github_worker
 
 
 def _worker_with_clients(settings, store, clock, github_for) -> Worker:
-    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
-                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
-    return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock,
+    return Worker(lambda: connect(settings.db_path), store, NoCallbacks(), settings, clock,
                   github_for=github_for)
 
 
@@ -1470,9 +1460,7 @@ def notifier() -> FakeNotifier:
 @pytest.fixture
 def notify_worker(app, settings, store, clock, pr_github, secrets, notifier) -> Worker:
     settings = dataclasses.replace(settings, public_url="https://runloom.example")
-    diag = HttpDiagClient(settings.diag_api_url, settings.diag_api_token,
-                          transport=httpx.MockTransport(lambda request: httpx.Response(503)))
-    return Worker(lambda: connect(settings.db_path), store, diag, NoCallbacks(), settings, clock,
+    return Worker(lambda: connect(settings.db_path), store, NoCallbacks(), settings, clock,
                   github_for=lambda config: pr_github, secrets=secrets, notifier=notifier)
 
 
@@ -1530,7 +1518,7 @@ def test_failed_fix_is_notified_once_even_after_restart(cycle, conn, store, noti
                                                         clock, secrets):
     fix_task, execution_id = fail_fix(conn, store, notify_worker)
     assert status(conn, fix_task)[0] == "실패"
-    restarted = Worker(lambda: connect(settings.db_path), store, None, NoCallbacks(), settings, clock,
+    restarted = Worker(lambda: connect(settings.db_path), store, NoCallbacks(), settings, clock,
                        secrets=secrets, notifier=notifier)
     restarted.tick()
 

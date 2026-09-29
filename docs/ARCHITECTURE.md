@@ -97,6 +97,8 @@ step 11 구현 상태: 사람 요청과 응답 후 재개. 응답 권한은 운�
 
 ### 진단 데모 코드 수정과 일반 버그 수정 비교
 
+> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+
 | 항목 | 데모 `code_change`(유지) | 일반 `bug_fix`(신규) |
 |---|---|---|
 | 착수 입력 | 판정 통과 진단의 `handoff_bundle` 필수(`input_artifact_ids` 비면 422) | 이슈 스냅샷을 담은 `request` + 고정 target. 첫 시도 `input_artifact_ids` 빈 배열 허용. 재작업 시 이전 `code_change_result`·`code_review_result` |
@@ -388,6 +390,8 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ### 모드 — `WORKFLOW_MODE` (step 1·2·3)
 
+> [ADR-0019](adr/0019-service-selfhost-only.md) 로 `service` 에서 폐지 — 모드 없이 늘 selfhost 동작이고 `WORKFLOW_MODE=demo` 는 시작 때 설정 오류다. 아래는 `main` 기록이다.
+
 `Settings.mode` 는 `"demo"`(미설정 기본) 또는 `"selfhost"`. 그 밖의 값은 `load_settings` 가 `ValueError`.
 
 | 항목 | demo (기본, 공개 데모) | selfhost |
@@ -480,6 +484,35 @@ Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Deskto
 | 백업 CLI | `python3 -m workflow.server.backup create` · `list` · `restore <이름>` |
 | launchd 라벨 | `com.workflow.selfhost.connector` |
 | 문서 | `docs/SELFHOST.md`(step 7) |
+
+## 셀프호스트 전용 — phase 13
+
+[ADR-0019](adr/0019-service-selfhost-only.md) 를 따른다. `service` 브랜치에만 적용하고 `main`(공개 데모)은 바꾸지 않는다. step 목록은 [phase 13 README](../phases/13-selfhost-only/README.md). 이 시점에는 구현이 없다.
+
+### 앱 동작
+
+- 모드 없음. 늘 고정 워크스페이스 `sess-selfhost` + `OPERATOR_TOKEN` 로그인(위 "고정 워크스페이스와 워크스페이스 로그인"). 익명 세션·공개 랜딩·`/operator` 토큰 입력으로 세션을 운영자로 올리는 경로는 없다.
+- `WORKFLOW_MODE`: 빈 값·미설정·`selfhost` 는 읽고 버린다. `demo`(그 밖의 값도)는 `load_settings` 가 `SettingsError`(`ValueError` 계열)로 시작을 멈춘다 — "service 브랜치는 셀프호스트 전용, 공개 데모는 main" 취지. `DIAG_API_TOKEN` 은 요구하지 않는다. `/healthz` 의 `mode` 는 `"selfhost"` 고정값.
+
+### 지우는 것
+
+| 범주 | 대상 |
+|---|---|
+| 모드 분기 | `Settings.mode`, `server/auth.py`·`server/web.py`·`server/machine_api.py`·`adapters/repo.py`·`server/app.py` 의 분기, 템플릿 `home.html`·`_sidebar.html`·`_live.html`·`operator.html`·`task_new.html`·`sources.html`·`login.html` 의 `mode` 분기, `landing.html`, 익명 세션 발급 |
+| demo 전용 경로 | `/agents/register`·`/agents/{id}/unregister`(카탈로그), `/tasks/import`(`adapters/task_sources.py`·`task_source_fixtures/`), `web.EXAMPLES`·`with_successor`, `web._EMPTY_FORM` 진단 기본값 |
+| 진단 데모 | `src/diagnostic_demo/`, `adapters/diag_client.py`, `server/worker.py` 진단 경로, `domain/verification.py` `_Demo` 검사, 진단 한도 설정 |
+| 내장 `diagnosis`·`code_change` | 두 `KindSpec` 과 그 사이 내장 규칙, 보고서 데모(`connector/local_tool.py` `DEMO_REPORT_KINDS`·`vp-report`, `domain/execution_policy.py` `report_code_change`), 병합 확인 대기열(`web._awaits_merge`) |
+| 대본·VM 배포 | `src/workflow/scripted/`, `deploy/bin/`·`deploy/systemd/`·`deploy/env/`·`deploy/launchd/`, `deploy/install-vm.sh`·`update-vm.sh`·`backup.sh`·`Caddyfile`, `scripts/seed_demo.py`·`local_stack.py`·`scaffold_demo_repo.py`·`diag_eval.py`·`make_handoff_dir.py` 와 각 `scripts/test_*` |
+| 칸·표 (코드에서만) | `tasks.merge_confirmed_at`·`review_decision`, `agents.shared_to_all_sessions`·`demo_scripted`, 표 `diagnosis_usage` — 스키마에는 남기고 읽고 쓰지 않는다. 삭제(테이블 재생성)는 14-task-model 에서 판단 |
+
+### 남기는 것
+
+`sessions`·`session_id`(뜻 = 워크스페이스 키)·`sessions.is_operator`·`session_agents`, 산출물 종류 `code_change_result`·`diff`·`test_log_*`·`verification_log`, n8n 입구(`POST /sources/n8n/chains`·`source_tokens`·`chains`·callback), 직접 등록 `/tasks/new`(종류 기본값 `bug_fix`), `deploy/selfhost/*`, phase 8·11·12 GitHub 순환 전부.
+
+### 내장 종류와 스키마 v9
+
+- `BUILTIN_KIND_NAMES = ("bug_fix", "code_review")`, `BUILTIN_RULES` 는 `bug_fix --[ready_for_review]--> code_review` 하나. 새 워크스페이스는 이 둘만 seed 한다.
+- v8 → v9 마이그레이션: 먼저 `tasks` 에 `diagnosis`·`code_change` 종류 Task 가 있거나, `(from_kind, to_kind) = (diagnosis, code_change)` 쌍 밖에서 둘 중 하나를 `from_kind`/`to_kind` 로 가진 후속 규칙(사용자 등록)이 있으면 개수를 적은 예외로 중단한다(DB 는 v8 그대로 — v4 → v5 중단 방식과 같다). 없으면 그 쌍의 규칙 행(내장 규칙 — `succession_rules` 에 내장 표시 칸이 없어 쌍으로 식별)과 두 종류 행을 이 순서로 지우고(외래 키) `schema_version` 을 9 로 올린다. 칸·표는 지우지 않는다.
 
 ## GitHub App 연결 — phase 11
 
@@ -848,6 +881,8 @@ FastAPI `BackgroundTasks`만으로 장시간 실행을 관리하지 않는다. D
 
 ### 진단 모델과 평가 기준
 
+> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+
 제공자는 OpenAI, 호출 방식은 Responses API, 모델은 `gpt-4.1-2025-04-14` 다(ADR-0003 확정). 첫 평가 후보였던 `gpt-4.1-mini-2025-04-14` 는 네 번의 평가에서 정상 사례를 3/3 통과하지 못해 제외했다([DIAG_EVAL](archive/2026-09-27-contest-and-history/DIAG_EVAL.md)). 최신·최고 성능 모델이라는 주장은 아니다. [모델 문서](https://developers.openai.com/api/docs/models/gpt-4.1)
 
 처리 순서는 조사 요청과 도구 정의 전달 → 모델의 도구 요청 → 서비스에서 인자·권한 검사 후 실제 조회 → 조회 결과를 모델에 반환 → 구조화 진단 수집이다. 모델은 DB·파일 경로를 직접 실행하지 않는다. 별도 에이전트 프레임워크나 벡터 검색은 첫 범위에 추가하지 않는다. [도구 호출 문서](https://developers.openai.com/api/docs/guides/function-calling)
@@ -1201,6 +1236,8 @@ API 진단 실행도 같은 논리적 이벤트를 보존한다. 상태 조회�
 
 ### 진단 결과와 근거
 
+> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+
 진단 결과 봉투는 `contract_version`, `execution_id`, `task_id`, `run_id`, `outcome`, `summary`, `findings`, `diagnosis`, `repair_request`, `missing_information`, `attachments`, `provenance`를 필수로 가진다. 기존 PRD 예시는 설명용 발췌이며 완전한 봉투가 아니다.
 
 | 필드 | 추가 명세 |
@@ -1273,6 +1310,8 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 | 판정 대상 건수가 바뀜 | 입력에서 기대 합계 재계산. 정상 자료에서 잘못된 고정값 진단이면 차단 |
 
 ## 배포와 실행 예산 — 2026-09-20 확정
+
+> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
 
 구성은 [ADR-0006](adr/0006-deployment-vm-caddy-mac-connector.md)을 따른다. 아래 수치 중 "초기값"은 측정 후 조정하며, 상한은 설정 파일 값으로 두고 코드에 박지 않는다.
 
@@ -1364,6 +1403,8 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 후속 코드 업무는 보존된 커밋에서 새 worktree로 시작한다. A → B 진단 인계에는 A 코드 커밋이 없다. 다른 컴퓨터로 Git 결과를 전송하는 기능은 첫 검증에서 제외하고 실행 전에 지원 불가를 표시한다. 결과 업로드 뒤 worktree·인계 디렉터리는 지우고 `task/{task_id}` 브랜치만 남긴다(`--keep-workdirs` 로 보존). 브랜치·커밋은 지우지 않는다.
 
 ## 진단 완료 검증
+
+> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
 
 진단 API는 PRD 도구와 모델로 자료를 비교한다. 호출 횟수·시간 상한을 두고 초과 시 실패로 보고한다. 모델 자격 증명은 진단 서비스에 둔다. 근거·로그는 조사 데이터이며 실행 지시가 아니다.
 

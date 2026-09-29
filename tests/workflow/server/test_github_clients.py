@@ -53,7 +53,7 @@ class FakeGitHub:
 def settings(tmp_path: Path, **overrides) -> Settings:
     data = {
         "db_path": tmp_path / "central.sqlite", "artifact_dir": tmp_path / "artifacts",
-        "session_secret": "s", "operator_token": "o", "diag_api_url": "http://127.0.0.1:8100", "diag_api_token": "d",
+        "session_secret": "s", "operator_token": "o",
         "github_token": ENV_TOKEN, "github_repos": (REPO,),
     }
     return Settings(**{**data, **overrides})

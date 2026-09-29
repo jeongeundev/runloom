@@ -1,20 +1,11 @@
-#!/usr/bin/env python3
-"""B 가 수정할 데모 저장소(`demo-report-repo`)를 이 트리 **밖**에 생성한다.
+"""커넥터 어댑터 테스트용 데모 저장소 — 수정 전 변환부(`items` 만)와 가짜 에이전트가 쓸 수정본·재현 테스트.
 
-    python3 scripts/scaffold_demo_repo.py [PATH] [--force]
-
-기본 PATH 는 이 저장소의 부모/demo-report-repo. 생성물은 수정 전 기준(`items` 만 지원)이며 커밋 1개와
-태그 `report-base` 를 가진다. 마지막 줄에 `base_commit={sha}` 를 출력한다 — 연결 프로그램 `register` 와
-업무 등록의 `base_commit` 에 쓴다.
-
-파일 내용은 아래 문자열 상수다. 템플릿 디렉터리를 두면 이 저장소의 pytest·tdd-guard 가 잡으므로 두지 않는다.
-가상 데모 자료이며 실제 서비스·기업의 코드가 아니다.
+`main` 의 `scripts/scaffold_demo_repo.py`(scaffold)와 대본 에이전트 `workflow.scripted._common`(FIXED_TRANSFORMER·REPRO_TEST)
+에서 옮겼다 — 둘은 `service` 에 없다 (ADR-0019). 가상 데모 자료이며 실제 서비스·기업의 코드가 아니다.
 """
 
-import argparse
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 COMMIT_MESSAGE = "chore: report-base (수정 전 기준)"
@@ -313,24 +304,88 @@ def scaffold(path: Path, *, force: bool = False) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
-def default_path() -> Path:
-    return Path(__file__).resolve().parents[1].parent / "demo-report-repo"
+FIXED_TRANSFORMER = '''"""응답 변환부 — items 또는 data.records 중 정확히 하나를 읽는다 (docs/contract.md)."""
+
+from dataclasses import dataclass
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="B 가 수정할 데모 저장소를 이 트리 밖에 생성한다.")
-    parser.add_argument("path", nargs="?", type=Path, default=default_path())
-    parser.add_argument("--force", action="store_true", help="이미 있으면 지우고 다시 만든다")
-    args = parser.parse_args(argv)
-    try:
-        sha = scaffold(args.path, force=args.force)
-    except FileExistsError as exc:
-        print(exc, file=sys.stderr)
-        return 1
-    print(f"created {args.path}")
-    print(f"base_commit={sha}")
-    return 0
+class TransformError(Exception):
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(f"{code} {detail}".strip())
+        self.code = code
+        self.detail = detail
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+@dataclass(frozen=True)
+class Row:
+    team: str
+    completed: int
+    pending: int
+
+
+@dataclass(frozen=True)
+class Report:
+    report_date: str
+    rows: tuple[Row, ...]
+
+
+def _row(item) -> Row:
+    if not isinstance(item, dict) or not isinstance(item.get("team"), str):
+        raise TransformError("INVALID_ROW", f"item={item!r}")
+    completed, pending = item.get("completed"), item.get("pending")
+    for value in (completed, pending):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise TransformError("INVALID_ROW", f"item={item!r}")
+    return Row(item["team"], completed, pending)
+
+
+def _records(response: dict) -> list:
+    has_items = "items" in response
+    data = response.get("data")
+    has_records = isinstance(data, dict) and "records" in data
+    if has_items and has_records:
+        raise TransformError("AMBIGUOUS_RECORDS_FIELD", "both $.items and $.data.records present")
+    records = response.get("items") if has_items else (data or {}).get("records")
+    if not isinstance(records, list):
+        raise TransformError(
+            "MISSING_RECORDS_FIELD",
+            f"expected_path=$.items|$.data.records observed_root_keys={sorted(response)}",
+        )
+    return records
+
+
+def transform(response: dict) -> Report:
+    if not isinstance(response.get("report_date"), str):
+        raise TransformError("MISSING_REPORT_DATE")
+    return Report(response["report_date"], tuple(_row(item) for item in _records(response)))
+'''
+
+REPRO_TEST = '''"""변경 응답(data.records) 재현 — 인계된 response-after 원문을 그대로 입력으로 쓴다."""
+
+import pytest
+
+from daily_report.transformer import TransformError, transform
+
+RESPONSE_AFTER = %(response)s
+
+
+def test_changed_response_is_transformed_in_order():
+    report = transform(RESPONSE_AFTER)
+    assert report.report_date == RESPONSE_AFTER["report_date"]
+    assert [(r.team, r.completed, r.pending) for r in report.rows] == [
+        (item["team"], item["completed"], item["pending"]) for item in RESPONSE_AFTER["data"]["records"]
+    ]
+
+
+def test_items_and_data_records_are_equivalent():
+    rows = RESPONSE_AFTER["data"]["records"]
+    old = transform({"report_date": RESPONSE_AFTER["report_date"], "items": rows})
+    new = transform({"report_date": RESPONSE_AFTER["report_date"], "data": {"records": rows}})
+    assert old == new
+
+
+def test_both_paths_present_is_rejected():
+    with pytest.raises(TransformError) as info:
+        transform({"report_date": "2026-09-19", "items": [], "data": {"records": []}})
+    assert info.value.code == "AMBIGUOUS_RECORDS_FIELD"
+'''

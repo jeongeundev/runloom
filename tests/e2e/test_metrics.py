@@ -181,8 +181,6 @@ def world(tmp_path_factory):
         "WORKFLOW_ARTIFACT_DIR": str(workdir / "central" / "artifacts"),
         "SESSION_SECRET": "e2e-session-secret-" + "s" * 20,
         "OPERATOR_TOKEN": "e2e-operator-token-" + "o" * 20,
-        "DIAG_API_TOKEN": "e2e-diag-token-" + "d" * 20,
-        "DIAG_API_URL": "http://127.0.0.1:9",
         "WORKFLOW_PUBLIC_URL": f"http://127.0.0.1:{port}",
         "WORKFLOW_GITHUB_TOKEN": TOKEN,
         "WORKFLOW_GITHUB_REPOS": REPO,
@@ -231,8 +229,7 @@ def metrics(world: World, **params) -> dict:
 
 def test_01_setup_connects_fix_by_claude_and_review_by_codex(world):
     http = world.http
-    assert http.get("/tasks").status_code == 200  # 세션 쿠키
-    login = http.post("/operator/login", data={"token": world.central_env["OPERATOR_TOKEN"]})
+    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 
@@ -240,7 +237,6 @@ def test_01_setup_connects_fix_by_claude_and_review_by_codex(world):
                      (REVIEW, "code.review", "local-billing-review", "codex", False))
     for agent_id, code, registration, _, _ in registrations:
         operator_agent(world, agent_id, code, "billing", registration)
-        assert http.post("/agents/register", data={"agent_id": agent_id}).status_code == 303
     issued = http.post("/operator/connect-codes")
     connect_code = re.search(r'<code id="issued-code">([^<]+)</code>', issued.text).group(1)
     py = sys.executable

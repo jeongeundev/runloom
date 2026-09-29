@@ -16,7 +16,7 @@ from workflow.connector.config import connector_paths
 from workflow.connector.runner import Runner
 
 from .conftest import CONNECTOR_ID, TOKEN, FakeCentral, make_request
-from .test_codex import RESPONSE_AFTER, make_repo, write_fake_codex
+from .test_codex import make_repo, write_fake_codex
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ def test_register_reports_registration_and_stores_commands_locally(env, repo, ca
 
     code = main([
         "register", "--id", "local-demo-report", "--repo", str(repo), "--repository-id", "demo-report-repo",
-        "--verify", 'vp-pytest=python3 -m pytest -q', "--verify", "vp-report=python3 -m daily_report {response}",
+        "--verify", 'vp-pytest=python3 -m pytest -q', "--verify", "vp-lint=python3 -m ruff check .",
     ], env=env, transport=fake.transport())
 
     assert code == 0
@@ -123,7 +123,7 @@ def test_register_reports_registration_and_stores_commands_locally(env, repo, ca
     assert body["connector_id"] == CONNECTOR_ID
     assert body["local_registration_id"] == "local-demo-report"
     assert body["base_commit"] == _head(repo)
-    assert body["verification_profile_ids"] == ["vp-pytest", "vp-report"]
+    assert body["verification_profile_ids"] == ["vp-pytest", "vp-lint"]
     assert body["discovered"]["verification_level"] == "설정 발견"
     assert "pytest -q" not in json.dumps(body) and str(repo) not in json.dumps(body)
 
@@ -135,7 +135,7 @@ def test_register_reports_registration_and_stores_commands_locally(env, repo, ca
     assert reg["repo_path"] == str(repo.resolve())
     assert reg["verification_profiles"] == {
         "vp-pytest": ["python3", "-m", "pytest", "-q"],
-        "vp-report": ["python3", "-m", "daily_report", "{response}"],
+        "vp-lint": ["python3", "-m", "ruff", "check", "."],
     }
     assert reg["base_commit"] == _head(repo)
     assert "agent-codex-mac" in capsys.readouterr().out
@@ -441,10 +441,7 @@ def test_run_local_runs_adapter_once_and_writes_artifacts_to_out(env, tmp_path, 
     state.save_registration(conn, {
         "local_registration_id": "local-demo-report", "repo_path": str(repo), "tool": "codex",
         "repository_id": "demo-report-repo", "base_commit": _head(repo),
-        "verification_profiles": {
-            "vp-pytest": [sys.executable, "-m", "pytest", "-q"],
-            "vp-report": [sys.executable, "-m", "daily_report", "{response}"],
-        },
+        "verification_profiles": {"vp-pytest": [sys.executable, "-m", "pytest", "-q"]},
     })
     conn.close()
     request = make_request()
@@ -455,7 +452,6 @@ def test_run_local_runs_adapter_once_and_writes_artifacts_to_out(env, tmp_path, 
     request_file.write_text(request.model_dump_json())
     handoff = tmp_path / "handoff"
     handoff.mkdir()
-    (handoff / "response-after@1.json").write_text(json.dumps(RESPONSE_AFTER, ensure_ascii=False))
     out = tmp_path / "out"
 
     code = main(
@@ -466,13 +462,12 @@ def test_run_local_runs_adapter_once_and_writes_artifacts_to_out(env, tmp_path, 
     assert code == 0
     names = sorted(p.name for p in out.iterdir())
     assert names == [
-        "code_change_result.json", "codex_jsonl.jsonl", "codex_stderr.txt", "diff.diff", "report_output.txt",
+        "code_change_result.json", "codex_jsonl.jsonl", "codex_stderr.txt", "diff.diff",
         "test_log_after.txt", "test_log_before.txt", "verification_log.txt",
     ]
     result = json.loads((out / "code_change_result.json").read_text())
     assert result["outcome"] == "ready_for_review" and result["result_commit"] != _head(repo)
     assert (out / "test_log_before.txt").read_text().splitlines()[0] == "exit_code=1"
-    assert "합계    20    5" in (out / "report_output.txt").read_text()
     printed = capsys.readouterr()
     assert "ready_for_review" in printed.out and str(out) in printed.out
 

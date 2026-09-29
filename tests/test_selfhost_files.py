@@ -126,6 +126,16 @@ def test_compose_holds_no_secret_values():
         assert key not in text, key
 
 
+def test_repo_holds_no_secret_looking_values_under_deploy():
+    """저장소에 실제 값이 없어야 한다. 접두사 검사는 connector.masking 과 같은 규칙 (tests/test_deploy_files.py 에서 옮김).
+    사용자의 실제 `deploy/selfhost/.env` 는 저장소 밖(.gitignore) 값이라 읽지 않는다."""
+    for path in (ROOT / "deploy").rglob("*"):
+        if path.is_file() and path != SELFHOST / ".env":
+            text = path.read_text(encoding="utf-8", errors="replace")
+            assert not re.search(r"\bwfc_[A-Za-z0-9_-]{8,}", text), path
+            assert not re.search(r"\bsk-[A-Za-z0-9_-]{8,}", text), path
+
+
 # --- .env.example ------------------------------------------------------------------------------
 
 
@@ -303,7 +313,8 @@ def test_install_creates_env_0600_with_generated_secrets(tmp_path):
     # 나머지 키는 .env.example 그대로
     example = _env_example()
     assert set(values) == set(example)
-    assert values["WORKFLOW_PORT"] == "8000" and values["DIAG_API_TOKEN"] == ""
+    assert values["WORKFLOW_PORT"] == "8000"
+    assert not {"DIAG_API_TOKEN", "DIAG_API_URL"} & set(values)  # 진단 데모는 `main` 전용 (ADR-0019)
     # 출력에 비밀값이 없고 토큰 파일 위치·접속 주소·다음 할 일이 있다
     out = res.stdout + res.stderr
     assert values["OPERATOR_TOKEN"] not in out and values["SESSION_SECRET"] not in out

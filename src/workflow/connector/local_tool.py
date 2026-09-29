@@ -3,14 +3,13 @@
 `LocalToolAdapter.run` 이 하는 일 (ARCHITECTURE "코드 수정 결과", "Codex와 worktree"):
 - 로컬 등록·검증 프로필·기준 커밋 확인 → worktree 준비 → `launch` → 원시 stdout/stderr 보존(마스킹)
 - 변경 유무 확인 → 결과 커밋 → `test_log_before`(결과 커밋의 새 테스트만 기준 커밋의 깨끗한 체크아웃에 넣고 실행)
-  → `test_log_after`(worktree) → `verification_log`·`report_output`(결과 커밋의 깨끗한 체크아웃) → diff → outcome
+  → `test_log_after`(worktree) → `verification_log`(결과 커밋의 깨끗한 체크아웃) → diff → outcome
 - 도구의 말을 믿지 않는다: 변경 없음·재현 테스트 없음이면 `needs_information`, 검증은 별도 체크아웃에서 다시 실행한다.
 
-보고서 데모(`DEMO_REPORT_KINDS` = `code_change`)만 진단 인계 프롬프트(`build_prompt`)와 `vp-report` 보고서(`report_output`)를
-쓴다. 일반 버그 수정(`bug_fix`, ADR-0014)은 같은 흐름에서 보고서 없이 등록된 검증 프로필 하나로 판정 재료를 남기고, 기준
-커밋을 더 엄격히 고정한다: 도구를 띄우기 전 worktree HEAD 가 `base_commit` 이 아니면 `base_commit_mismatch`, 이전 시도의
-미커밋 변경이 남아 있으면 `worktree_dirty`, 도구가 직접 커밋해 HEAD 가 움직였으면 `commit_mismatch` 로 실패한다. 재작업
-시도는 `base_commit` = 이전 `result_commit` 이라 남아 있는 `task/<id>` 브랜치 위에서 그대로 이어진다.
+버그 수정(`bug_fix`, ADR-0014)은 등록된 검증 프로필 하나로 판정 재료를 남기고 기준 커밋을 고정한다: 도구를 띄우기 전
+worktree HEAD 가 `base_commit` 이 아니면 `base_commit_mismatch`, 이전 시도의 미커밋 변경이 남아 있으면 `worktree_dirty`,
+도구가 직접 커밋해 HEAD 가 움직였으면 `commit_mismatch` 로 실패한다. 재작업 시도는 `base_commit` = 이전 `result_commit`
+이라 남아 있는 `task/<id>` 브랜치 위에서 그대로 이어진다.
 
 하위 클래스는 `tool_name`·`raw_kinds` 와 `launch`(프로세스를 띄우고 `ToolRun` 을 돌려준다)·`parse_last_message`
 (도구의 마지막 구조화 메시지를 `ToolResult` 로), 그리고 읽기 전용 실행의 `launch_readonly`·`parse_generic_message`·
@@ -53,7 +52,7 @@ from workflow.connector import git_ops, state
 from workflow.connector.adapter import AdapterOutput, Progress, make_meta
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import codex_env, mask_secrets, registered_env
-from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt, build_prompt, build_review_prompt
+from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt, build_review_prompt
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
     CodeChangeResult,
@@ -69,10 +68,6 @@ from workflow.contracts.v1 import (
 
 log = logging.getLogger(__name__)
 
-REPORT_PROFILE_ID = "vp-report"
-DEMO_REPORT_KINDS = frozenset({"code_change"})  # 진단 인계·보고서 데모 경로. 나머지 코드 수정 종류는 보고서가 없다
-RESPONSE_PLACEHOLDER = "{response}"
-RESPONSE_FILE = "response-after@1.json"
 NO_REPRO_TEST_LOG = "exit_code=0\n(재현 테스트 없음)\n"
 KILL_GRACE_SECONDS = 5
 
@@ -246,26 +241,23 @@ class LocalToolAdapter:
                 f"검증 프로필 {target.verification_profile_id} 이 등록 {target.local_registration_id} 에 없다",
             )
         repo = Path(registration["repo_path"])
-        demo = request.kind in DEMO_REPORT_KINDS
         try:
             worktree = git_ops.ensure_worktree(repo, request.task_id, target.base_commit)
         except GitError as exc:
             return _failed("base_commit_missing", str(exc))
         prepared = Prepared(registration["links"], registration.get("copies", []))
         prepared.apply(repo, worktree)  # 이어 쓰는 worktree 는 이미 있는 링크·복사본을 건너뛴다
-        if not demo:
-            head = git_ops.head_sha(worktree)
-            if head != target.base_commit:
-                return _failed(
-                    "base_commit_mismatch",
-                    f"worktree {worktree.name} 의 HEAD {head[:12]} 가 요청 base_commit {target.base_commit[:12]} 이 아니다",
-                )
-            if git_ops.is_dirty(worktree):
-                return _failed("worktree_dirty", f"worktree {worktree.name} 에 이전 시도의 미커밋 변경이 남아 있다")
+        head = git_ops.head_sha(worktree)
+        if head != target.base_commit:
+            return _failed(
+                "base_commit_mismatch",
+                f"worktree {worktree.name} 의 HEAD {head[:12]} 가 요청 base_commit {target.base_commit[:12]} 이 아니다",
+            )
+        if git_ops.is_dirty(worktree):
+            return _failed("worktree_dirty", f"worktree {worktree.name} 에 이전 시도의 미커밋 변경이 남아 있다")
 
-        build = build_prompt if demo else build_bug_fix_prompt
         try:
-            run = self.launch(worktree, build(request, handoff_dir, worktree), progress)
+            run = self.launch(worktree, build_bug_fix_prompt(request, handoff_dir, worktree), progress)
         except OSError as exc:  # 실행 파일 없음 등 — 프로세스가 시작되지 않았다
             return _failed(f"{self.tool_name}_unavailable", f"{self.tool_name} 을 시작하지 못함: {exc}")
         runtime_ref = f"pid:{run.pid};start:{run.started_at}"
@@ -286,7 +278,7 @@ class LocalToolAdapter:
             )
 
         base_commit = target.base_commit
-        if not demo and (head := git_ops.head_sha(worktree)) != base_commit:
+        if (head := git_ops.head_sha(worktree)) != base_commit:
             return AdapterOutput(
                 result=None, artifacts=raw_artifacts, runtime_ref=runtime_ref, usage=usage,
                 failed=("commit_mismatch",
@@ -311,12 +303,8 @@ class LocalToolAdapter:
         after_code, after_out, after_err = self._run_argv(profile, worktree)
         progress(f"수정 후 테스트 exit_code={after_code}")
 
-        def in_result_checkout(dest: Path) -> tuple[tuple[int, str, str], str | None]:
-            report = self._report(dest, profiles.get(REPORT_PROFILE_ID), handoff_dir) if demo else None
-            return self._run_argv(profile, dest), report
-
-        (verify_code, verify_out, verify_err), report = _in_clean_checkout(
-            repo, result_commit, in_result_checkout, prepared,
+        verify_code, verify_out, verify_err = _in_clean_checkout(
+            repo, result_commit, lambda dest: self._run_argv(profile, dest), prepared,
         )
         progress(f"검증 프로필 {target.verification_profile_id} exit_code={verify_code} @ {result_commit[:12]}")
         diff = git_ops.diff_text(repo, base_commit, result_commit)
@@ -337,7 +325,6 @@ class LocalToolAdapter:
                       "text/plain"),
             make_meta("verification_log", "verification.txt",
                       _log_text(verify_code, verify_out, verify_err).encode(), "text/plain"),
-            *([] if report is None else [make_meta("report_output", "report.txt", report.encode(), "text/plain")]),
             *raw_artifacts,
         ]
         return AdapterOutput(result=result, artifacts=artifacts, runtime_ref=runtime_ref, usage=usage)
@@ -512,16 +499,6 @@ class LocalToolAdapter:
             return _log_text(*self._run_argv(profile, dest))
 
         return _in_clean_checkout(repo, base_commit, inside, prepared)
-
-    def _report(self, checkout: Path, report_profile: list[str] | None, handoff_dir: Path) -> str:
-        if report_profile is None:
-            return f"exit_code=2\n(검증 프로필 {REPORT_PROFILE_ID} 이 등록되지 않아 보고서를 생성하지 못함)\n"
-        response = handoff_dir / RESPONSE_FILE
-        if not response.is_file():
-            return f"exit_code=2\n(인계 자료에 {RESPONSE_FILE} 이 없어 보고서를 생성하지 못함)\n"
-        argv = [str(response) if arg == RESPONSE_PLACEHOLDER else arg for arg in report_profile]
-        code, stdout, stderr = self._run_argv(argv, checkout)
-        return stdout if code == 0 else _log_text(code, stdout, stderr)
 
     @staticmethod
     def _result(

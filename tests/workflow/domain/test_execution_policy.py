@@ -16,11 +16,7 @@ def test_every_builtin_kind_has_a_policy_matching_its_kind_spec():
         assert policy.result_kind == spec.output_kind
 
 
-def test_bug_fix_does_not_require_the_demo_report_but_code_change_does():
-    assert policy_for("code_change").required_artifacts == (
-        "diff", "test_log_before", "test_log_after", "report_output", "verification_log",
-    )
-    assert policy_for("code_change").verifier == "report_code_change"
+def test_builtin_policies_required_artifacts_and_verifiers():
     assert policy_for("bug_fix").required_artifacts == ("diff", "test_log_before", "test_log_after", "verification_log")
     assert policy_for("bug_fix").verifier == "code_change"
     assert policy_for("code_review").required_artifacts == ()
@@ -36,6 +32,9 @@ def test_only_the_github_cycle_kinds_are_driven_by_readiness_and_followup_decisi
 
 def test_user_defined_kinds_get_the_generic_policy():
     assert policy_for("review") is GENERIC_POLICY
+    # 진단 데모의 옛 내장 이름은 main 전용 — service 에서는 사용자 정의 이름일 뿐이다 (ADR-0019)
+    assert policy_for("diagnosis") is GENERIC_POLICY
+    assert policy_for("code_change") is GENERIC_POLICY
     assert (GENERIC_POLICY.target, GENERIC_POLICY.verifier, GENERIC_POLICY.cycle) == ("local", "generic", False)
 
 

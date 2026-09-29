@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from workflow.adapters.db import SCHEMA_VERSION, connect, init_schema
-from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
+from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES, KindSpec, SuccessorRule
 
 from .conftest import NOW
 
@@ -45,6 +45,35 @@ TABLES = {
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 PHASE12_TABLES = {"task_pull_requests", "notifications"}
+
+# phase 13 이전(v4~v8) 서버가 모든 세션에 seed 하던 진단 데모 내장 종류·규칙 (ADR-0019). 지금 계약은 이 이름을
+# 내장으로 받지 않으므로 검증 없이 만든다 — 옛 DB 행 모양 그대로다.
+LEGACY_KIND_NAMES = ("diagnosis", "code_change")
+LEGACY_KINDS = (
+    KindSpec.model_construct(
+        kind="diagnosis", label="진단", capability_code="operations.diagnose", scope_key="workflow_id",
+        input_kinds=[], output_kind="diagnosis_result",
+        outcomes=["ready_for_handoff", "needs_information"], instructions="", builtin=True,
+    ),
+    KindSpec.model_construct(
+        kind="code_change", label="코드 수정", capability_code="code.modify", scope_key="repository_id",
+        input_kinds=["diagnosis_result", "evidence"], output_kind="code_change_result",
+        outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
+    ),
+)
+LEGACY_RULE = SuccessorRule(
+    from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
+    handoff_kinds=["diagnosis_result", "evidence"],
+)
+V8_BUILTIN_KINDS = (*LEGACY_KINDS, *BUILTIN_KINDS)
+
+
+def _without_legacy(dump: dict[str, list[tuple]]) -> dict[str, list[tuple]]:
+    """v9 가 지우는 행(진단·코드 수정 종류와 그 둘의 규칙)을 뺀 덤프 — 나머지 행은 그대로여야 한다."""
+    return {
+        table: [row for row in rows if not (table in ("kinds", "succession_rules") and set(row) & set(LEGACY_KIND_NAMES))]
+        for table, rows in dump.items()
+    }
 
 
 def _seed_kind(conn, session_id: str, kind: str = "diagnosis") -> None:
@@ -208,8 +237,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_8():
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_9():
+    assert SCHEMA_VERSION == 9
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -406,13 +435,13 @@ def _v4_db(db_path, *, extra_kind: str | None = None):
     for sid in ("s1", "s2"):
         c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, ?)",
                   (sid, NOW, int(sid == "s1")))
-        for spec in BUILTIN_KINDS[:2]:
+        for spec in LEGACY_KINDS:
             c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
                       (sid, spec.kind, spec.model_dump_json(), NOW))
         c.execute(
             "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
             " VALUES (?, ?, 'diagnosis', 'code_change', ?, ?)",
-            (f"rule-{sid}", sid, BUILTIN_RULES[0].model_dump_json(), NOW),
+            (f"rule-{sid}", sid, LEGACY_RULE.model_dump_json(), NOW),
         )
     c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', 'review', ?, ?)",
               (json.dumps({"kind": "review", "builtin": False}), NOW))
@@ -501,8 +530,9 @@ def test_migrates_v4_to_v5_preserving_data(db_path):
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
     assert TABLES <= _table_names(c)
     assert _dump(c, kept, kept_columns) == before
-    for table, rows in kinds_before.items():  # 기존 종류·규칙 행은 그대로, 새 내장만 더해진다
+    for table, rows in _without_legacy(kinds_before).items():  # 기존 종류·규칙 행은 그대로(v9 가 진단 둘만 지움), 새 내장만 더해진다
         assert set(rows) <= set(_dump(c, {table})[table])
+    assert not set(LEGACY_KIND_NAMES) & {r[0] for r in c.execute("SELECT kind FROM kinds")}
     row = c.execute("SELECT connector_id, token_sha256, supported_kinds_json FROM connectors").fetchone()
     assert tuple(row) == ("conn-1", "h", None)  # null = 구버전 연결 프로그램
     for sid in ("s1", "s2"):
@@ -516,7 +546,7 @@ def test_migrates_v4_to_v5_preserving_data(db_path):
             "SELECT rule_id, rule_json FROM succession_rules WHERE session_id = ? AND from_kind = 'bug_fix'",
             (sid,),
         ).fetchall()
-        assert [r["rule_json"] for r in rules] == [BUILTIN_RULES[1].model_dump_json()]
+        assert [r["rule_json"] for r in rules] == [BUILTIN_RULES[0].model_dump_json()]
         assert rules[0]["rule_id"].startswith("rule-")
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -706,7 +736,7 @@ def _v5_db(db_path):
     for sid in ("s1", "s2"):
         c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, ?)",
                   (sid, NOW, int(sid == "s1")))
-        for spec in BUILTIN_KINDS:
+        for spec in V8_BUILTIN_KINDS:
             c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
                       (sid, spec.kind, spec.model_dump_json(), NOW))
     c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', 'review', ?, ?)",
@@ -714,7 +744,7 @@ def _v5_db(db_path):
     c.execute(
         "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
         " VALUES ('rule-1', 's1', 'bug_fix', 'code_review', ?, ?)",
-        (BUILTIN_RULES[1].model_dump_json(), NOW),
+        (BUILTIN_RULES[0].model_dump_json(), NOW),
     )
     c.execute(
         "INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id, capabilities_json,"
@@ -842,7 +872,7 @@ def test_migrates_v5_to_v6_preserving_data(db_path):
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
     assert TABLES <= _table_names(c)
-    assert _dump(c, V5_TABLES, columns) == before  # 기존 행·열 값은 하나도 바뀌지 않는다
+    assert _dump(c, V5_TABLES, columns) == _without_legacy(before)  # 기존 행·열 값은 하나도 바뀌지 않는다
     assert [tuple(r) for r in c.execute("SELECT session_id, config_revision FROM sessions ORDER BY 1")] == [
         ("s1", 1), ("s2", 1),
     ]
@@ -965,7 +995,7 @@ def test_migrates_v6_to_v7_preserving_data(db_path):
     columns = _column_lists(c, v6_tables)
     for table, names in columns.items():
         columns[table] = [n for n in names if n not in SOURCE_ISSUE_DELEGATION_COLUMNS and n != "branch_pushed"]
-    assert _dump(c, v6_tables, columns) == before  # 기존 행·열 값은 그대로
+    assert _dump(c, v6_tables, columns) == _without_legacy(before)  # 기존 행·열 값은 그대로
     row = c.execute("SELECT delegated_at, delegated_by FROM source_issues").fetchone()
     assert tuple(row) == (None, None)  # 옛 소스는 filtered 라 지시 칸을 보지 않는다 — 추정해 채우지 않는다
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -1014,9 +1044,9 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
 
     c = connect(db_path)
     init_schema(c)
-    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(8,)]
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
     assert TABLES <= _table_names(c)
-    assert _dump(c, v7_tables, columns) == before  # 기존 행·열 값은 그대로
+    assert _dump(c, v7_tables, columns) == _without_legacy(before)  # 기존 행·열 값은 그대로
     pushed = dict(c.execute("SELECT execution_id, branch_pushed FROM executions").fetchall())
     assert pushed == {"e1": None, "e2": 1}  # 이벤트에 남은 보고만 옮긴다 — 없으면 모름
     for table in PHASE12_TABLES:
@@ -1028,12 +1058,12 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c.close()
 
 
-def test_migrates_v4_all_the_way_to_v8(db_path):
+def test_migrates_v4_all_the_way_to_v9(db_path):
     c = _v4_db(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 9
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
     c.close()
@@ -1084,3 +1114,94 @@ def test_fresh_db_notifications_checks(conn):
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(insert, params)
     assert "url" not in " ".join(_columns(conn, "notifications"))  # URL 은 비밀 파일에만
+
+
+# --- phase 13: v8 → v9 진단 데모 내장 종류 삭제 (ADR-0019 결정 4) ------------------------------------------
+
+
+def _v8_db(db_path):
+    """phase 12 서버가 남긴 모양의 v8 DB — 두 세션 모두 옛 내장 4종류와 옛 내장 규칙 둘을 가진다."""
+    from workflow.adapters import db
+
+    c = _v7_db(db_path)
+    c.execute("BEGIN IMMEDIATE")
+    db._migrate_7_to_8(c)
+    c.execute("COMMIT")
+    for sid in ("s1", "s2"):
+        c.execute(
+            "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+            " VALUES (?, ?, 'diagnosis', 'code_change', ?, ?)",
+            (f"rule-legacy-{sid}", sid, LEGACY_RULE.model_dump_json(), NOW),
+        )
+    return c
+
+
+def test_v8_fixture_has_legacy_kinds(db_path):
+    c = _v8_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    kinds = {tuple(r) for r in c.execute("SELECT session_id, kind FROM kinds WHERE kind IN ('diagnosis', 'code_change')")}
+    assert kinds == {(s, k) for s in ("s1", "s2") for k in LEGACY_KIND_NAMES}
+    c.close()
+
+
+def test_fresh_db_seeds_two_builtin_kinds_and_one_rule(conn):
+    from workflow.adapters import repo
+
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    repo.create_session(conn, "s1", NOW)
+    kinds = [r["kind"] for r in conn.execute("SELECT kind FROM kinds WHERE session_id = 's1' ORDER BY kind")]
+    assert kinds == ["bug_fix", "code_review"]
+    rules = [tuple(r) for r in conn.execute("SELECT from_kind, to_kind FROM succession_rules WHERE session_id = 's1'")]
+    assert rules == [("bug_fix", "code_review")]
+
+
+def test_migrates_v8_to_v9_dropping_legacy_kinds_and_rules(db_path):
+    c = _v8_db(db_path)
+    before = _dump(c, TABLES)
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(9,)]
+    assert _dump(c, TABLES) == _without_legacy(before)  # 두 종류·그 규칙만 사라지고 나머지는 그대로
+    for sid in ("s1", "s2"):
+        kinds = {r["kind"] for r in c.execute("SELECT kind FROM kinds WHERE session_id = ?", (sid,))}
+        assert not set(LEGACY_KIND_NAMES) & kinds and {"bug_fix", "code_review"} <= kinds
+    rules = {tuple(r) for r in c.execute("SELECT session_id, from_kind, to_kind FROM succession_rules")}
+    assert rules == {("s1", "bug_fix", "code_review")}
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    after = _dump(c, TABLES)
+    init_schema(c)
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def _assert_v9_aborted(db_path, c, match: str) -> None:
+    before = _dump(c, TABLES)
+    c.close()
+    c = connect(db_path)
+    with pytest.raises(RuntimeError, match=match):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert _dump(c, TABLES) == before
+    assert not c.in_transaction
+    c.close()
+
+
+def test_v9_migration_aborts_when_a_legacy_task_exists(db_path):
+    c = _v8_db(db_path)
+    _insert_task(c, "t-diag", "s2", "diagnosis")
+    c.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+        " status, created_at) VALUES ('e-diag', 't-diag', 1, 'kd', 'a1', 'diagnosis', '{}', 'failed', ?)", (NOW,)
+    )
+    _assert_v9_aborted(db_path, c, r"s2:diagnosis")
+
+
+def test_v9_migration_aborts_when_a_user_rule_uses_a_legacy_kind(db_path):
+    c = _v8_db(db_path)
+    c.execute(
+        "INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+        " VALUES ('rule-user', 's1', 'code_change', 'review', '{}', ?)", (NOW,)
+    )
+    _assert_v9_aborted(db_path, c, r"s1:code_change")

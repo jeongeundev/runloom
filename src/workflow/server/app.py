@@ -41,7 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 요청마다 새 연결 (auth.get_conn). sqlite3 연결을 스레드 간 공유하지 않는다.
     app.state.conn_factory = lambda: connect(settings.db_path)
     app.state.store = ArtifactStore(settings.artifact_dir)
-    app.state.login_throttle = LoginThrottle()  # selfhost 로그인 연속 실패 제한 — 프로세스 메모리
+    app.state.login_throttle = LoginThrottle()  # 로그인 연속 실패 제한 — 프로세스 메모리
     app.state.github_client = None  # 기준선 가져오기 — None 이면 요청 때 Settings 로 만든다. 테스트는 가짜로 바꾼다
     app.state.secrets = SecretStore(settings.secret_dir)  # GitHub App·PAT 비밀 파일 (ADR-0017)
     app.state.github_transport = None  # GitHub 연결 경로의 httpx transport — 테스트는 가짜 GitHub 로 바꾼다
@@ -59,7 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _healthz(settings: Settings) -> JSONResponse:
-    """DB 를 읽기 전용으로 열어 schema_version 을 확인한다. 없는 DB 를 만들지 않고, 오류 내용·경로는 싣지 않는다."""
+    """DB 를 읽기 전용으로 열어 schema_version 을 확인한다. 없는 DB 를 만들지 않고, 오류 내용·경로는 싣지 않는다.
+    `mode` 는 호환을 위한 고정값 `selfhost` (ADR-0019)."""
     try:
         conn = sqlite3.connect(f"{settings.db_path.resolve().as_uri()}?mode=ro", uri=True)
         try:
@@ -69,8 +70,8 @@ def _healthz(settings: Settings) -> JSONResponse:
     except (sqlite3.Error, TypeError):
         version = None
     if version != SCHEMA_VERSION:
-        return JSONResponse({"status": "error", "mode": settings.mode}, status_code=503)
-    return JSONResponse({"status": "ok", "mode": settings.mode, "schema_version": version})
+        return JSONResponse({"status": "error", "mode": "selfhost"}, status_code=503)
+    return JSONResponse({"status": "ok", "mode": "selfhost", "schema_version": version})
 
 
 app = None if os.environ.get("WORKFLOW_SKIP_APP") == "1" else create_app()

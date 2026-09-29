@@ -101,7 +101,7 @@ deploy/selfhost/install-runner.sh
 
 connect 는 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다. register 는 폴더마다 한 번(`--id`·`--repository-id` 를 빼면 폴더 이름·GitHub owner/name). 인자 없는 `install-runner.sh` 는 plist 를 쓰고 연결 토큰 파일이 있을 때만 적재한다 — 없으면 connect 뒤 다시 실행한다.
 
-공개 데모용 러너(`com.workflow.connector`)를 같은 Mac 에서 같이 쓰면 연결 토큰 파일 위치가 겹친다. 그때는 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
+`main` 데모 러너(`com.workflow.connector`)를 같은 Mac 에 둔 경우 연결 토큰 파일 위치가 겹치므로 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
 
 ## GitHub 연결
 
@@ -197,6 +197,7 @@ deploy/selfhost/install-runner.sh
 ```
 
 - `install.sh` 재실행 = 이미지 재빌드·재기동. `.env` 와 볼륨은 그대로다. 스키마가 바뀌었으면 서버·워커가 시작할 때 `init_schema` 가 올린다. 올리지 못하면 `/healthz` 가 503 이 되고 설치 스크립트가 실패로 끝난다 — 그때는 로그를 보고 위 백업으로 복원한다.
+- v9(phase 13) — 진단 데모 내장 종류 `diagnosis`·`code_change` 와 그 규칙을 지운다. 그 종류의 업무·실행·사용자 규칙이 있으면 올리지 않고 멈춘다. 백업(`backup create`)을 먼저 한다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
 ## 제거

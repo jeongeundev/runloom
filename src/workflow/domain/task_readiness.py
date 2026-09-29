@@ -14,9 +14,6 @@ from typing import Literal
 from workflow.contracts.v1 import BUILTIN_KIND_NAMES, Capability
 from workflow.domain.selection import Candidate, select_agent
 
-# `supported_kinds` 를 보내지 않는 구버전 연결 프로그램이 실행할 수 있는 내장 종류(ADR-0014 4항).
-LEGACY_BUILTIN_KINDS = ("diagnosis", "code_change")
-
 Actor = Literal["operator", "assignee", "system"]
 
 
@@ -102,8 +99,9 @@ def _online(executor: ExecutorFacts, now: str, offline_after_seconds: int) -> bo
 def _supports(executor: ExecutorFacts, kind: str) -> bool:
     if kind not in BUILTIN_KIND_NAMES or executor.connection_type == "api":
         return True
-    declared = executor.supported_kinds if executor.supported_kinds is not None else LEGACY_BUILTIN_KINDS
-    return kind in declared
+    # `supported_kinds` 를 보내지 않는 구버전 연결 프로그램은 내장 종류를 실행하지 못한다(ADR-0014 4항 — 옛 내장
+    # `code_change` 는 ADR-0019 로 없어졌다)
+    return executor.supported_kinds is not None and kind in executor.supported_kinds
 
 
 def _resolve_agent(facts: TaskFacts, blockers: list[Blocker]) -> str | None:

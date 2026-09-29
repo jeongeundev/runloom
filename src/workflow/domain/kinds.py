@@ -18,11 +18,6 @@ def get_kind(kinds: Sequence[KindSpec], kind: str) -> KindSpec | None:
     return next((spec for spec in kinds if spec.kind == kind), None)
 
 
-def can_auto_complete(spec: KindSpec) -> bool:
-    """자동 완료 검증기가 있는 종류만 — 내장 진단의 `response_path_changed` 판정뿐이다."""
-    return spec.builtin and spec.output_kind == "diagnosis_result"
-
-
 def validate_capability(kinds: Sequence[KindSpec], capability: Capability) -> str | None:
     """None 이면 OK. 코드가 어느 종류의 `capability_code` 이고 scope 키가 그 종류의 `scope_key` 인지 본다."""
     spec = kind_for_capability(kinds, capability.code)

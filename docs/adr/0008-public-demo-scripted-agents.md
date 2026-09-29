@@ -14,3 +14,5 @@
 - [ADR-0000](0000-principles.md) 의 "고정 답변 재생으로 진단·수정을 대체하지 않는다" 와 긴장이 있다. 이 ADR 은 공개 데모에 한해 그 원칙을 유예하되, 화면에 대본임을 표시하고 검증·worktree·pytest 는 실제로 돌리는 조건으로 한다. 셀프호스트 실사용에는 적용하지 않는다.
 
 **ADR-0006 과의 관계**: ADR-0006 의 "운영자 Mac 연결 프로그램 + launchd" 구성은 셀프호스트 실사용용으로 그대로 유지한다(`deploy/launchd/`, `connector/codex.py`·`claude.py`). 공개 데모에서는 쓰지 않는다. 실제 모델·실제 Codex 로 되돌리려면 `diag.env` 의 `DIAG_MODEL=openai`·`OPENAI_API_KEY`·단가, `central.env` 의 한도(10/36), Mac 연결(ADR-0006) 순이며 절차는 [DEPLOY](../DEPLOY.md) 10절이다.
+
+**`service` 브랜치**: `service` 브랜치에서는 [ADR-0019](0019-service-selfhost-only.md) 가 대체한다(대본 에이전트·VM 배포 파일 삭제). 이 ADR 은 `main` 공개 데모의 기록이다.

@@ -145,7 +145,8 @@ class LocalTarget(_Contract):
 
 # --- 업무 종류와 후속 규칙 (CONTRACT 11절) ---------------------------------
 
-BUILTIN_KIND_NAMES: tuple[str, ...] = ("diagnosis", "code_change", "bug_fix", "code_review")
+# 셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다
+BUILTIN_KIND_NAMES: tuple[str, ...] = ("bug_fix", "code_review")
 
 
 class KindSpec(_Contract):
@@ -177,16 +178,6 @@ class KindSpec(_Contract):
 
 
 BUILTIN_KINDS: tuple[KindSpec, ...] = (
-    KindSpec(
-        kind="diagnosis", label="진단", capability_code="operations.diagnose", scope_key="workflow_id",
-        input_kinds=[], output_kind="diagnosis_result",
-        outcomes=["ready_for_handoff", "needs_information"], instructions="", builtin=True,
-    ),
-    KindSpec(
-        kind="code_change", label="코드 수정", capability_code="code.modify", scope_key="repository_id",
-        input_kinds=["diagnosis_result", "evidence"], output_kind="code_change_result",
-        outcomes=["ready_for_review", "needs_information"], instructions="", builtin=True,
-    ),
     KindSpec(
         kind="bug_fix", label="버그 수정", capability_code="code.fix", scope_key="repository_id",
         input_kinds=[], output_kind="code_change_result",
@@ -224,10 +215,6 @@ class SuccessorRule(_Contract):
 
 BUILTIN_RULES: tuple[SuccessorRule, ...] = (
     SuccessorRule(
-        from_kind="diagnosis", on_outcomes=["ready_for_handoff"], to_kind="code_change",
-        handoff_kinds=["diagnosis_result", "evidence"],
-    ),
-    SuccessorRule(
         from_kind="bug_fix", on_outcomes=["ready_for_review"], to_kind="code_review",
         handoff_kinds=["code_change_result", "diff", "test_log_after", "verification_log"],
     ),
@@ -252,10 +239,12 @@ class ExecutionRequest(_Contract):
             raise ValueError("input_artifact_ids 에 중복이 있습니다")
         if self.kind_spec is not None and self.kind_spec.kind != self.kind:
             raise ValueError("kind_spec.kind 는 kind 와 같아야 합니다")
-        if self.kind == "diagnosis":
+        # `diagnosis`·`code_change` 는 `main` 의 진단 데모 요청(kind_spec 없음) 모양으로만 남는다 (ADR-0019).
+        # kind_spec 이 있으면 그 이름의 사용자 정의 종류다 — 아래 else 로 간다
+        if self.kind == "diagnosis" and self.kind_spec is None:
             if not isinstance(self.target, DiagnosisTarget):
                 raise ValueError("kind diagnosis 의 target 은 run_id 만 가집니다")
-        elif self.kind == "code_change":
+        elif self.kind == "code_change" and self.kind_spec is None:
             if not isinstance(self.target, CodeChangeTarget):
                 raise ValueError("kind code_change 의 target 은 local_registration_id 를 가집니다")
             if not self.input_artifact_ids:
@@ -279,8 +268,8 @@ class ExecutionRequest(_Contract):
 
 
 class ClaimRequest(_Contract):
-    """`supported_kinds` 가 null(생략)이면 구버전 연결 프로그램 — 서버는 내장 중 `code_change` 와 사용자 정의 종류만
-    배정한다 (ADR-0014 결정 4). `registration_heads` 는 `local_registration_id` → fetch 뒤 `origin` 기본 브랜치 커밋 —
+    """`supported_kinds` 가 null(생략)이면 구버전 연결 프로그램 — 서버는 사용자 정의 종류만 배정한다
+    (ADR-0014 결정 4, 옛 내장 `code_change` 는 ADR-0019 로 없어졌다). `registration_heads` 는 `local_registration_id` → fetch 뒤 `origin` 기본 브랜치 커밋 —
     서버가 이 연결 프로그램 Agent 의 `base_commit` 을 갱신한다. null(생략)이면 보고 없음 (ADR-0018 결정 2)."""
 
     contract_version: ContractVersion

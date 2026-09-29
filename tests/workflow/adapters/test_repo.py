@@ -168,12 +168,37 @@ def _create_execution(conn, execution_id="exec-1", task_id=TASK_A, *, attempt_no
     )
 
 
+# 진단 데모 제거(ADR-0019) 뒤 diagnosis·code_change 는 내장이 아니다. 저장소 계층은 종류 이름을 가리지 않으므로
+# 기존 테스트 데이터(TASK_A = diagnosis, 후속 = code_change)는 사용자 정의 종류로 등록해 그대로 쓴다.
+DIAGNOSIS_KIND = KindSpec(
+    kind="diagnosis", label="운영 진단", capability_code="operations.diagnose", scope_key="workflow_id",
+    input_kinds=[], output_kind="generic_result", outcomes=["ready_for_handoff", "needs_information"],
+    instructions="", builtin=False,
+)
+CODE_CHANGE_KIND = KindSpec(
+    kind="code_change", label="코드 수정", capability_code="code.modify", scope_key="repository_id",
+    input_kinds=["diagnosis_result", "evidence"], output_kind="generic_result",
+    outcomes=["ready_for_review", "needs_information"], instructions="", builtin=False,
+)
+# `seeded` 의 종류 등록 2건이 세션 설정 번호를 1 → 3 으로 올린다 (insert_kind 마다 +1)
+SEEDED_REVISION = 3
+
+
 @pytest.fixture
-def seeded(conn):
+def sessions(conn):
+    """내장 종류·규칙만 seed 된 두 세션."""
     repo.create_session(conn, SESSION, NOW)
     repo.create_session(conn, OTHER_SESSION, NOW)
-    repo.insert_task(conn, _task(TASK_A), NOW)
     return conn
+
+
+@pytest.fixture
+def seeded(sessions):
+    for session_id in (SESSION, OTHER_SESSION):
+        repo.insert_kind(sessions, session_id, DIAGNOSIS_KIND, NOW)
+        repo.insert_kind(sessions, session_id, CODE_CHANGE_KIND, NOW)
+    repo.insert_task(sessions, _task(TASK_A), NOW)
+    return sessions
 
 
 @pytest.fixture
@@ -361,13 +386,6 @@ def test_register_local_agent_fills_preregistered_agent_without_creating(conn):
     assert json.loads(row["capabilities_json"])[0]["code"] == "code.modify"
 
 
-def test_register_local_agent_without_workspace_does_not_create(conn):
-    """demo 모드 — 만들지 않고 지금처럼 NotFound."""
-    with pytest.raises(NotFound):
-        _register(conn, session_id=None)
-    assert repo.list_agents(conn) == []
-
-
 def test_register_local_agent_rejects_name_used_by_another_connector(conn):
     repo.create_session(conn, SESSION, NOW)
     _issue_connector(conn, CONNECTOR)
@@ -505,16 +523,6 @@ def test_selection_record_roundtrip(seeded):
     repo.save_selection(conn, record.model_copy(update={"reason": "다시 저장"}))
     assert repo.get_selection(conn, TASK_A).reason == "다시 저장"
     assert repo.get_selection(conn, "nope") is None
-
-
-def test_confirm_merge(seeded):
-    repo.confirm_merge(seeded, TASK_A, LATER)
-    assert repo.get_task(seeded, TASK_A)["merge_confirmed_at"] == LATER
-    with pytest.raises(NotFound):
-        repo.confirm_merge(seeded, "nope", LATER)
-
-
-# --- 실행 생성·잠금 -----------------------------------------------------------
 
 
 def test_active_lock_blocks_second_execution_until_release(seeded):
@@ -853,21 +861,6 @@ def test_download_allowed_three_paths_and_denial(seeded, store):
     assert not repo.download_allowed(conn, store, "exec-fix", trace.artifact_id)  # 나열되지 않은 A 산출물
     assert not repo.download_allowed(conn, store, "exec-fix", "art-none")
     assert not repo.download_allowed(conn, store, "exec-none", mine.artifact_id)
-
-
-# --- 상한 --------------------------------------------------------------------
-
-
-def test_diagnosis_usage_counts_per_session_and_total(seeded):
-    conn = seeded
-    repo.record_diagnosis_start(conn, SESSION, "exec-1", "2026-09-19T23:00:00Z")
-    repo.record_diagnosis_start(conn, SESSION, "exec-2", "2026-09-20T01:00:00Z")
-    repo.record_diagnosis_start(conn, OTHER_SESSION, "exec-3", "2026-09-20T02:00:00Z")
-    since = "2026-09-20T00:00:00Z"
-    assert repo.count_diagnosis_started(conn, session_id=SESSION, since=since) == 1
-    assert repo.count_diagnosis_started(conn, session_id=OTHER_SESSION, since=since) == 1
-    assert repo.count_diagnosis_started(conn, session_id=None, since=since) == 2
-    assert repo.count_diagnosis_started(conn, session_id=None, since="2026-09-19T00:00:00Z") == 3
 
 
 # --- Step 6 웹 화면이 쓰는 읽기·갱신 보조 -------------------------------------
@@ -1221,7 +1214,7 @@ REVIEW = KindSpec(
     instructions="diff 를 읽고 검토하세요.", builtin=False,
 )
 FIX_TO_REVIEW = SuccessorRule(
-    from_kind="code_change", on_outcomes=["ready_for_review"], to_kind="review",
+    from_kind="bug_fix", on_outcomes=["ready_for_review"], to_kind="review",
     handoff_kinds=["diff", "code_change_result", "test_log_after"],
 )
 
@@ -1246,19 +1239,18 @@ def _to_result_ready(conn, store, execution_id: str, kind: str = "diagnosis_resu
 
 
 def test_create_session_seeds_builtin_kinds_and_rule_per_session(conn):
-    """내장 종류 4개(phase 8 의 bug_fix·code_review 포함)와 내장 규칙 2개를 세션마다 seed 한다."""
+    """내장 종류 2개(bug_fix·code_review)와 내장 규칙 1개(bug_fix → code_review)를 세션마다 seed 한다."""
     repo.create_session(conn, SESSION, NOW)
     assert repo.list_kinds(conn, SESSION) == list(BUILTIN_KINDS)
     rules = repo.list_rules(conn, SESSION)
-    assert sorted((rule for _, rule in rules), key=lambda r: r.from_kind) == sorted(
-        BUILTIN_RULES, key=lambda r: r.from_kind
-    )
+    assert [rule for _, rule in rules] == list(BUILTIN_RULES)
     assert all(rule_id.startswith("rule-") for rule_id, _ in rules)
     assert repo.list_kinds(conn, OTHER_SESSION) == [] and repo.list_rules(conn, OTHER_SESSION) == []
     repo.create_session(conn, OTHER_SESSION, LATER)
     assert repo.list_kinds(conn, OTHER_SESSION) == list(BUILTIN_KINDS)
-    assert len(repo.list_rules(conn, OTHER_SESSION)) == 2
-    assert repo.get_kind(conn, SESSION, "diagnosis") == BUILTIN_KINDS[0]
+    assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
+    assert repo.get_kind(conn, SESSION, "bug_fix") == BUILTIN_KINDS[0]
+    assert repo.get_kind(conn, SESSION, "diagnosis") is None  # 진단 데모 종류는 더 이상 내장이 아니다
     assert repo.get_kind(conn, SESSION, "review") is None
 
 
@@ -1266,11 +1258,11 @@ def test_create_session_is_atomic_with_seed(conn):
     repo.create_session(conn, SESSION, NOW)
     with pytest.raises(sqlite3.IntegrityError):
         repo.create_session(conn, SESSION, LATER)
-    assert len(repo.list_kinds(conn, SESSION)) == 4 and len(repo.list_rules(conn, SESSION)) == 2
+    assert len(repo.list_kinds(conn, SESSION)) == 2 and len(repo.list_rules(conn, SESSION)) == 1
 
 
-def test_insert_kind_roundtrip_ordering_and_duplicate(seeded):
-    conn = seeded
+def test_insert_kind_roundtrip_ordering_and_duplicate(sessions):
+    conn = sessions
     zebra = REVIEW.model_copy(update={"kind": "zebra", "capability_code": "zebra"})
     repo.insert_kind(conn, SESSION, zebra, NOW)
     repo.insert_kind(conn, SESSION, REVIEW, LATER)
@@ -1279,8 +1271,7 @@ def test_insert_kind_roundtrip_ordering_and_duplicate(seeded):
     assert repo.get_kind(conn, SESSION, "review") == REVIEW
     assert repo.get_kind(conn, OTHER_SESSION, "review") is None  # 세션 격리
     # 내장 먼저(BUILTIN_KINDS 순), 그 다음 created_at·kind 순
-    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == [
-        "diagnosis", "code_change", "bug_fix", "code_review", "apple", "zebra", "review"]
+    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["bug_fix", "code_review", "apple", "zebra", "review"]
     with pytest.raises(DuplicateKind):
         repo.insert_kind(conn, SESSION, REVIEW, LATER)
     with pytest.raises(DuplicateKind):  # 내장 이름 재등록도 중복
@@ -1289,10 +1280,10 @@ def test_insert_kind_roundtrip_ordering_and_duplicate(seeded):
         repo.insert_kind(conn, "no-such-session", REVIEW, NOW)
 
 
-def test_delete_kind_protects_builtin_and_in_use(seeded):
-    conn = seeded
+def test_delete_kind_protects_builtin_and_in_use(sessions):
+    conn = sessions
     with pytest.raises(KindProtected):
-        repo.delete_kind(conn, SESSION, "diagnosis")
+        repo.delete_kind(conn, SESSION, "bug_fix")
     with pytest.raises(NotFound):
         repo.delete_kind(conn, SESSION, "review")
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
@@ -1301,7 +1292,7 @@ def test_delete_kind_protects_builtin_and_in_use(seeded):
     with pytest.raises(KindInUse):  # 규칙이 참조
         repo.delete_kind(conn, SESSION, "review")
     repo.delete_rule(conn, SESSION, rule_id)
-    repo.insert_task(conn, _task("review-1", kind="review", predecessor=TASK_A), NOW)
+    repo.insert_task(conn, _task("review-1", kind="review"), NOW)
     with pytest.raises(KindInUse):  # Task 가 사용
         repo.delete_kind(conn, SESSION, "review")
     repo.delete_kind(conn, OTHER_SESSION, "review")  # 다른 세션의 같은 이름은 무관
@@ -1309,36 +1300,36 @@ def test_delete_kind_protects_builtin_and_in_use(seeded):
     assert repo.get_kind(conn, SESSION, "review") == REVIEW
 
 
-def test_delete_kind_success(seeded):
-    conn = seeded
+def test_delete_kind_success(sessions):
+    conn = sessions
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
     repo.delete_kind(conn, SESSION, "review")
     assert repo.get_kind(conn, SESSION, "review") is None
-    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["diagnosis", "code_change", "bug_fix", "code_review"]
+    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["bug_fix", "code_review"]
 
 
-def test_rule_insert_get_list_duplicate_and_delete(seeded):
-    conn = seeded
+def test_rule_insert_get_list_duplicate_and_delete(sessions):
+    conn = sessions
     with pytest.raises(NotFound):  # to_kind 미등록
         repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, NOW)
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
     rule_id = repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, LATER)
     assert rule_id.startswith("rule-")
-    assert repo.get_rule(conn, SESSION, "code_change", "review") == FIX_TO_REVIEW
-    assert repo.get_rule(conn, SESSION, "diagnosis", "code_change") == BUILTIN_RULES[0]
-    assert repo.get_rule(conn, SESSION, "review", "code_change") is None
-    assert repo.get_rule(conn, OTHER_SESSION, "code_change", "review") is None
+    assert repo.get_rule(conn, SESSION, "bug_fix", "review") == FIX_TO_REVIEW
+    assert repo.get_rule(conn, SESSION, "bug_fix", "code_review") == BUILTIN_RULES[0]
+    assert repo.get_rule(conn, SESSION, "review", "bug_fix") is None
+    assert repo.get_rule(conn, OTHER_SESSION, "bug_fix", "review") is None
     rules = repo.list_rules(conn, SESSION)
-    # 내장 2개(같은 시각 — rule_id 순)가 먼저, 나중에 넣은 규칙이 끝
-    assert sorted(rule.from_kind for _, rule in rules[:2]) == ["bug_fix", "diagnosis"]
-    assert rules[2] == (rule_id, FIX_TO_REVIEW)
+    # 내장 규칙이 먼저, 나중에 넣은 규칙이 끝
+    assert [rule for _, rule in rules[:1]] == list(BUILTIN_RULES)
+    assert rules[1] == (rule_id, FIX_TO_REVIEW)
     with pytest.raises(DuplicateRule):  # 같은 (from, to) — on_outcomes 가 달라도
         repo.insert_rule(conn, SESSION, FIX_TO_REVIEW.model_copy(update={"on_outcomes": ["needs_information"]}), LATER)
     with pytest.raises(NotFound):  # from_kind 미등록
         repo.insert_rule(conn, SESSION, SuccessorRule(from_kind="nope", on_outcomes=["x"], to_kind="review",
                                                       handoff_kinds=["diff"]), NOW)
     repo.delete_rule(conn, SESSION, rule_id)
-    assert repo.get_rule(conn, SESSION, "code_change", "review") is None
+    assert repo.get_rule(conn, SESSION, "bug_fix", "review") is None
     with pytest.raises(NotFound):
         repo.delete_rule(conn, SESSION, rule_id)
     with pytest.raises(NotFound):  # 다른 세션의 rule_id 로는 지울 수 없다
@@ -1346,21 +1337,21 @@ def test_rule_insert_get_list_duplicate_and_delete(seeded):
         repo.delete_rule(conn, OTHER_SESSION, builtin_id)
 
 
-def test_builtin_rule_can_be_deleted(seeded):
-    conn = seeded
-    [rule_id] = [rid for rid, rule in repo.list_rules(conn, SESSION) if rule.from_kind == "diagnosis"]
+def test_builtin_rule_can_be_deleted(sessions):
+    conn = sessions
+    [rule_id] = [rid for rid, rule in repo.list_rules(conn, SESSION) if rule.from_kind == "bug_fix"]
     repo.delete_rule(conn, SESSION, rule_id)
-    assert [rule for _, rule in repo.list_rules(conn, SESSION)] == [BUILTIN_RULES[1]]
-    assert len(repo.list_rules(conn, OTHER_SESSION)) == 2
-    assert repo.get_rule(conn, SESSION, "diagnosis", "code_change") is None
+    assert repo.list_rules(conn, SESSION) == []
+    assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
+    assert repo.get_rule(conn, SESSION, "bug_fix", "code_review") is None
 
 
-def test_list_rules_orders_by_created_at_then_rule_id(seeded):
-    conn = seeded
+def test_list_rules_orders_by_created_at_then_rule_id(sessions):
+    conn = sessions
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
     later_rule = repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, LATER)
-    earlier = SuccessorRule(from_kind="review", on_outcomes=["changes_requested"], to_kind="code_change",
-                            handoff_kinds=["diagnosis_result", "evidence", "generic_result"])
+    earlier = SuccessorRule(from_kind="review", on_outcomes=["changes_requested"], to_kind="bug_fix",
+                            handoff_kinds=["generic_result"])
     earlier_rule = repo.insert_rule(conn, SESSION, earlier, NOW)
     ids = [rid for rid, _ in repo.list_rules(conn, SESSION)]
     assert ids[-1] == later_rule and earlier_rule in ids[:-1]
@@ -2321,7 +2312,7 @@ def test_update_task_status_records_status_changed_only_when_status_changes(seed
     assert len(rows) == 1
     row = rows[0]
     assert (row["session_id"], row["type"], row["task_revision"], row["config_revision"], row["occurred_at"]) == (
-        SESSION, "status_changed", 1, 1, LATER)
+        SESSION, "status_changed", 1, SEEDED_REVISION, LATER)
     assert json.loads(row["data_json"]) == {"from": "실행 가능", "to": "실행 중", "reason": "agent-ops-demo 실행 중",
                                             "review_decision": None}
     # 같은 상태로 다시 쓰면(사유 문구만 바뀌어도) 기록하지 않는다
@@ -2381,7 +2372,7 @@ def test_append_task_event_reads_session_and_revisions_and_dedupes(seeded):
     blockers = {"blockers": [{"code": "input_missing", "actor": "operator"}]}
     assert repo.append_task_event(seeded, task_id=TASK_A, type="blocked", data=blockers, now=NOW) is True
     row = repo.list_task_events(seeded, TASK_A)[0]
-    assert (row["session_id"], row["task_revision"], row["config_revision"]) == (SESSION, 1, 2)
+    assert (row["session_id"], row["task_revision"], row["config_revision"]) == (SESSION, 1, SEEDED_REVISION + 1)
     # 같은 대기 목록은 다시 쓰지 않는다, 다르면 쓴다
     assert repo.append_task_event(seeded, task_id=TASK_A, type="blocked", data=blockers, now=LATER) is False
     other = {"blockers": [{"code": "approval_needed", "actor": "operator"}]}
@@ -2429,7 +2420,8 @@ def _revision(conn, session_id=SESSION):
     return repo.get_config_revision(conn, session_id)
 
 
-def test_config_revision_bumps_on_kind_rule_and_source_changes(seeded):
+def test_config_revision_bumps_on_kind_rule_and_source_changes(sessions):
+    seeded = sessions
     assert (_revision(seeded), _revision(seeded, OTHER_SESSION)) == (1, 1)
     repo.insert_kind(seeded, SESSION, REVIEW, NOW)
     assert _revision(seeded) == 2
@@ -2462,7 +2454,8 @@ def test_config_revision_is_not_bumped_by_assignee_binding(cycle):
     assert _revision(cycle) == before
 
 
-def test_bump_config_revision_runs_inside_the_callers_transaction(seeded):
+def test_bump_config_revision_runs_inside_the_callers_transaction(sessions):
+    seeded = sessions
     seeded.execute("BEGIN IMMEDIATE")
     assert repo.bump_config_revision(seeded, SESSION) == 2
     seeded.execute("ROLLBACK")
@@ -2476,18 +2469,18 @@ def test_create_execution_stamps_current_config_revision(seeded):
     repo.release_execution(seeded, "exec-1", NOW)
     repo.insert_kind(seeded, SESSION, REVIEW, NOW)
     _create_execution(seeded, "exec-2", attempt_no=2, start_key="rework:1")
-    assert repo.get_execution(seeded, "exec-1")["config_revision"] == 1
-    assert repo.get_execution(seeded, "exec-2")["config_revision"] == 2
+    assert repo.get_execution(seeded, "exec-1")["config_revision"] == SEEDED_REVISION
+    assert repo.get_execution(seeded, "exec-2")["config_revision"] == SEEDED_REVISION + 1
 
 
 def test_followup_link_can_record_the_session_config_revision(cycle):
     _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
     revision = repo.get_config_revision(cycle, SESSION)
-    assert revision == 2  # cycle 이 소스를 저장했다
+    assert revision == SEEDED_REVISION + 1  # cycle 이 소스를 저장했다
     spec = FollowupTaskSpec(session_id=SESSION, kind="code_review", cause_execution_id="exec-fix-1",
                             predecessor_task_id="task-gh-41", rules_revision=revision)
     repo.create_followup_once(cycle, spec, _review_task(), NOW)
-    assert repo.get_followup_link(cycle, "task-gh-41-review")["rules_revision"] == 2
+    assert repo.get_followup_link(cycle, "task-gh-41-review")["rules_revision"] == SEEDED_REVISION + 1
 
 
 _MEASURE = ("folder_commit", "folder_dirty", "cost_usd", "input_tokens", "output_tokens")
@@ -2592,7 +2585,7 @@ def test_list_metric_facts_reads_the_session_rows_as_domain_values(cycle, store)
     assert executions["exec-fix-1"] == ExecutionFact(
         execution_id="exec-fix-1", task_id="task-gh-41", kind="code_change", attempt_no=1, status="result_ready",
         start_key="auto:task-gh-41:r1", created_at=NOW, started_at="2026-10-06T10:20:00Z",
-        finished_at="2026-10-06T10:30:00Z", outcome="passed", config_revision=2, folder_commit="c" * 40,
+        finished_at="2026-10-06T10:30:00Z", outcome="passed", config_revision=SEEDED_REVISION + 1, folder_commit="c" * 40,
         cost_usd=0.25, input_tokens=10,
     )
     assert executions["exec-rev-1"].outcome == "approved"  # 판정(passed)이 아니라 검토 결과

@@ -1,2 +1,0 @@
-#!/usr/bin/env bash
-exec /opt/workflow/venv/bin/python -m workflow.scripted.codex "$@"
