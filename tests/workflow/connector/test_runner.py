@@ -361,6 +361,48 @@ def test_launching_or_running_on_restart_is_unknown_local_and_not_rerun(
     assert fake.heartbeats[-1]["current_execution_id"] == request.execution_id
 
 
+def test_unknown_local_execution_closed_centrally_is_dropped_and_claiming_resumes(
+    fake, client, state_conn, paths, tmp_path
+):
+    """재시작으로 끊긴 실행을 중앙이 이미 마감했으면 러너가 내려놓고 다음 업무를 받는다(실연동 1 — 전에는 영구히 막혔다).
+    내려놓기만 한다: 이벤트를 보내지 않고, 프로세스 종료를 모르므로 작업 폴더도 지우지 않는다."""
+    stuck = assign_with_handoff(fake)
+    client.claim(CONNECTOR_ID)
+    state.record_claim(state_conn, stuck, NOW)
+    state.set_phase(state_conn, stuck.execution_id, "running")
+    fake.closed.add(stuck.execution_id)
+    fake.current = None  # 중앙은 마감한 실행을 다시 배정하지 않는다
+    adapter = StubAdapter()
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path, heartbeat_interval=0)
+
+    runner.tick()  # 재시작 뒤 첫 바퀴 — 아직 끊긴 실행으로 표시하기 전의 heartbeat
+    assert state.get_execution(state_conn, stuck.execution_id)["unknown_local_at"] == NOW
+    runner.tick()  # heartbeat 가 "중앙에서 마감됨" → 내려놓음
+
+    row = state.get_execution(state_conn, stuck.execution_id)
+    assert row["phase"] == "finished" and row["finished_at"] == NOW and row["cleaned_at"] is None
+    assert fake.events_of(stuck.execution_id) == [] and adapter.calls == []
+
+    nxt = assign_with_handoff(fake, make_request("exec-fix-002", "fix-daily-0921"))
+    runner.tick()
+    assert [e for _, e in event_types(fake, nxt.execution_id)][:1] == ["accepted"]
+
+
+def test_unknown_local_execution_still_open_centrally_keeps_blocking(fake, client, state_conn, paths, tmp_path):
+    stuck = assign_with_handoff(fake)
+    client.claim(CONNECTOR_ID)
+    state.record_claim(state_conn, stuck, NOW)
+    state.set_phase(state_conn, stuck.execution_id, "running")
+    runner = make_runner(client, state_conn, paths, StubAdapter(), tmp_path, heartbeat_interval=0)
+    claims_before = fake.claims
+
+    runner.tick()
+    runner.tick()
+
+    assert state.get_execution(state_conn, stuck.execution_id)["phase"] == "running"
+    assert fake.claims == claims_before
+
+
 def test_sequence_gap_is_recovered_by_resending_from_expected(fake, client, state_conn, paths, tmp_path):
     request = assign_with_handoff(fake)
 
