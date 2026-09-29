@@ -13,7 +13,9 @@
     {
       "step": 1,
       "name": "work-status-domain",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:12:50+0900",
+      "summary": "생성: src/workflow/domain/work_status.py(WORK_STATUSES 8개·TERMINAL_WORK_STATUSES·STAGE_FAILED·WorkStatus·StageFact·RequestFact·PullRequestFact·WorkItemFacts·work_status — ARCHITECTURE 이름 표 그대로, step.md 의 WORK_TERMINAL 대신 TERMINAL_WORK_STATUSES, 원본 상태·직접 작업 신호 칸은 이름 표에 없어 두지 않음), tests/workflow/domain/test_work_status.py(33개, 표 기반). 결정: ARCHITECTURE 11단계 우선순위 그대로(끝 상태 유지 > PR merged 완료 > PR closed 종료 > 열린 요청 내 차례 > PR pending·open > 확인 필요 > 전 단계 마감 > 실행 중 > 새로 들어옴 > 대기), stage_failed 요청이 다른 요청보다 먼저이고 이유는 가장 최근 '실패' 단계 status_reason(없으면 질문), 가장 최근 단계는 (created_at, task_id) 최댓값, PR failed 는 무시(아래 규칙으로), 사람 요청 이유는 질문 첫 줄 80자. 검증: pytest 2415 passed/32 skipped, ruff 통과. 다음 step 주의: work_item_facts 가 stages 의 status 에 단계 사용자 상태 라벨을, executed 에 실행 존재 여부를, delegated 에 all_open·delegated_by 를 채울 것; 초기 저장 상태는 끝 상태가 아니어야 계산이 돈다."
     },
     {
       "step": 2,
