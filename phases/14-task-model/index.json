@@ -5,10 +5,7 @@
     {
       "step": 0,
       "name": "task-model-design",
-      "status": "error",
-      "started_at": "2026-09-30T00:51:23+0900",
-      "error_message": "[3회 시도 후 실패] Step did not update status",
-      "failed_at": "2026-09-30T00:57:39+0900"
+      "status": "pending"
     },
     {
       "step": 1,
