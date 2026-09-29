@@ -2,9 +2,9 @@
 
 갱신일: 2026-09-29. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 13-selfhost-only → 14-task-model 실행 (새 세션은 여기서 시작)
+## 다음 작업: 13 완료 → service 병합 → 14-task-model(phases/14-task-model) (새 세션은 여기서 시작)
 
-**진행 중**: 13-selfhost-only 진행 중(`phases/13-selfhost-only`, step 0 — [ADR-0019](adr/0019-service-selfhost-only.md) 고정), 그 뒤 14-task-model.
+**13-selfhost-only 완료**(2026-09-29, `feat-13-selfhost-only`, [ADR-0019](adr/0019-service-selfhost-only.md), 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "2026-09-29 phase 13 셀프호스트 전용"). 다음: `feat-13-selfhost-only` 를 `service` 에 `--no-ff` 병합 → `python3 scripts/execute.py 14-task-model --engine claude`(`phases/14-task-model`). 셀프호스트는 아직 스키마 8 — 재설치(v9 로 올림)는 백업 뒤 사용자 지시로.
 
 **step 설계 완료(2026-09-29)**: 13-task-model 범위를 두 phase 로 나눴다(사용자 결정 — demo 걷어내기를 먼저).
 - `phases/13-selfhost-only/`(6 step): `service` 에서 demo 모드·진단 데모·대본 에이전트·카탈로그·fixture 가져오기·VM 배포 파일 삭제, 내장 종류 `bug_fix`·`code_review` 둘, 스키마 v9. README "남기는 것" 참고.

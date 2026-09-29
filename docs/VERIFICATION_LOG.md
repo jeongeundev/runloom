@@ -418,3 +418,20 @@ phase 뒤 사용자와 함께 채운다. 결과가 좋게 보이도록 편집하
 3. (개선) PR 생성 422 의 `message` 가 워커 로그에 남지 않아(`str(exc)` 는 `HTTP 422` 뿐) 원인을 컨테이너에서 재현해야 알았다. 로그에 요약(`GitHubUnprocessable.message`, 200자)을 붙인다.
 
 sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔다(`d5c2568`, cherry-pick).
+
+## 2026-09-29 phase 13 셀프호스트 전용 (step 5)
+
+목적: [ADR-0019](adr/0019-service-selfhost-only.md)대로 `service` 에서 demo 모드·진단 데모·대본 에이전트·VM 배포 파일을 걷어낸 뒤 전체 회귀·대역 e2e·v8 → v9 마이그레이션을 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 서버다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-29 KST, 이 Mac, 브랜치 `feat-13-selfhost-only` |
+| 명령·결과 | `python3 -m pytest -q` — **2382 passed·32 skipped**(phase 13 전 2932 passed·68 skipped — 진단·대본·VM·데모 테스트 삭제). `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **31 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e) |
+| e2e 설정 | `tests/e2e` 에 demo 모드 설정(카탈로그 등록·대본 에이전트·`WORKFLOW_MODE=demo`)이 남지 않음. `test_real_repo.py` 의 `WORKFLOW_MODE=selfhost` 는 ADR-0019 가 허용하는 값(읽고 버림)이라 둠 |
+| v8 → v9 사본 | `tests/workflow/server/test_backup.py::test_selfhost_v8_copy_upgrades_to_v9_and_backups_round_trip` — 임시 디렉터리에 셀프호스트 모양 v8 DB(워크스페이스 `sess-selfhost` 운영자, 옛 내장 4종류·규칙 2개, `bug_fix`·`code_review` Task 6, `github_sources`·`source_issues`·`baseline_items`·`task_pull_requests`·`notifications` 행)를 만들고 `backup create`(목록에 schema 8) → `init_schema` → 행 수는 `kinds` 4→2·`succession_rules` 2→1 말고 전부 그대로, 남은 종류 `bug_fix`·`code_review` → v9 백업을 다른 위치로 `restore`(행 수·산출물 같음) → v8 백업을 복원해도 복원이 v9 로 올려 같은 결과. 사용자 셀프호스트 볼륨·백업 파일은 읽지 않았다 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — compose 프로젝트(`runloom-e2e-<랜덤>`)·포트(빈 포트)·볼륨은 격리되지만 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 쓴다. `install.sh` 의 `up -d --build` 가 그 태그를 이 브랜치(v9) 코드로 다시 빌드하므로, 사용자가 다음에 `compose up` 하면 백업 없이 DB 가 v9 로 올라갈 수 있다. 셀프호스트 재설치는 사용자 지시 뒤라 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음(grep + `tests/test_packages.py`) |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 수정 없음(마이그레이션은 step 3 에서 구현, 새 테스트는 처음부터 통과). 추가: 위 테스트. 문서: [SELFHOST](SELFHOST.md) 업그레이드 절 v9 한 줄, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 phase 표 새 번호, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.

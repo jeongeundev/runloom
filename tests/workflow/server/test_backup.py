@@ -244,3 +244,119 @@ def test_help_says_stop_services_before_restore(capsys):
     with pytest.raises(SystemExit):
         backup.main(["restore", "--help"], env={})
     assert "멈춘" in capsys.readouterr().out
+
+
+# --- phase 13: 셀프호스트 모양 v8 DB 사본 → v9 + 백업 왕복 (ADR-0019, SELFHOST "업그레이드") ---------------------
+
+V8_NOW = "2026-09-28T00:00:00Z"
+LEGACY_KINDS = ("diagnosis", "code_change")
+V8_SESSION = "sess-selfhost"
+
+
+def _v8_selfhost(db_path: Path, artifact_dir: Path) -> None:
+    """phase 12 셀프호스트가 남긴 모양 — 워크스페이스 하나(운영자), 옛 내장 4종류·규칙 2개, GitHub 순환 행.
+    v8 과 v9 는 표 구조가 같아 새 스키마에 옛 행을 넣고 버전을 8 로 되돌려 만든다."""
+    from workflow.adapters import repo
+
+    conn = connect(db_path)
+    init_schema(conn)
+    repo.create_session(conn, V8_SESSION, V8_NOW)
+    repo.mark_operator(conn, V8_SESSION)
+    for kind in LEGACY_KINDS:
+        conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, '{}', ?)",
+                     (V8_SESSION, kind, V8_NOW))
+    conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                 " VALUES ('rule-legacy', ?, 'diagnosis', 'code_change', '{}', ?)", (V8_SESSION, V8_NOW))
+    conn.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
+                 " connection_state) VALUES ('agent-codex-mac', 'n', 'personal', 'local', '[]', 'online')")
+    conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json,"
+                 " created_at, updated_at) VALUES ('ghs-00000001', ?, 'acme/billing', '{}', ?, ?)",
+                 (V8_SESSION, V8_NOW, V8_NOW))
+    for n in range(1, 4):
+        for task_id, kind in ((f"t-fix-{n}", "bug_fix"), (f"t-review-{n}", "code_review")):
+            conn.execute(
+                "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,"
+                " selection_mode, run_mode, completion_mode, criteria_json, revision, target_json,"
+                " status, status_reason, created_at) VALUES (?, ?, 't', 'r', ?, '{}', 'auto', 'manual',"
+                " 'review', '[]', 1, '{}', '완료', '완료', ?)", (task_id, V8_SESSION, kind, V8_NOW))
+        conn.execute(
+            "INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
+            " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at)"
+            " VALUES ('ghs-00000001', ?, ?, ?, 1, '{}', 'd', ?, 'open', ?, ?)",
+            (1000 + n, n, f"t-fix-{n}", V8_NOW, V8_NOW, V8_NOW))
+        conn.execute(
+            "INSERT INTO baseline_items (source_id, issue_number, issue_title, issue_opened_at, pr_number,"
+            " pr_merged_at, fetched_at) VALUES ('ghs-00000001', ?, 'i', ?, ?, ?, ?)",
+            (100 + n, V8_NOW, 200 + n, V8_NOW, V8_NOW))
+        conn.execute(
+            "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+            " head_branch, fix_execution_id, review_execution_id, state, pr_number, created_at, updated_at)"
+            " VALUES (?, ?, 'ghs-00000001', 'acme/billing', ?, ?, 'e-f', 'e-r', 'open', ?, ?, ?)",
+            (f"t-fix-{n}", V8_SESSION, n, f"task/t-fix-{n}", 10 + n, V8_NOW, V8_NOW))
+        conn.execute(
+            "INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+            " payload_json, state, created_at) VALUES (?, ?, 'pr_opened', ?, ?, 'c', '{}', 'sent', ?)",
+            (f"ntf-0000000{n}", V8_SESSION, f"t-fix-{n}", f"pr_opened:t-fix-{n}", V8_NOW))
+    conn.execute("UPDATE schema_version SET version = 8")
+    conn.close()
+    (artifact_dir / V8_SESSION).mkdir(parents=True, exist_ok=True)
+    (artifact_dir / V8_SESSION / "diff.patch").write_text("--- a\n+++ b\n", encoding="utf-8")
+
+
+def _counts(db_path: Path) -> dict[str, int]:
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'schema_version' ORDER BY name")]
+        return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
+    finally:
+        conn.close()
+
+
+def _version_and_kinds(db_path: Path) -> tuple[int, list[str]]:
+    conn = sqlite3.connect(db_path)
+    try:
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        kinds = [r[0] for r in conn.execute("SELECT kind FROM kinds WHERE session_id = ? ORDER BY kind", (V8_SESSION,))]
+        return version, kinds
+    finally:
+        conn.close()
+
+
+def test_selfhost_v8_copy_upgrades_to_v9_and_backups_round_trip(tmp_path, capsys):
+    src = tmp_path / "src"
+    src.mkdir()
+    env = _env(src)
+    _v8_selfhost(src / "central.sqlite", src / "artifacts")
+    v8_counts = _counts(src / "central.sqlite")
+    assert v8_counts["tasks"] == 6 and v8_counts["kinds"] == 4 and v8_counts["succession_rules"] == 2
+
+    # 1) 업그레이드 전에 백업한다 — 목록에 스키마 8 로 나온다
+    assert backup.main(["create"], env=env, now=lambda: T1) == 0
+    v8_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    assert capsys.readouterr().out.strip().endswith("schema 8")
+
+    # 2) v9 로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로
+    conn = connect(src / "central.sqlite")
+    init_schema(conn)
+    conn.close()
+    v9_counts = _counts(src / "central.sqlite")
+    assert v9_counts == {**v8_counts, "kinds": 2, "succession_rules": 1}
+    assert _version_and_kinds(src / "central.sqlite") == (9, ["bug_fix", "code_review"])
+
+    # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
+    assert backup.main(["create"], env=env, now=lambda: T2) == 0
+    v9_backup = capsys.readouterr().out.strip()
+    dst = tmp_path / "dst"
+    dst_env = {**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v9_backup], env=dst_env) == 0
+    assert _counts(dst / "central.sqlite") == v9_counts
+    assert _files(dst / "artifacts") == _files(src / "artifacts")
+
+    # 4) 업그레이드 전 v8 백업으로 되돌려도 복원이 v9 로 올린다 — 같은 결과
+    old = tmp_path / "old"
+    old_env = {**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v8_backup], env=old_env) == 0
+    assert _counts(old / "central.sqlite") == v9_counts
+    assert _version_and_kinds(old / "central.sqlite") == (SCHEMA_VERSION, ["bug_fix", "code_review"])

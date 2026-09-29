@@ -197,6 +197,7 @@ deploy/selfhost/install-runner.sh
 ```
 
 - `install.sh` 재실행 = 이미지 재빌드·재기동. `.env` 와 볼륨은 그대로다. 스키마가 바뀌었으면 서버·워커가 시작할 때 `init_schema` 가 올린다. 올리지 못하면 `/healthz` 가 503 이 되고 설치 스크립트가 실패로 끝난다 — 그때는 로그를 보고 위 백업으로 복원한다.
+- v9(phase 13) — 진단 데모 내장 종류 `diagnosis`·`code_change` 와 그 규칙을 지운다. 그 종류의 업무·실행·사용자 규칙이 있으면 올리지 않고 멈춘다. 백업(`backup create`)을 먼저 한다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
 ## 제거
