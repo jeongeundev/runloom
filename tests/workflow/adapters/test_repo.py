@@ -2960,7 +2960,7 @@ def test_refresh_work_status_writes_only_on_change_and_is_idempotent(seeded):
     assert event["type"] == "status_changed"
     assert json.loads(event["data_json"]) == {"from": "새로 들어옴", "to": "새로 들어옴", "reason": "담당 없음"}
     repo.finish_task(conn, task_id=TASK_A, execution_id="exec-none", status="완료", reason="판정 통과", now=LATER)
-    assert repo.refresh_work_status(conn, work_item_id, now=LATER)
+    assert not repo.refresh_work_status(conn, work_item_id, now=LATER)  # 단계 마감이 같은 트랜잭션에서 이미 기록했다
     row = repo.get_work_item(conn, SESSION, work_item_id)
     assert (row["status"], row["closed_at"], row["updated_at"]) == ("완료", LATER, LATER)
     assert not repo.refresh_work_status(conn, work_item_id, now="2026-09-21T00:00:00Z")  # 끝 상태는 그대로
@@ -3046,7 +3046,7 @@ def test_mark_issue_delegated_refreshes_work_status(seeded):
     repo.save_github_source(seeded, SESSION, _source(intake="all_open", label_filter=[]), NOW)
     task = _fix_task(selection_mode="manual", chosen_agent_id=FIX_AGENT)
     repo.upsert_source_issue(seeded, SESSION, SOURCE, _snapshot(), task=task, now=NOW)
-    repo.refresh_task_work_statuses(seeded, ["task-gh-41"], now=NOW)
+    repo.refresh_open_work_statuses(seeded, now=NOW)
     assert repo.work_item_of_task(seeded, "task-gh-41")["status"] == "새로 들어옴"  # 지시 전
     repo.mark_issue_delegated(seeded, session_id=SESSION, source_id=SOURCE, github_issue_id=2456789012,
                               by="operator", now=LATER)
@@ -3094,3 +3094,138 @@ def test_replace_field_mappings_rejects_invalid_rows_and_keeps_old(sessions, row
         repo.replace_field_mappings(sessions, SESSION, rows, now=LATER)
     assert repo.list_field_mappings(sessions, SESSION) == [_mapping("*", "bug_fix")]
     assert repo.get_config_revision(sessions, SESSION) == revision
+
+
+# --- 단계 상태를 쓰면 업무 상태도 (phase 14 step 6) ----------------------------------------------
+
+
+def _work(conn, task_id: str = TASK_A):
+    return repo.work_item_of_task(conn, task_id)
+
+
+def _status_events(conn, task_id: str = TASK_A) -> list[str]:
+    events = repo.list_work_item_events(conn, _work(conn, task_id)["work_item_id"])
+    return [json.loads(e["data_json"])["to"] for e in events if e["type"] == "status_changed"]
+
+
+def test_every_stage_status_write_refreshes_the_work_status(seeded, store):
+    conn = seeded
+    repo.update_task_status(conn, TASK_A, "대기", "선행 대기", now=NOW)
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("새로 들어옴", "담당 없음")
+    _create_execution(conn, "exec-1")
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("대기", "선행 대기")  # 실행이 생겼다
+    repo.update_task_status(conn, TASK_A, "실행 요청됨", "접수 대기", now=NOW)
+    assert _work(conn)["status"] == "에이전트 작업 중"
+    repo.create_human_request_once(conn, TASK_A, "decision", "어느 쪽으로 고칠까요?", "decision:1", NOW)
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("내 차례", "사람 요청 — 어느 쪽으로 고칠까요?")
+    repo.record_verdict(conn, task_id=TASK_A, execution_id="exec-1", verdict={"outcome": "passed"}, status="완료",
+                        reason="판정 통과", finish=True, now=LATER)
+    assert _work(conn)["status"] == "내 차례"  # 열린 요청이 앞선다
+    assert _status_events(conn) == ["새로 들어옴", "대기", "에이전트 작업 중", "내 차례"]
+    repo.update_task_status(conn, TASK_A, "대기", "선행 대기", now=LATER)  # 같은 업무 상태 — 재기록 없음
+    assert _status_events(conn) == ["새로 들어옴", "대기", "에이전트 작업 중", "내 차례"]
+
+
+def test_the_first_agent_to_take_a_stage_becomes_the_work_assignee(seeded):
+    conn = seeded
+    assert (_work(conn)["assignee_type"], _work(conn)["assignee_id"]) == (None, None)
+    _create_execution(conn, "exec-1")
+    assert (_work(conn)["assignee_type"], _work(conn)["assignee_id"]) == ("agent", "agent-ops-demo")
+    (event,) = [e for e in repo.list_work_item_events(conn, _work(conn)["work_item_id"]) if e["type"] == "assigned"]
+    assert json.loads(event["data_json"]) == {"from": None, "to": {"type": "agent", "id": "agent-ops-demo"}}
+    repo.release_execution(conn, "exec-1", NOW)
+    repo.create_execution(conn, execution_id="exec-2", task_id=TASK_A, attempt_no=2, start_key="manual:2",
+                          agent_id="agent-other", kind="diagnosis", request=_request("exec-2", TASK_A),
+                          assigned_connector_id=None, predecessor_execution_id=None, now=LATER)
+    assert _work(conn)["assignee_id"] == "agent-ops-demo"  # 이미 담당이 있으면 바꾸지 않는다
+
+
+def test_refresh_open_work_statuses_skips_closed_work_items(seeded):
+    conn = seeded
+    assert repo.refresh_open_work_statuses(conn, now=NOW) == 1  # '' 이유로 시작한 업무에 계산값
+    assert repo.refresh_open_work_statuses(conn, now=NOW) == 0
+    repo.finish_task(conn, task_id=TASK_A, execution_id="exec-none", status="완료", reason="판정 통과", now=LATER)
+    assert _work(conn)["status"] == "완료"
+    assert repo.refresh_open_work_statuses(conn, now=LATER) == 0
+
+
+def test_finish_failed_stage_closes_the_stage_and_asks_once(seeded):
+    conn = seeded
+    _create_execution(conn, "exec-1")
+    request_id, fresh = repo.finish_failed_stage(
+        conn, task_id=TASK_A, execution_id="exec-1", reason="timeout · 20분 초과",
+        question="실행 실패 — timeout: 20분 초과", cause_key="stage_failed:exec-1", now=LATER,
+    )
+    assert fresh
+    task = repo.get_task(conn, TASK_A)
+    assert (task["status"], task["status_reason"], task["finished_at"]) == ("실패", "timeout · 20분 초과", LATER)
+    assert repo.get_execution(conn, "exec-1")["released_at"] == LATER
+    (request,) = repo.list_human_requests(conn, TASK_A)
+    assert (request["request_id"], request["code"], request["state"]) == (request_id, "stage_failed", "open")
+    assert (_work(conn)["status"], _work(conn)["status_reason"]) == ("내 차례", "실패 — timeout · 20분 초과")
+    again = repo.finish_failed_stage(
+        conn, task_id=TASK_A, execution_id="exec-1", reason="timeout · 20분 초과",
+        question="실행 실패 — timeout: 20분 초과", cause_key="stage_failed:exec-1", now=LATER,
+    )
+    assert again == (request_id, False) and len(repo.list_human_requests(conn, TASK_A)) == 1
+
+
+def _failed_stage(conn) -> str:
+    _create_execution(conn, "exec-1")
+    request_id, _ = repo.finish_failed_stage(
+        conn, task_id=TASK_A, execution_id="exec-1", reason="timeout · 20분 초과",
+        question="실행 실패 — timeout: 20분 초과", cause_key="stage_failed:exec-1", now=NOW,
+    )
+    return request_id
+
+
+def test_retry_response_copies_the_failed_stage_into_the_same_work_item(seeded):
+    conn = seeded
+    request_id = _failed_stage(conn)
+    repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                    action="retry", text="", now=LATER, retry_task_id="task-retry")
+    retried = repo.get_task(conn, "task-retry")
+    first = repo.get_task(conn, TASK_A)
+    assert retried["work_item_id"] == first["work_item_id"]
+    assert (retried["request"], retried["predecessor_task_id"], retried["status"]) == (
+        first["request"], first["predecessor_task_id"], "대기")
+    assert repo.get_human_request(conn, SESSION, request_id)["state"] == "answered"
+    assert _work(conn)["status"] == "대기"
+    with pytest.raises(StaleRequest):
+        repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-2", expected_revision=2,
+                                        action="retry", text="", now=LATER, retry_task_id="task-retry-2")
+    assert repo.get_task(conn, "task-retry-2") is None
+
+
+def test_close_response_on_a_failed_stage_ends_the_work_item(seeded):
+    conn = seeded
+    request_id = _failed_stage(conn)
+    repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                    action="close", text="", now=LATER, close_work_reason="닫음 — 실행 실패")
+    row = _work(conn)
+    assert (row["status"], row["status_reason"], row["closed_at"]) == ("종료", "닫음 — 실행 실패", LATER)
+
+
+def test_response_to_a_non_stage_failed_request_on_a_closed_task_is_still_rejected(seeded):
+    conn = seeded
+    request_id, _ = repo.create_human_request_once(conn, TASK_A, "decision", "q", "decision:1", NOW)
+    repo.finish_task(conn, task_id=TASK_A, execution_id="exec-none", status="실패", reason="운영자 종료", now=NOW)
+    with pytest.raises(TaskClosed):
+        repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                        action="resume", text="", now=LATER)
+
+
+def test_retried_stage_reads_the_source_issue_of_its_work_item(cycle):
+    """다시 맡긴 단계(같은 업무·원본 이슈 단계와 같은 종류)는 원본 이슈를 그대로 읽는다 — 담당·입력·PR 이 이어진다.
+    같은 업무의 다른 종류 단계(검토)는 원본 이슈가 없다. `source_issues.task_id` 는 첫 단계 그대로."""
+    conn = cycle
+    work_item_id = repo.work_item_of_task(conn, "task-gh-41")["work_item_id"]
+    repo.insert_task(conn, _fix_task("task-gh-41-retry"), LATER, work_item_id=work_item_id)
+    review = {**_fix_task("task-gh-41-review"), "kind": "code_review",
+              "required_capability": {"code": "code.review", "scope": {"repository_id": "billing"}}}
+    repo.insert_task(conn, review, LATER, work_item_id=work_item_id)
+    first = repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")
+    assert first["task_id"] == "task-gh-41"
+    assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41-retry")["github_issue_id"] == first["github_issue_id"]
+    assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41-review") is None
+    assert repo.get_source_issue_by_task(conn, OTHER_SESSION, "task-gh-41-retry") is None

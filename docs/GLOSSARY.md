@@ -130,7 +130,7 @@
 | `Worker.start_manually` | 업무 순환 Task 의 직접 실행(step 13) — 그 Task·선행·후속만 워커 규칙으로 돌리고 이 Task 의 `manual_mode` 만 뺀다. start_key 가 자동 착수와 같다 | `force run` |
 | `TaskFacts` / `TaskReadiness` / `Blocker` | 준비 판정의 입력 값·결과 (`domain/task_readiness.evaluate_readiness`, step 2). `Blocker(code, reason, actor)` — 코드 목록은 ARCHITECTURE "준비 판정 — 대기 코드". 사용자 상태 라벨이 아니다 | `Status`, `Precondition`, `Gate` |
 | `FollowupContext` / `FollowupDecision` | 후속 결정의 입력·결과 (`domain/task_followup.decide_followup`, step 3). `action` 은 `link_existing`·`create_task`·`rework`·`request_human`·`none`. `SuccessorRule` 은 여전히 착수 조건이고 이것은 생성·재작업까지 정한다 | `Transition`, `Trigger`, `NextStep` |
-| `HumanRequest` / `response_id` | 사람에게 묻는 요청과 그 응답의 멱등 키 (step 4·11). 운영자만 응답(`POST /human-requests/{id}/responses`, `action` = `resume`·`choose_agent`·`close`). 응답은 새 `task_revision` 의 입력(`task_cycle.request_text`)이 되고 원본 스냅샷은 그대로. 준비 판정 대기에서 생긴 요청은 cause_key `ready:<code>:r<revision>` | `approval`(검토 승인과 혼동), `ticket`, `question` |
+| `HumanRequest` / `response_id` | 사람에게 묻는 요청과 그 응답의 멱등 키 (step 4·11). 운영자만 응답(`POST /human-requests/{id}/responses`, `action` = `resume`·`choose_agent`·`retry`·`close` — `retry` 는 `stage_failed` 전용). 응답은 새 `task_revision` 의 입력(`task_cycle.request_text`)이 되고 원본 스냅샷은 그대로. 준비 판정 대기에서 생긴 요청은 cause_key `ready:<code>:r<revision>` | `approval`(검토 승인과 혼동), `ticket`, `question` |
 
 ## 계획 용어 — phase 9 측정 (미구현)
 

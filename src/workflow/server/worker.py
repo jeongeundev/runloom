@@ -96,6 +96,7 @@ from workflow.domain.status import UserStatus, user_status
 from workflow.domain.succession import continue_reason, may_continue
 from workflow.domain.task_followup import FollowupContext, FollowupDecision, FollowupTaskSpec, ReviewFacts, decide_followup
 from workflow.domain.task_readiness import TaskReadiness
+from workflow.domain.work_status import STAGE_FAILED
 from workflow.server import github_delivery, github_sync, task_cycle, views
 from workflow.server.github_clients import SourceClients
 from workflow.server.auth import utc_now
@@ -147,6 +148,7 @@ class TickReport:
     prs_merged: int = 0  # 병합을 보고 완료한 수정 Task
     notifications_sent: int = 0  # 알림 웹훅 2xx
     notifications_failed: int = 0  # 알림 전송 실패(재시도 대기·포기) — 업무 상태와 따로
+    work_statuses_changed: int = 0  # tick 끝 재계산에서 바뀐 업무 상태(단계 쓰기와 함께 바뀐 것은 세지 않음)
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -306,7 +308,7 @@ class Worker:
 
     def tick(self) -> TickReport:
         """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다.
-        callback 전달은 후속 착수·실패 반영 뒤 — 끝난 상태로 사람 차례를 판정한다. 알림은 맨 뒤 — 같은 tick 에 쌓인 것을 보낸다)."""
+        callback 전달은 후속 착수·실패 반영 뒤 — 끝난 상태로 사람 차례를 판정한다. 알림은 외부 반영의 맨 뒤 — 같은 tick 에 쌓인 것을 보낸다. 업무 상태 재계산은 tick 끝)."""
         report = TickReport()
         conn = self._conn_factory()
         try:
@@ -323,6 +325,7 @@ class Worker:
             self._deliver_pull_requests(conn, report)
             self._deliver_github(conn, report)
             self._deliver_notifications(conn, report)
+            self._refresh_work_statuses(conn, report)
         finally:
             conn.close()
         return report
@@ -716,13 +719,11 @@ class Worker:
         report: TickReport,
     ) -> None:
         now = self._clock()
-        touched = [task["task_id"]] + ([context.review.fix_task_id] if context.review is not None else [])
         if decision.action == "create_task":
             created = self._create_followup_task(conn, task, decision.create, now)
             if created is None:
                 return
             followup_id, fresh = created
-            touched.append(followup_id)
             report.followup_tasks_created += int(fresh)
             started = self._start_review(conn, repo.get_task(conn, followup_id), execution, decision.cause_key, report)
             report.followups_started += int(started)
@@ -758,8 +759,6 @@ class Worker:
             fix_task = repo.get_task(conn, context.review.fix_task_id)
             reason = self._queue_pull_request(conn, fix_task, execution, context.review, report)
             self._write_status(conn, fix_task, "확인 필요", reason or decision.reason)
-        # 후속·재작업·검토 착수와 그 단계 상태를 쓴 뒤 관련 업무의 상태를 다시 계산한다(ADR-0020)
-        repo.refresh_task_work_statuses(conn, touched, now=self._clock())
 
     def _queue_pull_request(
         self, conn: Connection, fix_task: Row, review_execution: Row, review: ReviewFacts, report: TickReport
@@ -1093,7 +1092,6 @@ class Worker:
                 continue
             report.successors_created += 1
             self._refresh_task(conn, task_id)  # → 실행 요청됨 · 접수 대기
-            repo.refresh_task_work_statuses(conn, [task_id], now=now)
 
     # --- 9. 실패 반영 -------------------------------------------------------------------
 
@@ -1103,12 +1101,16 @@ class Worker:
             if task is None or task["finished_at"] is not None:
                 continue
             if execution["status"] == "failed" and execution["process_stopped"]:
-                # 프로세스 종료를 확인한 실패 — 마감(실패)하고 잠금을 푼다. 재실행은 새 업무·명시적 재시도만
+                # 프로세스 종료를 확인한 실패 — 마감(실패)하고 잠금을 푼다. 같은 트랜잭션에서 사람에게 다시 맡기기·닫기를
+                # 묻는다(ADR-0020 결정 5 — 자동 재시도 없음). 알림은 `task_failed` 한 번 — 요청 알림은 따로 보내지 않는다
                 reason = f"{execution['failed_code']} · {execution['failed_message']}"
-                repo.finish_task(
-                    conn, task_id=task["task_id"], execution_id=execution["execution_id"], status="실패",
-                    reason=reason, now=self._clock(),
+                message = (execution["failed_message"] or "").splitlines()[0] if execution["failed_message"] else ""
+                _, fresh = repo.finish_failed_stage(
+                    conn, task_id=task["task_id"], execution_id=execution["execution_id"], reason=reason,
+                    question=f"실행 실패 — {execution['failed_code']}: {message}",
+                    cause_key=f"{STAGE_FAILED}:{execution['execution_id']}", now=self._clock(),
                 )
+                report.human_requests += int(fresh)
                 self._notify(conn, "task_failed", task["task_id"], f"task_failed:{execution['execution_id']}",
                              detail=reason)
                 report.failures_reflected += 1
@@ -1119,6 +1121,13 @@ class Worker:
             )
             if self._write_status(conn, task, "확인 필요", reason):
                 report.failures_reflected += 1
+
+    # --- 업무 상태 (ADR-0020) ---------------------------------------------------------------
+
+    def _refresh_work_statuses(self, conn: Connection, report: TickReport) -> None:
+        """끝나지 않은 업무의 상태를 다시 계산한다. 단계 상태를 쓰는 repo 함수가 같은 트랜잭션에서 이미 계산하므로
+        여기서 바뀌는 것은 단계 쓰기를 거치지 않은 변화(수집이 막 만든 업무 등)뿐이다."""
+        report.work_statuses_changed += repo.refresh_open_work_statuses(conn, now=self._clock())
 
     # --- 10. callback 전달 ---------------------------------------------------------------
 

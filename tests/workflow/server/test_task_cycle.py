@@ -1722,3 +1722,155 @@ def test_webhook_url_stays_out_of_the_db_and_logs(cycle, conn, store, notify_wor
     assert not any("tok-secret" in line for line in conn.iterdump())
     assert "tok-secret" not in caplog.text
     assert "discord.com" in caplog.text  # 실패 로그는 호스트만
+
+
+# --- 업무 상태 기록·실패 → 내 차례 · 다시 맡기기/닫기 (phase 14 step 6) ---------------------------
+
+
+def work_of(conn, task_id: str):
+    return repo.work_item_of_task(conn, task_id)
+
+
+def work_state(conn, task_id: str) -> tuple[str, str]:
+    row = work_of(conn, task_id)
+    return row["status"], row["status_reason"]
+
+
+def status_changes(conn, task_id: str) -> list[str]:
+    events = repo.list_work_item_events(conn, work_of(conn, task_id)["work_item_id"])
+    return [json.loads(e["data_json"])["to"] for e in events if e["type"] == "status_changed"]
+
+
+def test_work_status_follows_the_cycle_to_a_merged_pr(cycle, conn, store, pr_worker, pr_github, clock):
+    fix_task = import_issue(conn, 1)
+    pr_worker.tick()
+    assert work_state(conn, fix_task) == ("에이전트 작업 중", "버그 수정 실행 중")
+
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], branch_pushed=True)
+    pr_worker.tick()
+    assert work_state(conn, fix_task) == ("내 차례", "검토 대기")  # 수정 단계가 `확인 필요 · 검토 대기`
+    review_exec = executions(conn, review_tasks(conn, fix_task)[0]["task_id"])[0]["execution_id"]
+    finish_review(conn, store, review_exec, outcome="approved")
+    pr_worker.tick()
+    assert work_state(conn, fix_task) == ("PR · 검토", "PR 확인 — #31")
+
+    pr_github.merge(31)
+    clock.now = "2026-10-06T13:00:00Z"
+    pr_worker.tick()
+    row = work_of(conn, fix_task)
+    assert (row["status"], row["status_reason"], row["closed_at"]) == ("완료", "PR 병합 — #31", clock.now)
+    changes = status_changes(conn, fix_task)
+    assert changes[-1] == "완료" and "PR · 검토" in changes
+    events = [json.loads(e["data_json"]) for e in repo.list_work_item_events(conn, row["work_item_id"])
+              if e["type"] == "status_changed"]
+    pairs = [(e["to"], e["reason"]) for e in events]
+    assert all(a != b for a, b in zip(pairs, pairs[1:]))  # 전환마다 한 행 — 같은 상태·이유 재기록 없음
+    pr_worker.tick()
+    assert status_changes(conn, fix_task) == changes
+
+
+def test_review_approval_without_pr_is_my_turn(cycle, conn, store, worker):
+    fix_task, _ = _approved(conn, store, worker, branch_pushed=None)
+    assert work_state(conn, fix_task) == ("내 차례", status(conn, fix_task)[1])
+
+
+def test_human_request_makes_it_my_turn_and_the_answer_clears_it(cycle, conn, store, worker):
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], outcome="needs_information")
+    worker.tick()
+    assert work_state(conn, fix_task)[0] == "내 차례"
+    assert work_state(conn, fix_task)[1].startswith("사람 요청 — ")
+    (request,) = open_requests(conn, fix_task)
+    answer(conn, request["request_id"], text="10,000원")
+    assert not work_state(conn, fix_task)[1].startswith("사람 요청 — ")  # 응답과 같은 트랜잭션에서 다시 계산
+
+
+def test_tick_end_recomputes_work_status_that_no_stage_write_touched(cycle, conn, worker):
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, run_mode="manual"), NOW)
+    fix_task = import_issue(conn, 1)
+    assert work_state(conn, fix_task) == ("새로 들어옴", "")  # 수집은 상태를 계산하지 않는다
+    worker.tick()
+    computed = work_state(conn, fix_task)
+    assert computed[1] != ""
+    # 단계 상태는 그대로인데 저장된 업무 상태만 계산값과 다르다(수집이 막 만든 업무와 같은 경우)
+    conn.execute("UPDATE work_items SET status = '새로 들어옴', status_reason = '' WHERE work_item_id = ?",
+                 (work_of(conn, fix_task)["work_item_id"],))
+    report = worker.tick()
+    assert work_state(conn, fix_task) == computed
+    assert report.work_statuses_changed == 1
+    assert worker.tick().work_statuses_changed == 0
+
+
+def test_auto_matched_agent_becomes_the_work_assignee(auto_source, conn, worker):
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    assert (work_of(conn, task_id)["assignee_type"], work_of(conn, task_id)["assignee_id"]) == (None, None)
+    delegate(conn, task_id)
+    worker.tick()
+    row = work_of(conn, task_id)
+    assert (row["assignee_type"], row["assignee_id"]) == ("agent", FIX)
+    events = [e for e in repo.list_work_item_events(conn, row["work_item_id"]) if e["type"] == "assigned"]
+    assert [json.loads(e["data_json"])["to"] for e in events] == [{"type": "agent", "id": FIX}]
+
+
+def test_existing_work_assignee_is_kept_when_another_agent_runs_a_stage(cycle, conn, store, worker):
+    fix_task, _, review_task, _ = _to_first_review(conn, store, worker)
+    row = work_of(conn, fix_task)
+    assert (row["assignee_type"], row["assignee_id"]) == ("agent", FIX)  # 검토 Agent 로 바꾸지 않는다
+
+
+def test_failed_stage_asks_once_and_is_my_turn(cycle, conn, store, worker):
+    fix_task, execution_id = fail_fix(conn, store, worker)
+
+    assert status(conn, fix_task) == ("실패", "timeout · 20분 초과")
+    (request,) = repo.list_human_requests(conn, fix_task)
+    assert (request["code"], request["cause_key"], request["state"]) == (
+        "stage_failed", f"stage_failed:{execution_id}", "open",
+    )
+    assert request["question"] == "실행 실패 — timeout: 20분 초과"
+    assert work_state(conn, fix_task) == ("내 차례", "실패 — timeout · 20분 초과")
+    worker.tick()
+    worker.tick()
+    assert len(repo.list_human_requests(conn, fix_task)) == 1
+
+
+def test_retry_answer_adds_one_new_stage_in_the_same_work_item(cycle, conn, store, worker):
+    fix_task, _ = fail_fix(conn, store, worker)
+    (request,) = open_requests(conn, fix_task)
+
+    answer(conn, request["request_id"], action="retry", text="시간 제한을 늘려 다시")
+
+    work = work_of(conn, fix_task)
+    stages = {t["task_id"]: t for t in repo.list_work_item_tasks(conn, work["work_item_id"])}
+    first = stages.pop(fix_task)
+    (retried,) = stages.values()
+    for column in ("kind", "title", "required_capability_json", "criteria_json", "target_json", "selection_mode",
+                   "chosen_agent_id", "run_mode", "completion_mode", "predecessor_task_id"):
+        assert retried[column] == first[column], column
+    assert retried["request"] == first["request"] + "\n\n## 사람 응답 (운영자)\n\n시간 제한을 늘려 다시"
+    assert (retried["revision"], retried["finished_at"], retried["status"]) == (1, None, "대기")
+    assert work_state(conn, fix_task)[0] == "대기"
+    assert open_requests(conn, fix_task) == []
+
+    with pytest.raises(human_api.ApiError) as raised:  # 같은 요청에 두 번째 응답 — 새 단계는 하나
+        answer(conn, request["request_id"], "resp-2", action="retry")
+    assert raised.value.status == 409 and raised.value.code == "stale_request"
+    assert len(repo.list_work_item_tasks(conn, work["work_item_id"])) == 2
+
+    worker.tick()
+    (execution,) = executions(conn, retried["task_id"])
+    assert execution["agent_id"] == FIX
+    assert work_state(conn, fix_task)[0] == "에이전트 작업 중"
+
+
+def test_close_answer_ends_the_work_item(cycle, conn, store, worker, clock):
+    fix_task, _ = fail_fix(conn, store, worker)
+    (request,) = open_requests(conn, fix_task)
+
+    answer(conn, request["request_id"], action="close")
+    worker.tick()
+
+    row = work_of(conn, fix_task)
+    assert (row["status"], row["status_reason"], row["closed_at"]) == ("종료", "닫음 — 실행 실패", NOW)
+    assert len(repo.list_work_item_tasks(conn, row["work_item_id"])) == 1
+    assert status_changes(conn, fix_task)[-1] == "종료"
