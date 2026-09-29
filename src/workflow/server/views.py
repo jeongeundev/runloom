@@ -136,6 +136,9 @@ def kind_public(spec: KindSpec) -> dict[str, Any]:
     }
 
 
+PLACEMENT_LABELS = {"same_work": "같은 업무의 다음 단계", "new_work": "새 업무로 등록"}
+
+
 def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) -> dict[str, Any]:
     """규칙 한 줄 `{from label} --[outcome, …]--> {to label}` (ADR-0009 — 그래프를 그리지 않는다).
     등록부에 없는 종류는 코드 그대로 보인다."""
@@ -151,6 +154,8 @@ def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) ->
         "text": f"{label(rule.from_kind)} --[{', '.join(rule.on_outcomes)}]--> {label(rule.to_kind)}",
         "handoff_kinds": list(rule.handoff_kinds),
         "handoff_labels": [kind_label(k) for k in rule.handoff_kinds],
+        "placement": rule.placement,
+        "placement_label": PLACEMENT_LABELS[rule.placement],
     }
 
 

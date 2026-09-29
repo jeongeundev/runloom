@@ -345,6 +345,9 @@ def test_triage_result_is_judged_and_spawns_review_in_the_same_tick(flow, worker
     assert r["predecessor_execution_id"] == EXEC_T
     assert r["start_key"] == f"auto:{TASK_R}:r1"
     assert _status(conn, TASK_R) == ("실행 요청됨", "접수 대기")
+    # 후속 실행을 만든 뒤 R 의 업무 상태를 다시 계산해 기록했다(ADR-0020)
+    work = repo.work_item_of_task(conn, TASK_R)
+    assert (work["status"], work["status_reason"]) == ("에이전트 작업 중", "검토 실행 중")
 
     # 사용자 정의 종류의 요청: kind_spec 은 등록부 값, target 은 LocalTarget 하나 (CONTRACT 11.5)
     request = ExecutionRequest.model_validate_json(r["request_json"])

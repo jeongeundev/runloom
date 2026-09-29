@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "succession-placement",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T01:42:10+0900",
+      "summary": "수정: contracts/v1.py(SuccessorRule.placement Literal same_work|new_work 기본 same_work — 옛 rule_json 그대로 읽힘), domain/task_followup.py(FollowupTaskSpec.placement = 규칙 행 값), adapters/repo.py(create_followup_once 에 placement — new_work 면 원인 업무 원본 칸 복사·source_item_id NULL·담당=선택 Agent 로 새 업무 + spawned_from(cause_execution_id) 링크 + 첫 단계(선행 NULL), 새로 만들 때만·같은 트랜잭션에서 관련 업무 refresh_work_status; 새 followups_of(선행 + followup_links 후속)·refresh_task_work_statuses(자체 트랜잭션)·get_source_issue), server/worker.py(_create_followup_task 가 placement 전달, 기존 후속 찾기를 followups_of 로, _apply_followup 끝·_spawn_successors 실행 생성 뒤 업무 상태 재계산), server/task_cycle.py(origin_source = work_item_of_task → 업무 원본 칸, 선행 사슬 안 따라감, new_work 업무는 (None, 소스 설정)), server/web.py·views.py·kinds.html(POST /rules placement 폼 칸·규칙 목록 '같은 업무의 다음 단계'/'새 업무로 등록'), docs/CONTRACT(15.1 json 펜스·11.2 문구), docs/ARCHITECTURE(step 4 구현 단락·이름 표); 테스트: test_v1(placement 기본·옛 JSON·잘못된 값, 블록 수 60), test_task_followup, test_task_cycle(같은 업무 fix→review, origin_source 검토·재작업·선행 사슬 무시, new_work 새 업무+링크 1·재평가·재작업 중복 없음·상태 기록), test_web(등록·422), test_views, test_worker(_spawn_successors 뒤 업무 상태). 결정: 업무 상태 재계산은 단계 상태 기록 뒤라 워커 쪽은 실행 생성과 별도 트랜잭션; _spawn_successors 는 미리 등록된 Task 에 실행만 만들어 placement 로 옮기지 않음. 검증: pytest 2447 passed/32 skipped, ruff 통과. 다음 step 주의: blocks 링크 기반 준비 판정·교차 업무 predecessor_task_id NULL 화(ARCHITECTURE 마이그레이션 5항)는 하지 않음 — 체인 blocks 링크(step 5)와 함께 처리할 것; views 선행/후속 칩·test 의 review_tasks 헬퍼는 여전히 successors_of(선행) 기준"
     },
     {
       "step": 5,

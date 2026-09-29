@@ -691,6 +691,9 @@ def test_rule_public_one_line_text_with_labels():
     assert rule["text"] == "버그 수정 --[ready_for_review]--> 커밋 검토"
     assert rule["handoff_kinds"] == ["code_change_result", "diff", "test_log_after", "verification_log"]
     assert rule["handoff_labels"] == ["수정 결과", "diff", "테스트 후", "검증 로그"]
+    assert (rule["placement"], rule["placement_label"]) == ("same_work", "같은 업무의 다음 단계")
+    spawned = views.rule_public("rule-4", builtin.model_copy(update={"placement": "new_work"}), BUILTIN_KINDS)
+    assert (spawned["placement"], spawned["placement_label"]) == ("new_work", "새 업무로 등록")
 
     custom = views.rule_public(
         "rule-2",

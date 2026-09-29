@@ -193,12 +193,14 @@ BUILTIN_KINDS: tuple[KindSpec, ...] = (
 
 class SuccessorRule(_Contract):
     """선행 결과의 outcome 이 `on_outcomes` 에 있으면 `handoff_kinds` 산출물을 넘겨 `to_kind` 를 시작한다.
-    `on_outcomes ⊆ from_kind.outcomes`·`handoff_kinds ⊇ to_kind.input_kinds` 는 서버가 등록부로 검사한다."""
+    `on_outcomes ⊆ from_kind.outcomes`·`handoff_kinds ⊇ to_kind.input_kinds` 는 서버가 등록부로 검사한다.
+    `placement` 는 후속 Task 를 둘 곳 — `same_work` 원인 Task 업무의 다음 단계, `new_work` 새 업무(ADR-0020)."""
 
     from_kind: KindId
     on_outcomes: list[Outcome] = Field(min_length=1)
     to_kind: KindId
     handoff_kinds: list[ArtifactKind]
+    placement: Literal["same_work", "new_work"] = "same_work"
 
     @model_validator(mode="after")
     def _check_rule(self) -> "SuccessorRule":

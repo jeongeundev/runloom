@@ -1124,6 +1124,7 @@ def kinds_page(
         kinds=[views.kind_public(spec) for spec in kinds],
         rules=[views.rule_public(rule_id, rule, kinds) for rule_id, rule in repo.list_rules(conn, session_id)],
         input_kind_choices=INPUT_KIND_CHOICES,
+        placement_choices=list(views.PLACEMENT_LABELS.items()),
     )
 
 
@@ -1191,6 +1192,7 @@ def rules_create(
     on_outcomes: list[str] = Form([]),
     to_kind: str = Form(""),
     handoff_kinds: list[str] = Form([]),
+    placement: str = Form("same_work"),
     session_id: str = Depends(require_session),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -1202,6 +1204,7 @@ def rules_create(
             "on_outcomes": on_outcomes,
             "to_kind": to_kind.strip(),
             "handoff_kinds": handoff_kinds,
+            "placement": placement,
         })
     except ValidationError as exc:
         raise _validation_page_error(exc) from None

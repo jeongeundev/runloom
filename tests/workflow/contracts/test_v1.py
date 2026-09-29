@@ -120,7 +120,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 58
+    assert len(FENCED) == 60
     assert len(INLINE) == 8
 
 
@@ -713,6 +713,7 @@ def test_builtin_rules_match_concept_table():
             handoff_kinds=["code_change_result", "diff", "test_log_after", "verification_log"],
         ),
     )
+    assert BUILTIN_RULES[0].placement == "same_work"
 
 
 @pytest.mark.parametrize("kind", ["diagnosis", "code_change"])
@@ -798,6 +799,22 @@ def test_successor_rule_rejects_handoff_bundle_in_handoff_kinds():
 def test_successor_rule_rejects_bad_handoff_kinds(handoff_kinds):
     with pytest.raises(ValidationError):
         SuccessorRule.model_validate(_rule(handoff_kinds=handoff_kinds))
+
+
+def test_successor_rule_placement_defaults_to_same_work_and_reads_old_json():
+    """CONTRACT 15.1 — 칸이 없는 저장 규칙(v10 이전 `rule_json`)은 같은 업무의 다음 단계다."""
+    old = _rule()
+    assert "placement" not in old
+    assert SuccessorRule.model_validate(old).placement == "same_work"
+    assert SuccessorRule.model_validate_json(json.dumps(old)).placement == "same_work"
+    assert SuccessorRule.model_validate(_rule(placement="new_work")).placement == "new_work"
+    assert json.loads(SuccessorRule.model_validate(old).model_dump_json())["placement"] == "same_work"
+
+
+@pytest.mark.parametrize("placement", ["other", "", "NEW_WORK", None])
+def test_successor_rule_rejects_bad_placement(placement):
+    with pytest.raises(ValidationError):
+        SuccessorRule.model_validate(_rule(placement=placement))
 
 
 def test_successor_rule_accepts_empty_handoff_kinds():

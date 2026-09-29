@@ -79,11 +79,12 @@
 {% if rules %}
 <div class="table-wrap">
 <table>
-  <tr><th>규칙</th><th>넘기는 산출물</th><th></th></tr>
+  <tr><th>규칙</th><th>넘기는 산출물</th><th>후속 위치</th><th></th></tr>
   {% for r in rules %}
   <tr>
     <td class="rule-text">{{ r.text }}</td>
     <td>{% for label in r.handoff_labels %}<span class="chip">{{ label }}</span> {% endfor %}</td>
+    <td>{{ r.placement_label }}</td>
     <td><form method="post" action="/rules/{{ r.rule_id }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form></td>
   </tr>
   {% endfor %}
@@ -124,6 +125,13 @@
       {% endfor %}
     </div>
     <div class="help">선행 실행의 산출물 중 후속에 넘길 것. 후속 종류의 받는 산출물을 모두 포함해야 합니다.</div>
+  </div>
+  <div class="field">
+    <label for="placement">후속 위치 (placement)</label>
+    <select id="placement" name="placement">
+      {% for value, label in placement_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+    </select>
+    <div class="help">같은 업무의 다음 단계로 둘지, 새 업무로 등록하고 원인 업무와 연결할지 고릅니다.</div>
   </div>
   <div class="actions"><button class="btn" type="submit">규칙 등록</button></div>
 </form>

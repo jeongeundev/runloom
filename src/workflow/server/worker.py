@@ -677,7 +677,7 @@ class Worker:
                 task_closed=_operator_closed(task) or _operator_closed(fix_task),
             )
         to_kinds = {rule.to_kind for rule in rules if rule.from_kind == task["kind"]}
-        successors = [t for t in repo.successors_of(conn, task["task_id"]) if t["kind"] in to_kinds]
+        successors = [t for t in repo.followups_of(conn, task["task_id"]) if t["kind"] in to_kinds]
         return FollowupContext(
             **common,
             result_commit=self._result_commit(conn, execution),
@@ -716,11 +716,13 @@ class Worker:
         report: TickReport,
     ) -> None:
         now = self._clock()
+        touched = [task["task_id"]] + ([context.review.fix_task_id] if context.review is not None else [])
         if decision.action == "create_task":
             created = self._create_followup_task(conn, task, decision.create, now)
             if created is None:
                 return
             followup_id, fresh = created
+            touched.append(followup_id)
             report.followup_tasks_created += int(fresh)
             started = self._start_review(conn, repo.get_task(conn, followup_id), execution, decision.cause_key, report)
             report.followups_started += int(started)
@@ -756,6 +758,8 @@ class Worker:
             fix_task = repo.get_task(conn, context.review.fix_task_id)
             reason = self._queue_pull_request(conn, fix_task, execution, context.review, report)
             self._write_status(conn, fix_task, "확인 필요", reason or decision.reason)
+        # 후속·재작업·검토 착수와 그 단계 상태를 쓴 뒤 관련 업무의 상태를 다시 계산한다(ADR-0020)
+        repo.refresh_task_work_statuses(conn, touched, now=self._clock())
 
     def _queue_pull_request(
         self, conn: Connection, fix_task: Row, review_execution: Row, review: ReviewFacts, report: TickReport
@@ -810,14 +814,15 @@ class Worker:
             "run_mode": config.run_mode if config is not None else predecessor["run_mode"],
             "completion_mode": "review",
             "criteria": [c.__dict__ for c in merge_criteria(criteria_template(kind_spec), [])],
-            "predecessor_task_id": spec.predecessor_task_id,
+            "predecessor_task_id": spec.predecessor_task_id if spec.placement == "same_work" else None,
             "revision": 1,
             "target": {},
             "status": "대기",
             "status_reason": "준비 판정 대기",
         }
-        # 같은 업무의 다음 단계 — placement(같은 업무/새 업무)는 step 4
-        return repo.create_followup_once(conn, spec, row, now, work_item_id=predecessor["work_item_id"])
+        return repo.create_followup_once(
+            conn, spec, row, now, work_item_id=predecessor["work_item_id"], placement=spec.placement,
+        )
 
     def _start_review(
         self, conn: Connection, review_task: Row, fix_execution: Row, start_key: str, report: TickReport
@@ -1088,6 +1093,7 @@ class Worker:
                 continue
             report.successors_created += 1
             self._refresh_task(conn, task_id)  # → 실행 요청됨 · 접수 대기
+            repo.refresh_task_work_statuses(conn, [task_id], now=now)
 
     # --- 9. 실패 반영 -------------------------------------------------------------------
 

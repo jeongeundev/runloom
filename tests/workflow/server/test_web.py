@@ -1171,6 +1171,18 @@ def test_register_rule_appears_as_one_line(web, conn, settings):
     assert [(r.from_kind, r.to_kind) for _, r in rules] == [("bug_fix", "code_review"), ("bug_fix", "review")]
     assert rules[1][1].on_outcomes == ["ready_for_review"]
     assert rules[1][1].handoff_kinds == ["diff", "code_change_result"]
+    assert rules[1][1].placement == "same_work"  # 폼에 칸이 없으면 같은 업무의 다음 단계
+    assert "같은 업무의 다음 단계" in text
+
+
+def test_register_rule_with_new_work_placement(web, conn, settings):
+    register_kind(web)
+    register_rule(web, placement="new_work")
+    (_, rule), = [r for r in repo.list_rules(conn, session_id_of(web, settings)) if r[1].to_kind == "review"]
+    assert rule.placement == "new_work"
+    text = kinds_page(web)
+    assert "새 업무로 등록" in text
+    assert 'name="placement"' in text
 
 
 @pytest.mark.parametrize(
@@ -1183,6 +1195,7 @@ def test_register_rule_appears_as_one_line(web, conn, settings):
         ({"on_outcomes": []}, "on_outcomes"),
         ({"from_kind": "review", "on_outcomes": ["approved"]}, "from_kind 와 to_kind 가 같습니다"),
         ({"handoff_kinds": ["diff", "code_change_result", "handoff_bundle"]}, "handoff_bundle"),
+        ({"placement": "elsewhere"}, "placement"),
     ],
 )
 def test_register_rule_rejects_invalid_422(web, conn, settings, overrides, message):

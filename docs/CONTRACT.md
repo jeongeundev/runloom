@@ -542,7 +542,7 @@
 { "from_kind": "code_change", "on_outcomes": ["ready_for_review"], "to_kind": "review", "handoff_kinds": ["diff", "code_change_result", "test_log_after"] }
 ```
 
-`SuccessorRule.model_dump_json()` 의 필드 순서 그대로(`from_kind` · `on_outcomes` · `to_kind` · `handoff_kinds`, 기본값 없음). 계약 자체는 `from_kind == to_kind`·`on_outcomes`/`handoff_kinds` 중복·`handoff_kinds` 에 `handoff_bundle` 을 거부한다. 등록은 `POST /rules`: `on_outcomes` 가 `from_kind.outcomes` 밖이거나 `handoff_kinds` 가 `to_kind.input_kinds` 를 빠뜨리거나 `from_kind`·`to_kind` 가 이 워크스페이스에 없으면 `422 invalid_field`(사유는 `domain/kinds.validate_rule` 문구 — `등록되지 않은 종류 …` / `on_outcomes 에 … 의 outcome 이 아닌 값이 있습니다: …` / `handoff_kinds 에 … 의 input_kinds 가 빠졌습니다: …`), 같은 `from_kind → to_kind` 가 이미 있으면 `409 rule_exists`. 삭제는 `POST /rules/{rule_id}/delete` 이며 내장 규칙도 지울 수 있다.
+`SuccessorRule.model_dump_json()` 의 필드 순서 그대로(`from_kind` · `on_outcomes` · `to_kind` · `handoff_kinds`, 네 필드 모두 필수 — 위 예시처럼 생략한 선택 칸 `placement` 는 기본값 `same_work` 이고 dump 하면 끝에 붙는다, 15.1). 계약 자체는 `from_kind == to_kind`·`on_outcomes`/`handoff_kinds` 중복·`handoff_kinds` 에 `handoff_bundle` 을 거부한다. 등록은 `POST /rules`: `on_outcomes` 가 `from_kind.outcomes` 밖이거나 `handoff_kinds` 가 `to_kind.input_kinds` 를 빠뜨리거나 `from_kind`·`to_kind` 가 이 워크스페이스에 없으면 `422 invalid_field`(사유는 `domain/kinds.validate_rule` 문구 — `등록되지 않은 종류 …` / `on_outcomes 에 … 의 outcome 이 아닌 값이 있습니다: …` / `handoff_kinds 에 … 의 input_kinds 가 빠졌습니다: …`), 같은 `from_kind → to_kind` 가 이미 있으면 `409 rule_exists`. 삭제는 `POST /rules/{rule_id}/delete` 이며 내장 규칙도 지울 수 있다.
 
 ### 11.3 `GenericResult` — `review` 의 `approved`
 
@@ -1073,23 +1073,23 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 ## 15. 업무와 단계 — 선택 칸 (contract-pending)
 
-[ADR-0020](adr/0020-work-items-and-stages.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "업무와 단계 — phase 14". 계약 버전은 1 그대로이고 1~14절 payload 는 바뀌지 않는다 — 아래는 모두 기본값이 있는 추가형 선택 칸이다. 모델에 칸이 생기기 전이라 블록은 `jsonc` 펜스다(계약 fixture 테스트가 읽지 않는다). 15.1 은 step 4 가, 15.2·15.3 은 step 7 이 모델을 구현하면서 일반 `json` 펜스로 바꾸고 `test_v1.py` 의 블록 수(`test_contract_md_has_expected_block_counts`)를 함께 올린다. step 4 는 11.2 의 "기본값 없음" 문구도 고친다.
+[ADR-0020](adr/0020-work-items-and-stages.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "업무와 단계 — phase 14". 계약 버전은 1 그대로이고 1~14절 payload 는 바뀌지 않는다 — 아래는 모두 기본값이 있는 추가형 선택 칸이다. 15.1 은 step 4 가 모델을 구현해 일반 `json` 펜스다(계약 fixture 테스트가 읽는다). 15.2·15.3 은 모델에 칸이 생기기 전이라 `jsonc` 펜스이고(fixture 테스트가 읽지 않는다), step 7 이 모델을 구현하면서 `json` 펜스로 바꾸고 `test_v1.py` 의 블록 수(`test_contract_md_has_expected_block_counts`)를 함께 올린다.
 
 ### 15.1 `SuccessorRule` — `placement`
 
 `placement` 는 규칙이 만든 후속 Task 를 어디에 두는지다. `same_work`(기본) = 원인 Task 와 같은 업무의 다음 단계, `new_work` = 새 업무의 첫 단계 + 업무 링크 `spawned_from`. 칸이 없는 저장 규칙·요청은 `same_work` 다. 내장 `bug_fix → code_review` 는 `same_work` 이며 13.1 예시와 같은 값이다(dump 하면 `placement` 가 끝에 붙는다):
 
-```jsonc
+```json
 { "from_kind": "bug_fix", "on_outcomes": ["ready_for_review"], "to_kind": "code_review", "handoff_kinds": ["code_change_result", "diff", "test_log_after", "verification_log"], "placement": "same_work" }
 ```
 
 사용자 정의 규칙 — 검토에서 나온 후속 문서 작업을 새 업무로 만든다:
 
-```jsonc
+```json
 { "from_kind": "review", "on_outcomes": ["approved"], "to_kind": "doc_update", "handoff_kinds": ["generic_result"], "placement": "new_work" }
 ```
 
-`placement` 가 `same_work`·`new_work` 밖이면 422 `invalid_field`.
+`placement` 가 `same_work`·`new_work` 밖이면 422 `invalid_field`. 규칙 등록 화면(`POST /rules`)은 선택 필드 `placement` 를 받고(없으면 `same_work`), 규칙 목록에 "같은 업무의 다음 단계" / "새 업무로 등록" 으로 보인다.
 
 ### 15.2 `ExecutionRequest` — `bug_fix` 첫 시도, 업무 키
 

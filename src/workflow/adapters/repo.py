@@ -309,6 +309,17 @@ def refresh_work_status(conn: Connection, work_item_id: str, *, now: str) -> boo
     return set_work_status(conn, work_item_id, work_status(work_item_facts(conn, work_item_id)), now=now)
 
 
+def refresh_task_work_statuses(conn: Connection, task_ids: Sequence[str], *, now: str) -> int:
+    """Task 들이 속한 업무의 상태를 한 트랜잭션에서 다시 계산한다(바뀐 업무 수). 업무 없는 Task 는 건너뛴다."""
+    with _tx(conn):
+        work_item_ids = dict.fromkeys(
+            row["work_item_id"] for task_id in task_ids
+            if (row := _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ?", (task_id,))) is not None
+            and row["work_item_id"] is not None
+        )
+        return sum(refresh_work_status(conn, work_item_id, now=now) for work_item_id in work_item_ids)
+
+
 def assign_work_item(
     conn: Connection, session_id: str, work_item_id: str, *, assignee_type: str | None, assignee_id: str | None,
     now: str,
@@ -1105,6 +1116,16 @@ def get_selection(conn: Connection, task_id: str) -> SelectionRecord | None:
 def successors_of(conn: Connection, task_id: str) -> list[Row]:
     return conn.execute(
         "SELECT * FROM tasks WHERE predecessor_task_id = ? ORDER BY created_at, task_id", (task_id,)
+    ).fetchall()
+
+
+def followups_of(conn: Connection, task_id: str) -> list[Row]:
+    """이 Task 에서 이어진 Task — 같은 업무의 다음 단계(`predecessor_task_id`)와 이 Task 의 실행 결과가 새 업무로 만든
+    후속(`followup_links`, placement `new_work`)."""
+    return conn.execute(
+        "SELECT * FROM tasks WHERE predecessor_task_id = ? OR task_id IN (SELECT f.task_id FROM followup_links f"
+        " JOIN executions e ON e.execution_id = f.cause_execution_id WHERE e.task_id = ?) ORDER BY created_at, task_id",
+        (task_id, task_id),
     ).fetchall()
 
 
@@ -2089,6 +2110,15 @@ def list_issues_needing_merge_check(conn: Connection, session_id: str, source_id
     ).fetchall()
 
 
+def get_source_issue(conn: Connection, session_id: str, source_id: str, github_issue_id: int) -> Row | None:
+    return _one(
+        conn,
+        "SELECT si.* FROM source_issues si JOIN github_sources gs ON gs.source_id = si.source_id"
+        " WHERE si.source_id = ? AND si.github_issue_id = ? AND gs.session_id = ?",
+        (source_id, github_issue_id, session_id),
+    )
+
+
 def get_source_issue_by_task(conn: Connection, session_id: str, task_id: str) -> Row | None:
     return _one(
         conn,
@@ -2099,14 +2129,19 @@ def get_source_issue_by_task(conn: Connection, session_id: str, task_id: str) ->
 
 
 def create_followup_once(
-    conn: Connection, spec: FollowupTaskSpec, task: dict, now: str, *, work_item_id: str
+    conn: Connection, spec: FollowupTaskSpec, task: dict, now: str, *, work_item_id: str,
+    placement: str = "same_work",
 ) -> tuple[str, bool]:
     """(task_id, created). 같은 `(session_id, cause_execution_id, kind)` 가 있으면 그 Task 를 돌려주고 만들지 않는다.
-    `task` 는 spec 과 세션·종류·선행이 같아야 하고(ValueError), 원인 실행은 같은 세션 것이어야 한다(NotFound).
-    새 Task 는 `work_item_id` 업무의 단계가 된다(같은 세션 업무가 아니면 NotFound)."""
-    if (task["session_id"], task["kind"], task.get("predecessor_task_id")) != (
-        spec.session_id, spec.kind, spec.predecessor_task_id,
-    ):
+    `task` 는 spec 과 세션·종류가 같고 선행이 `same_work` 면 spec 의 선행, `new_work` 면 None 이어야 하며(ValueError),
+    원인 실행은 같은 세션 것이어야 한다(NotFound). `work_item_id` 는 원인 Task 의 업무다(같은 세션 업무가 아니면
+    NotFound). `same_work` 면 새 Task 가 그 업무의 다음 단계, `new_work` 면 새 업무의 첫 단계가 되고 원인 업무와
+    `spawned_from` 으로 잇는다(ADR-0020). 새 업무·링크는 Task 를 새로 만들 때만 생기고, 같은 트랜잭션 끝에 관련
+    업무의 상태를 다시 계산한다."""
+    if placement not in ("same_work", "new_work"):
+        raise ValueError(f"placement {placement!r}")
+    predecessor = spec.predecessor_task_id if placement == "same_work" else None
+    if (task["session_id"], task["kind"], task.get("predecessor_task_id")) != (spec.session_id, spec.kind, predecessor):
         raise ValueError(f"task {task['task_id']} 가 후속 spec 과 다릅니다")
     with _tx(conn):
         cause = _one(
@@ -2124,12 +2159,26 @@ def create_followup_once(
         )
         if existing is not None:
             return existing["task_id"], False
-        _insert_task_row(conn, task, now, work_item_id=work_item_id)
+        work_item_ids = [work_item_id]
+        if placement == "new_work":
+            cause_work = get_work_item(conn, spec.session_id, work_item_id)
+            if cause_work is None:
+                raise NotFound(f"work item {work_item_id}")
+            spawned = _work_item_for_task(
+                conn, task, now, source_type=cause_work["source_type"], source_id=cause_work["source_id"],
+                source_key=cause_work["source_key"], source_url=cause_work["source_url"],
+            )
+            link_work_items(conn, from_work_item_id=work_item_id, to_work_item_id=spawned, type="spawned_from",
+                            cause_execution_id=spec.cause_execution_id, now=now)
+            work_item_ids.append(spawned)
+        _insert_task_row(conn, task, now, work_item_id=work_item_ids[-1])
         conn.execute(
             "INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (spec.session_id, spec.cause_execution_id, spec.kind, task["task_id"], spec.rules_revision, now),
         )
+        for changed in work_item_ids:
+            refresh_work_status(conn, changed, now=now)
         return task["task_id"], True
 
 
