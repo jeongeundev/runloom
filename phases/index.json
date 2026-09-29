@@ -66,6 +66,14 @@
       "dir": "12-real-repo",
       "status": "completed",
       "completed_at": "2026-09-28T01:19:05+0900"
+    },
+    {
+      "dir": "13-selfhost-only",
+      "status": "pending"
+    },
+    {
+      "dir": "14-task-model",
+      "status": "pending"
     }
   ]
 }

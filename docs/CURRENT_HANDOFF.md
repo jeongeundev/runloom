@@ -2,13 +2,14 @@
 
 갱신일: 2026-09-29. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 13-task-model step 설계 (새 세션은 여기서 시작)
+## 다음 작업: 13-selfhost-only → 14-task-model 실행 (새 세션은 여기서 시작)
 
-**할 일**: `phases/13-task-model/` 의 step 을 설계한다(`.claude/commands/harness.md` 워크플로우). 구현은 사용자가 "진행해" 로 지시한 뒤.
+**step 설계 완료(2026-09-29)**: 13-task-model 범위를 두 phase 로 나눴다(사용자 결정 — demo 걷어내기를 먼저).
+- `phases/13-selfhost-only/`(6 step): `service` 에서 demo 모드·진단 데모·대본 에이전트·카탈로그·fixture 가져오기·VM 배포 파일 삭제, 내장 종류 `bug_fix`·`code_review` 둘, 스키마 v9. README "남기는 것" 참고.
+- `phases/14-task-model/`(11 step): 업무 `WorkItem`(`work_items`, 키 `RUN-n`) ↔ 단계 `Task` 분리, 업무 상태 8개(실패 = "내 차례 · 실패" + [다시 맡기기]·[닫기]), 후속 규칙 `placement`(same_work/new_work), `members`(첫 관리자), 매핑 표(`github · kind · * → bug_fix` 기본), 양식 칸 추출, 브랜치 `runloom/RUN-n`, 지표 묶음 = 업무, 홈 목록 = 업무 한 줄, 기존 데이터는 v10 마이그레이션으로 옮김.
+- 이후 phase 번호 한 칸씩 밀림: 15-team, 16-work-ui, 17-jira, 18-triage, 19-monitor(REDESIGN_PLAN 13절은 13 의 step 5 가 고침).
 
-**읽을 것(순서대로)**: [재설계 계획](product/REDESIGN_PLAN.md) — 특히 5절(데이터 모델)·13절(phase 표)·**16절(설계 검토 결정·제안)**, 목업 https://claude.ai/artifact/Jx6Pa7PmRZo1hmvFuiH66C (4판), [ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)(종류·후속 규칙), [ADR-0014](adr/0014-github-task-cycle.md)(GitHub 순환), 벤치마킹 `docs/research/2026-09-29-benchmark-intake-mapping.md`.
-
-**13-task-model 범위(16절 반영)**: 업무(목록 한 줄) ↔ 단계(Task) 분리 — 후속 규칙 행이 "같은 업무 단계 / 새 업무" 를 가른다, Runloom 업무 키(예 `RUN-23`, 브랜치 이름에 사용), 공통 업무 양식 칸, 소스·매핑 표 일반화(GitHub 를 새 모델로), `members`(첫 관리자 1명) + 담당 = 멤버 또는 에이전트, 상태 모델(`tasks.status` CHECK 재생성 — 새로 들어옴·직접 작업 중·PR·검토, "실패" 자리), 되쓰기 기록, **`service` 에서 demo 모드 제거**. step 0 에서 ADR·GLOSSARY·ARCHITECTURE 로 이름 고정. 데이터 등급은 17 로, 원본 상태 → Runloom 규칙 표는 16-jira 전.
+**실행**: `service` 에서 `python3 scripts/execute.py 13-selfhost-only --engine claude` → `feat-13-selfhost-only` 를 `service` 에 `--no-ff` 병합 → `python3 scripts/execute.py 14-task-model --engine claude` → 병합. 셀프호스트 재설치는 사용자 지시 뒤.
 
 **2026-09-29 확정 사항**: 목록 한 줄 = 업무(수정·검토·재작업·판단은 단계), `service` 는 셀프호스트만(demo 는 `main` 에만), 일정 무관·완성도 우선, 팀 계정 = 초대 링크 + 이메일·비밀번호, 판단 = 로컬 Claude Code 판단 에이전트가 제안만(자동 시작은 업무 종류별 설정), 직접 작업 상태 추적 = Git·GitHub 신호 + Claude Code 훅, 수신함 = "담당 없음" 묶음. Jira 는 사용자 계정의 새 Jira Cloud 사이트(지인 회사 Jira 는 형식만 참고).
 

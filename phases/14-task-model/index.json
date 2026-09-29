@@ -1,0 +1,61 @@
+{
+  "project": "workflow",
+  "phase": "14-task-model",
+  "steps": [
+    {
+      "step": 0,
+      "name": "task-model-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "work-status-domain",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "schema-v10",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "work-item-repo",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "succession-placement",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "intake-work-items",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "work-status-worker",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "branch-key",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "metrics-by-work",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "work-list-minimal",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "task-model-verify",
+      "status": "pending"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "project": "workflow",
+  "phase": "13-selfhost-only",
+  "steps": [
+    {
+      "step": 0,
+      "name": "selfhost-only-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "selfhost-fixtures",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "remove-demo-web",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "remove-diagnosis",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "remove-demo-deploy",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "selfhost-only-verify",
+      "status": "pending"
+    }
+  ]
+}
