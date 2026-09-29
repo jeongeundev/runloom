@@ -1996,12 +1996,13 @@ def _execution_outcome(conn: Connection, store: ArtifactStore, row: Row) -> str 
 
 def list_metric_facts(conn: Connection, session_id: str, *, store: ArtifactStore) -> MetricFacts:
     """세션의 Task·실행·업무 이벤트·사람 요청을 도메인 값 객체로 옮긴다(계산 없음). NULL 은 None 그대로(모름).
+    Task 는 업무(`work_item_id`)를 싣고 생성 순(`created_at`, rowid)이다 — 지표 묶음 = 업무, 시작 Task = 첫 단계.
     원본 이슈에서 온 Task 는 이슈 상태·병합 시각·마지막 조회 시각(`source_issues`)도 싣는다.
     `store` 는 검토 결과 산출물의 outcome 을 읽는 데만 쓴다."""
     tasks = tuple(
         TaskFact(
-            task_id=r["task_id"], kind=r["kind"], created_at=r["created_at"], status=r["status"],
-            predecessor_task_id=r["predecessor_task_id"],
+            task_id=r["task_id"], work_item_id=r["work_item_id"], kind=r["kind"], created_at=r["created_at"],
+            status=r["status"],
             issue_opened_at=json.loads(r["snapshot_json"])["created_at"] if r["snapshot_json"] else None,
             issue_state=r["issue_state"], pr_merged_at=r["pr_merged_at"], merge_checked_at=r["merge_checked_at"],
             finished_at=r["finished_at"],

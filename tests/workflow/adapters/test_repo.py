@@ -2587,10 +2587,11 @@ def test_list_metric_facts_reads_the_session_rows_as_domain_values(cycle, store)
     tasks = {t.task_id: t for t in facts.tasks}
     assert set(tasks) == {TASK_A, "task-gh-41", "task-gh-41-review"}
     assert tasks["task-gh-41"] == TaskFact(
-        task_id="task-gh-41", kind="bug_fix", created_at=NOW, status="확인 필요",
+        task_id="task-gh-41", work_item_id=_wi41(cycle), kind="bug_fix", created_at=NOW, status="확인 필요",
         issue_opened_at="2026-10-06T10:12:00Z", issue_state="open",
     )
-    assert tasks["task-gh-41-review"].predecessor_task_id == "task-gh-41"
+    assert tasks["task-gh-41-review"].work_item_id == _wi41(cycle)  # 같은 업무의 다음 단계 = 같은 묶음
+    assert tasks[TASK_A].work_item_id != _wi41(cycle)
     assert tasks["task-gh-41-review"].issue_opened_at is None
     assert tasks[TASK_A].issue_opened_at is None
     assert tasks[TASK_A].issue_state is None and tasks["task-gh-41-review"].issue_state is None

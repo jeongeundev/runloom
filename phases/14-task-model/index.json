@@ -69,7 +69,9 @@
     {
       "step": 8,
       "name": "metrics-by-work",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T02:41:39+0900",
+      "summary": "수정: domain/metrics.py(TaskFact.work_item_id 필수 칸 추가·predecessor_task_id 제거, _Index.bundles = 업무마다 묶음·시작 Task = 입력 생성 순의 첫 단계, root_of 제거, 인계 대기 = 시작 Task 가 아닌 단계 생성 → 첫 시작), adapters/repo.py(list_metric_facts 가 work_item_id 를 싣고 생성 순), templates/metrics.html('GitHub 이슈 업무만'), docs ARCHITECTURE(지표 정의 묶음 문단·인계 대기 행·접수 시각·step 8 구현 단락·list_metric_facts 행)·GLOSSARY 업무 묶음; 테스트: test_metrics 헬퍼 work= (없으면 업무=Task 하나)·새 4개(체인 2업무 → 묶음 2·인계 0, fix+review+재작업 → 묶음 1·재작업 1·1회 통과 False·인계 1h, spawned 업무 별도 묶음·intake_to_merge 는 원인 업무만, 선행 없는 다시 맡긴 단계도 인계), test_repo list_metric_facts work_item_id 단정, test_web_metrics 문구. 결정: 업무 생성 시각 = 첫 단계 created_at(같은 트랜잭션·같은 now)이라 TaskFact 에 업무 시각 칸을 따로 두지 않음; 인계 대기는 predecessor_task_id 대신 '업무의 시작 Task 가 아닌 단계'(체인·폼 업무 사이 선행 제외, 다시 맡긴 단계 포함); 직접 등록 완료 규칙(시작 Task 의 완료 시각)·group_by·기준선·CSV 코드값 bundles 그대로; new_work 업무는 source_issues 행이 없어 GitHub 묶음이 아님. 검증: pytest 2562 passed/32 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e/test_metrics.py 5 passed. 다음 step 주의: 직접 등록 업무에서 첫 단계가 실패하고 다시 맡긴 단계가 완료되면 접수 → 완료는 여전히 시작 Task 기준이라 미완료·closed_failed 로 셈(업무 완료 시각으로 바꾸려면 work_item_events 를 사실에 실어야 함)"
     },
     {
       "step": 9,

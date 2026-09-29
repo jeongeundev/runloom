@@ -48,7 +48,7 @@
     <tr>
       <td>도입 후 · {{ a.label }}</td>
       <td>{{ cell(a.cell) }}</td>
-      <td class="small">GitHub 이슈 묶음만 · 끝점은 그 이슈를 닫은 병합 PR 의 병합 시각(병합 전은 미완료){% if a.closed_unmerged %} · 병합 없이 닫힘 {{ a.closed_unmerged }}(미완료에 포함){% endif %}</td>
+      <td class="small">GitHub 이슈 업무만 · 끝점은 그 이슈를 닫은 병합 PR 의 병합 시각(병합 전은 미완료){% if a.closed_unmerged %} · 병합 없이 닫힘 {{ a.closed_unmerged }}(미완료에 포함){% endif %}</td>
     </tr>
     {% endfor %}
   </table>
