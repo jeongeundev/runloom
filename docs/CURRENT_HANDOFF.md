@@ -2,7 +2,11 @@
 
 갱신일: 2026-09-29. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 14 완료 → service 병합 → 셀프호스트 재설치(사용자 지시) → 15-team 설계 (새 세션은 여기서 시작)
+## 다음 작업: 15-team 설계 (새 세션은 여기서 시작)
+
+**할 일**: `phases/15-team/` step 설계(`.claude/commands/harness.md`). 범위는 [재설계 계획](product/REDESIGN_PLAN.md) 13절 15-team — 초대 링크·이메일·비밀번호 로그인·역할(관리자/멤버), 사람별 "내 차례"·알림, 러너 소유자. 14 가 만든 `members`(첫 관리자 1명)·업무 담당(`member`|`agent`)을 잇는다([ADR-0020](adr/0020-work-items-and-stages.md)). 구현은 사용자 "진행해" 뒤.
+
+**2026-09-30 반영**: 13·14 모두 `service` 병합(`56a400d`, `7cd95d9`, 원격 미푸시). 셀프호스트 재설치 — 백업 `20260929T235350Z`(스키마 8) → `install.sh` → 스키마 10(업무 23: 새로 들어옴 21·완료 1·종료 1, Task 24·기준선 24 보존, 종류 `bug_fix`·`code_review`, 관리자 1) → `install-runner.sh` 로 러너 재기동(claim 정상). 재기동 직후 워커가 sandbox #1 의 기존 댓글(같은 comment_id)을 업무 키 `RUN-23` 이 든 제목으로 한 번 고쳐 썼다(새 댓글 아님, OpenArchive 쓰기 없음). 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 `workflow-selfhost:local` 을 사용자 설치와 공유해 여전히 미실행 — 태그 격리 수정이 먼저 필요. 남은 문서 정리: `docs/n8n/README.md`·`tests/test_n8n_example.py` 가 지운 `scripts/local_stack.py`·`/agents/register` 를 아직 언급.
 
 **14-task-model 완료**(2026-09-30, `feat-14-task-model`, [ADR-0020](adr/0020-work-items-and-stages.md), 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 14 업무·단계"): 업무 `work_items`(키 `RUN-n`)·단계 Task 분리, 업무 상태 8개, 실패 → 내 차례·[다시 맡기기]·[닫기], `placement`, 매핑 표·양식 칸, 브랜치 `runloom/<키>`, 지표 묶음 = 업무, 홈 목록 = 업무 한 줄, 스키마 v10. 다음: `feat-14-task-model` 을 `service` 에 `--no-ff` 병합 → 셀프호스트 재설치(백업 먼저, 진행 중 실행이 끝난 뒤, 러너도 함께 — [SELFHOST](SELFHOST.md) 업그레이드 v10, 사용자 지시 뒤) → 15-team 설계(초대·로그인·역할). 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 공유 때문에 미실행 — 재설치 때 함께 확인한다.
 
