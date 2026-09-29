@@ -69,6 +69,7 @@ from workflow.adapters.github_client import (
     GitHubRateLimited,
     GitHubRepositoryNotAllowed,
     GitHubUnavailable,
+    GitHubUnprocessable,
 )
 from workflow.adapters.notify_sender import NotifyFailed, NotifySender
 from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore
@@ -1552,8 +1553,12 @@ class Worker:
                 self._pull_request_failed(conn, row, str(exc), pull_request.PERMISSION_NEEDED, now, report)
                 continue
             except GitHubError as exc:
+                detail = exc.message if isinstance(exc, GitHubUnprocessable) else ""
+                if pull_request.refs_unreadable(detail):  # Contents 읽기 없는 App — 재시도해도 같다(실연동 1)
+                    self._pull_request_failed(conn, row, str(exc), pull_request.PERMISSION_NEEDED, now, report)
+                    continue
                 attempts = row["attempts"] + 1
-                log.warning("PR 열기 실패 %s (%s회): %s", task_id, attempts, exc)
+                log.warning("PR 열기 실패 %s (%s회): %s%s", task_id, attempts, exc, f" — {detail}" if detail else "")
                 if attempts >= PR_MAX_ATTEMPTS:
                     self._pull_request_failed(conn, row, str(exc), str(exc), now, report)
                 else:

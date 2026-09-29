@@ -429,10 +429,11 @@ def test_build_manifest_has_minimal_permissions_and_no_webhook():
         "setup_url": "http://127.0.0.1:8000/operator/github/app/setup",
         "setup_on_update": True,
         "public": False,
-        "default_permissions": {"issues": "write", "pull_requests": "write", "metadata": "read"},
+        "default_permissions": {"issues": "write", "pull_requests": "write", "contents": "read", "metadata": "read"},
         "default_events": [],
     }
-    assert "contents" not in manifest["default_permissions"]
+    # Contents 는 읽기만 — PR 생성이 head·base ref 를 읽는다(없으면 422 `not all refs are readable`, 실연동 1). push 는 러너가
+    assert manifest["default_permissions"]["contents"] == "read"
 
 
 def test_build_manifest_strips_trailing_slash():

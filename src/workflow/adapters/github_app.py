@@ -97,7 +97,8 @@ def _json_object(response: httpx.Response, method: str, label: str) -> dict:
 
 def build_manifest(base_url: str, name: str) -> dict:
     """App 만들기 화면에 넘길 manifest. 웹훅 항목은 넣지 않는다 — GitHub 는 `active: false` 여도 공개 인터넷에서 닿지 않는
-    hook url(127.0.0.1)을 거부한다(2026-09-27 실제 확인). 권한은 이슈 쓰기·PR 쓰기(초안 PR, ADR-0018)·메타데이터만."""
+    hook url(127.0.0.1)을 거부한다(2026-09-27 실제 확인). 권한은 이슈 쓰기·PR 쓰기(초안 PR, ADR-0018)·메타데이터와 Contents 읽기 —
+    PR 생성이 head·base ref 를 읽는다(없으면 422 `not all refs are readable`, 2026-09-29 실연동 1). push 는 러너가 사용자 자격으로 한다."""
     base = base_url.rstrip("/")
     return {
         "name": name,
@@ -106,7 +107,7 @@ def build_manifest(base_url: str, name: str) -> dict:
         "setup_url": f"{base}/operator/github/app/setup",
         "setup_on_update": True,
         "public": False,
-        "default_permissions": {"issues": "write", "pull_requests": "write", "metadata": "read"},
+        "default_permissions": {"issues": "write", "pull_requests": "write", "contents": "read", "metadata": "read"},
         "default_events": [],
     }
 
