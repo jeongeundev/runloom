@@ -12,8 +12,10 @@
 1. 완료(2026-09-29): `service` 병합(2e06218) → 백업 `20260929T012810Z` → `install.sh` 재실행, 스키마 8, 업무 22·기준선 24 보존.
 2. **App 권한 승인** — 기존 App `runloom-gwufov` 의 Pull requests 를 Read and write 로 올리고 설치(jeongeundev)에서 새 권한 승인([SELFHOST "App 권한 올리기"](SELFHOST.md#app-권한-올리기--phase-12-전에-만든-app)).
 3. **에이전트 전용 테스트 DB** — 2026-09-29 컨테이너 `runloom-agent-db`(pgvector pg17, vector 0.8.6, `127.0.0.1:5435`, 볼륨 `runloom-agent-db`)로 띄움 — 5433 은 `opensql-db-1`, 5434 는 `application-db-1` 이 사용 중. 러너 `--env DATABASE_URL=postgresql://openarchive:openarchive@localhost:5435/openarchive` 로 넘긴다.
-4. **OpenArchive 준비**(사용자 저장소 — 사용자가 직접 또는 지시로): `scripts/check.sh` 의 pytest 를 `python -m pytest` 로 한 줄 수정(링크된 편집 설치 venv 가 원본 코드를 가리키는 문제), 원본 폴더 `frontend` 에서 `npm install`. Next 가 링크된 `node_modules` 를 거부하면 frontend 만 업무마다 설치로 바꾼다.
-5. **러너 붙이기** — 카드 [러너 붙이기] → 명령에 `--verify check="scripts/check.sh" --link backend/.venv --link frontend/node_modules --env DATABASE_URL=…` 를 더해 실행. `origin` 이 ssh 면 launchd 에 `SSH_AUTH_SOCK` 이 없어 push 가 실패할 수 있다(SELFHOST 러너 절 "git 자격").
+4. 완료(2026-09-29) **OpenArchive 준비**: 원본 폴더 `/Users/kje/demo/OpenArchive` 를 `git pull --ff-only` 로 GitHub `main`(`2383ce9`)에 맞추고 `backend/.venv` 에 `pip install -e '.[dev]'`(pytest·ruff 가 없었다), `frontend` 에 `npm install`. check.sh 는 고치지 않았다 — 대신 러너 `--env PYTHONPATH=.` 로 링크된 편집 설치 venv 가 작업 복사본 코드를 먼저 잡게 한다(확인: 없으면 원본 `app`, 있으면 복사본 `app`). Next 16 Turbopack 이 링크된 `node_modules` 를 "points out of the filesystem root" 로 거부해 러너에 `--copy`(APFS 복제, 4.6초)를 더했다(`781ce2a`). GitHub `main` 클론 + 링크 venv + 복제 node_modules + `PYTHONPATH=.` + 5435 DB 로 `bash scripts/check.sh` 통과(exit 0, 약 3분, backend 880·frontend 242). **main 에 의존성이 늘면 원본 폴더를 다시 pull + pip/npm install 해야 한다**(venv·node_modules 는 원본 것을 쓴다).
+5. **러너 붙이기** — 카드 [러너 붙이기] → 나온 명령 끝에 붙여 실행:
+   `--repo /Users/kje/demo/OpenArchive --verify "check=bash scripts/check.sh" --link backend/.venv --copy frontend/node_modules --env PYTHONPATH=. --env DATABASE_URL=postgresql://openarchive:openarchive@localhost:5435/openarchive`
+   `origin` 은 https(osxkeychain) — launchd 에서 push 가 되는지 첫 업무에서 확인.
 6. **알림** — Discord 웹훅 URL 을 `/operator/notifications` 에 저장 → [테스트 보내기].
 7. **이슈 3건 이상** — 사용자가 손대지 않은 이슈를 골라 [에이전트에게 맡기기] → PR 병합까지. [VERIFICATION_LOG](VERIFICATION_LOG.md) 의 "실연동 기록 틀" 에 이슈마다 기록(phase 11 미확인 `setup_action`·설치 URL `state` 복귀 포함). 끝나면 `/metrics` 의 기준선(24건, 중앙값 7시간 28분) 대 도입 후.
 
