@@ -121,7 +121,8 @@ def test_claim_204_then_assignment_then_204_after_accepted(client, seeded, conne
     seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id)
     assigned = client.post("/connector/claim", json=claim, headers=headers)
     assert assigned.status_code == 200
-    assert assigned.json() == request_body(EXEC_FIX, TASK_B)  # 저장된 request_json 그대로
+    # 저장된 request_json 그대로 — 칸이 없던 요청의 업무 키 두 칸은 기본값으로 싣는다 (CONTRACT 15.2)
+    assert assigned.json() == {**request_body(EXEC_FIX, TASK_B), "work_key": None, "branch_seq": 1}
 
     repeat = client.post("/connector/claim", json=claim, headers=headers)  # 접수 전 재조회는 같은 배정
     assert repeat.status_code == 200

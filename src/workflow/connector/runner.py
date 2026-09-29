@@ -13,7 +13,7 @@
 - 어댑터는 도구 이름 → 어댑터 매핑이며, 실행마다 `target.local_registration_id` 로 찾은 로컬 등록의 `tool` 로
   하나를 고른다 (`select_adapter`). 요청 본문의 값으로 실행 대상을 고르지 않는다.
 - 종료 이벤트(result_ready·failed)를 중앙이 받은 뒤 worktree·인계 디렉터리를 지운다 (`_cleanup_workdirs`). 결과는
-  `task/{task_id}` 브랜치의 커밋으로 남아 있다. 지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다.
+  결과 브랜치(`runloom/<업무 키>` 또는 `task/{task_id}`)의 커밋으로 남아 있다. 지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다.
 - 내장이 아닌 종류(`LocalTarget`, ADR-0009)도 등록의 `tool`·`repo_path` 로 어댑터·인계 디렉터리를 정하지만 worktree 는
   없다. 결과는 `GenericResult` 를 kind `generic_result` 로 올리고 같은 `result_ready` 를 보낸다.
 - 커밋 검토(`CommitReviewTarget`, `code_review`)도 같다 — 업무 worktree 가 없고(검토 체크아웃은 어댑터가 만들고 지운다)
@@ -27,7 +27,7 @@
   `origin/HEAD` 커밋을 claim 의 `registration_heads` 로 보낸다. fetch 에 실패한 등록은 빼고 로그만 남긴다. 실행 중에는
   claim 을 하지 않으므로 fetch 도 없다.
 - 결과 브랜치 push(ADR-0018 결정 4): 수정 결과가 `ready_for_review`·결과 커밋이면 `result_ready` 전에 등록 폴더에서
-  `task/<task_id>` 를 origin 에 push 하고 `branch_pushed` 로 보고한다. 검토·사용자 정의 종류는 push 하지 않는다.
+  결과 브랜치(`contracts/v1.result_branch`)를 origin 에 push 하고 `branch_pushed` 로 보고한다. 검토·사용자 정의 종류는 push 하지 않는다.
 """
 
 import hashlib
@@ -452,14 +452,17 @@ class Runner:
         )
 
     def _push_result(self, request: ExecutionRequest, result: CodeChangeResult | CodeReviewResult | GenericResult) -> dict:
-        """수정 결과(`ready_for_review`·결과 커밋 있음)면 등록 폴더에서 `task/<task_id>` 를 origin 에 push 하고
+        """수정 결과(`ready_for_review`·결과 커밋 있음)면 등록 폴더에서 결과 브랜치(`runloom/<업무 키>`, 키 없는 옛 요청은
+        `task/<task_id>`)를 origin 에 push 하고
         `branch_pushed` 칸을 돌려준다. origin 이 없거나 push 대상이 아니면 칸을 뺀다. 실패해도 결과는 그대로다."""
         if not (isinstance(result, CodeChangeResult) and result.outcome == "ready_for_review" and result.result_commit):
             return {}
         repo = self._registered_repo(request)
         if repo is None or not repo.is_dir() or not git_ops.has_origin(repo):
             return {}
-        return {"branch_pushed": git_ops.push_task_branch(repo, request.task_id)}
+        return {"branch_pushed": git_ops.push_task_branch(
+            repo, request.task_id, work_key=request.work_key, branch_seq=request.branch_seq,
+        )}
 
     def _finish_failed(
         self, execution_id: str, failed: tuple[str, str, bool], usage: ExecutionUsage | None = None,
@@ -517,7 +520,7 @@ class Runner:
         self._cleanup_workdirs(row)
 
     def _cleanup_workdirs(self, row: dict) -> None:
-        """결과가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지운다. 브랜치 `task/{task_id}` 와 결과 커밋은 남긴다.
+        """결과가 중앙에 닿은 뒤 worktree·인계 디렉터리를 지운다. 결과 브랜치와 결과 커밋은 남긴다.
         지우는 경로는 등록의 repo 와 task_id 로 계산한 것뿐이다. 프로세스 종료를 확인하지 못한 실패(process_stopped
         False)는 살아 있는 프로세스의 cwd 일 수 있어 지우지 않는다. 실패는 경고만 남기고 실행 결과에 영향을 주지 않는다.
         이미 없는 디렉터리는 조용히 지나가며, 다 지웠을 때만 `cleaned_at` 을 적는다."""

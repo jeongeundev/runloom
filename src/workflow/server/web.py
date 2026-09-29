@@ -309,6 +309,7 @@ def _start_execution(
             "input_artifact_ids": list(input_artifact_ids),
             "target": target,
             "kind_spec": spec.model_dump(),
+            **repo.execution_branch_fields(conn, task["task_id"]),
         })
     except ValidationError:
         raise PageError(

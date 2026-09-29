@@ -62,6 +62,7 @@ from workflow.contracts.v1 import (
     KindSpec,
     SelectionRecord,
     SuccessorRule,
+    format_work_key,
 )
 from workflow.domain import status as domain_status
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
@@ -1407,6 +1408,26 @@ def list_executions(conn: Connection, task_id: str) -> list[Row]:
     ).fetchall()
 
 
+def execution_branch_fields(conn: Connection, task_id: str) -> dict[str, str | int | None]:
+    """새 실행 요청의 `work_key`·`branch_seq` (ARCHITECTURE "실행 요청 work_key·branch_seq와 브랜치"). 이미 실행이 있으면
+    첫 요청의 두 칸 그대로(재작업은 같은 브랜치, v10 이전 요청은 끝까지 `task/<id>`), 첫 실행이면 업무 키 + 그 업무에서
+    같은 종류 단계 중 이 Task 의 순번(다시 맡긴 단계는 2 부터). 같은 시각에 만든 단계는 만든 순(rowid)으로 센다."""
+    first = _one(conn, "SELECT request_json FROM executions WHERE task_id = ? ORDER BY attempt_no LIMIT 1", (task_id,))
+    if first is not None:
+        request = ExecutionRequest.model_validate_json(first["request_json"])
+        return {"work_key": request.work_key, "branch_seq": request.branch_seq}
+    task = _one(conn, "SELECT work_item_id, kind FROM tasks WHERE task_id = ?", (task_id,))
+    work = _one(conn, "SELECT key_number FROM work_items WHERE work_item_id = ?", (task["work_item_id"],))
+    same_kind = conn.execute(
+        "SELECT task_id FROM tasks WHERE work_item_id = ? AND kind = ? ORDER BY created_at, rowid",
+        (task["work_item_id"], task["kind"]),
+    ).fetchall()
+    return {
+        "work_key": format_work_key(work["key_number"]),
+        "branch_seq": [r["task_id"] for r in same_kind].index(task_id) + 1,
+    }
+
+
 def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None:
     """이 connector 에 배정된 `queued` 실행 하나. 접수 확인(accepted) 전에는 같은 실행을 다시 준다.
     연결 프로그램당 실행 하나이므로 두 개가 queued 여도 먼저 내준 것을 유지한다. 상태는 바꾸지 않는다."""
@@ -2535,13 +2556,16 @@ def enqueue_pull_request(
     conn: Connection, *, task_id: str, session_id: str, source_id: str, repository_full_name: str, issue_number: int,
     fix_execution_id: str, review_execution_id: str, now: str,
 ) -> bool:
-    """수정 Task 하나에 한 행(`pending`). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다."""
+    """수정 Task 하나에 한 행(`pending`). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다.
+    head 는 검토한 수정 실행 요청의 두 칸으로 계산한 결과 브랜치(러너가 push 한 이름)."""
+    fix = ExecutionRequest.model_validate_json(get_execution(conn, fix_execution_id)["request_json"])
+    branch = head_branch(task_id, work_key=fix.work_key, branch_seq=fix.branch_seq)
     with _tx(conn):
         cur = conn.execute(
             "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
             " head_branch, fix_execution_id, review_execution_id, state, created_at, updated_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) ON CONFLICT (task_id) DO NOTHING",
-            (task_id, session_id, source_id, repository_full_name, issue_number, head_branch(task_id),
+            (task_id, session_id, source_id, repository_full_name, issue_number, branch,
              fix_execution_id, review_execution_id, now, now),
         )
         if cur.rowcount == 1:

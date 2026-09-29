@@ -2694,6 +2694,59 @@ def test_enqueue_pull_request_once_per_fix_task(cycle):
     assert repo.get_pull_request_row(cycle, "task-gh-41")["created_at"] == NOW
 
 
+def test_enqueue_pull_request_head_branch_follows_the_fix_request_work_key(cycle):
+    """phase 14 step 7 — head 는 검토한 수정 실행 요청의 두 칸으로 `result_branch`. 이미 있는 행은 그대로."""
+    keyed = ExecutionRequest.model_validate({
+        **_request("exec-fix-1", "task-gh-41", "code_change", ("art-x",)).model_dump(),
+        "work_key": "RUN-1", "branch_seq": 2,
+    })
+    repo.create_execution(cycle, execution_id="exec-fix-1", task_id="task-gh-41", attempt_no=1,
+                          start_key="auto:task-gh-41:r1", agent_id=FIX_AGENT, kind="bug_fix", request=keyed,
+                          assigned_connector_id=None, predecessor_execution_id=None, now=NOW)
+    assert _enqueue(cycle) is True
+    assert repo.get_pull_request_row(cycle, "task-gh-41")["head_branch"] == "runloom/RUN-1-2"
+
+
+def test_enqueue_pull_request_keeps_existing_row_head_branch(cycle):
+    _fix_execution(cycle)
+    cycle.execute(
+        "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+        " head_branch, fix_execution_id, review_execution_id, state, created_at, updated_at)"
+        " VALUES ('task-gh-41', ?, ?, 'acme/billing', 41, 'task/task-gh-41', 'exec-fix-1', 'exec-rev-0',"
+        " 'pending', ?, ?)", (SESSION, SOURCE, NOW, NOW),
+    )
+    assert _enqueue(cycle, LATER) is False
+    assert repo.get_pull_request_row(cycle, "task-gh-41")["head_branch"] == "task/task-gh-41"
+
+
+def test_execution_branch_fields_new_task_gets_work_key_and_same_kind_sequence(seeded):
+    """첫 실행이면 업무 키 + 그 업무의 같은 종류 단계 중 순번(다시 맡긴 단계는 2, 3 …)."""
+    conn = seeded
+    work = repo.work_item_of_task(conn, TASK_A)
+    key = f"RUN-{work['key_number']}"
+    repo.insert_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), LATER,
+                     work_item_id=work["work_item_id"])
+    repo.insert_task(conn, _task("diagnose-again"), LATER, work_item_id=work["work_item_id"])
+    assert repo.execution_branch_fields(conn, TASK_A) == {"work_key": key, "branch_seq": 1}
+    assert repo.execution_branch_fields(conn, TASK_B) == {"work_key": key, "branch_seq": 1}  # 종류가 다르면 따로 센다
+    assert repo.execution_branch_fields(conn, "diagnose-again") == {"work_key": key, "branch_seq": 2}
+
+
+def test_execution_branch_fields_copy_the_first_request_of_the_task(seeded):
+    """이미 실행이 있으면 첫 요청의 두 칸 그대로 — 재작업은 같은 브랜치, v10 이전 요청(칸 없음)은 끝까지 `task/<id>`."""
+    conn = seeded
+    _create_execution(conn, "exec-1", TASK_A)
+    assert repo.execution_branch_fields(conn, TASK_A) == {"work_key": None, "branch_seq": 1}
+    keyed = ExecutionRequest.model_validate({**_request("exec-2", TASK_B, "code_change", ("art-x",)).model_dump(),
+                                             "work_key": "RUN-9", "branch_seq": 3})
+    repo.insert_task(conn, _task(TASK_B, kind="code_change"), LATER,
+                     work_item_id=repo.work_item_of_task(conn, TASK_A)["work_item_id"])
+    repo.create_execution(conn, execution_id="exec-2", task_id=TASK_B, attempt_no=1, start_key="auto:b:r1",
+                          agent_id="agent-codex-mac", kind="code_change", request=keyed, assigned_connector_id=None,
+                          predecessor_execution_id=None, now=LATER)
+    assert repo.execution_branch_fields(conn, TASK_B) == {"work_key": "RUN-9", "branch_seq": 3}
+
+
 def test_failed_attempt_backs_off_and_stops_at_the_limit(cycle):
     _fix_execution(cycle)
     _enqueue(cycle)

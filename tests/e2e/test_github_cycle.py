@@ -593,6 +593,13 @@ def q(world: World, sql: str, *params) -> list[sqlite3.Row]:
         conn.close()
 
 
+def result_branch_of(world: World, task_id: str) -> str:
+    """러너가 만든 결과 브랜치 — 업무 키 `runloom/RUN-<n>` (phase 14 step 7, 첫 수정 단계라 순번 없음)."""
+    (row,) = q(world, "SELECT w.key_number FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ?", task_id)
+    return f"runloom/RUN-{row['key_number']}"
+
+
 def task(world: World, task_id: str) -> sqlite3.Row:
     return q(world, "SELECT * FROM tasks WHERE task_id = ?", task_id)[0]
 
@@ -830,7 +837,7 @@ def test_06_real_fix_is_verified_and_restarted_workers_link_existing_c_once(worl
     assert after.startswith("exit_code=0") and verification.startswith("exit_code=0")
     result = fix_result(world, execs(world, t["A"])[0])
     assert result.base_commit == world.base["billing"]
-    assert _git(world.billing, "rev-parse", f"task/{t['A']}") == result.result_commit  # 실제 커밋
+    assert _git(world.billing, "rev-parse", result_branch_of(world, t["A"])) == result.result_commit  # 실제 커밋
     assert _git(world.billing, "rev-parse", "main") == world.base["billing"]  # 기준 브랜치는 그대로
 
     # 기존 C 에 연결 — 새 검토 Task·후속 링크 없음, 실행 하나
@@ -867,7 +874,7 @@ def test_07_changes_requested_reworks_a_once_and_the_new_commit_is_reviewed(worl
     a = task(world, t["A"])
     assert (a["status"], a["status_reason"], a["finished_at"]) == (
         "확인 필요", "검토 승인 — 병합·이슈 종료는 사람", None)
-    assert _git(world.billing, "rev-parse", f"task/{t['A']}") == second.result_commit
+    assert _git(world.billing, "rev-parse", result_branch_of(world, t["A"])) == second.result_commit  # 재작업은 같은 브랜치
     assert _git(world.billing, "rev-parse", "main") == world.base["billing"]  # 승인은 병합이 아니다
 
 

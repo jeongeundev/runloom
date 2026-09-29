@@ -612,7 +612,8 @@ class WorktreeAdapter(StubAdapter):
         self.result_commit: str | None = None
 
     def run(self, request, handoff_dir, progress):
-        worktree = git_ops.ensure_worktree(self.repo, request.task_id, git_ops.head_sha(self.repo))
+        worktree = git_ops.ensure_worktree(self.repo, request.task_id, git_ops.head_sha(self.repo),
+                                           work_key=request.work_key, branch_seq=request.branch_seq)
         (worktree / "pkg.py").write_text("X = 2\n")
         self.result_commit = git_ops.commit_all(worktree, f"fix({request.task_id}): 수정")
         return super().run(request, handoff_dir, progress)
@@ -1326,6 +1327,21 @@ def test_fix_result_pushes_task_branch_and_reports_branch_pushed(fake, client, s
     assert events[-1]["type"] == "result_ready" and events[-1]["data"]["branch_pushed"] is True
     assert _git(bare, "rev-parse", f"refs/heads/task/{request.task_id}") == adapter.result_commit
     assert _git(bare, "rev-parse", "main") == main_before
+
+
+def test_fix_result_with_work_key_pushes_the_runloom_branch(fake, client, state_conn, paths, tmp_path):
+    """phase 14 step 7 — 업무 키가 있는 요청은 `runloom/<키>` 를 push 한다. `task/<id>` 는 만들지 않는다."""
+    repo = make_git_repo(tmp_path)
+    bare = _with_bare_origin(repo, tmp_path)
+    request = assign_with_handoff(fake, make_request().model_copy(update={"work_key": "RUN-3", "branch_seq": 2}))
+    adapter = WorktreeAdapter(repo)
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    events = fake.events_of(request.execution_id)
+    assert events[-1]["type"] == "result_ready" and events[-1]["data"]["branch_pushed"] is True
+    assert _git(bare, "rev-parse", "refs/heads/runloom/RUN-3-2") == adapter.result_commit
+    assert _git(bare, "branch", "--list", "task/*") == ""
 
 
 def test_fix_result_push_failure_still_reports_result_ready(fake, client, state_conn, paths, tmp_path):

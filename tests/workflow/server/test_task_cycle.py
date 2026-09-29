@@ -690,6 +690,36 @@ def test_rework_keeps_the_reviewed_result_commit_after_a_newer_head_report(cycle
     assert request_of(rework).target.base_commit == C1
 
 
+def work_key(conn, task_id: str) -> str:
+    return f"RUN-{repo.work_item_of_task(conn, task_id)['key_number']}"
+
+
+def test_fix_review_and_rework_requests_carry_the_work_key(cycle, conn, store, worker):
+    """phase 14 step 7 — 첫 요청에 업무 키·순번 1, 검토 단계도 같은 키, 재작업은 첫 요청의 두 칸 그대로(같은 브랜치)."""
+    fix_task, fix_exec, review_task, review_exec = _to_first_review(conn, store, worker)
+    key = work_key(conn, fix_task)
+    assert (request_of(repo.get_execution(conn, fix_exec)).work_key,
+            request_of(repo.get_execution(conn, fix_exec)).branch_seq) == (key, 1)
+    review = request_of(repo.get_execution(conn, review_exec))
+    assert (review.work_key, review.branch_seq) == (key, 1)
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+    worker.tick()
+    _, rework = executions(conn, fix_task)
+    assert (request_of(rework).work_key, request_of(rework).branch_seq) == (key, 1)
+
+
+def test_fix_task_started_before_v10_keeps_the_old_branch(cycle, conn, store, worker):
+    """첫 요청에 칸이 없던 Task(v10 이전에 시작)는 재작업도 칸 없이 — 브랜치는 끝까지 `task/<id>`."""
+    fix_task, fix_exec, _, review_exec = _to_first_review(conn, store, worker)
+    old = request_of(repo.get_execution(conn, fix_exec)).model_dump(mode="json")
+    old.pop("work_key"), old.pop("branch_seq")
+    conn.execute("UPDATE executions SET request_json = ? WHERE execution_id = ?", (json.dumps(old), fix_exec))
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+    worker.tick()
+    _, rework = executions(conn, fix_task)
+    assert (request_of(rework).work_key, request_of(rework).branch_seq) == (None, 1)
+
+
 def test_approved_review_completes_review_and_leaves_merge_to_a_human(cycle, conn, store, worker):
     fix_task, fix_exec, review_task, review_exec = _to_first_review(conn, store, worker)
     finish_review(conn, store, review_exec, outcome="approved")
@@ -1263,7 +1293,8 @@ def test_comment_says_where_the_pushed_result_branch_is(cycle, conn, store, gith
     github_worker.tick()
     (after_fix,) = github.bodies(1)
     assert C1 in after_fix
-    assert f"`task/{fix_task}`" in after_fix and "푸시하지 않" not in after_fix
+    assert f"`runloom/{work_key(conn, fix_task)}`" in after_fix and "푸시하지 않" not in after_fix
+    assert f"### Runloom 작업 현황 — {work_key(conn, fix_task)} 버그 1" in after_fix.splitlines()  # 업무 키 표시
 
 
 def test_human_request_is_shown_with_where_to_answer(cycle, conn, store, github_worker, github):
@@ -1391,9 +1422,12 @@ def test_approved_pushed_fix_opens_one_draft_pr(cycle, conn, store, pr_worker, p
     fix_task, _ = _approved(conn, store, pr_worker)
 
     (created,) = pr_github.created
-    assert created["head"] == "task/task-gh-1" and created["base"] == "main" and created["draft"] is True
-    assert created["title"] == "버그 1"
+    key = work_key(conn, fix_task)
+    assert created["head"] == f"runloom/{key}" and created["base"] == "main" and created["draft"] is True
+    assert created["title"] == f"{key} 버그 1"
     assert created["body"].splitlines()[0] == "Fixes #1"
+    assert f"업무 키: {key}" in created["body"].splitlines()
+    assert repo.get_pull_request_row(conn, fix_task)["head_branch"] == f"runloom/{key}"
     assert "검토 의견" in created["body"]
     assert "https://runloom.example/tasks/task-gh-1" in created["body"]
     assert status(conn, fix_task) == ("확인 필요", "사람 차례 · PR 확인 — #31")
@@ -1414,7 +1448,7 @@ def test_approved_without_pushed_branch_asks_a_human_to_push(cycle, conn, store,
     assert pr_github.created == [] and repo.get_pull_request_row(conn, fix_task) is None
     (request,) = repo.list_human_requests(conn, fix_task)
     assert request["code"] == "pr_unavailable"
-    assert "git push origin task/task-gh-1" in request["question"]
+    assert f"git push origin runloom/{work_key(conn, fix_task)}" in request["question"]
     assert status(conn, fix_task)[0] == "확인 필요"
 
 
@@ -1487,7 +1521,7 @@ def test_unavailable_github_gives_up_after_the_limit(cycle, conn, store, pr_work
             pr_worker.tick()
     assert repo.get_pull_request_row(conn, fix_task)["state"] == "failed"
     (request,) = repo.list_human_requests(conn, fix_task)
-    assert "task/task-gh-1" in request["question"]
+    assert f"runloom/{work_key(conn, fix_task)}" in request["question"]
 
 
 def test_source_without_credentials_does_not_open_a_pr(cycle, conn, store, settings, clock):
@@ -1632,7 +1666,7 @@ def test_new_human_request_is_notified_once(cycle, conn, store, notify_worker, n
     )
     ((_, body),) = notifier.sent
     assert body["content"].startswith("[Runloom] 사람 차례 — 버그 1: ")
-    assert "git push origin task/task-gh-1" in body["content"]
+    assert f"git push origin runloom/{work_key(conn, fix_task)}" in body["content"]
 
 
 def test_failed_fix_is_notified_once_even_after_restart(cycle, conn, store, notify_worker, notifier, settings,
@@ -1860,6 +1894,8 @@ def test_retry_answer_adds_one_new_stage_in_the_same_work_item(cycle, conn, stor
     worker.tick()
     (execution,) = executions(conn, retried["task_id"])
     assert execution["agent_id"] == FIX
+    # 다시 맡긴 단계는 같은 업무의 두 번째 수정 단계 — 기준 커밋에서 새 브랜치 `runloom/<키>-2` (step 7)
+    assert (request_of(execution).work_key, request_of(execution).branch_seq) == (work_key(conn, fix_task), 2)
     assert work_state(conn, fix_task)[0] == "에이전트 작업 중"
 
 

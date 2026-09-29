@@ -9,7 +9,8 @@
 버그 수정(`bug_fix`, ADR-0014)은 등록된 검증 프로필 하나로 판정 재료를 남기고 기준 커밋을 고정한다: 도구를 띄우기 전
 worktree HEAD 가 `base_commit` 이 아니면 `base_commit_mismatch`, 이전 시도의 미커밋 변경이 남아 있으면 `worktree_dirty`,
 도구가 직접 커밋해 HEAD 가 움직였으면 `commit_mismatch` 로 실패한다. 재작업 시도는 `base_commit` = 이전 `result_commit`
-이라 남아 있는 `task/<id>` 브랜치 위에서 그대로 이어진다.
+이라 남아 있는 결과 브랜치(`runloom/<업무 키>`, 키 없는 옛 요청은 `task/<id>`) 위에서 그대로 이어진다. 요청의 업무 키가
+계약 패턴 밖이면 git 을 부르기 전에 `invalid_work_key` 로 실패한다.
 
 하위 클래스는 `tool_name`·`raw_kinds` 와 `launch`(프로세스를 띄우고 `ToolRun` 을 돌려준다)·`parse_last_message`
 (도구의 마지막 구조화 메시지를 `ToolResult` 로), 그리고 읽기 전용 실행의 `launch_readonly`·`parse_generic_message`·
@@ -64,6 +65,7 @@ from workflow.contracts.v1 import (
     GenericResult,
     LocalTarget,
     Verification,
+    result_branch,
 )
 
 log = logging.getLogger(__name__)
@@ -241,8 +243,11 @@ class LocalToolAdapter:
                 f"검증 프로필 {target.verification_profile_id} 이 등록 {target.local_registration_id} 에 없다",
             )
         repo = Path(registration["repo_path"])
+        branch = {"work_key": request.work_key, "branch_seq": request.branch_seq}
         try:
-            worktree = git_ops.ensure_worktree(repo, request.task_id, target.base_commit)
+            worktree = git_ops.ensure_worktree(repo, request.task_id, target.base_commit, **branch)
+        except ValueError as exc:  # 계약 밖 업무 키 — 브랜치 이름으로 쓰지 않는다
+            return _failed("invalid_work_key", str(exc))
         except GitError as exc:
             return _failed("base_commit_missing", str(exc))
         prepared = Prepared(registration["links"], registration.get("copies", []))
@@ -295,7 +300,7 @@ class LocalToolAdapter:
         result_commit = git_ops.commit_all(
             worktree, f"fix({request.task_id}): {_first_line(summary, self.tool_name)[:60]}"
         )
-        progress(f"결과 커밋 {result_commit[:12]} (task/{request.task_id})")
+        progress(f"결과 커밋 {result_commit[:12]} ({result_branch(request.task_id, **branch)})")
 
         test_files = git_ops.changed_test_files(repo, base_commit, result_commit)
         before = self._test_before(repo, worktree, base_commit, test_files, profile, prepared)

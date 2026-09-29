@@ -696,6 +696,40 @@ def test_bug_fix_baseline_fails_and_result_passes(state_conn, repo, bug_handoff)
     assert "target_component" not in prompt_text and "python3 -m pytest" not in prompt_text  # 데모 규칙 없음
 
 
+def test_bug_fix_with_work_key_commits_on_the_runloom_branch(state_conn, repo, bug_handoff):
+    """phase 14 step 7 — 요청의 업무 키로 `runloom/<키>` 브랜치에 결과 커밋을 남긴다. 다시 맡긴 단계는 `-<순번>`."""
+    base = register_bug(state_conn, repo)
+    request = ExecutionRequest.model_validate({**bug_request(base).model_dump(), "work_key": "RUN-3"})
+    progress = Recorder()
+
+    output = ScriptedTool(state_conn, fix_and_add_test).run(request, bug_handoff, progress)
+
+    assert output.failed is None, output.failed
+    assert _git(repo, "rev-parse", "runloom/RUN-3") == output.result.result_commit
+    assert any("runloom/RUN-3" in message for message, _ in progress.calls)
+    retried = ExecutionRequest.model_validate({
+        **bug_request(base, execution_id="exec-gh-fix-003").model_dump(), "task_id": "task-gh-41-retry",
+        "work_key": "RUN-3", "branch_seq": 2,
+    })
+    again = ScriptedTool(state_conn, fix_and_add_test).run(retried, bug_handoff, Recorder())
+    assert _git(repo, "rev-parse", f"{again.result.result_commit}^") == base  # 기준 커밋에서 새로
+    assert _git(repo, "rev-parse", "runloom/RUN-3-2") == again.result.result_commit
+
+
+def test_bug_fix_with_work_key_outside_the_pattern_fails_before_launch(state_conn, repo, bug_handoff):
+    """모델 검증을 거치지 않은 요청(model_construct)이라도 계약 밖 키는 브랜치 이름이 되기 전에 `invalid_work_key`."""
+    base = register_bug(state_conn, repo)
+    request = bug_request(base).model_copy(update={"work_key": "main/../x"})
+    adapter = ScriptedTool(state_conn, fix_and_add_test)
+
+    output = adapter.run(request, bug_handoff, Recorder())
+
+    code, _, stopped = output.failed
+    assert (code, stopped) == ("invalid_work_key", True)
+    assert adapter.launched_with == []
+    assert not git_ops.worktree_path(repo, BUG_TASK).exists()
+
+
 def test_bug_fix_without_new_test_is_needs_information(state_conn, repo, bug_handoff):
     base = register_bug(state_conn, repo)
 

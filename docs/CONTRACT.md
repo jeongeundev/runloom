@@ -1095,7 +1095,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 13.2 와 같은 요청에 `work_key`(업무 키 — 패턴 `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8}$`)와 `branch_seq`(1 이상, 기본 1)가 붙는다. 러너는 결과 브랜치를 `runloom/RUN-23` 으로 만들고 push 한다. 두 칸이 없는 요청(v10 이전에 시작한 Task·구버전 서버)은 지금처럼 `task/<task_id>` 다. 같은 Task 의 재작업 요청은 첫 요청의 두 칸을 그대로 싣는다.
 
-```jsonc
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-gh-fix-001",
@@ -1120,7 +1120,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 실행 실패 뒤 사람이 [다시 맡기기] 로 만든 같은 업무의 두 번째 수정 단계(새 Task). `branch_seq` 2 → 브랜치 `runloom/RUN-23-2`, 기준 커밋에서 새로 만든다(force push 없음).
 
-```jsonc
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-gh-fix-003",

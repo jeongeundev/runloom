@@ -365,6 +365,8 @@ def test_run_creates_queued_execution_with_frozen_request(review_web, conn, sett
         "input_artifact_ids": [],
         "target": {"local_registration_id": LOCAL_REVIEW},
         "kind_spec": repo.get_kind(conn, session_id_of(review_web, settings), "review").model_dump(),  # 서버가 등록부에서 채운다 (ADR-0009)
+        "work_key": f"RUN-{repo.work_item_of_task(conn, task_id)['key_number']}",  # 업무 키 (phase 14 step 7)
+        "branch_seq": 1,
     }
     assert repo.get_task(conn, task_id)["status"] == "실행 요청됨"
 

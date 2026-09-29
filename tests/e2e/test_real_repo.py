@@ -13,7 +13,7 @@
 
 흐름: 로그인 → GitHub 연결(가짜) → 알림 URL 저장 → 카드 [러너 붙이기] → 화면 명령의 서버·코드로 `connector setup`
 → 카드 자동 매칭 → bare 에 새 커밋(다른 곳에서 개발) → 기준 커밋 보고 → #1 [맡기기] → 수정(기준 = 새 커밋, 검증이
-링크된 deps/·CHECK_DB 를 봄) → bare 에 task/<id> → 검토 승인 → 초안 PR(Fixes #1) → "PR 확인" 알림 → PR 병합 →
+링크된 deps/·CHECK_DB 를 봄) → bare 에 runloom/<업무 키> → 검토 승인 → 초안 PR(Fixes #1) → "PR 확인" 알림 → PR 병합 →
 Task 완료·지표 → #2 는 도구가 직접 커밋(실행 실패) → 실패 알림. 끝으로 비밀값(연결 코드·러너 토큰·env 값·알림 URL 경로·설치 토큰)이
 중앙 DB 덤프·로그·화면·PR 본문·알림 본문에 없다.
 
@@ -64,6 +64,7 @@ from tests.e2e.test_github_cycle import (
     make_repo,
     q,
     request_of,
+    result_branch_of,
     reviews_of,
     serve,
     task,
@@ -428,7 +429,7 @@ def test_03_new_upstream_commit_becomes_the_base_of_the_delegated_fix(world):
 
     # 결과 브랜치가 origin(bare) 에 — 부모는 새 커밋, 기본 브랜치는 그대로
     assert fix["branch_pushed"] == 1
-    assert bare_git(world, "rev-parse", f"refs/heads/task/{a_id}") == result.result_commit
+    assert bare_git(world, "rev-parse", f"refs/heads/{result_branch_of(world, a_id)}") == result.result_commit
     assert bare_git(world, "rev-parse", f"{result.result_commit}^") == upstream
     assert bare_git(world, "rev-parse", "refs/heads/main") == upstream
     assert _git(world.billing, "rev-parse", "main") == world.base["billing"]  # 원본 폴더의 main 은 건드리지 않는다
@@ -441,9 +442,12 @@ def test_04_review_approval_opens_a_draft_pr_and_notifies_once(world):
 
     drive(world, lambda: received(world, "pr_opened"), "PR 확인 알림")
     (pr,) = world.fake.pulls.values()
-    assert (pr["number"], pr["draft"], pr["head"]["ref"], pr["base"]["ref"]) == (PR_NUMBER, True, f"task/{a_id}", "main")
+    branch = result_branch_of(world, a_id)
+    key = branch.removeprefix("runloom/")
+    assert (pr["number"], pr["draft"], pr["head"]["ref"], pr["base"]["ref"]) == (PR_NUMBER, True, branch, "main")
     assert pr["body"].splitlines()[0] == "Fixes #1" and f"<!-- runloom:task={a_id} -->" in pr["body"]
-    assert pr["title"] == "청구서 번호 자릿수"
+    assert f"업무 키: {key}" in pr["body"].splitlines()
+    assert pr["title"] == f"{key} 청구서 번호 자릿수"
     (row,) = q(world, "SELECT state, pr_number FROM task_pull_requests WHERE task_id = ?", a_id)
     assert (row["state"], row["pr_number"]) == ("open", PR_NUMBER)
     fix_task = task(world, a_id)
@@ -456,7 +460,7 @@ def test_04_review_approval_opens_a_draft_pr_and_notifies_once(world):
     assert all(path == f"/hooks/{HOOK_SECRET}" for path, _ in world.ctx["receiver"].received)
 
     (comment,) = world.fake.issue_comments(REPO, 1)  # 원본 이슈 댓글이 올린 브랜치를 가리킨다
-    assert f"`task/{a_id}`" in comment["body"] and "푸시하지 않" not in comment["body"]
+    assert f"`{branch}`" in comment["body"] and "푸시하지 않" not in comment["body"]
 
     detail = world.http.get(f"/tasks/{a_id}").text
     assert "data-pull-request" in detail and f"/pull/{PR_NUMBER}" in detail

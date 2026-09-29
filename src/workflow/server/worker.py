@@ -767,11 +767,15 @@ class Worker:
         성공했으면 PR 한 행, 실패를 보고했으면 push 안내 사람 요청. push 보고가 없으면(구버전 러너·origin 없음) None =
         지금 동작 그대로. 돌려주는 값은 수정 Task 의 새 상태 이유."""
         issue = repo.get_source_issue_by_task(conn, fix_task["session_id"], fix_task["task_id"])
-        pushed = repo.get_execution(conn, review.source_execution_id)["branch_pushed"]
+        fix_execution = repo.get_execution(conn, review.source_execution_id)
+        pushed = fix_execution["branch_pushed"]
         if issue is None or pushed is None:
             return None
         if not pushed:
-            question = pull_request.not_pushed_question(fix_task["task_id"])
+            fix = ExecutionRequest.model_validate_json(fix_execution["request_json"])
+            question = pull_request.not_pushed_question(
+                pull_request.head_branch(fix_task["task_id"], work_key=fix.work_key, branch_seq=fix.branch_seq)
+            )
             report.human_requests += int(self._request_human(
                 conn, fix_task["task_id"], pull_request.PR_REQUEST_CODE, question,
                 pull_request.pr_request_cause_key(review_execution["execution_id"]), self._clock(),
@@ -950,6 +954,7 @@ class Worker:
                 "input_artifact_ids": inputs,
                 "target": target,
                 "kind_spec": spec.model_dump() if spec is not None else None,
+                **repo.execution_branch_fields(conn, task_id),
             })
         except ValidationError as exc:
             log.warning("업무 %s 의 실행 요청을 만들 수 없음: %s", task_id, exc)
@@ -1069,6 +1074,7 @@ class Worker:
                     "input_artifact_ids": [bundle_id],
                     "target": json.loads(task["target_json"]),
                     "kind_spec": spec.model_dump(),
+                    **repo.execution_branch_fields(conn, task_id),
                 })
             except ValidationError as exc:
                 log.warning("후속 업무 %s 의 실행 요청을 만들 수 없음: %s", task_id, exc)
@@ -1182,12 +1188,15 @@ class Worker:
                 self._pull_request_failed(conn, row, "github_not_connected", "이 저장소의 GitHub 자격 없음", now, report)
                 continue
             issue = repo.get_source_issue_by_task(conn, row["session_id"], task_id)
-            title = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"]).title
+            work_key = ExecutionRequest.model_validate_json(
+                repo.get_execution(conn, row["fix_execution_id"])["request_json"]
+            ).work_key
+            title = pull_request.pr_title(work_key, GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"]).title)
             _, summary = _result_envelope(conn, self._store, repo.get_execution(conn, row["review_execution_id"]))
             public_url = self._settings.public_url
             body = pull_request.pr_body(
                 issue_number=row["issue_number"], task_id=task_id, review_summary=summary or "",
-                task_url=f"{public_url}/tasks/{task_id}" if public_url else None,
+                task_url=f"{public_url}/tasks/{task_id}" if public_url else None, work_key=work_key,
             )
             name = row["repository_full_name"]
             try:
@@ -1230,7 +1239,7 @@ class Worker:
         task_id = row["task_id"]
         repo.record_pull_request(conn, task_id, state="failed", now=now, error=error)
         report.human_requests += int(self._request_human(
-            conn, task_id, pull_request.PR_REQUEST_CODE, pull_request.failed_question(task_id, cause),
+            conn, task_id, pull_request.PR_REQUEST_CODE, pull_request.failed_question(row["head_branch"], cause),
             pull_request.pr_request_cause_key(row["review_execution_id"]), now,
         ))
         report.prs_failed += 1
