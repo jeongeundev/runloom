@@ -5,6 +5,8 @@
   같은 seq 로 다시 보낸다. `sequence_gap` 이면 중앙이 요구한 순번부터 다시 보낸다.
 - 재시작 후 `launching`/`running` 인 실행은 프로세스 동일성을 확인할 수 없으므로 아무 이벤트도 보내지 않고
   `unknown_local_at` 만 적어 사람 확인을 기다린다 (중앙은 2분 규칙으로 `unknown`). 재실행하지 않는다.
+  중앙이 그 실행을 이미 마감했다고 heartbeat 가 알리면(`current_execution_closed`, CONTRACT 2.1) 로컬에서 마감하고
+  다음 claim 으로 넘어간다 — 작업 폴더는 남긴다(프로세스 종료 미확인). 전에는 러너가 영구히 멈췄다(실연동 1).
 - 어댑터가 돌려준 산출물은 로컬 DB 에 보존한 뒤 업로드한다. 업로드 중 끊겨도 어댑터를 다시 돌리지 않는다.
 - 산출물·진행 메시지·오류 메시지·결과 봉투는 `mask_secrets` 를 거친다. 연결 토큰은 이 모듈이 알지 못한다 (client 안).
   실행의 로컬 등록 `env` 값(8자 이상)도 `<env:이름>` 으로 가린다 (ADR-0018 결정 3).
@@ -218,8 +220,16 @@ class Runner:
             return
         active = state.active_execution(self._conn)
         current = active["execution_id"] if active and active["finished_at"] is None else None
-        self._client.heartbeat(self._connector_id, current)
+        closed = self._client.heartbeat(self._connector_id, current)
         self._last_heartbeat = time.monotonic()
+        if closed and active is not None and current is not None and active["unknown_local_at"] is not None:
+            # 재시작으로 끊긴 실행을 중앙이 이미 마감했다 — 내려놓고 다음 업무를 받는다(실연동 1). 이벤트는 보내지 않고,
+            # 프로세스 종료를 확인할 수 없으므로 작업 폴더도 지우지 않는다(`cleaned_at` 없음).
+            state.set_phase(
+                self._conn, current, "finished", finished_at=self._clock(),
+                failed_json=json.dumps(["closed_centrally", "중앙이 이미 마감한 끊긴 실행", False]),  # 정리 건너뜀
+            )
+            log.warning("%s: 중앙이 이미 마감한 끊긴 실행 — 내려놓고 다음 업무를 받는다. 작업 폴더는 남긴다", current)
 
     def _heartbeat_due_in(self) -> float:
         if self._last_heartbeat is None:

@@ -14,7 +14,12 @@ PR_PENDING_REASON = "검토 승인 — PR 여는 중"
 PR_FAILED_REASON = "검토 승인 — PR 을 열지 못함, 병합·이슈 종료는 사람"
 PR_MERGED_REASON = "PR 병합"
 PR_CLOSED_REASON = "PR 이 병합 없이 닫힘"
-PERMISSION_NEEDED = "GitHub App 권한(Pull requests 쓰기) 승인 필요"
+PERMISSION_NEEDED = "GitHub App 권한(Pull requests 쓰기·Contents 읽기) 승인 필요"
+
+
+def refs_unreadable(summary: str) -> bool:
+    """PR 생성 422 요약이 App 이 브랜치를 읽지 못한 경우인가 — Contents 읽기 없는 App(2026-09-29 실연동 1 실제 문구)."""
+    return "not all refs are readable" in summary.lower()
 
 
 def head_branch(task_id: str) -> str:

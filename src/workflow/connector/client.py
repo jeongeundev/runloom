@@ -122,14 +122,19 @@ class CentralClient:
             return None
         return ExecutionRequest.model_validate(response.json())
 
-    def heartbeat(self, connector_id: str, current_execution_id: str | None) -> None:
-        self._call(
+    def heartbeat(self, connector_id: str, current_execution_id: str | None) -> bool:
+        """중앙이 `current_execution_id` 를 이미 마감했으면 True. 구버전 서버(빈 응답)는 언제나 False."""
+        response = self._call(
             "POST", "/connector/heartbeat",
             json={
                 "contract_version": CONTRACT_VERSION, "connector_id": connector_id,
                 "current_execution_id": current_execution_id,
             },
         )
+        try:
+            return response.json().get("current_execution_closed") is True
+        except (ValueError, AttributeError):
+            return False
 
     def report_registration(self, connector_id: str, registration: dict) -> dict:
         """서버 `RegistrationRequest` 필드만 보낸다. 저장소 경로·검증 명령은 로컬에만 있다."""

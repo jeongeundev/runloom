@@ -155,6 +155,12 @@
 }
 ```
 
+### 2.1 heartbeat 응답 — 끊긴 실행 내려놓기 (2026-09-29 실연동 1)
+
+`POST /connector/heartbeat` 요청은 `{"contract_version": 1, "connector_id": …, "current_execution_id": …|null}` 그대로다. 응답은 보통 `{}` 이고, 보고한 `current_execution_id` 가 **이 연결 프로그램에 배정된 실행**이면서 중앙에서 이미 끝났으면(`result_ready`·`failed` 이거나 잠금 해제) `{"current_execution_closed": true}` 로 알린다. 다른 연결 프로그램의 실행·없는 실행·null 에는 아무 말도 하지 않는다.
+
+연결 프로그램은 재시작으로 끊긴 실행(로컬 `unknown_local_at` 이 있는 `launching`·`running`)에 대해서만 이 값을 보고 그 실행을 로컬에서 마감한다 — 이벤트를 보내지 않고, 프로세스 종료를 확인할 수 없으므로 worktree·인계 디렉터리를 지우지 않는다. 그 뒤 다음 claim 을 한다. 지금 도는 실행에는 쓰지 않는다. 구버전 서버의 `{}` 는 "마감 아님"과 같다.
+
 ## 3. 실행 이벤트 5종 — 연결 프로그램 → 중앙
 
 `POST /executions/exec-fix-001/events`. 성공은 `200`과 `{ "execution_id", "last_event_seq", "status" }`.

@@ -2,9 +2,9 @@
 
 갱신일: 2026-09-29. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 실연동 결함 2건 수정 → 13-task-model step 설계 (새 세션은 여기서 시작)
+## 다음 작업: 13-task-model step 설계 (새 세션은 여기서 시작)
 
-**2026-09-29 sandbox 실연동 1 완료** — `runloom-sandbox` #1 이 이슈 → 수정 → 검토 → 초안 PR #2 → 사람 병합 → 업무 완료까지 돌았다([VERIFICATION_LOG](VERIFICATION_LOG.md) "실연동 1"). 결함: (1) 러너 재시작 뒤 끊긴 실행이 claim 을 영구히 막음, (2) App manifest 에 `contents: read` 없음 → PR 422(실제 App 에는 수동 추가함). 셀프호스트 워커·러너는 sandbox 대상으로 **켜져 있다**(OpenArchive 소스 중지, #112 운영자 종료).
+**2026-09-29 sandbox 실연동 1 완료** — `runloom-sandbox` #1 이 이슈 → 수정 → 검토 → 초안 PR #2 → 사람 병합 → 업무 완료까지 돌았다([VERIFICATION_LOG](VERIFICATION_LOG.md) "실연동 1"). 결함: (1) 러너 재시작 뒤 끊긴 실행이 claim 을 영구히 막음, (2) App manifest 에 `contents: read` 없음 → PR 422(실제 App 에는 수동 추가함) — 둘 다 `fix-live-1` 에서 고쳐 `service` 병합, 셀프호스트 이미지는 아직 옛 코드. 셀프호스트 워커·러너는 sandbox 대상으로 **켜져 있다**(OpenArchive 소스 중지, #112 운영자 종료).
 
 2026-09-29 설계 검토 완료 — [재설계 계획 16절](product/REDESIGN_PLAN.md#16-설계-검토-2026-09-29). 사용자 확정: (1) 목록 한 줄 = 업무, 수정·검토·재작업·판단은 그 업무의 단계(후속 규칙 행이 "같은 업무 단계"/"새 업무" 구분), (2) `service` 는 셀프호스트만 — demo 모드는 `main` 에만, (3) **재설계 전에 지금 화면 그대로 새 비공개 저장소 `jeongeundev/runloom-sandbox` 에서 이슈 → 수정 → 검토 → 실제 초안 PR 1회**. 그 뒤 13-task-model step 설계(16절 제안: Runloom 업무 키, 13 에서 `members`, 상태 모델, 원본 상태 규칙 표, 판단 실행 상한).
 

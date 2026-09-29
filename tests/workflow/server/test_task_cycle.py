@@ -20,6 +20,7 @@ from workflow.adapters.github_client import (
     GitHubForbidden,
     GitHubNotFound,
     GitHubUnavailable,
+    GitHubUnprocessable,
     IssueComment,
     IssuePage,
 )
@@ -1321,8 +1322,31 @@ def test_forbidden_pr_asks_for_the_app_permission(cycle, conn, store, pr_worker,
     assert repo.get_pull_request_row(conn, fix_task)["state"] == "failed"
     (request,) = repo.list_human_requests(conn, fix_task)
     assert request["code"] == "pr_unavailable"
-    assert "GitHub App 권한(Pull requests 쓰기) 승인 필요" in request["question"]
+    assert "GitHub App 권한(Pull requests 쓰기·Contents 읽기) 승인 필요" in request["question"]
     assert status(conn, fix_task) == ("확인 필요", "검토 승인 — PR 을 열지 못함, 병합·이슈 종료는 사람")
+
+
+def test_unreadable_refs_pr_asks_for_the_app_permission_without_retrying(cycle, conn, store, pr_worker, pr_github):
+    """Contents 읽기 없는 App 의 PR 생성은 422 `not all refs are readable`(실연동 1) — 재시도해도 같으니 바로 권한 안내."""
+    pr_github.pr_fail = GitHubUnprocessable(
+        "POST /repos/acme/billing/pulls: HTTP 422", "Validation Failed · not all refs are readable"
+    )
+    fix_task, _ = _approved(conn, store, pr_worker)
+
+    assert repo.get_pull_request_row(conn, fix_task)["state"] == "failed"
+    (request,) = repo.list_human_requests(conn, fix_task)
+    assert request["code"] == "pr_unavailable"
+    assert "Contents 읽기" in request["question"]
+
+
+def test_pr_failure_log_carries_the_422_summary(cycle, conn, store, pr_worker, pr_github, caplog):
+    """`str(exc)` 는 `HTTP 422` 뿐이라 원인을 알 수 없었다(실연동 1) — 로그에는 GitHub 가 준 요약을 붙인다."""
+    pr_github.pr_fail = GitHubUnprocessable(
+        "POST /repos/acme/billing/pulls: HTTP 422", "Validation Failed · A pull request already exists"
+    )
+    with caplog.at_level("WARNING", logger="workflow.worker"):
+        _approved(conn, store, pr_worker)
+    assert "A pull request already exists" in caplog.text
 
 
 def test_unavailable_github_retries_later_then_opens(cycle, conn, store, pr_worker, pr_github, clock):

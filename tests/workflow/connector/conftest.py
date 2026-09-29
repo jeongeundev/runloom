@@ -72,6 +72,7 @@ class FakeCentral:
         self.claims = 0
         self.claim_bodies: list[dict] = []
         self.heartbeats: list[dict] = []
+        self.closed: set[str] = set()  # 중앙이 이미 마감한 실행 — heartbeat 가 `current_execution_closed` 로 알린다
         self.registrations: list[dict] = []
         self.requests: list[httpx.Request] = []
 
@@ -127,8 +128,10 @@ class FakeCentral:
         if path == "/connector/claim":
             return self._claim(json.loads(request.content))
         if path == "/connector/heartbeat":
-            self.heartbeats.append(json.loads(request.content))
-            return httpx.Response(200, json={})
+            body = json.loads(request.content)
+            self.heartbeats.append(body)
+            closed = body["current_execution_id"] in self.closed
+            return httpx.Response(200, json={"current_execution_closed": True} if closed else {})
         if path == "/connector/registrations":
             self.registrations.append(json.loads(request.content))
             return httpx.Response(200, json={"agent_id": "agent-codex-mac"})

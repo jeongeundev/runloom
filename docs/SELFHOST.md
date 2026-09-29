@@ -116,7 +116,7 @@ GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. �
 1. `/operator/github` 에서 **[GitHub 연결]** 을 누른다. Runloom 이 App 설정(이름·권한)을 채워 GitHub 로 보낸다.
 2. GitHub 의 **App 만들기 화면**에서 확인할 것:
    - App 이름 `runloom-xxxxxx`(무작위 6자 — GitHub 전역에서 겹치지 않게). 바꿔도 된다.
-   - 권한: Issues 읽기·쓰기, Pull requests 읽기·쓰기(검토 승인 뒤 초안 PR — ADR-0018. phase 12 전에 만든 App 은 [권한 올리기](#app-권한-올리기--phase-12-전에-만든-app)), Metadata 읽기. 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
+   - 권한: Issues 읽기·쓰기, Pull requests 읽기·쓰기(검토 승인 뒤 초안 PR — ADR-0018), Contents 읽기(PR 생성이 브랜치를 읽는다), Metadata 읽기. 이전에 만든 App 은 [권한 올리기](#app-권한-올리기--phase-12-전에-만든-app). 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
    - 그대로 **[Create GitHub App]** 을 누른다. 조직 저장소면 `/operator/github/app/new?org=<조직 이름>` 으로 시작한다.
 3. Runloom 이 App 개인 키·비밀을 받아 저장하고 GitHub 의 **설치 화면**으로 다시 보낸다. **Only select repositories** 로 대상 저장소(예: OpenArchive)를 고르고 **[Install]** 을 누른다.
 4. `/operator/github` 로 돌아오면 고른 저장소마다 카드가 생긴다. 약 1분 안에 열린 이슈가 **전부** 업무 목록에 `대기 · 지시 전` 으로 들어온다(PR·닫힌 이슈 제외).
@@ -130,10 +130,10 @@ GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. �
 
 ### App 권한 올리기 — phase 12 전에 만든 App
 
-phase 11 에서 만든 App 은 Pull requests 가 읽기뿐이라 초안 PR 을 열 때 GitHub 가 403 을 준다 — 업무에 `GitHub App 권한(Pull requests 쓰기) 승인 필요` 사람 요청이 남는다. 새로 만드는 App 은 처음부터 쓰기 권한이다. 올리는 순서([GitHub 문서](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration) 기준):
+phase 11 에서 만든 App 은 Pull requests 가 읽기뿐이라 초안 PR 을 열 때 GitHub 가 403 을 주고, 2026-09-29 이전에 만든 App 은 Contents 읽기가 없어 422 `not all refs are readable` 을 준다 — 둘 다 업무에 `GitHub App 권한(Pull requests 쓰기·Contents 읽기) 승인 필요` 사람 요청이 남는다. 새로 만드는 App 은 처음부터 두 권한이 있다. 올리는 순서([GitHub 문서](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration) 기준):
 
 1. GitHub → **Settings → Developer settings → GitHub Apps** → 이 서버의 App(`runloom-xxxxxx`) → **Edit** → **Permissions & events**.
-2. **Repository permissions → Pull requests** 를 **Read and write** 로 바꾸고 맨 아래 **Save changes**. 바뀐 권한은 설치한 계정이 승인해야 적용된다.
+2. **Repository permissions → Pull requests** 를 **Read and write**, **Contents** 를 **Read-only** 로 바꾸고 맨 아래 **Save changes**. 바뀐 권한은 설치한 계정이 승인해야 적용된다.
 3. 설치한 계정(개인이면 본인)의 **Settings → Applications → Installed GitHub Apps** → 이 App 의 **Configure** → 권한 변경 요청을 검토하고 **Accept new permissions**. 조직 설치면 조직 관리자가 조직 설정에서 승인한다.
 
 승인 전에 이미 실패한 업무는 PR 을 다시 열지 않는다 — 사람 요청의 안내대로 `task/<업무 id>` 로 직접 PR 을 연다. 승인 뒤 새로 검토 승인되는 업무부터 자동으로 열린다.

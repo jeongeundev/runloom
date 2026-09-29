@@ -520,6 +520,34 @@ def test_heartbeat_touches_connector_and_marks_its_agents_online(client, seeded,
     assert row["last_seen_at"] is not None
 
 
+def _heartbeat(client, headers, connector_id, current):
+    return client.post(
+        "/connector/heartbeat",
+        json={"contract_version": 1, "connector_id": connector_id, "current_execution_id": current},
+        headers=headers,
+    )
+
+
+def test_heartbeat_says_when_the_reported_execution_is_closed_centrally(client, seeded, connector, headers, running):
+    """러너가 재시작 뒤 붙잡고 있는 실행을 중앙이 이미 마감했으면 알려 준다 — 러너가 내려놓고 새 업무를 받게(실연동 1)."""
+    connector_id, _ = connector
+    assert _heartbeat(client, headers, connector_id, running).json() == {}  # 아직 진행 중
+
+    repo.fail_execution(seeded, running, code="operator_closed", message="운영자 종료", now="2026-09-20T02:00:00Z")
+    assert _heartbeat(client, headers, connector_id, running).json() == {"current_execution_closed": True}
+
+    repo.release_execution(seeded, running, "2026-09-20T02:00:00Z")
+    assert _heartbeat(client, headers, connector_id, running).json() == {"current_execution_closed": True}
+
+
+def test_heartbeat_does_not_speak_about_other_or_unknown_executions(client, seeded, connector, exec_fix):
+    other_id, other_token = exchange(client, seeded)
+    repo.fail_execution(seeded, exec_fix, code="operator_closed", message="운영자 종료", now="2026-09-20T02:00:00Z")
+    assert _heartbeat(client, bearer(other_token), other_id, exec_fix).json() == {}  # 다른 러너에 배정된 실행
+    assert _heartbeat(client, bearer(other_token), other_id, "exec-none").json() == {}
+    assert _heartbeat(client, bearer(other_token), other_id, None).json() == {}
+
+
 def test_heartbeat_connector_id_must_match_token(client, connector, headers):
     response = client.post(
         "/connector/heartbeat",

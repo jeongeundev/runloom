@@ -24,6 +24,7 @@ from workflow.contracts.v1 import (
     HeartbeatRequest,
     NonEmptyStr,
 )
+from workflow.domain.status import TERMINAL_STATUSES
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace, get_conn, require_connector, utc_now
 from workflow.server.errors import ApiError
 
@@ -125,6 +126,14 @@ def heartbeat(
     repo.touch_connector(conn, connector_id, now, body.current_execution_id)
     for agent in repo.agents_for_connector(conn, connector_id):
         repo.set_agent_connection(conn, agent["agent_id"], "online", now)
+    # 러너가 붙잡은 실행을 중앙이 이미 마감했으면 알린다 — 재시작으로 끊긴 실행을 러너가 내려놓게(실연동 1). 자기 배정만
+    execution = repo.get_execution(conn, body.current_execution_id) if body.current_execution_id else None
+    if (
+        execution is not None
+        and execution["assigned_connector_id"] == connector_id
+        and (execution["status"] in TERMINAL_STATUSES or execution["released_at"] is not None)
+    ):
+        return {"current_execution_closed": True}
     return {}
 
 

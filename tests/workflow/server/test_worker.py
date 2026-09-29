@@ -1542,3 +1542,26 @@ def test_worker_syncs_each_source_with_its_own_client_and_skips_unconnected(app,
     assert billing.repos == ["acme/billing"]
     assert (report.sources_synced, report.sync_errors) == (1, 0)
     assert {"ghs-00000001", "ghs-00000002"} <= set(asked)
+
+
+def test_configure_logging_silences_http_request_lines():
+    """httpx 는 요청 줄을 URL 그대로 INFO 로 남긴다 — callback URL 의 `?signature=…` 가 워커 로그에 새지 않게."""
+    import logging
+
+    from workflow.server.worker import configure_logging
+
+    root = logging.getLogger()
+    loggers = [root, logging.getLogger("httpx"), logging.getLogger("httpcore")]
+    saved = [lg.level for lg in loggers]
+    saved_handlers = root.handlers[:]
+    root.handlers.clear()  # `python3 -m workflow.server.worker` 처럼 핸들러 없는 루트에서 시작
+    try:
+        configure_logging()
+        for name in ("httpx", "httpcore"):
+            assert not logging.getLogger(name).isEnabledFor(logging.INFO)
+            assert logging.getLogger(name).isEnabledFor(logging.WARNING)
+        assert logging.getLogger("workflow.worker").isEnabledFor(logging.INFO)
+    finally:
+        root.handlers[:] = saved_handlers
+        for lg, level in zip(loggers, saved, strict=True):
+            lg.setLevel(level)

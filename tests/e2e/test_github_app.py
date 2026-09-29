@@ -292,7 +292,9 @@ def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     assert manifest["redirect_url"] == f"{world.central_url}/operator/github/app/callback"
     assert manifest["setup_url"] == f"{world.central_url}/operator/github/app/setup"
     assert "hook_attributes" not in manifest and manifest["public"] is False
-    assert manifest["default_permissions"] == {"issues": "write", "pull_requests": "write", "metadata": "read"}  # ADR-0018 초안 PR
+    assert manifest["default_permissions"] == {
+        "issues": "write", "pull_requests": "write", "contents": "read", "metadata": "read",
+    }  # ADR-0018 초안 PR — PR 생성은 ref 를 읽는다(실연동 1)
 
     # (GitHub 에서 사용자가 [Create]) → callback — code 교환·비밀 저장 → 설치 화면으로
     callback = http.get("/operator/github/app/callback", params={"code": MANIFEST_CODE, "state": state1})

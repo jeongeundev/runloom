@@ -102,7 +102,7 @@ class GitHubUnavailable(GitHubError):
 
 class GitHubUnprocessable(GitHubError):
     """PR 생성의 422. `str()` 은 다른 오류처럼 `메서드 경로: HTTP 422` 뿐이고, `.message` 에 응답 `message`·`errors[].message`
-    요약(초안 미지원 판단용)을 둔다 — 로그·DB 에 싣지 않는다."""
+    요약(초안 미지원·권한 부족 판단용)을 둔다 — 워커 경고 로그에만 붙이고 DB 에는 싣지 않는다."""
 
     def __init__(self, text: str, message: str):
         super().__init__(text)

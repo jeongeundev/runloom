@@ -412,9 +412,9 @@ phase 뒤 사용자와 함께 채운다. 결과가 좋게 보이도록 편집하
 | 비밀값 | 러너 로그에 `signature`·`wfc_`·`gho_` 없음(grep 0). PR·댓글에 토큰·env 값 없음 |
 | 근거 | 업무 `task-b07ed4afa33d`, https://github.com/jeongeundev/runloom-sandbox/pull/2, `~/Library/Logs/workflow-connector-selfhost/` |
 
-발견한 결함(미수정):
+발견한 결함 — 같은 날 `fix-live-1` 에서 수정(러너 `3664277`, App 권한·422 `6d8d8b7`):
 1. **러너 재시작 뒤 끊긴 실행이 러너를 영구히 막는다.** 로컬 상태에 `running` 으로 남은 실행은 `unknown_local_at` 만 찍고 "사람 확인 필요" 로그를 남긴 채 활성 실행으로 남아 claim 을 하지 않는다(`connector/runner.py` `_continue`, `state.active_execution`). 중앙이 그 실행을 이미 마감(`failed`)했어도 러너는 모르고, 풀어 주는 명령도 없다. 방향: 중앙이 종료로 본 실행은 러너가 내려놓는다(heartbeat 응답 또는 claim 전 조회), 아니면 `connector release <실행>` 명령.
 2. **App 권한에 Contents 읽기가 없어 초안 PR 이 422 `Validation Failed · not all refs are readable`.** `adapters/github_app.py` manifest `default_permissions` 가 issues·pull_requests·metadata 뿐. 가짜 GitHub e2e 로는 드러나지 않았다. 방향: manifest 에 `contents: read`, SELFHOST "App 권한 올리기" 에 Contents 추가, 권한 부족 422 를 `pr_unavailable` 사람 요청(권한 안내)으로 분류.
 3. (개선) PR 생성 422 의 `message` 가 워커 로그에 남지 않아(`str(exc)` 는 `HTTP 422` 뿐) 원인을 컨테이너에서 재현해야 알았다. 로그에 요약(`GitHubUnprocessable.message`, 200자)을 붙인다.
 
-sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 Runloom 본 코드에도 유효한 수정이다 — `service` 에 가져올지 사용자 결정.
+sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔다(`d5c2568`, cherry-pick).
