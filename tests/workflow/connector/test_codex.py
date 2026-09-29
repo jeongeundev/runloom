@@ -1,6 +1,6 @@
 """codex — 실제 Codex 를 띄우는 어댑터. 여기서는 PATH 앞에 둔 **가짜 `codex`** 스크립트로만 돈다 (실연동은 Step 15).
 
-`make_repo` 는 Step 13 의 `scripts/scaffold_demo_repo.py` 로 데모 저장소를 만든다: `daily_report/transformer.py` 는
+`make_repo` 는 `demo_repo.scaffold` 로 데모 저장소를 만든다: `daily_report/transformer.py` 는
 수정 전(`items` 만), 검증은 `python3 -m pytest -q`.
 """
 
@@ -18,11 +18,9 @@ from workflow.connector.local_tool import ToolRun
 from workflow.contracts.v1 import ExecutionRequest, ExecutionUsage
 
 from .conftest import REVIEW_SPEC, make_local_request, make_request, make_review_request
+from .demo_repo import scaffold
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
-from scaffold_demo_repo import scaffold
-
-# --- 데모 저장소 (Step 13 스크립트로 생성) --------------------------------------------------
+# --- 데모 저장소 (demo_repo.scaffold 로 생성) --------------------------------------------------
 
 
 def _git(cwd, *args) -> str:
@@ -33,7 +31,7 @@ def _git(cwd, *args) -> str:
 
 
 def make_repo(tmp_path: Path) -> Path:
-    """수정 전 데모 저장소. scripts/scaffold_demo_repo.py 가 만드는 것과 같다 (커밋 1개, 태그 report-base)."""
+    """수정 전 데모 저장소 (커밋 1개, 태그 report-base)."""
     repo = tmp_path / "demo-report-repo"
     scaffold(repo)
     return repo

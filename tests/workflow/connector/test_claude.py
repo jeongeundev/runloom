@@ -3,8 +3,8 @@
 가짜는 `claude -p --output-format json` 처럼 stdout 에 결과 JSON 한 덩어리를 쓴다. 키는 2026-09-20 `claude 2.1.278` 로
 한 번 실행해 확인한 형태(`type=result`, `subtype`, `is_error`, `result`, `structured_output`, `usage`, `api_error_status` …)를
 따르고, 받은 argv·env·cwd·프롬프트를 그 안의 `_fake` 키에 남긴다. 어댑터는 모르는 키를 무시하므로 테스트는 보존된
-`claude_jsonl` 산출물에서 이를 읽는다. 데모 저장소는 test_codex 와 같은 `scripts/scaffold_demo_repo.py`,
-수정 대본(고친 변환부·재현 테스트)은 대본 에이전트(`workflow.scripted._common`)의 상수를 재사용한다.
+`claude_jsonl` 산출물에서 이를 읽는다. 데모 저장소와 수정 대본(고친 변환부·재현 테스트)은
+test_codex 와 같은 `demo_repo` 의 것을 쓴다.
 """
 
 import json
@@ -18,9 +18,9 @@ from workflow.connector import git_ops, state
 from workflow.connector.claude import ALLOWED_TOOLS, READONLY_TOOLS, ClaudeAdapter
 from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun, generic_result_schema
 from workflow.contracts.v1 import ExecutionUsage
-from workflow.scripted._common import FIXED_TRANSFORMER, REPRO_TEST
 
 from .conftest import REVIEW_SPEC, make_local_request, make_review_request
+from .demo_repo import FIXED_TRANSFORMER, REPRO_TEST
 from .test_codex import RESPONSE_AFTER, Progress, _git, by_kind, make_repo, make_review_fixture, request_for
 
 WFC = "wfc_" + "a" * 43

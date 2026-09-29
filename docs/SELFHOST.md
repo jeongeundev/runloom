@@ -101,7 +101,7 @@ deploy/selfhost/install-runner.sh
 
 connect 는 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application Support/workflow-connector/` 의 0600 파일에 둔다. register 는 폴더마다 한 번(`--id`·`--repository-id` 를 빼면 폴더 이름·GitHub owner/name). 인자 없는 `install-runner.sh` 는 plist 를 쓰고 연결 토큰 파일이 있을 때만 적재한다 — 없으면 connect 뒤 다시 실행한다.
 
-공개 데모용 러너(`com.workflow.connector`)를 같은 Mac 에서 같이 쓰면 연결 토큰 파일 위치가 겹친다. 그때는 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
+`main` 데모 러너(`com.workflow.connector`)를 같은 Mac 에 둔 경우 연결 토큰 파일 위치가 겹치므로 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
 
 ## GitHub 연결
 

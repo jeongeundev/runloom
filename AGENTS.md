@@ -23,7 +23,6 @@
 
 ## 제품 코드와 데모의 경계
 - `src/workflow/` 는 제품(중앙 웹/API·워커·연결 프로그램·계약). 진단 데모 서비스(`src/diagnostic_demo/`)·진단 fixture·보고서 데모 저장소는 `main` 전용이다 ([ADR-0019](docs/adr/0019-service-selfhost-only.md)).
-- `src/workflow/scripted/` 는 공개 데모 전용 대본 에이전트다([ADR-0008](docs/adr/0008-public-demo-scripted-agents.md)). 제품 런타임 경로(`connector/`)에서 import 하지 않는다 — 배포·로컬 스택이 `codex`/`claude` 이름의 PATH 래퍼로 앞에 둘 뿐이다.
 
 ## 개발 프로세스
 - CRITICAL: 새 기능 구현 시 반드시 테스트를 먼저 작성하고, 테스트가 통과하는 구현을 작성할 것 (TDD)

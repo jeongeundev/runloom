@@ -126,6 +126,16 @@ def test_compose_holds_no_secret_values():
         assert key not in text, key
 
 
+def test_repo_holds_no_secret_looking_values_under_deploy():
+    """저장소에 실제 값이 없어야 한다. 접두사 검사는 connector.masking 과 같은 규칙 (tests/test_deploy_files.py 에서 옮김).
+    사용자의 실제 `deploy/selfhost/.env` 는 저장소 밖(.gitignore) 값이라 읽지 않는다."""
+    for path in (ROOT / "deploy").rglob("*"):
+        if path.is_file() and path != SELFHOST / ".env":
+            text = path.read_text(encoding="utf-8", errors="replace")
+            assert not re.search(r"\bwfc_[A-Za-z0-9_-]{8,}", text), path
+            assert not re.search(r"\bsk-[A-Za-z0-9_-]{8,}", text), path
+
+
 # --- .env.example ------------------------------------------------------------------------------
 
 

@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "remove-demo-deploy",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-29T21:36:33+0900",
+      "summary": "삭제: src/workflow/scripted/·tests/workflow/scripted/, deploy/bin·env·systemd·launchd·install-vm.sh·update-vm.sh·backup.sh·Caddyfile, scripts/seed_demo.py·local_stack.py·scaffold_demo_repo.py·test_seed_demo·test_local_stack(diag_eval·make_handoff_dir 는 step 3 에서 이미 삭제), tests/e2e/fake_codex.py(local_stack 전용 shim), tests/test_deploy_files.py(전부 VM 검사). 참조 확인: deploy/selfhost/*·test_selfhost_files 는 지운 파일을 참조하지 않음 — 남긴 것 없음. 수정: masking.ENV_ALLOWLIST 에서 WORKFLOW_SCRIPT_PACE_SECONDS 삭제(test_masking 은 이제 빠짐을 단정), test_packages 에 workflow.scripted find_spec None 추가, 커넥터 test_codex·test_claude 가 쓰던 scaffold·FIXED_TRANSFORMER·REPRO_TEST 는 tests/workflow/connector/demo_repo.py(테스트 도우미)로 옮겨 커버리지 유지, ENV_KEYS↔.env.example 일치 검사는 test_selfhost_files 에 이미 있어 옮기지 않았고 deploy 비밀 모양 검사만 test_selfhost_files 로 옮김(사용자 deploy/selfhost/.env 는 읽지 않게 제외), settings.py·test_settings 주석의 deploy/env 참조를 selfhost 로, docs/DEPLOY.md 머리에 main 전용 표시, SELFHOST.md 데모 러너 문단 축약, AGENTS.md scripted 문장 삭제(명령어 절은 셀프호스트만 — 확인). 검증: ruff 통과, pytest 2381 passed/32 skipped(전 2496 — 대본·VM·데모 스크립트 테스트 삭제), WORKFLOW_E2E=1 github_cycle·github_app·metrics·real_repo 31 passed, domain·server↔connector 경계는 test_packages 로 확인. 다음 step 주의: tests/test_n8n_example.py 가 docs/n8n/README.md 에 'scripts/local_stack.py --scripted …'·'/agents/register' 문구를 요구함(지운 스크립트·경로 — step 5 에서 문서와 함께 고칠 것), docs(ARCHITECTURE·GLOSSARY·VERIFICATION_LOG·github/README·n8n/README·ADR-0008/0016)에 deploy/bin·seed_demo·local_stack·workflow.scripted 언급 남음, DEPLOY.md 본문은 기록으로 둠"
     },
     {
       "step": 5,

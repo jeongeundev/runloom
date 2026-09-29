@@ -160,7 +160,7 @@ class _RecordingEnv(dict):
 
 
 def test_env_keys_lists_exactly_what_load_settings_reads():
-    """deploy/env/central.env.example 이 이 목록과 비교된다 (Step 16). 개발 플래그 WORKFLOW_DEV 는 제외."""
+    """deploy/selfhost/.env.example 이 이 목록과 비교된다 (tests/test_selfhost_files.py). 개발 플래그 WORKFLOW_DEV 는 제외."""
     env = _RecordingEnv(FULL)
     load_settings(env)
     assert env.asked - {"WORKFLOW_DEV"} == set(ENV_KEYS)

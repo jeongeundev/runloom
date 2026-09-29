@@ -18,7 +18,7 @@ SECRET_KEYS = ("SESSION_SECRET", "OPERATOR_TOKEN")
 OPTIONAL_SECRET_KEYS = ("WORKFLOW_GITHUB_TOKEN",)
 
 # `load_settings` 가 읽는 환경변수 전부 (개발 플래그 `WORKFLOW_DEV` 제외).
-# deploy/env/central.env.example 의 키 목록이 이것과 일치해야 한다 (tests/test_deploy_files.py).
+# deploy/selfhost/.env.example 의 키 목록이 이것과 맞아야 한다 (tests/test_selfhost_files.py).
 ENV_KEYS = (
     # 셀프호스트 전용(ADR-0019) — 빈 값·`selfhost` 는 읽고 버리고, 그 밖의 값(`demo` 등)은 SettingsError
     "WORKFLOW_MODE",
