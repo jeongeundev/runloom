@@ -81,8 +81,10 @@ def _check(conn: Connection, session_id: str, request, body: ResponseBody) -> No
                            f"에이전트 {body.agent_id} 는 이 워크스페이스에 등록되지 않았습니다.", field="agent_id")
 
 
-def respond_to_request(conn: Connection, session_id: str, request_id: str, body: ResponseBody, now: str) -> dict:
-    """응답 기록 — 재전송은 처음 결과. 검사는 처음 응답에만 의미가 있지만 같은 본문이면 같은 결과라 먼저 한다."""
+def respond_to_request(
+    conn: Connection, session_id: str, request_id: str, body: ResponseBody, now: str, *, member_id: str | None = None,
+) -> dict:
+    """응답 기록 — 재전송은 처음 결과. `member_id` 는 응답자(다시 맡기기면 맡긴 사람도). 검사는 처음 응답에만 의미가 있지만 같은 본문이면 같은 결과라 먼저 한다."""
     request = repo.get_human_request(conn, session_id, request_id)
     if request is None:
         raise ApiError(404, "not_found", f"사람 요청 {request_id}을 찾을 수 없습니다.", field="request_id")
@@ -96,6 +98,7 @@ def respond_to_request(conn: Connection, session_id: str, request_id: str, body:
             close_reason=CLOSE_REASON if body.action == "close" and not failed_stage else None,
             retry_task_id=f"task-{secrets.token_hex(6)}" if body.action == "retry" else None,
             close_work_reason=CLOSE_WORK_REASON if body.action == "close" and failed_stage else None,
+            member_id=member_id,
         )
     except StaleRequest as exc:
         raise ApiError(409, "stale_request", f"사람 요청 {request_id} 가 이미 revision {exc.current_revision} 입니다.",
@@ -122,4 +125,4 @@ def post_response(
     conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
     session_id = member.session_id
-    return JSONResponse(respond_to_request(conn, session_id, request_id, body, utc_now()))
+    return JSONResponse(respond_to_request(conn, session_id, request_id, body, utc_now(), member_id=member.member_id))

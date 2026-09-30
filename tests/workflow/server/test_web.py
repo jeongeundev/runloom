@@ -2229,3 +2229,49 @@ def test_selfhost_hides_demo_only_elements(settings):
         assert_no_secrets(response.text, settings)
 
 
+
+
+# --- phase 15 step 8: 맡긴 사람 — 직접 등록·직접 실행·체인 시작 -------------------------------------------------
+
+
+def _member_of(conn, client) -> str:
+    from workflow.server.auth import LOGIN_COOKIE, utc_now
+
+    return repo.member_for_login_token(conn, client.cookies[LOGIN_COOKIE], now=utc_now())["member_id"]
+
+
+def _requester(conn, task_id: str) -> str | None:
+    return repo.work_item_of_task(conn, task_id)["requested_by_member_id"]
+
+
+def test_direct_register_records_the_registering_member(web, conn, app):
+    task_id = create_task(web, fix_form())
+    assert _requester(conn, task_id) == _member_of(conn, web)
+    member = log_in_member(TestClient(app))
+    other = create_task(member, fix_form())
+    assert _requester(conn, other) == _member_of(conn, member)
+
+
+def test_direct_run_records_the_member_who_pressed_it(review_web, conn, app):
+    report_registration(conn, LOCAL_REVIEW, verification_profile_ids=())
+    task_id = create_task(review_web, review_form())
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/tasks/{task_id}/run", follow_redirects=False).status_code == 303
+    assert _requester(conn, task_id) == _member_of(conn, member)
+
+
+def test_failed_direct_run_does_not_record(web, conn, app):
+    task_a = create_task(web, fix_form())
+    task_b = create_task(web, code_review_form(task_a, run_mode="manual"))
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/tasks/{task_b}/run", follow_redirects=False).status_code == 409
+    assert _requester(conn, task_b) == _member_of(conn, web)  # 등록한 관리자 그대로
+
+
+def test_chain_start_records_the_member_on_every_work_item_of_the_chain(web, conn, app):
+    report_registration(conn)
+    chain_id, tasks = import_chain(web, conn, "#41", "#42")
+    assert [_requester(conn, t) for t in tasks] == [None, None]  # n8n 입구는 기록하지 않는다
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
+    assert [_requester(conn, t) for t in tasks] == [_member_of(conn, member)] * 2

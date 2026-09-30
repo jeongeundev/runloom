@@ -69,7 +69,9 @@
     {
       "step": 8,
       "name": "my-turn",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:10:46+0900",
+      "summary": "수정 adapters/repo.py(ARCHITECTURE 이름 — step.md 의 turn_recipients_for·list_my_turn 대신: set_work_requester(자체 BEGIN·이벤트 없음, 덮어씀)·turn_recipients_of(활성 멤버 맵+team.turn_recipients, 없는 업무 NotFound)·list_work_items(recipient_member_id=) — 상태 '내 차례'+받는 사람 포함, 계산값, insert_work_item_task(requested_by_member_id=), mark_issue_delegated(member_id=) — 이미 지시돼도 누른 멤버로 덮어씀·label 은 안 씀, record_human_response_once(member_id=) — human_responses.member_id, retry 면 맡긴 사람도, 재전송 비교엔 안 넣음, create_followup_once new_work 가 원인 업무 requested_by 복사), server/web.py(POST /tasks·/tasks/{id}/run(성공 뒤)·/chains/{id}/start(체인 업무 전부)·/delegate 가 현재 멤버 기록, 홈 GET /tasks?view=my_turn 빠른 필터+개수, 그 밖 값은 전체), human_api.py(respond_to_request member_id=), views.py(work_summary.recipients = 내 차례일 때 받는 사람 표시 이름, _responses_public 응답자 이름 — cycle_context·work_context.responses), templates home.html(내 차례 N·전체 필터, 줄에 '→ 이름')·work_detail.html('받는 사람: 이름', 응답 기록 절 data-responder)·_cycle.html(응답자); 테스트: test_repo +7, test_web +4(직접 등록·직접 실행·실패한 실행은 기록 안 함·체인 시작), 새 test_web_my_turn.py 8개(맡긴 멤버만·담당 멤버 우선·비활성 → 관리자 전원·수집만 된 실패 → 관리자·누구나 응답+응답자·다시 맡기기가 맡긴 사람 변경·닫기는 유지·맡기기 재클릭 최신). 검증: pytest 2886 passed/33 skipped, ruff 통과. 다음 step 주의: 받는 사람은 repo.turn_recipients_of 로 계산(저장 안 함) — step 9 알림이 이걸 쓸 것, 웹 경로의 set_work_requester 는 autocommit 단독 UPDATE(체인 시작은 업무별), n8n 입구 start_chain(API)은 기록 안 함, 직접 실행은 성공 뒤에만 기록."
     },
     {
       "step": 9,

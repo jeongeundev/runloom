@@ -302,9 +302,10 @@ def work_item_of_task(conn: Connection, task_id: str) -> Row | None:
 
 def list_work_items(
     conn: Connection, session_id: str, *, include_closed: bool = True, status: str | None = None,
-    assignee: tuple[str, str] | None = None,
+    assignee: tuple[str, str] | None = None, recipient_member_id: str | None = None,
 ) -> list[Row]:
-    """워크스페이스의 업무(키 번호 내림차순 — 새 업무가 위). `assignee` 는 `(assignee_type, assignee_id)`."""
+    """워크스페이스의 업무(키 번호 내림차순 — 새 업무가 위). `assignee` 는 `(assignee_type, assignee_id)`.
+    `recipient_member_id` 는 "내 차례" 필터 — 상태가 `내 차례` 이고 그 멤버가 `turn_recipients_of` 에 든 업무만."""
     where, params = ["session_id = ?"], [session_id]
     if not include_closed:
         where.append("closed_at IS NULL")
@@ -314,9 +315,41 @@ def list_work_items(
     if assignee is not None:
         where.append("assignee_type = ? AND assignee_id = ?")
         params.extend(assignee)
-    return conn.execute(
+    if recipient_member_id is not None:
+        where.append("status = ?")
+        params.append("내 차례")
+    rows = conn.execute(
         f"SELECT * FROM work_items WHERE {' AND '.join(where)} ORDER BY key_number DESC", params
     ).fetchall()
+    if recipient_member_id is None:
+        return rows
+    members = _member_facts(conn, session_id)
+    return [r for r in rows if recipient_member_id in _recipients(r, members)]
+
+
+def _member_facts(conn: Connection, session_id: str) -> list[team.MemberFact]:
+    return [team.MemberFact(member_id=m["member_id"], role=m["role"], active=m["disabled_at"] is None)
+            for m in list_members(conn, session_id)]
+
+
+def _recipients(work: Row, members: list[team.MemberFact]) -> tuple[str, ...]:
+    return team.turn_recipients(assignee_type=work["assignee_type"], assignee_id=work["assignee_id"],
+                                requested_by_member_id=work["requested_by_member_id"], members=members)
+
+
+def turn_recipients_of(conn: Connection, work_item_id: str) -> tuple[str, ...]:
+    """업무가 `내 차례` 일 때 받는 사람(담당 멤버 → 맡긴 사람 → 활성 관리자 전원 — `team.turn_recipients`).
+    저장하지 않고 매번 계산한다. 없는 업무 → NotFound."""
+    work = _one(conn, "SELECT * FROM work_items WHERE work_item_id = ?", (work_item_id,))
+    if work is None:
+        raise NotFound(f"work item {work_item_id}")
+    return _recipients(work, _member_facts(conn, work["session_id"]))
+
+
+def set_work_requester(conn: Connection, work_item_id: str, member_id: str) -> None:
+    """맡긴 사람을 기록한다(가장 최근 값으로 덮어씀). 자체 BEGIN·이벤트 없음 — 맡기기·다시 맡기기·체인 시작·직접 등록·
+    직접 실행이 그 변경과 같은 트랜잭션에서 부른다."""
+    conn.execute("UPDATE work_items SET requested_by_member_id = ? WHERE work_item_id = ?", (member_id, work_item_id))
 
 
 def list_work_item_tasks(conn: Connection, work_item_id: str) -> list[Row]:
@@ -1275,15 +1308,17 @@ def insert_task(conn: Connection, task: dict, now: str, *, work_item_id: str) ->
 
 def insert_work_item_task(
     conn: Connection, task: dict, now: str, *, source_type: str = "manual", source_id: str | None = None,
-    source_item_id: str | None = None, source_key: str | None = None,
+    source_item_id: str | None = None, source_key: str | None = None, requested_by_member_id: str | None = None,
 ) -> str:
-    """새 업무와 그 첫 단계 Task 를 한 트랜잭션에 만들고 업무 id 를 돌려준다. 제목·요청·종류는 Task 의 것,
+    """새 업무와 그 첫 단계 Task 를 한 트랜잭션에 만들고 업무 id 를 돌려준다. `requested_by_member_id` 는 맡긴 사람(직접 등록). 제목·요청·종류는 Task 의 것,
     담당은 Task 에 고른 Agent 가 있으면 그 Agent(v9 → v10 마이그레이션과 같다). Task 가 실패하면 업무도 남지 않는다.
     선행 Task(체인 `blocked_by`·폼 선행)가 있으면 그 업무 → 새 업무 `blocks` 링크도 같은 트랜잭션에 남긴다 — 준비 판정은
     아직 `predecessor_task_id` 를 본다."""
     with _tx(conn):
         work_item_id = _work_item_for_task(conn, task, now, source_type=source_type, source_id=source_id,
                                            source_item_id=source_item_id, source_key=source_key)
+        if requested_by_member_id is not None:
+            set_work_requester(conn, work_item_id, requested_by_member_id)
         _insert_task_row(conn, task, now, work_item_id=work_item_id)
         predecessor = task.get("predecessor_task_id")
         if predecessor is not None:
@@ -2446,9 +2481,11 @@ def upsert_source_issue(
 
 
 def mark_issue_delegated(
-    conn: Connection, *, session_id: str, source_id: str, github_issue_id: int, by: str, now: str
+    conn: Connection, *, session_id: str, source_id: str, github_issue_id: int, by: str, now: str,
+    member_id: str | None = None,
 ) -> bool:
     """원본 이슈 Task 에 실행 지시를 기록한다(ADR-0017 — `all_open` 소스). 처음 지시만 남기고 이미 있으면 그대로(False).
+    `member_id`(누른 멤버)는 지시가 이미 있어도 그 업무의 맡긴 사람으로 덮어쓴다.
     라벨을 떼거나 이슈가 바뀌어도 지우지 않는다. 다른 세션 소스·없는 이슈 → NotFound, `by` 가 operator·label 밖 → ValueError.
     처음 지시면 같은 트랜잭션에서 그 업무의 상태를 다시 계산한다."""
     if by not in ("operator", "label"):
@@ -2461,6 +2498,10 @@ def mark_issue_delegated(
         )
         if row is None:
             raise NotFound(f"source issue {source_id}/{github_issue_id}")
+        work = _one(conn, "SELECT t.work_item_id FROM source_issues si JOIN tasks t ON t.task_id = si.task_id"
+                          " WHERE si.source_id = ? AND si.github_issue_id = ?", (source_id, github_issue_id))
+        if member_id is not None:
+            set_work_requester(conn, work["work_item_id"], member_id)
         cur = conn.execute(
             "UPDATE source_issues SET delegated_at = ?, delegated_by = ?"
             " WHERE source_id = ? AND github_issue_id = ? AND delegated_at IS NULL",
@@ -2468,8 +2509,6 @@ def mark_issue_delegated(
         )
         if cur.rowcount == 0:
             return False
-        work = _one(conn, "SELECT t.work_item_id FROM source_issues si JOIN tasks t ON t.task_id = si.task_id"
-                          " WHERE si.source_id = ? AND si.github_issue_id = ?", (source_id, github_issue_id))
         refresh_work_status(conn, work["work_item_id"], now=now)
         return True
 
@@ -2580,6 +2619,8 @@ def create_followup_once(
             )
             link_work_items(conn, from_work_item_id=work_item_id, to_work_item_id=spawned, type="spawned_from",
                             cause_execution_id=spec.cause_execution_id, now=now)
+            if cause_work["requested_by_member_id"] is not None:  # 같은 사람이 맡긴 일의 결과
+                set_work_requester(conn, spawned, cause_work["requested_by_member_id"])
             work_item_ids.append(spawned)
         _insert_task_row(conn, task, now, work_item_id=work_item_ids[-1])
         conn.execute(
@@ -2667,7 +2708,7 @@ def list_human_responses(conn: Connection, task_id: str) -> list[Row]:
 def record_human_response_once(
     conn: Connection, session_id: str, request_id: str, *, response_id: str, expected_revision: int,
     action: str, text: str, now: str, agent_id: str | None = None, close_reason: str | None = None,
-    retry_task_id: str | None = None, close_work_reason: str | None = None,
+    retry_task_id: str | None = None, close_work_reason: str | None = None, member_id: str | None = None,
 ) -> tuple[int, bool]:
     """(task_revision, created). 응답은 요청을 `answered` 로, Task revision 을 +1 한다(다음 실행 입력).
     `agent_id` 는 같은 트랜잭션에서 Task 의 실행 Agent 로 지정하고, `close_reason` 은 Task 를 `실패` 로 마감하고
@@ -2675,7 +2716,9 @@ def record_human_response_once(
     `close_work_reason` 은 업무를 `종료` 로 기록한다(닫기 — ADR-0020 결정 5). 같은 response_id·같은 내용 재전송은
     처음 결과, 다른 내용은 ResponseConflict, revision 불일치·이미 응답됨은 StaleRequest, 마감된 Task 는
     TaskClosed(`stage_failed` 요청은 단계가 이미 `실패` 로 마감이라 예외), 다른 세션이면 NotFound.
-    `action` 의 허용 값 검사는 서버 몫. 같은 트랜잭션 끝에 업무 상태를 다시 계산한다."""
+    `action` 의 허용 값 검사는 서버 몫. 같은 트랜잭션 끝에 업무 상태를 다시 계산한다.
+    `member_id` 는 응답자(`human_responses.member_id`)이고, `retry_task_id` 와 함께면 그 업무의 맡긴 사람이 된다.
+    재전송 비교에는 넣지 않는다 — 같은 응답의 재전송은 누가 보내도 처음 결과."""
     with _tx(conn):
         request = get_human_request(conn, session_id, request_id)
         if request is None:
@@ -2713,11 +2756,13 @@ def record_human_response_once(
         )
         conn.execute(
             "INSERT INTO human_responses (request_id, response_id, action, text, agent_id, expected_revision,"
-            " task_revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (request_id, response_id, action, text, agent_id, expected_revision, task_revision, now),
+            " task_revision, created_at, member_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (request_id, response_id, action, text, agent_id, expected_revision, task_revision, now, member_id),
         )
         if retry_task_id is not None:
             _insert_retry_stage(conn, get_task(conn, task_id), retry_task_id, text, now)
+            if member_id is not None:
+                set_work_requester(conn, get_task(conn, task_id)["work_item_id"], member_id)
         if close_work_reason is not None:
             set_work_status(conn, get_task(conn, task_id)["work_item_id"], WorkStatus("종료", close_work_reason),
                             now=now)

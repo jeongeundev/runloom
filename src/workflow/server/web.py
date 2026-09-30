@@ -610,9 +610,11 @@ def logout(request: Request, conn: Connection = Depends(get_conn)) -> RedirectRe
 @router.get("/tasks", response_class=HTMLResponse)
 def home(
     request: Request,
+    view: str = "",
     member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
+    """홈. 빠른 필터 `view=my_turn` = 로그인한 멤버가 받는 사람인 `내 차례` 업무만, 그 밖 값은 전체."""
     session_id = member.session_id
     now = utc_now()
     settings = _settings(request)
@@ -620,7 +622,12 @@ def home(
     chains = [
         views.chain_summary(conn, c, now=now, settings=settings) for c in repo.list_chains(conn, session_id)
     ]
-    return _render("home.html", **_base(request, conn, session_id, now), agents=agents, chains=chains)
+    base = _base(request, conn, session_id, now)
+    my_turn = [views.work_summary(conn, w)
+               for w in repo.list_work_items(conn, session_id, recipient_member_id=member.member_id)]
+    view = "my_turn" if view == "my_turn" else "all"
+    return _render("home.html", **base, agents=agents, chains=chains, view=view, my_turn_count=len(my_turn),
+                   work_list=my_turn if view == "my_turn" else base["my_work"])
 
 
 def _form_context(
@@ -726,7 +733,7 @@ def task_create(
         title=title, request_text=request_text, spec=spec, scope_value=scope_value,
         selection_mode=selection_mode, chosen_agent_id=chosen_agent_id,
         run_mode=run_mode, completion_mode=completion_mode, criteria_extra=criteria_extra,
-        predecessor_task_id=predecessor_task_id,
+        predecessor_task_id=predecessor_task_id, requested_by_member_id=member.member_id,
     )
     return _redirect(f"/tasks/{task_id}", response)
 
@@ -737,7 +744,7 @@ def _insert_new_task(
     selection_mode: str, chosen_agent_id: str, run_mode: str, completion_mode: str,
     criteria_extra: str, predecessor_task_id: str,
     chain_id: str | None = None, source_ref: str | None = None, prefer: Sequence[str] | None = None,
-    source_type: str = "manual",
+    source_type: str = "manual", requested_by_member_id: str | None = None,
 ) -> str:
     """검증이 끝난 값으로 업무 1개와 그 첫 단계 Task 를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다.
     `source_type="n8n"` 이면 업무 원본 칸이 체인·항목 키(v9 → v10 마이그레이션과 같다).
@@ -781,6 +788,7 @@ def _insert_new_task(
         now,
         source_type=source_type, source_id=chain_id if n8n else None,
         source_item_id=source_ref if n8n else None, source_key=source_ref if n8n else None,
+        requested_by_member_id=requested_by_member_id,
     )
     repo.save_selection(conn, selection)
     _refresh_status(conn, task_id, now, settings)
@@ -928,6 +936,8 @@ def chain_start(
     now = utc_now()
     chain = _own_chain(conn, session_id, chain_id)
     start_chain(conn, chain, session_id=session_id, now=now, settings=_settings(request), error=PageError)
+    for work_item_id in dict.fromkeys(t["work_item_id"] for t in repo.tasks_of_chain(conn, chain_id)):
+        repo.set_work_requester(conn, work_item_id, member.member_id)  # 맡긴 사람 = 체인을 시작한 멤버
     return _redirect(f"/chains/{chain_id}", response)
 
 
@@ -1029,6 +1039,7 @@ def task_run(
         _run_cycle_task(conn, request.app.state.store, task, now=now, settings=_settings(request))
     else:
         _run_task(conn, task, session_id=session_id, now=now, settings=_settings(request))
+    repo.set_work_requester(conn, task["work_item_id"], member.member_id)  # 맡긴 사람 = 직접 실행한 멤버
     return _redirect(f"/tasks/{task_id}", response)
 
 
@@ -1051,7 +1062,8 @@ def task_delegate(
     if task["finished_at"] is not None:
         raise PageError(409, "task_closed", "마감된 업무는 맡길 수 없습니다.")
     repo.mark_issue_delegated(conn, session_id=session_id, source_id=issue["source_id"],
-                              github_issue_id=issue["github_issue_id"], by="operator", now=now)
+                              github_issue_id=issue["github_issue_id"], by="operator", now=now,
+                              member_id=member.member_id)
     worker = Worker(lambda: conn, request.app.state.store, None, _settings(request), lambda: now)
     worker.start_manually(conn, task_id)
     return _redirect(f"/tasks/{task_id}", response)

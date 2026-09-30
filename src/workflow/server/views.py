@@ -611,10 +611,7 @@ def cycle_context(
         "can_delegate": team.DELEGATE in allowed and undelegated(conn, task),
         "requests": requests,
         "open_requests": [r for r in requests if r["state"] == "open"],
-        "responses": [
-            {k: r[k] for k in ("question", "action", "text", "agent_id", "created_at", "task_revision")}
-            for r in repo.list_human_responses(conn, task_id)
-        ],
+        "responses": _responses_public(conn, task),
         "followup": {
             "cause_execution_id": link["cause_execution_id"],
             "cause_task_id": cause_task["task_id"] if cause_task is not None else None,
@@ -656,17 +653,36 @@ def assignee_label(conn: Connection, work: Row) -> str:
     return "담당 없음"
 
 
+def _member_names(conn: Connection, session_id: str) -> dict[str, str]:
+    return {m["member_id"]: m["display_name"] for m in repo.list_members(conn, session_id)}
+
+
+def _responses_public(conn: Connection, task: Row) -> list[dict[str, Any]]:
+    """단계의 응답 기록 — 응답자는 표시 이름(v11 이전 응답은 None)."""
+    names = _member_names(conn, task["session_id"])
+    return [
+        {**{k: r[k] for k in ("question", "action", "text", "agent_id", "created_at", "task_revision")},
+         "responder": names.get(r["member_id"]) if r["member_id"] else None}
+        for r in repo.list_human_responses(conn, task["task_id"])
+    ]
+
+
 def work_summary(conn: Connection, work: Row) -> dict[str, Any]:
     """목록 한 줄 — 키(원본 키가 있으면 원본 키)·제목·담당·업무 상태·이유·갱신 시각. 첫 단계가 지시 전이면
-    [에이전트에게 맡기기] 대상(`delegate_task_id`)."""
+    [에이전트에게 맡기기] 대상(`delegate_task_id`). `내 차례` 면 받는 사람 표시 이름(`recipients`, 계산값)."""
     stages = repo.list_work_item_tasks(conn, work["work_item_id"])
     first = stages[0] if stages else None
     work_key = format_work_key(work["key_number"])
+    recipients: list[str] = []
+    if work["status"] == "내 차례":
+        names = _member_names(conn, work["session_id"])
+        recipients = [names[m] for m in repo.turn_recipients_of(conn, work["work_item_id"])]
     return {
         "work_key": work_key,
         "key": work["source_key"] or work_key,
         "title": work["title"],
         "assignee": assignee_label(conn, work),
+        "recipients": recipients,
         "status": UserStatus(work["status"], work["status_reason"]),
         "updated_at": work["updated_at"],
         "delegate_task_id": first["task_id"] if first is not None and undelegated(conn, first) else None,
@@ -681,6 +697,7 @@ def work_context(
     stages = repo.list_work_item_tasks(conn, work["work_item_id"])
     pull_request = None
     open_requests: list[dict[str, Any]] = []
+    responses: list[dict[str, Any]] = []
     stage_views = []
     for stage in stages:
         summary = task_summary(conn, stage, now=now, settings=settings)
@@ -692,6 +709,7 @@ def work_context(
         })
         if (pr := repo.get_pull_request_row(conn, stage["task_id"])) is not None:
             pull_request = pull_request_public(pr)
+        responses.extend(_responses_public(conn, stage))
         opened = [r for r in repo.list_human_requests(conn, stage["task_id"]) if r["state"] == "open"]
         if opened:
             issue, config = task_cycle.origin_source(conn, stage)
@@ -735,6 +753,7 @@ def work_context(
         ],
         "links": links,
         "open_requests": open_requests,
+        "responses": responses,
     }
 
 

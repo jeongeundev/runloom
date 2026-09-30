@@ -15,6 +15,7 @@
     · 담당 {{ work.assignee }}
     {% if pull_request %} · <span data-pull-request="{{ pull_request.state }}">{{ pull_request.label }}{% if pull_request.url %} <a href="{{ pull_request.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pull_request.number }}</a>{% if pull_request.draft %} (초안){% endif %}{% endif %}</span>{% endif %}</p>
   {{ st.status_line(work.status) }}
+  {% if work.recipients %}<p class="small" data-recipients>받는 사람: {{ work.recipients|join(', ') }}</p>{% endif %}
 </div>
 
 <div class="bubble">{{ work.request }}<span class="stamp">{{ work.created_at|kst }}</span></div>
@@ -33,6 +34,13 @@
   {% if r.response_id %}{{ response_form(r) }}{% else %}<p class="small">응답 권한이 없습니다.</p>{% endif %}
 </div>
 {% endfor %}
+
+{% if responses %}
+<div class="section-head"><h2>응답 기록</h2></div>
+<ul class="small">
+  {% for a in responses %}<li>{{ a.question }} → <span class="mono">{{ a.action }}</span>{% if a.text %} · {{ a.text }}{% endif %} · <span data-responder>{{ a.responder or '기록 없음' }}</span> <span class="small">· {{ a.created_at|kst }}</span></li>{% endfor %}
+</ul>
+{% endif %}
 
 {% if form_fields %}
 <div class="section-head"><h2>업무 양식</h2></div>

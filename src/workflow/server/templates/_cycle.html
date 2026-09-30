@@ -74,7 +74,7 @@
   {% if cycle.responses %}
   <div class="small">입력 보충 (운영자 응답)</div>
   <ul>
-    {% for a in cycle.responses %}<li>{{ a.question }} → <span class="mono">{{ a.action }}</span>{% if a.agent_id %} <span class="mono">{{ a.agent_id }}</span>{% endif %}{% if a.text %} · {{ a.text }}{% endif %} <span class="small">· r{{ a.task_revision }} · {{ a.created_at|kst }}</span></li>{% endfor %}
+    {% for a in cycle.responses %}<li>{{ a.question }} → <span class="mono">{{ a.action }}</span>{% if a.agent_id %} <span class="mono">{{ a.agent_id }}</span>{% endif %}{% if a.text %} · {{ a.text }}{% endif %}{% if a.responder %} · <span data-responder>{{ a.responder }}</span>{% endif %} <span class="small">· r{{ a.task_revision }} · {{ a.created_at|kst }}</span></li>{% endfor %}
   </ul>
   {% endif %}
 

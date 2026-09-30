@@ -3630,3 +3630,109 @@ def test_member_last_seen_is_latest_login_session_per_member(sessions):
     repo.revoke_login_session(sessions, token, now=_plus(120))  # 폐기된 세션도 접속 기록이다
     assert repo.member_last_seen(sessions, SESSION) == {admin: _plus(60)}
     assert member not in repo.member_last_seen(sessions, SESSION)
+
+
+# --- phase 15 step 8: 맡긴 사람·응답자·사람별 내 차례 ------------------------------------------------------
+
+
+def _people(conn) -> tuple[str, str, str]:
+    """(첫 관리자 B, 멤버 A, 멤버 C) — B 는 세션을 만들 때 생긴 관리자."""
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    a = repo.add_member(conn, SESSION, display_name="김맡김", now=NOW)
+    c = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    return admin, a, c
+
+
+def test_turn_recipients_of_is_assignee_then_requester_then_admins(seeded):
+    conn = seeded
+    admin, a, c = _people(conn)
+    second_admin = repo.add_member(conn, SESSION, display_name="박관리", role="admin", now=LATER)
+    work = _work(conn)["work_item_id"]
+    assert repo.turn_recipients_of(conn, work) == (admin, second_admin)  # 맡긴 사람 없음 → 활성 관리자 전원
+    repo.set_work_requester(conn, work, a)
+    assert _work(conn)["requested_by_member_id"] == a
+    assert repo.turn_recipients_of(conn, work) == (a,)
+    repo.assign_work_item(conn, SESSION, work, assignee_type="member", assignee_id=c, now=LATER)
+    assert repo.turn_recipients_of(conn, work) == (c,)  # 담당 멤버가 먼저
+    repo.disable_member(conn, SESSION, c, now=LATER)
+    assert repo.turn_recipients_of(conn, work) == (a,)
+    repo.disable_member(conn, SESSION, a, now=LATER)
+    assert repo.turn_recipients_of(conn, work) == (admin, second_admin)  # 맡긴 사람이 비활성 → 관리자 전원
+    with pytest.raises(NotFound):
+        repo.turn_recipients_of(conn, "wi-nope")
+
+
+def test_list_work_items_my_turn_is_computed_per_member(seeded):
+    conn = seeded
+    admin, a, _ = _people(conn)
+    other = repo.insert_work_item_task(conn, _task("task-other"), NOW)  # 내 차례 아님
+    repo.set_work_requester(conn, other, a)
+    _failed_stage(conn)  # TASK_A 업무 → 내 차례, 맡긴 사람 없음
+    work = _work(conn)["work_item_id"]
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION, recipient_member_id=admin)] == [work]
+    assert repo.list_work_items(conn, SESSION, recipient_member_id=a) == []
+    repo.set_work_requester(conn, work, a)
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION, recipient_member_id=a)] == [work]
+    assert repo.list_work_items(conn, SESSION, recipient_member_id=admin) == []  # 관리자에게는 안 보인다
+    assert conn.execute("SELECT COUNT(*) FROM work_items WHERE requested_by_member_id IS NOT NULL").fetchone()[0] == 2
+
+
+def test_insert_work_item_task_records_requester(seeded):
+    conn = seeded
+    _, a, _ = _people(conn)
+    work = repo.insert_work_item_task(conn, _task("task-direct"), NOW, requested_by_member_id=a)
+    assert repo.get_work_item(conn, SESSION, work)["requested_by_member_id"] == a
+    assert _work(conn)["requested_by_member_id"] is None  # 넘기지 않으면 기록 없음
+
+
+def test_mark_issue_delegated_records_the_latest_member_but_not_the_label(cycle):
+    conn = cycle
+    admin, a, _ = _people(conn)
+    issue = repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")
+    kwargs = {"session_id": SESSION, "source_id": SOURCE, "github_issue_id": issue["github_issue_id"]}
+    repo.mark_issue_delegated(conn, **kwargs, by="label", now=NOW)
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] is None
+    assert repo.mark_issue_delegated(conn, **kwargs, by="operator", now=LATER, member_id=a) is False
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] == a  # 이미 지시됐어도 누른 사람은 남는다
+    repo.mark_issue_delegated(conn, **kwargs, by="operator", now=LATER, member_id=admin)
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] == admin  # 가장 최근이 이긴다
+
+
+def test_response_records_the_responder_and_retry_sets_the_requester(seeded):
+    conn = seeded
+    admin, a, _ = _people(conn)
+    request_id = _failed_stage(conn)
+    kwargs = {"response_id": "resp-1", "expected_revision": 1, "action": "retry", "text": "", "now": LATER,
+              "retry_task_id": "task-retry"}
+    repo.record_human_response_once(conn, SESSION, request_id, **kwargs, member_id=a)
+    (response,) = repo.list_human_responses(conn, TASK_A)
+    assert response["member_id"] == a
+    assert _work(conn)["requested_by_member_id"] == a  # 다시 맡기기 = 맡긴 사람
+    # 같은 response_id 재전송은 처음 결과 — 다른 멤버가 보내도 응답자·맡긴 사람은 그대로
+    assert repo.record_human_response_once(conn, SESSION, request_id, **kwargs, member_id=admin) == (2, False)
+    assert repo.list_human_responses(conn, TASK_A)[0]["member_id"] == a
+    assert _work(conn)["requested_by_member_id"] == a
+
+
+def test_non_retry_response_keeps_the_requester(cycle):
+    conn = cycle
+    admin, a, _ = _people(conn)
+    repo.set_work_requester(conn, _wi41(conn), a)
+    request_id, _ = repo.create_human_request_once(conn, "task-gh-41", "decision", "q", "decision:1", NOW)
+    repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                    action="resume", text="", now=LATER, member_id=admin)
+    assert repo.list_human_responses(conn, "task-gh-41")[0]["member_id"] == admin
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] == a
+
+
+def test_new_work_followup_copies_the_requester(cycle):
+    conn = cycle
+    _, a, _ = _people(conn)
+    repo.set_work_requester(conn, _wi41(conn), a)
+    _create_execution(conn, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    spec = FollowupTaskSpec(session_id=SESSION, kind="code_review", cause_execution_id="exec-fix-1",
+                            predecessor_task_id=None, rules_revision=1)
+    task_id, _ = repo.create_followup_once(conn, spec, {**_review_task(), "predecessor_task_id": None}, NOW,
+                                           work_item_id=_wi41(conn), placement="new_work")
+    spawned = repo.work_item_of_task(conn, task_id)
+    assert spawned["work_item_id"] != _wi41(conn) and spawned["requested_by_member_id"] == a
