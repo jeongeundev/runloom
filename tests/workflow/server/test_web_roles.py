@@ -210,7 +210,7 @@ def test_member_operator_page_shows_runner_but_not_agent_forms(member, admin):
     text = member.get("/operator").text
     assert 'action="/operator/connect-codes"' in text
     assert 'action="/operator/agents"' not in text and "/operator/agents/" not in text
-    assert "/revoke" not in text  # 코드 취소는 이 step 에서 관리자 동작(step 10 이 소유자 본인으로 넓힌다)
+    assert "/revoke" not in text  # 관리자가 발급한 코드는 멤버에게 보이지 않는다(자기 발급분만 — step 10)
 
 
 def test_member_github_page_shows_runner_but_not_connection_forms(member, admin):

@@ -470,6 +470,24 @@ def test_connector_revoke_and_touch(conn):
     assert repo.authenticate_connector(conn, "wfc_bogus") is None
 
 
+def test_connect_code_issuer_becomes_connector_owner(conn):
+    """러너 소유자(phase 15 step 10) — 발급 멤버가 교환 때 같은 트랜잭션에서 연결 프로그램 소유자로 옮겨진다."""
+    repo.create_session(conn, SESSION, NOW)
+    kim = repo.add_member(conn, SESSION, display_name="김", now=NOW)
+    code = repo.issue_connect_code(conn, NOW, issued_by_member_id=kim)
+    legacy = repo.issue_connect_code(conn, NOW)
+
+    assert [c["issued_by_member_id"] for c in repo.list_connect_codes(conn, issued_by_member_id=kim)] == [kim]
+    assert {c["code"] for c in repo.list_connect_codes(conn)} == {code, legacy}
+
+    owned, _ = repo.exchange_connect_code(conn, code, NOW)
+    unowned, _ = repo.exchange_connect_code(conn, legacy, NOW)
+    assert repo.connector_owner(conn, owned) == kim
+    assert repo.connector_owner(conn, unowned) is None
+    assert repo.connector_owner(conn, "conn-none") is None
+    assert [r["connector_id"] for r in repo.list_connectors(conn)] == sorted([owned, unowned])
+
+
 def test_record_supported_kinds_keeps_last_claim_declaration(conn):
     """마지막 claim 의 `supported_kinds` 선언을 JSON 으로 남긴다. 선언 없는 claim(구버전)은 NULL 로 되돌린다."""
     code = repo.issue_connect_code(conn, NOW)

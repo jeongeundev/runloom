@@ -1149,11 +1149,14 @@ def is_session_agent(conn: Connection, session_id: str, agent_id: str) -> bool:
 # --- 연결 코드·연결 프로그램 (ARCHITECTURE 인증 절) -------------------------
 
 
-def issue_connect_code(conn: Connection, now: str, ttl_seconds: int = 600) -> str:
+def issue_connect_code(
+    conn: Connection, now: str, ttl_seconds: int = 600, *, issued_by_member_id: str | None = None
+) -> str:
+    """`issued_by_member_id` = 발급 멤버 — 교환 때 러너 소유자가 된다(None = 소유자 없음, 관리자 관리)."""
     code = secrets.token_urlsafe(24)
     conn.execute(
-        "INSERT INTO connect_codes (code, issued_at, expires_at) VALUES (?, ?, ?)",
-        (code, now, _plus_seconds(now, ttl_seconds)),
+        "INSERT INTO connect_codes (code, issued_at, expires_at, issued_by_member_id) VALUES (?, ?, ?, ?)",
+        (code, now, _plus_seconds(now, ttl_seconds), issued_by_member_id),
     )
     return code
 
@@ -1167,9 +1170,15 @@ def revoke_connect_code(conn: Connection, code: str, now: str) -> None:
     _require_rowcount(cur, "connect code")
 
 
-def list_connect_codes(conn: Connection) -> list[Row]:
-    """운영자 화면용. 최근 발급 순. 코드 자체는 1회용·10분이라 화면에 보여도 된다."""
-    return conn.execute("SELECT * FROM connect_codes ORDER BY issued_at DESC, code").fetchall()
+def list_connect_codes(conn: Connection, *, issued_by_member_id: str | None = None) -> list[Row]:
+    """운영자 화면용. 최근 발급 순. 코드 자체는 1회용·10분이라 화면에 보여도 된다.
+    `issued_by_member_id` 가 있으면 그 멤버가 발급한 것만(None = 전부)."""
+    if issued_by_member_id is None:
+        return conn.execute("SELECT * FROM connect_codes ORDER BY issued_at DESC, code").fetchall()
+    return conn.execute(
+        "SELECT * FROM connect_codes WHERE issued_by_member_id = ? ORDER BY issued_at DESC, code",
+        (issued_by_member_id,),
+    ).fetchall()
 
 
 def exchange_connect_code(conn: Connection, code: str, now: str) -> tuple[str, str]:
@@ -1188,8 +1197,8 @@ def exchange_connect_code(conn: Connection, code: str, now: str) -> tuple[str, s
             raise NotFound("connect code")
         conn.execute("UPDATE connect_codes SET used_at = ? WHERE code = ?", (now, code))
         conn.execute(
-            "INSERT INTO connectors (connector_id, token_sha256, created_at) VALUES (?, ?, ?)",
-            (connector_id, token_hash, now),
+            "INSERT INTO connectors (connector_id, token_sha256, created_at, owner_member_id) VALUES (?, ?, ?, ?)",
+            (connector_id, token_hash, now, row["issued_by_member_id"]),
         )
     return connector_id, token_plain
 
@@ -1232,6 +1241,17 @@ def record_supported_kinds(conn: Connection, connector_id: str, kinds: Sequence[
 
 def get_connector(conn: Connection, connector_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM connectors WHERE connector_id = ?", (connector_id,))
+
+
+def list_connectors(conn: Connection) -> list[Row]:
+    """운영자 화면 러너 목록 — 해제된 것 포함, 연결 순."""
+    return conn.execute("SELECT * FROM connectors ORDER BY created_at, connector_id").fetchall()
+
+
+def connector_owner(conn: Connection, connector_id: str) -> str | None:
+    """러너 소유 멤버. 없는 러너·소유자 없음(v11 이전 발급) = None."""
+    row = _one(conn, "SELECT owner_member_id FROM connectors WHERE connector_id = ?", (connector_id,))
+    return row["owner_member_id"] if row else None
 
 
 # --- 입구 토큰 (phase 7, ADR-0010: 세션이 발급해 n8n 이 쓴다) ------------------------

@@ -11,6 +11,7 @@
   <table class="kv">
     <tr><th>ID</th><td class="mono">{{ agent.agent_id }}</td></tr>
     <tr><th>소유 구분</th><td>{{ agent.owner_scope }}</td></tr>
+    <tr><th>소유자</th><td>{{ st.owner(agent.owner) }}</td></tr>
     <tr><th>연결 유형</th><td>{{ agent.connection_type }}</td></tr>
     {% if agent.connection_type == 'api' %}
     <tr><th>주소</th><td class="mono">{{ agent.api_url }}</td></tr>

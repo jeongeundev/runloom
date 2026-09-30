@@ -1,5 +1,6 @@
 {# 운영자 — 로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드, 모든 세션 업무.
-   연결 코드 발급은 `attach_runner`(멤버 포함), 코드 목록·취소는 `remove_any_runner`, 에이전트 삭제·등록은 `manage_connections`.
+   연결 코드 발급은 `attach_runner`(멤버 포함), 코드 목록은 관리자면 전부·멤버면 자기 발급분, 코드 취소·러너 해제·러너 에이전트 삭제는
+   소유자 본인 또는 `remove_any_runner`(`can_revoke`·`can_delete`), 에이전트 등록은 `manage_connections`.
    등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
@@ -24,13 +25,32 @@
       <td class="mono">{{ c.code }}</td>
       <td>{{ c.issued_at|kst }}</td>
       <td>{{ c.expires_at|kst }}</td>
-      <td>{% if c.used_at %}사용됨 {{ c.used_at|kst }}{% elif c.revoked_at %}취소됨 {{ c.revoked_at|kst }}{% else %}
-        <form method="post" action="/operator/connect-codes/{{ c.code }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">취소</button></form>{% endif %}</td>
+      <td>{% if c.used_at %}사용됨 {{ c.used_at|kst }}{% elif c.revoked_at %}취소됨 {{ c.revoked_at|kst }}{% elif c.can_revoke %}
+        <form method="post" action="/operator/connect-codes/{{ c.code }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">취소</button></form>{% else %}사용 전{% endif %}</td>
     </tr>
     {% endfor %}
   </table>
   </div>
   {% endif %}
+</div>
+
+<h2>러너</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>러너</th><th>소유</th><th>연결</th><th>마지막 확인</th><th>상태</th></tr>
+    {% for r in runners %}
+    <tr data-runner="{{ r.connector_id }}">
+      <td class="mono">{{ r.connector_id }}</td>
+      <td>{{ st.owner(r.owner) }}</td>
+      <td>{{ r.created_at|kst }}</td>
+      <td>{{ r.last_seen_at|kst if r.last_seen_at else '없음' }}</td>
+      <td>{% if r.revoked_at %}해제됨 {{ r.revoked_at|kst }}{% elif r.can_revoke %}
+        <form method="post" action="/operator/connectors/{{ r.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">해제</button></form>{% else %}연결됨{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">연결된 러너 없음</td></tr>
+    {% endfor %}
+  </table>
 </div>
 
 <h2>에이전트</h2>
@@ -39,10 +59,10 @@
     {% for a in agents %}
     <li>
       <span><strong>{{ a.name }}</strong> <span class="mono small">{{ a.agent_id }}</span></span>
-      <span class="small">{{ a.owner_scope }} · {{ a.connection_type }}</span>
+      <span class="small">{{ a.owner_scope }} · {{ a.connection_type }} · {{ st.owner(a.owner) }}</span>
       <span>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if c.kind_label %} <span class="small">({{ c.kind_label }})</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</span>
       {{ st.connection(a) }}
-      {% if 'manage_connections' in allowed %}<form method="post" action="/operator/agents/{{ a.agent_id }}/delete" class="inline-form" style="margin-left:auto"><button class="btn btn-danger btn-small" type="submit">삭제</button></form>{% endif %}
+      {% if a.can_delete %}<form method="post" action="/operator/agents/{{ a.agent_id }}/delete" class="inline-form" style="margin-left:auto"><button class="btn btn-danger btn-small" type="submit">삭제</button></form>{% endif %}
     </li>
     {% else %}
     <li class="muted">등록된 에이전트 없음</li>

@@ -1318,7 +1318,11 @@ def agents_list(
     session_id = member.session_id
     now = utc_now()
     settings = _settings(request)
-    agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
+    agents = [
+        {**views.agent_public(a, now=now, settings=settings),
+         "owner": views.runner_owner(conn, session_id, views.agent_owner_id(conn, a))}
+        for a in _session_agents(conn, session_id)
+    ]
     return _render("agents.html", **_base(request, conn, session_id, now), agents=agents)
 
 
@@ -1336,6 +1340,7 @@ def agent_detail(
     if row is None or not repo.is_session_agent(conn, session_id, agent_id):
         raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
     agent = views.agent_public(row, now=now, settings=_settings(request), kinds=_kinds(conn, session_id))
+    agent["owner"] = views.runner_owner(conn, session_id, views.agent_owner_id(conn, row))
     return _render("agent_detail.html", **_base(request, conn, session_id, now), agent=agent)
 
 
@@ -1586,6 +1591,21 @@ def sources_revoke_token(
 # --- 운영자 (ADR-0005) --------------------------------------------------------------
 
 
+def _may_remove_runner(member: LoggedIn, owner_member_id: str | None) -> bool:
+    """러너 해제·코드 취소·러너 에이전트 삭제 — 소유자(발급자) 본인(`attach_runner`) 또는 `remove_any_runner`.
+    소유자 없음(v11 이전)은 관리자만."""
+    if team.can(member.role, team.REMOVE_ANY_RUNNER):
+        return True
+    return owner_member_id is not None and owner_member_id == member.member_id \
+        and team.can(member.role, team.ATTACH_RUNNER)
+
+
+def _forbid_runner_removal(owner_member_id: str | None) -> PageError:
+    if owner_member_id is None:
+        return PageError(403, "forbidden", "관리자 권한이 필요합니다.")
+    return PageError(403, "forbidden", "러너 소유자나 관리자만 할 수 있습니다.")
+
+
 def _operator_context(
     request: Request, conn: Connection, session_id: str, now: str, issued: dict[str, str] | None = None
 ) -> dict[str, Any]:
@@ -1593,13 +1613,35 @@ def _operator_context(
     tasks = [views.task_summary(conn, t, now=now, settings=settings) for t in repo.list_tasks(conn, None)]
     kinds = _kinds(conn, session_id)
     base = _base(request, conn, session_id, now)
-    # 코드 목록·취소는 이 step 에서 관리자 동작 — 멤버에게는 자기가 방금 발급한 코드(`issued`)만 보인다
-    codes = repo.list_connect_codes(conn) if team.REMOVE_ANY_RUNNER in base["allowed"] else []
+    member: LoggedIn = base["member"]
+    # 연결 코드 목록은 관리자면 전부, 멤버면 자기가 발급한 것만(러너 소유자 — phase 15 step 10)
+    codes = repo.list_connect_codes(
+        conn, issued_by_member_id=None if team.REMOVE_ANY_RUNNER in base["allowed"] else member.member_id
+    )
+    agents = []
+    for a in repo.list_agents(conn):
+        owner_id = views.agent_owner_id(conn, a)
+        agents.append({
+            **views.agent_public(a, now=now, settings=settings, kinds=kinds),
+            "owner": views.runner_owner(conn, session_id, owner_id),
+            "can_delete": team.MANAGE_CONNECTIONS in base["allowed"] or _may_remove_runner(member, owner_id),
+        })
+    runners = [
+        {
+            **{k: c[k] for k in ("connector_id", "created_at", "last_seen_at", "revoked_at")},
+            "owner": views.runner_owner(conn, session_id, c["owner_member_id"]),
+            "can_revoke": c["revoked_at"] is None and _may_remove_runner(member, c["owner_member_id"]),
+        }
+        for c in repo.list_connectors(conn)
+    ]
     return {
         **base,
-        "agents": [views.agent_public(a, now=now, settings=settings, kinds=kinds) for a in repo.list_agents(conn)],
+        "agents": agents,
+        "runners": runners,
         "all_tasks": tasks,
-        "connect_codes": [dict(c) for c in codes],
+        "connect_codes": [
+            {**dict(c), "can_revoke": _may_remove_runner(member, c["issued_by_member_id"])} for c in codes
+        ],
         "issued": issued,
         # 에이전트 등록 폼의 안내 — 운영자는 세션 무관이라 내장 종류만 보인다. 사용자 정의 코드는 scope 키를 직접 적는다
         "builtin_kinds": [views.kind_public(spec) for spec in BUILTIN_KINDS],
@@ -1651,7 +1693,7 @@ def operator_attach_runner(
     if repo.get_github_source(conn, session_id, source_id) is None:
         raise PageError(404, "not_found", "이 워크스페이스의 저장소 연결이 아닙니다.", field="source_id")
     now = utc_now()
-    code = repo.issue_connect_code(conn, now)
+    code = repo.issue_connect_code(conn, now, issued_by_member_id=member.member_id)
     row = next(c for c in repo.list_connect_codes(conn) if c["code"] == code)
     settings = _settings(request)
     server = settings.public_url or str(request.base_url).rstrip("/")
@@ -2334,9 +2376,14 @@ def operator_register_agent(
 def operator_delete_agent(
     response: Response,
     agent_id: str,
-    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
+    """`manage_connections`(관리자) 또는 그 에이전트 러너의 소유자 본인. 없는 에이전트는 관리자에게만 404."""
+    row = repo.get_agent(conn, agent_id)
+    owner_id = views.agent_owner_id(conn, row) if row is not None else None
+    if not (team.can(member.role, team.MANAGE_CONNECTIONS) or _may_remove_runner(member, owner_id)):
+        raise _forbid_runner_removal(owner_id)
     try:
         repo.delete_agent(conn, agent_id)
     except NotFound:
@@ -2353,7 +2400,7 @@ def operator_issue_connect_code(
     """발급한 코드는 이 응답 화면에만 보인다 (URL 에 넣지 않는다). 1회용·10분."""
     session_id = member.session_id
     now = utc_now()
-    code = repo.issue_connect_code(conn, now)
+    code = repo.issue_connect_code(conn, now, issued_by_member_id=member.member_id)
     row = next(c for c in repo.list_connect_codes(conn) if c["code"] == code)
     issued = {"code": code, "expires_at": row["expires_at"]}
     return _render("operator.html", **_operator_context(request, conn, session_id, now, issued))
@@ -2363,11 +2410,34 @@ def operator_issue_connect_code(
 def operator_revoke_connect_code(
     response: Response,
     code: str,
-    member: LoggedIn = Depends(require_action(team.REMOVE_ANY_RUNNER)),
+    member: LoggedIn = Depends(require_action(team.ATTACH_RUNNER)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
+    """발급자 본인 또는 `remove_any_runner`. 발급자 없는 코드는 관리자만."""
+    row = next((c for c in repo.list_connect_codes(conn) if c["code"] == code), None)
+    owner_id = row["issued_by_member_id"] if row is not None else None
+    if not _may_remove_runner(member, owner_id):
+        raise _forbid_runner_removal(owner_id)
     try:
         repo.revoke_connect_code(conn, code, utc_now())
     except NotFound:
         raise PageError(404, "not_found", "취소할 수 있는 연결 코드가 아닙니다.", field="code") from None
+    return _redirect("/operator", response)
+
+
+@router.post("/operator/connectors/{connector_id}/revoke")
+def operator_revoke_connector(
+    response: Response,
+    connector_id: str,
+    member: LoggedIn = Depends(require_action(team.ATTACH_RUNNER)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """러너 해제 — 연결 토큰 무효(러너 다음 요청 401). 소유자 본인 또는 `remove_any_runner`, 소유자 없는 러너는 관리자만."""
+    owner_id = repo.connector_owner(conn, connector_id)
+    if not _may_remove_runner(member, owner_id):
+        raise _forbid_runner_removal(owner_id)
+    try:
+        repo.revoke_connector(conn, connector_id, utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", "해제할 수 있는 러너가 아닙니다.", field="connector_id") from None
     return _redirect("/operator", response)

@@ -122,6 +122,21 @@ def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[Ki
     return data
 
 
+def agent_owner_id(conn: Connection, agent: Row) -> str | None:
+    """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리)."""
+    if agent["connection_type"] != "local" or agent["connector_id"] is None:
+        return None
+    return repo.connector_owner(conn, agent["connector_id"])
+
+
+def runner_owner(conn: Connection, session_id: str, owner_member_id: str | None) -> dict[str, Any] | None:
+    """러너·에이전트의 "소유자 <표시 이름>" — None 이면 "관리자 관리". 비활성 멤버는 `active` 가 False."""
+    row = repo.get_member(conn, session_id, owner_member_id) if owner_member_id is not None else None
+    if row is None:
+        return None
+    return {"member_id": row["member_id"], "display_name": row["display_name"], "active": row["disabled_at"] is None}
+
+
 def kind_public(spec: KindSpec) -> dict[str, Any]:
     """종류·규칙 화면의 종류 카드. 산출물 kind 는 칩 라벨(`KIND_LABELS`)로, outcome 은 코드 그대로 (GLOSSARY `outcome 라벨`)."""
     return {
