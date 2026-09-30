@@ -119,11 +119,13 @@ def test_anonymous_is_sent_to_login(app, admin):
         assert (response.status_code, response.headers["location"]) == (303, "/login"), path
 
 
-def test_sidebar_links_team_for_admin_and_me_for_everyone(admin, member):
-    admin_page = admin.get("/tasks").text
-    assert 'href="/team"' in admin_page and 'href="/me"' in admin_page
-    member_page = member.get("/tasks").text
-    assert 'href="/team"' not in member_page and 'href="/me"' in member_page
+def test_sidebar_links_me_for_everyone_and_team_moves_to_connect(admin, member):
+    """phase 16: 사이드바에서 팀 링크는 빠지고(연결 화면 팀 탭 — step 6) 내 설정은 모두에게."""
+    for client in (admin, member):
+        page = client.get("/tasks").text
+        sidebar = page[page.index('class="sidebar'):page.index('class="main')]
+        assert 'href="/team"' not in sidebar and 'href="/me"' in sidebar
+    assert admin.get("/team").status_code == 200
 
 
 # --- /team 목록 ------------------------------------------------------------------------------------

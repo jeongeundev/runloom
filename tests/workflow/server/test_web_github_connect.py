@@ -664,10 +664,11 @@ def test_delegate_button_only_for_open_tasks_without_an_instruction(cycle_op, co
     conn.execute("UPDATE tasks SET finished_at = ? WHERE task_id = ?", ("2026-10-06T12:00:00Z", closed))
     conn.commit()
 
-    for url in ("/tasks", "/operator/github"):
-        text = cycle_op.get(url).text
-        assert delegate_form(waiting) in text and "에이전트에게 맡기기" in text, url
-        assert delegate_form(labelled) not in text and delegate_form(closed) not in text, url
+    # phase 16: 업무 화면 표에는 행 동작 버튼이 없다(에이전트 맡기기는 패널의 담당 선택 — step 5)
+    assert "/delegate" not in cycle_op.get("/tasks").text
+    text = cycle_op.get("/operator/github").text
+    assert delegate_form(waiting) in text and "에이전트에게 맡기기" in text
+    assert delegate_form(labelled) not in text and delegate_form(closed) not in text
 
     detail = cycle_op.get(f"/tasks/{waiting}").text
     assert delegate_form(waiting) in detail
@@ -685,11 +686,12 @@ def test_list_groups_undelegated_tasks_as_waiting_for_an_instruction(cycle_op, c
 
     home = cycle_op.get("/tasks").text
     main = home[home.index('class="main'):]
-    card = main.split('href="/work/RUN-1"', 1)[1].split("</div>\n  </div>", 1)[0]  # 목록 한 줄 = 업무
-    # 업무 상태는 `새로 들어옴 · 담당 없음`(담당 없음이 지시 전보다 먼저 — domain/work_status), 지시 전은 맡기기 버튼으로
+    card = re.search(r'<tr class="work-row" data-work-key="RUN-1".*?</tr>', main, re.S).group(0)  # 목록 한 줄 = 업무
+    # 업무 상태는 `새로 들어옴 · 담당 없음`(담당 없음이 지시 전보다 먼저 — domain/work_status) — "다음 할 일" 칸이 이유
     assert 'data-status="새로 들어옴"' in card and "담당 없음" in card and "다른 사유" not in card
-    assert delegate_form(waiting) in card and "맡겨야 실행합니다" in card
-    assert "다른 사유" in cycle_op.get(f"/tasks/{waiting}").text  # 다른 사유는 상세에서
+    detail = cycle_op.get(f"/tasks/{waiting}").text
+    assert delegate_form(waiting) in detail  # 지시 전은 단계 상세의 맡기기 버튼으로(phase 16 — 패널은 step 5)
+    assert "다른 사유" in detail  # 다른 사유는 상세에서
 
 
 def test_no_delegate_button_for_filtered_sources_or_non_operators(client, cycle, conn):
@@ -708,7 +710,7 @@ def test_member_sees_the_delegate_button_regardless_of_is_operator(cycle_op, app
     conn.commit()
     for client in (cycle_op, log_in_member(TestClient(app))):
         assert delegate_form(task_id) in client.get(f"/tasks/{task_id}").text
-        assert delegate_form(task_id) in client.get("/tasks").text
+        assert delegate_form(task_id) in client.get("/operator/github").text  # phase 16: 업무 화면 표에는 버튼 없음
 
 
 def test_home_without_github_is_unchanged(logged_in_client):

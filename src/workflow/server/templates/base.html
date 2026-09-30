@@ -1,5 +1,5 @@
 {# 3열 셸 — UI_GUIDE "앱 셸". 왼쪽 목록 · 가운데 본문 · 오른쪽 산출물 뷰어. 대화 입력창은 없다.
-   스크립트는 여기 인라인 하나뿐이다 (폴링·뷰어 열기·목록 서랍·복사·원문 토글·JSON 폼). 외부 자원 없음. #}
+   스크립트는 여기 인라인 하나뿐이다 (폴링·뷰어 열기·목록 서랍·업무 표 묶음 접기·복사·원문 토글·JSON 폼). 외부 자원 없음. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -18,7 +18,7 @@
   </div>
   {% include "_sidebar.html" %}
   <main class="main">
-    <div class="main-inner">
+    <div class="main-inner{% block main_class %}{% endblock %}">
     {% block content %}{% endblock %}
     </div>
   </main>
@@ -68,6 +68,38 @@
     }
     if (ev.target.closest('[data-viewer-close]')) {
       shell.classList.remove('viewer-open');
+    }
+  });
+
+  // --- 업무 표: 묶음 접기(접힌 묶음 키는 localStorage — 읽기·쓰기 실패해도 동작), 행 아무 곳이나 누르면 그 행의 링크 ---
+  var FOLDED = 'runloom.folded-groups';
+  function folded() {
+    try { return JSON.parse(window.localStorage.getItem(FOLDED) || '[]'); } catch (e) { return []; }
+  }
+  function fold(key, closed) {
+    var body = document.querySelector('[data-group-body="' + CSS.escape(key) + '"]');
+    var btn = document.querySelector('[data-group-toggle="' + CSS.escape(key) + '"]');
+    if (!body || !btn) { return; }
+    body.classList.toggle('folded', closed);
+    btn.setAttribute('aria-expanded', closed ? 'false' : 'true');
+    btn.textContent = closed ? '▸' : '▾';
+  }
+  folded().forEach(function (key) { fold(key, true); });
+  document.addEventListener('click', function (ev) {
+    var btn = ev.target.closest('[data-group-toggle]');
+    if (btn) {
+      var key = btn.getAttribute('data-group-toggle');
+      var keys = folded().filter(function (k) { return k !== key; });
+      var closed = btn.getAttribute('aria-expanded') === 'true';
+      if (closed) { keys.push(key); }
+      fold(key, closed);
+      try { window.localStorage.setItem(FOLDED, JSON.stringify(keys)); } catch (e) { /* 저장 못 해도 접기는 된다 */ }
+      return;
+    }
+    var row = ev.target.closest('tr.work-row');
+    if (row && !ev.target.closest('a, button')) {
+      var link = row.querySelector('a.row-link');
+      if (link) { window.location.href = link.getAttribute('href'); }
     }
   });
 

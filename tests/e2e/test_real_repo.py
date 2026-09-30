@@ -519,7 +519,7 @@ def test_05_merging_the_pr_completes_the_task_and_counts_in_metrics(world):
     assert result_branch_of(world, a_id) == "runloom/RUN-1"
     assert world.fake.pulls[PR_NUMBER]["title"].startswith("RUN-1 ")
     home = world.http.get("/tasks").text
-    assert home.count('href="/work/RUN-1"') >= 1 and f'href="/tasks/{review["task_id"]}"' not in home
+    assert home.count('href="/tasks?open=RUN-1"') >= 1 and f'href="/tasks/{review["task_id"]}"' not in home
 
 
 def test_06_a_failed_fix_sends_one_failure_notification(world):

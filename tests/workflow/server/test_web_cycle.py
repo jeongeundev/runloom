@@ -446,15 +446,15 @@ def test_one_issue_with_fix_and_review_is_one_row_and_one_work_detail(operator, 
 
     home = page(operator, "/tasks")
     main = main_of(home)
-    # 한 줄 = 업무 — 단계(Task) 링크가 아니라 업무 상세 링크 하나
-    assert main.count('href="/work/RUN-1"') == 1
+    # 한 줄 = 업무 — 단계(Task) 링크가 아니라 업무를 여는 링크 하나(phase 16: `/tasks?open=<key>`)
+    assert main.count('href="/tasks?open=RUN-1"') == 1
     assert f'href="/tasks/{fix_task}"' not in main and f'href="/tasks/{review_task}"' not in main
-    row = main.split('href="/work/RUN-1"', 1)[1].split("</div>\n  </div>", 1)[0]
+    row = re.search(r'<tr class="work-row" data-work-key="RUN-1".*?</tr>', main, re.S).group(0)
     assert "acme/billing#1" in row  # 원본 키가 있으면 원본 키
     assert "버그 1" in row
     assert FIX in row  # 담당 = 에이전트 이름
     assert 'data-status="내 차례"' in row and "검토 대기" in row  # 업무 상태 — 수정 단계가 검토를 기다림
-    assert sidebar_of(home).count('href="/work/RUN-1"') == 1
+    assert "RUN-1" not in sidebar_of(home)  # phase 16: 사이드바 "최근" 목록 없음
 
     detail = page(operator, "/work/RUN-1")
     assert "RUN-1" in detail and 'href="https://github.com/acme/billing/issues/1"' in detail

@@ -47,9 +47,14 @@ ADMIN_APIS = [
 ]
 MEMBER_PAGES = ["/tasks", "/tasks/new", "/agents", "/kinds", "/operator", "/operator/github", "/metrics"]
 MEMBER_APIS = ["/github/sources", "/human-requests", "/field-mappings", "/metrics.json", "/metrics.csv"]
-ADMIN_LINKS = ('href="/sources"', 'href="/operator/notifications"')
-MEMBER_LINKS = ('href="/tasks"', 'href="/agents"', 'href="/kinds"', 'href="/operator"', 'href="/operator/github"',
-                'href="/metrics"')
+# phase 16 사이드바: 업무 · 모니터링(`view_metrics`) · 연결 · 내 설정(`edit_own_settings`) — 관리자 전용 화면(입구·알림·팀)은
+# 사이드바가 아니라 연결 화면 탭(step 6)으로 간다
+ADMIN_LINKS = ('href="/sources"', 'href="/operator/notifications"', 'href="/team"')
+MEMBER_LINKS = ('href="/tasks"', 'href="/metrics"', 'href="/operator/github"', 'href="/me"')
+
+
+def sidebar_of(html: str) -> str:
+    return html[html.index('class="sidebar'):html.index('class="main')]
 
 
 def send(client: TestClient, method: str, path: str, body):
@@ -144,7 +149,9 @@ def test_admin_role_gates_do_not_read_is_operator(admin, conn):
     for path in ("/operator/notifications", "/sources", "/operator/github", "/metrics"):
         response = admin.get(path, follow_redirects=False)
         assert response.status_code == 200, path
-    assert 'href="/operator/notifications"' in admin.get("/tasks").text
+    sidebar = sidebar_of(admin.get("/tasks").text)
+    for link in MEMBER_LINKS:
+        assert link in sidebar, link
 
 
 # --- 멤버가 쓰는 경로 --------------------------------------------------------------------------------
@@ -182,17 +189,19 @@ def test_member_issues_a_connect_code_on_operator_page(member, conn):
 
 
 def test_member_sidebar_hides_admin_links(member):
-    text = member.get("/tasks").text
+    text = sidebar_of(member.get("/tasks").text)
     for link in ADMIN_LINKS:
         assert link not in text, link
     for link in MEMBER_LINKS:
         assert link in text, link
 
 
-def test_admin_sidebar_shows_every_link(admin):
-    text = admin.get("/tasks").text
-    for link in ADMIN_LINKS + MEMBER_LINKS:
+def test_admin_sidebar_shows_every_nav_item(admin):
+    text = sidebar_of(admin.get("/tasks").text)
+    for link in MEMBER_LINKS:
         assert link in text, link
+    for link in ADMIN_LINKS:  # 관리자 화면은 연결 화면에서 간다
+        assert link not in text, link
 
 
 def test_member_kinds_page_hides_setting_forms(member, admin):

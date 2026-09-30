@@ -1018,3 +1018,11 @@ def test_list_query_params_leave_out_defaults():
                                    open_key=12) == "q=my_turn&group=status&view=board&closed=all&open=RUN-12"
     assert views.list_query_params(parse_list_query(view="board", open="RUN-3")) == "view=board"  # open 은 인자로만
     assert views.list_query_params(parse_list_query(), open_key=4) == "open=RUN-4"
+
+
+def test_list_href_changes_one_value_and_keeps_the_rest():
+    query = parse_list_query(q="unassigned", group="status")
+    assert views.list_href(query) == "/tasks?q=unassigned&group=status"
+    assert views.list_href(query, q="all") == "/tasks?group=status"
+    assert views.list_href(query, view="board", open_key=7) == "/tasks?q=unassigned&group=status&view=board&open=RUN-7"
+    assert views.list_href(parse_list_query(), q="all") == "/tasks"

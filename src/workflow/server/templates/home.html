@@ -1,59 +1,95 @@
-{# 업무 홈 (`/tasks`) — UI_GUIDE "화면 목록". 워크스페이스에 붙은 에이전트 카드, 워크플로우 목록(있을 때), 업무 목록(한 줄 = 업무, phase 14 step 9)과 다음 행동 버튼.
-   지시 전 GitHub 업무는 운영자에게 [에이전트에게 맡기기] (phase 11 step 8). 에이전트가 0개면 러너 연결 안내 (ADR-0018·0019). #}
+{# 업무 화면 (`/tasks`) — UI_GUIDE "업무 화면", ARCHITECTURE "업무 화면 — phase 16" 화면 배치. 도구 막대(빠른 필터 4개 + 건수 · 묶기 ·
+   보기 · 끝난 업무 · [업무 등록]) → 목록(한 줄 표, 묶음 머리 행) 또는 보드(6칸). 필터·묶기·보기·행·카드는 모두 서버 이동 링크라
+   JS 없이 동작한다(행·카드 = `open=<key>` + 나머지 목록 상태). 외부 문자열(제목·원본 키)은 자동 이스케이프로만 출력한다. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
+{% set FILTERS = [('all', '전체'), ('my_turn', '내 차례'), ('unassigned', '담당 없음'), ('agent_working', '에이전트 작업 중')] %}
+{% set EMPTY = {'my_turn': '내 차례인 업무가 없습니다.', 'unassigned': '담당 없는 업무가 없습니다.',
+                'agent_working': '에이전트가 작업 중인 업무가 없습니다.'} %}
+{% set PRIORITY = {'high': '↑ 높음', 'normal': '– 보통', 'low': '↓ 낮음'} %}
+{% set SOURCE = {'github': 'GitHub', 'n8n': 'n8n', 'manual': '직접'} %}
+{% macro key_of(row) -%}
+<span class="mono">{{ row.source_key or row.work_key }}</span> <span class="source-badge" data-source="{{ row.source_type }}">{{ SOURCE.get(row.source_type, row.source_type) }}</span>
+{%- endmacro %}
+{% macro assignee_of(row) -%}
+{% if row.assignee_type %}{{ row.assignee_name }}{% if not row.assignee_active %} (비활성){% endif %}{% else %}<span class="muted">없음</span>{% endif %}
+{%- endmacro %}
 {% block title %}업무 — Runloom{% endblock %}
+{% block main_class %} main-wide{% endblock %}
 {% block content %}
-<div class="section-head" style="margin-top:0"><h2 style="margin-top:0">에이전트</h2><a class="small" href="/agents">에이전트 목록</a></div>
-{% if agents %}
-<div class="agent-grid">
-  {% for a in agents %}
-  <div class="card agent-card">
-    <div class="name"><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></div>
-    <div class="meta mono">{{ a.agent_id }} · {{ a.owner_scope }} · {{ a.connection_type }}</div>
-    <div>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
-    <div style="margin-top:8px">{{ st.connection(a) }}</div>
+<div class="work-toolbar">
+  <div class="seg" role="group" aria-label="빠른 필터">
+    {% for q, label in FILTERS %}<a class="seg-item" href="{{ list_href(query, q=q) }}" data-q="{{ q }}"{% if query.q == q %} aria-current="true"{% endif %}>{{ label }} <span class="count">{{ counts[q] }}</span></a>{% endfor %}
   </div>
+  <div class="seg" role="group" aria-label="묶기">
+    {% for g, label in [('assignee', '담당자'), ('status', '상태')] %}<a class="seg-item" href="{{ list_href(query, group=g) }}" data-group-by="{{ g }}"{% if query.group == g %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+  </div>
+  <div class="seg" role="group" aria-label="보기">
+    {% for v, label in [('list', '목록'), ('board', '보드')] %}<a class="seg-item" href="{{ list_href(query, view=v) }}" data-view="{{ v }}"{% if query.view == v %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+  </div>
+  <div class="seg" role="group" aria-label="끝난 업무">
+    {% for c, label in [('recent', '최근 14일'), ('all', '전부')] %}<a class="seg-item" href="{{ list_href(query, closed=c) }}" data-closed="{{ c }}"{% if query.closed == c %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+  </div>
+  {% if 'create_work' in allowed %}<a class="btn btn-small" href="/tasks/new">업무 등록</a>{% endif %}
+</div>
+{% if not has_agents %}
+<p class="toolbar-note">러너를 붙이면 에이전트가 생깁니다 · <a href="/operator/github">러너 붙이기</a></p>
+{% endif %}
+
+{% if not rows %}
+<div class="empty">
+  {% if query.q == 'all' %}
+  <p>아직 업무가 없습니다.</p>
+  {% if 'create_work' in allowed %}<a class="btn" href="/tasks/new">업무 등록</a>{% endif %}
+  {% else %}
+  <p>{{ EMPTY[query.q] }}</p>
+  <a class="btn btn-secondary" href="{{ list_href(query, q='all') }}">전체 보기</a>
+  {% endif %}
+</div>
+{% elif query.view == 'board' %}
+<div class="board">
+  {% for col in columns %}
+  <section class="board-col" data-column="{{ col.key }}">
+    <h3>{{ col.label }} <span class="count">{{ col.rows|length }}</span></h3>
+    {% for row in col.rows %}
+    <a class="board-card" data-work-key="{{ row.work_key }}" href="{{ list_href(query, open_key=row.key_number) }}">
+      <span class="card-meta">{{ key_of(row) }} <span class="priority" data-priority="{{ row.priority }}">{{ PRIORITY.get(row.priority, row.priority) }}</span></span>
+      <span class="card-title">{{ row.title }}</span>
+      <span class="small">{{ assignee_of(row) }}</span>
+      {% if row.next_action %}<span class="small next-action">{{ row.next_action }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </section>
   {% endfor %}
 </div>
 {% else %}
-<div class="empty" style="padding-top:0">
-  <p>아직 에이전트가 없습니다.</p>
-  <p class="small" style="margin-top:8px">러너를 연결하면 그 에이전트가 이 워크스페이스에 붙습니다 · <a href="/operator/github">GitHub</a> 에서 러너 연결.</p>
-</div>
-{% endif %}
-
-{% if chains %}
-<div class="section-head"><h2>워크플로우</h2></div>
-<div>
-  {% for c in chains|reverse %}
-  <div class="card">
-    <div class="card-title"><a href="/chains/{{ c.chain_id }}">{{ c.title or '업무 없음' }}</a></div>
-    <div class="small">{{ c.source_label }} · {{ c.done_count }}/{{ c.total }} 완료 · {{ c.progress }}</div>
-  </div>
+<div class="table-wrap work-table-wrap">
+<table class="work-table">
+  <thead><tr>
+    <th scope="col">키</th><th scope="col">제목</th><th scope="col">담당</th><th scope="col">우선순위</th>
+    <th scope="col">종류</th><th scope="col">상태</th><th scope="col">다음 할 일</th><th scope="col">업데이트</th>
+  </tr></thead>
+  {% for group in groups %}
+  <tbody data-group-body="{{ group.key }}">
+    <tr class="group-head" data-group="{{ group.key }}"><th scope="colgroup" colspan="8">
+      <button type="button" class="group-toggle" data-group-toggle="{{ group.key }}" aria-expanded="true" aria-label="{{ group.label }} 접기">▾</button>
+      <span class="group-label">{{ group.label }}</span> <span class="count">{{ group.rows|length }}</span>
+    </th></tr>
+    {% for row in group.rows %}
+    <tr class="work-row" data-work-key="{{ row.work_key }}">
+      <td class="nowrap">{{ key_of(row) }}</td>
+      <td><a class="row-link" href="{{ list_href(query, open_key=row.key_number) }}">{{ row.title }}</a></td>
+      <td class="nowrap">{{ assignee_of(row) }}</td>
+      <td class="nowrap" data-priority="{{ row.priority }}">{{ PRIORITY.get(row.priority, row.priority) }}</td>
+      <td class="nowrap">{{ row.kind_label }}</td>
+      <td class="nowrap">{{ st.badge(row.status) }}</td>
+      <td class="next-action">{{ row.next_action }}</td>
+      <td class="nowrap small">{{ row.updated_at|ago(now) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
   {% endfor %}
-</div>
-{% endif %}
-
-<div class="section-head"><h2>업무</h2></div>
-<div class="actions" style="margin-bottom:12px">
-  <a class="btn btn-small{% if view != 'my_turn' %} btn-secondary{% endif %}" href="/tasks?view=my_turn" data-view="my_turn">내 차례 <span class="count">{{ my_turn_count }}</span></a>
-  <a class="btn btn-small{% if view != 'all' %} btn-secondary{% endif %}" href="/tasks" data-view="all">전체</a>
-  <a class="btn btn-secondary" href="/tasks/new">직접 등록</a>
-</div>
-{% if work_list %}
-<div>
-  {% for w in work_list %}
-  <div class="card" data-work-key="{{ w.work_key }}">
-    <div class="card-title"><a href="/work/{{ w.work_key }}"><span class="mono">{{ w.key }}</span> {{ w.title }}</a></div>
-    <div class="status-line" style="margin:0">{{ st.badge(w.status.label) }}<span class="reason">{{ w.status.reason }}</span><span class="small">{{ w.assignee }}{% if w.recipients %} → {{ w.recipients|join(', ') }}{% endif %} · {{ w.updated_at|ago(now) }}</span></div>
-    {% if 'delegate' in allowed and w.delegate_task_id %}<form method="post" action="/tasks/{{ w.delegate_task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
-  </div>
-  {% endfor %}
-</div>
-{% else %}
-<div class="empty" style="padding-top:0">
-  <p>{{ '내 차례인 업무가 없습니다.' if view == 'my_turn' else '아직 업무가 없습니다.' }}</p>
+</table>
 </div>
 {% endif %}
 {% endblock %}

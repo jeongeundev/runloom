@@ -54,18 +54,11 @@ th { color: var(--text-muted); font-weight: 500; white-space: nowrap; }
 .nav { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
 .nav a { color: var(--text-body); padding: 5px 8px; border-radius: 6px; font-size: 13px; }
 .nav a:hover, .nav a.active { background: var(--bg-bubble); text-decoration: none; color: var(--text); }
-.side-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px;
-             font-size: 12px; color: var(--text-muted); text-transform: none; }
-.plus { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
-        border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); font-size: 14px; }
-.plus:hover { background: var(--bg-bubble); text-decoration: none; }
-.task-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1 1 auto; }
-.task-list a { display: block; padding: 6px 8px; border-radius: 6px; color: var(--text); }
-.task-list a:hover, .task-list a.active { background: var(--bg-bubble); text-decoration: none; }
-.task-list .title { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-list .sub { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
-.side-empty { padding: 6px 8px; font-size: 12px; color: var(--text-muted); }
-.side-foot { padding: 12px 8px 0; font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--border); }
+.side-foot { padding: 12px 8px 0; font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--border);
+             margin-top: auto; }
+.nav-count { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 9px;
+             background: var(--bg-attention); color: var(--state-attention); font-size: 11px; font-weight: 600;
+             text-align: center; line-height: 18px; }
 
 /* --- 헤더·브레드크럼 ------------------------------------------------------------- */
 
@@ -189,8 +182,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 /* --- 에이전트 카드 ---------------------------------------------------------------- */
 
 .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.agent-card .name { font-size: 15px; font-weight: 600; color: var(--text); }
-.agent-card .meta { font-size: 12px; color: var(--text-muted); margin: 2px 0 8px; }
 .cap { font-family: var(--mono); font-size: 12px; color: var(--text-body); }
 /* 대본 에이전트 라벨 — 작은 회색 텍스트. 배지 색을 쓰지 않는다 (상태가 아니다) */
 /* 등록 카탈로그 카드의 "발견된 정보" — 키 요약만 */
@@ -296,6 +287,38 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 
 .live-swap { animation: fade 0.2s ease-out; }
 @keyframes fade { from { opacity: 0.2; } to { opacity: 1; } }
+
+/* --- 업무 화면 (phase 16) — 폭 제한 없음, 표는 자체 가로 스크롤 ----------------------------------- */
+
+.main-inner.main-wide { max-width: none; }
+.work-toolbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 12px; }
+.seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.seg-item { padding: 3px 10px; font-size: 12px; color: var(--text-body); white-space: nowrap; }
+.seg-item + .seg-item { border-left: 1px solid var(--border); }
+.seg-item:hover { background: var(--bg-bubble); text-decoration: none; }
+.seg-item[aria-current="true"] { background: var(--bg-inflight); color: var(--accent); font-weight: 600; }
+.seg-item .count, .group-head .count, .board-col h3 .count { color: var(--text-muted); font-weight: 400; }
+.toolbar-note { font-size: 13px; color: var(--text-muted); margin: -4px 0 12px; }
+.work-table-wrap { max-width: 100%; }
+.work-table { min-width: 900px; }
+.work-table .nowrap { white-space: nowrap; }
+.work-row { cursor: pointer; }
+.work-row:hover td { background: var(--bg-side); }
+.work-row .row-link { color: var(--text); }
+.work-table .next-action { color: var(--text-muted); max-width: 320px; }
+.group-head th { background: var(--bg-bubble); color: var(--text); font-weight: 600; }
+.group-toggle { border: 0; background: none; padding: 0 4px; cursor: pointer; color: var(--text-muted); font-size: 12px; }
+tbody.folded .work-row { display: none; }
+.source-badge { display: inline-block; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 4px;
+                font-size: 11px; color: var(--text-muted); line-height: 16px; }
+.board { display: grid; grid-template-columns: repeat(6, minmax(200px, 1fr)); gap: 12px; overflow-x: auto; }
+.board-col { background: var(--bg-side); border: 1px solid var(--border); border-radius: 8px; padding: 10px; min-width: 0; }
+.board-col h3 { font-size: 13px; margin-bottom: 8px; }
+.board-card { display: flex; flex-direction: column; gap: 2px; background: var(--bg-card); border: 1px solid var(--border);
+              border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; color: var(--text); }
+.board-card:hover { border-color: var(--border-strong); text-decoration: none; }
+.board-card .card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted); }
+.board-card .card-title { font-size: 13px; overflow-wrap: anywhere; }
 
 /* --- 반응형 ----------------------------------------------------------------------- */
 

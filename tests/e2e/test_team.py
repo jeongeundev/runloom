@@ -270,7 +270,7 @@ def test_04_member_delegates_and_the_review_request_is_only_the_members_turn(wor
     world.worker.tick()
     assert q(world, "SELECT status FROM work_items")[0]["status"] == "내 차례"
 
-    link = f'class="card" data-work-key="RUN-{work["key_number"]}"'  # 업무 목록 카드 (사이드바 목록 말고)
+    link = f'class="work-row" data-work-key="RUN-{work["key_number"]}"'  # 업무 화면 표 한 줄 (phase 16)
     assert link in member.get("/tasks", params={"view": "my_turn"}).text
     assert link not in world.http.get("/tasks", params={"view": "my_turn"}).text  # 관리자의 내 차례엔 없다
     assert link in world.http.get("/tasks").text  # 전체에는 있다

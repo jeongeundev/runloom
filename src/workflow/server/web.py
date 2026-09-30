@@ -192,8 +192,9 @@ def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict
         "session_id": session_id,
         "member": member,  # 왼쪽 목록 아래 — 로그인한 멤버 표시 이름·역할
         "allowed": team.allowed_actions(member.role) if member is not None else frozenset(),
-        # 목록 한 줄 = 업무(ADR-0020) — 새 업무가 위
-        "my_work": [views.work_summary(conn, w) for w in repo.list_work_items(conn, session_id)],
+        # 사이드바 "업무" 배지 = 로그인한 멤버가 받는 사람인 `내 차례` 업무 수(빠른 필터 `my_turn` 과 같은 계산)
+        "turn_count": len(repo.list_work_items(conn, session_id, recipient_member_id=member.member_id))
+        if member is not None else 0,
     }
 
 
@@ -538,24 +539,21 @@ def logout(request: Request, conn: Connection = Depends(get_conn)) -> RedirectRe
 @router.get("/tasks", response_class=HTMLResponse)
 def home(
     request: Request,
+    q: str = "",
+    group: str = "",
     view: str = "",
+    closed: str = "",
+    open: str = "",
     member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """홈. 빠른 필터 `view=my_turn` = 로그인한 멤버가 받는 사람인 `내 차례` 업무만, 그 밖 값은 전체."""
+    """업무 화면 — 한 줄 표(묶기)·보드, 빠른 필터. 쿼리는 열거형만(`parse_list_query` — 모르는 값은 기본값)."""
     session_id = member.session_id
     now = utc_now()
-    settings = _settings(request)
-    agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
-    chains = [
-        views.chain_summary(conn, c, now=now, settings=settings) for c in repo.list_chains(conn, session_id)
-    ]
-    base = _base(request, conn, session_id, now)
-    my_turn = [views.work_summary(conn, w)
-               for w in repo.list_work_items(conn, session_id, recipient_member_id=member.member_id)]
-    view = "my_turn" if view == "my_turn" else "all"
-    return _render("home.html", **base, agents=agents, chains=chains, view=view, my_turn_count=len(my_turn),
-                   work_list=my_turn if view == "my_turn" else base["my_work"])
+    query = parse_list_query(q=q, group=group, view=view, closed=closed, open=open)
+    return _render("home.html", **_base(request, conn, session_id, now),
+                   **views.work_list_context(conn, session_id, member_id=member.member_id, query=query, now=now),
+                   list_href=views.list_href, has_agents=bool(_session_agents(conn, session_id)))
 
 
 def _form_context(

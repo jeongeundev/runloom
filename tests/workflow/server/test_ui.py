@@ -161,29 +161,32 @@ def test_static_stylesheet_is_served(client):
     assert ":root" in response.text
 
 
-def test_sidebar_lists_my_work_with_status_dot_and_relative_time(web):
+def test_work_screen_lists_my_work_with_status_badge_and_relative_time(web):
+    """phase 16: 사이드바 "최근" 목록은 없고 업무는 업무 화면 표 한 줄이다(행 링크 = `open=<key>`)."""
     task_id = create_task(web, fix_form())
     html = web.get("/tasks").text
     sidebar = html[html.index('class="sidebar'):html.index('class="main')]
-    assert 'href="/work/RUN-1"' in sidebar and f'href="/tasks/{task_id}"' not in sidebar  # 한 줄 = 업무
-    assert BUG_FIX_TITLE in sidebar
-    assert 'data-status="새로 들어옴"' in sidebar  # 업무 상태
-    assert "전" in sidebar  # 상대 시각 "n분 전"
-    assert 'href="/tasks/new"' in sidebar  # `+` 는 직접 등록
-    assert 'href="/tasks/import"' not in sidebar and "/tasks/new?example=diagnose" not in sidebar
-    assert 'href="/operator"' in sidebar  # 워크스페이스 로그인 = 운영자
+    assert "data-work-key" not in sidebar and BUG_FIX_TITLE not in sidebar and 'href="/tasks/new"' not in sidebar
+    main = html[html.index('class="main'):html.index("<script>")]
+    row = re.search(r'<tr class="work-row" data-work-key="RUN-1".*?</tr>', main, re.S).group(0)
+    assert 'href="/tasks?open=RUN-1"' in row and f'href="/tasks/{task_id}"' not in row  # 한 줄 = 업무
+    assert BUG_FIX_TITLE in row
+    assert 'data-status="새로 들어옴"' in row  # 업무 상태
+    assert "전" in visible_text(row)  # 상대 시각 "n분 전"
+    assert 'href="/tasks/new"' in main  # 업무 등록은 도구 막대
+    assert 'href="/tasks/import"' not in html and "/tasks/new?example=diagnose" not in html
+    assert 'href="/operator/github"' in sidebar  # 워크스페이스 로그인 = 연결 화면
 
 
-def test_sidebar_links_kinds_page_after_agents_and_marks_active(web):
-    """종류·규칙 링크는 에이전트 다음. 활성 표시 규칙은 다른 탐색 항목과 같다 (phase 6 step 6)."""
+def test_sidebar_marks_connect_active_on_kinds_page(web):
+    """종류·규칙은 연결 화면으로 모인다(phase 16) — `/kinds` 에서는 `연결` 이 활성이다. 활성 표시는 경로 접두사."""
     html = web.get("/tasks").text
-    nav = html[html.index('class="nav"'):html.index('class="side-head"')]
-    assert '<a href="/kinds">종류·규칙</a>' in nav
-    assert nav.index('href="/agents"') < nav.index('href="/kinds"')
+    nav = html[html.index('class="nav"'):html.index("</nav>")]
+    assert 'href="/kinds"' not in nav and '<a href="/tasks" class="active">' in nav
     kinds = web.get("/kinds").text
-    nav = kinds[kinds.index('class="nav"'):kinds.index('class="side-head"')]
-    assert '<a href="/kinds" class="active">종류·규칙</a>' in nav
-    assert 'href="/agents" class="active"' not in nav and 'href="/tasks" class="active"' not in nav
+    nav = kinds[kinds.index('class="nav"'):kinds.index("</nav>")]
+    assert '<a href="/operator/github" class="active">연결</a>' in nav
+    assert 'href="/tasks" class="active"' not in nav
 
 
 # --- 상태 배지 ----------------------------------------------------------------------
@@ -257,10 +260,12 @@ def test_chain_nodes_show_status_as_badge_text_with_reason(web, conn):
         assert label in visible_text(html), label
 
 
-def test_api_agent_card_shows_connected_without_last_seen(web, conn):
+def test_api_agent_row_shows_connected_without_last_seen(web, conn):
     """API 에이전트는 heartbeat 가 없어도 '연결됨' 이고 '마지막 확인' 을 보이지 않는다. 로컬은 heartbeat 규칙."""
     seed_user_kinds(conn)  # 분류 API(API)를 워크스페이스에 붙인다
-    cards = re.findall(r'<div class="card agent-card">(.*?)</div>\s*</div>', web.get("/tasks").text, re.S)
+    # phase 16: 에이전트 카드는 홈에서 빠졌다 — 같은 연결 표시는 에이전트 목록(`/agents`) 행에 있다
+    html = web.get("/agents").text
+    cards = re.findall(r"<tr>\s*<td><a href=\"/agents/.*?</tr>", html, re.S)
     by_id = {re.search(r"agent-[a-z-]+", c).group(0): c for c in cards}
     ops, codex = by_id[API_AGENT], by_id["agent-codex-mac"]
     assert 'data-status="연결됨"' in ops and "마지막 확인" not in ops
@@ -479,7 +484,7 @@ N8N_ITEM = {"key": "issue-1", "title": "입력 형식 변경에 맞춰 변환 �
 
 
 def seed_n8n_chain(conn, session_id: str, *, callback_url: str | None) -> str:
-    """입구 API 가 만든 것과 같은 모양의 n8n 체인 하나 (`bug_fix` Task 1개, source_ref 는 항목 key)."""
+    """입구 API 가 만든 것과 같은 모양의 n8n 체인 하나 (`bug_fix` Task 1개, source_ref 는 항목 key, 업무 원본 칸은 체인·항목 key)."""
     chain_id = "chain-n8n-ui"
     repo.insert_chain(conn, {
         "chain_id": chain_id, "session_id": session_id, "source": "n8n",
@@ -493,7 +498,7 @@ def seed_n8n_chain(conn, session_id: str, *, callback_url: str | None) -> str:
         "criteria": [], "predecessor_task_id": None, "revision": 1,
         "target": {"local_registration_id": LOCAL_REGISTRATION},
         "status": "대기", "status_reason": "연결 끊김, 마지막 확인 없음", "chain_id": chain_id, "source_ref": N8N_ITEM["key"],
-    }, NOW)
+    }, NOW, source_type="n8n", source_id=chain_id, source_item_id=N8N_ITEM["key"], source_key=N8N_ITEM["key"])
     return chain_id
 
 
@@ -522,8 +527,8 @@ def test_chain_page_shows_n8n_source_and_callback_line(web, conn, settings):
     repo.record_callback_attempt(conn, chain_id, ok=True, error=None, now=NOW, next_at=None)
     sent = visible_text(crumbs_of(web.get(f"/chains/{chain_id}").text))
     assert "callback · localhost:5678 · 전송됨" in sent and "HTTP 503" not in sent
-    # 홈의 워크플로우 카드도 같은 출처 라벨
-    assert "n8n · 0/1 완료" in visible_text(web.get("/tasks").text)
+    # phase 16: 홈의 워크플로우 카드는 빠졌다 — 업무 화면 행의 원본 배지가 같은 출처를 보인다
+    assert '<span class="source-badge" data-source="n8n">n8n</span>' in web.get("/tasks").text
 
 
 def test_chain_page_without_callback_url_has_no_callback_line(web, conn, settings):
@@ -540,8 +545,8 @@ def test_sources_page_uses_app_shell(web):
         assert column in shell, column
     assert '<link rel="stylesheet" href="/static/style.css">' in html
     assert '<div class="crumb">입구</div>' in html
-    nav = html[html.index('class="nav"'):html.index('class="side-head"')]
-    assert '<a href="/sources" class="active">입구</a>' in nav
+    nav = html[html.index('class="nav"'):html.index("</nav>")]
+    assert '<a href="/operator/github" class="active">연결</a>' in nav  # 입구는 연결 화면으로 모인다(phase 16)
     main = html[html.index('class="main'):html.index('class="viewer')]
     assert "<svg" not in main and '<script src=' not in main
     text = visible_text(html)

@@ -174,10 +174,11 @@ def seed_judged_fix(client, conn, store, settings, task_a: str, *, bundle: bool 
 # --- 세션·홈 ---------------------------------------------------------------------
 
 
-def test_app_home_has_agent_and_task_sections_with_direct_register(web):
+def test_app_home_has_work_toolbar_with_direct_register(web):
+    """phase 16: 홈 = 업무 화면. 에이전트 구역은 빠지고 연결 화면(사이드바 `연결`)으로 간다."""
     text = web.get("/tasks").text
     assert 'href="/tasks/new"' in text  # 시연 예시 없이 직접 등록
-    assert 'href="/agents"' in text
+    assert 'href="/operator/github"' in text
     assert 'href="/"' in text  # 사이드바 브랜드 → `/` (로그인 상태면 /tasks)
     assert '/static/logo.jpg' not in text  # 로고는 랜딩에만
 
@@ -187,7 +188,7 @@ def test_home_lists_my_work_with_status(web):
     text = web.get("/tasks").text
     assert "아직 업무가 없습니다." not in text
     main = text[text.index('class="main'):]
-    assert 'href="/work/RUN-1"' in main and f"/tasks/{task_id}" not in main  # 한 줄 = 업무
+    assert 'href="/tasks?open=RUN-1"' in main and f"/tasks/{task_id}" not in main  # 한 줄 = 업무
     assert BUG_FIX_TITLE in main
     assert 'data-status="새로 들어옴"' in main and "담당 없음" in main  # 자동 선택만으로는 담당이 아니다
     # 단계 상태는 업무 상세의 단계 목록에서
@@ -905,23 +906,21 @@ def test_chain_human_gate_follows_last_task_review(web, conn, store, settings):
     assert web.post(f"/operator/merges/{task_b}/confirm", follow_redirects=False).status_code in (404, 405)
 
 
-def test_home_lists_chains_with_progress(web, conn):
+def test_home_lists_chain_nodes_as_work_rows(web, conn):
+    """phase 16: 홈의 워크플로우 카드는 빠졌다(체인은 패널의 "들어온 곳" — step 5). 체인 노드는 각자 업무 한 줄이다."""
     chain_id, (task_a, task_b) = import_chain(web, conn)
     home = web.get("/tasks").text
-    assert "워크플로우" in home and f'href="/chains/{chain_id}"' in home
-    assert "0/2 완료" in home and "시작 전" in home
-    main = home[home.index('class="main'):]
-    assert main.index("<h2>워크플로우</h2>") < main.index("<h2>업무</h2>")  # 업무 구역 위에
+    main = home[home.index('class="main'):home.index("<script>")]
+    assert "/chains/" not in main and "<h2>워크플로우</h2>" not in main
 
     repo.update_task_status(conn, task_a, "완료", "판정 근거: 3/3", finished_at=NOW, now=NOW)
     repo.mark_chain_started(conn, chain_id, NOW)
     home = web.get("/tasks").text
-    assert "1/2 완료" in home and "2단계 중 2단계 대기" in home
-    # 왼쪽 목록에는 업무 한 줄씩 — 체인 노드는 각자 업무
+    main = home[home.index('class="main'):home.index("<script>")]
+    assert 'href="/tasks?open=RUN-1"' in main and 'href="/tasks?open=RUN-2"' in main
+    assert f'href="/tasks/{task_a}"' not in main and f'href="/tasks/{task_b}"' not in main
     sidebar = home[home.index('class="sidebar'):home.index('class="main')]
-    assert 'href="/work/RUN-1"' in sidebar and 'href="/work/RUN-2"' in sidebar
-    assert f'href="/tasks/{task_a}"' not in sidebar and f'href="/tasks/{task_b}"' not in sidebar
-    assert "/chains/" not in sidebar
+    assert "/chains/" not in sidebar and "data-work-key" not in sidebar
 
 
 def test_task_detail_links_to_its_chain(web, conn):
@@ -1556,7 +1555,7 @@ def issued_token_of(text: str) -> str:
 
 
 def nav_of(html: str) -> str:
-    return html[html.index('class="nav"'):html.index('class="side-head"')]
+    return html[html.index('class="nav"'):html.index("</nav>")]
 
 
 def token_row_of(html: str, token_id: str) -> str:
@@ -1586,11 +1585,10 @@ def test_sources_page_shows_inbound_url_empty_state_example_and_sidebar_link(web
     assert "docs/n8n/README.md" in text
     # 허용 목록이 비어 있으면 callback_url 은 거부된다는 안내
     assert "callback 허용 목록이 비어 있어" in text and "WORKFLOW_CALLBACK_HOSTS" in text
-    # 사이드바 — 종류·규칙 다음, 활성 표시
+    # 사이드바 — 입구는 연결 화면으로 모인다(phase 16): `/sources` 에서는 `연결` 이 활성
     nav = nav_of(web.get("/sources").text)
-    assert '<a href="/sources" class="active">입구</a>' in nav
-    assert nav.index('href="/kinds"') < nav.index('href="/sources"')
-    assert '<a href="/sources">입구</a>' in nav_of(web.get("/tasks").text)
+    assert '<a href="/operator/github" class="active">연결</a>' in nav
+    assert '<a href="/operator/github">연결</a>' in nav_of(web.get("/tasks").text)
     # GLOSSARY 금지 표현·n8n 비판 문구 없음
     lowered = text.lower()
     for phrase in ("webhook secret", "api key", "inbound token", "whitelist"):
@@ -2205,7 +2203,7 @@ def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, set
     sidebar = html[html.index('class="sidebar'):html.index('class="main')]
     assert 'action="/logout"' in sidebar and "로그아웃" in sidebar
     assert 'href="/metrics"' in sidebar and 'href="/operator/github"' in sidebar
-    assert 'href="/tasks/new"' in sidebar  # `+` 는 직접 등록
+    assert 'href="/tasks/new"' not in sidebar and 'href="/tasks/new"' in html  # 업무 등록은 도구 막대(phase 16)
     assert_no_secrets(html, settings)
 
 

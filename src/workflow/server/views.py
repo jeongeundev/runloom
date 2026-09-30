@@ -6,6 +6,7 @@
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from sqlite3 import Connection, Row
 from typing import Any
@@ -740,6 +741,12 @@ def list_query_params(query: ListQuery, *, open_key: int | None = None) -> str:
     if open_key is not None:
         parts.append(f"open={format_work_key(open_key)}")
     return "&".join(parts)
+
+
+def list_href(query: ListQuery, *, open_key: int | None = None, **change: str) -> str:
+    """업무 화면 주소 — `query` 에서 열거형 값 하나(`q`·`group`·`view`·`closed`)만 바꾼 링크. 도구 막대·행 링크용."""
+    params = list_query_params(replace(query, **change), open_key=open_key)
+    return f"/tasks?{params}" if params else "/tasks"
 
 
 def work_context(
