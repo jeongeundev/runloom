@@ -35,6 +35,7 @@ def facts(
     delegated=True,
     requests=(),
     pr=None,
+    direct=None,
 ):
     return WorkItemFacts(
         stored_status=stored[0],
@@ -44,6 +45,7 @@ def facts(
         stages=tuple(stages),
         open_requests=tuple(requests),
         pull_request=pr,
+        direct_member_name=direct,
     )
 
 
@@ -264,3 +266,60 @@ def test_every_result_is_a_known_status():
     ]
     for sample in samples:
         assert work_status(sample).status in WORK_STATUSES
+
+
+# --- 직접 작업 (phase 16 step 8, ARCHITECTURE "업무 상태 표 갱신" 8번) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        pytest.param(facts(direct="김개발"), WorkStatus("직접 작업 중", "김개발"), id="direct-no-stage"),
+        pytest.param(
+            facts([stage("대기", "자동 실행 대기", executed=False)], assigned=False, delegated=False, direct="김개발"),
+            WorkStatus("직접 작업 중", "김개발"),
+            id="direct-beats-new",
+        ),
+        pytest.param(
+            facts([FAILED, stage("대기", "선행 대기", task_id="t2", at="2026-09-30T01:00:00Z")], direct="김개발"),
+            WorkStatus("직접 작업 중", "김개발"),
+            id="direct-beats-waiting",
+        ),
+        pytest.param(
+            facts([stage("확인 필요", "검토 승인")], direct="김개발"),
+            WorkStatus("직접 작업 중", "김개발"),
+            id="direct-beats-check-needed",
+        ),
+        pytest.param(
+            facts([RUNNING], requests=[RequestFact("question", "어느 브랜치?")], direct="김개발"),
+            WorkStatus("내 차례", "사람 요청 — 어느 브랜치?"),
+            id="request-beats-direct",
+        ),
+        pytest.param(
+            facts(pr=PullRequestFact("open", 4), direct="김개발"),
+            WorkStatus("PR · 검토", "PR 확인 — #4"),
+            id="open-pr-beats-direct",
+        ),
+        pytest.param(
+            facts(pr=PullRequestFact("merged", 4), direct="김개발"),
+            WorkStatus("완료", "PR 병합 — #4"),
+            id="merged-pr-beats-direct",
+        ),
+        pytest.param(
+            facts(stored=("종료", "원본 이슈 닫힘"), direct="김개발"),
+            WorkStatus("종료", "원본 이슈 닫힘"),
+            id="terminal-beats-direct",
+        ),
+    ],
+)
+def test_direct_work(given, expected):
+    assert work_status(given) == expected
+
+
+def test_direct_work_defaults_to_none_so_old_facts_are_unchanged():
+    old = WorkItemFacts(
+        stored_status="새로 들어옴", stored_reason="", assigned=False, delegated=True, stages=(), open_requests=(),
+        pull_request=None,
+    )
+    assert old.direct_member_name is None
+    assert work_status(old) == WorkStatus("새로 들어옴", "담당 없음")

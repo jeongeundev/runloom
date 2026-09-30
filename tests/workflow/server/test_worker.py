@@ -545,6 +545,20 @@ def test_manual_review_gets_bundle_without_execution_and_is_runnable(conn, clien
     assert r["predecessor_execution_id"] == EXEC_T
 
 
+def test_successor_under_direct_work_gets_bundle_without_execution(flow, worker, conn, store, clock):
+    """직접 작업 중인 업무의 후속은 직접 실행 모드처럼 입력만 준비한다 — 사람이 자기 세션에서 하는 중(phase 16 step 8)."""
+    work_item_id = repo.work_item_of_task(conn, TASK_R)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, repo.get_task(conn, TASK_R)["session_id"], now=clock())
+    repo.start_direct_work(conn, repo.get_task(conn, TASK_R)["session_id"], work_item_id, member_id=admin,
+                           branch="RUN-2", now=clock())
+    finish_triage(conn, store, clock)
+
+    report = worker.tick()
+
+    assert report.inputs_prepared == 1 and report.successors_created == 0
+    assert _executions(conn, TASK_R) == []
+
+
 # --- 사용자 정의 종류의 결과 판정 — outcome ∈ KindSpec.outcomes 만, 완료는 사람 ---------------------
 
 

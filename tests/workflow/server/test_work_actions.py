@@ -21,11 +21,14 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     REVIEW,
     SESSION,
     config,
+    clock,
     cycle,
     direct_shop_task,
     executions,
     import_issue,
+    make_worker,
     settings,
+    worker,
 )
 
 LATER = "2026-10-06T12:00:30Z"  # 연결 프로그램 마지막 신호(NOW) 30초 뒤 — 온라인
@@ -262,3 +265,107 @@ def test_priority_of_closed_work_is_409(conn, admin, all_open):
     task_id = import_issue(conn, 1, labels=[])
     repo.set_work_status(conn, work_of(conn, task_id)["work_item_id"], WorkStatus("완료", "PR 병합 — #3"), now=NOW)
     refused(lambda: set_priority(conn, task_id, "low", admin), 409, "work_closed")
+
+
+
+# --- 직접 작업 (step 8) ---------------------------------------------------------------
+
+
+def start_direct(conn, task_id: str, member_id: str, *, now: str = LATER) -> str:
+    return work_actions.start_direct(conn, session_id=SESSION, work_item_id=work_of(conn, task_id)["work_item_id"],
+                                     member_id=member_id, now=now)
+
+
+def stop_direct(conn, task_id: str) -> None:
+    work_actions.stop_direct(conn, session_id=SESSION, work_item_id=work_of(conn, task_id)["work_item_id"], now=LATER)
+
+
+def test_start_direct_takes_the_assignee_and_gives_a_branch_name(conn, store, settings, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[], title="Login fails 로그인 실패")
+    other = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    assign(conn, store, settings, task_id, f"member:{other}", admin)
+    repo.set_member_display_name(conn, SESSION, admin, "김개발", now=NOW)
+
+    assert start_direct(conn, task_id, admin) == "RUN-1-login-fails"
+
+    work = work_of(conn, task_id)
+    assert (work["assignee_type"], work["assignee_id"]) == ("member", admin)  # 다른 멤버 담당이어도 누른 사람
+    assert (work["direct_member_id"], work["direct_started_at"], work["direct_branch"]) == (
+        admin, LATER, "RUN-1-login-fails")
+    assert (work["status"], work["status_reason"]) == ("직접 작업 중", "김개발")
+    assert events(conn, task_id, "direct_started") == [{"member_id": admin, "branch": "RUN-1-login-fails"}]
+    assert events(conn, task_id, "assigned")[-1] == {
+        "from": {"type": "member", "id": other}, "to": {"type": "member", "id": admin}, "by": admin}
+    assert executions(conn, task_id) == []  # 직접 작업은 실행을 만들지 않는다
+    # 같은 멤버가 다시 누르면 변화 없음
+    assert start_direct(conn, task_id, admin) == "RUN-1-login-fails"
+    assert len(events(conn, task_id, "direct_started")) == 1
+
+
+def test_stop_direct_clears_the_columns_and_keeps_the_assignee(conn, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    start_direct(conn, task_id, admin)
+    stop_direct(conn, task_id)
+    stop_direct(conn, task_id)  # 직접 작업 중이 아니면 변화 없음
+    work = work_of(conn, task_id)
+    assert (work["direct_member_id"], work["direct_started_at"], work["direct_branch"]) == (None, None, None)
+    assert (work["assignee_type"], work["assignee_id"]) == ("member", admin)
+    assert work["status"] != "직접 작업 중"
+    assert events(conn, task_id, "direct_stopped") == [{"member_id": admin, "reason": "stopped"}]
+
+
+def test_start_direct_is_refused_while_an_agent_runs(conn, store, settings, admin):
+    task_id = direct_shop_task(conn)
+    assign(conn, store, settings, task_id, f"agent:{FIX_SHOP}", admin)
+    assert len(executions(conn, task_id)) == 1
+    refused(lambda: start_direct(conn, task_id, admin), 409, "execution_conflict")
+    assert work_of(conn, task_id)["direct_member_id"] is None
+
+
+def test_start_direct_on_closed_work_is_409(conn, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    repo.set_work_status(conn, work_of(conn, task_id)["work_item_id"], WorkStatus("종료", "원본 이슈 닫힘"), now=NOW)
+    refused(lambda: start_direct(conn, task_id, admin), 409, "work_closed")
+    assert work_of(conn, task_id)["direct_member_id"] is None
+
+
+def test_hand_direct_work_to_an_agent_ends_it_and_starts(conn, store, settings, admin):
+    task_id = direct_shop_task(conn)
+    start_direct(conn, task_id, admin)
+
+    assign(conn, store, settings, task_id, f"agent:{FIX_SHOP}", admin)
+
+    work = work_of(conn, task_id)
+    assert work["direct_member_id"] is None
+    assert (work["assignee_type"], work["assignee_id"]) == ("agent", FIX_SHOP)
+    assert events(conn, task_id, "direct_stopped") == [{"member_id": admin, "reason": "handed_to_agent"}]
+    assert len(executions(conn, task_id)) == 1
+    assert work["status"] == "에이전트 작업 중"
+
+
+def test_assigning_another_member_ends_the_direct_work(conn, store, settings, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    other = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    start_direct(conn, task_id, admin)
+    assign(conn, store, settings, task_id, f"member:{other}", admin)
+    assert work_of(conn, task_id)["direct_member_id"] is None
+    assert events(conn, task_id, "direct_stopped") == [{"member_id": admin, "reason": "reassigned"}]
+
+
+def test_clearing_the_assignee_of_a_direct_work_is_409(conn, store, settings, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    start_direct(conn, task_id, admin)
+    refused(lambda: assign(conn, store, settings, task_id, "none", admin), 409, "direct_work_active")
+    assert work_of(conn, task_id)["direct_member_id"] == admin
+
+
+def test_worker_does_not_start_a_stage_under_direct_work(conn, admin, worker):
+    task_id = direct_shop_task(conn)  # 자동 실행 — 선택된 Agent 가 있어 원래는 tick 이 착수한다
+    start_direct(conn, task_id, admin, now=NOW)
+
+    worker.tick()
+
+    assert executions(conn, task_id) == []
+    assert "직접 작업 중 — 에이전트에게 넘기면 시작" in repo.get_task(conn, task_id)["status_reason"]
+    assert work_of(conn, task_id)["status"] == "직접 작업 중"
+    assert repo.list_human_requests(conn, task_id) == []  # 대기 사유일 뿐 사람 요청이 아니다

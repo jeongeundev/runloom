@@ -1048,7 +1048,8 @@ class Worker:
                 # API Agent 는 이 워커가 실행을 전달하지 않는다 (진단 API 전달은 `main` 전용 — ADR-0019)
                 self._refresh_task(conn, task_id)
                 continue
-            if task["run_mode"] == "manual":
+            # 직접 작업 중인 업무도 직접 실행 모드처럼 입력만 준비한다 — 사람이 자기 세션에서 하는 중(phase 16)
+            if task["run_mode"] == "manual" or repo.is_direct_working(conn, task_id):
                 before = repo.artifacts_of(conn, source["execution_id"])
                 assemble_handoff(conn, self._store, source, task, rule, now)
                 if len(repo.artifacts_of(conn, source["execution_id"])) > len(before):

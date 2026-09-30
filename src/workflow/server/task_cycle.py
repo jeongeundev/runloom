@@ -173,6 +173,7 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
         ),
         "source_state": issue["state"] if issue is not None else None,
         "max_rework_rounds": config.max_rework_rounds if config is not None else DEFAULT_MAX_REWORK_ROUNDS,
+        "direct_work": repo.is_direct_working(conn, task["task_id"]),
     }
     if config is not None:
         match = _match(config, agents, intake)

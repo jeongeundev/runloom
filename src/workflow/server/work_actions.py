@@ -3,6 +3,8 @@
 - 담당을 에이전트로 = 맡기기: 열린 단계에 그 에이전트를 직접 선택으로 지정하고(`select_agent(mode="manual")`) 지시 전
   GitHub 원본이면 운영자 지시를 남긴 뒤 착수한다. 지금 못 시작하면 오류가 아니다 — 대기 사유는 단계 상태에 남는다.
 - 멤버 = 배정만, `none` = 담당 해제. 끝난 업무·활성 실행이 있는 업무는 409.
+- 직접 작업: 시작 = 담당을 누른 멤버로 + 브랜치 이름(`branch_name`), 그만두기 = 칸만 비움(담당 그대로). 에이전트나 다른
+  멤버를 담당으로 고르면 직접 작업이 먼저 끝난다(repo 가 같은 트랜잭션에서). 결과 판정·완료 처리는 하지 않는다.
 - 착수 코드(`run_task`·`run_cycle_task`)는 웹의 `/tasks/{id}/run`·`/select`·체인 시작·검토 재요청과 함께 쓴다.
 - 오류는 `WorkActionError` — 웹이 `PageError` 로 바꾼다. 이 모듈은 `web` 을 import 하지 않는다.
 """
@@ -19,12 +21,13 @@ from pydantic import ValidationError
 
 from workflow.adapters import repo
 from workflow.adapters.errors import ActiveExecutionExists
-from workflow.contracts.v1 import Capability, ExecutionRequest, KindSpec
+from workflow.contracts.v1 import Capability, ExecutionRequest, KindSpec, format_work_key
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.field_mapping import PRIORITIES
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
+from workflow.domain.work_keys import branch_name
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES
 from workflow.server import task_cycle, views
 from workflow.server.settings import Settings
@@ -261,14 +264,24 @@ def _own_open_work(conn: Connection, session_id: str, work_item_id: str) -> Row:
     return work
 
 
+def _running(conn: Connection, work_item_id: str) -> bool:
+    return any(repo.active_execution(conn, t["task_id"]) is not None
+               for t in repo.list_work_item_tasks(conn, work_item_id))
+
+
+DIRECT_WORK_ACTIVE = "직접 작업 중인 업무입니다. 먼저 직접 작업을 그만두세요."
+
+
 def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str, value: str,
                 member_id: str, now: str) -> None:
-    """담당 바꾸기 — 에이전트 = 맡기기(쓰기 한 트랜잭션 뒤 착수), 멤버 = 배정만(활성 멤버), `none` = 해제."""
+    """담당 바꾸기 — 에이전트 = 맡기기(쓰기 한 트랜잭션 뒤 착수), 멤버 = 배정만(활성 멤버), `none` = 해제.
+    직접 작업 중이면 에이전트·다른 멤버는 그 직접 작업을 끝내고(repo), `none` 은 409 `direct_work_active`."""
     assignee = parse_assignee(value)
-    _own_open_work(conn, session_id, work_item_id)
-    if any(repo.active_execution(conn, t["task_id"]) is not None
-           for t in repo.list_work_item_tasks(conn, work_item_id)):
+    work = _own_open_work(conn, session_id, work_item_id)
+    if _running(conn, work_item_id):
         raise WorkActionError(409, "execution_conflict", "실행 중인 업무는 담당을 바꿀 수 없습니다.")
+    if assignee is None and work["direct_member_id"] is not None:
+        raise WorkActionError(409, "direct_work_active", DIRECT_WORK_ACTIVE)
     if assignee is None:
         repo.assign_work_item(conn, session_id, work_item_id, assignee_type=None, assignee_id=None,
                               by_member_id=member_id, now=now)
@@ -304,3 +317,26 @@ def set_priority(conn: Connection, *, session_id: str, work_item_id: str, priori
         raise WorkActionError(422, "invalid_field", "우선순위 값이 올바르지 않습니다.", field="priority")
     _own_open_work(conn, session_id, work_item_id)
     repo.set_work_priority(conn, session_id, work_item_id, priority, member_id=member_id, now=now)
+
+
+# --- 직접 작업 ----------------------------------------------------------------------
+
+
+def start_direct(conn: Connection, *, session_id: str, work_item_id: str, member_id: str, now: str) -> str:
+    """[내 세션에서 작업] — 담당 = 누른 멤버(다른 멤버 담당이어도), 직접 작업 칸 채움, 상태 `직접 작업 중`. 끝난 업무·
+    에이전트 실행 중이면 409. 반환은 브랜치 이름(같은 멤버가 다시 누르면 처음 값). 서버는 이 이름으로 아무것도 실행하지 않는다."""
+    work = _own_open_work(conn, session_id, work_item_id)
+    if _running(conn, work_item_id):
+        raise WorkActionError(409, "execution_conflict", "에이전트가 실행 중인 업무는 직접 작업을 시작할 수 없습니다.")
+    if work["direct_member_id"] == member_id:
+        return work["direct_branch"]
+    branch = branch_name(format_work_key(work["key_number"]), work["title"])
+    repo.start_direct_work(conn, session_id, work_item_id, member_id=member_id, branch=branch, now=now)
+    return branch
+
+
+def stop_direct(conn: Connection, *, session_id: str, work_item_id: str, now: str) -> None:
+    """[직접 작업 그만두기] — 칸만 비우고 담당은 그대로. 직접 작업 중이 아니면 변화 없음."""
+    if repo.get_work_item(conn, session_id, work_item_id) is None:
+        raise WorkActionError(404, "not_found", "업무를 찾을 수 없습니다.")
+    repo.stop_direct_work(conn, work_item_id, reason="stopped", now=now)

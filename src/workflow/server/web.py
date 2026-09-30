@@ -993,6 +993,49 @@ def work_priority(
     return _work_redirect(work, response, q, group, view, closed)
 
 
+@router.post("/work/{key}/direct")
+def work_direct(
+    response: Response,
+    key: str,
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[내 세션에서 작업] — 담당 = 누른 멤버, 업무 상태 `직접 작업 중` (`work_actions.start_direct`)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.start_direct(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                  member_id=member.member_id, now=utc_now())
+    return _work_redirect(work, response, q, group, view, closed)
+
+
+@router.post("/work/{key}/direct/stop")
+def work_direct_stop(
+    response: Response,
+    key: str,
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[직접 작업 그만두기] — 칸만 비우고 담당은 그대로 (`work_actions.stop_direct`)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.stop_direct(conn, session_id=member.session_id, work_item_id=work["work_item_id"], now=utc_now())
+    return _work_redirect(work, response, q, group, view, closed)
+
+
+def _refuse_direct_work(conn: Connection, task_id: str) -> None:
+    """직접 작업 중인 업무의 단계는 에이전트로 착수하지 않는다 — 담당 폼에서 에이전트에게 넘기면 시작된다."""
+    if repo.is_direct_working(conn, task_id):
+        raise PageError(409, "direct_work_active", work_actions.DIRECT_WORK_ACTIVE)
+
+
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
 def task_detail(
     request: Request,
@@ -1044,6 +1087,7 @@ def task_run(
     session_id = member.session_id
     now = utc_now()
     task = _own_task(conn, session_id, task_id)
+    _refuse_direct_work(conn, task_id)
     if policy_for(task["kind"]).cycle:
         _run_cycle_task(conn, request.app.state.store, task, now=now, settings=_settings(request))
     else:
@@ -1070,6 +1114,7 @@ def task_delegate(
         raise PageError(409, "not_delegatable", "GitHub 이슈에서 온 업무만 맡길 수 있습니다.")
     if task["finished_at"] is not None:
         raise PageError(409, "task_closed", "마감된 업무는 맡길 수 없습니다.")
+    _refuse_direct_work(conn, task_id)
     repo.mark_issue_delegated(conn, session_id=session_id, source_id=issue["source_id"],
                               github_issue_id=issue["github_issue_id"], by="operator", now=now,
                               member_id=member.member_id)

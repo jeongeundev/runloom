@@ -148,6 +148,24 @@
     });
   }
 
+  // --- 직접 작업 브랜치 이름 복사(패널은 나중에 끼워지므로 문서에 건다). 클립보드를 못 쓰면 이름 글자를 선택해 둔다 ---
+  document.addEventListener('click', function (ev) {
+    var btn = ev.target.closest('[data-copy]');
+    if (!btn) { return; }
+    var text = btn.getAttribute('data-copy');
+    function select() {
+      var code = btn.parentNode.querySelector('[data-branch]');
+      if (!code) { return; }
+      var range = document.createRange();
+      range.selectNodeContents(code);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    if (!navigator.clipboard) { select(); return; }
+    navigator.clipboard.writeText(text).then(function () { btn.textContent = '복사됨'; }, select);
+  });
+
   // --- 뷰어 도구: 원문 보기 토글, 복사 ---
   function bindViewer() {
     var raw = document.querySelector('[data-raw-toggle]');

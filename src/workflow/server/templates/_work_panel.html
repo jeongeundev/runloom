@@ -61,7 +61,7 @@
     </table>
   </section>
 
-  {% if panel.open_requests %}
+  {% if panel.open_requests or panel.direct or panel.can_start_direct %}
   <section class="panel-section" data-panel-section="now">
     <h3>지금 할 일</h3>
     {% for r in panel.open_requests %}
@@ -70,6 +70,27 @@
       {% if r.response_id %}{{ response_form(r) }}{% else %}<p class="small">응답 권한이 없습니다.</p>{% endif %}
     </div>
     {% endfor %}
+    {% if panel.direct %}{% set d = panel.direct %}
+    <div class="direct-work" data-direct-work>
+      <p><strong>직접 작업 중 · {{ d.member_name }} · {{ d.started_at|kst }}</strong></p>
+      <p class="branch-line">브랜치 <code class="mono" data-branch>{{ d.branch }}</code>
+        <button class="btn btn-small btn-secondary" type="button" data-copy="{{ d.branch }}">복사</button></p>
+      <p class="small">PR 을 열면 PR · 검토, 병합되면 완료로 옮깁니다. Runloom 결과 판정은 거치지 않습니다.</p>
+      {% if panel.can_edit %}
+      <form method="post" action="/work/{{ w.work_key }}/direct/stop" class="inline-form">
+        {{ list_state() }}
+        <button class="btn btn-small btn-secondary" type="submit">직접 작업 그만두기</button>
+      </form>
+      <p class="small">에이전트에게 넘기려면 담당에서 에이전트를 고르세요.</p>
+      {% endif %}
+    </div>
+    {% elif panel.can_start_direct %}
+    <form method="post" action="/work/{{ w.work_key }}/direct" class="inline-form" data-direct-start>
+      {{ list_state() }}
+      <button class="btn btn-small" type="submit">내 세션에서 작업</button>
+      <span class="small">담당이 나로 바뀌고, 업무 키가 든 브랜치 이름을 드립니다.</span>
+    </form>
+    {% endif %}
   </section>
   {% endif %}
 

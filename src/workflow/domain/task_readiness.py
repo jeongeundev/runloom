@@ -79,6 +79,7 @@ class TaskFacts:
     source_state: Literal["open", "closed"] | None = None  # 원본 이슈 상태. 원본 없으면 None
     delegated: bool = True  # `all_open` 소스 Task 의 실행 지시(맡기기·트리거 라벨). 지시 단계가 없으면 True
     closed: bool = False  # 운영자 종료
+    direct_work: bool = False  # 업무가 직접 작업 중 — 사람이 자기 세션에서 하므로 에이전트를 착수하지 않는다 (phase 16)
 
 
 def _parse(value: str) -> datetime:
@@ -217,6 +218,8 @@ def evaluate_readiness(facts: TaskFacts) -> TaskReadiness:
         blockers.append(
             Blocker("not_delegated", "실행 지시 전 — [에이전트에게 맡기기] 또는 `runloom` 라벨", "operator")
         )
+    if facts.direct_work:
+        blockers.append(Blocker("direct_work", "직접 작업 중 — 에이전트에게 넘기면 시작", "operator"))
     if facts.run_mode == "manual":
         blockers.append(Blocker("manual_mode", "직접 실행 모드", "operator"))
 

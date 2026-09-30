@@ -211,12 +211,15 @@ def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[Map
         return bump_config_revision(conn, session_id)
 
 
-def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
-    """업무 상태 판정(`domain/work_status.work_status`)의 재료를 DB 에서 모은다. 사실을 모으는 SQL 은 여기 한 곳."""
+def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = True) -> WorkItemFacts:
+    """업무 상태 판정(`domain/work_status.work_status`)의 재료를 DB 에서 모은다. 사실을 모으는 SQL 은 여기 한 곳.
+    `direct_work=False` 는 직접 작업 칸(v12)이 아직 없는 스키마 — v9 → v10 마이그레이션만 쓴다."""
     item = _one(conn, "SELECT status, status_reason, assignee_type FROM work_items WHERE work_item_id = ?",
                 (work_item_id,))
     if item is None:
         raise NotFound(f"work item {work_item_id}")
+    direct = _one(conn, "SELECT d.display_name FROM work_items w JOIN members d ON d.member_id = w.direct_member_id"
+                        " WHERE w.work_item_id = ?", (work_item_id,)) if direct_work else None
     stages = conn.execute(
         "SELECT t.task_id, t.kind, COALESCE(json_extract(k.spec_json, '$.label'), t.kind) AS kind_label, t.status,"
         " t.status_reason, t.created_at, t.chosen_agent_id,"
@@ -253,6 +256,7 @@ def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
         ),
         open_requests=tuple(RequestFact(code=r["code"], question=r["question"]) for r in requests),
         pull_request=PullRequestFact(state=pr["state"], number=pr["pr_number"]) if pr else None,
+        direct_member_name=direct["display_name"] if direct else None,
     )
 
 
@@ -428,8 +432,8 @@ def _work_item_event(conn: Connection, work_item_id: str, session_id: str, type:
 
 
 def set_work_status(conn: Connection, work_item_id: str, status: WorkStatus, *, now: str) -> bool:
-    """값 또는 이유가 저장값과 다를 때만 쓰고 `status_changed` 이벤트 한 행을 남긴다. 끝 상태가 되면 `closed_at`.
-    자체 BEGIN 이 없다 — 그 변경과 같은 트랜잭션에서 부른다."""
+    """값 또는 이유가 저장값과 다를 때만 쓰고 `status_changed` 이벤트 한 행을 남긴다. 끝 상태가 되면 `closed_at` 과
+    직접 작업 종료(`direct_stopped` reason `closed`). 자체 BEGIN 이 없다 — 그 변경과 같은 트랜잭션에서 부른다."""
     row = _one(conn, "SELECT session_id, status, status_reason FROM work_items WHERE work_item_id = ?",
                (work_item_id,))
     if row is None:
@@ -437,6 +441,8 @@ def set_work_status(conn: Connection, work_item_id: str, status: WorkStatus, *, 
     if (row["status"], row["status_reason"]) == (status.status, status.reason):
         return False
     closed_at = now if status.status in TERMINAL_WORK_STATUSES else None
+    if closed_at is not None:
+        _clear_direct_work(conn, work_item_id, reason="closed", now=now)
     conn.execute(
         "UPDATE work_items SET status = ?, status_reason = ?, closed_at = ?, updated_at = ? WHERE work_item_id = ?",
         (status.status, status.reason, closed_at, now, work_item_id),
@@ -508,6 +514,10 @@ def _assign_work_item(
         raise NotFound(f"agent {assignee_id}")
     if (row["assignee_type"], row["assignee_id"]) == (assignee_type, assignee_id):
         return False
+    if row["direct_member_id"] is not None and (assignee_type, assignee_id) != ("member", row["direct_member_id"]):
+        # 직접 작업하는 사람과 담당이 갈리지 않게 — 에이전트로 넘기면 handed_to_agent, 다른 사람이면 reassigned
+        _clear_direct_work(conn, work_item_id, reason="handed_to_agent" if assignee_type == "agent" else "reassigned",
+                           now=now)
     conn.execute(
         "UPDATE work_items SET assignee_type = ?, assignee_id = ?, updated_at = ? WHERE work_item_id = ?",
         (assignee_type, assignee_id, now, work_item_id),
@@ -546,6 +556,64 @@ def hand_work_to_agent(
         if issue is not None:
             _delegate_issue(conn, issue["source_id"], issue["github_issue_id"], by="operator", now=now)
         refresh_work_status(conn, work_item_id, now=now)
+
+
+DIRECT_STOP_REASONS = ("stopped", "handed_to_agent", "reassigned", "closed")
+
+
+def _clear_direct_work(conn: Connection, work_item_id: str, *, reason: str, now: str) -> bool:
+    """직접 작업 칸 셋을 함께 비우고 `direct_stopped` 한 행. 재계산 없음(호출자가 한다). 직접 작업 중이 아니면 False."""
+    if reason not in DIRECT_STOP_REASONS:
+        raise ValueError(f"직접 작업 종료 사유 {reason!r}")
+    row = _one(conn, "SELECT session_id, direct_member_id FROM work_items WHERE work_item_id = ?", (work_item_id,))
+    if row is None:
+        raise NotFound(f"work item {work_item_id}")
+    if row["direct_member_id"] is None:
+        return False
+    conn.execute("UPDATE work_items SET direct_member_id = NULL, direct_started_at = NULL, direct_branch = NULL,"
+                 " updated_at = ? WHERE work_item_id = ?", (now, work_item_id))
+    _work_item_event(conn, work_item_id, row["session_id"], "direct_stopped",
+                     {"member_id": row["direct_member_id"], "reason": reason}, now)
+    return True
+
+
+def start_direct_work(conn: Connection, session_id: str, work_item_id: str, *, member_id: str, branch: str,
+                      now: str) -> bool:
+    """직접 작업 시작(한 트랜잭션) — 다른 멤버가 직접 작업 중이면 끝내고(`reassigned`), 칸 셋을 채우고(`direct_started`
+    `{"member_id", "branch"}`), 담당 = 그 멤버(`assigned` `by`), 업무 상태 재계산. 같은 멤버가 이미 직접 작업 중이면
+    False(브랜치 이름은 처음 값). 끝난 업무·실행 여부 검사는 `work_actions` 가 한다. 다른 워크스페이스 → NotFound."""
+    with _tx(conn):
+        row = get_work_item(conn, session_id, work_item_id)
+        if row is None:
+            raise NotFound(f"work item {work_item_id}")
+        if row["direct_member_id"] == member_id:
+            return False
+        _clear_direct_work(conn, work_item_id, reason="reassigned", now=now)
+        conn.execute("UPDATE work_items SET direct_member_id = ?, direct_started_at = ?, direct_branch = ?,"
+                     " updated_at = ? WHERE work_item_id = ?", (member_id, now, branch, now, work_item_id))
+        _work_item_event(conn, work_item_id, session_id, "direct_started", {"member_id": member_id, "branch": branch},
+                         now)
+        _assign_work_item(conn, session_id, work_item_id, assignee_type="member", assignee_id=member_id,
+                          by_member_id=member_id, now=now)
+        refresh_work_status(conn, work_item_id, now=now)
+        return True
+
+
+def stop_direct_work(conn: Connection, work_item_id: str, *, reason: str, now: str) -> bool:
+    """직접 작업 그만두기(한 트랜잭션) — 칸 셋 비움, `direct_stopped`, 재계산. 담당은 그대로. 직접 작업 중이 아니면 False."""
+    if reason not in DIRECT_STOP_REASONS:
+        raise ValueError(f"직접 작업 종료 사유 {reason!r}")
+    with _tx(conn):
+        if not _clear_direct_work(conn, work_item_id, reason=reason, now=now):
+            return False
+        refresh_work_status(conn, work_item_id, now=now)
+        return True
+
+
+def is_direct_working(conn: Connection, task_id: str) -> bool:
+    """이 단계의 업무가 직접 작업 중인가 — 에이전트 착수(워커·`/run`·`/delegate`)를 막는 조건."""
+    return _one(conn, "SELECT 1 FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ? AND w.direct_member_id IS NOT NULL", (task_id,)) is not None
 
 
 def set_work_priority(conn: Connection, session_id: str, work_item_id: str, priority: str, *, member_id: str,

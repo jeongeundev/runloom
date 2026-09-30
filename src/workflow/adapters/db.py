@@ -903,7 +903,7 @@ def _migrate_9_to_10(conn: sqlite3.Connection) -> None:
         " ORDER BY t.created_at, t.task_id"
     )
     for work_item_id in work_of.values():
-        status = work_status(work_item_facts(conn, work_item_id))
+        status = work_status(work_item_facts(conn, work_item_id, direct_work=False))  # 직접 작업 칸은 v12
         closed_at = now if status.status in TERMINAL_WORK_STATUSES else None
         conn.execute("UPDATE work_items SET status = ?, status_reason = ?, closed_at = ? WHERE work_item_id = ?",
                      (status.status, status.reason, closed_at, work_item_id))

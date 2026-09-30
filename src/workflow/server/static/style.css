@@ -334,6 +334,9 @@ tbody.folded .work-row { display: none; }
 .panel-list { list-style: none; padding: 0; margin: 8px 0 0; }
 .panel-list li { padding: 2px 0; overflow-wrap: anywhere; }
 .inline-form { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.direct-work p { margin: 4px 0; }
+.branch-line code { user-select: all; overflow-wrap: anywhere; background: var(--bg-bubble); border-radius: 4px;
+                    padding: 1px 6px; }
 
 /* --- 반응형 ----------------------------------------------------------------------- */
 

@@ -732,9 +732,18 @@ DETECTED_PR_LABELS = {"open": "PR 열림", "merged": "PR 병합됨", "closed": "
 PRIORITY_LABELS = {"high": "높음", "normal": "보통", "low": "낮음"}
 
 
-def _event_line(event: Row) -> str:
-    """업무 이벤트 한 줄. 모르는 종류(뒤 step 이 더하는 것)는 코드 그대로."""
+DIRECT_STOP_LABELS = {"stopped": "그만둠", "handed_to_agent": "에이전트에게 넘김", "reassigned": "담당 바뀜",
+                      "closed": "업무 끝남"}
+
+
+def _event_line(event: Row, names: dict[str, str]) -> str:
+    """업무 이벤트 한 줄. 모르는 종류(뒤 step 이 더하는 것)는 코드 그대로. `names` 는 멤버 id → 표시 이름."""
     data = json.loads(event["data_json"])
+    if event["type"] == "direct_started":
+        return f"직접 작업 시작 · {names.get(data['member_id'], data['member_id'])} · {data['branch']}"
+    if event["type"] == "direct_stopped":
+        reason = DIRECT_STOP_LABELS.get(data["reason"], data["reason"])
+        return f"직접 작업 끝 · {names.get(data['member_id'], data['member_id'])} · {reason}"
     if event["type"] == "status_changed":
         return f"상태 {data['to']}" + (f" · {data['reason']}" if data.get("reason") else "")
     if event["type"] == "assigned":
@@ -820,10 +829,16 @@ def work_panel_context(
             "title": other["title"],
             "status": UserStatus(other["status"], other["status_reason"]),
         })
+    names = _member_names(conn, session_id)
     recipients: list[str] = []
     if work["status"] == "내 차례":
-        names = _member_names(conn, session_id)
         recipients = [names[m] for m in repo.turn_recipients_of(conn, work_item_id)]
+    closed = work["status"] in TERMINAL_WORK_STATUSES
+    running = any(repo.active_execution(conn, stage["task_id"]) is not None for stage in stages)
+    direct = None
+    if work["direct_member_id"] is not None:
+        direct = {"member_name": names.get(work["direct_member_id"], work["direct_member_id"]),
+                  "started_at": work["direct_started_at"], "branch": work["direct_branch"]}
     assignee = f"{work['assignee_type']}:{work['assignee_id']}" if work["assignee_type"] else "none"
     kind = repo.get_kind(conn, session_id, work["kind"])
     return {
@@ -848,7 +863,10 @@ def work_panel_context(
         },
         "member_id": member_id,
         # 담당·우선순위 폼 — delegate 동작이고 끝나지 않은 업무만(서버 경로가 같은 규칙으로 다시 막는다)
-        "can_edit": team.DELEGATE in allowed and work["status"] not in TERMINAL_WORK_STATUSES,
+        "can_edit": team.DELEGATE in allowed and not closed,
+        # 직접 작업 — 있으면 누가·언제·브랜치, 없으면 [내 세션에서 작업](에이전트 실행 중이면 없음)
+        "direct": direct,
+        "can_start_direct": team.DELEGATE in allowed and not closed and direct is None and not running,
         "members": [
             {"member_id": m["member_id"], "display_name": m["display_name"]}
             for m in repo.list_members(conn, session_id) if m["disabled_at"] is None
@@ -860,7 +878,7 @@ def work_panel_context(
         "pulls": pulls,
         "comments": comments,
         "draft_pulls": [p for p in pulls if p["runloom"] and p["url"] is not None],
-        "events": [{"at": e["occurred_at"], "text": _event_line(e)}
+        "events": [{"at": e["occurred_at"], "text": _event_line(e, names)}
                    for e in repo.list_work_item_events(conn, work_item_id)],
         "chain": chain,
         "form_fields": [

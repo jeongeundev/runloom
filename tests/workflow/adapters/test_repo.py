@@ -3110,6 +3110,81 @@ def test_assign_work_item_records_who_and_refreshes_the_work_status(seeded):
     assert row["status_reason"] != ""
 
 
+def _direct(conn, work_item_id: str) -> tuple:
+    row = conn.execute("SELECT direct_member_id, direct_started_at, direct_branch FROM work_items WHERE work_item_id = ?",
+                       (work_item_id,)).fetchone()
+    return tuple(row)
+
+
+def _events_of(conn, work_item_id: str, type_: str) -> list[dict]:
+    return [json.loads(e["data_json"]) for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == type_]
+
+
+def test_start_and_stop_direct_work_fill_and_clear_three_columns(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    repo.set_member_display_name(conn, SESSION, admin, "김개발", now=NOW)
+    assert repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1-fix", now=LATER)
+    assert _direct(conn, work_item_id) == (admin, LATER, "RUN-1-fix")
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["assignee_type"], row["assignee_id"]) == ("member", admin)
+    assert (row["status"], row["status_reason"]) == ("직접 작업 중", "김개발")
+    assert repo.work_item_facts(conn, work_item_id).direct_member_name == "김개발"
+    assert _events_of(conn, work_item_id, "direct_started") == [{"member_id": admin, "branch": "RUN-1-fix"}]
+    assert _events_of(conn, work_item_id, "assigned")[-1]["by"] == admin
+    # 같은 멤버가 다시 → 변화 없음(브랜치 이름은 처음 값)
+    assert not repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1-other", now=LATER)
+    assert _direct(conn, work_item_id) == (admin, LATER, "RUN-1-fix")
+
+    assert repo.stop_direct_work(conn, work_item_id, reason="stopped", now=LATER)
+    assert not repo.stop_direct_work(conn, work_item_id, reason="stopped", now=LATER)  # 이미 아님
+    assert _direct(conn, work_item_id) == (None, None, None)
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["assignee_type"], row["assignee_id"]) == ("member", admin)  # 담당은 그대로
+    assert row["status"] != "직접 작업 중"
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "stopped"}]
+    with pytest.raises(ValueError):
+        repo.stop_direct_work(conn, work_item_id, reason="bored", now=LATER)
+    with pytest.raises(NotFound):  # 다른 워크스페이스 업무
+        repo.start_direct_work(conn, OTHER_SESSION, work_item_id, member_id=admin, branch="x", now=LATER)
+
+
+def test_start_direct_work_by_another_member_ends_the_first_and_takes_the_assignee(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    other = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1", now=NOW)
+    assert repo.start_direct_work(conn, SESSION, work_item_id, member_id=other, branch="RUN-1", now=LATER)
+    assert _direct(conn, work_item_id) == (other, LATER, "RUN-1")
+    assert repo.get_work_item(conn, SESSION, work_item_id)["assignee_id"] == other
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "reassigned"}]
+
+
+def test_reassigning_a_direct_work_ends_it(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    other = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1", now=NOW)
+    repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=other, by_member_id=admin,
+                          now=LATER)
+    assert _direct(conn, work_item_id) == (None, None, None)
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "reassigned"}]
+
+
+def test_terminal_status_clears_direct_work_in_the_same_write(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1", now=NOW)
+    assert repo.set_work_status(conn, work_item_id, WorkStatus("종료", "원본 이슈 닫힘"), now=LATER)
+    assert _direct(conn, work_item_id) == (None, None, None)
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "closed"}]
+    assert repo.get_work_item(conn, SESSION, work_item_id)["closed_at"] == LATER
+
+
 def test_set_work_priority_records_from_to_by(seeded):
     conn = seeded
     work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]

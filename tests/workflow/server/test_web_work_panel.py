@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
+from workflow.domain.work_status import WorkStatus
 from workflow.server import views, web
 
 from .conftest import ADMIN_EMAIL, log_in, log_in_member
@@ -109,9 +110,11 @@ def test_forms_carry_the_list_state_and_close_goes_back_to_it(admin, issue_task)
 
 def test_sections_without_content_are_hidden(admin, issue_task):
     text = panel(admin)
-    for name in ("now", "left", "links", "origin", "form"):
+    for name in ("left", "links", "origin", "form"):
         assert section(text, name) is None, name
     assert "data-request-id" not in text
+    # 지금 할 일은 열린 요청이 없어도 직접 작업 버튼으로 보인다(step 8) — 요청 블록은 없다
+    assert section(text, "now") is not None and "human-request" not in section(text, "now")
     assert section(text, "timeline") is not None and section(text, "detail") is not None
 
 
@@ -265,3 +268,108 @@ def test_external_strings_are_escaped(admin, conn, issue_task):
     text = panel(admin)
     assert "<script>alert(1)</script>" not in text and "&lt;script&gt;alert(1)&lt;/script&gt;" in text
     assert "<b>본문</b>" not in text
+
+
+
+# --- 직접 작업 (step 8) ---------------------------------------------------------------------------------
+
+
+def test_start_direct_work_from_the_panel(admin, conn, issue_task):
+    now = section(panel(admin), "now")
+    assert 'action="/work/RUN-1/direct"' in now and "내 세션에서 작업" in now
+    assert "직접 작업 중" not in now
+
+    response = admin.post("/work/RUN-1/direct", data={"q": "unassigned"}, follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/tasks?q=unassigned&open=RUN-1"
+
+    now = section(panel(admin), "now")
+    assert re.search(r"직접 작업 중 · 관리자 · ", now)
+    assert re.search(r'data-branch[^>]*>RUN-1-1<', now)  # 제목 "버그 1" → 영숫자 "1" 만 남는다
+    assert "data-copy" in now
+    assert "PR 을 열면 PR · 검토, 병합되면 완료로 옮깁니다. Runloom 결과 판정은 거치지 않습니다." in now
+    assert 'action="/work/RUN-1/direct/stop"' in now and "직접 작업 그만두기" in now
+    assert 'action="/work/RUN-1/direct"' not in now
+    work = repo.get_work_item(conn, SESSION, work_id(conn, issue_task))
+    assert (work["status"], work["assignee_id"]) == ("직접 작업 중", admin_id(conn))
+
+
+def test_list_next_action_shows_direct_work(admin, issue_task):
+    admin.post("/work/RUN-1/direct", follow_redirects=False)
+    row = admin.get("/tasks").text.split('data-work-key="RUN-1"', 1)[1].split("</tr>", 1)[0]
+    assert re.search(r'class="next-action">직접 작업 중 · 관리자<', row)
+
+
+def test_stop_direct_work_from_the_panel(admin, conn, issue_task):
+    admin.post("/work/RUN-1/direct", follow_redirects=False)
+    response = admin.post("/work/RUN-1/direct/stop", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/tasks?open=RUN-1"
+    now = section(panel(admin), "now")
+    assert 'action="/work/RUN-1/direct"' in now and "직접 작업 중 ·" not in now
+    work = repo.get_work_item(conn, SESSION, work_id(conn, issue_task))
+    assert (work["direct_member_id"], work["assignee_id"]) == (None, admin_id(conn))
+    # 직접 작업 중이 아니면 변화 없음
+    assert admin.post("/work/RUN-1/direct/stop", follow_redirects=False).status_code == 303
+
+
+def test_another_member_takes_over_the_direct_work(app, admin, conn, issue_task):
+    admin.post("/work/RUN-1/direct", follow_redirects=False)
+    member = log_in_member(TestClient(app), display_name="이멤버")
+    assert member.post("/work/RUN-1/direct", follow_redirects=False).status_code == 303
+    work = repo.get_work_item(conn, SESSION, work_id(conn, issue_task))
+    assert (work["status"], work["status_reason"]) == ("직접 작업 중", "이멤버")
+    assert work["assignee_id"] == work["direct_member_id"] != admin_id(conn)
+
+
+def test_direct_work_blocks_run_and_delegate(admin, conn, issue_task):
+    admin.post("/work/RUN-1/direct", follow_redirects=False)
+    for path in (f"/tasks/{issue_task}/run", f"/tasks/{issue_task}/delegate"):
+        response = admin.post(path, follow_redirects=False)
+        assert response.status_code == 409, path
+        assert "direct_work_active" in response.text
+    assert repo.list_executions(conn, issue_task) == []
+    assert repo.get_source_issue_by_task(conn, SESSION, issue_task)["delegated_by"] is None
+
+
+def test_hand_direct_work_to_an_agent_from_the_assignee_form(admin, conn, issue_task):
+    admin.post("/work/RUN-1/direct", follow_redirects=False)
+    response = admin.post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}"}, follow_redirects=False)
+    assert response.status_code == 303
+    work = repo.get_work_item(conn, SESSION, work_id(conn, issue_task))
+    assert work["direct_member_id"] is None and (work["assignee_type"], work["assignee_id"]) == ("agent", FIX)
+    assert len(repo.list_executions(conn, issue_task)) == 1  # 넘기면 곧 착수
+
+
+def test_clearing_the_assignee_during_direct_work_is_409(admin, issue_task):
+    admin.post("/work/RUN-1/direct", follow_redirects=False)
+    response = admin.post("/work/RUN-1/assignee", data={"assignee": "none"}, follow_redirects=False)
+    assert response.status_code == 409 and "direct_work_active" in response.text
+
+
+def test_no_direct_button_while_an_agent_runs_or_on_closed_work(admin, conn, issue_task):
+    admin.post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}"}, follow_redirects=False)
+    assert repo.list_executions(conn, issue_task)  # 실행이 시작됨
+    assert 'action="/work/RUN-1/direct"' not in panel(admin)
+    response = admin.post("/work/RUN-1/direct", follow_redirects=False)
+    assert response.status_code == 409 and "execution_conflict" in response.text
+
+
+def test_direct_on_closed_work_is_409(admin, conn, issue_task):
+    repo.set_work_status(conn, work_id(conn, issue_task), WorkStatus("종료", "원본 이슈 닫힘"), now=NOW)
+    conn.commit()
+    assert 'action="/work/RUN-1/direct"' not in panel(admin)
+    response = admin.post("/work/RUN-1/direct", follow_redirects=False)
+    assert response.status_code == 409 and "work_closed" in response.text
+
+
+def test_direct_work_events_are_on_the_timeline(admin, issue_task):
+    admin.post("/work/RUN-1/direct", follow_redirects=False)
+    admin.post("/work/RUN-1/direct/stop", follow_redirects=False)
+    events = panel(admin).split("data-work-events", 1)[1].split("</ul>", 1)[0]
+    assert "직접 작업 시작 · 관리자 · RUN-1-1" in events and "직접 작업 끝 · 관리자 · 그만둠" in events
+
+
+def test_direct_work_requires_login(client, conn, cycle, issue_task):
+    for path in ("/work/RUN-1/direct", "/work/RUN-1/direct/stop"):
+        response = client.post(path, follow_redirects=False)
+        assert response.status_code == 303 and response.headers["location"] == "/login"
+    assert repo.get_work_item(conn, SESSION, work_id(conn, issue_task))["direct_member_id"] is None
