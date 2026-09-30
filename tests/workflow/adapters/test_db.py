@@ -47,11 +47,15 @@ TABLES = {
     "members",
     "field_mappings",
     "work_item_events",
+    "login_sessions",
+    "member_invites",
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 PHASE12_TABLES = {"task_pull_requests", "notifications"}
 PHASE14_TABLES = {"work_items", "work_item_links", "members", "field_mappings", "work_item_events"}
-V9_TABLES = TABLES - PHASE14_TABLES
+PHASE15_TABLES = {"login_sessions", "member_invites"}
+V10_TABLES = TABLES - PHASE15_TABLES
+V9_TABLES = V10_TABLES - PHASE14_TABLES
 
 # phase 13 이전(v4~v8) 서버가 모든 세션에 seed 하던 진단 데모 내장 종류·규칙 (ADR-0019). 지금 계약은 이 이름을
 # 내장으로 받지 않으므로 검증 없이 만든다 — 옛 DB 행 모양 그대로다.
@@ -244,8 +248,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_10():
-    assert SCHEMA_VERSION == 10
+def test_schema_version_is_11():
+    assert SCHEMA_VERSION == 11
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -427,7 +431,7 @@ def test_phase7_chains_callback_columns_defaults_and_source(conn):
 # --- phase 8: v4 → v5 데이터 보존 마이그레이션 (ADR-0014 결과, ARCHITECTURE "GitHub 업무 순환" 저장) ------
 
 V4_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v4.sql").read_text()
-V4_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES - PHASE14_TABLES - {
+V4_TABLES = V10_TABLES - PHASE9_TABLES - PHASE12_TABLES - PHASE14_TABLES - {
     "github_sources", "github_assignee_bindings", "source_issues", "followup_links", "human_requests",
     "human_responses", "source_deliveries",
 }
@@ -728,7 +732,7 @@ def test_phase8_table_keys_and_checks(conn):
 # --- phase 9: v5 → v6 측정 스키마 (ADR-0015, ARCHITECTURE "측정 — phase 9" 저장) -----------------------
 
 V5_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v5.sql").read_text()
-V5_TABLES = TABLES - PHASE9_TABLES - PHASE12_TABLES - PHASE14_TABLES
+V5_TABLES = V10_TABLES - PHASE9_TABLES - PHASE12_TABLES - PHASE14_TABLES
 EXECUTION_MEASURE_COLUMNS = (
     "config_revision", "folder_commit", "folder_dirty", "cost_usd", "input_tokens", "output_tokens",
 )
@@ -1063,12 +1067,12 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c.close()
 
 
-def test_migrates_v4_all_the_way_to_v10(db_path):
+def test_migrates_v4_all_the_way_to_v11(db_path):
     c = _v4_db(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 10
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 11
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
     assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
@@ -1342,11 +1346,13 @@ def test_fresh_db_has_v10_tables_columns_and_checks(conn):
 
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert PHASE14_TABLES <= _table_names(conn)
-    assert _columns(conn, "work_items") == WORK_ITEM_COLUMNS
+    assert _columns(conn, "work_items") == WORK_ITEM_COLUMNS | {"requested_by_member_id"}  # v11
     assert _columns(conn, "work_item_links") == {
         "from_work_item_id", "to_work_item_id", "type", "cause_execution_id", "created_at",
     }
-    assert _columns(conn, "members") == {"member_id", "session_id", "display_name", "role", "created_at"}
+    assert _columns(conn, "members") == {
+        "member_id", "session_id", "display_name", "role", "created_at", "email", "password_hash", "disabled_at",
+    }
     assert _columns(conn, "field_mappings") == {
         "mapping_id", "session_id", "source_type", "field", "source_value", "runloom_value", "position", "created_at",
     }
@@ -1573,3 +1579,279 @@ def test_fresh_schema_matches_v9_migrated_schema(tmp_path):
     assert _indexes(fresh) == _indexes(migrated)
     fresh.close()
     migrated.close()
+
+
+# --- phase 15: v10 → v11 계정·로그인 세션·초대 칸 (ADR-0021) ------------------------------------------
+
+V10_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v10.sql").read_text()
+V11_COLUMNS = {
+    "members": {"email", "password_hash", "disabled_at"},
+    "work_items": {"requested_by_member_id"},
+    "human_responses": {"member_id"},
+    "notifications": {"recipient_member_id", "channel"},
+    "connect_codes": {"issued_by_member_id"},
+    "connectors": {"owner_member_id"},
+}
+
+
+def _v10_db(db_path):
+    """phase 14 서버가 남긴 모양의 v10 DB. 워크스페이스 s1 — 첫 관리자·멤버, 업무 1건(단계 Task 1, 사람 요청·응답),
+    알림 1건, 연결 코드·연결 프로그램 1개. 워크스페이스 s2 — 첫 관리자만."""
+    c = connect(db_path)
+    c.executescript(V10_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (10)")
+    for sid in ("s1", "s2"):
+        c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (sid, NOW))
+        for spec in BUILTIN_KINDS:
+            c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                      (sid, spec.kind, spec.model_dump_json(), NOW))
+        c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+                  " VALUES (?, ?, '관리자', 'admin', ?)", (f"mem-0000000{sid[-1]}", sid, NOW))
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+              " VALUES ('mem-0000000a', 's1', '김OO', 'member', ?)", (NOW,))
+    c.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, assignee_type,"
+              " assignee_id, status, status_reason, source_type, created_at, updated_at) VALUES ('wi-000000000001',"
+              " 's1', 1, '쿠폰 오류', '고쳐 주세요', 'bug_fix', 'member', 'mem-0000000a', '내 차례', '검토 승인',"
+              " 'manual', ?, ?)", (NOW, NOW))
+    _insert_task(c, "t1", "s1", "bug_fix")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001' WHERE task_id = 't1'")
+    c.execute("INSERT INTO human_requests (request_id, task_id, code, question, cause_key, task_revision, revision,"
+              " state, created_at, answered_at) VALUES ('hr-00000001', 't1', 'approve', '승인?', 'k', 1, 2,"
+              " 'answered', ?, ?)", (NOW, NOW))
+    c.execute("INSERT INTO human_responses (request_id, response_id, action, text, expected_revision, task_revision,"
+              " created_at) VALUES ('hr-00000001', 'rsp-1', 'approve', '좋아요', 1, 2, ?)", (NOW,))
+    c.execute("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+              " payload_json, state, created_at) VALUES ('ntf-00000001', 's1', 'human_request', 't1',"
+              " 'human_request:hr-00000001', '[Runloom] 사람 차례', '{}', 'sent', ?)", (NOW,))
+    c.execute("INSERT INTO connect_codes (code, issued_at, expires_at, used_at) VALUES ('code-1', ?, ?, ?)",
+              (NOW, NOW, NOW))
+    c.execute("INSERT INTO connectors (connector_id, token_sha256, created_at) VALUES ('conn-1', 'h', ?)", (NOW,))
+    return c
+
+
+def _v11_base(conn) -> None:
+    """새 칸·표 제약 확인용 최소 행 — 두 워크스페이스, 멤버 둘."""
+    _cycle_base(conn)
+    conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('s2', ?)", (NOW,))
+    member = "INSERT INTO members (member_id, session_id, display_name, role, created_at) VALUES (?, ?, 'n', ?, ?)"
+    conn.execute(member, ("mem-00000001", "s1", "admin", NOW))
+    conn.execute(member, ("mem-00000002", "s1", "member", NOW))
+
+
+def test_v11_constants_come_from_domain_and_contract():
+    from workflow.adapters import db
+
+    assert db.NOTIFICATION_CHANNELS == ("shared", "personal")
+    assert db.INVITE_PURPOSES == ("invite", "reset")
+
+
+def test_fresh_db_has_v11_tables_columns_and_indexes(conn):
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    assert PHASE15_TABLES <= _table_names(conn)
+    for table, columns in V11_COLUMNS.items():
+        assert columns <= _columns(conn, table), table
+    assert _columns(conn, "login_sessions") == {
+        "login_id", "session_id", "member_id", "token_sha256", "created_at", "expires_at", "last_seen_at", "revoked_at",
+    }
+    assert _columns(conn, "member_invites") == {
+        "invite_id", "session_id", "purpose", "role", "member_id", "token_sha256", "created_by_member_id", "created_at",
+        "expires_at", "used_at", "used_by_member_id", "revoked_at",
+    }
+    assert {("sessions", "session_id", "session_id"), ("members", "member_id", "member_id")} <= _foreign_keys(
+        conn, "login_sessions")
+    assert {("sessions", "session_id", "session_id"), ("members", "member_id", "member_id"),
+            ("members", "created_by_member_id", "member_id"), ("members", "used_by_member_id", "member_id")} <= (
+        _foreign_keys(conn, "member_invites"))
+    assert ("members", "requested_by_member_id", "member_id") in _foreign_keys(conn, "work_items")
+    assert ("members", "member_id", "member_id") in _foreign_keys(conn, "human_responses")
+    assert ("members", "recipient_member_id", "member_id") in _foreign_keys(conn, "notifications")
+    assert ("members", "issued_by_member_id", "member_id") in _foreign_keys(conn, "connect_codes")
+    assert ("members", "owner_member_id", "member_id") in _foreign_keys(conn, "connectors")
+    assert "password" not in " ".join(_columns(conn, "login_sessions") | _columns(conn, "member_invites"))
+
+    unique = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'members_session_email'").fetchone()[0]
+    assert "UNIQUE" in unique and "WHERE email IS NOT NULL" in unique
+    indexed = {
+        (table, tuple(r["name"] for r in conn.execute(f"PRAGMA index_info({i['name']})")))
+        for table in ("members", "login_sessions", "notifications")
+        for i in conn.execute(f"PRAGMA index_list({table})")
+    }
+    assert {("members", ("session_id", "email")), ("login_sessions", ("member_id",)),
+            ("notifications", ("recipient_member_id",))} <= indexed
+
+
+def test_v11_member_email_is_unique_per_workspace_only_when_set(conn):
+    _v11_base(conn)
+    conn.execute("UPDATE members SET email = 'a@example.com', password_hash = 'h' WHERE member_id = 'mem-00000001'")
+    with pytest.raises(sqlite3.IntegrityError):  # 같은 워크스페이스 같은 이메일
+        conn.execute("UPDATE members SET email = 'a@example.com' WHERE member_id = 'mem-00000002'")
+    member = ("INSERT INTO members (member_id, session_id, display_name, role, created_at, email)"
+              " VALUES (?, ?, 'n', 'member', ?, ?)")
+    conn.execute(member, ("mem-00000003", "s1", NOW, None))
+    conn.execute(member, ("mem-00000004", "s1", NOW, None))  # 이메일 없는 멤버는 여럿
+    conn.execute(member, ("mem-00000005", "s2", NOW, "a@example.com"))  # 다른 워크스페이스는 같은 이메일 허용
+    assert conn.execute("SELECT COUNT(*) FROM members WHERE email IS NULL").fetchone()[0] == 3
+    with pytest.raises(sqlite3.IntegrityError):  # 역할 CHECK 는 그대로
+        conn.execute("UPDATE members SET role = 'owner' WHERE member_id = 'mem-00000003'")
+
+
+def test_v11_login_sessions_checks(conn):
+    _v11_base(conn)
+    insert = ("INSERT INTO login_sessions (login_id, session_id, member_id, token_sha256, created_at, expires_at,"
+              " last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    conn.execute(insert, ("lgn-000000000001", "s1", "mem-00000001", "sha-1", NOW, NOW, NOW))
+    row = conn.execute("SELECT revoked_at FROM login_sessions").fetchone()
+    assert row[0] is None
+    for params in (
+        ("lgn-000000000001", "s1", "mem-00000001", "sha-2", NOW, NOW, NOW),  # id 중복
+        ("lgn-000000000002", "s1", "mem-00000001", "sha-1", NOW, NOW, NOW),  # 토큰 해시 중복
+        ("lgn-000000000003", "s1", "mem-nope", "sha-3", NOW, NOW, NOW),  # 없는 멤버
+        ("lgn-000000000004", "s-nope", "mem-00000001", "sha-4", NOW, NOW, NOW),  # 없는 워크스페이스
+        ("lgn-000000000005", "s1", "mem-00000001", None, NOW, NOW, NOW),  # 토큰 해시 필수
+        ("lgn-000000000006", "s1", "mem-00000001", "sha-6", NOW, None, NOW),  # 만료 시각 필수
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+
+
+def test_v11_member_invites_checks(conn):
+    _v11_base(conn)
+    insert = ("INSERT INTO member_invites (invite_id, session_id, purpose, role, member_id, token_sha256,"
+              " created_by_member_id, created_at, expires_at, used_at, used_by_member_id)"
+              " VALUES (?, 's1', ?, ?, ?, ?, 'mem-00000001', ?, ?, ?, ?)")
+    conn.execute(insert, ("inv-1", "invite", "member", None, "sha-1", NOW, NOW, None, None))
+    conn.execute(insert, ("inv-2", "invite", "admin", None, "sha-2", NOW, NOW, NOW, "mem-00000002"))
+    conn.execute(insert, ("inv-3", "reset", None, "mem-00000002", "sha-3", NOW, NOW, None, None))
+    for params in (
+        ("inv-4", "login", "member", None, "sha-4", NOW, NOW, None, None),  # 목적 허용 값 밖
+        ("inv-5", "invite", "owner", None, "sha-5", NOW, NOW, None, None),  # 역할 허용 값 밖
+        ("inv-6", "invite", None, None, "sha-6", NOW, NOW, None, None),  # 초대는 역할이 있어야
+        ("inv-7", "invite", "member", "mem-00000002", "sha-7", NOW, NOW, None, None),  # 초대는 멤버가 없어야
+        ("inv-8", "reset", None, None, "sha-8", NOW, NOW, None, None),  # 재설정은 멤버가 있어야
+        ("inv-9", "reset", "member", "mem-00000002", "sha-9", NOW, NOW, None, None),  # 재설정은 역할이 없어야
+        ("inv-10", "invite", "member", None, "sha-1", NOW, NOW, None, None),  # 토큰 해시 중복
+        ("inv-11", "invite", "member", None, "sha-11", NOW, NOW, NOW, None),  # 사용 시각·사용자는 함께
+        ("inv-12", "invite", "member", None, "sha-12", NOW, NOW, None, "mem-00000002"),  # 사용 시각·사용자는 함께
+        ("inv-13", "reset", None, "mem-nope", "sha-13", NOW, NOW, None, None),  # 없는 멤버
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+
+
+def test_v11_notification_channel_and_member_references(conn):
+    _v11_base(conn)
+    insert = ("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+              " payload_json, state, created_at, channel, recipient_member_id)"
+              " VALUES (?, 's1', 'human_request', 't1', ?, 'c', '{}', 'pending', ?, ?, ?)")
+    conn.execute("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+                 " payload_json, state, created_at) VALUES ('ntf-1', 's1', 'human_request', 't1', 'k1', 'c', '{}',"
+                 " 'pending', ?)", (NOW,))
+    assert tuple(conn.execute("SELECT channel, recipient_member_id FROM notifications").fetchone()) == ("shared", None)
+    conn.execute(insert, ("ntf-2", "k2", NOW, "personal", "mem-00000002"))
+    for params in (
+        ("ntf-3", "k3", NOW, "email", None),  # 경로 허용 값 밖
+        ("ntf-4", "k4", NOW, None, None),  # 경로 필수
+        ("ntf-5", "k5", NOW, "shared", "mem-nope"),  # 없는 멤버
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+
+    conn.execute("INSERT INTO connect_codes (code, issued_at, expires_at, issued_by_member_id) VALUES"
+                 " ('code-1', ?, ?, 'mem-00000001')", (NOW, NOW))
+    conn.execute("INSERT INTO connectors (connector_id, token_sha256, created_at, owner_member_id) VALUES"
+                 " ('conn-1', 'h', ?, 'mem-00000001')", (NOW,))
+    conn.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status,"
+                 " status_reason, source_type, created_at, updated_at, requested_by_member_id) VALUES ('wi-1', 's1', 1,"
+                 " 't', 'r', 'bug_fix', '대기', '', 'manual', ?, ?, 'mem-00000002')", (NOW, NOW))
+    for sql in (
+        "UPDATE work_items SET requested_by_member_id = 'mem-nope'",
+        "UPDATE connect_codes SET issued_by_member_id = 'mem-nope'",
+        "UPDATE connectors SET owner_member_id = 'mem-nope'",
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(sql)
+
+
+def test_v10_fixture_is_the_phase14_schema(db_path):
+    c = _v10_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 10
+    assert _table_names(c) - {"sqlite_sequence"} == V10_TABLES | {"schema_version"}
+    for table, columns in V11_COLUMNS.items():
+        assert not columns & _columns(c, table), table
+    c.close()
+
+
+def test_migrates_v10_to_v11_preserving_rows(db_path):
+    c = _v10_db(db_path)
+    columns = _column_lists(c, V10_TABLES)
+    before = _dump(c, V10_TABLES)
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    assert _dump(c, V10_TABLES, columns) == before  # 기존 행 수·열 값은 그대로
+    for table, new in V11_COLUMNS.items():
+        values = {tuple(r) for r in c.execute(f"SELECT {', '.join(sorted(new - {'channel'}))} FROM {table}")}
+        assert values <= {(None,) * len(new - {"channel"})}, table  # 새 칸은 NULL
+    assert [r[0] for r in c.execute("SELECT channel FROM notifications")] == ["shared"]
+    assert c.execute("SELECT COUNT(*) FROM login_sessions").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(*) FROM member_invites").fetchone()[0] == 0
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_v11_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v10_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    before = _dump(c, V10_TABLES)
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 10
+    assert _table_names(c) - {"sqlite_sequence"} == V10_TABLES | {"schema_version"}
+    for table, columns in V11_COLUMNS.items():
+        assert not columns & _columns(c, table), table
+    assert c.execute("SELECT name FROM sqlite_master WHERE name = 'members_session_email'").fetchone() is None
+    assert _dump(c, V10_TABLES) == before
+    assert not c.in_transaction
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001' WHERE task_id = 't1'")
+    init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    c.close()
+
+
+def test_fresh_schema_matches_v10_migrated_schema(tmp_path):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = _v10_db(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    assert _table_names(fresh) == _table_names(migrated)
+    for table in TABLES:
+        cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid"
+        assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
+        assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    assert _indexes(fresh) == _indexes(migrated)
+    fresh.close()
+    migrated.close()
+
+
+@pytest.mark.parametrize("make", [_v4_db, _v5_db, _v6_db, _v7_db, _v8_db, _v9_db])
+def test_migrates_v4_to_v9_all_the_way_to_v11(db_path, make):
+    c = make(db_path)
+    c.close()
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 11
+    assert TABLES <= _table_names(c)
+    for table, columns in V11_COLUMNS.items():
+        assert columns <= _columns(c, table), table
+    assert c.execute("SELECT COUNT(*) FROM notifications WHERE channel != 'shared'").fetchone()[0] == 0
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    c.close()

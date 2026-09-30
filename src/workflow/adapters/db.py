@@ -12,9 +12,10 @@ from pathlib import Path
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.adapters.repo import ensure_first_admin, seed_default_field_mappings, work_item_facts
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
+from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -371,6 +372,63 @@ ALTER TABLE tasks ADD COLUMN work_item_id TEXT REFERENCES work_items(work_item_i
 CREATE INDEX IF NOT EXISTS ix_tasks_work_item ON tasks(work_item_id, created_at);
 """
 
+# v11 (phase 15, ADR-0021): 계정·로그인 세션·초대. ARCHITECTURE "팀 — phase 15" 스키마 v11 표.
+# 기존 표는 재생성하지 않는다 — 칸은 빈 DB·10 → 11 모두 ALTER 로 더한다. 토큰은 sha256, 비밀번호는 scrypt 해시만.
+# ALTER 로 걸 수 없는 표 단위 조건(email·password_hash 동시, personal → recipient_member_id)은 repo 가 지킨다.
+NOTIFICATION_CHANNELS = ("shared", "personal")
+INVITE_PURPOSES = ("invite", "reset")
+
+_V11_TABLES = f"""
+-- email 은 normalize_email 결과(소문자)만. 계정 = email 과 password_hash 가 둘 다 있음. 활성 = disabled_at IS NULL.
+ALTER TABLE members ADD COLUMN email TEXT;
+ALTER TABLE members ADD COLUMN password_hash TEXT;
+ALTER TABLE members ADD COLUMN disabled_at TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS members_session_email ON members(session_id, email) WHERE email IS NOT NULL;
+
+-- 로그인 세션. 쿠키 원문은 저장하지 않는다. 만료 행은 지우지 않는다.
+CREATE TABLE IF NOT EXISTS login_sessions (
+  login_id     TEXT PRIMARY KEY,                            -- 'lgn-' + 12 hex
+  session_id   TEXT NOT NULL REFERENCES sessions(session_id),
+  member_id    TEXT NOT NULL REFERENCES members(member_id),
+  token_sha256 TEXT NOT NULL UNIQUE,
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  revoked_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_login_sessions_member ON login_sessions(member_id);
+
+-- 초대 링크(역할만, 가입 때 멤버가 생긴다)와 재설정 링크(기존 멤버). 유효 = 미사용·미취소·미만료.
+CREATE TABLE IF NOT EXISTS member_invites (
+  invite_id            TEXT PRIMARY KEY,                    -- 'inv-' + 12 hex
+  session_id           TEXT NOT NULL REFERENCES sessions(session_id),
+  purpose              TEXT NOT NULL CHECK (purpose IN ({_in(INVITE_PURPOSES)})),
+  role                 TEXT CHECK (role IS NULL OR role IN ({_in(ROLES)})),
+  member_id            TEXT REFERENCES members(member_id),
+  token_sha256         TEXT NOT NULL UNIQUE,
+  created_by_member_id TEXT REFERENCES members(member_id),
+  created_at           TEXT NOT NULL,
+  expires_at           TEXT NOT NULL,
+  used_at              TEXT,
+  used_by_member_id    TEXT REFERENCES members(member_id),
+  revoked_at           TEXT,
+  CHECK ((purpose = 'invite' AND role IS NOT NULL AND member_id IS NULL)
+         OR (purpose = 'reset' AND role IS NULL AND member_id IS NOT NULL)),
+  CHECK ((used_at IS NULL) = (used_by_member_id IS NULL))
+);
+
+-- 맡긴 사람·응답한 멤버·알림 받는 사람·연결 코드 발급자·러너 소유자. NULL = v11 이전(기록 없음).
+ALTER TABLE work_items ADD COLUMN requested_by_member_id TEXT REFERENCES members(member_id);
+ALTER TABLE human_responses ADD COLUMN member_id TEXT REFERENCES members(member_id);
+ALTER TABLE notifications ADD COLUMN recipient_member_id TEXT REFERENCES members(member_id);
+ALTER TABLE notifications ADD COLUMN channel TEXT NOT NULL DEFAULT 'shared'
+  CHECK (channel IN ({_in(NOTIFICATION_CHANNELS)}));
+CREATE INDEX IF NOT EXISTS ix_notifications_recipient ON notifications(recipient_member_id);
+ALTER TABLE connect_codes ADD COLUMN issued_by_member_id TEXT REFERENCES members(member_id);
+ALTER TABLE connectors ADD COLUMN owner_member_id TEXT REFERENCES members(member_id);
+"""
+
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -579,7 +637,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -797,8 +855,18 @@ def _migrate_9_to_10(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 10")
 
 
+def _migrate_10_to_11(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 칸·표만 더한다 — 기존 행은 바꾸지 않는다(새 칸 NULL, 알림 경로 `shared`).
+    기존 첫 관리자는 계정이 없으므로 업그레이드 뒤 첫 접속이 첫 설정이다."""
+    for statement in _statements(_V11_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 11")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~9 는 10 까지 차례로(4 → 5 → 6 → 7 → 8 → 9 → 10) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~10 은 11 까지 차례로(4 → 5 → … → 10 → 11) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
@@ -811,9 +879,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] in (4, 5, 6, 7, 8, 9):
+        elif row[0] in (4, 5, 6, 7, 8, 9, 10):
             steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
-                     _migrate_9_to_10)
+                     _migrate_9_to_10, _migrate_10_to_11)
             for step in steps[row[0] - 4:]:
                 step(conn)
         elif row[0] != SCHEMA_VERSION:

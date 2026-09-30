@@ -246,7 +246,7 @@ def test_help_says_stop_services_before_restore(capsys):
     assert "멈춘" in capsys.readouterr().out
 
 
-# --- phase 13·14: 셀프호스트 모양 v8 DB 사본 → v10 + 백업 왕복 (ADR-0019·0020, SELFHOST "업그레이드") -----------
+# --- phase 13·14·15: 셀프호스트 모양 v8 DB 사본 → v11 + 백업 왕복 (ADR-0019·0020, SELFHOST "업그레이드") -----------
 
 V8_NOW = "2026-09-28T00:00:00Z"
 LEGACY_KINDS = ("diagnosis", "code_change")
@@ -329,7 +329,7 @@ def _version_and_kinds(db_path: Path) -> tuple[int, list[str]]:
         conn.close()
 
 
-def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsys):
+def test_selfhost_v8_copy_upgrades_to_v11_and_backups_round_trip(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     env = _env(src)
@@ -343,7 +343,7 @@ def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsy
     assert backup.main(["list"], env=env) == 0
     assert capsys.readouterr().out.strip().endswith("schema 8")
 
-    # 2) v10 으로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로, 이슈마다 수정·검토가 각자 업무
+    # 2) v11 로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로, 이슈마다 수정·검토가 각자 업무
     #    (후속 연결 없음), 첫 관리자·기본 매핑 하나
     conn = connect(src / "central.sqlite")
     init_schema(conn)
@@ -352,8 +352,9 @@ def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsy
     assert v9_counts == {
         **v8_counts, "kinds": 2, "succession_rules": 1,
         "work_items": 6, "work_item_links": 0, "members": 1, "field_mappings": 1, "work_item_events": 0,
+        "login_sessions": 0, "member_invites": 0,
     }
-    assert _version_and_kinds(src / "central.sqlite") == (10, ["bug_fix", "code_review"])
+    assert _version_and_kinds(src / "central.sqlite") == (11, ["bug_fix", "code_review"])
 
     # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
     assert backup.main(["create"], env=env, now=lambda: T2) == 0
@@ -480,7 +481,7 @@ def _works(db_path: Path) -> list[tuple]:
         conn.close()
 
 
-def test_selfhost_v9_copy_upgrades_to_v10_work_items_and_backups_round_trip(tmp_path, capsys):
+def test_selfhost_v9_copy_upgrades_to_v11_work_items_and_backups_round_trip(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     env = _env(src)
@@ -494,14 +495,14 @@ def test_selfhost_v9_copy_upgrades_to_v10_work_items_and_backups_round_trip(tmp_
     assert backup.main(["list"], env=env) == 0
     assert capsys.readouterr().out.strip().endswith("schema 9")
 
-    # 2) v10 — 이슈 하나 = 업무 하나(검토 단계는 수정 업무에), 키는 생성 순, 기존 표 행 수·기준선 그대로
+    # 2) v11 — 이슈 하나 = 업무 하나(검토 단계는 수정 업무에), 키는 생성 순, 기존 표 행 수·기준선 그대로
     conn = connect(src / "central.sqlite")
     init_schema(conn)
     conn.close()
     v10_counts = _counts(src / "central.sqlite")
     assert v10_counts == {
         **v9_counts, "work_items": 21, "work_item_links": 0, "members": 1, "field_mappings": 1,
-        "work_item_events": 0,
+        "work_item_events": 0, "login_sessions": 0, "member_invites": 0,
     }
     works = _works(src / "central.sqlite")
     assert [w[0] for w in works] == list(range(1, 22))
