@@ -25,11 +25,13 @@ from workflow.adapters.errors import (
     DuplicateKind,
     DuplicateRule,
     DuplicateStartKey,
+    EmailTaken,
     EventConflict,
     HashMismatch,
     InvalidTransition,
     KindInUse,
     KindProtected,
+    LastAdmin,
     NotFound,
     RegistrationTaken,
     ResponseConflict,
@@ -65,6 +67,7 @@ from workflow.contracts.v1 import (
     format_work_key,
 )
 from workflow.domain import status as domain_status
+from workflow.domain import team
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
@@ -464,6 +467,270 @@ def list_members(conn: Connection, session_id: str) -> list[Row]:
     return conn.execute(
         "SELECT * FROM members WHERE session_id = ? ORDER BY created_at, member_id", (session_id,)
     ).fetchall()
+
+
+# --- 계정·로그인 세션·초대·재설정 (ARCHITECTURE "팀 — phase 15") -----------------------------------
+
+LOGIN_TOUCH_SECONDS = 300
+INVITE_TTL_DAYS = 7
+RESET_TTL_HOURS = 24
+
+# 로그인 세션 조회가 돌려주는 멤버 칸 — 비밀번호 해시는 싣지 않는다.
+_LOGIN_MEMBER_COLUMNS = "m.member_id, m.session_id, m.display_name, m.role, m.email, m.created_at, m.disabled_at"
+_INVITE_COLUMNS = ("invite_id, session_id, purpose, role, member_id, created_by_member_id, created_at, expires_at,"
+                   " used_at, used_by_member_id, revoked_at")
+
+
+def get_member(conn: Connection, session_id: str, member_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM members WHERE session_id = ? AND member_id = ?", (session_id, member_id))
+
+
+def find_member_by_email(conn: Connection, session_id: str, email: str) -> Row | None:
+    """정규화한 이메일로 찾는다. 비활성 멤버도 돌려준다. 형식이 틀리면 None."""
+    normalized = team.normalize_email(email)
+    if normalized is None:
+        return None
+    return _one(conn, "SELECT * FROM members WHERE session_id = ? AND email = ?", (session_id, normalized))
+
+
+def needs_first_setup(conn: Connection, session_id: str) -> bool:
+    """워크스페이스 행이 없거나 이메일·비밀번호가 있는 활성 멤버가 0."""
+    if get_session(conn, session_id) is None:
+        return True
+    return _one(conn, "SELECT 1 FROM members WHERE session_id = ? AND email IS NOT NULL"
+                      " AND password_hash IS NOT NULL AND disabled_at IS NULL LIMIT 1", (session_id,)) is None
+
+
+def _require_member(conn: Connection, session_id: str, member_id: str) -> Row:
+    row = get_member(conn, session_id, member_id)
+    if row is None:
+        raise NotFound(f"member {member_id}")
+    return row
+
+
+def _write_credentials(conn: Connection, member_id: str, email: str, password_hash: str, now: str) -> None:
+    """이메일·비밀번호 해시를 함께 쓰고 그 멤버 로그인 세션을 전부 폐기한다. 자체 BEGIN 없음."""
+    try:
+        conn.execute("UPDATE members SET email = ?, password_hash = ? WHERE member_id = ?",
+                     (email, password_hash, member_id))
+    except sqlite3.IntegrityError as exc:
+        raise EmailTaken(email) from exc
+    revoke_login_sessions(conn, member_id, now=now)
+
+
+def _normalized_email(email: str) -> str:
+    normalized = team.normalize_email(email)
+    if normalized is None:
+        raise ValueError("email")
+    return normalized
+
+
+def set_member_credentials(
+    conn: Connection, session_id: str, member_id: str, *, email: str, password_hash: str,
+    display_name: str | None = None, now: str,
+) -> None:
+    """계정(이메일·비밀번호 해시)을 채우거나 바꾼다. 같은 이메일이 있으면 `EmailTaken`. 그 멤버 로그인 세션 전부 폐기."""
+    normalized = _normalized_email(email)
+    with _tx(conn):
+        _require_member(conn, session_id, member_id)
+        _write_credentials(conn, member_id, normalized, password_hash, now)
+        if display_name is not None:
+            conn.execute("UPDATE members SET display_name = ? WHERE member_id = ?", (display_name, member_id))
+
+
+def set_member_display_name(conn: Connection, session_id: str, member_id: str, display_name: str, *,
+                            now: str) -> None:
+    cur = conn.execute("UPDATE members SET display_name = ? WHERE session_id = ? AND member_id = ?",
+                       (display_name, session_id, member_id))
+    _require_rowcount(cur, f"member {member_id}")
+
+
+def _require_active_admin(conn: Connection, session_id: str) -> None:
+    if _one(conn, "SELECT 1 FROM members WHERE session_id = ? AND role = 'admin' AND disabled_at IS NULL LIMIT 1",
+            (session_id,)) is None:
+        raise LastAdmin(session_id)
+
+
+def set_member_role(conn: Connection, session_id: str, member_id: str, role: str, *, now: str) -> None:
+    """역할 변경. 활성 관리자가 0 이 되면 `LastAdmin`. 로그인 세션은 그대로(권한은 요청마다 DB 로 판정)."""
+    if role not in team.ROLES:
+        raise ValueError(f"role {role}")
+    with _tx(conn):
+        _require_member(conn, session_id, member_id)
+        conn.execute("UPDATE members SET role = ? WHERE member_id = ?", (role, member_id))
+        _require_active_admin(conn, session_id)
+
+
+def disable_member(conn: Connection, session_id: str, member_id: str, *, now: str) -> None:
+    """비활성화 + 로그인 세션 전부 폐기. 이미 비활성이면 그대로(멱등). 활성 관리자가 0 이 되면 `LastAdmin`."""
+    with _tx(conn):
+        if _require_member(conn, session_id, member_id)["disabled_at"] is not None:
+            return
+        conn.execute("UPDATE members SET disabled_at = ? WHERE member_id = ?", (now, member_id))
+        _require_active_admin(conn, session_id)
+        revoke_login_sessions(conn, member_id, now=now)
+
+
+def enable_member(conn: Connection, session_id: str, member_id: str, *, now: str) -> None:
+    """다시 활성화(멱등). 폐기된 로그인 세션은 되살리지 않는다."""
+    cur = conn.execute("UPDATE members SET disabled_at = NULL WHERE session_id = ? AND member_id = ?",
+                       (session_id, member_id))
+    _require_rowcount(cur, f"member {member_id}")
+
+
+def create_login_session(conn: Connection, session_id: str, member_id: str, *, now: str, days: int) -> str:
+    """쿠키 원문을 한 번 돌려준다. DB 에는 sha256 만."""
+    token = secrets.token_urlsafe(32)
+    conn.execute(
+        "INSERT INTO login_sessions (login_id, session_id, member_id, token_sha256, created_at, expires_at,"
+        " last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (f"lgn-{secrets.token_hex(6)}", session_id, member_id, _sha256(token), now,
+         _plus_seconds(now, days * 86400), now),
+    )
+    return token
+
+
+def member_for_login_token(conn: Connection, token: str, *, now: str) -> Row | None:
+    """유효한 로그인 세션(미폐기·미만료)의 활성 멤버 칸 + `login_id`. `last_seen_at` 은 5분보다 오래됐을 때만 쓴다."""
+    row = _one(
+        conn,
+        f"SELECT {_LOGIN_MEMBER_COLUMNS}, ls.login_id, ls.expires_at AS login_expires_at,"
+        " ls.last_seen_at AS login_last_seen_at FROM login_sessions ls"
+        " JOIN members m ON m.member_id = ls.member_id AND m.session_id = ls.session_id"
+        " WHERE ls.token_sha256 = ? AND ls.revoked_at IS NULL AND m.disabled_at IS NULL",
+        (_sha256(token),),
+    )
+    if row is None or _parse(now) >= _parse(row["login_expires_at"]):
+        return None
+    if (_parse(now) - _parse(row["login_last_seen_at"])).total_seconds() > LOGIN_TOUCH_SECONDS:
+        conn.execute("UPDATE login_sessions SET last_seen_at = ? WHERE login_id = ?", (now, row["login_id"]))
+    return row
+
+
+def revoke_login_session(conn: Connection, token: str, *, now: str) -> bool:
+    cur = conn.execute("UPDATE login_sessions SET revoked_at = ? WHERE token_sha256 = ? AND revoked_at IS NULL",
+                       (now, _sha256(token)))
+    return cur.rowcount > 0
+
+
+def revoke_login_sessions(conn: Connection, member_id: str, *, now: str) -> int:
+    """그 멤버의 로그인 세션 전부 폐기. 자체 BEGIN 없음 — 호출자 트랜잭션 안에서도 쓴다."""
+    cur = conn.execute("UPDATE login_sessions SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL",
+                       (now, member_id))
+    return cur.rowcount
+
+
+def _insert_link(conn: Connection, session_id: str, *, purpose: str, role: str | None, member_id: str | None,
+                 created_by_member_id: str | None, now: str, ttl_seconds: int) -> tuple[str, str]:
+    invite_id, token = f"inv-{secrets.token_hex(6)}", secrets.token_urlsafe(32)
+    conn.execute(
+        "INSERT INTO member_invites (invite_id, session_id, purpose, role, member_id, token_sha256,"
+        " created_by_member_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (invite_id, session_id, purpose, role, member_id, _sha256(token), created_by_member_id, now,
+         _plus_seconds(now, ttl_seconds)),
+    )
+    return invite_id, token
+
+
+def issue_invite(conn: Connection, session_id: str, *, role: str, created_by_member_id: str | None,
+                 now: str) -> tuple[str, str]:
+    """(invite_id, 토큰 원문). 7일 유효."""
+    return _insert_link(conn, session_id, purpose="invite", role=role, member_id=None,
+                        created_by_member_id=created_by_member_id, now=now, ttl_seconds=INVITE_TTL_DAYS * 86400)
+
+
+def issue_reset_link(conn: Connection, session_id: str, member_id: str, *, created_by_member_id: str | None,
+                     now: str) -> tuple[str, str]:
+    """(invite_id, 토큰 원문). 24시간 유효. 그 멤버의 쓰지 않은 재설정 링크는 같은 트랜잭션에서 취소한다."""
+    with _tx(conn):
+        _require_member(conn, session_id, member_id)
+        conn.execute("UPDATE member_invites SET revoked_at = ? WHERE purpose = 'reset' AND member_id = ?"
+                     " AND used_at IS NULL AND revoked_at IS NULL", (now, member_id))
+        return _insert_link(conn, session_id, purpose="reset", role=None, member_id=member_id,
+                            created_by_member_id=created_by_member_id, now=now,
+                            ttl_seconds=RESET_TTL_HOURS * 3600)
+
+
+def invite_for_token(conn: Connection, token: str, *, purpose: str, now: str) -> Row | None:
+    """유효한(미사용·미취소·미만료) 링크만. 재설정 링크는 대상 멤버가 활성이고 계정이 있을 때만."""
+    row = _one(
+        conn,
+        f"SELECT {_INVITE_COLUMNS} FROM member_invites WHERE token_sha256 = ? AND purpose = ?"
+        " AND used_at IS NULL AND revoked_at IS NULL",
+        (_sha256(token), purpose),
+    )
+    if row is None or _parse(now) >= _parse(row["expires_at"]):
+        return None
+    if purpose == "reset" and _one(
+        conn, "SELECT 1 FROM members WHERE member_id = ? AND session_id = ? AND disabled_at IS NULL"
+              " AND email IS NOT NULL", (row["member_id"], row["session_id"])
+    ) is None:
+        return None
+    return row
+
+
+def _mark_link_used(conn: Connection, invite_id: str, member_id: str, now: str) -> None:
+    """`used_at IS NULL` 조건부 UPDATE — 한 번만 성공한다."""
+    cur = conn.execute(
+        "UPDATE member_invites SET used_at = ?, used_by_member_id = ?"
+        " WHERE invite_id = ? AND used_at IS NULL AND revoked_at IS NULL",
+        (now, member_id, invite_id),
+    )
+    _require_rowcount(cur, "invite")
+
+
+def accept_invite(conn: Connection, token: str, *, email: str, display_name: str, password_hash: str,
+                  now: str) -> str:
+    """초대로 새 멤버(초대의 역할)를 만든다. 무효 링크 `NotFound`, 이메일 중복 `EmailTaken`(링크는 그대로)."""
+    normalized = _normalized_email(email)
+    member_id = f"mem-{secrets.token_hex(4)}"
+    with _tx(conn):
+        invite = invite_for_token(conn, token, purpose="invite", now=now)
+        if invite is None:
+            raise NotFound("invite")
+        try:
+            conn.execute(
+                "INSERT INTO members (member_id, session_id, display_name, role, created_at, email, password_hash)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (member_id, invite["session_id"], display_name, invite["role"], now, normalized, password_hash),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise EmailTaken(normalized) from exc
+        _mark_link_used(conn, invite["invite_id"], member_id, now)
+    return member_id
+
+
+def use_reset_link(conn: Connection, token: str, *, password_hash: str, now: str) -> str:
+    """재설정 링크로 비밀번호를 바꾸고 그 멤버 로그인 세션을 전부 폐기한다. 무효·비활성 멤버는 `NotFound`."""
+    with _tx(conn):
+        link = invite_for_token(conn, token, purpose="reset", now=now)
+        if link is None:
+            raise NotFound("reset link")
+        member_id = link["member_id"]
+        _mark_link_used(conn, link["invite_id"], member_id, now)
+        conn.execute("UPDATE members SET password_hash = ? WHERE member_id = ?", (password_hash, member_id))
+        revoke_login_sessions(conn, member_id, now=now)
+    return member_id
+
+
+def revoke_invite(conn: Connection, session_id: str, invite_id: str, *, now: str) -> None:
+    """쓰지 않은 초대·재설정 링크 취소. 없거나 이미 쓰였거나 취소됐으면 `NotFound`."""
+    cur = conn.execute(
+        "UPDATE member_invites SET revoked_at = ? WHERE session_id = ? AND invite_id = ?"
+        " AND used_at IS NULL AND revoked_at IS NULL",
+        (now, session_id, invite_id),
+    )
+    _require_rowcount(cur, f"invite {invite_id}")
+
+
+def list_open_invites(conn: Connection, session_id: str, *, now: str) -> list[Row]:
+    """쓰지 않은·유효한 초대(재설정 링크 제외), 발급 순. 토큰 해시는 싣지 않는다."""
+    rows = conn.execute(
+        f"SELECT {_INVITE_COLUMNS} FROM member_invites WHERE session_id = ? AND purpose = 'invite'"
+        " AND used_at IS NULL AND revoked_at IS NULL ORDER BY created_at, invite_id",
+        (session_id,),
+    ).fetchall()
+    return [r for r in rows if _parse(now) < _parse(r["expires_at"])]
 
 
 def get_session(conn: Connection, session_id: str) -> Row | None:
