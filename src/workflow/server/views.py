@@ -737,13 +737,15 @@ DIRECT_STOP_LABELS = {"stopped": "그만둠", "handed_to_agent": "에이전트�
 
 
 def _event_line(event: Row, names: dict[str, str]) -> str:
-    """업무 이벤트 한 줄. 모르는 종류(뒤 step 이 더하는 것)는 코드 그대로. `names` 는 멤버 id → 표시 이름."""
+    """업무 이벤트 한 줄. 모르는 종류는 코드 그대로. `names` 는 멤버 id → 표시 이름."""
     data = json.loads(event["data_json"])
     if event["type"] == "direct_started":
         return f"직접 작업 시작 · {names.get(data['member_id'], data['member_id'])} · {data['branch']}"
     if event["type"] == "direct_stopped":
         reason = DIRECT_STOP_LABELS.get(data["reason"], data["reason"])
         return f"직접 작업 끝 · {names.get(data['member_id'], data['member_id'])} · {reason}"
+    if event["type"] == "pull_request_linked":
+        return f"PR 연결 · #{data['pr_number']} · {data['head_branch']}"
     if event["type"] == "status_changed":
         return f"상태 {data['to']}" + (f" · {data['reason']}" if data.get("reason") else "")
     if event["type"] == "assigned":

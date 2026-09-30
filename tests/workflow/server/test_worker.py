@@ -1102,6 +1102,9 @@ class _CountingGitHub:
     def get_issue(self, repo_name, number):
         raise AssertionError("선택 이슈 없음")
 
+    def list_pulls(self, repo_name, cursor):
+        return []
+
 
 def _github_source(source_id: str, repository: str, *, enabled: bool = True) -> GitHubSourceConfig:
     return GitHubSourceConfig(

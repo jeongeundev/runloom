@@ -1223,6 +1223,9 @@ class RecordingGitHub:
     def get_issue(self, repo_name, number):
         raise GitHubNotFound("GET: HTTP 404")
 
+    def list_pulls(self, repo_name, cursor):
+        return []
+
     def list_comments(self, repo_name, number, cursor):
         return CommentPage(tuple(
             IssueComment(i, b, 1, "bot", NOW) for i, (n, b) in sorted(self.comments.items()) if n == number

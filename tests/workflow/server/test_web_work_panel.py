@@ -373,3 +373,42 @@ def test_direct_work_requires_login(client, conn, cycle, issue_task):
         response = client.post(path, follow_redirects=False)
         assert response.status_code == 303 and response.headers["location"] == "/login"
     assert repo.get_work_item(conn, SESSION, work_id(conn, issue_task))["direct_member_id"] is None
+
+
+# --- 감지 PR (phase 16 step 9 — PR 신호) --------------------------------------------------------------
+
+
+def _detect(conn, work_item_id: str, *, state: str = "open", merged_at: str | None = None) -> None:
+    repo.upsert_work_pull_request(
+        conn, session_id=SESSION, work_item_id=work_item_id, source_id="ghs-1a2b3c4d",
+        repository_full_name="acme/billing", pr_number=77, title="<script>x</script> RUN-1 고침",
+        head_branch="RUN-1-fix", state=state, draft=False, author_login="kim-dev", merged_at=merged_at,
+        pr_updated_at="2026-10-06T13:00:00Z", matched_in="head", now=NOW,
+    )
+
+
+def test_detected_pr_shows_in_head_timeline_and_list_marked_detected(admin, conn, issue_task):
+    _detect(conn, work_id(conn, issue_task))
+    text = panel(admin)
+    props = section(text, "props")
+    assert 'href="https://github.com/acme/billing/pull/77"' in props and "data-detected" in props
+    timeline = section(text, "timeline")
+    assert 'data-pull-request="open"' in timeline and "data-detected" in timeline
+    assert "&lt;script&gt;x&lt;/script&gt; RUN-1 고침" in timeline and "<script>x</script>" not in text
+    assert "PR 연결 · #77 · RUN-1-fix" in text.split("data-work-events", 1)[1].split("</ul>", 1)[0]
+    assert "PR · 검토" in text
+
+    listing = admin.get("/tasks").text
+    row = listing.split('data-work-key="RUN-1"', 1)[1].split("</tr>", 1)[0]
+    assert "PR #77" in row
+
+
+def test_detected_merge_completes_work_in_panel_and_list(admin, conn, issue_task):
+    work = work_id(conn, issue_task)
+    _detect(conn, work, state="merged", merged_at="2026-10-06T13:00:00Z")
+    assert repo.get_work_item(conn, SESSION, work)["status"] == "완료"
+    text = panel(admin)
+    assert 'data-pull-request="merged"' in section(text, "timeline")
+    assert "PR 병합 — #77" in text
+    listing = admin.get("/tasks?closed=all").text
+    assert "PR #77" in listing.split('data-work-key="RUN-1"', 1)[1].split("</tr>", 1)[0]

@@ -213,7 +213,7 @@ def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[Map
 
 def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = True) -> WorkItemFacts:
     """업무 상태 판정(`domain/work_status.work_status`)의 재료를 DB 에서 모은다. 사실을 모으는 SQL 은 여기 한 곳.
-    `direct_work=False` 는 직접 작업 칸(v12)이 아직 없는 스키마 — v9 → v10 마이그레이션만 쓴다."""
+    `direct_work=False` 는 직접 작업 칸·감지 PR 표(v12)가 아직 없는 스키마 — v9 → v10 마이그레이션만 쓴다."""
     item = _one(conn, "SELECT status, status_reason, assignee_type FROM work_items WHERE work_item_id = ?",
                 (work_item_id,))
     if item is None:
@@ -235,6 +235,10 @@ def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = 
     ).fetchall()
     pr = _one(conn, "SELECT p.state, p.pr_number FROM task_pull_requests p JOIN tasks t ON t.task_id = p.task_id"
                     " WHERE t.work_item_id = ? ORDER BY p.created_at DESC, p.task_id DESC LIMIT 1", (work_item_id,))
+    detected = conn.execute(
+        "SELECT state, pr_number FROM work_pull_requests WHERE work_item_id = ? ORDER BY pr_updated_at DESC, id DESC",
+        (work_item_id,),
+    ).fetchall() if direct_work else []
     # 지시 전 = 원본 소스가 all_open 이고 원본 이슈에 지시 기록이 없음
     undelegated = _one(
         conn,
@@ -257,6 +261,7 @@ def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = 
         open_requests=tuple(RequestFact(code=r["code"], question=r["question"]) for r in requests),
         pull_request=PullRequestFact(state=pr["state"], number=pr["pr_number"]) if pr else None,
         direct_member_name=direct["display_name"] if direct else None,
+        detected_pull_requests=tuple(PullRequestFact(state=d["state"], number=d["pr_number"]) for d in detected),
     )
 
 
@@ -3130,6 +3135,72 @@ def list_work_pull_requests(conn: Connection, work_item_id: str) -> list[Row]:
     return conn.execute(
         "SELECT * FROM work_pull_requests WHERE work_item_id = ? ORDER BY pr_updated_at DESC, id DESC", (work_item_id,)
     ).fetchall()
+
+
+def get_work_pull_request(conn: Connection, session_id: str, repository_full_name: str, pr_number: int) -> Row | None:
+    return _one(conn, "SELECT * FROM work_pull_requests WHERE session_id = ? AND repository_full_name = ?"
+                      " AND pr_number = ?", (session_id, repository_full_name, pr_number))
+
+
+def upsert_work_pull_request(
+    conn: Connection, *, session_id: str, work_item_id: str, source_id: str, repository_full_name: str,
+    pr_number: int, title: str, head_branch: str, state: str, draft: bool, author_login: str | None,
+    merged_at: str | None, pr_updated_at: str, matched_in: str, now: str,
+) -> bool:
+    """감지 PR 한 건(한 트랜잭션 — 서버 모듈은 트랜잭션을 열지 않는다). 없으면 넣고 `pull_request_linked` 이벤트, 있으면
+    제목·head·상태·draft·병합 시각·`pr_updated_at` 만 갱신한다(업무는 처음 붙은 업무 그대로, `merged` 는 되돌리지 않음).
+    그 업무의 상태를 다시 계산한다. 처음 붙으면 True."""
+    with _tx(conn):
+        row = get_work_pull_request(conn, session_id, repository_full_name, pr_number)
+        if row is None:
+            conn.execute(
+                "INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+                " title, pr_url, head_branch, state, draft, author_login, merged_at, pr_updated_at, created_at,"
+                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, work_item_id, source_id, repository_full_name, pr_number, title,
+                 f"https://github.com/{repository_full_name}/pull/{pr_number}", head_branch, state, int(draft),
+                 author_login, merged_at, pr_updated_at, now, now),
+            )
+            _work_item_event(conn, work_item_id, session_id, "pull_request_linked",
+                             {"repository_full_name": repository_full_name, "pr_number": pr_number,
+                              "head_branch": head_branch, "matched_in": matched_in}, now)
+        else:
+            work_item_id = row["work_item_id"]
+            if row["state"] == "merged":
+                state, merged_at = "merged", row["merged_at"]
+            conn.execute(
+                "UPDATE work_pull_requests SET title = ?, head_branch = ?, state = ?, draft = ?, merged_at = ?,"
+                " pr_updated_at = ?, updated_at = ? WHERE id = ?",
+                (title, head_branch, state, int(draft), merged_at, pr_updated_at, now, row["id"]),
+            )
+        refresh_work_status(conn, work_item_id, now=now)
+        return row is None
+
+
+def is_runloom_pull_request(
+    conn: Connection, session_id: str, repository_full_name: str, *, pr_number: int, head_branch: str
+) -> bool:
+    """Runloom 이 연 PR 인지 — 같은 워크스페이스 `task_pull_requests` 에 같은 저장소의 같은 번호가 있거나, 같은 head 가
+    있다(번호를 기록하기 전 대기열 행). 이런 PR 은 감지 PR 로 저장하지 않는다."""
+    return _one(
+        conn,
+        "SELECT 1 FROM task_pull_requests WHERE session_id = ? AND repository_full_name = ?"
+        " AND (pr_number = ? OR head_branch = ?)",
+        (session_id, repository_full_name, pr_number, head_branch),
+    ) is not None
+
+
+def get_pull_cursor(conn: Connection, source_id: str) -> str | None:
+    """PR 읽기 커서(마지막으로 본 PR 의 가장 늦은 `updated_at`). None = 아직 읽지 않음."""
+    row = _one(conn, "SELECT pull_cursor FROM github_sources WHERE source_id = ?", (source_id,))
+    if row is None:
+        raise NotFound(f"source {source_id}")
+    return row["pull_cursor"]
+
+
+def set_pull_cursor(conn: Connection, source_id: str, cursor: str, *, now: str) -> None:
+    cur = conn.execute("UPDATE github_sources SET pull_cursor = ? WHERE source_id = ?", (cursor, source_id))
+    _require_rowcount(cur, f"source {source_id}")
 
 
 def pull_requests_due(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:

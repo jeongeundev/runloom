@@ -55,7 +55,7 @@
       </td></tr>
       <tr><th>종류</th><td>{{ w.kind_label }}</td></tr>
       {% if panel.pull_request %}{% set pr = panel.pull_request %}
-      <tr><th>PR</th><td data-pull-request="{{ pr.state }}">{{ pr.label }}{% if pr.url %} · <a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pr.number }}</a>{% if pr.draft %} (초안){% endif %}{% endif %}</td></tr>
+      <tr><th>PR</th><td data-pull-request="{{ pr.state }}">{{ pr.label }}{% if pr.url %} · <a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pr.number }}</a>{% if pr.draft %} (초안){% endif %}{% endif %}{% if not pr.runloom %} <span class="small" data-detected>감지</span>{% endif %}</td></tr>
       {% endif %}
       <tr><th>업데이트</th><td>{{ w.updated_at|ago(now) }}</td></tr>
     </table>
@@ -104,7 +104,7 @@
     </ol>
     {% if panel.pulls %}
     <ul class="panel-list">
-      {% for pr in panel.pulls %}<li data-pull-request="{{ pr.state }}">{{ pr.label }}{% if pr.url %} · <a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pr.number }}</a>{% endif %}{% if pr.title %} {{ pr.title }}{% endif %} <span class="small">· {{ pr.at|kst }}</span></li>{% endfor %}
+      {% for pr in panel.pulls %}<li data-pull-request="{{ pr.state }}">{{ pr.label }}{% if pr.url %} · <a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pr.number }}</a>{% endif %}{% if not pr.runloom %} <span class="small" data-detected>감지</span>{% endif %}{% if pr.title %} {{ pr.title }}{% endif %} <span class="small">· {{ pr.at|kst }}</span></li>{% endfor %}
     </ul>
     {% endif %}
     {% if panel.responses %}

@@ -4036,6 +4036,73 @@ def test_list_work_pull_requests_is_recent_first_per_work(cycle):
     assert repo.list_work_pull_requests(conn, "wi-none") == []
 
 
+def _detected(conn, work_item_id: str, *, number: int = 7, state: str = "open", title: str = "RUN-1 고침",
+              merged_at: str | None = None, updated: str = "2026-10-06T03:00:00Z", now: str = NOW) -> bool:
+    return repo.upsert_work_pull_request(
+        conn, session_id=SESSION, work_item_id=work_item_id, source_id=SOURCE, repository_full_name="acme/billing",
+        pr_number=number, title=title, head_branch="RUN-1-fix", state=state, draft=False, author_login="kim-dev",
+        merged_at=merged_at, pr_updated_at=updated, matched_in="head", now=now,
+    )
+
+
+def test_upsert_work_pull_request_links_once_updates_and_refreshes_work_status(cycle):
+    conn = cycle
+    work = repo.work_item_of_task(conn, "task-gh-41")["work_item_id"]
+    other, _ = _new_work(conn, title="다른 업무")
+
+    assert _detected(conn, work) is True
+    (row,) = repo.list_work_pull_requests(conn, work)
+    assert (row["pr_url"], row["state"], row["head_branch"], row["author_login"]) == (
+        "https://github.com/acme/billing/pull/7", "open", "RUN-1-fix", "kim-dev")
+    assert _events_of(conn, work, "pull_request_linked") == [
+        {"repository_full_name": "acme/billing", "pr_number": 7, "head_branch": "RUN-1-fix", "matched_in": "head"}]
+    status = repo.get_work_item(conn, SESSION, work)
+    assert (status["status"], status["status_reason"]) == ("PR · 검토", "PR 확인 — #7")
+    assert repo.get_work_pull_request(conn, SESSION, "acme/billing", 7)["work_item_id"] == work
+    assert repo.get_work_pull_request(conn, SESSION, "acme/billing", 8) is None
+
+    # 다시 부르면 갱신만 — 다른 업무를 넘겨도 처음 붙은 업무 그대로, 이벤트 없음
+    assert _detected(conn, other, title="새 제목", state="merged", merged_at="2026-10-06T04:00:00Z",
+                     updated="2026-10-06T04:00:00Z", now=LATER) is False
+    assert repo.list_work_pull_requests(conn, other) == []
+    (row,) = repo.list_work_pull_requests(conn, work)
+    assert (row["title"], row["state"], row["merged_at"], row["pr_updated_at"]) == (
+        "새 제목", "merged", "2026-10-06T04:00:00Z", "2026-10-06T04:00:00Z")
+    assert len(_events_of(conn, work, "pull_request_linked")) == 1
+    done = repo.get_work_item(conn, SESSION, work)
+    assert (done["status"], done["status_reason"], done["closed_at"]) == ("완료", "PR 병합 — #7", LATER)
+
+    # 병합은 되돌아가지 않고, 끝난 업무의 상태 기록은 한 번뿐
+    assert _detected(conn, work, state="closed", updated="2026-10-06T05:00:00Z") is False
+    (row,) = repo.list_work_pull_requests(conn, work)
+    assert (row["state"], row["merged_at"], row["pr_updated_at"]) == ("merged", "2026-10-06T04:00:00Z",
+                                                                      "2026-10-06T05:00:00Z")
+    assert [e["to"] for e in _events_of(conn, work, "status_changed")].count("완료") == 1
+
+
+def test_is_runloom_pull_request_by_number_or_queued_head(cycle):
+    conn = cycle
+    _fix_execution(conn)
+    _enqueue(conn)  # 번호 기록 전 대기열 행 — head 로 알아본다
+    assert repo.is_runloom_pull_request(conn, SESSION, "acme/billing", pr_number=31, head_branch="task/task-gh-41")
+    assert not repo.is_runloom_pull_request(conn, SESSION, "acme/billing", pr_number=31, head_branch="RUN-1-fix")
+    repo.record_pull_request(conn, "task-gh-41", state="open", pr=_pr(31), now=NOW)
+    assert repo.is_runloom_pull_request(conn, SESSION, "acme/billing", pr_number=31, head_branch="RUN-1-fix")
+    assert not repo.is_runloom_pull_request(conn, SESSION, "acme/other", pr_number=31, head_branch="task/task-gh-41")
+    assert not repo.is_runloom_pull_request(conn, OTHER_SESSION, "acme/billing", pr_number=31,
+                                            head_branch="task/task-gh-41")
+
+
+def test_pull_cursor_is_separate_from_issue_cursor(cycle):
+    conn = cycle
+    assert repo.get_pull_cursor(conn, SOURCE) is None
+    repo.set_pull_cursor(conn, SOURCE, "2026-10-06T04:00:00Z", now=NOW)
+    assert repo.get_pull_cursor(conn, SOURCE) == "2026-10-06T04:00:00Z"
+    assert repo.get_source_cursor(conn, SESSION, SOURCE) is None
+    with pytest.raises(NotFound):
+        repo.set_pull_cursor(conn, "ghs-none", "2026-10-06T04:00:00Z", now=NOW)
+
+
 def test_list_work_rows_query_count_does_not_grow_with_work_items(seeded):
     conn = seeded
     admin, a, _ = _people(conn)

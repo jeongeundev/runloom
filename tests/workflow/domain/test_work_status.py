@@ -36,6 +36,7 @@ def facts(
     requests=(),
     pr=None,
     direct=None,
+    detected=(),
 ):
     return WorkItemFacts(
         stored_status=stored[0],
@@ -46,6 +47,7 @@ def facts(
         open_requests=tuple(requests),
         pull_request=pr,
         direct_member_name=direct,
+        detected_pull_requests=tuple(detected),
     )
 
 
@@ -323,3 +325,46 @@ def test_direct_work_defaults_to_none_so_old_facts_are_unchanged():
     )
     assert old.direct_member_name is None
     assert work_status(old) == WorkStatus("새로 들어옴", "담당 없음")
+
+
+# --- 감지 PR (phase 16 step 9 — 규칙 4·7) ---
+
+D_OPEN = PullRequestFact("open", 21)
+D_MERGED = PullRequestFact("merged", 22)
+D_CLOSED = PullRequestFact("closed", 23)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        pytest.param(facts(detected=[D_OPEN]), WorkStatus("PR · 검토", "PR 확인 — #21"), id="open"),
+        pytest.param(facts(detected=[D_MERGED]), WorkStatus("완료", "PR 병합 — #22"), id="merged"),
+        pytest.param(facts(detected=[D_OPEN, D_MERGED]), WorkStatus("완료", "PR 병합 — #22"), id="merged-beats-open"),
+        pytest.param(facts(detected=[PullRequestFact("open", 30), D_OPEN]), WorkStatus("PR · 검토", "PR 확인 — #30"),
+                     id="latest-open-first"),
+        pytest.param(facts(detected=[D_CLOSED], direct="김개발"), WorkStatus("직접 작업 중", "김개발"),
+                     id="closed-ignored-direct"),
+        pytest.param(facts([RUNNING], detected=[D_CLOSED]), WorkStatus("에이전트 작업 중", "버그 수정 실행 중"),
+                     id="closed-ignored"),
+        pytest.param(facts(detected=[D_OPEN], direct="김개발"), WorkStatus("PR · 검토", "PR 확인 — #21"),
+                     id="open-beats-direct"),
+        pytest.param(facts(requests=[RequestFact("question", "어느 브랜치?")], detected=[D_OPEN]),
+                     WorkStatus("내 차례", "사람 요청 — 어느 브랜치?"), id="request-beats-open"),
+        pytest.param(facts(requests=[RequestFact("question", "어느 브랜치?")], detected=[D_MERGED]),
+                     WorkStatus("완료", "PR 병합 — #22"), id="merged-beats-request"),
+        pytest.param(facts(pr=PullRequestFact("closed", 4), detected=[D_MERGED]),
+                     WorkStatus("종료", "PR 이 병합 없이 닫힘 — #4"), id="runloom-closed-first"),
+        pytest.param(facts(pr=PullRequestFact("open", 4), detected=[D_OPEN]), WorkStatus("PR · 검토", "PR 확인 — #4"),
+                     id="runloom-open-first"),
+        pytest.param(facts(stored=("종료", "원본 이슈 닫힘"), detected=[D_MERGED]), WorkStatus("종료", "원본 이슈 닫힘"),
+                     id="terminal-stays"),
+        pytest.param(facts(assigned=False, detected=[D_OPEN]), WorkStatus("PR · 검토", "PR 확인 — #21"),
+                     id="unassigned-too"),
+    ],
+)
+def test_detected_pull_requests(given, expected):
+    assert work_status(given) == expected
+
+
+def test_detected_pull_requests_default_empty():
+    assert facts().detected_pull_requests == ()

@@ -21,6 +21,8 @@ from workflow.adapters.github_client import (
     IssueCursor,
     IssuePage,
     InstallationTokenProvider,
+    MAX_PULL_PAGES_PER_SYNC,
+    PullSummary,
 )
 from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink, PullRequestRef
 
@@ -828,4 +830,105 @@ def test_pull_request_calls_stay_inside_allowed_repositories():
     rec = Recorder({})
     with pytest.raises(GitHubRepositoryNotAllowed):
         _client(rec).create_pull_request("acme/other", **_create_args())
+    assert rec.calls == []
+
+
+# ── 소스 저장소 PR 목록 (phase 16 step 9 — PR 신호) ─────────────────────────────
+
+
+def _listed_pull(number: int, updated_at: str, **overrides) -> dict:
+    item = {
+        "number": number,
+        "title": f"RUN-{number} 고침",
+        "state": "open",
+        "draft": False,
+        "merged_at": None,
+        "user": {"id": 3, "login": "kim-dev"},
+        "head": {"ref": f"RUN-{number}-fix", "sha": "abc"},
+        "html_url": "https://evil.example/pull/1",
+        "updated_at": updated_at,
+    }
+    item.update(overrides)
+    return item
+
+
+def _pulls_link(page: int) -> dict:
+    return {"link": f'<https://api.github.com/repositories/9001/pulls?state=all&page={page}>; rel="next"'}
+
+
+def test_list_pulls_sends_query_and_parses_needed_fields():
+    rec = Recorder({("GET", f"/repos/{REPO}/pulls"): httpx.Response(200, json=[
+        _listed_pull(2, "2026-09-21T02:00:00Z", state="closed", merged_at="2026-09-21T01:59:00Z", draft=True),
+        _listed_pull(1, "2026-09-21T01:00:00Z", user=None, head={"ref": "feature/x"}),
+    ])})
+
+    pulls = _client(rec).list_pulls(REPO, None)
+
+    request = rec.calls[0]
+    assert request.url.host == "api.github.com" and request.headers["authorization"] == f"Bearer {TOKEN}"
+    assert _query(request) == {"state": "all", "sort": "updated", "direction": "desc", "per_page": "50", "page": "1"}
+    assert "if-none-match" not in request.headers
+    assert pulls == [
+        PullSummary(number=2, title="RUN-2 고침", head_ref="RUN-2-fix", state="closed", draft=True,
+                    merged_at="2026-09-21T01:59:00Z", author_login="kim-dev", updated_at="2026-09-21T02:00:00Z"),
+        PullSummary(number=1, title="RUN-1 고침", head_ref="feature/x", state="open", draft=False, merged_at=None,
+                    author_login=None, updated_at="2026-09-21T01:00:00Z"),
+    ]
+
+
+def test_list_pulls_stops_at_cursor_and_follows_pages_up_to_the_cap():
+    def pulls(request: httpx.Request) -> httpx.Response:
+        page = int(_query(request)["page"])
+        if page == 1:
+            return httpx.Response(200, json=[_listed_pull(9, "2026-09-21T09:00:00Z"), _listed_pull(8, "2026-09-21T08:00:00Z")],
+                                  headers=_pulls_link(2))
+        return httpx.Response(200, json=[_listed_pull(7, "2026-09-21T07:00:00Z"), _listed_pull(6, "2026-09-21T06:00:00Z")],
+                              headers=_pulls_link(page + 1))
+
+    rec = Recorder({("GET", f"/repos/{REPO}/pulls"): pulls})
+    client = _client(rec)
+
+    # 커서까지 — 커서와 같거나 이른 PR 을 만나면 그 뒤 페이지는 부르지 않는다
+    assert [p.number for p in client.list_pulls(REPO, "2026-09-21T07:00:00Z")] == [9, 8]
+    assert [_query(r)["page"] for r in rec.calls] == ["1", "2"]
+
+    rec.calls.clear()
+    assert [p.number for p in client.list_pulls(REPO, "2026-09-21T08:30:00Z")] == [9]
+    assert [_query(r)["page"] for r in rec.calls] == ["1"]
+
+    # 커서가 없으면 상한(2 페이지)까지만
+    rec.calls.clear()
+    assert MAX_PULL_PAGES_PER_SYNC == 2
+    assert [p.number for p in client.list_pulls(REPO, None)] == [9, 8, 7, 6]
+    assert [_query(r)["page"] for r in rec.calls] == ["1", "2"]
+
+
+def test_list_pulls_not_modified_is_empty():
+    rec = Recorder({("GET", f"/repos/{REPO}/pulls"): httpx.Response(304)})
+    assert _client(rec).list_pulls(REPO, "2026-09-21T00:00:00Z") == []
+
+
+def test_list_pulls_errors_are_classified_without_token():
+    limited = Recorder({("GET", f"/repos/{REPO}/pulls"): httpx.Response(429, headers={"retry-after": "12"})})
+    with pytest.raises(GitHubRateLimited) as info:
+        _client(limited).list_pulls(REPO, None)
+    assert info.value.retry_after_seconds == 12 and TOKEN not in str(info.value)
+
+    down = Recorder({("GET", f"/repos/{REPO}/pulls"): httpx.Response(502)})
+    with pytest.raises(GitHubUnavailable):
+        _client(down).list_pulls(REPO, None)
+
+
+@pytest.mark.parametrize("body", [{"not": "a list"}, [{"number": 1}], [_listed_pull(1, "2026-09-21T00:00:00Z", state="weird")]])
+def test_list_pulls_bad_shape_is_github_error(body):
+    rec = Recorder({("GET", f"/repos/{REPO}/pulls"): httpx.Response(200, json=body)})
+    with pytest.raises(GitHubError) as info:
+        _client(rec).list_pulls(REPO, None)
+    assert str(info.value) == f"GET /repos/{REPO}/pulls: 응답 형식 오류"
+
+
+def test_list_pulls_refuses_repository_outside_allowed_list():
+    rec = Recorder({})
+    with pytest.raises(GitHubRepositoryNotAllowed):
+        _client(rec).list_pulls("other/repo", None)
     assert rec.calls == []

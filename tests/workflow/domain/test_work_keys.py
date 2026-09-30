@@ -2,7 +2,7 @@
 
 import pytest
 
-from workflow.domain.work_keys import BRANCH_SUMMARY_MAX, branch_name, work_path
+from workflow.domain.work_keys import BRANCH_SUMMARY_MAX, branch_name, keys_in, work_path
 
 
 def test_work_path_opens_the_panel_on_the_work_screen():
@@ -31,3 +31,25 @@ def test_branch_name_summary_is_cut_at_40_and_trailing_dash_removed():
     long = branch_name("RUN-7", "word " * 30)
     summary = long.removeprefix("RUN-7-")
     assert len(summary) <= 40 and not summary.endswith("-") and summary.startswith("word-word")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("RUN-15-url-filter", (15,)),
+        ("fix: RUN-3 와 run-7 정리", (3, 7)),
+        ("RUN-4 RUN-2 RUN-4", (4, 2)),
+        ("feature/RUN-12_x", (12,)),
+        ("XRUN-5", ()),
+        ("run5", ()),
+        ("RUN-0", ()),
+        ("RUN-05", ()),
+        ("RUN-1234567890", ()),
+        ("RUN-123456789", (123456789,)),
+        ("RUN-12a", (12,)),
+        ("", ()),
+        ("쿠폰 오류", ()),
+    ],
+)
+def test_keys_in(text, expected):
+    assert keys_in(text) == expected

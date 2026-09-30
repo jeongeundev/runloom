@@ -18,6 +18,8 @@
 - 수집 뒤 닫혔지만 병합 시각을 모르는 이슈마다 그 이슈를 닫은 병합 PR 을 조회해 저장한다(ADR-0015 결정 9 — 도입 후 완료
   시각). 한 번에 `MAX_MERGE_CHECKS_PER_SYNC` 건까지. 병합 없음으로 확인한 이슈는 그 뒤 이슈가 바뀔 때만 다시 조회한다.
   조회 실패는 `merge_error` 에 남기고 이미 저장한 수집 결과는 그대로 둔다.
+- 그 뒤 소스 저장소의 PR 을 읽어(`list_pulls`, 커서 = 본 PR 의 가장 늦은 `updated_at`) head 브랜치 → 제목 순으로 업무 키를
+  찾아 감지 PR 로 붙인다(phase 16 PR 신호). Runloom 이 연 PR 은 붙이지 않는다. 실패는 `pull_error` 에 남기고 커서는 그대로다.
 """
 
 import secrets
@@ -35,6 +37,7 @@ from workflow.adapters.github_client import (
     GitHubRateLimited,
     GitHubUnavailable,
     IssueCursor,
+    PullSummary,
 )
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.domain.form_sections import extract_form
@@ -47,6 +50,7 @@ from workflow.domain.issue_intake import (
     label_delegated,
     snapshot_to_task_spec,
 )
+from workflow.domain.work_keys import keys_in
 
 # 한 번의 호출에서 넘길 최대 페이지 수. 남은 페이지는 저장된 커서로 다음 호출이 잇는다.
 MAX_PAGES_PER_SYNC = 10
@@ -75,6 +79,8 @@ class SyncReport:
     retry_after_seconds: int | None = None
     merged: list[str] = field(default_factory=list)  # 병합 PR 을 새로 기록한 Task
     merge_error: str | None = None  # 병합 PR 조회 실패(마지막 것). 수집 결과는 그대로
+    pulls_linked: list[str] = field(default_factory=list)  # 감지 PR 이 새로 붙은 업무
+    pull_error: str | None = None  # PR 목록 읽기 실패. 수집 결과는 그대로
 
 
 def _parse(value: str) -> datetime:
@@ -214,6 +220,50 @@ def _check_merges(client: GitHubClient, intake: _Intake, report: SyncReport) -> 
             report.merged.append(row["task_id"])
 
 
+def _pull_target(intake: _Intake, pull: PullSummary) -> tuple[str, str] | None:
+    """(업무 id, matched_in) — head 브랜치에서 이 워크스페이스에 있는 키를 먼저, 없으면 제목에서. 처음 것 하나."""
+    for matched_in, text in (("head", pull.head_ref), ("title", pull.title)):
+        for key_number in keys_in(text):
+            work = repo.get_work_item_by_key(intake.conn, intake.session_id, key_number)
+            if work is not None:
+                return work["work_item_id"], matched_in
+    return None
+
+
+def _link_pulls(client: GitHubClient, intake: _Intake, report: SyncReport) -> None:
+    """소스 저장소 PR → 업무 키 매칭 → 감지 PR 저장·업무 상태 재계산. 커서는 본 PR 을 모두 반영한 뒤에 옮긴다."""
+    conn, session_id, config, now = intake.conn, intake.session_id, intake.config, intake.now
+    repository = config.repository_full_name
+    cursor = repo.get_pull_cursor(conn, config.source_id)
+    try:
+        pulls = client.list_pulls(repository, cursor)
+    except GitHubError as exc:
+        report.pull_error = str(exc)
+        _back_off(report, exc, now)
+        return
+    latest = cursor
+    for pull in pulls:
+        latest = _later(latest, pull.updated_at)
+        if repo.is_runloom_pull_request(conn, session_id, repository, pr_number=pull.number, head_branch=pull.head_ref):
+            continue
+        existing = repo.get_work_pull_request(conn, session_id, repository, pull.number)
+        target = (existing["work_item_id"], "head") if existing is not None else _pull_target(intake, pull)
+        if target is None:
+            continue
+        work_item_id, matched_in = target
+        linked = repo.upsert_work_pull_request(
+            conn, session_id=session_id, work_item_id=work_item_id, source_id=config.source_id,
+            repository_full_name=repository, pr_number=pull.number, title=pull.title, head_branch=pull.head_ref,
+            state="merged" if pull.merged_at is not None else pull.state, draft=pull.draft,
+            author_login=pull.author_login, merged_at=pull.merged_at, pr_updated_at=pull.updated_at,
+            matched_in=matched_in, now=now,
+        )
+        if linked:
+            report.pulls_linked.append(work_item_id)
+    if latest is not None and latest != cursor:
+        repo.set_pull_cursor(conn, config.source_id, latest, now=now)
+
+
 def sync_source(conn: Connection, client: GitHubClient, source_id: str, now: str) -> SyncReport:
     """소스 하나를 한 번 수집한다. GitHub 오류는 예외 대신 `report.error`(rate limit 이면 `retry_after_seconds`)로
     돌려주고, DB 오류는 그대로 올린다(커서가 넘어가지 않았으므로 다음 호출이 같은 페이지부터 다시 한다)."""
@@ -231,6 +281,8 @@ def sync_source(conn: Connection, client: GitHubClient, source_id: str, now: str
         _selected(client, intake, report)
     if report.error is None:
         _check_merges(client, intake, report)
+    if report.error is None and report.retry_after_seconds is None:
+        _link_pulls(client, intake, report)
     report.skipped = {reason: count for reason, count in intake.skipped.items() if count}
     return report
 

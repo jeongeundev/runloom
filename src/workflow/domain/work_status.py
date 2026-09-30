@@ -65,6 +65,8 @@ class WorkItemFacts:
     open_requests: tuple[RequestFact, ...]
     pull_request: PullRequestFact | None
     direct_member_name: str | None = None  # 직접 작업 중이면 그 멤버 표시 이름 (phase 16)
+    # 감지 PR(`work_pull_requests`) — open·merged·closed, 최근순 (phase 16 step 9)
+    detected_pull_requests: tuple[PullRequestFact, ...] = ()
 
 
 def _pr_suffix(pr: PullRequestFact) -> str:
@@ -85,6 +87,9 @@ def work_status(facts: WorkItemFacts) -> WorkStatus:
         return WorkStatus("완료", "PR 병합" + _pr_suffix(pr))
     if pr is not None and pr.state == "closed":
         return WorkStatus("종료", "PR 이 병합 없이 닫힘" + _pr_suffix(pr))
+    detected_merged = next((d for d in facts.detected_pull_requests if d.state == "merged"), None)
+    if detected_merged is not None:
+        return WorkStatus("완료", "PR 병합" + _pr_suffix(detected_merged))
 
     if facts.open_requests:
         failed = next((r for r in facts.open_requests if r.code == STAGE_FAILED), None)
@@ -98,6 +103,9 @@ def work_status(facts: WorkItemFacts) -> WorkStatus:
         return WorkStatus("PR · 검토", "PR 여는 중")
     if pr is not None and pr.state == "open":
         return WorkStatus("PR · 검토", "PR 확인" + _pr_suffix(pr))
+    detected_open = next((d for d in facts.detected_pull_requests if d.state == "open"), None)
+    if detected_open is not None:  # 병합 없이 닫힌 감지 PR 은 보지 않는다
+        return WorkStatus("PR · 검토", "PR 확인" + _pr_suffix(detected_open))
 
     if facts.direct_member_name is not None:
         return WorkStatus("직접 작업 중", facts.direct_member_name)

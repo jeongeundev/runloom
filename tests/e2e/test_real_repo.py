@@ -118,7 +118,7 @@ class FakeGitHubPulls(FakeGitHubApp):
 
     def merge(self, number: int) -> None:
         with self.lock:
-            self.pulls[number].update(state="closed", merged_at=utc_now())
+            self.pulls[number].update(state="closed", merged_at=utc_now(), updated_at=utc_now())
 
     def handle(self, method, path, query, headers, body):
         prefix = f"/repos/{REPO}"
@@ -132,6 +132,8 @@ class FakeGitHubPulls(FakeGitHubApp):
             rest = path[len(prefix):]
             if rest == "":
                 return 200, {}, {"id": 5001, "full_name": REPO, "default_branch": "main"}
+            if method == "GET" and rest == "/pulls" and "head" not in query:  # PR 신호(phase 16) — 갱신 내림차순
+                return 200, {}, sorted(self.pulls.values(), key=lambda pr: pr["updated_at"], reverse=True)
             if method == "GET" and rest == "/pulls":
                 head = query["head"][0]
                 return 200, {}, [pr for _, pr in sorted(self.pulls.items(), reverse=True)
@@ -146,7 +148,7 @@ class FakeGitHubPulls(FakeGitHubApp):
                 self.pulls[number] = {
                     "number": number, "html_url": f"https://github.com/{REPO}/pull/{number}", "state": "open",
                     "draft": data["draft"], "merged_at": None, "title": data["title"], "body": data["body"],
-                    "head": {"ref": data["head"]}, "base": {"ref": data["base"]},
+                    "head": {"ref": data["head"]}, "base": {"ref": data["base"]}, "updated_at": utc_now(),
                 }
                 return 201, {}, self.pulls[number]
             if method == "GET" and (m := re.fullmatch(r"/pulls/(\d+)", rest)):

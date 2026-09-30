@@ -370,6 +370,8 @@ class Worker:
                 log.warning("GitHub 수집 실패 %s: %s", config.source_id, result.error)
             if result.merge_error is not None:
                 log.warning("GitHub 병합 PR 조회 실패 %s: %s", config.source_id, result.merge_error)
+            if result.pull_error is not None:
+                log.warning("GitHub PR 목록 읽기 실패 %s: %s", config.source_id, result.pull_error)
             if result.error is None and result.retry_after_seconds is None:
                 self._sync_pull_requests(conn, client, config, now, report)
             wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
