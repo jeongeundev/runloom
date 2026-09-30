@@ -13,7 +13,9 @@
     {
       "step": 1,
       "name": "team-domain",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T09:55:34+0900",
+      "summary": "새 파일 src/workflow/domain/team.py(hashlib·hmac·secrets·base64 만)·tests/workflow/domain/test_team.py(67개). step.md 와 다른 곳은 ARCHITECTURE 기준: hash_password(pw, *, n=None)(호출 때 SCRYPT_N 읽음 — 테스트는 monkeypatch 로 2**4), 형식 scrypt$n$r$p$salt$hash(표준 base64), verify_password 는 깨진 형식·모르는 알고리즘·n 이 2의 거듭제곱 아님/2**20 초과·r·p 가 1~16 밖·scrypt 오류면 False, DUMMY_PASSWORD_HASH 는 고정 리터럴(n=2**14, 어떤 입력과도 안 맞음), password_problem 10~128자+공백만 거부('비밀번호를 공백만으로 만들 수 없습니다.'), normalize_email(@ 하나·양쪽 비지 않음·공백/제어문자 없음·254자), clean_display_name(1~40자·제어문자 없음), ROLES·동작 상수 11개·ACTIONS·can(모르는 역할 False, 모르는 동작 ValueError)·allowed_actions(모르는 역할 빈 frozenset), MemberFact + turn_recipients(assignee_type, assignee_id, requested_by_member_id, members) — 담당 활성 멤버 → 맡긴 사람(활성) → 활성 관리자(주어진 순서, id 정렬 아님). 검증: pytest 2635 passed/33 skipped, ruff 통과. 다음 step 주의: members 는 created_at·member_id 순으로 넘겨야 관리자 순서가 안정적, 로그인 실패 경로는 DUMMY_PASSWORD_HASH 로 한 번 verify 해 시간 맞춤."
     },
     {
       "step": 2,
