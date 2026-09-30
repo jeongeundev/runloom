@@ -4,6 +4,8 @@
 
 ## 다음 작업: 15-team 하네스 실행 (새 세션은 여기서 시작)
 
+**15-team 진행 중(phases/15-team)** — 2026-09-30 step 0 설계 기록 완료: [ADR-0021](adr/0021-team-accounts-and-roles.md), [ARCHITECTURE](ARCHITECTURE.md) "팀 — phase 15"(스키마 v11·역할 × 동작·라우트 표·이름 고정). 진행 상태는 `phases/15-team/index.json`.
+
 **할 일**: step 설계 완료(2026-09-30, [phases/15-team/README.md](../phases/15-team/README.md) — 12 step, 계획 기본값 11가지). 사용자 지시 뒤 `service` 에서 `python3 scripts/execute.py 15-team --engine claude` → `feat-15-team` 을 `service` 에 `--no-ff` 병합 → 셀프호스트 재설치(v11, 백업 먼저, 재설치 뒤 첫 접속에서 `.env` 토큰으로 관리자 계정 만들기).
 
 **2026-09-30 15-team 결정(사용자)**: 운영자 토큰은 첫 설정·복구 전용(이후 이메일·비밀번호), "내 차례" 받는 사람 = 담당 멤버 → 맡긴 사람 → 관리자 전원(응답은 누구나, 응답자 기록), `WORKFLOW_PUBLIC_URL` 설정 + 터널은 문서 안내만, 알림 = 공용 웹훅(`→ 이름`) + 멤버 개인 웹훅 선택, 멤버도 자기 러너 붙임(해제는 소유자·관리자). 기본값: scrypt(표준 라이브러리), 서버 로그인 세션 표, CSRF 는 Origin 검사, 초대 1회용 7일, 이메일 발송 없음.
