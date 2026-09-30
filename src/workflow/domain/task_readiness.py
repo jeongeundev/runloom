@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from workflow.contracts.v1 import BUILTIN_KIND_NAMES, Capability
+from workflow.domain.delegation import ApprovalFact, offline_reason
 from workflow.domain.selection import Candidate, select_agent
 
 Actor = Literal["operator", "assignee", "system"]
@@ -40,6 +41,7 @@ class ExecutorFacts:
     connection_state: str
     last_seen_at: str | None  # RFC 3339
     supported_kinds: tuple[str, ...] | None  # 마지막 claim 의 선언. None 이면 구버전
+    owner_name: str | None = None  # 러너 소유자 표시 이름. None 이면 공용 (phase 17)
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,8 @@ class TaskFacts:
     delegated: bool = True  # `all_open` 소스 Task 의 실행 지시(맡기기·트리거 라벨). 지시 단계가 없으면 True
     closed: bool = False  # 운영자 종료
     direct_work: bool = False  # 업무가 직접 작업 중 — 사람이 자기 세션에서 하므로 에이전트를 착수하지 않는다 (phase 16)
+    # agent_id → 소유자 승인 상태. 없는 Agent 는 `not_needed` (phase 17)
+    owner_approvals: Mapping[str, ApprovalFact] = field(default_factory=dict)
 
 
 def _parse(value: str) -> datetime:
@@ -167,8 +171,7 @@ def _check_executor(facts: TaskFacts, agent_id: str, blockers: list[Blocker]) ->
         blockers.append(Blocker("executor_offline", f"{agent_id} 연결 정보 없음", "system"))
         return
     if not _online(executor, facts.now, facts.offline_after_seconds):
-        seen = executor.last_seen_at or "없음"
-        blockers.append(Blocker("executor_offline", f"연결 끊김, 마지막 확인 {seen}", "system"))
+        blockers.append(Blocker("executor_offline", offline_reason(executor.owner_name), "system"))
     if not _supports(executor, facts.kind):
         blockers.append(
             Blocker("executor_outdated", f"연결 프로그램 업데이트 필요 — {facts.kind} 미지원", "operator")
@@ -183,6 +186,16 @@ def _check_executor(facts: TaskFacts, agent_id: str, blockers: list[Blocker]) ->
                     "operator",
                 )
             )
+
+
+def _check_owner_approval(facts: TaskFacts, agent_id: str, blockers: list[Blocker]) -> None:
+    approval = facts.owner_approvals.get(agent_id)
+    if approval is None:
+        return
+    if approval.state in ("missing", "pending"):
+        blockers.append(Blocker("owner_approval_pending", approval.reason, "operator"))
+    elif approval.state == "declined":
+        blockers.append(Blocker("owner_approval_declined", approval.reason, "operator"))
 
 
 def evaluate_readiness(facts: TaskFacts) -> TaskReadiness:
@@ -203,6 +216,7 @@ def evaluate_readiness(facts: TaskFacts) -> TaskReadiness:
     if facts.open_request_ids:
         blockers.append(Blocker("decision_pending", f"사람 응답 대기 {len(facts.open_request_ids)}건", "operator"))
     if agent_id is not None:
+        _check_owner_approval(facts, agent_id, blockers)
         _check_executor(facts, agent_id, blockers)
     if facts.busy_execution_ids:
         blockers.append(Blocker("repository_busy", "같은 저장소에서 다른 수정 실행 중", "system"))

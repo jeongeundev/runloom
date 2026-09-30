@@ -226,12 +226,13 @@ PARK_OFF = MemberFact("mem-00000003", "member", False)
 TEAM = (ADMIN_B, KIM, ADMIN_OFF, LEE, ADMIN_A, PARK_OFF)
 
 
-def recipients(assignee_type=None, assignee_id=None, requested_by=None, members=TEAM):
+def recipients(assignee_type=None, assignee_id=None, requested_by=None, members=TEAM, approvers=None):
     return turn_recipients(
         assignee_type=assignee_type,
         assignee_id=assignee_id,
         requested_by_member_id=requested_by,
         members=members,
+        approvers=approvers,
     )
 
 
@@ -269,3 +270,27 @@ def test_nobody_goes_to_active_admins():
 def test_no_active_admin_is_empty():
     assert recipients(members=(KIM, ADMIN_OFF)) == ()
     assert recipients(members=()) == ()
+
+
+# --- 열린 소유자 승인 요청 (phase 17) ---
+
+
+def test_open_owner_approval_goes_to_owner_before_assignee_and_requester():
+    assert recipients("member", KIM.member_id, requested_by=LEE.member_id, approvers=(LEE.member_id,)) == (
+        LEE.member_id,)
+    assert recipients("agent", "agent-1", requested_by=KIM.member_id, approvers=(LEE.member_id,)) == (LEE.member_id,)
+
+
+def test_open_owner_approval_on_shared_runner_goes_to_admins():
+    admins = (ADMIN_B.member_id, ADMIN_A.member_id)
+
+    assert recipients("agent", "agent-1", requested_by=KIM.member_id, approvers=admins) == admins
+
+
+def test_no_open_owner_approval_keeps_existing_rule():
+    assert recipients("agent", "agent-1", requested_by=KIM.member_id, approvers=None) == (KIM.member_id,)
+    assert recipients("agent", "agent-1", requested_by=KIM.member_id) == (KIM.member_id,)
+
+
+def test_empty_approvers_are_returned_as_is():
+    assert recipients("agent", "agent-1", requested_by=KIM.member_id, approvers=()) == ()

@@ -45,7 +45,9 @@
     {
       "step": 5,
       "name": "delegation-rules",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T23:05:31+0900",
+      "summary": "맡기기 규칙(domain 만): delegation.py 에 APPROVAL_STATES·ApprovalFact·needs_owner_approval(admin_ids — 소유자 있으면 requester≠owner, 공용이면 requester∉관리자, 모름=소유자 아님)·approval_deciders(활성 소유자 아니면 활성 관리자 members 순)·can_decide_approval(관리자 또는 소유자)·can_set_policy(REMOVE_ANY_RUNNER 또는 ATTACH_RUNNER+자기 러너)·approval_state(표 — withdraw·모르는 동작=missing)·approval_question·declined_reason(이름 없으면 '관리자', 메모 첫 줄 80자)·offline_reason·candidate_label 추가(delegation 이 team 을 import). task_readiness: ExecutorFacts.owner_name, TaskFacts.owner_approvals, 정해진 Agent 의 상태로 owner_approval_pending(missing·pending)·owner_approval_declined(declined) — 이유는 ApprovalFact.reason, actor operator, 순서는 decision_pending 뒤·executor 검사 앞. executor_offline 이유 = offline_reason(owner_name)('이OO의 러너 꺼짐 · 켜지면 시작'/공용이면 '공용 러너 꺼짐 · 켜지면 시작' — step 파일의 '러너 꺼짐'이 아니라 ARCHITECTURE 문구), 연결 정보 없음 문구 그대로. team.turn_recipients(approvers=None) — None 아니면 그대로(빈 튜플도). work_status: 첫 열린 요청 코드 owner_approval 이면 이유 = 질문 첫 줄(접두어 없음). notification._HEADLINES 3개(맡김·러너 꺼짐·거절). 테스트: test_delegation(승인 필요 16행 표·승인자·권한·상태 표·문구), test_task_readiness 8, test_team 4, test_work_status 2, test_notification 1. 기존 테스트 수정 없음(test_team 도우미에 approvers 인자만). 검증: pytest 3325 passed·48 skipped, ruff 통과. 다음 step 주의: status.py(TaskView.connector_owner_name·approval_reason, user_status 의 '연결 끊김, 마지막 확인' 문구)는 views 가 채워야 해 step 6 으로 넘김. 서버가 ExecutorFacts.owner_name 을 아직 안 채워 순환 단계의 꺼짐 이유는 당분간 '공용 러너 꺼짐 · 켜지면 시작'. repo.agent_owner_id·_recipients approvers 계산·task_facts 의 owner_approvals 채우기·열린 owner_approval 요청을 open_request_ids 에서 빼기는 server/repo step 몫."
     },
     {
       "step": 6,

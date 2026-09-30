@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from workflow.contracts.v1 import Capability
+from workflow.domain.delegation import ApprovalFact
 from workflow.domain.selection import Candidate
 from workflow.domain.task_readiness import (
     Blocker,
@@ -431,3 +432,59 @@ def test_direct_work_blocks_the_agent_start():
     assert not readiness.ready
     assert readiness.blockers == (Blocker("direct_work", "직접 작업 중 — 에이전트에게 넘기면 시작", "operator"),)
     assert evaluate_readiness(_fix(direct_work=False)).ready
+
+
+# --- 소유자 승인·꺼진 러너 (phase 17) ---------------------------------------------
+
+
+def test_offline_reason_names_runner_owner():
+    executors = {**EXECUTORS, "agent-a": _executor("agent-a", connection_state="offline", owner_name="이OO")}
+
+    readiness = evaluate_readiness(_fix(executors=executors))
+
+    assert readiness.blockers == (Blocker("executor_offline", "이OO의 러너 꺼짐 · 켜지면 시작", "system"),)
+
+
+def test_offline_reason_for_shared_runner():
+    executors = {**EXECUTORS, "agent-a": _executor("agent-a", connection_state="offline")}
+
+    assert evaluate_readiness(_fix(executors=executors)).blockers == (
+        Blocker("executor_offline", "공용 러너 꺼짐 · 켜지면 시작", "system"),)
+
+
+def test_missing_executor_reason_is_unchanged():
+    assert evaluate_readiness(_fix(executors={})).blockers == (
+        Blocker("executor_offline", "agent-a 연결 정보 없음", "system"),)
+
+
+@pytest.mark.parametrize("state", ["missing", "pending"])
+def test_owner_approval_pending_blocks_resolved_agent(state):
+    approvals = {"agent-a": ApprovalFact(state, "김OO 가 맡김 · 이OO 승인 대기")}
+
+    readiness = evaluate_readiness(_fix(owner_approvals=approvals))
+
+    assert not readiness.ready and readiness.agent_id == "agent-a"
+    assert readiness.blockers == (Blocker("owner_approval_pending", "김OO 가 맡김 · 이OO 승인 대기", "operator"),)
+
+
+def test_owner_approval_declined_blocks_resolved_agent():
+    approvals = {"agent-a": ApprovalFact("declined", "이OO 가 거절 — 다른 담당을 고르세요")}
+
+    assert evaluate_readiness(_fix(owner_approvals=approvals)).blockers == (
+        Blocker("owner_approval_declined", "이OO 가 거절 — 다른 담당을 고르세요", "operator"),)
+
+
+@pytest.mark.parametrize("state", ["not_needed", "approved"])
+def test_owner_approval_not_needed_or_approved_is_ready(state):
+    assert evaluate_readiness(_fix(owner_approvals={"agent-a": ApprovalFact(state, "")})).ready
+
+
+def test_owner_approval_of_other_agent_is_ignored():
+    approvals = {"agent-b": ApprovalFact("pending", "김OO 가 맡김 · 박OO 승인 대기")}
+
+    assert evaluate_readiness(_fix(owner_approvals=approvals)).ready
+
+
+def test_owner_approval_default_is_not_needed():
+    assert _fix().owner_approvals == {}
+    assert _executor("agent-a").owner_name is None

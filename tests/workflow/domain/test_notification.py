@@ -37,6 +37,19 @@ def test_text_per_event():
     )
 
 
+
+def test_text_for_delegation_events():
+    """phase 17 사건 3개의 머리(ARCHITECTURE "알림 사건 3개")."""
+    assert notification_text("delegated_to_you", title="쿠폰 오류", detail="김OO 가 opensql 에게 맡김") == (
+        "[Runloom] 맡김 — 쿠폰 오류: 김OO 가 opensql 에게 맡김"
+    )
+    assert notification_text("runner_offline_waiting", title="쿠폰 오류", detail="러너가 꺼져 있어 RUN-12 가 기다림") == (
+        "[Runloom] 러너 꺼짐 — 쿠폰 오류: 러너가 꺼져 있어 RUN-12 가 기다림"
+    )
+    assert notification_text("delegation_declined", title="쿠폰 오류", detail="이OO 가 거절 — 오늘은 Mac 을 못 씁니다") == (
+        "[Runloom] 거절 — 쿠폰 오류: 이OO 가 거절 — 오늘은 Mac 을 못 씁니다"
+    )
+
 def test_text_adds_the_task_link_on_its_own_line():
     text = notification_text("task_failed", title="버그 1", detail="x", task_url="https://runloom.example/tasks/t")
     assert text.splitlines() == ["[Runloom] 실패 — 버그 1: x", "https://runloom.example/tasks/t"]

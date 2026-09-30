@@ -368,3 +368,19 @@ def test_detected_pull_requests(given, expected):
 
 def test_detected_pull_requests_default_empty():
     assert facts().detected_pull_requests == ()
+
+
+# --- 사람 사이 인계 (phase 17) ---
+
+
+def test_owner_approval_request_reason_is_question_first_line_without_prefix():
+    question = "김OO 가 맡김 · 이OO 승인 대기\n에이전트 opensql — [승인]하면 곧 시작합니다."
+
+    assert work_status(facts([stage("대기", "김OO 가 맡김 · 이OO 승인 대기", executed=False)],
+                             requests=[RequestFact("owner_approval", question)])) == WorkStatus(
+        "내 차례", "김OO 가 맡김 · 이OO 승인 대기")
+
+
+def test_runner_offline_stage_waits_with_owner_reason():
+    assert work_status(facts([stage("대기", "이OO의 러너 꺼짐 · 켜지면 시작", executed=False)])) == WorkStatus(
+        "대기", "이OO의 러너 꺼짐 · 켜지면 시작")

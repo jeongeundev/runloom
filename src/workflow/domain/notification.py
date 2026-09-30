@@ -10,7 +10,10 @@ from urllib.parse import urlsplit
 DISCORD_CONTENT_LIMIT = 2000  # Discord 웹훅 `content` 상한
 WEBHOOK_URL_MAX_LENGTH = 2048
 _DISCORD_HOSTS = ("discord.com", "discordapp.com")
-_HEADLINES = {"human_request": "사람 차례", "pr_opened": "PR 확인", "task_failed": "실패"}
+_HEADLINES = {
+    "human_request": "사람 차례", "pr_opened": "PR 확인", "task_failed": "실패",
+    "delegated_to_you": "맡김", "runner_offline_waiting": "러너 꺼짐", "delegation_declined": "거절",
+}
 
 
 @dataclass(frozen=True)
