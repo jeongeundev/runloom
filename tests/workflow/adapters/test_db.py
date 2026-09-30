@@ -49,12 +49,15 @@ TABLES = {
     "work_item_events",
     "login_sessions",
     "member_invites",
+    "work_pull_requests",
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 PHASE12_TABLES = {"task_pull_requests", "notifications"}
 PHASE14_TABLES = {"work_items", "work_item_links", "members", "field_mappings", "work_item_events"}
 PHASE15_TABLES = {"login_sessions", "member_invites"}
-V10_TABLES = TABLES - PHASE15_TABLES
+PHASE16_TABLES = {"work_pull_requests"}
+V11_TABLES = TABLES - PHASE16_TABLES
+V10_TABLES = V11_TABLES - PHASE15_TABLES
 V9_TABLES = V10_TABLES - PHASE14_TABLES
 
 # phase 13 이전(v4~v8) 서버가 모든 세션에 seed 하던 진단 데모 내장 종류·규칙 (ADR-0019). 지금 계약은 이 이름을
@@ -248,8 +251,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_11():
-    assert SCHEMA_VERSION == 11
+def test_schema_version_is_12():
+    assert SCHEMA_VERSION == 12
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -1067,12 +1070,12 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c.close()
 
 
-def test_migrates_v4_all_the_way_to_v11(db_path):
+def test_migrates_v4_all_the_way_to_v12(db_path):
     c = _v4_db(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 11
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 12
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
     assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
@@ -1346,7 +1349,7 @@ def test_fresh_db_has_v10_tables_columns_and_checks(conn):
 
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert PHASE14_TABLES <= _table_names(conn)
-    assert _columns(conn, "work_items") == WORK_ITEM_COLUMNS | {"requested_by_member_id"}  # v11
+    assert _columns(conn, "work_items") == WORK_ITEM_COLUMNS | {"requested_by_member_id"} | V12_COLUMNS["work_items"]  # v11·v12
     assert _columns(conn, "work_item_links") == {
         "from_work_item_id", "to_work_item_id", "type", "cause_execution_id", "created_at",
     }
@@ -1842,16 +1845,233 @@ def test_fresh_schema_matches_v10_migrated_schema(tmp_path):
     migrated.close()
 
 
-@pytest.mark.parametrize("make", [_v4_db, _v5_db, _v6_db, _v7_db, _v8_db, _v9_db])
-def test_migrates_v4_to_v9_all_the_way_to_v11(db_path, make):
+@pytest.mark.parametrize("make", [_v4_db, _v5_db, _v6_db, _v7_db, _v8_db, _v9_db, _v10_db])
+def test_migrates_v4_to_v10_all_the_way_to_v12(db_path, make):
     c = make(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 11
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 12
     assert TABLES <= _table_names(c)
     for table, columns in V11_COLUMNS.items():
         assert columns <= _columns(c, table), table
+    for table, columns in V12_COLUMNS.items():
+        assert columns <= _columns(c, table), table
     assert c.execute("SELECT COUNT(*) FROM notifications WHERE channel != 'shared'").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(*) FROM work_items WHERE direct_member_id IS NOT NULL").fetchone()[0] == 0
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
     c.close()
+
+
+# --- phase 16: v11 → v12 직접 작업 칸·업무 PR 표·PR 커서·이벤트 종류 (ADR-0022) -----------------------------
+
+V11_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v11.sql").read_text()
+V12_COLUMNS = {
+    "work_items": {"direct_member_id", "direct_started_at", "direct_branch"},
+    "github_sources": {"pull_cursor"},
+}
+WORK_PULL_REQUEST_COLUMNS = [
+    "id", "session_id", "work_item_id", "source_id", "repository_full_name", "pr_number", "title", "pr_url",
+    "head_branch", "state", "draft", "author_login", "merged_at", "pr_updated_at", "created_at", "updated_at",
+]
+_WORK_EVENT_INSERT = ("INSERT INTO work_item_events (work_item_id, session_id, type, config_revision, occurred_at,"
+                      " data_json) VALUES ('wi-000000000001', 's1', ?, 1, ?, '{}')")
+
+
+def _v11_db(db_path):
+    """phase 15 서버가 남긴 모양의 v11 DB. 워크스페이스 s1 — 관리자(계정 있음)·멤버, GitHub 소스 1개, 업무 1건
+    (단계 Task 1), 업무 이벤트 2건(id 5·9 — 빈 번호가 있어도 id 가 그대로인지 본다)."""
+    c = connect(db_path)
+    c.executescript(V11_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (11)")
+    c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES ('s1', ?, 1)", (NOW,))
+    for spec in BUILTIN_KINDS:
+        c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', ?, ?, ?)",
+                  (spec.kind, spec.model_dump_json(), NOW))
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at, email, password_hash)"
+              " VALUES ('mem-00000001', 's1', '관리자', 'admin', ?, 'a@example.com', 'scrypt$h')", (NOW,))
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+              " VALUES ('mem-0000000a', 's1', '김OO', 'member', ?)", (NOW,))
+    c.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, cursor,"
+              " created_at, updated_at) VALUES ('ghs-00000001', 's1', 'acme/billing', '{}', '2026-09-29T00:00:00Z',"
+              " ?, ?)", (NOW, NOW))
+    c.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, assignee_type,"
+              " assignee_id, status, status_reason, source_type, created_at, updated_at, requested_by_member_id)"
+              " VALUES ('wi-000000000001', 's1', 1, '쿠폰 오류', '고쳐 주세요', 'bug_fix', 'member', 'mem-0000000a',"
+              " '내 차례', '검토 승인', 'manual', ?, ?, 'mem-00000001')", (NOW, NOW))
+    _insert_task(c, "t1", "s1", "bug_fix")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001' WHERE task_id = 't1'")
+    event = ("INSERT INTO work_item_events (id, work_item_id, session_id, type, config_revision, occurred_at,"
+             " data_json) VALUES (?, 'wi-000000000001', 's1', ?, 1, ?, ?)")
+    c.execute(event, (5, "status_changed", NOW, '{"from": "대기", "to": "내 차례", "reason": "검토 승인"}'))
+    c.execute(event, (9, "assigned", NOW, '{"from": null, "to": {"type": "member", "id": "mem-0000000a"}}'))
+    return c
+
+
+def _v12_base(conn) -> None:
+    """새 칸·표 제약 확인용 최소 행 — 멤버 둘, GitHub 소스, 업무 하나."""
+    _v11_base(conn)
+    conn.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status,"
+                 " status_reason, source_type, created_at, updated_at) VALUES ('wi-000000000001', 's1', 1, 't', 'r',"
+                 " 'bug_fix', '대기', '', 'manual', ?, ?)", (NOW, NOW))
+
+
+def _referencing(conn, table: str) -> list[str]:
+    """`table` 을 외래키로 참조하는 표 이름."""
+    return [
+        name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        if any(r["table"] == table for r in conn.execute(f"PRAGMA foreign_key_list({name})"))
+    ]
+
+
+def test_v12_constants():
+    from workflow.adapters import db
+
+    assert db.WORK_ITEM_EVENT_TYPES == (
+        "status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked",
+    )
+    assert db.WORK_PULL_REQUEST_STATES == ("open", "merged", "closed")
+
+
+def test_fresh_db_has_v12_columns_table_and_indexes(conn):
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    for table, columns in V12_COLUMNS.items():
+        assert columns <= _columns(conn, table), table
+    assert ("members", "direct_member_id", "member_id") in _foreign_keys(conn, "work_items")
+    assert _column_lists(conn, ["work_pull_requests"])["work_pull_requests"] == WORK_PULL_REQUEST_COLUMNS
+    assert _foreign_keys(conn, "work_pull_requests") == {
+        ("sessions", "session_id", "session_id"), ("work_items", "work_item_id", "work_item_id"),
+        ("github_sources", "source_id", "source_id"),
+    }
+    indexed = {
+        (i["unique"], tuple(r["name"] for r in conn.execute(f"PRAGMA index_info({i['name']})")))
+        for i in conn.execute("PRAGMA index_list(work_pull_requests)")
+    }
+    assert {(1, ("session_id", "repository_full_name", "pr_number")), (0, ("work_item_id", "pr_updated_at"))} <= indexed
+    event_indexes = {r["name"] for r in conn.execute("PRAGMA index_list(work_item_events)")}
+    assert {"ix_work_item_events_item", "ix_work_item_events_session"} <= event_indexes
+    assert _referencing(conn, "work_item_events") == []  # 재생성해도 끊길 외래키가 없다
+
+
+def test_v12_work_pull_request_checks(conn):
+    _v12_base(conn)
+    insert = ("INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+              " title, pr_url, head_branch, state, draft, author_login, merged_at, pr_updated_at, created_at,"
+              " updated_at) VALUES ('s1', ?, ?, 'acme/billing', ?, 'RUN-1 고침', 'https://github.com/acme/billing/pull/7',"
+              " 'run-1-fix', ?, ?, 'kim', ?, ?, ?, ?)")
+    conn.execute(insert, ("wi-000000000001", "ghs-00000001", 7, "open", 1, None, NOW, NOW, NOW))
+    conn.execute(insert, ("wi-000000000001", "ghs-00000001", 8, "merged", 0, NOW, NOW, NOW, NOW))
+    conn.execute(insert, ("wi-000000000001", "ghs-00000001", 9, "closed", 0, None, NOW, NOW, NOW))
+    for params in (
+        ("wi-000000000001", "ghs-00000001", 10, "draft", 0, None, NOW, NOW, NOW),  # 상태 허용 값 밖
+        ("wi-000000000001", "ghs-00000001", 11, "merged", 0, None, NOW, NOW, NOW),  # 병합이면 병합 시각이 있어야
+        ("wi-000000000001", "ghs-00000001", 12, "open", 0, NOW, NOW, NOW, NOW),  # 병합이 아니면 병합 시각이 없어야
+        ("wi-000000000001", "ghs-00000001", 13, "open", 2, None, NOW, NOW, NOW),  # draft 는 0·1
+        ("wi-000000000001", "ghs-00000001", 0, "open", 0, None, NOW, NOW, NOW),  # PR 번호는 1 이상
+        ("wi-000000000001", "ghs-00000001", 7, "closed", 0, None, NOW, NOW, NOW),  # 같은 저장소 같은 PR 번호
+        ("wi-nope", "ghs-00000001", 14, "open", 0, None, NOW, NOW, NOW),  # 없는 업무
+        ("wi-000000000001", "ghs-nope", 15, "open", 0, None, NOW, NOW, NOW),  # 없는 소스
+        ("wi-000000000001", "ghs-00000001", 16, "open", 0, None, None, NOW, NOW),  # PR 갱신 시각 필수
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+    assert conn.execute("SELECT COUNT(*) FROM work_pull_requests").fetchone()[0] == 3
+
+
+def test_v12_work_item_direct_columns_and_event_types(conn):
+    _v12_base(conn)
+    conn.execute("UPDATE work_items SET direct_member_id = 'mem-00000002', direct_started_at = ?,"
+                 " direct_branch = 'run-1-fix'", (NOW,))
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 멤버
+        conn.execute("UPDATE work_items SET direct_member_id = 'mem-nope'")
+    conn.execute("UPDATE github_sources SET pull_cursor = ?", (NOW,))
+    from workflow.adapters.db import WORK_ITEM_EVENT_TYPES
+
+    for event_type in WORK_ITEM_EVENT_TYPES:
+        conn.execute(_WORK_EVENT_INSERT, (event_type, NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # 모르는 종류
+        conn.execute(_WORK_EVENT_INSERT, ("commented", NOW))
+
+
+def test_v11_fixture_is_the_phase15_schema(db_path):
+    c = _v11_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 11
+    assert _table_names(c) - {"sqlite_sequence"} == V11_TABLES | {"schema_version"}
+    for table, columns in V12_COLUMNS.items():
+        assert not columns & _columns(c, table), table
+    with pytest.raises(sqlite3.IntegrityError):  # v11 은 새 이벤트 종류를 모른다
+        c.execute(_WORK_EVENT_INSERT, ("priority_changed", NOW))
+    c.close()
+
+
+def test_migrates_v11_to_v12_preserving_rows_and_event_ids(db_path):
+    c = _v11_db(db_path)
+    columns = _column_lists(c, V11_TABLES)
+    before = _dump(c, V11_TABLES)
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    assert _dump(c, V11_TABLES, columns) == before  # 기존 행 수·열 값은 그대로
+    assert [r[0] for r in c.execute("SELECT id FROM work_item_events ORDER BY id")] == [5, 9]
+    for table, new in V12_COLUMNS.items():
+        values = {tuple(r) for r in c.execute(f"SELECT {', '.join(sorted(new))} FROM {table}")}
+        assert values == {(None,) * len(new)}, table  # 새 칸은 NULL
+    assert c.execute("SELECT cursor FROM github_sources").fetchone()[0] == "2026-09-29T00:00:00Z"  # 이슈 커서 그대로
+    assert c.execute("SELECT COUNT(*) FROM work_pull_requests").fetchone()[0] == 0
+    event_indexes = {r["name"] for r in c.execute("PRAGMA index_list(work_item_events)")}
+    assert {"ix_work_item_events_item", "ix_work_item_events_session"} <= event_indexes
+    assert _referencing(c, "work_item_events") == []
+    c.execute(_WORK_EVENT_INSERT, ("pull_request_linked", NOW))  # 새 종류 허용
+    assert c.execute("SELECT MAX(id) FROM work_item_events").fetchone()[0] == 10  # id 는 이어서
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute(_WORK_EVENT_INSERT, ("commented", NOW))
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_v12_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v11_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    before = _dump(c, V11_TABLES)
+    events_sql = c.execute("SELECT sql FROM sqlite_master WHERE name = 'work_item_events'").fetchone()[0]
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 11
+    assert _table_names(c) - {"sqlite_sequence"} == V11_TABLES | {"schema_version"}
+    for table, columns in V12_COLUMNS.items():
+        assert not columns & _columns(c, table), table
+    assert c.execute("SELECT sql FROM sqlite_master WHERE name = 'work_item_events'").fetchone()[0] == events_sql
+    assert _dump(c, V11_TABLES) == before
+    assert not c.in_transaction
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001' WHERE task_id = 't1'")
+    init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    assert [r[0] for r in c.execute("SELECT id FROM work_item_events ORDER BY id")] == [5, 9]
+    c.close()
+
+
+@pytest.mark.parametrize("old", ["v10", "v11"])
+def test_fresh_schema_matches_v11_migrated_schema(tmp_path, old):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = (_v10_db if old == "v10" else _v11_db)(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    assert _table_names(fresh) == _table_names(migrated)
+    for table in TABLES:
+        cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid"
+        assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
+        assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    assert _indexes(fresh) == _indexes(migrated)
+    sql = "SELECT sql FROM sqlite_master WHERE name IN ('work_item_events', 'work_pull_requests') ORDER BY name"
+    assert fresh.execute(sql).fetchall() == migrated.execute(sql).fetchall()  # CHECK 까지 같은 원문
+    fresh.close()
+    migrated.close()
