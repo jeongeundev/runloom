@@ -7,7 +7,8 @@
       "name": "work-ui-design",
       "status": "completed",
       "started_at": "2026-09-30T14:28:33+0900",
-      "summary": "문서만: 신설 docs/adr/0022-work-screen-and-direct-work.md(결정 9·하지 않는 것·대안 7), 수정 ARCHITECTURE \"업무 화면 — phase 16\"(주소 표·옛 주소 303 표·바꾸지 않는 경로·빠른 필터·묶기·보드 6칸·다음 할 일·담당 바꾸기·직접 작업·업무 상태 새 순서·PR 신호·스키마 v12·화면 배치·연결 탭·시작하기·이름 표), UI_GUIDE 셸·업무 화면·패널·화면 목록, GLOSSARY phase 16 용어 12개, ADR-0020 끝 링크, CURRENT_HANDOFF 한 줄. 결정: 업무 PR 표 work_pull_requests 는 감지 PR 전용(Runloom PR 은 task_pull_requests), 직접 작업 중에는 워커 자동 착수 금지(대기 코드 direct_work), 끝 상태가 되면 직접 작업 칸 비움, work_actions 는 web 을 import 하지 않고 WorkActionError 를 던짐, branch_name·keys_in·work_path 는 domain/work_keys.py, 시작하기는 domain/start_checklist.py. 검증: pytest 2915 passed·40 skipped, ruff 통과. 다음 step 주의: 이름·시그니처는 ARCHITECTURE 이름 표가 기준, v11 fixture schema_v11.sql 을 step 1 이 만든다, 15 의 ?view=my_turn 은 q=my_turn 으로 읽어야 한다."
+      "summary": "문서만: 신설 docs/adr/0022-work-screen-and-direct-work.md(결정 9·하지 않는 것·대안 7), 수정 ARCHITECTURE \"업무 화면 — phase 16\"(주소 표·옛 주소 303 표·바꾸지 않는 경로·빠른 필터·묶기·보드 6칸·다음 할 일·담당 바꾸기·직접 작업·업무 상태 새 순서·PR 신호·스키마 v12·화면 배치·연결 탭·시작하기·이름 표), UI_GUIDE 셸·업무 화면·패널·화면 목록, GLOSSARY phase 16 용어 12개, ADR-0020 끝 링크, CURRENT_HANDOFF 한 줄. 결정: 업무 PR 표 work_pull_requests 는 감지 PR 전용(Runloom PR 은 task_pull_requests), 직접 작업 중에는 워커 자동 착수 금지(대기 코드 direct_work), 끝 상태가 되면 직접 작업 칸 비움, work_actions 는 web 을 import 하지 않고 WorkActionError 를 던짐, branch_name·keys_in·work_path 는 domain/work_keys.py, 시작하기는 domain/start_checklist.py. 검증: pytest 2915 passed·40 skipped, ruff 통과. 다음 step 주의: 이름·시그니처는 ARCHITECTURE 이름 표가 기준, v11 fixture schema_v11.sql 을 step 1 이 만든다, 15 의 ?view=my_turn 은 q=my_turn 으로 읽어야 한다.",
+      "completed_at": "2026-09-30T14:42:53+0900"
     },
     {
       "step": 1,
