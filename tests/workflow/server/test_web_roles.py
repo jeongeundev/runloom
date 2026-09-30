@@ -46,12 +46,12 @@ ADMIN_APIS = [
 ]
 # phase 16: 옛 /agents·/kinds·/operator·/operator/github 는 연결 화면 탭으로 303 — 멤버가 여는 탭(알림 탭만 관리자)
 MEMBER_PAGES = ["/tasks", "/tasks/new", "/connect?tab=team", "/connect?tab=kinds", "/connect?tab=advanced",
-                "/connect?tab=sources", "/metrics"]
+                "/connect?tab=sources", "/monitor"]
 MEMBER_APIS = ["/github/sources", "/human-requests", "/field-mappings", "/metrics.json", "/metrics.csv"]
-# phase 16 사이드바: 업무 · 모니터링(`view_metrics`) · 연결 · 내 설정(`edit_own_settings`) — 관리자 전용 화면(입구·알림·팀)은
+# phase 16 사이드바: 업무 · 모니터링(`view_metrics`, /monitor) · 연결 · 내 설정(`edit_own_settings`) — 관리자 전용 화면(입구·알림·팀)은
 # 사이드바가 아니라 연결 화면 탭(step 6)으로 간다
 ADMIN_LINKS = ('href="/sources"', 'href="/operator/notifications"', 'href="/team"')
-MEMBER_LINKS = ('href="/tasks"', 'href="/metrics"', 'href="/connect"', 'href="/me"')
+MEMBER_LINKS = ('href="/tasks"', 'href="/monitor"', 'href="/connect"', 'href="/me"')
 
 
 def sidebar_of(html: str) -> str:
@@ -147,7 +147,7 @@ def test_member_changes_nothing_on_admin_routes(member, conn):
 def test_admin_role_gates_do_not_read_is_operator(admin, conn):
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (SESSION,))
     conn.commit()
-    for path in ("/connect?tab=notify", "/connect?tab=sources", "/metrics"):
+    for path in ("/connect?tab=notify", "/connect?tab=sources", "/monitor"):
         response = admin.get(path, follow_redirects=False)
         assert response.status_code == 200, path
     assert 'id="inbound-url"' in admin.get("/connect?tab=sources").text  # 입구 절 = `manage_connections`
@@ -239,5 +239,5 @@ def test_member_github_page_shows_runner_but_not_connection_forms(member, admin)
 
 
 def test_member_metrics_page_hides_baseline_import(member, admin):
-    assert f"/operator/github/sources/{SOURCE}/baseline" in admin.get("/metrics").text
-    assert f"/operator/github/sources/{SOURCE}/baseline" not in member.get("/metrics").text
+    assert f"/operator/github/sources/{SOURCE}/baseline" in admin.get("/monitor").text
+    assert f"/operator/github/sources/{SOURCE}/baseline" not in member.get("/monitor").text

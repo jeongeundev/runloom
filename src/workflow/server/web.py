@@ -74,7 +74,7 @@ from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
 from workflow.domain.execution_policy import policy_for
-from workflow.domain import notification, team
+from workflow.domain import notification, start_checklist, team
 from workflow.domain.kinds import (
     get_kind,
     kind_for_capability,
@@ -197,6 +197,8 @@ def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict
         # 사이드바 "업무" 배지 = 로그인한 멤버가 받는 사람인 `내 차례` 업무 수(빠른 필터 `my_turn` 과 같은 계산)
         "turn_count": len(repo.list_work_items(conn, session_id, recipient_member_id=member.member_id))
         if member is not None else 0,
+        # 사이드바 "시작하기" — 필수 항목이 모두 끝나면 숨긴다(주소는 열림)
+        "show_start": not start_checklist.required_done(repo.start_facts(conn, session_id)),
     }
 
 
@@ -2226,7 +2228,26 @@ def me_webhook_test(
     return _me_page(request, conn, member, test_result=_send_test_notification(request, url))
 
 
-@router.get("/metrics", response_class=HTMLResponse)
+@router.get("/metrics")
+def metrics_redirect(request: Request) -> RedirectResponse:
+    """옛 지표 주소 → `/monitor`(쿼리 그대로 — 값은 `/monitor` 의 파서가 검증)."""
+    query = request.url.query
+    return RedirectResponse(f"/monitor?{query}" if query else "/monitor", status_code=303)
+
+
+@router.get("/start", response_class=HTMLResponse)
+def start_page(
+    request: Request,
+    member: LoggedIn = Depends(require_member),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """시작하기 체크리스트 — 항목·상태는 `domain/start_checklist.py`. 필수가 모두 끝나도 열린다."""
+    facts = repo.start_facts(conn, member.session_id)
+    return _render("start.html", **_base(request, conn, member.session_id, utc_now()),
+                   items=start_checklist.start_items(facts), done=start_checklist.required_done(facts))
+
+
+@router.get("/monitor", response_class=HTMLResponse)
 def metrics_page(
     request: Request,
     since: str = Query("", alias="from"),

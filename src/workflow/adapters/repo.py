@@ -71,6 +71,7 @@ from workflow.domain import team
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
+from workflow.domain.start_checklist import StartFacts
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
 from workflow.domain.work_list import WorkRow, next_action
@@ -1423,6 +1424,29 @@ def list_source_tokens(conn: Connection, session_id: str) -> list[Row]:
     return conn.execute(
         "SELECT * FROM source_tokens WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
     ).fetchall()
+
+
+# --- 시작하기 (phase 16 step 7) ----------------------------------------------------
+
+
+def start_facts(conn: Connection, session_id: str) -> StartFacts:
+    """시작하기 항목의 완료 사실. 연결 프로그램은 워크스페이스 칸이 없어(셀프호스트 1 워크스페이스) 전부 센다."""
+    def exists(sql: str, params: tuple = ()) -> bool:
+        return _one(conn, sql, params) is not None
+
+    has_source = any(s.enabled for s in list_github_sources(conn, session_id)) or exists(
+        "SELECT 1 FROM source_tokens WHERE session_id = ? AND revoked_at IS NULL LIMIT 1", (session_id,))
+    active_members = conn.execute(
+        "SELECT COUNT(*) FROM members WHERE session_id = ? AND disabled_at IS NULL", (session_id,)).fetchone()[0]
+    return StartFacts(
+        has_source=has_source,
+        has_runner=exists("SELECT 1 FROM connectors WHERE revoked_at IS NULL LIMIT 1"),
+        invited=active_members >= 2 or exists(
+            "SELECT 1 FROM member_invites WHERE session_id = ? AND purpose = 'invite' LIMIT 1", (session_id,)),
+        delegated=exists(
+            "SELECT 1 FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+            " WHERE t.session_id = ? AND t.work_item_id IS NOT NULL LIMIT 1", (session_id,)),
+    )
 
 
 # --- 업무·선택 ---------------------------------------------------------------

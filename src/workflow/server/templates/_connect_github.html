@@ -102,7 +102,7 @@
   <div class="actions">
     <form data-json-action="/operator/github/sources/{{ c.source_id }}/baseline" class="actions">
       <button class="btn btn-secondary btn-small" type="submit">{{ '기준선 다시 가져오기' if s.baseline else '기준선 가져오기' }}</button>
-      {% if s.baseline %}<span class="small" data-baseline-summary>기준선 {{ s.baseline.n }}건 · 이슈 열림 → 병합 중앙값 {{ s.baseline.median }} · {{ s.baseline.fetched_at|kst }} 가져옴 · <a href="/metrics">지표에서 비교</a></span>
+      {% if s.baseline %}<span class="small" data-baseline-summary>기준선 {{ s.baseline.n }}건 · 이슈 열림 → 병합 중앙값 {{ s.baseline.median }} · {{ s.baseline.fetched_at|kst }} 가져옴 · <a href="/monitor">지표에서 비교</a></span>
       {% else %}<span class="small">Runloom 도입 전 GitHub 이력으로 비교 기준을 만듭니다 (연결 전에 열려 PR 병합으로 닫힌 이슈)</span>{% endif %}
       <span class="action-note" data-json-result></span>
     </form>

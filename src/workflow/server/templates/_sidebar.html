@@ -1,13 +1,14 @@
-{# 왼쪽 사이드바 — UI_GUIDE "앱 셸". 제품명 · 탐색(업무 + 내 차례 수 배지 · 모니터링 · 연결 · 내 설정) · 로그인 멤버(표시 이름·역할) + 로그아웃.
+{# 왼쪽 사이드바 — UI_GUIDE "앱 셸". 제품명 · 탐색(업무 + 내 차례 수 배지 · 모니터링 · 연결 · 시작하기 · 내 설정) · 로그인 멤버(표시 이름·역할) + 로그아웃.
    "최근" 목록·`+` 는 없다(업무 화면이 목록, 업무 등록은 도구 막대). 활성 표시는 경로 접두사. 권한 없는 항목(모니터링 `view_metrics`,
-   내 설정 `edit_own_settings`)은 숨긴다. 연결 = `/connect`(옛 설정 화면 경로도 활성). 모니터링은 step 7 전까지 옛 화면(/metrics)으로, 시작하기는 step 7 전까지 숨김. #}
+   내 설정 `edit_own_settings`)은 숨긴다. 연결 = `/connect`(옛 설정 화면 경로도 활성). 시작하기는 필수 항목이 남았을 때만(`show_start`). #}
 {% set path = request.url.path %}
 <aside class="sidebar">
   <a class="brand" href="/">Runloom</a>
   <nav class="nav">
     <a href="/tasks"{% if path.startswith('/tasks') or path.startswith('/work') or path.startswith('/chains') %} class="active"{% endif %}>업무{% if turn_count %}<span class="nav-count" data-turn-count>{{ turn_count }}</span>{% endif %}</a>
-    {% if 'view_metrics' in allowed %}<a href="/metrics"{% if path.startswith('/metrics') %} class="active"{% endif %}>모니터링</a>{% endif %}
+    {% if 'view_metrics' in allowed %}<a href="/monitor"{% if path.startswith('/monitor') %} class="active"{% endif %}>모니터링</a>{% endif %}
     <a href="/connect"{% if path.startswith('/connect') or path.startswith('/operator') or path.startswith('/sources') or path.startswith('/team') or path.startswith('/agents') or path.startswith('/kinds') %} class="active"{% endif %}>연결</a>
+    {% if show_start %}<a href="/start"{% if path == '/start' %} class="active"{% endif %}>시작하기</a>{% endif %}
     {% if 'edit_own_settings' in allowed %}<a href="/me"{% if path == '/me' or path.startswith('/me/') %} class="active"{% endif %}>내 설정</a>{% endif %}
   </nav>
   <div class="side-foot">{% if member %}{{ member.display_name }} · {{ "관리자" if member.role == "admin" else "멤버" }}{% else %}셀프호스트 워크스페이스{% endif %}

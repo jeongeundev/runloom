@@ -367,7 +367,7 @@ def test_04_github_merge_and_close_completes_the_bundle_at_merge_time(world):
 
 def test_05_baseline_import_shows_before_and_after_on_the_page(world):
     source_id = world.sources[REPO]
-    before = world.http.get("/metrics")
+    before = world.http.get("/monitor")
     assert before.status_code == 200 and "가져온 적 없음" in before.text
     earlier = len([r for r in world.fake.requests if r[1] == "/graphql"])  # 병합 조회
 
@@ -383,7 +383,7 @@ def test_05_baseline_import_shows_before_and_after_on_the_page(world):
     assert baseline["intake_to_merge"]["n"] == 2  # #11(2시간)·#16(이른 병합 6시간). PR 없음·미병합·연결 이후는 제외
     assert baseline["intake_to_merge"]["median"] == 4 * 3600
 
-    page = world.http.get("/metrics")
+    page = world.http.get("/monitor")
     assert page.status_code == 200
     top = page.text.split('id="compare"', 1)[1].split("</section>", 1)[0]
     assert REPO in top and "n 2" in top and "4시간 0분" in top and BASELINE_NOTE in top

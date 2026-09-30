@@ -596,7 +596,7 @@ def test_08_secrets_stay_out_of_the_central_side(world):
     assert (world.workdir / "logs" / "central.log").stat().st_size > 0
 
     pages = ["/tasks", f"/tasks/{world.tasks['A']}", f"/tasks/{world.tasks['B']}", "/connect?tab=sources",
-             "/connect?tab=notify", "/metrics", "/github/sources"]
+             "/connect?tab=notify", "/monitor", "/github/sources"]
     for page in pages:
         body = world.http.get(page).text
         leaked += [f"{name}@{page}" for name, value in needles.items() if value in body]

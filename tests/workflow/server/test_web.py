@@ -1756,7 +1756,7 @@ def invite_token(conn, role: str = "member") -> str:
 
 def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn):
     client = TestClient(selfhost)
-    for path in ("/", "/tasks", "/tasks/new", "/connect?tab=team", "/connect?tab=advanced", "/metrics"):
+    for path in ("/", "/tasks", "/tasks/new", "/connect?tab=team", "/connect?tab=advanced", "/monitor"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303, path
         assert response.headers["location"] == "/login", path
@@ -2207,7 +2207,7 @@ def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, set
     html = client.get("/tasks").text
     sidebar = html[html.index('class="sidebar'):html.index('class="main')]
     assert 'action="/logout"' in sidebar and "로그아웃" in sidebar
-    assert 'href="/metrics"' in sidebar and 'href="/connect"' in sidebar
+    assert 'href="/monitor"' in sidebar and 'href="/connect"' in sidebar
     assert 'href="/tasks/new"' not in sidebar and 'href="/tasks/new"' in html  # 업무 등록은 도구 막대(phase 16)
     assert_no_secrets(html, settings)
 

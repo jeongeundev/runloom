@@ -52,6 +52,7 @@ from workflow.contracts.v1 import (
 )
 from workflow.domain.field_mapping import MappingRow
 from workflow.domain.selection import Candidate, select_agent
+from workflow.domain.start_checklist import StartFacts
 from workflow.domain.task_followup import FollowupTaskSpec
 from workflow.domain.work_status import WorkStatus, work_status
 
@@ -3986,3 +3987,55 @@ def test_list_work_rows_query_count_does_not_grow_with_work_items(seeded):
     add(28)
     assert len(repo.list_work_rows(conn, SESSION, closed_since=None)) == 31
     assert count() == few
+
+
+# --- 시작하기 (phase 16 step 7) ---
+
+
+def test_start_facts_empty_workspace_is_all_false(sessions):
+    assert repo.start_facts(sessions, SESSION) == StartFacts(
+        has_source=False, has_runner=False, invited=False, delegated=False)
+
+
+def test_start_facts_source_is_enabled_github_source_or_live_inbound_token(sessions):
+    conn = sessions
+    repo.save_github_source(conn, OTHER_SESSION, _source(source_id="ghs-99999999"), NOW)  # 다른 워크스페이스는 세지 않는다
+    token_id, _ = repo.issue_source_token(conn, SESSION, "n8n", "", NOW)
+    assert repo.start_facts(conn, SESSION).has_source
+    repo.revoke_source_token(conn, SESSION, token_id, LATER)
+    assert not repo.start_facts(conn, SESSION).has_source
+    repo.save_github_source(conn, SESSION, _source(enabled=False), NOW)
+    assert not repo.start_facts(conn, SESSION).has_source
+    repo.save_github_source(conn, SESSION, _source(), LATER)
+    assert repo.start_facts(conn, SESSION).has_source
+
+
+def test_start_facts_runner_is_unrevoked_connector(sessions):
+    conn = sessions
+    connector_id, _ = repo.exchange_connect_code(conn, repo.issue_connect_code(conn, NOW), NOW)
+    assert repo.start_facts(conn, SESSION).has_runner
+    repo.revoke_connector(conn, connector_id, LATER)
+    assert not repo.start_facts(conn, SESSION).has_runner
+
+
+def test_start_facts_invited_is_two_active_members_or_issued_invite(sessions):
+    conn = sessions
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)  # 세션을 만들 때 생긴 첫 관리자 1명
+    repo.add_member(conn, OTHER_SESSION, display_name="남", now=NOW)
+    repo.issue_invite(conn, OTHER_SESSION, role="member", created_by_member_id=None, now=NOW)
+    repo.issue_reset_link(conn, SESSION, admin, created_by_member_id=None, now=NOW)  # 재설정 링크는 초대가 아니다
+    assert not repo.start_facts(conn, SESSION).invited
+    other = repo.add_member(conn, SESSION, display_name="멤버", now=NOW)
+    assert repo.start_facts(conn, SESSION).invited
+    repo.disable_member(conn, SESSION, other, now=LATER)
+    assert not repo.start_facts(conn, SESSION).invited
+    repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    assert repo.start_facts(conn, SESSION).invited
+
+
+def test_start_facts_delegated_is_work_with_any_execution(seeded):
+    conn = seeded
+    assert not repo.start_facts(conn, SESSION).delegated
+    _create_execution(conn, "exec-1")
+    assert repo.start_facts(conn, SESSION).delegated
+    assert not repo.start_facts(conn, OTHER_SESSION).delegated

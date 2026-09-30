@@ -606,7 +606,7 @@ def test_card_shows_the_imported_baseline_summary(op, conn, secrets, pem):
 
     assert "기준선 2건" in card and "이슈 열림 → 병합 중앙값 4시간 0분" in card
     assert "2026-09-27 20:20" in card  # 가져온 시각(KST)
-    assert 'href="/metrics"' in card
+    assert 'href="/monitor"' in card
 
 
 def test_card_title_hides_internal_ids(op, conn, secrets, pem):
