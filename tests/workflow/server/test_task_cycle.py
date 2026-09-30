@@ -41,6 +41,7 @@ from workflow.domain.metrics import compute_metrics
 from workflow.domain.work_status import work_status
 from workflow.server import human_api, task_cycle
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace
+from workflow.server.errors import ApiError
 from workflow.server.worker import TickReport, Worker
 
 from .conftest import event, exchange
@@ -1184,6 +1185,140 @@ def test_rework_limit_resume_answer_runs_one_more_fix(cycle, conn, store, worker
     answer(conn, request["request_id"], text="중복 조건만 지우고 다시")
     worker.tick()
     assert [e["start_key"] for e in executions(conn, fix_task)][-1] == f"auto:{fix_task}:r2"
+
+
+# --- 검증만 다시 (phase 17 step 7) -----------------------------------------------------------------
+
+
+def reverify(conn, store, request_id: str, response_id: str = "resp-reverify") -> dict:
+    row = repo.get_human_request(conn, SESSION, request_id)
+    body = human_api.ResponseBody(response_id=response_id, expected_revision=row["revision"], action="reverify")
+    return human_api.respond_to_request(conn, SESSION, request_id, body, NOW, store=store)
+
+
+def _failed_fix(conn, store, worker) -> tuple[str, str, str]:
+    """(fix_task, fix_exec, request_id) — 첫 수정 결과가 판정에 실패해 `fix_verification_failed` 가 열린 상태."""
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    fix_exec = executions(conn, fix_task)[0]["execution_id"]
+    finish_fix(conn, store, fix_exec, before_exit=0)
+    worker.tick()
+    (request,) = open_requests(conn, fix_task)
+    assert request["code"] == "fix_verification_failed"
+    return fix_task, fix_exec, request["request_id"]
+
+
+def test_reverify_runs_verification_only_on_the_last_result_commit(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, fix_exec, request_id = _failed_fix(conn, store, worker)
+    previous = repo.get_execution(conn, fix_exec)
+
+    answered = reverify(conn, store, request_id)
+    assert answered["task_revision"] == 2
+    assert len(executions(conn, fix_task)) == 1  # 응답은 실행을 만들지 않는다 — 워커가 만든다
+    report = worker.tick()
+
+    old, again = executions(conn, fix_task)
+    assert report.tasks_resumed == 1
+    assert old["released_at"] is not None
+    assert (again["start_key"], again["agent_id"], again["predecessor_execution_id"], again["verify_only"]) == (
+        f"reverify:{request_id}", FIX, fix_exec, 1,
+    )
+    assert again["assigned_connector_id"] == cycle["billing"]
+    request = request_of(again)
+    assert request.verify_only_commit == C1
+    assert request.target == request_of(previous).target  # 등록·기준 커밋·검증 프로필 그대로
+    assert request.input_artifact_ids == [previous["result_artifact_id"]]
+    assert request.task_revision == 2
+    assert (request.work_key, request.branch_seq) == (request_of(previous).work_key, request_of(previous).branch_seq)
+    worker.tick()
+    assert len(executions(conn, fix_task)) == 2  # 응답 하나에 실행 하나
+
+
+def test_reverify_that_passes_moves_on_to_review(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, _, request_id = _failed_fix(conn, store, worker)
+    reverify(conn, store, request_id)
+    worker.tick()
+    again = executions(conn, fix_task)[-1]["execution_id"]
+
+    finish_fix(conn, store, again)  # 러너가 같은 결과 커밋을 다시 검증 — 이번엔 통과
+    worker.tick()
+
+    assert verdict_codes(conn, again)["verification_passed"] is True
+    (review,) = review_tasks(conn, fix_task)
+    (review_exec,) = executions(conn, review["task_id"])
+    assert review_exec["start_key"] == f"review:{again}"
+    assert request_of(review_exec).target.result_commit == C1
+    assert open_requests(conn, fix_task) == []
+    assert all(not e["start_key"].startswith("rework:") for e in executions(conn, fix_task))  # 재작업 횟수에 들지 않음
+
+
+def test_reverify_that_fails_again_opens_a_new_verification_request(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, fix_exec, request_id = _failed_fix(conn, store, worker)
+    reverify(conn, store, request_id)
+    worker.tick()
+    again = executions(conn, fix_task)[-1]["execution_id"]
+
+    finish_fix(conn, store, again, before_exit=0)
+    worker.tick()
+    worker.tick()
+
+    assert review_tasks(conn, fix_task) == []
+    (fresh,) = open_requests(conn, fix_task)
+    assert (fresh["code"], fresh["cause_key"]) == ("fix_verification_failed", f"fix_verification_failed:{again}")
+    assert [r["cause_key"] for r in repo.list_human_requests(conn, fix_task)] == [
+        f"fix_verification_failed:{fix_exec}", f"fix_verification_failed:{again}",
+    ]
+    reverify(conn, store, fresh["request_id"], "resp-reverify-2")  # 몇 번이든 다시 할 수 있다
+    worker.tick()
+    assert executions(conn, fix_task)[-1]["start_key"] == f"reverify:{fresh['request_id']}"
+
+
+def test_reverify_waits_for_a_runner_that_reports_verify_only(cycle, conn, store, worker):
+    fix_task, _, request_id = _failed_fix(conn, store, worker)  # 러너가 capabilities 를 보고하지 않았다(옛 러너)
+    reverify(conn, store, request_id)
+    worker.tick()
+    worker.tick()
+
+    assert len(executions(conn, fix_task)) == 1
+    assert status(conn, fix_task) == ("대기", "연결 프로그램 업데이트 필요 — 검증만 다시 미지원")
+
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])  # 러너 업데이트 뒤 claim
+    worker.tick()
+    assert executions(conn, fix_task)[-1]["start_key"] == f"reverify:{request_id}"
+
+
+def test_resume_on_a_verification_failure_still_reruns_the_agent(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, fix_exec, request_id = _failed_fix(conn, store, worker)
+    answer(conn, request_id, text="테스트를 먼저 실패하게 만드세요")
+    worker.tick()
+
+    _, again = executions(conn, fix_task)
+    assert (again["start_key"], again["verify_only"]) == (f"auto:{fix_task}:r2", 0)
+    request = request_of(again)
+    assert request.verify_only_commit is None
+    assert "테스트를 먼저 실패하게 만드세요" in request.request
+
+
+def test_reverify_needs_a_result_commit(cycle, conn, store, worker):
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    fix_exec = executions(conn, fix_task)[0]["execution_id"]
+    request_id, _ = repo.create_human_request_once(
+        conn, fix_task, "fix_verification_failed", "결과 판정 실패", f"fix_verification_failed:{fix_exec}", NOW,
+    )
+    with pytest.raises(ApiError) as nothing:  # 실행이 아직 결과 전이다
+        reverify(conn, store, request_id)
+    assert (nothing.value.status, nothing.value.code) == (409, "nothing_to_reverify")
+
+    finish_fix(conn, store, fix_exec, outcome="needs_information")  # 결과 커밋 없는 결과
+    with pytest.raises(ApiError) as no_commit:
+        reverify(conn, store, request_id)
+    assert (no_commit.value.status, no_commit.value.code) == (409, "nothing_to_reverify")
+    assert repo.get_human_request(conn, SESSION, request_id)["state"] == "open"
 
 
 def test_close_racing_with_start_leaves_no_execution(cycle, conn, worker, monkeypatch):

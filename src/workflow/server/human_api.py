@@ -13,6 +13,9 @@
 - 소유자 승인 요청(`owner_approval`, ADR-0023 결정 1)은 `approve`·`decline` 만 받고, 에이전트 소유자와 관리자만 답한다
   (`delegation.can_decide_approval` — 아니면 403). 승인은 요청만 닫고 착수는 워커가, 거절은 같은 트랜잭션에서 단계
   선택·업무 담당을 비우고 트랜잭션 뒤 맡긴 사람에게 `delegation_declined` 알림.
+- 수정 결과 판정 실패(`fix_verification_failed`)는 `reverify`(검증만 다시, ADR-0023)도 받는다. 그 단계의 활성 실행이
+  `result_ready` 이고 결과 봉투에 `result_commit` 이 있어야 한다(아니면 409 `nothing_to_reverify`). 실행은 워커가
+  같은 결과 커밋으로 만든다(`Worker._start_verify_only`).
 """
 
 import secrets
@@ -21,12 +24,13 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from workflow.adapters import repo
-from workflow.adapters.errors import ResponseConflict, StaleRequest, TaskClosed
+from workflow.adapters.artifact_store import ArtifactStore
+from workflow.adapters.errors import ArtifactMissing, NotFound, ResponseConflict, StaleRequest, TaskClosed
 from workflow.adapters.secret_store import SecretStore
-from workflow.contracts.v1 import NonEmptyStr
+from workflow.contracts.v1 import CodeChangeResult, NonEmptyStr
 from workflow.domain.delegation import OWNER_APPROVAL_CODE, can_decide_approval, parse_approval_cause_key
 from workflow.domain.work_status import STAGE_FAILED
 from workflow.domain import team
@@ -37,7 +41,7 @@ from workflow.server.settings import Settings
 
 router = APIRouter(prefix="/human-requests")
 
-Action = Literal["resume", "choose_agent", "retry", "close", "approve", "decline"]
+Action = Literal["resume", "reverify", "choose_agent", "retry", "close", "approve", "decline"]
 CLOSE_REASON = "운영자 종료 — 사람 요청 응답"
 CLOSE_WORK_REASON = "닫음 — 실행 실패"  # 실행 실패 요청을 닫으면 업무 `종료` 의 이유
 DECLINE_NOTE_MAX = 2000  # 거절 메모 최대 글자 수
@@ -46,6 +50,7 @@ _ACTIONS: dict[str, frozenset[str]] = {
     "assignee_multiple": frozenset({"choose_agent", "close"}),
     STAGE_FAILED: frozenset({"retry", "close"}),
     OWNER_APPROVAL_CODE: frozenset({"approve", "decline"}),
+    "fix_verification_failed": frozenset({"resume", "reverify", "close"}),
 }
 # 추가 정보를 묻는 요청 — `resume` 에 빈 답은 받지 않는다
 _INFORMATION_CODES = frozenset({"input_missing", "fix_needs_information", "review_needs_information"})
@@ -75,7 +80,21 @@ def asks_information(code: str) -> bool:
     return code in _INFORMATION_CODES
 
 
-def _check(conn: Connection, session_id: str, request, body: ResponseBody, member_id: str | None) -> None:
+def reverify_commit(conn: Connection, store: ArtifactStore | None, task_id: str) -> str | None:
+    """검증만 다시 할 결과 커밋 — 단계의 활성 실행이 `result_ready` 이고 결과 봉투(`CodeChangeResult`)에 있는 값. 없으면 None."""
+    active = repo.active_execution(conn, task_id)
+    if store is None or active is None or active["status"] != "result_ready" or not active["result_artifact_id"]:
+        return None
+    try:
+        return CodeChangeResult.model_validate_json(
+            repo.read_artifact(conn, store, active["result_artifact_id"])
+        ).result_commit
+    except (ValidationError, ValueError, NotFound, ArtifactMissing):
+        return None
+
+
+def _check(conn: Connection, session_id: str, request, body: ResponseBody, member_id: str | None,
+           store: ArtifactStore | None) -> None:
     allowed = allowed_actions(request["code"])
     if body.action not in allowed:
         raise ApiError(422, "invalid_field", f"요청 {request['code']} 에는 {body.action} 로 응답할 수 없습니다.",
@@ -88,6 +107,9 @@ def _check(conn: Connection, session_id: str, request, body: ResponseBody, membe
             raise ApiError(403, "forbidden", "에이전트 소유자나 관리자만 승인·거절할 수 있습니다.")
         if body.action == "decline" and len(body.text) > DECLINE_NOTE_MAX:
             raise ApiError(422, "invalid_field", f"거절 메모는 {DECLINE_NOTE_MAX}자까지입니다.", field="text")
+    # 이미 답한 요청은 재전송·경쟁 판정(`record_human_response_once`)에 맡긴다 — 착수 뒤 재전송도 처음 결과
+    if body.action == "reverify" and request["state"] == "open" and reverify_commit(conn, store, request["task_id"]) is None:
+        raise ApiError(409, "nothing_to_reverify", "다시 검증할 결과 커밋이 없습니다.")
     if body.action == "resume" and asks_information(request["code"]) and not body.text.strip():
         raise ApiError(422, "invalid_field", "요청한 정보를 text 에 적어야 합니다.", field="text")
     if body.action == "choose_agent":
@@ -100,14 +122,15 @@ def _check(conn: Connection, session_id: str, request, body: ResponseBody, membe
 
 def respond_to_request(
     conn: Connection, session_id: str, request_id: str, body: ResponseBody, now: str, *, member_id: str | None = None,
-    settings: Settings | None = None, secret_store: SecretStore | None = None,
+    settings: Settings | None = None, secret_store: SecretStore | None = None, store: ArtifactStore | None = None,
 ) -> dict:
     """응답 기록 — 재전송은 처음 결과. `member_id` 는 응답자(다시 맡기기면 맡긴 사람도). 검사는 처음 응답에만 의미가 있지만 같은 본문이면 같은 결과라 먼저 한다.
-    `settings`·`secret_store` 는 거절 알림용 — 없으면 알림을 쌓지 않는다."""
+    `settings`·`secret_store` 는 거절 알림용 — 없으면 알림을 쌓지 않는다. `store` 는 `reverify` 의 결과 커밋 확인용 —
+    없으면 결과 커밋을 읽지 못하므로 `reverify` 는 409."""
     request = repo.get_human_request(conn, session_id, request_id)
     if request is None:
         raise ApiError(404, "not_found", f"사람 요청 {request_id}을 찾을 수 없습니다.", field="request_id")
-    _check(conn, session_id, request, body, member_id)
+    _check(conn, session_id, request, body, member_id, store)
     failed_stage = request["code"] == STAGE_FAILED
     try:
         task_revision, created = repo.record_human_response_once(
@@ -149,4 +172,4 @@ def post_response(
     session_id = member.session_id
     return JSONResponse(respond_to_request(conn, session_id, request_id, body, utc_now(), member_id=member.member_id,
                                            settings=request.app.state.settings,
-                                           secret_store=request.app.state.secrets))
+                                           secret_store=request.app.state.secrets, store=request.app.state.store))

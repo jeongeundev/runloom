@@ -79,6 +79,7 @@ def max_rework_rounds(conn: Connection, task: Row) -> int:
 def _executor(conn: Connection, agent: Row, session_id: str) -> ExecutorFacts:
     connector = repo.get_connector(conn, agent["connector_id"]) if agent["connector_id"] else None
     declared = connector["supported_kinds_json"] if connector is not None else None
+    reported = connector["capabilities_json"] if connector is not None else None
     return ExecutorFacts(
         owner_name=owner_approval.owner_name(conn, session_id, agent["agent_id"]),
         agent_id=agent["agent_id"],
@@ -88,6 +89,7 @@ def _executor(conn: Connection, agent: Row, session_id: str) -> ExecutorFacts:
         connection_state=agent["connection_state"],
         last_seen_at=agent["last_seen_at"],
         supported_kinds=tuple(json.loads(declared)) if declared is not None else None,
+        runner_capabilities=tuple(json.loads(reported)) if reported is not None else None,
     )
 
 

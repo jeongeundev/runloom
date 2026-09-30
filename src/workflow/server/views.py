@@ -474,7 +474,7 @@ DELIVERY_LABELS = {
 ACTOR_LABELS = {"operator": "운영자", "assignee": "GitHub 담당자", "system": "자동 해소 대기"}
 # 사람 요청 응답 버튼 (`human_api.Action`) — 표시 순서
 RESPONSE_ACTIONS = (
-    ("resume", "답하고 다시 판정"), ("approve", "승인"), ("decline", "거절"), ("choose_agent", "이 Agent 로 지정"),
+    ("resume", "답하고 다시 맡기기"), ("reverify", "검증만 다시"), ("approve", "승인"), ("decline", "거절"), ("choose_agent", "이 Agent 로 지정"),
     ("retry", "다시 맡기기"), ("close", "업무 종료"),
 )
 # 실행 실패 요청의 [닫기] — 업무 `종료`(ARCHITECTURE "실패 단계")

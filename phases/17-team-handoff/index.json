@@ -61,7 +61,9 @@
     {
       "step": 7,
       "name": "verify-only-server",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T23:37:42+0900",
+      "summary": "검증만 다시 서버: repo.record_runner_capabilities(알려진 값만 정렬·None=NULL, machine_api.claim 이 매번 호출), create_execution 이 request.verify_only_commit 으로 executions.verify_only 채움, claim_execution 은 verify_only=1 실행을 capabilities_json 에 verify_only 가 있는 러너에만(json_each). domain/task_readiness: ExecutorFacts.runner_capabilities·TaskFacts.required_runner_capability → executor_outdated '연결 프로그램 업데이트 필요 — 검증만 다시 미지원'(operator), task_cycle._executor 가 capabilities_json 을 채움. human_api: Action reverify, fix_verification_failed → {resume, reverify, close}(review_verification_failed 에는 없음), reverify_commit(활성 실행 result_ready + CodeChangeResult.result_commit) 없으면 409 nothing_to_reverify — 열린 요청에만 검사(재전송 멱등 유지), respond_to_request 새 kwarg store(API 는 app.state.store). worker: _resume 의 가장 최근 응답이 reverify 면 _start_verify_only(같은 Agent — auto_match·matched_agent_id, 같은 target, inputs=[이전 결과], start_key reverify:<request_id>, predecessor·release=이전 실행, required_runner_capability=verify_only), _create_cycle_execution 에 verify_only_commit kwarg. 판정·후속은 평소 경로(통과→review:<새 실행>, 실패→fix_verification_failed:<새 실행>, rework 횟수 안 셈). views.RESPONSE_ACTIONS: resume='답하고 다시 맡기기', reverify='검증만 다시'(패널·단계 상세가 같은 매크로; 알림 본문엔 버튼 이름 없음). 테스트: test_task_readiness 2, test_machine_api 3, test_task_cycle 6, test_human_api 3, test_views 1. 기존 테스트 수정 없음. 검증: pytest 3357 passed·48 skipped, ruff 통과. 다음 step 주의: CURRENT_HANDOFF 의 '[답하고 다시 판정]' 언급은 이력이라 두었다(step 11 문서 정리 몫). 지표 규칙 변경 없음(검증만 다시 실행도 executions 행 하나로 셈)."
     },
     {
       "step": 8,

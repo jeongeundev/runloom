@@ -153,6 +153,58 @@ def test_claim_records_supported_kinds_declaration(client, seeded, connector, he
     assert stored() is None
 
 
+def _seed_verify_only(conn, connector_id: str) -> None:
+    body = {**request_body(EXEC_FIX, TASK_B, inputs=["art-previous"]), "verify_only_commit": "c" * 40}
+    repo.create_execution(
+        conn, execution_id=EXEC_FIX, task_id=TASK_B, attempt_no=1, start_key="reverify:hr-1",
+        agent_id="agent-codex-mac", kind="bug_fix", request=ExecutionRequest.model_validate(body),
+        assigned_connector_id=connector_id, predecessor_execution_id=None, now=utc_now(),
+    )
+
+
+def test_claim_records_known_runner_capabilities(client, seeded, connector, headers):
+    """claim 의 `capabilities` 중 알려진 값만 정렬해 connectors 에 남긴다. 생략하면 NULL(보고 없음)."""
+    connector_id, _ = connector
+
+    def stored():
+        return repo.get_connector(seeded, connector_id)["capabilities_json"]
+
+    reported = {"contract_version": 1, "connector_id": connector_id, "capabilities": ["someday_feature", "verify_only"]}
+    assert client.post("/connector/claim", json=reported, headers=headers).status_code == 204
+    assert json.loads(stored()) == ["verify_only"]
+
+    empty = {**reported, "capabilities": []}
+    assert client.post("/connector/claim", json=empty, headers=headers).status_code == 204
+    assert json.loads(stored()) == []
+
+    legacy = {"contract_version": 1, "connector_id": connector_id}
+    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert stored() is None
+
+
+def test_verify_only_execution_goes_only_to_a_runner_reporting_verify_only(client, seeded, connector, headers):
+    connector_id, _ = connector
+    _seed_verify_only(seeded, connector_id)
+    assert repo.get_execution(seeded, EXEC_FIX)["verify_only"] == 1  # create_execution 이 요청에서 채운다
+
+    legacy = {"contract_version": 1, "connector_id": connector_id}
+    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    other = {**legacy, "capabilities": ["someday_feature"]}
+    assert client.post("/connector/claim", json=other, headers=headers).status_code == 204
+
+    assigned = client.post("/connector/claim", json={**legacy, "capabilities": ["verify_only"]}, headers=headers)
+    assert assigned.status_code == 200
+    assert (assigned.json()["execution_id"], assigned.json()["verify_only_commit"]) == (EXEC_FIX, "c" * 40)
+
+
+def test_ordinary_execution_keeps_verify_only_zero_and_goes_to_old_runners(client, seeded, connector, headers):
+    connector_id, _ = connector
+    seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id)
+    assert repo.get_execution(seeded, EXEC_FIX)["verify_only"] == 0
+    legacy = {"contract_version": 1, "connector_id": connector_id}
+    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 200
+
+
 def test_claim_connector_id_must_match_token(client, connector, headers):
     response = client.post(
         "/connector/claim", json={"contract_version": 1, "connector_id": "conn-someone-else"}, headers=headers

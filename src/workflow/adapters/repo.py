@@ -61,6 +61,8 @@ from workflow.contracts.v1 import (
     ExecutionRequest,
     ExecutionUsage,
     HandoffBundle,
+    RUNNER_CAPABILITIES,
+    RUNNER_CAPABILITY_VERIFY_ONLY,
     KindSpec,
     SelectionRecord,
     SuccessorRule,
@@ -1503,6 +1505,16 @@ def record_supported_kinds(conn: Connection, connector_id: str, kinds: Sequence[
     _require_rowcount(cur, f"connector {connector_id}")
 
 
+def record_runner_capabilities(conn: Connection, connector_id: str, capabilities: Sequence[str] | None) -> None:
+    """마지막 claim 의 러너 능력 — 알려진 값만 정렬해 덮어쓴다. None(보고 없음·옛 러너)이면 NULL. 없는 connector 는 NotFound."""
+    known = None if capabilities is None else sorted(set(capabilities) & set(RUNNER_CAPABILITIES))
+    cur = conn.execute(
+        "UPDATE connectors SET capabilities_json = ? WHERE connector_id = ?",
+        (None if known is None else json.dumps(known), connector_id),
+    )
+    _require_rowcount(cur, f"connector {connector_id}")
+
+
 def get_connector(conn: Connection, connector_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM connectors WHERE connector_id = ?", (connector_id,))
 
@@ -2001,14 +2013,15 @@ def create_execution(
                 """
                 INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind,
                   request_json, status, assigned_connector_id, predecessor_execution_id, created_at,
-                  config_revision)
+                  config_revision, verify_only)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?,
                   (SELECT s.config_revision FROM sessions s JOIN tasks t ON t.session_id = s.session_id
-                   WHERE t.task_id = ?))
+                   WHERE t.task_id = ?), ?)
                 """,
                 (
                     execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,
                     assigned_connector_id, predecessor_execution_id, now, task_id,
+                    int(request.verify_only_commit is not None),
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -2065,7 +2078,9 @@ def execution_branch_fields(conn: Connection, task_id: str) -> dict[str, str | i
 
 def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None:
     """이 connector 에 배정된 `queued` 실행 하나. 접수 확인(accepted) 전에는 같은 실행을 다시 준다.
-    연결 프로그램당 실행 하나이므로 두 개가 queued 여도 먼저 내준 것을 유지한다. 상태는 바꾸지 않는다."""
+    연결 프로그램당 실행 하나이므로 두 개가 queued 여도 먼저 내준 것을 유지한다. 상태는 바꾸지 않는다.
+    검증만 다시 실행은 마지막 claim 이 `verify_only` 를 보고한 연결 프로그램에만 준다(phase 17 — 워커가 이미 막지만
+    만든 뒤 러너가 옛 판으로 돌아간 경우)."""
     with _tx(conn):
         row = _one(
             conn,
@@ -2073,10 +2088,12 @@ def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None
             SELECT e.* FROM executions e
             LEFT JOIN connectors c ON c.connector_id = e.assigned_connector_id
             WHERE e.assigned_connector_id = ? AND e.status = 'queued' AND e.released_at IS NULL
+              AND (e.verify_only = 0 OR EXISTS (
+                SELECT 1 FROM json_each(COALESCE(c.capabilities_json, '[]')) WHERE value = ?))
             ORDER BY (c.current_execution_id = e.execution_id) DESC, e.created_at, e.execution_id
             LIMIT 1
             """,
-            (connector_id,),
+            (connector_id, RUNNER_CAPABILITY_VERIFY_ONLY),
         )
         if row is None:
             return None

@@ -16,6 +16,8 @@ from workflow.domain.delegation import ApprovalFact, offline_reason
 from workflow.domain.selection import Candidate, select_agent
 
 Actor = Literal["operator", "assignee", "system"]
+# 러너 능력 → 대기 이유의 이름
+_RUNNER_CAPABILITY_LABELS = {"verify_only": "검증만 다시"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class ExecutorFacts:
     last_seen_at: str | None  # RFC 3339
     supported_kinds: tuple[str, ...] | None  # 마지막 claim 의 선언. None 이면 구버전
     owner_name: str | None = None  # 러너 소유자 표시 이름. None 이면 공용 (phase 17)
+    runner_capabilities: tuple[str, ...] | None = None  # 마지막 claim 의 러너 능력. None 이면 보고 없음 (phase 17)
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ class TaskFacts:
     direct_work: bool = False  # 업무가 직접 작업 중 — 사람이 자기 세션에서 하므로 에이전트를 착수하지 않는다 (phase 16)
     # agent_id → 소유자 승인 상태. 없는 Agent 는 `not_needed` (phase 17)
     owner_approvals: Mapping[str, ApprovalFact] = field(default_factory=dict)
+    required_runner_capability: str | None = None  # 이 실행에 필요한 러너 능력(검증만 다시 = `verify_only`, phase 17)
 
 
 def _parse(value: str) -> datetime:
@@ -176,6 +180,10 @@ def _check_executor(facts: TaskFacts, agent_id: str, blockers: list[Blocker]) ->
         blockers.append(
             Blocker("executor_outdated", f"연결 프로그램 업데이트 필요 — {facts.kind} 미지원", "operator")
         )
+    required = facts.required_runner_capability
+    if required is not None and required not in (executor.runner_capabilities or ()):
+        label = _RUNNER_CAPABILITY_LABELS.get(required, required)
+        blockers.append(Blocker("executor_outdated", f"연결 프로그램 업데이트 필요 — {label} 미지원", "operator"))
     if facts.pair_agent_id is not None:
         pair = facts.executors.get(facts.pair_agent_id)
         if pair is None or (pair.connector_id, pair.repository_id) != (executor.connector_id, executor.repository_id):

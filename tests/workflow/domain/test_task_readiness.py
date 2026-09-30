@@ -268,6 +268,23 @@ def test_declared_kinds_without_this_builtin_is_outdated():
     assert _codes(evaluate_readiness(_fix(executors=executors))) == ["executor_outdated"]
 
 
+def test_runner_without_the_required_capability_is_outdated():
+    """검증만 다시(phase 17) — 러너가 `verify_only` 를 보고하지 않았으면(옛 러너 = None) 업데이트를 기다린다."""
+    for reported in (None, ()):
+        executors = {**EXECUTORS, "agent-a": _executor("agent-a", runner_capabilities=reported)}
+        readiness = evaluate_readiness(_fix(executors=executors, required_runner_capability="verify_only"))
+        assert _codes(readiness) == ["executor_outdated"]
+        assert readiness.blockers[0].reason == "연결 프로그램 업데이트 필요 — 검증만 다시 미지원"
+        assert readiness.blockers[0].actor == "operator"
+
+
+def test_runner_reporting_the_required_capability_is_ready():
+    executors = {**EXECUTORS, "agent-a": _executor("agent-a", runner_capabilities=("verify_only",))}
+    assert evaluate_readiness(_fix(executors=executors, required_runner_capability="verify_only")).ready
+    # 능력 조건이 없는 보통 실행은 보고가 없어도 그대로
+    assert evaluate_readiness(_fix()).ready
+
+
 def test_repository_busy_blocks_only_this_repository():
     readiness = evaluate_readiness(_fix(busy_execution_ids=("exec-other",)))
 

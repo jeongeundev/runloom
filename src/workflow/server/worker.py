@@ -82,6 +82,7 @@ from workflow.contracts.v1 import (
     CommitReviewTarget,
     ExecutionRequest,
     GenericResult,
+    RUNNER_CAPABILITY_VERIFY_ONLY,
     HandoffBundle,
     InputRef,
     SuccessorRule,
@@ -936,7 +937,8 @@ class Worker:
     def _resume(self, conn: Connection, task: Row, active: Row, policy: ExecutionPolicy, report: TickReport) -> bool:
         """결과를 기다리던 시도(`result_ready`)에 대해 물은 요청에 운영자가 답해 새 revision 이 생겼으면 그 시도를 해제하고
         새 revision 의 `auto_start_key` 로 다시 착수한다(준비 판정을 다시 거친다). 준비 판정 대기 요청(`ready:`)은 실행 전의
-        일이라 결과를 기다리는 시도를 다시 돌리지 않는다. 수정은 이전 입력 + 이전 결과를, 검토는 같은 수정 결과를 다시 본다."""
+        일이라 결과를 기다리는 시도를 다시 돌리지 않는다. 수정은 이전 입력 + 이전 결과를, 검토는 같은 수정 결과를 다시 본다.
+        가장 최근 응답이 `reverify`(검증만 다시)면 에이전트를 돌리지 않고 같은 결과 커밋을 다시 검증한다."""
         if active["status"] != "result_ready":
             return False
         previous = ExecutionRequest.model_validate_json(active["request_json"])
@@ -948,6 +950,8 @@ class Worker:
         ]
         if not answered:
             return False
+        if answered[-1]["action"] == "reverify" and not policy.starts_from_result:
+            return self._start_verify_only(conn, task, active, answered[-1]["request_id"], report)
         start_key = auto_start_key(task["task_id"], task["revision"])
         if policy.starts_from_result:
             fix_execution = repo.get_execution(conn, previous.target.source_execution_id)
@@ -956,6 +960,30 @@ class Worker:
         return self._start_fix(
             conn, task, start_key=start_key, inputs=list(dict.fromkeys(i for i in inputs if i)),
             release_execution_id=active["execution_id"], report=report,
+        )
+
+    def _start_verify_only(self, conn: Connection, task: Row, active: Row, request_id: str, report: TickReport) -> bool:
+        """[검증만 다시] — 같은 Task·같은 Agent(담당 재해석 없음)·같은 target 으로 이전 결과 커밋만 다시 검증하는 실행
+        (ARCHITECTURE "검증만 다시"). 러너가 `verify_only` 를 보고하지 않았으면 `executor_outdated` 로 기다린다 —
+        응답이 남아 있어 매 tick 다시 본다. 결과는 평소 결과 판정·후속 결정을 지난다."""
+        commit = self._result_commit(conn, active)
+        if commit is None:  # 응답 검사가 막지만, 결과를 읽을 수 없게 된 경우
+            log.warning("업무 %s 의 검증만 다시 — 이전 결과 커밋을 읽을 수 없음", task["task_id"])
+            return False
+        readiness = task_cycle.evaluate(
+            conn, task, now=self._clock(), settings=self._settings, auto_match=True,
+            matched_agent_id=active["agent_id"], match_blockers=(),
+            required_runner_capability=RUNNER_CAPABILITY_VERIFY_ONLY, **self._manual_override(task),
+        )
+        if not readiness.ready:
+            self._write_blocked(conn, task, readiness, report)
+            return False
+        previous = ExecutionRequest.model_validate_json(active["request_json"])
+        return self._create_cycle_execution(
+            conn, task, repo.get_agent(conn, readiness.agent_id), target=previous.target.model_dump(),
+            inputs=[active["result_artifact_id"]], start_key=f"reverify:{request_id}",
+            predecessor_execution_id=active["execution_id"], release_execution_id=active["execution_id"],
+            verify_only_commit=commit,
         )
 
     def _start_fix(
@@ -991,9 +1019,10 @@ class Worker:
 
     def _create_cycle_execution(
         self, conn: Connection, task: Row, agent: Row, *, target: dict[str, Any], inputs: list[str], start_key: str,
-        predecessor_execution_id: str | None, release_execution_id: str | None,
+        predecessor_execution_id: str | None, release_execution_id: str | None, verify_only_commit: str | None = None,
     ) -> bool:
-        """요청을 고정하고 기존 `create_execution`(start_key 유일·활성 잠금)으로 만든다. 이전 시도 해제도 같은 트랜잭션."""
+        """요청을 고정하고 기존 `create_execution`(start_key 유일·활성 잠금)으로 만든다. 이전 시도 해제도 같은 트랜잭션.
+        `verify_only_commit` 은 검증만 다시 실행의 결과 커밋(없으면 요청에서 빠진다)."""
         task_id = task["task_id"]
         spec = repo.get_kind(conn, task["session_id"], task["kind"])
         attempts = repo.list_executions(conn, task_id)
@@ -1009,6 +1038,7 @@ class Worker:
                 "input_artifact_ids": inputs,
                 "target": target,
                 "kind_spec": spec.model_dump() if spec is not None else None,
+                "verify_only_commit": verify_only_commit,
                 **repo.execution_branch_fields(conn, task_id),
             })
         except ValidationError as exc:

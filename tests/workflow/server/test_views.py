@@ -1027,3 +1027,18 @@ def test_list_href_changes_one_value_and_keeps_the_rest():
     assert views.list_href(query, q="all") == "/tasks?group=status"
     assert views.list_href(query, view="board", open_key=7) == "/tasks?q=unassigned&group=status&view=board&open=RUN-7"
     assert views.list_href(parse_list_query(), q="all") == "/tasks"
+
+
+def test_response_buttons_name_what_each_action_does(seeded):
+    """[답하고 다시 맡기기] = 에이전트를 다시 돌림, [검증만 다시] = 결과는 그대로 두고 검증만 (phase 17)."""
+    request_id, _ = repo.create_human_request_once(seeded, TASK_A, "fix_verification_failed", "결과 판정 실패",
+                                                   "fix_verification_failed:exec-1", NOW)
+    row = repo.get_human_request(seeded, SESSION, request_id)
+    data = views._request_public(seeded, row, can_respond=True, agent_choices=[])
+    assert data["actions"] == [("resume", "답하고 다시 맡기기"), ("reverify", "검증만 다시"), ("close", "업무 종료")]
+
+    other, _ = repo.create_human_request_once(seeded, TASK_A, "fix_needs_information", "재현 금액?",
+                                              "fix_needs_information:exec-1", NOW)
+    data = views._request_public(seeded, repo.get_human_request(seeded, SESSION, other), can_respond=True,
+                                 agent_choices=[])
+    assert data["actions"] == [("resume", "답하고 다시 맡기기"), ("close", "업무 종료")]
