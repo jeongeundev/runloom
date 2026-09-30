@@ -25,6 +25,7 @@ from workflow.contracts.v1 import (
     NonEmptyStr,
 )
 from workflow.domain.status import TERMINAL_STATUSES
+from workflow.server import work_actions
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace, get_conn, require_connector, utc_now
 from workflow.server.errors import ApiError
 
@@ -180,17 +181,21 @@ def register(
 def post_event(
     execution_id: str,
     body: ExecutionEvent,
+    request: Request,
     connector_id: str = Depends(require_connector),
     conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
-    _assigned_execution(conn, execution_id, connector_id)
+    execution = _assigned_execution(conn, execution_id, connector_id)
     if body.execution_id != execution_id:
         raise ApiError(
             422, "invalid_field", "execution_id가 URL의 실행 ID와 다릅니다.", field="execution_id"
         )
-    ack = repo.append_event(
-        conn, execution_id, body, actor=f"connector:{connector_id}", now=utc_now()
-    )
+    now = utc_now()
+    ack = repo.append_event(conn, execution_id, body, actor=f"connector:{connector_id}", now=now)
+    if ack.last_event_seq > execution["last_event_seq"]:  # 새로 저장된 이벤트 — 재전송은 상태를 다시 쓰지 않는다
+        task = repo.get_task(conn, execution["task_id"])
+        if task["finished_at"] is None:  # 마감된 단계는 늦게 온 이벤트로 되돌리지 않는다
+            work_actions.refresh_task_status(conn, task["task_id"], now, request.app.state.settings)
     return _json(ack)
 
 

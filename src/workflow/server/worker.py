@@ -93,7 +93,7 @@ from workflow.domain import notification, pull_request
 from workflow.domain.execution_policy import ExecutionPolicy, policy_for
 from workflow.domain.settlement import NodeState, chain_settled
 from workflow.domain.start_key import auto_start_key
-from workflow.domain.status import UserStatus, user_status
+from workflow.domain.status import TERMINAL_STATUSES, UserStatus, user_status
 from workflow.domain.succession import continue_reason, may_continue
 from workflow.domain.task_followup import FollowupContext, FollowupDecision, FollowupTaskSpec, ReviewFacts, decide_followup
 from workflow.domain.task_readiness import TaskReadiness
@@ -877,6 +877,8 @@ class Worker:
             if active is not None:
                 if self._resume(conn, task, active, policy, report):
                     report.tasks_resumed += 1
+                elif active["status"] not in TERMINAL_STATUSES:  # 결과·실패 뒤 상태는 판정·후속이 쓴다
+                    self._refresh_task(conn, task["task_id"])
                 continue
             if policy.starts_from_result:
                 continue

@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
+from workflow.contracts.v1 import ExecutionRequest, KindSpec
+from workflow.server import views
 from workflow.server.app import create_app
 from workflow.server.auth import SELFHOST_SESSION_ID, utc_now
 
@@ -14,6 +16,7 @@ from .conftest import (
     BASE_COMMIT,
     EXEC_FIX,
     LOCAL_REGISTRATION,
+    NOW,
     SESSION,
     TASK_A,
     TASK_B,
@@ -24,6 +27,7 @@ from .conftest import (
     request_body,
     seed_agents,
     seed_execution,
+    task_row,
 )
 
 UNAUTHENTICATED = {
@@ -303,6 +307,76 @@ def test_failed_event_records_code_and_process_stopped(client, headers, running,
     assert response.json()["status"] == "failed"
     row = repo.get_execution(seeded, running)
     assert (row["failed_code"], row["process_stopped"]) == ("timeout", 1)
+
+
+# --- 단계 상태 재계산 (ARCHITECTURE "단계 상태 재계산 (step 4)") -----------------------------
+
+
+def _stage_status(conn, task_id: str) -> tuple[str, str]:
+    row = repo.get_task(conn, task_id)
+    return row["status"], row["status_reason"]
+
+
+def _panel_status(client, conn, task_id: str) -> tuple[str, str]:
+    summary = views.task_summary(conn, repo.get_task(conn, task_id), now=utc_now(), settings=client.app.state.settings)
+    return summary["status"].label, summary["status"].reason
+
+
+def test_cycle_stage_status_follows_runner_events(client, headers, exec_fix, seeded):
+    """재현: 순환 종류(bug_fix) 단계가 실행 running 뒤에도 `실행 요청됨 · 접수 대기` 로 남던 결함."""
+    repo.update_task_status(seeded, TASK_A, "실행 요청됨", "접수 대기", now=NOW)
+
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 1, "accepted", {})).status_code == 200
+    assert _stage_status(seeded, TASK_A) == ("실행 요청됨", "접수 확인")
+
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 2, "started", {"runtime_ref": "pid:1"})).status_code == 200
+    assert _stage_status(seeded, TASK_A) == ("실행 중", "시작 확인")
+    assert _panel_status(client, seeded, TASK_A) == ("실행 중", "시작 확인")
+
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 3, "progress", {"message": "재현 중"})).status_code == 200
+    assert _stage_status(seeded, TASK_A) == ("실행 중", "재현 중")
+    assert _panel_status(client, seeded, TASK_A) == ("실행 중", "재현 중")
+
+
+def test_resent_event_leaves_stage_status_and_events_unchanged(client, headers, running, seeded):
+    before = (_stage_status(seeded, TASK_A), len(repo.list_task_events(seeded, TASK_A)))
+    body = event(running, 3, "progress", {"message": "재현 테스트 작성, 수정 전 실행 실패 확인"})
+    assert _post_event(client, headers, running, body).status_code == 200
+    assert _post_event(client, headers, running, body).status_code == 200
+    assert (_stage_status(seeded, TASK_A), len(repo.list_task_events(seeded, TASK_A))) == before
+    assert before[0] == ("실행 중", "재현 테스트 작성, 수정 전 실행 실패 확인")
+
+
+def test_late_event_does_not_reopen_finished_stage(client, headers, exec_fix, seeded):
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 1, "accepted", {})).status_code == 200
+    repo.update_task_status(seeded, TASK_A, "실패", "검토 거절", finished_at=NOW, now=NOW)
+    events_before = len(repo.list_task_events(seeded, TASK_A))
+
+    assert _post_event(client, headers, exec_fix, event(exec_fix, 2, "started", {"runtime_ref": "pid:1"})).status_code == 200
+    assert _stage_status(seeded, TASK_A) == ("실패", "검토 거절")
+    assert len(repo.list_task_events(seeded, TASK_A)) == events_before
+
+
+def test_non_cycle_stage_status_stays_live(client, headers, connector, seeded):
+    """비순환(사용자 정의) 종류는 화면이 지금처럼 실시간 판정이고, 저장값도 같은 판정으로 맞춰진다."""
+    spec = KindSpec(
+        kind="triage", label="분류", capability_code="code.fix", scope_key="repository_id",
+        input_kinds=[], output_kind="generic_result", outcomes=["done"], instructions="분류하세요.", builtin=False,
+    )
+    repo.insert_kind(seeded, SESSION, spec, NOW)
+    repo.insert_work_item_task(seeded, {**task_row("task-triage-1"), "kind": "triage", "criteria": []}, NOW)
+    request = {**request_body("exec-triage-001", "task-triage-1", "triage"),
+               "target": {"local_registration_id": LOCAL_REGISTRATION}, "kind_spec": spec.model_dump()}
+    repo.create_execution(
+        seeded, execution_id="exec-triage-001", task_id="task-triage-1", attempt_no=1, start_key="auto:task-triage-1:r1",
+        agent_id="agent-codex-mac", kind="triage", request=ExecutionRequest.model_validate(request),
+        assigned_connector_id=connector[0], predecessor_execution_id=None, now=NOW,
+    )
+    for body in (event("exec-triage-001", 1, "accepted", {}),
+                 event("exec-triage-001", 2, "started", {"runtime_ref": "pid:1"})):
+        assert _post_event(client, headers, "exec-triage-001", body).status_code == 200
+    assert _panel_status(client, seeded, "task-triage-1") == ("실행 중", "시작 확인")
+    assert _stage_status(seeded, "task-triage-1") == ("실행 중", "시작 확인")
 
 
 def test_events_for_other_connectors_execution_403(client, seeded, connector, exec_fix):

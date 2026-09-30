@@ -820,6 +820,21 @@ def test_heartbeat_loss_is_observed_once_and_never_restarts(flow, worker, conn, 
 # --- phase 7: callback — 체인이 사람 차례(chain_settled)가 되면 1회 POST (ADR-0010) --------------------------
 
 
+def test_ready_scan_refreshes_stale_status_of_running_cycle_stage(exec_fix, worker, conn, clock):
+    """이벤트만 저장되고 단계 상태가 `접수 대기` 로 남은 순환 단계(재현) — 워커가 활성 실행을 보고 다시 맞춘다."""
+    repo.update_task_status(conn, TASK_A, "실행 요청됨", "접수 대기", now=clock())
+    _append(conn, exec_fix, 1, "accepted", {}, clock())
+    _append(conn, exec_fix, 2, "started", {"runtime_ref": "pid:1"}, clock())
+
+    report = TickReport()
+    worker._start_ready_tasks(conn, report)
+
+    assert _status(conn, TASK_A) == ("실행 중", "시작 확인")
+    assert report.tasks_resumed == 0 and len(_executions(conn, TASK_A)) == 1
+    worker._start_ready_tasks(conn, TickReport())
+    assert _status(conn, TASK_A) == ("실행 중", "시작 확인")
+
+
 def _chain_row(conn):
     return repo.get_chain(conn, CHAIN_ID)
 
