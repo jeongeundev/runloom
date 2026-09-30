@@ -85,6 +85,7 @@ from workflow.contracts.v1 import (
     HandoffBundle,
     InputRef,
     SuccessorRule,
+    format_work_key,
 )
 from workflow.domain.callback_policy import host_allowed
 from workflow.domain.completion import criteria_template, merge_criteria
@@ -96,6 +97,7 @@ from workflow.domain.status import UserStatus, user_status
 from workflow.domain.succession import continue_reason, may_continue
 from workflow.domain.task_followup import FollowupContext, FollowupDecision, FollowupTaskSpec, ReviewFacts, decide_followup
 from workflow.domain.task_readiness import TaskReadiness
+from workflow.domain.work_keys import work_path
 from workflow.domain.work_status import STAGE_FAILED
 from workflow.server import github_delivery, github_sync, task_cycle, views
 from workflow.server.github_clients import SourceClients
@@ -368,6 +370,8 @@ class Worker:
                 log.warning("GitHub 수집 실패 %s: %s", config.source_id, result.error)
             if result.merge_error is not None:
                 log.warning("GitHub 병합 PR 조회 실패 %s: %s", config.source_id, result.merge_error)
+            if result.pull_error is not None:
+                log.warning("GitHub PR 목록 읽기 실패 %s: %s", config.source_id, result.pull_error)
             if result.error is None and result.retry_after_seconds is None:
                 self._sync_pull_requests(conn, client, config, now, report)
             wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
@@ -1046,7 +1050,8 @@ class Worker:
                 # API Agent 는 이 워커가 실행을 전달하지 않는다 (진단 API 전달은 `main` 전용 — ADR-0019)
                 self._refresh_task(conn, task_id)
                 continue
-            if task["run_mode"] == "manual":
+            # 직접 작업 중인 업무도 직접 실행 모드처럼 입력만 준비한다 — 사람이 자기 세션에서 하는 중(phase 16)
+            if task["run_mode"] == "manual" or repo.is_direct_working(conn, task_id):
                 before = repo.artifacts_of(conn, source["execution_id"])
                 assemble_handoff(conn, self._store, source, task, rule, now)
                 if len(repo.artifacts_of(conn, source["execution_id"])) > len(before):
@@ -1343,7 +1348,10 @@ class Worker:
             return
         names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, task["session_id"])}
         public_url = self._settings.public_url
-        task_url = f"{public_url}/tasks/{task_id}" if public_url else None
+        # 업무 주소(패널을 연 업무 화면), 업무가 없는 옛 단계만 단계 주소
+        work = repo.work_item_of_task(conn, task_id) if task["work_item_id"] else None
+        path = work_path(format_work_key(work["key_number"])) if work is not None else f"/tasks/{task_id}"
+        task_url = f"{public_url}{path}" if public_url else None
         payload = {"title": task["title"], "task_url": task_url, "pr_url": pr_url}
         now = self._clock()
         if shared:

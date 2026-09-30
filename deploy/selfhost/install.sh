@@ -105,6 +105,6 @@ cat <<EOF
 
 다음 할 일:
   1. 브라우저에서 $BASE_URL/login 을 연다 — 처음 접속 때 토큰으로 관리자 계정을 만든다 (그 뒤는 이메일·비밀번호)
-  2. /operator 에서 러너 연결 코드 발급
+  2. /connect?tab=advanced 에서 러너 연결 코드 발급
   3. 러너 설정: $SELFHOST_DIR/install-runner.sh
 EOF

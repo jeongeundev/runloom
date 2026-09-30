@@ -2,11 +2,22 @@
 
 갱신일: 2026-09-30. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 15 완료 → service 병합 → 셀프호스트 재설치(사용자 지시) → 16-work-ui 설계 (새 세션은 여기서 시작)
+## 다음 작업: 16 완료 → service 병합 → 셀프호스트 재설치(v12) → 17-jira 설계 (새 세션은 여기서 시작)
+
+**16-work-ui 완료**(2026-09-30, `feat-16-work-ui`, step 0~10, [ADR-0022](adr/0022-work-screen-and-direct-work.md), [ARCHITECTURE](ARCHITECTURE.md) "업무 화면 — phase 16", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 16 업무 화면"): 업무 화면 `/tasks`(한 줄 표·담당자/상태 묶음·빠른 필터 4개·목록/보드 6칸·끝난 업무 14일), 오른쪽 상세 패널 `/tasks?open=RUN-n`(조각 `/work/{key}/panel`, `/work/{key}` 는 넘김, 알림·원본 댓글 링크도 업무 주소), 패널에서 담당(에이전트 = 곧 맡기기)·우선순위, [내 세션에서 작업](브랜치 `RUN-n-<요약>`)·그만두기, PR 신호(소스 저장소 PR 의 head·제목에 든 키 → 감지 PR → `PR · 검토`·병합 `완료`), 연결 화면 `/connect` 탭 5개(옛 GET 7개 넘김), 모니터링 `/monitor`, 시작하기 `/start`, 사이드바 5항목, 스키마 v12.
+
+**할 일**(순서대로, 모두 사용자 지시 뒤):
+1. `feat-16-work-ui` 를 `service` 에 `--no-ff` 병합.
+2. 셀프호스트 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤, `install.sh` → 스키마 v12. 러너 재기동은 필요 없다(러너 프로토콜 변화 없음). 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v12. 옛 북마크는 새 주소로 넘어간다.
+3. 재설치 뒤 브라우저에서 사용자 확인 — 행 클릭 → 패널이 목록 위에 열리고 주소만 바뀌는지, Esc·닫기·뒤로 가기, 묶음 접기가 새로 고침 뒤에도 남는지, 브랜치 `복사`, 800px 미만 전체 화면 패널. 자동 테스트 없음.
+4. 실제 sandbox 저장소에서 직접 작업 1회 — [내 세션에서 작업] → 준 브랜치 이름으로 push·PR → 다음 동기화에 `PR · 검토` → 병합 → `완료`. 실제 github.com PR 감지는 아직 미확인.
+5. 17-jira 설계([REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절).
+
+**16 에서 남긴 것·주의**: 처음 PR 커서(NULL)는 저장소마다 최근 PR 100건(50 × 2쪽)까지만 본다. 감지 PR 은 알림을 보내지 않는다. 병합 없이 닫힌 감지 PR 은 무시한다(직접 작업이면 `직접 작업 중` 으로 돌아감). 브랜치 push 만으로는 감지하지 않는다(PR 이 있어야 함). 러너가 붙은 직후 첫 claim 전에 에이전트를 담당으로 고르면 착수가 다음 워커 tick 으로 밀린다(대기 이유 "연결 프로그램 업데이트 필요"). `_base` 가 화면마다 시작하기 사실(쿼리 5개 이하)을 읽는다. 코드 속 오류 문구 몇 개는 옛 주소(`/operator/github`)를 말한다 — 넘어가므로 둠. 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 공유 때문에 여전히 미실행. 범위 밖(다음 phase): 판단 제안·자동 시작(18-triage), Jira(17), 모니터링 확장(19), Claude Code 훅 상태 보고, 보드 끌기, 여러 행 일괄 변경.
 
 **15-team 완료**(2026-09-30, `feat-15-team`, [ADR-0021](adr/0021-team-accounts-and-roles.md), [ARCHITECTURE](ARCHITECTURE.md) "팀 — phase 15", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 15 팀"): 운영자 토큰은 첫 설정·복구 전용, 이메일·비밀번호 로그인(서버 로그인 세션 `wf_login`), 초대·재설정 링크, 역할 × 동작 표(관리자·멤버), Origin 검사, 사람별 "내 차례"(담당 멤버 → 맡긴 사람 → 관리자 전원)·응답자 기록, 받는 사람별 알림(공용 `→ 이름` + 개인 웹훅), 러너 소유자, 스키마 v11.
 
-**할 일**(순서대로, 모두 사용자 지시 뒤):
+**15 할 일**(이력 — 1·2 는 아래 "2026-09-30 반영(15)" 에서 끝남):
 1. `feat-15-team` 을 `service` 에 `--no-ff` 병합.
 2. 셀프호스트 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤, `install.sh` → 스키마 v11 → 첫 접속에서 `.env` 의 운영자 토큰으로 관리자 계정 만들기(옛 쿠키 무효라 다시 로그인) → `install-runner.sh`. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v11·"로그인"·"팀". 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 `workflow-selfhost:local` 공유 때문에 여전히 미실행 — 재설치 때 함께 확인한다.
 3. 16-work-ui 설계(업무 목록 담당자별 묶음·필터·보드·상세 패널 — [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절).

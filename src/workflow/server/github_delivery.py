@@ -38,6 +38,7 @@ from workflow.contracts.github import GitHubSourceConfig, SourceDelivery
 from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult, ExecutionRequest, format_work_key
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.pull_request import head_branch, pr_title
+from workflow.domain.work_keys import work_path
 
 CLAIM_SECONDS = 120  # 한 claim 이 HTTP(댓글 목록 여러 페이지 포함)를 끝낼 시간. 지나면 전송 후 crash 로 본다
 BACKOFF_SECONDS = 30  # n 번째 시도 실패 뒤 30·2^(n-1) 초, 최대 1시간
@@ -137,9 +138,10 @@ def source_update_body(conn: Connection, store: ArtifactStore, task: Row, public
     """원본 이슈 댓글 본문. 시각을 넣지 않는다 — 같은 상태면 같은 본문이라 새 revision 이 생기지 않는다."""
     task_id = task["task_id"]
     work = repo.work_item_of_task(conn, task_id)
+    work_key = format_work_key(work["key_number"])
     lines = [
         marker(task_id),
-        f"### Runloom 작업 현황 — {pr_title(format_work_key(work['key_number']), _one_line(task['title']))}",
+        f"### Runloom 작업 현황 — {pr_title(work_key, _one_line(task['title']))}",
         "",
         f"- 상태: **{task['status']}** · {task['status_reason']}",
         *_result_lines(conn, store, task),
@@ -158,7 +160,7 @@ def source_update_body(conn: Connection, store: ArtifactStore, task: Row, public
     if questions:
         lines.append("  - 응답은 Runloom 운영자 화면에서 받습니다. 이 댓글에 답해도 반영되지 않습니다.")
     if public_url:
-        lines.append(f"- 상세: {public_url}/tasks/{task_id} (Runloom 운영자 로그인이 필요합니다 — 공개 링크가 아닙니다)")
+        lines.append(f"- 상세: {public_url}{work_path(work_key)} (Runloom 운영자 로그인이 필요합니다 — 공개 링크가 아닙니다)")
     else:
         lines.append(f"- 상세: Runloom 운영자 화면의 Task `{task_id}`")
     lines += ["", "_Runloom 은 PR 생성·푸시·병합·이슈 종료를 자동으로 하지 않습니다._"]

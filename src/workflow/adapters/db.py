@@ -15,7 +15,7 @@ from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -286,7 +286,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 # v10 (phase 14, ADR-0020): 업무·단계. ARCHITECTURE "업무와 단계 — phase 14" 스키마 v10 표.
 # tasks 는 재생성하지 않는다 — work_item_id 칸은 빈 DB·9 → 10 모두 ALTER 로 더한다.
 WORK_ITEM_LINK_TYPES = ("blocks", "spawned_from")
-WORK_ITEM_EVENT_TYPES = ("status_changed", "assigned")
+# v10 이 만든 업무 이벤트 종류. v12 가 표를 재생성해 WORK_ITEM_EVENT_TYPES 로 넓힌다.
+_V10_WORK_ITEM_EVENT_TYPES = ("status_changed", "assigned")
 
 _V10_TABLES = f"""
 -- 업무(목록 한 줄). 키 문자열은 계산한다(RUN-<key_number>). 삭제 경로 없음 — 키는 재사용되지 않는다.
@@ -359,7 +360,7 @@ CREATE TABLE IF NOT EXISTS work_item_events (
   id              INTEGER PRIMARY KEY,
   work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
   session_id      TEXT NOT NULL REFERENCES sessions(session_id),
-  type            TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_EVENT_TYPES)})),
+  type            TEXT NOT NULL CHECK (type IN ({_in(_V10_WORK_ITEM_EVENT_TYPES)})),
   config_revision INTEGER NOT NULL,
   occurred_at     TEXT NOT NULL,
   data_json       TEXT NOT NULL
@@ -427,6 +428,65 @@ ALTER TABLE notifications ADD COLUMN channel TEXT NOT NULL DEFAULT 'shared'
 CREATE INDEX IF NOT EXISTS ix_notifications_recipient ON notifications(recipient_member_id);
 ALTER TABLE connect_codes ADD COLUMN issued_by_member_id TEXT REFERENCES members(member_id);
 ALTER TABLE connectors ADD COLUMN owner_member_id TEXT REFERENCES members(member_id);
+"""
+
+# v12 (phase 16, ADR-0022): 직접 작업·감지 PR·PR 커서·업무 이벤트 종류. ARCHITECTURE "업무 화면 — phase 16" 스키마 v12.
+# tasks 는 재생성하지 않는다. work_item_events 만 type CHECK 를 넓히려고 재생성한다 — 이 표를 참조하는 표는 없다.
+WORK_ITEM_EVENT_TYPES = (
+    "status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked",
+)
+WORK_PULL_REQUEST_STATES = ("open", "merged", "closed")
+
+_V12_TABLES = f"""
+-- 직접 작업(누가·언제·브랜치). 셋이 함께 NULL 이거나 함께 값 — ALTER 로 표 CHECK 를 걸 수 없어 repo 가 지킨다
+-- (start_direct_work·stop_direct_work·set_work_status 만 쓴다).
+ALTER TABLE work_items ADD COLUMN direct_member_id TEXT REFERENCES members(member_id);
+ALTER TABLE work_items ADD COLUMN direct_started_at TEXT;
+ALTER TABLE work_items ADD COLUMN direct_branch TEXT;
+
+-- PR 읽기 커서(마지막으로 본 updated_at). NULL = 아직 읽지 않음. 이슈 커서(cursor)와 따로.
+ALTER TABLE github_sources ADD COLUMN pull_cursor TEXT;
+
+-- 감지 PR(업무 키가 든 사람의 PR) 전용 — Runloom 이 연 PR 은 task_pull_requests. 삭제 경로 없음.
+CREATE TABLE IF NOT EXISTS work_pull_requests (
+  id                   INTEGER PRIMARY KEY,
+  session_id           TEXT NOT NULL REFERENCES sessions(session_id),
+  work_item_id         TEXT NOT NULL REFERENCES work_items(work_item_id),
+  source_id            TEXT NOT NULL REFERENCES github_sources(source_id),
+  repository_full_name TEXT NOT NULL,
+  pr_number            INTEGER NOT NULL CHECK (pr_number >= 1),
+  title                TEXT NOT NULL,
+  pr_url               TEXT NOT NULL,
+  head_branch          TEXT NOT NULL,
+  state                TEXT NOT NULL CHECK (state IN ({_in(WORK_PULL_REQUEST_STATES)})),
+  draft                INTEGER NOT NULL CHECK (draft IN (0, 1)),
+  author_login         TEXT,
+  merged_at            TEXT,
+  pr_updated_at        TEXT NOT NULL,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  UNIQUE (session_id, repository_full_name, pr_number),
+  CHECK ((state = 'merged') = (merged_at IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS ix_work_pull_requests_item ON work_pull_requests(work_item_id, pr_updated_at);
+
+-- 업무 이벤트 재생성: 칸·인덱스 그대로, type CHECK 만 넓힌다. 행과 id 를 그대로 옮긴다.
+CREATE TABLE work_item_events_v12 (
+  id              INTEGER PRIMARY KEY,
+  work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
+  session_id      TEXT NOT NULL REFERENCES sessions(session_id),
+  type            TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_EVENT_TYPES)})),
+  config_revision INTEGER NOT NULL,
+  occurred_at     TEXT NOT NULL,
+  data_json       TEXT NOT NULL
+);
+INSERT INTO work_item_events_v12 (id, work_item_id, session_id, type, config_revision, occurred_at, data_json)
+  SELECT id, work_item_id, session_id, type, config_revision, occurred_at, data_json FROM work_item_events;
+DROP TABLE work_item_events;
+ALTER TABLE work_item_events_v12 RENAME TO work_item_events;
+CREATE INDEX IF NOT EXISTS ix_work_item_events_item ON work_item_events(work_item_id, id);
+CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(session_id, occurred_at);
 """
 
 
@@ -637,7 +697,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -843,7 +903,7 @@ def _migrate_9_to_10(conn: sqlite3.Connection) -> None:
         " ORDER BY t.created_at, t.task_id"
     )
     for work_item_id in work_of.values():
-        status = work_status(work_item_facts(conn, work_item_id))
+        status = work_status(work_item_facts(conn, work_item_id, direct_work=False))  # 직접 작업 칸은 v12
         closed_at = now if status.status in TERMINAL_WORK_STATUSES else None
         conn.execute("UPDATE work_items SET status = ?, status_reason = ?, closed_at = ? WHERE work_item_id = ?",
                      (status.status, status.reason, closed_at, work_item_id))
@@ -865,8 +925,18 @@ def _migrate_10_to_11(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 11")
 
 
+def _migrate_11_to_12(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 칸·표를 더하고 업무 이벤트 표를 재생성한다 — 기존 행은 바꾸지 않는다
+    (새 칸 NULL, 새 표 빈 표, 이벤트 행·id 그대로). 업무 상태는 다시 계산하지 않는다."""
+    for statement in _statements(_V12_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 12")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~10 은 11 까지 차례로(4 → 5 → … → 10 → 11) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~11 은 12 까지 차례로(4 → 5 → … → 11 → 12) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
@@ -879,9 +949,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] in (4, 5, 6, 7, 8, 9, 10):
+        elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11):
             steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
-                     _migrate_9_to_10, _migrate_10_to_11)
+                     _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12)
             for step in steps[row[0] - 4:]:
                 step(conn)
         elif row[0] != SCHEMA_VERSION:

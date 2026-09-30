@@ -1,7 +1,7 @@
 # ruff: noqa: F811 — test_task_cycle 픽스처(cycle·worker)를 가져와 인자로 쓴다
 """맡긴 사람·응답자·사람별 "내 차례" — phase 15 step 8 (ADR-0021, ARCHITECTURE "맡긴 사람과 '내 차례' 받는 사람").
 
-받는 사람 = 담당 활성 멤버 → 맡긴 사람(활성) → 활성 관리자 전원. 저장하지 않고 계산한다. 홈 `GET /tasks?view=my_turn` 은
+받는 사람 = 담당 활성 멤버 → 맡긴 사람(활성) → 활성 관리자 전원. 저장하지 않고 계산한다. 홈 `GET /tasks?view=my_turn`(phase 16 부터 `q=my_turn` 으로 읽음) 은
 로그인한 멤버가 받는 사람인 `내 차례` 업무만. 응답은 누구나(`respond`) 하고 응답자가 남는다.
 """
 
@@ -62,7 +62,7 @@ def my_turn(client) -> str:
 
 
 def my_turn_count(client) -> int:
-    return int(re.search(r'data-view="my_turn"[^>]*>내 차례 <span[^>]*>(\d+)</span>', client.get("/tasks").text).group(1))
+    return int(re.search(r'data-q="my_turn"[^>]*>내 차례 <span[^>]*>(\d+)</span>', client.get("/tasks").text).group(1))
 
 
 def delegate_and_fail(conn, worker, client, number: int = 1) -> str:

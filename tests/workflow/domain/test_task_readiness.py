@@ -424,3 +424,10 @@ def test_review_by_the_fix_agent_itself_is_ready():
     readiness = evaluate_readiness(_review(candidates=(both,), chosen_agent_id="agent-a", pair_agent_id="agent-a"))
 
     assert readiness == TaskReadiness(ready=True, blockers=(), agent_id="agent-a")
+
+
+def test_direct_work_blocks_the_agent_start():
+    readiness = evaluate_readiness(_fix(direct_work=True))
+    assert not readiness.ready
+    assert readiness.blockers == (Blocker("direct_work", "직접 작업 중 — 에이전트에게 넘기면 시작", "operator"),)
+    assert evaluate_readiness(_fix(direct_work=False)).ready

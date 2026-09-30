@@ -1,12 +1,9 @@
-{# 운영자 — 로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드, 모든 세션 업무.
-   연결 코드 발급은 `attach_runner`(멤버 포함), 코드 목록은 관리자면 전부·멤버면 자기 발급분, 코드 취소·러너 해제·러너 에이전트 삭제는
+{# 연결 화면 "고급" 탭(옛 /operator, phase 16 step 6 — 러너 목록은 팀·담당자 탭, "모든 세션 업무" 절은 업무 화면이 대신).
+   로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드.
+   연결 코드 발급은 `attach_runner`(멤버 포함), 코드 목록은 관리자면 전부·멤버면 자기 발급분, 코드 취소·러너 에이전트 삭제는
    소유자 본인 또는 `remove_any_runner`(`can_revoke`·`can_delete`), 에이전트 등록은 `manage_connections`.
    등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
-{% extends "base.html" %}
 {% import "_status.html" as st %}
-{% block title %}운영자 — Runloom{% endblock %}
-{% block content %}
-<div class="crumbs"><div class="crumb">운영자</div></div>
 
 <h2 style="margin-top:0">연결 코드</h2>
 <div class="card">
@@ -32,25 +29,6 @@
   </table>
   </div>
   {% endif %}
-</div>
-
-<h2>러너</h2>
-<div class="card table-wrap">
-  <table>
-    <tr><th>러너</th><th>소유</th><th>연결</th><th>마지막 확인</th><th>상태</th></tr>
-    {% for r in runners %}
-    <tr data-runner="{{ r.connector_id }}">
-      <td class="mono">{{ r.connector_id }}</td>
-      <td>{{ st.owner(r.owner) }}</td>
-      <td>{{ r.created_at|kst }}</td>
-      <td>{{ r.last_seen_at|kst if r.last_seen_at else '없음' }}</td>
-      <td>{% if r.revoked_at %}해제됨 {{ r.revoked_at|kst }}{% elif r.can_revoke %}
-        <form method="post" action="/operator/connectors/{{ r.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">해제</button></form>{% else %}연결됨{% endif %}</td>
-    </tr>
-    {% else %}
-    <tr><td colspan="5" class="muted">연결된 러너 없음</td></tr>
-    {% endfor %}
-  </table>
 </div>
 
 <h2>에이전트</h2>
@@ -106,21 +84,3 @@
   <div class="actions"><button class="btn" type="submit">등록</button></div>
 </form>
 {% endif %}
-
-<h2>모든 세션 업무</h2>
-<div class="card table-wrap">
-  <table>
-    <tr><th>업무</th><th>세션</th><th>상태</th><th>등록</th></tr>
-    {% for t in all_tasks %}
-    <tr>
-      <td><a href="/tasks/{{ t.task_id }}">{{ t.title }}</a> <span class="mono small">{{ t.task_id }}</span></td>
-      <td class="mono small">{{ t.session_id }}</td>
-      <td>{{ st.badge(t.status.label) }} <span class="small">{{ t.status.reason }}</span></td>
-      <td class="small">{{ t.created_at|kst }}</td>
-    </tr>
-    {% else %}
-    <tr><td colspan="4" class="muted">없음</td></tr>
-    {% endfor %}
-  </table>
-</div>
-{% endblock %}

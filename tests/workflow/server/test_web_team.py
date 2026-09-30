@@ -102,7 +102,8 @@ ME_POSTS = [
 
 
 def test_member_gets_403_on_team_and_changes_nothing(member, conn):
-    error(member.get("/team"), 403, "forbidden")
+    page = member.get("/connect?tab=team")  # phase 16: 팀 탭은 열리지만 멤버·초대 절은 `manage_team` 만
+    assert page.status_code == 200 and 'action="/team/invites"' not in page.text and "data-member-id=" not in page.text
     invites = len(repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z"))
     for path, data in TEAM_POSTS:
         error(member.post(path, data=data), 403, "forbidden")
@@ -111,7 +112,7 @@ def test_member_gets_403_on_team_and_changes_nothing(member, conn):
 
 def test_anonymous_is_sent_to_login(app, admin):
     anonymous = TestClient(app)
-    for path in ("/team", "/me"):
+    for path in ("/connect?tab=team", "/me"):
         response = anonymous.get(path, follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")
     for path, data in TEAM_POSTS + ME_POSTS:
@@ -119,18 +120,20 @@ def test_anonymous_is_sent_to_login(app, admin):
         assert (response.status_code, response.headers["location"]) == (303, "/login"), path
 
 
-def test_sidebar_links_team_for_admin_and_me_for_everyone(admin, member):
-    admin_page = admin.get("/tasks").text
-    assert 'href="/team"' in admin_page and 'href="/me"' in admin_page
-    member_page = member.get("/tasks").text
-    assert 'href="/team"' not in member_page and 'href="/me"' in member_page
+def test_sidebar_links_me_for_everyone_and_team_moves_to_connect(admin, member):
+    """phase 16: 사이드바에서 팀 링크는 빠지고(연결 화면 팀 탭 — step 6) 내 설정은 모두에게."""
+    for client in (admin, member):
+        page = client.get("/tasks").text
+        sidebar = page[page.index('class="sidebar'):page.index('class="main')]
+        assert 'href="/team"' not in sidebar and 'href="/me"' in sidebar
+    assert admin.get("/connect?tab=team").status_code == 200
 
 
-# --- /team 목록 ------------------------------------------------------------------------------------
+# --- 팀 목록 (연결 화면 팀·담당자 탭 — phase 16 step 6) ------------------------------------------------------------------------------------
 
 
 def test_team_lists_members_with_email_role_state_and_dates(admin, member, conn):
-    page = admin.get("/team")
+    page = admin.get("/connect?tab=team")
     assert page.status_code == 200
     dev = member_id(conn, "dev@example.com")
     assert f'data-member-id="{dev}"' in page.text
@@ -141,7 +144,7 @@ def test_team_lists_members_with_email_role_state_and_dates(admin, member, conn)
 
 
 def test_team_without_public_url_shows_setting_hint(admin):
-    page = admin.get("/team").text
+    page = admin.get("/connect?tab=team").text
     assert "WORKFLOW_PUBLIC_URL" in page and "SELFHOST" in page
 
 
@@ -155,7 +158,7 @@ def test_invite_link_shown_once_then_only_listed_without_token(app, admin, conn)
     assert f"http://testserver/invite/{token}" in response.text
     assert "data-copy-target" in response.text  # 복사 버튼
 
-    listed = admin.get("/team").text
+    listed = admin.get("/connect?tab=team").text
     assert token not in listed
     invite = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]
     assert f'data-invite-id="{invite["invite_id"]}"' in listed
@@ -184,15 +187,15 @@ def test_invite_link_uses_public_url(settings, receiver):
     response = admin.post("/team/invites", data={"role": "member"})
     token = link_token(response.text, "invite")
     assert f"https://runloom.example.com/invite/{token}" in response.text
-    assert "WORKFLOW_PUBLIC_URL" not in admin.get("/team").text
+    assert "WORKFLOW_PUBLIC_URL" not in admin.get("/connect?tab=team").text
 
 
 def test_revoke_invite(app, admin, conn):
     token = link_token(admin.post("/team/invites", data={"role": "member"}).text, "invite")
     invite_id = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]["invite_id"]
     response = admin.post(f"/team/invites/{invite_id}/revoke", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/team")
-    assert f'data-invite-id="{invite_id}"' not in admin.get("/team").text
+    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
+    assert f'data-invite-id="{invite_id}"' not in admin.get("/connect?tab=team").text
     assert TestClient(app).get(f"/invite/{token}").status_code == 404
     error(admin.post(f"/team/invites/{invite_id}/revoke"), 404, "not_found")
 
@@ -203,8 +206,8 @@ def test_revoke_invite(app, admin, conn):
 def test_role_change_applies_immediately(admin, member, conn):
     dev = member_id(conn, "dev@example.com")
     response = admin.post(f"/team/members/{dev}/role", data={"role": "admin"}, follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/team")
-    assert member.get("/team").status_code == 200
+    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
+    assert 'action="/team/invites"' in member.get("/connect?tab=team").text
     error(admin.post(f"/team/members/{dev}/role", data={"role": "owner"}), 422, "invalid_field")
 
 
@@ -221,9 +224,9 @@ def test_last_admin_cannot_demote_or_disable_self(admin, member, conn):
 def test_disable_logs_member_out_and_blocks_login_then_enable(app, admin, member, conn):
     dev = member_id(conn, "dev@example.com")
     response = admin.post(f"/team/members/{dev}/disable", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/team")
+    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
     assert not logged_in(member)
-    assert "비활성" in admin.get("/team").text
+    assert "비활성" in admin.get("/connect?tab=team").text
     login = TestClient(app).post("/login", data={"email": "dev@example.com", "password": MEMBER_PASSWORD},
                                  follow_redirects=False)
     assert login.status_code == 403
@@ -248,7 +251,7 @@ def test_reset_link_shown_once_and_sets_new_password(app, admin, member, conn):
     assert response.status_code == 200, response.text
     token = link_token(response.text, "reset")
     assert f"http://testserver/reset/{token}" in response.text
-    assert token not in admin.get("/team").text and token not in dump(conn)
+    assert token not in admin.get("/connect?tab=team").text and token not in dump(conn)
 
     used = TestClient(app).post(f"/reset/{token}", data={"password": NEW_PASSWORD}, follow_redirects=False)
     assert used.status_code == 303

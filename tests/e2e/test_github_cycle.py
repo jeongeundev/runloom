@@ -333,6 +333,8 @@ class FakeGitHub:
                 return 200, {}, {"id": REPO_IDS[repo_name], "full_name": repo_name}
             if method == "GET" and rest == "/issues":
                 return self._list(repo_name, query, headers)
+            if method == "GET" and rest == "/pulls":  # PR 신호(phase 16) — 이 대역에는 사람이 연 PR 이 없다
+                return 200, {}, []
             if (m := re.fullmatch(r"/issues/(\d+)", rest)) and method == "GET":
                 item = self.issues[repo_name].get(int(m.group(1)))
                 return (200, {}, item) if item else (404, {}, {"message": "Not Found"})

@@ -1,5 +1,5 @@
 # ruff: noqa: F811 — test_metrics_api 픽스처(operator·op·fake·settings)를 가져와 인자로 쓴다
-"""지표 화면 `GET /metrics` (phase 9 step 9, ADR-0015, ARCHITECTURE "측정 — phase 9" API 표).
+"""지표 화면 `GET /monitor`(phase 16 step 7 — 옛 `GET /metrics` 는 303) (phase 9 step 9, ADR-0015, ARCHITECTURE "측정 — phase 9" API 표).
 
 운영자만 연다(`/operator/github` 과 같은 규칙). 계산은 `metrics_api` 와 같은 것을 쓰고, 화면은 중앙값 옆에 n·미완료·모름을 함께 적는다.
 모르는 값은 "모름" 이며 0 으로 보이지 않는다. 데이터·가짜 GitHub 는 `test_metrics_api` 의 fixture 를 그대로 쓴다.
@@ -30,7 +30,7 @@ BASELINE_ACTION = f'data-json-action="/operator/github/sources/{SOURCE}/baseline
 
 
 def page(client: TestClient, params: dict | None = None) -> str:
-    response = client.get("/metrics", params=params or {})
+    response = client.get("/monitor", params=params or {})
     assert response.status_code == 200, response.text
     return response.text
 
@@ -49,7 +49,7 @@ def test_metrics_page_is_operator_only(client, conn):
     # 로그인 전, 그리고 고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
     stranger = log_in_other_workspace(TestClient(client.app))
     for anonymous in (client, stranger):
-        response = anonymous.get("/metrics", follow_redirects=False)
+        response = anonymous.get("/monitor", follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")
         assert BASELINE_ACTION not in response.text
         tasks = anonymous.get("/tasks", follow_redirects=False)  # 사이드바 링크를 볼 화면도 없다
@@ -57,7 +57,34 @@ def test_metrics_page_is_operator_only(client, conn):
 
 
 def test_sidebar_links_metrics_page_for_operator(op):
-    assert 'href="/metrics"' in op.get("/tasks").text
+    assert 'href="/monitor"' in op.get("/tasks").text and 'href="/metrics"' not in op.get("/tasks").text
+
+
+# --- 이름 변경 (phase 16 step 7) -----------------------------------------------------------------------
+
+
+def test_monitor_page_is_named_monitoring_and_form_stays_on_monitor(op):
+    text = page(op)
+    assert "<title>모니터링 — Runloom</title>" in text
+    assert '<form method="get" action="/monitor"' in text
+    assert '<a href="/monitor" class="active">모니터링</a>' in text
+
+
+def test_old_metrics_page_redirects_to_monitor_keeping_query(op):
+    response = op.get("/metrics", params={"from": "2026-09-01T00:00:00Z", "group_by": "config_revision"},
+                      follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/monitor?from=2026-09-01T00%3A00%3A00Z&group_by=config_revision"
+    bare = op.get("/metrics", follow_redirects=False)
+    assert (bare.status_code, bare.headers["location"]) == (303, "/monitor")
+    # 쿼리 값은 넘어간 뒤 기존 파서가 검증한다
+    assert op.get("/metrics", params={"from": "어제"}).status_code == 422
+
+
+def test_metrics_json_and_csv_paths_stay(op):
+    assert op.get("/metrics.json", follow_redirects=False).status_code == 200
+    csv = op.get("/metrics.csv", follow_redirects=False)
+    assert csv.status_code == 200 and "text/csv" in csv.headers["content-type"]
 
 
 # --- 데이터 없음 / 있음 ----------------------------------------------------------------------------
@@ -153,7 +180,7 @@ def test_empty_form_values_mean_no_filter(op):
 def test_invalid_params_render_error_page(op):
     for params in ({"from": "어제"}, {"group_by": "agent"},
                    {"from": "2026-09-22T00:00:00Z", "to": "2026-09-21T00:00:00Z"}):
-        response = op.get("/metrics", params=params)
+        response = op.get("/monitor", params=params)
         assert response.status_code == 422, params
         assert "text/html" in response.headers["content-type"]
 

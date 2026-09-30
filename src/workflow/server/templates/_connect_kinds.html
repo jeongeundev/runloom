@@ -1,10 +1,6 @@
-{# 업무 종류·후속 규칙 — 워크스페이스(세션)가 등록한다 (ADR-0009, ARCHITECTURE "화면"). 규칙은 한 줄 텍스트이며
+{# 연결 화면 "업무 종류·규칙" 탭(옛 /kinds, phase 16 step 6). 업무 종류·후속 규칙 — 워크스페이스(세션)가 등록한다 (ADR-0009, ARCHITECTURE "화면"). 규칙은 한 줄 텍스트이며
    그래프·화살표 그림을 그리지 않는다. 사용자 정의 종류의 내는 산출물은 항상 결과 봉투(generic_result)라 폼에 없다.
    등록·삭제 폼은 `manage_rules` 일 때만(ADR-0021). 인라인 스크립트 하나: 선행 종류를 바꾸면 결과값 체크박스를 그 종류의 것(option 의 data-outcomes)으로 바꾼다. #}
-{% extends "base.html" %}
-{% block title %}종류·규칙 — Runloom{% endblock %}
-{% block content %}
-<div class="crumbs"><div class="crumb">종류·규칙</div></div>
 <p class="muted" style="margin-bottom:12px">업무 종류는 받는 산출물·내는 산출물·결과값의 봉투이고, 후속 규칙은 "이 결과값 다음에 무엇을 넘겨 어떤 종류를 시작하는가"를 한 줄로 정합니다.</p>
 
 <h2 style="margin-top:0">업무 종류</h2>
@@ -160,4 +156,3 @@
   });
 })();
 </script>
-{% endblock %}

@@ -1,0 +1,26 @@
+{# 시작하기 `/start` — phase 16 step 7, ARCHITECTURE "업무 화면 — phase 16" 시작하기. 항목·상태는 domain/start_checklist.py 가 계산한다.
+   그 항목의 동작(`item.action`)이 없는 멤버에게는 버튼 대신 "관리자에게 요청". 필수가 모두 끝나도 이 주소는 열린다. #}
+{% extends "base.html" %}
+{% block title %}시작하기 — Runloom{% endblock %}
+{% set STATE_LABEL = {'done': '완료', 'next': '다음', 'todo': '할 일', 'optional': '선택'} %}
+{% set STATE_CLASS = {'done': 'badge-done', 'next': 'badge-attention', 'todo': 'badge-wait', 'optional': 'badge-wait'} %}
+{% set HINT = {
+  'source': 'GitHub 저장소를 연결하거나 n8n 입구 토큰을 발급합니다.',
+  'runner': '에이전트가 도는 Mac 에 러너를 붙이면 에이전트가 생깁니다.',
+  'invite': '함께 일할 팀원을 초대합니다. 혼자 쓰면 건너뛰어도 됩니다.',
+  'delegate': '담당 없는 업무를 에이전트에게 맡겨 첫 실행을 시작합니다.',
+} %}
+{% block content %}
+<div class="crumbs"><div class="crumb">시작하기</div></div>
+<p class="muted">{% if done %}필수 항목을 모두 마쳤습니다.{% else %}아래 순서대로 하면 업무를 에이전트에게 맡길 수 있습니다.{% endif %}</p>
+<ol class="start-list" data-start-list>
+  {% for item in items %}
+  <li class="start-item" data-start-item="{{ item.key }}" data-state="{{ item.state }}">
+    <div class="start-head"><span class="badge {{ STATE_CLASS[item.state] }}">{{ STATE_LABEL[item.state] }}</span> <strong>{{ item.label }}</strong></div>
+    <p class="small muted">{{ HINT[item.key] }}</p>
+    {% if item.action in allowed %}<a class="btn btn-small{% if item.state != 'next' %} btn-secondary{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
+    {% else %}<span class="small muted" data-ask-admin>관리자에게 요청</span>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{% endblock %}

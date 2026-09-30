@@ -174,10 +174,11 @@ def seed_judged_fix(client, conn, store, settings, task_a: str, *, bundle: bool 
 # --- 세션·홈 ---------------------------------------------------------------------
 
 
-def test_app_home_has_agent_and_task_sections_with_direct_register(web):
+def test_app_home_has_work_toolbar_with_direct_register(web):
+    """phase 16: 홈 = 업무 화면. 에이전트 구역은 빠지고 연결 화면(사이드바 `연결`)으로 간다."""
     text = web.get("/tasks").text
     assert 'href="/tasks/new"' in text  # 시연 예시 없이 직접 등록
-    assert 'href="/agents"' in text
+    assert 'href="/connect"' in text
     assert 'href="/"' in text  # 사이드바 브랜드 → `/` (로그인 상태면 /tasks)
     assert '/static/logo.jpg' not in text  # 로고는 랜딩에만
 
@@ -187,7 +188,7 @@ def test_home_lists_my_work_with_status(web):
     text = web.get("/tasks").text
     assert "아직 업무가 없습니다." not in text
     main = text[text.index('class="main'):]
-    assert 'href="/work/RUN-1"' in main and f"/tasks/{task_id}" not in main  # 한 줄 = 업무
+    assert 'href="/tasks?open=RUN-1"' in main and f"/tasks/{task_id}" not in main  # 한 줄 = 업무
     assert BUG_FIX_TITLE in main
     assert 'data-status="새로 들어옴"' in main and "담당 없음" in main  # 자동 선택만으로는 담당이 아니다
     # 단계 상태는 업무 상세의 단계 목록에서
@@ -570,7 +571,7 @@ def test_agents_pages_hide_credentials(web, conn):
         "capabilities": [{"code": "code.review", "scope": {"repository_id": REPOSITORY}}],
     })
     repo.register_session_agent(conn, SESSION, "agent-api-review", NOW)
-    listing = web.get("/agents")
+    listing = web.get("/connect?tab=team")
     assert listing.status_code == 200
     assert "agent-api-review" in listing.text and "agent-codex-mac" in listing.text
     assert "env:REVIEW_API_TOKEN" not in listing.text
@@ -905,23 +906,21 @@ def test_chain_human_gate_follows_last_task_review(web, conn, store, settings):
     assert web.post(f"/operator/merges/{task_b}/confirm", follow_redirects=False).status_code in (404, 405)
 
 
-def test_home_lists_chains_with_progress(web, conn):
+def test_home_lists_chain_nodes_as_work_rows(web, conn):
+    """phase 16: 홈의 워크플로우 카드는 빠졌다(체인은 패널의 "들어온 곳" — step 5). 체인 노드는 각자 업무 한 줄이다."""
     chain_id, (task_a, task_b) = import_chain(web, conn)
     home = web.get("/tasks").text
-    assert "워크플로우" in home and f'href="/chains/{chain_id}"' in home
-    assert "0/2 완료" in home and "시작 전" in home
-    main = home[home.index('class="main'):]
-    assert main.index("<h2>워크플로우</h2>") < main.index("<h2>업무</h2>")  # 업무 구역 위에
+    main = home[home.index('class="main'):home.index("<script>")]
+    assert "/chains/" not in main and "<h2>워크플로우</h2>" not in main
 
     repo.update_task_status(conn, task_a, "완료", "판정 근거: 3/3", finished_at=NOW, now=NOW)
     repo.mark_chain_started(conn, chain_id, NOW)
     home = web.get("/tasks").text
-    assert "1/2 완료" in home and "2단계 중 2단계 대기" in home
-    # 왼쪽 목록에는 업무 한 줄씩 — 체인 노드는 각자 업무
+    main = home[home.index('class="main'):home.index("<script>")]
+    assert 'href="/tasks?open=RUN-1"' in main and 'href="/tasks?open=RUN-2"' in main
+    assert f'href="/tasks/{task_a}"' not in main and f'href="/tasks/{task_b}"' not in main
     sidebar = home[home.index('class="sidebar'):home.index('class="main')]
-    assert 'href="/work/RUN-1"' in sidebar and 'href="/work/RUN-2"' in sidebar
-    assert f'href="/tasks/{task_a}"' not in sidebar and f'href="/tasks/{task_b}"' not in sidebar
-    assert "/chains/" not in sidebar
+    assert "/chains/" not in sidebar and "data-work-key" not in sidebar
 
 
 def test_task_detail_links_to_its_chain(web, conn):
@@ -940,7 +939,7 @@ def test_operator_issues_connect_code_and_exchange(app, web, conn, settings):
     """셀프호스트 워크스페이스 로그인이 곧 운영자다 — 운영자 화면에서 연결 코드를 발급하고 러너가 교환한다."""
     assert repo.get_session(conn, session_id_of(web, settings))["is_operator"] == 1
 
-    page = web.get("/operator")
+    page = web.get("/connect?tab=advanced")
     assert page.status_code == 200
     assert 'action="/operator/connect-codes"' in page.text
     assert "개인 Codex" in page.text
@@ -957,7 +956,7 @@ def test_operator_issues_connect_code_and_exchange(app, web, conn, settings):
     exchanged = connector.post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
     assert exchanged.status_code == 200
     assert exchanged.json()["token"].startswith("wfc_")
-    assert code in web.get("/operator").text  # 목록에 사용됨으로 남는다
+    assert code in web.get("/connect?tab=advanced").text  # 목록에 사용됨으로 남는다
 
 
 def test_operator_revokes_unused_connect_code(web, conn):
@@ -988,7 +987,7 @@ def test_operator_registers_and_deletes_agent(web, conn):
     assert row["local_registration_id"] == "local-other"
     # 운영자 = 워크스페이스 — 등록하면 바로 워크스페이스에 붙어 목록·후보에 들어간다 (카탈로그 등록 단계 대신)
     assert repo.is_session_agent(conn, SESSION, "agent-claude-mac")
-    assert "agent-claude-mac" in web.get("/agents").text
+    assert "agent-claude-mac" in web.get("/connect?tab=team").text
 
     bad = web.post("/operator/agents", data={
         "agent_id": "agent-api-2", "name": "x", "owner_scope": "company", "connection_type": "api",
@@ -1021,23 +1020,28 @@ def test_operator_reregistration_keeps_connector_report(web, conn):
     assert row["connection_state"] == "online"
 
 
-def test_operator_sees_all_workspaces_tasks_without_merge_queue_or_usage(web, conn, store, settings):
+def test_work_screen_replaces_all_tasks_section_without_merge_queue_or_usage(web, conn, store, settings):
+    """phase 16: 옛 운영자 화면의 "모든 세션 업무" 절은 업무 화면(전체)이 대신한다 — 셀프호스트 워크스페이스의 업무만 보인다."""
     task_id, _ = seed_reviewable_fix(web, conn, store, settings)
     web.post(f"/tasks/{task_id}/review", data={"decision": "approve"}, follow_redirects=False)
-    other_task = other_workspace_task(conn)
+    other_workspace_task(conn)
 
-    page = web.get("/operator").text
-    assert task_id in page and other_task in page
+    page = web.get("/tasks?closed=all").text
+    assert len(re.findall(r'<tr class="work-row" data-work-key=', page)) == 1  # 다른 워크스페이스 업무는 없다
+    assert repo.get_task(conn, task_id)["title"] in page
+    advanced = web.get("/connect?tab=advanced").text
+    assert "모든 세션 업무" not in advanced
     # 병합 확인 대기열·진단 사용량은 없다 (ADR-0019)
-    assert "병합 확인 대기" not in page and "진단 사용량" not in page and "오늘 진단 실행" not in page
-    assert "/operator/merges/" not in page
+    for text in (page, advanced):
+        assert "병합 확인 대기" not in text and "진단 사용량" not in text and "오늘 진단 실행" not in text
+        assert "/operator/merges/" not in text
     confirm = web.post(f"/operator/merges/{task_id}/confirm", follow_redirects=False)
     assert confirm.status_code in (404, 405)
     assert repo.get_task(conn, task_id)["merge_confirmed_at"] is None
 
 
 def test_operator_token_never_appears_in_html(web):
-    for path in ("/tasks", "/operator", "/agents", "/tasks/new"):
+    for path in ("/tasks", "/connect?tab=advanced", "/connect?tab=team", "/tasks/new"):
         assert "test-operator-token" not in web.get(path).text
 
 
@@ -1080,18 +1084,18 @@ def rule_form(**overrides) -> dict:
 def register_kind(client, **overrides) -> None:
     response = client.post("/kinds", data=kind_form(**overrides), follow_redirects=False)
     assert response.status_code == 303, response.text
-    assert response.headers["location"] == "/kinds"
+    assert response.headers["location"] == "/connect?tab=kinds"
 
 
 def register_rule(client, **overrides) -> None:
     response = client.post("/rules", data=rule_form(**overrides), follow_redirects=False)
     assert response.status_code == 303, response.text
-    assert response.headers["location"] == "/kinds"
+    assert response.headers["location"] == "/connect?tab=kinds"
 
 
 def kinds_page(client) -> str:
     """엔티티를 복원한 페이지 텍스트 — 규칙 한 줄의 `-->` 가 `--&gt;` 로 이스케이프되므로."""
-    response = client.get("/kinds")
+    response = client.get("/connect?tab=kinds")
     assert response.status_code == 200, response.text
     return html_lib.unescape(response.text)
 
@@ -1279,7 +1283,7 @@ def test_delete_kind_protected_in_use_then_success(web, conn, settings):
     rule_id = next(rid for rid, r in repo.list_rules(conn, session_id) if r.to_kind == "audit")
     assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 303
     deleted = web.post("/kinds/audit/delete", follow_redirects=False)
-    assert deleted.status_code == 303 and deleted.headers["location"] == "/kinds"
+    assert deleted.status_code == 303 and deleted.headers["location"] == "/connect?tab=kinds"
     assert repo.get_kind(conn, session_id, "audit") is None
     assert 'action="/kinds/audit/delete"' not in kinds_page(web)
     assert web.post("/kinds/audit/delete", follow_redirects=False).status_code == 404
@@ -1289,7 +1293,7 @@ def test_delete_rule_then_404(web, conn, settings):
     session_id = session_id_of(web, settings)
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "bug_fix"]
     response = web.post(f"/rules/{rule_id}/delete", follow_redirects=False)
-    assert response.status_code == 303 and response.headers["location"] == "/kinds"
+    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=kinds"
     assert repo.list_rules(conn, session_id) == []
     assert "버그 수정 --[ready_for_review]--> 커밋 검토" not in kinds_page(web)
     assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
@@ -1463,12 +1467,12 @@ def test_agent_pages_show_kind_label_next_to_capability_code(review_web):
     codex = html_lib.unescape(review_web.get("/agents/agent-codex-mac").text)
     assert "code.fix · repository_id=demo-report-repo" in codex and "(버그 수정)" in codex
     assert "code.review · repository_id=demo-report-repo" in codex and "(커밋 검토)" in codex
-    operator = html_lib.unescape(review_web.get("/operator").text)
+    operator = html_lib.unescape(review_web.get("/connect?tab=advanced").text)
     assert "(버그 수정)" in operator and "(검토)" in operator
 
 
 def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_otherwise(web, conn):
-    page = html_lib.unescape(web.get("/operator").text)
+    page = html_lib.unescape(web.get("/connect?tab=advanced").text)
     assert 'name="scope_key"' in page and 'name="capability_code"' in page
     assert "code.fix</span> (repository_id)" in page and "code.review</span> (repository_id)" in page  # 내장 코드 안내
     assert "operations.diagnose" not in page and "workflow_id" not in page
@@ -1500,7 +1504,7 @@ def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_oth
     assert json.loads(repo.get_agent(conn, REVIEW_AGENT)["capabilities_json"]) == [
         {"code": "review", "scope": {"repository_id": "demo-report-repo"}}
     ]
-    page = html_lib.unescape(web.get("/operator").text)
+    page = html_lib.unescape(web.get("/connect?tab=advanced").text)
     assert "review · repository_id=demo-report-repo" in page  # 운영자 목록의 능력 표시
 
 
@@ -1540,7 +1544,7 @@ INBOUND_ITEM = {
 
 def sources_page(client) -> str:
     """엔티티를 복원한 페이지 텍스트 — curl 예시의 따옴표가 `&#39;` 로 이스케이프되므로."""
-    response = client.get("/sources")
+    response = client.get("/connect?tab=sources")
     assert response.status_code == 200, response.text
     return html_lib.unescape(response.text)
 
@@ -1556,7 +1560,7 @@ def issued_token_of(text: str) -> str:
 
 
 def nav_of(html: str) -> str:
-    return html[html.index('class="nav"'):html.index('class="side-head"')]
+    return html[html.index('class="nav"'):html.index("</nav>")]
 
 
 def token_row_of(html: str, token_id: str) -> str:
@@ -1586,11 +1590,10 @@ def test_sources_page_shows_inbound_url_empty_state_example_and_sidebar_link(web
     assert "docs/n8n/README.md" in text
     # 허용 목록이 비어 있으면 callback_url 은 거부된다는 안내
     assert "callback 허용 목록이 비어 있어" in text and "WORKFLOW_CALLBACK_HOSTS" in text
-    # 사이드바 — 종류·규칙 다음, 활성 표시
-    nav = nav_of(web.get("/sources").text)
-    assert '<a href="/sources" class="active">입구</a>' in nav
-    assert nav.index('href="/kinds"') < nav.index('href="/sources"')
-    assert '<a href="/sources">입구</a>' in nav_of(web.get("/tasks").text)
+    # 사이드바 — 입구는 연결 화면으로 모인다(phase 16): 가져올 곳 탭에서는 `연결` 이 활성
+    nav = nav_of(web.get("/connect?tab=sources").text)
+    assert '<a href="/connect" class="active">연결</a>' in nav
+    assert '<a href="/connect">연결</a>' in nav_of(web.get("/tasks").text)
     # GLOSSARY 금지 표현·n8n 비판 문구 없음
     lowered = text.lower()
     for phrase in ("webhook secret", "api key", "inbound token", "whitelist"):
@@ -1672,7 +1675,7 @@ def test_revoke_token_marks_row_and_blocks_inbound_api(web, conn, settings):
     assert inbound_post(web, token).status_code == 201
 
     response = web.post(f"/sources/tokens/{token_id}/revoke", follow_redirects=False)
-    assert response.status_code == 303 and response.headers["location"] == "/sources"
+    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=sources"
     assert repo.list_source_tokens(conn, session_id)[0]["revoked_at"] is not None
     text = sources_page(web)
     assert "취소됨" in text
@@ -1697,7 +1700,7 @@ def test_cannot_see_or_revoke_token_of_other_workspace(web, conn):
 
 
 def test_token_issue_is_not_on_operator_page(web):
-    text = web.get("/operator").text
+    text = web.get("/connect?tab=advanced").text
     assert 'action="/sources/tokens"' not in text and "입구 토큰" not in text
 
 
@@ -1753,7 +1756,7 @@ def invite_token(conn, role: str = "member") -> str:
 
 def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn):
     client = TestClient(selfhost)
-    for path in ("/", "/tasks", "/tasks/new", "/agents", "/operator", "/metrics"):
+    for path in ("/", "/tasks", "/tasks/new", "/connect?tab=team", "/connect?tab=advanced", "/monitor"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303, path
         assert response.headers["location"] == "/login", path
@@ -1855,11 +1858,11 @@ def test_email_login_from_another_browser_shares_the_workspace(selfhost, conn):
     shared = kind_form(kind="shared_check", label="브라우저 공유 확인", capability_code="shared_check")
     assert first.post("/kinds", data=shared, follow_redirects=False).status_code == 303
     second = TestClient(selfhost)  # 다른 브라우저 — 쿠키 없음
-    assert second.get("/kinds", follow_redirects=False).status_code == 303
+    assert second.get("/connect?tab=kinds", follow_redirects=False).status_code == 303
     response = email_login(second, email="ADMIN@example.com")
     assert response.status_code == 303 and response.headers["location"] == "/"
     assert second.cookies[LOGIN_COOKIE] != first.cookies[LOGIN_COOKIE]  # 브라우저마다 로그인 세션
-    assert "브라우저 공유 확인" in second.get("/kinds").text
+    assert "브라우저 공유 확인" in second.get("/connect?tab=kinds").text
     assert session_count(conn) == 1
 
 
@@ -2152,7 +2155,7 @@ def test_demo_routes_and_landing_assets_are_gone(web, conn):
         allowed = (404, 405) if method == "post" else (404,)
         assert response.status_code in allowed, (method, path, response.status_code)
     assert repo.is_session_agent(conn, SESSION, "agent-codex-mac")  # 해제 경로가 없으니 그대로
-    for path in ("/tasks", "/agents", "/tasks/new"):
+    for path in ("/tasks", "/connect?tab=team", "/tasks/new"):
         text = web.get(path).text
         assert "/agents/register" not in text and "/tasks/import" not in text, path
 
@@ -2204,8 +2207,8 @@ def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, set
     html = client.get("/tasks").text
     sidebar = html[html.index('class="sidebar'):html.index('class="main')]
     assert 'action="/logout"' in sidebar and "로그아웃" in sidebar
-    assert 'href="/metrics"' in sidebar and 'href="/operator/github"' in sidebar
-    assert 'href="/tasks/new"' in sidebar  # `+` 는 직접 등록
+    assert 'href="/monitor"' in sidebar and 'href="/connect"' in sidebar
+    assert 'href="/tasks/new"' not in sidebar and 'href="/tasks/new"' in html  # 업무 등록은 도구 막대(phase 16)
     assert_no_secrets(html, settings)
 
 
@@ -2216,8 +2219,8 @@ def test_selfhost_hides_demo_only_elements(settings):
     pages = {
         "/tasks": DEMO_ONLY_TASKS,
         "/tasks/new": DEMO_ONLY_TASK_NEW,
-        "/operator": DEMO_ONLY_OPERATOR,
-        "/sources": DEMO_ONLY_SOURCES,
+        "/connect?tab=advanced": DEMO_ONLY_OPERATOR,
+        "/connect?tab=sources": DEMO_ONLY_SOURCES,
         f"/tasks/{task_id}": DEMO_ONLY_DETAIL,
         f"/tasks/{task_id}/live": DEMO_ONLY_DETAIL,
     }

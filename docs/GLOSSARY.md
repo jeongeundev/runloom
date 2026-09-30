@@ -215,6 +215,25 @@
 | `stage_failed` / 다시 맡기기·닫기 | 실행 실패 때 그 단계에 만드는 사람 요청 코드(원인 키 `stage_failed:<execution_id>`)와 그 응답 `retry`(같은 업무에 같은 종류의 새 단계)·`close`(업무 `종료`)(step 6). 자동 재시도 없음 | `재시도`(자동을 뜻함), `rerun`, `rework`(검토 뒤 같은 단계의 새 Execution) |
 | `work_key` / `branch_seq` / `result_branch` | 실행 요청의 선택 칸 — 업무 키와 그 업무 안 수정 단계 순번(기본 1). 결과 브랜치는 `runloom/<work_key>`, 순번 2 이상은 `runloom/<work_key>-<순번>`, 키 없으면 `task/<task_id>`(`contracts/v1.result_branch`, step 7) | `branch_name`(요청에 브랜치 이름을 싣지 않음), `ref` |
 
+## 계획 용어 — phase 16 업무 화면 (미구현)
+
+[ADR-0022](adr/0022-work-screen-and-direct-work.md), [ARCHITECTURE](ARCHITECTURE.md) "업무 화면 — phase 16". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| 업무 화면 | `/tasks` — 업무 한 줄 표(칸 8개: 키·제목·담당·우선순위·종류·상태·다음 할 일·업데이트)와 도구 막대(빠른 필터·묶기·보기·끝난 업무 범위). 상태는 주소 쿼리 `q`·`group`·`view`·`closed`·`open` 에 남는다(step 4). 코드 모델은 `domain/work_list`(`WorkRow`·`ListQuery`) | `홈`(옛 카드 화면), `대시보드`, `inbox` |
+| 상세 패널 | 업무 화면 오른쪽에 겹쳐 열리는 업무 상세(`/tasks?open=RUN-n`, 조각 `/work/{key}/panel`, 템플릿 `_work_panel.html`)(step 5). 단계 상세(`/tasks/{task_id}` — 한 단계의 실행·결과·산출물)와 다르다 | `모달`, `상세 페이지`(단계 상세), `drawer` |
+| 묶기 / `group` | 목록을 담당자(`assignee` — "담당 없음" → 나 → 다른 멤버 → 에이전트 → 비활성 멤버) 또는 상태(`status` — `WORK_STATUSES` 순)로 나눠 보이는 것(`group_rows`, `RowGroup`)(step 2). 빈 묶음은 숨긴다 | `스윔레인`, `그룹핑`, `정렬`(묶음 안 순서) |
+| 빠른 필터 / `q` | `all`(전체)·`my_turn`(내 차례 — 로그인 멤버가 받는 사람)·`unassigned`(담당 없음)·`agent_working`(에이전트 작업 중) 넷(`filter_rows`, `QUICK_FILTERS`)(step 2). 저장·편집하는 필터는 없다 | `뷰`(보기 `view` 와 혼동), `저장된 필터`, `검색` |
+| 보드 / `view=board` | 업무 화면의 보기 전용 칸 6개(`대기`(새로 들어옴 포함)·`에이전트 작업 중`·`직접 작업 중`·`내 차례`·`PR · 검토`·`완료`)(`board_columns`)(step 2·4). 끌어 옮기기 없음 — 업무 상태는 계산값. `종료` 는 칸이 없다 | `칸반`, `kanban`, `스프린트 보드` |
+| 직접 작업 / `direct work` | 사람이 Runloom 러너를 거치지 않고 자기 세션(Claude Code 등)에서 업무를 처리하는 것. 패널 [내 세션에서 작업] 으로 시작(담당 = 누른 멤버, 칸 `work_items.direct_member_id`·`direct_started_at`·`direct_branch`, 업무 상태 `직접 작업 중`), [직접 작업 그만두기]·[에이전트에게 넘기기]로 끝난다(step 8). Runloom 결과 판정을 거치지 않고 완료는 PR 병합으로만. 직접 작업 중에는 에이전트를 착수하지 않는다(대기 코드 `direct_work`). 단계의 **직접 실행**(`POST /tasks/{id}/run` — 사람이 누른 에이전트 실행)과 다르다 | `직접 실행`(`/run`), `수동 작업`, `manual run`, `manual_mode`(실행 방식) |
+| 브랜치 이름 / `branch_name` | 직접 작업에 복사해 주는 `<업무 키>-<제목의 ASCII 영숫자 요약, 최대 40자>`(요약이 비면 키만, 예 `RUN-15-url-filter`)(`domain/work_keys`, step 8). 러너가 만드는 결과 브랜치 `runloom/<키>`(`result_branch`)와 다르다 | `result_branch`, `task branch` |
+| 업무 PR / 감지 PR / `work_pull_requests` | 업무에 붙은 PR. Runloom 이 연 초안 PR 은 지금처럼 `task_pull_requests`(단계 단위), GitHub 동기화가 소스 저장소 PR 목록에서 head 브랜치나 제목의 업무 키(`keys_in`)로 찾아 붙인 PR(**감지 PR**)은 `work_pull_requests`(step 1·9). 둘을 중복 저장하지 않는다. 감지 PR 열림 → `PR · 검토`, 병합 → `완료`, 병합 없이 닫힘 → 무시 | `연결 PR`, `linked issue`, `외부 PR` |
+| 연결 화면 / `/connect` | 설정 화면을 모은 곳 — 탭 `sources`(가져올 곳)·`team`(팀·담당자)·`kinds`(업무 종류·규칙)·`notify`(알림)·`advanced`(고급)(step 6). 옛 `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` GET 은 여기로 303 | `설정`(내 설정 `/me` 와 혼동), `운영자 화면`, `admin 페이지` |
+| 시작하기 / `/start` | 처음 설정 체크리스트 4항목 — 가져올 곳 연결 → 러너 붙이기 → 팀원 초대(선택) → 첫 업무 맡기기. 완료는 DB 에서 계산(`domain/start_checklist`, `StartFacts`·`start_items`), 필수 셋이 끝나면 사이드바에서 숨김(step 7) | `온보딩 마법사`, `wizard`, `튜토리얼` |
+| 모니터링 / `/monitor` | 옛 지표 화면(`/metrics`)의 새 이름·주소(step 7). 내용·계산은 phase 9 측정 그대로, `/metrics.json`·`/metrics.csv` 는 주소 유지. 지표 확장은 19-monitor | `지표 화면`(옛 이름 — 코드 식별자 `metrics` 는 그대로), `대시보드`, `analytics` |
+| 담당 바꾸기 / `assign_work` | 패널 담당 폼(`POST /work/{key}/assignee`, 값 `member:<id>`\|`agent:<id>`\|`none`)(step 3). 에이전트 = 맡기기(가장 최근 미마감 단계에 지정 + 지시 기록 + 착수), 멤버 = 배정만, `none` = 해제. 활성 실행이 있거나 끝난 업무면 409 | `배정`(에이전트일 때 — 곧 맡기기다), `reassign` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.

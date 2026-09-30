@@ -105,7 +105,7 @@ class Selfhost:
 
     def kinds_text(self) -> str:
         with self.login() as client:
-            response = client.get("/kinds")
+            response = client.get("/connect?tab=kinds")
             assert response.status_code == 200, response.text
             return response.text
 

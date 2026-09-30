@@ -1,4 +1,4 @@
-"""업무 상태 판정 — ARCHITECTURE "업무와 단계 — phase 14" 업무 상태 표, ADR-0020 결정 4·5.
+"""업무 상태 판정 — ARCHITECTURE "업무와 단계 — phase 14" 업무 상태 표(+ "업무 화면 — phase 16" 갱신), ADR-0020 결정 4·5.
 
 시각·DB·HTTP 를 보지 않는다. 호출자가 단계·사람 요청·PR 을 `WorkItemFacts` 로 모아 넘긴다.
 단계 상태(`domain/status.py` 사용자 상태 7개)는 그대로 읽기만 한다.
@@ -11,7 +11,7 @@ WORK_STATUSES = (
     "새로 들어옴",
     "대기",
     "에이전트 작업 중",
-    "직접 작업 중",  # 값만 예약 — 신호는 16-work-ui 이후
+    "직접 작업 중",
     "내 차례",
     "PR · 검토",
     "완료",
@@ -64,6 +64,9 @@ class WorkItemFacts:
     stages: tuple[StageFact, ...]
     open_requests: tuple[RequestFact, ...]
     pull_request: PullRequestFact | None
+    direct_member_name: str | None = None  # 직접 작업 중이면 그 멤버 표시 이름 (phase 16)
+    # 감지 PR(`work_pull_requests`) — open·merged·closed, 최근순 (phase 16 step 9)
+    detected_pull_requests: tuple[PullRequestFact, ...] = ()
 
 
 def _pr_suffix(pr: PullRequestFact) -> str:
@@ -84,6 +87,9 @@ def work_status(facts: WorkItemFacts) -> WorkStatus:
         return WorkStatus("완료", "PR 병합" + _pr_suffix(pr))
     if pr is not None and pr.state == "closed":
         return WorkStatus("종료", "PR 이 병합 없이 닫힘" + _pr_suffix(pr))
+    detected_merged = next((d for d in facts.detected_pull_requests if d.state == "merged"), None)
+    if detected_merged is not None:
+        return WorkStatus("완료", "PR 병합" + _pr_suffix(detected_merged))
 
     if facts.open_requests:
         failed = next((r for r in facts.open_requests if r.code == STAGE_FAILED), None)
@@ -97,6 +103,12 @@ def work_status(facts: WorkItemFacts) -> WorkStatus:
         return WorkStatus("PR · 검토", "PR 여는 중")
     if pr is not None and pr.state == "open":
         return WorkStatus("PR · 검토", "PR 확인" + _pr_suffix(pr))
+    detected_open = next((d for d in facts.detected_pull_requests if d.state == "open"), None)
+    if detected_open is not None:  # 병합 없이 닫힌 감지 PR 은 보지 않는다
+        return WorkStatus("PR · 검토", "PR 확인" + _pr_suffix(detected_open))
+
+    if facts.direct_member_name is not None:
+        return WorkStatus("직접 작업 중", facts.direct_member_name)
 
     check = _latest(s for s in facts.stages if s.status == "확인 필요")
     if check is not None:

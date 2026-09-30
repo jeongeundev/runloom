@@ -216,10 +216,11 @@ def test_02_admin_invites_a_member_who_joins_and_logs_in(world):
     world.ctx["member_id"] = row["member_id"]
     assert MEMBER["display_name"] in member.get("/tasks").text  # 사이드바의 표시 이름
 
-    # 관리자 전용 경로는 멤버에게 403
-    for path in ("/team", "/operator/notifications"):
-        forbidden = member.get(path)
-        assert forbidden.status_code == 403, (path, forbidden.status_code)
+    # 관리자 전용 경로는 멤버에게 403 — 팀 탭은 열리지만 멤버·초대 절은 관리자만(phase 16)
+    forbidden = member.get("/connect?tab=notify")
+    assert forbidden.status_code == 403, forbidden.status_code
+    team_tab = member.get("/connect?tab=team")
+    assert team_tab.status_code == 200 and 'action="/team/invites"' not in team_tab.text
     assert member.post("/team/invites", data={"role": "admin"}).status_code == 403
 
     saved = member.post("/me/webhook", data={"url": world.ctx["personal_url"]})
@@ -244,7 +245,7 @@ def test_03_member_attaches_the_runner_and_owns_it(world):
     assert connector["owner_member_id"] == world.ctx["member_id"]
     (agent,) = q(world, "SELECT agent_id FROM agents WHERE local_registration_id = ?", REGISTRATION)
     world.ctx["agent_id"] = agent["agent_id"]
-    assert f"소유자 {MEMBER['display_name']}" in world.http.get("/operator").text  # 관리자도 소유자를 본다
+    assert f"소유자 {MEMBER['display_name']}" in world.http.get("/connect?tab=team").text  # 관리자도 소유자를 본다
 
     world.spawn("connector", [py, "-m", "workflow.connector", "run", "--adapter", "codex",
                               "--claim-interval", "0.5", "--heartbeat-interval", "1"], world.connector_env)
@@ -270,7 +271,7 @@ def test_04_member_delegates_and_the_review_request_is_only_the_members_turn(wor
     world.worker.tick()
     assert q(world, "SELECT status FROM work_items")[0]["status"] == "내 차례"
 
-    link = f'class="card" data-work-key="RUN-{work["key_number"]}"'  # 업무 목록 카드 (사이드바 목록 말고)
+    link = f'class="work-row" data-work-key="RUN-{work["key_number"]}"'  # 업무 화면 표 한 줄 (phase 16)
     assert link in member.get("/tasks", params={"view": "my_turn"}).text
     assert link not in world.http.get("/tasks", params={"view": "my_turn"}).text  # 관리자의 내 차례엔 없다
     assert link in world.http.get("/tasks").text  # 전체에는 있다
@@ -334,7 +335,7 @@ def test_07_team_secrets_stay_out_of_the_db_logs_and_pages(world):
         text = "\n".join(line for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
                          if not line.startswith(f"httpx INFO HTTP Request: POST {world.central_url}/"))
         leaked += [f"{name}@{path.name}" for name, value in needles.items() if value and value in text]
-    for page in ("/tasks", "/me", "/operator", "/operator/github"):
+    for page in ("/tasks", "/me", "/connect?tab=team", "/connect?tab=advanced", "/connect?tab=sources"):
         body = member_http(world).get(page).text
         leaked += [f"{name}@{page}" for name, value in needles.items() if value and value in body]
     assert leaked == []

@@ -13,6 +13,8 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain.kinds import get_kind
+from workflow.domain.work_list import parse_list_query
+from workflow.domain.work_status import WorkStatus
 from workflow.server import views
 
 from .conftest import (
@@ -26,6 +28,7 @@ from .conftest import (
     event,
     seed_execution,
     seed_result_ready,
+    task_row,
 )
 
 CAP_FIX = {"code": "code.fix", "scope": {"repository_id": REPOSITORY}}  # TASK_A (bug_fix)
@@ -966,3 +969,60 @@ def test_n8n_chain_without_items_json_keeps_only_selection_reason(seeded, settin
     first, second = _chain(seeded, settings)["tasks"]
     assert first["reasons"] == ["code.fix 일치 후보 1개"]
     assert second["reasons"] == ["후보 없음"]
+
+
+# --- phase 16 step 2: 목록 화면 문맥 ------------------------------------------------------------------------
+
+
+def _list_context(conn, member_id: str, **query):
+    return views.work_list_context(conn, SESSION, member_id=member_id, query=parse_list_query(**query), now=NOW)
+
+
+def test_work_list_context_counts_filters_over_the_closed_scope(seeded):
+    conn = seeded
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    repo.create_human_request_once(conn, TASK_A, "decision", "어느 쪽으로 고칠까요?", "decision:1", NOW)  # RUN-1 내 차례
+    old = repo.insert_work_item_task(conn, task_row("task-old"), NOW)
+    repo.set_work_status(conn, old, WorkStatus("종료", "닫힘"), now="2026-09-01T00:00:00Z")  # 19일 전
+
+    ctx = _list_context(conn, admin, q="my_turn")
+    assert ctx["query"] == parse_list_query(q="my_turn")
+    assert ctx["counts"] == {"all": 2, "my_turn": 1, "unassigned": 2, "agent_working": 0}
+    assert [r.work_key for r in ctx["rows"]] == ["RUN-1"]
+    assert [(g.key, [r.work_key for r in g.rows]) for g in ctx["groups"]] == [("none", ["RUN-1"])]
+    assert [len(c.rows) for c in ctx["columns"]] == [0, 0, 0, 1, 0, 0]
+    assert ctx["open_missing"] is False
+
+    ctx = _list_context(conn, admin, closed="all", group="status")
+    assert ctx["counts"] == {"all": 3, "my_turn": 1, "unassigned": 2, "agent_working": 0}
+    assert [r.work_key for r in ctx["rows"]] == ["RUN-3", "RUN-2", "RUN-1"]
+    assert [g.key for g in ctx["groups"]] == ["status:새로 들어옴", "status:내 차례", "status:종료"]
+    assert _list_context(conn, "mem-someone-else", q="my_turn")["counts"]["my_turn"] == 0
+
+
+def test_work_list_context_normalizes_unknown_values_and_flags_a_missing_open_key(seeded):
+    conn = seeded
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    ctx = _list_context(conn, admin, q="nope", group="x", view="grid", closed="old", open="RUN-99")
+    assert ctx["query"] == parse_list_query(open="RUN-99")
+    assert (ctx["query"].q, ctx["query"].group, ctx["query"].view, ctx["query"].closed) == (
+        "all", "assignee", "list", "recent")
+    assert ctx["open_missing"] is True
+    assert _list_context(conn, admin, open="RUN-2")["open_missing"] is False
+    assert _list_context(conn, admin, open="garbage")["open_missing"] is False  # 키 형식이 아니면 열 것이 없다
+
+
+def test_list_query_params_leave_out_defaults():
+    assert views.list_query_params(parse_list_query()) == ""
+    assert views.list_query_params(parse_list_query(q="my_turn", group="status", view="board", closed="all"),
+                                   open_key=12) == "q=my_turn&group=status&view=board&closed=all&open=RUN-12"
+    assert views.list_query_params(parse_list_query(view="board", open="RUN-3")) == "view=board"  # open 은 인자로만
+    assert views.list_query_params(parse_list_query(), open_key=4) == "open=RUN-4"
+
+
+def test_list_href_changes_one_value_and_keeps_the_rest():
+    query = parse_list_query(q="unassigned", group="status")
+    assert views.list_href(query) == "/tasks?q=unassigned&group=status"
+    assert views.list_href(query, q="all") == "/tasks?group=status"
+    assert views.list_href(query, view="board", open_key=7) == "/tasks?q=unassigned&group=status&view=board&open=RUN-7"
+    assert views.list_href(parse_list_query(), q="all") == "/tasks"

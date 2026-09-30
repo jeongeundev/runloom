@@ -17,6 +17,7 @@ from workflow.adapters.github_client import (
     GitHubUnavailable,
     IssueCursor,
     IssuePage,
+    PullSummary,
 )
 from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink
 from workflow.contracts.v1 import Capability, ExecutionRequest, KindSpec
@@ -47,6 +48,9 @@ class FakeGitHub:
         self.links: dict[int, IssuePrLink] = {}  # 이슈 번호 → 그 이슈를 닫은 병합 PR. 없으면 병합 없음
         self.link_failures: dict[int, Exception] = {}
         self.link_calls: list[int] = []
+        self.pulls: dict[int, PullSummary] = {}  # 소스 저장소 PR — 번호 → 요약
+        self.pull_failures: list[Exception] = []
+        self.pull_calls: list[str | None] = []
 
     def put(self, snapshot: GitHubIssueSnapshot) -> None:
         self.issues[snapshot.issue_id] = snapshot
@@ -89,6 +93,14 @@ class FakeGitHub:
         if number in self.link_failures:
             raise self.link_failures[number]
         return self.links.get(number)
+
+    def list_pulls(self, repo_name: str, cursor: str | None) -> list[PullSummary]:
+        """갱신 내림차순, `updated_at > cursor` 만(상한은 흉내 내지 않는다)."""
+        self.pull_calls.append(cursor)
+        if self.pull_failures:
+            raise self.pull_failures.pop(0)
+        return sorted((p for p in self.pulls.values() if cursor is None or p.updated_at > cursor),
+                      key=lambda p: (p.updated_at, p.number), reverse=True)
 
     def list_comments(self, *args, **kwargs):
         raise AssertionError("수집은 댓글을 읽지 않는다")
@@ -691,3 +703,197 @@ def test_body_edit_updates_work_item_form_and_revision(conn, session_id):
     sync_source(conn, gh, SOURCE, NOW)
     work = repo.get_work_item(conn, session_id, work["work_item_id"])
     assert (work["source_state"], work["revision"]) == ("closed", 2)
+
+
+# --- PR 신호 (phase 16 step 9 — ARCHITECTURE "업무 화면 — phase 16" PR 신호) ---
+
+
+def pull(number: int, *, head: str = "feature/x", title: str = "고침", state: str = "open",
+         merged_at: str | None = None, at: str = "2026-10-06T03:00:00Z") -> PullSummary:
+    return PullSummary(number=number, title=title, head_ref=head, state=state, draft=False, merged_at=merged_at,
+                       author_login="kim-dev", updated_at=at)
+
+
+def imported_work(conn, sid: str, gh: FakeGitHub, number: int = 1) -> str:
+    """이슈를 받아 업무(RUN-n)를 만든다. PR 대역은 비워 둔다."""
+    gh.put(issue(number))
+    sync_source(conn, gh, SOURCE, NOW)
+    return repo.work_item_of_task(conn, tasks_by_ref(conn, sid)[f"acme/billing#{number}"]["task_id"])["work_item_id"]
+
+
+def detected(conn, work_item_id: str) -> list[dict]:
+    return [dict(r) for r in repo.list_work_pull_requests(conn, work_item_id)]
+
+
+def work_events(conn, work_item_id: str, type: str) -> list[dict]:
+    return [json.loads(r["data_json"]) for r in conn.execute(
+        "SELECT data_json FROM work_item_events WHERE work_item_id = ? AND type = ? ORDER BY id", (work_item_id, type))]
+
+
+def work_status_of(conn, sid: str, work_item_id: str) -> tuple[str, str]:
+    row = repo.get_work_item(conn, sid, work_item_id)
+    return row["status"], row["status_reason"]
+
+
+def test_pr_with_key_in_head_branch_is_linked_to_work(conn, session_id):
+    gh = FakeGitHub()
+    work = imported_work(conn, session_id, gh)
+    gh.pulls[7] = pull(7, head="RUN-1-url-filter", title="URL 필터 <b>고침</b>")
+
+    report = sync_source(conn, gh, SOURCE, NOW)
+
+    assert report.pulls_linked == [work] and report.pull_error is None
+    (row,) = detected(conn, work)
+    assert (row["pr_number"], row["title"], row["head_branch"], row["state"], row["pr_url"]) == (
+        7, "URL 필터 <b>고침</b>", "RUN-1-url-filter", "open", "https://github.com/acme/billing/pull/7")
+    assert work_events(conn, work, "pull_request_linked") == [
+        {"repository_full_name": "acme/billing", "pr_number": 7, "head_branch": "RUN-1-url-filter",
+         "matched_in": "head"}]
+    assert work_status_of(conn, session_id, work) == ("PR · 검토", "PR 확인 — #7")
+
+
+def test_pr_with_key_only_in_title_is_linked_and_head_wins_over_title(conn, session_id):
+    gh = FakeGitHub()
+    first = imported_work(conn, session_id, gh, 1)
+    second = imported_work(conn, session_id, gh, 2)
+    gh.pulls[7] = pull(7, head="fix/coupon", title="fix: run-2 쿠폰")
+    gh.pulls[8] = pull(8, head="RUN-1-a", title="RUN-2 도 같이", at="2026-10-06T03:01:00Z")
+    gh.pulls[9] = pull(9, head="RUN-99-gone", title="RUN-2 제목", at="2026-10-06T03:02:00Z")  # head 키가 없는 업무면 제목
+
+    sync_source(conn, gh, SOURCE, NOW)
+
+    assert [r["pr_number"] for r in detected(conn, first)] == [8]
+    assert sorted(r["pr_number"] for r in detected(conn, second)) == [7, 9]
+    assert [e["matched_in"] for e in work_events(conn, second, "pull_request_linked")] == ["title", "title"]
+
+
+def test_pr_without_known_key_is_ignored(conn, session_id):
+    gh = FakeGitHub()
+    work = imported_work(conn, session_id, gh)
+    gh.pulls[7] = pull(7, head="feature/x", title="키 없음")
+    gh.pulls[8] = pull(8, head="RUN-77-x", title="없는 업무")
+    gh.pulls[9] = pull(9, head="XRUN-1", title="prefixRUN-1")
+
+    report = sync_source(conn, gh, SOURCE, NOW)
+
+    assert report.pulls_linked == [] and detected(conn, work) == []
+    assert conn.execute("SELECT COUNT(*) FROM work_pull_requests").fetchone()[0] == 0
+
+
+def test_key_of_another_workspace_is_ignored(conn, session_id):
+    gh = FakeGitHub()
+    imported_work(conn, session_id, gh)
+    repo.create_session(conn, "sess-other", NOW)
+    conn.execute("BEGIN IMMEDIATE")
+    other, _ = repo.create_work_item(conn, "sess-other", title="남의 업무", request="-", kind="bug_fix",
+                                     source_type="manual", now=NOW)
+    repo.create_work_item(conn, "sess-other", title="남의 업무 2", request="-", kind="bug_fix", source_type="manual",
+                          now=NOW)
+    conn.execute("COMMIT")
+    gh.pulls[7] = pull(7, head="RUN-2-x")  # 이 워크스페이스에는 RUN-2 가 없다
+
+    report = sync_source(conn, gh, SOURCE, NOW)
+
+    assert report.pulls_linked == [] and detected(conn, other) == []
+
+
+def test_runloom_pull_request_is_not_stored_again(conn, session_id):
+    gh = FakeGitHub()
+    work = imported_work(conn, session_id, gh)
+    task_id = tasks_by_ref(conn, session_id)["acme/billing#1"]["task_id"]
+    conn.execute(
+        "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+        " head_branch, fix_execution_id, review_execution_id, state, pr_number, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'acme/billing', 1, 'RUN-1-2', 'exec-f', 'exec-r', 'open', 31, ?, ?)",
+        (task_id, session_id, SOURCE, NOW, NOW),
+    )
+    gh.pulls[31] = pull(31, head="RUN-1-2", title="RUN-1 초안")
+
+    report = sync_source(conn, gh, SOURCE, NOW)
+
+    assert report.pulls_linked == [] and detected(conn, work) == []
+
+
+def test_resync_is_idempotent_and_cursor_advances(conn, session_id):
+    gh = FakeGitHub()
+    work = imported_work(conn, session_id, gh)
+    assert gh.pull_calls == [None] and repo.get_pull_cursor(conn, SOURCE) is None  # PR 이 없으면 커서 그대로
+    gh.pulls[7] = pull(7, head="RUN-1-a", at="2026-10-06T03:00:00Z")
+    gh.pulls[8] = pull(8, head="nothing", at="2026-10-06T04:00:00Z")  # 붙지 않은 PR 도 커서를 옮긴다
+
+    sync_source(conn, gh, SOURCE, NOW)
+    assert repo.get_pull_cursor(conn, SOURCE) == "2026-10-06T04:00:00Z"
+
+    again = sync_source(conn, gh, SOURCE, NOW)
+    assert gh.pull_calls[-1] == "2026-10-06T04:00:00Z"
+    assert again.pulls_linked == [] and len(detected(conn, work)) == 1
+
+    gh.pulls[7] = pull(7, head="RUN-1-a", title="제목 바뀜", at="2026-10-06T05:00:00Z")
+    third = sync_source(conn, gh, SOURCE, NOW)
+    assert third.pulls_linked == []
+    (row,) = detected(conn, work)
+    assert row["title"] == "제목 바뀜"
+    assert len(work_events(conn, work, "pull_request_linked")) == 1
+    assert repo.get_pull_cursor(conn, SOURCE) == "2026-10-06T05:00:00Z"
+
+
+def test_open_then_merged_pr_completes_work_once(conn, session_id):
+    gh = FakeGitHub()
+    work = imported_work(conn, session_id, gh)
+    gh.pulls[7] = pull(7, head="RUN-1-a")
+    sync_source(conn, gh, SOURCE, NOW)
+    assert work_status_of(conn, session_id, work) == ("PR · 검토", "PR 확인 — #7")
+
+    gh.pulls[7] = pull(7, head="RUN-1-a", state="closed", merged_at="2026-10-06T06:00:00Z", at="2026-10-06T06:00:00Z")
+    sync_source(conn, gh, SOURCE, NOW)
+    assert work_status_of(conn, session_id, work) == ("완료", "PR 병합 — #7")
+    assert repo.get_work_item(conn, session_id, work)["closed_at"] == NOW
+
+    gh.put(issue(1, state="closed", updated_at="2026-10-06T06:01:00Z"))  # 원본 이슈 닫힘이 겹쳐도
+    gh.pulls[7] = pull(7, head="RUN-1-a", state="closed", merged_at="2026-10-06T06:00:00Z", at="2026-10-06T06:02:00Z")
+    sync_source(conn, gh, SOURCE, NOW)
+    assert [e["to"] for e in work_events(conn, work, "status_changed")].count("완료") == 1
+    assert work_status_of(conn, session_id, work) == ("완료", "PR 병합 — #7")
+
+
+def test_closed_pr_without_merge_returns_to_direct_work(conn, session_id):
+    gh = FakeGitHub()
+    work = imported_work(conn, session_id, gh)
+    member = repo.list_members(conn, session_id)[0]
+    repo.start_direct_work(conn, session_id, work, member_id=member["member_id"], branch="RUN-1-a", now=NOW)
+    gh.pulls[7] = pull(7, head="RUN-1-a")
+    sync_source(conn, gh, SOURCE, NOW)
+    assert work_status_of(conn, session_id, work) == ("PR · 검토", "PR 확인 — #7")
+
+    gh.pulls[7] = pull(7, head="RUN-1-a", state="closed", at="2026-10-06T06:00:00Z")
+    sync_source(conn, gh, SOURCE, NOW)
+    assert detected(conn, work)[0]["state"] == "closed"
+    assert work_status_of(conn, session_id, work) == ("직접 작업 중", member["display_name"])
+
+
+def test_pr_read_failure_keeps_issue_intake_and_cursor(conn, session_id):
+    gh = FakeGitHub()
+    gh.put(issue(1))
+    gh.pulls[7] = pull(7, head="RUN-1-a")
+    gh.pull_failures = [GitHubUnavailable("GET /repos/acme/billing/pulls: HTTP 502")]
+
+    report = sync_source(conn, gh, SOURCE, NOW)
+
+    assert report.error is None and len(report.created) == 1
+    assert report.pull_error == "GET /repos/acme/billing/pulls: HTTP 502" and report.pulls_linked == []
+    assert repo.get_pull_cursor(conn, SOURCE) is None
+    assert conn.execute("SELECT COUNT(*) FROM work_pull_requests").fetchone()[0] == 0
+
+    gh.pull_failures = [GitHubRateLimited("GET /repos/acme/billing/pulls: HTTP 429", 45, None)]
+    limited = sync_source(conn, gh, SOURCE, NOW)
+    assert (limited.pull_error, limited.retry_after_seconds) == ("GET /repos/acme/billing/pulls: HTTP 429", 45)
+
+    retried = sync_source(conn, gh, SOURCE, NOW)  # 다음 호출이 처음부터 다시 읽어 붙인다
+    assert len(retried.pulls_linked) == 1 and repo.get_pull_cursor(conn, SOURCE) == "2026-10-06T03:00:00Z"
+
+
+def test_pr_is_not_read_when_issue_polling_failed(conn, session_id):
+    gh = FakeGitHub()
+    gh.failures = [GitHubUnavailable("GET /repos/acme/billing/issues: HTTP 502")]
+    report = sync_source(conn, gh, SOURCE, NOW)
+    assert report.error is not None and gh.pull_calls == []

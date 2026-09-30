@@ -18,11 +18,11 @@ import os
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink, PullRequestRef, RepositoryFullName
 from workflow.contracts.v1 import parse_rfc3339_aware
@@ -30,6 +30,9 @@ from workflow.contracts.v1 import parse_rfc3339_aware
 API_HOST = "api.github.com"
 API_VERSION = "2022-11-28"
 PER_PAGE = 100
+# 소스 저장소 PR 목록(phase 16 PR 신호) — 페이지 크기와 한 번의 호출에서 넘길 최대 페이지 수
+PULLS_PER_PAGE = 50
+MAX_PULL_PAGES_PER_SYNC = 2
 
 _REPO_NAME = TypeAdapter(RepositoryFullName)
 
@@ -169,6 +172,22 @@ class CommentPage:
     next_cursor: int | None
 
 
+class PullSummary(BaseModel):
+    """PR 목록 한 항목에서 PR 신호에 필요한 필드만(ARCHITECTURE "PR 신호"). `html_url` 은 받지 않는다 — 링크는 저장소
+    이름과 번호로 계산한다. 제목·브랜치·로그인은 외부 문자열이라 저장·표시만 한다."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    number: int
+    title: str
+    head_ref: str
+    state: Literal["open", "closed"]
+    draft: bool
+    merged_at: str | None
+    author_login: str | None
+    updated_at: str
+
+
 class TokenProvider(Protocol):
     """요청마다 부르는 토큰 공급자. `invalidate()` 는 401 을 받았을 때 캐시를 버리게 한다."""
 
@@ -234,6 +253,8 @@ class GitHubClient(Protocol):
     ) -> PullRequestRef: ...
 
     def get_pull_request(self, repo: str, number: int) -> PullRequestRef: ...
+
+    def list_pulls(self, repo: str, cursor: str | None) -> list[PullSummary]: ...
 
 
 def _header_int(response: httpx.Response, name: str) -> int | None:
@@ -488,6 +509,30 @@ class HttpGitHubClient:
         path = f"/repos/{self._repo(repo)}/pulls/{int(number)}"
         return self._pull_request(self._json(self._call("GET", path), "GET", path), "GET", path)
 
+    # ── PR 신호 (phase 16) ──
+
+    def list_pulls(self, repo: str, cursor: str | None) -> list[PullSummary]:
+        """소스 저장소의 PR 을 갱신 내림차순으로 — `updated_at > cursor` 인 것만, 최대 `MAX_PULL_PAGES_PER_SYNC` 페이지.
+        커서와 같거나 이른 PR 을 만나면 멈춘다. 304 면 빈 목록(ETag 는 보내지 않는다)."""
+        path = f"/repos/{self._repo(repo)}/pulls"
+        boundary = None if cursor is None else datetime.fromisoformat(parse_rfc3339_aware(cursor))
+        pulls: list[PullSummary] = []
+        page: int | None = 1
+        for _ in range(MAX_PULL_PAGES_PER_SYNC):
+            params = {"state": "all", "sort": "updated", "direction": "desc", "per_page": PULLS_PER_PAGE, "page": page}
+            response = self._call("GET", path, params=params)
+            if response.status_code == 304:
+                return pulls
+            for item in self._json_list(response, path):
+                pull = self._pull_summary(item, path)
+                if boundary is not None and datetime.fromisoformat(parse_rfc3339_aware(pull.updated_at)) <= boundary:
+                    return pulls
+                pulls.append(pull)
+            page = self._next_page(response, path)
+            if page is None:
+                return pulls
+        return pulls
+
     # ── 내부 ──
 
     def _repo(self, repo: str) -> str:
@@ -568,6 +613,16 @@ class HttpGitHubClient:
             )
         except (KeyError, TypeError, AttributeError, ValidationError):
             raise GitHubError(f"{method} {path}: 응답 형식 오류") from None
+
+    def _pull_summary(self, item: dict, path: str) -> PullSummary:
+        try:
+            return PullSummary(
+                number=item["number"], title=item["title"], head_ref=item["head"]["ref"], state=item["state"],
+                draft=bool(item.get("draft") or False), merged_at=item.get("merged_at"),
+                author_login=(item.get("user") or {}).get("login"), updated_at=item["updated_at"],
+            )
+        except (KeyError, TypeError, AttributeError, ValidationError):
+            raise GitHubError(f"GET {path}: 응답 형식 오류") from None
 
     def _next_page(self, response: httpx.Response, path: str) -> int | None:
         return next_page(response, path)

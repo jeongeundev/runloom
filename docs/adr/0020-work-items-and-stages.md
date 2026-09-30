@@ -43,3 +43,5 @@
 - **업그레이드 순서**: 실행 요청(서버 → 러너)에 새 칸이 생기므로 구버전 러너는 `work_key` 가 든 요청을 `extra="forbid"` 로 거부한다. 셀프호스트는 중앙(`install.sh`)과 러너(`install-runner.sh`)를 같은 체크아웃으로 함께 올린다 — step 10 이 SELFHOST 문서에 순서를 적는다.
 - v10 이전에 첫 수정 Execution 이 있던 Task(마이그레이션된 진행 중 업무)는 그 요청에 `work_key` 가 없으므로 끝까지 `task/<task_id>` 브랜치를 쓴다(결정 11 의 "첫 요청이 정한다").
 - `predecessor_task_id` 로 미리 등록한 검토 Task(후속 결정 표의 `link_existing` 두 번째 경우)는 마이그레이션에서 `followup_links` 가 없으면 별도 업무 + `blocks` 링크가 된다.
+
+16-work-ui 이후: 결정 4 의 `직접 작업 중` 신호는 [ADR-0022](0022-work-screen-and-direct-work.md) 결정 8(버튼 + 키 든 PR)이 채운다.

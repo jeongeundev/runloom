@@ -1,16 +1,16 @@
-{# 지표 — ADR-0015, ARCHITECTURE "측정 — phase 9". 지표 보기(`view_metrics`), 기준선 가져오기는 `manage_connections`. 계산은 metrics_api 와 같다(JSON·CSV 링크는 같은 쿼리).
+{# 모니터링(옛 지표) — ADR-0015, ARCHITECTURE "측정 — phase 9". 지표 보기(`view_metrics`), 기준선 가져오기는 `manage_connections`. 계산은 metrics_api 와 같다(JSON·CSV 링크는 같은 쿼리).
    칸마다 n·미완료·모름을 함께 적고, 모르는 값은 "모름"(0 아님). 기준선 가져오기는 data-json-action 으로 운영자 API 에 보낸다. #}
 {% extends "base.html" %}
-{% block title %}지표 — Runloom{% endblock %}
+{% block title %}모니터링 — Runloom{% endblock %}
 {% macro cell(c) -%}
 <strong>{{ c.text }}</strong><div class="small">{{ c.detail }}</div>
 {%- endmacro %}
 {% block content %}
-<div class="crumbs"><div class="crumb">운영자<span class="sep">/</span>지표</div></div>
+<div class="crumbs"><div class="crumb">모니터링</div></div>
 
 <p class="muted">관측값이며 인과 효과로 단정하지 않는다. 시스템 기록만으로 계산하고, 모르는 값은 0 이 아니라 "모름" 으로 따로 셉니다.</p>
 
-<form method="get" action="/metrics" class="card">
+<form method="get" action="/monitor" class="card">
   <div class="field-row">
     <div class="field"><label for="m-from">시작 (RFC 3339)</label>
       <input type="text" id="m-from" name="from" value="{{ params.from }}" placeholder="2026-09-01T00:00:00+09:00"></div>
@@ -79,7 +79,7 @@
     <button class="btn btn-secondary btn-small" type="submit">기준선 가져오기</button><span class="action-note" data-json-result></span>
   </form>
   {% else %}
-  <p class="small">GitHub 소스가 없습니다. <a href="/operator/github">GitHub 연결</a>에서 소스를 만드세요.</p>
+  <p class="small">GitHub 소스가 없습니다. <a href="/connect?tab=sources">GitHub 연결</a>에서 소스를 만드세요.</p>
   {% endfor %}
 </div>
 {% endif %}

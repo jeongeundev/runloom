@@ -43,6 +43,7 @@ from workflow.contracts.v1 import (
     BUILTIN_KINDS,
     BUILTIN_RULES,
     ArtifactMeta,
+    Capability,
     ExecutionEvent,
     ExecutionRequest,
     KindSpec,
@@ -50,8 +51,10 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain.field_mapping import MappingRow
+from workflow.domain.selection import Candidate, select_agent
+from workflow.domain.start_checklist import StartFacts
 from workflow.domain.task_followup import FollowupTaskSpec
-from workflow.domain.work_status import WorkStatus
+from workflow.domain.work_status import WorkStatus, work_status
 
 from .conftest import NOW
 
@@ -1757,6 +1760,38 @@ def cycle(seeded):
     return seeded
 
 
+def test_hand_work_to_agent_writes_the_delegation_in_one_transaction(cycle):
+    conn = cycle
+    repo.register_session_agent(conn, SESSION, FIX_AGENT, NOW)
+    work_item_id = repo.work_item_of_task(conn, "task-gh-41")["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    capability = Capability(code="code.fix", scope={"repository_id": "billing"})
+    record = select_agent("task-gh-41", capability, [Candidate(FIX_AGENT, (capability,))], mode="manual",
+                          chosen_agent_id=FIX_AGENT)
+    target = {"local_registration_id": "local-billing"}
+    with pytest.raises(NotFound):  # 다른 워크스페이스
+        repo.hand_work_to_agent(conn, OTHER_SESSION, work_item_id, record=record, target=target, member_id=admin,
+                                now=LATER)
+    assert repo.get_selection(conn, "task-gh-41") is None
+
+    repo.hand_work_to_agent(conn, SESSION, work_item_id, record=record, target=target, member_id=admin, now=LATER)
+
+    assert repo.get_selection(conn, "task-gh-41") == record
+    task = repo.get_task(conn, "task-gh-41")
+    assert (task["selection_mode"], task["chosen_agent_id"], json.loads(task["target_json"])) == (
+        "manual", FIX_AGENT, target)
+    work = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (work["assignee_type"], work["assignee_id"], work["requested_by_member_id"]) == ("agent", FIX_AGENT, admin)
+    issue = repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")
+    assert (issue["delegated_by"], issue["delegated_at"]) == ("operator", LATER)
+    assert WorkStatus(work["status"], work["status_reason"]) == work_status(repo.work_item_facts(conn, work_item_id))
+
+    repo.hand_work_to_agent(conn, SESSION, work_item_id, record=record, target=target, member_id=admin,
+                            now="2026-09-20T00:00:09Z")  # 두 번째 — 지시·담당 이벤트는 처음 것 그대로
+    assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")["delegated_at"] == LATER
+    assert len([e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "assigned"]) == 1
+
+
 def test_github_source_save_get_and_session_scope(seeded):
     repo.save_github_source(seeded, SESSION, _source(), NOW)
     assert repo.get_github_source(seeded, SESSION, SOURCE) == _source()
@@ -3050,14 +3085,120 @@ def test_assign_work_item_checks_workspace_and_records_event(seeded):
     assert repo.assign_work_item(conn, SESSION, work_item_id, assignee_type=None, assignee_id=None, now=LATER)
     row = repo.get_work_item(conn, SESSION, work_item_id)
     assert (row["assignee_type"], row["assignee_id"], row["updated_at"]) == (None, None, LATER)
-    events = repo.list_work_item_events(conn, work_item_id)
-    assert [e["type"] for e in events] == ["assigned"] * 3
+    # 바뀔 때마다 `assigned` 한 행 + 업무 상태 재계산(phase 16 — 상태가 바뀌면 `status_changed` 도 남는다)
+    events = [e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "assigned"]
     assert [json.loads(e["data_json"]) for e in events] == [
-        {"from": None, "to": {"type": "member", "id": admin}},
-        {"from": {"type": "member", "id": admin}, "to": {"type": "agent", "id": "agent-ops-demo"}},
-        {"from": {"type": "agent", "id": "agent-ops-demo"}, "to": None},
+        {"from": None, "to": {"type": "member", "id": admin}, "by": None},
+        {"from": {"type": "member", "id": admin}, "to": {"type": "agent", "id": "agent-ops-demo"}, "by": None},
+        {"from": {"type": "agent", "id": "agent-ops-demo"}, "to": None, "by": None},
     ]
     assert events[0]["session_id"] == SESSION and events[0]["config_revision"] == SEEDED_REVISION
+    assert {e["type"] for e in repo.list_work_item_events(conn, work_item_id)} <= {"assigned", "status_changed"}
+
+
+def test_assign_work_item_records_who_and_refreshes_the_work_status(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    assert repo.get_work_item(conn, SESSION, work_item_id)["status_reason"] == ""  # 계산 전 저장값
+    assert repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=admin,
+                                 by_member_id=admin, now=LATER)
+    (event,) = [e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "assigned"]
+    assert json.loads(event["data_json"])["by"] == admin
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert WorkStatus(row["status"], row["status_reason"]) == work_status(repo.work_item_facts(conn, work_item_id))
+    assert row["status_reason"] != ""
+
+
+def _direct(conn, work_item_id: str) -> tuple:
+    row = conn.execute("SELECT direct_member_id, direct_started_at, direct_branch FROM work_items WHERE work_item_id = ?",
+                       (work_item_id,)).fetchone()
+    return tuple(row)
+
+
+def _events_of(conn, work_item_id: str, type_: str) -> list[dict]:
+    return [json.loads(e["data_json"]) for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == type_]
+
+
+def test_start_and_stop_direct_work_fill_and_clear_three_columns(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    repo.set_member_display_name(conn, SESSION, admin, "김개발", now=NOW)
+    assert repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1-fix", now=LATER)
+    assert _direct(conn, work_item_id) == (admin, LATER, "RUN-1-fix")
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["assignee_type"], row["assignee_id"]) == ("member", admin)
+    assert (row["status"], row["status_reason"]) == ("직접 작업 중", "김개발")
+    assert repo.work_item_facts(conn, work_item_id).direct_member_name == "김개발"
+    assert _events_of(conn, work_item_id, "direct_started") == [{"member_id": admin, "branch": "RUN-1-fix"}]
+    assert _events_of(conn, work_item_id, "assigned")[-1]["by"] == admin
+    # 같은 멤버가 다시 → 변화 없음(브랜치 이름은 처음 값)
+    assert not repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1-other", now=LATER)
+    assert _direct(conn, work_item_id) == (admin, LATER, "RUN-1-fix")
+
+    assert repo.stop_direct_work(conn, work_item_id, reason="stopped", now=LATER)
+    assert not repo.stop_direct_work(conn, work_item_id, reason="stopped", now=LATER)  # 이미 아님
+    assert _direct(conn, work_item_id) == (None, None, None)
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["assignee_type"], row["assignee_id"]) == ("member", admin)  # 담당은 그대로
+    assert row["status"] != "직접 작업 중"
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "stopped"}]
+    with pytest.raises(ValueError):
+        repo.stop_direct_work(conn, work_item_id, reason="bored", now=LATER)
+    with pytest.raises(NotFound):  # 다른 워크스페이스 업무
+        repo.start_direct_work(conn, OTHER_SESSION, work_item_id, member_id=admin, branch="x", now=LATER)
+
+
+def test_start_direct_work_by_another_member_ends_the_first_and_takes_the_assignee(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    other = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1", now=NOW)
+    assert repo.start_direct_work(conn, SESSION, work_item_id, member_id=other, branch="RUN-1", now=LATER)
+    assert _direct(conn, work_item_id) == (other, LATER, "RUN-1")
+    assert repo.get_work_item(conn, SESSION, work_item_id)["assignee_id"] == other
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "reassigned"}]
+
+
+def test_reassigning_a_direct_work_ends_it(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    other = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1", now=NOW)
+    repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=other, by_member_id=admin,
+                          now=LATER)
+    assert _direct(conn, work_item_id) == (None, None, None)
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "reassigned"}]
+
+
+def test_terminal_status_clears_direct_work_in_the_same_write(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    repo.start_direct_work(conn, SESSION, work_item_id, member_id=admin, branch="RUN-1", now=NOW)
+    assert repo.set_work_status(conn, work_item_id, WorkStatus("종료", "원본 이슈 닫힘"), now=LATER)
+    assert _direct(conn, work_item_id) == (None, None, None)
+    assert _events_of(conn, work_item_id, "direct_stopped") == [{"member_id": admin, "reason": "closed"}]
+    assert repo.get_work_item(conn, SESSION, work_item_id)["closed_at"] == LATER
+
+
+def test_set_work_priority_records_from_to_by(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    with pytest.raises(ValueError):
+        repo.set_work_priority(conn, SESSION, work_item_id, "urgent", member_id=admin, now=LATER)
+    with pytest.raises(NotFound):
+        repo.set_work_priority(conn, OTHER_SESSION, work_item_id, "high", member_id=admin, now=LATER)
+    assert repo.set_work_priority(conn, SESSION, work_item_id, "high", member_id=admin, now=LATER)
+    assert not repo.set_work_priority(conn, SESSION, work_item_id, "high", member_id=admin, now=LATER)
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["priority"], row["updated_at"]) == ("high", LATER)
+    (event,) = [e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "priority_changed"]
+    assert json.loads(event["data_json"]) == {"from": "normal", "to": "high", "by": admin}
 
 
 def test_refresh_work_status_writes_only_on_change_and_is_idempotent(seeded):
@@ -3790,3 +3931,253 @@ def test_new_work_followup_copies_the_requester(cycle):
                                            work_item_id=_wi41(conn), placement="new_work")
     spawned = repo.work_item_of_task(conn, task_id)
     assert spawned["work_item_id"] != _wi41(conn) and spawned["requested_by_member_id"] == a
+
+
+# --- phase 16 step 2: 목록 행 조회 ----------------------------------------------------------------------------
+
+
+def _row_of(rows, work_item_id):
+    return next(r for r in rows if r.work_item_id == work_item_id)
+
+
+def test_list_work_rows_keeps_recent_closed_work_unless_all(sessions):
+    conn = sessions
+    open_work, _ = _new_work(conn, title="열림")
+    recent, _ = _new_work(conn, title="최근 끝남")
+    old, _ = _new_work(conn, title="오래전 끝남")
+    _new_work(conn, OTHER_SESSION, title="다른 워크스페이스")
+    repo.set_work_status(conn, recent, WorkStatus("완료", "PR 병합 — #3"), now="2026-09-25T00:00:00Z")
+    repo.set_work_status(conn, old, WorkStatus("종료", "닫힘"), now="2026-09-01T00:00:00Z")
+    since = "2026-09-16T00:00:00Z"
+    assert [r.work_item_id for r in repo.list_work_rows(conn, SESSION, closed_since=since)] == [recent, open_work]
+    assert [r.work_item_id for r in repo.list_work_rows(conn, SESSION, closed_since=None)] == [old, recent, open_work]
+    assert [r.title for r in repo.list_work_rows(conn, OTHER_SESSION, closed_since=None)] == ["다른 워크스페이스"]
+
+
+def test_list_work_rows_fills_names_recipients_and_next_action(seeded):
+    conn = seeded
+    admin, a, c = _people(conn)
+    _failed_stage(conn)  # TASK_A 업무 → 내 차례, 에이전트 담당
+    failed = _work(conn)["work_item_id"]
+    member_work, _ = _new_work(conn, title="멤버 담당", priority="high", source_key="OPS-7",
+                               source_url="https://example.com/OPS-7")
+    gone_work, _ = _new_work(conn, title="비활성 담당")
+    direct_work, direct_key = _new_work(conn, title="직접 작업")
+    repo.assign_work_item(conn, SESSION, member_work, assignee_type="member", assignee_id=a, now=LATER)
+    repo.assign_work_item(conn, SESSION, gone_work, assignee_type="member", assignee_id=c, now=LATER)
+    repo.disable_member(conn, SESSION, c, now=LATER)
+    conn.execute("UPDATE work_items SET direct_member_id = ?, direct_started_at = ?, direct_branch = ?"
+                 " WHERE work_item_id = ?", (admin, LATER, f"RUN-{direct_key}", direct_work))
+    rows = repo.list_work_rows(conn, SESSION, closed_since=None)
+
+    row = _row_of(rows, failed)
+    assert (row.work_key, row.kind, row.kind_label, row.status) == ("RUN-1", "diagnosis", "운영 진단", "내 차례")
+    assert (row.assignee_type, row.assignee_id, row.assignee_name, row.assignee_active) == (
+        "agent", "agent-ops-demo", "agent-ops-demo", True)  # 등록되지 않은 Agent 는 id
+    assert row.recipients == (admin,)
+    assert row.next_action == "실행 실패 — timeout: 20분 초과"
+
+    row = _row_of(rows, member_work)
+    assert (row.assignee_name, row.assignee_active, row.priority, row.source_key, row.source_url) == (
+        "김맡김", True, "high", "OPS-7", "https://example.com/OPS-7")
+    assert row.recipients == ()  # 내 차례가 아니면 받는 사람을 싣지 않는다
+    assert row.next_action == row.status_reason
+    assert (_row_of(rows, gone_work).assignee_name, _row_of(rows, gone_work).assignee_active) == ("이담당", False)
+    assert _row_of(rows, direct_work).next_action == "직접 작업 중 · 관리자"
+
+
+def test_list_work_rows_uses_the_names_of_registered_agents(seeded):
+    conn = seeded
+    repo.upsert_agent(conn, _agent(name="운영 에이전트"))
+    _create_execution(conn, "exec-1")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), _work(conn)["work_item_id"]).assignee_name \
+        == "운영 에이전트"
+
+
+def test_list_work_rows_shows_runloom_and_detected_pull_requests(cycle):
+    conn = cycle
+    work = _wi41(conn)
+    _fix_execution(conn)
+    _enqueue(conn)
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), work).next_action == "PR 여는 중"
+
+    detected, _ = _new_work(conn, title="사람이 연 PR")
+
+    def detected_pr(number: int, state: str, updated: str) -> None:
+        conn.execute(
+            "INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+            " title, pr_url, head_branch, state, draft, merged_at, pr_updated_at, created_at, updated_at)"
+            " VALUES (?, ?, ?, 'acme/billing', ?, 't', 'u', 'RUN-2-x', ?, 0, ?, ?, ?, ?)",
+            (SESSION, detected, SOURCE, number, state, updated if state == "merged" else None, updated, NOW, NOW),
+        )
+
+    detected_pr(5, "closed", "2026-09-22T00:00:00Z")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), detected).next_action == ""  # 닫힘은 무시
+    detected_pr(6, "merged", "2026-09-21T00:00:00Z")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), detected).next_action == "PR #6"
+    detected_pr(7, "open", "2026-09-20T00:00:00Z")
+    detected_pr(8, "open", "2026-09-20T10:00:00Z")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), detected).next_action == "PR #8"  # 열린 것 먼저
+
+
+def test_list_work_pull_requests_is_recent_first_per_work(cycle):
+    conn = cycle
+    work, _ = _new_work(conn, title="사람이 연 PR")
+    other, _ = _new_work(conn, title="다른 업무")
+    for work_item_id, number, updated in ((work, 3, "2026-09-20T00:00:00Z"), (work, 4, "2026-09-21T00:00:00Z"),
+                                          (other, 5, "2026-09-22T00:00:00Z")):
+        conn.execute(
+            "INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+            " title, pr_url, head_branch, state, draft, merged_at, pr_updated_at, created_at, updated_at)"
+            " VALUES (?, ?, ?, 'acme/billing', ?, 't', 'u', 'RUN-2-x', 'open', 0, NULL, ?, ?, ?)",
+            (SESSION, work_item_id, SOURCE, number, updated, NOW, NOW),
+        )
+    assert [r["pr_number"] for r in repo.list_work_pull_requests(conn, work)] == [4, 3]
+    assert repo.list_work_pull_requests(conn, "wi-none") == []
+
+
+def _detected(conn, work_item_id: str, *, number: int = 7, state: str = "open", title: str = "RUN-1 고침",
+              merged_at: str | None = None, updated: str = "2026-10-06T03:00:00Z", now: str = NOW) -> bool:
+    return repo.upsert_work_pull_request(
+        conn, session_id=SESSION, work_item_id=work_item_id, source_id=SOURCE, repository_full_name="acme/billing",
+        pr_number=number, title=title, head_branch="RUN-1-fix", state=state, draft=False, author_login="kim-dev",
+        merged_at=merged_at, pr_updated_at=updated, matched_in="head", now=now,
+    )
+
+
+def test_upsert_work_pull_request_links_once_updates_and_refreshes_work_status(cycle):
+    conn = cycle
+    work = repo.work_item_of_task(conn, "task-gh-41")["work_item_id"]
+    other, _ = _new_work(conn, title="다른 업무")
+
+    assert _detected(conn, work) is True
+    (row,) = repo.list_work_pull_requests(conn, work)
+    assert (row["pr_url"], row["state"], row["head_branch"], row["author_login"]) == (
+        "https://github.com/acme/billing/pull/7", "open", "RUN-1-fix", "kim-dev")
+    assert _events_of(conn, work, "pull_request_linked") == [
+        {"repository_full_name": "acme/billing", "pr_number": 7, "head_branch": "RUN-1-fix", "matched_in": "head"}]
+    status = repo.get_work_item(conn, SESSION, work)
+    assert (status["status"], status["status_reason"]) == ("PR · 검토", "PR 확인 — #7")
+    assert repo.get_work_pull_request(conn, SESSION, "acme/billing", 7)["work_item_id"] == work
+    assert repo.get_work_pull_request(conn, SESSION, "acme/billing", 8) is None
+
+    # 다시 부르면 갱신만 — 다른 업무를 넘겨도 처음 붙은 업무 그대로, 이벤트 없음
+    assert _detected(conn, other, title="새 제목", state="merged", merged_at="2026-10-06T04:00:00Z",
+                     updated="2026-10-06T04:00:00Z", now=LATER) is False
+    assert repo.list_work_pull_requests(conn, other) == []
+    (row,) = repo.list_work_pull_requests(conn, work)
+    assert (row["title"], row["state"], row["merged_at"], row["pr_updated_at"]) == (
+        "새 제목", "merged", "2026-10-06T04:00:00Z", "2026-10-06T04:00:00Z")
+    assert len(_events_of(conn, work, "pull_request_linked")) == 1
+    done = repo.get_work_item(conn, SESSION, work)
+    assert (done["status"], done["status_reason"], done["closed_at"]) == ("완료", "PR 병합 — #7", LATER)
+
+    # 병합은 되돌아가지 않고, 끝난 업무의 상태 기록은 한 번뿐
+    assert _detected(conn, work, state="closed", updated="2026-10-06T05:00:00Z") is False
+    (row,) = repo.list_work_pull_requests(conn, work)
+    assert (row["state"], row["merged_at"], row["pr_updated_at"]) == ("merged", "2026-10-06T04:00:00Z",
+                                                                      "2026-10-06T05:00:00Z")
+    assert [e["to"] for e in _events_of(conn, work, "status_changed")].count("완료") == 1
+
+
+def test_is_runloom_pull_request_by_number_or_queued_head(cycle):
+    conn = cycle
+    _fix_execution(conn)
+    _enqueue(conn)  # 번호 기록 전 대기열 행 — head 로 알아본다
+    assert repo.is_runloom_pull_request(conn, SESSION, "acme/billing", pr_number=31, head_branch="task/task-gh-41")
+    assert not repo.is_runloom_pull_request(conn, SESSION, "acme/billing", pr_number=31, head_branch="RUN-1-fix")
+    repo.record_pull_request(conn, "task-gh-41", state="open", pr=_pr(31), now=NOW)
+    assert repo.is_runloom_pull_request(conn, SESSION, "acme/billing", pr_number=31, head_branch="RUN-1-fix")
+    assert not repo.is_runloom_pull_request(conn, SESSION, "acme/other", pr_number=31, head_branch="task/task-gh-41")
+    assert not repo.is_runloom_pull_request(conn, OTHER_SESSION, "acme/billing", pr_number=31,
+                                            head_branch="task/task-gh-41")
+
+
+def test_pull_cursor_is_separate_from_issue_cursor(cycle):
+    conn = cycle
+    assert repo.get_pull_cursor(conn, SOURCE) is None
+    repo.set_pull_cursor(conn, SOURCE, "2026-10-06T04:00:00Z", now=NOW)
+    assert repo.get_pull_cursor(conn, SOURCE) == "2026-10-06T04:00:00Z"
+    assert repo.get_source_cursor(conn, SESSION, SOURCE) is None
+    with pytest.raises(NotFound):
+        repo.set_pull_cursor(conn, "ghs-none", "2026-10-06T04:00:00Z", now=NOW)
+
+
+def test_list_work_rows_query_count_does_not_grow_with_work_items(seeded):
+    conn = seeded
+    admin, a, _ = _people(conn)
+    repo.upsert_agent(conn, _agent(name="운영 에이전트"))
+
+    def count() -> int:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            repo.list_work_rows(conn, SESSION, closed_since=None)
+        finally:
+            conn.set_trace_callback(None)
+        return len(statements)
+
+    def add(n: int) -> None:
+        for i in range(n):
+            work, _ = _new_work(conn, title=f"업무 {i}")
+            repo.assign_work_item(conn, SESSION, work, assignee_type="member", assignee_id=(admin, a)[i % 2],
+                                  now=LATER)
+
+    _failed_stage(conn)
+    add(2)
+    few = count()
+    add(28)
+    assert len(repo.list_work_rows(conn, SESSION, closed_since=None)) == 31
+    assert count() == few
+
+
+# --- 시작하기 (phase 16 step 7) ---
+
+
+def test_start_facts_empty_workspace_is_all_false(sessions):
+    assert repo.start_facts(sessions, SESSION) == StartFacts(
+        has_source=False, has_runner=False, invited=False, delegated=False)
+
+
+def test_start_facts_source_is_enabled_github_source_or_live_inbound_token(sessions):
+    conn = sessions
+    repo.save_github_source(conn, OTHER_SESSION, _source(source_id="ghs-99999999"), NOW)  # 다른 워크스페이스는 세지 않는다
+    token_id, _ = repo.issue_source_token(conn, SESSION, "n8n", "", NOW)
+    assert repo.start_facts(conn, SESSION).has_source
+    repo.revoke_source_token(conn, SESSION, token_id, LATER)
+    assert not repo.start_facts(conn, SESSION).has_source
+    repo.save_github_source(conn, SESSION, _source(enabled=False), NOW)
+    assert not repo.start_facts(conn, SESSION).has_source
+    repo.save_github_source(conn, SESSION, _source(), LATER)
+    assert repo.start_facts(conn, SESSION).has_source
+
+
+def test_start_facts_runner_is_unrevoked_connector(sessions):
+    conn = sessions
+    connector_id, _ = repo.exchange_connect_code(conn, repo.issue_connect_code(conn, NOW), NOW)
+    assert repo.start_facts(conn, SESSION).has_runner
+    repo.revoke_connector(conn, connector_id, LATER)
+    assert not repo.start_facts(conn, SESSION).has_runner
+
+
+def test_start_facts_invited_is_two_active_members_or_issued_invite(sessions):
+    conn = sessions
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)  # 세션을 만들 때 생긴 첫 관리자 1명
+    repo.add_member(conn, OTHER_SESSION, display_name="남", now=NOW)
+    repo.issue_invite(conn, OTHER_SESSION, role="member", created_by_member_id=None, now=NOW)
+    repo.issue_reset_link(conn, SESSION, admin, created_by_member_id=None, now=NOW)  # 재설정 링크는 초대가 아니다
+    assert not repo.start_facts(conn, SESSION).invited
+    other = repo.add_member(conn, SESSION, display_name="멤버", now=NOW)
+    assert repo.start_facts(conn, SESSION).invited
+    repo.disable_member(conn, SESSION, other, now=LATER)
+    assert not repo.start_facts(conn, SESSION).invited
+    repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    assert repo.start_facts(conn, SESSION).invited
+
+
+def test_start_facts_delegated_is_work_with_any_execution(seeded):
+    conn = seeded
+    assert not repo.start_facts(conn, SESSION).delegated
+    _create_execution(conn, "exec-1")
+    assert repo.start_facts(conn, SESSION).delegated
+    assert not repo.start_facts(conn, OTHER_SESSION).delegated

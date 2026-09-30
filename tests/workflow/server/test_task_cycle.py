@@ -1223,6 +1223,9 @@ class RecordingGitHub:
     def get_issue(self, repo_name, number):
         raise GitHubNotFound("GET: HTTP 404")
 
+    def list_pulls(self, repo_name, cursor):
+        return []
+
     def list_comments(self, repo_name, number, cursor):
         return CommentPage(tuple(
             IssueComment(i, b, 1, "bot", NOW) for i, (n, b) in sorted(self.comments.items()) if n == number
@@ -1280,7 +1283,7 @@ def test_source_issue_gets_one_comment_that_follows_fix_and_review(cycle, conn, 
     assert "approved" in final and "검토 의견" in final
     assert "병합·이슈 종료는 사람" in final
     # 링크는 공개로 가정하지 않는다 — 운영자 로그인이 필요하다고 적는다
-    assert "https://runloom.example/tasks/task-gh-1" in final and "로그인" in final
+    assert "https://runloom.example/tasks?open=RUN-1" in final and "로그인" in final  # 업무 주소(phase 16)
     assert repo.list_source_deliveries(conn, fix_task)[-1].state == "delivered"
     # 원본 반영은 Task 상태를 바꾸지 않는다 — 승인 뒤에도 수정 Task 는 사람 확인
     assert status(conn, fix_task) == ("확인 필요", "검토 승인 — 병합·이슈 종료는 사람")
@@ -1650,7 +1653,7 @@ def test_pr_opened_is_notified_once_with_the_links(cycle, conn, store, notify_wo
     assert set(body) == {"content"}  # Discord 호스트
     assert body["content"].splitlines() == [
         "[Runloom] PR 확인 — 버그 1 https://github.com/acme/billing/pull/31 → 관리자",  # 맡긴 사람 없음 → 관리자 전원
-        "https://runloom.example/tasks/task-gh-1",
+        "https://runloom.example/tasks?open=RUN-1",  # 업무 주소(phase 16)
     ]
 
 

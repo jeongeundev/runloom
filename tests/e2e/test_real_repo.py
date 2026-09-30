@@ -118,7 +118,7 @@ class FakeGitHubPulls(FakeGitHubApp):
 
     def merge(self, number: int) -> None:
         with self.lock:
-            self.pulls[number].update(state="closed", merged_at=utc_now())
+            self.pulls[number].update(state="closed", merged_at=utc_now(), updated_at=utc_now())
 
     def handle(self, method, path, query, headers, body):
         prefix = f"/repos/{REPO}"
@@ -132,6 +132,8 @@ class FakeGitHubPulls(FakeGitHubApp):
             rest = path[len(prefix):]
             if rest == "":
                 return 200, {}, {"id": 5001, "full_name": REPO, "default_branch": "main"}
+            if method == "GET" and rest == "/pulls" and "head" not in query:  # PR 신호(phase 16) — 갱신 내림차순
+                return 200, {}, sorted(self.pulls.values(), key=lambda pr: pr["updated_at"], reverse=True)
             if method == "GET" and rest == "/pulls":
                 head = query["head"][0]
                 return 200, {}, [pr for _, pr in sorted(self.pulls.items(), reverse=True)
@@ -146,7 +148,7 @@ class FakeGitHubPulls(FakeGitHubApp):
                 self.pulls[number] = {
                     "number": number, "html_url": f"https://github.com/{REPO}/pull/{number}", "state": "open",
                     "draft": data["draft"], "merged_at": None, "title": data["title"], "body": data["body"],
-                    "head": {"ref": data["head"]}, "base": {"ref": data["base"]},
+                    "head": {"ref": data["head"]}, "base": {"ref": data["base"]}, "updated_at": utc_now(),
                 }
                 return 201, {}, self.pulls[number]
             if method == "GET" and (m := re.fullmatch(r"/pulls/(\d+)", rest)):
@@ -309,7 +311,7 @@ def issue_task(world: World, number: int) -> str:
 
 def source_card(world: World, html: str | None = None) -> str:
     if html is None:
-        page = world.http.get("/operator/github")
+        page = world.http.get("/connect?tab=sources")
         assert page.status_code == 200, page.text[:500]
         html = page.text
     return html.split(f'data-source-card="{world.sources[REPO]}"', 1)[1].split("</section>", 1)[0]
@@ -363,7 +365,7 @@ def test_01_login_connect_github_and_set_the_notification_url(world):
 
     saved = http.post("/operator/notifications/webhook", data={"url": world.ctx["hook_url"]})
     assert saved.status_code in (200, 303), saved.text[:500]
-    page = http.get("/operator/notifications").text
+    page = http.get("/connect?tab=notify").text
     assert "설정됨" in page and HOOK_SECRET not in page
 
     world.worker = make_worker(world)
@@ -477,7 +479,7 @@ def test_04_review_approval_opens_a_draft_pr_and_notifies_once(world):
     (note,) = received(world, "pr_opened")
     assert note["content"].startswith("[Runloom] PR 확인 — 청구서 번호 자릿수")
     assert note["pr_url"] == f"https://github.com/{REPO}/pull/{PR_NUMBER}"
-    assert note["task_url"] == f"{world.central_url}/tasks/{a_id}"
+    assert note["task_url"] == f"{world.central_url}/tasks?open={key}"  # 업무 주소(phase 16)
     assert all(path == f"/hooks/{HOOK_SECRET}" for path, _ in world.ctx["receiver"].received)
 
     (comment,) = world.fake.issue_comments(REPO, 1)  # 원본 이슈 댓글이 올린 브랜치를 가리킨다
@@ -519,7 +521,7 @@ def test_05_merging_the_pr_completes_the_task_and_counts_in_metrics(world):
     assert result_branch_of(world, a_id) == "runloom/RUN-1"
     assert world.fake.pulls[PR_NUMBER]["title"].startswith("RUN-1 ")
     home = world.http.get("/tasks").text
-    assert home.count('href="/work/RUN-1"') >= 1 and f'href="/tasks/{review["task_id"]}"' not in home
+    assert home.count('href="/tasks?open=RUN-1"') >= 1 and f'href="/tasks/{review["task_id"]}"' not in home
 
 
 def test_06_a_failed_fix_sends_one_failure_notification(world):
@@ -547,7 +549,8 @@ def test_07_failed_work_is_my_turn_and_retry_adds_a_new_stage_on_a_new_branch(wo
     assert (work["status"], work["status_reason"].startswith("실패 — ")) == ("내 차례", True), dict(work)
     (request,) = [r for r in world.http.get("/human-requests").json()["requests"] if r["task_id"] == b_id]
     assert request["code"] == "stage_failed"
-    detail = world.http.get("/work/RUN-2").text
+    assert world.http.get("/work/RUN-2").headers["location"] == "/tasks?open=RUN-2"  # 업무 주소(phase 16)
+    detail = world.http.get("/tasks?open=RUN-2").text
     assert 'value="retry">다시 맡기기<' in detail and 'value="close">닫기<' in detail
 
     response = world.http.post(f"/human-requests/{request['request_id']}/responses", json={
@@ -594,8 +597,8 @@ def test_08_secrets_stay_out_of_the_central_side(world):
             leaked += [f"{name}@{path.name}" for name, value in needles.items() if value in data]
     assert (world.workdir / "logs" / "central.log").stat().st_size > 0
 
-    pages = ["/tasks", f"/tasks/{world.tasks['A']}", f"/tasks/{world.tasks['B']}", "/operator/github",
-             "/operator/notifications", "/metrics", "/github/sources"]
+    pages = ["/tasks", f"/tasks/{world.tasks['A']}", f"/tasks/{world.tasks['B']}", "/connect?tab=sources",
+             "/connect?tab=notify", "/monitor", "/github/sources"]
     for page in pages:
         body = world.http.get(page).text
         leaked += [f"{name}@{page}" for name, value in needles.items() if value in body]

@@ -71,8 +71,10 @@ from workflow.domain import team
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
+from workflow.domain.start_checklist import StartFacts
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
+from workflow.domain.work_list import WorkRow, next_action
 from workflow.domain.work_status import (
     STAGE_FAILED,
     TERMINAL_WORK_STATUSES,
@@ -209,12 +211,15 @@ def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[Map
         return bump_config_revision(conn, session_id)
 
 
-def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
-    """업무 상태 판정(`domain/work_status.work_status`)의 재료를 DB 에서 모은다. 사실을 모으는 SQL 은 여기 한 곳."""
+def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = True) -> WorkItemFacts:
+    """업무 상태 판정(`domain/work_status.work_status`)의 재료를 DB 에서 모은다. 사실을 모으는 SQL 은 여기 한 곳.
+    `direct_work=False` 는 직접 작업 칸·감지 PR 표(v12)가 아직 없는 스키마 — v9 → v10 마이그레이션만 쓴다."""
     item = _one(conn, "SELECT status, status_reason, assignee_type FROM work_items WHERE work_item_id = ?",
                 (work_item_id,))
     if item is None:
         raise NotFound(f"work item {work_item_id}")
+    direct = _one(conn, "SELECT d.display_name FROM work_items w JOIN members d ON d.member_id = w.direct_member_id"
+                        " WHERE w.work_item_id = ?", (work_item_id,)) if direct_work else None
     stages = conn.execute(
         "SELECT t.task_id, t.kind, COALESCE(json_extract(k.spec_json, '$.label'), t.kind) AS kind_label, t.status,"
         " t.status_reason, t.created_at, t.chosen_agent_id,"
@@ -230,6 +235,10 @@ def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
     ).fetchall()
     pr = _one(conn, "SELECT p.state, p.pr_number FROM task_pull_requests p JOIN tasks t ON t.task_id = p.task_id"
                     " WHERE t.work_item_id = ? ORDER BY p.created_at DESC, p.task_id DESC LIMIT 1", (work_item_id,))
+    detected = conn.execute(
+        "SELECT state, pr_number FROM work_pull_requests WHERE work_item_id = ? ORDER BY pr_updated_at DESC, id DESC",
+        (work_item_id,),
+    ).fetchall() if direct_work else []
     # 지시 전 = 원본 소스가 all_open 이고 원본 이슈에 지시 기록이 없음
     undelegated = _one(
         conn,
@@ -251,6 +260,8 @@ def work_item_facts(conn: Connection, work_item_id: str) -> WorkItemFacts:
         ),
         open_requests=tuple(RequestFact(code=r["code"], question=r["question"]) for r in requests),
         pull_request=PullRequestFact(state=pr["state"], number=pr["pr_number"]) if pr else None,
+        direct_member_name=direct["display_name"] if direct else None,
+        detected_pull_requests=tuple(PullRequestFact(state=d["state"], number=d["pr_number"]) for d in detected),
     )
 
 
@@ -346,6 +357,63 @@ def turn_recipients_of(conn: Connection, work_item_id: str) -> tuple[str, ...]:
     return _recipients(work, _member_facts(conn, work["session_id"]))
 
 
+def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | None) -> list[WorkRow]:
+    """업무 화면 목록 행(키 번호 내림차순). `closed_since` 는 끝난 업무 범위의 경계 시각 — 그보다 앞서 끝난 업무는
+    빼고, None 이면 전부. 쿼리 수는 업무 수와 무관하다(담당·종류·직접 작업 이름은 JOIN, 열린 사람 요청·PR 은 묶음
+    조회). 받는 사람은 `내 차례` 인 업무만 계산한다(`_recipients`)."""
+    works = conn.execute(
+        "SELECT w.*, COALESCE(json_extract(k.spec_json, '$.label'), w.kind) AS kind_label,"
+        " m.display_name AS member_name, m.disabled_at AS member_disabled_at, a.name AS agent_name,"
+        " d.display_name AS direct_member_name"
+        " FROM work_items w LEFT JOIN kinds k ON k.session_id = w.session_id AND k.kind = w.kind"
+        " LEFT JOIN members m ON w.assignee_type = 'member' AND m.member_id = w.assignee_id"
+        " LEFT JOIN agents a ON w.assignee_type = 'agent' AND a.agent_id = w.assignee_id"
+        " LEFT JOIN members d ON d.member_id = w.direct_member_id"
+        " WHERE w.session_id = ? AND (? IS NULL OR w.closed_at IS NULL OR w.closed_at >= ?)"
+        " ORDER BY w.key_number DESC",
+        (session_id, closed_since, closed_since),
+    ).fetchall()
+    questions: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT t.work_item_id, h.question FROM human_requests h JOIN tasks t ON t.task_id = h.task_id"
+        " WHERE t.session_id = ? AND h.state = 'open' ORDER BY h.created_at, h.rowid", (session_id,)
+    ):
+        questions.setdefault(r["work_item_id"], r["question"])
+    # (열림?, 갱신 시각, 번호) — Runloom PR 의 pending·open·merged 와 감지 PR 의 open·merged
+    pulls: dict[str, list[tuple[bool, str, int | None]]] = {}
+    for r in conn.execute(
+        "SELECT t.work_item_id, p.state, p.pr_number, p.updated_at AS at FROM task_pull_requests p"
+        " JOIN tasks t ON t.task_id = p.task_id WHERE t.session_id = ? AND p.state IN ('pending', 'open', 'merged')"
+        " UNION ALL SELECT work_item_id, state, pr_number, pr_updated_at FROM work_pull_requests"
+        " WHERE session_id = ? AND state IN ('open', 'merged')", (session_id, session_id)
+    ):
+        pulls.setdefault(r["work_item_id"], []).append((r["state"] != "merged", r["at"], r["pr_number"]))
+    members = _member_facts(conn, session_id)
+    rows = []
+    for w in works:
+        if w["assignee_type"] == "member":
+            name, active = w["member_name"] or w["assignee_id"], w["member_disabled_at"] is None
+        else:
+            name, active = w["agent_name"] or w["assignee_id"], True
+        pr_label = None
+        if w["work_item_id"] in pulls:
+            _, _, number = max(pulls[w["work_item_id"]], key=lambda p: (p[0], p[1]))
+            pr_label = "PR 여는 중" if number is None else f"PR #{number}"
+        rows.append(WorkRow(
+            work_item_id=w["work_item_id"], key_number=w["key_number"], work_key=format_work_key(w["key_number"]),
+            source_type=w["source_type"], source_key=w["source_key"], source_url=w["source_url"], title=w["title"],
+            assignee_type=w["assignee_type"], assignee_id=w["assignee_id"], assignee_name=name,
+            assignee_active=active, priority=w["priority"], kind=w["kind"], kind_label=w["kind_label"],
+            status=w["status"], status_reason=w["status_reason"],
+            next_action=next_action(request_question=questions.get(w["work_item_id"]),
+                                    direct_member_name=w["direct_member_name"], pr_label=pr_label,
+                                    status_reason=w["status_reason"]),
+            recipients=_recipients(w, members) if w["status"] == "내 차례" else (),
+            updated_at=w["updated_at"], closed_at=w["closed_at"],
+        ))
+    return rows
+
+
 def set_work_requester(conn: Connection, work_item_id: str, member_id: str) -> None:
     """맡긴 사람을 기록한다(가장 최근 값으로 덮어씀). 자체 BEGIN·이벤트 없음 — 맡기기·다시 맡기기·체인 시작·직접 등록·
     직접 실행이 그 변경과 같은 트랜잭션에서 부른다."""
@@ -369,8 +437,8 @@ def _work_item_event(conn: Connection, work_item_id: str, session_id: str, type:
 
 
 def set_work_status(conn: Connection, work_item_id: str, status: WorkStatus, *, now: str) -> bool:
-    """값 또는 이유가 저장값과 다를 때만 쓰고 `status_changed` 이벤트 한 행을 남긴다. 끝 상태가 되면 `closed_at`.
-    자체 BEGIN 이 없다 — 그 변경과 같은 트랜잭션에서 부른다."""
+    """값 또는 이유가 저장값과 다를 때만 쓰고 `status_changed` 이벤트 한 행을 남긴다. 끝 상태가 되면 `closed_at` 과
+    직접 작업 종료(`direct_stopped` reason `closed`). 자체 BEGIN 이 없다 — 그 변경과 같은 트랜잭션에서 부른다."""
     row = _one(conn, "SELECT session_id, status, status_reason FROM work_items WHERE work_item_id = ?",
                (work_item_id,))
     if row is None:
@@ -378,6 +446,8 @@ def set_work_status(conn: Connection, work_item_id: str, status: WorkStatus, *, 
     if (row["status"], row["status_reason"]) == (status.status, status.reason):
         return False
     closed_at = now if status.status in TERMINAL_WORK_STATUSES else None
+    if closed_at is not None:
+        _clear_direct_work(conn, work_item_id, reason="closed", now=now)
     conn.execute(
         "UPDATE work_items SET status = ?, status_reason = ?, closed_at = ?, updated_at = ? WHERE work_item_id = ?",
         (status.status, status.reason, closed_at, now, work_item_id),
@@ -423,35 +493,150 @@ def _fill_work_assignee(conn: Connection, task_id: str, agent_id: str, *, now: s
 
 def assign_work_item(
     conn: Connection, session_id: str, work_item_id: str, *, assignee_type: str | None, assignee_id: str | None,
-    now: str,
+    now: str, by_member_id: str | None = None,
 ) -> bool:
     """담당을 바꾼다(None = 담당 없음). 멤버는 이 워크스페이스의 멤버, Agent 는 이 워크스페이스에 등록된 Agent 여야
-    한다(아니면 NotFound). 바뀌면 `assigned` 이벤트, 같으면 False."""
+    한다(아니면 NotFound). 바뀌면 `assigned` 이벤트(`by` = 바꾼 멤버)와 업무 상태 재계산, 같으면 False."""
     if (assignee_type is None) != (assignee_id is None) or assignee_type not in (None, "member", "agent"):
         raise ValueError(f"담당 {assignee_type!r}/{assignee_id!r}")
+    with _tx(conn):
+        return _assign_work_item(conn, session_id, work_item_id, assignee_type=assignee_type, assignee_id=assignee_id,
+                                 by_member_id=by_member_id, now=now)
+
+
+def _assign_work_item(
+    conn: Connection, session_id: str, work_item_id: str, *, assignee_type: str | None, assignee_id: str | None,
+    by_member_id: str | None, now: str,
+) -> bool:
+    row = get_work_item(conn, session_id, work_item_id)
+    if row is None:
+        raise NotFound(f"work item {work_item_id}")
+    if assignee_type == "member" and _one(
+        conn, "SELECT 1 FROM members WHERE member_id = ? AND session_id = ?", (assignee_id, session_id)
+    ) is None:
+        raise NotFound(f"member {assignee_id}")
+    if assignee_type == "agent" and not is_session_agent(conn, session_id, assignee_id):
+        raise NotFound(f"agent {assignee_id}")
+    if (row["assignee_type"], row["assignee_id"]) == (assignee_type, assignee_id):
+        return False
+    if row["direct_member_id"] is not None and (assignee_type, assignee_id) != ("member", row["direct_member_id"]):
+        # 직접 작업하는 사람과 담당이 갈리지 않게 — 에이전트로 넘기면 handed_to_agent, 다른 사람이면 reassigned
+        _clear_direct_work(conn, work_item_id, reason="handed_to_agent" if assignee_type == "agent" else "reassigned",
+                           now=now)
+    conn.execute(
+        "UPDATE work_items SET assignee_type = ?, assignee_id = ?, updated_at = ? WHERE work_item_id = ?",
+        (assignee_type, assignee_id, now, work_item_id),
+    )
+
+    def who(type_: str | None, id_: str | None) -> dict | None:
+        return None if type_ is None else {"type": type_, "id": id_}
+
+    _work_item_event(conn, work_item_id, session_id, "assigned",
+                     {"from": who(row["assignee_type"], row["assignee_id"]), "to": who(assignee_type, assignee_id),
+                      "by": by_member_id}, now)
+    refresh_work_status(conn, work_item_id, now=now)
+    return True
+
+
+def hand_work_to_agent(
+    conn: Connection, session_id: str, work_item_id: str, *, record: SelectionRecord, target: dict, member_id: str,
+    now: str,
+) -> None:
+    """에이전트에게 맡기기의 쓰기(ARCHITECTURE "담당 바꾸기" `agent:` ①~⑤)를 한 트랜잭션으로 — 단계 선택 기록·직접 선택
+    전환(`target` 고정), 업무 담당 = 그 Agent(`assigned` `by`), 맡긴 사람 = 누른 멤버, 그 단계가 지시 전 GitHub 원본이면
+    운영자 지시 기록, 업무 상태 재계산. 착수는 하지 않는다. 단계가 이 워크스페이스·업무의 것이 아니면 NotFound."""
+    if record.status != "selected":
+        raise ValueError(f"선택되지 않은 기록 {record.status}")
+    with _tx(conn):
+        task = _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ? AND session_id = ?",
+                    (record.task_id, session_id))
+        if task is None or task["work_item_id"] != work_item_id:
+            raise NotFound(f"task {record.task_id} of work item {work_item_id}")
+        save_selection(conn, record)
+        update_task_choice(conn, record.task_id, chosen_agent_id=record.selected_agent_id, target=target)
+        _assign_work_item(conn, session_id, work_item_id, assignee_type="agent", assignee_id=record.selected_agent_id,
+                          by_member_id=member_id, now=now)
+        set_work_requester(conn, work_item_id, member_id)
+        issue = get_source_issue_by_task(conn, session_id, record.task_id)
+        if issue is not None:
+            _delegate_issue(conn, issue["source_id"], issue["github_issue_id"], by="operator", now=now)
+        refresh_work_status(conn, work_item_id, now=now)
+
+
+DIRECT_STOP_REASONS = ("stopped", "handed_to_agent", "reassigned", "closed")
+
+
+def _clear_direct_work(conn: Connection, work_item_id: str, *, reason: str, now: str) -> bool:
+    """직접 작업 칸 셋을 함께 비우고 `direct_stopped` 한 행. 재계산 없음(호출자가 한다). 직접 작업 중이 아니면 False."""
+    if reason not in DIRECT_STOP_REASONS:
+        raise ValueError(f"직접 작업 종료 사유 {reason!r}")
+    row = _one(conn, "SELECT session_id, direct_member_id FROM work_items WHERE work_item_id = ?", (work_item_id,))
+    if row is None:
+        raise NotFound(f"work item {work_item_id}")
+    if row["direct_member_id"] is None:
+        return False
+    conn.execute("UPDATE work_items SET direct_member_id = NULL, direct_started_at = NULL, direct_branch = NULL,"
+                 " updated_at = ? WHERE work_item_id = ?", (now, work_item_id))
+    _work_item_event(conn, work_item_id, row["session_id"], "direct_stopped",
+                     {"member_id": row["direct_member_id"], "reason": reason}, now)
+    return True
+
+
+def start_direct_work(conn: Connection, session_id: str, work_item_id: str, *, member_id: str, branch: str,
+                      now: str) -> bool:
+    """직접 작업 시작(한 트랜잭션) — 다른 멤버가 직접 작업 중이면 끝내고(`reassigned`), 칸 셋을 채우고(`direct_started`
+    `{"member_id", "branch"}`), 담당 = 그 멤버(`assigned` `by`), 업무 상태 재계산. 같은 멤버가 이미 직접 작업 중이면
+    False(브랜치 이름은 처음 값). 끝난 업무·실행 여부 검사는 `work_actions` 가 한다. 다른 워크스페이스 → NotFound."""
     with _tx(conn):
         row = get_work_item(conn, session_id, work_item_id)
         if row is None:
             raise NotFound(f"work item {work_item_id}")
-        if assignee_type == "member" and _one(
-            conn, "SELECT 1 FROM members WHERE member_id = ? AND session_id = ?", (assignee_id, session_id)
-        ) is None:
-            raise NotFound(f"member {assignee_id}")
-        if assignee_type == "agent" and not is_session_agent(conn, session_id, assignee_id):
-            raise NotFound(f"agent {assignee_id}")
-        if (row["assignee_type"], row["assignee_id"]) == (assignee_type, assignee_id):
+        if row["direct_member_id"] == member_id:
             return False
-        conn.execute(
-            "UPDATE work_items SET assignee_type = ?, assignee_id = ?, updated_at = ? WHERE work_item_id = ?",
-            (assignee_type, assignee_id, now, work_item_id),
-        )
+        _clear_direct_work(conn, work_item_id, reason="reassigned", now=now)
+        conn.execute("UPDATE work_items SET direct_member_id = ?, direct_started_at = ?, direct_branch = ?,"
+                     " updated_at = ? WHERE work_item_id = ?", (member_id, now, branch, now, work_item_id))
+        _work_item_event(conn, work_item_id, session_id, "direct_started", {"member_id": member_id, "branch": branch},
+                         now)
+        _assign_work_item(conn, session_id, work_item_id, assignee_type="member", assignee_id=member_id,
+                          by_member_id=member_id, now=now)
+        refresh_work_status(conn, work_item_id, now=now)
+        return True
 
-        def who(type_: str | None, id_: str | None) -> dict | None:
-            return None if type_ is None else {"type": type_, "id": id_}
 
-        _work_item_event(conn, work_item_id, session_id, "assigned",
-                         {"from": who(row["assignee_type"], row["assignee_id"]),
-                          "to": who(assignee_type, assignee_id)}, now)
+def stop_direct_work(conn: Connection, work_item_id: str, *, reason: str, now: str) -> bool:
+    """직접 작업 그만두기(한 트랜잭션) — 칸 셋 비움, `direct_stopped`, 재계산. 담당은 그대로. 직접 작업 중이 아니면 False."""
+    if reason not in DIRECT_STOP_REASONS:
+        raise ValueError(f"직접 작업 종료 사유 {reason!r}")
+    with _tx(conn):
+        if not _clear_direct_work(conn, work_item_id, reason=reason, now=now):
+            return False
+        refresh_work_status(conn, work_item_id, now=now)
+        return True
+
+
+def is_direct_working(conn: Connection, task_id: str) -> bool:
+    """이 단계의 업무가 직접 작업 중인가 — 에이전트 착수(워커·`/run`·`/delegate`)를 막는 조건."""
+    return _one(conn, "SELECT 1 FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+                      " WHERE t.task_id = ? AND w.direct_member_id IS NOT NULL", (task_id,)) is not None
+
+
+def set_work_priority(conn: Connection, session_id: str, work_item_id: str, priority: str, *, member_id: str,
+                      now: str) -> bool:
+    """우선순위(`high`·`normal`·`low`, 아니면 ValueError). 바뀌면 `priority_changed` `{"from", "to", "by"}`, 같으면
+    False. 업무 상태에는 영향이 없다. 다른 워크스페이스·없는 업무 → NotFound."""
+    if priority not in PRIORITIES:
+        raise ValueError(f"우선순위 {priority!r}")
+    with _tx(conn):
+        row = get_work_item(conn, session_id, work_item_id)
+        if row is None:
+            raise NotFound(f"work item {work_item_id}")
+        if row["priority"] == priority:
+            return False
+        conn.execute("UPDATE work_items SET priority = ?, updated_at = ? WHERE work_item_id = ?",
+                     (priority, now, work_item_id))
+        _work_item_event(conn, work_item_id, session_id, "priority_changed",
+                         {"from": row["priority"], "to": priority, "by": member_id}, now)
         return True
 
 
@@ -1312,6 +1497,29 @@ def list_source_tokens(conn: Connection, session_id: str) -> list[Row]:
     return conn.execute(
         "SELECT * FROM source_tokens WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
     ).fetchall()
+
+
+# --- 시작하기 (phase 16 step 7) ----------------------------------------------------
+
+
+def start_facts(conn: Connection, session_id: str) -> StartFacts:
+    """시작하기 항목의 완료 사실. 연결 프로그램은 워크스페이스 칸이 없어(셀프호스트 1 워크스페이스) 전부 센다."""
+    def exists(sql: str, params: tuple = ()) -> bool:
+        return _one(conn, sql, params) is not None
+
+    has_source = any(s.enabled for s in list_github_sources(conn, session_id)) or exists(
+        "SELECT 1 FROM source_tokens WHERE session_id = ? AND revoked_at IS NULL LIMIT 1", (session_id,))
+    active_members = conn.execute(
+        "SELECT COUNT(*) FROM members WHERE session_id = ? AND disabled_at IS NULL", (session_id,)).fetchone()[0]
+    return StartFacts(
+        has_source=has_source,
+        has_runner=exists("SELECT 1 FROM connectors WHERE revoked_at IS NULL LIMIT 1"),
+        invited=active_members >= 2 or exists(
+            "SELECT 1 FROM member_invites WHERE session_id = ? AND purpose = 'invite' LIMIT 1", (session_id,)),
+        delegated=exists(
+            "SELECT 1 FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+            " WHERE t.session_id = ? AND t.work_item_id IS NOT NULL LIMIT 1", (session_id,)),
+    )
 
 
 # --- 업무·선택 ---------------------------------------------------------------
@@ -2522,15 +2730,20 @@ def mark_issue_delegated(
                           " WHERE si.source_id = ? AND si.github_issue_id = ?", (source_id, github_issue_id))
         if member_id is not None:
             set_work_requester(conn, work["work_item_id"], member_id)
-        cur = conn.execute(
-            "UPDATE source_issues SET delegated_at = ?, delegated_by = ?"
-            " WHERE source_id = ? AND github_issue_id = ? AND delegated_at IS NULL",
-            (now, by, source_id, github_issue_id),
-        )
-        if cur.rowcount == 0:
+        if not _delegate_issue(conn, source_id, github_issue_id, by=by, now=now):
             return False
         refresh_work_status(conn, work["work_item_id"], now=now)
         return True
+
+
+def _delegate_issue(conn: Connection, source_id: str, github_issue_id: int, *, by: str, now: str) -> bool:
+    """처음 지시만 기록한다(이미 있으면 False). 자체 BEGIN 없음."""
+    cur = conn.execute(
+        "UPDATE source_issues SET delegated_at = ?, delegated_by = ?"
+        " WHERE source_id = ? AND github_issue_id = ? AND delegated_at IS NULL",
+        (now, by, source_id, github_issue_id),
+    )
+    return cur.rowcount == 1
 
 
 def list_source_issues(conn: Connection, session_id: str, source_id: str) -> list[Row]:
@@ -2915,6 +3128,79 @@ def enqueue_pull_request(
 
 def get_pull_request_row(conn: Connection, task_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM task_pull_requests WHERE task_id = ?", (task_id,))
+
+
+def list_work_pull_requests(conn: Connection, work_item_id: str) -> list[Row]:
+    """업무에 붙은 감지 PR(`work_pull_requests`) — `pr_updated_at` 최근순."""
+    return conn.execute(
+        "SELECT * FROM work_pull_requests WHERE work_item_id = ? ORDER BY pr_updated_at DESC, id DESC", (work_item_id,)
+    ).fetchall()
+
+
+def get_work_pull_request(conn: Connection, session_id: str, repository_full_name: str, pr_number: int) -> Row | None:
+    return _one(conn, "SELECT * FROM work_pull_requests WHERE session_id = ? AND repository_full_name = ?"
+                      " AND pr_number = ?", (session_id, repository_full_name, pr_number))
+
+
+def upsert_work_pull_request(
+    conn: Connection, *, session_id: str, work_item_id: str, source_id: str, repository_full_name: str,
+    pr_number: int, title: str, head_branch: str, state: str, draft: bool, author_login: str | None,
+    merged_at: str | None, pr_updated_at: str, matched_in: str, now: str,
+) -> bool:
+    """감지 PR 한 건(한 트랜잭션 — 서버 모듈은 트랜잭션을 열지 않는다). 없으면 넣고 `pull_request_linked` 이벤트, 있으면
+    제목·head·상태·draft·병합 시각·`pr_updated_at` 만 갱신한다(업무는 처음 붙은 업무 그대로, `merged` 는 되돌리지 않음).
+    그 업무의 상태를 다시 계산한다. 처음 붙으면 True."""
+    with _tx(conn):
+        row = get_work_pull_request(conn, session_id, repository_full_name, pr_number)
+        if row is None:
+            conn.execute(
+                "INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+                " title, pr_url, head_branch, state, draft, author_login, merged_at, pr_updated_at, created_at,"
+                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, work_item_id, source_id, repository_full_name, pr_number, title,
+                 f"https://github.com/{repository_full_name}/pull/{pr_number}", head_branch, state, int(draft),
+                 author_login, merged_at, pr_updated_at, now, now),
+            )
+            _work_item_event(conn, work_item_id, session_id, "pull_request_linked",
+                             {"repository_full_name": repository_full_name, "pr_number": pr_number,
+                              "head_branch": head_branch, "matched_in": matched_in}, now)
+        else:
+            work_item_id = row["work_item_id"]
+            if row["state"] == "merged":
+                state, merged_at = "merged", row["merged_at"]
+            conn.execute(
+                "UPDATE work_pull_requests SET title = ?, head_branch = ?, state = ?, draft = ?, merged_at = ?,"
+                " pr_updated_at = ?, updated_at = ? WHERE id = ?",
+                (title, head_branch, state, int(draft), merged_at, pr_updated_at, now, row["id"]),
+            )
+        refresh_work_status(conn, work_item_id, now=now)
+        return row is None
+
+
+def is_runloom_pull_request(
+    conn: Connection, session_id: str, repository_full_name: str, *, pr_number: int, head_branch: str
+) -> bool:
+    """Runloom 이 연 PR 인지 — 같은 워크스페이스 `task_pull_requests` 에 같은 저장소의 같은 번호가 있거나, 같은 head 가
+    있다(번호를 기록하기 전 대기열 행). 이런 PR 은 감지 PR 로 저장하지 않는다."""
+    return _one(
+        conn,
+        "SELECT 1 FROM task_pull_requests WHERE session_id = ? AND repository_full_name = ?"
+        " AND (pr_number = ? OR head_branch = ?)",
+        (session_id, repository_full_name, pr_number, head_branch),
+    ) is not None
+
+
+def get_pull_cursor(conn: Connection, source_id: str) -> str | None:
+    """PR 읽기 커서(마지막으로 본 PR 의 가장 늦은 `updated_at`). None = 아직 읽지 않음."""
+    row = _one(conn, "SELECT pull_cursor FROM github_sources WHERE source_id = ?", (source_id,))
+    if row is None:
+        raise NotFound(f"source {source_id}")
+    return row["pull_cursor"]
+
+
+def set_pull_cursor(conn: Connection, source_id: str, cursor: str, *, now: str) -> None:
+    cur = conn.execute("UPDATE github_sources SET pull_cursor = ? WHERE source_id = ?", (cursor, source_id))
+    _require_rowcount(cur, f"source {source_id}")
 
 
 def pull_requests_due(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:
