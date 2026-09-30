@@ -2,7 +2,9 @@
 
 갱신일: 2026-09-30. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 16 완료 → service 병합 → 셀프호스트 재설치(v12) → 17-jira 설계 (새 세션은 여기서 시작)
+## 다음 작업: 새 화면 브라우저 확인(사용자) → 17-jira 설계 (새 세션은 여기서 시작)
+
+**2026-09-30 반영(16)**: `feat-16-work-ui` → `service` 병합(`f53afd6`, 원격 미푸시). 셀프호스트 재설치 — 진행 중 실행 0 확인 → 백업 `20260930T090902Z`(스키마 11) → `install.sh` → 스키마 12(업무 23: 새로 들어옴 21·완료 1·종료 1, Task 24, 멤버 1 보존, 감지 PR 0). 러너는 재기동하지 않음(프로토콜 변화 없음). 남은 확인: 브라우저 JS(패널·Esc·묶음 접기·브랜치 복사), 실제 github.com PR 감지.
 
 **16-work-ui 완료**(2026-09-30, `feat-16-work-ui`, step 0~10, [ADR-0022](adr/0022-work-screen-and-direct-work.md), [ARCHITECTURE](ARCHITECTURE.md) "업무 화면 — phase 16", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 16 업무 화면"): 업무 화면 `/tasks`(한 줄 표·담당자/상태 묶음·빠른 필터 4개·목록/보드 6칸·끝난 업무 14일), 오른쪽 상세 패널 `/tasks?open=RUN-n`(조각 `/work/{key}/panel`, `/work/{key}` 는 넘김, 알림·원본 댓글 링크도 업무 주소), 패널에서 담당(에이전트 = 곧 맡기기)·우선순위, [내 세션에서 작업](브랜치 `RUN-n-<요약>`)·그만두기, PR 신호(소스 저장소 PR 의 head·제목에 든 키 → 감지 PR → `PR · 검토`·병합 `완료`), 연결 화면 `/connect` 탭 5개(옛 GET 7개 넘김), 모니터링 `/monitor`, 시작하기 `/start`, 사이드바 5항목, 스키마 v12.
 
