@@ -1,0 +1,74 @@
+# Step 9: work-list-polish — 저장소 묶기·필터, 키 칸 RUN-n, 담당 후보 소유자·켜짐, 맡기기 정책 설정
+
+## 읽어야 할 파일
+
+- AGENTS.md
+- phases/17-team-handoff/README.md (조사 결과·계획 기본값 10가지 — 이 phase 의 기준), phases/17-team-handoff/index.json (이전 step summary)
+- docs/ARCHITECTURE.md "사람 사이 인계 — phase 17" (step 0 이 쓴 이름·시그니처 표 — README 와 다르면 ARCHITECTURE 가 기준)
+- docs/adr/0023-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
+- docs/UI_GUIDE.md (업무 화면·패널)
+- src/workflow/domain/work_list.py (`QUICK_FILTERS`·`GROUP_BYS`·`WorkRow`·`filter_rows`·`group_rows`), src/workflow/adapters/repo.py (`list_work_rows`·`WorkRow` 채우기, `github_sources`), src/workflow/server/web.py (`home` 쿼리 해석), src/workflow/server/views.py (`agent_owner_id`·`agent_online`·패널 보기 모델), src/workflow/server/work_actions.py (담당 후보)
+- src/workflow/server/templates/home.html·_work_panel.html, 에이전트 설정이 보이는 연결 탭 템플릿(`/connect?tab=team` — 파일은 직접 확인)
+- tests/workflow/domain/test_work_list.py, tests/workflow/server/test_web_home*.py·test_web_work.py·test_views.py (이름은 직접 확인)
+
+먼저 실제 파일을 읽는다. 대화 이력을 전제로 판단하지 않는다.
+
+## 작업
+
+1. **저장소**:
+   - `WorkRow` 에 저장소(없으면 None)를 더한다. 조회에서 GitHub 원본의 `repository_full_name` 을 붙이고, 칸은 새로 두지 않는다.
+   - `GROUP_BYS` 에 `repo`, 필터 `repo=<owner/name>` 을 넣는다. 워크스페이스에 있는 저장소 목록으로만 받고, 모르는 값은 무시한다.
+   - 묶음 순서는 이름순이고 "저장소 없음" 은 마지막이다. 도구 막대에 저장소 선택을 넣는다. 주소에 남고 다른 쿼리와 함께 쓴다.
+2. **키 칸**: `RUN-n` 을 먼저 쓰고, 원본 키는 옆에 흐리게 짧게 쓴다(`owner/name#n` → `name#n`). 짧은 키 함수는 domain 순수 함수다. 보드 카드도 같다.
+3. **담당 후보**: 한 줄 = `이름 · <소유자 표시 이름>의 Mac · 켜짐|꺼짐`(소유자 없으면 `공용`). 정책이 `owner_approval` 이고 누르는 사람이 소유자가 아니면 `· 승인 필요` 를 붙인다. 꺼진 에이전트도 후보에 남는다.
+4. **맡기기 정책 설정**:
+   - 연결 화면의 에이전트 줄에 정책 선택(바로 실행 / 내 승인 뒤 실행)을 넣는다.
+   - 경로·필요 동작은 ARCHITECTURE 를 따른다. 소유자와 관리자만 바꾼다. 다른 멤버에게는 읽기 전용으로 보인다.
+   - 바꾸면 업무 이벤트가 아니라 기존 설정 변경 기록 관례를 따른다(없으면 기록 없음).
+
+## 테스트 먼저
+
+- domain: 저장소 묶기·순서·"저장소 없음", 저장소 필터, 짧은 키.
+- 화면(렌더된 HTML 단정):
+  - `?group=repo`·`?repo=` 결과, 모르는 저장소 값 무시.
+  - 키 칸에 `RUN-n` 이 원본 키보다 앞.
+  - 후보 줄에 소유자·켜짐/꺼짐·승인 필요.
+  - 정책 변경: 소유자 가능, 관리자 가능, 다른 멤버 403, 잘못된 값 422.
+
+소스·템플릿을 바꾸기 전에 `tests/` 미러 경로에 실패하는 테스트를 먼저 작성하고, 실패 원인이 의도한 것인지 확인한다(`tdd-guard.sh` 가 테스트 없는 소스 작성을 막는다). 구현한 뒤 해당 테스트와 전체 회귀를 통과시킨다. 이 step 의 변경으로 기존 테스트가 깨지면 새 동작 기준으로 고치되 단정을 약하게 만들지 않는다. 무엇을 왜 바꿨는지는 summary 에 남긴다.
+
+## Acceptance Criteria
+
+```bash
+python3 -m pytest -q
+python3 -m ruff check .
+```
+
+위 커맨드와 이 step 의 테스트 항목을 모두 확인한다.
+
+## 검증 절차
+
+1. 위 AC 커맨드를 실행한다.
+2. 아키텍처 규칙을 확인한다.
+   - `domain/` 은 FastAPI·sqlite3·HTTPX·subprocess·Git 을 import 하지 않는다.
+   - `server/` 와 `connector/` 는 서로 import 하지 않고 `contracts/` 만 공유한다.
+   - 외부 입력(요청 본문·폼·쿼리 문자열·지시 메모·이슈 본문·양식 칸·모델 응답)에서 명령·경로를 받아 실행하지 않는다. 검증 명령은 러너에 등록된 것만 쓴다.
+   - 비밀값(연결 토큰, `OPERATOR_TOKEN`, `SESSION_SECRET`, 로그인 세션·초대·재설정 토큰 원문, 비밀번호, GitHub App 비밀·설치 토큰, PAT, 알림 웹훅 URL, `--env` 값)은 DB·로그·응답·템플릿·백업에 넣지 않는다.
+   - 권한은 `domain/team.py` 역할 × 동작 표로만 판정한다. 소유자 비교는 그 표와 함께 쓰는 순수 함수로 한다.
+   - 템플릿은 외부 문자열(업무 제목·지시 메모·멤버 이름)을 자동 이스케이프로만 출력한다(`|safe` 금지).
+   - GLOSSARY 이름을 그대로 쓴다.
+   - phase 8·11·12·14·15·16 의 GitHub 순환(수집 → 맡기기 → 수정 → 검토 → 초안 PR → 병합 추적 → 업무 완료), 사람별 내 차례, 직접 작업·PR 신호가 그대로 동작한다.
+3. 성공이면 `phases/17-team-handoff/index.json` 의 이 step 만 `completed` 로 바꾸고, `summary` 에 한 줄로 남긴다: 생성·수정·삭제 파일, 결정, 검증 결과(테스트 수), 다음 step 이 주의할 점.
+4. 3회 수정 후에도 실패하면 `error` + `error_message` 를 기록한다. 사용자 결정·외부 자원이 필요하면 `blocked` + `blocked_reason` 을 기록한다. 실행하지 않은 검증을 `completed` 로 표시하지 않는다.
+
+## 금지사항
+
+- 실제 GitHub(api.github.com·github.com)·Discord·외부 웹훅·실제 Claude/Codex 를 호출하지 않는다(공식 문서 읽기는 허용). 이유: 모든 step 은 httpx `MockTransport`·가짜 GitHub·가짜 도구(PATH 앞의 가짜 `codex`/`claude`)·가짜 알림 수신으로 검증한다. 실연동은 phase 뒤 사용자와 함께 한다.
+- 사용자가 띄워 둔 환경을 읽거나 바꾸지 않는다: 셀프호스트(compose 프로젝트 `runloom`, 포트 8000, 볼륨 `runloom_workflow-data`)·`deploy/selfhost/.env`·러너 홈(`~/Library/Application Support/workflow-connector*`)·launchd(`launchctl` 실행 금지)·`~/Library/LaunchAgents`·`~/.claude/`·`/Users/kje/demo/*`. 컨테이너를 띄우거나 멈추지 않는다. 이유: 실사용 중인 환경이다. 러너가 필요한 테스트는 임시 폴더를 `WORKFLOW_CONNECTOR_HOME` 으로 쓴다.
+- 새 의존성(Python 패키지, JS 프레임워크·번들러, 외부 CDN)을 추가하지 않는다. 이유: ADR-0002·UI_GUIDE.
+- 종류 이름(`bug_fix`·`code_review`)으로 새 분기를 만들지 않는다(`composition.py`·`worker.py` 포함). 이유: 업무 종류·후속 규칙은 워크스페이스 등록 데이터다(ADR-0009, AGENTS.md). 순환 종류인지는 기존 `execution_policy` 판정을 쓴다.
+- `tasks` 표를 재생성하거나 `tasks.status` CHECK 를 바꾸지 않는다. 이유: ADR-0020.
+- 모델의 "완료했다" 응답이나 프로세스 종료 코드만으로 완료 처리하지 않는다. 검증만 다시도 평소 결과 판정을 거친다. 이유: 계약 v1.
+- Jira(18-jira), 판단 제안·자동 시작(19-triage), 모니터링 확장(20-monitor), Claude Code 훅, 보드 끌기, 여러 행 일괄 변경, 새 역할을 만들지 않는다. 이유: 사용자 결정 2026-09-30 범위 밖.
+- 사용자 변경을 삭제하거나 stash·reset 하지 않는다. 커밋은 하네스가 한다.
+- 이 step 범위 밖 모듈을 "개선"하지 않는다. 기존 테스트의 단정을 약하게 만들어 통과시키지 않는다.

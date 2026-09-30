@@ -1,0 +1,66 @@
+{
+  "project": "workflow",
+  "phase": "17-team-handoff",
+  "steps": [
+    {
+      "step": 0,
+      "name": "handoff-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "schema-v13",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "contract-verify-only",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "runner-verify",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "task-status-refresh",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "delegation-rules",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "owner-approval",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "verify-only-server",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "handoff-context",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "work-list-polish",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "multi-runner-install",
+      "status": "pending"
+    },
+    {
+      "step": 11,
+      "name": "handoff-verify",
+      "status": "pending"
+    }
+  ]
+}
