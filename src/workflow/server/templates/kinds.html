@@ -1,6 +1,6 @@
 {# 업무 종류·후속 규칙 — 워크스페이스(세션)가 등록한다 (ADR-0009, ARCHITECTURE "화면"). 규칙은 한 줄 텍스트이며
    그래프·화살표 그림을 그리지 않는다. 사용자 정의 종류의 내는 산출물은 항상 결과 봉투(generic_result)라 폼에 없다.
-   인라인 스크립트 하나: 선행 종류를 바꾸면 결과값 체크박스를 그 종류의 것(option 의 data-outcomes)으로 바꾼다. #}
+   등록·삭제 폼은 `manage_rules` 일 때만(ADR-0021). 인라인 스크립트 하나: 선행 종류를 바꾸면 결과값 체크박스를 그 종류의 것(option 의 data-outcomes)으로 바꾼다. #}
 {% extends "base.html" %}
 {% block title %}종류·규칙 — Runloom{% endblock %}
 {% block content %}
@@ -21,13 +21,14 @@
     {% if k.instructions %}
     <details class="row" data-key="instructions-{{ k.kind }}"><summary>지시문</summary><div class="row-body"><pre class="instructions">{{ k.instructions }}</pre></div></details>
     {% endif %}
-    {% if not k.builtin %}
+    {% if not k.builtin and 'manage_rules' in allowed %}
     <div class="actions"><form method="post" action="/kinds/{{ k.kind }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form></div>
     {% endif %}
   </div>
   {% endfor %}
 </div>
 
+{% if 'manage_rules' in allowed %}
 <h2>종류 등록</h2>
 <form method="post" action="/kinds" class="card">
   <div class="field-row">
@@ -73,6 +74,7 @@
   </div>
   <div class="actions"><button class="btn" type="submit">종류 등록</button></div>
 </form>
+{% endif %}
 
 <h2>후속 규칙</h2>
 <p class="small" style="margin-bottom:8px">선행 결과값이 규칙에 맞으면 산출물을 넘겨 후속을 시작합니다. 규칙이 없으면 그 결과 뒤 후속은 사람이 시작합니다.</p>
@@ -85,7 +87,7 @@
     <td class="rule-text">{{ r.text }}</td>
     <td>{% for label in r.handoff_labels %}<span class="chip">{{ label }}</span> {% endfor %}</td>
     <td>{{ r.placement_label }}</td>
-    <td><form method="post" action="/rules/{{ r.rule_id }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form></td>
+    <td>{% if 'manage_rules' in allowed %}<form method="post" action="/rules/{{ r.rule_id }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form>{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
@@ -94,6 +96,7 @@
 <p class="muted">등록된 규칙이 없습니다. 모든 후속은 사람이 시작합니다.</p>
 {% endif %}
 
+{% if 'manage_rules' in allowed %}
 <h2>규칙 등록</h2>
 <form method="post" action="/rules" class="card">
   <div class="field-row">
@@ -135,6 +138,7 @@
   </div>
   <div class="actions"><button class="btn" type="submit">규칙 등록</button></div>
 </form>
+{% endif %}
 <script>
 (function () {
   var select = document.getElementById('from_kind');

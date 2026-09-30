@@ -1,10 +1,11 @@
-"""인증 — 워크스페이스 서명 쿠키, 연결 프로그램 Bearer 토큰, 운영자 확인 (ARCHITECTURE 인증 절),
+"""인증 — 로그인 세션 쿠키, 연결 프로그램 Bearer 토큰, 역할 × 동작 (ARCHITECTURE 인증 절),
 입구 토큰 (ADR-0010 — 워크스페이스가 발급해 n8n 이 쓴다).
 셀프호스트 전용(ADR-0016 결정 3, ADR-0019) — 익명 세션을 만들지 않고 고정 워크스페이스 `SELFHOST_SESSION_ID` 쿠키만 받는다.
 
 팀(phase 15, ADR-0021): 로그인 세션 쿠키 `wf_login` → 현재 멤버(`current_member`)·역할 × 동작(`require_action`),
 쿠키 인증 변경 요청의 Origin 검사(`check_origin`), 키별 로그인 실패 제한. 옛 `wf_session` 쿠키는 읽지 않는다.
-`require_session`·`require_operator` 는 라우트가 역할 표로 옮겨 갈 때까지(step 6) 현재 멤버 위의 `session_id` 래퍼다.
+화면은 `require_member`(로그인)·`require_action(동작)`, API 는 `require_member_api`·`require_action(동작, api=True)` 를 건다.
+`sessions.is_operator` 는 권한 판정에 읽지 않는다(칸만 남는다).
 
 요청 범위 의존성(`get_conn`, `utc_now`) 도 여기 둔다. 인증이 가장 먼저 DB 와 시각을 쓴다.
 sqlite 연결은 요청마다 새로 열고 응답 뒤 닫는다 (`get_conn`). 앱 전역 연결을 두지 않는다.
@@ -182,19 +183,6 @@ def require_action(action: str, *, api: bool = False) -> Callable[..., LoggedIn]
         return member
 
     return dependency
-
-
-def require_session(member: LoggedIn = Depends(require_member)) -> str:
-    """로그인한 멤버의 워크스페이스 id. 로그인 전이면 `/login` 으로 303 (step 6 이 역할 표로 옮긴 뒤 지운다)."""
-    return member.session_id
-
-
-def require_operator(member: LoggedIn = Depends(require_member_api), conn: Connection = Depends(get_conn)) -> str:
-    """로그인한 멤버의 워크스페이스가 운영자일 때 그 id. 로그인 전이면 401 unauthenticated (step 6 이 지운다)."""
-    row = repo.get_session(conn, member.session_id)
-    if row is None or not row["is_operator"]:
-        raise ApiError(403, "forbidden", "운영자 권한이 필요합니다.")
-    return member.session_id
 
 
 def set_login_cookie(response: Response, token: str, settings: Settings) -> None:

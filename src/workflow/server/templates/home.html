@@ -45,7 +45,7 @@
   <div class="card" data-work-key="{{ w.work_key }}">
     <div class="card-title"><a href="/work/{{ w.work_key }}"><span class="mono">{{ w.key }}</span> {{ w.title }}</a></div>
     <div class="status-line" style="margin:0">{{ st.badge(w.status.label) }}<span class="reason">{{ w.status.reason }}</span><span class="small">{{ w.assignee }} · {{ w.updated_at|ago(now) }}</span></div>
-    {% if is_operator and w.delegate_task_id %}<form method="post" action="/tasks/{{ w.delegate_task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
+    {% if 'delegate' in allowed and w.delegate_task_id %}<form method="post" action="/tasks/{{ w.delegate_task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
   </div>
   {% endfor %}
 </div>

@@ -27,7 +27,7 @@ from workflow.server import web
 from workflow.server.app import create_app
 from workflow.server.auth import LOGIN_COOKIE
 
-from .conftest import log_in, log_in_other_workspace, session_of, task_row
+from .conftest import log_in, log_in_member, log_in_other_workspace, session_of, task_row
 from .test_task_cycle import SESSION as CYCLE_SESSION
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     SOURCE,
@@ -492,7 +492,7 @@ def test_delegate_refuses_a_closed_task(cycle_op, conn):
     assert delegated(conn, task_id) == (None, None)
 
 
-def test_delegate_needs_the_owning_operator(cycle_op, app, conn):
+def test_delegate_needs_a_login_to_the_owning_workspace(cycle_op, app, conn):
     task_id = import_issue(conn, 1, labels=[])
     stranger = log_in_other_workspace(TestClient(app))  # 다른 워크스페이스의 로그인 쿠키 — 로그인 안 된 것
     response = stranger.post(f"/tasks/{task_id}/delegate", follow_redirects=False)
@@ -502,10 +502,12 @@ def test_delegate_needs_the_owning_operator(cycle_op, app, conn):
     repo.mark_operator(conn, "sess-other")
     repo.insert_work_item_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, "2026-10-06T12:00:00Z")
     assert cycle_op.post("/tasks/task-other/delegate").status_code == 404
+    # 맡기기는 `delegate` 동작 — 멤버도 한다. 워크스페이스의 `is_operator` 는 권한 판정에 읽지 않는다 (ADR-0021)
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (CYCLE_SESSION,))
     conn.commit()
-    error(cycle_op.post(f"/tasks/{task_id}/delegate"), 403, "forbidden")
-    assert delegated(conn, task_id) == (None, None)
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/tasks/{task_id}/delegate", follow_redirects=False).status_code == 303
+    assert delegated(conn, task_id)[0] == "operator"
 
 
 # --- 연결 화면 (phase 11 step 8) ------------------------------------------------------------------------
@@ -699,12 +701,14 @@ def test_no_delegate_button_for_filtered_sources_or_non_operators(client, cycle,
     assert "/delegate" not in detail.text
 
 
-def test_detail_hides_the_delegate_button_from_a_non_operator(cycle_op, conn):
+def test_member_sees_the_delegate_button_regardless_of_is_operator(cycle_op, app, conn):
+    # 버튼은 `delegate` 동작(관리자·멤버)을 본다 — 워크스페이스의 `is_operator` 는 읽지 않는다 (ADR-0021)
     task_id = import_issue(conn, 1, labels=[])
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (CYCLE_SESSION,))
     conn.commit()
-    assert delegate_form(task_id) not in cycle_op.get(f"/tasks/{task_id}").text
-    assert delegate_form(task_id) not in cycle_op.get("/tasks").text
+    for client in (cycle_op, log_in_member(TestClient(app))):
+        assert delegate_form(task_id) in client.get(f"/tasks/{task_id}").text
+        assert delegate_form(task_id) in client.get("/tasks").text
 
 
 def test_home_without_github_is_unchanged(logged_in_client):

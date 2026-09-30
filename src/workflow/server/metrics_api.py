@@ -1,6 +1,6 @@
 """지표 API·기준선 가져오기 — ADR-0015, ARCHITECTURE "측정 — phase 9" API 표.
 
-- 운영자 세션(`require_operator`)만 쓰고 그 세션의 데이터만 계산한다. 다른 세션의 소스는 404.
+- 지표는 `view_metrics`, 기준선 가져오기는 `manage_connections`(ADR-0021). 그 세션의 데이터만 계산한다. 다른 세션의 소스는 404.
 - 계산은 `domain.metrics` 가 하고 여기서는 DB 사실을 넘겨 JSON·CSV 로 옮길 뿐이다. 모르는 값은 JSON null·CSV 빈 칸.
 - 기준선 가져오기는 GitHub 호출(트랜잭션 밖) 뒤 `replace_baseline` 한 트랜잭션. 토큰은 `Settings.github_token` 에만 있고
   응답·오류 문구에 GitHub 예외 메시지를 넣지 않는다.
@@ -38,7 +38,8 @@ from workflow.domain.metrics import (
     compute_metrics,
     summarize_baseline,
 )
-from workflow.server.auth import get_conn, require_operator, utc_now
+from workflow.domain import team
+from workflow.server.auth import LoggedIn, get_conn, require_action, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.github_sync import DEFAULT_RETRY_AFTER_SECONDS
 
@@ -179,8 +180,10 @@ GroupBy = Annotated[Literal["config_revision", "folder_commit"] | None, Query()]
 @router.get("/metrics.json")
 def metrics_json(
     request: Request, since: Since = None, until: Until = None, group_by: GroupBy = None,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.VIEW_METRICS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
+    session_id = member.session_id
     report = _report(conn, request, session_id, since, until, group_by)
     return JSONResponse({
         "from": report.since, "to": report.until, "group_by": report.group_by,
@@ -192,8 +195,10 @@ def metrics_json(
 @router.get("/metrics.csv")
 def metrics_csv(
     request: Request, since: Since = None, until: Until = None, group_by: GroupBy = None,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.VIEW_METRICS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> Response:
+    session_id = member.session_id
     report = _report(conn, request, session_id, since, until, group_by)
     return Response(_csv(_csv_rows(report, _baselines(conn, session_id))), media_type="text/csv; charset=utf-8")
 
@@ -224,9 +229,11 @@ def _github_error(exc: GitHubError) -> ApiError:
 @router.post("/operator/github/sources/{source_id}/baseline")
 def import_baseline(
     request: Request, source_id: str,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
     """소스 연결 시각(`github_sources.created_at`) 이전에 열린 이슈 → 병합 PR 을 가져와 전체 교체한다. 멱등."""
+    session_id = member.session_id
     source = repo.get_github_source(conn, session_id, source_id)
     if source is None:
         raise ApiError(404, "not_found", f"source {source_id}을 찾을 수 없습니다.", field="source_id")

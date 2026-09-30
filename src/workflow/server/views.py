@@ -35,6 +35,7 @@ from workflow.domain.metrics import (
     summarize_baseline,
 )
 from workflow.domain.notification import webhook_host
+from workflow.domain import team
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.domain.work_status import STAGE_FAILED
@@ -348,7 +349,8 @@ def _chip(conn: Connection, summary: dict[str, Any], stage_ids: list[str]) -> di
 
 
 def task_context(
-    conn: Connection, store: ArtifactStore, task_row: Row, *, now: str, settings: Settings, is_operator: bool = False
+    conn: Connection, store: ArtifactStore, task_row: Row, *, now: str, settings: Settings,
+    allowed: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """업무 상세 템플릿 컨텍스트 전부. 동작 가능 여부(`can_run`·`can_review`·`needs_selection`)도 여기서 정한다.
     업무 순환 Task 는 `cycle`(`cycle_context`)의 준비 판정이 직접 실행 여부를 정하고, 담당은 선택 폼이 아니라
@@ -382,7 +384,7 @@ def task_context(
     needs_selection = not finished and active is None and not selected
     chain = repo.get_chain(conn, task_row["chain_id"]) if task_row["chain_id"] is not None else None
     spec = repo.get_kind(conn, task_row["session_id"], task_row["kind"])
-    cycle = cycle_context(conn, store, task_row, now=now, settings=settings, is_operator=is_operator)
+    cycle = cycle_context(conn, store, task_row, now=now, settings=settings, allowed=allowed)
     cycle_task = cycle is not None and cycle["cycle"]
     if cycle_task:
         needs_selection = False
@@ -529,7 +531,7 @@ def _review_result(conn: Connection, store: ArtifactStore, executions: list[Row]
 
 
 def _request_public(
-    conn: Connection, request: Row, *, is_operator: bool, agent_choices: list[dict[str, Any]]
+    conn: Connection, request: Row, *, can_respond: bool, agent_choices: list[dict[str, Any]]
 ) -> dict[str, Any]:
     allowed = human_api.allowed_actions(request["code"])
     data = {k: request[k] for k in ("request_id", "code", "question", "state", "revision", "created_at", "answered_at")}
@@ -540,7 +542,7 @@ def _request_public(
     data["asks_information"] = human_api.asks_information(request["code"])
     data["agent_choices"] = agent_choices if "choose_agent" in allowed else []
     # 응답 폼마다 새 응답 ID — 같은 폼을 두 번 보내면 서버가 한 번만 반영한다(`response_id` 멱등)
-    data["response_id"] = f"resp-{uuid4().hex}" if request["state"] == "open" and is_operator else None
+    data["response_id"] = f"resp-{uuid4().hex}" if request["state"] == "open" and can_respond else None
     return data
 
 
@@ -554,7 +556,7 @@ def _agent_choices(conn: Connection, session_id: str, origin: dict[str, Any] | N
 
 
 def cycle_context(
-    conn: Connection, store: ArtifactStore, task: Row, *, now: str, settings: Settings, is_operator: bool
+    conn: Connection, store: ArtifactStore, task: Row, *, now: str, settings: Settings, allowed: frozenset[str]
 ) -> dict[str, Any] | None:
     """업무 상세의 업무 순환 영역 — 원본 링크·담당·대기 사유·사람 요청과 응답(입력 보충)·생성 근거·재시도 횟수·검토 결과·
     원본 반영 상태. 업무 순환 종류도 아니고 원본 이슈도 없으면 None."""
@@ -584,7 +586,7 @@ def cycle_context(
 
     agent_choices = _agent_choices(conn, task["session_id"], origin)
     requests = [
-        _request_public(conn, r, is_operator=is_operator, agent_choices=agent_choices)
+        _request_public(conn, r, can_respond=team.RESPOND in allowed, agent_choices=agent_choices)
         for r in repo.list_human_requests(conn, task_id)
     ]
     link = repo.get_followup_link(conn, task_id)
@@ -606,7 +608,7 @@ def cycle_context(
         "origin": origin,
         "blockers": blockers,
         "can_start": can_start,
-        "can_delegate": is_operator and undelegated(conn, task),
+        "can_delegate": team.DELEGATE in allowed and undelegated(conn, task),
         "requests": requests,
         "open_requests": [r for r in requests if r["state"] == "open"],
         "responses": [
@@ -672,7 +674,7 @@ def work_summary(conn: Connection, work: Row) -> dict[str, Any]:
 
 
 def work_context(
-    conn: Connection, work: Row, *, now: str, settings: Settings, is_operator: bool
+    conn: Connection, work: Row, *, now: str, settings: Settings, allowed: frozenset[str]
 ) -> dict[str, Any]:
     """업무 상세 — 머리(키·원본·상태·담당·PR)·단계 목록·양식 칸·연결 업무·열린 사람 요청(응답 폼)."""
     session_id = work["session_id"]
@@ -696,7 +698,7 @@ def work_context(
             origin = _origin(conn, stage, issue, config) if issue is not None else None
             choices = _agent_choices(conn, session_id, origin)
             open_requests.extend(
-                {**_request_public(conn, r, is_operator=is_operator, agent_choices=choices),
+                {**_request_public(conn, r, can_respond=team.RESPOND in allowed, agent_choices=choices),
                  "task_id": stage["task_id"]}
                 for r in opened
             )

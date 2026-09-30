@@ -30,7 +30,7 @@
 {% for r in open_requests %}
 <div class="human-request">
   <p><strong>내 차례</strong> · {{ r.question }} <span class="small">· {{ r.created_at|kst }}</span></p>
-  {% if r.response_id %}{{ response_form(r) }}{% else %}<p class="small">운영자만 응답할 수 있습니다.</p>{% endif %}
+  {% if r.response_id %}{{ response_form(r) }}{% else %}<p class="small">응답 권한이 없습니다.</p>{% endif %}
 </div>
 {% endfor %}
 

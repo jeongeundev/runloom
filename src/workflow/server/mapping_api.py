@@ -1,6 +1,6 @@
 """매핑 표 API — 워크스페이스 `field_mappings` 조회·교체 (ADR-0020, ARCHITECTURE "매핑 표"). 화면은 16-work-ui.
 
-- 운영자 세션(`require_operator`)만 쓰고 그 워크스페이스 행만 보인다.
+- 조회는 로그인한 멤버, 교체는 `manage_rules`(ADR-0021). 그 워크스페이스 행만 보인다.
 - PUT 은 행 전부를 본문 순서(= `position`)로 바꾸고 설정 번호를 올린다. 이미 만든 업무는 바꾸지 않는다.
 - 값은 문자열로만 저장한다 — 명령·경로로 해석하지 않는다.
 """
@@ -14,7 +14,8 @@ from pydantic import BaseModel, ConfigDict
 from workflow.adapters import repo
 from workflow.contracts.v1 import NonEmptyStr
 from workflow.domain.field_mapping import MappingRow
-from workflow.server.auth import get_conn, require_operator, utc_now
+from workflow.domain import team
+from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_api, utc_now
 from workflow.server.errors import ApiError
 
 router = APIRouter(prefix="/field-mappings")
@@ -47,14 +48,18 @@ def _view(conn: Connection, session_id: str) -> dict:
 
 
 @router.get("")
-def list_mappings(session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn)) -> dict:
+def list_mappings(member: LoggedIn = Depends(require_member_api), conn: Connection = Depends(get_conn)) -> dict:
+    session_id = member.session_id
     return _view(conn, session_id)
 
 
 @router.put("")
 def replace_mappings(
-    body: FieldMappingsRequest, session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    body: FieldMappingsRequest,
+    member: LoggedIn = Depends(require_action(team.MANAGE_RULES, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> dict:
+    session_id = member.session_id
     rows = [MappingRow(m.source_type, m.field, m.source_value, m.runloom_value, position)
             for position, m in enumerate(body.mappings, start=1)]
     try:

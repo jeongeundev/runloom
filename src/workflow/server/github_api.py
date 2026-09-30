@@ -1,6 +1,7 @@
 """운영자 GitHub 소스 설정·담당 연결 API — ADR-0014 결정 1·5, CONTRACT 13.6·13.9.
 
-- 운영자 세션(`require_operator`)만 쓴다. 소스는 만든 세션 소유이고, 다른 세션에는 404 다.
+- 목록·상세는 로그인한 멤버(`require_member_api`), 쓰기는 `manage_connections`(ADR-0021). 소스는 만든 세션 소유이고,
+  다른 세션에는 404 다.
   셀프호스트 1개 워크스페이스: 이미 다른 세션이 소스를 가지고 있으면 새 소스를 만들 수 없다(409 `github_workspace_taken`).
 - 토큰은 요청으로 받지 않고(알 수 없는 필드 422) 응답에는 `token_configured` 만 넣는다. 값은 `Settings.github_token` 에만.
 - 저장소는 `Settings.github_repos`(`WORKFLOW_GITHUB_REPOS`) 안에서만 연결한다(대소문자 무시, 저장은 목록의 표기).
@@ -32,7 +33,8 @@ from workflow.contracts.github import (
     RepositoryFullName,
 )
 from workflow.contracts.v1 import NonEmptyStr, Rfc3339
-from workflow.server.auth import get_conn, require_operator, utc_now
+from workflow.domain import team
+from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_api, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.settings import Settings
 
@@ -198,8 +200,11 @@ def _save(conn: Connection, session_id: str, config: GitHubSourceConfig, *, expe
 
 @router.get("/sources")
 def list_sources(
-    request: Request, session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn)
+    request: Request,
+    member: LoggedIn = Depends(require_member_api),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
+    session_id = member.session_id
     settings = _settings(request)
     return JSONResponse({
         "token_configured": bool(settings.github_token),
@@ -211,9 +216,11 @@ def list_sources(
 @router.post("/sources/preview")
 def preview_source(
     request: Request, body: SourceSettingsRequest,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
     """저장하지 않고 검사만 한다. 형식 오류(범위 없음 등)는 422, 저장소·Agent·프로필 문제는 200 의 `problems` 목록."""
+    session_id = member.session_id
     settings = _settings(request)
     _config(body, "ghs-00000000", 1, body.repository_full_name)
     return JSONResponse({
@@ -225,8 +232,10 @@ def preview_source(
 @router.post("/sources", status_code=201)
 def create_source(
     request: Request, body: SourceSettingsRequest,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
+    session_id = member.session_id
     settings = _settings(request)
     if any(owner != session_id for owner in repo.github_source_sessions(conn)):
         raise ApiError(409, "github_workspace_taken", "GitHub 연결은 이미 다른 운영자 워크스페이스가 쓰고 있습니다.")
@@ -240,8 +249,9 @@ def create_source(
 @router.get("/sources/{source_id}")
 def get_source(
     request: Request, source_id: str,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_member_api), conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
+    session_id = member.session_id
     config = _existing(conn, session_id, source_id)
     bindings = repo.list_assignee_bindings(conn, session_id, source_id)
     return JSONResponse({
@@ -253,9 +263,11 @@ def get_source(
 @router.put("/sources/{source_id}")
 def update_source(
     request: Request, source_id: str, body: SourceUpdateRequest,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
     """전체 교체 + `expected_revision` 잠금. 저장소는 바꿀 수 없다(커서·원본 매핑이 그 저장소 것이다)."""
+    session_id = member.session_id
     settings = _settings(request)
     current = _existing(conn, session_id, source_id)
     if body.repository_full_name.lower() != current.repository_full_name.lower():
@@ -271,9 +283,11 @@ def update_source(
 @router.post("/sources/{source_id}/stop")
 def stop_source(
     request: Request, source_id: str,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
     """`enabled=false`. 이미 멈췄으면 그대로(revision 유지). 진행 중 실행은 건드리지 않는다."""
+    session_id = member.session_id
     current = _existing(conn, session_id, source_id)
     if current.enabled:
         stopped = current.model_copy(update={"enabled": False, "config_revision": current.config_revision + 1})
@@ -289,9 +303,11 @@ def stop_source(
 def bind_assignee(
     source_id: str, body: AssigneeRequest,
     github_user_id: int = Path(ge=1),
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
     """GitHub 사용자 숫자 ID → 이 세션의 수정 Agent. 같은 ID 는 한 행(다시 부르면 교체)."""
+    session_id = member.session_id
     config = _existing(conn, session_id, source_id)
     agent, problem = _session_agent(conn, session_id, body.agent_id, "agent_id")
     if problem is not None:

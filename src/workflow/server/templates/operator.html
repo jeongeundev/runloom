@@ -1,11 +1,11 @@
 {# 운영자 — 로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드, 모든 세션 업무.
+   연결 코드 발급은 `attach_runner`(멤버 포함), 코드 목록·취소는 `remove_any_runner`, 에이전트 삭제·등록은 `manage_connections`.
    등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% block title %}운영자 — Runloom{% endblock %}
 {% block content %}
 <div class="crumbs"><div class="crumb">운영자</div></div>
-{% if is_operator %}
 
 <h2 style="margin-top:0">연결 코드</h2>
 <div class="card">
@@ -42,13 +42,14 @@
       <span class="small">{{ a.owner_scope }} · {{ a.connection_type }}</span>
       <span>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if c.kind_label %} <span class="small">({{ c.kind_label }})</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</span>
       {{ st.connection(a) }}
-      <form method="post" action="/operator/agents/{{ a.agent_id }}/delete" class="inline-form" style="margin-left:auto"><button class="btn btn-danger btn-small" type="submit">삭제</button></form>
+      {% if 'manage_connections' in allowed %}<form method="post" action="/operator/agents/{{ a.agent_id }}/delete" class="inline-form" style="margin-left:auto"><button class="btn btn-danger btn-small" type="submit">삭제</button></form>{% endif %}
     </li>
     {% else %}
     <li class="muted">등록된 에이전트 없음</li>
     {% endfor %}
   </ul>
 </div>
+{% if 'manage_connections' in allowed %}
 <h3>등록 · 수정</h3>
 <form method="post" action="/operator/agents" class="card">
   <div class="field-row">
@@ -84,6 +85,7 @@
   </div>
   <div class="actions"><button class="btn" type="submit">등록</button></div>
 </form>
+{% endif %}
 
 <h2>모든 세션 업무</h2>
 <div class="card table-wrap">
@@ -101,6 +103,4 @@
     {% endfor %}
   </table>
 </div>
-
-{% endif %}
 {% endblock %}

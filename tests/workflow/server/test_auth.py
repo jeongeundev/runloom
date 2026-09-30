@@ -26,8 +26,6 @@ from workflow.server.auth import (
     require_connector,
     require_member,
     require_member_api,
-    require_operator,
-    require_session,
     require_source_token,
     set_login_cookie,
 )
@@ -43,17 +41,17 @@ def old_workspace_cookie(session_id: str) -> str:
     return f"{session_id}.{hmac.new(SECRET.encode(), session_id.encode(), hashlib.sha256).hexdigest()}"
 
 
-# --- 의존성 — Step 6 이 쓸 세션·운영자 의존성을 테스트 전용 라우트로 검증 ---------
+# --- 의존성 — 화면(`require_member`)·API(`require_member_api`) 로그인 의존성을 테스트 전용 라우트로 검증 ---------
 
 
 def _install_probe_routes(app):
     @app.get("/_probe/session")
-    def _session(session_id: str = Depends(require_session)):
-        return {"session_id": session_id}
+    def _session(member: LoggedIn = Depends(require_member)):
+        return {"session_id": member.session_id}
 
     @app.get("/_probe/operator")
-    def _operator(session_id: str = Depends(require_operator)):
-        return {"session_id": session_id}
+    def _operator(member: LoggedIn = Depends(require_member_api)):
+        return {"session_id": member.session_id}
 
     @app.get("/_probe/connector")
     def _connector(connector_id: str = Depends(require_connector)):
@@ -151,7 +149,7 @@ def _session_count(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
 
 
-def test_selfhost_require_session_redirects_to_login_without_creating_session(settings, conn):
+def test_selfhost_require_member_redirects_to_login_without_creating_session(settings, conn):
     client = TestClient(_selfhost_app(settings))
     response = client.get("/_probe/session", follow_redirects=False)
     assert response.status_code == 303
@@ -160,7 +158,7 @@ def test_selfhost_require_session_redirects_to_login_without_creating_session(se
     assert _session_count(conn) == 0
 
 
-def test_selfhost_require_operator_is_401_without_login(settings, conn):
+def test_selfhost_require_member_api_is_401_without_login(settings, conn):
     client = TestClient(_selfhost_app(settings))
     response = client.get("/_probe/operator")
     assert response.status_code == 401
@@ -169,7 +167,7 @@ def test_selfhost_require_operator_is_401_without_login(settings, conn):
 
 
 def test_selfhost_accepts_only_a_login_to_the_fixed_workspace(settings, conn):
-    """다른 워크스페이스(예: demo 에서 쓰던 익명 세션)의 유효한 로그인도 미인증. 고정 워크스페이스 로그인은 운영자다."""
+    """다른 워크스페이스(예: demo 에서 쓰던 익명 세션)의 유효한 로그인도 미인증. 고정 워크스페이스 로그인만 통과한다."""
     client = TestClient(_selfhost_app(settings))
     repo.create_session(conn, "sess-other", NOW)
     repo.mark_operator(conn, "sess-other")
