@@ -93,7 +93,7 @@ class Selfhost:
     @contextmanager
     def login(self) -> Iterator[httpx.Client]:
         token = _env_value(self.selfhost / ".env", "OPERATOR_TOKEN")
-        with httpx.Client(base_url=self.base, timeout=10) as client:
+        with httpx.Client(base_url=self.base, timeout=10, headers={"Origin": self.base}) as client:
             response = client.post("/login", data={"token": token}, follow_redirects=False)
             assert response.status_code == 303, response.text
             yield client

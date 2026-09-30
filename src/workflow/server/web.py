@@ -86,6 +86,7 @@ from workflow.server import github_connect, metrics_api, task_cycle, views
 from workflow.server.auth import (
     SELFHOST_SESSION_ID,
     SESSION_COOKIE,
+    check_origin,
     ensure_workspace,
     get_conn,
     require_operator,
@@ -94,7 +95,7 @@ from workflow.server.auth import (
     utc_now,
     workspace_session,
 )
-from workflow.server.errors import ApiError
+from workflow.server.errors import ApiError, PageError
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
 from workflow.server.worker import Worker
@@ -138,16 +139,24 @@ _env.filters.update({
 })
 
 
-class PageError(ApiError):
-    """HTML 로 보여 줄 오류. `install` 이 `error.html` 로 렌더한다."""
-
-
 def install(app: FastAPI) -> None:
     app.include_router(router)
 
     @app.exception_handler(PageError)
     async def _page_error(request: Request, exc: PageError) -> HTMLResponse:
         return HTMLResponse(_render("error.html", request=request, error=exc), status_code=exc.status)
+
+
+async def origin_guard(request: Request, call_next):
+    """앱 미들웨어 — GET·HEAD·OPTIONS 밖의 요청이 `check_origin` 을 통과하지 못하면 403 forbidden_origin.
+    폼 제출(Accept 에 text/html)은 `error.html`, 그 밖은 JSON 오류 본문. 경로는 로그에 넣지 않는다(초대·재설정 토큰)."""
+    if request.method in ("GET", "HEAD", "OPTIONS") or check_origin(request, _settings(request)):
+        return await call_next(request)
+    logger.warning("요청 출처 거부: %s", request.method)
+    error = ApiError(403, "forbidden_origin", "요청 출처를 확인할 수 없습니다.")
+    if "text/html" in request.headers.get("accept", ""):
+        return HTMLResponse(_render("error.html", request=request, error=error), status_code=403)
+    return error.response()
 
 
 # --- 렌더·리다이렉트 ----------------------------------------------------------------
@@ -355,7 +364,7 @@ def login_page(request: Request) -> str:
 def _workspace_login(request: Request, conn: Connection, token: str) -> HTMLResponse | RedirectResponse:
     """`OPERATOR_TOKEN` 과 비교해 맞으면 고정 워크스페이스 쿠키. 입력한 토큰 값은 응답·로그에 넣지 않는다."""
     throttle = request.app.state.login_throttle
-    if throttle.blocked():
+    if throttle.blocked("recover"):
         logger.warning("로그인 거부: 연속 실패 제한")
         return HTMLResponse(
             _render("login.html", request=request, error="로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."),
@@ -363,12 +372,12 @@ def _workspace_login(request: Request, conn: Connection, token: str) -> HTMLResp
         )
     settings = _settings(request)
     if not hmac.compare_digest(token.encode(), settings.operator_token.encode()):
-        throttle.fail()
+        throttle.fail("recover")
         logger.warning("로그인 실패")
         return HTMLResponse(
             _render("login.html", request=request, error="토큰이 올바르지 않습니다."), status_code=403,
         )
-    throttle.reset()
+    throttle.reset("recover")
     ensure_workspace(conn, utc_now())
     redirect = RedirectResponse("/", status_code=303)
     set_session_cookie(redirect, SELFHOST_SESSION_ID, settings)

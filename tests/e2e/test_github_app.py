@@ -221,7 +221,8 @@ def world(tmp_path_factory):
             while not api.started:
                 assert time.monotonic() < deadline and api_thread.is_alive(), "중앙 API 가 뜨지 않음"
                 time.sleep(0.1)
-            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0)
+            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0,
+                                      headers={"Origin": world.central_url})  # Origin 검사 (phase 15)
             yield world
         finally:
             if world.http is not None:

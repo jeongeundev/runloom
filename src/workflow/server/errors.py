@@ -50,6 +50,10 @@ class ApiError(Exception):
         return JSONResponse(status_code=self.status, content=self.body())
 
 
+class PageError(ApiError):
+    """HTML 로 보여 줄 오류. `web.install` 이 `error.html` 로 렌더한다."""
+
+
 def _josa(value: object, with_batchim: str, without_batchim: str) -> str:
     """숫자 뒤 조사: 영·일·삼·육·칠·팔은 받침이 있다. 숫자가 아니면 받침 없는 쪽을 쓴다."""
     text = str(value)

@@ -549,7 +549,8 @@ def world(tmp_path_factory):
             world.spawn("central_api", [sys.executable, "-m", "uvicorn", "workflow.server.app:app",
                                         "--host", "127.0.0.1", "--port", str(port)], central_env)
             _wait_http(world, f"{world.central_url}/healthz")
-            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0)
+            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0,
+                                      headers={"Origin": world.central_url})  # Origin 검사 (phase 15)
             yield world
         finally:
             if world.http is not None:

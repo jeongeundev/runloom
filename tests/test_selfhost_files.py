@@ -152,6 +152,14 @@ def test_env_example_leaves_secrets_empty_and_defaults_port():
     assert env["WORKFLOW_PORT"] == "8000"
 
 
+def test_env_example_public_url_is_empty_and_explains_login_use():
+    """phase 15 step 4 — 공개 주소는 선택. 링크·Origin 검사·로그인 쿠키 Secure 에 쓰인다는 설명이 붙는다."""
+    assert _env_example()["WORKFLOW_PUBLIC_URL"] == ""
+    lines = ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+    comment = lines[lines.index("WORKFLOW_PUBLIC_URL=") - 1]
+    assert "https" in comment and "Secure" in comment
+
+
 def test_env_example_explains_every_key():
     """키마다 바로 위에 설명 주석이 있다."""
     lines = ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()

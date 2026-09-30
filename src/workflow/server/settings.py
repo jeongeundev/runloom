@@ -9,6 +9,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from workflow.domain.callback_policy import parse_hosts
 
@@ -78,6 +79,22 @@ def _int(env: Mapping[str, str], key: str, default: int) -> int:
         raise ValueError(f"{key} 는 정수여야 합니다: {raw!r}") from None
 
 
+def _public_url(env: Mapping[str, str]) -> str:
+    """`http(s)://host[:port]` 만 받는다(끝 `/` 는 버림). 링크·Origin 검사·쿠키 Secure 판정에 쓴다(phase 15)."""
+    raw = (env.get("WORKFLOW_PUBLIC_URL") or "").rstrip("/")
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    try:
+        parts.port
+    except ValueError:
+        parts = parts._replace(scheme="")
+    if (parts.scheme not in ("http", "https") or not parts.hostname or "@" in parts.netloc
+            or parts.path or parts.query or parts.fragment or "?" in raw or "#" in raw):
+        raise ValueError(f"WORKFLOW_PUBLIC_URL 은 http(s)://호스트[:포트] 형식이어야 합니다 (경로·쿼리 없이): {raw!r}")
+    return raw
+
+
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
     """비밀값이 비어 있으면 ValueError. `WORKFLOW_DEV=1` 이면 무작위 값을 만들고 stderr 에 경고한다.
     `WORKFLOW_MODE` 는 동작을 정하지 않는다 — 빈 값·`selfhost` 가 아니면 SettingsError (ADR-0019)."""
@@ -117,7 +134,7 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
             heartbeat_offline_seconds=_int(env, "WORKFLOW_LIMIT_HEARTBEAT_OFFLINE_SECONDS", 90),
         ),
         callback_hosts=parse_hosts(env.get("WORKFLOW_CALLBACK_HOSTS") or ""),
-        public_url=(env.get("WORKFLOW_PUBLIC_URL") or "").rstrip("/"),
+        public_url=_public_url(env),
         github_token=env.get("WORKFLOW_GITHUB_TOKEN") or "",
         github_repos=tuple(r.strip() for r in (env.get("WORKFLOW_GITHUB_REPOS") or "").split(",") if r.strip()),
         secret_dir=Path(env.get("WORKFLOW_SECRET_DIR") or "data/secrets"),
