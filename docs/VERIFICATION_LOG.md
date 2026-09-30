@@ -470,3 +470,23 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 수정 없음 — 추가한 e2e·사본 테스트는 처음부터 통과했다(팀 동작은 step 1~10 에서 구현). 배포 파일: `deploy/selfhost/install.sh` 설치 뒤 안내 "처음 접속 때 토큰으로 관리자 계정을 만든다"(`tests/test_selfhost_files.py` 단정). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v11·팀(초대·비밀번호 분실·공개 주소와 원격 접속·개인 웹훅), [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 15-team 완료, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.
+
+## 2026-09-30 phase 16 업무 화면 (step 10)
+
+목적: [ADR-0022](adr/0022-work-screen-and-direct-work.md)의 업무 화면(담당자 묶음·빠른 필터·보드·상세 패널)·담당 = 맡기기·직접 작업·PR 신호·연결 탭·시작하기가 대역 e2e 한 줄기와 셀프호스트 모양 v11 사본 마이그레이션에서 그대로 도는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 서버, 알림은 127.0.0.1 가짜 수신, origin 은 임시 bare 저장소다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-30 KST, 이 Mac, 브랜치 `feat-16-work-ui` |
+| 명령·결과 | `python3 -m pytest -q` — **3191 passed·48 skipped**. `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **47 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e). `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_work_ui.py -q` — **8 passed**(2회 연속) |
+| 에이전트 한 줄기 | `tests/e2e/test_work_ui.py` test_01~06 — 관리자 첫 설정 → GitHub 연결(가짜 App)·알림 URL → 이슈 2건 수집 → `/tasks` 담당자 묶음 `담당 없음` 2건·보드 `대기` 칸 2장·빠른 필터 `담당 없음` 2 → 시작하기 `가져올 곳` 완료·`러너` 다음(사이드바에 보임) → 러너 붙이기 → `/tasks?open=RUN-1` 패널에 담당 폼(`agent:<id>`)·조각 `/work/RUN-1/panel` 200 → 담당 = 에이전트 POST → 303 `/tasks?open=RUN-1`, 업무 담당·맡긴 사람 기록, 실행 1개, 상태 `에이전트 작업 중`, 목록은 에이전트 묶음으로·`담당 없음` 1건, 보드 `에이전트 작업 중` 칸, 빠른 필터 `에이전트 작업 중` → 시작하기 필수 3항목 완료·사이드바에서 사라짐 → 수정·검토 → 초안 PR #101(`runloom/RUN-1`) → `pr_opened` 알림 `task_url` = `{공개 주소}/tasks?open=RUN-1` → `PR · 검토`(보드 `PR · 검토` 칸, 패널 PR 은 `감지` 표시 없음, `work_pull_requests` 0행) → 병합 → `완료`(보드 `완료` 칸, 상태 묶음 `완료`) |
+| 직접 작업 한 줄기 | test_07~08 — RUN-2 패널 [내 세션에서 작업] POST(목록 상태 `group=status&view=board` 유지) → 담당 = 관리자, `직접 작업 중`, 브랜치 `RUN-2-rounding-error`(패널 `data-branch`), 보드 `직접 작업 중` 칸, 목록 `운영자 (나)` 묶음, 워커 tick 2회에도 실행 0 → 가짜 GitHub 에 그 브랜치의 PR #201 → 동기화 → `work_pull_requests` 1행(open) → `PR · 검토`("PR 확인 — #201", 패널 `감지`) → 병합 → `완료`("PR 병합 — #201"), 직접 작업 칸 셋 비움, 이벤트 `direct_started`·`pull_request_linked` 1회·`direct_stopped`(`closed`), 감지 PR 은 알림을 보내지 않음(`pr_opened` 1건 그대로) |
+| 연결·옛 주소 | test_02 — `/operator/github`·`/team`·`/kinds`·`/operator/notifications` → `/connect?tab=…`, `/metrics` → `/monitor`, `/work/RUN-1` → `/tasks?open=RUN-1`(모두 303), 연결 탭 5개 머리·가져올 곳 탭의 저장소 카드·알림 탭 `설정됨` |
+| v11 → v12 사본 | `tests/workflow/server/test_backup.py::test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backups_round_trip` — 임시 디렉터리에 셀프호스트 모양 v11 DB(관리자·멤버, 러너·Agent, GitHub 소스, 업무 5건 — `새로 들어옴`·`에이전트 작업 중`·`PR · 검토`(Runloom PR open)·`완료`(merged)·`내 차례`(사람 요청), 실행 4·업무 이벤트 5)를 만들고 `backup create`(schema 11) → `init_schema` → 기존 표 행 수 그대로 + `work_pull_requests` 0행, 저장된 업무 상태·이유 = v12 규칙(직접 작업·감지 PR 포함)으로 다시 계산한 값, 직접 작업 칸 NULL, 이슈 커서 그대로·PR 커서 NULL, 이벤트 id 1~5 그대로 → v12 백업 다른 위치 복원(같은 행·상태·산출물) → v11 백업을 v12 코드로 복원해도 v12 로 올라 같은 결과. 사용자 셀프호스트 볼륨·백업 파일은 읽지 않았다 |
+| 미확인 | 실제 github.com 의 PR 목록 읽기·키 매칭(`state=all`·`sort=updated` 응답, 사람이 연 PR 감지)은 가짜 GitHub 로만 확인했다. 브라우저 JS(행 클릭 → 패널 조각 끼우기·`pushState`·Esc·뒤로 가기, 묶음 접기 `localStorage`, 브랜치 `복사`)는 자동 테스트가 없다 — 서버가 `?open=` 으로 그린 패널과 폼 POST 만 확인했다. 사용자 확인 필요 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 써서, 실행하면 그 태그가 이 브랜치(v12) 코드로 다시 빌드돼 사용자가 다음에 `compose up` 할 때 백업 없이 v12 로 올라갈 수 있다. 셀프호스트 재설치는 사용자 지시 뒤라 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음, 템플릿에 `\|safe` 없음(grep + `tests/test_packages.py`) |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 수정 없음. e2e 를 쓰며 본 것: 러너가 카드에 매칭된(heartbeat) 직후 첫 claim 전이면 `connectors.supported_kinds_json` 이 비어 담당 = 에이전트가 곧바로 착수하지 못하고 `대기`("연결 프로그램 업데이트 필요 — bug_fix 미지원")로 남는다 — 지시는 기록되므로 다음 워커 tick 이 착수한다. 기존 동작(phase 5 claim 지원 종류)이고, e2e 는 첫 claim 을 기다린 뒤 맡긴다. 문서: [SELFHOST](SELFHOST.md) 업그레이드 v12·옛 주소 넘김, [UI_GUIDE](UI_GUIDE.md) 시작하기 상태에 `할 일`, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.

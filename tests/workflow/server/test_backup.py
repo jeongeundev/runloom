@@ -678,3 +678,176 @@ def test_selfhost_v10_copy_upgrades_to_v11_needs_first_setup_and_backups_round_t
     assert backup.main(["restore", v10_backup], env=old_env) == 0
     assert _counts(old / "central.sqlite") == v11_counts
     assert _v11_facts(old / "central.sqlite") == facts
+
+
+# --- phase 16: 셀프호스트 모양 v11 DB 사본 → v12 + 백업 왕복 (ADR-0022, SELFHOST "업그레이드" v12) -----------------
+
+V11_SCHEMA = (Path(__file__).parents[2] / "workflow" / "adapters" / "fixtures" / "schema_v11.sql").read_text()
+V11_SESSION = "sess-selfhost"
+V11_SOURCE = "ghs-00000001"
+# (키, 업무 상태, 이유, 단계 상태, 실행 상태, Runloom PR (상태, 번호), 열린 사람 요청 질문)
+V11_WORKS = (
+    (1, "새로 들어옴", "담당 없음", "대기", None, None, None),
+    (2, "에이전트 작업 중", "버그 수정 실행 중", "실행 중", "running", None, None),
+    (3, "PR · 검토", "PR 확인 — #101", "확인 필요", "result_ready", ("open", 101), None),
+    (4, "완료", "PR 병합 — #102", "완료", "result_ready", ("merged", 102), None),
+    (5, "내 차례", "사람 요청 — 범위를 정해 주세요", "확인 필요", "result_ready", None, "범위를 정해 주세요"),
+)
+
+
+def _t11(n: int) -> str:
+    return f"2026-09-30T00:{n:02d}:00Z"
+
+
+def _v11_selfhost(db_path: Path, artifact_dir: Path) -> None:
+    """phase 15 셀프호스트가 남긴 모양의 v11 — 관리자(계정 있음)·멤버, GitHub 소스·러너·Agent 하나, 이슈마다 업무 하나
+    (새로 들어옴·에이전트 작업 중·PR · 검토·완료·내 차례 — 단계·실행·Runloom PR·사람 요청이 그 상태를 만든다),
+    업무 이벤트. 실제 셀프호스트 볼륨·백업은 읽지 않는다."""
+    from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
+
+    conn = connect(db_path)
+    conn.executescript(V11_SCHEMA)
+    conn.execute("INSERT INTO schema_version (version) VALUES (11)")
+    conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (V11_SESSION, _t11(0)))
+    for spec in BUILTIN_KINDS:
+        conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                     (V11_SESSION, spec.kind, spec.model_dump_json(), _t11(0)))
+    conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                 " VALUES ('rule-builtin', ?, 'bug_fix', 'code_review', ?, ?)",
+                 (V11_SESSION, BUILTIN_RULES[0].model_dump_json(), _t11(0)))
+    conn.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at, email, password_hash)"
+                 " VALUES ('mem-00000001', ?, '관리자', 'admin', ?, 'a@example.com', 'scrypt$h')",
+                 (V11_SESSION, _t11(0)))
+    conn.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+                 " VALUES ('mem-0000000a', ?, '김OO', 'member', ?)", (V11_SESSION, _t11(0)))
+    conn.execute("INSERT INTO connectors (connector_id, token_sha256, created_at, owner_member_id)"
+                 " VALUES ('conn-00000001', 'h', ?, 'mem-0000000a')", (_t11(0),))
+    conn.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id,"
+                 " local_registration_id, capabilities_json, connection_state) VALUES ('agt-00000001', 'billing',"
+                 " 'personal', 'local', 'conn-00000001', 'billing', '[]', 'online')")
+    conn.execute("INSERT INTO session_agents (session_id, agent_id, registered_at) VALUES (?, 'agt-00000001', ?)",
+                 (V11_SESSION, _t11(0)))
+    conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, cursor,"
+                 " created_at, updated_at) VALUES (?, ?, 'acme/billing', '{}', ?, ?, ?)",
+                 (V11_SOURCE, V11_SESSION, _t11(1), _t11(0), _t11(0)))
+    for n, status, reason, task_status, run, pr, question in V11_WORKS:
+        work_id, task_id = f"wi-{n:012x}", f"t-{n}"
+        closed = _t11(10 + n) if status == "완료" else None
+        conn.execute(
+            "INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status, status_reason,"
+            " source_type, source_id, source_key, created_at, updated_at, closed_at, requested_by_member_id)"
+            " VALUES (?, ?, ?, ?, 'r', 'bug_fix', ?, ?, 'github', ?, ?, ?, ?, ?, ?)",
+            (work_id, V11_SESSION, n, f"이슈 {n}", status, reason, V11_SOURCE, f"acme/billing#{n}", _t11(n),
+             _t11(10 + n), closed, None if run is None else "mem-0000000a"))
+        conn.execute(
+            "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json, selection_mode,"
+            " chosen_agent_id, run_mode, completion_mode, criteria_json, revision, target_json, status, status_reason,"
+            " finished_at, created_at, work_item_id) VALUES (?, ?, ?, 'r', 'bug_fix', '{}', 'auto', ?, 'auto',"
+            " 'review', '[]', 1, '{}', ?, ?, ?, ?, ?)",
+            (task_id, V11_SESSION, f"이슈 {n}", None if run is None else "agt-00000001", task_status, reason,
+             closed, _t11(n), work_id))
+        conn.execute("INSERT INTO source_issues (source_id, github_issue_id, issue_number, task_id, source_revision,"
+                     " snapshot_json, snapshot_digest, issue_updated_at, state, created_at, updated_at, delegated_at,"
+                     " delegated_by) VALUES (?, ?, ?, ?, 1, '{}', 'd', ?, 'open', ?, ?, ?, ?)",
+                     (V11_SOURCE, 9000 + n, n, task_id, _t11(n), _t11(n), _t11(n),
+                      None if run is None else _t11(n), None if run is None else "operator"))
+        if run is not None:
+            conn.execute("INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind,"
+                         " request_json, status, created_at, released_at) VALUES (?, ?, 1, ?, 'agt-00000001',"
+                         " 'bug_fix', '{}', ?, ?, ?)",
+                         (f"exe-{n}", task_id, f"auto:{task_id}:r1", run, _t11(n),
+                          None if run == "running" else _t11(n)))
+        if pr is not None:
+            state, number = pr
+            conn.execute("INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name,"
+                         " issue_number, head_branch, fix_execution_id, review_execution_id, state, pr_number, pr_url,"
+                         " draft, created_at, updated_at, merged_at) VALUES (?, ?, ?, 'acme/billing', ?, ?, ?, ?, ?,"
+                         " ?, ?, 1, ?, ?, ?)",
+                         (task_id, V11_SESSION, V11_SOURCE, n, f"runloom/RUN-{n}", f"exe-{n}", f"exe-{n}", state,
+                          number, f"https://github.com/acme/billing/pull/{number}", _t11(n), _t11(n),
+                          _t11(10 + n) if state == "merged" else None))
+        if question is not None:
+            conn.execute("INSERT INTO human_requests (request_id, task_id, code, question, cause_key, task_revision,"
+                         " revision, state, created_at) VALUES (?, ?, 'rework_limit_reached', ?, 'k', 1, 1, 'open', ?)",
+                         (f"hr-0000000{n}", task_id, question, _t11(n)))
+        conn.execute("INSERT INTO work_item_events (work_item_id, session_id, type, config_revision, occurred_at,"
+                     " data_json) VALUES (?, ?, 'status_changed', 1, ?, ?)",
+                     (work_id, V11_SESSION, _t11(10 + n), f'{{"from": "새로 들어옴", "to": "{status}"}}'))
+    conn.close()
+    (artifact_dir / V11_SESSION).mkdir(parents=True, exist_ok=True)
+    (artifact_dir / V11_SESSION / "diff.patch").write_text("--- a\n+++ b\n", encoding="utf-8")
+
+
+def _v12_facts(db_path: Path) -> dict:
+    """저장된 업무 상태와, v12 규칙(직접 작업·감지 PR 포함)으로 다시 계산한 상태 — 둘이 같아야 한다."""
+    from workflow.adapters import repo
+    from workflow.domain.work_status import work_status
+
+    conn = connect(db_path)
+    try:
+        works = conn.execute("SELECT work_item_id, key_number, status, status_reason, direct_member_id,"
+                             " direct_started_at, direct_branch FROM work_items ORDER BY key_number").fetchall()
+        return {
+            "version": conn.execute("SELECT version FROM schema_version").fetchone()[0],
+            "stored": [(w["key_number"], w["status"], w["status_reason"]) for w in works],
+            "recomputed": [(w["key_number"], s.status, s.reason) for w in works
+                           for s in [work_status(repo.work_item_facts(conn, w["work_item_id"]))]],
+            "direct": {(w["direct_member_id"], w["direct_started_at"], w["direct_branch"]) for w in works},
+            "pull_cursor": conn.execute("SELECT cursor, pull_cursor FROM github_sources").fetchone()[:],
+            "event_ids": [r[0] for r in conn.execute("SELECT id FROM work_item_events ORDER BY id")],
+            "runloom_pulls": [tuple(r) for r in conn.execute(
+                "SELECT task_id, state, pr_number FROM task_pull_requests ORDER BY task_id")],
+        }
+    finally:
+        conn.close()
+
+
+def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backups_round_trip(tmp_path, capsys):
+    src = tmp_path / "src"
+    src.mkdir()
+    env = _env(src)
+    _v11_selfhost(src / "central.sqlite", src / "artifacts")
+    v11_counts = _counts(src / "central.sqlite")
+    assert (v11_counts["work_items"], v11_counts["tasks"], v11_counts["executions"], v11_counts["task_pull_requests"],
+            v11_counts["work_item_events"], v11_counts["human_requests"]) == (5, 5, 4, 2, 5, 1)
+
+    # 1) 업그레이드 전 백업 — 스키마 11
+    assert backup.main(["create"], env=env, now=lambda: T1) == 0
+    v11_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    assert capsys.readouterr().out.strip().endswith("schema 11")
+
+    # 2) v12 — 기존 행 수 그대로 + 감지 PR 표(비어 있음), 직접 작업 칸·PR 커서는 비어 있고, 업무 상태 재계산 결과가 같다
+    conn = connect(src / "central.sqlite")
+    init_schema(conn)
+    conn.close()
+    v12_counts = _counts(src / "central.sqlite")
+    assert v12_counts == {**v11_counts, "work_pull_requests": 0}
+    facts = _v12_facts(src / "central.sqlite")
+    assert facts["version"] == SCHEMA_VERSION == 12
+    assert facts["stored"] == [(n, status, reason) for n, status, reason, *_ in V11_WORKS]
+    assert facts["recomputed"] == facts["stored"]
+    assert facts["direct"] == {(None, None, None)}
+    assert facts["pull_cursor"] == (_t11(1), None)  # 이슈 커서 그대로, PR 커서는 처음(NULL)
+    assert facts["event_ids"] == [1, 2, 3, 4, 5]
+    assert facts["runloom_pulls"] == [("t-3", "open", 101), ("t-4", "merged", 102)]
+
+    # 3) v12 백업 → 다른 위치 복원: 같은 행·상태·산출물
+    assert backup.main(["create"], env=env, now=lambda: T2) == 0
+    v12_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    listed = dict(line.split("\t", 1) for line in capsys.readouterr().out.strip().splitlines())
+    assert listed[v12_backup].endswith("schema 12") and listed[v11_backup].endswith("schema 11")
+    dst = tmp_path / "dst"
+    dst_env = {**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v12_backup], env=dst_env) == 0
+    assert _counts(dst / "central.sqlite") == v12_counts
+    assert _v12_facts(dst / "central.sqlite") == facts
+    assert _files(dst / "artifacts") == _files(src / "artifacts")
+
+    # 4) 업그레이드 전 v11 백업을 v12 코드로 복원해도 v12 로 올린다 — 같은 결과
+    old = tmp_path / "old"
+    old_env = {**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v11_backup], env=old_env) == 0
+    assert _counts(old / "central.sqlite") == v12_counts
+    assert _v12_facts(old / "central.sqlite") == facts

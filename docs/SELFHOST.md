@@ -225,6 +225,8 @@ deploy/selfhost/install-runner.sh
 - v9(phase 13) — 진단 데모 내장 종류 `diagnosis`·`code_change` 와 그 규칙을 지운다. 그 종류의 업무·실행·사용자 규칙이 있으면 올리지 않고 멈춘다. 백업(`backup create`)을 먼저 한다.
 - v10(phase 14) — 업무 표(`work_items` 등)를 만들고 기존 Task 를 이슈마다 업무 하나로 묶는다(키 `RUN-n`, 첫 관리자·기본 매핑). 백업(`backup create`)을 먼저 한다. 진행 중인 실행이 끝난 뒤 업그레이드를 권장한다 — 러너도 함께 올린다(새 결과 브랜치 `runloom/<키>`).
 - v11(phase 15) — 팀 계정 표(`login_sessions`·`member_invites`)와 칸(이메일·비밀번호 해시·맡긴 사람·응답자·알림 받는 사람·러너 소유자)을 더한다. 기존 행은 그대로다. 백업(`backup create`)을 먼저 한다. 재설치 뒤 **옛 로그인 쿠키는 무효라 다시 로그인**해야 하고, 첫 접속에서 `.env` 의 운영자 토큰으로 관리자 계정(이메일·비밀번호)을 만든다(위 "로그인"). 기존 러너는 소유자 없음 = 관리자만 해제할 수 있다 — 그대로 계속 돈다. 기존 알림 설정은 공용 웹훅으로 그대로 간다.
+- v12(phase 16) — 업무 화면(담당자 묶음·보드·상세 패널)·직접 작업·PR 신호용 칸과 표를 더한다: `work_items` 직접 작업 칸 셋, `github_sources.pull_cursor`, 감지 PR 표 `work_pull_requests`, 업무 이벤트 종류 확장(`work_item_events` 재생성 — id 그대로). 기존 행과 업무 상태는 그대로다. 백업(`backup create`)을 먼저 하고, 진행 중인 실행이 끝난 뒤 `install.sh` 를 다시 돌린다. **러너 재기동은 필요 없다** — 러너 프로토콜(`connector`·`contracts`)은 바뀌지 않았다(재기동해도 된다). 재설치 뒤 첫 동기화는 저장소마다 최근 PR 100건까지만 읽어 업무 키(`RUN-n`)가 브랜치 이름·제목에 든 PR 을 업무에 붙인다.
+- 옛 주소는 넘어간다(303) — `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` → `/connect?tab=…`, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
 ## 제거

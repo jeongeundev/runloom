@@ -84,7 +84,9 @@
     {
       "step": 10,
       "name": "work-ui-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T17:42:27+0900",
+      "summary": "검증·문서: 신설 tests/e2e/test_work_ui.py 8개(WORKFLOW_E2E=1 — 관리자 첫 설정 → 가짜 App 연결·알림 → 이슈 2건 → /tasks 담당 없음 묶음 2·보드 대기 → 시작하기 source 완료·runner 다음 → 옛 GET(/operator/github·/team·/kinds·/operator/notifications·/metrics·/work/RUN-1) 303·연결 탭 5개 → 러너 붙이기(첫 claim 까지 대기) → 패널 담당=에이전트 POST 303 /tasks?open=RUN-1·실행 1·에이전트 작업 중·에이전트 묶음·보드 agent_working·시작하기 필수 완료로 사이드바 숨김 → 초안 PR #101·알림 task_url=/tasks?open=RUN-1·PR · 검토(감지 표시 없음) → 병합 완료·보드 done → RUN-2 [내 세션에서 작업](목록 상태 유지 303)·브랜치 RUN-2-rounding-error·보드 direct_working·워커 미착수 → 가짜 GitHub PR #201 → 감지 PR·PR · 검토·패널 감지 → 병합 완료·직접 작업 칸 비움·이벤트 direct_started/pull_request_linked/direct_stopped closed·감지 PR 알림 없음), test_backup.py 에 v11 사본 테스트 1개(업무 5건 5가지 상태·Runloom PR·사람 요청·이벤트 → backup create(schema 11) → init_schema v12 행 수 보존+work_pull_requests 0·저장 상태=v12 규칙 재계산·이벤트 id 보존 → v12 백업 복원·v11 백업을 v12 로 복원 같은 결과); 문서 SELFHOST 업그레이드 v12(백업 먼저·실행 끝난 뒤·install.sh·러너 재기동 필요 없음 — connector/contracts 변화 없음·첫 PR 동기화 100건)·옛 주소 넘김, UI_GUIDE 시작하기 상태에 '할 일', VERIFICATION_LOG 'phase 16 업무 화면' 절, CURRENT_HANDOFF 다음 작업 16 완료 → service 병합 → 셀프호스트 재설치(v12) → 17-jira 설계·남긴 것. 제품 코드 수정 없음, 기존 테스트 변경 없음. 관찰: 러너 heartbeat 매칭 직후 첫 claim 전이면 담당=에이전트가 즉시 착수 못 하고 대기(다음 tick 착수) — 기존 동작, e2e 는 첫 claim 을 기다림. 검증: pytest 3191 passed·48 skipped, WORKFLOW_E2E=1 tests/e2e 47 passed·1 skipped(test_work_ui 8 passed 3회), ruff 통과, 아키텍처 grep(domain import·server↔connector·|safe) 이상 없음. 셀프호스트 Docker e2e(WORKFLOW_DOCKER=1)는 이미지 태그 공유 문제로 미실행. 다음 주의: 실제 github.com PR 감지·브라우저 JS(패널 끼우기·Esc·접기·복사)는 사용자 확인 필요, 병합·재설치는 사용자 지시 뒤."
     }
   ],
   "created_at": "2026-09-30T14:28:33+0900"

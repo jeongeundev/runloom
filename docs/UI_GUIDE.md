@@ -83,7 +83,7 @@ phase 16([ADR-0022](adr/0022-work-screen-and-direct-work.md), ARCHITECTURE "업�
 | 연결 | `/connect?tab=sources\|team\|kinds\|notify\|advanced` | 로그인(탭별 권한) | 탭 5개 — 가져올 곳(GitHub 연결·저장소 카드·러너 붙이기·기준선, n8n 입구) / 팀·담당자(멤버·초대, 에이전트, 러너) / 업무 종류·규칙 / 알림 / 고급(연결 코드, 에이전트 수동 등록). 권한 없는 탭은 머리에서 숨긴다. 옛 `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` 는 이 탭들로 넘어간다 |
 | 에이전트 상세 | `/agents/{agent_id}` | 로그인 | 능력 목록, 파악된 정보와 확인 수준, 최근 실행, 소유자 |
 | 모니터링 | `/monitor` | `view_metrics` | 옛 지표 화면 그대로(이름만 모니터링). `/metrics` 는 넘어가고 `/metrics.json`·`/metrics.csv` 는 그대로 |
-| 시작하기 | `/start` | 로그인 | 체크리스트 4항목 — 가져올 곳 연결 → 러너 붙이기 → 팀원 초대(선택) → 첫 업무 맡기기. 항목마다 상태(완료·다음·선택)와 가는 버튼, 동작이 없는 멤버에게는 `관리자에게 요청`. 필수 항목이 끝나면 사이드바에서 숨긴다 |
+| 시작하기 | `/start` | 로그인 | 체크리스트 4항목 — 가져올 곳 연결 → 러너 붙이기 → 팀원 초대(선택) → 첫 업무 맡기기. 항목마다 상태(완료·다음·할 일·선택)와 가는 버튼, 동작이 없는 멤버에게는 `관리자에게 요청`. 필수 항목이 끝나면 사이드바에서 숨긴다 |
 | 내 설정 | `/me` | `edit_own_settings` | 표시 이름·비밀번호·개인 웹훅 |
 | 로그인·초대·재설정 | `/login`·`/invite/{t}`·`/reset/{t}` | 누구나 | 셸 없이 단독 |
 
