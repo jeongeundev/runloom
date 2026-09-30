@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 
+import httpx
 import pytest
 
 from workflow.adapters import repo
@@ -22,8 +23,8 @@ from workflow.adapters.github_client import (
     IssueComment,
     IssuePage,
 )
-from workflow.adapters.notify_sender import NotifyFailed
-from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore
+from workflow.adapters.notify_sender import NotifyFailed, NotifySender
+from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore, personal_webhook_name
 from workflow.contracts.github import AssigneeBinding, PullRequestRef
 from workflow.contracts.v1 import (
     ArtifactMeta,
@@ -40,7 +41,7 @@ from workflow.domain.metrics import compute_metrics
 from workflow.domain.work_status import work_status
 from workflow.server import human_api, task_cycle
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace
-from workflow.server.worker import Worker
+from workflow.server.worker import TickReport, Worker
 
 from .conftest import event, exchange
 from .test_github_sync import config, issue
@@ -1642,13 +1643,13 @@ def test_pr_opened_is_notified_once_with_the_links(cycle, conn, store, notify_wo
 
     (row,) = notifications(conn)
     assert (row["event"], row["dedupe_key"], row["state"], row["task_id"]) == (
-        "pr_opened", f"pr_opened:{fix_task}:31", "sent", fix_task,
+        "pr_opened", f"pr_opened:{fix_task}:31:shared", "sent", fix_task,
     )
     ((url, body),) = notifier.sent
     assert url == WEBHOOK  # 비밀 파일 끝 줄바꿈은 뗀다
     assert set(body) == {"content"}  # Discord 호스트
     assert body["content"].splitlines() == [
-        "[Runloom] PR 확인 — 버그 1 https://github.com/acme/billing/pull/31",
+        "[Runloom] PR 확인 — 버그 1 https://github.com/acme/billing/pull/31 → 관리자",  # 맡긴 사람 없음 → 관리자 전원
         "https://runloom.example/tasks/task-gh-1",
     ]
 
@@ -1662,7 +1663,7 @@ def test_new_human_request_is_notified_once(cycle, conn, store, notify_worker, n
     (request,) = repo.list_human_requests(conn, fix_task)
     (row,) = notifications(conn)
     assert (row["event"], row["dedupe_key"], row["state"]) == (
-        "human_request", f"human_request:{request['request_id']}", "sent",
+        "human_request", f"human_request:{request['request_id']}:shared", "sent",
     )
     ((_, body),) = notifier.sent
     assert body["content"].startswith("[Runloom] 사람 차례 — 버그 1: ")
@@ -1678,9 +1679,11 @@ def test_failed_fix_is_notified_once_even_after_restart(cycle, conn, store, noti
     restarted.tick()
 
     (row,) = notifications(conn)
-    assert (row["event"], row["dedupe_key"], row["state"]) == ("task_failed", f"task_failed:{execution_id}", "sent")
+    assert (row["event"], row["dedupe_key"], row["state"]) == (
+        "task_failed", f"task_failed:{execution_id}:shared", "sent",
+    )
     ((_, body),) = notifier.sent
-    assert body["content"].splitlines()[0] == "[Runloom] 실패 — 버그 1: timeout · 20분 초과"
+    assert body["content"].splitlines()[0] == "[Runloom] 실패 — 버그 1: timeout · 20분 초과 → 관리자"
 
 
 def test_without_a_url_nothing_is_queued(cycle, conn, store, pr_worker):
@@ -1756,6 +1759,157 @@ def test_webhook_url_stays_out_of_the_db_and_logs(cycle, conn, store, notify_wor
     assert not any("tok-secret" in line for line in conn.iterdump())
     assert "tok-secret" not in caplog.text
     assert "discord.com" in caplog.text  # 실패 로그는 호스트만
+
+
+# --- 받는 사람별 알림·개인 웹훅 (phase 15 step 9, ARCHITECTURE "알림 — 받는 사람별") -------------------------
+
+PERSONAL = "https://hooks.example.com/personal/tok-kim-secret"
+
+
+def admin_id(conn) -> str:
+    return next(m["member_id"] for m in repo.list_members(conn, SESSION) if m["role"] == "admin")
+
+
+def fail_requested_by(conn, store, worker, member_id: str | None, number: int = 1) -> tuple[str, str]:
+    """`fail_fix` 와 같지만 수집 직후 맡긴 사람을 기록한다(웹의 [맡기기] 가 하는 일)."""
+    fix_task = import_issue(conn, number)
+    if member_id is not None:
+        repo.set_work_requester(conn, work_of(conn, fix_task)["work_item_id"], member_id)
+    worker.tick()
+    execution_id = executions(conn, fix_task)[0]["execution_id"]
+    _append(conn, execution_id, 1, "accepted", {})
+    _append(conn, execution_id, 2, "failed", {"code": "timeout", "message": "20분 초과", "process_stopped": True})
+    worker.tick()
+    return fix_task, execution_id
+
+
+@pytest.fixture
+def received() -> list[tuple[str, dict]]:
+    return []
+
+
+@pytest.fixture
+def http_worker(app, settings, store, clock, pr_github, secrets, received) -> Worker:
+    """실제 `NotifySender` + httpx `MockTransport` — 외부로 나가지 않는다."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append((str(request.url), json.loads(request.content)))
+        return httpx.Response(204)
+
+    settings = dataclasses.replace(settings, public_url="https://runloom.example")
+    return Worker(lambda: connect(settings.db_path), store, NoCallbacks(), settings, clock,
+                  github_for=lambda config: pr_github, secrets=secrets,
+                  notifier=NotifySender(transport=httpx.MockTransport(handler)))
+
+
+def test_recipient_with_a_personal_webhook_gets_shared_and_personal(cycle, conn, store, http_worker, secrets,
+                                                                    received):
+    kim = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    secrets.write(personal_webhook_name(kim), PERSONAL + "\n")
+    _, execution_id = fail_requested_by(conn, store, http_worker, kim)
+
+    rows = {r["channel"]: r for r in notifications(conn)}
+    assert set(rows) == {"shared", "personal"}
+    shared, personal = rows["shared"], rows["personal"]
+    assert (shared["dedupe_key"], shared["recipient_member_id"], shared["state"]) == (
+        f"task_failed:{execution_id}:shared", kim, "sent",
+    )
+    assert json.loads(shared["payload_json"])["recipient_member_ids"] == [kim]
+    assert shared["content"].splitlines()[0] == "[Runloom] 실패 — 버그 1: timeout · 20분 초과 → 김OO"
+    assert (personal["dedupe_key"], personal["recipient_member_id"], personal["state"]) == (
+        f"task_failed:{execution_id}:personal:{kim}", kim, "sent",
+    )
+    assert "→" not in personal["content"]
+    assert sorted(url for url, _ in received) == sorted([WEBHOOK, PERSONAL])
+    by_url = dict(received)
+    assert by_url[PERSONAL]["content"].splitlines()[0] == "[Runloom] 실패 — 버그 1: timeout · 20분 초과"
+    assert by_url[PERSONAL]["event"] == "task_failed"  # Discord 아님 → 필드 JSON
+
+
+def test_all_admins_without_personal_webhooks_get_one_shared_row(cycle, conn, store, http_worker, received):
+    repo.add_member(conn, SESSION, display_name="이OO", role="admin", now="2026-10-06T12:00:01Z")  # 가입 순
+    repo.add_member(conn, SESSION, display_name="박OO", now=NOW)  # 멤버는 관리자 대체 수신자가 아니다
+    fail_requested_by(conn, store, http_worker, None)
+
+    (row,) = notifications(conn)
+    assert (row["channel"], row["recipient_member_id"]) == ("shared", None)
+    assert row["content"].splitlines()[0].endswith("20분 초과 → 관리자, 이OO")
+    assert len(json.loads(row["payload_json"])["recipient_member_ids"]) == 2
+    assert [url for url, _ in received] == [WEBHOOK]
+
+
+def test_personal_only_when_no_shared_webhook(cycle, conn, store, http_worker, secrets, received):
+    secrets.delete(NOTIFY_WEBHOOK_URL)
+    kim = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    secrets.write(personal_webhook_name(kim), PERSONAL)
+    fail_requested_by(conn, store, http_worker, kim)
+
+    (row,) = notifications(conn)
+    assert (row["channel"], row["recipient_member_id"], row["state"]) == ("personal", kim, "sent")
+    assert [url for url, _ in received] == [PERSONAL]
+
+
+def test_neither_webhook_queues_nothing(cycle, conn, store, http_worker, secrets, received):
+    secrets.delete(NOTIFY_WEBHOOK_URL)
+    kim = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    secrets.write(personal_webhook_name(admin_id(conn)), PERSONAL)  # 받는 사람이 아닌 멤버의 개인 웹훅
+    fail_requested_by(conn, store, http_worker, kim)
+    assert repo.list_notifications(conn, SESSION) == [] and received == []
+
+
+def test_same_event_twice_adds_no_rows(cycle, conn, store, http_worker, secrets, clock):
+    kim = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    secrets.write(personal_webhook_name(kim), PERSONAL)
+    fix_task, execution_id = fail_requested_by(conn, store, http_worker, kim)
+    before = [dict(r) for r in notifications(conn)]
+    with conn:
+        http_worker._notify(conn, "task_failed", fix_task, f"task_failed:{execution_id}", detail="다시")
+    http_worker.tick()
+    assert [dict(r) for r in notifications(conn)] == before and len(before) == 2
+
+
+def test_personal_webhook_deleted_before_sending_is_skipped(cycle, conn, store, http_worker, secrets, received,
+                                                            clock):
+    kim = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    secrets.write(personal_webhook_name(kim), PERSONAL)
+    fix_task = import_issue(conn, 1)
+    repo.set_work_requester(conn, work_of(conn, fix_task)["work_item_id"], kim)
+    with conn:
+        http_worker._notify(conn, "task_failed", fix_task, "task_failed:exec-x", detail="x")
+    secrets.delete(personal_webhook_name(kim))
+    http_worker._deliver_notifications(conn, TickReport())
+
+    states = {r["channel"]: (r["state"], r["attempts"]) for r in notifications(conn)}
+    assert states == {"shared": ("sent", 1), "personal": ("skipped", 0)}
+    assert [url for url, _ in received] == [WEBHOOK]
+
+
+def test_disabled_recipient_personal_row_is_skipped(cycle, conn, store, http_worker, secrets, received):
+    kim = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    secrets.write(personal_webhook_name(kim), PERSONAL)
+    fix_task = import_issue(conn, 1)
+    repo.set_work_requester(conn, work_of(conn, fix_task)["work_item_id"], kim)
+    with conn:
+        http_worker._notify(conn, "task_failed", fix_task, "task_failed:exec-x", detail="x")
+    conn.execute("UPDATE members SET disabled_at = ? WHERE member_id = ?", (NOW, kim))
+    http_worker._deliver_notifications(conn, TickReport())
+    assert {r["channel"]: r["state"] for r in notifications(conn)}["personal"] == "skipped"
+    assert PERSONAL not in [url for url, _ in received]
+
+
+def test_personal_webhook_url_stays_out_of_the_db_and_logs(cycle, conn, store, secrets, settings, clock,
+                                                           pr_github, caplog):
+    caplog.set_level(logging.DEBUG)
+    kim = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    secrets.write(personal_webhook_name(kim), PERSONAL)
+    worker = Worker(lambda: connect(settings.db_path), store, NoCallbacks(), settings, clock,
+                    github_for=lambda config: pr_github, secrets=secrets,
+                    notifier=NotifySender(transport=httpx.MockTransport(lambda request: httpx.Response(500))))
+    fail_requested_by(conn, store, worker, kim)
+
+    assert {r["state"] for r in notifications(conn)} == {"pending"}
+    assert not any("tok-" in line for line in conn.iterdump())
+    assert "tok-" not in caplog.text
+    assert "hooks.example.com" in caplog.text and "discord.com" in caplog.text  # 실패 로그는 호스트만
 
 
 # --- 업무 상태 기록·실패 → 내 차례 · 다시 맡기기/닫기 (phase 14 step 6) ---------------------------

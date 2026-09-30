@@ -2841,6 +2841,42 @@ def test_skipped_notification_does_not_count_an_attempt(cycle):
     assert repo.list_notifications(cycle, OTHER_SESSION) == []
 
 
+def test_personal_notification_needs_a_recipient_and_member_list_filters(cycle):
+    """개인 행은 받는 사람이 늘 있다(repo 가 지킴). `/me` 목록 = 그 멤버의 개인 행 + recipient_member_ids 에 든 공용 행."""
+    kim = repo.add_member(cycle, SESSION, display_name="김", now=NOW)
+    lee = repo.add_member(cycle, SESSION, display_name="이", now=NOW)
+    payload = {"title": "버그", "task_url": None, "pr_url": None}
+    with pytest.raises(ValueError):
+        repo.enqueue_notification(cycle, session_id=SESSION, event="human_request", task_id="task-gh-41",
+                                  dedupe_key="human_request:hr-1:personal:x", content="c", payload=payload, now=NOW,
+                                  channel="personal")
+    repo.enqueue_notification(cycle, session_id=SESSION, event="human_request", task_id="task-gh-41",
+                              dedupe_key="human_request:hr-1:shared", content="c → 김, 이",
+                              payload={**payload, "recipient_member_ids": [kim, lee]}, now=NOW)
+    repo.enqueue_notification(cycle, session_id=SESSION, event="human_request", task_id="task-gh-41",
+                              dedupe_key=f"human_request:hr-1:personal:{kim}", content="c", payload=payload, now=NOW,
+                              channel="personal", recipient_member_id=kim)
+    repo.enqueue_notification(cycle, session_id=SESSION, event="task_failed", task_id="task-gh-41",
+                              dedupe_key="task_failed:exec-1:shared", content="c → 이", now=LATER,
+                              payload={**payload, "recipient_member_ids": [lee]}, recipient_member_id=lee)
+    _notify(cycle)  # v11 이전 모양 — 받는 사람 없음
+
+    rows = repo.list_notifications(cycle, SESSION)
+    assert len(rows) == 4
+    shared = {r["dedupe_key"]: (r["channel"], r["recipient_member_id"]) for r in rows}
+    assert shared["human_request:hr-1:shared"] == ("shared", None)
+    assert shared[f"human_request:hr-1:personal:{kim}"] == ("personal", kim)
+    assert shared["task_failed:exec-1:shared"] == ("shared", lee)
+    assert shared["human_request:hr-1"] == ("shared", None)
+    assert [r["dedupe_key"] for r in repo.list_notifications(cycle, SESSION, member_id=kim)] == [
+        f"human_request:hr-1:personal:{kim}", "human_request:hr-1:shared",
+    ]
+    assert [r["dedupe_key"] for r in repo.list_notifications(cycle, SESSION, member_id=lee)] == [
+        "task_failed:exec-1:shared", "human_request:hr-1:shared",
+    ]
+    assert repo.list_notifications(cycle, SESSION, member_id=kim, limit=1)[0]["channel"] == "personal"
+
+
 def test_record_notification_unknown_id_is_not_found(cycle):
     with pytest.raises(NotFound):
         repo.record_notification_attempt(cycle, "ntf-nope", state="failed", error="x", now=NOW, next_at=None)

@@ -843,13 +843,18 @@ def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, An
 
 
 def me_context(conn: Connection, session_id: str, member_id: str, *, secrets: SecretStore) -> dict[str, Any]:
-    """내 설정 — 표시 이름·이메일·역할, 개인 웹훅은 설정됨/없음·호스트만(URL 은 다시 보이지 않는다)."""
+    """내 설정 — 표시 이름·이메일·역할, 개인 웹훅은 설정됨/없음·호스트만(URL 은 다시 보이지 않는다),
+    내가 받는 최근 알림(사건·상태·시각·오류 분류만 — 본문 없음)."""
     row = repo.get_member(conn, session_id, member_id)
     url = secrets.read(secret_store.personal_webhook_name(member_id))
     return {
         "account": {k: row[k] for k in ("display_name", "email", "role")},
         "webhook_configured": url is not None,
         "webhook_host": webhook_host(url) if url is not None else None,
+        "notifications": [
+            {k: n[k] for k in ("event", "channel", "state", "attempts", "last_error", "created_at", "sent_at")}
+            for n in repo.list_notifications(conn, session_id, member_id=member_id)
+        ],
     }
 
 

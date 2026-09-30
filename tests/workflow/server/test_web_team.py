@@ -370,3 +370,21 @@ def test_personal_webhook_test_sends_once(member, receiver):
     assert len(receiver.calls) == 1 and str(receiver.calls[0].url) == URL
     assert 'data-notify-test="sent"' in response.text
     assert TOKEN not in response.text
+
+
+def test_me_lists_only_notifications_i_receive(admin, member, conn):
+    """`/me` 최근 알림 = 내 개인 행 + recipient_member_ids 에 내가 든 공용 행(ARCHITECTURE "알림 — 받는 사람별"). 본문·URL 없음."""
+    dev, boss = member_id(conn, "dev@example.com"), member_id(conn, ADMIN_EMAIL)
+    base = {"session_id": SESSION, "task_id": None, "now": "2026-10-06T12:00:00Z"}
+    payload = {"title": "버그", "task_url": None, "pr_url": None}
+    repo.enqueue_notification(conn, event="human_request", dedupe_key="human_request:hr-1:shared",
+                              content="본문-공용", payload={**payload, "recipient_member_ids": [dev]}, **base)
+    repo.enqueue_notification(conn, event="pr_opened", dedupe_key=f"pr_opened:t:1:personal:{dev}", content="본문-개인",
+                              payload=payload, channel="personal", recipient_member_id=dev, **base)
+    repo.enqueue_notification(conn, event="task_failed", dedupe_key="task_failed:e:shared", content="본문-남",
+                              payload={**payload, "recipient_member_ids": [boss]}, **base)
+
+    page = member.get("/me").text
+    assert re.findall(r'data-notification-event="(\w+)"', page) == ["pr_opened", "human_request"]
+    assert "본문-" not in page
+    assert re.findall(r'data-notification-event="(\w+)"', admin.get("/me").text) == ["task_failed"]

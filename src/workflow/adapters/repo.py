@@ -2945,15 +2945,18 @@ def record_pull_request(
 
 def enqueue_notification(
     conn: Connection, *, session_id: str, event: str, task_id: str | None, dedupe_key: str, content: str,
-    payload: dict, now: str,
+    payload: dict, now: str, channel: str = "shared", recipient_member_id: str | None = None,
 ) -> bool:
     """`pending` 한 행. 같은 `dedupe_key` 가 이미 있으면 그대로 두고 False — 재평가·재시작에도 사건당 한 번.
-    URL 은 넣지 않는다(보낼 때 비밀 파일에서 읽는다)."""
+    URL 은 넣지 않는다(보낼 때 비밀 파일에서 읽는다). `personal` 행은 받는 사람이 늘 있다 — 없으면 ValueError."""
+    if channel == "personal" and recipient_member_id is None:
+        raise ValueError("개인 알림에는 받는 사람이 필요합니다.")
     cur = conn.execute(
         "INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content, payload_json,"
-        " state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT (dedupe_key) DO NOTHING",
+        " state, created_at, channel, recipient_member_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)"
+        " ON CONFLICT (dedupe_key) DO NOTHING",
         (f"ntf-{secrets.token_hex(4)}", session_id, event, task_id, dedupe_key, content,
-         json.dumps(payload, ensure_ascii=False), now),
+         json.dumps(payload, ensure_ascii=False), now, channel, recipient_member_id),
     )
     return cur.rowcount == 1
 
@@ -2981,9 +2984,18 @@ def record_notification_attempt(
     _require_rowcount(cur, f"notification {notification_id}")
 
 
-def list_notifications(conn: Connection, session_id: str, limit: int = 20) -> list[Row]:
-    """세션의 최근 알림(새것 먼저)."""
+def list_notifications(conn: Connection, session_id: str, limit: int = 20, *, member_id: str | None = None) -> list[Row]:
+    """세션의 최근 알림(새것 먼저). `member_id` 가 있으면 그 멤버가 받는 사람인 행만 — 그 멤버의 개인 행과
+    `payload_json.recipient_member_ids` 에 그 멤버가 든 공용 행."""
+    if member_id is None:
+        return conn.execute(
+            "SELECT * FROM notifications WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (session_id, limit),
+        ).fetchall()
     return conn.execute(
-        "SELECT * FROM notifications WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
-        (session_id, limit),
+        "SELECT * FROM notifications WHERE session_id = ? AND ("
+        " (channel = 'personal' AND recipient_member_id = ?)"
+        " OR (channel = 'shared' AND EXISTS (SELECT 1 FROM json_each(payload_json, '$.recipient_member_ids')"
+        " WHERE value = ?))) ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        (session_id, member_id, member_id, limit),
     ).fetchall()
