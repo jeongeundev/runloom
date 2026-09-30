@@ -17,12 +17,18 @@ from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import connect
 from workflow.contracts.v1 import ExecutionRequest
 from workflow.server.app import create_app
-from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace, utc_now
+from workflow.domain import team
+from workflow.server.auth import LOGIN_COOKIE, SELFHOST_SESSION_ID, ensure_workspace, utc_now
 from workflow.server.settings import Settings
 
 NOW = "2026-09-20T00:00:00Z"
 SESSION = SELFHOST_SESSION_ID
 OPERATOR_TOKEN = "test-operator-token"
+# `log_in` 이 첫 설정에서 만드는 관리자 계정 — 첫 관리자 행(표시 이름 `관리자`)에 채운다
+ADMIN_EMAIL = "admin@example.com"
+ADMIN_PASSWORD = "admin-password-0920"
+ADMIN_NAME = "관리자"
+MEMBER_PASSWORD = "member-password-0920"
 TASK_A = "fix-daily-0920"  # bug_fix
 TASK_B = "review-daily-0920"  # code_review ← TASK_A
 EXEC_FIX = "exec-fix-001"
@@ -39,6 +45,12 @@ def _settings(tmp_path) -> Settings:
         operator_token=OPERATOR_TOKEN,
         secret_dir=tmp_path / "secrets",  # 기본값(data/secrets)은 저장소 작업 폴더라 테스트가 읽지 않게 한다
     )
+
+
+@pytest.fixture(autouse=True)
+def _cheap_scrypt(monkeypatch):
+    """테스트는 scrypt 비용만 낮춘다 — 저장 형식·검증 경로는 그대로(ARCHITECTURE "비밀번호")."""
+    monkeypatch.setattr(team, "SCRYPT_N", 2**4)
 
 
 @pytest.fixture
@@ -58,10 +70,64 @@ def client(app):
 
 
 def log_in(client: TestClient) -> TestClient:
-    """`/login` 폼으로 워크스페이스에 로그인한다(고정 워크스페이스 행을 만들고 쿠키를 받는다)."""
-    response = client.post("/login", data={"token": OPERATOR_TOKEN}, follow_redirects=False)
+    """관리자로 로그인한다 — 첫 설정 전이면 운영자 토큰으로 관리자 계정을 만들고(`/login/setup`, 고정 워크스페이스 행도
+    만든다), 이미 있으면 이메일·비밀번호로(`/login`). 쿠키 `wf_login` 은 client 가 보관한다."""
+    account = {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}
+    response = client.post("/login/setup", data={"token": OPERATOR_TOKEN, "display_name": ADMIN_NAME, **account},
+                           follow_redirects=False)
+    if response.status_code == 409:  # already_set_up
+        response = client.post("/login", data=account, follow_redirects=False)
     assert response.status_code == 303, response.text
     return client
+
+
+def _app_conn(client: TestClient):
+    return client.app.state.conn_factory()
+
+
+def log_in_member(client: TestClient, role: str = "member", *, email: str | None = None,
+                  display_name: str = "멤버") -> TestClient:
+    """관리자가 발급한 초대 링크(`/invite/{token}`)로 가입해 로그인한다. 관리자 계정은 다른 클라이언트로 먼저 만든다."""
+    log_in(TestClient(client.app))
+    conn = _app_conn(client)
+    try:
+        admin_id = repo.find_member_by_email(conn, SESSION, ADMIN_EMAIL)["member_id"]
+        _, token = repo.issue_invite(conn, SESSION, role=role, created_by_member_id=admin_id, now=utc_now())
+    finally:
+        conn.close()
+    email = email or f"{role}-{token[:6].lower()}@example.com"
+    response = client.post(f"/invite/{token}", data={"email": email, "display_name": display_name,
+                                                     "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert response.status_code == 303, response.text
+    return client
+
+
+def log_in_other_workspace(client: TestClient) -> TestClient:
+    """고정 워크스페이스가 아닌 워크스페이스(`sess-other`)의 유효한 로그인 세션 쿠키 — 셀프호스트에서는 로그인 안 된 것."""
+    conn = _app_conn(client)
+    try:
+        if repo.get_session(conn, "sess-other") is None:
+            repo.create_session(conn, "sess-other", NOW)
+        other = repo.ensure_first_admin(conn, "sess-other", now=NOW)
+        if repo.get_member(conn, "sess-other", other)["email"] is None:
+            repo.set_member_credentials(conn, "sess-other", other, email="other@example.com",
+                                        password_hash=team.hash_password(ADMIN_PASSWORD), now=NOW)
+        token = repo.create_login_session(conn, "sess-other", other, now=utc_now(), days=14)
+    finally:
+        conn.close()
+    client.cookies.set(LOGIN_COOKIE, token)
+    return client
+
+
+def session_of(client: TestClient) -> str:
+    """client 의 로그인 쿠키가 가리키는 워크스페이스 id."""
+    conn = _app_conn(client)
+    try:
+        row = repo.member_for_login_token(conn, client.cookies[LOGIN_COOKIE], now=utc_now())
+    finally:
+        conn.close()
+    assert row is not None
+    return row["session_id"]
 
 
 @pytest.fixture

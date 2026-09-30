@@ -37,3 +37,5 @@
 - demo 와 selfhost 가 같은 코드에서 분기하므로 인증 경로 테스트는 두 모드 모두 돈다. 분기는 인증·화면 노출·진단 켜짐에만 두고, 업무·실행·후속 규칙 코드에는 두지 않는다.
 
 **`service` 브랜치**: `service` 브랜치에서는 [ADR-0019](0019-service-selfhost-only.md) 가 결정 4·5(모드 기본값 `demo`, 진단 선택)를 대체한다 — 모드 없이 늘 셀프호스트, `WORKFLOW_MODE=demo` 는 시작 때 설정 오류.
+
+**팀 계정**: 결정 3 의 "로그인한 사람은 곧 운영자" 는 [ADR-0021](0021-team-accounts-and-roles.md) 이 대체한다 — `OPERATOR_TOKEN` 은 첫 설정·복구 전용, 로그인은 멤버 이메일·비밀번호, 권한은 역할(`admin`·`member`).

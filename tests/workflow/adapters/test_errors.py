@@ -7,10 +7,12 @@ from workflow.adapters.errors import (
     AdapterError,
     ArtifactMissing,
     DuplicateStartKey,
+    EmailTaken,
     EventConflict,
     Forbidden,
     HashMismatch,
     InvalidTransition,
+    LastAdmin,
     NotFound,
     ResponseConflict,
     SequenceGap,
@@ -20,7 +22,8 @@ from workflow.adapters.errors import (
 
 @pytest.mark.parametrize(
     "exc_type",
-    [ActiveExecutionExists, DuplicateStartKey, NotFound, Forbidden, HashMismatch, ArtifactMissing],
+    [ActiveExecutionExists, DuplicateStartKey, NotFound, Forbidden, HashMismatch, ArtifactMissing, EmailTaken,
+     LastAdmin],
 )
 def test_simple_errors_inherit_adapter_error(exc_type):
     exc = exc_type("detail")

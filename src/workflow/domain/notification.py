@@ -3,6 +3,7 @@
 문구는 원인 한 줄 + 업무 링크. 비밀·이슈 본문 전체·로그를 넣지 않는다. URL 은 토큰을 담으므로 로그에는 `webhook_host` 만 쓴다.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -23,14 +24,18 @@ class NotificationMessage:
 
 
 def notification_text(
-    event: str, *, title: str, detail: str | None = None, pr_url: str | None = None, task_url: str | None = None
+    event: str, *, title: str, detail: str | None = None, pr_url: str | None = None, task_url: str | None = None,
+    recipients: Sequence[str] = (),
 ) -> str:
-    """`[Runloom] <원인> — <제목>: <내용>` 또는 PR 이면 `… — <제목> <pr_url>`. 업무 링크가 있으면 다음 줄."""
+    """`[Runloom] <원인> — <제목>: <내용>` 또는 PR 이면 `… — <제목> <pr_url>`. 받는 사람 표시 이름이 있으면 끝에
+    ` → 이름, 이름`(공용 경로). 업무 링크가 있으면 다음 줄."""
     line = f"[Runloom] {_HEADLINES[event]} — {title}"
     if pr_url:
         line += f" {pr_url}"
     elif detail:
         line += f": {detail}"
+    if recipients:
+        line += f" → {', '.join(recipients)}"
     return f"{line}\n{task_url}" if task_url else line
 
 

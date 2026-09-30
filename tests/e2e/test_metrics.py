@@ -30,6 +30,7 @@ import pytest
 import uvicorn
 
 from tests.e2e.test_github_cycle import (
+    log_in,
     BILLING_FILES,
     DROP_PREFIXES,
     FIXES,
@@ -210,7 +211,8 @@ def world(tmp_path_factory):
             while not api.started:
                 assert time.monotonic() < deadline and api_thread.is_alive(), "중앙 API 가 뜨지 않음"
                 time.sleep(0.1)
-            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0)
+            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0,
+                                      headers={"Origin": world.central_url})  # Origin 검사 (phase 15)
             yield world
         finally:
             if world.http is not None:
@@ -229,7 +231,7 @@ def metrics(world: World, **params) -> dict:
 
 def test_01_setup_connects_fix_by_claude_and_review_by_codex(world):
     http = world.http
-    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
+    login = log_in(http, world.central_env["OPERATOR_TOKEN"])  # 워크스페이스 = 운영자
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 

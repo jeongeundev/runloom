@@ -5,62 +5,100 @@
     {
       "step": 0,
       "name": "team-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T09:43:49+0900",
+      "summary": "문서만: docs/adr/0021-team-accounts-and-roles.md 신설(결정 1~11·하지 않는 것·대안 7개, ADR-0016 결정 3 대체) + ADR-0016 끝 링크, ARCHITECTURE '팀 — phase 15' 절(스키마 v11 칸·CHECK, scrypt 형식 scrypt$n$r$p$salt$hash·n=None 은 호출 때 team.SCRYPT_N 을 읽어 테스트가 monkeypatch, 비밀번호 10~128자, 쿠키 wf_login·Secure=public_url https, 폐기 표, 첫 설정·복구·초대·재설정 경로 표, 역할×동작 11개·기존 라우트 전부 동작 배정·새 경로 /team·/me·/operator/connectors/{id}/revoke, 맡긴 사람 경로 5개(맡기기·다시 맡기기·체인 시작·직접 등록·직접 실행 — README 3개에 등록·실행을 더함), 알림 공용 1행(:shared)+개인 행(:personal:<member_id>), 비밀 파일 notify_webhook_url.<member_id>, Origin 검사 제외 경로, 이메일별 제한 키, 러너 소유자, v10→v11, 이름·시그니처 표), GLOSSARY(operator=첫 설정·복구 토큰, 워크스페이스 로그인·고정 워크스페이스·Member·connect code·알림 웹훅 수정, 새 용어 로그인 세션·초대 링크·재설정 링크·맡긴 사람·받는 사람·개인 웹훅·러너 소유자·공개 주소), CURRENT_HANDOFF 한 줄. 검증: pytest 2568 passed/33 skipped, ruff 통과. 주의: 이름 기준은 ARCHITECTURE(README 와 다르면 ARCHITECTURE) — require_session·require_operator 는 step 4 에서 래퍼로 두고 step 6 이 제거, 초대·재설정 토큰은 URL 경로라 uvicorn.access 로그 필터와 Referrer-Policy 필요, SQLite ALTER 로 못 거는 표 CHECK(personal→recipient NOT NULL, email·password_hash 동시)는 repo 가 지킨다.",
+      "completed_at": "2026-09-30T09:55:33+0900"
     },
     {
       "step": 1,
       "name": "team-domain",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T09:55:34+0900",
+      "summary": "새 파일 src/workflow/domain/team.py(hashlib·hmac·secrets·base64 만)·tests/workflow/domain/test_team.py(67개). step.md 와 다른 곳은 ARCHITECTURE 기준: hash_password(pw, *, n=None)(호출 때 SCRYPT_N 읽음 — 테스트는 monkeypatch 로 2**4), 형식 scrypt$n$r$p$salt$hash(표준 base64), verify_password 는 깨진 형식·모르는 알고리즘·n 이 2의 거듭제곱 아님/2**20 초과·r·p 가 1~16 밖·scrypt 오류면 False, DUMMY_PASSWORD_HASH 는 고정 리터럴(n=2**14, 어떤 입력과도 안 맞음), password_problem 10~128자+공백만 거부('비밀번호를 공백만으로 만들 수 없습니다.'), normalize_email(@ 하나·양쪽 비지 않음·공백/제어문자 없음·254자), clean_display_name(1~40자·제어문자 없음), ROLES·동작 상수 11개·ACTIONS·can(모르는 역할 False, 모르는 동작 ValueError)·allowed_actions(모르는 역할 빈 frozenset), MemberFact + turn_recipients(assignee_type, assignee_id, requested_by_member_id, members) — 담당 활성 멤버 → 맡긴 사람(활성) → 활성 관리자(주어진 순서, id 정렬 아님). 검증: pytest 2635 passed/33 skipped, ruff 통과. 다음 step 주의: members 는 created_at·member_id 순으로 넘겨야 관리자 순서가 안정적, 로그인 실패 경로는 DUMMY_PASSWORD_HASH 로 한 번 verify 해 시간 맞춤.",
+      "completed_at": "2026-09-30T10:01:25+0900"
     },
     {
       "step": 2,
       "name": "schema-v11",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T10:01:25+0900",
+      "summary": "수정 src/workflow/adapters/db.py(SCHEMA_VERSION=11, _V11_TABLES — members email·password_hash·disabled_at ALTER + 부분 UNIQUE members_session_email, login_sessions·member_invites CREATE(역할 CHECK 는 domain/team.ROLES, purpose·channel CHECK 는 새 상수 INVITE_PURPOSES·NOTIFICATION_CHANNELS), work_items.requested_by_member_id·human_responses.member_id·notifications.recipient_member_id·channel(기본 shared)·connect_codes.issued_by_member_id·connectors.owner_member_id ALTER, 인덱스 ix_login_sessions_member·ix_notifications_recipient; 빈 DB 는 _SCHEMA 끝에 같은 _V11_TABLES, _migrate_10_to_11 은 같은 SQL + foreign_key_check, init_schema 가 v4~v10 을 11 까지), 새 tests/workflow/adapters/fixtures/schema_v10.sql(변경 전 코드의 sqlite_master 원문), tests/workflow/adapters/test_db.py(v11 표·칸·FK·인덱스·CHECK·이메일 부분 UNIQUE, v10 픽스처 → v11 행·값 보존·재실행 멱등, 외래키 실패 → v10 그대로 후 재시도, 빈 DB·v10 이전 스키마 칸 순서 일치, v4~v9 → v11; 기존 v10 기대값 갱신), tests/workflow/server/test_backup.py(업그레이드 기대 11·새 표 0행). 검증: pytest 2651 passed/33 skipped, ruff 통과. 다음 step 주의: email·password_hash 동시 채움과 personal 알림의 recipient_member_id 필수는 DB 가 아니라 repo 가 지켜야 한다, v10 의 members.role CHECK 는 그대로(문자열) — 새 표만 ROLES 상수를 쓴다.",
+      "completed_at": "2026-09-30T10:12:45+0900"
     },
     {
       "step": 3,
       "name": "member-repo",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T10:12:45+0900",
+      "summary": "수정 src/workflow/adapters/errors.py(EmailTaken·LastAdmin), src/workflow/adapters/repo.py(ARCHITECTURE 이름 표대로: get_member·find_member_by_email(normalize_email, 형식 틀리면 None, 비활성 포함)·needs_first_setup(행 없음 또는 email·password_hash 있는 활성 멤버 0)·set_member_credentials(자체 트랜잭션, 이메일 정규화 — 형식 틀리면 ValueError, 부분 UNIQUE 위반 → EmailTaken, 세션 전부 폐기, display_name None 이면 유지)·set_member_display_name·set_member_role(ROLES 밖 ValueError)·disable_member(멱등, 세션 폐기)·enable_member(멱등, 폐기 세션 안 살림) — 활성 관리자 0 이면 LastAdmin(자기 자신 포함), create_login_session(days, lgn-+12hex, 원문 반환·sha256 저장)·member_for_login_token(멤버 칸+login_id, password_hash 제외, 만료·폐기·비활성 None, last_seen_at 은 LOGIN_TOUCH_SECONDS=300 초과 때만)·revoke_login_session(bool)·revoke_login_sessions(int, 자체 BEGIN 없음), issue_invite·issue_reset_link((invite_id, 원문), 재설정은 같은 멤버의 미사용 링크 취소)·invite_for_token(유효만, reset 은 대상이 활성+이메일 있음)·accept_invite(같은 트랜잭션에 멤버 생성+used_at IS NULL 조건부 UPDATE, EmailTaken 이면 링크 그대로)·use_reset_link(세션 전부 폐기, 비활성 NotFound)·revoke_invite·list_open_invites(invite 만, 해시 칸 없음), INVITE_TTL_DAYS=7·RESET_TTL_HOURS=24), tests/workflow/adapters/test_repo.py(19개: 첫 설정 전후·이메일 중복·세션 생성/조회/만료/폐기/touch/비활성·표 전체 덤프에 원문 없음·초대 1회용/만료/취소/역할/4스레드 동시 수락 1회 성공·재설정 뒤 세션·이전 링크 폐기·마지막 관리자 거부)·test_errors.py. 검증: pytest 2671 passed/33 skipped, ruff 통과. 다음 step 주의: step.md 의 '지금 세션만 남기는 선택 인자'는 ARCHITECTURE 대로 두지 않음 — 비밀번호 변경은 set_member_credentials 가 전부 폐기하고 서버가 새 세션을 만든다, list_members·get_member·find_member_by_email 은 password_hash 를 포함하니 템플릿·응답에 넘기지 말 것, 서버는 이메일·표시 이름·비밀번호 규칙을 먼저 검사하고 해시한 뒤 repo 를 부른다(repo 는 표시 이름을 검사하지 않음).",
+      "completed_at": "2026-09-30T10:20:25+0900"
     },
     {
       "step": 4,
       "name": "auth-sessions",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T10:20:25+0900",
+      "summary": "수정 src/workflow/server/auth.py(LOGIN_COOKIE='wf_login', LoggedIn(session_id·member_id·role·display_name·login_id — 이메일·해시 없음), current_member(request, conn)(쿠키 → repo.member_for_login_token → 고정 워크스페이스만, request.state.logged_in 에 한 번만), require_member(303 /login)·require_member_api(401 unauthenticated)·require_action(action, *, api=False)(모르는 동작은 팩토리에서 ValueError, 403 forbidden '관리자 권한이 필요합니다.' — 화면 PageError·API ApiError), set_login_cookie(14일·HttpOnly·Lax·Path=/·public_url https 면 Secure)·clear_login_cookies(wf_login·wf_session 둘 다), check_origin(request, settings)(/connector/·/executions/·/sources/{s}/chains 제외, Origin→Referer, null·없음 거짓, base URL·공개 주소 비교 소문자·기본 포트 채움), LoginThrottle 키별(blocked/fail/reset(key), clock 주입, fail 때 창 지난 키 정리)·login_email_key(raw)), src/workflow/server/errors.py(PageError 를 web.py 에서 옮김 — auth 순환 import 방지, web 은 errors 에서 import), src/workflow/server/web.py(origin_guard 미들웨어 — 403 forbidden_origin, Accept text/html 이면 error.html·아니면 JSON, 경로 로그 안 함; 기존 토큰 로그인 throttle 키 'recover'), src/workflow/server/app.py(app.middleware('http')(web.origin_guard)), src/workflow/server/settings.py(_public_url: http(s)://host[:port] 만, 경로·쿼리·프래그먼트·사용자 정보·잘못된 포트 ValueError, 타입은 str 그대로 ''=없음 — ARCHITECTURE '새 키 없음'), deploy/selfhost/.env.example(WORKFLOW_PUBLIC_URL 설명: 링크·Origin·Secure); 테스트: tests/conftest.py(TestClient 기본 헤더 Origin=base_url 출처), tests/e2e 5개 httpx.Client 에 Origin 헤더, test_auth.py(+25: 쿠키 속성·폐기/만료/비활성/다른 워크스페이스/옛 wf_session/깨진 쿠키 거부·요청당 1회 조회·역할 표·역할 변경 즉시 반영·Origin 같은/다른/null/Referer/공개 주소/Bearer 제외·키별 제한·이메일 키), test_settings.py(공개 주소 형식), test_selfhost_files.py(.env.example 설명). 검증: pytest 2709 passed/33 skipped, ruff 통과. 다음 step 주의: require_session·require_operator·workspace_session·wf_session 은 옛 동작 그대로 둠(ARCHITECTURE 의 '래퍼로 전환'은 /login 이 아직 wf_session 을 발급하므로 step 5 로그인 교체와 함께 해야 함), Origin 검사는 이미 전체 앱에 켜져 있음 — 새 TestClient 는 conftest 가 Origin 을 싣지만 출처 없는 요청 테스트는 client.headers 에서 지울 것, 초대·재설정 경로도 검사 대상, login_email_key 를 로그인·비밀번호 변경 제한 키로 쓸 것",
+      "completed_at": "2026-09-30T10:29:55+0900"
     },
     {
       "step": 5,
       "name": "login-web",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T10:29:55+0900",
+      "summary": "수정 src/workflow/server/web.py(ARCHITECTURE 흐름 표 기준 — step.md 의 서명 쿠키+/setup 대신 한 폼 POST /login/setup(토큰·이메일·표시 이름·비밀번호, 키 setup, 첫 관리자 행에 set_member_credentials, 끝나면 409 already_set_up), GET /login 은 needs_first_setup 이면 setup 폼 아니면 이메일 폼+/login/recover 링크, POST /login(이메일, 없는/비활성/틀림 같은 문구 403, DUMMY_PASSWORD_HASH 로 시간 맞춤, 128자 초과는 해시 안 함, 키 login_email_key, 첫 설정 전 303 /login), GET·POST /login/recover(토큰+활성 관리자 이메일, 틀림·비관리자 같은 문구 403, 키 recover, 세션 전부 폐기 후 새 세션), GET·POST /invite/{t}·/reset/{t}(무효·만료·사용·취소 같은 404 안내, 이메일 중복 422, Referrer-Policy no-referrer, 폼 action 없음 — 토큰을 화면에 안 찍음, 첫 설정 전 303 /login), 성공은 모두 로그인 세션+wf_login → 303 /, POST /logout 은 revoke_login_session+두 쿠키 삭제, uvicorn.access 필터 _LinkTokenFilter 가 /invite/·/reset/ 뒤를 ***, _base 에 member, root 는 current_member), auth.py(SESSION_COOKIE·sign_session·verify_session·set_session_cookie·workspace_session 삭제, require_session=require_member 위 session_id 래퍼, require_operator=require_member_api+기존 is_operator 판정(step.md 8 — step 6 이 역할 표로), 옛 쿠키 이름은 _OLD_SESSION_COOKIE 로 삭제에만), templates login.html(mode setup·login·recover·invite·reset·invalid 한 장)·_sidebar.html(표시 이름·관리자/멤버+로그아웃); 테스트: server conftest(autouse SCRYPT_N=2**4, ADMIN_EMAIL·ADMIN_PASSWORD·MEMBER_PASSWORD, log_in 시그니처 유지=setup→409 면 이메일 로그인, log_in_member(client, role, *, email, display_name)=초대 가입, log_in_other_workspace(sess-other 유효 로그인 쿠키 — 옛 sign_session('sess-other') 대체), session_of(client)), test_web 로그인 절 재작성(첫 설정 한 줄기·설정 뒤 409·토큰 틀림/없음·제한 429·입력 422·이메일 로그인 공유/실패 동일 문구/이메일별 제한/성공 리셋·복구·초대·재설정·무효 링크·로그아웃 뒤 재사용 거부·옛 wf_session 거부·접근 로그 가림·사이드바, DB 전체·앱 로그에 원문 없음), test_auth(서명 테스트 삭제, 래퍼 테스트를 로그인 기준으로), 12개 서버 테스트 파일 쿠키 참조 교체, public_url https 테스트 3곳은 Secure 쿠키라 https base_url 로, e2e 5개는 /login/setup→/login 흐름(test_github_cycle.log_in·E2E_ADMIN). 검증: pytest 2726 passed/33 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 32 passed/1 skipped(Docker 셀프호스트 — WORKFLOW_DOCKER 미설정). 다음 step 주의: _require_operator_page·require_operator 는 아직 is_operator(워크스페이스) 판정이라 멤버 역할도 통과 — step 6 이 require_action 으로 옮기고 두 래퍼를 지울 것, 템플릿은 아직 is_operator 를 봄(_base 에 member 만 추가, allowed 는 step 6), https 공개 주소 테스트는 https base_url 이 필요, log_in_member 는 매번 다른 이메일(기본 role-토큰 앞 6자)로 가입한다.",
+      "completed_at": "2026-09-30T10:45:26+0900"
     },
     {
       "step": 6,
       "name": "role-gates",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T10:45:26+0900",
+      "summary": "수정 server/auth.py(require_session·require_operator 삭제), web.py(모든 화면 라우트를 ARCHITECTURE 표대로 require_member 또는 require_action(team.X) — create_work: /tasks/new·POST /tasks, delegate: run·select·delegate·chains start, respond: review, manage_rules: kinds·rules 변경 POST, manage_connections: /sources 전부·GitHub App/토큰 연결·/operator/agents 등록·삭제, attach_runner: [러너 붙이기]·POST /operator/connect-codes, remove_any_runner: 코드 취소(step 10 이 소유자 본인으로 넓힘), manage_shared_notify: /operator/notifications 4개, view_metrics: /metrics; _require_operator_page 삭제, _base 가 is_operator 대신 member+allowed(team.allowed_actions), 운영자 화면 코드 목록은 remove_any_runner 일 때만 context 에), github_api·human_api·metrics_api·mapping_api(GET 은 require_member_api, 쓰기는 require_action(..., api=True) — manage_connections·respond·view_metrics·manage_rules), views.py(task_context·cycle_context·work_context 인자 is_operator → allowed: frozenset, 응답 폼=respond·맡기기 버튼=delegate), 템플릿(_sidebar 입구=manage_connections·지표=view_metrics·알림=manage_shared_notify, 운영자·GitHub 링크는 모두; kinds 폼·삭제=manage_rules; operator 에이전트 삭제·등록=manage_connections; operator_github 연결 버튼·기준선·수집 중지·설정/담당 폼·토큰 연결=manage_connections, 러너 다시 붙이기는 모두, 맡기기=delegate; metrics 기준선 절=manage_connections; '운영자만 응답' 문구 → '응답 권한이 없습니다'); ensure_workspace·mark_operator 는 유지(첫 설정·machine_api 가 워크스페이스 생성에 쓰고 e2e 가 is_operator=1 로 워크스페이스를 찾음 — 권한 판정엔 안 읽음). 테스트: 새 tests/workflow/server/test_web_roles.py(97개: 관리자 전용 화면 18·API 7 경로 매개변수화 — 멤버 403 forbidden·관리자 통과·미로그인 303/401, 멤버 변경 없음, is_operator=0 무시, 멤버 로그인 화면·API 200, 멤버 러너 붙이기·연결 코드 발급, 사이드바·kinds·operator·GitHub·metrics 폼 숨김), test_auth 프로브를 require_member·require_member_api 로, test_web_github_connect·test_web_cycle 의 is_operator=0 → 403/숨김 테스트를 '멤버도 맡기기·응답 가능, is_operator 무시'로 교체+allowed 빈 집합이면 폼·버튼 없음. 검증: pytest 2824 passed/33 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 32 passed/1 skipped. 다음 step 주의: /team·/me 링크는 아직 사이드바에 없음(step 7 이 manage_team·edit_own_settings 로 추가), 멤버는 연결 코드 목록을 못 봄(step 10 이 자기 발급분 표시·취소 권한 세분), PageError 오류 화면은 allowed 없이 렌더돼 사이드바 관리자 링크가 숨음, API 라우트는 require_action(..., api=True) 로 401/403 JSON.",
+      "completed_at": "2026-09-30T11:00:22+0900"
     },
     {
       "step": 7,
       "name": "team-web",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:00:22+0900",
+      "summary": "수정 adapters/secret_store.py(PERSONAL_WEBHOOK_PATTERN ^mem-[0-9a-f]{8}$·personal_webhook_name — fullmatch 라 개행·../ 거부, _path 는 NAMES 또는 notify_webhook_url.<패턴> 만, NAMES 6개 그대로), repo.py(member_last_seen — 멤버별 login_sessions.last_seen_at 최댓값, 폐기 세션 포함), views.py(team_context·me_context — 해시·토큰·URL 없음, 웹훅은 설정됨/호스트만), web.py(ARCHITECTURE 새 경로 표대로 GET /team·POST /team/invites(링크 한 번 200, base=public_url 또는 요청 주소)·/team/invites/{id}/revoke·/team/members/{id}/role·disable·enable(LastAdmin → 409 last_admin '활성 관리자가 한 명은 있어야 합니다.', 없는 멤버 404, 역할 밖 422)·reset-link(한 번 200) — manage_team; GET /me·POST /me/profile(422)·/me/password(현재 비밀번호 확인 403·login_email_key 제한 429·규칙 422 은 me 화면 렌더, 성공은 set_member_credentials 로 전부 폐기 후 새 세션 303 /me)·/me/webhook·delete·test — edit_own_settings; 공용 알림과 검사·테스트 발송을 _savable_webhook_url·_send_test_notification 으로 공유), 새 템플릿 team.html(공개 주소 없으면 WORKFLOW_PUBLIC_URL·SELFHOST 안내, 링크 복사 버튼, 이메일 없는 멤버는 재설정 버튼 숨김)·me.html(data-personal-webhook), _sidebar(팀=manage_team·내 설정=edit_own_settings), base.html(data-copy-target 복사 스크립트); 테스트: 새 tests/workflow/server/test_web_team.py 24개, test_secret_store +4(매개변수화), test_repo +1. 검증: pytest 2867 passed/33 skipped, ruff 통과. 다음 step 주의: /me 의 '내가 받는 최근 알림'은 step 9(list_notifications member_id) 몫이라 아직 없음, 개인 웹훅 파일은 저장만 되고 전달은 step 9 가 personal_webhook_name 으로 읽을 것, 재설정 링크는 이메일 없는 멤버에게도 서버는 발급한다(버튼만 숨김 — invite_for_token 이 거부).",
+      "completed_at": "2026-09-30T11:10:46+0900"
     },
     {
       "step": 8,
       "name": "my-turn",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:10:46+0900",
+      "summary": "수정 adapters/repo.py(ARCHITECTURE 이름 — step.md 의 turn_recipients_for·list_my_turn 대신: set_work_requester(자체 BEGIN·이벤트 없음, 덮어씀)·turn_recipients_of(활성 멤버 맵+team.turn_recipients, 없는 업무 NotFound)·list_work_items(recipient_member_id=) — 상태 '내 차례'+받는 사람 포함, 계산값, insert_work_item_task(requested_by_member_id=), mark_issue_delegated(member_id=) — 이미 지시돼도 누른 멤버로 덮어씀·label 은 안 씀, record_human_response_once(member_id=) — human_responses.member_id, retry 면 맡긴 사람도, 재전송 비교엔 안 넣음, create_followup_once new_work 가 원인 업무 requested_by 복사), server/web.py(POST /tasks·/tasks/{id}/run(성공 뒤)·/chains/{id}/start(체인 업무 전부)·/delegate 가 현재 멤버 기록, 홈 GET /tasks?view=my_turn 빠른 필터+개수, 그 밖 값은 전체), human_api.py(respond_to_request member_id=), views.py(work_summary.recipients = 내 차례일 때 받는 사람 표시 이름, _responses_public 응답자 이름 — cycle_context·work_context.responses), templates home.html(내 차례 N·전체 필터, 줄에 '→ 이름')·work_detail.html('받는 사람: 이름', 응답 기록 절 data-responder)·_cycle.html(응답자); 테스트: test_repo +7, test_web +4(직접 등록·직접 실행·실패한 실행은 기록 안 함·체인 시작), 새 test_web_my_turn.py 8개(맡긴 멤버만·담당 멤버 우선·비활성 → 관리자 전원·수집만 된 실패 → 관리자·누구나 응답+응답자·다시 맡기기가 맡긴 사람 변경·닫기는 유지·맡기기 재클릭 최신). 검증: pytest 2886 passed/33 skipped, ruff 통과. 다음 step 주의: 받는 사람은 repo.turn_recipients_of 로 계산(저장 안 함) — step 9 알림이 이걸 쓸 것, 웹 경로의 set_work_requester 는 autocommit 단독 UPDATE(체인 시작은 업무별), n8n 입구 start_chain(API)은 기록 안 함, 직접 실행은 성공 뒤에만 기록.",
+      "completed_at": "2026-09-30T11:23:39+0900"
     },
     {
       "step": 9,
       "name": "notify-recipients",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:23:39+0900",
+      "summary": "수정 domain/notification.py(notification_text recipients: Sequence[str]=() — 첫 줄 끝 ' → 이름, 이름', 순수 유지), adapters/repo.py(enqueue_notification(..., channel='shared', recipient_member_id=None) — personal 인데 받는 사람 없으면 ValueError; list_notifications(..., *, member_id=None) — 그 멤버의 personal 행 + payload_json.recipient_member_ids(json_each)에 든 shared 행), server/worker.py(_notify: 업무의 turn_recipients_of 로 받는 사람 계산 — 공용 웹훅 있으면 사건당 shared 1행(키 '<사건 키>:shared', 한 명이면 recipient_member_id·여럿이면 NULL, payload.recipient_member_ids, 본문 → 표시 이름), 개인 웹훅 저장한 받는 사람마다 personal 1행(키 '<사건 키>:personal:<id>', → 없음), 둘 다 없으면 안 쌓음, work_item_id 없는 Task 는 받는 사람 없음; _row_webhook_url: shared=notify_webhook_url, personal=personal_webhook_name(id) — 파일 없음·받는 사람 비활성·없음 → skipped, 재시도·형식 검사·로그(호스트만) 그대로; _webhook_url(name) 인자화), views.me_context + me.html('내가 받는 최근 알림' 표 — 사건·경로·상태·시각·오류, 본문 없음; step 7 이 미룬 ARCHITECTURE 항목). 테스트: test_notification +1, test_repo +1, test_task_cycle +8(httpx MockTransport 로 실제 NotifySender: 받는 사람 개인 있음→공용 → 김OO+개인 1, 관리자 둘→공용 1행 이름 나열, 공용 없음→개인만, 둘 다 없음→큐 없음, 같은 사건 재호출→행 불변, 개인 웹훅 삭제→skipped, 받는 사람 비활성→skipped, DB·로그에 URL 없음) + 기존 3개 기대값을 새 규칙으로(키 ':shared', 본문 ' → 관리자'), test_web_team +1(/me 목록 필터). 검증: pytest 2897 passed/33 skipped, ruff 통과. 다음 step 주의: v11 이전 행(옛 키·shared·NULL)은 공용 URL 로 그대로 보냄, 공용 본문의 → 이름은 알림을 만들 때 계산(업무 상태와 무관 — 사건 시점 받는 사람), 받는 사람 없는 워크스페이스(멤버 0)는 → 없이 옛 문구, 커밋은 하네스가 함.",
+      "completed_at": "2026-09-30T11:32:37+0900"
     },
     {
       "step": 10,
       "name": "runner-owner",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:32:37+0900",
+      "summary": "수정 adapters/repo.py(issue_connect_code(..., *, issued_by_member_id=None)·exchange_connect_code 가 같은 트랜잭션에서 connectors.owner_member_id=코드 발급자·list_connect_codes(*, issued_by_member_id=None)·connector_owner·list_connectors(해제 포함, 연결 순 — 운영자 러너 목록용 새 함수)), views.py(agent_owner_id — 로컬+connector_id 일 때 러너 소유자, runner_owner — {member_id·display_name·active} 또는 None), web.py(_may_remove_runner: remove_any_runner 또는 attach_runner+소유자 본인, 소유자 없음=관리자만; _forbid_runner_removal 403 forbidden — 소유자 없음 '관리자 권한이 필요합니다.'·남의 것 '러너 소유자나 관리자만 할 수 있습니다.'; 코드 발급 두 경로가 issued_by_member_id 기록; POST /operator/connect-codes/{code}/revoke 는 attach_runner+발급자 본인/remove_any_runner; 새 POST /operator/connectors/{id}/revoke(권한 먼저 → 없는 러너는 멤버 403·관리자 404, 해제됨 재요청 404); POST /operator/agents/{id}/delete 는 require_member+manage_connections 또는 그 러너 소유자(ARCHITECTURE 표 manage_connections 와 step.md 소유자 삭제를 함께 만족); 운영자 화면 코드 목록 관리자=전부·멤버=자기 발급분+can_revoke, 새 러너 표(data-runner, 소유·해제 버튼·해제됨), 에이전트 can_delete·owner; /agents·/agents/{id} 소유자), 템플릿 _status.html owner 매크로('소유자 <이름>' · 비활성이면 '· 소유자 비활성', 없으면 '관리자 관리')·operator.html·agents.html(소유자 칸)·agent_detail.html; machine_api·계약·러너 코드 변경 없음. 테스트: test_repo +1, 새 test_web_runner_owner.py 12개(발급→교환→소유자·목록/상세 표시·교환 응답 키 불변, 소유자/다른 멤버 403/관리자 해제, 소유자 없는 러너 관리자만, 비활성 소유자 러너 계속 인증+표시, 에이전트 삭제 소유자·관리자, 코드 목록·취소 자기 것만, 카드 [러너 붙이기] 발급자 기록), test_web_roles 주석 1줄. 검증: pytest 2910 passed/33 skipped, ruff 통과. 다음 step 주의: GitHub 카드의 러너 매칭 줄에는 소유자를 넣지 않음(운영자 러너 표·에이전트 목록/상세에만), 연결 코드 목록은 멤버에게 자기 발급분만 보이고 관리자 발급분은 숨김, 러너 표는 워크스페이스 구분 없이 connectors 전부(고정 워크스페이스 전제).",
+      "completed_at": "2026-09-30T11:41:38+0900"
     },
     {
       "step": 11,
       "name": "team-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:41:38+0900",
+      "summary": "새 tests/e2e/test_team.py 7개(첫 설정 토큰→관리자 계정·GitHub 연결(가짜)·공용 알림·상한 0 → 초대 → 멤버 가입·재로그인·관리자 경로 403 → 개인 웹훅 → 멤버 [러너 붙이기] 소유자=멤버 → 맡기기 requested_by=멤버 → 사람 요청이 멤버 내 차례에만·공용 '→ 김멤버'+개인 알림, 재실행 불변 → 멤버 응답(member_id·data-responder) → revision 2 로 이어 돎 → 다른 Origin POST 403 → DB·로그·화면에 비밀 없음), test_backup +1(셀프호스트 모양 v10 사본: 업무 22·첫 관리자 이메일 없음·알림 3·러너 1 → v11 행 보존·needs_first_setup·러너 소유자 없음·알림 shared·백업 왕복, 실제 볼륨·백업 안 읽음), install.sh 안내 '처음 접속 때 토큰으로 관리자 계정을 만든다'(test_selfhost_files 단정 +1·SELFHOST 절 단정 +1), 문서 SELFHOST(업그레이드 v11·팀 초대·비밀번호 분실·WORKFLOW_PUBLIC_URL·Tailscale/Cloudflare Tunnel https·개인 웹훅)·VERIFICATION_LOG 'phase 15 팀'·CURRENT_HANDOFF 다음 작업·REDESIGN_PLAN 13절 완료. 제품 코드 수정 없음. 검증: pytest 2912 passed/40 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 39 passed/1 skipped. 셀프호스트 Docker e2e 미실행(이미지 태그 workflow-selfhost:local 을 사용자 runloom 과 공유 — 재빌드하면 사용자 셀프호스트가 백업 없이 v11 로 오를 수 있음, 재설치 때 함께 확인). 다음: service 병합·셀프호스트 재설치는 사용자 지시 뒤.",
+      "completed_at": "2026-09-30T12:00:44+0900"
     }
-  ]
+  ],
+  "created_at": "2026-09-30T09:43:49+0900",
+  "completed_at": "2026-09-30T12:00:44+0900"
 }

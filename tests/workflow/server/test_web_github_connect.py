@@ -25,9 +25,9 @@ from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import IssuePrLink
 from workflow.server import web
 from workflow.server.app import create_app
-from workflow.server.auth import SESSION_COOKIE, sign_session
+from workflow.server.auth import LOGIN_COOKIE
 
-from .conftest import log_in, task_row
+from .conftest import log_in, log_in_member, log_in_other_workspace, session_of, task_row
 from .test_task_cycle import SESSION as CYCLE_SESSION
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     SOURCE,
@@ -122,7 +122,7 @@ def op(app) -> TestClient:
 
 
 def op_session(client: TestClient) -> str:
-    return client.cookies[SESSION_COOKIE].rpartition(".")[0]
+    return session_of(client)
 
 
 def error(response, status: int, code: str) -> None:
@@ -159,10 +159,8 @@ def names(conn, session_id: str) -> dict:
 
 
 def test_every_path_is_operator_only(app, conn, github):
-    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
-    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
-    stranger = TestClient(app, base_url=BASE)
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    # 로그인 전, 그리고 고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    stranger = log_in_other_workspace(TestClient(app, base_url=BASE))
     for anonymous in (TestClient(app, base_url=BASE), stranger):
         for url in ("/operator/github/app/new", f"/operator/github/app/callback?code={CODE}&state=x",
                     "/operator/github/app/setup?installation_id=42"):
@@ -215,7 +213,8 @@ def test_new_for_an_organization_uses_the_org_url(op):
 def test_public_url_is_the_base_when_set(settings, github):
     app = create_app(dataclasses.replace(settings, public_url="https://runloom.example"))
     app.state.github_transport = httpx.MockTransport(github)
-    client = log_in(TestClient(app))  # 요청 주소 testserver 는 쓰지 않는다
+    # 요청 주소 testserver 는 쓰지 않는다. 공개 주소가 https 면 로그인 쿠키가 Secure — 브라우저처럼 https 로 연다
+    client = log_in(TestClient(app, base_url="https://testserver"))
     _, manifest = start(client)
     assert manifest["redirect_url"] == "https://runloom.example/operator/github/app/callback"
 
@@ -265,7 +264,7 @@ def test_callback_rejects_a_wrong_or_missing_state(op, app, github, secrets):
     error(op.get("/operator/github/app/callback", params={"code": CODE, "state": "forged"}), 403,
           "github_state_invalid")
     fresh = TestClient(app, base_url=BASE)
-    fresh.cookies.set(SESSION_COOKIE, op.cookies[SESSION_COOKIE])  # 같은 운영자, state 쿠키 없음
+    fresh.cookies.set(LOGIN_COOKIE, op.cookies[LOGIN_COOKIE])  # 같은 운영자, state 쿠키 없음
     error(fresh.get("/operator/github/app/callback", params={"code": CODE, "state": "forged"}), 403,
           "github_state_invalid")
     assert github.calls == []
@@ -493,11 +492,9 @@ def test_delegate_refuses_a_closed_task(cycle_op, conn):
     assert delegated(conn, task_id) == (None, None)
 
 
-def test_delegate_needs_the_owning_operator(cycle_op, app, conn):
+def test_delegate_needs_a_login_to_the_owning_workspace(cycle_op, app, conn):
     task_id = import_issue(conn, 1, labels=[])
-    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
-    stranger = TestClient(app)  # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 로그인 안 된 것
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    stranger = log_in_other_workspace(TestClient(app))  # 다른 워크스페이스의 로그인 쿠키 — 로그인 안 된 것
     response = stranger.post(f"/tasks/{task_id}/delegate", follow_redirects=False)
     assert (response.status_code, response.headers["location"]) == (303, "/login")
     assert delegated(conn, task_id) == (None, None)
@@ -505,10 +502,12 @@ def test_delegate_needs_the_owning_operator(cycle_op, app, conn):
     repo.mark_operator(conn, "sess-other")
     repo.insert_work_item_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, "2026-10-06T12:00:00Z")
     assert cycle_op.post("/tasks/task-other/delegate").status_code == 404
+    # 맡기기는 `delegate` 동작 — 멤버도 한다. 워크스페이스의 `is_operator` 는 권한 판정에 읽지 않는다 (ADR-0021)
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (CYCLE_SESSION,))
     conn.commit()
-    error(cycle_op.post(f"/tasks/{task_id}/delegate"), 403, "forbidden")
-    assert delegated(conn, task_id) == (None, None)
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/tasks/{task_id}/delegate", follow_redirects=False).status_code == 303
+    assert delegated(conn, task_id)[0] == "operator"
 
 
 # --- 연결 화면 (phase 11 step 8) ------------------------------------------------------------------------
@@ -702,12 +701,14 @@ def test_no_delegate_button_for_filtered_sources_or_non_operators(client, cycle,
     assert "/delegate" not in detail.text
 
 
-def test_detail_hides_the_delegate_button_from_a_non_operator(cycle_op, conn):
+def test_member_sees_the_delegate_button_regardless_of_is_operator(cycle_op, app, conn):
+    # 버튼은 `delegate` 동작(관리자·멤버)을 본다 — 워크스페이스의 `is_operator` 는 읽지 않는다 (ADR-0021)
     task_id = import_issue(conn, 1, labels=[])
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (CYCLE_SESSION,))
     conn.commit()
-    assert delegate_form(task_id) not in cycle_op.get(f"/tasks/{task_id}").text
-    assert delegate_form(task_id) not in cycle_op.get("/tasks").text
+    for client in (cycle_op, log_in_member(TestClient(app))):
+        assert delegate_form(task_id) in client.get(f"/tasks/{task_id}").text
+        assert delegate_form(task_id) in client.get("/tasks").text
 
 
 def test_home_without_github_is_unchanged(logged_in_client):

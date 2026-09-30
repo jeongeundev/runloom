@@ -9,12 +9,13 @@
 {% if agents %}
 <div class="table-wrap">
 <table>
-  <tr><th>이름</th><th>ID</th><th>소유</th><th>연결</th><th>능력</th><th>상태</th></tr>
+  <tr><th>이름</th><th>ID</th><th>소유</th><th>소유자</th><th>연결</th><th>능력</th><th>상태</th></tr>
   {% for a in agents %}
   <tr>
     <td><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></td>
     <td class="mono">{{ a.agent_id }}</td>
     <td>{{ a.owner_scope }}</td>
+    <td>{{ st.owner(a.owner) }}</td>
     <td>{{ a.connection_type }}</td>
     <td>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
     <td>{{ st.connection(a) }}</td>

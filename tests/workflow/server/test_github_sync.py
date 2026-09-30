@@ -23,8 +23,10 @@ from workflow.contracts.v1 import Capability, ExecutionRequest, KindSpec
 from workflow.domain.field_mapping import MappingRow
 from workflow.domain.selection import Candidate
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, evaluate_readiness
-from workflow.server.auth import SELFHOST_SESSION_ID, SESSION_COOKIE, verify_session
+from workflow.server.auth import SELFHOST_SESSION_ID
 from workflow.server.github_sync import MAX_MERGE_CHECKS_PER_SYNC, sync_source, task_intake_facts
+
+from .conftest import session_of
 
 SOURCE = "ghs-1a2b3c4d"
 FIX_AGENT = "agent-fix"
@@ -140,7 +142,7 @@ def config(**overrides) -> GitHubSourceConfig:
 def session_id(logged_in_client, conn) -> str:
     """로그인한 워크스페이스(직접 등록에도 쓴다) + 수정 Agent 등록 + 소스 + 담당 연결."""
     assert logged_in_client.get("/tasks").status_code == 200
-    sid = verify_session(logged_in_client.cookies[SESSION_COOKIE], "test-session-secret")
+    sid = session_of(logged_in_client)
     assert sid == SELFHOST_SESSION_ID
     repo.upsert_agent(conn, {
         "agent_id": FIX_AGENT, "name": "수정", "owner_scope": "personal", "connection_type": "local",

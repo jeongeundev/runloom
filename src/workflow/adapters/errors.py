@@ -98,3 +98,11 @@ class ResponseConflict(AdapterError):
 
 class RegistrationTaken(AdapterError):
     """같은 `local_registration_id` 의 Agent 를 취소되지 않은 다른 연결 프로그램이 쓰고 있다 (409 `registration_taken`)."""
+
+
+class EmailTaken(AdapterError):
+    """같은 워크스페이스에 같은 이메일의 멤버가 이미 있다 (422 `invalid_field` `email`)."""
+
+
+class LastAdmin(AdapterError):
+    """역할 변경·비활성화로 활성 관리자가 0 이 된다 (409 `last_admin`)."""

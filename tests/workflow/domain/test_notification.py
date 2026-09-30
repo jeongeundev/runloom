@@ -42,6 +42,18 @@ def test_text_adds_the_task_link_on_its_own_line():
     assert text.splitlines() == ["[Runloom] 실패 — 버그 1: x", "https://runloom.example/tasks/t"]
 
 
+def test_text_names_the_recipients_on_the_first_line():
+    """공용 경로 본문 끝 `→ 이름[, 이름]` (ARCHITECTURE "알림 — 받는 사람별"). 링크는 그다음 줄."""
+    assert notification_text("human_request", title="쿠폰 오류", detail="검토 승인", recipients=("김OO", "이OO")) == (
+        "[Runloom] 사람 차례 — 쿠폰 오류: 검토 승인 → 김OO, 이OO"
+    )
+    text = notification_text("pr_opened", title="버그 1", pr_url="https://github.com/a/b/pull/3", recipients=("김OO",),
+                             task_url="https://runloom.example/tasks/t")
+    assert text.splitlines() == ["[Runloom] PR 확인 — 버그 1 https://github.com/a/b/pull/3 → 김OO",
+                                 "https://runloom.example/tasks/t"]
+    assert notification_text("task_failed", title="버그 1", detail="x", recipients=()) == "[Runloom] 실패 — 버그 1: x"
+
+
 @pytest.mark.parametrize(("url", "expected"), [
     (DISCORD, True),
     ("https://DISCORDAPP.com/api/webhooks/1/x", True),

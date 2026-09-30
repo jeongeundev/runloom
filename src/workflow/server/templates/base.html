@@ -93,6 +93,18 @@
   }
   bindViewer();
 
+  // --- 복사: `data-copy-target` 버튼은 그 id 요소의 글자를 복사한다(한 번만 보이는 링크) ---
+  document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
+    var target = document.getElementById(btn.getAttribute('data-copy-target'));
+    if (!target || !navigator.clipboard) return;
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(target.textContent).then(function () {
+        btn.textContent = '복사됨';
+        setTimeout(function () { btn.textContent = '복사'; }, 1500);
+      });
+    });
+  });
+
   // --- JSON 폼: `data-json-action` 폼은 운영자 JSON API 로 보낸다(GitHub 설정·담당 연결·사람 응답). 누른 버튼의
   //     data-json-action/-method/-omit 이 폼 값보다 앞선다. 필드 형식은 data-json-type(int·bool·list·int-list·optional).
   //     성공이면 새로 연다(미리보기는 problems 만 보인다). 보내는 동안 버튼을 막고, 응답 ID 는 서버가 폼에 심은 값이다 ---

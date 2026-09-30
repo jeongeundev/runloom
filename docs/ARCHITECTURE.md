@@ -410,6 +410,8 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ### 고정 워크스페이스와 워크스페이스 로그인 (step 2)
 
+> `service` 에서는 아래 "팀 — phase 15" 가 로그인·권한을 대체한다([ADR-0021](adr/0021-team-accounts-and-roles.md)) — `OPERATOR_TOKEN` 은 첫 설정·복구 전용, 로그인은 멤버 이메일·비밀번호(쿠키 `wf_login`). 고정 워크스페이스 식별·생성은 그대로다.
+
 - 식별: 세션 id 고정값 `SELFHOST_SESSION_ID = "sess-selfhost"`(`server/auth.py`). `sessions` 테이블에 이 id 행 하나다. 스키마는 바꾸지 않는다.
 - 생성: 첫 `POST /login` 성공 때 행이 없으면 `repo.create_session`(내장 종류·규칙 seed) + `repo.mark_operator` 를 한 번 한다. 이후 로그인은 같은 행을 재사용한다(멱등). 로그인 전에는 행을 만들지 않는다.
 - 쿠키: 이름은 기존 `wf_session`, 값은 `sign_session("sess-selfhost", SESSION_SECRET)`. HttpOnly, SameSite=Lax, 유효기간 `session_cookie_days`(14일). 127.0.0.1 http 이므로 `Secure` 는 붙이지 않는다. `SESSION_SECRET` 을 바꾸면 모든 로그인이 풀린다.
@@ -994,6 +996,228 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 실행 요청 브랜치 칸 | `adapters/repo.py`·`connector/git_ops.py`(7) | `execution_branch_fields(conn, task_id) -> {"work_key", "branch_seq"}`, `ensure_worktree(repo, task_id, base_commit, *, work_key=None, branch_seq=1)`, `push_task_branch(repo, task_id, *, work_key=None, branch_seq=1)`, 실패 코드 `invalid_work_key` |
 | 지표 | `domain/metrics.py`·`adapters/repo.py`(8) | `TaskFact.work_item_id`, 묶음 = 업무 |
 | 화면 | `server/web.py`·`server/views.py`(9) | 홈·왼쪽 목록 = `list_work_items` 한 줄(`views.work_summary` — 키·제목·담당·업무 상태·이유·갱신 경과), `GET /work/{key}`(`views.work_context`, `work_detail.html`), `views.assignee_label`·`FORM_LABELS`, 응답 동작 `retry`(화면 [다시 맡기기]) — 새 화면 구성은 16-work-ui |
+
+## 팀 — phase 15
+
+[ADR-0021](adr/0021-team-accounts-and-roles.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 15 README](../phases/15-team/README.md). 이 시점에는 구현이 없다 — 아래 이름·표·경로·시그니처는 step 1~11 이 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** 위 "고정 워크스페이스와 워크스페이스 로그인"(토큰 = 로그인 = 운영자)은 이 절이 대체한다 — 고정 워크스페이스 `sess-selfhost` 하나·익명 세션 없음·러너(`wfc_`)·n8n(`wfs_`) 인증은 그대로다.
+
+### 한 줄 요약
+
+로그인 = 멤버 이메일·비밀번호(서버 로그인 세션 표, 쿠키 `wf_login`). `OPERATOR_TOKEN` 은 첫 설정(비밀번호 있는 활성 멤버 0)과 복구에만 쓴다. 멤버는 관리자가 발급한 초대 링크로 가입한다. 권한 = 역할(`admin`·`member`) × 동작 표 한 곳(`domain/team.can`). 업무가 `내 차례` 면 받는 사람은 담당 멤버 → 맡긴 사람 → 활성 관리자 전원. 알림은 공용 웹훅 한 번(`→ 이름`) + 받는 사람의 개인 웹훅. 러너는 연결 코드를 발급한 멤버가 소유한다. 쿠키 인증 변경 요청은 Origin 검사.
+
+### 스키마 v11 (step 2)
+
+`adapters/db.py` `SCHEMA_VERSION` 10 → 11. v9 → v10 과 같이 `init_schema` 가 `BEGIN IMMEDIATE` 한 트랜잭션으로 올리고 실패하면 10 그대로다. 빈 DB 도 v10 DDL 뒤 같은 ALTER 를 거쳐 만든다(칸 순서가 한 가지). 원본 v10 스키마는 `tests/workflow/adapters/fixtures/schema_v10.sql` 로 고정한다. **기존 표는 재생성하지 않는다** — ALTER ADD COLUMN + 새 표 두 개. 표 단위 CHECK 를 ALTER 로 더할 수 없는 조건(아래 "repo 가 지킴")은 repo 함수가 지킨다.
+
+| 대상 | 칸 | 제약·의미 |
+|---|---|---|
+| `members`(칸 추가) | `email TEXT`, `password_hash TEXT`, `disabled_at TEXT` | `email` 은 `normalize_email` 결과(소문자)만 저장. `CREATE UNIQUE INDEX members_session_email ON members(session_id, email) WHERE email IS NOT NULL`. `password_hash` 는 아래 저장 형식. 계정 = `email` 과 `password_hash` 가 둘 다 있음(repo 가 지킴 — 둘은 함께 채운다). 활성 = `disabled_at IS NULL`. 삭제 경로 없음 |
+| `login_sessions`(새) | `login_id TEXT PRIMARY KEY`(`lgn-` + 12 hex), `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `member_id TEXT NOT NULL REFERENCES members(member_id)`, `token_sha256 TEXT NOT NULL UNIQUE`, `created_at TEXT NOT NULL`, `expires_at TEXT NOT NULL`, `last_seen_at TEXT NOT NULL`, `revoked_at TEXT` | 쿠키 원문은 저장하지 않는다. 유효 = `revoked_at IS NULL AND expires_at > now` 이고 멤버가 활성. 인덱스 `(member_id)`. 만료 행은 지우지 않는다(작다) |
+| `member_invites`(새) | `invite_id TEXT PRIMARY KEY`(`inv-` + 12 hex), `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `purpose TEXT NOT NULL CHECK (purpose IN ('invite','reset'))`, `role TEXT CHECK (role IS NULL OR role IN ('admin','member'))`, `member_id TEXT REFERENCES members(member_id)`, `token_sha256 TEXT NOT NULL UNIQUE`, `created_by_member_id TEXT REFERENCES members(member_id)`, `created_at TEXT NOT NULL`, `expires_at TEXT NOT NULL`, `used_at TEXT`, `used_by_member_id TEXT REFERENCES members(member_id)`, `revoked_at TEXT` | `CHECK ((purpose = 'invite' AND role IS NOT NULL AND member_id IS NULL) OR (purpose = 'reset' AND role IS NULL AND member_id IS NOT NULL))`, `CHECK ((used_at IS NULL) = (used_by_member_id IS NULL))`. 초대 7일(`INVITE_TTL_DAYS`), 재설정 24시간(`RESET_TTL_HOURS`). 유효 = 미사용·미취소·미만료. 같은 멤버에게 재설정 링크를 새로 발급하면 그 멤버의 쓰지 않은 재설정 링크를 같은 트랜잭션에서 취소한다 |
+| `work_items.requested_by_member_id`(새 칸) | `TEXT REFERENCES members(member_id)` | 맡긴 사람(아래 "맡긴 사람"). NULL = 기록 없음 |
+| `human_responses.member_id`(새 칸) | `TEXT REFERENCES members(member_id)` | 응답한 멤버. v11 이전 응답은 NULL |
+| `notifications`(칸 추가) | `recipient_member_id TEXT REFERENCES members(member_id)`, `channel TEXT NOT NULL DEFAULT 'shared' CHECK (channel IN ('shared','personal'))` | `personal` 행은 `recipient_member_id` 가 늘 있다(repo 가 지킴). `shared` 행은 받는 사람이 한 명이면 그 멤버, 여럿이면 NULL(받는 사람 목록은 `payload_json.recipient_member_ids`). v11 이전 행은 `shared`·NULL |
+| `connect_codes.issued_by_member_id`(새 칸) | `TEXT REFERENCES members(member_id)` | 발급 멤버. NULL = v11 이전 발급 |
+| `connectors.owner_member_id`(새 칸) | `TEXT REFERENCES members(member_id)` | 교환 때 코드의 `issued_by_member_id` 를 옮긴다. NULL = 소유자 없음(관리자 관리) |
+
+비밀값 칸은 없다 — 토큰은 sha256 hex, 비밀번호는 scrypt 해시만. 백업 CLI 는 DB 를 그대로 담으므로 해시가 백업에 들어가고, 원문은 어디에도 없다.
+
+### 비밀번호 (step 1)
+
+- 저장 형식: `scrypt$<n>$<r>$<p>$<salt>$<hash>` — `salt` 는 `secrets.token_bytes(16)`, `hash` 는 `hashlib.scrypt(pw.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32)`, 둘 다 표준 base64(`=` 패딩 포함). 예 `scrypt$16384$8$1$q3v…==$Xk2…=`.
+- 파라미터: `SCRYPT_N = 2**14`, `SCRYPT_R = 8`, `SCRYPT_P = 1`, `SCRYPT_DKLEN = 32`(메모리 16 MiB — `hashlib` 기본 상한 32 MiB 안). `hash_password(pw, *, n=None)` 의 `n=None` 은 **호출 때** 모듈 상수 `SCRYPT_N` 을 읽는다 — 테스트는 `monkeypatch.setattr(team, "SCRYPT_N", 2**4)` 로 낮춘다(기본 인자에 상수를 박지 않는다).
+- 검증: `verify_password(pw, stored)` 는 저장 문자열의 파라미터로 다시 계산해 `hmac.compare_digest`. 형식이 깨졌거나 `n` 이 2 의 거듭제곱이 아니거나 `2**20` 을 넘으면(DB 조작으로 CPU 를 쓰게 하지 않게) 예외 없이 False. 이메일이 없거나 비활성인 로그인 시도도 고정 더미 해시(`DUMMY_PASSWORD_HASH`)로 한 번 검증해 응답 시간을 맞춘다.
+- 규칙 `password_problem(pw) -> str | None`: 글자 수 `PASSWORD_MIN_LENGTH = 10` 이상 `PASSWORD_MAX_LENGTH = 128` 이하(긴 입력으로 CPU 를 쓰지 않게 — 넘으면 해시하지 않고 거부). 문제 문구 예 `비밀번호는 10자 이상이어야 합니다.`·`비밀번호는 128자 이하여야 합니다.` 문자 종류 규칙은 두지 않는다. 비밀번호 원문은 로그·응답·템플릿(되돌려 채우기 포함)에 넣지 않는다.
+- 이메일 `normalize_email(s) -> str | None`: 앞뒤 공백 제거 → 소문자 → `@` 정확히 하나, 앞뒤 부분이 비지 않음, 공백·제어 문자 없음, 254자 이하. 아니면 None. 표시 이름 `clean_display_name(s) -> str | None`: 앞뒤 공백 제거, 1~40자, 제어 문자 없음.
+
+### 로그인 세션·쿠키 (step 3·4)
+
+- 쿠키 `LOGIN_COOKIE = "wf_login"`, 값 = `secrets.token_urlsafe(32)`(DB 에는 sha256). `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age` = `session_cookie_days`(14일), `Secure` 는 `Settings.public_url` 이 `https://` 로 시작할 때만.
+- 옛 `wf_session` 쿠키는 읽지 않는다(무시 — 로그인 화면으로). 로그아웃 응답은 두 쿠키를 모두 지운다. `SESSION_SECRET` 은 GitHub App state 쿠키(`wf_gh_state`) 서명에 계속 쓴다.
+- 판정 `current_member`: 쿠키 → `member_for_login_token` → 유효한 세션 + 활성 멤버 + 멤버의 `session_id` 가 `sess-selfhost`. `last_seen_at` 은 5분(`LOGIN_TOUCH_SECONDS = 300`)보다 오래됐을 때만 쓴다(요청마다 쓰기를 만들지 않게).
+- 폐기 경로 — 모두 같은 트랜잭션에서 `revoked_at = now`:
+
+| 사건 | 폐기 범위 | 뒤 |
+|---|---|---|
+| `POST /logout` | 그 쿠키의 세션 하나(`revoke_login_session`) | 쿠키 삭제, `/login` 303 |
+| 비활성화(`disable_member`) | 그 멤버의 전부 | |
+| 비밀번호 변경(`POST /me/password`) | 그 멤버의 전부(지금 세션 포함) | 새 세션을 만들어 쿠키를 바꿔 준다 |
+| 재설정 링크 사용(`use_reset_link`)·복구(`/login/recover`) | 그 멤버의 전부 | 새 세션으로 로그인 |
+| 역할 변경 | 폐기하지 않는다 — 권한은 요청마다 DB 의 역할로 판정한다 | |
+
+### 첫 설정·복구·초대·재설정 흐름 (step 5)
+
+"첫 설정 필요" = `needs_first_setup(conn, "sess-selfhost")` = 워크스페이스 행이 없거나, `email`·`password_hash` 가 있고 `disabled_at IS NULL` 인 멤버가 0.
+
+| 경로 | 첫 설정 필요 | 그 밖 |
+|---|---|---|
+| `GET /login` | "관리자 계정 만들기" 폼(운영자 토큰·이메일·표시 이름·비밀번호) — 토큰 위치 안내(`deploy/selfhost/.env` 의 `OPERATOR_TOKEN`, 값은 보이지 않음) | 이메일·비밀번호 폼 + "비밀번호를 잊었나요 — 관리자에게 재설정 링크를 받거나 관리자는 복구" 링크(`/login/recover`) |
+| `POST /login/setup`(폼 `token`·`email`·`display_name`·`password`) | 토큰(`hmac.compare_digest`) → 입력 검사 → `ensure_workspace` → 첫 관리자 행(`ensure_first_admin` — 이미 있으면 그 행, 없으면 새로)에 `set_member_credentials`(표시 이름도 바꿈) → 로그인 세션 → 303 `/` | 409 `already_set_up` 화면("이미 관리자 계정이 있습니다") |
+| `POST /login`(폼 `email`·`password`) | 첫 설정 폼을 다시 보임(303 `/login`) | 맞으면 로그인 세션 → 303 `/`. 틀림·없는 이메일·비활성은 모두 같은 문구 403 `이메일 또는 비밀번호가 올바르지 않습니다.` |
+| `GET·POST /login/recover`(폼 `token`·`email`·`password`) | 303 `/login` | 토큰이 맞고 이메일이 **활성 관리자**면 새 비밀번호로 `set_member_credentials` → 그 멤버 세션 전부 폐기 → 새 세션 → 303 `/`. 아니면 403 `토큰 또는 관리자 이메일이 올바르지 않습니다.` |
+| `GET·POST /invite/{token}`(폼 `email`·`display_name`·`password`) | 303 `/login` | 유효한 초대면 가입 폼 / `accept_invite` → 새 멤버(초대의 역할) → 로그인 세션 → 303 `/`. 없음·만료·사용·취소는 모두 404 `초대 링크가 없거나 만료됐습니다.` 이미 쓰인 이메일은 422 `invalid_field`(`email`) |
+| `GET·POST /reset/{token}`(폼 `password`) | 303 `/login` | 유효한 재설정 링크면 새 비밀번호 폼 / `use_reset_link` → 세션 전부 폐기 → 새 세션 → 303 `/`. 무효는 404 `재설정 링크가 없거나 만료됐습니다.` |
+| `POST /logout` | — | 위 폐기 표 |
+
+- 입력 오류(이메일 형식·표시 이름·비밀번호 규칙)는 422 `invalid_field` 화면, 입력한 이메일·표시 이름만 되돌려 채운다.
+- 링크 모양: `<base>/invite/<토큰>`, `<base>/reset/<토큰>` — `<base>` = `WORKFLOW_PUBLIC_URL` 또는 요청 base URL. 발급 응답 화면에만 한 번 보인다(303 없이 같은 화면 렌더 — 연결 코드와 같다).
+- 링크 토큰이 로그에 남지 않게: 앱이 `uvicorn.access` 로거에 필터를 달아 `/invite/`·`/reset/` 뒤 경로를 `***` 로 가린다. 두 화면 응답에 `Referrer-Policy: no-referrer`.
+
+### 역할 × 동작 (step 1·6)
+
+`domain/team.py`: `ROLES = ("admin", "member")`, 동작 상수 11개(`ACTIONS`), `can(role, action) -> bool` — 모르는 역할은 False, 모르는 동작은 ValueError(오타를 테스트에서 잡는다). 화면 말: `admin` = "관리자", `member` = "멤버".
+
+| 동작 | 뜻 | `admin` | `member` |
+|---|---|---|---|
+| `manage_connections` | GitHub 연결(App·PAT)·소스 설정·담당자 연결·기준선 가져오기·n8n 입구 토큰·에이전트 수동 등록·삭제 | ✓ | |
+| `manage_rules` | 종류·후속 규칙·매핑 표 | ✓ | |
+| `manage_team` | 초대·초대 취소·역할 변경·비활성화·다시 활성화·재설정 링크 | ✓ | |
+| `manage_shared_notify` | 공용 알림 웹훅 저장·삭제·테스트·최근 알림 | ✓ | |
+| `attach_runner` | 러너 붙이기(연결 코드 발급), **자기** 코드 취소·**자기** 러너 해제 | ✓ | ✓ |
+| `remove_any_runner` | 남의·소유자 없는 러너 해제와 코드 취소 | ✓ | |
+| `create_work` | 업무 직접 등록 | ✓ | ✓ |
+| `delegate` | [에이전트에게 맡기기]·에이전트 선택·직접 실행·체인 시작 | ✓ | ✓ |
+| `respond` | 사람 요청 응답([다시 맡기기]·[닫기] 포함)·검토 결정·병합 결정 | ✓ | ✓ |
+| `view_metrics` | 지표 화면·JSON·CSV | ✓ | ✓ |
+| `edit_own_settings` | 내 설정(표시 이름·비밀번호·개인 웹훅) | ✓ | ✓ |
+
+활성 관리자가 0 이 되는 역할 변경·비활성화는 거부한다(repo `LastAdmin` → 409 `last_admin` "활성 관리자가 한 명은 있어야 합니다"). 자기 자신도 같은 규칙.
+
+**라우트별 필요 동작**(step 6). "로그인" = 활성 멤버면 누구나(`require_member`). 화면 미로그인 → 303 `/login`, API 미로그인 → 401 `unauthenticated`. 동작 없음 → 화면 403 `forbidden`("관리자 권한이 필요합니다."), API 403 `forbidden`.
+
+| 경로(현재 의존성) | 필요 |
+|---|---|
+| `GET /tasks`·`GET /work/{key}`·`GET /tasks/{id}`·`/live`·`/artifacts/{aid}`·`GET /chains/{id}`·`/live`·`GET /agents`·`GET /agents/{id}`·`GET /kinds`(`require_session`) | 로그인(설정 폼은 `manage_rules` 일 때만 보임) |
+| `GET /tasks/new`·`POST /tasks`(`require_session`) | `create_work` |
+| `POST /tasks/{id}/run`·`POST /tasks/{id}/select`·`POST /chains/{id}/start`(`require_session`), `POST /tasks/{id}/delegate`(`require_session` + `_require_operator_page`) | `delegate` |
+| `POST /tasks/{id}/review`(`require_session`), `POST /human-requests/{id}/responses`(`require_operator`) | `respond` |
+| `POST /kinds`·`POST /kinds/{kind}/delete`·`POST /rules`·`POST /rules/{id}/delete`(`require_session`), `PUT /field-mappings`(`require_operator`) | `manage_rules` |
+| `GET /field-mappings`(`require_operator`) | 로그인 |
+| `GET /sources`·`POST /sources/tokens`·`POST /sources/tokens/{id}/revoke`(`require_session`) | `manage_connections` |
+| `GET /github/sources`·`GET /github/sources/{id}`(`require_operator`) | 로그인 |
+| `POST /github/sources/preview`·`POST /github/sources`·`PUT /github/sources/{id}`·`POST /github/sources/{id}/stop`·`PUT /github/sources/{id}/assignees/{uid}`(`require_operator`) | `manage_connections` |
+| `GET /operator/github/app/new`·`/callback`·`/setup`·`POST /operator/github/token`(`require_session` + `_require_operator_page`) | `manage_connections` |
+| `POST /operator/github/sources/{id}/baseline`(`require_operator`) | `manage_connections` |
+| `POST /operator/agents`·`POST /operator/agents/{id}/delete`(`require_operator`) | `manage_connections` |
+| `GET /operator`(`require_session`, 안에서 `is_operator`) | 로그인 — 절마다: 러너(연결 코드·러너 목록)는 `attach_runner`, 에이전트 수동 등록은 `manage_connections` |
+| `GET /operator/github`(`require_session`, 안에서 `is_operator`) | 로그인 — 카드 읽기와 [러너 붙이기]는 `attach_runner`, 연결·설정 폼은 `manage_connections` |
+| `POST /operator/github/sources/{id}/runner`(`require_session` + `_require_operator_page`) | `attach_runner` |
+| `POST /operator/connect-codes`(`require_operator`) | `attach_runner` |
+| `POST /operator/connect-codes/{code}/revoke`(`require_operator`) | `attach_runner` + 발급자 본인, 아니면 `remove_any_runner` |
+| `GET /operator/notifications`·`POST …/webhook`·`…/webhook/delete`·`…/test`(`require_session` + `_require_operator_page`) | `manage_shared_notify` |
+| `GET /metrics`(`require_session`, 안에서 `is_operator`), `GET /metrics.json`·`/metrics.csv`(`require_operator`) | `view_metrics` |
+| `GET /`·`GET·POST /login`·`/login/setup`·`/login/recover`·`/invite/{t}`·`/reset/{t}`·`POST /logout`·`GET /healthz` | 인증 경로(위 흐름) |
+| `/connector/*`·`/executions/*`(연결 토큰)·`POST /sources/{source}/chains`(입구 토큰) | 그대로 — 멤버 로그인과 무관 |
+
+새 경로(step 7·10):
+
+| 경로 | 필요 | 동작 |
+|---|---|---|
+| `GET /team` | `manage_team` | 멤버 표(표시 이름·이메일·역할·상태·마지막 접속 = 가장 최근 `last_seen_at`)·쓰지 않은 초대(역할·만료)·초대 발급 폼 |
+| `POST /team/invites`(폼 `role`) | `manage_team` | `issue_invite` → 같은 화면에 링크 한 번(200) |
+| `POST /team/invites/{invite_id}/revoke` | `manage_team` | `revoke_invite` → 303 `/team` |
+| `POST /team/members/{member_id}/role`(폼 `role`) | `manage_team` | `set_member_role` → 303(마지막 관리자 409) |
+| `POST /team/members/{member_id}/disable`·`/enable` | `manage_team` | `disable_member`·`enable_member` → 303(마지막 관리자 409) |
+| `POST /team/members/{member_id}/reset-link` | `manage_team` | `issue_reset_link` → 같은 화면에 링크 한 번(200) |
+| `GET /me` | `edit_own_settings` | 내 설정: 표시 이름·이메일(읽기)·역할·비밀번호 변경·개인 웹훅(설정됨/없음·호스트만) |
+| `POST /me/profile`(폼 `display_name`) | `edit_own_settings` | 303 `/me` |
+| `POST /me/password`(폼 `current_password`·`new_password`) | `edit_own_settings` | 현재 비밀번호 확인(틀리면 403, 이 멤버 이메일 키로 실패 제한) → `set_member_credentials` → 새 세션 쿠키 → 303 |
+| `POST /me/webhook`(폼 `url`)·`/me/webhook/delete`·`/me/webhook/test` | `edit_own_settings` | 공용 알림 경로와 같은 검사(`_webhook_url_savable`)·같은 응답 모양, 비밀 파일만 개인 이름 |
+| `POST /operator/connectors/{connector_id}/revoke` | `attach_runner` + 소유자 본인, 아니면 `remove_any_runner` | `repo.revoke_connector` → 303 `/operator`. 없는 러너 404 |
+
+화면 컨텍스트(step 6): `_base` 에 `member`(`member_id`·`display_name`·`role`)와 `allowed`(`frozenset` — 그 역할이 할 수 있는 동작)를 싣는다. 템플릿은 `is_operator` 대신 `'manage_rules' in allowed` 처럼 본다. 왼쪽 목록의 관리자 링크(입구·알림·팀)는 해당 동작이 있을 때만, "내 설정"·로그아웃은 모두에게.
+
+### 맡긴 사람과 "내 차례" 받는 사람 (step 1·8)
+
+`turn_recipients(*, assignee_type, assignee_id, requested_by_member_id, members: Sequence[MemberFact]) -> tuple[str, ...]` — 순수. `MemberFact(member_id: str, role: str, active: bool)`, `members` 는 워크스페이스 멤버 전부(`created_at`, `member_id` 순).
+
+1. `assignee_type == "member"` 이고 그 멤버가 활성 → `(assignee_id,)`
+2. `requested_by_member_id` 가 활성 멤버 → `(requested_by_member_id,)`
+3. 활성 관리자 전원(주어진 순서)
+
+업무 상태(`work_status`)는 그대로다 — 받는 사람은 상태가 아니라 "누구에게 보이고 누가 알림을 받는가" 다. `repo.turn_recipients_of(conn, work_item_id) -> tuple[str, ...]` 가 행을 읽어 이 함수를 부른다.
+
+맡긴 사람(`work_items.requested_by_member_id`)을 쓰는 경로 — 모두 그 변경과 같은 트랜잭션에서 `repo.set_work_requester(conn, work_item_id, member_id)`(자체 BEGIN 없음, 이벤트 없음 — `work_item_events.type` CHECK 를 바꾸지 않는다). 가장 최근 값으로 덮어쓴다.
+
+| 경로 | 기록 |
+|---|---|
+| `POST /tasks/{id}/delegate` [에이전트에게 맡기기] | 누른 멤버 — `mark_issue_delegated(..., member_id=)` |
+| `POST /human-requests/{id}/responses` action `retry` [다시 맡기기] | 응답한 멤버 — `record_human_response_once(..., member_id=)` 가 `retry_task_id` 와 함께 |
+| `POST /chains/{id}/start` 체인 시작 | 누른 멤버 — 그 체인의 업무 전부 |
+| `POST /tasks` 직접 등록 | 등록한 멤버 — `insert_work_item_task(..., requested_by_member_id=)` |
+| `POST /tasks/{id}/run` 직접 실행 | 누른 멤버 — 그 단계의 업무 |
+
+기록하지 않는 것: GitHub 수집·트리거 라벨 지시(`delegated_by='label'`)·워커 자동 시작·후속 규칙이 만든 단계·n8n 입구(체인 생성). `new_work` 후속 업무는 원인 업무의 `requested_by_member_id` 를 복사한다(같은 사람이 맡긴 일의 결과).
+
+응답자: `record_human_response_once(..., member_id=)` 가 `human_responses.member_id` 에 남긴다. 응답은 로그인한 누구나(`respond`) — 받는 사람이 아니어도 된다. 업무 상세의 응답 기록에 응답자 표시 이름.
+
+홈 빠른 필터 "내 차례"(step 8): `GET /tasks?view=my_turn` — 업무 상태가 `내 차례` 이고 로그인한 멤버가 `turn_recipients_of` 에 든 업무만. 목록 줄·상세에 받는 사람 이름("→ 김OO"). 담당자별 묶음·보드는 16-work-ui.
+
+### 알림 — 받는 사람별 (step 9)
+
+- 사건(`human_request`·`pr_opened`·`task_failed`)의 받는 사람 = 그 Task 업무의 `turn_recipients_of`. 사건 키는 지금 중복 키 그대로(`human_request:<request_id>`, `pr_opened:<task_id>:<n>`, `task_failed:<execution_id>`).
+- **공용 경로**: 공용 웹훅(`notify_webhook_url`)이 설정돼 있으면 사건마다 **한 행**, `channel='shared'`, `recipient_member_id` = 받는 사람이 한 명이면 그 id·여럿이면 NULL, `payload_json.recipient_member_ids` = 받는 사람 id 목록. 본문 = 지금 문구 + ` → <표시 이름>`(여럿이면 `, ` 로 나열 — 예 `[Runloom] 사람 차례 — 쿠폰 오류: 검토 승인 → 김OO, 이OO`). 중복 키 `<사건 키>:shared`.
+- **개인 경로**: 받는 사람마다, 그 멤버의 개인 웹훅이 설정돼 있으면 **한 행**, `channel='personal'`, `recipient_member_id` = 그 멤버. 본문에는 `→` 를 붙이지 않는다. 중복 키 `<사건 키>:personal:<member_id>`.
+- 전달(`Worker._deliver_notifications`): 행의 경로로 URL 을 고른다 — `shared` 는 `notify_webhook_url`, `personal` 은 `notify_webhook_url.<member_id>`. 보낼 때 URL 이 없으면 `skipped`, 받는 사람이 비활성이면 `skipped`(개인 경로만). 재시도·형식 검사·로그 규칙은 지금 그대로.
+- v11 이전 행(`shared`·NULL·옛 중복 키)은 지금처럼 공용 URL 로 보낸다.
+- 개인 웹훅 비밀 파일 이름: `notify_webhook_url.<member_id>` — `secret_store.personal_webhook_name(member_id) -> str` 가 만들고, `member_id` 가 `^mem-[0-9a-f]{8}$` 가 아니면 ValueError(외부 입력으로 경로를 만들지 않는다). `SecretStore._path` 는 고정 목록 `NAMES` 또는 이 패턴의 이름만 받는다. 0600, DB·로그·응답·템플릿에 넣지 않는다 — 화면은 "설정됨/없음"·호스트만.
+- 최근 알림 목록: `/operator/notifications`(관리자)는 전부, `/me` 는 그 멤버가 받는 사람인 행(개인 행 + `payload_json.recipient_member_ids` 에 든 공용 행) 20건.
+
+### Origin 검사 (step 4)
+
+`auth.check_origin(request, settings) -> bool` — 앱 미들웨어가 `GET`·`HEAD`·`OPTIONS` 밖의 모든 요청에 부르고, 거짓이면 403 `forbidden_origin`("요청 출처를 확인할 수 없습니다.", 화면은 HTML·API 는 JSON 오류 본문). 규칙:
+
+1. 제외(Bearer 인증 — 쿠키를 보지 않는다): 경로가 `/connector/` 로 시작, `/executions/` 로 시작, 또는 `/sources/{source}/chains` 모양(`/sources/tokens` 는 쿠키 경로라 검사 대상).
+2. 출처 = `Origin` 헤더. 없으면 `Referer` 의 scheme+host+port. 둘 다 없거나 `Origin: null` 이면 거짓.
+3. 허용 = 요청 base URL(`request.base_url`)의 scheme+host+port, 그리고 `WORKFLOW_PUBLIC_URL` 이 있으면 그 scheme+host+port. 비교는 소문자, 기본 포트(80·443)는 채워서.
+
+로그인 전 경로(`POST /login`·`/login/setup`·`/login/recover`·`/invite/{t}`·`/reset/{t}`)도 검사한다(로그인 CSRF). 테스트 클라이언트는 기본 헤더 `Origin: http://testserver` 를 싣는다(step 4·5).
+
+### 로그인 실패 제한 (step 4)
+
+`auth.LoginThrottle` 을 키별로 바꾼다: `blocked(key) -> bool`, `fail(key)`, `reset(key)`. 창 60초(`LOGIN_FAILURE_WINDOW_SECONDS`) 안 실패 5회(`LOGIN_MAX_FAILURES`) → 창이 지날 때까지 맞는 입력도 429 `잠시 후 다시 시도하세요.` 키: 로그인·비밀번호 변경 = `email:<normalize_email 값, 형식이 틀리면 입력을 소문자로 254자까지>`, 첫 설정 = `setup`, 복구 = `recover`. 성공하면 그 키만 비운다. 실패 기록이 빈 키는 정리한다. 프로세스 메모리 그대로(재시작하면 초기화).
+
+### 러너 소유자 (step 10)
+
+| 단계 | 기록 |
+|---|---|
+| 연결 코드 발급(`POST /operator/connect-codes`, 카드 [러너 붙이기]) | `issue_connect_code(conn, now, *, issued_by_member_id)` → `connect_codes.issued_by_member_id` |
+| 교환(`POST /connector/exchange`) | `exchange_connect_code` 가 같은 트랜잭션에서 `connectors.owner_member_id` = 코드의 발급자 |
+| 에이전트 | 소유자 = `agents.connector_id` 의 `connectors.owner_member_id`(에이전트에 칸 없음). `connection_type='local'` 이 아니거나 연결 프로그램이 없으면 소유자 없음 |
+
+- 화면: 운영자 화면 러너 목록·에이전트 목록·상세에 "소유자 <표시 이름>", 없으면 "관리자 관리". 연결 코드 목록은 관리자면 전부, 멤버면 자기가 발급한 것만.
+- 해제·코드 취소: 소유자 본인(`attach_runner`) 또는 `remove_any_runner`. 소유자 없는 러너·코드는 관리자만. 해제는 기존 `repo.revoke_connector`(연결 토큰 무효 → 러너 다음 요청 401). 해제한 러너의 에이전트는 지금처럼 `offline` 으로 보이고 새 실행이 가지 않는다.
+- 러너 프로토콜(계약 v1)·`install-runner.sh` 는 바뀌지 않는다. `agents.owner_scope` 는 그대로 `personal`.
+
+### v10 → v11 마이그레이션 (step 2)
+
+한 트랜잭션. 실패하면 v10 그대로.
+
+1. `members` 세 칸 + 부분 UNIQUE INDEX.
+2. `login_sessions`·`member_invites` 표와 인덱스.
+3. `work_items.requested_by_member_id`, `human_responses.member_id`, `notifications.recipient_member_id`·`channel`(기본 `shared`), `connect_codes.issued_by_member_id`, `connectors.owner_member_id`.
+4. 데이터는 바꾸지 않는다 — 새 칸 NULL(`channel` 은 `shared`). 기존 첫 관리자(`관리자`)는 이메일·비밀번호가 없으므로 `needs_first_setup` 이 참 → 업그레이드 뒤 첫 접속이 "관리자 계정 만들기" 이고, 그 행에 계정을 채운다(업무 담당·이력이 그대로 이어진다).
+5. `PRAGMA foreign_key_check` → 버전 11.
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 비밀번호·이메일 | `domain/team.py`(1) | `SCRYPT_N = 2**14`, `SCRYPT_R = 8`, `SCRYPT_P = 1`, `SCRYPT_DKLEN = 32`, `PASSWORD_MIN_LENGTH = 10`, `PASSWORD_MAX_LENGTH = 128`, `DUMMY_PASSWORD_HASH`, `hash_password(pw: str, *, n: int \| None = None) -> str`, `verify_password(pw: str, stored: str) -> bool`, `password_problem(pw: str) -> str \| None`, `normalize_email(s: str) -> str \| None`, `clean_display_name(s: str) -> str \| None` — 표준 `hashlib`·`hmac`·`secrets`·`base64` 만 |
+| 역할·동작 | `domain/team.py`(1) | `ROLES = ("admin", "member")`, 동작 상수 `MANAGE_CONNECTIONS = "manage_connections"`·`MANAGE_RULES`·`MANAGE_TEAM`·`MANAGE_SHARED_NOTIFY`·`ATTACH_RUNNER`·`REMOVE_ANY_RUNNER`·`CREATE_WORK`·`DELEGATE`·`RESPOND`·`VIEW_METRICS`·`EDIT_OWN_SETTINGS`(값 = 소문자 이름), `ACTIONS: tuple[str, ...]`(위 표 순서), `can(role: str, action: str) -> bool`, `allowed_actions(role: str) -> frozenset[str]` |
+| 받는 사람 | `domain/team.py`(1) | `MemberFact(member_id: str, role: str, active: bool)`, `turn_recipients(*, assignee_type: str \| None, assignee_id: str \| None, requested_by_member_id: str \| None, members: Sequence[MemberFact]) -> tuple[str, ...]` |
+| 스키마 | `adapters/db.py`(2) | `SCHEMA_VERSION = 11`, 표 `login_sessions`·`member_invites`, 인덱스 `members_session_email`, `NOTIFICATION_CHANNELS = ("shared", "personal")`, `INVITE_PURPOSES = ("invite", "reset")`, fixture `tests/workflow/adapters/fixtures/schema_v10.sql` |
+| 예외 | `adapters/errors.py`(3) | `EmailTaken(AdapterError)`(422 `invalid_field` `email`), `LastAdmin(AdapterError)`(409 `last_admin`). 무효·만료·사용·취소 링크와 없는 멤버는 기존 `NotFound` |
+| 계정 | `adapters/repo.py`(3) | `set_member_credentials(conn, session_id, member_id, *, email: str, password_hash: str, display_name: str \| None = None, now) -> None`(자체 트랜잭션, 이메일 중복 `EmailTaken`, 그 멤버 로그인 세션 전부 폐기), `find_member_by_email(conn, session_id, email) -> Row \| None`(정규화된 값으로, 비활성 포함), `get_member(conn, session_id, member_id) -> Row \| None`, `needs_first_setup(conn, session_id) -> bool`, `set_member_display_name(conn, session_id, member_id, display_name, *, now) -> None`, `set_member_role(conn, session_id, member_id, role, *, now) -> None`(`LastAdmin`), `disable_member(conn, session_id, member_id, *, now) -> None`(`LastAdmin`, 세션 전부 폐기, 멱등), `enable_member(conn, session_id, member_id, *, now) -> None`(멱등). `list_members` 는 그대로(비활성 포함, `created_at` 순) |
+| 로그인 세션 | `adapters/repo.py`(3) | `create_login_session(conn, session_id, member_id, *, now, days: int) -> str`(쿠키 원문), `member_for_login_token(conn, token, *, now) -> Row \| None`(멤버 칸 + `login_id`, `last_seen_at` 5분 규칙), `revoke_login_session(conn, token, *, now) -> bool`, `revoke_login_sessions(conn, member_id, *, now) -> int`, `LOGIN_TOUCH_SECONDS = 300` |
+| 초대·재설정 | `adapters/repo.py`(3) | `issue_invite(conn, session_id, *, role, created_by_member_id, now) -> tuple[str, str]`(`(invite_id, 토큰 원문)`), `invite_for_token(conn, token, *, purpose, now) -> Row \| None`(유효한 것만 — GET 화면용), `accept_invite(conn, token, *, email, display_name, password_hash, now) -> str`(새 `member_id`, `NotFound`·`EmailTaken`), `issue_reset_link(conn, session_id, member_id, *, created_by_member_id, now) -> tuple[str, str]`(그 멤버의 쓰지 않은 재설정 링크 취소), `use_reset_link(conn, token, *, password_hash, now) -> str`(`member_id`, 세션 전부 폐기, 비활성 멤버면 `NotFound`), `revoke_invite(conn, session_id, invite_id, *, now) -> None`, `list_open_invites(conn, session_id, *, now) -> list[Row]`, `INVITE_TTL_DAYS = 7`, `RESET_TTL_HOURS = 24` |
+| 맡긴 사람·응답자 | `adapters/repo.py`(8) | `set_work_requester(conn, work_item_id, member_id) -> None`(자체 BEGIN 없음), `turn_recipients_of(conn, work_item_id) -> tuple[str, ...]`, `mark_issue_delegated(..., member_id=None)`, `record_human_response_once(..., member_id=None)`, `insert_work_item_task(..., requested_by_member_id=None)`, `list_work_items(..., recipient_member_id=None)`(내 차례 필터) |
+| 알림 | `adapters/repo.py`·`server/worker.py`·`domain/notification.py`(9) | `enqueue_notification(..., channel="shared", recipient_member_id=None)`, `notification_text(..., recipients: Sequence[str] = ())`(표시 이름 — 공용 본문 끝 `→ …`), `list_notifications(conn, session_id, limit=20, *, member_id=None)`, `Worker._notify` 가 받는 사람별 행을 만든다 |
+| 비밀 파일 | `adapters/secret_store.py`(7) | `personal_webhook_name(member_id: str) -> str`(= `f"{NOTIFY_WEBHOOK_URL}.{member_id}"`, 패턴 `^mem-[0-9a-f]{8}$` 밖이면 ValueError), `PERSONAL_WEBHOOK_PATTERN` |
+| 인증 | `server/auth.py`(4) | `LOGIN_COOKIE = "wf_login"`, `LoggedIn(session_id: str, member_id: str, role: str, display_name: str, login_id: str)`, `current_member(request, conn) -> LoggedIn \| None`, `require_member`(화면 — 미로그인 303 `/login`), `require_member_api`(API — 401 `unauthenticated`), `require_action(action: str, *, api: bool = False)`(의존성 팩토리 — 동작 없음 403 `forbidden`), `set_login_cookie(response, token, settings)`, `clear_login_cookies(response)`, `check_origin(request, settings) -> bool`, `LoginThrottle.blocked(key)`·`fail(key)`·`reset(key)`. 기존 `require_session`·`require_operator` 는 step 4 에서 각각 `require_member`·`require_action(MANAGE_CONNECTIONS, api=True)` 위의 `session_id` 래퍼로 두고, step 6 이 라우트를 옮긴 뒤 지운다. `SESSION_COOKIE`·`sign_session`·`verify_session` 은 step 5 가 로그인 경로를 바꾼 뒤 지운다(`SESSION_SECRET` 은 GitHub state 서명에 남음) |
+| 러너 소유자 | `adapters/repo.py`(10) | `issue_connect_code(conn, now, ttl_seconds=600, *, issued_by_member_id=None)`, `exchange_connect_code` 가 소유자 옮김, `connector_owner(conn, connector_id) -> str \| None`, `list_connect_codes(conn, *, issued_by_member_id=None)`(None = 전부) |
+| 오류 코드 | `server/web.py`(4·5·7) | `forbidden_origin`, `already_set_up`, `last_admin` (그 밖은 기존 `invalid_field`·`not_found`·`forbidden`·`unauthenticated`) |
+| 설정 | `server/settings.py`(4) | 새 키 없음 — `WORKFLOW_PUBLIC_URL`(`Settings.public_url`)을 링크·Origin·`Secure` 판정에 쓴다. `.env.example` 에 빈 값으로 있는지 step 4 가 확인 |
 
 ## 기존 구현과 초기 설계 기록
 

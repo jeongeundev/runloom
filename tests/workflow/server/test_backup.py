@@ -246,7 +246,7 @@ def test_help_says_stop_services_before_restore(capsys):
     assert "멈춘" in capsys.readouterr().out
 
 
-# --- phase 13·14: 셀프호스트 모양 v8 DB 사본 → v10 + 백업 왕복 (ADR-0019·0020, SELFHOST "업그레이드") -----------
+# --- phase 13·14·15: 셀프호스트 모양 v8 DB 사본 → v11 + 백업 왕복 (ADR-0019·0020, SELFHOST "업그레이드") -----------
 
 V8_NOW = "2026-09-28T00:00:00Z"
 LEGACY_KINDS = ("diagnosis", "code_change")
@@ -329,7 +329,7 @@ def _version_and_kinds(db_path: Path) -> tuple[int, list[str]]:
         conn.close()
 
 
-def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsys):
+def test_selfhost_v8_copy_upgrades_to_v11_and_backups_round_trip(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     env = _env(src)
@@ -343,7 +343,7 @@ def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsy
     assert backup.main(["list"], env=env) == 0
     assert capsys.readouterr().out.strip().endswith("schema 8")
 
-    # 2) v10 으로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로, 이슈마다 수정·검토가 각자 업무
+    # 2) v11 로 올린다 — 진단 두 종류·그 규칙만 사라지고 나머지 행 수는 그대로, 이슈마다 수정·검토가 각자 업무
     #    (후속 연결 없음), 첫 관리자·기본 매핑 하나
     conn = connect(src / "central.sqlite")
     init_schema(conn)
@@ -352,8 +352,9 @@ def test_selfhost_v8_copy_upgrades_to_v10_and_backups_round_trip(tmp_path, capsy
     assert v9_counts == {
         **v8_counts, "kinds": 2, "succession_rules": 1,
         "work_items": 6, "work_item_links": 0, "members": 1, "field_mappings": 1, "work_item_events": 0,
+        "login_sessions": 0, "member_invites": 0,
     }
-    assert _version_and_kinds(src / "central.sqlite") == (10, ["bug_fix", "code_review"])
+    assert _version_and_kinds(src / "central.sqlite") == (11, ["bug_fix", "code_review"])
 
     # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
     assert backup.main(["create"], env=env, now=lambda: T2) == 0
@@ -480,7 +481,7 @@ def _works(db_path: Path) -> list[tuple]:
         conn.close()
 
 
-def test_selfhost_v9_copy_upgrades_to_v10_work_items_and_backups_round_trip(tmp_path, capsys):
+def test_selfhost_v9_copy_upgrades_to_v11_work_items_and_backups_round_trip(tmp_path, capsys):
     src = tmp_path / "src"
     src.mkdir()
     env = _env(src)
@@ -494,14 +495,14 @@ def test_selfhost_v9_copy_upgrades_to_v10_work_items_and_backups_round_trip(tmp_
     assert backup.main(["list"], env=env) == 0
     assert capsys.readouterr().out.strip().endswith("schema 9")
 
-    # 2) v10 — 이슈 하나 = 업무 하나(검토 단계는 수정 업무에), 키는 생성 순, 기존 표 행 수·기준선 그대로
+    # 2) v11 — 이슈 하나 = 업무 하나(검토 단계는 수정 업무에), 키는 생성 순, 기존 표 행 수·기준선 그대로
     conn = connect(src / "central.sqlite")
     init_schema(conn)
     conn.close()
     v10_counts = _counts(src / "central.sqlite")
     assert v10_counts == {
         **v9_counts, "work_items": 21, "work_item_links": 0, "members": 1, "field_mappings": 1,
-        "work_item_events": 0,
+        "work_item_events": 0, "login_sessions": 0, "member_invites": 0,
     }
     works = _works(src / "central.sqlite")
     assert [w[0] for w in works] == list(range(1, 22))
@@ -537,3 +538,143 @@ def test_selfhost_v9_copy_upgrades_to_v10_work_items_and_backups_round_trip(tmp_
     assert backup.main(["restore", v9_backup], env=old_env) == 0
     assert _counts(old / "central.sqlite") == v10_counts
     assert _works(old / "central.sqlite") == works
+
+
+V10_SCHEMA = (Path(__file__).parents[2] / "workflow" / "adapters" / "fixtures" / "schema_v10.sql").read_text()
+V10_NOW = "2026-09-30T00:00:00Z"
+V10_SESSION = "sess-selfhost"
+V10_ADMIN = "mem-00000001"
+V10_WORKS = 22  # 수집만 된 업무 17 + 완료 4 + 사람 요청이 열린 업무 1
+
+
+def _v10_selfhost(db_path: Path, artifact_dir: Path) -> None:
+    """phase 14 셀프호스트가 남긴 모양의 v10 — 워크스페이스 하나, 첫 관리자(`관리자`, 이메일·비밀번호 없음), 업무 22건
+    (단계 Task 하나씩, 마지막 업무는 사람 요청이 열려 `내 차례`), 알림 행(보낸 것·대기), 연결 코드로 붙은 러너 1개와
+    그 러너의 Agent. 실제 셀프호스트 볼륨·백업은 읽지 않는다."""
+    from workflow.contracts.v1 import BUILTIN_KINDS, BUILTIN_RULES
+
+    conn = connect(db_path)
+    conn.executescript(V10_SCHEMA)
+    conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+    conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)",
+                 (V10_SESSION, V10_NOW))
+    for spec in BUILTIN_KINDS:
+        conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                     (V10_SESSION, spec.kind, spec.model_dump_json(), V10_NOW))
+    conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
+                 " VALUES ('rule-builtin', ?, 'bug_fix', 'code_review', ?, ?)",
+                 (V10_SESSION, BUILTIN_RULES[0].model_dump_json(), V10_NOW))
+    conn.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+                 " VALUES (?, ?, '관리자', 'admin', ?)", (V10_ADMIN, V10_SESSION, V10_NOW))
+    conn.execute("INSERT INTO connect_codes (code, issued_at, expires_at, used_at) VALUES ('code-1', ?, ?, ?)",
+                 (V10_NOW, V10_NOW, V10_NOW))
+    conn.execute("INSERT INTO connectors (connector_id, token_sha256, created_at) VALUES ('conn-00000001', 'h', ?)",
+                 (V10_NOW,))
+    conn.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id,"
+                 " local_registration_id, capabilities_json, connection_state) VALUES ('agt-00000001', 'billing',"
+                 " 'personal', 'local', 'conn-00000001', 'billing', '[]', 'online')")
+    for n in range(1, V10_WORKS + 1):
+        work_id, task_id = f"wi-{n:012x}", f"t-{n}"
+        status, reason, task_status = (
+            ("새로 들어옴", "지시 전 — [에이전트에게 맡기기]", "대기") if n <= 17
+            else ("완료", "PR 병합", "완료") if n <= 21 else ("내 차례", "사람 요청 — 확인", "확인 필요"))
+        conn.execute(
+            "INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status,"
+            " status_reason, source_type, source_key, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, 'r',"
+            " 'bug_fix', ?, ?, 'github', ?, ?, ?, ?)",
+            (work_id, V10_SESSION, n, f"이슈 {n}", status, reason, f"acme/archive#{n}", V10_NOW, V10_NOW,
+             V10_NOW if status == "완료" else None))
+        conn.execute(
+            "INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json, selection_mode,"
+            " run_mode, completion_mode, criteria_json, revision, target_json, status, status_reason, created_at,"
+            " work_item_id) VALUES (?, ?, ?, 'r', 'bug_fix', '{}', 'auto', 'auto', 'review', '[]', 1, '{}', ?, ?,"
+            " ?, ?)", (task_id, V10_SESSION, f"이슈 {n}", task_status, reason, V10_NOW, work_id))
+    conn.execute("INSERT INTO human_requests (request_id, task_id, code, question, cause_key, task_revision, revision,"
+                 " state, created_at) VALUES ('hr-00000001', ?, 'rework_limit_reached', '확인', 'k', 1, 1, 'open', ?)",
+                 (f"t-{V10_WORKS}", V10_NOW))
+    for n, (event, state) in enumerate((("pr_opened", "sent"), ("task_failed", "sent"), ("human_request", "pending")),
+                                       start=1):
+        conn.execute("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+                     " payload_json, state, created_at) VALUES (?, ?, ?, ?, ?, 'c', '{}', ?, ?)",
+                     (f"ntf-0000000{n}", V10_SESSION, event, f"t-{17 + n}", f"{event}:t-{17 + n}", state, V10_NOW))
+    conn.close()
+    (artifact_dir / V10_SESSION).mkdir(parents=True, exist_ok=True)
+    (artifact_dir / V10_SESSION / "diff.patch").write_text("--- a\n+++ b\n", encoding="utf-8")
+
+
+def _v11_facts(db_path: Path) -> dict:
+    from workflow.adapters import repo
+
+    conn = connect(db_path)
+    try:
+        (admin,) = repo.list_members(conn, V10_SESSION)
+        return {
+            "version": conn.execute("SELECT version FROM schema_version").fetchone()[0],
+            "needs_first_setup": repo.needs_first_setup(conn, V10_SESSION),
+            "admin": (admin["member_id"], admin["display_name"], admin["role"], admin["email"],
+                      admin["password_hash"], admin["disabled_at"]),
+            "runner_owner": repo.connector_owner(conn, "conn-00000001"),
+            "code_issuer": conn.execute("SELECT issued_by_member_id FROM connect_codes").fetchone()[0],
+            "notifications": [tuple(r) for r in conn.execute(
+                "SELECT dedupe_key, channel, recipient_member_id, state FROM notifications ORDER BY notification_id")],
+            "requesters": conn.execute(
+                "SELECT COUNT(*) FROM work_items WHERE requested_by_member_id IS NOT NULL").fetchone()[0],
+            "works": [tuple(r) for r in conn.execute(
+                "SELECT key_number, status, status_reason FROM work_items ORDER BY key_number")],
+            # 사람 요청이 열린 업무의 받는 사람 = 활성 관리자 전원(담당·맡긴 사람 없음)
+            "turn": repo.turn_recipients_of(conn, f"wi-{V10_WORKS:012x}"),
+        }
+    finally:
+        conn.close()
+
+
+def test_selfhost_v10_copy_upgrades_to_v11_needs_first_setup_and_backups_round_trip(tmp_path, capsys):
+    src = tmp_path / "src"
+    src.mkdir()
+    env = _env(src)
+    _v10_selfhost(src / "central.sqlite", src / "artifacts")
+    v10_counts = _counts(src / "central.sqlite")
+    assert (v10_counts["work_items"], v10_counts["tasks"], v10_counts["notifications"], v10_counts["connectors"]) == (
+        V10_WORKS, V10_WORKS, 3, 1)
+
+    # 1) 업그레이드 전 백업 — 스키마 10
+    assert backup.main(["create"], env=env, now=lambda: T1) == 0
+    v10_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    assert capsys.readouterr().out.strip().endswith("schema 10")
+
+    # 2) v11 — 기존 행 수 그대로 + 새 표 둘(비어 있음), 새 칸은 비어 있고 알림은 공용
+    conn = connect(src / "central.sqlite")
+    init_schema(conn)
+    conn.close()
+    v11_counts = _counts(src / "central.sqlite")
+    assert v11_counts == {**v10_counts, "login_sessions": 0, "member_invites": 0}
+    facts = _v11_facts(src / "central.sqlite")
+    assert facts["version"] == SCHEMA_VERSION == 11
+    assert facts["needs_first_setup"] is True  # 첫 접속에서 .env 토큰으로 관리자 계정을 만든다
+    assert facts["admin"] == (V10_ADMIN, "관리자", "admin", None, None, None)
+    assert (facts["runner_owner"], facts["code_issuer"]) == (None, None)  # 기존 러너 = 관리자 관리
+    assert facts["notifications"] == [
+        ("pr_opened:t-18", "shared", None, "sent"), ("task_failed:t-19", "shared", None, "sent"),
+        ("human_request:t-20", "shared", None, "pending")]
+    assert facts["requesters"] == 0
+    assert facts["works"][:17] == [(n, "새로 들어옴", "지시 전 — [에이전트에게 맡기기]") for n in range(1, 18)]
+    assert facts["works"][-1] == (V10_WORKS, "내 차례", "사람 요청 — 확인")
+    assert facts["turn"] == (V10_ADMIN,)
+
+    # 3) v11 백업 → 다른 위치 복원: 같은 행·판정·산출물
+    assert backup.main(["create"], env=env, now=lambda: T2) == 0
+    v11_backup = capsys.readouterr().out.strip()
+    dst = tmp_path / "dst"
+    dst_env = {**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v11_backup], env=dst_env) == 0
+    assert _counts(dst / "central.sqlite") == v11_counts
+    assert _v11_facts(dst / "central.sqlite") == facts
+    assert _files(dst / "artifacts") == _files(src / "artifacts")
+
+    # 4) 업그레이드 전 v10 백업으로 되돌려도 복원이 v11 로 올린다 — 같은 결과
+    old = tmp_path / "old"
+    old_env = {**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["restore", v10_backup], env=old_env) == 0
+    assert _counts(old / "central.sqlite") == v11_counts
+    assert _v11_facts(old / "central.sqlite") == facts

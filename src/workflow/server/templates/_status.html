@@ -35,3 +35,8 @@
 {% macro outcome_badge(outcome) -%}
 <span class="badge {{ 'badge-done' if outcome == 'ready_for_handoff' else 'badge-attention' }}" data-outcome="{{ outcome }}"><span class="dot dot-filled" aria-hidden="true"></span>{{ outcome|outcome_label }}</span>
 {%- endmacro %}
+
+{# 러너·에이전트 소유자 (phase 15 step 10) — views.runner_owner 값. 없으면 "관리자 관리" #}
+{% macro owner(o) -%}
+<span data-owner>{% if o %}소유자 {{ o.display_name }}{% if not o.active %} · 소유자 비활성{% endif %}{% else %}관리자 관리{% endif %}</span>
+{%- endmacro %}

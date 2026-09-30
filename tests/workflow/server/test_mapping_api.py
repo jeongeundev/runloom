@@ -6,9 +6,9 @@
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
-from workflow.server.auth import SELFHOST_SESSION_ID, SESSION_COOKIE, sign_session
+from workflow.server.auth import SELFHOST_SESSION_ID
 
-from .conftest import NOW
+from .conftest import log_in_other_workspace
 from .test_github_api import error
 
 DEFAULT = [{"source_type": "github", "field": "kind", "source_value": "*", "runloom_value": "bug_fix"}]
@@ -49,9 +49,7 @@ def test_put_rejects_unknown_kind_or_bad_body_without_change(logged_in_client, c
 
 
 def test_every_endpoint_requires_operator_session(client, conn):
-    repo.create_session(conn, "sess-other", NOW)  # 워크스페이스가 아닌 세션 — 로그인 안 된 것으로 본다
-    signed = TestClient(client.app)
-    signed.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    signed = log_in_other_workspace(TestClient(client.app))  # 다른 워크스페이스의 로그인 — 로그인 안 된 것으로 본다
     for anonymous in (TestClient(client.app), signed):
         error(anonymous.get("/field-mappings"), 401, "unauthenticated")
         error(anonymous.put("/field-mappings", json={"mappings": NEW}), 401, "unauthenticated")

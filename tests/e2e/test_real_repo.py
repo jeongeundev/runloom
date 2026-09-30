@@ -48,6 +48,7 @@ from tests.e2e.test_github_app import (
     FakeGitHubApp,
 )
 from tests.e2e.test_github_cycle import (
+    log_in,
     _FAKE_CODEX,
     BILLING_FILES,
     DROP_PREFIXES,
@@ -277,7 +278,8 @@ def world(tmp_path_factory):
             while not api.started:
                 assert time.monotonic() < deadline and api_thread.is_alive(), "중앙 API 가 뜨지 않음"
                 time.sleep(0.1)
-            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0)
+            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0,
+                                      headers={"Origin": world.central_url})  # Origin 검사 (phase 15)
             yield world
         finally:
             if world.http is not None:
@@ -341,7 +343,7 @@ def status_flow(world: World, work_item_id: str) -> list[str]:
 
 def test_01_login_connect_github_and_set_the_notification_url(world):
     http = world.http
-    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})
+    login = log_in(http, world.central_env["OPERATOR_TOKEN"])
     assert login.status_code == 303, login.text[:300]
 
     new = http.get("/operator/github/app/new")

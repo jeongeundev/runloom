@@ -14,13 +14,12 @@ from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
 from workflow.server import metrics_api
-from workflow.server.auth import SESSION_COOKIE, sign_session
 from workflow.adapters.github_client import GitHubForbidden, GitHubRateLimited, GitHubUnavailable
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig, IssuePrLink
 from workflow.contracts.v1 import ArtifactMeta, ExecutionEvent, ExecutionRequest
 from workflow.domain.metrics import BASELINE_NOTE
 
-from .conftest import event, meta_for, request_body, seed_execution, task_row
+from .conftest import event, log_in_other_workspace, meta_for, request_body, seed_execution, task_row
 from .test_github_api import login
 
 TOKEN = "github_pat_" + "M3tr1c" * 10
@@ -142,9 +141,8 @@ def error(response, status: int, code: str) -> dict:
 
 
 def test_every_endpoint_requires_operator_session(client, conn):
-    # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 로그인 안 된 것으로 본다
-    repo.create_session(conn, "sess-other", "2026-09-20T00:00:00Z")
-    client.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    # 고정 워크스페이스가 아닌 워크스페이스의 유효한 로그인 쿠키 — 셀프호스트에서는 로그인 안 된 것으로 본다
+    log_in_other_workspace(client)
     for anonymous in (TestClient(client.app), client):
         error(anonymous.get("/metrics.json"), 401, "unauthenticated")
         error(anonymous.get("/metrics.csv"), 401, "unauthenticated")

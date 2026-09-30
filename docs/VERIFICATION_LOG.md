@@ -453,3 +453,20 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 수정 없음 — 추가한 단정·테스트는 처음부터 통과했다(업무 동작은 step 1~9 에서 구현). 추가: 위 e2e 단정·실패 줄기, v9 사본 테스트. 문서: [SELFHOST](SELFHOST.md) 업그레이드 절 v10 한 줄, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 16절 "14 확정" 표시, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.
+
+## 2026-09-30 phase 15 팀 (step 11)
+
+목적: [ADR-0021](adr/0021-team-accounts-and-roles.md)의 팀 계정·역할·사람별 "내 차례"·받는 사람별 알림·러너 소유자가 대역 e2e 한 줄기와 셀프호스트 모양 v10 사본 마이그레이션에서 그대로 도는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 서버, 알림은 127.0.0.1 가짜 수신, origin 은 임시 bare 저장소다.
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-09-30 KST, 이 Mac, 브랜치 `feat-15-team` |
+| 명령·결과 | `python3 -m pytest -q` — **2912 passed·40 skipped**. `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **39 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e) |
+| 팀 한 줄기 | `tests/e2e/test_team.py` 7개 — 첫 설정(운영자 토큰 → 관리자 계정, 설정 뒤 `/login` 은 이메일·비밀번호 폼) → 관리자 GitHub 연결(가짜)·공용 알림·재작업 상한 0 → 초대 링크 → 멤버 `김멤버` 가입·재로그인, `/team`·`/operator/notifications`·`POST /team/invites` 는 멤버 403, 개인 웹훅 저장 → 멤버 [러너 붙이기] → `connectors.owner_member_id` = 멤버, 운영자 화면 `소유자 김멤버` → 멤버 [맡기기] → `requested_by_member_id` = 멤버 → 검토 수정 요청이 사람 요청 → 멤버의 `내 차례` 에만(관리자 내 차례엔 없음, 전체엔 있음) → 공용 1(`→ 김멤버`)·개인 1(→ 없음), 재실행해도 알림 2건 그대로 → 멤버 응답(`human_responses.member_id`·`data-responder`) → 수정이 revision 2 로 이어 돈다. 다른 Origin POST → 403 `forbidden_origin`·변경 없음. DB 덤프·로그·화면에 비밀번호·초대 토큰·웹훅 경로·로그인 쿠키 없음 |
+| v10 → v11 사본 | `tests/workflow/server/test_backup.py::test_selfhost_v10_copy_upgrades_to_v11_needs_first_setup_and_backups_round_trip` — 임시 디렉터리에 셀프호스트 모양 v10 DB(워크스페이스 하나, 첫 관리자 이메일·비밀번호 없음, 업무 22건 — 수집만 17·완료 4·사람 요청 열린 `내 차례` 1, 알림 3행, 연결 코드로 붙은 러너 1개·Agent)를 만들고 `backup create`(schema 10) → `init_schema` → 기존 표 행 수 그대로 + `login_sessions`·`member_invites` 0행, `needs_first_setup` 참, 관리자 행 불변(이메일·해시 없음), 러너 소유자·코드 발급자 없음(관리자 관리), 알림 전부 `shared`·받는 사람 NULL, 맡긴 사람 0, `내 차례` 업무의 받는 사람 = 관리자 → v11 백업 다른 위치 복원(같은 행·판정·산출물) → v10 백업 복원도 v11 로 올라 같은 결과. 사용자 셀프호스트 볼륨·백업 파일은 읽지 않았다 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — compose 프로젝트(`runloom-e2e-<랜덤>`)·포트(빈 포트)·볼륨은 격리되지만 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 쓴다. 실행하면 그 태그가 이 브랜치(v11) 코드로 다시 빌드돼, 사용자가 다음에 `compose up` 할 때 백업 없이 v11 로 올라가고 옛 로그인이 풀릴 수 있다. 셀프호스트 재설치는 사용자 지시 뒤라 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음(grep + `tests/test_packages.py`) |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 수정 없음 — 추가한 e2e·사본 테스트는 처음부터 통과했다(팀 동작은 step 1~10 에서 구현). 배포 파일: `deploy/selfhost/install.sh` 설치 뒤 안내 "처음 접속 때 토큰으로 관리자 계정을 만든다"(`tests/test_selfhost_files.py` 단정). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v11·팀(초대·비밀번호 분실·공개 주소와 원격 접속·개인 웹훅), [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 15-team 완료, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.

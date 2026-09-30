@@ -11,12 +11,13 @@ import html as html_lib
 import re
 
 import pytest
+from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
+from workflow.domain import team
 from workflow.server import task_cycle, views
-from workflow.server.auth import SESSION_COOKIE, sign_session, verify_session
 
-from .conftest import log_in
+from .conftest import log_in, log_in_member, log_in_other_workspace, session_of
 
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     FIX,
@@ -53,19 +54,15 @@ def settings(settings):
 def operator(client, cycle, conn):
     """이 클라이언트를 고정 워크스페이스(cycle 의 `SESSION`)에 로그인 — 소스·업무의 주인. 셀프호스트는 로그인 = 운영자."""
     log_in(client)
-    assert verify_session(client.cookies[SESSION_COOKIE], "test-session-secret") == SESSION
+    assert session_of(client) == SESSION
     return client
 
 
 def _stranger(app, conn):
-    """워크스페이스가 아닌 세션 행을 서명한 쿠키를 가진 클라이언트 — 셀프호스트에서는 로그인 안 된 것으로 본다."""
+    """고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키를 가진 클라이언트 — 셀프호스트에서는 로그인 안 된 것으로 본다."""
     from fastapi.testclient import TestClient
 
-    if repo.get_session(conn, "sess-other") is None:
-        repo.create_session(conn, "sess-other", NOW)
-    stranger = TestClient(app)
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
-    return stranger
+    return log_in_other_workspace(TestClient(app))
 
 
 def page(client, url: str) -> str:
@@ -171,7 +168,8 @@ def test_views_blockers_are_the_readiness_blockers(operator, conn, worker, setti
     task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[])
     worker.tick()
     row = repo.get_task(conn, task_id)
-    context = views.cycle_context(conn, store, row, now=NOW, settings=settings, is_operator=True)
+    context = views.cycle_context(conn, store, row, now=NOW, settings=settings,
+                                 allowed=team.allowed_actions("admin"))
     readiness = task_cycle.evaluate(conn, row, now=NOW, settings=settings)
     assert [(b["code"], b["reason"], b["actor"]) for b in context["blockers"]] == [
         (b.code, b.reason, b.actor) for b in readiness.blockers
@@ -197,7 +195,7 @@ def test_plain_tasks_have_no_cycle_block(client, conn, store, settings):
                             "required_capability": {"code": "docs.write", "scope": {"repository_id": "docs"}},
                             "criteria": []}, NOW)
     assert views.cycle_context(conn, store, repo.get_task(conn, "task-plain"), now=NOW, settings=settings,
-                               is_operator=False) is None
+                               allowed=frozenset()) is None
 
 
 # --- 사람 요청 응답 ----------------------------------------------------------------------------
@@ -274,16 +272,27 @@ def test_response_api_rejects_form_posts_and_other_sessions(operator, client, co
     assert repo.get_human_request(conn, "sess-other", other_request)["state"] == "open"
 
 
-def test_non_operator_session_sees_no_response_form(operator, conn, worker, app):
+def test_member_sees_the_response_form_regardless_of_is_operator(operator, conn, worker, app):
+    # 응답은 `respond` 동작(관리자·멤버) — 워크스페이스의 `is_operator` 는 읽지 않는다 (ADR-0021)
     task_id = _two_assignees(conn)
     worker.tick()
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (SESSION,))
     conn.commit()
-    text = page(operator, f"/tasks/{task_id}")
     (request,) = repo.list_human_requests(conn, task_id)
-    assert request["question"] in text
-    assert f'data-request-id="{request["request_id"]}"' not in text
-    assert "운영자만 응답" in text
+    for client in (operator, log_in_member(TestClient(app))):
+        text = page(client, f"/tasks/{task_id}")
+        assert request["question"] in text
+        assert f'data-request-id="{request["request_id"]}"' in text
+        assert "응답 권한이 없습니다" not in text
+
+
+def test_views_hide_response_and_delegate_without_the_actions(operator, conn, worker, settings, store):
+    task_id = _two_assignees(conn)
+    worker.tick()
+    context = views.cycle_context(conn, store, repo.get_task(conn, task_id), now=NOW, settings=settings,
+                                  allowed=frozenset())
+    assert context["can_delegate"] is False
+    assert [r["response_id"] for r in context["open_requests"]] == [None]
 
 
 # --- 직접 실행 모드 -------------------------------------------------------------------------

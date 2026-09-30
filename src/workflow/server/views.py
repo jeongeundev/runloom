@@ -35,6 +35,7 @@ from workflow.domain.metrics import (
     summarize_baseline,
 )
 from workflow.domain.notification import webhook_host
+from workflow.domain import team
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.domain.work_status import STAGE_FAILED
@@ -119,6 +120,21 @@ def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[Ki
     data["online"] = agent_online(agent, now=now, settings=settings)
     data["discovered_summary"] = discovered_summary(data)
     return data
+
+
+def agent_owner_id(conn: Connection, agent: Row) -> str | None:
+    """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리)."""
+    if agent["connection_type"] != "local" or agent["connector_id"] is None:
+        return None
+    return repo.connector_owner(conn, agent["connector_id"])
+
+
+def runner_owner(conn: Connection, session_id: str, owner_member_id: str | None) -> dict[str, Any] | None:
+    """러너·에이전트의 "소유자 <표시 이름>" — None 이면 "관리자 관리". 비활성 멤버는 `active` 가 False."""
+    row = repo.get_member(conn, session_id, owner_member_id) if owner_member_id is not None else None
+    if row is None:
+        return None
+    return {"member_id": row["member_id"], "display_name": row["display_name"], "active": row["disabled_at"] is None}
 
 
 def kind_public(spec: KindSpec) -> dict[str, Any]:
@@ -348,7 +364,8 @@ def _chip(conn: Connection, summary: dict[str, Any], stage_ids: list[str]) -> di
 
 
 def task_context(
-    conn: Connection, store: ArtifactStore, task_row: Row, *, now: str, settings: Settings, is_operator: bool = False
+    conn: Connection, store: ArtifactStore, task_row: Row, *, now: str, settings: Settings,
+    allowed: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """업무 상세 템플릿 컨텍스트 전부. 동작 가능 여부(`can_run`·`can_review`·`needs_selection`)도 여기서 정한다.
     업무 순환 Task 는 `cycle`(`cycle_context`)의 준비 판정이 직접 실행 여부를 정하고, 담당은 선택 폼이 아니라
@@ -382,7 +399,7 @@ def task_context(
     needs_selection = not finished and active is None and not selected
     chain = repo.get_chain(conn, task_row["chain_id"]) if task_row["chain_id"] is not None else None
     spec = repo.get_kind(conn, task_row["session_id"], task_row["kind"])
-    cycle = cycle_context(conn, store, task_row, now=now, settings=settings, is_operator=is_operator)
+    cycle = cycle_context(conn, store, task_row, now=now, settings=settings, allowed=allowed)
     cycle_task = cycle is not None and cycle["cycle"]
     if cycle_task:
         needs_selection = False
@@ -529,7 +546,7 @@ def _review_result(conn: Connection, store: ArtifactStore, executions: list[Row]
 
 
 def _request_public(
-    conn: Connection, request: Row, *, is_operator: bool, agent_choices: list[dict[str, Any]]
+    conn: Connection, request: Row, *, can_respond: bool, agent_choices: list[dict[str, Any]]
 ) -> dict[str, Any]:
     allowed = human_api.allowed_actions(request["code"])
     data = {k: request[k] for k in ("request_id", "code", "question", "state", "revision", "created_at", "answered_at")}
@@ -540,7 +557,7 @@ def _request_public(
     data["asks_information"] = human_api.asks_information(request["code"])
     data["agent_choices"] = agent_choices if "choose_agent" in allowed else []
     # 응답 폼마다 새 응답 ID — 같은 폼을 두 번 보내면 서버가 한 번만 반영한다(`response_id` 멱등)
-    data["response_id"] = f"resp-{uuid4().hex}" if request["state"] == "open" and is_operator else None
+    data["response_id"] = f"resp-{uuid4().hex}" if request["state"] == "open" and can_respond else None
     return data
 
 
@@ -554,7 +571,7 @@ def _agent_choices(conn: Connection, session_id: str, origin: dict[str, Any] | N
 
 
 def cycle_context(
-    conn: Connection, store: ArtifactStore, task: Row, *, now: str, settings: Settings, is_operator: bool
+    conn: Connection, store: ArtifactStore, task: Row, *, now: str, settings: Settings, allowed: frozenset[str]
 ) -> dict[str, Any] | None:
     """업무 상세의 업무 순환 영역 — 원본 링크·담당·대기 사유·사람 요청과 응답(입력 보충)·생성 근거·재시도 횟수·검토 결과·
     원본 반영 상태. 업무 순환 종류도 아니고 원본 이슈도 없으면 None."""
@@ -584,7 +601,7 @@ def cycle_context(
 
     agent_choices = _agent_choices(conn, task["session_id"], origin)
     requests = [
-        _request_public(conn, r, is_operator=is_operator, agent_choices=agent_choices)
+        _request_public(conn, r, can_respond=team.RESPOND in allowed, agent_choices=agent_choices)
         for r in repo.list_human_requests(conn, task_id)
     ]
     link = repo.get_followup_link(conn, task_id)
@@ -606,13 +623,10 @@ def cycle_context(
         "origin": origin,
         "blockers": blockers,
         "can_start": can_start,
-        "can_delegate": is_operator and undelegated(conn, task),
+        "can_delegate": team.DELEGATE in allowed and undelegated(conn, task),
         "requests": requests,
         "open_requests": [r for r in requests if r["state"] == "open"],
-        "responses": [
-            {k: r[k] for k in ("question", "action", "text", "agent_id", "created_at", "task_revision")}
-            for r in repo.list_human_responses(conn, task_id)
-        ],
+        "responses": _responses_public(conn, task),
         "followup": {
             "cause_execution_id": link["cause_execution_id"],
             "cause_task_id": cause_task["task_id"] if cause_task is not None else None,
@@ -654,17 +668,36 @@ def assignee_label(conn: Connection, work: Row) -> str:
     return "담당 없음"
 
 
+def _member_names(conn: Connection, session_id: str) -> dict[str, str]:
+    return {m["member_id"]: m["display_name"] for m in repo.list_members(conn, session_id)}
+
+
+def _responses_public(conn: Connection, task: Row) -> list[dict[str, Any]]:
+    """단계의 응답 기록 — 응답자는 표시 이름(v11 이전 응답은 None)."""
+    names = _member_names(conn, task["session_id"])
+    return [
+        {**{k: r[k] for k in ("question", "action", "text", "agent_id", "created_at", "task_revision")},
+         "responder": names.get(r["member_id"]) if r["member_id"] else None}
+        for r in repo.list_human_responses(conn, task["task_id"])
+    ]
+
+
 def work_summary(conn: Connection, work: Row) -> dict[str, Any]:
     """목록 한 줄 — 키(원본 키가 있으면 원본 키)·제목·담당·업무 상태·이유·갱신 시각. 첫 단계가 지시 전이면
-    [에이전트에게 맡기기] 대상(`delegate_task_id`)."""
+    [에이전트에게 맡기기] 대상(`delegate_task_id`). `내 차례` 면 받는 사람 표시 이름(`recipients`, 계산값)."""
     stages = repo.list_work_item_tasks(conn, work["work_item_id"])
     first = stages[0] if stages else None
     work_key = format_work_key(work["key_number"])
+    recipients: list[str] = []
+    if work["status"] == "내 차례":
+        names = _member_names(conn, work["session_id"])
+        recipients = [names[m] for m in repo.turn_recipients_of(conn, work["work_item_id"])]
     return {
         "work_key": work_key,
         "key": work["source_key"] or work_key,
         "title": work["title"],
         "assignee": assignee_label(conn, work),
+        "recipients": recipients,
         "status": UserStatus(work["status"], work["status_reason"]),
         "updated_at": work["updated_at"],
         "delegate_task_id": first["task_id"] if first is not None and undelegated(conn, first) else None,
@@ -672,13 +705,14 @@ def work_summary(conn: Connection, work: Row) -> dict[str, Any]:
 
 
 def work_context(
-    conn: Connection, work: Row, *, now: str, settings: Settings, is_operator: bool
+    conn: Connection, work: Row, *, now: str, settings: Settings, allowed: frozenset[str]
 ) -> dict[str, Any]:
     """업무 상세 — 머리(키·원본·상태·담당·PR)·단계 목록·양식 칸·연결 업무·열린 사람 요청(응답 폼)."""
     session_id = work["session_id"]
     stages = repo.list_work_item_tasks(conn, work["work_item_id"])
     pull_request = None
     open_requests: list[dict[str, Any]] = []
+    responses: list[dict[str, Any]] = []
     stage_views = []
     for stage in stages:
         summary = task_summary(conn, stage, now=now, settings=settings)
@@ -690,13 +724,14 @@ def work_context(
         })
         if (pr := repo.get_pull_request_row(conn, stage["task_id"])) is not None:
             pull_request = pull_request_public(pr)
+        responses.extend(_responses_public(conn, stage))
         opened = [r for r in repo.list_human_requests(conn, stage["task_id"]) if r["state"] == "open"]
         if opened:
             issue, config = task_cycle.origin_source(conn, stage)
             origin = _origin(conn, stage, issue, config) if issue is not None else None
             choices = _agent_choices(conn, session_id, origin)
             open_requests.extend(
-                {**_request_public(conn, r, is_operator=is_operator, agent_choices=choices),
+                {**_request_public(conn, r, can_respond=team.RESPOND in allowed, agent_choices=choices),
                  "task_id": stage["task_id"]}
                 for r in opened
             )
@@ -733,6 +768,7 @@ def work_context(
         ],
         "links": links,
         "open_requests": open_requests,
+        "responses": responses,
     }
 
 
@@ -801,6 +837,38 @@ def notifications_context(conn: Connection, session_id: str, *, secrets: SecretS
         "notifications": [
             {k: row[k] for k in ("event", "state", "attempts", "last_error", "created_at", "sent_at")}
             for row in repo.list_notifications(conn, session_id)
+        ],
+    }
+
+
+def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, Any]:
+    """팀 화면 — 멤버(표시 이름·이메일·역할·상태·가입·마지막 접속)와 쓰지 않은 초대(역할·만료). 비밀번호 해시·링크 토큰은 싣지 않는다."""
+    last_seen = repo.member_last_seen(conn, session_id)
+    return {
+        "members": [
+            {**{k: row[k] for k in ("member_id", "display_name", "email", "role", "disabled_at", "created_at")},
+             "last_seen_at": last_seen.get(row["member_id"])}
+            for row in repo.list_members(conn, session_id)
+        ],
+        "invites": [
+            {k: row[k] for k in ("invite_id", "role", "created_at", "expires_at")}
+            for row in repo.list_open_invites(conn, session_id, now=now)
+        ],
+    }
+
+
+def me_context(conn: Connection, session_id: str, member_id: str, *, secrets: SecretStore) -> dict[str, Any]:
+    """내 설정 — 표시 이름·이메일·역할, 개인 웹훅은 설정됨/없음·호스트만(URL 은 다시 보이지 않는다),
+    내가 받는 최근 알림(사건·상태·시각·오류 분류만 — 본문 없음)."""
+    row = repo.get_member(conn, session_id, member_id)
+    url = secrets.read(secret_store.personal_webhook_name(member_id))
+    return {
+        "account": {k: row[k] for k in ("display_name", "email", "role")},
+        "webhook_configured": url is not None,
+        "webhook_host": webhook_host(url) if url is not None else None,
+        "notifications": [
+            {k: n[k] for k in ("event", "channel", "state", "attempts", "last_error", "created_at", "sent_at")}
+            for n in repo.list_notifications(conn, session_id, member_id=member_id)
         ],
     }
 

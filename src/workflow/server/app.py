@@ -41,7 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 요청마다 새 연결 (auth.get_conn). sqlite3 연결을 스레드 간 공유하지 않는다.
     app.state.conn_factory = lambda: connect(settings.db_path)
     app.state.store = ArtifactStore(settings.artifact_dir)
-    app.state.login_throttle = LoginThrottle()  # 로그인 연속 실패 제한 — 프로세스 메모리
+    app.state.login_throttle = LoginThrottle()  # 로그인 연속 실패 제한 — 키(이메일·setup·recover)별, 프로세스 메모리
     app.state.github_client = None  # 기준선 가져오기 — None 이면 요청 때 Settings 로 만든다. 테스트는 가짜로 바꾼다
     app.state.secrets = SecretStore(settings.secret_dir)  # GitHub App·PAT 비밀 파일 (ADR-0017)
     app.state.github_transport = None  # GitHub 연결 경로의 httpx transport — 테스트는 가짜 GitHub 로 바꾼다
@@ -54,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(metrics_api.router)  # 지표·기준선 가져오기 (ADR-0015) — 운영자 세션만
     app.include_router(mapping_api.router)  # 매핑 표 (ADR-0020) — 운영자 세션만
     web.install(app)  # 라우터 + PageError → error.html
+    app.middleware("http")(web.origin_guard)  # 쿠키 인증 변경 요청의 Origin 검사 (phase 15) — Bearer 경로 제외
     app.add_api_route("/healthz", lambda: _healthz(settings), methods=["GET"])  # 인증 없음 (ADR-0016)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")  # style.css 만. CDN 없음
     return app

@@ -37,21 +37,23 @@
 
 <div class="section-head"><h2>업무</h2></div>
 <div class="actions" style="margin-bottom:12px">
+  <a class="btn btn-small{% if view != 'my_turn' %} btn-secondary{% endif %}" href="/tasks?view=my_turn" data-view="my_turn">내 차례 <span class="count">{{ my_turn_count }}</span></a>
+  <a class="btn btn-small{% if view != 'all' %} btn-secondary{% endif %}" href="/tasks" data-view="all">전체</a>
   <a class="btn btn-secondary" href="/tasks/new">직접 등록</a>
 </div>
-{% if my_work %}
+{% if work_list %}
 <div>
-  {% for w in my_work %}
+  {% for w in work_list %}
   <div class="card" data-work-key="{{ w.work_key }}">
     <div class="card-title"><a href="/work/{{ w.work_key }}"><span class="mono">{{ w.key }}</span> {{ w.title }}</a></div>
-    <div class="status-line" style="margin:0">{{ st.badge(w.status.label) }}<span class="reason">{{ w.status.reason }}</span><span class="small">{{ w.assignee }} · {{ w.updated_at|ago(now) }}</span></div>
-    {% if is_operator and w.delegate_task_id %}<form method="post" action="/tasks/{{ w.delegate_task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
+    <div class="status-line" style="margin:0">{{ st.badge(w.status.label) }}<span class="reason">{{ w.status.reason }}</span><span class="small">{{ w.assignee }}{% if w.recipients %} → {{ w.recipients|join(', ') }}{% endif %} · {{ w.updated_at|ago(now) }}</span></div>
+    {% if 'delegate' in allowed and w.delegate_task_id %}<form method="post" action="/tasks/{{ w.delegate_task_id }}/delegate" class="actions"><button class="btn btn-small" type="submit">에이전트에게 맡기기</button><span class="action-note">GitHub 이슈 — 맡겨야 실행합니다</span></form>{% endif %}
   </div>
   {% endfor %}
 </div>
 {% else %}
 <div class="empty" style="padding-top:0">
-  <p>아직 업무가 없습니다.</p>
+  <p>{{ '내 차례인 업무가 없습니다.' if view == 'my_turn' else '아직 업무가 없습니다.' }}</p>
 </div>
 {% endif %}
 {% endblock %}

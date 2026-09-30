@@ -5,8 +5,11 @@
 `sess-other` 행을 DB 에 직접 넣어 본다."""
 
 import dataclasses
+import hashlib
+import hmac
 import html as html_lib
 import json
+import logging
 import re
 
 import pytest
@@ -16,27 +19,33 @@ from workflow.adapters import repo
 from workflow.contracts.v1 import BUILTIN_KINDS, ArtifactMeta, ExecutionRequest
 from workflow.server.app import create_app
 from workflow.server.auth import (
+    LOGIN_COOKIE,
     LOGIN_MAX_FAILURES,
     SELFHOST_SESSION_ID,
-    SESSION_COOKIE,
     ensure_workspace,
-    verify_session,
+    utc_now,
 )
 from workflow.server.web import create_chain
 
 from .conftest import (
+    ADMIN_EMAIL,
+    ADMIN_PASSWORD,
     BASE_COMMIT,
     LOCAL_REGISTRATION,
+    MEMBER_PASSWORD,
     NOW,
+    OPERATOR_TOKEN,
     REPOSITORY,
     RESULT_COMMIT,
     SESSION,
     code_change_result,
     log_in,
+    log_in_member,
     meta_for,
     seed_agents,
     seed_execution,
     seed_result_ready,
+    session_of,
 )
 
 DIAGNOSE_REQUEST = (
@@ -63,7 +72,7 @@ def web(logged_in_client, agents):
 
 
 def session_id_of(client: TestClient, settings) -> str:
-    return verify_session(client.cookies[SESSION_COOKIE], settings.session_secret)
+    return session_of(client)
 
 
 def fix_form(**overrides) -> dict:
@@ -1593,7 +1602,8 @@ def test_sources_page_uses_public_url_and_lists_callback_hosts(settings, agents)
     custom = dataclasses.replace(
         settings, callback_hosts=("localhost:5678", "127.0.0.1"), public_url="https://runloom.example",
     )
-    client = log_in(TestClient(create_app(custom)))
+    # 공개 주소가 https 면 로그인 쿠키가 Secure — 브라우저처럼 https 로 연다
+    client = log_in(TestClient(create_app(custom), base_url="https://testserver"))
     text = sources_page(client)
     assert "https://runloom.example/sources/n8n/chains" in text
     assert "http://testserver/sources" not in text
@@ -1691,9 +1701,7 @@ def test_token_issue_is_not_on_operator_page(web):
     assert 'action="/sources/tokens"' not in text and "입구 토큰" not in text
 
 
-# --- selfhost 로그인 (phase 10 step 2, ADR-0016 결정 3) ------------------------------------
-
-OPERATOR_TOKEN = "test-operator-token"
+# --- 로그인·첫 설정·복구·초대·재설정·로그아웃 (phase 15 step 5, ADR-0021, ARCHITECTURE "팀 — phase 15") -------------
 
 
 @pytest.fixture
@@ -1705,8 +1713,42 @@ def session_count(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
 
 
-def login(client, token: str = OPERATOR_TOKEN, path: str = "/login"):
-    return client.post(path, data={"token": token}, follow_redirects=False)
+def login(client):
+    """관리자로 로그인(첫 설정이 필요하면 첫 설정). conftest `log_in` 과 같다."""
+    return log_in(client)
+
+
+def setup(client, **overrides):
+    form = {"token": OPERATOR_TOKEN, "email": ADMIN_EMAIL, "display_name": "김관리", "password": ADMIN_PASSWORD}
+    return client.post("/login/setup", data={**form, **overrides}, follow_redirects=False)
+
+
+def email_login(client, email: str = ADMIN_EMAIL, password: str = ADMIN_PASSWORD):
+    return client.post("/login", data={"email": email, "password": password}, follow_redirects=False)
+
+
+def recover(client, **overrides):
+    form = {"token": OPERATOR_TOKEN, "email": ADMIN_EMAIL, "password": "recovered-password-1"}
+    return client.post("/login/recover", data={**form, **overrides}, follow_redirects=False)
+
+
+def admin_id(conn) -> str:
+    return repo.find_member_by_email(conn, SESSION, ADMIN_EMAIL)["member_id"]
+
+
+def all_rows_text(conn) -> str:
+    """DB 의 모든 표 행을 문자열로 — 원문 토큰·비밀번호가 어디에도 없는지 본다."""
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    return "\n".join(repr(tuple(row)) for t in tables for row in conn.execute(f"SELECT * FROM {t}"))
+
+
+def app_log_text(caplog) -> str:
+    """앱이 남긴 로그(httpx 클라이언트 로그는 테스트 쪽 요청 줄이라 뺀다)."""
+    return "\n".join(r.getMessage() for r in caplog.records if not r.name.startswith("httpx"))
+
+
+def invite_token(conn, role: str = "member") -> str:
+    return repo.issue_invite(conn, SESSION, role=role, created_by_member_id=admin_id(conn), now=utc_now())[1]
 
 
 def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn):
@@ -1723,77 +1765,361 @@ def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn
     assert session_count(conn) == 0
     page = client.get("/login")
     assert page.status_code == 200
-    assert 'name="token"' in page.text and 'action="/login"' in page.text
+    assert 'action="/login/setup"' in page.text
+    for name in ("token", "email", "display_name", "password"):
+        assert f'name="{name}"' in page.text, name
 
 
-def test_selfhost_login_sets_workspace_cookie_and_shares_workspace_across_browsers(selfhost, conn, settings):
-    first = TestClient(selfhost)
-    response = login(first)
+def test_first_setup_creates_admin_account_and_logs_in(selfhost, conn, settings, caplog):
+    client = TestClient(selfhost)
+    with caplog.at_level("DEBUG"):
+        response = setup(client, email=" Admin@Example.COM ")
     assert response.status_code == 303 and response.headers["location"] == "/"
     set_cookie = response.headers["set-cookie"].lower()
+    assert set_cookie.startswith(f"{LOGIN_COOKIE}=")
     assert "httponly" in set_cookie and "samesite=lax" in set_cookie and "max-age=1209600" in set_cookie
-    assert verify_session(response.cookies[SESSION_COOKIE], settings.session_secret) == SELFHOST_SESSION_ID
+    assert "secure" not in set_cookie  # 공개 주소가 https 가 아니다
     assert repo.get_session(conn, SELFHOST_SESSION_ID)["is_operator"] == 1
-    assert first.get("/", follow_redirects=False).headers["location"] == "/tasks"
-    assert first.get("/tasks").status_code == 200
-    assert first.get("/metrics.json").status_code == 200  # 로그인 = 운영자
+    (member,) = repo.list_members(conn, SESSION)  # 첫 관리자 행에 계정을 채운다 — 새 멤버를 만들지 않는다
+    assert (member["email"], member["display_name"], member["role"]) == (ADMIN_EMAIL, "김관리", "admin")
+    assert member["password_hash"].startswith("scrypt$")
+    assert session_of(client) == SELFHOST_SESSION_ID
+    assert client.get("/", follow_redirects=False).headers["location"] == "/tasks"
+    assert client.get("/tasks").status_code == 200
+    assert client.get("/metrics.json").status_code == 200  # 기존 운영자 판정을 통과한다(권한 전환은 step 6)
+    cookie = client.cookies[LOGIN_COOKIE]
+    stored = all_rows_text(conn)
+    assert ADMIN_PASSWORD not in stored and cookie not in stored and OPERATOR_TOKEN not in stored
+    logs = app_log_text(caplog)
+    assert ADMIN_PASSWORD not in logs and cookie not in logs and OPERATOR_TOKEN not in logs
+    assert ADMIN_PASSWORD not in response.text
 
+
+def test_after_first_setup_login_page_is_email_form_and_setup_is_closed(selfhost, conn):
+    client = TestClient(selfhost)
+    assert setup(client).status_code == 303
+    page = TestClient(selfhost).get("/login").text
+    assert 'action="/login"' in page and 'name="email"' in page and 'name="password"' in page
+    assert 'name="token"' not in page and 'href="/login/recover"' in page
+    before = repo.get_member(conn, SESSION, admin_id(conn))["password_hash"]
+    again = setup(TestClient(selfhost), email="intruder@example.com", password="intruder-password-1")
+    assert again.status_code == 409 and "<code>already_set_up</code>" in again.text
+    assert LOGIN_COOKIE not in again.cookies
+    assert repo.find_member_by_email(conn, SESSION, "intruder@example.com") is None
+    assert repo.get_member(conn, SESSION, admin_id(conn))["password_hash"] == before
+
+
+def test_first_setup_rejects_wrong_or_missing_token_without_leaking(selfhost, conn, caplog):
+    client = TestClient(selfhost)
+    guess = "guess-" + OPERATOR_TOKEN[::-1]
+    with caplog.at_level("DEBUG"):
+        wrong = setup(client, token=guess)
+        missing = setup(client, token="")
+    for response in (wrong, missing):
+        assert response.status_code == 403
+        assert "토큰이 올바르지 않습니다" in response.text
+        assert LOGIN_COOKIE not in response.cookies
+        assert guess not in response.text and OPERATOR_TOKEN not in response.text
+        assert ADMIN_PASSWORD not in response.text
+    assert guess not in app_log_text(caplog) and ADMIN_PASSWORD not in app_log_text(caplog)
+    assert session_count(conn) == 0  # 토큰이 맞기 전에는 워크스페이스를 만들지 않는다
+    assert client.get("/tasks", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_first_setup_throttles_repeated_token_failures(selfhost, conn):
+    client = TestClient(selfhost)
+    for _ in range(LOGIN_MAX_FAILURES):
+        assert setup(client, token="wrong").status_code == 403
+    blocked = setup(client)  # 맞는 토큰이어도 창이 지날 때까지
+    assert blocked.status_code == 429 and "잠시 후" in blocked.text
+    assert LOGIN_COOKIE not in blocked.cookies
+    assert session_count(conn) == 0
+
+
+@pytest.mark.parametrize("field,value", [("email", "not-an-email"), ("display_name", "   "),
+                                         ("password", "short")])
+def test_first_setup_rejects_invalid_input_and_refills_only_email_and_name(selfhost, conn, field, value):
+    client = TestClient(selfhost)
+    response = setup(client, **{field: value})
+    assert response.status_code == 422
+    assert LOGIN_COOKIE not in response.cookies
+    if field != "email":
+        assert f'value="{ADMIN_EMAIL}"' in response.text
+    assert ADMIN_PASSWORD not in response.text
+    assert repo.needs_first_setup(conn, SESSION)
+
+
+def test_email_login_from_another_browser_shares_the_workspace(selfhost, conn):
+    first = TestClient(selfhost)
+    assert setup(first).status_code == 303
     shared = kind_form(kind="shared_check", label="브라우저 공유 확인", capability_code="shared_check")
     assert first.post("/kinds", data=shared, follow_redirects=False).status_code == 303
     second = TestClient(selfhost)  # 다른 브라우저 — 쿠키 없음
     assert second.get("/kinds", follow_redirects=False).status_code == 303
-    assert login(second).status_code == 303
+    response = email_login(second, email="ADMIN@example.com")
+    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert second.cookies[LOGIN_COOKIE] != first.cookies[LOGIN_COOKIE]  # 브라우저마다 로그인 세션
     assert "브라우저 공유 확인" in second.get("/kinds").text
     assert session_count(conn) == 1
 
 
-def test_selfhost_wrong_token_is_rejected_without_leaking(selfhost, conn, caplog):
+def test_email_login_failures_share_one_message_and_leak_nothing(selfhost, conn, caplog):
     client = TestClient(selfhost)
-    secret_guess = "guess-" + OPERATOR_TOKEN[::-1]
+    assert setup(client).status_code == 303
+    member_client = TestClient(selfhost)
+    log_in_member(member_client, email="off@example.com")
+    repo.disable_member(conn, SESSION, repo.find_member_by_email(conn, SESSION, "off@example.com")["member_id"],
+                        now=utc_now())
+    guess = "wrong-password-" + ADMIN_PASSWORD
+    anonymous = TestClient(selfhost)
     with caplog.at_level("DEBUG"):
-        response = login(client, secret_guess)
-    assert response.status_code == 403
-    assert "토큰이 올바르지 않습니다" in response.text
-    assert secret_guess not in response.text and OPERATOR_TOKEN not in response.text
-    assert SESSION_COOKIE not in response.cookies
-    assert all(secret_guess not in r.getMessage() and OPERATOR_TOKEN not in r.getMessage() for r in caplog.records)
-    assert session_count(conn) == 0
-    assert client.get("/tasks", follow_redirects=False).status_code == 303
+        responses = [
+            email_login(anonymous, password=guess),  # 틀린 비밀번호
+            email_login(anonymous, email="nobody@example.com", password=guess),  # 없는 이메일
+            email_login(anonymous, email="off@example.com", password=MEMBER_PASSWORD),  # 비활성 멤버
+            email_login(anonymous, email="not-an-email", password=guess),  # 형식이 틀린 이메일
+        ]
+    bodies = set()
+    for response in responses:
+        assert response.status_code == 403
+        assert "이메일 또는 비밀번호가 올바르지 않습니다." in response.text
+        assert LOGIN_COOKIE not in response.cookies
+        assert guess not in response.text and MEMBER_PASSWORD not in response.text
+        bodies.add(response.text.replace("nobody@example.com", ADMIN_EMAIL).replace("off@example.com", ADMIN_EMAIL)
+                   .replace("not-an-email", ADMIN_EMAIL))
+    assert len(bodies) == 1  # 입력한 이메일만 다르다 — 존재 여부를 드러내지 않는다
+    logs = app_log_text(caplog)
+    assert guess not in logs and MEMBER_PASSWORD not in logs
+    assert anonymous.get("/tasks", follow_redirects=False).headers["location"] == "/login"
 
 
-def test_selfhost_logout_clears_cookie(selfhost, conn):
-    client = TestClient(selfhost)
-    login(client)
-    response = client.post("/logout", follow_redirects=False)
+def test_email_login_before_first_setup_goes_back_to_setup(selfhost, conn):
+    response = email_login(TestClient(selfhost))
     assert response.status_code == 303 and response.headers["location"] == "/login"
-    assert SESSION_COOKIE in response.headers["set-cookie"] and "max-age=0" in response.headers["set-cookie"].lower()
-    assert client.get("/tasks", follow_redirects=False).headers["location"] == "/login"
-    assert repo.get_session(conn, SELFHOST_SESSION_ID) is not None  # DB 는 그대로
+    assert LOGIN_COOKIE not in response.cookies and session_count(conn) == 0
 
 
-def test_selfhost_login_throttles_repeated_failures(selfhost):
+def test_email_login_throttles_per_email(selfhost):
+    assert setup(TestClient(selfhost)).status_code == 303
+    member = TestClient(selfhost)
+    log_in_member(member, email="m@example.com")
     client = TestClient(selfhost)
     for _ in range(LOGIN_MAX_FAILURES):
-        assert login(client, "wrong").status_code == 403
-    blocked = login(client)  # 맞는 토큰이어도 창이 지날 때까지 거부
-    assert blocked.status_code == 429
-    assert SESSION_COOKIE not in blocked.cookies
-    assert "잠시 후" in blocked.text
+        assert email_login(client, password="wrong-password-x").status_code == 403
+    blocked = email_login(client)  # 맞는 비밀번호여도 창이 지날 때까지 거부
+    assert blocked.status_code == 429 and "잠시 후" in blocked.text
+    assert LOGIN_COOKIE not in blocked.cookies
+    assert email_login(client, email="ADMIN@example.com").status_code == 429  # 같은 이메일(정규화)
+    assert email_login(client, email="m@example.com", password=MEMBER_PASSWORD).status_code == 303  # 다른 이메일
 
 
-def test_selfhost_login_success_resets_failure_count(selfhost):
+def test_email_login_success_resets_failure_count(selfhost):
+    assert setup(TestClient(selfhost)).status_code == 303
     client = TestClient(selfhost)
     for _ in range(LOGIN_MAX_FAILURES - 1):
-        login(client, "wrong")
-    assert login(client).status_code == 303
+        email_login(client, password="wrong-password-x")
+    assert email_login(client).status_code == 303
     for _ in range(LOGIN_MAX_FAILURES - 1):
-        assert login(client, "wrong").status_code == 403
+        assert email_login(client, password="wrong-password-x").status_code == 403
+
+
+def test_recover_changes_admin_password_and_revokes_sessions(selfhost, conn, caplog):
+    old = TestClient(selfhost)
+    assert setup(old).status_code == 303
+    old_cookie = old.cookies[LOGIN_COOKIE]
+    page = TestClient(selfhost).get("/login/recover")
+    assert page.status_code == 200
+    for name in ("token", "email", "password"):
+        assert f'name="{name}"' in page.text, name
+    client = TestClient(selfhost)
+    with caplog.at_level("DEBUG"):
+        response = recover(client, email="Admin@example.com")
+    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert client.get("/tasks").status_code == 200
+    assert old.get("/tasks", follow_redirects=False).headers["location"] == "/login"  # 기존 세션 폐기
+    assert repo.member_for_login_token(conn, old_cookie, now=utc_now()) is None
+    assert email_login(TestClient(selfhost)).status_code == 403  # 옛 비밀번호
+    assert email_login(TestClient(selfhost), password="recovered-password-1").status_code == 303
+    assert "recovered-password-1" not in app_log_text(caplog) + all_rows_text(conn)
+
+
+def test_recover_rejects_wrong_token_or_non_admin_with_one_message(selfhost, conn):
+    assert setup(TestClient(selfhost)).status_code == 303
+    log_in_member(TestClient(selfhost), email="m@example.com")
+    before = {r["member_id"]: r["password_hash"] for r in repo.list_members(conn, SESSION)}
+    client = TestClient(selfhost)
+    wrong_token = recover(client, token="wrong-token")
+    not_admin = recover(client, email="m@example.com")
+    nobody = recover(client, email="nobody@example.com")
+    for response in (wrong_token, not_admin, nobody):
+        assert response.status_code == 403
+        assert "토큰 또는 관리자 이메일이 올바르지 않습니다." in response.text
+        assert LOGIN_COOKIE not in response.cookies
+        assert "recovered-password-1" not in response.text and OPERATOR_TOKEN not in response.text
+    assert {r["member_id"]: r["password_hash"] for r in repo.list_members(conn, SESSION)} == before
+
+
+def test_recover_throttles_on_the_recover_key_and_is_closed_before_setup(selfhost, conn):
+    client = TestClient(selfhost)
+    assert client.get("/login/recover", follow_redirects=False).headers["location"] == "/login"
+    assert recover(client).headers["location"] == "/login"  # 첫 설정 전에는 복구 없음
+    assert setup(TestClient(selfhost)).status_code == 303
+    for _ in range(LOGIN_MAX_FAILURES):
+        assert recover(client, token="wrong").status_code == 403
+    blocked = recover(client)
+    assert blocked.status_code == 429 and "잠시 후" in blocked.text
+    assert email_login(TestClient(selfhost)).status_code == 303  # 이메일 로그인 키는 따로
+
+
+def test_invite_link_signs_up_member_and_logs_in_once(selfhost, conn, caplog):
+    assert setup(TestClient(selfhost)).status_code == 303
+    token = invite_token(conn, role="member")
+    client = TestClient(selfhost)
+    page = client.get(f"/invite/{token}")
+    assert page.status_code == 200
+    assert page.headers["referrer-policy"] == "no-referrer"
+    for name in ("email", "display_name", "password"):
+        assert f'name="{name}"' in page.text, name
+    assert token not in page.text
+    with caplog.at_level("DEBUG"):
+        response = client.post(f"/invite/{token}", data={"email": "Kim@Example.com", "display_name": "김멤버",
+                                                         "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    member = repo.find_member_by_email(conn, SESSION, "kim@example.com")
+    assert (member["display_name"], member["role"]) == ("김멤버", "member")
+    assert session_of(client) == SESSION and client.get("/tasks").status_code == 200
+    assert token not in app_log_text(caplog) and MEMBER_PASSWORD not in app_log_text(caplog)
+    assert token not in all_rows_text(conn) and MEMBER_PASSWORD not in all_rows_text(conn)
+    # 1회용 — 다시 쓰면 무효 안내
+    again = TestClient(selfhost).post(f"/invite/{token}", data={"email": "lee@example.com", "display_name": "이",
+                                                                "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert again.status_code == 404 and "초대 링크가 없거나 만료됐습니다." in again.text
+    assert repo.find_member_by_email(conn, SESSION, "lee@example.com") is None
+
+
+def test_invalid_expired_or_revoked_invite_shows_the_same_notice(selfhost, conn):
+    assert setup(TestClient(selfhost)).status_code == 303
+    expired = repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin_id(conn),
+                                now="2000-01-01T00:00:00Z")[1]
+    revoked_id, revoked = repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin_id(conn),
+                                            now=utc_now())
+    repo.revoke_invite(conn, SESSION, revoked_id, now=utc_now())
+    client = TestClient(selfhost)
+    for token in ("not-a-real-token", expired, revoked):
+        for response in (client.get(f"/invite/{token}"),
+                         client.post(f"/invite/{token}", data={"email": "x@example.com", "display_name": "x",
+                                                               "password": MEMBER_PASSWORD})):
+            assert response.status_code == 404
+            assert "초대 링크가 없거나 만료됐습니다." in response.text
+            assert token not in response.text
+            assert 'name="password"' not in response.text
+    assert repo.find_member_by_email(conn, SESSION, "x@example.com") is None
+
+
+def test_invite_with_taken_email_is_422_and_keeps_the_link(selfhost, conn):
+    assert setup(TestClient(selfhost)).status_code == 303
+    token = invite_token(conn)
+    client = TestClient(selfhost)
+    taken = client.post(f"/invite/{token}", data={"email": ADMIN_EMAIL, "display_name": "중복",
+                                                  "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert taken.status_code == 422 and "이미 쓰는 이메일입니다." in taken.text
+    assert LOGIN_COOKIE not in taken.cookies and MEMBER_PASSWORD not in taken.text
+    short = client.post(f"/invite/{token}", data={"email": "new@example.com", "display_name": "새",
+                                                  "password": "short"}, follow_redirects=False)
+    assert short.status_code == 422 and 'value="new@example.com"' in short.text
+    ok = client.post(f"/invite/{token}", data={"email": "new@example.com", "display_name": "새",
+                                               "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert ok.status_code == 303
+
+
+def test_invite_is_closed_before_first_setup(selfhost):
+    client = TestClient(selfhost)
+    assert client.get("/invite/anything", follow_redirects=False).headers["location"] == "/login"
+    assert client.get("/reset/anything", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_reset_link_sets_new_password_and_revokes_sessions(selfhost, conn, caplog):
+    assert setup(TestClient(selfhost)).status_code == 303
+    member = TestClient(selfhost)
+    log_in_member(member, email="m@example.com")
+    member_id = repo.find_member_by_email(conn, SESSION, "m@example.com")["member_id"]
+    _, token = repo.issue_reset_link(conn, SESSION, member_id, created_by_member_id=admin_id(conn), now=utc_now())
+    client = TestClient(selfhost)
+    page = client.get(f"/reset/{token}")
+    assert page.status_code == 200 and page.headers["referrer-policy"] == "no-referrer"
+    assert 'name="password"' in page.text and 'name="email"' not in page.text and token not in page.text
+    short = client.post(f"/reset/{token}", data={"password": "short"}, follow_redirects=False)
+    assert short.status_code == 422
+    with caplog.at_level("DEBUG"):
+        response = client.post(f"/reset/{token}", data={"password": "new-member-password"}, follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert client.get("/tasks").status_code == 200
+    assert member.get("/tasks", follow_redirects=False).headers["location"] == "/login"  # 기존 세션 폐기
+    assert email_login(TestClient(selfhost), "m@example.com", MEMBER_PASSWORD).status_code == 403
+    assert email_login(TestClient(selfhost), "m@example.com", "new-member-password").status_code == 303
+    assert token not in app_log_text(caplog) and "new-member-password" not in app_log_text(caplog)
+    reused = TestClient(selfhost).post(f"/reset/{token}", data={"password": "another-password-1"})
+    assert reused.status_code == 404 and "재설정 링크가 없거나 만료됐습니다." in reused.text
+    invalid = TestClient(selfhost).get("/reset/not-a-real-token")
+    assert invalid.status_code == 404 and "재설정 링크가 없거나 만료됐습니다." in invalid.text
+
+
+def test_logout_revokes_login_session_and_clears_cookies(selfhost, conn):
+    client = TestClient(selfhost)
+    login(client)
+    cookie = client.cookies[LOGIN_COOKIE]
+    response = client.post("/logout", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/login"
+    cleared = {h.split("=", 1)[0] for h in response.headers.get_list("set-cookie") if "max-age=0" in h.lower()}
+    assert cleared == {LOGIN_COOKIE, "wf_session"}
+    assert client.get("/tasks", follow_redirects=False).headers["location"] == "/login"
+    replay = TestClient(selfhost)  # 지운 쿠키 값을 다시 실어도 서버 세션이 폐기돼 있다
+    replay.cookies.set(LOGIN_COOKIE, cookie)
+    assert replay.get("/tasks", follow_redirects=False).headers["location"] == "/login"
+    assert repo.member_for_login_token(conn, cookie, now=utc_now()) is None
+    assert repo.get_session(conn, SELFHOST_SESSION_ID) is not None  # 워크스페이스는 그대로
+
+
+def test_old_workspace_cookie_does_not_log_in(selfhost, conn, settings):
+    """옛 `wf_session`(고정 워크스페이스 서명)은 더 이상 로그인이 아니다."""
+    login(TestClient(selfhost))
+    mac = hmac.new(settings.session_secret.encode(), SELFHOST_SESSION_ID.encode(), hashlib.sha256).hexdigest()
+    client = TestClient(selfhost)
+    client.cookies.set("wf_session", f"{SELFHOST_SESSION_ID}.{mac}")
+    assert client.get("/tasks", follow_redirects=False).headers["location"] == "/login"
+    assert client.get("/metrics.json").status_code == 401
+
+
+def test_access_log_masks_invite_and_reset_tokens(selfhost, caplog):
+    access = logging.getLogger("uvicorn.access")
+    with caplog.at_level("INFO", logger="uvicorn.access"):
+        for path in ("/invite/SeCrEt-InViTe", "/reset/SeCrEt-ReSeT?x=1", "/tasks"):
+            access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "GET", path, "1.1", 200)
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "SeCrEt" not in text
+    assert "/invite/***" in text and "/reset/***" in text and "/tasks" in text
+
+
+def test_sidebar_shows_logged_in_member_and_logout(selfhost):
+    client = TestClient(selfhost)
+    assert setup(client, display_name="김관리").status_code == 303
+    html = client.get("/tasks").text
+    sidebar = html[html.index('class="sidebar'):html.index('class="main')]
+    assert "김관리" in sidebar and "관리자" in sidebar
+    assert 'action="/logout"' in sidebar and "로그아웃" in sidebar
+    member = TestClient(selfhost)
+    log_in_member(member, display_name="박멤버")
+    html = member.get("/tasks").text
+    sidebar = html[html.index('class="sidebar'):html.index('class="main')]
+    assert "박멤버" in sidebar and "멤버" in sidebar
 
 
 def test_operator_login_route_is_gone(selfhost, conn):
     """ADR-0019 — 로그인은 `/login` 하나. 예전 `/operator/login` 은 없다."""
     client = TestClient(selfhost)
-    assert login(client, path="/operator/login").status_code == 404
+    response = client.post("/operator/login", data={"token": OPERATOR_TOKEN}, follow_redirects=False)
+    assert response.status_code == 404
     assert session_count(conn) == 0
 
 
@@ -1854,16 +2180,22 @@ def assert_no_secrets(text: str, settings) -> None:
         assert not secret or secret not in text
 
 
-def test_selfhost_login_page_is_one_token_field_with_notice(selfhost, settings):
+def test_selfhost_login_page_shows_setup_then_email_form_with_notice(selfhost, settings):
     client = TestClient(selfhost)
     page = client.get("/login").text
-    assert page.count("<input") == 1 and 'type="password"' in page and 'name="token"' in page
+    assert page.count("<input") == 4 and 'type="password"' in page and 'name="token"' in page
     assert "/static/style.css" in page
-    assert "셀프호스트" in page and "OPERATOR_TOKEN" in page
+    assert "OPERATOR_TOKEN" in page and "deploy/selfhost/.env" in page  # 토큰 위치만, 값은 없다
     assert 'class="alert"' not in page
-    failed = login(client, "wrong").text
+    failed = setup(client, token="wrong").text
     assert 'class="alert"' in failed and "토큰이 올바르지 않습니다" in failed
-    assert_no_secrets(page + failed, settings)
+    assert setup(client).status_code == 303
+    email_page = TestClient(selfhost).get("/login").text
+    assert email_page.count("<input") == 2 and 'type="email"' in email_page and 'type="password"' in email_page
+    assert "OPERATOR_TOKEN" not in email_page
+    wrong = email_login(TestClient(selfhost), password="wrong-password-x").text
+    assert 'class="alert"' in wrong and "이메일 또는 비밀번호가 올바르지 않습니다." in wrong
+    assert_no_secrets(page + failed + email_page + wrong, settings)
 
 
 def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, settings):
@@ -1897,3 +2229,49 @@ def test_selfhost_hides_demo_only_elements(settings):
         assert_no_secrets(response.text, settings)
 
 
+
+
+# --- phase 15 step 8: 맡긴 사람 — 직접 등록·직접 실행·체인 시작 -------------------------------------------------
+
+
+def _member_of(conn, client) -> str:
+    from workflow.server.auth import LOGIN_COOKIE, utc_now
+
+    return repo.member_for_login_token(conn, client.cookies[LOGIN_COOKIE], now=utc_now())["member_id"]
+
+
+def _requester(conn, task_id: str) -> str | None:
+    return repo.work_item_of_task(conn, task_id)["requested_by_member_id"]
+
+
+def test_direct_register_records_the_registering_member(web, conn, app):
+    task_id = create_task(web, fix_form())
+    assert _requester(conn, task_id) == _member_of(conn, web)
+    member = log_in_member(TestClient(app))
+    other = create_task(member, fix_form())
+    assert _requester(conn, other) == _member_of(conn, member)
+
+
+def test_direct_run_records_the_member_who_pressed_it(review_web, conn, app):
+    report_registration(conn, LOCAL_REVIEW, verification_profile_ids=())
+    task_id = create_task(review_web, review_form())
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/tasks/{task_id}/run", follow_redirects=False).status_code == 303
+    assert _requester(conn, task_id) == _member_of(conn, member)
+
+
+def test_failed_direct_run_does_not_record(web, conn, app):
+    task_a = create_task(web, fix_form())
+    task_b = create_task(web, code_review_form(task_a, run_mode="manual"))
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/tasks/{task_b}/run", follow_redirects=False).status_code == 409
+    assert _requester(conn, task_b) == _member_of(conn, web)  # 등록한 관리자 그대로
+
+
+def test_chain_start_records_the_member_on_every_work_item_of_the_chain(web, conn, app):
+    report_registration(conn)
+    chain_id, tasks = import_chain(web, conn, "#41", "#42")
+    assert [_requester(conn, t) for t in tasks] == [None, None]  # n8n 입구는 기록하지 않는다
+    member = log_in_member(TestClient(app))
+    assert member.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
+    assert [_requester(conn, t) for t in tasks] == [_member_of(conn, member)] * 2

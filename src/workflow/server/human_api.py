@@ -1,7 +1,7 @@
 """운영자 사람 요청 목록·응답 API — ADR-0014 결정 7, CONTRACT 13.9·13.11.
 
-- 응답 권한은 운영자 세션(`require_operator`)뿐이다. GitHub 담당자를 웹 인증 사용자로 보지 않고, GitHub 댓글을 응답·승인
-  명령으로 읽지 않는다. 다른 세션의 요청은 404.
+- 목록은 로그인한 멤버, 응답은 `respond` 동작(ADR-0021). GitHub 담당자를 웹 인증 사용자로 보지 않고, GitHub 댓글을
+  응답·승인 명령으로 읽지 않는다. 다른 세션의 요청은 404.
 - 응답은 `response_id` 로 멱등, `expected_revision` 으로 경쟁을 막는다. 요청을 `answered` 로, Task revision 을 +1 할 뿐
   실행을 만들지 않는다 — 워커가 다음 revision 을 준비 판정으로 다시 본다. 응답 내용은 다음 실행 요청에 붙고
   Task 요청 원문·원본 스냅샷은 그대로다(`task_cycle.request_text`).
@@ -24,7 +24,8 @@ from workflow.adapters import repo
 from workflow.adapters.errors import ResponseConflict, StaleRequest, TaskClosed
 from workflow.contracts.v1 import NonEmptyStr
 from workflow.domain.work_status import STAGE_FAILED
-from workflow.server.auth import get_conn, require_operator, utc_now
+from workflow.domain import team
+from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_api, utc_now
 from workflow.server.errors import ApiError
 
 router = APIRouter(prefix="/human-requests")
@@ -80,8 +81,10 @@ def _check(conn: Connection, session_id: str, request, body: ResponseBody) -> No
                            f"에이전트 {body.agent_id} 는 이 워크스페이스에 등록되지 않았습니다.", field="agent_id")
 
 
-def respond_to_request(conn: Connection, session_id: str, request_id: str, body: ResponseBody, now: str) -> dict:
-    """응답 기록 — 재전송은 처음 결과. 검사는 처음 응답에만 의미가 있지만 같은 본문이면 같은 결과라 먼저 한다."""
+def respond_to_request(
+    conn: Connection, session_id: str, request_id: str, body: ResponseBody, now: str, *, member_id: str | None = None,
+) -> dict:
+    """응답 기록 — 재전송은 처음 결과. `member_id` 는 응답자(다시 맡기기면 맡긴 사람도). 검사는 처음 응답에만 의미가 있지만 같은 본문이면 같은 결과라 먼저 한다."""
     request = repo.get_human_request(conn, session_id, request_id)
     if request is None:
         raise ApiError(404, "not_found", f"사람 요청 {request_id}을 찾을 수 없습니다.", field="request_id")
@@ -95,6 +98,7 @@ def respond_to_request(conn: Connection, session_id: str, request_id: str, body:
             close_reason=CLOSE_REASON if body.action == "close" and not failed_stage else None,
             retry_task_id=f"task-{secrets.token_hex(6)}" if body.action == "retry" else None,
             close_work_reason=CLOSE_WORK_REASON if body.action == "close" and failed_stage else None,
+            member_id=member_id,
         )
     except StaleRequest as exc:
         raise ApiError(409, "stale_request", f"사람 요청 {request_id} 가 이미 revision {exc.current_revision} 입니다.",
@@ -109,13 +113,16 @@ def respond_to_request(conn: Connection, session_id: str, request_id: str, body:
 
 
 @router.get("")
-def list_requests(session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn)) -> JSONResponse:
+def list_requests(member: LoggedIn = Depends(require_member_api), conn: Connection = Depends(get_conn)) -> JSONResponse:
+    session_id = member.session_id
     return JSONResponse({"requests": [_request_view(r) for r in repo.list_open_human_requests(conn, session_id)]})
 
 
 @router.post("/{request_id}/responses")
 def post_response(
     request_id: str, body: ResponseBody,
-    session_id: str = Depends(require_operator), conn: Connection = Depends(get_conn),
+    member: LoggedIn = Depends(require_action(team.RESPOND, api=True)),
+    conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
-    return JSONResponse(respond_to_request(conn, session_id, request_id, body, utc_now()))
+    session_id = member.session_id
+    return JSONResponse(respond_to_request(conn, session_id, request_id, body, utc_now(), member_id=member.member_id))

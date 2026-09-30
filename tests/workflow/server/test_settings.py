@@ -116,6 +116,31 @@ def test_public_url_drops_trailing_slash(raw, expected):
     assert s.public_url == expected
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "runloom.example",  # 스킴 없음
+        "ftp://runloom.example",
+        "https://",  # 호스트 없음
+        "https://runloom.example/app",  # 경로
+        "https://runloom.example/?next=1",  # 쿼리
+        "https://runloom.example#top",
+        "https://admin@runloom.example",  # 사용자 정보
+        "https://runloom.example:port",
+    ],
+)
+def test_public_url_must_be_scheme_host_port_only(raw):
+    """phase 15 step 4 — 링크·Origin 검사·쿠키 Secure 판정에 쓰므로 `http(s)://host[:port]` 만 받는다."""
+    with pytest.raises(ValueError, match="WORKFLOW_PUBLIC_URL"):
+        load_settings({**FULL, "WORKFLOW_PUBLIC_URL": raw})
+
+
+def test_public_url_keeps_explicit_port():
+    assert load_settings({**FULL, "WORKFLOW_PUBLIC_URL": "HTTPS://Runloom.Example:8443"}).public_url == (
+        "HTTPS://Runloom.Example:8443"
+    )
+
+
 def test_github_token_is_an_optional_secret():
     """phase 8 step 6 — 없으면 GitHub 연결이 꺼질 뿐 서버는 뜬다. 개발 모드도 무작위 값을 만들지 않는다(가짜 토큰 금지)."""
     s = load_settings(FULL)

@@ -36,6 +36,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from tests.e2e.test_github_cycle import (
+    log_in,
     _FAKE_CODEX,
     BILLING_FILES,
     DROP_PREFIXES,
@@ -221,7 +222,8 @@ def world(tmp_path_factory):
             while not api.started:
                 assert time.monotonic() < deadline and api_thread.is_alive(), "중앙 API 가 뜨지 않음"
                 time.sleep(0.1)
-            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0)
+            world.http = httpx.Client(base_url=world.central_url, follow_redirects=False, timeout=10.0,
+                                      headers={"Origin": world.central_url})  # Origin 검사 (phase 15)
             yield world
         finally:
             if world.http is not None:
@@ -267,7 +269,7 @@ def open_blockers(world: World, task_id: str) -> str:
 
 def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     http = world.http
-    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
+    login = log_in(http, world.central_env["OPERATOR_TOKEN"])  # 워크스페이스 = 운영자
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 

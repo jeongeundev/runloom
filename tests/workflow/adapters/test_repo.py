@@ -16,11 +16,13 @@ from workflow.adapters.errors import (
     DuplicateKind,
     DuplicateRule,
     DuplicateStartKey,
+    EmailTaken,
     EventConflict,
     HashMismatch,
     InvalidTransition,
     KindInUse,
     KindProtected,
+    LastAdmin,
     NotFound,
     RegistrationTaken,
     ResponseConflict,
@@ -466,6 +468,24 @@ def test_connector_revoke_and_touch(conn):
     repo.revoke_connector(conn, connector_id, LATER)
     assert repo.authenticate_connector(conn, token) is None
     assert repo.authenticate_connector(conn, "wfc_bogus") is None
+
+
+def test_connect_code_issuer_becomes_connector_owner(conn):
+    """러너 소유자(phase 15 step 10) — 발급 멤버가 교환 때 같은 트랜잭션에서 연결 프로그램 소유자로 옮겨진다."""
+    repo.create_session(conn, SESSION, NOW)
+    kim = repo.add_member(conn, SESSION, display_name="김", now=NOW)
+    code = repo.issue_connect_code(conn, NOW, issued_by_member_id=kim)
+    legacy = repo.issue_connect_code(conn, NOW)
+
+    assert [c["issued_by_member_id"] for c in repo.list_connect_codes(conn, issued_by_member_id=kim)] == [kim]
+    assert {c["code"] for c in repo.list_connect_codes(conn)} == {code, legacy}
+
+    owned, _ = repo.exchange_connect_code(conn, code, NOW)
+    unowned, _ = repo.exchange_connect_code(conn, legacy, NOW)
+    assert repo.connector_owner(conn, owned) == kim
+    assert repo.connector_owner(conn, unowned) is None
+    assert repo.connector_owner(conn, "conn-none") is None
+    assert [r["connector_id"] for r in repo.list_connectors(conn)] == sorted([owned, unowned])
 
 
 def test_record_supported_kinds_keeps_last_claim_declaration(conn):
@@ -2839,6 +2859,42 @@ def test_skipped_notification_does_not_count_an_attempt(cycle):
     assert repo.list_notifications(cycle, OTHER_SESSION) == []
 
 
+def test_personal_notification_needs_a_recipient_and_member_list_filters(cycle):
+    """개인 행은 받는 사람이 늘 있다(repo 가 지킴). `/me` 목록 = 그 멤버의 개인 행 + recipient_member_ids 에 든 공용 행."""
+    kim = repo.add_member(cycle, SESSION, display_name="김", now=NOW)
+    lee = repo.add_member(cycle, SESSION, display_name="이", now=NOW)
+    payload = {"title": "버그", "task_url": None, "pr_url": None}
+    with pytest.raises(ValueError):
+        repo.enqueue_notification(cycle, session_id=SESSION, event="human_request", task_id="task-gh-41",
+                                  dedupe_key="human_request:hr-1:personal:x", content="c", payload=payload, now=NOW,
+                                  channel="personal")
+    repo.enqueue_notification(cycle, session_id=SESSION, event="human_request", task_id="task-gh-41",
+                              dedupe_key="human_request:hr-1:shared", content="c → 김, 이",
+                              payload={**payload, "recipient_member_ids": [kim, lee]}, now=NOW)
+    repo.enqueue_notification(cycle, session_id=SESSION, event="human_request", task_id="task-gh-41",
+                              dedupe_key=f"human_request:hr-1:personal:{kim}", content="c", payload=payload, now=NOW,
+                              channel="personal", recipient_member_id=kim)
+    repo.enqueue_notification(cycle, session_id=SESSION, event="task_failed", task_id="task-gh-41",
+                              dedupe_key="task_failed:exec-1:shared", content="c → 이", now=LATER,
+                              payload={**payload, "recipient_member_ids": [lee]}, recipient_member_id=lee)
+    _notify(cycle)  # v11 이전 모양 — 받는 사람 없음
+
+    rows = repo.list_notifications(cycle, SESSION)
+    assert len(rows) == 4
+    shared = {r["dedupe_key"]: (r["channel"], r["recipient_member_id"]) for r in rows}
+    assert shared["human_request:hr-1:shared"] == ("shared", None)
+    assert shared[f"human_request:hr-1:personal:{kim}"] == ("personal", kim)
+    assert shared["task_failed:exec-1:shared"] == ("shared", lee)
+    assert shared["human_request:hr-1"] == ("shared", None)
+    assert [r["dedupe_key"] for r in repo.list_notifications(cycle, SESSION, member_id=kim)] == [
+        f"human_request:hr-1:personal:{kim}", "human_request:hr-1:shared",
+    ]
+    assert [r["dedupe_key"] for r in repo.list_notifications(cycle, SESSION, member_id=lee)] == [
+        "task_failed:exec-1:shared", "human_request:hr-1:shared",
+    ]
+    assert repo.list_notifications(cycle, SESSION, member_id=kim, limit=1)[0]["channel"] == "personal"
+
+
 def test_record_notification_unknown_id_is_not_found(cycle):
     with pytest.raises(NotFound):
         repo.record_notification_attempt(cycle, "ntf-nope", state="failed", error="x", now=NOW, next_at=None)
@@ -3283,3 +3339,454 @@ def test_retried_stage_reads_the_source_issue_of_its_work_item(cycle):
     assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41-retry")["github_issue_id"] == first["github_issue_id"]
     assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41-review") is None
     assert repo.get_source_issue_by_task(conn, OTHER_SESSION, "task-gh-41-retry") is None
+
+
+# --- phase 15 step 3: 계정·로그인 세션·초대·재설정·역할 ------------------------------------------------------
+
+PW_HASH = "scrypt$16$8$1$c2FsdHNhbHRzYWx0c2FsdA==$aGFzaGhhc2hoYXNoaGFzaA=="
+PW_HASH_2 = "scrypt$16$8$1$b3RoZXJvdGhlcm90aGVyMQ==$bmV3aGFzaG5ld2hhc2huZXc="
+
+
+def _plus(seconds: int, base: str = NOW) -> str:
+    return repo._plus_seconds(base, seconds)
+
+
+def _admin_with_account(conn, email="admin@example.com") -> str:
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    repo.set_member_credentials(conn, SESSION, admin, email=email, password_hash=PW_HASH, display_name="김관리",
+                                now=NOW)
+    return admin
+
+
+def _dump(conn) -> str:
+    """모든 표의 모든 행을 한 문자열로 — 원문 토큰이 어디에도 없음을 확인한다."""
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    return "\n".join(repr(tuple(row)) for t in tables for row in conn.execute(f"SELECT * FROM {t}"))
+
+
+def test_needs_first_setup_until_an_active_member_has_email_and_password(conn):
+    assert repo.needs_first_setup(conn, SESSION)  # 워크스페이스 행 없음
+    repo.create_session(conn, SESSION, NOW)
+    assert repo.needs_first_setup(conn, SESSION)  # 첫 관리자 행은 있으나 계정 없음
+    admin = _admin_with_account(conn)
+    assert not repo.needs_first_setup(conn, SESSION)
+    assert repo.needs_first_setup(conn, OTHER_SESSION)
+    row = repo.get_member(conn, SESSION, admin)
+    assert (row["email"], row["password_hash"], row["display_name"]) == ("admin@example.com", PW_HASH, "김관리")
+    repo.add_member(conn, SESSION, display_name="김개발", role="admin", now=NOW)
+    repo.disable_member(conn, SESSION, admin, now=LATER)
+    assert repo.needs_first_setup(conn, SESSION)  # 비밀번호 있는 활성 멤버 0
+
+
+def test_set_member_credentials_normalizes_email_and_keeps_display_name_when_none(sessions):
+    admin = repo.ensure_first_admin(sessions, SESSION, now=NOW)
+    repo.set_member_credentials(sessions, SESSION, admin, email="  Admin@Example.COM ", password_hash=PW_HASH,
+                                now=NOW)
+    row = repo.get_member(sessions, SESSION, admin)
+    assert (row["email"], row["display_name"]) == ("admin@example.com", "관리자")
+    assert repo.find_member_by_email(sessions, SESSION, "ADMIN@example.com ")["member_id"] == admin
+    assert repo.find_member_by_email(sessions, SESSION, "none@example.com") is None
+    assert repo.find_member_by_email(sessions, SESSION, "not an email") is None
+    assert repo.find_member_by_email(sessions, OTHER_SESSION, "admin@example.com") is None
+    assert repo.get_member(sessions, OTHER_SESSION, admin) is None
+    with pytest.raises(ValueError):
+        repo.set_member_credentials(sessions, SESSION, admin, email="bad", password_hash=PW_HASH, now=NOW)
+    with pytest.raises(NotFound):
+        repo.set_member_credentials(sessions, OTHER_SESSION, admin, email="x@example.com", password_hash=PW_HASH,
+                                    now=NOW)
+
+
+def test_duplicate_email_raises_email_taken_and_keeps_rows(sessions):
+    admin = _admin_with_account(sessions)
+    other = repo.add_member(sessions, SESSION, display_name="김개발", now=NOW)
+    with pytest.raises(EmailTaken):
+        repo.set_member_credentials(sessions, SESSION, other, email="ADMIN@example.com", password_hash=PW_HASH_2,
+                                    now=LATER)
+    assert repo.get_member(sessions, SESSION, other)["email"] is None
+    # 다른 워크스페이스는 같은 이메일을 쓸 수 있다
+    other_admin = repo.ensure_first_admin(sessions, OTHER_SESSION, now=NOW)
+    repo.set_member_credentials(sessions, OTHER_SESSION, other_admin, email="admin@example.com",
+                                password_hash=PW_HASH, now=NOW)
+    # 자기 이메일 그대로 비밀번호만 바꾸기는 된다
+    repo.set_member_credentials(sessions, SESSION, admin, email="admin@example.com", password_hash=PW_HASH_2,
+                                now=LATER)
+    assert repo.get_member(sessions, SESSION, admin)["password_hash"] == PW_HASH_2
+
+
+def test_list_members_includes_email_and_disabled(sessions):
+    admin = _admin_with_account(sessions)
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=LATER)
+    repo.disable_member(sessions, SESSION, member, now=LATER)
+    rows = repo.list_members(sessions, SESSION)
+    assert [(r["member_id"], r["email"], r["disabled_at"]) for r in rows] == [
+        (admin, "admin@example.com", None), (member, None, LATER)]
+
+
+def test_login_session_create_lookup_and_token_only_as_sha256(sessions):
+    admin = _admin_with_account(sessions)
+    token = repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    assert len(token) >= 40
+    row = repo.member_for_login_token(sessions, token, now=LATER)
+    assert (row["member_id"], row["session_id"], row["role"], row["display_name"]) == (
+        admin, SESSION, "admin", "김관리")
+    assert row["login_id"].startswith("lgn-") and len(row["login_id"]) == 16
+    assert "password_hash" not in row.keys()
+    (stored,) = sessions.execute("SELECT * FROM login_sessions").fetchall()
+    assert stored["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
+    assert stored["expires_at"] == _plus(14 * 86400)
+    assert token not in _dump(sessions)
+    assert repo.member_for_login_token(sessions, "wrong-token", now=LATER) is None
+    assert repo.member_for_login_token(sessions, token, now=_plus(14 * 86400)) is None  # 만료
+    assert repo.member_for_login_token(sessions, token, now=_plus(14 * 86400 - 1)) is not None
+
+
+def test_login_session_touch_only_after_five_minutes(sessions):
+    admin = _admin_with_account(sessions)
+    token = repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+
+    def seen():
+        return sessions.execute("SELECT last_seen_at FROM login_sessions").fetchone()[0]
+
+    assert seen() == NOW
+    repo.member_for_login_token(sessions, token, now=_plus(repo.LOGIN_TOUCH_SECONDS))
+    assert seen() == NOW
+    repo.member_for_login_token(sessions, token, now=_plus(repo.LOGIN_TOUCH_SECONDS + 1))
+    assert seen() == _plus(repo.LOGIN_TOUCH_SECONDS + 1)
+
+
+def test_login_session_revoke_one_and_all_and_disabled_member(sessions):
+    admin = _admin_with_account(sessions)
+    first = repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    second = repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    assert repo.revoke_login_session(sessions, first, now=LATER)
+    assert not repo.revoke_login_session(sessions, first, now=LATER)  # 이미 폐기
+    assert not repo.revoke_login_session(sessions, "nope", now=LATER)
+    assert repo.member_for_login_token(sessions, first, now=LATER) is None
+    assert repo.member_for_login_token(sessions, second, now=LATER) is not None
+    third = repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    assert repo.revoke_login_sessions(sessions, admin, now=LATER) == 2
+    assert repo.member_for_login_token(sessions, second, now=LATER) is None
+    assert repo.member_for_login_token(sessions, third, now=LATER) is None
+
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=NOW)
+    repo.set_member_credentials(sessions, SESSION, member, email="dev@example.com", password_hash=PW_HASH, now=NOW)
+    token = repo.create_login_session(sessions, SESSION, member, now=NOW, days=14)
+    sessions.execute("UPDATE members SET disabled_at = ? WHERE member_id = ?", (LATER, member))
+    assert repo.member_for_login_token(sessions, token, now=LATER) is None  # 비활성 멤버
+
+
+def test_set_member_credentials_revokes_all_login_sessions(sessions):
+    admin = _admin_with_account(sessions)
+    token = repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    repo.set_member_credentials(sessions, SESSION, admin, email="admin@example.com", password_hash=PW_HASH_2,
+                                now=LATER)
+    assert repo.member_for_login_token(sessions, token, now=LATER) is None
+
+
+def test_set_member_display_name(sessions):
+    admin = _admin_with_account(sessions)
+    repo.set_member_display_name(sessions, SESSION, admin, "이관리", now=LATER)
+    assert repo.get_member(sessions, SESSION, admin)["display_name"] == "이관리"
+    with pytest.raises(NotFound):
+        repo.set_member_display_name(sessions, OTHER_SESSION, admin, "x", now=LATER)
+
+
+def test_invite_accept_creates_member_with_role_once(sessions):
+    admin = _admin_with_account(sessions)
+    invite_id, token = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    assert invite_id.startswith("inv-") and len(invite_id) == 16
+    assert token not in _dump(sessions)
+    shown = repo.invite_for_token(sessions, token, purpose="invite", now=LATER)
+    assert (shown["invite_id"], shown["role"], shown["session_id"]) == (invite_id, "member", SESSION)
+    assert repo.invite_for_token(sessions, token, purpose="reset", now=LATER) is None
+    (listed,) = repo.list_open_invites(sessions, SESSION, now=LATER)
+    assert (listed["invite_id"], listed["role"], listed["expires_at"]) == (
+        invite_id, "member", _plus(repo.INVITE_TTL_DAYS * 86400))
+    assert "token_sha256" not in listed.keys()
+
+    member = repo.accept_invite(sessions, token, email="Dev@Example.com", display_name="김개발",
+                                password_hash=PW_HASH, now=LATER)
+    row = repo.get_member(sessions, SESSION, member)
+    assert (row["email"], row["display_name"], row["role"], row["password_hash"], row["disabled_at"]) == (
+        "dev@example.com", "김개발", "member", PW_HASH, None)
+    used = sessions.execute("SELECT used_at, used_by_member_id FROM member_invites").fetchone()
+    assert tuple(used) == (LATER, member)
+    assert repo.list_open_invites(sessions, SESSION, now=LATER) == []
+    assert repo.invite_for_token(sessions, token, purpose="invite", now=LATER) is None
+    with pytest.raises(NotFound):  # 두 번째 수락
+        repo.accept_invite(sessions, token, email="dev2@example.com", display_name="박개발",
+                           password_hash=PW_HASH, now=LATER)
+    assert len(repo.list_members(sessions, SESSION)) == 2
+
+
+def test_invite_admin_role_is_applied(sessions):
+    admin = _admin_with_account(sessions)
+    _, token = repo.issue_invite(sessions, SESSION, role="admin", created_by_member_id=admin, now=NOW)
+    member = repo.accept_invite(sessions, token, email="boss@example.com", display_name="박관리",
+                                password_hash=PW_HASH, now=LATER)
+    assert repo.get_member(sessions, SESSION, member)["role"] == "admin"
+
+
+def test_invite_expired_revoked_or_unknown_is_not_found(sessions):
+    admin = _admin_with_account(sessions)
+    _, expired = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    end = _plus(repo.INVITE_TTL_DAYS * 86400)
+    assert repo.invite_for_token(sessions, expired, purpose="invite", now=end) is None
+    assert repo.list_open_invites(sessions, SESSION, now=end) == []
+    with pytest.raises(NotFound):
+        repo.accept_invite(sessions, expired, email="a@example.com", display_name="가", password_hash=PW_HASH,
+                           now=end)
+    revoked_id, revoked = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    repo.revoke_invite(sessions, SESSION, revoked_id, now=LATER)
+    with pytest.raises(NotFound):
+        repo.revoke_invite(sessions, SESSION, revoked_id, now=LATER)  # 이미 취소
+    with pytest.raises(NotFound):
+        repo.accept_invite(sessions, revoked, email="b@example.com", display_name="나", password_hash=PW_HASH,
+                           now=LATER)
+    with pytest.raises(NotFound):
+        repo.accept_invite(sessions, "unknown", email="c@example.com", display_name="다", password_hash=PW_HASH,
+                           now=LATER)
+    other_id, _ = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    with pytest.raises(NotFound):
+        repo.revoke_invite(sessions, OTHER_SESSION, other_id, now=LATER)  # 다른 워크스페이스
+    assert len(repo.list_members(sessions, SESSION)) == 1
+
+
+def test_invite_with_taken_email_raises_and_stays_usable(sessions):
+    admin = _admin_with_account(sessions)
+    _, token = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    with pytest.raises(EmailTaken):
+        repo.accept_invite(sessions, token, email="admin@example.com", display_name="김개발",
+                           password_hash=PW_HASH, now=LATER)
+    assert len(repo.list_members(sessions, SESSION)) == 1
+    assert repo.invite_for_token(sessions, token, purpose="invite", now=LATER) is not None
+    repo.accept_invite(sessions, token, email="dev@example.com", display_name="김개발", password_hash=PW_HASH,
+                       now=LATER)
+
+
+def test_invite_second_accept_from_another_connection_fails(sessions, db_path):
+    """두 연결이 같은 토큰으로 수락 — 한 번만 성공한다."""
+    admin = _admin_with_account(sessions)
+    _, token = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    results = []
+
+    def accept(i):
+        c = connect(db_path)
+        try:
+            results.append(repo.accept_invite(c, token, email=f"dev{i}@example.com", display_name=f"개발{i}",
+                                              password_hash=PW_HASH, now=LATER))
+        except NotFound:
+            results.append(None)
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=accept, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len([r for r in results if r]) == 1
+    assert len(repo.list_members(sessions, SESSION)) == 2
+
+
+def test_reset_link_sets_password_revokes_sessions_and_earlier_links(sessions):
+    admin = _admin_with_account(sessions)
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=NOW)
+    repo.set_member_credentials(sessions, SESSION, member, email="dev@example.com", password_hash=PW_HASH, now=NOW)
+    login = repo.create_login_session(sessions, SESSION, member, now=NOW, days=14)
+    _, first = repo.issue_reset_link(sessions, SESSION, member, created_by_member_id=admin, now=NOW)
+    reset_id, second = repo.issue_reset_link(sessions, SESSION, member, created_by_member_id=admin, now=LATER)
+    assert reset_id.startswith("inv-")
+    dump = _dump(sessions)
+    assert first not in dump and second not in dump
+    assert repo.invite_for_token(sessions, first, purpose="reset", now=LATER) is None  # 이전 링크 취소
+    assert repo.invite_for_token(sessions, second, purpose="reset", now=LATER)["member_id"] == member
+    assert repo.invite_for_token(sessions, second, purpose="invite", now=LATER) is None
+    assert repo.list_open_invites(sessions, SESSION, now=LATER) == []  # 재설정 링크는 초대 목록에 없다
+    with pytest.raises(NotFound):
+        repo.use_reset_link(sessions, first, password_hash=PW_HASH_2, now=LATER)
+
+    assert repo.use_reset_link(sessions, second, password_hash=PW_HASH_2, now=LATER) == member
+    assert repo.get_member(sessions, SESSION, member)["password_hash"] == PW_HASH_2
+    assert repo.member_for_login_token(sessions, login, now=LATER) is None
+    with pytest.raises(NotFound):  # 1회용
+        repo.use_reset_link(sessions, second, password_hash=PW_HASH, now=LATER)
+    assert repo.get_member(sessions, SESSION, member)["password_hash"] == PW_HASH_2
+
+
+def test_reset_link_expiry_disabled_member_and_other_session(sessions):
+    admin = _admin_with_account(sessions)
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=NOW)
+    repo.set_member_credentials(sessions, SESSION, member, email="dev@example.com", password_hash=PW_HASH, now=NOW)
+    _, token = repo.issue_reset_link(sessions, SESSION, member, created_by_member_id=admin, now=NOW)
+    with pytest.raises(NotFound):
+        repo.use_reset_link(sessions, token, password_hash=PW_HASH_2, now=_plus(repo.RESET_TTL_HOURS * 3600))
+    _, token = repo.issue_reset_link(sessions, SESSION, member, created_by_member_id=admin, now=NOW)
+    repo.disable_member(sessions, SESSION, member, now=LATER)
+    assert repo.invite_for_token(sessions, token, purpose="reset", now=LATER) is None
+    with pytest.raises(NotFound):
+        repo.use_reset_link(sessions, token, password_hash=PW_HASH_2, now=LATER)
+    with pytest.raises(NotFound):
+        repo.issue_reset_link(sessions, OTHER_SESSION, member, created_by_member_id=None, now=NOW)
+
+
+def test_last_active_admin_cannot_be_demoted_or_disabled(sessions):
+    admin = _admin_with_account(sessions)
+    with pytest.raises(LastAdmin):
+        repo.set_member_role(sessions, SESSION, admin, "member", now=LATER)
+    with pytest.raises(LastAdmin):
+        repo.disable_member(sessions, SESSION, admin, now=LATER)
+    row = repo.get_member(sessions, SESSION, admin)
+    assert (row["role"], row["disabled_at"]) == ("admin", None)
+
+    second = repo.add_member(sessions, SESSION, display_name="박관리", now=NOW)
+    repo.set_member_role(sessions, SESSION, second, "admin", now=LATER)
+    repo.disable_member(sessions, SESSION, second, now=LATER)
+    with pytest.raises(LastAdmin):  # 비활성 관리자는 세지 않는다
+        repo.set_member_role(sessions, SESSION, admin, "member", now=LATER)
+    repo.enable_member(sessions, SESSION, second, now=LATER)
+    repo.enable_member(sessions, SESSION, second, now=LATER)  # 멱등
+    repo.set_member_role(sessions, SESSION, admin, "member", now=LATER)  # 자기 자신도 같은 규칙
+    assert repo.get_member(sessions, SESSION, admin)["role"] == "member"
+    with pytest.raises(LastAdmin):
+        repo.disable_member(sessions, SESSION, second, now=LATER)
+    with pytest.raises(ValueError):
+        repo.set_member_role(sessions, SESSION, admin, "owner", now=LATER)
+    with pytest.raises(NotFound):
+        repo.set_member_role(sessions, OTHER_SESSION, admin, "admin", now=LATER)
+
+
+def test_disable_member_revokes_sessions_and_is_idempotent(sessions):
+    _admin_with_account(sessions)
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=NOW)
+    repo.set_member_credentials(sessions, SESSION, member, email="dev@example.com", password_hash=PW_HASH, now=NOW)
+    token = repo.create_login_session(sessions, SESSION, member, now=NOW, days=14)
+    repo.disable_member(sessions, SESSION, member, now=LATER)
+    repo.disable_member(sessions, SESSION, member, now=_plus(60))
+    assert repo.get_member(sessions, SESSION, member)["disabled_at"] == LATER
+    assert repo.member_for_login_token(sessions, token, now=LATER) is None
+    revoked = sessions.execute("SELECT revoked_at FROM login_sessions").fetchone()[0]
+    assert revoked == LATER
+    repo.enable_member(sessions, SESSION, member, now=_plus(60))
+    assert repo.get_member(sessions, SESSION, member)["disabled_at"] is None
+    assert repo.member_for_login_token(sessions, token, now=_plus(60)) is None  # 폐기된 세션은 되살리지 않는다
+    with pytest.raises(NotFound):
+        repo.disable_member(sessions, OTHER_SESSION, member, now=LATER)
+    with pytest.raises(NotFound):
+        repo.enable_member(sessions, OTHER_SESSION, member, now=LATER)
+
+
+def test_member_last_seen_is_latest_login_session_per_member(sessions):
+    admin = _admin_with_account(sessions)
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=NOW)
+    repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    token = repo.create_login_session(sessions, SESSION, admin, now=_plus(60), days=14)
+    repo.revoke_login_session(sessions, token, now=_plus(120))  # 폐기된 세션도 접속 기록이다
+    assert repo.member_last_seen(sessions, SESSION) == {admin: _plus(60)}
+    assert member not in repo.member_last_seen(sessions, SESSION)
+
+
+# --- phase 15 step 8: 맡긴 사람·응답자·사람별 내 차례 ------------------------------------------------------
+
+
+def _people(conn) -> tuple[str, str, str]:
+    """(첫 관리자 B, 멤버 A, 멤버 C) — B 는 세션을 만들 때 생긴 관리자."""
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    a = repo.add_member(conn, SESSION, display_name="김맡김", now=NOW)
+    c = repo.add_member(conn, SESSION, display_name="이담당", now=NOW)
+    return admin, a, c
+
+
+def test_turn_recipients_of_is_assignee_then_requester_then_admins(seeded):
+    conn = seeded
+    admin, a, c = _people(conn)
+    second_admin = repo.add_member(conn, SESSION, display_name="박관리", role="admin", now=LATER)
+    work = _work(conn)["work_item_id"]
+    assert repo.turn_recipients_of(conn, work) == (admin, second_admin)  # 맡긴 사람 없음 → 활성 관리자 전원
+    repo.set_work_requester(conn, work, a)
+    assert _work(conn)["requested_by_member_id"] == a
+    assert repo.turn_recipients_of(conn, work) == (a,)
+    repo.assign_work_item(conn, SESSION, work, assignee_type="member", assignee_id=c, now=LATER)
+    assert repo.turn_recipients_of(conn, work) == (c,)  # 담당 멤버가 먼저
+    repo.disable_member(conn, SESSION, c, now=LATER)
+    assert repo.turn_recipients_of(conn, work) == (a,)
+    repo.disable_member(conn, SESSION, a, now=LATER)
+    assert repo.turn_recipients_of(conn, work) == (admin, second_admin)  # 맡긴 사람이 비활성 → 관리자 전원
+    with pytest.raises(NotFound):
+        repo.turn_recipients_of(conn, "wi-nope")
+
+
+def test_list_work_items_my_turn_is_computed_per_member(seeded):
+    conn = seeded
+    admin, a, _ = _people(conn)
+    other = repo.insert_work_item_task(conn, _task("task-other"), NOW)  # 내 차례 아님
+    repo.set_work_requester(conn, other, a)
+    _failed_stage(conn)  # TASK_A 업무 → 내 차례, 맡긴 사람 없음
+    work = _work(conn)["work_item_id"]
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION, recipient_member_id=admin)] == [work]
+    assert repo.list_work_items(conn, SESSION, recipient_member_id=a) == []
+    repo.set_work_requester(conn, work, a)
+    assert [r["work_item_id"] for r in repo.list_work_items(conn, SESSION, recipient_member_id=a)] == [work]
+    assert repo.list_work_items(conn, SESSION, recipient_member_id=admin) == []  # 관리자에게는 안 보인다
+    assert conn.execute("SELECT COUNT(*) FROM work_items WHERE requested_by_member_id IS NOT NULL").fetchone()[0] == 2
+
+
+def test_insert_work_item_task_records_requester(seeded):
+    conn = seeded
+    _, a, _ = _people(conn)
+    work = repo.insert_work_item_task(conn, _task("task-direct"), NOW, requested_by_member_id=a)
+    assert repo.get_work_item(conn, SESSION, work)["requested_by_member_id"] == a
+    assert _work(conn)["requested_by_member_id"] is None  # 넘기지 않으면 기록 없음
+
+
+def test_mark_issue_delegated_records_the_latest_member_but_not_the_label(cycle):
+    conn = cycle
+    admin, a, _ = _people(conn)
+    issue = repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")
+    kwargs = {"session_id": SESSION, "source_id": SOURCE, "github_issue_id": issue["github_issue_id"]}
+    repo.mark_issue_delegated(conn, **kwargs, by="label", now=NOW)
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] is None
+    assert repo.mark_issue_delegated(conn, **kwargs, by="operator", now=LATER, member_id=a) is False
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] == a  # 이미 지시됐어도 누른 사람은 남는다
+    repo.mark_issue_delegated(conn, **kwargs, by="operator", now=LATER, member_id=admin)
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] == admin  # 가장 최근이 이긴다
+
+
+def test_response_records_the_responder_and_retry_sets_the_requester(seeded):
+    conn = seeded
+    admin, a, _ = _people(conn)
+    request_id = _failed_stage(conn)
+    kwargs = {"response_id": "resp-1", "expected_revision": 1, "action": "retry", "text": "", "now": LATER,
+              "retry_task_id": "task-retry"}
+    repo.record_human_response_once(conn, SESSION, request_id, **kwargs, member_id=a)
+    (response,) = repo.list_human_responses(conn, TASK_A)
+    assert response["member_id"] == a
+    assert _work(conn)["requested_by_member_id"] == a  # 다시 맡기기 = 맡긴 사람
+    # 같은 response_id 재전송은 처음 결과 — 다른 멤버가 보내도 응답자·맡긴 사람은 그대로
+    assert repo.record_human_response_once(conn, SESSION, request_id, **kwargs, member_id=admin) == (2, False)
+    assert repo.list_human_responses(conn, TASK_A)[0]["member_id"] == a
+    assert _work(conn)["requested_by_member_id"] == a
+
+
+def test_non_retry_response_keeps_the_requester(cycle):
+    conn = cycle
+    admin, a, _ = _people(conn)
+    repo.set_work_requester(conn, _wi41(conn), a)
+    request_id, _ = repo.create_human_request_once(conn, "task-gh-41", "decision", "q", "decision:1", NOW)
+    repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-1", expected_revision=1,
+                                    action="resume", text="", now=LATER, member_id=admin)
+    assert repo.list_human_responses(conn, "task-gh-41")[0]["member_id"] == admin
+    assert _work(conn, "task-gh-41")["requested_by_member_id"] == a
+
+
+def test_new_work_followup_copies_the_requester(cycle):
+    conn = cycle
+    _, a, _ = _people(conn)
+    repo.set_work_requester(conn, _wi41(conn), a)
+    _create_execution(conn, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    spec = FollowupTaskSpec(session_id=SESSION, kind="code_review", cause_execution_id="exec-fix-1",
+                            predecessor_task_id=None, rules_revision=1)
+    task_id, _ = repo.create_followup_once(conn, spec, {**_review_task(), "predecessor_task_id": None}, NOW,
+                                           work_item_id=_wi41(conn), placement="new_work")
+    spawned = repo.work_item_of_task(conn, task_id)
+    assert spawned["work_item_id"] != _wi41(conn) and spawned["requested_by_member_id"] == a

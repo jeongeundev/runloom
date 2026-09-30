@@ -1,4 +1,4 @@
-{# 지표 — ADR-0015, ARCHITECTURE "측정 — phase 9". 운영자만. 계산은 metrics_api 와 같다(JSON·CSV 링크는 같은 쿼리).
+{# 지표 — ADR-0015, ARCHITECTURE "측정 — phase 9". 지표 보기(`view_metrics`), 기준선 가져오기는 `manage_connections`. 계산은 metrics_api 와 같다(JSON·CSV 링크는 같은 쿼리).
    칸마다 n·미완료·모름을 함께 적고, 모르는 값은 "모름"(0 아님). 기준선 가져오기는 data-json-action 으로 운영자 API 에 보낸다. #}
 {% extends "base.html" %}
 {% block title %}지표 — Runloom{% endblock %}
@@ -68,6 +68,7 @@
 {% endfor %}
 <p class="small">CLI 보고 비용은 CLI 가 계산한 값이며 구독 사용 시 실제 청구액이 아닙니다.</p>
 
+{% if 'manage_connections' in allowed %}
 <h2>기준선 가져오기</h2>
 <div class="card">
   {% if not token_configured %}<p class="small">토큰 없음 — 서버 환경변수 <span class="mono">WORKFLOW_GITHUB_TOKEN</span> 이 있어야 가져올 수 있습니다.</p>{% endif %}
@@ -81,4 +82,5 @@
   <p class="small">GitHub 소스가 없습니다. <a href="/operator/github">GitHub 연결</a>에서 소스를 만드세요.</p>
   {% endfor %}
 </div>
+{% endif %}
 {% endblock %}

@@ -1,7 +1,8 @@
-"""사람이 쓰는 웹 라우트 — 로그인한 고정 워크스페이스(= 운영자) (ADR-0016 결정 3, ADR-0019, UI_GUIDE "화면 목록", PRD 2·4절).
+"""사람이 쓰는 웹 라우트 — 로그인한 멤버의 고정 워크스페이스 (ADR-0016 결정 3, ADR-0019, ADR-0021, UI_GUIDE "화면 목록", PRD 2·4절).
 
-- `/`·`/login`·`/logout` 밖의 라우트는 `require_session` 을 건다. 워크스페이스는 자기 Task 만 보고, 남의 것은 404 로
-  존재를 알리지 않는다.
+- 로그인은 멤버 이메일·비밀번호(쿠키 `wf_login`). 운영자 토큰은 첫 설정(`/login/setup`)·복구(`/login/recover`)만.
+- `/`·`/login*`·`/invite/*`·`/reset/*`·`/logout` 밖의 라우트는 `require_member`, 역할이 필요한 곳은 `require_action(동작)` 을
+  건다(ARCHITECTURE "팀 — phase 15" 라우트별 필요 동작). 워크스페이스는 자기 Task 만 보고, 남의 것은 404 로 존재를 알리지 않는다.
 - 화면은 문자열(HTML) 을 돌려준다. 303 은 `_redirect` 가 sub-response 헤더를 옮긴다.
 - 오류는 `PageError` 로 `error.html` 에 렌더한다. 본문 규칙(code·message·details) 은 ApiError 와 같다.
 - 실행 요청(`ExecutionRequest`) 은 여기서 조립해 `request_json` 에 고정한다. 셸 명령·경로는 폼에서 받지 않는다.
@@ -38,8 +39,10 @@ from workflow.adapters.errors import (
     ActiveExecutionExists,
     DuplicateKind,
     DuplicateRule,
+    EmailTaken,
     KindInUse,
     KindProtected,
+    LastAdmin,
     NotFound,
 )
 from workflow.adapters.github_app import build_manifest, exchange_manifest_code, load_app, save_credentials
@@ -71,7 +74,7 @@ from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
 from workflow.domain.execution_policy import policy_for
-from workflow.domain import notification
+from workflow.domain import notification, team
 from workflow.domain.kinds import (
     get_kind,
     kind_for_capability,
@@ -84,17 +87,21 @@ from workflow.domain.status import user_status
 from workflow.domain.task_sources import Issue
 from workflow.server import github_connect, metrics_api, task_cycle, views
 from workflow.server.auth import (
+    LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
-    SESSION_COOKIE,
+    check_origin,
+    clear_login_cookies,
+    current_member,
+    LoggedIn,
     ensure_workspace,
     get_conn,
-    require_operator,
-    require_session,
-    set_session_cookie,
+    login_email_key,
+    require_action,
+    require_member,
+    set_login_cookie,
     utc_now,
-    workspace_session,
 )
-from workflow.server.errors import ApiError
+from workflow.server.errors import ApiError, PageError
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
 from workflow.server.worker import Worker
@@ -138,16 +145,25 @@ _env.filters.update({
 })
 
 
-class PageError(ApiError):
-    """HTML 로 보여 줄 오류. `install` 이 `error.html` 로 렌더한다."""
-
-
 def install(app: FastAPI) -> None:
     app.include_router(router)
+    _install_access_log_filter()
 
     @app.exception_handler(PageError)
     async def _page_error(request: Request, exc: PageError) -> HTMLResponse:
         return HTMLResponse(_render("error.html", request=request, error=exc), status_code=exc.status)
+
+
+async def origin_guard(request: Request, call_next):
+    """앱 미들웨어 — GET·HEAD·OPTIONS 밖의 요청이 `check_origin` 을 통과하지 못하면 403 forbidden_origin.
+    폼 제출(Accept 에 text/html)은 `error.html`, 그 밖은 JSON 오류 본문. 경로는 로그에 넣지 않는다(초대·재설정 토큰)."""
+    if request.method in ("GET", "HEAD", "OPTIONS") or check_origin(request, _settings(request)):
+        return await call_next(request)
+    logger.warning("요청 출처 거부: %s", request.method)
+    error = ApiError(403, "forbidden_origin", "요청 출처를 확인할 수 없습니다.")
+    if "text/html" in request.headers.get("accept", ""):
+        return HTMLResponse(_render("error.html", request=request, error=error), status_code=403)
+    return error.response()
 
 
 # --- 렌더·리다이렉트 ----------------------------------------------------------------
@@ -158,7 +174,7 @@ def _render(name: str, **context: Any) -> str:
 
 
 def _redirect(url: str, response: Response) -> RedirectResponse:
-    """303. `require_session` 이 sub-response 에 심은 Set-Cookie 를 옮긴다 (직접 반환한 Response 에는 합쳐지지 않는다)."""
+    """303. 의존성이 sub-response 에 심은 Set-Cookie 를 옮긴다 (직접 반환한 Response 에는 합쳐지지 않는다)."""
     redirect = RedirectResponse(url, status_code=303)
     redirect.headers.raw.extend(response.headers.raw)
     return redirect
@@ -169,13 +185,15 @@ def _settings(request: Request) -> Settings:
 
 
 def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict[str, Any]:
-    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용."""
-    session = repo.get_session(conn, session_id)
+    """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용. `allowed` = 로그인한 멤버의 역할이 할 수 있는 동작
+    (템플릿은 `'manage_rules' in allowed` 처럼 본다)."""
+    member = current_member(request, conn)
     return {
         "request": request,
         "now": now,
         "session_id": session_id,
-        "is_operator": bool(session["is_operator"]) if session is not None else False,
+        "member": member,  # 왼쪽 목록 아래 — 로그인한 멤버 표시 이름·역할
+        "allowed": team.allowed_actions(member.role) if member is not None else frozenset(),
         # 목록 한 줄 = 업무(ADR-0020) — 새 업무가 위
         "my_work": [views.work_summary(conn, w) for w in repo.list_work_items(conn, session_id)],
     }
@@ -341,68 +359,275 @@ def _start_execution(
 @router.get("/")
 def root(request: Request, conn: Connection = Depends(get_conn)) -> RedirectResponse:
     """랜딩 없음 (ADR-0019) — 로그인 상태면 업무 목록 `/tasks`, 아니면 `/login` 으로 303. 세션을 만들지 않는다."""
-    return RedirectResponse("/tasks" if workspace_session(request, conn) else "/login", status_code=303)
+    return RedirectResponse("/tasks" if current_member(request, conn) else "/login", status_code=303)
 
 
-# --- 로그인 (ADR-0016 결정 3) ---------------------------------------------------------------
+# --- 로그인·첫 설정·복구·초대·재설정 (ADR-0021, ARCHITECTURE "팀 — phase 15") ------------------------------
+# 비밀번호·토큰 원문은 응답·로그·템플릿에 넣지 않는다 — 되돌려 채우는 값은 이메일·표시 이름뿐이다.
+
+_TOO_MANY = "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."
+_BAD_LOGIN = "이메일 또는 비밀번호가 올바르지 않습니다."
+_BAD_RECOVER = "토큰 또는 관리자 이메일이 올바르지 않습니다."
+_BAD_INVITE = "초대 링크가 없거나 만료됐습니다."
+_BAD_RESET = "재설정 링크가 없거나 만료됐습니다."
+_LINK_PATH = re.compile(r"(/(?:invite|reset)/)[^\s?#\"]+")
+
+
+class _LinkTokenFilter(logging.Filter):
+    """uvicorn 접근 로그의 `/invite/<토큰>`·`/reset/<토큰>` 을 `***` 로 가린다."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_LINK_PATH.sub(r"\1***", a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.msg, str):
+            record.msg = _LINK_PATH.sub(r"\1***", record.msg)
+        return True
+
+
+def _install_access_log_filter() -> None:
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _LinkTokenFilter) for f in access.filters):
+        access.addFilter(_LinkTokenFilter())
+
+
+def _login_page(request: Request, mode: str, *, status: int = 200, error: str | None = None,
+                email: str = "", display_name: str = "") -> HTMLResponse:
+    """`login.html` 한 장 — mode: setup·login·recover·invite·reset·invalid."""
+    body = _render("login.html", request=request, mode=mode, error=error, email=email,
+                   display_name=display_name)
+    return HTMLResponse(body, status_code=status)
+
+
+def _link_page(request: Request, mode: str, **kwargs: Any) -> HTMLResponse:
+    """초대·재설정 화면 — 링크 토큰이 다른 곳으로 새지 않게 `Referrer-Policy: no-referrer`."""
+    response = _login_page(request, mode, **kwargs)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _logged_in_redirect(request: Request, conn: Connection, member_id: str, url: str = "/") -> RedirectResponse:
+    """새 로그인 세션을 만들고 쿠키를 실어 303."""
+    settings = _settings(request)
+    token = repo.create_login_session(conn, SELFHOST_SESSION_ID, member_id, now=utc_now(),
+                                      days=settings.session_cookie_days)
+    redirect = RedirectResponse(url, status_code=303)
+    set_login_cookie(redirect, token, settings)
+    return redirect
+
+
+def _token_matches(request: Request, token: str) -> bool:
+    return hmac.compare_digest(token.encode(), _settings(request).operator_token.encode())
+
+
+def _account_problem(email: str, display_name: str | None, password: str) -> str | None:
+    """이메일·표시 이름(None 이면 보지 않음)·비밀번호 규칙. 문제 문구 또는 None."""
+    if team.normalize_email(email) is None:
+        return "이메일 형식이 올바르지 않습니다."
+    if display_name is not None and team.clean_display_name(display_name) is None:
+        return "표시 이름은 1~40자로 입력하세요."
+    return team.password_problem(password)
 
 
 @router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request) -> str:
-    return _render("login.html", request=request, error=None)
+def login_page(request: Request, conn: Connection = Depends(get_conn)) -> HTMLResponse:
+    """첫 설정 전이면 관리자 계정 만들기(운영자 토큰 칸), 아니면 이메일·비밀번호."""
+    return _login_page(request, "setup" if repo.needs_first_setup(conn, SELFHOST_SESSION_ID) else "login")
 
 
-def _workspace_login(request: Request, conn: Connection, token: str) -> HTMLResponse | RedirectResponse:
-    """`OPERATOR_TOKEN` 과 비교해 맞으면 고정 워크스페이스 쿠키. 입력한 토큰 값은 응답·로그에 넣지 않는다."""
+@router.post("/login/setup", response_model=None)
+def login_setup(
+    request: Request, token: str = Form(""), email: str = Form(""), display_name: str = Form(""),
+    password: str = Form(""), conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """운영자 토큰으로 첫 관리자 행에 계정을 채우고 로그인한다. 첫 설정이 끝났으면 409 already_set_up."""
+    if not repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        raise PageError(409, "already_set_up", "이미 관리자 계정이 있습니다. 이메일로 로그인하세요.")
+    refill = {"email": email.strip(), "display_name": display_name.strip()}
     throttle = request.app.state.login_throttle
-    if throttle.blocked():
-        logger.warning("로그인 거부: 연속 실패 제한")
-        return HTMLResponse(
-            _render("login.html", request=request, error="로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."),
-            status_code=429,
-        )
-    settings = _settings(request)
-    if not hmac.compare_digest(token.encode(), settings.operator_token.encode()):
-        throttle.fail()
-        logger.warning("로그인 실패")
-        return HTMLResponse(
-            _render("login.html", request=request, error="토큰이 올바르지 않습니다."), status_code=403,
-        )
-    throttle.reset()
-    ensure_workspace(conn, utc_now())
-    redirect = RedirectResponse("/", status_code=303)
-    set_session_cookie(redirect, SELFHOST_SESSION_ID, settings)
-    return redirect
+    if throttle.blocked("setup"):
+        logger.warning("첫 설정 거부: 연속 실패 제한")
+        return _login_page(request, "setup", status=429, error=_TOO_MANY, **refill)
+    if not _token_matches(request, token):
+        throttle.fail("setup")
+        logger.warning("첫 설정 실패: 토큰 불일치")
+        return _login_page(request, "setup", status=403, error="토큰이 올바르지 않습니다.", **refill)
+    problem = _account_problem(email, display_name, password)
+    if problem:
+        return _login_page(request, "setup", status=422, error=problem, **refill)
+    throttle.reset("setup")
+    now = utc_now()
+    ensure_workspace(conn, now)
+    member_id = repo.ensure_first_admin(conn, SELFHOST_SESSION_ID, now=now)
+    try:
+        repo.set_member_credentials(conn, SELFHOST_SESSION_ID, member_id, email=email,
+                                    password_hash=team.hash_password(password),
+                                    display_name=team.clean_display_name(display_name), now=now)
+    except EmailTaken:
+        return _login_page(request, "setup", status=422, error="이미 쓰는 이메일입니다.", **refill)
+    logger.info("첫 설정: 관리자 계정 생성")
+    return _logged_in_redirect(request, conn, member_id)
 
 
 @router.post("/login", response_model=None)
 def login(
-    request: Request, token: str = Form(""), conn: Connection = Depends(get_conn),
+    request: Request, email: str = Form(""), password: str = Form(""), conn: Connection = Depends(get_conn),
 ) -> HTMLResponse | RedirectResponse:
-    return _workspace_login(request, conn, token)
+    """이메일·비밀번호. 틀림·없는 이메일·비활성은 같은 문구 403 — 없는 경우도 더미 해시로 한 번 검증해 시간을 맞춘다."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    refill = {"email": email.strip()}
+    key = login_email_key(email)
+    throttle = request.app.state.login_throttle
+    if throttle.blocked(key):
+        logger.warning("로그인 거부: 연속 실패 제한")
+        return _login_page(request, "login", status=429, error=_TOO_MANY, **refill)
+    member = repo.find_member_by_email(conn, SELFHOST_SESSION_ID, email)
+    usable = member is not None and member["disabled_at"] is None and member["password_hash"] is not None
+    stored = member["password_hash"] if usable else team.DUMMY_PASSWORD_HASH
+    matched = len(password) <= team.PASSWORD_MAX_LENGTH and team.verify_password(password, stored)
+    if not (usable and matched):
+        throttle.fail(key)
+        logger.warning("로그인 실패")
+        return _login_page(request, "login", status=403, error=_BAD_LOGIN, **refill)
+    throttle.reset(key)
+    return _logged_in_redirect(request, conn, member["member_id"])
+
+
+@router.get("/login/recover", response_class=HTMLResponse, response_model=None)
+def recover_page(request: Request, conn: Connection = Depends(get_conn)) -> HTMLResponse | RedirectResponse:
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    return _login_page(request, "recover")
+
+
+@router.post("/login/recover", response_model=None)
+def recover(
+    request: Request, token: str = Form(""), email: str = Form(""), password: str = Form(""),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """운영자 토큰 + 활성 관리자 이메일 → 새 비밀번호. 그 관리자의 로그인 세션을 전부 폐기하고 새 세션으로 로그인."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    refill = {"email": email.strip()}
+    throttle = request.app.state.login_throttle
+    if throttle.blocked("recover"):
+        logger.warning("복구 거부: 연속 실패 제한")
+        return _login_page(request, "recover", status=429, error=_TOO_MANY, **refill)
+    member = repo.find_member_by_email(conn, SELFHOST_SESSION_ID, email)
+    admin = member is not None and member["role"] == "admin" and member["disabled_at"] is None
+    if not (_token_matches(request, token) and admin):
+        throttle.fail("recover")
+        logger.warning("복구 실패")
+        return _login_page(request, "recover", status=403, error=_BAD_RECOVER, **refill)
+    problem = team.password_problem(password)
+    if problem:
+        return _login_page(request, "recover", status=422, error=problem, **refill)
+    throttle.reset("recover")
+    repo.set_member_credentials(conn, SELFHOST_SESSION_ID, member["member_id"], email=member["email"],
+                                password_hash=team.hash_password(password), now=utc_now())
+    logger.info("복구: 관리자 비밀번호 변경")
+    return _logged_in_redirect(request, conn, member["member_id"])
+
+
+@router.get("/invite/{token}", response_class=HTMLResponse, response_model=None)
+def invite_page(request: Request, token: str, conn: Connection = Depends(get_conn)) -> HTMLResponse | RedirectResponse:
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="invite", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
+    return _link_page(request, "invite")
+
+
+@router.post("/invite/{token}", response_model=None)
+def invite_accept(
+    request: Request, token: str, email: str = Form(""), display_name: str = Form(""), password: str = Form(""),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """초대로 가입(초대의 역할) → 로그인. 무효·만료·사용·취소는 같은 404 안내."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="invite", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
+    refill = {"email": email.strip(), "display_name": display_name.strip()}
+    problem = _account_problem(email, display_name, password)
+    if problem:
+        return _link_page(request, "invite", status=422, error=problem, **refill)
+    try:
+        member_id = repo.accept_invite(conn, token, email=email, display_name=team.clean_display_name(display_name),
+                                       password_hash=team.hash_password(password), now=utc_now())
+    except NotFound:
+        return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
+    except EmailTaken:
+        return _link_page(request, "invite", status=422, error="이미 쓰는 이메일입니다.", **refill)
+    logger.info("초대 가입")
+    redirect = _logged_in_redirect(request, conn, member_id)
+    redirect.headers["Referrer-Policy"] = "no-referrer"
+    return redirect
+
+
+@router.get("/reset/{token}", response_class=HTMLResponse, response_model=None)
+def reset_page(request: Request, token: str, conn: Connection = Depends(get_conn)) -> HTMLResponse | RedirectResponse:
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="reset", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_RESET)
+    return _link_page(request, "reset")
+
+
+@router.post("/reset/{token}", response_model=None)
+def reset_use(
+    request: Request, token: str, password: str = Form(""), conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """재설정 링크로 새 비밀번호 → 그 멤버 세션 전부 폐기 → 새 세션으로 로그인."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="reset", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_RESET)
+    problem = team.password_problem(password)
+    if problem:
+        return _link_page(request, "reset", status=422, error=problem)
+    try:
+        member_id = repo.use_reset_link(conn, token, password_hash=team.hash_password(password), now=utc_now())
+    except NotFound:
+        return _link_page(request, "invalid", status=404, error=_BAD_RESET)
+    logger.info("재설정 링크 사용")
+    redirect = _logged_in_redirect(request, conn, member_id)
+    redirect.headers["Referrer-Policy"] = "no-referrer"
+    return redirect
 
 
 @router.post("/logout")
-def logout() -> RedirectResponse:
-    """쿠키만 지운다. 워크스페이스 행은 그대로."""
+def logout(request: Request, conn: Connection = Depends(get_conn)) -> RedirectResponse:
+    """이 쿠키의 로그인 세션만 폐기하고 쿠키를 지운다. 워크스페이스 행은 그대로."""
+    token = request.cookies.get(LOGIN_COOKIE)
+    if token:
+        repo.revoke_login_session(conn, token, now=utc_now())
     redirect = RedirectResponse("/login", status_code=303)
-    redirect.delete_cookie(SESSION_COOKIE, httponly=True, samesite="lax")
+    clear_login_cookies(redirect)
     return redirect
 
 
 @router.get("/tasks", response_class=HTMLResponse)
 def home(
     request: Request,
-    session_id: str = Depends(require_session),
+    view: str = "",
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
+    """홈. 빠른 필터 `view=my_turn` = 로그인한 멤버가 받는 사람인 `내 차례` 업무만, 그 밖 값은 전체."""
+    session_id = member.session_id
     now = utc_now()
     settings = _settings(request)
     agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
     chains = [
         views.chain_summary(conn, c, now=now, settings=settings) for c in repo.list_chains(conn, session_id)
     ]
-    return _render("home.html", **_base(request, conn, session_id, now), agents=agents, chains=chains)
+    base = _base(request, conn, session_id, now)
+    my_turn = [views.work_summary(conn, w)
+               for w in repo.list_work_items(conn, session_id, recipient_member_id=member.member_id)]
+    view = "my_turn" if view == "my_turn" else "all"
+    return _render("home.html", **base, agents=agents, chains=chains, view=view, my_turn_count=len(my_turn),
+                   work_list=my_turn if view == "my_turn" else base["my_work"])
 
 
 def _form_context(
@@ -433,9 +658,10 @@ def _form_context(
 def task_new(
     request: Request,
     predecessor: str | None = None,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.CREATE_WORK)),
     conn: Connection = Depends(get_conn),
 ) -> str:
+    session_id = member.session_id
     now = utc_now()
     form = dict(_EMPTY_FORM)
     form["run_mode"] = default_run_mode(bool(predecessor))
@@ -459,9 +685,10 @@ def task_create(
     completion_mode: str = Form("review"),
     criteria_extra: str = Form(""),
     predecessor_task_id: str = Form(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.CREATE_WORK)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
+    session_id = member.session_id
     now = utc_now()
     settings = _settings(request)
     title, request_text = title.strip(), request_text.strip()
@@ -506,7 +733,7 @@ def task_create(
         title=title, request_text=request_text, spec=spec, scope_value=scope_value,
         selection_mode=selection_mode, chosen_agent_id=chosen_agent_id,
         run_mode=run_mode, completion_mode=completion_mode, criteria_extra=criteria_extra,
-        predecessor_task_id=predecessor_task_id,
+        predecessor_task_id=predecessor_task_id, requested_by_member_id=member.member_id,
     )
     return _redirect(f"/tasks/{task_id}", response)
 
@@ -517,7 +744,7 @@ def _insert_new_task(
     selection_mode: str, chosen_agent_id: str, run_mode: str, completion_mode: str,
     criteria_extra: str, predecessor_task_id: str,
     chain_id: str | None = None, source_ref: str | None = None, prefer: Sequence[str] | None = None,
-    source_type: str = "manual",
+    source_type: str = "manual", requested_by_member_id: str | None = None,
 ) -> str:
     """검증이 끝난 값으로 업무 1개와 그 첫 단계 Task 를 만들고 선택 기록·상태를 확정한다. 한도 검사는 호출자가 한다.
     `source_type="n8n"` 이면 업무 원본 칸이 체인·항목 키(v9 → v10 마이그레이션과 같다).
@@ -561,6 +788,7 @@ def _insert_new_task(
         now,
         source_type=source_type, source_id=chain_id if n8n else None,
         source_item_id=source_ref if n8n else None, source_key=source_ref if n8n else None,
+        requested_by_member_id=requested_by_member_id,
     )
     repo.save_selection(conn, selection)
     _refresh_status(conn, task_id, now, settings)
@@ -664,10 +892,11 @@ def _chain_context(request: Request, conn: Connection, session_id: str, chain: R
 def chain_page(
     request: Request,
     chain_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """구성 결과(순서·담당·이유)와 `워크플로우 시작`. 두 번째 노드부터는 워커가 선행 완료를 보고 자동으로 잇는다."""
+    session_id = member.session_id
     now = utc_now()
     chain = _own_chain(conn, session_id, chain_id)
     return _render(
@@ -681,10 +910,11 @@ def chain_live(
     request: Request,
     response: Response,
     chain_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """노드 목록 + 사람 단계 + 동작 영역 조각만 (`_chain_live.html`)."""
+    session_id = member.session_id
     now = utc_now()
     chain = _own_chain(conn, session_id, chain_id)
     response.headers["Cache-Control"] = "no-store"
@@ -698,13 +928,16 @@ def chain_start(
     request: Request,
     response: Response,
     chain_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """첫 노드를 `task_run` 과 같은 경로로 실행하고 `started_at` 을 기록한다. 이미 시작했으면 그대로 303 (멱등)."""
+    session_id = member.session_id
     now = utc_now()
     chain = _own_chain(conn, session_id, chain_id)
     start_chain(conn, chain, session_id=session_id, now=now, settings=_settings(request), error=PageError)
+    for work_item_id in dict.fromkeys(t["work_item_id"] for t in repo.tasks_of_chain(conn, chain_id)):
+        repo.set_work_requester(conn, work_item_id, member.member_id)  # 맡긴 사람 = 체인을 시작한 멤버
     return _redirect(f"/chains/{chain_id}", response)
 
 
@@ -736,17 +969,18 @@ _WORK_KEY = re.compile(rf"{WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})")
 def work_detail(
     request: Request,
     key: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """업무 상세(`/work/RUN-23`) — 머리·단계 묶음·양식 칸·연결 업무·열린 사람 요청. 다른 워크스페이스의 키는 404."""
+    session_id = member.session_id
     now = utc_now()
     match = _WORK_KEY.fullmatch(key)
     work = repo.get_work_item_by_key(conn, session_id, int(match.group(1))) if match else None
     if work is None:
         raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
     base = _base(request, conn, session_id, now)
-    context = views.work_context(conn, work, now=now, settings=_settings(request), is_operator=base["is_operator"])
+    context = views.work_context(conn, work, now=now, settings=_settings(request), allowed=base["allowed"])
     return _render("work_detail.html", **base, **context)
 
 
@@ -754,14 +988,15 @@ def work_detail(
 def task_detail(
     request: Request,
     task_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
+    session_id = member.session_id
     now = utc_now()
     row = _own_task(conn, session_id, task_id)
     store = request.app.state.store
     base = _base(request, conn, session_id, now)
-    context = views.task_context(conn, store, row, now=now, settings=_settings(request), is_operator=base["is_operator"])
+    context = views.task_context(conn, store, row, now=now, settings=_settings(request), allowed=base["allowed"])
     viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
     return _render("task_detail.html", **base, **context, viewer=viewer)
 
@@ -771,16 +1006,16 @@ def task_live(
     request: Request,
     response: Response,
     task_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """상세의 라이브 조각만 (상태 줄·실행 블록·결과 카드·산출물 칩·동작 영역·연결 업무 칩). 세션 소유 확인은 같다."""
+    session_id = member.session_id
     now = utc_now()
     row = _own_task(conn, session_id, task_id)
     store = request.app.state.store
-    session = repo.get_session(conn, session_id)
     context = views.task_context(
-        conn, store, row, now=now, settings=_settings(request), is_operator=bool(session and session["is_operator"]),
+        conn, store, row, now=now, settings=_settings(request), allowed=team.allowed_actions(member.role),
     )
     viewer = views.viewer_context(conn, store, context["result"], session_id=session_id)
     response.headers["Cache-Control"] = "no-store"
@@ -792,17 +1027,19 @@ def task_run(
     request: Request,
     response: Response,
     task_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """직접 실행. 활성 실행 없음 · 선택됨 · (선행이 있으면) 선행 결과 + 판정 + 인계 묶음이 조건이다 (ADR-0009 (3)).
     run_mode 와 무관하게 사용자 조작으로 시작할 수 있다."""
+    session_id = member.session_id
     now = utc_now()
     task = _own_task(conn, session_id, task_id)
     if policy_for(task["kind"]).cycle:
         _run_cycle_task(conn, request.app.state.store, task, now=now, settings=_settings(request))
     else:
         _run_task(conn, task, session_id=session_id, now=now, settings=_settings(request))
+    repo.set_work_requester(conn, task["work_item_id"], member.member_id)  # 맡긴 사람 = 직접 실행한 멤버
     return _redirect(f"/tasks/{task_id}", response)
 
 
@@ -811,21 +1048,22 @@ def task_delegate(
     request: Request,
     response: Response,
     task_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """[에이전트에게 맡기기] (ADR-0017) — GitHub 원본 Task 에 운영자 실행 지시를 한 번 기록하고(멱등) `/run` 과 같은
     착수(`Worker.start_manually`)를 시도한다. 지금 못 시작하면 대기 사유는 상세에 남고 워커가 풀리는 대로 착수한다."""
+    session_id = member.session_id
     now = utc_now()
     task = _own_task(conn, session_id, task_id)
-    _require_operator_page(conn, session_id)
     issue = repo.get_source_issue_by_task(conn, session_id, task_id)
     if issue is None:
         raise PageError(409, "not_delegatable", "GitHub 이슈에서 온 업무만 맡길 수 있습니다.")
     if task["finished_at"] is not None:
         raise PageError(409, "task_closed", "마감된 업무는 맡길 수 없습니다.")
     repo.mark_issue_delegated(conn, session_id=session_id, source_id=issue["source_id"],
-                              github_issue_id=issue["github_issue_id"], by="operator", now=now)
+                              github_issue_id=issue["github_issue_id"], by="operator", now=now,
+                              member_id=member.member_id)
     worker = Worker(lambda: conn, request.app.state.store, None, _settings(request), lambda: now)
     worker.start_manually(conn, task_id)
     return _redirect(f"/tasks/{task_id}", response)
@@ -895,11 +1133,12 @@ def task_select(
     task_id: str,
     agent_id: str = Form(""),
     return_to: str = Form(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """`needs_selection` 인 업무(또는 시작 전 워크플로우 노드)에 에이전트를 직접 지정한다. 판단은 `select_agent(mode="manual")`.
     `return_to=chain` 이면 워크플로우 화면으로 돌아간다 — 값은 열거형이며 URL 을 받지 않는다."""
+    session_id = member.session_id
     now = utc_now()
     settings = _settings(request)
     task = _own_task(conn, session_id, task_id)
@@ -935,10 +1174,11 @@ def task_review(
     task_id: str,
     decision: str = Form(""),
     comment: str = Form(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.RESPOND)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """PRD 4절 검토 동작. 결과가 `result_ready` 이고 사용자 상태가 `확인 필요` 일 때만 받는다."""
+    session_id = member.session_id
     now = utc_now()
     settings = _settings(request)
     store = request.app.state.store
@@ -1031,10 +1271,11 @@ def artifact_view(
     task_id: str,
     artifact_id: str,
     raw: int = 0,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> Any:
     """세션 소유 + 이 업무의 실행이 만든 산출물만. `?raw=1` 은 저장된 바이트 그대로."""
+    session_id = member.session_id
     now = utc_now()
     _own_task(conn, session_id, task_id)
     artifact = repo.get_artifact(conn, artifact_id)
@@ -1070,13 +1311,18 @@ def artifact_view(
 @router.get("/agents", response_class=HTMLResponse)
 def agents_list(
     request: Request,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """워크스페이스에 붙은 Agent 만. 0개면 빈 상태와 러너 연결 안내."""
+    session_id = member.session_id
     now = utc_now()
     settings = _settings(request)
-    agents = [views.agent_public(a, now=now, settings=settings) for a in _session_agents(conn, session_id)]
+    agents = [
+        {**views.agent_public(a, now=now, settings=settings),
+         "owner": views.runner_owner(conn, session_id, views.agent_owner_id(conn, a))}
+        for a in _session_agents(conn, session_id)
+    ]
     return _render("agents.html", **_base(request, conn, session_id, now), agents=agents)
 
 
@@ -1084,15 +1330,17 @@ def agents_list(
 def agent_detail(
     request: Request,
     agent_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """워크스페이스에 붙은 Agent 만 열린다. 그 외는 404 로 존재를 알리지 않는다."""
+    session_id = member.session_id
     now = utc_now()
     row = repo.get_agent(conn, agent_id)
     if row is None or not repo.is_session_agent(conn, session_id, agent_id):
         raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id")
     agent = views.agent_public(row, now=now, settings=_settings(request), kinds=_kinds(conn, session_id))
+    agent["owner"] = views.runner_owner(conn, session_id, views.agent_owner_id(conn, row))
     return _render("agent_detail.html", **_base(request, conn, session_id, now), agent=agent)
 
 
@@ -1137,10 +1385,11 @@ def _kind_in_use_message(conn: Connection, session_id: str, kind: str) -> str:
 @router.get("/kinds", response_class=HTMLResponse)
 def kinds_page(
     request: Request,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """종류 목록 + 종류 등록 폼 + 규칙 목록 + 규칙 등록 폼. 규칙은 한 줄 텍스트다 — 그래프를 그리지 않는다."""
+    session_id = member.session_id
     now = utc_now()
     kinds = repo.list_kinds(conn, session_id)
     return _render(
@@ -1162,11 +1411,12 @@ def kinds_create(
     input_kinds: list[str] = Form([]),
     outcomes: str = Form(""),
     instructions: str = Form(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_RULES)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """사용자 정의 종류. `output_kind` 는 항상 `generic_result`(내장 결과 봉투는 검증기가 딸려 있다), `builtin` 은 False.
     능력 코드를 비우면 종류 이름과 같다 (ARCHITECTURE "봉투와 내장 값")."""
+    session_id = member.session_id
     kind = kind.strip()
     if kind in BUILTIN_KIND_NAMES:  # 세션에 아직 seed 되지 않은 내장 이름도 예약어다
         raise PageError(409, "kind_exists", f"종류 {kind} 은 이미 등록돼 있습니다.", field="kind")
@@ -1195,9 +1445,10 @@ def kinds_create(
 def kinds_delete(
     response: Response,
     kind: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_RULES)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
+    session_id = member.session_id
     try:
         repo.delete_kind(conn, session_id, kind)
     except KindProtected:
@@ -1217,11 +1468,12 @@ def rules_create(
     to_kind: str = Form(""),
     handoff_kinds: list[str] = Form([]),
     placement: str = Form("same_work"),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_RULES)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """형식은 계약(`SuccessorRule`), 등록부와의 정합(`on_outcomes ⊆ from.outcomes`·`handoff_kinds ⊇ to.input_kinds`)은
     `domain.kinds.validate_rule` 이 본다. 여기서 규칙 논리를 다시 쓰지 않는다."""
+    session_id = member.session_id
     try:
         rule = SuccessorRule.model_validate({
             "from_kind": from_kind.strip(),
@@ -1248,10 +1500,11 @@ def rules_create(
 def rules_delete(
     response: Response,
     rule_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_RULES)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """내장 규칙도 삭제할 수 있다 — 규칙이 없으면 그 결과 뒤 후속은 사람이 시작한다."""
+    session_id = member.session_id
     try:
         repo.delete_rule(conn, session_id, rule_id)
     except NotFound:
@@ -1290,10 +1543,11 @@ def _sources_context(
 @router.get("/sources", response_class=HTMLResponse)
 def sources_page(
     request: Request,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """입구 주소 · 토큰 목록 · 발급 폼 · 요청 예시 · callback 허용 목록 상태."""
+    session_id = member.session_id
     return _render("sources.html", **_sources_context(request, conn, session_id, utc_now()))
 
 
@@ -1301,11 +1555,12 @@ def sources_page(
 def sources_issue_token(
     request: Request,
     label: str = Form(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """발급한 원문은 이 응답 화면에만 보인다 — 303 으로 넘기지 않는다(쿠키·쿼리·flash 에 원문을 두지 않는다).
     활성 토큰은 세션당 `SOURCE_TOKEN_LIMIT` 개까지."""
+    session_id = member.session_id
     now = utc_now()
     active = [t for t in repo.list_source_tokens(conn, session_id) if t["revoked_at"] is None]
     if len(active) >= SOURCE_TOKEN_LIMIT:
@@ -1321,10 +1576,11 @@ def sources_issue_token(
 def sources_revoke_token(
     response: Response,
     token_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """같은 세션의 토큰만. 다른 세션·없음은 404 로 존재를 알리지 않는다. 재취소는 멱등."""
+    session_id = member.session_id
     try:
         repo.revoke_source_token(conn, session_id, token_id, utc_now())
     except NotFound:
@@ -1335,17 +1591,57 @@ def sources_revoke_token(
 # --- 운영자 (ADR-0005) --------------------------------------------------------------
 
 
+def _may_remove_runner(member: LoggedIn, owner_member_id: str | None) -> bool:
+    """러너 해제·코드 취소·러너 에이전트 삭제 — 소유자(발급자) 본인(`attach_runner`) 또는 `remove_any_runner`.
+    소유자 없음(v11 이전)은 관리자만."""
+    if team.can(member.role, team.REMOVE_ANY_RUNNER):
+        return True
+    return owner_member_id is not None and owner_member_id == member.member_id \
+        and team.can(member.role, team.ATTACH_RUNNER)
+
+
+def _forbid_runner_removal(owner_member_id: str | None) -> PageError:
+    if owner_member_id is None:
+        return PageError(403, "forbidden", "관리자 권한이 필요합니다.")
+    return PageError(403, "forbidden", "러너 소유자나 관리자만 할 수 있습니다.")
+
+
 def _operator_context(
     request: Request, conn: Connection, session_id: str, now: str, issued: dict[str, str] | None = None
 ) -> dict[str, Any]:
     settings = _settings(request)
     tasks = [views.task_summary(conn, t, now=now, settings=settings) for t in repo.list_tasks(conn, None)]
     kinds = _kinds(conn, session_id)
+    base = _base(request, conn, session_id, now)
+    member: LoggedIn = base["member"]
+    # 연결 코드 목록은 관리자면 전부, 멤버면 자기가 발급한 것만(러너 소유자 — phase 15 step 10)
+    codes = repo.list_connect_codes(
+        conn, issued_by_member_id=None if team.REMOVE_ANY_RUNNER in base["allowed"] else member.member_id
+    )
+    agents = []
+    for a in repo.list_agents(conn):
+        owner_id = views.agent_owner_id(conn, a)
+        agents.append({
+            **views.agent_public(a, now=now, settings=settings, kinds=kinds),
+            "owner": views.runner_owner(conn, session_id, owner_id),
+            "can_delete": team.MANAGE_CONNECTIONS in base["allowed"] or _may_remove_runner(member, owner_id),
+        })
+    runners = [
+        {
+            **{k: c[k] for k in ("connector_id", "created_at", "last_seen_at", "revoked_at")},
+            "owner": views.runner_owner(conn, session_id, c["owner_member_id"]),
+            "can_revoke": c["revoked_at"] is None and _may_remove_runner(member, c["owner_member_id"]),
+        }
+        for c in repo.list_connectors(conn)
+    ]
     return {
-        **_base(request, conn, session_id, now),
-        "agents": [views.agent_public(a, now=now, settings=settings, kinds=kinds) for a in repo.list_agents(conn)],
+        **base,
+        "agents": agents,
+        "runners": runners,
         "all_tasks": tasks,
-        "connect_codes": [dict(c) for c in repo.list_connect_codes(conn)],
+        "connect_codes": [
+            {**dict(c), "can_revoke": _may_remove_runner(member, c["issued_by_member_id"])} for c in codes
+        ],
         "issued": issued,
         # 에이전트 등록 폼의 안내 — 운영자는 세션 무관이라 내장 종류만 보인다. 사용자 정의 코드는 scope 키를 직접 적는다
         "builtin_kinds": [views.kind_public(spec) for spec in BUILTIN_KINDS],
@@ -1357,32 +1653,29 @@ def _operator_context(
 @router.get("/operator", response_class=HTMLResponse)
 def operator_page(
     request: Request,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """운영자가 아니면 토큰 입력 폼만. 토큰 값은 세션 행의 `is_operator` 표시로만 남고 쿠키·HTML 에 넣지 않는다."""
+    """러너(연결 코드)는 `attach_runner`, 에이전트 등록·삭제와 코드 목록·취소는 관리자 동작 — 템플릿이 `allowed` 로 가른다."""
+    session_id = member.session_id
     now = utc_now()
-    base = _base(request, conn, session_id, now)
-    if not base["is_operator"]:
-        return _render("operator.html", **base)
     return _render("operator.html", **_operator_context(request, conn, session_id, now))
 
 
 @router.get("/operator/github", response_class=HTMLResponse)
 def operator_github_page(
     request: Request,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """GitHub 연결(ADR-0014·0017) — 연결 전엔 [GitHub 연결] 버튼, 연결 뒤엔 저장소 카드(동기화·러너 매칭·트리거 라벨)와
-    접힌 고급 설정·실제 업무 목록·열린 사람 요청. 비밀은 연결됨/없음만. 설정 쓰기는 화면 스크립트가 운영자 JSON API
-    (`/github/sources…`·`/human-requests…`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 으로 한다."""
+    접힌 고급 설정·실제 업무 목록·열린 사람 요청. 비밀은 연결됨/없음만. 설정 쓰기는 화면 스크립트가 관리자 JSON API
+    (`/github/sources…`·`/human-requests…`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 으로 한다.
+    카드 읽기·[러너 붙이기]는 멤버도, 연결·설정 폼은 `manage_connections` 일 때만 보인다."""
+    session_id = member.session_id
     now = utc_now()
-    base = _base(request, conn, session_id, now)
-    if not base["is_operator"]:
-        raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
     return _render(
-        "operator_github.html", **base,
+        "operator_github.html", **_base(request, conn, session_id, now),
         **views.github_context(conn, session_id, now=now, settings=_settings(request), secrets=request.app.state.secrets),
     )
 
@@ -1391,16 +1684,16 @@ def operator_github_page(
 def operator_attach_runner(
     request: Request,
     source_id: str,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.ATTACH_RUNNER)),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """[러너 붙이기](ADR-0018 결정 6) — 연결 코드(1회용·10분)를 발급해 그 카드에 명령 한 줄을 넣어 그대로 렌더한다.
     리다이렉트하지 않는다 — 코드가 URL·기록에 남지 않게. 서버 주소는 `WORKFLOW_PUBLIC_URL` 또는 요청 base URL."""
-    _require_operator_page(conn, session_id)
+    session_id = member.session_id
     if repo.get_github_source(conn, session_id, source_id) is None:
         raise PageError(404, "not_found", "이 워크스페이스의 저장소 연결이 아닙니다.", field="source_id")
     now = utc_now()
-    code = repo.issue_connect_code(conn, now)
+    code = repo.issue_connect_code(conn, now, issued_by_member_id=member.member_id)
     row = next(c for c in repo.list_connect_codes(conn) if c["code"] == code)
     settings = _settings(request)
     server = settings.public_url or str(request.base_url).rstrip("/")
@@ -1466,12 +1759,6 @@ def _invalid_gh_state() -> PageError:
                      "GitHub 연결 요청을 확인할 수 없습니다(만료 또는 다른 요청). /operator/github 에서 다시 [GitHub 연결] 을 누르세요.")
 
 
-def _require_operator_page(conn: Connection, session_id: str) -> None:
-    session = repo.get_session(conn, session_id)
-    if session is None or not session["is_operator"]:
-        raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
-
-
 def _require_github_workspace(conn: Connection, session_id: str) -> None:
     if any(owner != session_id for owner in repo.github_source_sessions(conn)):
         raise PageError(409, "github_workspace_taken", "GitHub 연결은 이미 다른 운영자 워크스페이스가 쓰고 있습니다.")
@@ -1510,11 +1797,11 @@ def github_app_new(
     request: Request,
     response: Response,
     org: str | None = Query(None),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> str | RedirectResponse:
     """[GitHub 연결] — manifest 를 담은 자동 제출 폼. App 이 이미 있으면 설치 화면으로 바로 보낸다."""
-    _require_operator_page(conn, session_id)
+    session_id = member.session_id
     if org is not None and not _GITHUB_LOGIN.fullmatch(org):
         raise PageError(422, "invalid_field", "GitHub 조직 이름 형식이 아닙니다.", field="org")
     slug = _saved_app_slug(request)
@@ -1537,11 +1824,10 @@ def github_app_callback(
     response: Response,
     code: str = Query(""),
     state: str = Query(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """GitHub 가 App 을 만들고 돌아온 곳 — code 교환 → 비밀 저장 → 설치 화면. code·응답 본문은 싣지 않는다."""
-    _require_operator_page(conn, session_id)
     if not _gh_state_valid(request, state):
         raise _invalid_gh_state()
     try:
@@ -1561,12 +1847,12 @@ def github_app_setup(
     installation_id: int = Query(ge=1),
     setup_action: str | None = Query(None),  # install·update — 값으로 분기하지 않는다
     state: str | None = Query(None),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """설치 뒤 돌아온 곳 — App JWT 로 우리 App 의 설치인지 확인한 뒤 설치 저장소마다 소스를 맞춘다.
     state 가 없으면(GitHub 설정 화면에서 설치를 바꾸고 온 경우) 운영자 세션만으로 받는다."""
-    _require_operator_page(conn, session_id)
+    session_id = member.session_id
     if state is not None and not _gh_state_valid(request, state):
         raise _invalid_gh_state()
     _require_github_workspace(conn, session_id)
@@ -1596,12 +1882,12 @@ def github_token_connect(
     response: Response,
     token: str = Form(""),
     repository_full_name: str = Form(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """고급: 붙여 넣은 PAT 로 저장소를 볼 수 있는지 확인한 뒤 비밀 파일에 쓰고 그 저장소 소스를 만든다.
     토큰 값·길이는 응답·로그에 싣지 않는다."""
-    _require_operator_page(conn, session_id)
+    session_id = member.session_id
     try:
         name = _REPOSITORY_NAME.validate_python(repository_full_name.strip())
     except ValidationError:
@@ -1638,6 +1924,32 @@ def _webhook_url_savable(url: str) -> bool:
     return parts.scheme == "https" or parts.hostname in _LOOPBACK_HOSTS
 
 
+def _savable_webhook_url(url: str) -> str:
+    """앞뒤 공백을 떼고 저장 검사. 틀리면 422 — 문구에 값을 되돌려 싣지 않는다."""
+    url = url.strip()
+    if not _webhook_url_savable(url):
+        raise PageError(422, "invalid_field",
+                        f"https:// 주소(같은 컴퓨터는 http:// 도 가능)를 {notification.WEBHOOK_URL_MAX_LENGTH}자 이하로 "
+                        "입력하세요. 사용자 이름·비밀번호가 든 주소는 받지 않습니다.", field="url")
+    return url
+
+
+def _send_test_notification(request: Request, url: str | None) -> dict[str, str]:
+    """저장된 URL 로 대기열 없이 한 번 보내고 결과(보냄·HTTP 상태·시간 초과·연결 오류)만 돌려준다. 없으면 409."""
+    if url is None:
+        raise PageError(409, "notify_not_configured", "저장된 알림 주소가 없습니다. 먼저 웹훅 URL 을 저장하세요.")
+    message = notification.NotificationMessage(
+        event="test", task_id=None, title="테스트 알림", content=_TEST_MESSAGE, task_url=None, pr_url=None,
+    )
+    try:
+        NotifySender(transport=request.app.state.notify_transport).post(url, notification.notification_body(url, message))
+    except NotifyFailed as exc:
+        reason = "시간 초과" if "Timeout" in str(exc) else str(exc)
+        logger.info("알림 테스트 실패 → %s: %s", notification.webhook_host(url), reason)
+        return {"state": "failed", "text": f"보내지 못했습니다 — {reason}"}
+    return {"state": "sent", "text": "보냈습니다 — 받는 쪽에서 메시지를 확인하세요."}
+
+
 def _notifications_page(request: Request, conn: Connection, session_id: str,
                         test_result: dict[str, str] | None = None) -> str:
     now = utc_now()
@@ -1650,11 +1962,11 @@ def _notifications_page(request: Request, conn: Connection, session_id: str,
 @router.get("/operator/notifications", response_class=HTMLResponse)
 def operator_notifications_page(
     request: Request,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_SHARED_NOTIFY)),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """알림 웹훅 설정 — 설정됨/없음·호스트, 최근 알림 20건, URL 폼·[테스트 보내기]·[삭제]."""
-    _require_operator_page(conn, session_id)
+    session_id = member.session_id
     return _notifications_page(request, conn, session_id)
 
 
@@ -1663,16 +1975,11 @@ def operator_notifications_save(
     request: Request,
     response: Response,
     url: str = Form(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_SHARED_NOTIFY)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """검사 뒤 비밀 파일에 저장. 형식 오류 문구에 값을 되돌려 싣지 않는다."""
-    _require_operator_page(conn, session_id)
-    url = url.strip()
-    if not _webhook_url_savable(url):
-        raise PageError(422, "invalid_field",
-                        f"https:// 주소(같은 컴퓨터는 http:// 도 가능)를 {notification.WEBHOOK_URL_MAX_LENGTH}자 이하로 "
-                        "입력하세요. 사용자 이름·비밀번호가 든 주소는 받지 않습니다.", field="url")
+    url = _savable_webhook_url(url)
     request.app.state.secrets.write(secret_store.NOTIFY_WEBHOOK_URL, url)
     logger.info("알림 웹훅 저장: %s", notification.webhook_host(url))
     return _redirect("/operator/notifications", response)
@@ -1682,10 +1989,9 @@ def operator_notifications_save(
 def operator_notifications_delete(
     request: Request,
     response: Response,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_SHARED_NOTIFY)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
-    _require_operator_page(conn, session_id)
     request.app.state.secrets.delete(secret_store.NOTIFY_WEBHOOK_URL)
     return _redirect("/operator/notifications", response)
 
@@ -1693,26 +1999,257 @@ def operator_notifications_delete(
 @router.post("/operator/notifications/test", response_class=HTMLResponse)
 def operator_notifications_test(
     request: Request,
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.MANAGE_SHARED_NOTIFY)),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """저장된 URL 로 대기열 없이 한 번 보내고 결과(보냄·HTTP 상태·시간 초과·연결 오류)만 보인다."""
-    _require_operator_page(conn, session_id)
-    url = request.app.state.secrets.read(secret_store.NOTIFY_WEBHOOK_URL)
-    if url is None:
-        raise PageError(409, "notify_not_configured", "저장된 알림 주소가 없습니다. 먼저 웹훅 URL 을 저장하세요.")
-    message = notification.NotificationMessage(
-        event="test", task_id=None, title="테스트 알림", content=_TEST_MESSAGE, task_url=None, pr_url=None,
-    )
-    try:
-        NotifySender(transport=request.app.state.notify_transport).post(url, notification.notification_body(url, message))
-    except NotifyFailed as exc:
-        reason = "시간 초과" if "Timeout" in str(exc) else str(exc)
-        logger.info("알림 테스트 실패 → %s: %s", notification.webhook_host(url), reason)
-        result = {"state": "failed", "text": f"보내지 못했습니다 — {reason}"}
-    else:
-        result = {"state": "sent", "text": "보냈습니다 — 받는 쪽에서 메시지를 확인하세요."}
+    session_id = member.session_id
+    result = _send_test_notification(request, request.app.state.secrets.read(secret_store.NOTIFY_WEBHOOK_URL))
     return _notifications_page(request, conn, session_id, test_result=result)
+
+
+# --- 팀·내 설정 (phase 15 step 7, ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로) --------------------------------
+# 초대·재설정 링크 원문은 발급 응답 화면에만 한 번(303 없이 렌더). 개인 웹훅 URL 은 비밀 파일
+# `notify_webhook_url.<member_id>` 에만 두고 화면·로그에는 호스트만.
+
+_LAST_ADMIN = "활성 관리자가 한 명은 있어야 합니다."
+_BAD_CURRENT_PASSWORD = "현재 비밀번호가 올바르지 않습니다."
+
+
+def _team_page(request: Request, conn: Connection, member: LoggedIn,
+               issued: dict[str, str] | None = None) -> str:
+    now = utc_now()
+    return _render(
+        "team.html", **_base(request, conn, member.session_id, now),
+        **views.team_context(conn, member.session_id, now=now),
+        public_url_set=bool(_settings(request).public_url), issued=issued,
+    )
+
+
+def _link_url(request: Request, kind: str, token: str) -> str:
+    """`<base>/invite/<토큰>`·`<base>/reset/<토큰>` — base 는 공개 주소, 없으면 요청 주소."""
+    base = _settings(request).public_url or str(request.base_url).rstrip("/")
+    return f"{base}/{kind}/{token}"
+
+
+def _checked_role(role: str) -> str:
+    if role not in team.ROLES:
+        raise PageError(422, "invalid_field", "역할은 관리자 또는 멤버입니다.", field="role")
+    return role
+
+
+def _team_member(conn: Connection, session_id: str, member_id: str) -> Row:
+    row = repo.get_member(conn, session_id, member_id)
+    if row is None:
+        raise PageError(404, "not_found", f"멤버 {member_id}을 찾을 수 없습니다.", field="member_id")
+    return row
+
+
+@router.get("/team", response_class=HTMLResponse)
+def team_page(
+    request: Request,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """팀 — 멤버 표, 쓰지 않은 초대와 [취소], 초대 발급 폼, 멤버별 역할·비활성화·재설정 링크."""
+    return _team_page(request, conn, member)
+
+
+@router.post("/team/invites", response_class=HTMLResponse)
+def team_invite(
+    request: Request,
+    role: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """초대 링크 발급 — 같은 화면에 링크를 한 번만 보인다."""
+    _, token = repo.issue_invite(conn, member.session_id, role=_checked_role(role),
+                                 created_by_member_id=member.member_id, now=utc_now())
+    logger.info("초대 링크 발급: %s", role)
+    return _team_page(request, conn, member, issued={"kind": "invite", "link": _link_url(request, "invite", token),
+                                                     "role": role})
+
+
+@router.post("/team/invites/{invite_id}/revoke")
+def team_invite_revoke(
+    request: Request,
+    response: Response,
+    invite_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    try:
+        repo.revoke_invite(conn, member.session_id, invite_id, now=utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", f"초대 {invite_id}을 찾을 수 없습니다.", field="invite_id") from None
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/role")
+def team_member_role(
+    request: Request,
+    response: Response,
+    member_id: str,
+    role: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    _team_member(conn, member.session_id, member_id)
+    try:
+        repo.set_member_role(conn, member.session_id, member_id, _checked_role(role), now=utc_now())
+    except LastAdmin:
+        raise PageError(409, "last_admin", _LAST_ADMIN) from None
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/disable")
+def team_member_disable(
+    request: Request,
+    response: Response,
+    member_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """비활성화 — 그 멤버의 로그인 세션을 전부 폐기한다."""
+    _team_member(conn, member.session_id, member_id)
+    try:
+        repo.disable_member(conn, member.session_id, member_id, now=utc_now())
+    except LastAdmin:
+        raise PageError(409, "last_admin", _LAST_ADMIN) from None
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/enable")
+def team_member_enable(
+    request: Request,
+    response: Response,
+    member_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    _team_member(conn, member.session_id, member_id)
+    repo.enable_member(conn, member.session_id, member_id, now=utc_now())
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/reset-link", response_class=HTMLResponse)
+def team_member_reset_link(
+    request: Request,
+    member_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """재설정 링크 발급(그 멤버의 이전 미사용 링크는 취소) — 같은 화면에 링크를 한 번만 보인다."""
+    target = _team_member(conn, member.session_id, member_id)
+    _, token = repo.issue_reset_link(conn, member.session_id, member_id, created_by_member_id=member.member_id,
+                                     now=utc_now())
+    logger.info("재설정 링크 발급")
+    return _team_page(request, conn, member, issued={"kind": "reset", "link": _link_url(request, "reset", token),
+                                                     "display_name": target["display_name"]})
+
+
+def _me_page(request: Request, conn: Connection, member: LoggedIn, *, status: int = 200,
+             error: str | None = None, test_result: dict[str, str] | None = None) -> HTMLResponse:
+    now = utc_now()
+    body = _render(
+        "me.html", **_base(request, conn, member.session_id, now),
+        **views.me_context(conn, member.session_id, member.member_id, secrets=request.app.state.secrets),
+        error=error, test_result=test_result,
+    )
+    return HTMLResponse(body, status_code=status)
+
+
+@router.get("/me", response_class=HTMLResponse)
+def me_page(
+    request: Request,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    """내 설정 — 표시 이름·이메일(읽기)·역할, 비밀번호 변경, 개인 웹훅(설정됨/없음·호스트만)."""
+    return _me_page(request, conn, member)
+
+
+@router.post("/me/profile")
+def me_profile(
+    request: Request,
+    response: Response,
+    display_name: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    cleaned = team.clean_display_name(display_name)
+    if cleaned is None:
+        raise PageError(422, "invalid_field", "표시 이름은 1~40자로 입력하세요.", field="display_name")
+    repo.set_member_display_name(conn, member.session_id, member.member_id, cleaned, now=utc_now())
+    return _redirect("/me", response)
+
+
+@router.post("/me/password", response_model=None)
+def me_password(
+    request: Request,
+    current_password: str = Form(""),
+    new_password: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """현재 비밀번호 확인(이 멤버 이메일 키로 실패 제한) → 새 비밀번호. 이 멤버의 로그인 세션을 전부 폐기하고
+    이 브라우저에는 새 세션 쿠키를 준다."""
+    row = repo.get_member(conn, member.session_id, member.member_id)
+    key = login_email_key(row["email"])
+    throttle = request.app.state.login_throttle
+    if throttle.blocked(key):
+        logger.warning("비밀번호 변경 거부: 연속 실패 제한")
+        return _me_page(request, conn, member, status=429, error=_TOO_MANY)
+    matched = len(current_password) <= team.PASSWORD_MAX_LENGTH and team.verify_password(current_password,
+                                                                                         row["password_hash"])
+    if not matched:
+        throttle.fail(key)
+        logger.warning("비밀번호 변경 실패: 현재 비밀번호 불일치")
+        return _me_page(request, conn, member, status=403, error=_BAD_CURRENT_PASSWORD)
+    problem = team.password_problem(new_password)
+    if problem:
+        return _me_page(request, conn, member, status=422, error=problem)
+    throttle.reset(key)
+    repo.set_member_credentials(conn, member.session_id, member.member_id, email=row["email"],
+                                password_hash=team.hash_password(new_password), now=utc_now())
+    logger.info("비밀번호 변경")
+    return _logged_in_redirect(request, conn, member.member_id, "/me")
+
+
+@router.post("/me/webhook")
+def me_webhook_save(
+    request: Request,
+    response: Response,
+    url: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """개인 웹훅 — 공용과 같은 검사, 비밀 파일만 개인 이름."""
+    url = _savable_webhook_url(url)
+    request.app.state.secrets.write(secret_store.personal_webhook_name(member.member_id), url)
+    logger.info("개인 알림 웹훅 저장: %s", notification.webhook_host(url))
+    return _redirect("/me", response)
+
+
+@router.post("/me/webhook/delete")
+def me_webhook_delete(
+    request: Request,
+    response: Response,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    request.app.state.secrets.delete(secret_store.personal_webhook_name(member.member_id))
+    return _redirect("/me", response)
+
+
+@router.post("/me/webhook/test", response_class=HTMLResponse)
+def me_webhook_test(
+    request: Request,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    url = request.app.state.secrets.read(secret_store.personal_webhook_name(member.member_id))
+    return _me_page(request, conn, member, test_result=_send_test_notification(request, url))
 
 
 @router.get("/metrics", response_class=HTMLResponse)
@@ -1721,15 +2258,14 @@ def metrics_page(
     since: str = Query("", alias="from"),
     until: str = Query("", alias="to"),
     group_by: str = Query(""),
-    session_id: str = Depends(require_session),
+    member: LoggedIn = Depends(require_action(team.VIEW_METRICS)),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """지표 화면 — `metrics_api` 와 같은 계산. 폼은 GET 이라 빈 칸은 "지정 안 함" 이다. 기준선 가져오기 버튼은
     운영자 JSON API(`POST /operator/github/sources/{id}/baseline`)로 보낸다."""
+    session_id = member.session_id
     now = utc_now()
     base = _base(request, conn, session_id, now)
-    if not base["is_operator"]:
-        raise PageError(403, "forbidden", "운영자 권한이 필요합니다. /operator 에서 운영자 토큰으로 여세요.")
     for field, value in (("from", since), ("to", until)):
         if not value:
             continue
@@ -1766,13 +2302,14 @@ def operator_register_agent(
     local_registration_id: str = Form(""),
     api_url: str = Form(""),
     credential_ref: str = Form(""),
-    session_id: str = Depends(require_operator),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """운영자 등록. 운영자 = 워크스페이스라 등록한 Agent 를 워크스페이스에 붙인다(ADR-0019 — 카탈로그 등록 단계 없음).
     자동 파악값은 연결 프로그램의 registrations 가 채우므로 기존 보고값은 유지한다.
     능력은 계약 패턴으로만 검사한다 — 운영자는 세션 무관이라 어느 세션의 종류와 맞는지는 그 세션의 선택 시점에 정해진다.
     `scope_key` 를 비우면 내장 종류의 코드일 때만 그 종류의 scope 키를 쓴다."""
+    session_id = member.session_id
     agent_id, name = agent_id.strip(), name.strip()
     capability_code, scope_key, scope_value = capability_code.strip(), scope_key.strip(), scope_value.strip()
     local_registration_id = local_registration_id.strip()
@@ -1839,9 +2376,14 @@ def operator_register_agent(
 def operator_delete_agent(
     response: Response,
     agent_id: str,
-    session_id: str = Depends(require_operator),
+    member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
+    """`manage_connections`(관리자) 또는 그 에이전트 러너의 소유자 본인. 없는 에이전트는 관리자에게만 404."""
+    row = repo.get_agent(conn, agent_id)
+    owner_id = views.agent_owner_id(conn, row) if row is not None else None
+    if not (team.can(member.role, team.MANAGE_CONNECTIONS) or _may_remove_runner(member, owner_id)):
+        raise _forbid_runner_removal(owner_id)
     try:
         repo.delete_agent(conn, agent_id)
     except NotFound:
@@ -1852,12 +2394,13 @@ def operator_delete_agent(
 @router.post("/operator/connect-codes", response_class=HTMLResponse)
 def operator_issue_connect_code(
     request: Request,
-    session_id: str = Depends(require_operator),
+    member: LoggedIn = Depends(require_action(team.ATTACH_RUNNER)),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """발급한 코드는 이 응답 화면에만 보인다 (URL 에 넣지 않는다). 1회용·10분."""
+    session_id = member.session_id
     now = utc_now()
-    code = repo.issue_connect_code(conn, now)
+    code = repo.issue_connect_code(conn, now, issued_by_member_id=member.member_id)
     row = next(c for c in repo.list_connect_codes(conn) if c["code"] == code)
     issued = {"code": code, "expires_at": row["expires_at"]}
     return _render("operator.html", **_operator_context(request, conn, session_id, now, issued))
@@ -1867,11 +2410,34 @@ def operator_issue_connect_code(
 def operator_revoke_connect_code(
     response: Response,
     code: str,
-    session_id: str = Depends(require_operator),
+    member: LoggedIn = Depends(require_action(team.ATTACH_RUNNER)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
+    """발급자 본인 또는 `remove_any_runner`. 발급자 없는 코드는 관리자만."""
+    row = next((c for c in repo.list_connect_codes(conn) if c["code"] == code), None)
+    owner_id = row["issued_by_member_id"] if row is not None else None
+    if not _may_remove_runner(member, owner_id):
+        raise _forbid_runner_removal(owner_id)
     try:
         repo.revoke_connect_code(conn, code, utc_now())
     except NotFound:
         raise PageError(404, "not_found", "취소할 수 있는 연결 코드가 아닙니다.", field="code") from None
+    return _redirect("/operator", response)
+
+
+@router.post("/operator/connectors/{connector_id}/revoke")
+def operator_revoke_connector(
+    response: Response,
+    connector_id: str,
+    member: LoggedIn = Depends(require_action(team.ATTACH_RUNNER)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """러너 해제 — 연결 토큰 무효(러너 다음 요청 401). 소유자 본인 또는 `remove_any_runner`, 소유자 없는 러너는 관리자만."""
+    owner_id = repo.connector_owner(conn, connector_id)
+    if not _may_remove_runner(member, owner_id):
+        raise _forbid_runner_removal(owner_id)
+    try:
+        repo.revoke_connector(conn, connector_id, utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", "해제할 수 있는 러너가 아닙니다.", field="connector_id") from None
     return _redirect("/operator", response)

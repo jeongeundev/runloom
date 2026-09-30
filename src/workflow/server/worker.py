@@ -63,7 +63,7 @@ from workflow.adapters.github_client import (
     GitHubUnprocessable,
 )
 from workflow.adapters.notify_sender import NotifyFailed, NotifySender
-from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore
+from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore, personal_webhook_name
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     ArtifactMissing,
@@ -1317,8 +1317,8 @@ class Worker:
 
     # --- 13. 알림 웹훅 (ADR-0018 결정 5) ------------------------------------------------
 
-    def _webhook_url(self) -> str | None:
-        value = self._secrets.read(NOTIFY_WEBHOOK_URL) if self._secrets is not None else None
+    def _webhook_url(self, name: str = NOTIFY_WEBHOOK_URL) -> str | None:
+        value = self._secrets.read(name) if self._secrets is not None else None
         return (value or "").strip() or None
 
     def _request_human(self, conn: Connection, task_id: str, code: str, question: str, cause_key: str,
@@ -1331,34 +1331,60 @@ class Worker:
 
     def _notify(self, conn: Connection, event: str, task_id: str, dedupe_key: str, *, detail: str | None = None,
                 pr_url: str | None = None) -> None:
-        """알림 대기열에 한 건(중복 키로 한 번만). URL 이 설정되지 않았으면 쌓지 않는다."""
-        if self._webhook_url() is None:
+        """받는 사람(업무의 `turn_recipients_of`)별 알림 행(중복 키로 한 번만). 공용 웹훅이 있으면 사건당 한 행
+        (`→ 이름`), 개인 웹훅을 저장한 받는 사람마다 한 행. 어느 URL 도 없으면 쌓지 않는다."""
+        if self._secrets is None:
             return
         task = repo.get_task(conn, task_id)
+        recipients = repo.turn_recipients_of(conn, task["work_item_id"]) if task["work_item_id"] else ()
+        personal = [m for m in recipients if self._webhook_url(personal_webhook_name(m)) is not None]
+        shared = self._webhook_url() is not None
+        if not shared and not personal:
+            return
+        names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, task["session_id"])}
         public_url = self._settings.public_url
         task_url = f"{public_url}/tasks/{task_id}" if public_url else None
-        content = notification.notification_text(
-            event, title=task["title"], detail=detail, pr_url=pr_url, task_url=task_url,
-        )
-        repo.enqueue_notification(
-            conn, session_id=task["session_id"], event=event, task_id=task_id, dedupe_key=dedupe_key,
-            content=content, payload={"title": task["title"], "task_url": task_url, "pr_url": pr_url},
-            now=self._clock(),
-        )
+        payload = {"title": task["title"], "task_url": task_url, "pr_url": pr_url}
+        now = self._clock()
+        if shared:
+            content = notification.notification_text(
+                event, title=task["title"], detail=detail, pr_url=pr_url, task_url=task_url,
+                recipients=[names[m] for m in recipients],
+            )
+            repo.enqueue_notification(
+                conn, session_id=task["session_id"], event=event, task_id=task_id, dedupe_key=f"{dedupe_key}:shared",
+                content=content, payload={**payload, "recipient_member_ids": list(recipients)}, now=now,
+                recipient_member_id=recipients[0] if len(recipients) == 1 else None,
+            )
+        content = notification.notification_text(event, title=task["title"], detail=detail, pr_url=pr_url,
+                                                  task_url=task_url)
+        for member_id in personal:
+            repo.enqueue_notification(
+                conn, session_id=task["session_id"], event=event, task_id=task_id,
+                dedupe_key=f"{dedupe_key}:personal:{member_id}", content=content, payload=payload, now=now,
+                channel="personal", recipient_member_id=member_id,
+            )
+
+    def _row_webhook_url(self, conn: Connection, row: Row) -> str | None:
+        """행의 경로에 맞는 URL — `shared` 는 공용, `personal` 은 받는 사람의 개인 웹훅(비활성이면 None)."""
+        if row["channel"] != "personal":
+            return self._webhook_url()
+        member = repo.get_member(conn, row["session_id"], row["recipient_member_id"])
+        if member is None or member["disabled_at"] is not None:
+            return None
+        return self._webhook_url(personal_webhook_name(row["recipient_member_id"]))
 
     def _deliver_notifications(self, conn: Connection, report: TickReport) -> None:
-        """대기열의 알림을 트랜잭션 밖에서 보낸다. URL 이 지워졌으면 `skipped`, 형식이 깨졌으면 `failed`.
-        실패는 attempts·next_at 으로 물러나고 NOTIFY_MAX_ATTEMPTS 뒤 포기한다. 업무 상태는 바꾸지 않는다.
-        URL 은 로그·DB·예외 문구에 넣지 않는다 — 호스트만."""
+        """대기열의 알림을 트랜잭션 밖에서 보낸다. 행의 경로(공용·개인)로 URL 을 고른다 — URL 이 지워졌거나 개인 행의
+        받는 사람이 비활성이면 `skipped`, 형식이 깨졌으면 `failed`. 실패는 attempts·next_at 으로 물러나고
+        NOTIFY_MAX_ATTEMPTS 뒤 포기한다. 업무 상태는 바꾸지 않는다. URL 은 로그·DB·예외 문구에 넣지 않는다 — 호스트만."""
         if self._notifier is None:
             return
         now = self._clock()
         due = repo.notifications_due(conn, now, max_attempts=NOTIFY_MAX_ATTEMPTS)
-        if not due:
-            return
-        url = self._webhook_url()
         for row in due:
             ntf_id = row["notification_id"]
+            url = self._row_webhook_url(conn, row)
             if url is None:
                 repo.record_notification_attempt(conn, ntf_id, state="skipped", error=None, now=now, next_at=None)
                 continue
