@@ -43,6 +43,7 @@ from workflow.contracts.v1 import (
     BUILTIN_KINDS,
     BUILTIN_RULES,
     ArtifactMeta,
+    Capability,
     ExecutionEvent,
     ExecutionRequest,
     KindSpec,
@@ -50,8 +51,9 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain.field_mapping import MappingRow
+from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.task_followup import FollowupTaskSpec
-from workflow.domain.work_status import WorkStatus
+from workflow.domain.work_status import WorkStatus, work_status
 
 from .conftest import NOW
 
@@ -1757,6 +1759,38 @@ def cycle(seeded):
     return seeded
 
 
+def test_hand_work_to_agent_writes_the_delegation_in_one_transaction(cycle):
+    conn = cycle
+    repo.register_session_agent(conn, SESSION, FIX_AGENT, NOW)
+    work_item_id = repo.work_item_of_task(conn, "task-gh-41")["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    capability = Capability(code="code.fix", scope={"repository_id": "billing"})
+    record = select_agent("task-gh-41", capability, [Candidate(FIX_AGENT, (capability,))], mode="manual",
+                          chosen_agent_id=FIX_AGENT)
+    target = {"local_registration_id": "local-billing"}
+    with pytest.raises(NotFound):  # 다른 워크스페이스
+        repo.hand_work_to_agent(conn, OTHER_SESSION, work_item_id, record=record, target=target, member_id=admin,
+                                now=LATER)
+    assert repo.get_selection(conn, "task-gh-41") is None
+
+    repo.hand_work_to_agent(conn, SESSION, work_item_id, record=record, target=target, member_id=admin, now=LATER)
+
+    assert repo.get_selection(conn, "task-gh-41") == record
+    task = repo.get_task(conn, "task-gh-41")
+    assert (task["selection_mode"], task["chosen_agent_id"], json.loads(task["target_json"])) == (
+        "manual", FIX_AGENT, target)
+    work = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (work["assignee_type"], work["assignee_id"], work["requested_by_member_id"]) == ("agent", FIX_AGENT, admin)
+    issue = repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")
+    assert (issue["delegated_by"], issue["delegated_at"]) == ("operator", LATER)
+    assert WorkStatus(work["status"], work["status_reason"]) == work_status(repo.work_item_facts(conn, work_item_id))
+
+    repo.hand_work_to_agent(conn, SESSION, work_item_id, record=record, target=target, member_id=admin,
+                            now="2026-09-20T00:00:09Z")  # 두 번째 — 지시·담당 이벤트는 처음 것 그대로
+    assert repo.get_source_issue_by_task(conn, SESSION, "task-gh-41")["delegated_at"] == LATER
+    assert len([e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "assigned"]) == 1
+
+
 def test_github_source_save_get_and_session_scope(seeded):
     repo.save_github_source(seeded, SESSION, _source(), NOW)
     assert repo.get_github_source(seeded, SESSION, SOURCE) == _source()
@@ -3050,14 +3084,45 @@ def test_assign_work_item_checks_workspace_and_records_event(seeded):
     assert repo.assign_work_item(conn, SESSION, work_item_id, assignee_type=None, assignee_id=None, now=LATER)
     row = repo.get_work_item(conn, SESSION, work_item_id)
     assert (row["assignee_type"], row["assignee_id"], row["updated_at"]) == (None, None, LATER)
-    events = repo.list_work_item_events(conn, work_item_id)
-    assert [e["type"] for e in events] == ["assigned"] * 3
+    # 바뀔 때마다 `assigned` 한 행 + 업무 상태 재계산(phase 16 — 상태가 바뀌면 `status_changed` 도 남는다)
+    events = [e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "assigned"]
     assert [json.loads(e["data_json"]) for e in events] == [
-        {"from": None, "to": {"type": "member", "id": admin}},
-        {"from": {"type": "member", "id": admin}, "to": {"type": "agent", "id": "agent-ops-demo"}},
-        {"from": {"type": "agent", "id": "agent-ops-demo"}, "to": None},
+        {"from": None, "to": {"type": "member", "id": admin}, "by": None},
+        {"from": {"type": "member", "id": admin}, "to": {"type": "agent", "id": "agent-ops-demo"}, "by": None},
+        {"from": {"type": "agent", "id": "agent-ops-demo"}, "to": None, "by": None},
     ]
     assert events[0]["session_id"] == SESSION and events[0]["config_revision"] == SEEDED_REVISION
+    assert {e["type"] for e in repo.list_work_item_events(conn, work_item_id)} <= {"assigned", "status_changed"}
+
+
+def test_assign_work_item_records_who_and_refreshes_the_work_status(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    assert repo.get_work_item(conn, SESSION, work_item_id)["status_reason"] == ""  # 계산 전 저장값
+    assert repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=admin,
+                                 by_member_id=admin, now=LATER)
+    (event,) = [e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "assigned"]
+    assert json.loads(event["data_json"])["by"] == admin
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert WorkStatus(row["status"], row["status_reason"]) == work_status(repo.work_item_facts(conn, work_item_id))
+    assert row["status_reason"] != ""
+
+
+def test_set_work_priority_records_from_to_by(seeded):
+    conn = seeded
+    work_item_id = repo.work_item_of_task(conn, TASK_A)["work_item_id"]
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    with pytest.raises(ValueError):
+        repo.set_work_priority(conn, SESSION, work_item_id, "urgent", member_id=admin, now=LATER)
+    with pytest.raises(NotFound):
+        repo.set_work_priority(conn, OTHER_SESSION, work_item_id, "high", member_id=admin, now=LATER)
+    assert repo.set_work_priority(conn, SESSION, work_item_id, "high", member_id=admin, now=LATER)
+    assert not repo.set_work_priority(conn, SESSION, work_item_id, "high", member_id=admin, now=LATER)
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["priority"], row["updated_at"]) == ("high", LATER)
+    (event,) = [e for e in repo.list_work_item_events(conn, work_item_id) if e["type"] == "priority_changed"]
+    assert json.loads(event["data_json"]) == {"from": "normal", "to": "high", "by": admin}
 
 
 def test_refresh_work_status_writes_only_on_change_and_is_idempotent(seeded):

@@ -481,35 +481,88 @@ def _fill_work_assignee(conn: Connection, task_id: str, agent_id: str, *, now: s
 
 def assign_work_item(
     conn: Connection, session_id: str, work_item_id: str, *, assignee_type: str | None, assignee_id: str | None,
-    now: str,
+    now: str, by_member_id: str | None = None,
 ) -> bool:
     """담당을 바꾼다(None = 담당 없음). 멤버는 이 워크스페이스의 멤버, Agent 는 이 워크스페이스에 등록된 Agent 여야
-    한다(아니면 NotFound). 바뀌면 `assigned` 이벤트, 같으면 False."""
+    한다(아니면 NotFound). 바뀌면 `assigned` 이벤트(`by` = 바꾼 멤버)와 업무 상태 재계산, 같으면 False."""
     if (assignee_type is None) != (assignee_id is None) or assignee_type not in (None, "member", "agent"):
         raise ValueError(f"담당 {assignee_type!r}/{assignee_id!r}")
+    with _tx(conn):
+        return _assign_work_item(conn, session_id, work_item_id, assignee_type=assignee_type, assignee_id=assignee_id,
+                                 by_member_id=by_member_id, now=now)
+
+
+def _assign_work_item(
+    conn: Connection, session_id: str, work_item_id: str, *, assignee_type: str | None, assignee_id: str | None,
+    by_member_id: str | None, now: str,
+) -> bool:
+    row = get_work_item(conn, session_id, work_item_id)
+    if row is None:
+        raise NotFound(f"work item {work_item_id}")
+    if assignee_type == "member" and _one(
+        conn, "SELECT 1 FROM members WHERE member_id = ? AND session_id = ?", (assignee_id, session_id)
+    ) is None:
+        raise NotFound(f"member {assignee_id}")
+    if assignee_type == "agent" and not is_session_agent(conn, session_id, assignee_id):
+        raise NotFound(f"agent {assignee_id}")
+    if (row["assignee_type"], row["assignee_id"]) == (assignee_type, assignee_id):
+        return False
+    conn.execute(
+        "UPDATE work_items SET assignee_type = ?, assignee_id = ?, updated_at = ? WHERE work_item_id = ?",
+        (assignee_type, assignee_id, now, work_item_id),
+    )
+
+    def who(type_: str | None, id_: str | None) -> dict | None:
+        return None if type_ is None else {"type": type_, "id": id_}
+
+    _work_item_event(conn, work_item_id, session_id, "assigned",
+                     {"from": who(row["assignee_type"], row["assignee_id"]), "to": who(assignee_type, assignee_id),
+                      "by": by_member_id}, now)
+    refresh_work_status(conn, work_item_id, now=now)
+    return True
+
+
+def hand_work_to_agent(
+    conn: Connection, session_id: str, work_item_id: str, *, record: SelectionRecord, target: dict, member_id: str,
+    now: str,
+) -> None:
+    """에이전트에게 맡기기의 쓰기(ARCHITECTURE "담당 바꾸기" `agent:` ①~⑤)를 한 트랜잭션으로 — 단계 선택 기록·직접 선택
+    전환(`target` 고정), 업무 담당 = 그 Agent(`assigned` `by`), 맡긴 사람 = 누른 멤버, 그 단계가 지시 전 GitHub 원본이면
+    운영자 지시 기록, 업무 상태 재계산. 착수는 하지 않는다. 단계가 이 워크스페이스·업무의 것이 아니면 NotFound."""
+    if record.status != "selected":
+        raise ValueError(f"선택되지 않은 기록 {record.status}")
+    with _tx(conn):
+        task = _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ? AND session_id = ?",
+                    (record.task_id, session_id))
+        if task is None or task["work_item_id"] != work_item_id:
+            raise NotFound(f"task {record.task_id} of work item {work_item_id}")
+        save_selection(conn, record)
+        update_task_choice(conn, record.task_id, chosen_agent_id=record.selected_agent_id, target=target)
+        _assign_work_item(conn, session_id, work_item_id, assignee_type="agent", assignee_id=record.selected_agent_id,
+                          by_member_id=member_id, now=now)
+        set_work_requester(conn, work_item_id, member_id)
+        issue = get_source_issue_by_task(conn, session_id, record.task_id)
+        if issue is not None:
+            _delegate_issue(conn, issue["source_id"], issue["github_issue_id"], by="operator", now=now)
+        refresh_work_status(conn, work_item_id, now=now)
+
+
+def set_work_priority(conn: Connection, session_id: str, work_item_id: str, priority: str, *, member_id: str,
+                      now: str) -> bool:
+    """우선순위(`high`·`normal`·`low`, 아니면 ValueError). 바뀌면 `priority_changed` `{"from", "to", "by"}`, 같으면
+    False. 업무 상태에는 영향이 없다. 다른 워크스페이스·없는 업무 → NotFound."""
+    if priority not in PRIORITIES:
+        raise ValueError(f"우선순위 {priority!r}")
     with _tx(conn):
         row = get_work_item(conn, session_id, work_item_id)
         if row is None:
             raise NotFound(f"work item {work_item_id}")
-        if assignee_type == "member" and _one(
-            conn, "SELECT 1 FROM members WHERE member_id = ? AND session_id = ?", (assignee_id, session_id)
-        ) is None:
-            raise NotFound(f"member {assignee_id}")
-        if assignee_type == "agent" and not is_session_agent(conn, session_id, assignee_id):
-            raise NotFound(f"agent {assignee_id}")
-        if (row["assignee_type"], row["assignee_id"]) == (assignee_type, assignee_id):
+        if row["priority"] == priority:
             return False
-        conn.execute(
-            "UPDATE work_items SET assignee_type = ?, assignee_id = ?, updated_at = ? WHERE work_item_id = ?",
-            (assignee_type, assignee_id, now, work_item_id),
-        )
-
-        def who(type_: str | None, id_: str | None) -> dict | None:
-            return None if type_ is None else {"type": type_, "id": id_}
-
-        _work_item_event(conn, work_item_id, session_id, "assigned",
-                         {"from": who(row["assignee_type"], row["assignee_id"]),
-                          "to": who(assignee_type, assignee_id)}, now)
+        conn.execute("UPDATE work_items SET priority = ?, updated_at = ? WHERE work_item_id = ?",
+                     (priority, now, work_item_id))
+        _work_item_event(conn, work_item_id, session_id, "priority_changed",
+                         {"from": row["priority"], "to": priority, "by": member_id}, now)
         return True
 
 
@@ -2580,15 +2633,20 @@ def mark_issue_delegated(
                           " WHERE si.source_id = ? AND si.github_issue_id = ?", (source_id, github_issue_id))
         if member_id is not None:
             set_work_requester(conn, work["work_item_id"], member_id)
-        cur = conn.execute(
-            "UPDATE source_issues SET delegated_at = ?, delegated_by = ?"
-            " WHERE source_id = ? AND github_issue_id = ? AND delegated_at IS NULL",
-            (now, by, source_id, github_issue_id),
-        )
-        if cur.rowcount == 0:
+        if not _delegate_issue(conn, source_id, github_issue_id, by=by, now=now):
             return False
         refresh_work_status(conn, work["work_item_id"], now=now)
         return True
+
+
+def _delegate_issue(conn: Connection, source_id: str, github_issue_id: int, *, by: str, now: str) -> bool:
+    """처음 지시만 기록한다(이미 있으면 False). 자체 BEGIN 없음."""
+    cur = conn.execute(
+        "UPDATE source_issues SET delegated_at = ?, delegated_by = ?"
+        " WHERE source_id = ? AND github_issue_id = ? AND delegated_at IS NULL",
+        (now, by, source_id, github_issue_id),
+    )
+    return cur.rowcount == 1
 
 
 def list_source_issues(conn: Connection, session_id: str, source_id: str) -> list[Row]:

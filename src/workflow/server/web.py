@@ -22,12 +22,12 @@ import secrets
 import string
 import time
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import Connection, Row
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -36,7 +36,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from workflow.adapters import repo, secret_store
 from workflow.adapters.errors import (
-    ActiveExecutionExists,
     DuplicateKind,
     DuplicateRule,
     EmailTaken,
@@ -82,10 +81,9 @@ from workflow.domain.kinds import (
     validate_rule,
 )
 from workflow.domain.selection import Candidate, select_agent
-from workflow.domain.start_key import request_start_key
-from workflow.domain.status import user_status
 from workflow.domain.task_sources import Issue
-from workflow.server import github_connect, metrics_api, task_cycle, views
+from workflow.domain.work_list import parse_list_query
+from workflow.server import github_connect, metrics_api, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
@@ -205,15 +203,7 @@ def _session_agents(conn: Connection, session_id: str) -> list[Row]:
 
 
 def _candidates(conn: Connection, session_id: str) -> list[Candidate]:
-    return [
-        Candidate(
-            agent_id=a["agent_id"],
-            capabilities=tuple(
-                Capability.model_validate(c) for c in json.loads(a["capabilities_json"])
-            ),
-        )
-        for a in _session_agents(conn, session_id)
-    ]
+    return work_actions.candidates(conn, session_id)
 
 
 def _require_registered(conn: Connection, session_id: str, agent_id: str) -> None:
@@ -240,11 +230,7 @@ def _refresh_status(
     conn: Connection, task_id: str, now: str, settings: Settings, *, review_decision: str | None = None
 ) -> None:
     """실행·선택·선행 상태를 보고 Task 의 사용자 상태를 다시 저장한다 (PRD 3절 대응표)."""
-    row = repo.get_task(conn, task_id)
-    status = user_status(views.build_task_view(conn, row, now=now, settings=settings))
-    repo.update_task_status(
-        conn, task_id, status.label, status.reason, review_decision=review_decision, now=now
-    )
+    work_actions.refresh_task_status(conn, task_id, now, settings, review_decision=review_decision)
 
 
 # --- 업무 종류 등록부 (ADR-0009) — 요구 능력·종류 판단은 세션 등록부 + domain.kinds 로만 한다 ---------------
@@ -274,83 +260,25 @@ def _kind_for_code(conn: Connection, session_id: str, code: str) -> KindSpec:
 
 
 def _target_for(spec: KindSpec, agent: Row | None) -> dict[str, Any]:
-    """Task 의 target. 선택된 Agent 의 등록값(연결 프로그램이 보고한 값)에서 온다 — 폼에서 받지 않는다.
-    코드 수정 대상(`bug_fix`, 실행 정책 target `code_change`)은 등록·기준 커밋·첫 검증 프로필, 그 밖은 등록 ID 하나.
-    Agent 가 아직 없으면 비워 두고 선택 뒤에 채운다."""
-    if agent is None:
-        return {}
-    if policy_for(spec.kind).target == "code_change":
-        profiles = json.loads(agent["verification_profile_ids_json"])
-        return {
-            "local_registration_id": agent["local_registration_id"],
-            "base_commit": agent["base_commit"],
-            "verification_profile_id": profiles[0] if profiles else None,
-        }
-    return {"local_registration_id": agent["local_registration_id"]}
+    return work_actions.target_for(spec, agent)
 
 
 # --- 실행 생성 -----------------------------------------------------------------------
 
 
-def _start_execution(
-    conn: Connection,
-    task: Row,
-    agent: Row,
-    *,
-    session_id: str,
-    now: str,
-    settings: Settings,
-    input_artifact_ids: Sequence[str],
-    predecessor_execution_id: str | None,
-    target: dict[str, Any],
-) -> str:
-    """새 시도를 `queued` 로 만든다. 요청은 여기서 고정되고 이후 바뀌지 않는다 — 종류 봉투(`kind_spec`)도 등록부에서
-    이때 채운다. 반환은 execution_id."""
-    kind = task["kind"]
-    spec = repo.get_kind(conn, session_id, kind)
-    if spec is None:
-        raise PageError(409, "request_incomplete", "실행 요청을 만들 수 없습니다. 업무 종류가 등록돼 있지 않습니다.")
-    attempts = repo.list_executions(conn, task["task_id"])
-    attempt_no = attempts[-1]["attempt_no"] + 1 if attempts else 1
-    execution_id = f"exec-{secrets.token_hex(8)}"
+@contextmanager
+def _page_errors():
+    """`work_actions` 의 오류를 화면 오류(`PageError`)로 — 본문 규칙은 같다."""
     try:
-        request = ExecutionRequest.model_validate({
-            "contract_version": 1,
-            "execution_id": execution_id,
-            "task_id": task["task_id"],
-            "kind": kind,
-            "agent_id": agent["agent_id"],
-            "task_revision": task["revision"],
-            "request": task["request"],
-            "input_artifact_ids": list(input_artifact_ids),
-            "target": target,
-            "kind_spec": spec.model_dump(),
-            **repo.execution_branch_fields(conn, task["task_id"]),
-        })
-    except ValidationError:
-        raise PageError(
-            409,
-            "request_incomplete",
-            "실행 요청을 만들 수 없습니다. 대상 등록 정보(연결 프로그램의 등록 보고)나 선행 업무의 "
-            "인계 자료가 아직 없습니다.",
-        ) from None
-    try:
-        repo.create_execution(
-            conn,
-            execution_id=execution_id,
-            task_id=task["task_id"],
-            attempt_no=attempt_no,
-            start_key=request_start_key(uuid4().hex),
-            agent_id=agent["agent_id"],
-            kind=kind,
-            request=request,
-            assigned_connector_id=agent["connector_id"],
-            predecessor_execution_id=predecessor_execution_id,
-            now=now,
-        )
-    except ActiveExecutionExists:
-        raise PageError(409, "execution_conflict", "이미 활성 실행이 있습니다.") from None
-    return execution_id
+        yield
+    except work_actions.WorkActionError as exc:
+        raise PageError(exc.status, exc.code, exc.message, field=exc.field) from None
+
+
+def _start_execution(conn: Connection, task: Row, agent: Row, **kwargs: Any) -> str:
+    """새 시도를 `queued` 로 만든다 — `work_actions.start_execution`."""
+    with _page_errors():
+        return work_actions.start_execution(conn, task, agent, **kwargs)
 
 
 # --- 홈·업무 ----------------------------------------------------------------------
@@ -975,13 +903,66 @@ def work_detail(
     """업무 상세(`/work/RUN-23`) — 머리·단계 묶음·양식 칸·연결 업무·열린 사람 요청. 다른 워크스페이스의 키는 404."""
     session_id = member.session_id
     now = utc_now()
+    work = _own_work(conn, session_id, key)
+    base = _base(request, conn, session_id, now)
+    context = views.work_context(conn, work, now=now, settings=_settings(request), allowed=base["allowed"])
+    return _render("work_detail.html", **base, **context)
+
+
+def _own_work(conn: Connection, session_id: str, key: str) -> Row:
     match = _WORK_KEY.fullmatch(key)
     work = repo.get_work_item_by_key(conn, session_id, int(match.group(1))) if match else None
     if work is None:
         raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
-    base = _base(request, conn, session_id, now)
-    context = views.work_context(conn, work, now=now, settings=_settings(request), allowed=base["allowed"])
-    return _render("work_detail.html", **base, **context)
+    return work
+
+
+def _work_redirect(work: Row, response: Response, q: str, group: str, view: str, closed: str) -> RedirectResponse:
+    """`/tasks?open=<key>` — 목록 상태(숨은 입력)는 `parse_list_query` 로 정규화한 열거형 값만 붙인다."""
+    query = parse_list_query(q=q, group=group, view=view, closed=closed)
+    return _redirect(f"/tasks?{views.list_query_params(query, open_key=work['key_number'])}", response)
+
+
+@router.post("/work/{key}/assignee")
+def work_assignee(
+    request: Request,
+    response: Response,
+    key: str,
+    assignee: str = Form(""),
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """담당 바꾸기 — 에이전트 = 맡기기, 멤버 = 배정만, `none` = 해제 (`work_actions.assign_work`)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.assign_work(conn, request.app.state.store, _settings(request), session_id=member.session_id,
+                                 work_item_id=work["work_item_id"], value=assignee, member_id=member.member_id,
+                                 now=utc_now())
+    return _work_redirect(work, response, q, group, view, closed)
+
+
+@router.post("/work/{key}/priority")
+def work_priority(
+    response: Response,
+    key: str,
+    priority: str = Form(""),
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """우선순위 바꾸기 (`work_actions.set_priority`)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.set_priority(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                  priority=priority, member_id=member.member_id, now=utc_now())
+    return _work_redirect(work, response, q, group, view, closed)
 
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -1070,52 +1051,15 @@ def task_delegate(
 
 
 def _run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, settings: Settings) -> None:
-    """업무 순환 Task 의 직접 실행 — 워커와 같은 준비 판정·후속 결정·start_key 로 착수하고(`Worker.start_manually`)
-    `manual_mode` 만 뺀다. 대상·입력은 워커가 Agent 등록값·원인 결과로 고정한다. 새 실행이 없으면 지금 대기 사유로 409."""
-    if task["finished_at"] is not None:
-        raise PageError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
-    worker = Worker(lambda: conn, store, None, settings, lambda: now)  # 착수 단계만 쓴다 — callback 없음
-    if worker.start_manually(conn, task["task_id"]):
-        return
-    readiness = task_cycle.evaluate(conn, repo.get_task(conn, task["task_id"]), now=now, settings=settings,
-                                    run_mode="auto")
-    reasons = " · ".join(b.reason for b in readiness.blockers) or "이미 실행이 있거나 이어서 시작할 결과가 없습니다"
-    raise PageError(409, "invalid_transition", f"지금 시작할 수 없습니다 — {reasons}.")
+    """업무 순환 Task 의 직접 실행 — `work_actions.run_cycle_task`."""
+    with _page_errors():
+        work_actions.run_cycle_task(conn, store, task, now=now, settings=settings)
 
 
 def _run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings: Settings) -> None:
-    """`task_run` 과 `chain_start` 의 공통 경로 — 조건 검사, 실행 생성, 상태 갱신."""
-    task_id = task["task_id"]
-    if task["finished_at"] is not None:
-        raise PageError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
-    if repo.active_execution(conn, task_id) is not None:
-        raise PageError(409, "execution_conflict", "이미 활성 실행이 있습니다.")
-    selection = repo.get_selection(conn, task_id)
-    if selection is None or selection.status != "selected":
-        raise PageError(409, "invalid_transition", "에이전트가 아직 선택되지 않았습니다.")
-    # 선행이 있으면 선행 결과가 판정되고 인계 묶음이 있어야 한다 — 선행 `완료`(사람 승인)를 기다리지 않는다 (ADR-0009 (3)).
-    # 묶음은 워커가 규칙 `handoff_kinds` 로 조립하므로 규칙이 없으면 생기지 않는다.
-    inputs, predecessor_execution_id = views.predecessor_handoff(conn, task)
-    if task["predecessor_task_id"] is not None and not inputs:
-        predecessor = repo.get_task(conn, task["predecessor_task_id"])
-        if predecessor is not None and repo.get_rule(conn, session_id, predecessor["kind"], task["kind"]) is None:
-            raise PageError(
-                409, "invalid_transition", "후속 규칙이 없어 인계 자료가 없습니다. /kinds 에서 규칙을 등록하세요.",
-            )
-        raise PageError(
-            409, "invalid_transition",
-            "선행 업무의 결과와 인계 자료가 아직 준비되지 않았습니다. 선행 결과가 판정을 통과하고 규칙에 맞으면 워커가 조립합니다.",
-        )
-    agent = repo.get_agent(conn, selection.selected_agent_id)
-    if agent is None:
-        raise PageError(409, "invalid_transition", "선택된 에이전트가 더 이상 등록돼 있지 않습니다.")
-
-    _start_execution(
-        conn, task, agent, session_id=session_id, now=now, settings=settings,
-        input_artifact_ids=inputs, predecessor_execution_id=predecessor_execution_id,
-        target=json.loads(task["target_json"]),
-    )
-    _refresh_status(conn, task_id, now, settings)
+    """`task_run` 과 `chain_start` 의 공통 경로 — `work_actions.run_task`(조건 검사, 실행 생성, 상태 갱신)."""
+    with _page_errors():
+        work_actions.run_task(conn, task, session_id=session_id, now=now, settings=settings)
 
 
 def _in_unstarted_chain(conn: Connection, task: Row) -> bool:
