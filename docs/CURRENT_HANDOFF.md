@@ -4,6 +4,8 @@
 
 ## 다음 작업: 15 완료 → service 병합 → 셀프호스트 재설치(사용자 지시) → 16-work-ui 설계 (새 세션은 여기서 시작)
 
+**16-work-ui 진행 중**(2026-09-30, `phases/16-work-ui`, `feat-16-work-ui`): step 0 완료 — [ADR-0022](adr/0022-work-screen-and-direct-work.md), [ARCHITECTURE](ARCHITECTURE.md) "업무 화면 — phase 16"(주소·스키마 v12·직접 작업·PR 신호·이름 고정). 다음은 step 1(schema-v12)부터 하네스가 이어 간다.
+
 **15-team 완료**(2026-09-30, `feat-15-team`, [ADR-0021](adr/0021-team-accounts-and-roles.md), [ARCHITECTURE](ARCHITECTURE.md) "팀 — phase 15", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 15 팀"): 운영자 토큰은 첫 설정·복구 전용, 이메일·비밀번호 로그인(서버 로그인 세션 `wf_login`), 초대·재설정 링크, 역할 × 동작 표(관리자·멤버), Origin 검사, 사람별 "내 차례"(담당 멤버 → 맡긴 사람 → 관리자 전원)·응답자 기록, 받는 사람별 알림(공용 `→ 이름` + 개인 웹훅), 러너 소유자, 스키마 v11.
 
 **할 일**(순서대로, 모두 사용자 지시 뒤):

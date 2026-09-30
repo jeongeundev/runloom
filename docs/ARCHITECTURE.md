@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
+갱신일: 2026-09-30 (phase 16 step 0 — "업무 화면 — phase 16" 절 추가: 주소·스키마 v12·직접 작업·PR 신호·이름 고정). 이전: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -868,7 +868,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 ### 업무 상태 (step 1·6)
 
-값 8개(`domain/work_status.WORK_STATUSES`, 이 순서가 화면 순서): `새로 들어옴` · `대기` · `에이전트 작업 중` · `직접 작업 중` · `내 차례` · `PR · 검토` · `완료` · `종료`. 끝 상태 `TERMINAL_WORK_STATUSES = ("완료", "종료")`. `직접 작업 중` 은 값만 있고 이 phase 에서 계산하지 않는다(신호는 16-work-ui 이후).
+값 8개(`domain/work_status.WORK_STATUSES`, 이 순서가 화면 순서): `새로 들어옴` · `대기` · `에이전트 작업 중` · `직접 작업 중` · `내 차례` · `PR · 검토` · `완료` · `종료`. 끝 상태 `TERMINAL_WORK_STATUSES = ("완료", "종료")`. `직접 작업 중` 은 값만 있고 이 phase 에서 계산하지 않는다(신호는 16-work-ui — 아래 "업무 화면 — phase 16" 의 "업무 상태 표 갱신").
 
 판정은 `work_status(facts: WorkItemFacts) -> WorkStatus` 한 곳이다. 위에서부터 첫 일치:
 
@@ -1218,6 +1218,228 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 러너 소유자 | `adapters/repo.py`(10) | `issue_connect_code(conn, now, ttl_seconds=600, *, issued_by_member_id=None)`, `exchange_connect_code` 가 소유자 옮김, `connector_owner(conn, connector_id) -> str \| None`, `list_connect_codes(conn, *, issued_by_member_id=None)`(None = 전부) |
 | 오류 코드 | `server/web.py`(4·5·7) | `forbidden_origin`, `already_set_up`, `last_admin` (그 밖은 기존 `invalid_field`·`not_found`·`forbidden`·`unauthenticated`) |
 | 설정 | `server/settings.py`(4) | 새 키 없음 — `WORKFLOW_PUBLIC_URL`(`Settings.public_url`)을 링크·Origin·`Secure` 판정에 쓴다. `.env.example` 에 빈 값으로 있는지 step 4 가 확인 |
+
+## 업무 화면 — phase 16
+
+[ADR-0022](adr/0022-work-screen-and-direct-work.md) 를 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 16 README](../phases/16-work-ui/README.md). 이 시점에는 구현이 없다 — 아래 이름·주소·표·시그니처는 step 1~10 이 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** "업무와 단계 — phase 14" 의 업무 상태 표와 "팀 — phase 15" 의 라우트 표는 이 절이 갱신한 부분만 바뀐다.
+
+### 한 줄 요약
+
+`/tasks` = 업무 한 줄 표(묶기·빠른 필터·목록/보드, 상태는 주소 쿼리) + 오른쪽 상세 패널(`?open=RUN-n`). 담당을 에이전트로 고르면 곧 맡기기. 설정 화면 7개는 `/connect` 탭 5개로, 지표는 `/monitor`, 처음 설정은 `/start`. [내 세션에서 작업] + 키 든 PR(감지 PR) 로 `직접 작업 중`·`PR · 검토`·`완료`. 스키마 v12.
+
+### 주소 (step 3~8)
+
+쿼리 값은 모두 열거형이다. 모르는 값·빈 값은 기본값(첫 값)으로 읽고 오류를 내지 않는다. **되돌아갈 URL 을 받지 않는다** — 폼이 목록 상태를 되살리려면 숨은 입력으로 `q`·`group`·`view`·`closed` 열거형 값을 싣고, 서버가 같은 정규화(`parse_list_query`)를 거친 값만 303 주소에 붙인다.
+
+| 경로 | 필요 동작(`domain/team.py`) | 동작 |
+|---|---|---|
+| `GET /tasks` | 로그인 | 업무 화면. 쿼리 `q=all\|my_turn\|unassigned\|agent_working`(기본 `all`), `group=assignee\|status`(기본 `assignee`), `view=list\|board`(기본 `list`), `closed=recent\|all`(기본 `recent`), `open=<업무 키>`(`WORK_KEY_PATTERN` 이고 접두가 `WORK_KEY_PREFIX` 일 때만 — 아니거나 이 워크스페이스에 없으면 패널 없이 목록 + 한 줄 안내 `RUN-99 업무를 찾을 수 없습니다.`). 15 의 `view=my_turn` 은 `q=my_turn` 으로 읽는다(옛 링크 호환 — `view` 는 `list` 가 된다) |
+| `GET /work/{key}/panel` | 로그인 | 패널 조각(`_work_panel.html`, `base.html` 없이). 키 형식이 아니거나 없으면 404 `not_found` |
+| `GET /work/{key}` | 로그인 | 키 형식이면 303 `/tasks?open=<key>`, 아니면 404 `not_found` |
+| `POST /work/{key}/assignee`(폼 `assignee` = `member:<member_id>`\|`agent:<agent_id>`\|`none`) | `delegate` | 아래 "담당 바꾸기". 성공 303 `/tasks?open=<key>`(+ 목록 상태 숨은 입력) |
+| `POST /work/{key}/priority`(폼 `priority` = `high`\|`normal`\|`low`) | `delegate` | `set_priority`. 303 같음 |
+| `POST /work/{key}/direct` | `delegate` | 직접 작업 시작. 303 같음 |
+| `POST /work/{key}/direct/stop` | `delegate` | 직접 작업 그만두기. 303 같음 |
+| `GET /connect?tab=sources\|team\|kinds\|notify\|advanced` | 로그인(탭별 — 아래 "연결 화면") | 연결 화면. 모르는 `tab` 은 볼 수 있는 첫 탭, 권한 없는 탭을 직접 열면 403 `forbidden` |
+| `GET /monitor` | `view_metrics` | 옛 `/metrics` 화면 그대로(제목 "모니터링"). 쿼리는 기존 파서가 검증 |
+| `GET /start` | 로그인 | 시작하기 체크리스트 |
+
+오류: 기존 `PageError` 형식. 새 오류 코드 `work_closed`(409, "끝난 업무는 바꿀 수 없습니다."), `no_open_stage`(409, "맡길 단계가 없습니다. 실패한 업무는 [다시 맡기기] 를 쓰세요."), `direct_work_active`(409, "직접 작업 중인 업무입니다. 먼저 직접 작업을 그만두세요."). 활성 실행은 기존 `execution_conflict`(409), 폼 값은 `invalid_field`(422), 없는 멤버·에이전트는 `invalid_field`.
+
+**옛 GET 주소 → 새 주소**(step 6·7, 303, 쿼리는 버림 — `/metrics` 만 쿼리 유지):
+
+| 옛 주소 | 새 주소 |
+|---|---|
+| `/sources` | `/connect?tab=sources` |
+| `/operator/github` | `/connect?tab=sources` |
+| `/operator` | `/connect?tab=advanced` |
+| `/operator/notifications` | `/connect?tab=notify` |
+| `/team` | `/connect?tab=team` |
+| `/agents` | `/connect?tab=team` |
+| `/kinds` | `/connect?tab=kinds` |
+| `/metrics` | `/monitor`(쿼리 그대로) |
+| `/work/{key}` | `/tasks?open=<key>` |
+
+**바꾸지 않는 경로**: 모든 POST(성공 뒤 303 대상만 새 주소로 — step 6), `/operator/github/app/new`·`/operator/github/app/callback`·`/operator/github/app/setup`(GitHub App 에 등록된 URL), `/sources/{source}/chains`(입구 API), `/sources/{id}` 모양의 다른 경로, `/agents/{agent_id}`(에이전트 상세), `/chains/{chain_id}`·`/live`, `/tasks/new`, `/tasks/{task_id}`(단계 상세)·`/tasks/{task_id}/live`·`/tasks/{task_id}/artifacts/{artifact_id}`, `/metrics.json`·`/metrics.csv`, `/field-mappings`, `/github/sources*`, `/human-requests/*`, 러너 API(`/connector/*`·`/executions/*`), 로그인·초대·재설정·`/me*`·`/healthz`.
+
+### 끝난 업무와 빠른 필터 (step 2)
+
+- 목록에 드는 업무: `closed=recent`(기본) = 끝나지 않은 업무 + `closed_at` 이 지금부터 14일(`CLOSED_RECENT_DAYS = 14`) 안인 업무. `closed=all` = 전부. 경계 시각은 서버(`views`)가 계산해 repo 에 `closed_since` 로 넘긴다(도메인은 시각을 읽지 않는다).
+- 빠른 필터(`filter_rows`) — 끝난 업무 범위를 적용한 뒤에 건다:
+
+| `q` | 조건 |
+|---|---|
+| `all` | 전부 |
+| `my_turn` | 상태 `내 차례` 이고 로그인 멤버가 `recipients`(`turn_recipients_of` 와 같은 계산)에 듦 |
+| `unassigned` | 담당 없음(`assignee_type IS NULL`)이고 끝나지 않음 |
+| `agent_working` | 담당이 에이전트이고 끝나지 않음 |
+
+- 도구 막대에 빠른 필터별 건수를 보인다(같은 끝난 업무 범위 기준). 사이드바 "업무" 옆 숫자 = `my_turn` 건수.
+
+### 묶기 순서와 보드 칸 (step 2)
+
+- `group=assignee` 묶음 순서: "담당 없음"(키 `none`) → 로그인한 나(`member:<id>`, 이름 뒤 `(나)`) → 다른 활성 멤버(표시 이름순) → 에이전트(`agent:<id>`, 이름순) → 비활성 멤버(표시 이름순, 이름 뒤 `(비활성)`). 이름이 같으면 id 순.
+- `group=status` 묶음 순서: `WORK_STATUSES` 순(키 `status:<상태>`).
+- 묶음 안: 우선순위(`high` → `normal` → `low`) → `updated_at` 최근순 → 키 번호 내림차순.
+- 빈 묶음은 보이지 않는다(행이 있는 묶음만 만든다).
+- 보드(`board_columns`, 묶기와 무관) — 칸 6개, 칸 안 순서는 묶음 안 순서와 같다:
+
+| 칸 키 | 칸 이름 | 드는 업무 상태 |
+|---|---|---|
+| `waiting` | 대기 | `대기`, `새로 들어옴` |
+| `agent_working` | 에이전트 작업 중 | `에이전트 작업 중` |
+| `direct_working` | 직접 작업 중 | `직접 작업 중` |
+| `my_turn` | 내 차례 | `내 차례` |
+| `pr_review` | PR · 검토 | `PR · 검토` |
+| `done` | 완료 | `완료` |
+
+`종료` 는 보드에 없다. 빠른 필터와 끝난 업무 범위는 보드에도 건다.
+
+### "다음 할 일" 칸 (step 2·8·9)
+
+`next_action(...)` — 위에서부터 첫 일치:
+
+1. 열린 사람 요청이 있으면 가장 이른 요청의 질문 첫 줄(80자).
+2. 직접 작업 중이면 `직접 작업 중 · <멤버 표시 이름>`.
+3. 업무 PR 이 있으면 `PR #<n>` — 열린 PR(Runloom PR 의 `pending`·`open`, 감지 PR `open`) 중 가장 최근 것, 없으면 병합된 것. `pending`(번호 없음)은 `PR 여는 중`.
+4. 상태 이유(`status_reason`).
+5. 빈 문자열.
+
+### 담당 바꾸기 (step 3·8)
+
+`server/work_actions.assign_work(...)` 한 곳. 모든 경우 먼저 검사한다: 업무가 끝 상태면 409 `work_closed`, 업무의 어느 단계에든 활성 실행이 있으면 409 `execution_conflict`. 쓰기는 `BEGIN IMMEDIATE` 한 트랜잭션, 바뀌면 `work_item_events(assigned)` 한 행(`{"from", "to", "by": <member_id>}`)과 `refresh_work_status`.
+
+| 폼 값 | 동작 |
+|---|---|
+| `agent:<agent_id>` | **맡기기.** ① 시작할 단계 = 그 업무의 `finished_at IS NULL` 인 단계 중 가장 최근(`created_at`, `rowid` 순 마지막). 없으면 409 `no_open_stage`. ② 에이전트가 같은 워크스페이스에 등록돼 있고 `select_agent(task_id, <단계 required_capability>, _candidates, mode="manual", chosen_agent_id=)` 가 받아들여야 한다(아니면 422 `invalid_field` `assignee` "이 단계를 맡을 수 없는 에이전트입니다."). 담당 후보 목록(패널)도 같은 판정 — `agent_candidates(conn, session_id, work_item_id)`. ③ 직접 작업 중이면 먼저 끝낸다(`direct_stopped`, reason `handed_to_agent`). ④ 선택 기록 저장(`save_selection` + `update_task_choice` — 이미 다른 에이전트가 선택돼 있어도 실행이 없으면 바꾼다), 업무 담당 = 그 에이전트, 맡긴 사람 = 누른 멤버(`set_work_requester`). ⑤ 그 단계가 GitHub 원본이고 지시 전이면 `mark_issue_delegated(by="operator", member_id=)`. ①~⑤ 가 한 트랜잭션. ⑥ 트랜잭션 뒤 착수: 업무 순환 종류(`policy_for(kind).cycle`)는 `Worker.start_manually(conn, task_id)`, 그 밖은 `/tasks/{id}/run` 과 같은 직접 실행 경로(선행 인계 자료 검사 포함). 지금 시작하지 못하면(러너 오프라인·선행 대기 등) 오류로 돌려주지 않는다 — 담당·선택은 남고 대기 사유는 단계 상태에 보인다(지금 [에이전트에게 맡기기] 와 같다) |
+| `member:<member_id>` | **배정만.** 같은 워크스페이스의 활성 멤버만(아니면 422 `invalid_field`). 다른 멤버가 직접 작업 중이면 그 직접 작업을 끝낸다(`direct_stopped`, reason `reassigned`) — 직접 작업하는 사람과 담당이 갈리지 않게. 단계 선택·실행은 건드리지 않는다 |
+| `none` | **담당 해제.** 직접 작업 중이면 409 `direct_work_active`. 단계 선택은 건드리지 않는다(업무 상태 계산의 "담당 없음" 은 단계 선택도 본다 — phase 14 규칙 그대로) |
+
+- 우선순위: `set_priority(...)` — `high`·`normal`·`low` 만(아니면 422), 끝난 업무면 409 `work_closed`, 바뀌면 `work_item_events(priority_changed)` `{"from", "to", "by"}`. 우선순위는 업무 상태에 영향이 없다.
+- 기존 `/tasks/{id}/delegate`·`/tasks/{id}/select`·`/tasks/{id}/run` 은 주소·응답·오류를 바꾸지 않는다(직접 작업 중일 때의 409 `direct_work_active` 만 step 8 이 더한다). 착수 코드(`_run_cycle_task`·`_run_task`)는 `work_actions` 의 내부 함수로 옮겨 세 경로와 `assign_work` 가 함께 쓴다(step 3 — 동작 변화 없음을 기존 테스트로 확인).
+
+### 직접 작업 (step 8)
+
+- 칸: `work_items.direct_member_id`(누가)·`direct_started_at`(언제)·`direct_branch`(복사해 준 브랜치 이름). 셋은 함께 비거나 함께 찬다(repo 가 지킴). 직접 작업 중 = `direct_member_id IS NOT NULL`.
+- **브랜치 이름** `branch_name(key, title)`: `<키>-<요약>`. 키는 업무 키(`RUN-15` — 원본 키가 아니다). 요약 = 제목을 소문자로 바꾸고 ASCII 영숫자(`[a-z0-9]`)가 아닌 글자를 모두 `-` 로, 연속 `-` 는 하나로, 앞뒤 `-` 제거, 40자에서 자른 뒤 끝 `-` 제거. 요약이 비면 키만(`RUN-15`). 예: `URL filter 가 안 먹음` → `RUN-15-url-filter`, `쿠폰 오류` → `RUN-15`. 서버는 이 이름으로 명령을 실행하지 않는다 — 복사해 보여줄 뿐이다.
+- 전이:
+
+| 동작 | 조건 | 결과 |
+|---|---|---|
+| 시작 `POST /work/{key}/direct` | 끝난 업무면 409 `work_closed`, 활성 실행이 있으면 409 `execution_conflict` | 담당 = 누른 멤버(다르면 `assigned` 이벤트), 다른 멤버가 직접 작업 중이면 그 직접 작업을 끝냄(`direct_stopped` reason `reassigned`), 직접 작업 칸 채움, `direct_started` `{"member_id", "branch"}`, 상태 재계산 → `직접 작업 중`. 같은 멤버가 다시 누르면 변화 없음(멱등, 브랜치 이름은 처음 값) |
+| 그만두기 `POST /work/{key}/direct/stop` | 직접 작업 중이 아니면 변화 없음(303) | 칸 비움, 담당은 그대로, `direct_stopped` `{"member_id", "reason": "stopped"}`, 상태 재계산 |
+| 에이전트에게 넘기기(패널의 담당 폼에서 에이전트) | 위 "담당 바꾸기" `agent:` | 직접 작업 종료와 담당·선택 저장이 한 트랜잭션, 착수는 그 뒤(실패해도 앞 변경은 남음) |
+| 업무가 끝 상태가 됨 | `set_work_status` 가 끝 상태를 쓸 때 | 같은 트랜잭션에서 칸 비움, `direct_stopped` reason `closed` |
+
+- **에이전트 실행과의 관계**: 직접 작업 중에는 에이전트 실행을 시작할 수 없다. 화면 경로(시작 버튼 없음)와 함께 워커 자동 착수도 막는다 — 업무 순환 준비 판정(`domain/task_readiness`)에 대기 코드 `direct_work`("직접 작업 중 — 에이전트에게 넘기면 시작", 응답할 주체 operator)를 더하고, 일반 후속 착수(`_spawn_successors`)와 `/tasks/{id}/run`·`/delegate` 도 같은 조건이면 착수하지 않는다(`/run`·`/delegate` 는 409 `direct_work_active`).
+- 직접 작업은 Runloom 결과 판정을 거치지 않는다. 직접 작업만으로 업무가 `완료` 가 되지 않는다 — 완료는 업무 PR 병합(감지 PR 포함)·원본 신호로만.
+
+### 업무 상태 표 갱신 (step 8·9)
+
+`WorkItemFacts` 에 칸 두 개를 더한다(기본값이 있어 기존 호출·테스트는 그대로):
+
+- `direct_member_name: str | None = None` — 직접 작업 중이면 그 멤버 표시 이름(비활성이어도).
+- `detected_pull_requests: tuple[PullRequestFact, ...] = ()` — 감지 PR(`work_pull_requests`), 상태는 `open`·`merged`·`closed` 만, `pr_updated_at` 최근순.
+
+`work_status(facts)` 새 순서(위에서부터 첫 일치). 1~3 은 phase 14 그대로, 새 칸이 비면 결과가 phase 14 와 같다:
+
+| 순서 | 조건 | 상태 | 이유 |
+|---|---|---|---|
+| 1 | 저장된 상태가 끝 상태 | 그대로 | 저장된 이유 |
+| 2 | Runloom PR `merged` | `완료` | `PR 병합 — #12` |
+| 3 | Runloom PR `closed`(병합 없음) | `종료` | `PR 이 병합 없이 닫힘 — #12` |
+| 4 | 감지 PR 중 `merged` 가 있음(가장 최근 것) | `완료` | `PR 병합 — #12` |
+| 5 | 열린 사람 요청 | `내 차례` | phase 14 4번 그대로 |
+| 6 | Runloom PR `pending`·`open` | `PR · 검토` | phase 14 5번 그대로 |
+| 7 | 감지 PR 중 `open` 이 있음(가장 최근 것) | `PR · 검토` | `PR 확인 — #12` |
+| 8 | 직접 작업 중 | `직접 작업 중` | 멤버 표시 이름 |
+| 9~14 | phase 14 의 6~11 그대로(`확인 필요` 단계 → 모두 마감 → 실행 중 → 새로 들어옴 → 대기) | | |
+
+- 병합 없이 닫힌 감지 PR 은 상태 계산에서 무시한다(직접 작업이면 8 로 `직접 작업 중`, 아니면 기존 규칙).
+- 감지 PR 병합으로 `완료` 가 되는 기록 경로는 기존 끝 상태와 같다(`set_work_status` → `closed_at`·`status_changed` 한 번). 원본 이슈 닫힘·Runloom PR 병합과 겹쳐도 끝 상태는 한 번만 기록된다(1번이 막는다). 끝 상태가 된 업무의 진행 중 실행은 지금처럼 끝까지 돈다(취소 경로 없음).
+- 담당이 에이전트이거나 없는 업무에 사람이 연 PR 도 같은 규칙이다.
+- 다시 계산하는 곳: phase 14 목록 + 담당·우선순위·직접 작업 경로(`work_actions`) + PR 신호 반영(`upsert_work_pull_request` 가 바뀐 업무에).
+
+### PR 신호 (step 9)
+
+- **읽는 API**: `GET /repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=50`. 소스(활성 `github_sources`)마다 이슈 수집 뒤, tick 당 최대 2 페이지(`MAX_PULL_PAGES_PER_SYNC = 2`). 커서 = 마지막으로 본 PR 의 가장 늦은 `updated_at`(`github_sources.pull_cursor`). 한 페이지 안에서 `updated_at <= cursor` 인 PR 을 만나면 거기서 멈춘다. 처음(커서 NULL)은 최근 최대 100건만 본다 — 그보다 오래된 PR 은 붙이지 않는다. 상한에 닿아 커서까지 못 읽어도 커서는 본 것 중 가장 늦은 값으로 옮긴다(알려진 한계 — tick 사이 PR 갱신이 100건을 넘으면 사이 것을 놓친다). 인증·ETag 없음·rate limit·오류 예외는 기존 `HttpGitHubClient`(`check_response`) 그대로. 실패하면 커서를 옮기지 않고 `SyncReport` 에 남기며 이슈 수집 결과는 유지한다.
+- **필드**(Pydantic 으로 필요한 것만): `number`, `title`, `head.ref`, `state`(`open`\|`closed`), `draft`, `merged_at`, `user.login`, `updated_at`. 저장 상태 = `merged_at` 이 있으면 `merged`, 아니면 `state`. URL 은 응답 `html_url` 을 쓰지 않고 `https://github.com/<owner/name>/pull/<n>` 으로 계산한다(원본 칸 규칙과 같다).
+- **키 매칭** `keys_in(text) -> tuple[int, ...]`: 정규식 `(?<![A-Za-z0-9])RUN-([1-9][0-9]{0,8})(?![0-9])`(접두는 `WORK_KEY_PREFIX`, 대소문자 무시), 나온 순서대로, 중복 제거, 키 번호를 돌려준다. PR 마다 head 브랜치 이름을 먼저 보고, 없으면 제목을 본다. 같은 워크스페이스에 있는 키 번호만 남기고 그중 처음 것 하나에 붙인다. 없으면 무시.
+- **Runloom PR 과 중복 저장하지 않는다**: 같은 워크스페이스의 `task_pull_requests` 에 같은 `(repository_full_name, pr_number)` 가 있거나, 같은 저장소의 `task_pull_requests.head_branch` 가 이 PR 의 head 와 같으면(번호를 기록하기 전 대기열 행) 저장하지 않는다. Runloom PR 은 지금처럼 `task_pull_requests` 와 병합 추적(`_sync_pull_requests`)이 맡는다.
+- **저장**: `upsert_work_pull_request` — 없으면 넣고 `work_item_events(pull_request_linked)` `{"repository_full_name", "pr_number", "head_branch", "matched_in": "head"|"title"}`, 있으면 제목·head·상태·draft·병합 시각·`pr_updated_at` 만 갱신(업무는 처음 붙은 업무 그대로 — 키가 바뀌어도 옮기지 않는다). `merged` 는 다시 바뀌지 않는다. 바뀐 업무는 같은 트랜잭션에서 `refresh_work_status`. 끝난 업무에도 저장한다(패널에 보이고 상태는 1번 규칙으로 그대로).
+- GitHub App 권한은 지금과 같다(Pull requests RW 가 이미 있다 — ADR-0017·phase 12). PAT·서버 환경변수 토큰 소스도 같은 API.
+- 외부 문자열(PR 제목·브랜치 이름·작성자 로그인)은 저장·표시만 한다 — 명령·경로로 쓰지 않고 템플릿은 자동 이스케이프로만 출력한다(`|safe` 금지).
+
+### 스키마 v12 (step 1)
+
+`adapters/db.py` `SCHEMA_VERSION` 11 → 12. v10 → v11 과 같이 `init_schema` 가 `BEGIN IMMEDIATE` 한 트랜잭션으로 올리고 실패하면 11 그대로다. 빈 DB 도 v11 DDL 뒤 같은 SQL(`_V12_TABLES`)을 거쳐 만든다. 원본 v11 스키마는 `tests/workflow/adapters/fixtures/schema_v11.sql` 로 고정한다. `tasks` 는 재생성하지 않는다.
+
+| 대상 | 칸 | 제약·의미 |
+|---|---|---|
+| `work_items`(칸 추가) | `direct_member_id TEXT REFERENCES members(member_id)`, `direct_started_at TEXT`, `direct_branch TEXT` | 셋이 함께 NULL 이거나 함께 값(ALTER 로 표 CHECK 를 못 걸어 repo 가 지킴 — `start_direct_work`·`stop_direct_work`·`set_work_status` 만 쓴다) |
+| `work_pull_requests`(새) | `id INTEGER PRIMARY KEY`, `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id)`, `source_id TEXT NOT NULL REFERENCES github_sources(source_id)`, `repository_full_name TEXT NOT NULL`, `pr_number INTEGER NOT NULL CHECK (pr_number >= 1)`, `title TEXT NOT NULL`, `pr_url TEXT NOT NULL`, `head_branch TEXT NOT NULL`, `state TEXT NOT NULL CHECK (state IN (<WORK_PULL_REQUEST_STATES>))`, `draft INTEGER NOT NULL CHECK (draft IN (0, 1))`, `author_login TEXT`, `merged_at TEXT`, `pr_updated_at TEXT NOT NULL`, `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL` | `UNIQUE (session_id, repository_full_name, pr_number)`, `CHECK ((state = 'merged') = (merged_at IS NOT NULL))`. 인덱스 `(work_item_id, pr_updated_at)`. 상수 `WORK_PULL_REQUEST_STATES = ("open", "merged", "closed")`. 감지 PR 전용 — Runloom PR 은 `task_pull_requests`. 삭제 경로 없음 |
+| `github_sources`(칸 추가) | `pull_cursor TEXT` | PR 읽기 커서(마지막으로 본 `updated_at`, ISO 문자열). NULL = 아직 읽지 않음. 이슈 커서(`cursor`)와 따로 |
+| `work_item_events`(재생성) | 칸·인덱스 그대로, `type` CHECK 만 `WORK_ITEM_EVENT_TYPES = ("status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked")` | 다른 표가 이 표를 참조하지 않는다(2026-09-30 `grep "REFERENCES work_item_events"` 0건 — step 1 이 테스트로 확인). 새 표 생성 → `INSERT … SELECT`(id 보존) → 옛 표 DROP → 새 표 RENAME → 인덱스 두 개 다시 → `PRAGMA foreign_key_check` |
+
+이벤트 `data_json` 모양: `status_changed` `{"from", "to", "reason"}`(그대로), `assigned` `{"from": {"type","id"}|null, "to": …, "by": <member_id>|null}`(`by` 는 v12 부터, 옛 행에 없음), `priority_changed` `{"from", "to", "by"}`, `direct_started` `{"member_id", "branch"}`, `direct_stopped` `{"member_id", "reason": "stopped"|"handed_to_agent"|"reassigned"|"closed"}`, `pull_request_linked` `{"repository_full_name", "pr_number", "head_branch", "matched_in"}`. 비밀값 칸은 없다.
+
+**v11 → v12 마이그레이션**(한 트랜잭션, 실패하면 v11 그대로 — DDL 도 되돌림):
+
+1. `work_items` 세 칸, `github_sources.pull_cursor` ALTER.
+2. `work_pull_requests` 표와 인덱스.
+3. `work_item_events` 재생성(위 순서).
+4. 데이터는 바꾸지 않는다 — 새 칸 NULL, 새 표 빈 표, 이벤트 행 수·id 보존. 업무 상태는 다시 계산하지 않는다(새 칸이 비면 결과가 같다).
+5. `PRAGMA foreign_key_check` → 버전 12. 백업 복원(`server/backup.py`)은 v4~v11 백업을 12 로 올려 복원한다.
+
+### 화면 배치 (step 4·5·6·7)
+
+- **업무 화면**(`/tasks`): 본문 폭 제한(760px)을 풀고 넓은 표. 표는 가로 스크롤 컨테이너 안(390px 에서 페이지 가로 스크롤 없음). 도구 막대 = 빠른 필터 4개(건수) · 묶기 · 보기 · 끝난 업무(최근 14일/전부) · [업무 등록](`/tasks/new`, `create_work` 일 때). 목록 = `<table>`, 묶음마다 머리 행(이름·건수·접기 버튼 — 접힘은 `localStorage`, 실패해도 동작). 행·카드는 `<a href="/tasks?…&open=<key>">` 라 JS 없이 동작한다. 에이전트가 0 이면 도구 막대 아래 "러너를 붙이면 에이전트가 생깁니다" 한 줄 + `/connect?tab=sources` 링크. 에이전트 카드·체인 카드는 홈에서 뺀다(에이전트 = 연결 화면 팀 탭, 체인 = 패널의 "들어온 곳").
+- **상세 패널**: 오른쪽 560px 겹침(목록 위에 뜨고 목록은 그대로), 800px 미만은 전체 화면. 절 순서(있는 절만): 머리(키·원본 링크·상태 배지·닫기) · 속성(담당 폼 — 활성 멤버·후보 에이전트·없음, 우선순위 폼, 종류, PR, 업데이트) · 지금 할 일(열린 사람 요청 + 기존 `response_form`, 직접 작업 버튼·브랜치 이름) · 진행 타임라인(단계마다 종류·상태·실행 횟수 → `/tasks/{task_id}`, PR 열림·병합, 응답 기록과 응답자, 업무 이벤트) · 원본에 남긴 것(GitHub 댓글·초안 PR — 기존 전달 기록) · 이어서 생긴 업무·선행 업무(`work_item_links`) · 들어온 곳(체인이면 `/chains/{id}`) · 업무 양식 · 자세히(내부 코드). 닫기 = `open` 을 뺀 같은 목록 주소, Esc·뒤로 가기도 닫는다.
+- **단계 상세** `/tasks/{task_id}`: 기존 3열 셸(오른쪽 산출물 뷰어)은 여기에만 남는다.
+- **사이드바**: 업무(`my_turn` 건수 배지) · 모니터링(`view_metrics`) · 연결 · 시작하기(필수 미완료일 때만) · 내 설정(`edit_own_settings`), 아래 로그인 멤버(표시 이름·역할)·로그아웃. "최근" 목록·`+`·`_base()["my_work"]` 는 없앤다(step 4). step 6·7 전까지 연결 = `/operator/github`, 모니터링 = `/metrics` 로 링크하고 시작하기는 숨긴다.
+- **알림·원본 댓글 링크**(step 5): 업무가 있으면 `{public_url}` + `work_path(key)`(= `/tasks?open=RUN-n`), 업무가 없는 옛 행만 `/tasks/{task_id}`.
+
+**연결 화면 탭**(step 6) — 본문은 기존 템플릿을 부분 템플릿으로 옮겨 재사용한다(문구·폼·`data-*` 유지):
+
+| 탭 `tab` | 이름 | 옛 화면에서 오는 내용 | 탭 머리를 보이는 조건 · 절별 권한 |
+|---|---|---|---|
+| `sources` | 가져올 곳 | `/operator/github` 전체(GitHub App 연결·저장소 카드·러너 붙이기·담당 연결·기준선·카드의 이슈 목록·"고급 — 토큰으로 연결") + `/sources` 전체(n8n 입구 주소·토큰·요청 예시·callback 허용 목록) | 로그인. 카드 읽기·[러너 붙이기] `attach_runner`, 연결·설정 폼 `manage_connections`, n8n 입구 절 `manage_connections` |
+| `team` | 팀·담당자 | `/team`(멤버·초대) + `/agents`(에이전트 목록) + `/operator` 의 러너 목록(소유자·해제) | 로그인. 멤버·초대 절 `manage_team`, 러너 절 `attach_runner`, 에이전트 목록 로그인 |
+| `kinds` | 업무 종류·규칙 | `/kinds` 전체 | 로그인. 폼 `manage_rules` |
+| `notify` | 알림 | `/operator/notifications` 전체 | `manage_shared_notify` |
+| `advanced` | 고급 | `/operator` 의 연결 코드 발급·목록, 에이전트 수동 등록·수정·삭제 | 로그인. 연결 코드 `attach_runner`, 에이전트 등록 `manage_connections` |
+
+`/operator` 의 "모든 세션 업무" 절과 `/operator/github` 의 "사람 응답 대기" 절은 업무 화면(전체·`내 차례`)이 대신하므로 탭에 옮기지 않는다(step 6 — 그 절을 단정하던 테스트는 업무 화면 단정으로 옮긴다). 기본 탭 = `sources`.
+
+**시작하기**(step 7) — `domain/start_checklist.py`:
+
+| 항목 키 | 이름 | 완료 조건(repo `start_facts`) | 필수 | 버튼 |
+|---|---|---|---|---|
+| `source` | 가져올 곳 연결 | 활성(`enabled`) GitHub 소스가 있거나 취소되지 않은 입구 토큰이 있음 | ✓ | `/connect?tab=sources` |
+| `runner` | 러너 붙이기 | 취소되지 않은 연결 프로그램(`connectors.revoked_at IS NULL`)이 있음 | ✓ | `/connect?tab=sources` |
+| `invite` | 팀원 초대 | 활성 멤버 2명 이상이거나 발급된 초대(`purpose='invite'`)가 있음 | 선택 | `/connect?tab=team` |
+| `delegate` | 첫 업무 맡기기 | 실행이 한 번이라도 있는 업무가 있음 | ✓ | `/tasks?q=unassigned` |
+
+항목 상태: `done`(완료) / `next`(필수 중 완료되지 않은 첫 항목) / `todo`(그 밖 필수 미완료) / `optional`(선택 미완료). 로그인 멤버에게 그 항목의 동작이 없으면(예: 멤버의 `source` = `manage_connections`) 버튼 대신 "관리자에게 요청". 필수 셋이 모두 `done` 이면 사이드바에서 숨긴다.
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 스키마 | `adapters/db.py`(1) | `SCHEMA_VERSION = 12`, `_V12_TABLES`, `_migrate_11_to_12`, `WORK_ITEM_EVENT_TYPES`(6개), `WORK_PULL_REQUEST_STATES = ("open", "merged", "closed")`, 표 `work_pull_requests`, fixture `tests/workflow/adapters/fixtures/schema_v11.sql` |
+| 목록 모델 | `domain/work_list.py`(2) — 시각·DB·HTTP 없음 | 상수 `QUICK_FILTERS = ("all", "my_turn", "unassigned", "agent_working")`, `GROUP_BYS = ("assignee", "status")`, `VIEWS = ("list", "board")`, `CLOSED_SCOPES = ("recent", "all")`, `CLOSED_RECENT_DAYS = 14`, `PRIORITY_ORDER = ("high", "normal", "low")`. `ListQuery(q: str, group: str, view: str, closed: str, open_key: int \| None)`(frozen), `parse_list_query(*, q: str = "", group: str = "", view: str = "", closed: str = "", open: str = "") -> ListQuery`(모르는 값은 기본값, `view == "my_turn"` 은 `q="my_turn"`, `open` 은 키 번호 또는 None). `WorkRow(work_item_id, key_number: int, work_key: str, source_type: str, source_key: str \| None, source_url: str \| None, title: str, assignee_type: str \| None, assignee_id: str \| None, assignee_name: str \| None, assignee_active: bool, priority: str, kind: str, kind_label: str, status: str, status_reason: str, next_action: str, recipients: tuple[str, ...], updated_at: str, closed_at: str \| None)`(frozen). `next_action(*, request_question: str \| None, direct_member_name: str \| None, pr_label: str \| None, status_reason: str) -> str`. `filter_rows(rows, q, *, member_id) -> list[WorkRow]`. `RowGroup(key: str, label: str, rows: tuple[WorkRow, ...])`, `group_rows(rows, by, *, member_id) -> list[RowGroup]`. `BoardColumn(key: str, label: str, rows: tuple[WorkRow, ...])`, `BOARD_COLUMNS`(위 표 6칸 — `(키, 이름, 상태 튜플)`), `board_columns(rows) -> list[BoardColumn]`(빈 칸도 6칸 모두), `filter_counts(rows, *, member_id) -> dict[str, int]` |
+| 목록 조회 | `adapters/repo.py`(2) | `list_work_rows(conn, session_id, *, closed_since: str \| None) -> list[WorkRow]`(None = 전부, 쿼리 수는 업무 수와 무관 — 담당 이름·열린 사람 요청 첫 질문·업무 PR 을 JOIN 또는 묶음 조회, 받는 사람은 기존 `_recipients` 재사용) |
+| 목록 화면 문맥 | `server/views.py`(2·4) | `work_list_context(conn, session_id, *, member_id: str, query: ListQuery, now: str) -> dict`(`rows`·`groups`·`columns`·`counts`·`query`·`open_missing`), `list_query_params(query: ListQuery, *, open_key: int \| None = None) -> str`(주소 쿼리 문자열 — 기본값은 뺀다) |
+| 업무 키·브랜치 | `domain/work_keys.py`(5·8·9) | `branch_name(key: str, title: str) -> str`, `BRANCH_SUMMARY_MAX = 40`, `keys_in(text: str) -> tuple[int, ...]`, `work_path(key: str) -> str`(= `/tasks?open=<key>`) |
+| 업무 상태 | `domain/work_status.py`(8·9) | `WorkItemFacts.direct_member_name: str \| None = None`, `WorkItemFacts.detected_pull_requests: tuple[PullRequestFact, ...] = ()` — 규칙 표는 위 "업무 상태 표 갱신" |
+| 업무 쓰기 | `adapters/repo.py`(3·8·9) | `set_work_priority(conn, session_id, work_item_id, priority, *, member_id, now) -> bool`(자체 트랜잭션, 바뀌면 이벤트), `assign_work_item(..., by_member_id=None)`(기존 함수에 키워드 — 이벤트 `by`), `start_direct_work(conn, session_id, work_item_id, *, member_id, branch, now) -> bool`(자체 BEGIN 없음 — `work_actions` 가 트랜잭션), `stop_direct_work(conn, work_item_id, *, reason, now) -> bool`(자체 BEGIN 없음), `upsert_work_pull_request(conn, *, session_id, work_item_id, source_id, repository_full_name, pr_number, title, head_branch, state, draft, author_login, merged_at, pr_updated_at, matched_in, now) -> bool`(처음 붙으면 True, 자체 BEGIN 없음), `list_work_pull_requests(conn, work_item_id) -> list[Row]`, `is_runloom_pull_request(conn, session_id, repository_full_name, *, pr_number, head_branch) -> bool`, `get_pull_cursor(conn, source_id) -> str \| None`, `set_pull_cursor(conn, source_id, cursor, *, now) -> None`, `start_facts(conn, session_id) -> StartFacts` |
+| 업무 동작 | `server/work_actions.py`(3·8) | `WorkActionError(Exception)`(`status: int`, `code: str`, `message: str`, `field: str \| None` — web 이 `PageError` 로 바꾼다, `work_actions` 는 `web` 을 import 하지 않는다), `parse_assignee(value: str) -> tuple[str, str] \| None`(`("member", id)`·`("agent", id)`, `none` 은 None, 형식이 틀리면 `WorkActionError` 422), `open_stage(conn, work_item_id) -> Row \| None`, `agent_candidates(conn, session_id, work_item_id) -> list[Row]`, `assign_work(conn, store, settings, *, session_id: str, work_item_id: str, value: str, member_id: str, now: str) -> None`, `set_priority(conn, *, session_id: str, work_item_id: str, priority: str, member_id: str, now: str) -> None`, `start_direct(conn, *, session_id: str, work_item_id: str, member_id: str, now: str) -> str`(브랜치 이름), `stop_direct(conn, *, session_id: str, work_item_id: str, now: str) -> None`, 내부 착수 `start_stage(conn, store, settings, task, *, session_id, now, strict: bool) -> bool`(`strict=True` 는 `/run` 처럼 못 시작하면 `WorkActionError` 409, `False` 는 조용히 False) |
+| 패널 | `server/views.py`·`templates/_work_panel.html`(5) | `work_panel_context(conn, session_id, work_item_id, *, member_id: str, allowed: frozenset[str], now: str, settings: Settings) -> dict`(기존 `work_context` 를 대신) |
+| GitHub | `adapters/github_client.py`(9) | `PullSummary`(Pydantic — `number`, `title`, `head_ref`, `state: Literal["open","closed"]`, `draft: bool`, `merged_at: str \| None`, `author_login: str \| None`, `updated_at: str`), `MAX_PULL_PAGES_PER_SYNC = 2`, `GitHubClient.list_pulls(repo: str, cursor: str \| None) -> list[PullSummary]`(`updated_at > cursor` 인 것만, 최근순) — 테스트 대역 모두에 메서드 추가 |
+| 동기화 | `server/github_sync.py`(9) | `_link_pulls(client, intake, report)`(이슈 수집 뒤), `SyncReport.pulls_linked: list[str]`(새로 붙은 업무 id), `SyncReport.pull_error: str \| None` |
+| 시작하기 | `domain/start_checklist.py`(7) | `StartFacts(has_source: bool, has_runner: bool, invited: bool, delegated: bool)`, `StartItem(key: str, label: str, state: Literal["done","next","todo","optional"], required: bool, href: str, action: str)`(`action` = 필요 동작), `START_ITEMS`, `start_items(facts: StartFacts) -> tuple[StartItem, ...]`, `required_done(facts: StartFacts) -> bool` |
+| 준비 판정 | `domain/task_readiness.py`(8) | 대기 코드 `direct_work`("직접 작업 중 — 에이전트에게 넘기면 시작") |
+| 오류 코드 | `server/web.py`(3·8) | `work_closed`, `no_open_stage`, `direct_work_active` |
 
 ## 기존 구현과 초기 설계 기록
 
