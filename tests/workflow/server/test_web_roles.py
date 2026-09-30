@@ -21,7 +21,6 @@ ADMIN_PAGES = [
     ("POST", "/kinds/custom_kind/delete", {}),
     ("POST", "/rules", {}),
     ("POST", "/rules/rule-x/delete", {}),
-    ("GET", "/sources", None),
     ("POST", "/sources/tokens", {"label": "n8n"}),
     ("POST", "/sources/tokens/tok-x/revoke", {}),
     ("GET", "/operator/github/app/new", None),
@@ -31,7 +30,7 @@ ADMIN_PAGES = [
     ("POST", "/operator/agents", {}),
     ("POST", "/operator/agents/agent-x/delete", {}),
     ("POST", "/operator/connect-codes/CODE-X/revoke", {}),
-    ("GET", "/operator/notifications", None),
+    ("GET", "/connect?tab=notify", None),
     ("POST", "/operator/notifications/webhook", {"url": "https://hooks.example.com/x"}),
     ("POST", "/operator/notifications/webhook/delete", {}),
     ("POST", "/operator/notifications/test", {}),
@@ -45,12 +44,14 @@ ADMIN_APIS = [
     ("POST", f"/operator/github/sources/{SOURCE}/baseline", None),
     ("PUT", "/field-mappings", {"mappings": []}),
 ]
-MEMBER_PAGES = ["/tasks", "/tasks/new", "/agents", "/kinds", "/operator", "/operator/github", "/metrics"]
+# phase 16: 옛 /agents·/kinds·/operator·/operator/github 는 연결 화면 탭으로 303 — 멤버가 여는 탭(알림 탭만 관리자)
+MEMBER_PAGES = ["/tasks", "/tasks/new", "/connect?tab=team", "/connect?tab=kinds", "/connect?tab=advanced",
+                "/connect?tab=sources", "/metrics"]
 MEMBER_APIS = ["/github/sources", "/human-requests", "/field-mappings", "/metrics.json", "/metrics.csv"]
 # phase 16 사이드바: 업무 · 모니터링(`view_metrics`) · 연결 · 내 설정(`edit_own_settings`) — 관리자 전용 화면(입구·알림·팀)은
 # 사이드바가 아니라 연결 화면 탭(step 6)으로 간다
 ADMIN_LINKS = ('href="/sources"', 'href="/operator/notifications"', 'href="/team"')
-MEMBER_LINKS = ('href="/tasks"', 'href="/metrics"', 'href="/operator/github"', 'href="/me"')
+MEMBER_LINKS = ('href="/tasks"', 'href="/metrics"', 'href="/connect"', 'href="/me"')
 
 
 def sidebar_of(html: str) -> str:
@@ -146,9 +147,10 @@ def test_member_changes_nothing_on_admin_routes(member, conn):
 def test_admin_role_gates_do_not_read_is_operator(admin, conn):
     conn.execute("UPDATE sessions SET is_operator = 0 WHERE session_id = ?", (SESSION,))
     conn.commit()
-    for path in ("/operator/notifications", "/sources", "/operator/github", "/metrics"):
+    for path in ("/connect?tab=notify", "/connect?tab=sources", "/metrics"):
         response = admin.get(path, follow_redirects=False)
         assert response.status_code == 200, path
+    assert 'id="inbound-url"' in admin.get("/connect?tab=sources").text  # 입구 절 = `manage_connections`
     sidebar = sidebar_of(admin.get("/tasks").text)
     for link in MEMBER_LINKS:
         assert link in sidebar, link
@@ -205,30 +207,30 @@ def test_admin_sidebar_shows_every_nav_item(admin):
 
 
 def test_member_kinds_page_hides_setting_forms(member, admin):
-    assert 'action="/kinds"' in admin.get("/kinds").text and 'action="/rules"' in admin.get("/kinds").text
-    text = member.get("/kinds").text
+    assert 'action="/kinds"' in admin.get("/connect?tab=kinds").text and 'action="/rules"' in admin.get("/connect?tab=kinds").text
+    text = member.get("/connect?tab=kinds").text
     assert 'action="/kinds"' not in text and 'action="/rules"' not in text
     assert "/delete" not in text
 
 
 def test_member_operator_page_shows_runner_but_not_agent_forms(member, admin):
     admin.post("/operator/connect-codes")
-    admin_text = admin.get("/operator").text
+    admin_text = admin.get("/connect?tab=advanced").text
     assert 'action="/operator/agents"' in admin_text and "/revoke" in admin_text
 
-    text = member.get("/operator").text
+    text = member.get("/connect?tab=advanced").text
     assert 'action="/operator/connect-codes"' in text
     assert 'action="/operator/agents"' not in text and "/operator/agents/" not in text
     assert "/revoke" not in text  # 관리자가 발급한 코드는 멤버에게 보이지 않는다(자기 발급분만 — step 10)
 
 
 def test_member_github_page_shows_runner_but_not_connection_forms(member, admin):
-    admin_text = admin.get("/operator/github").text
+    admin_text = admin.get("/connect?tab=sources").text
     for marker in ("/operator/github/token", f'data-json-action="/github/sources/{SOURCE}"',
                    f"/operator/github/sources/{SOURCE}/baseline", f"/github/sources/{SOURCE}/stop"):
         assert marker in admin_text, marker
 
-    text = member.get("/operator/github").text
+    text = member.get("/connect?tab=sources").text
     assert f'action="/operator/github/sources/{SOURCE}/runner"' in text
     for marker in ("/operator/github/app/new", "/operator/github/token", f'data-json-action="/github/sources/{SOURCE}"',
                    f"/operator/github/sources/{SOURCE}/baseline", f"/github/sources/{SOURCE}/stop",

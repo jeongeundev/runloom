@@ -1,14 +1,10 @@
-{# 입구 (`/sources`) — ADR-0010 결정 2. 워크스페이스(세션)가 n8n 같은 외부 도구용 입구 토큰을 발급·취소한다.
+{# 연결 화면 "가져올 곳" 탭의 n8n 입구 절(옛 `/sources`, `manage_connections` 일 때만) — ADR-0010 결정 2. 워크스페이스(세션)가 n8n 같은 외부 도구용 입구 토큰을 발급·취소한다.
    발급 원문은 POST 응답 화면(`issued`)에 한 번만 보이고 — 303 없음, 쿠키·쿼리에 넣지 않는다 — 서버에는 sha256 만 남는다.
    운영자 화면(/operator)에는 두지 않는다. 입구 주소의 경로는 inbound_api 의 것 그대로.
    요청 예시는 수정 항목 하나. #}
-{% extends "base.html" %}
-{% block title %}입구 — Runloom{% endblock %}
-{% block content %}
-<div class="crumbs"><div class="crumb">입구</div></div>
 <p class="muted" style="margin-bottom:12px">n8n 같은 외부 도구가 이 워크스페이스에 업무를 넣는 곳입니다. 토큰을 발급해 HTTP 요청의 <code>Authorization: Bearer</code> 에 넣습니다. 종류·순서·담당·판정은 등록된 종류·후속 규칙으로 여기서 정합니다.</p>
 
-<h2 style="margin-top:0">입구 주소</h2>
+<h2>입구 주소</h2>
 <div class="card">
   <div><span class="mono small">POST</span> <code id="inbound-url">{{ inbound_url }}</code></div>
   <div class="small" style="margin-top:4px">JSON 본문은 아래 요청 예시. 항목은 라벨 규칙으로 종류·순서가 정해지고, 접수 즉시 첫 업무를 시작합니다.</div>
@@ -80,4 +76,3 @@
   <p style="margin:0">callback 허용 목록이 비어 있어 <code>callback_url</code> 은 거부됩니다 (<code>WORKFLOW_CALLBACK_HOSTS</code>). 접수 자체는 되므로 <code>callback_url</code> 없이 보내세요.</p>
   {% endif %}
 </div>
-{% endblock %}

@@ -83,7 +83,7 @@ def form_value(text: str, request_id: str, name: str) -> str:
 
 def test_github_page_is_operator_only(client, cycle, conn, app):
     for anonymous in (client, _stranger(app, conn)):
-        response = anonymous.get("/operator/github", follow_redirects=False)
+        response = anonymous.get("/connect?tab=sources", follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")
         assert SOURCE not in response.text
         tasks = anonymous.get("/tasks", follow_redirects=False)  # 사이드바 링크를 볼 화면도 없다
@@ -95,7 +95,7 @@ def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, 
     import_issue(conn, 2, assignee_ids=[], assignee_logins=[])
     worker.tick()
 
-    text = page(operator, "/operator/github")
+    text = page(operator, "/connect?tab=sources")
 
     assert "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 연결됨" in text
     assert "acme/billing" in text and SOURCE in text
@@ -116,12 +116,12 @@ def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, 
 
 def test_github_page_without_token_says_so(operator, settings, app):
     app.state.settings = dataclasses.replace(settings, github_token="")
-    text = page(operator, "/operator/github")
+    text = page(operator, "/connect?tab=sources")
     assert "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 없음" in text
 
 
 def test_sidebar_links_github_page_for_operator(operator):
-    assert 'href="/operator/github"' in page(operator, "/tasks")
+    assert 'href="/connect"' in page(operator, "/tasks")  # phase 16: 연결 화면(가져올 곳 탭)
 
 
 # --- 업무 상세: 원본·담당·대기 사유 --------------------------------------------------------------
@@ -157,7 +157,7 @@ def test_detail_shows_bound_agent_for_the_github_assignee(operator, conn, worker
 def test_issue_text_is_escaped(operator, conn, worker):
     task_id = import_issue(conn, 1, title="<script>alert(1)</script>", body="<img src=x onerror=alert(2)>")
     worker.tick()
-    for url in (f"/tasks/{task_id}", "/operator/github"):
+    for url in (f"/tasks/{task_id}", "/connect?tab=sources"):
         text = page(operator, url)
         assert "<script>alert(1)</script>" not in text
         assert "<img src=x" not in text
@@ -390,7 +390,7 @@ def test_delivery_state_is_shown_apart_from_the_task_state(operator, conn, worke
     assert "반영 실패" in text and "시도 1회" in text
     # 반영 실패는 Agent 작업 상태가 아니다
     assert 'data-status="실행 요청됨"' in text and 'data-status="실패"' not in text
-    assert "반영 실패" in page(operator, "/operator/github")
+    assert "반영 실패" in page(operator, "/connect?tab=sources")
 
 
 # --- 초안 PR (phase 12 step 6) ----------------------------------------------------------------------

@@ -34,7 +34,7 @@
   {% if 'create_work' in allowed %}<a class="btn btn-small" href="/tasks/new">업무 등록</a>{% endif %}
 </div>
 {% if not has_agents %}
-<p class="toolbar-note">러너를 붙이면 에이전트가 생깁니다 · <a href="/operator/github">러너 붙이기</a></p>
+<p class="toolbar-note">러너를 붙이면 에이전트가 생깁니다 · <a href="/connect?tab=sources">러너 붙이기</a></p>
 {% endif %}
 {% if open_missing %}
 <p class="toolbar-note" data-open-missing>{{ open_key }} 업무를 찾을 수 없습니다.</p>

@@ -794,7 +794,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 경로 | 동작 | 실패 |
 |---|---|---|
 | `GET /operator/notifications` | 알림 설정 화면(`operator_notifications.html`): 설정됨/없음·호스트, 최근 알림 20건(사건·상태·시각·오류 분류 — URL·본문 없음), URL 폼(`type=password`)·[테스트 보내기]·[삭제] — 버튼 둘은 URL 이 설정됐을 때만. 운영자 왼쪽 목록에 "알림" | |
-| `POST /operator/notifications/webhook` (폼 `url`) | 검사 뒤 비밀 파일 `notify_webhook_url` 에 저장 → 303 `/operator/notifications` | 형식 오류 422 `invalid_field`(`url`) — 값을 되돌려 보이지 않는다 |
+| `POST /operator/notifications/webhook` (폼 `url`) | 검사 뒤 비밀 파일 `notify_webhook_url` 에 저장 → 303 `/operator/notifications`(phase 16 부터 `/connect?tab=notify`) | 형식 오류 422 `invalid_field`(`url`) — 값을 되돌려 보이지 않는다 |
 | `POST /operator/notifications/webhook/delete` | 비밀 파일 삭제 → 303 | |
 | `POST /operator/notifications/test` | 저장된 URL 로 대기열 없이 한 번 보내고(`NotifySender(transport=app.state.notify_transport)`, 본문은 `notification_body` — 사건 `test`) 결과를 화면에 표시(200, `data-notify-test="sent\|failed"`) | URL 없음 409 `notify_not_configured`, 전송 실패는 화면 메시지(`HTTP 404`·`시간 초과`·`연결 오류: <클래스>`, URL 없음) |
 | `POST /operator/github/sources/{source_id}/runner` | 연결 코드 발급(`repo.issue_connect_code`) → `/operator/github` 를 그 카드에 명령 한 줄(`runner_command`)을 넣어 그대로 렌더(200, 리다이렉트 없음 — 코드가 URL·기록에 남지 않게) | 남의 소스 404, 운영자 아님 403 `forbidden` |
@@ -1115,7 +1115,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 |---|---|---|
 | `GET /team` | `manage_team` | 멤버 표(표시 이름·이메일·역할·상태·마지막 접속 = 가장 최근 `last_seen_at`)·쓰지 않은 초대(역할·만료)·초대 발급 폼 |
 | `POST /team/invites`(폼 `role`) | `manage_team` | `issue_invite` → 같은 화면에 링크 한 번(200) |
-| `POST /team/invites/{invite_id}/revoke` | `manage_team` | `revoke_invite` → 303 `/team` |
+| `POST /team/invites/{invite_id}/revoke` | `manage_team` | `revoke_invite` → 303 `/team`(phase 16 부터 `/connect?tab=team`) |
 | `POST /team/members/{member_id}/role`(폼 `role`) | `manage_team` | `set_member_role` → 303(마지막 관리자 409) |
 | `POST /team/members/{member_id}/disable`·`/enable` | `manage_team` | `disable_member`·`enable_member` → 303(마지막 관리자 409) |
 | `POST /team/members/{member_id}/reset-link` | `manage_team` | `issue_reset_link` → 같은 화면에 링크 한 번(200) |
@@ -1123,7 +1123,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | `POST /me/profile`(폼 `display_name`) | `edit_own_settings` | 303 `/me` |
 | `POST /me/password`(폼 `current_password`·`new_password`) | `edit_own_settings` | 현재 비밀번호 확인(틀리면 403, 이 멤버 이메일 키로 실패 제한) → `set_member_credentials` → 새 세션 쿠키 → 303 |
 | `POST /me/webhook`(폼 `url`)·`/me/webhook/delete`·`/me/webhook/test` | `edit_own_settings` | 공용 알림 경로와 같은 검사(`_webhook_url_savable`)·같은 응답 모양, 비밀 파일만 개인 이름 |
-| `POST /operator/connectors/{connector_id}/revoke` | `attach_runner` + 소유자 본인, 아니면 `remove_any_runner` | `repo.revoke_connector` → 303 `/operator`. 없는 러너 404 |
+| `POST /operator/connectors/{connector_id}/revoke` | `attach_runner` + 소유자 본인, 아니면 `remove_any_runner` | `repo.revoke_connector` → 303 `/operator`(phase 16 부터 러너 목록이 있는 `/connect?tab=team`). 없는 러너 404 |
 
 화면 컨텍스트(step 6): `_base` 에 `member`(`member_id`·`display_name`·`role`)와 `allowed`(`frozenset` — 그 역할이 할 수 있는 동작)를 싣는다. 템플릿은 `is_operator` 대신 `'manage_rules' in allowed` 처럼 본다. 왼쪽 목록의 관리자 링크(입구·알림·팀)는 해당 동작이 있을 때만, "내 설정"·로그아웃은 모두에게.
 
@@ -1396,7 +1396,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 - **업무 화면**(`/tasks`): 본문 폭 제한(760px)을 풀고 넓은 표. 표는 가로 스크롤 컨테이너 안(390px 에서 페이지 가로 스크롤 없음). 도구 막대 = 빠른 필터 4개(건수) · 묶기 · 보기 · 끝난 업무(최근 14일/전부) · [업무 등록](`/tasks/new`, `create_work` 일 때). 목록 = `<table>`, 묶음마다 머리 행(이름·건수·접기 버튼 — 접힘은 `localStorage`, 실패해도 동작). 행·카드는 `<a href="/tasks?…&open=<key>">` 라 JS 없이 동작한다. 에이전트가 0 이면 도구 막대 아래 "러너를 붙이면 에이전트가 생깁니다" 한 줄 + `/connect?tab=sources` 링크. 에이전트 카드·체인 카드는 홈에서 뺀다(에이전트 = 연결 화면 팀 탭, 체인 = 패널의 "들어온 곳").
 - **상세 패널**: 오른쪽 560px 겹침(목록 위에 뜨고 목록은 그대로), 800px 미만은 전체 화면. 절 순서(있는 절만): 머리(키·원본 링크·상태 배지·닫기) · 속성(담당 폼 — 활성 멤버·후보 에이전트·없음, 우선순위 폼, 종류, PR, 업데이트) · 지금 할 일(열린 사람 요청 + 기존 `response_form`, 직접 작업 버튼·브랜치 이름) · 진행 타임라인(단계마다 종류·상태·실행 횟수 → `/tasks/{task_id}`, PR 열림·병합, 응답 기록과 응답자, 업무 이벤트) · 원본에 남긴 것(GitHub 댓글·초안 PR — 기존 전달 기록) · 이어서 생긴 업무·선행 업무(`work_item_links`) · 들어온 곳(체인이면 `/chains/{id}`) · 업무 양식 · 자세히(내부 코드). 닫기 = `open` 을 뺀 같은 목록 주소, Esc·뒤로 가기도 닫는다.
 - **단계 상세** `/tasks/{task_id}`: 기존 3열 셸(오른쪽 산출물 뷰어)은 여기에만 남는다.
-- **사이드바**: 업무(`my_turn` 건수 배지) · 모니터링(`view_metrics`) · 연결 · 시작하기(필수 미완료일 때만) · 내 설정(`edit_own_settings`), 아래 로그인 멤버(표시 이름·역할)·로그아웃. "최근" 목록·`+`·`_base()["my_work"]` 는 없앤다(step 4). step 6·7 전까지 연결 = `/operator/github`, 모니터링 = `/metrics` 로 링크하고 시작하기는 숨긴다.
+- **사이드바**: 업무(`my_turn` 건수 배지) · 모니터링(`view_metrics`) · 연결 · 시작하기(필수 미완료일 때만) · 내 설정(`edit_own_settings`), 아래 로그인 멤버(표시 이름·역할)·로그아웃. "최근" 목록·`+`·`_base()["my_work"]` 는 없앤다(step 4). 연결 = `/connect`(step 6, 옛 설정 화면 경로에서도 활성). step 7 전까지 모니터링 = `/metrics` 로 링크하고 시작하기는 숨긴다.
 - **알림·원본 댓글 링크**(step 5): 업무가 있으면 `{public_url}` + `work_path(key)`(= `/tasks?open=RUN-n`), 업무가 없는 옛 행만 `/tasks/{task_id}`.
 
 **연결 화면 탭**(step 6) — 본문은 기존 템플릿을 부분 템플릿으로 옮겨 재사용한다(문구·폼·`data-*` 유지):

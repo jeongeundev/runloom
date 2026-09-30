@@ -635,7 +635,7 @@ def test_selfhost_md_covers_every_section():
     ):
         assert heading in text, heading
     for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "초안 PR",
-                   "Accept new permissions", "/operator/notifications"):
+                   "Accept new permissions", "/connect?tab=notify"):
         assert needle in text, needle
 
 
@@ -647,7 +647,7 @@ def test_selfhost_md_covers_team_upgrade_and_remote_access():
     upgrade = text[text.index("## 업그레이드"):text.index("## 제거")]
     for needle in ("v11", "backup create", "관리자 계정", "다시 로그인"):
         assert needle in upgrade, needle
-    for needle in ("/team", "초대 링크", "재설정 링크", "/login/recover", "WORKFLOW_PUBLIC_URL", "Tailscale",
+    for needle in ("/connect?tab=team", "초대 링크", "재설정 링크", "/login/recover", "WORKFLOW_PUBLIC_URL", "Tailscale",
                    "Cloudflare Tunnel", "https://", "개인 웹훅", "/me"):
         assert needle in text, needle
 

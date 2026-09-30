@@ -1,11 +1,11 @@
-{# 팀 (`/team`, 관리자) — ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 초대·재설정 링크 원문은 발급 응답(`issued`)에만
-   한 번 보이고 — 303 없음 — 서버에는 sha256 만 남는다. 비밀번호 해시는 싣지 않는다. 마지막 관리자 거부는 오류 화면(409 last_admin). #}
-{% extends "base.html" %}
-{% block title %}팀 — Runloom{% endblock %}
-{% block content %}
-<div class="crumbs"><div class="crumb">팀</div></div>
+{# 연결 화면 "팀·담당자" 탭(phase 16 step 6) — 멤버·초대(옛 /team, `manage_team`) + 에이전트 목록(옛 /agents, 로그인) + 러너(옛 /operator
+   러너 목록, `attach_runner` — 해제 버튼은 소유자 본인 또는 `remove_any_runner`(`can_revoke`)).
+   ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 초대·재설정 링크 원문은 발급 응답(`issued`)에만
+   한 번 보이고 — 303 없음 — 서버에는 sha256 만 남는다. 비밀번호 해시는 싣지 않는다. 마지막 관리자 거부는 오류 화면(409 last_admin).
+   에이전트 목록의 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). #}
+{% import "_status.html" as st %}
 {% set role_labels = {'admin': '관리자', 'member': '멤버'} %}
-
+{% if 'manage_team' in allowed %}
 {% if not public_url_set %}
 <div class="alert">링크 주소가 지금 연 주소 기준입니다. 다른 컴퓨터에서 열려면 <code>WORKFLOW_PUBLIC_URL</code> 을 설정하세요 — SELFHOST 문서(<code>docs/SELFHOST.md</code>) 참고.</div>
 {% endif %}
@@ -75,4 +75,50 @@
     <div class="actions"><button class="btn" type="submit">초대 링크 만들기</button></div>
   </form>
 </div>
-{% endblock %}
+{% endif %}
+
+<h2>에이전트</h2>
+{% if agents %}
+<div class="table-wrap">
+<table>
+  <tr><th>이름</th><th>ID</th><th>소유</th><th>소유자</th><th>연결</th><th>능력</th><th>상태</th></tr>
+  {% for a in agents %}
+  <tr>
+    <td><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></td>
+    <td class="mono">{{ a.agent_id }}</td>
+    <td>{{ a.owner_scope }}</td>
+    <td>{{ st.owner(a.owner) }}</td>
+    <td>{{ a.connection_type }}</td>
+    <td>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+    <td>{{ st.connection(a) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% else %}
+<div class="empty" style="padding-top:0">
+  <p>아직 에이전트가 없습니다.</p>
+  <p class="small" style="margin-top:8px">러너를 연결하면 그 에이전트가 이 워크스페이스에 붙습니다 · <a href="/connect?tab=sources">가져올 곳</a> 에서 러너 연결.</p>
+</div>
+{% endif %}
+
+{% if 'attach_runner' in allowed %}
+<h2>러너</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>러너</th><th>소유</th><th>연결</th><th>마지막 확인</th><th>상태</th></tr>
+    {% for r in runners %}
+    <tr data-runner="{{ r.connector_id }}">
+      <td class="mono">{{ r.connector_id }}</td>
+      <td>{{ st.owner(r.owner) }}</td>
+      <td>{{ r.created_at|kst }}</td>
+      <td>{{ r.last_seen_at|kst if r.last_seen_at else '없음' }}</td>
+      <td>{% if r.revoked_at %}해제됨 {{ r.revoked_at|kst }}{% elif r.can_revoke %}
+        <form method="post" action="/operator/connectors/{{ r.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">해제</button></form>{% else %}연결됨{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">연결된 러너 없음</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}

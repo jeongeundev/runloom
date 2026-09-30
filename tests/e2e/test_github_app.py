@@ -250,7 +250,7 @@ def secret_dir(world: World) -> Path:
 
 
 def source_card(world: World) -> str:
-    page = world.http.get("/operator/github")
+    page = world.http.get("/connect?tab=sources")
     assert page.status_code == 200, page.text[:500]
     source_id = world.sources[REPO]
     return page.text.split(f'data-source-card="{source_id}"', 1)[1].split("</section>", 1)[0]
@@ -274,7 +274,7 @@ def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 
     # 연결 전 화면 — 버튼 하나, 기본 화면에 ID·토큰 칸 없음
-    before = http.get("/operator/github")
+    before = http.get("/connect?tab=sources")
     assert before.status_code == 200 and 'href="/operator/github/app/new"' in before.text
     assert "data-source-card" not in before.text
 
@@ -307,7 +307,7 @@ def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     # (GitHub 에서 사용자가 저장소 고르고 [Install]) → setup — JWT 로 설치 확인 → 저장소마다 소스
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state2})
-    assert setup.status_code == 303 and setup.headers["location"] == "/operator/github", setup.text[:500]
+    assert setup.status_code == 303 and setup.headers["location"] == "/connect?tab=sources", setup.text[:500]
     kinds = {(m, p): kind for m, p, kind in world.fake.app_requests}
     assert kinds[("GET", f"/app/installations/{INSTALLATION_ID}")] == "jwt"
     assert kinds[("GET", "/installation/repositories")] == "token"
@@ -354,7 +354,7 @@ def test_02_first_sync_imports_every_open_issue_as_waiting_for_delegation(world)
     # 목록 한 줄 = 업무(phase 14 step 9) — 지시 전 업무는 `새로 들어옴`. 맡기기 버튼은 GitHub 화면 이슈 목록에
     # (phase 16: 업무 화면 표에는 행 동작이 없다 — 패널의 담당 선택은 step 5)
     assert listing.status_code == 200 and listing.text.count('data-status="새로 들어옴"') >= 3
-    assert world.http.get("/operator/github").text.count("에이전트에게 맡기기") >= 3
+    assert world.http.get("/connect?tab=sources").text.count("에이전트에게 맡기기") >= 3
 
 
 def test_03_runner_registers_the_folder_and_matching_fills_everything(world):
@@ -459,7 +459,7 @@ def test_06_secrets_stay_in_the_secret_files(world):
     assert leaked == []
     assert (world.workdir / "logs" / "central.log").stat().st_size > 0  # 로그를 실제로 남겼다
     assert all(n not in c["body"] for c in world.fake.comments.values() for n in needles)
-    for path in ("/operator/github", "/tasks", "/github/sources"):
+    for path in ("/connect?tab=sources", "/tasks", "/github/sources"):
         body = world.http.get(path).text
         assert all(n not in body for n in needles), path
     assert q(world, "SELECT COUNT(*) FROM executions WHERE failed_code IS NOT NULL")[0][0] == 0

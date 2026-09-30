@@ -61,7 +61,7 @@ GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수�
 
 수정 Agent 와 검토 Agent 는 **같은 연결 프로그램**에 등록된 **같은 로컬 저장소**를 봐야 한다. 검토는 수정이 만든 커밋을 그 저장소에서 직접 읽는다(없으면 `commit_missing`, 다른 연결 프로그램·`repository_id` 면 `review_repository_mismatch`).
 
-1. 운영자 로그인 → `/operator/agents` 에서 Agent 를 만든다 — 연결 방식 `local`, 능력 `code.fix`(수정) 또는 `code.review`(검토), 범위 값 = 이 제품의 저장소 ID(예 `billing` — 소스의 `workflow_repository_id` 와 같게), 로컬 등록 ID. `/agents/register` 에서 이 워크스페이스(세션)에 등록한다.
+1. 운영자 로그인 → `/connect?tab=advanced`(연결 → 고급) 에서 Agent 를 만든다 — 연결 방식 `local`, 능력 `code.fix`(수정) 또는 `code.review`(검토), 범위 값 = 이 제품의 저장소 ID(예 `billing` — 소스의 `workflow_repository_id` 와 같게), 로컬 등록 ID. `/agents/register` 에서 이 워크스페이스(세션)에 등록한다.
 2. 연결 코드 발급(`/operator/connect-codes`) → 운영자 Mac 에서
    ```bash
    python3 -m workflow.connector connect --server <중앙 URL> --code <연결 코드>
@@ -79,7 +79,7 @@ GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수�
 
 ## 4. 소스 설정 — 저장소·이슈 범위
 
-화면 `/operator/github` 또는 JSON API(CONTRACT 13.10). 운영자 세션만, 워크스페이스 하나만(다른 세션이 이미 GitHub 소스를 가지면 409 `github_workspace_taken`).
+화면 `/connect?tab=sources`(연결 → 가져올 곳) 또는 JSON API(CONTRACT 13.10). 운영자 세션만, 워크스페이스 하나만(다른 세션이 이미 GitHub 소스를 가지면 409 `github_workspace_taken`).
 
 | 필드 | 뜻 |
 |---|---|
@@ -99,7 +99,7 @@ GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수�
 
 ## 5. 돌아가는 모습
 
-워커(`python3 -m workflow.server.worker`)가 tick 마다: 켜진 소스를 60초 간격으로 수집 → 준비 판정 → 착수 → 결과 판정 → 후속(검토 연결·생성, 재작업, 사람 요청) → 마지막에 댓글 반영. 대기 사유(`Blocker.code` 15종, [표](../ARCHITECTURE.md#준비-판정--대기-코드-blockercode))와 사람 요청은 업무 상세와 `/operator/github` 에 보인다.
+워커(`python3 -m workflow.server.worker`)가 tick 마다: 켜진 소스를 60초 간격으로 수집 → 준비 판정 → 착수 → 결과 판정 → 후속(검토 연결·생성, 재작업, 사람 요청) → 마지막에 댓글 반영. 대기 사유(`Blocker.code` 15종, [표](../ARCHITECTURE.md#준비-판정--대기-코드-blockercode))와 사람 요청은 업무 상세와 업무 화면 `내 차례`(`/tasks?q=my_turn`) 에 보인다.
 
 - 사람 요청 응답은 운영자 웹에서만(CONTRACT 13.11). 응답은 실행을 바로 만들지 않고 다음 tick 의 준비 판정이 새 revision 으로 다시 본다. 응답은 권한을 넓히지 않는다 — 위임 밖(`delegation_denied`)은 Agent 능력·소스 설정을 운영자가 따로 고쳐야 풀린다.
 - 검토 승인 뒤: 러너가 결과 브랜치를 올렸으면 초안 PR 을 열고 병합을 기다린다(12절). 올리지 못했으면(원격 없음·구버전 러너) 결과 커밋은 로컬 `task/<id>` 브랜치에만 있고 병합·push·이슈 종료는 사람이 직접 한다.

@@ -977,8 +977,8 @@ def me_context(conn: Connection, session_id: str, member_id: str, *, secrets: Se
 def github_context(
     conn: Connection, session_id: str, *, now: str, settings: Settings, secrets: SecretStore
 ) -> dict[str, Any]:
-    """운영자 GitHub 화면 — 연결 상태(비밀은 연결됨/없음만)·저장소 카드(동기화·수집 자격·러너 매칭·트리거 라벨)·
-    접힌 고급 설정(소스 설정·담당 연결)·실제 업무 목록·열린 사람 요청. 쓰기는 화면의 스크립트가 JSON API
+    """연결 화면 가져올 곳 탭의 GitHub 절 — 연결 상태(비밀은 연결됨/없음만)·저장소 카드(동기화·수집 자격·러너 매칭·트리거 라벨)·
+    접힌 고급 설정(소스 설정·담당 연결)·실제 업무 목록. 열린 사람 요청은 업무 화면(내 차례)이 보인다. 쓰기는 화면의 스크립트가 JSON API
     (`github_api`·`human_api`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 폼으로 한다."""
     agents = [agent_public(a, now=now, settings=settings) for a in repo.list_session_agents(conn, session_id)]
 
@@ -1022,11 +1022,6 @@ def github_context(
         "sources": sources,
         "fix_agents": able("code.fix"),
         "review_agents": able("code.review"),
-        "open_requests": [
-            {**{k: r[k] for k in ("request_id", "task_id", "code", "question", "created_at")},
-             "task_title": repo.get_task(conn, r["task_id"])["title"]}
-            for r in repo.list_open_human_requests(conn, session_id)
-        ],
         "default_start_at": now,
     }
 

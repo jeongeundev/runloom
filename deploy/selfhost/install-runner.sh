@@ -19,7 +19,7 @@ usage() {
   2. (--server·--code·--repo 가 있으면) python3 -m workflow.connector setup … — 연결 + 저장소 등록
   3. ~/Library/LaunchAgents/$LABEL.plist 작성 (홈·python·PATH(claude/codex 위치 포함)를 채움)
   4. 2 를 했거나 연결 토큰 파일이 있으면 launchctl 로 적재, 없으면 connect 명령을 안내
---server·--code·--repo 는 셋 다 주거나 셋 다 뺀다. 연결 코드는 /operator/github 저장소 카드의 [러너 붙이기].
+--server·--code·--repo 는 셋 다 주거나 셋 다 뺀다. 연결 코드는 /connect?tab=sources 저장소 카드의 [러너 붙이기].
 다시 실행해도 된다(plist 를 새로 쓰고 다시 적재).
 
 환경변수:
@@ -191,13 +191,13 @@ fi
 
 if [[ "$SETUP" == 1 ]]; then
   echo
-  echo "러너를 붙였습니다 — $SETUP_SERVER/operator/github 저장소 카드에 매칭 값이 보이면 끝입니다."
+  echo "러너를 붙였습니다 — $SETUP_SERVER/connect?tab=sources 저장소 카드에 매칭 값이 보이면 끝입니다."
   exit 0
 fi
 cat <<EOF
 
 사용자가 할 명령 (저장소 폴더에서):
-  1. 연결 — $SERVER/operator 에서 발급한 연결 코드로:
+  1. 연결 — $SERVER/connect?tab=advanced 에서 발급한 연결 코드로:
      $PYTHON -m workflow.connector connect --server $SERVER --code <연결 코드>
   2. 저장소 등록 — 작업 폴더와 도구:
      $PYTHON -m workflow.connector register --id <등록 id> --repo <작업 폴더> --repository-id <저장소 id> --tool claude

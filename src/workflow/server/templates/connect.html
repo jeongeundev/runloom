@@ -1,0 +1,24 @@
+{# 연결 화면 `/connect?tab=…` — phase 16 step 6, ARCHITECTURE "업무 화면 — phase 16" 연결 화면 탭. 탭 머리는 볼 수 있는 탭만(`tabs`),
+   본문은 옛 설정 화면을 옮긴 부분 템플릿(`_connect_*.html`) — 문구·폼·`data-*` 는 그대로. 절별 권한은 부분 템플릿이 `allowed` 로 가른다. #}
+{% extends "base.html" %}
+{% block title %}연결 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">연결</div></div>
+<nav class="tabs" data-connect-tabs>
+  {% for t in tabs %}<a href="/connect?tab={{ t.key }}" data-tab="{{ t.key }}"{% if t.key == tab %} class="active"{% endif %}>{{ t.label }}</a>{% endfor %}
+</nav>
+<section data-tab-body="{{ tab }}">
+{% if tab == 'sources' %}
+{% include "_connect_github.html" %}
+{% if 'manage_connections' in allowed %}{% include "_connect_inbound.html" %}{% endif %}
+{% elif tab == 'team' %}
+{% include "_connect_team.html" %}
+{% elif tab == 'kinds' %}
+{% include "_connect_kinds.html" %}
+{% elif tab == 'notify' %}
+{% include "_connect_notify.html" %}
+{% else %}
+{% include "_connect_advanced.html" %}
+{% endif %}
+</section>
+{% endblock %}

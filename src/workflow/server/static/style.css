@@ -198,8 +198,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .check-list { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .check-list label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
 .rule-text { font-family: var(--mono); font-size: 13px; color: var(--text); }
-/* 업무 가져오기 — 출처 탭(링크 2개, 활성 탭 밑줄)과 이슈 표 */
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+/* 탭 머리(연결 화면 — 링크, 활성 탭 밑줄). 좁은 화면은 줄을 바꿔 가로 스크롤을 만들지 않는다 */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
 .tabs a { padding: 8px 12px; font-size: 13px; color: var(--text-muted); border-bottom: 2px solid transparent;
           margin-bottom: -1px; }
 .tabs a:hover { color: var(--text); text-decoration: none; }

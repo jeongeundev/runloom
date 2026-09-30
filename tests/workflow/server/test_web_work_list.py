@@ -226,7 +226,7 @@ def test_agents_zero_shows_runner_hint(client, conn):
     ensure_workspace(conn, NOW)
     admin = log_in(client)
     html = main_of(admin.get("/tasks").text)
-    assert "러너를 붙이면 에이전트가 생깁니다" in html and 'href="/operator/github"' in html
+    assert "러너를 붙이면 에이전트가 생깁니다" in html and 'href="/connect?tab=sources"' in html
 
 
 def test_home_has_no_agent_or_chain_cards(admin, people):
@@ -242,7 +242,7 @@ def test_sidebar_has_new_items_and_no_recent_list(admin, people):
     sidebar = sidebar_of(admin.get("/tasks").text)
     nav = re.findall(r'<a href="([^"]+)"[^>]*>([^<]+)', sidebar[sidebar.index('class="nav"'):])
     assert [label.strip() for _, label in nav[:4]] == ["업무", "모니터링", "연결", "내 설정"]
-    assert [href for href, _ in nav[:4]] == ["/tasks", "/metrics", "/operator/github", "/me"]
+    assert [href for href, _ in nav[:4]] == ["/tasks", "/metrics", "/connect", "/me"]
     assert "최근" not in sidebar and 'href="/tasks/new"' not in sidebar and "data-work-key" not in sidebar
     assert "시작하기" not in sidebar  # step 7 전까지 숨김
     assert "관리자 · 관리자" in sidebar and 'action="/logout"' in sidebar
@@ -255,8 +255,8 @@ def test_sidebar_turn_badge_counts_my_turn(admin, member, people):
 
 
 def test_sidebar_marks_active_by_path_prefix(admin, people):
-    nav = sidebar_of(admin.get("/operator").text)
-    assert '<a href="/operator/github" class="active">' in nav
+    nav = sidebar_of(admin.get("/connect?tab=advanced").text)
+    assert '<a href="/connect" class="active">' in nav
     assert 'href="/tasks" class="active"' not in nav
     assert '<a href="/tasks" class="active">' in sidebar_of(admin.get("/tasks").text)
 
@@ -269,4 +269,4 @@ def test_sidebar_hides_items_without_permission(admin, member, people, monkeypat
                         lambda role: real(role) - {team.VIEW_METRICS, team.EDIT_OWN_SETTINGS})
     sidebar = sidebar_of(member.get("/tasks").text)
     assert 'href="/metrics"' not in sidebar and 'href="/me"' not in sidebar
-    assert 'href="/tasks"' in sidebar and 'href="/operator/github"' in sidebar
+    assert 'href="/tasks"' in sidebar and 'href="/connect"' in sidebar
