@@ -329,6 +329,8 @@ def test_install_creates_env_0600_with_generated_secrets(tmp_path):
     assert str(env_file) in out
     assert "http://127.0.0.1:8000/login" in out
     assert "install-runner.sh" in out
+    # phase 15 — 운영자 토큰은 첫 설정용: 처음 접속 때 토큰으로 관리자 계정을 만든다
+    assert "처음 접속 때 토큰으로 관리자 계정을 만든다" in out
 
 
 def test_install_runs_compose_with_project_name_and_file_then_waits_for_healthz(tmp_path):
@@ -597,6 +599,19 @@ def test_selfhost_md_covers_every_section():
         assert heading in text, heading
     for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "초안 PR",
                    "Accept new permissions", "/operator/notifications"):
+        assert needle in text, needle
+
+
+def test_selfhost_md_covers_team_upgrade_and_remote_access():
+    """phase 15 step 11 — v11 업그레이드(백업 먼저·토큰으로 관리자 계정·다시 로그인), 팀원 초대, 비밀번호 분실,
+    공개 주소와 원격 접속(https 필수), 개인 웹훅."""
+    text = _selfhost_md()
+    assert "## 팀" in text
+    upgrade = text[text.index("## 업그레이드"):text.index("## 제거")]
+    for needle in ("v11", "backup create", "관리자 계정", "다시 로그인"):
+        assert needle in upgrade, needle
+    for needle in ("/team", "초대 링크", "재설정 링크", "/login/recover", "WORKFLOW_PUBLIC_URL", "Tailscale",
+                   "Cloudflare Tunnel", "https://", "개인 웹훅", "/me"):
         assert needle in text, needle
 
 

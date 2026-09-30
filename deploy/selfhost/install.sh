@@ -101,10 +101,10 @@ cat <<EOF
 
 설치 완료 — 프로젝트 $PROJECT
   접속 주소   : $BASE_URL/login
-  로그인 토큰 : $ENV_FILE 의 OPERATOR_TOKEN 값 (이 파일은 0600, 백업·공유하지 않는다)
+  운영자 토큰 : $ENV_FILE 의 OPERATOR_TOKEN 값 (이 파일은 0600, 백업·공유하지 않는다)
 
 다음 할 일:
-  1. 브라우저에서 $BASE_URL/login 에 로그인
+  1. 브라우저에서 $BASE_URL/login 을 연다 — 처음 접속 때 토큰으로 관리자 계정을 만든다 (그 뒤는 이메일·비밀번호)
   2. /operator 에서 러너 연결 코드 발급
   3. 러너 설정: $SELFHOST_DIR/install-runner.sh
 EOF
