@@ -245,7 +245,22 @@ BUILTIN_RULES: tuple[SuccessorRule, ...] = (
 )
 
 
-class ExecutionRequest(_Contract):
+class _OmitUnknownMeasure(_Contract):
+    """측정 칸(phase 9)이 null 이면 직렬화에서 뺀다 — 구버전 서버는 null 이라도 모르는 칸을 422 로 거부하고,
+    저장된 이벤트와의 중복 비교(`repo._event_content`)도 기존 모양 그대로여야 한다."""
+
+    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_unknown_measure(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        for name in self._MEASURE_FIELDS:
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
+
+
+class ExecutionRequest(_OmitUnknownMeasure):
     contract_version: ContractVersion
     execution_id: NonEmptyStr
     task_id: NonEmptyStr
@@ -259,11 +274,22 @@ class ExecutionRequest(_Contract):
     # 결과 브랜치 `result_branch(task_id, work_key, branch_seq)` 의 두 칸 (CONTRACT 15.2·15.3). 없으면 옛 `task/<task_id>`
     work_key: WorkKey | None = None
     branch_seq: int = Field(default=1, ge=1)
+    # 검증만 다시 (CONTRACT 16.1): 에이전트 없이 이 커밋을 다시 검증한다. null 이면 직렬화에서 빠진다 — 옛 러너가 받는다
+    verify_only_commit: CommitSha | None = None
+
+    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ("verify_only_commit",)
 
     @model_validator(mode="after")
     def _check_kind_target(self) -> "ExecutionRequest":
         if len(set(self.input_artifact_ids)) != len(self.input_artifact_ids):
             raise ValueError("input_artifact_ids 에 중복이 있습니다")
+        if self.verify_only_commit is not None:
+            if not isinstance(self.target, CodeChangeTarget):
+                raise ValueError("verify_only_commit 은 target 이 CodeChangeTarget 일 때만 씁니다")
+            if not self.input_artifact_ids:
+                raise ValueError("verify_only_commit 은 input_artifact_ids 가 비어 있으면 안 됩니다")
+            if self.verify_only_commit == self.target.base_commit:
+                raise ValueError("verify_only_commit 은 target.base_commit 과 달라야 합니다")
         if self.work_key is None and self.branch_seq != 1:
             raise ValueError("branch_seq 는 work_key 가 있을 때만 1 이 아닐 수 있습니다")
         if self.kind_spec is not None and self.kind_spec.kind != self.kind:
@@ -296,7 +322,12 @@ class ExecutionRequest(_Contract):
         return self
 
 
-class ClaimRequest(_Contract):
+RunnerCapability = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
+RUNNER_CAPABILITY_VERIFY_ONLY = "verify_only"
+RUNNER_CAPABILITIES: tuple[str, ...] = (RUNNER_CAPABILITY_VERIFY_ONLY,)
+
+
+class ClaimRequest(_OmitUnknownMeasure):
     """`supported_kinds` 가 null(생략)이면 구버전 연결 프로그램 — 서버는 사용자 정의 종류만 배정한다
     (ADR-0014 결정 4, 옛 내장 `code_change` 는 ADR-0019 로 없어졌다). `registration_heads` 는 `local_registration_id` → fetch 뒤 `origin` 기본 브랜치 커밋 —
     서버가 이 연결 프로그램 Agent 의 `base_commit` 을 갱신한다. null(생략)이면 보고 없음 (ADR-0018 결정 2)."""
@@ -305,11 +336,17 @@ class ClaimRequest(_Contract):
     connector_id: NonEmptyStr
     supported_kinds: list[KindId] | None = None
     registration_heads: Annotated[dict[NonEmptyStr, CommitSha], Field(max_length=50)] | None = None
+    # 러너가 할 수 있는 선택 동작 (CONTRACT 16.2). null 이면 보고 없음(옛 러너) — 직렬화에서 빠진다
+    capabilities: Annotated[list[RunnerCapability], Field(max_length=20)] | None = None
+
+    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ("capabilities",)
 
     @model_validator(mode="after")
     def _check_unique_kinds(self) -> "ClaimRequest":
         if self.supported_kinds is not None and len(set(self.supported_kinds)) != len(self.supported_kinds):
             raise ValueError("supported_kinds 에 중복이 있습니다")
+        if self.capabilities is not None and len(set(self.capabilities)) != len(self.capabilities):
+            raise ValueError("capabilities 에 중복이 있습니다")
         return self
 
 
@@ -324,21 +361,6 @@ class HeartbeatRequest(_Contract):
 
 class AcceptedData(_Contract):
     pass
-
-
-class _OmitUnknownMeasure(_Contract):
-    """측정 칸(phase 9)이 null 이면 직렬화에서 뺀다 — 구버전 서버는 null 이라도 모르는 칸을 422 로 거부하고,
-    저장된 이벤트와의 중복 비교(`repo._event_content`)도 기존 모양 그대로여야 한다."""
-
-    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ()
-
-    @model_serializer(mode="wrap")
-    def _omit_unknown_measure(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        data = handler(self)
-        for name in self._MEASURE_FIELDS:
-            if data.get(name) is None:
-                data.pop(name, None)
-        return data
 
 
 class ExecutionUsage(_Contract):

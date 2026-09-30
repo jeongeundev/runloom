@@ -1151,7 +1151,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 `fix_verification_failed` 사람 요청에 [검증만 다시](`reverify`)로 답하면 워커가 만드는 요청. 같은 Task·같은 Agent·같은 `target`(15.2 와 같은 `CodeChangeTarget`)에 `verify_only_commit` = 이전 결과 커밋, 입력 = 이전 실행의 결과 봉투(`code_change_result`) 하나. `task_revision` 은 응답으로 올라간 값이다. 러너는 에이전트를 띄우지 않고 그 커밋의 깨끗한 체크아웃에서 등록된 검증 프로필(`verification_profile_id`)로 다시 검증해 7절과 같은 `CodeChangeResult` 를 낸다 — 도구 원시 산출물(stdout·stderr)과 `usage` 만 없다.
 
-```jsonc
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-gh-fix-004",
@@ -1179,7 +1179,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 `capabilities` 는 러너가 할 수 있는 선택 동작 목록이다. 알려진 값은 `"verify_only"`(검증만 다시) 하나. 값 형식 `^[a-z][a-z0-9_]{0,39}$`, 최대 20개, 중복이면 422. 서버는 알려진 값만 저장하고 모르는 값은 무시한다. null(생략)은 보고 없음 — 옛 러너로 보고 검증만 다시 요청을 배정하지 않는다("연결 프로그램 업데이트 필요 — 검증만 다시 미지원"으로 기다린다). 새 러너는 늘 보낸다. 구버전 서버는 이 칸을 422 `unknown_field` 로 거부하므로 업그레이드 순서는 서버 → 러너(14절과 같다).
 
-```jsonc
+```json
 { "contract_version": 1, "connector_id": "conn-mac-02", "supported_kinds": ["bug_fix", "code_review"], "registration_heads": { "local-billing": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c" }, "capabilities": ["verify_only"] }
 ```
 

@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 62개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 64개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -120,7 +120,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 62
+    assert len(FENCED) == 64
     assert len(INLINE) == 8
 
 
@@ -1510,7 +1510,7 @@ def test_execution_request_work_key_is_optional_with_branch_seq_one():
 
 def test_contract_examples_carry_work_key_and_branch_seq():
     keyed = [b for b in FENCED if _model_for(b) is ExecutionRequest and "work_key" in b]
-    assert [(b["work_key"], b["branch_seq"]) for b in keyed] == [("RUN-23", 1), ("RUN-23", 2)]
+    assert [(b["work_key"], b["branch_seq"]) for b in keyed] == [("RUN-23", 1), ("RUN-23", 2), ("RUN-23", 1)]
     for block in keyed:
         assert ExecutionRequest.model_validate(block).model_dump(mode="json") == block
 
@@ -1554,3 +1554,122 @@ def test_result_branch_refuses_values_outside_the_contract(key, seq):
     """요청 모델을 거치지 않은 값(model_construct 등)도 브랜치 이름이 되기 전에 막는다."""
     with pytest.raises(ValueError):
         v1.result_branch("task-abc", key, seq)
+
+
+# --- 검증만 다시·러너 능력 (phase 17 step 2, CONTRACT 16절) -----------------------------------
+
+
+_VERIFY_COMMIT = "8b2e4d6f0a1c3e5b7d9f1a3c5e7b9d2f4a6c8e0b"
+
+
+def _verify_only_request() -> dict:
+    return next(
+        json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ExecutionRequest and "verify_only_commit" in b
+    )
+
+
+def test_runner_capability_constants():
+    assert v1.RUNNER_CAPABILITY_VERIFY_ONLY == "verify_only"
+    assert v1.RUNNER_CAPABILITIES == ("verify_only",)
+
+
+def test_old_execution_requests_dump_without_verify_only_commit():
+    """칸 없는 요청은 그대로 통과하고 직렬화도 바이트 단위로 같다 — 옛 러너(extra=forbid)가 받는다."""
+    olds = [b for b in FENCED if _model_for(b) is ExecutionRequest and "verify_only_commit" not in b]
+    assert olds
+    for block in olds:
+        parsed = ExecutionRequest.model_validate(block)
+        assert parsed.verify_only_commit is None
+        assert "verify_only_commit" not in parsed.model_dump()
+        assert "verify_only_commit" not in json.loads(parsed.model_dump_json())
+        # 옛 dump 그대로 — 칸 순서까지
+        assert list(parsed.model_dump(mode="json")) == list(ExecutionRequest.model_fields)[:-1]
+
+
+def test_explicit_null_verify_only_commit_is_omitted():
+    parsed = ExecutionRequest.model_validate({**_bug_fix_request(), "verify_only_commit": None})
+    assert "verify_only_commit" not in parsed.model_dump(mode="json")
+    assert parsed.model_dump(mode="json") == ExecutionRequest.model_validate(_bug_fix_request()).model_dump(mode="json")
+
+
+def test_verify_only_request_example_roundtrips():
+    block = _verify_only_request()
+    parsed = ExecutionRequest.model_validate(block)
+    assert parsed.verify_only_commit == _VERIFY_COMMIT
+    assert isinstance(parsed.target, CodeChangeTarget)
+    assert parsed.model_dump(mode="json") == block
+    assert list(parsed.model_dump(mode="json")) == list(block)
+
+
+@pytest.mark.parametrize(
+    "sha", ["8B2E4D6F0A1C3E5B7D9F1A3C5E7B9D2F4A6C8E0B", "8b2e4d6", "g" * 40, "a" * 41, "", 123],
+)
+def test_verify_only_commit_rejects_bad_sha(sha):
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**_verify_only_request(), "verify_only_commit": sha})
+
+
+def test_verify_only_commit_requires_code_change_target():
+    review = next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ExecutionRequest and b["kind"] == "code_review")
+    ExecutionRequest.model_validate(review)
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**review, "verify_only_commit": _VERIFY_COMMIT})
+    local = next(
+        json.loads(json.dumps(b))
+        for b in FENCED
+        if _model_for(b) is ExecutionRequest and isinstance(ExecutionRequest.model_validate(b).target, LocalTarget)
+    )
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**local, "verify_only_commit": _VERIFY_COMMIT})
+
+
+def test_verify_only_commit_requires_input_artifacts():
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**_verify_only_request(), "input_artifact_ids": []})
+
+
+def test_verify_only_commit_must_differ_from_base_commit():
+    block = _verify_only_request()
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**block, "verify_only_commit": block["target"]["base_commit"]})
+
+
+def _capabilities_claim() -> dict:
+    return next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ClaimRequest and "capabilities" in b)
+
+
+def test_claim_capabilities_example_roundtrips():
+    block = _capabilities_claim()
+    parsed = ClaimRequest.model_validate(block)
+    assert parsed.capabilities == [v1.RUNNER_CAPABILITY_VERIFY_ONLY]
+    assert parsed.model_dump(mode="json") == block
+
+
+def test_old_claims_dump_without_capabilities():
+    olds = [b for b in FENCED if _model_for(b) is ClaimRequest and "capabilities" not in b]
+    assert olds
+    for block in olds:
+        parsed = ClaimRequest.model_validate(block)
+        assert parsed.capabilities is None
+        assert "capabilities" not in parsed.model_dump()
+        assert "capabilities" not in json.loads(parsed.model_dump_json())
+    explicit = ClaimRequest.model_validate({**olds[0], "capabilities": None})
+    assert "capabilities" not in explicit.model_dump(mode="json")
+
+
+def test_claim_capabilities_accepts_unknown_values_in_pattern():
+    """모르는 값은 계약이 받는다 — 서버가 저장할 때 버린다."""
+    parsed = ClaimRequest.model_validate({**_first("ClaimRequest"), "capabilities": ["verify_only", "future_x"]})
+    assert parsed.capabilities == ["verify_only", "future_x"]
+    assert ClaimRequest.model_validate({**_first("ClaimRequest"), "capabilities": []}).capabilities == []
+
+
+@pytest.mark.parametrize(
+    "caps",
+    [["verify_only", "verify_only"], ["Verify"], ["verify-only"], [""], ["a" * 41], "verify_only",
+     [f"c{i}" for i in range(21)]],
+    ids=["dup", "upper", "dash", "empty", "long", "str", "too_many"],
+)
+def test_claim_capabilities_rejects_bad_values(caps):
+    with pytest.raises(ValidationError):
+        ClaimRequest.model_validate({**_first("ClaimRequest"), "capabilities": caps})
