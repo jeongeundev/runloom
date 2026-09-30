@@ -3790,3 +3790,118 @@ def test_new_work_followup_copies_the_requester(cycle):
                                            work_item_id=_wi41(conn), placement="new_work")
     spawned = repo.work_item_of_task(conn, task_id)
     assert spawned["work_item_id"] != _wi41(conn) and spawned["requested_by_member_id"] == a
+
+
+# --- phase 16 step 2: 목록 행 조회 ----------------------------------------------------------------------------
+
+
+def _row_of(rows, work_item_id):
+    return next(r for r in rows if r.work_item_id == work_item_id)
+
+
+def test_list_work_rows_keeps_recent_closed_work_unless_all(sessions):
+    conn = sessions
+    open_work, _ = _new_work(conn, title="열림")
+    recent, _ = _new_work(conn, title="최근 끝남")
+    old, _ = _new_work(conn, title="오래전 끝남")
+    _new_work(conn, OTHER_SESSION, title="다른 워크스페이스")
+    repo.set_work_status(conn, recent, WorkStatus("완료", "PR 병합 — #3"), now="2026-09-25T00:00:00Z")
+    repo.set_work_status(conn, old, WorkStatus("종료", "닫힘"), now="2026-09-01T00:00:00Z")
+    since = "2026-09-16T00:00:00Z"
+    assert [r.work_item_id for r in repo.list_work_rows(conn, SESSION, closed_since=since)] == [recent, open_work]
+    assert [r.work_item_id for r in repo.list_work_rows(conn, SESSION, closed_since=None)] == [old, recent, open_work]
+    assert [r.title for r in repo.list_work_rows(conn, OTHER_SESSION, closed_since=None)] == ["다른 워크스페이스"]
+
+
+def test_list_work_rows_fills_names_recipients_and_next_action(seeded):
+    conn = seeded
+    admin, a, c = _people(conn)
+    _failed_stage(conn)  # TASK_A 업무 → 내 차례, 에이전트 담당
+    failed = _work(conn)["work_item_id"]
+    member_work, _ = _new_work(conn, title="멤버 담당", priority="high", source_key="OPS-7",
+                               source_url="https://example.com/OPS-7")
+    gone_work, _ = _new_work(conn, title="비활성 담당")
+    direct_work, direct_key = _new_work(conn, title="직접 작업")
+    repo.assign_work_item(conn, SESSION, member_work, assignee_type="member", assignee_id=a, now=LATER)
+    repo.assign_work_item(conn, SESSION, gone_work, assignee_type="member", assignee_id=c, now=LATER)
+    repo.disable_member(conn, SESSION, c, now=LATER)
+    conn.execute("UPDATE work_items SET direct_member_id = ?, direct_started_at = ?, direct_branch = ?"
+                 " WHERE work_item_id = ?", (admin, LATER, f"RUN-{direct_key}", direct_work))
+    rows = repo.list_work_rows(conn, SESSION, closed_since=None)
+
+    row = _row_of(rows, failed)
+    assert (row.work_key, row.kind, row.kind_label, row.status) == ("RUN-1", "diagnosis", "운영 진단", "내 차례")
+    assert (row.assignee_type, row.assignee_id, row.assignee_name, row.assignee_active) == (
+        "agent", "agent-ops-demo", "agent-ops-demo", True)  # 등록되지 않은 Agent 는 id
+    assert row.recipients == (admin,)
+    assert row.next_action == "실행 실패 — timeout: 20분 초과"
+
+    row = _row_of(rows, member_work)
+    assert (row.assignee_name, row.assignee_active, row.priority, row.source_key, row.source_url) == (
+        "김맡김", True, "high", "OPS-7", "https://example.com/OPS-7")
+    assert row.recipients == ()  # 내 차례가 아니면 받는 사람을 싣지 않는다
+    assert row.next_action == row.status_reason
+    assert (_row_of(rows, gone_work).assignee_name, _row_of(rows, gone_work).assignee_active) == ("이담당", False)
+    assert _row_of(rows, direct_work).next_action == "직접 작업 중 · 관리자"
+
+
+def test_list_work_rows_uses_the_names_of_registered_agents(seeded):
+    conn = seeded
+    repo.upsert_agent(conn, _agent(name="운영 에이전트"))
+    _create_execution(conn, "exec-1")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), _work(conn)["work_item_id"]).assignee_name \
+        == "운영 에이전트"
+
+
+def test_list_work_rows_shows_runloom_and_detected_pull_requests(cycle):
+    conn = cycle
+    work = _wi41(conn)
+    _fix_execution(conn)
+    _enqueue(conn)
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), work).next_action == "PR 여는 중"
+
+    detected, _ = _new_work(conn, title="사람이 연 PR")
+
+    def detected_pr(number: int, state: str, updated: str) -> None:
+        conn.execute(
+            "INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+            " title, pr_url, head_branch, state, draft, merged_at, pr_updated_at, created_at, updated_at)"
+            " VALUES (?, ?, ?, 'acme/billing', ?, 't', 'u', 'RUN-2-x', ?, 0, ?, ?, ?, ?)",
+            (SESSION, detected, SOURCE, number, state, updated if state == "merged" else None, updated, NOW, NOW),
+        )
+
+    detected_pr(5, "closed", "2026-09-22T00:00:00Z")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), detected).next_action == ""  # 닫힘은 무시
+    detected_pr(6, "merged", "2026-09-21T00:00:00Z")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), detected).next_action == "PR #6"
+    detected_pr(7, "open", "2026-09-20T00:00:00Z")
+    detected_pr(8, "open", "2026-09-20T10:00:00Z")
+    assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), detected).next_action == "PR #8"  # 열린 것 먼저
+
+
+def test_list_work_rows_query_count_does_not_grow_with_work_items(seeded):
+    conn = seeded
+    admin, a, _ = _people(conn)
+    repo.upsert_agent(conn, _agent(name="운영 에이전트"))
+
+    def count() -> int:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            repo.list_work_rows(conn, SESSION, closed_since=None)
+        finally:
+            conn.set_trace_callback(None)
+        return len(statements)
+
+    def add(n: int) -> None:
+        for i in range(n):
+            work, _ = _new_work(conn, title=f"업무 {i}")
+            repo.assign_work_item(conn, SESSION, work, assignee_type="member", assignee_id=(admin, a)[i % 2],
+                                  now=LATER)
+
+    _failed_stage(conn)
+    add(2)
+    few = count()
+    add(28)
+    assert len(repo.list_work_rows(conn, SESSION, closed_since=None)) == 31
+    assert count() == few

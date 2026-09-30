@@ -38,6 +38,15 @@ from workflow.domain.notification import webhook_host
 from workflow.domain import team
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
+from workflow.domain.work_list import (
+    CLOSED_RECENT_DAYS,
+    ListQuery,
+    board_columns,
+    filter_counts,
+    filter_rows,
+    group_rows,
+    parse_list_query,
+)
 from workflow.domain.work_status import STAGE_FAILED
 from workflow.server import github_clients, human_api, task_cycle
 from workflow.server.filters import KIND_LABELS, duration, kind_label, kst
@@ -702,6 +711,35 @@ def work_summary(conn: Connection, work: Row) -> dict[str, Any]:
         "updated_at": work["updated_at"],
         "delegate_task_id": first["task_id"] if first is not None and undelegated(conn, first) else None,
     }
+
+
+def work_list_context(conn: Connection, session_id: str, *, member_id: str, query: ListQuery, now: str) -> dict:
+    """업무 화면 목록 — 끝난 업무 범위(`closed=recent` 는 14일) → 행 → 빠른 필터 → 묶기·보드. 건수는 필터 전 행 기준.
+    `open_missing` = 키 형식의 `open` 이 이 워크스페이스에 없음."""
+    closed_since = None
+    if query.closed == "recent":
+        closed_since = (_parse(now) - timedelta(days=CLOSED_RECENT_DAYS)).isoformat().replace("+00:00", "Z")
+    all_rows = repo.list_work_rows(conn, session_id, closed_since=closed_since)
+    rows = filter_rows(all_rows, query.q, member_id=member_id)
+    return {
+        "rows": rows,
+        "groups": group_rows(rows, query.group, member_id=member_id),
+        "columns": board_columns(rows),
+        "counts": filter_counts(all_rows, member_id=member_id),
+        "query": query,
+        "open_missing": query.open_key is not None
+        and repo.get_work_item_by_key(conn, session_id, query.open_key) is None,
+    }
+
+
+def list_query_params(query: ListQuery, *, open_key: int | None = None) -> str:
+    """목록 주소 쿼리 문자열(기본값은 뺀다). 값은 모두 열거형이라 따로 인코딩하지 않는다."""
+    default = parse_list_query()
+    parts = [f"{name}={getattr(query, name)}" for name in ("q", "group", "view", "closed")
+             if getattr(query, name) != getattr(default, name)]
+    if open_key is not None:
+        parts.append(f"open={format_work_key(open_key)}")
+    return "&".join(parts)
 
 
 def work_context(

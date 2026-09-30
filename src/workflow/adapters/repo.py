@@ -73,6 +73,7 @@ from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts
 from workflow.domain.pull_request import head_branch
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
+from workflow.domain.work_list import WorkRow, next_action
 from workflow.domain.work_status import (
     STAGE_FAILED,
     TERMINAL_WORK_STATUSES,
@@ -344,6 +345,63 @@ def turn_recipients_of(conn: Connection, work_item_id: str) -> tuple[str, ...]:
     if work is None:
         raise NotFound(f"work item {work_item_id}")
     return _recipients(work, _member_facts(conn, work["session_id"]))
+
+
+def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | None) -> list[WorkRow]:
+    """업무 화면 목록 행(키 번호 내림차순). `closed_since` 는 끝난 업무 범위의 경계 시각 — 그보다 앞서 끝난 업무는
+    빼고, None 이면 전부. 쿼리 수는 업무 수와 무관하다(담당·종류·직접 작업 이름은 JOIN, 열린 사람 요청·PR 은 묶음
+    조회). 받는 사람은 `내 차례` 인 업무만 계산한다(`_recipients`)."""
+    works = conn.execute(
+        "SELECT w.*, COALESCE(json_extract(k.spec_json, '$.label'), w.kind) AS kind_label,"
+        " m.display_name AS member_name, m.disabled_at AS member_disabled_at, a.name AS agent_name,"
+        " d.display_name AS direct_member_name"
+        " FROM work_items w LEFT JOIN kinds k ON k.session_id = w.session_id AND k.kind = w.kind"
+        " LEFT JOIN members m ON w.assignee_type = 'member' AND m.member_id = w.assignee_id"
+        " LEFT JOIN agents a ON w.assignee_type = 'agent' AND a.agent_id = w.assignee_id"
+        " LEFT JOIN members d ON d.member_id = w.direct_member_id"
+        " WHERE w.session_id = ? AND (? IS NULL OR w.closed_at IS NULL OR w.closed_at >= ?)"
+        " ORDER BY w.key_number DESC",
+        (session_id, closed_since, closed_since),
+    ).fetchall()
+    questions: dict[str, str] = {}
+    for r in conn.execute(
+        "SELECT t.work_item_id, h.question FROM human_requests h JOIN tasks t ON t.task_id = h.task_id"
+        " WHERE t.session_id = ? AND h.state = 'open' ORDER BY h.created_at, h.rowid", (session_id,)
+    ):
+        questions.setdefault(r["work_item_id"], r["question"])
+    # (열림?, 갱신 시각, 번호) — Runloom PR 의 pending·open·merged 와 감지 PR 의 open·merged
+    pulls: dict[str, list[tuple[bool, str, int | None]]] = {}
+    for r in conn.execute(
+        "SELECT t.work_item_id, p.state, p.pr_number, p.updated_at AS at FROM task_pull_requests p"
+        " JOIN tasks t ON t.task_id = p.task_id WHERE t.session_id = ? AND p.state IN ('pending', 'open', 'merged')"
+        " UNION ALL SELECT work_item_id, state, pr_number, pr_updated_at FROM work_pull_requests"
+        " WHERE session_id = ? AND state IN ('open', 'merged')", (session_id, session_id)
+    ):
+        pulls.setdefault(r["work_item_id"], []).append((r["state"] != "merged", r["at"], r["pr_number"]))
+    members = _member_facts(conn, session_id)
+    rows = []
+    for w in works:
+        if w["assignee_type"] == "member":
+            name, active = w["member_name"] or w["assignee_id"], w["member_disabled_at"] is None
+        else:
+            name, active = w["agent_name"] or w["assignee_id"], True
+        pr_label = None
+        if w["work_item_id"] in pulls:
+            _, _, number = max(pulls[w["work_item_id"]], key=lambda p: (p[0], p[1]))
+            pr_label = "PR 여는 중" if number is None else f"PR #{number}"
+        rows.append(WorkRow(
+            work_item_id=w["work_item_id"], key_number=w["key_number"], work_key=format_work_key(w["key_number"]),
+            source_type=w["source_type"], source_key=w["source_key"], source_url=w["source_url"], title=w["title"],
+            assignee_type=w["assignee_type"], assignee_id=w["assignee_id"], assignee_name=name,
+            assignee_active=active, priority=w["priority"], kind=w["kind"], kind_label=w["kind_label"],
+            status=w["status"], status_reason=w["status_reason"],
+            next_action=next_action(request_question=questions.get(w["work_item_id"]),
+                                    direct_member_name=w["direct_member_name"], pr_label=pr_label,
+                                    status_reason=w["status_reason"]),
+            recipients=_recipients(w, members) if w["status"] == "내 차례" else (),
+            updated_at=w["updated_at"], closed_at=w["closed_at"],
+        ))
+    return rows
 
 
 def set_work_requester(conn: Connection, work_item_id: str, member_id: str) -> None:

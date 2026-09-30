@@ -21,7 +21,9 @@
     {
       "step": 2,
       "name": "work-list-model",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T14:52:17+0900",
+      "summary": "신설 domain/work_list.py(QUICK_FILTERS·GROUP_BYS·VIEWS·CLOSED_SCOPES·CLOSED_RECENT_DAYS=14·PRIORITY_ORDER·BOARD_COLUMNS, ListQuery·parse_list_query(모르는 값→기본값, view=my_turn→q=my_turn, open 은 RUN-n 형식만 키 번호)·WorkRow·next_action(요청 질문 첫 줄 80자→직접 작업→PR→상태 이유)·filter_rows·filter_counts·RowGroup·group_rows(담당 없음→나(나)→활성 멤버 이름·id순→에이전트→비활성(비활성), 상태는 WORK_STATUSES 순, 묶음 안 우선순위→updated_at 최근→키 내림차순, 빈 묶음 없음)·BoardColumn·board_columns(6칸 빈 칸 포함, 종료 제외)), repo.list_work_rows(업무 1쿼리 JOIN(종류 라벨·담당 멤버/에이전트 이름·직접 작업 멤버) + 열린 요청·PR(task_pull_requests pending/open/merged ∪ work_pull_requests open/merged) 묶음 조회 + _member_facts, 받는 사람은 내 차례 행만 _recipients, PR 라벨=열린 것 중 최근→병합 중 최근, pending→'PR 여는 중'), views.work_list_context(closed=recent 면 now-14일 closed_since, 건수는 q 필터 전 행 기준, open_missing=키 형식인데 워크스페이스에 없음)·list_query_params(기본값 제외, open 은 인자로만). 테스트: tests/workflow/domain/test_work_list.py 25개, test_repo.py list_work_rows 5개(14일 범위·closed=all·다른 워크스페이스·이름/받는 사람/다음 할 일·Runloom/감지 PR·업무 3개 vs 31개 쿼리 수 동일), test_views.py 3개. 기존 테스트 수정 없음. 검증: pytest 2958 passed·40 skipped, ruff 통과. 다음 step 주의: 행의 status 는 저장값(재계산 안 함), 에이전트는 늘 assignee_active=True, 등록 안 된 담당은 id 가 이름, 키 형식이 아닌 open 은 open_key=None 이라 open_missing=False(형식 오류 안내가 필요하면 step 4·5 가 원문으로 판단)."
     },
     {
       "step": 3,
