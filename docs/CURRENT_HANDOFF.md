@@ -11,7 +11,7 @@
 2. 셀프호스트 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤, `install.sh` → 스키마 v11 → 첫 접속에서 `.env` 의 운영자 토큰으로 관리자 계정 만들기(옛 쿠키 무효라 다시 로그인) → `install-runner.sh`. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v11·"로그인"·"팀". 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 `workflow-selfhost:local` 공유 때문에 여전히 미실행 — 재설치 때 함께 확인한다.
 3. 16-work-ui 설계(업무 목록 담당자별 묶음·필터·보드·상세 패널 — [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절).
 
-**2026-09-30 반영(15)**: `feat-15-team` → `service` 병합(`0f376a9`, 원격 미푸시). 셀프호스트 재설치 — 백업 `20260930T040417Z`(스키마 10) → `install.sh` → 스키마 11(업무 23·Task 24 보존, 관리자 1명은 아직 이메일·비밀번호 없음 = 첫 설정 대기, 러너 1개 소유자 없음) → `install-runner.sh`(launchd `Bootstrap failed: 5` — bootout 직후 bootstrap 경쟁으로 보임, 수동 `launchctl bootstrap` 재시도로 적재, heartbeat·claim 정상). **남은 것**: 사용자가 `http://127.0.0.1:8000/login` 에서 토큰으로 관리자 계정 만들기. `install-runner.sh` 의 bootout→bootstrap 경쟁은 미수정.
+**2026-09-30 반영(15)**: `feat-15-team` → `service` 병합(`0f376a9`, 원격 미푸시). 셀프호스트 재설치 — 백업 `20260930T040417Z`(스키마 10) → `install.sh` → 스키마 11(업무 23·Task 24 보존, 관리자 1명은 아직 이메일·비밀번호 없음 = 첫 설정 대기, 러너 1개 소유자 없음) → `install-runner.sh`(launchd `Bootstrap failed: 5` — bootout 직후 bootstrap 경쟁으로 보임, 수동 `launchctl bootstrap` 재시도로 적재, heartbeat·claim 정상). 관리자 계정 만들기 완료(사용자, 2026-09-30). `install-runner.sh` 의 bootout→bootstrap 경쟁은 미수정.
 
 **2026-09-30 15-team 결정(사용자)**: 운영자 토큰은 첫 설정·복구 전용(이후 이메일·비밀번호), "내 차례" 받는 사람 = 담당 멤버 → 맡긴 사람 → 관리자 전원(응답은 누구나, 응답자 기록), `WORKFLOW_PUBLIC_URL` 설정 + 터널은 문서 안내만, 알림 = 공용 웹훅(`→ 이름`) + 멤버 개인 웹훅 선택, 멤버도 자기 러너 붙임(해제는 소유자·관리자). 기본값: scrypt(표준 라이브러리), 서버 로그인 세션 표, CSRF 는 Origin 검사, 초대 1회용 7일, 이메일 발송 없음.
 
