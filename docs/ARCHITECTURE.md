@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-30 (phase 16 step 0 — "업무 화면 — phase 16" 절 추가: 주소·스키마 v12·직접 작업·PR 신호·이름 고정). 이전: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
+갱신일: 2026-09-30 (phase 17 step 0 — "사람 사이 인계 — phase 17" 절 추가: 맡기기 정책·소유자 승인·꺼진 러너 대기·검증만 다시·요청문·저장소 보기·스키마 v13·이름 고정). 이전: 2026-09-30 (phase 16 step 0 — "업무 화면 — phase 16" 절 추가: 주소·스키마 v12·직접 작업·PR 신호·이름 고정). 이전: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -174,6 +174,10 @@ step 11 구현 상태: 사람 요청과 응답 후 재개. 응답 권한은 운�
 | `rework_limit_reached` | 재작업 상한 도달 | operator | 사람 요청 응답 |
 | `source_closed` | 원본 이슈 closed | operator | 재오픈 |
 | `task_closed` | 운영자 종료 | — | 없음(마감) |
+| `owner_approval_pending` | 맡긴 사람 ≠ 에이전트 소유자이고 정책 `owner_approval` 인데 승인 전 — phase 17 | operator(소유자·관리자) | [승인] |
+| `owner_approval_declined` | 소유자가 그 맡기기를 거절 — phase 17 | operator | 다른 담당을 고르거나 다시 맡기기 |
+
+phase 17 부터 `executor_offline` 이유는 "<소유자>의 러너 꺼짐 · 켜지면 시작", `executor_outdated` 는 검증만 다시에서 러너가 `verify_only` 를 보고하지 않을 때도 쓴다("사람 사이 인계 — phase 17").
 
 ### 후속 결정 표 (`decide_followup`)
 
@@ -1440,6 +1444,244 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 시작하기 | `domain/start_checklist.py`(7) | `StartFacts(has_source: bool, has_runner: bool, invited: bool, delegated: bool)`, `StartItem(key: str, label: str, state: Literal["done","next","todo","optional"], required: bool, href: str, action: str)`(`action` = 필요 동작), `START_ITEMS`, `start_items(facts: StartFacts) -> tuple[StartItem, ...]`, `required_done(facts: StartFacts) -> bool` |
 | 준비 판정 | `domain/task_readiness.py`(8) | 대기 코드 `direct_work`("직접 작업 중 — 에이전트에게 넘기면 시작") |
 | 오류 코드 | `server/web.py`(3·8) | `work_closed`, `no_open_stage`, `direct_work_active` |
+
+## 사람 사이 인계 — phase 17
+
+[ADR-0023](adr/0023-cross-member-delegation.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 17 README](../phases/17-team-handoff/README.md). 이 시점에는 구현이 없다 — 아래 이름·표·경로·시그니처는 step 1~11 이 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** "팀 — phase 15" 의 받는 사람 규칙·알림, "업무 화면 — phase 16" 의 담당 바꾸기·주소·목록 모델은 이 절이 갱신한 부분만 바뀐다. README 와 달라진 조사 사실은 ADR-0023 "코드 조사로 README 와 달라진 사실" 6가지.
+
+### 한 줄 요약
+
+에이전트마다 맡기기 정책(`run`·`owner_approval`). 에이전트 소유자 = 러너 소유자(없으면 공용 = 활성 관리자). 맡긴 사람 ≠ 소유자면 소유자에게 알림, `owner_approval` 이면 사람 요청 `owner_approval` 로 승인 전까지 실행 없음(받는 사람 = 소유자). 꺼진 러너에게 맡긴 단계는 모든 종류가 `tasks.start_pending_at` 으로 기다렸다 켜지면 시작. [검증만 다시] = `ExecutionRequest.verify_only_commit` + 러너 `capabilities: ["verify_only"]`. 요청문 머리에 업무 키·제목·양식 칸·지시 메모. 저장소 묶기·필터, 키 칸 `RUN-n` 먼저. 러너는 상대 `PYTHONPATH` 를 풀고, 실행 이벤트마다 단계 상태를 다시 계산한다. `install-runner.sh --name`. 스키마 v13.
+
+### 소유자와 맡기기 정책 (step 1·5·9)
+
+- **에이전트 소유자** = `agents.connector_id` 의 `connectors.owner_member_id`. `connection_type != 'local'` 이거나 연결 프로그램이 없거나 칸이 NULL 이면 **공용**(소유자 없음 — ADR-0021 의 "관리자 관리"). 에이전트에 소유자 칸을 두지 않는다. 기존 `views.agent_owner_id(conn, agent)` 를 그대로 쓰고, 워커·repo 가 쓸 수 있게 같은 규칙을 `repo.agent_owner_id(conn, agent_id) -> str | None` 로 둔다(step 5 — `views.agent_owner_id` 는 이것을 부른다).
+- **공용의 소유자 역할** = 활성 관리자 전원. 비교는 순수 함수(`domain/delegation.py`, DB·시각 없음):
+
+| 함수 | 규칙 |
+|---|---|
+| `needs_owner_approval(*, policy: str, requester_id: str \| None, owner_id: str \| None, admin_ids: frozenset[str]) -> bool` | `policy != "owner_approval"` → False. 소유자가 있으면 `requester_id != owner_id`. 공용이면 `requester_id not in admin_ids`(활성 관리자). `requester_id` None(트리거 라벨·자동 후속 — 맡긴 사람 기록 없음)은 소유자가 아닌 것으로 본다 |
+| `approval_deciders(owner_id: str \| None, members: Sequence[MemberFact]) -> tuple[str, ...]` | 소유자가 활성 멤버면 `(owner_id,)`, 아니면(공용·비활성 소유자) 활성 관리자 전원(`members` 순서) |
+| `can_decide_approval(*, member_id: str, role: str, owner_id: str \| None) -> bool` | `role == "admin"` 이거나 `member_id == owner_id`. 역할 × 동작 판정(`team.can(role, RESPOND)`)을 먼저 거친 뒤 쓴다 |
+| `can_set_policy(*, member_id: str, role: str, owner_id: str \| None) -> bool` | `team.can(role, REMOVE_ANY_RUNNER)` 이거나 (`team.can(role, ATTACH_RUNNER)` 이고 `member_id == owner_id`) — 러너 해제와 같은 규칙 |
+
+- **정책**: `agents.delegation_policy` = `DELEGATION_POLICIES = ("run", "owner_approval")`, 기본 `run`. 바꾸는 곳은 `/connect?tab=team` 에이전트 목록(step 9)의 폼 하나 — `POST /agents/{agent_id}/delegation-policy`(폼 `policy`), 필요 동작은 `can_set_policy`(`team` 에 새 동작 없음). 없는 에이전트·다른 워크스페이스 404 `not_found`, 값이 둘 밖이면 422 `invalid_field`(`policy`), 권한 없음 403 `forbidden`("러너 소유자나 관리자만 바꿀 수 있습니다."). 성공 303 `/connect?tab=team`. `run` 으로 바꾸면 같은 트랜잭션에서 그 에이전트의 열린 승인 요청을 닫는다(아래 `withdraw`).
+- 역할(관리자·멤버)과 동작 표(`team.ACTIONS` 11개)는 바꾸지 않는다.
+
+### 승인 흐름 (step 5·6)
+
+**사람이 맡긴 착수**(명시적 착수) = `work_actions.start_stage` 를 지나는 모든 경로 — 패널 담당 `agent:`(`assign_work`)·`/tasks/{id}/delegate`·`/tasks/{id}/select`·`/tasks/{id}/run`·체인 시작. **자동 착수** = 워커 `_start_fix`·`_start_review`·`_spawn_successors`·`_start_waiting_stages`(아래) — [다시 맡기기]로 생긴 새 단계와 후속 단계도 워커가 시작하므로 자동 착수다.
+
+**승인 범위** = (단계 `task_id`, 에이전트 `agent_id`, 맡긴 사람 `work_items.requested_by_member_id`). 한 범위의 요청은 사람 요청 `code = "owner_approval"`, `cause_key = approval_cause_key(agent_id, requester_id, seq)` = `owner_approval:<agent_id>:<requester_id 또는 none>:<seq>`(seq 는 그 범위의 기존 요청 수 + 1). 범위의 **승인 상태**(`approval_state`, 순수)는 그 범위의 가장 최근 요청으로 정한다:
+
+| 가장 최근 요청 | `needs_owner_approval` 참 | 거짓 |
+|---|---|---|
+| 없음 | `missing` | `not_needed` |
+| 열림 | `pending` | `not_needed`(그 요청은 닫는다 — 아래) |
+| 응답 `approve` | `approved` | `not_needed` |
+| 응답 `decline` | `declined` | `not_needed` |
+| 응답 `withdraw` | `missing` | `not_needed` |
+
+**요청 만들기** — `server/owner_approval.py` `ensure_request(conn, task, agent_id, *, now, explicit: bool, settings, secrets) -> str`(승인 상태를 돌려준다, 자체 트랜잭션). `missing` 이면 새 요청을 만들고, `declined` 는 `explicit=True`(사람이 다시 맡김)일 때만 새 요청(seq + 1)을 만든다 — 워커는 거절된 범위를 다시 묻지 않는다. 새 요청이면 `human_request` 알림(받는 사람 = 아래 규칙으로 소유자).
+
+- 질문 `approval_question(requester_name: str | None, owner_name: str | None, agent_name: str) -> str` — 첫 줄 = 업무 이유: `김OO 가 맡김 · 이OO 승인 대기`. 맡긴 사람이 없으면 `자동으로 맡김 · 이OO 승인 대기`, 공용이면 `김OO 가 맡김 · 관리자 승인 대기`. 둘째 줄 `에이전트 opensql — [승인]하면 곧 시작합니다.`
+- 업무 상태(`work_status`): 열린 요청 규칙(phase 16 표 5번)에서 코드가 `owner_approval` 이면 이유 = 질문 첫 줄 그대로(`사람 요청 — ` 를 붙이지 않는다, `STAGE_FAILED` 처럼 코드 상수 `OWNER_APPROVAL_CODE = "owner_approval"`). 상태는 `내 차례`.
+
+**상태 전이**:
+
+| 사건 | 조건 | 결과(한 트랜잭션, 착수는 그 뒤) |
+|---|---|---|
+| 맡기기(명시적 착수) | `not_needed`·`approved` | 지금처럼 착수 시도. 맡긴 사람 ≠ 소유자면 `delegated_to_you` 알림 |
+| 맡기기 | `missing`·`declined`(명시적) | 승인 요청 생성(`pending`). 실행 없음. `start_pending_at` 은 남긴다 |
+| 맡기기 | `pending` | 변화 없음(같은 요청) |
+| 자동 착수 | `missing` | 승인 요청 생성, 실행 없음 |
+| 자동 착수 | `pending`·`declined` | 실행 없음(대기 사유만) |
+| [승인] `approve` | 소유자·관리자(`can_decide_approval`), 요청 열림 | 요청 `answered`, Task revision +1(기존 응답 규칙). 실행은 응답 경로가 만들지 않는다 — 다음 워커 tick 이 착수한다(순환: `_start_ready_tasks`, 비순환: `_start_waiting_stages` — 맡길 때 남긴 `start_pending_at` 으로). 러너가 꺼져 있으면 "꺼진 러너 대기" |
+| [거절] `decline`(메모 선택, 2000자) | 같음 | 요청 `answered`, 그 단계 선택 기록 = `needs_selection`(이유 `이OO 가 거절` + 메모가 있으면 ` — <메모 첫 줄 80자>`), `tasks.chosen_agent_id = NULL`, `start_pending_at = NULL`, 업무 담당 비움(`assigned` `by` = 거절한 멤버), 업무 상태 재계산. 트랜잭션 뒤 맡긴 사람에게 `delegation_declined` 알림. 업무는 닫지 않는다 |
+| 담당을 다른 것으로(멤버·`none`·다른 에이전트) | 열린 요청이 있음 | 그 업무 모든 단계의 열린 `owner_approval` 요청을 `withdraw` |
+| 정책을 `run` 으로 | 같음 | 그 에이전트의 열린 요청을 `withdraw` → 다음 착수는 `not_needed` |
+| 업무 끝 상태(`set_work_status`) | 같음 | 같은 트랜잭션에서 `withdraw` |
+
+`withdraw` = `repo.withdraw_owner_approvals(conn, *, work_item_id: str \| None = None, agent_id: str \| None = None, reason: str, member_id: str \| None, now) -> int`(자체 BEGIN 없음) — 열린 요청마다 `human_responses` 한 행(`response_id = "withdraw-<request_id>"`, `action = "withdraw"`, `text = reason`, `task_revision` = 지금 revision 그대로 — 올리지 않는다)과 요청 `answered`. 사람이 고를 수 있는 동작이 아니다(허용 동작 표에 없다).
+
+**승인 요청이 열린 동안 실행을 만들지 않는 지점**:
+
+| 경로 | 막는 곳 |
+|---|---|
+| 순환 종류(`policy_for(kind).cycle`) — `_start_fix`·`_start_review`·`start_manually` | 준비 판정. `TaskFacts.owner_approvals: Mapping[str, ApprovalFact]`(agent_id → `ApprovalFact(state: str, reason: str)`, 기본 빈 매핑 = 모두 `not_needed`)를 `task_cycle.task_facts` 가 워크스페이스 Agent 마다 채운다. `evaluate_readiness` 가 정해진 Agent 의 상태로 대기 코드 `owner_approval_pending`(`missing`·`pending`, 이유 = 질문 첫 줄, actor `operator`) 또는 `owner_approval_declined`(`declined`, 이유 `이OO 가 거절 — 다른 담당을 고르세요`, actor `operator`)를 더한다. 열린 `owner_approval` 요청은 `open_request_ids`(→ `decision_pending`)에 세지 않는다(`ready:` 요청과 같은 방식 — 사유가 두 번 보이지 않게). `_write_blocked` 가 `owner_approval_pending` 이고 상태가 `missing` 이면 `ensure_request(explicit=False)` |
+| 비순환 종류 — 명시적 착수(`run_task`)·`_start_waiting_stages`·`_spawn_successors` | 실행을 만들기 직전 `owner_approval.gate(conn, task, agent, *, now, explicit, settings, secrets) -> str`(= `ensure_request` 결과). `not_needed`·`approved` 밖이면 실행을 만들지 않는다. `run_task` 는 `WorkActionError(409, "owner_approval_pending", <이유>)`, 워커는 조용히 넘어간다 |
+| [답하고 다시 맡기기] `_resume` | 응답을 셀 때 `owner_approval:` 요청을 뺀다(`ready:`·PR 요청과 같이). 다시 착수는 `_start_fix`·`_start_review` 라 위 준비 판정을 지난다 |
+
+단계 상태(`tasks.status`): 순환 종류는 `_write_blocked` 그대로(`대기 · <이유>`). 비순환 종류는 `TaskView.approval_reason: str | None = None`(그 단계의 열린 `owner_approval` 요청 질문 첫 줄 — `views.build_task_view` 가 채움)이 있으면 실행이 없을 때 `user_status` = `대기` · 그 이유(연결 끊김 판정보다 먼저).
+
+**허용 동작**(`human_api.allowed_actions`): `owner_approval` → `{"approve", "decline"}`(`close`·`resume` 없음). 화면 버튼 [승인]·[거절](`views.RESPONSE_ACTIONS` 에 `("approve", "승인")`, `("decline", "거절")`). 검사 순서: 요청 없음 404 → 동작 허용 422 → `approve`·`decline` 이면 `can_decide_approval`(아니면 403 `forbidden` "에이전트 소유자나 관리자만 승인·거절할 수 있습니다.") → `decline` 메모 2000자 초과 422 `invalid_field`(`text`). 필요 동작은 경로 그대로 `respond`.
+
+### 받는 사람 규칙 갱신 (step 5)
+
+`team.turn_recipients(*, assignee_type, assignee_id, requested_by_member_id, members, approvers: tuple[str, ...] | None = None)` — 새 인자 `approvers` 가 None 이 아니면(업무에 열린 `owner_approval` 요청이 있음) **그것을 돌려준다**(비어 있어도 — 활성 관리자가 0 인 워크스페이스는 없다). 그 밖은 ADR-0021 그대로(담당 멤버 → 맡긴 사람 → 활성 관리자 전원).
+
+`approvers` 는 repo 가 계산한다: 업무의 모든 단계 중 열린 `owner_approval` 요청(가장 이른 것)의 `cause_key` 에서 agent_id 를 읽고(`delegation.parse_approval_cause_key(key) -> tuple[str, str | None, int] | None`), 그 에이전트 소유자로 `approval_deciders`. `repo._recipients(work, members, approvers=None)`·`turn_recipients_of`·`list_work_rows`(묶음 조회 — 쿼리 수는 업무 수와 무관 그대로)가 같은 계산을 쓴다.
+
+### 꺼진 러너 대기 (step 5·6)
+
+- **꺼짐** = 기존 `views.agent_online(agent, now, settings)` 가 거짓(로컬: `connection_state != 'online'` 이거나 마지막 heartbeat 가 `heartbeat_offline_seconds` 넘음. API: `online` 이 아님). 준비 판정 `_online` 도 같은 규칙 그대로.
+- **문구** `delegation.offline_reason(owner_name: str | None) -> str` = `이OO의 러너 꺼짐 · 켜지면 시작`, 공용이면 `공용 러너 꺼짐 · 켜지면 시작`. `ExecutorFacts.owner_name: str | None = None` 을 더하고, 순환 종류의 `executor_offline` 이유를 이것으로 바꾼다(코드·actor 그대로, 연결 정보 없음 문구는 그대로). `TaskView.connector_owner_name: str | None = None` 을 더하고 `user_status` 의 "연결 끊김, 마지막 확인 …" 을 같은 문구로 바꾼다(소유자 표시 이름은 `views.build_task_view` 가 채움 — 공용이면 None).
+- **기다리는 위치** = `tasks.start_pending_at`(v13, 사람이 맡겼는데 아직 실행이 없음을 뜻하는 시각). `start_stage` 가 착수 시도 **전에** 채우고(자체 트랜잭션, 이미 있으면 그대로), `repo.create_execution` 이 같은 트랜잭션에서 비운다. 거절·담당 해제·다른 담당(`_assign_work_item` 이 에이전트가 아닌 담당으로 바꿀 때 그 업무의 열린 단계)·단계 마감(`finish_task`)도 비운다. `strict=True`(`/run`)가 409 를 돌려줘도 표시는 남는다 — 오류는 "지금 못 시작한 이유"이고 조건이 풀리면 워커가 시작한다.
+- **워커가 다시 시도하는 때** = 매 tick:
+  - 순환 종류: 지금처럼 `_start_ready_tasks` → 준비 판정. `_manual_override(task)` 는 `start_pending_at` 이 있으면 `run_mode="auto"` 를 준다(사람이 맡겼으니 `manual_mode` 로 멈추지 않는다).
+  - 비순환 종류: 새 단계 `_start_waiting_stages`(tick 순서에서 `_spawn_successors` 다음) — `start_pending_at` 이 있고 마감 전·활성 실행 없음·직접 작업 아님인 비순환 단계마다 `stage_runs.run_task(...)` 를 부르고 `WorkActionError` 는 삼킨 뒤 `_refresh_task`. `run_task` 는 v13 부터 선택 Agent 가 꺼져 있으면 실행을 만들지 않고 `WorkActionError(409, "runner_offline", offline_reason(...))` 를 낸다.
+  - `_spawn_successors`(비순환 후속)는 지금처럼 온라인 검사로 기다리고, `gate` 를 더 거친다.
+- **소유자 알림** `runner_offline_waiting` — 워커가 꺼짐 때문에 착수하지 못한 단계(순환: `_write_blocked` 의 코드에 `executor_offline`, 비순환: `_start_waiting_stages` 의 `runner_offline`)에 `start_pending_at` 이 있거나 순환 종류이면 보낸다. 받는 사람 = `approval_deciders(소유자)`. 중복 키 `runner_offline:<work_item_id>:<agent_id>` — 업무 × 에이전트마다 한 번(러너가 켜졌다 다시 꺼져도 다시 보내지 않는다).
+- 착수 코드 이동(step 6): `work_actions` 의 `WorkActionError`·`start_execution`·`run_task` 를 새 모듈 `server/stage_runs.py` 로 옮기고 `work_actions` 는 같은 이름을 import 해 둔다(워커가 `work_actions` 를 import 하면 순환이 생긴다 — `work_actions` 가 `worker` 를 import 한다). 동작 변화 없음을 기존 테스트로 확인한다.
+
+### 알림 사건 3개 (step 6)
+
+`db.NOTIFICATION_EVENTS` = 기존 3개 + `delegated_to_you`·`runner_offline_waiting`·`delegation_declined`. 공용·개인 경로·재시도·형식 검사·`→ 이름` 규칙은 ADR-0021 결정 6·"알림 — 받는 사람별" 그대로다. 받는 사람만 사건이 정한다.
+
+| 사건 | 언제 | 받는 사람 | 머리(`_HEADLINES`) · 본문 예 | 중복 키(사건 키) |
+|---|---|---|---|---|
+| `delegated_to_you` | 명시적 착수에서 맡긴 사람 ≠ 소유자이고 승인 요청을 만들지 않았을 때 | `approval_deciders(소유자)` | `맡김` · `[Runloom] 맡김 — 쿠폰 오류: 김OO 가 opensql 에게 맡김` | `delegated_to_you:<task_id>:<agent_id>` |
+| `runner_offline_waiting` | 위 "꺼진 러너 대기" | `approval_deciders(소유자)` | `러너 꺼짐` · `[Runloom] 러너 꺼짐 — 쿠폰 오류: 러너가 꺼져 있어 RUN-12 가 기다림` | `runner_offline:<work_item_id>:<agent_id>` |
+| `delegation_declined` | [거절] 응답 뒤 | 맡긴 사람(활성일 때만, 없으면 보내지 않음) | `거절` · `[Runloom] 거절 — 쿠폰 오류: 이OO 가 거절 — 오늘은 Mac 을 못 씁니다` | `delegation_declined:<request_id>` |
+
+- 승인 요청 생성은 기존 `human_request` 사건(받는 사람 = 새 우선 규칙으로 소유자)이고, 그 알림이 정보 알림을 대신한다(같은 맡기기로 두 번 보내지 않는다 — ADR-0023 결정 1).
+- 웹 경로도 알림을 쌓을 수 있게 행 만들기를 모듈 함수로 꺼낸다: `worker.enqueue_event_notification(conn, settings: Settings, secrets: SecretStore, *, event: str, task_id: str, dedupe_key: str, recipients: tuple[str, ...] | None = None, detail: str | None = None, pr_url: str | None = None, now: str) -> None` — `recipients` None 이면 `turn_recipients_of`(지금 동작). `Worker._notify` 는 이것을 부른다. 웹은 `request.app.state.secrets` 를 넘긴다.
+- 메모·이름은 알림 본문에만(메모는 첫 줄 80자). 템플릿 출력은 자동 이스케이프.
+
+### 검증만 다시 (step 2·3·7)
+
+- **사람 요청 동작** `reverify`, 버튼 [검증만 다시]. 붙는 요청 코드: `fix_verification_failed`(`domain/task_followup._decide` 의 `f"{role}_verification_failed"` 에서 role `fix`). `review_verification_failed` 에는 붙지 않는다(다시 검증할 결과 커밋이 없다). 허용 동작: `fix_verification_failed` → `{"resume", "reverify", "close"}`. 검사: 그 단계의 활성 실행이 `result_ready` 이고 결과 봉투(`CodeChangeResult`)에 `result_commit` 이 있어야 한다 — 아니면 409 `nothing_to_reverify`("다시 검증할 결과 커밋이 없습니다."). 응답은 기존처럼 요청 `answered`·Task revision +1 이고 실행은 워커가 만든다.
+- **옛 버튼 이름**: `resume` 의 [답하고 다시 판정] → **[답하고 다시 맡기기]**(동작 그대로 — `_resume` 이 에이전트를 이전 결과 위에서 다시 돌린다).
+- **워커**: `_resume` 이 세는 응답 중 가장 최근 것이 `reverify` 면 `_start_verify_only(conn, task, active, request_id, report)`, 아니면 지금 경로. 만드는 실행:
+
+| 칸 | 값 |
+|---|---|
+| Task·Agent | 같은 Task, 이전 실행(`active`)의 Agent — 준비 판정은 `auto_match=True, matched_agent_id=<이전 Agent>, match_blockers=()` 로 담당 재해석 없이 그 Agent 를 본다 |
+| `task_revision` | 응답으로 올라간 지금 revision(다른 실행과 같다 — 요청문의 "## 사람 응답" 도 같은 규칙) |
+| `target` | 이전 요청의 `CodeChangeTarget` 그대로(`local_registration_id`·`base_commit`·`verification_profile_id`) |
+| `verify_only_commit` | 이전 결과의 `result_commit` |
+| `input_artifact_ids` | `[이전 실행의 result_artifact_id]`(러너가 이전 outcome·요약을 잇는다) |
+| `work_key`·`branch_seq` | 지금처럼 `execution_branch_fields`(같은 브랜치) |
+| `start_key` | `reverify:<request_id>`(응답 하나에 실행 하나) |
+| `predecessor_execution_id` | 이전 실행. 이전 실행의 잠금은 같은 트랜잭션에서 해제(`release_execution_id`, `_resume` 과 같다) |
+| `executions.verify_only` | 1(`create_execution` 이 `request.verify_only_commit` 으로 채운다) |
+
+  준비 판정에 러너 능력 조건을 더한다: `TaskFacts.required_runner_capability: str | None = None`, `ExecutorFacts.runner_capabilities: tuple[str, ...] | None = None`(`connectors.capabilities_json`, NULL = 보고 없음). `_start_verify_only` 는 `required_runner_capability="verify_only"` 로 부르고, Agent 의 러너가 그 값을 보고하지 않았으면 대기 코드 `executor_outdated`, 이유 `연결 프로그램 업데이트 필요 — 검증만 다시 미지원`(actor `operator`). 러너가 꺼져 있으면 위 "꺼진 러너 대기" 와 같다. 대기하는 동안 응답은 남아 있어 매 tick 다시 본다.
+- **결과 판정**: 평소 `_check_code_results` → `_code_result_checks` → `decide_followup`. 통과하면 검토 후속(`review:<execution_id>` — 새 실행 id)이 이어지고 `_latest_fix_result` 가 이 실행을 최신 결과로 본다. 다시 실패하면 새 `fix_verification_failed` 요청(`fix_verification_failed:<새 execution_id>`) — 몇 번이든 반복할 수 있다. `rework:` 로 시작하지 않으므로 재작업 횟수에 들지 않는다. 이전 실행의 판정 기록은 그대로 남는다(대체가 아니라 다음 시도).
+- **러너**(step 3): `LocalToolAdapter.run` 이 `request.verify_only_commit` 이 있으면 `_run_verify_only` 로 간다(`CodeChangeTarget` 만). 도구(에이전트)를 띄우지 않는다. ① 등록·검증 프로필 확인(지금과 같은 실패 코드). ② 인계 디렉터리의 `CodeChangeResult` 중 `result_commit == verify_only_commit` 이고 `base_commit == target.base_commit` 인 것(`_verify_only_source`) — 없으면 실패 `source_mismatch`. ③ 등록 폴더에 그 커밋이 없으면 실패 `result_commit_missing`. ④ 테스트 파일 = `changed_test_files(repo, base, commit)`, 수정 전 로그 = `_test_before` 와 같은 규칙(테스트 파일은 결과 커밋의 깨끗한 체크아웃에서 가져온다), 결과 커밋의 깨끗한 체크아웃에서 등록된 프로필을 한 번 실행해 그 로그를 `test_log_after`·`verification_log` 둘 다에 쓴다, diff = `diff_text(repo, base, commit)`. ⑤ 결과 봉투 `CodeChangeResult`: `outcome` = 테스트 파일이 있으면 이전 결과의 outcome, 없으면 `needs_information`, `summary` = `검증만 다시 — ` + 이전 요약, `result_commit` = `verify_only_commit`, `verification` = 이번 실행. 결과 브랜치 push 는 평소 규칙(`_push_result`) 그대로. **비는 것**: 도구 원시 산출물(`raw_kinds` — stdout jsonl·stderr), 사용량(`usage` 칸 없음), `started` 의 `runtime_ref` 는 `verify-only:<execution_id>`.
+
+### 계약 변경 (step 2)
+
+계약 버전은 1 그대로. 예시는 [CONTRACT](CONTRACT.md) 16절. 모두 기본값 있는 선택 칸이다.
+
+- `ExecutionRequest.verify_only_commit: CommitSha | None = None`. 값이 있으면 ① `target` 이 `CodeChangeTarget` 이어야 하고 ② `input_artifact_ids` 가 비어 있으면 안 되며 ③ `target.base_commit` 과 같으면 안 된다 — 아니면 검증 오류(422). null 이면 직렬화에서 뺀다 — `ExecutionRequest` 가 `_OmitUnknownMeasure` 를 상속하고 `_MEASURE_FIELDS = ("verify_only_commit",)`(그 클래스를 `ExecutionRequest` 위로 옮긴다). 그래서 기존 실행의 `request_json`·claim 응답은 바이트 단위로 그대로이고 옛 러너(`extra="forbid"`)도 보통 요청은 받는다.
+- `ClaimRequest.capabilities: list[RunnerCapability] | None = None` — `RunnerCapability = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")]`, 최대 20개, 중복이면 422. 알려진 값 `RUNNER_CAPABILITY_VERIFY_ONLY = "verify_only"`, `RUNNER_CAPABILITIES = ("verify_only",)`(`contracts/v1.py` — 러너·서버가 함께 쓴다). 서버는 claim 마다 알려진 값만 골라(정렬) `connectors.capabilities_json` 에 덮어쓰고 모르는 값은 버린다. null(생략) = 보고 없음 → NULL 저장. 새 러너는 늘 `["verify_only"]` 를 보낸다 — 구버전 서버는 422 이므로 업그레이드 순서는 서버 → 러너(14절과 같다).
+- **배정 방어**: `repo.claim_execution` 은 `executions.verify_only = 1` 인 실행을 그 연결 프로그램의 `capabilities_json` 에 `verify_only` 가 없으면 내주지 않는다(워커가 이미 막지만, 만든 뒤 러너가 옛 판으로 돌아간 경우).
+- 결과 봉투·이벤트·산출물 업로드는 바뀌지 않는다(위 "비는 것").
+
+### 인계 맥락 요청문 (step 8)
+
+- **지시 메모**: 패널 담당 폼의 선택 칸 `note`(textarea, 최대 `HANDOFF_NOTE_MAX = 2000` 자 — 넘으면 422 `invalid_field` `note`, 앞뒤 공백 제거, 빈 값 = 메모 없음). 에이전트 담당(`agent:`)일 때만 쓴다(멤버·`none` 은 무시). 저장: `hand_work_to_agent(..., note: str | None)` 가 같은 트랜잭션에서 `work_items.handoff_note`·`handoff_note_by_member_id` 를 덮어쓰고(빈 메모면 둘 다 NULL), 메모가 있으면 업무 이벤트 `handoff_note` `{"agent_id", "note", "by"}` 한 행. 담당이 에이전트가 아닌 것으로 바뀌면(`_assign_work_item`) 두 칸을 비운다. 타임라인은 `지시 메모 · 김OO` + 메모(자동 이스케이프, `|safe` 금지).
+- **요청문** — 순수 `domain/handoff_context.py` `compose_request(*, work_key: str | None, title: str, form_fields: Sequence[tuple[str, str]], note: str | None, note_by: str | None, body: str) -> str`. 절 순서(빈 절은 통째로 뺀다, 절 사이는 빈 줄 하나):
+  1. `# <work_key> <title>` — `work_key` 가 None(업무 없는 v10 이전 단계)이면 머리·양식·지시를 모두 빼고 `body` 만.
+  2. `## 업무 양식` + 칸마다 `### <칸 제목>` 다음 줄 값(`work_items.form_json` 의 칸, `form_sections` 순서, 빈 값·`_No response_` 제외). 값 하나는 `FORM_VALUE_MAX = 4000` 자에서 자르고 `…(생략)` 을 붙인다.
+  3. `## 맡긴 사람 지시 (<note_by>)` + 메모(`note_by` 없으면 `(이름 없음)`).
+  4. `body` — 원래 요청문. 순환 종류는 기존 `task_cycle.request_text`(원문 + "## 사람 응답 (운영자)"), 비순환은 `task["request"]` 원문. 비어 있으면 뺀다.
+- **서버 함수** `task_cycle.execution_request_text(conn, task: Row, *, with_answers: bool) -> str` — 업무 행·양식·메모·메모 쓴 멤버 표시 이름을 읽어 `compose_request` 를 부른다. 쓰는 곳 세 곳 모두 이것을 지난다: 워커 `_create_cycle_execution`(`with_answers=True`), `stage_runs.start_execution`·워커 `_spawn_successors`(`with_answers=False`). **준비 판정(`TaskFacts.request_text`)은 기존 `request_text` 그대로** — 머리 때문에 `input_missing` 이 풀리지 않게.
+- 메모·양식·제목은 외부 입력이다 — 요청문 문자열로만 쓰고 명령·경로로 해석하지 않는다(러너 프롬프트도 지금처럼 글로만 넣는다).
+
+### 저장소 보기와 키 칸 (step 9)
+
+- **업무의 저장소** = `work_items.source_type = 'github'` 이고 `source_id` 가 있으면 `github_sources.repository_full_name`, 그 밖(직접 등록·n8n·원본 없는 후속)은 None. 칸을 두지 않고 `list_work_rows` 가 JOIN 으로 계산한다. `WorkRow.repository: str | None`, `WorkRow.source_key_short: str | None` 을 더한다.
+- **묶기** `GROUP_BYS = ("assignee", "status", "repo")`. `group=repo` 묶음: 키 `repo:<owner/name>`, 이름 = 저장소 전체 이름, 저장소 이름 대소문자 무시 순, **"저장소 없음"(키 `repo:none`)은 마지막**. 빈 묶음은 숨긴다(지금 규칙).
+- **필터** `repo=<owner/name>`: `ListQuery.repo: str | None`. `parse_list_query(..., repo: str = "", repos: Sequence[str] = ())` — `repos` 는 서버가 넘기는 워크스페이스 저장소 목록(`repo.list_work_repositories(conn, session_id) -> list[str]` — 그 워크스페이스 `github_sources` 의 저장소, 이름순). 대소문자 무시로 목록 값과 같으면 목록 표기로, 아니면 None(오류 없음). 필터는 끝난 업무 범위 뒤·빠른 필터 앞에 건다: `filter_rows(rows, q, *, member_id, repo: str | None = None)`, `filter_counts(rows, *, member_id, repo: str | None = None)`(건수도 저장소 필터 뒤). `list_query_params` 와 폼 숨은 입력에 `repo` 를 싣는다(None 이면 뺀다). 도구 막대 = 저장소 `<select>`(전체 + 목록), 저장소가 없으면 숨김.
+- **키 칸**: `home.html` 은 `{{ row.work_key }}` 를 먼저 쓰고, 원본 키가 있으면 옆에 흐리게 `row.source_key_short`. 짧은 키 `work_keys.short_source_key(key: str | None) -> str | None` — `^[^/\s]+/([^/#\s]+)#([1-9][0-9]*)$` 이면 `<name>#<n>`(`acme/sandbox#3` → `sandbox#3`), 그 밖은 그대로, None 은 None. 보드 카드도 같다.
+- **담당 후보 한 줄**(패널): `delegation.candidate_label(name: str, owner_name: str | None, online: bool) -> str` = `opensql · 이OO의 Mac · 켜짐` / `opensql · 공용 · 꺼짐`. 후보 판정(`agent_candidates`)은 그대로 — 꺼진 에이전트도 후보에 남는다. `work_panel_context` 가 `agent_choices: list[dict]`(`agent_id`·`label`·`online`)를 싣는다.
+- **맡기기 정책 설정**: `/connect?tab=team` 에이전트 목록 줄마다 정책(`바로 실행`·`내 승인 뒤 실행`)과, `can_set_policy` 일 때 바꾸는 폼.
+
+### 상대 PYTHONPATH 풀기 (step 3)
+
+- `connector/local_tool.py` `resolve_pythonpath(env: Mapping[str, str], cwd: Path) -> dict[str, str]` — 순수(파일 시스템을 읽지 않는다). `env` 에 `PYTHONPATH` 가 없으면 그대로 복사. 있으면 `os.pathsep`(`:`)로 나눠 항목마다: 빈 항목은 그대로 둔다(뜻을 바꾸지 않는다), `~` 로 시작하면 그대로(풀지 않는다), 절대 경로면 그대로, 그 밖은 `os.path.normpath(os.path.join(cwd, item))`(심볼릭 링크를 따라가지 않는다). 다시 `:` 로 잇는다. 다른 변수는 건드리지 않는다.
+- `child_env(cwd: Path | None = None)` 가 `registered_env` 결과에 이 함수를 적용한다(None 이면 지금과 같다). `_run_argv(argv, cwd)`·`launch(worktree, …)`·`launch_readonly(cwd, …)` 가 자기 cwd 를 넘긴다 — worktree 실행은 worktree, 깨끗한 체크아웃 실행은 그 임시 체크아웃 기준.
+- `PYTHONPATH` 는 허용 목록(`ENV_ALLOWLIST`)에 없으므로 값은 러너 로컬 등록 `--env` 에서만 온다. 가림(`mask_secrets` extra)은 등록 원래 값 기준 그대로.
+- 안내(step 3·10): `connector setup`·`register` 의 `--env` 도움말과 SELFHOST 러너 절에 "상대 `PYTHONPATH` 는 실행 폴더 기준으로 풀린다(예 `PYTHONPATH=src`)".
+
+### 단계 상태 재계산 (step 4)
+
+재현 테스트를 먼저 쓴다: 수정 실행이 `accepted` → `running` 이 되어도 `tasks.status` 가 `실행 요청됨 · 접수 대기` 로 남는 것.
+
+| 사건 | 부르는 함수 |
+|---|---|
+| 러너 실행 이벤트(`POST /executions/{id}/events`) — 새로 저장된 이벤트(재전송이 아님)마다 | `machine_api.post_event` 가 `repo.append_event` 뒤 `work_actions.refresh_task_status(conn, task_id, now, settings)`(`request.app.state.settings`). 단계가 마감됐으면 아무것도 하지 않는다(`update_task_status` 규칙 그대로). 이 함수가 `update_task_status` → `_refresh_stage_work` 로 업무 상태도 다시 계산한다 |
+| 워커 `_start_ready_tasks` 가 활성 실행이 있는 순환 단계를 볼 때 `_resume` 이 False 면 | `self._refresh_task(conn, task_id)` |
+
+`accepted` → `실행 요청됨 · 접수 확인`, `started`·`progress` → `실행 중 · <마지막 진행>`, `result_ready` → 판정 전 `확인 필요 · 판정 대기`(워커 판정이 뒤이어 바꾼다), `failed` → 지금 `user_status` 표 그대로.
+
+### 러너 두 대 설치 (step 10)
+
+`deploy/selfhost/install-runner.sh --name <이름>` — 이름 규칙 `^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`(영소문자·숫자·하이픈, 1~32자, 하이픈으로 시작·끝나지 않음). 틀리면 설치 전에 멈춘다(종료 코드 2).
+
+| 항목 | `--name` 없음(지금 그대로) | `--name b` |
+|---|---|---|
+| launchd label | `com.workflow.selfhost.connector` | `com.workflow.selfhost.connector.b` |
+| plist | `~/Library/LaunchAgents/com.workflow.selfhost.connector.plist` | `~/Library/LaunchAgents/com.workflow.selfhost.connector.b.plist` |
+| 로그 | `~/Library/Logs/workflow-connector-selfhost/` | `~/Library/Logs/workflow-connector-selfhost-b/` |
+| 러너 홈 | `~/Library/Application Support/workflow-connector/` | `~/Library/Application Support/workflow-connector-b/` |
+| plist 환경 `WORKFLOW_CONNECTOR_HOME` | 넣지 않는다(지금 그대로) | 러너 홈 값 |
+
+- 설치 때 `WORKFLOW_CONNECTOR_HOME` 을 직접 주면 그 값이 러너 홈이다(두 경우 모두 — 지금 규칙). `connector setup` 도 같은 홈으로 실행한다.
+- 이름 없는 설치와 이름 있는 설치는 label·파일이 겹치지 않아 함께 둔다. 같은 이름으로 다시 설치하면 그 러너만 다시 적재한다(업그레이드). 두 러너는 서로 다른 연결 코드(= 다른 소유자 가능)로 붙는다.
+- `DRY_RUN=1` 출력에 label·plist·로그·홈이 모두 보인다(테스트가 본다 — `launchctl` 을 실행하지 않는다).
+
+### 스키마 v13 (step 1)
+
+`adapters/db.py` `SCHEMA_VERSION` 12 → 13. v11 → v12 와 같이 `init_schema` 가 `BEGIN IMMEDIATE` 한 트랜잭션으로 올리고 실패하면 12 그대로다(DDL 도 되돌림). 빈 DB 도 v12 DDL 뒤 같은 SQL(`_V13_TABLES`)을 거쳐 만든다. 원본 v12 스키마는 `tests/workflow/adapters/fixtures/schema_v12.sql` 로 고정한다. **`tasks` 는 재생성하지 않는다**(ALTER ADD COLUMN 만).
+
+| 대상 | 변경 | 제약·의미 |
+|---|---|---|
+| `agents`(칸 추가) | `delegation_policy TEXT NOT NULL DEFAULT 'run' CHECK (delegation_policy IN ('run', 'owner_approval'))` | 상수 `DELEGATION_POLICIES`(`domain/delegation.py`)로 CHECK 를 만든다 |
+| `connectors`(칸 추가) | `capabilities_json TEXT` | 마지막 claim 의 알려진 `capabilities`(정렬 JSON 배열). NULL = 보고 없음(옛 러너) |
+| `executions`(칸 추가) | `verify_only INTEGER NOT NULL DEFAULT 0 CHECK (verify_only IN (0, 1))` | 1 = 검증만 다시 실행(`request_json` 의 `verify_only_commit` 과 같이 채움) |
+| `tasks`(칸 추가) | `start_pending_at TEXT` | 사람이 맡겼는데 아직 실행이 없음(위 "꺼진 러너 대기"). 표 재생성 없음 |
+| `work_items`(칸 추가) | `handoff_note TEXT`, `handoff_note_by_member_id TEXT REFERENCES members(member_id)` | 지금 유효한 지시 메모와 쓴 멤버. 둘이 함께 NULL 이거나 `handoff_note` 가 값(repo 가 지킴 — `hand_work_to_agent`·`_assign_work_item` 만 쓴다) |
+| `notifications`(재생성) | 칸·인덱스 그대로, `event` CHECK 만 `NOTIFICATION_EVENTS` 6개 | 참조하는 표 없음(`grep "REFERENCES notifications"` 0건 — step 1 이 테스트로 확인). 칸 순서 = v12 표(v8 칸 + v11 `recipient_member_id`·`channel`, `channel` CHECK 그대로). 새 표 `notifications_v13` → `INSERT … SELECT`(행·`notification_id` 보존) → DROP → RENAME → `ix_notifications_recipient` 다시 |
+| `work_item_events`(재생성) | 칸·인덱스 그대로, `type` CHECK 만 `WORK_ITEM_EVENT_TYPES` 7개(+ `handoff_note`) | v12 재생성과 같은 순서(`work_item_events_v13`, id 보존, 인덱스 두 개 다시) |
+| `human_requests`·`human_responses` | 바꾸지 않는다 | `code`·`action` 에 CHECK 가 없다 — `owner_approval`·`approve`·`decline`·`reverify`·`withdraw` 는 값만 새로 쓴다 |
+
+**v12 → v13 마이그레이션**(한 트랜잭션):
+
+1. ALTER 여섯 칸(`agents`·`connectors`·`executions`·`tasks`·`work_items` 둘).
+2. `notifications` 재생성, `work_item_events` 재생성(위 순서).
+3. 데이터는 바꾸지 않는다 — 새 칸은 기본값(`delegation_policy = 'run'`, `verify_only = 0`)이거나 NULL, 행 수·id 보존. 업무·단계 상태는 다시 계산하지 않는다(정책이 모두 `run` 이라 결과가 같다).
+4. `PRAGMA foreign_key_check` → 버전 13. 백업 복원(`server/backup.py`)은 v4~v12 백업을 13 으로 올려 복원한다.
+
+이벤트 `handoff_note` `data_json` = `{"agent_id": <agent_id>, "note": <메모>, "by": <member_id>}`. 비밀값 칸은 없다 — 메모는 사람이 쓴 지시이고 알림 웹훅 URL·토큰·`--env` 값은 어디에도 저장하지 않는다.
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 스키마 | `adapters/db.py`(1) | `SCHEMA_VERSION = 13`, `_V13_TABLES`, `_migrate_12_to_13`, `NOTIFICATION_EVENTS`(6개), `WORK_ITEM_EVENT_TYPES`(7개), fixture `tests/workflow/adapters/fixtures/schema_v12.sql` |
+| 계약 | `contracts/v1.py`(2) | `ExecutionRequest.verify_only_commit: CommitSha \| None = None`(null 생략), `ClaimRequest.capabilities: list[RunnerCapability] \| None = None`, `RunnerCapability`, `RUNNER_CAPABILITY_VERIFY_ONLY = "verify_only"`, `RUNNER_CAPABILITIES = ("verify_only",)` |
+| 러너 | `connector/local_tool.py`·`client.py`(3) | `resolve_pythonpath(env: Mapping[str, str], cwd: Path) -> dict[str, str]`, `child_env(cwd: Path \| None = None)`, `LocalToolAdapter._run_verify_only(request, handoff_dir, progress) -> AdapterOutput`, `_verify_only_source(handoff_dir: Path, commit: str, base_commit: str) -> CodeChangeResult \| None`, `ConnectorClient.claim(..., capabilities: Sequence[str] = RUNNER_CAPABILITIES)`. 실패 코드 `source_mismatch`·`result_commit_missing` |
+| 러너 능력 저장 | `adapters/repo.py`(2) | `record_runner_capabilities(conn, connector_id, capabilities: Sequence[str] \| None) -> None`(알려진 값만), `claim_execution` 의 검증만 다시 방어 |
+| 단계 상태 | `server/machine_api.py`·`server/worker.py`(4) | `post_event` 뒤 `work_actions.refresh_task_status`, `_start_ready_tasks` 의 `_refresh_task` |
+| 맡기기 규칙 | `domain/delegation.py`(5) — DB·시각 없음 | `DELEGATION_POLICIES = ("run", "owner_approval")`, `OWNER_APPROVAL_CODE = "owner_approval"`, `OWNER_APPROVAL_PREFIX = "owner_approval:"`, `APPROVAL_STATES = ("not_needed", "approved", "pending", "declined", "missing")`, `ApprovalFact(state: str, reason: str)`(frozen), `needs_owner_approval(...)`, `approval_deciders(...)`, `can_decide_approval(...)`, `can_set_policy(...)`(위 표), `approval_state(*, needed: bool, latest_state: str \| None, latest_action: str \| None) -> str`(위 표), `approval_cause_key(agent_id: str, requester_id: str \| None, seq: int) -> str`, `parse_approval_cause_key(key: str) -> tuple[str, str \| None, int] \| None`, `approval_question(requester_name: str \| None, owner_name: str \| None, agent_name: str) -> str`, `declined_reason(owner_name: str \| None, note: str \| None) -> str`, `offline_reason(owner_name: str \| None) -> str`, `candidate_label(name: str, owner_name: str \| None, online: bool) -> str` |
+| 준비 판정 | `domain/task_readiness.py`(5·7) | `TaskFacts.owner_approvals: Mapping[str, ApprovalFact] = {}`, `TaskFacts.required_runner_capability: str \| None = None`, `ExecutorFacts.owner_name: str \| None = None`, `ExecutorFacts.runner_capabilities: tuple[str, ...] \| None = None`, 대기 코드 `owner_approval_pending`·`owner_approval_declined`(actor `operator`) |
+| 단계 상태 표 | `domain/status.py`(5·6) | `TaskView.connector_owner_name: str \| None = None`, `TaskView.approval_reason: str \| None = None` |
+| 업무 상태 | `domain/work_status.py`(5) | 열린 요청 코드 `owner_approval` 의 이유 = 질문 첫 줄 |
+| 받는 사람 | `domain/team.py`(5) | `turn_recipients(..., approvers: tuple[str, ...] \| None = None)` |
+| 알림 문구 | `domain/notification.py`(6) | `_HEADLINES` 에 `delegated_to_you`: `맡김`, `runner_offline_waiting`: `러너 꺼짐`, `delegation_declined`: `거절` |
+| 요청문 | `domain/handoff_context.py`(8) | `HANDOFF_NOTE_MAX = 2000`, `FORM_VALUE_MAX = 4000`, `compose_request(*, work_key, title, form_fields, note, note_by, body) -> str` |
+| 업무 쓰기 | `adapters/repo.py`(5·6·8) | `agent_owner_id(conn, agent_id) -> str \| None`, `set_delegation_policy(conn, session_id, agent_id, policy, *, member_id, now) -> bool`(자체 트랜잭션, `run` 이면 열린 승인 요청 `withdraw`), `list_owner_approvals(conn, task_id) -> list[Row]`, `withdraw_owner_approvals(...)`(위), `mark_start_pending(conn, task_id, *, now) -> None`(자체 트랜잭션), `record_human_response_once(..., clear_delegation: bool = False)`(거절 — 선택 `needs_selection`·담당 비움·`start_pending_at` 비움을 같은 트랜잭션에서), `hand_work_to_agent(..., note: str \| None = None)`, `list_work_repositories(conn, session_id) -> list[str]`, `_recipients(work, members, approvers=None)` |
+| 승인 | `server/owner_approval.py`(6) | `ensure_request(conn, task: Row, agent_id: str, *, now: str, explicit: bool, settings: Settings, secrets: SecretStore \| None) -> str`, `gate(conn, task: Row, agent: Row, *, now: str, explicit: bool, settings: Settings, secrets: SecretStore \| None) -> str`, `approval_facts(conn, task: Row) -> dict[str, ApprovalFact]`(워크스페이스 Agent 마다 — `task_cycle.task_facts` 가 쓴다) |
+| 착수 | `server/stage_runs.py`(6) | `WorkActionError`, `start_execution(...)`, `run_task(...)`(`work_actions` 에서 옮김 — `work_actions` 는 import 로 같은 이름 유지), 새 오류 코드 `runner_offline`(409)·`owner_approval_pending`(409) |
+| 워커 | `server/worker.py`(6·7) | `enqueue_event_notification(...)`(모듈 함수), `Worker._start_waiting_stages(conn, report)`, `Worker._start_verify_only(conn, task, active, request_id, report) -> bool`, `_manual_override` 의 `start_pending_at` 규칙 |
+| 사람 요청 | `server/human_api.py`·`server/views.py`(6·7) | `Action` 에 `approve`·`decline`·`reverify`, `allowed_actions` 표(위), 오류 `nothing_to_reverify`(409), `RESPONSE_ACTIONS` = `("resume", "답하고 다시 맡기기")`·`("reverify", "검증만 다시")`·`("approve", "승인")`·`("decline", "거절")`·기존 셋 |
+| 요청문 | `server/task_cycle.py`(8) | `execution_request_text(conn, task: Row, *, with_answers: bool) -> str`(`request_text` 는 그대로 — 준비 판정용) |
+| 목록 모델 | `domain/work_list.py`·`domain/work_keys.py`(9) | `GROUP_BYS = ("assignee", "status", "repo")`, `ListQuery.repo: str \| None`, `parse_list_query(..., repo="", repos=())`, `WorkRow.repository: str \| None`, `WorkRow.source_key_short: str \| None`, `filter_rows(..., repo=None)`, `filter_counts(..., repo=None)`, `short_source_key(key: str \| None) -> str \| None` |
+| 경로 | `server/web.py`(9) | `POST /agents/{agent_id}/delegation-policy`(폼 `policy`, `can_set_policy`), `POST /work/{key}/assignee` 에 폼 `note` |
+| 설치 | `deploy/selfhost/install-runner.sh`(10) | `--name <이름>`(위 표) |
 
 ## 기존 구현과 초기 설계 기록
 

@@ -234,6 +234,21 @@
 | 모니터링 / `/monitor` | 옛 지표 화면(`/metrics`)의 새 이름·주소(step 7). 내용·계산은 phase 9 측정 그대로, `/metrics.json`·`/metrics.csv` 는 주소 유지. 지표 확장은 19-monitor | `지표 화면`(옛 이름 — 코드 식별자 `metrics` 는 그대로), `대시보드`, `analytics` |
 | 담당 바꾸기 / `assign_work` | 패널 담당 폼(`POST /work/{key}/assignee`, 값 `member:<id>`\|`agent:<id>`\|`none`)(step 3). 에이전트 = 맡기기(가장 최근 미마감 단계에 지정 + 지시 기록 + 착수), 멤버 = 배정만, `none` = 해제. 활성 실행이 있거나 끝난 업무면 409 | `배정`(에이전트일 때 — 곧 맡기기다), `reassign` |
 
+## 계획 용어 — phase 17 사람 사이 인계 (미구현)
+
+[ADR-0023](adr/0023-cross-member-delegation.md), [ARCHITECTURE](ARCHITECTURE.md) "사람 사이 인계 — phase 17". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| 에이전트 소유자 | 에이전트가 붙은 러너의 소유자(`agents.connector_id` → `connectors.owner_member_id`, `repo.agent_owner_id`)(step 5). 없으면 **공용** — 활성 관리자 전원이 소유자 역할(승인·정책 변경). 에이전트에 소유자 칸은 없다. 담당 후보 한 줄은 `이름 · <소유자>의 Mac · 켜짐\|꺼짐`(`candidate_label`) | `러너 주인`, `에이전트 주인`, `owner_scope`(늘 `personal` 인 옛 칸), `운영자` |
+| 맡기기 정책 / `delegation_policy` | 에이전트마다 정하는 값 `run`(바로 실행, 기본) \| `owner_approval`(소유자 승인 뒤 실행)(`agents.delegation_policy`, step 1·9). 소유자 본인과 관리자가 바꾼다(`can_set_policy`). 자기 에이전트에게 맡기면 정책과 무관하게 바로 실행 | `권한`, `공유 설정`, `실행 방식`(`run_mode` 와 혼동) |
+| 소유자 승인 / `owner_approval` | 맡긴 사람 ≠ 소유자이고 정책이 `owner_approval` 일 때 생기는 사람 요청 코드(`cause_key` `owner_approval:<agent_id>:<맡긴 사람>:<순번>`)(step 6). 열린 동안 그 단계에 실행을 만들지 않고, 업무는 `내 차례`(이유 "김OO 가 맡김 · 이OO 승인 대기"), 받는 사람은 소유자. 동작 `approve`[승인]·`decline`[거절](메모 선택). 담당·정책이 바뀌거나 업무가 끝나면 `withdraw` 로 닫힌다. 대기 코드 `owner_approval_pending`·`owner_approval_declined` | `허가`, `결재`, `리뷰`(검토 `code_review` 와 혼동), `검토 승인`(`approved` outcome) |
+| 꺼진 러너 대기 / `start_pending_at` | 꺼진 러너의 에이전트에게 맡긴 단계를 실행 없이 기다리게 하는 표시(`tasks.start_pending_at`, step 1·6). 모든 종류가 켜지면 워커가 시작한다(순환 = 준비 판정, 비순환 = `_start_waiting_stages`). 이유 "이OO의 러너 꺼짐 · 켜지면 시작"(`offline_reason`), 소유자 알림 `runner_offline_waiting` 한 번 | `예약 실행`, `큐`, `queued`(실행 상태와 혼동) |
+| 검증만 다시 / `reverify` · `verify_only_commit` | `fix_verification_failed` 요청의 동작 `reverify`[검증만 다시](step 7). 에이전트를 돌리지 않고 같은 러너가 같은 결과 커밋(`ExecutionRequest.verify_only_commit`)을 깨끗한 체크아웃에서 등록된 검증 프로필로 다시 검증해 평소처럼 판정한다(`executions.verify_only = 1`, step 2·3). [답하고 다시 맡기기](`resume` — 에이전트를 다시 돌림)와 다르다 | `재판정`, `재실행`, `다시 판정`(옛 `resume` 버튼 이름), `rerun` |
+| 러너 능력 보고 / `capabilities` | `ClaimRequest.capabilities` — 러너가 할 수 있는 선택 동작(알려진 값 `verify_only`)(step 2·3). 서버는 알려진 값만 `connectors.capabilities_json` 에 저장하고, 보고하지 않은 옛 러너에는 검증만 다시를 배정하지 않는다. Agent 의 능력(`Capability` — `code.fix {repository_id}`)과 다르다 | `capability`(Agent 능력), `supported_kinds`(지원 종류), `기능 플래그` |
+| 지시 메모 / `handoff_note` | 맡기는 사람이 패널 담당 폼에 적는 선택 지시(최대 2000자)(step 8). 지금 유효한 것은 `work_items.handoff_note`·`handoff_note_by_member_id`, 기록은 업무 이벤트 `handoff_note`. 실행 요청문에 "## 맡긴 사람 지시 (이름)" 절로 들어간다(`compose_request`). 계약 칸이 아니다 | `코멘트`(GitHub 댓글과 혼동), `사람 응답`(요청에 대한 답 — `human_responses`), `프롬프트` |
+| 저장소 묶기 / `group=repo` · `repo=` | 업무 화면을 GitHub 저장소(`github_sources.repository_full_name`, 조회 때 계산 — 칸 없음)로 묶는 것과 저장소 필터(열거형 — 워크스페이스 저장소만)(step 9). 저장소가 없는 업무는 "저장소 없음" 묶음(마지막) | `프로젝트`(Orca Projects·Jira 프로젝트와 혼동), `레포 뷰` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.

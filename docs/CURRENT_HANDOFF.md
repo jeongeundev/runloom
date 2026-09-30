@@ -4,6 +4,8 @@
 
 ## 다음 작업: 17 phase 설계 — 사람 사이 인계(두 사람·러너 두 대) + 16 다듬기 (새 세션은 여기서 시작)
 
+**17-team-handoff 진행 중(phases/17-team-handoff)** — step 0 이 [ADR-0023](adr/0023-cross-member-delegation.md)·ARCHITECTURE "사람 사이 인계 — phase 17" 로 결정·이름·스키마 v13 을 고정했다. 아래는 설계 전 기록.
+
 **2026-09-30 사용자 결정**: 17-jira 앞에 phase 하나를 끼운다(Jira·판단·모니터링은 한 칸씩 밀림 — 18-jira·19-triage·20-monitor, REDESIGN_PLAN 13절은 새 phase step 0 이 고친다). 이름 제안 `17-team-handoff`(설계 세션에서 확정).
 
 **왜**(사용자 정리, 2026-09-30): Orca 로 저장소별 Claude Code 세션을 열어 작업·리뷰를 새 세션에 맡기는 1인 흐름은 자연어가 더 빠르고 성능도 좋을 수 있다. Runloom 의 핵심 가치는 **내 에이전트 사이가 아니라 사람 사이 병목** — 다른 멤버의 에이전트(그 멤버 Mac 의 러너)에게 작업이 바로 가고, 결과가 받아야 할 사람에게만 "내 차례"로 가는 것. Orca 의 Projects = 저장소 축.
