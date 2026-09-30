@@ -45,7 +45,9 @@
     {
       "step": 5,
       "name": "detail-panel",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T15:35:57+0900",
+      "summary": "상세 패널: 신설 GET /work/{key}/panel(조각 _work_panel.html, 목록 상태 q·group·view·closed 는 열거형으로 받아 닫기 주소·폼 숨은 입력에만 씀, 없는·다른 워크스페이스·키 형식 아님 404), GET /work/{key} → 키 형식이면 303 /tasks?open=<key>(없는 키는 목록이 'RUN-n 업무를 찾을 수 없습니다.' 안내), 아니면 404, work_detail.html 삭제; web.home 이 open 업무를 찾으면 web._panel 로 패널을 #work-panel-slot 에 서버 렌더. views.work_panel_context(conn, session_id, work_item_id, *, member_id, allowed, now, settings)가 work_context·work_summary 를 대체(고아 제거): 머리·속성(담당 폼 = 활성 멤버 + work_actions.agent_candidates(순환 import 라 함수 안 import) + 없음, 우선순위 폼, can_edit = delegate 이고 끝나지 않은 업무)·지금 할 일(열린 요청 + response_form, 권한 없으면 안내)·타임라인(ol data-stages 단계·Runloom PR+감지 PR·응답·업무 이벤트)·원본에 남긴 것(전달된 댓글 URL·Runloom PR)·연결 업무(/tasks?open=)·들어온 곳(체인)·양식·자세히, 빈 절은 안 그림. repo.list_work_pull_requests 신설(ARCHITECTURE 이름 표의 step 9 함수 — 패널이 먼저 씀). domain/work_keys.work_path 신설(branch_name·keys_in 은 step 8·9). 링크: worker._notify task_url·github_delivery 댓글 '상세' = {public_url}/tasks?open=RUN-n(업무 없는 옛 단계만 /tasks/{id}), PR 본문·n8n 콜백 task_url 은 그대로; _live.html 업무 칩·브레드크럼도 /tasks?open=. base.html JS: 행·카드·패널 안 연결 업무 클릭 → fetch 조각 + pushState, 닫기·Esc·popstate, 실패면 링크 이동; style.css 패널 560px 겹침·800px 미만 전체(그림자 없음 — UI_GUIDE 테스트). 테스트: test_web_work_panel.py 19개·test_work_keys 1개·test_repo 1개·test_github_delivery 1개 신설. 바꾼 기존 단정(새 주소 기준, 약화 없음): test_task_cycle 댓글·알림 링크 → /tasks?open=RUN-1, test_ui·test_web_cycle 칩/브레드크럼 href → /tasks?open=, test_web_cycle 404 테스트 → 없는·남의 키는 안내 문장 + /panel 404(키 형식 아님은 여전히 404), e2e test_real_repo 알림 task_url·/work/RUN-2 는 303 location 확인 후 /tasks?open=RUN-2 로 읽음. 검증: pytest 3050 passed·40 skipped, WORKFLOW_E2E=1 tests/e2e 39 passed·1 skipped, ruff 통과. 다음 step 주의: 패널 '지금 할 일' 절은 열린 요청이 있을 때만 — step 8 이 직접 작업 버튼·브랜치를 여기에 더하면 조건도 넓혀야 함, 사이드바·툴바의 /operator/github 링크는 step 6 몫, 패널 속성의 PR 은 목록과 같은 규칙(열린 것 최근 → 병합 최근)."
     },
     {
       "step": 6,

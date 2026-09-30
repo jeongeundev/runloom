@@ -1,0 +1,149 @@
+{# 업무 상세 패널 (`GET /work/{key}/panel` 조각, `/tasks?open=<key>` 는 업무 화면 안에 같은 조각) — ARCHITECTURE "업무 화면 —
+   phase 16" 화면 배치 "상세 패널". `panel` 은 web._panel(views.work_panel_context + 닫기 주소·목록 상태). 절 순서: 머리 · 속성 ·
+   지금 할 일 · 진행 타임라인 · 원본에 남긴 것 · 연결 업무 · 들어온 곳 · 업무 양식 · 자세히 — 비어 있는 절은 그리지 않는다.
+   폼은 일반 POST(서버가 `/tasks?open=` 으로 돌려보낸다). 외부 문자열(제목·본문·PR 제목)은 자동 이스케이프로만 출력한다. #}
+{% import "_status.html" as st %}
+{% from "_cycle.html" import response_form %}
+{% set w = panel.work %}
+{% set PRIORITY = [('high', '↑ 높음'), ('normal', '– 보통'), ('low', '↓ 낮음')] %}
+{% macro list_state() -%}
+{% for name, value in panel.list_state %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+{%- endmacro %}
+<div class="work-panel" id="work-panel" data-work-panel="{{ w.work_key }}" role="dialog" aria-label="{{ w.work_key }} 상세">
+  <header class="panel-head">
+    <div class="panel-title">
+      <span class="mono">{{ w.work_key }}</span>
+      {% if w.source_url %}<a href="{{ w.source_url }}" rel="noopener noreferrer" target="_blank">{{ w.source_key }}</a>{% elif w.source_key %}<span class="mono">{{ w.source_key }}</span>{% endif %}
+      <a class="icon-btn panel-close" data-panel-close href="{{ panel.close_href }}" title="닫기" aria-label="닫기"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></a>
+    </div>
+    <h2>{{ w.title }}</h2>
+    {{ st.status_line(w.status) }}
+    {% if w.recipients %}<p class="small" data-recipients>받는 사람: {{ w.recipients|join(', ') }}</p>{% endif %}
+    <div class="panel-request">{{ w.request }}<span class="stamp">{{ w.created_at|kst }}</span></div>
+  </header>
+
+  <section class="panel-section" data-panel-section="props">
+    <table class="kv">
+      <tr><th>담당</th><td>
+        {% if panel.can_edit %}
+        <form method="post" action="/work/{{ w.work_key }}/assignee" class="inline-form">
+          {{ list_state() }}
+          <select name="assignee" aria-label="담당">
+            <option value="none"{% if w.assignee == 'none' %} selected{% endif %}>담당 없음</option>
+            {% if panel.members %}<optgroup label="사람">
+              {% for m in panel.members %}<option value="member:{{ m.member_id }}"{% if w.assignee == 'member:' ~ m.member_id %} selected{% endif %}>{{ m.display_name }}{% if m.member_id == panel.member_id %} (나){% endif %}</option>{% endfor %}
+            </optgroup>{% endif %}
+            {% if panel.agents %}<optgroup label="에이전트 — 고르면 곧 맡깁니다">
+              {% for a in panel.agents %}<option value="agent:{{ a.agent_id }}"{% if w.assignee == 'agent:' ~ a.agent_id %} selected{% endif %}>{{ a.name }}</option>{% endfor %}
+            </optgroup>{% endif %}
+          </select>
+          <button class="btn btn-small btn-secondary" type="submit">바꾸기</button>
+        </form>
+        {% if w.assignee.startswith('agent:') %}<span class="small">지금: {{ w.assignee_label }}</span>{% endif %}
+        {% else %}{{ w.assignee_label }}{% endif %}
+      </td></tr>
+      <tr><th>우선순위</th><td>
+        {% if panel.can_edit %}
+        <form method="post" action="/work/{{ w.work_key }}/priority" class="inline-form">
+          {{ list_state() }}
+          <select name="priority" aria-label="우선순위">
+            {% for value, label in PRIORITY %}<option value="{{ value }}"{% if w.priority == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+          <button class="btn btn-small btn-secondary" type="submit">바꾸기</button>
+        </form>
+        {% else %}{% for value, label in PRIORITY if value == w.priority %}{{ label }}{% endfor %}{% endif %}
+      </td></tr>
+      <tr><th>종류</th><td>{{ w.kind_label }}</td></tr>
+      {% if panel.pull_request %}{% set pr = panel.pull_request %}
+      <tr><th>PR</th><td data-pull-request="{{ pr.state }}">{{ pr.label }}{% if pr.url %} · <a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pr.number }}</a>{% if pr.draft %} (초안){% endif %}{% endif %}</td></tr>
+      {% endif %}
+      <tr><th>업데이트</th><td>{{ w.updated_at|ago(now) }}</td></tr>
+    </table>
+  </section>
+
+  {% if panel.open_requests %}
+  <section class="panel-section" data-panel-section="now">
+    <h3>지금 할 일</h3>
+    {% for r in panel.open_requests %}
+    <div class="human-request">
+      <p><strong>내 차례</strong> · {{ r.question }} <span class="small">· {{ r.created_at|kst }}</span></p>
+      {% if r.response_id %}{{ response_form(r) }}{% else %}<p class="small">응답 권한이 없습니다.</p>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section class="panel-section" data-panel-section="timeline">
+    <h3>진행</h3>
+    <ol class="stage-list" data-stages>
+      {% for s in panel.stages %}
+      <li><a href="/tasks/{{ s.task_id }}">단계 {{ loop.index }}/{{ loop.length }} · {{ s.kind_label }}</a>
+        {{ st.mini(s.status.label) }} <span class="small">{{ s.status.reason }} · 실행 {{ s.attempts }}회</span></li>
+      {% endfor %}
+    </ol>
+    {% if panel.pulls %}
+    <ul class="panel-list">
+      {% for pr in panel.pulls %}<li data-pull-request="{{ pr.state }}">{{ pr.label }}{% if pr.url %} · <a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">PR #{{ pr.number }}</a>{% endif %}{% if pr.title %} {{ pr.title }}{% endif %} <span class="small">· {{ pr.at|kst }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if panel.responses %}
+    <ul class="panel-list small">
+      {% for a in panel.responses %}<li>{{ a.question }} → <span class="mono">{{ a.action }}</span>{% if a.text %} · {{ a.text }}{% endif %} · <span data-responder>{{ a.responder or '기록 없음' }}</span> <span class="small">· {{ a.created_at|kst }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if panel.events %}
+    <ul class="panel-list small" data-work-events>
+      {% for e in panel.events %}<li>{{ e.text }} <span class="small">· {{ e.at|kst }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  {% if panel.comments or panel.draft_pulls %}
+  <section class="panel-section" data-panel-section="left">
+    <h3>원본에 남긴 것</h3>
+    <ul>
+      {% for d in panel.comments %}<li data-delivery="{{ d.state }}"><a href="{{ d.comment_url }}" rel="noopener noreferrer" target="_blank">GitHub 댓글</a> · {{ d.label }}</li>{% endfor %}
+      {% for pr in panel.draft_pulls %}<li><a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">{{ '초안 PR' if pr.draft else 'PR' }} #{{ pr.number }}</a> · {{ pr.label }}</li>{% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if panel.links %}
+  <section class="panel-section" data-panel-section="links">
+    <h3>연결 업무</h3>
+    <ul>
+      {% for l in panel.links %}<li>{{ l.label }} · <a href="/tasks?open={{ l.key }}" data-work-key="{{ l.key }}">{{ l.key }}</a> {{ l.title }} {{ st.mini(l.status.label) }}</li>{% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if panel.chain %}
+  <section class="panel-section" data-panel-section="origin">
+    <h3>들어온 곳</h3>
+    <p>워크플로우 <a href="/chains/{{ panel.chain.chain_id }}">{{ panel.chain.title }}</a></p>
+  </section>
+  {% endif %}
+
+  {% if panel.form_fields %}
+  <section class="panel-section" data-panel-section="form">
+    <h3>업무 양식</h3>
+    <table class="kv">
+      {% for f in panel.form_fields %}<tr><th>{{ f.label }}</th><td style="white-space:pre-wrap">{{ f.value }}</td></tr>{% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  <section class="panel-section" data-panel-section="detail">
+    <details class="row" data-key="work-detail">
+      <summary>자세히</summary>
+      <div class="row-body">
+        <table class="kv">
+          <tr><th>work_item_id</th><td class="mono">{{ w.work_item_id }}</td></tr>
+          <tr><th>source_type</th><td class="mono">{{ w.source_type }}</td></tr>
+          {% for r in panel.open_requests %}<tr><th>human_request</th><td class="mono">{{ r.request_id }} · {{ r.code }} · {{ r.task_id }}</td></tr>{% endfor %}
+          {% for f in panel.form_fields %}<tr><th>{{ f.key }}</th><td class="mono">{{ f.source }}</td></tr>{% endfor %}
+        </table>
+      </div>
+    </details>
+  </section>
+</div>

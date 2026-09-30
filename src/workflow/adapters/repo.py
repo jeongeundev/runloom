@@ -3033,6 +3033,13 @@ def get_pull_request_row(conn: Connection, task_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM task_pull_requests WHERE task_id = ?", (task_id,))
 
 
+def list_work_pull_requests(conn: Connection, work_item_id: str) -> list[Row]:
+    """업무에 붙은 감지 PR(`work_pull_requests`) — `pr_updated_at` 최근순."""
+    return conn.execute(
+        "SELECT * FROM work_pull_requests WHERE work_item_id = ? ORDER BY pr_updated_at DESC, id DESC", (work_item_id,)
+    ).fetchall()
+
+
 def pull_requests_due(conn: Connection, now: str, *, max_attempts: int) -> list[Row]:
     """열 차례인 행 — `pending` 이고 attempts < max_attempts 이고 (next_at IS NULL OR next_at <= now). 만든 순."""
     return conn.execute(

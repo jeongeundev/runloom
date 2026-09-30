@@ -469,16 +469,18 @@ def test_task_detail_links_its_work_item_and_names_stages_by_position(operator, 
 
     fix = page(operator, f"/tasks/{fix_task}")
     crumbs = fix.split('class="crumbs"', 1)[1].split('class="bubble"', 1)[0]
-    assert 'href="/work/RUN-1"' in crumbs
+    assert 'href="/tasks?open=RUN-1"' in crumbs  # 업무 패널(phase 16)
     assert f'href="/tasks/{review_task}"' in crumbs and "단계 2/2" in crumbs
     review = page(operator, f"/tasks/{review_task}")
     crumbs = review.split('class="crumbs"', 1)[1].split('class="bubble"', 1)[0]
     assert f'href="/tasks/{fix_task}"' in crumbs and "단계 1/2" in crumbs
 
 
-def test_unknown_and_foreign_work_keys_are_404(operator, conn, app):
+def test_unknown_and_foreign_work_keys_are_not_shown(operator, conn, app):
     import_issue(conn, 1)
-    assert operator.get("/work/RUN-99").status_code == 404
+    # phase 16: 키 형식이면 `/tasks?open=` 로 넘기고, 없는 키는 패널 없이 목록 + 안내. 키 형식이 아니면 404
+    assert "RUN-99 업무를 찾을 수 없습니다." in page(operator, "/work/RUN-99")
+    assert operator.get("/work/RUN-99/panel").status_code == 404
     assert operator.get("/work/task-gh-1").status_code == 404
     assert operator.get("/work/RUN-0").status_code == 404
     # 다른 워크스페이스의 업무 — 키 번호가 달라도 이 워크스페이스에서는 없는 업무
@@ -489,7 +491,8 @@ def test_unknown_and_foreign_work_keys_are_404(operator, conn, app):
     conn.execute("UPDATE work_items SET key_number = 7 WHERE session_id = 'sess-other'")
     conn.commit()
     response = operator.get("/work/RUN-7")
-    assert response.status_code == 404 and "남의 업무" not in response.text
+    assert "RUN-7 업무를 찾을 수 없습니다." in response.text and "남의 업무" not in response.text
+    assert operator.get("/work/RUN-7/panel").status_code == 404
     assert "남의 업무" not in page(operator, "/tasks")
 
 

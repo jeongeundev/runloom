@@ -1,6 +1,7 @@
 {# 업무 화면 (`/tasks`) — UI_GUIDE "업무 화면", ARCHITECTURE "업무 화면 — phase 16" 화면 배치. 도구 막대(빠른 필터 4개 + 건수 · 묶기 ·
    보기 · 끝난 업무 · [업무 등록]) → 목록(한 줄 표, 묶음 머리 행) 또는 보드(6칸). 필터·묶기·보기·행·카드는 모두 서버 이동 링크라
-   JS 없이 동작한다(행·카드 = `open=<key>` + 나머지 목록 상태). 외부 문자열(제목·원본 키)은 자동 이스케이프로만 출력한다. #}
+   JS 없이 동작한다(행·카드 = `open=<key>` + 나머지 목록 상태 — 서버가 패널을 함께 렌더, JS 는 조각만 불러와 끼운다).
+   외부 문자열(제목·원본 키)은 자동 이스케이프로만 출력한다. #}
 {% extends "base.html" %}
 {% import "_status.html" as st %}
 {% set FILTERS = [('all', '전체'), ('my_turn', '내 차례'), ('unassigned', '담당 없음'), ('agent_working', '에이전트 작업 중')] %}
@@ -34,6 +35,9 @@
 </div>
 {% if not has_agents %}
 <p class="toolbar-note">러너를 붙이면 에이전트가 생깁니다 · <a href="/operator/github">러너 붙이기</a></p>
+{% endif %}
+{% if open_missing %}
+<p class="toolbar-note" data-open-missing>{{ open_key }} 업무를 찾을 수 없습니다.</p>
 {% endif %}
 
 {% if not rows %}
@@ -92,4 +96,6 @@
 </table>
 </div>
 {% endif %}
+{# 상세 패널 — `open` 이 이 워크스페이스의 업무면 서버가 함께 렌더한다(JS 없이도 열림). JS 는 이 자리에 조각을 끼운다 #}
+<div id="work-panel-slot" data-panel-slot>{% if panel %}{% include "_work_panel.html" %}{% endif %}</div>
 {% endblock %}

@@ -320,6 +320,21 @@ tbody.folded .work-row { display: none; }
 .board-card .card-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted); }
 .board-card .card-title { font-size: 13px; overflow-wrap: anywhere; }
 
+/* 상세 패널 — 오른쪽 560px 겹침(목록은 그대로), 800px 미만은 전체 화면 */
+.work-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); overflow-y: auto; z-index: 25;
+              background: var(--bg-card); border-left: 1px solid var(--border-strong); padding: 16px 18px 40px; }
+.panel-head h2 { font-size: 16px; margin: 6px 0 8px; overflow-wrap: anywhere; }
+.panel-title { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.panel-close { margin-left: auto; }
+.panel-request { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; background: var(--bg-bubble);
+                 border-radius: 8px; padding: 8px 10px; margin: 8px 0; max-height: 200px; overflow-y: auto; }
+.panel-request .stamp { display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.panel-section { border-top: 1px solid var(--border); padding: 12px 0; }
+.panel-section h3 { font-size: 13px; margin: 0 0 8px; }
+.panel-list { list-style: none; padding: 0; margin: 8px 0 0; }
+.panel-list li { padding: 2px 0; overflow-wrap: anywhere; }
+.inline-form { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
 /* --- 반응형 ----------------------------------------------------------------------- */
 
 @media (max-width: 1199px) {
@@ -339,6 +354,7 @@ tbody.folded .work-row { display: none; }
   .shell.nav-open .sidebar { transform: translateX(0); }
   .main { padding: 16px 14px 40px; }
   .viewer { width: 100vw; padding: 14px; }
+  .work-panel { width: 100vw; z-index: 35; padding: 14px; }
   .compare { grid-template-columns: 1fr; }
   .timeline li { grid-template-columns: 40px 1fr; }
   .timeline .t-type, .timeline .t-msg { grid-column: 2; }

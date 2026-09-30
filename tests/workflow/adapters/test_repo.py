@@ -3944,6 +3944,22 @@ def test_list_work_rows_shows_runloom_and_detected_pull_requests(cycle):
     assert _row_of(repo.list_work_rows(conn, SESSION, closed_since=None), detected).next_action == "PR #8"  # 열린 것 먼저
 
 
+def test_list_work_pull_requests_is_recent_first_per_work(cycle):
+    conn = cycle
+    work, _ = _new_work(conn, title="사람이 연 PR")
+    other, _ = _new_work(conn, title="다른 업무")
+    for work_item_id, number, updated in ((work, 3, "2026-09-20T00:00:00Z"), (work, 4, "2026-09-21T00:00:00Z"),
+                                          (other, 5, "2026-09-22T00:00:00Z")):
+        conn.execute(
+            "INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+            " title, pr_url, head_branch, state, draft, merged_at, pr_updated_at, created_at, updated_at)"
+            " VALUES (?, ?, ?, 'acme/billing', ?, 't', 'u', 'RUN-2-x', 'open', 0, NULL, ?, ?, ?)",
+            (SESSION, work_item_id, SOURCE, number, updated, NOW, NOW),
+        )
+    assert [r["pr_number"] for r in repo.list_work_pull_requests(conn, work)] == [4, 3]
+    assert repo.list_work_pull_requests(conn, "wi-none") == []
+
+
 def test_list_work_rows_query_count_does_not_grow_with_work_items(seeded):
     conn = seeded
     admin, a, _ = _people(conn)

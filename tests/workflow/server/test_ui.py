@@ -425,11 +425,11 @@ def test_live_fragment_shows_successor_chip(web):
     task_a = create_task(web, fix_form())
     task_b = create_task(web, code_review_form(task_a))
     fragment = web.get(f"/tasks/{task_a}/live").text
-    # 폼 선행으로 이은 Task 는 다른 업무 — 칩은 그 업무 키로 업무 상세에
-    assert 'href="/work/RUN-2"' in fragment and "후속 RUN-2" in fragment
-    assert 'href="/work/RUN-1"' in fragment  # 브레드크럼의 자기 업무
+    # 폼 선행으로 이은 Task 는 다른 업무 — 칩은 그 업무 키로 업무 패널(`/tasks?open=`, phase 16)에
+    assert 'href="/tasks?open=RUN-2"' in fragment and "후속 RUN-2" in fragment
+    assert 'href="/tasks?open=RUN-1"' in fragment  # 브레드크럼의 자기 업무
     back = web.get(f"/tasks/{task_b}/live").text
-    assert 'href="/work/RUN-1"' in back and "선행 RUN-1" in back
+    assert 'href="/tasks?open=RUN-1"' in back and "선행 RUN-1" in back
     assert 'data-status="대기"' in fragment
 
 

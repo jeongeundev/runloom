@@ -421,3 +421,12 @@ def test_source_filter_writes_only_that_sources_issues(db, client, fake):
     assert deliver_source_updates(db, client, NOW, source_id="ghs-00000009").any() is False
     assert fake.calls == [] and latest(db).state == "pending"
     assert deliver_source_updates(db, client, NOW, source_id=SOURCE).created == 1
+
+
+# --- 상세 링크 (phase 16 step 5) --------------------------------------------------------------------
+
+
+def test_comment_links_to_the_work_panel(db):
+    text = github_delivery.source_update_body(db, None, repo.get_task(db, TASK), "https://runloom.example")
+    assert "- 상세: https://runloom.example/tasks?open=RUN-1 " in text
+    assert f"/tasks/{TASK}" not in text

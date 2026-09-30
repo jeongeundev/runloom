@@ -1,5 +1,5 @@
 {# 3열 셸 — UI_GUIDE "앱 셸". 왼쪽 목록 · 가운데 본문 · 오른쪽 산출물 뷰어. 대화 입력창은 없다.
-   스크립트는 여기 인라인 하나뿐이다 (폴링·뷰어 열기·목록 서랍·업무 표 묶음 접기·복사·원문 토글·JSON 폼). 외부 자원 없음. #}
+   스크립트는 여기 인라인 하나뿐이다 (폴링·뷰어 열기·목록 서랍·업무 표 묶음 접기·상세 패널·복사·원문 토글·JSON 폼). 외부 자원 없음. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -99,9 +99,54 @@
     var row = ev.target.closest('tr.work-row');
     if (row && !ev.target.closest('a, button')) {
       var link = row.querySelector('a.row-link');
-      if (link) { window.location.href = link.getAttribute('href'); }
+      if (link) { link.click(); }  // 아래 패널 열기를 거친다
     }
   });
+
+  // --- 상세 패널: 행·카드·연결 업무 링크(`open=<key>`)를 누르면 조각(`/work/<key>/panel`)을 불러와 끼우고 주소만 바꾼다.
+  //     닫기 버튼·Esc·뒤로 가기로 닫는다. 조각을 못 불러오면 그냥 링크로 간다. 패널 안 폼은 일반 POST ---
+  var slot = document.getElementById('work-panel-slot');
+  function panelUrl(href) {
+    var u = new URL(href, window.location.href);
+    var key = u.searchParams.get('open');
+    if (!key) { return null; }
+    u.searchParams.delete('open');
+    var qs = u.searchParams.toString();
+    return '/work/' + encodeURIComponent(key) + '/panel' + (qs ? '?' + qs : '');
+  }
+  function loadPanel(href) {
+    var url = panelUrl(href);
+    if (!url) { slot.innerHTML = ''; return Promise.resolve(); }
+    return fetch(url, { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) { throw new Error(String(r.status)); }
+      return r.text();
+    }).then(function (html) { slot.innerHTML = html; });
+  }
+  if (slot) {
+    document.addEventListener('click', function (ev) {
+      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) { return; }
+      var close = ev.target.closest('[data-panel-close]');
+      if (close) {
+        ev.preventDefault();
+        slot.innerHTML = '';
+        history.pushState(null, '', close.getAttribute('href'));
+        return;
+      }
+      var link = ev.target.closest('a.row-link, a.board-card, #work-panel a[data-work-key]');
+      if (!link) { return; }
+      ev.preventDefault();
+      var href = link.getAttribute('href');
+      loadPanel(href).then(function () { history.pushState(null, '', href); })
+        .catch(function () { window.location.href = href; });
+    });
+    window.addEventListener('popstate', function () {
+      loadPanel(window.location.href).catch(function () { window.location.reload(); });
+    });
+    document.addEventListener('keydown', function (ev) {
+      var close = slot.querySelector('[data-panel-close]');
+      if (ev.key === 'Escape' && close) { close.click(); }
+    });
+  }
 
   // --- 뷰어 도구: 원문 보기 토글, 복사 ---
   function bindViewer() {

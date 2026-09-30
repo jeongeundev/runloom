@@ -48,7 +48,7 @@ from workflow.domain.work_list import (
     group_rows,
     parse_list_query,
 )
-from workflow.domain.work_status import STAGE_FAILED
+from workflow.domain.work_status import STAGE_FAILED, TERMINAL_WORK_STATUSES
 from workflow.server import github_clients, human_api, task_cycle
 from workflow.server.filters import KIND_LABELS, duration, kind_label, kst
 from workflow.server.settings import Settings
@@ -692,28 +692,6 @@ def _responses_public(conn: Connection, task: Row) -> list[dict[str, Any]]:
     ]
 
 
-def work_summary(conn: Connection, work: Row) -> dict[str, Any]:
-    """목록 한 줄 — 키(원본 키가 있으면 원본 키)·제목·담당·업무 상태·이유·갱신 시각. 첫 단계가 지시 전이면
-    [에이전트에게 맡기기] 대상(`delegate_task_id`). `내 차례` 면 받는 사람 표시 이름(`recipients`, 계산값)."""
-    stages = repo.list_work_item_tasks(conn, work["work_item_id"])
-    first = stages[0] if stages else None
-    work_key = format_work_key(work["key_number"])
-    recipients: list[str] = []
-    if work["status"] == "내 차례":
-        names = _member_names(conn, work["session_id"])
-        recipients = [names[m] for m in repo.turn_recipients_of(conn, work["work_item_id"])]
-    return {
-        "work_key": work_key,
-        "key": work["source_key"] or work_key,
-        "title": work["title"],
-        "assignee": assignee_label(conn, work),
-        "recipients": recipients,
-        "status": UserStatus(work["status"], work["status_reason"]),
-        "updated_at": work["updated_at"],
-        "delegate_task_id": first["task_id"] if first is not None and undelegated(conn, first) else None,
-    }
-
-
 def work_list_context(conn: Connection, session_id: str, *, member_id: str, query: ListQuery, now: str) -> dict:
     """업무 화면 목록 — 끝난 업무 범위(`closed=recent` 는 14일) → 행 → 빠른 필터 → 묶기·보드. 건수는 필터 전 행 기준.
     `open_missing` = 키 형식의 `open` 이 이 워크스페이스에 없음."""
@@ -749,16 +727,55 @@ def list_href(query: ListQuery, *, open_key: int | None = None, **change: str) -
     return f"/tasks?{params}" if params else "/tasks"
 
 
-def work_context(
-    conn: Connection, work: Row, *, now: str, settings: Settings, allowed: frozenset[str]
+# 감지 PR 상태(`work_pull_requests.state`) → 화면 문구
+DETECTED_PR_LABELS = {"open": "PR 열림", "merged": "PR 병합됨", "closed": "PR 닫힘(병합 없음)"}
+PRIORITY_LABELS = {"high": "높음", "normal": "보통", "low": "낮음"}
+
+
+def _event_line(event: Row) -> str:
+    """업무 이벤트 한 줄. 모르는 종류(뒤 step 이 더하는 것)는 코드 그대로."""
+    data = json.loads(event["data_json"])
+    if event["type"] == "status_changed":
+        return f"상태 {data['to']}" + (f" · {data['reason']}" if data.get("reason") else "")
+    if event["type"] == "assigned":
+        return "담당 바뀜"
+    if event["type"] == "priority_changed":
+        return f"우선순위 {PRIORITY_LABELS.get(data['to'], data['to'])}"
+    return event["type"]
+
+
+def _work_pulls(conn: Connection, work_item_id: str, stages: list[Row]) -> list[dict[str, Any]]:
+    """업무 PR — Runloom PR(단계별 `task_pull_requests`)과 감지 PR(`work_pull_requests`), 갱신 시각 순."""
+    pulls = []
+    for stage in stages:
+        if (row := repo.get_pull_request_row(conn, stage["task_id"])) is not None:
+            pulls.append({**pull_request_public(row), "runloom": True, "at": row["updated_at"]})
+    for row in repo.list_work_pull_requests(conn, work_item_id):
+        pulls.append({
+            "state": row["state"], "label": DETECTED_PR_LABELS[row["state"]], "number": row["pr_number"],
+            "url": f"https://github.com/{row['repository_full_name']}/pull/{row['pr_number']}",
+            "draft": row["draft"] == 1, "attempts": 0, "title": row["title"], "runloom": False,
+            "at": row["pr_updated_at"],
+        })
+    return sorted(pulls, key=lambda p: p["at"])
+
+
+def work_panel_context(
+    conn: Connection, session_id: str, work_item_id: str, *, member_id: str, allowed: frozenset[str], now: str,
+    settings: Settings,
 ) -> dict[str, Any]:
-    """업무 상세 — 머리(키·원본·상태·담당·PR)·단계 목록·양식 칸·연결 업무·열린 사람 요청(응답 폼)."""
-    session_id = work["session_id"]
-    stages = repo.list_work_item_tasks(conn, work["work_item_id"])
-    pull_request = None
+    """상세 패널 — 머리·속성(담당·우선순위 폼)·지금 할 일(열린 사람 요청)·진행 타임라인(단계·PR·응답·이벤트)·
+    원본에 남긴 것(댓글·초안 PR)·연결 업무·들어온 곳(체인)·양식. 템플릿은 비어 있는 절을 그리지 않는다."""
+    from workflow.server.work_actions import agent_candidates  # work_actions 가 views 를 import 한다
+
+    work = repo.get_work_item(conn, session_id, work_item_id)
+    work_key = format_work_key(work["key_number"])
+    stages = repo.list_work_item_tasks(conn, work_item_id)
     open_requests: list[dict[str, Any]] = []
     responses: list[dict[str, Any]] = []
+    comments: list[dict[str, Any]] = []
     stage_views = []
+    chain = None
     for stage in stages:
         summary = task_summary(conn, stage, now=now, settings=settings)
         spec = repo.get_kind(conn, session_id, stage["kind"])
@@ -767,23 +784,32 @@ def work_context(
             "kind_label": spec.label if spec is not None else stage["kind"],
             "attempts": len(repo.list_executions(conn, stage["task_id"])),
         })
-        if (pr := repo.get_pull_request_row(conn, stage["task_id"])) is not None:
-            pull_request = pull_request_public(pr)
         responses.extend(_responses_public(conn, stage))
+        issue, config = task_cycle.origin_source(conn, stage)
+        origin = _origin(conn, stage, issue, config) if issue is not None else None
         opened = [r for r in repo.list_human_requests(conn, stage["task_id"]) if r["state"] == "open"]
         if opened:
-            issue, config = task_cycle.origin_source(conn, stage)
-            origin = _origin(conn, stage, issue, config) if issue is not None else None
             choices = _agent_choices(conn, session_id, origin)
             open_requests.extend(
                 {**_request_public(conn, r, can_respond=team.RESPOND in allowed, agent_choices=choices),
                  "task_id": stage["task_id"]}
                 for r in opened
             )
+        if origin is not None and origin["own"] and (deliveries := repo.list_source_deliveries(conn, stage["task_id"])):
+            delivery = delivery_public(deliveries[-1], origin["repository"])
+            if delivery["comment_url"] is not None:
+                comments.append(delivery)
+        if chain is None and stage["chain_id"] is not None and (row := repo.get_chain(conn, stage["chain_id"])):
+            chain = {"chain_id": row["chain_id"], "title": row["title"]}
+    pulls = _work_pulls(conn, work_item_id, stages)
+    # 속성의 PR — 목록 "다음 할 일" 과 같은 규칙: 열린 것 중 가장 최근, 없으면 병합된 것 중 가장 최근
+    shown = [p for p in pulls if p["state"] in ("pending", "open", "merged")]
+    pull_request = max(shown, key=lambda p: (p["state"] != "merged", p["at"])) if shown else None
+
     form = json.loads(work["form_json"])
     links = []
-    for link in repo.list_work_item_links(conn, work["work_item_id"]):
-        ahead = link["from_work_item_id"] == work["work_item_id"]
+    for link in repo.list_work_item_links(conn, work_item_id):
+        ahead = link["from_work_item_id"] == work_item_id
         other = repo.get_work_item(conn, session_id, link["to_work_item_id" if ahead else "from_work_item_id"])
         if other is None:
             continue
@@ -794,19 +820,49 @@ def work_context(
             "title": other["title"],
             "status": UserStatus(other["status"], other["status_reason"]),
         })
+    recipients: list[str] = []
+    if work["status"] == "내 차례":
+        names = _member_names(conn, session_id)
+        recipients = [names[m] for m in repo.turn_recipients_of(conn, work_item_id)]
+    assignee = f"{work['assignee_type']}:{work['assignee_id']}" if work["assignee_type"] else "none"
+    kind = repo.get_kind(conn, session_id, work["kind"])
     return {
         "work": {
-            **work_summary(conn, work),
-            "work_item_id": work["work_item_id"],
+            "work_item_id": work_item_id,
+            "work_key": work_key,
+            "key_number": work["key_number"],
+            "title": work["title"],
             "request": work["request"],
+            "kind_label": kind.label if kind is not None else work["kind"],
+            "priority": work["priority"],
+            "assignee": assignee,
+            "assignee_label": assignee_label(conn, work),
+            "recipients": recipients,
+            "status": UserStatus(work["status"], work["status_reason"]),
             "source_type": work["source_type"],
             "source_key": work["source_key"],
             "source_url": work["source_url"],
             "created_at": work["created_at"],
+            "updated_at": work["updated_at"],
             "closed_at": work["closed_at"],
         },
+        "member_id": member_id,
+        # 담당·우선순위 폼 — delegate 동작이고 끝나지 않은 업무만(서버 경로가 같은 규칙으로 다시 막는다)
+        "can_edit": team.DELEGATE in allowed and work["status"] not in TERMINAL_WORK_STATUSES,
+        "members": [
+            {"member_id": m["member_id"], "display_name": m["display_name"]}
+            for m in repo.list_members(conn, session_id) if m["disabled_at"] is None
+        ],
+        "agents": [{"agent_id": a["agent_id"], "name": a["name"]}
+                   for a in agent_candidates(conn, session_id, work_item_id)],
         "stages": stage_views,
         "pull_request": pull_request,
+        "pulls": pulls,
+        "comments": comments,
+        "draft_pulls": [p for p in pulls if p["runloom"] and p["url"] is not None],
+        "events": [{"at": e["occurred_at"], "text": _event_line(e)}
+                   for e in repo.list_work_item_events(conn, work_item_id)],
+        "chain": chain,
         "form_fields": [
             {"key": key, "label": FORM_LABELS[key], "value": form[key]["value"], "source": form[key]["source"]}
             for key in FORM_HEADINGS if key in form

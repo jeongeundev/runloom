@@ -3,7 +3,7 @@
 {% import "_status.html" as st %}
 {% macro chip(c, side) -%}
 {% if c.stage_label %}<a class="task-chip" href="/tasks/{{ c.task_id }}" title="{{ c.title }}">{{ c.stage_label }} · {{ st.mini(c.status.label) }}</a>
-{%- elif c.work_key %}<a class="task-chip" href="/work/{{ c.work_key }}" title="{{ c.title }}">{{ side }} {{ c.work_key }}</a>
+{%- elif c.work_key %}<a class="task-chip" href="/tasks?open={{ c.work_key }}" title="{{ c.title }}">{{ side }} {{ c.work_key }}</a>
 {%- else %}<a class="task-chip" href="/tasks/{{ c.task_id }}" title="{{ c.title }}">{{ side }} · {{ st.mini(c.status.label) }}</a>{% endif %}
 {%- endmacro %}
 {% set terminal = status.label in ['완료', '실패'] %}
@@ -11,7 +11,7 @@
 
   {# 1. 브레드크럼 + 연결 업무 칩 + 뷰어 열기 #}
   <div class="crumbs">
-    <div class="crumb">{% if work %}<a href="/work/{{ work.key }}" title="{{ work.title }}">{{ work.key }}</a><span class="sep">/</span>{% endif %}{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }} <span class="chip kind-chip">{{ kind_label }}</span></div>
+    <div class="crumb">{% if work %}<a href="/tasks?open={{ work.key }}" title="{{ work.title }}">{{ work.key }}</a><span class="sep">/</span>{% endif %}{{ agent.name if agent else '에이전트 미선택' }}<span class="sep">/</span>{{ task.title }} <span class="chip kind-chip">{{ kind_label }}</span></div>
     <div class="crumb-side">
       {% if chain %}<a class="task-chip" href="/chains/{{ chain.chain_id }}" title="{{ chain.title }}">워크플로우 {{ chain.title }}</a>{% endif %}
       {# 같은 업무의 단계는 "단계 N/M", 다른 업무는 업무 키 링크 (phase 14 step 9) #}

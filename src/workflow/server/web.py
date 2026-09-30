@@ -67,6 +67,7 @@ from workflow.contracts.v1 import (
     KindSpec,
     ReviewComment,
     SuccessorRule,
+    format_work_key,
     parse_rfc3339_aware,
 )
 from workflow.domain.completion import criteria_template, merge_criteria
@@ -82,7 +83,8 @@ from workflow.domain.kinds import (
 )
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.task_sources import Issue
-from workflow.domain.work_list import parse_list_query
+from workflow.domain.work_keys import work_path
+from workflow.domain.work_list import ListQuery, parse_list_query
 from workflow.server import github_connect, metrics_api, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
@@ -551,9 +553,22 @@ def home(
     session_id = member.session_id
     now = utc_now()
     query = parse_list_query(q=q, group=group, view=view, closed=closed, open=open)
-    return _render("home.html", **_base(request, conn, session_id, now),
+    base = _base(request, conn, session_id, now)
+    work = repo.get_work_item_by_key(conn, session_id, query.open_key) if query.open_key is not None else None
+    panel = _panel(request, conn, member, work, query, allowed=base["allowed"], now=now) if work else None
+    return _render("home.html", **base,
                    **views.work_list_context(conn, session_id, member_id=member.member_id, query=query, now=now),
-                   list_href=views.list_href, has_agents=bool(_session_agents(conn, session_id)))
+                   list_href=views.list_href, has_agents=bool(_session_agents(conn, session_id)), panel=panel,
+                   open_key=format_work_key(query.open_key) if query.open_key is not None else None)
+
+
+def _panel(request: Request, conn: Connection, member: LoggedIn, work: Row, query: ListQuery, *,
+           allowed: frozenset[str], now: str) -> dict[str, Any]:
+    """패널 조각 컨텍스트 — `views.work_panel_context` + 닫기 주소(`open` 을 뺀 목록) + 폼 숨은 입력(기본값이 아닌 목록 상태)."""
+    context = views.work_panel_context(conn, member.session_id, work["work_item_id"], member_id=member.member_id,
+                                       allowed=allowed, now=now, settings=_settings(request))
+    state = [pair.split("=", 1) for pair in views.list_query_params(query).split("&") if pair]
+    return {**context, "close_href": views.list_href(query), "list_state": state}
 
 
 def _form_context(
@@ -891,20 +906,33 @@ def start_chain(
 _WORK_KEY = re.compile(rf"{WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})")
 
 
-@router.get("/work/{key}", response_class=HTMLResponse)
-def work_detail(
+@router.get("/work/{key}")
+def work_detail(key: str, response: Response, member: LoggedIn = Depends(require_member)) -> RedirectResponse:
+    """옛 업무 상세 주소 — 키 형식이면 `/tasks?open=<key>`(없는 키는 그 화면이 안내), 아니면 404."""
+    if _WORK_KEY.fullmatch(key) is None:
+        raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
+    return _redirect(work_path(key), response)
+
+
+@router.get("/work/{key}/panel", response_class=HTMLResponse)
+def work_panel(
     request: Request,
+    response: Response,
     key: str,
+    q: str = "",
+    group: str = "",
+    view: str = "",
+    closed: str = "",
     member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """업무 상세(`/work/RUN-23`) — 머리·단계 묶음·양식 칸·연결 업무·열린 사람 요청. 다른 워크스페이스의 키는 404."""
-    session_id = member.session_id
+    """상세 패널 조각(`base.html` 없이) — 업무 화면의 JS 가 끼운다. 목록 상태 쿼리는 닫기 주소·폼 숨은 입력에만 쓴다."""
     now = utc_now()
-    work = _own_work(conn, session_id, key)
-    base = _base(request, conn, session_id, now)
-    context = views.work_context(conn, work, now=now, settings=_settings(request), allowed=base["allowed"])
-    return _render("work_detail.html", **base, **context)
+    work = _own_work(conn, member.session_id, key)
+    query = parse_list_query(q=q, group=group, view=view, closed=closed)
+    response.headers["Cache-Control"] = "no-store"
+    return _render("_work_panel.html", now=now, panel=_panel(
+        request, conn, member, work, query, allowed=team.allowed_actions(member.role), now=now))
 
 
 def _own_work(conn: Connection, session_id: str, key: str) -> Row:

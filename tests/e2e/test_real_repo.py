@@ -477,7 +477,7 @@ def test_04_review_approval_opens_a_draft_pr_and_notifies_once(world):
     (note,) = received(world, "pr_opened")
     assert note["content"].startswith("[Runloom] PR 확인 — 청구서 번호 자릿수")
     assert note["pr_url"] == f"https://github.com/{REPO}/pull/{PR_NUMBER}"
-    assert note["task_url"] == f"{world.central_url}/tasks/{a_id}"
+    assert note["task_url"] == f"{world.central_url}/tasks?open={key}"  # 업무 주소(phase 16)
     assert all(path == f"/hooks/{HOOK_SECRET}" for path, _ in world.ctx["receiver"].received)
 
     (comment,) = world.fake.issue_comments(REPO, 1)  # 원본 이슈 댓글이 올린 브랜치를 가리킨다
@@ -547,7 +547,8 @@ def test_07_failed_work_is_my_turn_and_retry_adds_a_new_stage_on_a_new_branch(wo
     assert (work["status"], work["status_reason"].startswith("실패 — ")) == ("내 차례", True), dict(work)
     (request,) = [r for r in world.http.get("/human-requests").json()["requests"] if r["task_id"] == b_id]
     assert request["code"] == "stage_failed"
-    detail = world.http.get("/work/RUN-2").text
+    assert world.http.get("/work/RUN-2").headers["location"] == "/tasks?open=RUN-2"  # 업무 주소(phase 16)
+    detail = world.http.get("/tasks?open=RUN-2").text
     assert 'value="retry">다시 맡기기<' in detail and 'value="close">닫기<' in detail
 
     response = world.http.post(f"/human-requests/{request['request_id']}/responses", json={

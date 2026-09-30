@@ -85,6 +85,7 @@ from workflow.contracts.v1 import (
     HandoffBundle,
     InputRef,
     SuccessorRule,
+    format_work_key,
 )
 from workflow.domain.callback_policy import host_allowed
 from workflow.domain.completion import criteria_template, merge_criteria
@@ -96,6 +97,7 @@ from workflow.domain.status import UserStatus, user_status
 from workflow.domain.succession import continue_reason, may_continue
 from workflow.domain.task_followup import FollowupContext, FollowupDecision, FollowupTaskSpec, ReviewFacts, decide_followup
 from workflow.domain.task_readiness import TaskReadiness
+from workflow.domain.work_keys import work_path
 from workflow.domain.work_status import STAGE_FAILED
 from workflow.server import github_delivery, github_sync, task_cycle, views
 from workflow.server.github_clients import SourceClients
@@ -1343,7 +1345,10 @@ class Worker:
             return
         names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, task["session_id"])}
         public_url = self._settings.public_url
-        task_url = f"{public_url}/tasks/{task_id}" if public_url else None
+        # 업무 주소(패널을 연 업무 화면), 업무가 없는 옛 단계만 단계 주소
+        work = repo.work_item_of_task(conn, task_id) if task["work_item_id"] else None
+        path = work_path(format_work_key(work["key_number"])) if work is not None else f"/tasks/{task_id}"
+        task_url = f"{public_url}{path}" if public_url else None
         payload = {"title": task["title"], "task_url": task_url, "pr_url": pr_url}
         now = self._clock()
         if shared:
