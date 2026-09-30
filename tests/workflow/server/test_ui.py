@@ -193,13 +193,13 @@ def test_sidebar_marks_connect_active_on_kinds_page(web):
 
 
 def test_detail_status_line_has_label_and_reason_together(web, conn):
-    """상태 줄은 라벨과 이유를 함께 보인다 — 등록한 `bug_fix` 는 러너 보고 전이라 `대기 · 연결 끊김`."""
+    """상태 줄은 라벨과 이유를 함께 보인다 — 등록한 `bug_fix` 는 러너 보고 전이라 `대기 · 공용 러너 꺼짐`(phase 17)."""
     task_id = create_task(web, fix_form())
     html = web.get(f"/tasks/{task_id}").text
     line = status_line(html)
     assert 'data-status="대기"' in line
     assert "대기" in visible_text(line)
-    assert "연결 끊김, 마지막 확인 없음" in visible_text(line)
+    assert "공용 러너 꺼짐 · 켜지면 시작" in visible_text(line)
     assert f'action="/tasks/{task_id}/run"' not in html
 
 

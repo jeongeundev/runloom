@@ -73,7 +73,6 @@ from workflow.contracts.v1 import (
 from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
-from workflow.domain.execution_policy import policy_for
 from workflow.domain import notification, start_checklist, team
 from workflow.domain.kinds import (
     get_kind,
@@ -104,7 +103,6 @@ from workflow.server.auth import (
 from workflow.server.errors import ApiError, PageError
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
-from workflow.server.worker import Worker
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -901,6 +899,7 @@ def start_chain(
         selection = repo.get_selection(conn, first["task_id"])
         if selection is None or selection.status != "selected":
             raise error(409, "selection_required", "담당 에이전트를 먼저 확정하세요.")
+        repo.mark_start_pending(conn, first["task_id"], now=now)  # 승인·러너를 기다리면 워커가 이어 시작한다
         _run_task(conn, first, session_id=session_id, now=now, settings=settings)
     repo.mark_chain_started(conn, chain_id, now)
 
@@ -969,7 +968,7 @@ def work_assignee(
     with _page_errors():
         work_actions.assign_work(conn, request.app.state.store, _settings(request), session_id=member.session_id,
                                  work_item_id=work["work_item_id"], value=assignee, member_id=member.member_id,
-                                 now=utc_now())
+                                 now=utc_now(), secrets=request.app.state.secrets)
     return _work_redirect(work, response, q, group, view, closed)
 
 
@@ -1083,16 +1082,24 @@ def task_run(
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """직접 실행. 활성 실행 없음 · 선택됨 · (선행이 있으면) 선행 결과 + 판정 + 인계 묶음이 조건이다 (ADR-0009 (3)).
-    run_mode 와 무관하게 사용자 조작으로 시작할 수 있다."""
+    run_mode 와 무관하게 사용자 조작으로 시작할 수 있다. 사람이 맡긴 착수(`work_actions.start_stage`)라 소유자 승인을 거친다."""
     session_id = member.session_id
     now = utc_now()
     task = _own_task(conn, session_id, task_id)
     _refuse_direct_work(conn, task_id)
-    if policy_for(task["kind"]).cycle:
-        _run_cycle_task(conn, request.app.state.store, task, now=now, settings=_settings(request))
-    else:
-        _run_task(conn, task, session_id=session_id, now=now, settings=_settings(request))
-    repo.set_work_requester(conn, task["work_item_id"], member.member_id)  # 맡긴 사람 = 직접 실행한 멤버
+    if task["finished_at"] is not None:
+        raise PageError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
+    # 맡긴 사람 = 직접 실행한 멤버 — 소유자 승인이 이 멤버로 묻도록 착수 전에 쓴다. 못 시작했고 승인 요청도 없으면 되돌린다
+    previous = repo.work_item_of_task(conn, task_id)["requested_by_member_id"]
+    repo.set_work_requester(conn, task["work_item_id"], member.member_id)
+    try:
+        with _page_errors():
+            work_actions.start_stage(conn, request.app.state.store, _settings(request), task, session_id=session_id,
+                                     now=now, strict=True, secrets=request.app.state.secrets)
+    except PageError:
+        if not any(r["state"] == "open" for r in repo.list_owner_approvals(conn, task_id)) and previous is not None:
+            repo.set_work_requester(conn, task["work_item_id"], previous)
+        raise
     return _redirect(f"/tasks/{task_id}", response)
 
 
@@ -1105,7 +1112,7 @@ def task_delegate(
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """[에이전트에게 맡기기] (ADR-0017) — GitHub 원본 Task 에 운영자 실행 지시를 한 번 기록하고(멱등) `/run` 과 같은
-    착수(`Worker.start_manually`)를 시도한다. 지금 못 시작하면 대기 사유는 상세에 남고 워커가 풀리는 대로 착수한다."""
+    착수(`work_actions.start_stage`)를 시도한다. 지금 못 시작하면 대기 사유는 상세에 남고 워커가 풀리는 대로 착수한다."""
     session_id = member.session_id
     now = utc_now()
     task = _own_task(conn, session_id, task_id)
@@ -1118,15 +1125,9 @@ def task_delegate(
     repo.mark_issue_delegated(conn, session_id=session_id, source_id=issue["source_id"],
                               github_issue_id=issue["github_issue_id"], by="operator", now=now,
                               member_id=member.member_id)
-    worker = Worker(lambda: conn, request.app.state.store, None, _settings(request), lambda: now)
-    worker.start_manually(conn, task_id)
+    work_actions.start_stage(conn, request.app.state.store, _settings(request), repo.get_task(conn, task_id),
+                             session_id=session_id, now=now, strict=False, secrets=request.app.state.secrets)
     return _redirect(f"/tasks/{task_id}", response)
-
-
-def _run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, settings: Settings) -> None:
-    """업무 순환 Task 의 직접 실행 — `work_actions.run_cycle_task`."""
-    with _page_errors():
-        work_actions.run_cycle_task(conn, store, task, now=now, settings=settings)
 
 
 def _run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings: Settings) -> None:

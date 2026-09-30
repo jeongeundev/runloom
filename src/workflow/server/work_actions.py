@@ -6,43 +6,34 @@
 - 직접 작업: 시작 = 담당을 누른 멤버로 + 브랜치 이름(`branch_name`), 그만두기 = 칸만 비움(담당 그대로). 에이전트나 다른
   멤버를 담당으로 고르면 직접 작업이 먼저 끝난다(repo 가 같은 트랜잭션에서). 결과 판정·완료 처리는 하지 않는다.
 - 착수 코드(`run_task`·`run_cycle_task`)는 웹의 `/tasks/{id}/run`·`/select`·체인 시작·검토 재요청과 함께 쓴다.
+  `run_task`·`start_execution`·`WorkActionError` 는 워커도 쓰므로 `stage_runs` 에 있다(phase 17).
 - 오류는 `WorkActionError` — 웹이 `PageError` 로 바꾼다. 이 모듈은 `web` 을 import 하지 않는다.
 """
 
 import json
 import re
-import secrets
-from collections.abc import Sequence
 from sqlite3 import Connection, Row
 from typing import Any
-from uuid import uuid4
-
-from pydantic import ValidationError
 
 from workflow.adapters import repo
-from workflow.adapters.errors import ActiveExecutionExists
-from workflow.contracts.v1 import Capability, ExecutionRequest, KindSpec, format_work_key
+from workflow.adapters.secret_store import SecretStore
+from workflow.contracts.v1 import Capability, KindSpec, format_work_key
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.field_mapping import PRIORITIES
 from workflow.domain.selection import Candidate, select_agent
-from workflow.domain.start_key import request_start_key
-from workflow.domain.status import user_status
 from workflow.domain.work_keys import branch_name
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES
-from workflow.server import task_cycle, views
+from workflow.server import owner_approval, task_cycle
 from workflow.server.settings import Settings
+from workflow.server.stage_runs import (  # noqa: F401 — 옮긴 이름을 그대로 둔다(웹·테스트가 work_actions 로 부른다)
+    WorkActionError,
+    refresh_task_status,
+    run_task,
+    start_execution,
+)
 from workflow.server.worker import Worker
 
 _ASSIGNEE = re.compile(r"(member|agent):([A-Za-z0-9._-]+)")
-
-
-class WorkActionError(Exception):
-    def __init__(self, status: int, code: str, message: str, field: str | None = None):
-        super().__init__(message)
-        self.status = status
-        self.code = code
-        self.message = message
-        self.field = field
 
 
 def _invalid_assignee(message: str) -> WorkActionError:
@@ -89,79 +80,7 @@ def target_for(spec: KindSpec, agent: Row | None) -> dict[str, Any]:
     return {"local_registration_id": agent["local_registration_id"]}
 
 
-def refresh_task_status(
-    conn: Connection, task_id: str, now: str, settings: Settings, *, review_decision: str | None = None
-) -> None:
-    """실행·선택·선행 상태를 보고 Task 의 사용자 상태를 다시 저장한다 (PRD 3절 대응표)."""
-    row = repo.get_task(conn, task_id)
-    status = user_status(views.build_task_view(conn, row, now=now, settings=settings))
-    repo.update_task_status(
-        conn, task_id, status.label, status.reason, review_decision=review_decision, now=now
-    )
-
-
 # --- 착수 -------------------------------------------------------------------------
-
-
-def start_execution(
-    conn: Connection,
-    task: Row,
-    agent: Row,
-    *,
-    session_id: str,
-    now: str,
-    settings: Settings,
-    input_artifact_ids: Sequence[str],
-    predecessor_execution_id: str | None,
-    target: dict[str, Any],
-) -> str:
-    """새 시도를 `queued` 로 만든다. 요청은 여기서 고정되고 이후 바뀌지 않는다 — 종류 봉투(`kind_spec`)도 등록부에서
-    이때 채운다. 반환은 execution_id."""
-    kind = task["kind"]
-    spec = repo.get_kind(conn, session_id, kind)
-    if spec is None:
-        raise WorkActionError(409, "request_incomplete", "실행 요청을 만들 수 없습니다. 업무 종류가 등록돼 있지 않습니다.")
-    attempts = repo.list_executions(conn, task["task_id"])
-    attempt_no = attempts[-1]["attempt_no"] + 1 if attempts else 1
-    execution_id = f"exec-{secrets.token_hex(8)}"
-    try:
-        request = ExecutionRequest.model_validate({
-            "contract_version": 1,
-            "execution_id": execution_id,
-            "task_id": task["task_id"],
-            "kind": kind,
-            "agent_id": agent["agent_id"],
-            "task_revision": task["revision"],
-            "request": task["request"],
-            "input_artifact_ids": list(input_artifact_ids),
-            "target": target,
-            "kind_spec": spec.model_dump(),
-            **repo.execution_branch_fields(conn, task["task_id"]),
-        })
-    except ValidationError:
-        raise WorkActionError(
-            409,
-            "request_incomplete",
-            "실행 요청을 만들 수 없습니다. 대상 등록 정보(연결 프로그램의 등록 보고)나 선행 업무의 "
-            "인계 자료가 아직 없습니다.",
-        ) from None
-    try:
-        repo.create_execution(
-            conn,
-            execution_id=execution_id,
-            task_id=task["task_id"],
-            attempt_no=attempt_no,
-            start_key=request_start_key(uuid4().hex),
-            agent_id=agent["agent_id"],
-            kind=kind,
-            request=request,
-            assigned_connector_id=agent["connector_id"],
-            predecessor_execution_id=predecessor_execution_id,
-            now=now,
-        )
-    except ActiveExecutionExists:
-        raise WorkActionError(409, "execution_conflict", "이미 활성 실행이 있습니다.") from None
-    return execution_id
 
 
 def run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, settings: Settings) -> None:
@@ -178,50 +97,25 @@ def run_cycle_task(conn: Connection, store: Any, task: Row, *, now: str, setting
     raise WorkActionError(409, "invalid_transition", f"지금 시작할 수 없습니다 — {reasons}.")
 
 
-def run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings: Settings) -> None:
-    """업무 순환이 아닌 Task 의 직접 실행 — 조건 검사, 실행 생성, 상태 갱신."""
-    task_id = task["task_id"]
-    if task["finished_at"] is not None:
-        raise WorkActionError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
-    if repo.active_execution(conn, task_id) is not None:
-        raise WorkActionError(409, "execution_conflict", "이미 활성 실행이 있습니다.")
-    selection = repo.get_selection(conn, task_id)
-    if selection is None or selection.status != "selected":
-        raise WorkActionError(409, "invalid_transition", "에이전트가 아직 선택되지 않았습니다.")
-    # 선행이 있으면 선행 결과가 판정되고 인계 묶음이 있어야 한다 — 선행 `완료`(사람 승인)를 기다리지 않는다 (ADR-0009 (3)).
-    # 묶음은 워커가 규칙 `handoff_kinds` 로 조립하므로 규칙이 없으면 생기지 않는다.
-    inputs, predecessor_execution_id = views.predecessor_handoff(conn, task)
-    if task["predecessor_task_id"] is not None and not inputs:
-        predecessor = repo.get_task(conn, task["predecessor_task_id"])
-        if predecessor is not None and repo.get_rule(conn, session_id, predecessor["kind"], task["kind"]) is None:
-            raise WorkActionError(
-                409, "invalid_transition", "후속 규칙이 없어 인계 자료가 없습니다. /kinds 에서 규칙을 등록하세요.",
-            )
-        raise WorkActionError(
-            409, "invalid_transition",
-            "선행 업무의 결과와 인계 자료가 아직 준비되지 않았습니다. 선행 결과가 판정을 통과하고 규칙에 맞으면 워커가 조립합니다.",
-        )
-    agent = repo.get_agent(conn, selection.selected_agent_id)
-    if agent is None:
-        raise WorkActionError(409, "invalid_transition", "선택된 에이전트가 더 이상 등록돼 있지 않습니다.")
-
-    start_execution(
-        conn, task, agent, session_id=session_id, now=now, settings=settings,
-        input_artifact_ids=inputs, predecessor_execution_id=predecessor_execution_id,
-        target=json.loads(task["target_json"]),
-    )
-    refresh_task_status(conn, task_id, now, settings)
-
-
 def start_stage(conn: Connection, store: Any, settings: Settings, task: Row, *, session_id: str, now: str,
-                strict: bool) -> bool:
-    """단계 착수 — 업무 순환 종류는 `Worker.start_manually`, 그 밖은 `run_task`. `strict=True` 는 `/run` 처럼 못 시작하면
-    `WorkActionError`, `False` 는 조용히 False(대기 사유는 단계 상태에 남는다)."""
+                strict: bool, secrets: SecretStore | None = None) -> bool:
+    """사람이 맡긴 착수 — 업무 순환 종류는 `Worker.start_manually`, 그 밖은 `run_task`. `strict=True` 는 `/run` 처럼 못
+    시작하면 `WorkActionError`, `False` 는 조용히 False(대기 사유는 단계 상태에 남는다). 먼저 착수 대기
+    (`start_pending_at`)를 표시하고 소유자 승인을 본다 — 승인이 필요하면 요청을 열고(`human_request` 알림이 소유자에게),
+    필요 없으면 맡긴 사람 ≠ 소유자일 때 `delegated_to_you`. 조건이 풀리면 워커가 시작한다(phase 17)."""
+    repo.mark_start_pending(conn, task["task_id"], now=now)
+    selection = repo.get_selection(conn, task["task_id"])
+    agent_id = task["chosen_agent_id"] or (selection.selected_agent_id if selection is not None else None)
+    if agent_id is not None:
+        state = owner_approval.ensure_request(conn, task, agent_id, now=now, explicit=True, settings=settings,
+                                              secrets=secrets)
+        if state in owner_approval.STARTABLE:
+            owner_approval.notify_delegated(conn, task, agent_id, now=now, settings=settings, secrets=secrets)
     try:
         if policy_for(task["kind"]).cycle:
             run_cycle_task(conn, store, task, now=now, settings=settings)
         else:
-            run_task(conn, task, session_id=session_id, now=now, settings=settings)
+            run_task(conn, task, session_id=session_id, now=now, settings=settings, secrets=secrets)
     except WorkActionError:
         if strict:
             raise
@@ -273,7 +167,7 @@ DIRECT_WORK_ACTIVE = "직접 작업 중인 업무입니다. 먼저 직접 작업
 
 
 def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str, value: str,
-                member_id: str, now: str) -> None:
+                member_id: str, now: str, secrets: SecretStore | None = None) -> None:
     """담당 바꾸기 — 에이전트 = 맡기기(쓰기 한 트랜잭션 뒤 착수), 멤버 = 배정만(활성 멤버), `none` = 해제.
     직접 작업 중이면 에이전트·다른 멤버는 그 직접 작업을 끝내고(repo), `none` 은 409 `direct_work_active`."""
     assignee = parse_assignee(value)
@@ -307,7 +201,7 @@ def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id:
                             now=now)
     refresh_task_status(conn, stage["task_id"], now, settings)
     start_stage(conn, store, settings, repo.get_task(conn, stage["task_id"]), session_id=session_id, now=now,
-                strict=False)
+                strict=False, secrets=secrets)
 
 
 def set_priority(conn: Connection, *, session_id: str, work_item_id: str, priority: str, member_id: str,

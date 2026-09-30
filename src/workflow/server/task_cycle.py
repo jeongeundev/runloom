@@ -26,8 +26,9 @@ from workflow.domain.execution_policy import BUILTIN_POLICIES, policy_for
 from workflow.domain.github_match import MatchAgent, SourceMatch, match_source
 from workflow.domain.issue_intake import IntakeFacts
 from workflow.domain.selection import Candidate
+from workflow.domain.delegation import OWNER_APPROVAL_PREFIX
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, TaskReadiness, evaluate_readiness
-from workflow.server import github_sync
+from workflow.server import github_sync, owner_approval
 from workflow.server.settings import Settings
 
 # 원본 이슈가 없는(직접 등록) 수정 Task 의 자동 재작업 상한 — 소스 설정의 기본값과 같다
@@ -75,10 +76,11 @@ def max_rework_rounds(conn: Connection, task: Row) -> int:
     return config.max_rework_rounds if config is not None else DEFAULT_MAX_REWORK_ROUNDS
 
 
-def _executor(conn: Connection, agent: Row) -> ExecutorFacts:
+def _executor(conn: Connection, agent: Row, session_id: str) -> ExecutorFacts:
     connector = repo.get_connector(conn, agent["connector_id"]) if agent["connector_id"] else None
     declared = connector["supported_kinds_json"] if connector is not None else None
     return ExecutorFacts(
+        owner_name=owner_approval.owner_name(conn, session_id, agent["agent_id"]),
         agent_id=agent["agent_id"],
         connector_id=agent["connector_id"],
         repository_id=agent["repository_id"],
@@ -156,7 +158,7 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
             Candidate(a["agent_id"], tuple(Capability.model_validate(c) for c in json.loads(a["capabilities_json"])))
             for a in agents
         ],
-        "executors": {a["agent_id"]: _executor(conn, a) for a in agents},
+        "executors": {a["agent_id"]: _executor(conn, a, session_id) for a in agents},
         "chosen_agent_id": task["chosen_agent_id"],
         # App 설치 소스는 설치 저장소 자체가, 화면에서 붙여 넣은 PAT 가 있으면 소스 저장소가 허용 범위다(ADR-0017,
         # `github_clients` 와 같은 규칙) — 환경변수 허용 목록은 환경변수 토큰 연결에만
@@ -167,10 +169,12 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
         "task_revision": task["revision"],
         "request_text": request_text(conn, task),
         "information_requested_at_revision": max(asked, default=None),
+        # 준비 판정 대기 요청(`ready:`)과 소유자 승인 요청은 그 대기 사유가 이미 막는다 — 사유가 두 번 보이지 않게
         "open_request_ids": tuple(
             r["request_id"] for r in requests
-            if r["state"] == "open" and not r["cause_key"].startswith(READINESS_REQUEST_PREFIX)
+            if r["state"] == "open" and not r["cause_key"].startswith((READINESS_REQUEST_PREFIX, OWNER_APPROVAL_PREFIX))
         ),
+        "owner_approvals": owner_approval.approval_facts(conn, task),
         "source_state": issue["state"] if issue is not None else None,
         "max_rework_rounds": config.max_rework_rounds if config is not None else DEFAULT_MAX_REWORK_ROUNDS,
         "direct_work": repo.is_direct_working(conn, task["task_id"]),

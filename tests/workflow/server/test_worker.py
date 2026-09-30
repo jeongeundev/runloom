@@ -31,7 +31,7 @@ from workflow.contracts.v1 import (
     SelectionRecord,
     SuccessorRule,
 )
-from workflow.server.auth import ensure_workspace
+from workflow.server.auth import ensure_workspace, utc_now
 from workflow.server.worker import GITHUB_SYNC_INTERVAL_SECONDS, TickReport, Worker, assemble_handoff
 
 from .conftest import (
@@ -536,7 +536,8 @@ def test_manual_review_gets_bundle_without_execution_and_is_runnable(conn, clien
     # (ADR-0009 (3) — views.predecessor_handoff 가 선행 조건을 푼다)
     assert _status(conn, TASK_R) == ("실행 가능", "agent-claude-mac 선택됨")
 
-    # 사용자의 직접 실행이 그 인계 묶음을 입력으로 쓴다
+    # 사용자의 직접 실행이 그 인계 묶음을 입력으로 쓴다 — 웹은 실제 시각이라 그때 러너가 켜져 있어야 한다(phase 17)
+    repo.set_agent_connection(conn, "agent-claude-mac", "online", utc_now())
     log_in(client)
     response = client.post(f"/tasks/{TASK_R}/run", follow_redirects=False)
     assert response.status_code == 303, response.text
@@ -1067,8 +1068,8 @@ def test_callback_stage_runs_after_successor_scan_and_failure_reflection():
     알림은 외부 반영의 맨 뒤 — 같은 tick 에 쌓인 사람 요청·PR 열림·실패를 바로 보낸다. 업무 상태 재계산(ADR-0020)은
     tick 끝 — 단계 쓰기를 거치지 않은 업무까지 계산값을 갖게 한다."""
     calls = re.findall(r"self\.(_\w+)\(conn, report\)", inspect.getsource(Worker.tick))
-    assert calls[-7:] == [
-        "_spawn_successors", "_reflect_failures", "_deliver_callbacks", "_deliver_pull_requests", "_deliver_github",
+    assert calls[-8:] == [
+        "_spawn_successors", "_start_waiting_stages", "_reflect_failures", "_deliver_callbacks", "_deliver_pull_requests", "_deliver_github",
         "_deliver_notifications", "_refresh_work_statuses",
     ]
 

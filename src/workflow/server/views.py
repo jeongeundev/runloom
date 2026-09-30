@@ -133,10 +133,8 @@ def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[Ki
 
 
 def agent_owner_id(conn: Connection, agent: Row) -> str | None:
-    """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리)."""
-    if agent["connection_type"] != "local" or agent["connector_id"] is None:
-        return None
-    return repo.connector_owner(conn, agent["connector_id"])
+    """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리) — `repo.agent_owner_id`."""
+    return repo.agent_owner_id(conn, agent["agent_id"])
 
 
 def runner_owner(conn: Connection, session_id: str, owner_member_id: str | None) -> dict[str, Any] | None:
@@ -235,12 +233,17 @@ def build_task_view(conn: Connection, task: Row, *, now: str, settings: Settings
             predecessor_status = None
 
     # 연결 상태는 종류 이름이 아니라 선택된 Agent 의 연결 유형으로 본다 — 사용자 정의 종류도 로컬 도구가 수행한다
-    connector_online = connector_last_seen = None
+    connector_online = connector_last_seen = connector_owner_name = None
     if selected is not None:
         agent = repo.get_agent(conn, selected)
         if agent is not None and agent["connection_type"] == "local":
             connector_online = agent_online(agent, now=now, settings=settings)
             connector_last_seen = kst(agent["last_seen_at"]) if agent["last_seen_at"] else "없음"
+            owner = repo.get_member(conn, task["session_id"], repo.agent_owner_id(conn, selected) or "")
+            connector_owner_name = owner["display_name"] if owner is not None and owner["disabled_at"] is None else None
+    # 열린 소유자 승인 요청의 질문 첫 줄 — 실행이 없을 때 단계 이유(phase 17)
+    approval_reason = next((r["question"].split("\n", 1)[0] for r in repo.list_owner_approvals(conn, task["task_id"])
+                            if r["state"] == "open"), None)
 
     execution = repo.active_execution(conn, task["task_id"])
     execution_status = last_progress = failed_code = failed_message = None
@@ -277,6 +280,8 @@ def build_task_view(conn: Connection, task: Row, *, now: str, settings: Settings
         verdict_detail=verdict_detail,
         review_decision=task["review_decision"],
         finished=task["finished_at"] is not None,
+        connector_owner_name=connector_owner_name,
+        approval_reason=approval_reason,
     )
 
 
@@ -469,7 +474,8 @@ DELIVERY_LABELS = {
 ACTOR_LABELS = {"operator": "운영자", "assignee": "GitHub 담당자", "system": "자동 해소 대기"}
 # 사람 요청 응답 버튼 (`human_api.Action`) — 표시 순서
 RESPONSE_ACTIONS = (
-    ("resume", "답하고 다시 판정"), ("choose_agent", "이 Agent 로 지정"), ("retry", "다시 맡기기"), ("close", "업무 종료"),
+    ("resume", "답하고 다시 판정"), ("approve", "승인"), ("decline", "거절"), ("choose_agent", "이 Agent 로 지정"),
+    ("retry", "다시 맡기기"), ("close", "업무 종료"),
 )
 # 실행 실패 요청의 [닫기] — 업무 `종료`(ARCHITECTURE "실패 단계")
 _FAILED_CLOSE_LABEL = "닫기"

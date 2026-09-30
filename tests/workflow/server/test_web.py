@@ -194,7 +194,7 @@ def test_home_lists_my_work_with_status(web):
     # 단계 상태는 업무 상세의 단계 목록에서
     stages = web.get("/work/RUN-1").text.split("data-stages", 1)[1].split("</ol>", 1)[0]
     assert f'href="/tasks/{task_id}"' in stages
-    assert 'data-status="대기"' in stages and "연결 끊김, 마지막 확인 없음" in stages  # conftest 의 Codex 는 아직 보고 전
+    assert 'data-status="대기"' in stages and "공용 러너 꺼짐 · 켜지면 시작" in stages  # conftest 의 Codex 는 아직 보고 전(소유자 없는 러너 = 공용, phase 17)
 
 
 # --- 등록 폼 ---------------------------------------------------------------------
@@ -227,13 +227,13 @@ def test_create_fix_task_selects_agent_and_waits_for_connection(web, conn):
     """직접 등록한 `bug_fix` — 자동 선택으로 러너 Agent 를 고르고 대상은 그 등록값. 러너가 보고 전이라 `대기`."""
     task_id = create_task(web, fix_form())
     text = detail(web, task_id)
-    assert "대기" in text and "연결 끊김, 마지막 확인 없음" in text
+    assert "대기" in text and "공용 러너 꺼짐 · 켜지면 시작" in text
     assert "버그 수정" in text and "검토 후 완료" in text and "재현 테스트가 수정 전에 실패함" in text
     assert f'action="/tasks/{task_id}/run"' not in text
 
     row = repo.get_task(conn, task_id)
     assert row["kind"] == "bug_fix"
-    assert (row["status"], row["status_reason"]) == ("대기", "연결 끊김, 마지막 확인 없음")
+    assert (row["status"], row["status_reason"]) == ("대기", "공용 러너 꺼짐 · 켜지면 시작")
     assert row["completion_mode"] == "review" and row["run_mode"] == "manual"
     # 코드 수정 대상 — 러너가 아직 기준 커밋·검증 프로필을 보고하지 않아 비어 있다 (보고 전에는 요청을 만들 수 없다)
     assert json.loads(row["target_json"]) == {
@@ -1390,7 +1390,7 @@ def test_create_review_task_targets_local_registration_and_needs_no_run_id(revie
     assert selection.status == "selected" and selection.selected_agent_id == REVIEW_AGENT
     text = detail(review_web, task_id)
     assert "검토" in text and "review · repository_id=demo-report-repo 일치 후보 1개" in text
-    assert "대기" in text and "연결 끊김" in text  # 로컬 에이전트라 종류와 무관하게 연결 상태를 본다
+    assert "대기" in text and "러너 꺼짐" in text  # 로컬 에이전트라 종류와 무관하게 연결 상태를 본다
 
     auto = review_web.post("/tasks", data=review_form(completion_mode="auto"), follow_redirects=False)
     assert auto.status_code == 422 and "자동 완료" in auto.text

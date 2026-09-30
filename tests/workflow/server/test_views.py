@@ -197,7 +197,8 @@ def test_view_user_kind_reads_predecessor_status_and_connector_heartbeat(seeded,
 
     stale = _view(seeded, settings, TASK_P, now="2026-09-20T00:02:00Z")  # 120초 뒤: 90초 초과
     assert stale.connector_online is False
-    assert views.status_of(repo.get_task(seeded, TASK_P), stale).reason == "연결 끊김, 마지막 확인 2026-09-20 09:00:00 KST"
+    # phase 17 — 꺼진 러너는 소유자 문구(이 러너는 소유자 없음 = 공용)
+    assert views.status_of(repo.get_task(seeded, TASK_P), stale).reason == "공용 러너 꺼짐 · 켜지면 시작"
 
 
 def test_status_of_builtin_cycle_kind_uses_stored_status(seeded, settings):

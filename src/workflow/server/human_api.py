@@ -10,33 +10,42 @@
 - `close` 는 Task 를 `실패` 로 마감하고 활성 실행을 해제한다(운영자 종료). 같은 트랜잭션이라 착수와 겹쳐도 실행이 붙지 않는다.
 - 실행 실패 요청(`stage_failed`, ADR-0020 결정 5)은 `retry`(다시 맡기기 — 같은 업무에 실패한 단계를 복사한 새 단계)와
   `close`(닫기 — 업무 `종료`)만 받는다. 단계는 이미 `실패` 로 마감이라 `task_closed` 검사를 하지 않는다.
+- 소유자 승인 요청(`owner_approval`, ADR-0023 결정 1)은 `approve`·`decline` 만 받고, 에이전트 소유자와 관리자만 답한다
+  (`delegation.can_decide_approval` — 아니면 403). 승인은 요청만 닫고 착수는 워커가, 거절은 같은 트랜잭션에서 단계
+  선택·업무 담당을 비우고 트랜잭션 뒤 맡긴 사람에게 `delegation_declined` 알림.
 """
 
 import secrets
 from sqlite3 import Connection
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from workflow.adapters import repo
 from workflow.adapters.errors import ResponseConflict, StaleRequest, TaskClosed
+from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.v1 import NonEmptyStr
+from workflow.domain.delegation import OWNER_APPROVAL_CODE, can_decide_approval, parse_approval_cause_key
 from workflow.domain.work_status import STAGE_FAILED
 from workflow.domain import team
+from workflow.server import owner_approval
 from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_api, utc_now
 from workflow.server.errors import ApiError
+from workflow.server.settings import Settings
 
 router = APIRouter(prefix="/human-requests")
 
-Action = Literal["resume", "choose_agent", "retry", "close"]
+Action = Literal["resume", "choose_agent", "retry", "close", "approve", "decline"]
 CLOSE_REASON = "운영자 종료 — 사람 요청 응답"
 CLOSE_WORK_REASON = "닫음 — 실행 실패"  # 실행 실패 요청을 닫으면 업무 `종료` 의 이유
+DECLINE_NOTE_MAX = 2000  # 거절 메모 최대 글자 수
 # 요청 code → 허용 응답. 없으면 `resume`·`close`
 _ACTIONS: dict[str, frozenset[str]] = {
     "assignee_multiple": frozenset({"choose_agent", "close"}),
     STAGE_FAILED: frozenset({"retry", "close"}),
+    OWNER_APPROVAL_CODE: frozenset({"approve", "decline"}),
 }
 # 추가 정보를 묻는 요청 — `resume` 에 빈 답은 받지 않는다
 _INFORMATION_CODES = frozenset({"input_missing", "fix_needs_information", "review_needs_information"})
@@ -66,11 +75,19 @@ def asks_information(code: str) -> bool:
     return code in _INFORMATION_CODES
 
 
-def _check(conn: Connection, session_id: str, request, body: ResponseBody) -> None:
+def _check(conn: Connection, session_id: str, request, body: ResponseBody, member_id: str | None) -> None:
     allowed = allowed_actions(request["code"])
     if body.action not in allowed:
         raise ApiError(422, "invalid_field", f"요청 {request['code']} 에는 {body.action} 로 응답할 수 없습니다.",
                        field="action")
+    if body.action in ("approve", "decline"):
+        scope = parse_approval_cause_key(request["cause_key"])
+        member = repo.get_member(conn, session_id, member_id) if member_id is not None else None
+        owner_id = repo.agent_owner_id(conn, scope[0]) if scope is not None else None
+        if member is None or not can_decide_approval(member_id=member_id, role=member["role"], owner_id=owner_id):
+            raise ApiError(403, "forbidden", "에이전트 소유자나 관리자만 승인·거절할 수 있습니다.")
+        if body.action == "decline" and len(body.text) > DECLINE_NOTE_MAX:
+            raise ApiError(422, "invalid_field", f"거절 메모는 {DECLINE_NOTE_MAX}자까지입니다.", field="text")
     if body.action == "resume" and asks_information(request["code"]) and not body.text.strip():
         raise ApiError(422, "invalid_field", "요청한 정보를 text 에 적어야 합니다.", field="text")
     if body.action == "choose_agent":
@@ -83,12 +100,14 @@ def _check(conn: Connection, session_id: str, request, body: ResponseBody) -> No
 
 def respond_to_request(
     conn: Connection, session_id: str, request_id: str, body: ResponseBody, now: str, *, member_id: str | None = None,
+    settings: Settings | None = None, secret_store: SecretStore | None = None,
 ) -> dict:
-    """응답 기록 — 재전송은 처음 결과. `member_id` 는 응답자(다시 맡기기면 맡긴 사람도). 검사는 처음 응답에만 의미가 있지만 같은 본문이면 같은 결과라 먼저 한다."""
+    """응답 기록 — 재전송은 처음 결과. `member_id` 는 응답자(다시 맡기기면 맡긴 사람도). 검사는 처음 응답에만 의미가 있지만 같은 본문이면 같은 결과라 먼저 한다.
+    `settings`·`secret_store` 는 거절 알림용 — 없으면 알림을 쌓지 않는다."""
     request = repo.get_human_request(conn, session_id, request_id)
     if request is None:
         raise ApiError(404, "not_found", f"사람 요청 {request_id}을 찾을 수 없습니다.", field="request_id")
-    _check(conn, session_id, request, body)
+    _check(conn, session_id, request, body, member_id)
     failed_stage = request["code"] == STAGE_FAILED
     try:
         task_revision, created = repo.record_human_response_once(
@@ -98,7 +117,7 @@ def respond_to_request(
             close_reason=CLOSE_REASON if body.action == "close" and not failed_stage else None,
             retry_task_id=f"task-{secrets.token_hex(6)}" if body.action == "retry" else None,
             close_work_reason=CLOSE_WORK_REASON if body.action == "close" and failed_stage else None,
-            member_id=member_id,
+            member_id=member_id, clear_delegation=body.action == "decline",
         )
     except StaleRequest as exc:
         raise ApiError(409, "stale_request", f"사람 요청 {request_id} 가 이미 revision {exc.current_revision} 입니다.",
@@ -108,6 +127,9 @@ def respond_to_request(
                        field="response_id") from None
     except TaskClosed:
         raise ApiError(409, "task_closed", f"업무 {request['task_id']} 는 이미 마감되었습니다.") from None
+    if created and body.action == "decline" and settings is not None:
+        owner_approval.notify_declined(conn, request, note=body.text, member_id=member_id, now=now, settings=settings,
+                                       secrets=secret_store)
     return {"request_id": request_id, "task_id": request["task_id"], "response_id": body.response_id,
             "task_revision": task_revision, "created": created}
 
@@ -120,9 +142,11 @@ def list_requests(member: LoggedIn = Depends(require_member_api), conn: Connecti
 
 @router.post("/{request_id}/responses")
 def post_response(
-    request_id: str, body: ResponseBody,
+    request: Request, request_id: str, body: ResponseBody,
     member: LoggedIn = Depends(require_action(team.RESPOND, api=True)),
     conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
     session_id = member.session_id
-    return JSONResponse(respond_to_request(conn, session_id, request_id, body, utc_now(), member_id=member.member_id))
+    return JSONResponse(respond_to_request(conn, session_id, request_id, body, utc_now(), member_id=member.member_id,
+                                           settings=request.app.state.settings,
+                                           secret_store=request.app.state.secrets))

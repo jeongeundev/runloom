@@ -88,6 +88,7 @@ from workflow.contracts.v1 import (
     format_work_key,
 )
 from workflow.domain.callback_policy import host_allowed
+from workflow.domain.delegation import OWNER_APPROVAL_PREFIX
 from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain import notification, pull_request
 from workflow.domain.execution_policy import ExecutionPolicy, policy_for
@@ -99,7 +100,7 @@ from workflow.domain.task_followup import FollowupContext, FollowupDecision, Fol
 from workflow.domain.task_readiness import TaskReadiness
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_status import STAGE_FAILED
-from workflow.server import github_delivery, github_sync, task_cycle, views
+from workflow.server import github_delivery, github_sync, owner_approval, stage_runs, task_cycle, views
 from workflow.server.github_clients import SourceClients
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
@@ -268,6 +269,50 @@ def assemble_handoff(
     )
 
 
+def _webhook(secrets: SecretStore, name: str = NOTIFY_WEBHOOK_URL) -> str | None:
+    return (secrets.read(name) or "").strip() or None
+
+
+def enqueue_event_notification(
+    conn: Connection, settings: Settings, secrets: SecretStore, *, event: str, task_id: str, dedupe_key: str,
+    recipients: tuple[str, ...] | None = None, detail: str | None = None, pr_url: str | None = None, now: str,
+) -> None:
+    """받는 사람별 알림 행(중복 키로 한 번만). `recipients` None 이면 업무의 `turn_recipients_of`. 공용 웹훅이 있으면
+    사건당 한 행(`→ 이름`), 개인 웹훅을 저장한 받는 사람마다 한 행. 어느 URL 도 없으면 쌓지 않는다. 워커와 웹이 같이 쓴다."""
+    task = repo.get_task(conn, task_id)
+    if recipients is None:
+        recipients = repo.turn_recipients_of(conn, task["work_item_id"]) if task["work_item_id"] else ()
+    personal = [m for m in recipients if _webhook(secrets, personal_webhook_name(m)) is not None]
+    shared = _webhook(secrets) is not None
+    if not shared and not personal:
+        return
+    names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, task["session_id"])}
+    public_url = settings.public_url
+    # 업무 주소(패널을 연 업무 화면), 업무가 없는 옛 단계만 단계 주소
+    work = repo.work_item_of_task(conn, task_id) if task["work_item_id"] else None
+    path = work_path(format_work_key(work["key_number"])) if work is not None else f"/tasks/{task_id}"
+    task_url = f"{public_url}{path}" if public_url else None
+    payload = {"title": task["title"], "task_url": task_url, "pr_url": pr_url}
+    if shared:
+        content = notification.notification_text(
+            event, title=task["title"], detail=detail, pr_url=pr_url, task_url=task_url,
+            recipients=[names[m] for m in recipients],
+        )
+        repo.enqueue_notification(
+            conn, session_id=task["session_id"], event=event, task_id=task_id, dedupe_key=f"{dedupe_key}:shared",
+            content=content, payload={**payload, "recipient_member_ids": list(recipients)}, now=now,
+            recipient_member_id=recipients[0] if len(recipients) == 1 else None,
+        )
+    content = notification.notification_text(event, title=task["title"], detail=detail, pr_url=pr_url,
+                                              task_url=task_url)
+    for member_id in personal:
+        repo.enqueue_notification(
+            conn, session_id=task["session_id"], event=event, task_id=task_id,
+            dedupe_key=f"{dedupe_key}:personal:{member_id}", content=content, payload=payload, now=now,
+            channel="personal", recipient_member_id=member_id,
+        )
+
+
 def _operator_closed(task: Row) -> bool:
     """운영자 종료·실패로 마감된 Task — 새 후속을 만들지 않는다."""
     return task["finished_at"] is not None and task["status"] == "실패"
@@ -322,6 +367,7 @@ class Worker:
             self._check_generic_results(conn, report)
             self._advance_cycle(conn, report)
             self._spawn_successors(conn, report)
+            self._start_waiting_stages(conn, report)
             self._reflect_failures(conn, report)
             self._deliver_callbacks(conn, report)
             self._deliver_pull_requests(conn, report)
@@ -626,7 +672,9 @@ class Worker:
         return any(e["execution_id"] not in before for e in repo.list_executions(conn, task_id))
 
     def _manual_override(self, task: Row) -> dict[str, Any]:
-        return {"run_mode": "auto"} if task["task_id"] == self._manual_task_id else {}
+        """직접 실행 중이거나 사람이 맡겨 착수를 기다리는(`start_pending_at`) 단계는 `manual_mode` 로 멈추지 않는다."""
+        manual = task["task_id"] == self._manual_task_id or task["start_pending_at"] is not None
+        return {"run_mode": "auto"} if manual else {}
 
     def _advance_cycle(self, conn: Connection, report: TickReport) -> None:
         """판정된 결과 → `decide_followup` → 저장(후속 Task·사람 요청) → 준비 판정 → 착수, 그다음 아직 실행이 없는 Task 의
@@ -895,7 +943,8 @@ class Worker:
         answered = [
             r for r in repo.list_human_responses(conn, task["task_id"])
             if r["task_revision"] > previous.task_revision and r["asked_revision"] >= previous.task_revision
-            and not r["cause_key"].startswith((task_cycle.READINESS_REQUEST_PREFIX, pull_request.PR_REQUEST_PREFIX))
+            and not r["cause_key"].startswith(
+                (task_cycle.READINESS_REQUEST_PREFIX, pull_request.PR_REQUEST_PREFIX, OWNER_APPROVAL_PREFIX))
         ]
         if not answered:
             return False
@@ -998,6 +1047,7 @@ class Worker:
         if task["finished_at"] is None:
             blockers = sorted({(b.code, b.actor) for b in readiness.blockers})
             repo.record_blocked(conn, task["task_id"], [{"code": c, "actor": a} for c, a in blockers], now=self._clock())
+        self._owner_blocked(conn, task, readiness, codes)
         if "decision_pending" in codes:
             return
         for blocker in readiness.blockers:
@@ -1009,6 +1059,18 @@ class Worker:
             )
             if report is not None:
                 report.human_requests += int(fresh)
+
+    def _owner_blocked(self, conn: Connection, task: Row, readiness: TaskReadiness, codes: set[str]) -> None:
+        """소유자 승인이 필요한데 요청이 없으면 연다(거절된 범위는 다시 묻지 않는다). 승인·지시 대기 없이 러너가 꺼져서만
+        못 시작하면 소유자에게 `runner_offline_waiting` 한 번(phase 17)."""
+        if task["finished_at"] is not None or readiness.agent_id is None:
+            return
+        if "owner_approval_pending" in codes:
+            owner_approval.ensure_request(conn, task, readiness.agent_id, now=self._clock(), explicit=False,
+                                          settings=self._settings, secrets=self._secrets)
+        elif "executor_offline" in codes and not codes & {"owner_approval_declined", "not_delegated"}:
+            owner_approval.notify_offline(conn, task, readiness.agent_id, now=self._clock(), settings=self._settings,
+                                          secrets=self._secrets)
 
     # --- 8. 후속 스캔 -------------------------------------------------------------------
 
@@ -1060,8 +1122,13 @@ class Worker:
                     report.inputs_prepared += 1
                 self._refresh_task(conn, task_id)  # → 실행 가능. 사용자 조작 전에는 실행을 만들지 않는다
                 continue
+            state = owner_approval.gate(conn, task, agent, now=now, explicit=False, settings=self._settings,
+                                        secrets=self._secrets)
+            if state not in owner_approval.STARTABLE:
+                self._refresh_task(conn, task_id)  # → 대기 · <승인 대기 이유>
+                continue
             if not views.agent_online(agent, now=now, settings=self._settings):
-                self._refresh_task(conn, task_id)  # → 대기 · 연결 끊김, 마지막 확인 …
+                self._refresh_task(conn, task_id)  # → 대기 · <소유자>의 러너 꺼짐 · 켜지면 시작
                 continue
             spec = repo.get_kind(conn, task["session_id"], task["kind"])
             if spec is None:
@@ -1105,6 +1172,26 @@ class Worker:
                 continue
             report.successors_created += 1
             self._refresh_task(conn, task_id)  # → 실행 요청됨 · 접수 대기
+
+    def _start_waiting_stages(self, conn: Connection, report: TickReport) -> None:
+        """사람이 맡겼는데 아직 실행이 없는(`start_pending_at`) 업무 순환이 아닌 단계를 다시 착수한다 — 소유자 승인·러너
+        켜짐을 기다리던 단계. 못 시작하면 조용히 넘기고(대기 사유는 단계 상태), 러너가 꺼져서면 소유자에게 한 번 알린다."""
+        now = self._clock()
+        for task in repo.list_tasks(conn, None):
+            task_id = task["task_id"]
+            if (task["start_pending_at"] is None or task["finished_at"] is not None or policy_for(task["kind"]).cycle
+                    or repo.active_execution(conn, task_id) is not None or repo.is_direct_working(conn, task_id)):
+                continue
+            try:
+                stage_runs.run_task(conn, task, session_id=task["session_id"], now=now, settings=self._settings,
+                                    explicit=False, secrets=self._secrets)
+                report.tasks_started += 1
+            except stage_runs.WorkActionError as exc:
+                selection = repo.get_selection(conn, task_id)
+                if exc.code == "runner_offline" and selection is not None and selection.selected_agent_id:
+                    owner_approval.notify_offline(conn, task, selection.selected_agent_id, now=now,
+                                                  settings=self._settings, secrets=self._secrets)
+            self._refresh_task(conn, task_id)
 
     # --- 9. 실패 반영 -------------------------------------------------------------------
 
@@ -1337,43 +1424,13 @@ class Worker:
         return fresh
 
     def _notify(self, conn: Connection, event: str, task_id: str, dedupe_key: str, *, detail: str | None = None,
-                pr_url: str | None = None) -> None:
-        """받는 사람(업무의 `turn_recipients_of`)별 알림 행(중복 키로 한 번만). 공용 웹훅이 있으면 사건당 한 행
-        (`→ 이름`), 개인 웹훅을 저장한 받는 사람마다 한 행. 어느 URL 도 없으면 쌓지 않는다."""
+                pr_url: str | None = None, recipients: tuple[str, ...] | None = None) -> None:
+        """알림 행 쌓기 — `enqueue_event_notification`. 비밀 저장소가 없으면(웹이 만든 착수용 워커) 아무것도 하지 않는다."""
         if self._secrets is None:
             return
-        task = repo.get_task(conn, task_id)
-        recipients = repo.turn_recipients_of(conn, task["work_item_id"]) if task["work_item_id"] else ()
-        personal = [m for m in recipients if self._webhook_url(personal_webhook_name(m)) is not None]
-        shared = self._webhook_url() is not None
-        if not shared and not personal:
-            return
-        names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, task["session_id"])}
-        public_url = self._settings.public_url
-        # 업무 주소(패널을 연 업무 화면), 업무가 없는 옛 단계만 단계 주소
-        work = repo.work_item_of_task(conn, task_id) if task["work_item_id"] else None
-        path = work_path(format_work_key(work["key_number"])) if work is not None else f"/tasks/{task_id}"
-        task_url = f"{public_url}{path}" if public_url else None
-        payload = {"title": task["title"], "task_url": task_url, "pr_url": pr_url}
-        now = self._clock()
-        if shared:
-            content = notification.notification_text(
-                event, title=task["title"], detail=detail, pr_url=pr_url, task_url=task_url,
-                recipients=[names[m] for m in recipients],
-            )
-            repo.enqueue_notification(
-                conn, session_id=task["session_id"], event=event, task_id=task_id, dedupe_key=f"{dedupe_key}:shared",
-                content=content, payload={**payload, "recipient_member_ids": list(recipients)}, now=now,
-                recipient_member_id=recipients[0] if len(recipients) == 1 else None,
-            )
-        content = notification.notification_text(event, title=task["title"], detail=detail, pr_url=pr_url,
-                                                  task_url=task_url)
-        for member_id in personal:
-            repo.enqueue_notification(
-                conn, session_id=task["session_id"], event=event, task_id=task_id,
-                dedupe_key=f"{dedupe_key}:personal:{member_id}", content=content, payload=payload, now=now,
-                channel="personal", recipient_member_id=member_id,
-            )
+        enqueue_event_notification(conn, self._settings, self._secrets, event=event, task_id=task_id,
+                                   dedupe_key=dedupe_key, recipients=recipients, detail=detail, pr_url=pr_url,
+                                   now=self._clock())
 
     def _row_webhook_url(self, conn: Connection, row: Row) -> str | None:
         """행의 경로에 맞는 URL — `shared` 는 공용, `personal` 은 받는 사람의 개인 웹훅(비활성이면 None)."""
