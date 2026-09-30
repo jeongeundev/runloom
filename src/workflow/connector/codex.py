@@ -119,7 +119,7 @@ class CodexAdapter(LocalToolAdapter):
             started_at = state.utc_now()
             proc = subprocess.Popen(
                 argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=self.child_env(),
+                env=self.child_env(cwd),
             )
             progress(f"Codex 실행 시작 pid={proc.pid}", runtime_ref=f"pid:{proc.pid};start:{started_at}")
             stdout, stderr, timed_out, stopped = communicate_or_stop(proc, prompt_text.encode("utf-8"), self._timeout)

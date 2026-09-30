@@ -31,9 +31,15 @@ None(판정 없음·모름)이다. 사용량은 도구를 띄운 뒤의 모든 �
 `CodeReviewResult` 로(`result_invalid`). `reviewed_commit` 은 도구의 말이 아니라 검토 뒤 확인한 체크아웃 HEAD 다.
 체크아웃은 끝나면 지우고 원본 저장소·수정 브랜치는 건드리지 않는다.
 
+검증만 다시(`verify_only_commit`, ADR-0023)는 `_run_verify_only` 가 도구를 띄우지 않고 그 커밋의 깨끗한 체크아웃에서 등록된
+검증 프로필만 다시 돌린다: 등록·프로필 확인 → 인계된 이전 결과 봉투가 같은 커밋인지(`source_mismatch`) → 커밋이 등록
+폴더에 있는지(없으면 origin fetch 뒤 다시, 그래도 없으면 `result_commit_missing`) → 수정 전 재현 로그·검증 로그·diff →
+`CodeChangeResult`. worktree·브랜치를 만들지 않는다.
+
 셸 명령은 로컬 등록의 검증 프로필에서만 온다. 요청·인계 자료·모델 출력에서 명령·경로를 받아 실행하지 않는다.
 도구·검증 프로세스의 환경은 `child_env`(= `masking.codex_env` 허용 목록 + 이 실행 로컬 등록의 `env`)뿐이다 — 연결 토큰·API
-키를 상속하지 않는다. 코드 수정은 worktree 와 검증용 깨끗한 체크아웃에 등록의 `links`(원본 폴더 설치물)를 링크로, `copies` 를 복사로 건다
+키를 상속하지 않는다. 등록 `PYTHONPATH` 의 상대 항목은 그 프로세스의 cwd(worktree·임시 체크아웃) 기준 절대 경로로 푼다
+(`resolve_pythonpath`) — 하위 프로세스가 cwd 를 바꿔도 호스트의 편집 설치를 잡지 않는다. 코드 수정은 worktree 와 검증용 깨끗한 체크아웃에 등록의 `links`(원본 폴더 설치물)를 링크로, `copies` 를 복사로 건다
 (ADR-0018 결정 3). 등록 `env` 값 가림은 업로드 전 러너가 한다.
 """
 
@@ -112,6 +118,19 @@ REVIEW_RESULT_SCHEMA = {
     "required": ["outcome", "summary", "findings", "missing_information"],
     "additionalProperties": False,
 }
+
+
+def resolve_pythonpath(env: Mapping[str, str], cwd: Path) -> dict[str, str]:
+    """`PYTHONPATH` 의 상대 항목을 `cwd` 기준 절대 경로로 바꾼 사본. 빈 항목·`~` 로 시작하는 항목·절대 경로는 그대로,
+    심볼릭 링크는 따라가지 않는다(파일 시스템을 읽지 않는다). 다른 변수는 건드리지 않는다."""
+    resolved = dict(env)
+    if "PYTHONPATH" in resolved:
+        resolved["PYTHONPATH"] = os.pathsep.join(
+            item if not item or item.startswith("~") or os.path.isabs(item)
+            else os.path.normpath(os.path.join(cwd, item))
+            for item in resolved["PYTHONPATH"].split(os.pathsep)
+        )
+    return resolved
 
 
 def outcome_note(outcome: str, outcomes: Sequence[str]) -> str:
@@ -214,10 +233,12 @@ class LocalToolAdapter:
 
     # --- 공통 ------------------------------------------------------------------------------------
 
-    def child_env(self) -> dict[str, str]:
+    def child_env(self, cwd: Path | None = None) -> dict[str, str]:
         """도구·검증 프로세스에 넘기는 환경. 허용 목록만 남기고 연결 토큰·API 키·중앙 설정을 제거한 뒤, 지금 실행의
-        로컬 등록 env 를 더한다 — `registered_env` 가 허용 목록·예약 이름을 빼므로 허용 목록 값을 덮지 못한다."""
-        return {**codex_env(self._env_base), **registered_env(self._registered_env)}
+        로컬 등록 env 를 더한다 — `registered_env` 가 허용 목록·예약 이름을 빼므로 허용 목록 값을 덮지 못한다.
+        `cwd` 를 주면 등록 `PYTHONPATH` 의 상대 항목을 그 기준으로 푼다."""
+        env = {**codex_env(self._env_base), **registered_env(self._registered_env)}
+        return env if cwd is None else resolve_pythonpath(env, cwd)
 
     def run(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
         target = request.target
@@ -243,6 +264,9 @@ class LocalToolAdapter:
                 f"검증 프로필 {target.verification_profile_id} 이 등록 {target.local_registration_id} 에 없다",
             )
         repo = Path(registration["repo_path"])
+        prepared = Prepared(registration["links"], registration.get("copies", []))
+        if request.verify_only_commit is not None:
+            return self._run_verify_only(request, handoff_dir, progress, repo, profile, prepared)
         branch = {"work_key": request.work_key, "branch_seq": request.branch_seq}
         try:
             worktree = git_ops.ensure_worktree(repo, request.task_id, target.base_commit, **branch)
@@ -250,7 +274,6 @@ class LocalToolAdapter:
             return _failed("invalid_work_key", str(exc))
         except GitError as exc:
             return _failed("base_commit_missing", str(exc))
-        prepared = Prepared(registration["links"], registration.get("copies", []))
         prepared.apply(repo, worktree)  # 이어 쓰는 worktree 는 이미 있는 링크·복사본을 건너뛴다
         head = git_ops.head_sha(worktree)
         if head != target.base_commit:
@@ -333,6 +356,60 @@ class LocalToolAdapter:
             *raw_artifacts,
         ]
         return AdapterOutput(result=result, artifacts=artifacts, runtime_ref=runtime_ref, usage=usage)
+
+    # --- 검증만 다시 — 도구 없이 결과 커밋의 깨끗한 체크아웃 --------------------------------------------------
+
+    def _run_verify_only(
+        self, request: ExecutionRequest, handoff_dir: Path, progress: Progress, repo: Path, profile: list[str],
+        prepared: "Prepared",
+    ) -> AdapterOutput:
+        """`verify_only_commit` 실행. 이전 결과 봉투 확인(`source_mismatch`) → 커밋 확인(`result_commit_missing`) →
+        결과 커밋의 깨끗한 체크아웃에서 수정 전 재현 로그와 검증 프로필 한 번 → `CodeChangeResult`. 도구를 띄우지 않는다."""
+        target = request.target
+        commit = request.verify_only_commit
+        source = _verify_only_source(handoff_dir, commit, target.base_commit)
+        if source is None:
+            return _failed(
+                "source_mismatch",
+                f"인계 자료에 결과 커밋 {commit[:12]}(기준 {target.base_commit[:12]}) 의 수정 결과 봉투가 없다",
+            )
+        if not _has_commits_after_fetch(repo, (commit, target.base_commit)):
+            return _failed(
+                "result_commit_missing",
+                f"결과 커밋 {commit[:12]} 또는 기준 커밋 {target.base_commit[:12]} 이 등록 "
+                f"{target.local_registration_id} 의 저장소에 없다 (origin fetch 뒤에도)",
+            )
+        runtime_ref = f"verify-only:{request.execution_id}"
+        progress(f"검증만 다시 @ {commit[:12]}", runtime_ref=runtime_ref)
+
+        test_files = git_ops.changed_test_files(repo, target.base_commit, commit)
+
+        def inside(dest: Path) -> tuple[str, tuple[int, str, str]]:
+            before = self._test_before(repo, dest, target.base_commit, test_files, profile, prepared)
+            return before, self._run_argv(profile, dest)
+
+        try:
+            before, (verify_code, verify_out, verify_err) = _in_clean_checkout(repo, commit, inside, prepared)
+        except GitError as exc:
+            return _failed("checkout_failed", f"결과 커밋 {commit[:12]} 체크아웃 실패: {exc}")
+        progress(f"수정 전 재현 테스트 {before.splitlines()[0]} (테스트 파일 {len(test_files)}개)")
+        progress(f"검증 프로필 {target.verification_profile_id} exit_code={verify_code} @ {commit[:12]}")
+        diff = git_ops.diff_text(repo, target.base_commit, commit)
+
+        outcome = source.outcome if test_files else "needs_information"
+        verification = Verification(
+            profile_id=target.verification_profile_id, result_commit=commit, exit_code=verify_code,
+            log_artifact_id="verification_log",
+        )
+        result = self._result(request, outcome, f"검증만 다시 — {source.summary}", commit, verification)
+        verify_log = _log_text(verify_code, verify_out, verify_err).encode()
+        artifacts = [
+            make_meta("diff", "fix.diff", diff.encode(), "text/x-diff"),
+            make_meta("test_log_before", "pytest-before.txt", before.encode(), "text/plain"),
+            make_meta("test_log_after", "pytest-after.txt", verify_log, "text/plain"),
+            make_meta("verification_log", "verification.txt", verify_log, "text/plain"),
+        ]
+        return AdapterOutput(result=result, artifacts=artifacts, runtime_ref=runtime_ref)
 
     # --- 사용자 정의 종류 — 읽기 전용 -----------------------------------------------------------------
 
@@ -482,7 +559,7 @@ class LocalToolAdapter:
         try:
             proc = subprocess.run(
                 argv, cwd=cwd, capture_output=True, text=True, errors="replace",
-                timeout=self._verification_timeout, env=self.child_env(),
+                timeout=self._verification_timeout, env=self.child_env(cwd),
             )
         except subprocess.TimeoutExpired as exc:
             return 124, _text(exc.stdout), f"(검증 시간 초과 {self._verification_timeout}초)\n{_text(exc.stderr)}"
@@ -498,7 +575,9 @@ class LocalToolAdapter:
             return NO_REPRO_TEST_LOG
 
         def inside(dest: Path) -> str:
-            for rel in test_files:  # git 이 보고한 저장소 상대 경로 — 결과 커밋의 테스트만 기준 코드 위에 놓는다
+            # git 이 보고한 저장소 상대 경로 — 결과 커밋의 테스트만 기준 코드 위에 놓는다. `worktree` 는 결과 커밋의
+            # 파일이 있는 곳(업무 worktree 또는 검증만 다시의 결과 커밋 체크아웃)이다.
+            for rel in test_files:
                 (dest / rel).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(worktree / rel, dest / rel)
             return _log_text(*self._run_argv(profile, dest))
@@ -576,6 +655,30 @@ def _source_result(handoff_dir: Path, execution_id: str) -> CodeChangeResult | N
         if result.execution_id == execution_id:
             return result
     return None
+
+
+def _verify_only_source(handoff_dir: Path, commit: str, base_commit: str) -> CodeChangeResult | None:
+    """인계 디렉터리의 수정 결과 봉투 중 `result_commit == commit` 이고 `base_commit` 이 같은 것 (이름 순 첫 번째)."""
+    for path in sorted(handoff_dir.glob("*.json")) if handoff_dir.is_dir() else []:
+        try:
+            result = CodeChangeResult.model_validate_json(path.read_bytes())
+        except (ValidationError, ValueError):
+            continue
+        if (result.result_commit, result.base_commit) == (commit, base_commit):
+            return result
+    return None
+
+
+def _has_commits_after_fetch(repo: Path, commits: Sequence[str]) -> bool:
+    """커밋이 모두 등록 폴더에 있는가. 없으면 origin 을 한 번 fetch 하고 다시 본다 — fetch 실패는 없음과 같다."""
+    if all(git_ops.has_commit(repo, commit) for commit in commits):
+        return True
+    try:
+        git_ops.fetch_origin(repo)
+    except GitError:
+        log.info("검증만 다시: %s 의 origin fetch 실패", repo.name)
+        return False
+    return all(git_ops.has_commit(repo, commit) for commit in commits)
 
 
 def _first_error(exc: ValidationError) -> str:

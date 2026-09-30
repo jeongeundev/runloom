@@ -18,14 +18,16 @@ import pytest
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import Progress
 from workflow.connector.local_tool import (
+    NO_REPRO_TEST_LOG,
     RESULT_SCHEMA,
     REVIEW_RESULT_SCHEMA,
     LocalToolAdapter,
     ToolResult,
     ToolRun,
     generic_result_schema,
+    resolve_pythonpath,
 )
-from workflow.contracts.v1 import CodeReviewResult, ExecutionRequest, GenericResult
+from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult, ExecutionRequest, GenericResult, Verification
 
 from .conftest import REVIEW_REQUEST, REVIEW_SPEC, make_local_request, make_request, make_review_request
 
@@ -1354,3 +1356,243 @@ def test_child_env_without_registration_run_has_no_registered_env(state_conn, re
     assert output.failed[0] == "registration_missing"
 
     assert "DATABASE_URL" not in adapter.child_env()
+
+
+# --- 상대 PYTHONPATH 풀기 (phase 17 step 3) -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("src", "/work/checkout/src"),
+    ("/opt/lib", "/opt/lib"),
+    ("src:/opt/lib:../shared", "/work/checkout/src:/opt/lib:/work/shared"),
+    ("./src/../lib", "/work/checkout/lib"),
+    ("", ""),
+    ("src::lib", "/work/checkout/src::/work/checkout/lib"),  # 빈 항목은 뜻을 바꾸지 않도록 그대로
+    ("~/lib:src", "~/lib:/work/checkout/src"),
+])
+def test_resolve_pythonpath_makes_relative_entries_absolute_against_cwd(value, expected):
+    env = {"PYTHONPATH": value, "DATABASE_URL": "rel/x", "OTHER": "src"}
+
+    resolved = resolve_pythonpath(env, Path("/work/checkout"))
+
+    assert resolved == {"PYTHONPATH": expected, "DATABASE_URL": "rel/x", "OTHER": "src"}  # 다른 변수는 그대로
+    assert env["PYTHONPATH"] == value  # 입력은 바꾸지 않는다
+
+
+def test_resolve_pythonpath_without_pythonpath_is_a_copy():
+    env = {"PATH": "/usr/bin", "LIB": "src"}
+
+    resolved = resolve_pythonpath(env, Path("/work"))
+
+    assert resolved == env and resolved is not env
+
+
+def test_child_env_resolves_registered_pythonpath_only_with_cwd(state_conn, repo, bug_handoff):
+    base = register_prepared(state_conn, repo, env={"PYTHONPATH": "src", "DATABASE_URL": "db/rel"})
+    adapter = ScriptedTool(state_conn, fix_and_add_test)
+    adapter.run(bug_request(base), bug_handoff, Recorder())
+
+    assert adapter.child_env()["PYTHONPATH"] == "src"  # cwd 없으면 지금과 같다
+    assert adapter.child_env(Path("/w/t"))["PYTHONPATH"] == "/w/t/src"
+    assert adapter.child_env(Path("/w/t"))["DATABASE_URL"] == "db/rel"
+
+
+# 검증 스크립트 — cwd 를 바꾼 하위 프로세스가 `lib/marker.py` 를 어디서 import 하는지 찍고, 재현 판정은 `_CHECK` 와 같다.
+_MARKER_PROBE = """\
+import subprocess, sys
+out = subprocess.run([sys.executable, "-c", "import marker; print(marker.__file__)"], cwd="/",
+                     capture_output=True, text=True)
+print("MARKER=" + (out.stdout.strip() or out.stderr.strip().splitlines()[-1]))
+""" + _CHECK
+
+
+def register_marker(state_conn, repo: Path) -> str:
+    (repo / "check.py").write_text(_MARKER_PROBE)
+    (repo / "lib").mkdir()
+    (repo / "lib" / "marker.py").write_text("")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "marker")
+    base = register_bug(state_conn, repo)
+    state.save_registration(state_conn, {
+        **state.get_registration(state_conn, "local-billing"), "env": {"PYTHONPATH": "lib"},
+    })
+    return base
+
+
+def _marker(log: bytes) -> Path:
+    line, = [line for line in log.decode().splitlines() if line.startswith("MARKER=")]
+    return Path(line.removeprefix("MARKER="))
+
+
+def test_relative_pythonpath_points_into_worktree_and_clean_checkout(state_conn, repo, bug_handoff):
+    base = register_marker(state_conn, repo)
+
+    output = ScriptedTool(state_conn, fix_and_add_test).run(bug_request(base), bug_handoff, Recorder())
+
+    assert output.failed is None, output.failed
+    worktree = git_ops.worktree_path(repo, BUG_TASK)
+    after = _marker(by_kind(output)["test_log_after"])
+    assert after == worktree / "lib" / "marker.py"
+    verified = _marker(by_kind(output)["verification_log"])
+    assert verified.name == "marker.py" and verified.parent.name == "lib"
+    assert verified.parent.parent.name == "checkout" and "workflow-checkout-" in str(verified)
+    before = _marker(by_kind(output)["test_log_before"])
+    assert "workflow-checkout-" in str(before) and before != verified  # 기준 커밋의 체크아웃은 따로 만든다
+
+
+# --- 검증만 다시 `verify_only_commit` (phase 17 step 3) ----------------------------------------------------------
+
+VERIFY_EXECUTION = "exec-gh-fix-002"
+
+
+def forbidden_tool(cwd: Path) -> ToolRun:
+    raise AssertionError("검증만 다시는 도구를 띄우지 않는다")
+
+
+def first_fix(state_conn, repo: Path, tmp_path: Path, script=fix_and_add_test):
+    """첫 수정 실행을 실제로 돌려 결과 커밋을 남기고 runner 처럼 worktree 를 지운다. 등록은 호출자가 먼저 한다."""
+    handoff = tmp_path / "first.handoff"
+    handoff.mkdir(exist_ok=True)
+    base = state.get_registration(state_conn, "local-billing")["base_commit"]
+    result = ScriptedTool(state_conn, script).run(bug_request(base), handoff, Recorder()).result
+    git_ops.remove_worktree(repo, git_ops.worktree_path(repo, BUG_TASK))
+    return result
+
+
+def verify_request(base_commit: str, commit: str) -> ExecutionRequest:
+    request = bug_request(base_commit, execution_id=VERIFY_EXECUTION, input_artifact_ids=["art-fix-result"])
+    return ExecutionRequest.model_validate({**request.model_dump(mode="json"), "verify_only_commit": commit})
+
+
+def source_at(result, commit: str):
+    """같은 수정 결과 봉투를 다른 결과 커밋으로 — 봉투 검증(verification.result_commit 일치)을 통과하게 둘 다 바꾼다."""
+    verification = result.verification.model_copy(update={"result_commit": commit})
+    return CodeChangeResult.model_validate(
+        {**result.model_dump(), "result_commit": commit, "verification": verification.model_dump()}
+    )
+
+
+def verify_handoff(tmp_path: Path, source) -> Path:
+    handoff = tmp_path / "verify.handoff"
+    handoff.mkdir(exist_ok=True)
+    if source is not None:
+        (handoff / "code_change_result.json").write_text(source.model_dump_json())
+    return handoff
+
+
+def test_verify_only_reruns_registered_profile_on_result_commit_without_tool(state_conn, repo, tmp_path):
+    base = register_prepared(state_conn, repo)
+    first = first_fix(state_conn, repo, tmp_path)
+    (repo / "src.py").write_text("VALUE = 'dirty'\n")  # 원본 폴더의 미커밋 변경은 검증에 섞이지 않는다
+    branches = _git(repo, "branch", "--list")
+    adapter = ScriptedTool(state_conn, forbidden_tool)
+    progress = Recorder()
+
+    output = adapter.run(verify_request(base, first.result_commit), verify_handoff(tmp_path, first), progress)
+
+    assert output.failed is None, output.failed
+    assert adapter.launched_with == [] and adapter.launched_readonly_with == []
+    result = output.result
+    assert (result.execution_id, result.base_commit, result.result_commit) == (
+        VERIFY_EXECUTION, base, first.result_commit,
+    )
+    assert result.outcome == "ready_for_review" and result.summary == f"검증만 다시 — {first.summary}"
+    assert result.verification.exit_code == 0 and result.verification.result_commit == first.result_commit
+    assert result.verification.profile_id == "vp-unit"
+    assert [meta.kind for meta, _ in output.artifacts] == [
+        "diff", "test_log_before", "test_log_after", "verification_log",
+    ]
+    artifacts = by_kind(output)
+    assert artifacts["test_log_before"].decode().splitlines()[0] == "exit_code=1"  # 기준 커밋 + 결과의 새 테스트
+    verification = artifacts["verification_log"].decode()
+    assert verification.splitlines()[0] == "exit_code=0" and artifacts["test_log_after"].decode() == verification
+    assert f"DATABASE_URL={DB_URL}" in verification and "VENV=True" in verification  # 등록 env·링크 적용
+    assert "test_repro.py" in artifacts["diff"].decode()
+    assert progress.runtime_refs == [f"verify-only:{VERIFY_EXECUTION}"]
+    assert output.runtime_ref == f"verify-only:{VERIFY_EXECUTION}" and output.usage is None
+    assert _git(repo, "branch", "--list") == branches  # 브랜치를 만들지 않는다
+    assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1  # 임시 체크아웃은 정리됨
+    assert (repo / "src.py").read_text() == "VALUE = 'dirty'\n"
+
+
+def test_verify_only_reports_the_new_verification_exit_code(state_conn, repo, tmp_path):
+    base = register_bug(state_conn, repo)
+    first = first_fix(state_conn, repo, tmp_path)
+    state.save_registration(state_conn, {
+        **state.get_registration(state_conn, "local-billing"),
+        "verification_profiles": {"vp-unit": [sys.executable, "-c", "import sys; print('flaky'); sys.exit(3)"]},
+    })
+
+    output = ScriptedTool(state_conn, forbidden_tool).run(
+        verify_request(base, first.result_commit), verify_handoff(tmp_path, first), Recorder(),
+    )
+
+    assert output.failed is None, output.failed
+    assert output.result.verification.exit_code == 3
+    assert by_kind(output)["verification_log"].decode() == "exit_code=3\nflaky\n"
+
+
+def test_verify_only_without_test_files_is_needs_information(state_conn, repo, tmp_path):
+    base = register_bug(state_conn, repo)
+    first = first_fix(state_conn, repo, tmp_path, script=fix_only)
+
+    output = ScriptedTool(state_conn, forbidden_tool).run(
+        verify_request(base, first.result_commit), verify_handoff(tmp_path, first), Recorder(),
+    )
+
+    assert output.failed is None, output.failed
+    assert output.result.outcome == "needs_information"
+    assert by_kind(output)["test_log_before"].decode() == NO_REPRO_TEST_LOG
+
+
+def test_verify_only_without_matching_source_result_is_source_mismatch(state_conn, repo, tmp_path):
+    base = register_bug(state_conn, repo)
+    first = first_fix(state_conn, repo, tmp_path)
+    adapter = ScriptedTool(state_conn, forbidden_tool)
+
+    empty = adapter.run(verify_request(base, first.result_commit), verify_handoff(tmp_path, None), Recorder())
+    other = source_at(first, "e" * 40)
+    (tmp_path / "verify.handoff" / "code_change_result.json").write_text(other.model_dump_json())
+    mismatched = adapter.run(verify_request(base, first.result_commit), tmp_path / "verify.handoff", Recorder())
+
+    assert empty.failed[0] == "source_mismatch" and mismatched.failed[0] == "source_mismatch"
+    assert empty.failed[2] is True and empty.result is None
+
+
+def test_verify_only_missing_commit_fails_without_tool(state_conn, repo, tmp_path):
+    base = register_bug(state_conn, repo)
+    first = first_fix(state_conn, repo, tmp_path)
+    ghost = source_at(first, "f" * 40)
+    progress = Recorder()
+
+    output = ScriptedTool(state_conn, forbidden_tool).run(
+        verify_request(base, ghost.result_commit), verify_handoff(tmp_path, ghost), progress,
+    )
+
+    assert output.result is None and output.failed[0] == "result_commit_missing"
+    assert progress.runtime_refs == []
+
+
+def test_verify_only_fetches_origin_when_commit_is_only_there(state_conn, repo, tmp_path):
+    """다른 러너가 올린 결과 커밋 — 등록 폴더에 없으면 origin 에서 fetch 한 뒤 검증한다."""
+    base = register_bug(state_conn, repo)
+    upstream = tmp_path / "upstream"
+    _git(tmp_path, "clone", "-q", str(repo), str(upstream))
+    (upstream / "src.py").write_text("VALUE = 'fixed'\n")
+    (upstream / "tests" / "test_repro.py").write_text("def test_repro():\n    assert True\n")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-q", "-m", "fix elsewhere")
+    commit = _git(upstream, "rev-parse", "HEAD")
+    _git(repo, "remote", "add", "origin", str(upstream))
+    source = CodeChangeResult(
+        contract_version=1, execution_id="exec-gh-fix-001", task_id=BUG_TASK, outcome="ready_for_review",
+        summary="다른 Mac 에서 고쳤다", base_commit=base, result_commit=commit, artifact_ids=[],
+        verification=Verification(profile_id="vp-unit", result_commit=commit, exit_code=1, log_artifact_id="log"),
+    )
+
+    output = ScriptedTool(state_conn, forbidden_tool).run(
+        verify_request(base, commit), verify_handoff(tmp_path, source), Recorder(),
+    )
+
+    assert output.failed is None, output.failed
+    assert output.result.result_commit == commit and output.result.verification.exit_code == 0

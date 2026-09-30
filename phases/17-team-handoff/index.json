@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "runner-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T22:43:48+0900",
+      "summary": "러너: connector/local_tool.py — resolve_pythonpath(env, cwd)(순수, 빈 항목·~·절대 경로 그대로, 나머지 normpath(cwd/item), 다른 변수 불변), child_env(cwd=None)(cwd 주면 풀기) — _run_argv(worktree·임시 체크아웃)·codex._launch·claude.tool_env(cwd) 가 자기 cwd 를 넘김. 검증만 다시: run 이 request.verify_only_commit 이면 등록·프로필 확인 뒤 _run_verify_only(도구 안 띄움) — _verify_only_source(인계 봉투 중 result_commit·base_commit 일치, 없으면 source_mismatch) → _has_commits_after_fetch(두 커밋, 없으면 origin fetch 한 번 뒤 다시, 그래도 없으면 result_commit_missing) → progress runtime_ref verify-only:<execution_id> → 결과 커밋 깨끗한 체크아웃(등록 links·copies 적용) 안에서 _test_before(테스트 파일은 그 체크아웃에서) + 등록 프로필 1회(로그를 test_log_after·verification_log 둘 다) → diff → CodeChangeResult(outcome=테스트 파일 있으면 이전 outcome 아니면 needs_information, summary '검증만 다시 — '+이전 요약, result_commit=그 커밋), 산출물 diff·test_log_before·test_log_after·verification_log(원시 로그·usage 없음), worktree·브랜치 만들지 않음. client.claim(capabilities=RUNNER_CAPABILITIES) 가 늘 capabilities 를 싣는다. cli --env 도움말에 상대 PYTHONPATH 안내. 결정: step 파일은 'push 하지 않는다'지만 ARCHITECTURE('_push_result 평소 규칙 그대로')를 따라 runner._push_result 는 그대로 둠 — 이미 있는 결과 브랜치를 fast-forward push 해 branch_pushed 를 보고해야 검토 승인 뒤 초안 PR(_queue_pull_request 가 검토 대상 실행의 branch_pushed 를 봄)이 이어진다; 어댑터는 브랜치를 만들지 않는다. 테스트: test_local_tool 16개(풀기 9·child_env·worktree/체크아웃 marker 하위 프로세스 cwd='/'·검증만 다시 정상/exit code/테스트 없음/source_mismatch/없는 커밋/origin fetch), test_codex·test_claude 도구 env PYTHONPATH, test_client capabilities(기존 claim 본문 단정에 capabilities 추가), test_cli 도움말 2. 검증: pytest 3265 passed·48 skipped, ruff 통과. 다음 step 주의: 서버 쪽 repo.record_runner_capabilities·claim_execution 검증만 다시 방어·create_execution 의 executions.verify_only 채우기는 아직 없음(step 7). 새 러너는 capabilities 를 늘 보내므로 v13 이전 서버에는 422 — 서버 먼저 업그레이드."
     },
     {
       "step": 4,
