@@ -133,9 +133,22 @@ PYEOF
 }
 
 load_plist() {
-  launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
-  echo "러너 적재: $LABEL (로그 $LOG_DIR)"
+  local domain="gui/$(id -u)" i
+  launchctl bootout "$domain/$LABEL" >/dev/null 2>&1 || true
+  # bootout 은 서비스가 다 내려가기 전에 돌아온다 — 곧바로 bootstrap 하면 "5: Input/output error"
+  for i in $(seq 1 10); do
+    launchctl print "$domain/$LABEL" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  for i in 1 2 3; do
+    if launchctl bootstrap "$domain" "$PLIST_PATH"; then
+      echo "러너 적재: $LABEL (로그 $LOG_DIR)"
+      return 0
+    fi
+    [[ "$i" == 3 ]] || sleep 1
+  done
+  echo "러너 적재에 실패했습니다. 잠시 뒤 직접 실행하세요: launchctl bootstrap $domain $PLIST_PATH" >&2
+  return 1
 }
 
 if [[ "$DRY_RUN" == 1 ]]; then

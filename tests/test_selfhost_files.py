@@ -243,8 +243,15 @@ echo "curl $*" >> "$FAKE_LOG"
 if [ "${FAKE_CURL_FAIL:-0}" = 1 ]; then exit 7; fi
 echo '{"status":"ok","mode":"selfhost","schema_version":6}'
 """
+# print: FAKE_PRINT_LOADED 번까지 "아직 적재됨"(0), 그 뒤 "없음"(113).
+# bootstrap: FAKE_BOOTSTRAP_FAILS 번까지 5(Input/output error), 그 뒤 성공.
 FAKE_LAUNCHCTL = """#!/bin/bash
 echo "launchctl $*" >> "$FAKE_LOG"
+count() { local f="$FAKE_LOG.$1"; local n=$(( $(cat "$f" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$f"; echo "$n"; }
+case "$1" in
+  print) [ "$(count print)" -le "${FAKE_PRINT_LOADED:-0}" ] && exit 0; exit 113 ;;
+  bootstrap) [ "$(count bootstrap)" -le "${FAKE_BOOTSTRAP_FAILS:-0}" ] && { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; } ;;
+esac
 exit 0
 """
 
@@ -464,6 +471,36 @@ def test_install_runner_writes_plist_and_loads_it_when_connected(tmp_path):
     assert plist["Label"] == "com.workflow.selfhost.connector"
     calls = _calls(tmp_path)
     assert any(c.startswith("launchctl bootstrap") and str(plist_path) in c for c in calls)
+
+
+def _run_connected_runner(tmp_path: Path, **env: str):
+    connector_home = tmp_path / "connector"
+    connector_home.mkdir()
+    (connector_home / "token.json").write_text("{}", encoding="utf-8")
+    return _run_runner(tmp_path, WORKFLOW_CONNECTOR_HOME=str(connector_home), SKIP_PIP_INSTALL="1", **env)
+
+
+def test_install_runner_waits_for_bootout_before_bootstrap(tmp_path):
+    # bootout 은 서비스가 내려가기 전에 돌아온다 — 사라질 때까지 기다린 뒤 bootstrap (2026-09-30 재설치 때 5 실패)
+    res = _run_connected_runner(tmp_path, FAKE_PRINT_LOADED="2")
+    assert res.returncode == 0, res.stdout + res.stderr
+    verbs = [c.split()[1] for c in _calls(tmp_path) if c.startswith("launchctl")]
+    assert verbs == ["bootout", "print", "print", "print", "bootstrap"]
+
+
+def test_install_runner_retries_bootstrap_after_io_error(tmp_path):
+    res = _run_connected_runner(tmp_path, FAKE_BOOTSTRAP_FAILS="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert sum(c.startswith("launchctl bootstrap") for c in _calls(tmp_path)) == 2
+    assert "러너 적재" in res.stdout
+
+
+def test_install_runner_fails_when_bootstrap_keeps_failing(tmp_path):
+    res = _run_connected_runner(tmp_path, FAKE_BOOTSTRAP_FAILS="9")
+    assert res.returncode != 0
+    assert sum(c.startswith("launchctl bootstrap") for c in _calls(tmp_path)) == 3
+    assert "러너 적재" not in res.stdout
+    assert "launchctl bootstrap" in res.stderr  # 사용자가 직접 칠 명령 안내
 
 
 def test_install_runner_does_not_load_before_connect(tmp_path):
