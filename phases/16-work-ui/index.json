@@ -1,0 +1,61 @@
+{
+  "project": "workflow",
+  "phase": "16-work-ui",
+  "steps": [
+    {
+      "step": 0,
+      "name": "work-ui-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "schema-v12",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "work-list-model",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "assign-priority",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "work-list-ui",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "detail-panel",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "connect-tabs",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "monitor-start",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "direct-work",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "pr-signal",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "work-ui-verify",
+      "status": "pending"
+    }
+  ]
+}

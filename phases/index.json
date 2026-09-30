@@ -81,6 +81,10 @@
       "dir": "15-team",
       "status": "completed",
       "completed_at": "2026-09-30T12:00:44+0900"
+    },
+    {
+      "dir": "16-work-ui",
+      "status": "pending"
     }
   ]
 }
