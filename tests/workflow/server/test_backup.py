@@ -354,7 +354,7 @@ def test_selfhost_v8_copy_upgrades_to_v11_and_backups_round_trip(tmp_path, capsy
         "work_items": 6, "work_item_links": 0, "members": 1, "field_mappings": 1, "work_item_events": 0,
         "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0,
     }
-    assert _version_and_kinds(src / "central.sqlite") == (12, ["bug_fix", "code_review"])
+    assert _version_and_kinds(src / "central.sqlite") == (13, ["bug_fix", "code_review"])
 
     # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
     assert backup.main(["create"], env=env, now=lambda: T2) == 0
@@ -650,7 +650,7 @@ def test_selfhost_v10_copy_upgrades_to_v11_needs_first_setup_and_backups_round_t
     v11_counts = _counts(src / "central.sqlite")
     assert v11_counts == {**v10_counts, "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0}
     facts = _v11_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 12
+    assert facts["version"] == SCHEMA_VERSION == 13
     assert facts["needs_first_setup"] is True  # 첫 접속에서 .env 토큰으로 관리자 계정을 만든다
     assert facts["admin"] == (V10_ADMIN, "관리자", "admin", None, None, None)
     assert (facts["runner_owner"], facts["code_issuer"]) == (None, None)  # 기존 러너 = 관리자 관리
@@ -824,7 +824,7 @@ def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backup
     v12_counts = _counts(src / "central.sqlite")
     assert v12_counts == {**v11_counts, "work_pull_requests": 0}
     facts = _v12_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 12
+    assert facts["version"] == SCHEMA_VERSION == 13
     assert facts["stored"] == [(n, status, reason) for n, status, reason, *_ in V11_WORKS]
     assert facts["recomputed"] == facts["stored"]
     assert facts["direct"] == {(None, None, None)}
@@ -837,7 +837,7 @@ def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backup
     v12_backup = capsys.readouterr().out.strip()
     assert backup.main(["list"], env=env) == 0
     listed = dict(line.split("\t", 1) for line in capsys.readouterr().out.strip().splitlines())
-    assert listed[v12_backup].endswith("schema 12") and listed[v11_backup].endswith("schema 11")
+    assert listed[v12_backup].endswith("schema 13") and listed[v11_backup].endswith("schema 11")
     dst = tmp_path / "dst"
     dst_env = {**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
     assert backup.main(["restore", v12_backup], env=dst_env) == 0

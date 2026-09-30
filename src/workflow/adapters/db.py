@@ -11,11 +11,12 @@ from pathlib import Path
 
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.adapters.repo import ensure_first_admin, seed_default_field_mappings, work_item_facts
+from workflow.domain.delegation import DELEGATION_POLICIES
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -237,7 +238,8 @@ _V7_SOURCE_ISSUE_ALTERS = "".join(
 _EXECUTION_PUSH_COLUMN = "branch_pushed INTEGER CHECK (branch_pushed IS NULL OR branch_pushed IN (0, 1))"
 _V8_EXECUTION_ALTERS = f"ALTER TABLE executions ADD COLUMN {_EXECUTION_PUSH_COLUMN};\n"
 PULL_REQUEST_STATES = ("pending", "open", "merged", "closed", "failed")
-NOTIFICATION_EVENTS = ("human_request", "pr_opened", "task_failed")
+# v8 이 만든 알림 사건. v13 이 표를 재생성해 NOTIFICATION_EVENTS 로 넓힌다.
+_V8_NOTIFICATION_EVENTS = ("human_request", "pr_opened", "task_failed")
 NOTIFICATION_STATES = ("pending", "sent", "failed", "skipped")
 
 _V8_TABLES = f"""
@@ -269,7 +271,7 @@ CREATE TABLE IF NOT EXISTS task_pull_requests (
 CREATE TABLE IF NOT EXISTS notifications (
   notification_id TEXT PRIMARY KEY,                         -- 'ntf-' + 8 hex
   session_id      TEXT NOT NULL,
-  event           TEXT NOT NULL CHECK (event IN ({_in(NOTIFICATION_EVENTS)})),
+  event           TEXT NOT NULL CHECK (event IN ({_in(_V8_NOTIFICATION_EVENTS)})),
   task_id         TEXT REFERENCES tasks(task_id),
   dedupe_key      TEXT NOT NULL UNIQUE,
   content         TEXT NOT NULL,
@@ -432,7 +434,8 @@ ALTER TABLE connectors ADD COLUMN owner_member_id TEXT REFERENCES members(member
 
 # v12 (phase 16, ADR-0022): 직접 작업·감지 PR·PR 커서·업무 이벤트 종류. ARCHITECTURE "업무 화면 — phase 16" 스키마 v12.
 # tasks 는 재생성하지 않는다. work_item_events 만 type CHECK 를 넓히려고 재생성한다 — 이 표를 참조하는 표는 없다.
-WORK_ITEM_EVENT_TYPES = (
+# v12 가 만든 업무 이벤트 종류. v13 이 표를 다시 재생성해 WORK_ITEM_EVENT_TYPES 로 넓힌다.
+_V12_WORK_ITEM_EVENT_TYPES = (
     "status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked",
 )
 WORK_PULL_REQUEST_STATES = ("open", "merged", "closed")
@@ -476,7 +479,7 @@ CREATE TABLE work_item_events_v12 (
   id              INTEGER PRIMARY KEY,
   work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
   session_id      TEXT NOT NULL REFERENCES sessions(session_id),
-  type            TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_EVENT_TYPES)})),
+  type            TEXT NOT NULL CHECK (type IN ({_in(_V12_WORK_ITEM_EVENT_TYPES)})),
   config_revision INTEGER NOT NULL,
   occurred_at     TEXT NOT NULL,
   data_json       TEXT NOT NULL
@@ -485,6 +488,71 @@ INSERT INTO work_item_events_v12 (id, work_item_id, session_id, type, config_rev
   SELECT id, work_item_id, session_id, type, config_revision, occurred_at, data_json FROM work_item_events;
 DROP TABLE work_item_events;
 ALTER TABLE work_item_events_v12 RENAME TO work_item_events;
+CREATE INDEX IF NOT EXISTS ix_work_item_events_item ON work_item_events(work_item_id, id);
+CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(session_id, occurred_at);
+"""
+
+
+# v13 (phase 17, ADR-0023): 맡기기 정책·러너 능력·검증만 다시 표시·맡김 대기·지시 메모·알림 사건·업무 이벤트 종류.
+# ARCHITECTURE "사람 사이 인계 — phase 17" 스키마 v13. tasks 는 재생성하지 않는다(ALTER 만). notifications·work_item_events 만
+# CHECK 를 넓히려고 재생성한다 — 두 표를 참조하는 표는 없다. human_requests·human_responses 는 code·action 에 CHECK 가 없어
+# 그대로 둔다(owner_approval·approve·decline·reverify·withdraw 는 값만 새로 쓴다).
+NOTIFICATION_EVENTS = (*_V8_NOTIFICATION_EVENTS, "delegated_to_you", "runner_offline_waiting", "delegation_declined")
+WORK_ITEM_EVENT_TYPES = (*_V12_WORK_ITEM_EVENT_TYPES, "handoff_note")
+
+_V13_TABLES = f"""
+ALTER TABLE agents ADD COLUMN delegation_policy TEXT NOT NULL DEFAULT 'run'
+  CHECK (delegation_policy IN ({_in(DELEGATION_POLICIES)}));
+-- 마지막 claim 의 알려진 capabilities(정렬 JSON 배열). NULL = 보고 없음(옛 러너).
+ALTER TABLE connectors ADD COLUMN capabilities_json TEXT;
+-- 1 = 검증만 다시 실행(request_json 의 verify_only_commit 과 같이 채운다).
+ALTER TABLE executions ADD COLUMN verify_only INTEGER NOT NULL DEFAULT 0 CHECK (verify_only IN (0, 1));
+-- 사람이 맡겼는데 아직 실행이 없음(꺼진 러너 대기). NULL = 기다리지 않음.
+ALTER TABLE tasks ADD COLUMN start_pending_at TEXT;
+-- 지금 유효한 지시 메모와 쓴 멤버. 둘이 함께 NULL 이거나 handoff_note 가 값 — ALTER 로 표 CHECK 를 걸 수 없어 repo 가 지킨다.
+ALTER TABLE work_items ADD COLUMN handoff_note TEXT;
+ALTER TABLE work_items ADD COLUMN handoff_note_by_member_id TEXT REFERENCES members(member_id);
+
+-- 알림 재생성: 칸 순서(v8 칸 + v11 recipient_member_id·channel)·인덱스 그대로, event CHECK 만 넓힌다. 행·id 를 그대로 옮긴다.
+CREATE TABLE notifications_v13 (
+  notification_id     TEXT PRIMARY KEY,                     -- 'ntf-' + 8 hex
+  session_id          TEXT NOT NULL,
+  event               TEXT NOT NULL CHECK (event IN ({_in(NOTIFICATION_EVENTS)})),
+  task_id             TEXT REFERENCES tasks(task_id),
+  dedupe_key          TEXT NOT NULL UNIQUE,
+  content             TEXT NOT NULL,
+  payload_json        TEXT NOT NULL,
+  state               TEXT NOT NULL CHECK (state IN ({_in(NOTIFICATION_STATES)})),
+  attempts            INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_at             TEXT,
+  last_error          TEXT,
+  created_at          TEXT NOT NULL,
+  sent_at             TEXT,
+  recipient_member_id TEXT REFERENCES members(member_id),
+  channel             TEXT NOT NULL DEFAULT 'shared' CHECK (channel IN ({_in(NOTIFICATION_CHANNELS)}))
+);
+INSERT INTO notifications_v13 (notification_id, session_id, event, task_id, dedupe_key, content, payload_json, state,
+  attempts, next_at, last_error, created_at, sent_at, recipient_member_id, channel)
+  SELECT notification_id, session_id, event, task_id, dedupe_key, content, payload_json, state,
+  attempts, next_at, last_error, created_at, sent_at, recipient_member_id, channel FROM notifications;
+DROP TABLE notifications;
+ALTER TABLE notifications_v13 RENAME TO notifications;
+CREATE INDEX IF NOT EXISTS ix_notifications_recipient ON notifications(recipient_member_id);
+
+-- 업무 이벤트 재생성: v12 와 같은 순서, type CHECK 만 넓힌다(+ handoff_note).
+CREATE TABLE work_item_events_v13 (
+  id              INTEGER PRIMARY KEY,
+  work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
+  session_id      TEXT NOT NULL REFERENCES sessions(session_id),
+  type            TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_EVENT_TYPES)})),
+  config_revision INTEGER NOT NULL,
+  occurred_at     TEXT NOT NULL,
+  data_json       TEXT NOT NULL
+);
+INSERT INTO work_item_events_v13 (id, work_item_id, session_id, type, config_revision, occurred_at, data_json)
+  SELECT id, work_item_id, session_id, type, config_revision, occurred_at, data_json FROM work_item_events;
+DROP TABLE work_item_events;
+ALTER TABLE work_item_events_v13 RENAME TO work_item_events;
 CREATE INDEX IF NOT EXISTS ix_work_item_events_item ON work_item_events(work_item_id, id);
 CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(session_id, occurred_at);
 """
@@ -697,7 +765,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -935,8 +1003,18 @@ def _migrate_11_to_12(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 12")
 
 
+def _migrate_12_to_13(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 칸을 더하고 알림·업무 이벤트 표를 재생성한다 — 기존 행은 바꾸지 않는다
+    (정책 `run`, 검증만 다시 0, 나머지 새 칸 NULL, 알림·이벤트 행과 id 그대로). 업무·단계 상태는 다시 계산하지 않는다."""
+    for statement in _statements(_V13_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 13")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~11 은 12 까지 차례로(4 → 5 → … → 11 → 12) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~12 는 13 까지 차례로(4 → 5 → … → 12 → 13) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
     exists = conn.execute(
@@ -949,9 +1027,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11):
+        elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12):
             steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
-                     _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12)
+                     _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13)
             for step in steps[row[0] - 4:]:
                 step(conn)
         elif row[0] != SCHEMA_VERSION:

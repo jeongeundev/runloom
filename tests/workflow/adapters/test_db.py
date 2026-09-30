@@ -251,8 +251,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_12():
-    assert SCHEMA_VERSION == 12
+def test_schema_version_is_13():
+    assert SCHEMA_VERSION == 13
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -1070,12 +1070,12 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c.close()
 
 
-def test_migrates_v4_all_the_way_to_v12(db_path):
+def test_migrates_v4_all_the_way_to_v13(db_path):
     c = _v4_db(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 12
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 13
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
     assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
@@ -1349,7 +1349,8 @@ def test_fresh_db_has_v10_tables_columns_and_checks(conn):
 
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert PHASE14_TABLES <= _table_names(conn)
-    assert _columns(conn, "work_items") == WORK_ITEM_COLUMNS | {"requested_by_member_id"} | V12_COLUMNS["work_items"]  # v11·v12
+    assert _columns(conn, "work_items") == (WORK_ITEM_COLUMNS | {"requested_by_member_id"} | V12_COLUMNS["work_items"]
+                                             | V13_COLUMNS["work_items"])  # v11·v12·v13
     assert _columns(conn, "work_item_links") == {
         "from_work_item_id", "to_work_item_id", "type", "cause_execution_id", "created_at",
     }
@@ -1846,16 +1847,18 @@ def test_fresh_schema_matches_v10_migrated_schema(tmp_path):
 
 
 @pytest.mark.parametrize("make", [_v4_db, _v5_db, _v6_db, _v7_db, _v8_db, _v9_db, _v10_db])
-def test_migrates_v4_to_v10_all_the_way_to_v12(db_path, make):
+def test_migrates_v4_to_v10_all_the_way_to_v13(db_path, make):
     c = make(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 12
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 13
     assert TABLES <= _table_names(c)
     for table, columns in V11_COLUMNS.items():
         assert columns <= _columns(c, table), table
     for table, columns in V12_COLUMNS.items():
+        assert columns <= _columns(c, table), table
+    for table, columns in V13_COLUMNS.items():
         assert columns <= _columns(c, table), table
     assert c.execute("SELECT COUNT(*) FROM notifications WHERE channel != 'shared'").fetchone()[0] == 0
     assert c.execute("SELECT COUNT(*) FROM work_items WHERE direct_member_id IS NOT NULL").fetchone()[0] == 0
@@ -1927,7 +1930,7 @@ def _referencing(conn, table: str) -> list[str]:
 def test_v12_constants():
     from workflow.adapters import db
 
-    assert db.WORK_ITEM_EVENT_TYPES == (
+    assert db._V12_WORK_ITEM_EVENT_TYPES == (
         "status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked",
     )
     assert db.WORK_PULL_REQUEST_STATES == ("open", "merged", "closed")
@@ -2072,6 +2075,218 @@ def test_fresh_schema_matches_v11_migrated_schema(tmp_path, old):
         assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
     assert _indexes(fresh) == _indexes(migrated)
     sql = "SELECT sql FROM sqlite_master WHERE name IN ('work_item_events', 'work_pull_requests') ORDER BY name"
+    assert fresh.execute(sql).fetchall() == migrated.execute(sql).fetchall()  # CHECK 까지 같은 원문
+    fresh.close()
+    migrated.close()
+
+
+# --- phase 17: v12 → v13 맡기기 정책·러너 능력·검증만 다시·맡김 대기·지시 메모·알림 사건 (ADR-0023) -------------------
+
+V12_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v12.sql").read_text()
+V13_COLUMNS = {
+    "agents": {"delegation_policy"},
+    "connectors": {"capabilities_json"},
+    "executions": {"verify_only"},
+    "tasks": {"start_pending_at"},
+    "work_items": {"handoff_note", "handoff_note_by_member_id"},
+}
+_NOTIFICATION_INSERT = ("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+                        " payload_json, state, created_at) VALUES (?, 's1', ?, 't1', ?, 'c', '{}', 'pending', ?)")
+
+
+def _v12_db(db_path):
+    """phase 16 서버가 남긴 모양의 v12 DB. 워크스페이스 s1 — 관리자·멤버, 러너 1(소유자 = 멤버)·로컬 에이전트 1,
+    업무 1건(단계 Task 1, 실행 1), 열린 사람 요청 1, 알림 2건(공용·개인), 업무 이벤트 2건(id 5·9)."""
+    c = connect(db_path)
+    c.executescript(V12_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (12)")
+    c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES ('s1', ?, 1)", (NOW,))
+    for spec in BUILTIN_KINDS:
+        c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', ?, ?, ?)",
+                  (spec.kind, spec.model_dump_json(), NOW))
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at, email, password_hash)"
+              " VALUES ('mem-00000001', 's1', '관리자', 'admin', ?, 'a@example.com', 'scrypt$h')", (NOW,))
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+              " VALUES ('mem-0000000a', 's1', '김OO', 'member', ?)", (NOW,))
+    c.execute("INSERT INTO connectors (connector_id, token_sha256, created_at, supported_kinds_json, owner_member_id)"
+              " VALUES ('conn-1', 'h', ?, '[\"bug_fix\"]', 'mem-0000000a')", (NOW,))
+    c.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, connector_id, capabilities_json,"
+              " connection_state) VALUES ('agent-1', 'opensql', 'personal', 'local', 'conn-1', '[]', 'online')")
+    c.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, assignee_type,"
+              " assignee_id, status, status_reason, source_type, created_at, updated_at, requested_by_member_id)"
+              " VALUES ('wi-000000000001', 's1', 1, '쿠폰 오류', '고쳐 주세요', 'bug_fix', 'agent', 'agent-1',"
+              " '내 차례', '사람 요청 — 금액?', 'manual', ?, ?, 'mem-00000001')", (NOW, NOW))
+    _insert_task(c, "t1", "s1", "bug_fix")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001', chosen_agent_id = 'agent-1' WHERE task_id = 't1'")
+    c.execute("INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+              " status, created_at) VALUES ('e1', 't1', 1, 'k1', 'agent-1', 'bug_fix', '{}', 'result_ready', ?)", (NOW,))
+    c.execute("INSERT INTO human_requests (request_id, task_id, code, question, cause_key, task_revision, revision,"
+              " state, created_at) VALUES ('hr-00000001', 't1', 'fix_needs_information', '금액?', 'a:1', 1, 1, 'open', ?)",
+              (NOW,))
+    c.execute(_NOTIFICATION_INSERT, ("ntf-00000001", "human_request", "human_request:hr-00000001", NOW))
+    c.execute("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+              " payload_json, state, attempts, created_at, sent_at, recipient_member_id, channel)"
+              " VALUES ('ntf-00000002', 's1', 'task_failed', 't1', 'task_failed:e1', 'c', '{}', 'sent', 1, ?, ?,"
+              " 'mem-0000000a', 'personal')", (NOW, NOW))
+    event = ("INSERT INTO work_item_events (id, work_item_id, session_id, type, config_revision, occurred_at,"
+             " data_json) VALUES (?, 'wi-000000000001', 's1', ?, 1, ?, '{}')")
+    c.execute(event, (5, "status_changed", NOW))
+    c.execute(event, (9, "direct_started", NOW))
+    return c
+
+
+def test_v13_constants():
+    from workflow.adapters import db
+    from workflow.domain.delegation import DELEGATION_POLICIES
+
+    assert db.NOTIFICATION_EVENTS == (
+        "human_request", "pr_opened", "task_failed", "delegated_to_you", "runner_offline_waiting",
+        "delegation_declined",
+    )
+    assert db.WORK_ITEM_EVENT_TYPES == (
+        "status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked",
+        "handoff_note",
+    )
+    assert DELEGATION_POLICIES == ("run", "owner_approval")
+
+
+def test_fresh_db_has_v13_columns_and_checks(conn):
+    _v12_base(conn)
+    for table, columns in V13_COLUMNS.items():
+        assert columns <= _columns(conn, table), table
+    assert ("members", "handoff_note_by_member_id", "member_id") in _foreign_keys(conn, "work_items")
+    # 정책 — 기본 run, 두 값만
+    conn.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
+                 " connection_state) VALUES ('agent-1', 'a', 'team', 'local', '[]', 'online')")
+    assert conn.execute("SELECT delegation_policy FROM agents").fetchone()[0] == "run"
+    conn.execute("UPDATE agents SET delegation_policy = 'owner_approval'")
+    for bad in ("approve", "", None):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE agents SET delegation_policy = ?", (bad,))
+    # 검증만 다시 표시 — 기본 0, 0·1 만
+    assert {r[0] for r in conn.execute("SELECT verify_only FROM executions")} == {0}
+    conn.execute("UPDATE executions SET verify_only = 1")
+    for bad in (2, None):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE executions SET verify_only = ?", (bad,))
+    # 지시 메모 쓴 멤버는 있는 멤버
+    conn.execute("UPDATE work_items SET handoff_note = '결제 모듈만', handoff_note_by_member_id = 'mem-00000002'")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE work_items SET handoff_note_by_member_id = 'mem-nope'")
+    conn.execute("UPDATE tasks SET start_pending_at = ?", (NOW,))
+    conn.execute("UPDATE connectors SET capabilities_json = '[\"verify_only\"]'")
+
+
+def test_v13_notification_events_and_work_item_event_types(conn):
+    _v12_base(conn)
+    from workflow.adapters.db import NOTIFICATION_EVENTS, WORK_ITEM_EVENT_TYPES
+
+    for n, event in enumerate(NOTIFICATION_EVENTS):
+        conn.execute(_NOTIFICATION_INSERT, (f"ntf-{n}", event, f"k{n}", NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(_NOTIFICATION_INSERT, ("ntf-x", "approved", "kx", NOW))
+    for event_type in WORK_ITEM_EVENT_TYPES:
+        conn.execute(_WORK_EVENT_INSERT, (event_type, NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(_WORK_EVENT_INSERT, ("commented", NOW))
+    notification_indexes = {r["name"] for r in conn.execute("PRAGMA index_list(notifications)")}
+    assert "ix_notifications_recipient" in notification_indexes
+    # 재생성하는 두 표를 참조하는 표가 없다 — 재생성해도 끊길 외래키가 없다
+    assert _referencing(conn, "notifications") == []
+    assert _referencing(conn, "work_item_events") == []
+    # 알림 경로·받는 사람 제약은 재생성 뒤에도 그대로
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE notifications SET channel = 'dm'")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE notifications SET recipient_member_id = 'mem-nope'")
+
+
+def test_v12_fixture_is_the_phase16_schema(db_path):
+    c = _v12_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 12
+    assert _table_names(c) - {"sqlite_sequence"} == TABLES | {"schema_version"}
+    for table, columns in V13_COLUMNS.items():
+        assert not columns & _columns(c, table), table
+    with pytest.raises(sqlite3.IntegrityError):  # v12 는 새 알림 사건을 모른다
+        c.execute(_NOTIFICATION_INSERT, ("ntf-x", "delegated_to_you", "kx", NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # v12 는 새 이벤트 종류를 모른다
+        c.execute(_WORK_EVENT_INSERT, ("handoff_note", NOW))
+    c.close()
+
+
+def test_migrates_v12_to_v13_preserving_rows_with_defaults(db_path):
+    c = _v12_db(db_path)
+    columns = _column_lists(c, TABLES)
+    before = _dump(c, TABLES)
+    tasks_page = c.execute("SELECT rootpage FROM sqlite_master WHERE name = 'tasks'").fetchone()[0]
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    assert _dump(c, TABLES, columns) == before  # 기존 행 수·열 값은 그대로
+    assert [r[0] for r in c.execute("SELECT id FROM work_item_events ORDER BY id")] == [5, 9]
+    assert [r[0] for r in c.execute("SELECT notification_id FROM notifications ORDER BY notification_id")] == [
+        "ntf-00000001", "ntf-00000002"]
+    assert [tuple(r) for r in c.execute("SELECT delegation_policy FROM agents")] == [("run",)]
+    assert [tuple(r) for r in c.execute("SELECT verify_only FROM executions")] == [(0,)]
+    assert [tuple(r) for r in c.execute("SELECT capabilities_json FROM connectors")] == [(None,)]
+    assert [tuple(r) for r in c.execute("SELECT start_pending_at FROM tasks")] == [(None,)]
+    assert [tuple(r) for r in c.execute("SELECT handoff_note, handoff_note_by_member_id FROM work_items")] == [(None, None)]
+    # tasks 는 재생성하지 않는다 — 칸만 붙는다(같은 b-tree)
+    assert c.execute("SELECT rootpage FROM sqlite_master WHERE name = 'tasks'").fetchone()[0] == tasks_page
+    assert {"ix_notifications_recipient"} <= {r["name"] for r in c.execute("PRAGMA index_list(notifications)")}
+    assert {"ix_work_item_events_item", "ix_work_item_events_session"} <= {
+        r["name"] for r in c.execute("PRAGMA index_list(work_item_events)")}
+    c.execute(_NOTIFICATION_INSERT, ("ntf-00000003", "delegation_declined", "delegation_declined:hr-1", NOW))
+    c.execute(_WORK_EVENT_INSERT, ("handoff_note", NOW))
+    assert c.execute("SELECT MAX(id) FROM work_item_events").fetchone()[0] == 10  # id 는 이어서
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("UPDATE agents SET delegation_policy = 'ask'")
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_v13_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v12_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    before = _dump(c, TABLES)
+    recreated = "SELECT name, sql FROM sqlite_master WHERE name IN ('notifications', 'work_item_events') ORDER BY name"
+    sql_before = c.execute(recreated).fetchall()
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 12
+    for table, columns in V13_COLUMNS.items():
+        assert not columns & _columns(c, table), table
+    assert c.execute(recreated).fetchall() == sql_before
+    assert _dump(c, TABLES) == before
+    assert not c.in_transaction
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001' WHERE task_id = 't1'")
+    init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    c.close()
+
+
+@pytest.mark.parametrize("old", ["v11", "v12"])
+def test_fresh_schema_matches_v12_migrated_schema(tmp_path, old):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = (_v11_db if old == "v11" else _v12_db)(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    assert _table_names(fresh) == _table_names(migrated)
+    for table in TABLES:
+        cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid"
+        assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
+        assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    assert _indexes(fresh) == _indexes(migrated)
+    sql = "SELECT sql FROM sqlite_master WHERE name IN ('notifications', 'work_item_events') ORDER BY name"
     assert fresh.execute(sql).fetchall() == migrated.execute(sql).fetchall()  # CHECK 까지 같은 원문
     fresh.close()
     migrated.close()

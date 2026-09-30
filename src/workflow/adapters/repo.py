@@ -68,6 +68,12 @@ from workflow.contracts.v1 import (
 )
 from workflow.domain import status as domain_status
 from workflow.domain import team
+from workflow.domain.delegation import (
+    DELEGATION_POLICIES,
+    OWNER_APPROVAL_CODE,
+    approval_cause_key,
+    parse_approval_cause_key,
+)
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
@@ -561,6 +567,20 @@ def hand_work_to_agent(
         if issue is not None:
             _delegate_issue(conn, issue["source_id"], issue["github_issue_id"], by="operator", now=now)
         refresh_work_status(conn, work_item_id, now=now)
+
+
+def _set_handoff_note(conn: Connection, work_item_id: str, *, agent_id: str, note: str | None, member_id: str | None,
+                      now: str) -> None:
+    """지금 유효한 지시 메모를 바꾼다. 메모가 있으면 두 칸을 채우고 `handoff_note` `{"agent_id", "note", "by"}` 한 행,
+    없으면 두 칸을 함께 비운다(이벤트 없음). 자체 BEGIN·재계산 없음 — `hand_work_to_agent`·`_assign_work_item` 만 부른다."""
+    row = _one(conn, "SELECT session_id FROM work_items WHERE work_item_id = ?", (work_item_id,))
+    if row is None:
+        raise NotFound(f"work item {work_item_id}")
+    conn.execute("UPDATE work_items SET handoff_note = ?, handoff_note_by_member_id = ?, updated_at = ?"
+                 " WHERE work_item_id = ?", (note, member_id if note is not None else None, now, work_item_id))
+    if note is not None:
+        _work_item_event(conn, work_item_id, row["session_id"], "handoff_note",
+                         {"agent_id": agent_id, "note": note, "by": member_id}, now)
 
 
 DIRECT_STOP_REASONS = ("stopped", "handed_to_agent", "reassigned", "closed")
@@ -1066,6 +1086,29 @@ def set_agent_connection(
         (state, last_seen_at, agent_id),
     )
     _require_rowcount(cur, f"agent {agent_id}")
+
+
+def set_delegation_policy(conn: Connection, session_id: str, agent_id: str, policy: str, *, member_id: str | None,
+                          now: str) -> bool:
+    """맡기기 정책(`run`·`owner_approval`, 아니면 ValueError). 바뀌면 True. `run` 으로 바꾸면 같은 트랜잭션에서 그 에이전트의
+    열린 승인 요청을 `withdraw` 하고 그 업무 상태를 다시 계산한다. 이 워크스페이스에 붙지 않은 에이전트 → NotFound.
+    권한(`can_set_policy`)은 서버가 판정한다."""
+    if policy not in DELEGATION_POLICIES:
+        raise ValueError(f"맡기기 정책 {policy!r}")
+    with _tx(conn):
+        agent = get_agent(conn, agent_id)
+        if agent is None or not is_session_agent(conn, session_id, agent_id):
+            raise NotFound(f"agent {agent_id}")
+        if agent["delegation_policy"] == policy:
+            return False
+        conn.execute("UPDATE agents SET delegation_policy = ? WHERE agent_id = ?", (policy, agent_id))
+        if policy == "run":
+            open_requests = _open_owner_approvals(conn, agent_id=agent_id)
+            withdraw_owner_approvals(conn, agent_id=agent_id, reason="맡기기 정책을 바로 실행으로 바꿈",
+                                     member_id=member_id, now=now)
+            for task_id in dict.fromkeys(r["task_id"] for r in open_requests):
+                _refresh_stage_work(conn, task_id, now=now)
+        return True
 
 
 def agents_for_connector(conn: Connection, connector_id: str) -> list[Row]:
@@ -2936,6 +2979,69 @@ def list_human_responses(conn: Connection, task_id: str) -> list[Row]:
         " WHERE hr.task_id = ? ORDER BY r.created_at, r.rowid",
         (task_id,),
     ).fetchall()
+
+
+def _open_owner_approvals(conn: Connection, *, work_item_id: str | None = None,
+                          agent_id: str | None = None) -> list[Row]:
+    """열린 `owner_approval` 요청(만든 순) — 업무·에이전트로 좁힌다. 에이전트는 원인 키에서 읽는다."""
+    rows = conn.execute(
+        "SELECT hr.* FROM human_requests hr JOIN tasks t ON t.task_id = hr.task_id"
+        " WHERE hr.code = ? AND hr.state = 'open' AND (? IS NULL OR t.work_item_id = ?)"
+        " ORDER BY hr.created_at, hr.rowid",
+        (OWNER_APPROVAL_CODE, work_item_id, work_item_id),
+    ).fetchall()
+    if agent_id is None:
+        return rows
+    return [r for r in rows if (parse_approval_cause_key(r["cause_key"]) or (None,))[0] == agent_id]
+
+
+def open_owner_approval(conn: Connection, task_id: str, *, agent_id: str, requester_id: str | None, question: str,
+                        now: str) -> tuple[str, bool]:
+    """(request_id, created). 승인 범위(단계·에이전트·맡긴 사람)에 열린 요청이 있으면 그것을 돌려준다 — 범위마다 열린
+    요청은 하나. 없으면 `owner_approval:<agent_id>:<requester_id 또는 none>:<seq>`(seq = 그 범위의 기존 요청 수 + 1)로
+    새 요청을 만들고 업무 상태를 다시 계산한다. 새 요청을 만들지 여부(승인 상태)는 호출자가 정한다. 없는 Task → NotFound."""
+    with _tx(conn):
+        scope = [r for r in list_owner_approvals(conn, task_id)
+                 if parse_approval_cause_key(r["cause_key"]) is not None
+                 and parse_approval_cause_key(r["cause_key"])[:2] == (agent_id, requester_id)]
+        opened = [r for r in scope if r["state"] == "open"]
+        if opened:
+            return opened[0]["request_id"], False
+        request_id, created = _create_human_request(
+            conn, task_id, OWNER_APPROVAL_CODE, question, approval_cause_key(agent_id, requester_id, len(scope) + 1),
+            now)
+        _refresh_stage_work(conn, task_id, now=now)
+        return request_id, created
+
+
+def list_owner_approvals(conn: Connection, task_id: str) -> list[Row]:
+    """단계의 `owner_approval` 요청(만든 순)과 그 응답 동작(`action` — 열림이면 NULL)·응답한 멤버(`responder_id`)."""
+    return conn.execute(
+        "SELECT hr.*, r.action AS action, r.member_id AS responder_id FROM human_requests hr"
+        " LEFT JOIN human_responses r ON r.request_id = hr.request_id"
+        " WHERE hr.task_id = ? AND hr.code = ? ORDER BY hr.created_at, hr.rowid",
+        (task_id, OWNER_APPROVAL_CODE),
+    ).fetchall()
+
+
+def withdraw_owner_approvals(conn: Connection, *, work_item_id: str | None = None, agent_id: str | None = None,
+                             reason: str, member_id: str | None, now: str) -> int:
+    """열린 승인 요청을 닫는다(닫은 수) — 요청마다 응답 한 행(`withdraw-<request_id>`, `withdraw`, `text = reason`,
+    `task_revision` = 지금 revision 그대로)과 요청 `answered`. Task revision 은 올리지 않는다. 업무·에이전트 중 하나는
+    있어야 한다(ValueError). 자체 BEGIN·재계산 없음 — 그 변경과 같은 트랜잭션에서 부른다."""
+    if work_item_id is None and agent_id is None:
+        raise ValueError("업무나 에이전트로 좁혀야 합니다.")
+    requests = _open_owner_approvals(conn, work_item_id=work_item_id, agent_id=agent_id)
+    for request in requests:
+        conn.execute(
+            "INSERT INTO human_responses (request_id, response_id, action, text, agent_id, expected_revision,"
+            " task_revision, created_at, member_id) VALUES (?, ?, 'withdraw', ?, NULL, ?, ?, ?, ?)",
+            (request["request_id"], f"withdraw-{request['request_id']}", reason, request["revision"],
+             get_task(conn, request["task_id"])["revision"], now, member_id),
+        )
+        conn.execute("UPDATE human_requests SET state = 'answered', revision = revision + 1, answered_at = ?"
+                     " WHERE request_id = ?", (now, request["request_id"]))
+    return len(requests)
 
 
 def record_human_response_once(
