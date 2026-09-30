@@ -1,0 +1,45 @@
+{# 내 설정 (`/me`, 모든 멤버) — ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 비밀번호는 되돌려 채우지 않는다.
+   개인 웹훅 URL 은 비밀 파일(`notify_webhook_url.<member_id>`, 0600)에만 두고 다시 보이지 않는다 — 저장됨/없음·호스트만. #}
+{% extends "base.html" %}
+{% block title %}내 설정 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">내 설정</div></div>
+{% if error %}<div class="alert" data-me-error>{{ error }}</div>{% endif %}
+
+<h2 style="margin-top:0">계정</h2>
+<form method="post" action="/me/profile" class="card">
+  <p class="small" style="margin-top:0">이메일 {{ account.email }} · {{ '관리자' if account.role == 'admin' else '멤버' }}</p>
+  <div class="field"><label for="display-name">표시 이름</label>
+    <input type="text" id="display-name" name="display_name" value="{{ account.display_name }}" maxlength="40" required></div>
+  <div class="actions"><button class="btn" type="submit">저장</button></div>
+</form>
+
+<h2>비밀번호</h2>
+<form method="post" action="/me/password" class="card">
+  <div class="field"><label for="current-password">현재 비밀번호</label>
+    <input type="password" id="current-password" name="current_password" autocomplete="current-password" required></div>
+  <div class="field"><label for="new-password">새 비밀번호</label>
+    <input type="password" id="new-password" name="new_password" autocomplete="new-password" minlength="10" maxlength="128" required>
+    <div class="help">10~128자. 바꾸면 다른 기기의 로그인은 모두 끊기고 이 브라우저만 로그인 상태로 남습니다.</div></div>
+  <div class="actions"><button class="btn" type="submit">비밀번호 바꾸기</button></div>
+</form>
+
+<h2>개인 알림</h2>
+<div class="card" data-personal-webhook="{{ 'true' if webhook_configured else 'false' }}">
+  <p>{% if webhook_configured %}저장됨 · 호스트 {{ webhook_host }}{% else %}개인 알림 주소 없음{% endif %}</p>
+  <p class="small">내 차례 알림을 이 주소로도 받습니다. 주소는 서버의 비밀 파일(0600)에만 두고 화면·DB 에 다시 보이지 않습니다.</p>
+  {% if test_result %}<div class="{{ 'alert' if test_result.state == 'failed' else 'small' }}" data-notify-test="{{ test_result.state }}">{{ test_result.text }}</div>{% endif %}
+  <form method="post" action="/me/webhook">
+    <div class="field"><label for="me-webhook-url">웹훅 URL</label>
+      <input type="password" id="me-webhook-url" name="url" autocomplete="off" required placeholder="{{ '새 주소로 바꾸기' if webhook_configured else 'https://discord.com/api/webhooks/…' }}">
+      <div class="help">https:// 주소. 같은 컴퓨터의 수신(예: n8n)은 http://127.0.0.1 도 됩니다.</div></div>
+    <div class="actions"><button class="btn" type="submit">저장</button></div>
+  </form>
+  {% if webhook_configured %}
+  <div class="actions">
+    <form method="post" action="/me/webhook/test"><button class="btn btn-secondary" type="submit">테스트 보내기</button></form>
+    <form method="post" action="/me/webhook/delete"><button class="btn btn-secondary" type="submit">삭제</button></form>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

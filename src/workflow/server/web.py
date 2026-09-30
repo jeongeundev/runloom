@@ -42,6 +42,7 @@ from workflow.adapters.errors import (
     EmailTaken,
     KindInUse,
     KindProtected,
+    LastAdmin,
     NotFound,
 )
 from workflow.adapters.github_app import build_manifest, exchange_manifest_code, load_app, save_credentials
@@ -1869,6 +1870,32 @@ def _webhook_url_savable(url: str) -> bool:
     return parts.scheme == "https" or parts.hostname in _LOOPBACK_HOSTS
 
 
+def _savable_webhook_url(url: str) -> str:
+    """앞뒤 공백을 떼고 저장 검사. 틀리면 422 — 문구에 값을 되돌려 싣지 않는다."""
+    url = url.strip()
+    if not _webhook_url_savable(url):
+        raise PageError(422, "invalid_field",
+                        f"https:// 주소(같은 컴퓨터는 http:// 도 가능)를 {notification.WEBHOOK_URL_MAX_LENGTH}자 이하로 "
+                        "입력하세요. 사용자 이름·비밀번호가 든 주소는 받지 않습니다.", field="url")
+    return url
+
+
+def _send_test_notification(request: Request, url: str | None) -> dict[str, str]:
+    """저장된 URL 로 대기열 없이 한 번 보내고 결과(보냄·HTTP 상태·시간 초과·연결 오류)만 돌려준다. 없으면 409."""
+    if url is None:
+        raise PageError(409, "notify_not_configured", "저장된 알림 주소가 없습니다. 먼저 웹훅 URL 을 저장하세요.")
+    message = notification.NotificationMessage(
+        event="test", task_id=None, title="테스트 알림", content=_TEST_MESSAGE, task_url=None, pr_url=None,
+    )
+    try:
+        NotifySender(transport=request.app.state.notify_transport).post(url, notification.notification_body(url, message))
+    except NotifyFailed as exc:
+        reason = "시간 초과" if "Timeout" in str(exc) else str(exc)
+        logger.info("알림 테스트 실패 → %s: %s", notification.webhook_host(url), reason)
+        return {"state": "failed", "text": f"보내지 못했습니다 — {reason}"}
+    return {"state": "sent", "text": "보냈습니다 — 받는 쪽에서 메시지를 확인하세요."}
+
+
 def _notifications_page(request: Request, conn: Connection, session_id: str,
                         test_result: dict[str, str] | None = None) -> str:
     now = utc_now()
@@ -1898,11 +1925,7 @@ def operator_notifications_save(
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """검사 뒤 비밀 파일에 저장. 형식 오류 문구에 값을 되돌려 싣지 않는다."""
-    url = url.strip()
-    if not _webhook_url_savable(url):
-        raise PageError(422, "invalid_field",
-                        f"https:// 주소(같은 컴퓨터는 http:// 도 가능)를 {notification.WEBHOOK_URL_MAX_LENGTH}자 이하로 "
-                        "입력하세요. 사용자 이름·비밀번호가 든 주소는 받지 않습니다.", field="url")
+    url = _savable_webhook_url(url)
     request.app.state.secrets.write(secret_store.NOTIFY_WEBHOOK_URL, url)
     logger.info("알림 웹훅 저장: %s", notification.webhook_host(url))
     return _redirect("/operator/notifications", response)
@@ -1927,21 +1950,252 @@ def operator_notifications_test(
 ) -> str:
     """저장된 URL 로 대기열 없이 한 번 보내고 결과(보냄·HTTP 상태·시간 초과·연결 오류)만 보인다."""
     session_id = member.session_id
-    url = request.app.state.secrets.read(secret_store.NOTIFY_WEBHOOK_URL)
-    if url is None:
-        raise PageError(409, "notify_not_configured", "저장된 알림 주소가 없습니다. 먼저 웹훅 URL 을 저장하세요.")
-    message = notification.NotificationMessage(
-        event="test", task_id=None, title="테스트 알림", content=_TEST_MESSAGE, task_url=None, pr_url=None,
-    )
-    try:
-        NotifySender(transport=request.app.state.notify_transport).post(url, notification.notification_body(url, message))
-    except NotifyFailed as exc:
-        reason = "시간 초과" if "Timeout" in str(exc) else str(exc)
-        logger.info("알림 테스트 실패 → %s: %s", notification.webhook_host(url), reason)
-        result = {"state": "failed", "text": f"보내지 못했습니다 — {reason}"}
-    else:
-        result = {"state": "sent", "text": "보냈습니다 — 받는 쪽에서 메시지를 확인하세요."}
+    result = _send_test_notification(request, request.app.state.secrets.read(secret_store.NOTIFY_WEBHOOK_URL))
     return _notifications_page(request, conn, session_id, test_result=result)
+
+
+# --- 팀·내 설정 (phase 15 step 7, ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로) --------------------------------
+# 초대·재설정 링크 원문은 발급 응답 화면에만 한 번(303 없이 렌더). 개인 웹훅 URL 은 비밀 파일
+# `notify_webhook_url.<member_id>` 에만 두고 화면·로그에는 호스트만.
+
+_LAST_ADMIN = "활성 관리자가 한 명은 있어야 합니다."
+_BAD_CURRENT_PASSWORD = "현재 비밀번호가 올바르지 않습니다."
+
+
+def _team_page(request: Request, conn: Connection, member: LoggedIn,
+               issued: dict[str, str] | None = None) -> str:
+    now = utc_now()
+    return _render(
+        "team.html", **_base(request, conn, member.session_id, now),
+        **views.team_context(conn, member.session_id, now=now),
+        public_url_set=bool(_settings(request).public_url), issued=issued,
+    )
+
+
+def _link_url(request: Request, kind: str, token: str) -> str:
+    """`<base>/invite/<토큰>`·`<base>/reset/<토큰>` — base 는 공개 주소, 없으면 요청 주소."""
+    base = _settings(request).public_url or str(request.base_url).rstrip("/")
+    return f"{base}/{kind}/{token}"
+
+
+def _checked_role(role: str) -> str:
+    if role not in team.ROLES:
+        raise PageError(422, "invalid_field", "역할은 관리자 또는 멤버입니다.", field="role")
+    return role
+
+
+def _team_member(conn: Connection, session_id: str, member_id: str) -> Row:
+    row = repo.get_member(conn, session_id, member_id)
+    if row is None:
+        raise PageError(404, "not_found", f"멤버 {member_id}을 찾을 수 없습니다.", field="member_id")
+    return row
+
+
+@router.get("/team", response_class=HTMLResponse)
+def team_page(
+    request: Request,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """팀 — 멤버 표, 쓰지 않은 초대와 [취소], 초대 발급 폼, 멤버별 역할·비활성화·재설정 링크."""
+    return _team_page(request, conn, member)
+
+
+@router.post("/team/invites", response_class=HTMLResponse)
+def team_invite(
+    request: Request,
+    role: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """초대 링크 발급 — 같은 화면에 링크를 한 번만 보인다."""
+    _, token = repo.issue_invite(conn, member.session_id, role=_checked_role(role),
+                                 created_by_member_id=member.member_id, now=utc_now())
+    logger.info("초대 링크 발급: %s", role)
+    return _team_page(request, conn, member, issued={"kind": "invite", "link": _link_url(request, "invite", token),
+                                                     "role": role})
+
+
+@router.post("/team/invites/{invite_id}/revoke")
+def team_invite_revoke(
+    request: Request,
+    response: Response,
+    invite_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    try:
+        repo.revoke_invite(conn, member.session_id, invite_id, now=utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", f"초대 {invite_id}을 찾을 수 없습니다.", field="invite_id") from None
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/role")
+def team_member_role(
+    request: Request,
+    response: Response,
+    member_id: str,
+    role: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    _team_member(conn, member.session_id, member_id)
+    try:
+        repo.set_member_role(conn, member.session_id, member_id, _checked_role(role), now=utc_now())
+    except LastAdmin:
+        raise PageError(409, "last_admin", _LAST_ADMIN) from None
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/disable")
+def team_member_disable(
+    request: Request,
+    response: Response,
+    member_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """비활성화 — 그 멤버의 로그인 세션을 전부 폐기한다."""
+    _team_member(conn, member.session_id, member_id)
+    try:
+        repo.disable_member(conn, member.session_id, member_id, now=utc_now())
+    except LastAdmin:
+        raise PageError(409, "last_admin", _LAST_ADMIN) from None
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/enable")
+def team_member_enable(
+    request: Request,
+    response: Response,
+    member_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    _team_member(conn, member.session_id, member_id)
+    repo.enable_member(conn, member.session_id, member_id, now=utc_now())
+    return _redirect("/team", response)
+
+
+@router.post("/team/members/{member_id}/reset-link", response_class=HTMLResponse)
+def team_member_reset_link(
+    request: Request,
+    member_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """재설정 링크 발급(그 멤버의 이전 미사용 링크는 취소) — 같은 화면에 링크를 한 번만 보인다."""
+    target = _team_member(conn, member.session_id, member_id)
+    _, token = repo.issue_reset_link(conn, member.session_id, member_id, created_by_member_id=member.member_id,
+                                     now=utc_now())
+    logger.info("재설정 링크 발급")
+    return _team_page(request, conn, member, issued={"kind": "reset", "link": _link_url(request, "reset", token),
+                                                     "display_name": target["display_name"]})
+
+
+def _me_page(request: Request, conn: Connection, member: LoggedIn, *, status: int = 200,
+             error: str | None = None, test_result: dict[str, str] | None = None) -> HTMLResponse:
+    now = utc_now()
+    body = _render(
+        "me.html", **_base(request, conn, member.session_id, now),
+        **views.me_context(conn, member.session_id, member.member_id, secrets=request.app.state.secrets),
+        error=error, test_result=test_result,
+    )
+    return HTMLResponse(body, status_code=status)
+
+
+@router.get("/me", response_class=HTMLResponse)
+def me_page(
+    request: Request,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    """내 설정 — 표시 이름·이메일(읽기)·역할, 비밀번호 변경, 개인 웹훅(설정됨/없음·호스트만)."""
+    return _me_page(request, conn, member)
+
+
+@router.post("/me/profile")
+def me_profile(
+    request: Request,
+    response: Response,
+    display_name: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    cleaned = team.clean_display_name(display_name)
+    if cleaned is None:
+        raise PageError(422, "invalid_field", "표시 이름은 1~40자로 입력하세요.", field="display_name")
+    repo.set_member_display_name(conn, member.session_id, member.member_id, cleaned, now=utc_now())
+    return _redirect("/me", response)
+
+
+@router.post("/me/password", response_model=None)
+def me_password(
+    request: Request,
+    current_password: str = Form(""),
+    new_password: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """현재 비밀번호 확인(이 멤버 이메일 키로 실패 제한) → 새 비밀번호. 이 멤버의 로그인 세션을 전부 폐기하고
+    이 브라우저에는 새 세션 쿠키를 준다."""
+    row = repo.get_member(conn, member.session_id, member.member_id)
+    key = login_email_key(row["email"])
+    throttle = request.app.state.login_throttle
+    if throttle.blocked(key):
+        logger.warning("비밀번호 변경 거부: 연속 실패 제한")
+        return _me_page(request, conn, member, status=429, error=_TOO_MANY)
+    matched = len(current_password) <= team.PASSWORD_MAX_LENGTH and team.verify_password(current_password,
+                                                                                         row["password_hash"])
+    if not matched:
+        throttle.fail(key)
+        logger.warning("비밀번호 변경 실패: 현재 비밀번호 불일치")
+        return _me_page(request, conn, member, status=403, error=_BAD_CURRENT_PASSWORD)
+    problem = team.password_problem(new_password)
+    if problem:
+        return _me_page(request, conn, member, status=422, error=problem)
+    throttle.reset(key)
+    repo.set_member_credentials(conn, member.session_id, member.member_id, email=row["email"],
+                                password_hash=team.hash_password(new_password), now=utc_now())
+    logger.info("비밀번호 변경")
+    return _logged_in_redirect(request, conn, member.member_id, "/me")
+
+
+@router.post("/me/webhook")
+def me_webhook_save(
+    request: Request,
+    response: Response,
+    url: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """개인 웹훅 — 공용과 같은 검사, 비밀 파일만 개인 이름."""
+    url = _savable_webhook_url(url)
+    request.app.state.secrets.write(secret_store.personal_webhook_name(member.member_id), url)
+    logger.info("개인 알림 웹훅 저장: %s", notification.webhook_host(url))
+    return _redirect("/me", response)
+
+
+@router.post("/me/webhook/delete")
+def me_webhook_delete(
+    request: Request,
+    response: Response,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    request.app.state.secrets.delete(secret_store.personal_webhook_name(member.member_id))
+    return _redirect("/me", response)
+
+
+@router.post("/me/webhook/test", response_class=HTMLResponse)
+def me_webhook_test(
+    request: Request,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    url = request.app.state.secrets.read(secret_store.personal_webhook_name(member.member_id))
+    return _me_page(request, conn, member, test_result=_send_test_notification(request, url))
 
 
 @router.get("/metrics", response_class=HTMLResponse)

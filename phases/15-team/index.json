@@ -61,7 +61,9 @@
     {
       "step": 7,
       "name": "team-web",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:00:22+0900",
+      "summary": "수정 adapters/secret_store.py(PERSONAL_WEBHOOK_PATTERN ^mem-[0-9a-f]{8}$·personal_webhook_name — fullmatch 라 개행·../ 거부, _path 는 NAMES 또는 notify_webhook_url.<패턴> 만, NAMES 6개 그대로), repo.py(member_last_seen — 멤버별 login_sessions.last_seen_at 최댓값, 폐기 세션 포함), views.py(team_context·me_context — 해시·토큰·URL 없음, 웹훅은 설정됨/호스트만), web.py(ARCHITECTURE 새 경로 표대로 GET /team·POST /team/invites(링크 한 번 200, base=public_url 또는 요청 주소)·/team/invites/{id}/revoke·/team/members/{id}/role·disable·enable(LastAdmin → 409 last_admin '활성 관리자가 한 명은 있어야 합니다.', 없는 멤버 404, 역할 밖 422)·reset-link(한 번 200) — manage_team; GET /me·POST /me/profile(422)·/me/password(현재 비밀번호 확인 403·login_email_key 제한 429·규칙 422 은 me 화면 렌더, 성공은 set_member_credentials 로 전부 폐기 후 새 세션 303 /me)·/me/webhook·delete·test — edit_own_settings; 공용 알림과 검사·테스트 발송을 _savable_webhook_url·_send_test_notification 으로 공유), 새 템플릿 team.html(공개 주소 없으면 WORKFLOW_PUBLIC_URL·SELFHOST 안내, 링크 복사 버튼, 이메일 없는 멤버는 재설정 버튼 숨김)·me.html(data-personal-webhook), _sidebar(팀=manage_team·내 설정=edit_own_settings), base.html(data-copy-target 복사 스크립트); 테스트: 새 tests/workflow/server/test_web_team.py 24개, test_secret_store +4(매개변수화), test_repo +1. 검증: pytest 2867 passed/33 skipped, ruff 통과. 다음 step 주의: /me 의 '내가 받는 최근 알림'은 step 9(list_notifications member_id) 몫이라 아직 없음, 개인 웹훅 파일은 저장만 되고 전달은 step 9 가 personal_webhook_name 으로 읽을 것, 재설정 링크는 이메일 없는 멤버에게도 서버는 발급한다(버튼만 숨김 — invite_for_token 이 거부)."
     },
     {
       "step": 8,

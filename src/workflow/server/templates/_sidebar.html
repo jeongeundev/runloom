@@ -1,6 +1,6 @@
 {# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무(한 줄 = 업무) · 세션. 상태 점은 _status.html 규칙.
    `+` 는 직접 등록, 아래는 로그인한 멤버(표시 이름·역할) + 로그아웃 (ADR-0016·0019·0021).
-   관리자 링크(입구·알림)는 그 동작이 `allowed` 에 있을 때만. #}
+   관리자 링크(입구·알림·팀)는 그 동작이 `allowed` 에 있을 때만, "내 설정" 은 모두. #}
 {% import "_status.html" as st %}
 <aside class="sidebar">
   <a class="brand" href="/">Runloom</a>
@@ -13,6 +13,8 @@
     <a href="/operator/github"{% if request.url.path.startswith('/operator/github') %} class="active"{% endif %}>GitHub</a>
     {% if 'view_metrics' in allowed %}<a href="/metrics"{% if request.url.path == '/metrics' %} class="active"{% endif %}>지표</a>{% endif %}
     {% if 'manage_shared_notify' in allowed %}<a href="/operator/notifications"{% if request.url.path == '/operator/notifications' %} class="active"{% endif %}>알림</a>{% endif %}
+    {% if 'manage_team' in allowed %}<a href="/team"{% if request.url.path == '/team' %} class="active"{% endif %}>팀</a>{% endif %}
+    {% if 'edit_own_settings' in allowed %}<a href="/me"{% if request.url.path == '/me' %} class="active"{% endif %}>내 설정</a>{% endif %}
   </nav>
   <div class="side-head"><span>최근</span><a class="plus" href="/tasks/new" title="업무 등록" aria-label="업무 등록">+</a></div>
   {% if my_work %}

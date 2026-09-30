@@ -3620,3 +3620,13 @@ def test_disable_member_revokes_sessions_and_is_idempotent(sessions):
         repo.disable_member(sessions, OTHER_SESSION, member, now=LATER)
     with pytest.raises(NotFound):
         repo.enable_member(sessions, OTHER_SESSION, member, now=LATER)
+
+
+def test_member_last_seen_is_latest_login_session_per_member(sessions):
+    admin = _admin_with_account(sessions)
+    member = repo.add_member(sessions, SESSION, display_name="김개발", now=NOW)
+    repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    token = repo.create_login_session(sessions, SESSION, admin, now=_plus(60), days=14)
+    repo.revoke_login_session(sessions, token, now=_plus(120))  # 폐기된 세션도 접속 기록이다
+    assert repo.member_last_seen(sessions, SESSION) == {admin: _plus(60)}
+    assert member not in repo.member_last_seen(sessions, SESSION)

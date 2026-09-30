@@ -134,3 +134,45 @@ def test_repr_and_errors_do_not_contain_values(tmp_path, monkeypatch):
 def test_from_env_reads_workflow_secret_dir_with_default(tmp_path):
     assert SecretStore.from_env({}).root == secret_store.Path("data/secrets")
     assert SecretStore.from_env({"WORKFLOW_SECRET_DIR": str(tmp_path / "s")}).root == tmp_path / "s"
+
+
+# --- 개인 웹훅 (phase 15 step 7, ARCHITECTURE "알림 — 받는 사람별") -----------------------------------------------
+
+
+def test_personal_webhook_name_is_shared_name_plus_member_id():
+    assert secret_store.personal_webhook_name("mem-0a1b2c3d") == "notify_webhook_url.mem-0a1b2c3d"
+    assert secret_store.PERSONAL_WEBHOOK_PATTERN.pattern == r"^mem-[0-9a-f]{8}$"
+
+
+@pytest.mark.parametrize("bad", [
+    "", "mem-", "mem-0A1B2C3D", "mem-0a1b2c3", "mem-0a1b2c3d4", "../mem-0a1b2c3d", "mem-0a1b2c3d/../x",
+    "mem-0a1b2c3d\n", "sess-0a1b2c3d", "mem-0a1b2c3d.json",
+])
+def test_personal_webhook_name_rejects_other_member_ids(bad):
+    with pytest.raises(ValueError):
+        secret_store.personal_webhook_name(bad)
+
+
+def test_personal_webhook_file_round_trip_is_0600(tmp_path):
+    root = tmp_path / "secrets"
+    store = SecretStore(root)
+    name = secret_store.personal_webhook_name("mem-0a1b2c3d")
+    assert not store.exists(name)
+    store.write(name, VALUE)
+    assert store.read(name) == VALUE
+    assert _mode(root / "notify_webhook_url.mem-0a1b2c3d") == 0o600
+    store.delete(name)
+    assert store.read(name) is None
+
+
+@pytest.mark.parametrize("bad", [
+    "notify_webhook_url.mem-0A1B2C3D", "notify_webhook_url.../x", "notify_webhook_url.mem-0a1b2c3d/../../etc",
+    "notify_webhook_url.", "github_token.mem-0a1b2c3d", "notify_webhook_url.mem-0a1b2c3d.tmp",
+])
+def test_store_rejects_names_outside_list_and_personal_pattern(tmp_path, bad):
+    store = SecretStore(tmp_path / "secrets")
+    for op in (store.read, store.exists, store.delete):
+        with pytest.raises(ValueError):
+            op(bad)
+    with pytest.raises(ValueError):
+        store.write(bad, VALUE)

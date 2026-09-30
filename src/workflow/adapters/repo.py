@@ -607,6 +607,13 @@ def member_for_login_token(conn: Connection, token: str, *, now: str) -> Row | N
     return row
 
 
+def member_last_seen(conn: Connection, session_id: str) -> dict[str, str]:
+    """멤버별 마지막 접속(로그인 세션 `last_seen_at` 최댓값 — 폐기·만료 세션 포함). 접속 기록 없는 멤버는 빠진다."""
+    rows = conn.execute("SELECT member_id, MAX(last_seen_at) AS seen FROM login_sessions WHERE session_id = ?"
+                        " GROUP BY member_id", (session_id,)).fetchall()
+    return {r["member_id"]: r["seen"] for r in rows}
+
+
 def revoke_login_session(conn: Connection, token: str, *, now: str) -> bool:
     cur = conn.execute("UPDATE login_sessions SET revoked_at = ? WHERE token_sha256 = ? AND revoked_at IS NULL",
                        (now, _sha256(token)))

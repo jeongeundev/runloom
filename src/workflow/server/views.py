@@ -807,6 +807,33 @@ def notifications_context(conn: Connection, session_id: str, *, secrets: SecretS
     }
 
 
+def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, Any]:
+    """팀 화면 — 멤버(표시 이름·이메일·역할·상태·가입·마지막 접속)와 쓰지 않은 초대(역할·만료). 비밀번호 해시·링크 토큰은 싣지 않는다."""
+    last_seen = repo.member_last_seen(conn, session_id)
+    return {
+        "members": [
+            {**{k: row[k] for k in ("member_id", "display_name", "email", "role", "disabled_at", "created_at")},
+             "last_seen_at": last_seen.get(row["member_id"])}
+            for row in repo.list_members(conn, session_id)
+        ],
+        "invites": [
+            {k: row[k] for k in ("invite_id", "role", "created_at", "expires_at")}
+            for row in repo.list_open_invites(conn, session_id, now=now)
+        ],
+    }
+
+
+def me_context(conn: Connection, session_id: str, member_id: str, *, secrets: SecretStore) -> dict[str, Any]:
+    """내 설정 — 표시 이름·이메일·역할, 개인 웹훅은 설정됨/없음·호스트만(URL 은 다시 보이지 않는다)."""
+    row = repo.get_member(conn, session_id, member_id)
+    url = secrets.read(secret_store.personal_webhook_name(member_id))
+    return {
+        "account": {k: row[k] for k in ("display_name", "email", "role")},
+        "webhook_configured": url is not None,
+        "webhook_host": webhook_host(url) if url is not None else None,
+    }
+
+
 def github_context(
     conn: Connection, session_id: str, *, now: str, settings: Settings, secrets: SecretStore
 ) -> dict[str, Any]:
