@@ -4,6 +4,13 @@
 
 ## 다음 작업: 새 화면 브라우저 확인(사용자) → 17-jira 설계 (새 세션은 여기서 시작)
 
+**2026-09-30 실사용 확인(16 뒤)**: sandbox 이슈 #3(RUN-24, `duration` 표기)·#4(RUN-25, `ago` 날짜) 생성. RUN-24 를 패널에서 에이전트에게 맡김 → 수정은 맞았으나 검증 실패 6건 — sandbox 의 `tests/workflow/scripted` 가 cwd 를 바꿔 `python -m workflow.scripted.*` 를 띄우는데 러너 `--env PYTHONPATH=src` 가 상대 경로라 호스트의 Runloom 편집 설치(`service`, scripted 삭제됨)를 잡음. 러너 등록 검증 명령을 `sh -c 'PYTHONPATH="$PWD/src" python3 -m pytest -q && python3 -m ruff check .'` 로 다시 등록(클론에서 2925 passed 확인). 다음 phase 후보(사용자 요청·관찰):
+- **저장소별 업무 보기**(사용자 요청 2026-09-30) — 묶기·필터에 저장소.
+- 목록 키 칸에 `RUN-n` 을 먼저(원본 키는 옆에 짧게) — 브랜치·PR 은 `RUN-n` 인데 목록에서 못 찾음.
+- 러너 검증 환경 격리 — 호스트 Python 의 편집 설치가 대상 저장소 검증에 섞임(상대 `PYTHONPATH` 함정).
+- 실행 중인데 단계 상태가 `실행 요청됨 · 접수 대기` 로 남음(업무 상태는 맞음) — 갱신 주기인지 결함인지 확인.
+- RUN-22(OpenArchive #133)·RUN-25 가 테스트 클릭으로 `직접 작업 중`.
+
 **2026-09-30 반영(16)**: `feat-16-work-ui` → `service` 병합(`f53afd6`, 원격 미푸시). 셀프호스트 재설치 — 진행 중 실행 0 확인 → 백업 `20260930T090902Z`(스키마 11) → `install.sh` → 스키마 12(업무 23: 새로 들어옴 21·완료 1·종료 1, Task 24, 멤버 1 보존, 감지 PR 0). 러너는 재기동하지 않음(프로토콜 변화 없음). 남은 확인: 브라우저 JS(패널·Esc·묶음 접기·브랜치 복사), 실제 github.com PR 감지.
 
 **16-work-ui 완료**(2026-09-30, `feat-16-work-ui`, step 0~10, [ADR-0022](adr/0022-work-screen-and-direct-work.md), [ARCHITECTURE](ARCHITECTURE.md) "업무 화면 — phase 16", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 16 업무 화면"): 업무 화면 `/tasks`(한 줄 표·담당자/상태 묶음·빠른 필터 4개·목록/보드 6칸·끝난 업무 14일), 오른쪽 상세 패널 `/tasks?open=RUN-n`(조각 `/work/{key}/panel`, `/work/{key}` 는 넘김, 알림·원본 댓글 링크도 업무 주소), 패널에서 담당(에이전트 = 곧 맡기기)·우선순위, [내 세션에서 작업](브랜치 `RUN-n-<요약>`)·그만두기, PR 신호(소스 저장소 PR 의 head·제목에 든 키 → 감지 PR → `PR · 검토`·병합 `완료`), 연결 화면 `/connect` 탭 5개(옛 GET 7개 넘김), 모니터링 `/monitor`, 시작하기 `/start`, 사이드바 5항목, 스키마 v12.
