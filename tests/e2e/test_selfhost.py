@@ -3,7 +3,7 @@
 커밋된 작업 트리를 임시 디렉터리에 `git clone` 하고, 그 복사본의 `deploy/selfhost/install.sh` 를 격리된 compose 프로젝트
 (`RUNLOOM_PROJECT=runloom-e2e-<랜덤>`)·빈 포트(`WORKFLOW_PORT`)로 실행한다. 흐름:
 
-1. install.sh → `/healthz` ok → `.env` 의 `OPERATOR_TOKEN` 으로 `/login` → 종류 A 등록
+1. install.sh → `/healthz` ok → `.env` 의 `OPERATOR_TOKEN` 으로 첫 설정(`/login/setup`, 관리자 계정) → 종류 A 등록
 2. `down`(볼륨 유지) → install.sh 재실행 → 종류 A 가 그대로
 3. 컨테이너 안에서 `backup create`·`list` → 종류 B 등록 → `stop central worker` → `run --rm central … restore <이름> --force`
    → `up -d` → 종류 A 는 있고 B 는 없다 (백업 시점)
@@ -32,6 +32,7 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[2]
 HEALTH_TIMEOUT = 180.0
+ADMIN = {"email": "operator@example.com", "display_name": "운영자", "password": "e2e-operator-password"}
 
 
 def _free_port() -> int:
@@ -94,7 +95,11 @@ class Selfhost:
     def login(self) -> Iterator[httpx.Client]:
         token = _env_value(self.selfhost / ".env", "OPERATOR_TOKEN")
         with httpx.Client(base_url=self.base, timeout=10, headers={"Origin": self.base}) as client:
-            response = client.post("/login", data={"token": token}, follow_redirects=False)
+            # 첫 설정 전이면 운영자 토큰으로 관리자 계정을 만들고, 이미 있으면(재설치·복원 뒤) 이메일·비밀번호로
+            response = client.post("/login/setup", data={"token": token, **ADMIN}, follow_redirects=False)
+            if response.status_code == 409:  # already_set_up
+                response = client.post("/login", data={"email": ADMIN["email"], "password": ADMIN["password"]},
+                                       follow_redirects=False)
             assert response.status_code == 303, response.text
             yield client
 

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
 from workflow.contracts.v1 import ArtifactMeta, ExecutionRequest, SelectionRecord
-from workflow.server.auth import SESSION_COOKIE, ensure_workspace, utc_now, verify_session
+from workflow.server.auth import ensure_workspace, utc_now
 
 from .conftest import (
     LOCAL_REGISTRATION,
@@ -23,6 +23,7 @@ from .conftest import (
     seed_agents,
     seed_execution,
     seed_result_ready,
+    session_of,
     task_row,
 )
 from .test_views import API_AGENT, CAP_PATCH, CAP_TRIAGE, PATCH_AGENT, seed_user_kinds, user_task
@@ -84,7 +85,7 @@ def web(logged_in_client, agents):
 
 
 def session_id_of(client: TestClient, settings) -> str:
-    return verify_session(client.cookies[SESSION_COOKIE], settings.session_secret)
+    return session_of(client)
 
 
 def visible_text(html: str) -> str:

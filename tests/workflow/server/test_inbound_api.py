@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.contracts.v1 import InboundChainResponse
 from workflow.server.app import create_app
-from workflow.server.auth import SESSION_COOKIE, ensure_workspace
+from workflow.server.auth import LOGIN_COOKIE, ensure_workspace
 
 from .conftest import (
     BASE_COMMIT,
@@ -111,7 +111,7 @@ def test_without_bearer_is_401_even_with_session_cookie(client, conn, workspace)
     assert post(client, None).json() == UNAUTHENTICATED
     # 로그인 쿠키가 있어도 입구는 Bearer 만 받는다 (브라우저 CSRF 경로를 만들지 않는다)
     log_in(client)
-    assert client.get("/tasks").status_code == 200 and client.cookies.get(SESSION_COOKIE)
+    assert client.get("/tasks").status_code == 200 and client.cookies.get(LOGIN_COOKIE)
     assert post(client, None).status_code == 401
     # 연결 토큰(wfc_)도 아니다
     connector_token = exchange(client, conn)[1]

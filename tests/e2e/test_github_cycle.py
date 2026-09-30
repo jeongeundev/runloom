@@ -661,6 +661,18 @@ def settled(world: World, execution_id: str) -> bool:
     return verdict_checks(world, execution_id) is not None
 
 
+E2E_ADMIN = {"email": "operator@example.com", "display_name": "운영자", "password": "e2e-operator-password"}
+
+
+def log_in(http: httpx.Client, operator_token: str) -> httpx.Response:
+    """관리자로 로그인 — 첫 설정 전이면 운영자 토큰으로 관리자 계정을 만들고(`/login/setup`), 이미 있으면 이메일·비밀번호로.
+    성공이면 303 과 쿠키 `wf_login`."""
+    response = http.post("/login/setup", data={"token": operator_token, **E2E_ADMIN})
+    if response.status_code == 409:  # already_set_up
+        response = http.post("/login", data={"email": E2E_ADMIN["email"], "password": E2E_ADMIN["password"]})
+    return response
+
+
 def operator_agent(world: World, agent_id: str, code: str, scope: str, registration: str) -> None:
     response = world.http.post("/operator/agents", data={
         "agent_id": agent_id, "name": agent_id, "owner_scope": "personal", "connection_type": "local",
@@ -683,7 +695,7 @@ REGISTRATIONS = (  # (agent, 능력, 저장소 ID, 로컬 등록, 폴더 이름,
 
 def test_01_operator_registers_agents_and_connects_the_local_connector(world):
     http = world.http
-    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
+    login = log_in(http, world.central_env["OPERATOR_TOKEN"])  # 첫 설정 → 관리자 계정 (워크스페이스 = 운영자)
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 

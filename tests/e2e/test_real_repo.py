@@ -48,6 +48,7 @@ from tests.e2e.test_github_app import (
     FakeGitHubApp,
 )
 from tests.e2e.test_github_cycle import (
+    log_in,
     _FAKE_CODEX,
     BILLING_FILES,
     DROP_PREFIXES,
@@ -342,7 +343,7 @@ def status_flow(world: World, work_item_id: str) -> list[str]:
 
 def test_01_login_connect_github_and_set_the_notification_url(world):
     http = world.http
-    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})
+    login = log_in(http, world.central_env["OPERATOR_TOKEN"])
     assert login.status_code == 303, login.text[:300]
 
     new = http.get("/operator/github/app/new")

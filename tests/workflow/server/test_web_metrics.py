@@ -9,10 +9,9 @@ import re
 
 from fastapi.testclient import TestClient
 
-from workflow.adapters import repo
 from workflow.domain.metrics import BASELINE_NOTE
-from workflow.server.auth import SESSION_COOKIE, sign_session
 
+from .conftest import log_in_other_workspace
 from .test_github_api import login
 from .test_metrics_api import (  # noqa: F401 — fixture
     MERGE_7,
@@ -47,10 +46,8 @@ def row(text: str, label: str) -> str:
 
 
 def test_metrics_page_is_operator_only(client, conn):
-    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
-    repo.create_session(conn, "sess-other", "2026-09-20T00:00:00Z")
-    stranger = TestClient(client.app)
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    # 로그인 전, 그리고 고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    stranger = log_in_other_workspace(TestClient(client.app))
     for anonymous in (client, stranger):
         response = anonymous.get("/metrics", follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")

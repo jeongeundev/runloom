@@ -1,6 +1,7 @@
-"""사람이 쓰는 웹 라우트 — 로그인한 고정 워크스페이스(= 운영자) (ADR-0016 결정 3, ADR-0019, UI_GUIDE "화면 목록", PRD 2·4절).
+"""사람이 쓰는 웹 라우트 — 로그인한 멤버의 고정 워크스페이스 (ADR-0016 결정 3, ADR-0019, ADR-0021, UI_GUIDE "화면 목록", PRD 2·4절).
 
-- `/`·`/login`·`/logout` 밖의 라우트는 `require_session` 을 건다. 워크스페이스는 자기 Task 만 보고, 남의 것은 404 로
+- 로그인은 멤버 이메일·비밀번호(쿠키 `wf_login`). 운영자 토큰은 첫 설정(`/login/setup`)·복구(`/login/recover`)만.
+- `/`·`/login*`·`/invite/*`·`/reset/*`·`/logout` 밖의 라우트는 `require_session` 을 건다. 워크스페이스는 자기 Task 만 보고, 남의 것은 404 로
   존재를 알리지 않는다.
 - 화면은 문자열(HTML) 을 돌려준다. 303 은 `_redirect` 가 sub-response 헤더를 옮긴다.
 - 오류는 `PageError` 로 `error.html` 에 렌더한다. 본문 규칙(code·message·details) 은 ApiError 와 같다.
@@ -38,6 +39,7 @@ from workflow.adapters.errors import (
     ActiveExecutionExists,
     DuplicateKind,
     DuplicateRule,
+    EmailTaken,
     KindInUse,
     KindProtected,
     NotFound,
@@ -71,7 +73,7 @@ from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
 from workflow.domain.execution_policy import policy_for
-from workflow.domain import notification
+from workflow.domain import notification, team
 from workflow.domain.kinds import (
     get_kind,
     kind_for_capability,
@@ -84,16 +86,18 @@ from workflow.domain.status import user_status
 from workflow.domain.task_sources import Issue
 from workflow.server import github_connect, metrics_api, task_cycle, views
 from workflow.server.auth import (
+    LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
-    SESSION_COOKIE,
     check_origin,
+    clear_login_cookies,
+    current_member,
     ensure_workspace,
     get_conn,
+    login_email_key,
     require_operator,
     require_session,
-    set_session_cookie,
+    set_login_cookie,
     utc_now,
-    workspace_session,
 )
 from workflow.server.errors import ApiError, PageError
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
@@ -141,6 +145,7 @@ _env.filters.update({
 
 def install(app: FastAPI) -> None:
     app.include_router(router)
+    _install_access_log_filter()
 
     @app.exception_handler(PageError)
     async def _page_error(request: Request, exc: PageError) -> HTMLResponse:
@@ -185,6 +190,7 @@ def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict
         "now": now,
         "session_id": session_id,
         "is_operator": bool(session["is_operator"]) if session is not None else False,
+        "member": current_member(request, conn),  # 왼쪽 목록 아래 — 로그인한 멤버 표시 이름·역할
         # 목록 한 줄 = 업무(ADR-0020) — 새 업무가 위
         "my_work": [views.work_summary(conn, w) for w in repo.list_work_items(conn, session_id)],
     }
@@ -350,52 +356,251 @@ def _start_execution(
 @router.get("/")
 def root(request: Request, conn: Connection = Depends(get_conn)) -> RedirectResponse:
     """랜딩 없음 (ADR-0019) — 로그인 상태면 업무 목록 `/tasks`, 아니면 `/login` 으로 303. 세션을 만들지 않는다."""
-    return RedirectResponse("/tasks" if workspace_session(request, conn) else "/login", status_code=303)
+    return RedirectResponse("/tasks" if current_member(request, conn) else "/login", status_code=303)
 
 
-# --- 로그인 (ADR-0016 결정 3) ---------------------------------------------------------------
+# --- 로그인·첫 설정·복구·초대·재설정 (ADR-0021, ARCHITECTURE "팀 — phase 15") ------------------------------
+# 비밀번호·토큰 원문은 응답·로그·템플릿에 넣지 않는다 — 되돌려 채우는 값은 이메일·표시 이름뿐이다.
+
+_TOO_MANY = "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."
+_BAD_LOGIN = "이메일 또는 비밀번호가 올바르지 않습니다."
+_BAD_RECOVER = "토큰 또는 관리자 이메일이 올바르지 않습니다."
+_BAD_INVITE = "초대 링크가 없거나 만료됐습니다."
+_BAD_RESET = "재설정 링크가 없거나 만료됐습니다."
+_LINK_PATH = re.compile(r"(/(?:invite|reset)/)[^\s?#\"]+")
+
+
+class _LinkTokenFilter(logging.Filter):
+    """uvicorn 접근 로그의 `/invite/<토큰>`·`/reset/<토큰>` 을 `***` 로 가린다."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_LINK_PATH.sub(r"\1***", a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.msg, str):
+            record.msg = _LINK_PATH.sub(r"\1***", record.msg)
+        return True
+
+
+def _install_access_log_filter() -> None:
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _LinkTokenFilter) for f in access.filters):
+        access.addFilter(_LinkTokenFilter())
+
+
+def _login_page(request: Request, mode: str, *, status: int = 200, error: str | None = None,
+                email: str = "", display_name: str = "") -> HTMLResponse:
+    """`login.html` 한 장 — mode: setup·login·recover·invite·reset·invalid."""
+    body = _render("login.html", request=request, mode=mode, error=error, email=email,
+                   display_name=display_name)
+    return HTMLResponse(body, status_code=status)
+
+
+def _link_page(request: Request, mode: str, **kwargs: Any) -> HTMLResponse:
+    """초대·재설정 화면 — 링크 토큰이 다른 곳으로 새지 않게 `Referrer-Policy: no-referrer`."""
+    response = _login_page(request, mode, **kwargs)
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _logged_in_redirect(request: Request, conn: Connection, member_id: str, url: str = "/") -> RedirectResponse:
+    """새 로그인 세션을 만들고 쿠키를 실어 303."""
+    settings = _settings(request)
+    token = repo.create_login_session(conn, SELFHOST_SESSION_ID, member_id, now=utc_now(),
+                                      days=settings.session_cookie_days)
+    redirect = RedirectResponse(url, status_code=303)
+    set_login_cookie(redirect, token, settings)
+    return redirect
+
+
+def _token_matches(request: Request, token: str) -> bool:
+    return hmac.compare_digest(token.encode(), _settings(request).operator_token.encode())
+
+
+def _account_problem(email: str, display_name: str | None, password: str) -> str | None:
+    """이메일·표시 이름(None 이면 보지 않음)·비밀번호 규칙. 문제 문구 또는 None."""
+    if team.normalize_email(email) is None:
+        return "이메일 형식이 올바르지 않습니다."
+    if display_name is not None and team.clean_display_name(display_name) is None:
+        return "표시 이름은 1~40자로 입력하세요."
+    return team.password_problem(password)
 
 
 @router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request) -> str:
-    return _render("login.html", request=request, error=None)
+def login_page(request: Request, conn: Connection = Depends(get_conn)) -> HTMLResponse:
+    """첫 설정 전이면 관리자 계정 만들기(운영자 토큰 칸), 아니면 이메일·비밀번호."""
+    return _login_page(request, "setup" if repo.needs_first_setup(conn, SELFHOST_SESSION_ID) else "login")
 
 
-def _workspace_login(request: Request, conn: Connection, token: str) -> HTMLResponse | RedirectResponse:
-    """`OPERATOR_TOKEN` 과 비교해 맞으면 고정 워크스페이스 쿠키. 입력한 토큰 값은 응답·로그에 넣지 않는다."""
+@router.post("/login/setup", response_model=None)
+def login_setup(
+    request: Request, token: str = Form(""), email: str = Form(""), display_name: str = Form(""),
+    password: str = Form(""), conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """운영자 토큰으로 첫 관리자 행에 계정을 채우고 로그인한다. 첫 설정이 끝났으면 409 already_set_up."""
+    if not repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        raise PageError(409, "already_set_up", "이미 관리자 계정이 있습니다. 이메일로 로그인하세요.")
+    refill = {"email": email.strip(), "display_name": display_name.strip()}
     throttle = request.app.state.login_throttle
-    if throttle.blocked("recover"):
-        logger.warning("로그인 거부: 연속 실패 제한")
-        return HTMLResponse(
-            _render("login.html", request=request, error="로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."),
-            status_code=429,
-        )
-    settings = _settings(request)
-    if not hmac.compare_digest(token.encode(), settings.operator_token.encode()):
-        throttle.fail("recover")
-        logger.warning("로그인 실패")
-        return HTMLResponse(
-            _render("login.html", request=request, error="토큰이 올바르지 않습니다."), status_code=403,
-        )
-    throttle.reset("recover")
-    ensure_workspace(conn, utc_now())
-    redirect = RedirectResponse("/", status_code=303)
-    set_session_cookie(redirect, SELFHOST_SESSION_ID, settings)
-    return redirect
+    if throttle.blocked("setup"):
+        logger.warning("첫 설정 거부: 연속 실패 제한")
+        return _login_page(request, "setup", status=429, error=_TOO_MANY, **refill)
+    if not _token_matches(request, token):
+        throttle.fail("setup")
+        logger.warning("첫 설정 실패: 토큰 불일치")
+        return _login_page(request, "setup", status=403, error="토큰이 올바르지 않습니다.", **refill)
+    problem = _account_problem(email, display_name, password)
+    if problem:
+        return _login_page(request, "setup", status=422, error=problem, **refill)
+    throttle.reset("setup")
+    now = utc_now()
+    ensure_workspace(conn, now)
+    member_id = repo.ensure_first_admin(conn, SELFHOST_SESSION_ID, now=now)
+    try:
+        repo.set_member_credentials(conn, SELFHOST_SESSION_ID, member_id, email=email,
+                                    password_hash=team.hash_password(password),
+                                    display_name=team.clean_display_name(display_name), now=now)
+    except EmailTaken:
+        return _login_page(request, "setup", status=422, error="이미 쓰는 이메일입니다.", **refill)
+    logger.info("첫 설정: 관리자 계정 생성")
+    return _logged_in_redirect(request, conn, member_id)
 
 
 @router.post("/login", response_model=None)
 def login(
-    request: Request, token: str = Form(""), conn: Connection = Depends(get_conn),
+    request: Request, email: str = Form(""), password: str = Form(""), conn: Connection = Depends(get_conn),
 ) -> HTMLResponse | RedirectResponse:
-    return _workspace_login(request, conn, token)
+    """이메일·비밀번호. 틀림·없는 이메일·비활성은 같은 문구 403 — 없는 경우도 더미 해시로 한 번 검증해 시간을 맞춘다."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    refill = {"email": email.strip()}
+    key = login_email_key(email)
+    throttle = request.app.state.login_throttle
+    if throttle.blocked(key):
+        logger.warning("로그인 거부: 연속 실패 제한")
+        return _login_page(request, "login", status=429, error=_TOO_MANY, **refill)
+    member = repo.find_member_by_email(conn, SELFHOST_SESSION_ID, email)
+    usable = member is not None and member["disabled_at"] is None and member["password_hash"] is not None
+    stored = member["password_hash"] if usable else team.DUMMY_PASSWORD_HASH
+    matched = len(password) <= team.PASSWORD_MAX_LENGTH and team.verify_password(password, stored)
+    if not (usable and matched):
+        throttle.fail(key)
+        logger.warning("로그인 실패")
+        return _login_page(request, "login", status=403, error=_BAD_LOGIN, **refill)
+    throttle.reset(key)
+    return _logged_in_redirect(request, conn, member["member_id"])
+
+
+@router.get("/login/recover", response_class=HTMLResponse, response_model=None)
+def recover_page(request: Request, conn: Connection = Depends(get_conn)) -> HTMLResponse | RedirectResponse:
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    return _login_page(request, "recover")
+
+
+@router.post("/login/recover", response_model=None)
+def recover(
+    request: Request, token: str = Form(""), email: str = Form(""), password: str = Form(""),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """운영자 토큰 + 활성 관리자 이메일 → 새 비밀번호. 그 관리자의 로그인 세션을 전부 폐기하고 새 세션으로 로그인."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    refill = {"email": email.strip()}
+    throttle = request.app.state.login_throttle
+    if throttle.blocked("recover"):
+        logger.warning("복구 거부: 연속 실패 제한")
+        return _login_page(request, "recover", status=429, error=_TOO_MANY, **refill)
+    member = repo.find_member_by_email(conn, SELFHOST_SESSION_ID, email)
+    admin = member is not None and member["role"] == "admin" and member["disabled_at"] is None
+    if not (_token_matches(request, token) and admin):
+        throttle.fail("recover")
+        logger.warning("복구 실패")
+        return _login_page(request, "recover", status=403, error=_BAD_RECOVER, **refill)
+    problem = team.password_problem(password)
+    if problem:
+        return _login_page(request, "recover", status=422, error=problem, **refill)
+    throttle.reset("recover")
+    repo.set_member_credentials(conn, SELFHOST_SESSION_ID, member["member_id"], email=member["email"],
+                                password_hash=team.hash_password(password), now=utc_now())
+    logger.info("복구: 관리자 비밀번호 변경")
+    return _logged_in_redirect(request, conn, member["member_id"])
+
+
+@router.get("/invite/{token}", response_class=HTMLResponse, response_model=None)
+def invite_page(request: Request, token: str, conn: Connection = Depends(get_conn)) -> HTMLResponse | RedirectResponse:
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="invite", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
+    return _link_page(request, "invite")
+
+
+@router.post("/invite/{token}", response_model=None)
+def invite_accept(
+    request: Request, token: str, email: str = Form(""), display_name: str = Form(""), password: str = Form(""),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """초대로 가입(초대의 역할) → 로그인. 무효·만료·사용·취소는 같은 404 안내."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="invite", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
+    refill = {"email": email.strip(), "display_name": display_name.strip()}
+    problem = _account_problem(email, display_name, password)
+    if problem:
+        return _link_page(request, "invite", status=422, error=problem, **refill)
+    try:
+        member_id = repo.accept_invite(conn, token, email=email, display_name=team.clean_display_name(display_name),
+                                       password_hash=team.hash_password(password), now=utc_now())
+    except NotFound:
+        return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
+    except EmailTaken:
+        return _link_page(request, "invite", status=422, error="이미 쓰는 이메일입니다.", **refill)
+    logger.info("초대 가입")
+    redirect = _logged_in_redirect(request, conn, member_id)
+    redirect.headers["Referrer-Policy"] = "no-referrer"
+    return redirect
+
+
+@router.get("/reset/{token}", response_class=HTMLResponse, response_model=None)
+def reset_page(request: Request, token: str, conn: Connection = Depends(get_conn)) -> HTMLResponse | RedirectResponse:
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="reset", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_RESET)
+    return _link_page(request, "reset")
+
+
+@router.post("/reset/{token}", response_model=None)
+def reset_use(
+    request: Request, token: str, password: str = Form(""), conn: Connection = Depends(get_conn),
+) -> HTMLResponse | RedirectResponse:
+    """재설정 링크로 새 비밀번호 → 그 멤버 세션 전부 폐기 → 새 세션으로 로그인."""
+    if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
+        return RedirectResponse("/login", status_code=303)
+    if repo.invite_for_token(conn, token, purpose="reset", now=utc_now()) is None:
+        return _link_page(request, "invalid", status=404, error=_BAD_RESET)
+    problem = team.password_problem(password)
+    if problem:
+        return _link_page(request, "reset", status=422, error=problem)
+    try:
+        member_id = repo.use_reset_link(conn, token, password_hash=team.hash_password(password), now=utc_now())
+    except NotFound:
+        return _link_page(request, "invalid", status=404, error=_BAD_RESET)
+    logger.info("재설정 링크 사용")
+    redirect = _logged_in_redirect(request, conn, member_id)
+    redirect.headers["Referrer-Policy"] = "no-referrer"
+    return redirect
 
 
 @router.post("/logout")
-def logout() -> RedirectResponse:
-    """쿠키만 지운다. 워크스페이스 행은 그대로."""
+def logout(request: Request, conn: Connection = Depends(get_conn)) -> RedirectResponse:
+    """이 쿠키의 로그인 세션만 폐기하고 쿠키를 지운다. 워크스페이스 행은 그대로."""
+    token = request.cookies.get(LOGIN_COOKIE)
+    if token:
+        repo.revoke_login_session(conn, token, now=utc_now())
     redirect = RedirectResponse("/login", status_code=303)
-    redirect.delete_cookie(SESSION_COOKIE, httponly=True, samesite="lax")
+    clear_login_cookies(redirect)
     return redirect
 
 

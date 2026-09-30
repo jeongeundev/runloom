@@ -15,9 +15,8 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo, secret_store
 from workflow.adapters.secret_store import SecretStore
 from workflow.server.app import create_app
-from workflow.server.auth import SESSION_COOKIE, sign_session
 
-from .conftest import log_in
+from .conftest import log_in, log_in_other_workspace
 
 BASE = "http://127.0.0.1:8000"
 URL = "https://discord.com/api/webhooks/123456/SECRETwebhookTOKEN_abcdef"
@@ -72,10 +71,8 @@ def save(op: TestClient, url: str = URL):
 
 
 def test_every_path_is_operator_only(app, conn, secrets, receiver):
-    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
-    repo.create_session(conn, "sess-other", "2026-09-28T00:00:00Z")
-    stranger = TestClient(app, base_url=BASE)
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    # 로그인 전, 그리고 고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    stranger = log_in_other_workspace(TestClient(app, base_url=BASE))
     for anonymous in (TestClient(app, base_url=BASE), stranger):
         response = anonymous.get("/operator/notifications", follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")

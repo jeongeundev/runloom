@@ -1,5 +1,5 @@
 {# 왼쪽 목록 — UI_GUIDE "앱 셸". 제품명 · 탐색 · 최근(+) · 내 업무(한 줄 = 업무) · 세션. 상태 점은 _status.html 규칙.
-   `+` 는 직접 등록, 아래는 워크스페이스 + 로그아웃 (ADR-0016·0019). #}
+   `+` 는 직접 등록, 아래는 로그인한 멤버(표시 이름·역할) + 로그아웃 (ADR-0016·0019·0021). #}
 {% import "_status.html" as st %}
 <aside class="sidebar">
   <a class="brand" href="/">Runloom</a>
@@ -26,7 +26,7 @@
   {% else %}
   <div class="side-empty">아직 업무가 없습니다.</div>
   {% endif %}
-  <div class="side-foot">셀프호스트 워크스페이스
+  <div class="side-foot">{% if member %}{{ member.display_name }} · {{ "관리자" if member.role == "admin" else "멤버" }}{% else %}셀프호스트 워크스페이스{% endif %}
     <form method="post" action="/logout" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">로그아웃</button></form>
   </div>
 </aside>

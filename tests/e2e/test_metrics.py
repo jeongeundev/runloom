@@ -30,6 +30,7 @@ import pytest
 import uvicorn
 
 from tests.e2e.test_github_cycle import (
+    log_in,
     BILLING_FILES,
     DROP_PREFIXES,
     FIXES,
@@ -230,7 +231,7 @@ def metrics(world: World, **params) -> dict:
 
 def test_01_setup_connects_fix_by_claude_and_review_by_codex(world):
     http = world.http
-    login = http.post("/login", data={"token": world.central_env["OPERATOR_TOKEN"]})  # 워크스페이스 = 운영자
+    login = log_in(http, world.central_env["OPERATOR_TOKEN"])  # 워크스페이스 = 운영자
     assert login.status_code == 303, login.text[:300]
     world.session_id = q(world, "SELECT session_id FROM sessions WHERE is_operator = 1")[0]["session_id"]
 

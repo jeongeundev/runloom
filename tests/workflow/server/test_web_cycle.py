@@ -14,9 +14,8 @@ import pytest
 
 from workflow.adapters import repo
 from workflow.server import task_cycle, views
-from workflow.server.auth import SESSION_COOKIE, sign_session, verify_session
 
-from .conftest import log_in
+from .conftest import log_in, log_in_other_workspace, session_of
 
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     FIX,
@@ -53,19 +52,15 @@ def settings(settings):
 def operator(client, cycle, conn):
     """이 클라이언트를 고정 워크스페이스(cycle 의 `SESSION`)에 로그인 — 소스·업무의 주인. 셀프호스트는 로그인 = 운영자."""
     log_in(client)
-    assert verify_session(client.cookies[SESSION_COOKIE], "test-session-secret") == SESSION
+    assert session_of(client) == SESSION
     return client
 
 
 def _stranger(app, conn):
-    """워크스페이스가 아닌 세션 행을 서명한 쿠키를 가진 클라이언트 — 셀프호스트에서는 로그인 안 된 것으로 본다."""
+    """고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키를 가진 클라이언트 — 셀프호스트에서는 로그인 안 된 것으로 본다."""
     from fastapi.testclient import TestClient
 
-    if repo.get_session(conn, "sess-other") is None:
-        repo.create_session(conn, "sess-other", NOW)
-    stranger = TestClient(app)
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
-    return stranger
+    return log_in_other_workspace(TestClient(app))
 
 
 def page(client, url: str) -> str:

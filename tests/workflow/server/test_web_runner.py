@@ -14,9 +14,8 @@ from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
 from workflow.server.app import create_app
-from workflow.server.auth import SESSION_COOKIE, sign_session
 
-from .conftest import log_in
+from .conftest import log_in, log_in_other_workspace
 from .test_task_cycle import SESSION as CYCLE_SESSION
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     SOURCE,
@@ -87,7 +86,8 @@ def test_post_issues_a_code_and_renders_one_command_in_that_card(op, conn, secre
 def test_command_uses_workflow_public_url_when_set(settings, github, conn, secrets, pem):
     app = create_app(dataclasses.replace(settings, public_url="https://runloom.example.com"))
     app.state.github_transport = httpx.MockTransport(github)
-    client = log_in(TestClient(app, base_url=BASE))
+    # 공개 주소가 https 면 로그인 쿠키가 Secure — 브라우저처럼 https 로 연다
+    client = log_in(TestClient(app, base_url=BASE.replace("http://", "https://")))
     source = billing(client, conn, secrets, pem)
 
     text = client.post(f"/operator/github/sources/{source.source_id}/runner").text
@@ -121,10 +121,8 @@ def test_other_workspace_source_is_404(op, conn):
 
 def test_non_operator_is_refused(app, conn, secrets, pem, op):
     source = billing(op, conn, secrets, pem)
-    # 로그인 전, 그리고 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
-    repo.create_session(conn, "sess-other", "2026-10-06T12:00:00Z")
-    stranger = TestClient(app, base_url=BASE)
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    # 로그인 전, 그리고 고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
+    stranger = log_in_other_workspace(TestClient(app, base_url=BASE))
 
     for anonymous in (TestClient(app, base_url=BASE), stranger):
         response = anonymous.post(f"/operator/github/sources/{source.source_id}/runner", follow_redirects=False)

@@ -12,9 +12,9 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import ExecutionRequest
-from workflow.server.auth import SELFHOST_SESSION_ID, SESSION_COOKIE, sign_session, verify_session
+from workflow.server.auth import SELFHOST_SESSION_ID
 
-from .conftest import BASE_COMMIT, NOW, log_in
+from .conftest import BASE_COMMIT, NOW, log_in, log_in_other_workspace, session_of
 
 TOKEN = "github_pat_" + "S3cr3t" * 10
 FIX_AGENT = "agent-codex-mac"
@@ -42,7 +42,7 @@ def _agent(agent_id: str, *capabilities: tuple[str, str], profiles=("vp-pytest",
 def login(client: TestClient) -> str:
     """워크스페이스 로그인(`/login`, 로그인 = 운영자) → 세션 ID(고정 워크스페이스). 쿠키는 client 가 보관한다."""
     log_in(client)
-    session_id = verify_session(client.cookies[SESSION_COOKIE], "test-session-secret")
+    session_id = session_of(client)
     assert session_id == SELFHOST_SESSION_ID
     return session_id
 
@@ -100,9 +100,8 @@ def error(response, status: int, code: str, field: str | None = "__any__") -> di
 
 
 def test_every_endpoint_requires_operator_session(client, conn):
-    # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 셀프호스트에서는 로그인 안 된 것으로 본다
-    repo.create_session(conn, "sess-other", NOW)
-    client.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    # 고정 워크스페이스가 아닌 워크스페이스의 유효한 로그인 쿠키 — 셀프호스트에서는 로그인 안 된 것으로 본다
+    log_in_other_workspace(client)
     calls = [
         ("GET", "/github/sources", None),
         ("POST", "/github/sources/preview", body()),

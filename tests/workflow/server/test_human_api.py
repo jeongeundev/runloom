@@ -8,9 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
-from workflow.server.auth import SESSION_COOKIE, sign_session
 
-from .conftest import task_row
+from .conftest import log_in_other_workspace, task_row
 from .test_github_api import login
 from .test_task_cycle import FIX, FIX_SHOP, SESSION, cycle, import_issue, settings  # noqa: F401 — 픽스처
 
@@ -83,9 +82,7 @@ def test_only_the_operator_session_can_answer(app, conn, request_id):
     anonymous = TestClient(app)
     assert respond(anonymous, request_id).status_code == 401
     assert anonymous.get("/human-requests").status_code == 401
-    stranger = TestClient(app)  # 워크스페이스가 아닌 세션 행을 서명한 쿠키 — 로그인 안 된 것으로 본다
-    repo.create_session(conn, "sess-other", NOW)
-    stranger.cookies.set(SESSION_COOKIE, sign_session("sess-other", "test-session-secret"))
+    stranger = log_in_other_workspace(TestClient(app))  # 다른 워크스페이스의 로그인 쿠키 — 로그인 안 된 것으로 본다
     assert respond(stranger, request_id).status_code == 401
     assert stranger.get("/human-requests").status_code == 401
     assert repo.get_human_request(conn, SESSION, request_id)["state"] == "open"

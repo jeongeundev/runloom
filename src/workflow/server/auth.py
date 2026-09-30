@@ -3,15 +3,13 @@
 셀프호스트 전용(ADR-0016 결정 3, ADR-0019) — 익명 세션을 만들지 않고 고정 워크스페이스 `SELFHOST_SESSION_ID` 쿠키만 받는다.
 
 팀(phase 15, ADR-0021): 로그인 세션 쿠키 `wf_login` → 현재 멤버(`current_member`)·역할 × 동작(`require_action`),
-쿠키 인증 변경 요청의 Origin 검사(`check_origin`), 키별 로그인 실패 제한. 옛 `require_session`·`require_operator`·
-`wf_session` 은 라우트가 옮겨 갈 때까지(step 5·6) 그대로 둔다 — 새 의존성은 `wf_session` 을 읽지 않는다.
+쿠키 인증 변경 요청의 Origin 검사(`check_origin`), 키별 로그인 실패 제한. 옛 `wf_session` 쿠키는 읽지 않는다.
+`require_session`·`require_operator` 는 라우트가 역할 표로 옮겨 갈 때까지(step 6) 현재 멤버 위의 `session_id` 래퍼다.
 
 요청 범위 의존성(`get_conn`, `utc_now`) 도 여기 둔다. 인증이 가장 먼저 DB 와 시각을 쓴다.
 sqlite 연결은 요청마다 새로 열고 응답 뒤 닫는다 (`get_conn`). 앱 전역 연결을 두지 않는다.
 """
 
-import hashlib
-import hmac
 import re
 import time
 from collections import deque
@@ -28,8 +26,8 @@ from workflow.domain import team
 from workflow.server.errors import ApiError, PageError
 from workflow.server.settings import Settings
 
-SESSION_COOKIE = "wf_session"
 LOGIN_COOKIE = "wf_login"
+_OLD_SESSION_COOKIE = "wf_session"  # phase 15 이전 쿠키 — 로그아웃 때 지우기만 한다
 SELFHOST_SESSION_ID = "sess-selfhost"
 LOGIN_MAX_FAILURES = 5  # 이 창 안에서 연속 실패가 이만큼이면 창이 지날 때까지 로그인 429
 LOGIN_FAILURE_WINDOW_SECONDS = 60
@@ -46,24 +44,6 @@ def get_conn(request: Request) -> Iterator[Connection]:
         yield conn
     finally:
         conn.close()
-
-
-# --- 세션 서명 ---------------------------------------------------------------
-
-
-def _mac(session_id: str, secret: str) -> str:
-    return hmac.new(secret.encode(), session_id.encode(), hashlib.sha256).hexdigest()
-
-
-def sign_session(session_id: str, secret: str) -> str:
-    return f"{session_id}.{_mac(session_id, secret)}"
-
-
-def verify_session(cookie: str, secret: str) -> str | None:
-    session_id, dot, mac = cookie.rpartition(".")
-    if not dot or not session_id:
-        return None
-    return session_id if hmac.compare_digest(mac, _mac(session_id, secret)) else None
 
 
 # --- 의존성 ------------------------------------------------------------------
@@ -95,37 +75,11 @@ def require_source_token(request: Request, conn: Connection = Depends(get_conn))
     return row
 
 
-def _session_from_cookie(request: Request, conn: Connection) -> str | None:
-    cookie = request.cookies.get(SESSION_COOKIE)
-    if not cookie:
-        return None
-    session_id = verify_session(cookie, request.app.state.settings.session_secret)
-    if session_id is None or repo.get_session(conn, session_id) is None:
-        return None
-    return session_id
-
-
-def workspace_session(request: Request, conn: Connection) -> str | None:
-    """로그인 상태 — 쿠키가 고정 워크스페이스를 가리키고 그 행이 있을 때만 그 id."""
-    session_id = _session_from_cookie(request, conn)
-    return session_id if session_id == SELFHOST_SESSION_ID else None
-
-
 def ensure_workspace(conn: Connection, now: str) -> None:
     """고정 워크스페이스 행을 한 번 만든다(내장 종류·규칙 seed + 운영자). 이미 있으면 그대로."""
     if repo.get_session(conn, SELFHOST_SESSION_ID) is None:
         repo.create_session(conn, SELFHOST_SESSION_ID, now)
         repo.mark_operator(conn, SELFHOST_SESSION_ID)
-
-
-def set_session_cookie(response: Response, session_id: str, settings: Settings) -> None:
-    response.set_cookie(
-        SESSION_COOKIE,
-        sign_session(session_id, settings.session_secret),
-        max_age=settings.session_cookie_days * 86400,
-        httponly=True,
-        samesite="lax",
-    )
 
 
 class LoginThrottle:
@@ -164,25 +118,6 @@ class LoginThrottle:
 def login_email_key(raw: str) -> str:
     """이메일별 실패 제한 키 — 정규화한 이메일, 형식이 틀리면 입력을 소문자로 254자까지."""
     return "email:" + (team.normalize_email(raw) or raw.lower()[:254])
-
-
-def require_session(request: Request, conn: Connection = Depends(get_conn)) -> str:
-    """로그인한 고정 워크스페이스. 세션을 만들지 않는다 — 로그인 전이면 `/login` 으로 303."""
-    session_id = workspace_session(request, conn)
-    if session_id is None:
-        raise HTTPException(303, "로그인이 필요합니다.", headers={"Location": "/login"})
-    return session_id
-
-
-def require_operator(request: Request, conn: Connection = Depends(get_conn)) -> str:
-    """로그인 = 운영자(고정 워크스페이스는 `ensure_workspace` 가 운영자로 만든다). 로그인 전이면 401 unauthenticated."""
-    session_id = workspace_session(request, conn)
-    if session_id is None:
-        raise ApiError(401, "unauthenticated", "로그인이 필요합니다.")
-    row = repo.get_session(conn, session_id)
-    if row is None or not row["is_operator"]:
-        raise ApiError(403, "forbidden", "운영자 권한이 필요합니다.")
-    return session_id
 
 
 # --- 로그인 세션·현재 멤버 (phase 15) --------------------------------------------------------
@@ -249,6 +184,19 @@ def require_action(action: str, *, api: bool = False) -> Callable[..., LoggedIn]
     return dependency
 
 
+def require_session(member: LoggedIn = Depends(require_member)) -> str:
+    """로그인한 멤버의 워크스페이스 id. 로그인 전이면 `/login` 으로 303 (step 6 이 역할 표로 옮긴 뒤 지운다)."""
+    return member.session_id
+
+
+def require_operator(member: LoggedIn = Depends(require_member_api), conn: Connection = Depends(get_conn)) -> str:
+    """로그인한 멤버의 워크스페이스가 운영자일 때 그 id. 로그인 전이면 401 unauthenticated (step 6 이 지운다)."""
+    row = repo.get_session(conn, member.session_id)
+    if row is None or not row["is_operator"]:
+        raise ApiError(403, "forbidden", "운영자 권한이 필요합니다.")
+    return member.session_id
+
+
 def set_login_cookie(response: Response, token: str, settings: Settings) -> None:
     """로그인 세션 원문 토큰. 공개 주소가 https 일 때만 Secure."""
     response.set_cookie(
@@ -265,7 +213,7 @@ def set_login_cookie(response: Response, token: str, settings: Settings) -> None
 def clear_login_cookies(response: Response) -> None:
     """로그아웃 — 새 로그인 쿠키와 옛 `wf_session` 을 모두 지운다."""
     response.delete_cookie(LOGIN_COOKIE, path="/")
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(_OLD_SESSION_COOKIE, path="/")
 
 
 # --- Origin 검사 (phase 15) ---------------------------------------------------------------------

@@ -1,4 +1,7 @@
-{# 셀프호스트 로그인 (`/login`, ADR-0016 결정 3) — 토큰 한 칸 · 오류 문구 · 안내 한 줄. 앱 셸 없음. 입력한 토큰 값은 다시 싣지 않는다. #}
+{# 로그인 전 화면 한 장 (ADR-0021, ARCHITECTURE "첫 설정·복구·초대·재설정 흐름") — 앱 셸 없음.
+   mode: setup(운영자 토큰으로 관리자 계정 만들기) · login(이메일·비밀번호) · recover(토큰 + 관리자 이메일 + 새 비밀번호)
+   · invite(초대 가입) · reset(새 비밀번호) · invalid(무효 링크 안내).
+   되돌려 채우는 값은 이메일·표시 이름뿐 — 비밀번호·토큰은 다시 싣지 않는다. 링크 토큰은 화면에 적지 않는다 — 초대·재설정 폼은 action 없이 지금 주소로 보낸다. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -10,16 +13,95 @@
 <body>
 <main class="main">
   <div class="main-inner">
-    <h1>Runloom 로그인</h1>
+    {% if mode == "setup" %}<h1>처음 설정 — 관리자 계정 만들기</h1>
+    {% elif mode == "recover" %}<h1>관리자 복구</h1>
+    {% elif mode == "invite" %}<h1>Runloom 가입</h1>
+    {% elif mode == "reset" %}<h1>새 비밀번호</h1>
+    {% elif mode == "invalid" %}<h1>링크를 쓸 수 없습니다</h1>
+    {% else %}<h1>Runloom 로그인</h1>{% endif %}
     {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-    <form method="post" action="/login" class="card">
+    {% if mode == "setup" %}
+    <form method="post" action="/login/setup" class="card">
       <div class="field">
         <label for="token">운영자 토큰</label>
-        <input type="password" id="token" name="token" autocomplete="current-password" required>
-        <div class="help">셀프호스트 설치의 <code>deploy/selfhost/.env</code> 에 있는 <code>OPERATOR_TOKEN</code> 값을 입력합니다.</div>
+        <input type="password" id="token" name="token" autocomplete="off" required>
+        <div class="help">셀프호스트 설치의 <code>deploy/selfhost/.env</code> 에 있는 <code>OPERATOR_TOKEN</code> 값을 입력합니다. 처음 설정과 복구에만 씁니다.</div>
+      </div>
+      <div class="field">
+        <label for="email">이메일</label>
+        <input type="email" id="email" name="email" value="{{ email }}" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="display_name">표시 이름</label>
+        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" maxlength="40" required>
+      </div>
+      <div class="field">
+        <label for="password">비밀번호</label>
+        <input type="password" id="password" name="password" autocomplete="new-password" minlength="10" maxlength="128" required>
+        <div class="help">10자 이상.</div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">관리자 계정 만들기</button></div>
+    </form>
+    {% elif mode == "recover" %}
+    <form method="post" action="/login/recover" class="card">
+      <div class="field">
+        <label for="token">운영자 토큰</label>
+        <input type="password" id="token" name="token" autocomplete="off" required>
+        <div class="help"><code>deploy/selfhost/.env</code> 의 <code>OPERATOR_TOKEN</code> 값.</div>
+      </div>
+      <div class="field">
+        <label for="email">관리자 이메일</label>
+        <input type="email" id="email" name="email" value="{{ email }}" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">새 비밀번호</label>
+        <input type="password" id="password" name="password" autocomplete="new-password" minlength="10" maxlength="128" required>
+      </div>
+      <div class="actions"><button class="btn" type="submit">비밀번호 바꾸고 로그인</button> <a href="/login">로그인으로</a></div>
+    </form>
+    {% elif mode == "invite" %}
+    <form method="post" class="card">
+      <div class="field">
+        <label for="email">이메일</label>
+        <input type="email" id="email" name="email" value="{{ email }}" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="display_name">표시 이름</label>
+        <input type="text" id="display_name" name="display_name" value="{{ display_name }}" maxlength="40" required>
+      </div>
+      <div class="field">
+        <label for="password">비밀번호</label>
+        <input type="password" id="password" name="password" autocomplete="new-password" minlength="10" maxlength="128" required>
+        <div class="help">10자 이상.</div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">가입하고 로그인</button></div>
+    </form>
+    {% elif mode == "reset" %}
+    <form method="post" class="card">
+      <div class="field">
+        <label for="password">새 비밀번호</label>
+        <input type="password" id="password" name="password" autocomplete="new-password" minlength="10" maxlength="128" required>
+        <div class="help">10자 이상. 바꾸면 이 계정의 다른 로그인은 모두 풀립니다.</div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">비밀번호 바꾸고 로그인</button></div>
+    </form>
+    {% elif mode == "invalid" %}
+    <p>관리자에게 새 링크를 받으세요.</p>
+    <div class="actions"><a class="btn btn-secondary" href="/login">로그인으로</a></div>
+    {% else %}
+    <form method="post" action="/login" class="card">
+      <div class="field">
+        <label for="email">이메일</label>
+        <input type="email" id="email" name="email" value="{{ email }}" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">비밀번호</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
       </div>
       <div class="actions"><button class="btn" type="submit">로그인</button></div>
+      <div class="help">비밀번호를 잊었나요 — 관리자에게 재설정 링크를 받으세요. 관리자는 <a href="/login/recover">토큰으로 복구</a>합니다.</div>
     </form>
+    {% endif %}
   </div>
 </main>
 </body>

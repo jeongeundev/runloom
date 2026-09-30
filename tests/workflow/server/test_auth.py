@@ -1,7 +1,9 @@
-"""auth.py — 세션 서명 쿠키, 연결 토큰 인증, 운영자 확인 (ADR-0005), 입구 토큰 인증 (ADR-0010),
-로그인 세션·현재 멤버·역할·Origin 검사·키별 실패 제한 (phase 15 step 4)."""
+"""auth.py — 연결 토큰 인증, 운영자 확인 (ADR-0005), 입구 토큰 인증 (ADR-0010),
+로그인 세션·현재 멤버·역할·Origin 검사·키별 실패 제한 (phase 15 step 4), 옛 세션 의존성의 로그인 래퍼 (step 5)."""
 
 import dataclasses
+import hashlib
+import hmac
 
 import pytest
 from fastapi import Depends, Request, Response
@@ -12,7 +14,6 @@ from workflow.domain import team
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
-    SESSION_COOKIE,
     LoggedIn,
     LoginThrottle,
     check_origin,
@@ -29,35 +30,17 @@ from workflow.server.auth import (
     require_session,
     require_source_token,
     set_login_cookie,
-    sign_session,
-    verify_session,
 )
 
-from .conftest import NOW, bearer, exchange, log_in
+from .conftest import NOW, bearer, exchange, log_in, log_in_other_workspace
 
 SECRET = "test-session-secret"
+OLD_SESSION_COOKIE = "wf_session"  # phase 15 이전 로그인 쿠키 — 이제 읽지 않는다
 
 
-# --- 서명 ------------------------------------------------------------------
-
-
-def test_sign_and_verify_roundtrip():
-    cookie = sign_session("sess-abc", SECRET)
-    session_id, _, mac = cookie.rpartition(".")
-    assert session_id == "sess-abc"
-    assert len(mac) == 64
-    assert verify_session(cookie, SECRET) == "sess-abc"
-
-
-def test_forged_or_tampered_cookie_is_rejected():
-    cookie = sign_session("sess-abc", SECRET)
-    session_id, _, mac = cookie.rpartition(".")
-    assert verify_session(f"sess-other.{mac}", SECRET) is None  # 다른 ID 에 같은 서명
-    assert verify_session(f"{session_id}.{'0' * 64}", SECRET) is None  # 서명 위조
-    assert verify_session(cookie, "another-secret") is None  # 다른 비밀값
-    assert verify_session("no-dot-here", SECRET) is None
-    assert verify_session(f".{mac}", SECRET) is None  # 빈 ID
-    assert verify_session("", SECRET) is None
+def old_workspace_cookie(session_id: str) -> str:
+    """phase 15 이전 `wf_session` 값 모양(`<id>.<SESSION_SECRET HMAC>`) — 서명이 맞아도 로그인이 아니어야 한다."""
+    return f"{session_id}.{hmac.new(SECRET.encode(), session_id.encode(), hashlib.sha256).hexdigest()}"
 
 
 # --- 의존성 — Step 6 이 쓸 세션·운영자 의존성을 테스트 전용 라우트로 검증 ---------
@@ -124,7 +107,7 @@ def test_require_source_token_accepts_only_bearer_wfs_token_and_touches_last_use
         "code": "unauthenticated", "message": "유효한 입구 토큰이 필요합니다.", "field": None, "details": None,
     }
     log_in(client)  # 로그인한 워크스페이스 쿠키도 입구 인증이 아니다
-    assert client.cookies.get(SESSION_COOKIE)
+    assert client.cookies.get(LOGIN_COOKIE)
     connector_token = exchange(client, conn)[1]  # 연결 토큰(wfc_)도 아니다
     for headers in (
         {},
@@ -185,26 +168,27 @@ def test_selfhost_require_operator_is_401_without_login(settings, conn):
     assert _session_count(conn) == 0
 
 
-def test_selfhost_accepts_only_the_fixed_workspace_cookie(settings, conn):
-    """서명이 맞아도 다른 세션 id(예: demo 에서 쓰던 익명 세션)는 미인증. 고정 워크스페이스는 운영자다."""
+def test_selfhost_accepts_only_a_login_to_the_fixed_workspace(settings, conn):
+    """다른 워크스페이스(예: demo 에서 쓰던 익명 세션)의 유효한 로그인도 미인증. 고정 워크스페이스 로그인은 운영자다."""
     client = TestClient(_selfhost_app(settings))
-    repo.create_session(conn, "sess-anon", NOW)
-    repo.mark_operator(conn, "sess-anon")
-    client.cookies.set(SESSION_COOKIE, sign_session("sess-anon", SECRET))
+    repo.create_session(conn, "sess-other", NOW)
+    repo.mark_operator(conn, "sess-other")
+    log_in_other_workspace(client)
     assert client.get("/_probe/session", follow_redirects=False).status_code == 303
     assert client.get("/_probe/operator").status_code == 401
 
-    ensure_workspace(conn, NOW)
-    client.cookies.set(SESSION_COOKIE, sign_session(SELFHOST_SESSION_ID, SECRET))
+    log_in(client)
     assert client.get("/_probe/session").json() == {"session_id": SELFHOST_SESSION_ID}
     assert client.get("/_probe/operator").json() == {"session_id": SELFHOST_SESSION_ID}
 
 
-def test_selfhost_workspace_cookie_without_row_is_unauthenticated(settings, conn):
+def test_selfhost_old_workspace_cookie_is_unauthenticated(settings, conn):
+    """서명이 맞는 옛 `wf_session`(고정 워크스페이스)은 워크스페이스 행이 있어도 로그인이 아니다."""
     client = TestClient(_selfhost_app(settings))
-    client.cookies.set(SESSION_COOKIE, sign_session(SELFHOST_SESSION_ID, SECRET))
+    ensure_workspace(conn, NOW)
+    client.cookies.set(OLD_SESSION_COOKIE, old_workspace_cookie(SELFHOST_SESSION_ID))
     assert client.get("/_probe/session", follow_redirects=False).status_code == 303
-    assert _session_count(conn) == 0
+    assert client.get("/_probe/operator").status_code == 401
 
 
 def test_ensure_workspace_creates_operator_session_once(conn, app):
@@ -325,7 +309,7 @@ def test_clear_login_cookies_deletes_login_and_old_session_cookie():
     response = Response()
     clear_login_cookies(response)
     headers = [v.decode() for k, v in response.raw_headers if k == b"set-cookie"]
-    assert {h.split("=", 1)[0] for h in headers} == {LOGIN_COOKIE, SESSION_COOKIE}
+    assert {h.split("=", 1)[0] for h in headers} == {LOGIN_COOKIE, OLD_SESSION_COOKIE}
     assert all("Max-Age=0" in h for h in headers)
 
 
@@ -387,7 +371,7 @@ def test_old_workspace_session_cookie_is_ignored(settings, conn):
     """옛 `wf_session`(서명된 고정 워크스페이스)은 새 의존성에서 로그인이 아니다."""
     client = TestClient(_member_app(settings))
     _account(conn)
-    client.cookies.set(SESSION_COOKIE, sign_session(SELFHOST_SESSION_ID, SECRET))
+    client.cookies.set(OLD_SESSION_COOKIE, old_workspace_cookie(SELFHOST_SESSION_ID))
     assert client.get("/_probe/member", follow_redirects=False).status_code == 303
     assert client.get("/_probe/member-api").status_code == 401
 
