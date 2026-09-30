@@ -77,7 +77,10 @@
     {
       "step": 9,
       "name": "notify-recipients",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T11:23:39+0900",
+      "summary": "수정 domain/notification.py(notification_text recipients: Sequence[str]=() — 첫 줄 끝 ' → 이름, 이름', 순수 유지), adapters/repo.py(enqueue_notification(..., channel='shared', recipient_member_id=None) — personal 인데 받는 사람 없으면 ValueError; list_notifications(..., *, member_id=None) — 그 멤버의 personal 행 + payload_json.recipient_member_ids(json_each)에 든 shared 행), server/worker.py(_notify: 업무의 turn_recipients_of 로 받는 사람 계산 — 공용 웹훅 있으면 사건당 shared 1행(키 '<사건 키>:shared', 한 명이면 recipient_member_id·여럿이면 NULL, payload.recipient_member_ids, 본문 → 표시 이름), 개인 웹훅 저장한 받는 사람마다 personal 1행(키 '<사건 키>:personal:<id>', → 없음), 둘 다 없으면 안 쌓음, work_item_id 없는 Task 는 받는 사람 없음; _row_webhook_url: shared=notify_webhook_url, personal=personal_webhook_name(id) — 파일 없음·받는 사람 비활성·없음 → skipped, 재시도·형식 검사·로그(호스트만) 그대로; _webhook_url(name) 인자화), views.me_context + me.html('내가 받는 최근 알림' 표 — 사건·경로·상태·시각·오류, 본문 없음; step 7 이 미룬 ARCHITECTURE 항목). 테스트: test_notification +1, test_repo +1, test_task_cycle +8(httpx MockTransport 로 실제 NotifySender: 받는 사람 개인 있음→공용 → 김OO+개인 1, 관리자 둘→공용 1행 이름 나열, 공용 없음→개인만, 둘 다 없음→큐 없음, 같은 사건 재호출→행 불변, 개인 웹훅 삭제→skipped, 받는 사람 비활성→skipped, DB·로그에 URL 없음) + 기존 3개 기대값을 새 규칙으로(키 ':shared', 본문 ' → 관리자'), test_web_team +1(/me 목록 필터). 검증: pytest 2897 passed/33 skipped, ruff 통과. 다음 step 주의: v11 이전 행(옛 키·shared·NULL)은 공용 URL 로 그대로 보냄, 공용 본문의 → 이름은 알림을 만들 때 계산(업무 상태와 무관 — 사건 시점 받는 사람), 받는 사람 없는 워크스페이스(멤버 0)는 → 없이 옛 문구, 커밋은 하네스가 함.",
+      "completed_at": "2026-09-30T11:32:37+0900"
     },
     {
       "step": 10,
