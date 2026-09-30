@@ -1,0 +1,66 @@
+{
+  "project": "workflow",
+  "phase": "15-team",
+  "steps": [
+    {
+      "step": 0,
+      "name": "team-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "team-domain",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "schema-v11",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "member-repo",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "auth-sessions",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "login-web",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "role-gates",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "team-web",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "my-turn",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "notify-recipients",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "runner-owner",
+      "status": "pending"
+    },
+    {
+      "step": 11,
+      "name": "team-verify",
+      "status": "pending"
+    }
+  ]
+}

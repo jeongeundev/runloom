@@ -2,9 +2,11 @@
 
 갱신일: 2026-09-29. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 15-team 설계 (새 세션은 여기서 시작)
+## 다음 작업: 15-team 하네스 실행 (새 세션은 여기서 시작)
 
-**할 일**: `phases/15-team/` step 설계(`.claude/commands/harness.md`). 범위는 [재설계 계획](product/REDESIGN_PLAN.md) 13절 15-team — 초대 링크·이메일·비밀번호 로그인·역할(관리자/멤버), 사람별 "내 차례"·알림, 러너 소유자. 14 가 만든 `members`(첫 관리자 1명)·업무 담당(`member`|`agent`)을 잇는다([ADR-0020](adr/0020-work-items-and-stages.md)). 구현은 사용자 "진행해" 뒤.
+**할 일**: step 설계 완료(2026-09-30, [phases/15-team/README.md](../phases/15-team/README.md) — 12 step, 계획 기본값 11가지). 사용자 지시 뒤 `service` 에서 `python3 scripts/execute.py 15-team --engine claude` → `feat-15-team` 을 `service` 에 `--no-ff` 병합 → 셀프호스트 재설치(v11, 백업 먼저, 재설치 뒤 첫 접속에서 `.env` 토큰으로 관리자 계정 만들기).
+
+**2026-09-30 15-team 결정(사용자)**: 운영자 토큰은 첫 설정·복구 전용(이후 이메일·비밀번호), "내 차례" 받는 사람 = 담당 멤버 → 맡긴 사람 → 관리자 전원(응답은 누구나, 응답자 기록), `WORKFLOW_PUBLIC_URL` 설정 + 터널은 문서 안내만, 알림 = 공용 웹훅(`→ 이름`) + 멤버 개인 웹훅 선택, 멤버도 자기 러너 붙임(해제는 소유자·관리자). 기본값: scrypt(표준 라이브러리), 서버 로그인 세션 표, CSRF 는 Origin 검사, 초대 1회용 7일, 이메일 발송 없음.
 
 **2026-09-30 반영**: 13·14 모두 `service` 병합(`56a400d`, `7cd95d9`, 원격 미푸시). 셀프호스트 재설치 — 백업 `20260929T235350Z`(스키마 8) → `install.sh` → 스키마 10(업무 23: 새로 들어옴 21·완료 1·종료 1, Task 24·기준선 24 보존, 종류 `bug_fix`·`code_review`, 관리자 1) → `install-runner.sh` 로 러너 재기동(claim 정상). 재기동 직후 워커가 sandbox #1 의 기존 댓글(같은 comment_id)을 업무 키 `RUN-23` 이 든 제목으로 한 번 고쳐 썼다(새 댓글 아님, OpenArchive 쓰기 없음). 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 `workflow-selfhost:local` 을 사용자 설치와 공유해 여전히 미실행 — 태그 격리 수정이 먼저 필요. 남은 문서 정리: `docs/n8n/README.md`·`tests/test_n8n_example.py` 가 지운 `scripts/local_stack.py`·`/agents/register` 를 아직 언급.
 
