@@ -7,7 +7,8 @@
       "name": "handoff-design",
       "status": "completed",
       "started_at": "2026-09-30T22:00:42+0900",
-      "summary": "문서만: ADR-0023 신설(결정 10·조사 사실 6·대안), ADR-0021 끝 링크, ARCHITECTURE '사람 사이 인계 — phase 17' 절(소유자·정책·승인 상태 표·막는 지점·받는 사람 approvers·꺼진 러너 start_pending_at·알림 3종·검증만 다시·계약·요청문·저장소 보기·PYTHONPATH·단계 상태 재계산·러너 두 대·스키마 v13·이름 표)+대기 코드 표 2행, CONTRACT 16절(jsonc 2블록 — step 2 가 json 으로 바꾸고 블록 수 62→64), GLOSSARY phase 17 용어 8개, REDESIGN_PLAN 13절(17-team-handoff, 18-jira·19-triage·20-monitor), CURRENT_HANDOFF 한 줄. 주의: human_requests 는 CHECK 없어 그대로, notifications·work_item_events 는 재생성, tasks 는 ALTER(start_pending_at)만. 판정용 request_text 는 그대로 두고 execution_request_text 로 머리를 붙인다. work_actions 의 착수 코드는 server/stage_runs.py 로 옮긴다(순환 import). delegated_to_you 는 승인 요청이 생기면 따로 보내지 않는다(README '항상'과 다름 — ADR 결정 1). 검증: pytest 3191 passed·48 skipped, ruff 통과."
+      "summary": "문서만: ADR-0023 신설(결정 10·조사 사실 6·대안), ADR-0021 끝 링크, ARCHITECTURE '사람 사이 인계 — phase 17' 절(소유자·정책·승인 상태 표·막는 지점·받는 사람 approvers·꺼진 러너 start_pending_at·알림 3종·검증만 다시·계약·요청문·저장소 보기·PYTHONPATH·단계 상태 재계산·러너 두 대·스키마 v13·이름 표)+대기 코드 표 2행, CONTRACT 16절(jsonc 2블록 — step 2 가 json 으로 바꾸고 블록 수 62→64), GLOSSARY phase 17 용어 8개, REDESIGN_PLAN 13절(17-team-handoff, 18-jira·19-triage·20-monitor), CURRENT_HANDOFF 한 줄. 주의: human_requests 는 CHECK 없어 그대로, notifications·work_item_events 는 재생성, tasks 는 ALTER(start_pending_at)만. 판정용 request_text 는 그대로 두고 execution_request_text 로 머리를 붙인다. work_actions 의 착수 코드는 server/stage_runs.py 로 옮긴다(순환 import). delegated_to_you 는 승인 요청이 생기면 따로 보내지 않는다(README '항상'과 다름 — ADR 결정 1). 검증: pytest 3191 passed·48 skipped, ruff 통과.",
+      "completed_at": "2026-09-30T22:21:41+0900"
     },
     {
       "step": 1,
