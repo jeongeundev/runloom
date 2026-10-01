@@ -4312,6 +4312,25 @@ def test_handoff_note_is_recorded_on_the_work_item_with_an_event(handoff):
     assert len(_events_of(conn, work_item_id, "handoff_note")) == 1
 
 
+def test_hand_work_to_agent_saves_the_note_and_a_non_agent_assignee_clears_it(handoff):
+    conn, work_item_id, _, member = handoff
+    capability = Capability(code="code.fix", scope={"repository_id": "billing"})
+    record = select_agent("task-gh-41", capability, [Candidate(FIX_AGENT, (capability,))], mode="manual",
+                          chosen_agent_id=FIX_AGENT)
+    repo.hand_work_to_agent(conn, SESSION, work_item_id, record=record, target={}, member_id=member, now=LATER,
+                            note="결제 모듈만 보세요")
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["handoff_note"], row["handoff_note_by_member_id"]) == ("결제 모듈만 보세요", member)
+    assert _events_of(conn, work_item_id, "handoff_note") == [
+        {"agent_id": FIX_AGENT, "note": "결제 모듈만 보세요", "by": member}]
+
+    repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=member,
+                          by_member_id=member, now=LATER)
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["handoff_note"], row["handoff_note_by_member_id"]) == (None, None)
+    assert len(_events_of(conn, work_item_id, "handoff_note")) == 1  # 이력은 남는다
+
+
 def test_execution_verify_only_flag_defaults_to_zero(cycle):
     _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
     assert repo.get_execution(cycle, "exec-fix-1")["verify_only"] == 0

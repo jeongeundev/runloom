@@ -20,6 +20,7 @@ from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.v1 import Capability, KindSpec, format_work_key
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.field_mapping import PRIORITIES
+from workflow.domain.handoff_context import HANDOFF_NOTE_MAX
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.work_keys import branch_name
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES
@@ -167,9 +168,10 @@ DIRECT_WORK_ACTIVE = "직접 작업 중인 업무입니다. 먼저 직접 작업
 
 
 def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str, value: str,
-                member_id: str, now: str, secrets: SecretStore | None = None) -> None:
+                member_id: str, now: str, secrets: SecretStore | None = None, note: str = "") -> None:
     """담당 바꾸기 — 에이전트 = 맡기기(쓰기 한 트랜잭션 뒤 착수), 멤버 = 배정만(활성 멤버), `none` = 해제.
-    직접 작업 중이면 에이전트·다른 멤버는 그 직접 작업을 끝내고(repo), `none` 은 409 `direct_work_active`."""
+    직접 작업 중이면 에이전트·다른 멤버는 그 직접 작업을 끝내고(repo), `none` 은 409 `direct_work_active`.
+    지시 메모 `note` 는 에이전트일 때만 쓴다(앞뒤 공백 제거, 빈 값 = 메모 없음, `HANDOFF_NOTE_MAX` 자 넘으면 422)."""
     assignee = parse_assignee(value)
     work = _own_open_work(conn, session_id, work_item_id)
     if _running(conn, work_item_id):
@@ -181,6 +183,9 @@ def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id:
                               by_member_id=member_id, now=now)
         return
     kind, assignee_id = assignee
+    note = note.strip()
+    if kind == "agent" and len(note) > HANDOFF_NOTE_MAX:
+        raise WorkActionError(422, "invalid_field", f"지시 메모는 {HANDOFF_NOTE_MAX}자까지 쓸 수 있습니다.", field="note")
     if kind == "member":
         member = repo.get_member(conn, session_id, assignee_id)
         if member is None or member["disabled_at"] is not None:
@@ -198,7 +203,7 @@ def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id:
         raise _invalid_assignee("이 단계를 맡을 수 없는 에이전트입니다.")
     target = target_for(repo.get_kind(conn, session_id, stage["kind"]), repo.get_agent(conn, assignee_id))
     repo.hand_work_to_agent(conn, session_id, work_item_id, record=record, target=target, member_id=member_id,
-                            now=now)
+                            now=now, note=note or None)
     refresh_task_status(conn, stage["task_id"], now, settings)
     start_stage(conn, store, settings, repo.get_task(conn, stage["task_id"]), session_id=session_id, now=now,
                 strict=False, secrets=secrets)

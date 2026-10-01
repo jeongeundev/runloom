@@ -21,12 +21,14 @@ from sqlite3 import Connection, Row
 from workflow.adapters import repo, secret_store
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubSourceConfig
-from workflow.contracts.v1 import Capability
+from workflow.contracts.v1 import Capability, format_work_key
 from workflow.domain.execution_policy import BUILTIN_POLICIES, policy_for
+from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS
 from workflow.domain.github_match import MatchAgent, SourceMatch, match_source
 from workflow.domain.issue_intake import IntakeFacts
 from workflow.domain.selection import Candidate
 from workflow.domain.delegation import OWNER_APPROVAL_PREFIX
+from workflow.domain.handoff_context import compose_request
 from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, TaskReadiness, evaluate_readiness
 from workflow.server import github_sync, owner_approval
 from workflow.server.settings import Settings
@@ -56,6 +58,25 @@ def request_text(conn: Connection, task: Row) -> str:
     for answer in answers:
         lines += [f"- 질문: {answer['question']}", f"  답: {answer['text'].strip()}"]
     return "\n".join(lines)
+
+
+def execution_request_text(conn: Connection, task: Row, *, with_answers: bool) -> str:
+    """실행 요청의 `request` — 업무 키·제목·양식 칸·맡긴 사람 지시를 원래 요청문 앞에 붙인다(`compose_request`).
+    원래 요청문은 `with_answers` 면 `request_text`(사람 응답 포함), 아니면 단계 원문. 준비 판정은 `request_text` 를 쓴다."""
+    body = request_text(conn, task) if with_answers else task["request"]
+    work = repo.work_item_of_task(conn, task["task_id"])
+    if work is None:
+        return body
+    form = json.loads(work["form_json"])
+    note_by = None
+    if work["handoff_note_by_member_id"] is not None:
+        member = repo.get_member(conn, work["session_id"], work["handoff_note_by_member_id"])
+        note_by = member["display_name"] if member is not None else None
+    return compose_request(
+        work_key=format_work_key(work["key_number"]), title=work["title"],
+        form_fields=[(FORM_LABELS[key], form[key]["value"]) for key in FORM_HEADINGS if key in form],
+        note=work["handoff_note"], note_by=note_by, body=body,
+    )
 
 
 def origin_source(conn: Connection, task: Row) -> tuple[Row | None, GitHubSourceConfig | None]:

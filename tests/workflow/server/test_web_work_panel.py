@@ -368,6 +368,21 @@ def test_direct_work_events_are_on_the_timeline(admin, issue_task):
     assert "직접 작업 시작 · 관리자 · RUN-1-1" in events and "직접 작업 끝 · 관리자 · 그만둠" in events
 
 
+def test_assignee_form_has_a_note_field(admin, issue_task):
+    props = section(panel(admin), "props")
+    assert '<textarea name="note"' in props and 'maxlength="2000"' in props
+
+
+def test_handoff_note_is_on_the_timeline_escaped(admin, issue_task):
+    response = admin.post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}", "note": "<script>x</script> 먼저"},
+                          follow_redirects=False)
+    assert response.status_code == 303
+    text = panel(admin)
+    events = text.split("data-work-events", 1)[1].split("</ul>", 1)[0]
+    assert "지시 메모 · 관리자 — &lt;script&gt;x&lt;/script&gt; 먼저" in events
+    assert "<script>x</script>" not in text
+
+
 def test_direct_work_requires_login(client, conn, cycle, issue_task):
     for path in ("/work/RUN-1/direct", "/work/RUN-1/direct/stop"):
         response = client.post(path, follow_redirects=False)

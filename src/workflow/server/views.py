@@ -23,7 +23,7 @@ from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule, format_work_key
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.execution_policy import policy_for
-from workflow.domain.form_sections import FORM_HEADINGS
+from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS
 from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.metrics import (
     ACTORS,
@@ -661,10 +661,6 @@ def cycle_context(
 #
 # 업무 상태·이유는 워커·repo 가 저장한 값 그대로다(`domain/work_status`). 화면은 다시 판정하지 않는다.
 
-# 양식 칸 키 → 화면 이름 (ARCHITECTURE "양식 칸")
-FORM_LABELS = {
-    "goal": "목표", "steps_to_reproduce": "재현 절차", "expected_behavior": "기대 동작", "acceptance_criteria": "인수 조건",
-}
 # 업무 사이 연결(앞 → 뒤)을 이 업무에서 본 이름 — (type, 이 업무가 앞인가)
 _LINK_LABELS = {
     ("spawned_from", True): "이어서 생긴 업무", ("spawned_from", False): "원인 업무",
@@ -758,6 +754,8 @@ def _event_line(event: Row, names: dict[str, str]) -> str:
         return "담당 바뀜"
     if event["type"] == "priority_changed":
         return f"우선순위 {PRIORITY_LABELS.get(data['to'], data['to'])}"
+    if event["type"] == "handoff_note":
+        return f"지시 메모 · {names.get(data['by'], data['by'] or '이름 없음')} — {data['note']}"
     return event["type"]
 
 

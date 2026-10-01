@@ -37,6 +37,7 @@
               {% for a in panel.agents %}<option value="agent:{{ a.agent_id }}"{% if w.assignee == 'agent:' ~ a.agent_id %} selected{% endif %}>{{ a.name }}</option>{% endfor %}
             </optgroup>{% endif %}
           </select>
+          <textarea name="note" maxlength="2000" rows="2" aria-label="지시 메모" placeholder="지시 메모 (에이전트에게 맡길 때만, 선택)"></textarea>
           <button class="btn btn-small btn-secondary" type="submit">바꾸기</button>
         </form>
         {% if w.assignee.startswith('agent:') %}<span class="small">지금: {{ w.assignee_label }}</span>{% endif %}

@@ -571,6 +571,8 @@ def _assign_work_item(
     if assignee_type != "agent":
         conn.execute("UPDATE tasks SET start_pending_at = NULL WHERE work_item_id = ? AND finished_at IS NULL",
                      (work_item_id,))
+        conn.execute("UPDATE work_items SET handoff_note = NULL, handoff_note_by_member_id = NULL"
+                     " WHERE work_item_id = ?", (work_item_id,))
 
     def who(type_: str | None, id_: str | None) -> dict | None:
         return None if type_ is None else {"type": type_, "id": id_}
@@ -584,11 +586,12 @@ def _assign_work_item(
 
 def hand_work_to_agent(
     conn: Connection, session_id: str, work_item_id: str, *, record: SelectionRecord, target: dict, member_id: str,
-    now: str,
+    now: str, note: str | None = None,
 ) -> None:
     """에이전트에게 맡기기의 쓰기(ARCHITECTURE "담당 바꾸기" `agent:` ①~⑤)를 한 트랜잭션으로 — 단계 선택 기록·직접 선택
-    전환(`target` 고정), 업무 담당 = 그 Agent(`assigned` `by`), 맡긴 사람 = 누른 멤버, 그 단계가 지시 전 GitHub 원본이면
-    운영자 지시 기록, 업무 상태 재계산. 착수는 하지 않는다. 단계가 이 워크스페이스·업무의 것이 아니면 NotFound."""
+    전환(`target` 고정), 업무 담당 = 그 Agent(`assigned` `by`), 맡긴 사람 = 누른 멤버, 지시 메모(없으면 지난 메모를 지움),
+    그 단계가 지시 전 GitHub 원본이면 운영자 지시 기록, 업무 상태 재계산. 착수는 하지 않는다. 단계가 이 워크스페이스·
+    업무의 것이 아니면 NotFound."""
     if record.status != "selected":
         raise ValueError(f"선택되지 않은 기록 {record.status}")
     with _tx(conn):
@@ -601,6 +604,8 @@ def hand_work_to_agent(
         _assign_work_item(conn, session_id, work_item_id, assignee_type="agent", assignee_id=record.selected_agent_id,
                           by_member_id=member_id, now=now)
         set_work_requester(conn, work_item_id, member_id)
+        _set_handoff_note(conn, work_item_id, agent_id=record.selected_agent_id, note=note, member_id=member_id,
+                          now=now)
         issue = get_source_issue_by_task(conn, session_id, record.task_id)
         if issue is not None:
             _delegate_issue(conn, issue["source_id"], issue["github_issue_id"], by="operator", now=now)

@@ -19,7 +19,7 @@ from workflow.contracts.v1 import ExecutionRequest
 from workflow.domain.delegation import offline_reason
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
-from workflow.server import owner_approval, views
+from workflow.server import owner_approval, task_cycle, views
 from workflow.server.settings import Settings
 
 
@@ -72,7 +72,7 @@ def start_execution(
             "kind": kind,
             "agent_id": agent["agent_id"],
             "task_revision": task["revision"],
-            "request": task["request"],
+            "request": task_cycle.execution_request_text(conn, task, with_answers=False),
             "input_artifact_ids": list(input_artifact_ids),
             "target": target,
             "kind_spec": spec.model_dump(),

@@ -69,7 +69,9 @@
     {
       "step": 8,
       "name": "handoff-context",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T09:03:30+0900",
+      "summary": "인계 맥락 요청문: 새 domain/handoff_context.py(HANDOFF_NOTE_MAX 2000·FORM_VALUE_MAX 4000·compose_request — '# <키> <제목>' → '## 업무 양식'(### 칸 제목·값, 빈 값·_No response_ 제외, 값 4000자 넘으면 '…(생략)') → '## 맡긴 사람 지시 (<이름>|이름 없음)' → 원래 요청문, 빈 절 생략·절 사이 빈 줄 하나, work_key None 이면 body 그대로). task_cycle.execution_request_text(conn, task, *, with_answers) — 업무 행·form_json·메모·메모 쓴 멤버 이름으로 compose_request; 워커 _create_cycle_execution(True)·_spawn_successors(False)·stage_runs.start_execution(False) 이 사용, 준비 판정 request_text 는 그대로. 결정: 칸 이름 FORM_LABELS 를 views → domain/form_sections 로 옮김(views 가 task_cycle 을 import 해 순환) — views 는 import 로 같은 이름 사용. 지시 메모: 패널 담당 폼 textarea note(maxlength 2000), web POST /work/{key}/assignee 폼 note → work_actions.assign_work(note) 가 strip·에이전트일 때만 2000자 초과 422 invalid_field note(멤버·none 은 무시), repo.hand_work_to_agent(note) 가 같은 트랜잭션에서 _set_handoff_note(빈 메모면 지난 메모 지움), _assign_work_item 이 에이전트 아닌 담당이면 두 칸 비움. 타임라인 _event_line handoff_note = '지시 메모 · <이름> — <메모>'(자동 이스케이프). 테스트: test_handoff_context 6·test_form_sections 1·test_repo 1·test_work_actions 5(순환·비순환 요청문, 빈 메모, 2001→422·2000 통과, 멤버 무시)·test_web_work 2·test_web_work_panel 2(textarea, <script> 이스케이프). 기존 테스트 수정(새 동작 — 요청문 앞에 업무 머리): test_task_cycle 4곳·test_web 1곳의 request 기대값에 '# RUN-n 제목' 머리 추가. 검증: pytest 3374 passed·48 skipped, ruff 통과. 다음 step 주의: 업무에 붙은 모든 단계의 실행 요청 request 가 이제 '# RUN-n 제목' 으로 시작한다(request 원문 단정 테스트는 머리 포함으로)."
     },
     {
       "step": 9,

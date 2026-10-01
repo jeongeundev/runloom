@@ -260,7 +260,8 @@ def test_independent_tasks_start_in_the_same_tick_and_a_blocked_one_does_not_hol
     # 대상은 등록값 + 소스의 검증 프로필(등록된 ID)로 고정된다 — 요청 본문은 이슈 본문 그대로
     assert request.target == CodeChangeTarget(local_registration_id=REG_FIX, base_commit=BASE,
                                               verification_profile_id="vp-pytest")
-    assert (request.request, request.input_artifact_ids, request.task_revision) == ("재현 절차 1", [], 1)
+    # 요청문 = 업무 머리(phase 17 step 8) + 단계 원문
+    assert (request.request, request.input_artifact_ids, request.task_revision) == ("# RUN-1 버그 1\n\n재현 절차 1", [], 1)
     assert request.kind_spec is not None and request.kind_spec.kind == "bug_fix"
     (exec_b,) = executions(conn, b)
     assert (exec_b["agent_id"], request_of(exec_b).target.verification_profile_id) == (FIX_SHOP, "vp-shop")
@@ -613,7 +614,7 @@ def test_verified_fix_links_an_existing_review_task_instead_of_creating_one(cycl
     assert [t["task_id"] for t in review_tasks(conn, fix_task)] == ["task-review-c"]
     (review_exec,) = executions(conn, "task-review-c")
     assert review_exec["start_key"] == f"review:{fix_exec}"
-    assert request_of(review_exec).request == "결제 경로 위주로 봐 주세요."
+    assert request_of(review_exec).request == "# RUN-2 쿠폰 수정 검토\n\n결제 경로 위주로 봐 주세요."  # 업무 머리 + 원문
     assert conn.execute("SELECT COUNT(*) FROM followup_links").fetchone()[0] == 0
 
 
@@ -1005,7 +1006,7 @@ def test_issue_text_and_later_github_changes_do_not_widen_the_fixed_request(cycl
     request = request_of(execution)
     assert request.target == CodeChangeTarget(local_registration_id=REG_FIX, base_commit=BASE,
                                               verification_profile_id="vp-pytest")
-    assert request.request == body.strip()  # 본문은 요청 문자열일 뿐 실행 범위가 되지 않는다
+    assert request.request == "# RUN-1 버그 1\n\n" + body.strip()  # 본문은 요청 문자열일 뿐 실행 범위가 되지 않는다
 
     # 실행 중 GitHub 에서 담당자·제목이 바뀌어도 진행 중 실행은 그대로이고 새 실행을 만들지 않는다
     snapshot = issue(1, body=body, title="제목 변경", assignee_ids=[999], assignee_logins=["someone"],
@@ -1135,7 +1136,8 @@ def test_fix_needing_information_resumes_with_the_answer_as_input(cycle, conn, s
     assert (resumed["attempt_no"], resumed["start_key"]) == (2, f"auto:{fix_task}:r2")
     fixed = request_of(resumed)
     assert fixed.task_revision == 2
-    assert fixed.request.startswith("재현 절차 1") and "결제 금액은 10,000원" in fixed.request
+    assert fixed.request.startswith("# RUN-1 버그 1\n\n재현 절차 1\n\n## 사람 응답 (운영자)")  # 머리 → 원문 → 응답
+    assert "결제 금액은 10,000원" in fixed.request
     assert fixed.input_artifact_ids == [result_id]  # 이전 시도의 결과를 잇는다
     again = worker.tick()
     assert again.tasks_resumed == 0 and len(executions(conn, fix_task)) == 2  # 한 번만

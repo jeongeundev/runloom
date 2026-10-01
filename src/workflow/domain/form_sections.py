@@ -18,6 +18,10 @@ FORM_HEADINGS: dict[str, tuple[str, ...]] = {
                           "Expected result"),
     "acceptance_criteria": ("인수 조건", "완료 조건", "수용 기준", "Acceptance criteria", "Definition of done"),
 }
+# 칸 키 → 화면·요청문 이름 (ARCHITECTURE "양식 칸")
+FORM_LABELS = {
+    "goal": "목표", "steps_to_reproduce": "재현 절차", "expected_behavior": "기대 동작", "acceptance_criteria": "인수 조건",
+}
 NO_RESPONSE = "_No response_"  # GitHub issue forms 의 빈 답
 
 _HEADING = re.compile(r"^(#{1,3})\s+(.*)$")

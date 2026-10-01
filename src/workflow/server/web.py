@@ -956,6 +956,7 @@ def work_assignee(
     response: Response,
     key: str,
     assignee: str = Form(""),
+    note: str = Form(""),
     q: str = Form(""),
     group: str = Form(""),
     view: str = Form(""),
@@ -968,7 +969,7 @@ def work_assignee(
     with _page_errors():
         work_actions.assign_work(conn, request.app.state.store, _settings(request), session_id=member.session_id,
                                  work_item_id=work["work_item_id"], value=assignee, member_id=member.member_id,
-                                 now=utc_now(), secrets=request.app.state.secrets)
+                                 now=utc_now(), secrets=request.app.state.secrets, note=note)
     return _work_redirect(work, response, q, group, view, closed)
 
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from workflow.domain.form_sections import FORM_HEADINGS, FormField, WorkForm, extract_form
+from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS, FormField, WorkForm, extract_form
 
 ISSUE_FORM_BODY = """### 목표
 
@@ -72,3 +72,7 @@ def test_every_field_has_korean_and_english_synonyms():
     assert set(FORM_HEADINGS) == {"goal", "steps_to_reproduce", "expected_behavior", "acceptance_criteria"}
     for synonyms in FORM_HEADINGS.values():
         assert any(s.isascii() for s in synonyms) and any(not s.isascii() for s in synonyms)
+
+
+def test_every_form_field_has_a_label():
+    assert list(FORM_LABELS) == list(FORM_HEADINGS)

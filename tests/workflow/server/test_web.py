@@ -369,6 +369,7 @@ def test_run_creates_queued_execution_with_frozen_request(review_web, conn, sett
     assert execution["start_key"].startswith("req:")
     assert execution["assigned_connector_id"] == "conn-mac-01"  # 러너가 보고한 연결 프로그램
     request = ExecutionRequest.model_validate_json(execution["request_json"])
+    work_key = f"RUN-{repo.work_item_of_task(conn, task_id)['key_number']}"
     assert request.model_dump() == {
         "contract_version": 1,
         "execution_id": execution["execution_id"],
@@ -376,11 +377,11 @@ def test_run_creates_queued_execution_with_frozen_request(review_web, conn, sett
         "kind": "review",
         "agent_id": REVIEW_AGENT,
         "task_revision": 1,
-        "request": REVIEW_REQUEST,
+        "request": f"# {work_key} 보고서 수정 검토\n\n{REVIEW_REQUEST}",  # 업무 머리 + 원문 (phase 17 step 8)
         "input_artifact_ids": [],
         "target": {"local_registration_id": LOCAL_REVIEW},
         "kind_spec": repo.get_kind(conn, session_id_of(review_web, settings), "review").model_dump(),  # 서버가 등록부에서 채운다 (ADR-0009)
-        "work_key": f"RUN-{repo.work_item_of_task(conn, task_id)['key_number']}",  # 업무 키 (phase 14 step 7)
+        "work_key": work_key,  # 업무 키 (phase 14 step 7)
         "branch_seq": 1,
     }
     assert repo.get_task(conn, task_id)["status"] == "실행 요청됨"
