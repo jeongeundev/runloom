@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import secrets
+import sqlite3
 import string
 import time
 from collections.abc import Sequence
@@ -52,8 +53,17 @@ from workflow.adapters.github_client import (
     GitHubUnavailable,
     HttpGitHubClient,
 )
+from workflow.adapters.jira_client import (
+    HttpJiraClient,
+    JiraBadRequest,
+    JiraError,
+    JiraForbidden,
+    JiraNotFound,
+    JiraUnauthorized,
+)
 from workflow.adapters.notify_sender import NotifyFailed, NotifySender
 from workflow.contracts.github import RepositoryFullName
+from workflow.contracts.jira import JiraProjectConfig, valid_email, valid_token
 from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
     BUILTIN_KIND_NAMES,
@@ -85,7 +95,7 @@ from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.task_sources import Issue
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_list import ListQuery, parse_list_query
-from workflow.server import github_connect, metrics_api, views, work_actions
+from workflow.server import github_connect, jira_connect, metrics_api, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
@@ -1370,6 +1380,8 @@ def _tab_context(request: Request, conn: Connection, member: LoggedIn, tab: str,
         context = views.github_context(conn, session_id, now=now, settings=settings, secrets=request.app.state.secrets)
         if team.MANAGE_CONNECTIONS in allowed:
             context |= _inbound_context(request, conn, session_id)
+            context |= jira_connect.connect_context(
+                conn, session_id, token_saved=request.app.state.secrets.exists(secret_store.JIRA_API_TOKEN))
         return context
     if tab == "team":
         context: dict[str, Any] = {
@@ -2001,6 +2013,210 @@ def github_token_connect(
                         field="token") from None
     request.app.state.secrets.write(secret_store.GITHUB_TOKEN, token)
     github_connect.ensure_token_source(conn, session_id, name, utc_now())
+    return _redirect("/connect?tab=sources", response)
+
+
+# --- Jira 연결 (phase 18 step 4, ADR-0024, ARCHITECTURE "Jira 소스 — phase 18" 경로) ----------------------------------
+# 모두 `manage_connections`. 토큰은 비밀 파일 `jira_api_token` 에만 — 값·길이를 응답·로그·오류 문구에 싣지 않는다.
+# 화면은 Jira 를 부르지 않는다(후보는 저장한 `choices_json`). 검색·추가·새로 고침만 사람이 누를 때 부른다.
+
+JIRA_QUERY_MAX = 100
+_JIRA_PROJECT_ID = re.compile(r"[1-9][0-9]*")
+_JIRA_START_MODES = ("from_now", "all_open")
+
+
+def _jira_page_error(exc: JiraError, conn: Connection | None = None, session_id: str = "") -> PageError:
+    """Jira 오류 → 화면 오류(ARCHITECTURE 오류 분류 "연결 화면" 칸). 저장한 연결로 부른 401 이면 `auth_failed_at` 을 쓴다."""
+    if isinstance(exc, JiraUnauthorized):
+        if conn is not None:
+            repo.mark_jira_auth_failed(conn, session_id, now=utc_now())
+        return PageError(400, "jira_auth_failed", "이메일·토큰이 맞지 않습니다.", field="token")
+    if isinstance(exc, JiraForbidden):
+        return PageError(400, "jira_forbidden",
+                         "권한(스코프)이 부족합니다 — read:jira-work·write:jira-work·read:jira-user")
+    if isinstance(exc, JiraNotFound):
+        return PageError(404, "not_found", "Jira 에서 찾을 수 없습니다.")
+    if isinstance(exc, JiraBadRequest):
+        return PageError(422, "invalid_field", f"Jira 가 요청을 거부했습니다 — {exc.message}")
+    logger.warning("Jira 호출 실패: %s", exc)  # 메시지는 `메서드 경로: 상태` 뿐(토큰 없음)
+    return PageError(502, "jira_unavailable", "Jira 사이트에 닿지 못했습니다. 잠시 뒤 다시 시도하세요.")
+
+
+def _jira_client(request: Request, conn: Connection, session_id: str) -> HttpJiraClient:
+    """저장한 연결 + 비밀 파일 토큰으로 만든 클라이언트. 끊겼거나 토큰 파일이 없으면 409 jira_not_connected."""
+    row = repo.get_jira_connection(conn, session_id)
+    token = request.app.state.secrets.read(secret_store.JIRA_API_TOKEN)
+    if row is None or row["disconnected_at"] is not None or token is None:
+        raise PageError(409, "jira_not_connected", "Jira 를 먼저 연결하세요.")
+    return HttpJiraClient(jira_connect.api_base_url(row), row["email"], token,
+                          transport=request.app.state.jira_transport)
+
+
+def _jira_project_or_404(conn: Connection, session_id: str, source_id: str) -> JiraProjectConfig:
+    project = repo.get_jira_project(conn, session_id, source_id)
+    if project is None:
+        raise PageError(404, "not_found", "Jira 프로젝트 설정을 찾을 수 없습니다.", field="source_id")
+    return project
+
+
+@router.post("/operator/jira/connect")
+def jira_connect_route(
+    request: Request,
+    response: Response,
+    site_url: str = Form(""),
+    email: str = Form(""),
+    token: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """사이트·이메일·토큰 확인(tenant_info → myself, 게이트웨이 → 사이트) 뒤 토큰은 비밀 파일, 공개 정보는 DB.
+    이미 프로젝트를 추가했는데 다른 사이트(cloudId)면 저장하지 않는다(409)."""
+    session_id = member.session_id
+    try:
+        site = jira_connect.normalize_site(site_url)
+    except ValueError:
+        raise PageError(422, "invalid_field", "https://<이름>.atlassian.net 형식만 받습니다.", field="site_url") from None
+    email = email.strip()
+    if not valid_email(email):
+        raise PageError(422, "invalid_field", "이메일 형식이 아닙니다.", field="email")
+    token = token.strip()
+    if not valid_token(token):
+        raise PageError(422, "invalid_field", "Jira API 토큰을 붙여 넣으세요.", field="token")
+    try:
+        facts = jira_connect.verify(site, email, token, transport=request.app.state.jira_transport)
+    except JiraError as exc:
+        raise _jira_page_error(exc) from None
+    current = repo.get_jira_connection(conn, session_id)
+    if current is not None and current["cloud_id"] != facts.cloud_id and repo.list_jira_projects(conn, session_id):
+        raise PageError(409, "jira_site_mismatch", "이미 설정한 프로젝트가 다른 사이트의 것입니다.", field="site_url")
+    request.app.state.secrets.write(secret_store.JIRA_API_TOKEN, token)
+    repo.save_jira_connection(conn, facts, session_id=session_id, now=utc_now())
+    return _redirect("/connect?tab=sources", response)
+
+
+@router.get("/operator/jira/projects", response_class=HTMLResponse)
+def jira_project_search(
+    request: Request,
+    q: str = Query(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """프로젝트 찾기 — 결과 줄을 연결 화면에 그린다(줄마다 연결 저장소·시작점 고르기 + [추가])."""
+    session_id = member.session_id
+    q = q.strip()
+    if len(q) > JIRA_QUERY_MAX:
+        raise PageError(422, "invalid_field", f"검색어는 {JIRA_QUERY_MAX}자까지입니다.", field="q")
+    client = _jira_client(request, conn, session_id)
+    try:
+        found = client.search_projects(q)
+    except JiraError as exc:
+        raise _jira_page_error(exc, conn, session_id) from None
+    added = {p.project_id for p in repo.list_jira_projects(conn, session_id)}
+    return _connect_page(request, conn, member, "sources", jira_query=q, jira_found=[
+        {**ref.model_dump(mode="json"), "added": ref.project_id in added} for ref in found
+    ])
+
+
+@router.post("/operator/jira/projects")
+def jira_project_add(
+    request: Request,
+    response: Response,
+    project_id: str = Form(""),
+    github_source_id: str = Form(""),
+    start_mode: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """프로젝트 추가 — Jira 에서 프로젝트·후보(이슈 유형·상태)를 받아 설정 행을 만든다. 시작점은 여기서만 고른다."""
+    session_id = member.session_id
+    client = _jira_client(request, conn, session_id)
+    sources = {s.source_id for s in repo.list_github_sources(conn, session_id)}
+    if not sources:
+        raise PageError(409, "github_source_required", "먼저 GitHub 저장소를 연결하세요.", field="github_source_id")
+    if github_source_id not in sources:
+        raise PageError(422, "invalid_field", "이 워크스페이스에 연결한 GitHub 저장소를 고르세요.", field="github_source_id")
+    if start_mode not in _JIRA_START_MODES:
+        raise PageError(422, "invalid_field", "시작점이 올바르지 않습니다.", field="start_mode")
+    if not _JIRA_PROJECT_ID.fullmatch(project_id):
+        raise PageError(422, "invalid_field", "프로젝트를 목록에서 고르세요.", field="project_id")
+    if any(p.project_id == project_id for p in repo.list_jira_projects(conn, session_id)):
+        raise PageError(409, "jira_project_exists", "이미 추가한 프로젝트입니다.", field="project_id")
+    try:
+        ref = client.get_project(project_id)
+        choices = client.project_choices(ref.key)
+    except JiraError as exc:
+        raise _jira_page_error(exc, conn, session_id) from None
+    try:
+        repo.add_jira_project(conn, session_id=session_id, ref=ref, github_source_id=github_source_id,
+                              start_mode=start_mode, choices=choices, now=utc_now())
+    except sqlite3.IntegrityError:
+        raise PageError(409, "jira_project_exists", "이미 추가한 프로젝트입니다.", field="project_id") from None
+    return _redirect("/connect?tab=sources", response)
+
+
+@router.post("/operator/jira/projects/{source_id}")
+def jira_project_save(
+    response: Response,
+    source_id: str,
+    github_source_id: str = Form(""),
+    issue_types: list[str] = Form([]),
+    status_on_start: str = Form(""),
+    status_on_review: str = Form(""),
+    status_on_done: str = Form(""),
+    followup_issue_type: str = Form(""),
+    enabled: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """프로젝트 설정 저장. 이름은 저장한 후보와 대조(대소문자 무시, 후보 표기로 저장), 빈 값 = 옮기지 않음/만들지 않음.
+    Jira 를 부르지 않는다."""
+    session_id = member.session_id
+    _jira_project_or_404(conn, session_id, source_id)
+    if github_source_id not in {s.source_id for s in repo.list_github_sources(conn, session_id)}:
+        raise PageError(422, "invalid_field", "이 워크스페이스에 연결한 GitHub 저장소를 고르세요.", field="github_source_id")
+    choices = repo.get_jira_choices(conn, session_id, source_id)
+    try:
+        settings = jira_connect.project_settings(
+            choices, issue_types=issue_types, status_on_start=status_on_start, status_on_review=status_on_review,
+            status_on_done=status_on_done, followup_issue_type=followup_issue_type,
+        )
+    except jira_connect.InvalidSetting as exc:
+        raise PageError(422, "invalid_field", str(exc), field=exc.field) from None
+    repo.update_jira_project(conn, session_id, source_id, now=utc_now(), github_source_id=github_source_id,
+                             enabled=bool(enabled), **settings)
+    return _redirect("/connect?tab=sources", response)
+
+
+@router.post("/operator/jira/projects/{source_id}/refresh")
+def jira_project_refresh(
+    request: Request,
+    response: Response,
+    source_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """후보(이슈 유형·상태 이름) 다시 받기. 이미 고른 이름은 그대로 둔다."""
+    session_id = member.session_id
+    project = _jira_project_or_404(conn, session_id, source_id)
+    client = _jira_client(request, conn, session_id)
+    try:
+        choices = client.project_choices(project.project_key)
+    except JiraError as exc:
+        raise _jira_page_error(exc, conn, session_id) from None
+    repo.set_jira_choices(conn, session_id, source_id, choices, now=utc_now())
+    return _redirect("/connect?tab=sources", response)
+
+
+@router.post("/operator/jira/disconnect")
+def jira_disconnect(
+    request: Request,
+    response: Response,
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """끊기 — 토큰 파일 삭제 + `disconnected_at`. 프로젝트 설정·업무는 남는다(다시 연결하면 이어간다)."""
+    request.app.state.secrets.delete(secret_store.JIRA_API_TOKEN)
+    repo.disconnect_jira(conn, member.session_id, now=utc_now())
     return _redirect("/connect?tab=sources", response)
 
 

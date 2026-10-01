@@ -49,6 +49,7 @@ from workflow.contracts.github import (
     SourceDelivery,
     snapshot_digest,
 )
+from workflow.contracts.jira import JiraChoices, JiraProjectConfig, JiraProjectRef
 from workflow.contracts.v1 import (
     BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
@@ -79,6 +80,7 @@ from workflow.domain.delegation import (
     parse_approval_cause_key,
 )
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
+from workflow.domain.jira_intake import initial_cursor_ms
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
@@ -2598,6 +2600,131 @@ def github_source_session(conn: Connection, source_id: str) -> str | None:
 def github_source_sessions(conn: Connection) -> list[str]:
     """GitHub 소스를 가진 세션들. 운영자 API 는 이것이 한 세션뿐이도록 지킨다(셀프호스트 1개 워크스페이스)."""
     return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM github_sources ORDER BY session_id")]
+
+
+# --- Jira 연결·프로젝트 설정 (phase 18 step 4, ARCHITECTURE "Jira 소스 — phase 18") ------------------------------------
+# 연결 행은 공개 정보만 — 토큰은 비밀 저장소 `jira_api_token`. 끊어도 프로젝트·업무 행은 남는다.
+
+
+def save_jira_connection(conn: Connection, facts, *, session_id: str, now: str) -> None:
+    """확인이 끝난 연결(`jira_connect.JiraConnectionFacts` — 토큰 없음)을 워크스페이스 한 행으로 upsert.
+    다시 연결하면 `connected_at` 을 새로 쓰고 끊김·토큰 오류 표시를 지운다."""
+    conn.execute(
+        "INSERT INTO jira_connections (session_id, site_url, cloud_id, api_base, email, account_id, display_name,"
+        " connected_at, disconnected_at, auth_failed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)"
+        " ON CONFLICT(session_id) DO UPDATE SET site_url = excluded.site_url, cloud_id = excluded.cloud_id,"
+        " api_base = excluded.api_base, email = excluded.email, account_id = excluded.account_id,"
+        " display_name = excluded.display_name, connected_at = excluded.connected_at, disconnected_at = NULL,"
+        " auth_failed_at = NULL, updated_at = excluded.updated_at",
+        (session_id, facts.site_url, facts.cloud_id, facts.api_base, facts.email, facts.account_id,
+         facts.display_name, now, now),
+    )
+
+
+def get_jira_connection(conn: Connection, session_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM jira_connections WHERE session_id = ?", (session_id,))
+
+
+def disconnect_jira(conn: Connection, session_id: str, *, now: str) -> None:
+    """끊김 표시만 — 토큰 파일 삭제는 호출자. 연결이 없거나 이미 끊겼으면 그대로."""
+    conn.execute(
+        "UPDATE jira_connections SET disconnected_at = ?, updated_at = ? WHERE session_id = ? AND disconnected_at IS NULL",
+        (now, now, session_id),
+    )
+
+
+def mark_jira_auth_failed(conn: Connection, session_id: str, *, now: str) -> None:
+    """401 을 받은 시각(첫 시각을 지킨다). 다시 연결할 때까지 그 워크스페이스의 Jira 호출을 멈추는 표시다."""
+    conn.execute(
+        "UPDATE jira_connections SET auth_failed_at = ?, updated_at = ? WHERE session_id = ? AND auth_failed_at IS NULL",
+        (now, now, session_id),
+    )
+
+
+def jira_project_config(row: Row) -> JiraProjectConfig:
+    return JiraProjectConfig(
+        source_id=row["source_id"], session_id=row["session_id"], project_id=row["project_id"],
+        project_key=row["project_key"], project_name=row["project_name"], github_source_id=row["github_source_id"],
+        issue_types=json.loads(row["issue_types_json"]), start_mode=row["start_mode"], start_at=row["start_at"],
+        status_on_start=row["status_on_start"], status_on_review=row["status_on_review"],
+        status_on_done=row["status_on_done"], followup_issue_type=row["followup_issue_type"],
+        enabled=bool(row["enabled"]),
+    )
+
+
+def _require_session_github_source(conn: Connection, session_id: str, source_id: str) -> None:
+    if _one(conn, "SELECT 1 FROM github_sources WHERE source_id = ? AND session_id = ?", (source_id, session_id)) is None:
+        raise NotFound(f"source {source_id}")
+
+
+def add_jira_project(
+    conn: Connection, *, session_id: str, ref: JiraProjectRef, github_source_id: str,
+    start_mode: Literal["from_now", "all_open"], choices: JiraChoices, now: str,
+) -> str:
+    """프로젝트 설정 한 행. `start_at` = 지금, 커서 = `from_now` 면 지금(ms)·`all_open` 이면 없음. 설정 칸은 비어 있다.
+    연결 저장소가 이 워크스페이스 소스가 아니면 NotFound, 같은 프로젝트가 이미 있으면 IntegrityError."""
+    source_id = f"jps-{secrets.token_hex(4)}"
+    with _tx(conn):
+        _require_session_github_source(conn, session_id, github_source_id)
+        conn.execute(
+            "INSERT INTO jira_projects (source_id, session_id, project_id, project_key, project_name, github_source_id,"
+            " start_mode, start_at, choices_json, cursor_ms, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, session_id, ref.project_id, ref.key, ref.name, github_source_id, start_mode, now,
+             choices.model_dump_json(), initial_cursor_ms(start_mode, now), now, now),
+        )
+    return source_id
+
+
+def update_jira_project(
+    conn: Connection, session_id: str, source_id: str, *, now: str, github_source_id: str, issue_types: Sequence[str],
+    status_on_start: str | None, status_on_review: str | None, status_on_done: str | None,
+    followup_issue_type: str | None, enabled: bool,
+) -> None:
+    """설정 칸 저장. 이름이 Jira 후보에 있는지는 서버가 본다(`jira_connect.project_settings`). 시작점은 바꾸지 않는다.
+    다른 워크스페이스 프로젝트·연결 저장소는 NotFound."""
+    with _tx(conn):
+        _require_session_github_source(conn, session_id, github_source_id)
+        cur = conn.execute(
+            "UPDATE jira_projects SET github_source_id = ?, issue_types_json = ?, status_on_start = ?,"
+            " status_on_review = ?, status_on_done = ?, followup_issue_type = ?, enabled = ?, updated_at = ?"
+            " WHERE source_id = ? AND session_id = ?",
+            (github_source_id, json.dumps(list(issue_types), ensure_ascii=False), status_on_start, status_on_review,
+             status_on_done, followup_issue_type, int(enabled), now, source_id, session_id),
+        )
+        _require_rowcount(cur, f"jira project {source_id}")
+
+
+def set_jira_choices(conn: Connection, session_id: str, source_id: str, choices: JiraChoices, *, now: str) -> None:
+    """후보(이슈 유형·상태 이름) 다시 받기. 이미 고른 설정 이름은 그대로 둔다."""
+    cur = conn.execute(
+        "UPDATE jira_projects SET choices_json = ?, updated_at = ? WHERE source_id = ? AND session_id = ?",
+        (choices.model_dump_json(), now, source_id, session_id),
+    )
+    _require_rowcount(cur, f"jira project {source_id}")
+
+
+def list_jira_project_rows(conn: Connection, session_id: str) -> list[Row]:
+    """화면용 — 설정 칸과 후보(`choices_json`)·마지막 가져오기(`cursor_updated_at`)."""
+    return conn.execute(
+        "SELECT * FROM jira_projects WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+    ).fetchall()
+
+
+def list_jira_projects(conn: Connection, session_id: str) -> list[JiraProjectConfig]:
+    return [jira_project_config(r) for r in list_jira_project_rows(conn, session_id)]
+
+
+def get_jira_project(conn: Connection, session_id: str, source_id: str) -> JiraProjectConfig | None:
+    row = _one(conn, "SELECT * FROM jira_projects WHERE source_id = ? AND session_id = ?", (source_id, session_id))
+    return jira_project_config(row) if row else None
+
+
+def get_jira_choices(conn: Connection, session_id: str, source_id: str) -> JiraChoices | None:
+    row = _one(
+        conn, "SELECT choices_json FROM jira_projects WHERE source_id = ? AND session_id = ?", (source_id, session_id)
+    )
+    return JiraChoices.model_validate_json(row["choices_json"]) if row else None
 
 
 def replace_baseline(
