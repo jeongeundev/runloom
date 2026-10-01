@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "schema-v15",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T21:16:04+0900",
+      "summary": "스키마 v15: 생성 src/workflow/domain/triage_criteria.py(TRIAGE_CRITERIA_V1=문서 바이트 동일·CRITERIA_BODY_MAX 8000), tests/workflow/adapters/fixtures/schema_v14.sql, tests/workflow/domain/test_triage_criteria.py. 수정 adapters/db.py(SCHEMA_VERSION 15·_V15_TABLES triage_criteria·triage_logs(ux_triage_logs_running 등 인덱스 3)·triage_autostart, _migrate_14_to_15: 사용자 정의 triage 있으면 RuntimeError → 표 → 세션마다 내장 triage 종류·기준 v1 → code.fix 있는 로컬 Agent 에 같은 scope 의 code.triage 끝에(중복 없음) → foreign_key_check → 15), adapters/repo.py(seed_triage_criteria — create_session·마이그레이션 공용), contracts/v1.py(BUILTIN_KIND_NAMES 에 triage, output_kind 에 triage_result, BUILTIN_KINDS 셋째 봉투), 내장 불변식 유지를 위해 domain/execution_policy.py BUILTIN_POLICIES[\"triage\"](ARCHITECTURE 값 그대로, Target·Verifier 에 \"triage\")·domain/completion.py _TEMPLATES[\"triage\"]=() 를 미리 넣음(ARCHITECTURE 스키마 v15 절에 구현 메모). github_sources·tasks 재생성·칸 추가 없음(판단 Agent 는 config_json — ARCHITECTURE 기준). 테스트: test_db v15 표·CHECK·FK·인덱스·v14→v15(보존·종류·기준·능력·롤백·사용자 triage 중단·재실행 멱등)·v4/v9/v13→v15·fresh=migrated, test_backup v14 백업 복원→15, 버전 리터럴 15. 기존 테스트 변경: 옛 DB 헬퍼는 phase 8 종류만 시드(PHASE8_BUILTIN_KINDS·BUILTIN_KINDS[:2]), 옛 마이그레이션 덤프 비교에 _without_v15_seeds, 내장 종류 수 2→3(test_repo·test_web·test_backup), 사용자 정의 종류 이름 triage→classify(test_views·test_worker·test_ui·test_owner_approval·test_stage_runs·test_machine_api·test_task_readiness), test_completion 은 triage_result 종류 템플릿 [] 단정, test_v1 CONTRACT 내장 봉투 비교는 triage 제외(17.1 요청 안에만 있음). 검증: pytest 3813 passed·63 skipped, ruff 통과. 다음 step 주의: BUILTIN_POLICIES[\"triage\"]·completion 템플릿은 이미 있음 — step 2 는 is_triage_kind·TRIAGE_OUTPUT_KIND·TriageTarget/Result·ARTIFACT_KINDS·register_local_agent 세 능력·claim 조건만, 화면 /kinds 에 내장 triage 가 보임(새 업무 폼·매핑·규칙 막기는 step 2).",
+      "completed_at": "2026-10-01T21:37:31+0900"
     },
     {
       "step": 2,
