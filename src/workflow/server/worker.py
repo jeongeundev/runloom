@@ -91,12 +91,14 @@ from workflow.contracts.v1 import (
     HandoffBundle,
     InputRef,
     SuccessorRule,
+    TriageCandidates,
+    TriageResult,
     format_work_key,
 )
 from workflow.domain.callback_policy import host_allowed
 from workflow.domain.delegation import OWNER_APPROVAL_PREFIX
 from workflow.domain.completion import criteria_template, merge_criteria
-from workflow.domain import notification, pull_request
+from workflow.domain import notification, pull_request, triage
 from workflow.domain.execution_policy import ExecutionPolicy, policy_for
 from workflow.domain.settlement import NodeState, chain_settled
 from workflow.domain.start_key import auto_start_key
@@ -139,6 +141,8 @@ NOTIFY_MAX_ATTEMPTS = 5
 NOTIFY_BACKOFF_SECONDS = 30
 # 판단 실행이 사용량 한도(`usage_limit`)로 실패하면 그 Agent 의 자동 판단을 쉬는 시간 (phase 19)
 TRIAGE_USAGE_PAUSE_SECONDS = 3600
+# 판단 실행이 접수부터 이 시간 안에 결과를 내지 않으면 판단 실패(`triage_deadline`)로 마감한다 (phase 19)
+TRIAGE_DEADLINE_SECONDS = 3600
 
 
 @dataclass
@@ -176,6 +180,7 @@ class TickReport:
     notifications_failed: int = 0  # 알림 전송 실패(재시도 대기·포기) — 업무 상태와 따로
     work_statuses_changed: int = 0  # tick 끝 재계산에서 바뀐 업무 상태(단계 쓰기와 함께 바뀐 것은 세지 않음)
     triage_started: int = 0  # 자동으로 시작한 판단(워크스페이스마다 tick 당 최대 1건)
+    triage_judged: int = 0  # 판단 로그 proposed·failed 로 마감한 판단(결과·실행 실패·기한 초과)
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -396,6 +401,7 @@ class Worker:
             self._check_code_results(conn, report)
             self._check_review_results(conn, report)
             self._check_generic_results(conn, report)
+            self._judge_triage(conn, report)
             self._advance_cycle(conn, report)
             self._spawn_successors(conn, report)
             self._start_waiting_stages(conn, report)
@@ -1297,6 +1303,66 @@ class Worker:
 
     # --- 판단 (phase 19, ADR-0025) ---------------------------------------------------------
 
+    def _judge_triage(self, conn: Connection, report: TickReport) -> None:
+        """`running` 판단의 실행을 본다 — 결과는 시작 때 고정한 후보(`candidates_json`)로 검증해 `proposed`·`failed`,
+        실행 실패·시작 여부 불명·기한 초과는 `failed`. 사람 요청·`task_failed` 알림은 만들지 않는다(판단은 제안이다).
+        `_reflect_failures` 앞이라 판단 실행 실패를 먼저 가져간다."""
+        for log in repo.running_triages(conn):
+            execution = repo.get_execution(conn, log["execution_id"])
+            now = self._clock()
+            if execution["status"] == "result_ready" and repo.get_verdict(conn, execution["execution_id"]) is None:
+                judged = self._triage_verdict(conn, log, execution, now)
+            elif execution["status"] in ("failed", "unknown"):
+                judged = self._triage_failed(conn, log, execution, now)
+            elif execution["status"] in ("queued", "accepted", "running") and (
+                    _age_seconds(now, execution["created_at"]) or 0) > TRIAGE_DEADLINE_SECONDS:
+                repo.fail_execution(conn, execution["execution_id"], code="triage_deadline",
+                                    message="판단이 1시간 안에 끝나지 않음", now=now)
+                judged = self._triage_failed(conn, log, repo.get_execution(conn, execution["execution_id"]), now)
+            else:
+                continue
+            report.triage_judged += int(judged)
+
+    def _triage_verdict(self, conn: Connection, log: Row, execution: Row, now: str) -> bool:
+        execution_id = execution["execution_id"]
+        content = _read_owned(conn, self._store, execution_id, execution["result_artifact_id"])
+        try:
+            if content is None:
+                raise ValueError("이 실행의 결과 산출물이 없음")
+            result = TriageResult.model_validate_json(content)
+        except ValidationError as exc:
+            message = f"result_unreadable — {exc.errors()[0]['msg']}"
+        except ValueError as exc:
+            message = f"result_unreadable — {exc}"
+        else:
+            base = ExecutionRequest.model_validate_json(execution["request_json"]).target.base_commit
+            verdict = triage.validate(result, TriageCandidates.model_validate_json(log["candidates_json"]),
+                                      execution_id=execution_id, task_id=execution["task_id"], base_commit=base)
+            if verdict.ok:
+                return repo.record_triage_proposed(
+                    conn, log["triage_id"], execution_id=execution_id, result=result,
+                    verdict={"outcome": "passed", "checks": [_check_dict("triage_valid", True, "후보 안의 제안")]},
+                    now=now,
+                )
+            return repo.record_triage_failed(
+                conn, log["triage_id"], execution_id=execution_id, code="triage_invalid",
+                message=f"{verdict.code} — {verdict.reason}",
+                verdict={"outcome": "failed", "checks": [_check_dict(verdict.code, False, verdict.reason)]}, now=now,
+            )
+        return repo.record_triage_failed(
+            conn, log["triage_id"], execution_id=execution_id, code="triage_invalid", message=message,
+            verdict={"outcome": "failed", "checks": [_check_dict("result_unreadable", False, message)]}, now=now,
+        )
+
+    def _triage_failed(self, conn: Connection, log: Row, execution: Row, now: str) -> bool:
+        code = execution["failed_code"] or "unknown"
+        if code == "usage_limit":
+            self._triage_paused_until[execution["agent_id"]] = _plus_seconds(now, TRIAGE_USAGE_PAUSE_SECONDS)
+        return repo.record_triage_failed(
+            conn, log["triage_id"], execution_id=execution["execution_id"], code=code,
+            message=execution["failed_message"] or "시작 여부 불명", verdict=None, now=now,
+        )
+
     def _triage_new_work(self, conn: Connection, report: TickReport) -> None:
         """담당 없는 새 GitHub·Jira 업무에 판단을 자동으로 건다 — 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건),
         판단 Agent 의 러너가 비었을 때만, 사용량 한도로 쉬는 Agent 는 건너뛴다. 오래된 업무부터. 수정·검토 착수
@@ -1325,8 +1391,8 @@ class Worker:
     def _reflect_failures(self, conn: Connection, report: TickReport) -> None:
         for execution in repo.executions_by(conn, statuses=("failed", "unknown")):
             task = repo.get_task(conn, execution["task_id"])
-            if task is None or task["finished_at"] is not None:
-                continue
+            if task is None or task["finished_at"] is not None or repo.is_triage_task(conn, task["task_id"]):
+                continue  # 판단 단계 실행은 `_judge_triage` 몫
             if execution["status"] == "failed" and execution["process_stopped"]:
                 # 프로세스 종료를 확인한 실패 — 마감(실패)하고 잠금을 푼다. 같은 트랜잭션에서 사람에게 다시 맡기기·닫기를
                 # 묻는다(ADR-0020 결정 5 — 자동 재시도 없음). 알림은 `task_failed` 한 번 — 요청 알림은 따로 보내지 않는다

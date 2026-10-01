@@ -2063,6 +2063,8 @@ def build_candidates(conn: Connection, work: Row, route: TriageRoute) -> TriageC
 | `assignee_cannot_take_kind` | 에이전트 후보의 `kinds` 에 `proposed_kind`(없으면 `current_kind`) 없음 |
 | `predecessor_not_candidate` | `predecessors` 중 `candidates.predecessors` 의 키 밖 |
 
+구현 메모(step 6, 2026-10-02): `_judge_triage` 는 실행 목록이 아니라 `repo.running_triages(conn)`(`running` 판단 로그 행, 오래된 순 — 판단 단계의 활성 실행은 이 행들의 실행뿐)를 돌며 실행 상태로 가른다(위 1~3 과 같은 조건, 종류 이름·`policy_for` 분기 없음). 결과 산출물은 이 실행 것만 읽고(`_read_owned`), 판정 dict 의 검사는 통과 `triage_valid`, 후보 밖 `<validate 코드>`, 못 읽음 `result_unreadable` 한 줄씩. 실행 실패 쪽은 판정 행을 남기지 않는다(`verdict=None`). `_reflect_failures` 는 `repo.is_triage_task` 로 판단 단계를 건너뛴다. 이름 표의 `get_triage_log`·`triage_log_of_task` 는 이 step 에서 쓸 곳이 없어 만들지 않았다 — 필요한 step 이 만든다.
+
 ### 업무 상태 (step 3·5·6)
 
 `domain/triage.py`:
