@@ -2,13 +2,13 @@
 
 갱신일: 2026-10-01. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 18-jira 반영 → Jira 실연동 → 19-triage (새 세션은 여기서 시작)
+## 다음 작업: Jira 실연동(사용자 준비 뒤) → 19-triage 설계 (새 세션은 여기서 시작)
 
 **18-jira 완료**(2026-10-01, `feat-18-jira`, step 0~9, [ADR-0024](adr/0024-jira-source.md), [ARCHITECTURE](ARCHITECTURE.md) "Jira 소스 — phase 18", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 18 Jira"): 연결 탭 가져올 곳에 Jira 칸(사이트 주소·이메일·API 토큰 → tenant_info·myself 확인 → 게이트웨이/사이트 기준 주소 저장, 토큰은 비밀 파일 `jira_api_token`), 프로젝트 찾기·추가(연결 저장소 = GitHub 저장소 하나, 지금부터/열린 업무 전부), 프로젝트 설정(이슈 유형·세 상태·후속 이슈 유형·켜짐·목록 새로 고침), 1분 폴링 가져오기(`search/jql`·`nextPageToken`·포함 경계 커서) → 업무 `새로 들어옴`(맡기기 뒤에만 착수), Jira 완료 범주 = 원본 닫힘(다음 단계 대기, 다시 열면 이어감), 연결 저장소에서 수정·검토·초안 PR(`Fixes` 없음, 본문 첫 줄 `원본: SHOP-n — 주소`, 요청문 머리에도 원본 키), 세 순간(작업 시작·`PR · 검토`·`완료`) → outbox `jira_deliveries` → 전환(이미 그 상태면 보내지 않음, 전환 없음·400 은 반영 실패), 후속 새 업무 → 같은 프로젝트에 이슈(라벨 `runloom`·`runloom-RUN-n`, `Relates` 링크, 응답 유실은 라벨로 조정), 스키마 v14. 러너 프로토콜은 바뀌지 않았다.
 
 **할 일**(순서대로, 모두 사용자 지시 뒤):
-1. `feat-18-jira` 를 `service` 에 `--no-ff` 병합(17 은 이미 병합됨).
-2. 셀프호스트 v14 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 14. 러너 재설치는 필요 없다. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v14. 셀프호스트가 아직 v13 전(v12)이면 v13 항목의 **러너 재설치(`install-runner.sh`)도 함께** 한다 — 러너 프로토콜은 17 에서 바뀌었다.
+1. ~~`feat-18-jira` 를 `service` 에 `--no-ff` 병합~~ — 끝남(2026-10-01, `c5f1d31`).
+2. ~~셀프호스트 v14 재설치~~ — 끝남(2026-10-01, 백업 `20261001T085957Z`, v13 → v14, 업무 25건 그대로·jira 기본 매핑 1행·외래키 검사 통과, 러너는 17 뒤 이미 새 판이라 그대로). 원래 절차: 셀프호스트 v14 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 14. 러너 재설치는 필요 없다. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v14. 셀프호스트가 아직 v13 전(v12)이면 v13 항목의 **러너 재설치(`install-runner.sh`)도 함께** 한다 — 러너 프로토콜은 17 에서 바뀌었다.
 3. 사용자가 무료 Jira Cloud 사이트와 API 토큰을 만든다 → 아래 실연동 확인 목록 1회.
 4. 19-triage 설계([REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절).
 
