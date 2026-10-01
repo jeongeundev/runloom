@@ -2184,6 +2184,8 @@ def should_autostart(*, proceed: str, assignee_type: str | None, confidence: flo
 - `connector/prompt.py` `build_triage_prompt(request: ExecutionRequest, checkout: Path) -> str` — 요청문 그대로 + 고정 꼬리("현재 폴더는 기본 브랜치의 읽기 전용 사본이다. 파일을 바꾸지 말고 읽기 도구만 쓴다. 답은 JSON 스키마 하나로만.").
 - Codex 어댑터는 같은 `launch_readonly`(`--sandbox read-only` + 출력 스키마 파일)로 판단을 돈다. 읽기 전용 실행이 없는 어댑터(`ExecutionAdapter` 를 직접 구현한 것)는 `TriageTarget` 에 `unsupported_kind`.
 
+구현(step 4, 2026-10-01): 위 그대로. 실행·업무 ID 와 `inspected_commit` 은 모델의 말이 아니라 요청·판단 뒤 체크아웃 HEAD 로 채우고 모델이 낸 같은 이름 칸은 버린다(검토의 `reviewed_commit` 과 같음). `TRIAGE_OUTPUT_SCHEMA` 는 개수·길이·확신도 범위를 적지 않고(Codex strict 출력 호환) `TriageResult` 검증에 맡긴다. 인계 디렉터리는 입력이 없어 빈 채로 있고 바뀌면 `readonly_violation`. `runner._finalize` 는 `TriageTarget` 이면 `TriageResult` 를 산출물 kind `triage_result` 로 그대로 올린다(봉투에 산출물 ID 칸이 없다 — 원시 로그는 실행 산출물로만), push 하지 않는다. `_LOCAL_TARGETS` 에 `TriageTarget`(어댑터 선택·등록 env 가림·인계 디렉터리 위치). `EchoAdapter` 는 판단에 `unsupported_kind`.
+
 ### 요청문·후보·근거 (step 3·5)
 
 `domain/triage.py`(순수 — DB·HTTP·프로세스 import 없음):

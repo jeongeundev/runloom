@@ -8,10 +8,20 @@ from workflow.connector.prompt import (
     build_bug_fix_prompt,
     build_generic_prompt,
     build_review_prompt,
+    build_triage_prompt,
 )
 from workflow.contracts.v1 import CodeChangeResult
 
-from .conftest import REVIEW_REQUEST, REVIEW_SPEC, make_local_request, make_request, make_review_request
+from .conftest import (
+    BASE_COMMIT,
+    REVIEW_REQUEST,
+    REVIEW_SPEC,
+    TRIAGE_REQUEST,
+    make_local_request,
+    make_request,
+    make_review_request,
+    make_triage_request,
+)
 
 
 # --- 사용자 정의 종류 — build_generic_prompt -----------------------------------------------------
@@ -198,3 +208,19 @@ def test_review_prompt_truncates_large_diff(tmp_path):
 
     assert diff not in prompt and diff[:MAX_REVIEW_DIFF_CHARS] in prompt
     assert "diff 가 길어" in prompt
+
+
+# --- 판단 `triage` — build_triage_prompt -----------------------------------------------------------------
+
+
+def test_triage_prompt_is_server_request_verbatim_plus_fixed_readonly_tail(tmp_path):
+    checkout = tmp_path / "checkout"
+
+    text = build_triage_prompt(make_triage_request(BASE_COMMIT), checkout)
+
+    assert text.startswith(TRIAGE_REQUEST + "\n")
+    tail = text[len(TRIAGE_REQUEST):]
+    assert "현재 폴더는 기본 브랜치의 읽기 전용 사본이다. 파일을 바꾸지 말고 읽기 도구만 쓴다. 답은 JSON 스키마 하나로만." in tail
+    assert str(checkout) in tail
+    for word in ("wfc_", "OPERATOR_TOKEN", "http://", "https://"):
+        assert word not in text

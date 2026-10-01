@@ -18,6 +18,7 @@ from workflow.connector import state
 from workflow.connector.client import CentralClient
 from workflow.connector.config import ConnectorPaths
 from workflow.contracts.v1 import (
+    BUILTIN_KINDS,
     ArtifactMeta,
     AttachmentRef,
     ClaimRequest,
@@ -343,6 +344,25 @@ def make_review_request(base_commit: str, result_commit: str, *, execution_id: s
         "input_artifact_ids": ["art-handoff-gh-001"],
         "target": {"local_registration_id": local_registration_id, "source_execution_id": source_execution_id,
                    "base_commit": base_commit, "result_commit": result_commit},
+    })
+
+
+TRIAGE_REQUEST = (
+    "# 판단: RUN-12 쿠폰이 두 번 적용됨\n\n## 업무\n같은 쿠폰으로 결제하면 두 번 할인된다.\n\n"
+    "## 답하는 법\n- 후보 안의 값만 쓴다."
+)
+TRIAGE_SPEC = next(spec for spec in BUILTIN_KINDS if spec.kind == "triage")
+
+
+def make_triage_request(base_commit: str, *, execution_id: str = "exec-triage-001",
+                        task_id: str = "task-triage-12",
+                        local_registration_id: str = "local-billing-claude") -> ExecutionRequest:
+    """내장 `triage` 요청 (CONTRACT 17.1) — target 은 `TriageTarget`, 입력 없음, `kind_spec` 은 늘 싣는다."""
+    return ExecutionRequest.model_validate({
+        "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": "triage",
+        "agent_id": "agent-claude-mac", "task_revision": 1, "request": TRIAGE_REQUEST, "input_artifact_ids": [],
+        "target": {"local_registration_id": local_registration_id, "base_commit": base_commit},
+        "kind_spec": TRIAGE_SPEC.model_dump(),
     })
 
 

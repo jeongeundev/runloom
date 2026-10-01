@@ -11,6 +11,9 @@
 연결 프로그램이 등록 저장소에서 `base_commit..result_commit` 으로 직접 뽑은 것이다. 첫 줄은 `# 커밋 검토` — 사용자 정의
 종류의 표식과 겹치지 않는다. 마지막 메시지 스키마는 `local_tool.REVIEW_RESULT_SCHEMA`.
 
+판단(`build_triage_prompt`, 결과 형태 `triage_result`)은 중앙이 만든 요청문(기준·업무·후보·근거·답하는 법) 그대로에 고정
+꼬리만 붙인다. 작업 위치는 기본 브랜치 끝의 깨끗한 체크아웃이다. 마지막 메시지 스키마는 `local_tool.TRIAGE_OUTPUT_SCHEMA`.
+
 사용자 정의 종류(`build_generic_prompt`)는 `kind_spec.instructions` + 요청 + 인계 파일 목록이며 읽기 전용 규칙을 적는다.
 첫 줄 `# 업무 종류: {kind} ({label})` 은 고정 형식이다 — 대본 에이전트가 이걸로 종류를 읽는다. 마지막 메시지 스키마는
 `local_tool.generic_result_schema(outcomes)`.
@@ -190,4 +193,15 @@ def build_generic_prompt(request: ExecutionRequest, handoff_dir: Path) -> str:
 # 마지막 메시지
 
 JSON 하나: {{"outcome": <{outcomes}>, "summary": "<근거를 담은 요약>"}}
+"""
+
+
+def build_triage_prompt(request: ExecutionRequest, checkout: Path) -> str:
+    """판단의 프롬프트. `checkout` 은 `target.base_commit` 의 깨끗한 임시 체크아웃이다."""
+    return f"""{request.request}
+
+---
+
+작업 위치: {checkout}
+현재 폴더는 기본 브랜치의 읽기 전용 사본이다. 파일을 바꾸지 말고 읽기 도구만 쓴다. 답은 JSON 스키마 하나로만.
 """

@@ -21,15 +21,31 @@ from workflow.connector.local_tool import (
     NO_REPRO_TEST_LOG,
     RESULT_SCHEMA,
     REVIEW_RESULT_SCHEMA,
+    TRIAGE_OUTPUT_SCHEMA,
     LocalToolAdapter,
     ToolResult,
     ToolRun,
     generic_result_schema,
     resolve_pythonpath,
 )
-from workflow.contracts.v1 import CodeChangeResult, CodeReviewResult, ExecutionRequest, GenericResult, Verification
+from workflow.contracts.v1 import (
+    CodeChangeResult,
+    CodeReviewResult,
+    ExecutionRequest,
+    GenericResult,
+    TriageResult,
+    Verification,
+)
 
-from .conftest import REVIEW_REQUEST, REVIEW_SPEC, make_local_request, make_request, make_review_request
+from .conftest import (
+    REVIEW_REQUEST,
+    REVIEW_SPEC,
+    TRIAGE_REQUEST,
+    make_local_request,
+    make_request,
+    make_review_request,
+    make_triage_request,
+)
 
 WFC = "wfc_" + "a" * 43
 SK = "sk-" + "b" * 20
@@ -1596,3 +1612,234 @@ def test_verify_only_fetches_origin_when_commit_is_only_there(state_conn, repo, 
 
     assert output.failed is None, output.failed
     assert output.result.result_commit == commit and output.result.verification.exit_code == 0
+
+
+# --- 판단 `triage` — 기본 브랜치 끝의 깨끗한 읽기 전용 체크아웃 (ARCHITECTURE "러너 (step 4)") ----------------------
+
+
+def register_triager(state_conn, repo: Path, local_registration_id: str = "local-billing-claude") -> None:
+    """판단 Agent 의 로컬 등록 — 검증 프로필은 쓰지 않는다."""
+    state.save_registration(state_conn, {
+        "local_registration_id": local_registration_id, "repo_path": str(repo), "tool": "claude",
+        "repository_id": "acme-billing", "base_commit": git_ops.head_sha(repo), "verification_profiles": {},
+    })
+
+
+def _triage_message(**fields) -> str:
+    message = {
+        "proceed": "ready", "confidence": 0.86, "proposed_kind": "bug_fix",
+        "assignee": {"type": "agent", "id": "agt-9f3c2a1b"}, "predecessors": ["RUN-9"],
+        "reasons": [{"criterion": "clarity", "note": "재현 절차가 있다"}], "missing_information": [],
+    }
+    message.update(fields)
+    return json.dumps(message, ensure_ascii=False)
+
+
+class ReadingTriager:
+    """체크아웃 내용을 읽는 가짜 판단자 — 본 HEAD·파일을 남기고 정상 판단을 낸다."""
+
+    def __init__(self):
+        self.seen: list[dict] = []
+
+    def __call__(self, cwd: Path) -> ToolRun:
+        self.seen.append({"cwd": cwd, "head": _git(cwd, "rev-parse", "HEAD"), "src": (cwd / "src.py").read_text(),
+                          "local_only": (cwd / "LOCAL_ONLY.md").exists()})
+        return _run(stdout=b'{"type":"result"}\n', stderr=b"triage: done\n", last_message=_triage_message())
+
+
+def _main_moved_on(repo: Path) -> tuple[str, str]:
+    """기본 브랜치에 커밋 하나를 더하고(판단이 볼 끝), 등록 폴더는 다른 브랜치·커밋 안 된 변경으로 둔다.
+    (판단할 커밋, 등록 폴더 HEAD)."""
+    (repo / "src.py").write_text("VALUE = 'main tip'\n")
+    _git(repo, "commit", "-q", "-am", "main tip")
+    tip = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "local-work", "HEAD~1")
+    (repo / "src.py").write_text("VALUE = 'uncommitted local edit'\n")
+    (repo / "LOCAL_ONLY.md").write_text("커밋 안 된 로컬 파일\n")
+    return tip, _git(repo, "rev-parse", "HEAD")
+
+
+def test_triage_reads_default_branch_tip_in_clean_readonly_checkout(state_conn, repo, tmp_path):
+    register_triager(state_conn, repo)
+    tip, folder_head = _main_moved_on(repo)
+    handoff = tmp_path / "task-triage-12.handoff"
+    handoff.mkdir()
+    request = make_triage_request(tip)
+    triager = ReadingTriager()
+    adapter = ScriptedTool(state_conn, triager)
+    progress = Recorder()
+
+    output = adapter.run(request, handoff, progress)
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert isinstance(result, TriageResult)
+    assert (result.execution_id, result.task_id, result.inspected_commit) == (
+        "exec-triage-001", "task-triage-12", tip)
+    assert (result.proceed, result.confidence, result.proposed_kind, result.predecessors) == (
+        "ready", 0.86, "bug_fix", ["RUN-9"])
+    assert (result.assignee.type, result.assignee.id) == ("agent", "agt-9f3c2a1b")
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    assert output.runtime_ref == progress.runtime_refs[0]
+    # 기본 브랜치 끝을 봤다 — 등록 폴더의 브랜치·커밋 안 된 변경은 보이지 않는다
+    seen, = triager.seen
+    assert seen["head"] == tip and seen["src"] == "VALUE = 'main tip'\n" and seen["local_only"] is False
+    (cwd, prompt_text, schema), = adapter.launched_readonly_with
+    assert cwd == seen["cwd"] and cwd != repo and adapter.launched_with == []
+    assert schema == TRIAGE_OUTPUT_SCHEMA
+    assert prompt_text.startswith(TRIAGE_REQUEST) and "읽기 전용 사본" in prompt_text
+    # 체크아웃은 지웠고, 등록 폴더는 그대로
+    assert not cwd.exists() and _git(repo, "worktree", "list").count("\n") == 0
+    assert _git(repo, "rev-parse", "HEAD") == folder_head
+    assert (repo / "src.py").read_text() == "VALUE = 'uncommitted local edit'\n" and (repo / "LOCAL_ONLY.md").exists()
+    assert os.listdir(handoff) == []
+
+
+@pytest.mark.parametrize("message, note", [
+    (_triage_message(proceed="maybe"), "proceed"),
+    (_triage_message(confidence=1.5), "confidence"),
+    (_triage_message(missing_information=["재현 버전"]), "ready"),  # ready 인데 부족한 정보가 있다
+    (_triage_message(proceed="needs_check"), "needs_check"),  # 확인 필요인데 부족한 정보가 없다
+    (_triage_message(reasons=[]), "reasons"),
+    (None, "파일 없음"),
+])
+def test_triage_output_outside_schema_is_result_invalid(state_conn, repo, tmp_path, message, note):
+    register_triager(state_conn, repo)
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(stderr=b"triage\n", last_message=message))
+
+    output = adapter.run(make_triage_request(git_ops.head_sha(repo)), tmp_path / "h", Recorder())
+
+    assert output.result is None
+    code, reason, stopped = output.failed
+    assert code == "result_invalid" and note in reason and stopped is True
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_triage_ignores_ids_and_commit_claimed_by_the_tool(state_conn, repo, tmp_path):
+    """실행·업무 ID 와 `inspected_commit` 은 도구의 말이 아니라 요청과 판단 뒤 확인한 체크아웃 HEAD 다."""
+    register_triager(state_conn, repo)
+    base = git_ops.head_sha(repo)
+    message = _triage_message(inspected_commit="0" * 40, execution_id="exec-other", task_id="task-other")
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(last_message=message))
+
+    output = adapter.run(make_triage_request(base), tmp_path / "h", Recorder())
+
+    assert output.failed is None, output.failed
+    assert (output.result.inspected_commit, output.result.execution_id, output.result.task_id) == (
+        base, "exec-triage-001", "task-triage-12")
+
+
+def _triage_edit(cwd: Path) -> ToolRun:
+    (cwd / "src.py").write_text("VALUE = 'triager edit'\n")
+    return _run(last_message=_triage_message())
+
+
+def _triage_add_file(cwd: Path) -> ToolRun:
+    (cwd / "notes.md").write_text("판단 메모\n")
+    return _run(last_message=_triage_message())
+
+
+def _triage_commit(cwd: Path) -> ToolRun:
+    (cwd / "src.py").write_text("VALUE = 'triager commit'\n")
+    _git(cwd, "commit", "-q", "-am", "triager")
+    return _run(last_message=_triage_message())
+
+
+def _triage_edit_handoff(_cwd: Path) -> ToolRun:
+    (_triage_edit_handoff.handoff / "notes.md").write_text("must not happen\n")
+    return _run(last_message=_triage_message())
+
+
+@pytest.mark.parametrize("script, reason", [
+    (_triage_edit, "판단 체크아웃"),
+    (_triage_add_file, "판단 체크아웃"),
+    (_triage_commit, "HEAD"),
+    (_triage_edit_handoff, "인계 디렉터리"),
+])
+def test_triage_that_changes_anything_is_readonly_violation(state_conn, repo, tmp_path, script, reason):
+    register_triager(state_conn, repo)
+    base = git_ops.head_sha(repo)
+    handoff = tmp_path / "task-triage-12.handoff"
+    handoff.mkdir()
+    _triage_edit_handoff.handoff = handoff
+    adapter = ScriptedTool(state_conn, script)
+
+    output = adapter.run(make_triage_request(base), handoff, Recorder())
+
+    assert output.result is None
+    code, message, _stopped = output.failed
+    assert code == "readonly_violation" and reason in message
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    (cwd, _prompt, _schema), = adapter.launched_readonly_with
+    assert not cwd.exists() and _git(repo, "worktree", "list").count("\n") == 0
+    assert _git(repo, "rev-parse", "HEAD") == base and _git(repo, "status", "--porcelain") == ""
+
+
+def test_triage_commit_missing_fails_before_launch_without_fetch(state_conn, repo, tmp_path, monkeypatch):
+    register_triager(state_conn, repo)
+    fetched = []
+    monkeypatch.setattr(git_ops, "fetch_origin", lambda repo: fetched.append(repo))
+    unknown = "a" * 40
+    adapter = ScriptedTool(state_conn, ReadingTriager())
+    progress = Recorder()
+
+    output = adapter.run(make_triage_request(unknown), tmp_path / "h", progress)
+
+    assert output.failed[0] == "commit_missing" and unknown[:12] in output.failed[1] and output.failed[2] is True
+    assert adapter.launched_readonly_with == [] and progress.runtime_refs == [] and output.artifacts == []
+    assert fetched == []
+
+
+def test_triage_missing_registration_fails_before_launch(state_conn, repo, tmp_path):
+    adapter = ScriptedTool(state_conn, ReadingTriager())
+
+    output = adapter.run(make_triage_request(git_ops.head_sha(repo)), tmp_path / "h", Recorder())
+
+    assert output.failed[0] == "registration_missing" and adapter.launched_readonly_with == []
+
+
+def test_triage_timeout_and_usage_limit_keep_raw_logs_and_clean_checkout(state_conn, repo, tmp_path):
+    register_triager(state_conn, repo)
+    request = make_triage_request(git_ops.head_sha(repo))
+
+    timed_out = ScriptedTool(state_conn, lambda _cwd: _run(stderr=b"partial\n", timed_out=True, stopped=False))
+    output = timed_out.run(request, tmp_path / "h", Recorder())
+    assert output.failed[0] == "timeout" and output.failed[2] is False and output.usage is None
+    assert by_kind(output)["claude_stderr"] == b"partial\n"
+
+    limited = LimitedTool(state_conn, lambda _cwd: _run(stderr=b"limit", last_message=_triage_message()))
+    output = limited.run(request, tmp_path / "h", Recorder())
+    assert output.failed[0] == "usage_limit" and output.result is None
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_triage_missing_executable_is_tool_unavailable_and_cleans_checkout(state_conn, repo, tmp_path):
+    register_triager(state_conn, repo)
+
+    def missing(_cwd: Path) -> ToolRun:
+        raise FileNotFoundError("fake")
+
+    output = ScriptedTool(state_conn, missing).run(make_triage_request(git_ops.head_sha(repo)), tmp_path / "h",
+                                                   Recorder())
+
+    assert output.failed[0] == "fake_unavailable" and output.failed[2] is True
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_triage_output_schema_is_strict_and_has_only_model_fields():
+    schema = TRIAGE_OUTPUT_SCHEMA
+    fields = ["proceed", "confidence", "proposed_kind", "assignee", "predecessors", "reasons", "missing_information"]
+    assert schema["type"] == "object" and schema["additionalProperties"] is False
+    assert list(schema["properties"]) == fields and schema["required"] == fields
+    assert schema["properties"]["proceed"]["enum"] == ["ready", "needs_check", "unsuitable"]
+    assert schema["properties"]["proposed_kind"]["type"] == ["string", "null"]
+    assignee, null = schema["properties"]["assignee"]["anyOf"]
+    assert null == {"type": "null"} and assignee["additionalProperties"] is False
+    assert assignee["required"] == ["type", "id"] and assignee["properties"]["type"]["enum"] == ["member", "agent"]
+    reason = schema["properties"]["reasons"]["items"]
+    assert reason["required"] == ["criterion", "note"] and reason["additionalProperties"] is False
+    assert reason["properties"]["criterion"]["enum"] == [
+        "clarity", "verifiability", "scope", "risk", "permission", "history", "dependency"]
+    for key in ("execution_id", "task_id", "inspected_commit", "contract_version"):
+        assert key not in schema["properties"]
