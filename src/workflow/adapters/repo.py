@@ -11,6 +11,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -239,7 +240,8 @@ def list_field_mappings(
             for r in rows]
 
 
-def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[MappingRow], *, now: str) -> int:
+def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[MappingRow], *, now: str,
+                           member_id: str | None = None) -> int:
     """워크스페이스 매핑 행 전부를 `rows` 로 바꾸고 설정 번호 +1(새 번호). `kind` 값은 등록된 종류, `priority` 값은
     high·normal·low, 같은 (원본 종류, 필드, 원본 값 — 대소문자 무시)은 한 번만 — 어기면 ValueError 이고 아무것도 바꾸지
     않는다. 이미 만든 업무는 바꾸지 않는다."""
@@ -266,7 +268,10 @@ def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[Map
                 (f"map-{secrets.token_hex(4)}", session_id, row.source_type, row.field, row.source_value,
                  row.runloom_value, row.position, now),
             )
-        return bump_config_revision(conn, session_id)
+        counts = Counter(row.source_type for row in rows)
+        subject = " · ".join(f"{t} {counts[t]}행" for t in sorted(counts)) or "0행"
+        return bump_config_revision(conn, session_id, area="mapping", action="change", subject=subject,
+                                    member_id=member_id, now=now)
 
 
 def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = True) -> WorkItemFacts:
@@ -1129,13 +1134,18 @@ def get_config_revision(conn: Connection, session_id: str) -> int:
     return row["config_revision"]
 
 
-def bump_config_revision(conn: Connection, session_id: str) -> int:
-    """설정 번호 +1. 자체 BEGIN 이 없다 — 종류·규칙·GitHub 소스를 저장하는 호출자 트랜잭션 안에서만 부른다."""
+def bump_config_revision(conn: Connection, session_id: str, *, area: str, action: str, subject: str,
+                         member_id: str | None, now: str) -> int:
+    """설정 번호 +1 과 설정 변경 기록 한 행(phase 20). 자체 BEGIN 이 없다 — 종류·규칙·GitHub 소스를 저장하는 호출자
+    트랜잭션 안에서만 부른다."""
     cur = conn.execute(
         "UPDATE sessions SET config_revision = config_revision + 1 WHERE session_id = ?", (session_id,)
     )
     _require_rowcount(cur, f"session {session_id}")
-    return get_config_revision(conn, session_id)
+    revision = get_config_revision(conn, session_id)
+    record_config_change(conn, session_id, revision=revision, area=area, action=action, subject=subject,
+                         member_id=member_id, now=now)
+    return revision
 
 
 def record_config_change(
@@ -1428,16 +1438,17 @@ def get_kind(conn: Connection, session_id: str, kind: str) -> KindSpec | None:
     return KindSpec.model_validate_json(row["spec_json"]) if row else None
 
 
-def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str) -> None:
+def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str, *, member_id: str | None = None) -> None:
     """같은 kind 가 있으면 DuplicateKind. `validate_*` 검증은 서버 몫 — 여기서는 저장만 한다."""
     with _tx(conn):
         if get_kind(conn, session_id, spec.kind) is not None:
             raise DuplicateKind(spec.kind)
         _insert_kind_row(conn, session_id, spec, now)
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="kind", action="add", subject=spec.kind, member_id=member_id,
+                             now=now)
 
 
-def delete_kind(conn: Connection, session_id: str, kind: str) -> None:
+def delete_kind(conn: Connection, session_id: str, kind: str, *, now: str, member_id: str | None = None) -> None:
     """내장 → KindProtected. Task 가 쓰거나 규칙이 참조 → KindInUse. 없으면 NotFound."""
     with _tx(conn):
         spec = get_kind(conn, session_id, kind)
@@ -1456,7 +1467,8 @@ def delete_kind(conn: Connection, session_id: str, kind: str) -> None:
         if used_by_task is not None or used_by_rule is not None:
             raise KindInUse(kind)
         conn.execute("DELETE FROM kinds WHERE session_id = ? AND kind = ?", (session_id, kind))
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="kind", action="delete", subject=kind, member_id=member_id,
+                             now=now)
 
 
 def list_rules(conn: Connection, session_id: str) -> list[tuple[str, SuccessorRule]]:
@@ -1480,7 +1492,8 @@ def get_rule(conn: Connection, session_id: str, from_kind: str, to_kind: str) ->
     return SuccessorRule.model_validate_json(row["rule_json"]) if row else None
 
 
-def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str) -> str:
+def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str, *,
+                member_id: str | None = None) -> str:
     """rule_id 를 돌려준다. 같은 (from_kind, to_kind) → DuplicateRule. 종류가 세션에 없으면 NotFound."""
     with _tx(conn):
         for kind in (rule.from_kind, rule.to_kind):
@@ -1489,18 +1502,21 @@ def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str
         if get_rule(conn, session_id, rule.from_kind, rule.to_kind) is not None:
             raise DuplicateRule(f"{rule.from_kind} → {rule.to_kind}")
         rule_id = _insert_rule_row(conn, session_id, rule, now)
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="rule", action="add", subject=f"{rule.from_kind} → {rule.to_kind}",
+                             member_id=member_id, now=now)
         return rule_id
 
 
-def delete_rule(conn: Connection, session_id: str, rule_id: str) -> None:
+def delete_rule(conn: Connection, session_id: str, rule_id: str, *, now: str, member_id: str | None = None) -> None:
     """내장 규칙도 삭제할 수 있다 — 팀이 버그 수정 → 커밋 검토를 잇지 않을 수 있다."""
     with _tx(conn):
-        cur = conn.execute(
-            "DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id)
-        )
-        _require_rowcount(cur, f"rule {rule_id}")
-        bump_config_revision(conn, session_id)
+        row = _one(conn, "SELECT from_kind, to_kind FROM succession_rules WHERE session_id = ? AND rule_id = ?",
+                   (session_id, rule_id))
+        if row is None:
+            raise NotFound(f"rule {rule_id}")
+        conn.execute("DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id))
+        bump_config_revision(conn, session_id, area="rule", action="delete",
+                             subject=f"{row['from_kind']} → {row['to_kind']}", member_id=member_id, now=now)
 
 
 # --- 세션 등록 (phase 5: 심사자 세션이 카탈로그에서 고른 Agent) ---------------
@@ -2672,7 +2688,8 @@ def _source_row(conn: Connection, session_id: str, source_id: str) -> Row:
 
 
 def save_github_source(
-    conn: Connection, session_id: str, config: GitHubSourceConfig, now: str, *, expected_revision: int | None = None
+    conn: Connection, session_id: str, config: GitHubSourceConfig, now: str, *, expected_revision: int | None = None,
+    member_id: str | None = None,
 ) -> None:
     """저장 또는 교체. 수집 커서는 유지한다. 다른 세션의 source_id → NotFound, 같은 세션에 같은 저장소 → IntegrityError.
     `expected_revision` 을 주면 기존 소스만 갱신하고, 저장된 `config_revision` 이 다르면 같은 트랜잭션에서 StaleConfig.
@@ -2696,7 +2713,16 @@ def save_github_source(
             " config_json = excluded.config_json, updated_at = excluded.updated_at",
             (config.source_id, session_id, config.repository_full_name, config.model_dump_json(), now, now),
         )
-        bump_config_revision(conn, session_id)
+        subject = config.repository_full_name
+        if owner is not None:  # 바뀐 최상위 칸 이름만 — 값은 싣지 않는다
+            before = json.loads(owner["config_json"])
+            after = config.model_dump(mode="json")
+            fields = sorted(k for k in after.keys() | before.keys()
+                            if k != "config_revision" and before.get(k) != after.get(k))
+            if fields:
+                subject = f"{subject} · {', '.join(fields)}"
+        bump_config_revision(conn, session_id, area="source", action="add" if owner is None else "change",
+                             subject=subject, member_id=member_id, now=now)
 
 
 def get_github_source(conn: Connection, session_id: str, source_id: str) -> GitHubSourceConfig | None:
@@ -4382,7 +4408,8 @@ def save_triage_criteria(conn: Connection, session_id: str, body: str, *, expect
             " VALUES (?, ?, ?, ?, ?)",
             (session_id, version, body, member_id, now),
         )
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="triage_criteria", action="change", subject=f"v{version}",
+                             member_id=member_id, now=now)
         return version
 
 
@@ -4455,7 +4482,9 @@ def save_triage_autostart(conn: Connection, session_id: str, kind: str, *, enabl
             " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (session_id, kind, version, int(enabled), threshold, member_id, now),
         )
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="triage_autostart", action="change",
+                             subject=f"{kind} {'켬' if enabled else '끔'} · 기준값 {threshold:.2f}",
+                             member_id=member_id, now=now)
         return version
 
 

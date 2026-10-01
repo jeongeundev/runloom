@@ -461,7 +461,7 @@ def test_run_successor_waits_for_bundle_and_says_so_without_rule(review_web, con
 
     session_id = session_id_of(review_web, settings)
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.to_kind == "review"]
-    repo.delete_rule(conn, session_id, rule_id)
+    repo.delete_rule(conn, session_id, rule_id, now=NOW)
     without_rule = review_web.post(f"/tasks/{task_c}/run", follow_redirects=False)
     assert without_rule.status_code == 409
     assert "후속 규칙이 없어 인계 자료가 없습니다. /kinds 에서 규칙을 등록하세요." in html_lib.unescape(without_rule.text)
@@ -2288,3 +2288,22 @@ def test_chain_start_records_the_member_on_every_work_item_of_the_chain(web, con
     member = log_in_member(TestClient(app))
     assert member.post(f"/chains/{chain_id}/start", follow_redirects=False).status_code == 303
     assert [_requester(conn, t) for t in tasks] == [_member_of(conn, member)] * 2
+
+
+def test_kind_and_rule_changes_record_the_logged_in_member(web, conn, settings):
+    """phase 20 — 종류·규칙 추가·삭제마다 설정 변경 기록 한 행, 쓴 사람 = 로그인 멤버."""
+    session_id = session_id_of(web, settings)
+    admin = repo.find_member_by_email(conn, session_id, ADMIN_EMAIL)["member_id"]
+    register_kind(web)
+    register_rule(web)
+    rule_id = next(rid for rid, r in repo.list_rules(conn, session_id) if r.to_kind == "review")
+    assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 303
+    assert web.post("/kinds/review/delete", follow_redirects=False).status_code == 303
+    rows = repo.list_config_changes(conn, session_id)
+    assert [(r["area"], r["action"], r["subject"], r["by_member_id"]) for r in rows] == [
+        ("kind", "add", "review", admin),
+        ("rule", "add", "bug_fix → review", admin),
+        ("rule", "delete", "bug_fix → review", admin),
+        ("kind", "delete", "review", admin),
+    ]
+    assert rows[-1]["revision"] == repo.get_config_revision(conn, session_id)

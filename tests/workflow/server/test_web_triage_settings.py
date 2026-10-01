@@ -328,3 +328,17 @@ def test_cross_origin_posts_are_403(admin, conn):
                               follow_redirects=False)
         assert response.status_code == 403 and "forbidden_origin" in response.text
     assert repo.current_triage_criteria(conn, SESSION)["version"] == 1
+
+
+def test_criteria_and_autostart_saves_record_the_logged_in_member(admin, conn):
+    """phase 20 — 판단 기준·자동 시작 저장은 설정 변경 기록 한 행씩, 같은 값 저장은 기록 없음."""
+    body = repo.current_triage_criteria(conn, SESSION)["body"]
+    assert save_criteria(admin, body + "\n추가 규칙", 1).status_code == 303
+    assert save_criteria(admin, body + "\n추가 규칙", 2).status_code == 303
+    assert save_autostart(admin, "bug_fix", enabled=False, threshold="0.90").status_code == 303
+    assert save_autostart(admin, "bug_fix", enabled=False, threshold="0.90").status_code == 303
+    rows = [r for r in repo.list_config_changes(conn, SESSION) if r["area"].startswith("triage_")]  # 픽스처 소스 저장 제외
+    assert [(r["revision"], r["area"], r["subject"], r["by_member_id"]) for r in rows] == [
+        (revision(conn) - 1, "triage_criteria", "v2", admin_id(conn)),
+        (revision(conn), "triage_autostart", "bug_fix 끔 · 기준값 0.90", admin_id(conn)),
+    ]

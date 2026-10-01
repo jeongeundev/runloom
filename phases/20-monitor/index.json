@@ -21,7 +21,10 @@
     {
       "step": 2,
       "name": "config-change-log",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:09:33+0900",
+      "summary": "수정: adapters/repo.py(bump_config_revision(conn, sid, *, area, action, subject, member_id, now) 이 번호 +1 뒤 같은 트랜잭션에서 record_config_change — 기록 한 곳. insert_kind·insert_rule·save_github_source·replace_field_mappings 에 member_id=None, delete_kind·delete_rule 에 now(필수)·member_id=None. subject: 종류 이름, '<from> → <to>'(delete_rule 은 지우기 전 행을 읽고 없으면 NotFound), 소스 add=owner/repo·change='owner/repo · 바뀐 최상위 칸 이름'(config_revision 제외, 값 없음), 매핑 '원본 종류 n행' 이름순·없으면 '0행', 판단 기준 'v<n>', 자동 시작 '<종류> 켬|끔 · 기준값 0.90'. 그대로 경로는 번호·기록 둘 다 없음), server/web.py(종류·규칙 추가·삭제, App 설치 setup·PAT 연결에 member.member_id), mapping_api.py(PUT), github_api.py(_save 에 member_id 필수 키워드 — 생성·변경·중지), github_connect.py(sync_installation_sources·ensure_token_source 에 member_id=None, _save_change 에 member_id). 테스트: test_repo(지점별 번호=기록 revision·실패/그대로 무기록·member_id·트랜잭션 롤백, 기존 delete_kind/delete_rule/bump 호출 새 시그니처), test_web(종류·규칙), test_web_triage_settings(기준·자동 시작), test_mapping_api, test_github_api(생성·변경·중지), test_web_github_connect(setup·PAT — 토큰 부재 단정), test_views·test_task_cycle 호출 now 추가. 검증: pytest 4072 passed·72 skipped, ruff 통과. 다음 step 주의: list_config_changes 는 픽스처가 저장한 소스 기록도 포함(test_task_cycle cycle 픽스처는 member_id NULL 소스 add 1행).",
+      "completed_at": "2026-10-02T05:21:43+0900"
     },
     {
       "step": 3,

@@ -25,13 +25,16 @@ def _new_source(full_name: str, now: str, installation_id: int | None) -> GitHub
     )
 
 
-def _save_change(conn: Connection, session_id: str, current: GitHubSourceConfig, now: str, **changes) -> None:
+def _save_change(conn: Connection, session_id: str, current: GitHubSourceConfig, now: str, *, member_id: str | None,
+                 **changes) -> None:
     changed = current.model_copy(update={**changes, "config_revision": current.config_revision + 1})
-    repo.save_github_source(conn, session_id, changed, now, expected_revision=current.config_revision)
+    repo.save_github_source(conn, session_id, changed, now, expected_revision=current.config_revision,
+                            member_id=member_id)
 
 
 def sync_installation_sources(
-    conn: Connection, session_id: str, installation_id: int, repositories: Sequence[InstalledRepository], now: str
+    conn: Connection, session_id: str, installation_id: int, repositories: Sequence[InstalledRepository], now: str,
+    *, member_id: str | None = None,
 ) -> list[str]:
     """설치 저장소에 소스를 맞춘다. 반환은 새로 만들었거나 바꾼(설치 id·수집 중지) source_id."""
     existing = {s.repository_full_name.lower(): s for s in repo.list_github_sources(conn, session_id)}
@@ -41,24 +44,25 @@ def sync_installation_sources(
         current = existing.get(repository.full_name.lower())
         if current is None:
             config = _new_source(repository.full_name, now, installation_id)
-            repo.save_github_source(conn, session_id, config, now)
+            repo.save_github_source(conn, session_id, config, now, member_id=member_id)
             existing[repository.full_name.lower()] = config
             changed.append(config.source_id)
         elif current.installation_id != installation_id:
-            _save_change(conn, session_id, current, now, installation_id=installation_id)
+            _save_change(conn, session_id, current, now, member_id=member_id, installation_id=installation_id)
             changed.append(current.source_id)
     for name, current in existing.items():
         if current.installation_id == installation_id and name not in installed and current.enabled:
-            _save_change(conn, session_id, current, now, enabled=False)
+            _save_change(conn, session_id, current, now, member_id=member_id, enabled=False)
             changed.append(current.source_id)
     return changed
 
 
-def ensure_token_source(conn: Connection, session_id: str, repository_full_name: str, now: str) -> str | None:
+def ensure_token_source(conn: Connection, session_id: str, repository_full_name: str, now: str, *,
+                        member_id: str | None = None) -> str | None:
     """PAT 로 확인한 저장소의 소스. 이미 있으면 그대로(None), 없으면 만들어 source_id."""
     if any(s.repository_full_name.lower() == repository_full_name.lower()
            for s in repo.list_github_sources(conn, session_id)):
         return None
     config = _new_source(repository_full_name, now, None)
-    repo.save_github_source(conn, session_id, config, now)
+    repo.save_github_source(conn, session_id, config, now, member_id=member_id)
     return config.source_id

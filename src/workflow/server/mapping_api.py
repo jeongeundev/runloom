@@ -63,7 +63,7 @@ def replace_mappings(
     rows = [MappingRow(m.source_type, m.field, m.source_value, m.runloom_value, position)
             for position, m in enumerate(body.mappings, start=1)]
     try:
-        repo.replace_field_mappings(conn, session_id, rows, now=utc_now())
+        repo.replace_field_mappings(conn, session_id, rows, now=utc_now(), member_id=member.member_id)
     except ValueError as exc:
         raise ApiError(422, "invalid_field", str(exc), field="mappings") from None
     return _view(conn, session_id)

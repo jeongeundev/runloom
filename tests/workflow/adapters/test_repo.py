@@ -1365,19 +1365,19 @@ def test_insert_kind_roundtrip_ordering_and_duplicate(sessions):
 def test_delete_kind_protects_builtin_and_in_use(sessions):
     conn = sessions
     with pytest.raises(KindProtected):
-        repo.delete_kind(conn, SESSION, "bug_fix")
+        repo.delete_kind(conn, SESSION, "bug_fix", now=NOW)
     with pytest.raises(NotFound):
-        repo.delete_kind(conn, SESSION, "review")
+        repo.delete_kind(conn, SESSION, "review", now=NOW)
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
     repo.insert_kind(conn, OTHER_SESSION, REVIEW, NOW)
     rule_id = repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, NOW)
     with pytest.raises(KindInUse):  # 규칙이 참조
-        repo.delete_kind(conn, SESSION, "review")
-    repo.delete_rule(conn, SESSION, rule_id)
+        repo.delete_kind(conn, SESSION, "review", now=NOW)
+    repo.delete_rule(conn, SESSION, rule_id, now=NOW)
     repo.insert_work_item_task(conn, _task("review-1", kind="review"), NOW)
     with pytest.raises(KindInUse):  # Task 가 사용
-        repo.delete_kind(conn, SESSION, "review")
-    repo.delete_kind(conn, OTHER_SESSION, "review")  # 다른 세션의 같은 이름은 무관
+        repo.delete_kind(conn, SESSION, "review", now=NOW)
+    repo.delete_kind(conn, OTHER_SESSION, "review", now=NOW)  # 다른 세션의 같은 이름은 무관
     assert repo.get_kind(conn, OTHER_SESSION, "review") is None
     assert repo.get_kind(conn, SESSION, "review") == REVIEW
 
@@ -1385,7 +1385,7 @@ def test_delete_kind_protects_builtin_and_in_use(sessions):
 def test_delete_kind_success(sessions):
     conn = sessions
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
-    repo.delete_kind(conn, SESSION, "review")
+    repo.delete_kind(conn, SESSION, "review", now=NOW)
     assert repo.get_kind(conn, SESSION, "review") is None
     assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["bug_fix", "code_review", "triage"]
 
@@ -1410,19 +1410,19 @@ def test_rule_insert_get_list_duplicate_and_delete(sessions):
     with pytest.raises(NotFound):  # from_kind 미등록
         repo.insert_rule(conn, SESSION, SuccessorRule(from_kind="nope", on_outcomes=["x"], to_kind="review",
                                                       handoff_kinds=["diff"]), NOW)
-    repo.delete_rule(conn, SESSION, rule_id)
+    repo.delete_rule(conn, SESSION, rule_id, now=NOW)
     assert repo.get_rule(conn, SESSION, "bug_fix", "review") is None
     with pytest.raises(NotFound):
-        repo.delete_rule(conn, SESSION, rule_id)
+        repo.delete_rule(conn, SESSION, rule_id, now=NOW)
     with pytest.raises(NotFound):  # 다른 세션의 rule_id 로는 지울 수 없다
         builtin_id = repo.list_rules(conn, SESSION)[0][0]
-        repo.delete_rule(conn, OTHER_SESSION, builtin_id)
+        repo.delete_rule(conn, OTHER_SESSION, builtin_id, now=NOW)
 
 
 def test_builtin_rule_can_be_deleted(sessions):
     conn = sessions
     [rule_id] = [rid for rid, rule in repo.list_rules(conn, SESSION) if rule.from_kind == "bug_fix"]
-    repo.delete_rule(conn, SESSION, rule_id)
+    repo.delete_rule(conn, SESSION, rule_id, now=NOW)
     assert repo.list_rules(conn, SESSION) == []
     assert len(repo.list_rules(conn, OTHER_SESSION)) == 1
     assert repo.get_rule(conn, SESSION, "bug_fix", "code_review") is None
@@ -2549,12 +2549,12 @@ def test_config_revision_bumps_on_kind_rule_and_source_changes(sessions):
     assert _revision(seeded) == 2
     rule_id = repo.insert_rule(seeded, SESSION, FIX_TO_REVIEW, NOW)
     assert _revision(seeded) == 3
-    repo.delete_rule(seeded, SESSION, rule_id)
+    repo.delete_rule(seeded, SESSION, rule_id, now=NOW)
     assert _revision(seeded) == 4
     with pytest.raises(NotFound):
-        repo.delete_rule(seeded, SESSION, rule_id)
+        repo.delete_rule(seeded, SESSION, rule_id, now=NOW)
     assert _revision(seeded) == 4
-    repo.delete_kind(seeded, SESSION, "review")
+    repo.delete_kind(seeded, SESSION, "review", now=NOW)
     assert _revision(seeded) == 5
     repo.save_github_source(seeded, SESSION, _source(), NOW)
     assert _revision(seeded) == 6
@@ -2576,7 +2576,8 @@ def test_config_revision_is_not_bumped_by_assignee_binding(cycle):
 def test_bump_config_revision_runs_inside_the_callers_transaction(sessions):
     seeded = sessions
     seeded.execute("BEGIN IMMEDIATE")
-    assert repo.bump_config_revision(seeded, SESSION) == 2
+    assert repo.bump_config_revision(seeded, SESSION, area="kind", action="add", subject="review", member_id=None,
+                                     now=NOW) == 2
     seeded.execute("ROLLBACK")
     assert _revision(seeded) == 1
     with pytest.raises(NotFound):
@@ -4484,3 +4485,113 @@ def test_record_config_change_rejects_unknown_area_action_and_repeated_revision(
         with pytest.raises(sqlite3.IntegrityError):
             repo.record_config_change(conn, SESSION, revision=revision, area=area, action=action, subject="x",
                                       member_id=None, now=NOW)
+
+
+# --- phase 20: 설정 변경 기록 지점 (ARCHITECTURE "모니터링 — phase 20" 설정 변경 기록 지점 표) -----------------------
+
+
+def _changes(conn, session_id=SESSION) -> list[tuple]:
+    return [(r["revision"], r["area"], r["action"], r["subject"], r["by_member_id"], r["occurred_at"])
+            for r in repo.list_config_changes(conn, session_id)]
+
+
+def test_kind_and_rule_changes_are_recorded_with_the_bumped_revision(sessions):
+    conn = sessions
+    admin = _admin_id(conn, SESSION)
+    start = _revision(conn)
+    repo.insert_kind(conn, SESSION, REVIEW, NOW, member_id=admin)
+    with pytest.raises(DuplicateKind):  # 실패한 저장은 번호도 기록도 없다
+        repo.insert_kind(conn, SESSION, REVIEW, LATER, member_id=admin)
+    rule_id = repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, NOW, member_id=admin)
+    with pytest.raises(DuplicateRule):
+        repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, LATER, member_id=admin)
+    repo.delete_rule(conn, SESSION, rule_id, now=LATER, member_id=admin)
+    with pytest.raises(NotFound):
+        repo.delete_rule(conn, SESSION, rule_id, now=LATER, member_id=admin)
+    with pytest.raises(KindProtected):
+        repo.delete_kind(conn, SESSION, "bug_fix", now=LATER, member_id=admin)
+    repo.delete_kind(conn, SESSION, "review", now=LATER)  # member_id 없음 = NULL
+
+    assert _revision(conn) == start + 4
+    assert _changes(conn) == [
+        (start + 1, "kind", "add", "review", admin, NOW),
+        (start + 2, "rule", "add", "bug_fix → review", admin, NOW),
+        (start + 3, "rule", "delete", "bug_fix → review", admin, LATER),
+        (start + 4, "kind", "delete", "review", None, LATER),
+    ]
+    assert _changes(conn, OTHER_SESSION) == []
+
+
+def test_kind_in_use_delete_records_nothing(sessions):
+    conn = sessions
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, NOW)
+    before = (_revision(conn), _changes(conn))
+    with pytest.raises(KindInUse):
+        repo.delete_kind(conn, SESSION, "review", now=LATER)
+    assert (_revision(conn), _changes(conn)) == before
+
+
+def test_github_source_add_change_and_stale_are_recorded_by_field_name_only(sessions):
+    conn = sessions
+    admin = _admin_id(conn, SESSION)
+    start = _revision(conn)
+    repo.save_github_source(conn, SESSION, _source(), NOW, member_id=admin)
+    changed = _source(enabled=False, label_filter=["bug", "secret-label-value"], config_revision=2)
+    repo.save_github_source(conn, SESSION, changed, LATER, expected_revision=1, member_id=admin)
+    same = _source(enabled=False, label_filter=["bug", "secret-label-value"], config_revision=3)
+    repo.save_github_source(conn, SESSION, same, LATER, expected_revision=2)
+    with pytest.raises(StaleConfig):
+        repo.save_github_source(conn, SESSION, _source(config_revision=9), LATER, expected_revision=1)
+
+    assert _revision(conn) == start + 3
+    assert _changes(conn) == [
+        (start + 1, "source", "add", "acme/billing", admin, NOW),
+        (start + 2, "source", "change", "acme/billing · enabled, label_filter", admin, LATER),
+        (start + 3, "source", "change", "acme/billing", None, LATER),  # config_revision 만 바뀜
+    ]
+    assert all("secret-label-value" not in r[3] for r in _changes(conn))  # 값은 싣지 않는다
+
+
+def test_field_mapping_replace_is_recorded_as_row_counts_per_source_type(sessions):
+    conn = sessions
+    admin = _admin_id(conn, SESSION)
+    start = _revision(conn)
+    rows = [_mapping("docs", "code_review"), _mapping("*", "bug_fix", position=2),
+            _mapping("*", "bug_fix", position=3, source_type="jira")]
+    assert repo.replace_field_mappings(conn, SESSION, rows, now=NOW, member_id=admin) == start + 1
+    with pytest.raises(ValueError):
+        repo.replace_field_mappings(conn, SESSION, [_mapping("docs", "no_such_kind")], now=LATER)
+    repo.replace_field_mappings(conn, SESSION, [], now=LATER)
+    assert _changes(conn) == [
+        (start + 1, "mapping", "change", "github 2행 · jira 1행", admin, NOW),
+        (start + 2, "mapping", "change", "0행", None, LATER),
+    ]
+
+
+def test_triage_criteria_and_autostart_changes_are_recorded_only_when_saved(sessions):
+    conn = sessions
+    admin = _admin_id(conn, SESSION)
+    start = _revision(conn)
+    body = repo.current_triage_criteria(conn, SESSION)["body"]
+    assert repo.save_triage_criteria(conn, SESSION, body, expected_version=1, member_id=admin, now=NOW) == 1
+    assert repo.save_triage_criteria(conn, SESSION, body + "\n추가", expected_version=1, member_id=admin,
+                                     now=NOW) == 2
+    repo.save_triage_autostart(conn, SESSION, "bug_fix", enabled=False, threshold=0.8, member_id=admin, now=NOW)
+    repo.save_triage_autostart(conn, SESSION, "bug_fix", enabled=False, threshold=0.9, member_id=admin, now=LATER)
+    repo.save_triage_autostart(conn, SESSION, "bug_fix", enabled=False, threshold=0.9, member_id=admin, now=LATER)
+
+    assert _revision(conn) == start + 2
+    assert _changes(conn) == [
+        (start + 1, "triage_criteria", "change", "v2", admin, NOW),
+        (start + 2, "triage_autostart", "change", "bug_fix 끔 · 기준값 0.90", admin, LATER),
+    ]
+
+
+def test_bump_config_revision_records_in_the_callers_transaction(sessions):
+    conn = sessions
+    conn.execute("BEGIN IMMEDIATE")
+    assert repo.bump_config_revision(conn, SESSION, area="kind", action="add", subject="x", member_id=None,
+                                     now=NOW) == 2
+    conn.execute("ROLLBACK")
+    assert (_revision(conn), _changes(conn)) == (1, [])

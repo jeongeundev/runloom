@@ -1709,7 +1709,7 @@ def kinds_create(
     except ValidationError as exc:
         raise _validation_page_error(exc) from None
     try:
-        repo.insert_kind(conn, session_id, spec, utc_now())
+        repo.insert_kind(conn, session_id, spec, utc_now(), member_id=member.member_id)
     except DuplicateKind:
         raise PageError(409, "kind_exists", f"종류 {spec.kind} 은 이미 등록돼 있습니다.", field="kind") from None
     return _redirect("/connect?tab=kinds", response)
@@ -1724,7 +1724,7 @@ def kinds_delete(
 ) -> RedirectResponse:
     session_id = member.session_id
     try:
-        repo.delete_kind(conn, session_id, kind)
+        repo.delete_kind(conn, session_id, kind, now=utc_now(), member_id=member.member_id)
     except KindProtected:
         raise PageError(409, "kind_protected", "내장 종류는 삭제할 수 없습니다.", field="kind") from None
     except KindInUse:
@@ -1762,7 +1762,7 @@ def rules_create(
     if reason is not None:
         raise PageError(422, "invalid_field", reason)
     try:
-        repo.insert_rule(conn, session_id, rule, utc_now())
+        repo.insert_rule(conn, session_id, rule, utc_now(), member_id=member.member_id)
     except DuplicateRule:
         raise PageError(
             409, "rule_exists", f"규칙 {rule.from_kind} → {rule.to_kind} 은 이미 등록돼 있습니다.",
@@ -1780,7 +1780,7 @@ def rules_delete(
     """내장 규칙도 삭제할 수 있다 — 규칙이 없으면 그 결과 뒤 후속은 사람이 시작한다."""
     session_id = member.session_id
     try:
-        repo.delete_rule(conn, session_id, rule_id)
+        repo.delete_rule(conn, session_id, rule_id, now=utc_now(), member_id=member.member_id)
     except NotFound:
         raise PageError(404, "not_found", f"규칙 {rule_id}을 찾을 수 없습니다.", field="rule_id") from None
     return _redirect("/connect?tab=kinds", response)
@@ -2114,7 +2114,8 @@ def github_app_setup(
     except GitHubError as exc:
         logger.warning("GitHub 설치 저장소 조회 실패: %s", exc)
         raise PageError(502, "github_unavailable", "GitHub 에서 설치 저장소를 읽지 못했습니다. 잠시 뒤 다시 여세요.") from None
-    github_connect.sync_installation_sources(conn, session_id, installation_id, repositories, utc_now())
+    github_connect.sync_installation_sources(conn, session_id, installation_id, repositories, utc_now(),
+                                             member_id=member.member_id)
     response.delete_cookie(GH_STATE_COOKIE, path=GH_STATE_PATH)
     return _redirect("/connect?tab=sources", response)
 
@@ -2149,7 +2150,7 @@ def github_token_connect(
         raise PageError(400, "github_token_invalid", f"이 토큰으로 저장소 {name} 를 볼 수 없습니다.",
                         field="token") from None
     request.app.state.secrets.write(secret_store.GITHUB_TOKEN, token)
-    github_connect.ensure_token_source(conn, session_id, name, utc_now())
+    github_connect.ensure_token_source(conn, session_id, name, utc_now(), member_id=member.member_id)
     return _redirect("/connect?tab=sources", response)
 
 

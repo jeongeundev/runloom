@@ -193,9 +193,11 @@ def _raise_first(problems: list[ApiError]) -> None:
         raise problems[0]
 
 
-def _save(conn: Connection, session_id: str, config: GitHubSourceConfig, *, expected_revision: int | None) -> None:
+def _save(conn: Connection, session_id: str, config: GitHubSourceConfig, *, expected_revision: int | None,
+          member_id: str) -> None:
     try:
-        repo.save_github_source(conn, session_id, config, utc_now(), expected_revision=expected_revision)
+        repo.save_github_source(conn, session_id, config, utc_now(), expected_revision=expected_revision,
+                                member_id=member_id)
     except StaleConfig as exc:
         raise ApiError(409, "stale_config", f"source {config.source_id} 설정이 이미 revision {exc.current_revision} 입니다.",
                        field="expected_revision", details={"current_revision": exc.current_revision}) from None
@@ -251,7 +253,7 @@ def create_source(
     config = _config(body, f"ghs-{secrets.token_hex(4)}", 1, body.repository_full_name)
     _raise_first(_source_problems(conn, session_id, body, settings))
     config = config.model_copy(update={"repository_full_name": _allowed_name(body.repository_full_name, settings)})
-    _save(conn, session_id, config, expected_revision=None)
+    _save(conn, session_id, config, expected_revision=None, member_id=member.member_id)
     return JSONResponse(_source_view(config, settings), status_code=201)
 
 
@@ -285,7 +287,7 @@ def update_source(
     config = _config(body, source_id, body.expected_revision + 1, current.repository_full_name,
                      current.installation_id)
     _raise_first(_source_problems(conn, session_id, body, settings, installed=current.installation_id is not None))
-    _save(conn, session_id, config, expected_revision=body.expected_revision)
+    _save(conn, session_id, config, expected_revision=body.expected_revision, member_id=member.member_id)
     return JSONResponse(_source_view(config, settings))
 
 
@@ -300,7 +302,8 @@ def stop_source(
     current = _existing(conn, session_id, source_id)
     if current.enabled:
         stopped = current.model_copy(update={"enabled": False, "config_revision": current.config_revision + 1})
-        _save(conn, session_id, stopped, expected_revision=current.config_revision)
+        _save(conn, session_id, stopped, expected_revision=current.config_revision,
+              member_id=member.member_id)
         current = stopped
     return JSONResponse(_source_view(current, _settings(request)))
 

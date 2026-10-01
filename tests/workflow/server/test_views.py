@@ -857,7 +857,7 @@ def test_chain_node_kind_label_and_reasons_use_session_registry(seeded, settings
     assert "선행 #41 (ops.triage) → code.patch 인계" in second["reasons"]
 
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(seeded, SESSION) if r.from_kind == "classify"]
-    repo.delete_rule(seeded, SESSION, rule_id)
+    repo.delete_rule(seeded, SESSION, rule_id, now=NOW)
     second = _chain(seeded, settings)["tasks"][1]
     assert second["reasons"][0] == "후속 규칙 없음: classify → patch"
 
