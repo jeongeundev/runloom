@@ -69,7 +69,9 @@
     {
       "step": 8,
       "name": "triage-settings",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T01:49:52+0900",
+      "summary": "판단 설정: 생성 templates/_connect_triage.html(기준 v<n>·쓴 사람(시드=처음 기준)·textarea+expected_version·버전 이력·?version=n 읽기 전용 pre·종류별 자동 시작 폼 data-autostart — 판단 기록 n/20·20 미만 disabled·기준값 0.50~1.00 step 0.05·마지막 변경 v<n>), tests/workflow/server/test_web_triage_settings.py 32건. 수정 adapters/errors.py(StaleCriteria·AutostartLocked), adapters/repo.py(save_triage_criteria(같은 본문 그대로·다르면 +1 행·bump_config_revision·StaleCriteria)·list_triage_criteria·get_triage_criteria·triage_handled_counts·triage_autostart_settings→AutostartSetting·save_triage_autostart(켜기는 같은 트랜잭션에서 다시 세어 AutostartLocked, 같으면 그대로)·list_triage_autostart), server/web.py(CONNECT_TABS notify 앞 ('triage','판단',MANAGE_CONNECTIONS), connect_page version 쿼리(없는 버전 404), POST /operator/triage/criteria(CRLF→LF, 빈 값·8000자 초과 422, 409 stale_criteria)·/operator/triage/autostart/{kind}(404 판단·입력 종류·없는 종류, 422 threshold(parse_threshold), 409 triage_autostart_locked '판단 기록 n/20 — 20건이 되면 켤 수 있습니다')), server/views.py(autostart_kinds·triage_settings_context, 저장소 카드 triage_agents(code.triage {저장소}·정책 run), 매칭 줄 '판단 에이전트'(설정만)), server/github_api.py(SourceSettingsRequest.triage_agent_id + 검사 agent_not_registered·agent_capability_mismatch(code.triage)·422 triage_agent_policy — PUT 전체 교체에서 칸이 사라지지 않음), _connect_github.html(판단 Agent select '없음 — 판단하지 않음', 매크로 인자로 후보), _connect_jira.html(연결 저장소 카드 것을 쓴다는 안내 한 줄), connect.html, ARCHITECTURE step 8 구현 메모. 결정: 판단 Agent 소유자 알림은 ADR-0025 사실 10·결정 3(ARCHITECTURE 기준)대로 만들지 않음 — step.md 의 알림 테스트 대신 정책 owner_approval 거부·후보 제외를 테스트; 자동 시작 종류는 startable_kinds 가 아니라 판단·입력 종류만 뺀 등록 종류. 기존 테스트 변경: test_web_connect 탭 목록에 판단 탭 추가(새 동작). 검증: pytest 4032 passed·63 skipped, ruff 통과. 다음 step 주의: step 9 _autostart_triaged 는 repo.triage_autostart_settings·triage_handled_counts 를 그대로 쓰면 되고(행 없음 = 꺼짐), 자동 시작 표시는 accept_triage(member_id=None)·hand_to_agent 분리가 필요."
     },
     {
       "step": 9,

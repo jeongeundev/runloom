@@ -23,6 +23,7 @@ from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     ArtifactMissing,
+    AutostartLocked,
     DuplicateKind,
     DuplicateRule,
     DuplicateStartKey,
@@ -38,6 +39,7 @@ from workflow.adapters.errors import (
     ResponseConflict,
     SequenceGap,
     StaleConfig,
+    StaleCriteria,
     StaleRequest,
     TaskClosed,
     TriageRunning,
@@ -94,7 +96,15 @@ from workflow.domain.start_checklist import StartFacts
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
-from workflow.domain.triage import PastWork, TriageFact, handling_for, triage_reason
+from workflow.domain.triage import (
+    AUTOSTART_DEFAULT_THRESHOLD,
+    AutostartSetting,
+    PastWork,
+    TriageFact,
+    can_enable_autostart,
+    handling_for,
+    triage_reason,
+)
 from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
 from workflow.domain.work_keys import short_source_key
 from workflow.domain.work_list import WorkRow, next_action
@@ -4322,3 +4332,96 @@ def prepare_triage_accept(conn: Connection, work_item_id: str, *,
         for predecessor_id in predecessor_ids:
             link_work_items(conn, from_work_item_id=predecessor_id, to_work_item_id=work_item_id, type="blocks",
                             now=now)
+
+
+# --- 판단 설정 (phase 19 step 8 — 기준 버전·종류별 자동 시작, 둘 다 추가 전용 버전 행) ----------------------
+
+
+def save_triage_criteria(conn: Connection, session_id: str, body: str, *, expected_version: int, member_id: str,
+                         now: str) -> int:
+    """지금 버전을 돌려준다. 같은 본문이면 그대로, 다르면 +1 행·`bump_config_revision`.
+    `expected_version` ≠ 현재 → `StaleCriteria`. 본문 길이는 호출자와 표 CHECK 가 본다."""
+    with _tx(conn):
+        current = current_triage_criteria(conn, session_id)
+        if current["version"] != expected_version:
+            raise StaleCriteria(current["version"])
+        if current["body"] == body:
+            return current["version"]
+        version = current["version"] + 1
+        conn.execute(
+            "INSERT INTO triage_criteria (session_id, version, body, created_by_member_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (session_id, version, body, member_id, now),
+        )
+        bump_config_revision(conn, session_id)
+        return version
+
+
+def list_triage_criteria(conn: Connection, session_id: str) -> list[Row]:
+    """버전 이력(최신순) — `version`, `created_by_member_id`, `created_by_name`(시드는 None), `created_at`. 본문은 싣지 않는다."""
+    return conn.execute(
+        "SELECT c.version, c.created_by_member_id, m.display_name AS created_by_name, c.created_at"
+        " FROM triage_criteria c LEFT JOIN members m ON m.member_id = c.created_by_member_id"
+        " WHERE c.session_id = ? ORDER BY c.version DESC",
+        (session_id,),
+    ).fetchall()
+
+
+def get_triage_criteria(conn: Connection, session_id: str, version: int) -> Row | None:
+    return _one(conn, "SELECT version, body, created_by_member_id, created_at FROM triage_criteria"
+                      " WHERE session_id = ? AND version = ?", (session_id, version))
+
+
+def triage_handled_counts(conn: Connection, session_id: str) -> dict[str, int]:
+    """제안 종류 → 사람이 처리한(`accepted`·`changed`) 판단 수 — 자동 시작 자격."""
+    return {r["proposed_kind"]: r["n"] for r in conn.execute(
+        "SELECT proposed_kind, COUNT(*) AS n FROM triage_logs WHERE session_id = ? AND state = 'proposed'"
+        " AND handling IN ('accepted', 'changed') AND proposed_kind IS NOT NULL GROUP BY proposed_kind",
+        (session_id,),
+    )}
+
+
+def triage_autostart_settings(conn: Connection, session_id: str) -> dict[str, AutostartSetting]:
+    """종류 → 현재(가장 큰 버전) 설정. 행 없는 종류는 빠진다(= 꺼짐·기본 기준값)."""
+    return {r["kind"]: AutostartSetting(kind=r["kind"], version=r["version"], enabled=bool(r["enabled"]),
+                                        threshold=r["threshold"])
+            for r in conn.execute(
+                "SELECT kind, version, enabled, threshold FROM triage_autostart a WHERE session_id = ?"
+                " AND version = (SELECT MAX(version) FROM triage_autostart b"
+                " WHERE b.session_id = a.session_id AND b.kind = a.kind)",
+                (session_id,),
+            )}
+
+
+def save_triage_autostart(conn: Connection, session_id: str, kind: str, *, enabled: bool, threshold: float,
+                          member_id: str, now: str) -> int:
+    """지금 버전을 돌려준다(행 없음 0). 현재와 같으면 그대로, 다르면 새 버전·`bump_config_revision`.
+    켜기는 자격을 같은 트랜잭션에서 다시 세어 모자라면 `AutostartLocked(count)`."""
+    with _tx(conn):
+        if enabled:
+            count = triage_handled_counts(conn, session_id).get(kind, 0)
+            if not can_enable_autostart(count):
+                raise AutostartLocked(count)
+        current = triage_autostart_settings(conn, session_id).get(kind)
+        if current is None:
+            current = AutostartSetting(kind=kind, version=0, enabled=False, threshold=AUTOSTART_DEFAULT_THRESHOLD)
+        if current.enabled == enabled and current.threshold == threshold:
+            return current.version
+        version = current.version + 1
+        conn.execute(
+            "INSERT INTO triage_autostart (session_id, kind, version, enabled, threshold, created_by_member_id,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, kind, version, int(enabled), threshold, member_id, now),
+        )
+        bump_config_revision(conn, session_id)
+        return version
+
+
+def list_triage_autostart(conn: Connection, session_id: str, kind: str) -> list[Row]:
+    """그 종류의 설정 이력(최신순) — 쓴 사람 이름 `created_by_name` 포함."""
+    return conn.execute(
+        "SELECT a.version, a.enabled, a.threshold, a.created_by_member_id, m.display_name AS created_by_name,"
+        " a.created_at FROM triage_autostart a LEFT JOIN members m ON m.member_id = a.created_by_member_id"
+        " WHERE a.session_id = ? AND a.kind = ? ORDER BY a.version DESC",
+        (session_id, kind),
+    ).fetchall()

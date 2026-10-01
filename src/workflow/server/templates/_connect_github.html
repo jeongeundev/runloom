@@ -5,7 +5,7 @@
    JSON 으로 관리자 API 에 보낸다), 토큰 연결은 일반 POST 폼. <details> 는 겹치지 않는다(화면 테스트가 접힘을 이것으로 본다).
    카드 읽기·[러너 붙이기]는 멤버도(`attach_runner`), 연결·설정·기준선·수집 중지 폼은 `manage_connections`, 맡기기는 `delegate`. #}
 {% import "_status.html" as st %}
-{% macro source_fields(c, prefix) -%}
+{% macro source_fields(c, prefix, triage_agents=[]) -%}
 {% set auto = c and c.intake == 'all_open' %}
 <input type="hidden" name="intake" value="{{ c.intake if c else 'filtered' }}">
 <div class="field-row">
@@ -48,6 +48,11 @@
     {% if auto %}<input type="text" id="{{ prefix }}-profile" name="fix_verification_profile_id" data-json-type="optional" value="{{ c.fix_verification_profile_id or '' }}" placeholder="비워 두면 자동">
     {% else %}<input type="text" id="{{ prefix }}-profile" name="fix_verification_profile_id" value="{{ c.fix_verification_profile_id if c else '' }}" required>{% endif %}
     <div class="help">연결 프로그램이 보고한 프로필 ID. 명령이 아닙니다.</div></div>
+</div>
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-triage">판단 Agent</label>
+    <select id="{{ prefix }}-triage" name="triage_agent_id" data-json-type="optional"><option value="">없음 — 판단하지 않음</option>{% for a in triage_agents %}<option value="{{ a.agent_id }}"{% if c.triage_agent_id == a.agent_id %} selected{% endif %}>{{ a.name }} ({{ a.agent_id }})</option>{% endfor %}</select>
+    <div class="help">새로 들어온 담당 없는 업무의 종류·담당·순서를 제안합니다. 이 저장소를 등록했고 맡기기 정책이 '바로 실행'인 에이전트만.</div></div>
 </div>
 <div class="field-row">
   <div class="field"><label for="{{ prefix }}-mode">실행 방식</label>
@@ -125,7 +130,7 @@
       {% if 'manage_connections' in allowed %}
       <form data-json-action="/github/sources/{{ c.source_id }}" data-json-method="PUT">
         <input type="hidden" name="expected_revision" value="{{ c.config_revision }}" data-json-type="int">
-        {{ source_fields(c, c.source_id) }}
+        {{ source_fields(c, c.source_id, s.triage_agents) }}
         <div class="actions">
           <button class="btn btn-secondary" type="submit" data-json-action="/github/sources/preview" data-json-method="POST" data-json-omit="expected_revision">미리보기</button>
           <button class="btn" type="submit">저장</button>

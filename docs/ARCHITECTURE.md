@@ -2281,6 +2281,8 @@ POST 는 모두 기존 Origin 검사(phase 15)를 거친다. 결과 문구·이�
 
 repo(step 8): `save_triage_criteria(conn, session_id, body: str, *, expected_version: int, member_id: str, now: str) -> int`(같은 본문이면 그 버전 그대로, 다르면 +1 행·`bump_config_revision`, `expected_version` ≠ 현재 → `StaleCriteria(current)`), `list_triage_criteria(conn, session_id) -> list[Row]`(최신순), `get_triage_criteria(conn, session_id, version) -> Row | None`, `save_triage_autostart(conn, session_id, kind: str, *, enabled: bool, threshold: float, member_id: str, now: str) -> int`(현재와 같으면 그대로, 다르면 새 버전·`bump_config_revision`; 켜기는 자격을 같은 트랜잭션에서 다시 세어 모자라면 `AutostartLocked(count)`), `list_triage_autostart(conn, session_id, kind) -> list[Row]`(이력), `triage_autostart_settings`·`triage_handled_counts`(위).
 
+구현 메모(step 8): 위 그대로. ① 자동 시작 표·`POST /operator/triage/autostart/{kind}` 의 "시작할 수 있는 종류" 는 `views.autostart_kinds` = 판단 종류·입력이 필요한 종류를 뺀 등록 종류(`domain.triage.startable_kinds` 는 지금 종류에 따라 저장소 범위가 아닌 종류를 빼므로 쓰지 않는다 — 그런 종류도 지금 종류일 때는 제안될 수 있다). ② 기준 저장은 textarea 의 CRLF 를 LF 로 맞춘 뒤 비교한다(브라우저가 같은 글을 CRLF 로 보내 버전이 오르지 않게). ③ 판단 Agent 칸 검사는 `_source_problems` 에 형제 칸과 같은 `_agent_problem(…, "code.triage", workflow_repository_id, "triage_agent_id")` + 정책 `run` 아니면 422 `triage_agent_policy` — 저장소 id 가 없으면(all_open 자동 매칭) 등록·정책만 본다. 카드 select 후보는 설정값 또는 매칭 결과 저장소로 고른다. ④ 판단 Agent 소유자 알림은 ADR-0025 사실 10·결정 3 대로 만들지 않았다. ⑤ Jira 프로젝트 카드는 연결 저장소 select 아래에 "판단 에이전트는 연결 저장소 카드에서 고른 것을 씁니다." 한 줄.
+
 ### 화면 (step 7·8)
 
 - 업무 패널(`_work_panel.html`, `views.triage_panel(conn, session_id, work: Row, *, allowed: frozenset[str], now: str, settings: Settings) -> dict | None` → `panel.triage`): 절 `data-panel-section="triage"` 을 `props` 다음·`now` 앞에. 그 업무에 판단 로그 행이 없고 버튼도 없으면(판단 경로 없음) 그리지 않는다.

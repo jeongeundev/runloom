@@ -29,7 +29,7 @@ from workflow.contracts.v1 import (
     format_work_key,
 )
 from workflow.domain.composition import compose, human_gate_label
-from workflow.domain.execution_policy import policy_for
+from workflow.domain.execution_policy import is_triage_kind, policy_for
 from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS
 from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.metrics import (
@@ -47,7 +47,14 @@ from workflow.domain import team
 from workflow.domain.delegation import candidate_label, needs_owner_approval
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
-from workflow.domain.triage import CRITERION_LABELS, FAILED_LABELS, PROCEED_LABELS
+from workflow.domain.triage import (
+    AUTOSTART_DEFAULT_THRESHOLD,
+    AUTOSTART_MIN_HANDLED,
+    CRITERION_LABELS,
+    FAILED_LABELS,
+    PROCEED_LABELS,
+    can_enable_autostart,
+)
 from workflow.domain.work_list import (
     CLOSED_RECENT_DAYS,
     ListQuery,
@@ -986,6 +993,40 @@ def _triage_proposal(log: Row, stage_kind: str | None, labels: dict[str, str]) -
     }
 
 
+def autostart_kinds(specs: Sequence[KindSpec]) -> list[KindSpec]:
+    """자동 시작을 둘 수 있는 종류 — 판단이 제안할 수 있는 종류(판단 종류·입력이 필요한 종류 제외). 등록부 순서."""
+    return [s for s in specs if not is_triage_kind(s) and not s.input_kinds]
+
+
+def triage_settings_context(conn: Connection, session_id: str) -> dict[str, Any]:
+    """연결 화면 판단 탭 — 현재 기준(버전·쓴 사람·시각·본문)·버전 이력·종류별 자동 시작(자격 건수·설정·마지막 변경).
+    쓴 사람이 없는 행(시드)은 `by` None — 화면이 `처음 기준` 으로 보인다. 본문은 템플릿이 자동 이스케이프로 그린다."""
+    current = repo.current_triage_criteria(conn, session_id)
+    history = [{"version": r["version"], "by": r["created_by_name"], "created_at": r["created_at"]}
+               for r in repo.list_triage_criteria(conn, session_id)]
+    counts = repo.triage_handled_counts(conn, session_id)
+    settings = repo.triage_autostart_settings(conn, session_id)
+    autostart = []
+    for spec in autostart_kinds(repo.list_kinds(conn, session_id)):
+        setting = settings.get(spec.kind)
+        last = repo.list_triage_autostart(conn, session_id, spec.kind)[:1]
+        count = counts.get(spec.kind, 0)
+        autostart.append({
+            "kind": spec.kind, "label": spec.label, "count": count, "can_enable": can_enable_autostart(count),
+            "enabled": setting is not None and setting.enabled,
+            "threshold": f"{setting.threshold if setting is not None else AUTOSTART_DEFAULT_THRESHOLD:.2f}",
+            "last": {"version": last[0]["version"], "by": last[0]["created_by_name"],
+                     "created_at": last[0]["created_at"]} if last else None,
+        })
+    return {
+        "criteria": {"version": current["version"], "body": current["body"], "by": history[0]["by"],
+                     "created_at": history[0]["created_at"]},
+        "criteria_history": history,
+        "autostart": autostart,
+        "autostart_min": AUTOSTART_MIN_HANDLED,
+    }
+
+
 def triage_panel(conn: Connection, session_id: str, work: Row, *, allowed: frozenset[str], now: str,
                  settings: Settings) -> dict[str, Any] | None:
     """패널 "판단 제안" 절 — 최신 판단 로그 행(판단 중·제안·무시함·처리됨·실패)과 [판단 받기]/[다시 판단] 버튼.
@@ -1066,6 +1107,7 @@ def _match_rows(config: GitHubSourceConfig, match: Any) -> list[dict[str, Any]]:
         ("수정 에이전트", config.default_fix_agent_id, match.fix_agent_id),
         ("검증 프로필", config.fix_verification_profile_id, match.fix_verification_profile_id),
         ("검토 에이전트", config.review_agent_id, match.review_agent_id),
+        ("판단 에이전트", config.triage_agent_id, None),  # 자동 매칭하지 않는다(ADR-0025 결정 3)
     ):
         how = "설정" if configured is not None else "자동" if matched is not None else None
         rows.append({"label": label, "value": configured or matched, "how": how})
@@ -1137,6 +1179,14 @@ def me_context(conn: Connection, session_id: str, member_id: str, *, secrets: Se
     }
 
 
+def _triage_agents(agents: list[dict[str, Any]], repository_id: str | None) -> list[dict[str, Any]]:
+    """저장소 카드 판단 Agent 후보 — 그 저장소의 `code.triage` 능력이 있고 맡기기 정책 `run` 인 Agent(ADR-0025 결정 3)."""
+    if repository_id is None:
+        return []
+    return [a for a in agents if a["delegation_policy"] == "run" and any(
+        c["code"] == "code.triage" and c["scope"] == {"repository_id": repository_id} for c in a["capabilities"])]
+
+
 def github_context(
     conn: Connection, session_id: str, *, now: str, settings: Settings, secrets: SecretStore
 ) -> dict[str, Any]:
@@ -1176,6 +1226,7 @@ def github_context(
             "runner_missing": any(b.code == "repository_unmatched" for b in match.blockers),
             "match_blockers": [b.reason for b in match.blockers if b.code != "repository_unmatched"],
             "baseline": _baseline_summary(conn, session_id, config.source_id),
+            "triage_agents": _triage_agents(agents, config.workflow_repository_id or match.workflow_repository_id),
         })
     return {
         "token_configured": bool(settings.github_token),

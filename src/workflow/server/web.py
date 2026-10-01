@@ -37,6 +37,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from workflow.adapters import repo, secret_store
 from workflow.adapters.errors import (
+    AutostartLocked,
     DuplicateKind,
     DuplicateRule,
     EmailTaken,
@@ -44,6 +45,7 @@ from workflow.adapters.errors import (
     KindProtected,
     LastAdmin,
     NotFound,
+    StaleCriteria,
 )
 from workflow.adapters.github_app import build_manifest, exchange_manifest_code, load_app, save_credentials
 from workflow.adapters.github_client import (
@@ -94,6 +96,8 @@ from workflow.domain.kinds import (
 )
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.task_sources import Issue
+from workflow.domain.triage import AUTOSTART_MIN_HANDLED, parse_threshold
+from workflow.domain.triage_criteria import CRITERIA_BODY_MAX
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_list import ListQuery, parse_list_query
 from workflow.server import github_connect, jira_connect, metrics_api, triage_runs, views, work_actions
@@ -1429,6 +1433,7 @@ CONNECT_TABS = (
     ("sources", "가져올 곳", None),
     ("team", "팀·담당자", None),
     ("kinds", "업무 종류·규칙", None),
+    ("triage", "판단", team.MANAGE_CONNECTIONS),
     ("notify", "알림", team.MANAGE_SHARED_NOTIFY),
     ("advanced", "고급", None),
 )
@@ -1471,6 +1476,8 @@ def _tab_context(request: Request, conn: Connection, member: LoggedIn, tab: str,
         return context
     if tab == "kinds":
         return _kinds_context(conn, session_id)
+    if tab == "triage":
+        return views.triage_settings_context(conn, session_id)
     if tab == "notify":
         return views.notifications_context(conn, session_id, secrets=request.app.state.secrets)
     return _advanced_context(request, conn, session_id, now, member, allowed)
@@ -1490,16 +1497,76 @@ def _connect_page(request: Request, conn: Connection, member: LoggedIn, tab: str
 def connect_page(
     request: Request,
     tab: str = Query(""),
+    version: int | None = Query(None),
     member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """모르는 `tab` 은 볼 수 있는 첫 탭, 아는 탭인데 권한이 없으면 403 forbidden."""
+    """모르는 `tab` 은 볼 수 있는 첫 탭, 아는 탭인데 권한이 없으면 403 forbidden. 판단 탭의 `version` 은 그 기준 본문
+    읽기 전용 보기(없는 버전 404)."""
     visible = [t["key"] for t in _visible_tabs(team.allowed_actions(member.role))]
     if tab not in visible:
         if any(tab == key for key, _, _ in CONNECT_TABS):
             raise PageError(403, "forbidden", "관리자 권한이 필요합니다.")
         tab = visible[0]
-    return _connect_page(request, conn, member, tab)
+    extra: dict[str, Any] = {}
+    if tab == "triage" and version is not None:
+        row = repo.get_triage_criteria(conn, member.session_id, version)
+        if row is None:
+            raise PageError(404, "not_found", f"판단 기준 v{version} 이 없습니다.", field="version")
+        extra["criteria_view"] = {"version": row["version"], "body": row["body"]}
+    return _connect_page(request, conn, member, tab, **extra)
+
+
+# --- 판단 설정 (phase 19 step 8, ADR-0025, ARCHITECTURE "판단 — phase 19" 경로) -------------------------------------
+# 기준 본문은 사용자 입력 — 요청문에 글로만 들어가고 화면은 자동 이스케이프로만 그린다. 모두 `manage_connections`.
+
+
+@router.post("/operator/triage/criteria")
+def triage_criteria_save(
+    response: Response,
+    body: str = Form(""),
+    expected_version: int = Form(...),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """저장 = 새 버전 행. 같은 본문이면 버전을 올리지 않는다(textarea 의 CRLF 는 LF 로 맞춘다)."""
+    body = body.replace("\r\n", "\n")
+    if not body.strip() or len(body) > CRITERIA_BODY_MAX:
+        raise PageError(422, "invalid_field", f"판단 기준은 1~{CRITERIA_BODY_MAX}자입니다.", field="body")
+    try:
+        repo.save_triage_criteria(conn, member.session_id, body, expected_version=expected_version,
+                                  member_id=member.member_id, now=utc_now())
+    except StaleCriteria:
+        raise PageError(409, "stale_criteria", "다른 사람이 먼저 고쳤습니다 — 새로 고친 뒤 다시",
+                        field="expected_version") from None
+    return _redirect("/connect?tab=triage", response)
+
+
+@router.post("/operator/triage/autostart/{kind}")
+def triage_autostart_save(
+    response: Response,
+    kind: str,
+    enabled: str = Form(""),
+    threshold: str = Form(""),
+    member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """종류별 자동 시작 켬·기준값. 켜기는 사람 처리 판단 20건부터 — 서버가 같은 트랜잭션에서 다시 센다."""
+    session_id = member.session_id
+    if kind not in {s.kind for s in views.autostart_kinds(_kinds(conn, session_id))}:
+        raise PageError(404, "not_found", "자동 시작을 둘 수 있는 업무 종류가 아닙니다.", field="kind")
+    try:
+        value = parse_threshold(threshold.strip())
+    except ValueError as exc:
+        raise PageError(422, "invalid_field", str(exc), field="threshold") from None
+    try:
+        repo.save_triage_autostart(conn, session_id, kind, enabled=bool(enabled), threshold=value,
+                                   member_id=member.member_id, now=utc_now())
+    except AutostartLocked as exc:
+        raise PageError(409, "triage_autostart_locked",
+                        f"판단 기록 {exc.count}/{AUTOSTART_MIN_HANDLED} — {AUTOSTART_MIN_HANDLED}건이 되면 켤 수 있습니다",
+                        field="enabled") from None
+    return _redirect("/connect?tab=triage", response)
 
 
 # --- 에이전트 — 러너 등록이 워크스페이스에 붙인다 (ADR-0018 결정 1) --------------

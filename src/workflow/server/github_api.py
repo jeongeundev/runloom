@@ -7,6 +7,7 @@
 - 저장소는 `Settings.github_repos`(`WORKFLOW_GITHUB_REPOS`) 안에서만 연결한다(대소문자 무시, 저장은 목록의 표기).
 - Agent 는 이 세션에 등록된 것만. 검토 Agent 는 `code.review {repository_id}`, 담당 Agent 는 `code.fix {repository_id}` 와
   로컬 등록이 보고한 검증 프로필 `fix_verification_profile_id` 가 있어야 한다. 프로필은 ID 일 뿐 명령이 아니다.
+  판단 Agent(phase 19)는 `code.triage {repository_id}` 와 맡기기 정책 `run`(ADR-0025 결정 3 — 자동 매칭하지 않는다).
 - 설정 변경은 `config_revision` 을 올릴 뿐 이미 만든 Task·Execution 입력을 바꾸지 않는다. GitHub 호출은 하지 않는다(수집은 step 7).
 - phase 11(ADR-0017): `intake: all_open` 소스는 범위·세 ID 가 비어도 된다(None 은 자동 매칭 몫이라 검사하지 않는다).
   `start_at` 생략은 서버 수신 시각, `all_open` 의 `trigger_label` 생략은 `runloom`. `installation_id` 는 본문으로 받지 않고
@@ -62,6 +63,7 @@ class SourceSettingsRequest(_Body):
     max_rework_rounds: int = 1  # 0~3 범위는 GitHubSourceConfig 가 검사한다
     trigger_label: NonEmptyStr | None = None  # 생략하면 all_open 은 DEFAULT_TRIGGER_LABEL, 명시한 null 은 그대로
     default_fix_agent_id: NonEmptyStr | None = None
+    triage_agent_id: NonEmptyStr | None = None  # 판단 Agent(phase 19) — 비우면 자동 판단 안 함
     enabled: bool = True
 
 
@@ -174,6 +176,13 @@ def _source_problems(
         ))
     problem = _agent_problem(conn, session_id, body.default_fix_agent_id, "code.fix", repository_id,
                              "default_fix_agent_id")
+    if problem is not None:
+        problems.append(problem)
+    problem = _agent_problem(conn, session_id, body.triage_agent_id, "code.triage", repository_id, "triage_agent_id")
+    if problem is None and body.triage_agent_id is not None \
+            and repo.get_agent(conn, body.triage_agent_id)["delegation_policy"] != "run":
+        problem = ApiError(422, "triage_agent_policy",
+                           "판단 에이전트는 맡기기 정책이 '바로 실행'인 에이전트만 고를 수 있습니다", field="triage_agent_id")
     if problem is not None:
         problems.append(problem)
     return problems
