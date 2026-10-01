@@ -79,6 +79,10 @@ class StaleRequest(AdapterError):
         self.current_revision = current_revision
 
 
+class TriageRunning(AdapterError):
+    """그 업무에 이미 도는(`running`) 판단이 있다 — 업무마다 하나(`ux_triage_logs_running`, phase 19)."""
+
+
 class StaleConfig(AdapterError):
     """소스 설정의 저장된 `config_revision` 이 `expected_revision` 과 다르다 (409 `stale_config`)."""
 

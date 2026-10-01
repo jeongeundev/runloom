@@ -875,7 +875,8 @@ def work_panel_context(
     if work["status"] == "내 차례":
         recipients = [names[m] for m in repo.turn_recipients_of(conn, work_item_id)]
     closed = work["status"] in TERMINAL_WORK_STATUSES
-    running = any(repo.active_execution(conn, stage["task_id"]) is not None for stage in stages)
+    running = any(repo.active_execution(conn, stage["task_id"]) is not None and not repo.is_triage_task(conn, stage["task_id"])
+                  for stage in stages)  # 판단 단계의 실행은 세지 않는다 (phase 19)
     direct = None
     if work["direct_member_id"] is not None:
         direct = {"member_name": names.get(work["direct_member_id"], work["direct_member_id"]),

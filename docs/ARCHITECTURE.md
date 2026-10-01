@@ -2259,6 +2259,8 @@ ORDER BY w.created_at, w.key_number
 
 `runner_idle` = `connectors.current_execution_id IS NULL AND NOT EXISTS (SELECT 1 FROM executions WHERE assigned_connector_id = ? AND released_at IS NULL AND status IN ('queued', 'accepted', 'running'))`.
 
+구현(step 5, 2026-10-01): 위 그대로에 다음을 더하거나 바꿨다. ① `GitHubSourceConfig.triage_agent_id: NonEmptyStr | None = None`(`contracts/github.py`, CONTRACT 13.6 예시 둘에 `null`) — 저장·검증(`SourceSettingsRequest`)은 step 8. ② 맡길 단계 규칙은 `repo.open_stage(conn, work_item_id)` 한 곳(`work_actions.open_stage` 는 그것을 부른다 — `triage_runs` 가 `work_actions` 를 import 하지 않게). 판단 단계가 아닌 조건은 `repo._NOT_TRIAGE_TASK`(종류 행이 없는 옛 단계도 판단 아님). ③ `build_candidates(conn, work, route, *, now, settings)` — 후보 Agent 의 켜짐(`views.agent_online`)에 시각·설정이 필요하다. 지금 종류의 요구 능력은 열린 단계의 것이되 소스가 저장소를 자동 매칭하면(`workflow_repository_id` None) 매칭 저장소로 scope 를 바꾼다(준비 판정 `_match_facts` 와 같다). ④ `start_triage` 는 트랜잭션 안에서 `running` 행을 먼저 보고 `adapters.errors.TriageRunning` 을 올린다(`BEGIN IMMEDIATE` 라 경합 없음 — 부분 UNIQUE 인덱스는 마지막 방어), `request_triage` 가 `TriageStart(False, None, "판단 중")` 으로 바꾼다. 실행 `start_key` 는 `start_triage` 안에서 `request_start_key(uuid4().hex)`. 판단 요청의 `branch_seq` 는 계약 기본값 1(`work_key` 없음). ⑤ 판단 종류 이름은 등록부에서 `is_triage_kind` 로 찾은 봉투의 `kind`(러너 `supported_kinds` 검사도 그 이름) — 문자열 `triage` 분기 없음. ⑥ `list_metric_facts` 는 판단 단계의 Task·실행·`task_events` 를 뺀다. ⑦ 사용량 한도 쉼 `_triage_paused_until` 은 워커가 읽기만 한다 — 채우는 것은 step 6 `_judge_triage`.
+
 ### 경로 (step 7·8)
 
 | 경로 | 권한 | 폼 | 동작 | 오류 |

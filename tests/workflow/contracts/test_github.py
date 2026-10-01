@@ -185,6 +185,13 @@ def test_all_open_accepts_empty_scope_and_undecided_ids():
         "billing", "agent-codex-mac", None)
 
 
+def test_triage_agent_is_optional_and_defaults_to_none():
+    """판단 Agent 칸(phase 19, ADR-0025 결정 3) — 옛 config_json 에는 없고, 비우면 자동 판단하지 않는다."""
+    assert GitHubSourceConfig.model_validate(_all_open()).triage_agent_id is None
+    assert GitHubSourceConfig.model_validate_json(json.dumps(PHASE8_CONFIG)).triage_agent_id is None
+    assert GitHubSourceConfig.model_validate(_all_open(triage_agent_id="agt-1a2b3c4d")).triage_agent_id == "agt-1a2b3c4d"
+
+
 def test_filtered_keeps_scope_and_id_requirements():
     with pytest.raises(ValidationError):
         GitHubSourceConfig.model_validate(_config(intake="filtered", label_filter=[], selected_issue_numbers=[]))
@@ -205,6 +212,7 @@ def test_filtered_keeps_scope_and_id_requirements():
         {"trigger_label": ""},
         {"trigger_label": 1},
         {"default_fix_agent_id": ""},
+        {"triage_agent_id": ""},
         {"installation_id": 0},
         {"installation_id": "12345678"},
         {"workflow_repository_id": ""},

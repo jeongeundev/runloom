@@ -128,11 +128,8 @@ def start_stage(conn: Connection, store: Any, settings: Settings, task: Row, *, 
 
 
 def open_stage(conn: Connection, work_item_id: str) -> Row | None:
-    """맡길 단계 = 업무의 마감 전 단계 중 가장 최근(`created_at`, `rowid` 순 마지막)."""
-    return conn.execute(
-        "SELECT * FROM tasks WHERE work_item_id = ? AND finished_at IS NULL ORDER BY created_at DESC, rowid DESC"
-        " LIMIT 1", (work_item_id,)
-    ).fetchone()
+    """맡길 단계 = 업무의 마감 전 단계 중 가장 최근 — 판단 단계는 맡길 단계가 아니다(`repo.open_stage`, phase 19)."""
+    return repo.open_stage(conn, work_item_id)
 
 
 def _accepts(stage: Row, pool: list[Candidate], agent_id: str) -> bool:
@@ -160,7 +157,8 @@ def _own_open_work(conn: Connection, session_id: str, work_item_id: str) -> Row:
 
 
 def _running(conn: Connection, work_item_id: str) -> bool:
-    return any(repo.active_execution(conn, t["task_id"]) is not None
+    """에이전트 실행 중 — 판단 단계의 실행은 세지 않는다(판단 중에도 담당을 정할 수 있다, phase 19)."""
+    return any(repo.active_execution(conn, t["task_id"]) is not None and not repo.is_triage_task(conn, t["task_id"])
                for t in repo.list_work_item_tasks(conn, work_item_id))
 
 

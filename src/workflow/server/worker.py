@@ -106,7 +106,17 @@ from workflow.domain.task_followup import FollowupContext, FollowupDecision, Fol
 from workflow.domain.task_readiness import TaskReadiness
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_status import STAGE_FAILED
-from workflow.server import github_delivery, github_sync, jira_delivery, jira_sync, owner_approval, stage_runs, task_cycle, views
+from workflow.server import (
+    github_delivery,
+    github_sync,
+    jira_delivery,
+    jira_sync,
+    owner_approval,
+    stage_runs,
+    task_cycle,
+    triage_runs,
+    views,
+)
 from workflow.server.github_clients import SourceClients
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
@@ -127,6 +137,8 @@ PR_BACKOFF_SECONDS = 30
 # 알림 웹훅 재시도 (ADR-0018 결정 5): callback 과 같은 30·2^(n-1) 초(429 면 retry_after 와 큰 쪽), 5회 실패 후 포기
 NOTIFY_MAX_ATTEMPTS = 5
 NOTIFY_BACKOFF_SECONDS = 30
+# 판단 실행이 사용량 한도(`usage_limit`)로 실패하면 그 Agent 의 자동 판단을 쉬는 시간 (phase 19)
+TRIAGE_USAGE_PAUSE_SECONDS = 3600
 
 
 @dataclass
@@ -163,6 +175,7 @@ class TickReport:
     notifications_sent: int = 0  # 알림 웹훅 2xx
     notifications_failed: int = 0  # 알림 전송 실패(재시도 대기·포기) — 업무 상태와 따로
     work_statuses_changed: int = 0  # tick 끝 재계산에서 바뀐 업무 상태(단계 쓰기와 함께 바뀐 것은 세지 않음)
+    triage_started: int = 0  # 자동으로 시작한 판단(워크스페이스마다 tick 당 최대 1건)
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -367,6 +380,8 @@ class Worker:
         # 알림 웹훅(ADR-0018 결정 5). URL 은 비밀 파일에서 그때그때 읽는다 — 없으면 쌓지도 보내지도 않는다
         self._secrets = secrets
         self._notifier = notifier
+        # 사용량 한도로 판단이 실패한 Agent → 자동 판단을 다시 걸 수 있는 시각(메모리 — 재시작하면 풀린다, phase 19)
+        self._triage_paused_until: dict[str, str] = {}
 
     def tick(self) -> TickReport:
         """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다.
@@ -384,6 +399,7 @@ class Worker:
             self._advance_cycle(conn, report)
             self._spawn_successors(conn, report)
             self._start_waiting_stages(conn, report)
+            self._triage_new_work(conn, report)
             self._reflect_failures(conn, report)
             self._deliver_callbacks(conn, report)
             self._deliver_pull_requests(conn, report)
@@ -1278,6 +1294,31 @@ class Worker:
                     owner_approval.notify_offline(conn, task, selection.selected_agent_id, now=now,
                                                   settings=self._settings, secrets=self._secrets)
             self._refresh_task(conn, task_id)
+
+    # --- 판단 (phase 19, ADR-0025) ---------------------------------------------------------
+
+    def _triage_new_work(self, conn: Connection, report: TickReport) -> None:
+        """담당 없는 새 GitHub·Jira 업무에 판단을 자동으로 건다 — 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건),
+        판단 Agent 의 러너가 비었을 때만, 사용량 한도로 쉬는 Agent 는 건너뛴다. 오래된 업무부터. 수정·검토 착수
+        (`_start_waiting_stages`) 뒤에 돌아 그 둘이 러너를 먼저 차지한다."""
+        now = self._clock()
+        for (session_id,) in conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall():
+            if repo.has_running_triage(conn, session_id):
+                continue
+            for work in repo.auto_triage_works(conn, session_id):
+                route = triage_runs.triage_route(conn, work, now=now, settings=self._settings)
+                if route.reason is not None:
+                    continue
+                paused = self._triage_paused_until.get(route.agent_id)
+                if paused is not None and _parse(paused) > _parse(now):
+                    continue
+                if not repo.runner_idle(conn, repo.get_agent(conn, route.agent_id)["connector_id"]):
+                    continue
+                started = triage_runs.request_triage(conn, self._settings, session_id=session_id,
+                                                     work_item_id=work["work_item_id"], trigger="auto",
+                                                     member_id=None, now=now)
+                report.triage_started += int(started.started)
+                break
 
     # --- 9. 실패 반영 -------------------------------------------------------------------
 

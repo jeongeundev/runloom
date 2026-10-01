@@ -899,13 +899,14 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
   "intake": "filtered",
   "trigger_label": null,
   "default_fix_agent_id": null,
+  "triage_agent_id": null,
   "installation_id": null,
   "enabled": true,
   "config_revision": 3
 }
 ```
 
-phase 11(ADR-0017)의 새 칸 `intake`·`trigger_label`·`default_fix_agent_id`·`installation_id` 는 모두 기본값이 있다(`"filtered"`·`null`·`null`·`null`) — 새 칸이 없는 phase 8 설정도 그대로 유효하다. `intake: filtered` 는 위와 같이 범위와 세 ID(`workflow_repository_id`·`fix_verification_profile_id`·`review_agent_id`)가 필수다. `intake: all_open` 은 열린 이슈 전부를 가져오고 실행은 지시한 것만 한다 — 범위는 비어도 되고, `null` 인 ID 는 자동 매칭이 정한다. `trigger_label` 이 붙은 이슈는 지시된 것으로 본다(API 로 만든 `all_open` 소스의 기본 `"runloom"`). `installation_id` 는 App 설치가 만든 소스에만 있고 API 본문으로 받지 않는다.
+phase 11(ADR-0017)의 새 칸 `intake`·`trigger_label`·`default_fix_agent_id`·`installation_id` 는 모두 기본값이 있다(`"filtered"`·`null`·`null`·`null`) — 새 칸이 없는 phase 8 설정도 그대로 유효하다. `intake: filtered` 는 위와 같이 범위와 세 ID(`workflow_repository_id`·`fix_verification_profile_id`·`review_agent_id`)가 필수다. `intake: all_open` 은 열린 이슈 전부를 가져오고 실행은 지시한 것만 한다 — 범위는 비어도 되고, `null` 인 ID 는 자동 매칭이 정한다. `trigger_label` 이 붙은 이슈는 지시된 것으로 본다(API 로 만든 `all_open` 소스의 기본 `"runloom"`). `installation_id` 는 App 설치가 만든 소스에만 있고 API 본문으로 받지 않는다. phase 19(ADR-0025)의 `triage_agent_id`(판단 Agent, 기본 `null` — 비우면 이 저장소의 업무는 자동 판단하지 않는다)도 기본값이 있다.
 
 ```json
 {
@@ -922,6 +923,7 @@ phase 11(ADR-0017)의 새 칸 `intake`·`trigger_label`·`default_fix_agent_id`�
   "intake": "all_open",
   "trigger_label": "runloom",
   "default_fix_agent_id": null,
+  "triage_agent_id": null,
   "installation_id": 51234567,
   "enabled": true,
   "config_revision": 1
