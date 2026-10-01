@@ -11,7 +11,9 @@ from fastapi.testclient import TestClient
 
 from workflow.domain.metrics import BASELINE_NOTE
 
-from .conftest import log_in_other_workspace
+from workflow.adapters import repo
+
+from .conftest import log_in_member, log_in_other_workspace, seed_execution, task_row
 from .test_github_api import login
 from .test_metrics_api import (  # noqa: F401 — fixture
     MERGE_7,
@@ -23,6 +25,7 @@ from .test_metrics_api import (  # noqa: F401 — fixture
     record_merge,
     seed_github_bundle,
     settings,
+    triaged,
 )
 
 CAUSAL_NOTE = "관측값이며 인과 효과로 단정하지 않는다"
@@ -193,3 +196,173 @@ def test_page_has_no_secrets_or_paths(op, fake, settings):
     text = page(op, {"group_by": "folder_commit"})
     for secret in (TOKEN, settings.operator_token, settings.session_secret, str(settings.db_path.parent)):
         assert secret not in text
+
+
+# --- 탭 3개 (phase 20 step 7, ARCHITECTURE "모니터링 — phase 20" 경로·화면 문구) ------------------------------------
+
+
+def tabs(text: str) -> dict[str, str]:
+    """탭 머리 — data-tab → 링크 원문."""
+    nav = text.split("data-monitor-tabs", 1)[1].split("</nav>", 1)[0]
+    return {key: link for link, key in re.findall(r'(<a href="[^"]*" data-tab="([^"]+)"[^>]*>[^<]*</a>)', nav)}
+
+
+def named_row(text: str, name: str) -> str:
+    """이름 칸 뒤에 표시(비활성·소유자)가 붙는 행."""
+    match = re.search(rf"<tr[^>]*>\s*<th[^>]*>{re.escape(name)}.*?</tr>", text, re.S)
+    assert match, name
+    return match.group(0)
+
+
+def body(text: str) -> str:
+    return text.split("data-tab-body=", 1)[1]
+
+
+def test_three_tabs_render_with_the_active_head_and_keep_the_period(op):
+    params = {"from": "2026-09-01T00:00:00Z", "group_by": "config_revision"}
+    for tab in ("before_after", "triage", "assignees"):
+        text = page(op, {**params, "tab": tab})
+        heads = tabs(text)
+        assert list(heads) == ["before_after", "triage", "assignees"]
+        assert [k for k, a in heads.items() if 'class="active"' in a] == [tab]
+        assert ">전후</a>" in heads["before_after"] and ">판단</a>" in heads["triage"]
+        assert ">담당자별</a>" in heads["assignees"]
+        for key, link in heads.items():  # 링크는 기간·그룹을 유지한다
+            assert f"tab={key}" in link and "from=2026-09-01T00%3A00%3A00Z" in link
+            assert "group_by=config_revision" in link
+        assert f'data-tab-body="{tab}"' in text
+        assert f'<input type="hidden" name="tab" value="{tab}">' in text
+        assert CAUSAL_NOTE in text
+    assert 'data-tab-body="before_after"' in page(op)  # 기본 = 전후
+    assert 'id="compare"' not in page(op, {"tab": "triage"})  # 전후 표는 전후 탭에만
+
+
+def test_invalid_tab_is_422(op):
+    response = op.get("/monitor", params={"tab": "charts"})
+    assert response.status_code == 422
+    assert "text/html" in response.headers["content-type"]
+    assert "탭은 전후·판단·담당자별 중 하나입니다." in response.text
+
+
+def test_member_role_opens_every_tab(app, triaged):
+    member = log_in_member(TestClient(app))
+    for tab in ("before_after", "triage", "assignees"):
+        assert member.get("/monitor", params={"tab": tab}).status_code == 200, tab
+
+
+# --- 전후 탭 — 설정 번호 머리 --------------------------------------------------------------------------
+
+
+def test_config_revision_heads_show_the_change_or_no_record(triaged):
+    op, _ = triaged
+    text = page(op, {"group_by": "config_revision"})
+    heads = re.findall(r"<div class=\"small\" data-config-head>([^<]*)</div>", text)
+    assert "설정 1 — 기록 없음" in heads  # v16 전 번호
+    assert "설정 2 — 저장소 연결 추가 acme/billing · 시스템 · 9/1" in heads  # 멤버 없는 경로 = 시스템
+    assert not any(h.startswith("설정 3") for h in heads)  # 그 번호의 업무가 없으면 열도 없다
+    assert "data-config-head" not in page(op)  # 나누지 않으면 머리 줄 없음
+    assert "data-config-head" not in page(op, {"group_by": "folder_commit"})
+
+
+def test_config_revision_head_names_the_member_escaped(triaged, conn):
+    op, admin = triaged
+    conn.execute("UPDATE members SET display_name = ? WHERE member_id = ?", ("<script>김</script>", admin))
+    session_id = conn.execute("SELECT session_id FROM members WHERE member_id = ?", (admin,)).fetchone()[0]
+    repo.insert_work_item_task(conn, {**task_row("task-3"), "session_id": session_id}, "2026-10-02T15:30:00Z")
+    seed_execution(conn, "exec-3", "task-3")  # 설정 번호 그룹은 실행 때의 번호(3)
+    text = page(op, {"group_by": "config_revision"})
+    assert "설정 3 — 자동 시작 변경 bug_fix 끔 · 기준값 0.90 · &lt;script&gt;김&lt;/script&gt; · 9/22" in text
+    assert "<script>김" not in text
+
+
+# --- 판단 탭 ------------------------------------------------------------------------------------------
+
+
+def test_triage_tab_matches_metrics_json(triaged):
+    op, _ = triaged
+    overall = op.get("/metrics.json").json()["triage"]["overall"]
+    text = body(page(op, {"tab": "triage"}))
+    summary = re.search(r"<p[^>]*data-triage-summary>([^<]*)</p>", text).group(1)
+    merged = overall["merged"]
+    assert summary == (
+        f"제안 {overall['proposed']} · 사람 일치 {overall['agreement']['numerator']}/{overall['agreement']['denominator']}"
+        f" · 병합 완료 {merged['numerator']}/{merged['denominator']}(진행 중 {merged['incomplete']})"
+        f" · 재작업 없이 병합 {overall['merged_without_rework']['numerator']}/{merged['denominator']}"
+    )
+    assert summary == "제안 1 · 사람 일치 1/1 · 병합 완료 0/0(진행 중 1) · 재작업 없이 병합 0/0"
+
+    kind = row(text, "bug_fix")
+    assert "100% (1/1)" in kind  # 사람 일치
+    assert "제안대로 1 · 다르게 0 · 무시 0 · 자동 시작 0 · 미처리 0" in kind
+    assert "맡겨도 됨 1 · 확인 필요 0 · 부적합 0" in kind
+    assert "2분 0초" in kind and "$0.1" in kind
+    unknown_kind = row(text, "모름")  # 실패 판단은 제안 종류가 없다
+    assert "timeout 1" in unknown_kind
+    criteria = row(text, "v1")
+    assert "n 1" in criteria
+    bucket = row(text, "[0.9, 1.0]")
+    assert "100% (1/1)" in bucket and "진행 중 1" in bucket
+    low = row(text, "[0, 0.5)")
+    assert "—" in low and "0%" not in low  # 분모 0 은 0% 가 아니다
+    assert "실패 코드 timeout 1" in text
+    assert "판단 뒤 내용이 바뀐 업무 0" in text
+    assert "비용은 CLI 계산값이며 구독 청구액이 아닙니다." in text
+    assert "아직 판단 기록이 없습니다." not in text
+
+
+def test_triage_tab_follows_the_period(triaged):
+    op, _ = triaged
+    text = body(page(op, {"tab": "triage", "from": "2026-09-21T00:00:00Z"}))
+    assert "제안 0 · 사람 일치 0/0" in text
+
+
+def test_triage_tab_empty_state_links_connect_only_for_managers(app, op):
+    text = body(page(op, {"tab": "triage"}))  # operator 픽스처 — 판단 기록 없음
+    assert "아직 판단 기록이 없습니다." in text
+    assert '<a href="/connect?tab=triage">연결 › 판단</a>' in text
+    member = log_in_member(TestClient(app))
+    member_text = body(page(member, {"tab": "triage"}))
+    assert "아직 판단 기록이 없습니다." in member_text and "연결 › 판단" in member_text
+    assert 'href="/connect?tab=triage"' not in member_text
+
+
+# --- 담당자별 탭 -----------------------------------------------------------------------------------------
+
+
+def test_assignees_tab_lists_members_and_agents_with_escaped_names(triaged, conn):
+    op, admin = triaged
+    conn.execute("UPDATE members SET display_name = ? WHERE member_id = ?", ("<script>관</script>", admin))
+    conn.execute("UPDATE agents SET name = ? WHERE agent_id = ?", ("<b>코덱스</b>", "agent-codex-mac"))
+    text = body(page(op, {"tab": "assignees"}))
+    assert "<script>관" not in text and "<b>코덱스" not in text
+    member = named_row(text, "&lt;script&gt;관&lt;/script&gt;")
+    assert "(비활성)" not in member
+    agent = named_row(text, "&lt;b&gt;코덱스&lt;/b&gt;")
+    assert "관리자 관리" in agent  # 러너가 없는 Agent — 기존 소유자 표시
+    assert "50% (1/2)" in agent and "timeout 1" in agent  # 실패율·실패 코드(판단 실행 제외)
+    assert "<td>2</td>" in agent  # 진행 중 2
+    assert "$0.5" in agent
+    assert "담당 없는 진행 중 업무 0" in text
+    assert "응답자를 모르는 응답" not in text
+    assert "아직 맡은 업무가 없습니다." not in text
+
+
+def test_assignees_tab_marks_inactive_members_with_records(triaged, conn):
+    op, admin = triaged
+    session_id = conn.execute("SELECT session_id FROM members WHERE member_id = ?", (admin,)).fetchone()[0]
+    work = conn.execute("SELECT work_item_id FROM tasks WHERE task_id = 'task-1'").fetchone()[0]
+    conn.execute("UPDATE work_items SET assignee_type = 'member' WHERE work_item_id = ?", (work,))
+    log_in_member(TestClient(op.app), display_name="떠난 멤버")
+    [gone] = [m["member_id"] for m in repo.list_members(conn, session_id) if m["display_name"] == "떠난 멤버"]
+    conn.execute("UPDATE work_items SET assignee_id = ? WHERE work_item_id = ?", (gone, work))
+    conn.execute("UPDATE members SET disabled_at = '2026-09-30T00:00:00Z' WHERE member_id = ?", (gone,))
+    text = body(page(op, {"tab": "assignees"}))
+    assert "(비활성)" in named_row(text, "떠난 멤버")
+
+
+def test_assignees_tab_empty_state(app):
+    client = TestClient(app)
+    login(client)
+    text = body(page(client, {"tab": "assignees"}))
+    assert "아직 맡은 업무가 없습니다." in text
+    assert "담당 없는 진행 중 업무 0" in text

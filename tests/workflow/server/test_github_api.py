@@ -465,3 +465,19 @@ def test_token_value_never_leaves_the_server(op, settings):
         assert "github_pat_" not in response.text
     db_bytes = b"".join(p.read_bytes() for p in settings.db_path.parent.glob("central.sqlite*"))
     assert TOKEN.encode() not in db_bytes
+
+
+def test_source_create_update_stop_record_the_logged_in_member(op, operator, conn):
+    """phase 20 — 소스 생성·변경·중지마다 설정 변경 기록 한 행. 변경은 바뀐 칸 이름만."""
+    session_id = operator[1]
+    admin = conn.execute("SELECT member_id FROM members WHERE session_id = ?", (session_id,)).fetchone()[0]
+    source = create(op)
+    url = f"/github/sources/{source['source_id']}"
+    assert op.put(url, json={**body(label_filter=["p1"]), "expected_revision": 1}).status_code == 200
+    assert op.post(f"{url}/stop").status_code == 200
+    rows = repo.list_config_changes(conn, session_id)
+    assert [(r["area"], r["action"], r["subject"], r["by_member_id"]) for r in rows] == [
+        ("source", "add", "acme/billing", admin),
+        ("source", "change", "acme/billing · label_filter", admin),
+        ("source", "change", "acme/billing · enabled", admin),
+    ]

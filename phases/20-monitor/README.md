@@ -1,6 +1,6 @@
 # Phase 20 — 모니터링: 판단 품질·담당자별·설정 버전 비교
 
-작성일: 2026-10-02. 상태: 계획. **`service`(19-triage 병합 `df82a46`, 스키마 v15)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 4·6절 4·11·13절, [ADR-0015](../../docs/adr/0015-measurement-events-and-baseline.md)(측정 원칙), [ADR-0021](../../docs/adr/0021-team-accounts-and-roles.md)(역할), [ADR-0025](../../docs/adr/0025-triage.md)(판단 — 결정 9·13 이 "실제 결과 집계·확신도 보정은 20-monitor" 로 넘김).
+작성일: 2026-10-02. 상태: 완료(2026-10-02, step 0~9, `feat-20-monitor` — `service` 병합·셀프호스트 v16 재설치는 사용자 지시 뒤). **`service`(19-triage 병합 `df82a46`, 스키마 v15)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 4·6절 4·11·13절, [ADR-0015](../../docs/adr/0015-measurement-events-and-baseline.md)(측정 원칙), [ADR-0021](../../docs/adr/0021-team-accounts-and-roles.md)(역할), [ADR-0025](../../docs/adr/0025-triage.md)(판단 — 결정 9·13 이 "실제 결과 집계·확신도 보정은 20-monitor" 로 넘김).
 
 ## 왜
 
@@ -30,7 +30,7 @@
    - 담당 없음: 끝나지 않은 업무 n
    - 판단 단계 실행은 담당자 지표·기존 지표에서 뺀다(19 그대로) — 판단 탭에서만
 5. **원칙(phase 9 그대로)**: 시스템이 남긴 기록으로만, 모든 값에 n, 모름은 0 이 아니라 "모름", 인과 단정 문구 금지.
-6. **`config_changes`**(v16): `id`·`session_id`·`revision`(바뀐 뒤 번호)·`area`(종류·후속 규칙·소스·매핑 표·판단 기준·자동 시작)·`action`(추가·삭제·변경)·`subject`(표시용 이름 — 값·본문·비밀 없음)·`by_member_id`(NULL 허용 — 마이그레이션·시드·워커)·`occurred_at`. 추가 전용. 기록 지점 = `bump_config_revision` 을 부르는 repo 함수 전부(같은 트랜잭션, 번호 한 번 = 한 행). 설정 번호를 올리지 않는 저장(예: Jira 프로젝트 설정)은 기록하지 않는다.
+6. **`config_changes`**(v16): `id`·`session_id`·`revision`(바뀐 뒤 번호)·`area`(종류·후속 규칙·소스·매핑 표·판단 기준·자동 시작)·`action`(추가·삭제·변경)·`subject`(표시용 이름 — 값·본문·비밀 없음)·`by_member_id`(NULL 허용 — 마이그레이션·시드·워커)·`occurred_at`. 추가 전용. 기록 지점 = `bump_config_revision` 을 부르는 repo 함수 전부(같은 트랜잭션, 번호 한 번 = 한 행). 설정 번호를 올리지 않는 저장(예: Jira 프로젝트 설정)은 기록하지 않는다. (step 0: ADR-0026 결정 7 로 바꿈)
 7. **API**: `/metrics.json` 에 `triage`·`assignees`·`config_changes` 키 추가, `/metrics.csv` 는 열 그대로 새 행만. 기존 키·열은 바꾸지 않는다.
 8. **자동 시작 칸 미리보기**: 저장된 기준값 기준 서버 렌더 한 줄(JS 없음). 자동 시작 동작은 바꾸지 않는다.
 

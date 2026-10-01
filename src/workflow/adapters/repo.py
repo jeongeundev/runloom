@@ -11,6 +11,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -90,6 +91,14 @@ from workflow.domain.execution_policy import TRIAGE_OUTPUT_KIND, is_triage_kind
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain import jira_intake
 from workflow.domain.jira_intake import initial_cursor_ms
+from workflow.domain.assignee_metrics import (
+    AgentLabel,
+    AgentRunFact,
+    AssigneeFacts,
+    AssigneeWorkFact,
+    MemberLabel,
+    ResponseFact,
+)
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
@@ -106,6 +115,7 @@ from workflow.domain.triage import (
     triage_reason,
 )
 from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
+from workflow.domain.triage_metrics import TriageLogFact, WorkOutcomeFact
 from workflow.domain.work_keys import short_source_key
 from workflow.domain.work_list import WorkRow, next_action
 from workflow.domain.work_status import (
@@ -239,7 +249,8 @@ def list_field_mappings(
             for r in rows]
 
 
-def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[MappingRow], *, now: str) -> int:
+def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[MappingRow], *, now: str,
+                           member_id: str | None = None) -> int:
     """워크스페이스 매핑 행 전부를 `rows` 로 바꾸고 설정 번호 +1(새 번호). `kind` 값은 등록된 종류, `priority` 값은
     high·normal·low, 같은 (원본 종류, 필드, 원본 값 — 대소문자 무시)은 한 번만 — 어기면 ValueError 이고 아무것도 바꾸지
     않는다. 이미 만든 업무는 바꾸지 않는다."""
@@ -266,7 +277,10 @@ def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[Map
                 (f"map-{secrets.token_hex(4)}", session_id, row.source_type, row.field, row.source_value,
                  row.runloom_value, row.position, now),
             )
-        return bump_config_revision(conn, session_id)
+        counts = Counter(row.source_type for row in rows)
+        subject = " · ".join(f"{t} {counts[t]}행" for t in sorted(counts)) or "0행"
+        return bump_config_revision(conn, session_id, area="mapping", action="change", subject=subject,
+                                    member_id=member_id, now=now)
 
 
 def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = True) -> WorkItemFacts:
@@ -1129,13 +1143,51 @@ def get_config_revision(conn: Connection, session_id: str) -> int:
     return row["config_revision"]
 
 
-def bump_config_revision(conn: Connection, session_id: str) -> int:
-    """설정 번호 +1. 자체 BEGIN 이 없다 — 종류·규칙·GitHub 소스를 저장하는 호출자 트랜잭션 안에서만 부른다."""
+def bump_config_revision(conn: Connection, session_id: str, *, area: str, action: str, subject: str,
+                         member_id: str | None, now: str) -> int:
+    """설정 번호 +1 과 설정 변경 기록 한 행(phase 20). 자체 BEGIN 이 없다 — 종류·규칙·GitHub 소스를 저장하는 호출자
+    트랜잭션 안에서만 부른다."""
     cur = conn.execute(
         "UPDATE sessions SET config_revision = config_revision + 1 WHERE session_id = ?", (session_id,)
     )
     _require_rowcount(cur, f"session {session_id}")
-    return get_config_revision(conn, session_id)
+    revision = get_config_revision(conn, session_id)
+    record_config_change(conn, session_id, revision=revision, area=area, action=action, subject=subject,
+                         member_id=member_id, now=now)
+    return revision
+
+
+def record_config_change(
+    conn: Connection, session_id: str, *, revision: int, area: str, action: str, subject: str,
+    member_id: str | None, now: str,
+) -> None:
+    """설정 변경 기록 한 행(추가 전용). 자체 BEGIN 이 없다 — 번호를 올린 호출자 트랜잭션 안에서만 부른다.
+    `subject` 는 표시용 이름이고 200자를 넘으면 199자 + `…`."""
+    if len(subject) > 200:
+        subject = subject[:199] + "…"
+    conn.execute(
+        "INSERT INTO config_changes (session_id, revision, area, action, subject, by_member_id, occurred_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (session_id, revision, area, action, subject, member_id, now),
+    )
+
+
+def list_config_changes(conn: Connection, session_id: str) -> list[Row]:
+    """세션의 설정 변경 기록 — `revision`, `id` 순. 칸 + `by_member_name`(멤버 표시 이름, 없으면 NULL)."""
+    return conn.execute(
+        "SELECT c.id, c.session_id, c.revision, c.area, c.action, c.subject, c.by_member_id, c.occurred_at,"
+        " m.display_name AS by_member_name FROM config_changes c LEFT JOIN members m ON m.member_id = c.by_member_id"
+        " WHERE c.session_id = ? ORDER BY c.revision, c.id",
+        (session_id,),
+    ).fetchall()
+
+
+def config_changes_by_revision(conn: Connection, session_id: str) -> dict[int, list[Row]]:
+    """설정 번호 → 그 번호의 변경 기록(`list_config_changes` 를 번호로 묶음, 번호 순)."""
+    grouped: dict[int, list[Row]] = {}
+    for row in list_config_changes(conn, session_id):
+        grouped.setdefault(row["revision"], []).append(row)
+    return grouped
 
 
 def mark_operator(conn: Connection, session_id: str) -> None:
@@ -1403,16 +1455,17 @@ def get_kind(conn: Connection, session_id: str, kind: str) -> KindSpec | None:
     return KindSpec.model_validate_json(row["spec_json"]) if row else None
 
 
-def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str) -> None:
+def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str, *, member_id: str | None = None) -> None:
     """같은 kind 가 있으면 DuplicateKind. `validate_*` 검증은 서버 몫 — 여기서는 저장만 한다."""
     with _tx(conn):
         if get_kind(conn, session_id, spec.kind) is not None:
             raise DuplicateKind(spec.kind)
         _insert_kind_row(conn, session_id, spec, now)
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="kind", action="add", subject=spec.kind, member_id=member_id,
+                             now=now)
 
 
-def delete_kind(conn: Connection, session_id: str, kind: str) -> None:
+def delete_kind(conn: Connection, session_id: str, kind: str, *, now: str, member_id: str | None = None) -> None:
     """내장 → KindProtected. Task 가 쓰거나 규칙이 참조 → KindInUse. 없으면 NotFound."""
     with _tx(conn):
         spec = get_kind(conn, session_id, kind)
@@ -1431,7 +1484,8 @@ def delete_kind(conn: Connection, session_id: str, kind: str) -> None:
         if used_by_task is not None or used_by_rule is not None:
             raise KindInUse(kind)
         conn.execute("DELETE FROM kinds WHERE session_id = ? AND kind = ?", (session_id, kind))
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="kind", action="delete", subject=kind, member_id=member_id,
+                             now=now)
 
 
 def list_rules(conn: Connection, session_id: str) -> list[tuple[str, SuccessorRule]]:
@@ -1455,7 +1509,8 @@ def get_rule(conn: Connection, session_id: str, from_kind: str, to_kind: str) ->
     return SuccessorRule.model_validate_json(row["rule_json"]) if row else None
 
 
-def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str) -> str:
+def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str, *,
+                member_id: str | None = None) -> str:
     """rule_id 를 돌려준다. 같은 (from_kind, to_kind) → DuplicateRule. 종류가 세션에 없으면 NotFound."""
     with _tx(conn):
         for kind in (rule.from_kind, rule.to_kind):
@@ -1464,18 +1519,21 @@ def insert_rule(conn: Connection, session_id: str, rule: SuccessorRule, now: str
         if get_rule(conn, session_id, rule.from_kind, rule.to_kind) is not None:
             raise DuplicateRule(f"{rule.from_kind} → {rule.to_kind}")
         rule_id = _insert_rule_row(conn, session_id, rule, now)
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="rule", action="add", subject=f"{rule.from_kind} → {rule.to_kind}",
+                             member_id=member_id, now=now)
         return rule_id
 
 
-def delete_rule(conn: Connection, session_id: str, rule_id: str) -> None:
+def delete_rule(conn: Connection, session_id: str, rule_id: str, *, now: str, member_id: str | None = None) -> None:
     """내장 규칙도 삭제할 수 있다 — 팀이 버그 수정 → 커밋 검토를 잇지 않을 수 있다."""
     with _tx(conn):
-        cur = conn.execute(
-            "DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id)
-        )
-        _require_rowcount(cur, f"rule {rule_id}")
-        bump_config_revision(conn, session_id)
+        row = _one(conn, "SELECT from_kind, to_kind FROM succession_rules WHERE session_id = ? AND rule_id = ?",
+                   (session_id, rule_id))
+        if row is None:
+            raise NotFound(f"rule {rule_id}")
+        conn.execute("DELETE FROM succession_rules WHERE session_id = ? AND rule_id = ?", (session_id, rule_id))
+        bump_config_revision(conn, session_id, area="rule", action="delete",
+                             subject=f"{row['from_kind']} → {row['to_kind']}", member_id=member_id, now=now)
 
 
 # --- 세션 등록 (phase 5: 심사자 세션이 카탈로그에서 고른 Agent) ---------------
@@ -2647,7 +2705,8 @@ def _source_row(conn: Connection, session_id: str, source_id: str) -> Row:
 
 
 def save_github_source(
-    conn: Connection, session_id: str, config: GitHubSourceConfig, now: str, *, expected_revision: int | None = None
+    conn: Connection, session_id: str, config: GitHubSourceConfig, now: str, *, expected_revision: int | None = None,
+    member_id: str | None = None,
 ) -> None:
     """저장 또는 교체. 수집 커서는 유지한다. 다른 세션의 source_id → NotFound, 같은 세션에 같은 저장소 → IntegrityError.
     `expected_revision` 을 주면 기존 소스만 갱신하고, 저장된 `config_revision` 이 다르면 같은 트랜잭션에서 StaleConfig.
@@ -2671,7 +2730,16 @@ def save_github_source(
             " config_json = excluded.config_json, updated_at = excluded.updated_at",
             (config.source_id, session_id, config.repository_full_name, config.model_dump_json(), now, now),
         )
-        bump_config_revision(conn, session_id)
+        subject = config.repository_full_name
+        if owner is not None:  # 바뀐 최상위 칸 이름만 — 값은 싣지 않는다
+            before = json.loads(owner["config_json"])
+            after = config.model_dump(mode="json")
+            fields = sorted(k for k in after.keys() | before.keys()
+                            if k != "config_revision" and before.get(k) != after.get(k))
+            if fields:
+                subject = f"{subject} · {', '.join(fields)}"
+        bump_config_revision(conn, session_id, area="source", action="add" if owner is None else "change",
+                             subject=subject, member_id=member_id, now=now)
 
 
 def get_github_source(conn: Connection, session_id: str, source_id: str) -> GitHubSourceConfig | None:
@@ -3250,6 +3318,105 @@ def list_metric_facts(conn: Connection, session_id: str, *, store: ArtifactStore
         )
     )
     return MetricFacts(tasks=tasks, executions=executions, events=events, human_requests=requests)
+
+
+def list_triage_facts(conn: Connection, session_id: str) -> tuple[list[TriageLogFact], list[WorkOutcomeFact]]:
+    """판단 품질 입력(phase 20, 계산 없음) — 세션의 판단 로그 전부(만든 순, 판단 실행의 상태·시작·끝·비용과 업무의 지금
+    revision)와 판단 로그가 있는 업무의 결과 사실(키 번호 순). 병합 = 판단 단계가 아닌 단계의 PR 또는 감지 PR 이
+    `merged`, 재작업 = 판단 단계가 아닌 실행 중 start_key `rework:`. 쿼리 두 번 — 업무 수와 무관하다."""
+    logs = [
+        TriageLogFact(
+            triage_id=r["triage_id"], work_item_id=r["work_item_id"], kind=r["proposed_kind"],
+            criteria_version=r["criteria_version"], trigger=r["trigger"], state=r["state"], proceed=r["proceed"],
+            confidence=r["confidence"], failed_code=r["failed_code"], handling=r["handling"],
+            created_at=r["created_at"], work_revision=r["work_revision"], work_revision_now=r["work_revision_now"],
+            execution_status=r["execution_status"], started_at=r["started_at"], finished_at=r["execution_finished_at"],
+            cost_usd=r["cost_usd"],
+        )
+        for r in conn.execute(
+            "SELECT l.*, w.revision AS work_revision_now, e.status AS execution_status, e.started_at,"
+            " e.finished_at AS execution_finished_at, e.cost_usd FROM triage_logs l"
+            " JOIN work_items w ON w.work_item_id = l.work_item_id JOIN executions e ON e.execution_id = l.execution_id"
+            " WHERE l.session_id = ? ORDER BY l.created_at, l.rowid",
+            (session_id,),
+        )
+    ]
+    outcomes = [
+        WorkOutcomeFact(work_item_id=r["work_item_id"], status=r["status"], closed_at=r["closed_at"],
+                        merged=bool(r["merged"]), rework_runs=r["rework_runs"])
+        for r in conn.execute(
+            "SELECT w.work_item_id, w.status, w.closed_at,"
+            " (EXISTS (SELECT 1 FROM task_pull_requests p JOIN tasks t ON t.task_id = p.task_id"
+            f"   WHERE t.work_item_id = w.work_item_id AND p.state = 'merged' AND {_NOT_TRIAGE_TASK})"
+            "  OR EXISTS (SELECT 1 FROM work_pull_requests wp WHERE wp.work_item_id = w.work_item_id"
+            "   AND wp.state = 'merged')) AS merged,"
+            " (SELECT COUNT(*) FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+            f"   WHERE t.work_item_id = w.work_item_id AND e.start_key LIKE 'rework:%' AND {_NOT_TRIAGE_TASK})"
+            "  AS rework_runs"
+            " FROM work_items w WHERE w.session_id = ?"
+            " AND EXISTS (SELECT 1 FROM triage_logs l WHERE l.work_item_id = w.work_item_id) ORDER BY w.key_number",
+            (session_id,),
+        )
+    ]
+    return logs, outcomes
+
+
+def list_assignee_facts(conn: Connection, session_id: str, *, store: ArtifactStore) -> AssigneeFacts:
+    """담당자별 입력(phase 20, 계산 없음) — 업무 전부(키 번호 순, 판단만 있는 업무 포함), 사람 응답, 실행, 멤버·에이전트
+    표시 이름. 판단 단계·그 실행·그 요청은 뺀다. `내 차례` 업무만 받는 사람(`turn_recipients_of` 와 같은 규칙)과 내 차례가
+    된 시각(`status_changed` 중 to = `내 차례`·from ≠ `내 차례` 인 가장 최근 행)을 싣는다. 검토 outcome 은
+    `list_metric_facts` 와 같이 산출물에서 읽는다(`store`). 쿼리 수는 업무 수와 무관하다."""
+    members = list_members(conn, session_id)
+    member_facts = [team.MemberFact(member_id=m["member_id"], role=m["role"], active=m["disabled_at"] is None)
+                    for m in members]
+    approvers = _approvers_by_work(conn, session_id, member_facts)
+    turn_since = {r["work_item_id"]: r["occurred_at"] for r in conn.execute(
+        "SELECT work_item_id, occurred_at FROM work_item_events WHERE session_id = ? AND type = 'status_changed'"
+        " AND json_extract(data_json, '$.to') = '내 차례' AND json_extract(data_json, '$.from') IS NOT '내 차례'"
+        " ORDER BY id",
+        (session_id,),
+    )}  # 뒤 행이 덮어 가장 최근이 남는다
+    works = []
+    for w in conn.execute("SELECT * FROM work_items WHERE session_id = ? ORDER BY key_number", (session_id,)):
+        turn = w["status"] == "내 차례"
+        works.append(AssigneeWorkFact(
+            work_item_id=w["work_item_id"], assignee_type=w["assignee_type"], assignee_id=w["assignee_id"],
+            status=w["status"], closed_at=w["closed_at"],
+            turn_since=turn_since.get(w["work_item_id"]) if turn else None,
+            recipients=_recipients(w, member_facts, approvers.get(w["work_item_id"])) if turn else (),
+        ))
+    responses = tuple(
+        ResponseFact(request_id=r["request_id"], member_id=r["member_id"], requested_at=r["requested_at"],
+                     responded_at=r["responded_at"])
+        for r in conn.execute(
+            "SELECT r.request_id, r.member_id, h.created_at AS requested_at, r.created_at AS responded_at"
+            " FROM human_responses r JOIN human_requests h ON h.request_id = r.request_id"
+            f" JOIN tasks t ON t.task_id = h.task_id WHERE t.session_id = ? AND {_NOT_TRIAGE_TASK}"
+            " ORDER BY r.created_at, r.rowid",
+            (session_id,),
+        )
+    )
+    runs = tuple(
+        AgentRunFact(
+            execution_id=r["execution_id"], agent_id=r["agent_id"], work_item_id=r["work_item_id"], kind=r["kind"],
+            status=r["status"], start_key=r["start_key"], created_at=r["created_at"], started_at=r["started_at"],
+            finished_at=r["finished_at"], failed_code=r["failed_code"], outcome=_execution_outcome(conn, store, r),
+            cost_usd=r["cost_usd"],
+        )
+        for r in conn.execute(
+            "SELECT e.*, t.work_item_id, (SELECT v.verdict_json FROM task_verdicts v"
+            "  WHERE v.execution_id = e.execution_id ORDER BY v.decided_at DESC, v.rowid DESC LIMIT 1) AS verdict_json"
+            f" FROM executions e JOIN tasks t ON t.task_id = e.task_id WHERE t.session_id = ? AND {_NOT_TRIAGE_TASK}"
+            " ORDER BY e.created_at, e.rowid",
+            (session_id,),
+        ).fetchall()
+    )
+    return AssigneeFacts(
+        works=tuple(works), responses=responses, runs=runs,
+        members=tuple(MemberLabel(member_id=m["member_id"], display_name=m["display_name"],
+                                  active=m["disabled_at"] is None) for m in members),
+        agents=tuple(AgentLabel(agent_id=a["agent_id"], name=a["name"]) for a in list_session_agents(conn, session_id)),
+    )
 
 
 def save_source_cursor(conn: Connection, session_id: str, source_id: str, cursor: str, now: str) -> None:
@@ -4357,7 +4524,8 @@ def save_triage_criteria(conn: Connection, session_id: str, body: str, *, expect
             " VALUES (?, ?, ?, ?, ?)",
             (session_id, version, body, member_id, now),
         )
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="triage_criteria", action="change", subject=f"v{version}",
+                             member_id=member_id, now=now)
         return version
 
 
@@ -4430,7 +4598,9 @@ def save_triage_autostart(conn: Connection, session_id: str, kind: str, *, enabl
             " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (session_id, kind, version, int(enabled), threshold, member_id, now),
         )
-        bump_config_revision(conn, session_id)
+        bump_config_revision(conn, session_id, area="triage_autostart", action="change",
+                             subject=f"{kind} {'켬' if enabled else '끔'} · 기준값 {threshold:.2f}",
+                             member_id=member_id, now=now)
         return version
 
 

@@ -2321,6 +2321,155 @@ repo(step 8): `save_triage_criteria(conn, session_id, body: str, *, expected_ver
 
 구현 메모(step 10, 2026-10-02): e2e 파일 이름은 `test_triage_cycle.py`(다른 순환 e2e 와 같은 꼴). 러너 도구는 PATH 앞 가짜 `claude` 하나 — `--json-schema` 의 모양(`proceed`·`findings`·그 밖)으로 판단·검토·수정을 고른다. 사용량 한도 쉼은 e2e 가 아니라 `tests/workflow/server/test_triage_judge.py`·`test_triage_dispatch.py` 가 지킨다(가짜 도구로 한도를 흉내 내면 같은 경로를 다시 볼 뿐이다). 옛 러너는 `connector.client.SUPPORTED_BUILTIN_KINDS` 를 phase 18 값으로 바꾼 진입점으로 띄운다. v14 사본 마이그레이션은 같은 파일의 `test_v14_copy_upgrades_to_v15_with_triage_seeds`(Jira 행 포함). 제품 결함은 나오지 않았고, phase 18 e2e 의 `SCHEMA_VERSION == 14` 리터럴만 15 로 고쳤다.
 
+## 모니터링 — phase 20
+
+[ADR-0026](adr/0026-monitor.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 20 README](../phases/20-monitor/README.md). step 0 설계(2026-10-02) — 아래 이름·표·경로·시그니처는 step 1~8 이 만든다(괄호의 숫자). **README 와 다르면 이 절이 기준이다.** "측정 — phase 9" 의 지표·API 는 이 절이 더한 부분만 바뀐다(기존 키·열·행 그대로).
+
+### 한 줄 요약
+
+`/monitor` 를 탭 셋(`전후`·`판단`·`담당자별`)으로 나눠, 판단 로그와 기존 업무·실행·응답 기록에서 판단 품질(사람 일치율·실제 결과·확신도 구간)과 사람·에이전트별 몫·대기를 매번 계산해 보이고, 설정 번호를 올릴 때마다 무엇을·누가 바꿨는지 추가 전용 표 `config_changes` 에 남겨 전후 탭의 설정 번호 머리에 붙인다. 연결 "판단" 탭 자동 시작 행에 그 기준값 이상 판단의 결과 한 줄. 스키마 v16(표 하나), 러너 변화 없음.
+
+### 흐름
+
+```
+[설정 저장 — 웹 경로 8곳] repo 함수(…, member_id=로그인 멤버, now) ─ 같은 트랜잭션 ─▶ bump_config_revision(…, area, action, subject, member_id, now)
+                                                                              ├─ sessions.config_revision + 1
+                                                                              └─ record_config_change → config_changes 한 행
+
+GET /monitor?tab=…&from&to ─┬─ before_after: metrics_api._report (그대로) + repo.config_changes_by_revision → 그룹 머리
+                            ├─ triage:       repo.list_triage_facts → triage_metrics.compute_triage_quality → views.triage_quality_context
+                            └─ assignees:    repo.list_assignee_facts → assignee_metrics.compute_assignee_metrics(now) → views.assignee_context
+GET /metrics.json · /metrics.csv ─ 같은 세 계산을 더한다(기존 키·행 뒤에)
+GET /connect?tab=triage ─ 자동 시작 행마다 triage_metrics.autostart_preview(kind, 저장된 기준값) → 한 줄
+```
+
+### 판단 품질 — 지표 정의 (step 3·5)
+
+기간 = 판단 로그 `triage_logs.created_at`(`from` 이상 `to` 미만). 묶음 = 전체(`all`) · 제안 종류별(`proposed_kind`, NULL = `unknown` — 실패·도는 중 판단) · 기준 버전별(`criteria_version`). 종류 × 버전 교차 표는 두지 않는다. 결과 업무의 사실(상태·병합·재작업)은 기간과 무관하게 지금 값이다.
+
+| 지표 | 정의 | 원천 칸 | 미완료 | 모름 |
+|---|---|---|---|---|
+| 제안 n | `state = 'proposed'` 행 수 | `triage_logs.state` | — | — |
+| 도는 중 n | `state = 'running'` 행 수 | `triage_logs.state` | — | — |
+| 실패 n · 실패 코드 | `state = 'failed'` 행 수, `failed_code` 분포 | `triage_logs.state`·`failed_code` | — | — (`failed` 는 CHECK 로 코드가 있다) |
+| 대체됨 n | `state = 'superseded'` 행 수 | `triage_logs.state` | — | — |
+| 사람 처리 | 제안 행의 `handling` 별 수: `accepted`·`changed`·`dismissed`·`auto_started`·미처리(NULL) | `triage_logs.handling` | 미처리 | — |
+| 사람 일치율 | `Ratio(accepted, accepted + changed)` — 제안 행만. 정답률이 아니다 | `triage_logs.handling` | `incomplete` = 미처리 제안 수 | — |
+| 진행 여부 분포 | 제안 행의 `proceed` 별 수(`ready`·`needs_check`·`unsuitable`) | `triage_logs.proceed` | — | — |
+| 실제 결과 ① 병합 완료 | 대상 = 제안 행 중 `proceed = 'ready'` · `handling IN ('accepted', 'auto_started')`. `Ratio(병합 완료, 끝난 대상)` | `work_items.status`·`closed_at`, `task_pull_requests.state`(`tasks.work_item_id`), `work_pull_requests.state` | `incomplete` = 끝나지 않은 대상(진행 중) | — |
+| 실제 결과 ② 재작업 없이 병합 완료 | 같은 대상, `Ratio(병합 완료 이고 재작업 0, 끝난 대상)` | 위 + `executions.start_key`(판단 단계 제외) | 같음 | — |
+| 판단 시간 | 판단 실행 `started_at` → `finished_at` 의 `Stat` | `executions`(`triage_logs.execution_id`) | 실행이 `result_ready`·`failed` 가 아님 | 끝났는데 `started_at` 없음(시작 전 실패·기한 초과) |
+| 비용 | 판단 실행 `cost_usd` 의 `Stat`(합계 포함). CLI 계산값 — 구독 청구액 아님 | `executions.cost_usd` | 끝나지 않은 실행 | NULL |
+| 판단 뒤 내용이 바뀐 업무 | 제안 행 중 `work_revision < 지금 work_items.revision` 인 행의 **업무 수**(중복 업무 한 번) | `triage_logs.work_revision`, `work_items.revision` | — | — |
+
+- **병합 완료**(ADR-0026 사실 5) = 업무 `status = '완료'` 이고 그 업무에 `state = 'merged'` 인 `task_pull_requests`(판단 단계가 아닌 단계의 것) 또는 `work_pull_requests` 가 하나라도 있음. `status_reason` 문구는 쓰지 않는다. **끝난 것** = `status IN ('완료', '종료')`. 병합 없는 `완료`(모든 단계 완료)·`종료` 는 분모에만 든다.
+- **재작업 수** = 그 업무의 판단 단계가 아닌 단계 실행 중 `start_key` 가 `rework:` 로 시작하는 것.
+- 한 업무에 판단 로그가 여럿이어도 행마다 센다(결과 사실은 업무 하나를 같이 본다).
+
+### 확신도 구간 (step 3)
+
+`CONFIDENCE_BUCKETS` — 대상 = 기간 안 `state = 'proposed'` 행(확신도가 있다). 0.5 미만은 한 칸(자동 시작 기준값 범위가 0.50~1.00).
+
+| 키 | 화면 | 범위 |
+|---|---|---|
+| `0-0.5` | `[0, 0.5)` | `0 <= c < 0.5` |
+| `0.5-0.7` | `[0.5, 0.7)` | `0.5 <= c < 0.7` |
+| `0.7-0.8` | `[0.7, 0.8)` | `0.7 <= c < 0.8` |
+| `0.8-0.9` | `[0.8, 0.9)` | `0.8 <= c < 0.9` |
+| `0.9-1` | `[0.9, 1.0]` | `0.9 <= c <= 1.0` |
+
+구간마다: 제안 n, 사람 일치 `Ratio(accepted, accepted + changed)`, 실제 결과 ①·② `Ratio`(정의는 위 표 — 그 구간의 대상만).
+
+### 기준값 미리보기 (step 3·8)
+
+`autostart_preview(logs, outcomes, *, kind, threshold)` — 그 종류(`proposed_kind == kind`)의 `state = 'proposed'` · `confidence >= threshold` 행 전부(기간·기준 버전으로 거르지 않는다). 낸 값: 판단 n, 사람 일치 `Ratio(accepted, accepted + changed)`, 병합 `Ratio(병합 완료, 실제 결과 대상 중 끝난 것)`. 기준값 = 저장된 현재 값(`triage_autostart_settings`), 행 없으면 `AUTOSTART_DEFAULT_THRESHOLD`(0.8). 서버 렌더 한 번 — 입력을 바꿔도 다시 계산하지 않는다.
+
+### 담당자별 — 지표 정의 (step 4·5)
+
+귀속(사용자 결정): 완료·진행 = 업무의 **지금** 담당(`work_items.assignee_type`·`assignee_id`), 응답 시간 = 응답한 멤버(`human_responses.member_id`), 내 차례 대기 = **지금** 받는 사람(`turn_recipients_of` 와 같은 규칙), 실행 = 그 실행의 `executions.agent_id`. 판단 단계·그 실행·그 Task 의 요청은 입력에 오지 않는다(step 5 가 `repo._TRIAGE_STAGE` 로 뺀다). 판단만 있는 업무도 업무다.
+
+| 행 | 지표 | 정의 | 원천 칸 | 미완료 | 모름 |
+|---|---|---|---|---|---|
+| 멤버 | 완료 n | 지금 담당이 그 멤버이고 `status = '완료'`, `closed_at` 이 기간 안 | `work_items` | — | — |
+| 멤버 | 진행 중 n | 지금 담당이 그 멤버이고 끝나지 않음(기간 무관) | `work_items` | — | — |
+| 멤버 | 내 차례 대기 n | 지금 `status = '내 차례'` 이고 받는 사람에 그 멤버가 든 업무 수(기간 무관) | `work_items`, 받는 사람 규칙(`_member_facts`·`_approvers_by_work`·`_recipients`) | — | — |
+| 멤버 | 가장 오래 기다림 · 대기 중앙값 | 위 업무마다 `now` − 내 차례가 된 시각의 최댓값·`Stat` | `work_item_events`(`status_changed`, `to = '내 차례'` 이고 `from != '내 차례'` 인 가장 최근 행의 `occurred_at`) | — | 그런 행이 없는 업무 |
+| 멤버 | 응답 시간 | 그 멤버가 응답한 사람 요청: `human_requests.created_at` → `human_responses.created_at` 의 `Stat`, 기간 = 응답 시각 | `human_requests`·`human_responses` | — | — |
+| 에이전트 | 완료 n · 진행 중 n | 멤버와 같은 규칙(지금 담당이 그 에이전트) | `work_items` | — | — |
+| 에이전트 | 실행 n · 실패율 · 실패 코드 | 그 에이전트 실행(기간 = `executions.created_at`) 수, 끝난 실행 중 `failed` 비율, `failed_code` 분포 | `executions` | 끝나지 않은 실행 | `failed_code` NULL → `unknown` |
+| 에이전트 | 1회 통과율 | 지금 담당이 그 에이전트인 업무 중 `code_review` 결과가 있는 것에서 첫 결과가 `approved` 인 비율(phase 9 정의) | `executions`(kind `code_review`)·결과 산출물 | 검토 결과 없는 업무 | — |
+| 에이전트 | 재작업 n | 그 에이전트 실행 중 `start_key` `rework:` 수 | `executions.start_key` | — | — |
+| 에이전트 | 실행 시간 · 비용 | phase 9 `_execution_metrics` 와 같은 정의 | `executions` | 끝나지 않은 실행 | `started_at` 없음 · `cost_usd` NULL |
+| 담당 없음 | 진행 중 n | 담당 없고 끝나지 않은 업무 수 | `work_items` | — | — |
+| (보고서) | 응답자 모름 n | 기간 안 응답 중 `member_id` NULL(v11 이전) | `human_responses` | — | 이 값 자체가 모름 건수 |
+
+- 멤버 행 = 활성 멤버 전부(`created_at`, `member_id` 순) + 기록이 있는 비활성 멤버. 에이전트 행 = 워크스페이스 Agent 전부(`list_session_agents`) + 기록이 있는 다른 Agent. 기록이 없으면 0·n=0 행.
+
+### 스키마 v16 (step 1)
+
+`adapters/db.py` `SCHEMA_VERSION` 15 → 16. 원본 v15 스키마는 `tests/workflow/adapters/fixtures/schema_v15.sql` 로 고정한다(v14 fixture 와 같은 방식). 빈 DB 도 `_SCHEMA` 끝의 `_V16_TABLES` 를 거쳐 만든다. CHECK 값 묶음 `CONFIG_CHANGE_AREAS`·`CONFIG_CHANGE_ACTIONS` 는 `db.py` 상수(다른 표 CHECK 값과 같은 자리).
+
+| 대상 | 변경 | 제약·의미 |
+|---|---|---|
+| `config_changes`(새) | `id INTEGER PRIMARY KEY`, `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `revision INTEGER NOT NULL CHECK (revision >= 1)`(바뀐 뒤 번호), `area TEXT NOT NULL CHECK (area IN ('kind', 'rule', 'source', 'mapping', 'triage_criteria', 'triage_autostart'))`, `action TEXT NOT NULL CHECK (action IN ('add', 'delete', 'change'))`, `subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 200)`, `by_member_id TEXT REFERENCES members(member_id)`(NULL 허용 — 멤버 없는 경로), `occurred_at TEXT NOT NULL`, `UNIQUE (session_id, revision)` | 추가 전용 — UPDATE·DELETE 경로 없음. `UNIQUE` 가 "번호 한 번 = 한 행" 을 지키고 조회 인덱스를 겸한다. 값·본문·비밀은 넣지 않는다(`subject` 는 표시용 이름) |
+
+**v15 → v16 마이그레이션** `_migrate_15_to_16`(호출자 트랜잭션 안): ① `_V16_TABLES`(표) ② `PRAGMA foreign_key_check` 가 비어 있지 않으면 `RuntimeError` ③ 버전 16. 과거 변경을 추정해 채우지 않는다 — v16 이전 설정 번호는 화면에서 `기록 없음`. 기존 올리기 경로(4~15 → 16)는 `steps` 끝에 `_migrate_15_to_16` 을 더해 이어서 거친다. `tasks`·`work_items`·`triage_logs` 등 기존 표는 재생성·칸 추가 없음. `server/backup.py` 복원은 v4~v15 백업을 16 으로 올린다(같은 `init_schema`).
+
+### 설정 변경 기록 지점 (step 2)
+
+`bump_config_revision(conn, session_id, *, area, action, subject, member_id, now) -> int` 이 번호를 올리고 같은 트랜잭션에서 `record_config_change(…, revision=새 번호, …)` 를 부른다. 아래 8개 함수만 부른다. 번호를 올리지 않는 "그대로" 경로(같은 본문의 판단 기준·같은 자동 시작 값)는 기록도 없다. `subject` 가 200자를 넘으면 199자 + `…`.
+
+| repo 함수 | `area` | `action` | `subject` | 새 키워드 | server 경로 → `member_id` |
+|---|---|---|---|---|---|
+| `insert_kind(conn, session_id, spec, now, *, member_id=None)` | `kind` | `add` | `spec.kind` | `member_id` | `web` 종류 추가(`MANAGE_RULES`) → `member.member_id` |
+| `delete_kind(conn, session_id, kind, *, now, member_id=None)` | `kind` | `delete` | `kind` | `now`·`member_id` | `web` 종류 삭제 → `member.member_id` |
+| `insert_rule(conn, session_id, rule, now, *, member_id=None)` | `rule` | `add` | `<from_kind> → <to_kind>` | `member_id` | `web` 규칙 추가 → `member.member_id` |
+| `delete_rule(conn, session_id, rule_id, *, now, member_id=None)` | `rule` | `delete` | `<from_kind> → <to_kind>`(지우기 전 행에서 읽음) | `now`·`member_id` | `web` 규칙 삭제 → `member.member_id` |
+| `save_github_source(conn, session_id, config, now, *, expected_revision=None, member_id=None)` | `source` | 행이 없었으면 `add`, 있었으면 `change` | `add`: `<owner/repo>`. `change`: `<owner/repo> · <바뀐 최상위 칸 이름, 이름순 `, ` 로 이음>`(`config_revision` 제외, 바뀐 칸이 없으면 `<owner/repo>`) — 칸 **이름만**, 값 없음 | `member_id` | `github_api._save`(생성·변경·중지) → `member.member_id`(`_save` 에 `member_id` 키워드), `github_connect.sync_installation_sources(…, now, *, member_id=None)`·`ensure_token_source(…, now, *, member_id=None)`·`_save_change` → `web` App 설치·PAT 연결 경로가 `member.member_id` |
+| `replace_field_mappings(conn, session_id, rows, *, now, member_id=None)` | `mapping` | `change` | 원본 종류별 행 수 `github 2행 · jira 1행`(원본 종류 이름순, 행이 없으면 `0행`) | `member_id` | `mapping_api` `PUT`(`MANAGE_RULES`) → `member.member_id` |
+| `save_triage_criteria(…, member_id: str, now)` | `triage_criteria` | `change` | `v<새 버전>` | (그대로) | `web` 기준 저장 → 이미 넘김 |
+| `save_triage_autostart(…, member_id: str, now)` | `triage_autostart` | `change` | `<종류> 켬 · 기준값 0.85` 또는 `<종류> 끔 · 기준값 0.80`(소수 둘째 자리) | (그대로) | `web` 자동 시작 저장 → 이미 넘김 |
+
+- 마이그레이션·시드(`create_session`·`seed_*`)·워커는 이 함수들을 부르지 않는다(번호를 올리지 않는다) — 그래서 지금 `by_member_id` NULL 은 테스트 직접 호출뿐이다. 칸은 NULL 을 허용한다.
+- `update_jira_project`·`bind_assignee`·에이전트 등록·토큰 발급은 번호를 올리지 않으므로 기록하지 않는다.
+- 기존 테스트의 `bump_config_revision(conn, SESSION)`·`delete_kind`·`delete_rule` 호출은 새 시그니처로 고친다(step 2).
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 스키마 | `adapters/db.py`(1) | `SCHEMA_VERSION = 16`, `_V16_TABLES`, `_migrate_15_to_16`, `CONFIG_CHANGE_AREAS = ("kind", "rule", "source", "mapping", "triage_criteria", "triage_autostart")`, `CONFIG_CHANGE_ACTIONS = ("add", "delete", "change")`, fixture `tests/workflow/adapters/fixtures/schema_v15.sql` |
+| 변경 기록 | `adapters/repo.py`(1) | `record_config_change(conn, session_id, *, revision: int, area: str, action: str, subject: str, member_id: str \| None, now: str) -> None`(자체 BEGIN 없음, `subject` 자르기는 여기), `list_config_changes(conn, session_id) -> list[Row]`(`revision`, `id` 순 — 칸 + `by_member_name`(`members.display_name`, LEFT JOIN)) |
+| 기록 지점 | `adapters/repo.py`·`server/web.py`·`mapping_api.py`·`github_api.py`·`github_connect.py`(2) | `bump_config_revision(conn, session_id, *, area: str, action: str, subject: str, member_id: str \| None, now: str) -> int`, 위 지점 표의 새 키워드 |
+| 판단 품질 | `domain/triage_metrics.py`(3) | 입력 `TriageLogFact`(`triage_id`, `work_item_id`, `kind: str \| None`(= `proposed_kind`), `criteria_version: int`, `trigger`, `state`, `proceed: str \| None`, `confidence: float \| None`, `failed_code: str \| None`, `handling: str \| None`, `created_at`, `work_revision: int`, `work_revision_now: int`, `execution_status: str`, `started_at: str \| None`, `finished_at: str \| None`, `cost_usd: float \| None`), `WorkOutcomeFact`(`work_item_id`, `status`, `closed_at: str \| None`, `merged: bool`, `rework_runs: int`). 결과 `TriageQuality`(`key`, `proposed`, `running`, `failed`, `failed_codes: Mapping[str, int]`, `superseded`, `handling: Mapping[str, int]`(`accepted`·`changed`·`dismissed`·`auto_started`·`unhandled`), `agreement: Ratio`, `proceed: Mapping[str, int]`, `merged: Ratio`, `merged_without_rework: Ratio`, `triage_time: Stat`, `cost_usd: Stat`, `revised_after: int`), `ConfidenceBucket`(`key`, `low: float`, `high: float`, `proposed: int`, `agreement: Ratio`, `merged: Ratio`, `merged_without_rework: Ratio`), `TriageQualityReport`(`since`, `until`, `overall: TriageQuality`, `by_kind: tuple[TriageQuality, ...]`, `by_criteria: tuple[TriageQuality, ...]`(키 `v<n>`, 버전 순), `buckets: tuple[ConfidenceBucket, ...]`), `AutostartPreview`(`kind`, `threshold`, `proposed: int`, `agreement: Ratio`, `merged: Ratio`). `CONFIDENCE_BUCKETS`, `compute_triage_quality(logs: Sequence[TriageLogFact], outcomes: Sequence[WorkOutcomeFact], *, since: str \| None, until: str \| None) -> TriageQualityReport`, `confidence_buckets(logs, outcomes) -> tuple[ConfidenceBucket, ...]`, `autostart_preview(logs, outcomes, *, kind: str, threshold: float) -> AutostartPreview`. `Stat`·`Ratio`·`UNKNOWN` 은 `domain/metrics.py` 것 |
+| 담당자별 | `domain/assignee_metrics.py`(4) | 입력 `AssigneeWorkFact`(`work_item_id`, `assignee_type: str \| None`, `assignee_id: str \| None`, `status`, `closed_at: str \| None`, `turn_since: str \| None`, `recipients: tuple[str, ...]`), `ResponseFact`(`request_id`, `member_id: str \| None`, `requested_at`, `responded_at`), `AgentRunFact`(`execution_id`, `agent_id`, `work_item_id`, `kind`, `status`, `start_key`, `created_at`, `started_at`, `finished_at`, `failed_code`, `outcome: str \| None`, `cost_usd: float \| None`), `MemberLabel`(`member_id`, `display_name`, `active: bool`), `AgentLabel`(`agent_id`, `name`), `AssigneeFacts`(`works`, `responses`, `runs`, `members`, `agents` — 튜플). 결과 `MemberRow`(`member_id`, `display_name`, `active`, `done: int`, `open: int`, `turn_waiting: int`, `longest_wait: float \| None`, `wait: Stat`, `response_time: Stat`), `AgentRow`(`agent_id`, `name`, `done`, `open`, `runs: int`, `failure: Ratio`, `failed_codes`, `first_pass: Ratio`, `rework: int`, `execution_time: Stat`, `cost_usd: Stat`), `AssigneeReport`(`since`, `until`, `members: tuple[MemberRow, ...]`, `agents: tuple[AgentRow, ...]`, `unassigned_open: int`, `responses_unknown_member: int`). `compute_assignee_metrics(facts: AssigneeFacts, *, since: str \| None, until: str \| None, now: str) -> AssigneeReport` |
+| 사실 읽기 | `adapters/repo.py`(5) | `list_triage_facts(conn, session_id) -> tuple[list[TriageLogFact], list[WorkOutcomeFact]]`, `list_assignee_facts(conn, session_id, *, store) -> AssigneeFacts`(`code_review` 결과 outcome 은 `list_metric_facts` 와 같은 방식으로 산출물에서 — 그래서 `store`), `config_changes_by_revision(conn, session_id) -> dict[int, list[Row]]`(`list_config_changes` 를 묶음). 모두 세션 소유 행만, 쿼리 수는 업무 수와 무관(N+1 금지). `list_metric_facts` 는 바꾸지 않는다 |
+| API | `server/metrics_api.py`(6) | `_triage_report(conn, session_id, since, until) -> TriageQualityReport`, `_assignee_report(conn, request, session_id, since, until, *, now) -> AssigneeReport`, `_config_changes(conn, session_id) -> list[dict]`, 직렬화는 기존 `_value`·`_ratio` |
+| 화면 | `server/web.py`·`views.py`·`templates/metrics.html`·`_monitor_triage.html`·`_monitor_assignees.html`(7) | `web.MONITOR_TABS = (("before_after", "전후"), ("triage", "판단"), ("assignees", "담당자별"))`, `metrics_page(…, tab: str = Query("before_after"))`, `views.triage_quality_context(report: TriageQualityReport) -> dict`, `views.assignee_context(report: AssigneeReport) -> dict`, `views.config_change_heads(changes: Mapping[int, Sequence[Row]], keys: Sequence[str]) -> dict[str, str]`, `views.CONFIG_CHANGE_AREA_LABELS`·`CONFIG_CHANGE_ACTION_LABELS` |
+| 미리보기 | `server/views.py`·`templates/_connect_triage.html`(8) | `views.autostart_preview_line(preview: AutostartPreview) -> str`, 자동 시작 행 dict 의 `preview` 칸, `data-autostart-preview` |
+| e2e·문서 | `tests/e2e/test_monitor.py`·`docs/SELFHOST.md`·`docs/VERIFICATION_LOG.md`·`docs/CURRENT_HANDOFF.md`(9) | 가짜 러너·가짜 GitHub, v15 사본 마이그레이션, SELFHOST 업그레이드 v16(러너 재설치 없음) |
+
+### 경로 (step 6·7·8)
+
+| 경로 | 권한 | 쿼리 | 동작 | 오류 |
+|---|---|---|---|---|
+| `GET /monitor` | `team.VIEW_METRICS`(관리자·멤버 — 사용자 결정 4) | `tab`(`before_after`\|`triage`\|`assignees`, 기본 `before_after`), `from`·`to`(공통, 빈 값 = 지정 안 함), `group_by`(전후 탭만 쓰지만 값 검증은 늘) | 탭 머리 = 연결 화면 탭과 같은 링크 모양(`from`·`to`·`group_by` 유지). 계산은 `metrics_api` 와 같은 함수 | 422 `invalid_field`: `tab` "탭은 전후·판단·담당자별 중 하나입니다."(field `tab`), 기간·그룹은 지금 문구 그대로 |
+| `GET /metrics` | (그대로) | — | 303 `/monitor?…`(쿼리 그대로 — `tab` 도 따라간다) | — |
+| `GET /metrics.json` | `team.VIEW_METRICS`(그대로) | `from`·`to`·`group_by`(그대로) | 기존 키(`from`·`to`·`group_by`·`groups`·`baselines`) 그대로 + 새 키 `triage`(`overall`·`by_kind`·`by_criteria`·`confidence` — 각 칸은 `TriageQuality`·`ConfidenceBucket` 이름 그대로, 기간 적용, `group_by` 무관), `assignees`(`members`·`agents`·`unassigned_open`·`responses_unknown_member` — 표시 이름 포함, 기간 적용), `config_changes`(`[{revision, area, action, subject, by_member_id, by_member_name, occurred_at}]`, `revision`·`id` 순, 기간 무관) | 그대로 |
+| `GET /metrics.csv` | (그대로) | (그대로) | 열 `CSV_COLUMNS` 그대로, 기존 행 뒤에 새 행. `area` = `triage` 일 때 `group` = `triage:all`·`triage:kind:<종류>`·`triage:criteria:v<n>`·`triage:confidence:<구간 키>`, `area` = `assignee` 일 때 `group` = `member:<member_id>`·`agent:<agent_id>`·`unassigned`. `metric` = 결과 칸 이름(분포는 `failed_code:<code>`·`handling:<값>`·`proceed:<값>`, 건수는 `total`). id 만 — 표시 이름·설정 변경 목록은 CSV 에 없다 | 그대로 |
+| `GET /connect?tab=triage` | `team.MANAGE_CONNECTIONS`(그대로) | (그대로) | 자동 시작 행마다 미리보기 한 줄 + `/monitor?tab=triage` 링크 | 그대로 |
+
+POST 경로는 새로 없다. 설정 저장 경로(위 지점 표)는 응답·동작 그대로이고 기록만 더한다.
+
+### 화면 문구 (step 7·8)
+
+- 탭: `전후` · `판단` · `담당자별`. 머리 문장(세 탭 공통, 지금 문구 그대로): `관측값이며 인과 효과로 단정하지 않는다. …`.
+- **전후 탭**: 지금 화면 그대로. `group_by=config_revision` 이면 각 그룹 머리 아래 한 줄 — `설정 4 — 판단 기준 변경 v2 · 김OO · 10/3`(꼴: `설정 <번호> — <영역> <동작> <subject> · <멤버 표시 이름, NULL 이면 시스템> · <KST M/D>`), 그 번호의 기록이 없으면(v16 전) `설정 3 — 기록 없음`, 모름 그룹은 머리 줄 없음. 영역 이름: `kind` 종류 · `rule` 후속 규칙 · `source` 저장소 연결 · `mapping` 매핑 표 · `triage_criteria` 판단 기준 · `triage_autostart` 자동 시작. 동작 이름: `add` 추가 · `delete` 삭제 · `change` 변경.
+- **판단 탭**: 맨 위 요약 `제안 n · 사람 일치 x/y · 병합 완료 a/b(진행 중 c) · 재작업 없이 병합 d/b`. 표 머리 — 종류별·기준 버전별 표: `종류`(또는 `기준`) · `제안` · `사람 처리(제안대로·다르게·무시·자동 시작·미처리)` · `사람 일치` · `맡겨도 됨·확인 필요·부적합` · `병합 완료` · `재작업 없이 병합` · `실패` · `판단 시간` · `비용`. 확신도 구간표: `확신도` · `제안` · `사람 일치` · `병합 완료` · `재작업 없이 병합`. 아래 줄: `실패 코드`, `판단 뒤 내용이 바뀐 업무 n`, `비용은 CLI 계산값이며 구독 청구액이 아닙니다.` 판단 기록이 없으면 `아직 판단 기록이 없습니다.` + `연결 › 판단` 링크(`/connect?tab=triage`, `MANAGE_CONNECTIONS` 일 때만 링크). 비율은 늘 `x/y` 와 n 을 함께, 분모 0 이면 `—`.
+- **담당자별 탭**: 멤버 표 `멤버` · `완료` · `진행 중` · `내 차례 대기` · `가장 오래 기다림` · `응답 시간(중앙값)`. 에이전트 표 `에이전트` · `완료` · `진행 중` · `실행` · `실패율` · `1회 통과` · `재작업` · `실행 시간(중앙값)` · `비용`. 담당 없음 한 줄 `담당 없는 진행 중 업무 n`. 응답자 모름이 있으면 `응답자를 모르는 응답 n(v11 이전)`. 비활성 멤버·소유자 표시는 기존 표시 함수 그대로. 기록이 없으면 `아직 맡은 업무가 없습니다.`
+- **자동 시작 행 미리보기**: `지금 기준값 0.80 이상 판단 23건 — 사람 일치 19/21 · 병합 15/17`, 없으면 `아직 이 기준값 이상 판단이 없습니다`, 끝에 `판단 품질 보기` 링크.
+- 모름은 `모름`(0 아님). 인과 단정 금지("판단 덕분에 줄었다" 대신 "기준 v1 n=12 · 기준 v2 n=8"). 외부 문자열(멤버·에이전트 이름·종류 라벨·`subject`)은 자동 이스케이프로만(`|safe` 금지). 금지 표현: `정확도`, `대시보드`, `analytics`.
+
 ## 기존 구현과 초기 설계 기록
 
 이하의 첫 범위·후속 제외 표현은 해당 phase의 범위다. 실서비스 제품 목표는 위 전환 설계와 ADR-0011을 따른다.

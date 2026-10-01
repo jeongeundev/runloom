@@ -718,3 +718,37 @@ def test_home_without_github_is_unchanged(logged_in_client):
     assert response.status_code == 200
     text = response.text
     assert "/delegate" not in text and "지시 전" not in text
+
+
+# --- phase 20: 설정 변경 기록 -------------------------------------------------------------------
+
+
+def _changes(conn, session_id: str) -> list[tuple]:
+    return [(r["area"], r["action"], r["subject"], r["by_member_id"])
+            for r in repo.list_config_changes(conn, session_id)]
+
+
+def _admin(conn, session_id: str) -> str:
+    return conn.execute("SELECT member_id FROM members WHERE session_id = ?", (session_id,)).fetchone()[0]
+
+
+def test_setup_records_source_changes_by_the_logged_in_member(op, conn, github, secrets, pem):
+    save_app(secrets, pem)
+    assert op.get("/operator/github/app/setup", params={"installation_id": 42}, follow_redirects=False).status_code == 303
+    github.repositories = ["acme/billing"]
+    assert op.get("/operator/github/app/setup", params={"installation_id": 42}, follow_redirects=False).status_code == 303
+    session_id = op_session(op)
+    admin = _admin(conn, session_id)
+    assert _changes(conn, session_id) == [
+        ("source", "add", "acme/billing", admin),
+        ("source", "add", "acme/shop", admin),
+        ("source", "change", "acme/shop · enabled", admin),
+    ]
+
+
+def test_pasted_token_source_is_recorded_without_the_token(op, conn, github, secrets):
+    assert op.post("/operator/github/token", data={"token": PAT, "repository_full_name": "acme/lib"},
+                   follow_redirects=False).status_code == 303
+    session_id = op_session(op)
+    assert _changes(conn, session_id) == [("source", "add", "acme/lib", _admin(conn, session_id))]
+    assert PAT not in json.dumps([dict(r) for r in repo.list_config_changes(conn, session_id)])

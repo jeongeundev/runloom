@@ -236,6 +236,81 @@ def test_autostart_of_triage_or_unstartable_or_unknown_kind_is_404(admin, kind):
     error(save_autostart(admin, kind, enabled=False), 404, "not_found")
 
 
+def seed_judged(conn, kind: str, confidence: float, *, handling: str | None, status: str = "에이전트 작업 중",
+                merged: bool = False) -> None:
+    """미리보기 재료 — 업무·판단 실행·제안 판단 로그 한 벌(외래키를 끄고 DB 직접). `merged` 면 감지 PR 을 병합으로 둔다."""
+    conn.execute("PRAGMA foreign_keys=OFF")
+    n = conn.execute("SELECT COUNT(*) FROM triage_logs").fetchone()[0]
+    work_item_id, task_id, execution_id = f"wi-p{n}", f"task-p{n}", f"exec-p{n}"
+    conn.execute(
+        "INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status, status_reason,"
+        " source_type, created_at, updated_at, closed_at) VALUES (?, ?, ?, '제목', '요청', ?, ?, '', 'manual', ?, ?, ?)",
+        (work_item_id, SESSION, 900 + n, kind, status, NOW, NOW, NOW if status in ("완료", "종료") else None),
+    )
+    conn.execute(
+        "INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json, status,"
+        " created_at) VALUES (?, ?, 1, ?, ?, 'triage', '{}', 'result_ready', ?)",
+        (execution_id, task_id, f"auto:{task_id}:r1", FIX, NOW),
+    )
+    conn.execute(
+        "INSERT INTO triage_logs (triage_id, session_id, work_item_id, work_revision, task_id, execution_id,"
+        " agent_id, trigger, criteria_version, input_sha256, candidates_json, state, result_json, proceed,"
+        " confidence, proposed_kind, handling, handled_at, final_assignee_type, final_assignee_id, final_kind,"
+        " created_at, updated_at)"
+        " VALUES (?, ?, ?, 1, ?, ?, ?, 'auto', 1, ?, '{}', 'proposed', '{}', 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (f"trg-p{n:06x}", SESSION, work_item_id, task_id, execution_id, FIX, "0" * 64, confidence, kind, handling,
+         NOW if handling else None, *(("agent", FIX, kind) if handling not in (None, "dismissed") else (None,) * 3),
+         NOW, NOW),
+    )
+    if merged:
+        conn.execute(
+            "INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+            " title, pr_url, head_branch, state, draft, merged_at, pr_updated_at, created_at, updated_at)"
+            " VALUES (?, ?, 'src-p', 'acme/billing', ?, 'pr', 'https://example.test/pr', 'b', 'merged', 0, ?, ?, ?, ?)",
+            (SESSION, work_item_id, 900 + n, NOW, NOW, NOW, NOW),
+        )
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.commit()
+
+
+def preview_of(html: str, kind: str) -> str:
+    row = re.search(rf'data-autostart="{kind}".*?</form>', html, re.S).group(0)
+    match = re.search(r"<span[^>]*data-autostart-preview>(.*?)</span>", row, re.S)
+    assert match is not None, row
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", match.group(1))).strip()
+
+
+@pytest.fixture
+def judged(conn) -> None:
+    """bug_fix 제안 5건: 0.95 제안대로·완료·병합 / 0.85 다르게 정함·완료 / 0.85 제안대로·에이전트 작업 중 / 0.90 무시함 /
+    0.70 제안대로·완료·병합."""
+    seed_judged(conn, "bug_fix", 0.95, handling="accepted", status="완료", merged=True)
+    seed_judged(conn, "bug_fix", 0.85, handling="changed", status="완료")
+    seed_judged(conn, "bug_fix", 0.85, handling="accepted")
+    seed_judged(conn, "bug_fix", 0.90, handling="dismissed")
+    seed_judged(conn, "bug_fix", 0.70, handling="accepted", status="완료", merged=True)
+
+
+def test_autostart_preview_counts_judgements_at_the_default_threshold(admin, judged):
+    html = tab(admin)
+    assert preview_of(html, "bug_fix") == "지금 기준값 0.80 이상 판단 4건 — 사람 일치 2/3 · 병합 1/1 판단 품질 보기"
+    row = re.search(r'data-autostart="bug_fix".*?</form>', html, re.S).group(0)
+    assert '<a href="/monitor?tab=triage">판단 품질 보기</a>' in row
+
+
+def test_autostart_preview_without_records_says_so(admin):
+    assert preview_of(tab(admin), "bug_fix") == "아직 이 기준값 이상 판단이 없습니다 판단 품질 보기"
+
+
+def test_autostart_preview_follows_the_saved_threshold(admin, conn, judged):
+    assert save_autostart(admin, "bug_fix", enabled=False, threshold="0.90").status_code == 303
+    assert preview_of(tab(admin), "bug_fix") == "지금 기준값 0.90 이상 판단 2건 — 사람 일치 1/1 · 병합 1/1 판단 품질 보기"
+    assert save_autostart(admin, "bug_fix", enabled=False, threshold="0.70").status_code == 303
+    assert preview_of(tab(admin), "bug_fix") == "지금 기준값 0.70 이상 판단 5건 — 사람 일치 3/4 · 병합 2/2 판단 품질 보기"
+    assert save_autostart(admin, "bug_fix", enabled=False, threshold="1.00").status_code == 303
+    assert preview_of(tab(admin), "bug_fix") == "아직 이 기준값 이상 판단이 없습니다 판단 품질 보기"
+
+
 # --- 저장소 카드 판단 Agent 칸 -----------------------------------------------------------------
 
 
@@ -328,3 +403,17 @@ def test_cross_origin_posts_are_403(admin, conn):
                               follow_redirects=False)
         assert response.status_code == 403 and "forbidden_origin" in response.text
     assert repo.current_triage_criteria(conn, SESSION)["version"] == 1
+
+
+def test_criteria_and_autostart_saves_record_the_logged_in_member(admin, conn):
+    """phase 20 — 판단 기준·자동 시작 저장은 설정 변경 기록 한 행씩, 같은 값 저장은 기록 없음."""
+    body = repo.current_triage_criteria(conn, SESSION)["body"]
+    assert save_criteria(admin, body + "\n추가 규칙", 1).status_code == 303
+    assert save_criteria(admin, body + "\n추가 규칙", 2).status_code == 303
+    assert save_autostart(admin, "bug_fix", enabled=False, threshold="0.90").status_code == 303
+    assert save_autostart(admin, "bug_fix", enabled=False, threshold="0.90").status_code == 303
+    rows = [r for r in repo.list_config_changes(conn, SESSION) if r["area"].startswith("triage_")]  # 픽스처 소스 저장 제외
+    assert [(r["revision"], r["area"], r["subject"], r["by_member_id"]) for r in rows] == [
+        (revision(conn) - 1, "triage_criteria", "v2", admin_id(conn)),
+        (revision(conn), "triage_autostart", "bug_fix 끔 · 기준값 0.90", admin_id(conn)),
+    ]

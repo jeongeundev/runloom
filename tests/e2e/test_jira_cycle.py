@@ -594,7 +594,7 @@ def test_v13_copy_upgrades_to_v14_and_takes_jira_issues(tmp_path):
 
     conn = connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 15  # v14 를 거쳐 v15(phase 19)까지
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 16  # v14 를 거쳐 v16(phase 20)까지
         after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in before}
         assert after == {**before, "field_mappings": before["field_mappings"] + 1}  # jira 기본 매핑 한 행
         assert [tuple(r) for r in conn.execute(

@@ -5,52 +5,84 @@
     {
       "step": 0,
       "name": "monitor-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T04:32:00+0900",
+      "summary": "문서만: docs/adr/0026-monitor.md 새로, ARCHITECTURE '모니터링 — phase 20' 절(지표 정의 표 둘·확신도 구간·기준값 미리보기·스키마 v16·기록 지점 표·이름 고정·경로·문구), GLOSSARY phase 20 용어, REDESIGN_PLAN 13절 8행, CURRENT_HANDOFF '20-monitor 진행 중', README 기본값 6 표시. 결정: 병합 완료 = 업무 완료 + 병합 PR(task_pull_requests·work_pull_requests, status_reason 안 씀), 내 차례 시각 = to='내 차례' 이고 from!='내 차례' 인 최근 행(이유만 바뀐 행 제외), config_changes 는 영문 area/action 코드 + UNIQUE(session_id, revision), 기록은 bump_config_revision(conn, sid, *, area, action, subject, member_id, now) 한 곳, 매핑 subject 'github 2행 · jira 1행', 판단 입력 이름 TriageLogFact(domain/triage.TriageFact 와 충돌 피함), WorkOutcomeFact. bump 호출 8곳은 README 와 같음, update_jira_project 는 기록 안 함. 검증: pytest 4045 passed·72 skipped, ruff 통과. 다음 step 주의: bump_config_revision·delete_kind·delete_rule 시그니처 변경 시 기존 테스트 호출 수정, github_connect 헬퍼에 member_id 키워드, 받는 사람은 _member_facts·_approvers_by_work·_recipients 묶음 재사용.",
+      "completed_at": "2026-10-02T04:57:02+0900"
     },
     {
       "step": 1,
       "name": "schema-v16",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T04:57:02+0900",
+      "summary": "새: tests/workflow/adapters/fixtures/schema_v15.sql(빈 v15 DB sqlite_master 원문, v14 fixture 와 같은 생성법). 수정: adapters/db.py(SCHEMA_VERSION 16, CONFIG_CHANGE_AREAS·CONFIG_CHANGE_ACTIONS, _V16_TABLES config_changes — id·session_id FK·revision>=1·area/action CHECK·subject 1~200자·by_member_id FK NULL 허용·occurred_at·UNIQUE(session_id, revision), _migrate_15_to_16 표만·FK 검사·버전 16, init_schema 4~15 → 16), adapters/repo.py(record_config_change 자체 BEGIN 없음·200자 넘으면 199자+…, list_config_changes revision·id 순 + by_member_name LEFT JOIN — 아직 호출자 없음). backup.py 변경 없음(같은 init_schema). 테스트: test_db(v16 상수·표·FK·UNIQUE·CHECK, _v15_db fixture → 16 행 보존·기존 표 재생성 없음·빈 기록·멱등, FK 위반 롤백, 빈 DB = v14/v15 올린 DB, v4/v9/v14 → 16), test_repo(기록·순서·세션 분리·자르기·호출자 트랜잭션·CHECK), test_backup(v15 백업 → 16 왕복, 기존 표 수 단정에 CONFIG_CHANGES_EMPTY 추가), 버전 리터럴 15→16(test_db·test_backup·e2e triage/jira). 검증: pytest 4060 passed·72 skipped, ruff 통과. 다음 step 주의: bump_config_revision 은 아직 옛 시그니처 — step 2 에서 area·action·subject·member_id·now 를 받아 record_config_change 를 부르게 바꾼다.",
+      "completed_at": "2026-10-02T05:09:32+0900"
     },
     {
       "step": 2,
       "name": "config-change-log",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:09:33+0900",
+      "summary": "수정: adapters/repo.py(bump_config_revision(conn, sid, *, area, action, subject, member_id, now) 이 번호 +1 뒤 같은 트랜잭션에서 record_config_change — 기록 한 곳. insert_kind·insert_rule·save_github_source·replace_field_mappings 에 member_id=None, delete_kind·delete_rule 에 now(필수)·member_id=None. subject: 종류 이름, '<from> → <to>'(delete_rule 은 지우기 전 행을 읽고 없으면 NotFound), 소스 add=owner/repo·change='owner/repo · 바뀐 최상위 칸 이름'(config_revision 제외, 값 없음), 매핑 '원본 종류 n행' 이름순·없으면 '0행', 판단 기준 'v<n>', 자동 시작 '<종류> 켬|끔 · 기준값 0.90'. 그대로 경로는 번호·기록 둘 다 없음), server/web.py(종류·규칙 추가·삭제, App 설치 setup·PAT 연결에 member.member_id), mapping_api.py(PUT), github_api.py(_save 에 member_id 필수 키워드 — 생성·변경·중지), github_connect.py(sync_installation_sources·ensure_token_source 에 member_id=None, _save_change 에 member_id). 테스트: test_repo(지점별 번호=기록 revision·실패/그대로 무기록·member_id·트랜잭션 롤백, 기존 delete_kind/delete_rule/bump 호출 새 시그니처), test_web(종류·규칙), test_web_triage_settings(기준·자동 시작), test_mapping_api, test_github_api(생성·변경·중지), test_web_github_connect(setup·PAT — 토큰 부재 단정), test_views·test_task_cycle 호출 now 추가. 검증: pytest 4072 passed·72 skipped, ruff 통과. 다음 step 주의: list_config_changes 는 픽스처가 저장한 소스 기록도 포함(test_task_cycle cycle 픽스처는 member_id NULL 소스 add 1행).",
+      "completed_at": "2026-10-02T05:26:23+0900"
     },
     {
       "step": 3,
       "name": "triage-metrics",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:26:23+0900",
+      "summary": "새: src/workflow/domain/triage_metrics.py(순수 — TriageLogFact·WorkOutcomeFact 입력, TriageQuality·ConfidenceBucket·TriageQualityReport·AutostartPreview 결과, CONFIDENCE_BUCKETS (키,low,high)·HANDLINGS·UNHANDLED·PROCEEDS 상수, compute_triage_quality·confidence_buckets·autostart_preview; Stat·Ratio·ALL_GROUP·UNKNOWN·_stat·_in_window·_seconds 는 metrics.py 것 재사용), tests/workflow/domain/test_triage_metrics.py(17건). 결정: 기간 = created_at [since, until), by_kind 키 이름순 + unknown 마지막, by_criteria 'v<n>' 버전 순, handling·proceed 는 제안 행만(키 늘 전부, 미처리 = 'unhandled'), agreement incomplete = 미처리 제안, 병합 완료 = status '완료' 이고 merged(종료+merged 는 분모만), 결과 사실이 없는 대상 = Ratio unknown, 판단 시간·비용은 묶음의 모든 행(execution_status result_ready·failed 가 끝남, 나머지 incomplete, started_at·cost NULL 은 unknown, 비용 total 포함), revised_after 는 제안 행의 업무 중복 제거, 확신도 마지막 구간만 1.0 포함·confidence_buckets 는 받은 행을 거르지 않음(compute 가 기간 거른 행을 넘김), autostart_preview 는 기간·버전 무관·confidence >= threshold. 기존 파일 변경 없음. 검증: pytest 4089 passed·72 skipped, ruff 통과. 다음 step 주의: step 5 list_triage_facts 는 WorkOutcomeFact.merged 에 판단 단계 아닌 task_pull_requests·work_pull_requests merged 여부, rework_runs 에 판단 단계 제외 rework: 실행 수를 채우고 execution_status 는 판단 실행 상태를 넣는다.",
+      "completed_at": "2026-10-02T05:37:46+0900"
     },
     {
       "step": 4,
       "name": "assignee-metrics",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:37:46+0900",
+      "summary": "새: src/workflow/domain/assignee_metrics.py(순수 — ARCHITECTURE 고정 이름: AssigneeWorkFact·ResponseFact·AgentRunFact·MemberLabel·AgentLabel·AssigneeFacts 입력, MemberRow·AgentRow·AssigneeReport 결과, compute_assignee_metrics(facts, *, since, until, now); Stat·Ratio·UNKNOWN·_stat·_in_window·_seconds·_parse 는 metrics.py 재사용), tests/workflow/domain/test_assignee_metrics.py(13건). 결정: 기간 = 완료 closed_at·응답 responded_at·실행 created_at, 진행 중·내 차례 대기·담당 없음·1회 통과는 기간 무관 지금 값. 완료 = status '완료'만(종료 제외), 진행 = 완료·종료 아님. 내 차례 대기 = status '내 차례' 이고 recipients 에 든 업무(받는 사람 둘이면 둘 다), wait Stat = now−turn_since(turn_since None 은 unknown), longest_wait = 최댓값. 응답자 None 은 responses_unknown_member(기간 안). 에이전트 실행 = 실행의 agent_id(지금 담당 아님), 실패율·실행 시간·비용은 phase 9 _execution_metrics 정의(끝 = result_ready·failed, 비용 total 포함), 1회 통과 = 지금 그 에이전트 담당 업무의 첫 code_review outcome(어느 에이전트 실행이든, 결과 없는 업무 incomplete). 행: 멤버 = 라벨 순 활성 전부 + 기록(완료·진행·대기·응답 n>0) 있는 비활성, 에이전트 = 라벨 전부; 라벨에 없는 id 가 기록에 있으면 id 를 이름으로 한 행을 뒤에(멤버는 active False) 이름순. 기존 파일 변경 없음. 검증: pytest 4102 passed·72 skipped, ruff 통과. 다음 step 주의: list_assignee_facts 는 members 를 created_at·member_id 순, agents 를 list_session_agents 순으로 넘기고, 판단 단계 실행·요청은 빼고, turn_since 는 to='내 차례'·from!='내 차례' 최근 행, recipients 는 _member_facts·_approvers_by_work·_recipients 로 채운다(내 차례 아닌 업무는 빈 튜플이어도 무관).",
+      "completed_at": "2026-10-02T05:48:59+0900"
     },
     {
       "step": 5,
       "name": "metric-facts",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:48:59+0900",
+      "summary": "수정: adapters/repo.py(새 읽기 함수 셋 — 계산 없음, 세션 소유 행만, 쿼리 수 업무 수와 무관: list_triage_facts(conn, sid) -> (TriageLogFact 목록 만든 순 — triage_logs JOIN work_items(revision=work_revision_now)·executions(status·started_at·finished_at·cost_usd, finished_at 은 실행의 것), WorkOutcomeFact 목록 — 판단 로그가 있는 업무만 키 번호 순, merged = 판단 단계 아닌 task_pull_requests 또는 work_pull_requests state merged, rework_runs = 판단 단계 아닌 실행 start_key LIKE 'rework:%'), 쿼리 2번; list_assignee_facts(conn, sid, *, store) -> AssigneeFacts — works 세션 업무 전부 키 번호 순(판단만 있는 업무 포함), 내 차례 업무만 recipients(_member_facts 대신 list_members 한 번으로 MemberFact·MemberLabel 둘 다 만들고 _approvers_by_work·_recipients 재사용 — turn_recipients_of 와 같음)·turn_since(status_changed to='내 차례' 이고 from IS NOT '내 차례' 의 id 순 마지막), 아닌 업무는 None·(), responses 는 human_responses 전부(member_id NULL 포함 — 도메인이 응답자 모름으로 셈, 판단 단계 요청 제외), runs 는 판단 단계 제외 실행 + work_item_id, outcome 은 list_metric_facts 의 _execution_outcome 재사용(검토 실행마다 산출물 읽기 — list_metric_facts 와 같음), members = list_members 순(active = disabled_at 없음), agents = list_session_agents 순; config_changes_by_revision(conn, sid) -> dict[int, list[Row]] — list_config_changes 를 번호로 묶음). list_metric_facts 변경 없음. 테스트: test_repo(triaged·assigned 픽스처 — 판단 v1 제안·수정·재작업·감지 PR 병합·완료·판단 뒤 revision 2, 대체·v2 실패, 판단 단계 PR·rework start_key·요청 제외, 받는 사람 세 경우 = turn_recipients_of, 이유만 바뀐 행 제외, 다른 세션 제외, set_trace_callback 쿼리 수 불변, 설정 변경 묶음) 7건. 검증: pytest 4109 passed·72 skipped, ruff 통과. 다음 step 주의: list_assignee_facts 는 store 필요(metrics_api 의 기존 store 의존성), 판단 결과 사실은 판단 로그가 있는 업무만이라 outcomes 에 없는 업무는 도메인에서 unknown.",
+      "completed_at": "2026-10-02T06:10:37+0900"
     },
     {
       "step": 6,
       "name": "metrics-export",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T06:10:37+0900",
+      "summary": "수정: server/metrics_api.py(_triage_report·_assignee_report(now=utc_now())·_config_changes, /metrics.json 기존 키 뒤 triage{overall·by_kind·by_criteria·confidence}·assignees{members·agents·unassigned_open·responses_unknown_member}·config_changes[{revision,area,action,subject,by_member_id,by_member_name,occurred_at}] — 기간 from·to 는 triage·assignees 에만, group_by 는 기존 groups 에만, config_changes 기간 무관; /metrics.csv 열 CSV_COLUMNS 그대로 기존 행 뒤에 area triage(group triage:all·triage:kind:<키>·triage:criteria:v<n>·triage:confidence:<구간 키>, 구간은 proposed·agreement·merged·merged_without_rework 만)·assignee(member:<id>·agent:<id>·unassigned open) 행 — id 만, 표시 이름·설정 변경은 JSON 에만; _group 을 결과 dataclass 공용으로(MetricsGroup import 제거), 행 생성은 _metric_rows 로 묶고 매핑 접두는 _ROW_PREFIX.get(name, name) — handling:<값>·proceed:<값>·failed_code:<code>; longest_wait 는 seconds 단위 total 칸, responses_unknown_member 는 ARCHITECTURE 의 CSV group 목록에 없어 JSON 에만). 테스트: test_metrics_api 에 triaged 픽스처(판단 제안·실패 2건, seed_agents, 관리자 자동 시작 저장) + 새 키 모양·값·기간·CSV 새 행·멤버 역할 200 4건, test_metrics_csv_follows_the_same_parameters 는 기존 행 단정 유지하고 새 행이 뒤에 붙는 것까지 단정. 검증: pytest 4113 passed·72 skipped, ruff 통과. 다음 step 주의: 화면은 metrics_api._triage_report·_assignee_report·repo.config_changes_by_revision 를 재사용, 기존 operator 픽스처 업무는 agent-codex-mac 담당이라 unassigned 0.",
+      "completed_at": "2026-10-02T06:23:59+0900"
     },
     {
       "step": 7,
       "name": "monitor-tabs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T06:23:59+0900",
+      "summary": "새: templates/_monitor_triage.html·_monitor_assignees.html. 수정: server/web.py(MONITOR_TABS, metrics_page 에 tab 쿼리 — 기본 before_after, 다른 값 422 '탭은 전후·판단·담당자별 중 하나입니다.'(field tab), 탭마다 필요한 계산만: 전후 = 기존 metrics_context + group_by=config_revision 이면 config_change_heads 를 group_columns[].head 로, 판단 = metrics_api._triage_report, 담당자별 = metrics_api._assignee_report(now) + agent_owners(runner_owner·repo.agent_owner_id), 탭 링크는 from·to·group_by 유지), views.py(CONFIG_CHANGE_AREA_LABELS·CONFIG_CHANGE_ACTION_LABELS·HANDLING_LABELS, config_change_heads(전체·모름 키는 머리 없음, 기록 없으면 '설정 n — 기록 없음', 멤버 NULL = 시스템, KST M/D), triage_quality_context(요약 한 줄·종류별(unknown=모름)·기준별·구간 [low, high) 마지막만 ']'·실패 코드·판단 뒤 바뀐 업무, 빈 상태 = 제안·도는 중·실패·대체 모두 0), assignee_context(멤버 longest_wait None 은 대기 0 이면 —, 아니면 모름; 에이전트 실패율 아래 실패 코드; 빈 상태 = 모든 행 완료·진행·대기 0 이고 담당 없음 0), 비율 분모 0 은 '—'(_share_cell·_result_cell 이 _ratio_cell 감쌈), PROCEED_LABELS 는 domain/triage 것 재사용), metrics.html(탭 머리 data-monitor-tabs·숨은 tab 입력·data-tab-body, 기존 본문은 전후 탭 안, 그룹 열 머리 아래 data-config-head). 테스트: test_web_metrics 10건(탭 셋·활성·링크 유지, 422, 멤버 역할 200, 설정 머리 기록 있음·없음·이스케이프, 판단 요약 = /metrics.json, 기간, 빈 상태 링크는 manage_connections 만, 멤버·에이전트 이름 이스케이프·소유자·비활성), test_views config_change_heads 1건, e2e test_triage_cycle test_09(판단 탭 요약 = JSON, WORKFLOW_E2E=1 로 10 passed). 검증: pytest 4125 passed·73 skipped, ruff 통과. 다음 step 주의: 미리보기 링크는 /monitor?tab=triage, 설정 머리 그룹은 실행의 config_revision 이라 업무만 있고 실행 없는 번호는 열이 없다.",
+      "completed_at": "2026-10-02T06:38:22+0900"
     },
     {
       "step": 8,
       "name": "autostart-preview",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T06:38:22+0900",
+      "summary": "수정: server/views.py(autostart_preview_line(preview) -> str — proposed 0 이면 '아직 이 기준값 이상 판단이 없습니다', 아니면 '지금 기준값 0.80 이상 판단 n건 — 사람 일치 x/y · 병합 a/b'(분모 0 은 '—'), triage_settings_context 가 repo.list_triage_facts 를 한 번 읽고 종류마다 저장된 기준값(없으면 AUTOSTART_DEFAULT_THRESHOLD 0.8)으로 domain autostart_preview 를 불러 자동 시작 행 dict 에 preview 칸), templates/_connect_triage.html(자동 시작 폼 안 <span data-autostart-preview> 미리보기 + '/monitor?tab=triage' 판단 품질 보기 링크 — 서버 렌더 한 번, JS 없음). 자동 시작 잠김·저장·버전 동작 변경 없음. 테스트: test_web_triage_settings 에 seed_judged(업무·판단 실행·제안 로그·감지 PR 병합, FK 끄고 직접)·judged 픽스처와 3건 — 기본 0.80 숫자·링크, 기록 없음 문구, 기준값 0.90·0.70·1.00 저장 뒤 다음 렌더 숫자. 기존 테스트 변경 없음. 검증: pytest 4128 passed·73 skipped, ruff 통과. 다음 step 주의: 미리보기는 판단 실행·업무 행이 있어야 잡힌다(list_triage_facts 는 work_items·executions 와 INNER JOIN).",
+      "completed_at": "2026-10-02T06:49:39+0900"
     },
     {
       "step": 9,
       "name": "monitor-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T06:49:39+0900",
+      "summary": "새: tests/e2e/test_monitor.py(WORKFLOW_E2E 게이트, 10건 — 가짜 GitHub App·가짜 claude(확신도 [confidence:x], [ask] 는 인계 파일 input-… 없는 첫 시도에 needs_information, 재작업은 '이전 검토 지적' 절) 로 이슈 3건 기준 v1 판단 → RUN-1 김멤버 제안대로·정보 요청에 김멤버 응답·병합, RUN-2 다르게(김멤버), RUN-3 무시 → 기준 v2 → RUN-4 제안대로·재작업 1회·병합 → 자동 시작 끈 채 기준값 0.70 → 연결 판단 탭 미리보기 '0.70 이상 3건 — 사람 일치 2/3 · 병합 2/2', /metrics.json 판단(일치 2/3, v1 1/2·v2 1/1, 병합 2/2, 재작업 없이 1/2, 확신도 구간 5개)·담당자별(김멤버 진행 1·응답 n 1, 에이전트 실행 7·실패 0/7·1회 통과 1/2·재작업 1, 담당 없음 1)·설정 변경 4행(번호 2~5, 운영자, 본문 없음), /metrics.csv 같은 숫자·이름 없음, /monitor 세 탭 숫자·설정 머리; v15 사본(_v15_db 를 고정 워크스페이스로 옮기고 설정 3 실행 추가) → v16 → 행 수 그대로·config_changes 0 → 세 탭 200·'설정 3 — 기록 없음'). 문서: SELFHOST 업그레이드 v16(백업 → install.sh → 스키마 16, 러너 재설치 불필요), VERIFICATION_LOG 'phase 20 모니터링', CURRENT_HANDOFF 다음 작업(20-monitor 완료 → service 병합·셀프호스트 v16 → 실연동·브라우저 확인), phase README 상태 완료. 제품 코드 변경 없음(결함 없음 — 가짜 claude 의 첫 시도 판별만 고침). 검증: pytest 4128 passed·83 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 82 passed·1 skipped(첫 실행에서 test_work_ui 5건 실패 — 단독·재실행 통과, 원인 미확인으로 로그에 기록). 다음: service 병합·셀프호스트 v16 재설치는 사용자 지시 뒤.",
+      "completed_at": "2026-10-02T07:19:39+0900"
     }
-  ]
+  ],
+  "created_at": "2026-10-02T04:32:00+0900",
+  "completed_at": "2026-10-02T07:19:40+0900"
 }

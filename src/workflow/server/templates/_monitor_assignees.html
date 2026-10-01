@@ -1,0 +1,32 @@
+{# 모니터링 담당자별 탭 — phase 20 step 7, ARCHITECTURE "모니터링 — phase 20" 화면 문구. views.assignee_context 값.
+   완료·진행은 지금 담당 기준, 내 차례 대기는 지금 받는 사람 기준. 에이전트 소유자는 기존 `st.owner`(views.runner_owner). #}
+{% import "_status.html" as st %}
+{% if assignees.empty %}<p class="muted">아직 맡은 업무가 없습니다.</p>{% endif %}
+
+<h2>멤버</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>멤버</th><th>완료</th><th>진행 중</th><th>내 차례 대기</th><th>가장 오래 기다림</th><th>응답 시간(중앙값)</th></tr>
+    {% for m in assignees.members %}
+    <tr><th>{{ m.display_name }}{% if not m.active %} (비활성){% endif %}</th><td>{{ m.done }}</td><td>{{ m.open }}</td>
+      <td>{{ m.turn_waiting }}</td><td>{{ m.longest_wait }}</td><td>{{ cell(m.response_time) }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<h2>에이전트</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>에이전트</th><th>완료</th><th>진행 중</th><th>실행</th><th>실패율</th><th>1회 통과</th><th>재작업</th><th>실행 시간(중앙값)</th><th>비용</th></tr>
+    {% for a in assignees.agents %}
+    <tr><th>{{ a.name }} <span class="small">{{ st.owner(agent_owners.get(a.agent_id)) }}</span></th><td>{{ a.done }}</td><td>{{ a.open }}</td>
+      <td>{{ a.runs }}</td><td>{{ cell(a.failure) }}{% if a.failure.codes %}<div class="small">{{ a.failure.codes }}</div>{% endif %}</td>
+      <td>{{ cell(a.first_pass) }}</td><td>{{ a.rework }}</td><td>{{ cell(a.execution_time) }}</td><td>{{ cell(a.cost) }}</td></tr>
+    {% else %}
+    <tr><td colspan="9" class="small">워크스페이스에 에이전트가 없습니다.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<p class="small">담당 없는 진행 중 업무 {{ assignees.unassigned_open }}</p>
+{% if assignees.responses_unknown_member %}<p class="small">응답자를 모르는 응답 {{ assignees.responses_unknown_member }}(v11 이전)</p>{% endif %}
+<p class="small">완료·진행 중은 지금 담당 기준, 내 차례 대기는 지금 받는 사람 기준입니다. 비용은 CLI 계산값이며 구독 청구액이 아닙니다.</p>

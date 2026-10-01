@@ -857,7 +857,7 @@ def test_chain_node_kind_label_and_reasons_use_session_registry(seeded, settings
     assert "선행 #41 (ops.triage) → code.patch 인계" in second["reasons"]
 
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(seeded, SESSION) if r.from_kind == "classify"]
-    repo.delete_rule(seeded, SESSION, rule_id)
+    repo.delete_rule(seeded, SESSION, rule_id, now=NOW)
     second = _chain(seeded, settings)["tasks"][1]
     assert second["reasons"][0] == "후속 규칙 없음: classify → patch"
 
@@ -1042,3 +1042,19 @@ def test_response_buttons_name_what_each_action_does(seeded):
     data = views._request_public(seeded, repo.get_human_request(seeded, SESSION, other), can_respond=True,
                                  agent_choices=[])
     assert data["actions"] == [("resume", "답하고 다시 맡기기"), ("close", "업무 종료")]
+
+
+# --- 모니터링 탭 (phase 20 step 7) ---------------------------------------------------------------------------
+
+
+def test_config_change_heads_name_the_change_or_say_no_record():
+    change = {"revision": 4, "area": "triage_criteria", "action": "change", "subject": "v2",
+              "by_member_name": "김OO", "occurred_at": "2026-10-02T16:00:00Z"}  # KST 10/3 01:00
+    system = {**change, "revision": 5, "area": "source", "action": "add", "subject": "acme/billing",
+              "by_member_name": None}
+    heads = views.config_change_heads({4: [change], 5: [system]}, ["all", "3", "4", "5", "unknown"])
+    assert heads == {
+        "3": "설정 3 — 기록 없음",
+        "4": "설정 4 — 판단 기준 변경 v2 · 김OO · 10/3",
+        "5": "설정 5 — 저장소 연결 추가 acme/billing · 시스템 · 10/3",
+    }

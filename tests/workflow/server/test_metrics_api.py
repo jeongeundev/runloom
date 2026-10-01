@@ -19,7 +19,10 @@ from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig, I
 from workflow.contracts.v1 import ArtifactMeta, ExecutionEvent, ExecutionRequest
 from workflow.domain.metrics import BASELINE_NOTE
 
-from .conftest import event, log_in_other_workspace, meta_for, request_body, seed_execution, task_row
+from .conftest import (
+    ADMIN_EMAIL, ADMIN_NAME, event, log_in_member, log_in_other_workspace, meta_for, request_body, seed_execution,
+    seed_agents, task_row,
+)
 from .test_github_api import login
 
 TOKEN = "github_pat_" + "M3tr1c" * 10
@@ -297,7 +300,185 @@ def test_metrics_csv_has_one_row_per_metric_with_blank_unknowns(op):
 
 def test_metrics_csv_follows_the_same_parameters(op):
     rows = _rows(op.get("/metrics.csv", params={"group_by": "config_revision"}))
-    assert {r["group"] for r in rows} == {"1", "2", f"baseline:{SOURCE}"}  # 기준선은 그룹과 무관한 행 하나
+    old = [r for r in rows if r["area"] not in ("triage", "assignee")]  # phase 20 행은 group_by 와 무관하게 뒤에 붙는다
+    assert {r["group"] for r in old} == {"1", "2", f"baseline:{SOURCE}"}  # 기준선은 그룹과 무관한 행 하나
+    assert rows[:len(old)] == old
+    assert "triage:all" in {r["group"] for r in rows[len(old):]}
+
+
+# --- phase 20: 판단 품질·담당자별·설정 변경 ----------------------------------------------------------
+
+
+def _work_of(conn, task_id: str) -> str:
+    return conn.execute("SELECT work_item_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()[0]
+
+
+def _triage_log(conn, session_id: str, n: int, task_id: str, *, created: str, state: str, kind: str | None = None,
+                proceed: str | None = None, confidence: float | None = None, handling: str | None = None,
+                failed_code: str | None = None, status: str, started: str | None, finished: str,
+                cost: float | None) -> None:
+    """판단 단계 Task·실행·판단 로그 한 벌을 `task_id` 의 업무에 붙인다(DB 직접)."""
+    work_item_id = _work_of(conn, task_id)
+    triage_task, execution_id = f"task-trg-{n}", f"exec-trg-{n}"
+    repo.insert_task(conn, {**_task(triage_task, session_id), "kind": "triage"}, created, work_item_id=work_item_id)
+    seed_execution(conn, execution_id, triage_task)  # 판단 단계는 Task 종류의 결과 형태로 가른다
+    conn.execute("UPDATE executions SET status = ?, started_at = ?, finished_at = ?, cost_usd = ? WHERE execution_id = ?",
+                 (status, started, finished, cost, execution_id))
+    final = ("agent", "agent-codex-mac") if handling else (None, None)
+    conn.execute(
+        "INSERT INTO triage_logs (triage_id, session_id, work_item_id, work_revision, task_id, execution_id, agent_id,"
+        " trigger, criteria_version, input_sha256, candidates_json, state, result_json, proceed, confidence,"
+        " proposed_kind, failed_code, handling, handled_at, final_assignee_type, final_assignee_id, created_at,"
+        " updated_at) VALUES (?, ?, ?, 1, ?, ?, 'agent-codex-mac', 'auto', 1, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+        " ?, ?)",
+        (f"trg-{n}", session_id, work_item_id, triage_task, execution_id, "a" * 64, state,
+         "{}" if state == "proposed" else None, proceed, confidence, kind, failed_code, handling,
+         created if handling else None, *final, created, created),
+    )
+
+
+@pytest.fixture
+def triaged(operator, conn) -> tuple[TestClient, str]:
+    """operator + 판단 2건(task-1 업무: 09-20 제안 bug_fix·맡겨도 됨·0.92·제안대로, 2분·0.1달러 / task-2 업무: 09-25 실패
+    timeout, 시작 전이라 시작 시각·비용 모름), 러너 모양 Agent(agent-codex-mac) 등록, 관리자가 저장한 자동 시작(설정 번호 3)."""
+    op, session_id = operator
+    seed_agents(conn)
+    _triage_log(conn, session_id, 1, "task-1", created="2026-09-20T00:05:00Z", state="proposed", kind="bug_fix",
+                proceed="ready", confidence=0.92, handling="accepted", status="result_ready",
+                started="2026-09-20T00:06:00Z", finished="2026-09-20T00:08:00Z", cost=0.1)
+    _triage_log(conn, session_id, 2, "task-2", created="2026-09-25T00:01:00Z", state="failed", failed_code="timeout",
+                status="failed", started=None, finished="2026-09-25T00:02:00Z", cost=None)
+    admin = repo.find_member_by_email(conn, session_id, ADMIN_EMAIL)["member_id"]
+    repo.save_triage_autostart(conn, session_id, "bug_fix", enabled=False, threshold=0.9, member_id=admin,
+                               now="2026-09-22T00:00:00Z")
+    return op, admin
+
+
+def _ratio(numerator: int, denominator: int, rate, incomplete: int = 0, unknown: int = 0) -> dict:
+    return {"numerator": numerator, "denominator": denominator, "rate": rate, "incomplete": incomplete,
+            "unknown": unknown}
+
+
+def _stat(median=None, n: int = 0, incomplete: int = 0, unknown: int = 0, total=None) -> dict:
+    return {"median": median, "n": n, "incomplete": incomplete, "unknown": unknown, "total": total}
+
+
+def test_metrics_json_adds_triage_assignees_and_config_changes_after_the_old_keys(triaged):
+    op, admin = triaged
+    body = op.get("/metrics.json").json()
+    assert list(body) == ["from", "to", "group_by", "groups", "baselines", "triage", "assignees", "config_changes"]
+    [group] = body["groups"]
+    assert group["bundles"] == 2 and group["failure"]["denominator"] == 2  # 판단 단계 실행은 기존 지표에 섞이지 않는다
+
+    triage = body["triage"]
+    assert list(triage) == ["overall", "by_kind", "by_criteria", "confidence"]
+    overall = triage["overall"]
+    assert (overall["key"], overall["proposed"], overall["running"], overall["failed"], overall["superseded"]) \
+        == ("all", 1, 0, 1, 0)
+    assert overall["failed_codes"] == {"timeout": 1}
+    assert overall["handling"] == {"accepted": 1, "changed": 0, "dismissed": 0, "auto_started": 0, "unhandled": 0}
+    assert overall["agreement"] == _ratio(1, 1, 1.0)
+    assert overall["proceed"] == {"ready": 1, "needs_check": 0, "unsuitable": 0}
+    assert overall["merged"] == _ratio(0, 0, None, incomplete=1)  # 대상 업무가 아직 안 끝났다 — 0% 가 아니다
+    assert overall["merged_without_rework"] == _ratio(0, 0, None, incomplete=1)
+    assert overall["triage_time"] == _stat(120.0, 1, unknown=1)  # 시작 전 실패는 모름
+    assert overall["cost_usd"] == _stat(0.1, 1, unknown=1, total=0.1)
+    assert overall["revised_after"] == 0
+    assert [q["key"] for q in triage["by_kind"]] == ["bug_fix", "unknown"]
+    assert [(q["key"], q["proposed"], q["failed"]) for q in triage["by_criteria"]] == [("v1", 1, 1)]
+    assert [b["key"] for b in triage["confidence"]] == ["0-0.5", "0.5-0.7", "0.7-0.8", "0.8-0.9", "0.9-1"]
+    top = triage["confidence"][-1]
+    assert (top["low"], top["high"], top["proposed"], top["agreement"]) == (0.9, 1.0, 1, _ratio(1, 1, 1.0))
+    assert triage["confidence"][0]["agreement"] == _ratio(0, 0, None)
+
+    assignees = body["assignees"]
+    assert list(assignees) == ["members", "agents", "unassigned_open", "responses_unknown_member"]
+    assert assignees["members"] == [{
+        "member_id": admin, "display_name": ADMIN_NAME, "active": True, "done": 0, "open": 0, "turn_waiting": 0,
+        "longest_wait": None, "wait": _stat(), "response_time": _stat(),
+    }]
+    [agent] = assignees["agents"]
+    assert (agent["agent_id"], agent["name"], agent["runs"], agent["rework"]) == ("agent-codex-mac", "개인 Codex", 2, 1)
+    assert agent["failure"] == _ratio(1, 2, 0.5)  # 판단 실행(실패)은 담당자 지표에 없다
+    assert agent["failed_codes"] == {"timeout": 1}
+    assert (agent["done"], agent["open"]) == (0, 2)  # 두 업무 모두 지금 이 Agent 담당
+    assert agent["first_pass"] == _ratio(0, 0, None, incomplete=2)  # 검토 결과가 없다 — 0% 가 아니다
+    assert agent["cost_usd"] == _stat(0.5, 1, unknown=1, total=0.5)
+    assert (assignees["unassigned_open"], assignees["responses_unknown_member"]) == (0, 0)
+
+    assert body["config_changes"] == [
+        {"revision": 2, "area": "source", "action": "add", "subject": "acme/billing", "by_member_id": None,
+         "by_member_name": None, "occurred_at": OPENED_BEFORE},
+        {"revision": 3, "area": "triage_autostart", "action": "change", "subject": "bug_fix 끔 · 기준값 0.90",
+         "by_member_id": admin, "by_member_name": ADMIN_NAME, "occurred_at": "2026-09-22T00:00:00Z"},
+    ]
+
+
+def test_metrics_json_applies_the_period_to_new_areas_but_not_config_changes(triaged):
+    op, _ = triaged
+    whole = op.get("/metrics.json").json()
+    body = op.get("/metrics.json", params={"from": "2026-09-21T00:00:00Z", "group_by": "config_revision"}).json()
+    overall = body["triage"]["overall"]
+    assert (overall["proposed"], overall["failed"], overall["agreement"]) == (0, 1, _ratio(0, 0, None))
+    assert [q["key"] for q in body["triage"]["by_kind"]] == ["unknown"]  # group_by 는 판단 묶음과 무관
+    [agent] = body["assignees"]["agents"]
+    assert (agent["runs"], agent["failure"], agent["rework"]) == (1, _ratio(1, 1, 1.0), 1)
+    assert agent["open"] == 2  # 진행 중은 기간과 무관한 지금 값
+    assert body["config_changes"] == whole["config_changes"]
+
+
+def test_metrics_csv_adds_triage_and_assignee_rows_with_the_same_columns(triaged):
+    op, admin = triaged
+    response = op.get("/metrics.csv")
+    rows = _rows(response)
+    assert list(rows[0]) == list(metrics_api.CSV_COLUMNS)
+    new = [r for r in rows if r["area"] in ("triage", "assignee")]
+    assert rows[-len(new):] == new  # 기존 행 뒤에
+    cell = {(r["group"], r["metric"]): r for r in new}
+    assert {g for g, _ in cell} == {
+        "triage:all", "triage:kind:bug_fix", "triage:kind:unknown", "triage:criteria:v1",
+        "triage:confidence:0-0.5", "triage:confidence:0.5-0.7", "triage:confidence:0.7-0.8",
+        "triage:confidence:0.8-0.9", "triage:confidence:0.9-1", f"member:{admin}", "agent:agent-codex-mac",
+        "unassigned",
+    }
+    assert {r["area"] for r in new if r["group"].startswith("triage:")} == {"triage"}
+    assert {r["area"] for r in new if not r["group"].startswith("triage:")} == {"assignee"}
+
+    proposed = cell[("triage:all", "proposed")]
+    assert (proposed["unit"], proposed["total"], proposed["median"]) == ("count", "1", "")
+    assert cell[("triage:all", "failed_code:timeout")]["total"] == "1"
+    assert cell[("triage:all", "handling:unhandled")]["total"] == "0"
+    assert cell[("triage:all", "proceed:ready")]["total"] == "1"
+    agreement = cell[("triage:all", "agreement")]
+    assert (agreement["unit"], agreement["numerator"], agreement["denominator"]) == ("ratio", "1", "1")
+    merged = cell[("triage:all", "merged")]
+    assert (merged["numerator"], merged["denominator"], merged["incomplete"]) == ("0", "0", "1")
+    triage_time = cell[("triage:all", "triage_time")]
+    assert (triage_time["unit"], triage_time["median"], triage_time["unknown"]) == ("seconds", "120.0", "1")
+    assert cell[("triage:all", "cost_usd")]["unit"] == "usd"
+    assert cell[("triage:all", "revised_after")]["total"] == "0"
+    assert cell[("triage:confidence:0.9-1", "proposed")]["total"] == "1"
+    assert ("triage:confidence:0.9-1", "failed") not in cell  # 구간은 구간의 칸만
+
+    longest = cell[(f"member:{admin}", "longest_wait")]
+    assert (longest["unit"], longest["total"]) == ("seconds", "")  # 모름은 빈 칸
+    assert cell[(f"member:{admin}", "response_time")]["n"] == "0"
+    assert cell[("agent:agent-codex-mac", "runs")]["total"] == "2"
+    assert cell[("agent:agent-codex-mac", "failure")]["numerator"] == "1"
+    assert cell[("agent:agent-codex-mac", "failed_code:timeout")]["total"] == "1"
+    assert cell[("agent:agent-codex-mac", "open")]["total"] == "2"
+    assert cell[("unassigned", "open")]["total"] == "0"
+    for row in new:  # id 만 — 표시 이름·설정 변경 목록은 CSV 에 없다
+        assert ADMIN_NAME not in row.values() and "개인 Codex" not in row.values()
+    assert "기준값" not in response.text
+
+
+def test_member_role_reads_the_new_areas(app, triaged):
+    member = log_in_member(TestClient(app))
+    body = member.get("/metrics.json")
+    assert body.status_code == 200, body.text
+    assert body.json()["triage"]["overall"]["proposed"] == 1
+    assert any(r["area"] == "triage" for r in _rows(member.get("/metrics.csv")))
 
 
 # --- 기준선 가져오기 ------------------------------------------------------------------------

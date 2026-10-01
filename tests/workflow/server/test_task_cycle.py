@@ -885,7 +885,7 @@ def _reopen(conn, number: int, state: str, updated_at: str) -> None:
 def _use_placement(conn, placement: str) -> None:
     """내장 bug_fix → code_review 규칙을 같은 칸에 `placement` 만 바꾼 사용자 규칙으로 갈아 끼운다."""
     ((rule_id, rule),) = repo.list_rules(conn, SESSION)
-    repo.delete_rule(conn, SESSION, rule_id)
+    repo.delete_rule(conn, SESSION, rule_id, now=NOW)
     repo.insert_rule(conn, SESSION, rule.model_copy(update={"placement": placement}), NOW)
 
 

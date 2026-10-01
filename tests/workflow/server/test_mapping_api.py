@@ -55,3 +55,12 @@ def test_every_endpoint_requires_operator_session(client, conn):
         error(anonymous.get("/field-mappings"), 401, "unauthenticated")
         error(anonymous.put("/field-mappings", json={"mappings": NEW}), 401, "unauthenticated")
     assert len(repo.list_field_mappings(conn, SELFHOST_SESSION_ID)) <= len(DEFAULT)
+
+
+def test_put_records_a_config_change_by_the_logged_in_member(logged_in_client, conn):
+    """phase 20 — 매핑 표 교체 = 설정 변경 기록 한 행(원본 종류별 행 수만)."""
+    assert logged_in_client.put("/field-mappings", json={"mappings": NEW}).status_code == 200
+    (row,) = repo.list_config_changes(conn, SELFHOST_SESSION_ID)
+    admin = conn.execute("SELECT member_id FROM members WHERE session_id = ?", (SELFHOST_SESSION_ID,)).fetchone()[0]
+    assert (row["revision"], row["area"], row["action"], row["subject"], row["by_member_id"]) == (
+        repo.get_config_revision(conn, SELFHOST_SESSION_ID), "mapping", "change", "github 3행", admin)
