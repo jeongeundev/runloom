@@ -5,13 +5,14 @@
 """
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from workflow.contracts.v1 import WORK_KEY_PATTERN, WORK_KEY_PREFIX
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES
 
 QUICK_FILTERS = ("all", "my_turn", "unassigned", "agent_working")
-GROUP_BYS = ("assignee", "status")
+GROUP_BYS = ("assignee", "status", "repo")
 VIEWS = ("list", "board")
 CLOSED_SCOPES = ("recent", "all")
 CLOSED_RECENT_DAYS = 14
@@ -37,6 +38,7 @@ class ListQuery:
     view: str
     closed: str
     open_key: int | None
+    repo: str | None = None  # 워크스페이스 저장소 목록의 값만
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,8 @@ class WorkRow:
     recipients: tuple[str, ...]  # `내 차례` 일 때 받는 사람 member_id 들
     updated_at: str
     closed_at: str | None
+    repository: str | None = None  # GitHub 원본의 `owner/name`, 그 밖은 None
+    source_key_short: str | None = None  # `work_keys.short_source_key(source_key)`
 
 
 @dataclass(frozen=True)
@@ -81,15 +85,18 @@ def _pick(value: str, allowed: tuple[str, ...]) -> str:
     return value if value in allowed else allowed[0]
 
 
-def parse_list_query(*, q: str = "", group: str = "", view: str = "", closed: str = "", open: str = "") -> ListQuery:
-    """주소 쿼리 값 → 열거형. 모르는 값·빈 값은 기본값(첫 값). 15 의 `view=my_turn` 은 `q=my_turn` 으로 읽는다."""
+def parse_list_query(*, q: str = "", group: str = "", view: str = "", closed: str = "", open: str = "",
+                     repo: str = "", repos: Sequence[str] = ()) -> ListQuery:
+    """주소 쿼리 값 → 열거형. 모르는 값·빈 값은 기본값(첫 값). 15 의 `view=my_turn` 은 `q=my_turn` 으로 읽는다.
+    `repo` 는 `repos`(워크스페이스 저장소 목록)와 대소문자 무시로 같을 때만 목록 표기로, 아니면 None."""
     if view == "my_turn":
         q = "my_turn"
     open_key = None
     if re.fullmatch(WORK_KEY_PATTERN, open) and open.startswith(f"{WORK_KEY_PREFIX}-"):
         open_key = int(open.removeprefix(f"{WORK_KEY_PREFIX}-"))
+    picked_repo = next((name for name in repos if name.lower() == repo.lower()), None) if repo else None
     return ListQuery(q=_pick(q, QUICK_FILTERS), group=_pick(group, GROUP_BYS), view=_pick(view, VIEWS),
-                     closed=_pick(closed, CLOSED_SCOPES), open_key=open_key)
+                     closed=_pick(closed, CLOSED_SCOPES), open_key=open_key, repo=picked_repo)
 
 
 def next_action(*, request_question: str | None, direct_member_name: str | None, pr_label: str | None,
@@ -118,13 +125,14 @@ def _matches(row: WorkRow, q: str, member_id: str) -> bool:
     return True
 
 
-def filter_rows(rows, q: str, *, member_id: str) -> list[WorkRow]:
+def filter_rows(rows, q: str, *, member_id: str, repo: str | None = None) -> list[WorkRow]:
+    """저장소 필터(`repo` 가 있으면 그 저장소만) → 빠른 필터."""
     q = _pick(q, QUICK_FILTERS)
-    return [r for r in rows if _matches(r, q, member_id)]
+    return [r for r in rows if (repo is None or r.repository == repo) and _matches(r, q, member_id)]
 
 
-def filter_counts(rows, *, member_id: str) -> dict[str, int]:
-    return {q: len(filter_rows(rows, q, member_id=member_id)) for q in QUICK_FILTERS}
+def filter_counts(rows, *, member_id: str, repo: str | None = None) -> dict[str, int]:
+    return {q: len(filter_rows(rows, q, member_id=member_id, repo=repo)) for q in QUICK_FILTERS}
 
 
 def _in_group_order(rows) -> tuple[WorkRow, ...]:
@@ -148,12 +156,22 @@ def _assignee_group(row: WorkRow, member_id: str) -> tuple[tuple, str, str]:
     return (4, name, row.assignee_id), key, f"{name} (비활성)"
 
 
+def _repo_group(row: WorkRow) -> tuple[tuple, str, str]:
+    """저장소 이름 대소문자 무시 순, `저장소 없음` 은 마지막."""
+    if row.repository is None:
+        return (1,), "repo:none", "저장소 없음"
+    return (0, row.repository.lower(), row.repository), f"repo:{row.repository}", row.repository
+
+
 def group_rows(rows, by: str, *, member_id: str) -> list[RowGroup]:
     """묶음 목록. 행이 있는 묶음만 만든다."""
+    by = _pick(by, GROUP_BYS)
     buckets: dict[str, tuple[tuple, str, list[WorkRow]]] = {}
     for row in rows:
-        if _pick(by, GROUP_BYS) == "status":
+        if by == "status":
             order, key, label = (WORK_STATUSES.index(row.status),), f"status:{row.status}", row.status
+        elif by == "repo":
+            order, key, label = _repo_group(row)
         else:
             order, key, label = _assignee_group(row, member_id)
         buckets.setdefault(key, (order, label, []))[2].append(row)

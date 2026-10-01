@@ -94,6 +94,46 @@ def test_assignee_candidates_are_only_agents_that_can_take_the_open_stage(admin,
     assert f'value="agent:{REVIEW}"' not in props and 'value="agent:agent-fix-shop"' not in props
 
 
+def agent_option(text: str, agent_id: str) -> str:
+    return re.search(rf'<option value="agent:{agent_id}"[^>]*>(.*?)</option>', section(text, "props"), re.S).group(1)
+
+
+def member_named(conn, name: str) -> str:
+    return next(m["member_id"] for m in repo.list_members(conn, SESSION) if m["display_name"] == name)
+
+
+def test_agent_choice_line_shows_owner_mac_and_online(app, admin, conn, cycle, issue_task):
+    assert agent_option(panel(admin), FIX) == f"{FIX} · 공용 · 켜짐"  # 소유자 없는 러너
+    log_in_member(TestClient(app), display_name="이소유")
+    conn.execute("UPDATE connectors SET owner_member_id = ? WHERE connector_id = ?",
+                 (member_named(conn, "이소유"), cycle["billing"]))
+    assert agent_option(panel(admin), FIX) == f"{FIX} · 이소유의 Mac · 켜짐"
+
+
+def test_offline_agent_stays_a_choice_marked_off(admin, conn, issue_task):
+    conn.execute("UPDATE agents SET connection_state = 'offline' WHERE agent_id = ?", (FIX,))
+    assert agent_option(panel(admin), FIX) == f"{FIX} · 공용 · 꺼짐"
+
+
+def test_owner_approval_policy_marks_the_choice_for_non_owners(app, admin, conn, cycle, issue_task):
+    owner = log_in_member(TestClient(app), display_name="이소유")
+    other = log_in_member(TestClient(app), display_name="김맡김")
+    conn.execute("UPDATE connectors SET owner_member_id = ? WHERE connector_id = ?",
+                 (member_named(conn, "이소유"), cycle["billing"]))
+    assert "승인 필요" not in agent_option(panel(other), FIX)  # 정책 run
+    conn.execute("UPDATE agents SET delegation_policy = 'owner_approval' WHERE agent_id = ?", (FIX,))
+    assert agent_option(panel(other), FIX) == f"{FIX} · 이소유의 Mac · 켜짐 · 승인 필요"
+    assert agent_option(panel(admin), FIX) == f"{FIX} · 이소유의 Mac · 켜짐 · 승인 필요"  # 관리자도 소유자 아님
+    assert agent_option(panel(owner), FIX) == f"{FIX} · 이소유의 Mac · 켜짐"
+
+
+def test_shared_agent_needs_approval_only_for_non_admins(app, admin, conn, issue_task):
+    other = log_in_member(TestClient(app), display_name="김맡김")
+    conn.execute("UPDATE agents SET delegation_policy = 'owner_approval' WHERE agent_id = ?", (FIX,))
+    assert agent_option(panel(admin), FIX) == f"{FIX} · 공용 · 켜짐"
+    assert agent_option(panel(other), FIX) == f"{FIX} · 공용 · 켜짐 · 승인 필요"
+
+
 def test_disabled_members_are_not_assignee_choices(app, admin, conn, issue_task):
     other = repo.add_member(conn, SESSION, display_name="떠난사람", now=NOW)
     repo.disable_member(conn, SESSION, other, now=NOW)

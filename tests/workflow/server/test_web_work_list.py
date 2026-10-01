@@ -13,6 +13,7 @@ from workflow.adapters import repo
 from workflow.server.auth import LOGIN_COOKIE, ensure_workspace, utc_now
 
 from .conftest import NOW, SESSION, log_in, log_in_member, seed_agents
+from .test_github_sync import config
 
 AGENT = "agent-codex-mac"  # 이름 "개인 Codex"
 HEADERS = ["키", "제목", "담당", "우선순위", "종류", "상태", "다음 할 일", "업데이트"]
@@ -125,7 +126,7 @@ def test_row_cells_show_source_badge_priority_symbol_status_badge_and_next_actio
              source_url="https://github.com/acme/billing/issues/41", priority="high")  # RUN-6
     html = admin.get("/tasks").text
     row = re.search(r'<tr class="work-row" data-work-key="RUN-6".*?</tr>', html, re.S).group(0)
-    assert "acme/billing#41" in row and '<span class="source-badge" data-source="github">GitHub</span>' in row
+    assert "billing#41" in row and '<span class="source-badge" data-source="github">GitHub</span>' in row
     assert "↑ 높음" in row
     assert 'data-status="새로 들어옴"' in row
     theirs = re.search(r'<tr class="work-row" data-work-key="RUN-4".*?</tr>', html, re.S).group(0)
@@ -158,6 +159,79 @@ def test_external_title_is_escaped(admin, conn):
     assert "<b>k</b>" not in html
     board = admin.get("/tasks?view=board").text
     assert "<script>alert(1)</script>" not in board
+
+
+# --- 저장소 보기·키 칸 (phase 17 step 9) ---------------------------------------------------------------------
+
+
+def add_source(conn, source_id: str, full_name: str) -> None:
+    data = config(source_id=source_id, repository_full_name=full_name).model_dump_json()
+    conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, created_at,"
+                 " updated_at) VALUES (?, ?, ?, ?, ?, ?)", (source_id, SESSION, full_name, data, NOW, NOW))
+
+
+@pytest.fixture
+def repos(conn, admin) -> None:
+    """RUN-1 직접 · RUN-2 acme/web#7 · RUN-3 acme/billing#41 · RUN-4 acme/web#8(담당 없음 아님)."""
+    add_source(conn, "ghs-0000000a", "acme/web")
+    add_source(conn, "ghs-0000000b", "acme/billing")
+    new_work(conn, "직접 업무")
+    new_work(conn, "웹 이슈", source_type="github", source_id="ghs-0000000a", source_key="acme/web#7")
+    new_work(conn, "결제 이슈", source_type="github", source_id="ghs-0000000b", source_key="acme/billing#41")
+    work, _ = new_work(conn, "웹 이슈 2", source_type="github", source_id="ghs-0000000a", source_key="acme/web#8")
+    assign(conn, work, "agent", AGENT)
+
+
+def test_group_by_repo_orders_by_name_and_puts_no_repo_last(admin, repos):
+    html = admin.get("/tasks?group=repo").text
+    assert groups_in(html) == [("repo:acme/billing", "acme/billing", 1), ("repo:acme/web", "acme/web", 2),
+                               ("repo:none", "저장소 없음", 1)]
+    assert 'data-group-by="repo" aria-current="true"' in html
+
+
+def test_repo_filter_keeps_that_repository_and_stays_in_links(admin, repos):
+    html = admin.get("/tasks?repo=acme/web").text
+    assert keys_in(html) == ["RUN-2", "RUN-4"]  # 담당 없음 묶음 → 에이전트 묶음
+    assert counts_in(html) == {"all": 2, "my_turn": 0, "unassigned": 1, "agent_working": 1}
+    assert 'href="/tasks?group=status&amp;repo=acme/web"' in html  # 묶기 링크가 저장소를 유지
+    assert 'href="/tasks?repo=acme/web&amp;open=RUN-2"' in main_of(html)  # 행 링크도
+    html = admin.get("/tasks?repo=ACME/Web&q=unassigned&group=repo").text  # 대소문자 무시 + 다른 쿼리와 함께
+    assert keys_in(html) == ["RUN-2"]
+    assert groups_in(html) == [("repo:acme/web", "acme/web", 1)]
+
+
+def test_unknown_repo_value_is_ignored(admin, repos):
+    assert keys_in(admin.get("/tasks").text) == ["RUN-3", "RUN-2", "RUN-1", "RUN-4"]
+    for value in ("acme/nope", "<script>x</script>", "../../etc"):
+        html = admin.get("/tasks", params={"repo": value}).text
+        assert keys_in(html) == ["RUN-3", "RUN-2", "RUN-1", "RUN-4"], value
+        assert 'href="/tasks?group=status"' in html  # 버린 값은 주소에 남지 않는다
+        assert "<script>x</script>" not in html
+
+
+def test_toolbar_has_a_repo_select_only_when_the_workspace_has_repositories(admin, conn, repos):
+    html = main_of(admin.get("/tasks?repo=acme/web&view=board").text)
+    select = re.search(r'<form[^>]*data-repo-filter.*?</form>', html, re.S).group(0)
+    assert re.findall(r'<option value="([^"]*)"', select) == ["", "acme/billing", "acme/web"]
+    assert '<option value="acme/web" selected>' in select
+    assert '<input type="hidden" name="view" value="board">' in select  # 다른 목록 상태를 싣는다
+    assert 'name="repo"' in select
+
+
+def test_toolbar_hides_the_repo_select_without_repositories(admin, people):
+    assert "data-repo-filter" not in admin.get("/tasks").text
+
+
+def test_key_cell_shows_run_key_first_and_the_short_source_key_dimmed(admin, repos):
+    html = admin.get("/tasks").text
+    row = re.search(r'<tr class="work-row" data-work-key="RUN-3".*?</tr>', html, re.S).group(0)
+    cell = row[:row.index("</td>")]
+    assert cell.index("RUN-3") < cell.index("billing#41")
+    assert "acme/billing#41" not in cell
+    assert re.search(r'<span class="muted[^"]*"[^>]*>billing#41</span>', cell)
+    board = main_of(admin.get("/tasks?view=board").text)
+    card = re.search(r'<a class="board-card" data-work-key="RUN-3".*?</a>', board, re.S).group(0)
+    assert card.index("RUN-3") < card.index("billing#41") and "acme/billing#41" not in card
 
 
 # --- 빠른 필터 ---------------------------------------------------------------------------------------------

@@ -450,7 +450,8 @@ def test_one_issue_with_fix_and_review_is_one_row_and_one_work_detail(operator, 
     assert main.count('href="/tasks?open=RUN-1"') == 1
     assert f'href="/tasks/{fix_task}"' not in main and f'href="/tasks/{review_task}"' not in main
     row = re.search(r'<tr class="work-row" data-work-key="RUN-1".*?</tr>', main, re.S).group(0)
-    assert "acme/billing#1" in row  # 원본 키가 있으면 원본 키
+    # phase 17: 키 칸 = RUN-n 먼저, 원본 키는 옆에 짧게(`acme/billing#1` → `billing#1`)
+    assert row.index("RUN-1") < row.index("billing#1") and "acme/billing#1" not in row
     assert "버그 1" in row
     assert FIX in row  # 담당 = 에이전트 이름
     assert 'data-status="내 차례"' in row and "검토 대기" in row  # 업무 상태 — 수정 단계가 검토를 기다림

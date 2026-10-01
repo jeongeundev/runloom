@@ -74,6 +74,7 @@ from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
 from workflow.domain import notification, start_checklist, team
+from workflow.domain.delegation import DELEGATION_POLICIES, can_set_policy
 from workflow.domain.kinds import (
     get_kind,
     kind_for_capability,
@@ -546,13 +547,15 @@ def home(
     view: str = "",
     closed: str = "",
     open: str = "",
+    repo_name: str = Query("", alias="repo"),
     member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """업무 화면 — 한 줄 표(묶기)·보드, 빠른 필터. 쿼리는 열거형만(`parse_list_query` — 모르는 값은 기본값)."""
+    """업무 화면 — 한 줄 표(묶기)·보드, 빠른 필터. 쿼리는 열거형만(`parse_list_query` — 모르는 값은 기본값), 저장소는
+    워크스페이스 저장소 목록의 값만."""
     session_id = member.session_id
     now = utc_now()
-    query = parse_list_query(q=q, group=group, view=view, closed=closed, open=open)
+    query = _list_query(conn, session_id, q=q, group=group, view=view, closed=closed, open=open, repo_name=repo_name)
     base = _base(request, conn, session_id, now)
     work = repo.get_work_item_by_key(conn, session_id, query.open_key) if query.open_key is not None else None
     panel = _panel(request, conn, member, work, query, allowed=base["allowed"], now=now) if work else None
@@ -560,6 +563,13 @@ def home(
                    **views.work_list_context(conn, session_id, member_id=member.member_id, query=query, now=now),
                    list_href=views.list_href, has_agents=bool(_session_agents(conn, session_id)), panel=panel,
                    open_key=format_work_key(query.open_key) if query.open_key is not None else None)
+
+
+def _list_query(conn: Connection, session_id: str, *, q: str, group: str, view: str, closed: str, repo_name: str,
+                open: str = "") -> ListQuery:
+    """목록 상태 — `repo` 는 이 워크스페이스 저장소 목록과 맞을 때만 남는다(`parse_list_query`)."""
+    return parse_list_query(q=q, group=group, view=view, closed=closed, open=open, repo=repo_name,
+                            repos=repo.list_work_repositories(conn, session_id))
 
 
 def _panel(request: Request, conn: Connection, member: LoggedIn, work: Row, query: ListQuery, *,
@@ -924,13 +934,14 @@ def work_panel(
     group: str = "",
     view: str = "",
     closed: str = "",
+    repo_name: str = Query("", alias="repo"),
     member: LoggedIn = Depends(require_member),
     conn: Connection = Depends(get_conn),
 ) -> str:
     """상세 패널 조각(`base.html` 없이) — 업무 화면의 JS 가 끼운다. 목록 상태 쿼리는 닫기 주소·폼 숨은 입력에만 쓴다."""
     now = utc_now()
     work = _own_work(conn, member.session_id, key)
-    query = parse_list_query(q=q, group=group, view=view, closed=closed)
+    query = _list_query(conn, member.session_id, q=q, group=group, view=view, closed=closed, repo_name=repo_name)
     response.headers["Cache-Control"] = "no-store"
     return _render("_work_panel.html", now=now, panel=_panel(
         request, conn, member, work, query, allowed=team.allowed_actions(member.role), now=now))
@@ -944,9 +955,10 @@ def _own_work(conn: Connection, session_id: str, key: str) -> Row:
     return work
 
 
-def _work_redirect(work: Row, response: Response, q: str, group: str, view: str, closed: str) -> RedirectResponse:
-    """`/tasks?open=<key>` — 목록 상태(숨은 입력)는 `parse_list_query` 로 정규화한 열거형 값만 붙인다."""
-    query = parse_list_query(q=q, group=group, view=view, closed=closed)
+def _work_redirect(conn: Connection, work: Row, response: Response, q: str, group: str, view: str, closed: str,
+                   repo_name: str) -> RedirectResponse:
+    """`/tasks?open=<key>` — 목록 상태(숨은 입력)는 `parse_list_query` 로 정규화한 값만 붙인다."""
+    query = _list_query(conn, work["session_id"], q=q, group=group, view=view, closed=closed, repo_name=repo_name)
     return _redirect(f"/tasks?{views.list_query_params(query, open_key=work['key_number'])}", response)
 
 
@@ -961,6 +973,7 @@ def work_assignee(
     group: str = Form(""),
     view: str = Form(""),
     closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
     member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -970,7 +983,7 @@ def work_assignee(
         work_actions.assign_work(conn, request.app.state.store, _settings(request), session_id=member.session_id,
                                  work_item_id=work["work_item_id"], value=assignee, member_id=member.member_id,
                                  now=utc_now(), secrets=request.app.state.secrets, note=note)
-    return _work_redirect(work, response, q, group, view, closed)
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
 
 
 @router.post("/work/{key}/priority")
@@ -982,6 +995,7 @@ def work_priority(
     group: str = Form(""),
     view: str = Form(""),
     closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
     member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -990,7 +1004,7 @@ def work_priority(
     with _page_errors():
         work_actions.set_priority(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
                                   priority=priority, member_id=member.member_id, now=utc_now())
-    return _work_redirect(work, response, q, group, view, closed)
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
 
 
 @router.post("/work/{key}/direct")
@@ -1001,6 +1015,7 @@ def work_direct(
     group: str = Form(""),
     view: str = Form(""),
     closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
     member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -1009,7 +1024,7 @@ def work_direct(
     with _page_errors():
         work_actions.start_direct(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
                                   member_id=member.member_id, now=utc_now())
-    return _work_redirect(work, response, q, group, view, closed)
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
 
 
 @router.post("/work/{key}/direct/stop")
@@ -1020,6 +1035,7 @@ def work_direct_stop(
     group: str = Form(""),
     view: str = Form(""),
     closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
     member: LoggedIn = Depends(require_action(team.DELEGATE)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -1027,7 +1043,7 @@ def work_direct_stop(
     work = _own_work(conn, member.session_id, key)
     with _page_errors():
         work_actions.stop_direct(conn, session_id=member.session_id, work_item_id=work["work_item_id"], now=utc_now())
-    return _work_redirect(work, response, q, group, view, closed)
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
 
 
 def _refuse_direct_work(conn: Connection, task_id: str) -> None:
@@ -1359,8 +1375,10 @@ def _tab_context(request: Request, conn: Connection, member: LoggedIn, tab: str,
         context: dict[str, Any] = {
             "agents": [
                 {**views.agent_public(a, now=now, settings=settings),
-                 "owner": views.runner_owner(conn, session_id, views.agent_owner_id(conn, a))}
+                 "owner": views.runner_owner(conn, session_id, owner_id),
+                 "can_set_policy": can_set_policy(member_id=member.member_id, role=member.role, owner_id=owner_id)}
                 for a in _session_agents(conn, session_id)
+                for owner_id in (views.agent_owner_id(conn, a),)
             ],
             "public_url_set": bool(settings.public_url),
         }
@@ -1409,6 +1427,30 @@ def connect_page(
 def agents_list() -> RedirectResponse:
     """옛 에이전트 목록 — 연결 화면 팀·담당자 탭(phase 16 step 6). 쿼리는 버린다."""
     return _to_connect("team")
+
+
+@router.post("/agents/{agent_id}/delegation-policy")
+def agent_delegation_policy(
+    response: Response,
+    agent_id: str,
+    policy: str = Form(""),
+    member: LoggedIn = Depends(require_member),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """맡기기 정책(`run` 바로 실행 · `owner_approval` 내 승인 뒤 실행) — 러너 소유자 또는 관리자(`can_set_policy`).
+    `run` 으로 바꾸면 그 에이전트의 열린 승인 요청을 닫는다(`repo.set_delegation_policy`). ARCHITECTURE "사람 사이 인계 — phase 17"."""
+    if repo.get_agent(conn, agent_id) is None or not repo.is_session_agent(conn, member.session_id, agent_id):
+        raise PageError(404, "not_found", "에이전트를 찾을 수 없습니다.", field="agent_id")
+    if not can_set_policy(member_id=member.member_id, role=member.role, owner_id=repo.agent_owner_id(conn, agent_id)):
+        raise PageError(403, "forbidden", "러너 소유자나 관리자만 바꿀 수 있습니다.")
+    if policy not in DELEGATION_POLICIES:
+        raise PageError(422, "invalid_field", "맡기기 정책이 올바르지 않습니다.", field="policy")
+    try:
+        repo.set_delegation_policy(conn, member.session_id, agent_id, policy, member_id=member.member_id,
+                                   now=utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", "에이전트를 찾을 수 없습니다.", field="agent_id") from None
+    return _redirect("/connect?tab=team", response)
 
 
 @router.get("/agents/{agent_id}", response_class=HTMLResponse)

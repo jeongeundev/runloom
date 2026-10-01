@@ -34,7 +34,7 @@
               {% for m in panel.members %}<option value="member:{{ m.member_id }}"{% if w.assignee == 'member:' ~ m.member_id %} selected{% endif %}>{{ m.display_name }}{% if m.member_id == panel.member_id %} (나){% endif %}</option>{% endfor %}
             </optgroup>{% endif %}
             {% if panel.agents %}<optgroup label="에이전트 — 고르면 곧 맡깁니다">
-              {% for a in panel.agents %}<option value="agent:{{ a.agent_id }}"{% if w.assignee == 'agent:' ~ a.agent_id %} selected{% endif %}>{{ a.name }}</option>{% endfor %}
+              {% for a in panel.agents %}<option value="agent:{{ a.agent_id }}"{% if w.assignee == 'agent:' ~ a.agent_id %} selected{% endif %}>{{ a.label }}</option>{% endfor %}
             </optgroup>{% endif %}
           </select>
           <textarea name="note" maxlength="2000" rows="2" aria-label="지시 메모" placeholder="지시 메모 (에이전트에게 맡길 때만, 선택)"></textarea>

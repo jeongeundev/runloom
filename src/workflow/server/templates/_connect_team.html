@@ -2,9 +2,11 @@
    러너 목록, `attach_runner` — 해제 버튼은 소유자 본인 또는 `remove_any_runner`(`can_revoke`)).
    ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 초대·재설정 링크 원문은 발급 응답(`issued`)에만
    한 번 보이고 — 303 없음 — 서버에는 sha256 만 남는다. 비밀번호 해시는 싣지 않는다. 마지막 관리자 거부는 오류 화면(409 last_admin).
-   에이전트 목록의 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). #}
+   에이전트 목록의 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). 맡기기 정책(phase 17)은 러너 소유자·관리자(`can_set_policy`)만
+   바꾸는 폼, 다른 멤버에게는 글자로만 보인다. #}
 {% import "_status.html" as st %}
 {% set role_labels = {'admin': '관리자', 'member': '멤버'} %}
+{% set policy_labels = {'run': '바로 실행', 'owner_approval': '내 승인 뒤 실행'} %}
 {% if 'manage_team' in allowed %}
 {% if not public_url_set %}
 <div class="alert">링크 주소가 지금 연 주소 기준입니다. 다른 컴퓨터에서 열려면 <code>WORKFLOW_PUBLIC_URL</code> 을 설정하세요 — SELFHOST 문서(<code>docs/SELFHOST.md</code>) 참고.</div>
@@ -81,9 +83,9 @@
 {% if agents %}
 <div class="table-wrap">
 <table>
-  <tr><th>이름</th><th>ID</th><th>소유</th><th>소유자</th><th>연결</th><th>능력</th><th>상태</th></tr>
+  <tr><th>이름</th><th>ID</th><th>소유</th><th>소유자</th><th>연결</th><th>능력</th><th>상태</th><th>맡기기</th></tr>
   {% for a in agents %}
-  <tr>
+  <tr data-agent="{{ a.agent_id }}">
     <td><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></td>
     <td class="mono">{{ a.agent_id }}</td>
     <td>{{ a.owner_scope }}</td>
@@ -91,6 +93,13 @@
     <td>{{ a.connection_type }}</td>
     <td>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
     <td>{{ st.connection(a) }}</td>
+    <td>{% if a.can_set_policy %}
+      <form method="post" action="/agents/{{ a.agent_id }}/delegation-policy" class="inline-form">
+        <select name="policy" aria-label="{{ a.name }} 맡기기 정책">
+          {% for value, label in policy_labels.items() %}<option value="{{ value }}"{% if a.delegation_policy == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-secondary btn-small" type="submit">바꾸기</button></form>
+      {% else %}{{ policy_labels.get(a.delegation_policy, a.delegation_policy) }}{% endif %}</td>
   </tr>
   {% endfor %}
 </table>

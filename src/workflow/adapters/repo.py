@@ -84,6 +84,7 @@ from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
+from workflow.domain.work_keys import short_source_key
 from workflow.domain.work_list import WorkRow, next_action
 from workflow.domain.work_status import (
     STAGE_FAILED,
@@ -400,11 +401,13 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
     works = conn.execute(
         "SELECT w.*, COALESCE(json_extract(k.spec_json, '$.label'), w.kind) AS kind_label,"
         " m.display_name AS member_name, m.disabled_at AS member_disabled_at, a.name AS agent_name,"
-        " d.display_name AS direct_member_name"
+        " d.display_name AS direct_member_name, g.repository_full_name AS repository"
         " FROM work_items w LEFT JOIN kinds k ON k.session_id = w.session_id AND k.kind = w.kind"
         " LEFT JOIN members m ON w.assignee_type = 'member' AND m.member_id = w.assignee_id"
         " LEFT JOIN agents a ON w.assignee_type = 'agent' AND a.agent_id = w.assignee_id"
         " LEFT JOIN members d ON d.member_id = w.direct_member_id"
+        " LEFT JOIN github_sources g ON w.source_type = 'github' AND g.source_id = w.source_id"
+        " AND g.session_id = w.session_id"
         " WHERE w.session_id = ? AND (? IS NULL OR w.closed_at IS NULL OR w.closed_at >= ?)"
         " ORDER BY w.key_number DESC",
         (session_id, closed_since, closed_since),
@@ -448,8 +451,17 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
             recipients=(_recipients(w, members, approvers.get(w["work_item_id"])) if w["status"] == "내 차례"
                         else ()),
             updated_at=w["updated_at"], closed_at=w["closed_at"],
+            repository=w["repository"], source_key_short=short_source_key(w["source_key"]),
         ))
     return rows
+
+
+def list_work_repositories(conn: Connection, session_id: str) -> list[str]:
+    """워크스페이스 GitHub 원본의 저장소(`owner/name`) — 이름순(대소문자 무시). 업무 화면 저장소 필터가 받는 값."""
+    return [r[0] for r in conn.execute(
+        "SELECT repository_full_name FROM github_sources WHERE session_id = ?"
+        " ORDER BY lower(repository_full_name), repository_full_name", (session_id,)
+    )]
 
 
 def set_work_requester(conn: Connection, work_item_id: str, member_id: str) -> None:

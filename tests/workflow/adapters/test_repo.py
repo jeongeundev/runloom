@@ -3986,6 +3986,36 @@ def test_list_work_rows_fills_names_recipients_and_next_action(seeded):
     assert _row_of(rows, direct_work).next_action == "직접 작업 중 · 관리자"
 
 
+def _raw_source(conn, session_id: str, source_id: str, full_name: str) -> None:
+    conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, created_at,"
+                 " updated_at) VALUES (?, ?, ?, '{}', ?, ?)", (source_id, session_id, full_name, NOW, NOW))
+
+
+def test_list_work_rows_fills_repository_and_short_source_key(sessions):
+    """phase 17 step 9 — 업무의 저장소 = GitHub 원본의 `repository_full_name`, 그 밖은 None. 칸은 새로 두지 않는다."""
+    conn = sessions
+    _raw_source(conn, SESSION, "ghs-0000000a", "acme/sandbox")
+    github, _ = _new_work(conn, title="이슈", source_type="github", source_id="ghs-0000000a",
+                          source_key="acme/sandbox#3")
+    manual, _ = _new_work(conn, title="직접", source_key="OPS-7")
+    n8n, _ = _new_work(conn, title="n8n", source_type="n8n", source_id="ghs-0000000a")  # GitHub 원본 아님
+    rows = {r.work_item_id: r for r in repo.list_work_rows(conn, SESSION, closed_since=None)}
+    assert (rows[github].repository, rows[github].source_key_short) == ("acme/sandbox", "sandbox#3")
+    assert (rows[manual].repository, rows[manual].source_key_short) == (None, "OPS-7")
+    assert (rows[n8n].repository, rows[n8n].source_key_short) == (None, None)
+
+
+def test_list_work_repositories_is_the_workspace_sources_by_name(sessions):
+    conn = sessions
+    _raw_source(conn, SESSION, "ghs-0000000a", "acme/web")
+    _raw_source(conn, SESSION, "ghs-0000000b", "Acme/Billing")
+    _raw_source(conn, OTHER_SESSION, "ghs-0000000c", "other/repo")
+    assert repo.list_work_repositories(conn, SESSION) == ["Acme/Billing", "acme/web"]
+    assert repo.list_work_repositories(conn, OTHER_SESSION) == ["other/repo"]
+    repo.create_session(conn, "sess-3", NOW)
+    assert repo.list_work_repositories(conn, "sess-3") == []
+
+
 def test_list_work_rows_uses_the_names_of_registered_agents(seeded):
     conn = seeded
     repo.upsert_agent(conn, _agent(name="운영 에이전트"))

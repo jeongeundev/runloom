@@ -6,6 +6,7 @@ from workflow.contracts.v1 import WORK_KEY_PREFIX
 
 BRANCH_SUMMARY_MAX = 40
 _NOT_ALNUM = re.compile(r"[^a-z0-9]+")
+_GITHUB_SOURCE_KEY = re.compile(r"^[^/\s]+/([^/#\s]+)#([1-9][0-9]*)$")
 _KEY_IN_TEXT = re.compile(rf"(?<![A-Za-z0-9]){WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})(?![0-9])", re.IGNORECASE)
 
 
@@ -24,3 +25,11 @@ def work_path(key: str) -> str:
 def keys_in(text: str) -> tuple[int, ...]:
     """글 속 업무 키 번호(`RUN-12` → 12) — 단어 경계·대소문자 무시, 나온 순서, 중복 제거. PR head 브랜치·제목 매칭용."""
     return tuple(dict.fromkeys(int(n) for n in _KEY_IN_TEXT.findall(text)))
+
+
+def short_source_key(key: str | None) -> str | None:
+    """키 칸 옆의 짧은 원본 키 — `owner/name#n` 이면 `name#n`(`acme/sandbox#3` → `sandbox#3`), 그 밖은 그대로."""
+    if key is None:
+        return None
+    match = _GITHUB_SOURCE_KEY.match(key)
+    return f"{match.group(1)}#{match.group(2)}" if match else key
