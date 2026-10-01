@@ -5,7 +5,10 @@
     {
       "step": 0,
       "name": "triage-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T20:52:11+0900",
+      "summary": "문서만: 새 docs/adr/0025-triage.md(사실 10·결정 22), docs/product/triage-criteria-v1.md(기준 v1, 423단어), ARCHITECTURE \"판단 — phase 19\"(흐름·판단 단계 가르기·시작 조건·판정·업무 상태·사람 처리·자동 시작·스키마 v15·계약·러너·요청문·경로·화면·이름 고정), CONTRACT 17절(jsonc 3블록 — step 2 가 json 으로 바꾸고 블록 수·_SIGNATURES·4절 kind 목록 갱신), GLOSSARY phase 19, REDESIGN_PLAN 13·15절, CURRENT_HANDOFF. README 와 바뀐 결정: 판단 Agent 는 표 칸이 아니라 GitHubSourceConfig.triage_agent_id(config_json, 형제 칸과 같은 저장·검증), 판단 로그 행은 시작 때 running 으로(후보 고정·1건 상한), 결과 칸 proposed_kind(kind 아님), 체크아웃 커밋은 중앙이 agent.base_commit 으로 TriageTarget 에 고정, 자동 판단 대상은 '업무에 로그 행 없음(usage_limit 실패 제외)', needs_check 는 missing_information 1개 이상, 소유자 알림·직접 등록·n8n 판단은 하지 않음, 판단 실행 기한 3600초. 검증: pytest 3794 passed·63 skipped, ruff 통과. 다음 step 주의: 판단 단계를 세거나 고르는 곳은 모두 is_triage_kind/repo._TRIAGE_STAGE 를 거친다(open_stage·work_item_facts·create_execution 의 _fill_work_assignee·_reflect_failures·list_metric_facts·_running), tasks·github_sources 재생성·칸 추가 없음.",
+      "completed_at": "2026-10-01T21:16:04+0900"
     },
     {
       "step": 1,
@@ -57,5 +60,6 @@
       "name": "triage-verify",
       "status": "pending"
     }
-  ]
+  ],
+  "created_at": "2026-10-01T20:52:11+0900"
 }
