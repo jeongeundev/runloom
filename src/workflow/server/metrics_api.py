@@ -1,7 +1,9 @@
 """지표 API·기준선 가져오기 — ADR-0015, ARCHITECTURE "측정 — phase 9" API 표.
 
 - 지표는 `view_metrics`, 기준선 가져오기는 `manage_connections`(ADR-0021). 그 세션의 데이터만 계산한다. 다른 세션의 소스는 404.
-- 계산은 `domain.metrics` 가 하고 여기서는 DB 사실을 넘겨 JSON·CSV 로 옮길 뿐이다. 모르는 값은 JSON null·CSV 빈 칸.
+- 계산은 `domain.metrics`·`triage_metrics`·`assignee_metrics` 가 하고 여기서는 DB 사실을 넘겨 JSON·CSV 로 옮길 뿐이다.
+  모르는 값은 JSON null·CSV 빈 칸. phase 20 영역(판단 품질·담당자별·설정 변경)은 기존 키·행 뒤에 더한다
+  (ARCHITECTURE "모니터링 — phase 20" 경로 표). CSV 에는 id 만 — 표시 이름·설정 변경 목록은 JSON 에만.
 - 기준선 가져오기는 GitHub 호출(트랜잭션 밖) 뒤 `replace_baseline` 한 트랜잭션. 토큰은 `Settings.github_token` 에만 있고
   응답·오류 문구에 GitHub 예외 메시지를 넣지 않는다.
 """
@@ -31,7 +33,6 @@ from workflow.server import github_clients
 from workflow.domain.metrics import (
     BASELINE_NOTE,
     BaselineItemFact,
-    MetricsGroup,
     MetricsReport,
     Ratio,
     Stat,
@@ -39,6 +40,8 @@ from workflow.domain.metrics import (
     summarize_baseline,
 )
 from workflow.domain import team
+from workflow.domain.assignee_metrics import AssigneeReport, compute_assignee_metrics
+from workflow.domain.triage_metrics import TriageQualityReport, compute_triage_quality
 from workflow.server.auth import LoggedIn, get_conn, require_action, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.github_sync import DEFAULT_RETRY_AFTER_SECONDS
@@ -75,6 +78,43 @@ _CSV_METRICS = (
 )
 _ROW_PREFIX = {"handoff_blocked": "handoff_blocked", "failed_codes": "failed_code"}
 
+# phase 20 — 같은 (칸, 영역, 단위) 모양. 구간·담당 없음은 그 결과에 있는 칸만 쓴다
+_TRIAGE_CSV = (
+    ("proposed", "triage", "count"),
+    ("running", "triage", "count"),
+    ("failed", "triage", "count"),
+    ("failed_codes", "triage", "count"),
+    ("superseded", "triage", "count"),
+    ("handling", "triage", "count"),
+    ("agreement", "triage", "ratio"),
+    ("proceed", "triage", "count"),
+    ("merged", "triage", "ratio"),
+    ("merged_without_rework", "triage", "ratio"),
+    ("triage_time", "triage", "seconds"),
+    ("cost_usd", "triage", "usd"),
+    ("revised_after", "triage", "count"),
+)
+_BUCKET_CSV = tuple(m for m in _TRIAGE_CSV if m[0] in ("proposed", "agreement", "merged", "merged_without_rework"))
+_MEMBER_CSV = (
+    ("done", "assignee", "count"),
+    ("open", "assignee", "count"),
+    ("turn_waiting", "assignee", "count"),
+    ("longest_wait", "assignee", "seconds"),
+    ("wait", "assignee", "seconds"),
+    ("response_time", "assignee", "seconds"),
+)
+_AGENT_CSV = (
+    ("done", "assignee", "count"),
+    ("open", "assignee", "count"),
+    ("runs", "assignee", "count"),
+    ("failure", "assignee", "ratio"),
+    ("failed_codes", "assignee", "count"),
+    ("first_pass", "assignee", "ratio"),
+    ("rework", "assignee", "count"),
+    ("execution_time", "assignee", "seconds"),
+    ("cost_usd", "assignee", "usd"),
+)
+
 
 # --- 계산 --------------------------------------------------------------------------------------
 
@@ -90,6 +130,24 @@ def _report(
         raise ApiError(422, "invalid_field", "from 은 to 보다 앞이어야 합니다.", field="to")
     facts = repo.list_metric_facts(conn, session_id, store=request.app.state.store)
     return compute_metrics(facts, since=since, until=until, group_by=group_by)
+
+
+def _triage_report(conn: Connection, session_id: str, since: str | None, until: str | None) -> TriageQualityReport:
+    logs, outcomes = repo.list_triage_facts(conn, session_id)
+    return compute_triage_quality(logs, outcomes, since=since, until=until)
+
+
+def _assignee_report(
+    conn: Connection, request: Request, session_id: str, since: str | None, until: str | None, *, now: str
+) -> AssigneeReport:
+    facts = repo.list_assignee_facts(conn, session_id, store=request.app.state.store)
+    return compute_assignee_metrics(facts, since=since, until=until, now=now)
+
+
+def _config_changes(conn: Connection, session_id: str) -> list[dict[str, Any]]:
+    """설정 변경 기록 — `revision`, `id` 순, 기간 무관. 멤버 없는 경로는 `by_member_id`·`by_member_name` null."""
+    return [{k: row[k] for k in ("revision", "area", "action", "subject", "by_member_id", "by_member_name",
+                                 "occurred_at")} for row in repo.list_config_changes(conn, session_id)]
 
 
 def _baselines(conn: Connection, session_id: str) -> list[dict[str, Any]]:
@@ -132,8 +190,20 @@ def _value(value: Any) -> Any:
     return value
 
 
-def _group(group: MetricsGroup) -> dict[str, Any]:
+def _group(group: Any) -> dict[str, Any]:
+    """결과 dataclass 하나(`MetricsGroup`·`TriageQuality`·`ConfidenceBucket`·`MemberRow`·`AgentRow`) → 칸 이름 그대로."""
     return {f.name: _value(getattr(group, f.name)) for f in dataclasses.fields(group)}
+
+
+def _triage(report: TriageQualityReport) -> dict[str, Any]:
+    return {"overall": _group(report.overall), "by_kind": [_group(q) for q in report.by_kind],
+            "by_criteria": [_group(q) for q in report.by_criteria],
+            "confidence": [_group(b) for b in report.buckets]}
+
+
+def _assignees(report: AssigneeReport) -> dict[str, Any]:
+    return {"members": [_group(m) for m in report.members], "agents": [_group(a) for a in report.agents],
+            "unassigned_open": report.unassigned_open, "responses_unknown_member": report.responses_unknown_member}
 
 
 def _cells(value: Any) -> dict[str, Any]:
@@ -145,20 +215,39 @@ def _cells(value: Any) -> dict[str, Any]:
     return {"total": value}  # 건수 하나
 
 
-def _csv_rows(report: MetricsReport, baselines: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+def _metric_rows(key: str, group: Any, metrics: tuple[tuple[str, str, str], ...]) -> Iterator[dict[str, Any]]:
+    for name, area, unit in metrics:
+        value = getattr(group, name)
+        entries = (
+            [(f"{_ROW_PREFIX.get(name, name)}:{k}", v) for k, v in value.items()] if isinstance(value, Mapping)
+            else [(name, value)]
+        )
+        for metric, v in entries:
+            yield {"group": key, "area": area, "metric": metric, "unit": unit, **_cells(v)}
+
+
+def _csv_rows(
+    report: MetricsReport, baselines: list[dict[str, Any]], triage: TriageQualityReport, assignees: AssigneeReport
+) -> Iterator[dict[str, Any]]:
     for group in report.groups:
-        for name, area, unit in _CSV_METRICS:
-            value = getattr(group, name)
-            entries = (
-                [(f"{_ROW_PREFIX[name]}:{key}", v) for key, v in value.items()] if isinstance(value, Mapping)
-                else [(name, value)]
-            )
-            for metric, v in entries:
-                yield {"group": group.key, "area": area, "metric": metric, "unit": unit, **_cells(v)}
+        yield from _metric_rows(group.key, group, _CSV_METRICS)
     for b in baselines:
         stat = b["intake_to_merge"] or {}
         yield {"group": f"baseline:{b['source_id']}", "area": "speed", "metric": "intake_to_merge",
                "unit": "seconds", **stat, "note": b["note"]}
+    yield from _metric_rows("triage:all", triage.overall, _TRIAGE_CSV)
+    for q in triage.by_kind:
+        yield from _metric_rows(f"triage:kind:{q.key}", q, _TRIAGE_CSV)
+    for q in triage.by_criteria:
+        yield from _metric_rows(f"triage:criteria:{q.key}", q, _TRIAGE_CSV)
+    for b in triage.buckets:
+        yield from _metric_rows(f"triage:confidence:{b.key}", b, _BUCKET_CSV)
+    for m in assignees.members:
+        yield from _metric_rows(f"member:{m.member_id}", m, _MEMBER_CSV)
+    for a in assignees.agents:
+        yield from _metric_rows(f"agent:{a.agent_id}", a, _AGENT_CSV)
+    yield {"group": "unassigned", "area": "assignee", "metric": "open", "unit": "count",
+           **_cells(assignees.unassigned_open)}
 
 
 def _csv(rows: Iterator[dict[str, Any]]) -> str:
@@ -189,6 +278,9 @@ def metrics_json(
         "from": report.since, "to": report.until, "group_by": report.group_by,
         "groups": [_group(g) for g in report.groups],
         "baselines": _baselines(conn, session_id),
+        "triage": _triage(_triage_report(conn, session_id, since, until)),
+        "assignees": _assignees(_assignee_report(conn, request, session_id, since, until, now=utc_now())),
+        "config_changes": _config_changes(conn, session_id),
     })
 
 
@@ -200,7 +292,9 @@ def metrics_csv(
 ) -> Response:
     session_id = member.session_id
     report = _report(conn, request, session_id, since, until, group_by)
-    return Response(_csv(_csv_rows(report, _baselines(conn, session_id))), media_type="text/csv; charset=utf-8")
+    rows = _csv_rows(report, _baselines(conn, session_id), _triage_report(conn, session_id, since, until),
+                     _assignee_report(conn, request, session_id, since, until, now=utc_now()))
+    return Response(_csv(rows), media_type="text/csv; charset=utf-8")
 
 
 # --- 기준선 가져오기 ---------------------------------------------------------------------------

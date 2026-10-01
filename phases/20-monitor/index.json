@@ -53,7 +53,9 @@
     {
       "step": 6,
       "name": "metrics-export",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T06:10:37+0900",
+      "summary": "수정: server/metrics_api.py(_triage_report·_assignee_report(now=utc_now())·_config_changes, /metrics.json 기존 키 뒤 triage{overall·by_kind·by_criteria·confidence}·assignees{members·agents·unassigned_open·responses_unknown_member}·config_changes[{revision,area,action,subject,by_member_id,by_member_name,occurred_at}] — 기간 from·to 는 triage·assignees 에만, group_by 는 기존 groups 에만, config_changes 기간 무관; /metrics.csv 열 CSV_COLUMNS 그대로 기존 행 뒤에 area triage(group triage:all·triage:kind:<키>·triage:criteria:v<n>·triage:confidence:<구간 키>, 구간은 proposed·agreement·merged·merged_without_rework 만)·assignee(member:<id>·agent:<id>·unassigned open) 행 — id 만, 표시 이름·설정 변경은 JSON 에만; _group 을 결과 dataclass 공용으로(MetricsGroup import 제거), 행 생성은 _metric_rows 로 묶고 매핑 접두는 _ROW_PREFIX.get(name, name) — handling:<값>·proceed:<값>·failed_code:<code>; longest_wait 는 seconds 단위 total 칸, responses_unknown_member 는 ARCHITECTURE 의 CSV group 목록에 없어 JSON 에만). 테스트: test_metrics_api 에 triaged 픽스처(판단 제안·실패 2건, seed_agents, 관리자 자동 시작 저장) + 새 키 모양·값·기간·CSV 새 행·멤버 역할 200 4건, test_metrics_csv_follows_the_same_parameters 는 기존 행 단정 유지하고 새 행이 뒤에 붙는 것까지 단정. 검증: pytest 4113 passed·72 skipped, ruff 통과. 다음 step 주의: 화면은 metrics_api._triage_report·_assignee_report·repo.config_changes_by_revision 를 재사용, 기존 operator 픽스처 업무는 agent-codex-mac 담당이라 unassigned 0."
     },
     {
       "step": 7,
