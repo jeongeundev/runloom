@@ -71,6 +71,7 @@ from workflow.contracts.v1 import (
     SelectionRecord,
     SuccessorRule,
     TriageCandidates,
+    TriageResult,
     format_work_key,
 )
 from workflow.domain import status as domain_status
@@ -93,7 +94,7 @@ from workflow.domain.start_checklist import StartFacts
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
-from workflow.domain.triage import PastWork, TriageFact
+from workflow.domain.triage import PastWork, TriageFact, triage_reason
 from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
 from workflow.domain.work_keys import short_source_key
 from workflow.domain.work_list import WorkRow, next_action
@@ -4176,3 +4177,65 @@ def start_triage(
         )
         refresh_work_status(conn, work_item_id, now=now)
     return triage_id
+
+
+def running_triages(conn: Connection) -> list[Row]:
+    """판정을 기다리는 판단 — `running` 판단 로그 행(오래된 순). 판단 단계의 활성 실행은 이 행들의 실행뿐이다."""
+    return conn.execute("SELECT * FROM triage_logs WHERE state = 'running' ORDER BY created_at, rowid").fetchall()
+
+
+def _close_triage_stage(conn: Connection, log: Row, *, execution_id: str, status: str, verdict: dict | None,
+                        now: str) -> None:
+    """판단 단계 마감 — 판정 행(있으면)·단계 `완료`/`실패`·잠금 해제·업무 상태 재계산. 사람 요청은 만들지 않는다."""
+    if verdict is not None:
+        conn.execute("INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
+                     (log["task_id"], execution_id, json.dumps(verdict, ensure_ascii=False), now))
+    fact = _one(conn, "SELECT state, proceed, confidence, failed_code FROM triage_logs WHERE triage_id = ?",
+                (log["triage_id"],))
+    reason = triage_reason(TriageFact(state=fact["state"], proceed=fact["proceed"], confidence=fact["confidence"],
+                                      failed_code=fact["failed_code"]))
+    _finish_task_row(conn, task_id=log["task_id"], execution_id=execution_id, status=status, reason=reason, now=now)
+    refresh_work_status(conn, log["work_item_id"], now=now)
+
+
+def _running_triage(conn: Connection, triage_id: str, execution_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM triage_logs WHERE triage_id = ? AND execution_id = ? AND state = 'running'",
+                (triage_id, execution_id))
+
+
+def record_triage_proposed(conn: Connection, triage_id: str, *, execution_id: str, result: TriageResult,
+                           verdict: dict, now: str) -> bool:
+    """판단 결과가 후보 안 — 로그 `running → proposed`(결과·진행 여부·확신도·제안 종류), 판단 단계 `완료`(이유 = 업무의
+    제안 문구), 업무 상태 재계산. 한 트랜잭션. 이미 `running` 이 아니면 False(두 번 판정하지 않는다)."""
+    with _tx(conn):
+        log = _running_triage(conn, triage_id, execution_id)
+        if log is None:
+            return False
+        conn.execute(
+            "UPDATE triage_logs SET state = 'proposed', result_json = ?, proceed = ?, confidence = ?, proposed_kind = ?,"
+            " finished_at = ?, updated_at = ? WHERE triage_id = ? AND state = 'running'",
+            (result.model_dump_json(), result.proceed, result.confidence, result.proposed_kind, now, now, triage_id),
+        )
+        _close_triage_stage(conn, log, execution_id=execution_id, status="완료", verdict=verdict, now=now)
+    return True
+
+
+TRIAGE_MESSAGE_MAX = 200
+
+
+def record_triage_failed(conn: Connection, triage_id: str, *, execution_id: str, code: str, message: str,
+                         verdict: dict | None, now: str) -> bool:
+    """판단 실패(후보 밖·형식 오류·실행 실패) — 로그 `running → failed`(코드·이유 200자), 판단 단계 `실패`, 업무 상태
+    재계산. 한 트랜잭션. `finish_failed_stage` 와 달리 사람 요청을 만들지 않는다 — 판단은 제안일 뿐이다.
+    이미 `running` 이 아니면 False."""
+    with _tx(conn):
+        log = _running_triage(conn, triage_id, execution_id)
+        if log is None:
+            return False
+        conn.execute(
+            "UPDATE triage_logs SET state = 'failed', failed_code = ?, failed_message = ?, finished_at = ?,"
+            " updated_at = ? WHERE triage_id = ? AND state = 'running'",
+            (code, message[:TRIAGE_MESSAGE_MAX], now, now, triage_id),
+        )
+        _close_triage_stage(conn, log, execution_id=execution_id, status="실패", verdict=verdict, now=now)
+    return True
