@@ -77,7 +77,9 @@
     {
       "step": 9,
       "name": "jira-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T16:49:44+0900",
+      "summary": "신설: tests/e2e/test_jira_cycle.py(WORKFLOW_E2E=1 — 상태 있는 가짜 Jira Cloud FakeJiraCloud(MockTransport, 사이트 tenant_info·게이트웨이 rest/api/3: myself·프로젝트 검색/조회/statuses·search/jql 커서·statusCategory·라벨 JQL·이슈 상태·전환 조회/실행·이슈 생성·링크 유형·링크, 다른 호스트는 단정 실패)+가짜 GitHub App(PR)+bare origin+가짜 codex 러너, 웹 app.state.jira_transport·워커 JiraClients(transport=) 같은 가짜; test_01~06: 연결(gateway)→프로젝트 추가·설정→SHOP-12 RUN-1 새로 들어옴·맡기기 전 실행 0→맡김→Jira 진행 중→초안 PR(Fixes 없음·원본 줄·issue_number NULL)→PR · 검토→리뷰중→병합→완료→종료(POST 3번만), 규칙을 new_work 로 다시 등록→SHOP-13 맡김 뒤 Jira 종료→원본 닫힘 대기·진행 중 skipped→다시 열면 검토 새 업무 RUN-3→Jira SHOP-14(라벨·Relates 링크) 1건·다음 동기화 뒤 업무 수 불변, 토큰 DB·로그·화면 없음·0600; test_v13_copy_upgrades_to_v14_and_takes_jira_issues: test_db._v13_db 사본→create_app 시작이 v14→행 수 그대로+jira 매핑 1행→가져오기 RUN-8). 문서: SELFHOST 'Jira 연결' 절(토큰·스코프·연결·프로젝트·세 상태 표·원본 닫힘·반영 실패·후속 이슈·끊기·비밀)과 업그레이드 v14(백업 먼저·러너 재설치 불필요 — service..HEAD 에 connector·contracts/v1·deploy 변경 없음 확인), VERIFICATION_LOG 'phase 18 Jira', CURRENT_HANDOFF 맨 위 다음 작업(18 완료·할 일: service --no-ff 병합→셀프호스트 v14(v12 이면 v13 러너 재설치도)→Jira 실연동 확인 목록 체크리스트→19-triage), phase README 상태 줄, REDESIGN_PLAN 13절 18 완료. 제품 코드 수정 없음(e2e 가 빠진 연결 없이 통과 — 기대값만 설계에 맞춤: work_items.source_state 는 Jira 상태 이름, 열림/닫힘은 jira_issues.state, 후속 이슈 줄은 새 업무 패널). 검증: pytest 3794 passed/63 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 62 passed/1 skipped(Docker 게이트), test_jira_cycle 7 passed 2회. 다음 주의: 실연동·병합·셀프호스트 재설치는 사용자 지시 뒤, WORKFLOW_DOCKER e2e 미실행(이미지 태그 공유)."
     }
   ],
   "created_at": "2026-10-01T14:18:35+0900"

@@ -516,3 +516,25 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 - **검토가 수정한 러너가 아닌 곳으로**: 검토 후보도 둘이라 막히거나(설정으로 한쪽을 고르면 다른 러너의 수정은 `review_repository_mismatch`). `match_source(pair_agent_id=)` — 검토 설정이 비어 있으면 수정 Agent 가 검토 후보일 때 그것. `server/task_cycle._match` 가 두 값을 넘긴다. 같은 테스트 파일에 먼저.
 - **실행 `failed` 이벤트가 업무를 `종료` 로 굳힘**(step 4 회귀, 기존 `tests/e2e/test_real_repo.py` test_07 이 HEAD 에서 실패): 이벤트 경로가 단계 `실패` 를 먼저 저장해 `stage_failed` 요청 전에 업무가 끝 상태가 됐다. `server/machine_api.post_event` 는 `failed` 이벤트로 다시 계산하지 않는다(워커 마감이 씀). 테스트 `tests/workflow/server/test_machine_api.py` 먼저.
 - 문서: [ARCHITECTURE](ARCHITECTURE.md) phase 17 "같은 저장소의 러너 여럿 — 매칭"·단계 상태 표 `failed`, [ADR-0023](adr/0023-cross-member-delegation.md) 결정 11, [SELFHOST](SELFHOST.md) 업그레이드 v13·러너 두 대(두 번째 클론), [UI_GUIDE](UI_GUIDE.md) 저장소 묶기·담당 후보·승인·검증만 다시, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 17 완료.
+
+## 2026-10-01 phase 18 Jira (step 9)
+
+목적: [ADR-0024](adr/0024-jira-source.md)의 Jira 연결·가져오기·맡기기 전 대기·연결 저장소 실행·초안 PR·세 순간 상태 옮기기·원본 닫힘 대기·후속 이슈 등록이 대역 e2e 에서 이어서 도는지, v13 사본이 v14 로 올라 Jira 이슈를 받는지 확인한다. 외부 호출 없음 — Jira 는 httpx `MockTransport` 의 상태 있는 가짜(`FakeJiraCloud` — 사이트 `shopco.atlassian.net`·게이트웨이 `api.atlassian.com/ex/jira/<cloudId>` 를 흉내, 다른 주소는 단정 실패), GitHub 는 127.0.0.1 가짜 App 서버, origin 은 임시 bare 저장소, 도구는 PATH 앞의 가짜 `codex`, 러너는 `WORKFLOW_CONNECTOR_HOME` 임시 폴더(launchd 아님).
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-10-01 KST, 이 Mac, 브랜치 `feat-18-jira` |
+| 명령·결과 | `python3 -m pytest -q` — **3794 passed·63 skipped**. `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **62 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e, GitHub 순환·실제 저장소·팀·업무 화면·인계 e2e 포함). `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_jira_cycle.py -q` — **7 passed**(따로 한 번 더) |
+| 연결 | `tests/e2e/test_jira_cycle.py` test_01~02 — 관리자 첫 설정·GitHub 연결(가짜 App)·러너 붙이기 → `/connect?tab=sources` Jira 칸 → 연결 POST 303 → `jira_connections` = 사이트·cloudId·`api_base = gateway`·이메일, 토큰은 비밀 파일에만 → 프로젝트 찾기 `쇼핑몰` → 추가(연결 저장소 acme/billing, 지금부터, 커서 있음) → 설정(세 상태 `진행 중`·`리뷰중`·`종료`, 후속 유형 `작업`). 사이트 주소로는 `tenant_info` 한 번만, 나머지는 게이트웨이 |
+| 한 줄기 1 | test_03~04 — Jira 에 SHOP-12 → tick 1회로 RUN-1(`jira`·`SHOP-12`·`{site}/browse/SHOP-12`·상태 이름 `대기`·`bug_fix`) `새로 들어옴`, tick 2회 더 해도 실행 0 → 패널 담당 = 에이전트 → 실행 1, 요청문 첫 줄 `# RUN-1 …` + `원본: SHOP-12` → Jira `진행 중`(전환 행 `start` delivered) → 수정·검토 → 초안 PR #101(`runloom/RUN-1`, 제목 `RUN-1 …` — Jira 키 없음, 본문 첫 줄 `원본: SHOP-12 — 주소`, `Fixes` 없음, `task_pull_requests.issue_number` NULL) → `PR · 검토` → Jira `리뷰중` → 병합 → 업무 `완료` → Jira `종료`. 전환 POST 정확히 3번, tick 을 더 돌려도 늘지 않음. 스냅숏 닫힘(`종료`)이 들어와도 업무는 `완료` 그대로, 패널 `Jira 상태 → 종료` |
+| 한 줄기 2 | test_05 — 내장 규칙 bug_fix → code_review 를 지우고 같은 규칙을 `new_work` 로 등록(등록 데이터만) → SHOP-13(유형 작업) RUN-2 맡김 → 가짜 Jira 에서 `종료`(완료 범주)로 옮김 → 다음 가져오기가 원본 닫힘 → 수정 결과·판정이 나와도 수정 단계 `원본 이슈 닫힘 — 재오픈 시 재평가`, 검토(새 업무) 안 생김, 도는 실행은 그대로 → `진행 중` 전환은 `skipped`(Jira 가 이미 완료 범주) → `대기` 로 다시 열면 검토가 새 업무 RUN-3(`jira`·`code_review`)로 생김 → Jira 에 SHOP-14 1건(라벨 `runloom`·`runloom-RUN-3`, 유형 작업, 제목 = 업무 제목) + `Relates` 링크(원인 SHOP-13 → SHOP-14) → RUN-3 원본 칸 채워짐 → tick 3회 뒤 업무 수 3 그대로, SHOP-14 스냅숏은 RUN-3 단계에 붙음, 이슈 생성 POST 1번, RUN-3 패널 `후속 이슈 만들기 → SHOP-14` |
+| 비밀 | test_06 — 가짜 Jira 가 받은 요청은 모두 Basic 인증 일치(tenant_info 제외), DB 덤프·중앙/러너 로그(httpx DEBUG 포함)·화면 3개에 토큰 없음, 비밀 파일 `jira_api_token` 0600 |
+| v13 → v14 사본 | `test_v13_copy_upgrades_to_v14_and_takes_jira_issues` — `tests/workflow/adapters/test_db.py::_v13_db`(업무 2건 key 3·7, GitHub 소스 1, Runloom PR 1, 매핑 2) + 소스 설정을 phase 17 모양으로 → `create_app` 시작이 v14 로 올림(`/healthz` 200) → 행 수 그대로, `jira → bug_fix` 매핑 1행만 더함, 외래키 검사 깨끗 → 같은 가짜 Jira 로 연결 확인·프로젝트 추가(열린 업무 전부)·가져오기 → 새 업무 `RUN-8`(키 번호가 옛 업무 뒤로 이어짐) `새로 들어옴`. 사용자 셀프호스트 볼륨·백업은 읽지 않았다 |
+| 러너 계약 | `git diff service..feat-18-jira -- src/workflow/connector src/workflow/contracts/v1.py deploy/` 변경 없음 — v14 업그레이드에 러너 재설치 불필요(SELFHOST 업그레이드 v14 에 적음) |
+| 미확인 | 실제 Jira Cloud(스코프/비스코프 토큰의 기준 주소, `project/{key}/statuses` 응답 모양, 한국어 상태 이름 전환, 생성 화면 필수 칸, `Relates` 유형 이름)는 사용자가 사이트·토큰을 만든 뒤 1회 — 확인 목록은 [CURRENT_HANDOFF](CURRENT_HANDOFF.md). 연결 화면의 브라우저 동작(접힌 폼·새 창 링크)은 자동 테스트가 없다 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 써서 실행하면 사용자의 다음 `compose up` 이 백업 없이 v14 로 올라갈 수 있다. 사용자 지시 전이라 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음, 템플릿 `\|safe` 없음(grep). 사이트 주소는 `https://<이름>.atlassian.net` 만(가짜 Jira 가 다른 호스트 요청을 단정 실패로 막음) |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 수정 없음. e2e 를 쓰며 확인한 설계 사실: 업무의 `source_state` 는 Jira 상태 **이름**(`대기`·`종료`)이고, 열림/닫힘은 스냅숏 `jira_issues.state` 다. 후속 이슈 줄은 새 업무(RUN-3) 패널에 보인다(전송 행이 새 업무에 붙음). 문서: [SELFHOST](SELFHOST.md) "Jira 연결"·업그레이드 v14, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업·실연동 확인 목록, [phase 18 README](../phases/18-jira/README.md) 상태, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 18 완료.
