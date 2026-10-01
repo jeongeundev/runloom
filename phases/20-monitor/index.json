@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "triage-metrics",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:26:23+0900",
+      "summary": "새: src/workflow/domain/triage_metrics.py(순수 — TriageLogFact·WorkOutcomeFact 입력, TriageQuality·ConfidenceBucket·TriageQualityReport·AutostartPreview 결과, CONFIDENCE_BUCKETS (키,low,high)·HANDLINGS·UNHANDLED·PROCEEDS 상수, compute_triage_quality·confidence_buckets·autostart_preview; Stat·Ratio·ALL_GROUP·UNKNOWN·_stat·_in_window·_seconds 는 metrics.py 것 재사용), tests/workflow/domain/test_triage_metrics.py(17건). 결정: 기간 = created_at [since, until), by_kind 키 이름순 + unknown 마지막, by_criteria 'v<n>' 버전 순, handling·proceed 는 제안 행만(키 늘 전부, 미처리 = 'unhandled'), agreement incomplete = 미처리 제안, 병합 완료 = status '완료' 이고 merged(종료+merged 는 분모만), 결과 사실이 없는 대상 = Ratio unknown, 판단 시간·비용은 묶음의 모든 행(execution_status result_ready·failed 가 끝남, 나머지 incomplete, started_at·cost NULL 은 unknown, 비용 total 포함), revised_after 는 제안 행의 업무 중복 제거, 확신도 마지막 구간만 1.0 포함·confidence_buckets 는 받은 행을 거르지 않음(compute 가 기간 거른 행을 넘김), autostart_preview 는 기간·버전 무관·confidence >= threshold. 기존 파일 변경 없음. 검증: pytest 4089 passed·72 skipped, ruff 통과. 다음 step 주의: step 5 list_triage_facts 는 WorkOutcomeFact.merged 에 판단 단계 아닌 task_pull_requests·work_pull_requests merged 여부, rework_runs 에 판단 단계 제외 rework: 실행 수를 채우고 execution_status 는 판단 실행 상태를 넣는다."
     },
     {
       "step": 4,
