@@ -7,7 +7,8 @@
       "name": "jira-design",
       "status": "completed",
       "started_at": "2026-10-01T14:18:35+0900",
-      "summary": "문서만: ADR-0024 신설(결정 18개·코드 조사 사실 7개), ARCHITECTURE 'Jira 소스 — phase 18' 절(흐름·경로 6개·스키마 v14 표·시그니처 표·세 순간·오류 분류), GLOSSARY phase 18 용어 12개+경계 2줄, REDESIGN_PLAN 13절 18-jira 행, CURRENT_HANDOFF 진행 중 한 줄. 결정: 기준 주소 확인 뒤 저장(gateway→site), 토큰 secret_store jira_api_token, done 범주=closed, 세 순간은 set_work_status 훅(INSERT…SELECT, 업무×순간 1회, 뒤 순간이 앞 행 skipped), outbox jira_deliveries(+skipped), 스냅숏 jira_issues 는 첫 단계 task_id 에 붙음(fix 매칭), Jira config=연결 저장소 설정 all_open 사본, origin_source→task_cycle.origin(Origin), task_pull_requests.issue_number NULL 허용, 후속 이슈 라벨 runloom-RUN-n 로 조정. 검증: pytest 3427 passed/56 skipped, ruff 통과. 다음 step 주의: work_items 재생성은 트랜잭션 밖 PRAGMA foreign_keys=OFF 필수(FK ON 이면 defer 해도 COMMIT 실패 — v13 사본 실험으로 확인), _deliver_pull_requests 의 PR 제목·_apply_pull_request_state 기준선이 GitHub 이슈 행을 읽어 Jira 에서 예외 — step 6 에서 고칠 것."
+      "summary": "문서만: ADR-0024 신설(결정 18개·코드 조사 사실 7개), ARCHITECTURE 'Jira 소스 — phase 18' 절(흐름·경로 6개·스키마 v14 표·시그니처 표·세 순간·오류 분류), GLOSSARY phase 18 용어 12개+경계 2줄, REDESIGN_PLAN 13절 18-jira 행, CURRENT_HANDOFF 진행 중 한 줄. 결정: 기준 주소 확인 뒤 저장(gateway→site), 토큰 secret_store jira_api_token, done 범주=closed, 세 순간은 set_work_status 훅(INSERT…SELECT, 업무×순간 1회, 뒤 순간이 앞 행 skipped), outbox jira_deliveries(+skipped), 스냅숏 jira_issues 는 첫 단계 task_id 에 붙음(fix 매칭), Jira config=연결 저장소 설정 all_open 사본, origin_source→task_cycle.origin(Origin), task_pull_requests.issue_number NULL 허용, 후속 이슈 라벨 runloom-RUN-n 로 조정. 검증: pytest 3427 passed/56 skipped, ruff 통과. 다음 step 주의: work_items 재생성은 트랜잭션 밖 PRAGMA foreign_keys=OFF 필수(FK ON 이면 defer 해도 COMMIT 실패 — v13 사본 실험으로 확인), _deliver_pull_requests 의 PR 제목·_apply_pull_request_state 기준선이 GitHub 이슈 행을 읽어 Jira 에서 예외 — step 6 에서 고칠 것.",
+      "completed_at": "2026-10-01T14:38:51+0900"
     },
     {
       "step": 1,
