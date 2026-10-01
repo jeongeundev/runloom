@@ -537,9 +537,9 @@ def list_work_repositories(conn: Connection, session_id: str) -> list[str]:
     )]
 
 
-def set_work_requester(conn: Connection, work_item_id: str, member_id: str) -> None:
-    """맡긴 사람을 기록한다(가장 최근 값으로 덮어씀). 자체 BEGIN·이벤트 없음 — 맡기기·다시 맡기기·체인 시작·직접 등록·
-    직접 실행이 그 변경과 같은 트랜잭션에서 부른다."""
+def set_work_requester(conn: Connection, work_item_id: str, member_id: str | None) -> None:
+    """맡긴 사람을 기록한다(가장 최근 값으로 덮어씀, None = 맡긴 사람 없음 — 판단 자동 시작). 자체 BEGIN·이벤트 없음 —
+    맡기기·다시 맡기기·체인 시작·직접 등록·직접 실행이 그 변경과 같은 트랜잭션에서 부른다."""
     conn.execute("UPDATE work_items SET requested_by_member_id = ? WHERE work_item_id = ?", (member_id, work_item_id))
 
 
@@ -632,7 +632,7 @@ def assign_work_item(
 
 def _assign_work_item(
     conn: Connection, session_id: str, work_item_id: str, *, assignee_type: str | None, assignee_id: str | None,
-    by_member_id: str | None, now: str,
+    by_member_id: str | None, now: str, autostart_triage: tuple[str, int] | None = None,
 ) -> bool:
     row = get_work_item(conn, session_id, work_item_id)
     if row is None:
@@ -664,24 +664,27 @@ def _assign_work_item(
     def who(type_: str | None, id_: str | None) -> dict | None:
         return None if type_ is None else {"type": type_, "id": id_}
 
-    _work_item_event(conn, work_item_id, session_id, "assigned",
-                     {"from": who(row["assignee_type"], row["assignee_id"]), "to": who(assignee_type, assignee_id),
-                      "by": by_member_id}, now)
+    data = {"from": who(row["assignee_type"], row["assignee_id"]), "to": who(assignee_type, assignee_id),
+            "by": by_member_id}
+    if autostart_triage is not None:  # 판단 자동 시작 — 타임라인 `자동 시작 · 판단 v<n>` (phase 19)
+        data["triage"] = {"triage_id": autostart_triage[0], "criteria_version": autostart_triage[1]}
+    _work_item_event(conn, work_item_id, session_id, "assigned", data, now)
     if row["assignee_type"] is None and assignee_type is not None:  # 담당 없음 → 정함 = 판단 제안의 사람 처리 (phase 19)
         _record_triage_handling(conn, work_item_id, assignee_type=assignee_type, assignee_id=assignee_id,
-                                by_member_id=by_member_id, now=now)
+                                by_member_id=by_member_id, now=now, auto=autostart_triage is not None)
     refresh_work_status(conn, work_item_id, now=now)
     return True
 
 
 def hand_work_to_agent(
-    conn: Connection, session_id: str, work_item_id: str, *, record: SelectionRecord, target: dict, member_id: str,
-    now: str, note: str | None = None,
+    conn: Connection, session_id: str, work_item_id: str, *, record: SelectionRecord, target: dict,
+    member_id: str | None, now: str, note: str | None = None, autostart_triage: tuple[str, int] | None = None,
 ) -> None:
     """에이전트에게 맡기기의 쓰기(ARCHITECTURE "담당 바꾸기" `agent:` ①~⑤)를 한 트랜잭션으로 — 단계 선택 기록·직접 선택
     전환(`target` 고정), 업무 담당 = 그 Agent(`assigned` `by`), 맡긴 사람 = 누른 멤버, 지시 메모(없으면 지난 메모를 지움),
     그 단계가 지시 전 GitHub·Jira 원본이면 운영자 지시 기록, 업무 상태 재계산. 착수는 하지 않는다. 단계가 이 워크스페이스·
-    업무의 것이 아니면 NotFound."""
+    업무의 것이 아니면 NotFound. 판단 자동 시작은 `member_id=None`(맡긴 사람 없음)·`autostart_triage=(triage_id, 기준 버전)`
+    — `assigned` 이벤트에 `triage`, 판단 로그 `auto_started` (phase 19)."""
     if record.status != "selected":
         raise ValueError(f"선택되지 않은 기록 {record.status}")
     with _tx(conn):
@@ -692,7 +695,7 @@ def hand_work_to_agent(
         save_selection(conn, record)
         update_task_choice(conn, record.task_id, chosen_agent_id=record.selected_agent_id, target=target)
         _assign_work_item(conn, session_id, work_item_id, assignee_type="agent", assignee_id=record.selected_agent_id,
-                          by_member_id=member_id, now=now)
+                          by_member_id=member_id, now=now, autostart_triage=autostart_triage)
         set_work_requester(conn, work_item_id, member_id)
         _set_handoff_note(conn, work_item_id, agent_id=record.selected_agent_id, note=note, member_id=member_id,
                           now=now)
@@ -4271,18 +4274,19 @@ def latest_triage(conn: Connection, work_item_id: str) -> Row | None:
 
 
 def _record_triage_handling(conn: Connection, work_item_id: str, *, assignee_type: str, assignee_id: str,
-                            by_member_id: str | None, now: str) -> bool:
-    """담당이 정해질 때 떠 있는 판단 제안의 사람 처리 — 최신 행이 `proposed`·처리 없음일 때만 `accepted`(제안 담당·종류와
-    같음) 또는 `changed`, 실제로 정한 담당·종류(그 시점 맡길 단계 종류)와 함께. 자체 BEGIN 없음 — `_assign_work_item` 이
-    맡기기 트랜잭션 안에서 부른다."""
+                            by_member_id: str | None, now: str, auto: bool = False) -> bool:
+    """담당이 정해질 때 떠 있는 판단 제안의 사람 처리 — 최신 행이 `proposed`·처리 없음일 때만 `auto_started`(자동 시작)
+    또는 `accepted`(제안 담당·종류와 같음)·`changed`, 실제로 정한 담당·종류(그 시점 맡길 단계 종류)와 함께. 자체 BEGIN
+    없음 — `_assign_work_item` 이 맡기기 트랜잭션 안에서 부른다."""
     log = latest_triage(conn, work_item_id)
     if log is None or log["state"] != "proposed" or log["handling"] is not None:
         return False
     stage = open_stage(conn, work_item_id)
     final_kind = stage["kind"] if stage is not None else _one(
         conn, "SELECT kind FROM work_items WHERE work_item_id = ?", (work_item_id,))["kind"]
-    handling = handling_for(TriageResult.model_validate_json(log["result_json"]), assignee_type=assignee_type,
-                            assignee_id=assignee_id, kind=final_kind)
+    handling = "auto_started" if auto else handling_for(
+        TriageResult.model_validate_json(log["result_json"]), assignee_type=assignee_type, assignee_id=assignee_id,
+        kind=final_kind)
     cur = conn.execute(
         "UPDATE triage_logs SET handling = ?, handled_by_member_id = ?, handled_at = ?, final_assignee_type = ?,"
         " final_assignee_id = ?, final_kind = ?, updated_at = ? WHERE triage_id = ? AND handling IS NULL",
@@ -4370,6 +4374,19 @@ def list_triage_criteria(conn: Connection, session_id: str) -> list[Row]:
 def get_triage_criteria(conn: Connection, session_id: str, version: int) -> Row | None:
     return _one(conn, "SELECT version, body, created_by_member_id, created_at FROM triage_criteria"
                       " WHERE session_id = ? AND version = ?", (session_id, version))
+
+
+def autostart_candidates(conn: Connection) -> list[Row]:
+    """자동 시작을 볼 판단 — 처리 없는 `proposed`·`ready` 이고 그 업무의 최신 행, 업무가 `새로 들어옴`·담당 없음·직접
+    작업 없음(오래된 순). 설정·자격·확신도는 워커가 `domain.triage.should_autostart` 로 본다."""
+    return conn.execute(
+        "SELECT l.* FROM triage_logs l JOIN work_items w ON w.work_item_id = l.work_item_id"
+        " WHERE l.state = 'proposed' AND l.handling IS NULL AND l.proceed = 'ready'"
+        " AND w.status = '새로 들어옴' AND w.assignee_type IS NULL AND w.direct_member_id IS NULL"
+        " AND NOT EXISTS (SELECT 1 FROM triage_logs n WHERE n.work_item_id = l.work_item_id"
+        " AND (n.created_at > l.created_at OR (n.created_at = l.created_at AND n.rowid > l.rowid)))"
+        " ORDER BY l.created_at, l.rowid"
+    ).fetchall()
 
 
 def triage_handled_counts(conn: Connection, session_id: str) -> dict[str, int]:

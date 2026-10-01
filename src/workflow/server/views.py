@@ -781,7 +781,8 @@ def _event_line(event: Row, names: dict[str, str]) -> str:
     if event["type"] == "status_changed":
         return f"상태 {data['to']}" + (f" · {data['reason']}" if data.get("reason") else "")
     if event["type"] == "assigned":
-        return "담당 바뀜"
+        triage = data.get("triage")  # 판단 자동 시작 (phase 19)
+        return f"자동 시작 · 판단 v{triage['criteria_version']}" if triage else "담당 바뀜"
     if event["type"] == "priority_changed":
         return f"우선순위 {PRIORITY_LABELS.get(data['to'], data['to'])}"
     if event["type"] == "handoff_note":

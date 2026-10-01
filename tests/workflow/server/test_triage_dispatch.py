@@ -46,9 +46,14 @@ def triage_logs(conn, work_item_id: str | None = None) -> list:
 def end_triage(conn, triage_id: str, *, now: str, failed_code: str | None = None) -> None:
     """판단 끝(step 6 `_judge_triage` 자리) — 로그 proposed/failed, 실행 잠금 해제, 단계 마감."""
     log = conn.execute("SELECT * FROM triage_logs WHERE triage_id = ?", (triage_id,)).fetchone()
-    if failed_code is None:
-        conn.execute("UPDATE triage_logs SET state = 'proposed', result_json = '{}', proceed = 'ready',"
-                     " confidence = 0.9, finished_at = ?, updated_at = ? WHERE triage_id = ?", (now, now, triage_id))
+    if failed_code is None:  # 결과는 판정(step 6)이 남기는 모양 그대로 — 자동 시작(step 9)이 읽는다
+        result = {"contract_version": 1, "execution_id": log["execution_id"], "task_id": log["task_id"],
+                  "inspected_commit": BASE, "proceed": "ready", "confidence": 0.9, "proposed_kind": "bug_fix",
+                  "assignee": {"type": "agent", "id": FIX}, "predecessors": [],
+                  "reasons": [{"criterion": "clarity", "note": "분명함"}], "missing_information": []}
+        conn.execute("UPDATE triage_logs SET state = 'proposed', result_json = ?, proceed = 'ready',"
+                     " confidence = 0.9, proposed_kind = 'bug_fix', finished_at = ?, updated_at = ?"
+                     " WHERE triage_id = ?", (json.dumps(result), now, now, triage_id))
     else:
         conn.execute("UPDATE triage_logs SET state = 'failed', failed_code = ?, failed_message = '실패',"
                      " finished_at = ?, updated_at = ? WHERE triage_id = ?", (failed_code, now, now, triage_id))

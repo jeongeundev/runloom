@@ -181,6 +181,7 @@ class TickReport:
     work_statuses_changed: int = 0  # tick 끝 재계산에서 바뀐 업무 상태(단계 쓰기와 함께 바뀐 것은 세지 않음)
     triage_started: int = 0  # 자동으로 시작한 판단(워크스페이스마다 tick 당 최대 1건)
     triage_judged: int = 0  # 판단 로그 proposed·failed 로 마감한 판단(결과·실행 실패·기한 초과)
+    triage_autostarted: int = 0  # 자동 시작 설정으로 맡긴 판단 제안(판단 로그 auto_started)
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -402,6 +403,7 @@ class Worker:
             self._check_review_results(conn, report)
             self._check_generic_results(conn, report)
             self._judge_triage(conn, report)
+            self._autostart_triaged(conn, report)
             self._advance_cycle(conn, report)
             self._spawn_successors(conn, report)
             self._start_waiting_stages(conn, report)
@@ -1362,6 +1364,36 @@ class Worker:
             conn, log["triage_id"], execution_id=execution["execution_id"], code=code,
             message=execution["failed_message"] or "시작 여부 불명", verdict=None, now=now,
         )
+
+    def _autostart_triaged(self, conn: Connection, report: TickReport) -> None:
+        """자동 시작 — 처리 없는 최신 `ready` 제안 중 맡기는 순간의 설정(제안 종류)·자격 건수·확신도로
+        `should_autostart` 가 참인 것을 [제안대로 맡기기]와 같은 함수로 맡긴다(맡긴 사람 없음 — 소유자 승인·꺼진 러너
+        대기 그대로). 멱등은 판단 처리 칸의 조건부 UPDATE 와 `accept_triage` 의 검사. 맡기지 못하면 경고만 남기고 다음
+        tick 에 다시 본다. `_advance_cycle` 앞이라 맡긴 업무가 같은 tick 에 착수된다."""
+        from workflow.server import work_actions  # work_actions 가 이 모듈을 import 한다 — 순환
+
+        now = self._clock()
+        settings_of: dict[str, dict] = {}
+        counts_of: dict[str, dict[str, int]] = {}
+        for row in repo.autostart_candidates(conn):
+            session_id = row["session_id"]
+            if session_id not in settings_of:
+                settings_of[session_id] = repo.triage_autostart_settings(conn, session_id)
+                counts_of[session_id] = repo.triage_handled_counts(conn, session_id)
+            result = TriageResult.model_validate_json(row["result_json"])
+            if not triage.should_autostart(
+                    proceed=row["proceed"], assignee_type=result.assignee.type if result.assignee else None,
+                    confidence=row["confidence"], setting=settings_of[session_id].get(row["proposed_kind"]),
+                    handled_count=counts_of[session_id].get(row["proposed_kind"], 0)):
+                continue
+            try:
+                work_actions.accept_triage(conn, self._store, self._settings, session_id=session_id,
+                                           work_item_id=row["work_item_id"], triage_id=row["triage_id"],
+                                           member_id=None, now=now, secrets=self._secrets)
+            except stage_runs.WorkActionError as exc:
+                log.warning("판단 자동 시작 실패 %s: %s %s", row["triage_id"], exc.code, exc)
+                continue
+            report.triage_autostarted += 1
 
     def _triage_new_work(self, conn: Connection, report: TickReport) -> None:
         """담당 없는 새 GitHub·Jira 업무에 판단을 자동으로 건다 — 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건),

@@ -191,17 +191,26 @@ def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id:
         repo.assign_work_item(conn, session_id, work_item_id, assignee_type="member", assignee_id=assignee_id,
                               by_member_id=member_id, now=now)
         return
+    hand_to_agent(conn, store, settings, session_id=session_id, work_item_id=work_item_id, agent_id=assignee_id,
+                  member_id=member_id, now=now, secrets=secrets, note=note)
+
+
+def hand_to_agent(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str,
+                  agent_id: str, member_id: str | None, now: str, secrets: SecretStore | None = None, note: str = "",
+                  autostart_triage: tuple[str, int] | None = None) -> None:
+    """에이전트에게 맡기기 — 열린 단계 → 직접 선택(`select_agent(manual)`) → 쓰기 한 트랜잭션 → 착수(소유자 승인·꺼진
+    러너 대기 그대로). 판단 자동 시작은 `member_id=None`·`autostart_triage=(triage_id, 기준 버전)` (phase 19)."""
     stage = open_stage(conn, work_item_id)
     if stage is None:
         raise WorkActionError(409, "no_open_stage", "맡길 단계가 없습니다.")
     capability = Capability.model_validate_json(stage["required_capability_json"])
     record = select_agent(stage["task_id"], capability, candidates(conn, session_id), mode="manual",
-                          chosen_agent_id=assignee_id)
+                          chosen_agent_id=agent_id)
     if record.status != "selected":
         raise _invalid_assignee("이 단계를 맡을 수 없는 에이전트입니다.")
-    target = target_for(repo.get_kind(conn, session_id, stage["kind"]), repo.get_agent(conn, assignee_id))
+    target = target_for(repo.get_kind(conn, session_id, stage["kind"]), repo.get_agent(conn, agent_id))
     repo.hand_work_to_agent(conn, session_id, work_item_id, record=record, target=target, member_id=member_id,
-                            now=now, note=note or None)
+                            now=now, note=note or None, autostart_triage=autostart_triage)
     refresh_task_status(conn, stage["task_id"], now, settings)
     start_stage(conn, store, settings, repo.get_task(conn, stage["task_id"]), session_id=session_id, now=now,
                 strict=False, secrets=secrets)
@@ -245,10 +254,11 @@ def _work_ids(conn: Connection, session_id: str, keys: list[str]) -> list[str]:
 
 
 def accept_triage(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str,
-                  triage_id: str, member_id: str, now: str, secrets: SecretStore | None = None) -> None:
+                  triage_id: str, member_id: str | None, now: str, secrets: SecretStore | None = None) -> None:
     """[제안대로 맡기기] — 제안 종류가 시작 전 맡길 단계와 다르면 종류를 바꾸고(요구 능력 다시 계산), 선행 업무를 `blocks`
     로 잇고(한 트랜잭션), 기존 담당 바꾸기(`assign_work`)로 맡긴다 — 에이전트면 소유자 승인·꺼진 러너 대기 그대로, 멤버면
-    배정만. 판단 처리(`accepted`)는 그 맡기기 트랜잭션 안에서 남는다. 맡기기가 실패하면 종류·연결은 남고 처리는 비어 있다."""
+    배정만. 판단 처리(`accepted`)는 그 맡기기 트랜잭션 안에서 남는다. 맡기기가 실패하면 종류·연결은 남고 처리는 비어 있다.
+    `member_id=None` 은 워커 자동 시작(제안 담당은 에이전트) — 맡긴 사람 없이 `hand_to_agent`, 처리 `auto_started`."""
     work = _own_open_work(conn, session_id, work_item_id)
     log = repo.latest_triage(conn, work_item_id)
     if (log is None or log["triage_id"] != triage_id or log["state"] != "proposed" or log["handling"] is not None
@@ -274,6 +284,11 @@ def accept_triage(conn: Connection, store: Any, settings: Settings, *, session_i
                   target_for(spec, agent))
     repo.prepare_triage_accept(conn, work_item_id, stage_change=change,
                                predecessor_ids=_work_ids(conn, session_id, result.predecessors), now=now)
+    if member_id is None:
+        hand_to_agent(conn, store, settings, session_id=session_id, work_item_id=work_item_id,
+                      agent_id=result.assignee.id, member_id=None, now=now, secrets=secrets,
+                      autostart_triage=(triage_id, log["criteria_version"]))
+        return
     assign_work(conn, store, settings, session_id=session_id, work_item_id=work_item_id,
                 value=f"{result.assignee.type}:{result.assignee.id}", member_id=member_id, now=now, secrets=secrets)
 
