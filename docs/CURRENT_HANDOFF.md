@@ -1,10 +1,21 @@
 # 현재 인계 — 업무 목록과 결과 기반 자동 실행
 
-갱신일: 2026-09-30. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
+갱신일: 2026-10-01. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 17 phase 설계 — 사람 사이 인계(두 사람·러너 두 대) + 16 다듬기 (새 세션은 여기서 시작)
+## 다음 작업: 17-team-handoff 반영 → 18-jira 설계 (새 세션은 여기서 시작)
 
-**17-team-handoff 진행 중(phases/17-team-handoff)** — step 0 이 [ADR-0023](adr/0023-cross-member-delegation.md)·ARCHITECTURE "사람 사이 인계 — phase 17" 로 결정·이름·스키마 v13 을 고정했다. 아래는 설계 전 기록.
+**17-team-handoff 완료**(2026-10-01, `feat-17-team-handoff`, step 0~11, [ADR-0023](adr/0023-cross-member-delegation.md), [ARCHITECTURE](ARCHITECTURE.md) "사람 사이 인계 — phase 17", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 17 사람 사이 인계"): 에이전트마다 맡기기 정책(`바로 실행`·`내 승인 뒤 실행` — 연결 탭 팀 목록에서 러너 소유자·관리자가 바꿈), 다른 멤버의 에이전트에게 맡기면 소유자에게 `맡김` 알림, 승인 정책이면 소유자의 `내 차례`에 [승인]·[거절](거절 = 담당 없음 + 맡긴 사람 알림, 후속 검토 단계도 새로 묻는다), 꺼진 러너에게 맡기면 `대기 · <소유자>의 러너 꺼짐 · 켜지면 시작` + 소유자 알림 1회 → 켜지면 시작(모든 종류), 검증 실패 요청에 [검증만 다시](에이전트 없이 같은 결과 커밋 재검증)·[답하고 다시 맡기기](옛 [답하고 다시 판정]), 패널 담당 후보 `이름 · 이OO의 Mac · 켜짐`·지시 메모 → 요청문 머리(`# RUN-n 제목`·양식·지시), 목록 저장소 묶기·필터·키 칸 `RUN-n` 먼저, 러너 상대 `PYTHONPATH` 풀기, 실행 이벤트마다 단계 상태 재계산, `install-runner.sh --name`, 스키마 v13. step 11 e2e 에서 고친 결함 3건: 같은 저장소를 등록한 러너가 둘이면 맡긴 에이전트를 무시하던 매칭, 검토가 다른 러너로 가던 매칭, 실행 `failed` 이벤트가 업무를 `종료` 로 굳히던 것(step 4 회귀).
+
+**할 일**(순서대로, 모두 사용자 지시 뒤):
+1. `feat-17-team-handoff` 를 `service` 에 `--no-ff` 병합.
+2. 셀프호스트 v13 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 13 → **러너도 `install-runner.sh` 재실행**(러너 프로토콜 변화 — 옛 러너는 [검증만 다시]를 받지 못한다). 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v13.
+3. 실연동 1회 — 두 번째 멤버 계정 + `--name b` 러너(**다른 이름의 sandbox 클론** 폴더 — 같은 폴더면 등록 409, [SELFHOST](SELFHOST.md) "한 Mac 에 러너 두 대")로 sandbox 이슈 하나를 A → B 에이전트에게 맡기기(저장소 카드의 수정·검토 에이전트 칸은 비워 둔다), 승인 정책 1회(승인·거절), [검증만 다시]는 RUN-24 에서(재설치 뒤 러너가 새 판이어야 한다).
+4. 브라우저 확인 — 16 에서 남은 것(패널 끼우기·Esc·뒤로 가기·묶음 접기·브랜치 복사·800px 미만 전체 화면 패널) + 17(저장소 묶기·저장소 필터 select, 승인·거절 버튼, 지시 메모 칸, 팀 탭 맡기기 정책 select). 자동 테스트 없음.
+5. 18-jira 설계([REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절).
+
+**17 에서 남긴 것·주의**: 저장소 카드(`match_for_source`)는 단계 없이 계산해 러너가 둘이면 "수정 Agent 2개" 를 그대로 보인다(패널에서 고르면 시작함). 승인 범위는 단계마다라 승인 정책 에이전트는 수정·검토 단계를 각각 묻는다(ADR-0023 결정 1 그대로 — 실사용에서 번거로우면 다음 phase 에서 업무 단위로 넓히는 것을 검토). 거절된 범위는 워커가 다시 묻지 않는다(사람이 다시 맡기면 새 요청). `install-runner.sh` 에 `--id` 가 없어 로컬 등록 이름 = 클론 폴더 이름. 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 공유 때문에 여전히 미실행.
+
+**17 설계 전 기록**(이력):
 
 **2026-09-30 사용자 결정**: 17-jira 앞에 phase 하나를 끼운다(Jira·판단·모니터링은 한 칸씩 밀림 — 18-jira·19-triage·20-monitor, REDESIGN_PLAN 13절은 새 phase step 0 이 고친다). 이름 제안 `17-team-handoff`(설계 세션에서 확정).
 

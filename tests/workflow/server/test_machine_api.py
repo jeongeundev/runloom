@@ -409,6 +409,18 @@ def test_late_event_does_not_reopen_finished_stage(client, headers, exec_fix, se
     assert len(repo.list_task_events(seeded, TASK_A)) == events_before
 
 
+def test_failed_event_leaves_stage_and_work_open_for_the_worker(client, headers, running, seeded):
+    """실행 실패 마감(단계 `실패`·`stage_failed` 요청)은 워커가 한 트랜잭션으로 쓴다. 이벤트 경로가 먼저 `실패` 를 저장하면
+    요청 없이 모든 단계가 닫혀 업무가 `종료`(끝 상태)로 굳는다 — e2e `test_real_repo` test_07 이 잡은 회귀(phase 17 step 11)."""
+    before = _stage_status(seeded, TASK_A)
+    body = event(running, 4, "failed", {"code": "commit_mismatch", "message": "도구가 직접 커밋", "process_stopped": True})
+    assert _post_event(client, headers, running, body).status_code == 200
+
+    assert _stage_status(seeded, TASK_A) == before
+    work = repo.work_item_of_task(seeded, TASK_A)
+    assert work["status"] not in ("종료", "완료") and work["closed_at"] is None
+
+
 def test_non_cycle_stage_status_stays_live(client, headers, connector, seeded):
     """비순환(사용자 정의) 종류는 화면이 지금처럼 실시간 판정이고, 저장값도 같은 판정으로 맞춰진다."""
     spec = KindSpec(

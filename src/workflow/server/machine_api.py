@@ -193,7 +193,9 @@ def post_event(
         )
     now = utc_now()
     ack = repo.append_event(conn, execution_id, body, actor=f"connector:{connector_id}", now=now)
-    if ack.last_event_seq > execution["last_event_seq"]:  # 새로 저장된 이벤트 — 재전송은 상태를 다시 쓰지 않는다
+    # 새로 저장된 이벤트만 — 재전송은 상태를 다시 쓰지 않는다. `failed` 뒤 단계 마감(`실패`·`stage_failed` 요청)은 워커가
+    # 한 트랜잭션으로 쓴다 — 여기서 `실패` 를 먼저 저장하면 요청 없이 단계가 모두 닫혀 업무가 `종료` 로 굳는다
+    if ack.last_event_seq > execution["last_event_seq"] and body.type != "failed":
         task = repo.get_task(conn, execution["task_id"])
         if task["finished_at"] is None:  # 마감된 단계는 늦게 온 이벤트로 되돌리지 않는다
             work_actions.refresh_task_status(conn, task["task_id"], now, request.app.state.settings)

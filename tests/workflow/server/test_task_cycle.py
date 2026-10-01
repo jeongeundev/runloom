@@ -438,6 +438,47 @@ def test_two_fix_agents_wait_until_a_default_is_chosen(auto_source, conn, worker
     assert fix["agent_id"] == "agent-fix-2"
 
 
+def test_two_fix_agents_run_the_one_a_person_handed_the_task_to(auto_source, conn, worker):
+    """phase 17 — 두 러너가 같은 저장소를 등록해도 사람이 맡긴 Agent(`chosen_agent_id`)로 착수하고 그 등록의 프로필을 쓴다."""
+    second = _agent("agent-fix-2", "local-billing-2", "code.fix", "billing")
+    repo.upsert_agent(conn, second)
+    repo.register_session_agent(conn, SESSION, second["agent_id"], NOW)
+    _report(conn, "local-billing-2", auto_source["billing"], "billing", ["vp-2"], "acme/billing")
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    repo.update_task_choice(conn, task_id, chosen_agent_id="agent-fix-2", target={})
+    worker.tick()
+
+    (fix,) = executions(conn, task_id)
+    assert fix["agent_id"] == "agent-fix-2"
+    assert request_of(fix).target == CodeChangeTarget(local_registration_id="local-billing-2", base_commit=BASE,
+                                                      verification_profile_id="vp-2")
+
+
+def test_the_fix_agents_own_runner_reviews_when_two_runners_share_the_repository(auto_source, conn, store, worker):
+    """phase 17 — 다른 연결 프로그램(러너)의 Agent 도 같은 저장소를 등록해 검토 후보가 둘이면, 수정한 Agent 가 검토한다
+    (검토는 수정 러너의 결과 커밋을 읽는다 — `review_repository_mismatch` 로 막히지 않게)."""
+    runner_b = {**_agent("agent-runner-b", "local-billing-b", "code.fix", "billing"),
+                "capabilities": [{"code": "code.fix", "scope": {"repository_id": "billing"}},
+                                 {"code": "code.review", "scope": {"repository_id": "billing"}}]}
+    repo.upsert_agent(conn, runner_b)
+    repo.register_session_agent(conn, SESSION, "agent-runner-b", NOW)
+    _report(conn, "local-billing-b", auto_source["shop"], "billing", ["vp-b"], "acme/billing")
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    repo.update_task_choice(conn, task_id, chosen_agent_id="agent-runner-b", target={})
+    worker.tick()
+    (fix,) = executions(conn, task_id)
+    assert fix["agent_id"] == "agent-runner-b"
+
+    finish_fix(conn, store, fix["execution_id"])
+    worker.tick()
+    (review_task,) = review_tasks(conn, task_id)
+    (review,) = executions(conn, review_task["task_id"])
+    assert (review["agent_id"], request_of(review).target.local_registration_id) == ("agent-runner-b",
+                                                                                      "local-billing-b")
+
+
 def test_bound_assignee_still_wins_on_an_auto_matched_source(auto_source, conn, worker):
     repo.upsert_agent(conn, _agent(FIX_SHOP, REG_SHOP, "code.fix", "billing"))
     repo.update_registration(conn, REG_SHOP, connector_id=auto_source["shop"], repository_id="billing",

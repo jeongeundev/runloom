@@ -33,6 +33,8 @@
 9. **한 Mac 에 러너 두 대.** `install-runner.sh --name <이름>`(영소문자·숫자·하이픈)이면 launchd label·plist·로그·러너 홈을 이름으로 나눈다. `--name` 이 없으면 지금과 같다(업그레이드 호환).
 10. **스키마 v13.** ALTER: `agents.delegation_policy`(기본 `run`), `connectors.capabilities_json`, `executions.verify_only`(기본 0), `tasks.start_pending_at`, `work_items.handoff_note`·`handoff_note_by_member_id`. 재생성: `notifications`(사건 CHECK 확장), `work_item_events`(종류 CHECK 에 `handoff_note`). `human_requests` 는 그대로(코드 CHECK 없음). `tasks` 는 재생성하지 않는다. 실패하면 v12 그대로.
 
+11. **같은 저장소를 등록한 러너가 여럿일 때의 매칭(step 11 e2e 에서 추가).** 자동 매칭(ADR-0017, `all_open` 소스)은 수정 Agent 후보가 둘이면 "수정 Agent 2개 — 설정에서 하나 고르세요" 로 막고 사람이 맡긴 Agent(`tasks.chosen_agent_id`)를 보지 않았다 — 두 멤버가 각자 러너로 같은 저장소를 등록하면 다른 멤버의 에이전트에게 맡길 수 없었다. 이제 ① `all_open` 소스에서 사람이 그 단계에 맡긴 Agent 가 있으면 수정 Agent 는 그것이고 검증 프로필도 그 등록에서 정한다(`filtered` 는 담당자 규칙 그대로 — ADR-0014). ② 검토 Agent 설정이 비어 있으면 검토 단계의 수정 Agent 가 검토 능력을 가지면 그것을 고른다 — 검토는 수정 결과 커밋이 있는 러너에서만 돈다(`review_repository_mismatch`). 설정값은 그대로 우선한다. 판정은 순수 함수 `github_match.match_source(..., chosen_agent_id, pair_agent_id)` 가 한다.
+
 **ADR-0021 결정 5(받는 사람 규칙)에 우선 규칙이 붙는다**: 업무에 열린 `owner_approval` 요청이 있으면 받는 사람은 그 에이전트의 소유자다(소유자가 없거나 비활성이면 활성 관리자 전원). 그 밖은 ADR-0021 그대로(담당 멤버 → 맡긴 사람 → 활성 관리자 전원).
 
 ## 하지 않는 것

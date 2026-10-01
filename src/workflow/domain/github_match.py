@@ -70,10 +70,15 @@ def match_source(
     *,
     assignee_ids: Sequence[int] = (),
     bindings: Mapping[int, str] | None = None,
+    chosen_agent_id: str | None = None,
+    pair_agent_id: str | None = None,
 ) -> SourceMatch:
-    """`agents` 는 이 워크스페이스의 로컬 Agent. 수정 Agent 는 ① 담당자 1명의 연결 ② `default_fix_agent_id`
+    """`agents` 는 이 워크스페이스의 로컬 Agent. 수정 Agent 는 ⓪ 사람이 이 Task 에 맡긴 Agent(`chosen_agent_id`,
+    `all_open` 만 — filtered 는 담당자 규칙이 정한다) ① 담당자 1명의 연결 ② `default_fix_agent_id`
     ③ `code.fix {repository_id}` 후보가 하나(`all_open` 만) 순서. 검증 프로필은 정해진 수정 Agent 의 등록이 보고한
-    프로필이 하나일 때. 로컬 저장소가 정해지지 않으면 Agent·프로필도 정하지 않는다(그 사유 하나만 낸다)."""
+    프로필이 하나일 때. 검토 Agent 는 설정값, 없으면 검토 Task 의 수정 Agent(`pair_agent_id`)가 검토할 수 있으면
+    그것(검토는 수정한 러너의 결과 커밋을 읽는다 — 같은 저장소의 러너 여럿, phase 17), 아니면 후보가 하나.
+    로컬 저장소가 정해지지 않으면 Agent·프로필도 정하지 않는다(그 사유 하나만 낸다)."""
     blockers: list[Blocker] = []
     full_name = source.repository_full_name
     repository_id = source.workflow_repository_id
@@ -93,7 +98,8 @@ def match_source(
     if repository_id is None:
         return SourceMatch(None, source.fix_verification_profile_id, None, source.review_agent_id, tuple(blockers))
 
-    fix_agent_id = _fix_agent(source, agents, repository_id, assignee_ids, bindings or {}, blockers)
+    chosen = chosen_agent_id if source.intake == "all_open" else None
+    fix_agent_id = chosen or _fix_agent(source, agents, repository_id, assignee_ids, bindings or {}, blockers)
     profile_id = source.fix_verification_profile_id
     if profile_id is None and fix_agent_id is not None:
         profiles = next((a.verification_profile_ids for a in agents if a.agent_id == fix_agent_id), ())
@@ -107,7 +113,7 @@ def match_source(
     review_agent_id = source.review_agent_id
     if review_agent_id is None:
         reviewers = _capable(agents, _REVIEW_KIND.capability_code, repository_id)
-        review_agent_id = _one(
+        review_agent_id = pair_agent_id if pair_agent_id in reviewers else _one(
             reviewers,
             Blocker("review_agent_unmatched", f"{repository_id} 을 검토할 Agent 없음", "operator"),
             Blocker("review_agent_ambiguous", _choice(f"{repository_id} 검토 Agent", len(reviewers)), "operator"),

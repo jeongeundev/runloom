@@ -133,7 +133,7 @@ def source_match(conn: Connection, task: Row) -> SourceMatch | None:
     if config is None:
         return None
     intake = github_sync.task_intake_facts(conn, task["session_id"], task["task_id"])
-    return _match(config, repo.list_session_agents(conn, task["session_id"]), intake)
+    return _match(config, repo.list_session_agents(conn, task["session_id"]), intake, task["chosen_agent_id"])
 
 
 def match_for_source(conn: Connection, session_id: str, config: GitHubSourceConfig) -> SourceMatch:
@@ -142,9 +142,13 @@ def match_for_source(conn: Connection, session_id: str, config: GitHubSourceConf
     return match_source(config, local)
 
 
-def _match(config: GitHubSourceConfig, agents: list[Row], intake: IntakeFacts) -> SourceMatch:
+def _match(config: GitHubSourceConfig, agents: list[Row], intake: IntakeFacts, chosen_agent_id: str | None,
+           pair_agent_id: str | None = None) -> SourceMatch:
+    """사람이 이 Task 에 맡긴 Agent(`chosen_agent_id`)가 있으면 수정 Agent 는 그것, 검토는 수정 Agent(`pair_agent_id`)가
+    검토할 수 있으면 그것이다(phase 17 — 같은 저장소의 러너 여럿)."""
     local = [_match_agent(a) for a in agents if a["connection_type"] == "local"]
-    return match_source(config, local, assignee_ids=intake.assignee_ids or (), bindings=intake.bindings)
+    return match_source(config, local, assignee_ids=intake.assignee_ids or (), bindings=intake.bindings,
+                        chosen_agent_id=chosen_agent_id, pair_agent_id=pair_agent_id)
 
 
 def _match_facts(task: Row, config: GitHubSourceConfig, match: SourceMatch, required: Capability, *, fix: bool) -> dict:
@@ -203,7 +207,7 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
         "direct_work": repo.is_direct_working(conn, task["task_id"]),
     }
     if config is not None:
-        match = _match(config, agents, intake)
+        match = _match(config, agents, intake, task["chosen_agent_id"], overrides.get("pair_agent_id"))
         values.update(_match_facts(task, config, match, required, fix=intake.assignee_ids is not None))
     values.update(overrides)
     return TaskFacts(**values)

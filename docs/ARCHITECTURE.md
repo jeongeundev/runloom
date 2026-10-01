@@ -1615,7 +1615,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 러너 실행 이벤트(`POST /executions/{id}/events`) — 새로 저장된 이벤트(재전송이 아님)마다 | `machine_api.post_event` 가 `repo.append_event` 뒤 `work_actions.refresh_task_status(conn, task_id, now, settings)`(`request.app.state.settings`). 단계가 마감됐으면 아무것도 하지 않는다(`update_task_status` 규칙 그대로). 이 함수가 `update_task_status` → `_refresh_stage_work` 로 업무 상태도 다시 계산한다 |
 | 워커 `_start_ready_tasks` 가 활성 실행이 있는 순환 단계를 볼 때 `_resume` 이 False 면 | `self._refresh_task(conn, task_id)` |
 
-`accepted` → `실행 요청됨 · 접수 확인`, `started`·`progress` → `실행 중 · <마지막 진행>`, `result_ready` → 판정 전 `확인 필요 · 판정 대기`(워커 판정이 뒤이어 바꾼다), `failed` → 지금 `user_status` 표 그대로.
+`accepted` → `실행 요청됨 · 접수 확인`, `started`·`progress` → `실행 중 · <마지막 진행>`, `result_ready` → 판정 전 `확인 필요 · 판정 대기`(워커 판정이 뒤이어 바꾼다). `failed` 이벤트는 **다시 계산하지 않는다**(step 11 수정) — 단계 마감(`실패`)과 `stage_failed` 요청은 워커가 한 트랜잭션으로 쓴다. 이벤트 경로가 `실패` 를 먼저 저장하면 열린 요청 없이 모든 단계가 닫혀 업무가 `종료`(끝 상태)로 굳었다(`tests/e2e/test_real_repo.py` test_07).
 
 ### 러너 두 대 설치 (step 10)
 
@@ -1657,6 +1657,17 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 이벤트 `handoff_note` `data_json` = `{"agent_id": <agent_id>, "note": <메모>, "by": <member_id>}`. 비밀값 칸은 없다 — 메모는 사람이 쓴 지시이고 알림 웹훅 URL·토큰·`--env` 값은 어디에도 저장하지 않는다.
 
+### 같은 저장소의 러너 여럿 — 매칭 (step 11)
+
+멤버 두 명이 각자 러너로 같은 GitHub 저장소를 등록하면(로컬 등록 이름은 달라야 한다 — 폴더 이름 기본) 자동 매칭(phase 11)의 수정·검토 후보가 둘이 된다. e2e(`tests/e2e/test_team_handoff.py`)에서 발견해 순수 함수 `domain/github_match.match_source` 에 두 인자를 더했다(ADR-0023 결정 11):
+
+| 인자 | 규칙 |
+|---|---|
+| `chosen_agent_id: str \| None = None` | `intake == "all_open"` 이면 수정 Agent = 이 값(사람이 그 단계에 맡긴 Agent — 맡기기·`choose_agent` 응답이 쓴 `tasks.chosen_agent_id`). 검증 프로필은 그 Agent 의 등록에서(하나일 때). `filtered` 는 무시 — 담당자 규칙(phase 8)이 정한다 |
+| `pair_agent_id: str \| None = None` | `review_agent_id` 설정이 비어 있고 이 Agent(검토 단계의 수정 Agent)가 `code.review` 후보이면 검토 Agent = 이 값. 아니면 지금처럼 후보가 하나일 때 |
+
+`task_cycle._match(config, agents, intake, chosen_agent_id, pair_agent_id=None)` 가 `source_match`(워커 `_start_fix` 의 프로필)·`task_facts`(준비 판정 — 검토는 `_start_review` 가 넘기는 `pair_agent_id`)에서 이 값을 넘긴다. 저장소 카드(`match_for_source`)는 단계가 없어 두 인자 없이 계산한다 — 카드에는 "수정 Agent 2개" 가 그대로 보이지만 패널에서 담당 에이전트를 고르면 그 에이전트로 시작한다.
+
 ### 이름·시그니처 고정
 
 | 대상 | 위치(step) | 이름·시그니처 |
@@ -1682,6 +1693,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 목록 모델 | `domain/work_list.py`·`domain/work_keys.py`(9) | `GROUP_BYS = ("assignee", "status", "repo")`, `ListQuery.repo: str \| None`, `parse_list_query(..., repo="", repos=())`, `WorkRow.repository: str \| None`, `WorkRow.source_key_short: str \| None`, `filter_rows(..., repo=None)`, `filter_counts(..., repo=None)`, `short_source_key(key: str \| None) -> str \| None` |
 | 경로 | `server/web.py`(9) | `POST /agents/{agent_id}/delegation-policy`(폼 `policy`, `can_set_policy`), `POST /work/{key}/assignee` 에 폼 `note` |
 | 설치 | `deploy/selfhost/install-runner.sh`(10) | `--name <이름>`(위 표) |
+| 매칭 | `domain/github_match.py`·`server/task_cycle.py`(11) | `match_source(..., chosen_agent_id: str \| None = None, pair_agent_id: str \| None = None)`, `_match(config, agents, intake, chosen_agent_id, pair_agent_id=None)`(위 "같은 저장소의 러너 여럿") |
 
 ## 기존 구현과 초기 설계 기록
 

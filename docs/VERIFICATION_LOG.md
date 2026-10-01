@@ -490,3 +490,29 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 수정 없음. e2e 를 쓰며 본 것: 러너가 카드에 매칭된(heartbeat) 직후 첫 claim 전이면 `connectors.supported_kinds_json` 이 비어 담당 = 에이전트가 곧바로 착수하지 못하고 `대기`("연결 프로그램 업데이트 필요 — bug_fix 미지원")로 남는다 — 지시는 기록되므로 다음 워커 tick 이 착수한다. 기존 동작(phase 5 claim 지원 종류)이고, e2e 는 첫 claim 을 기다린 뒤 맡긴다. 문서: [SELFHOST](SELFHOST.md) 업그레이드 v12·옛 주소 넘김, [UI_GUIDE](UI_GUIDE.md) 시작하기 상태에 `할 일`, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업.
+
+## 2026-10-01 phase 17 사람 사이 인계 (step 11)
+
+목적: [ADR-0023](adr/0023-cross-member-delegation.md)의 맡기기 정책·소유자 승인·꺼진 러너 대기·[검증만 다시]·인계 맥락 요청문·저장소 보기가 멤버 두 명·러너 두 대 대역 e2e 에서 그대로 도는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 서버, 알림은 127.0.0.1 가짜 수신, origin 은 임시 bare 저장소, 도구는 PATH 앞의 가짜 `codex`, 러너 두 대는 각자 `WORKFLOW_CONNECTOR_HOME` 임시 폴더(launchd 아님).
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-10-01 KST, 이 Mac, 브랜치 `feat-17-team-handoff` |
+| 명령·결과 | `python3 -m pytest -q` — **3424 passed·56 skipped**. `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **55 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e). `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_team_handoff.py -q` — **8 passed**(전체 e2e 와 따로 한 번 더) |
+| 준비 | `tests/e2e/test_team_handoff.py` test_01~02 — 관리자 A(운영자) 첫 설정·GitHub 연결(가짜 App)·공용 알림, 이슈 4건 수집 → 멤버 B(김멤버) 초대 가입·개인 웹훅 → A·B 가 각자 [러너 붙이기] 코드로 자기 클론(같은 bare origin)을 `--id billing-a`·`billing-b` 로 setup(소유자 = 각자), 저장소 카드의 수정·검토 에이전트 칸은 비움, 재작업 상한 0. 두 러너가 claim 으로 `capabilities_json = ["verify_only"]` 보고 |
+| 한 줄기 1 | test_03 — RUN-1 패널 담당 후보 `billing · 운영자의 Mac · 켜짐`·`billing · 김멤버의 Mac · 켜짐` → A 가 B 의 에이전트(정책 `run`)에게 지시 메모와 함께 맡김 → 수정·검토 모두 B 의 러너(`assigned_connector_id`) → 검토 수정 요청 → 상한 0 이라 사람 요청 → 업무 `내 차례`, A 의 `내 차례` 에만(B 에는 없음) → B 에게 `delegated_to_you` 공용·개인 1건씩, tick 을 더 돌려도 그대로 |
+| 한 줄기 2 | test_04~05 — B 가 정책을 `owner_approval` 로(잘못된 값 422) → 후보 줄 끝 ` · 승인 필요` → A 가 RUN-2 를 맡김 → 실행 0, 업무 `내 차례 · 운영자 가 맡김 · 김멤버 승인 대기`, B 의 내 차례에만, B 에게 승인 요청 알림 → B [승인] → 워커가 착수 → 결과 판정 → 후속 검토 단계가 다시 승인을 물음(ADR-0023 결정 1) → B 승인 → 검토 승인 → `PR · 검토`. RUN-3: 승인 요청 → 거절 메모 2001자 422 → B [거절] `오늘은 Mac 을 못 씁니다` → 담당 없음(`담당 없음` 묶음)·실행 0·업무 닫히지 않음, A 에게 `delegation_declined`(공용, 본문 `김멤버 가 거절 — 오늘은 Mac 을 못 씁니다`), 워커는 다시 묻지 않음 |
+| 한 줄기 3 | test_06 — 관리자가 정책을 `run` 으로 → B 러너 프로세스 종료 → 후보 줄 `꺼짐`(heartbeat 4초 기준) → A 가 RUN-4 를 맡김 → 실행 0, 업무 `대기 · 김멤버의 러너 꺼짐 · 켜지면 시작`, `runner_offline_waiting` 이 B 에게 공용·개인 1건씩(중복 키 `runner_offline:<업무>:<에이전트>`) → B 러너 재기동 → 워커가 착수 → 알림은 늘지 않음 |
+| 한 줄기 4 | test_06~07 — RUN-4 의 B 러너 검증 프로필은 플래그 파일이 있으면 실패하는 스크립트(러너 로컬 등록에만) → `fix_verification_failed` 요청 → 플래그 제거 → A [검증만 다시](`reverify`) → 새 실행 `verify_only = 1`·`start_key reverify:<요청>`·`verify_only_commit` = 이전 결과 커밋 → 판정 모두 통과, 결과 요약 `검증만 다시 — …`, 결과 커밋 그대로 → 검토 단계 생성·착수. 가짜 도구가 받은 수정 프롬프트 수는 1 그대로(에이전트를 다시 부르지 않음) |
+| 한 줄기 5 | test_08 — `/tasks?group=repo` 묶음 `repo:acme/billing` 4건, `repo=ACME/billing` 필터(대소문자 무시)도 4건, 키 칸 `RUN-1` 다음 흐린 `billing#1`(`acme/billing#1` 없음). 가짜 codex 가 파일로 남긴 RUN-1 프롬프트에 `# RUN-1 쿠폰 중복 차감` 1번 → `## 맡긴 사람 지시 (운영자)` + 메모 → 원래 이슈 본문 순서. 패널 타임라인 `지시 메모 · 운영자 — <메모>` |
+| v12 → v13 | e2e 에서는 생략 — `tests/workflow/adapters/test_db.py::test_migrates_v12_to_v13_preserving_rows_with_defaults`(fixture `schema_v12.sql`, 행·id 보존, `delegation_policy = 'run'`·`verify_only = 0`)·`test_v13_migration_rolls_back_on_foreign_key_violation`·`test_migrates_v4_all_the_way_to_v13` 가 본다(step 1) |
+| 미확인 | 브라우저 JS(저장소 select 바꾸면 제출·패널 끼우기 안의 승인 폼·지시 메모 textarea)와 실제 launchd 러너 두 대(`--name b`)는 자동 테스트가 없다 — 실연동은 phase 뒤 사용자와. 실제 github.com·Claude/Codex 호출 없음 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 써서 실행하면 사용자의 다음 `compose up` 이 백업 없이 v13 으로 올라갈 수 있다. 사용자 지시 전이라 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음, 템플릿 `\|safe` 없음(grep + `tests/test_packages.py`). 검증 명령은 러너 로컬 등록에만 있고 중앙·요청문은 명령을 싣지 않는다 |
+
+### 발견한 결함과 고친 파일
+
+- **같은 저장소를 등록한 러너가 둘이면 맡긴 에이전트를 무시**: `all_open` 소스의 자동 매칭이 수정 후보 둘을 `fix_agent_ambiguous`("수정 Agent 2개 — 설정에서 하나 고르세요")로 막고 `tasks.chosen_agent_id` 를 보지 않았다 → 다른 멤버의 에이전트에게 맡겨도 시작하지 않음. `domain/github_match.match_source(chosen_agent_id=)` — `all_open` 에서 사람이 맡긴 Agent 우선, 프로필도 그 등록에서(`filtered` 는 담당자 규칙 그대로). 테스트 `tests/workflow/domain/test_github_match.py`·`tests/workflow/server/test_task_cycle.py` 먼저.
+- **검토가 수정한 러너가 아닌 곳으로**: 검토 후보도 둘이라 막히거나(설정으로 한쪽을 고르면 다른 러너의 수정은 `review_repository_mismatch`). `match_source(pair_agent_id=)` — 검토 설정이 비어 있으면 수정 Agent 가 검토 후보일 때 그것. `server/task_cycle._match` 가 두 값을 넘긴다. 같은 테스트 파일에 먼저.
+- **실행 `failed` 이벤트가 업무를 `종료` 로 굳힘**(step 4 회귀, 기존 `tests/e2e/test_real_repo.py` test_07 이 HEAD 에서 실패): 이벤트 경로가 단계 `실패` 를 먼저 저장해 `stage_failed` 요청 전에 업무가 끝 상태가 됐다. `server/machine_api.post_event` 는 `failed` 이벤트로 다시 계산하지 않는다(워커 마감이 씀). 테스트 `tests/workflow/server/test_machine_api.py` 먼저.
+- 문서: [ARCHITECTURE](ARCHITECTURE.md) phase 17 "같은 저장소의 러너 여럿 — 매칭"·단계 상태 표 `failed`, [ADR-0023](adr/0023-cross-member-delegation.md) 결정 11, [SELFHOST](SELFHOST.md) 업그레이드 v13·러너 두 대(두 번째 클론), [UI_GUIDE](UI_GUIDE.md) 저장소 묶기·담당 후보·승인·검증만 다시, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 17 완료.
