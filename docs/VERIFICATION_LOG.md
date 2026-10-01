@@ -569,3 +569,28 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 수정 없음. phase 18 e2e `test_jira_cycle.py::test_v13_copy_upgrades_to_v14_and_takes_jira_issues` 가 `SCHEMA_VERSION == 14` 리터럴로 v15 이후 실패하던 것을 `== 15` 로 고쳤다(e2e 게이트라 step 1 회귀에 잡히지 않았다 — 나머지 단정은 그대로 통과). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v15, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업·판단 실연동 목록, [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19" 구현 상태·시그니처·step 10 메모, [ADR-0025](adr/0025-triage.md) 구현 상태, [phase 19 README](../phases/19-triage/README.md) 상태.
+
+## 2026-10-02 phase 20 모니터링 (step 9)
+
+목적: [ADR-0026](adr/0026-monitor.md)의 판단 품질(사람 일치·실제 결과·확신도 구간)·담당자별(멤버·에이전트·담당 없음)·설정 변경 기록이 실제 순환에서 쌓인 기록으로 맞게 계산되고, `/monitor` 세 탭·`/metrics.json`·`/metrics.csv`·연결 "판단" 탭 미리보기가 같은 숫자를 보이는지, v15 사본이 v16 으로 올라 세 탭이 열리는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 App 서버(PR 경로 포함), origin 은 임시 bare 저장소, 도구는 PATH 앞의 가짜 `claude`(`--json-schema` 모양으로 판단·검토·수정 — 판단 확신도는 이슈 본문 `[confidence:x]`, `[ask]` 는 인계 파일 없는 첫 시도에 `needs_information`, 재작업은 '이전 검토 지적' 절), 러너는 `WORKFLOW_CONNECTOR_HOME` 임시 폴더(launchd 아님).
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-10-02 KST, 이 Mac, 브랜치 `feat-20-monitor` |
+| 명령·결과 | `python3 -m pytest -q` — **4128 passed·83 skipped**(새 e2e 10 은 `WORKFLOW_E2E` 게이트). `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_monitor.py -q` — **10 passed**. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **82 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e). 같은 명령의 첫 실행은 `test_work_ui.py` test_03(러너 붙이기 대기 단정)~06·08 의 5건이 실패했다(77 passed, 실행 229초 — 두 번째의 두 배 남짓). `test_work_ui.py` 단독 8 passed, `test_monitor.py` + `test_work_ui.py` 18 passed, 전체 재실행 82 passed 로 재현되지 않았다 — 원인은 확인하지 못했다(시간 대기 단정이라 부하 때 흔들린 것으로 보이나 단정하지 않는다) |
+| 준비 | `tests/e2e/test_monitor.py` test_01 — 관리자(운영자)·GitHub 연결(가짜 App) → 멤버 김멤버 초대 가입 → `setup --tool claude` → 러너 claim 지원 종류에 `triage` → `PUT /github/sources/{id}` 로 판단 에이전트(재작업 상한 1 그대로) |
+| 기준 v1 판단 | test_02 — 이슈 3건 → 자동 판단 → 셋 다 `proposed`·기준 v1·`ready`, 확신도 0.95·0.85·0.6 |
+| 제안대로 + 사람 요청 | test_03 — 김멤버가 RUN-1 [제안대로 맡기기](맡긴 사람 = 김멤버) → 수정이 `needs_information` → 김멤버에게 요청 → 김멤버 응답(resume) → 같은 단계 실행 2 → 검토 승인 → 초안 PR → 병합 → `완료`. 응답 행의 `member_id` = 김멤버, 판단 로그 `accepted`·처리자 김멤버 |
+| 다르게·무시 | test_04 — RUN-2 담당 = 김멤버(`changed`), RUN-3 [무시](`dismissed`) |
+| 기준 v2 + 재작업 | test_05 — 판단 기준 v2 저장 → 이슈 4 → 판단 기준 v2·0.75 → 관리자 [제안대로 맡기기] → 검토 수정 요청 → 재작업 1회(`rework:` start_key) → 승인 → 병합 → `완료` |
+| 자동 시작 미리보기 | test_06 — 자동 시작 bug_fix 끈 채 기준값 0.70 저장 → 연결 "판단" 탭에 `지금 기준값 0.70 이상 판단 3건 — 사람 일치 2/3 · 병합 2/2`(0.95 제안대로·0.85 다르게·0.75 제안대로) |
+| `/metrics.json` | test_07 — 판단 전체: 제안 4·실패 0·처리 제안대로 2·다르게 1·무시 1·미처리 0, 사람 일치 2/3, 병합 완료 2/2(진행 중 0), 재작업 없이 병합 1/2, 비용 n 4·합계 0.04, 판단 시간 n 4. 기준별 v1 제안 3·일치 1/2·재작업 없이 1/1, v2 제안 1·일치 1/1·재작업 없이 0/1. 종류별 `bug_fix` 한 묶음. 확신도 구간 `0-0.5` 0 / `0.5-0.7` 1(일치 0/0) / `0.7-0.8` 1(일치 1/1·병합 1/1·재작업 없이 0/1) / `0.8-0.9` 1(일치 0/1) / `0.9-1` 1(일치 1/1·병합 1/1·재작업 없이 1/1). 담당자별: 멤버 순서 = 관리자·김멤버, 김멤버 완료 0·진행 1(RUN-2)·응답 n 1, 관리자 응답 n 0. 에이전트 완료 2·진행 0·실행 7(판단 실행 제외 — RUN-1 수정 2·검토 1, RUN-4 수정 2·검토 2)·실패 0/7·1회 통과 1/2·재작업 1. 담당 없음 1(RUN-3)·응답자 모름 0. 설정 변경 = 번호 2 소스 추가 `acme/billing` · 3 소스 변경 `acme/billing · triage_agent_id` · 4 판단 기준 `v2` · 5 자동 시작 `bug_fix 끔 · 기준값 0.70`, 모두 운영자. 응답 어디에도 기준 v2 본문이 없음 |
+| `/metrics.csv` | test_08 — 같은 숫자가 새 행(`triage:all`·`triage:criteria:v1`·`triage:confidence:0.7-0.8`·`agent:<id>`·`member:<id>`·`unassigned`)에, 멤버 표시 이름은 CSV 에 없음(id 만) |
+| `/monitor` 세 탭 | test_09 — 판단 탭 `제안 4 · 사람 일치 2/3 · 병합 완료 2/2(진행 중 0)`·기준 v1·v2 행, 담당자별 탭 김멤버·운영자 행·`담당 없는 진행 중 업무 1`, 전후 탭(`group_by=config_revision`) 머리마다 그 번호의 설정 변경 subject·운영자(기록 없는 번호는 `설정 n — 기록 없음`) |
+| v15 → v16 사본 | `test_v15_copy_upgrades_to_v16_and_the_monitor_tabs_open` — `tests/workflow/adapters/test_db.py::_v15_db`(업무·판단 단계·판단 실행·판단 로그·기준 v1·자동 시작·설정 번호 3)를 셀프호스트 고정 워크스페이스로 옮기고 설정 번호 3 의 수정 실행을 더함 → `create_app` 시작이 v16 으로 올림 → 업무·단계·실행·판단 로그·기준·자동 시작·멤버 행 수 그대로, `config_changes` 0, 외래키 검사 깨끗 → 세 탭 200, 전후 탭 `설정 3 — 기록 없음`, 판단 탭에 옮긴 판단 로그(도는 중 1), `/metrics.json` `config_changes` 빈 목록. 사용자 셀프호스트 볼륨·백업은 읽지 않았다 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 써서 돌리면 사용자의 다음 `compose up` 이 백업 없이 v16 으로 올라갈 수 있다. 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음(지표 계산은 `now` 인자), `server/`↔`connector/` 상호 import 없음, 템플릿 `\|safe` 없음(grep). 이 phase 는 `connector/`·`contracts/v1.py` 를 바꾸지 않았다 |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 결함 없음 — e2e 의 모든 숫자가 기대값과 처음부터 맞았다. 테스트 쪽만 고쳤다: 가짜 `claude` 의 "첫 시도" 판별을 프롬프트 문구(`코드 수정 결과 봉투`)에서 인계 파일 이름(`/input-…`)으로 바꿨다 — 러너는 인계 산출물을 `input-<artifact_id>.json` 으로 내려 `_hint` 의 접두 매칭에 걸리지 않는다(제품 동작은 정상, 가짜의 가정이 틀렸다). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v16, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업, [phase 20 README](../phases/20-monitor/README.md) 상태.

@@ -2,9 +2,14 @@
 
 갱신일: 2026-10-02. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 20-monitor 설계 → (모니터까지 끝난 뒤) 판단·Jira·17 실연동·브라우저 확인 (새 세션은 여기서 시작)
+## 다음 작업: 20-monitor 완료 → 할 일: service 병합·셀프호스트 v16 재설치 → 판단·Jira·17 실연동·브라우저 확인(모니터링 세 탭 포함) (새 세션은 여기서 시작)
 
-**20-monitor 진행 중**(2026-10-02, `feat-20-monitor`, step 0 설계 완료 — [ADR-0026](adr/0026-monitor.md), [ARCHITECTURE](ARCHITECTURE.md) "모니터링 — phase 20"): `/monitor` 탭 셋(전후·판단·담당자별), 판단 품질·확신도 구간·기준값 미리보기, 설정 변경 기록 `config_changes`(스키마 v16). step 1~9 는 하네스가 이어서.
+**20-monitor 완료**(2026-10-02, `feat-20-monitor`, step 0~9, [ADR-0026](adr/0026-monitor.md), [ARCHITECTURE](ARCHITECTURE.md) "모니터링 — phase 20", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 20 모니터링"): `/monitor` 탭 셋 — `전후`(기존 화면 + 설정 번호 그룹 머리에 무엇을·누가·언제 바꿨는지, v16 이전 번호는 `기록 없음`)·`판단`(종류별·기준 버전별 제안 n·사람 처리·사람 일치·진행 여부·실제 결과(병합 완료·재작업 없이 병합·진행 중)·실패 코드·판단 시간·비용, 확신도 구간표)·`담당자별`(멤버 완료·진행·내 차례 대기·가장 오래 기다림·응답 시간, 에이전트 실행·실패율·1회 통과·재작업·실행 시간·비용, 담당 없음). 연결 "판단" 탭 자동 시작 행에 `지금 기준값 x 이상 판단 n건 — 사람 일치 a/b · 병합 c/d`. `/metrics.json` 키 `triage`·`assignees`·`config_changes`, `/metrics.csv` 는 열 그대로 새 행. 설정 변경 기록 `config_changes`(스키마 v16). 지표는 기존 기록에서 매번 계산(저장·캐시 없음). **러너 프로토콜 변화 없음 — 러너 재설치 불필요.**
+
+**할 일**(순서대로, 모두 사용자 지시 뒤):
+1. `feat-20-monitor` 를 `service` 에 `--no-ff` 병합.
+2. 셀프호스트 v16 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 16. 러너는 그대로. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v16.
+3. 판단 실연동(아래 19 확인 목록) → Jira 실연동(18 목록) → 17 실연동(두 번째 멤버·`--name b` 러너) → 브라우저 확인(16·17 목록 + 19 판단 화면 + **모니터링 세 탭**·자동 시작 미리보기 줄).
 
 **19-triage 완료**(2026-10-02, `feat-19-triage`, step 0~10, [ADR-0025](adr/0025-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 19 판단"): 담당 없는 새 GitHub·Jira 업무에 내장 종류 `triage` 단계를 붙여, 저장소 카드의 **판단 에이전트**(러너의 로컬 Claude Code/Codex)가 기본 브랜치 끝의 읽기 전용 체크아웃에서 Runloom 이 저장한 판단 기준(버전 v1, v2…)으로 종류·담당·선행·진행 여부(`맡겨도 됨`·`확인 필요`·`부적합`)·확신도·근거를 **제안**한다. 자동 판단은 워크스페이스에 한 번에 1건·러너가 빌 때만, 사용량 한도면 그 에이전트 1시간 쉼. 중앙은 시작 때 고정한 후보 안의 값만 받고(밖이면 `판단 실패 · 후보 밖 제안`), 판단 로그에 남긴다. 패널 판단 절 [제안대로 맡기기]·[무시]·[판단 받기]/[다시 판단], 담당이 정해지면 `accepted`/`changed` 기록, 목록 배지. 연결 화면 "판단" 탭(기준 편집·버전 이력, 종류별 자동 시작 — 사람 처리 20건부터 켬, 기준값 0.50~1.00). 자동 시작은 맡긴 사람 없이 기존 맡기기 경로(소유자 승인·꺼진 러너 대기 그대로), 타임라인 `자동 시작 · 판단 v<n>`. 판단은 업무를 완료·종료하거나 `내 차례` 를 만들지 않는다. 스키마 v15, **러너 프로토콜 변화**(claim `supported_kinds` 에 `triage`) — 옛 러너는 판단만 못 한다(`러너 업데이트 필요 — 판단 미지원`).
 
@@ -12,7 +17,7 @@
 1. ~~`feat-19-triage` 를 `service` 에 `--no-ff` 병합~~ — 끝남(2026-10-02, `df82a46`).
 2. ~~셀프호스트 v15 재설치~~ — 끝남(2026-10-02, 백업 `20261001T191251Z`, v14 → v15, 업무 25·Task 26·멤버 1 그대로, 외래키 검사 통과, 에이전트 둘에 `code.triage`, 러너 재설치 뒤 `supported_kinds_json` 에 `triage`). **판단 에이전트 칸은 아직 비워 둠** — 고르면 sandbox 의 `새로 들어옴` 업무에 자동 판단이 바로 걸리므로 실연동(3) 때 고른다. 원래 절차: 셀프호스트 v15 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 15 → **러너도 `install-runner.sh` 재실행**(옛 러너는 판단을 받지 못한다). 그 뒤 저장소 카드(runloom-sandbox)의 **판단 에이전트** 칸을 고른다. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v15. OpenArchive 저장소 카드에는 판단 에이전트를 고르지 않는다(공모전 출품작 — 러너·워커를 멈춰 둔 저장소).
 3. 판단 실연동 1회 — 아래 확인 목록. 결과는 [VERIFICATION_LOG](VERIFICATION_LOG.md) 에 새 절로.
-4. 20-monitor 설계([REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절) — 판단 품질·담당자별·기준 버전 비교 화면, 판단 "실제 결과"(병합·재작업) 집계는 기존 이벤트로.
+4. ~~20-monitor 설계~~ — 끝남, 구현까지 완료(위 20-monitor).
 
 **판단 실연동 확인 목록**(runloom-sandbox, 실제 Claude 구독):
 - [ ] 재설치 뒤 러너 claim 의 지원 종류에 `triage`(`connectors.supported_kinds_json`), 에이전트 능력에 `code.triage {repository_id}`.

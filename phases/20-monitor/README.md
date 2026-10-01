@@ -1,6 +1,6 @@
 # Phase 20 — 모니터링: 판단 품질·담당자별·설정 버전 비교
 
-작성일: 2026-10-02. 상태: 계획. **`service`(19-triage 병합 `df82a46`, 스키마 v15)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 4·6절 4·11·13절, [ADR-0015](../../docs/adr/0015-measurement-events-and-baseline.md)(측정 원칙), [ADR-0021](../../docs/adr/0021-team-accounts-and-roles.md)(역할), [ADR-0025](../../docs/adr/0025-triage.md)(판단 — 결정 9·13 이 "실제 결과 집계·확신도 보정은 20-monitor" 로 넘김).
+작성일: 2026-10-02. 상태: 완료(2026-10-02, step 0~9, `feat-20-monitor` — `service` 병합·셀프호스트 v16 재설치는 사용자 지시 뒤). **`service`(19-triage 병합 `df82a46`, 스키마 v15)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 4·6절 4·11·13절, [ADR-0015](../../docs/adr/0015-measurement-events-and-baseline.md)(측정 원칙), [ADR-0021](../../docs/adr/0021-team-accounts-and-roles.md)(역할), [ADR-0025](../../docs/adr/0025-triage.md)(판단 — 결정 9·13 이 "실제 결과 집계·확신도 보정은 20-monitor" 로 넘김).
 
 ## 왜
 

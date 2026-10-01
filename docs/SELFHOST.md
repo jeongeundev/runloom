@@ -300,6 +300,11 @@ deploy/selfhost/install-runner.sh
   2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 15.
   3. **러너도 `install-runner.sh` 로 다시 설치한다** — 러너 프로토콜이 바뀌었다(claim 의 `supported_kinds` 에 `triage`, 실행 요청 target `TriageTarget`, 결과 `triage_result`). 옛 러너는 v15 서버에 그대로 붙어 수정·검토는 계속 하지만 판단은 받지 못한다 — 업무 패널에 `러너 업데이트 필요 — 판단 미지원`. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
   4. 판단을 쓰려면 연결 화면 저장소 카드에서 **판단 에이전트** 칸을 고른다(맡기기 정책이 '바로 실행'이고 그 저장소의 `code.triage` 능력이 있는 에이전트만). 비워 두면 그 저장소는 판단하지 않는다 — 지금과 같다. Jira 업무는 프로젝트의 연결 저장소 칸을 쓴다. 판단 기준·자동 시작은 연결 화면 "판단" 탭(자동 시작은 사람이 처리한 판단 20건부터 켤 수 있다).
+- v16(phase 20) — 모니터링: 설정 변경 기록 표 `config_changes` 하나를 더한다(설정 번호를 올릴 때마다 영역·동작·이름·누가·언제 — 값·본문·비밀은 넣지 않는다). 다른 표는 재생성하지 않고 기존 행·업무 상태는 그대로다. v16 이전 설정 번호는 기록이 없어 모니터링 전후 탭 머리에 `설정 n — 기록 없음` 으로 보인다. 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v15). 순서:
+  1. 백업 먼저(`backup create`).
+  2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 16.
+  3. **러너 재설치는 필요 없다** — 러너 프로토콜(`connector`·`contracts/v1`)은 이 phase 에서 바뀌지 않았다(재설치해도 된다).
+  4. `/monitor` 에 탭 셋(`전후`·`판단`·`담당자별`)이 생기고, 연결 화면 "판단" 탭의 종류별 자동 시작 행에 저장된 기준값 이상 판단의 사람 일치·병합 한 줄이 보인다. `/metrics.json` 은 키 `triage`·`assignees`·`config_changes` 를 더하고, `/metrics.csv` 는 열은 그대로 새 행만 더한다.
 - 옛 주소는 넘어간다(303) — `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` → `/connect?tab=…`, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
