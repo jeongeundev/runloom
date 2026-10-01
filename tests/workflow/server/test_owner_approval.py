@@ -39,7 +39,7 @@ BACK = "2026-10-08T12:00:10Z"  # 꺼진 뒤 러너가 다시 붙은 시각
 WEBHOOK = "https://discord.com/api/webhooks/123/tok-secret-path"
 TRIAGE = "agent-triage"
 TRIAGE_KIND = KindSpec(
-    kind="triage", label="분류", capability_code="triage", scope_key="repository_id", input_kinds=[],
+    kind="classify", label="분류", capability_code="classify", scope_key="repository_id", input_kinds=[],
     output_kind="generic_result", outcomes=["ready_for_handoff"], instructions="원인을 분류하세요.", builtin=False,
 )
 
@@ -76,19 +76,19 @@ def worker(app, settings, store, clock, secrets) -> Worker:
 
 @pytest.fixture
 def triage_task(conn, cycle, members) -> str:
-    """순환이 아닌 사용자 정의 종류 `triage` 의 단계 하나 — 에이전트 TRIAGE(billing 러너, B 소유)가 맡을 수 있다."""
+    """순환이 아닌 사용자 정의 종류 `classify` 의 단계 하나 — 에이전트 TRIAGE(billing 러너, B 소유)가 맡을 수 있다."""
     repo.insert_kind(conn, SESSION, TRIAGE_KIND, NOW)
     repo.upsert_agent(conn, {
         "agent_id": TRIAGE, "name": "분류기", "owner_scope": "personal", "connection_type": "local",
         "local_registration_id": "local-triage",
-        "capabilities": [{"code": "triage", "scope": {"repository_id": "billing"}}],
+        "capabilities": [{"code": "classify", "scope": {"repository_id": "billing"}}],
     })
     repo.register_session_agent(conn, SESSION, TRIAGE, NOW)
     repo.update_registration(conn, "local-triage", connector_id=cycle["billing"], repository_id="billing",
                              base_commit="a" * 40, verification_profile_ids=[], discovered={}, now=NOW)
     repo.insert_work_item_task(conn, {
         "task_id": "task-triage", "session_id": SESSION, "title": "보고서 분류", "request": "원인을 분류해 주세요.",
-        "kind": "triage", "required_capability": {"code": "triage", "scope": {"repository_id": "billing"}},
+        "kind": "classify", "required_capability": {"code": "classify", "scope": {"repository_id": "billing"}},
         "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "auto", "completion_mode": "review",
         "criteria": [], "predecessor_task_id": None, "revision": 1, "target": {},
         "status": "대기", "status_reason": "준비 판정 대기",
@@ -298,10 +298,10 @@ def test_approval_facts_follow_the_latest_request(conn, members, pending):
 
 
 def _next_stage(conn, task_id: str, new_task_id: str) -> dict:
-    """같은 업무에 이어지는 단계 하나(분류 `triage`, TRIAGE 에이전트 — 같은 소유자 B)."""
+    """같은 업무에 이어지는 단계 하나(분류 `classify`, TRIAGE 에이전트 — 같은 소유자 B)."""
     repo.insert_task(conn, {
         "task_id": new_task_id, "session_id": SESSION, "title": "이어지는 단계", "request": "이어서 해 주세요.",
-        "kind": "triage", "required_capability": {"code": "triage", "scope": {"repository_id": "billing"}},
+        "kind": "classify", "required_capability": {"code": "classify", "scope": {"repository_id": "billing"}},
         "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "auto", "completion_mode": "review",
         "criteria": [], "predecessor_task_id": None, "revision": 1, "target": {},
         "status": "대기", "status_reason": "준비 판정 대기",

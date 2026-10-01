@@ -56,6 +56,7 @@ class GitHubSourceConfig(_Contract):
     intake: Literal["filtered", "all_open"] = "filtered"
     trigger_label: NonEmptyStr | None = None  # all_open 에서 이 라벨이 붙은 이슈는 지시된 것으로 본다
     default_fix_agent_id: NonEmptyStr | None = None  # 담당자 연결이 없을 때 쓸 수정 Agent
+    triage_agent_id: NonEmptyStr | None = None  # 판단 Agent(phase 19) — 비우면 이 저장소는 자동 판단하지 않는다
     installation_id: PositiveInt | None = None  # App 설치가 만든 소스 — 클라이언트가 설치 토큰을 쓴다
     enabled: bool
     config_revision: PositiveInt

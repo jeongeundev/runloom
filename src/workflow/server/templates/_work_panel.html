@@ -1,6 +1,6 @@
 {# 업무 상세 패널 (`GET /work/{key}/panel` 조각, `/tasks?open=<key>` 는 업무 화면 안에 같은 조각) — ARCHITECTURE "업무 화면 —
    phase 16" 화면 배치 "상세 패널". `panel` 은 web._panel(views.work_panel_context + 닫기 주소·목록 상태). 절 순서: 머리 · 속성 ·
-   지금 할 일 · 진행 타임라인 · 원본에 남긴 것 · 연결 업무 · 들어온 곳 · 업무 양식 · 자세히 — 비어 있는 절은 그리지 않는다.
+   판단 제안(phase 19) · 지금 할 일 · 진행 타임라인 · 원본에 남긴 것 · 연결 업무 · 들어온 곳 · 업무 양식 · 자세히 — 비어 있는 절은 그리지 않는다.
    폼은 일반 POST(서버가 `/tasks?open=` 으로 돌려보낸다). 외부 문자열(제목·본문·PR 제목)은 자동 이스케이프로만 출력한다. #}
 {% import "_status.html" as st %}
 {% from "_cycle.html" import response_form %}
@@ -61,6 +61,61 @@
       <tr><th>업데이트</th><td>{{ w.updated_at|ago(now) }}</td></tr>
     </table>
   </section>
+
+  {% if panel.triage %}{% set t = panel.triage %}
+  <section class="panel-section" data-panel-section="triage" data-triage-state="{{ t.state or 'none' }}">
+    <h3>판단 제안</h3>
+    {% macro proposal_body(p) -%}
+    <ul class="panel-list">
+      <li>종류 {{ p.kind_line }}</li>
+      {% if p.assignee %}<li>담당 {{ p.assignee }}</li>{% endif %}
+      {% if p.predecessors %}<li>선행 {% for x in p.predecessors %}<a href="/tasks?open={{ x.key }}" data-work-key="{{ x.key }}">{{ x.key }}</a>{% if x.title %} {{ x.title }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</li>{% endif %}
+    </ul>
+    {% if p.reasons %}<ul class="panel-list small" data-triage-reasons>{% for r in p.reasons %}<li>{{ r.label }} — {{ r.note }}</li>{% endfor %}</ul>{% endif %}
+    {% if p.missing %}<p class="small">모자란 정보</p><ul class="panel-list small" data-triage-missing>{% for m in p.missing %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+    {%- endmacro %}
+    {% if t.state == 'running' %}
+    <p>판단 중 · {{ t.agent_name }} · 기준 v{{ t.criteria_version }}</p>
+    {% elif t.state == 'proposed' %}{% set p = t.proposal %}
+    <p><strong>판단 제안 · {{ p.proceed }} · 확신도 {{ p.confidence }} · 기준 v{{ t.criteria_version }}</strong></p>
+    {{ proposal_body(p) }}
+    <div class="inline-form">
+      {% if t.can_accept %}
+      <form method="post" action="/work/{{ w.work_key }}/triage/accept" class="inline-form">
+        {{ list_state() }}<input type="hidden" name="triage_id" value="{{ t.triage_id }}">
+        <button class="btn btn-small" type="submit">제안대로 맡기기</button>
+      </form>
+      {% endif %}
+      {% if t.can_dismiss %}
+      <form method="post" action="/work/{{ w.work_key }}/triage/dismiss" class="inline-form">
+        {{ list_state() }}<input type="hidden" name="triage_id" value="{{ t.triage_id }}">
+        <button class="btn btn-small btn-secondary" type="submit">무시</button>
+      </form>
+      {% endif %}
+    </div>
+    {% elif t.state == 'dismissed' %}
+    <details class="row" data-key="triage-dismissed">
+      <summary>판단 제안(무시함) · {{ t.handled_by }} · {{ t.handled_at|kst }}</summary>
+      <div class="row-body">
+        <p>{{ t.proposal.proceed }} · 확신도 {{ t.proposal.confidence }} · 기준 v{{ t.criteria_version }}</p>
+        {{ proposal_body(t.proposal) }}
+      </div>
+    </details>
+    {% elif t.state == 'handled' %}
+    <p>{{ t.handled_text }}</p>
+    {% elif t.state == 'failed' %}
+    <p>판단 실패 · {{ t.failed_label }}{% if t.failed_message %} · {{ t.failed_message }}{% endif %}</p>
+    {% endif %}
+    {% if t.note %}<p class="small">{{ t.note }}</p>{% endif %}
+    {% if t.button %}
+    <form method="post" action="/work/{{ w.work_key }}/triage" class="inline-form">
+      {{ list_state() }}
+      <button class="btn btn-small btn-secondary" type="submit"{% if t.button.disabled %} disabled{% endif %}>{{ t.button.label }}</button>
+      {% if t.button.reason %}<span class="small">{{ t.button.reason }}</span>{% endif %}
+    </form>
+    {% endif %}
+  </section>
+  {% endif %}
 
   {% if panel.open_requests or panel.direct or panel.can_start_direct %}
   <section class="panel-section" data-panel-section="now">
@@ -165,6 +220,7 @@
           <tr><th>source_type</th><td class="mono">{{ w.source_type }}</td></tr>
           {% for r in panel.open_requests %}<tr><th>human_request</th><td class="mono">{{ r.request_id }} · {{ r.code }} · {{ r.task_id }}</td></tr>{% endfor %}
           {% for f in panel.form_fields %}<tr><th>{{ f.key }}</th><td class="mono">{{ f.source }}</td></tr>{% endfor %}
+          {% if panel.triage and panel.triage.triage_id %}<tr><th>triage</th><td class="mono">{{ panel.triage.triage_id }}{% if panel.triage.failed_code %} · {{ panel.triage.failed_code }}{% endif %}{% if panel.triage.handling %} · {{ panel.triage.handling }}{% endif %}</td></tr>{% endif %}
         </table>
       </div>
     </details>

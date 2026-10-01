@@ -14,10 +14,10 @@ import pytest
 
 from workflow.connector import git_ops, state
 from workflow.connector.codex import CodexAdapter
-from workflow.connector.local_tool import ToolRun
+from workflow.connector.local_tool import TRIAGE_OUTPUT_SCHEMA, ToolRun
 from workflow.contracts.v1 import ExecutionRequest, ExecutionUsage
 
-from .conftest import REVIEW_SPEC, make_local_request, make_request, make_review_request
+from .conftest import REVIEW_SPEC, make_local_request, make_request, make_review_request, make_triage_request
 from .demo_repo import scaffold
 
 # --- 데모 저장소 (demo_repo.scaffold 로 생성) --------------------------------------------------
@@ -80,6 +80,18 @@ if MODE == "review":
         json.dump({"outcome": "approved", "summary": f"표식 {mark} 확인", "findings": [],
                    "missing_information": []}, f, ensure_ascii=False)
     print("fake codex: reviewed", file=sys.stderr)
+    sys.exit(0)
+
+if MODE == "triage":
+    # 판단 — cwd 는 기본 브랜치 끝의 체크아웃. 스키마 파일의 모델 칸만 채운다.
+    with open(opt("--output-schema"), encoding="utf-8") as f:
+        schema = json.load(f)
+    emit({"type": "readonly", "cwd": os.getcwd(), "schema": schema, "prompt_first_line": prompt.splitlines()[0]})
+    with open(last_message, "w", encoding="utf-8") as f:
+        json.dump({"proceed": "needs_check", "confidence": 0.4, "proposed_kind": None, "assignee": None,
+                   "predecessors": [], "reasons": [{"criterion": "clarity", "note": "재현 절차 없음"}],
+                   "missing_information": ["재현 절차"]}, f, ensure_ascii=False)
+    print("fake codex: triaged", file=sys.stderr)
     sys.exit(0)
 
 if MODE.startswith("generic"):
@@ -681,6 +693,30 @@ def test_code_review_runs_readonly_codex_in_result_checkout(state_conn, repo, tm
     assert readonly["schema"]["properties"]["outcome"]["enum"] == ["approved", "changes_requested",
                                                                    "needs_information"]
     assert readonly["prompt_first_line"] == "# 커밋 검토"
+    assert not checkout.exists() and _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_triage_runs_readonly_codex_on_default_branch_tip(state_conn, repo, tmp_path, fake_bin):
+    write_fake_codex(fake_bin, "triage")
+    base = register(state_conn, repo)
+    state.save_registration(state_conn, {
+        "local_registration_id": "local-billing-claude", "repo_path": str(repo), "tool": "codex",
+        "repository_id": "demo-report-repo", "base_commit": base, "verification_profiles": {},
+    })
+
+    output = adapter(state_conn).run(make_triage_request(base), tmp_path / "h", Progress())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.proceed, result.assignee, result.missing_information, result.inspected_commit) == (
+        "needs_check", None, ["재현 절차"], base)
+    lines = [json.loads(line) for line in by_kind(output)["codex_jsonl"].decode().splitlines()]
+    argv = next(line["argv"] for line in lines if line["type"] == "argv")
+    readonly = next(line for line in lines if line["type"] == "readonly")
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    checkout = Path(argv[argv.index("-C") + 1])
+    assert checkout.resolve() == Path(readonly["cwd"]).resolve() and checkout.resolve() != repo.resolve()
+    assert readonly["schema"] == TRIAGE_OUTPUT_SCHEMA and readonly["prompt_first_line"].startswith("# 판단")
     assert not checkout.exists() and _git(repo, "worktree", "list").count("\n") == 0
 
 

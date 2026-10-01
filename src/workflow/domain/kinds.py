@@ -7,6 +7,7 @@
 from collections.abc import Sequence
 
 from workflow.contracts.v1 import Capability, KindSpec, SuccessorRule
+from workflow.domain.execution_policy import is_triage_kind
 
 
 def kind_for_capability(kinds: Sequence[KindSpec], code: str) -> KindSpec | None:
@@ -36,6 +37,8 @@ def validate_rule(kinds: Sequence[KindSpec], rule: SuccessorRule) -> str | None:
     to_spec = get_kind(kinds, rule.to_kind)
     if to_spec is None:
         return f"등록되지 않은 종류 {rule.to_kind}"
+    if is_triage_kind(from_spec) or is_triage_kind(to_spec):
+        return "판단 종류는 후속 규칙에 쓸 수 없습니다"
     extra = [o for o in rule.on_outcomes if o not in from_spec.outcomes]
     if extra:
         return f"on_outcomes 에 {from_spec.kind} 의 outcome 이 아닌 값이 있습니다: {', '.join(extra)}"

@@ -1,6 +1,6 @@
 # Phase 19 — 판단: 담당 없는 업무에 종류·담당·순서 제안, 판단 로그, 자동 시작
 
-작성일: 2026-10-01. 상태: 설계 완료, 하네스 실행 대기. **`service`(18-jira 병합 `c5f1d31`, 스키마 v14)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 3·5.4·6·13·15·16절, [ADR-0009](../../docs/adr/)(종류·후속 규칙은 등록 데이터), [ADR-0020](../../docs/adr/0020-work-items-and-stages.md)(업무·단계), [ADR-0023](../../docs/adr/0023-cross-member-delegation.md)(맡기기 정책·소유자 승인), [ADR-0024](../../docs/adr/0024-jira-source.md)(Jira 업무 → 연결 저장소).
+작성일: 2026-10-01. 상태: **step 0~10 완료**(2026-10-02, `feat-19-triage` — 검증은 [VERIFICATION_LOG](../../docs/VERIFICATION_LOG.md) "phase 19 판단"). `service` 병합·셀프호스트 v15 재설치(러너 재설치 포함)·판단 실연동은 사용자 지시 대기. **`service`(18-jira 병합 `c5f1d31`, 스키마 v14)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 3·5.4·6·13·15·16절, [ADR-0009](../../docs/adr/)(종류·후속 규칙은 등록 데이터), [ADR-0020](../../docs/adr/0020-work-items-and-stages.md)(업무·단계), [ADR-0023](../../docs/adr/0023-cross-member-delegation.md)(맡기기 정책·소유자 승인), [ADR-0024](../../docs/adr/0024-jira-source.md)(Jira 업무 → 연결 저장소).
 
 ## 왜
 

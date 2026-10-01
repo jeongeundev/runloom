@@ -67,7 +67,7 @@ def test_claim_sends_bearer_and_body_and_returns_request(fake, client):
     assert (sent.method, sent.url.path) == ("POST", "/connector/claim")
     assert sent.headers["authorization"] == f"Bearer {TOKEN}"
     assert json.loads(sent.content) == {
-        "contract_version": 1, "connector_id": CONNECTOR_ID, "supported_kinds": ["bug_fix", "code_review"],
+        "contract_version": 1, "connector_id": CONNECTOR_ID, "supported_kinds": ["bug_fix", "code_review", "triage"],
         "capabilities": ["verify_only"],
     }
 

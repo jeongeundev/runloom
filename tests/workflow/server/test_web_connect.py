@@ -15,8 +15,8 @@ from .conftest import NOW, SESSION, log_in, log_in_member, seed_agents
 from .test_github_sync import config
 
 SOURCE = config().source_id
-TABS = ["sources", "team", "kinds", "notify", "advanced"]
-TAB_LABELS = ["가져올 곳", "팀·담당자", "업무 종류·규칙", "알림", "고급"]
+TABS = ["sources", "team", "kinds", "triage", "notify", "advanced"]  # 판단 탭은 phase 19 step 8
+TAB_LABELS = ["가져올 곳", "팀·담당자", "업무 종류·규칙", "판단", "알림", "고급"]
 OLD_GETS = [
     ("/sources", "/connect?tab=sources"),
     ("/operator/github", "/connect?tab=sources"),
@@ -61,7 +61,7 @@ def body_of(html: str) -> str:
 # --- 탭 머리·권한 -----------------------------------------------------------------------------------
 
 
-def test_admin_sees_five_tabs_in_order(admin):
+def test_admin_sees_six_tabs_in_order(admin):
     html = admin.get("/connect").text
     assert tabs_of(html) == list(zip(TABS, TAB_LABELS, strict=True))
     assert active_tab(html) == "sources"  # 기본 탭

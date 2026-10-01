@@ -1,5 +1,7 @@
 """업무 상태 판정(ARCHITECTURE "업무와 단계 — phase 14" 업무 상태 표, ADR-0020 결정 4·5)."""
 
+import dataclasses
+
 import pytest
 
 from workflow.domain.work_status import (
@@ -13,6 +15,7 @@ from workflow.domain.work_status import (
     WorkStatus,
     work_status,
 )
+from workflow.domain.triage import TriageFact
 
 
 def stage(status, reason="", *, task_id="t1", kind="bug_fix", label="버그 수정", at="2026-09-30T00:00:00Z", executed=True):
@@ -384,3 +387,32 @@ def test_owner_approval_request_reason_is_question_first_line_without_prefix():
 def test_runner_offline_stage_waits_with_owner_reason():
     assert work_status(facts([stage("대기", "이OO의 러너 꺼짐 · 켜지면 시작", executed=False)])) == WorkStatus(
         "대기", "이OO의 러너 꺼짐 · 켜지면 시작")
+
+
+# --- 판단 (phase 19 step 5 — 담당 없는 새 업무의 이유만 바뀐다) ---
+
+def test_triage_fact_defaults_to_none_and_keeps_the_unassigned_reason():
+    assert facts(assigned=False).triage is None
+    assert work_status(facts(assigned=False)) == WorkStatus("새로 들어옴", "담당 없음")
+
+
+@pytest.mark.parametrize(
+    ("fact", "reason"),
+    [
+        (TriageFact("running", None, None, None), "판단 중"),
+        (TriageFact("proposed", "ready", 0.86, None), "판단 제안 · 맡겨도 됨 0.86"),
+        (TriageFact("failed", None, None, "usage_limit"), "판단 실패 · 사용량 한도"),
+    ],
+)
+def test_unassigned_new_work_shows_the_triage_reason(fact, reason):
+    given = dataclasses.replace(facts(assigned=False), triage=fact)
+    assert work_status(given) == WorkStatus("새로 들어옴", reason)
+
+
+def test_triage_does_not_change_other_statuses():
+    running = TriageFact("running", None, None, None)
+    # 담당이 정해졌으면(판단이 떠 있어도) 그대로 — 판단은 제안일 뿐
+    assert work_status(dataclasses.replace(facts(assigned=True, delegated=False), triage=running)) == WorkStatus(
+        "새로 들어옴", "지시 전 — [에이전트에게 맡기기]")
+    assert work_status(dataclasses.replace(facts([RUNNING], assigned=False), triage=running)) == WorkStatus(
+        "에이전트 작업 중", "버그 수정 실행 중")

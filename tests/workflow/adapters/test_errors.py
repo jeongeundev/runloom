@@ -17,6 +17,7 @@ from workflow.adapters.errors import (
     ResponseConflict,
     SequenceGap,
     StaleRequest,
+    TriageRunning,
 )
 
 
@@ -65,3 +66,7 @@ def test_stale_request_carries_current_revision():
 
 def test_response_conflict_is_adapter_error():
     assert isinstance(ResponseConflict("resp-1"), AdapterError)
+
+
+def test_triage_running_is_adapter_error():
+    assert isinstance(TriageRunning("work-1"), AdapterError)

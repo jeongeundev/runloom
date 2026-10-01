@@ -22,6 +22,7 @@ from workflow.contracts.v1 import (
     ExecutionRequest,
     ExecutionUsage,
     GenericResult,
+    TriageResult,
     Verification,
 )
 
@@ -36,6 +37,7 @@ from .conftest import (
     make_local_request,
     make_request,
     make_review_request,
+    make_triage_request,
 )
 
 
@@ -987,7 +989,7 @@ def test_claim_declares_supported_builtin_kinds(fake, client, state_conn, paths,
     runner.tick()
 
     claim = next(r for r in fake.requests if r.url.path == "/connector/claim")
-    assert json.loads(claim.content)["supported_kinds"] == ["bug_fix", "code_review"]
+    assert json.loads(claim.content)["supported_kinds"] == ["bug_fix", "code_review", "triage"]
 
 
 # --- 커밋 검토 `code_review` ---------------------------------------------------------------------
@@ -1060,6 +1062,53 @@ def test_code_review_missing_registration_fails_before_download(fake, client, st
     events = fake.events_of(request.execution_id)
     assert [e["type"] for e in events] == ["accepted", "failed"]
     assert events[-1]["data"]["code"] == "registration_missing"
+
+
+def triage_output(request: ExecutionRequest) -> AdapterOutput:
+    """판단 결과 — 산출물은 원시 로그뿐, 봉투는 `TriageResult`(산출물 ID 칸 없음)."""
+    result = TriageResult.model_validate({
+        "contract_version": 1, "execution_id": request.execution_id, "task_id": request.task_id,
+        "inspected_commit": request.target.base_commit, "proceed": "unsuitable", "confidence": 0.7,
+        "proposed_kind": None, "assignee": None, "predecessors": [],
+        "reasons": [{"criterion": "permission", "note": "운영 DB 권한이 필요하다"}], "missing_information": [],
+    })
+    artifacts = [make_meta("claude_jsonl", "claude.jsonl", b'{"type":"result"}\n', "application/x-ndjson"),
+                 make_meta("claude_stderr", "claude-stderr.txt", b"", "text/plain")]
+    return AdapterOutput(result=result, artifacts=artifacts, runtime_ref="stub:triage")
+
+
+def test_triage_uploads_triage_result_without_push_or_worktree(fake, client, state_conn, paths, tmp_path,
+                                                                monkeypatch):
+    repo = make_git_repo(tmp_path)
+    base = git_ops.head_sha(repo)
+    register(state_conn, tmp_path, "local-billing-claude", tool="claude")
+    request = make_triage_request(base)
+    fake.assign(request)
+    pushed = []
+    monkeypatch.setattr(git_ops, "push_task_branch", lambda *a, **k: pushed.append(a))
+    adapter = StubAdapter(output=triage_output(request))
+    runner = Runner(client, state_conn, paths, {"claude": adapter}, CONNECTOR_ID, lambda: NOW, tmp_path / "handoff")
+
+    runner.tick()
+
+    (called, handoff_dir), = adapter.calls
+    assert called == request and adapter.handoff_files == [{}]  # 입력 산출물 없음
+    events = fake.events_of(request.execution_id)
+    assert [e["type"] for e in events] == ["accepted", "started", "result_ready"]
+    assert "branch_pushed" not in events[-1]["data"] and pushed == []
+    uploaded = fake.artifacts_of(request.execution_id)
+    assert set(uploaded) == {"claude_jsonl", "claude_stderr", "triage_result"}
+    assert uploaded["triage_result"]["name"] == "triage_result.json"
+    result = TriageResult.model_validate_json(uploaded["triage_result"]["data"])
+    assert result == request_result(request)
+    assert fake.artifacts[events[-1]["data"]["result_artifact_id"]]["kind"] == "triage_result"
+    assert not handoff_dir.exists()
+    assert _git(repo, "worktree", "list").count("\n") == 0 and _git(repo, "status", "--porcelain") == ""
+    assert state.get_execution(state_conn, request.execution_id)["cleaned_at"] == NOW
+
+
+def request_result(request: ExecutionRequest) -> TriageResult:
+    return triage_output(request).result
 
 
 # --- 측정 (phase 9) — started 의 등록 폴더 커밋, 종료 이벤트의 사용량 ---------------------------------------

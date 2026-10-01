@@ -10,7 +10,7 @@ from workflow.domain.composition import ChainPlan, PlanNode, Standalone, compose
 from workflow.domain.selection import Candidate
 from workflow.domain.task_sources import Issue
 
-BUG_FIX, CODE_REVIEW = BUILTIN_KINDS
+BUG_FIX, CODE_REVIEW = BUILTIN_KINDS[:2]
 
 FIX = Capability(code="code.fix", scope={"repository_id": "billing"})
 REVIEW = Capability(code="code.review", scope={"repository_id": "billing"})

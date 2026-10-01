@@ -538,3 +538,34 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 수정 없음. e2e 를 쓰며 확인한 설계 사실: 업무의 `source_state` 는 Jira 상태 **이름**(`대기`·`종료`)이고, 열림/닫힘은 스냅숏 `jira_issues.state` 다. 후속 이슈 줄은 새 업무(RUN-3) 패널에 보인다(전송 행이 새 업무에 붙음). 문서: [SELFHOST](SELFHOST.md) "Jira 연결"·업그레이드 v14, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업·실연동 확인 목록, [phase 18 README](../phases/18-jira/README.md) 상태, [REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절 18 완료.
+
+## 2026-10-02 phase 19 판단 (step 10)
+
+목적: [ADR-0025](adr/0025-triage.md)의 자동 판단(한 번에 1건)·제안·사람 처리(`accepted`·`changed`·`dismissed`)·판단 실패(내 차례 없음)·Jira 업무의 연결 저장소 판단·자동 시작(`auto_started`)·옛 러너 판단 제외가 대역 e2e 에서 이어서 도는지, v14 사본이 v15 로 오르는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 App 서버(PR 경로 포함), Jira 는 httpx `MockTransport` 의 `FakeJiraCloud`, origin 은 임시 bare 저장소, 도구는 PATH 앞의 가짜 `claude`(`--json-schema` 모양으로 판단·검토·수정을 고름 — 모델 없음), 러너는 `WORKFLOW_CONNECTOR_HOME` 임시 폴더(launchd 아님).
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-10-02 KST, 이 Mac, 브랜치 `feat-19-triage` |
+| 명령·결과 | `python3 -m pytest -q` — **4045 passed·72 skipped**(skip 63 + 새 e2e 9 는 `WORKFLOW_E2E` 게이트). `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **71 passed·1 skipped**(skip 은 `WORKFLOW_DOCKER` 게이트의 셀프호스트 e2e, phase 8~18 순환·팀·인계·Jira e2e 포함). `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_triage_cycle.py -q` — **9 passed**(따로 한 번 더) |
+| 준비 | `tests/e2e/test_triage_cycle.py` test_01 — 관리자·GitHub 연결(가짜 App) → `setup --tool claude` → 에이전트 능력 `code.fix`·`code.review`·`code.triage` → 러너 claim 지원 종류에 `triage`·기준 커밋 보고 → 저장소 카드 판단 에이전트 select 에 그 에이전트 → `PUT /github/sources/{id}` 로 `triage_agent_id` |
+| 자동 판단 | test_02 — 이슈 2건 → tick 1회: 업무 2·판단 시작 1·착수 0, RUN-1 `새로 들어옴 · 판단 중`. 이후 `running` 판단은 늘 1건 이하 → 둘 다 `proposed`(계기 auto·기준 v1·`ready`·0.90·`bug_fix`·담당 = 그 에이전트, `inspected_commit` = 기본 브랜치 끝), 판단 요청 첫 줄 `# 판단: RUN-n …`, 업무 이유 `판단 제안 · 맡겨도 됨 0.90`, 맡길 단계는 `bug_fix` 하나·실행 없음, 원본 폴더 `git status` 깨끗, 목록 배지 `판단 제안` 2개, 패널 [제안대로 맡기기]·[무시] |
+| 제안대로 | test_03 — RUN-1 [제안대로 맡기기] → 담당 에이전트·맡긴 사람 관리자·실행 1 → 판단 로그 `accepted`(처리자 관리자·최종 agent·`bug_fix`) → 수정·검토 → 초안 PR → 병합 → `완료`. 판단 로그는 `proposed`·`accepted` 그대로, 패널 `제안대로 맡김` |
+| 다르게 정함 | test_04 — RUN-2 담당 = 멤버(관리자) → `changed`(최종 member), 실행 없음(사람은 배정만) |
+| 판단 실패 | test_05 — `[triage:outside]` 이슈 → 가짜가 후보 밖 담당 → `failed`·`triage_invalid`·`assignee_not_candidate — 후보 밖 담당 agent:agt-outside`, 판단 단계 `실패`, 업무 `새로 들어옴 · 판단 실패 · 후보 밖 제안`, 사람 요청 0·`내 차례` 에 없음, tick 3회 더 해도 자동 판단 다시 없음 → [다시 판단] → 이전 행 `superseded`·새 행 `running`(manual·관리자) → 다시 실패해도 내 차례 없음 |
+| Jira | test_06 — Jira 연결·프로젝트(연결 저장소 acme/billing) → SHOP-12 → RUN-4 → 연결 저장소의 판단 에이전트가 자동 판단(target 등록 `billing`, 요청에 `원본: SHOP-12`) → [무시] → `dismissed`, 업무 이유 `담당 없음`, 패널 `판단 제안(무시함)` |
+| 자동 시작 | test_07 — 사람 처리 2건일 때 켜기 409 `판단 기록 2/20` → 처리한 판단 18건 시드(RUN-1 판단 단계·실행·로그 행을 새 ID 로 복사) → 판단 탭 `20/20` → 켬(기준값 0.80, 설정 v1) → 새 이슈 RUN-5 → 판단 → 같은 흐름에서 자동 맡김: 로그 `auto_started`(처리자 NULL·최종 agent·`bug_fix`), 맡긴 사람 NULL, `assigned` 이벤트 `data.triage` = {triage_id, 기준 v1}, 패널 `자동 시작 · 판단 v1` → 초안 PR → 병합 → `완료` |
+| 옛 러너 | test_08 — 러너를 `connector.client.SUPPORTED_BUILTIN_KINDS = ('bug_fix', 'code_review')` 진입점으로 다시 띄움 → RUN-6 은 tick 3회 동안 판단 0·업무 `담당 없음`, 패널 `러너 업데이트 필요 — 판단 미지원`(버튼 비활성) → 사람이 에이전트에게 맡김 → 수정·검토·초안 PR → 병합 → `완료` |
+| v14 → v15 사본 | `test_v14_copy_upgrades_to_v15_with_triage_seeds` — `tests/workflow/adapters/test_db.py::_v14_db`(업무·단계·실행·로컬 Agent 셋·API Agent·사용자 종류) + Jira 연결·프로젝트·업무·단계·이슈 스냅숏·전달 행 → `create_app` 시작이 v15 로 올림(`/healthz` 200) → 업무·단계·실행·Agent·소스·Jira 4표·멤버·매핑 행 수 그대로, 외래키·무결성 검사 깨끗, 종류는 워크스페이스마다 `triage` 1행씩, 판단 기준 v1 = 문서 원문, `code.fix` 로컬 Agent 에만 `code.triage`, Jira 업무 `새로 들어옴 · 담당 없음`, 판단 로그 0. 사용자 셀프호스트 볼륨·백업은 읽지 않았다 |
+| 미실행 | `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` — 이미지 태그 `workflow-selfhost:local` 을 사용자 셀프호스트(`runloom`)와 같이 써서 돌리면 사용자의 다음 `compose up` 이 백업 없이 v15 로 올라갈 수 있다. 실행하지 않았다 |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음, 템플릿 `\|safe` 없음(grep). 판단 단계 가르기는 `is_triage_kind`·`_TRIAGE_STAGE`(결과 형태)뿐 |
+
+### 실연동 확인 목록 (사용자 지시 뒤, runloom-sandbox·실제 Claude 구독)
+
+- [ ] v15 재설치·러너 재설치 뒤 claim 지원 종류에 `triage`, 저장소 카드 판단 에이전트 설정.
+- [ ] sandbox 이슈 3건 — 명확한 버그 / 양식이 빈 것 / 운영 접근이 필요한 것 → 제안 진행 여부가 각각 `맡겨도 됨`·`확인 필요`·`부적합` 인지, 근거·모자란 정보.
+- [ ] 구독 사용량(판단 실행의 비용·토큰), 판단 시간(판단 시작 → 제안), 후보 밖 값(`triage_invalid`) 빈도.
+- [ ] 판단 중 러너 등록 폴더에 변경 없음.
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 수정 없음. phase 18 e2e `test_jira_cycle.py::test_v13_copy_upgrades_to_v14_and_takes_jira_issues` 가 `SCHEMA_VERSION == 14` 리터럴로 v15 이후 실패하던 것을 `== 15` 로 고쳤다(e2e 게이트라 step 1 회귀에 잡히지 않았다 — 나머지 단정은 그대로 통과). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v15, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업·판단 실연동 목록, [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19" 구현 상태·시그니처·step 10 메모, [ADR-0025](adr/0025-triage.md) 구현 상태, [phase 19 README](../phases/19-triage/README.md) 상태.

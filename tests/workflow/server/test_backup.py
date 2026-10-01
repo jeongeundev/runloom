@@ -263,7 +263,7 @@ def _v8_selfhost(db_path: Path, artifact_dir: Path) -> None:
     conn.executescript(V9_SCHEMA)
     conn.execute("INSERT INTO schema_version (version) VALUES (8)")
     conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (V8_SESSION, V8_NOW))
-    for spec in BUILTIN_KINDS:
+    for spec in BUILTIN_KINDS[:2]:  # v14 까지는 bug_fix·code_review 만 (triage 는 v15)
         conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
                      (V8_SESSION, spec.kind, spec.model_dump_json(), V8_NOW))
     conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
@@ -321,6 +321,8 @@ def _counts(db_path: Path) -> dict[str, int]:
 
 # v14 가 더하는 빈 Jira 표 4개 (phase 18)
 JIRA_EMPTY = {"jira_connections": 0, "jira_projects": 0, "jira_issues": 0, "jira_deliveries": 0}
+# v15 가 더하는 판단 표 3개 — 기준은 워크스페이스마다 v1 한 행 (phase 19)
+TRIAGE_ONE_WORKSPACE = {"triage_criteria": 1, "triage_logs": 0, "triage_autostart": 0}
 
 
 def _version_and_kinds(db_path: Path) -> tuple[int, list[str]]:
@@ -354,11 +356,11 @@ def test_selfhost_v8_copy_upgrades_to_v11_and_backups_round_trip(tmp_path, capsy
     conn.close()
     v9_counts = _counts(src / "central.sqlite")
     assert v9_counts == {
-        **v8_counts, "kinds": 2, "succession_rules": 1,
+        **v8_counts, "kinds": 3, "succession_rules": 1,
         "work_items": 6, "work_item_links": 0, "members": 1, "field_mappings": 2, "work_item_events": 0,
-        "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0, **JIRA_EMPTY,
+        "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0, **JIRA_EMPTY, **TRIAGE_ONE_WORKSPACE,
     }
-    assert _version_and_kinds(src / "central.sqlite") == (14, ["bug_fix", "code_review"])
+    assert _version_and_kinds(src / "central.sqlite") == (15, ["bug_fix", "code_review", "triage"])
 
     # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
     assert backup.main(["create"], env=env, now=lambda: T2) == 0
@@ -374,7 +376,7 @@ def test_selfhost_v8_copy_upgrades_to_v11_and_backups_round_trip(tmp_path, capsy
     old_env = {**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
     assert backup.main(["restore", v8_backup], env=old_env) == 0
     assert _counts(old / "central.sqlite") == v9_counts
-    assert _version_and_kinds(old / "central.sqlite") == (SCHEMA_VERSION, ["bug_fix", "code_review"])
+    assert _version_and_kinds(old / "central.sqlite") == (SCHEMA_VERSION, ["bug_fix", "code_review", "triage"])
 
 
 V9_NOW = "2026-09-29T00:00:00Z"
@@ -400,7 +402,7 @@ def _v9_selfhost(db_path: Path, artifact_dir: Path) -> None:
     conn.executescript(V9_SCHEMA)
     conn.execute("INSERT INTO schema_version (version) VALUES (9)")
     conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (V9_SESSION, V9_NOW))
-    for spec in BUILTIN_KINDS:
+    for spec in BUILTIN_KINDS[:2]:  # v14 까지는 bug_fix·code_review 만 (triage 는 v15)
         conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
                      (V9_SESSION, spec.kind, spec.model_dump_json(), V9_NOW))
     conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
@@ -507,6 +509,7 @@ def test_selfhost_v9_copy_upgrades_to_v11_work_items_and_backups_round_trip(tmp_
     assert v10_counts == {
         **v9_counts, "work_items": 21, "work_item_links": 0, "members": 1, "field_mappings": 2,
         "work_item_events": 0, "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0, **JIRA_EMPTY,
+        "kinds": v9_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE,  # + 내장 triage 종류·판단 기준 v1
     }
     works = _works(src / "central.sqlite")
     assert [w[0] for w in works] == list(range(1, 22))
@@ -562,7 +565,7 @@ def _v10_selfhost(db_path: Path, artifact_dir: Path) -> None:
     conn.execute("INSERT INTO schema_version (version) VALUES (10)")
     conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)",
                  (V10_SESSION, V10_NOW))
-    for spec in BUILTIN_KINDS:
+    for spec in BUILTIN_KINDS[:2]:  # v14 까지는 bug_fix·code_review 만 (triage 는 v15)
         conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
                      (V10_SESSION, spec.kind, spec.model_dump_json(), V10_NOW))
     conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
@@ -653,9 +656,10 @@ def test_selfhost_v10_copy_upgrades_to_v11_needs_first_setup_and_backups_round_t
     conn.close()
     v11_counts = _counts(src / "central.sqlite")
     assert v11_counts == {**v10_counts, "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0,
-                          "field_mappings": v10_counts["field_mappings"] + 1, **JIRA_EMPTY}  # + jira 기본 매핑
+                          "field_mappings": v10_counts["field_mappings"] + 1, **JIRA_EMPTY,  # + jira 기본 매핑
+                          "kinds": v10_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE}  # + triage 종류·기준 v1
     facts = _v11_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 14
+    assert facts["version"] == SCHEMA_VERSION == 15
     assert facts["needs_first_setup"] is True  # 첫 접속에서 .env 토큰으로 관리자 계정을 만든다
     assert facts["admin"] == (V10_ADMIN, "관리자", "admin", None, None, None)
     assert (facts["runner_owner"], facts["code_issuer"]) == (None, None)  # 기존 러너 = 관리자 관리
@@ -714,7 +718,7 @@ def _v11_selfhost(db_path: Path, artifact_dir: Path) -> None:
     conn.executescript(V11_SCHEMA)
     conn.execute("INSERT INTO schema_version (version) VALUES (11)")
     conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (V11_SESSION, _t11(0)))
-    for spec in BUILTIN_KINDS:
+    for spec in BUILTIN_KINDS[:2]:  # v14 까지는 bug_fix·code_review 만 (triage 는 v15)
         conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
                      (V11_SESSION, spec.kind, spec.model_dump_json(), _t11(0)))
     conn.execute("INSERT INTO succession_rules (rule_id, session_id, from_kind, to_kind, rule_json, created_at)"
@@ -828,9 +832,10 @@ def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backup
     conn.close()
     v12_counts = _counts(src / "central.sqlite")
     assert v12_counts == {**v11_counts, "work_pull_requests": 0,
-                          "field_mappings": v11_counts["field_mappings"] + 1, **JIRA_EMPTY}  # + jira 기본 매핑
+                          "field_mappings": v11_counts["field_mappings"] + 1, **JIRA_EMPTY,  # + jira 기본 매핑
+                          "kinds": v11_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE}  # + triage 종류·기준 v1
     facts = _v12_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 14
+    assert facts["version"] == SCHEMA_VERSION == 15
     assert facts["stored"] == [(n, status, reason) for n, status, reason, *_ in V11_WORKS]
     assert facts["recomputed"] == facts["stored"]
     assert facts["direct"] == {(None, None, None)}
@@ -843,7 +848,7 @@ def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backup
     v12_backup = capsys.readouterr().out.strip()
     assert backup.main(["list"], env=env) == 0
     listed = dict(line.split("\t", 1) for line in capsys.readouterr().out.strip().splitlines())
-    assert listed[v12_backup].endswith("schema 14") and listed[v11_backup].endswith("schema 11")
+    assert listed[v12_backup].endswith("schema 15") and listed[v11_backup].endswith("schema 11")
     dst = tmp_path / "dst"
     dst_env = {**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
     assert backup.main(["restore", v12_backup], env=dst_env) == 0
@@ -886,7 +891,7 @@ def test_v13_copy_upgrades_to_v14_and_jira_rows_round_trip_without_token(tmp_pat
     capsys.readouterr()
     conn = connect(old / "central.sqlite")
     init_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 14
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 15
     assert [tuple(r) for r in conn.execute("SELECT source_type, source_value, runloom_value FROM field_mappings")] == [
         ("jira", "*", "bug_fix")]
     conn.execute("INSERT INTO jira_connections (session_id, site_url, cloud_id, api_base, email, account_id,"
@@ -906,5 +911,56 @@ def test_v13_copy_upgrades_to_v14_and_jira_rows_round_trip_without_token(tmp_pat
     try:
         assert [tuple(r) for r in conn.execute("SELECT session_id, site_url, api_base FROM jira_connections")] == [
             ("s1", "https://acme.atlassian.net", "gateway")]
+    finally:
+        conn.close()
+
+
+# --- phase 19: v14 사본 → v15 판단 표·내장 triage 종류·기준 v1 + 백업 왕복 (ADR-0025, ARCHITECTURE "스키마 v15") -------
+
+V14_SCHEMA = (Path(__file__).parents[2] / "workflow" / "adapters" / "fixtures" / "schema_v14.sql").read_text()
+
+
+def test_v14_backup_restores_and_upgrades_to_v15(tmp_path, capsys):
+    """v14 백업을 복원하면 15 로 올라가 판단 표가 생기고 워크스페이스에 triage 종류·기준 v1 이 생긴다. 다시 백업·복원해도
+    판단 기준 행이 그대로다."""
+    from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
+
+    src = tmp_path / "src"
+    (src / "artifacts").mkdir(parents=True)
+    conn = connect(src / "central.sqlite")
+    conn.executescript(V14_SCHEMA)
+    conn.execute("INSERT INTO schema_version (version) VALUES (14)")
+    conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES ('s1', ?, 1)", (V10_NOW,))
+    conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', 'bug_fix', '{}', ?)",
+                 (V10_NOW,))
+    conn.close()
+    env = _env(src)
+    assert backup.main(["create"], env=env, now=lambda: T1) == 0
+    v14_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    assert capsys.readouterr().out.strip().endswith("schema 14")
+
+    old = tmp_path / "old"
+    assert backup.main(["restore", v14_backup], env={**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}) == 0
+    capsys.readouterr()
+    conn = connect(old / "central.sqlite")
+    init_schema(conn)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 15
+    assert [r[0] for r in conn.execute("SELECT kind FROM kinds WHERE session_id = 's1' ORDER BY kind")] == [
+        "bug_fix", "triage"]
+    assert [tuple(r) for r in conn.execute("SELECT session_id, version, body FROM triage_criteria")] == [
+        ("s1", 1, TRIAGE_CRITERIA_V1)]
+    conn.close()
+
+    old_env = {**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["create"], env=old_env, now=lambda: T2) == 0
+    v15_backup = capsys.readouterr().out.strip()
+    dst = tmp_path / "dst"
+    assert backup.main(["restore", v15_backup], env={**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}) == 0
+    assert _counts(dst / "central.sqlite") == _counts(old / "central.sqlite")
+    conn = connect(dst / "central.sqlite")
+    try:
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 15
+        assert [tuple(r) for r in conn.execute("SELECT session_id, version FROM triage_criteria")] == [("s1", 1)]
     finally:
         conn.close()

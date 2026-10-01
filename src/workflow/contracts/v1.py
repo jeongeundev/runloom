@@ -18,7 +18,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SerializerFun
 
 CONTRACT_VERSION = 1
 
-# CONTRACT.md 4절의 산출물 kind 17종
+# CONTRACT.md 4절의 산출물 kind 18종
 ARTIFACT_KINDS: tuple[str, ...] = (
     "handoff_bundle",
     "diagnosis_result",
@@ -37,6 +37,7 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     "claude_stderr",
     "generic_result",
     "code_review_result",
+    "triage_result",
 )
 
 _RFC3339 = re.compile(
@@ -165,10 +166,17 @@ class LocalTarget(_Contract):
     local_registration_id: NonEmptyStr
 
 
+class TriageTarget(_Contract):
+    """판단(결과 형태 `triage_result`) 전용 — 판단 Agent 의 로컬 등록과 읽기 전용으로 꺼낼 기본 브랜치 끝 (CONTRACT 17.1)."""
+
+    local_registration_id: NonEmptyStr
+    base_commit: CommitSha
+
+
 # --- 업무 종류와 후속 규칙 (CONTRACT 11절) ---------------------------------
 
 # 셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다
-BUILTIN_KIND_NAMES: tuple[str, ...] = ("bug_fix", "code_review")
+BUILTIN_KIND_NAMES: tuple[str, ...] = ("bug_fix", "code_review", "triage")
 
 
 class KindSpec(_Contract):
@@ -179,7 +187,9 @@ class KindSpec(_Contract):
     capability_code: CapabilityCode
     scope_key: Identifier
     input_kinds: list[ArtifactKind]
-    output_kind: Literal["diagnosis_result", "code_change_result", "code_review_result", "generic_result"]
+    output_kind: Literal[
+        "diagnosis_result", "code_change_result", "code_review_result", "generic_result", "triage_result"
+    ]
     outcomes: list[Outcome] = Field(min_length=1)
     instructions: str
     builtin: bool
@@ -209,6 +219,11 @@ BUILTIN_KINDS: tuple[KindSpec, ...] = (
         kind="code_review", label="커밋 검토", capability_code="code.review", scope_key="repository_id",
         input_kinds=["code_change_result"], output_kind="code_review_result",
         outcomes=["approved", "changes_requested", "needs_information"], instructions="", builtin=True,
+    ),
+    KindSpec(  # 판단 — outcomes 는 진행 여부 세 값 (ADR-0025 결정 1)
+        kind="triage", label="판단", capability_code="code.triage", scope_key="repository_id",
+        input_kinds=[], output_kind="triage_result",
+        outcomes=["ready", "needs_check", "unsuitable"], instructions="", builtin=True,
     ),
 )
 
@@ -269,7 +284,7 @@ class ExecutionRequest(_OmitUnknownMeasure):
     task_revision: int = Field(ge=1)
     request: NonEmptyStr
     input_artifact_ids: list[NonEmptyStr]
-    target: DiagnosisTarget | CodeChangeTarget | CommitReviewTarget | LocalTarget
+    target: DiagnosisTarget | CodeChangeTarget | CommitReviewTarget | LocalTarget | TriageTarget
     kind_spec: KindSpec | None = None
     # 결과 브랜치 `result_branch(task_id, work_key, branch_seq)` 의 두 칸 (CONTRACT 15.2·15.3). 없으면 옛 `task/<task_id>`
     work_key: WorkKey | None = None
@@ -294,6 +309,15 @@ class ExecutionRequest(_OmitUnknownMeasure):
             raise ValueError("branch_seq 는 work_key 가 있을 때만 1 이 아닐 수 있습니다")
         if self.kind_spec is not None and self.kind_spec.kind != self.kind:
             raise ValueError("kind_spec.kind 는 kind 와 같아야 합니다")
+        # 판단은 결과 형태로 target 모양이 정해진다 — 봉투를 늘 싣는다 (CONTRACT 17.1)
+        if self.kind_spec is not None and self.kind_spec.output_kind == "triage_result":
+            if not isinstance(self.target, TriageTarget):
+                raise ValueError("결과 형태 triage_result 의 target 은 local_registration_id·base_commit 입니다")
+            if self.input_artifact_ids:
+                raise ValueError("판단 요청은 input_artifact_ids 가 빈 배열이어야 합니다")
+            return self
+        if self.kind == "triage":
+            raise ValueError("kind triage 는 kind_spec 이 있어야 합니다")
         # `diagnosis`·`code_change` 는 `main` 의 진단 데모 요청(kind_spec 없음) 모양으로만 남는다 (ADR-0019).
         # kind_spec 이 있으면 그 이름의 사용자 정의 종류다 — 아래 else 로 간다
         if self.kind == "diagnosis" and self.kind_spec is None:
@@ -695,6 +719,109 @@ class CodeReviewResult(_Contract):
             raise ValueError(f"{self.outcome} 는 missing_information 이 빈 배열이어야 합니다")
         if len(set(self.artifact_ids)) != len(self.artifact_ids):
             raise ValueError("artifact_ids 에 중복이 있습니다")
+        return self
+
+
+# --- 판단 결과·후보 (CONTRACT 17.2·17.3, ADR-0025) ------------------------------
+
+TRIAGE_PROCEED: tuple[str, ...] = ("ready", "needs_check", "unsuitable")
+TRIAGE_CRITERIA: tuple[str, ...] = ("clarity", "verifiability", "scope", "risk", "permission", "history", "dependency")
+TRIAGE_CANDIDATES_MAX = 30
+_TriageNote = Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class TriageReason(_Contract):
+    criterion: Literal[*TRIAGE_CRITERIA]
+    note: _TriageNote  # 표시만 한다 — 명령·경로로 쓰지 않는다
+
+
+class TriageAssignee(_Contract):
+    type: Literal["member", "agent"]
+    id: NonEmptyStr
+
+
+class TriageResult(_Contract):
+    """판단의 결과 봉투 — **제안**이다. 후보 목록 안인지·`inspected_commit == target.base_commit` 인지는 중앙이 본다."""
+
+    contract_version: ContractVersion
+    execution_id: NonEmptyStr
+    task_id: NonEmptyStr
+    inspected_commit: CommitSha
+    proceed: Literal[*TRIAGE_PROCEED]
+    confidence: Annotated[float, Field(ge=0, le=1)]
+    proposed_kind: KindId | None
+    assignee: TriageAssignee | None
+    predecessors: Annotated[list[WorkKey], Field(max_length=5)]
+    reasons: Annotated[list[TriageReason], Field(min_length=1, max_length=7)]
+    missing_information: Annotated[list[_TriageNote], Field(max_length=10)]
+
+    @model_validator(mode="after")
+    def _check_proceed(self) -> "TriageResult":
+        if len(set(self.predecessors)) != len(self.predecessors):
+            raise ValueError("predecessors 에 중복이 있습니다")
+        criteria = [r.criterion for r in self.reasons]
+        if len(set(criteria)) != len(criteria):
+            raise ValueError("reasons 의 criterion 에 중복이 있습니다")
+        if self.proceed == "ready":
+            if self.proposed_kind is None or self.assignee is None:
+                raise ValueError("ready 는 proposed_kind·assignee 가 있어야 합니다")
+            if self.missing_information:
+                raise ValueError("ready 는 missing_information 이 빈 배열이어야 합니다")
+        elif self.proceed == "needs_check" and not self.missing_information:
+            raise ValueError("needs_check 는 missing_information 이 하나 이상이어야 합니다")
+        return self
+
+
+class TriageKindCandidate(_Contract):
+    kind: KindId
+    label: NonEmptyStr
+
+
+class TriageMemberCandidate(_Contract):
+    member_id: NonEmptyStr
+    display_name: NonEmptyStr
+    open_work: int = Field(ge=0)
+
+
+class TriageAgentCandidate(_Contract):
+    agent_id: NonEmptyStr
+    name: NonEmptyStr
+    owner_name: str | None
+    online: bool
+    open_work: int = Field(ge=0)
+    kinds: list[KindId] = Field(min_length=1)  # 이 저장소 범위로 맡을 수 있는 후보 종류
+
+
+class TriagePredecessorCandidate(_Contract):
+    work_key: WorkKey
+    title: NonEmptyStr
+    status: NonEmptyStr  # 업무 상태
+
+
+def _check_unique(values: list[str], name: str) -> None:
+    if len(set(values)) != len(values):
+        raise ValueError(f"{name} 에 중복이 있습니다")
+
+
+class TriageCandidates(_Contract):
+    """판단을 시작할 때 고정한 후보 목록 — 요청문에 글로 넣고 판단 로그에 저장한다. 러너 payload 가 아니다."""
+
+    current_kind: KindId
+    kinds: list[TriageKindCandidate] = Field(min_length=1)
+    members: list[TriageMemberCandidate]
+    agents: list[TriageAgentCandidate] = Field(max_length=TRIAGE_CANDIDATES_MAX)
+    predecessors: list[TriagePredecessorCandidate] = Field(max_length=TRIAGE_CANDIDATES_MAX)
+
+    @model_validator(mode="after")
+    def _check_ids(self) -> "TriageCandidates":
+        _check_unique([k.kind for k in self.kinds], "kinds")
+        _check_unique([m.member_id for m in self.members], "members")
+        _check_unique([a.agent_id for a in self.agents], "agents")
+        _check_unique([p.work_key for p in self.predecessors], "predecessors")
+        if self.current_kind not in {k.kind for k in self.kinds}:
+            raise ValueError("kinds 에 current_kind 가 있어야 합니다")
+        for agent in self.agents:
+            _check_unique(agent.kinds, f"agents[{agent.agent_id}].kinds")
         return self
 
 

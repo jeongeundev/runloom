@@ -5,7 +5,7 @@ import hashlib
 from workflow.connector.adapter import SUPPORTED_BUILTIN_KINDS, AdapterOutput, EchoAdapter, make_meta
 from workflow.contracts.v1 import ExecutionRequest, GenericResult
 
-from .conftest import BASE_COMMIT, make_local_request, make_request
+from .conftest import BASE_COMMIT, make_local_request, make_request, make_triage_request
 
 
 class Progress:
@@ -16,9 +16,9 @@ class Progress:
         self.calls.append((message, runtime_ref))
 
 
-def test_supported_builtin_kinds_are_bug_fix_and_code_review_only():
+def test_supported_builtin_kinds_are_bug_fix_code_review_and_triage():
     # 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다 (ADR-0019) — claim 때 지원 종류로 선언하지 않는다
-    assert SUPPORTED_BUILTIN_KINDS == ("bug_fix", "code_review")
+    assert SUPPORTED_BUILTIN_KINDS == ("bug_fix", "code_review", "triage")
     assert "diagnosis" not in SUPPORTED_BUILTIN_KINDS and "code_change" not in SUPPORTED_BUILTIN_KINDS
 
 
@@ -114,3 +114,10 @@ def test_echo_adapter_local_target_without_kind_spec_is_kind_spec_missing(tmp_pa
 
     assert output.result is None
     assert output.failed[0] == "kind_spec_missing" and output.failed[2] is True and "review" in output.failed[1]
+
+
+def test_echo_adapter_does_not_triage(tmp_path):
+    """읽기 전용 실행이 없는 어댑터는 판단을 다른 형태로 내지 않고 `unsupported_kind` 로 끝낸다."""
+    output = EchoAdapter().run(make_triage_request(BASE_COMMIT), tmp_path, Progress())
+
+    assert output.result is None and output.failed[0] == "unsupported_kind"

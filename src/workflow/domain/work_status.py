@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from workflow.domain.delegation import OWNER_APPROVAL_CODE
+from workflow.domain.triage import TriageFact, triage_reason
 
 WORK_STATUSES = (
     "새로 들어옴",
@@ -69,6 +70,8 @@ class WorkItemFacts:
     direct_member_name: str | None = None  # 직접 작업 중이면 그 멤버 표시 이름 (phase 16)
     # 감지 PR(`work_pull_requests`) — open·merged·closed, 최근순 (phase 16 step 9)
     detected_pull_requests: tuple[PullRequestFact, ...] = ()
+    # 그 업무의 최신 판단 로그 행 — 도는 중·처리 전 제안·실패일 때만 (phase 19)
+    triage: TriageFact | None = None
 
 
 def _pr_suffix(pr: PullRequestFact) -> str:
@@ -131,7 +134,7 @@ def work_status(facts: WorkItemFacts) -> WorkStatus:
 
     if not any(s.executed for s in facts.stages):
         if not facts.assigned:
-            return WorkStatus("새로 들어옴", "담당 없음")
+            return WorkStatus("새로 들어옴", triage_reason(facts.triage) if facts.triage else "담당 없음")
         if not facts.delegated:
             return WorkStatus("새로 들어옴", "지시 전 — [에이전트에게 맡기기]")
 

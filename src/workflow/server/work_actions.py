@@ -17,7 +17,7 @@ from typing import Any
 
 from workflow.adapters import repo
 from workflow.adapters.secret_store import SecretStore
-from workflow.contracts.v1 import Capability, KindSpec, format_work_key
+from workflow.contracts.v1 import WORK_KEY_PREFIX, Capability, KindSpec, TriageResult, format_work_key
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.field_mapping import PRIORITIES
 from workflow.domain.handoff_context import HANDOFF_NOTE_MAX
@@ -128,11 +128,8 @@ def start_stage(conn: Connection, store: Any, settings: Settings, task: Row, *, 
 
 
 def open_stage(conn: Connection, work_item_id: str) -> Row | None:
-    """맡길 단계 = 업무의 마감 전 단계 중 가장 최근(`created_at`, `rowid` 순 마지막)."""
-    return conn.execute(
-        "SELECT * FROM tasks WHERE work_item_id = ? AND finished_at IS NULL ORDER BY created_at DESC, rowid DESC"
-        " LIMIT 1", (work_item_id,)
-    ).fetchone()
+    """맡길 단계 = 업무의 마감 전 단계 중 가장 최근 — 판단 단계는 맡길 단계가 아니다(`repo.open_stage`, phase 19)."""
+    return repo.open_stage(conn, work_item_id)
 
 
 def _accepts(stage: Row, pool: list[Candidate], agent_id: str) -> bool:
@@ -160,7 +157,8 @@ def _own_open_work(conn: Connection, session_id: str, work_item_id: str) -> Row:
 
 
 def _running(conn: Connection, work_item_id: str) -> bool:
-    return any(repo.active_execution(conn, t["task_id"]) is not None
+    """에이전트 실행 중 — 판단 단계의 실행은 세지 않는다(판단 중에도 담당을 정할 수 있다, phase 19)."""
+    return any(repo.active_execution(conn, t["task_id"]) is not None and not repo.is_triage_task(conn, t["task_id"])
                for t in repo.list_work_item_tasks(conn, work_item_id))
 
 
@@ -193,17 +191,26 @@ def assign_work(conn: Connection, store: Any, settings: Settings, *, session_id:
         repo.assign_work_item(conn, session_id, work_item_id, assignee_type="member", assignee_id=assignee_id,
                               by_member_id=member_id, now=now)
         return
+    hand_to_agent(conn, store, settings, session_id=session_id, work_item_id=work_item_id, agent_id=assignee_id,
+                  member_id=member_id, now=now, secrets=secrets, note=note)
+
+
+def hand_to_agent(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str,
+                  agent_id: str, member_id: str | None, now: str, secrets: SecretStore | None = None, note: str = "",
+                  autostart_triage: tuple[str, int] | None = None) -> None:
+    """에이전트에게 맡기기 — 열린 단계 → 직접 선택(`select_agent(manual)`) → 쓰기 한 트랜잭션 → 착수(소유자 승인·꺼진
+    러너 대기 그대로). 판단 자동 시작은 `member_id=None`·`autostart_triage=(triage_id, 기준 버전)` (phase 19)."""
     stage = open_stage(conn, work_item_id)
     if stage is None:
         raise WorkActionError(409, "no_open_stage", "맡길 단계가 없습니다.")
     capability = Capability.model_validate_json(stage["required_capability_json"])
     record = select_agent(stage["task_id"], capability, candidates(conn, session_id), mode="manual",
-                          chosen_agent_id=assignee_id)
+                          chosen_agent_id=agent_id)
     if record.status != "selected":
         raise _invalid_assignee("이 단계를 맡을 수 없는 에이전트입니다.")
-    target = target_for(repo.get_kind(conn, session_id, stage["kind"]), repo.get_agent(conn, assignee_id))
+    target = target_for(repo.get_kind(conn, session_id, stage["kind"]), repo.get_agent(conn, agent_id))
     repo.hand_work_to_agent(conn, session_id, work_item_id, record=record, target=target, member_id=member_id,
-                            now=now, note=note or None)
+                            now=now, note=note or None, autostart_triage=autostart_triage)
     refresh_task_status(conn, stage["task_id"], now, settings)
     start_stage(conn, store, settings, repo.get_task(conn, stage["task_id"]), session_id=session_id, now=now,
                 strict=False, secrets=secrets)
@@ -216,6 +223,83 @@ def set_priority(conn: Connection, *, session_id: str, work_item_id: str, priori
         raise WorkActionError(422, "invalid_field", "우선순위 값이 올바르지 않습니다.", field="priority")
     _own_open_work(conn, session_id, work_item_id)
     repo.set_work_priority(conn, session_id, work_item_id, priority, member_id=member_id, now=now)
+
+
+# --- 판단 제안 (phase 19) ------------------------------------------------------------
+
+TRIAGE_STALE = "판단 제안이 이미 처리됐거나 바뀌었습니다."
+
+
+def _stale() -> WorkActionError:
+    return WorkActionError(409, "triage_stale", TRIAGE_STALE)
+
+
+def _repository_id(conn: Connection, session_id: str, stage: Row) -> str | None:
+    """맡길 단계의 연결 저장소 ID — 소스 설정값, 없으면 자동 매칭 결과(`triage_runs.triage_route` 와 같은 규칙)."""
+    config = task_cycle.origin(conn, stage).config
+    if config is None:
+        return None
+    return config.workflow_repository_id or task_cycle.match_for_source(conn, session_id, config).workflow_repository_id
+
+
+def _work_ids(conn: Connection, session_id: str, keys: list[str]) -> list[str]:
+    """선행 업무 키 → 업무 ID. 이 워크스페이스에 없는 키는 건너뛴다."""
+    ids = []
+    for key in keys:
+        prefix, _, number = key.rpartition("-")
+        work = repo.get_work_item_by_key(conn, session_id, int(number)) if prefix == WORK_KEY_PREFIX else None
+        if work is not None:
+            ids.append(work["work_item_id"])
+    return ids
+
+
+def accept_triage(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str,
+                  triage_id: str, member_id: str | None, now: str, secrets: SecretStore | None = None) -> None:
+    """[제안대로 맡기기] — 제안 종류가 시작 전 맡길 단계와 다르면 종류를 바꾸고(요구 능력 다시 계산), 선행 업무를 `blocks`
+    로 잇고(한 트랜잭션), 기존 담당 바꾸기(`assign_work`)로 맡긴다 — 에이전트면 소유자 승인·꺼진 러너 대기 그대로, 멤버면
+    배정만. 판단 처리(`accepted`)는 그 맡기기 트랜잭션 안에서 남는다. 맡기기가 실패하면 종류·연결은 남고 처리는 비어 있다.
+    `member_id=None` 은 워커 자동 시작(제안 담당은 에이전트) — 맡긴 사람 없이 `hand_to_agent`, 처리 `auto_started`."""
+    work = _own_open_work(conn, session_id, work_item_id)
+    log = repo.latest_triage(conn, work_item_id)
+    if (log is None or log["triage_id"] != triage_id or log["state"] != "proposed" or log["handling"] is not None
+            or work["status"] != "새로 들어옴" or work["assignee_type"] is not None
+            or work["direct_member_id"] is not None):
+        raise _stale()
+    result = TriageResult.model_validate_json(log["result_json"])
+    if result.assignee is None or result.proceed == "unsuitable":
+        raise _stale()
+    stage = open_stage(conn, work_item_id)
+    if stage is None:
+        raise WorkActionError(409, "no_open_stage", "맡길 단계가 없습니다.")
+    change = None
+    if result.proposed_kind is not None and result.proposed_kind != stage["kind"]:
+        if repo.list_executions(conn, stage["task_id"]):
+            raise WorkActionError(409, "stage_started", "이미 시작한 단계는 종류를 바꿀 수 없습니다.")
+        spec = repo.get_kind(conn, session_id, result.proposed_kind)
+        repository_id = _repository_id(conn, session_id, stage)
+        if spec is None or repository_id is None:
+            raise _stale()
+        agent = repo.get_agent(conn, result.assignee.id) if result.assignee.type == "agent" else None
+        change = (stage["task_id"], spec, Capability(code=spec.capability_code, scope={spec.scope_key: repository_id}),
+                  target_for(spec, agent))
+    repo.prepare_triage_accept(conn, work_item_id, stage_change=change,
+                               predecessor_ids=_work_ids(conn, session_id, result.predecessors), now=now)
+    if member_id is None:
+        hand_to_agent(conn, store, settings, session_id=session_id, work_item_id=work_item_id,
+                      agent_id=result.assignee.id, member_id=None, now=now, secrets=secrets,
+                      autostart_triage=(triage_id, log["criteria_version"]))
+        return
+    assign_work(conn, store, settings, session_id=session_id, work_item_id=work_item_id,
+                value=f"{result.assignee.type}:{result.assignee.id}", member_id=member_id, now=now, secrets=secrets)
+
+
+def dismiss_triage(conn: Connection, *, session_id: str, work_item_id: str, triage_id: str, member_id: str,
+                   now: str) -> None:
+    """[무시] — 판단 로그 `dismissed`(제안 접힘). 최신 제안이 아니거나 이미 처리됐으면 409 `triage_stale`."""
+    if repo.get_work_item(conn, session_id, work_item_id) is None:
+        raise WorkActionError(404, "not_found", "업무를 찾을 수 없습니다.")
+    if not repo.dismiss_triage(conn, session_id, work_item_id, triage_id, member_id=member_id, now=now):
+        raise _stale()
 
 
 # --- 직접 작업 ----------------------------------------------------------------------

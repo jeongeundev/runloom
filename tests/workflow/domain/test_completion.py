@@ -3,7 +3,7 @@
 from workflow.contracts.v1 import BUILTIN_KINDS, KindSpec
 from workflow.domain.completion import Criterion, criteria_template, merge_criteria
 
-BUG_FIX, CODE_REVIEW = BUILTIN_KINDS
+BUG_FIX, CODE_REVIEW = BUILTIN_KINDS[:2]
 REVIEW = KindSpec(
     kind="review", label="검토", capability_code="review", scope_key="repository_id",
     input_kinds=["diff", "code_change_result"], output_kind="generic_result",
@@ -70,7 +70,11 @@ def test_user_defined_kind_template_is_single_review_item():
 
 
 def test_every_builtin_kind_has_structured_template():
-    """phase 8 의 bug_fix·code_review 도 세션에 seed 되므로 화면이 템플릿을 그릴 수 있어야 한다 (ADR-0014)."""
+    """phase 8 의 bug_fix·code_review 도 세션에 seed 되므로 화면이 템플릿을 그릴 수 있어야 한다 (ADR-0014).
+    판단(`triage_result`)은 제안이라 완료 기준이 없다 — 판단 단계 Task 의 criteria 는 [] (ADR-0025)."""
     for spec in BUILTIN_KINDS:
         items = criteria_template(spec)
+        if spec.output_kind == "triage_result":
+            assert items == [], spec.kind
+            continue
         assert items and all(c.structured and c.code.startswith(f"{spec.kind}.") for c in items), spec.kind

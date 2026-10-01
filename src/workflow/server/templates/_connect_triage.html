@@ -1,0 +1,41 @@
+{# 연결 화면 "판단" 탭 — phase 19 step 8, ADR-0025, ARCHITECTURE "판단 — phase 19" 화면. `manage_connections` 만 연다.
+   판단 기준(현재 버전·편집·버전 이력·이전 본문 보기)과 종류별 자동 시작(자격 n/20·켬·기준값·마지막 변경).
+   기준 본문은 사용자 입력이다 — 자동 이스케이프로만 그린다(`|safe` 금지). 판단 에이전트는 저장소 카드(가져올 곳 탭)에서 고른다. #}
+<section class="card" data-triage-criteria>
+  <div class="card-title">판단 기준 v{{ criteria.version }}</div>
+  <p class="small">{{ criteria.by or '처음 기준' }} · {{ criteria.created_at|kst }} — 판단 에이전트가 받는 요청문의 기준 절입니다. 저장하면 버전이 오르고, 다음 판단부터 씁니다.</p>
+  <form method="post" action="/operator/triage/criteria">
+    <input type="hidden" name="expected_version" value="{{ criteria.version }}">
+    <div class="field"><label for="triage-criteria-body">기준 본문</label>
+      <textarea name="body" id="triage-criteria-body" rows="18" maxlength="8000" required>{{ criteria.body }}</textarea>
+      <div class="help">8000자까지. 본문이 같으면 버전을 올리지 않습니다.</div></div>
+    <div class="actions"><button class="btn" type="submit">저장</button></div>
+  </form>
+  <h3>버전 이력</h3>
+  <table>
+    <tr><th>버전</th><th>누가</th><th>언제</th><th></th></tr>
+    {% for h in criteria_history %}<tr><td>v{{ h.version }}</td><td>{{ h.by or '처음 기준' }}</td><td>{{ h.created_at|kst }}</td><td><a href="/connect?tab=triage&amp;version={{ h.version }}">보기</a></td></tr>{% endfor %}
+  </table>
+  {% if criteria_view %}
+  <h3>v{{ criteria_view.version }} 본문 (읽기 전용)</h3>
+  <pre class="mono" data-criteria-version="{{ criteria_view.version }}">{{ criteria_view.body }}</pre>
+  {% endif %}
+</section>
+
+<section class="card" data-triage-autostart>
+  <div class="card-title">자동 시작</div>
+  <p class="small">켜 둔 종류는 판단이 "맡겨도 됨"·에이전트 담당·확신도 기준값 이상일 때 사람 확인 없이 맡깁니다. 사람이 처리한 판단(제안대로 맡김·다르게 정함)이 {{ autostart_min }}건 쌓여야 켤 수 있습니다.</p>
+  {% for a in autostart %}
+  <form method="post" action="/operator/triage/autostart/{{ a.kind }}" class="actions" data-autostart="{{ a.kind }}">
+    <strong>{{ a.label }}</strong>
+    <span class="small">판단 기록 {{ a.count }}/{{ autostart_min }}</span>
+    <label><input type="checkbox" name="enabled"{% if a.enabled %} checked{% endif %}{% if not a.can_enable %} disabled{% endif %}> 켬</label>
+    {% if not a.can_enable %}<span class="small">{{ autostart_min }}건이 되면 켤 수 있습니다</span>{% endif %}
+    <label>기준값 <input type="number" name="threshold" min="0.50" max="1.00" step="0.05" value="{{ a.threshold }}"></label>
+    <button class="btn btn-small" type="submit">저장</button>
+    <span class="small">{% if a.last %}마지막 변경 v{{ a.last.version }} · {{ a.last.by or '—' }} · {{ a.last.created_at|kst }}{% else %}꺼짐 (기본){% endif %}</span>
+  </form>
+  {% else %}
+  <p class="muted">자동 시작을 둘 수 있는 업무 종류가 없습니다.</p>
+  {% endfor %}
+</section>

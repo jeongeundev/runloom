@@ -2,7 +2,7 @@
 
 > 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고, 13.9 오류 본문도 서버 경로(step 6·11)가 생겨 모두 일반 `json` 펜스다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
-갱신일: 2026-09-28 (phase 12 step 5 — 14.2 `ResultReadyData.branch_pushed` 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 12 step 3 — 14.1 `ClaimRequest.registration_heads` 구현. 그 전: 2026-09-27 phase 12 step 1 — 14.3·14.4 등록 요청 `agent_name`·응답 `RegistrationResponse` 구현. 그 전: 2026-09-27 phase 12 step 0 — 14절 실제 저장소 순환 선택 칸 예시, `json contract-pending`
+갱신일: 2026-10-01 (phase 19 step 0 — 17절 판단 `ExecutionRequest`·`TriageResult`·`TriageCandidates` 예시, `jsonc` contract-pending). 이전: 2026-09-28 (phase 12 step 5 — 14.2 `ResultReadyData.branch_pushed` 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 12 step 3 — 14.1 `ClaimRequest.registration_heads` 구현. 그 전: 2026-09-27 phase 12 step 1 — 14.3·14.4 등록 요청 `agent_name`·응답 `RegistrationResponse` 구현. 그 전: 2026-09-27 phase 12 step 0 — 14절 실제 저장소 순환 선택 칸 예시, `json contract-pending`
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -242,7 +242,7 @@
 
 본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
-산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`.
+산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`.
 
 로컬 도구의 원시 로그 산출물 — 생산자와 내용:
 
@@ -252,6 +252,7 @@
 | `claude_jsonl` / `claude_stderr` | 연결 프로그램 Claude 어댑터 | `claude -p --output-format json` 의 원문 stdout / stderr. 같은 마스킹 적용 |
 | `generic_result` | 연결 프로그램 | 사용자 정의 종류의 결과 봉투(`GenericResult`, 11절). 내장 종류의 `diagnosis_result`·`code_change_result` 와 구분 |
 | `code_review_result` | 연결 프로그램 | 내장 `code_review` 의 결과 봉투(`CodeReviewResult`, 13.4절) |
+| `triage_result` | 연결 프로그램 | 내장 `triage` 의 결과 봉투(`TriageResult`, 17.2절) |
 
 ## 5. 진단 결과 — `ready_for_handoff` 전체
 
@@ -898,13 +899,14 @@ target `CommitReviewTarget` 은 검토할 수정 실행과 커밋을 고정한�
   "intake": "filtered",
   "trigger_label": null,
   "default_fix_agent_id": null,
+  "triage_agent_id": null,
   "installation_id": null,
   "enabled": true,
   "config_revision": 3
 }
 ```
 
-phase 11(ADR-0017)의 새 칸 `intake`·`trigger_label`·`default_fix_agent_id`·`installation_id` 는 모두 기본값이 있다(`"filtered"`·`null`·`null`·`null`) — 새 칸이 없는 phase 8 설정도 그대로 유효하다. `intake: filtered` 는 위와 같이 범위와 세 ID(`workflow_repository_id`·`fix_verification_profile_id`·`review_agent_id`)가 필수다. `intake: all_open` 은 열린 이슈 전부를 가져오고 실행은 지시한 것만 한다 — 범위는 비어도 되고, `null` 인 ID 는 자동 매칭이 정한다. `trigger_label` 이 붙은 이슈는 지시된 것으로 본다(API 로 만든 `all_open` 소스의 기본 `"runloom"`). `installation_id` 는 App 설치가 만든 소스에만 있고 API 본문으로 받지 않는다.
+phase 11(ADR-0017)의 새 칸 `intake`·`trigger_label`·`default_fix_agent_id`·`installation_id` 는 모두 기본값이 있다(`"filtered"`·`null`·`null`·`null`) — 새 칸이 없는 phase 8 설정도 그대로 유효하다. `intake: filtered` 는 위와 같이 범위와 세 ID(`workflow_repository_id`·`fix_verification_profile_id`·`review_agent_id`)가 필수다. `intake: all_open` 은 열린 이슈 전부를 가져오고 실행은 지시한 것만 한다 — 범위는 비어도 되고, `null` 인 ID 는 자동 매칭이 정한다. `trigger_label` 이 붙은 이슈는 지시된 것으로 본다(API 로 만든 `all_open` 소스의 기본 `"runloom"`). `installation_id` 는 App 설치가 만든 소스에만 있고 API 본문으로 받지 않는다. phase 19(ADR-0025)의 `triage_agent_id`(판단 Agent, 기본 `null` — 비우면 이 저장소의 업무는 자동 판단하지 않는다)도 기본값이 있다.
 
 ```json
 {
@@ -921,6 +923,7 @@ phase 11(ADR-0017)의 새 칸 `intake`·`trigger_label`·`default_fix_agent_id`�
   "intake": "all_open",
   "trigger_label": "runloom",
   "default_fix_agent_id": null,
+  "triage_agent_id": null,
   "installation_id": 51234567,
   "enabled": true,
   "config_revision": 1
@@ -1041,7 +1044,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 ### 14.3 등록 — Agent 를 새로 만드는 경우
 
-`connector setup`(또는 `--id`·`--repository-id` 를 생략한 `register`)이 보내는 요청. `local_registration_id` 기본 = 폴더 이름, `repository_id` 기본 = 러너가 찾은 GitHub `owner/name`, `agent_name` = 폴더 이름. 같은 `local_registration_id` 의 Agent 가 없고 서버가 `selfhost` 모드면 Agent 를 만든다(능력 `code.fix`·`code.review`, scope `repository_id`). `demo` 모드는 지금처럼 404.
+`connector setup`(또는 `--id`·`--repository-id` 를 생략한 `register`)이 보내는 요청. `local_registration_id` 기본 = 폴더 이름, `repository_id` 기본 = 러너가 찾은 GitHub `owner/name`, `agent_name` = 폴더 이름. 같은 `local_registration_id` 의 Agent 가 없고 서버가 `selfhost` 모드면 Agent 를 만든다(능력 `code.fix`·`code.review`·`code.triage`(phase 19), scope `repository_id`). `demo` 모드는 지금처럼 404.
 
 ```json
 {
@@ -1184,3 +1187,93 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 ```
 
 요청문(`request`)에 붙는 머리·"## 업무 양식"·"## 맡긴 사람 지시 (이름)" 절은 계약 칸이 아니다 — 서버가 문자열로 만든다(ARCHITECTURE "인계 맥락 요청문"). 러너는 지금처럼 글로만 프롬프트에 넣는다.
+
+## 17. 판단 — 내장 종류 `triage`
+
+[ADR-0025](adr/0025-triage.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19" 의 "계약"·"요청문·후보·근거". 계약 버전은 1 그대로이고 1~16절 payload 는 바뀌지 않는다 — 내장 종류 하나(`triage`, 봉투 `capability_code="code.triage"`·`scope_key="repository_id"`·`input_kinds=[]`·`output_kind="triage_result"`·`outcomes=["ready", "needs_check", "unsuitable"]`)와 그 요청 target·결과 봉투·후보 목록이 더해진다. 모델은 phase 19 step 2 가 구현했고 아래 세 블록은 fixture 테스트 대상이다(`test_v1.py` 키 서명 — `TriageResult` 는 `proceed`, `TriageCandidates` 는 `current_kind`). 4절 산출물 `kind` 목록 끝에 `triage_result` 가 더해졌다.
+
+### 17.1 `ExecutionRequest` — 판단
+
+중앙이 판단을 시작할 때 만드는 요청(`triage_runs.request_triage`). target 은 `TriageTarget` — 판단 Agent 의 로컬 등록과 그 Agent 의 `base_commit`(러너가 claim 때 보고한 origin 기본 브랜치 끝, ADR-0018 결정 2)이다. 러너는 이 커밋의 깨끗한 임시 체크아웃에서 읽기 도구만으로 판단한다. 입력 산출물은 없다. `request` 는 서버가 만든 글이다(판단 기준 본문·업무·후보·로그 근거 — 계약 칸이 아니다). 업무 키·결과 브랜치 칸은 쓰지 않는다(판단은 브랜치를 만들지 않는다). `kind_spec` 은 늘 싣는다 — 결과 형태(`output_kind == "triage_result"`)가 target 모양을 정한다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-triage-001",
+  "task_id": "task-triage-12",
+  "kind": "triage",
+  "agent_id": "agt-9f3c2a1b",
+  "task_revision": 1,
+  "request": "# 판단: RUN-12 쿠폰이 두 번 적용됨\n\n## 판단 기준 (v1)\n…\n\n## 업무\n지금 종류: bug_fix (버그 수정)\n### 재현 절차\n같은 쿠폰으로 결제를 두 번 요청한다.\n### 요청\n결제 금액이 두 번 할인된다.\n\n## 후보\n### 종류\n- bug_fix — 버그 수정\n### 담당\n- member:mem-1a2b3c4d 김지은 — 진행 중 2\n- agent:agt-9f3c2a1b macbook-billing — 소유 김지은 · 켜짐 · 진행 중 1 · 맡을 수 있는 종류 bug_fix\n### 선행 후보\n- RUN-9 결제 모듈 정리 (에이전트 작업 중)\n\n## 로그 근거 (Runloom 계산)\n- bug_fix 최근 12건: 1회 통과 7건 · 재작업 4건 · 완료까지 중앙 6시간 10분\n\n## 답하는 법\n- proposed_kind·assignee·predecessors 는 위 후보 안의 값만 쓴다. 후보 밖 값은 판단 실패로 기록된다.\n- 담당은 type(member|agent)과 id 로 쓴다.\n- 저장소 코드는 현재 폴더에서 읽기만 한다.",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c"
+  },
+  "kind_spec": {
+    "kind": "triage",
+    "label": "판단",
+    "capability_code": "code.triage",
+    "scope_key": "repository_id",
+    "input_kinds": [],
+    "output_kind": "triage_result",
+    "outcomes": ["ready", "needs_check", "unsuitable"],
+    "instructions": "",
+    "builtin": true
+  }
+}
+```
+
+`kind_spec.output_kind` 가 `triage_result` 인데 target 이 `TriageTarget` 이 아니거나 `input_artifact_ids` 가 비어 있지 않으면 422, 다른 종류에 `TriageTarget` 이면 422, `kind == "triage"` 인데 `kind_spec` 이 없으면 422. 구버전 러너는 이 요청을 받지 않는다 — 서버는 마지막 claim 의 `supported_kinds` 에 `triage` 가 있는 러너에만 판단을 만들고 배정한다(13.5).
+
+### 17.2 `TriageResult` — `ready`
+
+러너가 체크아웃 HEAD 를 `inspected_commit` 으로 채운 결과 봉투(산출물 kind `triage_result`). 중앙은 `inspected_commit == target.base_commit` 과, `proposed_kind`·`assignee`·`predecessors` 가 판단을 시작할 때 고정한 후보 목록(17.3) 안인지 본다 — 밖이면 판단 로그 `failed`(`triage_invalid`). 결과는 **제안**이다 — 업무를 완료·종료하거나 담당을 바꾸지 않는다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-triage-001",
+  "task_id": "task-triage-12",
+  "inspected_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+  "proceed": "ready",
+  "confidence": 0.86,
+  "proposed_kind": "bug_fix",
+  "assignee": { "type": "agent", "id": "agt-9f3c2a1b" },
+  "predecessors": ["RUN-9"],
+  "reasons": [
+    { "criterion": "clarity", "note": "재현 절차와 기대 동작이 있다" },
+    { "criterion": "verifiability", "note": "tests/test_coupon.py 에 할인 테스트가 있어 등록 검증으로 확인된다" },
+    { "criterion": "scope", "note": "billing/coupon.py 한 모듈" },
+    { "criterion": "dependency", "note": "RUN-9 가 같은 모듈을 정리 중 — 먼저 끝나는 편이 충돌이 적다" }
+  ],
+  "missing_information": []
+}
+```
+
+`proceed` 는 `ready`(맡겨도 됨)·`needs_check`(확인 필요)·`unsuitable`(부적합). `confidence` 0~1. `reasons` 1~7개(`criterion` 은 `clarity`·`verifiability`·`scope`·`risk`·`permission`·`history`·`dependency`, 중복 없음, `note` 1~200자), `missing_information` 최대 10개(각 1~200자), `predecessors` 최대 5개(업무 키, 중복 없음). `ready` 는 `proposed_kind`·`assignee` 가 있고 `missing_information` 이 빈 배열, `needs_check` 는 `missing_information` 이 1개 이상, `unsuitable` 은 `assignee` 가 null 이어도 된다. 어긋나면 러너가 `result_invalid` 로 실행을 실패시킨다. 글 칸은 표시만 한다 — 명령·경로로 쓰지 않는다.
+
+### 17.3 `TriageCandidates` — 요청에 넣은 후보 목록
+
+중앙이 판단을 시작할 때 계산해 요청문(17.1 의 "## 후보")에 글로 넣고 판단 로그(`triage_logs.candidates_json`)에 이 모양으로 저장한다. 판정은 이 저장값으로 한다(다시 계산하지 않는다). 러너에게 보내는 payload 가 아니다.
+
+```json
+{
+  "current_kind": "bug_fix",
+  "kinds": [
+    { "kind": "bug_fix", "label": "버그 수정" }
+  ],
+  "members": [
+    { "member_id": "mem-1a2b3c4d", "display_name": "김지은", "open_work": 2 }
+  ],
+  "agents": [
+    { "agent_id": "agt-9f3c2a1b", "name": "macbook-billing", "owner_name": "김지은", "online": true, "open_work": 1,
+      "kinds": ["bug_fix"] }
+  ],
+  "predecessors": [
+    { "work_key": "RUN-9", "title": "결제 모듈 정리", "status": "에이전트 작업 중" }
+  ]
+}
+```
+
+`kinds` 는 판단 종류가 아니고 입력 없이 시작할 수 있는(`input_kinds` 빈) 등록 종류 중 저장소 범위(`scope_key == "repository_id"`)이거나 지금 종류인 것(`current_kind` 포함, 1개 이상). `agents` 의 `kinds` 는 그 Agent 가 이 저장소 범위로 맡을 수 있는 후보 종류(1개 이상 — 하나도 없으면 후보가 아니다). `agents`·`predecessors` 최대 30. id 가 겹치면 422.

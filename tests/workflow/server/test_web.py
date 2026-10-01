@@ -325,6 +325,15 @@ def test_create_task_rejects_bad_form_with_422(web, overrides):
         assert "등록되지 않은 업무 종류입니다." in response.text
 
 
+def test_create_task_rejects_triage_kind(web, conn):
+    """판단 종류로는 업무를 등록할 수 없다 (ADR-0025) — 판단 단계는 중앙만 붙인다."""
+    before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    response = web.post("/tasks", data=fix_form(capability_code="code.triage"), follow_redirects=False)
+    assert response.status_code == 422
+    assert "판단 종류로는 업무를 등록할 수 없습니다." in response.text
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+
+
 def test_create_code_change_task_cannot_be_auto_completed(web):
     for form in (fix_form(completion_mode="auto"), code_review_form(create_task(web, fix_form()), completion_mode="auto")):
         response = web.post("/tasks", data=form, follow_redirects=False)
@@ -1114,7 +1123,7 @@ def test_kinds_page_shows_builtin_kinds_and_rule_without_delete_button(web):
     for value in ("버그 수정", "커밋 검토", "bug_fix", "code_review", "code.fix", "code.review",
                   "repository_id", "ready_for_review", "approved", "changes_requested", "needs_information"):
         assert value in text, value
-    assert text.count(">내장<") == 2  # 내장 전부 — bug_fix·code_review (ADR-0019)
+    assert text.count(">내장<") == 3  # 내장 전부 — bug_fix·code_review (ADR-0019)·triage (ADR-0025)
     assert 'action="/kinds/bug_fix/delete"' not in text and 'action="/kinds/code_review/delete"' not in text
     # 내장 규칙 한 줄 텍스트 — 그래프·화살표 그림 없음, 삭제 가능
     assert "버그 수정 --[ready_for_review]--> 커밋 검토" in text

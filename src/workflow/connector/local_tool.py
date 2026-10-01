@@ -31,6 +31,13 @@ None(판정 없음·모름)이다. 사용량은 도구를 띄운 뒤의 모든 �
 `CodeReviewResult` 로(`result_invalid`). `reviewed_commit` 은 도구의 말이 아니라 검토 뒤 확인한 체크아웃 HEAD 다.
 체크아웃은 끝나면 지우고 원본 저장소·수정 브랜치는 건드리지 않는다.
 
+판단(`TriageTarget` — 결과 형태 `triage_result`, ARCHITECTURE "판단 — phase 19" 러너)은 `_run_triage` 가 등록 저장소에서
+중앙이 고정한 `base_commit`(기본 브랜치 끝)의 깨끗한 임시 체크아웃을 만들어 읽기 전용으로 돌린다 — 등록 폴더의 브랜치·
+커밋 안 된 변경은 보이지 않는다. 착수 전 확인: 등록(`registration_missing`) → 커밋이 그 저장소에 있음(`commit_missing`,
+fetch 하지 않는다). 체크아웃에 준비물 링크·복사는 없다. 그 뒤 `launch_readonly`(스키마 `TRIAGE_OUTPUT_SCHEMA`) → 원시 로그
+→ 시간 초과·`classify_failure` → 체크아웃 HEAD·파일과 인계 파일이 그대로인지(`readonly_violation`) → `read_structured_message`
+에 실행·업무 ID 와 체크아웃 HEAD(`inspected_commit`)를 더해 `TriageResult` 로(`result_invalid`). 후보 안의 값인지는 중앙이 본다.
+
 검증만 다시(`verify_only_commit`, ADR-0023)는 `_run_verify_only` 가 도구를 띄우지 않고 그 커밋의 깨끗한 체크아웃에서 등록된
 검증 프로필만 다시 돌린다: 등록·프로필 확인 → 인계된 이전 결과 봉투가 같은 커밋인지(`source_mismatch`) → 커밋이 등록
 폴더에 있는지(없으면 origin fetch 뒤 다시, 그래도 없으면 `result_commit_missing`) → 수정 전 재현 로그·검증 로그·diff →
@@ -59,9 +66,16 @@ from workflow.connector import git_ops, state
 from workflow.connector.adapter import AdapterOutput, Progress, make_meta
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import codex_env, mask_secrets, registered_env
-from workflow.connector.prompt import build_bug_fix_prompt, build_generic_prompt, build_review_prompt
+from workflow.connector.prompt import (
+    build_bug_fix_prompt,
+    build_generic_prompt,
+    build_review_prompt,
+    build_triage_prompt,
+)
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
+    TRIAGE_CRITERIA,
+    TRIAGE_PROCEED,
     CodeChangeResult,
     CodeChangeTarget,
     CodeReviewResult,
@@ -70,6 +84,8 @@ from workflow.contracts.v1 import (
     ExecutionUsage,
     GenericResult,
     LocalTarget,
+    TriageResult,
+    TriageTarget,
     Verification,
     result_branch,
 )
@@ -116,6 +132,48 @@ REVIEW_RESULT_SCHEMA = {
         "missing_information": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["outcome", "summary", "findings", "missing_information"],
+    "additionalProperties": False,
+}
+
+# 판단의 마지막 메시지 스키마 — `TriageResult` 중 모델이 채우는 칸만. 실행·업무 ID·`inspected_commit`(체크아웃 HEAD)·계약
+# 버전은 연결 프로그램이 채운다. 개수·길이·확신도 범위·proceed 별 규칙은 `TriageResult` 검증이 본다(어긋나면 `result_invalid`).
+TRIAGE_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "proceed": {"type": "string", "enum": list(TRIAGE_PROCEED)},
+        "confidence": {"type": "number", "description": "0~1"},
+        "proposed_kind": {"type": ["string", "null"], "description": "후보 종류 중 하나"},
+        "assignee": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["member", "agent"]},
+                        "id": {"type": "string"},
+                    },
+                    "required": ["type", "id"],
+                    "additionalProperties": False,
+                },
+                {"type": "null"},
+            ],
+        },
+        "predecessors": {"type": "array", "items": {"type": "string"}, "description": "선행 후보의 업무 키, 최대 5개"},
+        "reasons": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "criterion": {"type": "string", "enum": list(TRIAGE_CRITERIA)},
+                    "note": {"type": "string"},
+                },
+                "required": ["criterion", "note"],
+                "additionalProperties": False,
+            },
+        },
+        "missing_information": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["proceed", "confidence", "proposed_kind", "assignee", "predecessors", "reasons",
+                 "missing_information"],
     "additionalProperties": False,
 }
 
@@ -244,13 +302,15 @@ class LocalToolAdapter:
         target = request.target
         registration = (
             state.get_registration(self._conn, target.local_registration_id)
-            if isinstance(target, (LocalTarget, CommitReviewTarget, CodeChangeTarget)) else None
+            if isinstance(target, (LocalTarget, CommitReviewTarget, CodeChangeTarget, TriageTarget)) else None
         )
         self._registered_env = registration["env"] if registration else {}
         if isinstance(target, LocalTarget):
             return self._run_generic(request, handoff_dir, progress)
         if isinstance(target, CommitReviewTarget):
             return self._run_commit_review(request, handoff_dir, progress)
+        if isinstance(target, TriageTarget):  # 계약이 결과 형태 `triage_result` 에만 이 target 을 허용한다
+            return self._run_triage(request, handoff_dir, progress)
         if not isinstance(target, CodeChangeTarget):
             return _failed("unsupported_kind", f"{type(self).__name__} 는 {request.kind} 를 처리하지 않는다")
         registration = state.get_registration(self._conn, target.local_registration_id)
@@ -542,6 +602,71 @@ class LocalToolAdapter:
             })
         except ValidationError as exc:
             return failed("result_invalid", f"검토 결과 형식 오류: {_first_error(exc)}")
+        return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref, usage=usage)
+
+    # --- 판단 — 기본 브랜치 끝의 읽기 전용 체크아웃 ----------------------------------------------------
+
+    def _run_triage(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
+        """`TriageTarget` 실행. 착수 전 확인 → `base_commit` 의 깨끗한 체크아웃에서 `launch_readonly` → 원시 로그 →
+        시간 초과·`classify_failure` → 체크아웃·인계 파일 불변 확인 → `TriageResult`. 체크아웃은 반드시 지운다."""
+        target = request.target
+        registration = state.get_registration(self._conn, target.local_registration_id)
+        if registration is None:
+            return _failed("registration_missing", f"로컬 등록 {target.local_registration_id} 이 없다")
+        repo = Path(registration["repo_path"])
+        if not git_ops.has_commit(repo, target.base_commit):
+            return _failed(
+                "commit_missing",
+                f"base_commit {target.base_commit[:12]} 이 등록 {target.local_registration_id} 의 저장소에 없다",
+            )
+        handoff_before = _snapshot(handoff_dir) if handoff_dir.is_dir() else {}
+
+        def triage(checkout: Path) -> tuple[ToolRun, str, bool]:
+            run = self.launch_readonly(checkout, build_triage_prompt(request, checkout), TRIAGE_OUTPUT_SCHEMA, progress)
+            return run, git_ops.head_sha(checkout), git_ops.is_dirty(checkout)
+
+        try:
+            run, head, dirty = _in_clean_checkout(repo, target.base_commit, triage)
+        except OSError as exc:  # 실행 파일 없음 등 — 프로세스가 시작되지 않았다
+            return _failed(f"{self.tool_name}_unavailable", f"{self.tool_name} 을 시작하지 못함: {exc}")
+        except GitError as exc:
+            return _failed("checkout_failed", f"base_commit {target.base_commit[:12]} 체크아웃 실패: {exc}")
+        runtime_ref = f"pid:{run.pid};start:{run.started_at}"
+        raw_artifacts = self._raw_artifacts(run)
+
+        usage = None if run.timed_out else self.read_usage(run)
+
+        def failed(code: str, message: str) -> AdapterOutput:
+            return AdapterOutput(
+                result=None, artifacts=raw_artifacts, failed=(code, message, run.stopped), runtime_ref=runtime_ref,
+                usage=usage,
+            )
+
+        if run.timed_out:
+            return failed("timeout", f"{self.tool_name} 실행이 {self._timeout}초를 초과해 종료했습니다.")
+        failure = self.classify_failure(run)
+        if failure is not None:
+            return failed(*failure)
+        if head != target.base_commit:
+            return failed("readonly_violation",
+                          f"판단 체크아웃의 HEAD 가 {head[:12]} 로 움직였다 (base_commit {target.base_commit[:12]})")
+        if dirty:
+            return failed("readonly_violation", "읽기 전용 판단이 판단 체크아웃의 파일을 바꿨다")
+        changed = _changed_files(handoff_before, _snapshot(handoff_dir) if handoff_dir.is_dir() else {})
+        if changed:
+            return failed("readonly_violation", f"읽기 전용 판단이 인계 디렉터리의 파일을 바꿨다: {', '.join(changed)}")
+
+        data, note = self.read_structured_message(run.last_message)
+        if data is None:
+            return failed("result_invalid", f"{self.tool_name} 판단 결과를 읽지 못함 ({note})")
+        try:
+            result = TriageResult.model_validate({
+                **{key: data.get(key) for key in TRIAGE_OUTPUT_SCHEMA["required"]},
+                "contract_version": CONTRACT_VERSION, "execution_id": request.execution_id,
+                "task_id": request.task_id, "inspected_commit": head,
+            })
+        except ValidationError as exc:
+            return failed("result_invalid", f"판단 결과 형식 오류: {_first_error(exc)}")
         return AdapterOutput(result=result, artifacts=raw_artifacts, runtime_ref=runtime_ref, usage=usage)
 
     def _raw_artifacts(self, run: ToolRun) -> list[tuple]:

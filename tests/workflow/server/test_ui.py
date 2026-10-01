@@ -1,7 +1,7 @@
 """Step 7 화면 — UI_GUIDE 를 테스트로 고정한다. 실제 페이지를 렌더해 셸·배지·결과 카드·뷰어·라이브 조각·금지 사항을 본다.
 
 셀프호스트(ADR-0019) — 로그인한 고정 워크스페이스, 러너 모양 Agent, 종류 `bug_fix`·`code_review`·사용자 정의 `review`,
-체인 상태 판정은 사용자 정의 `triage` → `patch`(test_views 와 같은 시드)."""
+체인 상태 판정은 사용자 정의 `classify` → `patch`(test_views 와 같은 시드)."""
 
 import html as html_lib
 import re
@@ -229,12 +229,12 @@ def test_badge_dot_fill_follows_ui_guide(web, conn, store, settings):
 
 
 def seed_user_chain(conn) -> tuple[str, tuple[str, str]]:
-    """사용자 정의 triage(분류 API 선택) → patch(패치 Codex 선택) 체인. 상태는 선택·선행으로 실시간 판정된다."""
+    """사용자 정의 classify(분류 API 선택) → patch(패치 Codex 선택) 체인. 상태는 선택·선행으로 실시간 판정된다."""
     seed_user_kinds(conn)
     chain_id = "chain-user"
     repo.insert_chain(conn, {"chain_id": chain_id, "session_id": SESSION, "source": "github",
                              "title": "일일 보고서 실패 분류 → 보고서 변환 패치"}, NOW)
-    repo.insert_work_item_task(conn, {**user_task("task-c41", "triage"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
+    repo.insert_work_item_task(conn, {**user_task("task-c41", "classify"), "chain_id": chain_id, "source_ref": "#41"}, NOW)
     repo.insert_work_item_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
                             "chain_id": chain_id, "source_ref": "#42"}, NOW)
     select(conn, "task-c41", API_AGENT, CAP_TRIAGE)

@@ -16,10 +16,10 @@ import pytest
 
 from workflow.connector import git_ops, state
 from workflow.connector.claude import ALLOWED_TOOLS, READONLY_TOOLS, ClaudeAdapter
-from workflow.connector.local_tool import RESULT_SCHEMA, ToolRun, generic_result_schema
+from workflow.connector.local_tool import RESULT_SCHEMA, TRIAGE_OUTPUT_SCHEMA, ToolRun, generic_result_schema
 from workflow.contracts.v1 import ExecutionUsage
 
-from .conftest import REVIEW_SPEC, make_local_request, make_review_request
+from .conftest import REVIEW_SPEC, TRIAGE_REQUEST, make_local_request, make_review_request, make_triage_request
 from .demo_repo import FIXED_TRANSFORMER, REPRO_TEST
 from .test_codex import RESPONSE_AFTER, Progress, _git, by_kind, make_repo, make_review_fixture, request_for
 
@@ -58,6 +58,24 @@ if MODE == "review":
                   "findings": [{"severity": "blocking", "path": "REVIEW_MARK.md", "line": 1, "message": "테스트 없음"}]}
     print(json.dumps({
         "type": "result", "subtype": "success", "is_error": False, "api_error_status": None,
+        "result": json.dumps(structured, ensure_ascii=False), "structured_output": structured, "_fake": fake,
+    }, ensure_ascii=False))
+    sys.exit(0)
+
+if MODE.startswith("triage"):
+    # 판단 — cwd 는 기본 브랜치 끝의 체크아웃. 등록 폴더에만 있는 파일이 보이는지 남긴다.
+    fake["schema"] = json.loads(args[args.index("--json-schema") + 1])
+    fake["prompt_first_line"] = prompt.splitlines()[0]
+    fake["local_only"] = (worktree / "LOCAL_ONLY.md").exists()
+    if MODE == "triage_writes":
+        (worktree / "notes.md").write_text("must not happen")
+    structured = {"proceed": "maybe" if MODE == "triage_bad" else "ready", "confidence": 0.8,
+                  "proposed_kind": "bug_fix", "assignee": {"type": "member", "id": "mem-1a2b3c4d"},
+                  "predecessors": [], "reasons": [{"criterion": "scope", "note": "변환부 한 모듈"}],
+                  "missing_information": []}
+    print(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False, "api_error_status": None,
+        "usage": {"input_tokens": 30, "output_tokens": 9}, "total_cost_usd": 0.02,
         "result": json.dumps(structured, ensure_ascii=False), "structured_output": structured, "_fake": fake,
     }, ensure_ascii=False))
     sys.exit(0)
@@ -628,6 +646,75 @@ def test_code_review_runs_readonly_claude_in_result_checkout(state_conn, repo, t
     assert fake["schema"]["properties"]["outcome"]["enum"] == ["approved", "changes_requested", "needs_information"]
     assert fake["prompt_first_line"] == "# 커밋 검토"
     assert not any(k.startswith("WORKFLOW_") for k in fake["env"])
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+# --- 판단 `triage` -------------------------------------------------------------------------------------
+
+
+def register_triager(state_conn, repo: Path) -> str:
+    base = git_ops.head_sha(repo)
+    state.save_registration(state_conn, {
+        "local_registration_id": "local-billing-claude", "repo_path": str(repo), "tool": "claude",
+        "repository_id": "demo-report-repo", "base_commit": base, "verification_profiles": {},
+    })
+    return base
+
+
+def test_triage_runs_readonly_claude_on_default_branch_tip(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "triage")
+    base = register_triager(state_conn, repo)
+    (repo / "LOCAL_ONLY.md").write_text("커밋 안 된 로컬 파일\n")  # 등록 폴더의 미커밋 변경 — 판단에는 안 보인다
+    handoff = tmp_path / "task-triage-12.handoff"
+    handoff.mkdir()
+
+    output = adapter(state_conn).run(make_triage_request(base), handoff, Progress())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.proceed, result.proposed_kind, result.inspected_commit) == ("ready", "bug_fix", base)
+    assert (result.assignee.type, result.assignee.id) == ("member", "mem-1a2b3c4d")
+    assert output.usage == ExecutionUsage(cost_usd=0.02, input_tokens=30, output_tokens=9)
+    fake = envelope_of(output)["_fake"]
+    argv = fake["argv"]
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--json-schema")] == list(READONLY_TOOLS)
+    assert fake["schema"] == TRIAGE_OUTPUT_SCHEMA
+    assert fake["prompt_first_line"] == TRIAGE_REQUEST.splitlines()[0]
+    assert TRIAGE_REQUEST not in " ".join(argv)
+    assert fake["local_only"] is False
+    assert Path(fake["cwd"]).resolve() != repo.resolve() and not Path(fake["cwd"]).exists()
+    assert not any(k.startswith("WORKFLOW_") for k in fake["env"])
+    assert _git(repo, "worktree", "list").count("\n") == 0 and (repo / "LOCAL_ONLY.md").exists()
+
+
+def test_triage_output_outside_schema_is_result_invalid(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "triage_bad")
+    base = register_triager(state_conn, repo)
+
+    output = adapter(state_conn).run(make_triage_request(base), tmp_path / "h", Progress())
+
+    assert output.result is None and output.failed[0] == "result_invalid" and "proceed" in output.failed[1]
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+
+
+def test_triage_write_into_checkout_is_readonly_violation(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "triage_writes")
+    base = register_triager(state_conn, repo)
+
+    output = adapter(state_conn).run(make_triage_request(base), tmp_path / "h", Progress())
+
+    assert output.result is None and output.failed[0] == "readonly_violation"
+    assert _git(repo, "worktree", "list").count("\n") == 0 and _git(repo, "status", "--porcelain") == ""
+
+
+def test_triage_usage_limit_is_failed_usage_limit(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "usage_limit")
+    base = register_triager(state_conn, repo)
+
+    output = adapter(state_conn).run(make_triage_request(base), tmp_path / "h", Progress())
+
+    assert output.result is None and output.failed[0] == "usage_limit"
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
     assert _git(repo, "worktree", "list").count("\n") == 0
 
 

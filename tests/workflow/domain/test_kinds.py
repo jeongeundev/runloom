@@ -8,7 +8,7 @@ from workflow.domain.kinds import (
     validate_rule,
 )
 
-BUG_FIX, CODE_REVIEW = BUILTIN_KINDS
+BUG_FIX, CODE_REVIEW = BUILTIN_KINDS[:2]
 
 # 개념 절의 사용자 정의 종류 `review` — diff·code_change_result 를 받아 검토 의견을 낸다
 REVIEW = KindSpec(
@@ -104,3 +104,14 @@ def test_validate_rule_rejects_missing_input_kinds():
     reason = validate_rule(KINDS, _rule(handoff_kinds=["diff"]))
 
     assert reason == "handoff_kinds 에 review 의 input_kinds 가 빠졌습니다: code_change_result"
+
+
+def test_validate_rule_rejects_triage_kinds_on_either_side():
+    """판단 단계는 후속 규칙을 만들지도 받지도 않는다 — 결과 형태로 가른다 (ADR-0025)."""
+    triage = BUILTIN_KINDS[2]
+    renamed = triage.model_copy(update={"kind": "sorter"})  # 이름이 아니라 결과 형태
+    kinds = [*KINDS, renamed]
+    reason = "판단 종류는 후속 규칙에 쓸 수 없습니다"
+    assert validate_rule(kinds, _rule(from_kind="triage", on_outcomes=["ready"])) == reason
+    assert validate_rule(kinds, _rule(from_kind="sorter", on_outcomes=["ready"])) == reason
+    assert validate_rule(kinds, _rule(to_kind="triage", handoff_kinds=["diff"])) == reason

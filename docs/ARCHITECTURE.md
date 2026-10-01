@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-09-30 (phase 17 step 0 — "사람 사이 인계 — phase 17" 절 추가: 맡기기 정책·소유자 승인·꺼진 러너 대기·검증만 다시·요청문·저장소 보기·스키마 v13·이름 고정). 이전: 2026-09-30 (phase 16 step 0 — "업무 화면 — phase 16" 절 추가: 주소·스키마 v12·직접 작업·PR 신호·이름 고정). 이전: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
+갱신일: 2026-10-01 (phase 19 step 0 — "판단 — phase 19" 절 추가: 흐름·판단 단계 가르기·스키마 v15·계약·러너·경로·화면·이름 고정). 이전: 2026-09-30 (phase 17 step 0 — "사람 사이 인계 — phase 17" 절 추가: 맡기기 정책·소유자 승인·꺼진 러너 대기·검증만 다시·요청문·저장소 보기·스키마 v13·이름 고정). 이전: 2026-09-30 (phase 16 step 0 — "업무 화면 — phase 16" 절 추가: 주소·스키마 v12·직접 작업·PR 신호·이름 고정). 이전: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -1931,6 +1931,395 @@ Jira 의 `created`·`updated` 는 `2026-09-29T10:00:00.000+0900` 형식이다 �
 | 상태 옮기기 | `adapters/repo.py`·`server/jira_delivery.py`·`server/worker.py`(7) | `queue_jira_transition(conn, work_item_id, moment, *, now) -> bool`(`set_work_status` 가 부름), `jira_deliveries_due`·`claim_jira_delivery`·`record_jira_delivery`(위), `list_jira_deliveries(conn, work_item_id) -> list[Row]`, `jira_delivery_failures(conn, session_id) -> dict[str, int]`(프로젝트별 `failed` 수 — 지금 연결 `connected_at` 이후, 연결 화면 프로젝트 줄 "Jira 반영 실패 N건"), `deliver_jira_updates(...) -> JiraDeliveryReport`, `Worker._deliver_jira` |
 | 후속 등록 | `adapters/repo.py`·`server/jira_delivery.py`(8) | `queue_jira_issue_creation(conn, work_item_id, cause_work_item_id, *, now) -> bool`(`create_followup_once` 가 부름), `record_jira_issue_created(...) -> bool`, `note_jira_delivery(...)`, 후속 조정은 `upsert_jira_issue` 안 `_reconcile_jira_followup`, `jira_intake.followup_labels`·`followup_key_number`·`followup_summary` |
 | e2e·문서 | `tests/e2e/test_jira.py`·`docs/SELFHOST.md`·`docs/CURRENT_HANDOFF.md`(9) | 가짜 Jira(`MockTransport`) + 가짜 GitHub + 가짜 러너로 가져오기 → 맡기기 → 수정 → 검토 → 초안 PR → 병합 → 세 순간 전송 → 후속 이슈, v13 사본 마이그레이션, 실연동 확인 목록 |
+
+## 판단 — phase 19
+
+[ADR-0025](adr/0025-triage.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 19 README](../phases/19-triage/README.md). step 1~10 으로 구현을 마쳤다(2026-10-02) — 아래 이름·표·경로·시그니처가 실제 코드이고(괄호의 숫자는 만든 step), 설계와 달라진 곳은 각 절의 "구현 메모" 에 적었다. **README 와 다르면 이 절이 기준이다.** "업무와 단계 — phase 14", "업무 화면 — phase 16", "사람 사이 인계 — phase 17", "Jira 소스 — phase 18" 은 이 절이 갱신한 부분만 바뀐다. README 와 달라진 조사 사실은 ADR-0025 "코드 조사로 README 와 달라진 사실" 10가지 — 특히 판단 Agent 칸은 표 칸이 아니라 소스 설정 JSON(`GitHubSourceConfig.triage_agent_id`), 판단 로그 행은 결과 때가 아니라 **시작할 때** `running` 으로 만든다, 결과의 제안 종류 칸은 `proposed_kind`, 체크아웃 커밋은 중앙이 요청에 고정한다.
+
+### 한 줄 요약
+
+담당 없는 새 GitHub·Jira 업무에 내장 종류 `triage` 단계를 붙여, 저장소 카드가 정한 판단 Agent 의 러너가 기본 브랜치 끝의 읽기 전용 체크아웃에서 Runloom 이 저장한 판단 기준으로 종류·담당·선행·진행 여부·확신도·근거를 제안한다. 중앙은 시작할 때 고정한 후보 목록 안의 값만 받아 판단 로그에 남기고, 사람이 [제안대로 맡기기]·직접 고르기·[무시] 한 것을 같은 맡기기 트랜잭션에서 기록한다. 사람 처리 20건이 쌓인 종류는 자동 시작(확신도 기준값)을 켤 수 있다. 판단은 업무를 완료·종료하거나 `내 차례` 를 만들지 않는다. 스키마 v15.
+
+### 흐름
+
+```
+[워커 tick] … _check_generic_results → _judge_triage → _autostart_triaged → _advance_cycle → _spawn_successors
+            → _start_waiting_stages → _triage_new_work → _reflect_failures → …
+
+_triage_new_work (워크스페이스마다)
+  running 판단 있음? ─ 예 ─▶ 0건
+  대상 업무(새로 들어옴·담당 없음·GitHub/Jira·원본 안 닫힘·판단 Agent 있음·판단 로그 행 없음(사용량 한도 실패 제외)) 오래된 순
+    → 판단 Agent 시작 가능(능력·정책 run·러너 켜짐·러너 triage 지원·base_commit) · 러너 빔 · 쉬는 중 아님 → 첫 업무 1건
+    → triage_runs.request_triage(trigger="auto")
+
+[패널 판단 받기·다시 판단] POST /work/{key}/triage ─▶ triage_runs.request_triage(trigger="manual")
+
+request_triage
+  열린 단계(판단 단계 제외) · 판단 경로(origin → 설정 → triage_agent_id · repository_id)
+  후보 TriageCandidates · 로그 근거 · 기준 현재 버전 → domain.triage.compose_triage_request → 입력 해시
+  repo.start_triage (한 트랜잭션): 이전 미처리 proposed/failed → superseded
+     + 판단 단계 Task(kind triage, chosen = 판단 Agent, required code.triage {repository_id})
+     + 선택 기록 + 실행(queued, target TriageTarget{local_registration_id, base_commit})
+     + 판단 로그 running(후보·기준 버전·입력 해시) + 업무 상태 재계산 → "새로 들어옴 · 판단 중"
+
+[러너] claim(supported_kinds ∋ triage) → TriageTarget → base_commit 깨끗한 임시 체크아웃 → READONLY_TOOLS
+       → --json-schema TRIAGE_OUTPUT_SCHEMA → TriageResult(+ inspected_commit = HEAD) → result_ready
+
+_judge_triage
+  result_ready → 봉투 읽기 → domain.triage.validate(저장된 후보) ─ 통과 ─▶ repo.record_triage_proposed (단계 완료·로그 proposed)
+                                                                ─ 실패 ─▶ repo.record_triage_failed (단계 실패·로그 failed triage_invalid)
+  failed·unknown·기한 초과 → repo.record_triage_failed (사람 요청·task_failed 알림 없음) · usage_limit 면 Agent 1시간 쉼
+
+[사람] 패널 판단 절 → [제안대로 맡기기](종류 바꾸기 → 선행 링크 → 맡기기/배정) · 담당 select · [내 세션에서 작업] · [무시]
+       → _assign_work_item 안에서 판단 로그 handling(accepted|changed) / dismiss_triage(dismissed)
+_autostart_triaged → 켜진 종류·ready·에이전트 담당·confidence ≥ 기준값 → work_actions.accept_triage(member_id=None) → auto_started
+```
+
+tick 순서(phase 18 그대로에 셋 추가): `_sync_github` → `_sync_jira` → `_mark_offline` → `_observe` → `_check_code_results` → `_check_review_results` → `_check_generic_results` → **`_judge_triage`** → **`_autostart_triaged`** → `_advance_cycle` → `_spawn_successors` → `_start_waiting_stages` → **`_triage_new_work`** → `_reflect_failures` → `_deliver_callbacks` → `_deliver_pull_requests` → `_deliver_github` → `_deliver_jira` → `_deliver_notifications` → `_refresh_work_statuses`. `_judge_triage` 가 `_reflect_failures` 앞이라 판단 실행 실패를 먼저 가져가고, `_reflect_failures` 는 판단 단계를 건너뛴다(두 겹). `_autostart_triaged` 가 `_advance_cycle` 앞이라 자동으로 맡긴 업무 순환 단계가 같은 tick 에 착수된다. `_triage_new_work` 가 `_start_waiting_stages` 뒤라 수정·검토가 먼저 러너를 차지한다.
+
+### 판단 단계 가르기 (step 2·5)
+
+한 함수: `domain/execution_policy.py` `TRIAGE_OUTPUT_KIND = "triage_result"`, `is_triage_kind(spec: KindSpec) -> bool`. DB 쪽은 `repo._TRIAGE_STAGE = "json_extract(k.spec_json, '$.output_kind') = 'triage_result'"`(같은 상수에서 만든 SQL 조각 — `tasks t JOIN kinds k ON k.session_id = t.session_id AND k.kind = t.kind` 와 함께)와 `repo.is_triage_task(conn, task_id) -> bool`. 종류 이름 `triage` 로 분기하지 않는다(실행 정책 표 `BUILTIN_POLICIES` 의 키와 계약의 내장 이름 목록은 예외 — 원래 이름 표다).
+
+| 쓰는 곳 | 바뀌는 것 | step |
+|---|---|---|
+| `work_actions.open_stage` | `JOIN kinds` + `NOT (_TRIAGE_STAGE)` — 마감 전 **판단이 아닌** 단계 중 최신. 판단 단계는 첫 단계 뒤에 생겨도 맡길 단계가 되지 않는다 | 5 |
+| `work_actions.agent_candidates` | `open_stage` 를 쓰므로 그대로 | — |
+| `work_actions._running`·`views.work_panel_context` 의 `running` | 판단 단계의 활성 실행은 세지 않는다 — 판단 중에도 담당을 정할 수 있다 | 5 |
+| `repo.work_item_facts` | 단계 SQL 에 `NOT (_TRIAGE_STAGE)`(그래서 `assigned`·`stages` 에 판단 단계 없음), 새 칸 `triage: TriageFact \| None` = 그 업무의 최신 판단 로그 행 하나(아래 "업무 상태") | 5 |
+| `repo.create_execution` | 끝의 `_fill_work_assignee` 를 판단 단계면 부르지 않는다 | 5 |
+| `repo.list_metric_facts` | 판단 단계·그 실행을 뺀다(판단 지표는 20-monitor) | 5 |
+| `worker._reflect_failures` | 판단 단계 실행은 건너뛴다(`_judge_triage` 몫) | 6 |
+| 종류 선택 | `/tasks` 직접 등록(`_kind_for_code` 결과가 판단 종류면 422 `invalid_field` "판단 종류로는 업무를 등록할 수 없습니다."), 매핑 `replace_field_mappings`(`runloom_value` 가 판단 종류면 ValueError → 422), 후속 규칙 `domain/kinds.validate_rule`(from·to 가 판단 종류면 "판단 종류는 후속 규칙에 쓸 수 없습니다"), 판단 후보 종류(`triage.startable_kinds`) | 2·3 |
+| `domain/execution_policy` | `BUILTIN_POLICIES["triage"] = ExecutionPolicy("triage", "triage", "triage_result", (), "triage", cycle=False)` — `Target`·`Verifier` 에 `"triage"` | 2 |
+
+`_spawn_successors`·`_start_waiting_stages`·`_advance_cycle` 은 바꾸지 않는다 — 판단 단계는 선행이 없고(`predecessor_task_id` NULL), `start_pending_at` 을 쓰지 않으며, `cycle=False` 다.
+
+### 판단 경로·시작 조건 (step 5)
+
+`server/triage_runs.py`(새 모듈 — `repo`·`stage_runs`·`task_cycle`·`views`·`owner_approval` 를 쓰고 `work_actions`·`worker` 는 import 하지 않는다):
+
+```python
+@dataclass(frozen=True)
+class TriageRoute:
+    stage: Row | None              # work_actions.open_stage 와 같은 규칙(판단 단계 제외)
+    config: GitHubSourceConfig | None  # task_cycle.origin(stage).config — GitHub 소스 또는 Jira 연결 저장소 사본
+    agent_id: str | None           # config.triage_agent_id
+    repository_id: str | None      # config.workflow_repository_id 또는 task_cycle.match_for_source(...).workflow_repository_id
+    reason: str | None             # 판단할 수 없는 이유(아래 표). None 이면 시작 가능
+
+@dataclass(frozen=True)
+class TriageStart:
+    started: bool
+    triage_id: str | None
+    reason: str | None             # 시작하지 않은 이유 — 버튼 응답·패널 문구
+
+def triage_route(conn: Connection, work: Row, *, now: str, settings: Settings) -> TriageRoute: ...
+def request_triage(conn: Connection, settings: Settings, *, session_id: str, work_item_id: str,
+                   trigger: Literal["auto", "manual"], member_id: str | None, now: str) -> TriageStart: ...
+def build_candidates(conn: Connection, work: Row, route: TriageRoute) -> TriageCandidates: ...
+```
+
+`triage_route` 의 이유 — 위에서부터 첫 해당(상수 `triage_runs.REASONS` 사전, 화면에 그대로):
+
+| 조건 | 이유 문구 | 버튼 |
+|---|---|---|
+| 업무가 `새로 들어옴` 아님·담당 있음·직접 작업 중·끝남 | `담당 없는 새 업무만 판단합니다` | 숨김 |
+| 원본 종류가 `github`·`jira` 아님, 또는 `config` None(Jira 연결 저장소 없음 포함) | `연결 저장소가 없는 업무는 판단하지 않습니다` | 숨김 |
+| 판단이 아닌 열린 단계 없음 | `맡길 단계가 없습니다` | 숨김 |
+| 원본 `state == "closed"` | `원본이 닫힌 업무는 판단하지 않습니다` | 숨김 |
+| `triage_agent_id` None | `판단 에이전트 없음 — 저장소 카드에서 고르세요` | 숨김(패널에 이 문구만) |
+| `repository_id` None | `이 저장소를 등록한 러너 없음` | 비활성 + 문구 |
+| Agent 가 워크스페이스에 없음·로컬 아님·러너 없음 | `판단 에이전트가 이 워크스페이스에 없습니다` | 비활성 |
+| `select_agent(Capability("code.triage", {"repository_id": …}), …, mode="manual", chosen_agent_id=…)` 가 `selected` 아님 | `판단 에이전트에 이 저장소 판단 능력(code.triage) 없음` | 비활성 |
+| 맡기기 정책 `owner_approval` | `판단 에이전트의 맡기기 정책이 승인 필요 — '바로 실행'으로 바꾸세요` | 비활성 |
+| 러너 꺼짐(`views.agent_online` 거짓) | `판단 에이전트의 러너 꺼짐` | 비활성 |
+| 러너 `supported_kinds_json` 에 `triage` 없음(NULL 포함) | `러너 업데이트 필요 — 판단 미지원` | 비활성 |
+| `agents.base_commit` NULL | `러너의 기준 커밋 보고 전 — 잠시 뒤 다시` | 비활성 |
+| 그 업무에 `running` 판단 있음 | `판단 중` | 숨김(패널 "판단 중") |
+
+`request_triage`: 이유가 있으면 `TriageStart(False, None, reason)`. 없으면 후보·근거·기준 → 요청문 → `ExecutionRequest`(`kind="triage"`, `agent_id`, `task_revision=1`, `request`=요청문, `input_artifact_ids=[]`, `target={"local_registration_id": agent["local_registration_id"], "base_commit": agent["base_commit"]}`, `kind_spec`=등록 봉투, `work_key`·`branch_seq` 없음) → `repo.start_triage`. 같은 업무 `running` 행이 생기는 사이 경합은 부분 UNIQUE 인덱스(`ux_triage_logs_running`)가 막는다 — IntegrityError 는 `TriageStart(False, None, "판단 중")`. 웹은 `started=False` 면 409 `triage_unavailable`(문구 = 이유).
+
+판단 단계 Task 값(`repo.start_triage` 가 넣는다): `task_id` `task-` + 12 hex, `title` `판단`, `request` = 요청문(실행 요청과 같은 글 — 단계 상세에서 보인다), `kind` `triage`, `required_capability` `{"code": "code.triage", "scope": {"repository_id": <repository_id>}}`, `selection_mode` `manual`, `chosen_agent_id` = 판단 Agent, `run_mode` `auto`, `completion_mode` `review`, `criteria` `[]`, `revision` 1, `target` = 요청 target, `status` `실행 요청됨`, `status_reason` `판단 접수 대기`, `work_item_id` = 업무. 선택 기록 = `select_agent(... mode="manual", chosen_agent_id=…)` 결과. 실행 `start_key` = `request_start_key(uuid4().hex)`, `attempt_no` 1, `assigned_connector_id` = Agent 러너.
+
+### 결과 판정·실패 (step 6)
+
+`Worker._judge_triage(conn, report)` — 판단 단계의 활성 실행만:
+
+1. `result_ready` 이고 판정 없음(`results_awaiting_verdict` 중 `policy_for(kind).verifier == "triage"`): `TriageResult.model_validate_json(결과 산출물)` → 실패면 `failed`(`triage_invalid`, `result_unreadable — <첫 오류>`). 읽으면 `domain/triage.validate(result, candidates, execution_id=…, task_id=…, base_commit=target.base_commit)`(후보는 판단 로그 `candidates_json`) → 통과면 `repo.record_triage_proposed`, 아니면 `repo.record_triage_failed(code="triage_invalid", message=verdict.reason)`. 판정 dict 는 기존 모양 `{"outcome": "passed"|"failed", "checks": [{code, passed, detail}]}`(검사 코드 = 아래 하위 사유).
+2. `failed`·`unknown`: `record_triage_failed(code=execution["failed_code"] or "unknown", message=execution["failed_message"] or "시작 여부 불명")`. `failed_code == "usage_limit"` 면 `self._triage_paused_until[agent_id] = now + TRIAGE_USAGE_PAUSE_SECONDS`.
+3. `queued`·`accepted`·`running` 이고 `created_at` 부터 `TRIAGE_DEADLINE_SECONDS = 3600` 초 넘음: `repo.fail_execution(code="triage_deadline", message="판단이 1시간 안에 끝나지 않음")` 뒤 2와 같이.
+
+`report.triage_judged += 1`. `record_triage_proposed(conn, triage_id, *, execution_id, result: TriageResult, verdict: dict, now) -> bool` — 한 트랜잭션: `task_verdicts` 행, 단계 `완료`(이유 `work_status` 의 제안 문구와 같은 글)·`finished_at`·잠금 해제(`_finish_task_row`), 로그 `running → proposed`(조건부, `result_json`·`proceed`·`confidence`·`proposed_kind`·`finished_at`), 업무 상태 재계산. `record_triage_failed(conn, triage_id, *, execution_id, code, message, verdict: dict | None, now) -> bool` — 같은 모양으로 단계 `실패`(사람 요청 없음 — `finish_failed_stage` 를 쓰지 않는다), 로그 `running → failed`. 둘 다 이미 `running` 이 아니면 False(두 번 판정하지 않는다). `message` 는 200자에서 자른다.
+
+`validate` 하위 사유(`TriageVerdict.code`) → 판단 로그 `failed_message` 머리:
+
+| 코드 | 조건 |
+|---|---|
+| `ids_mismatch` | `result.execution_id`·`task_id` ≠ 요청 |
+| `commit_mismatch` | `result.inspected_commit` ≠ `target.base_commit` |
+| `kind_not_candidate` | `proposed_kind` 가 있는데 `candidates.kinds` 밖 |
+| `assignee_not_candidate` | 멤버면 `candidates.members`, 에이전트면 `candidates.agents` 밖 |
+| `assignee_cannot_take_kind` | 에이전트 후보의 `kinds` 에 `proposed_kind`(없으면 `current_kind`) 없음 |
+| `predecessor_not_candidate` | `predecessors` 중 `candidates.predecessors` 의 키 밖 |
+
+구현 메모(step 6, 2026-10-02): `_judge_triage` 는 실행 목록이 아니라 `repo.running_triages(conn)`(`running` 판단 로그 행, 오래된 순 — 판단 단계의 활성 실행은 이 행들의 실행뿐)를 돌며 실행 상태로 가른다(위 1~3 과 같은 조건, 종류 이름·`policy_for` 분기 없음). 결과 산출물은 이 실행 것만 읽고(`_read_owned`), 판정 dict 의 검사는 통과 `triage_valid`, 후보 밖 `<validate 코드>`, 못 읽음 `result_unreadable` 한 줄씩. 실행 실패 쪽은 판정 행을 남기지 않는다(`verdict=None`). `_reflect_failures` 는 `repo.is_triage_task` 로 판단 단계를 건너뛴다. 이름 표의 `get_triage_log`·`triage_log_of_task` 는 이 step 에서 쓸 곳이 없어 만들지 않았다 — 필요한 step 이 만든다.
+
+### 업무 상태 (step 3·5·6)
+
+`domain/triage.py`:
+
+```python
+@dataclass(frozen=True)
+class TriageFact:
+    state: Literal["running", "proposed", "failed"]
+    proceed: str | None          # proposed 일 때
+    confidence: float | None     # proposed 일 때
+    failed_code: str | None      # failed 일 때
+
+PROCEED_LABELS = {"ready": "맡겨도 됨", "needs_check": "확인 필요", "unsuitable": "부적합"}
+FAILED_LABELS = {"triage_invalid": "후보 밖 제안", "usage_limit": "사용량 한도", "timeout": "시간 초과",
+                 "triage_deadline": "시간 초과", "readonly_violation": "읽기 전용 위반", "result_invalid": "결과 형식 오류",
+                 "commit_missing": "커밋 없음", "unknown": "시작 여부 불명"}   # 그 밖 = "실행 실패"
+def triage_reason(fact: TriageFact) -> str: ...
+```
+
+`triage_reason`: `running` → `판단 중`, `proposed` → `판단 제안 · {PROCEED_LABELS[proceed]} {confidence:.2f}`(예 `판단 제안 · 맡겨도 됨 0.86`), `failed` → `판단 실패 · {FAILED_LABELS.get(code, "실행 실패")}`. `work_item_facts` 의 `triage` 는 그 업무의 판단 로그 최신 행(`created_at`, `rowid`)이 `running` 이거나, `proposed` 이고 `handling IS NULL` 이거나, `failed` 일 때 그 사실, 그 밖(`superseded`·처리된 `proposed`·행 없음)은 None. `work_status` 는 지금의 "새로 들어옴 · 담당 없음" 자리만 바꾼다: `if not facts.assigned: return WorkStatus("새로 들어옴", triage_reason(facts.triage) if facts.triage else "담당 없음")`. 다른 상태·순서는 그대로 — 판단 단계는 `stages` 에 없으므로 `에이전트 작업 중`·`완료`·`종료`·`대기` 를 만들지 않는다. `WorkItemFacts.triage: TriageFact | None = None`(기본값 — v9 → v10 마이그레이션 경로는 그대로).
+
+### 사람 처리 (step 7)
+
+판단 로그 `handling` 값: `accepted`(제안대로) · `changed`(다르게 정함) · `dismissed`([무시]) · `auto_started`(자동 시작). 같이 쓰는 칸: `handled_by_member_id`(자동 시작·멤버 없는 경로는 NULL), `handled_at`, `final_assignee_type`·`final_assignee_id`·`final_kind`(`dismissed` 는 셋 다 NULL).
+
+- `repo._record_triage_handling(conn, work_item_id, *, assignee_type: str, assignee_id: str, by_member_id: str | None, now: str, auto: bool = False) -> bool` — `_assign_work_item` 이 담당을 **없음 → 멤버/에이전트** 로 바꾸는 가지 끝에서 부른다(자체 BEGIN 없음). 그 업무의 최신 판단 로그 행이 `proposed` 이고 `handling IS NULL` 일 때만: `final_kind` = 그 시점 `open_stage` 종류, `handling` = `auto_started`(auto) 또는 `accepted`(제안 담당 = (type, id) 이고 `final_kind == proposed_kind`) 또는 `changed`. 조건부 UPDATE(`… WHERE triage_id = ? AND handling IS NULL`).
+- `_assign_work_item(..., autostart_triage: tuple[str, int] | None = None)`(step 9 — 설계의 `triage_auto: bool` 대신) 와 `hand_work_to_agent(..., member_id: str | None, autostart_triage: tuple[str, int] | None = None)`(`(triage_id, criteria_version)` — 있으면 `assigned` 이벤트 `data` 에 `"triage": {"triage_id", "criteria_version"}`, 처리 `auto_started`). `member_id` None 이면 `set_work_requester` 가 NULL 을 쓴다(맡긴 사람 없음).
+- `repo.dismiss_triage(conn, session_id, work_item_id, triage_id, *, member_id, now) -> bool` — 최신·`proposed`·처리 없음일 때만 `dismissed`, 업무 상태 재계산.
+- 패널 담당 select·[내 세션에서 작업]·[제안대로 맡기기] 는 모두 `_assign_work_item` 을 거친다(`start_direct_work` 포함). 워커 `_fill_work_assignee` 는 거치지 않는다(사람 처리 아님).
+
+`work_actions` (step 7):
+
+```python
+def hand_to_agent(conn, store, settings, *, session_id: str, work_item_id: str, agent_id: str,
+                  member_id: str | None, now: str, secrets: SecretStore | None = None, note: str = "",
+                  autostart_triage: tuple[str, int] | None = None) -> None: ...
+    # assign_work 의 에이전트 가지(열린 단계 → select_agent(manual) → target_for → hand_work_to_agent → refresh → start_stage)를
+    # 그대로 옮긴 것. assign_work 는 이것을 부른다(동작 그대로)
+def accept_triage(conn, store, settings, *, session_id: str, work_item_id: str, triage_id: str,
+                  member_id: str | None, now: str, secrets: SecretStore | None = None) -> None: ...
+def dismiss_triage(conn, *, session_id: str, work_item_id: str, triage_id: str, member_id: str, now: str) -> None: ...
+```
+
+`accept_triage` 순서: ① 행이 그 업무의 최신 판단·`proposed`·처리 없음·`assignee` 있음·`proceed != "unsuitable"`, 업무가 `새로 들어옴`·담당 없음·직접 작업 없음·끝나지 않음 — 아니면 409 `triage_stale` "판단 제안이 이미 처리됐거나 바뀌었습니다." ② `proposed_kind` 가 있고 열린 단계 종류와 다르면: 그 단계에 실행이 있으면 409 `stage_started` "이미 시작한 단계는 종류를 바꿀 수 없습니다.", 없으면 `repo.change_stage_kind(conn, task_id, spec, required=Capability(code=spec.capability_code, scope={spec.scope_key: <후보 저장소 id>}), target=target_for(spec, 제안 Agent 행 또는 None), *, now)` — `tasks.kind`·`required_capability_json`·`target_json`, 첫 단계면 `work_items.kind`, 한 트랜잭션, 이벤트 없음 ③ `predecessors` 마다 `link_work_items(from=선행 업무, to=이 업무, type="blocks")`(키로 찾고 없으면 건너뜀) ④ 에이전트면 `hand_to_agent(..., member_id=member_id, autostart_triage=(triage_id, criteria_version) if member_id is None else None)`, 멤버면 `repo.assign_work_item(..., by_member_id=member_id)`. ②~③ 은 한 트랜잭션(`repo.prepare_triage_accept`), ④ 는 기존 함수의 트랜잭션 — ④ 가 실패하면(예: 맡길 수 없는 Agent 422) 종류·링크는 남고 판단 처리는 비어 있다(다시 누를 수 있다).
+
+구현 메모(step 7): `accept_triage` 의 ④ 는 `hand_to_agent` 를 따로 빼지 않고 기존 `work_actions.assign_work`(값 `agent:<id>`·`member:<id>`)를 그대로 부른다 — 사람이 누르는 경로라 `member_id` 가 늘 있다. `hand_to_agent`·`hand_work_to_agent(member_id=None, autostart_triage=…)`·`_assign_work_item(triage_auto=…)`·`auto_started` 처리는 맡긴 사람이 없는 자동 시작(step 9)이 함께 만든다. `_record_triage_handling` 은 `auto` 인자 없이 `accepted`/`changed`(`domain.triage.handling_for`)만 쓴다. 패널 절은 이 문서대로 `props` 다음·`now` 앞(step.md 의 "now 와 timeline 사이" 대신). 선행 키는 `WORK_KEY_PREFIX` 가 맞고 이 워크스페이스에 있는 것만 잇는다. 목록 배지는 담당 칸의 `없음` 옆(`data-triage`) — 목록·보드 둘 다 같은 매크로.
+
+### 자동 시작 (step 8·9)
+
+`domain/triage.py`: `AUTOSTART_MIN_HANDLED = 20`, `AUTOSTART_DEFAULT_THRESHOLD = 0.8`, `AUTOSTART_THRESHOLD_RANGE = (0.5, 1.0)`,
+
+```python
+@dataclass(frozen=True)
+class AutostartSetting:
+    kind: str
+    version: int          # 0 = 행 없음(기본 꺼짐)
+    enabled: bool
+    threshold: float
+
+def can_enable_autostart(handled_count: int) -> bool: ...   # >= AUTOSTART_MIN_HANDLED
+def should_autostart(*, proceed: str, assignee_type: str | None, confidence: float,
+                     setting: AutostartSetting | None, handled_count: int) -> bool: ...
+```
+
+`should_autostart` = `setting is not None and setting.enabled and can_enable_autostart(handled_count) and proceed == "ready" and assignee_type == "agent" and confidence >= setting.threshold`. 자격 건수 `repo.triage_handled_counts(conn, session_id) -> dict[str, int]` = `SELECT proposed_kind, COUNT(*) FROM triage_logs WHERE session_id = ? AND state = 'proposed' AND handling IN ('accepted', 'changed') AND proposed_kind IS NOT NULL GROUP BY proposed_kind`.
+
+`Worker._autostart_triaged(conn, report)`: `repo.autostart_candidates(conn) -> list[Row]`(`state = 'proposed' AND handling IS NULL AND proceed = 'ready'` 이고 그 업무의 최신 행, 업무 `새로 들어옴`·담당 없음·직접 작업 없음·끝나지 않음) 마다 그 워크스페이스 설정(`repo.triage_autostart_settings(conn, session_id) -> dict[str, AutostartSetting]`)·자격 건수로 `should_autostart` → 참이면 `work_actions.accept_triage(..., member_id=None)`(함수 안 import — `work_actions` 가 `worker` 를 import 하므로 모듈 머리에서 import 하면 순환). `WorkActionError` 는 로그만 남기고 다음(처리 칸이 비어 있으므로 다음 tick 에 다시 본다 — 같은 오류가 되풀이되면 매 tick 경고 한 줄). `report.triage_autostarted += 1`. 멱등은 `_record_triage_handling` 의 조건부 UPDATE 와 `accept_triage` ① 의 검사.
+
+구현 메모(step 9): 위 그대로. ① `accept_triage(member_id=None)` 의 ④ 만 `hand_to_agent(member_id=None, autostart_triage=(triage_id, criteria_version))` 를 부르고, 사람 경로는 step 7 대로 `assign_work`(이제 에이전트 가지가 `hand_to_agent` 를 부른다 — 동작 그대로). ② 이벤트 `data.triage` 를 쓰려고 `_assign_work_item` 의 인자는 `triage_auto: bool` 대신 `autostart_triage: tuple[str, int] | None` 이다(`hand_work_to_agent` 와 같은 이름, `_record_triage_handling(auto=autostart_triage is not None)`). ③ 설정·자격은 제안 종류(`proposed_kind`) 기준, tick 마다 워크스페이스별로 한 번 읽는다(맡기는 순간의 설정). ④ 맡긴 사람이 없을 때 승인 질문 첫 줄은 phase 17 그대로 `자동으로 맡김 · 이OO 승인 대기`, `delegated_to_you` 는 보내지 않는다(맡긴 사람 없음). ⑤ 타임라인 `assigned` 줄은 `data.triage` 가 있으면 `자동 시작 · 판단 v<n>`(`views._event_line`).
+
+### 스키마 v15 (step 1)
+
+`adapters/db.py` `SCHEMA_VERSION` 14 → 15. 원본 v14 스키마는 `tests/workflow/adapters/fixtures/schema_v14.sql` 로 고정한다. 빈 DB 도 `_SCHEMA` 끝의 `_V15_TABLES` 를 거쳐 만든다. 판단 기준 v1 본문 상수는 `src/workflow/domain/triage_criteria.py` `TRIAGE_CRITERIA_V1: str`(= `docs/product/triage-criteria-v1.md` 파일 내용 그대로, 테스트가 바이트 비교)·`CRITERIA_BODY_MAX = 8000`. 내장 종류 봉투는 `contracts/v1.py` 의 `BUILTIN_KINDS` 한 곳(step 1 이 먼저 넣고 step 2 가 계약 검증을 넓힌다 — 아래 "계약").
+
+| 대상 | 변경 | 제약·의미 |
+|---|---|---|
+| `triage_criteria`(새) | `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `version INTEGER NOT NULL CHECK (version >= 1)`, `body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 8000)`, `created_by_member_id TEXT REFERENCES members(member_id)`(NULL = 시드), `created_at TEXT NOT NULL`, `PRIMARY KEY (session_id, version)` | 현재 = 가장 큰 버전. 추가 전용(고치지도 지우지도 않는다) |
+| `triage_logs`(새) | `triage_id TEXT PRIMARY KEY`(`'trg-'` + 8 hex), `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id)`, `work_revision INTEGER NOT NULL CHECK (work_revision >= 1)`, `task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id)`, `execution_id TEXT NOT NULL UNIQUE REFERENCES executions(execution_id)`, `agent_id TEXT NOT NULL REFERENCES agents(agent_id)`, `trigger TEXT NOT NULL CHECK (trigger IN ('auto', 'manual'))`, `requested_by_member_id TEXT REFERENCES members(member_id)`, `criteria_version INTEGER NOT NULL`, `input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64)`, `candidates_json TEXT NOT NULL`, `state TEXT NOT NULL CHECK (state IN ('running', 'proposed', 'failed', 'superseded'))`, `result_json TEXT`, `proceed TEXT CHECK (proceed IS NULL OR proceed IN ('ready', 'needs_check', 'unsuitable'))`, `confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))`, `proposed_kind TEXT`, `failed_code TEXT`, `failed_message TEXT`, `handling TEXT CHECK (handling IS NULL OR handling IN ('accepted', 'changed', 'dismissed', 'auto_started'))`, `handled_by_member_id TEXT REFERENCES members(member_id)`, `handled_at TEXT`, `final_assignee_type TEXT CHECK (final_assignee_type IS NULL OR final_assignee_type IN ('member', 'agent'))`, `final_assignee_id TEXT`, `final_kind TEXT`, `created_at TEXT NOT NULL`, `finished_at TEXT`, `updated_at TEXT NOT NULL`, `FOREIGN KEY (session_id, criteria_version) REFERENCES triage_criteria(session_id, version)`, `CHECK (state != 'proposed' OR (result_json IS NOT NULL AND proceed IS NOT NULL AND confidence IS NOT NULL))`, `CHECK (state != 'failed' OR failed_code IS NOT NULL)`, `CHECK (handling IS NULL OR state = 'proposed')`, `CHECK ((handling IS NULL) = (handled_at IS NULL))`, `CHECK ((final_assignee_type IS NULL) = (final_assignee_id IS NULL))`, `CHECK (handling IS NULL OR handling = 'dismissed' OR final_assignee_type IS NOT NULL)`, `CHECK (trigger = 'auto' OR requested_by_member_id IS NOT NULL)` | 인덱스 `ux_triage_logs_running ON triage_logs(work_item_id) WHERE state = 'running'`(UNIQUE — 업무마다 도는 판단 하나), `ix_triage_logs_work ON triage_logs(work_item_id, created_at)`, `ix_triage_logs_session ON triage_logs(session_id, state)`. `proposed_kind`·`final_kind` 는 FK 없음(종류를 지워도 로그는 남는다). 요청문 원문은 저장하지 않는다(실행 `request_json` 에 있다) |
+| `triage_autostart`(새) | `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `kind TEXT NOT NULL`, `version INTEGER NOT NULL CHECK (version >= 1)`, `enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))`, `threshold REAL NOT NULL CHECK (threshold >= 0.5 AND threshold <= 1)`, `created_by_member_id TEXT REFERENCES members(member_id)`, `created_at TEXT NOT NULL`, `PRIMARY KEY (session_id, kind, version)` | 종류마다 현재 = 가장 큰 버전, 행 없음 = 꺼짐·0.8. `kind` FK 없음(종류를 지우면 설정 이력만 남는다 — `delete_kind` 를 바꾸지 않는다) |
+| `kinds`(데이터) | 워크스페이스마다 내장 `triage` 행(`spec_json` = `BUILTIN_KINDS` 의 봉투, `created_at` = 마이그레이션 시각). 새 워크스페이스는 `create_session` 이 `BUILTIN_KINDS` 로 넣는다(그대로) | 사용자 정의 종류 `triage` 가 이미 있는 워크스페이스가 있으면 `RuntimeError`(14 그대로) |
+| `triage_criteria`(데이터) | 워크스페이스마다 v1 행(`body` = `TRIAGE_CRITERIA_V1`, 멤버 NULL). 새 워크스페이스는 `create_session` 이 같은 트랜잭션에서 | — |
+| `agents`(데이터) | `connection_type = 'local'` 이고 `capabilities_json` 에 `code.fix` 가 있는 Agent 마다, 그 `code.fix` 의 `scope` 그대로 `{"code": "code.triage", "scope": …}` 를 배열 끝에 더한다(이미 있으면 그대로) | 새 러너 등록은 `register_local_agent` 가 세 능력(`code.fix`·`code.review`·`code.triage`)으로 만든다(step 2) |
+
+**`tasks`·`github_sources`·`work_items`·`notifications` 는 재생성하지 않는다.** 칸 추가도 없다(판단 Agent 는 `config_json` — ADR-0025 결정 3). 그래서 v14 → v15 는 FK 를 끌 필요가 없지만 `init_schema` 의 올리기 경로는 지금처럼 FK 를 끈 한 트랜잭션이다(14 아래에서 올라오는 경로와 같은 코드).
+
+구현(step 1, 2026-10-01): 위 표 그대로. 봉투를 `BUILTIN_KINDS` 에 넣으면서 `BUILTIN_KIND_NAMES` 에 `triage`·`KindSpec.output_kind` 에 `triage_result` 를 함께 넣었고, 내장 종류 불변식(정책 표·완료 기준 템플릿이 내장 종류 전부를 덮는다)을 지키려 `BUILTIN_POLICIES["triage"]`(아래 "판단 단계 가르기" 값 그대로)와 `completion._TEMPLATES["triage"] = ()`(판단은 완료 기준 없음 — 판단 단계 `criteria []`)를 미리 넣었다. step 2 는 나머지 계약(`TriageTarget`·`TriageResult`·후보·`ARTIFACT_KINDS`)과 `is_triage_kind`·`TRIAGE_OUTPUT_KIND` 를 만든다. 판단 기준 시드 함수는 `repo.seed_triage_criteria(conn, session_id, *, now)`(자체 BEGIN 없음 — `create_session`·마이그레이션 공용). 기존 테스트의 사용자 정의 종류 이름 `triage` 는 `classify` 로 바꿨다(내장 예약어).
+
+**v14 → v15 마이그레이션** `_migrate_14_to_15`: ① 사용자 정의 `triage` 종류 검사(있으면 중단) ② 새 표 셋·인덱스 ③ `kinds` 행 ④ 기준 v1 행 ⑤ Agent 능력(Python 으로 JSON 을 읽어 더한다 — 다른 칸은 바꾸지 않는다) ⑥ `PRAGMA foreign_key_check` 가 비어 있지 않으면 `RuntimeError` ⑦ 버전 15. 데이터는 그 밖에 바꾸지 않는다 — 업무·단계 상태 재계산 없음. `server/backup.py` 복원은 v4~v14 백업을 15 로 올린다(같은 `init_schema`). 테스트(step 1): v14 fixture 사본에 Agent(`code.fix`·`code.review`)·업무·사용자 정의 종류를 넣고 올린 뒤 능력 셋·`triage` 종류·기준 v1·행 보존·`foreign_keys` 다시 1, 사용자 정의 `triage` 가 있으면 14 그대로, 기준 상수 = 문서 파일.
+
+### 계약 (step 2)
+
+`contracts/v1.py`(모두 `_Contract` — `extra="forbid"`, strict):
+
+| 이름 | 칸·규칙 |
+|---|---|
+| `BUILTIN_KIND_NAMES` | `("bug_fix", "code_review", "triage")` |
+| `KindSpec.output_kind` | Literal 에 `"triage_result"` 추가. 사용자 정의 종류는 지금처럼 `generic_result` 만 |
+| `BUILTIN_KINDS` | 셋째 봉투 `KindSpec(kind="triage", label="판단", capability_code="code.triage", scope_key="repository_id", input_kinds=[], output_kind="triage_result", outcomes=["ready", "needs_check", "unsuitable"], instructions="", builtin=True)` |
+| `ARTIFACT_KINDS` | 끝에 `"triage_result"`(CONTRACT 4절 kind 목록 줄도 같은 순서로 — 테스트가 비교) |
+| `TriageTarget` | `local_registration_id: NonEmptyStr`, `base_commit: CommitSha` |
+| `ExecutionRequest.target` | 합집합에 `TriageTarget`. 검증: `kind_spec` 이 있고 `kind_spec.output_kind == "triage_result"` 이면 target 은 `TriageTarget`·`input_artifact_ids` 빈 배열, 그 밖 kind 에 `TriageTarget` 이면 422. `kind_spec` 이 없으면 `kind == "triage"` 도 422(판단 요청은 늘 봉투를 싣는다) |
+| `TRIAGE_PROCEED` | `("ready", "needs_check", "unsuitable")` |
+| `TRIAGE_CRITERIA` | `("clarity", "verifiability", "scope", "risk", "permission", "history", "dependency")` — 화면 이름 `명확성`·`검증 가능성`·`범위`·`위험`·`권한`·`과거 유사 결과`·`선행 의존`(`domain/triage.CRITERION_LABELS`) |
+| `TriageReason` | `criterion: Literal[*TRIAGE_CRITERIA]`, `note: Annotated[str, Field(min_length=1, max_length=200)]` |
+| `TriageAssignee` | `type: Literal["member", "agent"]`, `id: NonEmptyStr` |
+| `TriageResult` | `contract_version`, `execution_id`, `task_id`, `inspected_commit: CommitSha`, `proceed: Literal[*TRIAGE_PROCEED]`, `confidence: Annotated[float, Field(ge=0, le=1)]`, `proposed_kind: KindId \| None`, `assignee: TriageAssignee \| None`, `predecessors: Annotated[list[WorkKey], Field(max_length=5)]`, `reasons: Annotated[list[TriageReason], Field(min_length=1, max_length=7)]`, `missing_information: Annotated[list[Annotated[str, Field(min_length=1, max_length=200)]], Field(max_length=10)]`. 검증: `predecessors` 중복·`reasons.criterion` 중복 422, `ready` → `proposed_kind`·`assignee` 있음 + `missing_information` 빈 배열, `needs_check` → `missing_information` 1개 이상 |
+| `TriageKindCandidate` | `kind: KindId`, `label: NonEmptyStr` |
+| `TriageMemberCandidate` | `member_id`, `display_name`, `open_work: int ≥ 0` |
+| `TriageAgentCandidate` | `agent_id`, `name`, `owner_name: str \| None`, `online: bool`, `open_work: int ≥ 0`, `kinds: list[KindId]`(1개 이상) |
+| `TriagePredecessorCandidate` | `work_key: WorkKey`, `title: NonEmptyStr`, `status: NonEmptyStr`(업무 상태) |
+| `TriageCandidates` | `current_kind: KindId`, `kinds: list[TriageKindCandidate]`(1개 이상, `current_kind` 포함), `members`, `agents`(최대 30), `predecessors`(최대 30) — 중복 id 422 |
+
+러너 출력 스키마 `connector/local_tool.TRIAGE_OUTPUT_SCHEMA`(step 4) = 모델이 채우는 칸만(`proceed`·`confidence`·`proposed_kind`·`assignee`·`predecessors`·`reasons`·`missing_information`, 모두 required, `additionalProperties: false`, `proposed_kind`·`assignee` 는 null 허용). 러너가 `contract_version`·`execution_id`·`task_id`·`inspected_commit`(체크아웃 HEAD)을 더해 `TriageResult` 로 검증한다 — 실패면 `result_invalid`.
+
+`repo.register_local_agent` 의 새 Agent 능력 = `code.fix`·`code.review`·`code.triage`(모두 `{repository_id}`). `repo.claim_execution` 조건에 `AND (NOT EXISTS (SELECT 1 FROM tasks t JOIN kinds k ON k.session_id = t.session_id AND k.kind = t.kind WHERE t.task_id = e.task_id AND _TRIAGE_STAGE) OR EXISTS (SELECT 1 FROM json_each(COALESCE(c.supported_kinds_json, '[]')) WHERE value = e.kind))`.
+
+구현(step 2, 2026-10-01): 위 표 그대로. `TRIAGE_CANDIDATES_MAX = 30` 상수와 후보 목록의 `kinds` 에 `current_kind` 포함·에이전트 후보 `kinds` 중복 없음 검사를 더했다. `execution_policy.TRIAGE_OUTPUT_KIND`·`is_triage_kind`, `repo._TRIAGE_STAGE`(claim 조건이 쓴다 — `repo.is_triage_task` 는 step 5), "판단 단계 가르기" 표의 종류 선택 셋(`/tasks` 422 · `replace_field_mappings` ValueError · `validate_rule`)도 이 step 에서 넣었다. CONTRACT 17절은 `json` 펜스(fixture 67개).
+
+### 러너 (step 4)
+
+- `connector/adapter.py` `SUPPORTED_BUILTIN_KINDS = ("bug_fix", "code_review", "triage")`, `AdapterOutput.result` 에 `TriageResult`.
+- `LocalToolAdapter.run`: `isinstance(target, TriageTarget)` → `_run_triage(request, handoff_dir, progress)`(target 모양 분기 — 지금 `LocalTarget`·`CommitReviewTarget` 과 같은 자리). 순서: 등록 없음 → `registration_missing`, `git_ops.has_commit(repo, base_commit)` 거짓 → `commit_missing`(fetch 하지 않는다) → `_in_clean_checkout(repo, base_commit, fn)`(준비물 링크·복사 없음 — 읽기만) 안에서 `launch_readonly(checkout, build_triage_prompt(request, checkout), TRIAGE_OUTPUT_SCHEMA, progress)` + HEAD·dirty → 시간 초과 `timeout`·`classify_failure`(`usage_limit` 등) → HEAD ≠ `base_commit` 또는 dirty → `readonly_violation` → 인계 디렉터리가 바뀌면 `readonly_violation` → `read_structured_message` → `TriageResult` 검증(`result_invalid`). 원시 산출물(stdout·stderr)과 `usage` 는 검토와 같이.
+- `connector/prompt.py` `build_triage_prompt(request: ExecutionRequest, checkout: Path) -> str` — 요청문 그대로 + 고정 꼬리("현재 폴더는 기본 브랜치의 읽기 전용 사본이다. 파일을 바꾸지 말고 읽기 도구만 쓴다. 답은 JSON 스키마 하나로만.").
+- Codex 어댑터는 같은 `launch_readonly`(`--sandbox read-only` + 출력 스키마 파일)로 판단을 돈다. 읽기 전용 실행이 없는 어댑터(`ExecutionAdapter` 를 직접 구현한 것)는 `TriageTarget` 에 `unsupported_kind`.
+
+구현(step 4, 2026-10-01): 위 그대로. 실행·업무 ID 와 `inspected_commit` 은 모델의 말이 아니라 요청·판단 뒤 체크아웃 HEAD 로 채우고 모델이 낸 같은 이름 칸은 버린다(검토의 `reviewed_commit` 과 같음). `TRIAGE_OUTPUT_SCHEMA` 는 개수·길이·확신도 범위를 적지 않고(Codex strict 출력 호환) `TriageResult` 검증에 맡긴다. 인계 디렉터리는 입력이 없어 빈 채로 있고 바뀌면 `readonly_violation`. `runner._finalize` 는 `TriageTarget` 이면 `TriageResult` 를 산출물 kind `triage_result` 로 그대로 올린다(봉투에 산출물 ID 칸이 없다 — 원시 로그는 실행 산출물로만), push 하지 않는다. `_LOCAL_TARGETS` 에 `TriageTarget`(어댑터 선택·등록 env 가림·인계 디렉터리 위치). `EchoAdapter` 는 판단에 `unsupported_kind`.
+
+### 요청문·후보·근거 (step 3·5)
+
+`domain/triage.py`(순수 — DB·HTTP·프로세스 import 없음):
+
+| 이름 | 시그니처·규칙 |
+|---|---|
+| 상수 | `HISTORY_LIMIT = 20`, `CANDIDATES_MAX = 30`, `PROCEED_LABELS`, `CRITERION_LABELS`, `FAILED_LABELS`, `AUTOSTART_*`(위) |
+| 종류 후보 | `startable_kinds(specs: Sequence[KindSpec], *, current_kind: str) -> list[KindSpec]` — `not is_triage_kind(s) and not s.input_kinds and (s.scope_key == "repository_id" or s.kind == current_kind)`, 등록부 순서 |
+| 과거 업무 | `@dataclass(frozen=True) PastWork(kind: str, status: str, created_at: str, closed_at: str \| None, attempts: int)` — `attempts` = 그 업무에서 `kind` 단계(판단 제외)의 실행 수(검증만 다시 제외) |
+| 근거 | `@dataclass(frozen=True) KindEvidence(kind: str, n: int, first_pass: int, rework: int, median_seconds: int \| None)`, `log_evidence(history: Sequence[PastWork], kinds: Sequence[str], *, limit: int = HISTORY_LIMIT) -> tuple[KindEvidence, ...]` — 종류마다 `closed_at` 이 있는 업무를 최신순 `limit` 건. `first_pass` = `status == "완료" and attempts == 1`, `rework` = `attempts >= 2`, `median_seconds` = `완료` 업무 `created_at → closed_at` 중앙값(없으면 None) |
+| 요청문 | `compose_triage_request(*, work_key: str, title: str, origin_key: str \| None, criteria_version: int, criteria_body: str, form_fields: Sequence[tuple[str, str]], request: str, candidates: TriageCandidates, evidence: Sequence[KindEvidence]) -> str` — 아래 모양 |
+| 입력 해시 | `input_sha256(text: str) -> str` — UTF-8 sha256 소문자 hex |
+| 판정 | `@dataclass(frozen=True) TriageVerdict(ok: bool, code: str \| None, reason: str)`, `validate(result: TriageResult, candidates: TriageCandidates, *, execution_id: str, task_id: str, base_commit: str) -> TriageVerdict` — 위 표 순서로 첫 실패 |
+| 처리 | `handling_for(result: TriageResult, *, assignee_type: str, assignee_id: str, kind: str) -> Literal["accepted", "changed"]` |
+| 상태 | `TriageFact`, `triage_reason(fact) -> str`(위) |
+| 자동 시작 | `AutostartSetting`, `can_enable_autostart`, `should_autostart`(위), `parse_threshold(value: str) -> float`(`0.50`~`1.00`, 소수 둘째 자리까지 — 아니면 ValueError) |
+
+구현(step 3, 2026-10-01): 위 표 그대로에 후보 조립 순수 함수 `AgentInfo(agent_id, name, owner_name, online, open_work, capabilities)`·`assemble_candidates(*, specs, current_kind, current_required: Capability, repository_id, members, agents: Sequence[AgentInfo], predecessors, work_key) -> TriageCandidates` 를 더했다 — 종류 = `startable_kinds`, Agent 가 맡을 수 있는 종류 = 요구 능력(지금 종류는 열린 단계의 `required_capability`, 나머지는 `{scope_key: repository_id}`)과 똑같은 능력이 있는 것(없으면 후보에서 뺀다), 선행 = `work_key` 자신 제외, Agent·선행 `CANDIDATES_MAX` 건까지. step 5 의 `triage_runs.build_candidates` 는 재료를 모아 이것을 부른다. 요청문의 업무 양식 칸·요청 원문은 글 안의 가장 긴 backtick 줄보다 긴 펜스 안에 그대로 넣는다(본문의 `## 후보` 같은 줄이 절 경계를 흐리지 않게), 제목·이름은 한 줄로 접는다. 선행 중복은 계약(`TriageResult`)이 이미 422 로 거부한다.
+
+요청문 모양(빈 절은 쓰지 않는다, 줄 끝 공백 없음):
+
+```
+# 판단: RUN-12 쿠폰이 두 번 적용됨
+원본: SHOP-12
+
+## 판단 기준 (v3)
+<기준 본문>
+
+## 업무
+지금 종류: bug_fix (버그 수정)
+### 재현 절차
+…(업무 양식 칸 — FORM_LABELS 순)
+### 요청
+<업무 요청 원문>
+
+## 후보
+### 종류
+- bug_fix — 버그 수정
+### 담당
+- member:mem-1a2b 김지은 — 진행 중 2
+- agent:agt-9f3c macbook-billing — 소유 김지은 · 켜짐 · 진행 중 1 · 맡을 수 있는 종류 bug_fix
+### 선행 후보
+- RUN-9 결제 모듈 정리 (에이전트 작업 중)
+
+## 로그 근거 (Runloom 계산)
+- bug_fix 최근 12건: 1회 통과 7건 · 재작업 4건 · 완료까지 중앙 6시간 10분
+- docs 기록 없음
+
+## 답하는 법
+- proposed_kind·assignee·predecessors 는 위 후보 안의 값만 쓴다. 후보 밖 값은 판단 실패로 기록된다.
+- 담당은 type(member|agent)과 id 로 쓴다.
+- 저장소 코드는 현재 폴더에서 읽기만 한다.
+```
+
+후보·근거 재료(repo, step 5): `repo.open_work_counts(conn, session_id) -> dict[tuple[str, str], int]`(`(assignee_type, assignee_id)` → 끝나지 않은 업무 수), `repo.open_works_in_repository(conn, session_id, github_source_id: str, *, exclude_work_item_id: str, limit: int) -> list[Row]`(GitHub 업무는 `source_id`, Jira 업무는 프로젝트 `github_source_id` 가 같은 끝나지 않은 업무, `updated_at` 최신순), `repo.triage_history(conn, session_id, kinds: Sequence[str], *, limit: int) -> list[PastWork]`, `repo.current_triage_criteria(conn, session_id) -> Row`(`version`, `body`), `repo.runner_idle(conn, connector_id) -> bool`.
+
+### 자동 판단 대상 (step 5)
+
+`repo.auto_triage_works(conn, session_id) -> list[Row]`:
+
+```sql
+SELECT w.* FROM work_items w
+WHERE w.session_id = ? AND w.status = '새로 들어옴' AND w.assignee_type IS NULL AND w.direct_member_id IS NULL
+  AND w.closed_at IS NULL AND w.source_type IN ('github', 'jira')
+  AND NOT EXISTS (SELECT 1 FROM triage_logs l WHERE l.work_item_id = w.work_item_id
+                  AND (l.failed_code IS NULL OR l.failed_code != 'usage_limit'))
+ORDER BY w.created_at, w.key_number
+```
+
+`Worker._triage_new_work(conn, report)`: 워크스페이스(`SELECT session_id FROM sessions`)마다 `repo.has_running_triage(conn, session_id) -> bool` 이면 건너뛰고, 아니면 위 행을 차례로 `triage_runs.triage_route` 로 보고 `reason is None` · `repo.runner_idle(conn, agent["connector_id"])` · `self._triage_paused_until.get(agent_id, "") <= now` 인 첫 업무에 `request_triage(trigger="auto", member_id=None)` 한 번. `TRIAGE_USAGE_PAUSE_SECONDS = 3600`, `report.triage_started += 1`. 워커 메모리 `_triage_paused_until: dict[str, str]`(agent_id → RFC 3339). 시각은 `self._clock()`(테스트가 주입).
+
+`runner_idle` = `connectors.current_execution_id IS NULL AND NOT EXISTS (SELECT 1 FROM executions WHERE assigned_connector_id = ? AND released_at IS NULL AND status IN ('queued', 'accepted', 'running'))`.
+
+구현(step 5, 2026-10-01): 위 그대로에 다음을 더하거나 바꿨다. ① `GitHubSourceConfig.triage_agent_id: NonEmptyStr | None = None`(`contracts/github.py`, CONTRACT 13.6 예시 둘에 `null`) — 저장·검증(`SourceSettingsRequest`)은 step 8. ② 맡길 단계 규칙은 `repo.open_stage(conn, work_item_id)` 한 곳(`work_actions.open_stage` 는 그것을 부른다 — `triage_runs` 가 `work_actions` 를 import 하지 않게). 판단 단계가 아닌 조건은 `repo._NOT_TRIAGE_TASK`(종류 행이 없는 옛 단계도 판단 아님). ③ `build_candidates(conn, work, route, *, now, settings)` — 후보 Agent 의 켜짐(`views.agent_online`)에 시각·설정이 필요하다. 지금 종류의 요구 능력은 열린 단계의 것이되 소스가 저장소를 자동 매칭하면(`workflow_repository_id` None) 매칭 저장소로 scope 를 바꾼다(준비 판정 `_match_facts` 와 같다). ④ `start_triage` 는 트랜잭션 안에서 `running` 행을 먼저 보고 `adapters.errors.TriageRunning` 을 올린다(`BEGIN IMMEDIATE` 라 경합 없음 — 부분 UNIQUE 인덱스는 마지막 방어), `request_triage` 가 `TriageStart(False, None, "판단 중")` 으로 바꾼다. 실행 `start_key` 는 `start_triage` 안에서 `request_start_key(uuid4().hex)`. 판단 요청의 `branch_seq` 는 계약 기본값 1(`work_key` 없음). ⑤ 판단 종류 이름은 등록부에서 `is_triage_kind` 로 찾은 봉투의 `kind`(러너 `supported_kinds` 검사도 그 이름) — 문자열 `triage` 분기 없음. ⑥ `list_metric_facts` 는 판단 단계의 Task·실행·`task_events` 를 뺀다. ⑦ 사용량 한도 쉼 `_triage_paused_until` 은 워커가 읽기만 한다 — 채우는 것은 step 6 `_judge_triage`.
+
+### 경로 (step 7·8)
+
+| 경로 | 권한 | 폼 | 동작 | 오류 |
+|---|---|---|---|---|
+| `POST /work/{key}/triage` | `team.DELEGATE` | 목록 상태(숨은 입력 — 지금 `/work/{key}/…` 와 같다) | `triage_runs.request_triage(trigger="manual", member_id=누른 멤버)` → 303 `/tasks?open=<key>` | 404 `not_found`, 409 `triage_unavailable`(문구 = 이유) |
+| `POST /work/{key}/triage/accept` | `team.DELEGATE` | `triage_id` | `work_actions.accept_triage` | 404, 409 `triage_stale`·`stage_started`, 422(맡길 수 없는 Agent — 기존 `invalid_field`) |
+| `POST /work/{key}/triage/dismiss` | `team.DELEGATE` | `triage_id` | `work_actions.dismiss_triage` | 404, 409 `triage_stale` |
+| `GET /connect?tab=triage` | `team.MANAGE_CONNECTIONS`(아니면 탭 없음·403) | `version`(선택 — 그 버전 본문 읽기 전용) | 연결 화면 판단 탭 | 404 `not_found`(없는 버전) |
+| `POST /operator/triage/criteria` | `team.MANAGE_CONNECTIONS` | `body`, `expected_version` | `repo.save_triage_criteria` → 303 `/connect?tab=triage` | 422 `invalid_field`(`body` 빈 값·8000자 넘음), 409 `stale_criteria` "다른 사람이 먼저 고쳤습니다 — 새로 고친 뒤 다시" |
+| `POST /operator/triage/autostart/{kind}` | `team.MANAGE_CONNECTIONS` | `enabled`(`on`\|없음), `threshold` | `repo.save_triage_autostart` → 303 | 404(없는 종류·판단 종류·시작할 수 없는 종류), 422 `invalid_field`(`threshold`), 409 `triage_autostart_locked` "판단 기록 n/20 — 20건이 되면 켤 수 있습니다" |
+| `PUT /github/sources/{id}` | 기존(`MANAGE_CONNECTIONS`) | 기존 본문 + `triage_agent_id` | 기존 저장 | 기존 + 422 `agent_not_registered`·`agent_capability_mismatch`(`code.triage`)·`triage_agent_policy` |
+
+POST 는 모두 기존 Origin 검사(phase 15)를 거친다. 결과 문구·이유·기준 본문은 응답·로그에 비밀값을 싣지 않는다(판단에는 비밀값이 들어가지 않는다 — 요청문은 업무 글·후보·숫자뿐).
+
+repo(step 8): `save_triage_criteria(conn, session_id, body: str, *, expected_version: int, member_id: str, now: str) -> int`(같은 본문이면 그 버전 그대로, 다르면 +1 행·`bump_config_revision`, `expected_version` ≠ 현재 → `StaleCriteria(current)`), `list_triage_criteria(conn, session_id) -> list[Row]`(최신순), `get_triage_criteria(conn, session_id, version) -> Row | None`, `save_triage_autostart(conn, session_id, kind: str, *, enabled: bool, threshold: float, member_id: str, now: str) -> int`(현재와 같으면 그대로, 다르면 새 버전·`bump_config_revision`; 켜기는 자격을 같은 트랜잭션에서 다시 세어 모자라면 `AutostartLocked(count)`), `list_triage_autostart(conn, session_id, kind) -> list[Row]`(이력), `triage_autostart_settings`·`triage_handled_counts`(위).
+
+구현 메모(step 8): 위 그대로. ① 자동 시작 표·`POST /operator/triage/autostart/{kind}` 의 "시작할 수 있는 종류" 는 `views.autostart_kinds` = 판단 종류·입력이 필요한 종류를 뺀 등록 종류(`domain.triage.startable_kinds` 는 지금 종류에 따라 저장소 범위가 아닌 종류를 빼므로 쓰지 않는다 — 그런 종류도 지금 종류일 때는 제안될 수 있다). ② 기준 저장은 textarea 의 CRLF 를 LF 로 맞춘 뒤 비교한다(브라우저가 같은 글을 CRLF 로 보내 버전이 오르지 않게). ③ 판단 Agent 칸 검사는 `_source_problems` 에 형제 칸과 같은 `_agent_problem(…, "code.triage", workflow_repository_id, "triage_agent_id")` + 정책 `run` 아니면 422 `triage_agent_policy` — 저장소 id 가 없으면(all_open 자동 매칭) 등록·정책만 본다. 카드 select 후보는 설정값 또는 매칭 결과 저장소로 고른다. ④ 판단 Agent 소유자 알림은 ADR-0025 사실 10·결정 3 대로 만들지 않았다. ⑤ Jira 프로젝트 카드는 연결 저장소 select 아래에 "판단 에이전트는 연결 저장소 카드에서 고른 것을 씁니다." 한 줄.
+
+### 화면 (step 7·8)
+
+- 업무 패널(`_work_panel.html`, `views.triage_panel(conn, session_id, work: Row, *, allowed: frozenset[str], now: str, settings: Settings) -> dict | None` → `panel.triage`): 절 `data-panel-section="triage"` 을 `props` 다음·`now` 앞에. 그 업무에 판단 로그 행이 없고 버튼도 없으면(판단 경로 없음) 그리지 않는다.
+  - 판단 중: `판단 중 · <판단 에이전트 이름> · 기준 v<n>`.
+  - 제안(최신 `proposed`, 처리 없음): 머리 `판단 제안 · <진행 여부 이름> · 확신도 0.86 · 기준 v<n>`, 줄 `종류 <라벨>`(지금과 다르면 `지금 <라벨> → 제안 <라벨>`), `담당 <이름>`(에이전트면 소유자), `선행 RUN-9 …`, 근거 목록 `<항목 이름> — <note>`, 모자란 정보 목록. 버튼 [제안대로 맡기기](`assignee` 있음·`proceed != "unsuitable"`·`DELEGATE`) · [무시](`DELEGATE`).
+  - 무시함: `<details>` 로 접힌 `판단 제안(무시함) · <누가> · <언제>` — 펼치면 같은 내용, 버튼 없음.
+  - 처리됨(`accepted`·`changed`·`auto_started`): 한 줄 `판단 제안대로 맡김`·`판단과 다르게 정함`·`자동 시작 · 판단 v<n>`.
+  - 실패: `판단 실패 · <실패 이름> · <failed_message 앞 120자>`.
+  - 버튼 [판단 받기](행 없음)·[다시 판단](행 있음): 판단 대상이고 판단 Agent 가 정해졌고(`triage_route` 이유가 "숨김" 행이 아님) `DELEGATE` 일 때. 이유가 "비활성" 행이면 버튼 비활성 + 이유 문구(예 `러너 업데이트 필요 — 판단 미지원`).
+- 업무 타임라인: `assigned` 이벤트의 `data.triage` 가 있으면 `자동 시작 · 판단 v<n>`. 판단 단계는 단계 목록에 `판단` 으로 보인다(지금 단계 묶음 그대로).
+- 목록(`repo.list_work_rows`): `WorkRow.triage: str | None = None` — 업무마다 최신 판단 로그 행(묶음 조회 한 번 — 쿼리 수는 업무 수와 무관)이 `running` → `판단 중`, `proposed`·처리 없음 → `판단 제안`, `failed` → `판단 실패`, 그 밖 None. 목록·보드 카드에 작은 배지.
+- 연결 화면 탭 `("triage", "판단", team.MANAGE_CONNECTIONS)`(`CONNECT_TABS` 의 `notify` 앞): 판단 기준(현재 버전 번호·쓴 사람·시각, `<textarea name="body">` + 숨은 `expected_version` + [저장], 버전 이력 표 — 번호·누가(시드 = `처음 기준`)·언제·[보기] → `?tab=triage&version=n` 읽기 전용 `<pre>`), 자동 시작 표(시작할 수 있는 종류마다: 라벨, `판단 기록 n/20`, 켬 체크박스(20 미만이면 `disabled` + 문구), 기준값 입력(`0.50`~`1.00`, step 0.05), [저장], 마지막 변경 `v<n> · 누가 · 언제`).
+- 저장소 카드(`_connect_github.html`): select `name="triage_agent_id" data-json-type="optional"` — 첫 항목 `없음 — 판단하지 않음`, 후보 = 워크스페이스 Agent 중 이 저장소(`workflow_repository_id` 또는 매칭 결과)의 `code.triage` 능력이 있고 정책 `run` 인 것(`이름 (agent_id)`). 매칭 줄(`views._match_rows`)에 `판단 에이전트` — 설정이면 `설정`, 없으면 값 없음(자동 매칭하지 않는다).
+- 템플릿은 외부 문자열(업무 제목·판단 근거·모자란 정보·기준 본문·멤버·Agent 이름)을 자동 이스케이프로만 출력한다(`|safe` 금지). 기준 본문은 `<pre>`·`<textarea>` 안에 그대로.
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 기준 문서·상수 | `docs/product/triage-criteria-v1.md`(0), `domain/triage_criteria.py`(1) | `TRIAGE_CRITERIA_V1`, `CRITERIA_BODY_MAX = 8000` |
+| 스키마 | `adapters/db.py`(1) | `SCHEMA_VERSION = 15`, `_V15_TABLES`, `_migrate_14_to_15`, fixture `schema_v14.sql`, 내장 `triage` 봉투(`contracts/v1.BUILTIN_KINDS`) |
+| 계약 | `contracts/v1.py`(2) | 위 "계약" 표, `ARTIFACT_KINDS` 끝 `triage_result`, `GitHubSourceConfig.triage_agent_id`(`contracts/github.py`) |
+| 실행 정책 | `domain/execution_policy.py`(2) | `TRIAGE_OUTPUT_KIND`, `is_triage_kind(spec) -> bool`, `BUILTIN_POLICIES["triage"]`, `Target`·`Verifier` 에 `"triage"` |
+| 등록·claim | `adapters/repo.py`(2) | `register_local_agent` 세 능력, `claim_execution` 판단 조건, `_TRIAGE_STAGE` |
+| 종류 선택 막기 | `server/web.py`·`adapters/repo.py`·`domain/kinds.py`(2) | 직접 등록 422, `replace_field_mappings` ValueError, `validate_rule` 문구 |
+| 순수 규칙 | `domain/triage.py`(3) | 위 "요청문·후보·근거" 표, `TriageFact`·`triage_reason`, `AutostartSetting`·`can_enable_autostart`·`should_autostart`·`parse_threshold` |
+| 러너 | `connector/adapter.py`·`local_tool.py`·`prompt.py`(4) | `SUPPORTED_BUILTIN_KINDS` 에 `triage`, `_run_triage`, `TRIAGE_OUTPUT_SCHEMA`, `build_triage_prompt(request, checkout) -> str` |
+| 시작 | `server/triage_runs.py`·`server/worker.py`·`adapters/repo.py`(5) | `TriageRoute`, `TriageStart`, `REASONS`, `triage_route(conn, work, *, now, settings)`, `request_triage(...)`, `build_candidates(...)`, `Worker._triage_new_work`·`_triage_paused_until`·`TRIAGE_USAGE_PAUSE_SECONDS`, `TickReport.triage_started`, repo `start_triage(conn, *, session_id, work_item_id, work_revision, task: dict, selection: SelectionRecord, request: ExecutionRequest, agent_id, connector_id, trigger, member_id, criteria_version, input_sha256, candidates: TriageCandidates, now) -> str`(안쪽 실행 쓰기는 `create_execution` 에서 나눈 `_insert_execution`), `is_triage_task`, `has_running_triage`, `auto_triage_works`, `current_triage_criteria`, `open_work_counts`, `open_works_in_repository`, `triage_history`, `runner_idle`, `work_item_facts`·`create_execution`·`list_metric_facts`·`open_stage`·`_running` 의 판단 단계 제외, `WorkItemFacts.triage`·`work_status` 이유 |
+| 판정 | `server/worker.py`·`adapters/repo.py`(6) | `Worker._judge_triage`, `TRIAGE_DEADLINE_SECONDS = 3600`, `TickReport.triage_judged`, `record_triage_proposed`, `record_triage_failed`, `running_triages(conn) -> list[Row]`, `_reflect_failures` 건너뜀 (`get_triage_log`·`triage_log_of_task` 는 쓸 곳이 없어 만들지 않았다) |
+| 패널·사람 처리 | `server/work_actions.py`·`views.py`·`web.py`·`templates/_work_panel.html`·`adapters/repo.py`·`domain/work_list.py`(7) | `hand_to_agent`, `accept_triage`, `dismiss_triage`, `views.triage_panel`, 경로 3개, `_record_triage_handling(..., auto=False)`, `_assign_work_item(..., autostart_triage=None)`, `hand_work_to_agent(..., member_id: str \| None, autostart_triage=None)`, `dismiss_triage`, `change_stage_kind`, `prepare_triage_accept`, `latest_triage(conn, work_item_id) -> Row \| None`, `WorkRow.triage` |
+| 설정 화면 | `server/web.py`·`views.py`·`github_api.py`·`templates/_connect_triage.html`·`_connect_github.html`·`adapters/repo.py`(8) | 탭 `triage`, 경로 2개, `save_triage_criteria`·`StaleCriteria`, `list_triage_criteria`, `get_triage_criteria`, `save_triage_autostart`·`AutostartLocked`, `list_triage_autostart`, `triage_autostart_settings`, `triage_handled_counts`, `SourceSettingsRequest.triage_agent_id`, 매칭 줄 `판단 에이전트` |
+| 자동 시작 | `server/worker.py`·`adapters/repo.py`(9) | `Worker._autostart_triaged`, `TickReport.triage_autostarted`, `autostart_candidates(conn) -> list[Row]` |
+| e2e·문서 | `tests/e2e/test_triage_cycle.py`·`docs/SELFHOST.md`·`docs/VERIFICATION_LOG.md`·`docs/CURRENT_HANDOFF.md`(10) | 가짜 러너·가짜 GitHub·가짜 Jira 로 대상 → 판단 → 제안 → 맡기기 → 수정·검토·PR, 실패·사용량 한도·옛 러너·자동 시작, v14 사본 마이그레이션, SELFHOST 업그레이드 v15(러너 재설치) |
+
+구현 메모(step 10, 2026-10-02): e2e 파일 이름은 `test_triage_cycle.py`(다른 순환 e2e 와 같은 꼴). 러너 도구는 PATH 앞 가짜 `claude` 하나 — `--json-schema` 의 모양(`proceed`·`findings`·그 밖)으로 판단·검토·수정을 고른다. 사용량 한도 쉼은 e2e 가 아니라 `tests/workflow/server/test_triage_judge.py`·`test_triage_dispatch.py` 가 지킨다(가짜 도구로 한도를 흉내 내면 같은 경로를 다시 볼 뿐이다). 옛 러너는 `connector.client.SUPPORTED_BUILTIN_KINDS` 를 phase 18 값으로 바꾼 진입점으로 띄운다. v14 사본 마이그레이션은 같은 파일의 `test_v14_copy_upgrades_to_v15_with_triage_seeds`(Jira 행 포함). 제품 결함은 나오지 않았고, phase 18 e2e 의 `SCHEMA_VERSION == 14` 리터럴만 15 로 고쳤다.
 
 ## 기존 구현과 초기 설계 기록
 

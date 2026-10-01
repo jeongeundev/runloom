@@ -79,6 +79,26 @@ class StaleRequest(AdapterError):
         self.current_revision = current_revision
 
 
+class TriageRunning(AdapterError):
+    """그 업무에 이미 도는(`running`) 판단이 있다 — 업무마다 하나(`ux_triage_logs_running`, phase 19)."""
+
+
+class StaleCriteria(AdapterError):
+    """판단 기준의 현재 버전이 `expected_version` 과 다르다 (409 `stale_criteria`)."""
+
+    def __init__(self, current: int):
+        super().__init__(f"판단 기준이 이미 v{current} 입니다")
+        self.current = current
+
+
+class AutostartLocked(AdapterError):
+    """그 종류의 사람 처리 판단이 기준 건수에 모자라 자동 시작을 켤 수 없다 (409 `triage_autostart_locked`)."""
+
+    def __init__(self, count: int):
+        super().__init__(f"판단 기록 {count}건")
+        self.count = count
+
+
 class StaleConfig(AdapterError):
     """소스 설정의 저장된 `config_revision` 이 `expected_revision` 과 다르다 (409 `stale_config`)."""
 

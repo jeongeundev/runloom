@@ -18,6 +18,8 @@
   없다. 결과는 `GenericResult` 를 kind `generic_result` 로 올리고 같은 `result_ready` 를 보낸다.
 - 커밋 검토(`CommitReviewTarget`, `code_review`)도 같다 — 업무 worktree 가 없고(검토 체크아웃은 어댑터가 만들고 지운다)
   결과는 `CodeReviewResult` 를 kind `code_review_result` 로 올린다. 결과 봉투 kind 는 target 모양으로 정한다.
+- 판단(`TriageTarget`, 결과 형태 `triage_result`)도 같다 — 입력 산출물이 없고(인계 디렉터리는 빈 채), 체크아웃은 어댑터가
+  만들고 지운다. 결과는 `TriageResult` 를 kind `triage_result` 로 그대로 올린다(산출물 ID 칸이 없다). push 하지 않는다.
 - 어댑터가 도는 동안(tick 이 `adapter.run` 안에 묶인 동안) heartbeat 는 별도 스레드가 주기마다 보낸다. 실제 실행은 대부분
   offline 판정(90초)보다 길다. 그 스레드는 sqlite 연결을 만지지 않는다 — 현재 실행 ID 를 값으로 받아 `client.heartbeat` 만.
 - 측정(ADR-0015): `started` 에 로컬 등록 폴더(worktree 아님)의 HEAD·미커밋 변경 여부를 `folder_commit`·`folder_dirty` 로
@@ -69,6 +71,8 @@ from workflow.contracts.v1 import (
     GenericResult,
     HandoffBundle,
     LocalTarget,
+    TriageResult,
+    TriageTarget,
 )
 
 log = logging.getLogger(__name__)
@@ -126,7 +130,7 @@ def _usage_data(usage: ExecutionUsage | None) -> dict:
     return {} if usage is None else {"usage": usage.model_dump()}
 
 
-_LOCAL_TARGETS = (CodeChangeTarget, CommitReviewTarget, LocalTarget)  # 로컬 등록(`local_registration_id`)으로 도는 target
+_LOCAL_TARGETS = (CodeChangeTarget, CommitReviewTarget, LocalTarget, TriageTarget)  # 로컬 등록(`local_registration_id`)으로 도는 target
 
 
 class HandoffHashMismatch(Exception):
@@ -431,6 +435,9 @@ class Runner:
         if isinstance(target, CodeChangeTarget):
             result = _code_change_result(result_json, uploaded, artifact_ids)
             kind = "code_change_result"
+        elif isinstance(target, TriageTarget):  # 판단 봉투에는 산출물 ID 칸이 없다 — 원시 로그는 실행의 산출물로만 남는다
+            result = TriageResult.model_validate_json(result_json)
+            kind = "triage_result"
         else:  # 커밋 검토·사용자 정의 종류 — 봉투는 그대로, 산출물 ID 만 채운다
             model, kind = (
                 (CodeReviewResult, "code_review_result") if isinstance(target, CommitReviewTarget)
@@ -451,7 +458,9 @@ class Runner:
             finished_at=self._clock(),
         )
 
-    def _push_result(self, request: ExecutionRequest, result: CodeChangeResult | CodeReviewResult | GenericResult) -> dict:
+    def _push_result(
+        self, request: ExecutionRequest, result: CodeChangeResult | CodeReviewResult | GenericResult | TriageResult,
+    ) -> dict:
         """수정 결과(`ready_for_review`·결과 커밋 있음)면 등록 폴더에서 결과 브랜치(`runloom/<업무 키>`, 키 없는 옛 요청은
         `task/<task_id>`)를 origin 에 push 하고
         `branch_pushed` 칸을 돌려준다. origin 이 없거나 push 대상이 아니면 칸을 뺀다. 실패해도 결과는 그대로다."""

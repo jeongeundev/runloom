@@ -8,7 +8,8 @@ runner 와의 약속:
 - 산출물의 `sha256`·`size` 는 마스킹 뒤 runner 가 다시 계산한다.
 - 요청·인계 자료에서 셸 명령·경로를 받아 실행하지 않는다. 검증 명령은 로컬 등록값에서만 온다.
 - `AdapterOutput.result` 는 코드 수정(`CodeChangeTarget` — `bug_fix`)이면 `CodeChangeResult`, 커밋 검토
-  (`CommitReviewTarget` — `code_review`)면 `CodeReviewResult`, 내장이 아닌 종류(`LocalTarget`)면 `GenericResult`.
+  (`CommitReviewTarget` — `code_review`)면 `CodeReviewResult`, 판단(`TriageTarget` — 결과 형태 `triage_result`)이면
+  `TriageResult`, 내장이 아닌 종류(`LocalTarget`)면 `GenericResult`. 처리하지 못하는 target 은 `unsupported_kind` 로 끝낸다.
 - `AdapterOutput.usage` 는 도구가 보고한 비용·토큰(ADR-0015). 모르면 None 이며 0 으로 채우지 않는다. runner 가
   `result_ready`·`failed` 에 싣는다.
 """
@@ -28,6 +29,7 @@ from workflow.contracts.v1 import (
     ExecutionUsage,
     GenericResult,
     LocalTarget,
+    TriageResult,
     Verification,
 )
 
@@ -35,12 +37,12 @@ Progress = Callable[..., None]  # progress(message: str, *, runtime_ref: str | N
 
 # claim 때 중앙에 선언하는 내장 종류 — 이 연결 프로그램의 어댑터가 처리한다 (`ClaimRequest.supported_kinds`, ADR-0014 4항).
 # 사용자 정의 종류는 선언과 무관하게 `LocalTarget` 으로 돈다.
-SUPPORTED_BUILTIN_KINDS = ("bug_fix", "code_review")
+SUPPORTED_BUILTIN_KINDS = ("bug_fix", "code_review", "triage")
 
 
 @dataclass
 class AdapterOutput:
-    result: CodeChangeResult | CodeReviewResult | GenericResult | None  # None 이면 실패
+    result: CodeChangeResult | CodeReviewResult | GenericResult | TriageResult | None  # None 이면 실패
     artifacts: list[tuple[ArtifactMeta, bytes]] = field(default_factory=list)
     failed: tuple[str, str, bool] | None = None  # (code, message, process_stopped)
     runtime_ref: str = ""

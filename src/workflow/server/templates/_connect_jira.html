@@ -69,7 +69,8 @@
     <form method="post" action="/operator/jira/projects/{{ c.source_id }}">
       <div class="field-row">
         <div class="field"><label for="jira-repo-{{ c.source_id }}">연결 저장소</label>
-          <select id="jira-repo-{{ c.source_id }}" name="github_source_id">{% for s in jira.github_sources %}<option value="{{ s.source_id }}"{% if s.source_id == c.github_source_id %} selected{% endif %}>{{ s.repository_full_name }}</option>{% endfor %}</select></div>
+          <select id="jira-repo-{{ c.source_id }}" name="github_source_id">{% for s in jira.github_sources %}<option value="{{ s.source_id }}"{% if s.source_id == c.github_source_id %} selected{% endif %}>{{ s.repository_full_name }}</option>{% endfor %}</select>
+          <div class="help">판단 에이전트는 연결 저장소 카드에서 고른 것을 씁니다.</div></div>
         <div class="field"><span class="label">가져올 이슈 유형</span>
           {% for t in p.choices.issue_types %}<label><input type="checkbox" name="issue_types" value="{{ t.name }}"{% if t.name in c.issue_types %} checked{% endif %}> {{ t.name }}</label> {% endfor %}
           <div class="help">모두 비우면 전부 가져옵니다.</div></div>
