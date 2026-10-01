@@ -56,7 +56,7 @@
       "status": "completed",
       "started_at": "2026-10-02T01:21:52+0900",
       "summary": "결과 판정·판단 로그: 수정 server/worker.py(_judge_triage 를 _check_generic_results 뒤에 — repo.running_triages 를 돌며 result_ready 는 이 실행 산출물만 읽어 TriageResult → domain.triage.validate(로그 candidates_json·요청 target.base_commit) → record_triage_proposed(판정 triage_valid) 또는 record_triage_failed(triage_invalid, 메시지 '<validate 코드> — 이유'·'result_unreadable — 첫 오류'), failed·unknown 은 failed_code or unknown·failed_message or '시작 여부 불명'(판정 행 없음, usage_limit 면 _triage_paused_until=now+3600), queued·accepted·running 이 created_at 부터 TRIAGE_DEADLINE_SECONDS 3600 초 넘으면 fail_execution(triage_deadline) 뒤 failed; TickReport.triage_judged; _reflect_failures 는 is_triage_task 면 건너뜀 — 사람 요청·task_failed 알림 없음), adapters/repo.py(이전 시도 커밋분 running_triages·_close_triage_stage·record_triage_proposed·record_triage_failed(메시지 200자 TRIAGE_MESSAGE_MAX), 단계 이유=triage_reason 문구), docs/ARCHITECTURE step 6 구현 메모. 생성 tests/workflow/server/test_triage_judge.py 14건(제안·업무 이유·담당/종류 불변·고정 후보·needs_check·후보 밖·커밋 불일치·근거 201자 거부/200자 저장·readonly_violation 내 차례 없음·메시지 200자·usage_limit 쉼·unknown·기한·다시 판단 superseded·두 번 판정 없음). 이름 표의 get_triage_log·triage_log_of_task 는 쓸 곳이 없어 만들지 않음. 기존 테스트 변경 없음. 검증: pytest 3976 passed·63 skipped, ruff 통과. 다음 step 주의: 판단 단계는 판정 후 finished_at 이 차고 실행 잠금 해제됨, 제안은 판단 로그 result_json(handling NULL)에만 있고 업무 담당·종류는 그대로 — step 7 이 latest_triage·handling 을 붙인다.",
-      "completed_at": "2026-10-02T00:00:00+0900"
+      "completed_at": "2026-10-02T01:34:29+0900"
     },
     {
       "step": 7,
