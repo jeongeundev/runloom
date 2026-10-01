@@ -911,6 +911,13 @@ def work_panel_context(
         "pull_request": pull_request,
         "pulls": pulls,
         "comments": comments,
+        # Jira 상태 옮기기(ADR-0024 결정 12) — 업무 상태와 따로. `skipped`(대체·이미 완료 범주)는 보이지 않는다
+        "jira_deliveries": [
+            {"state": d["state"], "text": f"상태 → {d['target']}", "label": DELIVERY_LABELS[d["state"]],
+             "detail": " · ".join(x for x in (d["last_error"], d["note"]) if x)}
+            for d in repo.list_jira_deliveries(conn, work_item_id)
+            if d["action"] == "transition" and d["state"] != "skipped"
+        ],
         "draft_pulls": [p for p in pulls if p["runloom"] and p["url"] is not None],
         "events": [{"at": e["occurred_at"], "text": _event_line(e, names)}
                    for e in repo.list_work_item_events(conn, work_item_id)],

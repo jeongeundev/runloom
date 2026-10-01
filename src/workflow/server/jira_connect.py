@@ -111,12 +111,14 @@ def connect_context(conn: Connection, session_id: str, *, token_saved: bool) -> 
         state = "auth_failed" if row["auth_failed_at"] is not None else "connected"
     sources = repo.list_github_sources(conn, session_id)
     names = {s.source_id: s.repository_full_name for s in sources}
+    failures = repo.jira_delivery_failures(conn, session_id)
     projects = [
         {
             "config": repo.jira_project_config(r).model_dump(mode="json"),
             "choices": JiraChoices.model_validate_json(r["choices_json"]).model_dump(mode="json"),
             "repository_full_name": names.get(r["github_source_id"]),
             "cursor_updated_at": r["cursor_updated_at"],
+            "delivery_failures": failures.get(r["source_id"], 0),  # 지금 연결 이후 Jira 반영 실패 수
         }
         for r in repo.list_jira_project_rows(conn, session_id)
     ]

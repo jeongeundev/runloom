@@ -521,6 +521,8 @@ def set_work_status(conn: Connection, work_item_id: str, status: WorkStatus, *, 
     )
     _work_item_event(conn, work_item_id, row["session_id"], "status_changed",
                      {"from": row["status"], "to": status.status, "reason": status.reason}, now)
+    if (moment := jira_intake.moment_for(status.status)) is not None:  # Jira 원본이 아니면 행이 생기지 않는다
+        queue_jira_transition(conn, work_item_id, moment, now=now)
     return True
 
 
@@ -2880,6 +2882,87 @@ def _delegate_jira_issue(conn: Connection, source_id: str, issue_id: str, *, by:
         (now, by, now, source_id, issue_id),
     )
     return cur.rowcount == 1
+
+
+# --- Jira 상태 옮기기 outbox (phase 18 step 7, ADR-0024 결정 11·12) ------------------------------------------
+# 전송 상태는 `pending`·`sending`·`delivered`·`failed`·`skipped`(전환은 `unknown` 을 쓰지 않는다). HTTP 는
+# `server/jira_delivery` 가 트랜잭션 밖에서 하고, 여기서는 행 고르기·claim(`attempts + 1` fence)·기록만 한다.
+
+
+def queue_jira_transition(conn: Connection, work_item_id: str, moment: str, *, now: str) -> bool:
+    """업무가 켜진 Jira 프로젝트의 원본 이슈이고 그 순간의 상태 이름이 설정돼 있으면 전환 행 하나(업무 × 순간 한 번).
+    `set_work_status` 가 부른다 — 자체 BEGIN 없음. 칸 이름은 고정 사전(`MOMENT_COLUMNS`)에서만 고른다."""
+    column = jira_intake.MOMENT_COLUMNS[moment]
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO jira_deliveries (delivery_id, session_id, source_id, work_item_id, action, moment,"
+        " target, dedupe_key, state, created_at, updated_at) SELECT ?, w.session_id, p.source_id, w.work_item_id,"
+        f" 'transition', ?, p.{column}, ?, 'pending', ?, ? FROM work_items w JOIN jira_projects p"
+        " ON p.source_id = w.source_id AND p.session_id = w.session_id"
+        " WHERE w.work_item_id = ? AND w.source_type = 'jira' AND w.source_item_id IS NOT NULL AND p.enabled = 1"
+        f" AND p.{column} IS NOT NULL",
+        (f"jdl-{secrets.token_hex(4)}", moment, f"transition:{work_item_id}:{moment}", now, now, work_item_id),
+    )
+    return cur.rowcount == 1
+
+
+def jira_deliveries_due(conn: Connection, now: str) -> list[Row]:
+    """보낼 차례인 행(생긴 순) — `pending`·`unknown` 은 `next_at` 이 지났거나 없으면, `sending` 은 claim 이 만료됐으면.
+    `issue_id` = 업무의 원본 이슈 id."""
+    return conn.execute(
+        "SELECT d.*, w.source_item_id AS issue_id FROM jira_deliveries d"
+        " JOIN work_items w ON w.work_item_id = d.work_item_id"
+        " WHERE d.state IN ('pending', 'sending', 'unknown') AND (d.next_at IS NULL OR d.next_at <= ?)"
+        " ORDER BY d.created_at, d.rowid",
+        (now,),
+    ).fetchall()
+
+
+def claim_jira_delivery(conn: Connection, delivery_id: str, attempts: int, *, now: str, claim_until: str) -> bool:
+    """읽은 `attempts` 그대로이고 보낼 차례인 행을 `sending`(`next_at` = claim 만료)으로 가져간다 — 여러 소비자 중
+    하나만 성공한다. 성공한 소비자의 fence 는 `attempts + 1`."""
+    cur = conn.execute(
+        "UPDATE jira_deliveries SET state = 'sending', attempts = attempts + 1, next_at = ?, updated_at = ?"
+        " WHERE delivery_id = ? AND attempts = ? AND state IN ('pending', 'sending', 'unknown')"
+        " AND (next_at IS NULL OR next_at <= ?)",
+        (claim_until, now, delivery_id, attempts, now),
+    )
+    return cur.rowcount == 1
+
+
+def record_jira_delivery(
+    conn: Connection, delivery_id: str, attempts: int, *, state: str, now: str, last_error: str | None = None,
+    note: str | None = None, next_at: str | None = None, result_issue_id: str | None = None,
+    result_issue_key: str | None = None,
+) -> bool:
+    """claim(fence = `attempts`)의 결과. 그 사이 claim 이 만료돼 다른 소비자가 가져갔으면 False — 늦은 기록은 버린다."""
+    cur = conn.execute(
+        "UPDATE jira_deliveries SET state = ?, last_error = ?, note = ?, next_at = ?,"
+        " result_issue_id = COALESCE(?, result_issue_id), result_issue_key = COALESCE(?, result_issue_key),"
+        " delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, updated_at = ?"
+        " WHERE delivery_id = ? AND state = 'sending' AND attempts = ?",
+        (state, last_error, note, next_at, result_issue_id, result_issue_key, state, now, now, delivery_id, attempts),
+    )
+    return cur.rowcount == 1
+
+
+def list_jira_deliveries(conn: Connection, work_item_id: str) -> list[Row]:
+    """업무의 Jira 반영 행(생긴 순) — 업무 패널·전송의 '다음 순간으로 대체' 판정."""
+    return conn.execute(
+        "SELECT * FROM jira_deliveries WHERE work_item_id = ? ORDER BY created_at, rowid", (work_item_id,)
+    ).fetchall()
+
+
+def jira_delivery_failures(conn: Connection, session_id: str) -> dict[str, int]:
+    """프로젝트(source_id)별 `failed` 행 수 — 지금 연결(`connected_at`) 이후에 실패한 것만(연결 화면의 최근 실패 수)."""
+    return {
+        r["source_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT d.source_id, COUNT(*) AS n FROM jira_deliveries d"
+            " JOIN jira_connections c ON c.session_id = d.session_id"
+            " WHERE d.session_id = ? AND d.state = 'failed' AND d.updated_at >= c.connected_at GROUP BY d.source_id",
+            (session_id,),
+        )
+    }
 
 
 def replace_baseline(

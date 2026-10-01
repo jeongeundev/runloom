@@ -1,7 +1,8 @@
 """중앙 워커 — ARCHITECTURE "실행 조정 워커". `python3 -m workflow.server.worker`.
 
 DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → Jira 가져오기 → 연결 상태 → 서버 관찰(unknown·heartbeat) → 코드 수정 결과 확인 →
-커밋 검토 결과 확인 → 범용 결과 판정 → 업무 순환 → 후속 스캔 → 실패 반영 → callback 전달 → 초안 PR → 원본 이슈 반영.
+커밋 검토 결과 확인 → 범용 결과 판정 → 업무 순환 → 후속 스캔 → 실패 반영 → callback 전달 → 초안 PR → 원본 이슈 반영 →
+Jira 상태 옮기기.
 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고, HTTP(GitHub·callback POST)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에
 오므로 같은 tick 에 판정이 나면 바로 잇는다. 진단 데모(진단 API 전달·폴링·A 판정)는 `main` 전용이다 (ADR-0019).
 
@@ -105,7 +106,7 @@ from workflow.domain.task_followup import FollowupContext, FollowupDecision, Fol
 from workflow.domain.task_readiness import TaskReadiness
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_status import STAGE_FAILED
-from workflow.server import github_delivery, github_sync, jira_sync, owner_approval, stage_runs, task_cycle, views
+from workflow.server import github_delivery, github_sync, jira_delivery, jira_sync, owner_approval, stage_runs, task_cycle, views
 from workflow.server.github_clients import SourceClients
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
@@ -154,6 +155,8 @@ class TickReport:
     deliveries_queued: int = 0  # 원본 이슈 댓글 본문의 새 revision
     deliveries_sent: int = 0  # 댓글 생성·수정 성공(응답을 잃은 POST 를 marker 로 찾은 것 포함)
     deliveries_failed: int = 0  # 반영 실패(403·404·삭제된 댓글) — Task 상태와 따로
+    jira_deliveries_sent: int = 0  # Jira 상태 옮기기 반영됨(이미 그 상태였던 것 포함)
+    jira_deliveries_failed: int = 0  # Jira 반영 실패(전환 없음·400·403·404·시도 상한) — 업무 상태와 따로
     prs_opened: int = 0  # 검토 승인 뒤 연(또는 이미 있던) 초안 PR
     prs_failed: int = 0  # PR 을 끝내 열지 못해 사람 요청으로 넘긴 수정 Task
     prs_merged: int = 0  # 병합을 보고 완료한 수정 Task
@@ -385,6 +388,7 @@ class Worker:
             self._deliver_callbacks(conn, report)
             self._deliver_pull_requests(conn, report)
             self._deliver_github(conn, report)
+            self._deliver_jira(conn, report)
             self._deliver_notifications(conn, report)
             self._refresh_work_statuses(conn, report)
         finally:
@@ -1495,6 +1499,24 @@ class Worker:
             report.deliveries_failed += result.failed
             if result.rate_limited:
                 log.warning("GitHub 반영 rate limit %s — 다음 시각까지 물러남", source_id)
+
+    def _deliver_jira(self, conn: Connection, report: TickReport) -> None:
+        """Jira 상태 옮기기 outbox (ADR-0024 결정 12). 연결이 살아 있는 워크스페이스의 행만 보낸다 — 끊김·토큰 오류·
+        토큰 파일 없음이면 행은 그대로 쌓여 있다가 다시 연결하면 나간다. 반영 실패는 업무 상태를 바꾸지 않는다."""
+        if self._jira_for is None:
+            return
+
+        def client_for(session_id: str) -> JiraClient | None:
+            connection = repo.get_jira_connection(conn, session_id)
+            if connection is None or connection["disconnected_at"] is not None or connection["auth_failed_at"]:
+                return None
+            return self._jira_for(connection)
+
+        result = jira_delivery.deliver_jira_updates(conn, client_for, self._clock())
+        report.jira_deliveries_sent += result.delivered
+        report.jira_deliveries_failed += result.failed
+        if result.rate_limited:
+            log.warning("Jira 반영 요청 한도 — 다음 시각까지 물러남")
 
     # --- 13. 알림 웹훅 (ADR-0018 결정 5) ------------------------------------------------
 

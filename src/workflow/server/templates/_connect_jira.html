@@ -65,7 +65,7 @@
   {% set c = p.config %}
   <section class="card" data-jira-project="{{ c.source_id }}">
     <div class="card-title">{{ c.project_key }} · {{ c.project_name }}</div>
-    <p class="small">{% if not c.enabled %}<strong>가져오기 꺼짐</strong> · {% endif %}{{ '지금부터' if c.start_mode == 'from_now' else '열린 업무 전부' }} · 연결 저장소 {{ p.repository_full_name or '없음' }} · {% if p.cursor_updated_at %}마지막 가져오기 {{ p.cursor_updated_at|kst }}{% else %}아직 가져오기 전{% endif %}</p>
+    <p class="small">{% if not c.enabled %}<strong>가져오기 꺼짐</strong> · {% endif %}{{ '지금부터' if c.start_mode == 'from_now' else '열린 업무 전부' }} · 연결 저장소 {{ p.repository_full_name or '없음' }} · {% if p.cursor_updated_at %}마지막 가져오기 {{ p.cursor_updated_at|kst }}{% else %}아직 가져오기 전{% endif %}{% if p.delivery_failures %} · <strong>Jira 반영 실패 {{ p.delivery_failures }}건</strong> — 업무 패널에서 이유 확인{% endif %}</p>
     <form method="post" action="/operator/jira/projects/{{ c.source_id }}">
       <div class="field-row">
         <div class="field"><label for="jira-repo-{{ c.source_id }}">연결 저장소</label>
