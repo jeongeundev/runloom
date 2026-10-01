@@ -1501,7 +1501,7 @@ class Worker:
                 log.warning("GitHub 반영 rate limit %s — 다음 시각까지 물러남", source_id)
 
     def _deliver_jira(self, conn: Connection, report: TickReport) -> None:
-        """Jira 상태 옮기기 outbox (ADR-0024 결정 12). 연결이 살아 있는 워크스페이스의 행만 보낸다 — 끊김·토큰 오류·
+        """Jira 상태 옮기기·후속 이슈 등록 outbox (ADR-0024 결정 12·13). 연결이 살아 있는 워크스페이스의 행만 보낸다 — 끊김·토큰 오류·
         토큰 파일 없음이면 행은 그대로 쌓여 있다가 다시 연결하면 나간다. 반영 실패는 업무 상태를 바꾸지 않는다."""
         if self._jira_for is None:
             return
@@ -1512,7 +1512,8 @@ class Worker:
                 return None
             return self._jira_for(connection)
 
-        result = jira_delivery.deliver_jira_updates(conn, client_for, self._clock())
+        result = jira_delivery.deliver_jira_updates(conn, client_for, self._clock(),
+                                                    public_url=self._settings.public_url)
         report.jira_deliveries_sent += result.delivered
         report.jira_deliveries_failed += result.failed
         if result.rate_limited:

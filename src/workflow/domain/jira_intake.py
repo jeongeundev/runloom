@@ -249,3 +249,46 @@ def already_in(current_name: str, target_name: str) -> bool:
 def choose_transition(transitions: Sequence[JiraTransition], target_name: str) -> str | None:
     """도착 상태 이름이 목표와 같은(대소문자·앞뒤 공백 무시) 첫 전환의 id. 없으면 None."""
     return next((t.transition_id for t in transitions if _same_name(t.to_name, target_name)), None)
+
+
+# --- 후속 이슈 등록 (ADR-0024 결정 13) ---
+
+FOLLOWUP_LABEL = "runloom"
+JIRA_LINK_TYPE = "Relates"
+FOLLOWUP_SUMMARY_MAX = 255
+FOLLOWUP_REQUEST_MAX = 2000
+_FOLLOWUP_LABEL = re.compile(r"runloom-RUN-([1-9][0-9]*)")
+
+
+def followup_label(key_number: int) -> str:
+    """후속 이슈를 업무 RUN-n 과 잇는 라벨 — 고정 형식이라 JQL 문자열에 넣어도 안전하다."""
+    if not isinstance(key_number, int) or isinstance(key_number, bool) or key_number < 1:
+        raise ValueError("key_number 는 1 이상의 정수여야 합니다")
+    return f"runloom-RUN-{key_number}"
+
+
+def followup_labels(key_number: int) -> tuple[str, str]:
+    return FOLLOWUP_LABEL, followup_label(key_number)
+
+
+def followup_key_number(labels: Sequence[str]) -> int | None:
+    """라벨 `runloom-RUN-<n>` 의 n(처음 것). 없으면 None — 가져오기의 후속 조정 판정."""
+    for label in labels:
+        match = _FOLLOWUP_LABEL.fullmatch(label)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def followup_summary(title: str) -> str:
+    return title[:FOLLOWUP_SUMMARY_MAX]
+
+
+def followup_description(*, work_key: str, cause_key: str, request: str, work_url: str | None) -> str:
+    """후속 이슈 본문(Markdown — `adf.markdown_to_adf` 로 바꿔 보낸다). 요청은 앞 2000자, 공개 주소가 없으면 그 줄 없음."""
+    parts = [f"Runloom 후속 업무 {work_key} — {cause_key} 의 결과로 생겼습니다."]
+    if body := request.strip()[:FOLLOWUP_REQUEST_MAX]:
+        parts.append(body)
+    if work_url:
+        parts.append(f"Runloom 업무: {work_url}")
+    return "\n\n".join(parts)

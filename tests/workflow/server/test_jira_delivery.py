@@ -1,11 +1,14 @@
 # ruff: noqa: F811 — test_task_cycle·test_jira_sync 픽스처(cycle·settings·worker·project)를 가져와 인자로 쓴다
 """jira_delivery — 세 순간 → outbox(`jira_deliveries`) → 전환 전송 (phase 18 step 7, ADR-0024 결정 11·12,
-ARCHITECTURE "Jira 소스 — phase 18" 상태 옮기기·오류 분류·화면).
+ARCHITECTURE "Jira 소스 — phase 18" 상태 옮기기·오류 분류·화면)과 후속 이슈 등록(step 8, ADR-0024 결정 13).
 
-실제 Jira 를 부르지 않는다 — `FakeJiraWriter` 가 `JiraClient` 의 `issue_status`·`transitions`·`transition` 을 흉내 낸다.
+실제 Jira 를 부르지 않는다 — `FakeJiraWriter` 가 `JiraClient` 의 `issue_status`·`transitions`·`transition` 을,
+`FakeJiraCreator` 가 `create_issue`·`find_issues_by_label`·`issue_link_types`·`link_issues` 를 흉내 낸다.
 """
 
+import dataclasses
 import inspect
+import json
 import re
 
 import pytest
@@ -21,13 +24,18 @@ from workflow.adapters.jira_client import (
     JiraUnauthorized,
     JiraUnavailable,
 )
-from workflow.contracts.jira import JiraTransition
+from workflow.contracts.jira import JiraIssueRef, JiraTransition
+from workflow.domain.adf import markdown_to_adf
+from workflow.domain.jira_intake import followup_description
+from workflow.domain.task_followup import FollowupTaskSpec
+from workflow.domain.work_keys import work_path
 from workflow.domain.work_status import WorkStatus
 from workflow.server.jira_delivery import MAX_ATTEMPTS, deliver_jira_updates
+from workflow.server.jira_sync import sync_project
 from workflow.server.worker import Worker
 
 from .conftest import log_in
-from .test_jira_sync import FACTS, FakeJira, _imported, add_project, jissue
+from .test_jira_sync import CHOICES, FACTS, SITE, FakeJira, _imported, add_project, jira_works, jissue
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     FIX,
     NOW,
@@ -39,6 +47,7 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     cycle,
     executions,
     import_issue,
+    make_worker,
     settings,
     worker,
 )
@@ -331,7 +340,7 @@ def test_lost_response_is_reconciled_by_reading_the_issue_status(conn, work):
                                                                  "Jira 응답 없음 — 다시 시도")
     del jira.transition
     jira.calls.clear()
-    deliver(conn, jira, now="2026-10-06T12:00:30Z")
+    deliver(conn, jira, now="2026-10-06T12:00:30.000000Z")
     assert jira.calls == [("issue_status", "10001")]  # 다시 보내지 않는다
     row = rows(conn, work)[0]
     assert (row["state"], row["note"], row["attempts"]) == ("delivered", "이미 그 상태", 2)
@@ -465,3 +474,345 @@ def test_connect_screen_counts_recent_failures(conn, work, client):
     repo.save_jira_connection(conn, FACTS, session_id=SESSION, now=LATER)
     assert "Jira 반영 실패" not in log_in(client).get("/connect?tab=sources").text
     assert repo.jira_delivery_failures(conn, SESSION) == {}
+
+
+# --- 후속 이슈 등록 (step 8) -----------------------------------------------------------------------
+# 후속 규칙이 새 업무를 만들면 원인 Jira 프로젝트에 이슈를 만들고, 새 업무의 원본 칸을 채우고, 원인 이슈와 잇는다.
+
+PUBLIC = "https://runloom.example"
+
+
+class FakeJiraCreator:
+    """이슈 만들기·라벨 찾기·링크. `lose` 면 이슈는 만들고 응답을 잃는다(연결 오류). `failures[메서드]` 는 하나씩 꺼낸다."""
+
+    def __init__(self, link_types=("Blocks", "relates")):
+        self.created: list[dict] = []
+        self.links: list[tuple[str, str, str]] = []
+        self.link_types = list(link_types)
+        self.failures: dict[str, list[Exception]] = {}
+        self.calls: list[str] = []
+        self.lose = False
+        self._next = 100
+
+    def _fail(self, method: str) -> None:
+        self.calls.append(method)
+        queue = self.failures.get(method)
+        if queue:
+            raise queue.pop(0)
+
+    def create_issue(self, project_id, issue_type_id, summary, description, labels) -> JiraIssueRef:
+        self._fail("create_issue")
+        ref = JiraIssueRef(issue_id=str(10000 + self._next), key=f"SHOP-{self._next}")
+        self._next += 1
+        self.created.append({"project_id": project_id, "issue_type_id": issue_type_id, "summary": summary,
+                             "description": description, "labels": list(labels), "ref": ref})
+        if self.lose:
+            self.lose = False
+            raise JiraUnavailable("POST /rest/api/3/issue: ReadTimeout")
+        return ref
+
+    def find_issues_by_label(self, project_id, label) -> list[JiraIssueRef]:
+        self._fail("find_issues_by_label")
+        assert project_id == "10000"
+        return [c["ref"] for c in self.created if label in c["labels"]]
+
+    def issue_link_types(self) -> list[str]:
+        self._fail("issue_link_types")
+        return self.link_types
+
+    def link_issues(self, type_name, *, inward_issue_id, outward_issue_id) -> None:
+        self._fail("link_issues")
+        self.links.append((type_name, inward_issue_id, outward_issue_id))
+
+    def __getattr__(self, name):  # 후속 이슈 등록은 다른 Jira API 를 부르지 않는다
+        raise AssertionError(f"후속 이슈 등록이 {name} 를 불렀다")
+
+
+def _spawn(conn, client, worker, source_id, placement="new_work") -> tuple[str, str]:
+    """Jira 이슈 SHOP-1 → 맡기기 → 수정 실행 → 그 실행이 원인인 후속(code_review). (원인 업무, 후속 단계의 업무)."""
+    jira = FakeJira()
+    jira.put(jissue(1))
+    task_id = _imported(conn, source_id, jira)
+    assert log_in(client).post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}"},
+                               follow_redirects=False).status_code == 303
+    (execution,) = executions(conn, task_id)
+    spec = FollowupTaskSpec(session_id=SESSION, kind="code_review", cause_execution_id=execution["execution_id"],
+                            predecessor_task_id=task_id, rules_revision=1, placement=placement)
+    followup_task, _ = worker._create_followup_task(conn, repo.get_task(conn, task_id), spec, NOW)
+    return (repo.work_item_of_task(conn, task_id)["work_item_id"],
+            repo.work_item_of_task(conn, followup_task)["work_item_id"])
+
+
+@pytest.fixture
+def spawned(conn, cycle, client, worker) -> tuple[str, str]:
+    return _spawn(conn, client, worker, add_project(conn, followup_issue_type="Task"))
+
+
+def creates(conn, work_item_id: str) -> list:
+    return [r for r in rows(conn, work_item_id) if r["action"] == "create_issue"]
+
+
+def all_creates(conn) -> list:
+    return conn.execute("SELECT * FROM jira_deliveries WHERE action = 'create_issue'").fetchall()
+
+
+def send(conn, jira, now: str = NOW):
+    return deliver_jira_updates(conn, lambda _session: jira, now, public_url=PUBLIC)
+
+
+def test_new_work_followup_of_jira_work_queues_one_create_row(conn, spawned, worker):
+    cause, new = spawned
+    assert new != cause
+    (row,) = creates(conn, new)
+    assert (row["moment"], row["target"], row["cause_issue_id"], row["state"], row["attempts"]) == (
+        None, "Task", "10001", "pending", 0)
+    assert row["dedupe_key"] == f"create_issue:{new}" and row["source_id"] == repo.get_work_item(
+        conn, SESSION, cause)["source_id"]
+    work = repo.get_work_item(conn, SESSION, new)
+    # 원본 칸: 종류·프로젝트는 원인 것, 키·주소는 이슈를 만든 뒤에야 — 원인 SHOP-1 을 복사하지 않는다
+    assert (work["source_type"], work["source_item_id"], work["source_key"], work["source_url"]) == (
+        "jira", None, None, None)
+    assert creates(conn, cause) == []
+
+
+def test_same_work_followup_creates_no_issue(conn, cycle, client, worker):
+    _, same = _spawn(conn, client, worker, add_project(conn, followup_issue_type="Task"), placement="same_work")
+    assert all_creates(conn) == []
+    assert repo.get_work_item(conn, SESSION, same)["source_key"] == "SHOP-1"  # 같은 업무 그대로
+
+
+def test_blank_followup_type_or_disabled_project_creates_no_issue(conn, cycle, client, worker):
+    _, new = _spawn(conn, client, worker, add_project(conn, followup_issue_type=None))
+    assert all_creates(conn) == []
+    assert repo.get_work_item(conn, SESSION, new)["source_key"] is None
+
+
+def test_disabled_project_creates_no_issue(conn, cycle, client, worker):
+    source_id = add_project(conn, followup_issue_type="Task")
+    jira = FakeJira()
+    jira.put(jissue(1))
+    task_id = _imported(conn, source_id, jira)
+    repo.update_jira_project(conn, SESSION, source_id, now=NOW, github_source_id=SOURCE, issue_types=[],
+                             status_on_start=None, status_on_review=None, status_on_done=None,
+                             followup_issue_type="Task", enabled=False)
+    work = repo.work_item_of_task(conn, task_id)["work_item_id"]
+    assert repo.queue_jira_issue_creation(conn, work, work, now=NOW) is False
+    assert all_creates(conn) == []
+
+
+def test_github_cause_creates_no_issue_and_keeps_copying_its_key(conn, cycle, worker):
+    task_id = import_issue(conn, 1)
+    worker.tick()
+    (execution,) = executions(conn, task_id)
+    spec = FollowupTaskSpec(session_id=SESSION, kind="code_review", cause_execution_id=execution["execution_id"],
+                            predecessor_task_id=task_id, rules_revision=1, placement="new_work")
+    followup_task, _ = worker._create_followup_task(conn, repo.get_task(conn, task_id), spec, NOW)
+    work = repo.work_item_of_task(conn, followup_task)
+    assert all_creates(conn) == []
+    assert (work["source_type"], work["source_key"]) == ("github", "acme/billing#1")
+
+
+def test_create_issue_fills_the_new_work_and_links_the_cause(conn, spawned):
+    cause, new = spawned
+    jira = FakeJiraCreator()
+
+    report = send(conn, jira)
+
+    assert report.delivered == 1
+    (created,) = jira.created
+    work = repo.get_work_item(conn, SESSION, new)
+    assert (created["project_id"], created["issue_type_id"], created["summary"]) == ("10000", "10002", work["title"])
+    assert created["labels"] == ["runloom", "runloom-RUN-2"]
+    assert created["description"] == markdown_to_adf(followup_description(
+        work_key="RUN-2", cause_key="SHOP-1", request=work["request"], work_url=f"{PUBLIC}{work_path('RUN-2')}"))
+    assert created["description"]["type"] == "doc"
+    assert (work["source_item_id"], work["source_key"], work["source_url"]) == (
+        "10100", "SHOP-100", f"{SITE}/browse/SHOP-100")
+    (row,) = creates(conn, new)
+    assert (row["state"], row["result_issue_id"], row["result_issue_key"], row["attempts"]) == (
+        "delivered", "10100", "SHOP-100", 1)
+    assert row["delivered_at"] == NOW and row["note"] is None
+    assert jira.links == [("relates", "10001", "10100")]  # Jira 가 준 이름 그대로, 원인 → 새 이슈
+    # 다시 돌려도 만들지 않는다
+    assert send(conn, jira).any() is False and len(jira.created) == 1
+
+
+def test_created_issue_joins_the_same_work_on_the_next_sync(conn, spawned):
+    cause, new = spawned
+    send(conn, FakeJiraCreator())
+    source_id = repo.get_work_item(conn, SESSION, cause)["source_id"]
+    before = len(jira_works(conn))
+    jira = FakeJira()
+    jira.put(jissue(100, summary="Jira 쪽 제목", labels=["runloom", "runloom-RUN-2"], issue_type="Task",
+                    updated="2026-10-06T05:00:00Z"))
+
+    result = sync_project(conn, jira, source_id, NOW)
+
+    assert result.created == [] and len(jira_works(conn)) == before
+    row = repo.get_jira_issue(conn, SESSION, source_id, "10100")
+    assert row["delegated_by"] == "followup"
+    assert repo.work_item_of_task(conn, row["task_id"])["work_item_id"] == new
+
+
+def test_without_a_relates_link_type_the_issue_still_counts(conn, spawned):
+    _, new = spawned
+    jira = FakeJiraCreator(link_types=("Blocks",))
+    assert send(conn, jira).delivered == 1
+    (row,) = creates(conn, new)
+    assert (row["state"], row["note"]) == ("delivered", "링크 유형 Relates 없음 — 링크 생략")
+    assert jira.links == [] and "link_issues" not in jira.calls
+    assert repo.get_work_item(conn, SESSION, new)["source_key"] == "SHOP-100"
+
+
+def test_link_failure_is_only_noted(conn, spawned):
+    _, new = spawned
+    jira = FakeJiraCreator()
+    jira.failures["link_issues"] = [JiraForbidden("POST /rest/api/3/issueLink: HTTP 403", 403)]
+    assert send(conn, jira).delivered == 1
+    (row,) = creates(conn, new)
+    assert (row["state"], row["note"]) == ("delivered", "링크 실패 — 권한 없음")
+    assert len(jira.created) == 1
+
+
+def test_lost_response_is_reconciled_by_label_and_created_once(conn, spawned):
+    _, new = spawned
+    jira = FakeJiraCreator()
+    jira.lose = True
+
+    report = send(conn, jira)
+
+    assert report.uncertain == 1 and len(jira.created) == 1
+    (row,) = creates(conn, new)
+    assert (row["state"], row["attempts"], row["last_error"]) == ("unknown", 1, "Jira 응답 없음 — 다시 시도")
+    assert row["next_at"] == "2026-10-06T12:00:30.000000Z"
+    assert repo.get_work_item(conn, SESSION, new)["source_item_id"] is None
+    assert send(conn, jira).any() is False  # 물러난 동안은 보지 않는다
+
+    report = send(conn, jira, now=LATER)
+
+    assert report.delivered == 1 and len(jira.created) == 1  # 라벨로 찾았다 — 두 번 만들지 않는다
+    assert jira.calls.count("find_issues_by_label") == 1 and jira.calls.count("create_issue") == 1
+    (row,) = creates(conn, new)
+    assert (row["state"], row["result_issue_key"]) == ("delivered", "SHOP-100")
+    assert repo.get_work_item(conn, SESSION, new)["source_key"] == "SHOP-100"
+    assert jira.links == [("relates", "10001", "10100")]
+
+
+def test_unknown_without_a_labelled_issue_posts_in_the_same_round(conn, spawned):
+    _, new = spawned
+    jira = FakeJiraCreator()
+    jira.failures["create_issue"] = [JiraUnavailable("POST /rest/api/3/issue: HTTP 502", 502)]  # 닿지 않았다
+    send(conn, jira)
+    assert creates(conn, new)[0]["state"] == "unknown" and jira.created == []
+
+    assert send(conn, jira, now=LATER).delivered == 1
+    assert jira.calls == ["create_issue", "find_issues_by_label", "create_issue", "issue_link_types", "link_issues"]
+    assert len(jira.created) == 1
+
+
+def test_unknown_lookup_failure_stays_unknown(conn, spawned):
+    _, new = spawned
+    jira = FakeJiraCreator()
+    jira.lose = True
+    send(conn, jira)
+    jira.failures["find_issues_by_label"] = [JiraUnavailable("GET /rest/api/3/search/jql: HTTP 503", 503)]
+    assert send(conn, jira, now=LATER).uncertain == 1
+    (row,) = creates(conn, new)
+    assert (row["state"], row["attempts"]) == ("unknown", 2)
+    assert jira.calls.count("create_issue") == 1
+
+
+@pytest.mark.parametrize(("failure", "message"), [
+    (JiraBadRequest("POST /rest/api/3/issue: HTTP 400", 400, "Components is required."),
+     "필수 칸 — Components is required. — Jira 프로젝트 설정 확인"),
+    (JiraForbidden("POST /rest/api/3/issue: HTTP 403", 403), "권한 없음 — 이슈를 만들 수 없음"),
+    (JiraNotFound("POST /rest/api/3/issue: HTTP 404", 404), "프로젝트를 찾을 수 없음"),
+])
+def test_rejected_creation_fails_with_a_reason(conn, spawned, failure, message):
+    _, new = spawned
+    jira = FakeJiraCreator()
+    jira.failures["create_issue"] = [failure]
+    assert send(conn, jira).failed == 1
+    (row,) = creates(conn, new)
+    assert (row["state"], row["last_error"]) == ("failed", message)
+    assert send(conn, jira, now=LATER).any() is False and jira.calls == ["create_issue"]  # 다시 보내지 않는다
+    assert repo.get_work_item(conn, SESSION, new)["source_item_id"] is None
+
+
+def test_unknown_issue_type_fails_without_calling_jira(conn, cycle, client, worker):
+    source_id = add_project(conn, followup_issue_type="Task")
+    _, new = _spawn(conn, client, worker, source_id)
+    repo.set_jira_choices(conn, SESSION, source_id, CHOICES.model_copy(update={"issue_types": CHOICES.issue_types[:1]}),
+                          now=NOW)
+    jira = FakeJiraCreator()
+    assert send(conn, jira).failed == 1
+    assert creates(conn, new)[0]["last_error"] == "이슈 유형 Task 없음 — 목록 새로 고침" and jira.calls == []
+
+
+def test_unauthorized_and_rate_limit_keep_the_create_pending(conn, spawned):
+    _, new = spawned
+    jira = FakeJiraCreator()
+    jira.failures["create_issue"] = [JiraRateLimited("POST /rest/api/3/issue: HTTP 429", 429, 120)]
+    report = send(conn, jira)
+    (row,) = creates(conn, new)
+    assert report.rate_limited and (row["state"], row["next_at"]) == ("pending", "2026-10-06T12:02:00.000000Z")
+
+    jira.failures["create_issue"] = [JiraUnauthorized("POST /rest/api/3/issue: HTTP 401", 401)]
+    send(conn, jira, now=LATER)
+    (row,) = creates(conn, new)
+    assert row["state"] == "pending" and repo.get_jira_connection(conn, SESSION)["auth_failed_at"] == LATER
+    assert jira.created == []
+
+
+def test_sync_reconciles_a_labelled_issue_before_the_delivery_does(conn, spawned):
+    """POST 는 닿았는데 기록 전에 죽었다 — 가져오기가 라벨로 같은 업무에 붙이고 생성 행을 끝낸다(새 업무 없음)."""
+    cause, new = spawned
+    source_id = repo.get_work_item(conn, SESSION, cause)["source_id"]
+    before = len(jira_works(conn))
+    jira = FakeJira()
+    jira.put(jissue(100, labels=["runloom", "runloom-RUN-2"], issue_type="Task", updated="2026-10-06T05:00:00Z"))
+    jira.put(jissue(101, labels=["runloom-RUN-77"], updated="2026-10-06T05:01:00Z"))  # 그런 업무 없음 — 건너뜀
+
+    result = sync_project(conn, jira, source_id, NOW)
+
+    assert result.created == [] and len(jira_works(conn)) == before
+    work = repo.get_work_item(conn, SESSION, new)
+    assert (work["source_item_id"], work["source_key"], work["source_url"]) == (
+        "10100", "SHOP-100", f"{SITE}/browse/SHOP-100")
+    assert repo.get_jira_issue(conn, SESSION, source_id, "10100")["delegated_by"] == "followup"
+    assert repo.get_jira_issue(conn, SESSION, source_id, "10101") is None
+    (row,) = creates(conn, new)
+    assert (row["state"], row["result_issue_id"], row["result_issue_key"], row["note"]) == (
+        "delivered", "10100", "SHOP-100", "가져오기로 조정")
+    creator = FakeJiraCreator()
+    assert send(conn, creator).any() is False and creator.calls == []
+
+
+def test_labelled_issue_for_a_filled_or_other_work_is_not_taken(conn, spawned):
+    cause, new = spawned
+    send(conn, FakeJiraCreator())  # RUN-2 는 이미 SHOP-100
+    source_id = repo.get_work_item(conn, SESSION, cause)["source_id"]
+    before = len(jira_works(conn))
+    jira = FakeJira()
+    jira.put(jissue(150, labels=["runloom-RUN-2"], updated="2026-10-06T05:00:00Z"))  # 사람이 라벨을 복사한 이슈
+    jira.put(jissue(151, labels=["runloom-RUN-1"], updated="2026-10-06T05:01:00Z"))  # 원인 업무(이미 원본 있음)
+    assert sync_project(conn, jira, source_id, NOW).created == []
+    assert len(jira_works(conn)) == before
+    assert repo.get_work_item(conn, SESSION, new)["source_item_id"] == "10100"
+
+
+def test_panel_shows_the_followup_issue_line(conn, spawned, client):
+    _, new = spawned
+    send(conn, FakeJiraCreator())
+    html = log_in(client).get("/work/RUN-2/panel").text
+    assert 'data-jira-delivery="delivered"' in html and "Jira 후속 이슈 만들기 → SHOP-100 · 반영됨" in html
+
+
+def test_worker_passes_the_public_url(conn, spawned, settings, store, clock):
+    _, new = spawned
+    jira = FakeJiraCreator()
+    worker = jira_worker(dataclasses.replace(settings, public_url=PUBLIC), store, clock, jira)
+    worker._sync_jira = lambda conn, report: None
+    worker.tick()
+    (created,) = jira.created
+    assert f"{PUBLIC}{work_path('RUN-2')}" in json.dumps(created["description"], ensure_ascii=False)

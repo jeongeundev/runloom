@@ -10,6 +10,12 @@ phase 18" 상태 옮기기·오류 분류).
   뒤로 물러나 그 워크스페이스의 이번 바퀴를 멈춘다. 5xx·연결 오류는 백오프, `MAX_ATTEMPTS` 번째에 `failed`.
   400·403·404·전환 없음은 `failed` — 다시 보내지 않는다. 반영 실패는 업무 상태·실행과 따로 남고 알림은 보내지 않는다.
 - Jira 상태는 완료 판정 근거가 아니다 — 여기서는 Runloom 상태를 Jira 로 옮기기만 한다.
+
+후속 이슈 등록(ADR-0024 결정 13 — 행은 `repo.create_followup_once` 의 새 업무 가지에서 생긴다):
+- 같은 프로젝트에 이슈를 만들고(이슈 유형 = 설정 이름의 `choices_json` id, 라벨 `runloom`·`runloom-RUN-<n>`), 한
+  트랜잭션에서 행 `delivered` + 새 업무 원본 칸을 채운 뒤 원인 이슈와 `Relates` 로 잇는다(링크 생략·실패는 `note` 만).
+- 생성 POST 의 응답을 잃으면(5xx·연결 오류) `unknown` — 다음 바퀴에 라벨 JQL 로 먼저 찾아 있으면 그것으로 기록하고,
+  없을 때만 다시 POST 한다(두 번 만들지 않는다). claim 이 만료된 `sending` 도 같다. 400·403·404 는 `failed`.
 """
 
 from collections.abc import Callable
@@ -27,7 +33,18 @@ from workflow.adapters.jira_client import (
     JiraUnauthorized,
     JiraUnavailable,
 )
-from workflow.domain.jira_intake import already_in, choose_transition
+from workflow.contracts.v1 import format_work_key
+from workflow.domain.adf import markdown_to_adf
+from workflow.domain.jira_intake import (
+    JIRA_LINK_TYPE,
+    already_in,
+    choose_transition,
+    followup_description,
+    followup_label,
+    followup_labels,
+    followup_summary,
+)
+from workflow.domain.work_keys import work_path
 from workflow.server.github_delivery import (
     BACKOFF_SECONDS,
     CLAIM_SECONDS,
@@ -51,6 +68,14 @@ RATE_LIMITED = "Jira 요청 한도 — 잠시 뒤"
 UNAVAILABLE = "Jira 응답 없음 — 다시 시도"
 GAVE_UP = "Jira 응답 없음 — {n}회 시도 뒤 멈춤"
 REJECTED = "Jira 가 요청을 받지 않음"
+# 후속 이슈 등록
+CREATE_BAD_REQUEST = "필수 칸 — {message} — Jira 프로젝트 설정 확인"
+CREATE_FORBIDDEN = "권한 없음 — 이슈를 만들 수 없음"
+CREATE_NOT_FOUND = "프로젝트를 찾을 수 없음"
+NO_ISSUE_TYPE = "이슈 유형 {name} 없음 — 목록 새로 고침"
+SEVERAL_FOUND = "같은 라벨 이슈 {n}개 — 가장 앞 것으로"
+NO_LINK_TYPE = f"링크 유형 {JIRA_LINK_TYPE} 없음 — 링크 생략"
+LINK_FAILED = "링크 실패 — {reason}"
 
 
 @dataclass
@@ -59,7 +84,7 @@ class JiraDeliveryReport:
     skipped: int = 0  # 다음 순간으로 대체·Jira 에서 이미 완료 범주
     failed: int = 0  # 전환 없음·400·403·404·시도 상한
     deferred: int = 0  # 일시 실패 — 물러났다가 다시
-    uncertain: int = 0  # 반영 불확실(`unknown`) — 전환에는 없다(후속 이슈 생성용)
+    uncertain: int = 0  # 반영 불확실(`unknown`) — 후속 이슈 생성 응답을 잃음(전환에는 없다)
     rate_limited: bool = False  # 어느 워크스페이스의 이번 바퀴를 멈췄다
 
     def any(self) -> bool:
@@ -71,16 +96,16 @@ class _Stop(Exception):
 
 
 def deliver_jira_updates(
-    conn: Connection, client_for: Callable[[str], JiraClient | None], now: str
+    conn: Connection, client_for: Callable[[str], JiraClient | None], now: str, *, public_url: str = ""
 ) -> JiraDeliveryReport:
     """보낼 차례인 행을 생긴 순으로 보낸다. `client_for(session_id)` 가 None 이면(끊김·토큰 없음·토큰 오류) 그
-    워크스페이스 행은 건드리지 않는다 — 시도 수도 늘지 않는다."""
+    워크스페이스 행은 건드리지 않는다 — 시도 수도 늘지 않는다. `public_url` 은 후속 이슈 본문의 Runloom 업무 주소."""
     report = JiraDeliveryReport()
     clients: dict[str, JiraClient | None] = {}
     stopped: set[str] = set()
     for row in repo.jira_deliveries_due(conn, now):
         session_id = row["session_id"]
-        if row["action"] != "transition" or session_id in stopped:
+        if session_id in stopped:
             continue
         if session_id not in clients:
             clients[session_id] = client_for(session_id)
@@ -91,7 +116,10 @@ def deliver_jira_updates(
                                         claim_until=_plus_seconds(now, CLAIM_SECONDS)):
             continue
         try:
-            _transition(conn, client, row, row["attempts"] + 1, now, report)
+            if row["action"] == "create_issue":
+                _create_issue(conn, client, row, row["attempts"] + 1, now, report, public_url)
+            else:
+                _transition(conn, client, row, row["attempts"] + 1, now, report)
         except _Stop:
             stopped.add(session_id)
     return report
@@ -151,6 +179,91 @@ def _transition(
     report.delivered += 1
 
 
+def _create_issue(
+    conn: Connection, client: JiraClient, row: Row, attempts: int, now: str, report: JiraDeliveryReport,
+    public_url: str,
+) -> None:
+    def record(state: str, *, error: str | None = None, next_at: str | None = None) -> None:
+        repo.record_jira_delivery(conn, row["delivery_id"], attempts, state=state, now=now, last_error=error,
+                                  next_at=next_at)
+
+    session_id = row["session_id"]
+    project = repo.jira_project_row(conn, row["source_id"])
+    work = repo.get_work_item(conn, session_id, row["work_item_id"])
+    site_url = repo.get_jira_connection(conn, session_id)["site_url"]
+    work_key = format_work_key(work["key_number"])
+    uncertain = row["state"] in ("unknown", "sending")  # 전에 POST 가 닿았을 수 있다
+    posting = False
+    try:
+        if uncertain:
+            found = sorted(client.find_issues_by_label(project["project_id"], followup_label(work["key_number"])),
+                           key=lambda ref: int(ref.issue_id))
+            if found:
+                note = SEVERAL_FOUND.format(n=len(found)) if len(found) > 1 else None
+                _created(conn, client, row, attempts, found[0], site_url, now, report, note)
+                return
+        choices = repo.get_jira_choices(conn, session_id, row["source_id"])
+        type_id = next((t.id for t in choices.issue_types if t.name.casefold() == row["target"].casefold()), None)
+        if type_id is None:
+            record("failed", error=NO_ISSUE_TYPE.format(name=row["target"]))
+            report.failed += 1
+            return
+        cause = repo.get_jira_issue(conn, session_id, row["source_id"], row["cause_issue_id"])
+        description = followup_description(
+            work_key=work_key, cause_key=cause["issue_key"] if cause is not None else row["cause_issue_id"],
+            request=work["request"], work_url=f"{public_url}{work_path(work_key)}" if public_url else None,
+        )
+        posting = True
+        ref = client.create_issue(project["project_id"], type_id, followup_summary(work["title"]),
+                                  markdown_to_adf(description), followup_labels(work["key_number"]))
+    except JiraUnauthorized:
+        record("unknown" if uncertain else "pending", error=UNAUTHORIZED)
+        repo.mark_jira_auth_failed(conn, session_id, now=now)
+        raise _Stop from None
+    except JiraRateLimited as exc:
+        if _give_up(record, attempts, report):
+            return
+        record("unknown" if uncertain else "pending", error=RATE_LIMITED,
+               next_at=_plus_seconds(now, max(MIN_RATE_LIMIT_SECONDS, exc.retry_after)))
+        report.rate_limited = True
+        raise _Stop from None
+    except JiraUnavailable:
+        if _give_up(record, attempts, report):
+            return
+        backoff = min(BACKOFF_SECONDS * 2 ** (attempts - 1), MAX_BACKOFF_SECONDS)
+        if posting or uncertain:  # POST 가 닿았는지 모른다 — 다음 바퀴에 라벨로 먼저 찾는다
+            record("unknown", error=UNAVAILABLE, next_at=_plus_seconds(now, backoff))
+            report.uncertain += 1
+        else:
+            record("pending", error=UNAVAILABLE, next_at=_plus_seconds(now, backoff))
+            report.deferred += 1
+        return
+    except (JiraBadRequest, JiraForbidden, JiraNotFound, JiraError, ValueError) as exc:
+        record("failed", error=_create_rejection(exc))
+        report.failed += 1
+        return
+    _created(conn, client, row, attempts, ref, site_url, now, report, None)
+
+
+def _created(conn: Connection, client: JiraClient, row: Row, attempts: int, ref, site_url: str, now: str,
+             report: JiraDeliveryReport, note: str | None) -> None:
+    """이슈 기록(행 + 새 업무 원본 칸, 한 트랜잭션) 뒤 원인 이슈와 잇는다. 링크는 이슈를 다시 만들 이유가 아니다."""
+    if not repo.record_jira_issue_created(conn, row["delivery_id"], attempts, issue_id=ref.issue_id, key=ref.key,
+                                          site_url=site_url, now=now, note=note):
+        return
+    report.delivered += 1
+    try:
+        type_name = next((t for t in client.issue_link_types() if t.casefold() == JIRA_LINK_TYPE.casefold()), None)
+        if type_name is None:
+            link_note = NO_LINK_TYPE
+        else:
+            client.link_issues(type_name, inward_issue_id=row["cause_issue_id"], outward_issue_id=ref.issue_id)
+            return
+    except (JiraError, ValueError) as exc:
+        link_note = LINK_FAILED.format(reason=_link_reason(exc))
+    repo.note_jira_delivery(conn, row["delivery_id"], " · ".join(x for x in (note, link_note) if x))
+
+
 def _give_up(record: Callable[..., None], attempts: int, report: JiraDeliveryReport) -> bool:
     if attempts < MAX_ATTEMPTS:
         return False
@@ -167,4 +280,24 @@ def _rejection(exc: Exception) -> str:
         return FORBIDDEN
     if isinstance(exc, JiraNotFound):
         return NOT_FOUND
+    return REJECTED
+
+
+def _create_rejection(exc: Exception) -> str:
+    if isinstance(exc, JiraBadRequest):
+        return CREATE_BAD_REQUEST.format(message=exc.message or "Jira 오류")
+    if isinstance(exc, JiraForbidden):
+        return CREATE_FORBIDDEN
+    if isinstance(exc, JiraNotFound):
+        return CREATE_NOT_FOUND
+    return REJECTED
+
+
+def _link_reason(exc: Exception) -> str:
+    if isinstance(exc, JiraForbidden):
+        return "권한 없음"
+    if isinstance(exc, JiraNotFound):
+        return "이슈를 찾을 수 없음"
+    if isinstance(exc, (JiraUnavailable, JiraRateLimited)):
+        return "Jira 응답 없음"
     return REJECTED

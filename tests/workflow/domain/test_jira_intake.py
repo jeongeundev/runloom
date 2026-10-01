@@ -303,3 +303,40 @@ def test_already_in_status():
     assert jira_intake.already_in("In Review", " in review")
     assert jira_intake.already_in("진행 중", "진행 중")
     assert not jira_intake.already_in("대기", "진행 중")
+
+
+# --- 후속 이슈 등록 (step 8) ---
+
+def test_followup_labels_and_key_number():
+    assert jira_intake.followup_label(13) == "runloom-RUN-13"
+    assert jira_intake.followup_labels(13) == ("runloom", "runloom-RUN-13")
+    assert jira_intake.JIRA_LINK_TYPE == "Relates"
+    for bad in (0, -1, True, "13", 1.5):
+        with pytest.raises(ValueError):
+            jira_intake.followup_label(bad)
+    assert jira_intake.followup_key_number(["frontend", "runloom", "runloom-RUN-13"]) == 13
+    assert jira_intake.followup_key_number(["runloom"]) is None
+    assert jira_intake.followup_key_number([]) is None
+    # 형식이 정확히 같을 때만 — 접두·접미·0 시작·소문자 키는 아니다
+    for label in ("x-runloom-RUN-13", "runloom-RUN-13x", "runloom-RUN-013", "runloom-run-13", "runloom-RUN-"):
+        assert jira_intake.followup_key_number([label]) is None
+
+
+def test_followup_description_shape():
+    text = jira_intake.followup_description(work_key="RUN-13", cause_key="SHOP-12", request="  검토 지적 고치기\n- 하나  ",
+                                            work_url="https://runloom.example/work/RUN-13")
+    assert text == (
+        "Runloom 후속 업무 RUN-13 — SHOP-12 의 결과로 생겼습니다.\n\n"
+        "검토 지적 고치기\n- 하나\n\n"
+        "Runloom 업무: https://runloom.example/work/RUN-13"
+    )
+    # 공개 주소가 없으면 그 줄이 없고, 빈 요청이면 요청 절이 없다. 요청은 앞 2000자만
+    assert jira_intake.followup_description(work_key="RUN-2", cause_key="SHOP-1", request="", work_url=None) == (
+        "Runloom 후속 업무 RUN-2 — SHOP-1 의 결과로 생겼습니다.")
+    long = jira_intake.followup_description(work_key="RUN-2", cause_key="SHOP-1", request="가" * 2500, work_url=None)
+    assert long.endswith("\n\n" + "가" * 2000)
+
+
+def test_followup_summary_is_cut_at_255():
+    assert jira_intake.followup_summary("짧은 제목") == "짧은 제목"
+    assert jira_intake.followup_summary("가" * 300) == "가" * 255

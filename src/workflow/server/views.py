@@ -468,6 +468,13 @@ def task_context(
 # 반영 상태는 `SourceDelivery.state` 그대로다. 표시 라벨에서 실행 여부를 거꾸로 추정하지 않는다.
 
 # 원본 반영 상태 라벨 (ARCHITECTURE "원본 반영 상태") — Task(Agent 작업) 상태와 따로 보인다
+def _jira_delivery_text(delivery: Row) -> str:
+    if delivery["action"] == "create_issue":
+        key = delivery["result_issue_key"]
+        return f"후속 이슈 만들기 → {key}" if key else "후속 이슈 만들기"
+    return f"상태 → {delivery['target']}"
+
+
 DELIVERY_LABELS = {
     "pending": "반영 대기", "sending": "반영 대기", "delivered": "반영됨", "unknown": "반영 불확실", "failed": "반영 실패",
 }
@@ -911,12 +918,11 @@ def work_panel_context(
         "pull_request": pull_request,
         "pulls": pulls,
         "comments": comments,
-        # Jira 상태 옮기기(ADR-0024 결정 12) — 업무 상태와 따로. `skipped`(대체·이미 완료 범주)는 보이지 않는다
+        # Jira 상태 옮기기·후속 이슈(ADR-0024 결정 12·13) — 업무 상태와 따로. `skipped`(대체·이미 완료 범주)는 보이지 않는다
         "jira_deliveries": [
-            {"state": d["state"], "text": f"상태 → {d['target']}", "label": DELIVERY_LABELS[d["state"]],
+            {"state": d["state"], "text": _jira_delivery_text(d), "label": DELIVERY_LABELS[d["state"]],
              "detail": " · ".join(x for x in (d["last_error"], d["note"]) if x)}
-            for d in repo.list_jira_deliveries(conn, work_item_id)
-            if d["action"] == "transition" and d["state"] != "skipped"
+            for d in repo.list_jira_deliveries(conn, work_item_id) if d["state"] != "skipped"
         ],
         "draft_pulls": [p for p in pulls if p["runloom"] and p["url"] is not None],
         "events": [{"at": e["occurred_at"], "text": _event_line(e, names)}

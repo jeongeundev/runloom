@@ -2817,6 +2817,11 @@ def upsert_jira_issue(
                                delegated_by="followup", now=now)
             _set_jira_source_fields(conn, followup["work_item_id"], fields, now)
             return JiraUpsert(followup["work_item_id"], False, True)
+        key_number = jira_intake.followup_key_number(snapshot.labels)
+        if key_number is not None:  # Runloom 이 만든 후속 이슈 — 새 업무를 만들지 않는다
+            work_item_id = _reconcile_jira_followup(conn, session_id, project.source_id, snapshot, digest, fields,
+                                                    key_number=key_number, now=now)
+            return JiraUpsert(work_item_id, False, work_item_id is not None)
         kind = get_kind(conn, session_id, jira_intake.issue_kind(mappings, snapshot) or "")
         if not jira_intake.accept(project, snapshot) or kind is None:
             return JiraUpsert(None, False, False)
@@ -2831,6 +2836,35 @@ def upsert_jira_issue(
         _insert_jira_issue(conn, project.source_id, snapshot, digest, fields, task_id=task["task_id"],
                            delegated_by=None, now=now)
         return JiraUpsert(work_item_id, True, True)
+
+
+def _reconcile_jira_followup(conn: Connection, session_id: str, source_id: str, snapshot: JiraIssueSnapshot,
+                             digest: str, fields: jira_intake.JiraWorkFields, *, key_number: int,
+                             now: str) -> str | None:
+    """라벨 `runloom-RUN-<n>` 이 붙은 처음 보는 이슈 — 생성 POST 는 닿았는데 기록 전에 응답을 잃은 경우. RUN-n 이 같은
+    프로젝트의 원본 이슈 없는 Jira 업무면 원본 칸·스냅숏 행(`followup`)을 붙이고 그 업무의 생성 행을 끝낸다.
+    아니면 None(건너뜀). 자체 BEGIN 없음."""
+    work = _one(
+        conn,
+        "SELECT w.work_item_id, t.task_id FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+        " WHERE w.session_id = ? AND w.key_number = ? AND w.source_type = 'jira' AND w.source_id = ?"
+        " AND w.source_item_id IS NULL ORDER BY t.created_at, t.task_id LIMIT 1",
+        (session_id, key_number, source_id),
+    )
+    if work is None:
+        return None
+    _insert_jira_issue(conn, source_id, snapshot, digest, fields, task_id=work["task_id"], delegated_by="followup",
+                       now=now)
+    _set_jira_source_fields(conn, work["work_item_id"], fields, now)
+    conn.execute("UPDATE work_items SET source_item_id = ? WHERE work_item_id = ?",
+                 (fields.source_item_id, work["work_item_id"]))
+    conn.execute(
+        "UPDATE jira_deliveries SET state = 'delivered', result_issue_id = ?, result_issue_key = ?, last_error = NULL,"
+        " note = '가져오기로 조정', next_at = NULL, delivered_at = ?, updated_at = ?"
+        " WHERE work_item_id = ? AND action = 'create_issue' AND state != 'delivered'",
+        (snapshot.issue_id, snapshot.key, now, now, work["work_item_id"]),
+    )
+    return work["work_item_id"]
 
 
 def _insert_jira_issue(conn: Connection, source_id: str, snapshot: JiraIssueSnapshot, digest: str,
@@ -2943,6 +2977,49 @@ def record_jira_delivery(
         (state, last_error, note, next_at, result_issue_id, result_issue_key, state, now, now, delivery_id, attempts),
     )
     return cur.rowcount == 1
+
+
+def queue_jira_issue_creation(conn: Connection, work_item_id: str, cause_work_item_id: str, *, now: str) -> bool:
+    """원인 업무가 켜진 Jira 프로젝트의 원본 이슈이고 후속 이슈 유형이 설정돼 있으면 새 업무(`work_item_id`)의 이슈 생성
+    행 하나(새 업무당 한 번). `create_followup_once` 의 새 업무 가지가 부른다 — 자체 BEGIN 없음."""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO jira_deliveries (delivery_id, session_id, source_id, work_item_id, action, moment,"
+        " target, cause_issue_id, dedupe_key, state, created_at, updated_at) SELECT ?, c.session_id, p.source_id, ?,"
+        " 'create_issue', NULL, p.followup_issue_type, c.source_item_id, ?, 'pending', ?, ? FROM work_items c"
+        " JOIN jira_projects p ON p.source_id = c.source_id AND p.session_id = c.session_id"
+        " WHERE c.work_item_id = ? AND c.source_type = 'jira' AND c.source_item_id IS NOT NULL AND p.enabled = 1"
+        " AND p.followup_issue_type IS NOT NULL",
+        (f"jdl-{secrets.token_hex(4)}", work_item_id, f"create_issue:{work_item_id}", now, now, cause_work_item_id),
+    )
+    return cur.rowcount == 1
+
+
+def record_jira_issue_created(
+    conn: Connection, delivery_id: str, attempts: int, *, issue_id: str, key: str, site_url: str, now: str,
+    note: str | None = None,
+) -> bool:
+    """생성(또는 라벨로 찾은) 이슈를 한 트랜잭션에 기록 — 행 `delivered` + 새 업무 `source_item_id`·`source_key`·
+    `source_url`. claim(fence = `attempts`)을 잃었으면 아무것도 쓰지 않고 False."""
+    with _tx(conn):
+        cur = conn.execute(
+            "UPDATE jira_deliveries SET state = 'delivered', result_issue_id = ?, result_issue_key = ?,"
+            " last_error = NULL, note = ?, next_at = NULL, delivered_at = ?, updated_at = ?"
+            " WHERE delivery_id = ? AND state = 'sending' AND attempts = ?",
+            (issue_id, key, note, now, now, delivery_id, attempts),
+        )
+        if cur.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE work_items SET source_item_id = ?, source_key = ?, source_url = ?, updated_at = ?"
+            " WHERE work_item_id = (SELECT work_item_id FROM jira_deliveries WHERE delivery_id = ?)",
+            (issue_id, key, jira_intake.issue_url(site_url, key), now, delivery_id),
+        )
+        return True
+
+
+def note_jira_delivery(conn: Connection, delivery_id: str, note: str) -> None:
+    """끝난 행에 덧붙이는 기록 — 후속 이슈의 링크 생략·실패."""
+    conn.execute("UPDATE jira_deliveries SET note = ? WHERE delivery_id = ?", (note, delivery_id))
 
 
 def list_jira_deliveries(conn: Connection, work_item_id: str) -> list[Row]:
@@ -3347,12 +3424,16 @@ def create_followup_once(
             cause_work = get_work_item(conn, spec.session_id, work_item_id)
             if cause_work is None:
                 raise NotFound(f"work item {work_item_id}")
+            # Jira 원인의 키·주소는 복사하지 않는다 — 새 업무의 원본 칸은 Jira 에 후속 이슈를 만든 뒤 채운다(ADR-0024 결정 13)
+            copy_key = cause_work["source_type"] != "jira"
             spawned = _work_item_for_task(
                 conn, task, now, source_type=cause_work["source_type"], source_id=cause_work["source_id"],
-                source_key=cause_work["source_key"], source_url=cause_work["source_url"],
+                source_key=cause_work["source_key"] if copy_key else None,
+                source_url=cause_work["source_url"] if copy_key else None,
             )
             link_work_items(conn, from_work_item_id=work_item_id, to_work_item_id=spawned, type="spawned_from",
                             cause_execution_id=spec.cause_execution_id, now=now)
+            queue_jira_issue_creation(conn, spawned, work_item_id, now=now)
             if cause_work["requested_by_member_id"] is not None:  # 같은 사람이 맡긴 일의 결과
                 set_work_requester(conn, spawned, cause_work["requested_by_member_id"])
             work_item_ids.append(spawned)
