@@ -23,7 +23,7 @@ from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -36,6 +36,10 @@ OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
 # phase 9 (ADR-0015): Task 이벤트 종류. ARCHITECTURE "측정 — phase 9" 이벤트 기록 규칙.
 TASK_EVENT_TYPES = ("status_changed", "blocked", "ready")
+
+# phase 20 (ADR-0026): 설정 변경 기록의 영역·동작. ARCHITECTURE "모니터링 — phase 20" 기록 지점 표.
+CONFIG_CHANGE_AREAS = ("kind", "rule", "source", "mapping", "triage_criteria", "triage_autostart")
+CONFIG_CHANGE_ACTIONS = ("add", "delete", "change")
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
@@ -838,6 +842,23 @@ CREATE TABLE IF NOT EXISTS triage_autostart (
 """
 
 
+# phase 20 (ADR-0026): 설정 번호를 올릴 때마다 무엇을·누가 바꿨는지. 추가 전용 — 번호 한 번 = 한 행.
+_V16_TABLES = f"""
+-- 설정 변경 기록. revision = 바뀐 뒤의 설정 번호. subject 는 표시용 이름(값·본문·비밀 없음). 멤버 NULL = 멤버 없는 경로.
+CREATE TABLE IF NOT EXISTS config_changes (
+  id           INTEGER PRIMARY KEY,
+  session_id   TEXT NOT NULL REFERENCES sessions(session_id),
+  revision     INTEGER NOT NULL CHECK (revision >= 1),
+  area         TEXT NOT NULL CHECK (area IN ({_in(CONFIG_CHANGE_AREAS)})),
+  action       TEXT NOT NULL CHECK (action IN ({_in(CONFIG_CHANGE_ACTIONS)})),
+  subject      TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 200),
+  by_member_id TEXT REFERENCES members(member_id),
+  occurred_at  TEXT NOT NULL,
+  UNIQUE (session_id, revision)
+);
+"""
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -1045,7 +1066,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -1351,8 +1372,18 @@ def _migrate_14_to_15(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 15")
 
 
+def _migrate_15_to_16(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 설정 변경 기록 표만 더한다 — 과거 변경은 추정해 채우지 않는다
+    (v16 이전 설정 번호는 화면에서 "기록 없음"). 그 밖 표·행은 바꾸지 않는다."""
+    for statement in _statements(_V16_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 16")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~14 는 15 까지 차례로(4 → 5 → … → 14 → 15) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~15 는 16 까지 차례로(4 → 5 → … → 15 → 16) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다.
 
@@ -1373,10 +1404,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
                 steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
                          _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13,
-                         _migrate_13_to_14, _migrate_14_to_15)
+                         _migrate_13_to_14, _migrate_14_to_15, _migrate_15_to_16)
                 for step in steps[row[0] - 4:]:
                     step(conn)
             elif row[0] != SCHEMA_VERSION:

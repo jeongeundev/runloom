@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "schema-v16",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T04:57:02+0900",
+      "summary": "새: tests/workflow/adapters/fixtures/schema_v15.sql(빈 v15 DB sqlite_master 원문, v14 fixture 와 같은 생성법). 수정: adapters/db.py(SCHEMA_VERSION 16, CONFIG_CHANGE_AREAS·CONFIG_CHANGE_ACTIONS, _V16_TABLES config_changes — id·session_id FK·revision>=1·area/action CHECK·subject 1~200자·by_member_id FK NULL 허용·occurred_at·UNIQUE(session_id, revision), _migrate_15_to_16 표만·FK 검사·버전 16, init_schema 4~15 → 16), adapters/repo.py(record_config_change 자체 BEGIN 없음·200자 넘으면 199자+…, list_config_changes revision·id 순 + by_member_name LEFT JOIN — 아직 호출자 없음). backup.py 변경 없음(같은 init_schema). 테스트: test_db(v16 상수·표·FK·UNIQUE·CHECK, _v15_db fixture → 16 행 보존·기존 표 재생성 없음·빈 기록·멱등, FK 위반 롤백, 빈 DB = v14/v15 올린 DB, v4/v9/v14 → 16), test_repo(기록·순서·세션 분리·자르기·호출자 트랜잭션·CHECK), test_backup(v15 백업 → 16 왕복, 기존 표 수 단정에 CONFIG_CHANGES_EMPTY 추가), 버전 리터럴 15→16(test_db·test_backup·e2e triage/jira). 검증: pytest 4060 passed·72 skipped, ruff 통과. 다음 step 주의: bump_config_revision 은 아직 옛 시그니처 — step 2 에서 area·action·subject·member_id·now 를 받아 record_config_change 를 부르게 바꾼다.",
+      "completed_at": "2026-10-02T05:04:41+0900"
     },
     {
       "step": 2,

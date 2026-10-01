@@ -57,6 +57,7 @@ TABLES = {
     "triage_criteria",
     "triage_logs",
     "triage_autostart",
+    "config_changes",
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 PHASE12_TABLES = {"task_pull_requests", "notifications"}
@@ -65,7 +66,9 @@ PHASE15_TABLES = {"login_sessions", "member_invites"}
 PHASE16_TABLES = {"work_pull_requests"}
 PHASE18_TABLES = {"jira_connections", "jira_projects", "jira_issues", "jira_deliveries"}
 PHASE19_TABLES = {"triage_criteria", "triage_logs", "triage_autostart"}
-V14_TABLES = TABLES - PHASE19_TABLES
+PHASE20_TABLES = {"config_changes"}
+V15_TABLES = TABLES - PHASE20_TABLES
+V14_TABLES = V15_TABLES - PHASE19_TABLES
 V13_TABLES = V14_TABLES - PHASE18_TABLES  # v12 도 같은 표 집합(v13 은 칸·CHECK 만 바꿨다)
 V11_TABLES = V13_TABLES - PHASE16_TABLES
 V10_TABLES = V11_TABLES - PHASE15_TABLES
@@ -281,8 +284,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_15():
-    assert SCHEMA_VERSION == 15
+def test_schema_version_is_16():
+    assert SCHEMA_VERSION == 16
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -1100,12 +1103,12 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c.close()
 
 
-def test_migrates_v4_all_the_way_to_v15(db_path):
+def test_migrates_v4_all_the_way_to_v16(db_path):
     c = _v4_db(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 15
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
     assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
@@ -1878,12 +1881,12 @@ def test_fresh_schema_matches_v10_migrated_schema(tmp_path):
 
 
 @pytest.mark.parametrize("make", [_v4_db, _v5_db, _v6_db, _v7_db, _v8_db, _v9_db, _v10_db])
-def test_migrates_v4_to_v10_all_the_way_to_v15(db_path, make):
+def test_migrates_v4_to_v10_all_the_way_to_v16(db_path, make):
     c = make(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 15
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
     assert TABLES <= _table_names(c)
     for table, columns in V11_COLUMNS.items():
         assert columns <= _columns(c, table), table
@@ -3037,7 +3040,7 @@ def test_migrates_old_versions_to_v15_with_triage_seeds(db_path, make):
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 15
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
     sessions = [r[0] for r in c.execute("SELECT session_id FROM sessions ORDER BY session_id")]
     assert sessions
     assert [r[0] for r in c.execute("SELECT session_id FROM kinds WHERE kind = 'triage' ORDER BY session_id")] == sessions
@@ -3047,6 +3050,167 @@ def test_migrates_old_versions_to_v15_with_triage_seeds(db_path, make):
         caps = json.loads(raw)
         fixes = [cap["scope"] for cap in caps if cap["code"] == "code.fix"]
         assert [cap["scope"] for cap in caps if cap["code"] == "code.triage"] == fixes
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    c.close()
+
+
+# --- phase 20: v15 → v16 설정 변경 기록 표 (ADR-0026, ARCHITECTURE "스키마 v16") ---------------------------------------
+
+V15_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v15.sql").read_text()
+CONFIG_CHANGE_COLUMNS = ["id", "session_id", "revision", "area", "action", "subject", "by_member_id", "occurred_at"]
+_CHANGE_INSERT = ("INSERT INTO config_changes (session_id, revision, area, action, subject, by_member_id, occurred_at)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?)")
+
+
+def test_v16_constants():
+    from workflow.adapters import db
+
+    assert db.CONFIG_CHANGE_AREAS == ("kind", "rule", "source", "mapping", "triage_criteria", "triage_autostart")
+    assert db.CONFIG_CHANGE_ACTIONS == ("add", "delete", "change")
+
+
+def test_fresh_db_has_v16_config_changes_table_keys_and_index(conn):
+    assert PHASE20_TABLES <= _table_names(conn)
+    assert _column_lists(conn, ["config_changes"]) == {"config_changes": CONFIG_CHANGE_COLUMNS}
+    assert _foreign_keys(conn, "config_changes") == {
+        ("sessions", "session_id", "session_id"), ("members", "by_member_id", "member_id")}
+    unique = [r for r in conn.execute("PRAGMA index_list(config_changes)") if r["unique"]]
+    assert [[c["name"] for c in conn.execute(f"PRAGMA index_info({r['name']})")] for r in unique] == [
+        ["session_id", "revision"]]
+
+
+def test_v16_config_change_checks(conn):
+    _v11_base(conn)
+    conn.execute(_CHANGE_INSERT, ("s1", 2, "kind", "add", "classify", "mem-00000001", NOW))
+    conn.execute(_CHANGE_INSERT, ("s1", 3, "triage_criteria", "change", "v2", None, NOW))  # 멤버 없는 경로
+    conn.execute(_CHANGE_INSERT, ("s2", 2, "rule", "delete", "bug_fix→code_review", None, NOW))  # 세션마다 번호
+    for params in (
+        ("s1", 4, "agent", "add", "x", None, NOW),  # 모르는 영역
+        ("s1", 4, "kind", "rename", "x", None, NOW),  # 모르는 동작
+        ("s1", 4, "kind", "add", "", None, NOW),  # 빈 이름
+        ("s1", 4, "kind", "add", "x" * 201, None, NOW),  # 200자 초과
+        ("s1", 0, "kind", "add", "x", None, NOW),  # 번호는 1 이상
+        ("s1", 2, "kind", "delete", "classify", None, NOW),  # 같은 번호 두 행
+        ("s1", 4, "kind", "add", "x", "mem-nope", NOW),  # 없는 멤버
+        ("s-nope", 2, "kind", "add", "x", None, NOW),  # 없는 워크스페이스
+        ("s1", 4, None, "add", "x", None, NOW),
+        ("s1", 4, "kind", "add", "x", None, None),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_CHANGE_INSERT, params)
+    conn.execute(_CHANGE_INSERT, ("s1", 4, "kind", "add", "x" * 200, None, NOW))
+
+
+def _v15_db(db_path):
+    """phase 19 서버가 남긴 모양의 v15 DB — v14 모양 행(워크스페이스 s1·s2, 업무·단계·실행·Agent)에 내장 triage 종류·
+    기준 v1·판단 로그 하나·자동 시작 한 행과 설정 번호 3."""
+    from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
+
+    c = connect(db_path)
+    c.executescript(V15_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (15)")
+    for session_id in ("s1", "s2"):
+        c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (session_id, NOW))
+        for spec in BUILTIN_KINDS:
+            c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+                      (session_id, spec.kind, spec.model_dump_json(), NOW))
+        c.execute(_CRITERIA_INSERT, (session_id, 1, TRIAGE_CRITERIA_V1, None, NOW))
+    c.execute("UPDATE sessions SET config_revision = 3 WHERE session_id = 's1'")
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+              " VALUES ('mem-00000001', 's1', '관리자', 'admin', ?)", (NOW,))
+    c.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json, connection_state)"
+              " VALUES ('agt-00000001', 'billing', 'personal', 'local', ?, 'online')", (json.dumps([
+                  {"code": "code.fix", "scope": {"repository_id": "billing"}},
+                  {"code": "code.triage", "scope": {"repository_id": "billing"}}]),))
+    c.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status,"
+              " status_reason, source_type, created_at, updated_at) VALUES ('wi-000000000001', 's1', 1, '쿠폰 오류',"
+              " 'r', 'bug_fix', '새로 들어옴', '판단 중', 'manual', ?, ?)", (NOW, NOW))
+    _insert_task(c, "t1", "s1", "triage")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001' WHERE task_id = 't1'")
+    c.execute("INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+              " status, created_at) VALUES ('e1', 't1', 1, 'k', 'agt-00000001', 'triage', '{}', 'queued', ?)", (NOW,))
+    _insert_triage_log(c, agent_id="agt-00000001")
+    c.execute(_AUTOSTART_INSERT, ("s1", "bug_fix", 1, 1, 0.8, "mem-00000001", NOW))
+    return c
+
+
+def test_v15_fixture_is_the_phase19_schema(db_path):
+    c = _v15_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 15
+    assert _table_names(c) - {"sqlite_sequence"} == V15_TABLES | {"schema_version"}
+    assert not PHASE20_TABLES & _table_names(c)
+    c.close()
+
+
+def test_migrates_v15_to_v16_adding_an_empty_config_changes_table(db_path):
+    c = _v15_db(db_path)
+    columns = _column_lists(c, V15_TABLES)
+    before = _dump(c, V15_TABLES)
+    sql_before = [tuple(r) for r in c.execute("SELECT type, name, sql, rootpage FROM sqlite_master ORDER BY name")]
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)] == [(16,)]
+    assert _column_lists(c, V15_TABLES) == columns
+    assert _dump(c, V15_TABLES) == before  # 행 그대로 — 설정 번호도
+    sql_after = [tuple(r) for r in c.execute("SELECT type, name, sql, rootpage FROM sqlite_master ORDER BY name")]
+    assert [r for r in sql_after if "config_changes" not in r[1]] == sql_before  # 기존 표는 재생성하지 않는다
+    assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0  # 과거 변경을 추정해 채우지 않는다
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    c.execute(_CHANGE_INSERT, ("s1", 4, "kind", "add", "classify", "mem-00000001", NOW))
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_v16_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v15_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    before = _dump(c, V15_TABLES)
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 15
+    assert not PHASE20_TABLES & _table_names(c)
+    assert _dump(c, V15_TABLES) == before
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    c.close()
+
+
+@pytest.mark.parametrize("old", ["v14", "v15"])
+def test_fresh_schema_matches_v15_migrated_schema(tmp_path, old):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = (_v14_db if old == "v14" else _v15_db)(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    assert _table_names(fresh) == _table_names(migrated)
+    for table in TABLES:
+        cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid"
+        assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
+        assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    assert _indexes(fresh) == _indexes(migrated)
+    sql = "SELECT name, sql FROM sqlite_master WHERE name LIKE '%config_changes%' ORDER BY name"
+    assert fresh.execute(sql).fetchall() == migrated.execute(sql).fetchall()  # CHECK 까지 같은 원문
+    fresh.close()
+    migrated.close()
+
+
+@pytest.mark.parametrize("make", [_v4_db, _v9_db, _v14_db])
+def test_migrates_old_versions_to_v16_with_empty_config_changes(db_path, make):
+    c = make(db_path)
+    c.close()
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+    assert TABLES <= _table_names(c)
+    assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     c.close()

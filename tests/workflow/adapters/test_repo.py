@@ -4425,3 +4425,62 @@ def test_execution_verify_only_flag_defaults_to_zero(cycle):
 def test_enqueue_notification_accepts_phase17_events(cycle, event):
     assert _notify(cycle, f"{event}:x", event=event) is True
     assert [r["event"] for r in repo.notifications_due(cycle, NOW, max_attempts=5)] == [event]
+
+
+# --- phase 20: 설정 변경 기록 (ARCHITECTURE "모니터링 — phase 20" 스키마 v16) ------------------------------------------
+
+
+def _admin_id(conn, session_id: str) -> str:
+    return conn.execute("SELECT member_id FROM members WHERE session_id = ? ORDER BY created_at, member_id",
+                        (session_id,)).fetchone()[0]
+
+
+def test_record_and_list_config_changes_in_revision_order_per_session(conn):
+    repo.create_session(conn, SESSION, NOW)
+    repo.create_session(conn, OTHER_SESSION, NOW)
+    admin = _admin_id(conn, SESSION)
+    conn.execute("UPDATE members SET display_name = '김관리' WHERE member_id = ?", (admin,))
+    repo.record_config_change(conn, SESSION, revision=3, area="rule", action="delete", subject="bug_fix→code_review",
+                              member_id=None, now=NOW)
+    repo.record_config_change(conn, OTHER_SESSION, revision=2, area="kind", action="add", subject="다른 곳",
+                              member_id=None, now=NOW)
+    repo.record_config_change(conn, SESSION, revision=2, area="kind", action="add", subject="classify",
+                              member_id=admin, now=NOW)
+
+    rows = repo.list_config_changes(conn, SESSION)
+    assert [(r["revision"], r["area"], r["action"], r["subject"], r["by_member_id"], r["by_member_name"],
+             r["occurred_at"]) for r in rows] == [
+        (2, "kind", "add", "classify", admin, "김관리", NOW),
+        (3, "rule", "delete", "bug_fix→code_review", None, None, NOW),  # 멤버 없는 경로 = NULL
+    ]
+    assert [r["subject"] for r in repo.list_config_changes(conn, OTHER_SESSION)] == ["다른 곳"]
+    assert repo.list_config_changes(conn, "s-none") == []
+
+
+def test_record_config_change_truncates_long_subject_and_has_no_own_transaction(conn):
+    repo.create_session(conn, SESSION, NOW)
+    conn.execute("BEGIN IMMEDIATE")  # 호출자 트랜잭션 안에서 부른다 — 자체 BEGIN 이 있으면 여기서 실패한다
+    repo.record_config_change(conn, SESSION, revision=2, area="source", action="add", subject="a" * 201,
+                              member_id=None, now=NOW)
+    repo.record_config_change(conn, SESSION, revision=3, area="source", action="add", subject="b" * 200,
+                              member_id=None, now=NOW)
+    conn.execute("ROLLBACK")
+    assert repo.list_config_changes(conn, SESSION) == []  # 호출자가 되돌리면 기록도 없다
+
+    conn.execute("BEGIN IMMEDIATE")
+    repo.record_config_change(conn, SESSION, revision=2, area="source", action="add", subject="a" * 201,
+                              member_id=None, now=NOW)
+    repo.record_config_change(conn, SESSION, revision=3, area="source", action="add", subject="b" * 200,
+                              member_id=None, now=NOW)
+    conn.execute("COMMIT")
+    assert [r["subject"] for r in repo.list_config_changes(conn, SESSION)] == ["a" * 199 + "…", "b" * 200]
+
+
+def test_record_config_change_rejects_unknown_area_action_and_repeated_revision(conn):
+    repo.create_session(conn, SESSION, NOW)
+    repo.record_config_change(conn, SESSION, revision=2, area="mapping", action="change",
+                              subject="github 2행 · jira 1행", member_id=None, now=NOW)
+    for area, action, revision in (("agent", "add", 3), ("kind", "rename", 3), ("kind", "add", 2)):
+        with pytest.raises(sqlite3.IntegrityError):
+            repo.record_config_change(conn, SESSION, revision=revision, area=area, action=action, subject="x",
+                                      member_id=None, now=NOW)

@@ -1138,6 +1138,31 @@ def bump_config_revision(conn: Connection, session_id: str) -> int:
     return get_config_revision(conn, session_id)
 
 
+def record_config_change(
+    conn: Connection, session_id: str, *, revision: int, area: str, action: str, subject: str,
+    member_id: str | None, now: str,
+) -> None:
+    """설정 변경 기록 한 행(추가 전용). 자체 BEGIN 이 없다 — 번호를 올린 호출자 트랜잭션 안에서만 부른다.
+    `subject` 는 표시용 이름이고 200자를 넘으면 199자 + `…`."""
+    if len(subject) > 200:
+        subject = subject[:199] + "…"
+    conn.execute(
+        "INSERT INTO config_changes (session_id, revision, area, action, subject, by_member_id, occurred_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (session_id, revision, area, action, subject, member_id, now),
+    )
+
+
+def list_config_changes(conn: Connection, session_id: str) -> list[Row]:
+    """세션의 설정 변경 기록 — `revision`, `id` 순. 칸 + `by_member_name`(멤버 표시 이름, 없으면 NULL)."""
+    return conn.execute(
+        "SELECT c.id, c.session_id, c.revision, c.area, c.action, c.subject, c.by_member_id, c.occurred_at,"
+        " m.display_name AS by_member_name FROM config_changes c LEFT JOIN members m ON m.member_id = c.by_member_id"
+        " WHERE c.session_id = ? ORDER BY c.revision, c.id",
+        (session_id,),
+    ).fetchall()
+
+
 def mark_operator(conn: Connection, session_id: str) -> None:
     cur = conn.execute("UPDATE sessions SET is_operator = 1 WHERE session_id = ?", (session_id,))
     _require_rowcount(cur, f"session {session_id}")
