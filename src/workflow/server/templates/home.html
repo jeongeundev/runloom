@@ -8,7 +8,7 @@
 {% set EMPTY = {'my_turn': '내 차례인 업무가 없습니다.', 'unassigned': '담당 없는 업무가 없습니다.',
                 'agent_working': '에이전트가 작업 중인 업무가 없습니다.'} %}
 {% set PRIORITY = {'high': '↑ 높음', 'normal': '– 보통', 'low': '↓ 낮음'} %}
-{% set SOURCE = {'github': 'GitHub', 'n8n': 'n8n', 'manual': '직접'} %}
+{% set SOURCE = {'github': 'GitHub', 'jira': 'Jira', 'n8n': 'n8n', 'manual': '직접'} %}
 {# 키 칸 — `RUN-n` 먼저, 원본 키는 옆에 흐리게 짧게(`acme/sandbox#3` → `sandbox#3`) #}
 {% macro key_of(row) -%}
 <span class="mono">{{ row.work_key }}</span>{% if row.source_key_short %} <span class="muted small mono">{{ row.source_key_short }}</span>{% endif %} <span class="source-badge" data-source="{{ row.source_type }}">{{ SOURCE.get(row.source_type, row.source_type) }}</span>

@@ -11,7 +11,8 @@ from workflow.server.auth import SELFHOST_SESSION_ID
 from .conftest import log_in_other_workspace
 from .test_github_api import error
 
-DEFAULT = [{"source_type": "github", "field": "kind", "source_value": "*", "runloom_value": "bug_fix"}]
+DEFAULT = [{"source_type": "github", "field": "kind", "source_value": "*", "runloom_value": "bug_fix"},
+           {"source_type": "jira", "field": "kind", "source_value": "*", "runloom_value": "bug_fix"}]
 NEW = [
     {"source_type": "github", "field": "kind", "source_value": "review", "runloom_value": "code_review"},
     {"source_type": "github", "field": "kind", "source_value": "*", "runloom_value": "bug_fix"},
@@ -39,7 +40,7 @@ def test_put_rejects_unknown_kind_or_bad_body_without_change(logged_in_client, c
     before = repo.get_config_revision(conn, SELFHOST_SESSION_ID)
     bad_kind = [{**DEFAULT[0], "runloom_value": "no_such_kind"}]
     error(logged_in_client.put("/field-mappings", json={"mappings": bad_kind}), 422, "invalid_field", "mappings")
-    for body in ({"mappings": [{**DEFAULT[0], "source_type": "jira"}]},  # 원본 종류 밖
+    for body in ({"mappings": [{**DEFAULT[0], "source_type": "linear"}]},  # 원본 종류 밖
                  {"mappings": [{**DEFAULT[0], "field": "assignee"}]},  # 필드 밖
                  {"mappings": [{**DEFAULT[0], "source_value": ""}]},
                  {"mappings": DEFAULT, "extra": 1}):
@@ -53,4 +54,4 @@ def test_every_endpoint_requires_operator_session(client, conn):
     for anonymous in (TestClient(client.app), signed):
         error(anonymous.get("/field-mappings"), 401, "unauthenticated")
         error(anonymous.put("/field-mappings", json={"mappings": NEW}), 401, "unauthenticated")
-    assert len(repo.list_field_mappings(conn, SELFHOST_SESSION_ID)) <= 1
+    assert len(repo.list_field_mappings(conn, SELFHOST_SESSION_ID)) <= len(DEFAULT)

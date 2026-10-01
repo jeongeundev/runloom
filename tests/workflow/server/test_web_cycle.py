@@ -100,12 +100,15 @@ def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, 
     assert "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 연결됨" in text
     assert "acme/billing" in text and SOURCE in text
     # 설정·미리보기·담당 연결 폼은 저장소 카드의 접힌 고급 설정에서 JSON API 로 보낸다 — 토큰 입력칸은 접힌 고급 연결 폼 하나뿐,
-    # 값을 채우지 않는다(phase 11 step 8)
+    # 값을 채우지 않는다(phase 11 step 8). Jira 칸(phase 18 step 4)도 접힌 연결 폼에 빈 토큰 칸 하나를 둔다
     assert 'data-json-action="/github/sources/preview"' in text
     assert f'data-json-action="/github/sources/{SOURCE}"' in text and 'data-json-method="PUT"' in text
     assert f'data-json-action="/github/sources/{SOURCE}/stop"' in text
     assert f'data-json-action="/github/sources/{SOURCE}/assignees"' in text
-    assert re.findall(r'<input[^>]*name="token"[^>]*>', text) == ['<input type="password" id="gh-token" name="token" autocomplete="off" required>']
+    assert re.findall(r'<input[^>]*name="token"[^>]*>', text) == [
+        '<input type="password" id="gh-token" name="token" autocomplete="off" required>',
+        '<input type="password" id="jira-token" name="token" autocomplete="off" required>',
+    ]
     assert "kim-dev" in text and FIX in text  # 담당 연결
     # 실제 업무 목록 — 원본 링크는 저장소 이름·번호로 만든다, Task 상태·대기 사유와 함께
     assert 'href="https://github.com/acme/billing/issues/1"' in text

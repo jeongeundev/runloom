@@ -2,8 +2,8 @@
 
 DB 행을 `domain.task_readiness.TaskFacts` 값으로 모아 `evaluate_readiness` 에 넘긴다. 업무 하나씩 따로 평가하고
 다른 Task 에 관한 사실(같은 로컬 등록에서 도는 수정 실행)은 값으로만 넘긴다 — 독립 업무는 서로의 대기에 묶이지 않는다.
-가져온 Task 와 직접 등록 Task 는 같은 `github_sync.task_intake_facts` 를 거친다. 검토 Task 는 원본 이슈가 없으므로
-수정 Task(선행)의 원본 상태·허용 저장소·재작업 상한을 따른다. 착수·후속 저장은 워커가 한다.
+가져온 Task 와 직접 등록 Task 는 같은 `task_intake`(Jira 행이 붙은 단계는 `jira_sync`, 그 밖은 `github_sync`)를 거친다.
+검토 Task 는 원본 이슈가 없으므로 업무 원본(`origin`)의 상태·허용 저장소·재작업 상한을 따른다. 착수·후속 저장은 워커가 한다.
 
 자동 매칭(phase 11 step 6, ADR-0017): 소스 설정의 빈 칸은 판정 때마다 `github_match.match_source` 로 계산한다(저장하지
 않음). 로컬 저장소를 매칭하는 소스의 Task 는 저장 scope 대신 매칭한 저장소로 능력을 본다. 수정 Task 는 수정 Agent·검증
@@ -15,8 +15,9 @@ DB 행을 `domain.task_readiness.TaskFacts` 값으로 모아 `evaluate_readiness
 """
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from sqlite3 import Connection, Row
+from typing import Literal
 
 from workflow.adapters import repo, secret_store
 from workflow.adapters.secret_store import SecretStore
@@ -29,8 +30,9 @@ from workflow.domain.issue_intake import IntakeFacts
 from workflow.domain.selection import Candidate
 from workflow.domain.delegation import OWNER_APPROVAL_PREFIX
 from workflow.domain.handoff_context import compose_request
-from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, TaskReadiness, evaluate_readiness
-from workflow.server import github_sync, owner_approval
+from workflow.domain.jira_intake import run_config
+from workflow.domain.task_readiness import Blocker, ExecutorFacts, TaskFacts, TaskReadiness, evaluate_readiness
+from workflow.server import github_sync, jira_sync, owner_approval
 from workflow.server.settings import Settings
 
 # 원본 이슈가 없는(직접 등록) 수정 Task 의 자동 재작업 상한 — 소스 설정의 기본값과 같다
@@ -75,25 +77,59 @@ def execution_request_text(conn: Connection, task: Row, *, with_answers: bool) -
     return compose_request(
         work_key=format_work_key(work["key_number"]), title=work["title"],
         form_fields=[(FORM_LABELS[key], form[key]["value"]) for key in FORM_HEADINGS if key in form],
-        note=work["handoff_note"], note_by=note_by, body=body,
+        note=work["handoff_note"], note_by=note_by, body=body, origin_key=origin(conn, task).origin_key,
     )
 
 
-def origin_source(conn: Connection, task: Row) -> tuple[Row | None, GitHubSourceConfig | None]:
-    """Task 가 속한 업무의 원본 칸으로 찾은 원본 이슈 매핑과 소스 설정(ADR-0020 — 선행 사슬을 거슬러 오르지 않는다).
-    GitHub 원본이 아니면 (None, None). 새 업무로 이어진 후속(원본 이슈 칸 없음)은 (None, 설정)."""
+@dataclass(frozen=True)
+class Origin:
+    """단계가 속한 업무의 원본(ARCHITECTURE "원본 조회·지시·매칭"). 원본 종류(`source_type`)로 가르는 곳은 여기 하나다."""
+
+    issue: Row | None  # GitHub `source_issues` 행 — GitHub 원본만(화면의 원본 카드·원본 댓글)
+    config: GitHubSourceConfig | None  # 실행 설정. Jira 는 연결 저장소 설정의 all_open 사본
+    state: Literal["open", "closed"] | None
+    own: bool  # 원본 행이 이 단계(또는 같은 업무의 같은 종류 단계 — 다시 맡긴 단계)에 붙어 있다 = 수정 단계
+    origin_key: str | None  # 요청문 머리의 원본 키 — Jira 만
+    unlinked: bool = False  # Jira 업무인데 프로젝트 설정·연결 저장소를 찾지 못함 — 실행하지 않고 기다린다
+
+
+_NO_ORIGIN = Origin(issue=None, config=None, state=None, own=False, origin_key=None)
+UNLINKED_REASON = "Jira 프로젝트의 연결 저장소 없음 — 연결 화면에서 저장소를 고르세요"
+
+
+def origin(conn: Connection, task: Row) -> Origin:
+    """업무의 원본 칸으로 찾는다(ADR-0020 — 선행 사슬을 거슬러 오르지 않는다). 직접 등록·n8n 은 원본 없음, 새 업무로
+    이어진 후속(원본 이슈 칸 없음)은 설정만. Jira 업무의 실행 설정은 프로젝트의 연결 저장소다(ADR-0024 결정 7)."""
     work = repo.work_item_of_task(conn, task["task_id"])
-    if work is None or work["source_type"] != "github" or work["source_id"] is None:
-        return None, None
-    issue = (
-        repo.get_source_issue(conn, task["session_id"], work["source_id"], int(work["source_item_id"]))
-        if work["source_item_id"] is not None else None
-    )
-    return issue, repo.get_github_source(conn, task["session_id"], work["source_id"])
+    if work is None or work["source_id"] is None:
+        return _NO_ORIGIN
+    session_id, item = task["session_id"], work["source_item_id"]
+    if work["source_type"] == "github":
+        issue = repo.get_source_issue(conn, session_id, work["source_id"], int(item)) if item is not None else None
+        own = issue is not None and repo.get_source_issue_by_task(conn, session_id, task["task_id"]) is not None
+        return Origin(issue=issue, config=repo.get_github_source(conn, session_id, work["source_id"]),
+                      state=issue["state"] if issue is not None else None, own=own, origin_key=None)
+    if work["source_type"] == "jira":
+        project = repo.get_jira_project(conn, session_id, work["source_id"])
+        if project is None:
+            return replace(_NO_ORIGIN, unlinked=True)
+        linked = repo.get_github_source(conn, session_id, project.github_source_id)
+        row = repo.get_jira_issue(conn, session_id, work["source_id"], item) if item is not None else None
+        own = row is not None and repo.get_jira_issue_by_task(conn, session_id, task["task_id"]) is not None
+        return Origin(issue=None, config=run_config(linked) if linked is not None else None,
+                      state=row["state"] if row is not None else None, own=own,
+                      origin_key=work["source_key"] if row is not None else None, unlinked=linked is None)
+    return _NO_ORIGIN
+
+
+def task_intake(conn: Connection, task: Row) -> IntakeFacts:
+    """준비 판정의 담당·지시 사실 — 이 단계에 Jira 이슈가 붙어 있으면 Jira 규칙, 아니면 GitHub·직접 등록 규칙."""
+    facts = jira_sync.task_intake_facts(conn, task["session_id"], task["task_id"])
+    return facts if facts is not None else github_sync.task_intake_facts(conn, task["session_id"], task["task_id"])
 
 
 def max_rework_rounds(conn: Connection, task: Row) -> int:
-    _, config = origin_source(conn, task)
+    config = origin(conn, task).config
     return config.max_rework_rounds if config is not None else DEFAULT_MAX_REWORK_ROUNDS
 
 
@@ -129,10 +165,10 @@ def _match_agent(agent: Row) -> MatchAgent:
 
 def source_match(conn: Connection, task: Row) -> SourceMatch | None:
     """Task 의 원본 소스 자동 매칭. 원본이 없으면 None. 담당 연결은 원본 이슈가 이 Task 에 있을 때(수정 Task)만 넘긴다."""
-    _, config = origin_source(conn, task)
+    config = origin(conn, task).config
     if config is None:
         return None
-    intake = github_sync.task_intake_facts(conn, task["session_id"], task["task_id"])
+    intake = task_intake(conn, task)
     return _match(config, repo.list_session_agents(conn, task["session_id"]), intake, task["chosen_agent_id"])
 
 
@@ -167,8 +203,9 @@ def _match_facts(task: Row, config: GitHubSourceConfig, match: SourceMatch, requ
 def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **overrides) -> TaskFacts:
     """Task 하나의 준비 판정 입력. `overrides` 는 호출 문맥의 값(검토 짝 Agent·선행 결과·재작업 요청 등)."""
     session_id = task["session_id"]
-    intake = github_sync.task_intake_facts(conn, session_id, task["task_id"])
-    issue, config = origin_source(conn, task)
+    intake = task_intake(conn, task)
+    found = origin(conn, task)
+    config = found.config
     agents = repo.list_session_agents(conn, session_id)
     requests = repo.list_human_requests(conn, task["task_id"])
     asked = [r["task_revision"] for r in requests if r["code"].endswith("_needs_information")]
@@ -202,13 +239,16 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
             if r["state"] == "open" and not r["cause_key"].startswith((READINESS_REQUEST_PREFIX, OWNER_APPROVAL_PREFIX))
         ),
         "owner_approvals": owner_approval.approval_facts(conn, task),
-        "source_state": issue["state"] if issue is not None else None,
+        "source_state": found.state,
         "max_rework_rounds": config.max_rework_rounds if config is not None else DEFAULT_MAX_REWORK_ROUNDS,
         "direct_work": repo.is_direct_working(conn, task["task_id"]),
     }
     if config is not None:
         match = _match(config, agents, intake, task["chosen_agent_id"], overrides.get("pair_agent_id"))
         values.update(_match_facts(task, config, match, required, fix=intake.assignee_ids is not None))
+    elif found.unlinked:
+        values.update(matched_agent_id=None, auto_match=True,
+                      match_blockers=(Blocker("repository_unmatched", UNLINKED_REASON, "operator"),))
     values.update(overrides)
     return TaskFacts(**values)
 

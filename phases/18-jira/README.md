@@ -1,6 +1,6 @@
 # Phase 18 — Jira 소스: 연결·가져오기·상태 옮기기·후속 업무 등록
 
-작성일: 2026-09-30, 2026-10-01 17 완료 코드로 다시 맞춤. 상태: 구현 계획 작성 완료, 모든 step pending. **`service`(17-team-handoff 병합 `3392159`, 스키마 v13 — 소유자 승인 범위 = 업무)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 7·13·14·16절, [Jira 연동 조사](../../docs/research/2026-09-29-jira-integration.md), [ADR-0020](../../docs/adr/0020-work-items-and-stages.md)(업무·단계·매핑 표·"Jira 는 전용 표를 나란히"), [ADR-0017](../../docs/adr/0017-github-app-connection.md)(비밀 저장소).
+작성일: 2026-09-30, 2026-10-01 17 완료 코드로 다시 맞춤. 상태: **완료**(2026-10-01, step 0~9 — 가짜 Jira·가짜 GitHub·가짜 러너 e2e `tests/e2e/test_jira_cycle.py`, 실연동·`service` 병합·셀프호스트 v14 재설치는 사용자 지시 뒤 — [CURRENT_HANDOFF](../../docs/CURRENT_HANDOFF.md)). **`service`(17-team-handoff 병합 `3392159`, 스키마 v13 — 소유자 승인 범위 = 업무)에서 실행한다.** 병합은 phase 뒤 사용자 지시로(`--no-ff`). 근거: [재설계 계획](../../docs/product/REDESIGN_PLAN.md) 7·13·14·16절, [Jira 연동 조사](../../docs/research/2026-09-29-jira-integration.md), [ADR-0020](../../docs/adr/0020-work-items-and-stages.md)(업무·단계·매핑 표·"Jira 는 전용 표를 나란히"), [ADR-0017](../../docs/adr/0017-github-app-connection.md)(비밀 저장소).
 
 ## 왜
 

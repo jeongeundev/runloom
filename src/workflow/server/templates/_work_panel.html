@@ -120,11 +120,12 @@
     {% endif %}
   </section>
 
-  {% if panel.comments or panel.draft_pulls %}
+  {% if panel.comments or panel.draft_pulls or panel.jira_deliveries %}
   <section class="panel-section" data-panel-section="left">
     <h3>원본에 남긴 것</h3>
     <ul>
       {% for d in panel.comments %}<li data-delivery="{{ d.state }}"><a href="{{ d.comment_url }}" rel="noopener noreferrer" target="_blank">GitHub 댓글</a> · {{ d.label }}</li>{% endfor %}
+      {% for d in panel.jira_deliveries %}<li data-jira-delivery="{{ d.state }}">Jira {{ d.text }} · {{ d.label }}{% if d.detail %} · {{ d.detail }}{% endif %}</li>{% endfor %}
       {% for pr in panel.draft_pulls %}<li><a href="{{ pr.url }}" rel="noopener noreferrer" target="_blank">{{ '초안 PR' if pr.draft else 'PR' }} #{{ pr.number }}</a> · {{ pr.label }}</li>{% endfor %}
     </ul>
   </section>

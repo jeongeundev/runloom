@@ -1695,6 +1695,243 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 설치 | `deploy/selfhost/install-runner.sh`(10) | `--name <이름>`(위 표) |
 | 매칭 | `domain/github_match.py`·`server/task_cycle.py`(11) | `match_source(..., chosen_agent_id: str \| None = None, pair_agent_id: str \| None = None)`, `_match(config, agents, intake, chosen_agent_id, pair_agent_id=None)`(위 "같은 저장소의 러너 여럿") |
 
+## Jira 소스 — phase 18
+
+[ADR-0024](adr/0024-jira-source.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 18 README](../phases/18-jira/README.md). 이 시점에는 구현이 없다 — 아래 이름·표·경로·시그니처는 step 1~9 가 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** "GitHub 업무 순환 — phase 8", "GitHub App 연결 — phase 11", "실제 저장소 순환 — phase 12", "업무와 단계 — phase 14", "업무 화면 — phase 16", "사람 사이 인계 — phase 17" 은 이 절이 갱신한 부분만 바뀐다. README 와 달라진 조사 사실은 ADR-0024 "코드 조사로 README 와 달라진 사실" 7가지.
+
+### 한 줄 요약
+
+API 토큰 붙여 넣기로 Jira Cloud 사이트 하나를 연결하고(토큰은 `secret_store`), 프로젝트마다 연결 저장소·이슈 유형·시작점·세 순간의 상태 이름·후속 이슈 유형을 정한다. 워커가 JQL 로 폴링해 업무(`source_type='jira'`)를 만들고, 상태 범주 `done` 은 원본 닫힘(`source_closed`)이다. 맡긴 뒤에만 연결 저장소에서 수정 → 검토 → 초안 PR → 병합으로 돈다. 업무 상태가 `에이전트 작업 중`/`직접 작업 중`·`PR · 검토`·`완료` 에 들어가면 Jira 상태를 한 번씩 옮기고, 후속 규칙이 새 업무를 만들면 같은 프로젝트에 이슈를 만든다. 스키마 v14.
+
+### 흐름
+
+```
+[연결 화면] 사이트·이메일·토큰 ─ tenant_info → myself(gateway → site) ─▶ jira_connections + secret jira_api_token
+          프로젝트 찾기 → 추가(연결 저장소·시작점) ─ project/{key}/statuses ─▶ jira_projects(choices_json)
+          설정(이슈 유형·세 상태 이름·후속 이슈 유형·켜짐)
+
+[워커 tick] _sync_github → _sync_jira ─ search/jql(project id, updated >= cursor_ms) ─▶ upsert_jira_issue
+              새 이슈: work_items(source_type='jira') + 첫 단계 Task + jira_issues(task_id, delegated_by NULL)
+              → 업무 "새로 들어옴" → [에이전트에게 맡기기] → jira_issues.delegated_by='operator'
+              → 준비 판정(origin = 연결 저장소 설정, all_open, fix 매칭) → 실행 → 검토 → 초안 PR(연결 저장소, issue_number NULL)
+              → PR 감지·병합 → 업무 "완료"
+          set_work_status(to ∈ 세 순간) ─▶ jira_deliveries(transition) ─ _deliver_jira ─▶ transitions GET·POST
+          create_followup_once(new_work, 원인 = Jira) ─▶ jira_deliveries(create_issue) ─▶ POST issue → issueLink
+              → 새 업무 원본 칸 채움 → 다음 동기화가 같은 업무에 스냅숏을 붙임(followup)
+```
+
+tick 순서(phase 17 그대로에 둘 추가): `_sync_github` → **`_sync_jira`** → `_mark_offline` → `_observe` → 판정 셋 → `_advance_cycle` → `_spawn_successors` → `_start_waiting_stages` → `_reflect_failures` → `_deliver_callbacks` → `_deliver_pull_requests` → `_deliver_github` → **`_deliver_jira`** → `_deliver_notifications` → `_refresh_work_statuses`.
+
+### 연결과 호출 기준 주소 (step 3·4)
+
+- 입력 검사(`contracts/jira.py`): 사이트 `JIRA_SITE_PATTERN = r"^https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net$"`(앞뒤 공백 제거·소문자·끝 `/` 하나 제거 뒤 — 다른 호스트·경로·포트·사용자 정보·쿼리 거부), 이메일 `^[^@\s]+@[^@\s]+$` 254자 이하, 토큰 `[\x21-\x7e]{1,2000}`(공백 없는 ASCII — 헤더에 그대로 싣는다), cloudId `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`(소문자로 바꿔 검사).
+- 확인 순서(`server/jira_connect.verify(site_url, email, token, *, transport) -> JiraConnectionFacts`): ① `GET {site}/_edge/tenant_info`(인증 없음) → `cloudId` ② `GET https://api.atlassian.com/ex/jira/{cloudId}/rest/api/3/myself`(Basic `email:token`) ③ ②가 401 이면 `GET {site}/rest/api/3/myself` ④ 된 쪽 `api_base`(`gateway`|`site`). 호출 기준 = `JIRA_GATEWAY = "https://api.atlassian.com/ex/jira/"` + cloudId, 또는 사이트 주소. 다른 URL 은 만들지 않는다(클라이언트가 경로 앞에 기준만 붙인다).
+- 저장: 확인이 끝나면 토큰을 `secrets.write(secret_store.JIRA_API_TOKEN, token)` 하고 `repo.save_jira_connection(...)`(한 행 upsert, `disconnected_at`·`auth_failed_at` NULL). 프로젝트 행이 있는데 cloudId 가 다르면 저장하지 않고 409.
+- 끊기: 토큰 파일 삭제 + `disconnected_at = now`. 업무·프로젝트·스냅숏·outbox 행은 남는다. 끊긴 동안 가져오기·전송은 건너뛰고(outbox 는 `pending` 그대로, 시도 수 늘지 않음) 다시 연결하면 이어간다.
+- 401(가져오기·전송 어디서든): `repo.mark_jira_auth_failed(conn, session_id, now)` → 다시 연결할 때까지 그 워크스페이스의 Jira 호출을 모두 멈춘다. 연결 칸에 "Jira 토큰 확인 필요 — 다시 연결하세요".
+
+### 경로 (step 4)
+
+모두 `team.MANAGE_CONNECTIONS`(아니면 403 `forbidden`). 성공은 303 `/connect?tab=sources`. 오류는 기존 `PageError(status, code, message, field=)` 로 연결 화면에 보인다. 토큰 값·길이는 응답·로그·오류 문구에 싣지 않는다.
+
+| 경로 | 폼·쿼리 | 동작 | 오류 |
+|---|---|---|---|
+| `POST /operator/jira/connect` | `site_url`·`email`·`token` | 위 확인 → 저장 | 422 `invalid_field`(`site_url` "https://<이름>.atlassian.net 형식만 받습니다." · `email` · `token`), 400 `jira_auth_failed` "이메일·토큰이 맞지 않습니다.", 400 `jira_forbidden` "권한(스코프)이 부족합니다 — read:jira-work·write:jira-work·read:jira-user", 502 `jira_unavailable` "Jira 사이트에 닿지 못했습니다. 잠시 뒤 다시 시도하세요.", 409 `jira_site_mismatch` "이미 설정한 프로젝트가 다른 사이트의 것입니다." |
+| `GET /operator/jira/projects` | `q`(최대 100자) | `GET /rest/api/3/project/search?query=<q>&maxResults=50` 결과로 연결 화면을 그린다(200) — 검색은 사람이 누를 때만 | 409 `jira_not_connected` "Jira 를 먼저 연결하세요.", 502 `jira_unavailable` |
+| `POST /operator/jira/projects` | `project_id`·`github_source_id`·`start_mode`(`from_now`\|`all_open`) | 프로젝트 조회(`GET /rest/api/3/project/{id}`) + 후보(`project/{key}/statuses`) → `repo.add_jira_project` | 409 `jira_not_connected`, 409 `github_source_required` "먼저 GitHub 저장소를 연결하세요."(워크스페이스에 `github_sources` 없음), 422 `invalid_field`(`github_source_id` — 이 워크스페이스 소스가 아님 · `start_mode`), 409 `jira_project_exists` "이미 추가한 프로젝트입니다.", 404 `not_found`(Jira 404) |
+| `POST /operator/jira/projects/{source_id}` | `github_source_id`·`issue_types`(여럿)·`status_on_start`·`status_on_review`·`status_on_done`·`followup_issue_type`·`enabled` | 설정 저장(`repo.update_jira_project`). 이름은 `choices_json` 후보와 대소문자 무시로 같아야 하고 후보 표기로 저장, 빈 값 = NULL | 404 `not_found`(다른 워크스페이스), 422 `invalid_field`(그 칸) |
+| `POST /operator/jira/projects/{source_id}/refresh` | — | 후보 다시 받기 | 409 `jira_not_connected`, 502 `jira_unavailable` |
+| `POST /operator/jira/disconnect` | — | 끊기 | — |
+
+### 화면 (step 4·7)
+
+- `connect.html` 소스 탭이 `_connect_jira.html` 을 `_connect_github.html` 다음에 include(`manage_connections` 일 때). 끊김: 사이트·이메일·토큰 칸 + [연결 확인] + 안내 "토큰 만들기"(`https://id.atlassian.com/manage-profile/security/api-tokens`, 새 창) "scoped 토큰이면 read:jira-work·write:jira-work·read:jira-user". 연결됨: `연결됨 · <표시 이름> · <사이트>` + [끊기], 토큰 오류면 `Jira 토큰 확인 필요 — 다시 연결하세요` + 같은 입력 칸. 프로젝트 찾기 칸 → 결과 줄마다 `<키> · <이름>` + 연결 저장소 select + 시작점(`지금부터`·`열린 업무 전부`) + [추가]. 추가한 프로젝트마다 설정 폼: 연결 저장소, 가져올 이슈 유형(체크박스 — 모두 비우면 전부), `작업 시작 →`·`PR 열림 →`·`업무 완료 →` 상태 select(첫 항목 `옮기지 않음`), `후속 업무 이슈 유형` select(첫 항목 `만들지 않음`), 켜짐, [저장]·[목록 새로 고침]. 마지막 가져오기 시각(`cursor_updated_at`).
+- 업무 패널(`_work_panel.html`): Jira 원본이면 원본 키 링크(지금 칸 그대로)와 "Jira 반영" 줄(step 7·8) — 행마다 `상태 → <목표 이름>` 또는 `후속 이슈 만들기 → <결과 키>` · `반영 대기`(`pending`·`sending`)|`반영됨`|`반영 불확실`(`unknown`)|`반영 실패`, 마지막 오류·`note` 를 ` · ` 뒤에. `skipped` 는 보이지 않는다.
+- 목록 출처 표시 `SOURCE['jira'] = "Jira"`(`home.html`·보드 카드).
+- 템플릿은 외부 문자열(Jira 제목·상태 이름·이슈 유형·프로젝트 이름·표시 이름·사이트)을 자동 이스케이프로만 출력한다(`|safe` 금지).
+
+### 가져오기 (step 5)
+
+`server/jira_sync.py` `sync_project(conn, client: JiraClient, source_id: str, now: str) -> JiraSyncResult(created: list[str], updated: int, error: str | None, retry_after_seconds: int | None, auth_failed: bool)`. 워커 `_sync_jira(conn, report)`: 연결이 있고 끊기지 않았고 `auth_failed_at` 이 NULL 이며 토큰 파일이 있을 때, 켜진 프로젝트마다 `_jira_next_at[source_id]`(메모리 dict) 가 지났으면 부른다. 간격 `JIRA_SYNC_INTERVAL_SECONDS = 60`, 429 는 `max(간격, Retry-After)`. 클라이언트는 `Worker(…, jira_for: Callable[[Row], JiraClient | None] | None = None)`(연결 행 → 클라이언트, 비밀 파일이 없으면 None — `github_for` 와 같은 모양, 테스트는 `MockTransport`).
+
+1. JQL(`domain/jira_intake.search_jql(project_id: str, cursor_ms: int | None) -> str`): `cursor_ms` 가 None 이면 `project = <id> AND statusCategory != Done ORDER BY updated ASC, key ASC`, 아니면 `project = <id> AND updated >= <cursor_ms> ORDER BY updated ASC, key ASC`. `project_id` 는 `^[1-9][0-9]*$` 만(아니면 ValueError — JQL 에 사용자 문자열을 넣지 않는다). `from_now` 는 프로젝트를 추가할 때 `cursor_ms` = 그 시각(ms), `all_open` 은 NULL.
+2. 페이지(`nextPageToken`, `maxResults=100`, `fields` = `JIRA_FIELDS = ("summary", "description", "status", "issuetype", "priority", "labels", "created", "updated", "project")`)를 끝까지 받고, 이슈마다 `repo.upsert_jira_issue`. 한 페이지라도 실패하면 커서를 그대로 둔다(이미 저장한 이슈는 남고 다음 바퀴에 digest 로 흡수).
+3. 다 끝나면 `cursor_ms = max(본 이슈의 updated ms, 이전 cursor_ms)`, `cursor_updated_at = now`.
+
+받기 규칙(`domain/jira_intake.accept(project: JiraProjectConfig, snapshot: JiraIssueSnapshot) -> bool` — 처음 보는 이슈만): `snapshot.project_id == project.project_id` 이고, `issue_types` 가 비었거나 `snapshot.issue_type` 이 그 안(대소문자 무시)이고, `status_category != "done"` 이고, `start_mode == "all_open"` 이거나 `created >= start_at`. 라벨 `runloom-RUN-<n>` 이 붙은 처음 보는 이슈는 받지 않고 후속 조정(아래 "후속 이슈 등록")으로 간다.
+
+`repo.upsert_jira_issue(conn, session_id: str, project: JiraProjectConfig, snapshot: JiraIssueSnapshot, *, site_url: str, run: GitHubSourceConfig, mappings: Sequence[MappingRow], now: str) -> JiraUpsert(work_item_id: str | None, created: bool, changed: bool)` — 한 트랜잭션:
+
+| 경우 | 동작 |
+|---|---|
+| 스냅숏 행 있음, digest 같음 | 아무것도 안 함 |
+| 행 있음, `updated` 가 저장값보다 이름 | 버림 |
+| 행 있음, 바뀜 | 스냅숏·digest·`issue_updated_at`·`state`·`status_name`·`issue_key`, `source_revision + 1`. 업무 `source_state`·`source_key`·`source_url` 갱신. `delegated_by != 'followup'` 이고 입력(`jira_intake.task_input(snapshot) -> (summary, description_text.strip())`)이 바뀌었으면 업무 제목·요청과 첫 단계 제목·요청을 바꾸고 단계 revision + 1(GitHub `upsert_source_issue` 와 같다) |
+| 행 없음, 같은 `(source_id, source_item_id)` 업무 있음(Runloom 이 만든 후속) | 그 업무의 첫 단계에 행을 붙인다(`delegated_by='followup'`, `delegated_at = now`). 업무 `source_state` 갱신 |
+| 행 없음, 라벨 `runloom-RUN-<n>` | 아래 "후속 조정" |
+| 행 없음, `accept` 참 | 종류 = `jira_intake.issue_kind(mappings, snapshot)`(None 이면 받지 않음), 우선순위 = `issue_priority`. 첫 단계(`jira_intake.snapshot_to_task_spec(project, run, snapshot, kind=…, session_id=…, task_id=…)` — `issue_intake.snapshot_to_task_spec` 과 같은 모양, `source_ref` = 이슈 키) + 업무(`source_type='jira'`, `source_id` = 프로젝트 `source_id`, `source_item_id` = issue id, `source_key`, `source_url` = `{site}/browse/{key}`, `source_state` = 상태 이름) + 스냅숏 행(`task_id` = 첫 단계, 지시 없음) |
+
+열림/닫힘 `jira_intake.issue_state(snapshot) -> Literal["open", "closed"]` = `status_category == "done"` 이면 `closed`. 매핑 입력값 `jira_intake.mapping_values(snapshot) -> tuple[str, ...]` = 라벨 + 이슈 유형 이름 + 우선순위 이름(있으면). ADF → 텍스트는 클라이언트가 스냅숏을 만들 때 `domain/adf.adf_to_text(node: Mapping | None) -> str`(문단은 빈 줄로, `heading` 수준 n → `#`×n + 공백 + 글, `bulletList` → `- `, `orderedList` → `1. `(번호 차례), `codeBlock` → ``` 울타리, `text` 의 `link` mark → `글 (url)`, `hardBreak` → 줄바꿈, `mention` → `@이름`, 모르는 노드는 안의 글만, None → 빈 문자열).
+
+### 원본 조회·지시·매칭 (step 5·6)
+
+`server/task_cycle.py`:
+
+```python
+@dataclass(frozen=True)
+class Origin:
+    issue: Row | None            # GitHub source_issues 행 — GitHub 원본만(views._origin·원본 댓글)
+    config: GitHubSourceConfig | None  # 실행 설정. Jira 는 연결 저장소 설정의 all_open 사본
+    state: Literal["open", "closed"] | None
+    own: bool                    # 원본 행(source_issues·jira_issues)이 이 단계 또는 같은 업무의 같은 종류 단계(다시 맡긴 단계)에 붙음 — get_*_by_task 와 같은 규칙
+    origin_key: str | None       # 요청문 머리의 원본 키 — Jira 만
+    unlinked: bool = False       # Jira 업무인데 프로젝트 설정·연결 저장소를 찾지 못함(step 6)
+
+def origin(conn: Connection, task: Row) -> Origin: ...
+def task_intake(conn: Connection, task: Row) -> IntakeFacts: ...
+```
+
+`origin` 규칙(업무 원본 칸으로 찾는다 — 선행 사슬을 오르지 않는다, ADR-0020):
+
+| 업무 원본 | `issue` | `config` | `state` | `own` | `origin_key` |
+|---|---|---|---|---|---|
+| 업무 없음·`manual`·`n8n` | None | None | None | False | None |
+| `github`, 원본 이슈 칸 있음 | `source_issues` 행 | 소스 설정 | 행 `state` | `get_source_issue_by_task` 가 있음 | None |
+| `github`, 원본 이슈 칸 없음(새 업무 후속) | None | 소스 설정 | None | False | None |
+| `jira`, 스냅숏 행 있음 | None | `jira_intake.run_config(연결 저장소 설정)` | 행 `state` | `get_jira_issue_by_task` 가 있음 | `work_items.source_key` |
+| `jira`, 스냅숏 행 없음(후속 이슈 전) | None | 같음 | None | False | None |
+
+Jira 업무의 프로젝트 설정이나 연결 저장소(`github_sources`) 행을 찾지 못하면 `config = None`, `unlinked = True`(그 밖 칸은 위 규칙). `task_facts` 는 이때 매칭 대신 `auto_match=True`·`matched_agent_id=None`·`match_blockers=(Blocker("repository_unmatched", task_cycle.UNLINKED_REASON, "operator"),)` — 기존 대기 코드로 기다리고 맡긴 Agent(`chosen_agent_id`)로 착수하지 않는다(step 6). `UNLINKED_REASON = "Jira 프로젝트의 연결 저장소 없음 — 연결 화면에서 저장소를 고르세요"`.
+
+`domain/jira_intake.run_config(config: GitHubSourceConfig) -> GitHubSourceConfig` = `config.model_copy(update={"intake": "all_open", "trigger_label": None})`. Jira 스냅숏 행은 업무의 원본 칸(`source_id`, `source_item_id`)으로 찾는다(`repo.get_jira_issue(conn, session_id, source_id, issue_id)`).
+
+`task_intake(conn, task)` = `jira_sync.task_intake_facts(conn, session_id, task_id)` 가 None 이 아니면 그것, 아니면 `github_sync.task_intake_facts`(그대로). `jira_sync.task_intake_facts` 는 이 단계에 붙은 Jira 행(`repo.get_jira_issue_by_task`)이 없으면 None, 있으면 `domain/jira_intake.intake_facts(*, request: str, run_mode: Literal["auto", "manual"], state: Literal["open", "closed"], delegated_by: str | None, max_rework_rounds: int) -> IntakeFacts` — `assignee_ids=()`, `bindings={}`, `request_required=True`, `run_mode="auto" if delegated_by == "operator" else run_mode`, `source_state=state`, `delegated=delegated_by is not None`.
+
+부르는 곳의 변경(동작은 GitHub 업무에서 그대로):
+
+| 부르는 곳 | 바뀌는 것 |
+|---|---|
+| `task_cycle.max_rework_rounds`·`source_match` | `origin(...).config`, `source_match` 의 담당 사실은 `task_intake` |
+| `task_cycle.task_facts` | `intake = task_intake(...)`, `source_state = origin.state`, `config = origin.config` — `_match_facts(fix=intake.assignee_ids is not None)` 는 그대로(Jira 첫 단계 = `()` → 수정) |
+| `task_cycle.execution_request_text` | `compose_request(..., origin_key=origin.origin_key)` |
+| `worker._followup_context` | `source_state = origin.state` |
+| `worker._create_followup_task` | `config = origin(predecessor).config`(검토 Agent·`run_mode`) |
+| `worker._queue_pull_request` | 아래 "초안 PR" |
+| `views.cycle_context`·단계 묶음 | `_origin(conn, task, origin.issue, origin.config) if origin.issue is not None` — Jira 는 GitHub 원본 카드 없음. `cycle_context` 의 None 조건 `not policy.cycle and origin.issue is None` 그대로 |
+
+지시: `hand_work_to_agent` 가 `get_source_issue_by_task` 다음에 `get_jira_issue_by_task` 를 보고 있으면 `_delegate_jira_issue(conn, source_id, issue_id, by="operator", now=now)`(이미 지시가 있으면 그대로). `work_item_facts.delegated` 의 SQL 은 지금 조건 `OR EXISTS (SELECT 1 FROM jira_issues ji JOIN tasks t ON t.task_id = ji.task_id WHERE t.work_item_id = ? AND ji.delegated_by IS NULL)` 이면 거짓. 준비 판정 사유 문구(`not_delegated`)는 바꾸지 않는다(ADR-0024 사실 6).
+
+### 초안 PR·목록·요청문 (step 6)
+
+- `worker._queue_pull_request`: `origin = task_cycle.origin(conn, fix_task)`, `if not origin.own or origin.config is None or pushed is None: return None`. push 실패 안내는 그대로. 대기열 `repo.enqueue_pull_request(conn, *, task_id, session_id, source_id=origin.config.source_id, repository_full_name=origin.config.repository_full_name, issue_number=origin.issue["issue_number"] if origin.issue is not None else None, fix_execution_id, review_execution_id, now)` — `issue_number: int | None`. (GitHub 은 스냅숏 저장소 = 소스 저장소다 — `intake_scope` 가 다른 저장소를 받지 않는다.)
+- `worker._deliver_pull_requests`: PR 제목 = `pull_request.pr_title(work_key, <업무 제목>)`(`repo.work_item_of_task` — GitHub 업무도 업무 제목이 이슈 제목에서 오므로 같다). 본문 `pull_request.pr_body(*, issue_number: int | None, task_id, review_summary, task_url, work_key=None, origin_line: str | None = None)` — `issue_number` 가 있으면 첫 줄 `Fixes #N`(지금 그대로), 없으면 `origin_line` 이 있을 때 첫 줄 그것, 둘 다 없으면 첫 줄 없이 검토 요약부터. `pull_request.origin_line(source_key: str, source_url: str | None) -> str` = `원본: SHOP-12 — <url>`(URL 없으면 `원본: SHOP-12`). 워커는 `row["issue_number"] is None` 이고 업무 `source_key` 가 있으면 넘긴다.
+- `worker._apply_pull_request_state`: 병합 기준선 기록(`record_issue_merge`)은 `get_source_issue_by_task` 가 있을 때만.
+- PR 감지·병합 → 완료: 바뀌지 않는다(연결 저장소는 `github_sources` 이고 `_link_pulls` 는 워크스페이스 업무 키로 찾는다).
+- 목록 `repo.list_work_rows`: `LEFT JOIN jira_projects jp ON w.source_type = 'jira' AND jp.source_id = w.source_id AND jp.session_id = w.session_id` 를 더하고 `github_sources g` 는 `g.session_id = w.session_id AND g.source_id = CASE WHEN w.source_type = 'github' THEN w.source_id WHEN w.source_type = 'jira' THEN jp.github_source_id END` 로. 쿼리 수 그대로.
+- 요청문 `domain/handoff_context.compose_request(*, work_key, title, form_fields, note, note_by, body, origin_key: str | None = None)` — `origin_key` 가 있으면 머리 `# <work_key> <title>` 바로 아래 줄 `원본: <origin_key>`(빈 줄 없이), 그 밖 절은 그대로. None 이면 지금과 바이트 단위로 같다.
+- 매핑 API `mapping_api.FieldMappingIn.source_type: Literal["github", "n8n", "jira"]`, `domain/field_mapping.MappingRow.source_type` 주석 `github | n8n | jira`.
+
+### 세 순간 — 상태 옮기기 (step 7)
+
+`domain/jira_intake.py`: `JIRA_MOMENTS = ("start", "review", "done")`, `moment_for(status: str) -> str | None`:
+
+| `to`(업무 상태) | 순간 | 프로젝트 설정 칸 | 화면 이름 |
+|---|---|---|---|
+| `에이전트 작업 중`, `직접 작업 중` | `start` | `status_on_start` | 작업 시작 |
+| `PR · 검토` | `review` | `status_on_review` | PR 열림 |
+| `완료` | `done` | `status_on_done` | 업무 완료 |
+| 그 밖(`새로 들어옴`·`대기`·`내 차례`·`종료`) | None | — | — |
+
+- 훅: `repo.set_work_status` 가 값을 바꿀 때(UPDATE·`status_changed` 이벤트 다음, 같은 트랜잭션) `moment = moment_for(status.status)` 가 있으면 `queue_jira_transition(conn, work_item_id, moment, now=now)`. 이 함수는 `INSERT OR IGNORE INTO jira_deliveries … SELECT … FROM work_items w JOIN jira_projects p ON p.source_id = w.source_id AND p.session_id = w.session_id WHERE w.work_item_id = ? AND w.source_type = 'jira' AND w.source_item_id IS NOT NULL AND p.enabled = 1 AND p.<순간 칸> IS NOT NULL` 하나(칸 이름은 순간 → 칸 고정 사전에서 — 문자열 조립에 외부 값 없음). `target` = 그 칸 값, `dedupe_key` = `transition:<work_item_id>:<moment>`. 자체 BEGIN 없음.
+- 전송 `server/jira_delivery.py` `deliver_jira_updates(conn, client_for: Callable[[str], JiraClient | None], now: str) -> JiraDeliveryReport(delivered, skipped, failed, deferred, uncertain, rate_limited)` — 워커 `_deliver_jira` 가 부른다(`client_for(session_id)` 는 연결·토큰이 없거나 `auth_failed_at` 이면 None → 그 워크스페이스 행은 건드리지 않음). 행 고르기·claim·기록은 repo(`jira_deliveries_due(conn, now) -> list[Row]`, `claim_jira_delivery(conn, delivery_id, attempts, *, now, claim_until) -> bool`(조건부 UPDATE, `attempts + 1` fence, `state` `sending`, `next_at = claim_until` = `now + CLAIM_SECONDS` — `claim_source_delivery` 와 같이 만료 시각을 호출자가 준다), `record_jira_delivery(conn, delivery_id, attempts, *, state, now, last_error=None, note=None, next_at=None, result_issue_id=None, result_issue_key=None) -> bool`(같은 fence 일 때만)). `sending` 이 claim 만료를 넘기면 전환은 `pending`, 생성은 `unknown` 으로 본다.
+- 전환 한 건: ① 같은 업무에 더 늦게 생긴(`created_at`, `delivery_id`) 전환 행이 있으면 `skipped`(`note` "다음 순간으로 대체") ② `client.issue_status(issue_id)` — 이름이 목표와 같으면(casefold) `delivered`(`note` "이미 그 상태"), 범주 `done` 이고 순간이 `done` 이 아니면 `skipped`(`note` "Jira 에서 이미 완료 범주") ③ `client.transitions(issue_id)` 에서 `to_name` casefold 가 같은 첫 전환, 없으면 `failed` ④ `client.transition(issue_id, transition_id)`. 이슈는 업무 `source_item_id`(id)로 부른다.
+
+### 후속 이슈 등록 (step 8)
+
+- 훅: `repo.create_followup_once` 의 `new_work` 가지에서 새 업무를 만든 뒤 같은 트랜잭션에서 `queue_jira_issue_creation(conn, spawned_work_item_id, cause_work_item_id, now=now)` — `INSERT OR IGNORE … SELECT … FROM work_items c JOIN jira_projects p … WHERE c.work_item_id = <원인> AND c.source_type = 'jira' AND c.source_item_id IS NOT NULL AND p.enabled = 1 AND p.followup_issue_type IS NOT NULL`. `action='create_issue'`, `moment` NULL, `target` = 후속 이슈 유형 이름, `cause_issue_id` = 원인 `source_item_id`, `dedupe_key` = `create_issue:<새 work_item_id>`. 새 업무의 원본 칸은 원인의 `source_type`·`source_id` 만 복사하고 `source_key`·`source_url`·`source_item_id` 는 NULL(생성 성공 때 채운다 — 원인 키 `SHOP-12` 를 새 업무 키 칸에 보이지 않는다, step 8). GitHub 원인은 지금처럼 키·주소도 복사한다.
+- 한 건(`jira_delivery`): `unknown` 이면 먼저 `client.find_issues_by_label(project_id, label)`(JQL `project = <id> AND labels = "runloom-RUN-<n>"` — 라벨은 `jira_intake.followup_label(key_number: int) -> str` = `runloom-RUN-<n>` 고정 형식) → 있으면 기록, 없으면 `pending` 으로 같은 바퀴에 POST. 이슈 유형 id = `choices_json.issue_types` 에서 이름(casefold)으로, 없으면 `failed`. `client.create_issue(project_id: str, issue_type_id: str, summary: str, description: dict, labels: Sequence[str]) -> JiraIssueRef(issue_id, key)`. 기록 `repo.record_jira_issue_created(conn, delivery_id, attempts, *, issue_id, key, site_url, now, note=None) -> bool` — 한 트랜잭션에서 행 `delivered` + 새 업무 `source_item_id`·`source_key`·`source_url`(`{site}/browse/{key}`). 그 뒤 링크 `client.issue_link_types() -> list[str]` → `JIRA_LINK_TYPE = "Relates"`(casefold) → `client.link_issues(type_name, inward_issue_id=cause, outward_issue_id=new)`. 실패·유형 없음은 `note` 만(`repo.note_jira_delivery(conn, delivery_id, note)` — 행은 이미 `delivered`). 후속 이슈 본문의 업무 주소는 `deliver_jira_updates(..., public_url=)`(워커가 `settings.public_url`) + `work_path(RUN-n)`.
+- 본문 `jira_intake.followup_description(*, work_key: str, cause_key: str, request: str, work_url: str | None) -> str`(Markdown — ADR-0024 결정 13 모양, 요청 앞 2000자) → `domain/adf.markdown_to_adf(text: str) -> dict`(빈 줄로 나뉜 문단, `- ` 줄 묶음 → `bulletList`, ``` 울타리 → `codeBlock`, `[글](http(s)://…)` 와 맨 `http(s)://` URL → `link` mark, 다른 스킴은 글 그대로). 요약 = 업무 제목 255자.
+- 후속 조정(가져오기): 라벨 `runloom-RUN-<n>`(`jira_intake.followup_key_number(labels)`)이 붙은 처음 보는 이슈 → `repo.upsert_jira_issue` 안의 `_reconcile_jira_followup`(같은 트랜잭션 — 별도 공개 함수를 두지 않았다, step 8) — 같은 워크스페이스 업무 `key_number = n` 이 `source_type='jira'`·같은 `source_id`·`source_item_id IS NULL` 이면 원본 칸 채움 + 스냅숏 행 붙임(`followup`) + 그 업무의 `create_issue` 행 `delivered`(`result_*`, `note` "가져오기로 조정"). 아니면 False(건너뜀 — 새 업무를 만들지 않는다).
+
+### 오류 분류 (step 3·7·8)
+
+`adapters/jira_client.py` 오류 계층: `JiraError`(기본, `status: int | None`) ← `JiraUnauthorized`(401), `JiraForbidden`(403), `JiraNotFound`(404), `JiraBadRequest`(400, `message` = 응답 `errorMessages`/`errors` 첫 문구 200자 — 본문 전체를 싣지 않는다), `JiraRateLimited`(429, `retry_after: int` — 헤더 없으면 60), `JiraUnavailable`(5xx·연결 오류·timeout). 오류 메시지·로그에 Authorization 헤더·토큰을 싣지 않는다.
+
+| 오류 | 가져오기 | 전환 | 후속 생성 | 연결 화면 |
+|---|---|---|---|---|
+| `JiraUnauthorized` | 커서 그대로, `auth_failed_at` | `pending`, `auth_failed_at` | 같음 | 400 `jira_auth_failed` |
+| `JiraForbidden` | 커서 그대로, `error` 기록 | `failed` "권한 없음 — 이 이슈를 옮길 수 없음" | `failed` "권한 없음 — 이슈를 만들 수 없음" | 400 `jira_forbidden` |
+| `JiraNotFound` | 커서 그대로(프로젝트 없음 — `error`) | `failed` "이슈를 찾을 수 없음" | `failed` "프로젝트를 찾을 수 없음" | 404 `not_found` |
+| `JiraBadRequest` | 커서 그대로 | `failed` "전환에 입력할 칸이 있음 — Jira 에서 옮기세요" | `failed` "필수 칸 — <message>" | 422 |
+| 전환 없음 | — | `failed` "전환 없음 — 현재 상태 <이름>" | — | — |
+| `JiraRateLimited` | `retry_after_seconds` | `pending`(`next_at` = 최소 60초) 후 그 바퀴 중단 | 같음 | 502 `jira_unavailable` |
+| `JiraUnavailable` | 커서 그대로 | `pending`(백오프), `MAX_ATTEMPTS = 8` 번째 시도면 `failed` "Jira 응답 없음 — 8회 시도 뒤 멈춤"(429 도 같은 상한) | POST 면 `unknown`, 조회면 `unknown` 유지 | 502 `jira_unavailable` |
+
+백오프·claim 상수는 `github_delivery` 의 `BACKOFF_SECONDS = 30`·`MAX_BACKOFF_SECONDS = 3600`·`CLAIM_SECONDS = 120` 과 같은 값(새 모듈의 상수로 import 해 쓴다).
+
+### 스키마 v14 (step 1)
+
+`adapters/db.py` `SCHEMA_VERSION` 13 → 14. 원본 v13 스키마는 `tests/workflow/adapters/fixtures/schema_v13.sql` 로 고정한다. 빈 DB 도 `_SCHEMA` 의 마지막에 같은 SQL(`_V14_TABLES`)을 거쳐 만든다(빈 표 재생성은 FK 가 켜져 있어도 된다). **`tasks` 는 재생성하지 않는다.**
+
+| 대상 | 변경 | 제약·의미 |
+|---|---|---|
+| `jira_connections`(새) | `session_id TEXT PRIMARY KEY REFERENCES sessions(session_id)`, `site_url TEXT NOT NULL`, `cloud_id TEXT NOT NULL`, `api_base TEXT NOT NULL CHECK (api_base IN ('gateway', 'site'))`, `email TEXT NOT NULL`, `account_id TEXT NOT NULL`, `display_name TEXT NOT NULL`, `connected_at TEXT NOT NULL`, `disconnected_at TEXT`, `auth_failed_at TEXT`, `updated_at TEXT NOT NULL` | 워크스페이스당 1행. 토큰 칸 없음(`secret_store` `jira_api_token`). 형식 검사는 계약·repo |
+| `jira_projects`(새) | `source_id TEXT PRIMARY KEY`(`'jps-'` + 8 hex), `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `project_id TEXT NOT NULL`, `project_key TEXT NOT NULL`, `project_name TEXT NOT NULL`, `github_source_id TEXT NOT NULL REFERENCES github_sources(source_id)`, `issue_types_json TEXT NOT NULL DEFAULT '[]'`, `start_mode TEXT NOT NULL CHECK (start_mode IN ('from_now', 'all_open'))`, `start_at TEXT NOT NULL`, `status_on_start TEXT`, `status_on_review TEXT`, `status_on_done TEXT`, `followup_issue_type TEXT`, `choices_json TEXT NOT NULL DEFAULT '{}'`, `cursor_ms INTEGER CHECK (cursor_ms IS NULL OR cursor_ms >= 0)`, `cursor_updated_at TEXT`, `enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))`, `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL`, `UNIQUE (session_id, project_id)` | `github_source_id` 가 같은 워크스페이스 소스인지는 repo 가 검사한다. `choices_json` = `{"issue_types": [{"id", "name"}], "statuses": ["이름", …]}`(하위 작업 유형 제외, 상태는 처음 나온 순서) |
+| `jira_issues`(새) | `source_id TEXT NOT NULL REFERENCES jira_projects(source_id)`, `issue_id TEXT NOT NULL`, `issue_key TEXT NOT NULL`, `task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id)`, `source_revision INTEGER NOT NULL CHECK (source_revision >= 1)`, `snapshot_json TEXT NOT NULL`, `snapshot_digest TEXT NOT NULL`, `issue_updated_at TEXT NOT NULL`, `state TEXT NOT NULL CHECK (state IN ('open', 'closed'))`, `status_name TEXT NOT NULL`, `delegated_at TEXT`, `delegated_by TEXT CHECK (delegated_by IS NULL OR delegated_by IN ('operator', 'followup'))`, `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL`, `PRIMARY KEY (source_id, issue_id)`, `CHECK ((delegated_at IS NULL) = (delegated_by IS NULL))` | `source_issues` 와 같은 모양 — 업무의 첫 단계에 붙는다(ADR-0024 사실 4) |
+| `jira_deliveries`(새) | `delivery_id TEXT PRIMARY KEY`(`'jdl-'` + 8 hex), `session_id TEXT NOT NULL REFERENCES sessions(session_id)`, `source_id TEXT NOT NULL REFERENCES jira_projects(source_id)`, `work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id)`, `action TEXT NOT NULL CHECK (action IN ('transition', 'create_issue'))`, `moment TEXT CHECK (moment IS NULL OR moment IN ('start', 'review', 'done'))`, `target TEXT NOT NULL`, `cause_issue_id TEXT`, `dedupe_key TEXT NOT NULL UNIQUE`, `state TEXT NOT NULL CHECK (state IN ('pending', 'sending', 'delivered', 'unknown', 'failed', 'skipped'))`, `result_issue_id TEXT`, `result_issue_key TEXT`, `attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0)`, `next_at TEXT`, `last_error TEXT`, `note TEXT`, `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL`, `delivered_at TEXT`, `CHECK ((action = 'transition') = (moment IS NOT NULL))`, `CHECK ((action = 'create_issue') = (cause_issue_id IS NOT NULL))`, `CHECK (action != 'create_issue' OR state != 'delivered' OR result_issue_id IS NOT NULL)` | 인덱스 `ix_jira_deliveries_due ON jira_deliveries(state, next_at)`, `ix_jira_deliveries_work ON jira_deliveries(work_item_id, created_at)`. `last_error`·`note` 는 분류 문구만(응답 본문·토큰 없음) |
+| `work_items`(재생성) | 칸·순서·제약 그대로(v10 칸 + v11 `requested_by_member_id` + v12 `direct_member_id`·`direct_started_at`·`direct_branch` + v13 `handoff_note`·`handoff_note_by_member_id`, 각 FK 그대로), `source_type` CHECK 만 `('github', 'n8n', 'manual', 'jira')`. 인덱스 `ix_work_items_status` 다시, 새 `ux_work_items_jira_issue ON work_items(source_id, source_item_id) WHERE source_type = 'jira' AND source_item_id IS NOT NULL`(UNIQUE) | 자식 FK(`work_item_events`·`work_item_links`·`tasks.work_item_id`·`work_pull_requests`·새 `jira_deliveries`)는 글자 그대로 새 표를 가리킨다. 순서: `work_items_v14` 생성 → 칸 이름을 적은 `INSERT … SELECT` → `DROP TABLE work_items` → `ALTER TABLE work_items_v14 RENAME TO work_items` → 인덱스 둘 |
+| `field_mappings`(재생성) | 칸·`UNIQUE` 그대로, `source_type` CHECK 만 `('github', 'n8n', 'jira')` | 참조하는 표 없음. `field_mappings_v14` → `INSERT … SELECT`(행·`mapping_id` 보존) → DROP → RENAME |
+| `task_pull_requests`(재생성) | 칸·순서·제약 그대로, `issue_number INTEGER CHECK (issue_number IS NULL OR issue_number >= 1)`(NOT NULL 뺌) | 참조하는 표 없음. 같은 순서(`task_pull_requests_v14`) |
+| `field_mappings`(데이터) | 워크스페이스마다 `('jira', 'kind', '*', 'bug_fix')` 한 행(`position` 1, `mapping_id` = `'map-' || lower(hex(randomblob(4)))`, `created_at` = 마이그레이션 시각) — 그 워크스페이스에 `bug_fix` 종류가 있을 때. `repo.DEFAULT_FIELD_MAPPINGS` 에도 더한다(새 워크스페이스) | 우선순위 기본 행은 없다(GitHub 과 같다) |
+
+**v13 → v14 마이그레이션**(ADR-0024 사실 1 — 실험으로 확인한 SQL 순서):
+
+1. `init_schema` 는 저장된 버전이 14 미만이면 **`BEGIN IMMEDIATE` 전에 `PRAGMA foreign_keys=OFF`**, `COMMIT`/`ROLLBACK` 뒤 `finally` 에서 `PRAGMA foreign_keys=ON`(트랜잭션 안에서는 이 PRAGMA 가 무시된다). 4~12 에서 올라오는 경로도 같은 한 트랜잭션이라 FK 를 끈 채로 돈다 — 각 단계는 지금처럼 끝에 `foreign_key_check` 를 한다.
+2. `_migrate_13_to_14`: 위 표 순서로 새 표 4개 → `work_items`·`field_mappings`·`task_pull_requests` 재생성 → 기본 매핑 행 → `PRAGMA foreign_key_check` 가 비어 있지 않으면 `RuntimeError`(롤백, 13 그대로) → 버전 14.
+3. 데이터는 바꾸지 않는다 — 행 수·id·칸 값 보존(`work_items` 는 칸 이름을 적은 복사), 업무·단계 상태는 다시 계산하지 않는다. `server/backup.py` 복원은 v4~v13 백업을 14 로 올린다(같은 `init_schema`).
+4. 테스트(step 1): v13 fixture 사본에 업무·이벤트·링크·단계·감지 PR·Runloom PR·매핑 행을 넣고 올린 뒤 행 보존, 자식 FK 가 살아 있음(없는 업무 id 이벤트 INSERT 가 FK 오류), `PRAGMA foreign_keys` 가 다시 1, Jira 업무 중복 INSERT 가 UNIQUE 오류, 실패 주입 시 13 그대로를 본다.
+
+### 계약·클라이언트 (step 2·3)
+
+`contracts/jira.py`(Pydantic, `_Contract` 모양 — `extra="forbid"`):
+
+| 이름 | 칸 |
+|---|---|
+| `JiraSourceId` | `Annotated[str, Field(pattern=r"^jps-[0-9a-f]{8}$")]` |
+| `JiraIssueId` | `Annotated[str, Field(pattern=r"^[1-9][0-9]*$")]`(프로젝트 id 도 같은 형식) |
+| `JiraIssueKey` | `Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*-[1-9][0-9]*$")]` |
+| `JiraConnection` | `session_id`, `site_url`(패턴), `cloud_id`(UUID), `api_base: Literal["gateway", "site"]`, `email`, `account_id`, `display_name`, `connected_at`, `disconnected_at: Rfc3339 \| None`, `auth_failed_at: Rfc3339 \| None` |
+| `JiraProjectConfig` | `source_id: JiraSourceId`, `session_id`, `project_id: JiraIssueId`, `project_key`, `project_name`, `github_source_id: SourceId`, `issue_types: list[NonEmptyStr]`(중복 없음), `start_mode: Literal["from_now", "all_open"]`, `start_at: Rfc3339`, `status_on_start`·`status_on_review`·`status_on_done`·`followup_issue_type: NonEmptyStr \| None`, `enabled: bool` |
+| `JiraIssueSnapshot` | `issue_id: JiraIssueId`, `key: JiraIssueKey`, `project_id: JiraIssueId`, `summary: NonEmptyStr`, `description_text: str`, `status_name: NonEmptyStr`, `status_category: Literal["new", "indeterminate", "done"]`, `issue_type: NonEmptyStr`, `priority: str \| None`, `labels: list[str]`, `created: Rfc3339`, `updated: Rfc3339` |
+| `JiraProjectRef` | `project_id`, `key`, `name` |
+| `JiraChoices` | `issue_types: list[JiraIssueType(id, name)]`, `statuses: list[str]` |
+| `JiraIssueRef` | `issue_id`, `key` |
+| `JiraTransition` | `transition_id`, `name`, `to_name`, `to_category` |
+| 상수 | `JIRA_SITE_PATTERN`, `JIRA_GATEWAY = "https://api.atlassian.com/ex/jira/"`, `JIRA_MOMENTS`, `JIRA_DELIVERY_STATES = ("pending", "sending", "delivered", "unknown", "failed", "skipped")`, `JIRA_FIELDS` |
+| 함수 | `snapshot_digest(snapshot: JiraIssueSnapshot) -> str`(GitHub `snapshot_digest` 와 같은 정렬 JSON sha256) |
+
+Jira 의 `created`·`updated` 는 `2026-09-29T10:00:00.000+0900` 형식이다 — 클라이언트가 RFC 3339(`+09:00`)로 바꿔 스냅숏에 넣는다(`jira_intake.updated_ms(snapshot) -> int`).
+
+`adapters/jira_client.py`: `JiraClient` Protocol + `HttpJiraClient(base_url: str, email: str, token: str, *, transport: httpx.BaseTransport | None = None, timeout: float = 20.0)` — `base_url` 은 `jira_connect.api_base_url(connection) -> str`(게이트웨이 + cloudId 또는 사이트) 만 받는다. 메서드: `myself() -> tuple[str, str]`(accountId, displayName), `search_projects(query: str) -> list[JiraProjectRef]`, `get_project(project_id: str) -> JiraProjectRef`, `project_choices(project_key: str) -> JiraChoices`, `search_issues(jql: str, *, next_page_token: str | None, site_url: str) -> tuple[list[JiraIssueSnapshot], str | None]`, `issue_status(issue_id: str) -> tuple[str, str]`(이름, 범주), `transitions(issue_id: str) -> list[JiraTransition]`, `transition(issue_id: str, transition_id: str) -> None`, `create_issue(...) -> JiraIssueRef`(위), `find_issues_by_label(project_id: str, label: str) -> list[JiraIssueRef]`, `issue_link_types() -> list[str]`, `link_issues(type_name: str, *, inward_issue_id: str, outward_issue_id: str) -> None`. 인증 전 `tenant_info(site_url: str, *, transport=None) -> str`(모듈 함수, 인증 헤더 없음). 비밀: `secret_store.JIRA_API_TOKEN = "jira_api_token"` 을 `NAMES` 에.
+
+### 이름·시그니처 고정
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 스키마 | `adapters/db.py`(1) | `SCHEMA_VERSION = 14`, `_V14_TABLES`, `_migrate_13_to_14`, `JIRA_DELIVERY_STATES`(계약 상수로 CHECK), fixture `schema_v13.sql`, `init_schema` 의 FK 끄기 |
+| 계약 | `contracts/jira.py`(2) | 위 표 |
+| 순수 규칙 | `domain/adf.py`(2) | `adf_to_text(node: Mapping \| None) -> str`, `markdown_to_adf(text: str) -> dict` |
+| 순수 규칙 | `domain/jira_intake.py`(2·7·8) — DB·HTTP 없음 | `search_jql(project_id, cursor_ms) -> str`, `accept(project, snapshot) -> bool`, `issue_state(snapshot) -> Literal["open", "closed"]`, `mapping_values(snapshot) -> tuple[str, ...]`, `issue_kind(rows, snapshot) -> str \| None`, `issue_priority(rows, snapshot) -> str`, `task_input(snapshot) -> tuple[str, str]`, `snapshot_to_task_spec(project, run, snapshot, *, kind, session_id, task_id) -> dict`, `run_config(config) -> GitHubSourceConfig`, `intake_facts(...) -> IntakeFacts`, `updated_ms(snapshot) -> int`, `JIRA_MOMENTS`, `moment_for(status: str) -> str \| None`, `followup_label(key_number: int) -> str`, `followup_description(*, work_key, cause_key, request, work_url) -> str`, `JIRA_LINK_TYPE = "Relates"` |
+| 클라이언트·비밀 | `adapters/jira_client.py`·`adapters/secret_store.py`(3) | 위 "계약·클라이언트", 오류 계층 |
+| 연결 | `server/jira_connect.py`·`server/web.py`·`templates/_connect_jira.html`(4) | `verify(site_url, email, token, *, transport) -> JiraConnectionFacts`(frozen — `site_url`·`cloud_id`·`api_base`·`email`·`account_id`·`display_name`, 토큰 없음), `api_base_url(connection: Row \| JiraConnection) -> str`, `normalize_site(value: str) -> str`(형식 밖이면 ValueError), 위 경로 6개 |
+| repo(연결·설정) | `adapters/repo.py`(4) | `save_jira_connection(conn, facts, *, session_id, now) -> None`, `get_jira_connection(conn, session_id) -> Row \| None`, `disconnect_jira(conn, session_id, *, now) -> None`, `mark_jira_auth_failed(conn, session_id, *, now) -> None`, `add_jira_project(conn, *, session_id, ref, github_source_id, start_mode, choices, now) -> str`, `update_jira_project(conn, session_id, source_id, **settings) -> None`, `set_jira_choices(conn, session_id, source_id, choices, *, now) -> None`, `list_jira_projects(conn, session_id) -> list[JiraProjectConfig]`, `get_jira_project(conn, session_id, source_id) -> JiraProjectConfig \| None`, 화면·대조용 `list_jira_project_rows(conn, session_id) -> list[Row]`·`jira_project_config(row) -> JiraProjectConfig`·`get_jira_choices(conn, session_id, source_id) -> JiraChoices \| None`(step 4 에서 더함) |
+| 가져오기 | `server/jira_sync.py`·`server/worker.py`·`adapters/repo.py`(5) | `sync_project(...) -> JiraSyncResult`, `task_intake_facts(conn, session_id, task_id) -> IntakeFacts \| None`, `Worker._sync_jira`, `Worker(jira_for=…)`, `JIRA_SYNC_INTERVAL_SECONDS = 60`, `repo.upsert_jira_issue(...) -> JiraUpsert`, `get_jira_issue(conn, session_id, source_id, issue_id) -> Row \| None`, `get_jira_issue_by_task(conn, session_id, task_id) -> Row \| None`, `_delegate_jira_issue(...)`, `advance_jira_cursor(conn, source_id, cursor_ms, *, now) -> None`, `jira_project_row(conn, source_id) -> Row \| None`·`jira_sync.JiraClients(secrets)`(워커 `jira_for` — 연결 행 → 클라이언트, step 5 에서 더함), `work_item_facts` 의 Jira 지시 조건, `hand_work_to_agent` 의 Jira 지시 기록 |
+| 원본 조회 | `server/task_cycle.py`·`server/worker.py`·`server/views.py`(5) | `Origin`, `origin(conn, task) -> Origin`(옛 `origin_source` 를 대신함 — 부르는 곳 모두 옮김), `task_intake(conn, task) -> IntakeFacts` |
+| 실행·PR·목록·요청문 | `worker.py`·`domain/pull_request.py`·`adapters/repo.py`·`domain/handoff_context.py`·`server/mapping_api.py`(6) | `_queue_pull_request`·`_deliver_pull_requests`·`_apply_pull_request_state`(위), `enqueue_pull_request(..., issue_number: int \| None)`, `pr_body(..., issue_number: int \| None, origin_line: str \| None = None)`, `origin_line(source_key, source_url) -> str`, `list_work_rows` JOIN, `compose_request(..., origin_key: str \| None = None)`, `FieldMappingIn.source_type` 에 `jira`, `SOURCE['jira']` |
+| 상태 옮기기 | `adapters/repo.py`·`server/jira_delivery.py`·`server/worker.py`(7) | `queue_jira_transition(conn, work_item_id, moment, *, now) -> bool`(`set_work_status` 가 부름), `jira_deliveries_due`·`claim_jira_delivery`·`record_jira_delivery`(위), `list_jira_deliveries(conn, work_item_id) -> list[Row]`, `jira_delivery_failures(conn, session_id) -> dict[str, int]`(프로젝트별 `failed` 수 — 지금 연결 `connected_at` 이후, 연결 화면 프로젝트 줄 "Jira 반영 실패 N건"), `deliver_jira_updates(...) -> JiraDeliveryReport`, `Worker._deliver_jira` |
+| 후속 등록 | `adapters/repo.py`·`server/jira_delivery.py`(8) | `queue_jira_issue_creation(conn, work_item_id, cause_work_item_id, *, now) -> bool`(`create_followup_once` 가 부름), `record_jira_issue_created(...) -> bool`, `note_jira_delivery(...)`, 후속 조정은 `upsert_jira_issue` 안 `_reconcile_jira_followup`, `jira_intake.followup_labels`·`followup_key_number`·`followup_summary` |
+| e2e·문서 | `tests/e2e/test_jira.py`·`docs/SELFHOST.md`·`docs/CURRENT_HANDOFF.md`(9) | 가짜 Jira(`MockTransport`) + 가짜 GitHub + 가짜 러너로 가져오기 → 맡기기 → 수정 → 검토 → 초안 PR → 병합 → 세 순간 전송 → 후속 이슈, v13 사본 마이그레이션, 실연동 확인 목록 |
+
 ## 기존 구현과 초기 설계 기록
 
 이하의 첫 범위·후속 제외 표현은 해당 phase의 범위다. 실서비스 제품 목표는 위 전환 설계와 ADR-0011을 따른다.

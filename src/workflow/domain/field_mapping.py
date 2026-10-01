@@ -12,7 +12,7 @@ PRIORITIES = ("high", "normal", "low")  # `priority` 행의 Runloom 값 = `work_
 
 @dataclass(frozen=True)
 class MappingRow:
-    source_type: str  # github | n8n
+    source_type: str  # github | n8n | jira
     field: str  # kind | priority
     source_value: str
     runloom_value: str

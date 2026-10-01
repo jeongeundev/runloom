@@ -193,6 +193,38 @@ App 을 만들 수 없을 때. `/connect?tab=sources` 의 접힌 **고급 — �
 - 토큰: *Only select repositories* 로 대상 저장소만, **Issues: Read and write**, **Metadata: Read-only**(자동). 기준선 가져오기를 쓰면 **Pull requests: Read-only** 도. Contents·Actions 등 그 밖의 권한, classic PAT 은 쓰지 않는다.
 - 예전 방식(`.env` 의 `WORKFLOW_GITHUB_TOKEN`·`WORKFLOW_GITHUB_REPOS` + 라벨 범위 소스)도 그대로 동작한다 — [GitHub 런북](github/README.md) 1~4절. 화면에서 넣은 토큰이 환경변수보다 우선한다.
 
+## Jira 연결
+
+Jira Cloud 이슈를 업무로 가져오고, 업무가 진행되면 Jira 상태를 옮기고, 후속 업무를 Jira 이슈로 만든다. 선택 기능이다([ADR-0024](adr/0024-jira-source.md), 설계 [ARCHITECTURE "Jira 소스 — phase 18"](ARCHITECTURE.md)). 실행·PR 은 GitHub 저장소에서 하므로 **GitHub 연결과 러너가 먼저** 있어야 한다.
+
+상태: 2026-10-01 가짜 Jira(httpx `MockTransport`)·가짜 GitHub·가짜 러너로만 검증했다(`tests/e2e/test_jira_cycle.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md) phase 18 절). 실제 Jira Cloud 연동은 아직 하지 않았다 — 아래 Atlassian 화면 이름은 문서 기준이다.
+
+1. **토큰 만들기** — Atlassian 계정의 [API 토큰 화면](https://id.atlassian.com/manage-profile/security/api-tokens)(연결 칸의 "토큰 만들기" 새 창)에서 만든다. 스코프를 고르는 토큰이면 `read:jira-work`·`write:jira-work`·`read:jira-user` 를 준다. 토큰은 만든 화면에서 한 번만 보인다.
+2. **연결** — `/connect?tab=sources` 의 **Jira 연결** 에 사이트 주소(`https://<이름>.atlassian.net` 형식만 — 다른 호스트·경로·포트는 거부), 계정 이메일, 토큰을 넣는다. 서버가 사이트의 cloudId 와 내 계정(`myself`)을 확인한 뒤 저장한다 — 게이트웨이(`api.atlassian.com/ex/jira/<cloudId>`)로 되면 그것을, 안 되면 사이트 주소를 이후 호출 기준으로 쓴다. `이메일·토큰이 맞지 않습니다` 면 401, `권한(스코프)이 부족합니다` 면 403 이다. 성공하면 `연결됨 · 이름 · 사이트` 가 보인다.
+3. **프로젝트 추가** — 프로젝트 찾기(키·이름) → 결과 줄에서 **연결 저장소**(이미 연결한 GitHub 저장소 하나 — 그 프로젝트 업무는 모두 이 저장소에서 실행·PR 된다)와 **시작점**(지금부터 / 열린 업무 전부)을 고르고 [추가]. 시작점은 추가할 때만 고른다.
+4. **프로젝트 설정** — 프로젝트마다:
+   - 가져올 이슈 유형(비우면 전부).
+   - **세 상태** — 업무가 그 순간에 들어가면 Jira 이슈를 그 상태로 옮긴다. 후보는 그 프로젝트의 실제 상태 목록이고 비워 두면 그 순간은 옮기지 않는다.
+
+     | 순간 | Runloom 업무 | 예(회사 형식) |
+     |---|---|---|
+     | 작업 시작 | `에이전트 작업 중`(맡긴 에이전트 착수) 또는 `직접 작업 중` | 진행 중 |
+     | PR 열림 | `PR · 검토` | 리뷰중 |
+     | 업무 완료 | `완료`(PR 병합) | 종료 |
+   - 후속 이슈 유형(비우면 후속 업무를 Jira 에 만들지 않는다), 켜짐.
+   - Jira 에서 이슈 유형·상태를 바꿨으면 **[목록 새로 고침]**.
+5. **맡기기** — 약 1분 안에 이슈가 업무 목록에 `새로 들어옴` 으로 들어온다(종류는 매핑 표 — 기본 `bug_fix`). **[에이전트에게 맡기기]**(또는 [내 세션에서 작업]) 뒤에만 착수한다. 수정·검토는 GitHub 업무와 같고, 검토 승인 뒤 연결 저장소에 초안 PR(브랜치 `runloom/RUN-n`, 제목 `RUN-n 제목`, 본문 첫 줄 `원본: SHOP-12 — <이슈 주소>`, `Fixes` 없음)이 열린다. 병합은 사람이 GitHub 에서 한다 — 병합하면 업무 `완료`.
+
+Jira 에서 이슈를 완료 범주(예: 종료)로 옮기면 GitHub 이슈를 닫은 것과 같다 — 도는 실행은 끊지 않고, 다음 단계(검토 등)를 시작하지 않고 기다린다. 다시 열면 이어간다. Jira 상태로 Runloom 업무를 완료·종료하지는 않는다(완료는 PR 병합).
+
+상태 옮기기가 안 되면(목표 상태로 가는 전환이 없음, 전환 화면에 필수 칸, 권한) 재시도하지 않고 업무 패널의 "원본에 남긴 것" 에 `Jira 상태 → 리뷰중 · 반영 실패 · 이유` 가, 연결 화면에 `Jira 반영 실패 N건` 이 보인다. Jira 를 고친 뒤에는 Jira 에서 직접 옮긴다. 5xx·429·연결 오류는 물러났다가 다시 보낸다. 토큰이 만료·폐기되면(401) 연결 칸이 경고로 바뀌고 가져오기·옮기기가 멈춘다 — [다시 연결] 에 새 토큰을 넣으면 이어간다.
+
+**후속 이슈** — 후속 규칙(연결 → 종류 탭)이 **새 업무** 로 후속을 만들고, 원인 업무가 Jira 원본이며, 그 프로젝트에 후속 이슈 유형이 있으면 같은 프로젝트에 이슈를 하나 만든다: 제목 = 새 업무 제목, 라벨 `runloom`·`runloom-RUN-n`, 원인 이슈와 `Relates` 링크(그 유형이 없으면 링크만 건너뜀). 다음 가져오기가 그 이슈를 받아도 같은 업무다. 응답을 잃으면 라벨로 찾아 한 번만 만든다.
+
+**끊기** — [연결 끊기] 는 토큰 파일을 지우고 연결을 끊음으로 표시한다. 프로젝트 설정과 가져온 업무는 남는다(같은 사이트로 다시 연결하면 이어간다).
+
+비밀값: Jira API 토큰은 데이터 볼륨의 비밀 파일(`/data/secrets/jira_api_token`, 0600)에만 있다. DB 에는 사이트 주소·cloudId·이메일·계정 id·표시 이름만 둔다. 토큰은 화면·로그·백업에 없고 러너 프로세스 환경에도 들어가지 않는다. **백업에 들어가지 않으므로** 볼륨을 지우면(`down -v`) 다시 연결한다.
+
 ## 알림
 
 사람 차례가 되거나 업무가 실패하면 웹훅 URL 하나로 알린다(선택 기능, [ADR-0018](adr/0018-real-repo-cycle.md) 결정 5). Discord 채널 웹훅을 그대로 넣을 수 있다.
@@ -258,6 +290,11 @@ deploy/selfhost/install-runner.sh
   2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 13.
   3. **러너도 `install-runner.sh` 로 다시 설치한다** — 러너 프로토콜이 바뀌었다(claim 에 `capabilities`, 실행 요청에 `verify_only_commit`). 옛 러너는 v13 서버에 그대로 붙지만 [검증만 다시]를 받지 못해 그 실행은 `연결 프로그램 업데이트 필요 — 검증만 다시 미지원` 으로 기다린다. 새 러너는 v13 이전 서버에 붙지 못한다(422) — 서버를 먼저 올린다. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
   - 러너 등록의 `--env PYTHONPATH=src` 같은 상대 항목은 이제 실행 폴더(worktree·임시 체크아웃) 기준 절대 경로로 풀린다 — `$PWD/src` 로 바꿔 둔 우회는 그대로 둬도 된다.
+- v14(phase 18) — Jira 소스: Jira 표 4개(`jira_connections`·`jira_projects`·`jira_issues`·`jira_deliveries`)를 더하고, `work_items`·`field_mappings` 의 `source_type` 에 `jira` 를 넣고 `task_pull_requests.issue_number` 를 비울 수 있게 한다(세 표 재생성 — id·키 번호·행 그대로, `tasks` 는 재생성하지 않는다). `bug_fix` 종류가 있는 워크스페이스에 기본 매핑 `jira → bug_fix` 한 행을 더한다. 기존 행과 업무 상태는 그대로다. 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v13). 순서:
+  1. 백업 먼저(`backup create`).
+  2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 14.
+  3. **러너 재설치는 필요 없다** — 러너 프로토콜(`connector`·`contracts/v1`)은 이 phase 에서 바뀌지 않았다(재설치해도 된다).
+  4. Jira 를 쓰려면 위 "Jira 연결". 쓰지 않으면 아무것도 하지 않아도 된다.
 - 옛 주소는 넘어간다(303) — `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` → `/connect?tab=…`, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 

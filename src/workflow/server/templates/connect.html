@@ -10,7 +10,7 @@
 <section data-tab-body="{{ tab }}">
 {% if tab == 'sources' %}
 {% include "_connect_github.html" %}
-{% if 'manage_connections' in allowed %}{% include "_connect_inbound.html" %}{% endif %}
+{% if 'manage_connections' in allowed %}{% include "_connect_jira.html" %}{% include "_connect_inbound.html" %}{% endif %}
 {% elif tab == 'team' %}
 {% include "_connect_team.html" %}
 {% elif tab == 'kinds' %}

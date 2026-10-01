@@ -49,6 +49,8 @@ from workflow.contracts.github import (
     SourceDelivery,
     snapshot_digest,
 )
+from workflow.contracts.jira import JiraChoices, JiraIssueSnapshot, JiraProjectConfig, JiraProjectRef
+from workflow.contracts.jira import snapshot_digest as jira_snapshot_digest
 from workflow.contracts.v1 import (
     BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
@@ -79,6 +81,8 @@ from workflow.domain.delegation import (
     parse_approval_cause_key,
 )
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
+from workflow.domain import jira_intake
+from workflow.domain.jira_intake import initial_cursor_ms
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
@@ -152,7 +156,7 @@ def create_session(conn: Connection, session_id: str, now: str) -> None:
 
 
 # 새 워크스페이스의 기본 매핑 — GitHub 이슈는 라벨과 무관하게 지금처럼 bug_fix (ARCHITECTURE "매핑 표").
-DEFAULT_FIELD_MAPPINGS = (("github", "kind", "*", "bug_fix"),)
+DEFAULT_FIELD_MAPPINGS = (("github", "kind", "*", "bug_fix"), ("jira", "kind", "*", "bug_fix"))
 
 
 def ensure_first_admin(conn: Connection, session_id: str, *, now: str) -> str:
@@ -167,9 +171,13 @@ def ensure_first_admin(conn: Connection, session_id: str, *, now: str) -> str:
     return member_id
 
 
-def seed_default_field_mappings(conn: Connection, session_id: str, *, now: str) -> None:
-    """기본 매핑 행을 넣는다. 설정 번호는 올리지 않는다. 자체 BEGIN 이 없다."""
-    for position, (source_type, field, source_value, runloom_value) in enumerate(DEFAULT_FIELD_MAPPINGS, start=1):
+def seed_default_field_mappings(
+    conn: Connection, session_id: str, *, now: str,
+    mappings: Sequence[tuple[str, str, str, str]] = DEFAULT_FIELD_MAPPINGS,
+) -> None:
+    """기본 매핑 행을 넣는다. 설정 번호는 올리지 않는다. 자체 BEGIN 이 없다. `mappings` 는 옛 스키마로 올리는
+    마이그레이션이 그 버전 표가 받는 행만 넘길 때 쓴다."""
+    for position, (source_type, field, source_value, runloom_value) in enumerate(mappings, start=1):
         conn.execute(
             "INSERT INTO field_mappings (mapping_id, session_id, source_type, field, source_value, runloom_value,"
             " position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -224,7 +232,7 @@ def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[Map
 
 def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = True) -> WorkItemFacts:
     """업무 상태 판정(`domain/work_status.work_status`)의 재료를 DB 에서 모은다. 사실을 모으는 SQL 은 여기 한 곳.
-    `direct_work=False` 는 직접 작업 칸·감지 PR 표(v12)가 아직 없는 스키마 — v9 → v10 마이그레이션만 쓴다."""
+    `direct_work=False` 는 직접 작업 칸·감지 PR 표(v12)·Jira 표(v14)가 아직 없는 스키마 — v9 → v10 마이그레이션만 쓴다."""
     item = _one(conn, "SELECT status, status_reason, assignee_type FROM work_items WHERE work_item_id = ?",
                 (work_item_id,))
     if item is None:
@@ -250,7 +258,8 @@ def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = 
         "SELECT state, pr_number FROM work_pull_requests WHERE work_item_id = ? ORDER BY pr_updated_at DESC, id DESC",
         (work_item_id,),
     ).fetchall() if direct_work else []
-    # 지시 전 = 원본 소스가 all_open 이고 원본 이슈에 지시 기록이 없음
+    # 지시 전 = 원본 소스가 all_open 이고 원본 이슈에 지시 기록이 없음, 또는 단계에 붙은 Jira 이슈에 지시 기록이 없음
+    # (Jira 는 늘 맡긴 뒤에만 착수 — ADR-0024 결정 9)
     undelegated = _one(
         conn,
         "SELECT 1 FROM source_issues si JOIN tasks t ON t.task_id = si.task_id"
@@ -258,7 +267,12 @@ def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = 
         " WHERE t.work_item_id = ? AND json_extract(gs.config_json, '$.intake') = 'all_open'"
         " AND si.delegated_by IS NULL",
         (work_item_id,),
-    )
+    ) or (_one(
+        conn,
+        "SELECT 1 FROM jira_issues ji JOIN tasks t ON t.task_id = ji.task_id"
+        " WHERE t.work_item_id = ? AND ji.delegated_by IS NULL",
+        (work_item_id,),
+    ) if direct_work else None)
     return WorkItemFacts(
         stored_status=item["status"],
         stored_reason=item["status_reason"],
@@ -406,8 +420,10 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
         " LEFT JOIN members m ON w.assignee_type = 'member' AND m.member_id = w.assignee_id"
         " LEFT JOIN agents a ON w.assignee_type = 'agent' AND a.agent_id = w.assignee_id"
         " LEFT JOIN members d ON d.member_id = w.direct_member_id"
-        " LEFT JOIN github_sources g ON w.source_type = 'github' AND g.source_id = w.source_id"
-        " AND g.session_id = w.session_id"
+        " LEFT JOIN jira_projects jp ON w.source_type = 'jira' AND jp.source_id = w.source_id"
+        " AND jp.session_id = w.session_id"
+        " LEFT JOIN github_sources g ON g.session_id = w.session_id AND g.source_id = CASE"
+        " WHEN w.source_type = 'github' THEN w.source_id WHEN w.source_type = 'jira' THEN jp.github_source_id END"
         " WHERE w.session_id = ? AND (? IS NULL OR w.closed_at IS NULL OR w.closed_at >= ?)"
         " ORDER BY w.key_number DESC",
         (session_id, closed_since, closed_since),
@@ -505,6 +521,8 @@ def set_work_status(conn: Connection, work_item_id: str, status: WorkStatus, *, 
     )
     _work_item_event(conn, work_item_id, row["session_id"], "status_changed",
                      {"from": row["status"], "to": status.status, "reason": status.reason}, now)
+    if (moment := jira_intake.moment_for(status.status)) is not None:  # Jira 원본이 아니면 행이 생기지 않는다
+        queue_jira_transition(conn, work_item_id, moment, now=now)
     return True
 
 
@@ -602,7 +620,7 @@ def hand_work_to_agent(
 ) -> None:
     """에이전트에게 맡기기의 쓰기(ARCHITECTURE "담당 바꾸기" `agent:` ①~⑤)를 한 트랜잭션으로 — 단계 선택 기록·직접 선택
     전환(`target` 고정), 업무 담당 = 그 Agent(`assigned` `by`), 맡긴 사람 = 누른 멤버, 지시 메모(없으면 지난 메모를 지움),
-    그 단계가 지시 전 GitHub 원본이면 운영자 지시 기록, 업무 상태 재계산. 착수는 하지 않는다. 단계가 이 워크스페이스·
+    그 단계가 지시 전 GitHub·Jira 원본이면 운영자 지시 기록, 업무 상태 재계산. 착수는 하지 않는다. 단계가 이 워크스페이스·
     업무의 것이 아니면 NotFound."""
     if record.status != "selected":
         raise ValueError(f"선택되지 않은 기록 {record.status}")
@@ -621,6 +639,9 @@ def hand_work_to_agent(
         issue = get_source_issue_by_task(conn, session_id, record.task_id)
         if issue is not None:
             _delegate_issue(conn, issue["source_id"], issue["github_issue_id"], by="operator", now=now)
+        jira_issue = get_jira_issue_by_task(conn, session_id, record.task_id)
+        if jira_issue is not None:
+            _delegate_jira_issue(conn, jira_issue["source_id"], jira_issue["issue_id"], by="operator", now=now)
         refresh_work_status(conn, work_item_id, now=now)
 
 
@@ -2596,6 +2617,431 @@ def github_source_sessions(conn: Connection) -> list[str]:
     return [r[0] for r in conn.execute("SELECT DISTINCT session_id FROM github_sources ORDER BY session_id")]
 
 
+# --- Jira 연결·프로젝트 설정 (phase 18 step 4, ARCHITECTURE "Jira 소스 — phase 18") ------------------------------------
+# 연결 행은 공개 정보만 — 토큰은 비밀 저장소 `jira_api_token`. 끊어도 프로젝트·업무 행은 남는다.
+
+
+def save_jira_connection(conn: Connection, facts, *, session_id: str, now: str) -> None:
+    """확인이 끝난 연결(`jira_connect.JiraConnectionFacts` — 토큰 없음)을 워크스페이스 한 행으로 upsert.
+    다시 연결하면 `connected_at` 을 새로 쓰고 끊김·토큰 오류 표시를 지운다."""
+    conn.execute(
+        "INSERT INTO jira_connections (session_id, site_url, cloud_id, api_base, email, account_id, display_name,"
+        " connected_at, disconnected_at, auth_failed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)"
+        " ON CONFLICT(session_id) DO UPDATE SET site_url = excluded.site_url, cloud_id = excluded.cloud_id,"
+        " api_base = excluded.api_base, email = excluded.email, account_id = excluded.account_id,"
+        " display_name = excluded.display_name, connected_at = excluded.connected_at, disconnected_at = NULL,"
+        " auth_failed_at = NULL, updated_at = excluded.updated_at",
+        (session_id, facts.site_url, facts.cloud_id, facts.api_base, facts.email, facts.account_id,
+         facts.display_name, now, now),
+    )
+
+
+def get_jira_connection(conn: Connection, session_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM jira_connections WHERE session_id = ?", (session_id,))
+
+
+def disconnect_jira(conn: Connection, session_id: str, *, now: str) -> None:
+    """끊김 표시만 — 토큰 파일 삭제는 호출자. 연결이 없거나 이미 끊겼으면 그대로."""
+    conn.execute(
+        "UPDATE jira_connections SET disconnected_at = ?, updated_at = ? WHERE session_id = ? AND disconnected_at IS NULL",
+        (now, now, session_id),
+    )
+
+
+def mark_jira_auth_failed(conn: Connection, session_id: str, *, now: str) -> None:
+    """401 을 받은 시각(첫 시각을 지킨다). 다시 연결할 때까지 그 워크스페이스의 Jira 호출을 멈추는 표시다."""
+    conn.execute(
+        "UPDATE jira_connections SET auth_failed_at = ?, updated_at = ? WHERE session_id = ? AND auth_failed_at IS NULL",
+        (now, now, session_id),
+    )
+
+
+def jira_project_config(row: Row) -> JiraProjectConfig:
+    return JiraProjectConfig(
+        source_id=row["source_id"], session_id=row["session_id"], project_id=row["project_id"],
+        project_key=row["project_key"], project_name=row["project_name"], github_source_id=row["github_source_id"],
+        issue_types=json.loads(row["issue_types_json"]), start_mode=row["start_mode"], start_at=row["start_at"],
+        status_on_start=row["status_on_start"], status_on_review=row["status_on_review"],
+        status_on_done=row["status_on_done"], followup_issue_type=row["followup_issue_type"],
+        enabled=bool(row["enabled"]),
+    )
+
+
+def _require_session_github_source(conn: Connection, session_id: str, source_id: str) -> None:
+    if _one(conn, "SELECT 1 FROM github_sources WHERE source_id = ? AND session_id = ?", (source_id, session_id)) is None:
+        raise NotFound(f"source {source_id}")
+
+
+def add_jira_project(
+    conn: Connection, *, session_id: str, ref: JiraProjectRef, github_source_id: str,
+    start_mode: Literal["from_now", "all_open"], choices: JiraChoices, now: str,
+) -> str:
+    """프로젝트 설정 한 행. `start_at` = 지금, 커서 = `from_now` 면 지금(ms)·`all_open` 이면 없음. 설정 칸은 비어 있다.
+    연결 저장소가 이 워크스페이스 소스가 아니면 NotFound, 같은 프로젝트가 이미 있으면 IntegrityError."""
+    source_id = f"jps-{secrets.token_hex(4)}"
+    with _tx(conn):
+        _require_session_github_source(conn, session_id, github_source_id)
+        conn.execute(
+            "INSERT INTO jira_projects (source_id, session_id, project_id, project_key, project_name, github_source_id,"
+            " start_mode, start_at, choices_json, cursor_ms, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, session_id, ref.project_id, ref.key, ref.name, github_source_id, start_mode, now,
+             choices.model_dump_json(), initial_cursor_ms(start_mode, now), now, now),
+        )
+    return source_id
+
+
+def update_jira_project(
+    conn: Connection, session_id: str, source_id: str, *, now: str, github_source_id: str, issue_types: Sequence[str],
+    status_on_start: str | None, status_on_review: str | None, status_on_done: str | None,
+    followup_issue_type: str | None, enabled: bool,
+) -> None:
+    """설정 칸 저장. 이름이 Jira 후보에 있는지는 서버가 본다(`jira_connect.project_settings`). 시작점은 바꾸지 않는다.
+    다른 워크스페이스 프로젝트·연결 저장소는 NotFound."""
+    with _tx(conn):
+        _require_session_github_source(conn, session_id, github_source_id)
+        cur = conn.execute(
+            "UPDATE jira_projects SET github_source_id = ?, issue_types_json = ?, status_on_start = ?,"
+            " status_on_review = ?, status_on_done = ?, followup_issue_type = ?, enabled = ?, updated_at = ?"
+            " WHERE source_id = ? AND session_id = ?",
+            (github_source_id, json.dumps(list(issue_types), ensure_ascii=False), status_on_start, status_on_review,
+             status_on_done, followup_issue_type, int(enabled), now, source_id, session_id),
+        )
+        _require_rowcount(cur, f"jira project {source_id}")
+
+
+def set_jira_choices(conn: Connection, session_id: str, source_id: str, choices: JiraChoices, *, now: str) -> None:
+    """후보(이슈 유형·상태 이름) 다시 받기. 이미 고른 설정 이름은 그대로 둔다."""
+    cur = conn.execute(
+        "UPDATE jira_projects SET choices_json = ?, updated_at = ? WHERE source_id = ? AND session_id = ?",
+        (choices.model_dump_json(), now, source_id, session_id),
+    )
+    _require_rowcount(cur, f"jira project {source_id}")
+
+
+def list_jira_project_rows(conn: Connection, session_id: str) -> list[Row]:
+    """화면용 — 설정 칸과 후보(`choices_json`)·마지막 가져오기(`cursor_updated_at`)."""
+    return conn.execute(
+        "SELECT * FROM jira_projects WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+    ).fetchall()
+
+
+def list_jira_projects(conn: Connection, session_id: str) -> list[JiraProjectConfig]:
+    return [jira_project_config(r) for r in list_jira_project_rows(conn, session_id)]
+
+
+def get_jira_project(conn: Connection, session_id: str, source_id: str) -> JiraProjectConfig | None:
+    row = _one(conn, "SELECT * FROM jira_projects WHERE source_id = ? AND session_id = ?", (source_id, session_id))
+    return jira_project_config(row) if row else None
+
+
+def get_jira_choices(conn: Connection, session_id: str, source_id: str) -> JiraChoices | None:
+    row = _one(
+        conn, "SELECT choices_json FROM jira_projects WHERE source_id = ? AND session_id = ?", (source_id, session_id)
+    )
+    return JiraChoices.model_validate_json(row["choices_json"]) if row else None
+
+
+def jira_project_row(conn: Connection, source_id: str) -> Row | None:
+    """가져오기용 — 워크스페이스·커서(`cursor_ms`)까지 든 프로젝트 행(워커가 source_id 만 안다)."""
+    return _one(conn, "SELECT * FROM jira_projects WHERE source_id = ?", (source_id,))
+
+
+def advance_jira_cursor(conn: Connection, source_id: str, cursor_ms: int | None, *, now: str) -> None:
+    """페이지를 다 저장한 뒤의 커서 — 뒤로 가지 않는다(None 이면 그대로). `cursor_updated_at` = 마지막 가져오기."""
+    conn.execute(
+        "UPDATE jira_projects SET cursor_ms = CASE WHEN ? IS NULL THEN cursor_ms"
+        " ELSE MAX(COALESCE(cursor_ms, 0), ?) END, cursor_updated_at = ? WHERE source_id = ?",
+        (cursor_ms, cursor_ms, now, source_id),
+    )
+
+
+@dataclass(frozen=True)
+class JiraUpsert:
+    """`work_item_id` None = 받지 않음(범위 밖·종류 매핑 없음). `changed` = 스냅숏 행을 새로 쓰거나 고쳤다."""
+
+    work_item_id: str | None
+    created: bool
+    changed: bool
+
+
+def upsert_jira_issue(
+    conn: Connection, session_id: str, project: JiraProjectConfig, snapshot: JiraIssueSnapshot, *, site_url: str,
+    run: GitHubSourceConfig, mappings: Sequence[MappingRow], now: str,
+) -> JiraUpsert:
+    """Jira 이슈 하나를 `(source_id, issue_id)` 로 업무 하나에 잇는다(한 트랜잭션, ARCHITECTURE "가져오기" 표).
+    스냅숏 행은 업무의 첫 단계에 붙는다. 처음 보는 이슈는 같은 원본 칸 업무(Runloom 이 만든 후속)가 있으면 그 첫 단계에
+    `followup` 지시로 붙고, 아니면 `accept` 이고 종류가 매핑될 때만 업무(`jira`, `새로 들어옴`)와 첫 단계를 만든다.
+    이미 받은 이슈는 범위와 무관하게 원본 칸을 따르고, 후속이 아니면 제목·요청이 바뀐 때 단계·업무 revision+1."""
+    if project.session_id != session_id:
+        raise NotFound(f"jira project {project.source_id}")
+    digest = jira_snapshot_digest(snapshot)
+    fields = jira_intake.work_fields(snapshot, site_url=site_url)
+    with _tx(conn):
+        row = _one(conn, "SELECT ji.*, t.work_item_id FROM jira_issues ji JOIN tasks t ON t.task_id = ji.task_id"
+                         " WHERE ji.source_id = ? AND ji.issue_id = ?", (project.source_id, snapshot.issue_id))
+        if row is not None:
+            if _parse(snapshot.updated) < _parse(row["issue_updated_at"]) or digest == row["snapshot_digest"]:
+                return JiraUpsert(row["work_item_id"], False, False)
+            conn.execute(
+                "UPDATE jira_issues SET issue_key = ?, source_revision = source_revision + 1, snapshot_json = ?,"
+                " snapshot_digest = ?, issue_updated_at = ?, state = ?, status_name = ?, updated_at = ?"
+                " WHERE source_id = ? AND issue_id = ?",
+                (snapshot.key, snapshot.model_dump_json(), digest, snapshot.updated, fields.state, fields.source_state,
+                 now, project.source_id, snapshot.issue_id),
+            )
+            _set_jira_source_fields(conn, row["work_item_id"], fields, now)
+            if row["delegated_by"] != "followup":
+                cur = conn.execute(
+                    "UPDATE tasks SET title = ?, request = ?, revision = revision + 1"
+                    " WHERE task_id = ? AND finished_at IS NULL AND (title != ? OR request != ?)",
+                    (fields.title, fields.request, row["task_id"], fields.title, fields.request),
+                )
+                if cur.rowcount == 1:
+                    conn.execute(
+                        "UPDATE work_items SET title = ?, request = ?, form_json = ?, revision = revision + 1"
+                        " WHERE work_item_id = ?",
+                        (fields.title, fields.request, json.dumps(fields.form, ensure_ascii=False),
+                         row["work_item_id"]),
+                    )
+            return JiraUpsert(row["work_item_id"], False, True)
+        followup = _one(
+            conn,
+            "SELECT t.task_id, t.work_item_id FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+            " WHERE w.session_id = ? AND w.source_type = 'jira' AND w.source_id = ? AND w.source_item_id = ?"
+            " ORDER BY t.created_at, t.task_id LIMIT 1",
+            (session_id, project.source_id, snapshot.issue_id),
+        )
+        if followup is not None:
+            _insert_jira_issue(conn, project.source_id, snapshot, digest, fields, task_id=followup["task_id"],
+                               delegated_by="followup", now=now)
+            _set_jira_source_fields(conn, followup["work_item_id"], fields, now)
+            return JiraUpsert(followup["work_item_id"], False, True)
+        key_number = jira_intake.followup_key_number(snapshot.labels)
+        if key_number is not None:  # Runloom 이 만든 후속 이슈 — 새 업무를 만들지 않는다
+            work_item_id = _reconcile_jira_followup(conn, session_id, project.source_id, snapshot, digest, fields,
+                                                    key_number=key_number, now=now)
+            return JiraUpsert(work_item_id, False, work_item_id is not None)
+        kind = get_kind(conn, session_id, jira_intake.issue_kind(mappings, snapshot) or "")
+        if not jira_intake.accept(project, snapshot) or kind is None:
+            return JiraUpsert(None, False, False)
+        task = jira_intake.snapshot_to_task_spec(project, run, snapshot, kind=kind, session_id=session_id,
+                                                 task_id=f"task-{secrets.token_hex(6)}")
+        work_item_id = _work_item_for_task(
+            conn, task, now, source_type="jira", source_id=project.source_id, source_item_id=fields.source_item_id,
+            source_key=fields.source_key, source_url=fields.source_url, source_state=fields.source_state,
+            form=fields.form, priority=jira_intake.issue_priority(mappings, snapshot),
+        )
+        _insert_task_row(conn, task, now, work_item_id=work_item_id)
+        _insert_jira_issue(conn, project.source_id, snapshot, digest, fields, task_id=task["task_id"],
+                           delegated_by=None, now=now)
+        return JiraUpsert(work_item_id, True, True)
+
+
+def _reconcile_jira_followup(conn: Connection, session_id: str, source_id: str, snapshot: JiraIssueSnapshot,
+                             digest: str, fields: jira_intake.JiraWorkFields, *, key_number: int,
+                             now: str) -> str | None:
+    """라벨 `runloom-RUN-<n>` 이 붙은 처음 보는 이슈 — 생성 POST 는 닿았는데 기록 전에 응답을 잃은 경우. RUN-n 이 같은
+    프로젝트의 원본 이슈 없는 Jira 업무면 원본 칸·스냅숏 행(`followup`)을 붙이고 그 업무의 생성 행을 끝낸다.
+    아니면 None(건너뜀). 자체 BEGIN 없음."""
+    work = _one(
+        conn,
+        "SELECT w.work_item_id, t.task_id FROM work_items w JOIN tasks t ON t.work_item_id = w.work_item_id"
+        " WHERE w.session_id = ? AND w.key_number = ? AND w.source_type = 'jira' AND w.source_id = ?"
+        " AND w.source_item_id IS NULL ORDER BY t.created_at, t.task_id LIMIT 1",
+        (session_id, key_number, source_id),
+    )
+    if work is None:
+        return None
+    _insert_jira_issue(conn, source_id, snapshot, digest, fields, task_id=work["task_id"], delegated_by="followup",
+                       now=now)
+    _set_jira_source_fields(conn, work["work_item_id"], fields, now)
+    conn.execute("UPDATE work_items SET source_item_id = ? WHERE work_item_id = ?",
+                 (fields.source_item_id, work["work_item_id"]))
+    conn.execute(
+        "UPDATE jira_deliveries SET state = 'delivered', result_issue_id = ?, result_issue_key = ?, last_error = NULL,"
+        " note = '가져오기로 조정', next_at = NULL, delivered_at = ?, updated_at = ?"
+        " WHERE work_item_id = ? AND action = 'create_issue' AND state != 'delivered'",
+        (snapshot.issue_id, snapshot.key, now, now, work["work_item_id"]),
+    )
+    return work["work_item_id"]
+
+
+def _insert_jira_issue(conn: Connection, source_id: str, snapshot: JiraIssueSnapshot, digest: str,
+                       fields: jira_intake.JiraWorkFields, *, task_id: str, delegated_by: str | None,
+                       now: str) -> None:
+    conn.execute(
+        "INSERT INTO jira_issues (source_id, issue_id, issue_key, task_id, source_revision, snapshot_json,"
+        " snapshot_digest, issue_updated_at, state, status_name, delegated_at, delegated_by, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (source_id, snapshot.issue_id, snapshot.key, task_id, snapshot.model_dump_json(), digest, snapshot.updated,
+         fields.state, fields.source_state, now if delegated_by else None, delegated_by, now, now),
+    )
+
+
+def _set_jira_source_fields(conn: Connection, work_item_id: str, fields: jira_intake.JiraWorkFields,
+                            now: str) -> None:
+    conn.execute("UPDATE work_items SET source_state = ?, source_key = ?, source_url = ?, updated_at = ?"
+                 " WHERE work_item_id = ?",
+                 (fields.source_state, fields.source_key, fields.source_url, now, work_item_id))
+
+
+def get_jira_issue(conn: Connection, session_id: str, source_id: str, issue_id: str) -> Row | None:
+    return _one(
+        conn,
+        "SELECT ji.* FROM jira_issues ji JOIN jira_projects jp ON jp.source_id = ji.source_id"
+        " WHERE ji.source_id = ? AND ji.issue_id = ? AND jp.session_id = ?",
+        (source_id, issue_id, session_id),
+    )
+
+
+def get_jira_issue_by_task(conn: Connection, session_id: str, task_id: str) -> Row | None:
+    """이 단계가 맡은 Jira 이슈 — `get_source_issue_by_task` 와 같은 규칙(이슈가 붙은 단계이거나 같은 업무의 같은 종류
+    단계). 같은 업무의 다른 종류 단계(검토)는 None."""
+    return _one(
+        conn,
+        "SELECT ji.* FROM jira_issues ji JOIN jira_projects jp ON jp.source_id = ji.source_id"
+        " JOIN tasks origin ON origin.task_id = ji.task_id"
+        " JOIN tasks t ON t.work_item_id = origin.work_item_id AND t.kind = origin.kind"
+        " WHERE t.task_id = ? AND jp.session_id = ?",
+        (task_id, session_id),
+    )
+
+
+def _delegate_jira_issue(conn: Connection, source_id: str, issue_id: str, *, by: str, now: str) -> bool:
+    """처음 지시만 기록한다(이미 있으면 False). 자체 BEGIN 없음."""
+    cur = conn.execute(
+        "UPDATE jira_issues SET delegated_at = ?, delegated_by = ?, updated_at = ?"
+        " WHERE source_id = ? AND issue_id = ? AND delegated_at IS NULL",
+        (now, by, now, source_id, issue_id),
+    )
+    return cur.rowcount == 1
+
+
+# --- Jira 상태 옮기기 outbox (phase 18 step 7, ADR-0024 결정 11·12) ------------------------------------------
+# 전송 상태는 `pending`·`sending`·`delivered`·`failed`·`skipped`(전환은 `unknown` 을 쓰지 않는다). HTTP 는
+# `server/jira_delivery` 가 트랜잭션 밖에서 하고, 여기서는 행 고르기·claim(`attempts + 1` fence)·기록만 한다.
+
+
+def queue_jira_transition(conn: Connection, work_item_id: str, moment: str, *, now: str) -> bool:
+    """업무가 켜진 Jira 프로젝트의 원본 이슈이고 그 순간의 상태 이름이 설정돼 있으면 전환 행 하나(업무 × 순간 한 번).
+    `set_work_status` 가 부른다 — 자체 BEGIN 없음. 칸 이름은 고정 사전(`MOMENT_COLUMNS`)에서만 고른다."""
+    column = jira_intake.MOMENT_COLUMNS[moment]
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO jira_deliveries (delivery_id, session_id, source_id, work_item_id, action, moment,"
+        " target, dedupe_key, state, created_at, updated_at) SELECT ?, w.session_id, p.source_id, w.work_item_id,"
+        f" 'transition', ?, p.{column}, ?, 'pending', ?, ? FROM work_items w JOIN jira_projects p"
+        " ON p.source_id = w.source_id AND p.session_id = w.session_id"
+        " WHERE w.work_item_id = ? AND w.source_type = 'jira' AND w.source_item_id IS NOT NULL AND p.enabled = 1"
+        f" AND p.{column} IS NOT NULL",
+        (f"jdl-{secrets.token_hex(4)}", moment, f"transition:{work_item_id}:{moment}", now, now, work_item_id),
+    )
+    return cur.rowcount == 1
+
+
+def jira_deliveries_due(conn: Connection, now: str) -> list[Row]:
+    """보낼 차례인 행(생긴 순) — `pending`·`unknown` 은 `next_at` 이 지났거나 없으면, `sending` 은 claim 이 만료됐으면.
+    `issue_id` = 업무의 원본 이슈 id."""
+    return conn.execute(
+        "SELECT d.*, w.source_item_id AS issue_id FROM jira_deliveries d"
+        " JOIN work_items w ON w.work_item_id = d.work_item_id"
+        " WHERE d.state IN ('pending', 'sending', 'unknown') AND (d.next_at IS NULL OR d.next_at <= ?)"
+        " ORDER BY d.created_at, d.rowid",
+        (now,),
+    ).fetchall()
+
+
+def claim_jira_delivery(conn: Connection, delivery_id: str, attempts: int, *, now: str, claim_until: str) -> bool:
+    """읽은 `attempts` 그대로이고 보낼 차례인 행을 `sending`(`next_at` = claim 만료)으로 가져간다 — 여러 소비자 중
+    하나만 성공한다. 성공한 소비자의 fence 는 `attempts + 1`."""
+    cur = conn.execute(
+        "UPDATE jira_deliveries SET state = 'sending', attempts = attempts + 1, next_at = ?, updated_at = ?"
+        " WHERE delivery_id = ? AND attempts = ? AND state IN ('pending', 'sending', 'unknown')"
+        " AND (next_at IS NULL OR next_at <= ?)",
+        (claim_until, now, delivery_id, attempts, now),
+    )
+    return cur.rowcount == 1
+
+
+def record_jira_delivery(
+    conn: Connection, delivery_id: str, attempts: int, *, state: str, now: str, last_error: str | None = None,
+    note: str | None = None, next_at: str | None = None, result_issue_id: str | None = None,
+    result_issue_key: str | None = None,
+) -> bool:
+    """claim(fence = `attempts`)의 결과. 그 사이 claim 이 만료돼 다른 소비자가 가져갔으면 False — 늦은 기록은 버린다."""
+    cur = conn.execute(
+        "UPDATE jira_deliveries SET state = ?, last_error = ?, note = ?, next_at = ?,"
+        " result_issue_id = COALESCE(?, result_issue_id), result_issue_key = COALESCE(?, result_issue_key),"
+        " delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, updated_at = ?"
+        " WHERE delivery_id = ? AND state = 'sending' AND attempts = ?",
+        (state, last_error, note, next_at, result_issue_id, result_issue_key, state, now, now, delivery_id, attempts),
+    )
+    return cur.rowcount == 1
+
+
+def queue_jira_issue_creation(conn: Connection, work_item_id: str, cause_work_item_id: str, *, now: str) -> bool:
+    """원인 업무가 켜진 Jira 프로젝트의 원본 이슈이고 후속 이슈 유형이 설정돼 있으면 새 업무(`work_item_id`)의 이슈 생성
+    행 하나(새 업무당 한 번). `create_followup_once` 의 새 업무 가지가 부른다 — 자체 BEGIN 없음."""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO jira_deliveries (delivery_id, session_id, source_id, work_item_id, action, moment,"
+        " target, cause_issue_id, dedupe_key, state, created_at, updated_at) SELECT ?, c.session_id, p.source_id, ?,"
+        " 'create_issue', NULL, p.followup_issue_type, c.source_item_id, ?, 'pending', ?, ? FROM work_items c"
+        " JOIN jira_projects p ON p.source_id = c.source_id AND p.session_id = c.session_id"
+        " WHERE c.work_item_id = ? AND c.source_type = 'jira' AND c.source_item_id IS NOT NULL AND p.enabled = 1"
+        " AND p.followup_issue_type IS NOT NULL",
+        (f"jdl-{secrets.token_hex(4)}", work_item_id, f"create_issue:{work_item_id}", now, now, cause_work_item_id),
+    )
+    return cur.rowcount == 1
+
+
+def record_jira_issue_created(
+    conn: Connection, delivery_id: str, attempts: int, *, issue_id: str, key: str, site_url: str, now: str,
+    note: str | None = None,
+) -> bool:
+    """생성(또는 라벨로 찾은) 이슈를 한 트랜잭션에 기록 — 행 `delivered` + 새 업무 `source_item_id`·`source_key`·
+    `source_url`. claim(fence = `attempts`)을 잃었으면 아무것도 쓰지 않고 False."""
+    with _tx(conn):
+        cur = conn.execute(
+            "UPDATE jira_deliveries SET state = 'delivered', result_issue_id = ?, result_issue_key = ?,"
+            " last_error = NULL, note = ?, next_at = NULL, delivered_at = ?, updated_at = ?"
+            " WHERE delivery_id = ? AND state = 'sending' AND attempts = ?",
+            (issue_id, key, note, now, now, delivery_id, attempts),
+        )
+        if cur.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE work_items SET source_item_id = ?, source_key = ?, source_url = ?, updated_at = ?"
+            " WHERE work_item_id = (SELECT work_item_id FROM jira_deliveries WHERE delivery_id = ?)",
+            (issue_id, key, jira_intake.issue_url(site_url, key), now, delivery_id),
+        )
+        return True
+
+
+def note_jira_delivery(conn: Connection, delivery_id: str, note: str) -> None:
+    """끝난 행에 덧붙이는 기록 — 후속 이슈의 링크 생략·실패."""
+    conn.execute("UPDATE jira_deliveries SET note = ? WHERE delivery_id = ?", (note, delivery_id))
+
+
+def list_jira_deliveries(conn: Connection, work_item_id: str) -> list[Row]:
+    """업무의 Jira 반영 행(생긴 순) — 업무 패널·전송의 '다음 순간으로 대체' 판정."""
+    return conn.execute(
+        "SELECT * FROM jira_deliveries WHERE work_item_id = ? ORDER BY created_at, rowid", (work_item_id,)
+    ).fetchall()
+
+
+def jira_delivery_failures(conn: Connection, session_id: str) -> dict[str, int]:
+    """프로젝트(source_id)별 `failed` 행 수 — 지금 연결(`connected_at`) 이후에 실패한 것만(연결 화면의 최근 실패 수)."""
+    return {
+        r["source_id"]: r["n"]
+        for r in conn.execute(
+            "SELECT d.source_id, COUNT(*) AS n FROM jira_deliveries d"
+            " JOIN jira_connections c ON c.session_id = d.session_id"
+            " WHERE d.session_id = ? AND d.state = 'failed' AND d.updated_at >= c.connected_at GROUP BY d.source_id",
+            (session_id,),
+        )
+    }
+
+
 def replace_baseline(
     conn: Connection, session_id: str, source_id: str, items: Sequence[IssuePrLink], *, opened_before: str, now: str
 ) -> int:
@@ -2978,12 +3424,16 @@ def create_followup_once(
             cause_work = get_work_item(conn, spec.session_id, work_item_id)
             if cause_work is None:
                 raise NotFound(f"work item {work_item_id}")
+            # Jira 원인의 키·주소는 복사하지 않는다 — 새 업무의 원본 칸은 Jira 에 후속 이슈를 만든 뒤 채운다(ADR-0024 결정 13)
+            copy_key = cause_work["source_type"] != "jira"
             spawned = _work_item_for_task(
                 conn, task, now, source_type=cause_work["source_type"], source_id=cause_work["source_id"],
-                source_key=cause_work["source_key"], source_url=cause_work["source_url"],
+                source_key=cause_work["source_key"] if copy_key else None,
+                source_url=cause_work["source_url"] if copy_key else None,
             )
             link_work_items(conn, from_work_item_id=work_item_id, to_work_item_id=spawned, type="spawned_from",
                             cause_execution_id=spec.cause_execution_id, now=now)
+            queue_jira_issue_creation(conn, spawned, work_item_id, now=now)
             if cause_work["requested_by_member_id"] is not None:  # 같은 사람이 맡긴 일의 결과
                 set_work_requester(conn, spawned, cause_work["requested_by_member_id"])
             work_item_ids.append(spawned)
@@ -3336,10 +3786,10 @@ def record_source_delivery(
 
 
 def enqueue_pull_request(
-    conn: Connection, *, task_id: str, session_id: str, source_id: str, repository_full_name: str, issue_number: int,
-    fix_execution_id: str, review_execution_id: str, now: str,
+    conn: Connection, *, task_id: str, session_id: str, source_id: str, repository_full_name: str,
+    issue_number: int | None, fix_execution_id: str, review_execution_id: str, now: str,
 ) -> bool:
-    """수정 Task 하나에 한 행(`pending`). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다.
+    """수정 Task 하나에 한 행(`pending`). `issue_number` 는 GitHub 원본일 때만(Jira 원본은 None — 본문에 `Fixes` 없음). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다.
     head 는 검토한 수정 실행 요청의 두 칸으로 계산한 결과 브랜치(러너가 push 한 이름)."""
     fix = ExecutionRequest.model_validate_json(get_execution(conn, fix_execution_id)["request_json"])
     branch = head_branch(task_id, work_key=fix.work_key, branch_seq=fix.branch_seq)

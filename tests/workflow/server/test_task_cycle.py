@@ -897,10 +897,10 @@ def _stored_equals_computed(conn, work_item_id: str) -> bool:
 
 
 def _origin_key(conn, task_id: str) -> tuple:
-    issue_row, source = task_cycle.origin_source(conn, repo.get_task(conn, task_id))
+    found = task_cycle.origin(conn, repo.get_task(conn, task_id))
     return (
-        (issue_row["source_id"], issue_row["github_issue_id"]) if issue_row is not None else None,
-        source.source_id if source is not None else None,
+        (found.issue["source_id"], found.issue["github_issue_id"]) if found.issue is not None else None,
+        found.config.source_id if found.config is not None else None,
     )
 
 
@@ -918,7 +918,7 @@ def test_builtin_rule_puts_the_review_in_the_same_work_item(cycle, conn, store, 
     assert _stored_equals_computed(conn, work["work_item_id"])
 
 
-def test_origin_source_comes_from_the_work_item_for_review_and_rework(cycle, conn, store, worker):
+def test_origin_comes_from_the_work_item_for_review_and_rework(cycle, conn, store, worker):
     fix_task, _, review_task, review_exec = _to_first_review(conn, store, worker)
     expected = ((SOURCE, 1001), SOURCE)
     assert _origin_key(conn, fix_task) == expected
@@ -932,7 +932,7 @@ def test_origin_source_comes_from_the_work_item_for_review_and_rework(cycle, con
     assert _origin_key(conn, direct_shop_task(conn)) == (None, None)  # 직접 등록은 원본 없음
 
 
-def test_origin_source_does_not_climb_the_predecessor_chain(cycle, conn, store, worker):
+def test_origin_does_not_climb_the_predecessor_chain(cycle, conn, store, worker):
     """원본은 업무 칸에서 찾는다 — 다른 업무의 Task 를 선행으로 가진 Task 는 그 이슈를 원본으로 삼지 않는다."""
     fix_task = import_issue(conn, 1)
     repo.insert_work_item_task(conn, {

@@ -45,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.github_client = None  # 기준선 가져오기 — None 이면 요청 때 Settings 로 만든다. 테스트는 가짜로 바꾼다
     app.state.secrets = SecretStore(settings.secret_dir)  # GitHub App·PAT 비밀 파일 (ADR-0017)
     app.state.github_transport = None  # GitHub 연결 경로의 httpx transport — 테스트는 가짜 GitHub 로 바꾼다
+    app.state.jira_transport = None  # Jira 연결 경로의 httpx transport — 테스트는 가짜 Jira 로 바꾼다
     app.state.notify_transport = None  # 알림 [테스트 보내기] 의 httpx transport — 테스트는 가짜 수신으로 바꾼다
     install_error_handlers(app)
     app.include_router(machine_api.router)

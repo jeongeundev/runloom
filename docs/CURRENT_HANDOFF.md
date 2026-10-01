@@ -2,7 +2,31 @@
 
 갱신일: 2026-10-01. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 17-team-handoff 반영 → 18-jira 설계 (새 세션은 여기서 시작)
+## 다음 작업: 18-jira 반영 → Jira 실연동 → 19-triage (새 세션은 여기서 시작)
+
+**18-jira 완료**(2026-10-01, `feat-18-jira`, step 0~9, [ADR-0024](adr/0024-jira-source.md), [ARCHITECTURE](ARCHITECTURE.md) "Jira 소스 — phase 18", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 18 Jira"): 연결 탭 가져올 곳에 Jira 칸(사이트 주소·이메일·API 토큰 → tenant_info·myself 확인 → 게이트웨이/사이트 기준 주소 저장, 토큰은 비밀 파일 `jira_api_token`), 프로젝트 찾기·추가(연결 저장소 = GitHub 저장소 하나, 지금부터/열린 업무 전부), 프로젝트 설정(이슈 유형·세 상태·후속 이슈 유형·켜짐·목록 새로 고침), 1분 폴링 가져오기(`search/jql`·`nextPageToken`·포함 경계 커서) → 업무 `새로 들어옴`(맡기기 뒤에만 착수), Jira 완료 범주 = 원본 닫힘(다음 단계 대기, 다시 열면 이어감), 연결 저장소에서 수정·검토·초안 PR(`Fixes` 없음, 본문 첫 줄 `원본: SHOP-n — 주소`, 요청문 머리에도 원본 키), 세 순간(작업 시작·`PR · 검토`·`완료`) → outbox `jira_deliveries` → 전환(이미 그 상태면 보내지 않음, 전환 없음·400 은 반영 실패), 후속 새 업무 → 같은 프로젝트에 이슈(라벨 `runloom`·`runloom-RUN-n`, `Relates` 링크, 응답 유실은 라벨로 조정), 스키마 v14. 러너 프로토콜은 바뀌지 않았다.
+
+**할 일**(순서대로, 모두 사용자 지시 뒤):
+1. `feat-18-jira` 를 `service` 에 `--no-ff` 병합(17 은 이미 병합됨).
+2. 셀프호스트 v14 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 14. 러너 재설치는 필요 없다. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v14. 셀프호스트가 아직 v13 전(v12)이면 v13 항목의 **러너 재설치(`install-runner.sh`)도 함께** 한다 — 러너 프로토콜은 17 에서 바뀌었다.
+3. 사용자가 무료 Jira Cloud 사이트와 API 토큰을 만든다 → 아래 실연동 확인 목록 1회.
+4. 19-triage 설계([REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절).
+
+**Jira 실연동 확인 목록**(사용자와 1회 — 결과는 [VERIFICATION_LOG](VERIFICATION_LOG.md) 에 새 절로. 절차는 [SELFHOST](SELFHOST.md) "Jira 연결"):
+- [ ] 무료 Jira Cloud 사이트 만들기(`https://<이름>.atlassian.net`), 소프트웨어 프로젝트 하나(키 예: `SHOP`).
+- [ ] 이슈 유형·상태를 회사 형식으로 — 유형 `버그`·`작업`, 워크플로 상태 `대기`·`진행 중`·`리뷰중`·`종료`(종료만 완료 범주). 아무 상태에서 세 상태로 옮길 수 있는 전환이 있는지 확인.
+- [ ] API 토큰 만들기 — 스코프 토큰이면 `read:jira-work`·`write:jira-work`·`read:jira-user`. 어느 토큰(스코프 있음/없음)인지와 저장된 기준 주소(`jira_connections.api_base` 가 `gateway`/`site`)를 기록.
+- [ ] `/connect?tab=sources` 에서 연결 → `연결됨 · 이름 · 사이트`.
+- [ ] 프로젝트 추가 — 연결 저장소 `runloom-sandbox`, 시작점 지금부터 → 설정: 세 상태 `진행 중`·`리뷰중`·`종료`, 후속 이슈 유형 `작업`. 상태 후보에 한국어 이름이 그대로 보이는지.
+- [ ] Jira 에 sandbox 를 고치는 이슈 1건 → 1분 안에 `새로 들어옴` → [에이전트에게 맡기기] → Jira 가 `진행 중` 으로.
+- [ ] 수정·검토 → sandbox 에 초안 PR(본문 첫 줄 `원본: SHOP-n — 주소`) → 업무 `PR · 검토` → Jira `리뷰중`.
+- [ ] PR 병합 → 업무 `완료` → Jira `종료`. Jira 상태가 세 번 옮겨졌는지(이슈 기록), 업무 패널 "원본에 남긴 것" 에 `반영됨` 세 줄.
+- [ ] 후속 이슈 — 후속 규칙을 새 업무로 둔 상태에서 한 건 → Jira 에 새 이슈(라벨 `runloom`·`runloom-RUN-n`, 원인과 `Relates` 링크) 1건, 다음 가져오기 뒤 업무 수 그대로. 회사 Jira 처럼 생성 화면 필수 칸이 있으면 `반영 실패 · 필수 칸 — …` 가 보이는지.
+- [ ] (선택) 진행 중에 Jira 에서 `종료` 로 옮겨 다음 단계 대기 → 다시 열면 이어가는지.
+
+**18 에서 남긴 것·주의**: 후속 새 업무는 이슈를 만들기 전에는 원본 이슈 id 가 없어 그 사이의 세 순간 전환은 쌓이지 않는다(만든 뒤 순간부터). 상태 옮기기 실패(전환 없음·필수 칸)는 재시도하지 않는다 — Jira 를 고친 뒤 사람이 옮긴다. Jira 상태는 완료 판정 근거가 아니다(완료는 PR 병합). Jira 담당자·진행 댓글·PR 원격 링크·웹훅·OAuth·Jira 기준선·매핑 표 편집 화면은 하지 않았다. 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 공유 때문에 여전히 미실행.
+
+**17 반영 이력**: 17 은 `service` 에 병합됐다(`ed64efa`·`3392159`) — 아래 17 할 일 1·5 는 끝남.
 
 **17-team-handoff 완료**(2026-10-01, `feat-17-team-handoff`, step 0~11, [ADR-0023](adr/0023-cross-member-delegation.md), [ARCHITECTURE](ARCHITECTURE.md) "사람 사이 인계 — phase 17", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 17 사람 사이 인계"): 에이전트마다 맡기기 정책(`바로 실행`·`내 승인 뒤 실행` — 연결 탭 팀 목록에서 러너 소유자·관리자가 바꿈), 다른 멤버의 에이전트에게 맡기면 소유자에게 `맡김` 알림, 승인 정책이면 소유자의 `내 차례`에 [승인]·[거절](거절 = 담당 없음 + 맡긴 사람 알림, 후속 검토 단계도 새로 묻는다), 꺼진 러너에게 맡기면 `대기 · <소유자>의 러너 꺼짐 · 켜지면 시작` + 소유자 알림 1회 → 켜지면 시작(모든 종류), 검증 실패 요청에 [검증만 다시](에이전트 없이 같은 결과 커밋 재검증)·[답하고 다시 맡기기](옛 [답하고 다시 판정]), 패널 담당 후보 `이름 · 이OO의 Mac · 켜짐`·지시 메모 → 요청문 머리(`# RUN-n 제목`·양식·지시), 목록 저장소 묶기·필터·키 칸 `RUN-n` 먼저, 러너 상대 `PYTHONPATH` 풀기, 실행 이벤트마다 단계 상태 재계산, `install-runner.sh --name`, 스키마 v13. step 11 e2e 에서 고친 결함 3건: 같은 저장소를 등록한 러너가 둘이면 맡긴 에이전트를 무시하던 매칭, 검토가 다른 러너로 가던 매칭, 실행 `failed` 이벤트가 업무를 `종료` 로 굳히던 것(step 4 회귀).
 
