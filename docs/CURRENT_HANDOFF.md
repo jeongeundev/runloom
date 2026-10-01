@@ -4,6 +4,8 @@
 
 ## 다음 작업: 17-team-handoff 반영 → 18-jira 설계 (새 세션은 여기서 시작)
 
+**18-jira 진행 중**(2026-10-01, `feat-18-jira` — 17 병합 뒤 `service` 에서 갈라짐, 끝나면 18 → `service` `--no-ff` 병합): step 0 설계 고정([ADR-0024](adr/0024-jira-source.md), [ARCHITECTURE](ARCHITECTURE.md) "Jira 소스 — phase 18"), step 1~9 는 [phase 18 README](../phases/18-jira/README.md).
+
 **17-team-handoff 완료**(2026-10-01, `feat-17-team-handoff`, step 0~11, [ADR-0023](adr/0023-cross-member-delegation.md), [ARCHITECTURE](ARCHITECTURE.md) "사람 사이 인계 — phase 17", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 17 사람 사이 인계"): 에이전트마다 맡기기 정책(`바로 실행`·`내 승인 뒤 실행` — 연결 탭 팀 목록에서 러너 소유자·관리자가 바꿈), 다른 멤버의 에이전트에게 맡기면 소유자에게 `맡김` 알림, 승인 정책이면 소유자의 `내 차례`에 [승인]·[거절](거절 = 담당 없음 + 맡긴 사람 알림, 후속 검토 단계도 새로 묻는다), 꺼진 러너에게 맡기면 `대기 · <소유자>의 러너 꺼짐 · 켜지면 시작` + 소유자 알림 1회 → 켜지면 시작(모든 종류), 검증 실패 요청에 [검증만 다시](에이전트 없이 같은 결과 커밋 재검증)·[답하고 다시 맡기기](옛 [답하고 다시 판정]), 패널 담당 후보 `이름 · 이OO의 Mac · 켜짐`·지시 메모 → 요청문 머리(`# RUN-n 제목`·양식·지시), 목록 저장소 묶기·필터·키 칸 `RUN-n` 먼저, 러너 상대 `PYTHONPATH` 풀기, 실행 이벤트마다 단계 상태 재계산, `install-runner.sh --name`, 스키마 v13. step 11 e2e 에서 고친 결함 3건: 같은 저장소를 등록한 러너가 둘이면 맡긴 에이전트를 무시하던 매칭, 검토가 다른 러너로 가던 매칭, 실행 `failed` 이벤트가 업무를 `종료` 로 굳히던 것(step 4 회귀).
 
 **할 일**(순서대로, 모두 사용자 지시 뒤):

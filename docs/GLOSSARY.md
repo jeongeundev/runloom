@@ -249,6 +249,25 @@
 | 지시 메모 / `handoff_note` | 맡기는 사람이 패널 담당 폼에 적는 선택 지시(최대 2000자)(step 8). 지금 유효한 것은 `work_items.handoff_note`·`handoff_note_by_member_id`, 기록은 업무 이벤트 `handoff_note`. 실행 요청문에 "## 맡긴 사람 지시 (이름)" 절로 들어간다(`compose_request`). 계약 칸이 아니다 | `코멘트`(GitHub 댓글과 혼동), `사람 응답`(요청에 대한 답 — `human_responses`), `프롬프트` |
 | 저장소 묶기 / `group=repo` · `repo=` | 업무 화면을 GitHub 저장소(`github_sources.repository_full_name`, 조회 때 계산 — 칸 없음)로 묶는 것과 저장소 필터(열거형 — 워크스페이스 저장소만)(step 9). 저장소가 없는 업무는 "저장소 없음" 묶음(마지막) | `프로젝트`(Orca Projects·Jira 프로젝트와 혼동), `레포 뷰` |
 
+## 계획 용어 — phase 18 Jira 소스 (미구현)
+
+[ADR-0024](adr/0024-jira-source.md), [ARCHITECTURE](ARCHITECTURE.md) "Jira 소스 — phase 18". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| Jira 연결 / `jira_connections` | 워크스페이스에 하나인 Jira Cloud 사이트 연결(사이트 주소·cloudId·`api_base`·이메일·accountId·표시 이름)(step 1·4). 토큰은 비밀 저장소 `jira_api_token` 에만. 끊기 = 토큰 삭제 + `disconnected_at`, 401 이면 `auth_failed_at` 으로 모든 Jira 호출을 멈춘다 | `Jira 계정`, `Jira 소스`(소스는 프로젝트 설정 행), `OAuth 연결`, `Jira 앱` |
+| 호출 기준 주소 / `api_base` | 연결 확인 때 실제로 된 Jira API 기준 — `gateway`(`api.atlassian.com/ex/jira/{cloudId}`, scoped 토큰) \| `site`(`https://<이름>.atlassian.net`)(step 4). 저장한 값으로만 URL 을 만든다 | `base URL 설정`, `Jira 서버 주소`(사용자가 고르는 값이 아니다) |
+| Jira 프로젝트 설정 / `jira_projects` · `JiraProjectConfig` | 가져올 Jira 프로젝트 하나와 그 연결 저장소(`github_source_id`)·이슈 유형·시작점·세 순간의 상태 이름·후속 이슈 유형·켜짐(step 1·4). `source_id`(`jps-…`)가 Jira 업무의 `work_items.source_id` 다 | `Jira 소스 설정`, `보드`, `프로젝트`(GitHub 저장소 묶기·Orca Projects 와 혼동 — "Jira 프로젝트"로), `매핑`(`field_mappings` 와 혼동) |
+| 연결 저장소 / `github_source_id` | Jira 프로젝트 업무를 실행·PR 할 워크스페이스 GitHub 소스(필수, 프로젝트마다 하나)(step 4·6). 실행 설정은 이 소스 설정을 `all_open` 으로 본 사본(`jira_intake.run_config`) | `대상 저장소`(`target` 과 혼동), `컴포넌트 저장소` |
+| 시작점 / `start_mode` | `from_now`(지금부터 — 추가 시각 이후 생성된 이슈) \| `all_open`(열린 업무 전부)(step 4·5). 프로젝트를 추가할 때만 고른다. GitHub `intake`(가져오기 방식 `filtered`·`all_open`)와 다르다 — Jira 는 언제나 맡기기 전엔 실행하지 않는다 | `intake`(GitHub 소스 칸), `가져오기 방식` |
+| Jira 스냅숏 / `jira_issues` · `JiraIssueSnapshot` | 받은 Jira 이슈의 필요한 값(ADF 본문은 텍스트로)과 업무 첫 단계(`task_id`)의 연결, 지시 기록(`delegated_by` `operator`\|`followup`)(step 1·2·5). `source_issues` 와 같은 모양 | `Jira 이슈 표`, `jira_items`, `티켓` |
+| 원본 닫힘(상태 범주) | Jira 상태의 `statusCategory.key == 'done'` 이면 원본 `closed`(`jira_intake.issue_state`) → 기존 `source_closed` 대기(step 5). 완료 판정 근거가 아니다 — 업무 완료는 PR 병합 | `Jira 완료 = 업무 완료`, `resolved` |
+| 원본 조회 / `Origin` · `task_cycle.origin` | 단계가 속한 업무의 원본 사실 묶음(`issue`·`config`·`state`·`own`·`origin_key`)(step 5). 원본 종류(`source_type`) 분기는 여기와 `task_intake` 에만 둔다. 옛 `origin_source` 를 대신한다 | `origin_source`(옛 이름), `원본 이슈`(GitHub 행만 뜻함) |
+| 세 순간 / 상태 옮기기 / `moment` | 업무 상태가 `에이전트 작업 중`·`직접 작업 중`(`start`), `PR · 검토`(`review`), `완료`(`done`)에 들어갈 때 Jira 이슈를 프로젝트가 정한 상태 이름으로 전환하는 것(`jira_intake.moment_for`, step 7). 업무 × 순간마다 한 번 | `상태 동기화`(양방향으로 들림), `Jira 상태 매핑`, `워크플로 전환`, `resolve` |
+| Jira outbox / `jira_deliveries` | Jira 로 보낼 쓰기 한 건(`action` `transition`\|`create_issue`, `state` `pending`·`sending`·`delivered`·`unknown`·`failed`·`skipped`)(step 1·7·8). 업무 상태 쓰기·후속 생성과 같은 트랜잭션에 쌓고 워커 `_deliver_jira` 가 트랜잭션 밖에서 보낸다. 화면 "Jira 반영" | `source_deliveries`(GitHub 댓글 outbox), `동기화 큐`, `웹훅` |
+| 후속 이슈 등록 / `create_issue` | 후속 규칙이 새 업무(`placement == "new_work"`)를 만들고 원인이 Jira 업무이며 후속 이슈 유형이 설정돼 있으면 같은 프로젝트에 이슈를 만들고(라벨 `runloom`·`runloom-RUN-n`) 원인과 `Relates` 로 잇는 것(step 8). 성공하면 새 업무의 원본 칸을 채우고, 다음 동기화는 그 이슈를 같은 업무에 붙인다(중복 업무 금지). 응답을 잃으면 라벨로 조정 | `Jira 동기화`, `이슈 복제`, `하위 작업`(subtask 가 아니다) |
+| ADF 변환 / `adf_to_text` · `markdown_to_adf` | Jira 본문 형식(ADF JSON)을 가져올 때 텍스트로(문단·제목·목록·코드·링크), 후속 이슈 본문을 쓸 때 짧은 Markdown 에서 ADF 로 바꾸는 작은 변환기(step 2). 새 의존성 없음 | `렌더링`, `wiki markup` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
@@ -272,3 +291,5 @@
 - GitHub 담당자 배정(assignee)과 실행 지시(`delegated_by`): 전자는 GitHub 에서 사람이 이슈 담당을 정한 것으로 어느 Agent 가 할지를 고르는 재료(`AssigneeBinding`)이고, 후자는 그 업무를 지금 실행해도 된다는 표시다. 담당자가 있어도 지시가 없으면 `all_open` 업무는 착수하지 않는다.
 - 알림 웹훅과 `callback_url`: 전자는 워크스페이스에 하나 등록한 URL(비밀 파일)로 사람 차례·실패 사건마다 보내는 알림, 후자는 n8n 이 체인을 넣을 때 요청마다 준 주소로 체인이 끝났을 때 1회 보내는 `ChainCallback` 이다. 둘 다 워커가 트랜잭션 밖에서 같은 백오프로 보내지만 대기열·본문·단위가 다르다.
 - 기준 커밋 보고(`registration_heads`)와 `folder_commit`: 전자는 fetch 한 GitHub 기본 브랜치 최신 커밋(새 업무의 출발점), 후자는 실행 시작 때 러너 등록 폴더의 로컬 HEAD(에이전트 설정 버전 기록)다.
+- Jira 상태 옮기기(`jira_deliveries` `transition`)와 원본 닫힘(`statusCategory` `done`): 전자는 Runloom 업무 상태가 세 순간에 들어갈 때 Runloom → Jira 로 한 번 보내는 쓰기, 후자는 Jira → Runloom 으로 읽어 다음 단계를 멈추는 신호다. 어느 쪽도 업무를 완료·종료하지 않는다(완료는 PR 병합).
+- `jira_deliveries`와 `source_deliveries`: 둘 다 원본 쪽 쓰기 outbox 지만 전자는 Jira(상태 전환·이슈 생성, 업무 단위), 후자는 GitHub 이슈 댓글(Task 단위, 최신 revision 만)이다. 상태 이름은 같고 전자에만 `skipped`(뒤 순간으로 대체·Jira 에서 이미 완료 범주)가 있다.
