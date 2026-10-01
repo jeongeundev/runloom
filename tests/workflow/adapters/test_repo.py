@@ -3498,7 +3498,7 @@ def test_retry_response_copies_the_failed_stage_into_the_same_work_item(seeded):
     assert repo.get_human_request(conn, SESSION, request_id)["state"] == "answered"
     assert _work(conn)["status"] == "대기"
     with pytest.raises(StaleRequest):
-        repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-2", expected_revision=2,
+        repo.record_human_response_once(conn, SESSION, request_id, response_id="resp-2", expected_revision=1,
                                         action="retry", text="", now=LATER, retry_task_id="task-retry-2")
     assert repo.get_task(conn, "task-retry-2") is None
 
@@ -4595,3 +4595,274 @@ def test_bump_config_revision_records_in_the_callers_transaction(sessions):
                                      now=NOW) == 2
     conn.execute("ROLLBACK")
     assert (_revision(conn), _changes(conn)) == (1, [])
+
+
+# --- phase 20 step 5: 판단·담당자·설정 변경 사실 읽기 ----------------------------------------------------
+
+TRIAGE_CAPABILITY = {"code": "code.triage", "scope": {"repository_id": "billing"}}
+
+
+def _triage_log(conn, work_item_id: str, n: int, *, session_id: str = SESSION, state: str = "proposed",
+                kind: str | None = "bug_fix", proceed: str | None = "ready", confidence: float | None = 0.9,
+                handling: str | None = None, failed_code: str | None = None, criteria_version: int = 1,
+                status: str = "result_ready", started: str | None = "2026-10-06T11:00:00Z",
+                finished: str | None = "2026-10-06T11:02:00Z", cost: float | None = 0.1,
+                created: str = "2026-10-06T10:59:00Z") -> str:
+    """판단 단계 Task·실행·판단 로그 한 벌(`triage_id` = `trg-<n>`). 실행 start_key 를 `rework:` 로 둬 판단 실행이
+    재작업 수에 섞이지 않는지도 본다."""
+    task_id, execution_id, triage_id = f"task-trg-{n}", f"exec-trg-{n}", f"trg-{n}"
+    repo.insert_task(conn, {**_task(task_id, session_id, kind="triage"), "required_capability": TRIAGE_CAPABILITY},
+                     NOW, work_item_id=work_item_id)
+    repo.create_execution(conn, execution_id=execution_id, task_id=task_id, attempt_no=1,
+                          start_key=f"rework:{task_id}:r1", agent_id=FIX_AGENT, kind="triage",
+                          request=_request(execution_id, task_id, "code_change", ("art-x",)), assigned_connector_id=None,
+                          predecessor_execution_id=None, now=created)
+    conn.execute("UPDATE executions SET status = ?, started_at = ?, finished_at = ?, cost_usd = ?"
+                 " WHERE execution_id = ?", (status, started, finished, cost, execution_id))
+    final = ("agent", FIX_AGENT) if handling not in (None, "dismissed") else (None, None)
+    conn.execute(
+        "INSERT INTO triage_logs (triage_id, session_id, work_item_id, work_revision, task_id, execution_id, agent_id,"
+        " trigger, criteria_version, input_sha256, candidates_json, state, result_json, proceed, confidence,"
+        " proposed_kind, failed_code, handling, handled_at, final_assignee_type, final_assignee_id, created_at,"
+        " updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, 'auto', ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (triage_id, session_id, work_item_id, task_id, execution_id, FIX_AGENT, criteria_version, "a" * 64, state,
+         "{}" if state == "proposed" else None, proceed, confidence, kind, failed_code, handling,
+         created if handling else None, *final, created, created),
+    )
+    return triage_id
+
+
+def _count_queries(conn, read):
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    try:
+        read()
+    finally:
+        conn.set_trace_callback(None)
+    return len(statements)
+
+
+@pytest.fixture
+def triaged(cycle):
+    """#41 업무(W41): 판단 v1 제안·제안대로 → 수정 → 재작업 → 감지 PR 병합 → 완료, 판단 뒤 내용 수정(revision 2).
+    W2: 판단 v1 대체됨 → v2 실패, 판단 단계에만 병합 PR. 다른 세션에도 판단 하나."""
+    conn = cycle
+    repo.upsert_agent(conn, _agent(FIX_AGENT, connection_type="local", api_url=None, credential_ref=None,
+                                   capabilities=[{"code": "code.fix", "scope": {"repository_id": "billing"}},
+                                                 TRIAGE_CAPABILITY]))
+    admin = _admin_id(conn, SESSION)
+    repo.save_triage_criteria(conn, SESSION, "새 기준", expected_version=1, member_id=admin, now=NOW)
+    w41 = _wi41(conn)
+    _triage_log(conn, w41, 1, handling="accepted", confidence=0.92)
+    _create_execution(conn, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",),
+                      now="2026-10-06T11:10:00Z")
+    conn.execute("UPDATE executions SET status = 'result_ready', released_at = '2026-10-06T11:15:00Z'"
+                 " WHERE execution_id = 'exec-fix-1'")
+    _create_execution(conn, "exec-fix-2", "task-gh-41", attempt_no=2, start_key="rework:task-gh-41:r2",
+                      kind="code_change", inputs=("art-x",), now="2026-10-06T11:20:00Z")
+    _detected(conn, w41, state="merged", merged_at="2026-10-06T12:00:00Z")
+    conn.execute("UPDATE work_items SET status = '완료', closed_at = '2026-10-06T12:01:00Z', revision = 2"
+                 " WHERE work_item_id = ?", (w41,))
+    w2, _ = _new_work(conn, title="둘째")
+    _triage_log(conn, w2, 2, state="superseded", created="2026-10-06T10:00:00Z")
+    _triage_log(conn, w2, 3, state="failed", kind=None, proceed=None, confidence=None, failed_code="timeout",
+                criteria_version=2, status="failed", started=None, cost=None)
+    conn.execute(
+        "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, head_branch,"
+        " fix_execution_id, review_execution_id, state, pr_number, created_at, updated_at)"
+        " VALUES ('task-trg-3', ?, ?, 'acme/billing', 'h', 'exec-trg-3', 'exec-trg-3', 'merged', 5, ?, ?)",
+        (SESSION, SOURCE, NOW, NOW))  # 판단 단계의 PR 은 병합 완료 원천이 아니다
+    other, _ = _new_work(conn, OTHER_SESSION, title="다른 세션")
+    _triage_log(conn, other, 9, session_id=OTHER_SESSION)
+    return conn, w41, w2
+
+
+def test_list_triage_facts_reads_logs_with_their_execution_and_work_outcomes(triaged):
+    from workflow.domain.triage_metrics import TriageLogFact, WorkOutcomeFact
+
+    conn, w41, w2 = triaged
+    logs, outcomes = repo.list_triage_facts(conn, SESSION)
+
+    assert [log.triage_id for log in logs] == ["trg-2", "trg-1", "trg-3"]  # 만든 순, 다른 세션 없음
+    assert logs[1] == TriageLogFact(
+        triage_id="trg-1", work_item_id=w41, kind="bug_fix", criteria_version=1, trigger="auto", state="proposed",
+        proceed="ready", confidence=0.92, failed_code=None, handling="accepted", created_at="2026-10-06T10:59:00Z",
+        work_revision=1, work_revision_now=2, execution_status="result_ready", started_at="2026-10-06T11:00:00Z",
+        finished_at="2026-10-06T11:02:00Z", cost_usd=0.1,
+    )
+    failed = logs[2]
+    assert (failed.kind, failed.state, failed.failed_code, failed.criteria_version) == (None, "failed", "timeout", 2)
+    assert (failed.execution_status, failed.started_at, failed.cost_usd) == ("failed", None, None)  # 모름은 None
+    assert outcomes == [
+        WorkOutcomeFact(work_item_id=w41, status="완료", closed_at="2026-10-06T12:01:00Z", merged=True, rework_runs=1),
+        WorkOutcomeFact(work_item_id=w2, status=repo.get_work_item(conn, SESSION, w2)["status"], closed_at=None,
+                        merged=False, rework_runs=0),
+    ]
+    other_logs, other_outcomes = repo.list_triage_facts(conn, OTHER_SESSION)
+    assert [log.triage_id for log in other_logs] == ["trg-9"] and len(other_outcomes) == 1
+
+
+def test_list_triage_facts_task_pull_request_merge_counts_for_non_triage_stage(triaged):
+    conn, w41, _ = triaged
+    conn.execute("DELETE FROM work_pull_requests")
+    _, outcomes = repo.list_triage_facts(conn, SESSION)
+    assert next(o for o in outcomes if o.work_item_id == w41).merged is False
+    conn.execute(
+        "INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, head_branch,"
+        " fix_execution_id, review_execution_id, state, pr_number, created_at, updated_at)"
+        " VALUES ('task-gh-41', ?, ?, 'acme/billing', 'h', 'exec-fix-1', 'exec-fix-2', 'merged', 6, ?, ?)",
+        (SESSION, SOURCE, NOW, NOW))
+    _, outcomes = repo.list_triage_facts(conn, SESSION)
+    assert next(o for o in outcomes if o.work_item_id == w41).merged is True
+
+
+def test_list_triage_facts_query_count_does_not_grow_with_works(triaged):
+    conn, _, _ = triaged
+    before = _count_queries(conn, lambda: repo.list_triage_facts(conn, SESSION))
+    for n in range(10, 14):
+        work, _ = _new_work(conn, title=f"추가 {n}")
+        _triage_log(conn, work, n)
+    assert len(repo.list_triage_facts(conn, SESSION)[0]) == 7
+    assert _count_queries(conn, lambda: repo.list_triage_facts(conn, SESSION)) == before
+
+
+def _fail_stage(conn, task_id: str, execution_id: str, now: str) -> None:
+    _create_execution(conn, execution_id, task_id, now=now)
+    repo.finish_failed_stage(conn, task_id=task_id, execution_id=execution_id, reason="timeout", question="실패",
+                             cause_key=f"stage_failed:{execution_id}", now=now)
+
+
+@pytest.fixture
+def assigned(triaged, store):
+    """triaged + 멤버(관리자 둘·김맡김·이담당·비활성 박퇴사), 내 차례 업무 셋(담당 멤버·맡긴 사람·관리자 전원),
+    #41 검토 승인, 사람 응답(멤버 있음·없음·판단 단계)."""
+    conn, w41, w2 = triaged
+    admin, a, c = _people(conn)
+    second_admin = repo.add_member(conn, SESSION, display_name="박관리", role="admin", now=LATER)
+    gone = repo.add_member(conn, SESSION, display_name="박퇴사", now=LATER)
+    repo.disable_member(conn, SESSION, gone, now=LATER)
+    repo.register_session_agent(conn, SESSION, FIX_AGENT, NOW)
+    _fail_stage(conn, TASK_A, "exec-1", "2026-10-06T09:00:00Z")  # 담당 Agent·맡긴 사람 없음 → 관리자 전원
+    to_member = repo.insert_work_item_task(conn, _task("task-m"), NOW)
+    repo.assign_work_item(conn, SESSION, to_member, assignee_type="member", assignee_id=c, now=NOW)
+    _fail_stage(conn, "task-m", "exec-m", "2026-10-06T09:10:00Z")
+    to_requester = repo.insert_work_item_task(conn, _task("task-r"), NOW, requested_by_member_id=a)
+    _fail_stage(conn, "task-r", "exec-r", "2026-10-06T09:20:00Z")
+    conn.execute(  # 이유만 바뀐 행 — 내 차례가 된 시각이 아니다
+        "INSERT INTO work_item_events (work_item_id, session_id, type, config_revision, occurred_at, data_json)"
+        " VALUES (?, ?, 'status_changed', 1, '2026-10-06T09:30:00Z', ?)",
+        (to_requester, SESSION, json.dumps({"from": "내 차례", "to": "내 차례", "reason": "x"})))
+    spec = _review_spec()
+    repo.create_followup_once(conn, spec, _review_task(), "2026-10-06T10:32:00Z", work_item_id=w41)
+    repo.create_execution(conn, execution_id="exec-rev-1", task_id="task-gh-41-review", attempt_no=1,
+                          start_key="auto:task-gh-41-review:r1", agent_id="agent-claude-mac", kind="code_review",
+                          request=_request("exec-rev-1", "task-gh-41-review", "code_change", ("art-x",)),
+                          assigned_connector_id=None, predecessor_execution_id=None, now="2026-10-06T10:33:00Z")
+    _finish(conn, store, "exec-rev-1", {"outcome": "approved"})
+    repo.record_verdict(conn, task_id="task-gh-41-review", execution_id="exec-rev-1", verdict={"outcome": "passed"},
+                        status="확인 필요", reason="판정 통과", finish=False, now="2026-10-06T10:34:00Z")
+    asked, _ = repo.create_human_request_once(conn, "task-gh-41-review", "decision", "q", "decision:1",
+                                              "2026-10-06T10:35:00Z")
+    repo.record_human_response_once(conn, SESSION, asked, response_id="resp-1", expected_revision=1, action="resume",
+                                    text="", now="2026-10-06T10:40:00Z", member_id=admin)
+    unknown, _ = repo.create_human_request_once(conn, "task-gh-41-review", "decision", "q2", "decision:2",
+                                                "2026-10-06T10:41:00Z")
+    repo.record_human_response_once(conn, SESSION, unknown, response_id="resp-2", expected_revision=1,
+                                    action="resume", text="", now="2026-10-06T10:42:00Z")
+    conn.execute(  # 판단 단계의 요청·응답은 담당자 사실이 아니다
+        "INSERT INTO human_requests (request_id, task_id, code, question, cause_key, task_revision, revision, state,"
+        " created_at, answered_at) VALUES ('hr-trg', 'task-trg-1', 'decision', 'q', 'decision:t', 1, 1, 'answered',"
+        " ?, ?)", (NOW, NOW))
+    conn.execute("INSERT INTO human_responses (request_id, response_id, action, text, expected_revision,"
+                 " task_revision, created_at, member_id) VALUES ('hr-trg', 'resp-t', 'resume', '', 1, 1, ?, ?)",
+                 (NOW, admin))
+    return conn, {"admin": admin, "second_admin": second_admin, "a": a, "c": c, "gone": gone,
+                  "w41": w41, "w2": w2, "to_admins": _work(conn)["work_item_id"], "to_member": to_member,
+                  "to_requester": to_requester, "asked": asked, "unknown": unknown}
+
+
+def test_list_assignee_facts_reads_works_turns_responses_runs_and_labels(assigned, store):
+    from workflow.domain.assignee_metrics import AgentLabel, AssigneeFacts, MemberLabel, ResponseFact
+
+    conn, ids = assigned
+    facts = repo.list_assignee_facts(conn, SESSION, store=store)
+
+    assert isinstance(facts, AssigneeFacts)
+    works = {w.work_item_id: w for w in facts.works}
+    assert set(works) == {ids["w41"], ids["w2"], ids["to_admins"], ids["to_member"], ids["to_requester"]}
+    assert works[ids["to_admins"]].recipients == (ids["admin"], ids["second_admin"])
+    assert works[ids["to_member"]].recipients == (ids["c"],)
+    assert works[ids["to_requester"]].recipients == (ids["a"],)
+    for work in facts.works:  # 같은 규칙의 한 번 읽기 — 업무마다 turn_recipients_of 와 같다
+        if work.status == "내 차례":
+            assert work.recipients == repo.turn_recipients_of(conn, work.work_item_id)
+    assert works[ids["to_admins"]].turn_since == "2026-10-06T09:00:00Z"
+    assert works[ids["to_member"]].turn_since == "2026-10-06T09:10:00Z"
+    assert works[ids["to_requester"]].turn_since == "2026-10-06T09:20:00Z"  # 이유만 바뀐 09:30 행이 아니다
+    w41 = works[ids["w41"]]
+    assert (w41.assignee_type, w41.assignee_id, w41.status, w41.closed_at, w41.turn_since, w41.recipients) == (
+        "agent", FIX_AGENT, "완료", "2026-10-06T12:01:00Z", None, ())
+    member_work = works[ids["to_member"]]
+    assert (member_work.assignee_type, member_work.assignee_id) == ("member", ids["c"])
+
+    assert facts.responses == (
+        ResponseFact(request_id=ids["asked"], member_id=ids["admin"], requested_at="2026-10-06T10:35:00Z",
+                     responded_at="2026-10-06T10:40:00Z"),
+        ResponseFact(request_id=ids["unknown"], member_id=None, requested_at="2026-10-06T10:41:00Z",
+                     responded_at="2026-10-06T10:42:00Z"),
+    )
+
+    runs = {r.execution_id: r for r in facts.runs}
+    assert set(runs) == {"exec-1", "exec-m", "exec-r", "exec-fix-1", "exec-fix-2", "exec-rev-1"}  # 판단 실행 없음
+    assert (runs["exec-fix-2"].agent_id, runs["exec-fix-2"].work_item_id, runs["exec-fix-2"].start_key) == (
+        FIX_AGENT, ids["w41"], "rework:task-gh-41:r2")
+    review = runs["exec-rev-1"]
+    assert (review.kind, review.status, review.outcome, review.started_at, review.finished_at) == (
+        "code_review", "result_ready", "approved", "2026-10-06T10:20:00Z", "2026-10-06T10:30:00Z")
+    assert runs["exec-1"].failed_code is None and runs["exec-1"].cost_usd is None
+
+    assert facts.members == tuple(
+        MemberLabel(member_id=m["member_id"], display_name=m["display_name"], active=m["disabled_at"] is None)
+        for m in repo.list_members(conn, SESSION))
+    assert MemberLabel(member_id=ids["gone"], display_name="박퇴사", active=False) in facts.members
+    assert facts.agents == (AgentLabel(agent_id=FIX_AGENT, name=repo.get_agent(conn, FIX_AGENT)["name"]),)
+
+
+def test_list_assignee_facts_is_per_session(assigned, store):
+    conn, _ = assigned
+    facts = repo.list_assignee_facts(conn, OTHER_SESSION, store=store)
+    assert [w.work_item_id for w in facts.works] == [r["work_item_id"] for r in repo.list_work_items(conn, OTHER_SESSION)]
+    assert facts.responses == () and facts.runs == () and facts.agents == ()
+    assert {m.member_id for m in facts.members} == {r["member_id"] for r in repo.list_members(conn, OTHER_SESSION)}
+
+
+def test_list_assignee_facts_query_count_does_not_grow_with_works(assigned, store):
+    conn, _ = assigned
+    before = _count_queries(conn, lambda: repo.list_assignee_facts(conn, SESSION, store=store))
+    for n in range(3):
+        repo.insert_work_item_task(conn, _task(f"task-more-{n}"), NOW)
+        _fail_stage(conn, f"task-more-{n}", f"exec-more-{n}", LATER)  # 내 차례 — 받는 사람 계산도 늘어난다
+        _new_work(conn, title=f"더 {n}")
+    assert len(repo.list_assignee_facts(conn, SESSION, store=store).works) == 11
+    assert _count_queries(conn, lambda: repo.list_assignee_facts(conn, SESSION, store=store)) == before
+
+
+def test_config_changes_by_revision_groups_the_session_log(sessions):
+    conn = sessions
+    admin = _admin_id(conn, SESSION)
+    start = _revision(conn)
+    repo.insert_kind(conn, SESSION, DIAGNOSIS_KIND, NOW, member_id=admin)
+    repo.insert_kind(conn, SESSION, CODE_CHANGE_KIND, LATER)
+    repo.insert_kind(conn, OTHER_SESSION, DIAGNOSIS_KIND, NOW)
+
+    grouped = repo.config_changes_by_revision(conn, SESSION)
+
+    assert list(grouped) == [start + 1, start + 2]
+    (first,) = grouped[start + 1]
+    assert (first["area"], first["action"], first["subject"], first["by_member_id"], first["by_member_name"]) == (
+        "kind", "add", "diagnosis", admin, repo.get_member(conn, SESSION, admin)["display_name"])
+    (second,) = grouped[start + 2]
+    assert (second["subject"], second["by_member_id"], second["by_member_name"]) == ("code_change", None, None)
+    assert [r["subject"] for rows in repo.config_changes_by_revision(conn, OTHER_SESSION).values() for r in rows] == [
+        "diagnosis"]
+    assert repo.config_changes_by_revision(conn, "sess-none") == {}

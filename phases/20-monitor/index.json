@@ -45,7 +45,9 @@
     {
       "step": 5,
       "name": "metric-facts",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:48:59+0900",
+      "summary": "수정: adapters/repo.py(새 읽기 함수 셋 — 계산 없음, 세션 소유 행만, 쿼리 수 업무 수와 무관: list_triage_facts(conn, sid) -> (TriageLogFact 목록 만든 순 — triage_logs JOIN work_items(revision=work_revision_now)·executions(status·started_at·finished_at·cost_usd, finished_at 은 실행의 것), WorkOutcomeFact 목록 — 판단 로그가 있는 업무만 키 번호 순, merged = 판단 단계 아닌 task_pull_requests 또는 work_pull_requests state merged, rework_runs = 판단 단계 아닌 실행 start_key LIKE 'rework:%'), 쿼리 2번; list_assignee_facts(conn, sid, *, store) -> AssigneeFacts — works 세션 업무 전부 키 번호 순(판단만 있는 업무 포함), 내 차례 업무만 recipients(_member_facts 대신 list_members 한 번으로 MemberFact·MemberLabel 둘 다 만들고 _approvers_by_work·_recipients 재사용 — turn_recipients_of 와 같음)·turn_since(status_changed to='내 차례' 이고 from IS NOT '내 차례' 의 id 순 마지막), 아닌 업무는 None·(), responses 는 human_responses 전부(member_id NULL 포함 — 도메인이 응답자 모름으로 셈, 판단 단계 요청 제외), runs 는 판단 단계 제외 실행 + work_item_id, outcome 은 list_metric_facts 의 _execution_outcome 재사용(검토 실행마다 산출물 읽기 — list_metric_facts 와 같음), members = list_members 순(active = disabled_at 없음), agents = list_session_agents 순; config_changes_by_revision(conn, sid) -> dict[int, list[Row]] — list_config_changes 를 번호로 묶음). list_metric_facts 변경 없음. 테스트: test_repo(triaged·assigned 픽스처 — 판단 v1 제안·수정·재작업·감지 PR 병합·완료·판단 뒤 revision 2, 대체·v2 실패, 판단 단계 PR·rework start_key·요청 제외, 받는 사람 세 경우 = turn_recipients_of, 이유만 바뀐 행 제외, 다른 세션 제외, set_trace_callback 쿼리 수 불변, 설정 변경 묶음) 7건. 검증: pytest 4109 passed·72 skipped, ruff 통과. 다음 step 주의: list_assignee_facts 는 store 필요(metrics_api 의 기존 store 의존성), 판단 결과 사실은 판단 로그가 있는 업무만이라 outcomes 에 없는 업무는 도메인에서 unknown."
     },
     {
       "step": 6,

@@ -91,6 +91,14 @@ from workflow.domain.execution_policy import TRIAGE_OUTPUT_KIND, is_triage_kind
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain import jira_intake
 from workflow.domain.jira_intake import initial_cursor_ms
+from workflow.domain.assignee_metrics import (
+    AgentLabel,
+    AgentRunFact,
+    AssigneeFacts,
+    AssigneeWorkFact,
+    MemberLabel,
+    ResponseFact,
+)
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
@@ -107,6 +115,7 @@ from workflow.domain.triage import (
     triage_reason,
 )
 from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
+from workflow.domain.triage_metrics import TriageLogFact, WorkOutcomeFact
 from workflow.domain.work_keys import short_source_key
 from workflow.domain.work_list import WorkRow, next_action
 from workflow.domain.work_status import (
@@ -1171,6 +1180,14 @@ def list_config_changes(conn: Connection, session_id: str) -> list[Row]:
         " WHERE c.session_id = ? ORDER BY c.revision, c.id",
         (session_id,),
     ).fetchall()
+
+
+def config_changes_by_revision(conn: Connection, session_id: str) -> dict[int, list[Row]]:
+    """설정 번호 → 그 번호의 변경 기록(`list_config_changes` 를 번호로 묶음, 번호 순)."""
+    grouped: dict[int, list[Row]] = {}
+    for row in list_config_changes(conn, session_id):
+        grouped.setdefault(row["revision"], []).append(row)
+    return grouped
 
 
 def mark_operator(conn: Connection, session_id: str) -> None:
@@ -3301,6 +3318,105 @@ def list_metric_facts(conn: Connection, session_id: str, *, store: ArtifactStore
         )
     )
     return MetricFacts(tasks=tasks, executions=executions, events=events, human_requests=requests)
+
+
+def list_triage_facts(conn: Connection, session_id: str) -> tuple[list[TriageLogFact], list[WorkOutcomeFact]]:
+    """판단 품질 입력(phase 20, 계산 없음) — 세션의 판단 로그 전부(만든 순, 판단 실행의 상태·시작·끝·비용과 업무의 지금
+    revision)와 판단 로그가 있는 업무의 결과 사실(키 번호 순). 병합 = 판단 단계가 아닌 단계의 PR 또는 감지 PR 이
+    `merged`, 재작업 = 판단 단계가 아닌 실행 중 start_key `rework:`. 쿼리 두 번 — 업무 수와 무관하다."""
+    logs = [
+        TriageLogFact(
+            triage_id=r["triage_id"], work_item_id=r["work_item_id"], kind=r["proposed_kind"],
+            criteria_version=r["criteria_version"], trigger=r["trigger"], state=r["state"], proceed=r["proceed"],
+            confidence=r["confidence"], failed_code=r["failed_code"], handling=r["handling"],
+            created_at=r["created_at"], work_revision=r["work_revision"], work_revision_now=r["work_revision_now"],
+            execution_status=r["execution_status"], started_at=r["started_at"], finished_at=r["execution_finished_at"],
+            cost_usd=r["cost_usd"],
+        )
+        for r in conn.execute(
+            "SELECT l.*, w.revision AS work_revision_now, e.status AS execution_status, e.started_at,"
+            " e.finished_at AS execution_finished_at, e.cost_usd FROM triage_logs l"
+            " JOIN work_items w ON w.work_item_id = l.work_item_id JOIN executions e ON e.execution_id = l.execution_id"
+            " WHERE l.session_id = ? ORDER BY l.created_at, l.rowid",
+            (session_id,),
+        )
+    ]
+    outcomes = [
+        WorkOutcomeFact(work_item_id=r["work_item_id"], status=r["status"], closed_at=r["closed_at"],
+                        merged=bool(r["merged"]), rework_runs=r["rework_runs"])
+        for r in conn.execute(
+            "SELECT w.work_item_id, w.status, w.closed_at,"
+            " (EXISTS (SELECT 1 FROM task_pull_requests p JOIN tasks t ON t.task_id = p.task_id"
+            f"   WHERE t.work_item_id = w.work_item_id AND p.state = 'merged' AND {_NOT_TRIAGE_TASK})"
+            "  OR EXISTS (SELECT 1 FROM work_pull_requests wp WHERE wp.work_item_id = w.work_item_id"
+            "   AND wp.state = 'merged')) AS merged,"
+            " (SELECT COUNT(*) FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+            f"   WHERE t.work_item_id = w.work_item_id AND e.start_key LIKE 'rework:%' AND {_NOT_TRIAGE_TASK})"
+            "  AS rework_runs"
+            " FROM work_items w WHERE w.session_id = ?"
+            " AND EXISTS (SELECT 1 FROM triage_logs l WHERE l.work_item_id = w.work_item_id) ORDER BY w.key_number",
+            (session_id,),
+        )
+    ]
+    return logs, outcomes
+
+
+def list_assignee_facts(conn: Connection, session_id: str, *, store: ArtifactStore) -> AssigneeFacts:
+    """담당자별 입력(phase 20, 계산 없음) — 업무 전부(키 번호 순, 판단만 있는 업무 포함), 사람 응답, 실행, 멤버·에이전트
+    표시 이름. 판단 단계·그 실행·그 요청은 뺀다. `내 차례` 업무만 받는 사람(`turn_recipients_of` 와 같은 규칙)과 내 차례가
+    된 시각(`status_changed` 중 to = `내 차례`·from ≠ `내 차례` 인 가장 최근 행)을 싣는다. 검토 outcome 은
+    `list_metric_facts` 와 같이 산출물에서 읽는다(`store`). 쿼리 수는 업무 수와 무관하다."""
+    members = list_members(conn, session_id)
+    member_facts = [team.MemberFact(member_id=m["member_id"], role=m["role"], active=m["disabled_at"] is None)
+                    for m in members]
+    approvers = _approvers_by_work(conn, session_id, member_facts)
+    turn_since = {r["work_item_id"]: r["occurred_at"] for r in conn.execute(
+        "SELECT work_item_id, occurred_at FROM work_item_events WHERE session_id = ? AND type = 'status_changed'"
+        " AND json_extract(data_json, '$.to') = '내 차례' AND json_extract(data_json, '$.from') IS NOT '내 차례'"
+        " ORDER BY id",
+        (session_id,),
+    )}  # 뒤 행이 덮어 가장 최근이 남는다
+    works = []
+    for w in conn.execute("SELECT * FROM work_items WHERE session_id = ? ORDER BY key_number", (session_id,)):
+        turn = w["status"] == "내 차례"
+        works.append(AssigneeWorkFact(
+            work_item_id=w["work_item_id"], assignee_type=w["assignee_type"], assignee_id=w["assignee_id"],
+            status=w["status"], closed_at=w["closed_at"],
+            turn_since=turn_since.get(w["work_item_id"]) if turn else None,
+            recipients=_recipients(w, member_facts, approvers.get(w["work_item_id"])) if turn else (),
+        ))
+    responses = tuple(
+        ResponseFact(request_id=r["request_id"], member_id=r["member_id"], requested_at=r["requested_at"],
+                     responded_at=r["responded_at"])
+        for r in conn.execute(
+            "SELECT r.request_id, r.member_id, h.created_at AS requested_at, r.created_at AS responded_at"
+            " FROM human_responses r JOIN human_requests h ON h.request_id = r.request_id"
+            f" JOIN tasks t ON t.task_id = h.task_id WHERE t.session_id = ? AND {_NOT_TRIAGE_TASK}"
+            " ORDER BY r.created_at, r.rowid",
+            (session_id,),
+        )
+    )
+    runs = tuple(
+        AgentRunFact(
+            execution_id=r["execution_id"], agent_id=r["agent_id"], work_item_id=r["work_item_id"], kind=r["kind"],
+            status=r["status"], start_key=r["start_key"], created_at=r["created_at"], started_at=r["started_at"],
+            finished_at=r["finished_at"], failed_code=r["failed_code"], outcome=_execution_outcome(conn, store, r),
+            cost_usd=r["cost_usd"],
+        )
+        for r in conn.execute(
+            "SELECT e.*, t.work_item_id, (SELECT v.verdict_json FROM task_verdicts v"
+            "  WHERE v.execution_id = e.execution_id ORDER BY v.decided_at DESC, v.rowid DESC LIMIT 1) AS verdict_json"
+            f" FROM executions e JOIN tasks t ON t.task_id = e.task_id WHERE t.session_id = ? AND {_NOT_TRIAGE_TASK}"
+            " ORDER BY e.created_at, e.rowid",
+            (session_id,),
+        ).fetchall()
+    )
+    return AssigneeFacts(
+        works=tuple(works), responses=responses, runs=runs,
+        members=tuple(MemberLabel(member_id=m["member_id"], display_name=m["display_name"],
+                                  active=m["disabled_at"] is None) for m in members),
+        agents=tuple(AgentLabel(agent_id=a["agent_id"], name=a["name"]) for a in list_session_agents(conn, session_id)),
+    )
 
 
 def save_source_cursor(conn: Connection, session_id: str, source_id: str, cursor: str, now: str) -> None:
