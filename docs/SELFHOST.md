@@ -295,6 +295,11 @@ deploy/selfhost/install-runner.sh
   2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 14.
   3. **러너 재설치는 필요 없다** — 러너 프로토콜(`connector`·`contracts/v1`)은 이 phase 에서 바뀌지 않았다(재설치해도 된다).
   4. Jira 를 쓰려면 위 "Jira 연결". 쓰지 않으면 아무것도 하지 않아도 된다.
+- v15(phase 19) — 판단: 표 3개(`triage_criteria` 판단 기준 버전·`triage_logs` 판단 로그·`triage_autostart` 종류별 자동 시작)를 더하고, 워크스페이스마다 내장 종류 `triage` 와 판단 기준 v1 을 넣고, `code.fix` 가 있는 로컬 에이전트에 같은 저장소의 `code.triage` 능력을 더한다(`tasks`·`github_sources` 는 재생성하지 않는다 — 판단 에이전트는 소스 설정 JSON 의 칸). 기존 행과 업무 상태는 그대로다. 사용자 정의 종류 이름이 `triage` 인 워크스페이스가 있거나 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v14). 순서:
+  1. 백업 먼저(`backup create`).
+  2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 15.
+  3. **러너도 `install-runner.sh` 로 다시 설치한다** — 러너 프로토콜이 바뀌었다(claim 의 `supported_kinds` 에 `triage`, 실행 요청 target `TriageTarget`, 결과 `triage_result`). 옛 러너는 v15 서버에 그대로 붙어 수정·검토는 계속 하지만 판단은 받지 못한다 — 업무 패널에 `러너 업데이트 필요 — 판단 미지원`. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
+  4. 판단을 쓰려면 연결 화면 저장소 카드에서 **판단 에이전트** 칸을 고른다(맡기기 정책이 '바로 실행'이고 그 저장소의 `code.triage` 능력이 있는 에이전트만). 비워 두면 그 저장소는 판단하지 않는다 — 지금과 같다. Jira 업무는 프로젝트의 연결 저장소 칸을 쓴다. 판단 기준·자동 시작은 연결 화면 "판단" 탭(자동 시작은 사람이 처리한 판단 20건부터 켤 수 있다).
 - 옛 주소는 넘어간다(303) — `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` → `/connect?tab=…`, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 

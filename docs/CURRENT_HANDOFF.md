@@ -1,10 +1,27 @@
 # 현재 인계 — 업무 목록과 결과 기반 자동 실행
 
-갱신일: 2026-10-01. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
+갱신일: 2026-10-02. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: Jira 실연동(사용자 준비 뒤) → 19-triage 설계 (새 세션은 여기서 시작)
+## 다음 작업: 19 병합·v15 재설치(러너 재설치) → 판단 실연동 → 20-monitor (새 세션은 여기서 시작)
 
-**19-triage 진행 중**(2026-10-01, `feat-19-triage` — `service` 에서 갈라짐, 끝나면 `service` 에 `--no-ff` 병합. 설계 [ADR-0025](adr/0025-triage.md)·[ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19", step 0 문서 끝). Jira 실연동·17 실연동·브라우저 확인은 사용자가 뒤로 미뤘다.
+**19-triage 완료**(2026-10-02, `feat-19-triage`, step 0~10, [ADR-0025](adr/0025-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 19 판단"): 담당 없는 새 GitHub·Jira 업무에 내장 종류 `triage` 단계를 붙여, 저장소 카드의 **판단 에이전트**(러너의 로컬 Claude Code/Codex)가 기본 브랜치 끝의 읽기 전용 체크아웃에서 Runloom 이 저장한 판단 기준(버전 v1, v2…)으로 종류·담당·선행·진행 여부(`맡겨도 됨`·`확인 필요`·`부적합`)·확신도·근거를 **제안**한다. 자동 판단은 워크스페이스에 한 번에 1건·러너가 빌 때만, 사용량 한도면 그 에이전트 1시간 쉼. 중앙은 시작 때 고정한 후보 안의 값만 받고(밖이면 `판단 실패 · 후보 밖 제안`), 판단 로그에 남긴다. 패널 판단 절 [제안대로 맡기기]·[무시]·[판단 받기]/[다시 판단], 담당이 정해지면 `accepted`/`changed` 기록, 목록 배지. 연결 화면 "판단" 탭(기준 편집·버전 이력, 종류별 자동 시작 — 사람 처리 20건부터 켬, 기준값 0.50~1.00). 자동 시작은 맡긴 사람 없이 기존 맡기기 경로(소유자 승인·꺼진 러너 대기 그대로), 타임라인 `자동 시작 · 판단 v<n>`. 판단은 업무를 완료·종료하거나 `내 차례` 를 만들지 않는다. 스키마 v15, **러너 프로토콜 변화**(claim `supported_kinds` 에 `triage`) — 옛 러너는 판단만 못 한다(`러너 업데이트 필요 — 판단 미지원`).
+
+**할 일**(순서대로, 모두 사용자 지시 뒤):
+1. `feat-19-triage` 를 `service` 에 `--no-ff` 병합.
+2. 셀프호스트 v15 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 15 → **러너도 `install-runner.sh` 재실행**(옛 러너는 판단을 받지 못한다). 그 뒤 저장소 카드(runloom-sandbox)의 **판단 에이전트** 칸을 고른다. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v15. OpenArchive 저장소 카드에는 판단 에이전트를 고르지 않는다(공모전 출품작 — 러너·워커를 멈춰 둔 저장소).
+3. 판단 실연동 1회 — 아래 확인 목록. 결과는 [VERIFICATION_LOG](VERIFICATION_LOG.md) 에 새 절로.
+4. 20-monitor 설계([REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절) — 판단 품질·담당자별·기준 버전 비교 화면, 판단 "실제 결과"(병합·재작업) 집계는 기존 이벤트로.
+
+**판단 실연동 확인 목록**(runloom-sandbox, 실제 Claude 구독):
+- [ ] 재설치 뒤 러너 claim 의 지원 종류에 `triage`(`connectors.supported_kinds_json`), 에이전트 능력에 `code.triage {repository_id}`.
+- [ ] sandbox 이슈 3건 — ① 명확한 버그(재현 절차·기대 동작이 있는 것) ② 양식이 빈 것(제목만) ③ 운영 접근이 필요한 것(예: 운영 DB 확인) → 자동 판단이 한 번에 1건씩 → 제안 진행 여부가 각각 `맡겨도 됨`·`확인 필요`·`부적합` 인지, 근거·모자란 정보가 기준 항목과 맞는지.
+- [ ] 판단 시간(판단 단계 시작 → 제안)과 구독 사용량(실행의 비용·토큰 — `total_cost_usd` 는 CLI 계산값), 후보 밖 값(`triage_invalid`)이 나오는지.
+- [ ] ① 에 [제안대로 맡기기] → 수정·검토·초안 PR → 판단 로그 `accepted`. ② 는 담당을 다르게 정해 `changed`, ③ 은 [무시] → `dismissed`.
+- [ ] 판단 중 원본 폴더(러너 등록 폴더)에 변경이 없는지(`git status`).
+
+**미룬 것**: Jira 실연동(아래 18 확인 목록 — 사용자가 Jira Cloud 사이트·토큰을 만든 뒤), 17 실연동(두 번째 멤버·`--name b` 러너), 브라우저 확인(16·17 목록 + 19 패널 판단 절·연결 "판단" 탭·저장소 카드 판단 에이전트 select). 셀프호스트 Docker e2e(`WORKFLOW_DOCKER=1`)는 이미지 태그 공유 때문에 여전히 미실행.
+
+**19 에서 남긴 것·주의**: 확신도는 모델이 말한 값이다 — 자동 시작 기준값은 20-monitor 에서 판단 품질을 본 뒤 정한다. 업무 내용이 바뀌어도 자동으로 다시 판단하지 않는다([다시 판단]만). 선행 업무 제안은 `blocks` 링크만 남기고 착수를 막지 않는다. 사용량 한도 쉼은 워커 메모리라 재시작하면 풀린다(3-limit-wait 는 범위 밖). 판단 에이전트 소유자 알림·직접 등록/n8n 업무 판단·판단 에이전트 자동 매칭은 하지 않았다.
 
 **18-jira 완료**(2026-10-01, `feat-18-jira`, step 0~9, [ADR-0024](adr/0024-jira-source.md), [ARCHITECTURE](ARCHITECTURE.md) "Jira 소스 — phase 18", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 18 Jira"): 연결 탭 가져올 곳에 Jira 칸(사이트 주소·이메일·API 토큰 → tenant_info·myself 확인 → 게이트웨이/사이트 기준 주소 저장, 토큰은 비밀 파일 `jira_api_token`), 프로젝트 찾기·추가(연결 저장소 = GitHub 저장소 하나, 지금부터/열린 업무 전부), 프로젝트 설정(이슈 유형·세 상태·후속 이슈 유형·켜짐·목록 새로 고침), 1분 폴링 가져오기(`search/jql`·`nextPageToken`·포함 경계 커서) → 업무 `새로 들어옴`(맡기기 뒤에만 착수), Jira 완료 범주 = 원본 닫힘(다음 단계 대기, 다시 열면 이어감), 연결 저장소에서 수정·검토·초안 PR(`Fixes` 없음, 본문 첫 줄 `원본: SHOP-n — 주소`, 요청문 머리에도 원본 키), 세 순간(작업 시작·`PR · 검토`·`완료`) → outbox `jira_deliveries` → 전환(이미 그 상태면 보내지 않음, 전환 없음·400 은 반영 실패), 후속 새 업무 → 같은 프로젝트에 이슈(라벨 `runloom`·`runloom-RUN-n`, `Relates` 링크, 응답 유실은 라벨로 조정), 스키마 v14. 러너 프로토콜은 바뀌지 않았다.
 
@@ -12,7 +29,7 @@
 1. ~~`feat-18-jira` 를 `service` 에 `--no-ff` 병합~~ — 끝남(2026-10-01, `c5f1d31`).
 2. ~~셀프호스트 v14 재설치~~ — 끝남(2026-10-01, 백업 `20261001T085957Z`, v13 → v14, 업무 25건 그대로·jira 기본 매핑 1행·외래키 검사 통과, 러너는 17 뒤 이미 새 판이라 그대로). 원래 절차: 셀프호스트 v14 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 14. 러너 재설치는 필요 없다. 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v14. 셀프호스트가 아직 v13 전(v12)이면 v13 항목의 **러너 재설치(`install-runner.sh`)도 함께** 한다 — 러너 프로토콜은 17 에서 바뀌었다.
 3. 사용자가 무료 Jira Cloud 사이트와 API 토큰을 만든다 → 아래 실연동 확인 목록 1회.
-4. 19-triage 설계([REDESIGN_PLAN](product/REDESIGN_PLAN.md) 13절).
+4. ~~19-triage 설계~~ — 끝남, 구현까지 완료(위 19-triage).
 
 **Jira 실연동 확인 목록**(사용자와 1회 — 결과는 [VERIFICATION_LOG](VERIFICATION_LOG.md) 에 새 절로. 절차는 [SELFHOST](SELFHOST.md) "Jira 연결"):
 - [ ] 무료 Jira Cloud 사이트 만들기(`https://<이름>.atlassian.net`), 소프트웨어 프로젝트 하나(키 예: `SHOP`).
