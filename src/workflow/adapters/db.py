@@ -16,7 +16,7 @@ from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -291,6 +291,9 @@ WORK_ITEM_LINK_TYPES = ("blocks", "spawned_from")
 # v10 이 만든 업무 이벤트 종류. v12 가 표를 재생성해 WORK_ITEM_EVENT_TYPES 로 넓힌다.
 _V10_WORK_ITEM_EVENT_TYPES = ("status_changed", "assigned")
 
+# v10 이 워크스페이스마다 넣은 기본 매핑. jira 기본 행은 v14 가 더한다(v10 표 CHECK 는 jira 를 모른다).
+_V10_FIELD_MAPPINGS = (("github", "kind", "*", "bug_fix"),)
+
 _V10_TABLES = f"""
 -- 업무(목록 한 줄). 키 문자열은 계산한다(RUN-<key_number>). 삭제 경로 없음 — 키는 재사용되지 않는다.
 CREATE TABLE IF NOT EXISTS work_items (
@@ -558,6 +561,204 @@ CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(sessi
 """
 
 
+# v14 (phase 18, ADR-0024): Jira 표 4개, work_items·field_mappings source_type CHECK 에 'jira', Runloom PR 이슈 번호 NULL 허용.
+# ARCHITECTURE "Jira 소스 — phase 18" 스키마 v14. tasks 는 재생성하지 않는다. work_items 는 자식 FK 가 있으므로
+# 기존 DB 는 init_schema 가 외래키를 끈 채(트랜잭션 밖 PRAGMA) 재생성한다 — 자식 FK 는 글자 그대로 새 표를 가리킨다.
+# 데이터(jira 기본 매핑)는 _migrate_13_to_14 가 넣는다.
+JIRA_DELIVERY_STATES = ("pending", "sending", "delivered", "unknown", "failed", "skipped")
+
+_V14_TABLES = f"""
+-- Jira Cloud 연결(워크스페이스당 1행). 토큰 칸 없음 — 비밀 저장소 jira_api_token 에만.
+CREATE TABLE IF NOT EXISTS jira_connections (
+  session_id      TEXT PRIMARY KEY REFERENCES sessions(session_id),
+  site_url        TEXT NOT NULL,                            -- https://<이름>.atlassian.net
+  cloud_id        TEXT NOT NULL,
+  api_base        TEXT NOT NULL CHECK (api_base IN ('gateway', 'site')),
+  email           TEXT NOT NULL,
+  account_id      TEXT NOT NULL,
+  display_name    TEXT NOT NULL,
+  connected_at    TEXT NOT NULL,
+  disconnected_at TEXT,
+  auth_failed_at  TEXT,
+  updated_at      TEXT NOT NULL
+);
+
+-- Jira 프로젝트 설정. github_source_id 가 같은 워크스페이스 소스인지는 repo 가 검사한다.
+-- choices_json = {{"issue_types": [{{"id", "name"}}], "statuses": ["이름", …]}}
+CREATE TABLE IF NOT EXISTS jira_projects (
+  source_id           TEXT PRIMARY KEY,                     -- 'jps-' + 8 hex
+  session_id          TEXT NOT NULL REFERENCES sessions(session_id),
+  project_id          TEXT NOT NULL,
+  project_key         TEXT NOT NULL,
+  project_name        TEXT NOT NULL,
+  github_source_id    TEXT NOT NULL REFERENCES github_sources(source_id),
+  issue_types_json    TEXT NOT NULL DEFAULT '[]',
+  start_mode          TEXT NOT NULL CHECK (start_mode IN ('from_now', 'all_open')),
+  start_at            TEXT NOT NULL,
+  status_on_start     TEXT,
+  status_on_review    TEXT,
+  status_on_done      TEXT,
+  followup_issue_type TEXT,
+  choices_json        TEXT NOT NULL DEFAULT '{{}}',
+  cursor_ms           INTEGER CHECK (cursor_ms IS NULL OR cursor_ms >= 0),
+  cursor_updated_at   TEXT,
+  enabled             INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  UNIQUE (session_id, project_id)
+);
+
+-- Jira 이슈 스냅숏 → 업무의 첫 단계. source_issues 와 같은 모양(digest·revision·지시).
+CREATE TABLE IF NOT EXISTS jira_issues (
+  source_id        TEXT NOT NULL REFERENCES jira_projects(source_id),
+  issue_id         TEXT NOT NULL,
+  issue_key        TEXT NOT NULL,
+  task_id          TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  source_revision  INTEGER NOT NULL CHECK (source_revision >= 1),
+  snapshot_json    TEXT NOT NULL,                           -- JiraIssueSnapshot JSON
+  snapshot_digest  TEXT NOT NULL,
+  issue_updated_at TEXT NOT NULL,
+  state            TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+  status_name      TEXT NOT NULL,
+  delegated_at     TEXT,
+  delegated_by     TEXT CHECK (delegated_by IS NULL OR delegated_by IN ('operator', 'followup')),
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (source_id, issue_id),
+  CHECK ((delegated_at IS NULL) = (delegated_by IS NULL))
+);
+
+-- Jira 되쓰기 outbox(상태 옮기기·후속 이슈 만들기). last_error·note 는 분류 문구만 — 응답 본문·토큰 없음.
+CREATE TABLE IF NOT EXISTS jira_deliveries (
+  delivery_id      TEXT PRIMARY KEY,                        -- 'jdl-' + 8 hex
+  session_id       TEXT NOT NULL REFERENCES sessions(session_id),
+  source_id        TEXT NOT NULL REFERENCES jira_projects(source_id),
+  work_item_id     TEXT NOT NULL REFERENCES work_items(work_item_id),
+  action           TEXT NOT NULL CHECK (action IN ('transition', 'create_issue')),
+  moment           TEXT CHECK (moment IS NULL OR moment IN ('start', 'review', 'done')),
+  target           TEXT NOT NULL,                           -- 목표 상태 이름 또는 후속 이슈 유형 이름
+  cause_issue_id   TEXT,
+  dedupe_key       TEXT NOT NULL UNIQUE,
+  state            TEXT NOT NULL CHECK (state IN ({_in(JIRA_DELIVERY_STATES)})),
+  result_issue_id  TEXT,
+  result_issue_key TEXT,
+  attempts         INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_at          TEXT,
+  last_error       TEXT,
+  note             TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  delivered_at     TEXT,
+  CHECK ((action = 'transition') = (moment IS NOT NULL)),
+  CHECK ((action = 'create_issue') = (cause_issue_id IS NOT NULL)),
+  CHECK (action != 'create_issue' OR state != 'delivered' OR result_issue_id IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS ix_jira_deliveries_due ON jira_deliveries(state, next_at);
+CREATE INDEX IF NOT EXISTS ix_jira_deliveries_work ON jira_deliveries(work_item_id, created_at);
+
+-- 업무 재생성: 칸·순서·제약 그대로(v10 칸 + v11·v12·v13 칸, 각 FK), source_type CHECK 만 넓힌다. 행·id 를 그대로 옮긴다.
+CREATE TABLE work_items_v14 (
+  work_item_id              TEXT PRIMARY KEY,               -- 'wi-' + 12 hex
+  session_id                TEXT NOT NULL REFERENCES sessions(session_id),
+  key_number                INTEGER NOT NULL CHECK (key_number >= 1),
+  title                     TEXT NOT NULL,
+  request                   TEXT NOT NULL,
+  kind                      TEXT NOT NULL,                  -- 대표 종류 = 첫 단계 종류
+  priority                  TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('high', 'normal', 'low')),
+  assignee_type             TEXT CHECK (assignee_type IS NULL OR assignee_type IN ('member', 'agent')),
+  assignee_id               TEXT,
+  status                    TEXT NOT NULL CHECK (status IN ({_in(WORK_STATUSES)})),
+  status_reason             TEXT NOT NULL,
+  source_type               TEXT NOT NULL CHECK (source_type IN ('github', 'n8n', 'manual', 'jira')),
+  source_id                 TEXT,
+  source_item_id            TEXT,
+  source_key                TEXT,
+  source_url                TEXT,
+  source_state              TEXT,
+  form_json                 TEXT NOT NULL DEFAULT '{{}}',
+  revision                  INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  created_at                TEXT NOT NULL,
+  updated_at                TEXT NOT NULL,
+  closed_at                 TEXT,
+  requested_by_member_id    TEXT REFERENCES members(member_id),
+  direct_member_id          TEXT REFERENCES members(member_id),
+  direct_started_at         TEXT,
+  direct_branch             TEXT,
+  handoff_note              TEXT,
+  handoff_note_by_member_id TEXT REFERENCES members(member_id),
+  UNIQUE (session_id, key_number),
+  FOREIGN KEY (session_id, kind) REFERENCES kinds(session_id, kind),
+  CHECK ((assignee_type IS NULL) = (assignee_id IS NULL)),
+  CHECK ((status IN ({_in(TERMINAL_WORK_STATUSES)})) = (closed_at IS NOT NULL))
+);
+INSERT INTO work_items_v14 (work_item_id, session_id, key_number, title, request, kind, priority, assignee_type,
+  assignee_id, status, status_reason, source_type, source_id, source_item_id, source_key, source_url, source_state,
+  form_json, revision, created_at, updated_at, closed_at, requested_by_member_id, direct_member_id, direct_started_at,
+  direct_branch, handoff_note, handoff_note_by_member_id)
+  SELECT work_item_id, session_id, key_number, title, request, kind, priority, assignee_type,
+  assignee_id, status, status_reason, source_type, source_id, source_item_id, source_key, source_url, source_state,
+  form_json, revision, created_at, updated_at, closed_at, requested_by_member_id, direct_member_id, direct_started_at,
+  direct_branch, handoff_note, handoff_note_by_member_id FROM work_items ORDER BY rowid;
+DROP TABLE work_items;
+ALTER TABLE work_items_v14 RENAME TO work_items;
+CREATE INDEX IF NOT EXISTS ix_work_items_status ON work_items(session_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_work_items_jira_issue ON work_items(source_id, source_item_id)
+  WHERE source_type = 'jira' AND source_item_id IS NOT NULL;
+
+-- 매핑 재생성: 칸·UNIQUE 그대로, source_type CHECK 만 넓힌다. 참조하는 표 없음.
+CREATE TABLE field_mappings_v14 (
+  mapping_id    TEXT PRIMARY KEY,                           -- 'map-' + 8 hex
+  session_id    TEXT NOT NULL REFERENCES sessions(session_id),
+  source_type   TEXT NOT NULL CHECK (source_type IN ('github', 'n8n', 'jira')),
+  field         TEXT NOT NULL CHECK (field IN ('kind', 'priority')),
+  source_value  TEXT NOT NULL,
+  runloom_value TEXT NOT NULL,
+  position      INTEGER NOT NULL CHECK (position >= 1),
+  created_at    TEXT NOT NULL,
+  UNIQUE (session_id, source_type, field, source_value)
+);
+INSERT INTO field_mappings_v14 (mapping_id, session_id, source_type, field, source_value, runloom_value, position,
+  created_at)
+  SELECT mapping_id, session_id, source_type, field, source_value, runloom_value, position, created_at
+  FROM field_mappings ORDER BY rowid;
+DROP TABLE field_mappings;
+ALTER TABLE field_mappings_v14 RENAME TO field_mappings;
+
+-- Runloom PR 재생성: 칸·순서·제약 그대로, issue_number 만 NULL 허용(Jira 업무는 GitHub 이슈가 없다). 참조하는 표 없음.
+CREATE TABLE task_pull_requests_v14 (
+  task_id              TEXT PRIMARY KEY REFERENCES tasks(task_id),
+  session_id           TEXT NOT NULL,
+  source_id            TEXT NOT NULL REFERENCES github_sources(source_id),
+  repository_full_name TEXT NOT NULL,
+  issue_number         INTEGER CHECK (issue_number IS NULL OR issue_number >= 1),
+  head_branch          TEXT NOT NULL,                       -- task/<task_id>
+  fix_execution_id     TEXT NOT NULL,
+  review_execution_id  TEXT NOT NULL,
+  state                TEXT NOT NULL CHECK (state IN ({_in(PULL_REQUEST_STATES)})),
+  pr_number            INTEGER,
+  pr_url               TEXT,
+  draft                INTEGER CHECK (draft IS NULL OR draft IN (0, 1)),
+  attempts             INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_at              TEXT,
+  last_error           TEXT,
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  merged_at            TEXT,
+  closed_at            TEXT,
+  CHECK (state NOT IN ('open', 'merged', 'closed') OR pr_number IS NOT NULL)
+);
+INSERT INTO task_pull_requests_v14 (task_id, session_id, source_id, repository_full_name, issue_number, head_branch,
+  fix_execution_id, review_execution_id, state, pr_number, pr_url, draft, attempts, next_at, last_error, created_at,
+  updated_at, merged_at, closed_at)
+  SELECT task_id, session_id, source_id, repository_full_name, issue_number, head_branch,
+  fix_execution_id, review_execution_id, state, pr_number, pr_url, draft, attempts, next_at, last_error, created_at,
+  updated_at, merged_at, closed_at FROM task_pull_requests ORDER BY rowid;
+DROP TABLE task_pull_requests;
+ALTER TABLE task_pull_requests_v14 RENAME TO task_pull_requests;
+"""
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -765,7 +966,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -977,7 +1178,7 @@ def _migrate_9_to_10(conn: sqlite3.Connection) -> None:
                      (status.status, status.reason, closed_at, work_item_id))
     for (session_id,) in conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall():
         ensure_first_admin(conn, session_id, now=now)
-        seed_default_field_mappings(conn, session_id, now=now)
+        seed_default_field_mappings(conn, session_id, now=now, mappings=_V10_FIELD_MAPPINGS)
     if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
     conn.execute("UPDATE schema_version SET version = 10")
@@ -1013,28 +1214,59 @@ def _migrate_12_to_13(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 13")
 
 
+def _migrate_13_to_14(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서(외래키를 끈 채) 실행한다. Jira 표를 더하고 work_items·field_mappings·
+    task_pull_requests 를 재생성한다 — 행·id·key_number·칸 값은 그대로, 업무·단계 상태는 다시 계산하지 않는다.
+    bug_fix 종류가 있는 워크스페이스마다 jira 기본 매핑 한 행을 넣는다(이미 jira 행이 있으면 넣지 않는다)."""
+    for statement in _statements(_V14_TABLES):
+        conn.execute(statement)
+    conn.execute(
+        "INSERT INTO field_mappings (mapping_id, session_id, source_type, field, source_value, runloom_value, position,"
+        " created_at) SELECT 'map-' || lower(hex(randomblob(4))), k.session_id, 'jira', 'kind', '*', 'bug_fix', 1, ?"
+        " FROM kinds k WHERE k.kind = 'bug_fix' AND NOT EXISTS ("
+        " SELECT 1 FROM field_mappings f WHERE f.session_id = k.session_id AND f.source_type = 'jira')"
+        " ORDER BY k.session_id",
+        (_now(),),
+    )
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 14")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~12 는 13 까지 차례로(4 → 5 → … → 12 → 13) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~13 은 14 까지 차례로(4 → 5 → … → 13 → 14) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
-    그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다."""
+    그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다.
+
+    올릴 때는 트랜잭션 밖에서 외래키를 끄고 끝나면(실패해도) 다시 켠다 — v14 가 자식 FK 가 있는 work_items 를
+    재생성하기 때문이다(트랜잭션 안에서는 이 PRAGMA 가 무시된다). 각 단계 끝의 `foreign_key_check` 가 결함을 잡는다."""
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
     ).fetchone()
     if exists is None:
         conn.executescript(_SCHEMA)
-    conn.execute("BEGIN IMMEDIATE")
+    stored = conn.execute("SELECT version FROM schema_version").fetchone()
+    migrating = stored is not None and stored[0] < SCHEMA_VERSION
+    if migrating:
+        conn.execute("PRAGMA foreign_keys=OFF")
     try:
-        row = conn.execute("SELECT version FROM schema_version").fetchone()
-        if row is None:
-            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12):
-            steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
-                     _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13)
-            for step in steps[row[0] - 4:]:
-                step(conn)
-        elif row[0] != SCHEMA_VERSION:
-            raise RuntimeError(f"schema_version {row[0]} 은 지원하지 않습니다 (기대 {SCHEMA_VERSION})")
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-    conn.execute("COMMIT")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT version FROM schema_version").fetchone()
+            if row is None:
+                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+                steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
+                         _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13,
+                         _migrate_13_to_14)
+                for step in steps[row[0] - 4:]:
+                    step(conn)
+            elif row[0] != SCHEMA_VERSION:
+                raise RuntimeError(f"schema_version {row[0]} 은 지원하지 않습니다 (기대 {SCHEMA_VERSION})")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+    finally:
+        if migrating:
+            conn.execute("PRAGMA foreign_keys=ON")

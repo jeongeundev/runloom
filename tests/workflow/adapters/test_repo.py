@@ -3322,8 +3322,11 @@ def _mapping(source_value: str, runloom_value: str, *, field: str = "kind", posi
     return MappingRow(source_type, field, source_value, runloom_value, position)
 
 
+DEFAULT_MAPPINGS = [_mapping("*", "bug_fix"), _mapping("*", "bug_fix", position=2, source_type="jira")]
+
+
 def test_field_mappings_start_with_default_and_replace_bumps_config_revision(sessions):
-    assert repo.list_field_mappings(sessions, SESSION) == [_mapping("*", "bug_fix")]
+    assert repo.list_field_mappings(sessions, SESSION) == DEFAULT_MAPPINGS
     revision = repo.get_config_revision(sessions, SESSION)
     rows = [_mapping("docs", "code_review", position=1), _mapping("*", "bug_fix", position=2),
             _mapping("P1", "high", field="priority", position=3)]
@@ -3331,7 +3334,7 @@ def test_field_mappings_start_with_default_and_replace_bumps_config_revision(ses
     assert repo.get_config_revision(sessions, SESSION) == revision + 1
     assert repo.list_field_mappings(sessions, SESSION) == rows
     assert repo.list_field_mappings(sessions, SESSION, "github", "priority") == rows[2:]
-    assert repo.list_field_mappings(sessions, OTHER_SESSION) == [_mapping("*", "bug_fix")]  # 다른 워크스페이스는 그대로
+    assert repo.list_field_mappings(sessions, OTHER_SESSION) == DEFAULT_MAPPINGS  # 다른 워크스페이스는 그대로
 
 
 @pytest.mark.parametrize("rows", [
@@ -3343,7 +3346,7 @@ def test_replace_field_mappings_rejects_invalid_rows_and_keeps_old(sessions, row
     revision = repo.get_config_revision(sessions, SESSION)
     with pytest.raises(ValueError):
         repo.replace_field_mappings(sessions, SESSION, rows, now=LATER)
-    assert repo.list_field_mappings(sessions, SESSION) == [_mapping("*", "bug_fix")]
+    assert repo.list_field_mappings(sessions, SESSION) == DEFAULT_MAPPINGS
     assert repo.get_config_revision(sessions, SESSION) == revision
 
 

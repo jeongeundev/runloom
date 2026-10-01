@@ -152,7 +152,7 @@ def create_session(conn: Connection, session_id: str, now: str) -> None:
 
 
 # 새 워크스페이스의 기본 매핑 — GitHub 이슈는 라벨과 무관하게 지금처럼 bug_fix (ARCHITECTURE "매핑 표").
-DEFAULT_FIELD_MAPPINGS = (("github", "kind", "*", "bug_fix"),)
+DEFAULT_FIELD_MAPPINGS = (("github", "kind", "*", "bug_fix"), ("jira", "kind", "*", "bug_fix"))
 
 
 def ensure_first_admin(conn: Connection, session_id: str, *, now: str) -> str:
@@ -167,9 +167,13 @@ def ensure_first_admin(conn: Connection, session_id: str, *, now: str) -> str:
     return member_id
 
 
-def seed_default_field_mappings(conn: Connection, session_id: str, *, now: str) -> None:
-    """기본 매핑 행을 넣는다. 설정 번호는 올리지 않는다. 자체 BEGIN 이 없다."""
-    for position, (source_type, field, source_value, runloom_value) in enumerate(DEFAULT_FIELD_MAPPINGS, start=1):
+def seed_default_field_mappings(
+    conn: Connection, session_id: str, *, now: str,
+    mappings: Sequence[tuple[str, str, str, str]] = DEFAULT_FIELD_MAPPINGS,
+) -> None:
+    """기본 매핑 행을 넣는다. 설정 번호는 올리지 않는다. 자체 BEGIN 이 없다. `mappings` 는 옛 스키마로 올리는
+    마이그레이션이 그 버전 표가 받는 행만 넘길 때 쓴다."""
+    for position, (source_type, field, source_value, runloom_value) in enumerate(mappings, start=1):
         conn.execute(
             "INSERT INTO field_mappings (mapping_id, session_id, source_type, field, source_value, runloom_value,"
             " position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

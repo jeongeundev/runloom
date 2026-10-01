@@ -50,13 +50,19 @@ TABLES = {
     "login_sessions",
     "member_invites",
     "work_pull_requests",
+    "jira_connections",
+    "jira_projects",
+    "jira_issues",
+    "jira_deliveries",
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 PHASE12_TABLES = {"task_pull_requests", "notifications"}
 PHASE14_TABLES = {"work_items", "work_item_links", "members", "field_mappings", "work_item_events"}
 PHASE15_TABLES = {"login_sessions", "member_invites"}
 PHASE16_TABLES = {"work_pull_requests"}
-V11_TABLES = TABLES - PHASE16_TABLES
+PHASE18_TABLES = {"jira_connections", "jira_projects", "jira_issues", "jira_deliveries"}
+V13_TABLES = TABLES - PHASE18_TABLES  # v12 도 같은 표 집합(v13 은 칸·CHECK 만 바꿨다)
+V11_TABLES = V13_TABLES - PHASE16_TABLES
 V10_TABLES = V11_TABLES - PHASE15_TABLES
 V9_TABLES = V10_TABLES - PHASE14_TABLES
 
@@ -251,8 +257,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_13():
-    assert SCHEMA_VERSION == 13
+def test_schema_version_is_14():
+    assert SCHEMA_VERSION == 14
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -1070,12 +1076,12 @@ def test_migrates_v7_to_v8_preserving_data_and_copies_pushed_results(db_path):
     c.close()
 
 
-def test_migrates_v4_all_the_way_to_v13(db_path):
+def test_migrates_v4_all_the_way_to_v14(db_path):
     c = _v4_db(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 13
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 14
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
     assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
@@ -1394,7 +1400,7 @@ def test_fresh_db_has_v10_tables_columns_and_checks(conn):
         ("wi-x", 20, "normal", None, None, "실패", "manual", NOW, NOW, None),  # 업무 상태 허용 값 밖
         ("wi-x", 20, "normal", None, None, "완료", "manual", NOW, NOW, None),  # 끝 상태는 마감 시각이 있어야
         ("wi-x", 20, "normal", None, None, "대기", "manual", NOW, NOW, NOW),  # 열린 상태는 마감 시각이 없어야
-        ("wi-x", 20, "normal", None, None, "대기", "jira", NOW, NOW, None),  # 원본 종류 허용 값 밖
+        ("wi-x", 20, "normal", None, None, "대기", "linear", NOW, NOW, None),  # 원본 종류 허용 값 밖
     ):
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(item, params)
@@ -1430,7 +1436,7 @@ def test_fresh_db_has_v10_tables_columns_and_checks(conn):
     conn.execute(mapping, ("map-2", "github", "kind", "bug", 1, NOW))  # position 은 유일하지 않다
     for params in (
         ("map-3", "github", "kind", "*", 2, NOW),  # (세션, 원본, 필드, 원본 값) 중복
-        ("map-4", "jira", "kind", "x", 1, NOW),  # 원본 종류 허용 값 밖
+        ("map-4", "linear", "kind", "x", 1, NOW),  # 원본 종류 허용 값 밖
         ("map-5", "github", "assignee", "x", 1, NOW),  # 필드 허용 값 밖
         ("map-6", "github", "kind", "y", 0, NOW),  # position >= 1
     ):
@@ -1457,7 +1463,7 @@ def test_create_session_seeds_first_admin_and_default_mapping(conn):
     assert conn.execute("SELECT member_id FROM members").fetchone()[0].startswith("mem-")
     mappings = [tuple(r) for r in conn.execute(
         "SELECT session_id, source_type, field, source_value, runloom_value, position FROM field_mappings")]
-    assert mappings == [("s1", "github", "kind", "*", "bug_fix", 1)]
+    assert mappings == [("s1", "github", "kind", "*", "bug_fix", 1), ("s1", "jira", "kind", "*", "bug_fix", 2)]
     assert conn.execute("SELECT mapping_id FROM field_mappings").fetchone()[0].startswith("map-")
     assert repo.get_config_revision(conn, "s1") == 1  # seed 는 설정 번호를 올리지 않는다
     assert repo.ensure_first_admin(conn, "s1", now=NOW) == conn.execute("SELECT member_id FROM members").fetchone()[0]
@@ -1532,8 +1538,9 @@ def test_migrates_v9_to_v10_grouping_stages_into_work_items(db_path):
     assert members == [("s1", "관리자", "admin"), ("s2", "관리자", "admin")]
     mappings = [tuple(r) for r in c.execute(
         "SELECT session_id, source_type, field, source_value, runloom_value, position FROM field_mappings"
-        " ORDER BY session_id")]
-    assert mappings == [("s1", "github", "kind", "*", "bug_fix", 1), ("s2", "github", "kind", "*", "bug_fix", 1)]
+        " ORDER BY session_id, source_type")]
+    assert mappings == [("s1", "github", "kind", "*", "bug_fix", 1), ("s1", "jira", "kind", "*", "bug_fix", 1),
+                        ("s2", "github", "kind", "*", "bug_fix", 1), ("s2", "jira", "kind", "*", "bug_fix", 1)]
     assert [r[0] for r in c.execute("SELECT DISTINCT config_revision FROM sessions")] == [1]
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -1794,7 +1801,7 @@ def test_migrates_v10_to_v11_preserving_rows(db_path):
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    assert _dump(c, V10_TABLES, columns) == before  # 기존 행 수·열 값은 그대로
+    assert _without_jira_mappings(_dump(c, V10_TABLES, columns)) == before  # 기존 행 수·열 값은 그대로
     for table, new in V11_COLUMNS.items():
         values = {tuple(r) for r in c.execute(f"SELECT {', '.join(sorted(new - {'channel'}))} FROM {table}")}
         assert values <= {(None,) * len(new - {"channel"})}, table  # 새 칸은 NULL
@@ -1847,12 +1854,12 @@ def test_fresh_schema_matches_v10_migrated_schema(tmp_path):
 
 
 @pytest.mark.parametrize("make", [_v4_db, _v5_db, _v6_db, _v7_db, _v8_db, _v9_db, _v10_db])
-def test_migrates_v4_to_v10_all_the_way_to_v13(db_path, make):
+def test_migrates_v4_to_v10_all_the_way_to_v14(db_path, make):
     c = make(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 13
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 14
     assert TABLES <= _table_names(c)
     for table, columns in V11_COLUMNS.items():
         assert columns <= _columns(c, table), table
@@ -2016,7 +2023,7 @@ def test_migrates_v11_to_v12_preserving_rows_and_event_ids(db_path):
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    assert _dump(c, V11_TABLES, columns) == before  # 기존 행 수·열 값은 그대로
+    assert _without_jira_mappings(_dump(c, V11_TABLES, columns)) == before  # 기존 행 수·열 값은 그대로
     assert [r[0] for r in c.execute("SELECT id FROM work_item_events ORDER BY id")] == [5, 9]
     for table, new in V12_COLUMNS.items():
         values = {tuple(r) for r in c.execute(f"SELECT {', '.join(sorted(new))} FROM {table}")}
@@ -2204,7 +2211,7 @@ def test_v13_notification_events_and_work_item_event_types(conn):
 def test_v12_fixture_is_the_phase16_schema(db_path):
     c = _v12_db(db_path)
     assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 12
-    assert _table_names(c) - {"sqlite_sequence"} == TABLES | {"schema_version"}
+    assert _table_names(c) - {"sqlite_sequence"} == V13_TABLES | {"schema_version"}
     for table, columns in V13_COLUMNS.items():
         assert not columns & _columns(c, table), table
     with pytest.raises(sqlite3.IntegrityError):  # v12 는 새 알림 사건을 모른다
@@ -2216,15 +2223,15 @@ def test_v12_fixture_is_the_phase16_schema(db_path):
 
 def test_migrates_v12_to_v13_preserving_rows_with_defaults(db_path):
     c = _v12_db(db_path)
-    columns = _column_lists(c, TABLES)
-    before = _dump(c, TABLES)
+    columns = _column_lists(c, V13_TABLES)
+    before = _dump(c, V13_TABLES)
     tasks_page = c.execute("SELECT rootpage FROM sqlite_master WHERE name = 'tasks'").fetchone()[0]
     c.close()
 
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    assert _dump(c, TABLES, columns) == before  # 기존 행 수·열 값은 그대로
+    assert _without_jira_mappings(_dump(c, V13_TABLES, columns)) == before  # 기존 행 수·열 값은 그대로
     assert [r[0] for r in c.execute("SELECT id FROM work_item_events ORDER BY id")] == [5, 9]
     assert [r[0] for r in c.execute("SELECT notification_id FROM notifications ORDER BY notification_id")] == [
         "ntf-00000001", "ntf-00000002"]
@@ -2257,7 +2264,7 @@ def test_v13_migration_rolls_back_on_foreign_key_violation(db_path):
     c.execute("PRAGMA foreign_keys=OFF")
     c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
     c.execute("PRAGMA foreign_keys=ON")
-    before = _dump(c, TABLES)
+    before = _dump(c, V13_TABLES)
     recreated = "SELECT name, sql FROM sqlite_master WHERE name IN ('notifications', 'work_item_events') ORDER BY name"
     sql_before = c.execute(recreated).fetchall()
     with pytest.raises(RuntimeError, match="외래키"):
@@ -2266,7 +2273,7 @@ def test_v13_migration_rolls_back_on_foreign_key_violation(db_path):
     for table, columns in V13_COLUMNS.items():
         assert not columns & _columns(c, table), table
     assert c.execute(recreated).fetchall() == sql_before
-    assert _dump(c, TABLES) == before
+    assert _dump(c, V13_TABLES) == before
     assert not c.in_transaction
     c.execute("UPDATE tasks SET work_item_id = 'wi-000000000001' WHERE task_id = 't1'")
     init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
@@ -2287,6 +2294,383 @@ def test_fresh_schema_matches_v12_migrated_schema(tmp_path, old):
         assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
     assert _indexes(fresh) == _indexes(migrated)
     sql = "SELECT sql FROM sqlite_master WHERE name IN ('notifications', 'work_item_events') ORDER BY name"
+    assert fresh.execute(sql).fetchall() == migrated.execute(sql).fetchall()  # CHECK 까지 같은 원문
+    fresh.close()
+    migrated.close()
+
+
+# --- phase 18: v13 → v14 Jira 표·source_type CHECK·Runloom PR 이슈 번호 NULL (ADR-0024) ----------------------------
+
+V13_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v13.sql").read_text()
+JIRA_CONNECTION_COLUMNS = [
+    "session_id", "site_url", "cloud_id", "api_base", "email", "account_id", "display_name", "connected_at",
+    "disconnected_at", "auth_failed_at", "updated_at",
+]
+JIRA_PROJECT_COLUMNS = [
+    "source_id", "session_id", "project_id", "project_key", "project_name", "github_source_id", "issue_types_json",
+    "start_mode", "start_at", "status_on_start", "status_on_review", "status_on_done", "followup_issue_type",
+    "choices_json", "cursor_ms", "cursor_updated_at", "enabled", "created_at", "updated_at",
+]
+JIRA_ISSUE_COLUMNS = [
+    "source_id", "issue_id", "issue_key", "task_id", "source_revision", "snapshot_json", "snapshot_digest",
+    "issue_updated_at", "state", "status_name", "delegated_at", "delegated_by", "created_at", "updated_at",
+]
+JIRA_DELIVERY_COLUMNS = [
+    "delivery_id", "session_id", "source_id", "work_item_id", "action", "moment", "target", "cause_issue_id",
+    "dedupe_key", "state", "result_issue_id", "result_issue_key", "attempts", "next_at", "last_error", "note",
+    "created_at", "updated_at", "delivered_at",
+]
+_WORK_INSERT = ("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status,"
+                " status_reason, source_type, source_id, source_item_id, created_at, updated_at)"
+                " VALUES (?, 's1', ?, 't', 'r', 'bug_fix', '대기', '', ?, ?, ?, ?, ?)")
+_MAPPING_INSERT = ("INSERT INTO field_mappings (mapping_id, session_id, source_type, field, source_value, runloom_value,"
+                   " position, created_at) VALUES (?, 's1', ?, 'kind', ?, 'bug_fix', 1, ?)")
+_JIRA_PROJECT_INSERT = (
+    "INSERT INTO jira_projects (source_id, session_id, project_id, project_key, project_name, github_source_id,"
+    " start_mode, start_at, enabled, created_at, updated_at) VALUES (?, 's1', ?, 'SHOP', '쇼핑', ?, ?, ?, ?, ?, ?)"
+)
+_JIRA_ISSUE_INSERT = (
+    "INSERT INTO jira_issues (source_id, issue_id, issue_key, task_id, source_revision, snapshot_json, snapshot_digest,"
+    " issue_updated_at, state, status_name, delegated_at, delegated_by, created_at, updated_at)"
+    " VALUES ('jps-00000001', ?, 'SHOP-12', ?, ?, '{}', 'd', ?, ?, 'To Do', ?, ?, ?, ?)"
+)
+_JIRA_DELIVERY_INSERT = (
+    "INSERT INTO jira_deliveries (delivery_id, session_id, source_id, work_item_id, action, moment, target,"
+    " cause_issue_id, dedupe_key, state, result_issue_id, attempts, created_at, updated_at)"
+    " VALUES (?, 's1', 'jps-00000001', 'wi-000000000001', ?, ?, '리뷰중', ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+def _without_jira_mappings(dump: dict[str, list[tuple]]) -> dict[str, list[tuple]]:
+    """v14 가 워크스페이스마다 넣는 jira 기본 매핑 행을 뺀 덤프 — 나머지 행은 그대로여야 한다."""
+    return {
+        table: [row for row in rows if not (table == "field_mappings" and "jira" in row)]
+        for table, rows in dump.items()
+    }
+
+
+def _jira_base(conn) -> None:
+    """Jira 표 제약 확인용 최소 행 — v12 기본(멤버 둘·GitHub 소스·업무 하나) + 단계 하나 + Jira 프로젝트 하나."""
+    _v12_base(conn)
+    conn.execute(_JIRA_PROJECT_INSERT, ("jps-00000001", "10000", "ghs-00000001", "from_now", NOW, 1, NOW, NOW))
+
+
+def test_v14_constants():
+    from workflow.adapters import db
+
+    assert db.JIRA_DELIVERY_STATES == ("pending", "sending", "delivered", "unknown", "failed", "skipped")
+
+
+def test_fresh_db_has_v14_jira_tables_keys_and_indexes(conn):
+    assert PHASE18_TABLES <= _table_names(conn)
+    assert _column_lists(conn, ["jira_connections", "jira_projects", "jira_issues", "jira_deliveries"]) == {
+        "jira_connections": JIRA_CONNECTION_COLUMNS, "jira_projects": JIRA_PROJECT_COLUMNS,
+        "jira_issues": JIRA_ISSUE_COLUMNS, "jira_deliveries": JIRA_DELIVERY_COLUMNS,
+    }
+    assert "token" not in " ".join(JIRA_CONNECTION_COLUMNS)  # 토큰은 비밀 저장소에만
+    assert _foreign_keys(conn, "jira_connections") == {("sessions", "session_id", "session_id")}
+    assert _foreign_keys(conn, "jira_projects") == {
+        ("sessions", "session_id", "session_id"), ("github_sources", "github_source_id", "source_id")}
+    assert _foreign_keys(conn, "jira_issues") == {
+        ("jira_projects", "source_id", "source_id"), ("tasks", "task_id", "task_id")}
+    assert _foreign_keys(conn, "jira_deliveries") == {
+        ("sessions", "session_id", "session_id"), ("jira_projects", "source_id", "source_id"),
+        ("work_items", "work_item_id", "work_item_id")}
+    indexed = {
+        table: {(i["unique"], tuple(r["name"] for r in conn.execute(f"PRAGMA index_info({i['name']})")))
+                for i in conn.execute(f"PRAGMA index_list({table})")}
+        for table in ("jira_projects", "jira_issues", "jira_deliveries", "work_items")
+    }
+    assert (1, ("session_id", "project_id")) in indexed["jira_projects"]
+    assert (1, ("task_id",)) in indexed["jira_issues"]
+    assert {(1, ("dedupe_key",)), (0, ("state", "next_at")), (0, ("work_item_id", "created_at"))} <= indexed[
+        "jira_deliveries"]
+    assert {(0, ("session_id", "status")), (1, ("source_id", "source_item_id"))} <= indexed["work_items"]
+    names = {r["name"] for r in conn.execute("PRAGMA index_list(jira_deliveries)")}
+    assert {"ix_jira_deliveries_due", "ix_jira_deliveries_work"} <= names
+    assert {"ix_work_items_status", "ux_work_items_jira_issue"} <= {
+        r["name"] for r in conn.execute("PRAGMA index_list(work_items)")}
+
+
+def test_v14_source_type_accepts_jira_and_rejects_unknown(conn):
+    _v12_base(conn)
+    conn.execute(_WORK_INSERT, ("wi-000000000002", 2, "jira", "jps-00000001", "10001", NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # 모르는 원본 종류
+        conn.execute(_WORK_INSERT, ("wi-000000000003", 3, "linear", None, None, NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # 같은 Jira 이슈의 업무는 하나
+        conn.execute(_WORK_INSERT, ("wi-000000000004", 4, "jira", "jps-00000001", "10001", NOW, NOW))
+    conn.execute(_WORK_INSERT, ("wi-000000000005", 5, "jira", "jps-00000001", None, NOW, NOW))  # 후속 이슈 전
+    conn.execute(_WORK_INSERT, ("wi-000000000006", 6, "jira", "jps-00000001", None, NOW, NOW))
+    conn.execute(_WORK_INSERT, ("wi-000000000007", 7, "jira", "jps-00000002", "10001", NOW, NOW))  # 다른 프로젝트
+    conn.execute(_WORK_INSERT, ("wi-000000000008", 8, "github", "jps-00000001", "10001", NOW, NOW))  # Jira 만 유일
+    conn.execute(_MAPPING_INSERT, ("map-00000001", "jira", "Bug", NOW))
+    conn.execute(_MAPPING_INSERT, ("map-00000002", "n8n", "Bug", NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(_MAPPING_INSERT, ("map-00000003", "linear", "Bug", NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # 같은 원본 종류·칸·값은 하나
+        conn.execute(_MAPPING_INSERT, ("map-00000004", "jira", "Bug", NOW))
+
+
+def test_v14_task_pull_request_issue_number_may_be_null(conn):
+    _cycle_base(conn)
+    conn.execute(_PR_INSERT.replace("41", "?"), ("t1", "ghs-00000001", None, "pending", None, NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # 값이 있으면 1 이상
+        conn.execute("UPDATE task_pull_requests SET issue_number = 0")
+    conn.execute("UPDATE task_pull_requests SET issue_number = 41")
+
+
+def test_v14_jira_connection_and_project_checks(conn):
+    _jira_base(conn)
+    insert = ("INSERT INTO jira_connections (session_id, site_url, cloud_id, api_base, email, account_id, display_name,"
+              " connected_at, updated_at) VALUES (?, 'https://acme.atlassian.net', 'c', ?, 'a@example.com', 'acc',"
+              " '김OO', ?, ?)")
+    conn.execute(insert, ("s1", "gateway", NOW, NOW))
+    for params in (("s1", "site", NOW, NOW),  # 워크스페이스당 1행
+                   ("s-nope", "site", NOW, NOW),  # 없는 워크스페이스
+                   ("s1", "proxy", NOW, NOW)):  # 호출 기준은 두 값
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+    conn.execute("UPDATE jira_connections SET api_base = 'site'")
+    project = conn.execute("SELECT * FROM jira_projects").fetchone()
+    assert (project["issue_types_json"], project["choices_json"], project["cursor_ms"]) == ("[]", "{}", None)
+    for params in (
+        ("jps-00000002", "10000", "ghs-00000001", "all_open", NOW, 1, NOW, NOW),  # 같은 워크스페이스 같은 프로젝트
+        ("jps-00000003", "10001", "ghs-nope", "all_open", NOW, 1, NOW, NOW),  # 연결 저장소는 있는 GitHub 소스
+        ("jps-00000004", "10002", "ghs-00000001", "later", NOW, 1, NOW, NOW),  # 시작점은 두 값
+        ("jps-00000005", "10003", "ghs-00000001", "all_open", NOW, 2, NOW, NOW),  # 켜짐은 0·1
+        ("jps-00000006", "10004", "ghs-00000001", "all_open", None, 1, NOW, NOW),  # 시작 시각 필수
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_JIRA_PROJECT_INSERT, params)
+    conn.execute("UPDATE jira_projects SET cursor_ms = 0")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE jira_projects SET cursor_ms = -1")
+
+
+def test_v14_jira_issue_checks(conn):
+    _jira_base(conn)
+    _insert_task(conn, "t-j2", "s1", "bug_fix")
+    conn.execute(_JIRA_ISSUE_INSERT, ("10001", "t1", 1, NOW, "open", None, None, NOW, NOW))
+    conn.execute(_JIRA_ISSUE_INSERT, ("10002", "t-j2", 1, NOW, "closed", NOW, "followup", NOW, NOW))
+    conn.execute("UPDATE jira_issues SET delegated_at = ?, delegated_by = 'operator' WHERE issue_id = '10001'", (NOW,))
+    _insert_task(conn, "t-j3", "s1", "bug_fix")
+    for params in (
+        ("10001", "t-j3", 1, NOW, "open", None, None, NOW, NOW),  # 같은 프로젝트 같은 이슈
+        ("10003", "t1", 1, NOW, "open", None, None, NOW, NOW),  # 단계 하나에 이슈 하나
+        ("10004", "t-nope", 1, NOW, "open", None, None, NOW, NOW),  # 없는 단계
+        ("10005", "t-j3", 0, NOW, "open", None, None, NOW, NOW),  # revision 1 이상
+        ("10006", "t-j3", 1, NOW, "done", None, None, NOW, NOW),  # 열림·닫힘만
+        ("10007", "t-j3", 1, NOW, "open", NOW, "label", NOW, NOW),  # 지시는 operator·followup
+        ("10008", "t-j3", 1, NOW, "open", NOW, None, NOW, NOW),  # 지시 시각과 지시자는 함께
+        ("10009", "t-j3", 1, NOW, "open", None, "operator", NOW, NOW),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_JIRA_ISSUE_INSERT, params)
+
+
+def test_v14_jira_delivery_checks_and_dedupe_key(conn):
+    _jira_base(conn)
+    conn.execute(_JIRA_DELIVERY_INSERT, ("jdl-00000001", "transition", "review", None,
+                                         "transition:wi-000000000001:review", "pending", None, 0, NOW, NOW))
+    conn.execute(_JIRA_DELIVERY_INSERT, ("jdl-00000002", "create_issue", None, "10001",
+                                         "create_issue:wi-000000000001", "delivered", "10002", 1, NOW, NOW))
+    from workflow.adapters.db import JIRA_DELIVERY_STATES
+
+    for n, state in enumerate(JIRA_DELIVERY_STATES):
+        conn.execute(_JIRA_DELIVERY_INSERT, (f"jdl-1000000{n}", "transition", "start", None, f"k{n}", state, None, 0,
+                                             NOW, NOW))
+    for params in (
+        ("jdl-00000003", "transition", "review", None, "transition:wi-000000000001:review", "pending", None, 0, NOW,
+         NOW),  # 같은 중복 키는 한 번
+        ("jdl-00000004", "comment", None, None, "x1", "pending", None, 0, NOW, NOW),  # 동작은 둘
+        ("jdl-00000005", "transition", None, None, "x2", "pending", None, 0, NOW, NOW),  # 전환은 순간이 있어야
+        ("jdl-00000006", "transition", "merge", None, "x3", "pending", None, 0, NOW, NOW),  # 순간은 셋
+        ("jdl-00000007", "create_issue", "done", "10001", "x4", "pending", None, 0, NOW, NOW),  # 생성은 순간 없음
+        ("jdl-00000008", "create_issue", None, None, "x5", "pending", None, 0, NOW, NOW),  # 생성은 원인 이슈가 있어야
+        ("jdl-00000009", "transition", "start", "10001", "x6", "pending", None, 0, NOW, NOW),  # 전환은 원인 이슈 없음
+        ("jdl-0000000a", "create_issue", None, "10001", "x7", "delivered", None, 1, NOW, NOW),  # 생성 완료는 결과 이슈
+        ("jdl-0000000b", "transition", "start", None, "x8", "sent", None, 0, NOW, NOW),  # 상태 허용 값 밖
+        ("jdl-0000000c", "transition", "start", None, "x9", "pending", None, -1, NOW, NOW),  # 시도 수 0 이상
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_JIRA_DELIVERY_INSERT, params)
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 업무
+        conn.execute(_JIRA_DELIVERY_INSERT.replace("'wi-000000000001'", "'wi-nope'"),
+                     ("jdl-0000000d", "transition", "done", None, "x10", "pending", None, 0, NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # 없는 프로젝트
+        conn.execute(_JIRA_DELIVERY_INSERT.replace("'jps-00000001'", "'jps-nope'"),
+                     ("jdl-0000000e", "transition", "done", None, "x11", "pending", None, 0, NOW, NOW))
+
+
+def test_create_session_seeds_jira_default_mapping(conn):
+    from workflow.adapters import repo
+
+    assert ("jira", "kind", "*", "bug_fix") in repo.DEFAULT_FIELD_MAPPINGS
+    repo.create_session(conn, "s1", NOW)
+    jira = repo.list_field_mappings(conn, "s1", "jira")
+    assert [(r.source_type, r.field, r.source_value, r.runloom_value) for r in jira] == [
+        ("jira", "kind", "*", "bug_fix")]
+
+
+def _v13_db(db_path):
+    """phase 17 서버가 남긴 모양의 v13 DB. 워크스페이스 s1 — 관리자·멤버, GitHub 소스 1, 업무 2건(key 3·7, 사이 링크·
+    지시 메모·직접 작업), 단계 Task 2(감지 PR·Runloom PR 각 1), 업무 이벤트 2건(id 5·9), 매핑 2행(github·n8n).
+    워크스페이스 s2 — bug_fix 종류가 없다(jira 기본 매핑을 넣지 않는다)."""
+    c = connect(db_path)
+    c.executescript(V13_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (13)")
+    for session_id in ("s1", "s2"):
+        c.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES (?, ?, 1)", (session_id, NOW))
+    for spec in BUILTIN_KINDS:
+        c.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', ?, ?, ?)",
+                  (spec.kind, spec.model_dump_json(), NOW))
+    _seed_kind(c, "s2", "triage")
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at, email, password_hash)"
+              " VALUES ('mem-00000001', 's1', '관리자', 'admin', ?, 'a@example.com', 'scrypt$h')", (NOW,))
+    c.execute("INSERT INTO members (member_id, session_id, display_name, role, created_at)"
+              " VALUES ('mem-0000000a', 's1', '김OO', 'member', ?)", (NOW,))
+    c.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, cursor,"
+              " created_at, updated_at) VALUES ('ghs-00000001', 's1', 'acme/billing', '{}', ?, ?, ?)", (NOW, NOW, NOW))
+    work = ("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, assignee_type,"
+            " assignee_id, status, status_reason, source_type, source_id, source_item_id, source_key, source_url,"
+            " source_state, created_at, updated_at, requested_by_member_id, direct_member_id, direct_started_at,"
+            " direct_branch, handoff_note, handoff_note_by_member_id)"
+            " VALUES (?, 's1', ?, ?, 'r', 'bug_fix', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    c.execute(work, ("wi-000000000003", 3, "쿠폰 오류", "member", "mem-0000000a", "직접 작업 중", "김OO 작업", "github",
+                     "ghs-00000001", "123456", "acme/billing#41", "https://github.com/acme/billing/issues/41", "open",
+                     NOW, NOW, "mem-00000001", "mem-0000000a", NOW, "run-3-fix", "결제만", "mem-00000001"))
+    c.execute(work, ("wi-000000000007", 7, "리뷰", None, None, "대기", "선행 대기", "manual", None, None, None, None,
+                     None, NOW, NOW, None, None, None, None, None, None))
+    c.execute("INSERT INTO work_item_links (from_work_item_id, to_work_item_id, type, created_at)"
+              " VALUES ('wi-000000000003', 'wi-000000000007', 'blocks', ?)", (NOW,))
+    _insert_task(c, "t1", "s1", "bug_fix")
+    _insert_task(c, "t2", "s1", "code_review")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000003' WHERE task_id = 't1'")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000007', predecessor_task_id = 't1' WHERE task_id = 't2'")
+    event = ("INSERT INTO work_item_events (id, work_item_id, session_id, type, config_revision, occurred_at,"
+             " data_json) VALUES (?, 'wi-000000000003', 's1', ?, 1, ?, '{}')")
+    c.execute(event, (5, "status_changed", NOW))
+    c.execute(event, (9, "handoff_note", NOW))
+    c.execute("INSERT INTO work_pull_requests (session_id, work_item_id, source_id, repository_full_name, pr_number,"
+              " title, pr_url, head_branch, state, draft, pr_updated_at, created_at, updated_at) VALUES ('s1',"
+              " 'wi-000000000003', 'ghs-00000001', 'acme/billing', 8, 'RUN-3 고침',"
+              " 'https://github.com/acme/billing/pull/8', 'run-3-fix', 'open', 0, ?, ?, ?)", (NOW, NOW, NOW))
+    c.execute("INSERT INTO task_pull_requests (task_id, session_id, source_id, repository_full_name, issue_number,"
+              " head_branch, fix_execution_id, review_execution_id, state, pr_number, pr_url, draft, attempts,"
+              " created_at, updated_at) VALUES ('t1', 's1', 'ghs-00000001', 'acme/billing', 41, 'runloom/RUN-3',"
+              " 'e1', 'e2', 'open', 9, 'https://github.com/acme/billing/pull/9', 1, 1, ?, ?)", (NOW, NOW))
+    c.execute(_MAPPING_INSERT.replace("'kind'", "'priority'").replace("'bug_fix'", "'high'"),
+              ("map-00000001", "github", "P1", NOW))
+    c.execute(_MAPPING_INSERT, ("map-00000002", "n8n", "*", NOW))
+    return c
+
+
+def test_v13_fixture_is_the_phase17_schema(db_path):
+    c = _v13_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 13
+    assert _table_names(c) - {"sqlite_sequence"} == V13_TABLES | {"schema_version"}
+    with pytest.raises(sqlite3.IntegrityError):  # v13 은 jira 원본을 모른다
+        c.execute(_WORK_INSERT, ("wi-000000000009", 9, "jira", None, None, NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute(_MAPPING_INSERT, ("map-00000009", "jira", "Bug", NOW))
+    with pytest.raises(sqlite3.IntegrityError):  # v13 Runloom PR 은 이슈 번호가 있어야
+        c.execute("UPDATE task_pull_requests SET issue_number = NULL")
+    c.close()
+
+
+def test_migrates_v13_to_v14_preserving_rows_and_foreign_keys(db_path):
+    c = _v13_db(db_path)
+    columns = _column_lists(c, V13_TABLES)
+    before = _dump(c, V13_TABLES)
+    tasks_sql, tasks_page = c.execute("SELECT sql, rootpage FROM sqlite_master WHERE name = 'tasks'").fetchone()
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
+    assert _column_lists(c, V13_TABLES) == columns  # 칸·순서 그대로
+    assert _without_jira_mappings(_dump(c, V13_TABLES)) == before  # 행 수·id·key_number·칸 값 그대로
+    assert [tuple(r) for r in c.execute("SELECT work_item_id, key_number FROM work_items ORDER BY key_number")] == [
+        ("wi-000000000003", 3), ("wi-000000000007", 7)]
+    # tasks 는 재생성하지 않는다
+    assert tuple(c.execute("SELECT sql, rootpage FROM sqlite_master WHERE name = 'tasks'").fetchone()) == (
+        tasks_sql, tasks_page)
+    # jira 기본 매핑 — bug_fix 종류가 있는 워크스페이스에만 한 행
+    jira = c.execute("SELECT session_id, field, source_value, runloom_value, position, created_at, mapping_id"
+                     " FROM field_mappings WHERE source_type = 'jira'").fetchall()
+    assert [tuple(r)[:5] for r in jira] == [("s1", "kind", "*", "bug_fix", 1)]
+    assert jira[0]["mapping_id"].startswith("map-") and len(jira[0]["mapping_id"]) == 12
+    for table in PHASE18_TABLES:
+        assert c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    # 외래키는 다시 켜져 있고, 자식 표는 새 work_items 를 가리킨다
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute(_WORK_EVENT_INSERT.replace("'wi-000000000001'", "'wi-nope'"), ("status_changed", NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("INSERT INTO work_item_links (from_work_item_id, to_work_item_id, type, created_at)"
+                  " VALUES ('wi-000000000003', 'wi-nope', 'blocks', ?)", (NOW,))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")
+    with pytest.raises(sqlite3.IntegrityError):  # 자식이 있는 업무는 지울 수 없다
+        c.execute("DELETE FROM work_items WHERE work_item_id = 'wi-000000000003'")
+    for table in ("work_item_events", "work_item_links", "tasks", "work_pull_requests", "jira_deliveries"):
+        assert "work_items" in {r["table"] for r in c.execute(f"PRAGMA foreign_key_list({table})")}, table
+    # 새 CHECK·유일 색인
+    c.execute(_WORK_INSERT, ("wi-000000000010", 10, "jira", "jps-00000001", "10001", NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute(_WORK_INSERT, ("wi-000000000011", 11, "jira", "jps-00000001", "10001", NOW, NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute(_WORK_INSERT, ("wi-000000000012", 12, "linear", None, None, NOW, NOW))
+    c.execute("UPDATE task_pull_requests SET issue_number = NULL")
+    c.execute(_WORK_EVENT_INSERT.replace("'wi-000000000001'", "'wi-000000000003'"), ("handoff_note", NOW))
+    assert c.execute("SELECT MAX(id) FROM work_item_events").fetchone()[0] == 10  # id 는 이어서
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    c.close()
+
+
+def test_v14_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v13_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    before = _dump(c, V13_TABLES)
+    recreated = ("SELECT name, sql FROM sqlite_master WHERE name IN ('work_items', 'field_mappings',"
+                 " 'task_pull_requests') ORDER BY name")
+    sql_before = c.execute(recreated).fetchall()
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 13
+    assert not PHASE18_TABLES & _table_names(c)
+    assert c.execute(recreated).fetchall() == sql_before
+    assert _dump(c, V13_TABLES) == before
+    assert not c.in_transaction
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1  # 실패해도 다시 켠다
+    c.execute("UPDATE tasks SET work_item_id = 'wi-000000000003' WHERE task_id = 't1'")
+    init_schema(c)  # 원인이 사라지면 다시 돌릴 수 있다
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+    c.close()
+
+
+@pytest.mark.parametrize("old", ["v12", "v13"])
+def test_fresh_schema_matches_v13_migrated_schema(tmp_path, old):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = (_v12_db if old == "v12" else _v13_db)(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    assert _table_names(fresh) == _table_names(migrated)
+    for table in TABLES:
+        cols = "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid"
+        assert fresh.execute(cols, (table,)).fetchall() == migrated.execute(cols, (table,)).fetchall(), table
+        assert _foreign_keys(fresh, table) == _foreign_keys(migrated, table), table
+    assert _indexes(fresh) == _indexes(migrated)
+    sql = ("SELECT name, sql FROM sqlite_master WHERE name IN ('work_items', 'field_mappings', 'task_pull_requests')"
+           " OR name LIKE 'jira_%' ORDER BY name")
     assert fresh.execute(sql).fetchall() == migrated.execute(sql).fetchall()  # CHECK 까지 같은 원문
     fresh.close()
     migrated.close()

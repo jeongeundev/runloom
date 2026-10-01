@@ -26,7 +26,7 @@ class _Body(BaseModel):
 
 
 class FieldMapping(_Body):
-    source_type: Literal["github", "n8n"]
+    source_type: Literal["github", "n8n", "jira"]
     field: Literal["kind", "priority"]
     source_value: NonEmptyStr  # `*` = 나머지 전부
     runloom_value: NonEmptyStr
