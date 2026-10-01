@@ -96,7 +96,7 @@ from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.task_sources import Issue
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_list import ListQuery, parse_list_query
-from workflow.server import github_connect, jira_connect, metrics_api, views, work_actions
+from workflow.server import github_connect, jira_connect, metrics_api, triage_runs, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
@@ -1056,6 +1056,73 @@ def work_direct_stop(
     work = _own_work(conn, member.session_id, key)
     with _page_errors():
         work_actions.stop_direct(conn, session_id=member.session_id, work_item_id=work["work_item_id"], now=utc_now())
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
+
+
+@router.post("/work/{key}/triage")
+def work_triage(
+    request: Request,
+    response: Response,
+    key: str,
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[판단 받기]·[다시 판단] — 판단할 수 없으면 409 `triage_unavailable`(문구 = 이유) (`triage_runs.request_triage`)."""
+    work = _own_work(conn, member.session_id, key)
+    started = triage_runs.request_triage(conn, _settings(request), session_id=member.session_id,
+                                         work_item_id=work["work_item_id"], trigger="manual",
+                                         member_id=member.member_id, now=utc_now())
+    if not started.started:
+        raise PageError(409, "triage_unavailable", f"{started.reason}.")
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
+
+
+@router.post("/work/{key}/triage/accept")
+def work_triage_accept(
+    request: Request,
+    response: Response,
+    key: str,
+    triage_id: str = Form(""),
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[제안대로 맡기기] (`work_actions.accept_triage`)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.accept_triage(conn, request.app.state.store, _settings(request), session_id=member.session_id,
+                                   work_item_id=work["work_item_id"], triage_id=triage_id,
+                                   member_id=member.member_id, now=utc_now(), secrets=request.app.state.secrets)
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
+
+
+@router.post("/work/{key}/triage/dismiss")
+def work_triage_dismiss(
+    response: Response,
+    key: str,
+    triage_id: str = Form(""),
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[무시] — 판단 제안을 접는다 (`work_actions.dismiss_triage`)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.dismiss_triage(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                    triage_id=triage_id, member_id=member.member_id, now=utc_now())
     return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
 
 

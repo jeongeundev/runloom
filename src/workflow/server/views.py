@@ -20,7 +20,14 @@ from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
-from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule, format_work_key
+from workflow.contracts.v1 import (
+    CodeReviewResult,
+    KindSpec,
+    SuccessorRule,
+    TriageCandidates,
+    TriageResult,
+    format_work_key,
+)
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS
@@ -40,6 +47,7 @@ from workflow.domain import team
 from workflow.domain.delegation import candidate_label, needs_owner_approval
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
+from workflow.domain.triage import CRITERION_LABELS, FAILED_LABELS, PROCEED_LABELS
 from workflow.domain.work_list import (
     CLOSED_RECENT_DAYS,
     ListQuery,
@@ -936,7 +944,96 @@ def work_panel_context(
         "links": links,
         "open_requests": open_requests,
         "responses": responses,
+        "triage": triage_panel(conn, session_id, work, allowed=allowed, now=now, settings=settings),
     }
+
+
+# `triage_runs.REASONS` 중 버튼을 숨기는 이유(그 밖은 비활성 + 문구). `no_agent` 는 패널에 문구만, `running` 은 "판단 중"
+_TRIAGE_HIDDEN = ("not_new", "no_repository", "no_stage", "origin_closed", "no_agent", "running")
+_TRIAGE_HANDLED = {"accepted": "판단 제안대로 맡김", "changed": "판단과 다르게 정함"}
+TRIAGE_FAILED_MESSAGE_SHOWN = 120
+
+
+def _triage_proposal(log: Row, stage_kind: str | None, labels: dict[str, str]) -> dict[str, Any]:
+    """제안 내용 — 진행 여부·확신도·종류(지금과 다르면 둘 다)·담당(에이전트면 소유자)·선행·근거·모자란 정보.
+    이름은 시작 때 고정한 후보 목록에서 찾는다."""
+    result = TriageResult.model_validate_json(log["result_json"])
+    candidates = TriageCandidates.model_validate_json(log["candidates_json"])
+    labels = {**labels, **{k.kind: k.label for k in candidates.kinds}}
+    proposed = result.proposed_kind or candidates.current_kind
+    if stage_kind is not None and proposed != stage_kind:
+        kind_line = f"지금 {labels.get(stage_kind, stage_kind)} → 제안 {labels.get(proposed, proposed)}"
+    else:
+        kind_line = labels.get(proposed, proposed)
+    assignee = None
+    if result.assignee is not None and result.assignee.type == "member":
+        member = next((m for m in candidates.members if m.member_id == result.assignee.id), None)
+        assignee = member.display_name if member is not None else result.assignee.id
+    elif result.assignee is not None:
+        agent = next((a for a in candidates.agents if a.agent_id == result.assignee.id), None)
+        assignee = (f"{agent.name} · {f'{agent.owner_name}의 Mac' if agent.owner_name else '공용'}"
+                    if agent is not None else result.assignee.id)
+    titles = {p.work_key: p.title for p in candidates.predecessors}
+    return {
+        "proceed": PROCEED_LABELS[result.proceed],
+        "confidence": f"{result.confidence:.2f}",
+        "kind_line": kind_line,
+        "assignee": assignee,
+        "predecessors": [{"key": key, "title": titles.get(key, "")} for key in result.predecessors],
+        "reasons": [{"label": CRITERION_LABELS[r.criterion], "note": r.note} for r in result.reasons],
+        "missing": list(result.missing_information),
+        "acceptable": result.assignee is not None and result.proceed != "unsuitable",
+    }
+
+
+def triage_panel(conn: Connection, session_id: str, work: Row, *, allowed: frozenset[str], now: str,
+                 settings: Settings) -> dict[str, Any] | None:
+    """패널 "판단 제안" 절 — 최신 판단 로그 행(판단 중·제안·무시함·처리됨·실패)과 [판단 받기]/[다시 판단] 버튼.
+    판단 로그 행이 없고 판단 경로도 없으면(버튼·문구 없음) None — 절을 그리지 않는다."""
+    from workflow.server.triage_runs import REASONS, triage_route  # triage_runs 가 views 를 import 한다
+
+    log = repo.latest_triage(conn, work["work_item_id"])
+    if log is not None and log["state"] == "superseded":
+        log = None
+    route = triage_route(conn, work, now=now, settings=settings)
+    hidden = {REASONS[key] for key in _TRIAGE_HIDDEN}
+    button = None
+    if team.DELEGATE in allowed and route.reason not in hidden:
+        button = {"label": "다시 판단" if log is not None else "판단 받기", "disabled": route.reason is not None,
+                  "reason": route.reason}
+    note = route.reason if route.reason == REASONS["no_agent"] and log is None else None
+    if log is None and button is None and note is None:
+        return None
+    panel: dict[str, Any] = {"button": button, "note": note, "state": None}
+    if log is None:
+        return panel
+    agent = repo.get_agent(conn, log["agent_id"])
+    names = _member_names(conn, session_id)
+    panel.update({
+        "triage_id": log["triage_id"], "criteria_version": log["criteria_version"],
+        "agent_name": agent["name"] if agent is not None else log["agent_id"],
+        "failed_code": log["failed_code"], "handling": log["handling"],
+    })
+    if log["state"] == "running":
+        panel["state"] = "running"
+    elif log["state"] == "failed":
+        panel.update(state="failed", failed_label=FAILED_LABELS.get(log["failed_code"], "실행 실패"),
+                     failed_message=(log["failed_message"] or "")[:TRIAGE_FAILED_MESSAGE_SHOWN])
+    else:
+        stage = repo.open_stage(conn, work["work_item_id"])
+        labels = {spec.kind: spec.label for spec in repo.list_kinds(conn, session_id)}
+        proposal = _triage_proposal(log, stage["kind"] if stage is not None else None, labels)
+        if log["handling"] is None:
+            panel.update(state="proposed", proposal=proposal,
+                         can_accept=team.DELEGATE in allowed and proposal["acceptable"],
+                         can_dismiss=team.DELEGATE in allowed)
+        elif log["handling"] == "dismissed":
+            panel.update(state="dismissed", proposal=proposal,
+                         handled_by=names.get(log["handled_by_member_id"], "이름 없음"), handled_at=log["handled_at"])
+        else:
+            panel.update(state="handled", handled_text=_TRIAGE_HANDLED.get(
+                log["handling"], f"자동 시작 · 판단 v{log['criteria_version']}"))
+    return panel
 
 
 # 연결 화면의 수집 자격 종류(`github_clients.credential_kind`) — 값은 보이지 않는다

@@ -94,7 +94,7 @@ from workflow.domain.start_checklist import StartFacts
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
-from workflow.domain.triage import PastWork, TriageFact, triage_reason
+from workflow.domain.triage import PastWork, TriageFact, handling_for, triage_reason
 from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
 from workflow.domain.work_keys import short_source_key
 from workflow.domain.work_list import WorkRow, next_action
@@ -445,6 +445,10 @@ def turn_recipients_of(conn: Connection, work_item_id: str) -> tuple[str, ...]:
     return _recipients(work, members, approvers.get(work_item_id))
 
 
+# (판단 로그 state, handling) → 목록 배지. 처리된 제안·superseded 는 배지 없음
+_TRIAGE_BADGES = {("running", None): "판단 중", ("proposed", None): "판단 제안", ("failed", None): "판단 실패"}
+
+
 def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | None) -> list[WorkRow]:
     """업무 화면 목록 행(키 번호 내림차순). `closed_since` 는 끝난 업무 범위의 경계 시각 — 그보다 앞서 끝난 업무는
     빼고, None 이면 전부. 쿼리 수는 업무 수와 무관하다(담당·종류·직접 작업 이름은 JOIN, 열린 사람 요청·PR 은 묶음
@@ -480,6 +484,11 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
         " WHERE session_id = ? AND state IN ('open', 'merged')", (session_id, session_id)
     ):
         pulls.setdefault(r["work_item_id"], []).append((r["state"] != "merged", r["at"], r["pr_number"]))
+    # 업무마다 최신 판단 로그 행 → 목록 배지 (phase 19)
+    triages: dict[str, str | None] = {}
+    for r in conn.execute("SELECT work_item_id, state, handling FROM triage_logs WHERE session_id = ?"
+                          " ORDER BY created_at, rowid", (session_id,)):
+        triages[r["work_item_id"]] = _TRIAGE_BADGES.get((r["state"], r["handling"]))
     members = _member_facts(conn, session_id)
     approvers = _approvers_by_work(conn, session_id, members)
     rows = []
@@ -505,6 +514,7 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
                         else ()),
             updated_at=w["updated_at"], closed_at=w["closed_at"],
             repository=w["repository"], source_key_short=short_source_key(w["source_key"]),
+            triage=triages.get(w["work_item_id"]),
         ))
     return rows
 
@@ -647,6 +657,9 @@ def _assign_work_item(
     _work_item_event(conn, work_item_id, session_id, "assigned",
                      {"from": who(row["assignee_type"], row["assignee_id"]), "to": who(assignee_type, assignee_id),
                       "by": by_member_id}, now)
+    if row["assignee_type"] is None and assignee_type is not None:  # 담당 없음 → 정함 = 판단 제안의 사람 처리 (phase 19)
+        _record_triage_handling(conn, work_item_id, assignee_type=assignee_type, assignee_id=assignee_id,
+                                by_member_id=by_member_id, now=now)
     refresh_work_status(conn, work_item_id, now=now)
     return True
 
@@ -4239,3 +4252,73 @@ def record_triage_failed(conn: Connection, triage_id: str, *, execution_id: str,
         )
         _close_triage_stage(conn, log, execution_id=execution_id, status="실패", verdict=verdict, now=now)
     return True
+
+
+def latest_triage(conn: Connection, work_item_id: str) -> Row | None:
+    """업무의 최신 판단 로그 행(`created_at`, `rowid` 순 마지막)."""
+    return _one(conn, "SELECT * FROM triage_logs WHERE work_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (work_item_id,))
+
+
+def _record_triage_handling(conn: Connection, work_item_id: str, *, assignee_type: str, assignee_id: str,
+                            by_member_id: str | None, now: str) -> bool:
+    """담당이 정해질 때 떠 있는 판단 제안의 사람 처리 — 최신 행이 `proposed`·처리 없음일 때만 `accepted`(제안 담당·종류와
+    같음) 또는 `changed`, 실제로 정한 담당·종류(그 시점 맡길 단계 종류)와 함께. 자체 BEGIN 없음 — `_assign_work_item` 이
+    맡기기 트랜잭션 안에서 부른다."""
+    log = latest_triage(conn, work_item_id)
+    if log is None or log["state"] != "proposed" or log["handling"] is not None:
+        return False
+    stage = open_stage(conn, work_item_id)
+    final_kind = stage["kind"] if stage is not None else _one(
+        conn, "SELECT kind FROM work_items WHERE work_item_id = ?", (work_item_id,))["kind"]
+    handling = handling_for(TriageResult.model_validate_json(log["result_json"]), assignee_type=assignee_type,
+                            assignee_id=assignee_id, kind=final_kind)
+    cur = conn.execute(
+        "UPDATE triage_logs SET handling = ?, handled_by_member_id = ?, handled_at = ?, final_assignee_type = ?,"
+        " final_assignee_id = ?, final_kind = ?, updated_at = ? WHERE triage_id = ? AND handling IS NULL",
+        (handling, by_member_id, now, assignee_type, assignee_id, final_kind, now, log["triage_id"]),
+    )
+    return cur.rowcount == 1
+
+
+def dismiss_triage(conn: Connection, session_id: str, work_item_id: str, triage_id: str, *, member_id: str,
+                   now: str) -> bool:
+    """[무시] — 그 행이 업무의 최신 판단·`proposed`·처리 없음일 때만 `dismissed`, 업무 상태 재계산. 아니면 False."""
+    with _tx(conn):
+        log = latest_triage(conn, work_item_id)
+        if (log is None or log["session_id"] != session_id or log["triage_id"] != triage_id
+                or log["state"] != "proposed" or log["handling"] is not None):
+            return False
+        conn.execute("UPDATE triage_logs SET handling = 'dismissed', handled_by_member_id = ?, handled_at = ?,"
+                     " updated_at = ? WHERE triage_id = ? AND handling IS NULL", (member_id, now, now, triage_id))
+        refresh_work_status(conn, work_item_id, now=now)
+        return True
+
+
+def change_stage_kind(conn: Connection, task_id: str, spec: KindSpec, *, required: Capability, target: dict,
+                      now: str) -> None:
+    """시작 전 단계의 종류를 바꾼다 — 종류·요구 능력·target, 업무의 첫 단계(판단 제외)면 업무 종류도. 이벤트 없음.
+    자체 BEGIN 없음 — `prepare_triage_accept` 가 부른다. 실행이 있는지는 호출자가 본다."""
+    cur = conn.execute("UPDATE tasks SET kind = ?, required_capability_json = ?, target_json = ? WHERE task_id = ?",
+                       (spec.kind, required.model_dump_json(), json.dumps(target, ensure_ascii=False), task_id))
+    _require_rowcount(cur, f"task {task_id}")
+    task = _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ?", (task_id,))
+    first = _one(conn, f"SELECT t.task_id FROM tasks t WHERE t.work_item_id = ? AND {_NOT_TRIAGE_TASK}"
+                       " ORDER BY t.created_at, t.rowid LIMIT 1", (task["work_item_id"],))
+    if first is not None and first["task_id"] == task_id:
+        conn.execute("UPDATE work_items SET kind = ?, updated_at = ? WHERE work_item_id = ?",
+                     (spec.kind, now, task["work_item_id"]))
+
+
+def prepare_triage_accept(conn: Connection, work_item_id: str, *,
+                          stage_change: tuple[str, KindSpec, Capability, dict] | None,
+                          predecessor_ids: Sequence[str], now: str) -> None:
+    """[제안대로 맡기기] 의 맡기기 전 쓰기(한 트랜잭션) — 단계 종류 바꾸기(`(task_id, spec, required, target)`, 있으면)와
+    선행 업무 → 이 업무 `blocks` 연결."""
+    with _tx(conn):
+        if stage_change is not None:
+            task_id, spec, required, target = stage_change
+            change_stage_kind(conn, task_id, spec, required=required, target=target, now=now)
+        for predecessor_id in predecessor_ids:
+            link_work_items(conn, from_work_item_id=predecessor_id, to_work_item_id=work_item_id, type="blocks",
+                            now=now)

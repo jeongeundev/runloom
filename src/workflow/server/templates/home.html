@@ -14,7 +14,7 @@
 <span class="mono">{{ row.work_key }}</span>{% if row.source_key_short %} <span class="muted small mono">{{ row.source_key_short }}</span>{% endif %} <span class="source-badge" data-source="{{ row.source_type }}">{{ SOURCE.get(row.source_type, row.source_type) }}</span>
 {%- endmacro %}
 {% macro assignee_of(row) -%}
-{% if row.assignee_type %}{{ row.assignee_name }}{% if not row.assignee_active %} (비활성){% endif %}{% else %}<span class="muted">없음</span>{% endif %}
+{% if row.assignee_type %}{{ row.assignee_name }}{% if not row.assignee_active %} (비활성){% endif %}{% else %}<span class="muted">없음</span>{% if row.triage %} <span class="small triage-badge" data-triage="{{ row.triage }}">{{ row.triage }}</span>{% endif %}{% endif %}
 {%- endmacro %}
 {% block title %}업무 — Runloom{% endblock %}
 {% block main_class %} main-wide{% endblock %}
