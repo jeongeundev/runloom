@@ -17,6 +17,7 @@ GITHUB_APP_CLIENT_SECRET = "github_app_client_secret"
 GITHUB_APP_WEBHOOK_SECRET = "github_app_webhook_secret"
 GITHUB_TOKEN = "github_token"
 NOTIFY_WEBHOOK_URL = "notify_webhook_url"  # 알림 웹훅 URL 한 줄 (ADR-0018 결정 5)
+JIRA_API_TOKEN = "jira_api_token"  # Jira Cloud API 토큰 (ADR-0024 결정 2)
 
 NAMES = frozenset({
     GITHUB_APP_INFO,
@@ -25,6 +26,7 @@ NAMES = frozenset({
     GITHUB_APP_WEBHOOK_SECRET,
     GITHUB_TOKEN,
     NOTIFY_WEBHOOK_URL,
+    JIRA_API_TOKEN,
 })
 
 # 개인 알림 웹훅 `notify_webhook_url.<member_id>` (ADR-0021, ARCHITECTURE "알림 — 받는 사람별")

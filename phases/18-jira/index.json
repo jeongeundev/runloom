@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "jira-client",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T15:10:00+0900",
+      "summary": "신설: adapters/jira_client.py(JiraClient Protocol·HttpJiraClient(base_url, email, token, *, transport, timeout=20.0) — ARCHITECTURE 시그니처대로 token: str(step.md 의 token_provider 아님, 고정 토큰이라 401 재시도 없음). 기준 주소는 JIRA_GATEWAY+cloudId 또는 사이트만(생성자 검사, 아니면 ValueError), 경로는 /rest/api/3 고정 문자열, id·키·전환 id 는 보내기 전 형식 검사(ValueError·요청 없음), follow_redirects=False, 응답 MAX_RESPONSE_BYTES 5MB(stream 으로 읽음), Basic 인증. 메서드: myself·search_projects(maxResults 50)·get_project·project_choices(project/{key}/statuses, 하위 작업 제외·상태 첫 등장 순 중복 없음)·search_issues(fields=JIRA_FIELDS·maxResults 100·nextPageToken, isLast/토큰 없음이면 None, Jira '+0900'→'+09:00', 본문 adf_to_text, site_url 은 형식 검사만 — 스냅숏에 주소 칸 없음)·issue_status(fields=status)·transitions·transition·create_issue·find_issues_by_label(jql_string 이스케이프, 한 페이지 10건)·issue_link_types·link_issues, 모듈 함수 tenant_info(인증 없음, cloudId 소문자). 오류 계층 JiraError(status)←Unauthorized 401·Forbidden 403·NotFound 404·BadRequest 400(.message = errorMessages 첫 문구, 없으면 errors 첫 값, 토큰·Basic 자격 문자열 *** 로 지움, 200자)·RateLimited 429 와 Retry-After 붙은 503(retry_after, 없거나 못 읽으면 60)·Unavailable 5xx·연결 오류·timeout(from None), 그 밖 3xx·409·형식 오류는 JiraError. 메시지는 '메서드 경로: HTTP 상태'. 수정: secret_store JIRA_API_TOKEN='jira_api_token' 을 NAMES 에(읽기는 SecretStore.read 그대로 — 별도 도우미 없음). 테스트: tests/workflow/adapters/test_jira_client.py 신설(MockTransport — 요청 모양·두 페이지·오류 분류·Retry-After·리디렉트 안 따름·잘못된 id/키 거부·토큰 미노출·크기 상한), test_secret_store 의 len(NAMES)==6 단정을 7 로 옮기고 Jira 토큰 0600 왕복 추가. 검증: pytest 3631 passed/56 skipped, ruff 통과. 다음 step 주의: step 4 verify 는 tenant_info → HttpJiraClient(JIRA_GATEWAY+cloud_id).myself() → JiraUnauthorized 면 HttpJiraClient(site).myself(); JiraBadRequest.message 는 이미 비밀이 지워진 요약; 503+Retry-After 도 JiraRateLimited 로 옴."
     },
     {
       "step": 4,

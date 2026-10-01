@@ -12,6 +12,7 @@ from workflow.adapters.secret_store import (
     GITHUB_APP_PRIVATE_KEY,
     GITHUB_APP_WEBHOOK_SECRET,
     GITHUB_TOKEN,
+    JIRA_API_TOKEN,
     NOTIFY_WEBHOOK_URL,
     NAMES,
     SecretStore,
@@ -36,7 +37,22 @@ def test_constants_are_the_architecture_file_names():
 
 def test_notify_webhook_url_is_the_sixth_secret_file():
     assert NOTIFY_WEBHOOK_URL == "notify_webhook_url"
-    assert NOTIFY_WEBHOOK_URL in NAMES and len(NAMES) == 6
+    assert NOTIFY_WEBHOOK_URL in NAMES
+
+
+def test_jira_api_token_is_the_seventh_secret_file():
+    assert JIRA_API_TOKEN == "jira_api_token"
+    assert JIRA_API_TOKEN in NAMES and len(NAMES) == 7
+
+
+def test_jira_api_token_round_trip_is_0600(tmp_path):
+    store = SecretStore(tmp_path / "secrets")
+    store.write(JIRA_API_TOKEN, "ATATT3x-jira-token")
+    assert store.read(JIRA_API_TOKEN) == "ATATT3x-jira-token"
+    assert _mode(tmp_path / "secrets" / JIRA_API_TOKEN) == 0o600
+    assert _mode(tmp_path / "secrets") == 0o700
+    store.delete(JIRA_API_TOKEN)
+    assert not store.exists(JIRA_API_TOKEN)
 
 
 def test_write_read_exists_delete_round_trip(tmp_path):
