@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "assignee-metrics",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T05:37:46+0900",
+      "summary": "새: src/workflow/domain/assignee_metrics.py(순수 — ARCHITECTURE 고정 이름: AssigneeWorkFact·ResponseFact·AgentRunFact·MemberLabel·AgentLabel·AssigneeFacts 입력, MemberRow·AgentRow·AssigneeReport 결과, compute_assignee_metrics(facts, *, since, until, now); Stat·Ratio·UNKNOWN·_stat·_in_window·_seconds·_parse 는 metrics.py 재사용), tests/workflow/domain/test_assignee_metrics.py(13건). 결정: 기간 = 완료 closed_at·응답 responded_at·실행 created_at, 진행 중·내 차례 대기·담당 없음·1회 통과는 기간 무관 지금 값. 완료 = status '완료'만(종료 제외), 진행 = 완료·종료 아님. 내 차례 대기 = status '내 차례' 이고 recipients 에 든 업무(받는 사람 둘이면 둘 다), wait Stat = now−turn_since(turn_since None 은 unknown), longest_wait = 최댓값. 응답자 None 은 responses_unknown_member(기간 안). 에이전트 실행 = 실행의 agent_id(지금 담당 아님), 실패율·실행 시간·비용은 phase 9 _execution_metrics 정의(끝 = result_ready·failed, 비용 total 포함), 1회 통과 = 지금 그 에이전트 담당 업무의 첫 code_review outcome(어느 에이전트 실행이든, 결과 없는 업무 incomplete). 행: 멤버 = 라벨 순 활성 전부 + 기록(완료·진행·대기·응답 n>0) 있는 비활성, 에이전트 = 라벨 전부; 라벨에 없는 id 가 기록에 있으면 id 를 이름으로 한 행을 뒤에(멤버는 active False) 이름순. 기존 파일 변경 없음. 검증: pytest 4102 passed·72 skipped, ruff 통과. 다음 step 주의: list_assignee_facts 는 members 를 created_at·member_id 순, agents 를 list_session_agents 순으로 넘기고, 판단 단계 실행·요청은 빼고, turn_since 는 to='내 차례'·from!='내 차례' 최근 행, recipients 는 _member_facts·_approvers_by_work·_recipients 로 채운다(내 차례 아닌 업무는 빈 튜플이어도 무관)."
     },
     {
       "step": 5,
