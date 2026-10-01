@@ -1,0 +1,56 @@
+{
+  "project": "workflow",
+  "phase": "18-jira",
+  "steps": [
+    {
+      "step": 0,
+      "name": "jira-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "schema-v14",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "jira-domain",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "jira-client",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "jira-connect",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "jira-sync",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "jira-run",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "jira-transitions",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "jira-followup",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "jira-verify",
+      "status": "pending"
+    }
+  ]
+}
