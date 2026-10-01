@@ -3113,6 +3113,18 @@ def list_owner_approvals(conn: Connection, task_id: str) -> list[Row]:
     ).fetchall()
 
 
+def list_work_owner_approvals(conn: Connection, work_item_id: str) -> list[Row]:
+    """업무의 모든 단계의 `owner_approval` 요청(만든 순) — `list_owner_approvals` 와 같은 칸. 승인 범위가 업무라서
+    (ADR-0023 결정 1) 다음 단계의 승인 상태는 이 목록으로 정한다."""
+    return conn.execute(
+        "SELECT hr.*, r.action AS action, r.member_id AS responder_id FROM human_requests hr"
+        " JOIN tasks t ON t.task_id = hr.task_id"
+        " LEFT JOIN human_responses r ON r.request_id = hr.request_id"
+        " WHERE t.work_item_id = ? AND hr.code = ? ORDER BY hr.created_at, hr.rowid",
+        (work_item_id, OWNER_APPROVAL_CODE),
+    ).fetchall()
+
+
 def withdraw_owner_approvals(conn: Connection, *, work_item_id: str | None = None, agent_id: str | None = None,
                              reason: str, member_id: str | None, now: str) -> int:
     """열린 승인 요청을 닫는다(닫은 수) — 요청마다 응답 한 행(`withdraw-<request_id>`, `withdraw`, `text = reason`,

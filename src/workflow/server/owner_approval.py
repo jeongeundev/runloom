@@ -1,6 +1,7 @@
 """소유자 승인 — 승인 상태 계산·승인 요청 열기·맡기기 알림 (ADR-0023 결정 1·2, ARCHITECTURE "사람 사이 인계 — phase 17").
 
-승인 범위 = (단계, 에이전트, 맡긴 사람 `work_items.requested_by_member_id`). 범위의 가장 최근 요청과
+승인 범위 = (업무, 에이전트 소유자, 맡긴 사람 `work_items.requested_by_member_id`) — 소유자가 한 번 승인하면 같은 업무의
+다음 단계(후속 검토·[다시 맡기기])는 그 소유자의 어느 에이전트든 다시 묻지 않는다(사용자 결정 2026-10-01). 범위의 가장 최근 요청과
 `delegation.needs_owner_approval` 로 상태를 정한다(`delegation.approval_state`). 요청은 사람 요청 `owner_approval` 이고
 응답은 `human_api`(approve·decline)가 받는다. 실행을 만들지 않는다 — 착수는 `stage_runs`·워커가 이 상태를 보고 한다.
 알림 행은 `worker.enqueue_event_notification`(웹·워커 공용)으로 쌓는다. `secrets` 가 없으면 쌓지 않는다.
@@ -37,6 +38,13 @@ class _Team:
         return None
 
 
+def _requests(conn: Connection, task: Row) -> list[Row]:
+    """승인 범위를 고를 요청 목록 — 업무의 모든 단계(업무 없는 단계는 그 단계만)."""
+    if task["work_item_id"]:
+        return repo.list_work_owner_approvals(conn, task["work_item_id"])
+    return repo.list_owner_approvals(conn, task["task_id"])
+
+
 def _requester(conn: Connection, task: Row) -> str | None:
     work = repo.work_item_of_task(conn, task["task_id"]) if task["work_item_id"] else None
     return work["requested_by_member_id"] if work is not None else None
@@ -47,9 +55,11 @@ def _fact(conn: Connection, task: Row, agent: Row, team: _Team, requester: str |
     owner_id = repo.agent_owner_id(conn, agent["agent_id"])
     needed = delegation.needs_owner_approval(policy=agent["delegation_policy"], requester_id=requester,
                                              owner_id=owner_id, admin_ids=team.admin_ids)
-    scope = [r for r in requests
-             if (delegation.parse_approval_cause_key(r["cause_key"]) or (None, None))[:2] == (agent["agent_id"],
-                                                                                            requester)]
+    scope = []
+    for r in requests:
+        key = delegation.parse_approval_cause_key(r["cause_key"])
+        if key is not None and key[1] == requester and repo.agent_owner_id(conn, key[0]) == owner_id:
+            scope.append(r)
     latest = scope[-1] if scope else None
     state = delegation.approval_state(needed=needed, latest_state=latest["state"] if latest else None,
                                       latest_action=latest["action"] if latest else None)
@@ -67,15 +77,14 @@ def _question(team: _Team, requester: str | None, owner_id: str | None, agent: R
 
 def approval_fact(conn: Connection, task: Row, agent: Row) -> ApprovalFact:
     """단계 × 에이전트 하나의 승인 상태와 대기 이유."""
-    return _fact(conn, task, agent, _Team(conn, task["session_id"]), _requester(conn, task),
-                 repo.list_owner_approvals(conn, task["task_id"]))
+    return _fact(conn, task, agent, _Team(conn, task["session_id"]), _requester(conn, task), _requests(conn, task))
 
 
 def approval_facts(conn: Connection, task: Row) -> dict[str, ApprovalFact]:
     """워크스페이스 Agent 마다의 승인 상태 — 준비 판정(`TaskFacts.owner_approvals`) 재료."""
     team = _Team(conn, task["session_id"])
     requester = _requester(conn, task)
-    requests = repo.list_owner_approvals(conn, task["task_id"])
+    requests = _requests(conn, task)
     return {a["agent_id"]: _fact(conn, task, a, team, requester, requests)
             for a in repo.list_session_agents(conn, task["session_id"])}
 
@@ -89,7 +98,7 @@ def ensure_request(conn: Connection, task: Row, agent_id: str, *, now: str, expl
         return "not_needed"
     team = _Team(conn, task["session_id"])
     requester = _requester(conn, task)
-    state = _fact(conn, task, agent, team, requester, repo.list_owner_approvals(conn, task["task_id"])).state
+    state = _fact(conn, task, agent, team, requester, _requests(conn, task)).state
     if state != "missing" and not (state == "declined" and explicit):
         return state
     question = _question(team, requester, repo.agent_owner_id(conn, agent_id), agent)
