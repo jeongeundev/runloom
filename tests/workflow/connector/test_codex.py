@@ -354,6 +354,23 @@ def test_codex_env_is_allowlisted_without_secrets(state_conn, repo, handoff, fak
     assert not any(key.startswith("WORKFLOW_") for key in env)
 
 
+def test_codex_env_resolves_relative_pythonpath_against_worktree(state_conn, repo, handoff, fake_bin):
+    """phase 17 — 등록 `--env PYTHONPATH=src` 의 상대 항목은 도구 cwd(worktree) 기준 절대 경로로 넘긴다."""
+    write_fake_codex(fake_bin, "full")
+    base = register(state_conn, repo)
+    state.save_registration(state_conn, {
+        **state.get_registration(state_conn, "local-demo-report"), "env": {"PYTHONPATH": "src:/opt/lib"},
+    })
+
+    output = adapter(state_conn).run(request_for(base), handoff, Progress())
+
+    lines = [json.loads(line) for line in by_kind(output)["codex_jsonl"].decode().splitlines()]
+    env = next(line["env"] for line in lines if line["type"] == "env")
+    argv = next(line["argv"] for line in lines if line["type"] == "argv")
+    worktree = argv[argv.index("-C") + 1]
+    assert env["PYTHONPATH"] == f"{worktree}/src:/opt/lib"
+
+
 def test_prompt_goes_to_stdin_not_argv(state_conn, repo, handoff, fake_bin):
     write_fake_codex(fake_bin, "full")
     base = register(state_conn, repo)

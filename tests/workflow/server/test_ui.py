@@ -193,13 +193,13 @@ def test_sidebar_marks_connect_active_on_kinds_page(web):
 
 
 def test_detail_status_line_has_label_and_reason_together(web, conn):
-    """상태 줄은 라벨과 이유를 함께 보인다 — 등록한 `bug_fix` 는 러너 보고 전이라 `대기 · 연결 끊김`."""
+    """상태 줄은 라벨과 이유를 함께 보인다 — 등록한 `bug_fix` 는 러너 보고 전이라 `대기 · 공용 러너 꺼짐`(phase 17)."""
     task_id = create_task(web, fix_form())
     html = web.get(f"/tasks/{task_id}").text
     line = status_line(html)
     assert 'data-status="대기"' in line
     assert "대기" in visible_text(line)
-    assert "연결 끊김, 마지막 확인 없음" in visible_text(line)
+    assert "공용 러너 꺼짐 · 켜지면 시작" in visible_text(line)
     assert f'action="/tasks/{task_id}/run"' not in html
 
 
@@ -265,7 +265,7 @@ def test_api_agent_row_shows_connected_without_last_seen(web, conn):
     seed_user_kinds(conn)  # 분류 API(API)를 워크스페이스에 붙인다
     # phase 16: 에이전트 카드는 홈에서 빠졌다 — 같은 연결 표시는 연결 화면 팀·담당자 탭의 에이전트 목록 행에 있다
     html = web.get("/connect?tab=team").text
-    cards = re.findall(r"<tr>\s*<td><a href=\"/agents/.*?</tr>", html, re.S)
+    cards = re.findall(r"<tr data-agent=\"[^\"]+\">\s*<td><a href=\"/agents/.*?</tr>", html, re.S)
     by_id = {re.search(r"agent-[a-z-]+", c).group(0): c for c in cards}
     ops, codex = by_id[API_AGENT], by_id["agent-codex-mac"]
     assert 'data-status="연결됨"' in ops and "마지막 확인" not in ops

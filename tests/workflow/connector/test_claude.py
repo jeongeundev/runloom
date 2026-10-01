@@ -378,6 +378,22 @@ def test_missing_executable_is_claude_unavailable(state_conn, repo, handoff):
 # --- 환경·비밀값 ----------------------------------------------------------------------------
 
 
+def test_tool_env_resolves_relative_pythonpath_against_worktree(state_conn, repo, handoff, fake_bin):
+    """phase 17 — 등록 `--env PYTHONPATH=src` 의 상대 항목은 도구 cwd(worktree) 기준 절대 경로로 넘긴다."""
+    write_fake_claude(fake_bin, "full")
+    base = register(state_conn, repo)
+    state.save_registration(state_conn, {
+        **state.get_registration(state_conn, "local-demo-report"), "env": {"PYTHONPATH": "src"},
+    })
+
+    output = adapter(state_conn).run(request_for(base), handoff, Progress())
+
+    fake = envelope_of(output)["_fake"]
+    pythonpath = Path(fake["env"]["PYTHONPATH"])
+    assert pythonpath.name == "src" and pythonpath.is_absolute()
+    assert pythonpath.parent.resolve() == Path(fake["cwd"]).resolve()
+
+
 def test_child_env_keeps_claude_and_anthropic_vars_but_drops_secrets(state_conn, repo, handoff, fake_bin,
                                                                    monkeypatch):
     write_fake_claude(fake_bin, "full")

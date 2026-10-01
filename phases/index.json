@@ -89,7 +89,8 @@
     },
     {
       "dir": "17-team-handoff",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-10-01T10:15:43+0900"
     }
   ]
 }

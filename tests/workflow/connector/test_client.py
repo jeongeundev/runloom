@@ -68,7 +68,18 @@ def test_claim_sends_bearer_and_body_and_returns_request(fake, client):
     assert sent.headers["authorization"] == f"Bearer {TOKEN}"
     assert json.loads(sent.content) == {
         "contract_version": 1, "connector_id": CONNECTOR_ID, "supported_kinds": ["bug_fix", "code_review"],
+        "capabilities": ["verify_only"],
     }
+
+
+def test_claim_reports_capabilities_on_every_claim(fake, client):
+    """phase 17 — 새 러너는 늘 `capabilities` 를 싣는다(서버가 검증만 다시를 배정할 수 있는지 판단)."""
+    client.claim(CONNECTOR_ID, registration_heads={"OpenArchive": "a" * 40})
+    client.claim(CONNECTOR_ID, capabilities=())
+
+    reported, empty = fake.claim_bodies
+    assert reported["capabilities"] == ["verify_only"]
+    assert empty["capabilities"] == []
 
 
 def test_claim_sends_registration_heads_only_when_given(fake, client):

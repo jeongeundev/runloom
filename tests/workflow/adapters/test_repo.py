@@ -3986,6 +3986,36 @@ def test_list_work_rows_fills_names_recipients_and_next_action(seeded):
     assert _row_of(rows, direct_work).next_action == "직접 작업 중 · 관리자"
 
 
+def _raw_source(conn, session_id: str, source_id: str, full_name: str) -> None:
+    conn.execute("INSERT INTO github_sources (source_id, session_id, repository_full_name, config_json, created_at,"
+                 " updated_at) VALUES (?, ?, ?, '{}', ?, ?)", (source_id, session_id, full_name, NOW, NOW))
+
+
+def test_list_work_rows_fills_repository_and_short_source_key(sessions):
+    """phase 17 step 9 — 업무의 저장소 = GitHub 원본의 `repository_full_name`, 그 밖은 None. 칸은 새로 두지 않는다."""
+    conn = sessions
+    _raw_source(conn, SESSION, "ghs-0000000a", "acme/sandbox")
+    github, _ = _new_work(conn, title="이슈", source_type="github", source_id="ghs-0000000a",
+                          source_key="acme/sandbox#3")
+    manual, _ = _new_work(conn, title="직접", source_key="OPS-7")
+    n8n, _ = _new_work(conn, title="n8n", source_type="n8n", source_id="ghs-0000000a")  # GitHub 원본 아님
+    rows = {r.work_item_id: r for r in repo.list_work_rows(conn, SESSION, closed_since=None)}
+    assert (rows[github].repository, rows[github].source_key_short) == ("acme/sandbox", "sandbox#3")
+    assert (rows[manual].repository, rows[manual].source_key_short) == (None, "OPS-7")
+    assert (rows[n8n].repository, rows[n8n].source_key_short) == (None, None)
+
+
+def test_list_work_repositories_is_the_workspace_sources_by_name(sessions):
+    conn = sessions
+    _raw_source(conn, SESSION, "ghs-0000000a", "acme/web")
+    _raw_source(conn, SESSION, "ghs-0000000b", "Acme/Billing")
+    _raw_source(conn, OTHER_SESSION, "ghs-0000000c", "other/repo")
+    assert repo.list_work_repositories(conn, SESSION) == ["Acme/Billing", "acme/web"]
+    assert repo.list_work_repositories(conn, OTHER_SESSION) == ["other/repo"]
+    repo.create_session(conn, "sess-3", NOW)
+    assert repo.list_work_repositories(conn, "sess-3") == []
+
+
 def test_list_work_rows_uses_the_names_of_registered_agents(seeded):
     conn = seeded
     repo.upsert_agent(conn, _agent(name="운영 에이전트"))
@@ -4181,3 +4211,163 @@ def test_start_facts_delegated_is_work_with_any_execution(seeded):
     _create_execution(conn, "exec-1")
     assert repo.start_facts(conn, SESSION).delegated
     assert not repo.start_facts(conn, OTHER_SESSION).delegated
+
+
+# --- phase 17 step 1: 맡기기 정책·승인 요청·지시 메모·검증만 다시 표시 (ADR-0023, 스키마 v13) ---------------------
+
+
+@pytest.fixture
+def handoff(cycle):
+    """cycle + FIX_AGENT 가 SESSION 에 붙어 있고, 맡긴 사람(멤버)·관리자가 있다. (conn, work_item_id, admin, member)."""
+    conn = cycle
+    repo.register_session_agent(conn, SESSION, FIX_AGENT, NOW)
+    admin = repo.ensure_first_admin(conn, SESSION, now=NOW)
+    member = repo.add_member(conn, SESSION, display_name="김OO", now=NOW)
+    return conn, _wi41(conn), admin, member
+
+
+def _open_approval(conn, *, requester=None, agent_id=FIX_AGENT, task_id="task-gh-41", now=NOW):
+    return repo.open_owner_approval(conn, task_id, agent_id=agent_id, requester_id=requester,
+                                    question="김OO 가 맡김 · 이OO 승인 대기", now=now)
+
+
+def test_delegation_policy_defaults_to_run_and_is_kept_by_upsert(handoff):
+    conn, _, admin, _ = handoff
+    assert repo.get_agent(conn, FIX_AGENT)["delegation_policy"] == "run"
+    assert repo.set_delegation_policy(conn, SESSION, FIX_AGENT, "owner_approval", member_id=admin, now=LATER) is True
+    assert repo.set_delegation_policy(conn, SESSION, FIX_AGENT, "owner_approval", member_id=admin, now=LATER) is False
+    assert repo.get_agent(conn, FIX_AGENT)["delegation_policy"] == "owner_approval"
+    # 러너 재등록(upsert)은 정책을 건드리지 않는다
+    repo.upsert_agent(conn, _agent(FIX_AGENT, connection_type="local", api_url=None, credential_ref=None,
+                                   capabilities=[{"code": "code.fix", "scope": {"repository_id": "billing"}}]))
+    assert repo.get_agent(conn, FIX_AGENT)["delegation_policy"] == "owner_approval"
+
+
+def test_set_delegation_policy_rejects_unknown_value_agent_and_workspace(handoff):
+    conn, _, admin, _ = handoff
+    with pytest.raises(ValueError):
+        repo.set_delegation_policy(conn, SESSION, FIX_AGENT, "ask", member_id=admin, now=LATER)
+    with pytest.raises(NotFound):
+        repo.set_delegation_policy(conn, SESSION, "agent-nope", "owner_approval", member_id=admin, now=LATER)
+    with pytest.raises(NotFound):  # 다른 워크스페이스에 붙지 않은 에이전트
+        repo.set_delegation_policy(conn, OTHER_SESSION, FIX_AGENT, "owner_approval", member_id=admin, now=LATER)
+    assert repo.get_agent(conn, FIX_AGENT)["delegation_policy"] == "run"
+    assert not conn.in_transaction
+
+
+def test_open_owner_approval_keeps_one_open_request_per_scope(handoff):
+    conn, work_item_id, _, member = handoff
+    first, created = _open_approval(conn, requester=member)
+    assert created is True
+    again, created = _open_approval(conn, requester=member, now=LATER)  # 같은 단계·에이전트·맡긴 사람
+    assert (again, created) == (first, False)
+    rows = repo.list_owner_approvals(conn, "task-gh-41")
+    assert [(r["request_id"], r["code"], r["cause_key"], r["state"], r["action"]) for r in rows] == [
+        (first, "owner_approval", f"owner_approval:{FIX_AGENT}:{member}:1", "open", None)]
+    assert rows[0]["question"] == "김OO 가 맡김 · 이OO 승인 대기"
+    # 다른 사람 요청은 승인 요청 목록에 없다
+    repo.create_human_request_once(conn, "task-gh-41", "decision", "q", "decision:1", NOW)
+    assert [r["request_id"] for r in repo.list_owner_approvals(conn, "task-gh-41")] == [first]
+    assert repo.get_work_item(conn, SESSION, work_item_id)["status"] == "내 차례"  # 업무 상태 재계산
+
+
+def test_owner_approval_seq_grows_after_the_previous_request_is_answered(handoff):
+    conn, _, admin, member = handoff
+    first, _ = _open_approval(conn, requester=member)
+    _respond(conn, first, action="decline", text="오늘은 Mac 을 못 씁니다", member_id=admin)
+    second, created = _open_approval(conn, requester=member, now=LATER)
+    assert created is True and second != first
+    rows = repo.list_owner_approvals(conn, "task-gh-41")
+    assert [(r["cause_key"], r["state"], r["action"], r["responder_id"]) for r in rows] == [
+        (f"owner_approval:{FIX_AGENT}:{member}:1", "answered", "decline", admin),
+        (f"owner_approval:{FIX_AGENT}:{member}:2", "open", None, None),
+    ]
+    # 맡긴 사람이 없는 범위(자동 착수)는 따로 센다
+    auto, created = _open_approval(conn, now=LATER)
+    assert created is True
+    assert repo.list_owner_approvals(conn, "task-gh-41")[-1]["cause_key"] == f"owner_approval:{FIX_AGENT}:none:1"
+    assert auto not in (first, second)
+
+
+def test_withdraw_owner_approvals_closes_open_requests_without_bumping_revision(handoff):
+    conn, work_item_id, admin, member = handoff
+    request_id, _ = _open_approval(conn, requester=member)
+    other, _ = repo.create_human_request_once(conn, "task-gh-41", "decision", "q", "decision:1", NOW)
+    revision = repo.get_task(conn, "task-gh-41")["revision"]
+    with pytest.raises(ValueError):  # 범위 없이 전부 닫지 않는다
+        repo.withdraw_owner_approvals(conn, reason="x", member_id=admin, now=LATER)
+    conn.execute("BEGIN IMMEDIATE")
+    assert repo.withdraw_owner_approvals(conn, work_item_id=work_item_id, reason="담당 바뀜", member_id=admin,
+                                         now=LATER) == 1
+    assert repo.withdraw_owner_approvals(conn, work_item_id=work_item_id, reason="담당 바뀜", member_id=admin,
+                                         now=LATER) == 0  # 이미 닫힘
+    conn.execute("COMMIT")
+    assert repo.get_task(conn, "task-gh-41")["revision"] == revision  # 올리지 않는다
+    row = repo.list_owner_approvals(conn, "task-gh-41")[0]
+    assert (row["request_id"], row["state"], row["action"], row["responder_id"]) == (
+        request_id, "answered", "withdraw", admin)
+    response = conn.execute("SELECT * FROM human_responses WHERE request_id = ?", (request_id,)).fetchone()
+    assert (response["response_id"], response["text"], response["task_revision"]) == (
+        f"withdraw-{request_id}", "담당 바뀜", revision)
+    assert repo.get_human_request(conn, SESSION, other)["state"] == "open"  # 다른 요청은 그대로
+
+
+def test_setting_policy_to_run_withdraws_open_approvals_of_that_agent(handoff):
+    conn, work_item_id, admin, member = handoff
+    repo.set_delegation_policy(conn, SESSION, FIX_AGENT, "owner_approval", member_id=admin, now=NOW)
+    _open_approval(conn, requester=member)
+    assert repo.get_work_item(conn, SESSION, work_item_id)["status_reason"].endswith("승인 대기")
+    assert repo.set_delegation_policy(conn, SESSION, FIX_AGENT, "run", member_id=admin, now=LATER) is True
+    rows = repo.list_owner_approvals(conn, "task-gh-41")
+    assert [(r["state"], r["action"]) for r in rows] == [("answered", "withdraw")]
+    assert not repo.get_work_item(conn, SESSION, work_item_id)["status_reason"].endswith("승인 대기")  # 재계산
+
+
+def test_handoff_note_is_recorded_on_the_work_item_with_an_event(handoff):
+    conn, work_item_id, _, member = handoff
+    conn.execute("BEGIN IMMEDIATE")
+    repo._set_handoff_note(conn, work_item_id, agent_id=FIX_AGENT, note="결제 모듈만 보세요", member_id=member,
+                           now=LATER)
+    conn.execute("COMMIT")
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["handoff_note"], row["handoff_note_by_member_id"]) == ("결제 모듈만 보세요", member)
+    assert _events_of(conn, work_item_id, "handoff_note") == [
+        {"agent_id": FIX_AGENT, "note": "결제 모듈만 보세요", "by": member}]
+    # 메모 없이 다시 맡기면 지난 메모는 지운다(이벤트 없음)
+    conn.execute("BEGIN IMMEDIATE")
+    repo._set_handoff_note(conn, work_item_id, agent_id=FIX_AGENT, note=None, member_id=member, now=LATER)
+    conn.execute("COMMIT")
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["handoff_note"], row["handoff_note_by_member_id"]) == (None, None)
+    assert len(_events_of(conn, work_item_id, "handoff_note")) == 1
+
+
+def test_hand_work_to_agent_saves_the_note_and_a_non_agent_assignee_clears_it(handoff):
+    conn, work_item_id, _, member = handoff
+    capability = Capability(code="code.fix", scope={"repository_id": "billing"})
+    record = select_agent("task-gh-41", capability, [Candidate(FIX_AGENT, (capability,))], mode="manual",
+                          chosen_agent_id=FIX_AGENT)
+    repo.hand_work_to_agent(conn, SESSION, work_item_id, record=record, target={}, member_id=member, now=LATER,
+                            note="결제 모듈만 보세요")
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["handoff_note"], row["handoff_note_by_member_id"]) == ("결제 모듈만 보세요", member)
+    assert _events_of(conn, work_item_id, "handoff_note") == [
+        {"agent_id": FIX_AGENT, "note": "결제 모듈만 보세요", "by": member}]
+
+    repo.assign_work_item(conn, SESSION, work_item_id, assignee_type="member", assignee_id=member,
+                          by_member_id=member, now=LATER)
+    row = repo.get_work_item(conn, SESSION, work_item_id)
+    assert (row["handoff_note"], row["handoff_note_by_member_id"]) == (None, None)
+    assert len(_events_of(conn, work_item_id, "handoff_note")) == 1  # 이력은 남는다
+
+
+def test_execution_verify_only_flag_defaults_to_zero(cycle):
+    _create_execution(cycle, "exec-fix-1", "task-gh-41", kind="code_change", inputs=("art-x",))
+    assert repo.get_execution(cycle, "exec-fix-1")["verify_only"] == 0
+    assert repo.get_task(cycle, "task-gh-41")["start_pending_at"] is None
+
+
+@pytest.mark.parametrize("event", ["delegated_to_you", "runner_offline_waiting", "delegation_declined"])
+def test_enqueue_notification_accepts_phase17_events(cycle, event):
+    assert _notify(cycle, f"{event}:x", event=event) is True
+    assert [r["event"] for r in repo.notifications_due(cycle, NOW, max_attempts=5)] == [event]

@@ -6,6 +6,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from workflow.domain.delegation import offline_reason
+
 EXECUTION_STATUSES = ("queued", "accepted", "running", "result_ready", "failed", "unknown")
 TERMINAL_STATUSES = ("result_ready", "failed")
 
@@ -61,6 +63,8 @@ class TaskView:
     verdict_detail: str | None
     review_decision: Literal["approve", "request_changes", "close"] | None
     finished: bool  # Task 가 완료 또는 실패로 마감됐는지
+    connector_owner_name: str | None = None  # 꺼진 러너 문구의 소유자 표시 이름. None 이면 공용 (phase 17)
+    approval_reason: str | None = None  # 열린 소유자 승인 요청의 질문 첫 줄 (phase 17)
 
 
 @dataclass(frozen=True)
@@ -79,8 +83,10 @@ def user_status(view: TaskView) -> UserStatus:
     if view.execution_status is None:
         if view.predecessor_status is not None and view.predecessor_status != "완료":
             return UserStatus("대기", "선행 대기")
+        if view.approval_reason is not None:
+            return UserStatus("대기", view.approval_reason)
         if view.connector_online is False:
-            return UserStatus("대기", f"연결 끊김, 마지막 확인 {view.connector_last_seen}")
+            return UserStatus("대기", offline_reason(view.connector_owner_name))
         if view.selection_status == "needs_selection":
             return UserStatus("확인 필요", view.selection_reason)
         if view.run_mode == "auto":

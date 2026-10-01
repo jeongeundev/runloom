@@ -23,7 +23,7 @@ from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import CodeReviewResult, KindSpec, SuccessorRule, format_work_key
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.execution_policy import policy_for
-from workflow.domain.form_sections import FORM_HEADINGS
+from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS
 from workflow.domain.kinds import get_kind, kind_for_capability
 from workflow.domain.metrics import (
     ACTORS,
@@ -37,6 +37,7 @@ from workflow.domain.metrics import (
 )
 from workflow.domain.notification import webhook_host
 from workflow.domain import team
+from workflow.domain.delegation import candidate_label, needs_owner_approval
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
 from workflow.domain.work_list import (
@@ -133,10 +134,8 @@ def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[Ki
 
 
 def agent_owner_id(conn: Connection, agent: Row) -> str | None:
-    """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리)."""
-    if agent["connection_type"] != "local" or agent["connector_id"] is None:
-        return None
-    return repo.connector_owner(conn, agent["connector_id"])
+    """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리) — `repo.agent_owner_id`."""
+    return repo.agent_owner_id(conn, agent["agent_id"])
 
 
 def runner_owner(conn: Connection, session_id: str, owner_member_id: str | None) -> dict[str, Any] | None:
@@ -235,12 +234,17 @@ def build_task_view(conn: Connection, task: Row, *, now: str, settings: Settings
             predecessor_status = None
 
     # 연결 상태는 종류 이름이 아니라 선택된 Agent 의 연결 유형으로 본다 — 사용자 정의 종류도 로컬 도구가 수행한다
-    connector_online = connector_last_seen = None
+    connector_online = connector_last_seen = connector_owner_name = None
     if selected is not None:
         agent = repo.get_agent(conn, selected)
         if agent is not None and agent["connection_type"] == "local":
             connector_online = agent_online(agent, now=now, settings=settings)
             connector_last_seen = kst(agent["last_seen_at"]) if agent["last_seen_at"] else "없음"
+            owner = repo.get_member(conn, task["session_id"], repo.agent_owner_id(conn, selected) or "")
+            connector_owner_name = owner["display_name"] if owner is not None and owner["disabled_at"] is None else None
+    # 열린 소유자 승인 요청의 질문 첫 줄 — 실행이 없을 때 단계 이유(phase 17)
+    approval_reason = next((r["question"].split("\n", 1)[0] for r in repo.list_owner_approvals(conn, task["task_id"])
+                            if r["state"] == "open"), None)
 
     execution = repo.active_execution(conn, task["task_id"])
     execution_status = last_progress = failed_code = failed_message = None
@@ -277,6 +281,8 @@ def build_task_view(conn: Connection, task: Row, *, now: str, settings: Settings
         verdict_detail=verdict_detail,
         review_decision=task["review_decision"],
         finished=task["finished_at"] is not None,
+        connector_owner_name=connector_owner_name,
+        approval_reason=approval_reason,
     )
 
 
@@ -469,7 +475,8 @@ DELIVERY_LABELS = {
 ACTOR_LABELS = {"operator": "운영자", "assignee": "GitHub 담당자", "system": "자동 해소 대기"}
 # 사람 요청 응답 버튼 (`human_api.Action`) — 표시 순서
 RESPONSE_ACTIONS = (
-    ("resume", "답하고 다시 판정"), ("choose_agent", "이 Agent 로 지정"), ("retry", "다시 맡기기"), ("close", "업무 종료"),
+    ("resume", "답하고 다시 맡기기"), ("reverify", "검증만 다시"), ("approve", "승인"), ("decline", "거절"), ("choose_agent", "이 Agent 로 지정"),
+    ("retry", "다시 맡기기"), ("close", "업무 종료"),
 )
 # 실행 실패 요청의 [닫기] — 업무 `종료`(ARCHITECTURE "실패 단계")
 _FAILED_CLOSE_LABEL = "닫기"
@@ -655,10 +662,6 @@ def cycle_context(
 #
 # 업무 상태·이유는 워커·repo 가 저장한 값 그대로다(`domain/work_status`). 화면은 다시 판정하지 않는다.
 
-# 양식 칸 키 → 화면 이름 (ARCHITECTURE "양식 칸")
-FORM_LABELS = {
-    "goal": "목표", "steps_to_reproduce": "재현 절차", "expected_behavior": "기대 동작", "acceptance_criteria": "인수 조건",
-}
 # 업무 사이 연결(앞 → 뒤)을 이 업무에서 본 이름 — (type, 이 업무가 앞인가)
 _LINK_LABELS = {
     ("spawned_from", True): "이어서 생긴 업무", ("spawned_from", False): "원인 업무",
@@ -693,28 +696,34 @@ def _responses_public(conn: Connection, task: Row) -> list[dict[str, Any]]:
 
 
 def work_list_context(conn: Connection, session_id: str, *, member_id: str, query: ListQuery, now: str) -> dict:
-    """업무 화면 목록 — 끝난 업무 범위(`closed=recent` 는 14일) → 행 → 빠른 필터 → 묶기·보드. 건수는 필터 전 행 기준.
+    """업무 화면 목록 — 끝난 업무 범위(`closed=recent` 는 14일) → 행 → 저장소 필터 → 빠른 필터 → 묶기·보드. 건수는
+    저장소 필터 뒤·빠른 필터 전 행 기준.
     `open_missing` = 키 형식의 `open` 이 이 워크스페이스에 없음."""
     closed_since = None
     if query.closed == "recent":
         closed_since = (_parse(now) - timedelta(days=CLOSED_RECENT_DAYS)).isoformat().replace("+00:00", "Z")
     all_rows = repo.list_work_rows(conn, session_id, closed_since=closed_since)
-    rows = filter_rows(all_rows, query.q, member_id=member_id)
+    rows = filter_rows(all_rows, query.q, member_id=member_id, repo=query.repo)
     return {
         "rows": rows,
         "groups": group_rows(rows, query.group, member_id=member_id),
         "columns": board_columns(rows),
-        "counts": filter_counts(all_rows, member_id=member_id),
+        "counts": filter_counts(all_rows, member_id=member_id, repo=query.repo),
         "query": query,
+        # 도구 막대 저장소 선택 — 목록이 비면 숨긴다. 숨은 입력은 저장소를 뺀 나머지 목록 상태
+        "repos": repo.list_work_repositories(conn, session_id),
+        "repo_form_state": [pair.split("=", 1)
+                            for pair in list_query_params(replace(query, repo=None)).split("&") if pair],
         "open_missing": query.open_key is not None
         and repo.get_work_item_by_key(conn, session_id, query.open_key) is None,
     }
 
 
 def list_query_params(query: ListQuery, *, open_key: int | None = None) -> str:
-    """목록 주소 쿼리 문자열(기본값은 뺀다). 값은 모두 열거형이라 따로 인코딩하지 않는다."""
+    """목록 주소 쿼리 문자열(기본값은 뺀다). 값은 열거형이거나 워크스페이스 저장소 이름(`owner/name`)이라 따로
+    인코딩하지 않는다."""
     default = parse_list_query()
-    parts = [f"{name}={getattr(query, name)}" for name in ("q", "group", "view", "closed")
+    parts = [f"{name}={getattr(query, name)}" for name in ("q", "group", "view", "closed", "repo")
              if getattr(query, name) != getattr(default, name)]
     if open_key is not None:
         parts.append(f"open={format_work_key(open_key)}")
@@ -722,7 +731,7 @@ def list_query_params(query: ListQuery, *, open_key: int | None = None) -> str:
 
 
 def list_href(query: ListQuery, *, open_key: int | None = None, **change: str) -> str:
-    """업무 화면 주소 — `query` 에서 열거형 값 하나(`q`·`group`·`view`·`closed`)만 바꾼 링크. 도구 막대·행 링크용."""
+    """업무 화면 주소 — `query` 에서 값 하나(`q`·`group`·`view`·`closed`·`repo`)만 바꾼 링크. 도구 막대·행 링크용."""
     params = list_query_params(replace(query, **change), open_key=open_key)
     return f"/tasks?{params}" if params else "/tasks"
 
@@ -752,6 +761,8 @@ def _event_line(event: Row, names: dict[str, str]) -> str:
         return "담당 바뀜"
     if event["type"] == "priority_changed":
         return f"우선순위 {PRIORITY_LABELS.get(data['to'], data['to'])}"
+    if event["type"] == "handoff_note":
+        return f"지시 메모 · {names.get(data['by'], data['by'] or '이름 없음')} — {data['note']}"
     return event["type"]
 
 
@@ -769,6 +780,25 @@ def _work_pulls(conn: Connection, work_item_id: str, stages: list[Row]) -> list[
             "at": row["pr_updated_at"],
         })
     return sorted(pulls, key=lambda p: p["at"])
+
+
+def _agent_choice_lines(conn: Connection, session_id: str, agents: Sequence[Row], *, member_id: str, now: str,
+                        settings: Settings) -> list[dict[str, Any]]:
+    """담당 후보 한 줄 — `이름 · <소유자>의 Mac · 켜짐|꺼짐`(소유자 없으면 `공용`), 누르는 사람이 맡기면 승인이 필요하면
+    ` · 승인 필요`. 꺼진 에이전트도 후보에 남는다."""
+    members = repo.list_members(conn, session_id)
+    names = {m["member_id"]: m["display_name"] for m in members}
+    admin_ids = frozenset(m["member_id"] for m in members if m["role"] == "admin" and m["disabled_at"] is None)
+    lines = []
+    for agent in agents:
+        owner_id = repo.agent_owner_id(conn, agent["agent_id"])
+        online = agent_online(agent, now=now, settings=settings)
+        label = candidate_label(agent["name"], names.get(owner_id) if owner_id else None, online)
+        if needs_owner_approval(policy=agent["delegation_policy"], requester_id=member_id, owner_id=owner_id,
+                                admin_ids=admin_ids):
+            label += " · 승인 필요"
+        lines.append({"agent_id": agent["agent_id"], "name": agent["name"], "label": label, "online": online})
+    return lines
 
 
 def work_panel_context(
@@ -873,8 +903,8 @@ def work_panel_context(
             {"member_id": m["member_id"], "display_name": m["display_name"]}
             for m in repo.list_members(conn, session_id) if m["disabled_at"] is None
         ],
-        "agents": [{"agent_id": a["agent_id"], "name": a["name"]}
-                   for a in agent_candidates(conn, session_id, work_item_id)],
+        "agents": _agent_choice_lines(conn, session_id, agent_candidates(conn, session_id, work_item_id),
+                                      member_id=member_id, now=now, settings=settings),
         "stages": stage_views,
         "pull_request": pull_request,
         "pulls": pulls,

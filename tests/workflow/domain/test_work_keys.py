@@ -2,7 +2,7 @@
 
 import pytest
 
-from workflow.domain.work_keys import BRANCH_SUMMARY_MAX, branch_name, keys_in, work_path
+from workflow.domain.work_keys import BRANCH_SUMMARY_MAX, branch_name, keys_in, short_source_key, work_path
 
 
 def test_work_path_opens_the_panel_on_the_work_screen():
@@ -53,3 +53,19 @@ def test_branch_name_summary_is_cut_at_40_and_trailing_dash_removed():
 )
 def test_keys_in(text, expected):
     assert keys_in(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        pytest.param("acme/sandbox#3", "sandbox#3", id="github"),
+        pytest.param("my-org/web.app_2#120", "web.app_2#120", id="dots-dashes"),
+        pytest.param("ENG-12", "ENG-12", id="other-format"),
+        pytest.param("acme/sandbox#0", "acme/sandbox#0", id="zero-number"),
+        pytest.param("a/b/c#3", "a/b/c#3", id="two-slashes"),
+        pytest.param("acme/sandbox", "acme/sandbox", id="no-number"),
+        pytest.param(None, None, id="none"),
+    ],
+)
+def test_short_source_key_keeps_only_the_repository_name_and_number(key, expected):
+    assert short_source_key(key) == expected

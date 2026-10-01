@@ -124,16 +124,23 @@ def test_row1_waiting_for_predecessor():
     )
 
 
-def test_row1_connector_offline_shows_last_seen():
-    assert user_status(
-        view(
-            kind="code_change",
-            run_mode="auto",
-            predecessor_status="완료",
-            connector_online=False,
-            connector_last_seen="2026-09-20 10:12:03 KST",
-        )
-    ) == UserStatus("대기", "연결 끊김, 마지막 확인 2026-09-20 10:12:03 KST")
+def test_row1_connector_offline_names_the_runner_owner():
+    """phase 17 — 꺼진 러너는 소유자 문구(`delegation.offline_reason`), 공용이면 `공용 러너 꺼짐`."""
+    offline = view(kind="code_change", run_mode="auto", predecessor_status="완료", connector_online=False,
+                   connector_last_seen="2026-09-20 10:12:03 KST")
+    assert user_status(offline) == UserStatus("대기", "공용 러너 꺼짐 · 켜지면 시작")
+    assert user_status(dataclasses.replace(offline, connector_owner_name="이소유")) == UserStatus(
+        "대기", "이소유의 러너 꺼짐 · 켜지면 시작"
+    )
+
+
+def test_row1_owner_approval_waits_before_the_offline_runner():
+    """승인 요청이 열린 단계는 실행이 없을 때 `대기 · <질문 첫 줄>` — 연결 판정보다 먼저(phase 17)."""
+    waiting = view(connector_online=False, approval_reason="김맡김 가 맡김 · 이소유 승인 대기")
+    assert user_status(waiting) == UserStatus("대기", "김맡김 가 맡김 · 이소유 승인 대기")
+    assert user_status(dataclasses.replace(waiting, execution_status="queued")) == UserStatus(
+        "실행 요청됨", "접수 대기"
+    )
 
 
 def test_row2_no_candidate_needs_attention():

@@ -1142,3 +1142,45 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 ```
 
 `work_key` 가 패턴 밖(소문자·공백·`/`·`..` 포함 등)이거나 `branch_seq` 가 1 미만이거나, `work_key` 없이 `branch_seq` 가 1 이 아니면 422. 구버전 러너는 두 칸을 `extra="forbid"` 로 거부하므로 중앙과 러너를 함께 올린다.
+
+## 16. 사람 사이 인계 — 선택 칸 (contract-pending)
+
+[ADR-0023](adr/0023-cross-member-delegation.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "사람 사이 인계 — phase 17" 의 "계약 변경"·"검증만 다시". 계약 버전은 1 그대로이고 1~15절 payload 는 바뀌지 않는다 — 아래는 모두 기본값이 있는 추가형 선택 칸이다. 모델에 칸이 생기기 전이라 `jsonc` 펜스이고(fixture 테스트가 읽지 않는다), phase 17 step 2 가 모델을 구현하면서 `json` 펜스로 바꾸고 `test_v1.py` 의 블록 수(`test_contract_md_has_expected_block_counts`)를 함께 올린다.
+
+### 16.1 `ExecutionRequest` — 검증만 다시
+
+`fix_verification_failed` 사람 요청에 [검증만 다시](`reverify`)로 답하면 워커가 만드는 요청. 같은 Task·같은 Agent·같은 `target`(15.2 와 같은 `CodeChangeTarget`)에 `verify_only_commit` = 이전 결과 커밋, 입력 = 이전 실행의 결과 봉투(`code_change_result`) 하나. `task_revision` 은 응답으로 올라간 값이다. 러너는 에이전트를 띄우지 않고 그 커밋의 깨끗한 체크아웃에서 등록된 검증 프로필(`verification_profile_id`)로 다시 검증해 7절과 같은 `CodeChangeResult` 를 낸다 — 도구 원시 산출물(stdout·stderr)과 `usage` 만 없다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-gh-fix-004",
+  "task_id": "task-gh-41",
+  "kind": "bug_fix",
+  "agent_id": "agent-codex-mac",
+  "task_revision": 2,
+  "request": "# RUN-23 할인 쿠폰이 두 번 적용됨\n\n## 업무 양식\n### 재현 절차\n같은 쿠폰으로 결제를 두 번 요청한다.\n\nGitHub acme/billing#41 — 할인 쿠폰이 두 번 적용됨\n\n## 사람 응답 (운영자)\n- 질문: 결과 판정 실패 — 자동 재시도 없음\n  답: PYTHONPATH 설정을 고쳤습니다. 검증만 다시 해 주세요.",
+  "input_artifact_ids": ["art-fix-result-003"],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "verification_profile_id": "vp-pytest"
+  },
+  "kind_spec": null,
+  "work_key": "RUN-23",
+  "branch_seq": 1,
+  "verify_only_commit": "8b2e4d6f0a1c3e5b7d9f1a3c5e7b9d2f4a6c8e0b"
+}
+```
+
+`verify_only_commit` 은 40자 소문자 hex. 값이 있는데 `target` 이 `CodeChangeTarget` 이 아니거나, `input_artifact_ids` 가 비었거나, `target.base_commit` 과 같으면 422. null 이면 직렬화에서 빠진다 — 보통 요청(13.2·15.2)은 칸 없이 그대로다. 구버전 러너는 이 칸을 `extra="forbid"` 로 거부하므로 서버는 16.2 의 `verify_only` 를 보고한 러너에만 이 요청을 배정한다.
+
+### 16.2 `ClaimRequest` — 러너 능력 보고
+
+`capabilities` 는 러너가 할 수 있는 선택 동작 목록이다. 알려진 값은 `"verify_only"`(검증만 다시) 하나. 값 형식 `^[a-z][a-z0-9_]{0,39}$`, 최대 20개, 중복이면 422. 서버는 알려진 값만 저장하고 모르는 값은 무시한다. null(생략)은 보고 없음 — 옛 러너로 보고 검증만 다시 요청을 배정하지 않는다("연결 프로그램 업데이트 필요 — 검증만 다시 미지원"으로 기다린다). 새 러너는 늘 보낸다. 구버전 서버는 이 칸을 422 `unknown_field` 로 거부하므로 업그레이드 순서는 서버 → 러너(14절과 같다).
+
+```json
+{ "contract_version": 1, "connector_id": "conn-mac-02", "supported_kinds": ["bug_fix", "code_review"], "registration_heads": { "local-billing": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c" }, "capabilities": ["verify_only"] }
+```
+
+요청문(`request`)에 붙는 머리·"## 업무 양식"·"## 맡긴 사람 지시 (이름)" 절은 계약 칸이 아니다 — 서버가 문자열로 만든다(ARCHITECTURE "인계 맥락 요청문"). 러너는 지금처럼 글로만 프롬프트에 넣는다.

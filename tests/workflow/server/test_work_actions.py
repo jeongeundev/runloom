@@ -14,6 +14,7 @@ from workflow.domain.work_status import WorkStatus
 from workflow.server import work_actions
 from workflow.server.work_actions import WorkActionError
 
+from .test_owner_approval import TRIAGE, members, triage_task  # noqa: F401 — 픽스처
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     FIX,
     FIX_SHOP,
@@ -27,6 +28,7 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     executions,
     import_issue,
     make_worker,
+    request_of,
     settings,
     worker,
 )
@@ -52,10 +54,10 @@ def work_of(conn, task_id: str):
 
 
 def assign(conn, store, settings, task_id: str, value: str, member_id: str, *, now: str = LATER,
-           session_id: str = SESSION) -> None:
+           session_id: str = SESSION, note: str = "") -> None:
     work_actions.assign_work(conn, store, settings, session_id=session_id,
                              work_item_id=work_of(conn, task_id)["work_item_id"], value=value, member_id=member_id,
-                             now=now)
+                             now=now, note=note)
 
 
 def refused(call, status: int, code: str) -> WorkActionError:
@@ -143,6 +145,69 @@ def test_no_open_stage_is_refused(conn, store, settings, admin, all_open):
     conn.execute("UPDATE tasks SET finished_at = ? WHERE task_id = ?", (NOW, task_id))
     refused(lambda: assign(conn, store, settings, task_id, f"agent:{FIX}", admin), 409, "no_open_stage")
     assert work_actions.agent_candidates(conn, SESSION, work_of(conn, task_id)["work_item_id"]) == []
+
+
+# --- 지시 메모와 요청문 머리 (phase 17 step 8) ------------------------------------------
+
+
+def test_cycle_handoff_request_carries_the_work_header_form_and_note(conn, store, settings, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    form = {"goal": {"value": "쿠폰은 한 번만", "source": "github_body:### 목표"},
+            "expected_behavior": {"value": "_No response_", "source": "github_body:### 기대 동작"}}
+    conn.execute("UPDATE work_items SET form_json = ? WHERE work_item_id = ?",
+                 (json.dumps(form, ensure_ascii=False), work_of(conn, task_id)["work_item_id"]))
+    admin_name = repo.get_member(conn, SESSION, admin)["display_name"]
+
+    assign(conn, store, settings, task_id, f"agent:{FIX}", admin, note="  결제 모듈만 보세요\n테스트 먼저  ")
+
+    (execution,) = executions(conn, task_id)
+    assert request_of(execution).request == (
+        f"# RUN-1 버그 1\n\n## 업무 양식\n\n### 목표\n쿠폰은 한 번만\n\n"
+        f"## 맡긴 사람 지시 ({admin_name})\n결제 모듈만 보세요\n테스트 먼저\n\n재현 절차 1"
+    )
+    assert repo.get_task(conn, task_id)["request"] == "재현 절차 1"  # 단계 원문은 그대로
+    work = work_of(conn, task_id)
+    assert (work["handoff_note"], work["handoff_note_by_member_id"]) == ("결제 모듈만 보세요\n테스트 먼저", admin)
+    assert events(conn, task_id, "handoff_note") == [
+        {"agent_id": FIX, "note": "결제 모듈만 보세요\n테스트 먼저", "by": admin}]
+
+
+def test_non_cycle_handoff_request_carries_the_header_and_note(conn, store, settings, members, triage_task):
+    assign(conn, store, settings, triage_task, f"agent:{TRIAGE}", members["a"], note="로그부터 보세요")
+
+    (execution,) = executions(conn, triage_task)
+    key = f"RUN-{work_of(conn, triage_task)['key_number']}"
+    assert request_of(execution).request == (
+        f"# {key} 보고서 분류\n\n## 맡긴 사람 지시 (김맡김)\n로그부터 보세요\n\n원인을 분류해 주세요.")
+
+
+def test_blank_note_is_no_note(conn, store, settings, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    assign(conn, store, settings, task_id, f"agent:{FIX}", admin, note="  \n ")
+    (execution,) = executions(conn, task_id)
+    assert request_of(execution).request == "# RUN-1 버그 1\n\n재현 절차 1"
+    assert work_of(conn, task_id)["handoff_note"] is None
+    assert events(conn, task_id, "handoff_note") == []
+
+
+def test_note_over_the_limit_is_422(conn, store, settings, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    error = refused(lambda: assign(conn, store, settings, task_id, f"agent:{FIX}", admin, note="가" * 2001),
+                    422, "invalid_field")
+    assert error.field == "note"
+    assert executions(conn, task_id) == [] and work_of(conn, task_id)["assignee_type"] is None
+    assign(conn, store, settings, task_id, f"agent:{FIX}", admin, note="가" * 2000)  # 경계는 받는다
+    assert work_of(conn, task_id)["handoff_note"] == "가" * 2000
+
+
+def test_member_assignment_ignores_the_note(conn, store, settings, admin, all_open):
+    task_id = import_issue(conn, 1, labels=[])
+    assign(conn, store, settings, task_id, f"member:{admin}", admin, note="가" * 2001)  # 길어도 무시
+    work = work_of(conn, task_id)
+    assert (work["assignee_type"], work["handoff_note"]) == ("member", None)
+    assert events(conn, task_id, "handoff_note") == []
+    assign(conn, store, settings, task_id, "none", admin, note="메모")
+    assert work_of(conn, task_id)["handoff_note"] is None
 
 
 # --- 멤버 = 배정만 · none = 해제 ------------------------------------------------------

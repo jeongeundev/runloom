@@ -7,6 +7,7 @@
 - 토큰은 헤더에만 넣고 예외 메시지·repr 에 넣지 않는다.
 """
 
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import quote
 
@@ -22,6 +23,7 @@ from workflow.contracts.v1 import (
     EventAck,
     ExecutionEvent,
     ExecutionRequest,
+    RUNNER_CAPABILITIES,
 )
 
 
@@ -110,10 +112,15 @@ class CentralClient:
         data = response.json()
         return data["connector_id"], data["token"]
 
-    def claim(self, connector_id: str, *, registration_heads: dict[str, str] | None = None) -> ExecutionRequest | None:
+    def claim(
+        self, connector_id: str, *, registration_heads: dict[str, str] | None = None,
+        capabilities: Sequence[str] = RUNNER_CAPABILITIES,
+    ) -> ExecutionRequest | None:
         body: dict[str, Any] = {
             "contract_version": CONTRACT_VERSION, "connector_id": connector_id,
             "supported_kinds": list(SUPPORTED_BUILTIN_KINDS),
+            # 늘 싣는다 — 서버가 검증만 다시를 배정할 수 있는지 본다. 구버전 서버는 422 라 서버를 먼저 올린다(ADR-0023)
+            "capabilities": list(capabilities),
         }
         if registration_heads:  # 보고할 것이 있을 때만 — 구버전 서버(extra=forbid)와 호환 (ADR-0018)
             body["registration_heads"] = registration_heads

@@ -41,6 +41,7 @@ from workflow.domain.metrics import compute_metrics
 from workflow.domain.work_status import work_status
 from workflow.server import human_api, task_cycle
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace
+from workflow.server.errors import ApiError
 from workflow.server.worker import TickReport, Worker
 
 from .conftest import event, exchange
@@ -259,7 +260,8 @@ def test_independent_tasks_start_in_the_same_tick_and_a_blocked_one_does_not_hol
     # 대상은 등록값 + 소스의 검증 프로필(등록된 ID)로 고정된다 — 요청 본문은 이슈 본문 그대로
     assert request.target == CodeChangeTarget(local_registration_id=REG_FIX, base_commit=BASE,
                                               verification_profile_id="vp-pytest")
-    assert (request.request, request.input_artifact_ids, request.task_revision) == ("재현 절차 1", [], 1)
+    # 요청문 = 업무 머리(phase 17 step 8) + 단계 원문
+    assert (request.request, request.input_artifact_ids, request.task_revision) == ("# RUN-1 버그 1\n\n재현 절차 1", [], 1)
     assert request.kind_spec is not None and request.kind_spec.kind == "bug_fix"
     (exec_b,) = executions(conn, b)
     assert (exec_b["agent_id"], request_of(exec_b).target.verification_profile_id) == (FIX_SHOP, "vp-shop")
@@ -434,6 +436,47 @@ def test_two_fix_agents_wait_until_a_default_is_chosen(auto_source, conn, worker
     worker.tick()
     (fix,) = executions(conn, task_id)
     assert fix["agent_id"] == "agent-fix-2"
+
+
+def test_two_fix_agents_run_the_one_a_person_handed_the_task_to(auto_source, conn, worker):
+    """phase 17 — 두 러너가 같은 저장소를 등록해도 사람이 맡긴 Agent(`chosen_agent_id`)로 착수하고 그 등록의 프로필을 쓴다."""
+    second = _agent("agent-fix-2", "local-billing-2", "code.fix", "billing")
+    repo.upsert_agent(conn, second)
+    repo.register_session_agent(conn, SESSION, second["agent_id"], NOW)
+    _report(conn, "local-billing-2", auto_source["billing"], "billing", ["vp-2"], "acme/billing")
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    repo.update_task_choice(conn, task_id, chosen_agent_id="agent-fix-2", target={})
+    worker.tick()
+
+    (fix,) = executions(conn, task_id)
+    assert fix["agent_id"] == "agent-fix-2"
+    assert request_of(fix).target == CodeChangeTarget(local_registration_id="local-billing-2", base_commit=BASE,
+                                                      verification_profile_id="vp-2")
+
+
+def test_the_fix_agents_own_runner_reviews_when_two_runners_share_the_repository(auto_source, conn, store, worker):
+    """phase 17 — 다른 연결 프로그램(러너)의 Agent 도 같은 저장소를 등록해 검토 후보가 둘이면, 수정한 Agent 가 검토한다
+    (검토는 수정 러너의 결과 커밋을 읽는다 — `review_repository_mismatch` 로 막히지 않게)."""
+    runner_b = {**_agent("agent-runner-b", "local-billing-b", "code.fix", "billing"),
+                "capabilities": [{"code": "code.fix", "scope": {"repository_id": "billing"}},
+                                 {"code": "code.review", "scope": {"repository_id": "billing"}}]}
+    repo.upsert_agent(conn, runner_b)
+    repo.register_session_agent(conn, SESSION, "agent-runner-b", NOW)
+    _report(conn, "local-billing-b", auto_source["shop"], "billing", ["vp-b"], "acme/billing")
+    task_id = import_issue(conn, 1, assignee_ids=[], assignee_logins=[], labels=[])
+    delegate(conn, task_id)
+    repo.update_task_choice(conn, task_id, chosen_agent_id="agent-runner-b", target={})
+    worker.tick()
+    (fix,) = executions(conn, task_id)
+    assert fix["agent_id"] == "agent-runner-b"
+
+    finish_fix(conn, store, fix["execution_id"])
+    worker.tick()
+    (review_task,) = review_tasks(conn, task_id)
+    (review,) = executions(conn, review_task["task_id"])
+    assert (review["agent_id"], request_of(review).target.local_registration_id) == ("agent-runner-b",
+                                                                                      "local-billing-b")
 
 
 def test_bound_assignee_still_wins_on_an_auto_matched_source(auto_source, conn, worker):
@@ -612,7 +655,7 @@ def test_verified_fix_links_an_existing_review_task_instead_of_creating_one(cycl
     assert [t["task_id"] for t in review_tasks(conn, fix_task)] == ["task-review-c"]
     (review_exec,) = executions(conn, "task-review-c")
     assert review_exec["start_key"] == f"review:{fix_exec}"
-    assert request_of(review_exec).request == "결제 경로 위주로 봐 주세요."
+    assert request_of(review_exec).request == "# RUN-2 쿠폰 수정 검토\n\n결제 경로 위주로 봐 주세요."  # 업무 머리 + 원문
     assert conn.execute("SELECT COUNT(*) FROM followup_links").fetchone()[0] == 0
 
 
@@ -1004,7 +1047,7 @@ def test_issue_text_and_later_github_changes_do_not_widen_the_fixed_request(cycl
     request = request_of(execution)
     assert request.target == CodeChangeTarget(local_registration_id=REG_FIX, base_commit=BASE,
                                               verification_profile_id="vp-pytest")
-    assert request.request == body.strip()  # 본문은 요청 문자열일 뿐 실행 범위가 되지 않는다
+    assert request.request == "# RUN-1 버그 1\n\n" + body.strip()  # 본문은 요청 문자열일 뿐 실행 범위가 되지 않는다
 
     # 실행 중 GitHub 에서 담당자·제목이 바뀌어도 진행 중 실행은 그대로이고 새 실행을 만들지 않는다
     snapshot = issue(1, body=body, title="제목 변경", assignee_ids=[999], assignee_logins=["someone"],
@@ -1134,7 +1177,8 @@ def test_fix_needing_information_resumes_with_the_answer_as_input(cycle, conn, s
     assert (resumed["attempt_no"], resumed["start_key"]) == (2, f"auto:{fix_task}:r2")
     fixed = request_of(resumed)
     assert fixed.task_revision == 2
-    assert fixed.request.startswith("재현 절차 1") and "결제 금액은 10,000원" in fixed.request
+    assert fixed.request.startswith("# RUN-1 버그 1\n\n재현 절차 1\n\n## 사람 응답 (운영자)")  # 머리 → 원문 → 응답
+    assert "결제 금액은 10,000원" in fixed.request
     assert fixed.input_artifact_ids == [result_id]  # 이전 시도의 결과를 잇는다
     again = worker.tick()
     assert again.tasks_resumed == 0 and len(executions(conn, fix_task)) == 2  # 한 번만
@@ -1184,6 +1228,140 @@ def test_rework_limit_resume_answer_runs_one_more_fix(cycle, conn, store, worker
     answer(conn, request["request_id"], text="중복 조건만 지우고 다시")
     worker.tick()
     assert [e["start_key"] for e in executions(conn, fix_task)][-1] == f"auto:{fix_task}:r2"
+
+
+# --- 검증만 다시 (phase 17 step 7) -----------------------------------------------------------------
+
+
+def reverify(conn, store, request_id: str, response_id: str = "resp-reverify") -> dict:
+    row = repo.get_human_request(conn, SESSION, request_id)
+    body = human_api.ResponseBody(response_id=response_id, expected_revision=row["revision"], action="reverify")
+    return human_api.respond_to_request(conn, SESSION, request_id, body, NOW, store=store)
+
+
+def _failed_fix(conn, store, worker) -> tuple[str, str, str]:
+    """(fix_task, fix_exec, request_id) — 첫 수정 결과가 판정에 실패해 `fix_verification_failed` 가 열린 상태."""
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    fix_exec = executions(conn, fix_task)[0]["execution_id"]
+    finish_fix(conn, store, fix_exec, before_exit=0)
+    worker.tick()
+    (request,) = open_requests(conn, fix_task)
+    assert request["code"] == "fix_verification_failed"
+    return fix_task, fix_exec, request["request_id"]
+
+
+def test_reverify_runs_verification_only_on_the_last_result_commit(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, fix_exec, request_id = _failed_fix(conn, store, worker)
+    previous = repo.get_execution(conn, fix_exec)
+
+    answered = reverify(conn, store, request_id)
+    assert answered["task_revision"] == 2
+    assert len(executions(conn, fix_task)) == 1  # 응답은 실행을 만들지 않는다 — 워커가 만든다
+    report = worker.tick()
+
+    old, again = executions(conn, fix_task)
+    assert report.tasks_resumed == 1
+    assert old["released_at"] is not None
+    assert (again["start_key"], again["agent_id"], again["predecessor_execution_id"], again["verify_only"]) == (
+        f"reverify:{request_id}", FIX, fix_exec, 1,
+    )
+    assert again["assigned_connector_id"] == cycle["billing"]
+    request = request_of(again)
+    assert request.verify_only_commit == C1
+    assert request.target == request_of(previous).target  # 등록·기준 커밋·검증 프로필 그대로
+    assert request.input_artifact_ids == [previous["result_artifact_id"]]
+    assert request.task_revision == 2
+    assert (request.work_key, request.branch_seq) == (request_of(previous).work_key, request_of(previous).branch_seq)
+    worker.tick()
+    assert len(executions(conn, fix_task)) == 2  # 응답 하나에 실행 하나
+
+
+def test_reverify_that_passes_moves_on_to_review(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, _, request_id = _failed_fix(conn, store, worker)
+    reverify(conn, store, request_id)
+    worker.tick()
+    again = executions(conn, fix_task)[-1]["execution_id"]
+
+    finish_fix(conn, store, again)  # 러너가 같은 결과 커밋을 다시 검증 — 이번엔 통과
+    worker.tick()
+
+    assert verdict_codes(conn, again)["verification_passed"] is True
+    (review,) = review_tasks(conn, fix_task)
+    (review_exec,) = executions(conn, review["task_id"])
+    assert review_exec["start_key"] == f"review:{again}"
+    assert request_of(review_exec).target.result_commit == C1
+    assert open_requests(conn, fix_task) == []
+    assert all(not e["start_key"].startswith("rework:") for e in executions(conn, fix_task))  # 재작업 횟수에 들지 않음
+
+
+def test_reverify_that_fails_again_opens_a_new_verification_request(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, fix_exec, request_id = _failed_fix(conn, store, worker)
+    reverify(conn, store, request_id)
+    worker.tick()
+    again = executions(conn, fix_task)[-1]["execution_id"]
+
+    finish_fix(conn, store, again, before_exit=0)
+    worker.tick()
+    worker.tick()
+
+    assert review_tasks(conn, fix_task) == []
+    (fresh,) = open_requests(conn, fix_task)
+    assert (fresh["code"], fresh["cause_key"]) == ("fix_verification_failed", f"fix_verification_failed:{again}")
+    assert [r["cause_key"] for r in repo.list_human_requests(conn, fix_task)] == [
+        f"fix_verification_failed:{fix_exec}", f"fix_verification_failed:{again}",
+    ]
+    reverify(conn, store, fresh["request_id"], "resp-reverify-2")  # 몇 번이든 다시 할 수 있다
+    worker.tick()
+    assert executions(conn, fix_task)[-1]["start_key"] == f"reverify:{fresh['request_id']}"
+
+
+def test_reverify_waits_for_a_runner_that_reports_verify_only(cycle, conn, store, worker):
+    fix_task, _, request_id = _failed_fix(conn, store, worker)  # 러너가 capabilities 를 보고하지 않았다(옛 러너)
+    reverify(conn, store, request_id)
+    worker.tick()
+    worker.tick()
+
+    assert len(executions(conn, fix_task)) == 1
+    assert status(conn, fix_task) == ("대기", "연결 프로그램 업데이트 필요 — 검증만 다시 미지원")
+
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])  # 러너 업데이트 뒤 claim
+    worker.tick()
+    assert executions(conn, fix_task)[-1]["start_key"] == f"reverify:{request_id}"
+
+
+def test_resume_on_a_verification_failure_still_reruns_the_agent(cycle, conn, store, worker):
+    repo.record_runner_capabilities(conn, cycle["billing"], ["verify_only"])
+    fix_task, fix_exec, request_id = _failed_fix(conn, store, worker)
+    answer(conn, request_id, text="테스트를 먼저 실패하게 만드세요")
+    worker.tick()
+
+    _, again = executions(conn, fix_task)
+    assert (again["start_key"], again["verify_only"]) == (f"auto:{fix_task}:r2", 0)
+    request = request_of(again)
+    assert request.verify_only_commit is None
+    assert "테스트를 먼저 실패하게 만드세요" in request.request
+
+
+def test_reverify_needs_a_result_commit(cycle, conn, store, worker):
+    fix_task = import_issue(conn, 1)
+    worker.tick()
+    fix_exec = executions(conn, fix_task)[0]["execution_id"]
+    request_id, _ = repo.create_human_request_once(
+        conn, fix_task, "fix_verification_failed", "결과 판정 실패", f"fix_verification_failed:{fix_exec}", NOW,
+    )
+    with pytest.raises(ApiError) as nothing:  # 실행이 아직 결과 전이다
+        reverify(conn, store, request_id)
+    assert (nothing.value.status, nothing.value.code) == (409, "nothing_to_reverify")
+
+    finish_fix(conn, store, fix_exec, outcome="needs_information")  # 결과 커밋 없는 결과
+    with pytest.raises(ApiError) as no_commit:
+        reverify(conn, store, request_id)
+    assert (no_commit.value.status, no_commit.value.code) == (409, "nothing_to_reverify")
+    assert repo.get_human_request(conn, SESSION, request_id)["state"] == "open"
 
 
 def test_close_racing_with_start_leaves_no_execution(cycle, conn, worker, monkeypatch):

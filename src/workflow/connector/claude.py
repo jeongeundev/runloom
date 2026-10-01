@@ -127,9 +127,10 @@ class ClaudeAdapter(LocalToolAdapter):
         """사용자 정의 종류 — `--allowedTools Read Glob Grep` 만. `cwd`(인계 디렉터리)는 마찬가지로 인자에 넣지 않는다."""
         return self.build_argv(cwd, schema_json, allowed_tools=READONLY_TOOLS)
 
-    def tool_env(self) -> dict[str, str]:
-        """Claude 프로세스 환경: 공통 허용 목록 + 부모의 `CLAUDE_*`·`ANTHROPIC_*`. 검증 프로필에는 쓰지 않는다."""
-        env = self.child_env()
+    def tool_env(self, cwd: Path | None = None) -> dict[str, str]:
+        """Claude 프로세스 환경: 공통 허용 목록 + 부모의 `CLAUDE_*`·`ANTHROPIC_*`. 검증 프로필에는 쓰지 않는다.
+        `cwd` 를 주면 등록 `PYTHONPATH` 의 상대 항목을 그 기준으로 푼다(`child_env`)."""
+        env = self.child_env(cwd)
         env.update({k: v for k, v in self._env_base.items() if k.startswith(("CLAUDE_", "ANTHROPIC_"))})
         return env
 
@@ -145,7 +146,7 @@ class ClaudeAdapter(LocalToolAdapter):
         started_at = state.utc_now()
         proc = subprocess.Popen(
             argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env=self.tool_env(),
+            env=self.tool_env(cwd),
         )
         progress(f"Claude 실행 시작 pid={proc.pid}", runtime_ref=f"pid:{proc.pid};start:{started_at}")
         stdout, stderr, timed_out, stopped = communicate_or_stop(proc, prompt_text.encode("utf-8"), self._timeout)

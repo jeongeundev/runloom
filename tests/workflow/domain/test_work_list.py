@@ -28,13 +28,13 @@ ME = "mem-me"
 
 def row(n: int, *, status: str = "대기", assignee: tuple[str, str] | None = None, name: str | None = None,
         active: bool = True, priority: str = "normal", updated: str = "2026-09-30T00:00:00Z",
-        recipients: tuple[str, ...] = (), closed_at: str | None = None) -> WorkRow:
+        recipients: tuple[str, ...] = (), closed_at: str | None = None, repository: str | None = None) -> WorkRow:
     return WorkRow(
         work_item_id=f"wi-{n}", key_number=n, work_key=f"RUN-{n}", source_type="manual", source_key=None,
         source_url=None, title=f"업무 {n}", assignee_type=assignee[0] if assignee else None,
         assignee_id=assignee[1] if assignee else None, assignee_name=name, assignee_active=active,
         priority=priority, kind="bug_fix", kind_label="버그 수정", status=status, status_reason="",
-        next_action="", recipients=recipients, updated_at=updated, closed_at=closed_at,
+        next_action="", recipients=recipients, updated_at=updated, closed_at=closed_at, repository=repository,
     )
 
 
@@ -44,7 +44,7 @@ def keys(rows) -> list[int]:
 
 def test_constants_follow_the_architecture_table():
     assert QUICK_FILTERS == ("all", "my_turn", "unassigned", "agent_working")
-    assert GROUP_BYS == ("assignee", "status")
+    assert GROUP_BYS == ("assignee", "status", "repo")
     assert VIEWS == ("list", "board")
     assert CLOSED_SCOPES == ("recent", "all")
     assert CLOSED_RECENT_DAYS == 14
@@ -117,6 +117,31 @@ def test_filter_counts_count_every_quick_filter():
     assert filter_counts(rows, member_id=ME) == {"all": 3, "my_turn": 1, "unassigned": 1, "agent_working": 1}
 
 
+def test_repo_filter_keeps_only_that_repository_and_counts_follow_it():
+    rows = [
+        row(1, repository="acme/web"),
+        row(2, repository="acme/billing", assignee=("agent", "a"), name="에이"),
+        row(3),
+        row(4, repository="acme/billing"),
+    ]
+    assert keys(filter_rows(rows, "all", member_id=ME, repo="acme/billing")) == [2, 4]
+    assert keys(filter_rows(rows, "unassigned", member_id=ME, repo="acme/billing")) == [4]
+    assert keys(filter_rows(rows, "all", member_id=ME, repo=None)) == [1, 2, 3, 4]
+    assert filter_counts(rows, member_id=ME, repo="acme/billing") == {
+        "all": 2, "my_turn": 0, "unassigned": 1, "agent_working": 1}
+
+
+def test_parse_list_query_repo_takes_only_a_workspace_repository():
+    repos = ["acme/billing", "acme/web"]
+    assert parse_list_query().repo is None
+    assert parse_list_query(repo="acme/web", repos=repos).repo == "acme/web"
+    assert parse_list_query(repo="ACME/Billing", repos=repos).repo == "acme/billing"  # 목록 표기로
+    for value in ("acme/nope", "", "../etc", "acme/web "):
+        assert parse_list_query(repo=value, repos=repos).repo is None
+    assert parse_list_query(repo="acme/web").repo is None  # 목록 없음
+    assert parse_list_query(group="repo").group == "repo"
+
+
 # --- 묶기 ---------------------------------------------------------------------------------
 
 
@@ -171,6 +196,20 @@ def test_group_by_status_follows_work_statuses_order():
                                                   ("status:완료", "완료")]
     assert [keys(g.rows) for g in groups] == [[4, 2], [3], [1]]
     assert [g.label for g in groups] == [s for s in WORK_STATUSES if s in {r.status for r in rows}]
+
+
+def test_group_by_repo_orders_by_name_ignoring_case_and_puts_no_repo_last():
+    rows = [row(1), row(2, repository="acme/web"), row(3, repository="Acme/Billing"), row(4, repository="acme/web"),
+            row(5, repository="zeta/app")]
+    groups = group_rows(rows, "repo", member_id=ME)
+    assert [(g.key, g.label) for g in groups] == [
+        ("repo:Acme/Billing", "Acme/Billing"),
+        ("repo:acme/web", "acme/web"),
+        ("repo:zeta/app", "zeta/app"),
+        ("repo:none", "저장소 없음"),
+    ]
+    assert [keys(g.rows) for g in groups] == [[3], [4, 2], [5], [1]]
+    assert [g.key for g in group_rows([row(1, repository="a/b")], "repo", member_id=ME)] == ["repo:a/b"]
 
 
 def test_unknown_group_reads_as_assignee():

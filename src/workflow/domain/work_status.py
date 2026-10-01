@@ -7,6 +7,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from workflow.domain.delegation import OWNER_APPROVAL_CODE
+
 WORK_STATUSES = (
     "새로 들어옴",
     "대기",
@@ -96,7 +98,10 @@ def work_status(facts: WorkItemFacts) -> WorkStatus:
         if failed is not None:
             stage = _latest(s for s in facts.stages if s.status == "실패")
             return WorkStatus("내 차례", "실패 — " + (stage.status_reason if stage else failed.question))
-        first_line = facts.open_requests[0].question.split("\n", 1)[0][:_REASON_MAX]
+        first = facts.open_requests[0]
+        first_line = first.question.split("\n", 1)[0][:_REASON_MAX]
+        if first.code == OWNER_APPROVAL_CODE:  # 질문 첫 줄이 곧 업무 이유 — `김OO 가 맡김 · 이OO 승인 대기`
+            return WorkStatus("내 차례", first_line)
         return WorkStatus("내 차례", "사람 요청 — " + first_line)
 
     if pr is not None and pr.state == "pending":

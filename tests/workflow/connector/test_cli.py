@@ -420,6 +420,15 @@ def test_help_exits_zero(capsys):
     assert "connect" in out and "register" in out and "run" in out and "run-local" in out and "setup" in out
 
 
+@pytest.mark.parametrize("command", ["register", "setup"])
+def test_env_help_says_relative_pythonpath_is_resolved_per_run(command, capsys):
+    """phase 17 — 상대 `PYTHONPATH` 는 실행 폴더(worktree·임시 체크아웃) 기준으로 풀린다고 안내한다."""
+    with pytest.raises(SystemExit):
+        main([command, "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "PYTHONPATH=src" in out and "실행 폴더 기준" in out
+
+
 def test_module_help_runs():
     result = subprocess.run(["python3", "-m", "workflow.connector", "--help"], capture_output=True, text=True)
     assert result.returncode == 0 and "register" in result.stdout

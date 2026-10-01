@@ -11,7 +11,9 @@ from workflow.adapters import repo
 
 from .conftest import log_in_other_workspace, task_row
 from .test_github_api import login
-from .test_task_cycle import FIX, FIX_SHOP, SESSION, cycle, import_issue, settings  # noqa: F401 — 픽스처
+from .test_task_cycle import (  # noqa: F401 — 픽스처
+    FIX, FIX_SHOP, SESSION, clock, cycle, executions, finish_fix, import_issue, make_worker, settings, worker,
+)
 
 NOW = "2026-10-06T12:00:00Z"
 
@@ -185,3 +187,37 @@ def test_stage_failed_allows_retry_and_close():
     from workflow.server.human_api import allowed_actions
 
     assert allowed_actions("stage_failed") == {"retry", "close"}
+
+
+def test_reverify_is_only_for_fix_verification_failures(op, conn, request_id):
+    from workflow.server.human_api import allowed_actions
+
+    assert allowed_actions("fix_verification_failed") == {"resume", "reverify", "close"}
+    assert "reverify" not in allowed_actions("review_verification_failed")  # 다시 검증할 결과 커밋이 없다
+    wrong = respond(op, request_id, action="reverify", text="")
+    assert (wrong.status_code, wrong.json()["field"]) == (422, "action")
+    review = repo.create_human_request_once(conn, "task-gh-1", "review_verification_failed", "검토 판정 실패",
+                                            "review_verification_failed:exec-r", NOW)[0]
+    assert respond(op, review, action="reverify", text="").status_code == 422
+
+
+def test_reverify_without_a_result_commit_is_refused(op, conn, request_id):
+    failed, _ = repo.create_human_request_once(conn, "task-gh-1", "fix_verification_failed", "결과 판정 실패",
+                                               "fix_verification_failed:exec-1", NOW)
+    refused = respond(op, failed, action="reverify", text="")
+    assert refused.status_code == 409
+    assert (refused.json()["code"], refused.json()["message"]) == (
+        "nothing_to_reverify", "다시 검증할 결과 커밋이 없습니다.",
+    )
+    assert repo.get_human_request(conn, SESSION, failed)["state"] == "open"
+
+
+def test_reverify_through_the_api_reads_the_result_commit(op, conn, store, worker, cycle):  # noqa: F811
+    task_id = import_issue(conn, 4)
+    worker.tick()
+    finish_fix(conn, store, executions(conn, task_id)[0]["execution_id"], before_exit=0)
+    worker.tick()
+    (failed,) = [r for r in repo.list_human_requests(conn, task_id) if r["state"] == "open"]
+    answered = respond(op, failed["request_id"], action="reverify", text="")
+    assert answered.status_code == 200, answered.text
+    assert repo.list_human_responses(conn, task_id)[-1]["action"] == "reverify"

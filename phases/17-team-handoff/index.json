@@ -5,62 +5,100 @@
     {
       "step": 0,
       "name": "handoff-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T22:00:42+0900",
+      "summary": "문서만: ADR-0023 신설(결정 10·조사 사실 6·대안), ADR-0021 끝 링크, ARCHITECTURE '사람 사이 인계 — phase 17' 절(소유자·정책·승인 상태 표·막는 지점·받는 사람 approvers·꺼진 러너 start_pending_at·알림 3종·검증만 다시·계약·요청문·저장소 보기·PYTHONPATH·단계 상태 재계산·러너 두 대·스키마 v13·이름 표)+대기 코드 표 2행, CONTRACT 16절(jsonc 2블록 — step 2 가 json 으로 바꾸고 블록 수 62→64), GLOSSARY phase 17 용어 8개, REDESIGN_PLAN 13절(17-team-handoff, 18-jira·19-triage·20-monitor), CURRENT_HANDOFF 한 줄. 주의: human_requests 는 CHECK 없어 그대로, notifications·work_item_events 는 재생성, tasks 는 ALTER(start_pending_at)만. 판정용 request_text 는 그대로 두고 execution_request_text 로 머리를 붙인다. work_actions 의 착수 코드는 server/stage_runs.py 로 옮긴다(순환 import). delegated_to_you 는 승인 요청이 생기면 따로 보내지 않는다(README '항상'과 다름 — ADR 결정 1). 검증: pytest 3191 passed·48 skipped, ruff 통과.",
+      "completed_at": "2026-09-30T22:21:41+0900"
     },
     {
       "step": 1,
       "name": "schema-v13",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T22:21:41+0900",
+      "summary": "스키마 v13: db.py SCHEMA_VERSION 13·_V13_TABLES·_migrate_12_to_13(한 트랜잭션, 빈 DB 도 같은 SQL) — ALTER 6칸(agents.delegation_policy 기본 run CHECK, connectors.capabilities_json, executions.verify_only 기본 0, tasks.start_pending_at, work_items.handoff_note·handoff_note_by_member_id), notifications·work_item_events 재생성(행·id 보존, 참조 표 없음 테스트), NOTIFICATION_EVENTS 6·WORK_ITEM_EVENT_TYPES 7(옛 CHECK 는 _V8_NOTIFICATION_EVENTS·_V12_WORK_ITEM_EVENT_TYPES 로 고정), tasks 재생성 없음(rootpage 테스트). 새 domain/delegation.py: DELEGATION_POLICIES·OWNER_APPROVAL_CODE·OWNER_APPROVAL_PREFIX·approval_cause_key·parse_approval_cause_key(step 5 가 나머지 함수 추가). repo: set_delegation_policy(워크스페이스 에이전트 아니면 NotFound, run 이면 withdraw+업무 재계산), open_owner_approval(범위=단계·에이전트·맡긴 사람마다 열린 요청 하나, seq=범위 요청 수+1, 업무 재계산 — 승인 상태 판단은 호출자), list_owner_approvals(action·responder_id 포함), withdraw_owner_approvals(자체 BEGIN 없음, revision 안 올림), _set_handoff_note(비공개 — hand_work_to_agent·_assign_work_item 전용, handoff_note 이벤트). 정책·verify_only·start_pending_at 읽기는 기존 get_agent·get_execution·get_task 행으로. fixture schema_v12.sql 추가(기존 관례대로 스키마 원문만, 행은 test_db._v12_db 가 넣음). 기존 테스트 수정: 버전 리터럴 12→13(test_db 3곳·test_backup 4곳), test_v12_constants 는 _V12_WORK_ITEM_EVENT_TYPES 로, v10 칼럼 집합에 v13 칸 추가. 검증: pytest 3219 passed·48 skipped, ruff 통과. 다음 step 주의: record_runner_capabilities·create_execution 의 verify_only 채우기는 step 2, 승인 상태 판정은 step 5.",
+      "completed_at": "2026-09-30T22:36:08+0900"
     },
     {
       "step": 2,
       "name": "contract-verify-only",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T22:36:08+0900",
+      "summary": "계약: contracts/v1.py — ExecutionRequest.verify_only_commit: CommitSha|None(값이 있으면 CodeChangeTarget·입력 비지 않음·base_commit 과 다름, 아니면 검증 오류), ClaimRequest.capabilities: list[RunnerCapability]|None(패턴 IDENTIFIER_PATTERN, 최대 20, 중복 거부, 모르는 값은 계약이 받음 — 버리는 건 서버), RunnerCapability·RUNNER_CAPABILITY_VERIFY_ONLY·RUNNER_CAPABILITIES. _OmitUnknownMeasure 를 ExecutionRequest 위로 옮기고 두 모델이 상속(_MEASURE_FIELDS) — null 칸은 dump 에서 빠져 옛 요청·claim 직렬화가 그대로. CONTRACT.md 16절 jsonc 2블록 → json(블록 62→64). 테스트 test_v1.py: 블록 수 62→64, work_key 예시 목록에 16.1 의 (RUN-23,1) 추가(새 예시 때문), 새 테스트 14개(옛 요청·claim 직렬화 불변, 명시 null 생략, 예시 왕복, 잘못된 SHA, target·입력·base 규칙, capabilities 중복·패턴·개수). 검증: pytest 3244 passed·48 skipped, ruff 통과. 다음 step 주의: step 파일이 v1.py 만 바꾸라고 해서 ARCHITECTURE 표가 '(2)' 로 적은 repo.record_runner_capabilities·claim_execution 방어·create_execution 의 executions.verify_only 채우기는 하지 않았다 — 뒤 step(3 러너·7 워커)이 함께 넣어야 한다. ConnectorClient.claim 의 capabilities 기본값도 step 3.",
+      "completed_at": "2026-09-30T22:43:48+0900"
     },
     {
       "step": 3,
       "name": "runner-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T22:43:48+0900",
+      "summary": "러너: connector/local_tool.py — resolve_pythonpath(env, cwd)(순수, 빈 항목·~·절대 경로 그대로, 나머지 normpath(cwd/item), 다른 변수 불변), child_env(cwd=None)(cwd 주면 풀기) — _run_argv(worktree·임시 체크아웃)·codex._launch·claude.tool_env(cwd) 가 자기 cwd 를 넘김. 검증만 다시: run 이 request.verify_only_commit 이면 등록·프로필 확인 뒤 _run_verify_only(도구 안 띄움) — _verify_only_source(인계 봉투 중 result_commit·base_commit 일치, 없으면 source_mismatch) → _has_commits_after_fetch(두 커밋, 없으면 origin fetch 한 번 뒤 다시, 그래도 없으면 result_commit_missing) → progress runtime_ref verify-only:<execution_id> → 결과 커밋 깨끗한 체크아웃(등록 links·copies 적용) 안에서 _test_before(테스트 파일은 그 체크아웃에서) + 등록 프로필 1회(로그를 test_log_after·verification_log 둘 다) → diff → CodeChangeResult(outcome=테스트 파일 있으면 이전 outcome 아니면 needs_information, summary '검증만 다시 — '+이전 요약, result_commit=그 커밋), 산출물 diff·test_log_before·test_log_after·verification_log(원시 로그·usage 없음), worktree·브랜치 만들지 않음. client.claim(capabilities=RUNNER_CAPABILITIES) 가 늘 capabilities 를 싣는다. cli --env 도움말에 상대 PYTHONPATH 안내. 결정: step 파일은 'push 하지 않는다'지만 ARCHITECTURE('_push_result 평소 규칙 그대로')를 따라 runner._push_result 는 그대로 둠 — 이미 있는 결과 브랜치를 fast-forward push 해 branch_pushed 를 보고해야 검토 승인 뒤 초안 PR(_queue_pull_request 가 검토 대상 실행의 branch_pushed 를 봄)이 이어진다; 어댑터는 브랜치를 만들지 않는다. 테스트: test_local_tool 16개(풀기 9·child_env·worktree/체크아웃 marker 하위 프로세스 cwd='/'·검증만 다시 정상/exit code/테스트 없음/source_mismatch/없는 커밋/origin fetch), test_codex·test_claude 도구 env PYTHONPATH, test_client capabilities(기존 claim 본문 단정에 capabilities 추가), test_cli 도움말 2. 검증: pytest 3265 passed·48 skipped, ruff 통과. 다음 step 주의: 서버 쪽 repo.record_runner_capabilities·claim_execution 검증만 다시 방어·create_execution 의 executions.verify_only 채우기는 아직 없음(step 7). 새 러너는 capabilities 를 늘 보내므로 v13 이전 서버에는 422 — 서버 먼저 업그레이드.",
+      "completed_at": "2026-09-30T22:56:34+0900"
     },
     {
       "step": 4,
       "name": "task-status-refresh",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T22:56:34+0900",
+      "summary": "단계 상태 재계산(결함 수정): machine_api.post_event 가 append_event 뒤 새로 저장된 이벤트(ack.last_event_seq > 받기 전 실행 행의 last_event_seq)이고 단계가 마감 전(finished_at NULL)일 때만 work_actions.refresh_task_status(settings=request.app.state.settings) — update_task_status→_refresh_stage_work 로 업무 상태도 재계산. _tx 가 중첩되지 않아 이벤트 저장과 상태 저장은 별도 트랜잭션(ARCHITECTURE 표 순서 그대로). 재전송은 다시 쓰지 않고, 마감 단계는 늦은 이벤트로 되돌리지 않음(update_task_status 자체는 마감을 안 보므로 호출자에서 막음). worker._start_ready_tasks: 활성 실행이 있는 순환 단계에서 _resume 이 False 이고 활성 실행이 TERMINAL_STATUSES(result_ready·failed)가 아니면 _refresh_task — 결정: ARCHITECTURE 는 조건 없이 부르라 했지만 result_ready·failed 뒤 상태는 판정·사람 요청·후속이 쓴 사유(검사 실패 상세 등)라 덮지 않도록 제한. 종류 이름 분기 없음(policy.cycle 그대로). 테스트: test_machine_api 4개(순환 accepted→접수 확인·started→실행 중·progress→마지막 진행, 패널 task_summary 도 같음 / 멱등 재전송 시 상태·task_events 불변 / 마감 단계 늦은 started 무시 / 비순환 사용자 정의 종류 화면 실시간 판정 유지·저장값도 맞춤), test_worker 1개(이벤트만 저장돼 접수 대기로 남은 순환 단계를 워커가 실행 중으로, 두 번 돌려도 같음). 기존 테스트 수정 없음. 검증: pytest 3270 passed·48 skipped, ruff 통과. 다음 step 주의: 실행 이벤트 경로가 이제 tasks.status·status_changed 이벤트를 쓴다 — result_ready 직후 워커 판정 전에는 '확인 필요 · 검토 대기/판정 대기' 가 먼저 저장된다.",
+      "completed_at": "2026-09-30T23:05:31+0900"
     },
     {
       "step": 5,
       "name": "delegation-rules",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T23:05:31+0900",
+      "summary": "맡기기 규칙(domain 만): delegation.py 에 APPROVAL_STATES·ApprovalFact·needs_owner_approval(admin_ids — 소유자 있으면 requester≠owner, 공용이면 requester∉관리자, 모름=소유자 아님)·approval_deciders(활성 소유자 아니면 활성 관리자 members 순)·can_decide_approval(관리자 또는 소유자)·can_set_policy(REMOVE_ANY_RUNNER 또는 ATTACH_RUNNER+자기 러너)·approval_state(표 — withdraw·모르는 동작=missing)·approval_question·declined_reason(이름 없으면 '관리자', 메모 첫 줄 80자)·offline_reason·candidate_label 추가(delegation 이 team 을 import). task_readiness: ExecutorFacts.owner_name, TaskFacts.owner_approvals, 정해진 Agent 의 상태로 owner_approval_pending(missing·pending)·owner_approval_declined(declined) — 이유는 ApprovalFact.reason, actor operator, 순서는 decision_pending 뒤·executor 검사 앞. executor_offline 이유 = offline_reason(owner_name)('이OO의 러너 꺼짐 · 켜지면 시작'/공용이면 '공용 러너 꺼짐 · 켜지면 시작' — step 파일의 '러너 꺼짐'이 아니라 ARCHITECTURE 문구), 연결 정보 없음 문구 그대로. team.turn_recipients(approvers=None) — None 아니면 그대로(빈 튜플도). work_status: 첫 열린 요청 코드 owner_approval 이면 이유 = 질문 첫 줄(접두어 없음). notification._HEADLINES 3개(맡김·러너 꺼짐·거절). 테스트: test_delegation(승인 필요 16행 표·승인자·권한·상태 표·문구), test_task_readiness 8, test_team 4, test_work_status 2, test_notification 1. 기존 테스트 수정 없음(test_team 도우미에 approvers 인자만). 검증: pytest 3325 passed·48 skipped, ruff 통과. 다음 step 주의: status.py(TaskView.connector_owner_name·approval_reason, user_status 의 '연결 끊김, 마지막 확인' 문구)는 views 가 채워야 해 step 6 으로 넘김. 서버가 ExecutorFacts.owner_name 을 아직 안 채워 순환 단계의 꺼짐 이유는 당분간 '공용 러너 꺼짐 · 켜지면 시작'. repo.agent_owner_id·_recipients approvers 계산·task_facts 의 owner_approvals 채우기·열린 owner_approval 요청을 open_request_ids 에서 빼기는 server/repo step 몫.",
+      "completed_at": "2026-09-30T23:14:18+0900"
     },
     {
       "step": 6,
       "name": "owner-approval",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T23:14:18+0900",
+      "summary": "소유자 승인·꺼진 러너 대기: 새 server/owner_approval.py(approval_facts·approval_fact·ensure_request·gate·STARTABLE·owner_name·notify_delegated/offline/declined — 순환 import 라 worker 는 모듈 참조), 새 server/stage_runs.py(WorkActionError·refresh_task_status·start_execution·run_task 를 work_actions 에서 옮김, work_actions 는 re-export; run_task(explicit, secrets) 가 gate → 409 owner_approval_pending, 러너에 붙은 에이전트가 꺼져 있으면 409 runner_offline — 연결 프로그램 없는 에이전트는 기존 request_incomplete 를 유지하려고 검사 안 함). work_actions.start_stage(secrets) = mark_start_pending → ensure_request(explicit) → 필요 없으면 delegated_to_you → 착수; assign_work(secrets). worker: enqueue_event_notification 모듈 함수(_notify 가 부름), _manual_override 가 start_pending_at 이면 auto, _owner_blocked(_write_blocked 에서 owner_approval_pending 이면 요청 열기, executor_offline 만이면 runner_offline_waiting — 결정: not_delegated·거절 대기일 땐 안 보냄), _start_waiting_stages(tick 에서 _spawn_successors 다음), _spawn_successors 에 gate, _resume 이 owner_approval: 응답을 셈에서 뺌. task_cycle: owner_approvals 채움·open_request_ids 에서 승인 요청 제외·ExecutorFacts.owner_name 채움. repo: agent_owner_id, mark_start_pending, _approvers_by_work(turn_recipients_of·list_work_rows·list_work_items 승인자 우선), create_execution·_finish_task_row 가 start_pending_at 비움, _assign_work_item 이 담당 바뀌면 withdraw + 에이전트 아니면 start_pending 비움, set_work_status 끝 상태면 withdraw, record_human_response_once(clear_delegation) → 선택 needs_selection(declined_reason)·chosen NULL·담당 비움. human_api: approve·decline(owner_approval 전용), 소유자·관리자 아니면 403, 거절 메모 2000자 422, 거절 뒤 delegation_declined(respond_to_request 새 kwarg settings·secret_store — secrets 모듈 이름과 겹쳐 이름 다름). views: agent_owner_id→repo, TaskView connector_owner_name·approval_reason 채움, RESPONSE_ACTIONS 에 승인·거절. domain/status: user_status 에 approval_reason(연결 판정 앞), 꺼짐 문구 = offline_reason. web: /tasks/{id}/run·/delegate 가 start_stage 경유(run 은 맡긴 사람을 착수 전에 쓰고 실패+승인 요청 없음이면 되돌림), 체인 시작은 mark_start_pending 후 _run_task, _run_cycle_task 삭제. 테스트: 새 test_owner_approval 14·test_stage_runs 2, test_status 2(문구 교체). 기존 수정: '연결 끊김, 마지막 확인 …' → '공용 러너 꺼짐 · 켜지면 시작'(test_web 4·test_ui 1·test_views 1), tick 순서 테스트에 _start_waiting_stages, test_worker 수동 실행 전에 에이전트 켜짐(웹이 실제 시각을 씀). 검증: pytest 3342 passed·48 skipped, ruff 통과. 다음 step 주의: 순환 단계에서 담당을 멤버로 바꿔도 chosen_agent_id 는 남아 워커가 자동 착수 시 승인을 다시 물을 수 있음(phase 16 동작 그대로); [다시 맡기기]의 비순환 새 단계는 여전히 워커가 시작하지 않음.",
+      "completed_at": "2026-09-30T23:37:42+0900"
     },
     {
       "step": 7,
       "name": "verify-only-server",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-09-30T23:37:42+0900",
+      "summary": "검증만 다시 서버: repo.record_runner_capabilities(알려진 값만 정렬·None=NULL, machine_api.claim 이 매번 호출), create_execution 이 request.verify_only_commit 으로 executions.verify_only 채움, claim_execution 은 verify_only=1 실행을 capabilities_json 에 verify_only 가 있는 러너에만(json_each). domain/task_readiness: ExecutorFacts.runner_capabilities·TaskFacts.required_runner_capability → executor_outdated '연결 프로그램 업데이트 필요 — 검증만 다시 미지원'(operator), task_cycle._executor 가 capabilities_json 을 채움. human_api: Action reverify, fix_verification_failed → {resume, reverify, close}(review_verification_failed 에는 없음), reverify_commit(활성 실행 result_ready + CodeChangeResult.result_commit) 없으면 409 nothing_to_reverify — 열린 요청에만 검사(재전송 멱등 유지), respond_to_request 새 kwarg store(API 는 app.state.store). worker: _resume 의 가장 최근 응답이 reverify 면 _start_verify_only(같은 Agent — auto_match·matched_agent_id, 같은 target, inputs=[이전 결과], start_key reverify:<request_id>, predecessor·release=이전 실행, required_runner_capability=verify_only), _create_cycle_execution 에 verify_only_commit kwarg. 판정·후속은 평소 경로(통과→review:<새 실행>, 실패→fix_verification_failed:<새 실행>, rework 횟수 안 셈). views.RESPONSE_ACTIONS: resume='답하고 다시 맡기기', reverify='검증만 다시'(패널·단계 상세가 같은 매크로; 알림 본문엔 버튼 이름 없음). 테스트: test_task_readiness 2, test_machine_api 3, test_task_cycle 6, test_human_api 3, test_views 1. 기존 테스트 수정 없음. 검증: pytest 3357 passed·48 skipped, ruff 통과. 다음 step 주의: CURRENT_HANDOFF 의 '[답하고 다시 판정]' 언급은 이력이라 두었다(step 11 문서 정리 몫). 지표 규칙 변경 없음(검증만 다시 실행도 executions 행 하나로 셈).",
+      "completed_at": "2026-09-30T23:59:07+0900"
     },
     {
       "step": 8,
       "name": "handoff-context",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T09:03:30+0900",
+      "summary": "인계 맥락 요청문: 새 domain/handoff_context.py(HANDOFF_NOTE_MAX 2000·FORM_VALUE_MAX 4000·compose_request — '# <키> <제목>' → '## 업무 양식'(### 칸 제목·값, 빈 값·_No response_ 제외, 값 4000자 넘으면 '…(생략)') → '## 맡긴 사람 지시 (<이름>|이름 없음)' → 원래 요청문, 빈 절 생략·절 사이 빈 줄 하나, work_key None 이면 body 그대로). task_cycle.execution_request_text(conn, task, *, with_answers) — 업무 행·form_json·메모·메모 쓴 멤버 이름으로 compose_request; 워커 _create_cycle_execution(True)·_spawn_successors(False)·stage_runs.start_execution(False) 이 사용, 준비 판정 request_text 는 그대로. 결정: 칸 이름 FORM_LABELS 를 views → domain/form_sections 로 옮김(views 가 task_cycle 을 import 해 순환) — views 는 import 로 같은 이름 사용. 지시 메모: 패널 담당 폼 textarea note(maxlength 2000), web POST /work/{key}/assignee 폼 note → work_actions.assign_work(note) 가 strip·에이전트일 때만 2000자 초과 422 invalid_field note(멤버·none 은 무시), repo.hand_work_to_agent(note) 가 같은 트랜잭션에서 _set_handoff_note(빈 메모면 지난 메모 지움), _assign_work_item 이 에이전트 아닌 담당이면 두 칸 비움. 타임라인 _event_line handoff_note = '지시 메모 · <이름> — <메모>'(자동 이스케이프). 테스트: test_handoff_context 6·test_form_sections 1·test_repo 1·test_work_actions 5(순환·비순환 요청문, 빈 메모, 2001→422·2000 통과, 멤버 무시)·test_web_work 2·test_web_work_panel 2(textarea, <script> 이스케이프). 기존 테스트 수정(새 동작 — 요청문 앞에 업무 머리): test_task_cycle 4곳·test_web 1곳의 request 기대값에 '# RUN-n 제목' 머리 추가. 검증: pytest 3374 passed·48 skipped, ruff 통과. 다음 step 주의: 업무에 붙은 모든 단계의 실행 요청 request 가 이제 '# RUN-n 제목' 으로 시작한다(request 원문 단정 테스트는 머리 포함으로).",
+      "completed_at": "2026-10-01T09:17:38+0900"
     },
     {
       "step": 9,
       "name": "work-list-polish",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T09:17:38+0900",
+      "summary": "목록 다듬기: domain/work_list — GROUP_BYS 에 repo(키 repo:<owner/name>, 대소문자 무시 이름순, '저장소 없음' repo:none 마지막), ListQuery.repo(기본 None)·parse_list_query(repo, repos — 목록과 대소문자 무시로 같을 때만 목록 표기, 아니면 None), filter_rows·filter_counts(repo=None — 저장소 필터 뒤 빠른 필터, 건수도 저장소 필터 뒤), WorkRow.repository·source_key_short(기본 None). domain/work_keys.short_source_key(owner/name#n → name#n, 그 밖 그대로, None→None). repo: list_work_rows 가 github_sources LEFT JOIN(source_type github·같은 워크스페이스)으로 repository 채움(칸 추가 없음), list_work_repositories(이름순). views: work_list_context 가 repo 필터·repos·repo_form_state, list_query_params 에 repo, 패널 담당 후보 _agent_choice_lines(candidate_label + needs_owner_approval(누르는 사람 기준)이면 ' · 승인 필요', 꺼진 에이전트 유지, agents 항목에 label·online). web: _list_query 도우미(home·패널 GET·담당/우선순위/직접 작업 POST 4개가 repo 쿼리/폼 — 파라미터 이름 repo_name alias repo, 모듈 repo 가림 방지), _work_redirect(conn, …, repo_name), POST /agents/{id}/delegation-policy(404 not_found → 403 forbidden '러너 소유자나 관리자만 바꿀 수 있습니다.' → 422 invalid_field policy → 303 /connect?tab=team), 팀 탭 agents 에 can_set_policy. 템플릿: home 키 칸 RUN-n 먼저 + 흐린 짧은 원본 키(보드 카드 같은 매크로), 묶기 '저장소', 도구 막대 저장소 GET 폼(data-repo-filter, 숨은 목록 상태, 저장소 없으면 숨김), _work_panel 후보 option 에 label, _connect_team 에이전트 행 data-agent + '맡기기' 칸(can_set_policy 면 select 폼, 아니면 글자). 결정: 정책 변경 기록은 설정 변경 기록 관례가 에이전트엔 없어 남기지 않음(업무 이벤트 아님); '승인 필요' 는 ARCHITECTURE candidate_label 시그니처 그대로 두고 views 에서 붙임. 테스트: test_work_list 4(묶기·필터·쿼리 파싱, 상수 GROUP_BYS 갱신)·test_work_keys 7·test_repo 2·test_web_work_list 6·test_web_work_panel 4·test_web_runner_owner 6(소유자·관리자·다른 멤버 403·읽기 전용·422·404·로그인/Origin). 기존 수정(새 동작): test_web_work_list·test_web_cycle 의 원본 키 전체 단정 → RUN-n 먼저·짧은 키(acme/… 없음), test_ui 에이전트 행 정규식에 data-agent. 검증: pytest 3405 passed·48 skipped, ruff 통과. 다음 step 주의: 목록 주소에 repo=<owner/name> 이 붙는다(패널 폼 숨은 입력 포함); UI_GUIDE·GLOSSARY 문서 갱신은 하지 않음(문서 step 몫).",
+      "completed_at": "2026-10-01T09:34:22+0900"
     },
     {
       "step": 10,
       "name": "multi-runner-install",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T09:34:22+0900",
+      "summary": "러너 두 대 설치: deploy/selfhost/install-runner.sh --name <이름> — 규칙은 ARCHITECTURE 기준 ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$(1~32자, 하이픈 시작·끝 불가; step 파일의 정규식·'32자 거부'와 달라 ARCHITECTURE 를 따름 — 33자·'b-' 거부, 32자 통과 테스트), 틀리면 설치 전 종료 2. 이름이 있으면 label com.workflow.selfhost.connector.<이름>·plist·로그 workflow-connector-selfhost-<이름>·러너 홈 workflow-connector-<이름>(WORKFLOW_CONNECTOR_HOME 을 직접 주면 그 값), plist EnvironmentVariables 에 WORKFLOW_CONNECTOR_HOME(이름 없을 땐 넣지 않음 — 지금 그대로), setup 도 같은 홈으로 export, bootout·print·bootstrap 은 그 label 만. DRY_RUN 첫 줄에 label·로그·러너 홈, setup·connect·register 안내 명령 앞에 WORKFLOW_CONNECTOR_HOME=\"…\", 다시 실행 안내에 --name. usage 에 --name. _connect_github.html [러너 붙이기] 명령 아래 '--name b' 안내 한 줄. docs/SELFHOST.md '### 한 Mac 에 러너 두 대(시험용)'(러너 연결 절 끝 — 두 번째 멤버 초대·로그인·[러너 붙이기]+--name b, 같은 claude·codex 로그인·git 자격, 해제 bootout+plist·홈·로그 삭제). 테스트: test_selfhost_files 에 --name 분리·이름 없음 그대로·명시 홈·그 label 만 적재·잘못된 이름 6·32자 통과·값 없음·도움말·SELFHOST 절(--env·코드 값 출력 없음 단정 포함, 모두 DRY_RUN 또는 가짜 launchctl), test_web_runner 카드 안내 단정 1줄. 기존 테스트 수정 없음. 검증: pytest 3419 passed·48 skipped, ruff 통과. 다음 step 주의: e2e 러너 두 대는 WORKFLOW_CONNECTOR_HOME 임시 폴더 두 개로(launchd 아님).",
+      "completed_at": "2026-10-01T09:45:43+0900"
     },
     {
       "step": 11,
       "name": "handoff-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-01T09:45:43+0900",
+      "summary": "e2e·문서: 새 tests/e2e/test_team_handoff.py 8개(WORKFLOW_E2E=1 — 관리자 A·멤버 B, 러너 두 대 각자 WORKFLOW_CONNECTOR_HOME·같은 bare origin 의 클론 둘 --id billing-a/-b, 가짜 codex 가 프롬프트를 파일로 남김, 검증 프로필 = 플래그 파일이면 실패하는 스크립트): ① A→B 에이전트(run)+지시 메모 → B 러너 수정·검토 → 재작업 상한 0 사람 요청 → A 의 내 차례만, B 에 delegated_to_you 공용·개인 1씩 ② B 정책 owner_approval → 후보 '· 승인 필요' → RUN-2 실행 0·'운영자 가 맡김 · 김멤버 승인 대기'·B 내 차례 → 승인 → 실행, 후속 검토 단계도 다시 승인(ADR-0023 결정 1 그대로) → PR; RUN-3 거절(2001자 422) → 담당 없음·A 에 delegation_declined ③ B 러너 종료 → '김멤버의 러너 꺼짐 · 켜지면 시작'·runner_offline_waiting 1회 → 재기동 → 착수 ④ 검증 실패 → [검증만 다시] → verify_only 실행·같은 커밋·통과 → 검토 단계, 수정 프롬프트 1 그대로 ⑤ group=repo·repo 필터·키 칸 RUN-1 + billing#1, 요청문 '# RUN-1 제목'→지시 절→본문. 마이그레이션은 step 1 의 test_db v12→v13 테스트가 봄(e2e 생략). 결함 수정 3(미러 테스트 먼저): (1) domain/github_match.match_source(chosen_agent_id=) — all_open 에서 사람이 맡긴 Agent 가 수정 Agent·프로필(같은 저장소 러너 둘이면 fix_agent_ambiguous 로 맡긴 에이전트를 무시하던 것, filtered 는 담당자 규칙 그대로 — 기존 test_choosing_an_agent_outside_the_assignees 유지), (2) match_source(pair_agent_id=) — 검토 설정이 비면 수정 Agent 가 검토(review_repository_mismatch 회피), task_cycle._match 가 두 값 전달(_start_review 의 pair_agent_id), (3) machine_api.post_event 가 failed 이벤트로 단계 상태를 다시 계산하지 않음 — step 4 회귀로 업무가 stage_failed 전에 '종료' 로 굳어 기존 e2e test_real_repo test_07 이 HEAD 에서 실패했음. 테스트: test_github_match 2·test_task_cycle 2·test_machine_api 1. 문서: ARCHITECTURE phase 17 '같은 저장소의 러너 여럿 — 매칭'·이름 표 행·단계 상태 표 failed, ADR-0023 결정 11, SELFHOST 업그레이드 v13(백업→install.sh→러너 재설치)·러너 두 대 절(두 번째 클론 폴더 이름 달라야 함 — 409 registration_taken, 카드 에이전트 칸 비움), UI_GUIDE 도구 막대·키 칸·담당 후보·지시 메모·승인/검증만 다시·팀 탭 정책, VERIFICATION_LOG phase 17 절, CURRENT_HANDOFF 다음 작업(사용자 할 일 5개), REDESIGN_PLAN 17 완료. 검증: pytest 3424 passed·56 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 55 passed·1 skipped(Docker 게이트), test_team_handoff 단독 8 passed. 주의: 저장소 카드는 러너 둘이면 '수정 Agent 2개' 를 계속 보임(패널 선택은 동작); install-runner.sh 에 --id 없음(등록 이름 = 클론 폴더 이름); 승인 정책은 단계마다 물음; WORKFLOW_DOCKER e2e 미실행.",
+      "completed_at": "2026-10-01T10:15:43+0900"
     }
-  ]
+  ],
+  "created_at": "2026-09-30T22:00:42+0900",
+  "completed_at": "2026-10-01T10:15:43+0900"
 }

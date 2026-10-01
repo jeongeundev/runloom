@@ -114,3 +114,18 @@ def test_unknown_key_is_404(admin, key):
 def test_conflicts_are_409(admin, conn, issue_task):
     assert admin.post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}"}).status_code == 200  # 따라감
     error(admin.post("/work/RUN-1/assignee", data={"assignee": "none"}), 409, "execution_conflict")
+
+
+def test_note_over_2000_is_422_and_nothing_changes(admin, conn, issue_task):
+    error(admin.post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}", "note": "가" * 2001}),
+          422, "invalid_field")
+    assert work(conn, issue_task)["assignee_type"] is None and executions(conn, issue_task) == []
+
+
+def test_note_is_saved_for_an_agent_and_ignored_for_a_member(admin, conn, issue_task):
+    response = admin.post("/work/RUN-1/assignee", data={"assignee": "none", "note": "가" * 2001},
+                          follow_redirects=False)
+    assert response.status_code == 303 and work(conn, issue_task)["handoff_note"] is None
+    response = admin.post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}", "note": "결제 모듈만"},
+                          follow_redirects=False)
+    assert response.status_code == 303 and work(conn, issue_task)["handoff_note"] == "결제 모듈만"

@@ -4,6 +4,7 @@
 settings 모듈의 ENV_KEYS. 컨테이너는 띄우지 않는다 — 실제 기동은 step 8. 도커가 있으면 `docker compose config` 만 돌린다.
 """
 
+import os
 import plistlib
 import re
 import shutil
@@ -594,6 +595,98 @@ def test_install_runner_stops_before_launchd_when_setup_fails(tmp_path):
     assert RUNNER_CODE not in res.stdout + res.stderr
 
 
+# --- install-runner.sh --name (phase 17 step 10, ARCHITECTURE "러너 두 대 설치") --------------------------------
+
+
+def test_install_runner_name_splits_label_plist_logs_and_home(tmp_path):
+    folder = tmp_path / "repo"
+    res = _run_runner(
+        tmp_path, "--name", "b", "--server", "http://127.0.0.1:8000", "--code", RUNNER_CODE, "--repo", str(folder),
+        "--env", f"DATABASE_URL={ENV_VALUE}", DRY_RUN="1",
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    out = res.stdout
+    home = tmp_path / "home"
+    label = "com.workflow.selfhost.connector.b"
+    plist_path = home / "Library" / "LaunchAgents" / f"{label}.plist"
+    runner_home = home / "Library" / "Application Support" / "workflow-connector-b"
+    log_dir = home / "Library" / "Logs" / "workflow-connector-selfhost-b"
+    plist, raw = _plist_in(out)
+    assert plist["Label"] == label
+    assert plist["StandardOutPath"] == str(log_dir / "stdout.log")
+    assert plist["EnvironmentVariables"]["WORKFLOW_CONNECTOR_HOME"] == str(runner_home)
+    assert str(plist_path) in out and str(log_dir) in out and str(runner_home) in out
+    assert f"launchctl bootout gui/{os.getuid()}/{label};" in out
+    assert f"launchctl bootstrap gui/{os.getuid()} {plist_path}" in out
+    # setup 도 같은 러너 홈으로 돈다
+    setup_line = next(line for line in out.splitlines() if "-m workflow.connector setup" in line)
+    assert f'WORKFLOW_CONNECTOR_HOME="{runner_home}"' in setup_line
+    # 코드·--env 값은 출력하지 않는다
+    assert RUNNER_CODE not in out and ENV_VALUE not in out and "s3cretPW" not in out
+    assert "DATABASE_URL" not in raw
+    assert not plist_path.exists() and _calls(tmp_path) == []
+
+
+def test_install_runner_without_name_keeps_old_label_and_home(tmp_path):
+    res = _run_runner(tmp_path, DRY_RUN="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    plist, _ = _plist_in(res.stdout)
+    home = tmp_path / "home"
+    assert plist["Label"] == "com.workflow.selfhost.connector"
+    assert plist["StandardOutPath"] == str(home / "Library" / "Logs" / "workflow-connector-selfhost" / "stdout.log")
+    assert "WORKFLOW_CONNECTOR_HOME" not in plist["EnvironmentVariables"]
+    assert str(home / "Library" / "LaunchAgents" / "com.workflow.selfhost.connector.plist") in res.stdout
+    assert str(home / "Library" / "Application Support" / "workflow-connector") in res.stdout
+    assert "workflow-connector-" not in res.stdout.replace("workflow-connector-selfhost", "")
+
+
+def test_install_runner_name_respects_explicit_connector_home(tmp_path):
+    explicit = tmp_path / "explicit-home"
+    res = _run_runner(tmp_path, "--name", "b", DRY_RUN="1", WORKFLOW_CONNECTOR_HOME=str(explicit))
+    assert res.returncode == 0, res.stdout + res.stderr
+    plist, _ = _plist_in(res.stdout)
+    assert plist["EnvironmentVariables"]["WORKFLOW_CONNECTOR_HOME"] == str(explicit)
+
+
+def test_install_runner_name_loads_only_its_label(tmp_path):
+    connector_home = tmp_path / "connector"
+    connector_home.mkdir()
+    (connector_home / "token.json").write_text("{}", encoding="utf-8")
+    res = _run_runner(tmp_path, "--name", "b", WORKFLOW_CONNECTOR_HOME=str(connector_home), SKIP_PIP_INSTALL="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    label = "com.workflow.selfhost.connector.b"
+    plist_path = tmp_path / "home" / "Library" / "LaunchAgents" / f"{label}.plist"
+    assert plistlib.loads(plist_path.read_bytes())["Label"] == label
+    assert not (tmp_path / "home" / "Library" / "LaunchAgents" / "com.workflow.selfhost.connector.plist").exists()
+    calls = [c for c in _calls(tmp_path) if c.startswith("launchctl")]
+    assert calls and all(label in c for c in calls)
+
+
+@pytest.mark.parametrize("name", ["B", "a_b", "-b", "b-", "a" * 33, ""])
+def test_install_runner_rejects_bad_name(tmp_path, name):
+    res = _run_runner(tmp_path, "--name", name, DRY_RUN="1")
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "--name" in res.stderr and res.stdout == "" and _calls(tmp_path) == []
+
+
+def test_install_runner_accepts_32_char_name(tmp_path):
+    name = "a" + "-b" * 15 + "c"  # 32자 — ARCHITECTURE 규칙 상한
+    assert len(name) == 32
+    res = _run_runner(tmp_path, "--name", name, DRY_RUN="1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert _plist_in(res.stdout)[0]["Label"] == f"com.workflow.selfhost.connector.{name}"
+
+
+def test_install_runner_name_needs_value(tmp_path):
+    res = _run_runner(tmp_path, "--name", DRY_RUN="1")
+    assert res.returncode == 2 and _calls(tmp_path) == []
+
+
+def test_install_runner_help_mentions_name(tmp_path):
+    res = _run_runner(tmp_path, "--help")
+    assert "--name" in res.stdout
+
+
 # --- docs/SELFHOST.md (step 7) ------------------------------------------------------------------
 # 문서의 명령이 실제 파일·모듈·CLI 인자와 맞는지 본다. 명령을 실행하지는 않는다 — argparse 로 인자만 확인한다.
 
@@ -650,6 +743,16 @@ def test_selfhost_md_covers_team_upgrade_and_remote_access():
     for needle in ("/connect?tab=team", "초대 링크", "재설정 링크", "/login/recover", "WORKFLOW_PUBLIC_URL", "Tailscale",
                    "Cloudflare Tunnel", "https://", "개인 웹훅", "/me"):
         assert needle in text, needle
+
+
+def test_selfhost_md_covers_two_runners_on_one_mac():
+    """phase 17 step 10 — 두 번째 멤버 계정으로 [러너 붙이기] → --name b, 같은 Claude 로그인, 해제 방법."""
+    text = _selfhost_md()
+    section = text[text.index("### 한 Mac 에 러너 두 대"):text.index("## GitHub 연결")]
+    for needle in ("/connect?tab=team", "러너 붙이기", "--name b", "같은 `claude`", "WORKFLOW_CONNECTOR_HOME",
+                   "launchctl bootout gui/$(id -u)/com.workflow.selfhost.connector.b",
+                   "com.workflow.selfhost.connector.b.plist", "workflow-connector-b"):
+        assert needle in section, needle
 
 
 def test_selfhost_md_paths_exist():

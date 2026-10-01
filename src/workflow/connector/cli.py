@@ -126,7 +126,8 @@ def _add_registration_args(parser: argparse.ArgumentParser, *, tool_default: str
     )
     parser.add_argument(
         "--env", action="append", default=[], type=_env_arg, metavar="NAME=VALUE",
-        help="검증·도구 프로세스 환경에 더할 값. 러너 로컬에만 저장. 여러 번 지정 가능",
+        help="검증·도구 프로세스 환경에 더할 값. 러너 로컬에만 저장. 여러 번 지정 가능. "
+             "상대 PYTHONPATH 는 실행 폴더 기준으로 풀린다 (예: PYTHONPATH=src)",
     )
 
 

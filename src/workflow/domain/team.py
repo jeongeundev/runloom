@@ -158,7 +158,11 @@ def turn_recipients(
     assignee_id: str | None,
     requested_by_member_id: str | None,
     members: Sequence[MemberFact],
+    approvers: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
+    # 열린 소유자 승인 요청이 있으면 그 승인자(호출자가 `delegation.approval_deciders` 로 계산)가 먼저다 (phase 17)
+    if approvers is not None:
+        return approvers
     active = {m.member_id for m in members if m.active}
     if assignee_type == "member" and assignee_id in active:
         return (assignee_id,)

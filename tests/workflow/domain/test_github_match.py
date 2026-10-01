@@ -198,3 +198,38 @@ def test_one_agent_with_fix_and_review_takes_both_roles():
     match = match_source(_source(), [both])
 
     assert match == SourceMatch(REPO, "vp-check", "agent-runner", "agent-runner", ())
+
+
+def test_agent_a_person_chose_for_the_task_wins_over_every_automatic_rule():
+    """phase 17 — 두 러너가 같은 저장소를 등록해도 사람이 맡긴 Agent(`chosen_agent_id`)로 정해지고 프로필도 그 등록에서."""
+    second = _agent("agent-fix-2", "code.fix", profiles=("vp-2",))
+
+    match = match_source(_source(), [FIX, second, REVIEW], chosen_agent_id="agent-fix-2")
+
+    assert (match.fix_agent_id, match.fix_verification_profile_id, match.blockers) == ("agent-fix-2", "vp-2", ())
+    bound = match_source(_source(default_fix_agent_id="agent-fix"), [FIX, second, REVIEW], assignee_ids=(7,),
+                         bindings={7: "agent-fix"}, chosen_agent_id="agent-fix-2")
+    assert bound.fix_agent_id == "agent-fix-2"
+    assert match_source(_source(), [FIX, second, REVIEW], chosen_agent_id=None).fix_agent_id is None  # 지금 그대로
+    filtered = _source(intake="filtered", label_filter=["bug"], workflow_repository_id="billing",  # 담당자 규칙(phase 8)
+                       fix_verification_profile_id="vp-pytest", review_agent_id="agent-review")
+    assert match_source(filtered, [FIX, second, REVIEW], chosen_agent_id="agent-fix-2").fix_agent_id is None
+
+
+def test_review_prefers_the_fix_agent_when_several_runners_can_review():
+    """phase 17 — 두 러너가 같은 저장소를 등록하면 검토 후보가 둘이다. 검토는 수정한 러너의 결과 커밋을 읽어야 하므로
+    수정 Agent(`pair_agent_id`)가 검토할 수 있으면 그것을 고른다. 설정값이 있으면 그대로."""
+    def both(agent_id: str) -> MatchAgent:
+        return MatchAgent(agent_id=agent_id, github_repository=REPO, repository_id=REPO,
+                          capabilities=(Capability(code="code.fix", scope={"repository_id": REPO}),
+                                        Capability(code="code.review", scope={"repository_id": REPO})),
+                          verification_profile_ids=("vp-check",))
+
+    runners = [both("agent-a"), both("agent-b")]
+
+    assert match_source(_source(), runners, pair_agent_id="agent-b").review_agent_id == "agent-b"
+    assert match_source(_source(), runners, pair_agent_id="agent-b").review_blockers == ()
+    assert _codes(match_source(_source(), runners, chosen_agent_id="agent-a")) == ["review_agent_ambiguous"]
+    assert match_source(_source(review_agent_id="agent-a"), runners, pair_agent_id="agent-b").review_agent_id == "agent-a"
+    assert _codes(match_source(_source(), [FIX, REVIEW, _agent("agent-review-2", "code.review")],
+                               pair_agent_id="agent-fix")) == ["review_agent_ambiguous"]  # 수정 Agent 가 검토 못 함

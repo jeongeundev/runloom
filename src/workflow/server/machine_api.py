@@ -25,6 +25,7 @@ from workflow.contracts.v1 import (
     NonEmptyStr,
 )
 from workflow.domain.status import TERMINAL_STATUSES
+from workflow.server import work_actions
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace, get_conn, require_connector, utc_now
 from workflow.server.errors import ApiError
 
@@ -107,6 +108,7 @@ def claim(
 ) -> Response:
     _check_connector_id(body.connector_id, connector_id)
     repo.record_supported_kinds(conn, connector_id, body.supported_kinds)  # 준비 판정(executor_outdated)의 입력
+    repo.record_runner_capabilities(conn, connector_id, body.capabilities)  # 검증만 다시 배정·준비 판정의 입력
     if body.registration_heads:  # 배정 판단보다 먼저 — 새 업무의 기준 커밋 (ADR-0018 결정 2)
         repo.update_registration_heads(conn, connector_id, body.registration_heads)
     row = repo.claim_execution(conn, connector_id, utc_now())
@@ -180,17 +182,23 @@ def register(
 def post_event(
     execution_id: str,
     body: ExecutionEvent,
+    request: Request,
     connector_id: str = Depends(require_connector),
     conn: Connection = Depends(get_conn),
 ) -> JSONResponse:
-    _assigned_execution(conn, execution_id, connector_id)
+    execution = _assigned_execution(conn, execution_id, connector_id)
     if body.execution_id != execution_id:
         raise ApiError(
             422, "invalid_field", "execution_id가 URL의 실행 ID와 다릅니다.", field="execution_id"
         )
-    ack = repo.append_event(
-        conn, execution_id, body, actor=f"connector:{connector_id}", now=utc_now()
-    )
+    now = utc_now()
+    ack = repo.append_event(conn, execution_id, body, actor=f"connector:{connector_id}", now=now)
+    # 새로 저장된 이벤트만 — 재전송은 상태를 다시 쓰지 않는다. `failed` 뒤 단계 마감(`실패`·`stage_failed` 요청)은 워커가
+    # 한 트랜잭션으로 쓴다 — 여기서 `실패` 를 먼저 저장하면 요청 없이 단계가 모두 닫혀 업무가 `종료` 로 굳는다
+    if ack.last_event_seq > execution["last_event_seq"] and body.type != "failed":
+        task = repo.get_task(conn, execution["task_id"])
+        if task["finished_at"] is None:  # 마감된 단계는 늦게 온 이벤트로 되돌리지 않는다
+            work_actions.refresh_task_status(conn, task["task_id"], now, request.app.state.settings)
     return _json(ack)
 
 

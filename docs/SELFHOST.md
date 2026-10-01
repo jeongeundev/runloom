@@ -124,6 +124,33 @@ connect 는 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application S
 
 `main` 데모 러너(`com.workflow.connector`)를 같은 Mac 에 둔 경우 연결 토큰 파일 위치가 겹치므로 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
 
+### 한 Mac 에 러너 두 대(시험용)
+
+다른 사람에게 맡기는 흐름(소유자 알림·승인)을 Mac 한 대에서 시험할 때. 러너 소유자는 [러너 붙이기]를 누른 멤버이므로 두 번째 러너는 두 번째 멤버 계정으로 붙인다.
+
+1. 관리자 계정으로 `/connect?tab=team` 에서 두 번째 멤버를 초대하고, 초대 링크로 계정을 만든다(다른 브라우저 프로필이나 시크릿 창).
+2. 그 계정으로 로그인해 `/connect?tab=sources` 저장소 카드의 [러너 붙이기]를 누른다. 카드에 나온 명령 끝에 `--name b` 를 붙여 Runloom 설치 폴더에서 실행한다.
+
+   ```bash
+   deploy/selfhost/install-runner.sh --server http://127.0.0.1:8000 --code <연결 코드> --repo <이 저장소를 클론한 폴더> --name b
+   ```
+
+`--repo` 는 **두 번째 클론**을 준다 — 폴더 이름이 첫 러너가 등록한 폴더와 달라야 한다(예 `~/demo/runloom-sandbox-b`). 로컬 등록 이름 = 폴더 이름이고, 다른 러너가 이미 쓰는 이름이면 등록이 409 `registration_taken` 으로 실패한다. 한 클론을 두 러너가 함께 쓰면 결과 브랜치(`runloom/RUN-n`)도 겹친다.
+
+두 러너가 같은 GitHub 저장소를 등록하면 저장소 카드의 수정·검토 에이전트 칸은 비워 둔다 — 업무를 맡긴 에이전트가 수정하고, 검토는 그 에이전트의 러너가 한다(검토는 수정 결과 커밋이 있는 러너에서만 돈다). 카드에 "수정 Agent 2개 — 설정에서 하나 고르세요" 가 보여도 패널에서 담당 에이전트를 고르면 그 에이전트로 시작한다.
+
+`--name b` 러너는 label `com.workflow.selfhost.connector.b`, plist `~/Library/LaunchAgents/com.workflow.selfhost.connector.b.plist`, 로그 `~/Library/Logs/workflow-connector-selfhost-b/`, 러너 홈(연결 토큰·등록) `~/Library/Application Support/workflow-connector-b/` 를 쓴다(plist 의 `WORKFLOW_CONNECTOR_HOME`). 이름 없는 러너와 겹치지 않아 둘 다 돈다. 이름은 영소문자·숫자·하이픈 1~32자(하이픈으로 시작·끝 불가)이고, 틀리면 아무것도 하지 않고 종료 코드 2 로 끝난다. 같은 이름으로 다시 실행하면 그 러너만 다시 적재한다.
+
+두 러너는 같은 Mac 사용자로 돌기 때문에 **같은 `claude`·`codex` 로그인(구독)과 같은 git 자격을 쓴다** — 소유자가 다르게 보이는 것은 Runloom 안에서뿐이다. 실제로 다른 사람이 쓰려면 그 사람의 Mac 에서 붙인다.
+
+해제(이 러너만):
+
+```bash
+launchctl bootout gui/$(id -u)/com.workflow.selfhost.connector.b
+rm ~/Library/LaunchAgents/com.workflow.selfhost.connector.b.plist
+rm -r ~/Library/"Application Support"/workflow-connector-b ~/Library/Logs/workflow-connector-selfhost-b
+```
+
 ## GitHub 연결
 
 GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. 선택 기능이다. 기본은 **버튼 연결** — 내 GitHub 계정에 이 서버 전용 GitHub App 을 하나 만들어 설치한다([ADR-0017](adr/0017-github-app-connection.md)). 내부 ID·토큰을 입력하지 않는다. 자세한 동작·중지·복구는 [GitHub 런북](github/README.md).
@@ -226,6 +253,11 @@ deploy/selfhost/install-runner.sh
 - v10(phase 14) — 업무 표(`work_items` 등)를 만들고 기존 Task 를 이슈마다 업무 하나로 묶는다(키 `RUN-n`, 첫 관리자·기본 매핑). 백업(`backup create`)을 먼저 한다. 진행 중인 실행이 끝난 뒤 업그레이드를 권장한다 — 러너도 함께 올린다(새 결과 브랜치 `runloom/<키>`).
 - v11(phase 15) — 팀 계정 표(`login_sessions`·`member_invites`)와 칸(이메일·비밀번호 해시·맡긴 사람·응답자·알림 받는 사람·러너 소유자)을 더한다. 기존 행은 그대로다. 백업(`backup create`)을 먼저 한다. 재설치 뒤 **옛 로그인 쿠키는 무효라 다시 로그인**해야 하고, 첫 접속에서 `.env` 의 운영자 토큰으로 관리자 계정(이메일·비밀번호)을 만든다(위 "로그인"). 기존 러너는 소유자 없음 = 관리자만 해제할 수 있다 — 그대로 계속 돈다. 기존 알림 설정은 공용 웹훅으로 그대로 간다.
 - v12(phase 16) — 업무 화면(담당자 묶음·보드·상세 패널)·직접 작업·PR 신호용 칸과 표를 더한다: `work_items` 직접 작업 칸 셋, `github_sources.pull_cursor`, 감지 PR 표 `work_pull_requests`, 업무 이벤트 종류 확장(`work_item_events` 재생성 — id 그대로). 기존 행과 업무 상태는 그대로다. 백업(`backup create`)을 먼저 하고, 진행 중인 실행이 끝난 뒤 `install.sh` 를 다시 돌린다. **러너 재기동은 필요 없다** — 러너 프로토콜(`connector`·`contracts`)은 바뀌지 않았다(재기동해도 된다). 재설치 뒤 첫 동기화는 저장소마다 최근 PR 100건까지만 읽어 업무 키(`RUN-n`)가 브랜치 이름·제목에 든 PR 을 업무에 붙인다.
+- v13(phase 17) — 사람 사이 인계: 에이전트 맡기기 정책(`agents.delegation_policy`, 기존 에이전트는 모두 `run` = 바로 실행), 러너 능력(`connectors.capabilities_json`), 검증만 다시 표시(`executions.verify_only`), 착수 대기(`tasks.start_pending_at` — `tasks` 표는 재생성하지 않는다), 지시 메모(`work_items` 칸 둘), 알림 사건 3개·업무 이벤트 `handoff_note`(`notifications`·`work_item_events` 재생성 — id 그대로). 기존 행과 업무 상태는 그대로다. 순서:
+  1. 백업 먼저(`backup create`).
+  2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 13.
+  3. **러너도 `install-runner.sh` 로 다시 설치한다** — 러너 프로토콜이 바뀌었다(claim 에 `capabilities`, 실행 요청에 `verify_only_commit`). 옛 러너는 v13 서버에 그대로 붙지만 [검증만 다시]를 받지 못해 그 실행은 `연결 프로그램 업데이트 필요 — 검증만 다시 미지원` 으로 기다린다. 새 러너는 v13 이전 서버에 붙지 못한다(422) — 서버를 먼저 올린다. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
+  - 러너 등록의 `--env PYTHONPATH=src` 같은 상대 항목은 이제 실행 폴더(worktree·임시 체크아웃) 기준 절대 경로로 풀린다 — `$PWD/src` 로 바꿔 둔 우회는 그대로 둬도 된다.
 - 옛 주소는 넘어간다(303) — `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` → `/connect?tab=…`, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
