@@ -2201,6 +2201,8 @@ def should_autostart(*, proceed: str, assignee_type: str | None, confidence: flo
 | 상태 | `TriageFact`, `triage_reason(fact) -> str`(위) |
 | 자동 시작 | `AutostartSetting`, `can_enable_autostart`, `should_autostart`(위), `parse_threshold(value: str) -> float`(`0.50`~`1.00`, 소수 둘째 자리까지 — 아니면 ValueError) |
 
+구현(step 3, 2026-10-01): 위 표 그대로에 후보 조립 순수 함수 `AgentInfo(agent_id, name, owner_name, online, open_work, capabilities)`·`assemble_candidates(*, specs, current_kind, current_required: Capability, repository_id, members, agents: Sequence[AgentInfo], predecessors, work_key) -> TriageCandidates` 를 더했다 — 종류 = `startable_kinds`, Agent 가 맡을 수 있는 종류 = 요구 능력(지금 종류는 열린 단계의 `required_capability`, 나머지는 `{scope_key: repository_id}`)과 똑같은 능력이 있는 것(없으면 후보에서 뺀다), 선행 = `work_key` 자신 제외, Agent·선행 `CANDIDATES_MAX` 건까지. step 5 의 `triage_runs.build_candidates` 는 재료를 모아 이것을 부른다. 요청문의 업무 양식 칸·요청 원문은 글 안의 가장 긴 backtick 줄보다 긴 펜스 안에 그대로 넣는다(본문의 `## 후보` 같은 줄이 절 경계를 흐리지 않게), 제목·이름은 한 줄로 접는다. 선행 중복은 계약(`TriageResult`)이 이미 422 로 거부한다.
+
 요청문 모양(빈 절은 쓰지 않는다, 줄 끝 공백 없음):
 
 ```
