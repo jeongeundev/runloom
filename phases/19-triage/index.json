@@ -24,7 +24,7 @@
       "status": "completed",
       "started_at": "2026-10-01T21:37:31+0900",
       "summary": "계약·판정: 수정 contracts/v1.py(ARTIFACT_KINDS 18종 끝 triage_result, TriageTarget·ExecutionRequest target 합집합 — kind_spec.output_kind==triage_result 면 TriageTarget·입력 없음, kind triage 에 봉투 없으면 422, 다른 종류의 TriageTarget 422, TRIAGE_PROCEED·TRIAGE_CRITERIA·TRIAGE_CANDIDATES_MAX=30, TriageReason·TriageAssignee·TriageResult(ready=종류·담당 있음+missing 빈, needs_check=missing 1+, 중복 거부)·Triage{Kind,Member,Agent,Predecessor}Candidate·TriageCandidates(중복 id·current_kind 포함·에이전트 kinds 1+)), domain/execution_policy.py(TRIAGE_OUTPUT_KIND·is_triage_kind — 결과 형태로 판정), domain/kinds.validate_rule(from·to 판단 종류 거부), adapters/repo.py(_TRIAGE_STAGE SQL 조각, register_local_agent 능력 3개 code.triage 추가, replace_field_mappings 판단 종류 ValueError, claim_execution — 판단 단계 실행은 supported_kinds_json 에 그 종류가 있는 러너에만), server/web.py(/tasks 판단 종류 422 '판단 종류로는 업무를 등록할 수 없습니다.'), docs/CONTRACT.md(17절 jsonc→json·contract-pending 제거, 4절 kind 목록·표에 triage_result, 14.3 능력 셋), ARCHITECTURE 계약 절 구현 메모. 테스트: test_v1(블록 64→67·_SIGNATURES TriageResult/TriageCandidates·ARTIFACT_KINDS 18·판단 요청·결과·후보 검증), test_execution_policy(이름 바꿔도 같은 판정), test_kinds(규칙 거부), test_repo(능력 3개·옛 러너 판단 claim 불가/수정 claim·매핑 거부), test_web(/tasks 422). 기존 변경: test_machine_api 자체 등록 능력 단정에 code.triage 추가(새 동작). 검증: pytest 3852 passed·63 skipped, ruff 통과. 다음 step 주의: repo.is_triage_task 는 아직 없음(step 5), 러너 SUPPORTED_BUILTIN_KINDS 는 그대로(step 4) — 지금 러너는 판단 실행을 claim 못 한다.",
-      "completed_at": "2026-10-01T21:50:00+0900"
+      "completed_at": "2026-10-01T21:54:09+0900"
     },
     {
       "step": 3,
