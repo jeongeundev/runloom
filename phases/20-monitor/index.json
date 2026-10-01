@@ -5,7 +5,9 @@
     {
       "step": 0,
       "name": "monitor-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T04:32:00+0900",
+      "summary": "문서만: docs/adr/0026-monitor.md 새로, ARCHITECTURE '모니터링 — phase 20' 절(지표 정의 표 둘·확신도 구간·기준값 미리보기·스키마 v16·기록 지점 표·이름 고정·경로·문구), GLOSSARY phase 20 용어, REDESIGN_PLAN 13절 8행, CURRENT_HANDOFF '20-monitor 진행 중', README 기본값 6 표시. 결정: 병합 완료 = 업무 완료 + 병합 PR(task_pull_requests·work_pull_requests, status_reason 안 씀), 내 차례 시각 = to='내 차례' 이고 from!='내 차례' 인 최근 행(이유만 바뀐 행 제외), config_changes 는 영문 area/action 코드 + UNIQUE(session_id, revision), 기록은 bump_config_revision(conn, sid, *, area, action, subject, member_id, now) 한 곳, 매핑 subject 'github 2행 · jira 1행', 판단 입력 이름 TriageLogFact(domain/triage.TriageFact 와 충돌 피함), WorkOutcomeFact. bump 호출 8곳은 README 와 같음, update_jira_project 는 기록 안 함. 검증: pytest 4045 passed·72 skipped, ruff 통과. 다음 step 주의: bump_config_revision·delete_kind·delete_rule 시그니처 변경 시 기존 테스트 호출 수정, github_connect 헬퍼에 member_id 키워드, 받는 사람은 _member_facts·_approvers_by_work·_recipients 묶음 재사용."
     },
     {
       "step": 1,
@@ -52,5 +54,6 @@
       "name": "monitor-verify",
       "status": "pending"
     }
-  ]
+  ],
+  "created_at": "2026-10-02T04:32:00+0900"
 }
