@@ -424,16 +424,16 @@ def test_failed_event_leaves_stage_and_work_open_for_the_worker(client, headers,
 def test_non_cycle_stage_status_stays_live(client, headers, connector, seeded):
     """비순환(사용자 정의) 종류는 화면이 지금처럼 실시간 판정이고, 저장값도 같은 판정으로 맞춰진다."""
     spec = KindSpec(
-        kind="triage", label="분류", capability_code="code.fix", scope_key="repository_id",
+        kind="classify", label="분류", capability_code="code.fix", scope_key="repository_id",
         input_kinds=[], output_kind="generic_result", outcomes=["done"], instructions="분류하세요.", builtin=False,
     )
     repo.insert_kind(seeded, SESSION, spec, NOW)
-    repo.insert_work_item_task(seeded, {**task_row("task-triage-1"), "kind": "triage", "criteria": []}, NOW)
-    request = {**request_body("exec-triage-001", "task-triage-1", "triage"),
+    repo.insert_work_item_task(seeded, {**task_row("task-triage-1"), "kind": "classify", "criteria": []}, NOW)
+    request = {**request_body("exec-triage-001", "task-triage-1", "classify"),
                "target": {"local_registration_id": LOCAL_REGISTRATION}, "kind_spec": spec.model_dump()}
     repo.create_execution(
         seeded, execution_id="exec-triage-001", task_id="task-triage-1", attempt_no=1, start_key="auto:task-triage-1:r1",
-        agent_id="agent-codex-mac", kind="triage", request=ExecutionRequest.model_validate(request),
+        agent_id="agent-codex-mac", kind="classify", request=ExecutionRequest.model_validate(request),
         assigned_connector_id=connector[0], predecessor_execution_id=None, now=NOW,
     )
     for body in (event("exec-triage-001", 1, "accepted", {}),

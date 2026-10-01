@@ -21,6 +21,10 @@ def test_builtin_policies_required_artifacts_and_verifiers():
     assert policy_for("bug_fix").verifier == "code_change"
     assert policy_for("code_review").required_artifacts == ()
     assert policy_for("code_review").verifier == "commit_review"
+    # 판단 — 읽기 전용 체크아웃, 결과 봉투 triage_result, 업무 순환 밖 (ARCHITECTURE "판단 단계 가르기")
+    triage = policy_for("triage")
+    assert (triage.target, triage.result_kind, triage.required_artifacts, triage.verifier, triage.cycle) == (
+        "triage", "triage_result", (), "triage", False)
 
 
 def test_only_the_github_cycle_kinds_are_driven_by_readiness_and_followup_decisions():

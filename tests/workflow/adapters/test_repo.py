@@ -1290,7 +1290,7 @@ def test_create_session_is_atomic_with_seed(conn):
     repo.create_session(conn, SESSION, NOW)
     with pytest.raises(sqlite3.IntegrityError):
         repo.create_session(conn, SESSION, LATER)
-    assert len(repo.list_kinds(conn, SESSION)) == 2 and len(repo.list_rules(conn, SESSION)) == 1
+    assert len(repo.list_kinds(conn, SESSION)) == 3 and len(repo.list_rules(conn, SESSION)) == 1
 
 
 def test_insert_kind_roundtrip_ordering_and_duplicate(sessions):
@@ -1303,7 +1303,8 @@ def test_insert_kind_roundtrip_ordering_and_duplicate(sessions):
     assert repo.get_kind(conn, SESSION, "review") == REVIEW
     assert repo.get_kind(conn, OTHER_SESSION, "review") is None  # 세션 격리
     # 내장 먼저(BUILTIN_KINDS 순), 그 다음 created_at·kind 순
-    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["bug_fix", "code_review", "apple", "zebra", "review"]
+    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == [
+        "bug_fix", "code_review", "triage", "apple", "zebra", "review"]
     with pytest.raises(DuplicateKind):
         repo.insert_kind(conn, SESSION, REVIEW, LATER)
     with pytest.raises(DuplicateKind):  # 내장 이름 재등록도 중복
@@ -1337,7 +1338,7 @@ def test_delete_kind_success(sessions):
     repo.insert_kind(conn, SESSION, REVIEW, NOW)
     repo.delete_kind(conn, SESSION, "review")
     assert repo.get_kind(conn, SESSION, "review") is None
-    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["bug_fix", "code_review"]
+    assert [k.kind for k in repo.list_kinds(conn, SESSION)] == ["bug_fix", "code_review", "triage"]
 
 
 def test_rule_insert_get_list_duplicate_and_delete(sessions):

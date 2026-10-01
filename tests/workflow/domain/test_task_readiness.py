@@ -256,7 +256,7 @@ def test_legacy_connector_without_supported_kinds_is_outdated_for_new_kinds():
 def test_legacy_connector_runs_only_user_kinds():
     executors = {**EXECUTORS, "agent-a": _executor("agent-a", supported_kinds=None)}
 
-    assert evaluate_readiness(_fix(executors=executors, kind="triage")).ready
+    assert evaluate_readiness(_fix(executors=executors, kind="classify")).ready
     # 옛 내장 code_change 는 없어졌다(ADR-0019) — 같은 이름이면 사용자 정의 종류로 본다
     assert evaluate_readiness(_fix(executors=executors, kind="code_change")).ready
     assert _codes(evaluate_readiness(_fix(executors=executors))) == ["executor_outdated"]
@@ -368,7 +368,7 @@ def test_facts_are_values_not_rows():
 
     with pytest.raises(AttributeError):
         facts.kind = "code_review"  # frozen
-    assert replace(facts, kind="triage").kind == "triage"
+    assert replace(facts, kind="classify").kind == "classify"
 
 
 # --- 자동 매칭 결과 (phase 11 step 6, ADR-0017) ----------------------------------------------

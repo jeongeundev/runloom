@@ -88,6 +88,7 @@ from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
 from workflow.domain.status import TERMINAL_STATUSES, next_execution_status
 from workflow.domain.task_followup import FollowupTaskSpec
+from workflow.domain.triage_criteria import TRIAGE_CRITERIA_V1
 from workflow.domain.work_keys import short_source_key
 from workflow.domain.work_list import WorkRow, next_action
 from workflow.domain.work_status import (
@@ -144,7 +145,8 @@ def _require_rowcount(cursor: sqlite3.Cursor, what: str) -> None:
 def create_session(conn: Connection, session_id: str, now: str) -> None:
     """세션 생성과 함께 내장 종류(`BUILTIN_KINDS`)·내장 규칙(`BUILTIN_RULES`)을 이 세션에 seed 한다 (ADR-0009).
     이미 있는 세션에는 v4 → v5 마이그레이션(`db._seed_phase8_kinds`)이 phase 8 종류를 넣는다.
-    첫 관리자·기본 매핑도 같은 트랜잭션에서 만든다(ADR-0020) — 기존 세션에는 v9 → v10 이 넣는다."""
+    첫 관리자·기본 매핑도 같은 트랜잭션에서 만든다(ADR-0020) — 기존 세션에는 v9 → v10 이 넣는다.
+    판단 기준 v1 도 같은 트랜잭션에서(ADR-0025) — 기존 세션에는 v14 → v15 가 내장 `triage` 종류와 함께 넣는다."""
     with _tx(conn):
         conn.execute("INSERT INTO sessions (session_id, created_at) VALUES (?, ?)", (session_id, now))
         for spec in BUILTIN_KINDS:
@@ -153,6 +155,16 @@ def create_session(conn: Connection, session_id: str, now: str) -> None:
             _insert_rule_row(conn, session_id, rule, now)
         ensure_first_admin(conn, session_id, now=now)
         seed_default_field_mappings(conn, session_id, now=now)
+        seed_triage_criteria(conn, session_id, now=now)
+
+
+def seed_triage_criteria(conn: Connection, session_id: str, *, now: str) -> None:
+    """판단 기준 v1 행(멤버 없음)을 넣는다. 자체 BEGIN 이 없다 — `create_session`·v14 → v15 마이그레이션이 부른다."""
+    conn.execute(
+        "INSERT INTO triage_criteria (session_id, version, body, created_by_member_id, created_at)"
+        " VALUES (?, 1, ?, NULL, ?)",
+        (session_id, TRIAGE_CRITERIA_V1, now),
+    )
 
 
 # 새 워크스페이스의 기본 매핑 — GitHub 이슈는 라벨과 무관하게 지금처럼 bug_fix (ARCHITECTURE "매핑 표").

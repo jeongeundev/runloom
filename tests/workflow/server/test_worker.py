@@ -1,7 +1,7 @@
 """중앙 워커 — ARCHITECTURE "계약 수용 기준" 표를 한 행씩. 연결 프로그램 대신 테스트가 이벤트·산출물을 DB 에 직접 올린다.
 
 시계는 고정 문자열을 돌려주는 `Clock`. 규칙 기반 후속(`_spawn_successors`)·범용 결과 판정·callback 은 워크스페이스에
-등록한 사용자 정의 종류 `triage` → `review`(`repo.insert_kind`·`insert_rule`) 위에서 본다 — 내장 `bug_fix`·`code_review`
+등록한 사용자 정의 종류 `classify` → `review`(`repo.insert_kind`·`insert_rule`) 위에서 본다 — 내장 `bug_fix`·`code_review`
 는 업무 순환(`_advance_cycle`)이 잇고, 그 흐름은 `test_task_cycle.py` 가 본다. 여기서 `bug_fix` 는 코드 결과 확인
 (`_check_code_results`)과 인계 묶음 조립만 본다. 진단 데모 경로는 `main` 전용이다 (ADR-0019).
 """
@@ -52,15 +52,15 @@ from .conftest import (
 BUILTIN_RULE = BUILTIN_RULES[0]  # bug_fix --[ready_for_review]--> code_review
 CODE_KINDS = ("diff", "test_log_before", "test_log_after", "verification_log")
 
-# 사용자 정의 종류 `triage`(Codex) → `review`(Claude) 와 규칙 triage → review (CONTRACT 11절). R 은 T 의 후속.
+# 사용자 정의 종류 `classify`(Codex) → `review`(Claude) 와 규칙 classify → review (CONTRACT 11절). R 은 T 의 후속.
 TASK_T = "triage-daily-0920"
 TASK_R = "triage-review-0920"
 EXEC_T = "exec-triage-001"
 LOCAL_REVIEW = "local-demo-report-claude"
-CAP_T = {"code": "triage", "scope": {"repository_id": REPOSITORY}}
+CAP_T = {"code": "classify", "scope": {"repository_id": REPOSITORY}}
 CAP_R = {"code": "review", "scope": {"repository_id": REPOSITORY}}
 TRIAGE_KIND = KindSpec(
-    kind="triage", label="분류", capability_code="triage", scope_key="repository_id",
+    kind="classify", label="분류", capability_code="classify", scope_key="repository_id",
     input_kinds=[], output_kind="generic_result", outcomes=["ready_for_handoff", "needs_information"],
     instructions="보고서 변환 실패 원인을 분류하고 수정 방향을 diff 초안으로 남기세요. 저장소를 수정하지 마세요.",
     builtin=False,
@@ -73,7 +73,7 @@ REVIEW_KIND = KindSpec(
     builtin=False,
 )
 REVIEW_RULE = SuccessorRule(
-    from_kind="triage", on_outcomes=["ready_for_handoff"], to_kind="review",
+    from_kind="classify", on_outcomes=["ready_for_handoff"], to_kind="review",
     handoff_kinds=["generic_result", "diff"],
 )
 TRIAGE_SUMMARY = "report_transformer 가 data.records 를 읽지 못해 합계가 비었습니다. 수정 방향을 diff 로 남겼습니다."
@@ -162,8 +162,8 @@ def _user_task(task_id: str, spec: KindSpec, capability: dict, registration: str
 
 
 def seed_user_flow(conn, client, clock, *, rule=REVIEW_RULE, r_run_mode="auto", chain=None) -> tuple[str, str]:
-    """워크스페이스·러너 모양 Agent 2개(Codex=triage, Claude=review)·종류 triage·review·(기본) 규칙 triage → review·
-    T(triage)→R(review)·선택 기록·T queued 실행(연결 프로그램 배정). 연결 프로그램은 두 등록을 보고한 온라인 상태.
+    """워크스페이스·러너 모양 Agent 2개(Codex=classify, Claude=review)·종류 classify·review·(기본) 규칙 classify → review·
+    T(classify)→R(review)·선택 기록·T queued 실행(연결 프로그램 배정). 연결 프로그램은 두 등록을 보고한 온라인 상태.
     `rule=None` 이면 규칙 없이 종류만. `chain`(`insert_chain` 행)을 주면 시작된 체인의 노드(`source_ref` KEY_T·KEY_R)다.
     반환은 (connector_id, token)."""
     now = clock()
@@ -204,13 +204,13 @@ def seed_user_flow(conn, client, clock, *, rule=REVIEW_RULE, r_run_mode="auto", 
         )
     repo.touch_connector(conn, connector_id, now, None)
     request = ExecutionRequest(
-        contract_version=1, execution_id=EXEC_T, task_id=TASK_T, kind="triage", agent_id="agent-codex-mac",
+        contract_version=1, execution_id=EXEC_T, task_id=TASK_T, kind="classify", agent_id="agent-codex-mac",
         task_revision=1, request="보고서 변환 실패를 살펴봐 주세요.", input_artifact_ids=[],
         target=LocalTarget(local_registration_id=LOCAL_REGISTRATION), kind_spec=TRIAGE_KIND,
     )
     repo.create_execution(
         conn, execution_id=EXEC_T, task_id=TASK_T, attempt_no=1, start_key=f"auto:{TASK_T}:r1",
-        agent_id="agent-codex-mac", kind="triage", request=request, assigned_connector_id=connector_id,
+        agent_id="agent-codex-mac", kind="classify", request=request, assigned_connector_id=connector_id,
         predecessor_execution_id=None, now=now,
     )
     return connector_id, token
@@ -229,7 +229,7 @@ def n8n_chain(callback_url=CALLBACK_URL) -> dict:
         "source": "n8n", "callback_url": callback_url,
         "items": [
             {"key": KEY_T, "title": "보고서 변환 실패 분류", "body": "분류",
-             "labels": ["kind:triage", f"repository_id:{REPOSITORY}"], "blocked_by": []},
+             "labels": ["kind:classify", f"repository_id:{REPOSITORY}"], "blocked_by": []},
             {"key": KEY_R, "title": "분류 결과 검토", "body": "검토",
              "labels": ["kind:review", f"repository_id:{REPOSITORY}"], "blocked_by": [KEY_T]},
         ],
@@ -304,7 +304,7 @@ def seed_generic_result(
 
 def finish_triage(conn, store, clock, *, outcome="ready_for_handoff", raw=None, started=False) -> str:
     """T 실행(EXEC_T)의 결과 제출 — diff 초안과 generic_result. 반환은 결과 산출물 ID."""
-    return seed_generic_result(conn, store, EXEC_T, clock(), task_id=TASK_T, kind="triage", outcome=outcome,
+    return seed_generic_result(conn, store, EXEC_T, clock(), task_id=TASK_T, kind="classify", outcome=outcome,
                                with_diff=True, raw=raw, started=started)
 
 
@@ -358,7 +358,7 @@ def test_triage_result_is_judged_and_spawns_review_in_the_same_tick(flow, worker
     bundle_row = repo.get_artifact(conn, request.input_artifact_ids[0])
     assert (bundle_row["kind"], bundle_row["execution_id"], bundle_row["session_id"]) == ("handoff_bundle", EXEC_T, SESSION)
     bundle = HandoffBundle.model_validate_json(repo.read_artifact(conn, store, bundle_row["artifact_id"]))
-    assert bundle.source_execution_id == EXEC_T and bundle.source_kind == "triage"
+    assert bundle.source_execution_id == EXEC_T and bundle.source_kind == "classify"
     assert bundle.source_result_artifact_id == result_id
     assert bundle.attachments == []
     # 규칙 handoff [generic_result, diff] — 원시 로그(claude_jsonl)는 넘기지 않는다
@@ -442,7 +442,7 @@ def test_review_needs_attention_when_triage_outcome_not_in_rule(flow, worker, co
 
 
 def test_review_waits_with_reason_when_no_rule_registered(conn, client, clock, worker, store):
-    """종류는 등록됐지만 triage → review 규칙이 없다 → 대기 + '후속 규칙 없음'."""
+    """종류는 등록됐지만 classify → review 규칙이 없다 → 대기 + '후속 규칙 없음'."""
     seed_user_flow(conn, client, clock, rule=None)
     finish_triage(conn, store, clock)
 
@@ -450,7 +450,7 @@ def test_review_waits_with_reason_when_no_rule_registered(conn, client, clock, w
 
     assert report.generic_checked == 1 and report.successors_created == 0
     assert _executions(conn, TASK_R) == []
-    assert _status(conn, TASK_R) == ("대기", "후속 규칙 없음: triage → review — 규칙을 등록하거나 직접 실행")
+    assert _status(conn, TASK_R) == ("대기", "후속 규칙 없음: classify → review — 규칙을 등록하거나 직접 실행")
 
 
 def test_failed_triage_verdict_does_not_spawn_review(flow, worker, conn, store, clock):
@@ -886,7 +886,7 @@ def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock
         "검토 승인 (사람) · 병합은 운영자 확인", "확인 필요", "검토 대기"
     )
     task_t, task_r = body.tasks
-    assert (task_t.task_id, task_t.key, task_t.kind, task_t.title) == (TASK_T, KEY_T, "triage", "보고서 변환 실패 분류")
+    assert (task_t.task_id, task_t.key, task_t.kind, task_t.title) == (TASK_T, KEY_T, "classify", "보고서 변환 실패 분류")
     assert (task_t.status, task_t.status_reason) == ("확인 필요", "검토 대기")
     assert (task_t.outcome, task_t.summary) == ("ready_for_handoff", TRIAGE_SUMMARY)
     assert (task_r.task_id, task_r.key, task_r.kind, task_r.title) == (TASK_R, KEY_R, "review", "분류 결과 검토")

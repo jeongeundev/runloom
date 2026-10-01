@@ -168,7 +168,7 @@ class LocalTarget(_Contract):
 # --- 업무 종류와 후속 규칙 (CONTRACT 11절) ---------------------------------
 
 # 셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다
-BUILTIN_KIND_NAMES: tuple[str, ...] = ("bug_fix", "code_review")
+BUILTIN_KIND_NAMES: tuple[str, ...] = ("bug_fix", "code_review", "triage")
 
 
 class KindSpec(_Contract):
@@ -179,7 +179,9 @@ class KindSpec(_Contract):
     capability_code: CapabilityCode
     scope_key: Identifier
     input_kinds: list[ArtifactKind]
-    output_kind: Literal["diagnosis_result", "code_change_result", "code_review_result", "generic_result"]
+    output_kind: Literal[
+        "diagnosis_result", "code_change_result", "code_review_result", "generic_result", "triage_result"
+    ]
     outcomes: list[Outcome] = Field(min_length=1)
     instructions: str
     builtin: bool
@@ -209,6 +211,11 @@ BUILTIN_KINDS: tuple[KindSpec, ...] = (
         kind="code_review", label="커밋 검토", capability_code="code.review", scope_key="repository_id",
         input_kinds=["code_change_result"], output_kind="code_review_result",
         outcomes=["approved", "changes_requested", "needs_information"], instructions="", builtin=True,
+    ),
+    KindSpec(  # 판단 — outcomes 는 진행 여부 세 값 (ADR-0025 결정 1)
+        kind="triage", label="판단", capability_code="code.triage", scope_key="repository_id",
+        input_kinds=[], output_kind="triage_result",
+        outcomes=["ready", "needs_check", "unsuitable"], instructions="", builtin=True,
     ),
 )
 

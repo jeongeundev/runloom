@@ -32,7 +32,7 @@ def test_run_task_refuses_an_offline_runner(conn, settings, triage_task):  # noq
 
 
 def _selected(task_id: str) -> SelectionRecord:
-    capability = {"code": "triage", "scope": {"repository_id": "billing"}}
+    capability = {"code": "classify", "scope": {"repository_id": "billing"}}
     return SelectionRecord.model_validate({
         "task_id": task_id, "mode": "manual", "required_capability": capability, "candidate_count": 1,
         "selected_agent_id": TRIAGE, "matched": capability, "status": "selected", "reason": "직접 지정",

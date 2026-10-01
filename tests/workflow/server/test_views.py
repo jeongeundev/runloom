@@ -52,12 +52,12 @@ def _view(conn, settings, task_id: str, now: str = NOW):
     return views.build_task_view(conn, repo.get_task(conn, task_id), now=now, settings=settings)
 
 
-# --- 사용자 정의 종류 triage → patch ---------------------------------------------------
+# --- 사용자 정의 종류 classify → patch ---------------------------------------------------
 # 내장 `bug_fix`·`code_review` 는 업무 순환 종류라 `status_of` 가 저장된 상태를 쓴다. 선택·선행·연결·실행으로
 # 상태를 다시 판정하는 경로는 사용자 정의 종류(GENERIC_POLICY)로 본다.
 
 TRIAGE = KindSpec(
-    kind="triage", label="분류", capability_code="ops.triage", scope_key="workflow_id",
+    kind="classify", label="분류", capability_code="ops.triage", scope_key="workflow_id",
     input_kinds=[], output_kind="generic_result", outcomes=["ready_for_handoff", "needs_information"],
     instructions="실패 원인을 분류하세요.", builtin=False,
 )
@@ -67,7 +67,7 @@ PATCH = KindSpec(
     instructions="인계된 분류 결과로 고치세요.", builtin=False,
 )
 TRIAGE_RULE = SuccessorRule(
-    from_kind="triage", on_outcomes=["ready_for_handoff"], to_kind="patch", handoff_kinds=["generic_result"],
+    from_kind="classify", on_outcomes=["ready_for_handoff"], to_kind="patch", handoff_kinds=["generic_result"],
 )
 CAP_TRIAGE = {"code": "ops.triage", "scope": {"workflow_id": "daily-report"}}
 CAP_PATCH = {"code": "code.patch", "scope": {"repository_id": REPOSITORY}}
@@ -78,13 +78,13 @@ TASK_T = "triage-daily-0920"  # triage
 TASK_P = "patch-daily-0920"  # patch ← TASK_T
 # kind → (종류, 능력, 제목, 로컬 등록 ID)
 USER_KINDS = {
-    "triage": (TRIAGE, CAP_TRIAGE, "일일 보고서 실패 분류", "local-triage"),
+    "classify": (TRIAGE, CAP_TRIAGE, "일일 보고서 실패 분류", "local-triage"),
     "patch": (PATCH, CAP_PATCH, "보고서 변환 패치", "local-patch"),
 }
 
 
 def seed_user_kinds(conn) -> None:
-    """세션에 종류 triage·patch 와 규칙 triage → patch 를 등록하고 분류 API(API)·분류 Codex·패치 Codex(로컬)를
+    """세션에 종류 classify·patch 와 규칙 classify → patch 를 등록하고 분류 API(API)·분류 Codex·패치 Codex(로컬)를
     워크스페이스에 붙인다. 워크스페이스 행이 먼저 있어야 한다."""
     repo.insert_kind(conn, SESSION, TRIAGE, NOW)
     repo.insert_kind(conn, SESSION, PATCH, NOW)
@@ -109,7 +109,7 @@ def user_task(task_id: str, kind: str, predecessor: str | None = None) -> dict:
         "task_id": task_id,
         "session_id": SESSION,
         "title": title,
-        "request": "실패 원인을 분류해 주세요." if kind == "triage" else "보고서 변환을 고쳐 주세요.",
+        "request": "실패 원인을 분류해 주세요." if kind == "classify" else "보고서 변환을 고쳐 주세요.",
         "kind": kind,
         "required_capability": capability,
         "selection_mode": "auto",
@@ -127,16 +127,16 @@ def user_task(task_id: str, kind: str, predecessor: str | None = None) -> dict:
 
 
 def seed_user_tasks(conn) -> None:
-    """종류·Agent(`seed_user_kinds`)와 Task T(triage) → P(patch)."""
+    """종류·Agent(`seed_user_kinds`)와 Task T(classify) → P(patch)."""
     seed_user_kinds(conn)
-    repo.insert_work_item_task(conn, user_task(TASK_T, "triage"), NOW)
+    repo.insert_work_item_task(conn, user_task(TASK_T, "classify"), NOW)
     repo.insert_work_item_task(conn, user_task(TASK_P, "patch", predecessor=TASK_T), NOW)
 
 
 def seed_user_execution(conn, execution_id: str, task_id: str, kind: str) -> None:
     """사용자 정의 종류의 queued 실행 (연결 프로그램 배정 없음)."""
     spec, _, _, registration = USER_KINDS[kind]
-    agent_id = TRIAGE_AGENT if kind == "triage" else PATCH_AGENT
+    agent_id = TRIAGE_AGENT if kind == "classify" else PATCH_AGENT
     repo.create_execution(
         conn, execution_id=execution_id, task_id=task_id, attempt_no=1, start_key=f"auto:{task_id}:r1",
         agent_id=agent_id, kind=kind,
@@ -173,7 +173,7 @@ def test_view_user_kind_selected_and_runnable(seeded, settings):
     seed_user_tasks(seeded)
     _select(seeded, TASK_T, API_AGENT, CAP_TRIAGE)
     view = _view(seeded, settings, TASK_T)
-    assert (view.kind, view.run_mode, view.completion_mode) == ("triage", "manual", "review")
+    assert (view.kind, view.run_mode, view.completion_mode) == ("classify", "manual", "review")
     assert view.selection_status == "selected"
     assert view.selected_agent_id == API_AGENT
     assert view.predecessor_status is None
@@ -418,7 +418,7 @@ def _seed_chain(conn) -> tuple[str, str]:
 
 CHAIN_ITEMS = [
     {"key": "#41", "title": "일일 보고서 생성 실패 (09-20 09:00)", "body": "실패 원인을 분류해 주세요.",
-     "labels": ["kind:triage", "workflow_id:daily-report"], "blocked_by": []},
+     "labels": ["kind:classify", "workflow_id:daily-report"], "blocked_by": []},
     {"key": "#42", "title": "집계 API 응답 형식 변경 대응", "body": "보고서 변환을 고쳐 주세요.",
      "labels": ["kind:patch", f"repository_id:{REPOSITORY}"], "blocked_by": ["#41"]},
     {"key": "#43", "title": "변경 응답 형식 모니터링 알림 추가", "body": "알림을 추가해 주세요.",
@@ -427,7 +427,7 @@ CHAIN_ITEMS = [
 
 
 def _seed_user_chain(conn, *, skipped=None) -> tuple[str, str]:
-    """n8n #41 → #42 체인(triage → patch). 접수 항목 원문(`items`)을 함께 저장해 구성 이유를 다시 만든다.
+    """n8n #41 → #42 체인(classify → patch). 접수 항목 원문(`items`)을 함께 저장해 구성 이유를 다시 만든다.
     Task 는 `user_task` 에 chain_id·source_ref 만 얹는다."""
     seed_user_kinds(conn)
     repo.insert_chain(conn, {
@@ -438,7 +438,7 @@ def _seed_user_chain(conn, *, skipped=None) -> tuple[str, str]:
              "reason": f"맞는 능력 코드 없음 (라벨: enhancement, repository_id:{REPOSITORY})"},
         ],
     }, NOW)
-    repo.insert_work_item_task(conn, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
+    repo.insert_work_item_task(conn, {**user_task("task-c41", "classify"), "chain_id": CHAIN, "source_ref": "#41"}, NOW)
     repo.insert_work_item_task(conn, {**user_task("task-c42", "patch", predecessor="task-c41"),
                             "chain_id": CHAIN, "source_ref": "#42"}, NOW)
     return "task-c41", "task-c42"
@@ -466,14 +466,14 @@ def test_chain_summary_orders_nodes_and_recomposes_reasons(seeded, settings):
     assert summary["polling"] is True  # #42 가 대기
 
     first, second = summary["tasks"]
-    assert first["status"].label == "실행 가능" and first["kind"] == "triage"
+    assert first["status"].label == "실행 가능" and first["kind"] == "classify"
     assert first["agent"]["name"] == "운영 분류 API"
     assert "credential_ref" not in first["agent"]
     assert (first["run_mode"], first["completion_mode"]) == ("manual", "review")
     assert first["selection"].status == "selected"
     # 구성 이유는 가져오기 때와 같은 규칙으로 다시 만들고, 배정 이유는 저장된 선택 기록이 기준
     assert first["reasons"] == [
-        "라벨 kind:triage + workflow_id:daily-report → triage",
+        "라벨 kind:classify + workflow_id:daily-report → classify",
         "blocked_by 없음 — 가져온 순서대로 배치",
         "체인의 첫 업무 — 선행 없음",
         "직접 실행 — 흐름의 첫 업무는 사람이 시작",
@@ -503,7 +503,7 @@ def test_chain_summary_progress_and_human_gate_follow_last_task(seeded, settings
     _select(seeded, task_a, API_AGENT, CAP_TRIAGE)
     _select(seeded, task_b, PATCH_AGENT, CAP_PATCH)
     repo.mark_chain_started(seeded, CHAIN, NOW)
-    seed_user_execution(seeded, "exec-a", task_a, "triage")
+    seed_user_execution(seeded, "exec-a", task_a, "classify")
     summary = _chain(seeded, settings)
     assert summary["started"] is True and summary["can_start"] is False
     assert summary["progress"] == "2단계 중 1단계 실행 요청됨"
@@ -530,7 +530,7 @@ def test_chain_summary_single_auto_node_gate_and_empty_chain(seeded, settings):
     seed_user_kinds(seeded)
     repo.insert_chain(seeded, {"chain_id": CHAIN, "session_id": SESSION, "source": "github",
                                "title": "일일 보고서 생성 실패 (09-20 09:00)"}, NOW)
-    repo.insert_work_item_task(seeded, {**user_task("task-c41", "triage"), "chain_id": CHAIN, "source_ref": "#41",
+    repo.insert_work_item_task(seeded, {**user_task("task-c41", "classify"), "chain_id": CHAIN, "source_ref": "#41",
                               "completion_mode": "auto"}, NOW)
     _select(seeded, "task-c41", API_AGENT, CAP_TRIAGE)
     summary = _chain(seeded, settings)
@@ -782,9 +782,9 @@ def test_predecessor_handoff_needs_judged_result_and_bundle(seeded, settings, st
     assert views.predecessor_handoff(seeded, repo.get_task(seeded, TASK_T)) == ([], None)  # 선행 없음
     assert _view(seeded, settings, TASK_P).predecessor_status == "실행 가능"
 
-    seed_user_execution(seeded, "exec-a", TASK_T, "triage")
+    seed_user_execution(seeded, "exec-a", TASK_T, "classify")
     seed_result_ready(seeded, store, "exec-a", kind="generic_result",
-                      body=user_result("exec-a", TASK_T, "triage", "ready_for_handoff"))
+                      body=user_result("exec-a", TASK_T, "classify", "ready_for_handoff"))
     assert views.predecessor_handoff(seeded, task_p) == ([], None)  # 판정 전
     _judge(seeded, TASK_T, "exec-a")
     assert views.predecessor_handoff(seeded, task_p) == ([], None)  # 판정됐지만 묶음 없음
@@ -792,7 +792,7 @@ def test_predecessor_handoff_needs_judged_result_and_bundle(seeded, settings, st
     assert view.predecessor_status == "확인 필요"
     assert views.status_of(task_p, view).reason == "선행 대기"
 
-    bundle_id = _store_bundle(seeded, store, "exec-a", "triage")
+    bundle_id = _store_bundle(seeded, store, "exec-a", "classify")
     assert views.predecessor_handoff(seeded, task_p) == ([bundle_id], "exec-a")
     view = _view(seeded, settings, TASK_P)
     assert view.predecessor_status is None  # 선행 조건 충족 — 선행 `완료` 를 기다리지 않는다
@@ -856,10 +856,10 @@ def test_chain_node_kind_label_and_reasons_use_session_registry(seeded, settings
     assert (first["kind_label"], second["kind_label"]) == ("분류", "패치")
     assert "선행 #41 (ops.triage) → code.patch 인계" in second["reasons"]
 
-    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(seeded, SESSION) if r.from_kind == "triage"]
+    (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(seeded, SESSION) if r.from_kind == "classify"]
     repo.delete_rule(seeded, SESSION, rule_id)
     second = _chain(seeded, settings)["tasks"][1]
-    assert second["reasons"][0] == "후속 규칙 없음: triage → patch"
+    assert second["reasons"][0] == "후속 규칙 없음: classify → patch"
 
 
 def test_agent_public_annotates_capabilities_with_kind_labels(seeded, settings):

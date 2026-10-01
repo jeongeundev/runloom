@@ -2144,6 +2144,8 @@ def should_autostart(*, proceed: str, assignee_type: str | None, confidence: flo
 
 **`tasks`·`github_sources`·`work_items`·`notifications` 는 재생성하지 않는다.** 칸 추가도 없다(판단 Agent 는 `config_json` — ADR-0025 결정 3). 그래서 v14 → v15 는 FK 를 끌 필요가 없지만 `init_schema` 의 올리기 경로는 지금처럼 FK 를 끈 한 트랜잭션이다(14 아래에서 올라오는 경로와 같은 코드).
 
+구현(step 1, 2026-10-01): 위 표 그대로. 봉투를 `BUILTIN_KINDS` 에 넣으면서 `BUILTIN_KIND_NAMES` 에 `triage`·`KindSpec.output_kind` 에 `triage_result` 를 함께 넣었고, 내장 종류 불변식(정책 표·완료 기준 템플릿이 내장 종류 전부를 덮는다)을 지키려 `BUILTIN_POLICIES["triage"]`(아래 "판단 단계 가르기" 값 그대로)와 `completion._TEMPLATES["triage"] = ()`(판단은 완료 기준 없음 — 판단 단계 `criteria []`)를 미리 넣었다. step 2 는 나머지 계약(`TriageTarget`·`TriageResult`·후보·`ARTIFACT_KINDS`)과 `is_triage_kind`·`TRIAGE_OUTPUT_KIND` 를 만든다. 판단 기준 시드 함수는 `repo.seed_triage_criteria(conn, session_id, *, now)`(자체 BEGIN 없음 — `create_session`·마이그레이션 공용). 기존 테스트의 사용자 정의 종류 이름 `triage` 는 `classify` 로 바꿨다(내장 예약어).
+
 **v14 → v15 마이그레이션** `_migrate_14_to_15`: ① 사용자 정의 `triage` 종류 검사(있으면 중단) ② 새 표 셋·인덱스 ③ `kinds` 행 ④ 기준 v1 행 ⑤ Agent 능력(Python 으로 JSON 을 읽어 더한다 — 다른 칸은 바꾸지 않는다) ⑥ `PRAGMA foreign_key_check` 가 비어 있지 않으면 `RuntimeError` ⑦ 버전 15. 데이터는 그 밖에 바꾸지 않는다 — 업무·단계 상태 재계산 없음. `server/backup.py` 복원은 v4~v14 백업을 15 로 올린다(같은 `init_schema`). 테스트(step 1): v14 fixture 사본에 Agent(`code.fix`·`code.review`)·업무·사용자 정의 종류를 넣고 올린 뒤 능력 셋·`triage` 종류·기준 v1·행 보존·`foreign_keys` 다시 1, 사용자 정의 `triage` 가 있으면 14 그대로, 기준 상수 = 문서 파일.
 
 ### 계약 (step 2)

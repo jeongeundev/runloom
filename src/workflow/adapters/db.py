@@ -4,6 +4,7 @@
 상수에서 만들어 문자열을 두 곳에 적지 않는다.
 """
 
+import json
 import secrets
 import sqlite3
 from datetime import UTC, datetime
@@ -11,18 +12,25 @@ from pathlib import Path
 
 from workflow.contracts.jira import JIRA_DELIVERY_STATES
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
-from workflow.adapters.repo import ensure_first_admin, seed_default_field_mappings, work_item_facts
+from workflow.adapters.repo import (
+    ensure_first_admin,
+    seed_default_field_mappings,
+    seed_triage_criteria,
+    work_item_facts,
+)
 from workflow.domain.delegation import DELEGATION_POLICIES
 from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
 # phase 13 이 모든 세션에서 지우는 진단 데모 내장 종류 (ADR-0019 결정 4). 쓰는 Task·사용자 규칙이 있으면 되돌린다.
 PHASE13_REMOVED_KIND_NAMES = ("diagnosis", "code_change")
+# phase 19 가 모든 세션에 더하는 내장 종류 (ADR-0025). 같은 이름의 사용자 정의 종류가 있으면 되돌린다.
+PHASE19_KIND_NAME = "triage"
 
 OBSERVATION_KINDS = ("unknown_no_start", "heartbeat_lost", "timeout")
 
@@ -759,6 +767,77 @@ ALTER TABLE task_pull_requests_v14 RENAME TO task_pull_requests;
 """
 
 
+# phase 19 (ADR-0025): 판단 기준(버전)·판단 로그·자동 시작 설정(버전). tasks·github_sources 는 그대로다 —
+# 판단 Agent 는 github_sources.config_json 의 triage_agent_id 칸이다.
+_V15_TABLES = """
+-- 판단 기준. 현재 = 가장 큰 버전. 추가 전용(고치지도 지우지도 않는다). 멤버 NULL = 시드.
+CREATE TABLE IF NOT EXISTS triage_criteria (
+  session_id           TEXT NOT NULL REFERENCES sessions(session_id),
+  version              INTEGER NOT NULL CHECK (version >= 1),
+  body                 TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 8000),
+  created_by_member_id TEXT REFERENCES members(member_id),
+  created_at           TEXT NOT NULL,
+  PRIMARY KEY (session_id, version)
+);
+
+-- 판단 로그. 판단을 시작할 때 running 으로 만든다. 요청문 원문은 저장하지 않는다(실행 request_json 에 있다).
+-- proposed_kind·final_kind 는 FK 없음(종류를 지워도 로그는 남는다).
+CREATE TABLE IF NOT EXISTS triage_logs (
+  triage_id              TEXT PRIMARY KEY,                    -- 'trg-' + 8 hex
+  session_id             TEXT NOT NULL REFERENCES sessions(session_id),
+  work_item_id           TEXT NOT NULL REFERENCES work_items(work_item_id),
+  work_revision          INTEGER NOT NULL CHECK (work_revision >= 1),
+  task_id                TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  execution_id           TEXT NOT NULL UNIQUE REFERENCES executions(execution_id),
+  agent_id               TEXT NOT NULL REFERENCES agents(agent_id),
+  trigger                TEXT NOT NULL CHECK (trigger IN ('auto', 'manual')),
+  requested_by_member_id TEXT REFERENCES members(member_id),
+  criteria_version       INTEGER NOT NULL,
+  input_sha256           TEXT NOT NULL CHECK (length(input_sha256) = 64),
+  candidates_json        TEXT NOT NULL,
+  state                  TEXT NOT NULL CHECK (state IN ('running', 'proposed', 'failed', 'superseded')),
+  result_json            TEXT,
+  proceed                TEXT CHECK (proceed IS NULL OR proceed IN ('ready', 'needs_check', 'unsuitable')),
+  confidence             REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+  proposed_kind          TEXT,
+  failed_code            TEXT,
+  failed_message         TEXT,
+  handling               TEXT CHECK (handling IS NULL OR handling IN ('accepted', 'changed', 'dismissed', 'auto_started')),
+  handled_by_member_id   TEXT REFERENCES members(member_id),
+  handled_at             TEXT,
+  final_assignee_type    TEXT CHECK (final_assignee_type IS NULL OR final_assignee_type IN ('member', 'agent')),
+  final_assignee_id      TEXT,
+  final_kind             TEXT,
+  created_at             TEXT NOT NULL,
+  finished_at            TEXT,
+  updated_at             TEXT NOT NULL,
+  FOREIGN KEY (session_id, criteria_version) REFERENCES triage_criteria(session_id, version),
+  CHECK (state != 'proposed' OR (result_json IS NOT NULL AND proceed IS NOT NULL AND confidence IS NOT NULL)),
+  CHECK (state != 'failed' OR failed_code IS NOT NULL),
+  CHECK (handling IS NULL OR state = 'proposed'),
+  CHECK ((handling IS NULL) = (handled_at IS NULL)),
+  CHECK ((final_assignee_type IS NULL) = (final_assignee_id IS NULL)),
+  CHECK (handling IS NULL OR handling = 'dismissed' OR final_assignee_type IS NOT NULL),
+  CHECK (trigger = 'auto' OR requested_by_member_id IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_triage_logs_running ON triage_logs(work_item_id) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS ix_triage_logs_work ON triage_logs(work_item_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_triage_logs_session ON triage_logs(session_id, state);
+
+-- 종류별 자동 시작 설정. 종류마다 현재 = 가장 큰 버전, 행 없음 = 꺼짐·0.8. kind FK 없음(종류를 지우면 이력만 남는다).
+CREATE TABLE IF NOT EXISTS triage_autostart (
+  session_id           TEXT NOT NULL REFERENCES sessions(session_id),
+  kind                 TEXT NOT NULL,
+  version              INTEGER NOT NULL CHECK (version >= 1),
+  enabled              INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  threshold            REAL NOT NULL CHECK (threshold >= 0.5 AND threshold <= 1),
+  created_by_member_id TEXT REFERENCES members(member_id),
+  created_at           TEXT NOT NULL,
+  PRIMARY KEY (session_id, kind, version)
+);
+"""
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -966,7 +1045,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -1233,8 +1312,47 @@ def _migrate_13_to_14(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 14")
 
 
+def _migrate_14_to_15(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 실행한다. 판단 표 셋을 더하고, 워크스페이스마다 내장 `triage` 종류·판단 기준 v1 을,
+    `code.fix` 가 있는 로컬 Agent 마다 같은 범위의 `code.triage` 능력을 끝에 넣는다. 그 밖 행은 바꾸지 않는다 —
+    업무·단계 상태는 다시 계산하지 않는다. 사용자 정의 종류 `triage` 가 있으면 중단한다(v8 → v9 선례)."""
+    conflicts = conn.execute(
+        "SELECT session_id, kind FROM kinds WHERE kind = ? ORDER BY session_id", (PHASE19_KIND_NAME,)
+    ).fetchall()
+    if conflicts:
+        listed = ", ".join(f"{session_id}:{kind}" for session_id, kind in conflicts)
+        raise RuntimeError(
+            f"schema_version 14 → 15 마이그레이션 중단 — 내장 종류와 이름이 같은 사용자 정의 종류: {listed}"
+        )
+    for statement in _statements(_V15_TABLES):
+        conn.execute(statement)
+    spec = next(spec for spec in BUILTIN_KINDS if spec.kind == PHASE19_KIND_NAME)
+    now = _now()
+    for (session_id,) in conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall():
+        conn.execute(
+            "INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES (?, ?, ?, ?)",
+            (session_id, spec.kind, spec.model_dump_json(), now),
+        )
+        seed_triage_criteria(conn, session_id, now=now)
+    agents = conn.execute(
+        "SELECT agent_id, capabilities_json FROM agents WHERE connection_type = 'local' ORDER BY agent_id"
+    ).fetchall()
+    for agent_id, raw in agents:
+        capabilities = json.loads(raw)
+        merged = list(capabilities)
+        for cap in capabilities:
+            triage = {"code": spec.capability_code, "scope": cap["scope"]}
+            if cap["code"] == "code.fix" and triage not in merged:
+                merged.append(triage)
+        if merged != capabilities:
+            conn.execute("UPDATE agents SET capabilities_json = ? WHERE agent_id = ?", (json.dumps(merged), agent_id))
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 15")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~13 은 14 까지 차례로(4 → 5 → … → 13 → 14) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~14 는 15 까지 차례로(4 → 5 → … → 14 → 15) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다.
 
@@ -1255,10 +1373,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
                 steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
                          _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13,
-                         _migrate_13_to_14)
+                         _migrate_13_to_14, _migrate_14_to_15)
                 for step in steps[row[0] - 4:]:
                     step(conn)
             elif row[0] != SCHEMA_VERSION:

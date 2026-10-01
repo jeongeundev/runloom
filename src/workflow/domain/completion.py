@@ -28,6 +28,7 @@ _TEMPLATES: dict[str, tuple[Criterion, ...]] = {
         Criterion("code_review.commit_matches", "검토한 커밋이 최신 수정 결과 커밋과 같음", True),
         Criterion("code_review.result_preserved", "검토 결과가 보존됨", True),
     ),
+    "triage": (),  # 판단은 제안이라 완료 기준이 없다 (ADR-0025)
 }
 _USER_DEFINED = Criterion("outcome_in_spec", "결과 outcome 이 허용 목록 안 · 사람 검토 승인", False)
 

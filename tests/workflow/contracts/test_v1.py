@@ -693,9 +693,9 @@ def _review_request() -> dict:
 
 def test_builtin_kinds_match_concept_table():
     """셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 내장이 아니다."""
-    assert BUILTIN_KIND_NAMES == ("bug_fix", "code_review")
+    assert BUILTIN_KIND_NAMES == ("bug_fix", "code_review", "triage")
     assert tuple(k.kind for k in BUILTIN_KINDS) == BUILTIN_KIND_NAMES
-    bug_fix, code_review = BUILTIN_KINDS
+    bug_fix, code_review, triage = BUILTIN_KINDS
     assert bug_fix == KindSpec(
         kind="bug_fix", label="버그 수정", capability_code="code.fix", scope_key="repository_id",
         input_kinds=[], output_kind="code_change_result",
@@ -706,6 +706,20 @@ def test_builtin_kinds_match_concept_table():
         input_kinds=["code_change_result"], output_kind="code_review_result",
         outcomes=["approved", "changes_requested", "needs_information"], instructions="", builtin=True,
     )
+    assert triage == KindSpec(  # 판단 (ADR-0025 결정 1)
+        kind="triage", label="판단", capability_code="code.triage", scope_key="repository_id",
+        input_kinds=[], output_kind="triage_result",
+        outcomes=["ready", "needs_check", "unsuitable"], instructions="", builtin=True,
+    )
+
+
+def test_user_kind_cannot_use_triage_result_or_the_triage_name():
+    base = {"label": "분류", "capability_code": "ops.classify", "scope_key": "workflow_id", "input_kinds": [],
+            "outcomes": ["done"], "instructions": "", "builtin": False}
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate({**base, "kind": "classify", "output_kind": "triage_result"})
+    with pytest.raises(ValidationError):
+        KindSpec.model_validate({**base, "kind": "triage", "output_kind": "generic_result"})
 
 
 def test_builtin_rules_match_concept_table():
@@ -1205,7 +1219,8 @@ def test_sections_1_to_12_fixtures_are_unchanged():
 
 def test_builtin_cycle_kinds_equal_contract_md_examples():
     blocks = {b["kind"]: b for b in FENCED if _model_for(b) is KindSpec and b["builtin"]}
-    assert set(blocks) == set(BUILTIN_KIND_NAMES)  # 옛 내장 code_change 예시는 11.1 에서 뺐다 (ADR-0019)
+    # 옛 내장 code_change 예시는 11.1 에서 뺐다 (ADR-0019). 판단 봉투는 17.1 요청의 kind_spec 안에만 있다
+    assert set(blocks) == set(BUILTIN_KIND_NAMES) - {"triage"}
     assert KindSpec.model_validate(blocks["bug_fix"]) == BUILTIN_KINDS[0]
     assert KindSpec.model_validate(blocks["code_review"]) == BUILTIN_KINDS[1]
 

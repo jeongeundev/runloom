@@ -1114,7 +1114,7 @@ def test_kinds_page_shows_builtin_kinds_and_rule_without_delete_button(web):
     for value in ("버그 수정", "커밋 검토", "bug_fix", "code_review", "code.fix", "code.review",
                   "repository_id", "ready_for_review", "approved", "changes_requested", "needs_information"):
         assert value in text, value
-    assert text.count(">내장<") == 2  # 내장 전부 — bug_fix·code_review (ADR-0019)
+    assert text.count(">내장<") == 3  # 내장 전부 — bug_fix·code_review (ADR-0019)·triage (ADR-0025)
     assert 'action="/kinds/bug_fix/delete"' not in text and 'action="/kinds/code_review/delete"' not in text
     # 내장 규칙 한 줄 텍스트 — 그래프·화살표 그림 없음, 삭제 가능
     assert "버그 수정 --[ready_for_review]--> 커밋 검토" in text
