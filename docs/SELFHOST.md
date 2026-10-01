@@ -124,6 +124,29 @@ connect 는 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application S
 
 `main` 데모 러너(`com.workflow.connector`)를 같은 Mac 에 둔 경우 연결 토큰 파일 위치가 겹치므로 한쪽에 `WORKFLOW_CONNECTOR_HOME` 을 따로 준다.
 
+### 한 Mac 에 러너 두 대(시험용)
+
+다른 사람에게 맡기는 흐름(소유자 알림·승인)을 Mac 한 대에서 시험할 때. 러너 소유자는 [러너 붙이기]를 누른 멤버이므로 두 번째 러너는 두 번째 멤버 계정으로 붙인다.
+
+1. 관리자 계정으로 `/connect?tab=team` 에서 두 번째 멤버를 초대하고, 초대 링크로 계정을 만든다(다른 브라우저 프로필이나 시크릿 창).
+2. 그 계정으로 로그인해 `/connect?tab=sources` 저장소 카드의 [러너 붙이기]를 누른다. 카드에 나온 명령 끝에 `--name b` 를 붙여 Runloom 설치 폴더에서 실행한다.
+
+   ```bash
+   deploy/selfhost/install-runner.sh --server http://127.0.0.1:8000 --code <연결 코드> --repo <이 저장소를 클론한 폴더> --name b
+   ```
+
+`--name b` 러너는 label `com.workflow.selfhost.connector.b`, plist `~/Library/LaunchAgents/com.workflow.selfhost.connector.b.plist`, 로그 `~/Library/Logs/workflow-connector-selfhost-b/`, 러너 홈(연결 토큰·등록) `~/Library/Application Support/workflow-connector-b/` 를 쓴다(plist 의 `WORKFLOW_CONNECTOR_HOME`). 이름 없는 러너와 겹치지 않아 둘 다 돈다. 이름은 영소문자·숫자·하이픈 1~32자(하이픈으로 시작·끝 불가)이고, 틀리면 아무것도 하지 않고 종료 코드 2 로 끝난다. 같은 이름으로 다시 실행하면 그 러너만 다시 적재한다.
+
+두 러너는 같은 Mac 사용자로 돌기 때문에 **같은 `claude`·`codex` 로그인(구독)과 같은 git 자격을 쓴다** — 소유자가 다르게 보이는 것은 Runloom 안에서뿐이다. 실제로 다른 사람이 쓰려면 그 사람의 Mac 에서 붙인다.
+
+해제(이 러너만):
+
+```bash
+launchctl bootout gui/$(id -u)/com.workflow.selfhost.connector.b
+rm ~/Library/LaunchAgents/com.workflow.selfhost.connector.b.plist
+rm -r ~/Library/"Application Support"/workflow-connector-b ~/Library/Logs/workflow-connector-selfhost-b
+```
+
 ## GitHub 연결
 
 GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. 선택 기능이다. 기본은 **버튼 연결** — 내 GitHub 계정에 이 서버 전용 GitHub App 을 하나 만들어 설치한다([ADR-0017](adr/0017-github-app-connection.md)). 내부 ID·토큰을 입력하지 않는다. 자세한 동작·중지·복구는 [GitHub 런북](github/README.md).

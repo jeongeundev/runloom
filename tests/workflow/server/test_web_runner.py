@@ -77,6 +77,7 @@ def test_post_issues_a_code_and_renders_one_command_in_that_card(op, conn, secre
     assert match, card
     assert match.group(1) == BASE and match.group(2) == row["code"]
     assert "data-runner-command" in card and "10분" in card
+    assert "--name b" in card  # 같은 Mac 의 두 번째 러너 안내 (phase 17 step 10)
     assert html_lib.escape(row["expires_at"]) in card or "만료" in card
     assert runner_action(source.source_id) in card and "다시 발급" in card
     assert row["code"] not in card_of(response.text, other.source_id)

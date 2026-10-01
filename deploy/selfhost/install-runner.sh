@@ -4,14 +4,15 @@
 # --server·--code·--repo 를 주면([러너 붙이기] 명령 한 줄, ADR-0018) connector setup(connect + register) 뒤 적재까지 한다.
 # 인자가 없으면 connect·register 명령을 출력만 하고, launchd 적재는 연결 토큰 파일이 있을 때만 한다.
 # 연결 코드·--env 값은 plist·출력에 쓰지 않는다(setup 인자로만 넘긴다).
+# --name <이름> 이면 label·plist·로그·러너 홈을 그 이름으로 나눈다 — 한 Mac 에 러너 두 대(ARCHITECTURE "러너 두 대 설치").
 set -euo pipefail
 
 LABEL="com.workflow.selfhost.connector"
 
 usage() {
   cat <<EOF
-사용법: deploy/selfhost/install-runner.sh [--help]
-       deploy/selfhost/install-runner.sh --server URL --code CODE --repo 폴더
+사용법: deploy/selfhost/install-runner.sh [--help] [--name 이름]
+       deploy/selfhost/install-runner.sh [--name 이름] --server URL --code CODE --repo 폴더
            [--tool claude|codex] [--verify NAME=COMMAND]... [--link PATH]... [--copy PATH]... [--env NAME=VALUE]...
 
 호스트 Mac 에 셀프호스트 러너(python3 -m workflow.connector run)를 launchd 로 설치한다.
@@ -21,6 +22,8 @@ usage() {
   4. 2 를 했거나 연결 토큰 파일이 있으면 launchctl 로 적재, 없으면 connect 명령을 안내
 --server·--code·--repo 는 셋 다 주거나 셋 다 뺀다. 연결 코드는 /connect?tab=sources 저장소 카드의 [러너 붙이기].
 다시 실행해도 된다(plist 를 새로 쓰고 다시 적재).
+--name 이름  같은 Mac 의 두 번째 러너(영소문자·숫자·하이픈, 1~32자, 하이픈으로 시작·끝 불가).
+             label $LABEL.<이름>, 러너 홈 ~/Library/Application Support/workflow-connector-<이름>.
 
 환경변수:
   WORKFLOW_PORT     중앙 서버 포트 (기본: deploy/selfhost/.env 의 값, 없으면 8000)
@@ -30,18 +33,19 @@ usage() {
 EOF
 }
 
-SETUP_SERVER="" SETUP_CODE="" SETUP_REPO=""
+SETUP_SERVER="" SETUP_CODE="" SETUP_REPO="" NAME="" NAME_SET=0 HOME_PREFIX=""
 SETUP_EXTRA=()   # --tool·--verify·--link·--copy·--env — setup 에 그대로 넘긴다
 SHOWN_EXTRA=()   # 출력용 — --env 값은 가린다
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --server|--code|--repo|--tool|--verify|--link|--copy|--env)
+    --name|--server|--code|--repo|--tool|--verify|--link|--copy|--env)
       if [[ $# -lt 2 ]]; then
         echo "$1 에 값이 필요합니다. --help 를 보세요." >&2
         exit 2
       fi
       case "$1" in
+        --name) NAME="$2"; NAME_SET=1 ;;
         --server) SETUP_SERVER="$2" ;;
         --code) SETUP_CODE="$2" ;;
         --repo) SETUP_REPO="$2" ;;
@@ -50,10 +54,14 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2 ;;
     *)
-      echo "알 수 없는 인자입니다(--server·--code·--repo·--tool·--verify·--link·--copy·--env). --help 를 보세요." >&2
+      echo "알 수 없는 인자입니다(--name·--server·--code·--repo·--tool·--verify·--link·--copy·--env). --help 를 보세요." >&2
       exit 2 ;;
   esac
 done
+if [[ "$NAME_SET" == 1 && ! "$NAME" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
+  echo "--name 은 영소문자·숫자·하이픈 1~32자이고 하이픈으로 시작·끝나지 않아야 합니다(예: --name b)." >&2
+  exit 2
+fi
 SETUP=0
 if [[ -n "$SETUP_SERVER" && -n "$SETUP_CODE" && -n "$SETUP_REPO" ]]; then
   SETUP=1
@@ -105,12 +113,22 @@ for dir in /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
   add_path "$dir"
 done
 
+if [[ -n "$NAME" ]]; then
+  LABEL="$LABEL.$NAME"
+  LOG_DIR="$HOME/Library/Logs/workflow-connector-selfhost-$NAME"
+  CONNECTOR_HOME="${WORKFLOW_CONNECTOR_HOME:-$HOME/Library/Application Support/workflow-connector-$NAME}"
+  # setup·run 이 같은 러너 홈을 쓴다 — plist 에도 넣는다
+  export WORKFLOW_CONNECTOR_HOME="$CONNECTOR_HOME"
+  HOME_PREFIX="WORKFLOW_CONNECTOR_HOME=\"$CONNECTOR_HOME\" "  # 출력하는 명령 앞에 붙인다
+else
+  LOG_DIR="$HOME/Library/Logs/workflow-connector-selfhost"
+  CONNECTOR_HOME="${WORKFLOW_CONNECTOR_HOME:-$HOME/Library/Application Support/workflow-connector}"
+fi
 PLIST_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="$HOME/Library/Logs/workflow-connector-selfhost"
-CONNECTOR_HOME="${WORKFLOW_CONNECTOR_HOME:-$HOME/Library/Application Support/workflow-connector}"
 
 render_plist() {
   LABEL="$LABEL" PY="$PYTHON" WORKDIR="$REPO_ROOT" LOG_DIR="$LOG_DIR" LAUNCH_PATH="$LAUNCH_PATH" LAUNCH_HOME="$HOME" \
+    RUNNER_HOME="${NAME:+$CONNECTOR_HOME}" \
     "$PYTHON" - <<'PYEOF'
 import os
 import plistlib
@@ -128,6 +146,8 @@ plist = {
     # HOME: git push·fetch 가 ~/.gitconfig·자격 도우미(osxkeychain)·~/.ssh 를 찾는 위치 (ADR-0018)
     "EnvironmentVariables": {"PATH": e["LAUNCH_PATH"], "HOME": e["LAUNCH_HOME"], "LANG": "ko_KR.UTF-8"},
 }
+if e["RUNNER_HOME"]:  # --name 일 때만 — 이름 없는 설치는 지금 그대로
+    plist["EnvironmentVariables"]["WORKFLOW_CONNECTOR_HOME"] = e["RUNNER_HOME"]
 sys.stdout.write(plistlib.dumps(plist).decode())
 PYEOF
 }
@@ -152,9 +172,10 @@ load_plist() {
 }
 
 if [[ "$DRY_RUN" == 1 ]]; then
+  echo "[DRY_RUN] label $LABEL · 로그 $LOG_DIR · 러너 홈 $CONNECTOR_HOME"
   echo "[DRY_RUN] $PYTHON -m pip install -e $REPO_ROOT"
   if [[ "$SETUP" == 1 ]]; then
-    echo "[DRY_RUN] $PYTHON -m workflow.connector setup --server $SETUP_SERVER --code *** --repo $SETUP_REPO ${SHOWN_EXTRA[*]:-}"
+    echo "[DRY_RUN] $HOME_PREFIX$PYTHON -m workflow.connector setup --server $SETUP_SERVER --code *** --repo $SETUP_REPO ${SHOWN_EXTRA[*]:-}"
   fi
   echo "[DRY_RUN] $PLIST_PATH 작성:"
   render_plist
@@ -198,8 +219,8 @@ cat <<EOF
 
 사용자가 할 명령 (저장소 폴더에서):
   1. 연결 — $SERVER/connect?tab=advanced 에서 발급한 연결 코드로:
-     $PYTHON -m workflow.connector connect --server $SERVER --code <연결 코드>
+     $HOME_PREFIX$PYTHON -m workflow.connector connect --server $SERVER --code <연결 코드>
   2. 저장소 등록 — 작업 폴더와 도구:
-     $PYTHON -m workflow.connector register --id <등록 id> --repo <작업 폴더> --repository-id <저장소 id> --tool claude
-  3. 러너 적재 — 연결 뒤 이 스크립트를 다시 실행: $SELFHOST_DIR/install-runner.sh
+     $HOME_PREFIX$PYTHON -m workflow.connector register --id <등록 id> --repo <작업 폴더> --repository-id <저장소 id> --tool claude
+  3. 러너 적재 — 연결 뒤 이 스크립트를 다시 실행: $SELFHOST_DIR/install-runner.sh${NAME:+ --name $NAME}
 EOF
