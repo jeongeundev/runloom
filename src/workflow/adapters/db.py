@@ -9,6 +9,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from workflow.contracts.jira import JIRA_DELIVERY_STATES
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
 from workflow.adapters.repo import ensure_first_admin, seed_default_field_mappings, work_item_facts
 from workflow.domain.delegation import DELEGATION_POLICIES
@@ -564,8 +565,7 @@ CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(sessi
 # v14 (phase 18, ADR-0024): Jira 표 4개, work_items·field_mappings source_type CHECK 에 'jira', Runloom PR 이슈 번호 NULL 허용.
 # ARCHITECTURE "Jira 소스 — phase 18" 스키마 v14. tasks 는 재생성하지 않는다. work_items 는 자식 FK 가 있으므로
 # 기존 DB 는 init_schema 가 외래키를 끈 채(트랜잭션 밖 PRAGMA) 재생성한다 — 자식 FK 는 글자 그대로 새 표를 가리킨다.
-# 데이터(jira 기본 매핑)는 _migrate_13_to_14 가 넣는다.
-JIRA_DELIVERY_STATES = ("pending", "sending", "delivered", "unknown", "failed", "skipped")
+# 데이터(jira 기본 매핑)는 _migrate_13_to_14 가 넣는다. jira_deliveries.state CHECK 는 계약 상수 JIRA_DELIVERY_STATES.
 
 _V14_TABLES = f"""
 -- Jira Cloud 연결(워크스페이스당 1행). 토큰 칸 없음 — 비밀 저장소 jira_api_token 에만.

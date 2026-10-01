@@ -37,7 +37,7 @@ _FIELD_OF = {_normalize(s): key for key, synonyms in FORM_HEADINGS.items() for s
 @dataclass(frozen=True)
 class FormField:
     value: str
-    source: str  # `github_body:<원래 제목 줄>`
+    source: str  # `<origin>:<원래 제목 줄>` — 예: `github_body:### 목표`, `jira_description:## 목표`
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class WorkForm:
         return {key: {"value": f.value, "source": f.source} for key, f in self.fields.items()}
 
 
-def extract_form(body: str) -> WorkForm:
+def extract_form(body: str, *, origin: str = "github_body") -> WorkForm:
     fields: dict[str, FormField] = {}
     current: tuple[str, str] | None = None  # (칸 키, 제목 줄)
     lines: list[str] = []
@@ -59,7 +59,7 @@ def extract_form(body: str) -> WorkForm:
             return
         value = "\n".join(lines).strip()
         if value and value != NO_RESPONSE and current[0] not in fields:
-            fields[current[0]] = FormField(value, f"github_body:{current[1]}")
+            fields[current[0]] = FormField(value, f"{origin}:{current[1]}")
 
     for line in body.splitlines():
         match = _HEADING.match(line)

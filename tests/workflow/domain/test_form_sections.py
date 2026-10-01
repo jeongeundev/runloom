@@ -76,3 +76,10 @@ def test_every_field_has_korean_and_english_synonyms():
 
 def test_every_form_field_has_a_label():
     assert list(FORM_LABELS) == list(FORM_HEADINGS)
+
+
+def test_origin_names_the_source_of_each_field():
+    """Jira 본문(ADF → 텍스트)도 같은 규칙으로 읽고 칸 출처만 다르게 적는다 (phase 18)."""
+    form = extract_form("## 목표\n쿠폰 한 번", origin="jira_description")
+    assert form.fields["goal"] == FormField("쿠폰 한 번", "jira_description:## 목표")
+    assert extract_form("## 목표\n쿠폰 한 번").fields["goal"].source == "github_body:## 목표"
