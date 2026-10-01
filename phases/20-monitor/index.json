@@ -69,7 +69,9 @@
     {
       "step": 8,
       "name": "autostart-preview",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T06:38:22+0900",
+      "summary": "수정: server/views.py(autostart_preview_line(preview) -> str — proposed 0 이면 '아직 이 기준값 이상 판단이 없습니다', 아니면 '지금 기준값 0.80 이상 판단 n건 — 사람 일치 x/y · 병합 a/b'(분모 0 은 '—'), triage_settings_context 가 repo.list_triage_facts 를 한 번 읽고 종류마다 저장된 기준값(없으면 AUTOSTART_DEFAULT_THRESHOLD 0.8)으로 domain autostart_preview 를 불러 자동 시작 행 dict 에 preview 칸), templates/_connect_triage.html(자동 시작 폼 안 <span data-autostart-preview> 미리보기 + '/monitor?tab=triage' 판단 품질 보기 링크 — 서버 렌더 한 번, JS 없음). 자동 시작 잠김·저장·버전 동작 변경 없음. 테스트: test_web_triage_settings 에 seed_judged(업무·판단 실행·제안 로그·감지 PR 병합, FK 끄고 직접)·judged 픽스처와 3건 — 기본 0.80 숫자·링크, 기록 없음 문구, 기준값 0.90·0.70·1.00 저장 뒤 다음 렌더 숫자. 기존 테스트 변경 없음. 검증: pytest 4128 passed·73 skipped, ruff 통과. 다음 step 주의: 미리보기는 판단 실행·업무 행이 있어야 잡힌다(list_triage_facts 는 work_items·executions 와 INNER JOIN)."
     },
     {
       "step": 9,

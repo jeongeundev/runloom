@@ -48,7 +48,15 @@ from workflow.domain import team
 from workflow.domain.delegation import candidate_label, needs_owner_approval
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
-from workflow.domain.triage_metrics import HANDLINGS, PROCEEDS, UNHANDLED, TriageQuality, TriageQualityReport
+from workflow.domain.triage_metrics import (
+    HANDLINGS,
+    PROCEEDS,
+    UNHANDLED,
+    AutostartPreview,
+    TriageQuality,
+    TriageQualityReport,
+    autostart_preview,
+)
 from workflow.domain.triage import (
     AUTOSTART_DEFAULT_THRESHOLD,
     AUTOSTART_MIN_HANDLED,
@@ -1001,6 +1009,18 @@ def autostart_kinds(specs: Sequence[KindSpec]) -> list[KindSpec]:
     return [s for s in specs if not is_triage_kind(s) and not s.input_kinds]
 
 
+def autostart_preview_line(preview: AutostartPreview) -> str:
+    """자동 시작 행 미리보기 — 저장된 기준값 이상 제안의 판단 n·사람 일치·병합(분모 0 은 `—`). 서버 렌더 한 번."""
+    if preview.proposed == 0:
+        return "아직 이 기준값 이상 판단이 없습니다"
+
+    def ratio(r: Ratio) -> str:
+        return f"{r.numerator}/{r.denominator}" if r.denominator else NO_DENOMINATOR
+
+    return (f"지금 기준값 {preview.threshold:.2f} 이상 판단 {preview.proposed}건 — "
+            f"사람 일치 {ratio(preview.agreement)} · 병합 {ratio(preview.merged)}")
+
+
 def triage_settings_context(conn: Connection, session_id: str) -> dict[str, Any]:
     """연결 화면 판단 탭 — 현재 기준(버전·쓴 사람·시각·본문)·버전 이력·종류별 자동 시작(자격 건수·설정·마지막 변경).
     쓴 사람이 없는 행(시드)은 `by` None — 화면이 `처음 기준` 으로 보인다. 본문은 템플릿이 자동 이스케이프로 그린다."""
@@ -1009,15 +1029,18 @@ def triage_settings_context(conn: Connection, session_id: str) -> dict[str, Any]
                for r in repo.list_triage_criteria(conn, session_id)]
     counts = repo.triage_handled_counts(conn, session_id)
     settings = repo.triage_autostart_settings(conn, session_id)
+    logs, outcomes = repo.list_triage_facts(conn, session_id)
     autostart = []
     for spec in autostart_kinds(repo.list_kinds(conn, session_id)):
         setting = settings.get(spec.kind)
         last = repo.list_triage_autostart(conn, session_id, spec.kind)[:1]
         count = counts.get(spec.kind, 0)
+        threshold = setting.threshold if setting is not None else AUTOSTART_DEFAULT_THRESHOLD
         autostart.append({
             "kind": spec.kind, "label": spec.label, "count": count, "can_enable": can_enable_autostart(count),
             "enabled": setting is not None and setting.enabled,
-            "threshold": f"{setting.threshold if setting is not None else AUTOSTART_DEFAULT_THRESHOLD:.2f}",
+            "threshold": f"{threshold:.2f}",
+            "preview": autostart_preview_line(autostart_preview(logs, outcomes, kind=spec.kind, threshold=threshold)),
             "last": {"version": last[0]["version"], "by": last[0]["created_by_name"],
                      "created_at": last[0]["created_at"]} if last else None,
         })
