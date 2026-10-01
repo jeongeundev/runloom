@@ -325,6 +325,15 @@ def test_create_task_rejects_bad_form_with_422(web, overrides):
         assert "등록되지 않은 업무 종류입니다." in response.text
 
 
+def test_create_task_rejects_triage_kind(web, conn):
+    """판단 종류로는 업무를 등록할 수 없다 (ADR-0025) — 판단 단계는 중앙만 붙인다."""
+    before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    response = web.post("/tasks", data=fix_form(capability_code="code.triage"), follow_redirects=False)
+    assert response.status_code == 422
+    assert "판단 종류로는 업무를 등록할 수 없습니다." in response.text
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+
+
 def test_create_code_change_task_cannot_be_auto_completed(web):
     for form in (fix_form(completion_mode="auto"), code_review_form(create_task(web, fix_form()), completion_mode="auto")):
         response = web.post("/tasks", data=form, follow_redirects=False)

@@ -2175,6 +2175,8 @@ def should_autostart(*, proceed: str, assignee_type: str | None, confidence: flo
 
 `repo.register_local_agent` 의 새 Agent 능력 = `code.fix`·`code.review`·`code.triage`(모두 `{repository_id}`). `repo.claim_execution` 조건에 `AND (NOT EXISTS (SELECT 1 FROM tasks t JOIN kinds k ON k.session_id = t.session_id AND k.kind = t.kind WHERE t.task_id = e.task_id AND _TRIAGE_STAGE) OR EXISTS (SELECT 1 FROM json_each(COALESCE(c.supported_kinds_json, '[]')) WHERE value = e.kind))`.
 
+구현(step 2, 2026-10-01): 위 표 그대로. `TRIAGE_CANDIDATES_MAX = 30` 상수와 후보 목록의 `kinds` 에 `current_kind` 포함·에이전트 후보 `kinds` 중복 없음 검사를 더했다. `execution_policy.TRIAGE_OUTPUT_KIND`·`is_triage_kind`, `repo._TRIAGE_STAGE`(claim 조건이 쓴다 — `repo.is_triage_task` 는 step 5), "판단 단계 가르기" 표의 종류 선택 셋(`/tasks` 422 · `replace_field_mappings` ValueError · `validate_rule`)도 이 step 에서 넣었다. CONTRACT 17절은 `json` 펜스(fixture 67개).
+
 ### 러너 (step 4)
 
 - `connector/adapter.py` `SUPPORTED_BUILTIN_KINDS = ("bug_fix", "code_review", "triage")`, `AdapterOutput.result` 에 `TriageResult`.

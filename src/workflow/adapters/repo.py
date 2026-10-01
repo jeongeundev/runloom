@@ -80,6 +80,7 @@ from workflow.domain.delegation import (
     declined_reason,
     parse_approval_cause_key,
 )
+from workflow.domain.execution_policy import TRIAGE_OUTPUT_KIND, is_triage_kind
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain import jira_intake
 from workflow.domain.jira_intake import initial_cursor_ms
@@ -102,6 +103,9 @@ from workflow.domain.work_status import (
     WorkStatus,
     work_status,
 )
+
+# 판단 단계인지 — `tasks t JOIN kinds k` 와 함께 쓰는 SQL 조각. 이름이 아니라 결과 형태로 가른다 (ADR-0025)
+_TRIAGE_STAGE = f"json_extract(k.spec_json, '$.output_kind') = '{TRIAGE_OUTPUT_KIND}'"
 
 TOKEN_PREFIX = "wfc_"
 SOURCE_TOKEN_PREFIX = "wfs_"
@@ -223,8 +227,12 @@ def replace_field_mappings(conn: Connection, session_id: str, rows: Sequence[Map
     with _tx(conn):
         seen: set[tuple[str, str, str]] = set()
         for row in rows:
-            if row.field == "kind" and get_kind(conn, session_id, row.runloom_value) is None:
-                raise ValueError(f"종류 {row.runloom_value} 이 등록되지 않음")
+            if row.field == "kind":
+                spec = get_kind(conn, session_id, row.runloom_value)
+                if spec is None:
+                    raise ValueError(f"종류 {row.runloom_value} 이 등록되지 않음")
+                if is_triage_kind(spec):
+                    raise ValueError(f"판단 종류 {row.runloom_value} 로는 업무를 가져올 수 없습니다")
             if row.field == "priority" and row.runloom_value not in PRIORITIES:
                 raise ValueError(f"우선순위 {row.runloom_value} 는 {', '.join(PRIORITIES)} 중 하나가 아닙니다")
             key = (row.source_type, row.field, row.source_value.casefold())
@@ -1279,7 +1287,7 @@ def register_local_agent(
     """러너 등록 (ADR-0018 결정 1). 반환 (agent_id, created).
 
     같은 `local_registration_id` 의 Agent 가 있으면 `update_registration` 과 같은 갱신(이름·소유 구분·능력 유지).
-    없으면 `code.fix`·`code.review` 능력의 Agent 를 만들어 `session_id`(고정 워크스페이스)에 등록한다 — 한 트랜잭션.
+    없으면 `code.fix`·`code.review`·`code.triage` 능력의 Agent 를 만들어 `session_id`(고정 워크스페이스)에 등록한다 — 한 트랜잭션.
     취소되지 않은 다른 연결 프로그램이 이미 쓰는 이름이면 RegistrationTaken."""
     with _tx(conn):
         row = _one(
@@ -1303,6 +1311,7 @@ def register_local_agent(
                 "capabilities": [
                     {"code": "code.fix", "scope": {"repository_id": repository_id}},
                     {"code": "code.review", "scope": {"repository_id": repository_id}},
+                    {"code": "code.triage", "scope": {"repository_id": repository_id}},
                 ],
                 "local_registration_id": local_registration_id,
             })
@@ -2130,16 +2139,21 @@ def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None
     """이 connector 에 배정된 `queued` 실행 하나. 접수 확인(accepted) 전에는 같은 실행을 다시 준다.
     연결 프로그램당 실행 하나이므로 두 개가 queued 여도 먼저 내준 것을 유지한다. 상태는 바꾸지 않는다.
     검증만 다시 실행은 마지막 claim 이 `verify_only` 를 보고한 연결 프로그램에만 준다(phase 17 — 워커가 이미 막지만
-    만든 뒤 러너가 옛 판으로 돌아간 경우)."""
+    만든 뒤 러너가 옛 판으로 돌아간 경우). 판단 단계의 실행은 마지막 claim 의 `supported_kinds` 에 그 종류가 있는
+    연결 프로그램에만 준다(phase 19 — 옛 러너는 판단만 못 하고 나머지는 그대로)."""
     with _tx(conn):
         row = _one(
             conn,
-            """
+            f"""
             SELECT e.* FROM executions e
             LEFT JOIN connectors c ON c.connector_id = e.assigned_connector_id
             WHERE e.assigned_connector_id = ? AND e.status = 'queued' AND e.released_at IS NULL
               AND (e.verify_only = 0 OR EXISTS (
                 SELECT 1 FROM json_each(COALESCE(c.capabilities_json, '[]')) WHERE value = ?))
+              AND (NOT EXISTS (
+                SELECT 1 FROM tasks t JOIN kinds k ON k.session_id = t.session_id AND k.kind = t.kind
+                WHERE t.task_id = e.task_id AND {_TRIAGE_STAGE})
+                OR EXISTS (SELECT 1 FROM json_each(COALESCE(c.supported_kinds_json, '[]')) WHERE value = e.kind))
             ORDER BY (c.current_execution_id = e.execution_id) DESC, e.created_at, e.execution_id
             LIMIT 1
             """,

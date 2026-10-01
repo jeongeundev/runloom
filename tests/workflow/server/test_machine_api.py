@@ -805,6 +805,7 @@ def test_selfhost_registration_creates_agent_for_unknown_name(selfhost, conn):
     assert json.loads(agent["capabilities_json"]) == [
         {"code": "code.fix", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
         {"code": "code.review", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+        {"code": "code.triage", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
     ]
     assert (agent["connector_id"], agent["repository_id"], agent["base_commit"]) == (
         connector_id, "jeongeundev/OpenArchive", BASE_COMMIT)

@@ -1,6 +1,6 @@
 """계약 v1 모델의 계약 테스트.
 
-`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 64개와 표 안의 인라인
+`docs/CONTRACT.md` 가 fixture 다. 문서의 ```json 펜스 블록 67개와 표 안의 인라인
 JSON 8개를 추출해, 키 서명으로 모델에 대응시킨 뒤 검증에 성공해야 한다.
 문서를 고쳐서 테스트를 통과시키지 않는다 — 모순이 있으면 모델 또는 문서의 버그다.
 """
@@ -50,6 +50,9 @@ from workflow.contracts.v1 import (
     RunStatus,
     SelectionRecord,
     SuccessorRule,
+    TriageCandidates,
+    TriageResult,
+    TriageTarget,
     parse_rfc3339_aware,
 )
 from workflow.contracts.github import AssigneeBinding, GitHubIssueSnapshot, GitHubSourceConfig, SourceDelivery
@@ -95,6 +98,8 @@ _SIGNATURES = [
     ("AssigneeBinding", lambda k: "github_user_id" in k, AssigneeBinding),
     ("GitHubIssueSnapshot", lambda k: "is_pull_request" in k, GitHubIssueSnapshot),
     ("SourceDelivery", lambda k: "delivery_id" in k, SourceDelivery),
+    ("TriageResult", lambda k: "proceed" in k, TriageResult),
+    ("TriageCandidates", lambda k: "current_kind" in k, TriageCandidates),
 ]
 
 
@@ -120,7 +125,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 64
+    assert len(FENCED) == 67
     assert len(INLINE) == 8
 
 
@@ -167,8 +172,9 @@ def test_constants():
         "claude_stderr",
         "generic_result",
         "code_review_result",
+        "triage_result",
     )
-    assert len(ARTIFACT_KINDS) == 17
+    assert len(ARTIFACT_KINDS) == 18
 
 
 def test_artifact_kinds_match_contract_md_list():
@@ -1688,3 +1694,142 @@ def test_claim_capabilities_accepts_unknown_values_in_pattern():
 def test_claim_capabilities_rejects_bad_values(caps):
     with pytest.raises(ValidationError):
         ClaimRequest.model_validate({**_first("ClaimRequest"), "capabilities": caps})
+
+
+# --- 판단 (CONTRACT 17절, ADR-0025) ---------------------------------------------------
+
+
+def _triage_request() -> dict:
+    return next(
+        json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ExecutionRequest and b["kind"] == "triage"
+    )
+
+
+def test_triage_request_example_has_triage_target_and_builtin_spec():
+    parsed = ExecutionRequest.model_validate(_triage_request())
+    assert isinstance(parsed.target, TriageTarget)
+    assert parsed.kind_spec == BUILTIN_KINDS[2]
+    assert parsed.input_artifact_ids == []
+
+
+def test_triage_request_rejects_inputs_other_targets_and_missing_spec():
+    block = _triage_request()
+    with pytest.raises(ValidationError):  # 판단은 입력 산출물이 없다
+        ExecutionRequest.model_validate({**block, "input_artifact_ids": ["art-1"]})
+    with pytest.raises(ValidationError):  # 결과 형태가 triage_result 면 target 은 TriageTarget
+        ExecutionRequest.model_validate({**block, "target": {"local_registration_id": "local-billing"}})
+    with pytest.raises(ValidationError):  # 판단 요청은 늘 봉투를 싣는다
+        ExecutionRequest.model_validate({k: v for k, v in block.items() if k != "kind_spec"})
+
+
+def test_triage_target_is_rejected_for_other_kinds():
+    target = _triage_request()["target"]
+    bug_fix = next(json.loads(json.dumps(b)) for b in FENCED
+                   if _model_for(b) is ExecutionRequest and b["kind"] == "bug_fix")
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**bug_fix, "target": target})
+    user = next(json.loads(json.dumps(b)) for b in FENCED
+                if _model_for(b) is ExecutionRequest and b.get("kind_spec") and not b["kind_spec"]["builtin"])
+    with pytest.raises(ValidationError):
+        ExecutionRequest.model_validate({**user, "target": target})
+
+
+def _triage_result() -> dict:
+    return _first("TriageResult")
+
+
+def test_triage_result_example_is_ready_with_agent_assignee():
+    parsed = TriageResult.model_validate(_triage_result())
+    assert (parsed.proceed, parsed.confidence, parsed.proposed_kind) == ("ready", 0.86, "bug_fix")
+    assert (parsed.assignee.type, parsed.assignee.id) == ("agent", "agt-9f3c2a1b")
+    assert parsed.predecessors == ["RUN-9"]
+    assert TriageResult.model_validate_json(parsed.model_dump_json()) == parsed
+
+
+def test_triage_result_ready_requires_assignee_kind_and_no_missing_information():
+    block = _triage_result()
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "assignee": None})
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "proposed_kind": None})
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "missing_information": ["재현 환경"]})
+
+
+def test_triage_result_needs_check_requires_missing_information():
+    block = {**_triage_result(), "proceed": "needs_check", "assignee": None, "proposed_kind": None}
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "missing_information": []})
+    parsed = TriageResult.model_validate({**block, "missing_information": ["어느 결제 수단인지"]})
+    assert parsed.missing_information == ["어느 결제 수단인지"]
+
+
+def test_triage_result_unsuitable_may_have_no_assignee():
+    block = {**_triage_result(), "proceed": "unsuitable", "assignee": None, "proposed_kind": None}
+    assert TriageResult.model_validate(block).assignee is None
+
+
+@pytest.mark.parametrize("confidence", [-0.01, 1.01, "0.5"])
+def test_triage_result_confidence_must_be_number_between_0_and_1(confidence):
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**_triage_result(), "confidence": confidence})
+
+
+@pytest.mark.parametrize("confidence", [0, 0.0, 1.0])
+def test_triage_result_confidence_bounds_are_inclusive(confidence):
+    assert TriageResult.model_validate({**_triage_result(), "confidence": confidence}).confidence == confidence
+
+
+@pytest.mark.parametrize("change", [
+    {"extra": 1},  # 모르는 칸
+    {"predecessors": ["RUN-9", "RUN-9"]},  # 중복
+    {"predecessors": [f"RUN-{i}" for i in range(1, 7)]},  # 6개
+    {"predecessors": ["run-9"]},  # 업무 키 모양 밖
+    {"reasons": []},
+    {"reasons": [{"criterion": "clarity", "note": "a"}, {"criterion": "clarity", "note": "b"}]},
+    {"reasons": [{"criterion": "speed", "note": "a"}]},
+    {"reasons": [{"criterion": "clarity", "note": ""}]},
+    {"reasons": [{"criterion": "clarity", "note": "a" * 201}]},
+    {"reasons": [{"criterion": "clarity", "note": "a", "extra": 1}]},
+    {"assignee": {"type": "team", "id": "x"}},
+    {"assignee": {"type": "agent", "id": ""}},
+    {"proposed_kind": "Bug Fix"},
+    {"inspected_commit": "abc"},
+    {"proceed": "maybe"},
+], ids=lambda c: next(iter(c)))
+def test_triage_result_rejects_out_of_contract_values(change):
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**_triage_result(), **change})
+
+
+def test_triage_result_missing_information_limits():
+    block = {**_triage_result(), "proceed": "needs_check"}
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "missing_information": [f"정보 {i}" for i in range(11)]})
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "missing_information": [""]})
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "missing_information": ["a" * 201]})
+
+
+def test_triage_candidates_example_and_duplicate_ids():
+    block = _first("TriageCandidates")
+    parsed = TriageCandidates.model_validate(block)
+    assert parsed.current_kind == "bug_fix"
+    assert [a.kinds for a in parsed.agents] == [["bug_fix"]]
+    member, agent, pred = block["members"][0], block["agents"][0], block["predecessors"][0]
+    for change in (
+        {"members": [member, member]},
+        {"agents": [agent, agent]},
+        {"predecessors": [pred, pred]},
+        {"kinds": block["kinds"] * 2},
+        {"kinds": []},
+        {"kinds": [{"kind": "code_review", "label": "커밋 검토"}]},  # current_kind 빠짐
+        {"agents": [{**agent, "kinds": []}]},
+        {"members": [{**member, "open_work": -1}]},
+        {"agents": [{**agent, "agent_id": f"agt-{i}"} for i in range(31)]},
+        {"predecessors": [{**pred, "work_key": f"RUN-{i}"} for i in range(1, 32)]},
+        {"extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            TriageCandidates.model_validate({**block, **change})

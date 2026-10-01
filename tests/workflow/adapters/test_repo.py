@@ -350,6 +350,7 @@ def test_register_local_agent_creates_agent_with_fix_and_review_in_workspace(con
     assert json.loads(row["capabilities_json"]) == [
         {"code": "code.fix", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
         {"code": "code.review", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
+        {"code": "code.triage", "scope": {"repository_id": "jeongeundev/OpenArchive"}},
     ]
     assert (row["connector_id"], row["repository_id"], row["base_commit"]) == (
         CONNECTOR, "jeongeundev/OpenArchive", REG_COMMIT)
@@ -788,6 +789,54 @@ def test_concurrent_claims_hand_out_one_execution(seeded, db_path):
     for t in threads:
         t.join()
     assert results == ["exec-fix-001", "exec-fix-001"]
+
+
+def _triage_execution(conn, *, execution_id, task_id, connector):
+    """판단 단계 Task(내장 triage)와 그 실행 — 판단 Agent 러너에 배정."""
+    task = {**_task(task_id, kind="triage"), "title": "판단",
+            "required_capability": {"code": "code.triage", "scope": {"repository_id": "demo-report-repo"}},
+            "criteria": [], "target": {"local_registration_id": "local-demo-report", "base_commit": REG_COMMIT}}
+    repo.insert_work_item_task(conn, task, NOW)
+    triage = BUILTIN_KINDS[2]
+    request = ExecutionRequest.model_validate({
+        "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": "triage",
+        "agent_id": "agent-codex-mac", "task_revision": 1, "request": "# 판단: RUN-1 제목",
+        "input_artifact_ids": [], "target": task["target"], "kind_spec": triage.model_dump(),
+    })
+    repo.create_execution(conn, execution_id=execution_id, task_id=task_id, attempt_no=1,
+                          start_key=f"auto:{task_id}:r1", agent_id="agent-codex-mac", kind="triage",
+                          request=request, assigned_connector_id=connector, predecessor_execution_id=None, now=NOW)
+
+
+def test_claim_gives_triage_execution_only_to_runner_that_declared_triage(seeded):
+    """옛 러너(마지막 claim 의 supported_kinds 에 triage 없음)는 판단 실행을 못 가져가고 수정 실행은 가져간다
+    (ARCHITECTURE "판단 — phase 19" 계약). 판단인지는 종류의 결과 형태로 가른다."""
+    conn = seeded
+    _issue_connector(conn, CONNECTOR)
+    _triage_execution(conn, execution_id="exec-triage-1", task_id="triage-1", connector=CONNECTOR)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-fix-001", TASK_B, kind="code_change", connector=CONNECTOR,
+                      inputs=["art-handoff-001"], now=LATER)
+
+    repo.record_supported_kinds(conn, CONNECTOR, None)  # 선언 없는 옛 claim
+    assert repo.claim_execution(conn, CONNECTOR, LATER)["execution_id"] == "exec-fix-001"
+    conn.execute("UPDATE connectors SET current_execution_id = NULL")
+    repo.record_supported_kinds(conn, CONNECTOR, ["bug_fix", "code_review"])
+    assert repo.claim_execution(conn, CONNECTOR, LATER)["execution_id"] == "exec-fix-001"
+
+    conn.execute("UPDATE connectors SET current_execution_id = NULL")
+    repo.record_supported_kinds(conn, CONNECTOR, ["bug_fix", "code_review", "triage"])
+    assert repo.claim_execution(conn, CONNECTOR, LATER)["execution_id"] == "exec-triage-1"  # 먼저 만든 것
+
+
+def test_claim_old_runner_gets_nothing_when_only_triage_is_queued(seeded):
+    conn = seeded
+    _issue_connector(conn, CONNECTOR)
+    _triage_execution(conn, execution_id="exec-triage-1", task_id="triage-1", connector=CONNECTOR)
+    repo.record_supported_kinds(conn, CONNECTOR, ["bug_fix", "code_review"])
+    assert repo.claim_execution(conn, CONNECTOR, LATER) is None
+    repo.record_supported_kinds(conn, CONNECTOR, ["triage"])
+    assert repo.claim_execution(conn, CONNECTOR, LATER)["execution_id"] == "exec-triage-1"
 
 
 # --- 산출물 (CONTRACT 4절) ----------------------------------------------------
@@ -3342,6 +3391,7 @@ def test_field_mappings_start_with_default_and_replace_bumps_config_revision(ses
     [_mapping("docs", "no_such_kind")],  # 등록되지 않은 종류
     [_mapping("p1", "urgent", field="priority")],  # 우선순위 값 밖
     [_mapping("bug", "bug_fix"), _mapping("BUG", "code_review", position=2)],  # 같은 원본 값 두 번(대소문자 무시)
+    [_mapping("triage", "triage")],  # 판단 종류로는 업무를 가져오지 않는다 (ADR-0025)
 ])
 def test_replace_field_mappings_rejects_invalid_rows_and_keeps_old(sessions, rows):
     revision = repo.get_config_revision(sessions, SESSION)

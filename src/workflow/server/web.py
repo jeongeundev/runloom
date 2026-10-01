@@ -85,6 +85,7 @@ from workflow.domain.composition import compose
 from workflow.domain.defaults import default_run_mode
 from workflow.domain import notification, start_checklist, team
 from workflow.domain.delegation import DELEGATION_POLICIES, can_set_policy
+from workflow.domain.execution_policy import is_triage_kind
 from workflow.domain.kinds import (
     get_kind,
     kind_for_capability,
@@ -659,6 +660,8 @@ def task_create(
     if not title or not request_text:
         raise PageError(422, "invalid_field", "제목과 요청 내용을 입력하세요.", field="title")
     spec = _kind_for_code(conn, session_id, capability_code)
+    if is_triage_kind(spec):  # 판단 단계는 중앙만 붙인다 (ADR-0025)
+        raise PageError(422, "invalid_field", "판단 종류로는 업무를 등록할 수 없습니다.", field="capability_code")
     if not scope_value:
         raise PageError(422, "invalid_field", "능력 범위 값을 입력하세요.", field="scope_value")
     if selection_mode not in ("auto", "manual"):

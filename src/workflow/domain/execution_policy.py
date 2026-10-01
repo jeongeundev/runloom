@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
+from workflow.contracts.v1 import KindSpec
+
 Target = Literal["code_change", "commit_review", "local", "triage"]
 # code_change: 버그 수정 결과(요청 ID·기준 커밋 대조). 진단·보고서 데모 판정기는 `main` 전용 (ADR-0019)
 Verifier = Literal["code_change", "commit_review", "generic", "triage"]
@@ -45,3 +47,11 @@ GENERIC_POLICY = ExecutionPolicy("*", "local", "generic_result", (), "generic", 
 
 def policy_for(kind: str) -> ExecutionPolicy:
     return BUILTIN_POLICIES.get(kind, GENERIC_POLICY)
+
+
+# 판단 단계는 종류 이름이 아니라 결과 형태로 가른다 (ADR-0025). DB 쪽 같은 판정은 `repo._TRIAGE_STAGE`
+TRIAGE_OUTPUT_KIND = "triage_result"
+
+
+def is_triage_kind(spec: KindSpec) -> bool:
+    return spec.output_kind == TRIAGE_OUTPUT_KIND

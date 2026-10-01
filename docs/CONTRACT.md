@@ -242,7 +242,7 @@
 
 본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
-산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`.
+산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`.
 
 로컬 도구의 원시 로그 산출물 — 생산자와 내용:
 
@@ -252,6 +252,7 @@
 | `claude_jsonl` / `claude_stderr` | 연결 프로그램 Claude 어댑터 | `claude -p --output-format json` 의 원문 stdout / stderr. 같은 마스킹 적용 |
 | `generic_result` | 연결 프로그램 | 사용자 정의 종류의 결과 봉투(`GenericResult`, 11절). 내장 종류의 `diagnosis_result`·`code_change_result` 와 구분 |
 | `code_review_result` | 연결 프로그램 | 내장 `code_review` 의 결과 봉투(`CodeReviewResult`, 13.4절) |
+| `triage_result` | 연결 프로그램 | 내장 `triage` 의 결과 봉투(`TriageResult`, 17.2절) |
 
 ## 5. 진단 결과 — `ready_for_handoff` 전체
 
@@ -1041,7 +1042,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 ### 14.3 등록 — Agent 를 새로 만드는 경우
 
-`connector setup`(또는 `--id`·`--repository-id` 를 생략한 `register`)이 보내는 요청. `local_registration_id` 기본 = 폴더 이름, `repository_id` 기본 = 러너가 찾은 GitHub `owner/name`, `agent_name` = 폴더 이름. 같은 `local_registration_id` 의 Agent 가 없고 서버가 `selfhost` 모드면 Agent 를 만든다(능력 `code.fix`·`code.review`, scope `repository_id`). `demo` 모드는 지금처럼 404.
+`connector setup`(또는 `--id`·`--repository-id` 를 생략한 `register`)이 보내는 요청. `local_registration_id` 기본 = 폴더 이름, `repository_id` 기본 = 러너가 찾은 GitHub `owner/name`, `agent_name` = 폴더 이름. 같은 `local_registration_id` 의 Agent 가 없고 서버가 `selfhost` 모드면 Agent 를 만든다(능력 `code.fix`·`code.review`·`code.triage`(phase 19), scope `repository_id`). `demo` 모드는 지금처럼 404.
 
 ```json
 {
@@ -1185,15 +1186,15 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 요청문(`request`)에 붙는 머리·"## 업무 양식"·"## 맡긴 사람 지시 (이름)" 절은 계약 칸이 아니다 — 서버가 문자열로 만든다(ARCHITECTURE "인계 맥락 요청문"). 러너는 지금처럼 글로만 프롬프트에 넣는다.
 
-## 17. 판단 — 내장 종류 `triage` (contract-pending)
+## 17. 판단 — 내장 종류 `triage`
 
-[ADR-0025](adr/0025-triage.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19" 의 "계약"·"요청문·후보·근거". 계약 버전은 1 그대로이고 1~16절 payload 는 바뀌지 않는다 — 내장 종류 하나(`triage`, 봉투 `capability_code="code.triage"`·`scope_key="repository_id"`·`input_kinds=[]`·`output_kind="triage_result"`·`outcomes=["ready", "needs_check", "unsuitable"]`)와 그 요청 target·결과 봉투·후보 목록이 더해진다. 모델이 생기기 전이라 `jsonc` 펜스이고(fixture 테스트가 읽지 않는다), phase 19 step 2 가 모델을 구현하면서 `json` 펜스로 바꾸고 `test_v1.py` 의 블록 수(`test_contract_md_has_expected_block_counts`)와 키 서명(`_SIGNATURES` — `TriageResult` 는 `proceed`, `TriageCandidates` 는 `current_kind`)을 함께 올린다. 같은 step 이 4절 산출물 `kind` 목록 끝에 `triage_result` 를 더한다.
+[ADR-0025](adr/0025-triage.md), 이름·규칙은 [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19" 의 "계약"·"요청문·후보·근거". 계약 버전은 1 그대로이고 1~16절 payload 는 바뀌지 않는다 — 내장 종류 하나(`triage`, 봉투 `capability_code="code.triage"`·`scope_key="repository_id"`·`input_kinds=[]`·`output_kind="triage_result"`·`outcomes=["ready", "needs_check", "unsuitable"]`)와 그 요청 target·결과 봉투·후보 목록이 더해진다. 모델은 phase 19 step 2 가 구현했고 아래 세 블록은 fixture 테스트 대상이다(`test_v1.py` 키 서명 — `TriageResult` 는 `proceed`, `TriageCandidates` 는 `current_kind`). 4절 산출물 `kind` 목록 끝에 `triage_result` 가 더해졌다.
 
 ### 17.1 `ExecutionRequest` — 판단
 
 중앙이 판단을 시작할 때 만드는 요청(`triage_runs.request_triage`). target 은 `TriageTarget` — 판단 Agent 의 로컬 등록과 그 Agent 의 `base_commit`(러너가 claim 때 보고한 origin 기본 브랜치 끝, ADR-0018 결정 2)이다. 러너는 이 커밋의 깨끗한 임시 체크아웃에서 읽기 도구만으로 판단한다. 입력 산출물은 없다. `request` 는 서버가 만든 글이다(판단 기준 본문·업무·후보·로그 근거 — 계약 칸이 아니다). 업무 키·결과 브랜치 칸은 쓰지 않는다(판단은 브랜치를 만들지 않는다). `kind_spec` 은 늘 싣는다 — 결과 형태(`output_kind == "triage_result"`)가 target 모양을 정한다.
 
-```jsonc
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-triage-001",
@@ -1227,7 +1228,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 러너가 체크아웃 HEAD 를 `inspected_commit` 으로 채운 결과 봉투(산출물 kind `triage_result`). 중앙은 `inspected_commit == target.base_commit` 과, `proposed_kind`·`assignee`·`predecessors` 가 판단을 시작할 때 고정한 후보 목록(17.3) 안인지 본다 — 밖이면 판단 로그 `failed`(`triage_invalid`). 결과는 **제안**이다 — 업무를 완료·종료하거나 담당을 바꾸지 않는다.
 
-```jsonc
+```json
 {
   "contract_version": 1,
   "execution_id": "exec-triage-001",
@@ -1254,7 +1255,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 중앙이 판단을 시작할 때 계산해 요청문(17.1 의 "## 후보")에 글로 넣고 판단 로그(`triage_logs.candidates_json`)에 이 모양으로 저장한다. 판정은 이 저장값으로 한다(다시 계산하지 않는다). 러너에게 보내는 payload 가 아니다.
 
-```jsonc
+```json
 {
   "current_kind": "bug_fix",
   "kinds": [
