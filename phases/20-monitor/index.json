@@ -1,0 +1,56 @@
+{
+  "project": "workflow",
+  "phase": "20-monitor",
+  "steps": [
+    {
+      "step": 0,
+      "name": "monitor-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "schema-v16",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "config-change-log",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "triage-metrics",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "assignee-metrics",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "metric-facts",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "metrics-export",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "monitor-tabs",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "autostart-preview",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "monitor-verify",
+      "status": "pending"
+    }
+  ]
+}
