@@ -3,11 +3,12 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
 - docs/ARCHITECTURE.md "Jira 소스 — phase 18" (step 0 이 쓴 이름·시그니처·스키마 표 — README 와 다르면 ARCHITECTURE 가 기준)
 - docs/adr/0024-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
 - src/workflow/server/github_sync.py (`sync_source`·`_Intake.take`·커서·`task_intake_facts`), src/workflow/server/worker.py (`tick`·`_sync_github`·간격·rate-limit 대기), src/workflow/server/task_cycle.py (`origin_source`)
-- src/workflow/adapters/repo.py (`upsert_source_issue` — 업무·단계 만들기, revision·digest), src/workflow/domain/task_readiness.py·task_followup.py (`source_closed`)
+- src/workflow/adapters/repo.py (`upsert_source_issue` — 업무·단계 만들기, revision·digest, `work_item_facts`(`delegated`)·`hand_work_to_agent`·`list_work_rows`), src/workflow/domain/task_readiness.py·task_followup.py (`source_closed`), src/workflow/domain/issue_intake.py (`intake_facts` — `needs_delegation`·`delegated_by`)
+- src/workflow/server/views.py (`cycle_context`·`_origin` — `origin_source` 를 부르는 화면)
 - step 1~3 산출물
 
 먼저 실제 파일을 읽는다. 대화 이력을 전제로 판단하지 않는다.
@@ -19,10 +20,11 @@
 3. 워커 `tick`: GitHub 동기화 다음에 Jira 동기화(연결된 워크스페이스만, 간격·429 대기는 GitHub 과 같은 모양, 오류는 기록하고 tick 을 멈추지 않음). 순서 테스트가 있으면 갱신.
 4. 원본 열림/닫힘: `task_cycle.origin_source`(또는 ARCHITECTURE 가 정한 곳)가 Jira 업무에 스냅숏의 open/closed 를 돌려준다 → 기존 `source_closed` 대기가 그대로 동작. 다시 열리면 이어감. 도는 실행은 끊지 않는다. Runloom 업무를 닫지 않는다.
 5. 후속 이슈 등록(step 8)으로 만들어진 이슈가 동기화로 들어오면 `source_item_id` 가 같은 업무에 붙는다(새 업무 아님).
+6. 맡기기 전엔 실행하지 않는다(README 기본값 13 — 방법은 ARCHITECTURE): 들어온 Jira 업무는 `새로 들어옴 · 지시 전`, [에이전트에게 맡기기] 뒤에 지시가 기록되고 착수할 수 있다. `origin_source` 를 바꾸면 그것을 부르는 곳 전부(`task_cycle`·`worker._followup_context`·`worker._create_followup_task`·`views`)가 Jira 업무에서 깨지지 않는지 테스트로 본다(업무 화면 GET 200 포함).
 
 ## 테스트 먼저
 
-`tests/workflow/server/test_jira_sync.py`(가짜 `JiraClient`): 두 쪽 페이지 가져오기·커서, 같은 이슈 재수신 멱등, 제목 바뀜 → revision, 이슈 유형 필터, 시작점 두 가지, 매핑 표(유형 `Bug`→`bug_fix` 등), 완료 범주 → 단계 `source_closed` 대기 → 다시 열림 → 이어감, 429 → 대기, 이미 `source_item_id` 가 채워진 업무와 같은 이슈 → 같은 업무. 워커 tick 순서. GitHub 동기화 회귀.
+`tests/workflow/server/test_jira_sync.py`(가짜 `JiraClient`): 두 쪽 페이지 가져오기·커서, 같은 이슈 재수신 멱등, 제목 바뀜 → revision, 이슈 유형 필터, 시작점 두 가지, 매핑 표(유형 `Bug`→`bug_fix` 등), 완료 범주 → 단계 `source_closed` 대기 → 다시 열림 → 이어감, 429 → 대기, 이미 `source_item_id` 가 채워진 업무와 같은 이슈 → 같은 업무, 맡기기 전 착수 없음 → 맡기면 지시 기록, Jira 업무 패널 GET 200. 워커 tick 순서. GitHub 동기화 회귀.
 
 소스·템플릿을 바꾸기 전에 `tests/` 미러 경로에 실패하는 테스트를 먼저 작성하고, 실패 원인이 의도한 것인지 확인한다(`tdd-guard.sh` 가 테스트 없는 소스 작성을 막는다). 구현한 뒤 해당 테스트와 전체 회귀를 통과시킨다. 이 step 의 변경으로 기존 테스트가 깨지면 새 동작 기준으로 고치되 단정을 약하게 만들지 않는다. 무엇을 왜 바꿨는지는 summary 에 남긴다.
 

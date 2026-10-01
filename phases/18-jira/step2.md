@@ -3,7 +3,7 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
 - docs/ARCHITECTURE.md "Jira 소스 — phase 18" (step 0 이 쓴 이름·시그니처·스키마 표 — README 와 다르면 ARCHITECTURE 가 기준)
 - docs/adr/0024-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
 - src/workflow/contracts/github.py (소스 설정·스냅숏 모델 관례), src/workflow/domain/issue_intake.py·form_sections.py·field_mapping.py·work_status.py (업무 상태 8개)

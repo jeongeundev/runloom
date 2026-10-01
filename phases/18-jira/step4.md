@@ -3,7 +3,7 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
 - docs/ARCHITECTURE.md "Jira 소스 — phase 18" (step 0 이 쓴 이름·시그니처·스키마 표 — README 와 다르면 ARCHITECTURE 가 기준)
 - docs/adr/0024-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
 - src/workflow/server/web.py (`/connect` 탭·`POST /operator/github/token`·Origin 검사·권한 판정), src/workflow/server/templates/connect.html·_connect_github.html·_connect_inbound.html, docs/UI_GUIDE.md
@@ -15,7 +15,7 @@
 
 1. `/connect?tab=sources` 에 Jira 칸(`_connect_jira.html`). 연결 전: 사이트 주소·이메일·API 토큰 입력, "토큰 만들기" 링크(`https://id.atlassian.com/manage-profile/security/api-tokens`, 새 창), 권장 스코프 안내. 저장 → 서버가 확인(tenant_info·myself) → 성공하면 토큰은 secret_store, 공개 정보는 DB. 실패 문구는 ARCHITECTURE 표(401·403·주소 형식·연결 실패).
 2. 연결 후: 계정 표시 이름·사이트, 프로젝트 추가(검색 목록에서 고르기) → 프로젝트 설정 폼: 연결 저장소(워크스페이스 `github_sources` 중 하나 — 없으면 "GitHub 저장소 먼저 연결" 안내, 필수), 이슈 유형(체크, 비우면 전부), 시작점(지금부터/열린 업무 전부), 세 순간 상태 이름(그 프로젝트 실제 상태 목록 select, 비움 허용), 후속 이슈 유형(select, 비움 허용). 프로젝트 빼기. 연결 끊기(토큰 지움·프로젝트 설정 지움·업무는 남김 — 확인 문구).
-3. 경로·권한은 ARCHITECTURE 표. 관리자만(기존 소스 연결과 같은 동작 권한). 폼 값은 서버가 Jira 에서 받은 목록과 대조해 모르는 값 거부(열거형).
+3. 경로·권한은 ARCHITECTURE 표. 관리자만(기존 소스 연결과 같은 동작 권한 `team.MANAGE_CONNECTIONS`). 폼 값은 서버가 Jira 에서 받은 목록과 대조해 모르는 값 거부(열거형).
 4. 사용자는 내부 id·JQL·customfield 를 입력하지 않는다(설정은 실제 서비스 흐름으로 — 고르기만).
 
 ## 테스트 먼저

@@ -3,11 +3,11 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
 - docs/ARCHITECTURE.md "Jira 소스 — phase 18" (step 0 이 쓴 이름·시그니처·스키마 표 — README 와 다르면 ARCHITECTURE 가 기준)
 - docs/adr/0024-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
 - src/workflow/adapters/db.py (v12 → v13 마이그레이션·재생성 선례·`_V13_TABLES`), src/workflow/adapters/repo.py (`field_mappings`·`DEFAULT_FIELD_MAPPINGS`·work_items 쓰기), src/workflow/server/backup.py
-- tests/workflow/adapters/test_db.py·test_repo*.py, tests/workflow/server/test_backup.py, tests/fixtures 의 schema_v*.sql 관례
+- tests/workflow/adapters/test_db.py·test_repo*.py, tests/workflow/server/test_backup.py, tests/workflow/adapters/fixtures/schema_v*.sql 관례(최신 v12)
 
 먼저 실제 파일을 읽는다. 대화 이력을 전제로 판단하지 않는다.
 
@@ -18,7 +18,8 @@
 3. `DEFAULT_FIELD_MAPPINGS` 에 `('jira','kind','*','bug_fix')`. 기존 워크스페이스에는 마이그레이션이 한 번 넣는다(이미 jira 행이 있으면 넣지 않음).
 4. repo 함수(시그니처는 ARCHITECTURE): Jira 연결 저장·읽기·지우기(토큰은 여기 없음), 프로젝트 설정 upsert·목록·지우기, 이슈 스냅숏 upsert, outbox 넣기(중복 키로 한 번)·가져오기·상태 바꾸기. 업무 upsert 는 step 5 몫이면 여기서 만들지 않는다.
 5. `server/backup.py` 가 새 표를 포함하는지 확인(비밀 파일은 백업 규칙 그대로).
-6. fixture `schema_v13.sql`(기존 관례대로 스키마 원문만).
+6. fixture `tests/workflow/adapters/fixtures/schema_v13.sql`(기존 관례대로 스키마 원문만 — 행은 test_db 도우미가 넣는다).
+7. step 0 이 v14 에 넣기로 한 다른 칸(예: Jira 지시 기록, `task_pull_requests` 의 이슈 번호 처리)이 있으면 같은 마이그레이션에서 ARCHITECTURE 대로.
 
 ## 테스트 먼저
 

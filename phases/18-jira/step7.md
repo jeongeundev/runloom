@@ -3,17 +3,17 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
 - docs/ARCHITECTURE.md "Jira 소스 — phase 18" (step 0 이 쓴 이름·시그니처·스키마 표 — README 와 다르면 ARCHITECTURE 가 기준)
 - docs/adr/0024-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
-- src/workflow/adapters/repo.py (업무 상태 저장 `_refresh_stage_work`·`set_work_status` 류 — 업무 상태가 바뀌는 모든 곳), src/workflow/server/github_delivery.py (outbox 전송·`unknown` 조정 관례), src/workflow/server/worker.py (`_deliver_github` 위치)
+- src/workflow/adapters/repo.py (업무 상태 쓰기는 `set_work_status` 한 곳 — `refresh_work_status`·`_refresh_stage_work`·`refresh_open_work_statuses`(tick 끝)가 모두 거친다, `status_changed` 이벤트 `{from,to,reason}`), src/workflow/server/github_delivery.py (outbox 전송·`unknown` 조정 관례), src/workflow/server/worker.py (`_deliver_github` 위치)
 - src/workflow/domain/jira_intake.py (세 순간 판정·전환 고르기 — step 2), step 1·3·5 산출물
 
 먼저 실제 파일을 읽는다. 대화 이력을 전제로 판단하지 않는다.
 
 ## 작업
 
-1. 업무 상태가 바뀌는 곳에서(한 곳으로 모여 있으면 거기, 아니면 ARCHITECTURE 가 정한 훅) Jira 업무이고 세 순간에 해당하고 설정 상태 이름이 있으면 outbox 한 행(업무 × 순간 × ADR 이 정한 되풀이 규칙의 중복 키). 같은 트랜잭션.
+1. 업무 상태가 바뀌는 곳에서(지금은 `set_work_status` 한 곳 — ARCHITECTURE 가 다른 훅을 정했으면 그것) Jira 업무이고 세 순간에 해당하고 설정 상태 이름이 있으면 outbox 한 행(업무 × 순간 × ADR 이 정한 되풀이 규칙의 중복 키). 같은 트랜잭션.
 2. 전송 `server/jira_delivery.py`(이름은 ARCHITECTURE) — 워커 tick 에서 GitHub 전송 다음:
    - 이슈 전환 목록 → 이미 목표 상태면 `delivered`(전송 안 함) → 목표로 가는 전환 있으면 POST → `delivered`.
    - 전환 없음·400 → `failed` + 이유(재시도 안 함). 401·403 → `failed` + 연결 화면 경고. 429·5xx·네트워크 → 재시도(백오프, 상한 뒤 `failed`).

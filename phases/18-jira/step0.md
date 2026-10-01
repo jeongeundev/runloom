@@ -3,20 +3,21 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준)
 - docs/research/2026-09-29-jira-integration.md (1절 권장 설계·2절 사실·3절 열린 질문 — 1차 출처 조사)
 - docs/product/REDESIGN_PLAN.md 7·13·14·16절
 - docs/ARCHITECTURE.md 의 "GitHub 업무 순환 — phase 8 계약"·"GitHub App 연결 — phase 11"·"실제 저장소 순환 — phase 12"·"업무와 단계 — phase 14"·"업무 화면 — phase 16"·"사람 사이 인계 — phase 17" 절
 - docs/adr/0014·0017·0018·0020·0022·0023, docs/GLOSSARY.md, docs/CONTRACT.md
 - src/workflow/adapters/db.py (v13 재생성 선례·FK), src/workflow/adapters/repo.py (`upsert_source_issue`·후속 `placement`·`field_mappings`), src/workflow/adapters/secret_store.py, src/workflow/adapters/github_client.py
-- src/workflow/server/github_sync.py·github_delivery.py·task_cycle.py (`origin_source`)·worker.py (`tick`·`_sync_github`·`_deliver_github`·`_deliver_pull_requests`)·mapping_api.py·web.py (`/connect`)
-- src/workflow/domain/issue_intake.py·field_mapping.py·form_sections.py·task_readiness.py·task_followup.py·work_status.py·pull_request.py·work_keys.py
+- src/workflow/server/github_sync.py (`task_intake_facts`·`_pull_target`)·github_delivery.py·task_cycle.py (`origin_source`·`task_facts`·`_match`·`_match_facts`·`execution_request_text`)·worker.py (`tick`·`_sync_github`·`_queue_pull_request`·`_deliver_pull_requests`·`_deliver_github`·`_followup_context`·`_create_followup_task`)·stage_runs.py·owner_approval.py·views.py (`cycle_context`·`_origin`)·mapping_api.py·web.py (`/connect`)
+- src/workflow/domain/issue_intake.py (`intake_facts`)·field_mapping.py·form_sections.py·task_readiness.py·task_followup.py·work_status.py·pull_request.py·work_keys.py·github_match.py (`match_source`)·handoff_context.py (`compose_request`)·work_list.py
+- src/workflow/adapters/repo.py 의 `set_work_status`·`work_item_facts`(`delegated`)·`hand_work_to_agent`·`list_work_rows`(`repository` 칸)·`enqueue_pull_request`·`create_followup_once`
 
-먼저 실제 파일을 읽는다. 대화 이력을 전제로 판단하지 않는다. phase 17 이 방금 끝났다 — 17 이 바꾼 코드(스키마 v13·`owner_approval`·`stage_runs`)를 기준으로 본다.
+먼저 실제 파일을 읽는다. 대화 이력을 전제로 판단하지 않는다. phase 17 은 끝나 `service` 에 병합됐다 — 17 이 바꾼 코드(스키마 v13·`owner_approval`·`stage_runs`·매칭 `chosen_agent_id`/`pair_agent_id`·요청문 머리·목록 저장소 칸)를 기준으로 본다. README "조사로 확인한 현재" 는 2026-10-01 에 17 완료 코드로 다시 맞췄다 — 다르면 코드가 기준이고, 다른 점을 ADR 에 적는다.
 
 ## 작업 (문서만 — 코드·테스트를 바꾸지 않는다)
 
-1. **ADR-0024 `docs/adr/0024-jira-source.md`**: README 사용자 결정 6가지와 계획 기본값 12가지를 결정으로 고정한다. 코드·조사 문서를 보고 기본값을 바꿔야 하면 바꾸고 이유를 적는다. 반드시 정할 것:
+1. **ADR-0024 `docs/adr/0024-jira-source.md`**: README 사용자 결정 6가지와 계획 기본값 14가지를 결정으로 고정한다. 코드·조사 문서를 보고 기본값을 바꿔야 하면 바꾸고 이유를 적는다. 반드시 정할 것:
    - 호출 기준 주소: 사이트 주소 직접 vs `api.atlassian.com/ex/jira/{cloudId}`(scoped 토큰). 조사 문서 근거로 하나 또는 "확인 뒤 저장" 규칙.
    - 토큰 보관 = `secret_store` 새 고정 이름(ADR-0017 과 같은 방식) — AGENTS.md 비밀값 규칙과 맞는지 한 줄.
    - Jira 상태 → Runloom `open`/`closed` 접기(`statusCategory.key == 'done'` → closed).
@@ -24,11 +25,18 @@
    - 전송 실패 분류(재시도 vs `failed`)와 화면 표시.
    - 후속 이슈 생성 조건·본문·라벨·링크 유형·조정 방법, 만든 이슈를 다음 동기화가 같은 업무로 받는 규칙(중복 업무 금지).
    - 원본 조회 일반화: `task_cycle.origin_source` 가 Jira 업무도 원본 열림/닫힘을 돌려주게 하는 방법(종류 이름 분기 없이, `source_type` 분기는 이 한 곳).
-   - Jira 업무의 실행 대상 저장소를 어디서 읽는지(프로젝트 설정 → `github_sources`), 초안 PR·PR 감지가 Jira 업무에도 되는지 코드로 확인한 결과와 필요한 변경.
+   - Jira 업무의 실행 대상 저장소를 어디서 읽는지(프로젝트 설정 → `github_sources`), 초안 PR·PR 감지가 Jira 업무에도 되는지 코드로 확인한 결과와 필요한 변경. 특히:
+     - `origin_source` 를 부르는 곳 전부(README 조사 목록)가 Jira 업무에서 무엇을 받는지 — `views._origin` 은 GitHub 이슈 행 모양을 전제한다. 돌려주는 모양(원본 사실 묶음으로 바꿀지, Jira 는 따로 둘지)을 정한다.
+     - 에이전트 매칭: `task_facts` 가 `config` 가 있으면 `_match` 를 부르고 `fix=intake.assignee_ids is not None` 으로 가른다 — Jira 업무(`source_issues` 없음 → `assignee_ids=None`)가 수정 단계로 매칭되게 하는 방법과 요구 능력 `repository_id` 범위를 채우는 방법.
+     - 맡기기 전 대기(README 기본값 13): 지시 기록 위치, `work_item_facts.delegated`·`intake_facts(needs_delegation, delegated_by)`·`hand_work_to_agent` 를 Jira 에도 맞추는 방법.
+     - 초안 PR: `_queue_pull_request` 가 GitHub 이슈 행 없이도 연결 저장소로 PR 행을 만드는 방법, `task_pull_requests.issue_number`·`enqueue_pull_request` 시그니처를 어떻게 할지(스키마 v14 에 포함되면 표에 적는다), `pr_body` 의 `Fixes #N` 을 원본이 GitHub 일 때만 넣는 방법과 Jira 원본 줄 문구.
+     - 목록 `list_work_rows.repository` 가 Jira 업무의 연결 저장소를 보이게 하는 방법.
+     - 요청문 머리의 원본 키(README 기본값 14).
+   - 세 순간 훅 위치: 업무 상태 쓰기는 `repo.set_work_status` 한 곳이다(`status_changed` 이벤트) — 여기서 outbox 를 넣을지, 다른 곳인지와 이유.
 2. **ARCHITECTURE "Jira 소스 — phase 18" 절**(끝에 추가): 흐름, 스키마 v14 표(표·칸·CHECK·FK·인덱스, `work_items`·`field_mappings` CHECK 확장 방법 — v13 재생성 선례를 따르되 `work_items` 를 참조하는 FK 가 깨지지 않는 방법을 실제 SQL 로 확인해 적는다, `tasks` 재생성 금지), 모듈·함수 이름·시그니처 표(step 번호 표시), 경로 표(연결 화면·저장·끊기), 비밀 이름, outbox 상태(`pending`/`sending`/`delivered`/`unknown`/`failed` — 기존 `SourceDelivery.state` 와 맞출지), 세 순간 표, 오류 분류 표, 화면 문구.
 3. **GLOSSARY**: phase 18 용어(Jira 연결·Jira 프로젝트 설정·세 순간(상태 옮기기)·후속 이슈 등록·Jira outbox 등) — 코드 식별자와 쓰지 말 말.
 4. **REDESIGN_PLAN 13절**: 18-jira 행에 이번 범위(되쓰기 = 상태 옮기기·후속 등록, 댓글·PR 링크 제외)와 ADR-0024 링크.
-5. **docs/CURRENT_HANDOFF.md** 맨 위 "다음 작업"을 한 줄: 18-jira 진행 중(`feat-18-jira`, 17 위에서 갈라짐 — 병합은 17 → service, 18 → service 순).
+5. **docs/CURRENT_HANDOFF.md** 맨 위 "다음 작업"을 한 줄: 18-jira 진행 중(`feat-18-jira`, 17 병합 뒤 `service` 에서 갈라짐 — 끝나면 18 → service `--no-ff` 병합).
 
 ## 테스트
 

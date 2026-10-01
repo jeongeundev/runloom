@@ -3,24 +3,25 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
 - docs/ARCHITECTURE.md "Jira 소스 — phase 18" (step 0 이 쓴 이름·시그니처·스키마 표 — README 와 다르면 ARCHITECTURE 가 기준)
 - docs/adr/0024-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
-- src/workflow/server/worker.py (실행 요청 만들기 — 대상 저장소·기준 커밋·`github_repository` 매칭, `_deliver_pull_requests`), src/workflow/server/stage_runs.py·work_actions.py (착수), src/workflow/server/github_sync.py (`_link_pulls`·`_pull_target`·`_check_merges`), src/workflow/domain/pull_request.py (`pr_body` `Fixes #N`), src/workflow/domain/task_readiness.py (연결 정보 없음 판정)
+- src/workflow/server/worker.py (실행 요청 만들기 — 대상 저장소·기준 커밋, `_queue_pull_request`(지금은 `get_source_issue_by_task` 가 없으면 PR 행을 안 만든다)·`_deliver_pull_requests`), src/workflow/server/task_cycle.py (`task_facts`·`_match`·`_match_facts` — `fix=intake.assignee_ids is not None`), src/workflow/domain/github_match.py (`match_source` — `chosen_agent_id`·`pair_agent_id`), src/workflow/server/stage_runs.py·owner_approval.py·work_actions.py (착수·승인 게이트), src/workflow/server/github_sync.py (`_link_pulls`·`_pull_target`·`_check_merges`), src/workflow/domain/pull_request.py (`pr_body` `Fixes #N`), src/workflow/adapters/repo.py (`enqueue_pull_request`·`list_work_rows` 의 `repository` 칸), src/workflow/domain/handoff_context.py (`compose_request`), src/workflow/domain/task_readiness.py (연결 정보 없음 판정)
 - step 5 산출물
 
 먼저 실제 파일을 읽는다. 대화 이력을 전제로 판단하지 않는다.
 
 ## 작업
 
-1. Jira 업무의 단계가 실행될 때 대상 저장소 = 프로젝트 설정의 연결 저장소(ARCHITECTURE 가 정한 조회 한 곳). 러너 매칭·기준 커밋·브랜치 `runloom/<RUN-n>` 은 GitHub 업무와 같다. 연결 저장소가 지워졌거나 프로젝트 설정이 없으면 기존 "연결 정보 없음" 류 대기(새 대기 코드가 필요하면 ARCHITECTURE 대로).
-2. 초안 PR: 연결 저장소에 연다. 본문 `Fixes #N` 은 GitHub 원본일 때만(Jira 원본은 원본 링크 한 줄 — 문구는 ARCHITECTURE). 제목 `<RUN-n> <제목>` 그대로.
+1. Jira 업무의 단계가 실행될 때 대상 저장소 = 프로젝트 설정의 연결 저장소(ARCHITECTURE 가 정한 조회 한 곳). 러너 매칭·기준 커밋·브랜치 `runloom/<RUN-n>` 은 GitHub 업무와 같다. 매칭은 수정 단계를 수정 Agent 로(지금 코드는 `source_issues` 가 없으면 `fix=False` 로 빠진다 — ARCHITECTURE 가 정한 방법으로), 맡긴 에이전트(`chosen_agent_id`)·검토 짝(`pair_agent_id`) 규칙은 17 그대로. 연결 저장소가 지워졌거나 프로젝트 설정이 없으면 기존 "연결 정보 없음" 류 대기(새 대기 코드가 필요하면 ARCHITECTURE 대로).
+2. 초안 PR: 연결 저장소에 연다 — `_queue_pull_request`·`enqueue_pull_request` 가 GitHub 이슈 행 없이도 Jira 업무의 PR 행을 만들게(ARCHITECTURE). 본문 `Fixes #N` 은 GitHub 원본일 때만(Jira 원본은 원본 링크 한 줄 — 문구는 ARCHITECTURE). 제목 `<RUN-n> <제목>` 그대로. push 실패 안내 요청도 GitHub 업무와 같다.
 3. PR 감지·병합 → 업무 완료가 Jira 업무에도 된다(`RUN-n` 키 — 연결 저장소 PR 동기화). 직접 작업([내 세션에서 작업])도 같다.
-4. 요청문 인계 맥락(phase 17 — `# <RUN-n> <제목>`·양식 칸)에 원본 키 `SHOP-12` 가 보이면 좋다 — 17 의 요청문 머리 규칙에 원본 키가 이미 있으면 그대로.
+4. 요청문 머리(phase 17 `compose_request` — 지금은 `# <RUN-n> <제목>` 만, 원본 키 없음)에 원본 키 `SHOP-12` 를 ARCHITECTURE 가 정한 모양으로. GitHub 업무 요청문은 그대로(17 테스트 불변).
+5. 목록: Jira 업무의 `repository` 칸 = 연결 저장소(저장소 묶기·필터에 나옴, ARCHITECTURE 방법).
 
 ## 테스트 먼저
 
-미러 테스트: Jira 업무 → 에이전트에게 맡김 → 실행 요청의 저장소 = 연결 저장소, 프로젝트 설정 없음 → 대기, 초안 PR 본문에 `Fixes` 없음(GitHub 업무는 그대로 있음), 연결 저장소 PR(`RUN-n`) 열림 → `PR · 검토`, 병합 → `완료`. GitHub 업무 회귀.
+미러 테스트: Jira 업무 → 에이전트에게 맡김 → 실행 요청의 저장소 = 연결 저장소, 프로젝트 설정 없음 → 대기, 초안 PR 본문에 `Fixes` 없음(GitHub 업무는 그대로 있음), 연결 저장소 PR(`RUN-n`) 열림 → `PR · 검토`, 병합 → `완료`, 수정 단계 매칭이 맡긴 에이전트·수정 Agent, 요청문 머리 원본 키, 목록 저장소 칸·필터. GitHub 업무 회귀(매칭·PR 본문·요청문).
 
 소스·템플릿을 바꾸기 전에 `tests/` 미러 경로에 실패하는 테스트를 먼저 작성하고, 실패 원인이 의도한 것인지 확인한다(`tdd-guard.sh` 가 테스트 없는 소스 작성을 막는다). 구현한 뒤 해당 테스트와 전체 회귀를 통과시킨다. 이 step 의 변경으로 기존 테스트가 깨지면 새 동작 기준으로 고치되 단정을 약하게 만들지 않는다. 무엇을 왜 바꿨는지는 summary 에 남긴다.
 

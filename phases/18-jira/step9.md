@@ -3,7 +3,7 @@
 ## 읽어야 할 파일
 
 - AGENTS.md
-- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 12가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
+- phases/18-jira/README.md (사용자 결정 6가지·계획 기본값 14가지·조사 결과 — 이 phase 의 기준), phases/18-jira/index.json (이전 step summary)
 - docs/ARCHITECTURE.md "Jira 소스 — phase 18" (step 0 이 쓴 이름·시그니처·스키마 표 — README 와 다르면 ARCHITECTURE 가 기준)
 - docs/adr/0024-*.md (step 0 이 쓴 ADR), docs/GLOSSARY.md
 - tests/e2e/ (GitHub 순환·팀 e2e 관례 — 가짜 GitHub·가짜 도구·`WORKFLOW_CONNECTOR_HOME` 임시 폴더), docs/SELFHOST.md ("업그레이드" 절 관례), docs/VERIFICATION_LOG.md, docs/CURRENT_HANDOFF.md
@@ -15,7 +15,7 @@
 
 1. e2e `tests/e2e/test_jira_cycle.py`(가짜 Jira 서버 = `MockTransport` 상태 있는 가짜, 가짜 GitHub, 가짜 러너·도구): 연결 → 프로젝트 설정(저장소·세 상태·후속 유형) → 동기화로 `SHOP-12` 업무 → 에이전트에게 맡김 → Jira "진행 중" → 결과·검토 → 초안 PR → Jira "리뷰중" → 병합 → 업무 완료·Jira "종료". 후속 새 업무 규칙이 있으면 Jira 에 새 이슈 1건·링크·다음 동기화 뒤 업무 수 불변. 중간에 Jira 를 완료 범주로 바꾸면 다음 단계 대기 → 다시 열면 이어감.
 2. v13 사본(업무·GitHub 소스·매핑 행이 든) → v14 마이그레이션 e2e.
-3. 문서: SELFHOST "업그레이드" v14(백업 먼저, 러너 재설치 불필요 — 러너 계약 불변인지 확인해 적기)·"Jira 연결" 절(토큰 만들기·권장 스코프·프로젝트 설정·세 상태), VERIFICATION_LOG "phase 18 Jira"(자동 검증 결과), CURRENT_HANDOFF 맨 위 "다음 작업"(18 완료 요약·할 일 순서: 17 → service 병합, 18 → service 병합, 셀프호스트 재설치 v14, 사용자 Jira Cloud 사이트·토큰 만들기 → 실연동 1회 확인 목록, 다음 19-triage), README 상태 줄.
+3. 문서: SELFHOST "업그레이드" v14(백업 먼저, 러너 재설치 불필요 — 러너 계약 불변인지 확인해 적기)·"Jira 연결" 절(토큰 만들기·권장 스코프·프로젝트 설정·세 상태), VERIFICATION_LOG "phase 18 Jira"(자동 검증 결과), CURRENT_HANDOFF 맨 위 "다음 작업"(18 완료 요약·할 일 순서: 18 → service `--no-ff` 병합(17 은 이미 병합됨), 셀프호스트 재설치 v14(백업 먼저), 사용자 Jira Cloud 사이트·토큰 만들기 → 실연동 1회 확인 목록, 다음 19-triage), README 상태 줄.
 4. 실연동 확인 목록(사용자용, 체크리스트): 사이트 만들기, 이슈 유형·상태 이름을 회사 형식으로(대기·진행 중·리뷰중·종료), 토큰, 연결, sandbox 저장소 연결, 이슈 1건 → PR → 병합, Jira 상태 세 번 옮겨지는지, 후속 이슈.
 
 ## 테스트 먼저
