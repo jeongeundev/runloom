@@ -1783,7 +1783,7 @@ class Origin:
     issue: Row | None            # GitHub source_issues 행 — GitHub 원본만(views._origin·원본 댓글)
     config: GitHubSourceConfig | None  # 실행 설정. Jira 는 연결 저장소 설정의 all_open 사본
     state: Literal["open", "closed"] | None
-    own: bool                    # 원본 행(source_issues·jira_issues)의 task_id 가 이 단계
+    own: bool                    # 원본 행(source_issues·jira_issues)이 이 단계 또는 같은 업무의 같은 종류 단계(다시 맡긴 단계)에 붙음 — get_*_by_task 와 같은 규칙
     origin_key: str | None       # 요청문 머리의 원본 키 — Jira 만
 
 def origin(conn: Connection, task: Row) -> Origin: ...
@@ -1795,9 +1795,9 @@ def task_intake(conn: Connection, task: Row) -> IntakeFacts: ...
 | 업무 원본 | `issue` | `config` | `state` | `own` | `origin_key` |
 |---|---|---|---|---|---|
 | 업무 없음·`manual`·`n8n` | None | None | None | False | None |
-| `github`, 원본 이슈 칸 있음 | `source_issues` 행 | 소스 설정 | 행 `state` | 행 `task_id` == 이 단계 | None |
+| `github`, 원본 이슈 칸 있음 | `source_issues` 행 | 소스 설정 | 행 `state` | `get_source_issue_by_task` 가 있음 | None |
 | `github`, 원본 이슈 칸 없음(새 업무 후속) | None | 소스 설정 | None | False | None |
-| `jira`, 스냅숏 행 있음 | None | `jira_intake.run_config(연결 저장소 설정)` | 행 `state` | 행 `task_id` == 이 단계 | `work_items.source_key` |
+| `jira`, 스냅숏 행 있음 | None | `jira_intake.run_config(연결 저장소 설정)` | 행 `state` | `get_jira_issue_by_task` 가 있음 | `work_items.source_key` |
 | `jira`, 스냅숏 행 없음(후속 이슈 전) | None | 같음 | None | False | None |
 
 `domain/jira_intake.run_config(config: GitHubSourceConfig) -> GitHubSourceConfig` = `config.model_copy(update={"intake": "all_open", "trigger_label": None})`. Jira 스냅숏 행은 업무의 원본 칸(`source_id`, `source_item_id`)으로 찾는다(`repo.get_jira_issue(conn, session_id, source_id, issue_id)`).
@@ -1922,7 +1922,7 @@ Jira 의 `created`·`updated` 는 `2026-09-29T10:00:00.000+0900` 형식이다 �
 | 클라이언트·비밀 | `adapters/jira_client.py`·`adapters/secret_store.py`(3) | 위 "계약·클라이언트", 오류 계층 |
 | 연결 | `server/jira_connect.py`·`server/web.py`·`templates/_connect_jira.html`(4) | `verify(site_url, email, token, *, transport) -> JiraConnectionFacts`(frozen — `site_url`·`cloud_id`·`api_base`·`email`·`account_id`·`display_name`, 토큰 없음), `api_base_url(connection: Row \| JiraConnection) -> str`, `normalize_site(value: str) -> str`(형식 밖이면 ValueError), 위 경로 6개 |
 | repo(연결·설정) | `adapters/repo.py`(4) | `save_jira_connection(conn, facts, *, session_id, now) -> None`, `get_jira_connection(conn, session_id) -> Row \| None`, `disconnect_jira(conn, session_id, *, now) -> None`, `mark_jira_auth_failed(conn, session_id, *, now) -> None`, `add_jira_project(conn, *, session_id, ref, github_source_id, start_mode, choices, now) -> str`, `update_jira_project(conn, session_id, source_id, **settings) -> None`, `set_jira_choices(conn, session_id, source_id, choices, *, now) -> None`, `list_jira_projects(conn, session_id) -> list[JiraProjectConfig]`, `get_jira_project(conn, session_id, source_id) -> JiraProjectConfig \| None`, 화면·대조용 `list_jira_project_rows(conn, session_id) -> list[Row]`·`jira_project_config(row) -> JiraProjectConfig`·`get_jira_choices(conn, session_id, source_id) -> JiraChoices \| None`(step 4 에서 더함) |
-| 가져오기 | `server/jira_sync.py`·`server/worker.py`·`adapters/repo.py`(5) | `sync_project(...) -> JiraSyncResult`, `task_intake_facts(conn, session_id, task_id) -> IntakeFacts \| None`, `Worker._sync_jira`, `Worker(jira_for=…)`, `JIRA_SYNC_INTERVAL_SECONDS = 60`, `repo.upsert_jira_issue(...) -> JiraUpsert`, `get_jira_issue(conn, session_id, source_id, issue_id) -> Row \| None`, `get_jira_issue_by_task(conn, session_id, task_id) -> Row \| None`, `_delegate_jira_issue(...)`, `advance_jira_cursor(conn, source_id, cursor_ms, *, now) -> None`, `work_item_facts` 의 Jira 지시 조건, `hand_work_to_agent` 의 Jira 지시 기록 |
+| 가져오기 | `server/jira_sync.py`·`server/worker.py`·`adapters/repo.py`(5) | `sync_project(...) -> JiraSyncResult`, `task_intake_facts(conn, session_id, task_id) -> IntakeFacts \| None`, `Worker._sync_jira`, `Worker(jira_for=…)`, `JIRA_SYNC_INTERVAL_SECONDS = 60`, `repo.upsert_jira_issue(...) -> JiraUpsert`, `get_jira_issue(conn, session_id, source_id, issue_id) -> Row \| None`, `get_jira_issue_by_task(conn, session_id, task_id) -> Row \| None`, `_delegate_jira_issue(...)`, `advance_jira_cursor(conn, source_id, cursor_ms, *, now) -> None`, `jira_project_row(conn, source_id) -> Row \| None`·`jira_sync.JiraClients(secrets)`(워커 `jira_for` — 연결 행 → 클라이언트, step 5 에서 더함), `work_item_facts` 의 Jira 지시 조건, `hand_work_to_agent` 의 Jira 지시 기록 |
 | 원본 조회 | `server/task_cycle.py`·`server/worker.py`·`server/views.py`(5) | `Origin`, `origin(conn, task) -> Origin`(옛 `origin_source` 를 대신함 — 부르는 곳 모두 옮김), `task_intake(conn, task) -> IntakeFacts` |
 | 실행·PR·목록·요청문 | `worker.py`·`domain/pull_request.py`·`adapters/repo.py`·`domain/handoff_context.py`·`server/mapping_api.py`(6) | `_queue_pull_request`·`_deliver_pull_requests`·`_apply_pull_request_state`(위), `enqueue_pull_request(..., issue_number: int \| None)`, `pr_body(..., issue_number: int \| None, origin_line: str \| None = None)`, `origin_line(source_key, source_url) -> str`, `list_work_rows` JOIN, `compose_request(..., origin_key: str \| None = None)`, `FieldMappingIn.source_type` 에 `jira`, `SOURCE['jira']` |
 | 상태 옮기기 | `adapters/repo.py`·`server/jira_delivery.py`·`server/worker.py`(7) | `queue_jira_transition(conn, work_item_id, moment, *, now) -> bool`(`set_work_status` 가 부름), `jira_deliveries_due`·`claim_jira_delivery`·`record_jira_delivery`(위), `list_jira_deliveries(conn, work_item_id) -> list[Row]`, `deliver_jira_updates(...) -> JiraDeliveryReport`, `Worker._deliver_jira` |

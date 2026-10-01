@@ -593,7 +593,8 @@ def cycle_context(
     """업무 상세의 업무 순환 영역 — 원본 링크·담당·대기 사유·사람 요청과 응답(입력 보충)·생성 근거·재시도 횟수·검토 결과·
     원본 반영 상태. 업무 순환 종류도 아니고 원본 이슈도 없으면 None."""
     policy = policy_for(task["kind"])
-    issue, config = task_cycle.origin_source(conn, task)
+    found = task_cycle.origin(conn, task)
+    issue, config = found.issue, found.config
     if not policy.cycle and issue is None:
         return None
     task_id = task["task_id"]
@@ -826,7 +827,8 @@ def work_panel_context(
             "attempts": len(repo.list_executions(conn, stage["task_id"])),
         })
         responses.extend(_responses_public(conn, stage))
-        issue, config = task_cycle.origin_source(conn, stage)
+        found = task_cycle.origin(conn, stage)
+        issue, config = found.issue, found.config
         origin = _origin(conn, stage, issue, config) if issue is not None else None
         opened = [r for r in repo.list_human_requests(conn, stage["task_id"]) if r["state"] == "open"]
         if opened:

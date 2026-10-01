@@ -1,6 +1,6 @@
 """중앙 워커 — ARCHITECTURE "실행 조정 워커". `python3 -m workflow.server.worker`.
 
-DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → 연결 상태 → 서버 관찰(unknown·heartbeat) → 코드 수정 결과 확인 →
+DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → Jira 가져오기 → 연결 상태 → 서버 관찰(unknown·heartbeat) → 코드 수정 결과 확인 →
 커밋 검토 결과 확인 → 범용 결과 판정 → 업무 순환 → 후속 스캔 → 실패 반영 → callback 전달 → 초안 PR → 원본 이슈 반영.
 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고, HTTP(GitHub·callback POST)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에
 오므로 같은 tick 에 판정이 나면 바로 잇는다. 진단 데모(진단 API 전달·폴링·A 판정)는 `main` 전용이다 (ADR-0019).
@@ -16,6 +16,9 @@ DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → 연결 상태 �
   ADR-0017) 켜진 소스마다 `GITHUB_SYNC_INTERVAL_SECONDS`
   간격으로 `github_sync.sync_source` 를 부른다. rate limit 이면 그 소스는 알려준 시간만큼 쉰다. 수집은 Task 만 만들고
   착수하지 않는다.
+- Jira 가져오기(ADR-0024)는 연결이 살아 있고 토큰 파일이 있는 워크스페이스의 켜진 프로젝트마다 `JIRA_SYNC_INTERVAL_SECONDS`
+  간격으로 `jira_sync.sync_project` 를 부른다(429 는 Retry-After 만큼 쉼, 401 은 다시 연결할 때까지 멈춤). 들어온 업무는
+  [에이전트에게 맡기기] 뒤에만 착수한다.
 - GitHub 업무 순환(ADR-0014 결정 5·6·10)은 `domain.execution_policy` 의 `cycle` 종류(`bug_fix`·`code_review`)만 다룬다.
   한 결과마다 판정 → `decide_followup` → 저장(후속 Task·사람 요청, repo 트랜잭션) → 준비 판정 → 착수 순이고, 그 뒤
   아직 실행이 없는 Task 를 준비 판정으로 착수한다. 이미 한 일은 DB(`start_key`·`followup_links`·사람 요청 `cause_key`)
@@ -62,6 +65,7 @@ from workflow.adapters.github_client import (
     GitHubUnavailable,
     GitHubUnprocessable,
 )
+from workflow.adapters.jira_client import JiraClient
 from workflow.adapters.notify_sender import NotifyFailed, NotifySender
 from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL, SecretStore, personal_webhook_name
 from workflow.adapters.errors import (
@@ -101,7 +105,7 @@ from workflow.domain.task_followup import FollowupContext, FollowupDecision, Fol
 from workflow.domain.task_readiness import TaskReadiness
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_status import STAGE_FAILED
-from workflow.server import github_delivery, github_sync, owner_approval, stage_runs, task_cycle, views
+from workflow.server import github_delivery, github_sync, jira_sync, owner_approval, stage_runs, task_cycle, views
 from workflow.server.github_clients import SourceClients
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
@@ -114,6 +118,8 @@ CALLBACK_MAX_ATTEMPTS = 5
 CALLBACK_BACKOFF_SECONDS = 30
 # GitHub 목록 폴링 간격(소스마다). 변화 없으면 ETag 304 라 primary 한도를 쓰지 않는다
 GITHUB_SYNC_INTERVAL_SECONDS = 60
+# Jira 가져오기 간격(프로젝트마다) — GitHub 과 같은 값
+JIRA_SYNC_INTERVAL_SECONDS = jira_sync.JIRA_SYNC_INTERVAL_SECONDS
 # 초안 PR 열기 재시도 (ADR-0018 결정 4): callback 과 같은 30·2^(n-1) 초, 5회 실패 후 사람 요청
 PR_MAX_ATTEMPTS = 5
 PR_BACKOFF_SECONDS = 30
@@ -127,8 +133,9 @@ class TickReport:
     """워커 한 바퀴의 처리 건수 요약. 로그·테스트용이며 상태가 아니다."""
 
     sources_synced: int = 0  # 이번 바퀴에 수집한 GitHub 소스
-    issues_created: int = 0  # 수집이 새로 만든 Task
-    sync_errors: int = 0  # GitHub 호출 실패(다음 간격에 같은 커서로 다시)
+    jira_projects_synced: int = 0  # 이번 바퀴에 가져온 Jira 프로젝트
+    issues_created: int = 0  # 수집이 새로 만든 Task(GitHub)·업무(Jira)
+    sync_errors: int = 0  # GitHub·Jira 호출 실패(다음 간격에 같은 커서로 다시)
     agents_offline: int = 0
     observations: int = 0
     successors_created: int = 0
@@ -338,12 +345,16 @@ class Worker:
         github_for: Callable[[GitHubSourceConfig], GitHubClient | None] | None = None,
         secrets: SecretStore | None = None,
         notifier: NotifySender | None = None,
+        jira_for: Callable[[Row], JiraClient | None] | None = None,
     ):
         # 소스별 클라이언트(ADR-0017). `github` 하나만 주면 모든 소스가 그것을 쓴다(환경변수 토큰·테스트)
         if github_for is None and github is not None:
             github_for = lambda _config: github  # noqa: E731
         self._github_for = github_for
         self._github_next_at: dict[str, str] = {}  # source_id → 다음 수집 시각(메모리 — 재시작하면 바로 한 번 부른다)
+        # Jira 연결 행 → 클라이언트(토큰 파일이 없으면 None). 프로젝트별 다음 가져오기 시각은 GitHub 과 같은 모양
+        self._jira_for = jira_for
+        self._jira_next_at: dict[str, str] = {}
         self._manual_task_id: str | None = None  # 직접 실행(`start_manually`) 중인 Task — 이 Task 만 `manual_mode` 를 뺀다
         self._conn_factory = conn_factory
         self._store = store
@@ -361,6 +372,7 @@ class Worker:
         conn = self._conn_factory()
         try:
             self._sync_github(conn, report)
+            self._sync_jira(conn, report)
             self._mark_offline(conn, report)
             self._observe(conn, report)
             self._check_code_results(conn, report)
@@ -423,6 +435,46 @@ class Worker:
                 self._sync_pull_requests(conn, client, config, now, report)
             wait = max(GITHUB_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
             self._github_next_at[config.source_id] = _plus_seconds(now, wait)
+
+    # --- Jira 가져오기 (ADR-0024 결정 4) ---------------------------------------------------
+
+    def _sync_jira(self, conn: Connection, report: TickReport) -> None:
+        """연결이 살아 있는(끊김·토큰 오류 없음, 토큰 파일 있음) 워크스페이스의 켜진 프로젝트마다 간격이 지났으면 가져온다.
+        429 는 `max(간격, Retry-After)` 만큼 쉬고, 401 이면 그 워크스페이스의 남은 프로젝트를 건너뛴다. 한 프로젝트의
+        예외는 기록하고 다음으로 넘어간다 — tick 을 멈추지 않는다."""
+        if self._jira_for is None:
+            return
+        now = self._clock()
+        for session_id in repo.github_source_sessions(conn):  # Jira 프로젝트는 연결 저장소(GitHub 소스)가 있어야 생긴다
+            connection = repo.get_jira_connection(conn, session_id)
+            if connection is None or connection["disconnected_at"] is not None or connection["auth_failed_at"]:
+                continue
+            due = [p for p in repo.list_jira_projects(conn, session_id)
+                   if p.enabled and (p.source_id not in self._jira_next_at
+                                     or _parse(now) >= _parse(self._jira_next_at[p.source_id]))]
+            if not due:
+                continue
+            client = self._jira_for(connection)
+            for project in due:
+                if client is None:  # 토큰 파일 없음 — 다음 간격에 다시 본다
+                    self._jira_next_at[project.source_id] = _plus_seconds(now, JIRA_SYNC_INTERVAL_SECONDS)
+                    continue
+                try:
+                    result = jira_sync.sync_project(conn, client, project.source_id, now)
+                except Exception:  # noqa: BLE001 — 한 프로젝트의 예외로 tick 을 멈추지 않는다
+                    log.exception("Jira 가져오기 실패 %s", project.source_id)
+                    report.sync_errors += 1
+                    self._jira_next_at[project.source_id] = _plus_seconds(now, JIRA_SYNC_INTERVAL_SECONDS)
+                    continue
+                report.jira_projects_synced += 1
+                report.issues_created += len(result.created)
+                if result.error is not None:
+                    report.sync_errors += 1
+                    log.warning("Jira 가져오기 실패 %s: %s", project.source_id, result.error)
+                wait = max(JIRA_SYNC_INTERVAL_SECONDS, result.retry_after_seconds or 0)
+                self._jira_next_at[project.source_id] = _plus_seconds(now, wait)
+                if result.auth_failed:
+                    break
 
     # --- Task 상태 ---------------------------------------------------------------------
 
@@ -702,14 +754,14 @@ class Worker:
         만들어진 실행의 `start_key` 와 사람 요청의 `cause_key` 다."""
         request = ExecutionRequest.model_validate_json(execution["request_json"])
         rules = [rule for _, rule in repo.list_rules(conn, task["session_id"])]
-        issue, _ = task_cycle.origin_source(conn, task)
+        source_state = task_cycle.origin(conn, task).state
         common = {
             "session_id": task["session_id"], "task_id": task["task_id"], "kind": task["kind"],
             "execution_id": execution["execution_id"],
             "outcome": _result_outcome(conn, self._store, execution) or "",
             "verdict": "passed" if verdict == "passed" else "failed",
             "rules": rules, "rules_revision": repo.get_config_revision(conn, task["session_id"]),
-            "source_state": issue["state"] if issue is not None else None,
+            "source_state": source_state,
         }
         if isinstance(request.target, CommitReviewTarget):
             fix_task = repo.get_task(conn, repo.get_execution(conn, request.target.source_execution_id)["task_id"])
@@ -853,7 +905,7 @@ class Worker:
         if kind_spec is None:
             log.warning("후속 종류 %s 가 세션 %s 등록부에 없음", spec.kind, spec.session_id)
             return None
-        _, config = task_cycle.origin_source(conn, predecessor)
+        config = task_cycle.origin(conn, predecessor).config
         scope = json.loads(predecessor["required_capability_json"])["scope"]
         if kind_spec.scope_key in scope:
             scope = {kind_spec.scope_key: scope[kind_spec.scope_key]}
@@ -1583,6 +1635,8 @@ def main() -> None:
         # 알림 웹훅 URL 은 비밀 파일(ADR-0018 결정 5). 없으면 알림을 쌓지 않는다
         secrets=SecretStore(settings.secret_dir),
         notifier=NotifySender(),
+        # Jira 토큰은 비밀 파일(ADR-0024 결정 2). 없거나 끊겼으면 그 워크스페이스의 가져오기만 꺼진다
+        jira_for=jira_sync.JiraClients(SecretStore(settings.secret_dir)),
     )
     log.info("중앙 워커 시작 — 복구 스캔 %s", asdict(worker.tick()))
     worker.run_forever(3.0)
