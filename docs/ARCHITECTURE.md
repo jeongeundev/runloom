@@ -1472,7 +1472,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 **사람이 맡긴 착수**(명시적 착수) = `work_actions.start_stage` 를 지나는 모든 경로 — 패널 담당 `agent:`(`assign_work`)·`/tasks/{id}/delegate`·`/tasks/{id}/select`·`/tasks/{id}/run`·체인 시작. **자동 착수** = 워커 `_start_fix`·`_start_review`·`_spawn_successors`·`_start_waiting_stages`(아래) — [다시 맡기기]로 생긴 새 단계와 후속 단계도 워커가 시작하므로 자동 착수다.
 
-**승인 범위** = (단계 `task_id`, 에이전트 `agent_id`, 맡긴 사람 `work_items.requested_by_member_id`). 한 범위의 요청은 사람 요청 `code = "owner_approval"`, `cause_key = approval_cause_key(agent_id, requester_id, seq)` = `owner_approval:<agent_id>:<requester_id 또는 none>:<seq>`(seq 는 그 범위의 기존 요청 수 + 1). 범위의 **승인 상태**(`approval_state`, 순수)는 그 범위의 가장 최근 요청으로 정한다:
+**승인 범위** = (업무 `work_item_id`, 에이전트 소유자 `agent_owner_id`, 맡긴 사람 `work_items.requested_by_member_id`) — 2026-10-01 단계에서 업무로 넓힘(ADR-0023 결정 1). 상태는 업무의 모든 단계 요청(`repo.list_work_owner_approvals`) 중 원인 키의 에이전트 소유자·맡긴 사람이 같은 것으로 정한다. 요청 자체는 단계에 붙고, 열린 요청은 단계·에이전트·맡긴 사람마다 하나다. 한 단계의 요청은 사람 요청 `code = "owner_approval"`, `cause_key = approval_cause_key(agent_id, requester_id, seq)` = `owner_approval:<agent_id>:<requester_id 또는 none>:<seq>`(seq 는 그 범위의 기존 요청 수 + 1). 범위의 **승인 상태**(`approval_state`, 순수)는 그 범위의 가장 최근 요청으로 정한다:
 
 | 가장 최근 요청 | `needs_owner_approval` 참 | 거짓 |
 |---|---|---|

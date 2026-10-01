@@ -437,14 +437,14 @@ def test_04_owner_approval_waits_for_the_member_then_runs(world):
     (fix,) = drive(world, lambda: execs(world, task_id), "승인 뒤 워커가 착수")
     assert (fix["agent_id"], fix["assigned_connector_id"]) == (agent_b, connector_of(world, "b"))
     drive(world, lambda: verdict_checks(world, fix["execution_id"]) is not None, "B 러너 결과 판정")
-    # 후속 검토는 새 단계 — 다시 묻는다(ADR-0023 결정 1). 승인하면 같은 러너가 검토한다
+    # 후속 검토는 같은 업무의 다음 단계 — 승인 범위가 업무라서 다시 묻지 않고 같은 러너가 검토한다(ADR-0023 결정 1)
     (review_task,) = drive(world, lambda: q(world, "SELECT task_id FROM tasks WHERE predecessor_task_id = ?", task_id),
                            "검토 단계")
-    review_request = drive(world, lambda: open_request(world, member, review_task["task_id"], "owner_approval"),
-                           "검토 단계 승인 요청")
-    assert respond(member, review_request, "approve-run2-review", "approve").status_code == 200
-    two = drive(world, lambda: (w := work(world, 2))["status"] == "PR · 검토" and w, "검토 승인 → 초안 PR")
+    two = drive(world, lambda: (w := work(world, 2))["status"] == "PR · 검토" and w, "검토 → 초안 PR")
     assert two["status_reason"].startswith("PR 확인")
+    assert open_request(world, member, review_task["task_id"], "owner_approval") is None
+    assert q(world, "SELECT count(*) FROM human_requests WHERE task_id = ? AND code = 'owner_approval'",
+             review_task["task_id"])[0][0] == 0
 
 
 def test_05_owner_declines_run3_and_the_work_goes_back_unassigned(world):

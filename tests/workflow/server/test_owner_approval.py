@@ -297,6 +297,56 @@ def test_approval_facts_follow_the_latest_request(conn, members, pending):
     assert facts[REVIEW].state == "not_needed"  # 정책 run
 
 
+def _next_stage(conn, task_id: str, new_task_id: str) -> dict:
+    """같은 업무에 이어지는 단계 하나(분류 `triage`, TRIAGE 에이전트 — 같은 소유자 B)."""
+    repo.insert_task(conn, {
+        "task_id": new_task_id, "session_id": SESSION, "title": "이어지는 단계", "request": "이어서 해 주세요.",
+        "kind": "triage", "required_capability": {"code": "triage", "scope": {"repository_id": "billing"}},
+        "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "auto", "completion_mode": "review",
+        "criteria": [], "predecessor_task_id": None, "revision": 1, "target": {},
+        "status": "대기", "status_reason": "준비 판정 대기",
+    }, NOW, work_item_id=work_of(conn, task_id)["work_item_id"])
+    return repo.get_task(conn, new_task_id)
+
+
+def test_approval_covers_later_stages_of_the_same_work(conn, settings, secrets, members, pending, triage_task):
+    """승인 범위 = 업무 × 소유자 × 맡긴 사람(사용자 결정 2026-10-01) — 같은 업무의 다음 단계는 같은 소유자의
+    다른 에이전트라도 다시 묻지 않는다."""
+    task_id, request_id = pending
+    set_policy(conn, TRIAGE, "owner_approval")
+    respond(conn, settings, secrets, request_id, "approve", members["b"])
+
+    stage = _next_stage(conn, task_id, "task-next")
+    triage = repo.get_agent(conn, TRIAGE)
+
+    assert owner_approval.approval_fact(conn, stage, triage).state == "approved"
+    assert owner_approval.ensure_request(conn, stage, TRIAGE, now=LATER, explicit=False, settings=settings,
+                                         secrets=secrets) == "approved"
+    assert approvals(conn, "task-next") == []
+    # 다른 업무는 새로 묻는다
+    assert owner_approval.approval_fact(conn, repo.get_task(conn, triage_task), triage).state == "missing"
+
+
+def test_pending_approval_on_one_stage_holds_the_next_stage(conn, members, pending, triage_task):
+    task_id, _ = pending
+    set_policy(conn, TRIAGE, "owner_approval")
+
+    stage = _next_stage(conn, task_id, "task-next")
+
+    assert owner_approval.approval_fact(conn, stage, repo.get_agent(conn, TRIAGE)).state == "pending"
+
+
+def test_a_new_requester_is_asked_again(conn, store, settings, secrets, members, pending, triage_task):
+    task_id, request_id = pending
+    set_policy(conn, TRIAGE, "owner_approval")
+    respond(conn, settings, secrets, request_id, "approve", members["b"])
+    repo.set_work_requester(conn, work_of(conn, task_id)["work_item_id"], members["admin"])
+
+    stage = _next_stage(conn, task_id, "task-next")
+
+    assert owner_approval.approval_fact(conn, stage, repo.get_agent(conn, TRIAGE)).state == "missing"
+
+
 # --- 순환이 아닌 종류 ----------------------------------------------------------------
 
 
