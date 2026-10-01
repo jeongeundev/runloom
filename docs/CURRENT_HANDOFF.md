@@ -4,6 +4,8 @@
 
 ## 다음 작업: Jira 실연동(사용자 준비 뒤) → 19-triage 설계 (새 세션은 여기서 시작)
 
+**19-triage 진행 중**(2026-10-01, `feat-19-triage` — `service` 에서 갈라짐, 끝나면 `service` 에 `--no-ff` 병합. 설계 [ADR-0025](adr/0025-triage.md)·[ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19", step 0 문서 끝). Jira 실연동·17 실연동·브라우저 확인은 사용자가 뒤로 미뤘다.
+
 **18-jira 완료**(2026-10-01, `feat-18-jira`, step 0~9, [ADR-0024](adr/0024-jira-source.md), [ARCHITECTURE](ARCHITECTURE.md) "Jira 소스 — phase 18", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 18 Jira"): 연결 탭 가져올 곳에 Jira 칸(사이트 주소·이메일·API 토큰 → tenant_info·myself 확인 → 게이트웨이/사이트 기준 주소 저장, 토큰은 비밀 파일 `jira_api_token`), 프로젝트 찾기·추가(연결 저장소 = GitHub 저장소 하나, 지금부터/열린 업무 전부), 프로젝트 설정(이슈 유형·세 상태·후속 이슈 유형·켜짐·목록 새로 고침), 1분 폴링 가져오기(`search/jql`·`nextPageToken`·포함 경계 커서) → 업무 `새로 들어옴`(맡기기 뒤에만 착수), Jira 완료 범주 = 원본 닫힘(다음 단계 대기, 다시 열면 이어감), 연결 저장소에서 수정·검토·초안 PR(`Fixes` 없음, 본문 첫 줄 `원본: SHOP-n — 주소`, 요청문 머리에도 원본 키), 세 순간(작업 시작·`PR · 검토`·`완료`) → outbox `jira_deliveries` → 전환(이미 그 상태면 보내지 않음, 전환 없음·400 은 반영 실패), 후속 새 업무 → 같은 프로젝트에 이슈(라벨 `runloom`·`runloom-RUN-n`, `Relates` 링크, 응답 유실은 라벨로 조정), 스키마 v14. 러너 프로토콜은 바뀌지 않았다.
 
 **할 일**(순서대로, 모두 사용자 지시 뒤):

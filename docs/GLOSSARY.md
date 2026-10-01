@@ -268,6 +268,27 @@
 | 후속 이슈 등록 / `create_issue` | 후속 규칙이 새 업무(`placement == "new_work"`)를 만들고 원인이 Jira 업무이며 후속 이슈 유형이 설정돼 있으면 같은 프로젝트에 이슈를 만들고(라벨 `runloom`·`runloom-RUN-n`) 원인과 `Relates` 로 잇는 것(step 8). 성공하면 새 업무의 원본 칸을 채우고, 다음 동기화는 그 이슈를 같은 업무에 붙인다(중복 업무 금지). 응답을 잃으면 라벨로 조정 | `Jira 동기화`, `이슈 복제`, `하위 작업`(subtask 가 아니다) |
 | ADF 변환 / `adf_to_text` · `markdown_to_adf` | Jira 본문 형식(ADF JSON)을 가져올 때 텍스트로(문단·제목·목록·코드·링크), 후속 이슈 본문을 쓸 때 짧은 Markdown 에서 ADF 로 바꾸는 작은 변환기(step 2). 새 의존성 없음 | `렌더링`, `wiki markup` |
 
+## 계획 용어 — phase 19 판단 (미구현)
+
+[ADR-0025](adr/0025-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "판단 — phase 19". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|------|------|-----------|
+| 판단 / 내장 종류 `triage` | 담당 없는 새 업무에 종류·담당·선행·진행 여부·확신도·근거를 **제안**하는 내장 종류(`capability_code` `code.triage`, 결과 형태 `triage_result`)(step 1·2). 업무를 완료·종료하거나 담당을 바꾸지 않는다 | `분류`, `트리아지`(화면), `자동 배정`(배정은 사람 또는 자동 시작이 한다), `AI 판정` |
+| 판단 단계 / `is_triage_kind` | 업무에 붙는 판단 Task. 결과 형태 `output_kind == "triage_result"` 로 가른다(`domain/execution_policy.is_triage_kind`, DB 는 `repo._TRIAGE_STAGE`)(step 2·5). 맡길 단계(`open_stage`)·업무 상태·담당 사실·지표·후속 규칙에서 빠진다 | `판단 업무`(새 업무를 만들지 않는다), `kind == "triage"` 분기, `첫 단계`(대표 종류가 아니다) |
+| 판단 Agent / `triage_agent_id` | 저장소 카드(GitHub 소스 설정 JSON)에서 고른, 그 저장소 판단을 맡는 러너 Agent(`code.triage {repository_id}` 능력, 맡기기 정책 `run`)(step 2·8). Jira 업무는 연결 저장소의 것을 쓴다. 비우면 그 저장소는 판단하지 않는다 | `판단 에이전트 폴더`(전용 폴더 없음), `리뷰어`, `github_sources.triage_agent_id`(표 칸 아님) |
+| 판단 기준 / 기준 버전 / `triage_criteria` | 판단 에이전트가 읽는 지시문(Runloom 이 워크스페이스마다 저장)과 그 버전 번호(v1, v2…)(step 1·8). v1 은 `docs/product/triage-criteria-v1.md` = `TRIAGE_CRITERIA_V1`. 고치면 새 버전 행 + 설정 번호 +1 | `프롬프트`, `config_revision`(설정 번호와 다르다 — 기준 버전은 판단 기준만), `규칙`(후속 규칙과 혼동) |
+| 판단 로그 / `triage_logs` | 판단마다 한 행 — 업무·단계·실행·판단 Agent·기준 버전·입력 해시·후보 목록·결과·상태(`running`·`proposed`·`failed`·`superseded`)·사람 처리(step 1·5·6). 시작할 때 `running` 으로 만든다 | `판단 이력`(화면 말로는 써도 되지만 코드 이름은 `triage_logs`), `triage_results`, `audit log` |
+| 후보 목록 / `TriageCandidates` | 판단을 시작할 때 중앙이 정한 고를 수 있는 종류·담당(멤버·에이전트)·선행 업무(step 2·5). 요청문에 글로 넣고 판단 로그에 저장하며, 결과는 이 안의 값만 받는다(밖이면 `triage_invalid`) | `옵션`, `선택지 스키마`, `enum`(러너 스키마에 넣지 않는다) |
+| 로그 근거 | 중앙이 계산해 요청문에 넣는 숫자 — 같은 종류 최근 20건의 1회 통과·재작업·중앙 소요 시간, 후보별 진행 중 업무 수, 같은 저장소 열린 업무(step 3·5). 건수를 늘 같이 적고 인과를 단정하지 않는다 | `통계 모델`, `추천 점수` |
+| 판단 제안 | 판단 로그 `proposed` 행 중 사람 처리가 없는 것 — 업무 패널 "판단" 절과 업무 이유 `판단 제안 · 맡겨도 됨 0.86`(step 6·7) | `추천`, `자동 배정 결과` |
+| 진행 여부 / `proceed` | `ready`(맡겨도 됨)·`needs_check`(확인 필요)·`unsuitable`(부적합)(step 2). 판단 종류 봉투의 `outcomes` 와 같은 세 값 | `outcome`(결과 봉투 칸 이름은 `proceed`), `승인`, `pass/fail` |
+| 확신도 / `confidence` | 판단 에이전트가 적은 0~1 값(step 2). 모델의 말이다 — 보정은 20-monitor 의 판단 품질을 보고 사람이 기준값으로 한다 | `정확도`, `확률`(보정 전이다) |
+| 제안 종류 / `proposed_kind` | 판단이 고른 종류(step 2). 결과 봉투의 `kind` 는 쓰지 않는다 — 다른 봉투에서 `kind` 는 "이 실행의 종류" 다 | `kind`(결과 봉투 칸으로), `new_kind` |
+| 사람 처리 / `handling` | 판단 제안을 사람이(또는 자동 시작이) 어떻게 했는지 — `accepted`(제안대로)·`changed`(다르게 정함)·`dismissed`([무시])·`auto_started`(자동 시작)(step 7·9). 담당을 정하는 `_assign_work_item` 과 같은 트랜잭션에서 쓴다 | `피드백`, `승인`(소유자 승인과 혼동), `라벨링` |
+| 자동 시작 / `triage_autostart` | 업무 종류별 설정(켬·기준값, 버전 행). 켜져 있으면 `ready`·에이전트 담당·확신도 ≥ 기준값인 판단을 워커가 [제안대로 맡기기]와 같은 함수로 맡긴다(step 8·9). 그 종류의 사람 처리(`accepted`+`changed`)가 20건 미만이면 켤 수 없다 | `자동 실행`(준비 판정의 `run_mode auto` 와 혼동), `자동 배정`, `autopilot` |
+| 자동 판단 | 워커가 담당 없는 새 업무에 판단을 거는 것 — 워크스페이스에 한 번에 1건, 판단 Agent 러너가 빌 때만, 업무마다 한 번(step 5). [다시 판단]은 사람만 | `자동 재판단`(하지 않는다), `백그라운드 분류` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
@@ -293,3 +314,5 @@
 - 기준 커밋 보고(`registration_heads`)와 `folder_commit`: 전자는 fetch 한 GitHub 기본 브랜치 최신 커밋(새 업무의 출발점), 후자는 실행 시작 때 러너 등록 폴더의 로컬 HEAD(에이전트 설정 버전 기록)다.
 - Jira 상태 옮기기(`jira_deliveries` `transition`)와 원본 닫힘(`statusCategory` `done`): 전자는 Runloom 업무 상태가 세 순간에 들어갈 때 Runloom → Jira 로 한 번 보내는 쓰기, 후자는 Jira → Runloom 으로 읽어 다음 단계를 멈추는 신호다. 어느 쪽도 업무를 완료·종료하지 않는다(완료는 PR 병합).
 - `jira_deliveries`와 `source_deliveries`: 둘 다 원본 쪽 쓰기 outbox 지만 전자는 Jira(상태 전환·이슈 생성, 업무 단위), 후자는 GitHub 이슈 댓글(Task 단위, 최신 revision 만)이다. 상태 이름은 같고 전자에만 `skipped`(뒤 순간으로 대체·Jira 에서 이미 완료 범주)가 있다.
+- 판단 단계와 업무의 단계: 판단 단계도 `tasks` 행이지만 맡길 단계·업무 상태·담당·지표·후속 규칙의 재료가 아니다. 단계를 세거나 고르는 새 코드는 `is_triage_kind`(또는 `repo._TRIAGE_STAGE`)로 판단 단계를 먼저 뺀다. 판단의 실패는 `내 차례` 가 아니라 판단 로그 `failed` 다.
+- 판단 기준 버전과 설정 번호(`config_revision`): 기준을 고치면 둘 다 오르지만, 기준 버전은 판단 기준 본문의 번호(판단 로그에 남음)이고 설정 번호는 워크스페이스 설정 전체의 번호(실행·업무 이벤트에 남음)다.
