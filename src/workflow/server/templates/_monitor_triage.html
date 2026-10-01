@@ -1,0 +1,41 @@
+{# 모니터링 판단 탭 — phase 20 step 7, ARCHITECTURE "모니터링 — phase 20" 화면 문구. views.triage_quality_context 값.
+   비율은 x/y 와 n 을 함께, 분모 0 은 "—". 실제 결과의 진행 중(끝나지 않은 대상)은 따로 적는다. #}
+{% if triage.empty %}
+<div class="card">
+  <p>아직 판단 기록이 없습니다.</p>
+  <p class="small">{% if 'manage_connections' in allowed %}<a href="/connect?tab=triage">연결 › 판단</a>{% else %}연결 › 판단{% endif %}에서 판단 에이전트를 고르면 새 업무마다 판단이 기록됩니다.</p>
+</div>
+{% else %}
+<p data-triage-summary>{{ triage.summary }}</p>
+
+{% macro quality_table(head, rows) -%}
+<div class="card table-wrap">
+  <table>
+    <tr><th>{{ head }}</th><th>제안</th><th>사람 처리</th><th>사람 일치</th><th>진행 여부</th><th>병합 완료</th><th>재작업 없이 병합</th><th>실패</th><th>판단 시간</th><th>비용</th></tr>
+    {% for r in rows %}
+    <tr><th>{{ r.label }}</th><td>{{ r.proposed }}</td><td class="small">{{ r.handling }}</td><td>{{ cell(r.agreement) }}</td>
+      <td class="small">{{ r.proceed }}</td><td>{{ cell(r.merged) }}</td><td>{{ cell(r.merged_without_rework) }}</td>
+      <td>{{ cell(r.failed) }}</td><td>{{ cell(r.triage_time) }}</td><td>{{ cell(r.cost) }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{%- endmacro %}
+
+<h2>종류별</h2>
+{{ quality_table("종류", triage.by_kind) }}
+<h2>기준 버전별</h2>
+{{ quality_table("기준", triage.by_criteria) }}
+
+<h2>확신도 구간</h2>
+<div class="card table-wrap">
+  <table>
+    <tr><th>확신도</th><th>제안</th><th>사람 일치</th><th>병합 완료</th><th>재작업 없이 병합</th></tr>
+    {% for b in triage.buckets %}
+    <tr><th>{{ b.label }}</th><td>{{ b.proposed }}</td><td>{{ cell(b.agreement) }}</td><td>{{ cell(b.merged) }}</td><td>{{ cell(b.merged_without_rework) }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<p class="small">실패 코드 {{ triage.failed_codes }}</p>
+<p class="small">판단 뒤 내용이 바뀐 업무 {{ triage.revised_after }}</p>
+<p class="small">사람 일치는 제안대로 / (제안대로 + 다르게) 이며 정답률이 아닙니다. 비용은 CLI 계산값이며 구독 청구액이 아닙니다.</p>
+{% endif %}

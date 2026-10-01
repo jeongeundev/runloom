@@ -61,7 +61,9 @@
     {
       "step": 7,
       "name": "monitor-tabs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-02T06:23:59+0900",
+      "summary": "새: templates/_monitor_triage.html·_monitor_assignees.html. 수정: server/web.py(MONITOR_TABS, metrics_page 에 tab 쿼리 — 기본 before_after, 다른 값 422 '탭은 전후·판단·담당자별 중 하나입니다.'(field tab), 탭마다 필요한 계산만: 전후 = 기존 metrics_context + group_by=config_revision 이면 config_change_heads 를 group_columns[].head 로, 판단 = metrics_api._triage_report, 담당자별 = metrics_api._assignee_report(now) + agent_owners(runner_owner·repo.agent_owner_id), 탭 링크는 from·to·group_by 유지), views.py(CONFIG_CHANGE_AREA_LABELS·CONFIG_CHANGE_ACTION_LABELS·HANDLING_LABELS, config_change_heads(전체·모름 키는 머리 없음, 기록 없으면 '설정 n — 기록 없음', 멤버 NULL = 시스템, KST M/D), triage_quality_context(요약 한 줄·종류별(unknown=모름)·기준별·구간 [low, high) 마지막만 ']'·실패 코드·판단 뒤 바뀐 업무, 빈 상태 = 제안·도는 중·실패·대체 모두 0), assignee_context(멤버 longest_wait None 은 대기 0 이면 —, 아니면 모름; 에이전트 실패율 아래 실패 코드; 빈 상태 = 모든 행 완료·진행·대기 0 이고 담당 없음 0), 비율 분모 0 은 '—'(_share_cell·_result_cell 이 _ratio_cell 감쌈), PROCEED_LABELS 는 domain/triage 것 재사용), metrics.html(탭 머리 data-monitor-tabs·숨은 tab 입력·data-tab-body, 기존 본문은 전후 탭 안, 그룹 열 머리 아래 data-config-head). 테스트: test_web_metrics 10건(탭 셋·활성·링크 유지, 422, 멤버 역할 200, 설정 머리 기록 있음·없음·이스케이프, 판단 요약 = /metrics.json, 기간, 빈 상태 링크는 manage_connections 만, 멤버·에이전트 이름 이스케이프·소유자·비활성), test_views config_change_heads 1건, e2e test_triage_cycle test_09(판단 탭 요약 = JSON, WORKFLOW_E2E=1 로 10 passed). 검증: pytest 4125 passed·73 skipped, ruff 통과. 다음 step 주의: 미리보기 링크는 /monitor?tab=triage, 설정 머리 그룹은 실행의 config_revision 이라 업무만 있고 실행 없는 번호는 열이 없다."
     },
     {
       "step": 8,

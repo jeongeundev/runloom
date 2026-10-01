@@ -1,5 +1,6 @@
 {# 모니터링(옛 지표) — ADR-0015, ARCHITECTURE "측정 — phase 9". 지표 보기(`view_metrics`), 기준선 가져오기는 `manage_connections`. 계산은 metrics_api 와 같다(JSON·CSV 링크는 같은 쿼리).
-   칸마다 n·미완료·모름을 함께 적고, 모르는 값은 "모름"(0 아님). 기준선 가져오기는 data-json-action 으로 운영자 API 에 보낸다. #}
+   칸마다 n·미완료·모름을 함께 적고, 모르는 값은 "모름"(0 아님). 기준선 가져오기는 data-json-action 으로 운영자 API 에 보낸다.
+   탭 셋(phase 20, ADR-0026) — 전후(아래 본문)·판단(`_monitor_triage.html`)·담당자별(`_monitor_assignees.html`). 탭 머리는 연결 화면 탭 모양. #}
 {% extends "base.html" %}
 {% block title %}모니터링 — Runloom{% endblock %}
 {% macro cell(c) -%}
@@ -7,10 +8,14 @@
 {%- endmacro %}
 {% block content %}
 <div class="crumbs"><div class="crumb">모니터링</div></div>
+<nav class="tabs" data-monitor-tabs>
+  {% for t in tabs %}<a href="{{ t.href }}" data-tab="{{ t.key }}"{% if t.key == tab %} class="active"{% endif %}>{{ t.label }}</a>{% endfor %}
+</nav>
 
 <p class="muted">관측값이며 인과 효과로 단정하지 않는다. 시스템 기록만으로 계산하고, 모르는 값은 0 이 아니라 "모름" 으로 따로 셉니다.</p>
 
 <form method="get" action="/monitor" class="card">
+  <input type="hidden" name="tab" value="{{ tab }}">
   <div class="field-row">
     <div class="field"><label for="m-from">시작 (RFC 3339)</label>
       <input type="text" id="m-from" name="from" value="{{ params.from }}" placeholder="2026-09-01T00:00:00+09:00"></div>
@@ -30,6 +35,12 @@
   </div>
 </form>
 
+<section data-tab-body="{{ tab }}">
+{% if tab == 'triage' %}
+{% include "_monitor_triage.html" %}
+{% elif tab == 'assignees' %}
+{% include "_monitor_assignees.html" %}
+{% else %}
 <section id="compare">
 <h2>기준선 대 도입 후 — 이슈 열림 → 병합</h2>
 <div class="card table-wrap">
@@ -59,7 +70,7 @@
 <h2>{{ area.title }}</h2>
 <div class="card table-wrap">
   <table>
-    <tr><th>지표</th>{% for g in group_columns %}<th{% if g.label != g.key %} title="{{ g.key }}"{% endif %}>{{ g.label }}</th>{% endfor %}</tr>
+    <tr><th>지표</th>{% for g in group_columns %}<th{% if g.label != g.key %} title="{{ g.key }}"{% endif %}>{{ g.label }}{% if g.head %}<div class="small" data-config-head>{{ g.head }}</div>{% endif %}</th>{% endfor %}</tr>
     {% for r in area.rows %}
     <tr><th>{{ r.label }}</th>{% for c in r.cells %}<td>{{ cell(c) }}</td>{% endfor %}</tr>
     {% endfor %}
@@ -83,4 +94,6 @@
   {% endfor %}
 </div>
 {% endif %}
+{% endif %}
+</section>
 {% endblock %}

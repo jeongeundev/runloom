@@ -558,6 +558,16 @@ def test_08_an_old_runner_gets_no_triage_and_the_fix_cycle_still_runs(world):
     assert len(world.fake.pulls) == 3 and PR_NUMBER in world.fake.pulls
 
 
+def test_09_monitor_triage_tab_shows_the_same_numbers_as_metrics_json(world):
+    """phase 20 step 7 — 위에서 쌓인 판단(제안대로·다르게·실패·자동 시작)이 모니터링 판단 탭 요약에 /metrics.json 과 같은 숫자로."""
+    overall = world.http.get("/metrics.json").json()["triage"]["overall"]
+    assert overall["proposed"] > 0 and overall["failed"] > 0
+    html = page(world, "/monitor", tab="triage")
+    agreement, merged = overall["agreement"], overall["merged"]
+    assert (f"제안 {overall['proposed']} · 사람 일치 {agreement['numerator']}/{agreement['denominator']}"
+            f" · 병합 완료 {merged['numerator']}/{merged['denominator']}(진행 중 {merged['incomplete']})") in html
+
+
 def test_v14_copy_upgrades_to_v15_with_triage_seeds(tmp_path):
     """v14 사본(업무·단계·실행·Agent·Jira 연결·프로젝트·이슈·전달 행) → 앱 시작이 v15 로 올림 → 행 수 그대로·외래키
     검사 통과·워크스페이스마다 판단 기준 v1·내장 triage 종류·code.fix 로컬 Agent 에 code.triage."""

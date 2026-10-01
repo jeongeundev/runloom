@@ -42,11 +42,13 @@ from workflow.domain.metrics import (
     Stat,
     summarize_baseline,
 )
+from workflow.domain.assignee_metrics import AssigneeReport
 from workflow.domain.notification import webhook_host
 from workflow.domain import team
 from workflow.domain.delegation import candidate_label, needs_owner_approval
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
+from workflow.domain.triage_metrics import HANDLINGS, PROCEEDS, UNHANDLED, TriageQuality, TriageQualityReport
 from workflow.domain.triage import (
     AUTOSTART_DEFAULT_THRESHOLD,
     AUTOSTART_MIN_HANDLED,
@@ -66,7 +68,7 @@ from workflow.domain.work_list import (
 )
 from workflow.domain.work_status import STAGE_FAILED, TERMINAL_WORK_STATUSES
 from workflow.server import github_clients, human_api, task_cycle
-from workflow.server.filters import KIND_LABELS, duration, kind_label, kst
+from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst
 from workflow.server.settings import Settings
 
 # 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7·11절)
@@ -1602,3 +1604,111 @@ def metrics_context(report: MetricsReport, baselines: Sequence[dict[str, Any]]) 
         "group_columns": [{"key": g.key, "label": group_label(g.key, report.group_by)} for g in groups],
         "areas": areas, "after": after, "baselines": baseline_rows,
     }
+
+
+# --- 모니터링 탭 (phase 20 step 7, ADR-0026, ARCHITECTURE "모니터링 — phase 20" 화면 문구) ------------------------------
+# 판단·담당자별 탭의 표. 비율은 늘 x/y 와 n 을 함께, 분모 0 이면 `—`(0% 아님). 이름·subject 는 템플릿이 자동 이스케이프한다.
+
+CONFIG_CHANGE_AREA_LABELS = {"kind": "종류", "rule": "후속 규칙", "source": "저장소 연결", "mapping": "매핑 표",
+                             "triage_criteria": "판단 기준", "triage_autostart": "자동 시작"}
+CONFIG_CHANGE_ACTION_LABELS = {"add": "추가", "delete": "삭제", "change": "변경"}
+HANDLING_LABELS = {"accepted": "제안대로", "changed": "다르게", "dismissed": "무시", "auto_started": "자동 시작",
+                   UNHANDLED: "미처리"}
+NO_DENOMINATOR = "—"
+
+
+def config_change_heads(changes: Mapping[int, Sequence[Row]], keys: Sequence[str]) -> dict[str, str]:
+    """설정 번호 그룹 키 → 머리 한 줄 `설정 <번호> — <영역> <동작> <subject> · <멤버|시스템> · <KST M/D>`.
+    그 번호의 기록이 없으면(v16 전) `설정 <번호> — 기록 없음`. 전체·모름 그룹은 머리 줄이 없다."""
+    heads = {}
+    for key in keys:
+        if not key.isdigit():
+            continue
+        rows = changes.get(int(key), ())
+        lines = [
+            f"{CONFIG_CHANGE_AREA_LABELS[r['area']]} {CONFIG_CHANGE_ACTION_LABELS[r['action']]} {r['subject']}"
+            f" · {r['by_member_name'] or '시스템'} · {_month_day(r['occurred_at'])}"
+            for r in rows
+        ]
+        heads[key] = f"설정 {key} — {' / '.join(lines) or '기록 없음'}"
+    return heads
+
+
+def _month_day(value: str) -> str:
+    at = datetime.fromisoformat(value).astimezone(KST)
+    return f"{at.month}/{at.day}"
+
+
+def _share_cell(ratio: Ratio) -> dict[str, str]:
+    """`_ratio_cell` 과 같되 분모 0 은 `—` — 판단·담당자별 탭(화면 문구)."""
+    cell = _ratio_cell(ratio)
+    return {**cell, "text": NO_DENOMINATOR} if ratio.denominator == 0 else cell
+
+
+def _result_cell(ratio: Ratio) -> dict[str, str]:
+    """실제 결과 — 끝난 대상 중 비율, 진행 중(미완료)은 따로."""
+    parts = [f"n {ratio.denominator}", f"진행 중 {ratio.incomplete}"]
+    text = NO_DENOMINATOR if ratio.denominator == 0 else _ratio_cell(ratio)["text"]
+    return {"text": text, "detail": " · ".join(parts)}
+
+
+def _counts(counts: Mapping[str, int], labels: Mapping[str, str]) -> str:
+    return " · ".join(f"{labels[k]} {counts.get(k, 0)}" for k in labels)
+
+
+def _quality_row(label: str, q: TriageQuality) -> dict[str, Any]:
+    return {
+        "label": label, "proposed": q.proposed,
+        "handling": _counts(q.handling, {k: HANDLING_LABELS[k] for k in (*HANDLINGS, UNHANDLED)}),
+        "agreement": _share_cell(q.agreement),
+        "proceed": _counts(q.proceed, {k: PROCEED_LABELS[k] for k in PROCEEDS}),
+        "merged": _result_cell(q.merged), "merged_without_rework": _result_cell(q.merged_without_rework),
+        "failed": _codes_cell(q.failed_codes), "triage_time": _stat_cell(q.triage_time, "seconds"),
+        "cost": _stat_cell(q.cost_usd, "usd"),
+    }
+
+
+def triage_quality_context(report: TriageQualityReport) -> dict[str, Any]:
+    """판단 탭 — 맨 위 요약, 종류별·기준 버전별 표, 확신도 구간표, 실패 코드·판단 뒤 바뀐 업무."""
+    q = report.overall
+    empty = q.proposed + q.running + q.failed + q.superseded == 0
+    summary = (
+        f"제안 {q.proposed} · 사람 일치 {q.agreement.numerator}/{q.agreement.denominator}"
+        f" · 병합 완료 {q.merged.numerator}/{q.merged.denominator}(진행 중 {q.merged.incomplete})"
+        f" · 재작업 없이 병합 {q.merged_without_rework.numerator}/{q.merged.denominator}"
+    )
+    return {"triage": {
+        "empty": empty, "summary": summary,
+        "by_kind": [_quality_row(UNKNOWN_TEXT if k.key == UNKNOWN else k.key, k) for k in report.by_kind],
+        "by_criteria": [_quality_row(c.key, c) for c in report.by_criteria],
+        "buckets": [
+            {"label": f"[{b.low:g}, {b.high:.1f}{']' if b.high >= 1 else ')'}", "proposed": b.proposed,
+             "agreement": _share_cell(b.agreement), "merged": _result_cell(b.merged),
+             "merged_without_rework": _result_cell(b.merged_without_rework)}
+            for b in report.buckets
+        ],
+        "failed_codes": _codes_cell(q.failed_codes)["text"], "revised_after": q.revised_after,
+    }}
+
+
+def assignee_context(report: AssigneeReport) -> dict[str, Any]:
+    """담당자별 탭 — 멤버 표·에이전트 표·담당 없음 한 줄. 소유자 표시는 화면이 `runner_owner` 로 붙인다."""
+    members = [
+        {"member_id": m.member_id, "display_name": m.display_name, "active": m.active, "done": m.done, "open": m.open,
+         "turn_waiting": m.turn_waiting,
+         "longest_wait": (NO_DENOMINATOR if m.turn_waiting == 0 else UNKNOWN_TEXT) if m.longest_wait is None
+         else _amount(m.longest_wait, "seconds"),
+         "response_time": _stat_cell(m.response_time, "seconds")}
+        for m in report.members
+    ]
+    agents = [
+        {"agent_id": a.agent_id, "name": a.name, "done": a.done, "open": a.open, "runs": a.runs,
+         "failure": {**_share_cell(a.failure), "codes": _codes_cell(a.failed_codes)["text"] if a.failed_codes else ""},
+         "first_pass": _share_cell(a.first_pass), "rework": a.rework,
+         "execution_time": _stat_cell(a.execution_time, "seconds"), "cost": _stat_cell(a.cost_usd, "usd")}
+        for a in report.agents
+    ]
+    empty = report.unassigned_open == 0 and not any(
+        r.done or r.open or r.turn_waiting for r in (*report.members, *report.agents))
+    return {"assignees": {"members": members, "agents": agents, "unassigned_open": report.unassigned_open,
+                          "responses_unknown_member": report.responses_unknown_member, "empty": empty}}

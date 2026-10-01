@@ -2690,20 +2690,26 @@ def start_page(
                    items=start_checklist.start_items(facts), done=start_checklist.required_done(facts))
 
 
+MONITOR_TABS = (("before_after", "전후"), ("triage", "판단"), ("assignees", "담당자별"))
+
+
 @router.get("/monitor", response_class=HTMLResponse)
 def metrics_page(
     request: Request,
+    tab: str = Query("before_after"),
     since: str = Query("", alias="from"),
     until: str = Query("", alias="to"),
     group_by: str = Query(""),
     member: LoggedIn = Depends(require_action(team.VIEW_METRICS)),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """지표 화면 — `metrics_api` 와 같은 계산. 폼은 GET 이라 빈 칸은 "지정 안 함" 이다. 기준선 가져오기 버튼은
-    운영자 JSON API(`POST /operator/github/sources/{id}/baseline`)로 보낸다."""
+    """모니터링 화면 탭 셋(phase 20) — `metrics_api` 와 같은 계산. 폼은 GET 이라 빈 칸은 "지정 안 함" 이다. 기준선 가져오기
+    버튼은 운영자 JSON API(`POST /operator/github/sources/{id}/baseline`)로 보낸다. `group_by` 는 전후 탭만 쓰지만 늘 검증한다."""
     session_id = member.session_id
     now = utc_now()
     base = _base(request, conn, session_id, now)
+    if tab not in dict(MONITOR_TABS):
+        raise PageError(422, "invalid_field", "탭은 전후·판단·담당자별 중 하나입니다.", field="tab")
     for field, value in (("from", since), ("to", until)):
         if not value:
             continue
@@ -2719,8 +2725,25 @@ def metrics_page(
     except ApiError as exc:
         raise PageError(exc.status, exc.code, exc.message, field=exc.field) from None
     query = urlencode({k: v for k, v in params.items() if v})
+    context: dict[str, Any] = {}
+    if tab == "before_after":
+        context = views.metrics_context(report, metrics_api._baselines(conn, session_id))
+        if group_by == "config_revision":
+            heads = views.config_change_heads(repo.config_changes_by_revision(conn, session_id),
+                                              [g["key"] for g in context["group_columns"]])
+            context["group_columns"] = [{**g, "head": heads.get(g["key"])} for g in context["group_columns"]]
+    elif tab == "triage":
+        context = views.triage_quality_context(metrics_api._triage_report(conn, session_id, since or None, until or None))
+    else:
+        assignees = metrics_api._assignee_report(conn, request, session_id, since or None, until or None, now=now)
+        context = views.assignee_context(assignees) | {"agent_owners": {
+            a.agent_id: views.runner_owner(conn, session_id, repo.agent_owner_id(conn, a.agent_id))
+            for a in assignees.agents
+        }}
     return _render(
-        "metrics.html", **base, **views.metrics_context(report, metrics_api._baselines(conn, session_id)),
+        "metrics.html", **base, **context,
+        tab=tab, tabs=[{"key": key, "label": label, "href": "/monitor?" + urlencode({"tab": key, **{
+            k: v for k, v in params.items() if v}})} for key, label in MONITOR_TABS],
         params=params, query=f"?{query}" if query else "",
         token_configured=bool(_settings(request).github_token),
     )
