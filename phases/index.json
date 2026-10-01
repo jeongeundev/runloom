@@ -96,6 +96,10 @@
       "dir": "18-jira",
       "status": "completed",
       "completed_at": "2026-10-01T17:10:27+0900"
+    },
+    {
+      "dir": "19-triage",
+      "status": "pending"
     }
   ]
 }

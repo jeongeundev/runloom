@@ -1,0 +1,61 @@
+{
+  "project": "workflow",
+  "phase": "19-triage",
+  "steps": [
+    {
+      "step": 0,
+      "name": "triage-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "schema-v15",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "triage-contract",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "triage-domain",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "triage-runner",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "triage-dispatch",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "triage-judge",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "triage-panel",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "triage-settings",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "triage-autostart",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "triage-verify",
+      "status": "pending"
+    }
+  ]
+}
