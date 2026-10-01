@@ -13,12 +13,12 @@ _CUT = "…(생략)"
 
 
 def compose_request(*, work_key: str | None, title: str, form_fields: Sequence[tuple[str, str]], note: str | None,
-                    note_by: str | None, body: str) -> str:
+                    note_by: str | None, body: str, origin_key: str | None = None) -> str:
     """`# <키> <제목>` → `## 업무 양식` → `## 맡긴 사람 지시 (<이름>)` → 원래 요청문. 빈 절은 통째로 빼고 절 사이는 빈 줄 하나.
-    `work_key` 가 None(업무 없는 단계)이면 `body` 그대로."""
+    `origin_key`(Jira 원본 키)가 있으면 머리 바로 아래 줄 `원본: <키>`. `work_key` 가 None(업무 없는 단계)이면 `body` 그대로."""
     if work_key is None:
         return body
-    sections = [f"# {work_key} {title}"]
+    sections = [f"# {work_key} {title}" + (f"\n원본: {origin_key}" if origin_key else "")]
     fields = [(label, value.strip()) for label, value in form_fields]
     fields = [(label, value) for label, value in fields if value and value != NO_RESPONSE]
     if fields:

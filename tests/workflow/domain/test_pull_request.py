@@ -5,6 +5,7 @@ from workflow.domain.pull_request import (
     REVIEW_SUMMARY_LIMIT,
     head_branch,
     not_pushed_question,
+    origin_line,
     pr_body,
     pr_request_cause_key,
     pr_title,
@@ -71,3 +72,31 @@ def test_not_pushed_question_tells_the_push_command():
 def test_pr_request_cause_key_uses_the_prefix():
     assert pr_request_cause_key("exec-r1") == f"{PR_REQUEST_PREFIX}exec-r1"
     assert pr_request_cause_key("exec-r1").startswith(PR_REQUEST_PREFIX)
+
+
+# --- phase 18 step 6 — Jira 원본은 `Fixes` 없이 원본 링크 한 줄 ---------------------------------------
+
+
+def test_origin_line_names_the_source_key_and_url():
+    assert origin_line("SHOP-12", "https://acme.atlassian.net/browse/SHOP-12") == (
+        "원본: SHOP-12 — https://acme.atlassian.net/browse/SHOP-12")
+    assert origin_line("SHOP-12", None) == "원본: SHOP-12"
+
+
+def test_body_without_issue_number_starts_with_the_origin_line_and_never_fixes():
+    line = origin_line("SHOP-12", "https://acme.atlassian.net/browse/SHOP-12")
+    body = pr_body(issue_number=None, task_id="task-1", review_summary="요약", task_url=None, work_key="RUN-3",
+                   origin_line=line)
+    lines = body.splitlines()
+    assert lines[:2] == [line, ""] and "Fixes" not in body
+    assert "업무 키: RUN-3" in lines and lines[-1] == "<!-- runloom:task=task-1 -->"
+
+
+def test_body_without_issue_number_or_origin_starts_with_the_summary():
+    body = pr_body(issue_number=None, task_id="task-1", review_summary="요약", task_url=None)
+    assert body.splitlines()[:2] == ["검토 요약:", "요약"] and "Fixes" not in body
+
+
+def test_issue_number_wins_over_the_origin_line():
+    body = pr_body(issue_number=12, task_id="task-1", review_summary="요약", task_url=None, origin_line="원본: X-1")
+    assert body.splitlines()[0] == "Fixes #12" and "원본: X-1" not in body

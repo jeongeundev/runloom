@@ -868,13 +868,13 @@ class Worker:
     def _queue_pull_request(
         self, conn: Connection, fix_task: Row, review_execution: Row, review: ReviewFacts, report: TickReport
     ) -> str | None:
-        """검토 승인 뒤 초안 PR 대기열(ADR-0018 결정 4). 원본 이슈가 있는 수정 Task 만 — 검토한 수정 실행이 push 에
-        성공했으면 PR 한 행, 실패를 보고했으면 push 안내 사람 요청. push 보고가 없으면(구버전 러너·origin 없음) None =
-        지금 동작 그대로. 돌려주는 값은 수정 Task 의 새 상태 이유."""
-        issue = repo.get_source_issue_by_task(conn, fix_task["session_id"], fix_task["task_id"])
+        """검토 승인 뒤 초안 PR 대기열(ADR-0018 결정 4). 원본(GitHub 이슈·Jira 이슈)이 붙은 수정 Task 만 — 검토한 수정
+        실행이 push 에 성공했으면 원본의 실행 저장소(Jira 는 연결 저장소)에 PR 한 행, 실패를 보고했으면 push 안내 사람
+        요청. push 보고가 없으면(구버전 러너·origin 없음) None = 지금 동작 그대로. 돌려주는 값은 수정 Task 의 새 상태 이유."""
+        origin = task_cycle.origin(conn, fix_task)
         fix_execution = repo.get_execution(conn, review.source_execution_id)
         pushed = fix_execution["branch_pushed"]
-        if issue is None or pushed is None:
+        if not origin.own or origin.config is None or pushed is None:
             return None
         if not pushed:
             fix = ExecutionRequest.model_validate_json(fix_execution["request_json"])
@@ -886,10 +886,10 @@ class Worker:
                 pull_request.pr_request_cause_key(review_execution["execution_id"]), self._clock(),
             ))
             return question
-        snapshot = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"])
         repo.enqueue_pull_request(
-            conn, task_id=fix_task["task_id"], session_id=fix_task["session_id"], source_id=issue["source_id"],
-            repository_full_name=snapshot.repository_full_name, issue_number=issue["issue_number"],
+            conn, task_id=fix_task["task_id"], session_id=fix_task["session_id"], source_id=origin.config.source_id,
+            repository_full_name=origin.config.repository_full_name,
+            issue_number=origin.issue["issue_number"] if origin.issue is not None else None,
             fix_execution_id=review.source_execution_id, review_execution_id=review_execution["execution_id"],
             now=self._clock(),
         )
@@ -1363,16 +1363,21 @@ class Worker:
             if client is None:
                 self._pull_request_failed(conn, row, "github_not_connected", "이 저장소의 GitHub 자격 없음", now, report)
                 continue
-            issue = repo.get_source_issue_by_task(conn, row["session_id"], task_id)
+            work = repo.work_item_of_task(conn, task_id)
             work_key = ExecutionRequest.model_validate_json(
                 repo.get_execution(conn, row["fix_execution_id"])["request_json"]
             ).work_key
-            title = pull_request.pr_title(work_key, GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"]).title)
+            title = pull_request.pr_title(work_key, work["title"])
             _, summary = _result_envelope(conn, self._store, repo.get_execution(conn, row["review_execution_id"]))
             public_url = self._settings.public_url
+            origin_line = (
+                pull_request.origin_line(work["source_key"], work["source_url"])
+                if row["issue_number"] is None and work["source_key"] else None
+            )
             body = pull_request.pr_body(
                 issue_number=row["issue_number"], task_id=task_id, review_summary=summary or "",
                 task_url=f"{public_url}/tasks/{task_id}" if public_url else None, work_key=work_key,
+                origin_line=origin_line,
             )
             name = row["repository_full_name"]
             try:
@@ -1447,8 +1452,8 @@ class Worker:
         task_id = row["task_id"]
         merged = pr.merged_at is not None
         repo.record_pull_request(conn, task_id, state="merged" if merged else "closed", now=now, pr=pr)
-        if merged:
-            issue = repo.get_source_issue_by_task(conn, row["session_id"], task_id)
+        issue = repo.get_source_issue_by_task(conn, row["session_id"], task_id) if merged else None
+        if issue is not None:  # 병합 기준선은 GitHub 이슈 원본만
             snapshot = GitHubIssueSnapshot.model_validate_json(issue["snapshot_json"])
             repo.record_issue_merge(
                 conn, session_id=row["session_id"], source_id=row["source_id"],

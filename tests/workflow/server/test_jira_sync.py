@@ -19,7 +19,7 @@ from workflow.adapters.jira_client import JiraError, JiraRateLimited, JiraUnauth
 from workflow.adapters.secret_store import JIRA_API_TOKEN, SecretStore
 from workflow.contracts.jira import JiraChoices, JiraIssueSnapshot, JiraIssueType, JiraProjectRef
 from workflow.domain.field_mapping import MappingRow
-from workflow.server import jira_sync, task_cycle
+from workflow.server import github_sync, jira_sync, task_cycle
 from workflow.server.jira_sync import JiraClients, sync_project, task_intake_facts
 from workflow.server.worker import JIRA_SYNC_INTERVAL_SECONDS, Worker
 
@@ -27,6 +27,8 @@ from .conftest import log_in
 from .test_task_cycle import (  # noqa: F401 — 픽스처
     FIX,
     NOW,
+    REG_FIX,
+    REG_REVIEW,
     REVIEW,
     SESSION,
     SOURCE,
@@ -37,13 +39,19 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     cycle,
     executions,
     finish_fix,
+    finish_review,
     import_issue,
     make_worker,
+    pr_github,
+    pr_worker,
+    request_of,
     review_tasks,
     settings,
     status,
     worker,
+    work_state,
 )
+from .test_github_sync import FakeGitHub, pull
 
 START = "2026-10-06T00:00:00Z"
 SITE = "https://acme.atlassian.net"
@@ -548,3 +556,145 @@ def test_github_sync_is_unchanged_by_a_jira_project(conn, project, worker):
     assert origin.state == "open" and origin.issue["github_issue_id"] == 1001
     worker.tick()
     assert len(executions(conn, task_id)) == 1
+
+
+# --- 실행·초안 PR·PR 감지·목록 (step 6, ARCHITECTURE "초안 PR·목록·요청문") ------------------------------------
+
+
+def _delegated(conn, project, client, jira: FakeJira | None = None) -> str:
+    jira = jira or FakeJira()
+    jira.put(jissue(1))
+    task_id = _imported(conn, project, jira)
+    assert log_in(client).post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}"},
+                               follow_redirects=False).status_code == 303
+    return task_id
+
+
+def _jira_approved(conn, store, worker, task_id: str) -> str:
+    worker.tick()
+    finish_fix(conn, store, executions(conn, task_id)[0]["execution_id"], branch_pushed=True)
+    worker.tick()
+    (review,) = review_tasks(conn, task_id)
+    (review_exec,) = executions(conn, review["task_id"])
+    assert review_exec["agent_id"] == REVIEW and request_of(review_exec).target.local_registration_id == REG_REVIEW
+    finish_review(conn, store, review_exec["execution_id"], outcome="approved")
+    worker.tick()
+    return review_exec["execution_id"]
+
+
+def test_jira_work_runs_on_the_linked_repository_with_the_source_key_in_the_request(conn, project, client, worker):
+    task_id = _delegated(conn, project, client)
+    worker.tick()
+
+    (execution,) = executions(conn, task_id)
+    request = request_of(execution)
+    assert execution["agent_id"] == FIX and request.target.local_registration_id == REG_FIX  # 연결 저장소 billing 러너
+    assert request.work_key == "RUN-1"
+    assert request.request.startswith("# RUN-1 쿠폰 오류 1\n원본: SHOP-1\n\n")
+    assert "재현 절차 1" in request.request
+
+
+def test_github_request_head_has_no_origin_line(cycle, conn, worker):
+    task_id = import_issue(conn, 1)
+    worker.tick()
+    assert request_of(executions(conn, task_id)[0]).request.startswith("# RUN-1 버그 1\n\n")
+    assert "원본:" not in request_of(executions(conn, task_id)[0]).request
+
+
+def test_jira_work_opens_a_draft_pr_on_the_linked_repository_without_fixes(conn, project, client, store, pr_worker,
+                                                                           pr_github, clock):
+    task_id = _delegated(conn, project, client)
+    _jira_approved(conn, store, pr_worker, task_id)
+
+    (created,) = pr_github.created
+    assert (created["repo"], created["head"], created["base"], created["draft"]) == (
+        "acme/billing", "runloom/RUN-1", "main", True)
+    assert created["title"] == "RUN-1 쿠폰 오류 1"
+    lines = created["body"].splitlines()
+    assert lines[0] == f"원본: SHOP-1 — {SITE}/browse/SHOP-1" and "Fixes" not in created["body"]
+    assert "업무 키: RUN-1" in lines
+    row = repo.get_pull_request_row(conn, task_id)
+    assert (row["source_id"], row["repository_full_name"], row["issue_number"], row["state"]) == (
+        SOURCE, "acme/billing", None, "open")
+    assert work_state(conn, task_id) == ("PR · 검토", "PR 확인 — #31")
+
+    pr_github.merge(31)
+    clock.now = "2026-10-06T13:00:00Z"
+    report = pr_worker.tick()
+    assert report.prs_merged == 1
+    assert status(conn, task_id) == ("완료", "PR 병합")
+    work = repo.work_item_of_task(conn, task_id)
+    assert (work["status"], work["status_reason"]) == ("완료", "PR 병합 — #31")
+
+
+def test_jira_work_without_push_asks_a_human_like_github(conn, project, client, store, pr_worker, pr_github):
+    task_id = _delegated(conn, project, client)
+    pr_worker.tick()
+    finish_fix(conn, store, executions(conn, task_id)[0]["execution_id"], branch_pushed=False)
+    pr_worker.tick()
+    review_exec = executions(conn, review_tasks(conn, task_id)[0]["task_id"])[0]["execution_id"]
+    finish_review(conn, store, review_exec, outcome="approved")
+    pr_worker.tick()
+
+    assert pr_github.created == [] and repo.get_pull_request_row(conn, task_id) is None
+    (request,) = repo.list_human_requests(conn, task_id)
+    assert request["code"] == "pr_unavailable" and "runloom/RUN-1" in request["question"]
+
+
+def test_github_draft_pr_still_fixes_the_issue(cycle, conn, store, pr_worker, pr_github):
+    fix_task = import_issue(conn, 1)
+    pr_worker.tick()
+    finish_fix(conn, store, executions(conn, fix_task)[0]["execution_id"], branch_pushed=True)
+    pr_worker.tick()
+    review_exec = executions(conn, review_tasks(conn, fix_task)[0]["task_id"])[0]["execution_id"]
+    finish_review(conn, store, review_exec, outcome="approved")
+    pr_worker.tick()
+    (created,) = pr_github.created
+    assert created["body"].splitlines()[0] == "Fixes #1" and "원본:" not in created["body"]
+    assert created["title"] == "RUN-1 버그 1"
+    assert repo.get_pull_request_row(conn, fix_task)["issue_number"] == 1
+
+
+def test_pr_on_the_linked_repository_with_the_work_key_moves_jira_work_to_review_then_done(conn, project, client):
+    task_id = _delegated(conn, project, client)
+    gh = FakeGitHub()
+    gh.pulls[7] = pull(7, head="RUN-1-coupon")
+
+    report = github_sync.sync_source(conn, gh, SOURCE, NOW)
+
+    work_id = repo.work_item_of_task(conn, task_id)["work_item_id"]
+    assert report.pulls_linked == [work_id]
+    assert work_state(conn, task_id) == ("PR · 검토", "PR 확인 — #7")
+    gh.pulls[7] = pull(7, head="RUN-1-coupon", state="closed", merged_at="2026-10-06T13:00:00Z",
+                       at="2026-10-06T13:00:00Z")
+    github_sync.sync_source(conn, gh, SOURCE, NOW)
+    assert work_state(conn, task_id) == ("완료", "PR 병합 — #7")
+
+
+def test_missing_linked_repository_holds_the_jira_work(conn, project, client, worker):
+    jira = FakeJira()
+    jira.put(jissue(1))
+    task_id = _imported(conn, project, jira)
+    conn.execute("PRAGMA foreign_keys = OFF")  # 연결 저장소 행이 사라진 상태(지금은 지우는 경로가 없다)
+    conn.execute("UPDATE jira_projects SET github_source_id = 'ghs-00000000' WHERE source_id = ?", (project,))
+    conn.execute("PRAGMA foreign_keys = ON")
+    assert task_cycle.origin(conn, repo.get_task(conn, task_id)).unlinked
+
+    log_in(client).post("/work/RUN-1/assignee", data={"assignee": f"agent:{FIX}"}, follow_redirects=False)
+    worker.tick()
+
+    assert executions(conn, task_id) == []
+    assert status(conn, task_id) == ("대기", task_cycle.UNLINKED_REASON)
+
+
+def test_jira_work_lists_under_the_linked_repository(conn, project, client):
+    _delegated(conn, project, client)
+    import_issue(conn, 2)
+
+    rows = {r.work_key: r for r in repo.list_work_rows(conn, SESSION, closed_since=None)}
+    assert (rows["RUN-1"].source_type, rows["RUN-1"].repository, rows["RUN-1"].source_key_short) == (
+        "jira", "acme/billing", "SHOP-1")
+    assert rows["RUN-2"].repository == "acme/billing"  # GitHub 업무 그대로
+    html = log_in(client).get("/tasks?repo=acme/billing").text
+    assert 'data-work-key="RUN-1"' in html and 'data-work-key="RUN-2"' in html
+    assert 'data-source="jira">Jira</span>' in html

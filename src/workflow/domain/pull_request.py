@@ -53,12 +53,19 @@ def failed_question(branch: str, cause: str) -> str:
     return f"검토 승인 — PR 을 열지 못함({cause}). {_manual_hint(branch)}"
 
 
+def origin_line(source_key: str, source_url: str | None) -> str:
+    """GitHub 이슈가 아닌 원본(Jira)의 PR 본문 첫 줄 — `Fixes` 대신 원본 키와 링크."""
+    return f"원본: {source_key} — {source_url}" if source_url else f"원본: {source_key}"
+
+
 def pr_body(
-    *, issue_number: int, task_id: str, review_summary: str, task_url: str | None, work_key: str | None = None,
+    *, issue_number: int | None, task_id: str, review_summary: str, task_url: str | None, work_key: str | None = None,
+    origin_line: str | None = None,
 ) -> str:
-    """첫 줄 `Fixes #N`(기본 브랜치로 병합되면 GitHub 가 이슈를 닫는다), 검토 요약, 업무 키(있으면), 업무 링크(공개
-    주소가 없으면 ID), 끝에 marker."""
-    lines = [f"Fixes #{issue_number}", ""]
+    """첫 줄 `Fixes #N`(기본 브랜치로 병합되면 GitHub 가 이슈를 닫는다) — GitHub 원본이 아니면 `origin_line`(있으면),
+    검토 요약, 업무 키(있으면), 업무 링크(공개 주소가 없으면 ID), 끝에 marker."""
+    first = f"Fixes #{issue_number}" if issue_number is not None else origin_line
+    lines = [first, ""] if first else []
     summary = review_summary.strip()
     if len(summary) > REVIEW_SUMMARY_LIMIT:
         summary = summary[: REVIEW_SUMMARY_LIMIT - 1] + "…"

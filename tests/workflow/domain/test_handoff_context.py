@@ -51,3 +51,11 @@ def test_long_form_value_is_cut():
     assert "가" * (FORM_VALUE_MAX + 1) not in text
     exact = compose(form_fields=(("목표", "가" * FORM_VALUE_MAX),))
     assert "…(생략)" not in exact
+
+
+def test_origin_key_goes_right_under_the_heading():
+    """phase 18 step 6 — Jira 업무는 머리 바로 아래 `원본: <키>`(빈 줄 없이), 그 밖 절은 그대로."""
+    assert compose(origin_key="SHOP-12", note="먼저 테스트", note_by="김") == (
+        "# RUN-3 주문 합계 반올림\n원본: SHOP-12\n\n## 맡긴 사람 지시 (김)\n먼저 테스트\n\n합계가 1원 틀립니다.")
+    assert compose(origin_key=None) == compose()
+    assert compose(work_key=None, origin_key="SHOP-12", body="원문") == "원문"

@@ -31,7 +31,7 @@ from workflow.domain.selection import Candidate
 from workflow.domain.delegation import OWNER_APPROVAL_PREFIX
 from workflow.domain.handoff_context import compose_request
 from workflow.domain.jira_intake import run_config
-from workflow.domain.task_readiness import ExecutorFacts, TaskFacts, TaskReadiness, evaluate_readiness
+from workflow.domain.task_readiness import Blocker, ExecutorFacts, TaskFacts, TaskReadiness, evaluate_readiness
 from workflow.server import github_sync, jira_sync, owner_approval
 from workflow.server.settings import Settings
 
@@ -77,7 +77,7 @@ def execution_request_text(conn: Connection, task: Row, *, with_answers: bool) -
     return compose_request(
         work_key=format_work_key(work["key_number"]), title=work["title"],
         form_fields=[(FORM_LABELS[key], form[key]["value"]) for key in FORM_HEADINGS if key in form],
-        note=work["handoff_note"], note_by=note_by, body=body,
+        note=work["handoff_note"], note_by=note_by, body=body, origin_key=origin(conn, task).origin_key,
     )
 
 
@@ -90,9 +90,11 @@ class Origin:
     state: Literal["open", "closed"] | None
     own: bool  # 원본 행이 이 단계(또는 같은 업무의 같은 종류 단계 — 다시 맡긴 단계)에 붙어 있다 = 수정 단계
     origin_key: str | None  # 요청문 머리의 원본 키 — Jira 만
+    unlinked: bool = False  # Jira 업무인데 프로젝트 설정·연결 저장소를 찾지 못함 — 실행하지 않고 기다린다
 
 
 _NO_ORIGIN = Origin(issue=None, config=None, state=None, own=False, origin_key=None)
+UNLINKED_REASON = "Jira 프로젝트의 연결 저장소 없음 — 연결 화면에서 저장소를 고르세요"
 
 
 def origin(conn: Connection, task: Row) -> Origin:
@@ -110,13 +112,13 @@ def origin(conn: Connection, task: Row) -> Origin:
     if work["source_type"] == "jira":
         project = repo.get_jira_project(conn, session_id, work["source_id"])
         if project is None:
-            return _NO_ORIGIN
+            return replace(_NO_ORIGIN, unlinked=True)
         linked = repo.get_github_source(conn, session_id, project.github_source_id)
         row = repo.get_jira_issue(conn, session_id, work["source_id"], item) if item is not None else None
         own = row is not None and repo.get_jira_issue_by_task(conn, session_id, task["task_id"]) is not None
         return Origin(issue=None, config=run_config(linked) if linked is not None else None,
                       state=row["state"] if row is not None else None, own=own,
-                      origin_key=work["source_key"] if row is not None else None)
+                      origin_key=work["source_key"] if row is not None else None, unlinked=linked is None)
     return _NO_ORIGIN
 
 
@@ -244,6 +246,9 @@ def task_facts(conn: Connection, task: Row, *, now: str, settings: Settings, **o
     if config is not None:
         match = _match(config, agents, intake, task["chosen_agent_id"], overrides.get("pair_agent_id"))
         values.update(_match_facts(task, config, match, required, fix=intake.assignee_ids is not None))
+    elif found.unlinked:
+        values.update(matched_agent_id=None, auto_match=True,
+                      match_blockers=(Blocker("repository_unmatched", UNLINKED_REASON, "operator"),))
     values.update(overrides)
     return TaskFacts(**values)
 

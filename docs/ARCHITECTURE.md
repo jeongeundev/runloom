@@ -1785,6 +1785,7 @@ class Origin:
     state: Literal["open", "closed"] | None
     own: bool                    # 원본 행(source_issues·jira_issues)이 이 단계 또는 같은 업무의 같은 종류 단계(다시 맡긴 단계)에 붙음 — get_*_by_task 와 같은 규칙
     origin_key: str | None       # 요청문 머리의 원본 키 — Jira 만
+    unlinked: bool = False       # Jira 업무인데 프로젝트 설정·연결 저장소를 찾지 못함(step 6)
 
 def origin(conn: Connection, task: Row) -> Origin: ...
 def task_intake(conn: Connection, task: Row) -> IntakeFacts: ...
@@ -1799,6 +1800,8 @@ def task_intake(conn: Connection, task: Row) -> IntakeFacts: ...
 | `github`, 원본 이슈 칸 없음(새 업무 후속) | None | 소스 설정 | None | False | None |
 | `jira`, 스냅숏 행 있음 | None | `jira_intake.run_config(연결 저장소 설정)` | 행 `state` | `get_jira_issue_by_task` 가 있음 | `work_items.source_key` |
 | `jira`, 스냅숏 행 없음(후속 이슈 전) | None | 같음 | None | False | None |
+
+Jira 업무의 프로젝트 설정이나 연결 저장소(`github_sources`) 행을 찾지 못하면 `config = None`, `unlinked = True`(그 밖 칸은 위 규칙). `task_facts` 는 이때 매칭 대신 `auto_match=True`·`matched_agent_id=None`·`match_blockers=(Blocker("repository_unmatched", task_cycle.UNLINKED_REASON, "operator"),)` — 기존 대기 코드로 기다리고 맡긴 Agent(`chosen_agent_id`)로 착수하지 않는다(step 6). `UNLINKED_REASON = "Jira 프로젝트의 연결 저장소 없음 — 연결 화면에서 저장소를 고르세요"`.
 
 `domain/jira_intake.run_config(config: GitHubSourceConfig) -> GitHubSourceConfig` = `config.model_copy(update={"intake": "all_open", "trigger_label": None})`. Jira 스냅숏 행은 업무의 원본 칸(`source_id`, `source_item_id`)으로 찾는다(`repo.get_jira_issue(conn, session_id, source_id, issue_id)`).
 

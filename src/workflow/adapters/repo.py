@@ -420,8 +420,10 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
         " LEFT JOIN members m ON w.assignee_type = 'member' AND m.member_id = w.assignee_id"
         " LEFT JOIN agents a ON w.assignee_type = 'agent' AND a.agent_id = w.assignee_id"
         " LEFT JOIN members d ON d.member_id = w.direct_member_id"
-        " LEFT JOIN github_sources g ON w.source_type = 'github' AND g.source_id = w.source_id"
-        " AND g.session_id = w.session_id"
+        " LEFT JOIN jira_projects jp ON w.source_type = 'jira' AND jp.source_id = w.source_id"
+        " AND jp.session_id = w.session_id"
+        " LEFT JOIN github_sources g ON g.session_id = w.session_id AND g.source_id = CASE"
+        " WHEN w.source_type = 'github' THEN w.source_id WHEN w.source_type = 'jira' THEN jp.github_source_id END"
         " WHERE w.session_id = ? AND (? IS NULL OR w.closed_at IS NULL OR w.closed_at >= ?)"
         " ORDER BY w.key_number DESC",
         (session_id, closed_since, closed_since),
@@ -3620,10 +3622,10 @@ def record_source_delivery(
 
 
 def enqueue_pull_request(
-    conn: Connection, *, task_id: str, session_id: str, source_id: str, repository_full_name: str, issue_number: int,
-    fix_execution_id: str, review_execution_id: str, now: str,
+    conn: Connection, *, task_id: str, session_id: str, source_id: str, repository_full_name: str,
+    issue_number: int | None, fix_execution_id: str, review_execution_id: str, now: str,
 ) -> bool:
-    """수정 Task 하나에 한 행(`pending`). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다.
+    """수정 Task 하나에 한 행(`pending`). `issue_number` 는 GitHub 원본일 때만(Jira 원본은 None — 본문에 `Fixes` 없음). 이미 있으면 그대로 두고 False — 검토 재평가·재시작에도 PR 은 하나다.
     head 는 검토한 수정 실행 요청의 두 칸으로 계산한 결과 브랜치(러너가 push 한 이름)."""
     fix = ExecutionRequest.model_validate_json(get_execution(conn, fix_execution_id)["request_json"])
     branch = head_branch(task_id, work_key=fix.work_key, branch_seq=fix.branch_seq)
