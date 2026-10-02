@@ -1,6 +1,7 @@
 {
   "project": "workflow",
   "phase": "3-limit-wait",
+  "note": "보류: 실사용 한도 빈도를 확인한 뒤 현재 업무·단계 모델과 Claude/Codex 지원에 맞춰 설계를 갱신한다. 기존 step은 2026-09-20 모델 기준.",
   "steps": [
     { "step": 0, "name": "failed-retry-after", "status": "pending" },
     { "step": 1, "name": "codex-limit-signal", "status": "pending" },

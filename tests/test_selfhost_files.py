@@ -4,6 +4,7 @@
 settings 모듈의 ENV_KEYS. 컨테이너는 띄우지 않는다 — 실제 기동은 step 8. 도커가 있으면 `docker compose config` 만 돌린다.
 """
 
+import json
 import os
 import plistlib
 import re
@@ -226,6 +227,23 @@ def test_docker_compose_config_accepts_the_file(tmp_path):
     )
     assert res.returncode == 0, res.stderr
     assert '"published": "8000"' in res.stdout and '"host_ip": "127.0.0.1"' in res.stdout
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker 없음")
+def test_compose_projects_build_distinct_images(tmp_path):
+    shutil.copy(COMPOSE, tmp_path / "compose.yaml")
+    shutil.copy(ENV_EXAMPLE, tmp_path / ".env")
+    images = []
+    for project in ("runloom", "runloom-e2e-isolated"):
+        result = subprocess.run(
+            ["docker", "compose", "-p", project, "-f", str(tmp_path / "compose.yaml"),
+             "config", "--format", "json"], capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        services = json.loads(result.stdout)["services"]
+        assert services["central"]["image"] == services["worker"]["image"]
+        images.append(services["central"]["image"])
+    assert images[0] != images[1]
 
 
 # --- install.sh (step 6) — 가짜 docker·curl 을 PATH 앞에 두고 임시 디렉터리에서 실행한다 -----------

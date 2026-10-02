@@ -594,3 +594,14 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 결함 없음 — e2e 의 모든 숫자가 기대값과 처음부터 맞았다. 테스트 쪽만 고쳤다: 가짜 `claude` 의 "첫 시도" 판별을 프롬프트 문구(`코드 수정 결과 봉투`)에서 인계 파일 이름(`/input-…`)으로 바꿨다 — 러너는 인계 산출물을 `input-<artifact_id>.json` 으로 내려 `_hint` 의 접두 매칭에 걸리지 않는다(제품 동작은 정상, 가짜의 가정이 틀렸다). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v16, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업, [phase 20 README](../phases/20-monitor/README.md) 상태.
+
+
+## 2026-10-02 검증 공백·n8n 예시 정리
+
+- Docker 이미지 격리: Compose `image` 를 `workflow-selfhost:${COMPOSE_PROJECT_NAME}` 로 변경. `docker compose -p runloom` 과 `-p runloom-e2e-isolated` 의 `config --format json` 결과 이미지가 다른지 검사하는 테스트를 먼저 작성했다. 변경 전 같은 `workflow-selfhost:local` 이라 실패, 변경 후 통과. 프로젝트별 central·worker 는 같은 이미지를 쓴다.
+- `python3 -m pytest tests/test_selfhost_files.py -q`: 73 passed. `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q -x`: 1 passed(74.18초). 임시 clone 의 실제 Docker 설치 → 종류 등록 → 재시작 보존 → 백업 → 추가 → 복원 확인. 테스트 프로젝트 컨테이너·볼륨 정리 완료. 운영 central·worker 는 기존 `workflow-selfhost:local` 로 계속 실행 중이며 재설치하지 않았다. 다음 운영 설치부터 태그는 `workflow-selfhost:runloom`, DB 스키마·러너 프로토콜 변화 없음.
+- 간헐 실패 조사: `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_work_ui.py -q -x`: 8 passed. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q -x`: 82 passed·1 skipped(별도 Docker 게이트). `test_monitor.py` + `test_work_ui.py` 를 전체 일반 테스트와 병행해 3회 반복: 매회 18 passed(21.20·21.15·21.06초). 이전 5건 실패는 재현하지 못했다. 부하·시간 대기 원인은 여전히 가설이며 제품 코드나 타임아웃을 바꾸지 않았다. 재발 시 실패한 실행의 `world.log_tails()`·러너/중앙 로그를 보존해 조사해야 한다.
+- n8n: 삭제된 대본 스택·등록 경로를 현행 셀프호스트·팀 탭·러너 안내로 교체. 예시 JSON 의 옛 진단/수정 라벨은 현재 `map_issue` 에서 매핑되지 않는 값이었다. 코드 수정→검토와 `kind:bug_fix`·`kind:code_review`·`repository_id:<등록 ID>` 로 교체, Webhook 에 `repository_id` 입력을 안내. Docker 워커에서 callback 의 localhost 가 호스트 n8n 을 뜻하지 않는 점과 `WEBHOOK_URL`·허용 목록 설정을 설명. 파일 테스트는 변경 전 2 failed·11 passed, 변경 후 13 passed. 실제 n8n·모델 실행은 하지 않았다.
+- `3-limit-wait`: 기존 실사용 빈도 확인 후 착수 결정을 유지. schema v16·업무/단계 분리·Claude/Codex 에 맞춘 설계 갱신이 먼저임을 phase index 와 현재 인계에 기록.
+- n8n 표현식을 Node 로 실제 평가한 JSON 을 `InboundChainRequest.model_validate_json` 에 통과시키고 `map_issue` 로 검증: `fix-check-1 → code.fix`, `review-check-1 → code.review`, 두 scope 는 `repository_id=billing`, 검토의 선행 키는 수정 키와 일치. 외부 호출 없음.
+- 최종 일반 검사: `python3 -m pytest -q` 4129 passed·83 skipped(257.47초), `python3 -m ruff check .` 통과, `git diff --check` 통과. 원격 fetch 뒤 `origin/service...service` 는 뒤처짐 0·앞섬 374로 확인.
