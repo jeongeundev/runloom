@@ -1,7 +1,7 @@
 """docs/n8n/ — import 가능한 n8n 워크플로우 JSON 과 절차서 (phase 7 step 7). Docker·n8n 없이 파일 내용만 검사한다.
 
 검사 기준: ADR-0010 의 노드 4개(Webhook → HTTP Request → Wait → Slack), CONTRACT 12절(입구 경로·본문 필드·`ChainCallback` 필드),
-github fixture 의 라벨 값, 비밀값 없음(test_deploy_files 와 같은 접두사 규칙), GLOSSARY 금지 표현·n8n 비판 문구 없음.
+현행 종류·저장소 라벨 값, 비밀값 없음(test_deploy_files 와 같은 접두사 규칙), GLOSSARY 금지 표현·n8n 비판 문구 없음.
 노드 파라미터 이름·option 값은 n8n 저장소(packages/nodes-base)에서 2026-09-22 확인한 것이다.
 """
 
@@ -90,8 +90,8 @@ def test_http_request_posts_inbound_chain_request_with_header_auth_credential(no
     assert body.startswith("={{") and body.rstrip().endswith("}}")  # n8n 표현식
     for needle in (
         "JSON.stringify", "contract_version: 1", "callback_url: $execution.resumeUrl", "items:",
-        "$json.body.run_id", "blocked_by", '"incident"', '"workflow:daily-report"', '"run:" +',
-        '"bug"', '"repo:demo-report-repo"',
+        "$json.body.run_id", "blocked_by", '"kind:bug_fix"', '"kind:code_review"',
+        '"repository_id:" + $json.body.repository_id',
     ):
         assert needle in body, needle
     # 자격 증명은 참조만 — 헤더 값(Bearer wfs_…)은 n8n 의 자격 증명 저장소에 있고 JSON 엔 없다
@@ -151,13 +151,13 @@ def test_readme_uses_the_same_commands_paths_and_settings_as_the_product(readme)
         "docker run -d --name runloom-n8n -p 5678:5678 -v runloom_n8n_data:/home/node/.n8n docker.n8n.io/n8nio/n8n",
         "runloom-handoff.json",
         "/sources",
-        "/agents/register",
+        "/connect?tab=team",
         "WORKFLOW_CALLBACK_HOSTS=localhost:5678",
         "WORKFLOW_PUBLIC_URL=http://127.0.0.1:8000",
-        "scripts/local_stack.py --scripted --callback-hosts localhost:5678 --public-url http://127.0.0.1:18000",
+        "deploy/selfhost/install.sh",
         "http://host.docker.internal:8000/sources/n8n/chains",
         "curl -X POST http://localhost:5678/webhook/runloom-demo",
-        '{"run_id":"daily-0920-0900"}',
+        '"run_id":"daily-0920-0900"',
         "$execution.resumeUrl",
         "import:workflow --input=",
         "import:credentials --input=",
@@ -168,11 +168,12 @@ def test_readme_uses_the_same_commands_paths_and_settings_as_the_product(readme)
         "--add-host",
         "0010-n8n-inbox-and-callback.md",
         "CONTRACT.md",
-        "DEPLOY.md",
+        "SELFHOST.md",
     ):
         assert needle in readme, needle
-    # 포트 표 — 로컬 스택 18000 / 개발 서버 8000 (HTTP Request 노드 URL 을 맞춘다)
-    assert "18000" in readme and "8000" in readme
+    assert "scripts/local_stack.py" not in readme
+    assert "/agents/register" not in readme
+    assert "8000" in readme
 
 
 def test_readme_states_the_callback_rules_and_public_demo_limit(readme):

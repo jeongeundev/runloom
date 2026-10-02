@@ -28,7 +28,7 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  contract_version: 1,\n  callback_url: $execution.resumeUrl,\n  items: [\n    {\n      key: \"run-\" + $json.body.run_id,\n      title: \"일일 보고서 생성 실패 (\" + $json.body.run_id + \")\",\n      body: \"실행 \" + $json.body.run_id + \" 의 실패 원인을 진단해 주세요.\",\n      labels: [\"incident\", \"workflow:daily-report\", \"run:\" + $json.body.run_id],\n      blocked_by: []\n    },\n    {\n      key: \"fix-\" + $json.body.run_id,\n      title: \"집계 API 응답 형식 변경 대응\",\n      body: \"진단 결과를 근거로 demo-report-repo 를 수정하고 테스트를 통과시켜 주세요.\",\n      labels: [\"bug\", \"repo:demo-report-repo\"],\n      blocked_by: [\"run-\" + $json.body.run_id]\n    }\n  ]\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  contract_version: 1,\n  callback_url: $execution.resumeUrl,\n  items: [\n    {\n      key: \"fix-\" + $json.body.run_id,\n      title: \"집계 API 응답 형식 변경 대응\",\n      body: \"등록된 저장소의 집계 API 응답 형식을 수정하고 테스트를 통과시켜 주세요.\",\n      labels: [\"kind:bug_fix\", \"repository_id:\" + $json.body.repository_id],\n      blocked_by: []\n    },\n    {\n      key: \"review-\" + $json.body.run_id,\n      title: \"집계 API 수정 검토\",\n      body: \"앞 단계의 수정 결과와 테스트를 검토해 주세요.\",\n      labels: [\"kind:code_review\", \"repository_id:\" + $json.body.repository_id],\n      blocked_by: [\"fix-\" + $json.body.run_id]\n    }\n  ]\n}) }}",
         "options": {}
       },
       "id": "d1226fef-8d89-483c-8143-fad61eae27a7",
