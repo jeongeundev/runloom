@@ -329,7 +329,7 @@ rm ~/Library/LaunchAgents/com.workflow.selfhost.connector.plist
 docker compose -p runloom -f deploy/selfhost/compose.yaml down -v
 ```
 
-그 밖에 남는 것: `deploy/selfhost/.env`(비밀값), 연결 토큰·러너 상태 `~/Library/Application Support/workflow-connector/`, 이미지 `workflow-selfhost:local`(`docker image rm workflow-selfhost:local`). 필요 없으면 직접 지운다.
+그 밖에 남는 것: `deploy/selfhost/.env`(비밀값), 연결 토큰·러너 상태 `~/Library/Application Support/workflow-connector/`, 이미지 `workflow-selfhost:runloom`(`docker image rm workflow-selfhost:runloom`, 다른 프로젝트는 그 프로젝트 이름 태그). 이전 설치의 `workflow-selfhost:local` 이미지도 남아 있을 수 있다. 필요 없으면 직접 지운다.
 
 ## 문제 해결
 

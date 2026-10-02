@@ -8,7 +8,7 @@
 3. 컨테이너 안에서 `backup create`·`list` → 종류 B 등록 → `stop central worker` → `run --rm central … restore <이름> --force`
    → `up -d` → 종류 A 는 있고 B 는 없다 (백업 시점)
 
-끝나면(finally) `down -v` 로 **이 테스트가 만든 프로젝트의 컨테이너·볼륨만** 지운다. 이미지(`workflow-selfhost:local`)는
+끝나면(finally) `down -v` 로 **이 테스트가 만든 프로젝트의 컨테이너·볼륨만** 지운다. 프로젝트별 이미지(`workflow-selfhost:runloom-e2e-…`)는
 지우지 않는다. `WORKFLOW_DOCKER=1` 일 때만 돈다. 외부 호출 없음 — 네트워크는 127.0.0.1 뿐이다.
 """
 

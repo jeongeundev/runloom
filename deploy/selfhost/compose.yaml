@@ -6,7 +6,7 @@ x-workflow: &workflow
   build:
     context: ../..
     dockerfile: deploy/selfhost/Dockerfile
-  image: workflow-selfhost:local
+  image: workflow-selfhost:${COMPOSE_PROJECT_NAME}
   env_file: .env
   # .env 로 바꾸지 않는 고정값
   environment:
