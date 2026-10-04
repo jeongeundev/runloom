@@ -98,7 +98,7 @@ from workflow.contracts.v1 import (
 from workflow.domain.callback_policy import host_allowed
 from workflow.domain.delegation import OWNER_APPROVAL_PREFIX
 from workflow.domain.completion import criteria_template, merge_criteria
-from workflow.domain import notification, pull_request, triage
+from workflow.domain import next_step, notification, pull_request, triage
 from workflow.domain.execution_policy import ExecutionPolicy, policy_for
 from workflow.domain.settlement import NodeState, chain_settled
 from workflow.domain.start_key import auto_start_key
@@ -113,6 +113,7 @@ from workflow.server import (
     github_sync,
     jira_delivery,
     jira_sync,
+    next_step_runs,
     owner_approval,
     stage_runs,
     task_cycle,
@@ -120,6 +121,7 @@ from workflow.server import (
     views,
 )
 from workflow.server.github_clients import SourceClients
+from workflow.server.next_step_runs import NextStepCause
 from workflow.server.auth import utc_now
 from workflow.server.settings import Settings, load_settings
 
@@ -182,6 +184,8 @@ class TickReport:
     triage_started: int = 0  # 자동으로 시작한 판단(워크스페이스마다 tick 당 최대 1건)
     triage_judged: int = 0  # 판단 로그 proposed·failed 로 마감한 판단(결과·실행 실패·기한 초과)
     triage_autostarted: int = 0  # 자동 시작 설정으로 맡긴 판단 제안(판단 로그 auto_started)
+    next_step_started: int = 0  # 결과 뒤 판단 시작(워크스페이스마다 tick 당 최대 1건, phase 22)
+    next_step_fallbacks: int = 0  # 결과 뒤 판단 대신 연 원래 사람 요청(② — 시작 불가·실패·무시·대기 상한)
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -388,11 +392,14 @@ class Worker:
         self._notifier = notifier
         # 사용량 한도로 판단이 실패한 Agent → 자동 판단을 다시 걸 수 있는 시각(메모리 — 재시작하면 풀린다, phase 19)
         self._triage_paused_until: dict[str, str] = {}
+        # 이번 tick 의 업무 순환에서 결과 뒤 판단을 기다리는 원인(①② — `_triage_after_results` 가 소비, tick 머리에서 비움)
+        self._next_step_queue: list[NextStepCause] = []
 
     def tick(self) -> TickReport:
         """한 바퀴. 단계 순서가 곧 의존 순서다 (판정은 폴링 뒤, 후속 스캔은 판정 셋 뒤 — 같은 tick 에 판정이 나면 바로 잇는다.
         callback 전달은 후속 착수·실패 반영 뒤 — 끝난 상태로 사람 차례를 판정한다. 알림은 외부 반영의 맨 뒤 — 같은 tick 에 쌓인 것을 보낸다. 업무 상태 재계산은 tick 끝)."""
         report = TickReport()
+        self._next_step_queue = []
         conn = self._conn_factory()
         try:
             self._sync_github(conn, report)
@@ -407,6 +414,7 @@ class Worker:
             self._advance_cycle(conn, report)
             self._spawn_successors(conn, report)
             self._start_waiting_stages(conn, report)
+            self._triage_after_results(conn, report)
             self._triage_new_work(conn, report)
             self._reflect_failures(conn, report)
             self._deliver_callbacks(conn, report)
@@ -877,6 +885,10 @@ class Worker:
             if started:
                 report.followups_started += 1
                 self._write_status(conn, task, "대기", "수정 요청 — 재작업 결과 대기")
+        elif decision.action == "request_human" and decision.request_code in next_step.NEEDS_INFORMATION_CODES:
+            self._next_step_or_human(conn, execution, task, decision, report)
+        elif decision.action == "none" and decision.hold_code == "no_rule":
+            self._queue_after_result(conn, execution, task)
         elif decision.action == "request_human":
             target = repo.get_task(conn, decision.target_task_id)
             report.human_requests += int(self._request_human(
@@ -892,6 +904,51 @@ class Worker:
             fix_task = repo.get_task(conn, context.review.fix_task_id)
             reason = self._queue_pull_request(conn, fix_task, execution, context.review, report)
             self._write_status(conn, fix_task, "확인 필요", reason or decision.reason)
+
+    def _after_result_cause(self, conn: Connection, execution: Row, task: Row,
+                            fallback: str) -> tuple[NextStepCause | None, str]:
+        """업무 순환 결과 하나의 결과 뒤 판단 원인과 처분(`next_step.disposition`) — 그 원인의 판단 행, 시작 조건 이유,
+        원인 나이(판정 시각부터). 업무가 없는 옛 단계는 판단할 업무가 없어 `fallback`."""
+        if task["work_item_id"] is None:
+            return None, "fallback"
+        now = self._clock()
+        cause = NextStepCause(
+            cause="after_result", session_id=task["session_id"], work_item_id=task["work_item_id"],
+            task_id=task["task_id"], execution_id=execution["execution_id"], request_id=None,
+            at=repo.get_verdict(conn, execution["execution_id"])["decided_at"], fallback=fallback,
+        )
+        log_row = repo.next_step_for_cause(conn, execution_id=cause.execution_id)
+        age = _age_seconds(now, cause.at) or 0.0
+        reason = None
+        if log_row is None and age <= next_step.NEXT_STEP_WAIT_SECONDS:  # 경로는 시작할 수 있을 때만 본다
+            reason = next_step_runs.next_step_route(conn, cause, now=now, settings=self._settings).reason
+        return cause, next_step.disposition(
+            state=log_row["state"] if log_row is not None else None,
+            handling=log_row["handling"] if log_row is not None else None, route_reason=reason, cause_age_seconds=age,
+        )
+
+    def _next_step_or_human(self, conn: Connection, execution: Row, task: Row, decision: FollowupDecision,
+                            report: TickReport) -> None:
+        """② `needs_information` — 결과 뒤 판단을 시작할 수 있으면 이번 tick 의 원인으로 담고(사람 요청 없음), 판단 중·
+        제안 중·처리됨이면 기다리고, 시작할 수 없거나 판단이 실패·무시·대기 상한이면 원래 사람 요청(같은 원인 키)을 연다."""
+        cause, choice = self._after_result_cause(conn, execution, task, "original_request")
+        if choice == "queue":
+            self._next_step_queue.append(cause)
+        elif choice == "fallback":
+            target = repo.get_task(conn, decision.target_task_id)
+            fresh = self._request_human(
+                conn, target["task_id"], decision.request_code, decision.reason, decision.cause_key, self._clock(),
+            )
+            report.human_requests += int(fresh)
+            report.next_step_fallbacks += int(fresh)
+            self._write_status(conn, target, "확인 필요", decision.reason)
+
+    def _queue_after_result(self, conn: Connection, execution: Row, task: Row) -> None:
+        """① 업무 순환의 규칙 없는 결과 — 시작할 수 있으면 이번 tick 의 원인으로 담는다. 대체 경로는 없다(지금처럼
+        `확인 필요 · 검토 대기`, 알림 없음)."""
+        cause, choice = self._after_result_cause(conn, execution, task, "none")
+        if choice == "queue":
+            self._next_step_queue.append(cause)
 
     def _queue_pull_request(
         self, conn: Connection, fix_task: Row, review_execution: Row, review: ReviewFacts, report: TickReport
@@ -1338,8 +1395,9 @@ class Worker:
             message = f"result_unreadable — {exc}"
         else:
             base = ExecutionRequest.model_validate_json(execution["request_json"]).target.base_commit
-            verdict = triage.validate(result, TriageCandidates.model_validate_json(log["candidates_json"]),
-                                      execution_id=execution_id, task_id=execution["task_id"], base_commit=base)
+            validate = triage.validate if log["cause"] == "intake" else next_step.validate_next_step
+            verdict = validate(result, TriageCandidates.model_validate_json(log["candidates_json"]),
+                               execution_id=execution_id, task_id=execution["task_id"], base_commit=base)
             if verdict.ok:
                 return repo.record_triage_proposed(
                     conn, log["triage_id"], execution_id=execution_id, result=result,
@@ -1394,6 +1452,36 @@ class Worker:
                 log.warning("판단 자동 시작 실패 %s: %s %s", row["triage_id"], exc.code, exc)
                 continue
             report.triage_autostarted += 1
+
+    def _triage_after_results(self, conn: Connection, report: TickReport) -> None:
+        """결과 뒤 판단을 건다(ADR-0027) — 원인은 이번 tick 업무 순환이 담은 ①② 와 사용자 정의 종류의 규칙 없는 결과(①,
+        대기 상한 안). 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건), 판단 Agent 의 러너가 비었을 때만, 사용량
+        한도로 쉬는 Agent 는 건너뛴다. 원인 시각 오래된 순. `_triage_new_work` 앞이라 판단 자리를 먼저 차지한다 — 시작하지
+        못한 원인은 다음 tick 에 다시 담긴다."""
+        now = self._clock()
+        causes = list(self._next_step_queue)
+        since = _plus_seconds(now, -next_step.NEXT_STEP_WAIT_SECONDS)
+        for row in repo.generic_results_awaiting_next_step(conn, since=since):
+            causes.append(NextStepCause(
+                cause="after_result", session_id=row["session_id"], work_item_id=row["work_item_id"],
+                task_id=row["task_id"], execution_id=row["execution_id"], request_id=None, at=row["decided_at"],
+                fallback="none",
+            ))
+        for session_id in sorted({c.session_id for c in causes}):
+            if repo.has_running_triage(conn, session_id):
+                continue
+            for cause in sorted((c for c in causes if c.session_id == session_id), key=lambda c: c.at):
+                route = next_step_runs.next_step_route(conn, cause, now=now, settings=self._settings)
+                if route.reason is not None:
+                    continue
+                paused = self._triage_paused_until.get(route.agent_id)
+                if paused is not None and _parse(paused) > _parse(now):
+                    continue
+                if not repo.runner_idle(conn, repo.get_agent(conn, route.agent_id)["connector_id"]):
+                    continue
+                started = next_step_runs.request_next_step(conn, self._settings, cause=cause, now=now)
+                report.next_step_started += int(started.started)
+                break
 
     def _triage_new_work(self, conn: Connection, report: TickReport) -> None:
         """담당 없는 새 GitHub·Jira 업무에 판단을 자동으로 건다 — 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건),

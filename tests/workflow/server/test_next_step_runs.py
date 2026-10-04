@@ -62,12 +62,16 @@ def capable(conn, judge) -> dict:
 
 @pytest.fixture
 def needs_info(conn, store, worker, capable) -> NextStepCause:
-    """RUN-1 수정 결과가 `needs_information`(판정까지) — 원래 사람 요청은 답한 것으로 치워 업무 상태가 판단을 보인다."""
+    """RUN-1 수정 결과가 `needs_information`(판정까지) — 원래 사람 요청은 답한 것으로 치워 업무 상태가 판단을 보인다.
+    워커가 결과 뒤 판단을 걸지 않도록(step 6) 판정하는 tick 동안만 러너 능력을 비우고 다시 보고한다."""
     fix_task = import_issue(conn, 1)
     worker.tick()
     fix_exec = executions(conn, fix_task)[0]["execution_id"]
     finish_fix(conn, store, fix_exec, outcome="needs_information")
+    repo.record_runner_capabilities(conn, capable["billing"], None)
+    conn.commit()
     worker.tick()
+    repo.record_runner_capabilities(conn, capable["billing"], ["verify_only", "after_result_triage"])
     conn.execute("UPDATE human_requests SET state = 'answered', answered_at = ?", (NOW,))
     conn.commit()
     wid = repo.work_item_of_task(conn, fix_task)["work_item_id"]
