@@ -367,7 +367,7 @@ def test_02_each_person_attaches_their_own_runner(world):
     start_runner(world, "a", "connector-a")
     start_runner(world, "b", "connector-b")
     wait_until(world, lambda: len(q(world, "SELECT 1 FROM connectors WHERE supported_kinds_json IS NOT NULL"
-                                           " AND capabilities_json = '[\"verify_only\"]'")) == 2,
+                                           " AND capabilities_json = '[\"after_result_triage\", \"verify_only\"]'")) == 2,
                "두 러너가 claim 으로 지원 종류·능력을 보고")
 
 

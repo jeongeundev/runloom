@@ -1,16 +1,28 @@
 # 현재 인계 — 업무 목록과 결과 기반 자동 실행
 
-갱신일: 2026-10-04. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
+갱신일: 2026-10-05. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 22-next-step 진행 중 — 결과 뒤 판단 (새 세션은 여기서 시작)
+## 다음 작업: 22-next-step 완료 — service 병합 → 셀프호스트 v24 → 결과 뒤 판단 실연동 (새 세션은 여기서 시작)
 
-**phase 22 하네스 실행 중**(`feat-22-next-step`, `service` `aae864a` 에서 갈라짐, `python3 scripts/execute.py 22-next-step --engine claude`). step 0 설계 고정(2026-10-04): [ADR-0027](adr/0027-next-step-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "결과 뒤 판단 — phase 22"(이름·계약·스키마 v24·시작 지점·tick 순서·행동별 적용·알림·문구 — README 와 다르면 이것이 기준), [GLOSSARY](GLOSSARY.md) "계획 용어 — phase 22". 진행 상태는 `phases/22-next-step/index.json`.
+**22-next-step 완료**(2026-10-05, `feat-22-next-step`, step 0~10, `service` `aae864a` 에서 갈라짐, [ADR-0027](adr/0027-next-step-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "결과 뒤 판단 — phase 22", 용어 [GLOSSARY](GLOSSARY.md) "계획 용어 — phase 22", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 22 결과 뒤 판단"): 결과가 규칙 밖(①)·`needs_information`(②)·사내 요청 반환(③)이면 저장소 카드의 판단 에이전트가 판단 시점에 고정한 후보(다음 단계 종류·멤버·에이전트·담당 범위) 안에서 다음 행동 하나(다음 단계·재작업 / 새 업무 / 사내 요청 / 사람 확인)를 제안하고, 사람이 업무 패널 "다음 단계 제안" 절의 [제안대로] 를 한 번 누른다(판단이 만든 사내 요청의 요청자 = 누른 멤버). 시작할 수 없거나(판단 에이전트 없음·옛 러너·대기 3600초 초과) 실패·[무시]면 지금 동작 — ② 는 원래 사람 요청, ① 은 그대로 `확인 필요`, ③ 은 판단이 만든 요청만 `next_step_human` 사람 요청. 사내 요청이 생기면 받는 사람에게 `요청 받음` 알림, 제안이 나오면 `다음 단계 제안` 알림. 받는 사람의 수락·조사·검토·반환은 그대로 사람이 한다. 결과 뒤 판단은 자동 시작하지 않고, 접수 판단의 자동 시작 자격 건수·모니터링 판단 지표에 섞이지 않는다. 스키마 v24, **러너 프로토콜 변화**(claim `capabilities` 에 `after_result_triage`) — 옛 러너는 결과 뒤 판단만 못 한다.
 
-요지: 결과가 규칙 밖(①)·`needs_information`(②)·사내 요청 반환(③)이면 판단 Agent 가 후보(다음 단계 종류·멤버·에이전트·담당 범위) 안에서 다음 행동 하나(다음 단계·재작업 / 새 업무 / 사내 요청 / 사람 확인)를 제안하고 사람이 [제안대로] 를 한 번 누른다. 시작할 수 없거나 실패·무시하면 지금 동작(② 는 사람 요청). 사내 요청은 받는 사람에게 알림(`internal_request_received`), 반환되면 원래 업무에서 판단이 다시. 스키마 v24(`triage_logs`·`notifications` 재생성, `internal_requests.created_by_triage_id`), 러너 능력 `after_result_triage` — **셀프호스트 반영 때 러너 재설치 필요**.
+**할 일**(순서대로, 모두 사용자 지시 뒤):
+1. `feat-22-next-step` 를 `service` 에 `--no-ff` 병합.
+2. 셀프호스트 v24 재설치 — 백업 먼저(`backup create`), 진행 중 실행이 끝난 뒤 `install.sh` → 스키마 24 → **러너도 `install-runner.sh` 재실행**(옛 러너는 결과 뒤 판단을 받지 못한다). 절차는 [SELFHOST](SELFHOST.md) "업그레이드" v24. 재설치 뒤 `connectors.capabilities_json` 에 `after_result_triage` 가 있는지 본다.
+3. 결과 뒤 판단 실연동 1회 — 아래 목록. 결과는 [VERIFICATION_LOG](VERIFICATION_LOG.md) 에 새 절로.
 
-step 0 에서 README 와 바꾼 것: C3 는 `TriageCandidates` 검증 오류로 먼저 터진다(접수 판단에도 있는 결함 — step 4 가 고친다), 규칙 없음은 새 `hold_code` `no_rule` 로만 시작, 담당표 revision 비교 대신 항목 비교(설정 번호가 워크스페이스 전체라서), 다음 단계·새 업무 후보는 입력 없는 종류만(규칙 없이 이은 단계는 착수되지 않는다), 재작업은 검토 [수정 요청] 경로, [무시] 는 `dismissed` 만 기록하고 대체 경로는 처분이 정한다(① 은 사람 요청 없음), `mode`·`next_action` 은 None 이면 직렬화에서 빠진다.
+**결과 뒤 판단 실연동 확인 목록**([사내 요청 실연동 1회차](product/INTERNAL_REQUEST_LIVE_RUN_1.md)의 K1 을 결과 뒤 판단 기준으로 고친 것 — runloom-sandbox, 실제 Claude 구독, 세 계정 R(관리자·요청자)·N(처리 담당)·J(판단 담당)는 브라우저를 나눈다):
+- [ ] 준비: N·J 초대, 조사 종류 `incident_investigation`(능력 `code.review` 우회·scope `repository_id`·입력 없음·outcomes `cause_found, needs_information, unresolved`), 담당 범위 `kube_proxy · investigation → N`(판단 담당 J, 에이전트 runloom-sandbox), N 의 개인 웹훅(또는 공용 웹훅) — 1회차 문서 "준비"와 같다.
+- [ ] **저장소 카드(runloom-sandbox)의 판단 에이전트 칸을 고른다** — 1회차와 다른 점. 고르면 sandbox 의 `새로 들어옴`·담당 없음 업무에 접수 판단이 바로 걸린다(기존 업무 확인 뒤 고른다). OpenArchive 카드는 고르지 않는다.
+- [ ] sandbox 에 K1 이슈 1건(1회차 "요청 본문") → 접수 판단 제안 → R [제안대로 맡기기] → 수정 에이전트가 `needs_information` 을 내는지(LXC 호스트 값이 없으므로 기대). 내지 않고 수정까지 가면 그 결과·판정을 기록하고 ① 경로(규칙 밖 결과)로 본다.
+- [ ] ② 사람 요청 대신 결과 뒤 판단이 도는지(업무 이유 `다음 단계 판단 중`), 제안이 `사내 요청 · kube_proxy/investigation → N` 인지, 목적 글·근거·확신도가 쓸 만한지, R 에게 `다음 단계 제안` 알림. 다른 행동을 제안하면 그대로 기록한다(판단 품질 평가가 목적이 아니다 — 흐름 확인).
+- [ ] R [제안대로] → `/requests` 에 `판단 제안으로 생성`, 요청자 = R, 업무 이유 `사내 요청 대기 · N`, N 에게 `요청 받음` 알림이 왔는지·어디서 알았는지.
+- [ ] N 수락 → (선택) 정보 질문·R 답변 → 조사 시작 → 검토 승인 → (선택) J 판단 → 반환. 1회차 "진행" 2~9 와 같다.
+- [ ] 반환 뒤 R 의 수동 재개 없이 원래 업무에서 `request_returned` 판단이 도는지, 제안이 `재작업 → <수정 에이전트>` 인지, R [제안대로] → 반환 요약이 지적으로 들어간 새 수정 실행 → 검토 → 초안 PR. 결과를 그대로 쓸 수 있었는지.
+- [ ] 판단 두 번의 시간(원인 → 제안)·구독 사용량(실행 비용·토큰), 후보 밖 값(`판단 실패 · 후보 밖 제안`) 여부, 판단 중 러너 등록 폴더에 변경 없음(`git status`).
+- [ ] (선택) [무시] 한 번 → 원래 사람 요청이 열리는지.
 
-**phase 뒤 할 일**(사용자 지시 뒤): `feat-22-next-step` → `service` `--no-ff` 병합, 셀프호스트 v24 재설치(백업 먼저, 진행 중 실행 0건, **러너 `install-runner.sh` 재실행**), 실연동(아래 K1 — RUN-26 장면).
+**22 에서 남긴 것·주의**: ③ 판단이 실패·무시되면 대체 경로가 없다(반환 조회가 `request_returned` 판단 행이 있는 요청을 빼므로 — ARCHITECTURE 조회 정의 그대로) — 그때 원래 업무는 사람이 패널에서 잇는다. 결과 뒤 판단 품질 지표(모니터링)는 범위 밖. 프로젝트별 판단 기준·한 화면 등록은 phase 23. 사람이 만든 사내 요청의 반환도 원래 업무에서 판단을 건다(판단 Agent 가 있을 때).
 
 ## 이전 다음 작업: 사내 요청 실연동 — 공개 사례 K1 을 실제 러너·CLI 로 조사
 

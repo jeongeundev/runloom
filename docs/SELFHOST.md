@@ -305,6 +305,11 @@ deploy/selfhost/install-runner.sh
   2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 16.
   3. **러너 재설치는 필요 없다** — 러너 프로토콜(`connector`·`contracts/v1`)은 이 phase 에서 바뀌지 않았다(재설치해도 된다).
   4. `/monitor` 에 탭 셋(`전후`·`판단`·`담당자별`)이 생기고, 연결 화면 "판단" 탭의 종류별 자동 시작 행에 저장된 기준값 이상 판단의 사람 일치·병합 한 줄이 보인다. `/metrics.json` 은 키 `triage`·`assignees`·`config_changes` 를 더하고, `/metrics.csv` 는 열은 그대로 새 행만 더한다.
+- v24(phase 22) — 결과 뒤 판단: `triage_logs` 를 재생성해 원인 칸 셋(`cause` — 기존 행은 모두 `intake`, `cause_execution_id`·`cause_request_id`)과 원인별 부분 UNIQUE 둘을 더하고, `notifications` 를 재생성해 알림 사건 둘(`internal_request_received`·`next_step_proposed`)을 받게 하고, `internal_requests.created_by_triage_id` 칸을 더한다(id·행 그대로, 다른 표는 재생성하지 않는다). 과거 결과·반환에는 판단을 걸지 않는다 — 업그레이드 뒤 새로 나온 결과부터다. 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v23). 순서:
+  1. 백업 먼저(`backup create`).
+  2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 24.
+  3. **러너도 `install-runner.sh` 로 다시 설치한다** — 러너 프로토콜이 바뀌었다(claim `capabilities` 에 `after_result_triage`, 판단 요청 target 의 `mode: next_step`, 결과의 `next_action`). 옛 러너는 v24 서버에 그대로 붙어 수정·검토·접수 판단은 계속 하지만 결과 뒤 판단은 받지 못한다 — `needs_information` 은 지금처럼 사람 요청, 규칙 없는 결과는 지금처럼 `확인 필요`. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
+  4. 결과 뒤 판단은 저장소 카드의 **판단 에이전트** 칸이 정해진 저장소의 업무에서만 돈다(접수 판단과 같은 칸 — 새 설정 없음). 사내 요청 제안을 받으려면 연결 화면 "팀" 탭의 담당 범위 표에 항목이 있어야 한다. 받는 사람 알림은 공용 웹훅 또는 받는 사람의 개인 웹훅(위 "알림")으로 간다.
 - 옛 주소는 넘어간다(303) — `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` → `/connect?tab=…`, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 

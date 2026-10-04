@@ -605,3 +605,27 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 - `3-limit-wait`: 기존 실사용 빈도 확인 후 착수 결정을 유지. schema v16·업무/단계 분리·Claude/Codex 에 맞춘 설계 갱신이 먼저임을 phase index 와 현재 인계에 기록.
 - n8n 표현식을 Node 로 실제 평가한 JSON 을 `InboundChainRequest.model_validate_json` 에 통과시키고 `map_issue` 로 검증: `fix-check-1 → code.fix`, `review-check-1 → code.review`, 두 scope 는 `repository_id=billing`, 검토의 선행 키는 수정 키와 일치. 외부 호출 없음.
 - 최종 일반 검사: `python3 -m pytest -q` 4129 passed·83 skipped(257.47초), `python3 -m ruff check .` 통과, `git diff --check` 통과. 원격 fetch 뒤 `origin/service...service` 는 뒤처짐 0·앞섬 374로 확인.
+
+## 2026-10-05 phase 22 결과 뒤 판단 (step 10)
+
+목적: [ADR-0027](adr/0027-next-step-triage.md)의 결과 뒤 판단 — ② `needs_information` → 사내 요청 제안 → [제안대로] → 받는 사람 알림·수락·조사·검토·반환 → ③ 반환 뒤 재작업 제안 → [제안대로] → PR 병합까지(RUN-26 장면), [무시] → 원래 사람 요청, ① 규칙 없는 결과 → 새 업무, 옛 러너 → 지금 동작이 실제 러너 프로세스로 이어서 도는지, v23 사본이 v24 로 오르는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 App 서버(PR 경로 포함), 알림은 127.0.0.1 가짜 수신기, origin 은 임시 bare 저장소, 도구는 PATH 앞의 가짜 `claude`(`--json-schema` 모양으로 고름 — `next_action` 칸 = 결과 뒤 판단: 반환된 사내 요청이 있으면 재작업, 아니면 본문 표식 `[next:internal|human|new_work]` / `proceed` = 접수 판단 / `findings` = 검토 / 첫 줄 `# 업무 종류:` = 사용자 정의 종류(등록 outcome 첫 값) / 그 밖 = 수정, `[ask]` 는 인계 파일 `input-…` 이 없는 첫 시도에 `needs_information`), 러너는 `WORKFLOW_CONNECTOR_HOME` 임시 폴더(launchd 아님).
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-10-05 KST, 이 Mac, 브랜치 `feat-22-next-step` |
+| 명령·결과 | `python3 -m pytest -q` — **4446 passed·92 skipped**(새 e2e 9 는 `WORKFLOW_E2E` 게이트). `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_next_step_cycle.py -q` — **9 passed**(23.7초). `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_next_step_cycle.py tests/e2e/test_triage_cycle.py tests/e2e/test_monitor.py -q` — **29 passed**(58.6초). `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **91 passed·1 skipped**(134.8초, 건너뜀은 `WORKFLOW_DOCKER` 게이트 `test_selfhost`). `test_team_handoff` 의 러너 능력 단정은 step 2 의 새 능력 튜플 `["after_result_triage", "verify_only"]` 로 갱신 |
+| 준비 | `tests/e2e/test_next_step_cycle.py` test_01 — 관리자·GitHub 연결(가짜 App) → 멤버 박조사 초대 가입 → 공용 웹훅·박조사 개인 웹훅 → `setup --tool claude` → 러너 claim 능력 `["after_result_triage", "verify_only"]` → `PUT /github/sources/{id}` 로 판단 에이전트 → `POST /kinds` 조사 종류 `incident_investigation`(능력 `code.review` 우회·scope `repository_id`·outcomes `cause_found, unresolved`) → `POST /responsibilities/add` `kube_proxy/investigation → 박조사`(판단 담당 박조사·에이전트 = 러너 에이전트) |
+| ② → 사내 요청 제안 | test_02 — 이슈(`[scenario:invoice] [ask] [next:internal]`) → 접수 판단 → [제안대로 맡기기] → 수정 `needs_information` → 사람 요청 0건, 결과 뒤 판단 `after_result`(auto·원인 실행 = 수정 실행)·target `mode: next_step`, 요청문 첫 줄 `# 다음 단계 판단: RUN-1 …`·`### 사내 요청 담당 범위`·`결과 needs_information`, 제안 `internal_request kube_proxy/investigation → 박조사`(목적 글 그대로), 업무 `내 차례 · 다음 단계 제안 · 사내 요청`, `next_step_proposed` 알림(관리자), 패널 행동 한 줄·[제안대로]·목적 전문, 목록 배지 `다음 단계 제안`, 원본 폴더 `git status` 깨끗 |
+| [제안대로] → 요청·알림 | test_03 — 사내 요청 1건(`created_by_triage_id` = 판단, 요청자 관리자, 받는 사람 박조사, `pending`), 판단 `accepted`·처리자 관리자, 업무 `대기 · 사내 요청 대기 · 박조사`, 수정 Task 그대로(끝나지 않음), `internal_request_received` 행 공용·개인 각 1(받는 사람 박조사) → 가짜 수신기 개인 경로에 도착, 박조사 `/requests` 에 `판단 제안으로 생성`, 다시 누르면 409·요청 그대로 1건 |
+| 받는 사람 흐름 | test_04 — 박조사 수락 → 조사 시작(`investigation_selection` = 조사 종류·저장소 범위) → 같은 러너가 사용자 정의 종류 실행(가짜 claude `cause_found`) → `확인 필요` → 박조사 검토 승인 → 반환(요약 = 조사 결과 summary) |
+| ③ → 재작업 → 완료 | test_05 — 반환 → `request_returned` 판단(원인 요청·원인 실행 = 처음 수정 실행), 요청문 `## 반환된 사내 요청`·반환 요약, 제안 `stage bug_fix rework → 러너 에이전트`, 업무 이유 `다음 단계 제안 · 재작업` → [제안대로] → 처음 실행 해제·`review_comment` 산출물(`다음 단계 판단: 재작업` + 반환 요약)이 새 실행 입력 → 수정 `ready_for_review` → 검토 승인 → 초안 PR → 병합 → `완료`. 단계 `bug_fix`·`code_review`, 판단 로그 `intake`·`after_result`·`request_returned` 모두 `proposed`·`accepted`·처리자 관리자, 수정 Task 의 사람 요청 0건 |
+| [무시] | test_06 — `[next:human]` 이슈 → 제안 `human`(질문 그대로)·사람 요청 0 → [무시] → 다음 tick 원래 사람 요청 `fix_needs_information` 1건(tick 3회 더 해도 1건), 판단 `dismissed`, 업무 `내 차례`, 패널 `다음 단계 제안 무시함` |
+| ① 규칙 없음 → 새 업무 | test_07 — `POST /rules/{id}/delete` 로 `bug_fix` 후속 규칙 삭제 → `[next:new_work]` 이슈 → 수정 `ready_for_review` → 결과 뒤 판단(원인 = 그 실행) → 제안 `new_work bug_fix 「쿠폰 차감 회귀 테스트 보강」 → 관리자` → [제안대로] → 새 업무(`spawned_from` 원래 업무, 담당 관리자, 단계 `bug_fix`·실행 없음 — 멤버는 배정만), 원래 수정 Task `완료 · 새 업무로 넘김` |
+| 옛 러너 | test_08 — 러너를 `CentralClient.claim` 기본 능력 `('verify_only',)` 진입점으로 다시 띄움 → 능력 `["verify_only"]` → 접수 판단은 그대로 → 수정 `needs_information` → 결과 뒤 판단 없이 원래 사람 요청 `fix_needs_information` 1건, tick 3회 `next_step_started` 0, 패널에 다음 단계 절 없음 |
+| v23 → v24 사본 | `test_v23_copy_upgrades_to_v24` — `tests/workflow/adapters/test_db.py::_v23_db`(접수 판단 셋·알림 둘·사내 요청 하나) → `create_app` 시작이 v24 로 올림(`/healthz` 200) → 업무·단계·실행·판단 로그·알림·사내 요청·멤버 행 수 그대로, 외래키·무결성 검사 깨끗, 원인 모두 `intake`, `created_by_triage_id` NULL. 사용자 셀프호스트 볼륨·백업은 읽지 않았다 |
+| 미실행 | 실연동(실제 Claude·GitHub·Discord) — 사용자 지시 뒤, 목록은 [CURRENT_HANDOFF](CURRENT_HANDOFF.md) "결과 뒤 판단 실연동 확인 목록". `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` 도 돌리지 않았다(셀프호스트 재설치는 phase 뒤 사용자 지시) |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음, 템플릿 `\|safe` 없음(grep) |
+
+### 발견한 결함과 고친 파일
+
+- 제품 코드 결함 없음 — e2e 단정이 처음부터 맞았다. 테스트 쪽만: e2e 워커는 알림 전송기가 있는 `test_real_repo.make_worker` 를 쓴다(`test_jira_cycle.make_worker` 는 알림 전송기가 없어 수신기에 도착하지 않았다 — 가정 오류). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v24(러너 재설치), [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업·실연동 목록, [ARCHITECTURE](ARCHITECTURE.md) "결과 뒤 판단 — phase 22" 구현 상태.

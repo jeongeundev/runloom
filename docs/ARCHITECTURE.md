@@ -3098,6 +3098,8 @@ B는 실제 테스트 기록·diff·보고서를 제출한다. 연결 프로그�
 
 [ADR-0027](adr/0027-next-step-triage.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 22 README](../phases/22-next-step/README.md). step 0 설계(2026-10-04) — 아래 이름·표·경로·시그니처·문구는 step 1~10 이 그대로 쓴다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** "판단 — phase 19" 는 이 절이 갱신한 부분만 바뀐다(접수 판단의 동작·자동 시작 자격 건수·판단 품질 지표는 그대로). README 와 달라진 조사 사실은 ADR-0027 "코드 조사로 README 와 달라진 사실" 10가지 — 특히 C3 는 `TriageCandidates` 검증 오류로 먼저 터진다, 규칙 없음은 새 `hold_code` `no_rule` 로 가른다, 담당표 revision 은 워크스페이스 설정 번호 전체라 항목 비교로 바꾼다, 다음 단계 후보는 입력 없는 종류만이고 재작업은 검토 [수정 요청] 경로, `mode`·`next_action` 은 null 이면 직렬화에서 빠진다.
 
+구현 상태(2026-10-05, step 10): step 1~9 가 아래 이름·시그니처대로 구현됐고, step 10 e2e(`tests/e2e/test_next_step_cycle.py` — 실제 러너 프로세스 + 가짜 `claude`)가 RUN-26 장면(접수 판단 → 수정 `needs_information` → 사내 요청 제안 → [제안대로] → 받는 사람 알림·수락·조사·검토·반환 → `request_returned` 재작업 제안 → [제안대로] → 검토 승인 → PR 병합 → 완료), [무시] → 원래 사람 요청, 규칙 없는 결과 → 새 업무, 옛 러너 → 지금 동작, v23 사본 → v24 를 통과했다. 제품 코드는 step 10 에서 바꾸지 않았다. 실연동(실제 Claude·GitHub)은 아직 없다 — 목록은 [CURRENT_HANDOFF](CURRENT_HANDOFF.md).
+
 ### 한 줄 요약
 
 결과가 규칙 밖(①)·`needs_information`(②)·사내 요청 반환(③)이면 워커가 그 업무의 판단 Agent 에 **결과 뒤 판단**(`TriageTarget.mode = "next_step"`)을 건다. 판단은 시작 때 고정한 후보(다음 단계 종류·멤버·에이전트·담당 범위) 안에서 다음 행동 하나(`NextAction` — 다음 단계·재작업 / 새 업무 / 사내 요청 / 사람 확인)를 제안하고, 사람이 업무 패널 [제안대로] 를 눌러 확정한다. 판단을 시작할 수 없거나 실패·무시하면 지금 동작(② 는 사람 요청)으로 돌아간다. 사내 요청은 받는 사람에게 알림이 가고, 반환되면 원래 업무에서 결과 뒤 판단이 다시 돈다. 스키마 v24, 러너 능력 `after_result_triage`(러너 재설치).
