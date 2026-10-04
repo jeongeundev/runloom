@@ -355,8 +355,8 @@ class ExecutionRequest(_OmitUnknownMeasure):
 
 RunnerCapability = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
 RUNNER_CAPABILITY_VERIFY_ONLY = "verify_only"
-RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE = "after_result_triage"  # 결과 뒤 판단(ADR-0027) — 러너 구현과 함께 아래에 더한다
-RUNNER_CAPABILITIES: tuple[str, ...] = (RUNNER_CAPABILITY_VERIFY_ONLY,)
+RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE = "after_result_triage"  # 결과 뒤 판단(ADR-0027) — `TriageTarget.mode = next_step`
+RUNNER_CAPABILITIES: tuple[str, ...] = (RUNNER_CAPABILITY_VERIFY_ONLY, RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE)
 
 
 class ClaimRequest(_OmitUnknownMeasure):

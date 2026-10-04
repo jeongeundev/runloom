@@ -12,7 +12,8 @@
 종류의 표식과 겹치지 않는다. 마지막 메시지 스키마는 `local_tool.REVIEW_RESULT_SCHEMA`.
 
 판단(`build_triage_prompt`, 결과 형태 `triage_result`)은 중앙이 만든 요청문(기준·업무·후보·근거·답하는 법) 그대로에 고정
-꼬리만 붙인다. 작업 위치는 기본 브랜치 끝의 깨끗한 체크아웃이다. 마지막 메시지 스키마는 `local_tool.TRIAGE_OUTPUT_SCHEMA`.
+꼬리만 붙인다. 작업 위치는 기본 브랜치 끝의 깨끗한 체크아웃이다. 마지막 메시지 스키마는 `local_tool.TRIAGE_OUTPUT_SCHEMA`
+(결과 뒤 판단은 `NEXT_STEP_OUTPUT_SCHEMA`).
 
 사용자 정의 종류(`build_generic_prompt`)는 `kind_spec.instructions` + 요청 + 인계 파일 목록이며 읽기 전용 규칙을 적는다.
 첫 줄 `# 업무 종류: {kind} ({label})` 은 고정 형식이다 — 대본 에이전트가 이걸로 종류를 읽는다. 마지막 메시지 스키마는

@@ -1591,9 +1591,8 @@ def _verify_only_request() -> dict:
 
 def test_runner_capability_constants():
     assert v1.RUNNER_CAPABILITY_VERIFY_ONLY == "verify_only"
-    assert v1.RUNNER_CAPABILITIES == ("verify_only",)
-    # 결과 뒤 판단 능력은 상수만 — RUNNER_CAPABILITIES 에는 러너가 mode=next_step 을 실행할 수 있게 되는 step 2 가 더한다
     assert v1.RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE == "after_result_triage"
+    assert v1.RUNNER_CAPABILITIES == ("verify_only", "after_result_triage")
 
 
 def test_old_execution_requests_dump_without_verify_only_commit():

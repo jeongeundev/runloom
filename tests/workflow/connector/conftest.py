@@ -356,12 +356,17 @@ TRIAGE_SPEC = next(spec for spec in BUILTIN_KINDS if spec.kind == "triage")
 
 def make_triage_request(base_commit: str, *, execution_id: str = "exec-triage-001",
                         task_id: str = "task-triage-12",
-                        local_registration_id: str = "local-billing-claude") -> ExecutionRequest:
-    """내장 `triage` 요청 (CONTRACT 17.1) — target 은 `TriageTarget`, 입력 없음, `kind_spec` 은 늘 싣는다."""
+                        local_registration_id: str = "local-billing-claude",
+                        mode: str | None = None) -> ExecutionRequest:
+    """내장 `triage` 요청 (CONTRACT 17.1) — target 은 `TriageTarget`, 입력 없음, `kind_spec` 은 늘 싣는다.
+    `mode="next_step"` 이면 결과 뒤 판단(CONTRACT 17.4), None 이면 target 에 `mode` 가 없는 접수 판단."""
+    target = {"local_registration_id": local_registration_id, "base_commit": base_commit}
+    if mode is not None:
+        target["mode"] = mode
     return ExecutionRequest.model_validate({
         "contract_version": 1, "execution_id": execution_id, "task_id": task_id, "kind": "triage",
         "agent_id": "agent-claude-mac", "task_revision": 1, "request": TRIAGE_REQUEST, "input_artifact_ids": [],
-        "target": {"local_registration_id": local_registration_id, "base_commit": base_commit},
+        "target": target,
         "kind_spec": TRIAGE_SPEC.model_dump(),
     })
 

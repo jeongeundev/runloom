@@ -21,6 +21,7 @@ from workflow.connector.local_tool import (
     NO_REPRO_TEST_LOG,
     RESULT_SCHEMA,
     REVIEW_RESULT_SCHEMA,
+    NEXT_STEP_OUTPUT_SCHEMA,
     TRIAGE_OUTPUT_SCHEMA,
     LocalToolAdapter,
     ToolResult,
@@ -1842,4 +1843,168 @@ def test_triage_output_schema_is_strict_and_has_only_model_fields():
     assert reason["properties"]["criterion"]["enum"] == [
         "clarity", "verifiability", "scope", "risk", "permission", "history", "dependency"]
     for key in ("execution_id", "task_id", "inspected_commit", "contract_version"):
+        assert key not in schema["properties"]
+
+
+# --- 결과 뒤 판단 `mode=next_step` — 같은 읽기 전용 체크아웃, 다음 단계 스키마 (ARCHITECTURE "러너 (step 2)") ---------
+
+NEXT_ACTIONS = {
+    "stage": {"type": "stage", "kind": "bug_fix", "assignee": {"type": "agent", "id": "agt-9f3c2a1b"}, "rework": True},
+    "new_work": {"type": "new_work", "kind": "bug_fix", "title": "쿠폰 중복 적용 막기",
+                 "assignee": {"type": "member", "id": "mem-1a2b3c4d"}},
+    "internal_request": {"type": "internal_request", "system_id": "billing", "request_kind": "data_check",
+                         "recipient_member_id": "mem-5e6f7a8b", "purpose": "쿠폰 적용 이력 확인"},
+    "human": {"type": "human", "question": "쿠폰 중복 허용이 의도인가요?"},
+}
+
+
+def _next_step_message(**fields) -> str:
+    message = {
+        "proceed": "ready", "confidence": 0.72, "next_action": NEXT_ACTIONS["stage"],
+        "reasons": [{"criterion": "history", "note": "이전 결과가 재현 정보를 남겼다"}], "missing_information": [],
+    }
+    message.update(fields)
+    return json.dumps(message, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("action_type", list(NEXT_ACTIONS))
+def test_next_step_triage_uses_next_step_schema_and_assembles_each_action(state_conn, repo, tmp_path, action_type):
+    register_triager(state_conn, repo)
+    tip, _folder_head = _main_moved_on(repo)
+    seen = []
+
+    def next_step(cwd: Path) -> ToolRun:
+        seen.append({"head": _git(cwd, "rev-parse", "HEAD"), "local_only": (cwd / "LOCAL_ONLY.md").exists()})
+        return _run(last_message=_next_step_message(next_action=NEXT_ACTIONS[action_type]))
+
+    adapter = ScriptedTool(state_conn, next_step)
+
+    output = adapter.run(make_triage_request(tip, mode="next_step"), tmp_path / "h", Recorder())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert isinstance(result, TriageResult)
+    assert result.next_action.model_dump() == NEXT_ACTIONS[action_type]
+    assert (result.proposed_kind, result.assignee, result.predecessors) == (None, None, [])
+    assert (result.execution_id, result.task_id, result.inspected_commit, result.proceed, result.confidence) == (
+        "exec-triage-001", "task-triage-12", tip, "ready", 0.72)
+    # 접수 판단과 같은 체크아웃 — 기본 브랜치 끝, 등록 폴더의 변경은 안 보인다. 스키마만 다르다
+    assert seen == [{"head": tip, "local_only": False}]
+    (cwd, prompt_text, schema), = adapter.launched_readonly_with
+    assert schema == NEXT_STEP_OUTPUT_SCHEMA and prompt_text.startswith(TRIAGE_REQUEST)
+    assert not cwd.exists() and _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_triage_without_mode_keeps_intake_schema(state_conn, repo, tmp_path):
+    """`mode` 없는 옛 요청은 지금과 같은 접수 판단 — 스키마·결과 모양 그대로, `next_action` 없음."""
+    register_triager(state_conn, repo)
+    adapter = ScriptedTool(state_conn, ReadingTriager())
+
+    output = adapter.run(make_triage_request(git_ops.head_sha(repo)), tmp_path / "h", Recorder())
+
+    assert output.failed is None, output.failed
+    assert output.result.next_action is None and output.result.proposed_kind == "bug_fix"
+    (_cwd, _prompt, schema), = adapter.launched_readonly_with
+    assert schema == TRIAGE_OUTPUT_SCHEMA
+
+
+@pytest.mark.parametrize("message, note", [
+    (_next_step_message(next_action={"type": "jump", "kind": "bug_fix"}), "next_action"),
+    (_next_step_message(next_action={"type": "human", "question": "   "}), "question"),
+    (_next_step_message(next_action=None), "ready"),  # 다음 행동 없이 ready — 접수 판단 칸도 없다
+    (_next_step_message(proceed="unsuitable", next_action=NEXT_ACTIONS["new_work"]), "human"),
+    (_next_step_message(proceed="needs_check"), "needs_check"),
+    (_next_step_message(confidence=-0.1), "confidence"),
+    (None, "파일 없음"),
+])
+def test_next_step_output_outside_schema_is_result_invalid(state_conn, repo, tmp_path, message, note):
+    register_triager(state_conn, repo)
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(stderr=b"triage\n", last_message=message))
+
+    output = adapter.run(make_triage_request(git_ops.head_sha(repo), mode="next_step"), tmp_path / "h", Recorder())
+
+    assert output.result is None
+    code, reason, stopped = output.failed
+    assert code == "result_invalid" and note in reason and stopped is True
+    assert [meta.kind for meta, _ in output.artifacts] == ["claude_jsonl", "claude_stderr"]
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_next_step_ignores_intake_fields_claimed_by_the_tool(state_conn, repo, tmp_path):
+    """다음 단계 스키마 밖의 칸(`proposed_kind`·`assignee`·`predecessors`·ID·커밋)은 도구가 말해도 버린다."""
+    register_triager(state_conn, repo)
+    base = git_ops.head_sha(repo)
+    message = _next_step_message(proposed_kind="bug_fix", assignee={"type": "agent", "id": "agt-9f3c2a1b"},
+                                 predecessors=["RUN-9"], inspected_commit="0" * 40, execution_id="exec-other")
+    adapter = ScriptedTool(state_conn, lambda _cwd: _run(last_message=message))
+
+    output = adapter.run(make_triage_request(base, mode="next_step"), tmp_path / "h", Recorder())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.proposed_kind, result.assignee, result.predecessors) == (None, None, [])
+    assert (result.inspected_commit, result.execution_id) == (base, "exec-triage-001")
+
+
+def _next_step_edit(cwd: Path) -> ToolRun:
+    (cwd / "src.py").write_text("VALUE = 'triager edit'\n")
+    return _run(last_message=_next_step_message())
+
+
+def _next_step_commit(cwd: Path) -> ToolRun:
+    (cwd / "src.py").write_text("VALUE = 'triager commit'\n")
+    _git(cwd, "commit", "-q", "-am", "triager")
+    return _run(last_message=_next_step_message())
+
+
+@pytest.mark.parametrize("script, reason", [(_next_step_edit, "판단 체크아웃"), (_next_step_commit, "HEAD")])
+def test_next_step_that_changes_anything_is_readonly_violation(state_conn, repo, tmp_path, script, reason):
+    register_triager(state_conn, repo)
+    base = git_ops.head_sha(repo)
+    adapter = ScriptedTool(state_conn, script)
+
+    output = adapter.run(make_triage_request(base, mode="next_step"), tmp_path / "h", Recorder())
+
+    assert output.result is None
+    code, message, _stopped = output.failed
+    assert code == "readonly_violation" and reason in message
+    assert _git(repo, "worktree", "list").count("\n") == 0
+    assert _git(repo, "rev-parse", "HEAD") == base and _git(repo, "status", "--porcelain") == ""
+
+
+def test_next_step_commit_missing_fails_before_launch(state_conn, repo, tmp_path):
+    register_triager(state_conn, repo)
+    adapter = ScriptedTool(state_conn, ReadingTriager())
+
+    output = adapter.run(make_triage_request("a" * 40, mode="next_step"), tmp_path / "h", Recorder())
+
+    assert output.failed[0] == "commit_missing" and adapter.launched_readonly_with == []
+
+
+def test_next_step_output_schema_is_strict_and_has_only_model_fields():
+    """Claude `--json-schema`·Codex `--output-schema`(strict) 둘 다 받는 모양 — 모든 객체가 칸 전부 required,
+    `additionalProperties: false`, 네 행동은 `anyOf` 로, `type` 은 값 하나의 enum."""
+    schema = NEXT_STEP_OUTPUT_SCHEMA
+    fields = ["proceed", "confidence", "next_action", "reasons", "missing_information"]
+    assert schema["type"] == "object" and schema["additionalProperties"] is False
+    assert list(schema["properties"]) == fields and schema["required"] == fields
+    assert schema["properties"]["proceed"] == TRIAGE_OUTPUT_SCHEMA["properties"]["proceed"]
+    assert schema["properties"]["reasons"] == TRIAGE_OUTPUT_SCHEMA["properties"]["reasons"]
+    actions = schema["properties"]["next_action"]["anyOf"]
+    expected = {
+        "stage": ["type", "kind", "assignee", "rework"],
+        "new_work": ["type", "kind", "title", "assignee"],
+        "internal_request": ["type", "system_id", "request_kind", "recipient_member_id", "purpose"],
+        "human": ["type", "question"],
+    }
+    assert [action["properties"]["type"]["enum"] for action in actions] == [[t] for t in expected]
+    assignee = TRIAGE_OUTPUT_SCHEMA["properties"]["assignee"]["anyOf"][0]
+    for action, (action_type, keys) in zip(actions, expected.items(), strict=True):
+        assert action["type"] == "object" and action["additionalProperties"] is False, action_type
+        assert list(action["properties"]) == keys and action["required"] == keys, action_type
+        if "assignee" in keys:
+            assert action["properties"]["assignee"] == assignee
+    assert actions[0]["properties"]["rework"] == {"type": "boolean"}
+    assert "oneOf" not in json.dumps(schema)
+    for key in ("proposed_kind", "assignee", "predecessors", "execution_id", "task_id", "inspected_commit"):
         assert key not in schema["properties"]

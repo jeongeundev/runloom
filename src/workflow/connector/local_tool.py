@@ -37,6 +37,8 @@ None(판정 없음·모름)이다. 사용량은 도구를 띄운 뒤의 모든 �
 fetch 하지 않는다). 체크아웃에 준비물 링크·복사는 없다. 그 뒤 `launch_readonly`(스키마 `TRIAGE_OUTPUT_SCHEMA`) → 원시 로그
 → 시간 초과·`classify_failure` → 체크아웃 HEAD·파일과 인계 파일이 그대로인지(`readonly_violation`) → `read_structured_message`
 에 실행·업무 ID 와 체크아웃 HEAD(`inspected_commit`)를 더해 `TriageResult` 로(`result_invalid`). 후보 안의 값인지는 중앙이 본다.
+결과 뒤 판단(`TriageTarget.mode = next_step`, ADR-0027)은 같은 경로에서 스키마만 `NEXT_STEP_OUTPUT_SCHEMA` 이고, 접수 판단 칸
+(`proposed_kind`·`assignee`·`predecessors`)은 비워 `next_action` 을 싣는다.
 
 검증만 다시(`verify_only_commit`, ADR-0023)는 `_run_verify_only` 가 도구를 띄우지 않고 그 커밋의 깨끗한 체크아웃에서 등록된
 검증 프로필만 다시 돌린다: 등록·프로필 확인 → 인계된 이전 결과 봉투가 같은 커밋인지(`source_mismatch`) → 커밋이 등록
@@ -75,6 +77,7 @@ from workflow.connector.prompt import (
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
     TRIAGE_CRITERIA,
+    TRIAGE_MODE_NEXT_STEP,
     TRIAGE_PROCEED,
     CodeChangeResult,
     CodeChangeTarget,
@@ -135,6 +138,29 @@ REVIEW_RESULT_SCHEMA = {
     "additionalProperties": False,
 }
 
+# 판단의 담당 후보 객체·근거 — 접수 판단과 결과 뒤 판단 스키마가 같이 쓴다.
+_TRIAGE_ASSIGNEE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": ["member", "agent"]},
+        "id": {"type": "string"},
+    },
+    "required": ["type", "id"],
+    "additionalProperties": False,
+}
+_TRIAGE_REASONS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "criterion": {"type": "string", "enum": list(TRIAGE_CRITERIA)},
+            "note": {"type": "string"},
+        },
+        "required": ["criterion", "note"],
+        "additionalProperties": False,
+    },
+}
+
 # 판단의 마지막 메시지 스키마 — `TriageResult` 중 모델이 채우는 칸만. 실행·업무 ID·`inspected_commit`(체크아웃 HEAD)·계약
 # 버전은 연결 프로그램이 채운다. 개수·길이·확신도 범위·proceed 별 규칙은 `TriageResult` 검증이 본다(어긋나면 `result_invalid`).
 TRIAGE_OUTPUT_SCHEMA = {
@@ -143,33 +169,9 @@ TRIAGE_OUTPUT_SCHEMA = {
         "proceed": {"type": "string", "enum": list(TRIAGE_PROCEED)},
         "confidence": {"type": "number", "description": "0~1"},
         "proposed_kind": {"type": ["string", "null"], "description": "후보 종류 중 하나"},
-        "assignee": {
-            "anyOf": [
-                {
-                    "type": "object",
-                    "properties": {
-                        "type": {"type": "string", "enum": ["member", "agent"]},
-                        "id": {"type": "string"},
-                    },
-                    "required": ["type", "id"],
-                    "additionalProperties": False,
-                },
-                {"type": "null"},
-            ],
-        },
+        "assignee": {"anyOf": [_TRIAGE_ASSIGNEE_SCHEMA, {"type": "null"}]},
         "predecessors": {"type": "array", "items": {"type": "string"}, "description": "선행 후보의 업무 키, 최대 5개"},
-        "reasons": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "criterion": {"type": "string", "enum": list(TRIAGE_CRITERIA)},
-                    "note": {"type": "string"},
-                },
-                "required": ["criterion", "note"],
-                "additionalProperties": False,
-            },
-        },
+        "reasons": _TRIAGE_REASONS_SCHEMA,
         "missing_information": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["proceed", "confidence", "proposed_kind", "assignee", "predecessors", "reasons",
@@ -177,6 +179,48 @@ TRIAGE_OUTPUT_SCHEMA = {
     "additionalProperties": False,
 }
 
+
+def _next_action_schema(action_type: str, properties: dict) -> dict:
+    """`next_action` 한 모양 — `type` 은 값 하나의 enum, 칸은 모두 required(Codex strict 호환)."""
+    properties = {"type": {"type": "string", "enum": [action_type]}, **properties}
+    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+
+# 결과 뒤 판단(`TriageTarget.mode = next_step`)의 마지막 메시지 스키마 — 모델이 채우는 칸만. `next_action` 은 네 모양의
+# `anyOf`(Claude `--json-schema`·Codex `--output-schema` 둘 다 받는다). `proposed_kind`·`assignee`·`predecessors` 는
+# 연결 프로그램이 비우고, 개수·길이·확신도 범위·proceed 별 규칙은 `TriageResult` 검증이 본다.
+NEXT_STEP_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "proceed": TRIAGE_OUTPUT_SCHEMA["properties"]["proceed"],
+        "confidence": TRIAGE_OUTPUT_SCHEMA["properties"]["confidence"],
+        "next_action": {
+            "anyOf": [
+                _next_action_schema("stage", {
+                    "kind": {"type": "string", "description": "다음 단계 후보 종류 중 하나"},
+                    "assignee": _TRIAGE_ASSIGNEE_SCHEMA,
+                    "rework": {"type": "boolean"},
+                }),
+                _next_action_schema("new_work", {
+                    "kind": {"type": "string", "description": "새 업무 후보 종류 중 하나"},
+                    "title": {"type": "string"},
+                    "assignee": _TRIAGE_ASSIGNEE_SCHEMA,
+                }),
+                _next_action_schema("internal_request", {
+                    "system_id": {"type": "string"},
+                    "request_kind": {"type": "string"},
+                    "recipient_member_id": {"type": "string"},
+                    "purpose": {"type": "string"},
+                }),
+                _next_action_schema("human", {"question": {"type": "string"}}),
+            ],
+        },
+        "reasons": _TRIAGE_REASONS_SCHEMA,
+        "missing_information": TRIAGE_OUTPUT_SCHEMA["properties"]["missing_information"],
+    },
+    "required": ["proceed", "confidence", "next_action", "reasons", "missing_information"],
+    "additionalProperties": False,
+}
 
 def resolve_pythonpath(env: Mapping[str, str], cwd: Path) -> dict[str, str]:
     """`PYTHONPATH` 의 상대 항목을 `cwd` 기준 절대 경로로 바꾼 사본. 빈 항목·`~` 로 시작하는 항목·절대 경로는 그대로,
@@ -608,7 +652,8 @@ class LocalToolAdapter:
 
     def _run_triage(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
         """`TriageTarget` 실행. 착수 전 확인 → `base_commit` 의 깨끗한 체크아웃에서 `launch_readonly` → 원시 로그 →
-        시간 초과·`classify_failure` → 체크아웃·인계 파일 불변 확인 → `TriageResult`. 체크아웃은 반드시 지운다."""
+        시간 초과·`classify_failure` → 체크아웃·인계 파일 불변 확인 → `TriageResult`. 체크아웃은 반드시 지운다.
+        `mode = next_step`(결과 뒤 판단)이면 스키마만 `NEXT_STEP_OUTPUT_SCHEMA` 이고 접수 판단 칸은 비운다."""
         target = request.target
         registration = state.get_registration(self._conn, target.local_registration_id)
         if registration is None:
@@ -620,9 +665,11 @@ class LocalToolAdapter:
                 f"base_commit {target.base_commit[:12]} 이 등록 {target.local_registration_id} 의 저장소에 없다",
             )
         handoff_before = _snapshot(handoff_dir) if handoff_dir.is_dir() else {}
+        next_step = target.mode == TRIAGE_MODE_NEXT_STEP
+        schema = NEXT_STEP_OUTPUT_SCHEMA if next_step else TRIAGE_OUTPUT_SCHEMA
 
         def triage(checkout: Path) -> tuple[ToolRun, str, bool]:
-            run = self.launch_readonly(checkout, build_triage_prompt(request, checkout), TRIAGE_OUTPUT_SCHEMA, progress)
+            run = self.launch_readonly(checkout, build_triage_prompt(request, checkout), schema, progress)
             return run, git_ops.head_sha(checkout), git_ops.is_dirty(checkout)
 
         try:
@@ -661,7 +708,8 @@ class LocalToolAdapter:
             return failed("result_invalid", f"{self.tool_name} 판단 결과를 읽지 못함 ({note})")
         try:
             result = TriageResult.model_validate({
-                **{key: data.get(key) for key in TRIAGE_OUTPUT_SCHEMA["required"]},
+                **{key: data.get(key) for key in schema["required"]},
+                **({"proposed_kind": None, "assignee": None, "predecessors": []} if next_step else {}),
                 "contract_version": CONTRACT_VERSION, "execution_id": request.execution_id,
                 "task_id": request.task_id, "inspected_commit": head,
             })
