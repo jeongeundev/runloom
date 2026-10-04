@@ -1,8 +1,14 @@
 # 현재 인계 — 업무 목록과 결과 기반 자동 실행
 
-갱신일: 2026-10-02. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
+갱신일: 2026-10-04. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 판단·Jira·17 실연동·브라우저 확인(모니터링 세 탭 포함) (새 세션은 여기서 시작)
+## 다음 작업: 사내 요청 실연동 — 공개 사례 K1 을 실제 러너·CLI 로 조사 (새 세션은 여기서 시작)
+
+**21-internal-request 병합·셀프호스트 v23 반영**(2026-10-04): 사내 요청(담당 범위·요청·정보 확인·조사·판단·반환·재개 기록)을 `feat-21-internal-request` 로 커밋해 `service` 에 병합(`332da59`). 하네스 phase 가 아니라 `phases/` 기록은 없다. 문서는 [사내 요청](product/INTERNAL_REQUESTS.md)부터, 합성 검증·기록 양식은 [파일럿 기록](product/INTERNAL_REQUEST_PILOT_RECORD.md). 회사 내부 사례가 없어 공개 Kubernetes 이슈 3건을 기존 방식 사례로 복원했다([공개 사례](product/INTERNAL_REQUEST_PUBLIC_CASES.md)). 셀프호스트: 백업 `20261004T055430Z`, 진행 중 실행 0건에서 v16 → v23, 업무 25·Task 26·멤버 1·실행 5 그대로, 외래키 검사 통과, `/healthz` 200. 러너 코드 변화 없음 — 재설치 안 함, 재기동 뒤에도 연결 이어짐.
+
+**할 일**(사용자 지시 뒤): K1 을 입력으로 혼자 세 역할(요청자·처리 담당·판단 담당)을 나눠 실제 등록 에이전트로 조사 → 반환 → 재개 기록. 손으로 먼저 돌리고 나온 결함을 phase 22 step 으로 만든다. 먼저 확인할 것: 조사용 종류(`generic_result`, 입력 없음) 등록, 러너 claim 의 지원 종류(현재 `bug_fix`·`code_review`·`triage`)가 조사 종류를 받는지, 두 번째·세 번째 멤버 계정.
+
+## 이전 다음 작업: 판단·Jira·17 실연동·브라우저 확인(모니터링 세 탭 포함)
 
 **20-monitor 완료**(2026-10-02, `feat-20-monitor`, step 0~9, [ADR-0026](adr/0026-monitor.md), [ARCHITECTURE](ARCHITECTURE.md) "모니터링 — phase 20", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 20 모니터링"): `/monitor` 탭 셋 — `전후`(기존 화면 + 설정 번호 그룹 머리에 무엇을·누가·언제 바꿨는지, v16 이전 번호는 `기록 없음`)·`판단`(종류별·기준 버전별 제안 n·사람 처리·사람 일치·진행 여부·실제 결과(병합 완료·재작업 없이 병합·진행 중)·실패 코드·판단 시간·비용, 확신도 구간표)·`담당자별`(멤버 완료·진행·내 차례 대기·가장 오래 기다림·응답 시간, 에이전트 실행·실패율·1회 통과·재작업·실행 시간·비용, 담당 없음). 연결 "판단" 탭 자동 시작 행에 `지금 기준값 x 이상 판단 n건 — 사람 일치 a/b · 병합 c/d`. `/metrics.json` 키 `triage`·`assignees`·`config_changes`, `/metrics.csv` 는 열 그대로 새 행. 설정 변경 기록 `config_changes`(스키마 v16). 지표는 기존 기록에서 매번 계산(저장·캐시 없음). **러너 프로토콜 변화 없음 — 러너 재설치 불필요.**
 
