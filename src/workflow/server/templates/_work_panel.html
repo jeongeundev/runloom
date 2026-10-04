@@ -117,6 +117,50 @@
   </section>
   {% endif %}
 
+  {% if panel.next_step %}{% set n = panel.next_step %}
+  <section class="panel-section" data-panel-section="next_step" data-next-step-state="{{ n.state }}">
+    <h3>다음 단계 제안</h3>
+    {% macro next_step_body(p) -%}
+    <p>{{ p.line }}</p>
+    {% if p.purpose %}<p class="pre-wrap">{{ p.purpose }}</p>{% endif %}
+    {% if p.question %}<p class="pre-wrap">{{ p.question }}</p>{% endif %}
+    {% if p.reasons %}<ul class="panel-list small" data-next-step-reasons>{% for r in p.reasons %}<li>{{ r.label }} — {{ r.note }}</li>{% endfor %}</ul>{% endif %}
+    {% if p.missing %}<p class="small">모자란 정보</p><ul class="panel-list small" data-next-step-missing>{% for m in p.missing %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+    {%- endmacro %}
+    {% if n.state == 'running' %}
+    <p>다음 단계 판단 중 · {{ n.agent_name }} · 기준 v{{ n.criteria_version }} · 원인 {{ n.cause_line }}</p>
+    {% elif n.state == 'failed' %}
+    <p>다음 단계 판단 실패 · {{ n.failed_label }}{% if n.failed_message %} · {{ n.failed_message }}{% endif %}</p>
+    <p class="small">원인 {{ n.cause_line }}</p>
+    {% elif n.state == 'proposed' %}{% set p = n.proposal %}
+    <p><strong>{{ p.action_label }} · {{ p.proceed }} · 확신도 {{ p.confidence }} · 기준 v{{ n.criteria_version }}</strong></p>
+    <p class="small">원인 {{ n.cause_line }}</p>
+    {{ next_step_body(p) }}
+    {% if n.can_act %}
+    <div class="inline-form">
+      <form method="post" action="/work/{{ w.work_key }}/next-step/accept" class="inline-form">
+        {{ list_state() }}<input type="hidden" name="triage_id" value="{{ n.triage_id }}">
+        <button class="btn btn-small" type="submit">제안대로</button>
+      </form>
+      <form method="post" action="/work/{{ w.work_key }}/next-step/dismiss" class="inline-form">
+        {{ list_state() }}<input type="hidden" name="triage_id" value="{{ n.triage_id }}">
+        <button class="btn btn-small btn-secondary" type="submit">무시</button>
+      </form>
+    </div>
+    {% endif %}
+    {% else %}{% set p = n.proposal %}
+    <details class="row" data-key="next-step-{{ n.state }}">
+      <summary>{% if n.state == 'stale' %}다음 단계 제안(지난 결과){% elif n.state == 'accepted' %}제안대로 처리 · {{ p.action_label }} · {{ n.handled_by }} · {{ n.handled_at|kst }}{% else %}다음 단계 제안 무시함 · {{ n.handled_by }} · {{ n.handled_at|kst }}{% endif %}</summary>
+      <div class="row-body">
+        <p>{{ p.action_label }} · {{ p.proceed }} · 확신도 {{ p.confidence }} · 기준 v{{ n.criteria_version }}</p>
+        <p class="small">원인 {{ n.cause_line }}</p>
+        {{ next_step_body(p) }}
+      </div>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+
   {% if panel.open_requests or panel.direct or panel.can_start_direct %}
   <section class="panel-section" data-panel-section="now">
     <h3>지금 할 일</h3>

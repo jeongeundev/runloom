@@ -509,6 +509,8 @@ def turn_recipients_of(conn: Connection, work_item_id: str) -> tuple[str, ...]:
 
 # (판단 로그 state, handling) → 목록 배지. 처리된 제안·superseded 는 배지 없음
 _TRIAGE_BADGES = {("running", None): "판단 중", ("proposed", None): "판단 제안", ("failed", None): "판단 실패"}
+# 결과 뒤 판단 state(처리 없음·원인 그대로) → 목록 배지. `accepted` 사내 요청이 반환·반려 전이면 `사내 요청 대기`
+_NEXT_STEP_BADGES = {"running": "다음 단계 판단 중", "proposed": "다음 단계 제안"}
 
 
 def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | None) -> list[WorkRow]:
@@ -551,6 +553,29 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
     for r in conn.execute("SELECT work_item_id, state, handling FROM triage_logs WHERE session_id = ?"
                           " AND cause = 'intake' ORDER BY created_at, rowid", (session_id,)):
         triages[r["work_item_id"]] = _TRIAGE_BADGES.get((r["state"], r["handling"]))
+    # 업무마다 최신 결과 뒤 판단 행 → 목록 배지 (phase 22) — `_next_step_fact` 와 같은 조건을 한 번에
+    next_steps: dict[str, str | None] = {}
+    for r in conn.execute(
+        "SELECT l.work_item_id, l.state, l.handling,"
+        " EXISTS (SELECT 1 FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+        "  WHERE e.execution_id = l.cause_execution_id AND e.status = 'result_ready' AND e.released_at IS NULL"
+        "  AND t.finished_at IS NULL)"
+        " AND (l.cause != 'request_returned' OR EXISTS (SELECT 1 FROM internal_request_investigations i"
+        "  WHERE i.request_id = l.cause_request_id AND i.returned_at IS NOT NULL AND NOT EXISTS (SELECT 1"
+        "  FROM internal_request_rejections j WHERE j.request_id = i.request_id))) AS cause_current,"
+        " EXISTS (SELECT 1 FROM internal_requests q LEFT JOIN internal_request_investigations i"
+        "  ON i.request_id = q.request_id WHERE q.created_by_triage_id = l.triage_id AND i.returned_at IS NULL"
+        "  AND NOT EXISTS (SELECT 1 FROM internal_request_rejections j WHERE j.request_id = q.request_id))"
+        " AS request_waiting"
+        " FROM triage_logs l WHERE l.session_id = ? AND l.cause != 'intake' ORDER BY l.created_at, l.rowid",
+        (session_id,),
+    ):
+        badge = None
+        if r["handling"] is None and r["cause_current"] and r["state"] in _NEXT_STEP_BADGES:
+            badge = _NEXT_STEP_BADGES[r["state"]]
+        elif r["handling"] == "accepted" and r["request_waiting"]:
+            badge = "사내 요청 대기"
+        next_steps[r["work_item_id"]] = badge
     members = _member_facts(conn, session_id)
     approvers = _approvers_by_work(conn, session_id, members)
     rows = []
@@ -577,6 +602,7 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
             updated_at=w["updated_at"], closed_at=w["closed_at"],
             repository=w["repository"], source_key_short=short_source_key(w["source_key"]),
             triage=triages.get(w["work_item_id"]),
+            next_step=next_steps.get(w["work_item_id"]),
         ))
     return rows
 

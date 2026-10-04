@@ -25,6 +25,7 @@ from workflow.contracts.v1 import (
     KindSpec,
     SuccessorRule,
     TriageCandidates,
+    TriageCause,
     TriageResult,
     format_work_key,
 )
@@ -44,7 +45,7 @@ from workflow.domain.metrics import (
 )
 from workflow.domain.assignee_metrics import AssigneeReport
 from workflow.domain.notification import webhook_host
-from workflow.domain import team
+from workflow.domain import next_step, team
 from workflow.domain.delegation import candidate_label, needs_owner_approval
 from workflow.domain.status import TaskView, UserStatus, user_status
 from workflow.domain.task_sources import Issue
@@ -963,6 +964,7 @@ def work_panel_context(
         "open_requests": open_requests,
         "responses": responses,
         "triage": triage_panel(conn, session_id, work, allowed=allowed, now=now, settings=settings),
+        "next_step": next_step_panel(conn, session_id, work, allowed=allowed, now=now, settings=settings),
     }
 
 
@@ -1101,6 +1103,59 @@ def triage_panel(conn: Connection, session_id: str, work: Row, *, allowed: froze
             panel.update(state="handled", handled_text=_TRIAGE_HANDLED.get(
                 log["handling"], f"자동 시작 · 판단 v{log['criteria_version']}"))
     return panel
+
+
+def _next_step_cause_line(conn: Connection, log: Row, cause: TriageCause, kind_labels: Mapping[str, str]) -> str:
+    """원인 문구 — `after_result` 는 `<종류 라벨> 결과 <outcome>`, `request_returned` 는 `사내 요청 반환 · <system_id>/<request_kind>`."""
+    if cause.cause == "request_returned":
+        request = conn.execute("SELECT system_id, request_kind FROM internal_requests WHERE request_id = ?",
+                               (log["cause_request_id"],)).fetchone()
+        return f"사내 요청 반환 · {request['system_id']}/{request['request_kind']}"
+    return f"{kind_labels.get(cause.kind, cause.kind)} 결과 {cause.outcome}"
+
+
+def next_step_panel(conn: Connection, session_id: str, work: Row, *, allowed: frozenset[str], now: str,
+                    settings: Settings) -> dict[str, Any] | None:
+    """패널 "다음 단계 제안" 절 — 최신 결과 뒤 판단 행 하나(판단 중·제안·지난 결과·처리됨·무시함·실패). 없으면 None.
+    이름은 시작 때 고정한 후보에서 찾는다. [제안대로]·[무시]는 `delegate` 이고 처리 없는 제안의 원인이 그대로일 때만."""
+    log = repo.latest_next_step(conn, work["work_item_id"])
+    if log is None or log["state"] == "superseded":
+        return None
+    candidates = TriageCandidates.model_validate_json(log["candidates_json"])
+    kind_labels = {spec.kind: spec.label for spec in repo.list_kinds(conn, session_id)}
+    kind_labels |= {k.kind: k.label for k in candidates.kinds}
+    agent = repo.get_agent(conn, log["agent_id"])
+    panel: dict[str, Any] = {
+        "triage_id": log["triage_id"], "criteria_version": log["criteria_version"],
+        "agent_name": agent["name"] if agent is not None else log["agent_id"],
+        "cause_line": _next_step_cause_line(conn, log, candidates.cause, kind_labels),
+    }
+    if log["state"] == "running":
+        return {**panel, "state": "running"}
+    if log["state"] == "failed":
+        return {**panel, "state": "failed", "failed_label": FAILED_LABELS.get(log["failed_code"], "실행 실패"),
+                "failed_message": (log["failed_message"] or "")[:TRIAGE_FAILED_MESSAGE_SHOWN]}
+    result = TriageResult.model_validate_json(log["result_json"])
+    action = result.next_action
+    names = {f"member:{m.member_id}": m.display_name for m in candidates.members}
+    names |= {f"agent:{a.agent_id}": a.name for a in candidates.agents}
+    names |= {f"member:{r.recipient_member_id}": r.recipient_name for r in candidates.responsibilities}
+    panel["proposal"] = {
+        "action_label": next_step.action_label(action),
+        "proceed": PROCEED_LABELS[result.proceed],
+        "confidence": f"{result.confidence:.2f}",
+        "line": next_step.action_line(action, kind_labels=kind_labels, names=names),
+        "purpose": action.purpose if action.type == "internal_request" else None,
+        "question": action.question if action.type == "human" else None,
+        "reasons": [{"label": CRITERION_LABELS[r.criterion], "note": r.note} for r in result.reasons],
+        "missing": list(result.missing_information),
+    }
+    if log["handling"] is None:
+        if not repo.next_step_cause_current(conn, log):
+            return {**panel, "state": "stale"}
+        return {**panel, "state": "proposed", "can_act": team.DELEGATE in allowed}
+    handled_by = _member_names(conn, session_id).get(log["handled_by_member_id"], "이름 없음")
+    return {**panel, "state": log["handling"], "handled_by": handled_by, "handled_at": log["handled_at"]}
 
 
 # 연결 화면의 수집 자격 종류(`github_clients.credential_kind`) — 값은 보이지 않는다

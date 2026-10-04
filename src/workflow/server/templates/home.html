@@ -16,6 +16,10 @@
 {% macro assignee_of(row) -%}
 {% if row.assignee_type %}{{ row.assignee_name }}{% if not row.assignee_active %} (비활성){% endif %}{% else %}<span class="muted">없음</span>{% if row.triage %} <span class="small triage-badge" data-triage="{{ row.triage }}">{{ row.triage }}</span>{% endif %}{% endif %}
 {%- endmacro %}
+{# 결과 뒤 판단 배지 (phase 22) — `다음 단계 판단 중`·`다음 단계 제안`·`사내 요청 대기` #}
+{% macro next_step_of(row) -%}
+{% if row.next_step %}<span class="small next-step-badge" data-next-step="{{ row.next_step }}">{{ row.next_step }}</span>{% endif %}
+{%- endmacro %}
 {% block title %}업무 — Runloom{% endblock %}
 {% block main_class %} main-wide{% endblock %}
 {% block content %}
@@ -72,6 +76,7 @@
       <span class="card-title">{{ row.title }}</span>
       <span class="small">{{ assignee_of(row) }}</span>
       {% if row.next_action %}<span class="small next-action">{{ row.next_action }}</span>{% endif %}
+      {{ next_step_of(row) }}
     </a>
     {% endfor %}
   </section>
@@ -98,7 +103,7 @@
       <td class="nowrap" data-priority="{{ row.priority }}">{{ PRIORITY.get(row.priority, row.priority) }}</td>
       <td class="nowrap">{{ row.kind_label }}</td>
       <td class="nowrap">{{ st.badge(row.status) }}</td>
-      <td class="next-action">{{ row.next_action }}</td>
+      <td class="next-action">{{ row.next_action }}{% if row.next_step %} {{ next_step_of(row) }}{% endif %}</td>
       <td class="nowrap small">{{ row.updated_at|ago(now) }}</td>
     </tr>
     {% endfor %}
