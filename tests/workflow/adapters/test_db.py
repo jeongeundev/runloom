@@ -284,8 +284,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_16():
-    assert SCHEMA_VERSION == 16
+def test_schema_version_is_23():
+    assert SCHEMA_VERSION == 23
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -1108,7 +1108,7 @@ def test_migrates_v4_all_the_way_to_v16(db_path):
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert TABLES <= _table_names(c)
     assert "branch_pushed" in _columns(c, "executions")
     assert c.execute("SELECT COUNT(*) FROM tasks WHERE work_item_id IS NULL").fetchone()[0] == 0
@@ -1886,7 +1886,7 @@ def test_migrates_v4_to_v10_all_the_way_to_v16(db_path, make):
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert TABLES <= _table_names(c)
     for table, columns in V11_COLUMNS.items():
         assert columns <= _columns(c, table), table
@@ -3040,7 +3040,7 @@ def test_migrates_old_versions_to_v15_with_triage_seeds(db_path, make):
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     sessions = [r[0] for r in c.execute("SELECT session_id FROM sessions ORDER BY session_id")]
     assert sessions
     assert [r[0] for r in c.execute("SELECT session_id FROM kinds WHERE kind = 'triage' ORDER BY session_id")] == sessions
@@ -3152,11 +3152,11 @@ def test_migrates_v15_to_v16_adding_an_empty_config_changes_table(db_path):
 
     c = connect(db_path)
     init_schema(c)
-    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)] == [(16,)]
+    assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
     assert _column_lists(c, V15_TABLES) == columns
     assert _dump(c, V15_TABLES) == before  # 행 그대로 — 설정 번호도
     sql_after = [tuple(r) for r in c.execute("SELECT type, name, sql, rootpage FROM sqlite_master ORDER BY name")]
-    assert [r for r in sql_after if "config_changes" not in r[1]] == sql_before  # 기존 표는 재생성하지 않는다
+    assert [r for r in sql_after if "config_changes" not in r[1] and "responsibilities" not in r[1] and "internal_requests" not in r[1] and "internal_request_investigations" not in r[1] and "internal_request_rejections" not in r[1] and "internal_request_questions" not in r[1] and "internal_request_judgments" not in r[1] and "internal_request_resumptions" not in r[1] and r[1] != "ix_internal_request_unanswered"] == sql_before  # 기존 표는 재생성하지 않는다
     assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0  # 과거 변경을 추정해 채우지 않는다
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -3208,7 +3208,7 @@ def test_migrates_old_versions_to_v16_with_empty_config_changes(db_path, make):
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert TABLES <= _table_names(c)
     assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []

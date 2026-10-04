@@ -315,8 +315,8 @@ def test_home_has_no_agent_or_chain_cards(admin, people):
 def test_sidebar_has_new_items_and_no_recent_list(admin, people):
     sidebar = sidebar_of(admin.get("/tasks").text)
     nav = re.findall(r'<a href="([^"]+)"[^>]*>([^<]+)', sidebar[sidebar.index('class="nav"'):])
-    assert [label.strip() for _, label in nav[:5]] == ["업무", "모니터링", "연결", "시작하기", "내 설정"]
-    assert [href for href, _ in nav[:5]] == ["/tasks", "/monitor", "/connect", "/start", "/me"]
+    assert [label.strip() for _, label in nav[:6]] == ["업무", "받은·보낸 요청", "모니터링", "연결", "시작하기", "내 설정"]
+    assert [href for href, _ in nav[:6]] == ["/tasks", "/requests", "/monitor", "/connect", "/start", "/me"]
     assert "최근" not in sidebar and 'href="/tasks/new"' not in sidebar and "data-work-key" not in sidebar
     # 시작하기는 필수 항목(가져올 곳·러너·첫 맡기기)이 남아 보인다 — 숨김 조건은 test_web_start
     assert "관리자 · 관리자" in sidebar and 'action="/logout"' in sidebar

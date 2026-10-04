@@ -615,7 +615,7 @@ def test_v14_copy_upgrades_to_v15_with_triage_seeds(tmp_path):
 
     conn = connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 16
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 23
         assert {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables} == before
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

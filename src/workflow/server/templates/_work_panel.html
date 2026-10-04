@@ -150,6 +150,52 @@
   </section>
   {% endif %}
 
+  <section class="panel-section" data-panel-section="internal-requests">
+    <h3>다른 담당자에게 요청</h3>
+    <p class="small">원래 업무 담당은 유지됩니다. 수락은 접수 확인이며 에이전트를 실행하거나 권한을 부여하지 않습니다.</p>
+    {% for r in panel.internal_requests %}
+    {% if r.rejected_at %}<p style="white-space:pre-wrap">담당 아님 사유: {{ r.rejection_reason }}</p>{% endif %}
+    <p>{{ r.recipient_name }} · {{ r.phase_label }} · {{ r.purpose }}
+      <span class="small">{{ r.created_at|kst }}</span></p>
+    {% for judgment in r.judgments %}
+    <p style="white-space:pre-wrap">판단 쟁점: {{ judgment.issue }}</p>
+    {% if judgment.decision %}<p style="white-space:pre-wrap">{{ '판단 승인' if judgment.decision == 'approve' else '판단 거절' }} · {{ r.judgment_name }}: {{ judgment.reason }}</p>{% endif %}
+    {% endfor %}
+    {% for question in r.questions %}
+    <p style="white-space:pre-wrap">추가 질문: {{ question.text }}</p>
+    {% if question.answered_at %}<p style="white-space:pre-wrap">답변: {{ question.answer }}</p>{% endif %}
+    {% endfor %}
+    {% if r.investigation_task_id %}<p class="small"><a href="/tasks/{{ r.investigation_task_id }}">조사 작업 · {{ r.investigation_status }}</a></p>{% endif %}
+    {% if r.resumption %}
+    <p style="white-space:pre-wrap">업무 재개 기록: {{ r.resumption.text }}</p>
+    <p class="small">요청자가 기록함 · {{ r.resumption.resumed_at|kst }}</p>
+    {% endif %}
+    {% if r.returned_at %}
+    <p style="white-space:pre-wrap">{{ r.returned_summary }}</p>
+    <p class="small"><a href="/tasks/{{ r.investigation_task_id }}/artifacts/{{ r.returned_artifact_id }}">반환한 결과</a> · {{ r.returned_at|kst }} · 원래 업무 완료와 별도</p>
+    {% endif %}
+    {% endfor %}
+    <p><a href="/requests">받은·보낸 요청 보기</a></p>
+    {% if panel.can_edit %}
+    {% if panel.directory_choices %}
+    <form method="post" action="/work/{{ w.work_key }}/internal-requests">
+      <input type="hidden" name="submission_key" value="{{ panel.submission_key }}">
+      <input type="hidden" name="expected_directory_revision" value="{{ panel.directory_revision }}">
+      <div class="field"><label for="request-recipient">담당 범위와 수신자</label>
+        <select id="request-recipient" name="selection" required>
+          <option value="">선택하세요</option>
+          {% for c in panel.directory_choices %}<option value="{{ c.value }}"{% if c.problem %} disabled{% endif %}>{{ c.label }}{% if c.problem %} · {{ c.problem }}{% endif %}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field"><label for="request-purpose">조사 목적과 공유할 맥락</label>
+        <textarea id="request-purpose" name="purpose" rows="3" maxlength="4000" required></textarea>
+      </div>
+      <button class="btn btn-small" type="submit">요청 보내기</button>
+    </form>
+    {% else %}<p class="small">등록된 담당 범위가 없습니다. <a href="/connect?tab=team">팀·담당자</a>에서 등록하세요.</p>{% endif %}
+    {% endif %}
+  </section>
+
   <section class="panel-section" data-panel-section="timeline">
     <h3>진행</h3>
     <ol class="stage-list" data-stages>

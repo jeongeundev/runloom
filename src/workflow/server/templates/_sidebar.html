@@ -6,6 +6,7 @@
   <a class="brand" href="/">Runloom</a>
   <nav class="nav">
     <a href="/tasks"{% if path.startswith('/tasks') or path.startswith('/work') or path.startswith('/chains') %} class="active"{% endif %}>업무{% if turn_count %}<span class="nav-count" data-turn-count>{{ turn_count }}</span>{% endif %}</a>
+    <a href="/requests"{% if path.startswith('/requests') %} class="active"{% endif %}>받은·보낸 요청</a>
     {% if 'view_metrics' in allowed %}<a href="/monitor"{% if path.startswith('/monitor') %} class="active"{% endif %}>모니터링</a>{% endif %}
     <a href="/connect"{% if path.startswith('/connect') or path.startswith('/operator') or path.startswith('/sources') or path.startswith('/team') or path.startswith('/agents') or path.startswith('/kinds') %} class="active"{% endif %}>연결</a>
     {% if show_start %}<a href="/start"{% if path == '/start' %} class="active"{% endif %}>시작하기</a>{% endif %}

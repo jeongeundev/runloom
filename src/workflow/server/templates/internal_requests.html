@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}받은·보낸 요청 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">받은·보낸 요청</div></div>
+<h1>받은·보낸 요청</h1>
+<p>수락한 요청은 등록된 에이전트로 조사하고, 조사 작업에서 결과를 검토·승인한 뒤 원래 업무에 반환합니다.</p>
+{% for r in requests %}
+<div class="card" id="{{ r.request_id }}" data-internal-request="{{ r.request_id }}">
+  <p><a href="/tasks?open={{ r.work_key }}">{{ r.work_key }}</a> · {{ r.system_id }} · {{ r.request_kind }}
+    · <strong>{{ r.phase_label }}</strong></p>
+  <p>{{ r.requester_name }} → {{ r.recipient_name }} · 판단 담당자 {{ r.judgment_name }}</p>
+  <p style="white-space:pre-wrap">{{ r.purpose }}</p>
+  <p class="small">요청 {{ r.created_at|kst }}{% if r.accepted_at %} · 수락 {{ r.accepted_at|kst }}{% endif %}</p>
+  {% if r.problem and not r.returned_at %}<p class="alert">{{ r.problem }}</p>{% endif %}
+  {% if r.investigation_task_id %}
+  <p><a href="/tasks/{{ r.investigation_task_id }}">조사 작업 · {{ r.investigation_status }}</a> · {{ r.investigation_reason }}</p>
+  {% if r.return_reason and not r.returned_at %}<p class="small">{{ r.return_reason }}</p>{% endif %}
+  {% endif %}
+  {% if r.can_investigate %}
+  {% if r.investigation_options %}
+  <form method="post" action="/requests/{{ r.request_id }}/investigation">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <div class="field"><label for="investigation-{{ r.request_id }}">조사 종류와 등록 범위</label>
+      <select id="investigation-{{ r.request_id }}" name="investigation_selection" required>
+        <option value="">선택하세요</option>{% for c in r.investigation_options %}<option value="{{ c.value }}">{{ c.label }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-small" type="submit">조사 시작</button>
+    <p class="small">에이전트 소유자의 승인이 필요하거나 러너가 꺼져 있으면 대기합니다.</p>
+  </form>
+  {% else %}<p class="small">요청에 등록된 로컬 에이전트에서 사용할 읽기 전용 종류와 범위가 없습니다. <a href="/connect?tab=team">등록 정보 확인</a></p>{% endif %}
+  {% endif %}
+  {% if r.can_return %}
+  <form method="post" action="/requests/{{ r.request_id }}/return">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <input type="hidden" name="execution_id" value="{{ r.return_execution_id }}">
+    <button class="btn btn-small" type="submit">검토된 결과 반환</button>
+  </form>
+  {% endif %}
+  {% if r.returned_at %}
+  <p style="white-space:pre-wrap">{{ r.returned_summary }}</p>
+  <p><a href="/tasks/{{ r.investigation_task_id }}/artifacts/{{ r.returned_artifact_id }}">반환한 결과</a> · {{ r.returned_at|kst }}</p>
+  <p class="small">결과 반환은 원래 업무의 완료를 뜻하지 않습니다.</p>
+  {% endif %}
+  {% if r.resumption %}
+  <p style="white-space:pre-wrap">업무 재개 기록: {{ r.resumption.text }}</p>
+  <p class="small">요청자가 기록함 · {{ r.resumption.resumed_at|kst }}</p>
+  {% endif %}
+  {% if r.can_resume %}
+  <form method="post" action="/requests/{{ r.request_id }}/resume">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <label>업무 재개 내용<textarea name="text" required maxlength="4000"></textarea></label>
+    <p class="small">반환된 결과를 받고 재개한 내용을 기록합니다. 원래 업무 상태는 자동 변경되지 않습니다.</p>
+    <button class="btn btn-small" type="submit">업무 재개 기록</button>
+  </form>
+  {% endif %}
+  {% if r.judgment_reason and not r.returned_at %}<p class="alert">{{ r.judgment_reason }}</p>{% endif %}
+  {% for j in r.judgment_views %}
+  <div class="card">
+    <p style="white-space:pre-wrap">판단 쟁점: {{ j.issue }}</p>
+    <p style="white-space:pre-wrap">대상 결과: {{ j.result_summary }}</p>
+    <p><a href="/tasks/{{ r.investigation_task_id }}/artifacts/{{ j.artifact_id }}">판단 근거 결과</a> · {{ j.asked_at|kst }}</p>
+    {% if not j.is_current %}<p class="small">현재 결과·정보와 다른 시점의 판단 기록입니다.</p>{% endif %}
+    {% if j.decision %}
+    <p>판단 {{ '승인' if j.decision == 'approve' else '거절' }} · {{ r.judgment_name }} · {{ j.responded_at|kst }}</p>
+    <p style="white-space:pre-wrap">{{ j.reason }}</p>
+    {% elif j.can_respond %}
+    <form method="post" action="/requests/{{ r.request_id }}/judgments/{{ j.judgment_id }}/respond">
+      <input type="hidden" name="expected_revision" value="{{ j.revision }}">
+      <div class="field"><label for="judgment-decision-{{ j.judgment_id }}">결과 반환 판단</label>
+        <select id="judgment-decision-{{ j.judgment_id }}" name="decision" required>
+          <option value="">선택하세요</option><option value="approve">승인</option><option value="reject">거절</option>
+        </select></div>
+      <div class="field"><label for="judgment-reason-{{ j.judgment_id }}">판단 사유</label>
+        <textarea id="judgment-reason-{{ j.judgment_id }}" name="reason" maxlength="4000" required></textarea></div>
+      <button class="btn btn-small" type="submit">판단 응답</button>
+      <p class="small">결과 반환에 대한 판단입니다. 실행 승인이나 시스템 권한을 부여하지 않습니다.</p>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% if r.can_request_judgment %}
+  <form method="post" action="/requests/{{ r.request_id }}/judgments">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <input type="hidden" name="execution_id" value="{{ r.return_execution_id }}">
+    <input type="hidden" name="submission_key" value="{{ r.judgment_submission_key }}">
+    <div class="field"><label for="judgment-issue-{{ r.request_id }}">판단이 필요한 쟁점</label>
+      <textarea id="judgment-issue-{{ r.request_id }}" name="issue" maxlength="4000" required></textarea></div>
+    <button class="btn btn-small" type="submit">{{ r.judgment_name }}에게 판단 요청</button>
+    <p class="small">판단 요청을 보내면 지정 담당자의 승인 전까지 결과 반환을 기다립니다.</p>
+  </form>
+  {% endif %}
+  {% for q in r.questions %}
+  <div class="card">
+    <p style="white-space:pre-wrap">{{ r.recipient_name }} 질문: {{ q.text }}</p>
+    <p class="small">{{ q.asked_at|kst }}</p>
+    {% if q.answered_at %}
+    <p style="white-space:pre-wrap">{{ r.requester_name }} 답변: {{ q.answer }}</p>
+    <p class="small">{{ q.answered_at|kst }}</p>
+    {% elif r.can_answer %}
+    <form method="post" action="/requests/{{ r.request_id }}/questions/{{ q.question_id }}/answer">
+      <input type="hidden" name="expected_revision" value="{{ q.revision }}">
+      <div class="field"><label for="answer-{{ q.question_id }}">부족한 정보에 답변</label>
+        <textarea id="answer-{{ q.question_id }}" name="text" maxlength="4000" required></textarea></div>
+      <button class="btn btn-small" type="submit">답변 보내기</button>
+    </form>
+    {% else %}<p class="small">요청자의 정보 답변을 기다립니다.</p>{% endif %}
+  </div>
+  {% endfor %}
+  {% if r.can_ask %}
+  <form method="post" action="/requests/{{ r.request_id }}/questions">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <input type="hidden" name="submission_key" value="{{ r.question_submission_key }}">
+    <div class="field"><label for="question-{{ r.request_id }}">추가로 필요한 정보</label>
+      <textarea id="question-{{ r.request_id }}" name="text" maxlength="4000" required></textarea></div>
+    <button class="btn btn-small" type="submit">정보 질문 보내기</button>
+    <p class="small">답변 전에는 새 조사 실행과 결과 반환을 기다립니다. 실행 중인 조사는 중단하지 않습니다.</p>
+  </form>
+  {% endif %}
+  {% if r.rejected_at %}
+  <p style="white-space:pre-wrap">담당 아님 사유: {{ r.rejection_reason }}</p>
+  <p class="small">{{ r.recipient_name }} · {{ r.rejected_at|kst }}</p>
+  {% if r.new_request_id %}<p>재전달 요청 <a href="/requests#{{ r.new_request_id }}">{{ r.new_request_id }}</a></p>{% endif %}
+  {% endif %}
+  {% if r.previous_request_id %}<p style="white-space:pre-wrap">이전 반려 사유: {{ r.previous_rejection_reason }}</p><p>이전 요청 <a href="/tasks?open={{ r.work_key }}">{{ r.previous_request_id }}</a></p>{% endif %}
+  {% if r.can_reject %}
+  <form method="post" action="/requests/{{ r.request_id }}/not-responsible">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <div class="field"><label for="rejection-{{ r.request_id }}">담당 아님 사유</label>
+      <textarea id="rejection-{{ r.request_id }}" name="reason" required maxlength="4000"></textarea></div>
+    <button class="btn btn-small" type="submit">담당 아님</button>
+  </form>
+  {% endif %}
+  {% if r.can_reroute %}
+  {% if r.reroute_options %}
+  <form method="post" action="/requests/{{ r.request_id }}/reroute">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <input type="hidden" name="expected_directory_revision" value="{{ r.directory_revision }}">
+    <div class="field"><label for="reroute-{{ r.request_id }}">새 담당 후보</label>
+      <select id="reroute-{{ r.request_id }}" name="recipient_member_id" required>
+        <option value="">선택하세요</option>{% for c in r.reroute_options %}<option value="{{ c.member_id }}">{{ c.name }}</option>{% endfor %}
+      </select></div>
+    <button class="btn btn-small" type="submit">선택한 담당자에게 재전달</button>
+    <p class="small">원래 요청 목적을 보존하고 새 수신자의 수락을 기다립니다.</p>
+  </form>
+  {% else %}<p class="small">같은 시스템·요청 종류에 다른 담당 후보가 없습니다. <a href="/connect?tab=team">담당 범위 표 확인</a></p>{% endif %}
+  {% endif %}
+  {% if r.can_accept %}
+  <form method="post" action="/requests/{{ r.request_id }}/accept">
+    <input type="hidden" name="expected_revision" value="{{ r.revision }}">
+    <button class="btn btn-small" type="submit">요청 수락</button>
+  </form>
+  {% endif %}
+</div>
+{% else %}<div class="empty">받거나 보낸 요청이 없습니다.</div>{% endfor %}
+{% endblock %}
