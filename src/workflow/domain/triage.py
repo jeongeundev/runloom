@@ -53,10 +53,11 @@ _CUT = "…(생략)"
 
 
 def startable_kinds(specs: Sequence[KindSpec], *, current_kind: str) -> list[KindSpec]:
-    """업무를 시작할 수 있는 종류 — 판단 종류·입력이 필요한 종류 제외, 저장소 범위가 아니면 지금 종류일 때만. 등록부 순서."""
+    """후보 종류 — 판단 종류 제외. 지금 종류는 입력이 있어도 남고(조사 C3), 나머지는 입력 없는 저장소 범위 종류만.
+    등록부 순서."""
     return [s for s in specs
-            if not is_triage_kind(s) and not s.input_kinds
-            and (s.scope_key == "repository_id" or s.kind == current_kind)]
+            if not is_triage_kind(s)
+            and (s.kind == current_kind or (not s.input_kinds and s.scope_key == "repository_id"))]
 
 
 @dataclass(frozen=True)
@@ -74,9 +75,23 @@ class AgentInfo:
 def assemble_candidates(*, specs: Sequence[KindSpec], current_kind: str, current_required: Capability,
                         repository_id: str, members: Sequence[TriageMemberCandidate], agents: Sequence[AgentInfo],
                         predecessors: Sequence[TriagePredecessorCandidate], work_key: str) -> TriageCandidates:
-    """후보 목록. 종류 = `startable_kinds`. Agent = 후보 종류 중 하나라도 요구 능력(지금 종류는 열린 단계의 요구 능력,
-    나머지는 `{scope_key: repository_id}`)과 똑같은 능력이 있는 것. 선행 = 자신 제외. Agent·선행은 `CANDIDATES_MAX` 건까지."""
+    """후보 목록. 종류 = `startable_kinds`(지금 종류에 입력이 있으면 `startable=False`). Agent = `agent_candidates`.
+    선행 = 자신 제외. 선행은 `CANDIDATES_MAX` 건까지."""
     kinds = startable_kinds(specs, current_kind=current_kind)
+    return TriageCandidates(
+        current_kind=current_kind,
+        kinds=[TriageKindCandidate(kind=s.kind, label=s.label, startable=not s.input_kinds) for s in kinds],
+        members=list(members),
+        agents=agent_candidates(kinds, current_kind=current_kind, current_required=current_required,
+                                repository_id=repository_id, agents=agents),
+        predecessors=[p for p in predecessors if p.work_key != work_key][:CANDIDATES_MAX],
+    )
+
+
+def agent_candidates(kinds: Sequence[KindSpec], *, current_kind: str, current_required: Capability,
+                     repository_id: str, agents: Sequence[AgentInfo]) -> list[TriageAgentCandidate]:
+    """후보 종류 중 하나라도 요구 능력(지금 종류는 열린 단계의 요구 능력, 나머지는 `{scope_key: repository_id}`)과
+    똑같은 능력이 있는 Agent. `CANDIDATES_MAX` 건까지. 접수 판단·결과 뒤 판단 공용."""
 
     def required(spec: KindSpec) -> Capability:
         if spec.kind == current_kind:
@@ -92,13 +107,7 @@ def assemble_candidates(*, specs: Sequence[KindSpec], current_kind: str, current
                 agent_id=agent.agent_id, name=agent.name, owner_name=agent.owner_name, online=agent.online,
                 open_work=agent.open_work, kinds=able,
             ))
-    return TriageCandidates(
-        current_kind=current_kind,
-        kinds=[TriageKindCandidate(kind=s.kind, label=s.label) for s in kinds],
-        members=list(members),
-        agents=agent_rows[:CANDIDATES_MAX],
-        predecessors=[p for p in predecessors if p.work_key != work_key][:CANDIDATES_MAX],
-    )
+    return agent_rows[:CANDIDATES_MAX]
 
 
 # ── 로그 근거 ──────────────────────────────────────────────────────────
@@ -156,16 +165,64 @@ def _duration(seconds: int) -> str:
 # ── 요청문·해시 ─────────────────────────────────────────────────────────
 
 
-def _line(text: str) -> str:
+def one_line(text: str) -> str:
     """한 줄로 — 제목·이름의 줄바꿈이 절 머리를 만들지 않게."""
     return " ".join(text.split())
 
 
-def _fenced(text: str) -> str:
+def fenced(text: str) -> str:
     """외부 글을 그대로 담는 펜스 — 글 안의 가장 긴 backtick 줄보다 길게 해서 글이 절을 닫거나 열지 못한다."""
     longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
     fence = "`" * max(3, longest + 1)
     return f"{fence}\n{text}\n{fence}"
+
+
+def clip(text: str, limit: int) -> str:
+    """`limit` 자에서 자르고 생략 표시."""
+    return text[:limit] + _CUT if len(text) > limit else text
+
+
+def work_lines(form_fields: Sequence[tuple[str, str]], request: str) -> list[str]:
+    """업무 양식 칸(빈 칸·무응답 제외)과 요청 원문 — 펜스 안에 그대로(그 안의 `## 후보` 같은 줄이 절 경계를 흐리지 않게)."""
+    lines = []
+    for label, value in form_fields:
+        value = value.strip()
+        if value and value != NO_RESPONSE:
+            lines.append(f"### {label}\n{fenced(clip(value, FORM_VALUE_MAX))}")
+    if request.strip():
+        lines.append(f"### 요청\n{fenced(request.strip())}")
+    return lines
+
+
+def people_lines(candidates: TriageCandidates) -> list[str]:
+    """`### 담당` 아래 줄 — 멤버·Agent 후보."""
+    people = [f"- member:{m.member_id} {one_line(m.display_name)} — 진행 중 {m.open_work}" for m in candidates.members]
+    for a in candidates.agents:
+        parts = ([f"소유 {one_line(a.owner_name)}"] if a.owner_name else []) + [
+            "켜짐" if a.online else "꺼짐", f"진행 중 {a.open_work}", "맡을 수 있는 종류 " + ", ".join(a.kinds)]
+        people.append(f"- agent:{a.agent_id} {one_line(a.name)} — " + " · ".join(parts))
+    return people
+
+
+def evidence_section(evidence: Sequence[KindEvidence]) -> str | None:
+    """`## 로그 근거` 절. 근거가 없으면 None."""
+    if not evidence:
+        return None
+    lines = ["## 로그 근거 (Runloom 계산)"]
+    for ev in evidence:
+        if ev.n == 0:
+            lines.append(f"- {ev.kind} 기록 없음")
+            continue
+        line = f"- {ev.kind} 최근 {ev.n}건: 1회 통과 {ev.first_pass}건 · 재작업 {ev.rework}건"
+        if ev.median_seconds is not None:
+            line += f" · 완료까지 중앙 {_duration(ev.median_seconds)}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def join_sections(sections: Sequence[str]) -> str:
+    """절을 빈 줄로 잇고 줄 끝 공백을 지운다."""
+    return "\n\n".join("\n".join(line.rstrip() for line in s.split("\n")) for s in sections)
 
 
 def compose_triage_request(*, work_key: str, title: str, origin_key: str | None, criteria_version: int,
@@ -173,44 +230,25 @@ def compose_triage_request(*, work_key: str, title: str, origin_key: str | None,
                            candidates: TriageCandidates, evidence: Sequence[KindEvidence]) -> str:
     """`# 판단: <키> <제목>` → 판단 기준 → 업무 → 후보 → 로그 근거 → 답하는 법. 빈 절은 쓰지 않는다.
     업무 양식·요청 원문은 펜스 안에 그대로 넣는다(그 안의 `## 후보` 같은 줄이 절 경계를 흐리지 않게)."""
-    head = f"# 판단: {work_key} {_line(title)}" + (f"\n원본: {_line(origin_key)}" if origin_key else "")
+    head = f"# 판단: {work_key} {one_line(title)}" + (f"\n원본: {one_line(origin_key)}" if origin_key else "")
     sections = [head, f"## 판단 기준 (v{criteria_version})\n{criteria_body.strip()}"]
 
     labels = {k.kind: k.label for k in candidates.kinds}
-    work = [f"## 업무\n지금 종류: {candidates.current_kind} ({labels[candidates.current_kind]})"]
-    for label, value in form_fields:
-        value = value.strip()
-        if value and value != NO_RESPONSE:
-            value = value[:FORM_VALUE_MAX] + _CUT if len(value) > FORM_VALUE_MAX else value
-            work.append(f"### {label}\n{_fenced(value)}")
-    if request.strip():
-        work.append(f"### 요청\n{_fenced(request.strip())}")
+    work = [f"## 업무\n지금 종류: {candidates.current_kind} ({labels[candidates.current_kind]})",
+            *work_lines(form_fields, request)]
     sections.append("\n".join(work))
 
-    cand = ["## 후보", "### 종류", *[f"- {k.kind} — {_line(k.label)}" for k in candidates.kinds]]
-    people = [f"- member:{m.member_id} {_line(m.display_name)} — 진행 중 {m.open_work}" for m in candidates.members]
-    for a in candidates.agents:
-        parts = ([f"소유 {_line(a.owner_name)}"] if a.owner_name else []) + [
-            "켜짐" if a.online else "꺼짐", f"진행 중 {a.open_work}", "맡을 수 있는 종류 " + ", ".join(a.kinds)]
-        people.append(f"- agent:{a.agent_id} {_line(a.name)} — " + " · ".join(parts))
+    cand = ["## 후보", "### 종류", *[f"- {k.kind} — {one_line(k.label)}" for k in candidates.kinds]]
+    people = people_lines(candidates)
     if people:
         cand += ["### 담당", *people]
     if candidates.predecessors:
         cand += ["### 선행 후보",
-                 *[f"- {p.work_key} {_line(p.title)} ({_line(p.status)})" for p in candidates.predecessors]]
+                 *[f"- {p.work_key} {one_line(p.title)} ({one_line(p.status)})" for p in candidates.predecessors]]
     sections.append("\n".join(cand))
 
-    if evidence:
-        lines = ["## 로그 근거 (Runloom 계산)"]
-        for ev in evidence:
-            if ev.n == 0:
-                lines.append(f"- {ev.kind} 기록 없음")
-                continue
-            line = f"- {ev.kind} 최근 {ev.n}건: 1회 통과 {ev.first_pass}건 · 재작업 {ev.rework}건"
-            if ev.median_seconds is not None:
-                line += f" · 완료까지 중앙 {_duration(ev.median_seconds)}"
-            lines.append(line)
-        sections.append("\n".join(lines))
+    if (logs := evidence_section(evidence)) is not None:
+        sections.append(logs)
 
     sections.append("\n".join([
         "## 답하는 법",
@@ -218,7 +256,7 @@ def compose_triage_request(*, work_key: str, title: str, origin_key: str | None,
         "- 담당은 type(member|agent)과 id 로 쓴다.",
         "- 저장소 코드는 현재 폴더에서 읽기만 한다.",
     ]))
-    return "\n\n".join("\n".join(line.rstrip() for line in s.split("\n")) for s in sections)
+    return join_sections(sections)
 
 
 def input_sha256(text: str) -> str:
@@ -237,7 +275,9 @@ class TriageVerdict:
 
 def validate(result: TriageResult, candidates: TriageCandidates, *, execution_id: str, task_id: str,
              base_commit: str) -> TriageVerdict:
-    """위에서부터 첫 실패. 통과면 `TriageVerdict(True, None, "")`."""
+    """위에서부터 첫 실패. 통과면 `TriageVerdict(True, None, "")`. 결과 뒤 판단은 `next_step.validate_next_step`."""
+    if result.next_action is not None:
+        return TriageVerdict(False, "next_action_forbidden", "접수 판단 결과에 next_action 이 있음")
     if result.execution_id != execution_id or result.task_id != task_id:
         return TriageVerdict(False, "ids_mismatch",
                              f"요청 {execution_id}/{task_id} ≠ 결과 {result.execution_id}/{result.task_id}")

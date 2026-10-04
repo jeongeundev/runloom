@@ -3093,3 +3093,380 @@ B는 실제 테스트 기록·diff·보고서를 제출한다. 연결 프로그�
 ### 사내 요청의 업무 재개 기록 (2026-10-04)
 
 반환 완료 요청의 실제 요청자가 재개 내용을 기록한다. `internal_request_resumptions`(스키마 v23)에 반환 실행·산출물 참조와 작성자·시각·내용을 요청별 한 번 보존한다. 요청 revision과 원래 업무 상태는 변경하지 않는다. 동일 내용 재시도는 기존 기록, 내용 변경은 충돌이다. 자세한 흐름은 [제품 문서](product/INTERNAL_REQUEST_RESUMPTION.md)를 따른다.
+
+## 결과 뒤 판단 — phase 22
+
+[ADR-0027](adr/0027-next-step-triage.md) 을 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 22 README](../phases/22-next-step/README.md). step 0 설계(2026-10-04) — 아래 이름·표·경로·시그니처·문구는 step 1~10 이 그대로 쓴다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** "판단 — phase 19" 는 이 절이 갱신한 부분만 바뀐다(접수 판단의 동작·자동 시작 자격 건수·판단 품질 지표는 그대로). README 와 달라진 조사 사실은 ADR-0027 "코드 조사로 README 와 달라진 사실" 10가지 — 특히 C3 는 `TriageCandidates` 검증 오류로 먼저 터진다, 규칙 없음은 새 `hold_code` `no_rule` 로 가른다, 담당표 revision 은 워크스페이스 설정 번호 전체라 항목 비교로 바꾼다, 다음 단계 후보는 입력 없는 종류만이고 재작업은 검토 [수정 요청] 경로, `mode`·`next_action` 은 null 이면 직렬화에서 빠진다.
+
+구현 상태(2026-10-05, step 10): step 1~9 가 아래 이름·시그니처대로 구현됐고, step 10 e2e(`tests/e2e/test_next_step_cycle.py` — 실제 러너 프로세스 + 가짜 `claude`)가 RUN-26 장면(접수 판단 → 수정 `needs_information` → 사내 요청 제안 → [제안대로] → 받는 사람 알림·수락·조사·검토·반환 → `request_returned` 재작업 제안 → [제안대로] → 검토 승인 → PR 병합 → 완료), [무시] → 원래 사람 요청, 규칙 없는 결과 → 새 업무, 옛 러너 → 지금 동작, v23 사본 → v24 를 통과했다. 제품 코드는 step 10 에서 바꾸지 않았다. 실연동(실제 Claude·GitHub)은 아직 없다 — 목록은 [CURRENT_HANDOFF](CURRENT_HANDOFF.md).
+
+### 한 줄 요약
+
+결과가 규칙 밖(①)·`needs_information`(②)·사내 요청 반환(③)이면 워커가 그 업무의 판단 Agent 에 **결과 뒤 판단**(`TriageTarget.mode = "next_step"`)을 건다. 판단은 시작 때 고정한 후보(다음 단계 종류·멤버·에이전트·담당 범위) 안에서 다음 행동 하나(`NextAction` — 다음 단계·재작업 / 새 업무 / 사내 요청 / 사람 확인)를 제안하고, 사람이 업무 패널 [제안대로] 를 눌러 확정한다. 판단을 시작할 수 없거나 실패·무시하면 지금 동작(② 는 사람 요청)으로 돌아간다. 사내 요청은 받는 사람에게 알림이 가고, 반환되면 원래 업무에서 결과 뒤 판단이 다시 돈다. 스키마 v24, 러너 능력 `after_result_triage`(러너 재설치).
+
+### 흐름
+
+```
+[워커 tick] … _check_generic_results → _judge_triage → _autostart_triaged → _advance_cycle → _spawn_successors
+            → _start_waiting_stages → _triage_after_results → _triage_new_work → _reflect_failures → …
+
+_advance_cycle → _cycle_followups → decide_followup
+  ├─ hold_code "no_rule"(①)                       ┐ next_step.disposition(그 원인의 판단 행, 시작 조건 이유, 원인 나이)
+  └─ request_human · fix/review_needs_information(②) ┘   queue → self._next_step_queue 에 담는다(이번 tick)
+                                                       hold  → 아무것도 안 함(판단 중·제안 중·처리됨)
+                                                       fallback → ② 원래 사람 요청 / ① 없음(지금 그대로)
+
+_triage_after_results (워크스페이스마다, 원인 시각 오래된 순)
+  원인 = _next_step_queue(①② 업무 순환) + repo.generic_results_awaiting_next_step(① 사용자 정의) + repo.returned_requests_awaiting_next_step(③)
+  running 판단 있음? ─ 예 ─▶ 0건
+  ①·③ 은 여기서 처분 — fallback 이면 ③(판단이 만든 요청)만 next_step_human 사람 요청
+  queue 인 원인 → 시작 조건 이유 없음 · 판단 Agent 쉬는 중 아님 · 러너 빔 → 첫 원인 1건
+    → next_step_runs.request_next_step(cause)
+         후보(다음 단계 종류·멤버·에이전트·담당 범위·원인) · 이전 결과 · 사람 응답 · 반환 · 기준 → compose_next_step_request
+         repo.start_triage(cause=…, cause_execution_id, cause_request_id, target mode next_step)
+           (한 트랜잭션: 같은 업무의 처리 없는 결과 뒤 판단 → superseded + 판단 단계 + 실행 + 판단 로그 running + 업무 상태)
+
+[러너] claim(capabilities ∋ after_result_triage) → TriageTarget{mode: next_step} → 깨끗한 체크아웃 → NEXT_STEP_OUTPUT_SCHEMA
+       → TriageResult(next_action, proposed_kind·assignee null, predecessors [], inspected_commit = HEAD)
+
+_judge_triage → cause != intake → next_step.validate_next_step(저장된 후보) → record_triage_proposed + next_step_proposed 알림
+                                                                          / record_triage_failed(triage_invalid)
+
+[사람] 패널 "다음 단계 제안" [제안대로] POST /work/{key}/next-step/accept → work_actions.accept_next_step
+         stage → (원인 Task 완료 + 새 단계) → 맡기기/배정 · stage rework → stage_runs.request_changes
+         new_work → (원인 Task 완료 + 새 업무 spawned_from) → 맡기기/배정
+         internal_request → internal_request_store(created_by_triage_id) → internal_request_received 알림
+         human → next_step_human 사람 요청 + human_request 알림
+       [무시] POST /work/{key}/next-step/dismiss → dismissed → 다음 tick 처분 fallback
+
+[받는 사람] /requests 수락 → 조사 → 검토 → 반환(record_return) ─▶ ③ request_returned 판단(원래 업무)
+```
+
+tick 순서(phase 19 그대로에 하나 추가): `_sync_github` → `_sync_jira` → `_mark_offline` → `_observe` → `_check_code_results` → `_check_review_results` → `_check_generic_results` → `_judge_triage` → `_autostart_triaged` → `_advance_cycle` → `_spawn_successors` → `_start_waiting_stages` → **`_triage_after_results`** → `_triage_new_work` → `_reflect_failures` → `_deliver_callbacks` → `_deliver_pull_requests` → `_deliver_github` → `_deliver_jira` → `_deliver_notifications` → `_refresh_work_statuses`. `_next_step_queue` 는 `tick()` 머리에서 비운다. `_triage_after_results` 가 `_triage_new_work` 앞이라 결과 뒤 판단이 워크스페이스의 판단 자리(1건)를 먼저 차지하고, `_start_waiting_stages` 뒤라 수정·검토 착수가 러너를 먼저 차지한다. `_judge_triage` 는 원인을 가리지 않고 `running` 행을 모두 본다(판정기만 원인으로 고른다).
+
+### 원인과 시작 지점 (step 6·8)
+
+| 원인 | `cause` | 시작 지점(함수·조건) | 원인 실행 | 원인 시각 | `fallback` |
+|---|---|---|---|---|---|
+| ① 규칙 없는 결과 — 업무 순환 | `after_result` | `Worker._apply_followup` 에서 `decision.action == "none" and decision.hold_code == "no_rule"`(`task_followup._after_fix` 의 규칙 없음에만 붙는다) | 그 결과 실행 | `task_verdicts.decided_at` | 없음(지금 그대로 — `확인 필요 · 검토 대기`) |
+| ① 규칙 없는 결과 — 사용자 정의 종류 | `after_result` | `repo.generic_results_awaiting_next_step(conn, *, since)`: 실행 `result_ready`·`released_at IS NULL`, 종류 `output_kind = 'generic_result'`, 판정 `outcome = 'passed'`, Task `finished_at IS NULL`, `NOT EXISTS (tasks s WHERE s.predecessor_task_id = t.task_id)`, `NOT EXISTS (internal_request_investigations i WHERE i.task_id = t.task_id)`, 그 실행에 `after_result` 판단 행 없음, `decided_at >= since` | 그 결과 실행 | `task_verdicts.decided_at` | 없음 |
+| ② `needs_information` | `after_result` | `Worker._apply_followup` 에서 `decision.action == "request_human" and decision.request_code in NEEDS_INFORMATION_CODES` | 그 결과 실행 | `task_verdicts.decided_at` | 원래 사람 요청 — `_request_human(target, code, reason, cause_key)` + `_write_status(target, "확인 필요", reason)`(지금 코드 그대로) |
+| ③ 사내 요청 반환 | `request_returned` | `repo.returned_requests_awaiting_next_step(conn, *, since)`: `returned_at` 있음, 반려 없음, 그 요청에 `request_returned` 판단 행 없음, (`returned_at >= since` 또는 `created_by_triage_id` 있음) — 원인 실행은 아래 규칙으로 찾고 `result_ready`·해제 안 됨·Task 끝나지 않음일 때만 | `created_by_triage_id` 의 `cause_execution_id`, 없으면 `repo.open_stage(원래 업무)` 의 활성 실행 | `returned_at` | 판단이 만든 요청이면 원인 Task 에 `next_step_human`(질문 `사내 요청 결과가 돌아왔습니다 — 다음 단계를 정해 주세요: <반환 요약 첫 줄 120자>`, `cause_key = "next_step_human:request:<request_id>"`), 사람이 만든 요청이면 없음 |
+
+`since` = `now − NEXT_STEP_WAIT_SECONDS`. 업무 순환 ①② 는 원인 나이를 `disposition` 이 본다(조회 조건이 아니라 — `_cycle_followups` 가 끝나지 않은 Task 를 매 tick 다시 보므로 상한을 넘으면 그때 `fallback`). ③ 의 `created_by_triage_id` 조건은 판단이 만든 요청이 상한을 넘겨도 대체 경로를 열게 하려는 것이다(그 요청에 `next_step_human` 이 이미 있으면 `cause_key` 로 멱등).
+
+처분 `next_step.disposition(*, state: str | None, handling: str | None, route_reason: str | None, cause_age_seconds: float) -> Literal["queue", "hold", "fallback"]`:
+
+| 그 원인의 판단 행 | 시작 조건 이유 | 원인 나이 | 처분 |
+|---|---|---|---|
+| `running` | — | — | `hold` |
+| `proposed` · 처리 없음 또는 `accepted` | — | — | `hold` |
+| `proposed` · `dismissed`, `failed`, `superseded` | — | — | `fallback` |
+| 없음 | 있음 | — | `fallback` |
+| 없음 | 없음 | `> NEXT_STEP_WAIT_SECONDS` | `fallback` |
+| 없음 | 없음 | 그 밖 | `queue` |
+
+"그 원인의 판단 행" = `repo.next_step_for_cause(conn, *, execution_id=…)`(`after_result`) 또는 `(…, request_id=…)`(`request_returned`). 업무 순환 ①② 에서 `queue` 면 `self._next_step_queue.append(NextStepCause(...))`, 상태 쓰기 없음(판단이 돌면 업무 사실이 이유를 바꾼다).
+
+### 시작 조건 (step 5)
+
+`server/next_step_runs.py`(새 모듈 — `repo`·`triage_runs`·`task_cycle`·`views`·`owner_approval`·`internal_request_store`·`responsibility_store` 를 쓰고 `work_actions`·`worker` 는 import 하지 않는다):
+
+```python
+@dataclass(frozen=True)
+class NextStepCause:
+    cause: Literal["after_result", "request_returned"]
+    session_id: str
+    work_item_id: str
+    task_id: str                 # 원인 Task
+    execution_id: str            # 원인 실행
+    request_id: str | None       # request_returned 만
+    at: str                      # 원인 시각(판정 decided_at 또는 returned_at)
+    fallback: Literal["none", "original_request", "next_step_human"]  # 대체 경로 종류(위 표)
+
+def next_step_route(conn: Connection, cause: NextStepCause, *, now: str, settings: Settings) -> TriageRoute: ...
+def build_next_step_candidates(conn: Connection, cause: NextStepCause, route: TriageRoute, *, now: str,
+                               settings: Settings) -> TriageCandidates: ...
+def request_next_step(conn: Connection, settings: Settings, *, cause: NextStepCause, now: str) -> TriageStart: ...
+```
+
+`triage_runs.triage_route` 의 판단 Agent 검사(`no_repository` 다음부터 `no_base_commit` 까지)를 `triage_runs._agent_route(conn, session_id, stage, *, now, settings, need_after_result: bool) -> TriageRoute` 로 나눠 두 경로가 같이 쓴다(접수 판단은 `need_after_result=False` — 동작 그대로). `next_step_route` = `_agent_route(원인 Task, need_after_result=True)` — 업무 조건(`not_new`)·맡길 단계(`no_stage`)·업무의 `running` 은 보지 않는다(워크스페이스의 `running` 은 `_triage_after_results` 가, 업무의 `running` 은 `start_triage` 의 `TriageRunning` 이 막는다 — 둘 다 `queue` 로 남아 다음 tick).
+
+| 조건(위에서부터 첫 해당 — `_agent_route`) | 이유 문구(`triage_runs.REASONS`) |
+|---|---|
+| `task_cycle.origin(원인 Task).config` None | `연결 저장소가 없는 업무는 판단하지 않습니다` |
+| 원본 `state == "closed"` | `원본이 닫힌 업무는 판단하지 않습니다` |
+| `triage_agent_id` None | `판단 에이전트 없음 — 저장소 카드에서 고르세요` |
+| 저장소 id None | `이 저장소를 등록한 러너 없음` |
+| Agent 없음·워크스페이스 밖·로컬 아님·러너 없음 | `판단 에이전트가 이 워크스페이스에 없습니다` |
+| `code.triage` 능력 없음 | `판단 에이전트에 이 저장소 판단 능력(code.triage) 없음` |
+| 정책 `owner_approval` | `판단 에이전트의 맡기기 정책이 승인 필요 — '바로 실행'으로 바꾸세요` |
+| 러너 꺼짐 | `판단 에이전트의 러너 꺼짐` |
+| `supported_kinds_json` 에 판단 종류 없음 | `러너 업데이트 필요 — 판단 미지원` |
+| (`need_after_result`) `capabilities_json` 에 `after_result_triage` 없음(NULL 포함) — 새 키 `runner_no_next_step` | `러너 업데이트 필요 — 결과 뒤 판단 미지원` |
+| `base_commit` NULL | `러너의 기준 커밋 보고 전 — 잠시 뒤 다시` |
+
+`request_next_step`: 이유가 있으면 `TriageStart(False, None, reason)`. 없으면 후보·이전 결과·사람 응답·반환·근거·기준 → `compose_next_step_request` → `ExecutionRequest`(접수 판단과 같고 `target = {"local_registration_id", "base_commit": agent.base_commit, "mode": "next_step"}`) → `repo.start_triage(..., trigger="auto", member_id=None, cause=cause.cause, cause_execution_id=cause.execution_id, cause_request_id=cause.request_id)`. 판단 단계 Task 값은 접수 판단과 같고 `status_reason` 만 `다음 단계 판단 접수 대기`. `TriageRunning`·`NextStepExists`(원인 UNIQUE 경합) → `TriageStart(False, None, "판단 중")`.
+
+**체크아웃 커밋 = 판단 Agent 의 `base_commit`**(접수 판단과 같다 — origin 기본 브랜치 끝). 원인 결과 커밋을 쓰지 않는 이유: 그 커밋은 수정 Agent 러너(다른 기기일 수 있음)에만 있고 push 되지 않았을 수 있어 판단 러너에서 `commit_missing` 이 나며(러너는 fetch 하지 않는다), `needs_information`·사용자 정의 종류 결과에는 커밋이 없다. 이전 결과는 요청문 `## 이전 결과` 의 글로 넘긴다.
+
+### 계약 (step 1)
+
+`contracts/v1.py`(모두 `_Contract` — `extra="forbid"`, strict):
+
+| 이름 | 칸·규칙 |
+|---|---|
+| 상수 | `TRIAGE_CAUSES = ("intake", "after_result", "request_returned")`, `TRIAGE_MODE_NEXT_STEP = "next_step"`, `RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE = "after_result_triage"`(step 2 가 `RUNNER_CAPABILITIES` 에 더한다), `RESPONSIBILITY_CANDIDATES_MAX = 50`, `NEXT_ACTION_TYPES = ("stage", "new_work", "internal_request", "human")`, `NEXT_ACTION_TITLE_MAX = 120`, `NEXT_ACTION_PURPOSE_MAX = 2000`, `NEXT_ACTION_QUESTION_MAX = 500` |
+| `TriageTarget` | `_OmitUnknownMeasure` 를 이어받는다. `local_registration_id`, `base_commit`, **`mode: Literal["next_step"] \| None = None`**, `_MEASURE_FIELDS = ("mode",)` — None(접수 판단)이면 직렬화에서 빠진다 |
+| `NextStage` | `type: Literal["stage"]`, `kind: KindId`, `assignee: TriageAssignee`, `rework: bool` |
+| `NextNewWork` | `type: Literal["new_work"]`, `kind: KindId`, `title: Annotated[str, Field(min_length=1, max_length=120)]`, `assignee: TriageAssignee` |
+| `NextInternalRequest` | `type: Literal["internal_request"]`, `system_id: Identifier`, `request_kind: Identifier`, `recipient_member_id: NonEmptyStr`, `purpose: Annotated[str, Field(min_length=1, max_length=2000)]` |
+| `NextHuman` | `type: Literal["human"]`, `question: Annotated[str, Field(min_length=1, max_length=500)]` |
+| `NextAction` | `Annotated[NextStage \| NextNewWork \| NextInternalRequest \| NextHuman, Field(discriminator="type")]`. `title`·`purpose`·`question` 이 공백만이면 422 |
+| `TriageResult` | `_OmitUnknownMeasure` 를 이어받는다. 지금 칸 + **`next_action: NextAction \| None = None`**, `_MEASURE_FIELDS = ("next_action",)`. 검증 추가: `next_action` 있음 → `proposed_kind is None and assignee is None and predecessors == []`(아니면 "next_action 이 있으면 proposed_kind·assignee·predecessors 는 비웁니다"), `ready` 의 `proposed_kind`·`assignee` 필수는 `next_action is None` 일 때만, `proceed == "unsuitable" and next_action is not None` → `next_action.type == "human"`. `ready` 의 `missing_information` 빈 배열·`needs_check` 의 1개 이상은 두 모드 공통 |
+| `TriageKindCandidate` | 지금 칸 + `startable: bool = True` |
+| `TriageResponsibilityCandidate` | `system_id: Identifier`, `request_kind: Identifier`, `recipient_member_id: NonEmptyStr`, `recipient_name: NonEmptyStr`, `judgment_member_id: NonEmptyStr`, `agent_id: NonEmptyStr \| None` |
+| `TriageCause` | `cause: Literal["after_result", "request_returned"]`, `execution_id: NonEmptyStr`, `task_id: NonEmptyStr`, `kind: KindId`, `agent_id: NonEmptyStr`, `outcome: Outcome`, `request_id: NonEmptyStr \| None = None`. 검증: `(cause == "request_returned") == (request_id is not None)` |
+| `TriageCandidates` | 지금 칸 + `responsibilities: Annotated[list[TriageResponsibilityCandidate], Field(max_length=50)] = []`, `cause: TriageCause \| None = None`. 검증 추가: 담당 범위 키 `(system_id, request_kind, recipient_member_id)` 중복 422, `cause` 가 있으면 `cause.kind == current_kind`. 저장된 v23 이전 후보 JSON(새 칸 없음)이 그대로 읽힌다 |
+
+CONTRACT 17절에 17.4 `ExecutionRequest` — 결과 뒤 판단(`mode: next_step`), 17.5 `TriageResult` — `next_action` 네 모양(`stage` 재작업·`new_work`·`internal_request`·`human`), 17.6 `TriageCandidates` — `cause`·`responsibilities` 예시를 `json` 펜스로 더한다(fixture 수를 세는 테스트를 새 수로 고친다). 17.1~17.3 의 기존 예시는 바이트 그대로(직렬화에 `mode`·`next_action` 이 나오지 않는다 — 테스트로 지킨다).
+
+### 러너 (step 2)
+
+- `contracts.v1.RUNNER_CAPABILITIES = (RUNNER_CAPABILITY_VERIFY_ONLY, RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE)` — `connector/client.claim` 이 그대로 보고한다(코드 변경 없음, 테스트로 확인).
+- `connector/local_tool.NEXT_STEP_OUTPUT_SCHEMA` — 모델이 채우는 칸만: `proceed`·`confidence`·`next_action`·`reasons`·`missing_information`(모두 required, `additionalProperties: false`). `next_action` = `anyOf` 네 객체(각각 `type` 은 값 하나의 `enum`, 칸 모두 required, `additionalProperties: false`, `assignee` 는 `TRIAGE_OUTPUT_SCHEMA` 의 객체 모양). 개수·길이·확신도 범위는 적지 않는다(Codex strict 호환 — `TriageResult` 검증에 맡긴다).
+- `_run_triage`: `target.mode == TRIAGE_MODE_NEXT_STEP` 이면 스키마 `NEXT_STEP_OUTPUT_SCHEMA`, 결과 조립 `{**모델 칸, "proposed_kind": None, "assignee": None, "predecessors": [], contract_version, execution_id, task_id, inspected_commit: HEAD}` → `TriageResult` 검증(실패 `result_invalid`). 체크아웃·읽기 전용 검사·실패 코드는 접수 판단과 같다. 프롬프트는 `build_triage_prompt` 그대로(요청문의 `## 답하는 법` 이 모드별이다).
+- 가짜 도구(e2e step 10)는 `--json-schema` 의 properties 에 `next_action` 이 있으면 결과 뒤 판단으로 가른다.
+
+### 스키마 v24 (step 3)
+
+`adapters/db.py` `SCHEMA_VERSION` 23 → 24. 원본 v23 스키마는 `tests/workflow/adapters/fixtures/schema_v23.sql` 로 고정한다. 빈 DB 도 `_SCHEMA` 끝의 `_V24_TABLES` 를 거쳐 만든다(v13·v15 와 같은 방식 — 재생성 문장 포함). 알림 사건 상수는 v8·v13 선례대로 이름을 나눈다: `_V13_NOTIFICATION_EVENTS`(지금 `NOTIFICATION_EVENTS` 값 그대로 — `_V13_TABLES` 가 이것을 쓴다), `NOTIFICATION_EVENTS = (*_V13_NOTIFICATION_EVENTS, "internal_request_received", "next_step_proposed")`. 원인 값 `TRIAGE_CAUSES` 는 `contracts.v1` 것을 쓴다.
+
+| 대상 | 변경 | 제약·의미 |
+|---|---|---|
+| `triage_logs`(재생성 `triage_logs_v24`) | v15 칸 그대로(같은 순서) 뒤에 `cause TEXT NOT NULL DEFAULT 'intake' CHECK (cause IN ('intake', 'after_result', 'request_returned'))`, `cause_execution_id TEXT REFERENCES executions(execution_id)`, `cause_request_id TEXT REFERENCES internal_requests(request_id)`. v15 CHECK 중 `CHECK (handling IS NULL OR handling = 'dismissed' OR final_assignee_type IS NOT NULL)` 를 `CHECK (cause != 'intake' OR handling IS NULL OR handling = 'dismissed' OR final_assignee_type IS NOT NULL)` 로 바꾸고 나머지는 그대로. 새 CHECK: `CHECK ((cause = 'intake') = (cause_execution_id IS NULL))`, `CHECK ((cause = 'request_returned') = (cause_request_id IS NOT NULL))`, `CHECK (cause = 'intake' OR trigger = 'auto')`, `CHECK (cause = 'intake' OR handling IS NULL OR handling IN ('accepted', 'dismissed'))`, `CHECK (cause = 'intake' OR (final_assignee_type IS NULL AND final_kind IS NULL))` | 기존 행은 `INSERT … SELECT` 로 옮기며 `cause = 'intake'`(기본값)·원인 참조 NULL. 인덱스: `ux_triage_logs_running`·`ix_triage_logs_work`·`ix_triage_logs_session` 그대로 다시 만들고, 새 `ux_triage_logs_after_result ON triage_logs(cause_execution_id) WHERE cause = 'after_result'`(UNIQUE — 결과 하나에 결과 뒤 판단 하나), `ux_triage_logs_request_returned ON triage_logs(cause_request_id) WHERE cause = 'request_returned'`(UNIQUE — 반환 하나에 하나) |
+| `notifications`(재생성 `notifications_v24`) | v13 칸·순서 그대로, `event` CHECK 만 `NOTIFICATION_EVENTS`(v24) | 행·id 그대로 옮긴다. `ix_notifications_recipient` 다시 |
+| `internal_requests` | `ALTER TABLE internal_requests ADD COLUMN created_by_triage_id TEXT REFERENCES triage_logs(triage_id)` | NULL = 사람이 만든 요청. `CREATE UNIQUE INDEX ux_internal_requests_triage ON internal_requests(created_by_triage_id) WHERE created_by_triage_id IS NOT NULL` — 판단 하나에 요청 하나 |
+| `human_requests` | 변경 없음 — `code` 에 CHECK 가 없다. 새 값 `next_step_human` | `human_api._INFORMATION_CODES` 에 더한다(`resume` 에 답 글 필수). 허용 응답은 기본값 `resume`·`close` |
+
+`triage_logs` 를 참조하는 표는 v24 전에 없다(새 `internal_requests.created_by_triage_id` 만 — 재생성 뒤 ALTER). `notifications` 를 참조하는 표는 없다.
+
+**v23 → v24 마이그레이션** `_migrate_23_to_24`(호출자 트랜잭션 안, FK 끈 올리기 경로 그대로): ① `_V24_TABLES`(`triage_logs` 재생성 → 인덱스 → `notifications` 재생성 → 인덱스 → `internal_requests` ALTER → 인덱스) ② `PRAGMA foreign_key_check` 가 비어 있지 않으면 `RuntimeError` ③ 버전 24. 데이터는 그 밖에 바꾸지 않는다 — 업무·단계 상태 재계산 없음, 과거 결과·반환에 판단을 걸지 않는다(원인 나이 상한이 막는다). 기존 올리기 경로(4~23 → 24)는 `steps` 끝에 `_migrate_23_to_24`. `server/backup.py` 복원은 v4~v23 백업을 24 로 올린다(같은 `init_schema`). 테스트: v23 fixture 사본에 접수 판단 행(`proposed`·`accepted`·`failed`)·알림 행·사내 요청을 넣고 올린 뒤 행·id 보존, `cause = 'intake'`, 새 CHECK·UNIQUE 동작, `foreign_keys` 다시 1.
+
+### 판단 로그를 읽는 기존 코드 — 원인 거르기 (step 5)
+
+| 함수 | 바뀌는 것 |
+|---|---|
+| `repo.latest_triage` | `AND cause = 'intake'` — 접수 판단의 최신 행(이름 그대로, 쓰는 곳 `accept_triage`·`triage_panel`·`_record_triage_handling`·`dismiss_triage` 가 그대로 맞다) |
+| `repo.work_item_facts` 의 `triage` | `AND cause = 'intake'`. 새 칸 `next_step` 은 아래 "업무 상태" |
+| `repo.list_work_rows` 배지 | 판단 배지(`WorkRow.triage`)는 `cause = 'intake'` 행만, 새 `WorkRow.next_step`(step 9) |
+| `repo.autostart_candidates` | 두 조회 모두 `cause = 'intake'`(결과 뒤 판단은 자동 시작하지 않는다 — D3) |
+| `repo.triage_handled_counts` | `AND cause = 'intake'`(자격 건수에 섞지 않는다 — D3) |
+| `repo.auto_triage_works` | `NOT EXISTS (… l.cause = 'intake' …)` |
+| `repo.start_triage` | 새 키워드 `cause: str = "intake"`, `cause_execution_id: str \| None = None`, `cause_request_id: str \| None = None`. `superseded` 대상 = 같은 업무·처리 없음·`proposed`/`failed` 이고 **같은 계열**(`intake` 면 `cause = 'intake'`, 아니면 `cause != 'intake'`). 결과 뒤 판단은 트랜잭션 안에서 원인 UNIQUE 를 먼저 보고 `adapters.errors.NextStepExists` 를 올린다(마지막 방어는 부분 UNIQUE) |
+| `repo.dismiss_triage`·`repo._record_triage_handling` | `latest_triage` 를 쓰므로 자동으로 접수 판단만 |
+| `repo.list_triage_facts`(모니터링) | 두 조회 모두 `cause = 'intake'`(결과 뒤 판단 품질은 이번 범위 밖) |
+| `views.triage_panel` | `latest_triage` 를 쓰므로 자동 |
+| `repo._close_triage_stage` | 단계 마감 이유: 접수 판단은 `triage_reason`(그대로), 결과 뒤 판단은 `next_step.next_step_reason` 의 문구(`다음 단계 제안 · …`·`다음 단계 판단 실패 · …`) |
+
+그대로 두는 곳(원인 구분 없이 맞다): `ux_triage_logs_running`(업무마다 도는 판단 하나), `repo.has_running_triage`(워크스페이스 1건), `repo.running_triages`(판정), `triage_runs.triage_route` 의 업무 `running` 검사, `record_triage_proposed`·`record_triage_failed`.
+
+### 결과 뒤 판단 repo (step 5)
+
+| 이름 | 시그니처·규칙 |
+|---|---|
+| 원인 행 | `next_step_for_cause(conn: Connection, *, execution_id: str \| None = None, request_id: str \| None = None) -> Row \| None` — 둘 중 하나. `after_result` 는 `cause_execution_id`, `request_returned` 는 `cause_request_id` |
+| 업무의 최신 | `latest_next_step(conn: Connection, work_item_id: str) -> Row \| None` — `cause != 'intake'` 최신 행 |
+| 원인이 그대로 | `next_step_cause_current(conn: Connection, log: Row) -> bool` — 원인 실행 `status = 'result_ready' AND released_at IS NULL`, 원인 Task `finished_at IS NULL`, `request_returned` 면 요청 `returned_at` 있음·반려 없음 |
+| ① 사용자 정의 조회 | `generic_results_awaiting_next_step(conn: Connection, *, since: str) -> list[Row]` — 칸: `execution_id`, `task_id`, `work_item_id`, `session_id`, `decided_at`(위 표 조건) |
+| ③ 조회 | `returned_requests_awaiting_next_step(conn: Connection, *, since: str) -> list[Row]` — 칸: `request_id`, `session_id`, `work_item_id`, `returned_at`, `created_by_triage_id`, `cause_execution_id`(판단이 만든 요청이면 그 판단의 것, 아니면 NULL — 호출자가 맡길 단계의 활성 실행으로 찾는다) |
+| 원인 Task 자료 | `cause_prior(conn: Connection, store: ArtifactStore, execution_id: str) -> PriorResult` — 종류·라벨·outcome(결과 봉투)·판정·`summary`·검토 결과의 `missing_information`. 봉투를 못 읽으면 `summary = "(결과를 읽을 수 없음)"` |
+| 처리 | `record_next_step_handling(conn: Connection, triage_id: str, *, handling: Literal["accepted", "dismissed"], member_id: str, now: str) -> bool` — 자체 BEGIN 없음, 조건부 UPDATE(`state = 'proposed' AND handling IS NULL AND cause != 'intake'`) |
+| 무시 | `dismiss_next_step(conn: Connection, session_id: str, work_item_id: str, triage_id: str, *, member_id: str, now: str) -> bool` — 한 트랜잭션, 최신 결과 뒤 판단·`proposed`·처리 없음일 때만, 업무 상태 재계산 |
+| 적용 쓰기 | `apply_next_stage(conn, *, triage_id, member_id, cause_task_id, cause_execution_id, task: dict, reason: str, now) -> None`(한 트랜잭션: 처리 `accepted` → 원인 Task `_finish_task_row(status="완료", reason)` → `_insert_task_row(task, work_item_id=원인 업무)` → 업무 상태 재계산. 처리가 이미 있으면 `NextStepHandled`), `apply_next_work(conn, *, triage_id, member_id, cause_task_id, cause_execution_id, spec: FollowupTaskSpec, task: dict, now) -> str`(같은 모양, 새 업무는 `_create_followup` — `create_followup_once` 의 트랜잭션 안쪽을 나눈 함수, 반환은 새 업무 id), `apply_next_human(conn, *, triage_id, member_id, cause_task_id, question, now) -> str`(처리 + `_create_human_request(code="next_step_human", cause_key=f"next_step_human:{triage_id}")`, 반환은 request_id), `mark_next_step_accepted(conn, triage_id, *, member_id, now) -> None`(재작업용 — 한 트랜잭션, 처리만) |
+| 오류 | `adapters/errors.py`: `NextStepExists(cause_key)`, `NextStepHandled(triage_id)` |
+
+### 요청문·후보·판정 순수 규칙 (step 4)
+
+`domain/next_step.py`(새 모듈 — DB·HTTP·프로세스·시각 import 없음, `now` 는 인자). 접수 판단의 `domain/triage.py` 에서 쓰는 것: `AgentInfo`, `KindEvidence`, `TriageVerdict`, `_fenced`·`_line`(공개 이름 `fenced`·`one_line` 으로 옮기고 `triage.py` 는 그것을 쓴다).
+
+| 이름 | 시그니처·규칙 |
+|---|---|
+| 상수 | `NEXT_STEP_WAIT_SECONDS = 3600`, `NEEDS_INFORMATION_CODES = ("fix_needs_information", "review_needs_information")`, `NEXT_STEP_HUMAN_CODE = "next_step_human"`, `PRIOR_TEXT_MAX = 2000`, `RESPONSE_TEXT_MAX = 1000`, `RESPONSES_MAX = 3`, `ACTION_LABELS = {"stage": "다음 단계", "rework": "재작업", "new_work": "새 업무", "internal_request": "사내 요청", "human": "사람 확인"}`, `STAGE_DONE_REASON = "다음 단계로 넘김"`, `WORK_DONE_REASON = "새 업무로 넘김"` |
+| 종류 후보 | `next_step_kinds(specs: Sequence[KindSpec], *, current_kind: str) -> list[TriageKindCandidate]` — 등록부 순서로 `kind == current_kind` 또는 `startable(spec)`, `startable` 표시 = `not is_triage_kind(s) and not s.input_kinds and s.scope_key == "repository_id"` |
+| 접수 판단 C3 | `triage.startable_kinds` 를 `not is_triage_kind(s) and (s.kind == current_kind or (not s.input_kinds and s.scope_key == "repository_id"))` 로 고치고, `assemble_candidates` 가 `startable` 표시를 채운다(지금 종류에 입력이 있으면 False). 접수 판단 판정·요청문 문구는 그대로 |
+| 후보 조립 | `assemble_next_step_candidates(*, specs, cause: TriageCause, current_required: Capability, repository_id: str, members: Sequence[TriageMemberCandidate], agents: Sequence[AgentInfo], responsibilities: Sequence[TriageResponsibilityCandidate]) -> TriageCandidates` — `current_kind = cause.kind`, 종류 = `next_step_kinds`, 에이전트 규칙은 `assemble_candidates` 와 같다, `predecessors = []`, 담당 범위 `RESPONSIBILITY_CANDIDATES_MAX` 건까지 |
+| 재료 | `@dataclass(frozen=True) PriorResult(kind: str, kind_label: str, outcome: str, verdict: Literal["passed", "failed"], summary: str, missing_information: tuple[str, ...] = ())`, `ResponseNote(at: str, member_name: str \| None, text: str)`, `ReturnedRequest(system_id: str, request_kind: str, recipient_name: str, purpose: str, summary: str, returned_at: str)` |
+| 요청문 | `compose_next_step_request(*, work_key: str, title: str, origin_key: str \| None, criteria_version: int, criteria_body: str, form_fields: Sequence[tuple[str, str]], request: str, candidates: TriageCandidates, evidence: Sequence[KindEvidence], prior: PriorResult, responses: Sequence[ResponseNote], returned: ReturnedRequest \| None) -> str` — 아래 모양 |
+| 판정 | `validate_next_step(result: TriageResult, candidates: TriageCandidates, *, execution_id: str, task_id: str, base_commit: str) -> TriageVerdict` — 아래 표 순서로 첫 실패. 접수 판단 `triage.validate` 는 맨 앞에 `next_action_forbidden`(`result.next_action is not None`)만 더한다 |
+| 처분 | `disposition(*, state: str \| None, handling: str \| None, route_reason: str \| None, cause_age_seconds: float) -> Literal["queue", "hold", "fallback"]`(위 표) |
+| 행동 이름 | `action_label(action: NextAction) -> str` — `ACTION_LABELS`(`stage` 이고 `rework` 면 `재작업`) |
+| 행동 한 줄 | `action_line(action: NextAction, *, kind_labels: Mapping[str, str], names: Mapping[str, str]) -> str` — 패널·알림 공용. `stage`: `<종류 라벨> → <담당 이름>`(재작업 `재작업 → <에이전트 이름>`), `new_work`: `새 업무 「<title>」 · <종류 라벨> → <담당 이름>`, `internal_request`: `사내 요청 · <system_id>/<request_kind> → <받는 사람 이름>`, `human`: `사람 확인 — <question 첫 줄 80자>`. `names` 키는 `member:<id>`·`agent:<id>`, 없으면 id 그대로 |
+| 새 단계 글 | `stage_request_text(*, work_request: str, prior: PriorResult, result: TriageResult) -> str` — `<원래 업무 요청>\n\n## 이전 단계 결과 (<종류 라벨> · <outcome>)\n<summary>\n\n## 다음 단계 판단 근거\n- <항목 이름> — <note>…`(`summary` 는 `PRIOR_TEXT_MAX` 에서 자름) |
+| 재작업 글 | `rework_note(result: TriageResult, *, returned: ReturnedRequest \| None) -> str` — `다음 단계 판단: 재작업\n- <항목 이름> — <note>…` + 모자란 정보 줄 + (③) `\n\n반환된 사내 요청 (<system_id>/<request_kind>, <받은 사람>):\n<반환 요약>`. `review_comment` 의 `comment` 로 쓴다 |
+| 업무 사실 | `@dataclass(frozen=True) NextStepFact(state: Literal["running", "proposed", "request_waiting"], action_label: str \| None, recipient_name: str \| None)`, `next_step_status(fact: NextStepFact) -> tuple[str, str]` — `running` → `("에이전트 작업 중", "다음 단계 판단 중")`, `proposed` → `("내 차례", f"다음 단계 제안 · {action_label}")`, `request_waiting` → `("대기", f"사내 요청 대기 · {recipient_name}")` |
+| 단계 마감 이유 | `next_step_reason(*, state: str, action_label: str \| None, failed_code: str \| None) -> str` — `proposed` → `다음 단계 제안 · <행동 이름>`, `failed` → `다음 단계 판단 실패 · <triage.FAILED_LABELS 또는 실행 실패>` |
+
+`validate_next_step` 하위 사유(→ 판단 로그 `failed`, 코드 `triage_invalid`, `failed_message` = `<사유> — <설명>`):
+
+| 코드 | 조건 |
+|---|---|
+| `ids_mismatch` | `execution_id`·`task_id` ≠ 요청 |
+| `commit_mismatch` | `inspected_commit` ≠ `target.base_commit` |
+| `next_action_missing` | `next_action is None` |
+| `kind_not_candidate` | `stage`·`new_work` 의 `kind` 가 `candidates.kinds` 밖 |
+| `rework_mismatch` | `stage.rework` 인데 `kind != current_kind` 또는 `assignee != ("agent", cause.agent_id)` |
+| `kind_not_startable` | `stage` 이고 `not rework` 인데 `kind == current_kind` 또는 그 후보 `startable=False`, `new_work` 의 후보 `startable=False` |
+| `assignee_not_candidate` | `stage`·`new_work` 담당이 `members`·`agents` 밖 |
+| `assignee_cannot_take_kind` | 에이전트 후보의 `kinds` 에 그 `kind` 없음 |
+| `responsibility_not_candidate` | `internal_request` 의 `(system_id, request_kind, recipient_member_id)` 가 `responsibilities` 밖 |
+
+`human` 은 내용 검사가 없다(길이·공백은 계약). 실패 이름은 접수 판단의 `FAILED_LABELS` 그대로(`triage_invalid` → `후보 밖 제안`).
+
+요청문 모양(빈 절은 쓰지 않는다, 줄 끝 공백 없음, 외부 글은 `fenced`):
+
+````
+# 다음 단계 판단: RUN-26 kube-proxy 가 LXC 에서 conntrack 설정 실패
+원본: SHOP-26
+
+## 판단 기준 (v3)
+<기준 본문>
+
+## 업무
+지금 단계: bug_fix (버그 수정)
+### 재현 절차
+```
+…(업무 양식 칸 — FORM_LABELS 순)
+```
+### 요청
+```
+<업무 요청 원문>
+```
+
+## 이전 결과
+- 단계: bug_fix (버그 수정) · 결과 needs_information · 판정 통과
+### 결과 요약
+```
+<결과 봉투 summary — 2000자에서 자름>
+```
+### 모자란 정보
+- <검토 결과 missing_information 한 줄씩(있을 때)>
+
+## 사람 응답
+- 2026-10-04T05:12:00Z 김지은
+```
+<응답 글 — 1000자에서 자름>
+```
+
+## 반환된 사내 요청
+- kube_proxy/investigation → 박OO · 반환 2026-10-04T07:30:00Z
+### 요청 목적
+```
+<목적>
+```
+### 반환 요약
+```
+<반환 요약>
+```
+
+## 후보
+### 다음 단계 종류
+- bug_fix — 버그 수정 (지금 단계 — 재작업만)
+- docs — 문서 정리
+### 담당
+- member:mem-1a2b 김지은 — 진행 중 2
+- agent:agt-9f3c macbook-fix — 소유 김지은 · 켜짐 · 진행 중 1 · 맡을 수 있는 종류 bug_fix, docs
+### 사내 요청 담당 범위
+- kube_proxy/investigation → member:mem-7d1e 박OO (판단 담당 member:mem-7d1e · 조사 에이전트 있음)
+
+## 로그 근거 (Runloom 계산)
+- bug_fix 최근 12건: 1회 통과 7건 · 재작업 4건 · 완료까지 중앙 6시간 10분
+
+## 답하는 법
+- next_action 하나만 고른다: stage(같은 업무의 다음 단계 — rework=true 면 지금 단계 재작업) · new_work(새 업무) · internal_request(위 담당 범위의 사람에게 사내 요청) · human(사람에게 확인).
+- 업무를 완료·종료하는 행동은 없다. 끝났다고 보면 human 으로 사람에게 확인을 묻는다.
+- kind·assignee·system_id·request_kind·recipient_member_id 는 위 후보 안의 값만 쓴다. 후보 밖 값은 판단 실패로 기록된다.
+- 재작업(rework=true)은 지금 단계 종류와 지금 단계의 에이전트(agent:agt-9f3c)로만 쓴다. 새 단계·새 업무에는 '지금 단계 — 재작업만' 종류를 쓰지 않는다.
+- 담당은 type(member|agent)과 id 로 쓴다.
+- 저장소 코드는 현재 폴더에서 읽기만 한다.
+````
+
+`지금 단계 — 재작업만` 표시는 지금 종류에 붙고(그 종류가 `startable` 이어도 새 단계로는 같은 종류를 쓰지 않는다), `startable=False` 인 다른 종류는 `kinds` 에 들지 않는다. `## 사람 응답` 은 원인 Task 의 `human_responses`(최근 `RESPONSES_MAX` 개, 오래된 순), `## 반환된 사내 요청` 은 ③ 만.
+
+### 행동별 적용 — [제안대로] (step 7)
+
+`work_actions` (step 7):
+
+```python
+NEXT_STEP_STALE = "다음 단계 제안이 이미 처리됐거나 원인이 바뀌었습니다."
+def accept_next_step(conn, store, settings, *, session_id: str, work_item_id: str, triage_id: str, member_id: str,
+                     now: str, secrets: SecretStore | None = None) -> None: ...
+def dismiss_next_step(conn, *, session_id: str, work_item_id: str, triage_id: str, member_id: str, now: str) -> None: ...
+```
+
+공통 검사(위에서부터): 업무 없음 404 `not_found`, 끝난 업무 409 `work_closed`(`_own_open_work`), 행이 그 업무의 `latest_next_step` 이 아님·`proposed` 아님·처리 있음·`repo.next_step_cause_current` 거짓 → 409 `next_step_stale`. `TriageResult.model_validate_json(result_json).next_action` 으로 가른다.
+
+| 행동 | 쓰기(한 트랜잭션) | 그 뒤 | 원인 Task | 업무 |
+|---|---|---|---|---|
+| `stage`, `rework=false` | `repo.apply_next_stage`: 처리 `accepted` · 원인 Task `완료`(`STAGE_DONE_REASON`, 잠금 해제) · 새 단계 Task(`task_id` `task-` + 12 hex, `title` `<종류 라벨>: <업무 제목>`, `request` = `stage_request_text`, `kind` = 제안, `required_capability` `{spec.capability_code, {spec.scope_key: 저장소 id}}`, `selection_mode` `manual`, `chosen_agent_id` NULL, `run_mode` = 원인 Task 값, `completion_mode` `review`, `criteria` = 종류 템플릿, `predecessor_task_id` NULL, `target` `{}`, `status` `대기`, `status_reason` `담당 대기`) | 담당 에이전트 → `hand_to_agent(member_id=누른 멤버)`(선택·`target_for`·소유자 승인·착수 대기 그대로), 멤버 → `repo.assign_work_item(by_member_id=누른 멤버)` | `완료` | 새 단계가 맡길 단계(`open_stage`) |
+| `stage`, `rework=true` | `repo.mark_next_step_accepted`(처리만) | `stage_runs.request_changes(conn, store, settings, 원인 Task, session_id=…, comment=next_step.rework_note(...), now=…)` — 웹 `task_review` 의 `request_changes` 본문을 옮긴 함수(`review_comment` 산출물 저장 → 이전 입력 + 이전 결과 + 지적 → 원인 실행 해제 → `start_execution`, 코드 수정 target 은 `base_commit` = 이전 결과 커밋 → 상태 갱신 `review_decision="request_changes"`). 웹 `task_review` 는 이것을 부른다(동작 그대로) | 새 실행(같은 Task) | 그대로 |
+| `new_work` | `repo.apply_next_work`: 처리 `accepted` · 원인 Task `완료`(`WORK_DONE_REASON`) · `_create_followup(FollowupTaskSpec(session_id, kind=제안, cause_execution_id=원인 실행, predecessor_task_id=원인 Task, rules_revision=지금 설정 번호, placement="new_work"), task(title = 제안 title, request = stage_request_text, 그 밖은 위 `stage` 와 같음), work_item_id=원인 업무, placement="new_work")` — 새 업무·첫 단계·`spawned_from`·맡긴 사람 복사·Jira 후속 이슈 생성 대기·`followup_links` | 새 업무에 `hand_to_agent`/`assign_work_item` | `완료` | 원인 업무는 남은 단계로 재계산, 새 업무 생김 |
+| `internal_request` | `internal_request_store.create_from_next_step(conn, session_id, member_id, work_item_id, body, *, triage_id, now)`: `BEGIN IMMEDIATE` → 담당표 항목 비교(판단 시점 후보 `(system_id, request_kind, recipient_member_id)` 의 `judgment_member_id`·`agent_id` = 지금 항목, 없거나 다르면 409 `stale_directory` "담당 범위 표가 바뀌었습니다 — [무시] 뒤 직접 요청하세요.") → `_create(..., expected_directory_revision=지금 설정 번호, submission_key=f"next_step:{triage_id}", purpose=제안 purpose, created_by_triage_id=triage_id)`(활성 아님 422 `invalid_recipient` 그대로) → `repo.record_next_step_handling(accepted)` → COMMIT | `worker.enqueue_request_notification(conn, settings, secrets, request_id=…, now=…)` | 그대로(`확인 필요`, 잠금 유지) | `대기` · `사내 요청 대기 · <받는 사람>` |
+| `human` | `repo.apply_next_human`: 처리 `accepted` · `next_step_human` 사람 요청(`question` = 제안, `cause_key = f"next_step_human:{triage_id}"`) · 업무 상태 재계산 | `enqueue_event_notification(event="human_request", task_id=원인 Task, dedupe_key=f"human_request:{request_id}", detail=question)` | 그대로 | `내 차례` · `사람 요청 — <question 첫 줄>` |
+
+- 제안 종류가 등록부에 없으면(지워짐) 409 `kind_unavailable` "제안한 종류가 더 이상 등록돼 있지 않습니다." — 쓰기 전에 본다. 저장소 id 는 `work_actions._repository_id(원인 Task)`, None 이면 409 `next_step_stale`.
+- 그 뒤 단계(맡기기·재작업 착수)의 오류는 기존 그대로 지난다 — 422 `invalid_field`(맡을 수 없는 에이전트), 409 `execution_conflict`·`request_incomplete`·`investigation_blocked`·`no_open_stage`. 처리는 이미 `accepted` 다(다시 누를 수 없다 — 사람이 패널 담당 select·단계 검토로 잇는다).
+- `dismiss_next_step`: 업무 없음 404, `repo.dismiss_next_step` 거짓이면 409 `next_step_stale`.
+- 재작업 실행의 `start_key` 는 `request_changes` 그대로(`request_start_key`) — 지표의 재작업(`rework:` 접두)으로 세지 않는다(사람의 검토 [수정 요청] 과 같다).
+
+### 경로 (step 7·9)
+
+| 경로 | 권한 | 폼 | 동작 | 오류 |
+|---|---|---|---|---|
+| `POST /work/{key}/next-step/accept` | `team.DELEGATE` | `triage_id`(+ 목록 상태 숨은 입력 — `/work/{key}/triage/accept` 와 같다) | `work_actions.accept_next_step` → 303 `/tasks?open=<key>` | 위 표 |
+| `POST /work/{key}/next-step/dismiss` | `team.DELEGATE` | `triage_id` | `work_actions.dismiss_next_step` → 303 | 404, 409 `next_step_stale` |
+| 사내 요청 생성·재전달(기존) — 웹 `POST /work/{key}/internal-requests`·`POST /requests/{request_id}/reroute`, API `internal_request_api` 의 `store.create`·`store.reroute` 두 경로 | 기존 | 기존 | 트랜잭션 뒤 돌려받은 `request_id` 로 `enqueue_request_notification`(step 8 — 재전송은 같은 `request_id` 라 `dedupe_key` 로 한 번) | 기존 |
+
+POST 는 모두 기존 Origin 검사를 거친다. 응답·로그에 비밀값을 싣지 않는다.
+
+### 알림 (step 8)
+
+`domain/notification._HEADLINES` 에 `"internal_request_received": "요청 받음"`, `"next_step_proposed": "다음 단계 제안"`.
+
+| 사건 | 언제 | 받는 사람 | `task_id` | `dedupe_key` | 문구(공용 경로는 끝에 ` → 이름`) | 링크 |
+|---|---|---|---|---|---|---|
+| `internal_request_received` | 사내 요청 행이 생김 — 사람 생성(웹 `POST /work/{key}/internal-requests`·API `POST /work-items/{id}/internal-requests`)·재전달(웹·API `reroute` — 알림 대상은 새로 생긴 요청 `new_request_id`)·[제안대로] `internal_request`. 같은 접수 키 재전송은 같은 `request_id` 라 `dedupe_key` 가 막는다 | 요청의 `recipient_member_id` 한 명 | NULL | `internal_request_received:<request_id>` | `[Runloom] 요청 받음 — <원래 업무 제목>: <요청자 이름> · <system_id>/<request_kind> · <목적 첫 줄 80자>` | `<public_url>/requests` |
+| `next_step_proposed` | 결과 뒤 판단이 `proposed` 가 됨(`_judge_triage`) | `turn_recipients_of(원래 업무)` | 원인 Task | `next_step_proposed:<triage_id>` | `[Runloom] 다음 단계 제안 — <업무 제목>: <action_line> · 확신도 0.82` | 업무 주소(`work_path`) |
+
+`worker.enqueue_request_notification(conn: Connection, settings: Settings, secrets: SecretStore, *, request_id: str, now: str) -> None` — `enqueue_event_notification` 과 같은 경로 규칙(공용 웹훅 한 행 + 개인 웹훅을 저장한 받는 사람 행, 둘 다 없으면 쌓지 않음), 제목 = 원래 업무 제목, `task_id` NULL, payload `{"title", "task_url": <public_url>/requests, "pr_url": None}`. 웹(요청 생성·재전달)과 `work_actions.accept_next_step` 이 트랜잭션 뒤 부른다(비밀 저장소가 없으면 아무것도 하지 않는다). `next_step_proposed` 는 `Worker._notify(conn, "next_step_proposed", 원인 Task, f"next_step_proposed:{triage_id}", detail=…)`.
+
+### 업무 상태·화면 (step 5·9)
+
+- `domain/work_status.WorkItemFacts.next_step: NextStepFact | None = None`. `repo.work_item_facts` 가 `latest_next_step` 으로 채운다: 원인이 그대로(`next_step_cause_current`)이고 `running` → `running`, `proposed`·처리 없음 → `proposed`(`action_label` = `json_extract(result_json, '$.next_action')` 로 `next_step.action_label`), `accepted`·`next_action.type == "internal_request"`·`internal_requests.created_by_triage_id = triage_id` 인 요청이 반환·반려 전 → `request_waiting`(`recipient_name` = 받는 사람 표시 이름). 그 밖 None.
+- `work_status`: `if facts.direct_member_name …` 다음, `check = …확인 필요…` 앞에 `if facts.next_step is not None: return WorkStatus(*next_step_status(facts.next_step))`. 열린 사람 요청·PR 이 먼저다(대체 경로 요청이 열리면 그것이 이유다).
+- 업무 이유 문구: `다음 단계 판단 중` · `다음 단계 제안 · 다음 단계|재작업|새 업무|사내 요청|사람 확인` · `사내 요청 대기 · <받는 사람>`.
+- 목록: `WorkRow.next_step: str | None = None` — 같은 사실을 묶음 조회 한 번으로(업무 수와 무관한 쿼리 수): `다음 단계 판단 중`·`다음 단계 제안`·`사내 요청 대기`. 배지 `data-next-step`. 기존 `WorkRow.next_action`(지금 할 일 문구)과 다르다 — 이름을 섞지 않는다.
+- 업무 패널 `views.next_step_panel(conn, session_id, work: Row, *, allowed: frozenset[str], now: str, settings: Settings) -> dict | None` → `panel.next_step`, 절 `data-panel-section="next_step"` 머리 `다음 단계 제안`, 판단 절(`triage`) 뒤·지금 할 일(`now`) 앞. 최신 결과 뒤 판단 행 하나만 보고, 없으면 그리지 않는다.
+  - 판단 중: `다음 단계 판단 중 · <판단 에이전트 이름> · 기준 v<n> · 원인 <원인 문구>`.
+  - 제안(처리 없음·원인 그대로): 머리 `<행동 이름> · <진행 여부 이름> · 확신도 0.82 · 기준 v<n>`, `원인 <원인 문구>`, 행동 한 줄(`action_line`), `internal_request` 면 목적 전문(`white-space: pre-wrap`), `human` 이면 질문 전문, 근거 목록 `<항목 이름> — <note>`, 모자란 정보 목록. 버튼 [제안대로]·[무시](`DELEGATE` 일 때).
+  - 지난 원인(처리 없음인데 원인이 바뀜): `<details>` 접힘 `다음 단계 제안(지난 결과)` — 버튼 없음.
+  - 처리됨: `accepted` → `제안대로 처리 · <행동 이름> · <누가> · <언제>`, `dismissed` → `다음 단계 제안 무시함 · <누가> · <언제>`(펼치면 같은 내용).
+  - 실패: `다음 단계 판단 실패 · <실패 이름> · <failed_message 앞 120자>`.
+  - 원인 문구: `after_result` → `<종류 라벨> 결과 <outcome>`(예 `버그 수정 결과 needs_information`), `request_returned` → `사내 요청 반환 · <system_id>/<request_kind>`.
+- `/requests`(받은·보낸 요청): `created_by_triage_id` 가 있으면 `판단 제안으로 생성` 작은 표시(`data-created-by-triage`). `internal_request_store.public` 은 `r.*` 를 돌려주므로 칸이 따라온다.
+- 템플릿은 외부 문자열(업무 제목·근거·목적·질문·반환 요약·멤버·에이전트 이름)을 자동 이스케이프로만(`|safe` 금지). 금지 표현: `자동 배정`, `AI 판정`, `완료 제안`.
+
+### 이름·시그니처 고정 (step 1~9)
+
+| 대상 | 위치(step) | 이름·시그니처 |
+|---|---|---|
+| 계약 | `contracts/v1.py`·`docs/CONTRACT.md` 17.4~17.6(1) | 위 "계약" 표 — `TRIAGE_CAUSES`, `TRIAGE_MODE_NEXT_STEP`, `RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE`, `RESPONSIBILITY_CANDIDATES_MAX`, `NEXT_ACTION_TYPES`, `NEXT_ACTION_*_MAX`, `TriageTarget.mode`, `NextStage`·`NextNewWork`·`NextInternalRequest`·`NextHuman`·`NextAction`, `TriageResult.next_action`, `TriageKindCandidate.startable`, `TriageResponsibilityCandidate`, `TriageCause`, `TriageCandidates.responsibilities`·`cause` |
+| 러너 | `contracts/v1.py`·`connector/local_tool.py`(2) | `RUNNER_CAPABILITIES` 에 `after_result_triage`, `NEXT_STEP_OUTPUT_SCHEMA`, `_run_triage` 의 `mode` 분기 |
+| 스키마 | `adapters/db.py`(3) | `SCHEMA_VERSION = 24`, `_V24_TABLES`, `_migrate_23_to_24`, `_V13_NOTIFICATION_EVENTS`, `NOTIFICATION_EVENTS`(v24), fixture `tests/workflow/adapters/fixtures/schema_v23.sql` |
+| 순수 규칙 | `domain/next_step.py`·`domain/triage.py`·`domain/task_followup.py`(4) | 위 "요청문·후보·판정" 표, `triage.startable_kinds` C3 고침·`next_action_forbidden`·`fenced`/`one_line` 공개, `task_followup._after_fix` 규칙 없음 `hold_code="no_rule"` |
+| repo·시작 | `adapters/repo.py`·`adapters/errors.py`·`server/next_step_runs.py`·`server/triage_runs.py`·`domain/work_status.py`(5) | "원인 거르기" 표, "결과 뒤 판단 repo" 표(`apply_*`·`mark_next_step_accepted` 는 step 7, `returned_requests_awaiting_next_step` 은 step 8), `NextStepExists`·`NextStepHandled`, `NextStepCause`, `next_step_route`, `build_next_step_candidates`, `request_next_step`, `triage_runs._agent_route`·`REASONS["runner_no_next_step"]`, `WorkItemFacts.next_step`·`work_status` 의 자리, `cause_prior` |
+| 워커 | `server/worker.py`(6) | `Worker._next_step_queue: list[NextStepCause]`(tick 머리에서 비움), `Worker._triage_after_results(conn, report)`, `Worker._next_step_or_human(conn, execution, task, decision, report) -> None`(② 처분), `Worker._queue_after_result(conn, execution, task) -> None`(① 업무 순환 처분), `_judge_triage` 의 판정기 선택(`cause`), `TickReport.next_step_started`·`next_step_fallbacks` |
+| 적용 | `server/work_actions.py`·`server/stage_runs.py`·`server/web.py`·`adapters/repo.py`·`adapters/internal_request_store.py`(7) | `accept_next_step`, `dismiss_next_step`, `NEXT_STEP_STALE`, `stage_runs.request_changes(conn, store, settings, task: Row, *, session_id: str, comment: str, now: str) -> str`(반환 execution_id — 웹 `task_review` 가 부른다), repo `apply_next_stage`·`apply_next_work`·`apply_next_human`·`mark_next_step_accepted`·`_create_followup`, `internal_request_store.create_from_next_step`(`_create` 에 `created_by_triage_id: str \| None = None`), 경로 2개, `human_api._INFORMATION_CODES` 에 `next_step_human` |
+| 알림·반환 | `server/worker.py`·`domain/notification.py`·`server/web.py`·`adapters/repo.py`(8) | `enqueue_request_notification`, `_HEADLINES` 두 값, `next_step_proposed` 알림 자리, ③ 원인 조회 `returned_requests_awaiting_next_step`·`_triage_after_results` 의 ③·대체 경로 `next_step_human:request:<id>` |
+| 화면 | `server/views.py`·`templates/_work_panel.html`·`templates/home.html`·`templates/internal_requests.html`·`domain/work_list.py`·`adapters/repo.py`(9) | `views.next_step_panel`, `panel.next_step`, `data-panel-section="next_step"`, `WorkRow.next_step`, `data-next-step`, `판단 제안으로 생성`(`data-created-by-triage`) |
+| e2e·문서 | `tests/e2e/test_next_step_cycle.py`·`docs/SELFHOST.md`·`docs/VERIFICATION_LOG.md`·`docs/CURRENT_HANDOFF.md`(10) | 실제 러너 프로세스 + 가짜 claude 로 RUN-26 장면(수정 `needs_information` → 사내 요청 제안 → [제안대로] → 알림 → 수락·조사·검토·반환 → ③ → 재작업 제안 → [제안대로] → 새 실행), 옛 러너(결과 뒤 판단 미지원 → 원래 사람 요청), v23 사본 마이그레이션, SELFHOST 업그레이드 v24(러너 재설치) |

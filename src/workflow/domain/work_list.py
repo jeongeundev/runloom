@@ -66,6 +66,9 @@ class WorkRow:
     repository: str | None = None  # GitHub 원본의 `owner/name`, 그 밖은 None
     source_key_short: str | None = None  # `work_keys.short_source_key(source_key)`
     triage: str | None = None  # 최신 판단 로그 — `판단 중`·`판단 제안`(처리 전)·`판단 실패`, 그 밖 None (phase 19)
+    # 최신 결과 뒤 판단 — `다음 단계 판단 중`·`다음 단계 제안`(원인 그대로·처리 전)·`사내 요청 대기`, 그 밖 None (phase 22).
+    # `next_action`(지금 할 일 문구)과 다르다
+    next_step: str | None = None
 
 
 @dataclass(frozen=True)

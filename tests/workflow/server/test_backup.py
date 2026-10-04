@@ -661,7 +661,7 @@ def test_selfhost_v10_copy_upgrades_to_v11_needs_first_setup_and_backups_round_t
                           "field_mappings": v10_counts["field_mappings"] + 1, **JIRA_EMPTY,  # + jira 기본 매핑
                           "kinds": v10_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY, "responsibilities": 0, "internal_requests": 0, "internal_request_investigations": 0, "internal_request_rejections": 0, "internal_request_questions": 0, "internal_request_judgments": 0, "internal_request_resumptions": 0}  # + triage 종류·기준 v1
     facts = _v11_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 23
+    assert facts["version"] == SCHEMA_VERSION == 24
     assert facts["needs_first_setup"] is True  # 첫 접속에서 .env 토큰으로 관리자 계정을 만든다
     assert facts["admin"] == (V10_ADMIN, "관리자", "admin", None, None, None)
     assert (facts["runner_owner"], facts["code_issuer"]) == (None, None)  # 기존 러너 = 관리자 관리
@@ -837,7 +837,7 @@ def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backup
                           "field_mappings": v11_counts["field_mappings"] + 1, **JIRA_EMPTY,  # + jira 기본 매핑
                           "kinds": v11_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY, "responsibilities": 0, "internal_requests": 0, "internal_request_investigations": 0, "internal_request_rejections": 0, "internal_request_questions": 0, "internal_request_judgments": 0, "internal_request_resumptions": 0}  # + triage 종류·기준 v1
     facts = _v12_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 23
+    assert facts["version"] == SCHEMA_VERSION == 24
     assert facts["stored"] == [(n, status, reason) for n, status, reason, *_ in V11_WORKS]
     assert facts["recomputed"] == facts["stored"]
     assert facts["direct"] == {(None, None, None)}
@@ -893,7 +893,7 @@ def test_v13_copy_upgrades_to_v14_and_jira_rows_round_trip_without_token(tmp_pat
     capsys.readouterr()
     conn = connect(old / "central.sqlite")
     init_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 23
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
     assert [tuple(r) for r in conn.execute("SELECT source_type, source_value, runloom_value FROM field_mappings")] == [
         ("jira", "*", "bug_fix")]
     conn.execute("INSERT INTO jira_connections (session_id, site_url, cloud_id, api_base, email, account_id,"
@@ -947,7 +947,7 @@ def test_v14_backup_restores_and_upgrades_to_v15(tmp_path, capsys):
     capsys.readouterr()
     conn = connect(old / "central.sqlite")
     init_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 23
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
     assert [r[0] for r in conn.execute("SELECT kind FROM kinds WHERE session_id = 's1' ORDER BY kind")] == [
         "bug_fix", "triage"]
     assert [tuple(r) for r in conn.execute("SELECT session_id, version, body FROM triage_criteria")] == [
@@ -995,7 +995,7 @@ def test_v15_backup_restores_and_upgrades_to_v16(tmp_path, capsys):
     capsys.readouterr()
     conn = connect(old / "central.sqlite")
     init_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 23
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
     assert conn.execute("SELECT config_revision FROM sessions WHERE session_id = 's1'").fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0
     conn.execute("INSERT INTO config_changes (session_id, revision, area, action, subject, by_member_id, occurred_at)"
@@ -1013,5 +1013,91 @@ def test_v15_backup_restores_and_upgrades_to_v16(tmp_path, capsys):
         assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(r) for r in conn.execute("SELECT session_id, revision, area, action, subject FROM config_changes")
                 ] == [("s1", 5, "kind", "add", "classify")]
+    finally:
+        conn.close()
+
+
+# --- phase 22: v23 백업 → v24 판단 원인·알림 사건·사내 요청 출처 (ADR-0027, ARCHITECTURE "스키마 v24") -----------------
+
+V23_SCHEMA = (Path(__file__).parents[2] / "workflow" / "adapters" / "fixtures" / "schema_v23.sql").read_text()
+
+
+def test_v23_backup_restores_and_upgrades_to_v24(tmp_path, capsys):
+    """v23 백업을 복원하면 24 로 올라간다 — 접수 판단 행은 cause = 'intake', 알림·사내 요청 행은 그대로이고 사내 요청
+    출처는 NULL. 올린 DB 를 다시 백업·복원해도 행이 그대로다."""
+    src = tmp_path / "src"
+    (src / "artifacts").mkdir(parents=True)
+    conn = connect(src / "central.sqlite")
+    conn.executescript(V23_SCHEMA)
+    conn.execute("INSERT INTO schema_version (version) VALUES (23)")
+    conn.execute("INSERT INTO sessions (session_id, created_at, is_operator) VALUES ('s1', ?, 1)", (V10_NOW,))
+    conn.execute("INSERT INTO kinds (session_id, kind, spec_json, created_at) VALUES ('s1', 'triage', '{}', ?)",
+                 (V10_NOW,))
+    member = "INSERT INTO members (member_id, session_id, display_name, role, created_at) VALUES (?, 's1', 'n', ?, ?)"
+    conn.execute(member, ("mem-00000001", "admin", V10_NOW))
+    conn.execute(member, ("mem-00000002", "member", V10_NOW))
+    conn.execute("INSERT INTO agents (agent_id, name, owner_scope, connection_type, capabilities_json,"
+                 " connection_state) VALUES ('a1', 'n', 'personal', 'local', '[]', 'online')")
+    conn.execute("INSERT INTO work_items (work_item_id, session_id, key_number, title, request, kind, status,"
+                 " status_reason, source_type, created_at, updated_at) VALUES ('wi-000000000001', 's1', 1, 't', 'r',"
+                 " 'triage', '대기', '', 'manual', ?, ?)", (V10_NOW, V10_NOW))
+    conn.execute("INSERT INTO tasks (task_id, session_id, title, request, kind, required_capability_json,"
+                 " selection_mode, run_mode, completion_mode, criteria_json, revision, target_json, status,"
+                 " status_reason, created_at, work_item_id) VALUES ('t1', 's1', 't', 'r', 'triage', '{}', 'auto',"
+                 " 'manual', 'review', '[]', 1, '{}', '대기', '', ?, 'wi-000000000001')", (V10_NOW,))
+    conn.execute("INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+                 " status, created_at) VALUES ('e1', 't1', 1, 'k', 'a1', 'triage', '{}', 'failed', ?)", (V10_NOW,))
+    conn.execute("INSERT INTO triage_criteria (session_id, version, body, created_at) VALUES ('s1', 1, '기준', ?)",
+                 (V10_NOW,))
+    conn.execute("INSERT INTO triage_logs (triage_id, session_id, work_item_id, work_revision, task_id, execution_id,"
+                 " agent_id, trigger, criteria_version, input_sha256, candidates_json, state, failed_code, created_at,"
+                 " updated_at) VALUES ('trg-00000001', 's1', 'wi-000000000001', 1, 't1', 'e1', 'a1', 'auto', 1, ?,"
+                 " '{}', 'failed', 'result_invalid', ?, ?)", ("a" * 64, V10_NOW, V10_NOW))
+    conn.execute("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+                 " payload_json, state, created_at) VALUES ('ntf-00000001', 's1', 'delegated_to_you', 't1', 'k1', 'c',"
+                 " '{}', 'pending', ?)", (V10_NOW,))
+    conn.execute("INSERT INTO internal_requests (request_id, session_id, work_item_id, requester_member_id,"
+                 " recipient_member_id, judgment_member_id, system_id, request_kind, directory_revision,"
+                 " submission_key, purpose, state, revision, created_at) VALUES ('req-00000001', 's1',"
+                 " 'wi-000000000001', 'mem-00000001', 'mem-00000002', 'mem-00000001', 'billing', 'investigate', 1,"
+                 " 'key', '목적', 'pending', 1, ?)", (V10_NOW,))
+    conn.close()
+    env = _env(src)
+    assert backup.main(["create"], env=env, now=lambda: T1) == 0
+    v23_backup = capsys.readouterr().out.strip()
+    assert backup.main(["list"], env=env) == 0
+    assert capsys.readouterr().out.strip().endswith("schema 23")
+
+    old = tmp_path / "old"
+    assert backup.main(["restore", v23_backup], env={**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}) == 0
+    capsys.readouterr()
+    assert _counts(old / "central.sqlite") == _counts(src / "central.sqlite")
+    conn = connect(old / "central.sqlite")
+    init_schema(conn)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
+    assert [tuple(r) for r in conn.execute("SELECT triage_id, cause, cause_execution_id, cause_request_id"
+                                           " FROM triage_logs")] == [("trg-00000001", "intake", None, None)]
+    assert [tuple(r) for r in conn.execute("SELECT notification_id, event FROM notifications")] == [
+        ("ntf-00000001", "delegated_to_you")]
+    assert [tuple(r) for r in conn.execute("SELECT request_id, created_by_triage_id FROM internal_requests")] == [
+        ("req-00000001", None)]
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.execute("INSERT INTO notifications (notification_id, session_id, event, task_id, dedupe_key, content,"
+                 " payload_json, state, created_at) VALUES ('ntf-00000002', 's1', 'internal_request_received', 't1',"
+                 " 'k2', 'c', '{}', 'pending', ?)", (V10_NOW,))
+    conn.close()
+
+    old_env = {**_env(old), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
+    assert backup.main(["create"], env=old_env, now=lambda: T2) == 0
+    v24_backup = capsys.readouterr().out.strip()
+    dst = tmp_path / "dst"
+    assert backup.main(["restore", v24_backup], env={**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}) == 0
+    assert _counts(dst / "central.sqlite") == _counts(old / "central.sqlite")
+    conn = connect(dst / "central.sqlite")
+    try:
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        assert [tuple(r) for r in conn.execute("SELECT notification_id, event FROM notifications"
+                                               " ORDER BY notification_id")] == [
+            ("ntf-00000001", "delegated_to_you"), ("ntf-00000002", "internal_request_received")]
     finally:
         conn.close()

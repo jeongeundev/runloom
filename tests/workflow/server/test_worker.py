@@ -1067,10 +1067,11 @@ def test_callback_stage_runs_after_successor_scan_and_failure_reflection():
     그 뒤는 외부 반영(초안 PR — phase 12, GitHub 원본 이슈 댓글 — step 12, 알림 웹훅 — phase 12 step 7)뿐이다.
     알림은 외부 반영의 맨 뒤 — 같은 tick 에 쌓인 사람 요청·PR 열림·실패를 바로 보낸다. 업무 상태 재계산(ADR-0020)은
     tick 끝 — 단계 쓰기를 거치지 않은 업무까지 계산값을 갖게 한다. 자동 판단(phase 19)은 착수 대기 단계 뒤 — 수정·검토가
-    러너를 먼저 차지한다."""
+    러너를 먼저 차지한다. 결과 뒤 판단(phase 22)은 그 뒤·접수 판단 앞 — 워크스페이스의 판단 자리를 먼저 차지한다."""
     calls = re.findall(r"self\.(_\w+)\(conn, report\)", inspect.getsource(Worker.tick))
-    assert calls[-10:] == [
-        "_spawn_successors", "_start_waiting_stages", "_triage_new_work", "_reflect_failures", "_deliver_callbacks",
+    assert calls[-11:] == [
+        "_spawn_successors", "_start_waiting_stages", "_triage_after_results", "_triage_new_work",
+        "_reflect_failures", "_deliver_callbacks",
         "_deliver_pull_requests", "_deliver_github", "_deliver_jira", "_deliver_notifications", "_refresh_work_statuses",
     ]
 

@@ -3,6 +3,7 @@ phase 17" 착수 코드 이동). `work_actions` 에서 옮겼다 — 워커도 �
 생기기 때문이다. `work_actions` 는 같은 이름을 import 해 둔다. 오류는 `WorkActionError`(웹이 `PageError` 로 바꾼다).
 """
 
+import hashlib
 import json
 import secrets
 from collections.abc import Sequence
@@ -13,9 +14,9 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from workflow.adapters import repo, internal_request_store
-from workflow.adapters.errors import ActiveExecutionExists
+from workflow.adapters.errors import ActiveExecutionExists, NotFound
 from workflow.adapters.secret_store import SecretStore
-from workflow.contracts.v1 import ExecutionRequest
+from workflow.contracts.v1 import ArtifactMeta, CodeChangeResult, CodeChangeTarget, ExecutionRequest, ReviewComment
 from workflow.domain.delegation import offline_reason
 from workflow.domain.start_key import request_start_key
 from workflow.domain.status import user_status
@@ -157,3 +158,68 @@ def run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings
         target=json.loads(task["target_json"]),
     )
     refresh_task_status(conn, task_id, now, settings)
+
+
+def request_changes(conn: Connection, store: Any, settings: Settings, task: Row, *, session_id: str, comment: str,
+                    now: str) -> str:
+    """검토 [수정 요청] — 같은 단계의 새 시도. 지적(`review_comment`)을 산출물로 남기고 이전 입력 + 이전 결과 + 지적을 입력으로
+    지금 실행을 해제한 뒤 같은 Agent 로 새 실행을 만든다(CONTRACT 8절). 대상은 이전 시도의 요청을 잇고, 코드 수정 대상은
+    `base_commit` 만 이전 결과 커밋으로. 웹 `task_review` 와 결과 뒤 판단 재작업(phase 22)이 같이 쓴다. 반환은 새 execution_id.
+    결과가 있는지(`result_ready`·`확인 필요`)는 호출자가 본다."""
+    task_id = task["task_id"]
+    problem = internal_request_store.investigation_problem(conn, task)
+    if problem:
+        raise WorkActionError(409, "investigation_blocked", problem)
+    execution = repo.active_execution(conn, task_id)
+    agent = repo.get_agent(conn, execution["agent_id"])
+    if agent is None:
+        raise WorkActionError(409, "invalid_transition", "실행했던 에이전트가 더 이상 등록돼 있지 않습니다.")
+    execution_id = execution["execution_id"]
+    review = ReviewComment(
+        contract_version=1,
+        task_id=task_id,
+        reviewed_execution_id=execution_id,
+        decision="request_changes",
+        comment=comment,
+        created_at=now,
+    )
+    data = review.model_dump_json().encode()
+    created, _ = repo.store_artifact(
+        conn, store,
+        execution_id=execution_id,
+        session_id=session_id,
+        meta=ArtifactMeta(
+            contract_version=1, kind="review_comment", name="review.json",
+            content_type="application/json", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
+        ),
+        data=data,
+        now=now,
+    )
+    previous = ExecutionRequest.model_validate_json(execution["request_json"])
+    inputs = list(
+        dict.fromkeys([*previous.input_artifact_ids, execution["result_artifact_id"], created.artifact_id])
+    )
+    # 대상은 이전 시도의 요청을 잇는다 (종류 무관). 코드 수정 대상은 base_commit 만 이전 시도가 보존한 result_commit 으로.
+    target = previous.target.model_dump()
+    if isinstance(previous.target, CodeChangeTarget):
+        result_commit = _result_commit(conn, store, execution["result_artifact_id"])
+        if result_commit is not None:
+            target["base_commit"] = result_commit
+    repo.release_execution(conn, execution_id, now)
+    new_execution_id = start_execution(
+        conn, task, agent, session_id=session_id, now=now, settings=settings,
+        input_artifact_ids=inputs,
+        predecessor_execution_id=execution["predecessor_execution_id"],
+        target=target,
+    )
+    refresh_task_status(conn, task_id, now, settings, review_decision="request_changes")
+    return new_execution_id
+
+
+def _result_commit(conn: Connection, store: Any, artifact_id: str) -> str | None:
+    """이전 시도의 `code_change_result` 에서 보존된 result_commit. 보류 제출(null)·깨진 결과면 None → 원래 기준 커밋."""
+    try:
+        result = CodeChangeResult.model_validate_json(repo.read_artifact(conn, store, artifact_id))
+    except (ValidationError, ValueError, NotFound):
+        return None
+    return result.result_commit

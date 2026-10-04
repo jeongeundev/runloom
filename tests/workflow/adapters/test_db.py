@@ -284,8 +284,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_23():
-    assert SCHEMA_VERSION == 23
+def test_schema_version_is_24():
+    assert SCHEMA_VERSION == 24
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -2173,7 +2173,7 @@ def test_v13_constants():
     from workflow.adapters import db
     from workflow.domain.delegation import DELEGATION_POLICIES
 
-    assert db.NOTIFICATION_EVENTS == (
+    assert db._V13_NOTIFICATION_EVENTS == (
         "human_request", "pr_opened", "task_failed", "delegated_to_you", "runner_offline_waiting",
         "delegation_declined",
     )
@@ -2713,6 +2713,8 @@ TRIAGE_LOG_COLUMNS = [
     "proceed", "confidence", "proposed_kind", "failed_code", "failed_message", "handling", "handled_by_member_id",
     "handled_at", "final_assignee_type", "final_assignee_id", "final_kind", "created_at", "finished_at", "updated_at",
 ]
+# v24 가 판단 원인 칸을 끝에 더한다 (phase 22)
+TRIAGE_LOG_V24_COLUMNS = [*TRIAGE_LOG_COLUMNS, "cause", "cause_execution_id", "cause_request_id"]
 TRIAGE_AUTOSTART_COLUMNS = ["session_id", "kind", "version", "enabled", "threshold", "created_by_member_id",
                             "created_at"]
 _CRITERIA_INSERT = ("INSERT INTO triage_criteria (session_id, version, body, created_by_member_id, created_at)"
@@ -2754,7 +2756,7 @@ def _triage_base(conn) -> None:
 def test_fresh_db_has_v15_triage_tables_keys_and_indexes(conn):
     assert PHASE19_TABLES <= _table_names(conn)
     assert _column_lists(conn, ["triage_criteria", "triage_logs", "triage_autostart"]) == {
-        "triage_criteria": TRIAGE_CRITERIA_COLUMNS, "triage_logs": TRIAGE_LOG_COLUMNS,
+        "triage_criteria": TRIAGE_CRITERIA_COLUMNS, "triage_logs": TRIAGE_LOG_V24_COLUMNS,
         "triage_autostart": TRIAGE_AUTOSTART_COLUMNS,
     }
     assert _foreign_keys(conn, "triage_criteria") == {
@@ -2764,7 +2766,8 @@ def test_fresh_db_has_v15_triage_tables_keys_and_indexes(conn):
         ("tasks", "task_id", "task_id"), ("executions", "execution_id", "execution_id"),
         ("agents", "agent_id", "agent_id"), ("members", "requested_by_member_id", "member_id"),
         ("members", "handled_by_member_id", "member_id"),
-        ("triage_criteria", "session_id", "session_id"), ("triage_criteria", "criteria_version", "version")}
+        ("triage_criteria", "session_id", "session_id"), ("triage_criteria", "criteria_version", "version"),
+        ("executions", "cause_execution_id", "execution_id"), ("internal_requests", "cause_request_id", "request_id")}
     assert _foreign_keys(conn, "triage_autostart") == {
         ("sessions", "session_id", "session_id"), ("members", "created_by_member_id", "member_id")}
     # github_sources·tasks 는 그대로 — 판단 Agent 는 config_json 의 칸이다(ADR-0025 결정 3)
@@ -3153,10 +3156,10 @@ def test_migrates_v15_to_v16_adding_an_empty_config_changes_table(db_path):
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    assert _column_lists(c, V15_TABLES) == columns
-    assert _dump(c, V15_TABLES) == before  # 행 그대로 — 설정 번호도
+    assert _column_lists(c, V15_TABLES) == {**columns, "triage_logs": TRIAGE_LOG_V24_COLUMNS}  # v24 원인 칸
+    assert _dump(c, V15_TABLES, columns) == before  # 행 그대로 — 설정 번호도
     sql_after = [tuple(r) for r in c.execute("SELECT type, name, sql, rootpage FROM sqlite_master ORDER BY name")]
-    assert [r for r in sql_after if "config_changes" not in r[1] and "responsibilities" not in r[1] and "internal_requests" not in r[1] and "internal_request_investigations" not in r[1] and "internal_request_rejections" not in r[1] and "internal_request_questions" not in r[1] and "internal_request_judgments" not in r[1] and "internal_request_resumptions" not in r[1] and r[1] != "ix_internal_request_unanswered"] == sql_before  # 기존 표는 재생성하지 않는다
+    assert [r for r in sql_after if "config_changes" not in r[1] and "responsibilities" not in r[1] and "internal_requests" not in r[1] and "internal_request_investigations" not in r[1] and "internal_request_rejections" not in r[1] and "internal_request_questions" not in r[1] and "internal_request_judgments" not in r[1] and "internal_request_resumptions" not in r[1] and r[1] != "ix_internal_request_unanswered" and "triage_logs" not in r[1] and "notifications" not in r[1]] == [r for r in sql_before if "triage_logs" not in r[1] and "notifications" not in r[1]]  # 기존 표는 재생성하지 않는다(v24 가 재생성하는 두 표 밖)
     assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0  # 과거 변경을 추정해 채우지 않는다
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -3211,6 +3214,269 @@ def test_migrates_old_versions_to_v16_with_empty_config_changes(db_path, make):
     assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
     assert TABLES <= _table_names(c)
     assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    c.close()
+
+
+# --- phase 22: v23 → v24 판단 원인·알림 사건·사내 요청 출처 (ADR-0027, ARCHITECTURE "스키마 v24") -------------------------
+
+V23_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v23.sql").read_text()
+_INTERNAL_REQUEST_INSERT = (
+    "INSERT INTO internal_requests (request_id, session_id, work_item_id, requester_member_id, recipient_member_id,"
+    " judgment_member_id, system_id, request_kind, agent_id, directory_revision, submission_key, purpose, state,"
+    " revision, created_at) VALUES (?, 's1', 'wi-000000000001', 'mem-00000001', 'mem-00000002', 'mem-00000001',"
+    " 'billing', 'investigate', NULL, 1, ?, '목적', 'pending', 1, ?)"
+)
+
+
+def _insert_internal_request(conn, request_id: str) -> None:
+    conn.execute(_INTERNAL_REQUEST_INSERT, (request_id, f"key-{request_id}", NOW))
+
+
+def _next_step_base(conn) -> None:
+    """원인 제약 확인용 — 판단 기본 행 + 판단 단계 t3·t4 와 실행 e3·e4, 사내 요청 둘."""
+    _triage_base(conn)
+    for n in (3, 4):
+        _insert_task(conn, f"t{n}", "s1", "bug_fix")
+        conn.execute("INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind,"
+                     f" request_json, status, created_at) VALUES ('e{n}', 't{n}', 1, 'k{n}', 'a1', 'bug_fix', '{{}}',"
+                     " 'queued', ?)", (NOW,))
+    _insert_internal_request(conn, "req-00000001")
+    _insert_internal_request(conn, "req-00000002")
+
+
+def test_v24_constants():
+    from workflow.adapters import db
+    from workflow.contracts.v1 import TRIAGE_CAUSES
+
+    assert db._V13_NOTIFICATION_EVENTS == (
+        "human_request", "pr_opened", "task_failed", "delegated_to_you", "runner_offline_waiting",
+        "delegation_declined",
+    )
+    assert db.NOTIFICATION_EVENTS == (*db._V13_NOTIFICATION_EVENTS, "internal_request_received", "next_step_proposed")
+    assert TRIAGE_CAUSES == ("intake", "after_result", "request_returned")
+
+
+def test_fresh_db_has_v24_columns_keys_and_indexes(conn):
+    assert _column_lists(conn, ["triage_logs"]) == {"triage_logs": TRIAGE_LOG_V24_COLUMNS}
+    assert {("executions", "cause_execution_id", "execution_id"),
+            ("internal_requests", "cause_request_id", "request_id")} <= _foreign_keys(conn, "triage_logs")
+    assert "created_by_triage_id" in _columns(conn, "internal_requests")
+    assert ("triage_logs", "created_by_triage_id", "triage_id") in _foreign_keys(conn, "internal_requests")
+    indexes = dict(_indexes(conn))
+    for name in ("ux_triage_logs_running", "ix_triage_logs_work", "ix_triage_logs_session",
+                 "ux_triage_logs_after_result", "ux_triage_logs_request_returned", "ix_notifications_recipient",
+                 "ux_internal_requests_triage"):
+        assert name in indexes, name
+    assert "WHERE cause = 'after_result'" in indexes["ux_triage_logs_after_result"]
+    assert "WHERE cause = 'request_returned'" in indexes["ux_triage_logs_request_returned"]
+    assert "WHERE created_by_triage_id IS NOT NULL" in indexes["ux_internal_requests_triage"]
+    assert not {name for name in _table_names(conn) if name.endswith("_v24")}
+
+
+def test_v24_triage_cause_checks_and_unique_per_cause(conn):
+    _next_step_base(conn)
+    _insert_triage_log(conn)  # 접수 판단 — 기본 원인 intake, 원인 참조 없음
+    assert tuple(conn.execute("SELECT cause, cause_execution_id, cause_request_id FROM triage_logs").fetchone()) == (
+        "intake", None, None)
+    after = {"cause": "after_result", "cause_execution_id": "e1"}
+    returned = {"cause": "request_returned", "cause_execution_id": "e2", "cause_request_id": "req-00000001"}
+    for overrides in (
+        {"cause": "next_step"},  # 원인 밖 값
+        {"cause": None},
+        {"cause_execution_id": "e1"},  # 접수 판단은 원인 실행이 없다
+        {"cause_request_id": "req-00000001"},
+        {"cause": "after_result"},  # 결과 뒤 판단은 원인 실행이 있다
+        {**after, "cause_request_id": "req-00000001"},  # 반환 아닌 원인에 요청
+        {"cause": "request_returned", "cause_execution_id": "e2"},  # 반환 원인은 요청이 있다
+        {**after, "trigger": "manual", "requested_by_member_id": "mem-00000001"},  # 결과 뒤 판단은 auto 만
+        {**after, "cause_execution_id": "e-nope"},  # 없는 실행
+        {**returned, "cause_request_id": "req-nope"},  # 없는 요청
+        {**after, "final_kind": "bug_fix"},  # 결과 뒤 판단은 최종 담당·종류를 남기지 않는다
+        {**after, "final_assignee_type": "agent", "final_assignee_id": "a1"},
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_triage_log(conn, triage_id="trg-00000002", task_id="t3", execution_id="e3", work_item_id=
+                               "wi-000000000001", state="failed", failed_code="x", **overrides)
+    conn.execute("UPDATE triage_logs SET state = 'failed', failed_code = 'x'")  # 도는 판단 자리를 비운다
+    _insert_triage_log(conn, triage_id="trg-00000002", task_id="t3", execution_id="e3", **after)
+    _insert_triage_log(conn, triage_id="trg-00000003", task_id="t4", execution_id="e4", state="failed",
+                       failed_code="x", **returned)
+    # 같은 결과·같은 반환에 두 번째 판단은 거부 — 상태와 무관하게
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_triage_log(conn, triage_id="trg-00000004", task_id="t2", execution_id="e2", state="failed",
+                           failed_code="x", **after)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_triage_log(conn, triage_id="trg-00000004", task_id="t2", execution_id="e2", state="failed",
+                           failed_code="x", cause="request_returned", cause_execution_id="e1",
+                           cause_request_id="req-00000001")
+    # 접수 판단은 원인 UNIQUE 에 걸리지 않는다 — 업무마다 여러 행
+    _insert_triage_log(conn, triage_id="trg-00000004", task_id="t2", execution_id="e2", state="failed",
+                       failed_code="x")
+    # 결과 뒤 판단의 처리는 accepted·dismissed 만, 최종 담당 없이
+    conn.execute("UPDATE triage_logs SET state = 'proposed', result_json = '{}', proceed = 'needs_check',"
+                 " confidence = 0.7 WHERE triage_id = 'trg-00000002'")
+    for handling in ("changed", "auto_started"):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE triage_logs SET handling = ?, handled_at = ? WHERE triage_id = 'trg-00000002'",
+                         (handling, NOW))
+    conn.execute("UPDATE triage_logs SET handling = 'accepted', handled_at = ?, handled_by_member_id = 'mem-00000001'"
+                 " WHERE triage_id = 'trg-00000002'", (NOW,))
+    # 접수 판단의 accepted 는 여전히 최종 담당이 있어야
+    conn.execute("UPDATE triage_logs SET state = 'proposed', result_json = '{}', proceed = 'ready', confidence = 0.9"
+                 " WHERE triage_id = 'trg-00000001'")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE triage_logs SET handling = 'accepted', handled_at = ? WHERE triage_id = 'trg-00000001'",
+                     (NOW,))
+
+
+def test_v24_notification_events_and_request_origin(conn):
+    _next_step_base(conn)
+    from workflow.adapters.db import NOTIFICATION_EVENTS
+
+    for n, event in enumerate(NOTIFICATION_EVENTS):
+        conn.execute(_NOTIFICATION_INSERT, (f"ntf-{n}", event, f"k{n}", NOW))
+    for bad in ("next_step", "internal_request_returned"):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_NOTIFICATION_INSERT, ("ntf-x", bad, "kx", NOW))
+    assert _referencing(conn, "notifications") == []
+    # 사내 요청 출처 — NULL = 사람이 만든 요청, 있는 판단만, 판단 하나에 요청 하나
+    assert {r[0] for r in conn.execute("SELECT created_by_triage_id FROM internal_requests")} == {None}
+    _insert_triage_log(conn, state="failed", failed_code="x")
+    conn.execute("UPDATE internal_requests SET created_by_triage_id = 'trg-00000001' WHERE request_id = 'req-00000001'")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE internal_requests SET created_by_triage_id = 'trg-00000001'"
+                     " WHERE request_id = 'req-00000002'")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE internal_requests SET created_by_triage_id = 'trg-nope' WHERE request_id = 'req-00000002'")
+    assert _referencing(conn, "triage_logs") == ["internal_requests"]
+
+
+def _v23_db(db_path):
+    """phase 21 서버가 남긴 모양의 v23 DB — 판단 기본 행에 접수 판단 셋(proposed·accepted·failed)·알림 둘·사내 요청 하나."""
+    c = connect(db_path)
+    c.executescript(V23_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (23)")
+    _triage_base(c)
+    _insert_task(c, "t3", "s1", "bug_fix")
+    c.execute("INSERT INTO executions (execution_id, task_id, attempt_no, start_key, agent_id, kind, request_json,"
+              " status, created_at) VALUES ('e3', 't3', 1, 'k3', 'a1', 'bug_fix', '{}', 'queued', ?)", (NOW,))
+    proposed = {"state": "proposed", "result_json": "{}", "proceed": "ready", "confidence": 0.9,
+                "proposed_kind": "bug_fix", "finished_at": NOW}
+    _insert_triage_log(c, **proposed)
+    _insert_triage_log(c, triage_id="trg-00000002", task_id="t2", execution_id="e2", **proposed, handling="accepted",
+                       handled_at=NOW, handled_by_member_id="mem-00000001", final_assignee_type="agent",
+                       final_assignee_id="a1", final_kind="bug_fix")
+    _insert_triage_log(c, triage_id="trg-00000003", task_id="t3", execution_id="e3", state="failed",
+                       failed_code="result_invalid", failed_message="m")
+    c.execute(_NOTIFICATION_INSERT, ("ntf-00000001", "delegated_to_you", "k1", NOW))
+    c.execute(_NOTIFICATION_INSERT, ("ntf-00000002", "human_request", "k2", NOW))
+    _insert_internal_request(c, "req-00000001")
+    return c
+
+
+def _v22_db(db_path):
+    """v22 모양 — v23 은 재개 기록 표(internal_request_resumptions)만 더했다."""
+    c = connect(db_path)
+    c.executescript(V23_SCHEMA)
+    c.execute("DROP TABLE internal_request_resumptions")
+    c.execute("INSERT INTO schema_version (version) VALUES (22)")
+    _v12_base(c)
+    _insert_internal_request(c, "req-00000001")
+    return c
+
+
+def test_v23_fixture_is_the_phase21_schema(db_path):
+    c = _v23_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 23
+    assert _column_lists(c, ["triage_logs"]) == {"triage_logs": TRIAGE_LOG_COLUMNS}
+    assert "created_by_triage_id" not in _columns(c, "internal_requests")
+    c.close()
+
+
+def test_migrates_v23_to_v24_preserving_rows(db_path):
+    c = _v23_db(db_path)
+    tables = _table_names(c) - {"sqlite_sequence", "schema_version"}
+    columns = _column_lists(c, tables)
+    before = _dump(c, tables, columns)
+    unchanged = ("SELECT type, name, sql, rootpage FROM sqlite_master WHERE tbl_name NOT IN"
+                 " ('triage_logs', 'notifications', 'internal_requests', 'schema_version') ORDER BY name")
+    sql_before = c.execute(unchanged).fetchall()
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
+    assert _dump(c, tables, columns) == before  # 행·id·기존 칸 값 그대로
+    assert c.execute(unchanged).fetchall() == sql_before  # 그 밖의 표는 재생성하지 않는다
+    assert [tuple(r) for r in c.execute("SELECT triage_id, cause, cause_execution_id, cause_request_id"
+                                        " FROM triage_logs ORDER BY triage_id")] == [
+        ("trg-00000001", "intake", None, None), ("trg-00000002", "intake", None, None),
+        ("trg-00000003", "intake", None, None)]
+    assert [tuple(r) for r in c.execute("SELECT created_by_triage_id FROM internal_requests")] == [(None,)]
+    assert not {name for name in _table_names(c) if name.endswith("_v24")}
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    # 새 CHECK·UNIQUE 가 올린 DB 에서도 동작한다
+    c.execute(_NOTIFICATION_INSERT, ("ntf-00000003", "next_step_proposed", "k3", NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute(_NOTIFICATION_INSERT, ("ntf-00000004", "next_step", "k4", NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute("UPDATE triage_logs SET cause = 'after_result' WHERE triage_id = 'trg-00000003'")
+    c.execute("UPDATE triage_logs SET cause = 'after_result', cause_execution_id = 'e1' WHERE triage_id = 'trg-00000003'")
+    with pytest.raises(sqlite3.IntegrityError):  # 같은 결과에 둘째 판단
+        c.execute("UPDATE triage_logs SET cause = 'after_result', cause_execution_id = 'e1', handling = NULL,"
+                  " handled_at = NULL, handled_by_member_id = NULL, final_assignee_type = NULL,"
+                  " final_assignee_id = NULL, final_kind = NULL WHERE triage_id = 'trg-00000002'")
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_v24_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v23_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    tables = _table_names(c) - {"sqlite_sequence"}
+    before = _dump(c, tables)
+    sql_before = c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 23
+    assert c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == sql_before
+    assert _dump(c, tables) == before
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    c.close()
+
+
+@pytest.mark.parametrize("old", ["v22", "v23"])
+def test_fresh_schema_matches_v23_migrated_schema(tmp_path, old):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = (_v22_db if old == "v22" else _v23_db)(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    dump = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name != 'sqlite_sequence' ORDER BY name"
+    assert fresh.execute(dump).fetchall() == migrated.execute(dump).fetchall()  # CHECK 까지 같은 원문
+    fresh.close()
+    migrated.close()
+
+
+@pytest.mark.parametrize("make", [_v4_db, _v14_db, _v22_db])
+def test_migrates_old_versions_to_v24(db_path, make):
+    c = make(db_path)
+    c.close()
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
+    assert _column_lists(c, ["triage_logs"]) == {"triage_logs": TRIAGE_LOG_V24_COLUMNS}
+    assert "created_by_triage_id" in _columns(c, "internal_requests")
+    assert {r[0] for r in c.execute("SELECT cause FROM triage_logs")} <= {"intake"}
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     c.close()

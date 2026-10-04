@@ -302,3 +302,36 @@ def test_concurrent_information_question_and_answer_are_recorded_once(logged_in_
     assert all(r.status_code == 200 for r in results)
     assert results[0].json() == results[1].json()
     assert len(results[0].json()['questions']) == 1
+
+
+def _received(conn) -> list:
+    return conn.execute("SELECT * FROM notifications WHERE event = 'internal_request_received' ORDER BY rowid").fetchall()
+
+
+def test_created_and_rerouted_requests_notify_the_recipient_once(logged_in_client, conn):
+    """사내 요청이 생기면(생성·재전달) 받는 사람에게 `internal_request_received` 한 번 — 같은 접수 키 재전송은 같은
+    요청이라 알림도 하나(phase 22 step 8)."""
+    from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL
+    logged_in_client.app.state.secrets.write(NOTIFY_WEBHOOK_URL, 'https://hooks.example/shared-token')
+    recipient, work_id, body = setup_request(logged_in_client, conn)
+    url = f'/work-items/{work_id}/internal-requests'
+    old = logged_in_client.post(url, json=body).json()
+    assert logged_in_client.post(url, json=body).json() == old
+    (row,) = _received(conn)
+    assert (row['dedupe_key'], row['recipient_member_id'], row['task_id']) == (
+        f"internal_request_received:{old['request_id']}:shared", body['recipient_member_id'], None)
+    assert row['content'].startswith('[Runloom] 요청 받음 — 결제 오류: ')
+    assert 'shared-token' not in row['content']
+    recipient.post(f"/internal-requests/{old['request_id']}/not-responsible", json=dict(expected_revision=1, reason='팀 다름'))
+    target_id = old['requester_member_id']
+    revision = repo.get_config_revision(conn, SESSION)
+    entry = dict(system_id='billing', request_kind='investigation', recipient_member_id=target_id,
+                 judgment_member_id=target_id, agent_id=None)
+    assert logged_in_client.put('/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
+    reroute_url = f"/internal-requests/{old['request_id']}/reroute"
+    selection = dict(expected_revision=2, expected_directory_revision=revision + 1, recipient_member_id=target_id)
+    new = logged_in_client.post(reroute_url, json=selection).json()
+    assert logged_in_client.post(reroute_url, json=selection).json() == new
+    assert [(r['dedupe_key'], r['recipient_member_id']) for r in _received(conn)] == [
+        (f"internal_request_received:{old['request_id']}:shared", body['recipient_member_id']),
+        (f"internal_request_received:{new['request_id']}:shared", target_id)]

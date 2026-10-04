@@ -7,8 +7,15 @@ from workflow.domain import team
 from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_api, utc_now
 from workflow.server.errors import ApiError
 from workflow.server import internal_investigation
+from workflow.server.worker import enqueue_request_notification
 
 router = APIRouter()
+
+
+def _notify(conn: Connection, request: Request, request_id: str) -> None:
+    """사내 요청이 생긴 뒤(생성·재전달) 받는 사람에게 알림 — 같은 요청이면 `dedupe_key` 로 한 번."""
+    enqueue_request_notification(conn, request.app.state.settings, request.app.state.secrets,
+                                 request_id=request_id, now=utc_now())
 
 
 @router.get('/internal-requests')
@@ -25,13 +32,15 @@ def for_work(work_item_id: str, member: LoggedIn = Depends(require_member_api),
 
 
 @router.post('/work-items/{work_item_id}/internal-requests')
-def create(work_item_id: str, body: InternalRequestCreate,
+def create(work_item_id: str, request: Request, body: InternalRequestCreate,
            member: LoggedIn = Depends(require_action(team.DELEGATE, api=True)),
            conn: Connection = Depends(get_conn)) -> dict:
     try:
-        return store.create(conn, member.session_id, member.member_id, work_item_id, body, now=utc_now())
+        result = store.create(conn, member.session_id, member.member_id, work_item_id, body, now=utc_now())
     except store.RequestProblem as exc:
         raise ApiError(exc.status, exc.code, str(exc)) from None
+    _notify(conn, request, result['request_id'])
+    return result
 
 
 @router.post('/internal-requests/{request_id}/accept')
@@ -75,13 +84,15 @@ def reject(request_id: str, body: InternalRequestReject,
 
 
 @router.post('/internal-requests/{request_id}/reroute')
-def reroute(request_id: str, body: InternalRequestReroute,
+def reroute(request_id: str, request: Request, body: InternalRequestReroute,
             member: LoggedIn = Depends(require_action(team.DELEGATE, api=True)),
             conn: Connection = Depends(get_conn)) -> dict:
     try:
-        return store.reroute(conn, member.session_id, member.member_id, request_id, body, now=utc_now())
+        result = store.reroute(conn, member.session_id, member.member_id, request_id, body, now=utc_now())
     except store.RequestProblem as exc:
         raise ApiError(exc.status, exc.code, str(exc)) from None
+    _notify(conn, request, result['request_id'])
+    return result
 
 
 @router.post('/internal-requests/{request_id}/questions')

@@ -15,12 +15,16 @@ Multica 는 이 자리를 squad 리더 LLM(자유 텍스트 지시, 권한 전�
 
 ## 사용자 결정 (2026-10-04)
 
+> 확정: [ADR-0027](../../docs/adr/0027-next-step-triage.md) "사용자 결정"·"결정", 구현 기준은 [ARCHITECTURE](../../docs/ARCHITECTURE.md) "결과 뒤 판단 — phase 22"(step 0, 2026-10-04). 아래 계획 기본값과 다르면 ADR·ARCHITECTURE 가 기준이다.
+
 1. **D1 언제** — 결과 뒤 판단은 세 경우에만 돈다: ① 후속 규칙에 맞는 것이 없는 결과(판정 통과) ② `needs_information` ③ 사내 요청 반환. 판정 실패·실행 실패는 지금처럼 사람에게 간다.
 2. **D2 무엇을** — 다음 행동은 네 가지: 같은 업무의 다음 단계·재작업 / 새 업무 / 외부 담당에게 사내 요청 / 사람에게 돌려보내기(확인 필요). "완료"는 제안하지 않는다(PR 병합·사람이 정한다).
 3. **D3 어떻게** — 판단은 제안까지. 사람이 [제안대로] 한 번 누른다. 결과 뒤 판단의 자동 시작은 이번에 없다. 접수 판단의 자동 시작 자격 건수(`triage_handled_counts`)에 섞지 않는다. 판단이 만든 사내 요청의 요청자는 [제안대로] 를 누른 멤버다.
 4. **D4 받는 쪽** — 받는 사람의 수락·검토는 그대로(동의). 대신 요청 생성 시 받는 사람에게 알림, 반환되면 요청자의 수동 재개 없이 원래 업무의 결과 뒤 판단이 자동으로 이어진다(재개 기록 기능은 그대로 둔다).
 
 ## 계획 기본값 (step 0 이 ADR-0027 로 고정 — 코드 근거가 있으면 바꾸고 이유를 남긴다)
+
+> step 0 에서 바꾼 것(이유는 ADR-0027 "코드 조사로 README 와 달라진 사실"): 2 `mode` 는 `Literal["next_step"] | None`(None = 접수 판단, 직렬화에서 빠짐), `next_action` 도 None 이면 빠짐 · 4 담당 범위 후보는 `has_agent` 대신 `agent_id`, 다음 단계 후보는 입력 없는 종류만(+ 지금 종류는 재작업만), 후보에 `startable`·`cause` · 6 ① 업무 순환은 새 `hold_code` `no_rule` 만, 시작 못 함·대기 상한(3600초)·실패·무시는 처분(`disposition`)이 대체 경로로 · 7 `stage` 새 단계는 선행·산출물 인계 없이 글로, 재작업은 검토 [수정 요청] 경로, `stale_directory` 는 revision 대신 항목 비교, [무시] 는 `dismissed` 만(① 은 사람 요청 없음) · 9 원인 칸 CHECK·부분 UNIQUE 이름은 ARCHITECTURE.
 
 1. **같은 판단, 다른 원인.** 내장 종류 `triage`·표 `triage_logs`·판단 Agent(저장소 카드 `triage_agent_id`)·판단 기준·읽기 전용 체크아웃을 그대로 쓴다. 판단 로그에 원인 `cause` ∈ `intake`(기존)·`after_result`·`request_returned` 와 원인 참조 `cause_execution_id`(executions, NULL 허용)·`cause_request_id`(internal_requests, NULL 허용)를 둔다. 같은 원인에 판단은 하나(부분 UNIQUE). `trigger`(auto/manual)는 그대로.
 2. **계약 확장(러너 재설치 필요).** `TriageTarget` 에 `mode: "intake" | "next_step"`(기본 `intake`, 직렬화 시 기본값이면 빠지게 해 옛 러너 호환을 지킨다 — 방법은 step 1 이 정한다). `TriageResult` 에 `next_action: NextAction | None` — `mode=next_step` 이면 필수, `intake` 면 금지. `NextAction` 은 `type` 으로 가르는 4형:

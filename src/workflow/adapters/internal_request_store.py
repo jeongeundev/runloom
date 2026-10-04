@@ -3,9 +3,10 @@ import secrets
 import json
 from sqlite3 import Connection, Row
 from workflow.adapters import repo, responsibility_store
+from workflow.adapters.errors import NextStepHandled
 from workflow.contracts.internal_request import InternalRequestCreate, InternalInvestigationStart, InternalRequestReject, InternalRequestReroute, InternalInformationQuestion, InternalInformationAnswer
 from workflow.contracts.responsibility import Responsibility
-from workflow.contracts.v1 import Capability
+from workflow.contracts.v1 import Capability, NextInternalRequest, TriageCandidates
 from workflow.domain.selection import Candidate, select_agent
 
 
@@ -71,8 +72,43 @@ def create(conn: Connection, session_id: str, requester_id: str, work_item_id: s
         raise
 
 
+STALE_DIRECTORY_NEXT_STEP = '담당 범위 표가 바뀌었습니다 — [무시] 뒤 직접 요청하세요.'
+
+
+def create_from_next_step(conn: Connection, session_id: str, member_id: str, work_item_id: str,
+                          body: NextInternalRequest, *, triage_id: str, now: str) -> dict:
+    """결과 뒤 판단 [제안대로] 사내 요청 — 요청자 = 누른 멤버, 접수 키 `next_step:<triage_id>`, `created_by_triage_id`.
+    판단 시점 후보 항목과 지금 항목(같은 키)의 판단 담당·조사 에이전트가 다르거나 항목이 없으면 409 `stale_directory`
+    (담당표 revision 은 워크스페이스 설정 번호 전체라 항목으로 비교한다). 처리 `accepted`·업무 상태 재계산과 한 트랜잭션 —
+    이미 처리됐으면 NextStepHandled."""
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        log = conn.execute('SELECT candidates_json FROM triage_logs WHERE triage_id = ?', (triage_id,)).fetchone()
+        key = (body.system_id, body.request_kind, body.recipient_member_id)
+        proposed = next((r for r in TriageCandidates.model_validate_json(log['candidates_json']).responsibilities
+                         if (r.system_id, r.request_kind, r.recipient_member_id) == key), None)
+        current = next((e for e in responsibility_store.list_entries(conn, session_id)
+                        if (e.system_id, e.request_kind, e.recipient_member_id) == key), None)
+        if proposed is None or current is None or (proposed.judgment_member_id, proposed.agent_id) != (
+                current.judgment_member_id, current.agent_id):
+            raise RequestProblem(409, 'stale_directory', STALE_DIRECTORY_NEXT_STEP)
+        result = _create(conn, session_id, member_id, work_item_id, InternalRequestCreate(
+            system_id=body.system_id, request_kind=body.request_kind, recipient_member_id=body.recipient_member_id,
+            expected_directory_revision=repo.get_config_revision(conn, session_id),
+            submission_key=f'next_step:{triage_id}', purpose=body.purpose,
+        ), now=now, created_by_triage_id=triage_id)
+        if not repo.record_next_step_handling(conn, triage_id, handling='accepted', member_id=member_id, now=now):
+            raise NextStepHandled(triage_id)
+        repo.refresh_work_status(conn, work_item_id, now=now)
+        conn.execute('COMMIT')
+        return result
+    except BaseException:
+        conn.execute('ROLLBACK')
+        raise
+
+
 def _create(conn: Connection, session_id: str, requester_id: str, work_item_id: str,
-            body: InternalRequestCreate, *, now: str) -> dict:
+            body: InternalRequestCreate, *, now: str, created_by_triage_id: str | None = None) -> dict:
     if repo.get_work_item(conn, session_id, work_item_id) is None:
         raise RequestProblem(404, 'not_found', '원래 업무를 찾을 수 없습니다.')
     previous = conn.execute(
@@ -100,10 +136,11 @@ def _create(conn: Connection, session_id: str, requester_id: str, work_item_id: 
         conn.execute(
             'INSERT INTO internal_requests (request_id, session_id, work_item_id, requester_member_id,'
             ' recipient_member_id, judgment_member_id, system_id, request_kind, agent_id, directory_revision,'
-            ' submission_key, purpose, state, revision, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' submission_key, purpose, state, revision, created_at, created_by_triage_id)'
+            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (request_id, session_id, work_item_id, requester_id, entry.recipient_member_id,
              entry.judgment_member_id, entry.system_id, entry.request_kind, entry.agent_id, revision,
-             body.submission_key, body.purpose, 'pending', 1, now))
+             body.submission_key, body.purpose, 'pending', 1, now, created_by_triage_id))
         result = public(conn, conn.execute(_SELECT + ' WHERE r.request_id = ?', (request_id,)).fetchone())
     return result
 

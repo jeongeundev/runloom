@@ -16,7 +16,13 @@ import pytest
 
 from workflow.connector import git_ops, state
 from workflow.connector.claude import ALLOWED_TOOLS, READONLY_TOOLS, ClaudeAdapter
-from workflow.connector.local_tool import RESULT_SCHEMA, TRIAGE_OUTPUT_SCHEMA, ToolRun, generic_result_schema
+from workflow.connector.local_tool import (
+    NEXT_STEP_OUTPUT_SCHEMA,
+    RESULT_SCHEMA,
+    TRIAGE_OUTPUT_SCHEMA,
+    ToolRun,
+    generic_result_schema,
+)
 from workflow.contracts.v1 import ExecutionUsage
 
 from .conftest import REVIEW_SPEC, TRIAGE_REQUEST, make_local_request, make_review_request, make_triage_request
@@ -69,10 +75,17 @@ if MODE.startswith("triage"):
     fake["local_only"] = (worktree / "LOCAL_ONLY.md").exists()
     if MODE == "triage_writes":
         (worktree / "notes.md").write_text("must not happen")
-    structured = {"proceed": "maybe" if MODE == "triage_bad" else "ready", "confidence": 0.8,
-                  "proposed_kind": "bug_fix", "assignee": {"type": "member", "id": "mem-1a2b3c4d"},
-                  "predecessors": [], "reasons": [{"criterion": "scope", "note": "변환부 한 모듈"}],
-                  "missing_information": []}
+    if "next_action" in fake["schema"]["properties"]:  # 결과 뒤 판단 — 다음 단계 스키마의 모델 칸만 채운다
+        structured = {"proceed": "maybe" if MODE == "triage_bad" else "ready", "confidence": 0.7,
+                      "next_action": {"type": "internal_request", "system_id": "billing", "request_kind": "data_check",
+                                      "recipient_member_id": "mem-5e6f7a8b", "purpose": "쿠폰 적용 이력 확인"},
+                      "reasons": [{"criterion": "history", "note": "이전 결과가 정보 부족"}],
+                      "missing_information": []}
+    else:
+        structured = {"proceed": "maybe" if MODE == "triage_bad" else "ready", "confidence": 0.8,
+                      "proposed_kind": "bug_fix", "assignee": {"type": "member", "id": "mem-1a2b3c4d"},
+                      "predecessors": [], "reasons": [{"criterion": "scope", "note": "변환부 한 모듈"}],
+                      "missing_information": []}
     print(json.dumps({
         "type": "result", "subtype": "success", "is_error": False, "api_error_status": None,
         "usage": {"input_tokens": 30, "output_tokens": 9}, "total_cost_usd": 0.02,
@@ -685,6 +698,47 @@ def test_triage_runs_readonly_claude_on_default_branch_tip(state_conn, repo, tmp
     assert Path(fake["cwd"]).resolve() != repo.resolve() and not Path(fake["cwd"]).exists()
     assert not any(k.startswith("WORKFLOW_") for k in fake["env"])
     assert _git(repo, "worktree", "list").count("\n") == 0 and (repo / "LOCAL_ONLY.md").exists()
+
+
+def test_next_step_triage_runs_readonly_claude_with_next_step_schema(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "triage")
+    base = register_triager(state_conn, repo)
+    (repo / "LOCAL_ONLY.md").write_text("커밋 안 된 로컬 파일\n")
+
+    output = adapter(state_conn).run(make_triage_request(base, mode="next_step"), tmp_path / "h", Progress())
+
+    assert output.failed is None, output.failed
+    result = output.result
+    assert (result.proceed, result.inspected_commit, result.proposed_kind, result.assignee) == (
+        "ready", base, None, None)
+    assert (result.next_action.type, result.next_action.recipient_member_id) == ("internal_request", "mem-5e6f7a8b")
+    fake = envelope_of(output)["_fake"]
+    argv = fake["argv"]
+    assert argv[argv.index("--allowedTools") + 1:argv.index("--json-schema")] == list(READONLY_TOOLS)
+    assert fake["schema"] == NEXT_STEP_OUTPUT_SCHEMA
+    assert fake["prompt_first_line"] == TRIAGE_REQUEST.splitlines()[0] and fake["local_only"] is False
+    assert Path(fake["cwd"]).resolve() != repo.resolve() and not Path(fake["cwd"]).exists()
+    assert not any(k.startswith("WORKFLOW_") for k in fake["env"])
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_next_step_output_outside_schema_is_result_invalid(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "triage_bad")
+    base = register_triager(state_conn, repo)
+
+    output = adapter(state_conn).run(make_triage_request(base, mode="next_step"), tmp_path / "h", Progress())
+
+    assert output.result is None and output.failed[0] == "result_invalid" and "proceed" in output.failed[1]
+
+
+def test_next_step_write_into_checkout_is_readonly_violation(state_conn, repo, tmp_path, fake_bin):
+    write_fake_claude(fake_bin, "triage_writes")
+    base = register_triager(state_conn, repo)
+
+    output = adapter(state_conn).run(make_triage_request(base, mode="next_step"), tmp_path / "h", Progress())
+
+    assert output.result is None and output.failed[0] == "readonly_violation"
+    assert _git(repo, "worktree", "list").count("\n") == 0 and _git(repo, "status", "--porcelain") == ""
 
 
 def test_triage_output_outside_schema_is_result_invalid(state_conn, repo, tmp_path, fake_bin):

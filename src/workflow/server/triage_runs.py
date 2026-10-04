@@ -10,7 +10,7 @@
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from secrets import token_hex
 from sqlite3 import Connection, Row
 from typing import Literal
@@ -20,6 +20,7 @@ from workflow.adapters import repo
 from workflow.adapters.errors import TriageRunning
 from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import (
+    RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE,
     Capability,
     ExecutionRequest,
     KindSpec,
@@ -48,6 +49,7 @@ REASONS = {
     "owner_approval": "판단 에이전트의 맡기기 정책이 승인 필요 — '바로 실행'으로 바꾸세요",
     "offline": "판단 에이전트의 러너 꺼짐",
     "runner_outdated": "러너 업데이트 필요 — 판단 미지원",
+    "runner_no_next_step": "러너 업데이트 필요 — 결과 뒤 판단 미지원",
     "no_base_commit": "러너의 기준 커밋 보고 전 — 잠시 뒤 다시",
     "running": "판단 중",
 }
@@ -85,69 +87,81 @@ def _required(spec: KindSpec, repository_id: str) -> Capability:
 
 def triage_route(conn: Connection, work: Row, *, now: str, settings: Settings) -> TriageRoute:
     """업무 하나의 판단 경로와 판단할 수 없는 이유(`REASONS` 순서대로 첫 해당)."""
-    session_id = work["session_id"]
-
-    def stop(key: str, **found) -> TriageRoute:
-        values = {"stage": None, "config": None, "agent_id": None, "repository_id": None} | found
-        return TriageRoute(**values, reason=REASONS[key])
-
     if (work["status"] != "새로 들어옴" or work["assignee_type"] is not None or work["direct_member_id"] is not None
             or work["closed_at"] is not None):
-        return stop("not_new")
+        return _stop("not_new")
     if work["source_type"] not in ("github", "jira"):
-        return stop("no_repository")
+        return _stop("no_repository")
     stage = repo.open_stage(conn, work["work_item_id"])
     if stage is None:
-        return stop("no_stage")
+        return _stop("no_stage")
+    route = _agent_route(conn, work["session_id"], stage, now=now, settings=settings, need_after_result=False)
+    if route.reason is None and conn.execute("SELECT 1 FROM triage_logs WHERE work_item_id = ? AND state = 'running'",
+                                             (work["work_item_id"],)).fetchone() is not None:
+        return replace(route, reason=REASONS["running"])
+    return route
+
+
+def _stop(key: str, **found) -> TriageRoute:
+    values = {"stage": None, "config": None, "agent_id": None, "repository_id": None} | found
+    return TriageRoute(**values, reason=REASONS[key])
+
+
+def _agent_route(conn: Connection, session_id: str, stage: Row, *, now: str, settings: Settings,
+                 need_after_result: bool) -> TriageRoute:
+    """단계 원본 설정의 판단 Agent 검사(`no_repository` 다음부터 `no_base_commit` 까지) — 접수 판단과 결과 뒤 판단
+    (`need_after_result` — 러너 능력 `after_result_triage` 도 본다, phase 22)이 같이 쓴다."""
     origin = task_cycle.origin(conn, stage)
     config = origin.config
     if config is None:
-        return stop("no_repository", stage=stage)
+        return _stop("no_repository", stage=stage)
     if origin.state == "closed":
-        return stop("origin_closed", stage=stage, config=config)
+        return _stop("origin_closed", stage=stage, config=config)
     agent_id = config.triage_agent_id
     if agent_id is None:
-        return stop("no_agent", stage=stage, config=config)
+        return _stop("no_agent", stage=stage, config=config)
     repository_id = (config.workflow_repository_id
                      or task_cycle.match_for_source(conn, session_id, config).workflow_repository_id)
     found = {"stage": stage, "config": config, "agent_id": agent_id, "repository_id": repository_id}
     if repository_id is None:
-        return stop("no_runner_repository", **found)
+        return _stop("no_runner_repository", **found)
     agent = repo.get_agent(conn, agent_id)
     if (agent is None or not repo.is_session_agent(conn, session_id, agent_id) or agent["connection_type"] != "local"
             or agent["connector_id"] is None):
-        return stop("agent_missing", **found)
+        return _stop("agent_missing", **found)
     spec = _triage_spec(conn, session_id)
     record = select_agent(stage["task_id"], _required(spec, repository_id), _pool(conn, session_id), mode="manual",
                           chosen_agent_id=agent_id)
     if record.status != "selected":
-        return stop("no_capability", **found)
+        return _stop("no_capability", **found)
     if agent["delegation_policy"] != "run":
-        return stop("owner_approval", **found)
+        return _stop("owner_approval", **found)
     if not views.agent_online(agent, now=now, settings=settings):
-        return stop("offline", **found)
+        return _stop("offline", **found)
     connector = repo.get_connector(conn, agent["connector_id"])
     declared = json.loads(connector["supported_kinds_json"]) if connector["supported_kinds_json"] else []
     if spec.kind not in declared:
-        return stop("runner_outdated", **found)
+        return _stop("runner_outdated", **found)
+    if need_after_result and RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE not in json.loads(
+            connector["capabilities_json"] or "[]"):
+        return _stop("runner_no_next_step", **found)
     if agent["base_commit"] is None:
-        return stop("no_base_commit", **found)
-    if conn.execute("SELECT 1 FROM triage_logs WHERE work_item_id = ? AND state = 'running'",
-                    (work["work_item_id"],)).fetchone() is not None:
-        return stop("running", **found)
+        return _stop("no_base_commit", **found)
     return TriageRoute(**found, reason=None)
 
 
-def build_candidates(conn: Connection, work: Row, route: TriageRoute, *, now: str, settings: Settings) -> TriageCandidates:
-    """후보 목록 — 시작할 수 있는 종류, 활성 멤버, 열린 단계를 맡을 수 있는 Agent(켜짐·진행 중 업무 수), 같은 저장소의
-    끝나지 않은 업무. 지금 종류의 요구 능력은 열린 단계의 것 — 소스가 저장소를 자동 매칭하면 그 저장소로 본다
-    (준비 판정 `_match_facts` 와 같다)."""
-    session_id = work["session_id"]
-    stage, config = route.stage, route.config
+def _required_of(stage: Row, route: TriageRoute) -> Capability:
+    """단계의 요구 능력 — 소스가 저장소를 자동 매칭하면 그 저장소로 본다(준비 판정 `_match_facts` 와 같다)."""
     required = Capability.model_validate_json(stage["required_capability_json"])
-    if config.workflow_repository_id is None:
+    if route.config.workflow_repository_id is None:
         (key,) = required.scope
         required = Capability(code=required.code, scope={key: route.repository_id})
+    return required
+
+
+def _people(conn: Connection, session_id: str, *, now: str,
+            settings: Settings) -> tuple[list[TriageMemberCandidate], list[triage.AgentInfo]]:
+    """후보 재료 — 활성 멤버와 워크스페이스 Agent(켜짐·진행 중 업무 수·능력)."""
     counts = repo.open_work_counts(conn, session_id)
     members = [TriageMemberCandidate(member_id=m["member_id"], display_name=m["display_name"],
                                      open_work=counts.get(("member", m["member_id"]), 0))
@@ -157,6 +171,17 @@ def build_candidates(conn: Connection, work: Row, route: TriageRoute, *, now: st
         online=views.agent_online(a, now=now, settings=settings), open_work=counts.get(("agent", a["agent_id"]), 0),
         capabilities=tuple(Capability.model_validate(c) for c in json.loads(a["capabilities_json"])),
     ) for a in repo.list_session_agents(conn, session_id)]
+    return members, agents
+
+
+def build_candidates(conn: Connection, work: Row, route: TriageRoute, *, now: str, settings: Settings) -> TriageCandidates:
+    """후보 목록 — 시작할 수 있는 종류, 활성 멤버, 열린 단계를 맡을 수 있는 Agent(켜짐·진행 중 업무 수), 같은 저장소의
+    끝나지 않은 업무. 지금 종류의 요구 능력은 열린 단계의 것 — 소스가 저장소를 자동 매칭하면 그 저장소로 본다
+    (준비 판정 `_match_facts` 와 같다)."""
+    session_id = work["session_id"]
+    stage, config = route.stage, route.config
+    required = _required_of(stage, route)
+    members, agents = _people(conn, session_id, now=now, settings=settings)
     predecessors = [TriagePredecessorCandidate(work_key=format_work_key(w["key_number"]), title=w["title"],
                                                status=w["status"])
                     for w in repo.open_works_in_repository(conn, session_id, config.source_id,
@@ -176,8 +201,6 @@ def request_triage(conn: Connection, settings: Settings, *, session_id: str, wor
     route = triage_route(conn, work, now=now, settings=settings)
     if route.reason is not None:
         return TriageStart(False, None, route.reason)
-    spec = _triage_spec(conn, session_id)
-    agent = repo.get_agent(conn, route.agent_id)
     candidates = build_candidates(conn, work, route, now=now, settings=settings)
     criteria = repo.current_triage_criteria(conn, session_id)
     kinds = [k.kind for k in candidates.kinds]
@@ -190,9 +213,29 @@ def request_triage(conn: Connection, settings: Settings, *, session_id: str, wor
         form_fields=[(FORM_LABELS[key], form[key]["value"]) for key in FORM_HEADINGS if key in form],
         request=work["request"], candidates=candidates, evidence=evidence,
     )
+    try:
+        triage_id = _launch(conn, work=work, route=route, text=text, candidates=candidates,
+                            criteria_version=criteria["version"], trigger=trigger, member_id=member_id,
+                            status_reason="판단 접수 대기", now=now)
+    except TriageRunning:
+        return TriageStart(False, None, REASONS["running"])
+    return TriageStart(True, triage_id, None)
+
+
+def _launch(conn: Connection, *, work: Row, route: TriageRoute, text: str, candidates: TriageCandidates,
+            criteria_version: int, trigger: Literal["auto", "manual"], member_id: str | None, status_reason: str,
+            now: str, mode: str | None = None, cause: str = "intake", cause_execution_id: str | None = None,
+            cause_request_id: str | None = None) -> str:
+    """판단 단계·선택·실행 요청을 만들어 `repo.start_triage` 로 연다 — 접수 판단과 결과 뒤 판단(`mode` next_step)이
+    같이 쓴다. 반환은 triage_id. `TriageRunning`·`NextStepExists` 는 그대로 올린다."""
+    session_id = work["session_id"]
+    spec = _triage_spec(conn, session_id)
+    agent = repo.get_agent(conn, route.agent_id)
     task_id = f"task-{uuid4().hex[:12]}"
     required = _required(spec, route.repository_id)
     target = {"local_registration_id": agent["local_registration_id"], "base_commit": agent["base_commit"]}
+    if mode is not None:
+        target["mode"] = mode
     request = ExecutionRequest.model_validate({
         "contract_version": 1, "execution_id": f"exec-{token_hex(8)}", "task_id": task_id, "kind": spec.kind,
         "agent_id": agent["agent_id"], "task_revision": 1, "request": text, "input_artifact_ids": [],
@@ -202,17 +245,14 @@ def request_triage(conn: Connection, settings: Settings, *, session_id: str, wor
         "task_id": task_id, "session_id": session_id, "title": "판단", "request": text, "kind": spec.kind,
         "required_capability": required.model_dump(), "selection_mode": "manual", "chosen_agent_id": agent["agent_id"],
         "run_mode": "auto", "completion_mode": "review", "criteria": [], "predecessor_task_id": None, "revision": 1,
-        "target": target, "status": "실행 요청됨", "status_reason": "판단 접수 대기",
+        "target": target, "status": "실행 요청됨", "status_reason": status_reason,
     }
     selection = select_agent(task_id, required, _pool(conn, session_id), mode="manual",
                              chosen_agent_id=agent["agent_id"])
-    try:
-        triage_id = repo.start_triage(
-            conn, session_id=session_id, work_item_id=work_item_id, work_revision=work["revision"], task=task,
-            selection=selection, request=request, agent_id=agent["agent_id"], connector_id=agent["connector_id"],
-            trigger=trigger, member_id=member_id, criteria_version=criteria["version"],
-            input_sha256=triage.input_sha256(text), candidates=candidates, now=now,
-        )
-    except TriageRunning:
-        return TriageStart(False, None, REASONS["running"])
-    return TriageStart(True, triage_id, None)
+    return repo.start_triage(
+        conn, session_id=session_id, work_item_id=work["work_item_id"], work_revision=work["revision"], task=task,
+        selection=selection, request=request, agent_id=agent["agent_id"], connector_id=agent["connector_id"],
+        trigger=trigger, member_id=member_id, criteria_version=criteria_version,
+        input_sha256=triage.input_sha256(text), candidates=candidates, now=now, cause=cause,
+        cause_execution_id=cause_execution_id, cause_request_id=cause_request_id,
+    )

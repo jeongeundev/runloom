@@ -5,57 +5,92 @@
     {
       "step": 0,
       "name": "next-step-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T21:45:11+0900",
+      "summary": "문서만: ADR-0027 신규, ARCHITECTURE '결과 뒤 판단 — phase 22' 추가(이름·계약·스키마 v24·시작 지점·처분·tick 순서(_triage_after_results 는 _start_waiting_stages 뒤·_triage_new_work 앞)·행동별 적용·알림·문구·step 1~10 시그니처), GLOSSARY phase 22 용어, CURRENT_HANDOFF '22-next-step 진행 중', README 에 ADR 연결. README 와 바꾼 결정: mode 는 Literal['next_step']|None·next_action 과 함께 None 이면 직렬화 생략(_OmitUnknownMeasure), C3 는 TriageCandidates ValidationError 로 먼저 터짐(접수 판단에도 있음 — step 4 가 startable_kinds 에 지금 종류 포함+startable 표시), ① 업무 순환은 새 hold_code no_rule 만, 다음 단계·새 업무 후보는 입력 없는 종류만(규칙 없는 이음은 착수 안 됨), 재작업은 검토 request_changes 경로(stage_runs.request_changes 로 이동), stale_directory 는 revision 대신 담당표 항목 비교(설정 번호가 워크스페이스 전체), 체크아웃은 판단 Agent base_commit, 처분 disposition(queue/hold/fallback, 대기 상한 3600초)으로 대체 경로, [무시]는 dismissed 만(① 은 사람 요청 없음), 결과 뒤 판단 handling 은 accepted/dismissed. 검증: pytest 4192 passed·83 skipped, ruff 통과. 다음 step 주의: 판단 로그를 읽는 기존 11곳은 cause='intake' 로 거른다(ARCHITECTURE '원인 거르기' 표), RUNNER_CAPABILITIES 에 after_result_triage 추가는 step 2(step 1 은 상수만), WorkRow.next_action(기존 문구)과 NextAction 을 섞지 말 것.",
+      "completed_at": "2026-10-04T22:15:13+0900"
     },
     {
       "step": 1,
       "name": "next-action-contract",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T22:15:14+0900",
+      "summary": "contracts/v1.py: 상수 TRIAGE_CAUSES·TRIAGE_MODE_NEXT_STEP·RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE(RUNNER_CAPABILITIES 튜플엔 아직 안 넣음 — step 2)·RESPONSIBILITY_CANDIDATES_MAX=50·NEXT_ACTION_TYPES·NEXT_ACTION_*_MAX, NextStage·NextNewWork·NextInternalRequest·NextHuman·NextAction(discriminator type, 글 칸 공백만 거부 _not_blank), TriageTarget 을 _OmitUnknownMeasure 로 바꾸고 ExecutionRequest 바로 위로 옮김(mode: Literal['next_step']|None, None 이면 직렬화 생략 — ARCHITECTURE 기준이라 step.md 의 Literal['intake','next_step'] 대신), TriageResult 도 _OmitUnknownMeasure + next_action(있으면 proposed_kind·assignee·predecessors 비움, ready 필수는 next_action 없을 때만, unsuitable 이면 human), TriageKindCandidate.startable=True, TriageResponsibilityCandidate, TriageCause(request_returned⇔request_id), TriageCandidates.responsibilities(최대 50·키 중복 거부)·cause(kind==current_kind). docs/CONTRACT.md 17.4~17.6 예시 6블록 추가(fixture 67→73, test_contract_md_has_expected_block_counts 수 갱신). tests/workflow/contracts/test_v1.py 에 결과 뒤 판단 테스트 추가. 검증: pytest 4235 passed·83 skipped, ruff 통과. 다음 step 주의: connector/server 코드는 아직 next_action·mode 를 모름, step 2 가 RUNNER_CAPABILITIES 에 상수를 더하면 test_runner_capability_constants 를 고쳐야 함.",
+      "completed_at": "2026-10-04T22:30:24+0900"
     },
     {
       "step": 2,
       "name": "connector-next-action",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T22:30:24+0900",
+      "summary": "contracts/v1.RUNNER_CAPABILITIES=(verify_only, after_result_triage) — client.claim 코드 변경 없이 보고(test_client·test_v1 단정을 새 튜플로 갱신). connector/local_tool: NEXT_STEP_OUTPUT_SCHEMA(proceed·confidence·next_action·reasons·missing_information, next_action=anyOf 네 객체·type 단일 enum·칸 전부 required·additionalProperties false, oneOf 없음 — Claude/Codex strict 공용), assignee·reasons 스키마를 _TRIAGE_ASSIGNEE_SCHEMA·_TRIAGE_REASONS_SCHEMA 로 나눠 TRIAGE_OUTPUT_SCHEMA 와 공유(값 그대로). _run_triage: target.mode==TRIAGE_MODE_NEXT_STEP 이면 스키마 교체·proposed_kind/assignee None·predecessors [] 로 조립(도구가 말한 접수 칸·ID·커밋은 버림), 체크아웃(base_commit)·읽기 전용 검사·실패 코드(result_invalid·readonly_violation·commit_missing)는 그대로. prompt.py docstring 한 줄. 테스트: conftest make_triage_request(mode=), test_local_tool 결과 뒤 판단 4형 조립·옛 요청 접수 스키마·스키마 밖 7종 result_invalid·읽기 전용 위반·commit_missing·스키마 모양, 가짜 claude/codex 는 --json-schema/--output-schema properties 에 next_action 있으면 결과 뒤 판단 응답(claude=internal_request, codex=human). 검증: pytest 4256 passed·83 skipped, ruff 통과. 다음 step 주의: server/repo.record_runner_capabilities 가 RUNNER_CAPABILITIES 교집합이라 이제 after_result_triage 도 저장된다(기존 서버 테스트 영향 없음), server 는 아직 mode=next_step 요청을 만들지 않는다.",
+      "completed_at": "2026-10-04T22:45:00+0900"
     },
     {
       "step": 3,
       "name": "schema-v24",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T22:45:00+0900",
+      "summary": "adapters/db.py: SCHEMA_VERSION 24, _V13_NOTIFICATION_EVENTS(옛 NOTIFICATION_EVENTS 값, _V13_TABLES 가 사용)·NOTIFICATION_EVENTS(v24 = +internal_request_received·next_step_proposed), _V24_TABLES(triage_logs_v24 재생성 — v15 칸 뒤 cause(TRIAGE_CAUSES CHECK, 기본 intake)·cause_execution_id·cause_request_id FK, ARCHITECTURE 표의 CHECK 그대로, 기존 인덱스 3개 + ux_triage_logs_after_result·ux_triage_logs_request_returned 부분 UNIQUE / notifications_v24 재생성 / internal_requests.created_by_triage_id ALTER + ux_internal_requests_triage) 를 _SCHEMA 끝에 붙임, _migrate_23_to_24(foreign_key_check → RuntimeError) 를 올리기 경로 끝에 추가. repo·backup 코드는 변경 없음(INSERT 가 칸 이름 명시라 기본값으로 동작). 신규 fixture tests/workflow/adapters/fixtures/schema_v23.sql(v23 빈 DB sqlite_master). 테스트: test_db.py phase 22 절(상수·빈 DB 칸·FK·인덱스, 원인 CHECK·원인별 UNIQUE·접수 판단 무영향·결과 뒤 판단 처리 accepted/dismissed 만, 알림 사건·요청 출처 UNIQUE, v23→24 행·id 보존·cause=intake·다른 표 미재생성·멱등, FK 결함 롤백, v22/v23 올린 DB = 빈 DB sqlite_master 원문 일치, v4/v14/v22→24), test_backup.py v23 백업 복원→24·재백업 왕복. 기존 테스트 갱신: 버전 리터럴 23→24(test_db·test_backup·e2e jira/triage), test_v13_constants 는 _V13_NOTIFICATION_EVENTS, v15 판단 표 테스트는 v24 칸·FK 로, v15→16 마이그레이션 테스트는 triage_logs 칸 비교를 v24 로·v24 가 재생성하는 두 표를 sqlite_master 비교에서 제외, test_internal_request_store·test_responsibility_store 의 옛 스키마 조립에 _V24_TABLES 제거 추가. 검증: pytest 4269 passed·83 skipped, ruff 통과. 다음 step 주의: 결과 뒤 판단 행은 trigger='auto'·final_assignee/final_kind NULL·handling 은 accepted/dismissed 만, cause='intake' 가 아니면 cause_execution_id 필수(request_returned 도), 판단 로그를 읽는 기존 코드는 아직 cause 로 거르지 않음(step 5).",
+      "completed_at": "2026-10-04T23:00:15+0900"
     },
     {
       "step": 4,
       "name": "next-step-domain",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T23:00:15+0900",
+      "summary": "신규 domain/next_step.py(상수 NEXT_STEP_WAIT_SECONDS·NEEDS_INFORMATION_CODES·NEXT_STEP_HUMAN_CODE·ACTION_LABELS 등, disposition, next_step_kinds, assemble_next_step_candidates, PriorResult·ResponseNote·ReturnedRequest, compose_next_step_request, validate_next_step(9개 하위 사유), action_label·action_line, stage_request_text, rework_note, NextStepFact·next_step_status, next_step_reason — ARCHITECTURE 시그니처 그대로). domain/triage.py: _fenced/_line → 공개 fenced/one_line, 요청문 조각을 공용 함수 clip·work_lines·people_lines·evidence_section·join_sections·agent_candidates 로 나눔(접수 요청문 바이트 그대로 — golden 테스트), startable_kinds C3 고침(지금 종류는 입력 있어도 후보), assemble_candidates 가 startable=not input_kinds 채움, validate 맨 앞 next_action_forbidden. task_followup._after_fix 규칙 없음에 hold_code='no_rule'(worker _HOLD_LABELS 에 없어 동작 그대로). 시작 판정은 ARCHITECTURE 대로 별도 함수 없이 decide_followup(no_rule·NEEDS_INFORMATION_CODES)+disposition 으로 — 테스트 표로 고정. 테스트: 신규 tests/workflow/domain/test_next_step.py, test_triage.py(C3·golden·next_action_forbidden·공개 이름), test_task_followup.py(no_rule). adapters/server 변경 없음. 검증: pytest 4341 passed·83 skipped, ruff 통과. 다음 step 주의: compose_next_step_request 는 candidates.cause 필수(없으면 ValueError), responses 는 오래된 순으로 넘기면 마지막 3개만 씀, 재작업도 원인 Agent 가 agents 후보에 있어야 통과(assignee_not_candidate), validate_next_step 의 reason 에 '<사유> — ' 접두는 호출자가 붙인다.",
+      "completed_at": "2026-10-04T23:18:21+0900"
     },
     {
       "step": 5,
       "name": "next-step-repo",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T23:18:22+0900",
+      "summary": "adapters/errors.py: NextStepExists(cause_key)·NextStepHandled(triage_id). adapters/repo.py: 원인 거르기 표대로 latest_triage·work_item_facts.triage·list_work_rows 배지·autostart_candidates(두 조회)·triage_handled_counts·auto_triage_works·list_triage_facts(두 조회)를 cause='intake' 로, start_triage 에 cause·cause_execution_id·cause_request_id(대체는 같은 계열만, 결과 뒤 판단은 원인 행 있으면 NextStepExists), _close_triage_stage 는 결과 뒤 판단이면 next_step_reason 문구, 새 next_step_for_cause·latest_next_step·next_step_cause_current·generic_results_awaiting_next_step·returned_requests_awaiting_next_step(step.md 요청으로 step 8 대신 여기서)·cause_prior(UNREADABLE_RESULT)·record_next_step_handling(자체 BEGIN 없음)·dismiss_next_step, work_item_facts.next_step(_next_step_fact: running/proposed 는 원인 그대로일 때만, accepted+판단이 만든 요청 반환·반려 전 → request_waiting). domain/work_status.py: WorkItemFacts.next_step, 직접 작업 다음·확인 필요 앞에서 next_step_status. server/triage_runs.py: _agent_route(need_after_result)·REASONS['runner_no_next_step']·_stop·_required_of·_people·_launch(접수·결과 뒤 공용, mode·cause 전달)로 나눔 — 접수 동작 그대로. 신규 server/next_step_runs.py: NextStepCause·next_step_route·build_next_step_candidates(활성 담당 범위만)·request_next_step(TriageRunning·NextStepExists → '판단 중', ArtifactStore(settings.artifact_dir) 로 원인 결과 읽음, 사람 응답 이름은 human_responses.member_id). 테스트: 신규 tests/workflow/server/test_next_step_runs.py 28개, test_work_status 결과 뒤 판단 4개, test_errors, test_triage_runs REASONS 표에 새 키. 검증: pytest 4375 passed·83 skipped, ruff 통과. 다음 step 주의: 워커는 아직 request_next_step 을 부르지 않음(step 6), _judge_triage 판정기 선택도 step 6, cause_prior 의 outcome 이 빈 문자열이면 TriageCause 검증 실패(판정 통과 결과는 봉투를 읽을 수 있음 전제), apply_*·mark_next_step_accepted 는 step 7.",
+      "completed_at": "2026-10-04T23:39:57+0900"
     },
     {
       "step": 6,
       "name": "worker-after-result",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T23:39:57+0900",
+      "summary": "server/worker.py: TickReport.next_step_started·next_step_fallbacks, Worker._next_step_queue(tick 머리에서 비움), tick 에 _triage_after_results 를 _start_waiting_stages 뒤·_triage_new_work 앞에 추가, _apply_followup 에서 ② request_human∧NEEDS_INFORMATION_CODES → _next_step_or_human(disposition queue=원인 담기·hold=대기·fallback=원래 사람 요청 같은 cause_key+확인 필요), ① none∧hold_code no_rule → _queue_after_result(fallback 없음), 공용 _after_result_cause(판단 행·원인 나이(판정 decided_at)·나이 상한 안일 때만 next_step_route 이유 → next_step.disposition, work_item_id 없는 옛 단계는 fallback), _triage_after_results(이번 tick 큐 + generic_results_awaiting_next_step(since=now-3600) → 워크스페이스마다 running 판단 있으면 0건, 원인 시각 순, 경로 이유·사용량 한도 쉼·러너 바쁨이면 다음 원인, request_next_step 1건), _judge_triage 는 cause!='intake' 면 next_step.validate_next_step. ③ 반환·next_step_proposed 알림은 step 8 로 남김. 테스트: 신규 tests/workflow/server/test_worker_next_step.py 21개(② 시작·사람 요청 없음, 제안 판정·업무 '다음 단계 제안 · 사람 확인', 접수 모양 결과는 next_action_missing, 후보 밖·실행 실패·기한 초과·무시 → 원래 요청 하나(재시작 포함), 능력 없음·판단 Agent 없음 → 기존 동작, 러너 바쁨 → 대기 후 상한 넘으면 요청, ① no_rule 시작·실패해도 조용, 규칙 있으면 규칙대로, 판정 실패·실행 실패 시작 안 함, 사용자 정의 종류 시작·판정 실패·능력 없음, 접수 판단보다 먼저·running 1건, 접수 판단 도는 중엔 대기, 재시작 멱등). 기존 테스트 갱신: test_worker tick 순서 단정에 _triage_after_results 추가(calls[-11:]), test_next_step_runs needs_info 픽스처는 판정 tick 동안만 러너 능력을 비워 원래 사람 요청 경로로 만들고 다시 보고. 검증: pytest 4396 passed·83 skipped, ruff 통과. 다음 step 주의: ② 는 [제안대로] 처리 accepted 면 hold(원래 요청 안 염), dismissed 면 다음 tick fallback 으로 원래 요청이 열린다 — step 7 dismiss 뒤 별도 사람 요청을 만들지 말 것, 판단 Agent 러너 claim 이 after_result_triage 를 보고하면 e2e 에서도 ①② 가 판단으로 간다.",
+      "completed_at": "2026-10-05T00:02:03+0900"
     },
     {
       "step": 7,
       "name": "accept-next-step",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T00:02:03+0900",
+      "summary": "server/work_actions.py: NEXT_STEP_STALE·accept_next_step(공통 검사 404 not_found·409 work_closed·최신 결과 뒤 판단 proposed·처리 없음·next_step_cause_current 아니면 409 next_step_stale, 제안 종류 지워짐 409 kind_unavailable, 저장소 id 없음 stale)·dismiss_next_step·_stage_row(선행·산출물 인계 없이 stage_request_text 글로 — ARCHITECTURE 기준이라 step.md 의 '입력 산출물 인계' 대신 글 인계를 테스트), 행동별: stage → repo.apply_next_stage(처리 accepted+원인 Task 완료 '다음 단계로 넘김'+새 단계) 뒤 assign_work(에이전트=hand_to_agent·멤버=배정, accept_triage 와 같은 경로), rework → repo.mark_next_step_accepted 뒤 stage_runs.request_changes(comment=rework_note, ③ 이면 next_step_runs._returned), new_work → repo.apply_next_work(_create_followup new_work·spawned_from·원인 Task 완료 '새 업무로 넘김') 뒤 새 업무에 assign_work, internal_request → internal_request_store.create_from_next_step(BEGIN IMMEDIATE·판단 시점 후보 항목과 지금 항목의 judgment_member_id·agent_id 비교 → 409 stale_directory '담당 범위 표가 바뀌었습니다 — [무시] 뒤 직접 요청하세요.'·_create(created_by_triage_id, submission_key next_step:<id>, 요청자=누른 멤버, revision=지금 설정 번호)·처리 accepted·업무 상태 재계산, RequestProblem→WorkActionError), human → repo.apply_next_human(next_step_human:<triage_id>)+기존 human_request 알림(비밀 저장소 있을 때). NextStepHandled→409 next_step_stale. adapters/repo.py: create_followup_once 의 트랜잭션 안쪽을 _create_followup 으로 나눔(동작 그대로), apply_next_stage·apply_next_work·apply_next_human·mark_next_step_accepted(처리 조건부 UPDATE 실패 시 NextStepHandled). server/stage_runs.py: request_changes·_result_commit(웹 task_review 의 request_changes 본문을 옮김 — 웹은 _page_errors 로 부름, 고아가 된 web._start_execution·미사용 import 제거). web.py: POST /work/{key}/next-step/accept·/dismiss(DELEGATE·Origin 검사·303 /tasks?open=). human_api._INFORMATION_CODES 에 next_step_human(허용 응답은 기본 resume·close). 별도 JSON API 는 ARCHITECTURE 경로 표에 없어 만들지 않음, internal_request_received 알림(enqueue_request_notification)은 step 8. 테스트: 신규 tests/workflow/server/test_work_actions_next_step.py 18개(stage 멤버·에이전트, kind_unavailable, rework 새 실행·지적 산출물, new_work spawned_from, internal_request 생성·원인 Task 그대로·두 번 눌러도 하나·stale_directory·무관한 설정 변경은 통과·invalid_recipient, human 요청·원래 요청 안 열림, 오래된 판단·404·work_closed, [무시] 후 다음 tick 원래 요청 하나, 웹 accept·dismiss·로그인·Origin, 경합 시 처리 한 번). 검증: pytest 4414 passed·83 skipped, ruff 통과. 다음 step 주의: accept_next_step 의 internal_request 뒤에 enqueue_request_notification 을 붙일 자리(work_actions), 권한 403 은 모든 역할이 DELEGATE 라 Origin 403 으로만 검사.",
+      "completed_at": "2026-10-05T00:23:01+0900"
     },
     {
       "step": 8,
       "name": "request-notify-return",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T00:23:01+0900",
+      "summary": "domain/notification._HEADLINES 에 internal_request_received '요청 받음'·next_step_proposed '다음 단계 제안'. server/worker.py: enqueue_event_notification 의 행 쓰기를 _enqueue_rows 로 나눔(동작 그대로), 새 enqueue_request_notification(받는 사람 1명, task_id NULL, dedupe internal_request_received:<request_id>, 제목=원래 업무 제목, 문구 '<요청자> · <system_id>/<request_kind> · <목적 첫 줄 80자>', 링크 <public_url>/requests), _triage_verdict 가 결과 뒤 판단 proposed 기록 시 _notify_next_step(next_step_proposed:<triage_id>, 원인 Task, turn_recipients_of, detail='<action_line> · 확신도 0.82', 이름은 저장된 후보 members·agents·responsibilities), _triage_after_results 에 ③(repo.returned_requests_awaiting_next_step → _returned_cause: 판단이 만든 요청은 그 판단의 cause_execution_id, 아니면 open_stage 활성 실행 — result_ready·해제 안 됨·Task 안 끝남일 때만 → disposition, queue 면 같은 원인 목록에 넣어 원인 시각 순으로 시작, 시작 불가·상한 초과면 판단이 만든 요청만 next_step_human 사람 요청 '사내 요청 결과가 돌아왔습니다 — 다음 단계를 정해 주세요: <반환 요약 첫 줄 120자>'·cause_key next_step_human:request:<id>, 사람이 만든 요청은 지금 그대로 없음). 알림 호출: work_actions.accept_next_step internal_request 뒤(secrets 있을 때), web POST /work/{key}/internal-requests·/requests/{id}/reroute, API internal_request_api create·reroute(_notify) — 트랜잭션 뒤, 재전송은 같은 request_id 라 한 번. 테스트: 신규 tests/workflow/server/test_worker_next_step_notify.py 12개(제안 알림 받는 사람·문구·재시작 한 번, 사내 요청 이름, 실패는 알림 없음, [제안대로] 요청 알림 한 번·payload, 개인 웹훅만·첫 줄 80자·URL 미포함, 웹훅 없음, ③ 판단 제안 요청 반환 → 시작 한 번·요청문 반환 요약·멱등, 사람 요청 반환 → open_stage 실행, 오래된 반환 안 함, 능력·판단 Agent 없음 → 지금 동작, 판단이 만든 요청 + 능력 없음 → next_step_human 한 번), test_notification 문구, test_internal_request_api·web 생성·재전달 알림 한 번. 검증: pytest 4429 passed·83 skipped, ruff 통과. 다음 step 주의: 화면(step 9)은 변경 없음, ③ 판단이 실패·무시되면 대체 경로가 없다(조회가 request_returned 행 있는 요청을 빼므로 — ARCHITECTURE 조회 정의 그대로).",
+      "completed_at": "2026-10-05T00:40:42+0900"
     },
     {
       "step": 9,
       "name": "next-step-panel",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T00:40:43+0900",
+      "summary": "server/views.py: next_step_panel(conn, session_id, work, *, allowed, now, settings) → panel.next_step — 최신 결과 뒤 판단 행 하나(superseded·없음 → None), state running/failed/proposed/stale/accepted/dismissed, 원인 문구 _next_step_cause_line(after_result '<종류 라벨> 결과 <outcome>', request_returned '사내 요청 반환 · <system_id>/<request_kind>'), 이름은 저장된 후보(members·agents·responsibilities)로 next_step.action_line, can_act = DELEGATE 이고 처리 없음·next_step_cause_current 일 때만. templates/_work_panel.html: 절 data-panel-section=\"next_step\"(data-next-step-state) 판단 절 뒤·지금 할 일 앞 — 판단 중 한 줄, 제안 머리 '<행동 이름> · <진행 여부> · 확신도 · 기준 v<n>'·원인·행동 한 줄·목적/질문 전문(.pre-wrap)·근거·모자란 정보·[제안대로]·[무시], 지난 결과·처리됨·무시함은 <details> 접힘(버튼 없음), 실패 '다음 단계 판단 실패 · <이름> · <메시지 120자>'. style.css .pre-wrap 한 줄. domain/work_list.WorkRow.next_step, adapters/repo.list_work_rows 가 묶음 조회 한 번(_NEXT_STEP_BADGES, _next_step_fact 와 같은 조건)으로 채움, home.html 배지 data-next-step(목록 '다음 할 일' 칸·보드 카드). internal_requests.html 'data-created-by-triage 판단 제안으로 생성'. 업무 이유 표는 step 5 test_work_status 에 이미 있어 추가 안 함. 테스트: 신규 tests/workflow/server/test_web_next_step.py 17개(상태별 절·문구·권한별 버튼(views 직접 호출)·이스케이프·접수 판단 절 회귀·목록 배지 전환·/requests 표시). 기존 테스트 변경 없음. 검증: pytest 4446 passed·83 skipped, ruff 통과. 다음 step 주의: 처리 시각은 웹 경로가 실제 시각으로 남기므로 화면 단정은 handled_at 행 값으로, 패널의 request_returned 원인 문구는 internal_requests 행을 직접 읽는다.",
+      "completed_at": "2026-10-05T00:55:48+0900"
     },
     {
       "step": 10,
       "name": "next-step-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T00:55:49+0900",
+      "summary": "tests/e2e/test_next_step_cycle.py 신규(가짜 claude 가 --json-schema 모양으로 결과 뒤 판단·접수 판단·검토·사용자 정의 종류·수정 분기, 표식 [ask]·[next:internal|human|new_work]; RUN-26 장면 ②→사내 요청 제안→[제안대로]→받는 사람 알림·수락·조사·검토·반환→③ 재작업 제안→PR 병합 완료, [무시]→원래 사람 요청, ① 규칙 없음→새 업무, 옛 러너→지금 동작, v23 사본→v24), test_team_handoff 러너 능력 단정을 step 2 새 튜플로 갱신, 문서: SELFHOST 업그레이드 v24(백업→install.sh→러너 재설치), VERIFICATION_LOG phase 22 절(실연동 미실행 명시), CURRENT_HANDOFF 22 완료·할 일·실연동 목록, ARCHITECTURE 구현 상태. 제품 코드 변경 없음. 검증: pytest 4446 passed·92 skipped, ruff 통과, WORKFLOW_E2E=1 새 e2e 9 passed·triage/monitor 포함 29 passed·전체 e2e 91 passed·1 skipped(docker 게이트). 다음 주의: service 병합·셀프호스트 v24·러너 재설치·실연동은 사용자 지시 뒤, ③ 판단 실패·무시 시 대체 경로 없음.",
+      "completed_at": "2026-10-05T01:40:21+0900"
     }
-  ]
+  ],
+  "created_at": "2026-10-04T21:45:11+0900",
+  "completed_at": "2026-10-05T01:40:21+0900"
 }

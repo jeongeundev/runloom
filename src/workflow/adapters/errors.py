@@ -126,3 +126,19 @@ class EmailTaken(AdapterError):
 
 class LastAdmin(AdapterError):
     """역할 변경·비활성화로 활성 관리자가 0 이 된다 (409 `last_admin`)."""
+
+
+class NextStepExists(AdapterError):
+    """같은 원인(결과 하나·반환 하나)에 결과 뒤 판단이 이미 있다 — `ux_triage_logs_after_result`·`…_request_returned` (phase 22)."""
+
+    def __init__(self, cause_key: str):
+        super().__init__(f"결과 뒤 판단이 이미 있습니다 — {cause_key}")
+        self.cause_key = cause_key
+
+
+class NextStepHandled(AdapterError):
+    """결과 뒤 판단 제안이 이미 처리됐다(`accepted`·`dismissed`) (phase 22)."""
+
+    def __init__(self, triage_id: str):
+        super().__init__(f"다음 단계 제안 {triage_id} 는 이미 처리됐습니다")
+        self.triage_id = triage_id

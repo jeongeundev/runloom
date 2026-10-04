@@ -7,7 +7,7 @@
 {% for r in requests %}
 <div class="card" id="{{ r.request_id }}" data-internal-request="{{ r.request_id }}">
   <p><a href="/tasks?open={{ r.work_key }}">{{ r.work_key }}</a> · {{ r.system_id }} · {{ r.request_kind }}
-    · <strong>{{ r.phase_label }}</strong></p>
+    · <strong>{{ r.phase_label }}</strong>{% if r.created_by_triage_id %} <span class="small" data-created-by-triage>판단 제안으로 생성</span>{% endif %}</p>
   <p>{{ r.requester_name }} → {{ r.recipient_name }} · 판단 담당자 {{ r.judgment_name }}</p>
   <p style="white-space:pre-wrap">{{ r.purpose }}</p>
   <p class="small">요청 {{ r.created_at|kst }}{% if r.accepted_at %} · 수락 {{ r.accepted_at|kst }}{% endif %}</p>

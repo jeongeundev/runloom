@@ -50,6 +50,17 @@ def test_text_for_delegation_events():
         "[Runloom] 거절 — 쿠폰 오류: 이OO 가 거절 — 오늘은 Mac 을 못 씁니다"
     )
 
+def test_text_for_next_step_events():
+    """phase 22 사건 2개의 머리(ARCHITECTURE "결과 뒤 판단 — phase 22" 알림)."""
+    assert notification_text("internal_request_received", title="쿠폰 오류",
+                             detail="김OO · kube_proxy/investigation · 호스트 sysctl 값 확인") == (
+        "[Runloom] 요청 받음 — 쿠폰 오류: 김OO · kube_proxy/investigation · 호스트 sysctl 값 확인"
+    )
+    assert notification_text("next_step_proposed", title="쿠폰 오류", detail="사람 확인 — 금액? · 확신도 0.82") == (
+        "[Runloom] 다음 단계 제안 — 쿠폰 오류: 사람 확인 — 금액? · 확신도 0.82"
+    )
+
+
 def test_text_adds_the_task_link_on_its_own_line():
     text = notification_text("task_failed", title="버그 1", detail="x", task_url="https://runloom.example/tasks/t")
     assert text.splitlines() == ["[Runloom] 실패 — 버그 1: x", "https://runloom.example/tasks/t"]

@@ -111,6 +111,7 @@ def test_reasons_are_the_architecture_texts():
         "owner_approval": "판단 에이전트의 맡기기 정책이 승인 필요 — '바로 실행'으로 바꾸세요",
         "offline": "판단 에이전트의 러너 꺼짐",
         "runner_outdated": "러너 업데이트 필요 — 판단 미지원",
+        "runner_no_next_step": "러너 업데이트 필요 — 결과 뒤 판단 미지원",
         "no_base_commit": "러너의 기준 커밋 보고 전 — 잠시 뒤 다시",
         "running": "판단 중",
     }

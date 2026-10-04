@@ -308,6 +308,29 @@
 | 담당자별 / `AssigneeReport` | 멤버·에이전트·담당 없음 행 — 완료·진행 중은 **지금** 담당, 응답 시간은 응답한 멤버, 내 차례 대기는 **지금** 받는 사람, 실행은 그 실행의 Agent 에 귀속(step 4) | `성과 평가`, `생산성 순위`, `leaderboard` |
 | 내 차례가 된 시각 / `turn_since` | 업무 `status_changed` 중 `to = '내 차례'` 이고 `from != '내 차례'` 인 가장 최근 행의 시각(이유만 바뀐 행은 세지 않는다)(step 5) | `대기 시작`(준비 판정 `blocked` 와 혼동) |
 
+## 계획 용어 — phase 22 결과 뒤 판단 (미구현)
+
+[ADR-0027](adr/0027-next-step-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "결과 뒤 판단 — phase 22". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|---|---|---|
+| 결과 뒤 판단 / `next_step` 판단 | 결과가 규칙 밖(①)·`needs_information`(②)·사내 요청 반환(③)일 때 그 업무의 판단 Agent 가 다음 행동 하나를 **제안**하는 판단(step 5·6·8). 같은 내장 종류 `triage`·판단 단계·`triage_logs` 를 쓰고 `cause != 'intake'` 로 가른다. 자동 시작·[다시 판단] 없음 | `자동 진행`, `오케스트레이터`, `리더 에이전트`, `squad`, `파이프라인` |
+| 접수 판단 | phase 19 의 판단 — 담당 없는 새 업무에 종류·담당·선행 제안(`cause = 'intake'`). 결과 뒤 판단과 구분할 때만 이렇게 부른다 | `첫 판단`, `intake triage`(화면) |
+| 원인 / `cause` | 판단 로그 칸 — `intake`·`after_result`(①②)·`request_returned`(③)(step 3). 원인 참조 `cause_execution_id`(결과 뒤 판단은 늘 있음)·`cause_request_id`(③ 만). 원인당 결과 뒤 판단 하나(부분 UNIQUE) | `trigger`(그것은 `auto`·`manual` — 누가 시작했나), `reason`, `source` |
+| 원인 실행 / 원인 Task | 결과 뒤 판단을 부른 결과 실행과 그 Task(step 5). ③ 은 판단이 만든 요청이면 그 판단의 원인 실행, 아니면 원래 업무 맡길 단계의 활성 실행. [제안대로] 는 원인이 그대로(`result_ready`·해제 안 됨·Task 끝나지 않음)일 때만 | `선행 Task`(`predecessor_task_id` 와 혼동), `부모 업무` |
+| `next_step` 모드 / `TriageTarget.mode` | 결과 뒤 판단 요청의 target 표시 `"next_step"`(step 1). 접수 판단은 None 이고 직렬화에서 빠진다(옛 러너 호환) | `mode: "intake"`(값으로 쓰지 않는다 — None), `next-step`(코드 값은 밑줄) |
+| 다음 행동 / `NextAction` | 결과 뒤 판단 결과의 `next_action` — `type` 으로 가르는 네 모양 `NextStage`(`stage` — 다음 단계, `rework=true` 면 재작업)·`NextNewWork`(`new_work`)·`NextInternalRequest`(`internal_request`)·`NextHuman`(`human`)(step 1). 완료·종료는 없다 | `WorkRow.next_action`(목록의 "지금 할 일" 문구 — 다른 것), `command`, `plan`, `완료 제안` |
+| 다음 단계 제안 | 결과 뒤 판단 로그 `proposed` 중 처리 없는 것 — 패널 "다음 단계 제안" 절, 업무 이유 `다음 단계 제안 · <행동 이름>`, 알림 `next_step_proposed`(step 6·8·9) | `추천`, `자동 배정`, `AI 판정` |
+| [제안대로] / `accept_next_step` | 다음 단계 제안을 사람이 한 번 눌러 확정 — 행동별로 새 단계·재작업·새 업무·사내 요청·사람 요청을 만든다(step 7). 처리 `accepted`. 접수 판단의 [제안대로 맡기기](`accept_triage`)와 다른 함수 | `승인`(소유자 승인과 혼동), `실행`, `자동 시작` |
+| 처분 / `disposition` | 원인 하나를 tick 마다 다시 보고 정하는 `queue`(판단 자리 기다림)·`hold`(판단 중·제안 중·처리됨)·`fallback`(대체 경로)(step 4·6). 원인 나이 상한 `NEXT_STEP_WAIT_SECONDS = 3600` | `재시도`, `상태`(판단 로그 `state` 와 혼동) |
+| 대체 경로 / `fallback` | 결과 뒤 판단을 시작할 수 없거나 실패·무시·대체됐을 때 가는 지금 동작 — ② 원래 사람 요청, ③(판단이 만든 요청) `next_step_human`, ① 없음(step 6·8) | `오류 처리`, `에스컬레이션` |
+| `next_step_human` | 결과 뒤 판단의 사람 요청 코드 — `human` 행동(`cause_key` `next_step_human:<triage_id>`)과 ③ 대체 경로(`next_step_human:request:<request_id>`)(step 7·8). 응답은 `resume`(답 글 필수)·`close` | `human_needed`, `escalation` |
+| 러너 능력 `after_result_triage` | claim `capabilities` 의 값 — 이 러너가 `next_step` 모드 판단을 실행할 수 있음(step 2). 없으면 결과 뒤 판단을 시작하지 않고(`러너 업데이트 필요 — 결과 뒤 판단 미지원`) 실행도 배정하지 않는다 | `supported_kinds` 의 값(종류가 아니다), `next_step` 능력 |
+| 담당 범위 후보 / `TriageResponsibilityCandidate` | 결과 뒤 판단 후보에 넣은 담당 범위 표 항목(활성만, 최대 50)(step 1·5). 사내 요청 제안은 이 안에서만 받는다 | `권한`, `라우팅 테이블` |
+| 판단이 만든 요청 / `created_by_triage_id` | [제안대로] `internal_request` 로 만든 사내 요청의 판단 참조(step 3·7). 요청자는 누른 멤버. `/requests` 에 `판단 제안으로 생성` | `자동 요청`, `시스템 요청` |
+| `internal_request_received` | 사내 요청이 생겼을 때 받는 사람 한 명에게 가는 알림 사건(판단·사람·재전달 모두)(step 8) | `request_created`, `assigned` |
+| `next_step_proposed` | 다음 단계 제안이 생겼을 때 그 업무의 받는 사람(`turn_recipients_of`)에게 가는 알림 사건(step 8) | `triage_done`, `next_action` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.
@@ -343,3 +366,7 @@
 - `internal_request_questions`: 지정 수신자의 정보 질문과 원래 요청자의 답변·작성자·시각을 보존하는 표. 요청 버전과 별개로 질문은 미답변 버전 1, 답변 버전 2다.
 
 - `internal_request_judgments`: 특정 조사 결과·정보 버전의 반환 여부에 대한 지정 담당자의 판단 요청·응답 이력을 보존하는 표. 미응답 버전 1, 응답 버전 2다.
+
+- 접수 판단과 결과 뒤 판단: 둘 다 판단 로그 한 행·판단 단계·판단 Agent 를 쓰지만, 접수 판단(`cause = 'intake'`)은 담당 없는 새 업무의 종류·담당·선행을, 결과 뒤 판단(`after_result`·`request_returned`)은 진행 중 업무의 다음 행동 하나(`NextAction`)를 제안한다. 자동 시작·자격 건수·[다시 판단]·판단 품질 지표는 접수 판단에만 있다. 판단 로그를 읽는 새 코드는 원인을 먼저 가린다.
+- 다음 행동(`NextAction`)과 후속 규칙(`SuccessorRule`): 규칙은 등록된 종류 사이의 고정 연결이라 맞으면 사람 없이 이어지고, 다음 행동은 규칙에 맞는 것이 없을 때 판단이 후보 안에서 고른 제안이라 사람이 [제안대로] 를 눌러야 생긴다. 다음 행동으로 이은 새 단계는 선행(`predecessor_task_id`)·산출물 인계가 없다 — 이전 결과는 요청 글로 넘긴다.
+- 재작업(`stage` `rework=true`)과 사람 응답 `resume`: 재작업 제안은 검토 [수정 요청] 경로(`review_comment` 지적 산출물 + 새 실행)를 쓰고, `resume` 은 사람 요청에 답해 그 단계 revision 을 올린다. `needs_information` 결과에 판단이 돌면 원래 사람 요청은 판단이 실패·무시될 때만 열린다.
