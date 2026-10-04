@@ -1,0 +1,61 @@
+{
+  "project": "workflow",
+  "phase": "22-next-step",
+  "steps": [
+    {
+      "step": 0,
+      "name": "next-step-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "next-action-contract",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "connector-next-action",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "schema-v24",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "next-step-domain",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "next-step-repo",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "worker-after-result",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "accept-next-step",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "request-notify-return",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "next-step-panel",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "next-step-verify",
+      "status": "pending"
+    }
+  ]
+}
