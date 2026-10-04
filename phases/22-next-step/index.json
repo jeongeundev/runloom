@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "schema-v24",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T22:45:00+0900",
+      "summary": "adapters/db.py: SCHEMA_VERSION 24, _V13_NOTIFICATION_EVENTS(옛 NOTIFICATION_EVENTS 값, _V13_TABLES 가 사용)·NOTIFICATION_EVENTS(v24 = +internal_request_received·next_step_proposed), _V24_TABLES(triage_logs_v24 재생성 — v15 칸 뒤 cause(TRIAGE_CAUSES CHECK, 기본 intake)·cause_execution_id·cause_request_id FK, ARCHITECTURE 표의 CHECK 그대로, 기존 인덱스 3개 + ux_triage_logs_after_result·ux_triage_logs_request_returned 부분 UNIQUE / notifications_v24 재생성 / internal_requests.created_by_triage_id ALTER + ux_internal_requests_triage) 를 _SCHEMA 끝에 붙임, _migrate_23_to_24(foreign_key_check → RuntimeError) 를 올리기 경로 끝에 추가. repo·backup 코드는 변경 없음(INSERT 가 칸 이름 명시라 기본값으로 동작). 신규 fixture tests/workflow/adapters/fixtures/schema_v23.sql(v23 빈 DB sqlite_master). 테스트: test_db.py phase 22 절(상수·빈 DB 칸·FK·인덱스, 원인 CHECK·원인별 UNIQUE·접수 판단 무영향·결과 뒤 판단 처리 accepted/dismissed 만, 알림 사건·요청 출처 UNIQUE, v23→24 행·id 보존·cause=intake·다른 표 미재생성·멱등, FK 결함 롤백, v22/v23 올린 DB = 빈 DB sqlite_master 원문 일치, v4/v14/v22→24), test_backup.py v23 백업 복원→24·재백업 왕복. 기존 테스트 갱신: 버전 리터럴 23→24(test_db·test_backup·e2e jira/triage), test_v13_constants 는 _V13_NOTIFICATION_EVENTS, v15 판단 표 테스트는 v24 칸·FK 로, v15→16 마이그레이션 테스트는 triage_logs 칸 비교를 v24 로·v24 가 재생성하는 두 표를 sqlite_master 비교에서 제외, test_internal_request_store·test_responsibility_store 의 옛 스키마 조립에 _V24_TABLES 제거 추가. 검증: pytest 4269 passed·83 skipped, ruff 통과. 다음 step 주의: 결과 뒤 판단 행은 trigger='auto'·final_assignee/final_kind NULL·handling 은 accepted/dismissed 만, cause='intake' 가 아니면 cause_execution_id 필수(request_returned 도), 판단 로그를 읽는 기존 코드는 아직 cause 로 거르지 않음(step 5)."
     },
     {
       "step": 4,

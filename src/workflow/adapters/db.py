@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from workflow.contracts.jira import JIRA_DELIVERY_STATES
-from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES
+from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES, TRIAGE_CAUSES
 from workflow.adapters.repo import (
     ensure_first_admin,
     seed_default_field_mappings,
@@ -23,7 +23,7 @@ from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -513,7 +513,8 @@ CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(sessi
 # ARCHITECTURE "사람 사이 인계 — phase 17" 스키마 v13. tasks 는 재생성하지 않는다(ALTER 만). notifications·work_item_events 만
 # CHECK 를 넓히려고 재생성한다 — 두 표를 참조하는 표는 없다. human_requests·human_responses 는 code·action 에 CHECK 가 없어
 # 그대로 둔다(owner_approval·approve·decline·reverify·withdraw 는 값만 새로 쓴다).
-NOTIFICATION_EVENTS = (*_V8_NOTIFICATION_EVENTS, "delegated_to_you", "runner_offline_waiting", "delegation_declined")
+# v13 이 넓힌 알림 사건. v24 가 표를 재생성해 NOTIFICATION_EVENTS 로 다시 넓힌다.
+_V13_NOTIFICATION_EVENTS = (*_V8_NOTIFICATION_EVENTS, "delegated_to_you", "runner_offline_waiting", "delegation_declined")
 WORK_ITEM_EVENT_TYPES = (*_V12_WORK_ITEM_EVENT_TYPES, "handoff_note")
 
 _V13_TABLES = f"""
@@ -533,7 +534,7 @@ ALTER TABLE work_items ADD COLUMN handoff_note_by_member_id TEXT REFERENCES memb
 CREATE TABLE notifications_v13 (
   notification_id     TEXT PRIMARY KEY,                     -- 'ntf-' + 8 hex
   session_id          TEXT NOT NULL,
-  event               TEXT NOT NULL CHECK (event IN ({_in(NOTIFICATION_EVENTS)})),
+  event               TEXT NOT NULL CHECK (event IN ({_in(_V13_NOTIFICATION_EVENTS)})),
   task_id             TEXT REFERENCES tasks(task_id),
   dedupe_key          TEXT NOT NULL UNIQUE,
   content             TEXT NOT NULL,
@@ -986,6 +987,111 @@ CREATE TABLE IF NOT EXISTS internal_request_investigations (
 """
 
 
+# v24 (phase 22, ADR-0027): 결과 뒤 판단. ARCHITECTURE "결과 뒤 판단 — phase 22" 스키마 v24. triage_logs 는 원인 칸·CHECK 를,
+# notifications 는 event CHECK 를 넓히려고 재생성한다 — 두 표를 참조하는 표는 v24 전에 없다(새 created_by_triage_id 는
+# 재생성 뒤 ALTER). 기존 판단 행은 cause = 'intake'(기본값)·원인 참조 NULL 로 옮긴다.
+NOTIFICATION_EVENTS = (*_V13_NOTIFICATION_EVENTS, "internal_request_received", "next_step_proposed")
+
+_V24_TABLES = f"""
+CREATE TABLE triage_logs_v24 (
+  triage_id              TEXT PRIMARY KEY,                    -- 'trg-' + 8 hex
+  session_id             TEXT NOT NULL REFERENCES sessions(session_id),
+  work_item_id           TEXT NOT NULL REFERENCES work_items(work_item_id),
+  work_revision          INTEGER NOT NULL CHECK (work_revision >= 1),
+  task_id                TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  execution_id           TEXT NOT NULL UNIQUE REFERENCES executions(execution_id),
+  agent_id               TEXT NOT NULL REFERENCES agents(agent_id),
+  trigger                TEXT NOT NULL CHECK (trigger IN ('auto', 'manual')),
+  requested_by_member_id TEXT REFERENCES members(member_id),
+  criteria_version       INTEGER NOT NULL,
+  input_sha256           TEXT NOT NULL CHECK (length(input_sha256) = 64),
+  candidates_json        TEXT NOT NULL,
+  state                  TEXT NOT NULL CHECK (state IN ('running', 'proposed', 'failed', 'superseded')),
+  result_json            TEXT,
+  proceed                TEXT CHECK (proceed IS NULL OR proceed IN ('ready', 'needs_check', 'unsuitable')),
+  confidence             REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+  proposed_kind          TEXT,
+  failed_code            TEXT,
+  failed_message         TEXT,
+  handling               TEXT CHECK (handling IS NULL OR handling IN ('accepted', 'changed', 'dismissed', 'auto_started')),
+  handled_by_member_id   TEXT REFERENCES members(member_id),
+  handled_at             TEXT,
+  final_assignee_type    TEXT CHECK (final_assignee_type IS NULL OR final_assignee_type IN ('member', 'agent')),
+  final_assignee_id      TEXT,
+  final_kind             TEXT,
+  created_at             TEXT NOT NULL,
+  finished_at            TEXT,
+  updated_at             TEXT NOT NULL,
+  -- 판단 원인. intake = 접수 판단(원인 참조 없음), after_result = 결과 뒤, request_returned = 사내 요청 반환 뒤.
+  cause                  TEXT NOT NULL DEFAULT 'intake' CHECK (cause IN ({_in(TRIAGE_CAUSES)})),
+  cause_execution_id     TEXT REFERENCES executions(execution_id),
+  cause_request_id       TEXT REFERENCES internal_requests(request_id),
+  FOREIGN KEY (session_id, criteria_version) REFERENCES triage_criteria(session_id, version),
+  CHECK (state != 'proposed' OR (result_json IS NOT NULL AND proceed IS NOT NULL AND confidence IS NOT NULL)),
+  CHECK (state != 'failed' OR failed_code IS NOT NULL),
+  CHECK (handling IS NULL OR state = 'proposed'),
+  CHECK ((handling IS NULL) = (handled_at IS NULL)),
+  CHECK ((final_assignee_type IS NULL) = (final_assignee_id IS NULL)),
+  CHECK (cause != 'intake' OR handling IS NULL OR handling = 'dismissed' OR final_assignee_type IS NOT NULL),
+  CHECK (trigger = 'auto' OR requested_by_member_id IS NOT NULL),
+  CHECK ((cause = 'intake') = (cause_execution_id IS NULL)),
+  CHECK ((cause = 'request_returned') = (cause_request_id IS NOT NULL)),
+  CHECK (cause = 'intake' OR trigger = 'auto'),
+  CHECK (cause = 'intake' OR handling IS NULL OR handling IN ('accepted', 'dismissed')),
+  CHECK (cause = 'intake' OR (final_assignee_type IS NULL AND final_kind IS NULL))
+);
+INSERT INTO triage_logs_v24 (triage_id, session_id, work_item_id, work_revision, task_id, execution_id, agent_id,
+  trigger, requested_by_member_id, criteria_version, input_sha256, candidates_json, state, result_json, proceed,
+  confidence, proposed_kind, failed_code, failed_message, handling, handled_by_member_id, handled_at,
+  final_assignee_type, final_assignee_id, final_kind, created_at, finished_at, updated_at)
+  SELECT triage_id, session_id, work_item_id, work_revision, task_id, execution_id, agent_id,
+  trigger, requested_by_member_id, criteria_version, input_sha256, candidates_json, state, result_json, proceed,
+  confidence, proposed_kind, failed_code, failed_message, handling, handled_by_member_id, handled_at,
+  final_assignee_type, final_assignee_id, final_kind, created_at, finished_at, updated_at FROM triage_logs;
+DROP TABLE triage_logs;
+ALTER TABLE triage_logs_v24 RENAME TO triage_logs;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_triage_logs_running ON triage_logs(work_item_id) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS ix_triage_logs_work ON triage_logs(work_item_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_triage_logs_session ON triage_logs(session_id, state);
+-- 결과 하나에 결과 뒤 판단 하나, 반환 하나에 판단 하나.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_triage_logs_after_result ON triage_logs(cause_execution_id)
+  WHERE cause = 'after_result';
+CREATE UNIQUE INDEX IF NOT EXISTS ux_triage_logs_request_returned ON triage_logs(cause_request_id)
+  WHERE cause = 'request_returned';
+
+-- 알림 재생성: v13 칸·순서 그대로, event CHECK 만 넓힌다. 행·id 를 그대로 옮긴다.
+CREATE TABLE notifications_v24 (
+  notification_id     TEXT PRIMARY KEY,                     -- 'ntf-' + 8 hex
+  session_id          TEXT NOT NULL,
+  event               TEXT NOT NULL CHECK (event IN ({_in(NOTIFICATION_EVENTS)})),
+  task_id             TEXT REFERENCES tasks(task_id),
+  dedupe_key          TEXT NOT NULL UNIQUE,
+  content             TEXT NOT NULL,
+  payload_json        TEXT NOT NULL,
+  state               TEXT NOT NULL CHECK (state IN ({_in(NOTIFICATION_STATES)})),
+  attempts            INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_at             TEXT,
+  last_error          TEXT,
+  created_at          TEXT NOT NULL,
+  sent_at             TEXT,
+  recipient_member_id TEXT REFERENCES members(member_id),
+  channel             TEXT NOT NULL DEFAULT 'shared' CHECK (channel IN ({_in(NOTIFICATION_CHANNELS)}))
+);
+INSERT INTO notifications_v24 (notification_id, session_id, event, task_id, dedupe_key, content, payload_json, state,
+  attempts, next_at, last_error, created_at, sent_at, recipient_member_id, channel)
+  SELECT notification_id, session_id, event, task_id, dedupe_key, content, payload_json, state,
+  attempts, next_at, last_error, created_at, sent_at, recipient_member_id, channel FROM notifications;
+DROP TABLE notifications;
+ALTER TABLE notifications_v24 RENAME TO notifications;
+CREATE INDEX IF NOT EXISTS ix_notifications_recipient ON notifications(recipient_member_id);
+
+-- 사내 요청 출처. NULL = 사람이 만든 요청. 판단 하나에 요청 하나.
+ALTER TABLE internal_requests ADD COLUMN created_by_triage_id TEXT REFERENCES triage_logs(triage_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_internal_requests_triage ON internal_requests(created_by_triage_id)
+  WHERE created_by_triage_id IS NOT NULL;
+"""
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -1193,7 +1299,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES + _V17_TABLES + _V18_TABLES + _V19_TABLES + _V20_TABLES + _V21_TABLES + _V22_TABLES + _V23_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES + _V17_TABLES + _V18_TABLES + _V19_TABLES + _V20_TABLES + _V21_TABLES + _V22_TABLES + _V23_TABLES + _V24_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -1563,8 +1669,18 @@ def _migrate_22_to_23(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 23")
 
 
+def _migrate_23_to_24(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서(외래키를 끈 채) 실행한다. 판단 로그·알림을 재생성하고 사내 요청에 출처 칸을 더한다 —
+    행·id 그대로, 기존 판단은 cause = 'intake'. 업무·단계 상태는 다시 계산하지 않고 과거 결과에 판단을 걸지 않는다."""
+    for statement in _statements(_V24_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 24")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~22 는 23 까지 차례로(4 → 5 → … → 22 → 23) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~23 은 24 까지 차례로(4 → 5 → … → 23 → 24) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다.
 
@@ -1585,10 +1701,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23):
                 steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
                          _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13,
-                         _migrate_13_to_14, _migrate_14_to_15, _migrate_15_to_16, _migrate_16_to_17, _migrate_17_to_18, _migrate_18_to_19, _migrate_19_to_20, _migrate_20_to_21, _migrate_21_to_22, _migrate_22_to_23)
+                         _migrate_13_to_14, _migrate_14_to_15, _migrate_15_to_16, _migrate_16_to_17, _migrate_17_to_18, _migrate_18_to_19, _migrate_19_to_20, _migrate_20_to_21, _migrate_21_to_22, _migrate_22_to_23,
+                         _migrate_23_to_24)
                 for step in steps[row[0] - 4:]:
                     step(conn)
             elif row[0] != SCHEMA_VERSION:
