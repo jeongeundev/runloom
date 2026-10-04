@@ -1277,3 +1277,152 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 ```
 
 `kinds` 는 판단 종류가 아니고 입력 없이 시작할 수 있는(`input_kinds` 빈) 등록 종류 중 저장소 범위(`scope_key == "repository_id"`)이거나 지금 종류인 것(`current_kind` 포함, 1개 이상). `agents` 의 `kinds` 는 그 Agent 가 이 저장소 범위로 맡을 수 있는 후보 종류(1개 이상 — 하나도 없으면 후보가 아니다). `agents`·`predecessors` 최대 30. id 가 겹치면 422.
+
+### 17.4 `ExecutionRequest` — 결과 뒤 판단(`mode: next_step`)
+
+[ADR-0027](adr/0027-next-step-triage.md), ARCHITECTURE "결과 뒤 판단 — phase 22". 결과가 규칙 밖·`needs_information`·사내 요청 반환이면 워커가 그 업무의 판단 Agent 에 거는 판단이다. 17.1 과 같은 요청에 `target.mode = "next_step"` 만 더해진다. `mode` 는 null(접수 판단)이면 직렬화에서 빠진다 — 17.1 의 요청은 바이트 그대로이고 옛 러너가 받는다. 중앙은 판단 Agent 러너의 마지막 claim `capabilities` 에 `after_result_triage` 가 있을 때만 이 요청을 만들고 배정한다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-next-026",
+  "task_id": "task-fix-26",
+  "kind": "triage",
+  "agent_id": "agt-9f3c2a1b",
+  "task_revision": 1,
+  "request": "# 다음 단계 판단: RUN-26 kube-proxy 가 LXC 에서 conntrack 설정 실패\n\n## 판단 기준 (v3)\n…\n\n## 업무\n지금 단계: bug_fix (버그 수정)\n…\n\n## 이전 결과\n…\n\n## 후보\n…\n\n## 답하는 법\n…",
+  "input_artifact_ids": [],
+  "target": {
+    "local_registration_id": "local-billing",
+    "base_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+    "mode": "next_step"
+  },
+  "kind_spec": {
+    "kind": "triage",
+    "label": "판단",
+    "capability_code": "code.triage",
+    "scope_key": "repository_id",
+    "input_kinds": [],
+    "output_kind": "triage_result",
+    "outcomes": ["ready", "needs_check", "unsuitable"],
+    "instructions": "",
+    "builtin": true
+  }
+}
+```
+
+### 17.5 `TriageResult` — `next_action`
+
+결과 뒤 판단의 결과 봉투. 접수 판단 칸(`proposed_kind`·`assignee`·`predecessors`)은 비우고(`null`·`null`·`[]`) 다음 행동 하나를 `next_action` 에 싣는다. `next_action` 은 null(접수 판단)이면 직렬화에서 빠진다 — 17.2 의 결과·저장된 `result_json` 모양 그대로. `next_action` 이 있으면 `ready` 의 "`proposed_kind`·`assignee` 필수" 는 적용하지 않고, `unsuitable` 이면 `next_action.type` 은 `human` 이어야 한다. `needs_check` 의 `missing_information` 1개 이상은 두 모드 공통. 네 모양(`type`):
+
+- `stage` — `{kind, assignee, rework}`. `rework=false` 면 같은 업무의 새 단계, `true` 면 원인 Task 재작업(종류 = 지금 종류, 담당 = 원인 실행의 Agent — 판정이 본다).
+- `new_work` — `{kind, title(1~120자), assignee}`. `spawned_from` 으로 잇는 새 업무.
+- `internal_request` — `{system_id, request_kind, recipient_member_id, purpose(1~2000자)}`. 담당 범위 후보(17.6) 중 하나에게 사내 요청.
+- `human` — `{question(1~500자)}`. 사람에게 돌려보내기.
+
+`title`·`purpose`·`question` 은 공백만이면 422. 모르는 칸·다른 `type` 의 칸은 422. 글 칸은 저장·표시만 한다 — 명령·경로로 쓰지 않는다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-next-026",
+  "task_id": "task-fix-26",
+  "inspected_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+  "proceed": "ready",
+  "confidence": 0.78,
+  "proposed_kind": null,
+  "assignee": null,
+  "predecessors": [],
+  "reasons": [
+    { "criterion": "clarity", "note": "반환된 사내 요청이 커널 모듈 설정 값을 알려 줬다" },
+    { "criterion": "scope", "note": "같은 단계에서 답을 넣어 다시 하면 된다" }
+  ],
+  "missing_information": [],
+  "next_action": { "type": "stage", "kind": "bug_fix", "assignee": { "type": "agent", "id": "agt-9f3c2a1b" }, "rework": true }
+}
+```
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-next-027",
+  "task_id": "task-fix-27",
+  "inspected_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+  "proceed": "ready",
+  "confidence": 0.7,
+  "proposed_kind": null,
+  "assignee": null,
+  "predecessors": [],
+  "reasons": [
+    { "criterion": "scope", "note": "결제 모듈 밖의 문서 정리가 따로 필요하다" }
+  ],
+  "missing_information": [],
+  "next_action": { "type": "new_work", "kind": "bug_fix", "title": "쿠폰 중복 적용 문서 정리", "assignee": { "type": "member", "id": "mem-1a2b3c4d" } }
+}
+```
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-next-026",
+  "task_id": "task-fix-26",
+  "inspected_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+  "proceed": "needs_check",
+  "confidence": 0.64,
+  "proposed_kind": null,
+  "assignee": null,
+  "predecessors": [],
+  "reasons": [
+    { "criterion": "permission", "note": "노드 커널 설정은 인프라 담당만 볼 수 있다" }
+  ],
+  "missing_information": ["LXC 컨테이너의 nf_conntrack 모듈 설정 값"],
+  "next_action": { "type": "internal_request", "system_id": "infra", "request_kind": "node_config", "recipient_member_id": "mem-5e6f7a8b", "purpose": "LXC 노드의 nf_conntrack_max 설정과 모듈 로드 여부를 알려 주세요." }
+}
+```
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exec-next-028",
+  "task_id": "task-fix-28",
+  "inspected_commit": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c",
+  "proceed": "unsuitable",
+  "confidence": 0.55,
+  "proposed_kind": null,
+  "assignee": null,
+  "predecessors": [],
+  "reasons": [
+    { "criterion": "risk", "note": "운영 데이터 삭제가 필요해 에이전트에 맡기기 어렵다" }
+  ],
+  "missing_information": [],
+  "next_action": { "type": "human", "question": "운영 DB 의 중복 쿠폰 행을 지워도 되는지 확인해 주세요." }
+}
+```
+
+### 17.6 `TriageCandidates` — 결과 뒤 판단 후보(`cause`·`responsibilities`)
+
+결과 뒤 판단을 시작할 때 고정한 후보. 17.3 에 칸 둘과 표시 하나가 더해진다 — 모두 기본값이 있어 저장된 v23 이전 후보 JSON(새 칸 없음)도 그대로 읽힌다. `kinds` 는 지금 종류(원인 Task 종류, 입력과 무관하게 늘 포함) + 시작할 수 있는 종류이고 `startable`(기본 `true`)이 새 단계·새 업무로 시작할 수 있는지를 가른다. `cause` 는 원인 실행(`after_result`·`request_returned`, `kind == current_kind`, `request_returned` 이면 `request_id` 가 있고 아니면 없다) — 접수 판단이면 null. `responsibilities` 는 사내 요청 담당 범위 후보(최대 50, 담당표 순서, 키 `(system_id, request_kind, recipient_member_id)` 중복 422) — 접수 판단이면 빈 배열.
+
+```json
+{
+  "current_kind": "code_review",
+  "kinds": [
+    { "kind": "code_review", "label": "커밋 검토", "startable": false },
+    { "kind": "bug_fix", "label": "버그 수정" }
+  ],
+  "members": [
+    { "member_id": "mem-1a2b3c4d", "display_name": "김지은", "open_work": 2 }
+  ],
+  "agents": [
+    { "agent_id": "agt-9f3c2a1b", "name": "macbook-billing", "owner_name": "김지은", "online": true, "open_work": 1,
+      "kinds": ["code_review", "bug_fix"] }
+  ],
+  "predecessors": [],
+  "responsibilities": [
+    { "system_id": "infra", "request_kind": "node_config", "recipient_member_id": "mem-5e6f7a8b", "recipient_name": "박도윤",
+      "judgment_member_id": "mem-5e6f7a8b", "agent_id": null }
+  ],
+  "cause": { "cause": "request_returned", "execution_id": "exec-review-31", "task_id": "task-review-31", "kind": "code_review",
+    "agent_id": "agt-9f3c2a1b", "outcome": "needs_information", "request_id": "req-7c8d9e0f" }
+}
+```

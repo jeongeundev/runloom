@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "next-action-contract",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T22:15:14+0900",
+      "summary": "contracts/v1.py: 상수 TRIAGE_CAUSES·TRIAGE_MODE_NEXT_STEP·RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE(RUNNER_CAPABILITIES 튜플엔 아직 안 넣음 — step 2)·RESPONSIBILITY_CANDIDATES_MAX=50·NEXT_ACTION_TYPES·NEXT_ACTION_*_MAX, NextStage·NextNewWork·NextInternalRequest·NextHuman·NextAction(discriminator type, 글 칸 공백만 거부 _not_blank), TriageTarget 을 _OmitUnknownMeasure 로 바꾸고 ExecutionRequest 바로 위로 옮김(mode: Literal['next_step']|None, None 이면 직렬화 생략 — ARCHITECTURE 기준이라 step.md 의 Literal['intake','next_step'] 대신), TriageResult 도 _OmitUnknownMeasure + next_action(있으면 proposed_kind·assignee·predecessors 비움, ready 필수는 next_action 없을 때만, unsuitable 이면 human), TriageKindCandidate.startable=True, TriageResponsibilityCandidate, TriageCause(request_returned⇔request_id), TriageCandidates.responsibilities(최대 50·키 중복 거부)·cause(kind==current_kind). docs/CONTRACT.md 17.4~17.6 예시 6블록 추가(fixture 67→73, test_contract_md_has_expected_block_counts 수 갱신). tests/workflow/contracts/test_v1.py 에 결과 뒤 판단 테스트 추가. 검증: pytest 4235 passed·83 skipped, ruff 통과. 다음 step 주의: connector/server 코드는 아직 next_action·mode 를 모름, step 2 가 RUNNER_CAPABILITIES 에 상수를 더하면 test_runner_capability_constants 를 고쳐야 함.",
+      "completed_at": "2026-10-04T22:40:00+0900"
     },
     {
       "step": 2,

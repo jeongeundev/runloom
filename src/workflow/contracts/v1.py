@@ -166,13 +166,6 @@ class LocalTarget(_Contract):
     local_registration_id: NonEmptyStr
 
 
-class TriageTarget(_Contract):
-    """판단(결과 형태 `triage_result`) 전용 — 판단 Agent 의 로컬 등록과 읽기 전용으로 꺼낼 기본 브랜치 끝 (CONTRACT 17.1)."""
-
-    local_registration_id: NonEmptyStr
-    base_commit: CommitSha
-
-
 # --- 업무 종류와 후속 규칙 (CONTRACT 11절) ---------------------------------
 
 # 셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다
@@ -275,6 +268,20 @@ class _OmitUnknownMeasure(_Contract):
         return data
 
 
+TRIAGE_MODE_NEXT_STEP = "next_step"
+
+
+class TriageTarget(_OmitUnknownMeasure):
+    """판단(결과 형태 `triage_result`) 전용 — 판단 Agent 의 로컬 등록과 읽기 전용으로 꺼낼 기본 브랜치 끝 (CONTRACT 17.1).
+    `mode` 가 `next_step` 이면 결과 뒤 판단(CONTRACT 17.4, ADR-0027). null(접수 판단)이면 직렬화에서 빠진다 — 옛 러너가 받는다."""
+
+    local_registration_id: NonEmptyStr
+    base_commit: CommitSha
+    mode: Literal["next_step"] | None = None
+
+    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ("mode",)
+
+
 class ExecutionRequest(_OmitUnknownMeasure):
     contract_version: ContractVersion
     execution_id: NonEmptyStr
@@ -348,6 +355,7 @@ class ExecutionRequest(_OmitUnknownMeasure):
 
 RunnerCapability = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
 RUNNER_CAPABILITY_VERIFY_ONLY = "verify_only"
+RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE = "after_result_triage"  # 결과 뒤 판단(ADR-0027) — 러너 구현과 함께 아래에 더한다
 RUNNER_CAPABILITIES: tuple[str, ...] = (RUNNER_CAPABILITY_VERIFY_ONLY,)
 
 
@@ -740,8 +748,54 @@ class TriageAssignee(_Contract):
     id: NonEmptyStr
 
 
-class TriageResult(_Contract):
-    """판단의 결과 봉투 — **제안**이다. 후보 목록 안인지·`inspected_commit == target.base_commit` 인지는 중앙이 본다."""
+# 결과 뒤 판단의 다음 행동 (CONTRACT 17.5, ADR-0027 결정 2). 글 칸은 저장·표시만 한다 — 명령·경로로 쓰지 않는다
+NEXT_ACTION_TYPES: tuple[str, ...] = ("stage", "new_work", "internal_request", "human")
+NEXT_ACTION_TITLE_MAX = 120
+NEXT_ACTION_PURPOSE_MAX = 2000
+NEXT_ACTION_QUESTION_MAX = 500
+
+
+def _not_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("공백만 있을 수 없습니다")
+    return value
+
+
+class NextStage(_Contract):
+    """같은 업무의 새 단계(`rework=false`) 또는 원인 Task 재작업(`rework=true`)."""
+
+    type: Literal["stage"]
+    kind: KindId
+    assignee: TriageAssignee
+    rework: bool
+
+
+class NextNewWork(_Contract):
+    type: Literal["new_work"]
+    kind: KindId
+    title: Annotated[str, Field(min_length=1, max_length=NEXT_ACTION_TITLE_MAX), AfterValidator(_not_blank)]
+    assignee: TriageAssignee
+
+
+class NextInternalRequest(_Contract):
+    type: Literal["internal_request"]
+    system_id: Identifier
+    request_kind: Identifier
+    recipient_member_id: NonEmptyStr
+    purpose: Annotated[str, Field(min_length=1, max_length=NEXT_ACTION_PURPOSE_MAX), AfterValidator(_not_blank)]
+
+
+class NextHuman(_Contract):
+    type: Literal["human"]
+    question: Annotated[str, Field(min_length=1, max_length=NEXT_ACTION_QUESTION_MAX), AfterValidator(_not_blank)]
+
+
+NextAction = Annotated[NextStage | NextNewWork | NextInternalRequest | NextHuman, Field(discriminator="type")]
+
+
+class TriageResult(_OmitUnknownMeasure):
+    """판단의 결과 봉투 — **제안**이다. 후보 목록 안인지·`inspected_commit == target.base_commit` 인지는 중앙이 본다.
+    `next_action` 은 결과 뒤 판단만 싣는다(CONTRACT 17.5) — null(접수 판단)이면 직렬화에서 빠진다."""
 
     contract_version: ContractVersion
     execution_id: NonEmptyStr
@@ -754,6 +808,9 @@ class TriageResult(_Contract):
     predecessors: Annotated[list[WorkKey], Field(max_length=5)]
     reasons: Annotated[list[TriageReason], Field(min_length=1, max_length=7)]
     missing_information: Annotated[list[_TriageNote], Field(max_length=10)]
+    next_action: NextAction | None = None
+
+    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ("next_action",)
 
     @model_validator(mode="after")
     def _check_proceed(self) -> "TriageResult":
@@ -762,8 +819,13 @@ class TriageResult(_Contract):
         criteria = [r.criterion for r in self.reasons]
         if len(set(criteria)) != len(criteria):
             raise ValueError("reasons 의 criterion 에 중복이 있습니다")
+        if self.next_action is not None:
+            if self.proposed_kind is not None or self.assignee is not None or self.predecessors:
+                raise ValueError("next_action 이 있으면 proposed_kind·assignee·predecessors 는 비웁니다")
+            if self.proceed == "unsuitable" and self.next_action.type != "human":
+                raise ValueError("unsuitable 의 next_action 은 human 이어야 합니다")
         if self.proceed == "ready":
-            if self.proposed_kind is None or self.assignee is None:
+            if self.next_action is None and (self.proposed_kind is None or self.assignee is None):
                 raise ValueError("ready 는 proposed_kind·assignee 가 있어야 합니다")
             if self.missing_information:
                 raise ValueError("ready 는 missing_information 이 빈 배열이어야 합니다")
@@ -775,6 +837,7 @@ class TriageResult(_Contract):
 class TriageKindCandidate(_Contract):
     kind: KindId
     label: NonEmptyStr
+    startable: bool = True  # 새 단계·새 업무로 시작할 수 있는가 — 지금 종류는 입력이 있어도 후보에 들어가고 여기서 가른다
 
 
 class TriageMemberCandidate(_Contract):
@@ -798,6 +861,39 @@ class TriagePredecessorCandidate(_Contract):
     status: NonEmptyStr  # 업무 상태
 
 
+TRIAGE_CAUSES: tuple[str, ...] = ("intake", "after_result", "request_returned")
+RESPONSIBILITY_CANDIDATES_MAX = 50
+
+
+class TriageResponsibilityCandidate(_Contract):
+    """사내 요청 담당 범위 후보 — 담당표 항목의 판단 시점 값. [제안대로] 때 지금 항목과 비교한다."""
+
+    system_id: Identifier
+    request_kind: Identifier
+    recipient_member_id: NonEmptyStr
+    recipient_name: NonEmptyStr
+    judgment_member_id: NonEmptyStr
+    agent_id: NonEmptyStr | None
+
+
+class TriageCause(_Contract):
+    """결과 뒤 판단의 원인 실행. `request_returned` 이면 반환된 사내 요청이 있다."""
+
+    cause: Literal["after_result", "request_returned"]
+    execution_id: NonEmptyStr
+    task_id: NonEmptyStr
+    kind: KindId
+    agent_id: NonEmptyStr
+    outcome: Outcome
+    request_id: NonEmptyStr | None = None
+
+    @model_validator(mode="after")
+    def _check_request(self) -> "TriageCause":
+        if (self.cause == "request_returned") != (self.request_id is not None):
+            raise ValueError("request_id 는 request_returned 일 때만 있습니다")
+        return self
+
+
 def _check_unique(values: list[str], name: str) -> None:
     if len(set(values)) != len(values):
         raise ValueError(f"{name} 에 중복이 있습니다")
@@ -811,6 +907,9 @@ class TriageCandidates(_Contract):
     members: list[TriageMemberCandidate]
     agents: list[TriageAgentCandidate] = Field(max_length=TRIAGE_CANDIDATES_MAX)
     predecessors: list[TriagePredecessorCandidate] = Field(max_length=TRIAGE_CANDIDATES_MAX)
+    # 결과 뒤 판단만 채운다(CONTRACT 17.6). 기본값이 있어 저장된 v23 이전 후보 JSON 도 그대로 읽힌다
+    responsibilities: list[TriageResponsibilityCandidate] = Field(default=[], max_length=RESPONSIBILITY_CANDIDATES_MAX)
+    cause: TriageCause | None = None
 
     @model_validator(mode="after")
     def _check_ids(self) -> "TriageCandidates":
@@ -822,6 +921,11 @@ class TriageCandidates(_Contract):
             raise ValueError("kinds 에 current_kind 가 있어야 합니다")
         for agent in self.agents:
             _check_unique(agent.kinds, f"agents[{agent.agent_id}].kinds")
+        keys = [(r.system_id, r.request_kind, r.recipient_member_id) for r in self.responsibilities]
+        if len(set(keys)) != len(keys):
+            raise ValueError("responsibilities 에 중복이 있습니다")
+        if self.cause is not None and self.cause.kind != self.current_kind:
+            raise ValueError("cause.kind 는 current_kind 와 같아야 합니다")
         return self
 
 

@@ -125,7 +125,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 67
+    assert len(FENCED) == 73
     assert len(INLINE) == 8
 
 
@@ -1592,6 +1592,8 @@ def _verify_only_request() -> dict:
 def test_runner_capability_constants():
     assert v1.RUNNER_CAPABILITY_VERIFY_ONLY == "verify_only"
     assert v1.RUNNER_CAPABILITIES == ("verify_only",)
+    # 결과 뒤 판단 능력은 상수만 — RUNNER_CAPABILITIES 에는 러너가 mode=next_step 을 실행할 수 있게 되는 step 2 가 더한다
+    assert v1.RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE == "after_result_triage"
 
 
 def test_old_execution_requests_dump_without_verify_only_commit():
@@ -1833,3 +1835,242 @@ def test_triage_candidates_example_and_duplicate_ids():
     ):
         with pytest.raises(ValidationError):
             TriageCandidates.model_validate({**block, **change})
+
+
+# --- 결과 뒤 판단 (CONTRACT 17.4~17.6, ADR-0027) ------------------------------
+
+
+def test_next_step_constants():
+    assert v1.TRIAGE_CAUSES == ("intake", "after_result", "request_returned")
+    assert v1.TRIAGE_MODE_NEXT_STEP == "next_step"
+    assert v1.RESPONSIBILITY_CANDIDATES_MAX == 50
+    assert v1.NEXT_ACTION_TYPES == ("stage", "new_work", "internal_request", "human")
+    assert (v1.NEXT_ACTION_TITLE_MAX, v1.NEXT_ACTION_PURPOSE_MAX, v1.NEXT_ACTION_QUESTION_MAX) == (120, 2000, 500)
+
+
+def _next_step_request() -> dict:
+    return next(
+        json.loads(json.dumps(b)) for b in FENCED
+        if _model_for(b) is ExecutionRequest and b["target"].get("mode") == "next_step"
+    )
+
+
+def test_triage_target_mode_defaults_to_none_and_is_omitted():
+    """접수 판단 요청은 바이트 단위로 지금 모양 — 옛 러너(extra=forbid)가 받는다."""
+    block = _triage_request()
+    assert "mode" not in block["target"]
+    parsed = ExecutionRequest.model_validate(block)
+    assert parsed.target.mode is None
+    old = '{"local_registration_id":"local-billing","base_commit":"5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c"}'
+    assert parsed.target.model_dump_json() == old
+    assert TriageTarget.model_validate_json(old).model_dump_json() == old
+    assert "mode" not in parsed.model_dump(mode="json")["target"]
+    assert '"mode"' not in parsed.model_dump_json()
+
+
+def test_next_step_request_example_has_mode_and_roundtrips():
+    parsed = ExecutionRequest.model_validate(_next_step_request())
+    assert isinstance(parsed.target, TriageTarget)
+    assert parsed.target.mode == "next_step"
+    assert parsed.model_dump(mode="json")["target"]["mode"] == "next_step"
+    assert ExecutionRequest.model_validate_json(parsed.model_dump_json()) == parsed
+
+
+@pytest.mark.parametrize("mode", ["intake", "NEXT_STEP", "", 1])
+def test_triage_target_rejects_unknown_mode(mode):
+    target = {**_next_step_request()["target"], "mode": mode}
+    with pytest.raises(ValidationError):
+        TriageTarget.model_validate(target)
+
+
+def _next_step_results() -> dict[str, dict]:
+    blocks = [json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is TriageResult and "next_action" in b]
+    return {b["next_action"]["type"]: b for b in blocks}
+
+
+def test_contract_md_has_one_next_step_result_per_action_type():
+    assert sorted(_next_step_results()) == sorted(v1.NEXT_ACTION_TYPES)
+
+
+@pytest.mark.parametrize("type_", ["stage", "new_work", "internal_request", "human"])
+def test_next_step_result_examples_parse_into_their_shape(type_):
+    shapes = {"stage": v1.NextStage, "new_work": v1.NextNewWork,
+              "internal_request": v1.NextInternalRequest, "human": v1.NextHuman}
+    parsed = TriageResult.model_validate(_next_step_results()[type_])
+    assert isinstance(parsed.next_action, shapes[type_])
+    assert (parsed.proposed_kind, parsed.assignee, parsed.predecessors) == (None, None, [])
+    assert TriageResult.model_validate_json(parsed.model_dump_json()) == parsed
+    assert parsed.model_dump(mode="json")["next_action"]["type"] == type_
+
+
+def test_intake_result_example_still_passes_and_dumps_without_next_action():
+    block = _triage_result()
+    assert "next_action" not in block
+    parsed = TriageResult.model_validate(block)
+    assert parsed.next_action is None
+    assert parsed.model_dump(mode="json") == block
+    assert '"next_action"' not in parsed.model_dump_json()
+
+
+def test_stage_action_shape():
+    stage = _next_step_results()["stage"]["next_action"]
+    parsed = TriageResult.model_validate(_next_step_results()["stage"]).next_action
+    assert (parsed.kind, parsed.assignee.type, parsed.assignee.id, parsed.rework) == (
+        "bug_fix", "agent", "agt-9f3c2a1b", True)
+    for change in (
+        {"rework": "true"},  # strict — 문자열 불리언 거부
+        {"kind": "Bug Fix"},
+        {"assignee": {"type": "team", "id": "x"}},
+        {"title": "새 단계"},  # 다른 모양의 칸
+        {"extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            TriageResult.model_validate({**_next_step_results()["stage"], "next_action": {**stage, **change}})
+    for missing in ("kind", "assignee", "rework"):
+        with pytest.raises(ValidationError):
+            TriageResult.model_validate({**_next_step_results()["stage"],
+                                         "next_action": {k: v for k, v in stage.items() if k != missing}})
+
+
+@pytest.mark.parametrize(("type_", "field", "limit"), [
+    ("new_work", "title", 120),
+    ("internal_request", "purpose", 2000),
+    ("human", "question", 500),
+])
+def test_next_action_text_bounds(type_, field, limit):
+    block = _next_step_results()[type_]
+    action = block["next_action"]
+    for ok in ("a", "가" * limit, "  앞뒤 공백  "):
+        parsed = TriageResult.model_validate({**block, "next_action": {**action, field: ok}})
+        assert getattr(parsed.next_action, field) == ok
+    for bad in ("", " ", "\n\t ", "a" * (limit + 1), 1):
+        with pytest.raises(ValidationError):
+            TriageResult.model_validate({**block, "next_action": {**action, field: bad}})
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "next_action": {k: v for k, v in action.items() if k != field}})
+
+
+@pytest.mark.parametrize("type_", ["new_work", "internal_request", "human"])
+def test_next_action_rejects_extra_fields(type_):
+    block = _next_step_results()[type_]
+    for extra in ({"extra": 1}, {"rework": False}):
+        with pytest.raises(ValidationError):
+            TriageResult.model_validate({**block, "next_action": {**block["next_action"], **extra}})
+
+
+@pytest.mark.parametrize("change", [
+    {"system_id": "Infra"},
+    {"system_id": ""},
+    {"request_kind": "node-config"},
+    {"recipient_member_id": ""},
+], ids=lambda c: next(iter(c)))
+def test_internal_request_action_rejects_bad_ids(change):
+    block = _next_step_results()["internal_request"]
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**block, "next_action": {**block["next_action"], **change}})
+
+
+@pytest.mark.parametrize("action", [{"type": "close"}, {"type": None}, {}, "human"])
+def test_next_action_rejects_unknown_type(action):
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**_next_step_results()["human"], "next_action": action})
+
+
+@pytest.mark.parametrize("change", [
+    {"proposed_kind": "bug_fix"},
+    {"assignee": {"type": "agent", "id": "agt-9f3c2a1b"}},
+    {"predecessors": ["RUN-9"]},
+], ids=lambda c: next(iter(c)))
+def test_next_action_rejects_intake_fields(change):
+    with pytest.raises(ValidationError, match="next_action 이 있으면 proposed_kind·assignee·predecessors 는 비웁니다"):
+        TriageResult.model_validate({**_next_step_results()["stage"], **change})
+
+
+def test_next_action_proceed_rules():
+    stage = _next_step_results()["stage"]
+    human = _next_step_results()["human"]
+    # ready 는 next_action 이 있으면 proposed_kind·assignee 없이 통과, missing_information 은 여전히 빈 배열
+    assert TriageResult.model_validate(stage).proceed == "ready"
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**stage, "missing_information": ["재현 환경"]})
+    # needs_check 는 두 모드 모두 missing_information 1개 이상
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**stage, "proceed": "needs_check"})
+    assert TriageResult.model_validate(
+        {**stage, "proceed": "needs_check", "missing_information": ["설정 값"]}).proceed == "needs_check"
+    # unsuitable 이면 사람에게 돌려보낸다
+    assert TriageResult.model_validate(human).proceed == "unsuitable"
+    for type_ in ("stage", "new_work", "internal_request"):
+        with pytest.raises(ValidationError):
+            TriageResult.model_validate({**human, "next_action": _next_step_results()[type_]["next_action"]})
+    # 접수 판단(next_action 없음)의 ready 는 지금처럼 proposed_kind·assignee 필수
+    with pytest.raises(ValidationError):
+        TriageResult.model_validate({**stage, "next_action": None})
+
+
+def _next_step_candidates() -> dict:
+    return next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is TriageCandidates and "cause" in b)
+
+
+def test_intake_candidates_default_new_fields():
+    """저장된 v23 이전 후보 JSON(새 칸 없음)이 그대로 읽힌다."""
+    parsed = TriageCandidates.model_validate(_first("TriageCandidates"))
+    assert parsed.responsibilities == []
+    assert parsed.cause is None
+    assert [k.startable for k in parsed.kinds] == [True]
+
+
+def test_next_step_candidates_example():
+    parsed = TriageCandidates.model_validate(_next_step_candidates())
+    assert [(k.kind, k.startable) for k in parsed.kinds] == [("code_review", False), ("bug_fix", True)]
+    (resp,) = parsed.responsibilities
+    assert (resp.system_id, resp.request_kind, resp.recipient_member_id, resp.agent_id) == (
+        "infra", "node_config", "mem-5e6f7a8b", None)
+    assert (parsed.cause.cause, parsed.cause.kind, parsed.cause.request_id) == (
+        "request_returned", "code_review", "req-7c8d9e0f")
+    assert TriageCandidates.model_validate_json(parsed.model_dump_json()) == parsed
+
+
+def test_next_step_candidates_responsibility_limits():
+    block = _next_step_candidates()
+    resp = block["responsibilities"][0]
+    many = [{**resp, "recipient_member_id": f"mem-{i}"} for i in range(50)]
+    assert len(TriageCandidates.model_validate({**block, "responsibilities": many}).responsibilities) == 50
+    for change in (
+        {"responsibilities": [*many, {**resp, "recipient_member_id": "mem-50"}]},  # 51개
+        {"responsibilities": [resp, {**resp, "recipient_name": "다른 이름", "agent_id": "agt-1"}]},  # 키 중복
+        {"responsibilities": [{**resp, "system_id": "Infra"}]},
+        {"responsibilities": [{**resp, "recipient_name": ""}]},
+        {"responsibilities": [{**resp, "extra": 1}]},
+        {"responsibilities": [{k: v for k, v in resp.items() if k != "agent_id"}]},
+    ):
+        with pytest.raises(ValidationError):
+            TriageCandidates.model_validate({**block, **change})
+    # 키가 하나라도 다르면 중복이 아니다
+    for key in ("system_id", "request_kind", "recipient_member_id"):
+        other = {**resp, key: "other" if key != "recipient_member_id" else "mem-other"}
+        TriageCandidates.model_validate({**block, "responsibilities": [resp, other]})
+
+
+def test_next_step_candidates_cause_rules():
+    block = _next_step_candidates()
+    cause = block["cause"]
+    after = {**cause, "cause": "after_result", "request_id": None}
+    assert TriageCandidates.model_validate({**block, "cause": after}).cause.request_id is None
+    for bad in (
+        {**cause, "request_id": None},  # request_returned 인데 요청 없음
+        {**after, "request_id": "req-1"},  # after_result 인데 요청 있음
+        {**cause, "cause": "intake"},  # 접수 판단은 cause 가 null
+        {**cause, "kind": "bug_fix"},  # current_kind 와 다름
+        {**cause, "execution_id": ""},
+        {**cause, "outcome": "Needs Info"},
+        {**cause, "extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            TriageCandidates.model_validate({**block, "cause": bad})
+
+
+def test_kind_candidate_startable_is_strict_bool():
+    block = _next_step_candidates()
+    with pytest.raises(ValidationError):
+        TriageCandidates.model_validate({**block, "kinds": [{**block["kinds"][0], "startable": "false"}, block["kinds"][1]]})
