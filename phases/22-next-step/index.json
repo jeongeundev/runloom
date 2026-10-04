@@ -87,7 +87,8 @@
       "name": "next-step-verify",
       "status": "completed",
       "started_at": "2026-10-05T00:55:49+0900",
-      "summary": "tests/e2e/test_next_step_cycle.py 신규(가짜 claude 가 --json-schema 모양으로 결과 뒤 판단·접수 판단·검토·사용자 정의 종류·수정 분기, 표식 [ask]·[next:internal|human|new_work]; RUN-26 장면 ②→사내 요청 제안→[제안대로]→받는 사람 알림·수락·조사·검토·반환→③ 재작업 제안→PR 병합 완료, [무시]→원래 사람 요청, ① 규칙 없음→새 업무, 옛 러너→지금 동작, v23 사본→v24), test_team_handoff 러너 능력 단정을 step 2 새 튜플로 갱신, 문서: SELFHOST 업그레이드 v24(백업→install.sh→러너 재설치), VERIFICATION_LOG phase 22 절(실연동 미실행 명시), CURRENT_HANDOFF 22 완료·할 일·실연동 목록, ARCHITECTURE 구현 상태. 제품 코드 변경 없음. 검증: pytest 4446 passed·92 skipped, ruff 통과, WORKFLOW_E2E=1 새 e2e 9 passed·triage/monitor 포함 29 passed·전체 e2e 91 passed·1 skipped(docker 게이트). 다음 주의: service 병합·셀프호스트 v24·러너 재설치·실연동은 사용자 지시 뒤, ③ 판단 실패·무시 시 대체 경로 없음."
+      "summary": "tests/e2e/test_next_step_cycle.py 신규(가짜 claude 가 --json-schema 모양으로 결과 뒤 판단·접수 판단·검토·사용자 정의 종류·수정 분기, 표식 [ask]·[next:internal|human|new_work]; RUN-26 장면 ②→사내 요청 제안→[제안대로]→받는 사람 알림·수락·조사·검토·반환→③ 재작업 제안→PR 병합 완료, [무시]→원래 사람 요청, ① 규칙 없음→새 업무, 옛 러너→지금 동작, v23 사본→v24), test_team_handoff 러너 능력 단정을 step 2 새 튜플로 갱신, 문서: SELFHOST 업그레이드 v24(백업→install.sh→러너 재설치), VERIFICATION_LOG phase 22 절(실연동 미실행 명시), CURRENT_HANDOFF 22 완료·할 일·실연동 목록, ARCHITECTURE 구현 상태. 제품 코드 변경 없음. 검증: pytest 4446 passed·92 skipped, ruff 통과, WORKFLOW_E2E=1 새 e2e 9 passed·triage/monitor 포함 29 passed·전체 e2e 91 passed·1 skipped(docker 게이트). 다음 주의: service 병합·셀프호스트 v24·러너 재설치·실연동은 사용자 지시 뒤, ③ 판단 실패·무시 시 대체 경로 없음.",
+      "completed_at": "2026-10-05T01:40:21+0900"
     }
   ],
   "created_at": "2026-10-04T21:45:11+0900"
