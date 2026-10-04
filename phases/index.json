@@ -109,7 +109,8 @@
     },
     {
       "dir": "22-next-step",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-10-05T01:40:21+0900"
     }
   ]
 }
