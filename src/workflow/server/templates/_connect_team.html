@@ -131,3 +131,41 @@
   </table>
 </div>
 {% endif %}
+
+<h2>담당 범위 표</h2>
+<p class="small">시스템과 요청 유형별로 요청을 받을 사람과 판단 담당자를 등록합니다. 등록만으로 업무가 배정되거나 실행 권한이 부여되지는 않습니다.</p>
+<div class="card table-wrap">
+  <table>
+    <tr><th>시스템</th><th>요청 유형</th><th>수신자</th><th>판단 담당자</th><th>에이전트</th><th>상태</th><th></th></tr>
+    {% for e in responsibilities %}
+    <tr>
+      <td>{{ e.system_id }}</td><td>{{ e.request_kind }}</td>
+      <td>{% for m in directory_members %}{% if m.member_id == e.recipient_member_id %}{{ m.display_name }}{% endif %}{% endfor %}<div class="muted small">{{ e.recipient_member_id }}</div></td>
+      <td>{% for m in directory_members %}{% if m.member_id == e.judgment_member_id %}{{ m.display_name }}{% endif %}{% endfor %}<div class="muted small">{{ e.judgment_member_id }}</div></td>
+      <td>{{ e.agent_id or '미지정' }}</td><td>{{ e.problem or '선택 가능' }}</td>
+      <td>{% if 'manage_rules' in allowed %}<form method="post" action="/responsibilities/remove">
+        <input type="hidden" name="position" value="{{ loop.index0 }}">
+        <input type="hidden" name="expected_revision" value="{{ directory_revision }}">
+        <button class="btn btn-danger btn-small">삭제</button>
+      </form>{% endif %}</td>
+    </tr>
+    {% else %}<tr><td colspan="7" class="muted">등록된 담당 범위가 없습니다.</td></tr>{% endfor %}
+  </table>
+  {% if 'manage_rules' in allowed %}
+  <form method="post" action="/responsibilities/add" style="margin-top:16px">
+    <input type="hidden" name="expected_revision" value="{{ directory_revision }}">
+    <div class="field"><label for="directory-system">시스템 식별자</label><input id="directory-system" name="system_id" required placeholder="billing"></div>
+    <div class="field"><label for="directory-kind">요청 유형 식별자</label><input id="directory-kind" name="request_kind" required placeholder="investigation"></div>
+    <div class="field"><label for="directory-recipient">수신자</label><select id="directory-recipient" name="recipient_member_id" required>
+      <option value="">선택하세요</option>{% for m in directory_members %}<option value="{{ m.member_id }}">{{ m.display_name }}</option>{% endfor %}
+    </select></div>
+    <div class="field"><label for="directory-judgment">판단 담당자</label><select id="directory-judgment" name="judgment_member_id" required>
+      <option value="">선택하세요</option>{% for m in directory_members %}<option value="{{ m.member_id }}">{{ m.display_name }}</option>{% endfor %}
+    </select></div>
+    <div class="field"><label for="directory-agent">에이전트</label><select id="directory-agent" name="agent_id">
+      <option value="">미지정</option>{% for a in agents %}<option value="{{ a.agent_id }}">{{ a.name }}</option>{% endfor %}
+    </select></div>
+    <button class="btn" type="submit">담당 범위 추가</button>
+  </form>
+  {% endif %}
+</div>

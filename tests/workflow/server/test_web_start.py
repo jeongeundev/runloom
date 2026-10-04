@@ -88,8 +88,8 @@ def test_sidebar_orders_start_between_connect_and_settings_and_marks_active(clie
     admin = log_in(client)
     sidebar = sidebar_of(page(admin))
     nav = re.findall(r'<a href="([^"]+)"[^>]*>([^<]+)', sidebar[sidebar.index('class="nav"'):])
-    assert [href for href, _ in nav[:5]] == ["/tasks", "/monitor", "/connect", "/start", "/me"]
-    assert [label.strip() for _, label in nav[:5]] == ["업무", "모니터링", "연결", "시작하기", "내 설정"]
+    assert [href for href, _ in nav[:6]] == ["/tasks", "/requests", "/monitor", "/connect", "/start", "/me"]
+    assert [label.strip() for _, label in nav[:6]] == ["업무", "받은·보낸 요청", "모니터링", "연결", "시작하기", "내 설정"]
     assert '<a href="/start" class="active">' in sidebar
 
 

@@ -923,7 +923,7 @@ def test_home_lists_chain_nodes_as_work_rows(web, conn):
     main = home[home.index('class="main'):home.index("<script>")]
     assert "/chains/" not in main and "<h2>워크플로우</h2>" not in main
 
-    repo.update_task_status(conn, task_a, "완료", "판정 근거: 3/3", finished_at=NOW, now=NOW)
+    repo.update_task_status(conn, task_a, "완료", "판정 근거: 3/3", finished_at=utc_now(), now=utc_now())
     repo.mark_chain_started(conn, chain_id, NOW)
     home = web.get("/tasks").text
     main = home[home.index('class="main'):home.index("<script>")]

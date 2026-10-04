@@ -56,7 +56,7 @@ from tests.e2e.test_jira_cycle import FakeJiraCloud, make_worker, tasks_of, work
 from tests.e2e.test_real_repo import FakeGitHubPulls, source_card
 from tests.e2e.test_team_handoff import MEMBER, respond
 from tests.e2e.test_work_ui import page
-from workflow.adapters.db import connect
+from workflow.adapters.db import SCHEMA_VERSION, connect
 from workflow.server import worker as worker_module
 from workflow.server.app import create_app
 from workflow.server.settings import load_settings
@@ -508,7 +508,7 @@ def test_v15_copy_upgrades_to_v16_and_the_monitor_tabs_open(tmp_path):
     with TestClient(create_app(load_settings(env))) as client:
         conn = connect(db_path)
         try:
-            assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+            assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
             assert {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables} == before
             assert conn.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0
             assert conn.execute("PRAGMA foreign_key_check").fetchall() == []

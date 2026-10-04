@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from workflow.adapters import repo
+from workflow.adapters import repo, internal_request_store
 from workflow.adapters.errors import ActiveExecutionExists
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.v1 import ExecutionRequest
@@ -57,6 +57,9 @@ def start_execution(
 ) -> str:
     """새 시도를 `queued` 로 만든다. 요청은 여기서 고정되고 이후 바뀌지 않는다 — 종류 봉투(`kind_spec`)도 등록부에서
     이때 채운다. 반환은 execution_id."""
+    problem = internal_request_store.investigation_problem(conn, task)
+    if problem:
+        raise WorkActionError(409, "investigation_blocked", problem)
     kind = task["kind"]
     spec = repo.get_kind(conn, session_id, kind)
     if spec is None:
@@ -72,7 +75,8 @@ def start_execution(
             "kind": kind,
             "agent_id": agent["agent_id"],
             "task_revision": task["revision"],
-            "request": task_cycle.execution_request_text(conn, task, with_answers=False),
+            "request": task_cycle.execution_request_text(conn, task, with_answers=False)
+                       + internal_request_store.information_context(conn, task['task_id']),
             "input_artifact_ids": list(input_artifact_ids),
             "target": target,
             "kind_spec": spec.model_dump(),
@@ -112,6 +116,9 @@ def run_task(conn: Connection, task: Row, *, session_id: str, now: str, settings
     task_id = task["task_id"]
     if task["finished_at"] is not None:
         raise WorkActionError(409, "invalid_transition", "마감된 업무는 실행할 수 없습니다.")
+    problem = internal_request_store.investigation_problem(conn, task)
+    if problem:
+        raise WorkActionError(409, "investigation_blocked", problem)
     if repo.active_execution(conn, task_id) is not None:
         raise WorkActionError(409, "execution_conflict", "이미 활성 실행이 있습니다.")
     selection = repo.get_selection(conn, task_id)

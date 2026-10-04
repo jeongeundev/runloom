@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from workflow.adapters import repo
 from workflow.domain import team
 from workflow.server.auth import (
+    utc_now,
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
     LoggedIn,
@@ -266,10 +267,10 @@ def _account(conn, *, role: str = "admin", email: str = "admin@example.com") -> 
     return member_id
 
 
-def _logged_in(settings, conn, *, role: str = "admin", email: str = "admin@example.com", now: str = NOW):
+def _logged_in(settings, conn, *, role: str = "admin", email: str = "admin@example.com", now: str | None = None):
     client = TestClient(_member_app(settings))
     member_id = _account(conn, role=role, email=email)
-    token = repo.create_login_session(conn, SELFHOST_SESSION_ID, member_id, now=now, days=14)
+    token = repo.create_login_session(conn, SELFHOST_SESSION_ID, member_id, now=now or utc_now(), days=14)
     client.cookies.set(LOGIN_COOKIE, token)
     return client, member_id, token
 
@@ -405,7 +406,7 @@ def test_require_action_follows_role_table(settings, conn):
 
     member = TestClient(admin.app)
     member_id = _account(conn, role="member", email="m@example.com")
-    member.cookies.set(LOGIN_COOKIE, repo.create_login_session(conn, SELFHOST_SESSION_ID, member_id, now=NOW, days=14))
+    member.cookies.set(LOGIN_COOKIE, repo.create_login_session(conn, SELFHOST_SESSION_ID, member_id, now=utc_now(), days=14))
     assert team.can("member", team.CREATE_WORK) and not team.can("member", team.MANAGE_TEAM)
     assert member.get("/_probe/work-api").json() == {"member_id": member_id}
 

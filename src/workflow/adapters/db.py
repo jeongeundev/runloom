@@ -23,7 +23,7 @@ from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 23
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -859,6 +859,133 @@ CREATE TABLE IF NOT EXISTS config_changes (
 """
 
 
+_V17_TABLES = """
+CREATE TABLE IF NOT EXISTS responsibilities (
+  session_id TEXT NOT NULL REFERENCES sessions(session_id),
+  position INTEGER NOT NULL CHECK (position >= 0),
+  entry_json TEXT NOT NULL,
+  PRIMARY KEY (session_id, position)
+);
+"""
+
+
+# 사내 요청의 접수 책임. 원업무·실행 상태와 별도로 보존한다.
+_V18_TABLES = """
+CREATE TABLE IF NOT EXISTS internal_requests (
+  request_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(session_id),
+  work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id),
+  requester_member_id TEXT NOT NULL REFERENCES members(member_id),
+  recipient_member_id TEXT NOT NULL REFERENCES members(member_id),
+  judgment_member_id TEXT NOT NULL REFERENCES members(member_id),
+  system_id TEXT NOT NULL,
+  request_kind TEXT NOT NULL,
+  agent_id TEXT,
+  directory_revision INTEGER NOT NULL CHECK (directory_revision >= 1),
+  submission_key TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'accepted')),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  created_at TEXT NOT NULL,
+  accepted_at TEXT,
+  UNIQUE (session_id, requester_member_id, submission_key),
+  CHECK ((state = 'accepted') = (accepted_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_internal_requests_work ON internal_requests(session_id, work_item_id);
+CREATE INDEX IF NOT EXISTS ix_internal_requests_recipient ON internal_requests(session_id, recipient_member_id, state);
+"""
+
+
+_V23_TABLES = """
+CREATE TABLE IF NOT EXISTS internal_request_resumptions (
+    request_id TEXT PRIMARY KEY REFERENCES internal_requests(request_id),
+    execution_id TEXT NOT NULL REFERENCES executions(execution_id),
+    artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),
+    text TEXT NOT NULL,
+    resumed_by_member_id TEXT NOT NULL REFERENCES members(member_id),
+    resumed_at TEXT NOT NULL
+);
+"""
+
+
+_V22_TABLES = """
+CREATE TABLE IF NOT EXISTS internal_request_judgments (
+    judgment_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES internal_requests(request_id),
+    submission_key TEXT NOT NULL,
+    execution_id TEXT NOT NULL REFERENCES executions(execution_id),
+    artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),
+    result_summary TEXT NOT NULL,
+    information_versions_json TEXT NOT NULL,
+    issue TEXT NOT NULL,
+    asked_by_member_id TEXT NOT NULL REFERENCES members(member_id),
+    judgment_member_id TEXT NOT NULL REFERENCES members(member_id),
+    asked_at TEXT NOT NULL,
+    decision TEXT CHECK (decision IN ('approve', 'reject')),
+    reason TEXT,
+    responded_by_member_id TEXT REFERENCES members(member_id),
+    responded_at TEXT,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision IN (1, 2)),
+    UNIQUE (request_id, submission_key),
+    UNIQUE (request_id, execution_id, information_versions_json),
+    CHECK ((responded_at IS NULL) = (decision IS NULL)),
+    CHECK ((responded_at IS NULL) = (reason IS NULL)),
+    CHECK ((responded_at IS NULL) = (responded_by_member_id IS NULL)),
+    CHECK ((responded_at IS NULL AND revision = 1) OR (responded_at IS NOT NULL AND revision = 2))
+);
+"""
+
+
+_V21_TABLES = """
+CREATE TABLE IF NOT EXISTS internal_request_questions (
+    question_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES internal_requests(request_id),
+    submission_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    asked_by_member_id TEXT NOT NULL REFERENCES members(member_id),
+    asked_at TEXT NOT NULL,
+    answer TEXT,
+    answered_by_member_id TEXT REFERENCES members(member_id),
+    answered_at TEXT,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision IN (1, 2)),
+    UNIQUE (request_id, submission_key),
+    CHECK ((answered_at IS NULL) = (answer IS NULL)),
+    CHECK ((answered_at IS NULL) = (answered_by_member_id IS NULL)),
+    CHECK ((answered_at IS NULL AND revision = 1) OR (answered_at IS NOT NULL AND revision = 2))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_internal_request_unanswered
+    ON internal_request_questions (request_id) WHERE answered_at IS NULL;
+"""
+
+
+_V20_TABLES = """
+CREATE TABLE IF NOT EXISTS internal_request_rejections (
+    request_id TEXT PRIMARY KEY REFERENCES internal_requests(request_id),
+    reason TEXT NOT NULL,
+    rejected_at TEXT NOT NULL,
+    new_request_id TEXT UNIQUE REFERENCES internal_requests(request_id)
+);
+"""
+
+
+_V19_TABLES = """
+CREATE TABLE IF NOT EXISTS internal_request_investigations (
+  request_id TEXT PRIMARY KEY REFERENCES internal_requests(request_id),
+  task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  created_at TEXT NOT NULL,
+  returned_execution_id TEXT REFERENCES executions(execution_id),
+  returned_artifact_id TEXT REFERENCES artifacts(artifact_id),
+  returned_summary TEXT,
+  returned_at TEXT,
+  returned_by_member_id TEXT REFERENCES members(member_id),
+  CHECK ((returned_at IS NULL) = (returned_execution_id IS NULL)),
+  CHECK ((returned_at IS NULL) = (returned_artifact_id IS NULL)),
+  CHECK ((returned_at IS NULL) = (returned_summary IS NULL)),
+  CHECK ((returned_at IS NULL) = (returned_by_member_id IS NULL))
+);
+"""
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -1066,7 +1193,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES + _V17_TABLES + _V18_TABLES + _V19_TABLES + _V20_TABLES + _V21_TABLES + _V22_TABLES + _V23_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -1382,8 +1509,62 @@ def _migrate_15_to_16(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 16")
 
 
+def _migrate_16_to_17(conn: sqlite3.Connection) -> None:
+    for statement in _statements(_V17_TABLES):
+        conn.execute(statement)
+    conn.execute("UPDATE schema_version SET version = 17")
+
+
+def _migrate_17_to_18(conn: sqlite3.Connection) -> None:
+    for statement in _statements(_V18_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 18")
+
+
+def _migrate_18_to_19(conn: sqlite3.Connection) -> None:
+    for statement in _statements(_V19_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 19")
+
+
+def _migrate_19_to_20(conn: sqlite3.Connection) -> None:
+    for statement in _statements(_V20_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 20")
+
+
+def _migrate_20_to_21(conn: sqlite3.Connection) -> None:
+    for statement in _statements(_V21_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 21")
+
+
+def _migrate_21_to_22(conn: sqlite3.Connection) -> None:
+    for statement in _statements(_V22_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 22")
+
+
+def _migrate_22_to_23(conn: sqlite3.Connection) -> None:
+    for statement in _statements(_V23_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 23")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~15 는 16 까지 차례로(4 → 5 → … → 15 → 16) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~22 는 23 까지 차례로(4 → 5 → … → 22 → 23) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다.
 
@@ -1404,10 +1585,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
+            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
                 steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
                          _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13,
-                         _migrate_13_to_14, _migrate_14_to_15, _migrate_15_to_16)
+                         _migrate_13_to_14, _migrate_14_to_15, _migrate_15_to_16, _migrate_16_to_17, _migrate_17_to_18, _migrate_18_to_19, _migrate_19_to_20, _migrate_20_to_21, _migrate_21_to_22, _migrate_22_to_23)
                 for step in steps[row[0] - 4:]:
                     step(conn)
             elif row[0] != SCHEMA_VERSION:

@@ -360,9 +360,9 @@ def test_selfhost_v8_copy_upgrades_to_v11_and_backups_round_trip(tmp_path, capsy
     assert v9_counts == {
         **v8_counts, "kinds": 3, "succession_rules": 1,
         "work_items": 6, "work_item_links": 0, "members": 1, "field_mappings": 2, "work_item_events": 0,
-        "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0, **JIRA_EMPTY, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY,
+        "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0, **JIRA_EMPTY, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY, "responsibilities": 0, "internal_requests": 0, "internal_request_investigations": 0, "internal_request_rejections": 0, "internal_request_questions": 0, "internal_request_judgments": 0, "internal_request_resumptions": 0,
     }
-    assert _version_and_kinds(src / "central.sqlite") == (16, ["bug_fix", "code_review", "triage"])
+    assert _version_and_kinds(src / "central.sqlite") == (SCHEMA_VERSION, ["bug_fix", "code_review", "triage"])
 
     # 3) v9 백업 → 다른 위치로 복원: 행·산출물이 그대로
     assert backup.main(["create"], env=env, now=lambda: T2) == 0
@@ -511,7 +511,7 @@ def test_selfhost_v9_copy_upgrades_to_v11_work_items_and_backups_round_trip(tmp_
     assert v10_counts == {
         **v9_counts, "work_items": 21, "work_item_links": 0, "members": 1, "field_mappings": 2,
         "work_item_events": 0, "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0, **JIRA_EMPTY,
-        "kinds": v9_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY,  # + 내장 triage 종류·판단 기준 v1
+        "kinds": v9_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY, "responsibilities": 0, "internal_requests": 0, "internal_request_investigations": 0, "internal_request_rejections": 0, "internal_request_questions": 0, "internal_request_judgments": 0, "internal_request_resumptions": 0,  # + 내장 triage 종류·판단 기준 v1
     }
     works = _works(src / "central.sqlite")
     assert [w[0] for w in works] == list(range(1, 22))
@@ -659,9 +659,9 @@ def test_selfhost_v10_copy_upgrades_to_v11_needs_first_setup_and_backups_round_t
     v11_counts = _counts(src / "central.sqlite")
     assert v11_counts == {**v10_counts, "login_sessions": 0, "member_invites": 0, "work_pull_requests": 0,
                           "field_mappings": v10_counts["field_mappings"] + 1, **JIRA_EMPTY,  # + jira 기본 매핑
-                          "kinds": v10_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY}  # + triage 종류·기준 v1
+                          "kinds": v10_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY, "responsibilities": 0, "internal_requests": 0, "internal_request_investigations": 0, "internal_request_rejections": 0, "internal_request_questions": 0, "internal_request_judgments": 0, "internal_request_resumptions": 0}  # + triage 종류·기준 v1
     facts = _v11_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 16
+    assert facts["version"] == SCHEMA_VERSION == 23
     assert facts["needs_first_setup"] is True  # 첫 접속에서 .env 토큰으로 관리자 계정을 만든다
     assert facts["admin"] == (V10_ADMIN, "관리자", "admin", None, None, None)
     assert (facts["runner_owner"], facts["code_issuer"]) == (None, None)  # 기존 러너 = 관리자 관리
@@ -835,9 +835,9 @@ def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backup
     v12_counts = _counts(src / "central.sqlite")
     assert v12_counts == {**v11_counts, "work_pull_requests": 0,
                           "field_mappings": v11_counts["field_mappings"] + 1, **JIRA_EMPTY,  # + jira 기본 매핑
-                          "kinds": v11_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY}  # + triage 종류·기준 v1
+                          "kinds": v11_counts["kinds"] + 1, **TRIAGE_ONE_WORKSPACE, **CONFIG_CHANGES_EMPTY, "responsibilities": 0, "internal_requests": 0, "internal_request_investigations": 0, "internal_request_rejections": 0, "internal_request_questions": 0, "internal_request_judgments": 0, "internal_request_resumptions": 0}  # + triage 종류·기준 v1
     facts = _v12_facts(src / "central.sqlite")
-    assert facts["version"] == SCHEMA_VERSION == 16
+    assert facts["version"] == SCHEMA_VERSION == 23
     assert facts["stored"] == [(n, status, reason) for n, status, reason, *_ in V11_WORKS]
     assert facts["recomputed"] == facts["stored"]
     assert facts["direct"] == {(None, None, None)}
@@ -850,7 +850,7 @@ def test_selfhost_v11_copy_upgrades_to_v12_with_unchanged_work_status_and_backup
     v12_backup = capsys.readouterr().out.strip()
     assert backup.main(["list"], env=env) == 0
     listed = dict(line.split("\t", 1) for line in capsys.readouterr().out.strip().splitlines())
-    assert listed[v12_backup].endswith("schema 16") and listed[v11_backup].endswith("schema 11")
+    assert listed[v12_backup].endswith(f"schema {SCHEMA_VERSION}") and listed[v11_backup].endswith("schema 11")
     dst = tmp_path / "dst"
     dst_env = {**_env(dst), "WORKFLOW_BACKUP_DIR": env["WORKFLOW_BACKUP_DIR"]}
     assert backup.main(["restore", v12_backup], env=dst_env) == 0
@@ -893,7 +893,7 @@ def test_v13_copy_upgrades_to_v14_and_jira_rows_round_trip_without_token(tmp_pat
     capsys.readouterr()
     conn = connect(old / "central.sqlite")
     init_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 16
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 23
     assert [tuple(r) for r in conn.execute("SELECT source_type, source_value, runloom_value FROM field_mappings")] == [
         ("jira", "*", "bug_fix")]
     conn.execute("INSERT INTO jira_connections (session_id, site_url, cloud_id, api_base, email, account_id,"
@@ -947,7 +947,7 @@ def test_v14_backup_restores_and_upgrades_to_v15(tmp_path, capsys):
     capsys.readouterr()
     conn = connect(old / "central.sqlite")
     init_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 16
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 23
     assert [r[0] for r in conn.execute("SELECT kind FROM kinds WHERE session_id = 's1' ORDER BY kind")] == [
         "bug_fix", "triage"]
     assert [tuple(r) for r in conn.execute("SELECT session_id, version, body FROM triage_criteria")] == [
@@ -962,7 +962,7 @@ def test_v14_backup_restores_and_upgrades_to_v15(tmp_path, capsys):
     assert _counts(dst / "central.sqlite") == _counts(old / "central.sqlite")
     conn = connect(dst / "central.sqlite")
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(r) for r in conn.execute("SELECT session_id, version FROM triage_criteria")] == [("s1", 1)]
     finally:
         conn.close()
@@ -995,7 +995,7 @@ def test_v15_backup_restores_and_upgrades_to_v16(tmp_path, capsys):
     capsys.readouterr()
     conn = connect(old / "central.sqlite")
     init_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 16
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 23
     assert conn.execute("SELECT config_revision FROM sessions WHERE session_id = 's1'").fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0
     conn.execute("INSERT INTO config_changes (session_id, revision, area, action, subject, by_member_id, occurred_at)"
@@ -1010,7 +1010,7 @@ def test_v15_backup_restores_and_upgrades_to_v16(tmp_path, capsys):
     assert _counts(dst / "central.sqlite") == _counts(old / "central.sqlite")
     conn = connect(dst / "central.sqlite")
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 16
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
         assert [tuple(r) for r in conn.execute("SELECT session_id, revision, area, action, subject FROM config_changes")
                 ] == [("s1", 5, "kind", "add", "classify")]
     finally:

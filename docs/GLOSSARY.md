@@ -22,6 +22,9 @@
 | 용어 | 정의 | 금지 표현 |
 |------|------|-----------|
 | `Agent` | 등록된 실행 대상 하나. 로컬은 실행 도구 + 작업 폴더, API는 주소 + 자격 증명. `capabilities`를 가진다 | `Bot`, `Worker`, `Runner` |
+| `Responsibility` | 시스템·요청 종류별 수신 멤버·판단 담당 멤버·선택적 Agent의 등록 항목. 담당표 후보이며 실행 target·사용 승인·자료 접근 권한과 다르다([담당 범위 표](product/RESPONSIBILITY_DIRECTORY.md)) | `Permission`, `Grant`, `Task` |
+| `internal_requests` / `InternalRequestCreate` / `InternalRequestAccept` | 원업무에 연결한 사내 요청의 생성·수락 기록과 입력 계약. 접수 책임·목적·대상 스냅샷·revision을 보존하며 수락은 실행이나 업무상 판단이 아니다([생성·수락](product/INTERNAL_REQUESTS.md)) | `HumanRequest`, `Task`, `Permission` |
+| `internal_request_investigations` | 사내 요청과 별도 조사 업무의 Task 연결, 검토된 최신 결과의 반환 참조·요약·행위자·시각. 원업무 완료와 별도([조사·반환](product/INTERNAL_REQUEST_INVESTIGATION.md)) | `WorkItem` 완료, 권한 부여 |
 | `Task` | 업무(`WorkItem`)의 한 단계(화면 말 "단계") — 수정·검토·다시 맡긴 수정이 각각 Task 하나다. 재작업은 새 Task 가 아니라 같은 Task 의 새 Execution. `required_capability` 하나를 가지고, `predecessor_task_id` 는 **같은 업무 안** 앞 단계만 가리킨다(업무 사이 선행은 `work_item_links` `blocks`). 표 `tasks`·상태(사용자 상태 7개)는 그대로이며 v10 이후 모든 Task 는 `work_item_id` 를 가진다([ADR-0020](adr/0020-work-items-and-stages.md)). 원본·키·우선순위·담당·양식 같은 가져온 업무의 칸은 `WorkItem` 에 있다(`chain_id`·`source_ref` 는 호환용으로 남음) | `Job`, `Ticket`, `Issue`(가져오기 전의 외부 항목 — 별도 용어), `업무`(목록 한 줄은 `WorkItem`) |
 | `Execution` | Task의 한 번의 시도. `attempt_no`로 구분. 상태는 `queued`, `accepted`, `running`, `result_ready`, `failed`, `unknown` | `Run`, `Job`, `Attempt` |
 | `ExecutionEvent` | 실행 주체가 보내는 이벤트. `seq` 연속 정수, `type`은 `accepted`, `started`, `progress`, `result_ready`, `failed` | `Log`, `Message`, `Notification` |
@@ -334,3 +337,9 @@
 - 판단 기준 버전과 설정 번호(`config_revision`): 기준을 고치면 둘 다 오르지만, 기준 버전은 판단 기준 본문의 번호(판단 로그에 남음)이고 설정 번호는 워크스페이스 설정 전체의 번호(실행·업무 이벤트에 남음)다.
 - 사람 일치율과 실제 결과: 사람 일치율은 "사람이 제안과 같은 담당·종류를 골랐는가"(판단 직후 사람 처리)이고, 실제 결과는 "그렇게 맡긴 업무가 병합까지 갔는가"(업무가 끝난 뒤 기록)다. 둘 다 정답률이 아니며, 화면은 늘 분자/분모와 n 을 함께 보인다.
 - 설정 변경 기록(`config_changes`)과 판단 기준·자동 시작 버전 행: 버전 행(`triage_criteria`·`triage_autostart`)은 그 설정의 값 자체를 담고, 설정 변경 기록은 워크스페이스 설정 번호가 오를 때 무엇이 바뀌었는지 이름만 남긴다(값·본문 없음).
+
+- `internal_request_rejections`: 수락 전 담당 아님 사유·시각과 재전달 요청 연결을 보존하는 표. 반려자는 원래 요청의 수신자다.
+
+- `internal_request_questions`: 지정 수신자의 정보 질문과 원래 요청자의 답변·작성자·시각을 보존하는 표. 요청 버전과 별개로 질문은 미답변 버전 1, 답변 버전 2다.
+
+- `internal_request_judgments`: 특정 조사 결과·정보 버전의 반환 여부에 대한 지정 담당자의 판단 요청·응답 이력을 보존하는 표. 미응답 버전 1, 응답 버전 2다.
