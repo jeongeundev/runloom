@@ -105,6 +105,15 @@ def test_startable_kinds_excludes_triage_and_input_kinds():
     assert [s.kind for s in triage.startable_kinds(specs, current_kind="chat")] == ["bug_fix", "docs", "chat"]
 
 
+def test_startable_kinds_keeps_current_kind_with_inputs():
+    """조사 C3 — 지금 종류가 입력을 가져도 후보에 남는다(없으면 TriageCandidates 검증이 터진다)."""
+    specs = [_builtin("bug_fix"), _builtin("code_review"), _builtin("triage"), _spec("docs"),
+             _spec("summary", input_kinds=["generic_result"])]
+    assert [s.kind for s in triage.startable_kinds(specs, current_kind="code_review")] == [
+        "bug_fix", "code_review", "docs"]
+    assert [s.kind for s in triage.startable_kinds(specs, current_kind="summary")] == ["bug_fix", "docs", "summary"]
+
+
 def test_assemble_candidates_filters_agents_and_excludes_self():
     specs = [_builtin("bug_fix"), _builtin("triage"), _spec("docs", label="문서")]
     agents = [
@@ -130,6 +139,19 @@ def test_assemble_candidates_filters_agents_and_excludes_self():
     assert c.members == members
 
 
+def test_assemble_candidates_current_kind_with_inputs_is_not_startable_and_composes():
+    specs = [_builtin("bug_fix"), _builtin("code_review"), _builtin("triage"), _spec("docs", label="문서")]
+    review_need = Capability(code="code.review", scope={"repository_id": REPO})
+    agents = [AgentInfo("agt-r", "reviewer", None, True, 0, (review_need,))]
+    c = triage.assemble_candidates(
+        specs=specs, current_kind="code_review", current_required=review_need, repository_id=REPO,
+        members=[], agents=agents, predecessors=[], work_key="RUN-12",
+    )
+    assert [(k.kind, k.startable) for k in c.kinds] == [("bug_fix", True), ("code_review", False), ("docs", True)]
+    assert [(a.agent_id, a.kinds) for a in c.agents] == [("agt-r", ["code_review"])]
+    assert "지금 종류: code_review (커밋 검토)" in _compose(candidates=c)  # KeyError 없음
+
+
 def test_assemble_candidates_caps_at_max():
     agents = [AgentInfo(f"agt-{i}", f"a{i}", None, True, 0,
                         (Capability(code="code.fix", scope={"repository_id": REPO}),)) for i in range(40)]
@@ -147,6 +169,14 @@ def test_assemble_candidates_caps_at_max():
 
 def test_validate_ok():
     assert _validate(_result()) == triage.TriageVerdict(True, None, "")
+
+
+def test_validate_rejects_next_action_first():
+    """접수 판단 결과에 next_action 이 오면 다른 검사보다 먼저 거부한다."""
+    bad = _result(execution_id="exec-x", proposed_kind=None, assignee=None, predecessors=[],
+                  next_action={"type": "human", "question": "끝났나요?"})
+    verdict = _validate(bad)
+    assert not verdict.ok and verdict.code == "next_action_forbidden"
 
 
 @pytest.mark.parametrize(("over", "code", "needle"), [
@@ -279,6 +309,29 @@ def test_compose_sections_in_order():
     assert "- docs 기록 없음" in text
     assert all(line == line.rstrip() for line in text.split("\n"))
     assert "때문" not in text  # 인과 단정 없음
+
+
+INTAKE_GOLDEN = (
+    "# 판단: RUN-12 쿠폰이 두 번 적용됨\n원본: SHOP-12\n\n## 판단 기준 (v3)\n기준 본문\n\n## 업무\n"
+    "지금 종류: bug_fix (버그 수정)\n### 재현 절차\n```\n1. 결제\n```\n### 요청\n```\n쿠폰을 두 번 쓰면 두 번 깎인다\n```"
+    "\n\n## 후보\n### 종류\n- bug_fix — 버그 수정\n- docs — 문서\n### 담당\n- member:mem-1 김지은 — 진행 중 2\n"
+    "- agent:agt-1 macbook — 소유 김지은 · 켜짐 · 진행 중 1 · 맡을 수 있는 종류 bug_fix\n### 선행 후보\n"
+    "- RUN-9 결제 모듈 정리 (에이전트 작업 중)\n\n## 로그 근거 (Runloom 계산)\n"
+    "- bug_fix 최근 12건: 1회 통과 7건 · 재작업 4건 · 완료까지 중앙 6시간 10분\n- docs 기록 없음\n\n## 답하는 법\n"
+    "- proposed_kind·assignee·predecessors 는 위 후보 안의 값만 쓴다. 후보 밖 값은 판단 실패로 기록된다.\n"
+    "- 담당은 type(member|agent)과 id 로 쓴다.\n- 저장소 코드는 현재 폴더에서 읽기만 한다."
+)
+
+
+def test_compose_intake_bytes_unchanged():
+    """phase 22 뒤에도 접수 판단 요청문은 바이트 그대로다(phase 21 출력으로 고정)."""
+    assert _compose() == INTAKE_GOLDEN
+
+
+def test_fenced_and_one_line_are_public():
+    assert triage.one_line(" a\n b  c ") == "a b c"
+    assert triage.fenced("x") == "```\nx\n```"
+    assert triage.fenced("a ```` b") == "`````\na ```` b\n`````"
 
 
 def test_compose_omits_empty_sections():

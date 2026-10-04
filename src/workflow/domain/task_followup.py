@@ -85,7 +85,8 @@ def _request(ctx: FollowupContext, code: str, target_task_id: str, reason: str) 
 def _after_fix(ctx: FollowupContext) -> FollowupDecision:
     rule = next((r for r in ctx.rules if r.from_kind == ctx.kind and ctx.outcome in r.on_outcomes), None)
     if rule is None:
-        return FollowupDecision("none", f"outcome {ctx.outcome} 에 맞는 후속 규칙 없음")
+        # no_rule = 결과 뒤 판단 ① 의 시작 표시(ADR-0027) — 워커의 상태 문구 표(`_HOLD_LABELS`)에는 없다
+        return FollowupDecision("none", f"outcome {ctx.outcome} 에 맞는 후속 규칙 없음", hold_code="no_rule")
     cause_key = f"review:{ctx.execution_id}"
     if ctx.existing_followup_task_id is not None:
         return FollowupDecision(

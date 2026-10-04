@@ -114,6 +114,17 @@ def test_already_handled_other_result_does_not_block_new_one():
 def test_fix_outcome_not_in_rule_has_no_followup():
     decision = decide_followup(_fix(rules=()))
     assert decision.action == "none"
+    assert decision.hold_code == "no_rule"  # 결과 뒤 판단 ① 의 시작 표시(ADR-0027)
+
+
+def test_no_rule_hold_code_only_for_fix_without_rule():
+    """`no_rule` 은 수정 결과의 규칙 없음에만 — 검토 승인·후속 대상 아닌 outcome·처리됨·판정 실패에는 없다."""
+    assert decide_followup(_review("approved")).hold_code is None
+    assert decide_followup(_review("weird")).hold_code is None
+    assert decide_followup(_fix(rules=(), handled_cause_keys=frozenset())).hold_code == "no_rule"
+    assert decide_followup(_fix(handled_cause_keys=frozenset({"review:exe-fix-1"}))).hold_code is None
+    failed = decide_followup(_fix(rules=(), verdict="failed"))
+    assert failed.action == "request_human" and failed.hold_code is None
 
 
 def test_fix_needs_information_requests_human():

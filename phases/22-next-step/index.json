@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "next-step-domain",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T23:00:15+0900",
+      "summary": "신규 domain/next_step.py(상수 NEXT_STEP_WAIT_SECONDS·NEEDS_INFORMATION_CODES·NEXT_STEP_HUMAN_CODE·ACTION_LABELS 등, disposition, next_step_kinds, assemble_next_step_candidates, PriorResult·ResponseNote·ReturnedRequest, compose_next_step_request, validate_next_step(9개 하위 사유), action_label·action_line, stage_request_text, rework_note, NextStepFact·next_step_status, next_step_reason — ARCHITECTURE 시그니처 그대로). domain/triage.py: _fenced/_line → 공개 fenced/one_line, 요청문 조각을 공용 함수 clip·work_lines·people_lines·evidence_section·join_sections·agent_candidates 로 나눔(접수 요청문 바이트 그대로 — golden 테스트), startable_kinds C3 고침(지금 종류는 입력 있어도 후보), assemble_candidates 가 startable=not input_kinds 채움, validate 맨 앞 next_action_forbidden. task_followup._after_fix 규칙 없음에 hold_code='no_rule'(worker _HOLD_LABELS 에 없어 동작 그대로). 시작 판정은 ARCHITECTURE 대로 별도 함수 없이 decide_followup(no_rule·NEEDS_INFORMATION_CODES)+disposition 으로 — 테스트 표로 고정. 테스트: 신규 tests/workflow/domain/test_next_step.py, test_triage.py(C3·golden·next_action_forbidden·공개 이름), test_task_followup.py(no_rule). adapters/server 변경 없음. 검증: pytest 4341 passed·83 skipped, ruff 통과. 다음 step 주의: compose_next_step_request 는 candidates.cause 필수(없으면 ValueError), responses 는 오래된 순으로 넘기면 마지막 3개만 씀, 재작업도 원인 Agent 가 agents 후보에 있어야 통과(assignee_not_candidate), validate_next_step 의 reason 에 '<사유> — ' 접두는 호출자가 붙인다."
     },
     {
       "step": 5,
