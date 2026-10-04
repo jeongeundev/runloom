@@ -12,27 +12,33 @@
 
 import json
 import re
+from secrets import token_hex
 from sqlite3 import Connection, Row
 from typing import Any
 
-from workflow.adapters import repo
+from workflow.adapters import internal_request_store, repo
+from workflow.adapters.errors import NextStepHandled
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.v1 import WORK_KEY_PREFIX, Capability, KindSpec, TriageResult, format_work_key
+from workflow.domain import next_step
+from workflow.domain.completion import criteria_template, merge_criteria
 from workflow.domain.execution_policy import policy_for
 from workflow.domain.field_mapping import PRIORITIES
 from workflow.domain.handoff_context import HANDOFF_NOTE_MAX
 from workflow.domain.selection import Candidate, select_agent
+from workflow.domain.task_followup import FollowupTaskSpec
 from workflow.domain.work_keys import branch_name
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES
-from workflow.server import owner_approval, task_cycle
+from workflow.server import next_step_runs, owner_approval, task_cycle
 from workflow.server.settings import Settings
 from workflow.server.stage_runs import (  # noqa: F401 — 옮긴 이름을 그대로 둔다(웹·테스트가 work_actions 로 부른다)
     WorkActionError,
     refresh_task_status,
+    request_changes,
     run_task,
     start_execution,
 )
-from workflow.server.worker import Worker
+from workflow.server.worker import Worker, enqueue_event_notification
 
 _ASSIGNEE = re.compile(r"(member|agent):([A-Za-z0-9._-]+)")
 
@@ -300,6 +306,118 @@ def dismiss_triage(conn: Connection, *, session_id: str, work_item_id: str, tria
         raise WorkActionError(404, "not_found", "업무를 찾을 수 없습니다.")
     if not repo.dismiss_triage(conn, session_id, work_item_id, triage_id, member_id=member_id, now=now):
         raise _stale()
+
+
+# --- 결과 뒤 판단 제안 (phase 22) ---------------------------------------------------------
+
+NEXT_STEP_STALE = "다음 단계 제안이 이미 처리됐거나 원인이 바뀌었습니다."
+
+
+def _next_step_stale() -> WorkActionError:
+    return WorkActionError(409, "next_step_stale", NEXT_STEP_STALE)
+
+
+def _stage_row(conn: Connection, session_id: str, spec: KindSpec, cause_task: Row, *, repository_id: str, title: str,
+               request: str) -> dict[str, Any]:
+    """[제안대로] 로 만드는 단계 — 선행·산출물 인계 없이 글(`stage_request_text`)로 잇는다. 담당은 그 뒤 맡기기·배정이 정한다."""
+    return {
+        "task_id": f"task-{token_hex(6)}",
+        "session_id": session_id,
+        "title": title,
+        "request": request,
+        "kind": spec.kind,
+        "required_capability": {"code": spec.capability_code, "scope": {spec.scope_key: repository_id}},
+        "selection_mode": "manual",
+        "chosen_agent_id": None,
+        "run_mode": cause_task["run_mode"],
+        "completion_mode": "review",
+        "criteria": [c.__dict__ for c in merge_criteria(criteria_template(spec), [])],
+        "predecessor_task_id": None,
+        "revision": 1,
+        "target": {},
+        "status": "대기",
+        "status_reason": "담당 대기",
+    }
+
+
+def accept_next_step(conn: Connection, store: Any, settings: Settings, *, session_id: str, work_item_id: str,
+                     triage_id: str, member_id: str, now: str, secrets: SecretStore | None = None) -> None:
+    """[제안대로] — 결과 뒤 판단의 다음 행동을 적용한다(ARCHITECTURE "행동별 적용"). 그 업무의 최신 결과 뒤 판단·`proposed`·
+    처리 없음·원인 그대로일 때만(아니면 409 `next_step_stale`). 처리 `accepted` 는 행동의 쓰기와 한 트랜잭션, 맡기기·재작업
+    착수는 그 뒤 기존 함수 — 그 오류는 그대로 지나고 처리는 남는다. 판단은 제안만 했고 누른 멤버가 정한다."""
+    work = _own_open_work(conn, session_id, work_item_id)
+    log = repo.latest_next_step(conn, work_item_id)
+    if (log is None or log["triage_id"] != triage_id or log["state"] != "proposed" or log["handling"] is not None
+            or not repo.next_step_cause_current(conn, log)):
+        raise _next_step_stale()
+    result = TriageResult.model_validate_json(log["result_json"])
+    action = result.next_action
+    if action is None:
+        raise _next_step_stale()
+    cause_execution_id = log["cause_execution_id"]
+    cause_task = repo.get_task(conn, repo.get_execution(conn, cause_execution_id)["task_id"])
+    try:
+        if action.type == "human":
+            request_id = repo.apply_next_human(conn, triage_id=triage_id, member_id=member_id,
+                                               cause_task_id=cause_task["task_id"], question=action.question, now=now)
+            if secrets is not None:
+                enqueue_event_notification(conn, settings, secrets, event="human_request",
+                                           task_id=cause_task["task_id"], dedupe_key=f"human_request:{request_id}",
+                                           detail=action.question, now=now)
+            return
+        if action.type == "internal_request":
+            try:
+                internal_request_store.create_from_next_step(conn, session_id, member_id, work_item_id, action,
+                                                             triage_id=triage_id, now=now)
+            except internal_request_store.RequestProblem as exc:
+                raise WorkActionError(exc.status, exc.code, str(exc)) from None
+            return
+        if action.type == "stage" and action.rework:
+            returned = (next_step_runs._returned(conn, session_id, log["cause_request_id"])
+                        if log["cause_request_id"] is not None else None)
+            repo.mark_next_step_accepted(conn, triage_id, member_id=member_id, now=now)
+            request_changes(conn, store, settings, cause_task, session_id=session_id,
+                            comment=next_step.rework_note(result, returned=returned), now=now)
+            return
+        spec = repo.get_kind(conn, session_id, action.kind)
+        if spec is None:
+            raise WorkActionError(409, "kind_unavailable", "제안한 종류가 더 이상 등록돼 있지 않습니다.")
+        repository_id = _repository_id(conn, session_id, cause_task)
+        if repository_id is None:
+            raise _next_step_stale()
+        text = next_step.stage_request_text(work_request=work["request"],
+                                            prior=repo.cause_prior(conn, store, cause_execution_id), result=result)
+        if action.type == "stage":
+            row = _stage_row(conn, session_id, spec, cause_task, repository_id=repository_id,
+                             title=f"{spec.label}: {work['title']}", request=text)
+            repo.apply_next_stage(conn, triage_id=triage_id, member_id=member_id, cause_task_id=cause_task["task_id"],
+                                  cause_execution_id=cause_execution_id, task=row,
+                                  reason=next_step.STAGE_DONE_REASON, now=now)
+            target_work_id = work_item_id
+        else:
+            row = _stage_row(conn, session_id, spec, cause_task, repository_id=repository_id, title=action.title,
+                             request=text)
+            followup = FollowupTaskSpec(session_id=session_id, kind=spec.kind, cause_execution_id=cause_execution_id,
+                                        predecessor_task_id=cause_task["task_id"],
+                                        rules_revision=repo.get_config_revision(conn, session_id),
+                                        placement="new_work")
+            target_work_id = repo.apply_next_work(conn, triage_id=triage_id, member_id=member_id,
+                                                  cause_task_id=cause_task["task_id"],
+                                                  cause_execution_id=cause_execution_id, spec=followup, task=row,
+                                                  now=now)
+    except NextStepHandled:
+        raise _next_step_stale() from None
+    assign_work(conn, store, settings, session_id=session_id, work_item_id=target_work_id,
+                value=f"{action.assignee.type}:{action.assignee.id}", member_id=member_id, now=now, secrets=secrets)
+
+
+def dismiss_next_step(conn: Connection, *, session_id: str, work_item_id: str, triage_id: str, member_id: str,
+                      now: str) -> None:
+    """[무시] — 결과 뒤 판단 `dismissed`. 대체 경로(② 원래 사람 요청 등)는 다음 tick 의 처분이 연다(ADR-0027 결정 6)."""
+    if repo.get_work_item(conn, session_id, work_item_id) is None:
+        raise WorkActionError(404, "not_found", "업무를 찾을 수 없습니다.")
+    if not repo.dismiss_next_step(conn, session_id, work_item_id, triage_id, member_id=member_id, now=now):
+        raise _next_step_stale()
 
 
 # --- 직접 작업 ----------------------------------------------------------------------

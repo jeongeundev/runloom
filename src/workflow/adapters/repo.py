@@ -36,6 +36,7 @@ from workflow.adapters.errors import (
     KindProtected,
     LastAdmin,
     NextStepExists,
+    NextStepHandled,
     NotFound,
     RegistrationTaken,
     ResponseConflict,
@@ -100,7 +101,14 @@ from workflow.domain.assignee_metrics import (
     MemberLabel,
     ResponseFact,
 )
-from workflow.domain.next_step import NextStepFact, PriorResult, action_label, next_step_reason
+from workflow.domain.next_step import (
+    NEXT_STEP_HUMAN_CODE,
+    WORK_DONE_REASON,
+    NextStepFact,
+    PriorResult,
+    action_label,
+    next_step_reason,
+)
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
@@ -3682,54 +3690,61 @@ def create_followup_once(
     NotFound). `same_work` 면 새 Task 가 그 업무의 다음 단계, `new_work` 면 새 업무의 첫 단계가 되고 원인 업무와
     `spawned_from` 으로 잇는다(ADR-0020). 새 업무·링크는 Task 를 새로 만들 때만 생기고, 같은 트랜잭션 끝에 관련
     업무의 상태를 다시 계산한다."""
+    with _tx(conn):
+        return _create_followup(conn, spec, task, now, work_item_id=work_item_id, placement=placement)
+
+
+def _create_followup(
+    conn: Connection, spec: FollowupTaskSpec, task: dict, now: str, *, work_item_id: str, placement: str,
+) -> tuple[str, bool]:
+    """`create_followup_once` 의 트랜잭션 안쪽 — 결과 뒤 판단 [제안대로] 새 업무(`apply_next_work`)도 같이 쓴다."""
     if placement not in ("same_work", "new_work"):
         raise ValueError(f"placement {placement!r}")
     predecessor = spec.predecessor_task_id if placement == "same_work" else None
     if (task["session_id"], task["kind"], task.get("predecessor_task_id")) != (spec.session_id, spec.kind, predecessor):
         raise ValueError(f"task {task['task_id']} 가 후속 spec 과 다릅니다")
-    with _tx(conn):
-        cause = _one(
-            conn,
-            "SELECT 1 FROM executions e JOIN tasks t ON t.task_id = e.task_id"
-            " WHERE e.execution_id = ? AND t.session_id = ?",
-            (spec.cause_execution_id, spec.session_id),
+    cause = _one(
+        conn,
+        "SELECT 1 FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+        " WHERE e.execution_id = ? AND t.session_id = ?",
+        (spec.cause_execution_id, spec.session_id),
+    )
+    if cause is None:
+        raise NotFound(f"execution {spec.cause_execution_id}")
+    existing = _one(
+        conn,
+        "SELECT task_id FROM followup_links WHERE session_id = ? AND cause_execution_id = ? AND to_kind = ?",
+        (spec.session_id, spec.cause_execution_id, spec.kind),
+    )
+    if existing is not None:
+        return existing["task_id"], False
+    work_item_ids = [work_item_id]
+    if placement == "new_work":
+        cause_work = get_work_item(conn, spec.session_id, work_item_id)
+        if cause_work is None:
+            raise NotFound(f"work item {work_item_id}")
+        # Jira 원인의 키·주소는 복사하지 않는다 — 새 업무의 원본 칸은 Jira 에 후속 이슈를 만든 뒤 채운다(ADR-0024 결정 13)
+        copy_key = cause_work["source_type"] != "jira"
+        spawned = _work_item_for_task(
+            conn, task, now, source_type=cause_work["source_type"], source_id=cause_work["source_id"],
+            source_key=cause_work["source_key"] if copy_key else None,
+            source_url=cause_work["source_url"] if copy_key else None,
         )
-        if cause is None:
-            raise NotFound(f"execution {spec.cause_execution_id}")
-        existing = _one(
-            conn,
-            "SELECT task_id FROM followup_links WHERE session_id = ? AND cause_execution_id = ? AND to_kind = ?",
-            (spec.session_id, spec.cause_execution_id, spec.kind),
-        )
-        if existing is not None:
-            return existing["task_id"], False
-        work_item_ids = [work_item_id]
-        if placement == "new_work":
-            cause_work = get_work_item(conn, spec.session_id, work_item_id)
-            if cause_work is None:
-                raise NotFound(f"work item {work_item_id}")
-            # Jira 원인의 키·주소는 복사하지 않는다 — 새 업무의 원본 칸은 Jira 에 후속 이슈를 만든 뒤 채운다(ADR-0024 결정 13)
-            copy_key = cause_work["source_type"] != "jira"
-            spawned = _work_item_for_task(
-                conn, task, now, source_type=cause_work["source_type"], source_id=cause_work["source_id"],
-                source_key=cause_work["source_key"] if copy_key else None,
-                source_url=cause_work["source_url"] if copy_key else None,
-            )
-            link_work_items(conn, from_work_item_id=work_item_id, to_work_item_id=spawned, type="spawned_from",
-                            cause_execution_id=spec.cause_execution_id, now=now)
-            queue_jira_issue_creation(conn, spawned, work_item_id, now=now)
-            if cause_work["requested_by_member_id"] is not None:  # 같은 사람이 맡긴 일의 결과
-                set_work_requester(conn, spawned, cause_work["requested_by_member_id"])
-            work_item_ids.append(spawned)
-        _insert_task_row(conn, task, now, work_item_id=work_item_ids[-1])
-        conn.execute(
-            "INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (spec.session_id, spec.cause_execution_id, spec.kind, task["task_id"], spec.rules_revision, now),
-        )
-        for changed in work_item_ids:
-            refresh_work_status(conn, changed, now=now)
-        return task["task_id"], True
+        link_work_items(conn, from_work_item_id=work_item_id, to_work_item_id=spawned, type="spawned_from",
+                        cause_execution_id=spec.cause_execution_id, now=now)
+        queue_jira_issue_creation(conn, spawned, work_item_id, now=now)
+        if cause_work["requested_by_member_id"] is not None:  # 같은 사람이 맡긴 일의 결과
+            set_work_requester(conn, spawned, cause_work["requested_by_member_id"])
+        work_item_ids.append(spawned)
+    _insert_task_row(conn, task, now, work_item_id=work_item_ids[-1])
+    conn.execute(
+        "INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (spec.session_id, spec.cause_execution_id, spec.kind, task["task_id"], spec.rules_revision, now),
+    )
+    for changed in work_item_ids:
+        refresh_work_status(conn, changed, now=now)
+    return task["task_id"], True
 
 
 def get_followup_link(conn: Connection, task_id: str) -> Row | None:
@@ -4652,6 +4667,56 @@ def dismiss_next_step(conn: Connection, session_id: str, work_item_id: str, tria
             return False
         refresh_work_status(conn, work_item_id, now=now)
         return True
+
+
+def _accept_next_step(conn: Connection, triage_id: str, *, member_id: str, now: str) -> None:
+    """처리 `accepted` — 이미 처리됐거나 제안이 아니면 NextStepHandled. 자체 BEGIN 없음."""
+    if not record_next_step_handling(conn, triage_id, handling="accepted", member_id=member_id, now=now):
+        raise NextStepHandled(triage_id)
+
+
+def apply_next_stage(conn: Connection, *, triage_id: str, member_id: str, cause_task_id: str,
+                     cause_execution_id: str, task: dict, reason: str, now: str) -> None:
+    """[제안대로] 다음 단계 — 처리 `accepted`, 원인 Task `완료`(잠금 해제), 같은 업무에 새 단계, 업무 상태 재계산(한 트랜잭션)."""
+    with _tx(conn):
+        _accept_next_step(conn, triage_id, member_id=member_id, now=now)
+        _finish_task_row(conn, task_id=cause_task_id, execution_id=cause_execution_id, status="완료", reason=reason,
+                         now=now)
+        work_item_id = _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ?", (cause_task_id,))["work_item_id"]
+        _insert_task_row(conn, task, now, work_item_id=work_item_id)
+        refresh_work_status(conn, work_item_id, now=now)
+
+
+def apply_next_work(conn: Connection, *, triage_id: str, member_id: str, cause_task_id: str, cause_execution_id: str,
+                    spec: FollowupTaskSpec, task: dict, now: str) -> str:
+    """[제안대로] 새 업무 — 처리 `accepted`, 원인 Task `완료`(`WORK_DONE_REASON`), `_create_followup(new_work)`(새 업무·
+    `spawned_from`·맡긴 사람 복사·Jira 후속 이슈 대기). 반환은 새 업무 id."""
+    with _tx(conn):
+        _accept_next_step(conn, triage_id, member_id=member_id, now=now)
+        _finish_task_row(conn, task_id=cause_task_id, execution_id=cause_execution_id, status="완료",
+                         reason=WORK_DONE_REASON, now=now)
+        work_item_id = _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ?", (cause_task_id,))["work_item_id"]
+        task_id, _ = _create_followup(conn, spec, task, now, work_item_id=work_item_id, placement="new_work")
+        refresh_work_status(conn, work_item_id, now=now)
+        return _one(conn, "SELECT work_item_id FROM tasks WHERE task_id = ?", (task_id,))["work_item_id"]
+
+
+def apply_next_human(conn: Connection, *, triage_id: str, member_id: str, cause_task_id: str, question: str,
+                     now: str) -> str:
+    """[제안대로] 사람 확인 — 처리 `accepted` + 원인 Task 에 `next_step_human` 사람 요청(`next_step_human:<triage_id>`),
+    업무 상태 재계산. 반환은 request_id."""
+    with _tx(conn):
+        _accept_next_step(conn, triage_id, member_id=member_id, now=now)
+        request_id, _ = _create_human_request(conn, cause_task_id, NEXT_STEP_HUMAN_CODE, question,
+                                              f"{NEXT_STEP_HUMAN_CODE}:{triage_id}", now)
+        _refresh_stage_work(conn, cause_task_id, now=now)
+        return request_id
+
+
+def mark_next_step_accepted(conn: Connection, triage_id: str, *, member_id: str, now: str) -> None:
+    """[제안대로] 재작업 — 처리만(한 트랜잭션). 재작업 착수는 호출자가 `stage_runs.request_changes` 로."""
+    with _tx(conn):
+        _accept_next_step(conn, triage_id, member_id=member_id, now=now)
 
 
 def change_stage_kind(conn: Connection, task_id: str, spec: KindSpec, *, required: Capability, target: dict,

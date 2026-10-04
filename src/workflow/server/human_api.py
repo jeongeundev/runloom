@@ -32,6 +32,7 @@ from workflow.adapters.errors import ArtifactMissing, NotFound, ResponseConflict
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.v1 import CodeChangeResult, NonEmptyStr
 from workflow.domain.delegation import OWNER_APPROVAL_CODE, can_decide_approval, parse_approval_cause_key
+from workflow.domain.next_step import NEXT_STEP_HUMAN_CODE
 from workflow.domain.work_status import STAGE_FAILED
 from workflow.domain import team
 from workflow.server import owner_approval
@@ -53,7 +54,8 @@ _ACTIONS: dict[str, frozenset[str]] = {
     "fix_verification_failed": frozenset({"resume", "reverify", "close"}),
 }
 # 추가 정보를 묻는 요청 — `resume` 에 빈 답은 받지 않는다
-_INFORMATION_CODES = frozenset({"input_missing", "fix_needs_information", "review_needs_information"})
+_INFORMATION_CODES = frozenset({"input_missing", "fix_needs_information", "review_needs_information",
+                                NEXT_STEP_HUMAN_CODE})
 
 
 class ResponseBody(BaseModel):

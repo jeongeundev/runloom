@@ -73,13 +73,8 @@ from workflow.contracts.v1 import (
     BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
     WORK_KEY_PREFIX,
-    ArtifactMeta,
     Capability,
-    CodeChangeResult,
-    CodeChangeTarget,
-    ExecutionRequest,
     KindSpec,
-    ReviewComment,
     SuccessorRule,
     format_work_key,
     parse_rfc3339_aware,
@@ -102,7 +97,7 @@ from workflow.domain.triage import AUTOSTART_MIN_HANDLED, parse_threshold
 from workflow.domain.triage_criteria import CRITERIA_BODY_MAX
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_list import ListQuery, parse_list_query
-from workflow.server import github_connect, jira_connect, metrics_api, triage_runs, views, work_actions
+from workflow.server import github_connect, jira_connect, metrics_api, stage_runs, triage_runs, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
@@ -295,12 +290,6 @@ def _page_errors():
         yield
     except work_actions.WorkActionError as exc:
         raise PageError(exc.status, exc.code, exc.message, field=exc.field) from None
-
-
-def _start_execution(conn: Connection, task: Row, agent: Row, **kwargs: Any) -> str:
-    """새 시도를 `queued` 로 만든다 — `work_actions.start_execution`."""
-    with _page_errors():
-        return work_actions.start_execution(conn, task, agent, **kwargs)
 
 
 # --- 홈·업무 ----------------------------------------------------------------------
@@ -1426,6 +1415,50 @@ def work_triage_dismiss(
     return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
 
 
+@router.post("/work/{key}/next-step/accept")
+def work_next_step_accept(
+    request: Request,
+    response: Response,
+    key: str,
+    triage_id: str = Form(""),
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[제안대로] — 결과 뒤 판단의 다음 행동 적용 (`work_actions.accept_next_step`, phase 22)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.accept_next_step(conn, request.app.state.store, _settings(request), session_id=member.session_id,
+                                      work_item_id=work["work_item_id"], triage_id=triage_id,
+                                      member_id=member.member_id, now=utc_now(), secrets=request.app.state.secrets)
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
+
+
+@router.post("/work/{key}/next-step/dismiss")
+def work_next_step_dismiss(
+    response: Response,
+    key: str,
+    triage_id: str = Form(""),
+    q: str = Form(""),
+    group: str = Form(""),
+    view: str = Form(""),
+    closed: str = Form(""),
+    repo_name: str = Form("", alias="repo"),
+    member: LoggedIn = Depends(require_action(team.DELEGATE)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[무시] — 결과 뒤 판단 제안을 접는다 (`work_actions.dismiss_next_step`, phase 22)."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        work_actions.dismiss_next_step(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                       triage_id=triage_id, member_id=member.member_id, now=utc_now())
+    return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
+
+
 def _refuse_direct_work(conn: Connection, task_id: str) -> None:
     """직접 작업 중인 업무의 단계는 에이전트로 착수하지 않는다 — 담당 폼에서 에이전트에게 넘기면 시작된다."""
     if repo.is_direct_working(conn, task_id):
@@ -1627,60 +1660,9 @@ def task_review(
         return _redirect(f"/tasks/{task_id}", response)
 
     # request_changes — 같은 업무의 새 시도. 이전 결과와 검토 의견이 입력에 더해진다 (CONTRACT 8절).
-    problem = internal_request_store.investigation_problem(conn, task)
-    if problem:
-        raise PageError(409, "investigation_blocked", problem)
-    agent = repo.get_agent(conn, execution["agent_id"])
-    if agent is None:
-        raise PageError(409, "invalid_transition", "실행했던 에이전트가 더 이상 등록돼 있지 않습니다.")
-    review = ReviewComment(
-        contract_version=1,
-        task_id=task_id,
-        reviewed_execution_id=execution_id,
-        decision="request_changes",
-        comment=comment,
-        created_at=now,
-    )
-    data = review.model_dump_json().encode()
-    created, _ = repo.store_artifact(
-        conn, store,
-        execution_id=execution_id,
-        session_id=session_id,
-        meta=ArtifactMeta(
-            contract_version=1, kind="review_comment", name="review.json",
-            content_type="application/json", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
-        ),
-        data=data,
-        now=now,
-    )
-    previous = ExecutionRequest.model_validate_json(execution["request_json"])
-    inputs = list(
-        dict.fromkeys([*previous.input_artifact_ids, execution["result_artifact_id"], created.artifact_id])
-    )
-    # 대상은 이전 시도의 요청을 잇는다 (종류 무관). 코드 수정 대상은 base_commit 만 이전 시도가 보존한 result_commit 으로.
-    target = previous.target.model_dump()
-    if isinstance(previous.target, CodeChangeTarget):
-        result_commit = _result_commit(conn, store, execution["result_artifact_id"])
-        if result_commit is not None:
-            target["base_commit"] = result_commit
-    repo.release_execution(conn, execution_id, now)
-    _start_execution(
-        conn, task, agent, session_id=session_id, now=now, settings=settings,
-        input_artifact_ids=inputs,
-        predecessor_execution_id=execution["predecessor_execution_id"],
-        target=target,
-    )
-    _refresh_status(conn, task_id, now, settings, review_decision="request_changes")
+    with _page_errors():
+        stage_runs.request_changes(conn, store, settings, task, session_id=session_id, comment=comment, now=now)
     return _redirect(f"/tasks/{task_id}", response)
-
-
-def _result_commit(conn: Connection, store: Any, artifact_id: str) -> str | None:
-    """이전 시도의 `code_change_result` 에서 보존된 result_commit. 보류 제출(null)·깨진 결과면 None → 원래 기준 커밋."""
-    try:
-        result = CodeChangeResult.model_validate_json(repo.read_artifact(conn, store, artifact_id))
-    except (ValidationError, ValueError, NotFound):
-        return None
-    return result.result_commit
 
 
 @router.get("/tasks/{task_id}/artifacts/{artifact_id}", response_class=HTMLResponse)
