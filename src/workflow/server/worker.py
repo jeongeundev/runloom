@@ -316,35 +316,69 @@ def enqueue_event_notification(
     task = repo.get_task(conn, task_id)
     if recipients is None:
         recipients = repo.turn_recipients_of(conn, task["work_item_id"]) if task["work_item_id"] else ()
+    # 업무 주소(패널을 연 업무 화면), 업무가 없는 옛 단계만 단계 주소
+    work = repo.work_item_of_task(conn, task_id) if task["work_item_id"] else None
+    path = work_path(format_work_key(work["key_number"])) if work is not None else f"/tasks/{task_id}"
+    _enqueue_rows(conn, settings, secrets, session_id=task["session_id"], event=event, task_id=task_id,
+                  dedupe_key=dedupe_key, recipients=recipients, title=task["title"], detail=detail, pr_url=pr_url,
+                  path=path, now=now)
+
+
+def _enqueue_rows(
+    conn: Connection, settings: Settings, secrets: SecretStore, *, session_id: str, event: str, task_id: str | None,
+    dedupe_key: str, recipients: tuple[str, ...], title: str, detail: str | None, pr_url: str | None, path: str,
+    now: str,
+) -> None:
+    """공용 웹훅이 있으면 사건당 한 행(`→ 이름`), 개인 웹훅을 저장한 받는 사람마다 한 행. 어느 URL 도 없으면 쌓지 않는다."""
     personal = [m for m in recipients if _webhook(secrets, personal_webhook_name(m)) is not None]
     shared = _webhook(secrets) is not None
     if not shared and not personal:
         return
-    names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, task["session_id"])}
+    names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, session_id)}
     public_url = settings.public_url
-    # 업무 주소(패널을 연 업무 화면), 업무가 없는 옛 단계만 단계 주소
-    work = repo.work_item_of_task(conn, task_id) if task["work_item_id"] else None
-    path = work_path(format_work_key(work["key_number"])) if work is not None else f"/tasks/{task_id}"
     task_url = f"{public_url}{path}" if public_url else None
-    payload = {"title": task["title"], "task_url": task_url, "pr_url": pr_url}
+    payload = {"title": title, "task_url": task_url, "pr_url": pr_url}
     if shared:
         content = notification.notification_text(
-            event, title=task["title"], detail=detail, pr_url=pr_url, task_url=task_url,
+            event, title=title, detail=detail, pr_url=pr_url, task_url=task_url,
             recipients=[names[m] for m in recipients],
         )
         repo.enqueue_notification(
-            conn, session_id=task["session_id"], event=event, task_id=task_id, dedupe_key=f"{dedupe_key}:shared",
+            conn, session_id=session_id, event=event, task_id=task_id, dedupe_key=f"{dedupe_key}:shared",
             content=content, payload={**payload, "recipient_member_ids": list(recipients)}, now=now,
             recipient_member_id=recipients[0] if len(recipients) == 1 else None,
         )
-    content = notification.notification_text(event, title=task["title"], detail=detail, pr_url=pr_url,
-                                              task_url=task_url)
+    content = notification.notification_text(event, title=title, detail=detail, pr_url=pr_url, task_url=task_url)
     for member_id in personal:
         repo.enqueue_notification(
-            conn, session_id=task["session_id"], event=event, task_id=task_id,
+            conn, session_id=session_id, event=event, task_id=task_id,
             dedupe_key=f"{dedupe_key}:personal:{member_id}", content=content, payload=payload, now=now,
             channel="personal", recipient_member_id=member_id,
         )
+
+
+REQUEST_PURPOSE_SHOWN = 80  # 요청 받음 알림의 목적 첫 줄 글자 수
+_RETURNED_SUMMARY_SHOWN = 120  # ③ 대체 경로 사람 요청의 반환 요약 첫 줄 글자 수
+
+
+def enqueue_request_notification(conn: Connection, settings: Settings, secrets: SecretStore, *, request_id: str,
+                                 now: str) -> None:
+    """사내 요청이 생겼다 — 받는 사람 한 명에게 `internal_request_received`(`dedupe_key` = 요청 id 라 재전송·재시도에도
+    한 번). 제목은 원래 업무 제목, 링크는 `/requests`, 단계가 없어 `task_id` NULL. 요청 생성 트랜잭션 뒤 부른다."""
+    request = conn.execute(
+        "SELECT r.session_id, r.system_id, r.request_kind, r.purpose, r.recipient_member_id, w.title,"
+        " m.display_name AS requester_name FROM internal_requests r"
+        " JOIN work_items w ON w.work_item_id = r.work_item_id"
+        " JOIN members m ON m.member_id = r.requester_member_id WHERE r.request_id = ?", (request_id,),
+    ).fetchone()
+    purpose = (request["purpose"].strip().splitlines() or [""])[0][:REQUEST_PURPOSE_SHOWN]
+    _enqueue_rows(
+        conn, settings, secrets, session_id=request["session_id"], event="internal_request_received", task_id=None,
+        dedupe_key=f"internal_request_received:{request_id}", recipients=(request["recipient_member_id"],),
+        title=request["title"],
+        detail=f"{request['requester_name']} · {request['system_id']}/{request['request_kind']} · {purpose}",
+        pr_url=None, path="/requests", now=now,
+    )
 
 
 def _operator_closed(task: Row) -> bool:
@@ -1396,14 +1430,18 @@ class Worker:
         else:
             base = ExecutionRequest.model_validate_json(execution["request_json"]).target.base_commit
             validate = triage.validate if log["cause"] == "intake" else next_step.validate_next_step
-            verdict = validate(result, TriageCandidates.model_validate_json(log["candidates_json"]),
-                               execution_id=execution_id, task_id=execution["task_id"], base_commit=base)
+            candidates = TriageCandidates.model_validate_json(log["candidates_json"])
+            verdict = validate(result, candidates, execution_id=execution_id, task_id=execution["task_id"],
+                               base_commit=base)
             if verdict.ok:
-                return repo.record_triage_proposed(
+                proposed = repo.record_triage_proposed(
                     conn, log["triage_id"], execution_id=execution_id, result=result,
                     verdict={"outcome": "passed", "checks": [_check_dict("triage_valid", True, "후보 안의 제안")]},
                     now=now,
                 )
+                if proposed and log["cause"] != "intake":
+                    self._notify_next_step(conn, log, result, candidates)
+                return proposed
             return repo.record_triage_failed(
                 conn, log["triage_id"], execution_id=execution_id, code="triage_invalid",
                 message=f"{verdict.code} — {verdict.reason}",
@@ -1413,6 +1451,19 @@ class Worker:
             conn, log["triage_id"], execution_id=execution_id, code="triage_invalid", message=message,
             verdict={"outcome": "failed", "checks": [_check_dict("result_unreadable", False, message)]}, now=now,
         )
+
+    def _notify_next_step(self, conn: Connection, log: Row, result: TriageResult,
+                          candidates: TriageCandidates) -> None:
+        """결과 뒤 판단 제안 — 원래 업무의 `turn_recipients_of` 에게 `next_step_proposed` 한 번(원인 Task 기준).
+        이름은 시작 때 고정한 후보에서 찾는다."""
+        names = {f"member:{m.member_id}": m.display_name for m in candidates.members}
+        names |= {f"agent:{a.agent_id}": a.name for a in candidates.agents}
+        names |= {f"member:{r.recipient_member_id}": r.recipient_name for r in candidates.responsibilities}
+        line = next_step.action_line(result.next_action, kind_labels={k.kind: k.label for k in candidates.kinds},
+                                     names=names)
+        cause_task_id = repo.get_execution(conn, log["cause_execution_id"])["task_id"]
+        self._notify(conn, "next_step_proposed", cause_task_id, f"next_step_proposed:{log['triage_id']}",
+                     detail=f"{line} · 확신도 {result.confidence:.2f}")
 
     def _triage_failed(self, conn: Connection, log: Row, execution: Row, now: str) -> bool:
         code = execution["failed_code"] or "unknown"
@@ -1455,7 +1506,8 @@ class Worker:
 
     def _triage_after_results(self, conn: Connection, report: TickReport) -> None:
         """결과 뒤 판단을 건다(ADR-0027) — 원인은 이번 tick 업무 순환이 담은 ①② 와 사용자 정의 종류의 규칙 없는 결과(①,
-        대기 상한 안). 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건), 판단 Agent 의 러너가 비었을 때만, 사용량
+        대기 상한 안), 반환된 사내 요청(③ — 시작할 수 없거나 상한을 넘으면 판단이 만든 요청만 `next_step_human` 사람
+        요청). 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건), 판단 Agent 의 러너가 비었을 때만, 사용량
         한도로 쉬는 Agent 는 건너뛴다. 원인 시각 오래된 순. `_triage_new_work` 앞이라 판단 자리를 먼저 차지한다 — 시작하지
         못한 원인은 다음 tick 에 다시 담긴다."""
         now = self._clock()
@@ -1467,6 +1519,25 @@ class Worker:
                 task_id=row["task_id"], execution_id=row["execution_id"], request_id=None, at=row["decided_at"],
                 fallback="none",
             ))
+        for row in repo.returned_requests_awaiting_next_step(conn, since=since):
+            cause = self._returned_cause(conn, row)
+            if cause is None:
+                continue
+            reason = next_step_runs.next_step_route(conn, cause, now=now, settings=self._settings).reason
+            choice = next_step.disposition(state=None, handling=None, route_reason=reason,
+                                           cause_age_seconds=_age_seconds(now, cause.at) or 0.0)
+            if choice == "queue":
+                causes.append(cause)
+            elif cause.fallback == "next_step_human":
+                summary = next_step_runs._returned(conn, cause.session_id, cause.request_id).summary
+                first = (summary.strip().splitlines() or [""])[0][:_RETURNED_SUMMARY_SHOWN]
+                fresh = self._request_human(
+                    conn, cause.task_id, next_step.NEXT_STEP_HUMAN_CODE,
+                    f"사내 요청 결과가 돌아왔습니다 — 다음 단계를 정해 주세요: {first}",
+                    f"next_step_human:request:{cause.request_id}", now,
+                )
+                report.human_requests += int(fresh)
+                report.next_step_fallbacks += int(fresh)
         for session_id in sorted({c.session_id for c in causes}):
             if repo.has_running_triage(conn, session_id):
                 continue
@@ -1482,6 +1553,25 @@ class Worker:
                 started = next_step_runs.request_next_step(conn, self._settings, cause=cause, now=now)
                 report.next_step_started += int(started.started)
                 break
+
+    def _returned_cause(self, conn: Connection, row: Row) -> NextStepCause | None:
+        """③ 반환된 사내 요청의 원인 — 원인 실행은 판단이 만든 요청이면 그 판단의 원인 실행, 아니면 원래 업무 맡길 단계의
+        활성 실행. 그 실행이 결과를 낸 채(해제 안 됨) Task 가 끝나지 않았을 때만."""
+        execution_id = row["cause_execution_id"]
+        if execution_id is None:
+            stage = repo.open_stage(conn, row["work_item_id"])
+            active = repo.active_execution(conn, stage["task_id"]) if stage is not None else None
+            execution_id = active["execution_id"] if active is not None else None
+        execution = repo.get_execution(conn, execution_id) if execution_id is not None else None
+        if execution is None or execution["status"] != "result_ready" or execution["released_at"] is not None:
+            return None
+        if repo.get_task(conn, execution["task_id"])["finished_at"] is not None:
+            return None
+        return NextStepCause(
+            cause="request_returned", session_id=row["session_id"], work_item_id=row["work_item_id"],
+            task_id=execution["task_id"], execution_id=execution_id, request_id=row["request_id"],
+            at=row["returned_at"], fallback="next_step_human" if row["created_by_triage_id"] else "none",
+        )
 
     def _triage_new_work(self, conn: Connection, report: TickReport) -> None:
         """담당 없는 새 GitHub·Jira 업무에 판단을 자동으로 건다 — 워크스페이스마다 한 번에 1건(도는 판단이 있으면 0건),

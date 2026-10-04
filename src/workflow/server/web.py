@@ -117,6 +117,7 @@ from workflow.server.errors import ApiError, PageError
 from workflow.server import internal_investigation
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
+from workflow.server.worker import enqueue_request_notification
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -1096,7 +1097,7 @@ def requests_page(request: Request, member: LoggedIn = Depends(require_member),
 
 @router.post('/work/{key}/internal-requests')
 def internal_request_send(
-    key: str, response: Response, selection: str = Form(...), purpose: str = Form(...),
+    key: str, request: Request, response: Response, selection: str = Form(...), purpose: str = Form(...),
     submission_key: str = Form(...), expected_directory_revision: int = Form(...),
     member: LoggedIn = Depends(require_action(team.DELEGATE)), conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -1110,9 +1111,12 @@ def internal_request_send(
     except (ValueError, ValidationError):
         raise PageError(422, 'invalid_field', '담당 후보와 조사 목적을 확인하세요.') from None
     try:
-        internal_request_store.create(conn, member.session_id, member.member_id, work['work_item_id'], body, now=utc_now())
+        created = internal_request_store.create(conn, member.session_id, member.member_id, work['work_item_id'], body,
+                                                now=utc_now())
     except internal_request_store.RequestProblem as exc:
         raise PageError(exc.status, exc.code, str(exc)) from None
+    enqueue_request_notification(conn, _settings(request), request.app.state.secrets,
+                                 request_id=created['request_id'], now=utc_now())
     return _redirect(work_path(key), response)
 
 
@@ -1214,7 +1218,7 @@ def internal_request_reject(
 
 @router.post('/requests/{request_id}/reroute')
 def internal_request_reroute(
-    request_id: str, response: Response, expected_revision: int = Form(...),
+    request_id: str, request: Request, response: Response, expected_revision: int = Form(...),
     expected_directory_revision: int = Form(...), recipient_member_id: str = Form(...),
     member: LoggedIn = Depends(require_action(team.DELEGATE)), conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
@@ -1224,9 +1228,12 @@ def internal_request_reroute(
     except ValidationError:
         raise PageError(422, 'invalid_field', '새 담당 후보를 선택하세요.') from None
     try:
-        internal_request_store.reroute(conn, member.session_id, member.member_id, request_id, body, now=utc_now())
+        created = internal_request_store.reroute(conn, member.session_id, member.member_id, request_id, body,
+                                                 now=utc_now())
     except internal_request_store.RequestProblem as exc:
         raise PageError(exc.status, exc.code, str(exc)) from None
+    enqueue_request_notification(conn, _settings(request), request.app.state.secrets,
+                                 request_id=created['request_id'], now=utc_now())
     return _redirect('/requests', response)
 
 

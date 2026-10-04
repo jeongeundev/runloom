@@ -38,7 +38,7 @@ from workflow.server.stage_runs import (  # noqa: F401 — 옮긴 이름을 그�
     run_task,
     start_execution,
 )
-from workflow.server.worker import Worker, enqueue_event_notification
+from workflow.server.worker import Worker, enqueue_event_notification, enqueue_request_notification
 
 _ASSIGNEE = re.compile(r"(member|agent):([A-Za-z0-9._-]+)")
 
@@ -367,10 +367,12 @@ def accept_next_step(conn: Connection, store: Any, settings: Settings, *, sessio
             return
         if action.type == "internal_request":
             try:
-                internal_request_store.create_from_next_step(conn, session_id, member_id, work_item_id, action,
-                                                             triage_id=triage_id, now=now)
+                created = internal_request_store.create_from_next_step(conn, session_id, member_id, work_item_id,
+                                                                       action, triage_id=triage_id, now=now)
             except internal_request_store.RequestProblem as exc:
                 raise WorkActionError(exc.status, exc.code, str(exc)) from None
+            if secrets is not None:
+                enqueue_request_notification(conn, settings, secrets, request_id=created["request_id"], now=now)
             return
         if action.type == "stage" and action.rework:
             returned = (next_step_runs._returned(conn, session_id, log["cause_request_id"])

@@ -69,7 +69,9 @@
     {
       "step": 8,
       "name": "request-notify-return",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T00:23:01+0900",
+      "summary": "domain/notification._HEADLINES 에 internal_request_received '요청 받음'·next_step_proposed '다음 단계 제안'. server/worker.py: enqueue_event_notification 의 행 쓰기를 _enqueue_rows 로 나눔(동작 그대로), 새 enqueue_request_notification(받는 사람 1명, task_id NULL, dedupe internal_request_received:<request_id>, 제목=원래 업무 제목, 문구 '<요청자> · <system_id>/<request_kind> · <목적 첫 줄 80자>', 링크 <public_url>/requests), _triage_verdict 가 결과 뒤 판단 proposed 기록 시 _notify_next_step(next_step_proposed:<triage_id>, 원인 Task, turn_recipients_of, detail='<action_line> · 확신도 0.82', 이름은 저장된 후보 members·agents·responsibilities), _triage_after_results 에 ③(repo.returned_requests_awaiting_next_step → _returned_cause: 판단이 만든 요청은 그 판단의 cause_execution_id, 아니면 open_stage 활성 실행 — result_ready·해제 안 됨·Task 안 끝남일 때만 → disposition, queue 면 같은 원인 목록에 넣어 원인 시각 순으로 시작, 시작 불가·상한 초과면 판단이 만든 요청만 next_step_human 사람 요청 '사내 요청 결과가 돌아왔습니다 — 다음 단계를 정해 주세요: <반환 요약 첫 줄 120자>'·cause_key next_step_human:request:<id>, 사람이 만든 요청은 지금 그대로 없음). 알림 호출: work_actions.accept_next_step internal_request 뒤(secrets 있을 때), web POST /work/{key}/internal-requests·/requests/{id}/reroute, API internal_request_api create·reroute(_notify) — 트랜잭션 뒤, 재전송은 같은 request_id 라 한 번. 테스트: 신규 tests/workflow/server/test_worker_next_step_notify.py 12개(제안 알림 받는 사람·문구·재시작 한 번, 사내 요청 이름, 실패는 알림 없음, [제안대로] 요청 알림 한 번·payload, 개인 웹훅만·첫 줄 80자·URL 미포함, 웹훅 없음, ③ 판단 제안 요청 반환 → 시작 한 번·요청문 반환 요약·멱등, 사람 요청 반환 → open_stage 실행, 오래된 반환 안 함, 능력·판단 Agent 없음 → 지금 동작, 판단이 만든 요청 + 능력 없음 → next_step_human 한 번), test_notification 문구, test_internal_request_api·web 생성·재전달 알림 한 번. 검증: pytest 4429 passed·83 skipped, ruff 통과. 다음 step 주의: 화면(step 9)은 변경 없음, ③ 판단이 실패·무시되면 대체 경로가 없다(조회가 request_returned 행 있는 요청을 빼므로 — ARCHITECTURE 조회 정의 그대로)."
     },
     {
       "step": 9,

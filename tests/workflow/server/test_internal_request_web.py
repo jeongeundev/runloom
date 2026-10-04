@@ -168,3 +168,36 @@ def test_requester_resumption_form_and_escaped_record(logged_in_client, conn, st
     key = f"RUN-{repo.get_work_item(conn, SESSION, work_id)['key_number']}"
     panel = logged_in_client.get(f'/work/{key}/panel')
     assert '업무 재개 기록' in panel.text and '&lt;재개 내용&gt;' in panel.text
+
+
+def test_web_send_and_reroute_notify_the_recipient_once(logged_in_client, conn):
+    """웹 폼으로 만든 요청·재전달도 받는 사람에게 `internal_request_received` 한 번(phase 22 step 8)."""
+    from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL
+    from .test_internal_request_api import _received
+
+    logged_in_client.app.state.secrets.write(NOTIFY_WEBHOOK_URL, 'https://hooks.example/shared-token')
+    recipient, work_id, body = setup_request(logged_in_client, conn)
+    key = f"RUN-{repo.get_work_item(conn, SESSION, work_id)['key_number']}"
+    selection = json.dumps(dict(system_id=body['system_id'], request_kind=body['request_kind'],
+                                recipient_member_id=body['recipient_member_id']))
+    data = dict(selection=selection, expected_directory_revision=body['expected_directory_revision'],
+                submission_key=body['submission_key'], purpose='<b>원인</b> 확인\n둘째 줄')
+    for _ in range(2):
+        assert logged_in_client.post(f'/work/{key}/internal-requests', data=data, follow_redirects=False).status_code == 303
+    (old,) = logged_in_client.get(f'/work-items/{work_id}/internal-requests').json()['requests']
+    (row,) = _received(conn)
+    assert row['dedupe_key'] == f"internal_request_received:{old['request_id']}:shared"
+    assert row['content'].split('\n')[0].endswith(' · billing/investigation · <b>원인</b> 확인 → API 담당')
+    recipient.post(f"/requests/{old['request_id']}/not-responsible", data=dict(expected_revision=1, reason='팀 다름'))
+    target_id = old['requester_member_id']
+    revision = repo.get_config_revision(conn, SESSION)
+    entry = dict(system_id='billing', request_kind='investigation', recipient_member_id=target_id,
+                 judgment_member_id=target_id, agent_id=None)
+    assert logged_in_client.put('/responsibilities', json=dict(expected_revision=revision, entries=[entry])).status_code == 200
+    assert logged_in_client.post(f"/requests/{old['request_id']}/reroute", data=dict(
+        expected_revision=2, expected_directory_revision=revision + 1, recipient_member_id=target_id),
+        follow_redirects=False).status_code == 303
+    new = [r for r in logged_in_client.get(f'/work-items/{work_id}/internal-requests').json()['requests']
+           if r['request_id'] != old['request_id']][0]
+    assert [r['dedupe_key'] for r in _received(conn)] == [
+        f"internal_request_received:{old['request_id']}:shared", f"internal_request_received:{new['request_id']}:shared"]
