@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from workflow.domain.delegation import OWNER_APPROVAL_CODE
+from workflow.domain.next_step import NextStepFact, next_step_status
 from workflow.domain.triage import TriageFact, triage_reason
 
 WORK_STATUSES = (
@@ -72,6 +73,8 @@ class WorkItemFacts:
     detected_pull_requests: tuple[PullRequestFact, ...] = ()
     # 그 업무의 최신 판단 로그 행 — 도는 중·처리 전 제안·실패일 때만 (phase 19)
     triage: TriageFact | None = None
+    # 그 업무의 최신 결과 뒤 판단 — 원인이 그대로이고 도는 중·처리 전 제안, 또는 판단이 만든 사내 요청 대기 (phase 22)
+    next_step: NextStepFact | None = None
 
 
 def _pr_suffix(pr: PullRequestFact) -> str:
@@ -117,6 +120,9 @@ def work_status(facts: WorkItemFacts) -> WorkStatus:
 
     if facts.direct_member_name is not None:
         return WorkStatus("직접 작업 중", facts.direct_member_name)
+
+    if facts.next_step is not None:
+        return WorkStatus(*next_step_status(facts.next_step))
 
     check = _latest(s for s in facts.stages if s.status == "확인 필요")
     if check is not None:

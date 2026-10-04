@@ -35,6 +35,7 @@ from workflow.adapters.errors import (
     KindInUse,
     KindProtected,
     LastAdmin,
+    NextStepExists,
     NotFound,
     RegistrationTaken,
     ResponseConflict,
@@ -99,6 +100,7 @@ from workflow.domain.assignee_metrics import (
     MemberLabel,
     ResponseFact,
 )
+from workflow.domain.next_step import NextStepFact, PriorResult, action_label, next_step_reason
 from workflow.domain.metrics import ExecutionFact, HumanRequestFact, MetricFacts, TaskEventFact, TaskFact
 from workflow.domain.pull_request import head_branch
 from workflow.domain.start_checklist import StartFacts
@@ -327,8 +329,8 @@ def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = 
         (work_item_id,),
     ) if direct_work else None)
     triage = _one(conn, "SELECT state, proceed, confidence, failed_code, handling FROM triage_logs"
-                        " WHERE work_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                  (work_item_id,)) if direct_work else None  # 판단 로그는 v15
+                        " WHERE work_item_id = ? AND cause = 'intake' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                  (work_item_id,)) if direct_work else None  # 판단 로그는 v15, 원인 칸은 v24
     if triage is not None and not (triage["state"] in ("running", "failed")
                                    or (triage["state"] == "proposed" and triage["handling"] is None)):
         triage = None
@@ -348,7 +350,35 @@ def work_item_facts(conn: Connection, work_item_id: str, *, direct_work: bool = 
         detected_pull_requests=tuple(PullRequestFact(state=d["state"], number=d["pr_number"]) for d in detected),
         triage=TriageFact(state=triage["state"], proceed=triage["proceed"], confidence=triage["confidence"],
                           failed_code=triage["failed_code"]) if triage is not None else None,
+        next_step=_next_step_fact(conn, work_item_id) if direct_work else None,
     )
+
+
+def _next_step_fact(conn: Connection, work_item_id: str) -> NextStepFact | None:
+    """업무 상태의 결과 뒤 판단 재료(phase 22) — 최신 결과 뒤 판단이 원인 그대로·`running` 또는 `proposed`·처리 없음,
+    또는 `accepted` 로 만든 사내 요청이 반환·반려 전."""
+    log = latest_next_step(conn, work_item_id)
+    if log is None:
+        return None
+    if log["state"] in ("running", "proposed") and log["handling"] is None:
+        if not next_step_cause_current(conn, log):
+            return None
+        if log["state"] == "running":
+            return NextStepFact("running", None, None)
+        return NextStepFact("proposed", action_label(TriageResult.model_validate_json(log["result_json"]).next_action),
+                            None)
+    if log["handling"] == "accepted":
+        waiting = _one(
+            conn,
+            "SELECT m.display_name FROM internal_requests r JOIN members m ON m.member_id = r.recipient_member_id"
+            " LEFT JOIN internal_request_investigations i ON i.request_id = r.request_id"
+            " WHERE r.created_by_triage_id = ? AND i.returned_at IS NULL"
+            " AND NOT EXISTS (SELECT 1 FROM internal_request_rejections j WHERE j.request_id = r.request_id)",
+            (log["triage_id"],),
+        )
+        if waiting is not None:
+            return NextStepFact("request_waiting", None, waiting["display_name"])
+    return None
 
 
 # --- 업무(WorkItem)·멤버 — ADR-0020 ---------------------------------------
@@ -511,7 +541,7 @@ def list_work_rows(conn: Connection, session_id: str, *, closed_since: str | Non
     # 업무마다 최신 판단 로그 행 → 목록 배지 (phase 19)
     triages: dict[str, str | None] = {}
     for r in conn.execute("SELECT work_item_id, state, handling FROM triage_logs WHERE session_id = ?"
-                          " ORDER BY created_at, rowid", (session_id,)):
+                          " AND cause = 'intake' ORDER BY created_at, rowid", (session_id,)):
         triages[r["work_item_id"]] = _TRIAGE_BADGES.get((r["state"], r["handling"]))
     members = _member_facts(conn, session_id)
     approvers = _approvers_by_work(conn, session_id, members)
@@ -3337,7 +3367,7 @@ def list_triage_facts(conn: Connection, session_id: str) -> tuple[list[TriageLog
             "SELECT l.*, w.revision AS work_revision_now, e.status AS execution_status, e.started_at,"
             " e.finished_at AS execution_finished_at, e.cost_usd FROM triage_logs l"
             " JOIN work_items w ON w.work_item_id = l.work_item_id JOIN executions e ON e.execution_id = l.execution_id"
-            " WHERE l.session_id = ? ORDER BY l.created_at, l.rowid",
+            " WHERE l.session_id = ? AND l.cause = 'intake' ORDER BY l.created_at, l.rowid",
             (session_id,),
         )
     ]
@@ -3354,7 +3384,8 @@ def list_triage_facts(conn: Connection, session_id: str) -> tuple[list[TriageLog
             f"   WHERE t.work_item_id = w.work_item_id AND e.start_key LIKE 'rework:%' AND {_NOT_TRIAGE_TASK})"
             "  AS rework_runs"
             " FROM work_items w WHERE w.session_id = ?"
-            " AND EXISTS (SELECT 1 FROM triage_logs l WHERE l.work_item_id = w.work_item_id) ORDER BY w.key_number",
+            " AND EXISTS (SELECT 1 FROM triage_logs l WHERE l.work_item_id = w.work_item_id AND l.cause = 'intake')"
+            " ORDER BY w.key_number",
             (session_id,),
         )
     ]
@@ -4267,7 +4298,7 @@ def auto_triage_works(conn: Connection, session_id: str) -> list[Row]:
         "SELECT w.* FROM work_items w"
         " WHERE w.session_id = ? AND w.status = '새로 들어옴' AND w.assignee_type IS NULL"
         " AND w.direct_member_id IS NULL AND w.closed_at IS NULL AND w.source_type IN ('github', 'jira')"
-        " AND NOT EXISTS (SELECT 1 FROM triage_logs l WHERE l.work_item_id = w.work_item_id"
+        " AND NOT EXISTS (SELECT 1 FROM triage_logs l WHERE l.work_item_id = w.work_item_id AND l.cause = 'intake'"
         " AND (l.failed_code IS NULL OR l.failed_code != 'usage_limit'))"
         " ORDER BY w.created_at, w.key_number",
         (session_id,),
@@ -4343,17 +4374,24 @@ def runner_idle(conn: Connection, connector_id: str) -> bool:
 def start_triage(
     conn: Connection, *, session_id: str, work_item_id: str, work_revision: int, task: dict, selection: SelectionRecord,
     request: ExecutionRequest, agent_id: str, connector_id: str, trigger: str, member_id: str | None,
-    criteria_version: int, input_sha256: str, candidates: TriageCandidates, now: str,
+    criteria_version: int, input_sha256: str, candidates: TriageCandidates, now: str, cause: str = "intake",
+    cause_execution_id: str | None = None, cause_request_id: str | None = None,
 ) -> str:
-    """판단 시작(한 트랜잭션) — 이전 처리 전 `proposed`·`failed` 행 → `superseded`, 판단 단계 Task·선택 기록·실행
-    (`queued`)·판단 로그 `running`(후보·기준 버전·입력 해시 — 요청문 원문은 실행 요청에만), 업무 상태 재계산.
-    그 업무에 이미 `running` 판단이 있으면 TriageRunning. 반환은 triage_id."""
+    """판단 시작(한 트랜잭션) — 같은 계열(접수 판단끼리·결과 뒤 판단끼리)의 이전 처리 전 `proposed`·`failed` 행 →
+    `superseded`, 판단 단계 Task·선택 기록·실행(`queued`)·판단 로그 `running`(원인·후보·기준 버전·입력 해시 — 요청문
+    원문은 실행 요청에만), 업무 상태 재계산. 그 업무에 이미 `running` 판단이 있으면 TriageRunning, 같은 원인의 결과 뒤
+    판단이 이미 있으면 NextStepExists(phase 22). 반환은 triage_id."""
     triage_id = f"trg-{secrets.token_hex(4)}"
     with _tx(conn):
         if _one(conn, "SELECT 1 FROM triage_logs WHERE work_item_id = ? AND state = 'running'", (work_item_id,)):
             raise TriageRunning(work_item_id)
+        if cause != "intake" and next_step_for_cause(
+                conn, **({"request_id": cause_request_id} if cause == "request_returned"
+                         else {"execution_id": cause_execution_id})) is not None:
+            raise NextStepExists(f"{cause}:{cause_request_id if cause == 'request_returned' else cause_execution_id}")
+        family = "cause = 'intake'" if cause == "intake" else "cause != 'intake'"
         conn.execute("UPDATE triage_logs SET state = 'superseded', updated_at = ? WHERE work_item_id = ?"
-                     " AND handling IS NULL AND state IN ('proposed', 'failed')", (now, work_item_id))
+                     f" AND handling IS NULL AND state IN ('proposed', 'failed') AND {family}", (now, work_item_id))
         _insert_task_row(conn, task, now, work_item_id=work_item_id)
         save_selection(conn, selection)
         _insert_execution(
@@ -4364,9 +4402,11 @@ def start_triage(
         conn.execute(
             "INSERT INTO triage_logs (triage_id, session_id, work_item_id, work_revision, task_id, execution_id,"
             " agent_id, trigger, requested_by_member_id, criteria_version, input_sha256, candidates_json, state,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
+            " cause, cause_execution_id, cause_request_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
             (triage_id, session_id, work_item_id, work_revision, task["task_id"], request.execution_id, agent_id,
-             trigger, member_id, criteria_version, input_sha256, candidates.model_dump_json(), now, now),
+             trigger, member_id, criteria_version, input_sha256, candidates.model_dump_json(), cause,
+             cause_execution_id, cause_request_id, now, now),
         )
         refresh_work_status(conn, work_item_id, now=now)
     return triage_id
@@ -4383,10 +4423,16 @@ def _close_triage_stage(conn: Connection, log: Row, *, execution_id: str, status
     if verdict is not None:
         conn.execute("INSERT INTO task_verdicts (task_id, execution_id, verdict_json, decided_at) VALUES (?, ?, ?, ?)",
                      (log["task_id"], execution_id, json.dumps(verdict, ensure_ascii=False), now))
-    fact = _one(conn, "SELECT state, proceed, confidence, failed_code FROM triage_logs WHERE triage_id = ?",
-                (log["triage_id"],))
-    reason = triage_reason(TriageFact(state=fact["state"], proceed=fact["proceed"], confidence=fact["confidence"],
-                                      failed_code=fact["failed_code"]))
+    fact = _one(conn, "SELECT state, proceed, confidence, failed_code, cause, result_json FROM triage_logs"
+                      " WHERE triage_id = ?", (log["triage_id"],))
+    if fact["cause"] == "intake":
+        reason = triage_reason(TriageFact(state=fact["state"], proceed=fact["proceed"], confidence=fact["confidence"],
+                                          failed_code=fact["failed_code"]))
+    else:
+        action = (TriageResult.model_validate_json(fact["result_json"]).next_action
+                  if fact["state"] == "proposed" else None)
+        reason = next_step_reason(state=fact["state"], action_label=action_label(action) if action else None,
+                                  failed_code=fact["failed_code"])
     _finish_task_row(conn, task_id=log["task_id"], execution_id=execution_id, status=status, reason=reason, now=now)
     refresh_work_status(conn, log["work_item_id"], now=now)
 
@@ -4435,9 +4481,9 @@ def record_triage_failed(conn: Connection, triage_id: str, *, execution_id: str,
 
 
 def latest_triage(conn: Connection, work_item_id: str) -> Row | None:
-    """업무의 최신 판단 로그 행(`created_at`, `rowid` 순 마지막)."""
-    return _one(conn, "SELECT * FROM triage_logs WHERE work_item_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (work_item_id,))
+    """업무의 최신 접수 판단 로그 행(`created_at`, `rowid` 순 마지막) — 결과 뒤 판단은 `latest_next_step`."""
+    return _one(conn, "SELECT * FROM triage_logs WHERE work_item_id = ? AND cause = 'intake'"
+                      " ORDER BY created_at DESC, rowid DESC LIMIT 1", (work_item_id,))
 
 
 def _record_triage_handling(conn: Connection, work_item_id: str, *, assignee_type: str, assignee_id: str,
@@ -4472,6 +4518,138 @@ def dismiss_triage(conn: Connection, session_id: str, work_item_id: str, triage_
             return False
         conn.execute("UPDATE triage_logs SET handling = 'dismissed', handled_by_member_id = ?, handled_at = ?,"
                      " updated_at = ? WHERE triage_id = ? AND handling IS NULL", (member_id, now, now, triage_id))
+        refresh_work_status(conn, work_item_id, now=now)
+        return True
+
+
+# --- 결과 뒤 판단 (phase 22, ADR-0027 — ARCHITECTURE "결과 뒤 판단 — phase 22" 결과 뒤 판단 repo) --------------
+
+
+def next_step_for_cause(conn: Connection, *, execution_id: str | None = None,
+                        request_id: str | None = None) -> Row | None:
+    """그 원인의 결과 뒤 판단 행 — `after_result` 는 원인 실행, `request_returned` 는 반환된 요청으로(둘 중 하나)."""
+    if (execution_id is None) == (request_id is None):
+        raise ValueError("execution_id 와 request_id 중 하나만 줍니다")
+    if request_id is not None:
+        return _one(conn, "SELECT * FROM triage_logs WHERE cause = 'request_returned' AND cause_request_id = ?",
+                    (request_id,))
+    return _one(conn, "SELECT * FROM triage_logs WHERE cause = 'after_result' AND cause_execution_id = ?",
+                (execution_id,))
+
+
+def latest_next_step(conn: Connection, work_item_id: str) -> Row | None:
+    """업무의 최신 결과 뒤 판단 행(`cause != 'intake'`, `created_at`, `rowid` 순 마지막)."""
+    return _one(conn, "SELECT * FROM triage_logs WHERE work_item_id = ? AND cause != 'intake'"
+                      " ORDER BY created_at DESC, rowid DESC LIMIT 1", (work_item_id,))
+
+
+def next_step_cause_current(conn: Connection, log: Row) -> bool:
+    """원인이 그대로인지 — 원인 실행이 `result_ready`·해제 안 됨, 원인 Task 가 끝나지 않음, `request_returned` 면 그 요청이
+    반환된 채 반려 없음."""
+    if _one(conn, "SELECT 1 FROM executions e JOIN tasks t ON t.task_id = e.task_id WHERE e.execution_id = ?"
+                  " AND e.status = 'result_ready' AND e.released_at IS NULL AND t.finished_at IS NULL",
+            (log["cause_execution_id"],)) is None:
+        return False
+    if log["cause"] != "request_returned":
+        return True
+    return _one(conn, "SELECT 1 FROM internal_request_investigations i WHERE i.request_id = ?"
+                      " AND i.returned_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM internal_request_rejections j"
+                      " WHERE j.request_id = i.request_id)", (log["cause_request_id"],)) is not None
+
+
+def generic_results_awaiting_next_step(conn: Connection, *, since: str) -> list[Row]:
+    """① 사용자 정의 종류의 규칙 없는 결과 — 판정 통과(가장 최근 판정)·잠금 유지·끝나지 않은 Task, 후속 Task·조사 업무 아님,
+    그 실행에 결과 뒤 판단 행 없음, 판정 시각 `>= since`. 판정 시각 오래된 순. 칸: execution_id, task_id, work_item_id,
+    session_id, decided_at."""
+    return conn.execute(
+        "SELECT e.execution_id, e.task_id, t.work_item_id, t.session_id, v.decided_at"
+        " FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+        " JOIN kinds k ON k.session_id = t.session_id AND k.kind = t.kind"
+        " JOIN task_verdicts v ON v.rowid = (SELECT v2.rowid FROM task_verdicts v2"
+        "  WHERE v2.execution_id = e.execution_id ORDER BY v2.decided_at DESC, v2.rowid DESC LIMIT 1)"
+        " WHERE e.status = 'result_ready' AND e.released_at IS NULL AND t.finished_at IS NULL"
+        " AND t.work_item_id IS NOT NULL AND json_extract(k.spec_json, '$.output_kind') = 'generic_result'"
+        " AND json_extract(v.verdict_json, '$.outcome') = 'passed' AND v.decided_at >= ?"
+        " AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.predecessor_task_id = t.task_id)"
+        " AND NOT EXISTS (SELECT 1 FROM internal_request_investigations i WHERE i.task_id = t.task_id)"
+        " AND NOT EXISTS (SELECT 1 FROM triage_logs l WHERE l.cause = 'after_result'"
+        "  AND l.cause_execution_id = e.execution_id)"
+        " ORDER BY v.decided_at, e.execution_id",
+        (since,),
+    ).fetchall()
+
+
+def returned_requests_awaiting_next_step(conn: Connection, *, since: str) -> list[Row]:
+    """③ 반환됐는데 `request_returned` 판단이 없는 사내 요청 — 반려 없음, 반환 시각 `>= since` 또는 판단이 만든 요청.
+    반환 시각 오래된 순. 칸: request_id, session_id, work_item_id, returned_at, created_by_triage_id,
+    cause_execution_id(판단이 만든 요청이면 그 판단의 원인 실행, 아니면 NULL — 호출자가 맡길 단계의 활성 실행으로 찾는다)."""
+    return conn.execute(
+        "SELECT r.request_id, r.session_id, r.work_item_id, i.returned_at, r.created_by_triage_id,"
+        " l.cause_execution_id FROM internal_requests r"
+        " JOIN internal_request_investigations i ON i.request_id = r.request_id"
+        " LEFT JOIN triage_logs l ON l.triage_id = r.created_by_triage_id"
+        " WHERE i.returned_at IS NOT NULL AND (i.returned_at >= ? OR r.created_by_triage_id IS NOT NULL)"
+        " AND NOT EXISTS (SELECT 1 FROM internal_request_rejections j WHERE j.request_id = r.request_id)"
+        " AND NOT EXISTS (SELECT 1 FROM triage_logs n WHERE n.cause = 'request_returned'"
+        "  AND n.cause_request_id = r.request_id)"
+        " ORDER BY i.returned_at, r.request_id",
+        (since,),
+    ).fetchall()
+
+
+UNREADABLE_RESULT = "(결과를 읽을 수 없음)"
+
+
+def cause_prior(conn: Connection, store: ArtifactStore, execution_id: str) -> PriorResult:
+    """원인 실행의 결과 — 종류·라벨·결과 봉투의 `outcome`·`summary`·`missing_information`(검토 결과), 가장 최근 판정.
+    봉투를 못 읽으면 `summary` 가 `UNREADABLE_RESULT`, `outcome` 은 빈 문자열."""
+    row = _one(conn, "SELECT e.result_artifact_id, t.kind, COALESCE(json_extract(k.spec_json, '$.label'), t.kind)"
+                     " AS kind_label FROM executions e JOIN tasks t ON t.task_id = e.task_id"
+                     " LEFT JOIN kinds k ON k.session_id = t.session_id AND k.kind = t.kind WHERE e.execution_id = ?",
+               (execution_id,))
+    if row is None:
+        raise NotFound(f"execution {execution_id}")
+    verdict = get_verdict(conn, execution_id)
+    passed = verdict is not None and json.loads(verdict["verdict_json"]).get("outcome") == "passed"
+    data = None
+    if row["result_artifact_id"] is not None:
+        try:
+            data = json.loads(read_artifact(conn, store, row["result_artifact_id"]))
+        except (ValueError, NotFound, ArtifactMissing):
+            data = None
+    outcome = data.get("outcome") if isinstance(data, dict) else None
+    summary = data.get("summary") if isinstance(data, dict) else None
+    missing = data.get("missing_information") if isinstance(data, dict) else None
+    return PriorResult(
+        kind=row["kind"], kind_label=row["kind_label"], outcome=outcome if isinstance(outcome, str) else "",
+        verdict="passed" if passed else "failed",
+        summary=summary if isinstance(summary, str) else UNREADABLE_RESULT,
+        missing_information=tuple(m for m in missing if isinstance(m, str)) if isinstance(missing, list) else (),
+    )
+
+
+def record_next_step_handling(conn: Connection, triage_id: str, *, handling: Literal["accepted", "dismissed"],
+                              member_id: str, now: str) -> bool:
+    """결과 뒤 판단 제안의 사람 처리 — 담당이 이미 있는 업무에서도 남긴다(접수 판단의 `_record_triage_handling` 과 별개,
+    최종 담당·종류는 비운다). 자체 BEGIN 없음, `proposed`·처리 없음·결과 뒤 판단일 때만. 바꿨으면 True."""
+    cur = conn.execute(
+        "UPDATE triage_logs SET handling = ?, handled_by_member_id = ?, handled_at = ?, updated_at = ?"
+        " WHERE triage_id = ? AND state = 'proposed' AND handling IS NULL AND cause != 'intake'",
+        (handling, member_id, now, now, triage_id),
+    )
+    return cur.rowcount == 1
+
+
+def dismiss_next_step(conn: Connection, session_id: str, work_item_id: str, triage_id: str, *, member_id: str,
+                      now: str) -> bool:
+    """결과 뒤 판단 [무시] — 그 행이 업무의 최신 결과 뒤 판단·`proposed`·처리 없음일 때만 `dismissed`, 업무 상태 재계산
+    (한 트랜잭션). 아니면 False."""
+    with _tx(conn):
+        log = latest_next_step(conn, work_item_id)
+        if log is None or log["session_id"] != session_id or log["triage_id"] != triage_id:
+            return False
+        if not record_next_step_handling(conn, triage_id, handling="dismissed", member_id=member_id, now=now):
+            return False
         refresh_work_status(conn, work_item_id, now=now)
         return True
 
@@ -4549,9 +4727,9 @@ def autostart_candidates(conn: Connection) -> list[Row]:
     작업 없음(오래된 순). 설정·자격·확신도는 워커가 `domain.triage.should_autostart` 로 본다."""
     return conn.execute(
         "SELECT l.* FROM triage_logs l JOIN work_items w ON w.work_item_id = l.work_item_id"
-        " WHERE l.state = 'proposed' AND l.handling IS NULL AND l.proceed = 'ready'"
+        " WHERE l.state = 'proposed' AND l.handling IS NULL AND l.proceed = 'ready' AND l.cause = 'intake'"
         " AND w.status = '새로 들어옴' AND w.assignee_type IS NULL AND w.direct_member_id IS NULL"
-        " AND NOT EXISTS (SELECT 1 FROM triage_logs n WHERE n.work_item_id = l.work_item_id"
+        " AND NOT EXISTS (SELECT 1 FROM triage_logs n WHERE n.work_item_id = l.work_item_id AND n.cause = 'intake'"
         " AND (n.created_at > l.created_at OR (n.created_at = l.created_at AND n.rowid > l.rowid)))"
         " ORDER BY l.created_at, l.rowid"
     ).fetchall()
@@ -4561,7 +4739,8 @@ def triage_handled_counts(conn: Connection, session_id: str) -> dict[str, int]:
     """제안 종류 → 사람이 처리한(`accepted`·`changed`) 판단 수 — 자동 시작 자격."""
     return {r["proposed_kind"]: r["n"] for r in conn.execute(
         "SELECT proposed_kind, COUNT(*) AS n FROM triage_logs WHERE session_id = ? AND state = 'proposed'"
-        " AND handling IN ('accepted', 'changed') AND proposed_kind IS NOT NULL GROUP BY proposed_kind",
+        " AND handling IN ('accepted', 'changed') AND proposed_kind IS NOT NULL AND cause = 'intake'"
+        " GROUP BY proposed_kind",
         (session_id,),
     )}
 

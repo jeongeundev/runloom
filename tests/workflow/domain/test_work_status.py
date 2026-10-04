@@ -15,6 +15,7 @@ from workflow.domain.work_status import (
     WorkStatus,
     work_status,
 )
+from workflow.domain.next_step import NextStepFact
 from workflow.domain.triage import TriageFact
 
 
@@ -416,3 +417,34 @@ def test_triage_does_not_change_other_statuses():
         "새로 들어옴", "지시 전 — [에이전트에게 맡기기]")
     assert work_status(dataclasses.replace(facts([RUNNING], assigned=False), triage=running)) == WorkStatus(
         "에이전트 작업 중", "버그 수정 실행 중")
+
+
+# --- 결과 뒤 판단 (phase 22 step 5 — 직접 작업 다음, 확인 필요 단계 앞) ---
+
+CHECK = stage("확인 필요", "결과 확인 — needs_information")
+
+
+def test_next_step_fact_defaults_to_none():
+    assert facts([CHECK]).next_step is None
+    assert work_status(facts([CHECK])) == WorkStatus("내 차례", "결과 확인 — needs_information")
+
+
+@pytest.mark.parametrize(
+    ("fact", "expected"),
+    [
+        (NextStepFact("running", None, None), WorkStatus("에이전트 작업 중", "다음 단계 판단 중")),
+        (NextStepFact("proposed", "사내 요청", None), WorkStatus("내 차례", "다음 단계 제안 · 사내 요청")),
+        (NextStepFact("request_waiting", None, "박OO"), WorkStatus("대기", "사내 요청 대기 · 박OO")),
+    ],
+)
+def test_next_step_comes_before_the_check_stage(fact, expected):
+    assert work_status(dataclasses.replace(facts([CHECK]), next_step=fact)) == expected
+
+
+def test_open_requests_and_direct_work_come_before_the_next_step():
+    running = NextStepFact("running", None, None)
+    asked = dataclasses.replace(facts([CHECK], requests=[RequestFact("fix_needs_information", "값이 필요")]),
+                                next_step=running)
+    assert work_status(asked) == WorkStatus("내 차례", "사람 요청 — 값이 필요")
+    direct = dataclasses.replace(facts([CHECK], direct="김지은"), next_step=running)
+    assert work_status(direct) == WorkStatus("직접 작업 중", "김지은")

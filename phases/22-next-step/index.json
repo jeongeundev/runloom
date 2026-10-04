@@ -45,7 +45,9 @@
     {
       "step": 5,
       "name": "next-step-repo",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T23:18:22+0900",
+      "summary": "adapters/errors.py: NextStepExists(cause_key)·NextStepHandled(triage_id). adapters/repo.py: 원인 거르기 표대로 latest_triage·work_item_facts.triage·list_work_rows 배지·autostart_candidates(두 조회)·triage_handled_counts·auto_triage_works·list_triage_facts(두 조회)를 cause='intake' 로, start_triage 에 cause·cause_execution_id·cause_request_id(대체는 같은 계열만, 결과 뒤 판단은 원인 행 있으면 NextStepExists), _close_triage_stage 는 결과 뒤 판단이면 next_step_reason 문구, 새 next_step_for_cause·latest_next_step·next_step_cause_current·generic_results_awaiting_next_step·returned_requests_awaiting_next_step(step.md 요청으로 step 8 대신 여기서)·cause_prior(UNREADABLE_RESULT)·record_next_step_handling(자체 BEGIN 없음)·dismiss_next_step, work_item_facts.next_step(_next_step_fact: running/proposed 는 원인 그대로일 때만, accepted+판단이 만든 요청 반환·반려 전 → request_waiting). domain/work_status.py: WorkItemFacts.next_step, 직접 작업 다음·확인 필요 앞에서 next_step_status. server/triage_runs.py: _agent_route(need_after_result)·REASONS['runner_no_next_step']·_stop·_required_of·_people·_launch(접수·결과 뒤 공용, mode·cause 전달)로 나눔 — 접수 동작 그대로. 신규 server/next_step_runs.py: NextStepCause·next_step_route·build_next_step_candidates(활성 담당 범위만)·request_next_step(TriageRunning·NextStepExists → '판단 중', ArtifactStore(settings.artifact_dir) 로 원인 결과 읽음, 사람 응답 이름은 human_responses.member_id). 테스트: 신규 tests/workflow/server/test_next_step_runs.py 28개, test_work_status 결과 뒤 판단 4개, test_errors, test_triage_runs REASONS 표에 새 키. 검증: pytest 4375 passed·83 skipped, ruff 통과. 다음 step 주의: 워커는 아직 request_next_step 을 부르지 않음(step 6), _judge_triage 판정기 선택도 step 6, cause_prior 의 outcome 이 빈 문자열이면 TriageCause 검증 실패(판정 통과 결과는 봉투를 읽을 수 있음 전제), apply_*·mark_next_step_accepted 는 step 7."
     },
     {
       "step": 6,

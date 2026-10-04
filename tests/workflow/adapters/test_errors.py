@@ -13,6 +13,8 @@ from workflow.adapters.errors import (
     HashMismatch,
     InvalidTransition,
     LastAdmin,
+    NextStepExists,
+    NextStepHandled,
     NotFound,
     ResponseConflict,
     SequenceGap,
@@ -70,3 +72,11 @@ def test_response_conflict_is_adapter_error():
 
 def test_triage_running_is_adapter_error():
     assert isinstance(TriageRunning("work-1"), AdapterError)
+
+
+def test_next_step_errors_carry_their_keys():
+    exists = NextStepExists("after_result:exec-1")
+    handled = NextStepHandled("trg-1")
+    assert isinstance(exists, AdapterError) and isinstance(handled, AdapterError)
+    assert exists.cause_key == "after_result:exec-1" and "after_result:exec-1" in str(exists)
+    assert handled.triage_id == "trg-1" and "trg-1" in str(handled)
