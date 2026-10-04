@@ -2,7 +2,17 @@
 
 갱신일: 2026-10-04. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 사내 요청 실연동 — 공개 사례 K1 을 실제 러너·CLI 로 조사 (새 세션은 여기서 시작)
+## 다음 작업: 22-next-step 진행 중 — 결과 뒤 판단 (새 세션은 여기서 시작)
+
+**phase 22 하네스 실행 중**(`feat-22-next-step`, `service` `aae864a` 에서 갈라짐, `python3 scripts/execute.py 22-next-step --engine claude`). step 0 설계 고정(2026-10-04): [ADR-0027](adr/0027-next-step-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "결과 뒤 판단 — phase 22"(이름·계약·스키마 v24·시작 지점·tick 순서·행동별 적용·알림·문구 — README 와 다르면 이것이 기준), [GLOSSARY](GLOSSARY.md) "계획 용어 — phase 22". 진행 상태는 `phases/22-next-step/index.json`.
+
+요지: 결과가 규칙 밖(①)·`needs_information`(②)·사내 요청 반환(③)이면 판단 Agent 가 후보(다음 단계 종류·멤버·에이전트·담당 범위) 안에서 다음 행동 하나(다음 단계·재작업 / 새 업무 / 사내 요청 / 사람 확인)를 제안하고 사람이 [제안대로] 를 한 번 누른다. 시작할 수 없거나 실패·무시하면 지금 동작(② 는 사람 요청). 사내 요청은 받는 사람에게 알림(`internal_request_received`), 반환되면 원래 업무에서 판단이 다시. 스키마 v24(`triage_logs`·`notifications` 재생성, `internal_requests.created_by_triage_id`), 러너 능력 `after_result_triage` — **셀프호스트 반영 때 러너 재설치 필요**.
+
+step 0 에서 README 와 바꾼 것: C3 는 `TriageCandidates` 검증 오류로 먼저 터진다(접수 판단에도 있는 결함 — step 4 가 고친다), 규칙 없음은 새 `hold_code` `no_rule` 로만 시작, 담당표 revision 비교 대신 항목 비교(설정 번호가 워크스페이스 전체라서), 다음 단계·새 업무 후보는 입력 없는 종류만(규칙 없이 이은 단계는 착수되지 않는다), 재작업은 검토 [수정 요청] 경로, [무시] 는 `dismissed` 만 기록하고 대체 경로는 처분이 정한다(① 은 사람 요청 없음), `mode`·`next_action` 은 None 이면 직렬화에서 빠진다.
+
+**phase 뒤 할 일**(사용자 지시 뒤): `feat-22-next-step` → `service` `--no-ff` 병합, 셀프호스트 v24 재설치(백업 먼저, 진행 중 실행 0건, **러너 `install-runner.sh` 재실행**), 실연동(아래 K1 — RUN-26 장면).
+
+## 이전 다음 작업: 사내 요청 실연동 — 공개 사례 K1 을 실제 러너·CLI 로 조사
 
 **21-internal-request 병합·셀프호스트 v23 반영**(2026-10-04): 사내 요청(담당 범위·요청·정보 확인·조사·판단·반환·재개 기록)을 `feat-21-internal-request` 로 커밋해 `service` 에 병합(`332da59`). 하네스 phase 가 아니라 `phases/` 기록은 없다. 문서는 [사내 요청](product/INTERNAL_REQUESTS.md)부터, 합성 검증·기록 양식은 [파일럿 기록](product/INTERNAL_REQUEST_PILOT_RECORD.md). 회사 내부 사례가 없어 공개 Kubernetes 이슈 3건을 기존 방식 사례로 복원했다([공개 사례](product/INTERNAL_REQUEST_PUBLIC_CASES.md)). 셀프호스트: 백업 `20261004T055430Z`, 진행 중 실행 0건에서 v16 → v23, 업무 25·Task 26·멤버 1·실행 5 그대로, 외래키 검사 통과, `/healthz` 200. 러너 코드 변화 없음 — 재설치 안 함, 재기동 뒤에도 연결 이어짐.
 

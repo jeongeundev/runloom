@@ -5,7 +5,9 @@
     {
       "step": 0,
       "name": "next-step-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-04T21:45:11+0900",
+      "summary": "문서만: ADR-0027 신규, ARCHITECTURE '결과 뒤 판단 — phase 22' 추가(이름·계약·스키마 v24·시작 지점·처분·tick 순서(_triage_after_results 는 _start_waiting_stages 뒤·_triage_new_work 앞)·행동별 적용·알림·문구·step 1~10 시그니처), GLOSSARY phase 22 용어, CURRENT_HANDOFF '22-next-step 진행 중', README 에 ADR 연결. README 와 바꾼 결정: mode 는 Literal['next_step']|None·next_action 과 함께 None 이면 직렬화 생략(_OmitUnknownMeasure), C3 는 TriageCandidates ValidationError 로 먼저 터짐(접수 판단에도 있음 — step 4 가 startable_kinds 에 지금 종류 포함+startable 표시), ① 업무 순환은 새 hold_code no_rule 만, 다음 단계·새 업무 후보는 입력 없는 종류만(규칙 없는 이음은 착수 안 됨), 재작업은 검토 request_changes 경로(stage_runs.request_changes 로 이동), stale_directory 는 revision 대신 담당표 항목 비교(설정 번호가 워크스페이스 전체), 체크아웃은 판단 Agent base_commit, 처분 disposition(queue/hold/fallback, 대기 상한 3600초)으로 대체 경로, [무시]는 dismissed 만(① 은 사람 요청 없음), 결과 뒤 판단 handling 은 accepted/dismissed. 검증: pytest 4192 passed·83 skipped, ruff 통과. 다음 step 주의: 판단 로그를 읽는 기존 11곳은 cause='intake' 로 거른다(ARCHITECTURE '원인 거르기' 표), RUNNER_CAPABILITIES 에 after_result_triage 추가는 step 2(step 1 은 상수만), WorkRow.next_action(기존 문구)과 NextAction 을 섞지 말 것."
     },
     {
       "step": 1,
@@ -57,5 +59,6 @@
       "name": "next-step-verify",
       "status": "pending"
     }
-  ]
+  ],
+  "created_at": "2026-10-04T21:45:11+0900"
 }
