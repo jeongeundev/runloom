@@ -36,6 +36,8 @@ python3 -m pytest -q tests/workflow/server/test_internal_investigation.py -k syn
 
 현재 실제 사례와 비교 환경은 확보되지 않았다. 혼자 세 역할을 수행하는 실험으로 동작은 확인할 수 있지만 사람 간 병목 절감의 증거로 쓰지 않는다. 기존 사례가 없으면 합성 비교만 보고한다.
 
+회사 내부 사례 대신 공개 Kubernetes 이슈 3건을 이 양식으로 복원했다: [공개 사례 복원](INTERNAL_REQUEST_PUBLIC_CASES.md).
+
 ## 3. 사례별 기록 양식
 
 아래를 사례마다 복사한다. 자료에는 실제 고객 정보·비밀값을 넣지 않는다.
