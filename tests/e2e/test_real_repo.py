@@ -413,8 +413,11 @@ def test_02_attach_runner_button_gives_one_command_and_setup_registers_the_folde
         assert time.monotonic() < deadline, world.log_tails()
         time.sleep(0.3)
     card = source_card(world)
-    for value in ("acme/billing", world.ctx["agent_id"], "check"):
+    for value in ("acme/billing", "check"):
         assert f'<span class="mono">{value}</span> (자동)' in card, card
+    assert "<span>billing (자동)</span>" in card  # phase 23: 에이전트 줄은 이름, ID 는 "자세히"
+    detail = re.search(r'<details class="detail">.*?</details>', card, re.S).group(0)
+    assert world.ctx["agent_id"] in detail
     assert world.ctx["connect_code"] not in card
 
 

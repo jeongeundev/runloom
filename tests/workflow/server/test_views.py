@@ -1058,3 +1058,30 @@ def test_config_change_heads_name_the_change_or_say_no_record():
         "4": "설정 4 — 판단 기준 변경 v2 · 김OO · 10/3",
         "5": "설정 5 — 저장소 연결 추가 acme/billing · 시스템 · 10/3",
     }
+
+
+# --- 저장소 화면 담당 연결 — 수집한 이슈에서 본 GitHub 사용자 (phase 23 step 7) ---------------------------
+
+
+def _issue_row(updated_at: str, ids: list[int], logins: list[str]) -> dict:
+    return {"issue_updated_at": updated_at,
+            "snapshot_json": json.dumps({"assignee_ids": ids, "assignee_logins": logins})}
+
+
+def test_seen_github_users_pairs_ids_with_the_latest_login_sorted_by_login():
+    rows = [
+        _issue_row("2026-10-06T02:00:00Z", [7, 3], ["zed", "old-kim"]),
+        _issue_row("2026-10-06T03:00:00Z", [3], ["kim-dev"]),  # 같은 id 는 가장 최근 이슈의 login
+        _issue_row("2026-10-06T01:00:00Z", [3, 9], ["older-kim", "amy"]),
+        _issue_row("2026-10-06T04:00:00Z", [], []),
+    ]
+    assert views.seen_github_users(rows) == [
+        {"github_user_id": 9, "github_login": "amy"},
+        {"github_user_id": 3, "github_login": "kim-dev"},
+        {"github_user_id": 7, "github_login": "zed"},
+    ]
+
+
+def test_seen_github_users_is_empty_without_assignees():
+    assert views.seen_github_users([]) == []
+    assert views.seen_github_users([_issue_row("2026-10-06T01:00:00Z", [], [])]) == []

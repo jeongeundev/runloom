@@ -337,7 +337,7 @@ def test_card_select_lists_run_policy_agents_with_triage_capability(admin, conn)
 
 def test_card_match_rows_show_triage_agent(admin):
     html = admin.get("/repos").text
-    assert re.search(rf"판단 에이전트</span><span><span class=\"mono\">{FIX}</span> \(설정\)", html)
+    assert f"판단 에이전트</span><span>{FIX} (설정)</span>" in html  # phase 23: 이름(이 픽스처는 이름 = ID)
 
 
 def test_saving_triage_agent_bumps_revisions(admin, conn):
@@ -417,3 +417,24 @@ def test_criteria_and_autostart_saves_record_the_logged_in_member(admin, conn):
         (revision(conn) - 1, "triage_criteria", "v2", admin_id(conn)),
         (revision(conn), "triage_autostart", "bug_fix 끔 · 기준값 0.90", admin_id(conn)),
     ]
+
+
+# --- phase 23 step 7: 판단 에이전트는 카드 본문 칸 — 저장하면 접수 판단 시작 조건 그대로 -----------------
+
+
+def test_triage_agent_is_a_card_body_field_and_saving_it_starts_intake_triage(admin, conn, settings):
+    from .test_triage_runs import new_issue, route
+
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW), NOW)  # 판단 에이전트 없음
+    card = admin.get("/repos").text.split(f'data-source-card="{SOURCE}"', 1)[1].split("</section>", 1)[0]
+    advanced = re.search(r"<details[^>]*data-source-advanced.*?</details>", card, re.S).group(0)
+    assert 'name="triage_agent_id"' in card and 'name="triage_agent_id"' not in advanced
+    work_item_id = new_issue(conn, 1)
+    assert route(conn, settings, work_item_id).agent_id is None
+
+    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
+    assert response.status_code == 200, response.text
+
+    found = route(conn, settings, work_item_id)
+    assert (found.agent_id, found.reason) == (FIX, None)
+    assert f'<option value="{FIX}" selected>{FIX}</option>' in admin.get("/repos").text

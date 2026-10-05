@@ -1253,21 +1253,37 @@ def _saved_app(secrets: SecretStore) -> dict[str, str] | None:
     }
 
 
-def _match_rows(config: GitHubSourceConfig, match: Any) -> list[dict[str, Any]]:
-    """저장소 카드의 러너 매칭 줄 — 설정값이 있으면 "설정", 자동 매칭이 정했으면 "자동", 아니면 정해지지 않음."""
+def _match_rows(config: GitHubSourceConfig, match: Any, names: Mapping[str, str]) -> list[dict[str, Any]]:
+    """저장소 카드의 러너 매칭 줄 — 설정값이 있으면 "설정", 자동 매칭이 정했으면 "자동", 아니면 정해지지 않음.
+    에이전트 줄은 `name`(화면 이름 — 없으면 None)을 싣고 화면은 이름만 보인다(ID 는 카드의 "자세히")."""
     rows = []
-    for label, configured, matched in (
-        ("로컬 저장소", config.workflow_repository_id, match.workflow_repository_id),
-        ("수정 에이전트", config.default_fix_agent_id, match.fix_agent_id),
-        ("검증 프로필", config.fix_verification_profile_id, match.fix_verification_profile_id),
-        ("검토 에이전트", config.review_agent_id, match.review_agent_id),
-        ("판단 에이전트", config.triage_agent_id, None),  # 자동 매칭하지 않는다(ADR-0025 결정 3)
+    for label, configured, matched, agent in (
+        ("로컬 저장소", config.workflow_repository_id, match.workflow_repository_id, False),
+        ("수정 에이전트", config.default_fix_agent_id, match.fix_agent_id, True),
+        ("검증 프로필", config.fix_verification_profile_id, match.fix_verification_profile_id, False),
+        ("검토 에이전트", config.review_agent_id, match.review_agent_id, True),
+        ("판단 에이전트", config.triage_agent_id, None, True),  # 자동 매칭하지 않는다(ADR-0025 결정 3)
     ):
         how = "설정" if configured is not None else "자동" if matched is not None else None
-        rows.append({"label": label, "value": configured or matched, "how": how})
+        value = configured or matched
+        rows.append({"label": label, "value": value, "how": how,
+                     "name": names.get(value, "등록하지 않은 에이전트") if agent and value else None})
     if config.intake == "filtered" and rows[1]["value"] is None:
-        rows[1]["note"] = "이슈 GitHub 담당자에 연결한 Agent"  # filtered 는 담당 연결로 정한다(phase 8)
+        rows[1]["note"] = "이슈 GitHub 담당자에 연결한 에이전트"  # filtered 는 담당 연결로 정한다(phase 8)
     return rows
+
+
+def seen_github_users(rows: Sequence[Row]) -> list[dict[str, Any]]:
+    """담당 연결 고르기 — 수집한 이슈(`source_issues` 행) 스냅숏의 `assignee_ids`·`assignee_logins` 짝. 같은 id 는 가장
+    최근 `issue_updated_at` 의 login, login 순."""
+    seen: dict[int, tuple[str, str]] = {}
+    for row in rows:
+        snapshot = json.loads(row["snapshot_json"])
+        for user_id, login in zip(snapshot["assignee_ids"], snapshot["assignee_logins"], strict=False):
+            if user_id not in seen or row["issue_updated_at"] > seen[user_id][0]:
+                seen[user_id] = (row["issue_updated_at"], login)
+    return [{"github_user_id": user_id, "github_login": login}
+            for user_id, (_, login) in sorted(seen.items(), key=lambda item: (item[1][1], item[0]))]
 
 
 def _baseline_summary(conn: Connection, session_id: str, source_id: str) -> dict[str, Any] | None:
@@ -1345,39 +1361,32 @@ def _triage_agents(agents: list[dict[str, Any]], repository_id: str | None) -> l
 def github_context(
     conn: Connection, session_id: str, *, now: str, settings: Settings, secrets: SecretStore
 ) -> dict[str, Any]:
-    """연결 화면 가져올 곳 탭의 GitHub 절 — 연결 상태(비밀은 연결됨/없음만)·저장소 카드(동기화·수집 자격·러너 매칭·트리거 라벨)·
-    접힌 고급 설정(소스 설정·담당 연결)·실제 업무 목록. 열린 사람 요청은 업무 화면(내 차례)이 보인다. 쓰기는 화면의 스크립트가 JSON API
-    (`github_api`·`human_api`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 폼으로 한다."""
+    """저장소 화면의 GitHub 절 — 연결 상태(비밀은 연결됨/없음만)·저장소 카드(수집 상태·끝나지 않은 업무 수·러너 매칭·판단·수정·검토
+    에이전트 이름·고급 설정·담당 연결·기준선). 이슈 목록은 업무 화면이 보인다 — 수집한 이슈는 담당 연결 사용자 목록에만 쓴다.
+    쓰기는 화면의 스크립트가 JSON API(`github_api`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 폼으로 한다."""
     agents = [agent_public(a, now=now, settings=settings) for a in repo.list_session_agents(conn, session_id)]
+    names = {a["agent_id"]: a["name"] for a in agents}
+    open_work: dict[str, int] = {}
+    for row in repo.list_work_rows(conn, session_id, closed_since=now):
+        if row.repository is not None and row.status not in TERMINAL_WORK_STATUSES:
+            open_work[row.repository] = open_work.get(row.repository, 0) + 1
 
     def able(code: str) -> list[dict[str, Any]]:
         return [a for a in agents if any(c["code"] == code for c in a["capabilities"])]
 
     sources = []
     for config in repo.list_github_sources(conn, session_id):
-        issues = []
-        for row in repo.list_source_issues(conn, session_id, config.source_id):
-            task = repo.get_task(conn, row["task_id"])
-            snapshot = GitHubIssueSnapshot.model_validate_json(row["snapshot_json"])
-            deliveries = repo.list_source_deliveries(conn, row["task_id"])
-            issues.append({
-                "number": row["issue_number"],
-                "url": issue_url(config.repository_full_name, row["issue_number"]),
-                "title": snapshot.title,
-                "state": row["state"],
-                "assignees": snapshot.assignee_logins,
-                "task": task_summary(conn, task, now=now, settings=settings),
-                "delivery": delivery_public(deliveries[-1], config.repository_full_name) if deliveries else None,
-            })
         match = task_cycle.match_for_source(conn, session_id, config)
         credential = github_clients.credential_kind(config, settings, secrets)
         sources.append({
             "config": config.model_dump(mode="json"),
-            "assignees": [b.model_dump(mode="json") for b in repo.list_assignee_bindings(conn, session_id, config.source_id)],
-            "issues": issues,
+            "assignees": [{**b.model_dump(mode="json"), "agent_name": names.get(b.agent_id, "등록하지 않은 에이전트")}
+                          for b in repo.list_assignee_bindings(conn, session_id, config.source_id)],
+            "seen_users": seen_github_users(repo.list_source_issues(conn, session_id, config.source_id)),
+            "open_work_count": open_work.get(config.repository_full_name, 0),
             "synced_at": repo.get_source_synced_at(conn, session_id, config.source_id),
             "credential": CREDENTIAL_LABELS.get(credential) if credential else None,
-            "match": _match_rows(config, match),
+            "match": _match_rows(config, match, names),
             "runner_missing": any(b.code == "repository_unmatched" for b in match.blockers),
             "match_blockers": [b.reason for b in match.blockers if b.code != "repository_unmatched"],
             "baseline": _baseline_summary(conn, session_id, config.source_id),

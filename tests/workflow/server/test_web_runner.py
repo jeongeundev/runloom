@@ -2,7 +2,7 @@
 """저장소 카드 [러너 붙이기] (phase 12 step 9, ADR-0018 결정 6, ARCHITECTURE "경로").
 
 러너가 없는 카드에는 버튼, POST 하면 연결 코드가 들어간 명령 한 줄을 같은 카드에 그대로 렌더한다(리다이렉트 없음).
-러너가 매칭된 카드에는 버튼이 없고 고급 설정 안에 [러너 다시 붙이기] 만 있다.
+러너가 매칭된 카드에는 버튼이 없고 접힌 카드 도구(러너·담당 연결·기준선, phase 23) 안에 [러너 다시 붙이기] 만 있다.
 """
 
 import dataclasses
@@ -104,7 +104,7 @@ def test_matched_card_has_no_attach_button_only_a_folded_reattach(client, auto_s
 
     assert runner_action(SOURCE) not in visible(f"<main>{card}")
     assert "data-runner-missing" not in card
-    assert runner_action(SOURCE) in folded(card, "고급 설정") and "러너 다시 붙이기" in card
+    assert runner_action(SOURCE) in folded(card, "러너·담당 연결·기준선") and "러너 다시 붙이기" in card
 
 
 def test_other_workspace_source_is_404(op, conn):
