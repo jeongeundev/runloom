@@ -85,7 +85,10 @@
     {
       "step": 10,
       "name": "setup-ux-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T16:33:09+0900",
+      "summary": "검증: tests/e2e/test_setup_ux.py 신규(표준 html.parser 로 사이드바·버튼 href·폼 action·필드를 읽어 따라감, JSON 폼은 base.html data-json-type 변환 그대로 PUT — 손으로 만든 주소는 GitHub 왕복·러너 설치 명령뿐): 첫 설정→저장소 [GitHub 연결]→카드 [러너 붙이기]→connector setup/run(가짜 codex)→에이전트 billing, 팀 이메일 초대 N·J→J [링크 다시 만들기]→옛 링크 GET/POST 404·새 링크 가입(이메일 readonly)→멤버 둘, 설정 탭 5개→종류 '장애 조사'(맡을 에이전트 billing 체크·결과값)→카드 맡을 수 있는 에이전트·자동 식별자 k_xxxxxx=능력 코드·select_agent 후보·팀 줄 맡을 수 있는 일, 팀 담당 범위(kube_proxy·조사·N·J·billing)→표 이름만·GET /responsibilities 값, 저장소 카드 판단 에이전트 billing→선택값·매칭 줄 '(설정)'·triage_agent_id, 8화면(팀·저장소·업무·설정 5탭) 모든 table 이 .table-wrap 안·노출 단정 7화면(설정 › 고급은 ARCHITECTURE 예외), 옛 주소 15개 303→200, v24 사본(관리자·멤버·열린 옛 초대 둘·사용된 초대)→v25·'이메일 없음(옛 초대)'·다시 만들기·취소·입력 이메일 가입. 결함 수정: 390px 에서 발급 링크·토큰·연결 코드(.alert code)·n8n 입구 주소(#inbound-url)가 줄바꿈 안 돼 페이지를 넓힘 → style.css '.alert code, #inbound-url { overflow-wrap: anywhere; }', 테스트 test_ui::test_tables_and_long_one_time_values_do_not_widen_the_page_at_390px(먼저 실패 확인, css_rules 도우미). 문서: SELFHOST 업그레이드 v25(백업·install.sh·러너 재설치 불필요·북마크 주소 바뀜/옛 주소 303·열린 옛 초대 이메일 없이)·옛 주소 줄 새 대상·본문 /connect?tab= → /team·/repos·/settings?tab=(초대 문단 이메일·[링크 다시 만들기]), n8n README /connect?tab=team·/sources → /team·/settings?tab=inbound, CURRENT_HANDOFF 맨 위 23 완료·할 일(병합→v25→K1 재개)·남긴 것, VERIFICATION_LOG 'phase 23 설정 UX', INTERNAL_REQUEST_LIVE_RUN_1 '준비 (관리자 R)' 새 화면 경로(code.review 우회 없음, 진행 표 그대로). 기존 단정 변경: test_selfhost_files 의 /connect?tab=notify·/connect?tab=team → /settings?tab=notify·/team(+/repos), test_n8n_example /connect?tab=team → /team·/settings?tab=inbound, 새 test_selfhost_md_covers_the_v25_setup_screens_upgrade(v25 절 항목·본문에 /connect?tab= 없음). 검증: pytest 4606 passed·100 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e 99 passed·1 skipped(test_selfhost Docker 게이트), test_setup_ux 8 passed. 셀프호스트·실연동 미실행. 주의: 저장소 카드 설정 폼은 JS(data-json-action) 필요(기존), 업무 패널·단계 상세·/requests·모니터링은 노출 단정 밖, 보드 완료 칸 남음.",
+      "completed_at": "2026-10-05T16:53:46+0900"
     }
   ],
   "created_at": "2026-10-05T12:43:55+0900"
