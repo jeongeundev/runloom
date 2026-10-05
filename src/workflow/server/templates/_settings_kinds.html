@@ -8,15 +8,16 @@
   {% for k in kinds %}
   <div class="card kind-card">
     <div class="name">{{ k.label }}{% if k.builtin %} <span class="tag-builtin">내장</span>{% endif %}</div>
-    <div class="meta mono">{{ k.kind }} · {{ k.capability_code }} · {{ k.scope_key }}</div>
     <dl class="kind-fields">
       <dt>받는 산출물</dt><dd>{% for label in k.input_labels %}<span class="chip">{{ label }}</span>{% else %}<span class="small">없음</span>{% endfor %}</dd>
       <dt>내는 산출물</dt><dd><span class="chip">{{ k.output_label }}</span></dd>
       <dt>결과값</dt><dd>{% for o in k.outcomes %}<span class="chip chip-mono">{{ o }}</span>{% endfor %}</dd>
+      <dt>맡을 수 있는 에이전트</dt><dd>{% if k.agent_names %}{{ k.agent_names|join(', ') }}{% else %}<span class="small">아직 없음 — 팀 화면에서 붙입니다</span>{% endif %}</dd>
     </dl>
     {% if k.instructions %}
     <details class="row" data-key="instructions-{{ k.kind }}"><summary>지시문</summary><div class="row-body"><pre class="instructions">{{ k.instructions }}</pre></div></details>
     {% endif %}
+    <details class="detail"><summary>자세히</summary>{{ k.kind }} · {{ k.capability_code }} · {{ k.scope_key }}</details>
     {% if not k.builtin and 'manage_rules' in allowed %}
     <div class="actions"><form method="post" action="/kinds/{{ k.kind }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form></div>
     {% endif %}
@@ -27,47 +28,62 @@
 {% if 'manage_rules' in allowed %}
 <h2>종류 등록</h2>
 <form method="post" action="/kinds" class="card">
-  <div class="field-row">
-    <div class="field">
-      <label for="kind">종류 이름 (kind)</label>
-      <input type="text" id="kind" name="kind" required placeholder="review">
-      <div class="help">소문자·숫자·밑줄, 2~40자, 소문자로 시작. 업무·실행의 <span class="mono">kind</span> 값이 됩니다.</div>
-    </div>
-    <div class="field">
-      <label for="label">화면 표시 이름</label>
-      <input type="text" id="label" name="label" required placeholder="검토">
-    </div>
-  </div>
-  <div class="field-row">
-    <div class="field">
-      <label for="capability_code">능력 코드</label>
-      <input type="text" id="capability_code" name="capability_code" placeholder="비우면 종류 이름과 같음">
-      <div class="help">이 종류를 맡을 에이전트의 능력 코드. 비우면 종류 이름과 같습니다.</div>
-    </div>
-    <div class="field">
-      <label for="scope_key">능력 범위 키 (scope_key)</label>
-      <input type="text" id="scope_key" name="scope_key" required placeholder="repository_id">
-      <div class="help">에이전트 능력의 범위 키 하나. 예: repository_id, workflow_id</div>
-    </div>
-  </div>
   <div class="field">
-    <label>받는 산출물</label>
-    <div class="check-list">
-      {% for choice in input_kind_choices %}
-      <label><input type="checkbox" name="input_kinds" value="{{ choice }}"> {{ choice|kind_label }}{% if choice|kind_label != choice %} <span class="mono">{{ choice }}</span>{% endif %}</label>
-      {% endfor %}
-    </div>
-    <div class="help">시작할 때 인계받아야 하는 산출물. 없어도 됩니다. 내는 산출물은 항상 결과 봉투(generic_result)이고 완료는 사람 검토입니다.</div>
-  </div>
-  <div class="field">
-    <label for="outcomes">결과값 (outcomes)</label>
-    <input type="text" id="outcomes" name="outcomes" required placeholder="approved, changes_requested, needs_information">
-    <div class="help">쉼표 또는 공백으로 구분. 에이전트가 낼 수 있는 결론이며 후속 규칙의 기준이 됩니다.</div>
+    <label for="label">화면 이름</label>
+    <input type="text" id="label" name="label" required placeholder="장애 조사">
   </div>
   <div class="field">
     <label for="instructions">지시문</label>
     <textarea id="instructions" name="instructions" rows="4" placeholder="에이전트가 무엇을 읽고 무엇을 판단해 어떤 근거로 답할지"></textarea>
   </div>
+  <div class="field">
+    <label for="outcomes">결과값</label>
+    <input type="text" id="outcomes" name="outcomes" required value="{{ default_kind_outcomes }}">
+    <div class="help">쉼표로 구분. 에이전트가 고를 수 있는 결론이고 후속 규칙의 기준이 됩니다</div>
+  </div>
+  <div class="field">
+    <label>맡을 에이전트</label>
+    {% if agent_choices %}
+    <div class="check-list">
+      {% for a in agent_choices %}
+      <label><input type="checkbox" name="agent_ids" value="{{ a.agent_id }}"{% if a.reason %} disabled{% endif %}> {{ a.line }}{% if a.reason %} <span class="muted small">{{ a.reason }}</span>{% endif %}</label>
+      {% endfor %}
+    </div>
+    <div class="help">고른 에이전트가 이 일을 맡을 수 있게 됩니다. 비워 두면 나중에 팀 화면에서 붙일 수 있습니다.</div>
+    {% else %}
+    <p class="small">아직 에이전트가 없습니다 — <a href="/repos">저장소 화면에서 러너를 붙이세요</a></p>
+    {% endif %}
+  </div>
+  <details class="row" data-kind-advanced><summary>고급</summary>
+    <div class="row-body">
+      <div class="field-row">
+        <div class="field">
+          <label for="kind">종류 식별자</label>
+          <input type="text" id="kind" name="kind" placeholder="비우면 자동">
+          <div class="help">소문자·숫자·밑줄, 2~40자, 소문자로 시작. 비우면 자동으로 만듭니다.</div>
+        </div>
+        <div class="field">
+          <label for="capability_code">능력 코드</label>
+          <input type="text" id="capability_code" name="capability_code" placeholder="비우면 종류 식별자와 같음">
+          <div class="help">이 종류를 맡을 에이전트의 능력 코드. 비우면 종류 식별자와 같습니다.</div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="scope_key">능력 범위 키 (scope_key)</label>
+        <input type="text" id="scope_key" name="scope_key" value="repository_id">
+        <div class="help">에이전트 능력의 범위 키 하나. repository_id 가 아니면 맡을 에이전트를 이 폼에서 고를 수 없습니다.</div>
+      </div>
+      <div class="field">
+        <label>받는 산출물</label>
+        <div class="check-list">
+          {% for choice in input_kind_choices %}
+          <label><input type="checkbox" name="input_kinds" value="{{ choice }}"> {{ choice|kind_label }}{% if choice|kind_label != choice %} <span class="muted small mono">{{ choice }}</span>{% endif %}</label>
+          {% endfor %}
+        </div>
+        <div class="help">시작할 때 인계받아야 하는 산출물. 없어도 됩니다. 내는 산출물은 항상 결과 봉투이고 완료는 사람 검토입니다.</div>
+      </div>
+    </div>
+  </details>
   <div class="actions"><button class="btn" type="submit">종류 등록</button></div>
 </form>
 {% endif %}

@@ -12,6 +12,7 @@ from workflow.adapters import repo
 from workflow.adapters.db import connect
 from workflow.adapters.errors import (
     ActiveExecutionExists,
+    AgentScopeUnknown,
     ArtifactMissing,
     CapabilityProtected,
     DuplicateKind,
@@ -1601,6 +1602,47 @@ def test_added_capability_makes_the_agent_selectable_for_the_new_kind(sessions):
     assert (record.status, record.selected_agent_id) == ("selected", agent_id)
     repo.remove_agent_capability(conn, agent_id=agent_id, capability=required)
     assert select_agent("t-1", required, pool()).status == "needs_selection"
+
+def test_insert_kind_attaches_capability_to_chosen_agents_in_one_transaction(sessions):
+    """phase 23 step 5 — 종류 등록과 맡을 에이전트 능력 붙이기는 한 트랜잭션."""
+    conn = sessions
+    first = _runner_agent(conn)
+    second = _runner_agent(conn, "agent-shop", repository="shop")
+    bystander = _runner_agent(conn, "agent-bystander")
+    before = _caps(conn, bystander)
+
+    repo.insert_kind(conn, SESSION, REVIEW, NOW, agent_ids=[first, second])
+
+    assert repo.get_kind(conn, SESSION, "review") is not None
+    assert {"code": "review", "scope": {"repository_id": "billing"}} in _caps(conn, first)
+    assert {"code": "review", "scope": {"repository_id": "shop"}} in _caps(conn, second)
+    assert _caps(conn, bystander) == before
+    assert _revision(conn) == 2  # 종류 추가 한 번만 — 능력 붙이기는 번호를 올리지 않는다
+    assert not conn.in_transaction
+
+
+def test_insert_kind_rolls_back_when_an_agent_cannot_take_it(sessions):
+    conn = sessions
+    good = _runner_agent(conn)
+    repo.upsert_agent(conn, _agent())  # 수동 등록 — 내장 능력의 repository_id 가 없다
+    repo.register_session_agent(conn, SESSION, "agent-ops-demo", NOW)
+    outsider = _runner_agent(conn, "agent-outsider", session_id=OTHER_SESSION)
+    good_before = _caps(conn, good)
+
+    with pytest.raises(AgentScopeUnknown) as info:
+        repo.insert_kind(conn, SESSION, REVIEW, NOW, agent_ids=[good, "agent-ops-demo"])
+    assert (info.value.agent_id, info.value.reason) == ("agent-ops-demo", "no_repository")
+    with pytest.raises(NotFound):  # 다른 워크스페이스 에이전트
+        repo.insert_kind(conn, SESSION, REVIEW, NOW, agent_ids=[good, outsider])
+    workflow_scoped = REVIEW.model_copy(update={"scope_key": "workflow_id"})
+    with pytest.raises(AgentScopeUnknown):  # 범위 키가 repository_id 가 아니면 붙일 수 없다
+        repo.insert_kind(conn, SESSION, workflow_scoped, NOW, agent_ids=[good])
+
+    assert repo.get_kind(conn, SESSION, "review") is None  # 전부 되돌림
+    assert _caps(conn, good) == good_before
+    assert _revision(conn) == 1
+    assert not conn.in_transaction
+
 
 def test_insert_task_requires_registered_kind(seeded):
     conn = seeded

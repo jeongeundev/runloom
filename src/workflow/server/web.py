@@ -37,6 +37,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from workflow.adapters import repo, secret_store, responsibility_store, internal_request_store
 from workflow.adapters.errors import (
+    AgentScopeUnknown,
     AutostartLocked,
     DuplicateKind,
     DuplicateRule,
@@ -128,6 +129,11 @@ CONNECTION_TYPES = ("local", "api")
 REVIEW_DECISIONS = ("approve", "request_changes", "close")
 # 종류·규칙 폼의 산출물 kind 선택지 — 묶음 자체(`handoff_bundle`)는 받는 산출물도 넘기는 산출물도 아니다
 INPUT_KIND_CHOICES = tuple(k for k in ARTIFACT_KINDS if k != "handoff_bundle")
+# 종류 폼(phase 23 step 5) — 식별자를 비우면 `k_` + hex 6 자동, 결과값 칸의 기본 채움 값
+AUTO_KIND_PREFIX = "k_"
+AUTO_KIND_HEX = 6
+AUTO_KIND_TRIES = 5
+DEFAULT_KIND_OUTCOMES = "done, needs_information"
 # 입구 (ADR-0010) — 토큰은 지금 n8n 하나에 묶이고, 경로는 inbound_api 의 것을 화면에 그대로 적는다
 INBOUND_SOURCE = "n8n"
 INBOUND_PATH = "/sources/n8n/chains"
@@ -2081,12 +2087,26 @@ def _kind_in_use_message(conn: Connection, session_id: str, kind: str) -> str:
 def _kinds_context(conn: Connection, session_id: str) -> dict[str, Any]:
     """종류 목록 + 종류 등록 폼 + 규칙 목록 + 규칙 등록 폼. 규칙은 한 줄 텍스트다 — 그래프를 그리지 않는다."""
     kinds = repo.list_kinds(conn, session_id)
+    agents = repo.list_session_agents(conn, session_id)
     return {
-        "kinds": [views.kind_public(spec) for spec in kinds],
+        "kinds": [{**views.kind_public(spec), "agent_names": views.kind_agent_names(agents, spec.capability_code)}
+                  for spec in kinds],
         "rules": [views.rule_public(rule_id, rule, kinds) for rule_id, rule in repo.list_rules(conn, session_id)],
         "input_kind_choices": INPUT_KIND_CHOICES,
         "placement_choices": list(views.PLACEMENT_LABELS.items()),
+        "agent_choices": views.kind_agent_choices(conn, session_id),
+        "default_kind_outcomes": DEFAULT_KIND_OUTCOMES,
     }
+
+
+def _auto_kind(conn: Connection, session_id: str) -> str:
+    """종류 식별자를 비웠을 때 — `k_` + hex 6. 등록부·내장 이름과 겹치면 다시 뽑고, `AUTO_KIND_TRIES` 번 겹치면 409."""
+    taken = {spec.kind for spec in repo.list_kinds(conn, session_id)} | set(BUILTIN_KIND_NAMES)
+    for _ in range(AUTO_KIND_TRIES):
+        kind = AUTO_KIND_PREFIX + secrets.token_hex(AUTO_KIND_HEX // 2)
+        if kind not in taken:
+            return kind
+    raise PageError(409, "kind_exists", "종류 식별자를 만들지 못했습니다 — 다시 시도하세요", field="kind")
 
 
 @router.get("/kinds")
@@ -2105,21 +2125,24 @@ def kinds_create(
     input_kinds: list[str] = Form([]),
     outcomes: str = Form(""),
     instructions: str = Form(""),
+    agent_ids: list[str] = Form([]),
     member: LoggedIn = Depends(require_action(team.MANAGE_RULES)),
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     """사용자 정의 종류. `output_kind` 는 항상 `generic_result`(내장 결과 봉투는 검증기가 딸려 있다), `builtin` 은 False.
-    능력 코드를 비우면 종류 이름과 같다 (ARCHITECTURE "봉투와 내장 값")."""
+    종류 식별자를 비우면 자동(`_auto_kind`), 능력 코드를 비우면 종류 식별자, 범위 키를 비우면 `repository_id`.
+    고른 에이전트(`agent_ids`)에는 같은 트랜잭션에서 이 종류의 능력을 붙인다(ARCHITECTURE "종류 폼과 에이전트 능력")."""
     session_id = member.session_id
     kind = kind.strip()
     if kind in BUILTIN_KIND_NAMES:  # 세션에 아직 seed 되지 않은 내장 이름도 예약어다
         raise PageError(409, "kind_exists", f"종류 {kind} 은 이미 등록돼 있습니다.", field="kind")
+    kind = kind or _auto_kind(conn, session_id)
     try:
         spec = KindSpec.model_validate({
             "kind": kind,
             "label": label.strip(),
             "capability_code": capability_code.strip() or kind,
-            "scope_key": scope_key.strip(),
+            "scope_key": scope_key.strip() or "repository_id",
             "input_kinds": input_kinds,
             "output_kind": "generic_result",
             "outcomes": _split_identifiers(outcomes),
@@ -2128,10 +2151,25 @@ def kinds_create(
         })
     except ValidationError as exc:
         raise _validation_page_error(exc) from None
+    kinds = repo.list_kinds(conn, session_id)
+    if any(s.kind == spec.kind for s in kinds):
+        raise PageError(409, "kind_exists", f"종류 {spec.kind} 은 이미 등록돼 있습니다.", field="kind")
+    if any(s.label.strip().casefold() == spec.label.casefold() for s in kinds):
+        raise PageError(409, "kind_label_exists", f"같은 이름의 종류가 이미 있습니다: {spec.label}", field="label")
+    if agent_ids and spec.scope_key != "repository_id":
+        raise PageError(422, "invalid_field", "범위 키가 repository_id 가 아닌 종류는 맡을 에이전트를 여기서 고를 수 없습니다"
+                        " — 설정 › 고급에서 능력을 붙이세요.", field="agent_ids")
     try:
-        repo.insert_kind(conn, session_id, spec, utc_now(), member_id=member.member_id)
+        repo.insert_kind(conn, session_id, spec, utc_now(), member_id=member.member_id,
+                         agent_ids=list(dict.fromkeys(agent_ids)))
     except DuplicateKind:
         raise PageError(409, "kind_exists", f"종류 {spec.kind} 은 이미 등록돼 있습니다.", field="kind") from None
+    except NotFound:
+        raise PageError(422, "invalid_field", "등록하지 않은 에이전트입니다.", field="agent_ids") from None
+    except AgentScopeUnknown as exc:
+        name = repo.get_agent(conn, exc.agent_id)["name"]
+        raise PageError(422, "agent_scope_unknown", f"{name} 은 고를 수 없습니다 — {views.SCOPE_REASON_LABELS[exc.reason]}",
+                        field="agent_ids") from None
     return _redirect("/settings?tab=kinds", response)
 
 

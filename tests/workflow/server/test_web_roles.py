@@ -212,6 +212,7 @@ def test_member_kinds_page_hides_setting_forms(member, admin):
     assert 'action="/kinds"' in admin.get("/settings?tab=kinds").text and 'action="/rules"' in admin.get("/settings?tab=kinds").text
     text = member.get("/settings?tab=kinds").text
     assert 'action="/kinds"' not in text and 'action="/rules"' not in text
+    assert 'name="agent_ids"' not in text and "data-kind-advanced" not in text  # 종류 폼 전체가 없다
     assert "/delete" not in text
 
 

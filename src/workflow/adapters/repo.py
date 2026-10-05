@@ -23,6 +23,7 @@ from uuid import uuid4
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import (
     ActiveExecutionExists,
+    AgentScopeUnknown,
     ArtifactMissing,
     AutostartLocked,
     CapabilityProtected,
@@ -96,7 +97,7 @@ from workflow.domain.execution_policy import TRIAGE_OUTPUT_KIND, is_triage_kind
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain import jira_intake
 from workflow.domain.jira_intake import initial_cursor_ms
-from workflow.domain.kinds import BUILTIN_CAPABILITY_CODES
+from workflow.domain.kinds import BUILTIN_CAPABILITY_CODES, agent_repository_scope
 from workflow.domain.assignee_metrics import (
     AgentLabel,
     AgentRunFact,
@@ -1603,14 +1604,26 @@ def get_kind(conn: Connection, session_id: str, kind: str) -> KindSpec | None:
     return KindSpec.model_validate_json(row["spec_json"]) if row else None
 
 
-def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str, *, member_id: str | None = None) -> None:
-    """같은 kind 가 있으면 DuplicateKind. `validate_*` 검증은 서버 몫 — 여기서는 저장만 한다."""
+def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str, *, member_id: str | None = None,
+                agent_ids: Sequence[str] = ()) -> None:
+    """같은 kind 가 있으면 DuplicateKind. `validate_*` 검증은 서버 몫 — 여기서는 저장만 한다.
+    `agent_ids` 각각에 이 종류의 능력(`repository_id` = 에이전트의 범위 값)을 같은 트랜잭션에서 붙인다 — 워크스페이스
+    에이전트가 아니면 NotFound, 범위 키가 `repository_id` 가 아니거나 범위 값이 없으면 AgentScopeUnknown(전부 되돌림)."""
     with _tx(conn):
         if get_kind(conn, session_id, spec.kind) is not None:
             raise DuplicateKind(spec.kind)
         _insert_kind_row(conn, session_id, spec, now)
         bump_config_revision(conn, session_id, area="kind", action="add", subject=spec.kind, member_id=member_id,
                              now=now)
+        for agent_id in agent_ids:
+            if not is_session_agent(conn, session_id, agent_id):
+                raise NotFound(f"agent {agent_id}")
+            value, reason = agent_repository_scope(_agent_capabilities(conn, agent_id))
+            if spec.scope_key != "repository_id":
+                raise AgentScopeUnknown(agent_id, f"scope_key {spec.scope_key}")
+            if value is None:
+                raise AgentScopeUnknown(agent_id, reason)
+            _add_capability(conn, agent_id, Capability(code=spec.capability_code, scope={"repository_id": value}))
 
 
 def delete_kind(conn: Connection, session_id: str, kind: str, *, now: str, member_id: str | None = None) -> None:

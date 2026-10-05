@@ -21,6 +21,7 @@ from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import (
+    Capability,
     CodeReviewResult,
     KindSpec,
     SuccessorRule,
@@ -32,7 +33,13 @@ from workflow.contracts.v1 import (
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.execution_policy import is_triage_kind, policy_for
 from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS
-from workflow.domain.kinds import get_kind, kind_for_capability
+from workflow.domain.kinds import (
+    SCOPE_MANY_REPOSITORIES,
+    SCOPE_NO_REPOSITORY,
+    agent_repository_scope,
+    get_kind,
+    kind_for_capability,
+)
 from workflow.domain.metrics import (
     ACTORS,
     ALL_GROUP,
@@ -187,6 +194,43 @@ def kind_public(spec: KindSpec) -> dict[str, Any]:
         "instructions": spec.instructions,
         "builtin": spec.builtin,
     }
+
+
+# 에이전트 범위 값(`agent_repository_scope`)을 정할 수 없는 이유 — 종류 폼·팀 화면 공통(phase 23)
+SCOPE_REASON_LABELS = {
+    SCOPE_NO_REPOSITORY: "러너로 연결한 에이전트만 고를 수 있습니다(저장소를 정할 수 없음)",
+    SCOPE_MANY_REPOSITORIES: "저장소가 여러 개라 정할 수 없습니다 — 설정 › 고급에서 능력을 붙이세요",
+}
+
+
+def _agent_capability_list(agent: Row) -> list[Capability]:
+    return [Capability.model_validate(c) for c in json.loads(agent["capabilities_json"])]
+
+
+def kind_agent_choices(conn: Connection, session_id: str) -> list[dict[str, Any]]:
+    """종류 폼의 맡을 에이전트 줄 — `이름 · <저장소 이름> · <소유자>의 Mac`(소유자 없으면 `공용`). 저장소 이름은 범위 값이
+    같은 GitHub 소스(설정값 또는 자동 매칭)의 `owner/name`, 없으면 범위 값 그대로. 범위 값이 없으면 `reason`(고를 수 없음)."""
+    repositories: dict[str, str] = {}
+    for config in repo.list_github_sources(conn, session_id):
+        value = (config.workflow_repository_id
+                 or task_cycle.match_for_source(conn, session_id, config).workflow_repository_id)
+        if value is not None:
+            repositories.setdefault(value, config.repository_full_name)
+    names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, session_id)}
+    choices = []
+    for agent in repo.list_session_agents(conn, session_id):
+        owner_id = repo.agent_owner_id(conn, agent["agent_id"])
+        owner = f"{names[owner_id]}의 Mac" if owner_id in names else "공용"
+        value, reason = agent_repository_scope(_agent_capability_list(agent))
+        parts = [agent["name"], repositories.get(value, value), owner] if value is not None else [agent["name"], owner]
+        choices.append({"agent_id": agent["agent_id"], "line": " · ".join(parts),
+                        "reason": SCOPE_REASON_LABELS[reason] if reason is not None else None})
+    return choices
+
+
+def kind_agent_names(agents: Sequence[Row], capability_code: str) -> list[str]:
+    """종류 카드의 `맡을 수 있는 에이전트` — 이 능력 코드의 능력이 있는 워크스페이스 에이전트 이름들."""
+    return [a["name"] for a in agents if any(c.code == capability_code for c in _agent_capability_list(a))]
 
 
 PLACEMENT_LABELS = {"same_work": "같은 업무의 다음 단계", "new_work": "새 업무로 등록"}
