@@ -1,5 +1,6 @@
-{# 업무 화면 (`/tasks`) — UI_GUIDE "업무 화면", ARCHITECTURE "업무 화면 — phase 16" 화면 배치. 도구 막대(빠른 필터 4개 + 건수 · 묶기 ·
-   보기 · 끝난 업무 · 저장소 선택(phase 17, 저장소가 있을 때) · [업무 등록]) → 목록(한 줄 표, 묶음 머리 행) 또는 보드(6칸). 필터·묶기·보기·행·카드는 모두 서버 이동 링크라
+{# 업무 화면 (`/tasks`) — UI_GUIDE "업무 화면", ARCHITECTURE "업무 화면 — phase 16" 화면 배치·"설정 UX — phase 23" 업무 목록. 도구 막대(빠른 필터 4개 + 건수 ·
+   저장소 선택(저장소가 있을 때, 바꾸면 이동 — JS 없으면 [보기]) · [업무 등록] · "보기 옵션" 접힘(묶기 · 보기 · 끝난 업무)) → 목록(한 줄 표, 묶음 머리 행,
+   끝난 업무는 맨 아래 접힌 묶음) 또는 보드(6칸). 보이는 행이 모두 같은 값인 칸(`hidden_columns`)은 숨긴다. 필터·묶기·보기·행·카드는 모두 서버 이동 링크라
    JS 없이 동작한다(행·카드 = `open=<key>` + 나머지 목록 상태 — 서버가 패널을 함께 렌더, JS 는 조각만 불러와 끼운다).
    외부 문자열(제목·원본 키)은 자동 이스케이프로만 출력한다. #}
 {% extends "base.html" %}
@@ -9,6 +10,11 @@
                 'agent_working': '에이전트가 작업 중인 업무가 없습니다.'} %}
 {% set PRIORITY = {'high': '↑ 높음', 'normal': '– 보통', 'low': '↓ 낮음'} %}
 {% set SOURCE = {'github': 'GitHub', 'jira': 'Jira', 'n8n': 'n8n', 'manual': '직접'} %}
+{% set GROUPS = [('assignee', '담당자'), ('status', '상태'), ('repo', '저장소')] %}
+{% set VIEWS = [('list', '목록'), ('board', '보드')] %}
+{% set CLOSED = [('recent', '최근 14일'), ('all', '전부')] %}
+{# 보기 옵션 summary 끝 — 기본값이 아닌 것만 #}
+{% set VIEW_NOTES = {'status': '상태로 묶음', 'repo': '저장소로 묶음', 'board': '보드', 'all': '끝난 업무 전부'} %}
 {# 키 칸 — `RUN-n` 먼저, 원본 키는 옆에 흐리게 짧게(`acme/sandbox#3` → `sandbox#3`) #}
 {% macro key_of(row) -%}
 <span class="mono">{{ row.work_key }}</span>{% if row.source_key_short %} <span class="muted small mono">{{ row.source_key_short }}</span>{% endif %} <span class="source-badge" data-source="{{ row.source_type }}">{{ SOURCE.get(row.source_type, row.source_type) }}</span>
@@ -27,26 +33,31 @@
   <div class="seg" role="group" aria-label="빠른 필터">
     {% for q, label in FILTERS %}<a class="seg-item" href="{{ list_href(query, q=q) }}" data-q="{{ q }}"{% if query.q == q %} aria-current="true"{% endif %}>{{ label }} <span class="count">{{ counts[q] }}</span></a>{% endfor %}
   </div>
-  <div class="seg" role="group" aria-label="묶기">
-    {% for g, label in [('assignee', '담당자'), ('status', '상태'), ('repo', '저장소')] %}<a class="seg-item" href="{{ list_href(query, group=g) }}" data-group-by="{{ g }}"{% if query.group == g %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
-  </div>
-  <div class="seg" role="group" aria-label="보기">
-    {% for v, label in [('list', '목록'), ('board', '보드')] %}<a class="seg-item" href="{{ list_href(query, view=v) }}" data-view="{{ v }}"{% if query.view == v %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
-  </div>
-  <div class="seg" role="group" aria-label="끝난 업무">
-    {% for c, label in [('recent', '최근 14일'), ('all', '전부')] %}<a class="seg-item" href="{{ list_href(query, closed=c) }}" data-closed="{{ c }}"{% if query.closed == c %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
-  </div>
   {% if repos %}
   <form method="get" action="/tasks" class="inline-form" data-repo-filter>
     {% for name, value in repo_form_state %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-    <select name="repo" aria-label="저장소">
+    <select name="repo" aria-label="저장소" data-auto-submit>
       <option value=""{% if not query.repo %} selected{% endif %}>모든 저장소</option>
       {% for r in repos %}<option value="{{ r }}"{% if query.repo == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
     </select>
-    <button class="btn btn-small btn-secondary" type="submit">보기</button>
+    <noscript><button class="btn btn-small btn-secondary" type="submit">보기</button></noscript>
   </form>
   {% endif %}
   {% if 'create_work' in allowed %}<a class="btn btn-small" href="/tasks/new">업무 등록</a>{% endif %}
+  <details class="view-options">
+    <summary>보기 옵션{% for value in [query.group, query.view, query.closed] if value in VIEW_NOTES %} · {{ VIEW_NOTES[value] }}{% endfor %}</summary>
+    <div class="view-options-body">
+      <div class="seg" role="group" aria-label="묶기">
+        {% for g, label in GROUPS %}<a class="seg-item" href="{{ list_href(query, group=g) }}" data-group-by="{{ g }}"{% if query.group == g %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+      </div>
+      <div class="seg" role="group" aria-label="보기">
+        {% for v, label in VIEWS %}<a class="seg-item" href="{{ list_href(query, view=v) }}" data-view="{{ v }}"{% if query.view == v %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+      </div>
+      <div class="seg" role="group" aria-label="끝난 업무">
+        {% for c, label in CLOSED %}<a class="seg-item" href="{{ list_href(query, closed=c) }}" data-closed="{{ c }}"{% if query.closed == c %} aria-current="true"{% endif %}>{{ label }}</a>{% endfor %}
+      </div>
+    </div>
+  </details>
 </div>
 {% if not has_agents %}
 <p class="toolbar-note">러너를 붙이면 에이전트가 생깁니다 · <a href="/repos">러너 붙이기</a></p>
@@ -72,10 +83,10 @@
     <h3>{{ col.label }} <span class="count">{{ col.rows|length }}</span></h3>
     {% for row in col.rows %}
     <a class="board-card" data-work-key="{{ row.work_key }}" href="{{ list_href(query, open_key=row.key_number) }}">
-      <span class="card-meta">{{ key_of(row) }} <span class="priority" data-priority="{{ row.priority }}">{{ PRIORITY.get(row.priority, row.priority) }}</span></span>
+      <span class="card-meta">{{ key_of(row) }}{% if 'priority' not in hidden_columns %} <span class="priority" data-priority="{{ row.priority }}">{{ PRIORITY.get(row.priority, row.priority) }}</span>{% endif %}</span>
       <span class="card-title">{{ row.title }}</span>
       <span class="small">{{ assignee_of(row) }}</span>
-      {% if row.next_action %}<span class="small next-action">{{ row.next_action }}</span>{% endif %}
+      {% set action = shown_next_action(row) %}{% if action and action != '—' %}<span class="small next-action">{{ action }}</span>{% endif %}
       {{ next_step_of(row) }}
     </a>
     {% endfor %}
@@ -86,12 +97,13 @@
 <div class="table-wrap work-table-wrap">
 <table class="work-table">
   <thead><tr>
-    <th scope="col">키</th><th scope="col">제목</th><th scope="col">담당</th><th scope="col">우선순위</th>
-    <th scope="col">종류</th><th scope="col">상태</th><th scope="col">다음 할 일</th><th scope="col">업데이트</th>
+    <th scope="col">키</th><th scope="col">제목</th><th scope="col">담당</th>
+    {%- if 'priority' not in hidden_columns %}<th scope="col">우선순위</th>{% endif %}
+    {%- if 'kind' not in hidden_columns %}<th scope="col">종류</th>{% endif %}<th scope="col">상태</th><th scope="col">다음 할 일</th><th scope="col">업데이트</th>
   </tr></thead>
   {% for group in groups %}
-  <tbody data-group-body="{{ group.key }}">
-    <tr class="group-head" data-group="{{ group.key }}"><th scope="colgroup" colspan="8">
+  <tbody data-group-body="{{ group.key }}"{% if group.key == 'closed' %} data-default-folded{% endif %}>
+    <tr class="group-head" data-group="{{ group.key }}"><th scope="colgroup" colspan="{{ 8 - hidden_columns|length }}">
       <button type="button" class="group-toggle" data-group-toggle="{{ group.key }}" aria-expanded="true" aria-label="{{ group.label }} 접기">▾</button>
       <span class="group-label">{{ group.label }}</span> <span class="count">{{ group.rows|length }}</span>
     </th></tr>
@@ -100,10 +112,10 @@
       <td class="nowrap">{{ key_of(row) }}</td>
       <td><a class="row-link" href="{{ list_href(query, open_key=row.key_number) }}">{{ row.title }}</a></td>
       <td class="nowrap">{{ assignee_of(row) }}</td>
-      <td class="nowrap" data-priority="{{ row.priority }}">{{ PRIORITY.get(row.priority, row.priority) }}</td>
-      <td class="nowrap">{{ row.kind_label }}</td>
+      {% if 'priority' not in hidden_columns %}<td class="nowrap" data-priority="{{ row.priority }}">{{ PRIORITY.get(row.priority, row.priority) }}</td>{% endif %}
+      {% if 'kind' not in hidden_columns %}<td class="nowrap">{{ row.kind_label }}</td>{% endif %}
       <td class="nowrap">{{ st.badge(row.status) }}</td>
-      <td class="next-action">{{ row.next_action }}{% if row.next_step %} {{ next_step_of(row) }}{% endif %}</td>
+      <td class="next-action">{{ shown_next_action(row) }}{% if row.next_step %} {{ next_step_of(row) }}{% endif %}</td>
       <td class="nowrap small">{{ row.updated_at|ago(now) }}</td>
     </tr>
     {% endfor %}

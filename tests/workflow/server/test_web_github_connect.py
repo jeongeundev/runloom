@@ -691,8 +691,10 @@ def test_list_groups_undelegated_tasks_as_waiting_for_an_instruction(cycle_op, c
     home = cycle_op.get("/tasks").text
     main = home[home.index('class="main'):]
     card = re.search(r'<tr class="work-row" data-work-key="RUN-1".*?</tr>', main, re.S).group(0)  # 목록 한 줄 = 업무
-    # 업무 상태는 `새로 들어옴 · 담당 없음`(담당 없음이 지시 전보다 먼저 — domain/work_status) — "다음 할 일" 칸이 이유
-    assert 'data-status="새로 들어옴"' in card and "담당 없음" in card and "다른 사유" not in card
+    # 업무 상태는 `새로 들어옴 · 담당 없음`(담당 없음이 지시 전보다 먼저 — domain/work_status). 담당 없음 행의 "다음 할 일"
+    # `담당 없음` 은 담당 칸과 겹쳐 `—` 로 보인다(phase 23 step 8)
+    assert 'data-status="새로 들어옴"' in card and '<td class="next-action">—' in card and "다른 사유" not in card
+    assert '<span class="muted">없음</span>' in card
     detail = cycle_op.get(f"/tasks/{waiting}").text
     assert delegate_form(waiting) in detail  # 지시 전은 단계 상세의 맡기기 버튼으로(phase 16 — 패널은 step 5)
     assert "다른 사유" in detail  # 다른 사유는 상세에서

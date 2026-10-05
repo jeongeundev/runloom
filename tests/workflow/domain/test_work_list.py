@@ -6,9 +6,13 @@ import pytest
 
 from workflow.domain.work_list import (
     BOARD_COLUMNS,
+    CLOSED_GROUP_KEY,
+    CLOSED_GROUP_LABEL,
     CLOSED_RECENT_DAYS,
     CLOSED_SCOPES,
     GROUP_BYS,
+    HIDEABLE_COLUMNS,
+    NO_NEXT_ACTION,
     PRIORITY_ORDER,
     QUICK_FILTERS,
     VIEWS,
@@ -18,8 +22,10 @@ from workflow.domain.work_list import (
     filter_counts,
     filter_rows,
     group_rows,
+    hidden_columns,
     next_action,
     parse_list_query,
+    shown_next_action,
 )
 from workflow.domain.work_status import WORK_STATUSES
 
@@ -192,10 +198,11 @@ def test_group_by_status_follows_work_statuses_order():
     rows = [row(1, status="완료", closed_at="x"), row(2, status="새로 들어옴"), row(3, status="내 차례"),
             row(4, status="새로 들어옴")]
     groups = group_rows(rows, "status", member_id=ME)
+    # 끝난 업무는 `완료`·`종료` 묶음 대신 맨 아래 "끝난 업무" 묶음 (phase 23 step 8)
     assert [(g.key, g.label) for g in groups] == [("status:새로 들어옴", "새로 들어옴"), ("status:내 차례", "내 차례"),
-                                                  ("status:완료", "완료")]
+                                                  (CLOSED_GROUP_KEY, CLOSED_GROUP_LABEL)]
     assert [keys(g.rows) for g in groups] == [[4, 2], [3], [1]]
-    assert [g.label for g in groups] == [s for s in WORK_STATUSES if s in {r.status for r in rows}]
+    assert [g.label for g in groups[:-1]] == [s for s in WORK_STATUSES if s in {r.status for r in rows[1:]}]
 
 
 def test_group_by_repo_orders_by_name_ignoring_case_and_puts_no_repo_last():
@@ -215,6 +222,86 @@ def test_group_by_repo_orders_by_name_ignoring_case_and_puts_no_repo_last():
 def test_unknown_group_reads_as_assignee():
     rows = [row(1), row(2, assignee=("member", ME), name="가람")]
     assert group_rows(rows, "nope", member_id=ME) == group_rows(rows, "assignee", member_id=ME)
+
+
+# --- 끝난 업무 묶음 (phase 23 step 8) -------------------------------------------------------
+
+
+def test_closed_group_constants():
+    assert (CLOSED_GROUP_KEY, CLOSED_GROUP_LABEL) == ("closed", "끝난 업무")
+
+
+def _mixed_rows() -> list[WorkRow]:
+    return [
+        row(1, status="완료", closed_at="2026-09-28T00:00:00Z", repository="acme/web"),
+        row(2, status="새로 들어옴", repository="acme/web"),
+        row(3, status="종료", assignee=("member", ME), name="가람", closed_at="2026-09-29T00:00:00Z"),
+        row(4, status="대기", assignee=("agent", "agent-a"), name="클로드", repository="zeta/app"),
+        row(5, status="완료", assignee=("agent", "agent-a"), name="클로드", closed_at="2026-09-29T00:00:00Z",
+            priority="high"),
+        row(6, status="새로 들어옴"),
+    ]
+
+
+@pytest.mark.parametrize("by", GROUP_BYS)
+def test_closed_work_goes_to_one_closed_group_at_the_bottom_for_every_grouping(by):
+    groups = group_rows(_mixed_rows(), by, member_id=ME)
+    assert groups[-1].key == CLOSED_GROUP_KEY and groups[-1].label == CLOSED_GROUP_LABEL
+    # 묶음 안 순서 = `closed_at` 최근순 → 키 번호 내림차순 (우선순위 무관)
+    assert keys(groups[-1].rows) == [5, 3, 1]
+    for group in groups[:-1]:
+        assert all(r.status not in ("완료", "종료") for r in group.rows)
+    assert sum(len(g.rows) for g in groups) == len(_mixed_rows())
+
+
+def test_no_closed_group_without_closed_rows():
+    assert all(g.key != CLOSED_GROUP_KEY for g in group_rows([row(1), row(2)], "status", member_id=ME))
+
+
+def test_assignee_grouping_puts_closed_work_out_of_member_and_agent_groups():
+    groups = group_rows(_mixed_rows(), "assignee", member_id=ME)
+    assert [(g.key, keys(g.rows)) for g in groups] == [
+        ("none", [6, 2]), ("agent:agent-a", [4]), (CLOSED_GROUP_KEY, [5, 3, 1])]
+
+
+@pytest.mark.parametrize("by", GROUP_BYS)
+@pytest.mark.parametrize("repo", [None, "acme/web"])
+def test_group_head_counts_match_quick_filter_counts(by, repo):
+    rows = _mixed_rows()
+    counts = filter_counts(rows, member_id=ME, repo=repo)
+    shown = filter_rows(rows, "all", member_id=ME, repo=repo)
+    groups = {g.key: len(g.rows) for g in group_rows(shown, by, member_id=ME)}
+    assert sum(groups.values()) == counts["all"]
+    closed = sum(1 for r in shown if r.status in ("완료", "종료"))
+    assert groups.get(CLOSED_GROUP_KEY, 0) == closed
+    if by == "assignee":
+        assert groups.get("none", 0) == counts["unassigned"]
+    # 빠른 필터 `unassigned` 로 거른 목록의 묶음 머리 건수도 그 필터 건수와 같다
+    unassigned = filter_rows(rows, "unassigned", member_id=ME, repo=repo)
+    assert sum(len(g.rows) for g in group_rows(unassigned, by, member_id=ME)) == counts["unassigned"]
+
+
+# --- 같은 값 칸 숨김 (phase 23 step 8) -------------------------------------------------------
+
+
+def test_hideable_columns():
+    assert HIDEABLE_COLUMNS == ("priority", "kind")
+
+
+def test_hidden_columns_hide_columns_where_every_row_is_the_same():
+    assert hidden_columns([row(1), row(2)]) == frozenset({"priority", "kind"})
+    assert hidden_columns([row(1)]) == frozenset({"priority", "kind"})
+
+
+def test_hidden_columns_keep_columns_that_differ():
+    assert hidden_columns([row(1), row(2, priority="high")]) == frozenset({"kind"})
+    other_kind = replace(row(2), kind="code_review", kind_label="커밋 검토")
+    assert hidden_columns([row(1), other_kind]) == frozenset({"priority"})
+    assert hidden_columns([row(1, priority="low"), replace(row(2), kind="code_review")]) == frozenset()
+
+
+def test_hidden_columns_hide_nothing_without_rows():
+    assert hidden_columns([]) == frozenset()
 
 
 # --- 보드 ---------------------------------------------------------------------------------
@@ -254,6 +341,20 @@ def test_next_action_takes_the_first_match():
 def test_next_action_cuts_the_question_to_80_characters():
     assert next_action(request_question="가" * 100, direct_member_name=None, pr_label=None,
                        status_reason="") == "가" * 80
+
+
+def test_shown_next_action_blanks_text_that_repeats_the_status():
+    assert NO_NEXT_ACTION == "—"
+    assert shown_next_action(replace(row(1, status="대기"), next_action="대기")) == NO_NEXT_ACTION
+    assert shown_next_action(replace(row(1, status="새로 들어옴"), next_action="담당 없음")) == NO_NEXT_ACTION
+
+
+def test_shown_next_action_keeps_other_text():
+    assert shown_next_action(replace(row(1, status="대기"), next_action="PR #12")) == "PR #12"
+    # 담당이 있는데 `담당 없음` 이 남은 경우는 숨기지 않는다 — 담당 없음 행에서만
+    assigned = replace(row(1, assignee=("member", ME), name="가람"), next_action="담당 없음")
+    assert shown_next_action(assigned) == "담당 없음"
+    assert shown_next_action(replace(row(1, status="내 차례"), next_action="어느 쪽으로 고칠까요?")) == "어느 쪽으로 고칠까요?"
 
 
 def test_work_row_is_frozen():

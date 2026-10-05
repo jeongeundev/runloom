@@ -99,7 +99,7 @@ from workflow.domain.task_sources import Issue
 from workflow.domain.triage import AUTOSTART_MIN_HANDLED, parse_threshold
 from workflow.domain.triage_criteria import CRITERIA_BODY_MAX
 from workflow.domain.work_keys import work_path
-from workflow.domain.work_list import ListQuery, parse_list_query
+from workflow.domain.work_list import ListQuery, parse_list_query, shown_next_action
 from workflow.server import github_connect, jira_connect, metrics_api, stage_runs, triage_runs, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
@@ -594,7 +594,8 @@ def home(
     panel = _panel(request, conn, member, work, query, allowed=base["allowed"], now=now) if work else None
     return _render("home.html", **base,
                    **views.work_list_context(conn, session_id, member_id=member.member_id, query=query, now=now),
-                   list_href=views.list_href, has_agents=bool(_session_agents(conn, session_id)), panel=panel,
+                   list_href=views.list_href, shown_next_action=shown_next_action,
+                   has_agents=bool(_session_agents(conn, session_id)), panel=panel,
                    open_key=format_work_key(query.open_key) if query.open_key is not None else None)
 
 

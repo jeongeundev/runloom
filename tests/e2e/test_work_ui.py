@@ -344,7 +344,9 @@ def test_06_merging_the_pr_completes_the_work(world):
     board = page(world, "/tasks", view="board")
     assert board_column(board, "RUN-1") == "done"
     listed = groups(page(world, "/tasks", group="status"))
-    assert listed["status:완료"][2] == ["RUN-1"] and listed["status:새로 들어옴"][2] == ["RUN-2"]
+    # 끝난 업무는 상태 묶기에서도 `완료` 묶음 대신 맨 아래 "끝난 업무" 묶음 (phase 23 step 8)
+    assert listed["closed"] == ("끝난 업무", 1, ["RUN-1"]) and listed["status:새로 들어옴"][2] == ["RUN-2"]
+    assert list(listed)[-1] == "closed" and "status:완료" not in listed
 
 
 def test_07_direct_work_gives_a_branch_name_and_moves_the_board(world):
@@ -401,7 +403,7 @@ def test_08_a_pr_on_the_branch_is_detected_then_its_merge_completes_the_work(wor
     assert [d.get("reason") for t, d in work_events(world, 2) if t == "direct_stopped"] == ["closed"]
     assert q(world, "SELECT state FROM work_pull_requests")[0][0] == "merged"
 
-    # 끝난 뒤 — 빠른 필터 "담당 없음" 은 비고, 둘 다 완료 묶음
-    assert groups(page(world, "/tasks", group="status"))["status:완료"][1] == 2
+    # 끝난 뒤 — 빠른 필터 "담당 없음" 은 비고, 둘 다 끝난 업무 묶음
+    assert groups(page(world, "/tasks", group="status"))["closed"][1] == 2
     assert groups(page(world, "/tasks", q="unassigned")) == {}
     assert len(received(world, "pr_opened")) == 1  # 감지 PR 은 알리지 않는다

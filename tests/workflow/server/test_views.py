@@ -13,7 +13,7 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain.kinds import get_kind
-from workflow.domain.work_list import parse_list_query
+from workflow.domain.work_list import hidden_columns, parse_list_query
 from workflow.domain.work_status import WorkStatus
 from workflow.server import views
 
@@ -997,7 +997,9 @@ def test_work_list_context_counts_filters_over_the_closed_scope(seeded):
     ctx = _list_context(conn, admin, closed="all", group="status")
     assert ctx["counts"] == {"all": 3, "my_turn": 1, "unassigned": 2, "agent_working": 0}
     assert [r.work_key for r in ctx["rows"]] == ["RUN-3", "RUN-2", "RUN-1"]
-    assert [g.key for g in ctx["groups"]] == ["status:새로 들어옴", "status:내 차례", "status:종료"]
+    # 끝난 업무는 `종료` 묶음 대신 맨 아래 "끝난 업무" 묶음 (phase 23 step 8)
+    assert [g.key for g in ctx["groups"]] == ["status:새로 들어옴", "status:내 차례", "closed"]
+    assert ctx["hidden_columns"] == hidden_columns(ctx["rows"])
     assert _list_context(conn, "mem-someone-else", q="my_turn")["counts"]["my_turn"] == 0
 
 

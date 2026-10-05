@@ -298,6 +298,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .seg-item:hover { background: var(--bg-bubble); text-decoration: none; }
 .seg-item[aria-current="true"] { background: var(--bg-inflight); color: var(--accent); font-weight: 600; }
 .seg-item .count, .group-head .count, .board-col h3 .count { color: var(--text-muted); font-weight: 400; }
+.view-options { position: relative; font-size: 12px; }
+.view-options summary { cursor: pointer; color: var(--text-body); padding: 3px 0; }
+.view-options-body { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; }
 .toolbar-note { font-size: 13px; color: var(--text-muted); margin: -4px 0 12px; }
 .work-table-wrap { max-width: 100%; }
 .work-table { min-width: 900px; }

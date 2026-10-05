@@ -81,6 +81,7 @@ from workflow.domain.work_list import (
     filter_counts,
     filter_rows,
     group_rows,
+    hidden_columns,
     parse_list_query,
 )
 from workflow.domain.work_status import STAGE_FAILED, TERMINAL_WORK_STATUSES
@@ -804,7 +805,7 @@ def _responses_public(conn: Connection, task: Row) -> list[dict[str, Any]]:
 
 def work_list_context(conn: Connection, session_id: str, *, member_id: str, query: ListQuery, now: str) -> dict:
     """업무 화면 목록 — 끝난 업무 범위(`closed=recent` 는 14일) → 행 → 저장소 필터 → 빠른 필터 → 묶기·보드. 건수는
-    저장소 필터 뒤·빠른 필터 전 행 기준.
+    저장소 필터 뒤·빠른 필터 전 행 기준. `hidden_columns` = 보이는 행이 모두 같은 값인 칸(phase 23).
     `open_missing` = 키 형식의 `open` 이 이 워크스페이스에 없음."""
     closed_since = None
     if query.closed == "recent":
@@ -816,6 +817,7 @@ def work_list_context(conn: Connection, session_id: str, *, member_id: str, quer
         "groups": group_rows(rows, query.group, member_id=member_id),
         "columns": board_columns(rows),
         "counts": filter_counts(all_rows, member_id=member_id, repo=query.repo),
+        "hidden_columns": hidden_columns(rows),
         "query": query,
         # 도구 막대 저장소 선택 — 목록이 비면 숨긴다. 숨은 입력은 저장소를 뺀 나머지 목록 상태
         "repos": repo.list_work_repositories(conn, session_id),
