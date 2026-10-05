@@ -1,6 +1,7 @@
 {# 설정 화면 "판단" 탭 — phase 19 step 8, ADR-0025, ARCHITECTURE "판단 — phase 19" 화면. `manage_connections` 만 연다.
    판단 기준(현재 버전·편집·버전 이력·이전 본문 보기)과 종류별 자동 시작(자격 n/20·켬·기준값·기준값 미리보기(phase 20 step 8)·마지막 변경).
-   기준 본문은 사용자 입력이다 — 자동 이스케이프로만 그린다(`|safe` 금지). 판단 에이전트는 저장소 카드(가져올 곳 탭)에서 고른다. #}
+   기준 본문은 사용자 입력이다 — 자동 이스케이프로만 그린다(`|safe` 금지). 판단 에이전트는 저장소 화면의 저장소 카드에서 고른다(맨 위 안내 한 줄). 자동 시작 행의 종류 식별자는 "자세히"에만(phase 23 step 9). #}
+<p class="muted" style="margin-bottom:12px">판단 에이전트는 저장소 화면의 각 저장소 카드에서 고릅니다. <a href="/repos">저장소 화면으로</a></p>
 <section class="card" data-triage-criteria>
   <div class="card-title">판단 기준 v{{ criteria.version }}</div>
   <p class="small">{{ criteria.by or '처음 기준' }} · {{ criteria.created_at|kst }} — 판단 에이전트가 받는 요청문의 기준 절입니다. 저장하면 버전이 오르고, 다음 판단부터 씁니다.</p>
@@ -12,10 +13,12 @@
     <div class="actions"><button class="btn" type="submit">저장</button></div>
   </form>
   <h3>버전 이력</h3>
+  <div class="table-wrap">
   <table>
     <tr><th>버전</th><th>누가</th><th>언제</th><th></th></tr>
     {% for h in criteria_history %}<tr><td>v{{ h.version }}</td><td>{{ h.by or '처음 기준' }}</td><td>{{ h.created_at|kst }}</td><td><a href="/settings?tab=triage&amp;version={{ h.version }}">보기</a></td></tr>{% endfor %}
   </table>
+  </div>
   {% if criteria_view %}
   <h3>v{{ criteria_view.version }} 본문 (읽기 전용)</h3>
   <pre class="mono" data-criteria-version="{{ criteria_view.version }}">{{ criteria_view.body }}</pre>
@@ -35,6 +38,7 @@
     <button class="btn btn-small" type="submit">저장</button>
     <span class="small" data-autostart-preview>{{ a.preview }} <a href="/monitor?tab=triage">판단 품질 보기</a></span>
     <span class="small">{% if a.last %}마지막 변경 v{{ a.last.version }} · {{ a.last.by or '—' }} · {{ a.last.created_at|kst }}{% else %}꺼짐 (기본){% endif %}</span>
+    <details class="detail"><summary>자세히</summary>{{ a.kind }}</details>
   </form>
   {% else %}
   <p class="muted">자동 시작을 둘 수 있는 업무 종류가 없습니다.</p>

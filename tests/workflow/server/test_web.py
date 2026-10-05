@@ -1130,7 +1130,7 @@ def test_kinds_page_shows_builtin_kinds_and_rule_without_delete_button(web):
     assert text.count(">내장<") == 3  # 내장 전부 — bug_fix·code_review (ADR-0019)·triage (ADR-0025)
     assert 'action="/kinds/bug_fix/delete"' not in text and 'action="/kinds/code_review/delete"' not in text
     # 내장 규칙 한 줄 텍스트 — 그래프·화살표 그림 없음, 삭제 가능
-    assert "버그 수정 --[ready_for_review]--> 커밋 검토" in text
+    assert "버그 수정 — 결과 검토 가능 → 커밋 검토" in text
     assert text.count('action="/rules/') == 1 and "/delete" in text  # 내장 규칙 전부 (bug_fix → code_review 하나)
     assert "규칙이 없으면 그 결과 뒤 후속은 사람이 시작합니다" in text
     assert 'action="/kinds"' in text and 'action="/rules"' in text
@@ -1412,7 +1412,7 @@ def test_register_rule_appears_as_one_line(web, conn, settings):
     register_kind(web)
     register_rule(web)
     text = kinds_page(web)
-    assert "버그 수정 --[ready_for_review]--> 검토" in text
+    assert "버그 수정 — 결과 검토 가능 → 검토" in text
     assert text.count('action="/rules/') == 2
     rules = repo.list_rules(conn, session_id_of(web, settings))
     assert [(r.from_kind, r.to_kind) for _, r in rules] == [("bug_fix", "code_review"), ("bug_fix", "review")]
@@ -1511,7 +1511,7 @@ def test_delete_rule_then_404(web, conn, settings):
     response = web.post(f"/rules/{rule_id}/delete", follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == "/settings?tab=kinds"
     assert repo.list_rules(conn, session_id) == []
-    assert "버그 수정 --[ready_for_review]--> 커밋 검토" not in kinds_page(web)
+    assert "버그 수정 — 결과 검토 가능 → 커밋 검토" not in kinds_page(web)
     assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
     assert web.post("/rules/rule-none/delete", follow_redirects=False).status_code == 404
 

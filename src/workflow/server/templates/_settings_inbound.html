@@ -1,7 +1,7 @@
 {# 설정 화면 "n8n 입구" 탭(옛 `/sources`, `manage_connections` 일 때만) — ADR-0010 결정 2. 워크스페이스(세션)가 n8n 같은 외부 도구용 입구 토큰을 발급·취소한다.
    발급 원문은 POST 응답 화면(`issued`)에 한 번만 보이고 — 303 없음, 쿠키·쿼리에 넣지 않는다 — 서버에는 sha256 만 남는다.
    운영자 화면(/operator)에는 두지 않는다. 입구 주소의 경로는 inbound_api 의 것 그대로.
-   요청 예시는 수정 항목 하나. #}
+   요청 예시는 수정 항목 하나. 토큰 ID 는 줄·발급 상자의 "자세히" 안에만(phase 23 step 9). #}
 <p class="muted" style="margin-bottom:12px">n8n 같은 외부 도구가 이 워크스페이스에 업무를 넣는 곳입니다. 토큰을 발급해 HTTP 요청의 <code>Authorization: Bearer</code> 에 넣습니다. 종류·순서·담당·판정은 등록된 종류·후속 규칙으로 여기서 정합니다.</p>
 
 <h2>입구 주소</h2>
@@ -14,18 +14,18 @@
 <div class="card">
   {% if issued %}
   <div class="alert" style="background:var(--bg-done);color:var(--state-done)">
-    발급된 토큰: <code id="issued-token">{{ issued.token }}</code> · <span class="mono">{{ issued.token_id }}</span><br>
+    발급된 토큰: <code id="issued-token">{{ issued.token }}</code><br>
     이 값은 다시 볼 수 없습니다. 지금 복사해 n8n 의 자격 증명(Header Auth)에 넣으세요. 서버에는 해시만 남습니다.
+    <details class="detail"><summary>자세히</summary>{{ issued.token_id }}</details>
   </div>
   {% endif %}
   {% if tokens %}
   <div class="table-wrap">
   <table>
-    <tr><th>ID</th><th>라벨</th><th>발급</th><th>마지막 사용</th><th>상태</th></tr>
+    <tr><th>라벨</th><th>발급</th><th>마지막 사용</th><th>상태</th></tr>
     {% for t in tokens %}
     <tr data-token-id="{{ t.token_id }}">
-      <td class="mono">{{ t.token_id }}</td>
-      <td>{{ t.label or '—' }}</td>
+      <td>{{ t.label or '—' }}<details class="detail"><summary>자세히</summary>{{ t.token_id }}</details></td>
       <td>{{ t.created_at|kst }}</td>
       <td>{{ t.last_used_at|kst if t.last_used_at else '없음' }}</td>
       <td>{% if t.revoked_at %}취소됨 {{ t.revoked_at|kst }}{% else %}활성

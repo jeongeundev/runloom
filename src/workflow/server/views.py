@@ -86,7 +86,7 @@ from workflow.domain.work_list import (
 )
 from workflow.domain.work_status import STAGE_FAILED, TERMINAL_WORK_STATUSES
 from workflow.server import github_clients, human_api, task_cycle
-from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst
+from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
 
 # 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7·11절)
@@ -267,8 +267,8 @@ PLACEMENT_LABELS = {"same_work": "같은 업무의 다음 단계", "new_work": "
 
 
 def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) -> dict[str, Any]:
-    """규칙 한 줄 `{from label} --[outcome, …]--> {to label}` (ADR-0009 — 그래프를 그리지 않는다).
-    등록부에 없는 종류는 코드 그대로 보인다."""
+    """규칙 한 줄 `{from label} — 결과 {outcome 라벨, …} → {to label}` (ADR-0009 — 그래프를 그리지 않는다, phase 23 step 9).
+    등록부에 없는 종류는 코드 그대로, 라벨 없는 결과값도 코드 그대로 보인다."""
 
     def label(kind: str) -> str:
         spec = get_kind(kinds, kind)
@@ -278,7 +278,7 @@ def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) ->
         "rule_id": rule_id,
         "from_kind": rule.from_kind,
         "to_kind": rule.to_kind,
-        "text": f"{label(rule.from_kind)} --[{', '.join(rule.on_outcomes)}]--> {label(rule.to_kind)}",
+        "text": f"{label(rule.from_kind)} — 결과 {', '.join(map(outcome_label, rule.on_outcomes))} → {label(rule.to_kind)}",
         "handoff_kinds": list(rule.handoff_kinds),
         "handoff_labels": [kind_label(k) for k in rule.handoff_kinds],
         "placement": rule.placement,

@@ -1,6 +1,7 @@
 {# 설정 화면 "업무 종류·규칙" 탭(옛 /kinds, phase 16 step 6). 업무 종류·후속 규칙 — 워크스페이스(세션)가 등록한다 (ADR-0009, ARCHITECTURE "화면"). 규칙은 한 줄 텍스트이며
    그래프·화살표 그림을 그리지 않는다. 사용자 정의 종류의 내는 산출물은 항상 결과 봉투(generic_result)라 폼에 없다.
-   등록·삭제 폼은 `manage_rules` 일 때만(ADR-0021). 인라인 스크립트 하나: 선행 종류를 바꾸면 결과값 체크박스를 그 종류의 것(option 의 data-outcomes)으로 바꾼다. #}
+   등록·삭제 폼은 `manage_rules` 일 때만(ADR-0021). 인라인 스크립트 하나: 선행 종류를 바꾸면 결과값 체크박스를 그 종류의 것(option 의 data-outcomes·data-outcome-labels)으로 바꾼다.
+   규칙 글은 화면 이름·결과값 라벨, 규칙 ID·종류 식별자는 "자세히"·속성에만(phase 23 step 9). #}
 <p class="muted" style="margin-bottom:12px">업무 종류는 받는 산출물·내는 산출물·결과값의 봉투이고, 후속 규칙은 "이 결과값 다음에 무엇을 넘겨 어떤 종류를 시작하는가"를 한 줄로 정합니다.</p>
 
 <h2 style="margin-top:0">업무 종류</h2>
@@ -99,7 +100,8 @@
     <td class="rule-text">{{ r.text }}</td>
     <td>{% for label in r.handoff_labels %}<span class="chip">{{ label }}</span> {% endfor %}</td>
     <td>{{ r.placement_label }}</td>
-    <td>{% if 'manage_rules' in allowed %}<form method="post" action="/rules/{{ r.rule_id }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form>{% endif %}</td>
+    <td>{% if 'manage_rules' in allowed %}<form method="post" action="/rules/{{ r.rule_id }}/delete" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">삭제</button></form>{% endif %}
+      <details class="detail"><summary>자세히</summary>{{ r.rule_id }} · {{ r.from_kind }} → {{ r.to_kind }}</details></td>
   </tr>
   {% endfor %}
 </table>
@@ -115,20 +117,20 @@
     <div class="field">
       <label for="from_kind">선행 종류</label>
       <select id="from_kind" name="from_kind">
-        {% for k in kinds %}<option value="{{ k.kind }}" data-outcomes="{{ k.outcomes|join(' ') }}">{{ k.label }} ({{ k.kind }})</option>{% endfor %}
+        {% for k in kinds %}<option value="{{ k.kind }}" data-outcomes="{{ k.outcomes|join(' ') }}" data-outcome-labels="{{ k.outcomes|map('outcome_label')|join('|') }}">{{ k.label }}</option>{% endfor %}
       </select>
     </div>
     <div class="field">
       <label for="to_kind">후속 종류</label>
       <select id="to_kind" name="to_kind">
-        {% for k in kinds %}<option value="{{ k.kind }}"{% if loop.index == 2 %} selected{% endif %}>{{ k.label }} ({{ k.kind }})</option>{% endfor %}
+        {% for k in kinds %}<option value="{{ k.kind }}"{% if loop.index == 2 %} selected{% endif %}>{{ k.label }}</option>{% endfor %}
       </select>
     </div>
   </div>
   <div class="field">
     <label>선행 결과값 (on_outcomes)</label>
     <div class="check-list" id="on-outcomes">
-      {% for o in kinds[0].outcomes %}<label><input type="checkbox" name="on_outcomes" value="{{ o }}"> <span class="mono">{{ o }}</span></label>{% endfor %}
+      {% for o in kinds[0].outcomes %}<label><input type="checkbox" name="on_outcomes" value="{{ o }}"> {{ o|outcome_label }}{% if o|outcome_label != o %} <span class="muted small mono">{{ o }}</span>{% endif %}</label>{% endfor %}
     </div>
     <div class="help">선행 결과의 결과값이 이 중 하나면 후속을 시작합니다. 선행 종류를 바꾸면 목록이 바뀝니다.</div>
   </div>
@@ -136,7 +138,7 @@
     <label>넘기는 산출물 (handoff_kinds)</label>
     <div class="check-list">
       {% for choice in input_kind_choices %}
-      <label><input type="checkbox" name="handoff_kinds" value="{{ choice }}"> {{ choice|kind_label }}{% if choice|kind_label != choice %} <span class="mono">{{ choice }}</span>{% endif %}</label>
+      <label><input type="checkbox" name="handoff_kinds" value="{{ choice }}"> {{ choice|kind_label }}{% if choice|kind_label != choice %} <span class="muted small mono">{{ choice }}</span>{% endif %}</label>
       {% endfor %}
     </div>
     <div class="help">선행 실행의 산출물 중 후속에 넘길 것. 후속 종류의 받는 산출물을 모두 포함해야 합니다.</div>
@@ -159,14 +161,19 @@
   select.addEventListener('change', function () {
     var option = select.options[select.selectedIndex];
     var outcomes = option ? (option.getAttribute('data-outcomes') || '').split(' ').filter(Boolean) : [];
+    var labels = option ? (option.getAttribute('data-outcome-labels') || '').split('|') : [];
     box.textContent = '';
-    outcomes.forEach(function (outcome) {
+    outcomes.forEach(function (outcome, i) {
+      var text = labels[i] || outcome;
       var label = document.createElement('label');
       var input = document.createElement('input');
       input.type = 'checkbox'; input.name = 'on_outcomes'; input.value = outcome;
-      var code = document.createElement('span');
-      code.className = 'mono'; code.textContent = outcome;
-      label.appendChild(input); label.appendChild(document.createTextNode(' ')); label.appendChild(code);
+      label.appendChild(input); label.appendChild(document.createTextNode(' ' + text));
+      if (text !== outcome) {
+        var code = document.createElement('span');
+        code.className = 'muted small mono'; code.textContent = outcome;
+        label.appendChild(document.createTextNode(' ')); label.appendChild(code);
+      }
       box.appendChild(label);
     });
   });

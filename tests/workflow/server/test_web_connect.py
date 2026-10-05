@@ -366,3 +366,90 @@ def test_agent_register_redirects_to_advanced_tab(admin):
     assert (response.status_code, response.headers["location"]) == (303, "/settings?tab=advanced")
     deleted = post(admin, "/operator/agents/agent-manual/delete")
     assert (deleted.status_code, deleted.headers["location"]) == (303, "/settings?tab=advanced")
+
+
+# --- 설정 화면 본문 정리 (phase 23 step 9, ARCHITECTURE "설정 UX — phase 23" 설정 화면·노출 단정) ------------------
+
+INTERNAL_ID = re.compile(r"agt-[0-9a-f]|conn-[0-9a-f]|inv-[0-9a-f]|code\.(fix|review|triage)")
+
+
+def visible_text(html: str) -> str:
+    html = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)
+    html = re.sub(r'<details class="detail"[^>]*>.*?</details>', " ", html, flags=re.S)
+    return re.sub(r"<[^>]+>", " ", html)
+
+
+def details_of(html: str) -> str:
+    return " ".join(re.findall(r'<details class="detail"[^>]*>(.*?)</details>', html, flags=re.S))
+
+
+def test_rule_table_reads_with_names_and_outcome_labels(admin, conn):
+    body = body_of(admin.get("/settings?tab=kinds").text)
+    assert "버그 수정 — 결과 검토 가능 → 커밋 검토" in body
+    assert "--[" not in body and "]-->" not in body
+    ((rule_id, _),) = repo.list_rules(conn, SESSION)
+    assert rule_id in details_of(body) and rule_id not in visible_text(body)
+    assert f'action="/rules/{rule_id}/delete"' in body  # 삭제 동작 그대로
+
+
+def test_rule_form_shows_names_and_labels_first(admin):
+    body = body_of(admin.get("/settings?tab=kinds").text)
+    form = body[body.index('action="/rules"'):]
+    form = form[:form.index("</form>")]
+    assert "(bug_fix)" not in form and "(code_review)" not in form
+    assert re.search(r'<option value="bug_fix" data-outcomes="[^"]*" data-outcome-labels="[^"]*">버그 수정</option>', form)
+    # 선행 결과값: 라벨 먼저, 코드는 흐리게
+    assert re.search(r'value="ready_for_review"> 검토 가능 <span class="muted small mono">ready_for_review</span>', form)
+    # 넘기는 산출물: 라벨 먼저, 내부 이름은 흐리게
+    assert re.search(r'value="code_change_result"> 수정 결과 <span class="muted small mono">code_change_result</span>',
+                     form)
+    assert re.search(r'value="diff"> diff</label>', form)  # 라벨과 이름이 같으면 한 번만
+
+
+def test_triage_tab_points_to_repos_for_triage_agent(admin):
+    body = body_of(admin.get("/settings?tab=triage").text)
+    head = body[:body.index("data-triage-criteria")]
+    assert "판단 에이전트는 저장소 화면의 각 저장소 카드에서 고릅니다." in head and 'href="/repos"' in head
+    kinds = re.findall(r'data-autostart="([a-z_0-9]+)"', body)
+    assert kinds  # 내장 종류의 자동 시작 행
+    for kind in kinds:
+        assert kind in details_of(body) and kind not in visible_text(body), kind
+
+
+def test_inbound_tab_hides_token_ids_outside_details(admin, conn):
+    issued = post(admin, "/sources/tokens", {"label": "n8n"})
+    (token,) = repo.list_source_tokens(conn, SESSION)
+    token_id = token["token_id"]
+    for html in (issued.text, admin.get("/settings?tab=inbound").text):
+        body = body_of(html)
+        assert token_id in details_of(body) and token_id not in visible_text(body)
+        assert "<th>ID</th>" not in body
+        assert f'data-token-id="{token_id}"' in body and f'action="/sources/tokens/{token_id}/revoke"' in body
+    assert 'id="issued-token"' in issued.text  # 원문은 그 응답에 한 번 그대로
+
+
+def test_advanced_tab_starts_with_dev_ops_note(admin):
+    body = body_of(admin.get("/settings?tab=advanced").text)
+    note = "개발·운영용 — 러너 연결 코드와 에이전트 수동 등록. 수동 등록은 그 에이전트의 능력을 모두 덮어씁니다."
+    assert f'<p class="muted">{note}</p>' in body
+    assert body.index(note) < body.index("연결 코드 발급")
+
+
+@pytest.mark.parametrize("tab", ["kinds", "triage", "notify", "inbound"])
+def test_settings_tabs_show_no_internal_ids(admin, tab):
+    post(admin, "/sources/tokens", {"label": "n8n"})
+    body = body_of(admin.get(f"/settings?tab={tab}").text)
+    assert INTERNAL_ID.search(visible_text(body)) is None
+    assert re.search(r"src-[0-9a-f]", visible_text(body)) is None
+
+
+def test_kinds_tab_internal_codes_live_in_details(admin):
+    body = body_of(admin.get("/settings?tab=kinds").text)
+    assert "code.fix" in details_of(body)  # 내장 종류 능력 코드는 자세히 안에만
+
+
+@pytest.mark.parametrize("tab", ["kinds", "triage", "notify", "inbound"])
+def test_settings_tables_are_wrapped(admin, tab):
+    post(admin, "/sources/tokens", {"label": "n8n"})
+    body = body_of(admin.get(f"/settings?tab={tab}").text)
+    assert body.count("<table") == body.count('<div class="table-wrap"')

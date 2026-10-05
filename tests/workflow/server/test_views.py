@@ -692,7 +692,7 @@ def test_rule_public_one_line_text_with_labels():
     rule = views.rule_public("rule-1", builtin, BUILTIN_KINDS)
     assert rule["rule_id"] == "rule-1"
     assert (rule["from_kind"], rule["to_kind"]) == ("bug_fix", "code_review")
-    assert rule["text"] == "버그 수정 --[ready_for_review]--> 커밋 검토"
+    assert rule["text"] == "버그 수정 — 결과 검토 가능 → 커밋 검토"
     assert rule["handoff_kinds"] == ["code_change_result", "diff", "test_log_after", "verification_log"]
     assert rule["handoff_labels"] == ["수정 결과", "diff", "테스트 후", "검증 로그"]
     assert (rule["placement"], rule["placement_label"]) == ("same_work", "같은 업무의 다음 단계")
@@ -704,9 +704,9 @@ def test_rule_public_one_line_text_with_labels():
         builtin.model_copy(update={"on_outcomes": ["ready_for_review", "needs_information"]}),
         [*BUILTIN_KINDS, REVIEW_SPEC],
     )
-    assert custom["text"] == "버그 수정 --[ready_for_review, needs_information]--> 커밋 검토"
+    assert custom["text"] == "버그 수정 — 결과 검토 가능, 정보 필요 → 커밋 검토"
     # 등록부에 없는 종류는 라벨 대신 코드 그대로
-    assert views.rule_public("rule-3", builtin, ())["text"] == "bug_fix --[ready_for_review]--> code_review"
+    assert views.rule_public("rule-3", builtin, ())["text"] == "bug_fix — 결과 검토 가능 → code_review"
 
 
 # --- 등록부를 보는 화면 컨텍스트 (phase 6 step 7) --------------------------------------
