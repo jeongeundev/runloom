@@ -13,6 +13,7 @@ from workflow.adapters.db import connect
 from workflow.adapters.errors import (
     ActiveExecutionExists,
     ArtifactMissing,
+    CapabilityProtected,
     DuplicateKind,
     DuplicateRule,
     DuplicateStartKey,
@@ -53,6 +54,7 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain.field_mapping import MappingRow
+from workflow.domain.kinds import agent_repository_scope
 from workflow.domain.selection import Candidate, select_agent
 from workflow.domain.start_checklist import StartFacts
 from workflow.domain.task_followup import FollowupTaskSpec
@@ -1440,6 +1442,165 @@ def test_list_rules_orders_by_created_at_then_rule_id(sessions):
     ids = [rid for rid, _ in repo.list_rules(conn, SESSION)]
     assert ids[-1] == later_rule and earlier_rule in ids[:-1]
 
+
+
+# --- 에이전트 능력 하나씩 (phase 23 step 4, ADR-0028 결정 5) ------------------------------
+
+
+def _caps(conn, agent_id: str) -> list[dict]:
+    return json.loads(repo.get_agent(conn, agent_id)["capabilities_json"])
+
+
+def _runner_agent(conn, agent_id: str = "agent-runner", repository: str = "billing", session_id: str = SESSION):
+    repo.upsert_agent(conn, _agent(agent_id, connection_type="local", owner_scope="personal",
+                                   local_registration_id=f"reg-{agent_id}", capabilities=[
+                                       {"code": "code.fix", "scope": {"repository_id": repository}},
+                                       {"code": "code.review", "scope": {"repository_id": repository}},
+                                   ]))
+    repo.register_session_agent(conn, session_id, agent_id, NOW)
+    return agent_id
+
+
+def test_add_agent_capability_appends_once_and_keeps_the_others(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    before = _caps(conn, agent_id)
+    review = Capability(code="review", scope={"repository_id": "billing"})
+
+    assert repo.add_agent_capability(conn, agent_id=agent_id, capability=review) is True
+    assert _caps(conn, agent_id) == [*before, review.model_dump()]
+    assert repo.add_agent_capability(conn, agent_id=agent_id, capability=review) is False  # 멱등
+    assert _caps(conn, agent_id) == [*before, review.model_dump()]
+
+    other_scope = Capability(code="review", scope={"repository_id": "shop"})  # code 가 같아도 scope 가 다르면 다른 능력
+    assert repo.add_agent_capability(conn, agent_id=agent_id, capability=other_scope) is True
+    assert _caps(conn, agent_id) == [*before, review.model_dump(), other_scope.model_dump()]
+    assert _revision(conn) == 1  # 능력 변경은 설정 번호를 올리지 않는다
+    assert not conn.in_transaction
+    with pytest.raises(NotFound):
+        repo.add_agent_capability(conn, agent_id="agent-nope", capability=review)
+
+
+def test_remove_agent_capability_removes_only_that_one(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    review = Capability(code="review", scope={"repository_id": "billing"})
+    audit = Capability(code="audit", scope={"repository_id": "billing"})
+    for capability in (review, audit):
+        repo.add_agent_capability(conn, agent_id=agent_id, capability=capability)
+    before = _caps(conn, agent_id)
+
+    assert repo.remove_agent_capability(conn, agent_id=agent_id, capability=review) is True
+    assert _caps(conn, agent_id) == [c for c in before if c != review.model_dump()]  # 다른 능력·순서 그대로
+    assert repo.remove_agent_capability(conn, agent_id=agent_id, capability=review) is False  # 없는 것 빼기
+    other_scope = Capability(code="audit", scope={"repository_id": "shop"})
+    assert repo.remove_agent_capability(conn, agent_id=agent_id, capability=other_scope) is False
+    assert audit.model_dump() in _caps(conn, agent_id)
+    assert _revision(conn) == 1
+    with pytest.raises(NotFound):
+        repo.remove_agent_capability(conn, agent_id="agent-nope", capability=review)
+
+
+@pytest.mark.parametrize("code", ["code.fix", "code.review", "code.triage"])
+def test_remove_agent_capability_refuses_builtin_capabilities(sessions, code):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    before = _caps(conn, agent_id)
+    with pytest.raises(CapabilityProtected):
+        repo.remove_agent_capability(conn, agent_id=agent_id, capability=Capability(
+            code=code, scope={"repository_id": "billing"}))
+    with pytest.raises(CapabilityProtected):  # 보호 검사가 먼저 — 없는 에이전트여도
+        repo.remove_agent_capability(conn, agent_id="agent-nope", capability=Capability(
+            code=code, scope={"repository_id": "billing"}))
+    assert _caps(conn, agent_id) == before
+
+
+def test_agent_repository_scope_of_stored_agents(conn):
+    repo.create_session(conn, SESSION, NOW)
+    _issue_connector(conn, CONNECTOR)
+    runner_id, _ = _register(conn)  # 러너 등록 — 내장 세 능력이 한 저장소
+    runner_caps = [Capability.model_validate(c) for c in _caps(conn, runner_id)]
+    assert agent_repository_scope(runner_caps) == ("jeongeundev/OpenArchive", None)
+
+    repo.upsert_agent(conn, _agent())  # 수동 등록 — 범위 키가 workflow_id
+    manual_caps = [Capability.model_validate(c) for c in _caps(conn, "agent-ops-demo")]
+    assert agent_repository_scope(manual_caps) == (None, "no_repository")
+
+
+def test_delete_kind_detaches_its_capability_from_workspace_agents(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    outsider = _runner_agent(conn, "agent-outsider", session_id=OTHER_SESSION)
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    keep = Capability(code="audit", scope={"repository_id": "billing"})
+    for capability in (Capability(code="review", scope={"repository_id": "billing"}), keep,
+                       Capability(code="review", scope={"repository_id": "shop"})):
+        repo.add_agent_capability(conn, agent_id=agent_id, capability=capability)
+    repo.add_agent_capability(conn, agent_id=outsider, capability=Capability(
+        code="review", scope={"repository_id": "billing"}))
+    before = _caps(conn, agent_id)
+
+    repo.delete_kind(conn, SESSION, "review", now=NOW)
+
+    assert _caps(conn, agent_id) == [c for c in before if c["code"] != "review"]  # scope 무관, 나머지 순서 그대로
+    assert keep.model_dump() in _caps(conn, agent_id)
+    assert any(c["code"] == "review" for c in _caps(conn, outsider))  # 다른 워크스페이스 에이전트는 그대로
+
+
+def test_delete_kind_keeps_a_capability_another_kind_still_uses(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    twin = REVIEW.model_copy(update={"kind": "review_twin", "label": "검토 2"})  # 같은 capability_code
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    repo.insert_kind(conn, SESSION, twin, NOW)
+    review = Capability(code="review", scope={"repository_id": "billing"})
+    repo.add_agent_capability(conn, agent_id=agent_id, capability=review)
+
+    repo.delete_kind(conn, SESSION, "review", now=NOW)
+    assert review.model_dump() in _caps(conn, agent_id)
+    repo.delete_kind(conn, SESSION, "review_twin", now=NOW)
+    assert review.model_dump() not in _caps(conn, agent_id)
+
+
+def test_delete_kind_never_detaches_builtin_capabilities(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    before = _caps(conn, agent_id)
+    fix_alias = REVIEW.model_copy(update={"kind": "fix_alias", "capability_code": "code.fix"})
+    repo.insert_kind(conn, SESSION, fix_alias, NOW)
+    repo.delete_kind(conn, SESSION, "fix_alias", now=NOW)
+    assert _caps(conn, agent_id) == before
+
+
+def test_delete_kind_refused_keeps_capabilities(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    review = Capability(code="review", scope={"repository_id": "billing"})
+    repo.add_agent_capability(conn, agent_id=agent_id, capability=review)
+    repo.insert_rule(conn, SESSION, FIX_TO_REVIEW, NOW)
+    with pytest.raises(KindInUse):
+        repo.delete_kind(conn, SESSION, "review", now=NOW)
+    assert review.model_dump() in _caps(conn, agent_id)
+
+
+def test_added_capability_makes_the_agent_selectable_for_the_new_kind(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    required = Capability(code="review", scope={"repository_id": "billing"})
+
+    def pool():
+        return [Candidate(agent_id=a["agent_id"], capabilities=tuple(
+            Capability.model_validate(c) for c in json.loads(a["capabilities_json"])))
+            for a in repo.list_session_agents(conn, SESSION)]
+
+    assert select_agent("t-1", required, pool()).status == "needs_selection"
+    repo.add_agent_capability(conn, agent_id=agent_id, capability=required)
+    record = select_agent("t-1", required, pool())
+    assert (record.status, record.selected_agent_id) == ("selected", agent_id)
+    repo.remove_agent_capability(conn, agent_id=agent_id, capability=required)
+    assert select_agent("t-1", required, pool()).status == "needs_selection"
 
 def test_insert_task_requires_registered_kind(seeded):
     conn = seeded

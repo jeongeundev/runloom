@@ -10,6 +10,7 @@ import json
 import pytest
 
 from workflow.adapters import repo
+from workflow.contracts.v1 import Capability, KindSpec
 from workflow.domain.work_status import WorkStatus
 from workflow.server import work_actions
 from workflow.server.work_actions import WorkActionError
@@ -139,6 +140,31 @@ def test_agent_candidates_are_the_agents_the_open_stage_accepts(conn, admin, all
     assert work_actions.open_stage(conn, work_item_id)["task_id"] == task_id
     assert [a["agent_id"] for a in work_actions.agent_candidates(conn, SESSION, work_item_id)] == [FIX]
 
+
+
+AUDIT = KindSpec(kind="audit", label="감사", capability_code="audit", scope_key="repository_id", input_kinds=[],
+                 output_kind="generic_result", outcomes=["done", "needs_information"], instructions="", builtin=False)
+
+
+def test_added_capability_makes_the_agent_a_candidate_for_a_user_kind(conn, admin):
+    """phase 23 step 4 — 매칭은 등록부 + 능력이라 붙인 능력만으로 사용자 정의 종류의 맡기기 후보가 된다."""
+    repo.insert_kind(conn, SESSION, AUDIT, NOW)
+    repo.insert_work_item_task(conn, {
+        "task_id": "task-audit", "session_id": SESSION, "title": "결제 로그 감사", "request": "로그를 살펴보세요.",
+        "kind": "audit", "required_capability": {"code": "audit", "scope": {"repository_id": "billing"}},
+        "selection_mode": "auto", "chosen_agent_id": None, "run_mode": "auto", "completion_mode": "review",
+        "criteria": [], "predecessor_task_id": None, "revision": 1, "target": {},
+        "status": "대기", "status_reason": "준비 판정 대기",
+    }, NOW)
+    work_item_id = work_of(conn, "task-audit")["work_item_id"]
+    assert work_actions.agent_candidates(conn, SESSION, work_item_id) == []
+
+    repo.add_agent_capability(conn, agent_id=REVIEW, capability=Capability(code="audit",
+                                                                           scope={"repository_id": "billing"}))
+    assert [a["agent_id"] for a in work_actions.agent_candidates(conn, SESSION, work_item_id)] == [REVIEW]
+    repo.add_agent_capability(conn, agent_id=FIX_SHOP, capability=Capability(code="audit",
+                                                                             scope={"repository_id": "shop"}))
+    assert [a["agent_id"] for a in work_actions.agent_candidates(conn, SESSION, work_item_id)] == [REVIEW]
 
 def test_no_open_stage_is_refused(conn, store, settings, admin, all_open):
     task_id = import_issue(conn, 1, labels=[])

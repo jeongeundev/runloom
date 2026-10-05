@@ -11,7 +11,7 @@ import json
 import pytest
 
 from workflow.adapters import repo
-from workflow.contracts.v1 import ExecutionRequest, TriageCandidates, TriageTarget
+from workflow.contracts.v1 import Capability, ExecutionRequest, KindSpec, TriageCandidates, TriageTarget
 from workflow.domain.triage import PastWork
 from workflow.server import triage_runs
 from workflow.server.triage_runs import REASONS
@@ -314,6 +314,27 @@ def test_candidates_list_members_agents_and_open_works_of_the_same_repository(co
     assert [k.kind for k in candidates.kinds] == ["bug_fix"]
     assert [p.work_key for p in candidates.predecessors] == ["RUN-2"]  # 자신 제외, 같은 저장소의 끝나지 않은 업무
 
+
+
+def test_added_capability_makes_the_agent_a_triage_candidate_for_a_user_kind(conn, settings, judge):
+    """phase 23 step 4 — 붙인 능력으로 사용자 정의 종류의 판단 후보 Agent 가 된다(코드 변경 없음)."""
+    audit = KindSpec(kind="audit", label="감사", capability_code="audit", scope_key="repository_id", input_kinds=[],
+                     output_kind="generic_result", outcomes=["done"], instructions="", builtin=False)
+    repo.insert_kind(conn, SESSION, audit, NOW)
+    a = new_issue(conn, 1)
+
+    def agents():
+        found = route(conn, settings, a)
+        candidates = triage_runs.build_candidates(conn, work(conn, a), found, now=LATER, settings=settings)
+        assert [k.kind for k in candidates.kinds] == ["bug_fix", "audit"]
+        return [(agent.agent_id, agent.kinds) for agent in candidates.agents]
+
+    assert agents() == [(FIX, ["bug_fix"])]
+    repo.add_agent_capability(conn, agent_id=REVIEW, capability=Capability(code="audit",
+                                                                           scope={"repository_id": "billing"}))
+    repo.add_agent_capability(conn, agent_id=FIX, capability=Capability(code="audit",
+                                                                        scope={"repository_id": "billing"}))
+    assert agents() == [(FIX, ["bug_fix", "audit"]), (REVIEW, ["audit"])]
 
 def test_open_work_counts_and_runner_idle(conn, judge, admin):
     a = new_issue(conn, 1)

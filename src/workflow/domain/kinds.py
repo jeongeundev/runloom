@@ -6,8 +6,12 @@
 
 from collections.abc import Sequence
 
-from workflow.contracts.v1 import Capability, KindSpec, SuccessorRule
+from workflow.contracts.v1 import BUILTIN_KINDS, Capability, KindSpec, SuccessorRule
 from workflow.domain.execution_policy import is_triage_kind
+
+BUILTIN_CAPABILITY_CODES: frozenset[str] = frozenset(spec.capability_code for spec in BUILTIN_KINDS)
+SCOPE_NO_REPOSITORY = "no_repository"
+SCOPE_MANY_REPOSITORIES = "many_repositories"
 
 
 def kind_for_capability(kinds: Sequence[KindSpec], code: str) -> KindSpec | None:
@@ -46,3 +50,15 @@ def validate_rule(kinds: Sequence[KindSpec], rule: SuccessorRule) -> str | None:
     if missing:
         return f"handoff_kinds 에 {to_spec.kind} 의 input_kinds 가 빠졌습니다: {', '.join(missing)}"
     return None
+
+
+def agent_repository_scope(capabilities: Sequence[Capability]) -> tuple[str | None, str | None]:
+    """에이전트의 범위 값 — 내장 능력 scope 의 `repository_id`. `(값, None)` 또는 `(None, 이유 코드)`.
+    사용자 정의 능력의 scope 는 보지 않는다(붙인 능력이 범위를 바꾸지 않게)."""
+    values = {c.scope["repository_id"] for c in capabilities
+              if c.code in BUILTIN_CAPABILITY_CODES and "repository_id" in c.scope}
+    if not values:
+        return None, SCOPE_NO_REPOSITORY
+    if len(values) > 1:
+        return None, SCOPE_MANY_REPOSITORIES
+    return next(iter(values)), None

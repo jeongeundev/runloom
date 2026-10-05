@@ -25,6 +25,7 @@ from workflow.adapters.errors import (
     ActiveExecutionExists,
     ArtifactMissing,
     AutostartLocked,
+    CapabilityProtected,
     DuplicateKind,
     DuplicateRule,
     DuplicateStartKey,
@@ -95,6 +96,7 @@ from workflow.domain.execution_policy import TRIAGE_OUTPUT_KIND, is_triage_kind
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain import jira_intake
 from workflow.domain.jira_intake import initial_cursor_ms
+from workflow.domain.kinds import BUILTIN_CAPABILITY_CODES
 from workflow.domain.assignee_metrics import (
     AgentLabel,
     AgentRunFact,
@@ -1363,6 +1365,50 @@ def get_agent(conn: Connection, agent_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
 
 
+def _agent_capabilities(conn: Connection, agent_id: str) -> list[Capability]:
+    row = _one(conn, "SELECT capabilities_json FROM agents WHERE agent_id = ?", (agent_id,))
+    if row is None:
+        raise NotFound(f"agent {agent_id}")
+    return [Capability.model_validate(c) for c in json.loads(row["capabilities_json"])]
+
+
+def _write_capabilities(conn: Connection, agent_id: str, capabilities: Sequence[Capability]) -> None:
+    conn.execute("UPDATE agents SET capabilities_json = ? WHERE agent_id = ?",
+                 (json.dumps([c.model_dump() for c in capabilities], ensure_ascii=False), agent_id))
+
+
+def _add_capability(conn: Connection, agent_id: str, capability: Capability) -> bool:
+    """트랜잭션 없음 — 같은 `code`·`scope` 가 있으면 False, 아니면 끝에 더한다."""
+    capabilities = _agent_capabilities(conn, agent_id)
+    if capability in capabilities:
+        return False
+    _write_capabilities(conn, agent_id, [*capabilities, capability])
+    return True
+
+
+def _remove_capability(conn: Connection, agent_id: str, capability: Capability) -> bool:
+    """트랜잭션 없음 — 같은 `code`·`scope` 하나만 뺀다. 없으면 False. 내장 보호는 부르는 쪽 몫."""
+    capabilities = _agent_capabilities(conn, agent_id)
+    if capability not in capabilities:
+        return False
+    _write_capabilities(conn, agent_id, [c for c in capabilities if c != capability])
+    return True
+
+
+def add_agent_capability(conn: Connection, *, agent_id: str, capability: Capability) -> bool:
+    """능력 하나 붙이기(멱등). 다른 능력·순서 그대로. 설정 번호는 올리지 않는다(ADR-0028)."""
+    with _tx(conn):
+        return _add_capability(conn, agent_id, capability)
+
+
+def remove_agent_capability(conn: Connection, *, agent_id: str, capability: Capability) -> bool:
+    """능력 하나 떼기. 내장 종류의 능력 코드면 CapabilityProtected(먼저 검사)."""
+    if capability.code in BUILTIN_CAPABILITY_CODES:
+        raise CapabilityProtected(capability.code)
+    with _tx(conn):
+        return _remove_capability(conn, agent_id, capability)
+
+
 def delete_agent(conn: Connection, agent_id: str) -> None:
     """세션 등록(`session_agents`)도 함께 지운다."""
     with _tx(conn):
@@ -1568,7 +1614,8 @@ def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str, *, 
 
 
 def delete_kind(conn: Connection, session_id: str, kind: str, *, now: str, member_id: str | None = None) -> None:
-    """내장 → KindProtected. Task 가 쓰거나 규칙이 참조 → KindInUse. 없으면 NotFound."""
+    """내장 → KindProtected. Task 가 쓰거나 규칙이 참조 → KindInUse. 없으면 NotFound.
+    지운 뒤 그 능력 코드를 쓰는 종류가 남지 않으면(내장 코드 제외) 워크스페이스 에이전트에서 그 능력을 뗀다."""
     with _tx(conn):
         spec = get_kind(conn, session_id, kind)
         if spec is None:
@@ -1586,6 +1633,14 @@ def delete_kind(conn: Connection, session_id: str, kind: str, *, now: str, membe
         if used_by_task is not None or used_by_rule is not None:
             raise KindInUse(kind)
         conn.execute("DELETE FROM kinds WHERE session_id = ? AND kind = ?", (session_id, kind))
+        code = spec.capability_code
+        if code not in BUILTIN_CAPABILITY_CODES and all(
+                s.capability_code != code for s in list_kinds(conn, session_id)):
+            for agent in list_session_agents(conn, session_id):  # 그 종류의 능력을 scope 무관하게 뗀다
+                capabilities = _agent_capabilities(conn, agent["agent_id"])
+                kept = [c for c in capabilities if c.code != code]
+                if kept != capabilities:
+                    _write_capabilities(conn, agent["agent_id"], kept)
         bump_config_revision(conn, session_id, area="kind", action="delete", subject=kind, member_id=member_id,
                              now=now)
 

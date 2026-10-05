@@ -37,7 +37,9 @@
     {
       "step": 4,
       "name": "agent-capability",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T14:21:37+0900",
+      "summary": "에이전트 능력 하나씩: domain/kinds.py BUILTIN_CAPABILITY_CODES(=BUILTIN_KINDS capability_code)·SCOPE_NO_REPOSITORY·SCOPE_MANY_REPOSITORIES·agent_repository_scope(capabilities)(내장 능력 scope 의 repository_id 만 — 사용자 정의 능력 scope 는 안 봄), errors.py CapabilityProtected·AgentScopeUnknown(agent_id·reason), repo.py 내부 _agent_capabilities(없는 에이전트 NotFound)·_write_capabilities·_add_capability·_remove_capability(트랜잭션 없음) + add_agent_capability/remove_agent_capability(conn, *, agent_id, capability) -> bool(자체 트랜잭션, 같은 code·scope 멱등 False, 다른 능력·순서 그대로, remove 는 내장 코드면 트랜잭션 전 CapabilityProtected, 설정 번호 안 올림), delete_kind 가 같은 트랜잭션에서 사용자 정의 코드이고 남은 종류가 그 코드를 안 쓰면 그 워크스페이스 session_agents 에서 code 일치 능력을 scope 무관하게 뗌. 매칭(select_agent·work_actions.agent_candidates·triage build_candidates)은 코드 변경 없이 붙인 능력으로 사용자 정의 종류 후보가 됨 — 테스트로만 확인. upsert_agent·POST /operator/agents·화면 그대로. insert_kind(agent_ids=) 는 만들지 않음(step 5 몫 — AgentScopeUnknown 은 거기서 씀). 테스트: test_kinds(범위 helper 4), test_repo(더하기 멱등·scope 다르면 별개·NotFound·설정 번호 그대로, 빼기·없는 것·내장 3종 거부, 러너 등록 에이전트→저장소·수동 등록→no_repository, 종류 삭제→떼기·다른 워크스페이스 유지·같은 코드 쓰는 종류 남으면 유지·내장 코드 종류 삭제는 안 뗌·KindInUse 면 그대로, select_agent 매칭), test_work_actions(사용자 정의 종류 맡기기 후보), test_triage_runs(판단 후보 kinds). 검증: pytest 4519 passed·92 skipped, ruff 통과. 다음 step 주의: step 5 의 insert_kind(agent_ids=) 는 _add_capability 와 agent_repository_scope 를 같은 _tx 안에서 쓰면 된다."
     },
     {
       "step": 5,
