@@ -38,8 +38,8 @@ def member_id(conn, client) -> str:
 def new_work(conn, title: str, *, updated: str = NOW, **overrides) -> tuple[str, str]:
     """(work_item_id, 업무 키). 직접 등록 모양, 상태는 저장값을 그대로 보인다."""
     conn.execute("BEGIN IMMEDIATE")
-    work_item_id, key = repo.create_work_item(conn, SESSION, title=title, request="요청", kind="bug_fix",
-                                              **{"source_type": "manual", "now": NOW, **overrides})
+    work_item_id, key = repo.create_work_item(conn, SESSION, title=title, request="요청",
+                                              **{"kind": "bug_fix", "source_type": "manual", "now": NOW, **overrides})
     conn.execute("COMMIT")
     conn.execute("UPDATE work_items SET updated_at = ? WHERE work_item_id = ?", (updated, work_item_id))
     return work_item_id, f"RUN-{key}"
@@ -97,7 +97,8 @@ def people(conn, admin, member) -> dict[str, str]:
 # --- 표 ----------------------------------------------------------------------------------------------------
 
 
-def test_list_table_has_eight_column_headers(admin, people):
+def test_list_table_has_eight_column_headers(admin, conn, people):
+    new_work(conn, "검토 업무", kind="code_review")  # 종류가 갈려야 종류 칸이 보인다 (phase 23 step 8)
     html = admin.get("/tasks").text
     table = main_of(html)[main_of(html).index("<table"):]
     assert re.findall(r"<th scope=\"col\"[^>]*>(.*?)</th>", table) == HEADERS
@@ -300,7 +301,7 @@ def test_agents_zero_shows_runner_hint(client, conn):
     ensure_workspace(conn, NOW)
     admin = log_in(client)
     html = main_of(admin.get("/tasks").text)
-    assert "러너를 붙이면 에이전트가 생깁니다" in html and 'href="/connect?tab=sources"' in html
+    assert "러너를 붙이면 에이전트가 생깁니다" in html and 'href="/repos"' in html
 
 
 def test_home_has_no_agent_or_chain_cards(admin, people):
@@ -315,8 +316,10 @@ def test_home_has_no_agent_or_chain_cards(admin, people):
 def test_sidebar_has_new_items_and_no_recent_list(admin, people):
     sidebar = sidebar_of(admin.get("/tasks").text)
     nav = re.findall(r'<a href="([^"]+)"[^>]*>([^<]+)', sidebar[sidebar.index('class="nav"'):])
-    assert [label.strip() for _, label in nav[:6]] == ["업무", "받은·보낸 요청", "모니터링", "연결", "시작하기", "내 설정"]
-    assert [href for href, _ in nav[:6]] == ["/tasks", "/requests", "/monitor", "/connect", "/start", "/me"]
+    assert [label.strip() for _, label in nav[:8]] == ["업무", "받은·보낸 요청", "모니터링", "팀", "저장소", "설정",
+                                                       "시작하기", "내 설정"]
+    assert [href for href, _ in nav[:8]] == ["/tasks", "/requests", "/monitor", "/team", "/repos", "/settings",
+                                             "/start", "/me"]
     assert "최근" not in sidebar and 'href="/tasks/new"' not in sidebar and "data-work-key" not in sidebar
     # 시작하기는 필수 항목(가져올 곳·러너·첫 맡기기)이 남아 보인다 — 숨김 조건은 test_web_start
     assert "관리자 · 관리자" in sidebar and 'action="/logout"' in sidebar
@@ -329,8 +332,8 @@ def test_sidebar_turn_badge_counts_my_turn(admin, member, people):
 
 
 def test_sidebar_marks_active_by_path_prefix(admin, people):
-    nav = sidebar_of(admin.get("/connect?tab=advanced").text)
-    assert '<a href="/connect" class="active">' in nav
+    nav = sidebar_of(admin.get("/settings?tab=advanced").text)
+    assert '<a href="/settings" class="active">' in nav
     assert 'href="/tasks" class="active"' not in nav
     assert '<a href="/tasks" class="active">' in sidebar_of(admin.get("/tasks").text)
 
@@ -343,4 +346,134 @@ def test_sidebar_hides_items_without_permission(admin, member, people, monkeypat
                         lambda role: real(role) - {team.VIEW_METRICS, team.EDIT_OWN_SETTINGS})
     sidebar = sidebar_of(member.get("/tasks").text)
     assert 'href="/monitor"' not in sidebar and 'href="/me"' not in sidebar
-    assert 'href="/tasks"' in sidebar and 'href="/connect"' in sidebar
+    assert 'href="/tasks"' in sidebar and 'href="/team"' in sidebar and 'href="/settings"' in sidebar
+
+
+# --- 끝난 업무 묶음·같은 값 칸·다음 할 일·도구 막대 (phase 23 step 8) ------------------------------------------
+
+
+def head_cells(html: str) -> list[str]:
+    table = main_of(html)[main_of(html).index("<table"):]
+    return re.findall(r"<th scope=\"col\"[^>]*>(.*?)</th>", table)
+
+
+def row_of(html: str, key: str) -> str:
+    return re.search(rf'<tr class="work-row" data-work-key="{key}".*?</tr>', main_of(html), re.S).group(0)
+
+
+@pytest.fixture
+def closed(conn, people) -> None:
+    """people + 끝난 업무 2개(RUN-6 완료 · RUN-7 종료, 나에게 배정)."""
+    done, _ = new_work(conn, "끝난 업무")
+    set_status(conn, done, "완료", "PR 병합 — #1", closed_at=utc_now())
+    gone, _ = new_work(conn, "닫힌 업무")
+    assign(conn, gone, "member", people["me"])
+    set_status(conn, gone, "종료", "닫힘", closed_at=utc_now())  # 같은 시각이면 키 번호 내림차순
+
+
+@pytest.mark.parametrize("group", ["assignee", "status", "repo"])
+def test_closed_work_is_one_folded_group_at_the_bottom(admin, closed, group):
+    html = admin.get(f"/tasks?group={group}").text
+    groups = groups_in(html)
+    assert groups[-1] == ("closed", "끝난 업무", 2)
+    assert all(k != "closed" for k, _, _ in groups[:-1])
+    assert "status:완료" not in [k for k, _, _ in groups] and "status:종료" not in [k for k, _, _ in groups]
+    assert keys_in(html)[-2:] == ["RUN-7", "RUN-6"]  # closed_at 최근순
+    assert '<tbody data-group-body="closed" data-default-folded>' in main_of(html)
+    assert main_of(html).count("data-default-folded") == 1
+    counts = counts_in(html)
+    assert sum(n for _, _, n in groups) == counts["all"]
+    if group == "assignee":
+        assert dict((k, n) for k, _, n in groups)["none"] == counts["unassigned"]
+        # 나에게 배정된 끝난 업무는 내 묶음 머리에 세지 않는다
+        assert dict((k, n) for k, _, n in groups)[f"member:{people_me(html)}"] == 1
+
+
+def people_me(html: str) -> str:
+    return re.search(r'data-group="member:([^"]+)">.*?\(나\)', main_of(html), re.S).group(1)
+
+
+def test_closed_group_follows_the_closed_scope(admin, conn, closed):
+    old, _ = new_work(conn, "오래전 끝남")  # RUN-8
+    set_status(conn, old, "완료", "PR 병합 — #2", closed_at="2026-01-01T00:00:00Z")
+    assert groups_in(admin.get("/tasks").text)[-1] == ("closed", "끝난 업무", 2)
+    assert groups_in(admin.get("/tasks?closed=all").text)[-1] == ("closed", "끝난 업무", 3)
+
+
+def test_same_value_columns_are_hidden_from_head_rows_and_colspan(admin, people):
+    html = admin.get("/tasks").text  # 종류 모두 버그 수정, 우선순위는 셋 다름
+    assert head_cells(html) == [h for h in HEADERS if h != "종류"]
+    assert "버그 수정" not in row_of(html, "RUN-3")
+    assert 'colspan="7"' in main_of(html) and 'colspan="8"' not in main_of(html)
+    html = admin.get("/tasks?q=agent_working").text  # 한 행 — 우선순위·종류 둘 다 숨김
+    assert head_cells(html) == [h for h in HEADERS if h not in ("종류", "우선순위")]
+    assert "data-priority" not in row_of(html, "RUN-5") and 'colspan="6"' in main_of(html)
+
+
+def test_board_card_hides_priority_when_every_card_has_the_same(admin, people):
+    board = main_of(admin.get("/tasks?view=board&q=agent_working").text)
+    card = re.search(r'<a class="board-card" data-work-key="RUN-5".*?</a>', board, re.S).group(0)
+    assert 'class="priority"' not in card and "– 보통" not in card
+    board = main_of(admin.get("/tasks?view=board").text)
+    assert 'class="priority"' in board
+
+
+def test_next_action_that_repeats_the_status_shows_a_dash(admin, conn, people):
+    waiting, _ = new_work(conn, "대기 업무")  # RUN-6
+    assign(conn, waiting, "member", people["me"])
+    set_status(conn, waiting, "대기", "대기")
+    unassigned, _ = new_work(conn, "새 업무")  # RUN-7
+    set_status(conn, unassigned, "새로 들어옴", "담당 없음")
+    html = admin.get("/tasks").text
+    for key in ("RUN-6", "RUN-7"):
+        assert '<td class="next-action">—' in row_of(html, key), key
+    assert "사람 요청 — 어느 쪽으로 고칠까요?" in row_of(html, "RUN-4")
+    board = main_of(admin.get("/tasks?view=board").text)
+    card = re.search(r'<a class="board-card" data-work-key="RUN-6".*?</a>', board, re.S).group(0)
+    assert "next-action" not in card
+
+
+def test_toolbar_has_filters_repo_select_register_and_view_options(admin, repos):
+    html = main_of(admin.get("/tasks").text)
+    toolbar = html[html.index('class="work-toolbar"'):html.index("</details>")]
+    form = re.search(r'<form[^>]*data-repo-filter.*?</form>', toolbar, re.S).group(0)
+    assert re.search(r'<select name="repo"[^>]*data-auto-submit', form)
+    assert ('<noscript><button class="btn btn-small btn-secondary" type="submit">보기</button></noscript>'
+            in form)
+    assert toolbar.index('aria-label="빠른 필터"') < toolbar.index("data-repo-filter") \
+        < toolbar.index('href="/tasks/new"') < toolbar.index('<details class="view-options">')
+    options = toolbar[toolbar.index('<details class="view-options">'):]
+    assert "<summary>보기 옵션</summary>" in options
+    for label in ('aria-label="묶기"', 'aria-label="보기"', 'aria-label="끝난 업무"'):
+        assert label in options, label
+    for href in ('href="/tasks?group=status"', 'href="/tasks?view=board"', 'href="/tasks?closed=all"'):
+        assert href in options, href
+    assert 'aria-label="빠른 필터"' not in options
+
+
+def test_view_options_summary_shows_non_default_choices(admin, people):
+    html = main_of(admin.get("/tasks?group=status&view=board&closed=all").text)
+    summary = re.search(r'<details class="view-options">\s*<summary>(.*?)</summary>', html, re.S).group(1)
+    assert summary == "보기 옵션 · 상태로 묶음 · 보드 · 끝난 업무 전부"
+    html = main_of(admin.get("/tasks?group=repo").text)
+    assert "<summary>보기 옵션 · 저장소로 묶음</summary>" in html
+
+
+def test_base_script_auto_submits_and_remembers_unfolded_groups(admin, people):
+    html = admin.get("/tasks").text
+    script = html[html.index("<script>"):]
+    assert "data-auto-submit" in script and ".submit()" in script
+    assert "wf_work_unfolded" in script and "data-default-folded" in script
+
+
+def test_work_list_shows_no_internal_ids(admin, conn, closed):
+    internal = re.compile(r"agt-[0-9a-f]|conn-[0-9a-f]|inv-[0-9a-f]|code\.(fix|review|triage)")
+
+    def visible_text(html: str) -> str:
+        html = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)
+        html = re.sub(r'<details class="detail"[^>]*>.*?</details>', " ", html, flags=re.S)
+        return re.sub(r"<[^>]+>", " ", html)
+
+    for path in ("/tasks", "/tasks?view=board", "/tasks?group=status&closed=all"):
+        assert internal.search(visible_text(admin.get(path).text)) is None, path
+    assert '<div class="table-wrap work-table-wrap">' in main_of(admin.get("/tasks").text)

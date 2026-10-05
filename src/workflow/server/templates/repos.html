@@ -1,0 +1,8 @@
+{# 저장소 화면 `/repos` — phase 23 step 1, ARCHITECTURE "설정 UX — phase 23". 옛 연결 화면 "가져올 곳" 탭의 GitHub·Jira 절
+   (n8n 입구는 설정 › n8n 입구 탭). Jira 절은 GitHub 연결 상자 아래(step 7) — `_repos_github.html` 이 포함한다. 절별 권한은 부분 템플릿이 `allowed` 로 가른다. #}
+{% extends "base.html" %}
+{% block title %}저장소 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">저장소</div></div>
+{% include "_repos_github.html" %}
+{% endblock %}

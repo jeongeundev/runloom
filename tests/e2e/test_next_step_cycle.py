@@ -395,7 +395,7 @@ def test_01_admin_sets_up_github_a_member_webhooks_a_runner_the_triage_agent_and
     (source,) = http.get("/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
-    issued = http.post("/team/invites", data={"role": "member"})
+    issued = http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
     link = re.search(rf"{re.escape(world.central_url)}/invite/([A-Za-z0-9_-]+)", issued.text)
     assert link, issued.text[:1000]
     assert member.post(f"/invite/{link.group(1)}", data=MEMBER).status_code == 303
@@ -662,7 +662,7 @@ def test_v23_copy_upgrades_to_v24(tmp_path):
 
     conn = connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25
         assert {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables} == before
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

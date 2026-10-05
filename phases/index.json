@@ -114,7 +114,8 @@
     },
     {
       "dir": "23-setup-ux",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-10-05T16:53:47+0900"
     }
   ]
 }

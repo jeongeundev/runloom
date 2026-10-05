@@ -629,3 +629,28 @@ sandbox 의 #1 수정(`79af657`, httpx 로그 억제)은 `service` 로 가져왔
 ### 발견한 결함과 고친 파일
 
 - 제품 코드 결함 없음 — e2e 단정이 처음부터 맞았다. 테스트 쪽만: e2e 워커는 알림 전송기가 있는 `test_real_repo.make_worker` 를 쓴다(`test_jira_cycle.make_worker` 는 알림 전송기가 없어 수신기에 도착하지 않았다 — 가정 오류). 문서: [SELFHOST](SELFHOST.md) 업그레이드 v24(러너 재설치), [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 다음 작업·실연동 목록, [ARCHITECTURE](ARCHITECTURE.md) "결과 뒤 판단 — phase 22" 구현 상태.
+
+## 2026-10-05 phase 23 설정 UX (step 10)
+
+목적: [ADR-0028](adr/0028-setup-ux.md)의 설정 UX — 처음 온 관리자가 **화면이 주는 링크·폼만 따라** 멤버 둘 초대(링크 하나 다시 만들기 포함) → 조사 종류 등록(맡을 에이전트 선택) → 담당 범위 추가 → 저장소 카드에 판단 에이전트 지정까지 끝내는지, 팀·저장소·설정·업무 목록 본문에 내부 ID 가 "자세히" 밖에 없는지, 표가 가로 스크롤 컨테이너 안인지, 옛 주소가 새 화면으로 넘어가는지, v24 사본이 v25 로 오르고 열린 옛 초대를 다룰 수 있는지 확인한다. 외부 호출 없음 — GitHub 는 127.0.0.1 가짜 App 서버, origin 은 임시 bare 저장소, 도구는 PATH 앞의 가짜 `codex`, 러너는 `WORKFLOW_CONNECTOR_HOME` 임시 폴더(launchd 아님).
+
+| 항목 | 값 |
+|---|---|
+| 실행일 | 2026-10-05 KST, 이 Mac, 브랜치 `feat-23-setup-ux` |
+| 명령·결과 | `python3 -m pytest -q` — **4606 passed·100 skipped**(새 e2e 8 은 `WORKFLOW_E2E` 게이트). `python3 -m ruff check .` 통과. `WORKFLOW_E2E=1 python3 -m pytest tests/e2e/test_setup_ux.py -q` — **8 passed**(약 3초). `WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q` — **99 passed·1 skipped**(139.8초, 건너뜀은 `WORKFLOW_DOCKER` 게이트 `test_selfhost`) |
+| 화면 읽기 방식 | `tests/e2e/test_setup_ux.py` 의 `_Page`(표준 `html.parser`) — 사이드바·버튼 href, 폼 action·필드(hidden·select 선택값·체크박스 라벨·readonly)를 HTML 에서 읽어 브라우저가 보낼 값으로 POST. JSON 폼(`data-json-action`)은 `base.html` 스크립트의 `data-json-type` 변환을 그대로 따라 PUT. 주소를 손으로 만든 곳은 GitHub 쪽 왕복(콜백·설치 돌아오기)과 러너 설치 명령뿐 |
+| 첫 설정·저장소·러너 | test_01 — 첫 설정 → `/` → `/tasks` 사이드바 순서 `업무 · 받은·보낸 요청 · 모니터링 · 팀 · 저장소 · 설정`(`연결` 없음) → `저장소` → [GitHub 연결] → 가짜 App 왕복 → 303 `/repos` → 워커 1회(이슈 1건 → 업무) → 카드 [러너 붙이기] 폼 → 카드의 설치 명령 → `connector setup --tool codex`·`run` → 카드의 `data-runner-missing` 사라짐 → 에이전트 `billing`(능력 범위 `acme/billing`) |
+| 초대 2·다시 만들기 | test_02 — `팀` 초대 절 폼(`POST /team/invites` 그대로)으로 N(`남조사`)·J(`정판단`) → 발급 상자에 받는 사람 이메일·링크(공개 주소 설정이라 회색 안내 없음) → J 줄(이메일·이름·멤버)의 [링크 다시 만들기](`/team/invites/inv-…/reissue`) → 새 링크 ≠ 옛 링크, 옛 링크 GET·POST 404 → 새 링크·N 링크의 가입 화면 이메일 `readonly`·이름 기본값 → 가입 303 → 멤버 표에 둘, 대기 초대 `쓰지 않은 초대가 없습니다.` |
+| 종류·후보 | test_03 — `설정` 탭 머리 `업무 종류·규칙 · 판단 · 알림 · n8n 입구 · 고급` → 종류 폼(`POST /kinds` 그대로)의 맡을 에이전트 줄 `billing · acme/billing · 운영자의 Mac`, 결과값 기본 `done, needs_information` → 화면 이름 `장애 조사`·지시문·결과값 `cause_found, needs_information, unresolved`·billing 체크 → 303 `/settings?tab=kinds` → 카드 `맡을 수 있는 에이전트 billing`, 자세히 `k_xxxxxx · k_xxxxxx · repository_id`(자동 식별자 = 능력 코드) → `select_agent(Capability(k_…, {repository_id: acme/billing}), work_actions.candidates)` = billing → 팀 에이전트 줄 맡을 수 있는 일에 `장애 조사` |
+| 담당 범위 | test_04 — `팀` 담당 범위 폼(`POST /responsibilities/add` 그대로, hidden `expected_revision` 그대로)에서 시스템 `kube_proxy`·요청 유형 `조사`·받는 사람 N·판단 담당자 J·조사 에이전트 billing(옵션은 이름으로 고름) → 303 `/team` → 표 `kube_proxy · 조사 · 남조사 · 정판단 · billing · 선택 가능` → `GET /responsibilities` 의 항목 `investigation`·두 멤버 ID·에이전트 ID |
+| 판단 에이전트 | test_05 — `저장소` 카드 설정 폼(판단 칸이 있는 PUT 폼)의 판단 에이전트 옵션 `billing` → 200 → 다시 연 카드의 선택값 billing, 매칭 줄 `판단 에이전트 billing (설정)`, `GET /github/sources` 의 `triage_agent_id` = 에이전트 ID |
+| 노출·표 | test_06 — 팀·저장소·업무 목록·설정 다섯 탭(사이드바·탭 머리 링크로 연 8화면): 모든 `<table>` 이 `.table-wrap` 조상 안. ARCHITECTURE 노출 단정(`INTERNAL_ID`·`visible_text` — `test_web_connect` 와 같은 함수)이 7화면에서 통과, 설정 › 고급은 예외(수동 등록 표가 에이전트 ID 를 보인다 — ARCHITECTURE 설정 화면 표). 팀 화면에는 에이전트 ID 가 "자세히" 안에만 있다 |
+| 옛 주소 | test_07 — `/connect`(탭 없음·`sources`·`team`·`kinds`·`triage`·`triage&version=1`·`notify`·`advanced`·모르는 탭)·`/sources`·`/operator/github`·`/operator`·`/operator/notifications`·`/agents`·`/kinds` 15개가 ARCHITECTURE 표의 대상으로 303, 대상은 모두 200 |
+| v24 → v25 사본 | `test_v24_copy_upgrades_to_v25_and_an_open_old_invite_can_be_reissued_and_revoked` — v24 fixture 스키마에 관리자·멤버·열린 옛 초대 둘·사용된 초대 하나 → `create_app` 시작이 v25 로 올림 → 관리자 로그인 → 팀 대기 초대 2줄 `이메일 없음(옛 초대)`·이름 `—`(사용된 초대 없음, ID 는 자세히 안) → 한 줄 [링크 다시 만들기] → 새 링크, 옛 토큰 404 → 다른 줄 [취소] → 옛 토큰 404 → 새 링크 가입 화면 이메일 빈 칸·고정 안 됨 → 입력 이메일로 가입 303. 외래키 검사 깨끗, 사용된 초대 해시 그대로. 사용자 셀프호스트 볼륨·백업은 읽지 않았다 |
+| 미실행 | 실연동(K1 — 실제 Claude·GitHub) — phase 뒤 사용자 지시, 절차는 [사내 요청 실연동 1회차](product/INTERNAL_REQUEST_LIVE_RUN_1.md) "준비 (관리자 R)"(새 화면 경로). 브라우저 실제 390px 렌더링은 보지 않았다(CSS·마크업 단정만). `WORKFLOW_DOCKER=1 python3 -m pytest tests/e2e/test_selfhost.py -q` 도 돌리지 않았다(셀프호스트 재설치는 사용자 지시) |
+| 아키텍처 | `domain/` 에 FastAPI·sqlite3·HTTPX·subprocess·Git import 없음, `server/`↔`connector/` 상호 import 없음, 템플릿 `\|safe`·`alert(`·`confirm(` 없음(grep), `connector/`·`contracts/v1.py` 변경 없음 |
+
+### 발견한 결함과 고친 파일
+
+- **390px 에서 발급 값이 페이지를 넓힘** — 초대·재설정 링크(`code#issued-link`), 입구 토큰·연결 코드(발급 상자 `.alert code`), n8n 입구 주소(`#inbound-url`)는 끊을 곳 없는 긴 글자라 좁은 화면에서 줄이 바뀌지 않아 페이지 가로 스크롤을 만든다. `static/style.css` 에 `.alert code, #inbound-url { overflow-wrap: anywhere; }`. 테스트 `tests/workflow/server/test_ui.py::test_tables_and_long_one_time_values_do_not_widen_the_page_at_390px`(먼저 실패 확인).
+- 문서: [SELFHOST](SELFHOST.md) 업그레이드 v25·옛 주소 줄과 본문의 화면 주소(`/connect?tab=` → `/team`·`/repos`·`/settings?tab=`, 초대 문단은 이메일·[링크 다시 만들기]), [n8n README](n8n/README.md) 의 `/connect?tab=team`·`/sources` → `/team`·`/settings?tab=inbound`, [CURRENT_HANDOFF](CURRENT_HANDOFF.md) 맨 위, [사내 요청 실연동 1회차](product/INTERNAL_REQUEST_LIVE_RUN_1.md) "준비 (관리자 R)". 문서 문구 테스트(`test_selfhost_files`·`test_n8n_example`)의 옛 주소 단정은 새 주소 단정으로 바꾸고, v25 절·본문에 `/connect?tab=` 없음 단정을 더했다.

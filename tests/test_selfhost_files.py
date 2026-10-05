@@ -746,7 +746,7 @@ def test_selfhost_md_covers_every_section():
     ):
         assert heading in text, heading
     for needle in ("Docker Desktop", "Python 3.13", "claude", "codex", "WORKFLOW_GITHUB_REPOS", "초안 PR",
-                   "Accept new permissions", "/connect?tab=notify"):
+                   "Accept new permissions", "/settings?tab=notify"):
         assert needle in text, needle
 
 
@@ -758,16 +758,32 @@ def test_selfhost_md_covers_team_upgrade_and_remote_access():
     upgrade = text[text.index("## 업그레이드"):text.index("## 제거")]
     for needle in ("v11", "backup create", "관리자 계정", "다시 로그인"):
         assert needle in upgrade, needle
-    for needle in ("/connect?tab=team", "초대 링크", "재설정 링크", "/login/recover", "WORKFLOW_PUBLIC_URL", "Tailscale",
+    for needle in ("/team", "초대 링크", "재설정 링크", "/login/recover", "WORKFLOW_PUBLIC_URL", "Tailscale",
                    "Cloudflare Tunnel", "https://", "개인 웹훅", "/me"):
         assert needle in text, needle
+
+
+def test_selfhost_md_covers_the_v25_setup_screens_upgrade():
+    """phase 23 step 10 — v25 업그레이드(백업 먼저·install.sh·러너 재설치 불필요·옛 주소 303·열린 옛 초대는 이메일 없이),
+    본문의 화면 주소는 새 화면(`/team`·`/repos`·`/settings?tab=`) — 옛 `/connect?tab=` 는 업그레이드 절의 넘김 안내에만."""
+    text = _selfhost_md()
+    upgrade = text[text.index("## 업그레이드"):text.index("## 제거")]
+    v25 = upgrade[upgrade.index("- v25(phase 23)"):]
+    v25 = v25[:v25.index("\n- ", 1)]
+    for needle in ("backup create", "install.sh", "러너 재설치는 필요 없다", "이메일 없음(옛 초대)", "링크 다시 만들기",
+                   "/connect", "303", "/team", "/repos", "/settings"):
+        assert needle in v25, needle
+    body = text[:text.index("## 업그레이드")] + text[text.index("## 제거"):]
+    assert "/connect?tab=" not in body
+    for needle in ("/settings?tab=advanced", "받는 사람 이메일", "[링크 다시 만들기]"):
+        assert needle in body, needle
 
 
 def test_selfhost_md_covers_two_runners_on_one_mac():
     """phase 17 step 10 — 두 번째 멤버 계정으로 [러너 붙이기] → --name b, 같은 Claude 로그인, 해제 방법."""
     text = _selfhost_md()
     section = text[text.index("### 한 Mac 에 러너 두 대"):text.index("## GitHub 연결")]
-    for needle in ("/connect?tab=team", "러너 붙이기", "--name b", "같은 `claude`", "WORKFLOW_CONNECTOR_HOME",
+    for needle in ("/team", "/repos", "러너 붙이기", "--name b", "같은 `claude`", "WORKFLOW_CONNECTOR_HOME",
                    "launchctl bootout gui/$(id -u)/com.workflow.selfhost.connector.b",
                    "com.workflow.selfhost.connector.b.plist", "workflow-connector-b"):
         assert needle in section, needle

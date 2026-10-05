@@ -23,12 +23,16 @@ from uuid import uuid4
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import (
     ActiveExecutionExists,
+    AgentScopeUnknown,
     ArtifactMissing,
     AutostartLocked,
+    CapabilityProtected,
     DuplicateKind,
     DuplicateRule,
     DuplicateStartKey,
     EmailTaken,
+    InviteEmailMismatch,
+    InviteEmailTaken,
     EventConflict,
     HashMismatch,
     InvalidTransition,
@@ -93,6 +97,7 @@ from workflow.domain.execution_policy import TRIAGE_OUTPUT_KIND, is_triage_kind
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain import jira_intake
 from workflow.domain.jira_intake import initial_cursor_ms
+from workflow.domain.kinds import BUILTIN_CAPABILITY_CODES, agent_repository_scope, editable_kinds
 from workflow.domain.assignee_metrics import (
     AgentLabel,
     AgentRunFact,
@@ -933,7 +938,7 @@ RESET_TTL_HOURS = 24
 # 로그인 세션 조회가 돌려주는 멤버 칸 — 비밀번호 해시는 싣지 않는다.
 _LOGIN_MEMBER_COLUMNS = "m.member_id, m.session_id, m.display_name, m.role, m.email, m.created_at, m.disabled_at"
 _INVITE_COLUMNS = ("invite_id, session_id, purpose, role, member_id, created_by_member_id, created_at, expires_at,"
-                   " used_at, used_by_member_id, revoked_at")
+                   " used_at, used_by_member_id, revoked_at, invitee_email, invitee_name")
 
 
 def get_member(conn: Connection, session_id: str, member_id: str) -> Row | None:
@@ -1083,22 +1088,60 @@ def revoke_login_sessions(conn: Connection, member_id: str, *, now: str) -> int:
 
 
 def _insert_link(conn: Connection, session_id: str, *, purpose: str, role: str | None, member_id: str | None,
-                 created_by_member_id: str | None, now: str, ttl_seconds: int) -> tuple[str, str]:
+                 created_by_member_id: str | None, now: str, ttl_seconds: int, invitee_email: str | None = None,
+                 invitee_name: str | None = None) -> tuple[str, str]:
     invite_id, token = f"inv-{secrets.token_hex(6)}", secrets.token_urlsafe(32)
     conn.execute(
         "INSERT INTO member_invites (invite_id, session_id, purpose, role, member_id, token_sha256,"
-        " created_by_member_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " created_by_member_id, created_at, expires_at, invitee_email, invitee_name)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (invite_id, session_id, purpose, role, member_id, _sha256(token), created_by_member_id, now,
-         _plus_seconds(now, ttl_seconds)),
+         _plus_seconds(now, ttl_seconds), invitee_email, invitee_name),
     )
     return invite_id, token
 
 
-def issue_invite(conn: Connection, session_id: str, *, role: str, created_by_member_id: str | None,
-                 now: str) -> tuple[str, str]:
-    """(invite_id, 토큰 원문). 7일 유효."""
-    return _insert_link(conn, session_id, purpose="invite", role=role, member_id=None,
-                        created_by_member_id=created_by_member_id, now=now, ttl_seconds=INVITE_TTL_DAYS * 86400)
+def _open_invite_rows(conn: Connection, session_id: str, *, now: str) -> list[Row]:
+    rows = conn.execute(
+        f"SELECT {_INVITE_COLUMNS} FROM member_invites WHERE session_id = ? AND purpose = 'invite'"
+        " AND used_at IS NULL AND revoked_at IS NULL ORDER BY created_at, invite_id",
+        (session_id,),
+    ).fetchall()
+    return [r for r in rows if _parse(now) < _parse(r["expires_at"])]
+
+
+def issue_invite(conn: Connection, session_id: str, *, role: str, invitee_email: str, invitee_name: str | None = None,
+                 created_by_member_id: str | None, now: str) -> tuple[str, str]:
+    """(invite_id, 토큰 원문). 7일 유효. 받는 사람 이메일이 멤버(비활성 포함)와 겹치면 `EmailTaken`,
+    열린 초대와 겹치면 `InviteEmailTaken`."""
+    email = team.normalize_email(invitee_email)
+    if email is None:
+        raise ValueError("invitee_email")
+    name = None
+    if invitee_name is not None and invitee_name.strip():
+        name = team.clean_display_name(invitee_name)
+        if name is None:
+            raise ValueError("invitee_name")
+    with _tx(conn):
+        if _one(conn, "SELECT 1 FROM members WHERE session_id = ? AND email = ?", (session_id, email)) is not None:
+            raise EmailTaken(email)
+        if any(r["invitee_email"] == email for r in _open_invite_rows(conn, session_id, now=now)):
+            raise InviteEmailTaken(email)
+        return _insert_link(conn, session_id, purpose="invite", role=role, member_id=None,
+                            created_by_member_id=created_by_member_id, now=now,
+                            ttl_seconds=INVITE_TTL_DAYS * 86400, invitee_email=email, invitee_name=name)
+
+
+def reissue_invite(conn: Connection, session_id: str, invite_id: str, *, now: str) -> str:
+    """열린 초대의 토큰·만료를 새로 — 같은 행, 새 토큰 원문을 돌려준다. 옛 토큰은 더 찾히지 않는다.
+    열린 초대가 아니면(재설정 링크·사용·취소·만료·다른 워크스페이스·없음) `NotFound`."""
+    token = secrets.token_urlsafe(32)
+    with _tx(conn):
+        if not any(r["invite_id"] == invite_id for r in _open_invite_rows(conn, session_id, now=now)):
+            raise NotFound(f"invite {invite_id}")
+        conn.execute("UPDATE member_invites SET token_sha256 = ?, expires_at = ? WHERE invite_id = ?",
+                     (_sha256(token), _plus_seconds(now, INVITE_TTL_DAYS * 86400), invite_id))
+    return token
 
 
 def issue_reset_link(conn: Connection, session_id: str, member_id: str, *, created_by_member_id: str | None,
@@ -1143,13 +1186,16 @@ def _mark_link_used(conn: Connection, invite_id: str, member_id: str, now: str) 
 
 def accept_invite(conn: Connection, token: str, *, email: str, display_name: str, password_hash: str,
                   now: str) -> str:
-    """초대로 새 멤버(초대의 역할)를 만든다. 무효 링크 `NotFound`, 이메일 중복 `EmailTaken`(링크는 그대로)."""
+    """초대로 새 멤버(초대의 역할)를 만든다. 무효 링크 `NotFound`, 이메일 중복 `EmailTaken`, 초대의 받는 사람 이메일과
+    다르면 `InviteEmailMismatch`(링크는 그대로). 이메일 없는 옛 초대는 입력 이메일 그대로."""
     normalized = _normalized_email(email)
     member_id = f"mem-{secrets.token_hex(4)}"
     with _tx(conn):
         invite = invite_for_token(conn, token, purpose="invite", now=now)
         if invite is None:
             raise NotFound("invite")
+        if invite["invitee_email"] is not None and invite["invitee_email"] != normalized:
+            raise InviteEmailMismatch(normalized)
         try:
             conn.execute(
                 "INSERT INTO members (member_id, session_id, display_name, role, created_at, email, password_hash)"
@@ -1186,13 +1232,8 @@ def revoke_invite(conn: Connection, session_id: str, invite_id: str, *, now: str
 
 
 def list_open_invites(conn: Connection, session_id: str, *, now: str) -> list[Row]:
-    """쓰지 않은·유효한 초대(재설정 링크 제외), 발급 순. 토큰 해시는 싣지 않는다."""
-    rows = conn.execute(
-        f"SELECT {_INVITE_COLUMNS} FROM member_invites WHERE session_id = ? AND purpose = 'invite'"
-        " AND used_at IS NULL AND revoked_at IS NULL ORDER BY created_at, invite_id",
-        (session_id,),
-    ).fetchall()
-    return [r for r in rows if _parse(now) < _parse(r["expires_at"])]
+    """쓰지 않은·유효한 초대(재설정 링크 제외), 발급 순. 받는 사람 이메일·이름을 싣고 토큰 해시는 싣지 않는다."""
+    return _open_invite_rows(conn, session_id, now=now)
 
 
 def get_session(conn: Connection, session_id: str) -> Row | None:
@@ -1323,6 +1364,72 @@ def list_agents(conn: Connection) -> list[Row]:
 
 def get_agent(conn: Connection, agent_id: str) -> Row | None:
     return _one(conn, "SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
+
+
+def _agent_capabilities(conn: Connection, agent_id: str) -> list[Capability]:
+    row = _one(conn, "SELECT capabilities_json FROM agents WHERE agent_id = ?", (agent_id,))
+    if row is None:
+        raise NotFound(f"agent {agent_id}")
+    return [Capability.model_validate(c) for c in json.loads(row["capabilities_json"])]
+
+
+def _write_capabilities(conn: Connection, agent_id: str, capabilities: Sequence[Capability]) -> None:
+    conn.execute("UPDATE agents SET capabilities_json = ? WHERE agent_id = ?",
+                 (json.dumps([c.model_dump() for c in capabilities], ensure_ascii=False), agent_id))
+
+
+def _add_capability(conn: Connection, agent_id: str, capability: Capability) -> bool:
+    """트랜잭션 없음 — 같은 `code`·`scope` 가 있으면 False, 아니면 끝에 더한다."""
+    capabilities = _agent_capabilities(conn, agent_id)
+    if capability in capabilities:
+        return False
+    _write_capabilities(conn, agent_id, [*capabilities, capability])
+    return True
+
+
+def _remove_capability(conn: Connection, agent_id: str, capability: Capability) -> bool:
+    """트랜잭션 없음 — 같은 `code`·`scope` 하나만 뺀다. 없으면 False. 내장 보호는 부르는 쪽 몫."""
+    capabilities = _agent_capabilities(conn, agent_id)
+    if capability not in capabilities:
+        return False
+    _write_capabilities(conn, agent_id, [c for c in capabilities if c != capability])
+    return True
+
+
+def add_agent_capability(conn: Connection, *, agent_id: str, capability: Capability) -> bool:
+    """능력 하나 붙이기(멱등). 다른 능력·순서 그대로. 설정 번호는 올리지 않는다(ADR-0028)."""
+    with _tx(conn):
+        return _add_capability(conn, agent_id, capability)
+
+
+def remove_agent_capability(conn: Connection, *, agent_id: str, capability: Capability) -> bool:
+    """능력 하나 떼기. 내장 종류의 능력 코드면 CapabilityProtected(먼저 검사)."""
+    if capability.code in BUILTIN_CAPABILITY_CODES:
+        raise CapabilityProtected(capability.code)
+    with _tx(conn):
+        return _remove_capability(conn, agent_id, capability)
+
+
+def set_agent_kinds(conn: Connection, session_id: str, agent_id: str, *, kinds: Sequence[str], now: str) -> None:
+    """팀 화면 "맡을 수 있는 일" — 편집 가능한 종류(`editable_kinds`)마다 `kinds` 에 있으면 그 능력(`repository_id` = 범위
+    값)을 붙이고 없으면 뗀다(한 트랜잭션). 워크스페이스 에이전트 아님 NotFound, 범위 값 없음 AgentScopeUnknown,
+    편집 가능하지 않은 값 ValueError("kinds"). 설정 번호는 올리지 않는다(ADR-0028). `now` 는 시그니처 고정용."""
+    with _tx(conn):
+        if not is_session_agent(conn, session_id, agent_id):
+            raise NotFound(f"agent {agent_id}")
+        specs = editable_kinds(list_kinds(conn, session_id))
+        if not set(kinds) <= {spec.kind for spec in specs}:
+            raise ValueError("kinds")
+        value, reason = agent_repository_scope(_agent_capabilities(conn, agent_id))
+        if value is None:
+            raise AgentScopeUnknown(agent_id, reason)
+        wanted = {spec.capability_code for spec in specs if spec.kind in kinds}  # 같은 능력 코드의 종류는 하나로 본다
+        for code in dict.fromkeys(spec.capability_code for spec in specs):
+            capability = Capability(code=code, scope={"repository_id": value})
+            if code in wanted:
+                _add_capability(conn, agent_id, capability)
+            else:
+                _remove_capability(conn, agent_id, capability)
 
 
 def delete_agent(conn: Connection, agent_id: str) -> None:
@@ -1519,18 +1626,31 @@ def get_kind(conn: Connection, session_id: str, kind: str) -> KindSpec | None:
     return KindSpec.model_validate_json(row["spec_json"]) if row else None
 
 
-def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str, *, member_id: str | None = None) -> None:
-    """같은 kind 가 있으면 DuplicateKind. `validate_*` 검증은 서버 몫 — 여기서는 저장만 한다."""
+def insert_kind(conn: Connection, session_id: str, spec: KindSpec, now: str, *, member_id: str | None = None,
+                agent_ids: Sequence[str] = ()) -> None:
+    """같은 kind 가 있으면 DuplicateKind. `validate_*` 검증은 서버 몫 — 여기서는 저장만 한다.
+    `agent_ids` 각각에 이 종류의 능력(`repository_id` = 에이전트의 범위 값)을 같은 트랜잭션에서 붙인다 — 워크스페이스
+    에이전트가 아니면 NotFound, 범위 키가 `repository_id` 가 아니거나 범위 값이 없으면 AgentScopeUnknown(전부 되돌림)."""
     with _tx(conn):
         if get_kind(conn, session_id, spec.kind) is not None:
             raise DuplicateKind(spec.kind)
         _insert_kind_row(conn, session_id, spec, now)
         bump_config_revision(conn, session_id, area="kind", action="add", subject=spec.kind, member_id=member_id,
                              now=now)
+        for agent_id in agent_ids:
+            if not is_session_agent(conn, session_id, agent_id):
+                raise NotFound(f"agent {agent_id}")
+            value, reason = agent_repository_scope(_agent_capabilities(conn, agent_id))
+            if spec.scope_key != "repository_id":
+                raise AgentScopeUnknown(agent_id, f"scope_key {spec.scope_key}")
+            if value is None:
+                raise AgentScopeUnknown(agent_id, reason)
+            _add_capability(conn, agent_id, Capability(code=spec.capability_code, scope={"repository_id": value}))
 
 
 def delete_kind(conn: Connection, session_id: str, kind: str, *, now: str, member_id: str | None = None) -> None:
-    """내장 → KindProtected. Task 가 쓰거나 규칙이 참조 → KindInUse. 없으면 NotFound."""
+    """내장 → KindProtected. Task 가 쓰거나 규칙이 참조 → KindInUse. 없으면 NotFound.
+    지운 뒤 그 능력 코드를 쓰는 종류가 남지 않으면(내장 코드 제외) 워크스페이스 에이전트에서 그 능력을 뗀다."""
     with _tx(conn):
         spec = get_kind(conn, session_id, kind)
         if spec is None:
@@ -1548,6 +1668,14 @@ def delete_kind(conn: Connection, session_id: str, kind: str, *, now: str, membe
         if used_by_task is not None or used_by_rule is not None:
             raise KindInUse(kind)
         conn.execute("DELETE FROM kinds WHERE session_id = ? AND kind = ?", (session_id, kind))
+        code = spec.capability_code
+        if code not in BUILTIN_CAPABILITY_CODES and all(
+                s.capability_code != code for s in list_kinds(conn, session_id)):
+            for agent in list_session_agents(conn, session_id):  # 그 종류의 능력을 scope 무관하게 뗀다
+                capabilities = _agent_capabilities(conn, agent["agent_id"])
+                kept = [c for c in capabilities if c.code != code]
+                if kept != capabilities:
+                    _write_capabilities(conn, agent["agent_id"], kept)
         bump_config_revision(conn, session_id, area="kind", action="delete", subject=kind, member_id=member_id,
                              now=now)
 

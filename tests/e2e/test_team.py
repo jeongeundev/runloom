@@ -199,7 +199,7 @@ def test_01_first_setup_with_the_token_then_admin_connects_github(world):
 
 
 def test_02_admin_invites_a_member_who_joins_and_logs_in(world):
-    issued = world.http.post("/team/invites", data={"role": "member"})
+    issued = world.http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
     assert issued.status_code == 200, issued.text[:500]
     link = re.search(rf"{re.escape(world.central_url)}/invite/([A-Za-z0-9_-]+)", issued.text)
     assert link, issued.text[:1000]
@@ -217,11 +217,11 @@ def test_02_admin_invites_a_member_who_joins_and_logs_in(world):
     assert MEMBER["display_name"] in member.get("/tasks").text  # 사이드바의 표시 이름
 
     # 관리자 전용 경로는 멤버에게 403 — 팀 탭은 열리지만 멤버·초대 절은 관리자만(phase 16)
-    forbidden = member.get("/connect?tab=notify")
+    forbidden = member.get("/settings?tab=notify")
     assert forbidden.status_code == 403, forbidden.status_code
-    team_tab = member.get("/connect?tab=team")
+    team_tab = member.get("/team")
     assert team_tab.status_code == 200 and 'action="/team/invites"' not in team_tab.text
-    assert member.post("/team/invites", data={"role": "admin"}).status_code == 403
+    assert member.post("/team/invites", data={"role": "admin", "invitee_email": "x@example.com"}).status_code == 403
 
     saved = member.post("/me/webhook", data={"url": world.ctx["personal_url"]})
     assert saved.status_code in (200, 303), saved.text[:500]
@@ -245,7 +245,7 @@ def test_03_member_attaches_the_runner_and_owns_it(world):
     assert connector["owner_member_id"] == world.ctx["member_id"]
     (agent,) = q(world, "SELECT agent_id FROM agents WHERE local_registration_id = ?", REGISTRATION)
     world.ctx["agent_id"] = agent["agent_id"]
-    assert f"소유자 {MEMBER['display_name']}" in world.http.get("/connect?tab=team").text  # 관리자도 소유자를 본다
+    assert f"{MEMBER['display_name']}의 Mac" in world.http.get("/team").text  # 관리자도 소유자를 본다(phase 23 step 6 문구)
 
     world.spawn("connector", [py, "-m", "workflow.connector", "run", "--adapter", "codex",
                               "--claim-interval", "0.5", "--heartbeat-interval", "1"], world.connector_env)
@@ -335,7 +335,7 @@ def test_07_team_secrets_stay_out_of_the_db_logs_and_pages(world):
         text = "\n".join(line for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
                          if not line.startswith(f"httpx INFO HTTP Request: POST {world.central_url}/"))
         leaked += [f"{name}@{path.name}" for name, value in needles.items() if value and value in text]
-    for page in ("/tasks", "/me", "/connect?tab=team", "/connect?tab=advanced", "/connect?tab=sources"):
+    for page in ("/tasks", "/me", "/team", "/settings?tab=advanced", "/repos"):
         body = member_http(world).get(page).text
         leaked += [f"{name}@{page}" for name, value in needles.items() if value and value in body]
     assert leaked == []

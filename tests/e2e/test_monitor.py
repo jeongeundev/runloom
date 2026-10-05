@@ -284,7 +284,7 @@ def test_01_admin_connects_github_attaches_a_claude_runner_and_invites_a_member(
     (source,) = http.get("/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
-    issued = http.post("/team/invites", data={"role": "member"})
+    issued = http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
     link = re.search(rf"{re.escape(world.central_url)}/invite/([A-Za-z0-9_-]+)", issued.text)
     assert link, issued.text[:1000]
     assert member.post(f"/invite/{link.group(1)}", data=MEMBER).status_code == 303
@@ -376,7 +376,7 @@ def test_05_criteria_v2_then_run4_is_accepted_reworked_once_and_merged(world):
 def test_06_autostart_threshold_change_shows_the_preview_line(world):
     saved = world.http.post("/operator/triage/autostart/bug_fix", data={"enabled": "", "threshold": "0.70"})
     assert saved.status_code == 303, saved.text[:500]
-    html = unescape(page(world, "/connect", tab="triage"))
+    html = unescape(page(world, "/settings", tab="triage"))
     # 0.70 이상 bug_fix 제안 = RUN-1(0.95 제안대로)·RUN-2(0.85 다르게)·RUN-4(0.75 제안대로), 병합 둘 다
     assert "지금 기준값 0.70 이상 판단 3건 — 사람 일치 2/3 · 병합 2/2" in html
 

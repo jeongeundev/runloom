@@ -16,7 +16,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
-from workflow.contracts.v1 import BUILTIN_KINDS, ArtifactMeta, ExecutionRequest
+from workflow.contracts.github import GitHubSourceConfig
+from workflow.contracts.v1 import BUILTIN_KINDS, KIND_PATTERN, ArtifactMeta, Capability, ExecutionRequest
+from workflow.domain.selection import select_agent
+from workflow.server import web as web_module
+from workflow.server import work_actions
 from workflow.server.app import create_app
 from workflow.server.auth import (
     LOGIN_COOKIE,
@@ -175,10 +179,10 @@ def seed_judged_fix(client, conn, store, settings, task_a: str, *, bundle: bool 
 
 
 def test_app_home_has_work_toolbar_with_direct_register(web):
-    """phase 16: 홈 = 업무 화면. 에이전트 구역은 빠지고 연결 화면(사이드바 `연결`)으로 간다."""
+    """phase 16: 홈 = 업무 화면. 에이전트 구역은 빠지고 팀 화면(사이드바 `팀`, phase 23)으로 간다."""
     text = web.get("/tasks").text
     assert 'href="/tasks/new"' in text  # 시연 예시 없이 직접 등록
-    assert 'href="/connect"' in text
+    assert 'href="/team"' in text and 'href="/connect"' not in text
     assert 'href="/"' in text  # 사이드바 브랜드 → `/` (로그인 상태면 /tasks)
     assert '/static/logo.jpg' not in text  # 로고는 랜딩에만
 
@@ -581,7 +585,7 @@ def test_agents_pages_hide_credentials(web, conn):
         "capabilities": [{"code": "code.review", "scope": {"repository_id": REPOSITORY}}],
     })
     repo.register_session_agent(conn, SESSION, "agent-api-review", NOW)
-    listing = web.get("/connect?tab=team")
+    listing = web.get("/team")
     assert listing.status_code == 200
     assert "agent-api-review" in listing.text and "agent-codex-mac" in listing.text
     assert "env:REVIEW_API_TOKEN" not in listing.text
@@ -949,7 +953,7 @@ def test_operator_issues_connect_code_and_exchange(app, web, conn, settings):
     """셀프호스트 워크스페이스 로그인이 곧 운영자다 — 운영자 화면에서 연결 코드를 발급하고 러너가 교환한다."""
     assert repo.get_session(conn, session_id_of(web, settings))["is_operator"] == 1
 
-    page = web.get("/connect?tab=advanced")
+    page = web.get("/settings?tab=advanced")
     assert page.status_code == 200
     assert 'action="/operator/connect-codes"' in page.text
     assert "개인 Codex" in page.text
@@ -966,7 +970,7 @@ def test_operator_issues_connect_code_and_exchange(app, web, conn, settings):
     exchanged = connector.post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
     assert exchanged.status_code == 200
     assert exchanged.json()["token"].startswith("wfc_")
-    assert code in web.get("/connect?tab=advanced").text  # 목록에 사용됨으로 남는다
+    assert code in web.get("/settings?tab=advanced").text  # 목록에 사용됨으로 남는다
 
 
 def test_operator_revokes_unused_connect_code(web, conn):
@@ -997,7 +1001,7 @@ def test_operator_registers_and_deletes_agent(web, conn):
     assert row["local_registration_id"] == "local-other"
     # 운영자 = 워크스페이스 — 등록하면 바로 워크스페이스에 붙어 목록·후보에 들어간다 (카탈로그 등록 단계 대신)
     assert repo.is_session_agent(conn, SESSION, "agent-claude-mac")
-    assert "agent-claude-mac" in web.get("/connect?tab=team").text
+    assert "agent-claude-mac" in web.get("/team").text
 
     bad = web.post("/operator/agents", data={
         "agent_id": "agent-api-2", "name": "x", "owner_scope": "company", "connection_type": "api",
@@ -1039,7 +1043,7 @@ def test_work_screen_replaces_all_tasks_section_without_merge_queue_or_usage(web
     page = web.get("/tasks?closed=all").text
     assert len(re.findall(r'<tr class="work-row" data-work-key=', page)) == 1  # 다른 워크스페이스 업무는 없다
     assert repo.get_task(conn, task_id)["title"] in page
-    advanced = web.get("/connect?tab=advanced").text
+    advanced = web.get("/settings?tab=advanced").text
     assert "모든 세션 업무" not in advanced
     # 병합 확인 대기열·진단 사용량은 없다 (ADR-0019)
     for text in (page, advanced):
@@ -1051,7 +1055,7 @@ def test_work_screen_replaces_all_tasks_section_without_merge_queue_or_usage(web
 
 
 def test_operator_token_never_appears_in_html(web):
-    for path in ("/tasks", "/connect?tab=advanced", "/connect?tab=team", "/tasks/new"):
+    for path in ("/tasks", "/settings?tab=advanced", "/team", "/tasks/new"):
         assert "test-operator-token" not in web.get(path).text
 
 
@@ -1094,18 +1098,18 @@ def rule_form(**overrides) -> dict:
 def register_kind(client, **overrides) -> None:
     response = client.post("/kinds", data=kind_form(**overrides), follow_redirects=False)
     assert response.status_code == 303, response.text
-    assert response.headers["location"] == "/connect?tab=kinds"
+    assert response.headers["location"] == "/settings?tab=kinds"
 
 
 def register_rule(client, **overrides) -> None:
     response = client.post("/rules", data=rule_form(**overrides), follow_redirects=False)
     assert response.status_code == 303, response.text
-    assert response.headers["location"] == "/connect?tab=kinds"
+    assert response.headers["location"] == "/settings?tab=kinds"
 
 
 def kinds_page(client) -> str:
     """엔티티를 복원한 페이지 텍스트 — 규칙 한 줄의 `-->` 가 `--&gt;` 로 이스케이프되므로."""
-    response = client.get("/connect?tab=kinds")
+    response = client.get("/settings?tab=kinds")
     assert response.status_code == 200, response.text
     return html_lib.unescape(response.text)
 
@@ -1126,7 +1130,7 @@ def test_kinds_page_shows_builtin_kinds_and_rule_without_delete_button(web):
     assert text.count(">내장<") == 3  # 내장 전부 — bug_fix·code_review (ADR-0019)·triage (ADR-0025)
     assert 'action="/kinds/bug_fix/delete"' not in text and 'action="/kinds/code_review/delete"' not in text
     # 내장 규칙 한 줄 텍스트 — 그래프·화살표 그림 없음, 삭제 가능
-    assert "버그 수정 --[ready_for_review]--> 커밋 검토" in text
+    assert "버그 수정 — 결과 검토 가능 → 커밋 검토" in text
     assert text.count('action="/rules/') == 1 and "/delete" in text  # 내장 규칙 전부 (bug_fix → code_review 하나)
     assert "규칙이 없으면 그 결과 뒤 후속은 사람이 시작합니다" in text
     assert 'action="/kinds"' in text and 'action="/rules"' in text
@@ -1202,11 +1206,213 @@ def test_register_kind_with_phase8_builtin_name_409(web, kind):
     assert response.status_code == 409 and "kind_exists" in response.text
 
 
+# --- 종류 등록 폼 — 이름·지시·결과값·맡을 에이전트 (phase 23 step 5, ARCHITECTURE "종류 폼과 에이전트 능력") --------
+
+
+def add_runner_agent(conn, agent_id: str, name: str, repository: str = REPOSITORY) -> str:
+    """러너 등록 모양 에이전트 하나 더(내장 능력의 repository_id 가 범위 값)."""
+    repo.upsert_agent(conn, {
+        "agent_id": agent_id, "name": name, "owner_scope": "personal", "connection_type": "local",
+        "local_registration_id": f"reg-{agent_id}",
+        "capabilities": [{"code": "code.fix", "scope": {"repository_id": repository}}],
+        "connection_state": "unknown",
+    })
+    repo.register_session_agent(conn, SESSION, agent_id, NOW)
+    return agent_id
+
+
+def add_manual_agent(conn, agent_id: str = "agent-ops", name: str = "운영 에이전트") -> str:
+    """수동 등록 모양 — 내장 능력이 없어 범위 값(저장소)을 정할 수 없다."""
+    repo.upsert_agent(conn, {
+        "agent_id": agent_id, "name": name, "owner_scope": "company", "connection_type": "api",
+        "api_url": "http://127.0.0.1:8101", "credential_ref": "env:OPS_TOKEN",
+        "capabilities": [{"code": "ops.check", "scope": {"workflow_id": "nightly"}}],
+        "connection_state": "unknown",
+    })
+    repo.register_session_agent(conn, SESSION, agent_id, NOW)
+    return agent_id
+
+
+def kind_form_section(text: str) -> str:
+    return text[text.index('action="/kinds"'):text.index("</form>", text.index('action="/kinds"'))]
+
+
+def caps_of(conn, agent_id: str) -> list[dict]:
+    return json.loads(repo.get_agent(conn, agent_id)["capabilities_json"])
+
+
+def test_kind_form_asks_basics_and_folds_internal_fields_into_advanced(web, conn):
+    add_runner_agent(conn, "agent-shop", "쇼핑 Codex", repository="shop-repo")
+    add_manual_agent(conn)
+    form = html_lib.unescape(kind_form_section(web.get("/settings?tab=kinds").text))
+    advanced_at = form.index("data-kind-advanced")
+    for name in ('name="label"', 'name="instructions"', 'name="outcomes"', 'name="agent_ids"'):
+        assert -1 < form.index(name) < advanced_at, name
+    for name in ('name="kind"', 'name="capability_code"', 'name="scope_key"', 'name="input_kinds"'):
+        assert form.index(name) > advanced_at, name
+    assert 'value="done, needs_information"' in form and 'value="repository_id"' in form
+    assert 'name="kind" required' not in form and 'id="kind" name="kind" required' not in form
+    # 줄 = 이름 · 저장소 · 소유자의 Mac(소유자 없으면 공용)
+    assert f"개인 Codex · {REPOSITORY} · 공용" in form and "쇼핑 Codex · shop-repo · 공용" in form
+    # 범위 값이 없는 에이전트는 고를 수 없다 — disabled + 이유
+    ops = form[form.index('value="agent-ops"') - 120:form.index("운영 에이전트") + 200]
+    assert "disabled" in ops and "러너로 연결한 에이전트만 고를 수 있습니다(저장소를 정할 수 없음)" in ops
+    assert "disabled" not in form[form.index('value="agent-shop"') - 80:form.index('value="agent-shop"') + 20]
+    # 받는 산출물 — 라벨 먼저, 내부 이름은 흐리게
+    assert '수정 결과 <span class="muted small mono">code_change_result</span>' in form
+
+
+def test_kind_form_line_shows_owner_mac_and_source_repository_name(web, conn):
+    admin = repo.find_member_by_email(conn, SESSION, ADMIN_EMAIL)
+    conn.execute("INSERT INTO connectors (connector_id, token_sha256, created_at, owner_member_id) VALUES (?, ?, ?, ?)",
+                 ("conn-owned", "0" * 64, NOW, admin["member_id"]))
+    conn.execute("UPDATE agents SET connector_id = 'conn-owned' WHERE agent_id = 'agent-codex-mac'")
+    conn.commit()
+    form = html_lib.unescape(kind_form_section(web.get("/settings?tab=kinds").text))
+    assert f"개인 Codex · {REPOSITORY} · {admin['display_name']}의 Mac" in form
+    # 범위 값이 GitHub 소스의 workflow_repository_id 면 저장소 이름(owner/name)으로
+    repo.save_github_source(conn, SESSION, GitHubSourceConfig(
+        source_id="ghs-1a2b3c4d", repository_full_name="acme/report", workflow_repository_id=REPOSITORY,
+        label_filter=[], selected_issue_numbers=[], start_at="2026-09-01T00:00:00Z", run_mode="manual",
+        intake="all_open", enabled=True, config_revision=1,
+    ), NOW)
+    form = html_lib.unescape(kind_form_section(web.get("/settings?tab=kinds").text))
+    assert f"개인 Codex · acme/report · {admin['display_name']}의 Mac" in form
+
+
+def test_kind_form_without_agents_says_attach_a_runner(web, conn):
+    repo.unregister_session_agent(conn, SESSION, "agent-codex-mac")
+    conn.commit()
+    form = kind_form_section(web.get("/settings?tab=kinds").text)
+    assert "아직 에이전트가 없습니다 — 저장소 화면에서 러너를 붙이세요" in re.sub(r"<[^>]+>", "", form)
+    assert 'href="/repos"' in form and 'name="agent_ids"' not in form
+
+
+def test_register_kind_with_basics_only_makes_auto_id_and_attaches_chosen_agents(web, conn):
+    second = add_runner_agent(conn, "agent-claude", "Claude Code", repository="shop-repo")
+    bystander = add_runner_agent(conn, "agent-idle", "쉬는 Codex")
+    idle_before = caps_of(conn, bystander)
+    response = web.post("/kinds", data={
+        "label": "장애 조사", "instructions": "로그를 읽고 원인을 적으세요.", "outcomes": "cause_found, unresolved",
+        "agent_ids": ["agent-codex-mac", second],
+    }, follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (303, "/settings?tab=kinds"), response.text
+
+    [spec] = [s for s in repo.list_kinds(conn, SESSION) if not s.builtin]
+    assert re.fullmatch(r"k_[0-9a-f]{6}", spec.kind) and re.fullmatch(KIND_PATTERN, spec.kind)
+    assert (spec.label, spec.capability_code, spec.scope_key) == ("장애 조사", spec.kind, "repository_id")
+    assert spec.outcomes == ["cause_found", "unresolved"] and spec.input_kinds == []
+    assert {"code": spec.kind, "scope": {"repository_id": REPOSITORY}} in caps_of(conn, "agent-codex-mac")
+    assert {"code": spec.kind, "scope": {"repository_id": "shop-repo"}} in caps_of(conn, second)
+    assert caps_of(conn, bystander) == idle_before
+    # 후보에 나온다 — 등록부 + 능력 매칭
+    required = Capability(code=spec.kind, scope={"repository_id": REPOSITORY})
+    record = select_agent("t-1", required, work_actions.candidates(conn, SESSION))
+    assert (record.status, record.selected_agent_id) == ("selected", "agent-codex-mac")
+    # 카드 — 맡을 수 있는 에이전트 이름
+    card = kind_card(web, "장애 조사")
+    assert "맡을 수 있는 에이전트" in card and "개인 Codex" in card and "Claude Code" in card
+    assert "쉬는 Codex" not in card
+
+
+def test_register_kind_advanced_fields_and_identifier_conflict(web, conn):
+    register_kind(web, kind="audit", label="감사", capability_code="audit.check", input_kinds=["diff"],
+                  outcomes="ok, not_ok", agent_ids=["agent-codex-mac"])
+    spec = repo.get_kind(conn, SESSION, "audit")
+    assert (spec.capability_code, spec.input_kinds) == ("audit.check", ["diff"])
+    assert {"code": "audit.check", "scope": {"repository_id": REPOSITORY}} in caps_of(conn, "agent-codex-mac")
+
+    again = web.post("/kinds", data=kind_form(kind="audit", label="감사 2"), follow_redirects=False)
+    assert again.status_code == 409 and "kind_exists" in again.text
+    same_label = web.post("/kinds", data=kind_form(kind="audit_two", label=" 감사 "), follow_redirects=False)
+    assert same_label.status_code == 409 and "kind_label_exists" in same_label.text
+    assert "같은 이름의 종류가 이미 있습니다: 감사" in html_lib.unescape(same_label.text)
+    builtin_label = web.post("/kinds", data=kind_form(kind="fix_two", label="버그 수정"), follow_redirects=False)
+    assert builtin_label.status_code == 409 and "kind_label_exists" in builtin_label.text
+    assert repo.get_kind(conn, SESSION, "audit_two") is None and repo.get_kind(conn, SESSION, "fix_two") is None
+
+
+def test_register_kind_blank_scope_key_defaults_to_repository_id(web, conn):
+    register_kind(web, scope_key="")
+    assert repo.get_kind(conn, SESSION, "review").scope_key == "repository_id"
+
+
+def test_auto_kind_retries_on_collision_and_gives_up_after_limit(web, conn, monkeypatch):
+    register_kind(web, kind="k_aaaaaa", label="먼저")
+    draws = iter(["aaaaaa", "bbbbbb"])
+    monkeypatch.setattr(web_module.secrets, "token_hex", lambda n: next(draws))
+    register_kind(web, kind="", label="다음", capability_code="")
+    assert repo.get_kind(conn, SESSION, "k_bbbbbb").label == "다음"
+
+    monkeypatch.setattr(web_module.secrets, "token_hex", lambda n: "aaaaaa")
+    response = web.post("/kinds", data=kind_form(kind="", label="또"), follow_redirects=False)
+    assert response.status_code == 409 and "kind_exists" in response.text
+    assert "종류 식별자를 만들지 못했습니다 — 다시 시도하세요" in html_lib.unescape(response.text)
+
+
+def test_register_kind_rejects_agents_that_cannot_be_chosen_even_forged(web, conn):
+    ops = add_manual_agent(conn)
+    before = caps_of(conn, "agent-codex-mac")
+
+    forged = web.post("/kinds", data=kind_form(agent_ids=["agent-codex-mac", ops]), follow_redirects=False)
+    assert forged.status_code == 422 and "agent_scope_unknown" in forged.text
+    assert "운영 에이전트 은 고를 수 없습니다 — 러너로 연결한 에이전트만 고를 수 있습니다" in html_lib.unescape(forged.text)
+
+    unknown = web.post("/kinds", data=kind_form(agent_ids=["agent-nope"]), follow_redirects=False)
+    assert unknown.status_code == 422 and "invalid_field" in unknown.text and "등록하지 않은 에이전트입니다." in unknown.text
+
+    repo.create_session(conn, "sess-other", NOW)
+    add_runner_agent(conn, "agent-elsewhere", "남의 Codex")
+    repo.unregister_session_agent(conn, SESSION, "agent-elsewhere")
+    repo.register_session_agent(conn, "sess-other", "agent-elsewhere", NOW)
+    conn.commit()
+    outsider = web.post("/kinds", data=kind_form(agent_ids=["agent-elsewhere"]), follow_redirects=False)
+    assert outsider.status_code == 422 and "등록하지 않은 에이전트입니다." in outsider.text
+
+    scoped = web.post("/kinds", data=kind_form(scope_key="workflow_id", agent_ids=["agent-codex-mac"]),
+                      follow_redirects=False)
+    assert scoped.status_code == 422 and "invalid_field" in scoped.text and "<code>agent_ids</code>" in scoped.text
+    assert "범위 키가 repository_id 가 아닌 종류는 맡을 에이전트를 여기서 고를 수 없습니다" in html_lib.unescape(scoped.text)
+
+    assert repo.get_kind(conn, SESSION, "review") is None  # 하나라도 실패하면 아무것도 만들지 않는다
+    assert caps_of(conn, "agent-codex-mac") == before
+
+
+def kind_cards(client) -> list[str]:
+    """종류 카드 묶음(종류 등록 폼 앞까지)을 카드별로."""
+    text = html_lib.unescape(client.get("/settings?tab=kinds").text)
+    start = text.index('<div class="agent-grid">')
+    return text[start:text.index("<h2", start)].split('<div class="card kind-card">')[1:]
+
+
+def kind_card(client, label: str) -> str:
+    return next(card for card in kind_cards(client) if f'<div class="name">{label}' in card)
+
+
+def test_kind_cards_keep_internal_codes_inside_detail(web, conn):
+    register_kind(web, kind="audit", label="감사", capability_code="audit.check", input_kinds=[], outcomes="ok")
+    text = html_lib.unescape(web.get("/settings?tab=kinds").text)
+    cards = "".join(kind_cards(web))
+    outside = re.sub(r'<details class="detail">.*?</details>', "", cards, flags=re.S)
+    outside = re.sub(r"<[^>]+>", " ", outside)
+    for code in ("bug_fix", "code_review", "code.fix", "code.review", "code.triage", "audit.check", "repository_id"):
+        assert not re.search(rf"\b{re.escape(code)}\b", outside), code  # 산출물 칩(code_review_result)은 별개
+    assert 'class="meta mono"' not in cards
+    details = re.findall(r'<details class="detail"><summary>자세히</summary>(.*?)</details>', cards, flags=re.S)
+    assert len(details) == len(repo.list_kinds(conn, SESSION))
+    assert any("code.fix" in d and "bug_fix" in d and "repository_id" in d for d in details)
+    assert any("audit" in d and "audit.check" in d for d in details)
+    fix_card = kind_card(web, "버그 수정")
+    assert "맡을 수 있는 에이전트" in fix_card and "개인 Codex" in fix_card
+    assert "아직 없음 — 팀 화면에서 붙입니다" in kind_card(web, "감사")
+    assert 'action="/kinds/audit/delete"' in text and 'action="/kinds/bug_fix/delete"' not in text
+
+
 def test_register_rule_appears_as_one_line(web, conn, settings):
     register_kind(web)
     register_rule(web)
     text = kinds_page(web)
-    assert "버그 수정 --[ready_for_review]--> 검토" in text
+    assert "버그 수정 — 결과 검토 가능 → 검토" in text
     assert text.count('action="/rules/') == 2
     rules = repo.list_rules(conn, session_id_of(web, settings))
     assert [(r.from_kind, r.to_kind) for _, r in rules] == [("bug_fix", "code_review"), ("bug_fix", "review")]
@@ -1293,7 +1499,7 @@ def test_delete_kind_protected_in_use_then_success(web, conn, settings):
     rule_id = next(rid for rid, r in repo.list_rules(conn, session_id) if r.to_kind == "audit")
     assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 303
     deleted = web.post("/kinds/audit/delete", follow_redirects=False)
-    assert deleted.status_code == 303 and deleted.headers["location"] == "/connect?tab=kinds"
+    assert deleted.status_code == 303 and deleted.headers["location"] == "/settings?tab=kinds"
     assert repo.get_kind(conn, session_id, "audit") is None
     assert 'action="/kinds/audit/delete"' not in kinds_page(web)
     assert web.post("/kinds/audit/delete", follow_redirects=False).status_code == 404
@@ -1303,9 +1509,9 @@ def test_delete_rule_then_404(web, conn, settings):
     session_id = session_id_of(web, settings)
     (rule_id, _), = [(rid, r) for rid, r in repo.list_rules(conn, session_id) if r.from_kind == "bug_fix"]
     response = web.post(f"/rules/{rule_id}/delete", follow_redirects=False)
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=kinds"
+    assert response.status_code == 303 and response.headers["location"] == "/settings?tab=kinds"
     assert repo.list_rules(conn, session_id) == []
-    assert "버그 수정 --[ready_for_review]--> 커밋 검토" not in kinds_page(web)
+    assert "버그 수정 — 결과 검토 가능 → 커밋 검토" not in kinds_page(web)
     assert web.post(f"/rules/{rule_id}/delete", follow_redirects=False).status_code == 404
     assert web.post("/rules/rule-none/delete", follow_redirects=False).status_code == 404
 
@@ -1477,12 +1683,12 @@ def test_agent_pages_show_kind_label_next_to_capability_code(review_web):
     codex = html_lib.unescape(review_web.get("/agents/agent-codex-mac").text)
     assert "code.fix · repository_id=demo-report-repo" in codex and "(버그 수정)" in codex
     assert "code.review · repository_id=demo-report-repo" in codex and "(커밋 검토)" in codex
-    operator = html_lib.unescape(review_web.get("/connect?tab=advanced").text)
+    operator = html_lib.unescape(review_web.get("/settings?tab=advanced").text)
     assert "(버그 수정)" in operator and "(검토)" in operator
 
 
 def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_otherwise(web, conn):
-    page = html_lib.unescape(web.get("/connect?tab=advanced").text)
+    page = html_lib.unescape(web.get("/settings?tab=advanced").text)
     assert 'name="scope_key"' in page and 'name="capability_code"' in page
     assert "code.fix</span> (repository_id)" in page and "code.review</span> (repository_id)" in page  # 내장 코드 안내
     assert "operations.diagnose" not in page and "workflow_id" not in page
@@ -1514,7 +1720,7 @@ def test_operator_register_agent_scope_key_defaults_for_builtin_and_required_oth
     assert json.loads(repo.get_agent(conn, REVIEW_AGENT)["capabilities_json"]) == [
         {"code": "review", "scope": {"repository_id": "demo-report-repo"}}
     ]
-    page = html_lib.unescape(web.get("/connect?tab=advanced").text)
+    page = html_lib.unescape(web.get("/settings?tab=advanced").text)
     assert "review · repository_id=demo-report-repo" in page  # 운영자 목록의 능력 표시
 
 
@@ -1554,7 +1760,7 @@ INBOUND_ITEM = {
 
 def sources_page(client) -> str:
     """엔티티를 복원한 페이지 텍스트 — curl 예시의 따옴표가 `&#39;` 로 이스케이프되므로."""
-    response = client.get("/connect?tab=sources")
+    response = client.get("/settings?tab=inbound")
     assert response.status_code == 200, response.text
     return html_lib.unescape(response.text)
 
@@ -1600,10 +1806,10 @@ def test_sources_page_shows_inbound_url_empty_state_example_and_sidebar_link(web
     assert "docs/n8n/README.md" in text
     # 허용 목록이 비어 있으면 callback_url 은 거부된다는 안내
     assert "callback 허용 목록이 비어 있어" in text and "WORKFLOW_CALLBACK_HOSTS" in text
-    # 사이드바 — 입구는 연결 화면으로 모인다(phase 16): 가져올 곳 탭에서는 `연결` 이 활성
-    nav = nav_of(web.get("/connect?tab=sources").text)
-    assert '<a href="/connect" class="active">연결</a>' in nav
-    assert '<a href="/connect">연결</a>' in nav_of(web.get("/tasks").text)
+    # 사이드바 — 입구는 설정 화면 n8n 입구 탭(phase 23): 그 탭에서는 `설정` 이 활성
+    nav = nav_of(web.get("/settings?tab=inbound").text)
+    assert '<a href="/settings" class="active">설정</a>' in nav
+    assert '<a href="/settings">설정</a>' in nav_of(web.get("/tasks").text)
     # GLOSSARY 금지 표현·n8n 비판 문구 없음
     lowered = text.lower()
     for phrase in ("webhook secret", "api key", "inbound token", "whitelist"):
@@ -1685,7 +1891,7 @@ def test_revoke_token_marks_row_and_blocks_inbound_api(web, conn, settings):
     assert inbound_post(web, token).status_code == 201
 
     response = web.post(f"/sources/tokens/{token_id}/revoke", follow_redirects=False)
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=sources"
+    assert response.status_code == 303 and response.headers["location"] == "/settings?tab=inbound"
     assert repo.list_source_tokens(conn, session_id)[0]["revoked_at"] is not None
     text = sources_page(web)
     assert "취소됨" in text
@@ -1710,7 +1916,7 @@ def test_cannot_see_or_revoke_token_of_other_workspace(web, conn):
 
 
 def test_token_issue_is_not_on_operator_page(web):
-    text = web.get("/connect?tab=advanced").text
+    text = web.get("/settings?tab=advanced").text
     assert 'action="/sources/tokens"' not in text and "입구 토큰" not in text
 
 
@@ -1760,13 +1966,18 @@ def app_log_text(caplog) -> str:
     return "\n".join(r.getMessage() for r in caplog.records if not r.name.startswith("httpx"))
 
 
-def invite_token(conn, role: str = "member") -> str:
-    return repo.issue_invite(conn, SESSION, role=role, created_by_member_id=admin_id(conn), now=utc_now())[1]
+def invite_token(conn, role: str = "member", *, email: str | None = "new@example.com") -> str:
+    """`email=None` 은 이메일 없는 옛 초대(v24 이전) — 가입 화면에서 아무 이메일이나 넣는다."""
+    invite_id, token = repo.issue_invite(conn, SESSION, role=role, invitee_email=email or "old@example.com",
+                                         created_by_member_id=admin_id(conn), now=utc_now())
+    if email is None:
+        conn.execute("UPDATE member_invites SET invitee_email = NULL WHERE invite_id = ?", (invite_id,))
+    return token
 
 
 def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn):
     client = TestClient(selfhost)
-    for path in ("/", "/tasks", "/tasks/new", "/connect?tab=team", "/connect?tab=advanced", "/monitor"):
+    for path in ("/", "/tasks", "/tasks/new", "/team", "/settings?tab=advanced", "/monitor"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303, path
         assert response.headers["location"] == "/login", path
@@ -1868,11 +2079,11 @@ def test_email_login_from_another_browser_shares_the_workspace(selfhost, conn):
     shared = kind_form(kind="shared_check", label="브라우저 공유 확인", capability_code="shared_check")
     assert first.post("/kinds", data=shared, follow_redirects=False).status_code == 303
     second = TestClient(selfhost)  # 다른 브라우저 — 쿠키 없음
-    assert second.get("/connect?tab=kinds", follow_redirects=False).status_code == 303
+    assert second.get("/settings?tab=kinds", follow_redirects=False).status_code == 303
     response = email_login(second, email="ADMIN@example.com")
     assert response.status_code == 303 and response.headers["location"] == "/"
     assert second.cookies[LOGIN_COOKIE] != first.cookies[LOGIN_COOKIE]  # 브라우저마다 로그인 세션
-    assert "브라우저 공유 확인" in second.get("/connect?tab=kinds").text
+    assert "브라우저 공유 확인" in second.get("/settings?tab=kinds").text
     assert session_count(conn) == 1
 
 
@@ -1986,7 +2197,7 @@ def test_recover_throttles_on_the_recover_key_and_is_closed_before_setup(selfhos
 
 def test_invite_link_signs_up_member_and_logs_in_once(selfhost, conn, caplog):
     assert setup(TestClient(selfhost)).status_code == 303
-    token = invite_token(conn, role="member")
+    token = invite_token(conn, role="member", email="kim@example.com")
     client = TestClient(selfhost)
     page = client.get(f"/invite/{token}")
     assert page.status_code == 200
@@ -2013,10 +2224,10 @@ def test_invite_link_signs_up_member_and_logs_in_once(selfhost, conn, caplog):
 
 def test_invalid_expired_or_revoked_invite_shows_the_same_notice(selfhost, conn):
     assert setup(TestClient(selfhost)).status_code == 303
-    expired = repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin_id(conn),
-                                now="2000-01-01T00:00:00Z")[1]
-    revoked_id, revoked = repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin_id(conn),
-                                            now=utc_now())
+    expired = repo.issue_invite(conn, SESSION, role="member", invitee_email="x@example.com",
+                                created_by_member_id=admin_id(conn), now="2000-01-01T00:00:00Z")[1]
+    revoked_id, revoked = repo.issue_invite(conn, SESSION, role="member", invitee_email="x@example.com",
+                                            created_by_member_id=admin_id(conn), now=utc_now())
     repo.revoke_invite(conn, SESSION, revoked_id, now=utc_now())
     client = TestClient(selfhost)
     for token in ("not-a-real-token", expired, revoked):
@@ -2032,7 +2243,7 @@ def test_invalid_expired_or_revoked_invite_shows_the_same_notice(selfhost, conn)
 
 def test_invite_with_taken_email_is_422_and_keeps_the_link(selfhost, conn):
     assert setup(TestClient(selfhost)).status_code == 303
-    token = invite_token(conn)
+    token = invite_token(conn, email=None)  # 이메일 없는 옛 초대만 가입 때 이메일을 고른다
     client = TestClient(selfhost)
     taken = client.post(f"/invite/{token}", data={"email": ADMIN_EMAIL, "display_name": "중복",
                                                   "password": MEMBER_PASSWORD}, follow_redirects=False)
@@ -2165,7 +2376,7 @@ def test_demo_routes_and_landing_assets_are_gone(web, conn):
         allowed = (404, 405) if method == "post" else (404,)
         assert response.status_code in allowed, (method, path, response.status_code)
     assert repo.is_session_agent(conn, SESSION, "agent-codex-mac")  # 해제 경로가 없으니 그대로
-    for path in ("/tasks", "/connect?tab=team", "/tasks/new"):
+    for path in ("/tasks", "/team", "/tasks/new"):
         text = web.get(path).text
         assert "/agents/register" not in text and "/tasks/import" not in text, path
 
@@ -2217,7 +2428,7 @@ def test_selfhost_navigation_after_login_has_logout_metrics_github(selfhost, set
     html = client.get("/tasks").text
     sidebar = html[html.index('class="sidebar'):html.index('class="main')]
     assert 'action="/logout"' in sidebar and "로그아웃" in sidebar
-    assert 'href="/monitor"' in sidebar and 'href="/connect"' in sidebar
+    assert 'href="/monitor"' in sidebar and 'href="/repos"' in sidebar
     assert 'href="/tasks/new"' not in sidebar and 'href="/tasks/new"' in html  # 업무 등록은 도구 막대(phase 16)
     assert_no_secrets(html, settings)
 
@@ -2229,8 +2440,9 @@ def test_selfhost_hides_demo_only_elements(settings):
     pages = {
         "/tasks": DEMO_ONLY_TASKS,
         "/tasks/new": DEMO_ONLY_TASK_NEW,
-        "/connect?tab=advanced": DEMO_ONLY_OPERATOR,
-        "/connect?tab=sources": DEMO_ONLY_SOURCES,
+        "/settings?tab=advanced": DEMO_ONLY_OPERATOR,
+        "/repos": DEMO_ONLY_SOURCES,
+        "/settings?tab=inbound": DEMO_ONLY_SOURCES,
         f"/tasks/{task_id}": DEMO_ONLY_DETAIL,
         f"/tasks/{task_id}/live": DEMO_ONLY_DETAIL,
     }

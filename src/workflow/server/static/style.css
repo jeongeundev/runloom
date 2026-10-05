@@ -173,6 +173,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .alert { background: var(--bg-failed); color: var(--state-failed); border: 1px solid var(--border);
          border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
 .alert code { font-size: 12px; }
+.alert code, #inbound-url { overflow-wrap: anywhere; }  /* 발급 링크·토큰·입구 주소 — 390px 에서 페이지를 넓히지 않게 */
 .empty { padding: 24px 0; }
 .empty p { margin-bottom: 12px; }
 
@@ -298,6 +299,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .seg-item:hover { background: var(--bg-bubble); text-decoration: none; }
 .seg-item[aria-current="true"] { background: var(--bg-inflight); color: var(--accent); font-weight: 600; }
 .seg-item .count, .group-head .count, .board-col h3 .count { color: var(--text-muted); font-weight: 400; }
+.view-options { position: relative; font-size: 12px; }
+.view-options summary { cursor: pointer; color: var(--text-body); padding: 3px 0; }
+.view-options-body { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; }
 .toolbar-note { font-size: 13px; color: var(--text-muted); margin: -4px 0 12px; }
 .work-table-wrap { max-width: 100%; }
 .work-table { min-width: 900px; }
@@ -381,3 +385,14 @@ tbody.folded .work-row { display: none; }
 .start-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; max-width: 640px; }
 .start-item { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
 .start-item p { margin: 4px 0 8px; }
+
+/* 설정 UX — phase 23 step 3: "자세히"(내부 값은 여기만)·링크 아래 회색 안내 */
+details.detail { font-size: 13px; color: var(--text-muted); }
+details.detail summary { cursor: pointer; }
+details.detail > :not(summary) { font-family: var(--mono); }
+.link-note { font-size: 13px; color: var(--text-muted); margin: -4px 0 16px; }
+
+/* 설정 UX — phase 23 step 6: 팀 화면 — 맡기기 select·[바꾸기] 한 덩어리, 담당 범위 넓은 입력 */
+.nowrap { white-space: nowrap; }
+.nowrap select { width: auto; }
+input.input-wide { width: 100%; }

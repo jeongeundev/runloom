@@ -248,15 +248,17 @@ def test_01_admin_connects_github_and_two_issues_land_unassigned(world):
 
 def test_02_connect_tabs_and_old_addresses(world):
     http = world.http
-    for old, new in (("/operator/github", "/connect?tab=sources"), ("/team", "/connect?tab=team"),
-                     ("/kinds", "/connect?tab=kinds"), ("/operator/notifications", "/connect?tab=notify"),
+    for old, new in (("/operator/github", "/repos"), ("/agents", "/team"), ("/connect?tab=team", "/team"),
+                     ("/kinds", "/settings?tab=kinds"), ("/operator/notifications", "/settings?tab=notify"),
                      ("/metrics", "/monitor"), ("/work/RUN-1", "/tasks?open=RUN-1")):
         response = http.get(old)
         assert (response.status_code, response.headers["location"]) == (303, new), old
-    sources = page(world, "/connect", tab="sources")
-    assert 'data-tab-body="sources"' in sources and f'data-source-card="{world.sources[REPO]}"' in sources
-    assert all(f'data-tab="{t}"' in sources for t in ("sources", "team", "kinds", "notify", "advanced"))
-    assert "설정됨" in page(world, "/connect", tab="notify")
+    assert http.get("/team").status_code == 200  # phase 23: 303 이 아니라 화면
+    sources = page(world, "/repos")
+    assert f'data-source-card="{world.sources[REPO]}"' in sources
+    settings = page(world, "/settings")
+    assert all(f'data-tab="{t}"' in settings for t in ("kinds", "triage", "notify", "inbound", "advanced"))
+    assert "설정됨" in page(world, "/settings", tab="notify")
     assert "모니터링" in page(world, "/monitor")
 
 
@@ -274,7 +276,7 @@ def test_03_attach_the_runner(world):
     ])
     (agent,) = q(world, "SELECT agent_id, name FROM agents WHERE local_registration_id = ?", REGISTRATION)
     world.ctx["agent_id"], world.ctx["agent_name"] = agent["agent_id"], agent["name"]
-    assert agent["agent_id"] in page(world, "/connect", tab="team")  # 에이전트·러너는 팀 탭
+    assert agent["agent_id"] in page(world, "/team")  # 에이전트·러너는 팀 화면
 
     world.spawn("connector", [py, "-m", "workflow.connector", "run", "--adapter", "codex",
                               "--claim-interval", "0.5", "--heartbeat-interval", "1"], world.connector_env)
@@ -342,7 +344,9 @@ def test_06_merging_the_pr_completes_the_work(world):
     board = page(world, "/tasks", view="board")
     assert board_column(board, "RUN-1") == "done"
     listed = groups(page(world, "/tasks", group="status"))
-    assert listed["status:완료"][2] == ["RUN-1"] and listed["status:새로 들어옴"][2] == ["RUN-2"]
+    # 끝난 업무는 상태 묶기에서도 `완료` 묶음 대신 맨 아래 "끝난 업무" 묶음 (phase 23 step 8)
+    assert listed["closed"] == ("끝난 업무", 1, ["RUN-1"]) and listed["status:새로 들어옴"][2] == ["RUN-2"]
+    assert list(listed)[-1] == "closed" and "status:완료" not in listed
 
 
 def test_07_direct_work_gives_a_branch_name_and_moves_the_board(world):
@@ -399,7 +403,7 @@ def test_08_a_pr_on_the_branch_is_detected_then_its_merge_completes_the_work(wor
     assert [d.get("reason") for t, d in work_events(world, 2) if t == "direct_stopped"] == ["closed"]
     assert q(world, "SELECT state FROM work_pull_requests")[0][0] == "merged"
 
-    # 끝난 뒤 — 빠른 필터 "담당 없음" 은 비고, 둘 다 완료 묶음
-    assert groups(page(world, "/tasks", group="status"))["status:완료"][1] == 2
+    # 끝난 뒤 — 빠른 필터 "담당 없음" 은 비고, 둘 다 끝난 업무 묶음
+    assert groups(page(world, "/tasks", group="status"))["closed"][1] == 2
     assert groups(page(world, "/tasks", q="unassigned")) == {}
     assert len(received(world, "pr_opened")) == 1  # 감지 PR 은 알리지 않는다

@@ -71,10 +71,17 @@
     }
   });
 
-  // --- 업무 표: 묶음 접기(접힌 묶음 키는 localStorage — 읽기·쓰기 실패해도 동작), 행 아무 곳이나 누르면 그 행의 링크 ---
+  // --- 업무 표: 묶음 접기(접힌 묶음 키는 localStorage — 읽기·쓰기 실패해도 동작), 행 아무 곳이나 누르면 그 행의 링크.
+  //     `data-default-folded` 묶음(끝난 업무)은 접힌 채 시작하고, 펼친 키는 따로 `wf_work_unfolded` 에 남긴다 ---
   var FOLDED = 'runloom.folded-groups';
-  function folded() {
-    try { return JSON.parse(window.localStorage.getItem(FOLDED) || '[]'); } catch (e) { return []; }
+  var UNFOLDED = 'wf_work_unfolded';
+  function stored(name) {
+    try { return JSON.parse(window.localStorage.getItem(name) || '[]'); } catch (e) { return []; }
+  }
+  function folded() { return stored(FOLDED); }
+  function defaultFolded(key) {
+    var body = document.querySelector('[data-group-body="' + CSS.escape(key) + '"]');
+    return !!body && body.hasAttribute('data-default-folded');
   }
   function fold(key, closed) {
     var body = document.querySelector('[data-group-body="' + CSS.escape(key) + '"]');
@@ -85,15 +92,21 @@
     btn.textContent = closed ? '▸' : '▾';
   }
   folded().forEach(function (key) { fold(key, true); });
+  var unfolded = stored(UNFOLDED);
+  document.querySelectorAll('[data-group-body][data-default-folded]').forEach(function (body) {
+    var key = body.getAttribute('data-group-body');
+    if (unfolded.indexOf(key) < 0) { fold(key, true); }
+  });
   document.addEventListener('click', function (ev) {
     var btn = ev.target.closest('[data-group-toggle]');
     if (btn) {
       var key = btn.getAttribute('data-group-toggle');
-      var keys = folded().filter(function (k) { return k !== key; });
       var closed = btn.getAttribute('aria-expanded') === 'true';
-      if (closed) { keys.push(key); }
+      var name = defaultFolded(key) ? UNFOLDED : FOLDED;
+      var keys = stored(name).filter(function (k) { return k !== key; });
+      if (closed === (name === FOLDED)) { keys.push(key); }  // 접힘 목록엔 접은 키, 펼침 목록엔 펼친 키
       fold(key, closed);
-      try { window.localStorage.setItem(FOLDED, JSON.stringify(keys)); } catch (e) { /* 저장 못 해도 접기는 된다 */ }
+      try { window.localStorage.setItem(name, JSON.stringify(keys)); } catch (e) { /* 저장 못 해도 접기는 된다 */ }
       return;
     }
     var row = ev.target.closest('tr.work-row');
@@ -101,6 +114,12 @@
       var link = row.querySelector('a.row-link');
       if (link) { link.click(); }  // 아래 패널 열기를 거친다
     }
+  });
+
+  // --- 바꾸면 바로 이동하는 select(`data-auto-submit`) — JS 가 없으면 옆 <noscript> [보기] 버튼 ---
+  document.addEventListener('change', function (ev) {
+    var select = ev.target.closest('select[data-auto-submit]');
+    if (select && select.form) { select.form.submit(); }
   });
 
   // --- 상세 패널: 행·카드·연결 업무 링크(`open=<key>`)를 누르면 조각(`/work/<key>/panel`)을 불러와 끼우고 주소만 바꾼다.

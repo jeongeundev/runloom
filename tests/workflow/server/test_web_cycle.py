@@ -83,19 +83,19 @@ def form_value(text: str, request_id: str, name: str) -> str:
 
 def test_github_page_is_operator_only(client, cycle, conn, app):
     for anonymous in (client, _stranger(app, conn)):
-        response = anonymous.get("/connect?tab=sources", follow_redirects=False)
+        response = anonymous.get("/repos", follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")
         assert SOURCE not in response.text
         tasks = anonymous.get("/tasks", follow_redirects=False)  # 사이드바 링크를 볼 화면도 없다
         assert (tasks.status_code, tasks.headers["location"]) == (303, "/login")
 
 
-def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, conn, worker):
+def test_github_page_shows_settings_assignees_and_a_link_to_the_work(operator, conn, worker):
     task_id = import_issue(conn, 1)
     import_issue(conn, 2, assignee_ids=[], assignee_logins=[])
     worker.tick()
 
-    text = page(operator, "/connect?tab=sources")
+    text = page(operator, "/repos")
 
     assert "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 연결됨" in text
     assert "acme/billing" in text and SOURCE in text
@@ -105,26 +105,27 @@ def test_github_page_shows_settings_assignees_and_the_real_issue_list(operator, 
     assert f'data-json-action="/github/sources/{SOURCE}"' in text and 'data-json-method="PUT"' in text
     assert f'data-json-action="/github/sources/{SOURCE}/stop"' in text
     assert f'data-json-action="/github/sources/{SOURCE}/assignees"' in text
-    assert re.findall(r'<input[^>]*name="token"[^>]*>', text) == [
-        '<input type="password" id="gh-token" name="token" autocomplete="off" required>',
+    assert re.findall(r'<input[^>]*name="token"[^>]*>', text) == [  # phase 23: Jira 절이 카드·토큰 연결보다 위
         '<input type="password" id="jira-token" name="token" autocomplete="off" required>',
+        '<input type="password" id="gh-token" name="token" autocomplete="off" required>',
     ]
     assert "kim-dev" in text and FIX in text  # 담당 연결
-    # 실제 업무 목록 — 원본 링크는 저장소 이름·번호로 만든다, Task 상태·대기 사유와 함께
-    assert 'href="https://github.com/acme/billing/issues/1"' in text
-    assert f'href="/tasks/{task_id}"' in text
-    assert "실제 GitHub 이슈" in text
-    assert "GitHub 담당자 없음" in text
+    # phase 23: 카드에는 이슈 목록이 없고 그 저장소의 끝나지 않은 업무로 가는 링크만 — 이슈·대기 사유는 업무 화면·단계 상세
+    assert 'href="https://github.com/acme/billing/issues/1"' not in text
+    assert f'href="/tasks/{task_id}"' not in text and "실제 GitHub 이슈" not in text
+    assert '<a data-source-work href="/tasks?repo=acme/billing">업무 2건 보기</a>' in text
+    detail = page(operator, f"/tasks/{task_id}")
+    assert 'href="https://github.com/acme/billing/issues/1"' in detail and "실제 GitHub 이슈" in detail
 
 
 def test_github_page_without_token_says_so(operator, settings, app):
     app.state.settings = dataclasses.replace(settings, github_token="")
-    text = page(operator, "/connect?tab=sources")
+    text = page(operator, "/repos")
     assert "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 없음" in text
 
 
 def test_sidebar_links_github_page_for_operator(operator):
-    assert 'href="/connect"' in page(operator, "/tasks")  # phase 16: 연결 화면(가져올 곳 탭)
+    assert 'href="/repos"' in page(operator, "/tasks")  # phase 23: 저장소 화면
 
 
 # --- 업무 상세: 원본·담당·대기 사유 --------------------------------------------------------------
@@ -160,7 +161,7 @@ def test_detail_shows_bound_agent_for_the_github_assignee(operator, conn, worker
 def test_issue_text_is_escaped(operator, conn, worker):
     task_id = import_issue(conn, 1, title="<script>alert(1)</script>", body="<img src=x onerror=alert(2)>")
     worker.tick()
-    for url in (f"/tasks/{task_id}", "/connect?tab=sources"):
+    for url in (f"/tasks/{task_id}", "/repos"):
         text = page(operator, url)
         assert "<script>alert(1)</script>" not in text
         assert "<img src=x" not in text
@@ -393,7 +394,7 @@ def test_delivery_state_is_shown_apart_from_the_task_state(operator, conn, worke
     assert "반영 실패" in text and "시도 1회" in text
     # 반영 실패는 Agent 작업 상태가 아니다
     assert 'data-status="실행 요청됨"' in text and 'data-status="실패"' not in text
-    assert "반영 실패" in page(operator, "/connect?tab=sources")
+    assert "data-delivery" not in page(operator, "/repos")  # phase 23: GitHub 반영 상태는 단계 상세에만(카드 이슈 목록 없음)
 
 
 # --- 초안 PR (phase 12 step 6) ----------------------------------------------------------------------

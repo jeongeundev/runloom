@@ -17,6 +17,12 @@ VIEWS = ("list", "board")
 CLOSED_SCOPES = ("recent", "all")
 CLOSED_RECENT_DAYS = 14
 PRIORITY_ORDER = ("high", "normal", "low")
+# 끝난 업무(`TERMINAL_WORK_STATUSES`)는 어떤 묶기에서도 맨 아래 이 묶음 하나 (phase 23)
+CLOSED_GROUP_KEY = "closed"
+CLOSED_GROUP_LABEL = "끝난 업무"
+# 보이는 행이 모두 같은 값이면 숨기는 칸 (phase 23)
+HIDEABLE_COLUMNS = ("priority", "kind")
+NO_NEXT_ACTION = "—"
 
 # (칸 키, 칸 이름, 드는 업무 상태) — `종료` 는 보드에 없다
 BOARD_COLUMNS = (
@@ -168,10 +174,12 @@ def _repo_group(row: WorkRow) -> tuple[tuple, str, str]:
 
 
 def group_rows(rows, by: str, *, member_id: str) -> list[RowGroup]:
-    """묶음 목록. 행이 있는 묶음만 만든다."""
+    """묶음 목록. 행이 있는 묶음만 만든다. 끝난 업무는 묶기와 무관하게 맨 아래 "끝난 업무" 묶음 하나
+    (`closed_at` 최근순 → 키 번호 내림차순)."""
     by = _pick(by, GROUP_BYS)
     buckets: dict[str, tuple[tuple, str, list[WorkRow]]] = {}
-    for row in rows:
+    closed = sorted((r for r in rows if not _open(r)), key=lambda r: (r.closed_at or "", r.key_number), reverse=True)
+    for row in (r for r in rows if _open(r)):
         if by == "status":
             order, key, label = (WORK_STATUSES.index(row.status),), f"status:{row.status}", row.status
         elif by == "repo":
@@ -179,8 +187,26 @@ def group_rows(rows, by: str, *, member_id: str) -> list[RowGroup]:
         else:
             order, key, label = _assignee_group(row, member_id)
         buckets.setdefault(key, (order, label, []))[2].append(row)
-    return [RowGroup(key=key, label=label, rows=_in_group_order(members))
-            for key, (_, label, members) in sorted(buckets.items(), key=lambda item: item[1][0])]
+    groups = [RowGroup(key=key, label=label, rows=_in_group_order(members))
+              for key, (_, label, members) in sorted(buckets.items(), key=lambda item: item[1][0])]
+    if closed:
+        groups.append(RowGroup(key=CLOSED_GROUP_KEY, label=CLOSED_GROUP_LABEL, rows=tuple(closed)))
+    return groups
+
+
+def hidden_columns(rows) -> frozenset[str]:
+    """`HIDEABLE_COLUMNS` 중 보이는 행이 모두 같은 값인 칸. 행이 없으면 빈 집합."""
+    rows = list(rows)
+    if not rows:
+        return frozenset()
+    return frozenset(col for col in HIDEABLE_COLUMNS if len({getattr(r, col) for r in rows}) == 1)
+
+
+def shown_next_action(row: WorkRow) -> str:
+    """화면의 "다음 할 일" — 상태 이름을 되풀이하거나 담당 없음 행의 `담당 없음` 이면 `NO_NEXT_ACTION`."""
+    if row.next_action == row.status or (row.assignee_type is None and row.next_action == "담당 없음"):
+        return NO_NEXT_ACTION
+    return row.next_action
 
 
 def board_columns(rows) -> list[BoardColumn]:

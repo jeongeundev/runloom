@@ -13,7 +13,7 @@ from workflow.contracts.v1 import (
     SuccessorRule,
 )
 from workflow.domain.kinds import get_kind
-from workflow.domain.work_list import parse_list_query
+from workflow.domain.work_list import hidden_columns, parse_list_query
 from workflow.domain.work_status import WorkStatus
 from workflow.server import views
 
@@ -692,7 +692,7 @@ def test_rule_public_one_line_text_with_labels():
     rule = views.rule_public("rule-1", builtin, BUILTIN_KINDS)
     assert rule["rule_id"] == "rule-1"
     assert (rule["from_kind"], rule["to_kind"]) == ("bug_fix", "code_review")
-    assert rule["text"] == "버그 수정 --[ready_for_review]--> 커밋 검토"
+    assert rule["text"] == "버그 수정 — 결과 검토 가능 → 커밋 검토"
     assert rule["handoff_kinds"] == ["code_change_result", "diff", "test_log_after", "verification_log"]
     assert rule["handoff_labels"] == ["수정 결과", "diff", "테스트 후", "검증 로그"]
     assert (rule["placement"], rule["placement_label"]) == ("same_work", "같은 업무의 다음 단계")
@@ -704,9 +704,9 @@ def test_rule_public_one_line_text_with_labels():
         builtin.model_copy(update={"on_outcomes": ["ready_for_review", "needs_information"]}),
         [*BUILTIN_KINDS, REVIEW_SPEC],
     )
-    assert custom["text"] == "버그 수정 --[ready_for_review, needs_information]--> 커밋 검토"
+    assert custom["text"] == "버그 수정 — 결과 검토 가능, 정보 필요 → 커밋 검토"
     # 등록부에 없는 종류는 라벨 대신 코드 그대로
-    assert views.rule_public("rule-3", builtin, ())["text"] == "bug_fix --[ready_for_review]--> code_review"
+    assert views.rule_public("rule-3", builtin, ())["text"] == "bug_fix — 결과 검토 가능 → code_review"
 
 
 # --- 등록부를 보는 화면 컨텍스트 (phase 6 step 7) --------------------------------------
@@ -997,7 +997,9 @@ def test_work_list_context_counts_filters_over_the_closed_scope(seeded):
     ctx = _list_context(conn, admin, closed="all", group="status")
     assert ctx["counts"] == {"all": 3, "my_turn": 1, "unassigned": 2, "agent_working": 0}
     assert [r.work_key for r in ctx["rows"]] == ["RUN-3", "RUN-2", "RUN-1"]
-    assert [g.key for g in ctx["groups"]] == ["status:새로 들어옴", "status:내 차례", "status:종료"]
+    # 끝난 업무는 `종료` 묶음 대신 맨 아래 "끝난 업무" 묶음 (phase 23 step 8)
+    assert [g.key for g in ctx["groups"]] == ["status:새로 들어옴", "status:내 차례", "closed"]
+    assert ctx["hidden_columns"] == hidden_columns(ctx["rows"])
     assert _list_context(conn, "mem-someone-else", q="my_turn")["counts"]["my_turn"] == 0
 
 
@@ -1058,3 +1060,30 @@ def test_config_change_heads_name_the_change_or_say_no_record():
         "4": "설정 4 — 판단 기준 변경 v2 · 김OO · 10/3",
         "5": "설정 5 — 저장소 연결 추가 acme/billing · 시스템 · 10/3",
     }
+
+
+# --- 저장소 화면 담당 연결 — 수집한 이슈에서 본 GitHub 사용자 (phase 23 step 7) ---------------------------
+
+
+def _issue_row(updated_at: str, ids: list[int], logins: list[str]) -> dict:
+    return {"issue_updated_at": updated_at,
+            "snapshot_json": json.dumps({"assignee_ids": ids, "assignee_logins": logins})}
+
+
+def test_seen_github_users_pairs_ids_with_the_latest_login_sorted_by_login():
+    rows = [
+        _issue_row("2026-10-06T02:00:00Z", [7, 3], ["zed", "old-kim"]),
+        _issue_row("2026-10-06T03:00:00Z", [3], ["kim-dev"]),  # 같은 id 는 가장 최근 이슈의 login
+        _issue_row("2026-10-06T01:00:00Z", [3, 9], ["older-kim", "amy"]),
+        _issue_row("2026-10-06T04:00:00Z", [], []),
+    ]
+    assert views.seen_github_users(rows) == [
+        {"github_user_id": 9, "github_login": "amy"},
+        {"github_user_id": 3, "github_login": "kim-dev"},
+        {"github_user_id": 7, "github_login": "zed"},
+    ]
+
+
+def test_seen_github_users_is_empty_without_assignees():
+    assert views.seen_github_users([]) == []
+    assert views.seen_github_users([_issue_row("2026-10-06T01:00:00Z", [], [])]) == []

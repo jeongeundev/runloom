@@ -1,0 +1,222 @@
+{# 저장소 화면 `/repos` 의 GitHub 절(옛 /operator/github·연결 화면 가져올 곳 탭) — ADR-0014·0017·0028, ARCHITECTURE "설정 UX — phase 23"
+   저장소 화면, CONTRACT 13.10·13.11. 위에서 아래로: 연결 상자 → Jira 절(`manage_connections`) → 저장소 카드 → 접힌 "고급 — 토큰으로 연결".
+   카드 = 이름·수집 상태·[업무 N건 보기]·러너 매칭(에이전트는 이름만)·설정 폼(판단·수정·검토 에이전트·실행 방식 + 접힌 고급 설정)·
+   접힌 카드 도구(러너·담당 연결·기준선·수집 중지)·"자세히"(내부 ID). 이슈 목록은 업무 화면이 보인다. 비밀값은 연결됨/없음만.
+   설정·담당 쓰기는 `data-json-action`(base.html 스크립트가 JSON 으로 관리자 API 에 보낸다), 토큰 연결은 일반 POST 폼.
+   <details> 는 겹치지 않는다(화면 테스트가 접힘을 이것으로 본다). 카드 읽기·[러너 붙이기]는 멤버도(`attach_runner`),
+   연결·설정·담당 연결·기준선·수집 중지는 `manage_connections`. #}
+{% macro source_main(c, prefix, triage_agents=[]) -%}
+{% set auto = c and c.intake == 'all_open' %}
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-triage">판단 에이전트</label>
+    <select id="{{ prefix }}-triage" name="triage_agent_id" data-json-type="optional"><option value="">없음 — 판단하지 않음</option>{% for a in triage_agents %}<option value="{{ a.agent_id }}"{% if c and c.triage_agent_id == a.agent_id %} selected{% endif %}>{{ a.name }}</option>{% endfor %}</select>
+    <div class="help">새로 들어온 업무의 담당·종류를 제안하고, 결과가 규칙 밖이거나 정보가 모자라거나 사내 요청이 돌아오면 다음 단계를 제안합니다. 이 저장소를 등록했고 맡기기 정책이 '바로 실행'인 에이전트만 고를 수 있습니다.</div>
+    {% if not triage_agents %}<div class="help" data-triage-none>고를 수 있는 판단 에이전트가 없습니다 — 이 저장소를 등록한 러너 에이전트의 맡기기 정책을 '바로 실행'으로 두세요</div>{% endif %}</div>
+</div>
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-fix">수정 에이전트</label>
+    <select id="{{ prefix }}-fix" name="default_fix_agent_id" data-json-type="optional"><option value="">{{ '비워 두면 자동' if auto else '없음 — 담당 연결로' }}</option>{% for a in fix_agents %}<option value="{{ a.agent_id }}"{% if c and c.default_fix_agent_id == a.agent_id %} selected{% endif %}>{{ a.name }}</option>{% endfor %}</select>
+    <div class="help">담당 연결이 없는 이슈에 씁니다.{% if not fix_agents %} 고칠 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다{% endif %}</div></div>
+  <div class="field"><label for="{{ prefix }}-review">검토 에이전트</label>
+    <select id="{{ prefix }}-review" name="review_agent_id"{% if auto %} data-json-type="optional"{% endif %}>{% if auto %}<option value="">비워 두면 자동</option>{% endif %}{% for a in review_agents %}<option value="{{ a.agent_id }}"{% if c and c.review_agent_id == a.agent_id %} selected{% endif %}>{{ a.name }}</option>{% else %}{% if not auto %}<option value="">검토할 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다</option>{% endif %}{% endfor %}</select></div>
+  <div class="field"><label for="{{ prefix }}-mode">실행 방식</label>
+    <select id="{{ prefix }}-mode" name="run_mode">{% for m, label in [('auto', '자동 실행'), ('manual', '직접 실행')] %}<option value="{{ m }}"{% if c and c.run_mode == m %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+</div>
+{%- endmacro %}
+
+{% macro source_advanced(c, prefix) -%}
+{% set auto = c and c.intake == 'all_open' %}
+<input type="hidden" name="intake" value="{{ c.intake if c else 'filtered' }}">
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-repo">저장소</label>
+    {% if c %}<input type="text" id="{{ prefix }}-repo" name="repository_full_name" value="{{ c.repository_full_name }}" readonly>
+    {% else %}<select id="{{ prefix }}-repo" name="repository_full_name">{% for r in allowed_repositories %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select>{% endif %}
+    <div class="help">{% if c %}연결 뒤에는 바꿀 수 없습니다.{% else %}WORKFLOW_GITHUB_REPOS 안에서만. 연결 뒤에는 바꿀 수 없습니다.{% endif %}</div></div>
+  <div class="field"><label for="{{ prefix }}-wrid">로컬 저장소 ID</label>
+    {% if auto %}<input type="text" id="{{ prefix }}-wrid" name="workflow_repository_id" data-json-type="optional" value="{{ c.workflow_repository_id or '' }}" placeholder="비워 두면 자동">
+    <div class="help">비워 두면 자동 — 이 저장소를 등록한 러너가 보고한 값.</div>
+    {% else %}<input type="text" id="{{ prefix }}-wrid" name="workflow_repository_id" value="{{ c.workflow_repository_id if c else '' }}" required>
+    <div class="help">러너가 이 저장소 폴더를 등록할 때 보고한 이름.</div>{% endif %}</div>
+</div>
+{% if auto %}
+<input type="hidden" name="start_at" value="{{ c.start_at }}">
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-trigger">트리거 라벨</label>
+    <input type="text" id="{{ prefix }}-trigger" name="trigger_label" data-json-type="optional" value="{{ c.trigger_label or '' }}" placeholder="runloom">
+    <div class="help">이 라벨이 붙은 이슈는 맡긴 것으로 봅니다(대소문자 무시).</div></div>
+</div>
+{% else %}
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-labels">라벨 (모두 있어야 함)</label>
+    <input type="text" id="{{ prefix }}-labels" name="label_filter" data-json-type="list" value="{{ c.label_filter|join(', ') if c else 'bug' }}"></div>
+  <div class="field"><label for="{{ prefix }}-numbers">고른 이슈 번호</label>
+    <input type="text" id="{{ prefix }}-numbers" name="selected_issue_numbers" data-json-type="int-list" value="{{ c.selected_issue_numbers|join(', ') if c else '' }}">
+    <div class="help">라벨·시작 시각과 무관하게 받습니다.</div></div>
+  <div class="field"><label for="{{ prefix }}-start">시작 시각 (RFC 3339)</label>
+    <input type="text" id="{{ prefix }}-start" name="start_at" value="{{ c.start_at if c else default_start_at }}" required>
+    <div class="help">이보다 먼저 만든 이슈(과거 백로그)는 자동으로 받지 않습니다.</div></div>
+</div>
+{% endif %}
+<div class="field-row">
+  <div class="field"><label for="{{ prefix }}-profile">수정 검증 프로필</label>
+    {% if auto %}<input type="text" id="{{ prefix }}-profile" name="fix_verification_profile_id" data-json-type="optional" value="{{ c.fix_verification_profile_id or '' }}" placeholder="비워 두면 자동">
+    {% else %}<input type="text" id="{{ prefix }}-profile" name="fix_verification_profile_id" value="{{ c.fix_verification_profile_id if c else '' }}" required>{% endif %}
+    <div class="help">연결 프로그램이 보고한 프로필 ID. 명령이 아닙니다.</div></div>
+  <div class="field"><label for="{{ prefix }}-rework">자동 재작업 상한</label>
+    <input type="number" id="{{ prefix }}-rework" name="max_rework_rounds" data-json-type="int" min="0" max="3" value="{{ c.max_rework_rounds if c else 1 }}"></div>
+</div>
+<div class="field"><label><input type="checkbox" name="enabled" data-json-type="bool"{% if not c or c.enabled %} checked{% endif %}> 수집 켜기</label></div>
+{%- endmacro %}
+
+<div class="card">
+  {% if sources %}
+  <p>{% if github_app %}GitHub App 연결됨{% if github_app.owner_login %} ({{ github_app.owner_login }}){% endif %}{% else %}GitHub App 없음 — 토큰으로 연결됨{% endif %} · 저장소 {{ sources|length }}개</p>
+  <p class="small">열린 이슈는 전부 업무 목록에 들어오고, 실행은 [에이전트에게 맡기기] 또는 트리거 라벨을 붙인 것만 합니다. GitHub 에는 업무마다 댓글 하나를 만들고 고쳐 씁니다. 러너가 결과 브랜치를 올리면 검토 승인 뒤 초안 PR 을 엽니다. 병합·이슈 종료는 사람이 합니다.</p>
+  {% if 'manage_connections' in allowed %}<div class="actions">
+    {% if github_app %}<a class="btn btn-secondary" href="{{ github_app.install_url }}" rel="noopener noreferrer" target="_blank">저장소 추가/변경</a>
+    {% else %}<a class="btn btn-secondary" href="/operator/github/app/new">GitHub 연결</a>{% endif %}
+  </div>{% endif %}
+  {% if github_app %}<details class="detail"><summary>자세히</summary>GitHub App {{ github_app.slug }}</details>{% endif %}
+  {% else %}
+  <p>GitHub 저장소를 연결하면 열린 이슈가 업무 목록에 들어오고, 맡긴 이슈만 에이전트가 고칩니다.</p>
+  {% if 'manage_connections' in allowed %}<div class="actions"><a class="btn" href="/operator/github/app/new">GitHub 연결</a></div>
+  {% else %}<p class="small">GitHub 연결은 관리자가 합니다.</p>{% endif %}
+  {% endif %}
+</div>
+
+{% if 'manage_connections' in allowed %}{% include "_repos_jira.html" %}{% endif %}
+
+{% for s in sources %}
+{% set c = s.config %}
+{% set manage = 'manage_connections' in allowed %}
+{% set reattach = not s.runner_missing and 'attach_runner' in allowed %}
+<section class="card" data-source-card="{{ c.source_id }}">
+  <div class="card-title">{{ c.repository_full_name }}</div>
+  <p class="small">수집 {{ '켜짐' if c.enabled else '멈춤' }} · {% if s.synced_at %}마지막 동기화 {{ s.synced_at|kst }}{% else %}아직 동기화 전{% endif %} ·
+    {% if s.credential %}{{ s.credential }}{% else %}<strong>GitHub 자격 없음</strong> — 수집하지 않습니다. [GitHub 연결] 또는 고급 — 토큰으로 연결{% endif %} ·
+    <a data-source-work href="/tasks?repo={{ c.repository_full_name|urlencode }}">업무 {{ s.open_work_count }}건 보기</a></p>
+  {% set issued = runner_issued if runner_issued and runner_issued.source_id == c.source_id else none %}
+  {% if issued %}
+  <div data-runner-command>
+    <p class="small">Runloom 설치 폴더에서 아래 한 줄을 실행하세요 — <span class="mono">&lt;이 저장소를 클론한 폴더&gt;</span> 만 바꿉니다. 코드는 10분 유효({{ issued.expires_at|kst }} 만료)·1회용입니다.</p>
+    <pre class="mono">{{ issued.command }}</pre>
+    <p class="small">이 Mac 에 이미 다른 러너가 있으면 끝에 <span class="mono">--name b</span> 를 붙여 따로 설치합니다.</p>
+  </div>
+  {% endif %}
+  {% if s.runner_missing %}
+  <div class="actions" data-runner-missing>
+    <span>이 저장소를 등록한 러너 없음</span>
+    <form method="post" action="/operator/github/sources/{{ c.source_id }}/runner" class="inline-form"><button class="btn btn-small" type="submit">{{ '다시 발급' if issued else '러너 붙이기' }}</button></form>
+  </div>
+  {% else %}
+  <ul class="agent-list">
+    {% for m in s.match %}<li><span>{{ m.label }}</span><span>{% if m.name %}{{ m.name }} ({{ m.how }}){% elif m.value %}<span class="mono">{{ m.value }}</span> ({{ m.how }}){% elif m.note %}{{ m.note }}{% else %}정해지지 않음{% endif %}</span></li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if s.match_blockers %}<ul class="blockers">{% for reason in s.match_blockers %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+  {% if manage %}
+  <form data-json-action="/github/sources/{{ c.source_id }}" data-json-method="PUT">
+    <input type="hidden" name="expected_revision" value="{{ c.config_revision }}" data-json-type="int">
+    {{ source_main(c, c.source_id, s.triage_agents) }}
+    <details class="row" data-source-advanced><summary>고급 설정</summary>
+      <div class="row-body">{{ source_advanced(c, c.source_id) }}</div>
+    </details>
+    <div class="actions">
+      <button class="btn btn-secondary" type="submit" data-json-action="/github/sources/preview" data-json-method="POST" data-json-omit="expected_revision">미리보기</button>
+      <button class="btn" type="submit">저장</button>
+      <span class="action-note" data-json-result></span>
+    </div>
+  </form>
+  {% else %}
+  {% set fix, review, judge = s.match[1].name, s.match[3].name, s.match[4].name %}
+  <p class="small" data-source-summary>판단 에이전트 {{ judge or '없음' }} · 수정 에이전트 {{ fix or '정해지지 않음' }} · 검토 에이전트 {{ review or '정해지지 않음' }} · {{ '자동 실행' if c.run_mode == 'auto' else '직접 실행' }}</p>
+  {% endif %}
+  {% if manage or reattach %}
+  <details class="row" data-source-tools><summary>러너·담당 연결·기준선</summary>
+    <div class="row-body">
+      {% if reattach %}
+      <form method="post" action="/operator/github/sources/{{ c.source_id }}/runner" class="actions">
+        <button class="btn btn-secondary btn-small" type="submit">{{ '다시 발급' if issued else '러너 다시 붙이기' }}</button>
+        <span class="small">새 연결 코드와 명령 한 줄을 발급합니다 — 러너를 다른 Mac·폴더로 옮길 때.</span>
+      </form>
+      {% endif %}
+      {% if manage %}
+      <h3>담당 연결 (GitHub 사용자 → 수정 에이전트)</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>GitHub 사용자</th><th>수정 에이전트</th></tr>
+          {% for b in s.assignees %}<tr><td>{{ b.github_login }}</td><td>{{ b.agent_name }}</td></tr>
+          {% else %}<tr><td colspan="2" class="muted">없음 — {{ '기본 수정 에이전트 또는 자동 매칭으로 정합니다' if c.intake == 'all_open' else '담당자가 연결되지 않은 이슈는 대기합니다' }}</td></tr>{% endfor %}
+        </table>
+      </div>
+      <p class="small">수집한 이슈에서 본 GitHub 담당자 — GitHub 담당자와 이 서비스의 사용자는 같은 사람으로 보지 않습니다.</p>
+      {% for u in s.seen_users %}
+      <form data-json-action="/github/sources/{{ c.source_id }}/assignees" data-json-method="PUT" data-json-path-field="github_user_id" class="actions">
+        <input type="hidden" name="github_user_id" value="{{ u.github_user_id }}">
+        <input type="hidden" name="github_login" value="{{ u.github_login }}">
+        <span>{{ u.github_login }}</span>
+        <select name="agent_id" aria-label="{{ u.github_login }} 의 수정 에이전트">{% for a in fix_agents %}<option value="{{ a.agent_id }}">{{ a.name }}</option>{% else %}<option value="">고칠 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다</option>{% endfor %}</select>
+        <button class="btn btn-small" type="submit">연결</button><span class="action-note" data-json-result></span>
+      </form>
+      {% else %}
+      <p class="small muted">수집한 이슈에 GitHub 담당자가 없습니다</p>
+      {% endfor %}
+      <h3>목록에 없는 사용자</h3>
+      <form data-json-action="/github/sources/{{ c.source_id }}/assignees" data-json-method="PUT" data-json-path-field="github_user_id">
+        <div class="field-row">
+          <div class="field"><label for="uid-{{ c.source_id }}">GitHub 사용자 번호</label><input type="number" id="uid-{{ c.source_id }}" name="github_user_id" min="1" required></div>
+          <div class="field"><label for="login-{{ c.source_id }}">로그인</label><input type="text" id="login-{{ c.source_id }}" name="github_login" required></div>
+          <div class="field"><label for="fix-{{ c.source_id }}">수정 에이전트</label>
+            <select id="fix-{{ c.source_id }}" name="agent_id">{% for a in fix_agents %}<option value="{{ a.agent_id }}">{{ a.name }}</option>{% else %}<option value="">고칠 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다</option>{% endfor %}</select></div>
+        </div>
+        <div class="help">GitHub 프로필 주소의 사용자 번호(api.github.com/users/&lt;login&gt; 의 id). 같은 번호를 다시 연결하면 교체합니다.</div>
+        <div class="actions"><button class="btn" type="submit">연결</button><span class="action-note" data-json-result></span></div>
+      </form>
+      <h3>기준선</h3>
+      <form data-json-action="/operator/github/sources/{{ c.source_id }}/baseline" class="actions">
+        <button class="btn btn-secondary btn-small" type="submit">{{ '기준선 다시 가져오기' if s.baseline else '기준선 가져오기' }}</button>
+        {% if s.baseline %}<span class="small" data-baseline-summary>기준선 {{ s.baseline.n }}건 · 이슈 열림 → 병합 중앙값 {{ s.baseline.median }} · {{ s.baseline.fetched_at|kst }} 가져옴 · <a href="/monitor">지표에서 비교</a></span>
+        {% else %}<span class="small">Runloom 도입 전 GitHub 이력으로 비교 기준을 만듭니다 (연결 전에 열려 PR 병합으로 닫힌 이슈)</span>{% endif %}
+        <span class="action-note" data-json-result></span>
+      </form>
+      {% if c.enabled %}
+      <form data-json-action="/github/sources/{{ c.source_id }}/stop" class="actions">
+        <button class="btn btn-danger btn-small" type="submit">수집 중지</button><span class="action-note" data-json-result></span>
+      </form>
+      {% endif %}
+      {% endif %}
+    </div>
+  </details>
+  {% endif %}
+  <details class="detail"><summary>자세히</summary>소스 {{ c.source_id }}{% if github_app %} · App {{ github_app.slug }}{% endif %}{% for m in s.match %}{% if m.name %} · {{ m.label }} {{ m.value }}{% endif %}{% endfor %}{% if manage %}{% for b in s.assignees %} · 담당 연결 {{ b.github_login }}({{ b.github_user_id }}) → {{ b.agent_id }}{% endfor %}{% endif %}</details>
+</section>
+{% endfor %}
+
+{% if 'manage_connections' in allowed %}
+<details class="row"><summary>고급 — 토큰으로 연결</summary>
+  <div class="row-body">
+    <p class="small">GitHub App 대신 토큰으로 저장소 하나를 연결합니다. 토큰은 서버의 비밀 파일(0600)에만 두고 화면·DB 에 두지 않습니다.</p>
+    <p class="small">{% if github_app %}GitHub App 연결됨{% else %}GitHub App 없음{% endif %} · 붙여 넣은 토큰 {{ '연결됨' if pat_connected else '없음' }} · 서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) {{ '연결됨' if token_configured else '없음' }}</p>
+    <form method="post" action="/operator/github/token" class="card">
+      <div class="field-row">
+        <div class="field"><label for="gh-token-repo">저장소 (owner/name)</label><input type="text" id="gh-token-repo" name="repository_full_name" required></div>
+        <div class="field"><label for="gh-token">GitHub 토큰</label><input type="password" id="gh-token" name="token" autocomplete="off" required>
+          <div class="help">Issues 읽기·쓰기, Pull requests·Metadata 읽기 권한. 저장소를 볼 수 있는지 확인한 뒤 저장합니다.</div></div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">토큰으로 연결</button></div>
+    </form>
+    {% if allowed_repositories %}
+    <p class="small">서버 환경변수 토큰의 허용 저장소(<span class="mono">WORKFLOW_GITHUB_REPOS</span>): {% for r in allowed_repositories %}<span class="mono">{{ r }}</span>{% if not loop.last %}, {% endif %}{% endfor %} — 라벨·고른 이슈 범위로 연결합니다.</p>
+    <form data-json-action="/github/sources" class="card">
+      {{ source_main(none, 'new') }}
+      {{ source_advanced(none, 'new') }}
+      <div class="actions">
+        <button class="btn btn-secondary" type="submit" data-json-action="/github/sources/preview">미리보기</button>
+        <button class="btn" type="submit">연결</button>
+        <span class="action-note" data-json-result></span>
+      </div>
+    </form>
+    {% endif %}
+  </div>
+</details>
+{% endif %}

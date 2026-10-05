@@ -21,6 +21,7 @@ from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import (
+    Capability,
     CodeReviewResult,
     KindSpec,
     SuccessorRule,
@@ -32,7 +33,14 @@ from workflow.contracts.v1 import (
 from workflow.domain.composition import compose, human_gate_label
 from workflow.domain.execution_policy import is_triage_kind, policy_for
 from workflow.domain.form_sections import FORM_HEADINGS, FORM_LABELS
-from workflow.domain.kinds import get_kind, kind_for_capability
+from workflow.domain.kinds import (
+    SCOPE_MANY_REPOSITORIES,
+    SCOPE_NO_REPOSITORY,
+    agent_repository_scope,
+    editable_kinds,
+    get_kind,
+    kind_for_capability,
+)
 from workflow.domain.metrics import (
     ACTORS,
     ALL_GROUP,
@@ -73,11 +81,12 @@ from workflow.domain.work_list import (
     filter_counts,
     filter_rows,
     group_rows,
+    hidden_columns,
     parse_list_query,
 )
 from workflow.domain.work_status import STAGE_FAILED, TERMINAL_WORK_STATUSES
 from workflow.server import github_clients, human_api, task_cycle
-from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst
+from workflow.server.filters import KIND_LABELS, KST, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
 
 # 결과 봉투로 화면이 파싱하는 산출물 종류 (CONTRACT 5·7·11절)
@@ -159,6 +168,13 @@ def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[Ki
     return data
 
 
+def runner_online(last_seen_at: str | None, *, now: str, settings: Settings) -> bool:
+    """러너(연결 프로그램) 켜짐 — 마지막 요청이 `heartbeat_offline_seconds` 이내. 팀 화면의 에이전트 없는 러너 줄."""
+    if not last_seen_at:
+        return False
+    return _parse(now) - _parse(last_seen_at) <= timedelta(seconds=settings.limits.heartbeat_offline_seconds)
+
+
 def agent_owner_id(conn: Connection, agent: Row) -> str | None:
     """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리) — `repo.agent_owner_id`."""
     return repo.agent_owner_id(conn, agent["agent_id"])
@@ -189,12 +205,70 @@ def kind_public(spec: KindSpec) -> dict[str, Any]:
     }
 
 
+# 에이전트 범위 값(`agent_repository_scope`)을 정할 수 없는 이유 — 종류 폼·팀 화면 공통(phase 23)
+SCOPE_REASON_LABELS = {
+    SCOPE_NO_REPOSITORY: "러너로 연결한 에이전트만 고를 수 있습니다(저장소를 정할 수 없음)",
+    SCOPE_MANY_REPOSITORIES: "저장소가 여러 개라 정할 수 없습니다 — 설정 › 고급에서 능력을 붙이세요",
+}
+
+
+def _agent_capability_list(agent: Row) -> list[Capability]:
+    return [Capability.model_validate(c) for c in json.loads(agent["capabilities_json"])]
+
+
+def kind_agent_choices(conn: Connection, session_id: str) -> list[dict[str, Any]]:
+    """종류 폼의 맡을 에이전트 줄 — `이름 · <저장소 이름> · <소유자>의 Mac`(소유자 없으면 `공용`). 저장소 이름은 범위 값이
+    같은 GitHub 소스(설정값 또는 자동 매칭)의 `owner/name`, 없으면 범위 값 그대로. 범위 값이 없으면 `reason`(고를 수 없음)."""
+    repositories: dict[str, str] = {}
+    for config in repo.list_github_sources(conn, session_id):
+        value = (config.workflow_repository_id
+                 or task_cycle.match_for_source(conn, session_id, config).workflow_repository_id)
+        if value is not None:
+            repositories.setdefault(value, config.repository_full_name)
+    names = {m["member_id"]: m["display_name"] for m in repo.list_members(conn, session_id)}
+    choices = []
+    for agent in repo.list_session_agents(conn, session_id):
+        owner_id = repo.agent_owner_id(conn, agent["agent_id"])
+        owner = f"{names[owner_id]}의 Mac" if owner_id in names else "공용"
+        value, reason = agent_repository_scope(_agent_capability_list(agent))
+        parts = [agent["name"], repositories.get(value, value), owner] if value is not None else [agent["name"], owner]
+        choices.append({"agent_id": agent["agent_id"], "line": " · ".join(parts),
+                        "reason": SCOPE_REASON_LABELS[reason] if reason is not None else None})
+    return choices
+
+
+def team_agent_kinds(agent: Row, kinds: Sequence[KindSpec]) -> dict[str, Any]:
+    """팀 화면 에이전트 줄의 "맡을 수 있는 일" — `kind_labels`(능력 코드의 종류 화면 이름, 등록부에 없는 코드는 세지 않음),
+    편집 체크박스 `kind_choices`(편집 가능한 종류만, 지금 붙어 있으면 `checked`), 범위 값이 없으면 `scope_reason`."""
+    capabilities = _agent_capability_list(agent)
+    labels = [spec.label for c in capabilities if (spec := kind_for_capability(kinds, c.code)) is not None]
+    value, reason = agent_repository_scope(capabilities)
+    return {
+        "kind_labels": list(dict.fromkeys(labels)),
+        "kind_choices": [
+            {"kind": spec.kind, "label": spec.label,
+             "checked": Capability(code=spec.capability_code, scope={"repository_id": value}) in capabilities}
+            for spec in editable_kinds(kinds)
+        ] if value is not None else [],
+        "scope_reason": SCOPE_REASON_LABELS[reason] if reason is not None else None,
+    }
+
+
+# 담당 범위 요청 유형 — 화면 폼의 고르는 목록(순서 = select 순서). JSON API 는 식별자 형식만 본다(phase 23)
+REQUEST_KIND_LABELS = {"investigation": "조사", "bug_report": "버그 보고", "data_check": "데이터 확인"}
+
+
+def kind_agent_names(agents: Sequence[Row], capability_code: str) -> list[str]:
+    """종류 카드의 `맡을 수 있는 에이전트` — 이 능력 코드의 능력이 있는 워크스페이스 에이전트 이름들."""
+    return [a["name"] for a in agents if any(c.code == capability_code for c in _agent_capability_list(a))]
+
+
 PLACEMENT_LABELS = {"same_work": "같은 업무의 다음 단계", "new_work": "새 업무로 등록"}
 
 
 def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) -> dict[str, Any]:
-    """규칙 한 줄 `{from label} --[outcome, …]--> {to label}` (ADR-0009 — 그래프를 그리지 않는다).
-    등록부에 없는 종류는 코드 그대로 보인다."""
+    """규칙 한 줄 `{from label} — 결과 {outcome 라벨, …} → {to label}` (ADR-0009 — 그래프를 그리지 않는다, phase 23 step 9).
+    등록부에 없는 종류는 코드 그대로, 라벨 없는 결과값도 코드 그대로 보인다."""
 
     def label(kind: str) -> str:
         spec = get_kind(kinds, kind)
@@ -204,7 +278,7 @@ def rule_public(rule_id: str, rule: SuccessorRule, kinds: Sequence[KindSpec]) ->
         "rule_id": rule_id,
         "from_kind": rule.from_kind,
         "to_kind": rule.to_kind,
-        "text": f"{label(rule.from_kind)} --[{', '.join(rule.on_outcomes)}]--> {label(rule.to_kind)}",
+        "text": f"{label(rule.from_kind)} — 결과 {', '.join(map(outcome_label, rule.on_outcomes))} → {label(rule.to_kind)}",
         "handoff_kinds": list(rule.handoff_kinds),
         "handoff_labels": [kind_label(k) for k in rule.handoff_kinds],
         "placement": rule.placement,
@@ -731,7 +805,7 @@ def _responses_public(conn: Connection, task: Row) -> list[dict[str, Any]]:
 
 def work_list_context(conn: Connection, session_id: str, *, member_id: str, query: ListQuery, now: str) -> dict:
     """업무 화면 목록 — 끝난 업무 범위(`closed=recent` 는 14일) → 행 → 저장소 필터 → 빠른 필터 → 묶기·보드. 건수는
-    저장소 필터 뒤·빠른 필터 전 행 기준.
+    저장소 필터 뒤·빠른 필터 전 행 기준. `hidden_columns` = 보이는 행이 모두 같은 값인 칸(phase 23).
     `open_missing` = 키 형식의 `open` 이 이 워크스페이스에 없음."""
     closed_since = None
     if query.closed == "recent":
@@ -743,6 +817,7 @@ def work_list_context(conn: Connection, session_id: str, *, member_id: str, quer
         "groups": group_rows(rows, query.group, member_id=member_id),
         "columns": board_columns(rows),
         "counts": filter_counts(all_rows, member_id=member_id, repo=query.repo),
+        "hidden_columns": hidden_columns(rows),
         "query": query,
         # 도구 막대 저장소 선택 — 목록이 비면 숨긴다. 숨은 입력은 저장소를 뺀 나머지 목록 상태
         "repos": repo.list_work_repositories(conn, session_id),
@@ -1180,21 +1255,37 @@ def _saved_app(secrets: SecretStore) -> dict[str, str] | None:
     }
 
 
-def _match_rows(config: GitHubSourceConfig, match: Any) -> list[dict[str, Any]]:
-    """저장소 카드의 러너 매칭 줄 — 설정값이 있으면 "설정", 자동 매칭이 정했으면 "자동", 아니면 정해지지 않음."""
+def _match_rows(config: GitHubSourceConfig, match: Any, names: Mapping[str, str]) -> list[dict[str, Any]]:
+    """저장소 카드의 러너 매칭 줄 — 설정값이 있으면 "설정", 자동 매칭이 정했으면 "자동", 아니면 정해지지 않음.
+    에이전트 줄은 `name`(화면 이름 — 없으면 None)을 싣고 화면은 이름만 보인다(ID 는 카드의 "자세히")."""
     rows = []
-    for label, configured, matched in (
-        ("로컬 저장소", config.workflow_repository_id, match.workflow_repository_id),
-        ("수정 에이전트", config.default_fix_agent_id, match.fix_agent_id),
-        ("검증 프로필", config.fix_verification_profile_id, match.fix_verification_profile_id),
-        ("검토 에이전트", config.review_agent_id, match.review_agent_id),
-        ("판단 에이전트", config.triage_agent_id, None),  # 자동 매칭하지 않는다(ADR-0025 결정 3)
+    for label, configured, matched, agent in (
+        ("로컬 저장소", config.workflow_repository_id, match.workflow_repository_id, False),
+        ("수정 에이전트", config.default_fix_agent_id, match.fix_agent_id, True),
+        ("검증 프로필", config.fix_verification_profile_id, match.fix_verification_profile_id, False),
+        ("검토 에이전트", config.review_agent_id, match.review_agent_id, True),
+        ("판단 에이전트", config.triage_agent_id, None, True),  # 자동 매칭하지 않는다(ADR-0025 결정 3)
     ):
         how = "설정" if configured is not None else "자동" if matched is not None else None
-        rows.append({"label": label, "value": configured or matched, "how": how})
+        value = configured or matched
+        rows.append({"label": label, "value": value, "how": how,
+                     "name": names.get(value, "등록하지 않은 에이전트") if agent and value else None})
     if config.intake == "filtered" and rows[1]["value"] is None:
-        rows[1]["note"] = "이슈 GitHub 담당자에 연결한 Agent"  # filtered 는 담당 연결로 정한다(phase 8)
+        rows[1]["note"] = "이슈 GitHub 담당자에 연결한 에이전트"  # filtered 는 담당 연결로 정한다(phase 8)
     return rows
+
+
+def seen_github_users(rows: Sequence[Row]) -> list[dict[str, Any]]:
+    """담당 연결 고르기 — 수집한 이슈(`source_issues` 행) 스냅숏의 `assignee_ids`·`assignee_logins` 짝. 같은 id 는 가장
+    최근 `issue_updated_at` 의 login, login 순."""
+    seen: dict[int, tuple[str, str]] = {}
+    for row in rows:
+        snapshot = json.loads(row["snapshot_json"])
+        for user_id, login in zip(snapshot["assignee_ids"], snapshot["assignee_logins"], strict=False):
+            if user_id not in seen or row["issue_updated_at"] > seen[user_id][0]:
+                seen[user_id] = (row["issue_updated_at"], login)
+    return [{"github_user_id": user_id, "github_login": login}
+            for user_id, (_, login) in sorted(seen.items(), key=lambda item: (item[1][1], item[0]))]
 
 
 def _baseline_summary(conn: Connection, session_id: str, source_id: str) -> dict[str, Any] | None:
@@ -1229,7 +1320,8 @@ def notifications_context(conn: Connection, session_id: str, *, secrets: SecretS
 
 
 def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, Any]:
-    """팀 화면 — 멤버(표시 이름·이메일·역할·상태·가입·마지막 접속)와 쓰지 않은 초대(역할·만료). 비밀번호 해시·링크 토큰은 싣지 않는다."""
+    """팀 화면 — 멤버(표시 이름·이메일·역할·상태·가입·마지막 접속)와 쓰지 않은 초대(받는 사람 이메일·이름·역할·발급·만료).
+    비밀번호 해시·링크 토큰은 싣지 않는다."""
     last_seen = repo.member_last_seen(conn, session_id)
     return {
         "members": [
@@ -1238,7 +1330,7 @@ def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, An
             for row in repo.list_members(conn, session_id)
         ],
         "invites": [
-            {k: row[k] for k in ("invite_id", "role", "created_at", "expires_at")}
+            {k: row[k] for k in ("invite_id", "invitee_email", "invitee_name", "role", "created_at", "expires_at")}
             for row in repo.list_open_invites(conn, session_id, now=now)
         ],
     }
@@ -1271,39 +1363,32 @@ def _triage_agents(agents: list[dict[str, Any]], repository_id: str | None) -> l
 def github_context(
     conn: Connection, session_id: str, *, now: str, settings: Settings, secrets: SecretStore
 ) -> dict[str, Any]:
-    """연결 화면 가져올 곳 탭의 GitHub 절 — 연결 상태(비밀은 연결됨/없음만)·저장소 카드(동기화·수집 자격·러너 매칭·트리거 라벨)·
-    접힌 고급 설정(소스 설정·담당 연결)·실제 업무 목록. 열린 사람 요청은 업무 화면(내 차례)이 보인다. 쓰기는 화면의 스크립트가 JSON API
-    (`github_api`·`human_api`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 폼으로 한다."""
+    """저장소 화면의 GitHub 절 — 연결 상태(비밀은 연결됨/없음만)·저장소 카드(수집 상태·끝나지 않은 업무 수·러너 매칭·판단·수정·검토
+    에이전트 이름·고급 설정·담당 연결·기준선). 이슈 목록은 업무 화면이 보인다 — 수집한 이슈는 담당 연결 사용자 목록에만 쓴다.
+    쓰기는 화면의 스크립트가 JSON API(`github_api`)로, 연결은 `/operator/github/app/new`·`/operator/github/token` 폼으로 한다."""
     agents = [agent_public(a, now=now, settings=settings) for a in repo.list_session_agents(conn, session_id)]
+    names = {a["agent_id"]: a["name"] for a in agents}
+    open_work: dict[str, int] = {}
+    for row in repo.list_work_rows(conn, session_id, closed_since=now):
+        if row.repository is not None and row.status not in TERMINAL_WORK_STATUSES:
+            open_work[row.repository] = open_work.get(row.repository, 0) + 1
 
     def able(code: str) -> list[dict[str, Any]]:
         return [a for a in agents if any(c["code"] == code for c in a["capabilities"])]
 
     sources = []
     for config in repo.list_github_sources(conn, session_id):
-        issues = []
-        for row in repo.list_source_issues(conn, session_id, config.source_id):
-            task = repo.get_task(conn, row["task_id"])
-            snapshot = GitHubIssueSnapshot.model_validate_json(row["snapshot_json"])
-            deliveries = repo.list_source_deliveries(conn, row["task_id"])
-            issues.append({
-                "number": row["issue_number"],
-                "url": issue_url(config.repository_full_name, row["issue_number"]),
-                "title": snapshot.title,
-                "state": row["state"],
-                "assignees": snapshot.assignee_logins,
-                "task": task_summary(conn, task, now=now, settings=settings),
-                "delivery": delivery_public(deliveries[-1], config.repository_full_name) if deliveries else None,
-            })
         match = task_cycle.match_for_source(conn, session_id, config)
         credential = github_clients.credential_kind(config, settings, secrets)
         sources.append({
             "config": config.model_dump(mode="json"),
-            "assignees": [b.model_dump(mode="json") for b in repo.list_assignee_bindings(conn, session_id, config.source_id)],
-            "issues": issues,
+            "assignees": [{**b.model_dump(mode="json"), "agent_name": names.get(b.agent_id, "등록하지 않은 에이전트")}
+                          for b in repo.list_assignee_bindings(conn, session_id, config.source_id)],
+            "seen_users": seen_github_users(repo.list_source_issues(conn, session_id, config.source_id)),
+            "open_work_count": open_work.get(config.repository_full_name, 0),
             "synced_at": repo.get_source_synced_at(conn, session_id, config.source_id),
             "credential": CREDENTIAL_LABELS.get(credential) if credential else None,
-            "match": _match_rows(config, match),
+            "match": _match_rows(config, match, names),
             "runner_missing": any(b.code == "repository_unmatched" for b in match.blockers),
             "match_blockers": [b.reason for b in match.blockers if b.code != "repository_unmatched"],
             "baseline": _baseline_summary(conn, session_id, config.source_id),

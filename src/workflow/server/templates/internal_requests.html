@@ -28,7 +28,7 @@
     <button class="btn btn-small" type="submit">조사 시작</button>
     <p class="small">에이전트 소유자의 승인이 필요하거나 러너가 꺼져 있으면 대기합니다.</p>
   </form>
-  {% else %}<p class="small">요청에 등록된 로컬 에이전트에서 사용할 읽기 전용 종류와 범위가 없습니다. <a href="/connect?tab=team">등록 정보 확인</a></p>{% endif %}
+  {% else %}<p class="small">요청에 등록된 로컬 에이전트에서 사용할 읽기 전용 종류와 범위가 없습니다. <a href="/team">등록 정보 확인</a></p>{% endif %}
   {% endif %}
   {% if r.can_return %}
   <form method="post" action="/requests/{{ r.request_id }}/return">
@@ -143,7 +143,7 @@
     <button class="btn btn-small" type="submit">선택한 담당자에게 재전달</button>
     <p class="small">원래 요청 목적을 보존하고 새 수신자의 수락을 기다립니다.</p>
   </form>
-  {% else %}<p class="small">같은 시스템·요청 종류에 다른 담당 후보가 없습니다. <a href="/connect?tab=team">담당 범위 표 확인</a></p>{% endif %}
+  {% else %}<p class="small">같은 시스템·요청 종류에 다른 담당 후보가 없습니다. <a href="/team">담당 범위 표 확인</a></p>{% endif %}
   {% endif %}
   {% if r.can_accept %}
   <form method="post" action="/requests/{{ r.request_id }}/accept">

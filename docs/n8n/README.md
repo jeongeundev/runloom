@@ -47,8 +47,8 @@ HTTP Request 기본 URL 은 `http://host.docker.internal:8000/sources/n8n/chains
 
 ## 3. Runloom 에서
 
-1. 관리자 로그인 뒤 `/connect?tab=team` 에서 러너가 켜져 있는지 확인한다. 대상 저장소에 `code.fix`·`code.review` 능력이 필요하다. 에이전트가 없으면 입구 API 는 422 `agent_not_registered` 로 거부한다.
-2. `/sources` 에서 입구 토큰을 발급한다. 한 번만 보이는 `wfs_…` 원문을 복사하고 callback 허용 목록을 확인한다.
+1. 관리자 로그인 뒤 `/team` 에서 러너가 켜져 있는지 확인한다. 대상 저장소에 `code.fix`·`code.review` 능력이 필요하다. 에이전트가 없으면 입구 API 는 422 `agent_not_registered` 로 거부한다.
+2. `/settings?tab=inbound`(설정 → n8n 입구) 에서 입구 토큰을 발급한다. 한 번만 보이는 `wfs_…` 원문을 복사하고 callback 허용 목록을 확인한다.
 3. 러너에 등록한 `repository_id` 를 확인한다. 실행 예시의 `billing` 을 자신의 ID 로 바꾼다.
 
 ## 4. n8n 에서
@@ -115,7 +115,7 @@ curl -X POST http://localhost:5678/webhook/runloom-demo -H 'content-type: applic
 - **전송 실패는 30·60·120·240초 뒤 재시도, 5회 실패 후 중단.** 체인 화면의 callback 줄에 `대기 · 재시도 n회` 또는 `실패 n회 · <사유>` 로 보인다. n8n 이 꺼져 있었으면 다시 켜고 그 창 안에 있으면 된다.
 - **허용 목록.** `callback_url` 의 host 가 `WORKFLOW_CALLBACK_HOSTS` 안이어야 접수된다(밖이면 422 `callback_host_not_allowed`, 목록이 비어 있어도 422). `host` 만 쓰면 그 host 의 모든 포트, `host:port` 는 그 포트만. 워커도 보내기 직전에 한 번 더 검사한다. Docker 워커는 `host.docker.internal:5678` 처럼 도달 가능한 주소를 쓴다.
 - **`started: false` 응답의 뜻.** 체인과 Task 는 만들어졌지만 첫 업무를 시작하지 못했다 — `start_error.code` 가 `selection_required`(담당 후보 없음) 등이다. 201 이므로 n8n 실행은 Wait 로 넘어가 잠들고, 사람이 `chain_url` 에서 담당을 확정해 `워크플로우 시작` 을 누르면 그 뒤 흐름은 같다. 체인을 만들기 전의 거부(401·403·422·429)는 HTTP Request 노드가 오류로 멈춘다.
-- **입구 토큰.** `/sources` 에서 취소하면 다음 요청부터 401 이다. 활성 토큰은 워크스페이스당 5개.
+- **입구 토큰.** `/settings?tab=inbound` 에서 취소하면 다음 요청부터 401 이다. 활성 토큰은 워크스페이스당 5개.
 
 ## 7. 한계
 

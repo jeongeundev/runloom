@@ -63,6 +63,19 @@ class KindInUse(AdapterError):
     """Task 또는 후속 규칙이 참조하는 종류는 삭제할 수 없다."""
 
 
+class CapabilityProtected(AdapterError):
+    """내장 종류의 능력(`BUILTIN_CAPABILITY_CODES`)은 하나씩 뗄 수 없다."""
+
+
+class AgentScopeUnknown(AdapterError):
+    """에이전트의 범위 값(저장소)을 정할 수 없다 — `reason` 은 `SCOPE_*` 이유 코드."""
+
+    def __init__(self, agent_id: str, reason: str):
+        super().__init__(f"{agent_id}: {reason}")
+        self.agent_id = agent_id
+        self.reason = reason
+
+
 class DuplicateKind(AdapterError):
     """같은 세션에 같은 `kind` 가 이미 등록돼 있다."""
 
@@ -122,6 +135,14 @@ class RegistrationTaken(AdapterError):
 
 class EmailTaken(AdapterError):
     """같은 워크스페이스에 같은 이메일의 멤버가 이미 있다 (422 `invalid_field` `email`)."""
+
+
+class InviteEmailTaken(AdapterError):
+    """같은 워크스페이스에 같은 받는 사람 이메일의 열린 초대가 이미 있다 (422 `invite_email_taken`)."""
+
+
+class InviteEmailMismatch(AdapterError):
+    """초대에 적힌 받는 사람 이메일과 가입 이메일이 다르다 (422 `invite_email_mismatch`). 링크는 그대로."""
 
 
 class LastAdmin(AdapterError):

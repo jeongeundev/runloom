@@ -2,6 +2,11 @@
 
 from workflow.contracts.v1 import BUILTIN_KINDS, Capability, KindSpec, SuccessorRule
 from workflow.domain.kinds import (
+    BUILTIN_CAPABILITY_CODES,
+    SCOPE_MANY_REPOSITORIES,
+    SCOPE_NO_REPOSITORY,
+    agent_repository_scope,
+    editable_kinds,
     get_kind,
     kind_for_capability,
     validate_capability,
@@ -115,3 +120,47 @@ def test_validate_rule_rejects_triage_kinds_on_either_side():
     assert validate_rule(kinds, _rule(from_kind="triage", on_outcomes=["ready"])) == reason
     assert validate_rule(kinds, _rule(from_kind="sorter", on_outcomes=["ready"])) == reason
     assert validate_rule(kinds, _rule(to_kind="triage", handoff_kinds=["diff"])) == reason
+
+
+# --- agent_repository_scope (phase 23 step 4) -------------------------------------------
+
+
+def _caps(*pairs: tuple[str, dict]) -> list[Capability]:
+    return [Capability(code=code, scope=scope) for code, scope in pairs]
+
+
+def test_builtin_capability_codes_are_the_builtin_kinds_codes():
+    assert BUILTIN_CAPABILITY_CODES == frozenset({"code.fix", "code.review", "code.triage"})
+    assert BUILTIN_CAPABILITY_CODES == frozenset(spec.capability_code for spec in BUILTIN_KINDS)
+
+
+def test_runner_agent_scope_is_its_repository():
+    caps = _caps(("code.fix", {"repository_id": "billing"}), ("code.review", {"repository_id": "billing"}),
+                 ("code.triage", {"repository_id": "billing"}), ("review", {"repository_id": "other"}))
+    assert agent_repository_scope(caps) == ("billing", None)  # 사용자 정의 능력의 scope 는 보지 않는다
+
+
+def test_agent_without_builtin_repository_capability_has_no_scope():
+    assert agent_repository_scope([]) == (None, SCOPE_NO_REPOSITORY)
+    manual = _caps(("operations.diagnose", {"workflow_id": "daily-report"}), ("review", {"repository_id": "x"}))
+    assert agent_repository_scope(manual) == (None, "no_repository")
+    other_key = _caps(("code.fix", {"workflow_id": "billing"}))
+    assert agent_repository_scope(other_key) == (None, "no_repository")
+
+
+def test_agent_with_many_repositories_has_no_scope():
+    caps = _caps(("code.fix", {"repository_id": "billing"}), ("code.review", {"repository_id": "shop"}))
+    assert agent_repository_scope(caps) == (None, SCOPE_MANY_REPOSITORIES)
+    assert SCOPE_MANY_REPOSITORIES == "many_repositories"
+
+
+# --- editable_kinds (phase 23 step 6) -----------------------------------------------------
+
+
+def test_editable_kinds_are_user_kinds_with_own_code_and_repository_scope():
+    fix_alias = REVIEW.model_copy(update={"kind": "fix_alias", "capability_code": "code.fix"})
+    workflow_scoped = REVIEW.model_copy(update={"kind": "ops", "capability_code": "ops", "scope_key": "workflow_id"})
+    audit = REVIEW.model_copy(update={"kind": "audit", "capability_code": "audit"})
+    kinds = [*BUILTIN_KINDS, REVIEW, fix_alias, workflow_scoped, audit]
+    assert [s.kind for s in editable_kinds(kinds)] == ["review", "audit"]  # 등록부 순서 그대로
+    assert editable_kinds(BUILTIN_KINDS) == []

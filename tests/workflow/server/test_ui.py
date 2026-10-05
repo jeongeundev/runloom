@@ -144,8 +144,9 @@ def test_pages_render_three_column_shell(web, conn, store, settings):
     task_id, _ = seed_code_change_result(web, conn, store, settings)
     chain_id = seed_n8n_chain(conn, session_id_of(web, settings), callback_url=None)
     for path in (
-        "/tasks", f"/tasks/{task_id}", "/connect?tab=team", "/agents/agent-codex-mac", "/connect?tab=advanced",
-        "/tasks/new", "/connect?tab=sources", f"/chains/{chain_id}", "/connect?tab=kinds", "/connect?tab=notify",
+        "/tasks", f"/tasks/{task_id}", "/team", "/agents/agent-codex-mac", "/settings?tab=advanced",
+        "/tasks/new", "/repos", "/settings?tab=inbound", f"/chains/{chain_id}", "/settings?tab=kinds",
+        "/settings?tab=notify",
     ):
         html = web.get(path).text
         assert 'class="shell' in html, path
@@ -175,17 +176,17 @@ def test_work_screen_lists_my_work_with_status_badge_and_relative_time(web):
     assert "전" in visible_text(row)  # 상대 시각 "n분 전"
     assert 'href="/tasks/new"' in main  # 업무 등록은 도구 막대
     assert 'href="/tasks/import"' not in html and "/tasks/new?example=diagnose" not in html
-    assert 'href="/connect"' in sidebar  # 워크스페이스 로그인 = 연결 화면
+    assert 'href="/team"' in sidebar and 'href="/repos"' in sidebar and 'href="/settings"' in sidebar  # phase 23
 
 
-def test_sidebar_marks_connect_active_on_kinds_page(web):
-    """종류·규칙은 연결 화면 탭이다(phase 16) — `/connect?tab=kinds` 에서는 `연결` 이 활성이다. 활성 표시는 경로 접두사."""
+def test_sidebar_marks_settings_active_on_kinds_page(web):
+    """종류·규칙은 설정 화면 탭이다(phase 23) — `/settings?tab=kinds` 에서는 `설정` 이 활성이다."""
     html = web.get("/tasks").text
     nav = html[html.index('class="nav"'):html.index("</nav>")]
     assert 'href="/kinds"' not in nav and '<a href="/tasks" class="active">' in nav
-    kinds = web.get("/connect?tab=kinds").text
+    kinds = web.get("/settings?tab=kinds").text
     nav = kinds[kinds.index('class="nav"'):kinds.index("</nav>")]
-    assert '<a href="/connect" class="active">연결</a>' in nav
+    assert '<a href="/settings" class="active">설정</a>' in nav
     assert 'href="/tasks" class="active"' not in nav
 
 
@@ -264,12 +265,13 @@ def test_api_agent_row_shows_connected_without_last_seen(web, conn):
     """API 에이전트는 heartbeat 가 없어도 '연결됨' 이고 '마지막 확인' 을 보이지 않는다. 로컬은 heartbeat 규칙."""
     seed_user_kinds(conn)  # 분류 API(API)를 워크스페이스에 붙인다
     # phase 16: 에이전트 카드는 홈에서 빠졌다 — 같은 연결 표시는 연결 화면 팀·담당자 탭의 에이전트 목록 행에 있다
-    html = web.get("/connect?tab=team").text
+    html = web.get("/team").text
     cards = re.findall(r"<tr data-agent=\"[^\"]+\">\s*<td><a href=\"/agents/.*?</tr>", html, re.S)
     by_id = {re.search(r"agent-[a-z-]+", c).group(0): c for c in cards}
     ops, codex = by_id[API_AGENT], by_id["agent-codex-mac"]
-    assert 'data-status="연결됨"' in ops and "마지막 확인" not in ops
-    assert 'data-status="연결 끊김"' in codex and "마지막 확인 없음" in codex
+    # phase 23 step 6: 팀 화면 상태 칸은 켜짐·꺼짐, 러너 없는 로컬 에이전트는 `러너 없음`
+    assert 'data-status="켜짐"' in ops and "마지막 확인" not in ops
+    assert "러너 없음" in codex and "data-status=" not in codex
 
 
 # --- 결과 카드·뷰어 — 수정 결과(`bug_fix`) -------------------------------------------------
@@ -440,9 +442,9 @@ def test_visible_text_has_no_forbidden_phrases(web, conn, store, settings):
     task_id, _ = seed_code_change_result(web, conn, store, settings)
     chain_id = seed_n8n_chain(conn, session_id_of(web, settings), callback_url=None)
     for path in (
-        "/tasks", f"/tasks/{task_id}", "/tasks/new", "/connect?tab=sources", "/connect?tab=team",
-        "/agents/agent-codex-mac", "/connect?tab=advanced", f"/chains/{chain_id}", "/connect?tab=kinds",
-        "/connect?tab=notify",
+        "/tasks", f"/tasks/{task_id}", "/tasks/new", "/repos", "/settings?tab=inbound", "/team",
+        "/agents/agent-codex-mac", "/settings?tab=advanced", f"/chains/{chain_id}", "/settings?tab=kinds",
+        "/settings?tab=notify",
     ):
         text = visible_text(web.get(path).text)
         for phrase in ("대기 중", "Powered by"):
@@ -462,6 +464,25 @@ def test_stylesheet_follows_ui_guide():
     assert "prefers-reduced-motion" in css
     assert "max-width: 1199px" in css or "max-width: 1200px" in css
     assert "max-width: 799px" in css or "max-width: 800px" in css
+
+
+def css_rules(css: str) -> dict[str, str]:
+    """선택자 하나 → 그 선택자가 든 규칙 본문들(이어 붙임). @media 안 규칙도 같이 본다."""
+    rules: dict[str, str] = {}
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        for selector in selectors.split(","):
+            key = selector.strip()
+            rules[key] = rules.get(key, "") + body
+    return rules
+
+
+def test_tables_and_long_one_time_values_do_not_widen_the_page_at_390px():
+    """390px 에서 페이지 가로 스크롤 없음(UI_GUIDE, phase 23) — 표는 `.table-wrap`(자체 가로 스크롤) 안, 끊을 곳 없는 긴 값
+    (초대·재설정 링크, 입구 토큰, 연결 코드 — 발급 상자 `.alert code` — 와 n8n 입구 주소)은 줄을 바꾼다."""
+    rules = css_rules(STYLE.read_text(encoding="utf-8"))
+    assert "overflow-x: auto" in rules[".table-wrap"]
+    for selector in (".alert code", "#inbound-url"):
+        assert "overflow-wrap: anywhere" in rules.get(selector, ""), selector
 
 
 def test_templates_have_no_external_assets():
@@ -540,15 +561,15 @@ def test_chain_page_without_callback_url_has_no_callback_line(web, conn, setting
 
 
 def test_sources_page_uses_app_shell(web):
-    html = web.get("/connect?tab=sources").text  # phase 16: 입구는 연결 화면 가져올 곳 탭
+    html = web.get("/settings?tab=inbound").text  # phase 23: 입구는 설정 화면 n8n 입구 탭
     shell = html[html.index('class="shell'):]
     for column in ('class="sidebar', 'class="main', 'class="viewer'):
         assert column in shell, column
     assert '<link rel="stylesheet" href="/static/style.css">' in html
-    assert '<div class="crumb">연결</div>' in html and 'data-tab="sources" class="active"' in html
+    assert '<div class="crumb">설정</div>' in html and 'data-tab="inbound" class="active"' in html
     assert 'id="inbound-url"' in html
     nav = html[html.index('class="nav"'):html.index("</nav>")]
-    assert '<a href="/connect" class="active">연결</a>' in nav  # 입구는 연결 화면으로 모인다(phase 16)
+    assert '<a href="/settings" class="active">설정</a>' in nav  # 입구는 설정 화면(phase 23)
     main = html[html.index('class="main'):html.index('class="viewer')]
     assert "<svg" not in main and '<script src=' not in main
     text = visible_text(html)

@@ -3,7 +3,7 @@
 {% if triage.empty %}
 <div class="card">
   <p>아직 판단 기록이 없습니다.</p>
-  <p class="small">{% if 'manage_connections' in allowed %}<a href="/connect?tab=triage">연결 › 판단</a>{% else %}연결 › 판단{% endif %}에서 판단 에이전트를 고르면 새 업무마다 판단이 기록됩니다.</p>
+  <p class="small">{% if 'manage_connections' in allowed %}<a href="/settings?tab=triage">연결 › 판단</a>{% else %}연결 › 판단{% endif %}에서 판단 에이전트를 고르면 새 업무마다 판단이 기록됩니다.</p>
 </div>
 {% else %}
 <p data-triage-summary>{{ triage.summary }}</p>

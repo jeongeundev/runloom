@@ -395,11 +395,11 @@ def test_01_admin_connects_github_and_attaches_the_runner(world):
 
 def test_02_jira_connect_project_and_settings(world):
     http, jira = world.http, world.ctx["jira"]
-    sources = page(world, "/connect", tab="sources")
+    sources = page(world, "/repos")
     assert 'action="/operator/jira/connect"' in sources
 
     connected = http.post("/operator/jira/connect", data={"site_url": SITE, "email": EMAIL, "token": JIRA_TOKEN})
-    assert (connected.status_code, connected.headers["location"]) == (303, "/connect?tab=sources"), connected.text
+    assert (connected.status_code, connected.headers["location"]) == (303, "/repos"), connected.text
     (row,) = q(world, "SELECT site_url, cloud_id, api_base, email FROM jira_connections")
     assert tuple(row) == (SITE, CLOUD, "gateway", EMAIL)
     secrets = SecretStore(load_settings(world.central_env).secret_dir)
@@ -421,7 +421,7 @@ def test_02_jira_connect_project_and_settings(world):
     (settings,) = q(world, "SELECT status_on_start, status_on_review, status_on_done, followup_issue_type, enabled"
                            " FROM jira_projects")
     assert tuple(settings) == ("진행 중", "리뷰중", "종료", "작업", 1)
-    screen = page(world, "/connect", tab="sources")
+    screen = page(world, "/repos")
     assert "shopco.atlassian.net" in screen and "김개발" in screen
     # 연결 화면·확인은 게이트웨이로만 부른다 — 사이트에는 tenant_info 한 번
     assert [p for _, p, _ in jira.requests if not p.startswith("/ex/jira/")] == ["/_edge/tenant_info"]
@@ -558,7 +558,7 @@ def test_06_the_jira_token_stays_in_the_secret_file(world):
     assert JIRA_TOKEN not in dump and EMAIL in dump
     for path in (world.workdir / "logs").glob("*.log"):
         assert JIRA_TOKEN not in path.read_text(encoding="utf-8", errors="replace"), path.name
-    for path in ("/connect?tab=sources", "/tasks", "/tasks?open=RUN-1"):
+    for path in ("/repos", "/tasks", "/tasks?open=RUN-1"):
         assert JIRA_TOKEN not in page(world, path)
     (secret,) = (world.workdir / "central" / "secrets").glob(JIRA_API_TOKEN)
     assert secret.stat().st_mode & 0o777 == 0o600
@@ -594,7 +594,7 @@ def test_v13_copy_upgrades_to_v14_and_takes_jira_issues(tmp_path):
 
     conn = connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24  # 결과 뒤 판단 마이그레이션까지
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25  # 결과 뒤 판단 마이그레이션까지
         after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in before}
         assert after == {**before, "field_mappings": before["field_mappings"] + 1}  # jira 기본 매핑 한 행
         assert [tuple(r) for r in conn.execute(

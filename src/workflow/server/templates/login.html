@@ -1,6 +1,7 @@
 {# 로그인 전 화면 한 장 (ADR-0021, ARCHITECTURE "첫 설정·복구·초대·재설정 흐름") — 앱 셸 없음.
    mode: setup(운영자 토큰으로 관리자 계정 만들기) · login(이메일·비밀번호) · recover(토큰 + 관리자 이메일 + 새 비밀번호)
-   · invite(초대 가입) · reset(새 비밀번호) · invalid(무효 링크 안내).
+   · invite(초대 가입 — phase 23: 초대에 이메일이 있으면 그 값으로 고정(readonly), 제목 아래 초대한 사람·역할 한 줄)
+   · reset(새 비밀번호) · invalid(무효 링크 안내).
    되돌려 채우는 값은 이메일·표시 이름뿐 — 비밀번호·토큰은 다시 싣지 않는다. 링크 토큰은 화면에 적지 않는다 — 초대·재설정 폼은 action 없이 지금 주소로 보낸다. #}
 <!DOCTYPE html>
 <html lang="ko">
@@ -19,7 +20,8 @@
     {% elif mode == "reset" %}<h1>새 비밀번호</h1>
     {% elif mode == "invalid" %}<h1>링크를 쓸 수 없습니다</h1>
     {% else %}<h1>Runloom 로그인</h1>{% endif %}
-    {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+    {% if mode == "invite" and invite %}<p class="muted">{{ invite.inviter }} 이 {{ '관리자' if invite.role == 'admin' else '멤버' }} 로 초대했습니다.</p>{% endif %}
+    {% if error %}<div class="alert"{% if error_code %} data-error-code="{{ error_code }}"{% endif %}>{{ error }}</div>{% endif %}
     {% if mode == "setup" %}
     <form method="post" action="/login/setup" class="card">
       <div class="field">
@@ -63,7 +65,7 @@
     <form method="post" class="card">
       <div class="field">
         <label for="email">이메일</label>
-        <input type="email" id="email" name="email" value="{{ email }}" autocomplete="username" required>
+        <input type="email" id="email" name="email" value="{{ email }}"{% if invite and invite.email %} readonly{% endif %} autocomplete="username" required>
       </div>
       <div class="field">
         <label for="display_name">표시 이름</label>

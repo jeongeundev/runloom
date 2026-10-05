@@ -467,12 +467,12 @@ def test_connect_screen_counts_recent_failures(conn, work, client):
     deliver(conn, jira)
     client.app.state.secrets.write(JIRA_API_TOKEN, "tok")
 
-    html = log_in(client).get("/connect?tab=sources").text
+    html = log_in(client).get("/repos").text
 
     assert "Jira 반영 실패 1건" in html
     # 다시 연결하면 그 뒤의 실패만 센다
     repo.save_jira_connection(conn, FACTS, session_id=SESSION, now=LATER)
-    assert "Jira 반영 실패" not in log_in(client).get("/connect?tab=sources").text
+    assert "Jira 반영 실패" not in log_in(client).get("/repos").text
     assert repo.jira_delivery_failures(conn, SESSION) == {}
 
 

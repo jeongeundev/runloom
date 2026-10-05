@@ -1,7 +1,7 @@
 # ruff: noqa: F811 — test_task_cycle·test_triage_runs 픽스처(cycle·judge)를 가져와 인자로 쓴다
 """판단 설정 — phase 19 step 8 (ADR-0025, ARCHITECTURE "판단 — phase 19" 경로·자동 시작·화면).
 
-연결 화면 판단 탭(`/connect?tab=triage`): 기준 본문 편집(저장 = 새 버전 행, 같은 본문이면 그대로)·버전 이력·이전 본문 보기,
+연결 화면 판단 탭(`/settings?tab=triage`): 기준 본문 편집(저장 = 새 버전 행, 같은 본문이면 그대로)·버전 이력·이전 본문 보기,
 종류별 자동 시작(사람 처리 20건 미만이면 서버도 켜기 거부, 기준값 0.50~1.00, 변경 = 설정 버전 행 + `config_revision` +1),
 저장소 카드 판단 Agent 칸(`code.triage` 능력·맡기기 정책 `run` 만). 모두 `manage_connections`.
 판단 Agent 소유자 알림은 하지 않는다 — ADR-0025 사실 10·결정 3(정책 `run` 인 Agent 만 고를 수 있다).
@@ -50,7 +50,7 @@ def revision(conn) -> int:
 
 
 def tab(client, query: str = "") -> str:
-    response = client.get(f"/connect?tab=triage{query}")
+    response = client.get(f"/settings?tab=triage{query}")
     assert response.status_code == 200, response.text
     return response.text
 
@@ -97,13 +97,13 @@ def test_tab_shows_current_criteria_v1_and_history(admin):
     assert '<textarea name="body"' in html
     assert 'name="expected_version" value="1"' in html
     assert "처음 기준" in html  # 시드 행은 쓴 사람이 없다
-    assert 'href="/connect?tab=triage&amp;version=1"' in html
+    assert 'href="/settings?tab=triage&amp;version=1"' in html
 
 
 def test_saving_new_body_makes_v2_and_bumps_config_revision(admin, conn):
     before = revision(conn)
     response = save_criteria(admin, "새 판단 기준\n- 재현 절차가 있는가", 1)
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=triage"
+    assert response.status_code == 303 and response.headers["location"] == "/settings?tab=triage"
 
     current = repo.current_triage_criteria(conn, SESSION)
     assert (current["version"], current["body"]) == (2, "새 판단 기준\n- 재현 절차가 있는가")
@@ -134,7 +134,7 @@ def test_previous_version_body_is_shown_read_only(admin, conn):
     view = re.search(r"<pre[^>]*data-criteria-version=\"1\"[^>]*>(.*?)</pre>", html, re.S)
     assert view is not None
     assert "너는 팀의 새 업무 하나를 보고" in view.group(1) and "두 번째 기준" not in view.group(1)  # v1 본문
-    error(admin.get("/connect?tab=triage&version=9"), 404, "not_found")
+    error(admin.get("/settings?tab=triage&version=9"), 404, "not_found")
 
 
 def test_stale_expected_version_is_409(admin, conn):
@@ -194,7 +194,7 @@ def test_enabling_with_20_handled_saves_a_version_and_bumps_revision(admin, conn
     seed_handled(conn, "bug_fix", 20)
     before = revision(conn)
     response = save_autostart(admin, "bug_fix", enabled=True, threshold="0.90")
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=triage"
+    assert response.status_code == 303 and response.headers["location"] == "/settings?tab=triage"
     assert repo.triage_autostart_settings(conn, SESSION)["bug_fix"] == AutostartSetting(
         kind="bug_fix", version=1, enabled=True, threshold=0.9)
     assert revision(conn) == before + 1
@@ -329,15 +329,15 @@ def triage_select(html: str) -> str:
 def test_card_select_lists_run_policy_agents_with_triage_capability(admin, conn):
     give_triage(conn, REVIEW, "billing")
     repo.set_delegation_policy(conn, SESSION, REVIEW, "owner_approval", member_id=None, now=NOW)
-    select = triage_select(admin.get("/connect?tab=sources").text)
+    select = triage_select(admin.get("/repos").text)
     assert "없음 — 판단하지 않음" in select
     assert f'value="{FIX}" selected' in select  # judge 픽스처가 FIX 로 저장
     assert f'value="{REVIEW}"' not in select  # 정책 owner_approval 은 후보가 아니다
 
 
 def test_card_match_rows_show_triage_agent(admin):
-    html = admin.get("/connect?tab=sources").text
-    assert re.search(rf"판단 에이전트</span><span><span class=\"mono\">{FIX}</span> \(설정\)", html)
+    html = admin.get("/repos").text
+    assert f"판단 에이전트</span><span>{FIX} (설정)</span>" in html  # phase 23: 이름(이 픽스처는 이름 = ID)
 
 
 def test_saving_triage_agent_bumps_revisions(admin, conn):
@@ -381,8 +381,8 @@ def test_triage_agent_needs_registration_and_capability(admin, conn, agent_id, c
 
 def test_member_has_no_triage_tab_and_gets_403(app, admin, conn):
     member = log_in_member(TestClient(app))
-    assert 'data-tab="triage"' not in member.get("/connect").text
-    error(member.get("/connect?tab=triage", follow_redirects=False), 403, "forbidden")
+    assert 'data-tab="triage"' not in member.get("/settings").text
+    error(member.get("/settings?tab=triage", follow_redirects=False), 403, "forbidden")
     error(save_criteria(member, "멤버 기준", 1), 403, "forbidden")
     error(save_autostart(member, "bug_fix", enabled=False), 403, "forbidden")
     assert member.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=None)).status_code == 403
@@ -391,7 +391,7 @@ def test_member_has_no_triage_tab_and_gets_403(app, admin, conn):
 
 def test_logged_out_is_redirected_to_login(app, judge):
     anonymous = TestClient(app)
-    for response in (anonymous.get("/connect?tab=triage", follow_redirects=False),
+    for response in (anonymous.get("/settings?tab=triage", follow_redirects=False),
                      save_criteria(anonymous, "기준", 1), save_autostart(anonymous, "bug_fix", enabled=False)):
         assert response.status_code == 303 and response.headers["location"] == "/login"
 
@@ -417,3 +417,24 @@ def test_criteria_and_autostart_saves_record_the_logged_in_member(admin, conn):
         (revision(conn) - 1, "triage_criteria", "v2", admin_id(conn)),
         (revision(conn), "triage_autostart", "bug_fix 끔 · 기준값 0.90", admin_id(conn)),
     ]
+
+
+# --- phase 23 step 7: 판단 에이전트는 카드 본문 칸 — 저장하면 접수 판단 시작 조건 그대로 -----------------
+
+
+def test_triage_agent_is_a_card_body_field_and_saving_it_starts_intake_triage(admin, conn, settings):
+    from .test_triage_runs import new_issue, route
+
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW), NOW)  # 판단 에이전트 없음
+    card = admin.get("/repos").text.split(f'data-source-card="{SOURCE}"', 1)[1].split("</section>", 1)[0]
+    advanced = re.search(r"<details[^>]*data-source-advanced.*?</details>", card, re.S).group(0)
+    assert 'name="triage_agent_id"' in card and 'name="triage_agent_id"' not in advanced
+    work_item_id = new_issue(conn, 1)
+    assert route(conn, settings, work_item_id).agent_id is None
+
+    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
+    assert response.status_code == 200, response.text
+
+    found = route(conn, settings, work_item_id)
+    assert (found.agent_id, found.reason) == (FIX, None)
+    assert f'<option value="{FIX}" selected>{FIX}</option>' in admin.get("/repos").text

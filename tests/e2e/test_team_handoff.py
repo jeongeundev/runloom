@@ -257,7 +257,7 @@ def assign(http: httpx.Client, key: str, agent_id: str, note: str = "") -> None:
 
 def set_policy(http: httpx.Client, agent_id: str, policy: str) -> None:
     response = http.post(f"/agents/{agent_id}/delegation-policy", data={"policy": policy})
-    assert (response.status_code, response.headers.get("location")) == (303, "/connect?tab=team"), response.text[:500]
+    assert (response.status_code, response.headers.get("location")) == (303, "/team"), response.text[:500]
 
 
 def open_request(world: World, http: httpx.Client, task_id: str, code: str) -> dict | None:
@@ -336,7 +336,7 @@ def test_01_admin_connects_github_and_invites_a_member(world):
     report = world.worker.tick()
     assert report.sync_errors == 0 and report.issues_created == 4 and report.tasks_started == 0
 
-    issued = http.post("/team/invites", data={"role": "member"})
+    issued = http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
     link = re.search(rf"{re.escape(world.central_url)}/invite/([A-Za-z0-9_-]+)", issued.text)
     assert link, issued.text[:1000]
     member = member_http(world)

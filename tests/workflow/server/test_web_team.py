@@ -15,6 +15,8 @@ from workflow.adapters import repo, secret_store
 from workflow.adapters.secret_store import SecretStore
 from workflow.server.app import create_app
 
+from workflow.server.auth import utc_now
+
 from .conftest import ADMIN_EMAIL, ADMIN_PASSWORD, MEMBER_PASSWORD, SESSION, log_in, log_in_member
 
 URL = "https://discord.com/api/webhooks/654321/PERSONALwebhookTOKEN_xyz"
@@ -78,6 +80,26 @@ def link_token(html: str, kind: str) -> str:
     return found[0]
 
 
+def invite_error(response, code: str, message: str) -> None:
+    """초대 폼 오류는 오류 화면이 아니라 팀 화면 폼 위 인라인(422) — phase 23 step 3."""
+    assert response.status_code == 422, response.text
+    assert f'data-invite-error="{code}"' in response.text and message in response.text, response.text
+    assert 'action="/team/invites"' in response.text  # 같은 팀 화면
+
+
+def visible_text(html: str) -> str:
+    """ARCHITECTURE "노출 단정 규칙" — 스크립트·스타일·"자세히" 를 뺀 화면 글자."""
+    html = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)
+    html = re.sub(r'<details class="detail"[^>]*>.*?</details>', " ", html, flags=re.S)
+    return re.sub(r"<[^>]+>", " ", html)
+
+
+LINK_NOTE = "이 링크는 이 컴퓨터 주소 기준입니다 — 다른 컴퓨터에서 열려면 SELFHOST 문서의 WORKFLOW_PUBLIC_URL 을 설정하세요."
+INVITE_NOTICE = ("이 링크는 지금만 보입니다. 놓치면 아래 목록에서 [링크 다시 만들기] 를 누르세요 — 옛 링크는 더 쓸 수 없습니다."
+                 " 7일 동안 한 번 쓸 수 있습니다.")
+RESET_NOTICE = "이 링크는 지금만 보입니다. 24시간 동안 한 번 쓸 수 있습니다."
+
+
 def logged_in(client: TestClient) -> bool:
     return client.get("/tasks", follow_redirects=False).status_code == 200
 
@@ -85,8 +107,9 @@ def logged_in(client: TestClient) -> bool:
 # --- 권한 ----------------------------------------------------------------------------------------
 
 TEAM_POSTS = [
-    ("/team/invites", {"role": "member"}),
+    ("/team/invites", {"role": "member", "invitee_email": "x@example.com"}),
     ("/team/invites/inv-000000000000/revoke", {}),
+    ("/team/invites/inv-000000000000/reissue", {}),
     ("/team/members/mem-00000000/role", {"role": "admin"}),
     ("/team/members/mem-00000000/disable", {}),
     ("/team/members/mem-00000000/enable", {}),
@@ -102,7 +125,7 @@ ME_POSTS = [
 
 
 def test_member_gets_403_on_team_and_changes_nothing(member, conn):
-    page = member.get("/connect?tab=team")  # phase 16: 팀 탭은 열리지만 멤버·초대 절은 `manage_team` 만
+    page = member.get("/team")  # phase 23: 팀 화면은 열리지만 멤버·초대 절은 `manage_team` 만
     assert page.status_code == 200 and 'action="/team/invites"' not in page.text and "data-member-id=" not in page.text
     invites = len(repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z"))
     for path, data in TEAM_POSTS:
@@ -112,7 +135,7 @@ def test_member_gets_403_on_team_and_changes_nothing(member, conn):
 
 def test_anonymous_is_sent_to_login(app, admin):
     anonymous = TestClient(app)
-    for path in ("/connect?tab=team", "/me"):
+    for path in ("/team", "/me"):
         response = anonymous.get(path, follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")
     for path, data in TEAM_POSTS + ME_POSTS:
@@ -120,20 +143,20 @@ def test_anonymous_is_sent_to_login(app, admin):
         assert (response.status_code, response.headers["location"]) == (303, "/login"), path
 
 
-def test_sidebar_links_me_for_everyone_and_team_moves_to_connect(admin, member):
-    """phase 16: 사이드바에서 팀 링크는 빠지고(연결 화면 팀 탭 — step 6) 내 설정은 모두에게."""
+def test_sidebar_links_team_and_me_for_everyone(admin, member):
+    """phase 23: 사이드바에 팀 화면(`/team`)과 내 설정이 모두에게 있다(옛 `연결` 메뉴는 없다)."""
     for client in (admin, member):
         page = client.get("/tasks").text
         sidebar = page[page.index('class="sidebar'):page.index('class="main')]
-        assert 'href="/team"' not in sidebar and 'href="/me"' in sidebar
-    assert admin.get("/connect?tab=team").status_code == 200
+        assert 'href="/team"' in sidebar and 'href="/me"' in sidebar and 'href="/connect"' not in sidebar
+        assert client.get("/team", follow_redirects=False).status_code == 200
 
 
-# --- 팀 목록 (연결 화면 팀·담당자 탭 — phase 16 step 6) ------------------------------------------------------------------------------------
+# --- 팀 목록 (팀 화면 — phase 23 step 1) ------------------------------------------------------------------------------------
 
 
 def test_team_lists_members_with_email_role_state_and_dates(admin, member, conn):
-    page = admin.get("/connect?tab=team")
+    page = admin.get("/team")
     assert page.status_code == 200
     dev = member_id(conn, "dev@example.com")
     assert f'data-member-id="{dev}"' in page.text
@@ -143,25 +166,38 @@ def test_team_lists_members_with_email_role_state_and_dates(admin, member, conn)
     assert "scrypt$" not in page.text  # 비밀번호 해시는 화면에 없다
 
 
-def test_team_without_public_url_shows_setting_hint(admin):
-    page = admin.get("/connect?tab=team").text
-    assert "WORKFLOW_PUBLIC_URL" in page and "SELFHOST" in page
+def test_team_has_no_red_public_url_warning_and_no_link_note_without_link(admin):
+    """phase 23: 팀 화면 맨 위 빨간 `WORKFLOW_PUBLIC_URL` 경고는 없다 — 회색 안내는 링크가 보일 때만."""
+    page = admin.get("/team").text
+    assert "WORKFLOW_PUBLIC_URL" not in page and "data-public-url-note" not in page
+    assert 'data-team-section="members"' in page and 'data-team-section="invites"' in page
+    assert page.index('data-team-section="members"') < page.index('data-team-section="invites"')
 
 
 # --- 초대 ------------------------------------------------------------------------------------------
 
 
 def test_invite_link_shown_once_then_only_listed_without_token(app, admin, conn):
-    response = admin.post("/team/invites", data={"role": "member"})
+    response = admin.post("/team/invites", data={"role": "member", "invitee_email": " New@Example.com ",
+                                                 "invitee_name": "새 멤버"})
     assert response.status_code == 200, response.text
     token = link_token(response.text, "invite")
     assert f"http://testserver/invite/{token}" in response.text
-    assert "data-copy-target" in response.text  # 복사 버튼
+    assert 'data-issued="invite"' in response.text and "new@example.com 초대 링크(멤버):" in response.text
+    assert 'data-copy-target="issued-link"' in response.text  # 복사 버튼
+    assert INVITE_NOTICE in response.text
+    assert 'class="link-note" data-public-url-note' in response.text and LINK_NOTE in response.text
+    assert '<div class="alert">' not in response.text  # 빨간 경고 없음
 
-    listed = admin.get("/connect?tab=team").text
-    assert token not in listed
+    listed = admin.get("/team").text
+    assert token not in listed and "data-issued" not in listed and "data-public-url-note" not in listed
     invite = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]
-    assert f'data-invite-id="{invite["invite_id"]}"' in listed
+    row = re.search(rf'<tr data-invite-id="{invite["invite_id"]}">.*?</tr>', listed, flags=re.S).group(0)
+    assert "new@example.com" in row and "새 멤버" in row and "멤버" in row
+    assert f'action="/team/invites/{invite["invite_id"]}/reissue"' in row and "링크 다시 만들기" in row
+    assert f'action="/team/invites/{invite["invite_id"]}/revoke"' in row
+    assert invite["invite_id"] in row and invite["invite_id"] not in visible_text(row)  # ID 는 "자세히" 안에만
+    assert (invite["invitee_email"], invite["invitee_name"]) == ("new@example.com", "새 멤버")
     assert token not in dump(conn)
 
     joined = TestClient(app).post(f"/invite/{token}", data={
@@ -171,31 +207,138 @@ def test_invite_link_shown_once_then_only_listed_without_token(app, admin, conn)
 
 
 def test_invite_role_admin_and_invalid_role(app, admin, conn):
-    token = link_token(admin.post("/team/invites", data={"role": "admin"}).text, "invite")
+    token = link_token(admin.post("/team/invites", data={"role": "admin", "invitee_email": "boss@example.com"}).text,
+                       "invite")
     TestClient(app).post(f"/invite/{token}", data={
         "email": "boss@example.com", "display_name": "새 관리자", "password": MEMBER_PASSWORD})
     assert repo.find_member_by_email(conn, SESSION, "boss@example.com")["role"] == "admin"
 
-    error(admin.post("/team/invites", data={"role": "owner"}), 422, "invalid_field")
+    invite_error(admin.post("/team/invites", data={"role": "owner", "invitee_email": "x@example.com"}),
+                 "invalid_field", "역할은 관리자 또는 멤버입니다.")
 
 
-def test_invite_link_uses_public_url(settings, receiver):
+def test_invite_needs_valid_email_name_and_no_overlap(admin, conn):
+    before = len(repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z"))
+    for data, code, message in (
+        ({"role": "member"}, "invalid_field", "이메일 형식이 올바르지 않습니다."),
+        ({"role": "member", "invitee_email": "not-an-email"}, "invalid_field", "이메일 형식이 올바르지 않습니다."),
+        ({"role": "member", "invitee_email": "n@example.com", "invitee_name": "가" * 41}, "invalid_field",
+         "이름은 1~40자로 입력하세요."),
+        ({"role": "member", "invitee_email": ADMIN_EMAIL.upper()}, "invite_email_taken",
+         "이미 팀에 있는 이메일입니다(비활성 멤버 포함)."),
+    ):
+        response = admin.post("/team/invites", data=data)
+        invite_error(response, code, message)
+        assert "data-issued" not in response.text
+    assert admin.post("/team/invites", data={"role": "member", "invitee_email": "dup@example.com"}).status_code == 200
+    again = admin.post("/team/invites", data={"role": "admin", "invitee_email": "DUP@example.com", "invitee_name": "중복"})
+    invite_error(again, "invite_email_taken",
+                 "이 이메일로 보낸 초대가 아직 열려 있습니다 — 아래 목록에서 [링크 다시 만들기] 를 누르세요.")
+    assert 'value="DUP@example.com"' in again.text and 'value="중복"' in again.text  # 입력값을 다시 채운다
+    assert '<option value="admin" selected>' in again.text
+    assert len(repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")) == before + 1
+
+
+def test_invite_accept_with_another_email_is_422_and_keeps_the_link(app, admin, conn):
+    token = link_token(admin.post("/team/invites", data={"role": "member", "invitee_email": "fix@example.com"}).text,
+                       "invite")
+    client = TestClient(app)
+    wrong = client.post(f"/invite/{token}", data={"email": "other@example.com", "display_name": "다른",
+                                                  "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert wrong.status_code == 422 and "초대받은 이메일로만 가입할 수 있습니다." in wrong.text
+    assert 'data-error-code="invite_email_mismatch"' in wrong.text
+    assert 'value="fix@example.com" readonly' in wrong.text  # 고정 이메일은 다시 초대 이메일로
+    assert repo.find_member_by_email(conn, SESSION, "other@example.com") is None
+    joined = client.post(f"/invite/{token}", data={"email": "fix@example.com", "display_name": "고정",
+                                                   "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert joined.status_code == 303
+
+
+def test_invite_form_asks_invitee_email_and_name(admin):
+    page = admin.get("/team").text
+    assert 'name="invitee_email"' in page and 'type="email"' in page and 'name="invitee_name"' in page
+    assert "받는 사람 이메일" in page and "링크를 복사해 직접 전하세요 — 이메일은 보내지 않습니다. 받는 사람은 이 이메일로만 가입합니다." in page
+    assert "쓰지 않은 초대가 없습니다." in page
+
+
+def test_signup_page_fixes_invite_email_and_defaults_name(app, admin, conn):
+    token = link_token(admin.post("/team/invites", data={"role": "admin", "invitee_email": "Fixed@Example.com",
+                                                         "invitee_name": "고정 이름"}).text, "invite")
+    page = TestClient(app).get(f"/invite/{token}")
+    assert page.status_code == 200
+    assert '<input type="email" id="email" name="email" value="fixed@example.com" readonly' in page.text
+    assert 'value="고정 이름"' in page.text
+    assert "관리자 이 관리자 로 초대했습니다." in page.text
+
+
+def test_signup_page_for_old_invite_without_email_is_unchanged(app, admin, conn):
+    invite_id, token = repo.issue_invite(conn, SESSION, role="member", invitee_email="old@example.com",
+                                         created_by_member_id=None, now="2026-09-30T00:00:00Z")
+    conn.execute("UPDATE member_invites SET invitee_email = NULL, expires_at = '2099-01-01T00:00:00Z'"
+                 " WHERE invite_id = ?", (invite_id,))
+    page = TestClient(app).get(f"/invite/{token}").text
+    assert "readonly" not in page and 'value=""' in page
+    assert "관리자 이 멤버 로 초대했습니다." in page  # 초대한 사람이 없으면 `관리자`
+
+    listed = admin.get("/team").text
+    row = re.search(rf'<tr data-invite-id="{invite_id}">.*?</tr>', listed, flags=re.S).group(0)
+    assert "이메일 없음(옛 초대)" in row and "—" in row
+    joined = TestClient(app).post(f"/invite/{token}", data={"email": "any@example.com", "display_name": "옛 초대",
+                                                            "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert joined.status_code == 303
+
+
+def test_invite_link_uses_public_url(settings, receiver, conn):
     from dataclasses import replace
 
     app = create_app(replace(settings, public_url="https://runloom.example.com"))
     admin = log_in(TestClient(app, base_url="https://testserver"))
-    response = admin.post("/team/invites", data={"role": "member"})
+    response = admin.post("/team/invites", data={"role": "member", "invitee_email": "pub@example.com"})
     token = link_token(response.text, "invite")
     assert f"https://runloom.example.com/invite/{token}" in response.text
-    assert "WORKFLOW_PUBLIC_URL" not in admin.get("/connect?tab=team").text
+    assert "data-public-url-note" not in response.text and "WORKFLOW_PUBLIC_URL" not in response.text
+    assert "WORKFLOW_PUBLIC_URL" not in admin.get("/team").text
+    invite_id = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]["invite_id"]
+    again = admin.post(f"/team/invites/{invite_id}/reissue")
+    assert "https://runloom.example.com/invite/" in again.text and "data-public-url-note" not in again.text
+
+
+def test_reissue_invite_shows_new_link_once_and_old_link_dies(app, admin, conn):
+    old = link_token(admin.post("/team/invites", data={"role": "member", "invitee_email": "re@example.com",
+                                                       "invitee_name": "다시"}).text, "invite")
+    invite_id = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]["invite_id"]
+    response = admin.post(f"/team/invites/{invite_id}/reissue", follow_redirects=False)
+    assert response.status_code == 200, response.text
+    new = link_token(response.text, "invite")
+    assert new != old and old not in response.text
+    assert 'data-issued="invite"' in response.text and "re@example.com 초대 링크(멤버):" in response.text
+    assert INVITE_NOTICE in response.text and LINK_NOTE in response.text
+    assert new not in admin.get("/team").text and new not in dump(conn)
+    assert len([r for r in repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")
+                if r["invitee_email"] == "re@example.com"]) == 1  # 같은 줄
+
+    guest = TestClient(app)
+    assert guest.get(f"/invite/{old}").status_code == 404
+    stale = guest.post(f"/invite/{old}", data={"email": "re@example.com", "display_name": "다시",
+                                               "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert stale.status_code == 404 and repo.find_member_by_email(conn, SESSION, "re@example.com") is None
+    joined = guest.post(f"/invite/{new}", data={"email": "re@example.com", "display_name": "다시",
+                                                "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert joined.status_code == 303
+    # 쓴 초대·없는 초대는 다시 만들 수 없다
+    used = admin.post(f"/team/invites/{invite_id}/reissue")
+    error(used, 404, "not_found")
+    assert f"초대 {invite_id}을 찾을 수 없습니다." in used.text
+    error(admin.post("/team/invites/inv-000000000000/reissue"), 404, "not_found")
 
 
 def test_revoke_invite(app, admin, conn):
-    token = link_token(admin.post("/team/invites", data={"role": "member"}).text, "invite")
+    token = link_token(admin.post("/team/invites", data={"role": "member", "invitee_email": "rv@example.com"}).text,
+                       "invite")
     invite_id = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]["invite_id"]
     response = admin.post(f"/team/invites/{invite_id}/revoke", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
-    assert f'data-invite-id="{invite_id}"' not in admin.get("/connect?tab=team").text
+    assert (response.status_code, response.headers["location"]) == (303, "/team")
+    assert f'data-invite-id="{invite_id}"' not in admin.get("/team").text
     assert TestClient(app).get(f"/invite/{token}").status_code == 404
     error(admin.post(f"/team/invites/{invite_id}/revoke"), 404, "not_found")
 
@@ -206,8 +349,8 @@ def test_revoke_invite(app, admin, conn):
 def test_role_change_applies_immediately(admin, member, conn):
     dev = member_id(conn, "dev@example.com")
     response = admin.post(f"/team/members/{dev}/role", data={"role": "admin"}, follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
-    assert 'action="/team/invites"' in member.get("/connect?tab=team").text
+    assert (response.status_code, response.headers["location"]) == (303, "/team")
+    assert 'action="/team/invites"' in member.get("/team").text
     error(admin.post(f"/team/members/{dev}/role", data={"role": "owner"}), 422, "invalid_field")
 
 
@@ -224,9 +367,9 @@ def test_last_admin_cannot_demote_or_disable_self(admin, member, conn):
 def test_disable_logs_member_out_and_blocks_login_then_enable(app, admin, member, conn):
     dev = member_id(conn, "dev@example.com")
     response = admin.post(f"/team/members/{dev}/disable", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
+    assert (response.status_code, response.headers["location"]) == (303, "/team")
     assert not logged_in(member)
-    assert "비활성" in admin.get("/connect?tab=team").text
+    assert "비활성" in admin.get("/team").text
     login = TestClient(app).post("/login", data={"email": "dev@example.com", "password": MEMBER_PASSWORD},
                                  follow_redirects=False)
     assert login.status_code == 403
@@ -251,7 +394,11 @@ def test_reset_link_shown_once_and_sets_new_password(app, admin, member, conn):
     assert response.status_code == 200, response.text
     token = link_token(response.text, "reset")
     assert f"http://testserver/reset/{token}" in response.text
-    assert token not in admin.get("/connect?tab=team").text and token not in dump(conn)
+    assert 'data-issued="reset"' in response.text and RESET_NOTICE in response.text
+    assert LINK_NOTE in response.text and '<div class="alert">' not in response.text
+    issued = response.text.index('data-issued="reset"')
+    assert issued < response.text.index('data-team-section="members"')  # 멤버 절 위
+    assert token not in admin.get("/team").text and token not in dump(conn)
 
     used = TestClient(app).post(f"/reset/{token}", data={"password": NEW_PASSWORD}, follow_redirects=False)
     assert used.status_code == 303
@@ -391,3 +538,237 @@ def test_me_lists_only_notifications_i_receive(admin, member, conn):
     assert re.findall(r'data-notification-event="(\w+)"', page) == ["pr_opened", "human_request"]
     assert "본문-" not in page
     assert re.findall(r'data-notification-event="(\w+)"', admin.get("/me").text) == ["task_failed"]
+
+
+# --- 에이전트 표·맡을 수 있는 일·담당 범위 (phase 23 step 6, ARCHITECTURE "설정 UX — phase 23" 팀 화면) ----------
+
+INTERNAL_ID = re.compile(r"agt-[0-9a-f]|conn-[0-9a-f]|inv-[0-9a-f]|code\.(fix|review|triage)")
+AUDIT_KIND = {"label": "감사", "instructions": "기록을 살핍니다.", "outcomes": "done, needs_information"}
+
+
+def runner_of(app, owner: TestClient, conn) -> str:
+    """owner 가 연결 코드를 발급하고 러너가 계약 v1 그대로 교환한다 — 러너 소유자 = owner."""
+    before = {c["code"] for c in repo.list_connect_codes(conn)}
+    assert owner.post("/operator/connect-codes").status_code == 200
+    (code,) = {c["code"] for c in repo.list_connect_codes(conn)} - before
+    response = TestClient(app).post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
+    assert response.status_code == 200
+    return response.json()["connector_id"]
+
+
+def seed_agent(conn, agent_id: str, connector_id: str | None, *, name: str | None = None,
+               repository: str | None = "billing", connection_type: str = "local") -> None:
+    capabilities = ([{"code": "code.fix", "scope": {"repository_id": repository}},
+                     {"code": "code.review", "scope": {"repository_id": repository}}] if repository is not None
+                    else [{"code": "ops.watch", "scope": {"workflow_id": "daily"}}])
+    agent = {"agent_id": agent_id, "name": name or f"에이전트 {agent_id}",
+             "owner_scope": "personal" if connection_type == "local" else "company",
+             "connection_type": connection_type, "connector_id": connector_id, "capabilities": capabilities}
+    if connection_type == "local":
+        agent["local_registration_id"] = f"local-{agent_id}"
+    else:
+        agent["api_url"] = "http://127.0.0.1:8101"
+    repo.upsert_agent(conn, agent)
+    repo.register_session_agent(conn, SESSION, agent_id, "2026-09-20T00:00:00Z")
+
+
+def row_of(html: str, attr: str, value: str) -> str:
+    start = html.index(f'{attr}="{value}"')
+    return html[start:html.index("</tr>", start)]
+
+
+def section_of(html: str, name: str) -> str:
+    start = html.index(f'data-team-section="{name}"')
+    return html[start:html.index("</section>", start)]
+
+
+def caps_of(conn, agent_id: str) -> list[dict]:
+    import json
+    return json.loads(repo.get_agent(conn, agent_id)["capabilities_json"])
+
+
+def test_team_sections_in_order_and_tables_scroll(admin, conn):
+    seed_agent(conn, "agt-0f", None)
+    html = admin.get("/team").text
+    positions = [html.index(f'data-team-section="{name}"')
+                 for name in ("members", "invites", "agents", "responsibilities")]
+    assert positions == sorted(positions)
+    for name in ("agents", "responsibilities"):
+        section = section_of(html, name)
+        assert section.count("<table") == section.count('class="table-wrap"') == 1, name  # 표는 가로 스크롤 컨테이너 안
+        assert section.index('class="table-wrap"') < section.index("<table"), name
+
+
+def test_agent_row_shows_owner_mac_state_kinds_policy_and_runner_revoke(app, admin, member, conn):
+    connector_id = runner_of(app, member, conn)
+    seed_agent(conn, "agt-0a1b2c", connector_id, name="개인 Codex")
+    seed_agent(conn, "agt-0a1b2d", connector_id, name="개인 Claude")
+
+    html = admin.get("/team").text
+    row = row_of(html, "data-agent", "agt-0a1b2c")
+    text = " ".join(visible_text(row).split())
+    assert 'href="/agents/agt-0a1b2c"' in row and "개인 Codex" in text
+    assert "김개발의 Mac" in text and "꺼짐" in text and "마지막 확인 없음" in text
+    assert "버그 수정, 커밋 검토" in text
+    assert 'action="/agents/agt-0a1b2c/delegation-policy"' in row and "<select" in row
+    assert f'action="/operator/connectors/{connector_id}/revoke"' in row  # 러너 [해제] 는 그 러너의 첫 줄
+    assert "/revoke" not in row_of(html, "data-agent", "agt-0a1b2d")
+    assert f'data-runner="{connector_id}"' not in html  # 에이전트가 있는 러너는 따로 줄이 없다
+    assert "<h2>러너</h2>" not in html
+    detail = row[row.index('<details class="detail"'):]
+    for value in ("agt-0a1b2c", "code.fix · repository_id=billing", connector_id):
+        assert value in detail, value
+
+    conn.execute("UPDATE agents SET connection_state = 'online', last_seen_at = ? WHERE agent_id = 'agt-0a1b2c'",
+                 (utc_now(),))
+    conn.commit()
+    text = " ".join(visible_text(row_of(admin.get("/team").text, "data-agent", "agt-0a1b2c")).split())
+    assert "켜짐" in text and "마지막 확인 방금 전" in text
+
+    assert admin.post(f"/operator/connectors/{connector_id}/revoke", follow_redirects=False).status_code == 303
+    row = row_of(admin.get("/team").text, "data-agent", "agt-0a1b2c")
+    assert "/revoke" not in row and "러너 해제" in row[row.index('<details class="detail"'):]
+
+
+def test_runner_without_agents_is_its_own_row_until_revoked(app, admin, member, conn):
+    connector_id = runner_of(app, member, conn)
+    html = admin.get("/team").text
+    row = row_of(html, "data-runner", connector_id)
+    text = " ".join(visible_text(row).split())
+    assert "러너" in text and "김개발의 Mac" in text and "마지막 확인 없음" in text
+    assert "아직 에이전트 없음 — 러너가 등록 폴더를 보고하면 생깁니다" in text
+    assert f'action="/operator/connectors/{connector_id}/revoke"' in row
+    assert connector_id in row[row.index('<details class="detail"'):]
+    assert f'action="/operator/connectors/{connector_id}/revoke"' in row_of(
+        member.get("/team").text, "data-runner", connector_id)  # 소유자 본인도 [해제]
+
+    assert admin.post(f"/operator/connectors/{connector_id}/revoke", follow_redirects=False).status_code == 303
+    assert f'data-runner="{connector_id}"' not in admin.get("/team").text
+
+
+def test_shared_and_runnerless_agents(admin, conn):
+    seed_agent(conn, "agt-1a", None, name="로컬 미연결")
+    seed_agent(conn, "agt-2a", None, name="사내 API", repository=None, connection_type="api")
+    conn.execute("UPDATE agents SET connection_state = 'online' WHERE agent_id = 'agt-2a'")
+    conn.commit()
+    html = admin.get("/team").text
+    local = " ".join(visible_text(row_of(html, "data-agent", "agt-1a")).split())
+    api = " ".join(visible_text(row_of(html, "data-agent", "agt-2a")).split())
+    assert "공용" in local and "러너 없음" in local
+    assert "공용" in api and "켜짐" in api and "마지막 확인" not in api
+    assert "—" in api  # 맡을 수 있는 일 없음(ops.watch 는 등록부 종류가 아니다)
+
+
+def test_empty_agents_table_points_to_repos(admin):
+    section = section_of(admin.get("/team").text, "agents")
+    assert "아직 에이전트가 없습니다." in section
+    assert 'href="/repos"' in section and "저장소 화면에서 러너를 붙이면 에이전트가 생깁니다" in section
+
+
+def test_admin_edits_what_an_agent_can_take(admin, conn):
+    seed_agent(conn, "agt-3a", None)
+    seed_agent(conn, "agt-3b", None, repository=None)
+    assert admin.post("/kinds", data={**AUDIT_KIND, "kind": "audit"}, follow_redirects=False).status_code == 303
+    html = admin.get("/team").text
+    row = row_of(html, "data-agent", "agt-3a")
+    form = row[row.index('data-capabilities="agt-3a"'):]
+    assert 'action="/agents/agt-3a/capabilities"' in form
+    assert re.findall(r'name="kinds" value="([^"]+)"', form) == ["audit"]  # 내장 종류는 목록에 없다
+    no_scope = row_of(html, "data-agent", "agt-3b")
+    assert "/agents/agt-3b/capabilities" not in no_scope
+    assert "러너로 연결한 에이전트만 고를 수 있습니다(저장소를 정할 수 없음)" in no_scope
+
+    response = admin.post("/agents/agt-3a/capabilities", data={"kinds": ["audit"]}, follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (303, "/team")
+    assert {"code": "audit", "scope": {"repository_id": "billing"}} in caps_of(conn, "agt-3a")
+    row = row_of(admin.get("/team").text, "data-agent", "agt-3a")
+    assert 'value="audit" checked' in row and "감사" in visible_text(row)
+
+    assert admin.post("/agents/agt-3a/capabilities", data={}, follow_redirects=False).status_code == 303
+    assert all(c["code"] != "audit" for c in caps_of(conn, "agt-3a"))
+    assert any(c["code"] == "code.fix" for c in caps_of(conn, "agt-3a"))  # 내장 능력은 그대로
+
+
+def test_capability_edit_refusals(admin, member, conn):
+    seed_agent(conn, "agt-4a", None)
+    seed_agent(conn, "agt-4b", None, repository=None)
+    admin.post("/kinds", data={**AUDIT_KIND, "kind": "audit"})
+    before = caps_of(conn, "agt-4a")
+
+    error(admin.post("/agents/agt-4a/capabilities", data={"kinds": ["bug_fix"]}), 422, "invalid_field")
+    response = admin.post("/agents/agt-4a/capabilities", data={"kinds": ["audit", "nope"]})
+    error(response, 422, "invalid_field")
+    assert "맡을 수 있는 일로 고를 수 없는 종류입니다." in response.text
+    error(admin.post("/agents/agt-4b/capabilities", data={"kinds": ["audit"]}), 422, "agent_scope_unknown")
+    error(admin.post("/agents/agt-nope/capabilities", data={"kinds": ["audit"]}), 404, "not_found")
+    error(member.post("/agents/agt-4a/capabilities", data={"kinds": ["audit"]}), 403, "forbidden")
+    assert caps_of(conn, "agt-4a") == before
+    assert "data-capabilities=" not in member.get("/team").text  # 멤버에게는 편집 폼이 없다
+
+
+def test_responsibility_form_uses_request_kind_list_and_table_shows_names(admin, member, conn):
+    seed_agent(conn, "agt-5a", None, name="조사 Codex")
+    section = section_of(admin.get("/team").text, "responsibilities")
+    assert re.findall(r'<option value="(\w+)">([^<]+)</option>', section[section.index('name="request_kind"'):
+                                                                       section.index("</select>", section.index('name="request_kind"'))]) == [
+        ("investigation", "조사"), ("bug_report", "버그 보고"), ("data_check", "데이터 확인")]
+    assert 'name="system_id"' in section and 'class="input-wide"' in section and 'placeholder="kube_proxy"' in section
+    assert "요청을 받는 시스템 이름 — 소문자·숫자·밑줄, 소문자로 시작" in section
+
+    me = member_id(conn, ADMIN_EMAIL)
+    dev = member_id(conn, "dev@example.com")
+    revision = repo.get_config_revision(conn, SESSION)
+    data = dict(system_id="kube_proxy", request_kind="bug_report", recipient_member_id=dev,
+                judgment_member_id=me, agent_id="agt-5a", expected_revision=revision)
+    assert admin.post("/responsibilities/add", data=data, follow_redirects=False).status_code == 303
+    section = section_of(admin.get("/team").text, "responsibilities")
+    text = " ".join(visible_text(section[section.index("<table"):section.index("</table>")]).split())
+    assert "kube_proxy" in text and "버그 보고" in text and "김개발" in text and "조사 Codex" in text
+    assert dev not in text and me not in text and "agt-5a" not in text  # 표에는 이름만
+
+
+def test_responsibility_form_rejects_out_of_list_kind_and_bad_system(admin, conn):
+    me = member_id(conn, ADMIN_EMAIL)
+    revision = repo.get_config_revision(conn, SESSION)
+    data = dict(system_id="kube_proxy", request_kind="billing_check", recipient_member_id=me,
+                judgment_member_id=me, agent_id="", expected_revision=revision)
+    response = admin.post("/responsibilities/add", data=data)
+    error(response, 422, "invalid_field")
+    assert "요청 유형을 목록에서 고르세요." in response.text
+    response = admin.post("/responsibilities/add", data={**data, "request_kind": "investigation", "system_id": "Kube"})
+    error(response, 422, "invalid_field")
+    assert "시스템 이름은 소문자·숫자·밑줄로, 소문자로 시작해 입력하세요." in response.text
+    assert admin.get("/responsibilities").json()["entries"] == []
+
+
+def test_out_of_list_request_kind_row_is_marked_and_removable(admin, conn):
+    me = member_id(conn, ADMIN_EMAIL)
+    revision = repo.get_config_revision(conn, SESSION)
+    entry = dict(system_id="billing", request_kind="billing_check", recipient_member_id=me,
+                 judgment_member_id=me, agent_id=None)
+    assert admin.put("/responsibilities", json={"expected_revision": revision, "entries": [entry]}).status_code == 200
+    section = section_of(admin.get("/team").text, "responsibilities")
+    text = " ".join(visible_text(section).split())
+    assert "billing_check (목록 밖)" in text and "미지정" in text
+    response = admin.post("/responsibilities/remove", data=dict(position=0, expected_revision=revision + 1),
+                          follow_redirects=False)
+    assert response.status_code == 303
+    assert admin.get("/responsibilities").json()["entries"] == []
+
+
+def test_team_page_shows_no_internal_ids_outside_detail(app, admin, member, conn):
+    connector_id = runner_of(app, member, conn)
+    seed_agent(conn, "agt-6a", connector_id, name="개인 Codex")
+    runner_of(app, admin, conn)  # 에이전트 없는 러너 줄
+    admin.post("/kinds", data={**AUDIT_KIND, "kind": "audit"})
+    admin.post("/agents/agt-6a/capabilities", data={"kinds": ["audit"]})
+    admin.post("/team/invites", data={"role": "member", "invitee_email": "new@example.com"})
+    me = member_id(conn, ADMIN_EMAIL)
+    admin.post("/responsibilities/add", data=dict(
+        system_id="billing", request_kind="investigation", recipient_member_id=me, judgment_member_id=me,
+        agent_id="agt-6a", expected_revision=repo.get_config_revision(conn, SESSION)))
+    html = admin.get("/team").text
+    assert 'data-agent="agt-6a"' in html and "data-invite-id=" in html and "data-runner=" in html
+    for client in (admin, member):
+        text = visible_text(client.get("/team").text)
+        assert INTERNAL_ID.search(text) is None, INTERNAL_ID.search(text)

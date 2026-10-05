@@ -8,6 +8,7 @@ Agent 는 러너 등록과 같은 모양(`session_agents` 로 워크스페이스
 
 import hashlib
 import json
+import secrets
 
 import pytest
 from fastapi.testclient import TestClient
@@ -92,10 +93,11 @@ def log_in_member(client: TestClient, role: str = "member", *, email: str | None
     conn = _app_conn(client)
     try:
         admin_id = repo.find_member_by_email(conn, SESSION, ADMIN_EMAIL)["member_id"]
-        _, token = repo.issue_invite(conn, SESSION, role=role, created_by_member_id=admin_id, now=utc_now())
+        email = email or f"{role}-{secrets.token_hex(3)}@example.com"
+        _, token = repo.issue_invite(conn, SESSION, role=role, invitee_email=email, created_by_member_id=admin_id,
+                                     now=utc_now())
     finally:
         conn.close()
-    email = email or f"{role}-{token[:6].lower()}@example.com"
     response = client.post(f"/invite/{token}", data={"email": email, "display_name": display_name,
                                                      "password": MEMBER_PASSWORD}, follow_redirects=False)
     assert response.status_code == 303, response.text

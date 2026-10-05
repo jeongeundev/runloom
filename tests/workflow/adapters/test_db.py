@@ -284,8 +284,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_24():
-    assert SCHEMA_VERSION == 24
+def test_schema_version_is_25():
+    assert SCHEMA_VERSION == 25
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -1693,7 +1693,7 @@ def test_fresh_db_has_v11_tables_columns_and_indexes(conn):
     }
     assert _columns(conn, "member_invites") == {
         "invite_id", "session_id", "purpose", "role", "member_id", "token_sha256", "created_by_member_id", "created_at",
-        "expires_at", "used_at", "used_by_member_id", "revoked_at",
+        "expires_at", "used_at", "used_by_member_id", "revoked_at", "invitee_email", "invitee_name",
     }
     assert {("sessions", "session_id", "session_id"), ("members", "member_id", "member_id")} <= _foreign_keys(
         conn, "login_sessions")
@@ -2615,7 +2615,7 @@ def test_migrates_v13_to_v14_preserving_rows_and_foreign_keys(db_path):
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    assert _column_lists(c, V13_TABLES) == columns  # 칸·순서 그대로
+    assert _column_lists(c, V13_TABLES) == {**columns, "member_invites": [*columns["member_invites"], "invitee_email", "invitee_name"]}  # 칸·순서 그대로(v25 초대 칸 뒤에)
     assert _without_v15_seeds(_without_jira_mappings(_dump(c, V13_TABLES))) == before  # 행 수·id·key_number·칸 값 그대로
     assert [tuple(r) for r in c.execute("SELECT work_item_id, key_number FROM work_items ORDER BY key_number")] == [
         ("wi-000000000003", 3), ("wi-000000000007", 7)]
@@ -2948,7 +2948,7 @@ def test_migrates_v14_to_v15_seeding_triage_and_preserving_rows(db_path):
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    assert _column_lists(c, V14_TABLES) == columns  # 칸·순서 그대로
+    assert _column_lists(c, V14_TABLES) == {**columns, "member_invites": [*columns["member_invites"], "invitee_email", "invitee_name"]}  # 칸·순서 그대로(v25 초대 칸 뒤에)
     assert _without_v15_seeds(_dump(c, V14_TABLES)) == before  # 업무·단계·실행·Agent 그대로
     assert [tuple(r) for r in c.execute(recreated)] == sql_before  # tasks·github_sources 는 재생성하지 않는다
     # 내장 triage 종류 — 워크스페이스마다(종류가 없던 s2 도)
@@ -3156,10 +3156,11 @@ def test_migrates_v15_to_v16_adding_an_empty_config_changes_table(db_path):
     c = connect(db_path)
     init_schema(c)
     assert [tuple(r) for r in c.execute("SELECT version FROM schema_version")] == [(SCHEMA_VERSION,)]
-    assert _column_lists(c, V15_TABLES) == {**columns, "triage_logs": TRIAGE_LOG_V24_COLUMNS}  # v24 원인 칸
+    assert _column_lists(c, V15_TABLES) == {**columns, "triage_logs": TRIAGE_LOG_V24_COLUMNS,  # v24 원인 칸
+                                             "member_invites": [*columns["member_invites"], "invitee_email", "invitee_name"]}  # v25 초대 칸
     assert _dump(c, V15_TABLES, columns) == before  # 행 그대로 — 설정 번호도
     sql_after = [tuple(r) for r in c.execute("SELECT type, name, sql, rootpage FROM sqlite_master ORDER BY name")]
-    assert [r for r in sql_after if "config_changes" not in r[1] and "responsibilities" not in r[1] and "internal_requests" not in r[1] and "internal_request_investigations" not in r[1] and "internal_request_rejections" not in r[1] and "internal_request_questions" not in r[1] and "internal_request_judgments" not in r[1] and "internal_request_resumptions" not in r[1] and r[1] != "ix_internal_request_unanswered" and "triage_logs" not in r[1] and "notifications" not in r[1]] == [r for r in sql_before if "triage_logs" not in r[1] and "notifications" not in r[1]]  # 기존 표는 재생성하지 않는다(v24 가 재생성하는 두 표 밖)
+    assert [r for r in sql_after if "config_changes" not in r[1] and "responsibilities" not in r[1] and "internal_requests" not in r[1] and "internal_request_investigations" not in r[1] and "internal_request_rejections" not in r[1] and "internal_request_questions" not in r[1] and "internal_request_judgments" not in r[1] and "internal_request_resumptions" not in r[1] and r[1] != "ix_internal_request_unanswered" and "triage_logs" not in r[1] and "notifications" not in r[1] and r[1] != "member_invites"] == [r for r in sql_before if "triage_logs" not in r[1] and "notifications" not in r[1] and r[1] != "member_invites"]  # 기존 표는 재생성하지 않는다(v24 가 재생성하는 두 표·v25 가 칸을 더하는 초대 표 밖)
     assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0  # 과거 변경을 추정해 채우지 않는다
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -3401,13 +3402,14 @@ def test_migrates_v23_to_v24_preserving_rows(db_path):
     columns = _column_lists(c, tables)
     before = _dump(c, tables, columns)
     unchanged = ("SELECT type, name, sql, rootpage FROM sqlite_master WHERE tbl_name NOT IN"
-                 " ('triage_logs', 'notifications', 'internal_requests', 'schema_version') ORDER BY name")
+                 " ('triage_logs', 'notifications', 'internal_requests', 'member_invites', 'schema_version')"
+                 " ORDER BY name")  # member_invites 는 v25 가 칸을 더한다
     sql_before = c.execute(unchanged).fetchall()
     c.close()
 
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25
     assert _dump(c, tables, columns) == before  # 행·id·기존 칸 값 그대로
     assert c.execute(unchanged).fetchall() == sql_before  # 그 밖의 표는 재생성하지 않는다
     assert [tuple(r) for r in c.execute("SELECT triage_id, cause, cause_execution_id, cause_request_id"
@@ -3468,15 +3470,130 @@ def test_fresh_schema_matches_v23_migrated_schema(tmp_path, old):
 
 
 @pytest.mark.parametrize("make", [_v4_db, _v14_db, _v22_db])
-def test_migrates_old_versions_to_v24(db_path, make):
+def test_migrates_old_versions_to_v25(db_path, make):
     c = make(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 24
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25
     assert _column_lists(c, ["triage_logs"]) == {"triage_logs": TRIAGE_LOG_V24_COLUMNS}
     assert "created_by_triage_id" in _columns(c, "internal_requests")
     assert {r[0] for r in c.execute("SELECT cause FROM triage_logs")} <= {"intake"}
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     c.close()
+
+
+# --- phase 23: v24 → v25 초대 받는 사람 이메일·이름 (ADR-0028, ARCHITECTURE "스키마 v25") -------------------------------
+
+V24_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v24.sql").read_text()
+_INVITE_INSERT = (
+    "INSERT INTO member_invites (invite_id, session_id, purpose, role, member_id, token_sha256, created_by_member_id,"
+    " created_at, expires_at, used_at, used_by_member_id, revoked_at) VALUES (?, 's1', ?, ?, ?, ?, 'mem-00000001', ?,"
+    " ?, ?, ?, ?)"
+)
+
+
+def _v24_db(db_path):
+    """phase 22 서버가 남긴 모양의 v24 DB — v23 기본 행 + 열린·사용된·취소된 초대와 재설정 링크."""
+    c = connect(db_path)
+    c.executescript(V24_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (24)")
+    _triage_base(c)
+    _insert_internal_request(c, "req-00000001")
+    c.execute(_INVITE_INSERT, ("inv-000000000001", "invite", "member", None, "sha-1", NOW, NOW, None, None, None))
+    c.execute(_INVITE_INSERT, ("inv-000000000002", "invite", "admin", None, "sha-2", NOW, NOW, NOW, "mem-00000002",
+                               None))
+    c.execute(_INVITE_INSERT, ("inv-000000000003", "invite", "member", None, "sha-3", NOW, NOW, None, None, NOW))
+    c.execute(_INVITE_INSERT, ("inv-000000000004", "reset", None, "mem-00000002", "sha-4", NOW, NOW, None, None,
+                               None))
+    return c
+
+
+def test_v24_fixture_is_the_phase22_schema(db_path):
+    c = _v24_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 24
+    assert not {"invitee_email", "invitee_name"} & _columns(c, "member_invites")
+    assert _column_lists(c, ["triage_logs"]) == {"triage_logs": TRIAGE_LOG_V24_COLUMNS}
+    c.close()
+
+
+def test_fresh_db_has_v25_invite_columns(conn):
+    assert _column_lists(conn, ["member_invites"])["member_invites"][-2:] == ["invitee_email", "invitee_name"]
+
+
+def test_v25_invitee_checks(conn):
+    _v11_base(conn)
+    insert = ("INSERT INTO member_invites (invite_id, session_id, purpose, role, member_id, token_sha256,"
+              " created_at, expires_at, invitee_email, invitee_name) VALUES (?, 's1', ?, ?, ?, ?, ?, ?, ?, ?)")
+    conn.execute(insert, ("inv-1", "invite", "member", None, "sha-1", NOW, NOW, "a@example.com", "가"))
+    conn.execute(insert, ("inv-2", "invite", "member", None, "sha-2", NOW, NOW, None, None))  # 옛 초대 모양
+    conn.execute(insert, ("inv-3", "reset", None, "mem-00000002", "sha-3", NOW, NOW, None, None))
+    for params in (
+        ("inv-4", "invite", "member", None, "sha-4", NOW, NOW, "A@example.com", None),  # 정규화 아님
+        ("inv-5", "invite", "member", None, "sha-5", NOW, NOW, " a@example.com", None),  # 앞뒤 공백
+        ("inv-6", "invite", "member", None, "sha-6", NOW, NOW, "", None),  # 빈 이메일
+        ("inv-7", "invite", "member", None, "sha-7", NOW, NOW, "b@example.com", ""),  # 빈 이름
+        ("inv-8", "reset", None, "mem-00000002", "sha-8", NOW, NOW, "b@example.com", None),  # 재설정은 이메일 없음
+        ("inv-9", "reset", None, "mem-00000002", "sha-9", NOW, NOW, None, "나"),  # 재설정은 이름 없음
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+
+
+def test_migrates_v24_to_v25_preserving_rows(db_path):
+    c = _v24_db(db_path)
+    tables = _table_names(c) - {"sqlite_sequence", "schema_version"}
+    columns = _column_lists(c, tables)
+    before = _dump(c, tables, columns)
+    counts = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("member_invites", "members", "tasks",
+                                                                               "work_items")}
+    unchanged = ("SELECT type, name, sql, rootpage FROM sqlite_master WHERE tbl_name NOT IN"
+                 " ('member_invites', 'schema_version') ORDER BY name")
+    sql_before = c.execute(unchanged).fetchall()
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25
+    assert _dump(c, tables, columns) == before  # 행·id·기존 칸 값 그대로
+    assert {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in counts} == counts == {
+        "member_invites": 4, "members": 2, "tasks": 2, "work_items": 1}
+    assert c.execute(unchanged).fetchall() == sql_before  # 그 밖의 표는 재생성하지 않는다
+    assert {tuple(r) for r in c.execute("SELECT invitee_email, invitee_name FROM member_invites")} == {(None, None)}
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    with pytest.raises(sqlite3.IntegrityError):  # 새 CHECK 가 올린 DB 에서도 동작한다
+        c.execute("UPDATE member_invites SET invitee_email = 'x@example.com' WHERE invite_id = 'inv-000000000004'")
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_v25_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v24_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    sql_before = c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 24
+    assert c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == sql_before
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    c.close()
+
+
+@pytest.mark.parametrize("make", [_v23_db, _v24_db])
+def test_fresh_schema_matches_v24_migrated_schema(tmp_path, make):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = make(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    dump = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name != 'sqlite_sequence' ORDER BY name"
+    assert fresh.execute(dump).fetchall() == migrated.execute(dump).fetchall()  # CHECK 까지 같은 원문
+    fresh.close()
+    migrated.close()

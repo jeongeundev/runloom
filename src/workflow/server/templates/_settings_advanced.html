@@ -1,9 +1,10 @@
-{# 연결 화면 "고급" 탭(옛 /operator, phase 16 step 6 — 러너 목록은 팀·담당자 탭, "모든 세션 업무" 절은 업무 화면이 대신).
+{# 설정 화면 "고급" 탭(옛 /operator, phase 16 step 6 — 러너 목록은 팀·담당자 탭, "모든 세션 업무" 절은 업무 화면이 대신).
    로그인한 워크스페이스(ADR-0019). 에이전트 등록·삭제, 연결 코드.
    연결 코드 발급은 `attach_runner`(멤버 포함), 코드 목록은 관리자면 전부·멤버면 자기 발급분, 코드 취소·러너 에이전트 삭제는
    소유자 본인 또는 `remove_any_runner`(`can_revoke`·`can_delete`), 에이전트 등록은 `manage_connections`.
    등록 폼은 "자동 파악된 값"(연결 프로그램 보고) 과 "소유자가 고친 값"(이 폼) 을 구분한다. #}
 {% import "_status.html" as st %}
+<p class="muted">개발·운영용 — 러너 연결 코드와 에이전트 수동 등록. 수동 등록은 그 에이전트의 능력을 모두 덮어씁니다.</p>
 
 <h2 style="margin-top:0">연결 코드</h2>
 <div class="card">
