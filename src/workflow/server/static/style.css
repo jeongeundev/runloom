@@ -173,6 +173,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .alert { background: var(--bg-failed); color: var(--state-failed); border: 1px solid var(--border);
          border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
 .alert code { font-size: 12px; }
+.alert code, #inbound-url { overflow-wrap: anywhere; }  /* 발급 링크·토큰·입구 주소 — 390px 에서 페이지를 넓히지 않게 */
 .empty { padding: 24px 0; }
 .empty p { margin-bottom: 12px; }
 

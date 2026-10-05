@@ -466,6 +466,25 @@ def test_stylesheet_follows_ui_guide():
     assert "max-width: 799px" in css or "max-width: 800px" in css
 
 
+def css_rules(css: str) -> dict[str, str]:
+    """선택자 하나 → 그 선택자가 든 규칙 본문들(이어 붙임). @media 안 규칙도 같이 본다."""
+    rules: dict[str, str] = {}
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        for selector in selectors.split(","):
+            key = selector.strip()
+            rules[key] = rules.get(key, "") + body
+    return rules
+
+
+def test_tables_and_long_one_time_values_do_not_widen_the_page_at_390px():
+    """390px 에서 페이지 가로 스크롤 없음(UI_GUIDE, phase 23) — 표는 `.table-wrap`(자체 가로 스크롤) 안, 끊을 곳 없는 긴 값
+    (초대·재설정 링크, 입구 토큰, 연결 코드 — 발급 상자 `.alert code` — 와 n8n 입구 주소)은 줄을 바꾼다."""
+    rules = css_rules(STYLE.read_text(encoding="utf-8"))
+    assert "overflow-x: auto" in rules[".table-wrap"]
+    for selector in (".alert code", "#inbound-url"):
+        assert "overflow-wrap: anywhere" in rules.get(selector, ""), selector
+
+
 def test_templates_have_no_external_assets():
     assert TEMPLATES, "템플릿 없음"
     for path in TEMPLATES:

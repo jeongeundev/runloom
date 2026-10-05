@@ -35,15 +35,17 @@
 
 ## 준비 (관리자 R)
 
-1. `/connect?tab=team` — 멤버 초대 2개(N, J). 초대 링크를 각 브라우저에서 열어 비밀번호를 정한다.
-2. `/connect?tab=kinds` — 종류 등록:
-   - 종류 `incident_investigation`, 이름 `장애 조사`
-   - 능력 코드 `code.review` (우회), scope 키 `repository_id`
-   - 입력 종류: 선택 안 함
-   - outcomes: `cause_found, needs_information, unresolved`
-   - 지시: 아래 "조사 지시" 블록
-3. `/connect?tab=team` — 담당 범위 추가: 시스템 `kube_proxy`, 요청 유형 `investigation`, 수신자 N, 판단 담당자 J, 에이전트 `runloom-sandbox`.
-4. **마지막에** 저장소 카드 `jeongeundev/runloom-sandbox` 의 **판단 에이전트** 칸 = `runloom-sandbox`. 저장하면 RUN-26 접수 판단이 곧 돈다.
+phase 23(스키마 v25) 화면 기준 — 주소는 왼쪽 목록의 `팀`·`설정`·`저장소` 로 연다. 종류에 맡을 에이전트를 고르면 그 종류의 능력이 그 에이전트에 붙으므로, 위 "능력 우회"(`code.review` 로 등록)는 하지 않는다.
+
+1. `/team`(팀) 초대 절 — 멤버 초대 2개(N, J): 받는 사람 이메일(예: `n@runloom.local`·`j@runloom.local`)·이름·역할 `멤버` → [초대 링크 만들기]. 초대 링크를 각 브라우저에서 열면 이메일이 채워져 고정돼 있다 — 표시 이름·비밀번호를 정한다. 링크를 놓쳤으면 대기 중 초대 줄의 [링크 다시 만들기](옛 링크는 무효).
+2. `/settings?tab=kinds`(설정 → 업무 종류·규칙) — 종류 등록:
+   - 화면 이름 `장애 조사`
+   - 지시문: 아래 "조사 지시" 블록
+   - 결과값: `cause_found, needs_information, unresolved`
+   - 맡을 에이전트: `runloom-sandbox` 체크
+   - "고급"(종류 식별자·능력 코드·scope 키·받는 산출물)은 비워 둔다 — 식별자는 자동(`k_…`), scope 키 `repository_id`
+3. `/team`(팀) 담당 범위 절 — 추가: 시스템 `kube_proxy`, 요청 유형 `조사`, 받는 사람 N, 판단 담당자 J, 조사 에이전트 `runloom-sandbox`.
+4. **마지막에** `/repos`(저장소) 카드 `jeongeundev/runloom-sandbox` 의 **판단 에이전트** 칸 = `runloom-sandbox` → [저장]. 저장하면 RUN-26 접수 판단이 곧 돈다.
 
 조사 지시:
 

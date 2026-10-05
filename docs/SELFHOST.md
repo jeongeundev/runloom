@@ -71,10 +71,10 @@ deploy/selfhost/install.sh
 
 역할은 둘이다. **관리자** — GitHub 연결·소스·n8n 입구 토큰·매핑 표·종류·후속 규칙·공용 알림·팀 관리·모든 러너 해제. **멤버** — 업무 등록·에이전트에게 맡기기·사람 요청 응답·지표 보기·자기 러너 붙이기와 해제·내 설정. 권한 밖 화면은 403 이다.
 
-**팀원 초대** — 관리자가 `/connect?tab=team`(연결 → 팀·담당자)에서 역할을 골라 [초대 링크 만들기]. 링크는 **그 화면에서 한 번만** 보인다 — 복사해 메신저 등으로 전한다(이메일은 보내지 않는다). 7일 동안 한 번 쓸 수 있고, 받은 사람이 이메일·표시 이름·비밀번호를 넣으면 가입·로그인된다. 쓰지 않은 초대는 목록에서 취소한다. 멤버는 삭제하지 않고 비활성화한다(로그인이 바로 끝나고 다시 활성화할 수 있다). 활성 관리자가 0 이 되는 강등·비활성화는 거부된다.
+**팀원 초대** — 관리자가 `/team`(왼쪽 목록 "팀")의 초대 절에서 받는 사람 이메일·이름(선택)·역할을 넣고 [초대 링크 만들기]. 링크는 **그 화면에서 한 번만** 보인다 — 복사해 메신저 등으로 전한다(이메일은 보내지 않는다). 7일 동안 한 번 쓸 수 있고, 받은 사람은 초대한 이메일로만 가입한다(가입 화면에 이메일이 고정돼 있다) — 표시 이름·비밀번호를 넣으면 가입·로그인된다. 링크를 놓쳤으면 대기 중 초대 목록의 그 줄에서 [링크 다시 만들기] — 새 링크가 한 번 보이고 옛 링크는 더 쓸 수 없다. 쓰지 않은 초대는 목록에서 취소한다. 멤버는 삭제하지 않고 비활성화한다(로그인이 바로 끝나고 다시 활성화할 수 있다). 활성 관리자가 0 이 되는 강등·비활성화는 거부된다.
 
 **비밀번호 분실**
-- 팀원: 관리자가 `/connect?tab=team` 에서 그 멤버의 [재설정 링크] 를 만들어 전한다(24시간·한 번). 링크로 새 비밀번호를 정하면 그 멤버의 다른 로그인은 모두 끝난다.
+- 팀원: 관리자가 `/team` 에서 그 멤버의 [재설정 링크] 를 만들어 전한다(24시간·한 번). 링크로 새 비밀번호를 정하면 그 멤버의 다른 로그인은 모두 끝난다.
 - 관리자 본인(다른 관리자도 없을 때): `/login/recover` 에서 운영자 토큰 + 관리자 이메일 + 새 비밀번호.
 - 자기 비밀번호 변경은 `/me`(왼쪽 목록 "내 설정").
 
@@ -88,7 +88,7 @@ deploy/selfhost/install.sh
 
 러너는 컨테이너가 아니라 호스트 Mac 에서 돈다 — `claude`·`codex` 로그인과 작업 폴더가 호스트에 있기 때문이다. 저장소를 연결한 뒤([GitHub 연결](#github-연결)) 저장소 카드에서 붙인다.
 
-1. **[러너 붙이기]** — `/connect?tab=sources`(연결 → 가져올 곳) 의 저장소 카드에 `이 저장소를 등록한 러너 없음` 과 [러너 붙이기] 버튼이 보인다. 누르면 그 카드에 명령 한 줄이 나온다. 연결 코드가 들어 있고 1회용·10분 유효다(지나면 [다시 발급]).
+1. **[러너 붙이기]** — `/repos`(왼쪽 목록 "저장소") 의 저장소 카드에 `이 저장소를 등록한 러너 없음` 과 [러너 붙이기] 버튼이 보인다. 누르면 그 카드에 명령 한 줄이 나온다. 연결 코드가 들어 있고 1회용·10분 유효다(지나면 [다시 발급]).
 
    ```bash
    deploy/selfhost/install-runner.sh --server http://127.0.0.1:8000 --code <연결 코드> --repo <이 저장소를 클론한 폴더>
@@ -111,7 +111,7 @@ deploy/selfhost/install.sh
 
 ### 고급 — 손으로 connect·register
 
-버튼 없이 붙이거나 한 러너에 여러 폴더를 등록할 때. 연결 코드는 `/connect?tab=advanced`(연결 → 고급) → `연결 코드 발급`(1회용, 10분).
+버튼 없이 붙이거나 한 러너에 여러 폴더를 등록할 때. 연결 코드는 `/settings?tab=advanced`(설정 → 고급) → `연결 코드 발급`(1회용, 10분).
 
 ```bash
 python3 -m pip install -e .
@@ -128,8 +128,8 @@ connect 는 연결 코드를 연결 토큰으로 바꿔 `~/Library/Application S
 
 다른 사람에게 맡기는 흐름(소유자 알림·승인)을 Mac 한 대에서 시험할 때. 러너 소유자는 [러너 붙이기]를 누른 멤버이므로 두 번째 러너는 두 번째 멤버 계정으로 붙인다.
 
-1. 관리자 계정으로 `/connect?tab=team` 에서 두 번째 멤버를 초대하고, 초대 링크로 계정을 만든다(다른 브라우저 프로필이나 시크릿 창).
-2. 그 계정으로 로그인해 `/connect?tab=sources` 저장소 카드의 [러너 붙이기]를 누른다. 카드에 나온 명령 끝에 `--name b` 를 붙여 Runloom 설치 폴더에서 실행한다.
+1. 관리자 계정으로 `/team` 에서 두 번째 멤버를 초대하고, 초대 링크로 계정을 만든다(다른 브라우저 프로필이나 시크릿 창).
+2. 그 계정으로 로그인해 `/repos` 저장소 카드의 [러너 붙이기]를 누른다. 카드에 나온 명령 끝에 `--name b` 를 붙여 Runloom 설치 폴더에서 실행한다.
 
    ```bash
    deploy/selfhost/install-runner.sh --server http://127.0.0.1:8000 --code <연결 코드> --repo <이 저장소를 클론한 폴더> --name b
@@ -161,13 +161,13 @@ GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. �
 
 준비: 로그인한 브라우저에 GitHub 도 로그인돼 있어야 한다. 서버 주소는 `http://127.0.0.1:<포트>` 그대로 둔다(`WORKFLOW_PUBLIC_URL` 이 있으면 그 주소로 돌아온다 — 브라우저에서 여는 주소와 같게 맞춘다).
 
-1. `/connect?tab=sources` 에서 **[GitHub 연결]** 을 누른다. Runloom 이 App 설정(이름·권한)을 채워 GitHub 로 보낸다.
+1. `/repos` 에서 **[GitHub 연결]** 을 누른다. Runloom 이 App 설정(이름·권한)을 채워 GitHub 로 보낸다.
 2. GitHub 의 **App 만들기 화면**에서 확인할 것:
    - App 이름 `runloom-xxxxxx`(무작위 6자 — GitHub 전역에서 겹치지 않게). 바꿔도 된다.
    - 권한: Issues 읽기·쓰기, Pull requests 읽기·쓰기(검토 승인 뒤 초안 PR — ADR-0018), Contents 읽기(PR 생성이 브랜치를 읽는다), Metadata 읽기. 이전에 만든 App 은 [권한 올리기](#app-권한-올리기--phase-12-전에-만든-app). 웹훅은 꺼져 있다(127.0.0.1 은 GitHub 가 부를 수 없다 — 새 이슈는 워커가 1분마다 조회한다).
    - 그대로 **[Create GitHub App]** 을 누른다. 조직 저장소면 `/operator/github/app/new?org=<조직 이름>` 으로 시작한다.
 3. Runloom 이 App 개인 키·비밀을 받아 저장하고 GitHub 의 **설치 화면**으로 다시 보낸다. **Only select repositories** 로 대상 저장소(예: OpenArchive)를 고르고 **[Install]** 을 누른다.
-4. `/connect?tab=sources` 로 돌아오면 고른 저장소마다 카드가 생긴다. 약 1분 안에 열린 이슈가 **전부** 업무 목록에 `대기 · 지시 전` 으로 들어온다(PR·닫힌 이슈 제외).
+4. `/repos` 로 돌아오면 고른 저장소마다 카드가 생긴다. 약 1분 안에 열린 이슈가 **전부** 업무 목록에 `대기 · 지시 전` 으로 들어온다(PR·닫힌 이슈 제외).
 5. **러너 연결** — 저장소 카드의 [러너 붙이기] 로 그 저장소의 로컬 클론 폴더를 붙인다(위 "러너 연결"). 서버가 수정(`code.fix`)·검토(`code.review`) Agent 를 만든다. 폴더의 `origin` 이 `github.com/<owner>/<name>` 이면 서버가 알아서 짝을 짓는다 — 카드의 러너 매칭에 로컬 저장소·수정 Agent·검증 프로필·검토 Agent 가 `(자동)` 으로 보인다. `이 저장소를 등록한 러너 없음` 이면 register 가 안 됐거나 `origin` 이 다른 저장소다. 수정용 등록에는 `--verify` 가 있어야 한다.
 6. **실행은 지시한 것만** — 업무 목록의 **[에이전트에게 맡기기]** 를 누르거나 GitHub 이슈에 `runloom` 라벨을 붙인다. 그 뒤는 자동이다: 수정(기준 = GitHub 기본 브랜치 최신) → 러너가 결과 브랜치 `task/<업무 id>` 를 `origin` 에 push → 검토(재작업 포함) → 검토 승인이면 서버가 초안 PR(`Fixes #<이슈>`)을 연다 → 업무는 `확인 필요 · PR 확인 — #<번호>`. **병합·이슈 종료는 사람이 GitHub 에서 한다** — 병합하면 다음 수집 주기에 업무가 `완료`(사유 `PR 병합`)가 되고 지표의 "이슈 열림 → 병합" 에 들어간다. 병합 없이 PR 을 닫으면 업무는 `실패`. push 가 안 됐거나(원격 자격) PR 을 못 열면(App 권한) 업무에 사람 요청이 남고 직접 push·PR 하는 안내가 붙는다.
 7. **기준선 가져오기** — 카드의 [기준선 가져오기] 또는 모니터링(`/monitor`)의 `기준선 대 도입 후` 표에서. 소스 연결 전에 열린 이슈 → 병합 PR 시간을 기준선으로 쓴다. 다시 가져오면 전체를 바꾼다.
@@ -188,7 +188,7 @@ phase 11 에서 만든 App 은 Pull requests 가 읽기뿐이라 초안 PR 을 �
 
 ### 고급 — 토큰으로 연결
 
-App 을 만들 수 없을 때. `/connect?tab=sources` 의 접힌 **고급 — 토큰으로 연결** 에 fine-grained personal access token 과 저장소(`owner/name`)를 넣는다. 서버가 그 토큰으로 저장소를 읽을 수 있는지 확인한 뒤 비밀 파일(`github_token`)에 저장하고 그 저장소 카드를 만든다. 이후 흐름(맡기기·라벨·자동 매칭)은 같다.
+App 을 만들 수 없을 때. `/repos` 의 접힌 **고급 — 토큰으로 연결** 에 fine-grained personal access token 과 저장소(`owner/name`)를 넣는다. 서버가 그 토큰으로 저장소를 읽을 수 있는지 확인한 뒤 비밀 파일(`github_token`)에 저장하고 그 저장소 카드를 만든다. 이후 흐름(맡기기·라벨·자동 매칭)은 같다.
 
 - 토큰: *Only select repositories* 로 대상 저장소만, **Issues: Read and write**, **Metadata: Read-only**(자동). 기준선 가져오기를 쓰면 **Pull requests: Read-only** 도. Contents·Actions 등 그 밖의 권한, classic PAT 은 쓰지 않는다.
 - 예전 방식(`.env` 의 `WORKFLOW_GITHUB_TOKEN`·`WORKFLOW_GITHUB_REPOS` + 라벨 범위 소스)도 그대로 동작한다 — [GitHub 런북](github/README.md) 1~4절. 화면에서 넣은 토큰이 환경변수보다 우선한다.
@@ -200,7 +200,7 @@ Jira Cloud 이슈를 업무로 가져오고, 업무가 진행되면 Jira 상태�
 상태: 2026-10-01 가짜 Jira(httpx `MockTransport`)·가짜 GitHub·가짜 러너로만 검증했다(`tests/e2e/test_jira_cycle.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md) phase 18 절). 실제 Jira Cloud 연동은 아직 하지 않았다 — 아래 Atlassian 화면 이름은 문서 기준이다.
 
 1. **토큰 만들기** — Atlassian 계정의 [API 토큰 화면](https://id.atlassian.com/manage-profile/security/api-tokens)(연결 칸의 "토큰 만들기" 새 창)에서 만든다. 스코프를 고르는 토큰이면 `read:jira-work`·`write:jira-work`·`read:jira-user` 를 준다. 토큰은 만든 화면에서 한 번만 보인다.
-2. **연결** — `/connect?tab=sources` 의 **Jira 연결** 에 사이트 주소(`https://<이름>.atlassian.net` 형식만 — 다른 호스트·경로·포트는 거부), 계정 이메일, 토큰을 넣는다. 서버가 사이트의 cloudId 와 내 계정(`myself`)을 확인한 뒤 저장한다 — 게이트웨이(`api.atlassian.com/ex/jira/<cloudId>`)로 되면 그것을, 안 되면 사이트 주소를 이후 호출 기준으로 쓴다. `이메일·토큰이 맞지 않습니다` 면 401, `권한(스코프)이 부족합니다` 면 403 이다. 성공하면 `연결됨 · 이름 · 사이트` 가 보인다.
+2. **연결** — `/repos` 의 **Jira 연결** 에 사이트 주소(`https://<이름>.atlassian.net` 형식만 — 다른 호스트·경로·포트는 거부), 계정 이메일, 토큰을 넣는다. 서버가 사이트의 cloudId 와 내 계정(`myself`)을 확인한 뒤 저장한다 — 게이트웨이(`api.atlassian.com/ex/jira/<cloudId>`)로 되면 그것을, 안 되면 사이트 주소를 이후 호출 기준으로 쓴다. `이메일·토큰이 맞지 않습니다` 면 401, `권한(스코프)이 부족합니다` 면 403 이다. 성공하면 `연결됨 · 이름 · 사이트` 가 보인다.
 3. **프로젝트 추가** — 프로젝트 찾기(키·이름) → 결과 줄에서 **연결 저장소**(이미 연결한 GitHub 저장소 하나 — 그 프로젝트 업무는 모두 이 저장소에서 실행·PR 된다)와 **시작점**(지금부터 / 열린 업무 전부)을 고르고 [추가]. 시작점은 추가할 때만 고른다.
 4. **프로젝트 설정** — 프로젝트마다:
    - 가져올 이슈 유형(비우면 전부).
@@ -230,7 +230,7 @@ Jira 에서 이슈를 완료 범주(예: 종료)로 옮기면 GitHub 이슈를 �
 사람 차례가 되거나 업무가 실패하면 웹훅 URL 하나로 알린다(선택 기능, [ADR-0018](adr/0018-real-repo-cycle.md) 결정 5). Discord 채널 웹훅을 그대로 넣을 수 있다.
 
 1. **URL 만들기** — Discord 면 채널 설정 → **연동(Integrations) → 웹후크 → 새 웹후크** → **웹후크 URL 복사**. 그 밖의 서비스는 JSON POST 를 받는 URL 이면 된다.
-2. **등록** — `/connect?tab=notify`(연결 → 알림)에 붙여 넣고 저장. `https` 만 받는다(같은 Mac 의 수신기는 `http://127.0.0.1…` 도 허용). 저장 뒤 화면에는 `설정됨 · 호스트 <이름>` 만 보인다.
+2. **등록** — `/settings?tab=notify`(설정 → 알림)에 붙여 넣고 저장. `https` 만 받는다(같은 Mac 의 수신기는 `http://127.0.0.1…` 도 허용). 저장 뒤 화면에는 `설정됨 · 호스트 <이름>` 만 보인다.
 3. **[테스트 보내기]** — 한 번 보내 보고 결과(`보냄`·`HTTP 404`·`시간 초과` 등)를 바로 보여 준다.
 
 언제 오나: 새 사람 요청(`[Runloom] 사람 차례 — 제목: 사유`), 초안 PR 이 열림(`[Runloom] PR 확인 — 제목 <PR 주소>`), 실행 실패로 업무가 끝남(`[Runloom] 실패 — 제목: 사유`). 각 줄 아래 업무 링크(`WORKFLOW_PUBLIC_URL` 기준 — 로그인 필요). 같은 사건은 한 번만 보낸다. Discord 호스트면 `{"content": …}`(2000자), 그 밖은 `content`·`event`·`task_id`·`task_url`·`title`·`pr_url` JSON.
@@ -310,7 +310,13 @@ deploy/selfhost/install-runner.sh
   2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 24.
   3. **러너도 `install-runner.sh` 로 다시 설치한다** — 러너 프로토콜이 바뀌었다(claim `capabilities` 에 `after_result_triage`, 판단 요청 target 의 `mode: next_step`, 결과의 `next_action`). 옛 러너는 v24 서버에 그대로 붙어 수정·검토·접수 판단은 계속 하지만 결과 뒤 판단은 받지 못한다 — `needs_information` 은 지금처럼 사람 요청, 규칙 없는 결과는 지금처럼 `확인 필요`. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
   4. 결과 뒤 판단은 저장소 카드의 **판단 에이전트** 칸이 정해진 저장소의 업무에서만 돈다(접수 판단과 같은 칸 — 새 설정 없음). 사내 요청 제안을 받으려면 연결 화면 "팀" 탭의 담당 범위 표에 항목이 있어야 한다. 받는 사람 알림은 공용 웹훅 또는 받는 사람의 개인 웹훅(위 "알림")으로 간다.
-- 옛 주소는 넘어간다(303) — `/sources`·`/operator`·`/operator/github`·`/operator/notifications`·`/team`·`/agents`·`/kinds` → `/connect?tab=…`, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
+- v25(phase 23) — 설정 화면 정리: `member_invites` 에 초대 받는 사람 칸 둘(`invitee_email`·`invitee_name`)을 더한다(ALTER — 다른 표는 재생성하지 않고 행·업무 상태는 그대로). 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v24). 순서:
+  1. 백업 먼저(`backup create`).
+  2. `install.sh` → 스키마 25.
+  3. **러너 재설치는 필요 없다** — 러너 프로토콜(`connector`·`contracts/v1`)은 이 phase 에서 바뀌지 않았다(재설치해도 된다).
+  4. **북마크 주소가 바뀐다.** 왼쪽 목록의 `연결` 이 `팀`(`/team` — 멤버·초대·에이전트·담당 범위) · `저장소`(`/repos` — GitHub·Jira 연결과 저장소 카드) · `설정`(`/settings?tab=kinds|triage|notify|inbound|advanced` — 업무 종류·규칙 / 판단 / 알림 / n8n 입구 / 고급)으로 나뉜다. 옛 주소는 새 주소로 넘어간다(303) — `/connect`·`/connect?tab=sources` → `/repos`, `/connect?tab=team` → `/team`, `/connect?tab=<kinds|triage|notify|advanced>` → `/settings?tab=<같은 탭>`. POST 경로·GitHub App 경로는 그대로라 GitHub 쪽 App 설정을 고칠 일은 없다. 저장소 카드 안 이슈 목록은 빠지고 카드의 `업무 N건 보기` 가 업무 목록으로 간다.
+  5. **열린 옛 초대는 이메일 없이 남는다** — 대기 중 초대 목록에 `이메일 없음(옛 초대)` 로 보이고, 링크는 그대로 쓸 수 있다(받는 사람이 이메일을 직접 넣는다). 줄의 [링크 다시 만들기]·[취소] 도 된다. 새 초대는 받는 사람 이메일이 필수이고, 그 이메일로만 가입한다.
+- 옛 주소는 넘어간다(303) — `/sources` → `/settings?tab=inbound`, `/operator/github` → `/repos`, `/operator` → `/settings?tab=advanced`, `/operator/notifications` → `/settings?tab=notify`, `/agents` → `/team`, `/kinds` → `/settings?tab=kinds`, `/connect?tab=…` → 위 v25 표, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
 ## 제거
