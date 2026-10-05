@@ -331,6 +331,23 @@
 | `internal_request_received` | 사내 요청이 생겼을 때 받는 사람 한 명에게 가는 알림 사건(판단·사람·재전달 모두)(step 8) | `request_created`, `assigned` |
 | `next_step_proposed` | 다음 단계 제안이 생겼을 때 그 업무의 받는 사람(`turn_recipients_of`)에게 가는 알림 사건(step 8) | `triage_done`, `next_action` |
 
+## 계획 용어 — phase 23 설정 UX (미구현)
+
+[ADR-0028](adr/0028-setup-ux.md), [ARCHITECTURE](ARCHITECTURE.md) "설정 UX — phase 23". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|---|---|---|
+| 팀 화면 / `/team` | 사이드바 `팀` — 멤버·초대·에이전트(러너 합친 표)·담당 범위 절(step 1·3·6). 템플릿 `team.html`, 라우트 `team_page`, 그리기 `_team_page` | `연결 › 팀·담당자`(옛 탭 이름), `멤버 관리`, `조직` |
+| 저장소 화면 / `/repos` | 사이드바 `저장소` — GitHub·Jira 연결과 저장소 카드(판단 에이전트·수정·검토 에이전트·실행 방식, 고급 설정, 러너·담당 연결·기준선)(step 1·7). 이슈 목록은 없다(업무 화면). 템플릿 `repos.html`·`_repos_github.html`·`_repos_jira.html` | `가져올 곳`(옛 탭 이름 — 화면 말로 쓰지 않는다), `프로젝트`, `소스 화면` |
+| 설정 화면 / `/settings?tab=` | 사이드바 `설정` — 탭 `kinds` 업무 종류·규칙 · `triage` 판단 · `notify` 알림 · `inbound` n8n 입구 · `advanced` 고급(step 1·9). 상수 `SETTINGS_TABS`(옛 `CONNECT_TABS` 대신) | `연결 화면`(없어진 화면), `/connect`(303 만 남은 주소), `환경설정` |
+| 맡을 수 있는 일 | 에이전트가 가진 능력(`Capability`)의 `code` 에 해당하는 종류들의 화면 이름(step 5·6). 사용자 정의 종류는 팀 화면에서 붙이고 떼며(`add_agent_capability`·`remove_agent_capability`·`set_agent_kinds`), 러너 등록이 만든 내장 능력(`BUILTIN_CAPABILITY_CODES`)은 뗄 수 없다(`CapabilityProtected`) | `권한`, `스킬`, `역할`, 화면에 `capability`·`code.fix` 그대로 |
+| 범위 값 / `agent_repository_scope` | 에이전트에 능력을 붙일 때 쓰는 `repository_id` — 내장 능력들의 `scope.repository_id` 가 한 값일 때 그 값(step 4). 없으면 `no_repository`, 둘 이상이면 `many_repositories` 로 고를 수 없다 | `저장소 ID` 입력 요구, `scope 값`(화면) |
+| 링크 다시 만들기 / `reissue_invite` | 열린 초대 행의 토큰 해시·만료만 새 값으로 바꾸고 새 원본을 그 응답 화면에 한 번 보이는 동작(step 2·3). 옛 링크는 무효, 같은 행(`invite_id`·이메일·역할 그대로). 경로 `POST /team/invites/{invite_id}/reissue` | `링크 다시 보기`(원본은 저장하지 않는다), `재발송`(이메일을 보내지 않는다), `새 초대` |
+| 받는 사람 이메일 / `invitee_email` | 초대 행의 받는 사람 이메일(정규화 값)과 이름 `invitee_name`(step 2). 새 초대는 필수, 가입은 이 이메일로만(`InviteEmailMismatch`). v24 이전 초대는 NULL — 화면 `이메일 없음(옛 초대)` | `수신자`(담당 범위의 받는 사람과 혼동), `email`(멤버 칸과 혼동 — 코드는 `invitee_email`) |
+| 끝난 업무 묶음 / `CLOSED_GROUP_KEY` | 업무 목록에서 `TERMINAL_WORK_STATUSES`(`완료`·`종료`) 업무를 묶기와 무관하게 맨 아래 모은 묶음 하나 — 키 `closed`, 이름 `끝난 업무`, 기본 접힘(step 8). 끝난 업무 범위(`closed=recent\|all`)는 그대로이고 이 묶음은 그 안의 행만 담는다 | `보관`, `아카이브`, `완료 묶음`(`종료` 도 든다) |
+| "자세히" / `details.detail` | 내부 ID·코드를 두는 유일한 접힘 `<details class="detail"><summary>자세히</summary>`(step 3~9). 노출 단정은 이 요소를 지운 화면 글자에서 `agt-`·`conn-`·`inv-`·`code.(fix\|review\|triage)` 를 찾는다 | `고급`(설정 칸 접힘 — 다른 것), `디버그`, `원문 보기`(산출물 원문 토글 — 다른 것) |
+| 요청 유형 목록 / `REQUEST_KIND_LABELS` | 담당 범위 화면 폼이 고르게 하는 요청 유형 — `investigation` 조사 · `bug_report` 버그 보고 · `data_check` 데이터 확인(step 6). 화면 폼에만 걸고 JSON API 는 식별자 형식만 본다. 목록 밖 기존 행은 `(목록 밖)` | `요청 종류`(업무 종류 `kind` 와 혼동 — 화면 말은 `요청 유형`), `카테고리` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.

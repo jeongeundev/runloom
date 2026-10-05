@@ -5,7 +5,9 @@
     {
       "step": 0,
       "name": "setup-ux-design",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T12:43:55+0900",
+      "summary": "문서만: docs/adr/0028-setup-ux.md 신규(계기·D1~D4·코드 조사로 달라진 사실 15·결정 11·하지 않는 것·결과), ARCHITECTURE 끝 '설정 UX — phase 23'(이름 고정·주소/303/POST 대상/링크 표·사이드바·권한·스키마 v25·팀/종류/저장소/업무 목록/설정 화면 표·노출 단정 규칙·step 1~10 시그니처) + phase 16 주소·탭 표에 안내 한 줄, UI_GUIDE 셸·도구 막대·화면 목록, GLOSSARY phase 23 용어, CURRENT_HANDOFF 맨 위. README 와 달라진 결정: 비활성 멤버 이메일도 초대 거부(members_session_email), CHECK 는 '초대 행에만·정규화'만(필수는 issue_invite), session_id 위치 인자 유지·reissue_invite(conn, session_id, invite_id, *, now), insert_kind(agent_ids=) 로 한 트랜잭션(_tx 중첩 불가), 능력 변경은 설정 번호 안 올림, 다음 할 일 '—' 는 상태 이름과 같거나 담당 없음 행의 '담당 없음'일 때만(상태 이유는 목록에 안 보임), 담당 연결은 수집 이슈의 GitHub 사용자 고르기 가능(snapshot assignee_ids/logins), 요청 유형 목록 investigation·bug_report·data_check(화면 폼만), /sources→/settings?tab=inbound, 노출 단정은 '자세히' 제거 후 태그 뺀 글자 기준. 검증: pytest 4446 passed·92 skipped, ruff 통과(코드 변경 없음). 다음 step 주의: step 2 는 issue_invite 필수 인자 때문에 team_invite 와 초대 폼에 이메일·이름 입력만 최소로 더한다(ARCHITECTURE step 2 행), POST 경로는 그대로·새 POST 는 /team/invites/{id}/reissue·/agents/{id}/capabilities 둘뿐."
     },
     {
       "step": 1,
@@ -57,5 +59,6 @@
       "name": "setup-ux-verify",
       "status": "pending"
     }
-  ]
+  ],
+  "created_at": "2026-10-05T12:43:55+0900"
 }

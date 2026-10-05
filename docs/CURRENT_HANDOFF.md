@@ -2,7 +2,13 @@
 
 갱신일: 2026-10-05. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
-## 다음 작업: 22-next-step 완료 — service 병합 → 셀프호스트 v24 → 결과 뒤 판단 실연동 (새 세션은 여기서 시작)
+## 다음 작업: 23-setup-ux 진행 중 — 설정 UX (새 세션은 여기서 시작)
+
+**23-setup-ux 진행 중**(2026-10-05~, `feat-23-setup-ux`, `service` `058d9bc` 에서 갈라짐, [phase 23 README](../phases/23-setup-ux/README.md), [ADR-0028](adr/0028-setup-ux.md), [ARCHITECTURE](ARCHITECTURE.md) "설정 UX — phase 23", 용어 [GLOSSARY](GLOSSARY.md) "계획 용어 — phase 23"). 계기: K1 실연동이 준비 1번(팀 초대)에서 멈춤 — [사내 요청 실연동 1회차](product/INTERNAL_REQUEST_LIVE_RUN_1.md) "결과" 의 화면 문제 15건. 사이드바 `연결` 을 `팀`(`/team`)·`저장소`(`/repos`)·`설정`(`/settings?tab=`)으로 나누고, 초대에 받는 사람 이메일·[링크 다시 만들기](스키마 v25), 종류 폼에서 맡을 에이전트 고르기(능력 붙이기), 담당 범위 요청 유형 목록, 저장소 카드 정리(판단 에이전트 설명·이슈 목록 빼기), 업무 목록 정리(끝난 업무 묶음·같은 값 칸 숨김·도구 막대). 내부 ID 는 "자세히" 안에만. 러너 프로토콜 변화 없음 — 러너 재설치 불필요.
+
+**진행**: step 0(설계 문서) 끝 → step 1~10 은 하네스(`python3 scripts/execute.py 23-setup-ux --engine claude`). 끝나면 사용자 지시로 `service` 에 `--no-ff` 병합 → 셀프호스트 v25(백업 먼저) → K1 실연동 재개(1회차 문서 "준비" 를 새 화면 경로로 — step 10 이 고친다). 남아 있는 옛 초대 `inv-93013b36ea37` 은 v25 뒤 그 줄의 [링크 다시 만들기] 또는 [취소].
+
+## 이전 다음 작업: 22-next-step 완료 — service 병합 → 셀프호스트 v24 → 결과 뒤 판단 실연동
 
 **22-next-step 완료**(2026-10-05, `feat-22-next-step`, step 0~10, `service` `aae864a` 에서 갈라짐, [ADR-0027](adr/0027-next-step-triage.md), [ARCHITECTURE](ARCHITECTURE.md) "결과 뒤 판단 — phase 22", 용어 [GLOSSARY](GLOSSARY.md) "계획 용어 — phase 22", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 22 결과 뒤 판단"): 결과가 규칙 밖(①)·`needs_information`(②)·사내 요청 반환(③)이면 저장소 카드의 판단 에이전트가 판단 시점에 고정한 후보(다음 단계 종류·멤버·에이전트·담당 범위) 안에서 다음 행동 하나(다음 단계·재작업 / 새 업무 / 사내 요청 / 사람 확인)를 제안하고, 사람이 업무 패널 "다음 단계 제안" 절의 [제안대로] 를 한 번 누른다(판단이 만든 사내 요청의 요청자 = 누른 멤버). 시작할 수 없거나(판단 에이전트 없음·옛 러너·대기 3600초 초과) 실패·[무시]면 지금 동작 — ② 는 원래 사람 요청, ① 은 그대로 `확인 필요`, ③ 은 판단이 만든 요청만 `next_step_human` 사람 요청. 사내 요청이 생기면 받는 사람에게 `요청 받음` 알림, 제안이 나오면 `다음 단계 제안` 알림. 받는 사람의 수락·조사·검토·반환은 그대로 사람이 한다. 결과 뒤 판단은 자동 시작하지 않고, 접수 판단의 자동 시작 자격 건수·모니터링 판단 지표에 섞이지 않는다. 스키마 v24, **러너 프로토콜 변화**(claim `capabilities` 에 `after_result_triage`) — 옛 러너는 결과 뒤 판단만 못 한다.
 

@@ -1233,6 +1233,8 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 ### 주소 (step 3~8)
 
+> phase 23 에서 바뀜 → "설정 UX — phase 23" 절(ADR-0028).
+
 쿼리 값은 모두 열거형이다. 모르는 값·빈 값은 기본값(첫 값)으로 읽고 오류를 내지 않는다. **되돌아갈 URL 을 받지 않는다** — 폼이 목록 상태를 되살리려면 숨은 입력으로 `q`·`group`·`view`·`closed` 열거형 값을 싣고, 서버가 같은 정규화(`parse_list_query`)를 거친 값만 303 주소에 붙인다.
 
 | 경로 | 필요 동작(`domain/team.py`) | 동작 |
@@ -1402,6 +1404,8 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 - **단계 상세** `/tasks/{task_id}`: 기존 3열 셸(오른쪽 산출물 뷰어)은 여기에만 남는다.
 - **사이드바**: 업무(`my_turn` 건수 배지) · 모니터링(`view_metrics`) · 연결 · 시작하기(필수 미완료일 때만) · 내 설정(`edit_own_settings`), 아래 로그인 멤버(표시 이름·역할)·로그아웃. "최근" 목록·`+`·`_base()["my_work"]` 는 없앤다(step 4). 연결 = `/connect`(step 6, 옛 설정 화면 경로에서도 활성). 모니터링 = `/monitor`, 시작하기 = `/start`(step 7).
 - **알림·원본 댓글 링크**(step 5): 업무가 있으면 `{public_url}` + `work_path(key)`(= `/tasks?open=RUN-n`), 업무가 없는 옛 행만 `/tasks/{task_id}`.
+
+> phase 23 에서 바뀜 → "설정 UX — phase 23" 절(ADR-0028).
 
 **연결 화면 탭**(step 6) — 본문은 기존 템플릿을 부분 템플릿으로 옮겨 재사용한다(문구·폼·`data-*` 유지):
 
@@ -3470,3 +3474,344 @@ POST 는 모두 기존 Origin 검사를 거친다. 응답·로그에 비밀값�
 | 알림·반환 | `server/worker.py`·`domain/notification.py`·`server/web.py`·`adapters/repo.py`(8) | `enqueue_request_notification`, `_HEADLINES` 두 값, `next_step_proposed` 알림 자리, ③ 원인 조회 `returned_requests_awaiting_next_step`·`_triage_after_results` 의 ③·대체 경로 `next_step_human:request:<id>` |
 | 화면 | `server/views.py`·`templates/_work_panel.html`·`templates/home.html`·`templates/internal_requests.html`·`domain/work_list.py`·`adapters/repo.py`(9) | `views.next_step_panel`, `panel.next_step`, `data-panel-section="next_step"`, `WorkRow.next_step`, `data-next-step`, `판단 제안으로 생성`(`data-created-by-triage`) |
 | e2e·문서 | `tests/e2e/test_next_step_cycle.py`·`docs/SELFHOST.md`·`docs/VERIFICATION_LOG.md`·`docs/CURRENT_HANDOFF.md`(10) | 실제 러너 프로세스 + 가짜 claude 로 RUN-26 장면(수정 `needs_information` → 사내 요청 제안 → [제안대로] → 알림 → 수락·조사·검토·반환 → ③ → 재작업 제안 → [제안대로] → 새 실행), 옛 러너(결과 뒤 판단 미지원 → 원래 사람 요청), v23 사본 마이그레이션, SELFHOST 업그레이드 v24(러너 재설치) |
+
+## 설정 UX — phase 23
+
+[ADR-0028](adr/0028-setup-ux.md) 를 따른다. `service` 브랜치에만 적용한다. step 목록은 [phase 23 README](../phases/23-setup-ux/README.md). 이 시점에는 구현이 없다 — 아래 이름·주소·표·시그니처·문구는 step 1~10 이 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** "업무 화면 — phase 16" 의 주소 표·연결 화면 탭 표·시작하기 표와 "팀 — phase 15" 의 라우트 표는 이 절이 바꾼 부분만 바뀐다. 러너 프로토콜(`contracts/v1.py` claim·실행 요청·결과, `connector/`)은 바뀌지 않는다.
+
+### 한 줄 요약
+
+사이드바 `연결` 하나를 `팀`(`/team` — 멤버·초대·에이전트(러너 합침)·담당 범위) · `저장소`(`/repos` — GitHub·Jira 연결과 저장소 카드, 이슈 목록 없음) · `설정`(`/settings?tab=` — 종류·규칙 / 판단 / 알림 / n8n 입구 / 고급)으로 나눈다. 초대는 받는 사람 이메일·이름을 적고 [링크 다시 만들기] 가 된다(스키마 v25). 종류 폼은 화면 이름·지시문·결과값·맡을 에이전트만 묻고 나머지는 "고급". 내부 ID·코드는 `<details class="detail">` "자세히" 안에만. 업무 목록은 끝난 업무 묶음·같은 값 칸 숨김·도구 막대 정리.
+
+### 이름 고정 (다음 step 이 그대로 쓴다)
+
+| 대상 | 위치(step) | 이름 |
+|---|---|---|
+| GET 화면 라우트 | `server/web.py`(1) | `team_page` `GET /team`, `repos_page` `GET /repos`, `settings_page` `GET /settings`(쿼리 `tab`, `version`), `connect_redirect` `GET /connect`(쿼리 `tab`, `version` — 303 만) |
+| 화면 그리기 | `server/web.py`(1) | `_team_page(request, conn, member, *, status: int = 200, **extra) -> HTMLResponse`, `_repos_page(request, conn, member, **extra) -> str`, `_settings_page(request, conn, member, tab: str, **extra) -> str` — `_connect_page` 를 대신한다(지운다). 문맥 `_team_context(request, conn, member, now, allowed) -> dict`, `_repos_context(request, conn, member, now, allowed) -> dict`, `_settings_context(request, conn, member, tab, now, allowed) -> dict` — `_tab_context` 를 대신한다(지운다) |
+| 탭 상수 | `server/web.py`(1) | `SETTINGS_TABS = (("kinds", "업무 종류·규칙", None), ("triage", "판단", team.MANAGE_CONNECTIONS), ("notify", "알림", team.MANAGE_SHARED_NOTIFY), ("inbound", "n8n 입구", team.MANAGE_CONNECTIONS), ("advanced", "고급", None))` — `CONNECT_TABS` 를 대신한다(지운다). `_visible_settings_tabs(allowed) -> list[dict[str, str]]` |
+| 303 도우미 | `server/web.py`(1) | `_to_settings(tab: str) -> RedirectResponse`(`/settings?tab=<tab>`), `CONNECT_TAB_TARGETS = {"sources": "/repos", "team": "/team", "kinds": "/settings?tab=kinds", "triage": "/settings?tab=triage", "notify": "/settings?tab=notify", "advanced": "/settings?tab=advanced"}`, `_connect_target(tab: str, version: int \| None) -> str`(모르는 탭·빈 탭 `/repos`, `triage` + `version` 이면 `/settings?tab=triage&version=<n>`). `_to_connect` 는 지운다 |
+| 사이드바 활성 | `templates/_sidebar.html`(1) | 화면 문맥 키 `nav` ∈ `team`·`repos`·`settings` — 있으면 그 메뉴, 없으면 경로 접두사(아래 사이드바 표) |
+| 페이지 템플릿 | `templates/`(1) | `team.html`(옛 `_connect_team.html` 본문을 옮긴다 — 부분 템플릿은 지운다), `repos.html`(옛 `_connect_github.html`·`_connect_jira.html` 을 포함), `settings.html`(옛 `connect.html` 의 탭 레이아웃 — `connect.html` 은 지운다) |
+| 부분 템플릿 이름 바꾸기 | `templates/`(1) | `_connect_github.html` → `_repos_github.html`, `_connect_jira.html` → `_repos_jira.html`, `_connect_kinds.html` → `_settings_kinds.html`, `_connect_triage.html` → `_settings_triage.html`, `_connect_notify.html` → `_settings_notify.html`, `_connect_inbound.html` → `_settings_inbound.html`, `_connect_advanced.html` → `_settings_advanced.html` |
+| 마크업 표식 | 템플릿(1·3·6·7·8·9) | 탭 머리 `nav.tabs[data-settings-tabs]`(옛 `data-connect-tabs`), 탭 본문 `section[data-tab-body="<tab>"]`(그대로), 팀 절 `section[data-team-section="members"\|"invites"\|"agents"\|"responsibilities"]`, 에이전트 줄 `tr[data-agent="<agent_id>"]`(그대로)·에이전트 없는 러너 줄 `tr[data-runner="<connector_id>"]`, 초대 줄 `tr[data-invite-id]`(그대로), 저장소 카드 `section[data-source-card]`(그대로), 카드 설정 고급 `details.row[data-source-advanced]`, 카드 도구 `details.row[data-source-tools]`, 업무 링크 `a[data-source-work]`, 도구 막대 보기 옵션 `details.view-options`, 끝난 업무 묶음 `tbody[data-group-body="closed"][data-default-folded]` |
+| "자세히" | 템플릿·`static/style.css`(3) | `<details class="detail"><summary>자세히</summary> … </details>` — 내부 값은 여기만, 안에 다른 `<details>` 없음. CSS `details.detail`(13px `--text-muted`, 펼친 내용 `--mono`)은 처음 쓰는 step 3 이 더한다 |
+| 링크 아래 회색 한 줄 | 템플릿·CSS(3) | `<p class="link-note" data-public-url-note>` |
+| 오류 클래스 | `adapters/errors.py`(2·4) | `InviteEmailTaken(AdapterError)`, `InviteEmailMismatch(AdapterError)`(2), `CapabilityProtected(AdapterError)`, `AgentScopeUnknown(AdapterError)`(`agent_id`·`reason` 속성)(4) |
+| 오류 코드(화면) | `server/web.py`(3·5·6) | `invite_email_taken`(422), `invite_email_mismatch`(422), `capability_protected`(409), `agent_scope_unknown`(422), `kind_label_exists`(409). 그 밖은 기존 `invalid_field`·`not_found`·`forbidden`·`kind_exists` |
+| 요청 유형 목록 | `server/views.py`(6) | `REQUEST_KIND_LABELS = {"investigation": "조사", "bug_report": "버그 보고", "data_check": "데이터 확인"}`(순서 = select 순서) |
+| 범위 값 | `domain/kinds.py`(4) | `agent_repository_scope(capabilities: Sequence[Capability]) -> tuple[str \| None, str \| None]`, 이유 코드 `SCOPE_NO_REPOSITORY = "no_repository"`·`SCOPE_MANY_REPOSITORIES = "many_repositories"`, `BUILTIN_CAPABILITY_CODES: frozenset[str]`(= `BUILTIN_KINDS` 의 `capability_code`) |
+| 자동 종류 식별자 | `server/web.py`(5) | `AUTO_KIND_PREFIX = "k_"`, `AUTO_KIND_HEX = 6`, `AUTO_KIND_TRIES = 5`, `_auto_kind(conn, session_id) -> str`(`secrets.token_hex(3)`), `DEFAULT_KIND_OUTCOMES = "done, needs_information"` |
+| 업무 목록 | `domain/work_list.py`(8) | `CLOSED_GROUP_KEY = "closed"`, `CLOSED_GROUP_LABEL = "끝난 업무"`, `HIDEABLE_COLUMNS = ("priority", "kind")`, `hidden_columns(rows) -> frozenset[str]`, `shown_next_action(row: WorkRow) -> str`, `NO_NEXT_ACTION = "—"` |
+
+### 주소 (step 1)
+
+**새 GET 화면**
+
+| 경로 | 필요 동작 | 동작 |
+|---|---|---|
+| `GET /team` | 로그인 | 팀 화면(아래 "팀 화면"). 옛 303 라우트(`team_page` → `/connect?tab=team`)를 이 화면이 대신한다 |
+| `GET /repos` | 로그인 | 저장소 화면(아래 "저장소 화면") |
+| `GET /settings?tab=kinds\|triage\|notify\|inbound\|advanced` | 로그인(탭별 — 권한 표) | 설정 화면. 모르는 `tab`·빈 `tab` 은 볼 수 있는 첫 탭(`kinds`), 아는 탭인데 권한이 없으면 403 `forbidden` "관리자 권한이 필요합니다.". `tab=triage` 의 `version` 은 그 기준 본문 읽기 전용 보기(없는 버전 404 — 지금 동작 그대로) |
+
+**`/connect` → 새 주소**(303, `connect_redirect` — 로그인 검사 없이 넘기고 대상 화면이 검사한다. `version` 말고 다른 쿼리는 버린다)
+
+| 요청 | 303 대상 |
+|---|---|
+| `/connect`(탭 없음) | `/repos` |
+| `/connect?tab=sources` | `/repos` |
+| `/connect?tab=team` | `/team` |
+| `/connect?tab=kinds` | `/settings?tab=kinds` |
+| `/connect?tab=triage` | `/settings?tab=triage` |
+| `/connect?tab=triage&version=<n>` | `/settings?tab=triage&version=<n>` |
+| `/connect?tab=notify` | `/settings?tab=notify` |
+| `/connect?tab=advanced` | `/settings?tab=advanced` |
+| `/connect?tab=<그 밖>` | `/repos`(옛 "볼 수 있는 첫 탭" = `sources`) |
+
+**옛 GET 주소 → 새 주소**(303, 쿼리는 버림 — `/metrics` 만 쿼리 유지, 그대로)
+
+| 옛 주소 | 지금(phase 16) | phase 23 |
+|---|---|---|
+| `/sources` | `/connect?tab=sources` | `/settings?tab=inbound`(옛 `/sources` 는 n8n 입구 화면이었다) |
+| `/operator/github` | `/connect?tab=sources` | `/repos` |
+| `/operator` | `/connect?tab=advanced` | `/settings?tab=advanced` |
+| `/operator/notifications` | `/connect?tab=notify` | `/settings?tab=notify` |
+| `/agents` | `/connect?tab=team` | `/team` |
+| `/kinds` | `/connect?tab=kinds` | `/settings?tab=kinds` |
+| `/team` | `/connect?tab=team` | (화면) |
+
+**POST 뒤 303 대상**(경로는 그대로 — 대상만 바꾼다)
+
+| POST(또는 GET 콜백) | 지금 | phase 23 |
+|---|---|---|
+| `/responsibilities/add`, `/responsibilities/remove`(`_save_directory`) | `/connect?tab=team` | `/team` |
+| `/agents/{agent_id}/delegation-policy` | `/connect?tab=team` | `/team` |
+| `/team/invites/{invite_id}/revoke` | `/connect?tab=team` | `/team` |
+| `/team/members/{member_id}/role`·`/disable`·`/enable` | `/connect?tab=team` | `/team` |
+| `/operator/connectors/{connector_id}/revoke` | `/connect?tab=team` | `/team` |
+| `/kinds`, `/kinds/{kind}/delete`, `/rules`, `/rules/{rule_id}/delete` | `/connect?tab=kinds` | `/settings?tab=kinds` |
+| `/operator/triage/criteria`, `/operator/triage/autostart/{kind}` | `/connect?tab=triage` | `/settings?tab=triage` |
+| `/operator/notifications/webhook`, `/operator/notifications/webhook/delete` | `/connect?tab=notify` | `/settings?tab=notify` |
+| `/sources/tokens/{token_id}/revoke` | `/connect?tab=sources` | `/settings?tab=inbound` |
+| `/operator/agents`, `/operator/agents/{agent_id}/delete`, `/operator/connect-codes/{code}/revoke` | `/connect?tab=advanced` | `/settings?tab=advanced` |
+| `/operator/github/token` | `/connect?tab=sources` | `/repos` |
+| `GET /operator/github/app/setup`(GitHub 이 돌아오는 곳 — 경로 그대로) | `/connect?tab=sources` | `/repos` |
+| `/operator/jira/connect`, `/operator/jira/projects`, `/operator/jira/projects/{source_id}`, `/operator/jira/projects/{source_id}/refresh`, `/operator/jira/disconnect` | `/connect?tab=sources` | `/repos` |
+| 새 `/agents/{agent_id}/capabilities`(6) | — | `/team` |
+
+**303 없이 화면을 그리는 요청**(발급 원문은 그 응답에만 — 지금 규칙)
+
+| 요청 | 지금 그리는 곳 | phase 23 |
+|---|---|---|
+| `POST /team/invites`, `POST /team/members/{member_id}/reset-link` | 연결 팀 탭 | 팀 화면(`_team_page`) |
+| 새 `POST /team/invites/{invite_id}/reissue`(3) | — | 팀 화면 |
+| `POST /sources/tokens` | 연결 가져올 곳 탭 | 설정 n8n 입구 탭 |
+| `POST /operator/github/sources/{source_id}/runner` | 연결 가져올 곳 탭 | 저장소 화면 |
+| `GET /operator/jira/projects`(프로젝트 찾기) | 연결 가져올 곳 탭 | 저장소 화면 |
+| `POST /operator/notifications/test` | 연결 알림 탭 | 설정 알림 탭 |
+| `POST /operator/connect-codes` | 연결 고급 탭 | 설정 고급 탭 |
+
+**링크 바꾸기**(href 만 — 문구는 그대로)
+
+| 위치 | 지금 | phase 23 |
+|---|---|---|
+| `domain/start_checklist.START_ITEMS` `source`·`runner` | `/connect?tab=sources` | `/repos` |
+| `domain/start_checklist.START_ITEMS` `invite` | `/connect?tab=team` | `/team` |
+| `home.html` "러너 붙이기", `_connect_team.html`(→ `team.html`) 빈 에이전트 안내, `metrics.html` "GitHub 연결", `operator_github_app_new.html` 브레드크럼 | `/connect?tab=sources` | `/repos` |
+| `agent_detail.html` 브레드크럼, `_work_panel.html` 담당 범위 안내, `internal_requests.html` 두 곳 | `/connect?tab=team` | `/team` |
+| `task_new.html` 종류 안내 | `/connect?tab=kinds` | `/settings?tab=kinds` |
+| `_monitor_triage.html` | `/connect?tab=triage` | `/settings?tab=triage` |
+| `_connect_triage.html`(→ `_settings_triage.html`) 버전 보기 | `/connect?tab=triage&version=<n>` | `/settings?tab=triage&version=<n>` |
+| `settings.html` 탭 머리 | `/connect?tab=<key>` | `/settings?tab=<key>` |
+
+`web.py` 오류 문구 안의 `/operator/github 에서 …`(GitHub App 콜백·설치 오류)는 그대로 둔다(그 주소는 `/repos` 로 넘어간다).
+
+**바꾸지 않는 경로**: 모든 기존 POST, `/operator/github/app/new`·`/callback`·`/setup`(GitHub App 에 등록된 URL), `/agents/{agent_id}`(에이전트 상세), `/github/sources*`·`/responsibilities`(JSON API), `/sources/{source}/chains`(입구 API), 러너 API, 로그인·초대(`/invite/{token}`)·재설정·`/me*`, `/tasks*`·`/work/*`·`/requests*`·`/monitor`·`/start`.
+
+**사이드바**(1) — 순서: `업무`(`/tasks`, 내 차례 수 배지) · `받은·보낸 요청`(`/requests`) · `모니터링`(`/monitor`, `view_metrics`) · `팀`(`/team`) · `저장소`(`/repos`) · `설정`(`/settings`) · `시작하기`(`/start`, `show_start`) · `내 설정`(`/me`, `edit_own_settings`). `연결` 항목은 없앤다.
+
+| 메뉴 | 활성 조건(`nav` 가 없을 때의 경로 접두사) |
+|---|---|
+| 업무 | `/tasks`·`/work`·`/chains` |
+| 받은·보낸 요청 | `/requests` |
+| 모니터링 | `/monitor` |
+| 팀 | `nav == "team"` 또는 `/team`·`/agents`(에이전트 상세 포함) |
+| 저장소 | `nav == "repos"` 또는 `/repos`·`/operator/github`·`/operator/jira` |
+| 설정 | `nav == "settings"` 또는 `/settings`·`/kinds`·`/rules`·`/sources`·`/connect`, 그리고 `/operator`·`/operator/` 중 `/operator/github`·`/operator/jira` 가 아닌 것 |
+| 시작하기 | `/start` |
+| 내 설정 | `/me`·`/me/` |
+
+`_team_page`·`_repos_page`·`_settings_page` 는 문맥에 `nav` 를 늘 싣는다 — POST 가 그린 화면(`/team/invites`·`/sources/tokens` 등)도 맞는 메뉴가 활성이다.
+
+### 권한 (step 1·3·5·6·7·9)
+
+`domain/team.py` `_ROLE_ACTIONS`: 관리자 = 전부, 멤버 = `attach_runner`·`create_work`·`delegate`·`respond`·`view_metrics`·`edit_own_settings`. 권한 없는 절·탭은 **숨기고**, 권한 없는 탭을 직접 열면 403, 권한 없는 POST 는 지금처럼 403(`require_action`).
+
+| 화면·절 | 보기 | 바꾸기 |
+|---|---|---|
+| 팀 › 멤버 | `manage_team`(멤버 목록에 이메일이 있어 지금처럼 관리자만) | `manage_team` |
+| 팀 › 초대 | `manage_team` | `manage_team`(만들기·다시 만들기·취소) |
+| 팀 › 에이전트 | 로그인 | 맡기기 정책 `can_set_policy`(러너 소유자·관리자), 맡을 수 있는 일 `manage_rules`, 러너 [해제] `_may_remove_runner`(소유자 본인 + `attach_runner`, 또는 `remove_any_runner`) |
+| 팀 › 에이전트 없는 러너 줄 | `attach_runner`(지금 러너 절 조건) | [해제] 같음 |
+| 팀 › 담당 범위 | 로그인 | `manage_rules` |
+| 저장소 › 연결(GitHub App·토큰·Jira) | 로그인(연결 상태 글자). Jira 절은 `manage_connections`(지금처럼) | `manage_connections` |
+| 저장소 › 카드 | 로그인(값은 글자로) | 카드 설정 폼·담당 연결·기준선·수집 중지 `manage_connections`, 러너 붙이기·다시 붙이기 `attach_runner` |
+| 설정 › 업무 종류·규칙 | 로그인 | `manage_rules` |
+| 설정 › 판단 | `manage_connections`(탭) | `manage_connections` |
+| 설정 › 알림 | `manage_shared_notify`(탭) | `manage_shared_notify` |
+| 설정 › n8n 입구 | `manage_connections`(탭) | `manage_connections` |
+| 설정 › 고급 | 로그인 | 연결 코드 `attach_runner`(목록은 관리자 전부·멤버 자기 발급분), 에이전트 등록 `manage_connections`, 삭제 `can_delete` — 지금 그대로 |
+
+멤버의 설정 화면 탭 = `업무 종류·규칙` · `고급`. 관리자 = 다섯 탭 모두.
+
+### 스키마 v25 (step 2)
+
+`adapters/db.py` `SCHEMA_VERSION` 24 → 25. 원본 v24 스키마는 `tests/workflow/adapters/fixtures/schema_v24.sql` 로 고정한다(열린 초대·사용된 초대·취소된 초대·재설정 링크 행 포함 — v23 fixture 를 만든 방식 그대로). 빈 DB 도 `_SCHEMA` 끝의 `_V25_TABLES` 를 거쳐 만든다.
+
+| 표·칸 | 정의 |
+|---|---|
+| `member_invites.invitee_email` | `ALTER TABLE member_invites ADD COLUMN invitee_email TEXT CHECK (invitee_email IS NULL OR (purpose = 'invite' AND invitee_email = lower(trim(invitee_email)) AND invitee_email <> ''))` — 초대 받는 사람 이메일(정규화 값). 재설정 링크 행은 늘 NULL. v24 이전 초대는 NULL |
+| `member_invites.invitee_name` | `ALTER TABLE member_invites ADD COLUMN invitee_name TEXT CHECK (invitee_name IS NULL OR (purpose = 'invite' AND invitee_name <> ''))` — 받는 사람 이름(선택, 앞뒤 공백 제거·1~40자는 애플리케이션 검사) |
+| 다른 표 | 바꾸지 않는다. 인덱스 추가 없음(열린 초대 수가 작다) |
+
+- "새 초대는 이메일 필수" 는 CHECK 가 아니라 `repo.issue_invite` 가 본다 — 기존 열린 초대(NULL)가 CHECK 를 어기기 때문이다(ADR-0028 사실 4).
+- `_INVITE_COLUMNS` 에 `invitee_email, invitee_name` 을 더한다 — `invite_for_token`·`list_open_invites` 결과에 들어간다. 토큰 해시는 지금처럼 싣지 않는다.
+
+**v24 → v25 마이그레이션** `_migrate_24_to_25`(호출자 트랜잭션 안, FK 끈 올리기 경로 그대로): ① `_V25_TABLES`(ALTER 두 개) ② `PRAGMA foreign_key_check` 가 비어 있지 않으면 `RuntimeError` ③ 버전 25. 데이터는 바꾸지 않는다. 기존 올리기 경로(4~24 → 25)는 `steps` 끝에 `_migrate_24_to_25`, `init_schema` 의 버전 목록에 24. `server/backup.py` 복원은 v4~v24 백업을 25 로 올린다(같은 `init_schema`). 테스트: v24 fixture 사본 → 25 — 칸이 생기고 초대·멤버·업무 행 수와 값 그대로, 외래키 검사 통과, `foreign_keys` 다시 1, 두 번 올려도 같음.
+
+**초대 규칙**(step 2 — `adapters/repo.py`)
+
+| 함수 | 시그니처 | 규칙 |
+|---|---|---|
+| `issue_invite` | `issue_invite(conn, session_id, *, role: str, invitee_email: str, invitee_name: str \| None = None, created_by_member_id: str \| None, now: str) -> tuple[str, str]`(invite_id, 원본 토큰) | 자체 트랜잭션. 이메일 `team.normalize_email` — None 이면 `ValueError("invitee_email")`. 이름은 빈 문자열·None 이면 NULL, 아니면 `team.clean_display_name` — None 이면 `ValueError("invitee_name")`. 같은 `session_id` 의 `members.email`(활성·비활성)과 같으면 `EmailTaken`, 같은 `session_id` 의 열린 초대(`purpose='invite'`·`used_at IS NULL`·`revoked_at IS NULL`·`now < expires_at`) `invitee_email` 과 같으면 `InviteEmailTaken`. 7일 유효. 원본은 반환만 — DB·로그에 없다 |
+| `reissue_invite` | `reissue_invite(conn, session_id, invite_id, *, now: str) -> str`(새 원본 토큰) | 자체 트랜잭션. 그 행이 이 `session_id` 의 열린 초대(`purpose='invite'`·미사용·미취소·`now < expires_at`)가 아니면 `NotFound`(재설정 링크 행·사용·취소·만료·다른 워크스페이스·없음 모두). 같은 행의 `token_sha256` = 새 해시, `expires_at` = `now + INVITE_TTL_DAYS`. `created_at`·이메일·이름·역할은 그대로. 옛 토큰은 `invite_for_token` 에서 더 찾히지 않는다. 이메일 없는 옛 초대도 된다 |
+| `invite_for_token` | 그대로 | 결과에 `invitee_email`·`invitee_name` |
+| `accept_invite` | 그대로(`accept_invite(conn, token, *, email, display_name, password_hash, now) -> str`) | 초대의 `invitee_email` 이 있으면 `team.normalize_email(email)` 이 그것과 같아야 한다 — 다르면 `InviteEmailMismatch`(링크는 그대로). NULL 이면 지금처럼 입력 이메일. 그 밖(무효 `NotFound`, 중복 `EmailTaken`)은 그대로 |
+| `list_open_invites` | 그대로 | 행에 `invitee_email`·`invitee_name` |
+| `issue_reset_link`·`use_reset_link`·`revoke_invite` | 그대로 | — |
+
+`start_facts.invited`(발급된 초대가 있음)는 그대로다.
+
+### 팀 화면 `/team` (step 3·6)
+
+절 순서: **멤버 → 초대 → 에이전트 → 담당 범위**(각 `section[data-team-section]`). 맨 위 빨간 `WORKFLOW_PUBLIC_URL` 경고는 없앤다(3). 모든 표는 `.table-wrap` 안.
+
+**멤버**(지금 칸·버튼 그대로, `manage_team`): 표시 이름 · 이메일 · 역할 · 상태 · 가입 · 마지막 접속 · 동작. 재설정 링크를 만든 응답이면 이 절 위에 발급 상자(아래 문구 — 재설정용).
+
+**초대**(3, `manage_team`)
+
+- 폼(`POST /team/invites`): `invitee_email`(type=email, 필수, 라벨 `받는 사람 이메일`) · `invitee_name`(선택, 라벨 `이름`) · `role`(멤버 기본) · [초대 링크 만들기]. help: `링크를 복사해 직접 전하세요 — 이메일은 보내지 않습니다. 받는 사람은 이 이메일로만 가입합니다.`
+- 오류는 폼 위 인라인(`<p class="alert" data-invite-error>`, 422 로 팀 화면을 다시 그리고 입력값을 채운다 — `_team_page(..., status=422, invite_error=…, invite_form=…)`):
+
+| 경우 | 오류 코드 | 문구 |
+|---|---|---|
+| 이메일 형식 | `invalid_field`(field `invitee_email`) | `이메일 형식이 올바르지 않습니다.` |
+| 이름 길이 | `invalid_field`(field `invitee_name`) | `이름은 1~40자로 입력하세요.` |
+| 멤버 이메일과 겹침 | `invite_email_taken` | `이미 팀에 있는 이메일입니다(비활성 멤버 포함).` |
+| 열린 초대와 겹침 | `invite_email_taken` | `이 이메일로 보낸 초대가 아직 열려 있습니다 — 아래 목록에서 [링크 다시 만들기] 를 누르세요.` |
+| 역할 | `invalid_field`(field `role`) | `역할은 관리자 또는 멤버입니다.`(지금 문구) |
+
+- 만든 응답(303 없음)·다시 만든 응답: 발급 상자 `div[data-issued="invite"]` = `<받는 사람 이메일> 초대 링크(<역할>):` + `<code id="issued-link">` + [복사](`data-copy-target="issued-link"`) + 안내 `이 링크는 지금만 보입니다. 놓치면 아래 목록에서 [링크 다시 만들기] 를 누르세요 — 옛 링크는 더 쓸 수 없습니다. 7일 동안 한 번 쓸 수 있습니다.` 재설정 상자 `div[data-issued="reset"]` 안내 `이 링크는 지금만 보입니다. 24시간 동안 한 번 쓸 수 있습니다.`
+- `WORKFLOW_PUBLIC_URL` 이 없을 때 발급 상자 바로 아래(링크가 보일 때만) 회색 한 줄 `p.link-note[data-public-url-note]`: `이 링크는 이 컴퓨터 주소 기준입니다 — 다른 컴퓨터에서 열려면 SELFHOST 문서의 WORKFLOW_PUBLIC_URL 을 설정하세요.` 설정돼 있으면 없다.
+- 대기 중 초대 표: `이메일`(NULL 이면 `이메일 없음(옛 초대)`) · `이름`(없으면 `—`) · `역할` · `만료` · 동작 [링크 다시 만들기](`POST /team/invites/{invite_id}/reissue`) [취소](`POST /team/invites/{invite_id}/revoke`) · `<details class="detail">`(초대 ID · 발급 시각). 비면 `쓰지 않은 초대가 없습니다.`(지금 문구).
+- 다시 만들기 대상이 열린 초대가 아니면 404 `not_found` `초대 <id>을 찾을 수 없습니다.`(revoke 와 같은 형식).
+
+**가입 화면**(3, `/invite/{token}`, `login.html` `mode == "invite"`): 초대에 이메일이 있으면 `<input type="email" name="email" value="<초대 이메일>" readonly>`, 이름이 있으면 표시 이름 기본값. 제목 아래 한 줄 `<초대한 사람> 이 <역할> 로 초대했습니다.`(초대한 사람 = `created_by_member_id` 의 표시 이름, 없으면 `관리자`, 역할 = `관리자`·`멤버`). POST 의 다른 이메일은 422 같은 화면 `초대받은 이메일로만 가입할 수 있습니다.`(오류 코드 `invite_email_mismatch`). 이메일 없는 옛 초대는 지금 화면 그대로.
+
+**에이전트**(6) — 표 한 줄:
+
+| 칸 | 내용 |
+|---|---|
+| 이름 | `<a href="/agents/{agent_id}">이름</a>`(대본 라벨 규칙 그대로) |
+| 소유 | `<소유자 표시 이름>의 Mac`, 소유자 없으면 `공용`, 비활성 소유자면 `(비활성)` 덧붙임 |
+| 상태 | `켜짐`·`꺼짐`(`views.agent_online`) + `마지막 확인 <n분 전>`, 러너 없는 에이전트는 `러너 없음` |
+| 맡을 수 있는 일 | 에이전트 능력의 `code` 에 해당하는 종류(`kind_for_capability` — 등록부)의 화면 이름들을 `, ` 로. 해당 종류가 없는 능력은 세지 않는다(코드는 "자세히"). 없으면 `—` |
+| 맡기기 | `can_set_policy` 면 select(`바로 실행`·`내 승인 뒤 실행`) + [바꾸기] 를 `white-space: nowrap` 한 덩어리로, 아니면 글자 |
+| 동작 | 러너 [해제](`POST /operator/connectors/{connector_id}/revoke`, `can_revoke` 일 때, 한 러너의 첫 줄만) · 관리자면 "맡을 수 있는 일" 편집 |
+| 자세히 | `<details class="detail">` — 에이전트 ID · 소유 구분 · 연결 유형 · 능력(`code · key=value`) · connector id · 러너 연결 시각 · 러너 해제 시각(해제됐으면) |
+
+- 러너 합치기: 에이전트의 러너 = `agents.connector_id`(`repo.list_connectors` 와 맞춘다). 취소되지 않은 러너 중 붙은 에이전트가 없는 것은 같은 표 끝에 `tr[data-runner]` 줄(`러너` · `<소유자>의 Mac` · `켜짐|꺼짐 · 마지막 확인` · `아직 에이전트 없음 — 러너가 등록 폴더를 보고하면 생깁니다` · `—` · [해제] · 자세히(connector id)) — `attach_runner` 일 때만. 해제된 러너는 에이전트 없는 러너 줄로 그리지 않는다(그 러너의 에이전트 줄은 [해제] 없이 남는다). 표가 비면 `아직 에이전트가 없습니다.` + `저장소 화면에서 러너를 붙이면 에이전트가 생깁니다` 링크 `/repos`.
+- "맡을 수 있는 일" 편집(`manage_rules`): 줄의 동작 칸에 `<details class="row" data-capabilities="<agent_id>"><summary>맡을 수 있는 일 바꾸기</summary>` 폼 `POST /agents/{agent_id}/capabilities` — 체크박스 `kinds`(값 = 종류 `kind`, 라벨 = 화면 이름) 는 **편집 가능한 종류**(`builtin == False` 이고 `capability_code not in BUILTIN_CAPABILITY_CODES` 이고 `scope_key == "repository_id"`)만, 지금 붙어 있으면 checked. 내장 종류는 목록에 없다. 범위 값이 없는 에이전트는 폼 대신 이유 한 줄(아래 문구). 서버: 체크된 집합을 원하는 상태로 보고, 편집 가능한 종류마다 `Capability(code=spec.capability_code, scope={"repository_id": 범위 값})` 를 더하거나 뗀다(한 트랜잭션 — `repo.set_agent_kinds`, step 6 시그니처). 편집 가능하지 않은 종류 값이 오면 422 `invalid_field` `맡을 수 있는 일로 고를 수 없는 종류입니다.`(field `kinds`).
+- 범위 이유 문구(4·5·6 공통, `views.SCOPE_REASON_LABELS`): `no_repository` → `러너로 연결한 에이전트만 고를 수 있습니다(저장소를 정할 수 없음)`, `many_repositories` → `저장소가 여러 개라 정할 수 없습니다 — 설정 › 고급에서 능력을 붙이세요`.
+
+**담당 범위**(6) — 저장 경로(`/responsibilities/add`·`/remove`)·`expected_revision` 검사·200행 제한 그대로.
+
+| 칸 | 폼(`manage_rules`) | 표 |
+|---|---|---|
+| 시스템 | `system_id` 넓은 입력(`class="input-wide"`), placeholder `kube_proxy`, help `요청을 받는 시스템 이름 — 소문자·숫자·밑줄, 소문자로 시작` | 값 그대로 |
+| 요청 유형 | `request_kind` select — `REQUEST_KIND_LABELS` 순서(`조사`·`버그 보고`·`데이터 확인`) | 라벨. 목록 밖 값이면 값 그대로 + `<span class="muted small">(목록 밖)</span>` |
+| 받는 사람 | `recipient_member_id` select(활성 멤버 이름) | 이름만(지금 같이 보이는 member id 줄은 뺀다) |
+| 판단 담당자 | `judgment_member_id` select | 이름만 |
+| 조사 에이전트 | `agent_id` select(이름만, `미지정` 기본) | 이름, 없으면 `미지정`. 해제된 에이전트면 `entry_problem` 문구 |
+| 상태 | — | `entry_problem` 또는 `선택 가능`(그대로) |
+
+- 화면 폼의 `request_kind` 가 `REQUEST_KIND_LABELS` 밖이면 422 `invalid_field` `요청 유형을 목록에서 고르세요.`(field `request_kind`). `system_id` 형식 오류는 지금 문구를 `시스템 이름은 소문자·숫자·밑줄로, 소문자로 시작해 입력하세요.` 로. JSON API `PUT /responsibilities` 는 그대로(식별자 형식만).
+- 목록 밖 기존 행은 [삭제] 가 된다(같은 위치 삭제 — 지금 경로).
+
+### 종류 폼과 에이전트 능력 (step 4·5)
+
+**능력 함수**(4 — `adapters/repo.py`)
+
+| 함수 | 시그니처 | 규칙 |
+|---|---|---|
+| `add_agent_capability` | `add_agent_capability(conn, *, agent_id: str, capability: Capability) -> bool` | 자체 트랜잭션(내부 `_add_capability(conn, agent_id, capability) -> bool` 를 감싼다). 없는 에이전트 `NotFound`. 같은 `code`·`scope` 가 있으면 False(쓰지 않음). 아니면 끝에 더해 `capabilities_json` 을 다시 쓰고 True. 다른 능력·순서 그대로 |
+| `remove_agent_capability` | `remove_agent_capability(conn, *, agent_id: str, capability: Capability) -> bool` | 자체 트랜잭션(내부 `_remove_capability`). `capability.code in BUILTIN_CAPABILITY_CODES` 면 `CapabilityProtected`(먼저 검사). 없는 에이전트 `NotFound`. 같은 `code`·`scope` 가 없으면 False. 있으면 그 하나만 빼고 True |
+| `set_agent_kinds` | `set_agent_kinds(conn, session_id, agent_id, *, kinds: Sequence[str], now: str) -> None`(6) | 자체 트랜잭션. 워크스페이스 에이전트 아님 `NotFound`. 범위 값(`agent_repository_scope`)이 없으면 `AgentScopeUnknown`. 편집 가능한 종류(위 정의) 각각: `kinds` 에 있으면 `_add_capability`, 없으면 `_remove_capability`. 편집 가능하지 않은 값이 `kinds` 에 있으면 `ValueError("kinds")` |
+| `insert_kind` | `insert_kind(conn, session_id, spec, now, *, member_id: str \| None = None, agent_ids: Sequence[str] = ()) -> None`(5에서 키워드 추가 — 4 에서 함께 만들어도 된다) | 같은 트랜잭션: 기존 검사(`DuplicateKind`) → 행 → `bump_config_revision(kind add)` → `agent_ids` 각각: 워크스페이스 에이전트 아님 `NotFound`, `spec.scope_key != "repository_id"` 이거나 범위 값 없음 `AgentScopeUnknown(agent_id, reason)`, 아니면 `_add_capability(Capability(code=spec.capability_code, scope={"repository_id": 값}))`. 하나라도 실패하면 전부 되돌린다 |
+| `delete_kind` | 그대로 | 같은 트랜잭션에서 삭제 뒤: `spec.capability_code not in BUILTIN_CAPABILITY_CODES` 이고 남은 종류 중 같은 `capability_code` 가 없으면, `session_agents` 의 에이전트 모두에서 `code == spec.capability_code` 인 능력을 뗀다(scope 무관) |
+
+- 능력 붙이기·떼기는 설정 번호를 올리지 않는다(ADR-0028 사실 9 — `config_changes.area` 에 에이전트 없음). `upsert_agent`·`register_local_agent`·`update_registration`·`POST /operator/agents` 는 그대로.
+- `domain/kinds.agent_repository_scope(capabilities)`: `code in BUILTIN_CAPABILITY_CODES` 인 능력의 `scope.get("repository_id")` 값 집합(None 제외) — 하나면 `(값, None)`, 비면 `(None, "no_repository")`, 둘 이상이면 `(None, "many_repositories")`. 종류 이름으로 가르지 않는다.
+- 매칭(`select_agent`·`work_actions.agent_candidates`·`work_actions.candidates`·판단 후보)은 등록부 + 능력으로 찾으므로 코드 변경 없이 붙인 능력으로 새 종류 후보가 된다 — step 4 가 테스트로 확인한다.
+
+**종류 폼**(5 — `_settings_kinds.html`, `POST /kinds` 경로 그대로, `manage_rules`)
+
+| 칸 | 이름(form) | 위치 | 기본·규칙 |
+|---|---|---|---|
+| 화면 이름 | `label` | 기본 | 필수. 다른 종류(내장 포함)의 이름과 같으면(앞뒤 공백 제거·`casefold`) 409 `kind_label_exists` `같은 이름의 종류가 이미 있습니다: <이름>` |
+| 지시문 | `instructions` | 기본 | 선택(지금 그대로) |
+| 결과값 | `outcomes` | 기본 | `value="done, needs_information"` 로 채워 둔다. help `쉼표로 구분. 에이전트가 고를 수 있는 결론이고 후속 규칙의 기준이 됩니다` |
+| 맡을 에이전트 | `agent_ids`(체크박스 여럿) | 기본 | 줄 = `이름 · <저장소 이름> · <소유자>의 Mac`(소유자 없으면 `공용`). 저장소 이름 = 범위 값의 GitHub 소스 `repository_full_name`(`workflow_repository_id` 또는 매칭 값이 같은 소스), 없으면 범위 값 그대로. 범위 값이 없으면 `disabled` + 이유(위 문구). 에이전트 0 이면 `아직 에이전트가 없습니다 — 저장소 화면에서 러너를 붙이세요`. help `고른 에이전트가 이 일을 맡을 수 있게 됩니다. 비워 두면 나중에 팀 화면에서 붙일 수 있습니다.` |
+| 고급 접힘 | `<details class="row" data-kind-advanced><summary>고급</summary>` | — | 아래 넷 |
+| 종류 식별자 | `kind` | 고급 | 비우면 자동(`k_` + hex 6, `_auto_kind` — 등록부·내장 이름과 겹치면 다시 뽑기 최대 `AUTO_KIND_TRIES = 5`, 그래도 겹치면 409 `kind_exists` `종류 식별자를 만들지 못했습니다 — 다시 시도하세요`). 직접 넣으면 지금 검사(`KIND_PATTERN`·내장 이름·`DuplicateKind`) |
+| 능력 코드 | `capability_code` | 고급 | 비우면 종류 식별자(지금 그대로) |
+| scope_key | `scope_key` | 고급 | `value="repository_id"` 로 채워 둔다. `repository_id` 가 아니면서 `agent_ids` 가 있으면 422 `invalid_field`(field `agent_ids`) `범위 키가 repository_id 가 아닌 종류는 맡을 에이전트를 여기서 고를 수 없습니다 — 설정 › 고급에서 능력을 붙이세요.` |
+| 받는 산출물 | `input_kinds` | 고급 | 체크박스 라벨 먼저(`kind_label`), 내부 이름은 `<span class="muted small mono">` |
+
+- 서버 순서: 칸 정리 → `kind` 비면 `_auto_kind` → `KindSpec` 검사(지금 `_validation_page_error`) → 이름 중복 → `agent_ids` 각각 워크스페이스 에이전트·범위 값 확인(위조 POST 포함 — 실패 422 `agent_scope_unknown` `<이름> 은 고를 수 없습니다 — <이유>`, 없는 에이전트 422 `invalid_field` `등록하지 않은 에이전트입니다.`) → `repo.insert_kind(..., agent_ids=…)`. 오류는 지금처럼 `PageError`(오류 화면). 성공 303 `/settings?tab=kinds`.
+- 종류 카드(내장 포함): 화면 이름(+ `내장` 표시) · 받는 산출물 칩 · 내는 산출물 칩 · 결과값 칩(코드) · `맡을 수 있는 에이전트` = 이 종류 `capability_code` 능력이 있는 워크스페이스 에이전트 이름들(없으면 `아직 없음 — 팀 화면에서 붙입니다`) · 지시문 접힘(그대로) · `<details class="detail">`(`kind` · `capability_code` · `scope_key`) · 사용자 정의 종류 [삭제](그대로). 카드 `div.meta.mono` 의 코드 줄은 없앤다.
+
+### 저장소 화면 `/repos` (step 7)
+
+위에서 아래로: ① 연결 상자(GitHub App 연결됨·저장소 수 + [저장소 추가/변경] 또는 [GitHub 연결] — 지금 문구, 내부 slug 는 `자세히`) ② Jira 절(`manage_connections`, 지금 `_repos_jira.html` 그대로) ③ 저장소 카드들 ④ 접힌 "고급 — 토큰으로 연결"(지금 그대로).
+
+**카드** `section[data-source-card]`
+
+| 줄·칸 | 내용 |
+|---|---|
+| 머리 | `div.card-title` 저장소 이름 · 수집 상태 `켜짐`/`멈춤` · `마지막 동기화 <시각>`(없으면 `아직 동기화 전`) · 자격 문구(지금) · `a[data-source-work]` `업무 <N>건 보기` → `/tasks?repo=<owner/name>`(N = 그 저장소의 끝나지 않은 업무 수 — `repo.list_work_rows(conn, session_id, closed_since=now)` 에서 `repository` 가 같고 `status not in TERMINAL_WORK_STATUSES` 인 행 수) |
+| 러너 | 러너 없으면 `이 저장소를 등록한 러너 없음` + [러너 붙이기](지금, `attach_runner`), 발급한 명령 상자(지금) |
+| 매칭 줄 | `로컬 저장소`·`수정 에이전트`·`검증 프로필`·`검토 에이전트`·`판단 에이전트` — 에이전트 칸은 **이름**(`views._match_rows` 가 `name` 을 싣는다), 값 출처 `설정`·`자동` 그대로, 없으면 `정해지지 않음` |
+| 카드 설정 폼 | `manage_connections` 일 때 지금 PUT `data-json-action="/github/sources/{id}"`·`expected_revision` 그대로. 폼 본문: **판단 에이전트** select(`triage_agent_id`, 옵션 이름만, `없음 — 판단하지 않음`) + help `새로 들어온 업무의 담당·종류를 제안하고, 결과가 규칙 밖이거나 정보가 모자라거나 사내 요청이 돌아오면 다음 단계를 제안합니다. 이 저장소를 등록했고 맡기기 정책이 '바로 실행'인 에이전트만 고를 수 있습니다.` · 수정 에이전트(`default_fix_agent_id`)·검토 에이전트(`review_agent_id`) select(이름만) · 실행 방식. 그 아래 폼 안 `details.row[data-source-advanced]` "고급 설정": 저장소(읽기 전용) · 로컬 저장소 ID · 트리거 라벨(또는 라벨·고른 이슈·시작 시각) · 수정 검증 프로필 · 자동 재작업 상한 · 수집 켜기. [미리보기]·[저장] 은 고급 접힘 밖(폼 끝) |
+| 글자 보기 | `manage_connections` 이 없으면 폼 대신 같은 값을 글자로(판단·수정·검토 에이전트 이름, 실행 방식) |
+| 카드 도구 | 폼 밖 `details.row[data-source-tools]` "러너·담당 연결·기준선": 러너 다시 붙이기(`attach_runner`) · 담당 연결(아래) · 기준선 가져오기·요약 · 수집 중지(`manage_connections`) |
+| 자세히 | `<details class="detail">` — 소스 ID · App slug · 매칭 줄의 에이전트 ID 들 |
+
+- select 의 빈 후보 문구(지금 `code.review 능력의 등록 Agent 없음`·`code.fix 능력의 등록 Agent 없음`): `검토할 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다` · `고칠 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다`. 판단 후보가 없으면 select 아래 `고를 수 있는 판단 에이전트가 없습니다 — 이 저장소를 등록한 러너 에이전트의 맡기기 정책을 '바로 실행'으로 두세요`.
+- 카드 안 "업무 목록"(이슈 표·[에이전트에게 맡기기])은 뺀다. `views.github_context` 의 `issues` 는 담당 연결용 사용자 목록 계산에만 쓴다.
+- **담당 연결**(`manage_connections`): ① 연결된 줄 표 = GitHub 사용자(`login`) · 수정 에이전트 이름(ID 는 `자세히`). ② **수집한 이슈에서 본 사용자** 줄마다 폼 `data-json-action="/github/sources/{id}/assignees" data-json-method="PUT" data-json-path-field="github_user_id"`: 숨은 `github_user_id`·`github_login` + 글자 `login` + 수정 에이전트 select(이름만) + [연결]. 사용자 목록 = 그 소스 `source_issues.snapshot_json` 의 `assignee_ids`·`assignee_logins` 짝(같은 id 는 가장 최근 `issue_updated_at` 의 login), login 순. 없으면 `수집한 이슈에 GitHub 담당자가 없습니다`. ③ 그 아래 "목록에 없는 사용자" 폼(지금 폼 — 라벨 `GitHub 사용자 번호`·`로그인`, help `GitHub 프로필 주소의 사용자 번호(api.github.com/users/<login> 의 id). 같은 번호를 다시 연결하면 교체합니다.`). `PUT` 경로·`AssigneeBinding` 계약 그대로. 계산 함수 `views.seen_github_users(rows: Sequence[Row]) -> list[dict]`(`github_user_id`·`github_login`).
+
+### 업무 목록 (step 8)
+
+- **끝난 업무 묶음**: `group_rows(rows, by, *, member_id)` 가 `status in TERMINAL_WORK_STATUSES` 인 행을 묶기와 무관하게 맨 아래 `RowGroup(key=CLOSED_GROUP_KEY, label=CLOSED_GROUP_LABEL, rows=…)` 하나로 모은다(묶음 안 순서 = `closed_at` 최근순 → 키 번호 내림차순). 나머지 묶음에는 끝나지 않은 행만. 상태 묶기의 `완료`·`종료` 묶음은 없어진다. 행이 없으면 묶음도 없다. 보드(`board_columns`)는 그대로.
+- 건수 규칙: 빠른 필터 건수(`filter_counts` — 저장소 필터 뒤·빠른 필터 전)는 그대로. 묶음 머리 건수 = 그 묶음의 행 수. 그래서 `q=all` 일 때 `담당 없음` 묶음 머리 = `unassigned` 건수, `끝난 업무` 머리 = 끝난 업무 범위(`closed`) 안의 끝난 업무 수. step 8 이 담당자·상태·저장소 묶기 각각에서 단정한다.
+- 접힘: `tbody[data-group-body="closed"][data-default-folded]`. `base.html` 스크립트는 `data-default-folded` 묶음을 접은 채 시작하고, 사람이 펼치면 그 키를 `localStorage` 키 `wf_work_unfolded`(JSON 배열)에 남긴다(지금 `FOLDED` 목록과 별도, 읽기·쓰기 실패해도 동작). JS 가 없으면 펼친 채.
+- **같은 값 칸 숨김**: `hidden_columns(rows) -> frozenset[str]` — `rows`(화면에 그리는 행 = 빠른 필터·저장소 필터 뒤 `rows`)가 1개 이상이고 `HIDEABLE_COLUMNS` 의 칸 값(`priority`, `kind`)이 모두 같으면 그 칸 이름. 행 0 이면 빈 집합. 목록 머리 `<th>`·행 `<td>`·보드 카드의 `.priority` 를 숨긴다(`colspan` 은 보이는 칸 수). `work_list_context` 가 `hidden_columns` 를 싣는다.
+- **다음 할 일**: `shown_next_action(row) -> str` — `row.next_action == row.status` 이거나(`대기`/`대기`) `row.assignee_type is None and row.next_action == "담당 없음"` 이면 `NO_NEXT_ACTION`(`—`), 아니면 `row.next_action`. 목록·보드가 이것을 쓴다(보드는 `—` 이면 줄을 그리지 않는다). `work_status`·`next_action` 계산은 그대로.
+- **도구 막대**(`home.html`): ① 빠른 필터 `seg`(그대로) ② 저장소 select(`form[data-repo-filter]` 그대로, `select` 에 `data-auto-submit` — `base.html` 이 `change` 때 `form.submit()`, 실패해도 동작) + `<noscript><button class="btn btn-small btn-secondary" type="submit">보기</button></noscript>` ③ [업무 등록] ④ `<details class="view-options"><summary>보기 옵션</summary>` 안에 묶기·목록/보드·끝난 업무 `seg` 셋(링크 그대로). 묶기·보기·끝난 업무가 기본값이 아니면 summary 끝에 지금 값(`· 상태로 묶음` 등)을 붙인다. 주소 쿼리(`q`·`group`·`repo`·`view`·`closed`·`open`)와 `list_href` 는 그대로.
+- 업무 상태 계산(`work_status`)·내 차례·빠른 필터 조건은 바꾸지 않는다.
+
+### 설정 화면 `/settings` (step 9)
+
+| 탭 `tab` | 이름 | 내용 | 자세히로 옮길 값 |
+|---|---|---|---|
+| `kinds` | 업무 종류·규칙 | 종류 카드·종류 폼(위)·후속 규칙 표·규칙 폼 | 종류 `kind`·`capability_code`·`scope_key`, 규칙 id |
+| `triage` | 판단 | 판단 기준·버전 이력·자동 시작(지금). 맨 위 한 줄 `판단 에이전트는 저장소 화면의 각 저장소 카드에서 고릅니다.` + `/repos` 링크 | 자동 시작 행의 종류 코드(`data-autostart` 속성은 그대로) |
+| `notify` | 알림 | 공용 웹훅·테스트·최근 알림(지금) | 알림 사건 코드(화면은 라벨만 — 지금도 라벨) |
+| `inbound` | n8n 입구 | 설명 · 입구 주소 · 토큰 목록(라벨·발급·마지막 사용·상태) · 토큰 발급 · 요청 예시 · callback 허용 목록(지금 `_connect_inbound.html` 본문) | 토큰 ID(`src-…`) — 표의 ID 칸은 줄의 `자세히` 로, 발급 상자의 ID 도 |
+| `advanced` | 고급 | 맨 위 `p.muted` `개발·운영용 — 러너 연결 코드와 에이전트 수동 등록. 수동 등록은 그 에이전트의 능력을 모두 덮어씁니다.` + 연결 코드·에이전트 등록(지금 그대로 — 노출 단정 예외) | 없음 |
+
+- 규칙 표 글(`views.rule_public` `text`): `<선행 화면 이름> — 결과 <outcome 라벨들(", ")> → <후속 화면 이름>`(outcome 라벨 = `filters.outcome_label`, 예 `버그 수정 — 결과 검토 가능 → 커밋 검토`). 넘기는 산출물은 칩 라벨(지금). 규칙 폼의 선행·후속 select 옵션은 화면 이름만(`(bug_fix)` 없음), 선행 결과값 체크박스는 `outcome_label` 먼저 + 코드 흐리게, 넘기는 산출물 체크박스는 라벨 먼저 + 내부 이름 흐리게.
+- 탭 머리 `nav.tabs[data-settings-tabs]` 의 링크 `/settings?tab=<key>`, 본문 `section[data-tab-body="<tab>"]`.
+
+### 노출 단정 규칙 (step 6·7·9·10)
+
+```python
+INTERNAL_ID = re.compile(r"agt-[0-9a-f]|conn-[0-9a-f]|inv-[0-9a-f]|code\.(fix|review|triage)")
+
+def visible_text(html: str) -> str:
+    html = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)
+    html = re.sub(r'<details class="detail"[^>]*>.*?</details>', " ", html, flags=re.S)
+    return re.sub(r"<[^>]+>", " ", html)
+
+assert INTERNAL_ID.search(visible_text(page.text)) is None
+```
+
+- 속성 값(폼 action·href·`data-*`·`<option value>`)은 동작에 필요해 검사하지 않는다(ADR-0028 사실 14) — 화면 글자만 본다. `details.detail` 안에 다른 `<details>` 를 두지 않으므로 비탐욕 일치가 정확하다.
+- 대상: `/team`(관리자·멤버), `/repos`, `/settings?tab=kinds|triage|notify|inbound`, `/tasks`(목록·보드). `/settings?tab=advanced` 는 예외. 각 step 은 자기 화면에 같은 함수로 단정한다(step 10 이 e2e 로 한 번 더).
+- 표: 팀·저장소·설정·업무 목록의 `<table>` 은 `.table-wrap` 안(마크업 단정), `.table-wrap { overflow-x: auto }`(그대로).
+
+### step 별 시그니처
+
+| step | 만드는 것 |
+|---|---|
+| 1 `nav-split` | 라우트 `team_page`·`repos_page`·`settings_page`·`connect_redirect`, `SETTINGS_TABS`·`_visible_settings_tabs`·`_to_settings`·`CONNECT_TAB_TARGETS`·`_connect_target`, `_team_page`·`_repos_page`·`_settings_page`·`_team_context`·`_repos_context`·`_settings_context`(옛 `CONNECT_TABS`·`_to_connect`·`_connect_page`·`_tab_context`·`connect_page` 와 옛 `/team` 303 라우트 삭제), 옛 GET 303 대상 갱신, POST 303 대상·그리는 화면 갱신(위 표), 사이드바(`nav`), `START_ITEMS` 링크, 템플릿 이름 바꾸기(위 표), 위 "링크 바꾸기" 표. 절 내용·문구·폼은 그대로 |
+| 2 `invite-schema` | `SCHEMA_VERSION = 25`, `_V25_TABLES`, `_migrate_24_to_25`, fixture `schema_v24.sql`, `_INVITE_COLUMNS`, `issue_invite(..., invitee_email, invitee_name=None, ...)`, `reissue_invite(conn, session_id, invite_id, *, now) -> str`, `accept_invite` 이메일 고정, `InviteEmailTaken`·`InviteEmailMismatch`. `invitee_email` 은 기본값 없는 키워드다 — 호출부가 깨지므로 **이 step 이 최소한으로 함께 고친다**(step 2 의 "화면·라우트를 바꾸지 마라" 의 유일한 예외): `team_invite` 가 폼 `invitee_email`·`invitee_name` 을 받아 넘기고(`ValueError`·`EmailTaken`·`InviteEmailTaken` → 지금 형식의 `PageError` 422 `invalid_field`, 문구는 팀 화면 오류 표), 지금 초대 폼에 두 입력만 더한다. `/team/invites` 를 POST 하는 기존 테스트에 이메일을 넣는다. 인라인 오류·목록·다시 만들기·안내 문구는 3 |
+| 3 `invite-ui` | `team_invite`(폼 `invitee_email`·`invitee_name`·`role`, 오류 인라인 422), `team_invite_reissue` `POST /team/invites/{invite_id}/reissue`, 발급 상자·`link-note`·초대 표(이메일·이름·자세히), 가입 화면 이메일 고정·초대한 사람 한 줄(`_link_page` 에 `invite` 행 정보), `details.detail`·`.link-note` CSS, `views.team_context` 의 초대 칸(`invitee_email`·`invitee_name`·`created_at`) |
+| 4 `agent-capability` | `add_agent_capability`·`remove_agent_capability`·내부 `_add_capability`·`_remove_capability`, `CapabilityProtected`·`AgentScopeUnknown`, `domain/kinds.agent_repository_scope`·`BUILTIN_CAPABILITY_CODES`·`SCOPE_NO_REPOSITORY`·`SCOPE_MANY_REPOSITORIES`, `delete_kind` 능력 떼기, `insert_kind(..., agent_ids=())`(4 또는 5), 매칭 테스트 |
+| 5 `kind-form` | `kinds_create`(폼 `agent_ids`, 자동 식별자, 이름 중복, 범위 검사), `_auto_kind`·`AUTO_KIND_*`·`DEFAULT_KIND_OUTCOMES`, `views.kind_public` 에 `agents`(맡을 수 있는 에이전트 이름들), 종류 폼에 넘길 에이전트 줄 `views.kind_agent_choices(conn, session_id, *, now, settings) -> list[dict]`(`agent_id`·`name`·`repository`·`owner_label`·`scope`·`reason`), `views.SCOPE_REASON_LABELS`, `_settings_kinds.html` 기본·고급·카드 |
+| 6 `team-page` | `views.team_agent_rows(conn, session_id, member, *, now, settings, kinds) -> list[dict]`(에이전트 줄 + 에이전트 없는 러너 줄 — 위 칸), `repo.set_agent_kinds`, `agent_capabilities` `POST /agents/{agent_id}/capabilities`(폼 `kinds: list[str]`, `manage_rules`, 303 `/team`), `REQUEST_KIND_LABELS`, `responsibility_add` 의 요청 유형 검사·문구, `team.html` 절 순서·표 |
+| 7 `repo-page` | `views.github_context` 에 `open_work_count`·`seen_users`·매칭 줄 `name`·에이전트 옵션 이름만, `views.seen_github_users`, `_repos_github.html` 카드(위 표), 빈 후보 문구 |
+| 8 `work-list` | `CLOSED_GROUP_KEY`·`CLOSED_GROUP_LABEL`·`group_rows` 끝난 업무 묶음, `HIDEABLE_COLUMNS`·`hidden_columns`, `NO_NEXT_ACTION`·`shown_next_action`, `work_list_context` 의 `hidden_columns`, `home.html` 도구 막대·숨김 칸·`data-default-folded`, `base.html` 의 `data-auto-submit`·`wf_work_unfolded` |
+| 9 `settings-page` | `settings.html` 탭 순서·n8n 입구 탭, `views.rule_public` 글, 규칙 폼 라벨, 판단·알림·입구 탭의 `자세히`, 고급 탭 안내 한 줄 |
+| 10 `setup-ux-verify` | `tests/e2e/test_setup_ux.py`(화면 링크만 따라 초대 2·다시 만들기·종류·담당 범위·판단 에이전트, 노출 단정, 옛 주소 303), v24 → v25 업그레이드 e2e, 문서(SELFHOST v25·CURRENT_HANDOFF·VERIFICATION_LOG·INTERNAL_REQUEST_LIVE_RUN_1 준비 경로) |
