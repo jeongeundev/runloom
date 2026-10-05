@@ -125,7 +125,7 @@ def test_sidebar_active_by_path(admin, path, active):
 
 def test_post_rendered_pages_mark_their_menu(admin):
     """POST 가 그린 화면도 맞는 메뉴가 활성이다(`nav` 문맥)."""
-    assert active_nav(admin.post("/team/invites", data={"role": "member"}).text) == ["/team"]
+    assert active_nav(admin.post("/team/invites", data={"role": "member", "invitee_email": "n@example.com"}).text) == ["/team"]
     assert active_nav(admin.post("/sources/tokens", data={"label": "n8n"}).text) == ["/settings"]
     assert active_nav(admin.post(f"/operator/github/sources/{SOURCE}/runner").text) == ["/repos"]
     assert active_nav(admin.post("/operator/connect-codes").text) == ["/settings"]
@@ -310,7 +310,7 @@ def test_attach_runner_renders_repos(admin):
 
 
 def test_invite_renders_team_and_revoke_redirects(admin, conn):
-    issued = post(admin, "/team/invites", {"role": "member"})
+    issued = post(admin, "/team/invites", {"role": "member", "invitee_email": "n@example.com"})
     assert issued.status_code == 200 and 'data-issued="invite"' in issued.text
     assert 'action="/responsibilities/add"' in issued.text  # 팀 화면 그대로
     invite_id = re.search(r'data-invite-id="([^"]+)"', issued.text).group(1)

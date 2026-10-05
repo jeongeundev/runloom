@@ -75,6 +75,10 @@
   <p class="muted" style="margin:0">쓰지 않은 초대가 없습니다.</p>
   {% endif %}
   <form method="post" action="/team/invites" style="margin-top:12px">
+    <div class="field"><label for="invite-email">받는 사람 이메일</label>
+      <input id="invite-email" type="email" name="invitee_email" required></div>
+    <div class="field"><label for="invite-name">이름</label>
+      <input id="invite-name" type="text" name="invitee_name" maxlength="40"></div>
     <div class="field"><label for="invite-role">역할</label>
       <select id="invite-role" name="role"><option value="member" selected>멤버</option><option value="admin">관리자</option></select>
       <div class="help">링크를 받은 사람이 이메일·표시 이름·비밀번호를 넣어 가입합니다. 이메일은 보내지 않습니다 — 링크를 복사해 전하세요.</div></div>

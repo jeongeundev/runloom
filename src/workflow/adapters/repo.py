@@ -29,6 +29,8 @@ from workflow.adapters.errors import (
     DuplicateRule,
     DuplicateStartKey,
     EmailTaken,
+    InviteEmailMismatch,
+    InviteEmailTaken,
     EventConflict,
     HashMismatch,
     InvalidTransition,
@@ -933,7 +935,7 @@ RESET_TTL_HOURS = 24
 # 로그인 세션 조회가 돌려주는 멤버 칸 — 비밀번호 해시는 싣지 않는다.
 _LOGIN_MEMBER_COLUMNS = "m.member_id, m.session_id, m.display_name, m.role, m.email, m.created_at, m.disabled_at"
 _INVITE_COLUMNS = ("invite_id, session_id, purpose, role, member_id, created_by_member_id, created_at, expires_at,"
-                   " used_at, used_by_member_id, revoked_at")
+                   " used_at, used_by_member_id, revoked_at, invitee_email, invitee_name")
 
 
 def get_member(conn: Connection, session_id: str, member_id: str) -> Row | None:
@@ -1083,22 +1085,60 @@ def revoke_login_sessions(conn: Connection, member_id: str, *, now: str) -> int:
 
 
 def _insert_link(conn: Connection, session_id: str, *, purpose: str, role: str | None, member_id: str | None,
-                 created_by_member_id: str | None, now: str, ttl_seconds: int) -> tuple[str, str]:
+                 created_by_member_id: str | None, now: str, ttl_seconds: int, invitee_email: str | None = None,
+                 invitee_name: str | None = None) -> tuple[str, str]:
     invite_id, token = f"inv-{secrets.token_hex(6)}", secrets.token_urlsafe(32)
     conn.execute(
         "INSERT INTO member_invites (invite_id, session_id, purpose, role, member_id, token_sha256,"
-        " created_by_member_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " created_by_member_id, created_at, expires_at, invitee_email, invitee_name)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (invite_id, session_id, purpose, role, member_id, _sha256(token), created_by_member_id, now,
-         _plus_seconds(now, ttl_seconds)),
+         _plus_seconds(now, ttl_seconds), invitee_email, invitee_name),
     )
     return invite_id, token
 
 
-def issue_invite(conn: Connection, session_id: str, *, role: str, created_by_member_id: str | None,
-                 now: str) -> tuple[str, str]:
-    """(invite_id, 토큰 원문). 7일 유효."""
-    return _insert_link(conn, session_id, purpose="invite", role=role, member_id=None,
-                        created_by_member_id=created_by_member_id, now=now, ttl_seconds=INVITE_TTL_DAYS * 86400)
+def _open_invite_rows(conn: Connection, session_id: str, *, now: str) -> list[Row]:
+    rows = conn.execute(
+        f"SELECT {_INVITE_COLUMNS} FROM member_invites WHERE session_id = ? AND purpose = 'invite'"
+        " AND used_at IS NULL AND revoked_at IS NULL ORDER BY created_at, invite_id",
+        (session_id,),
+    ).fetchall()
+    return [r for r in rows if _parse(now) < _parse(r["expires_at"])]
+
+
+def issue_invite(conn: Connection, session_id: str, *, role: str, invitee_email: str, invitee_name: str | None = None,
+                 created_by_member_id: str | None, now: str) -> tuple[str, str]:
+    """(invite_id, 토큰 원문). 7일 유효. 받는 사람 이메일이 멤버(비활성 포함)와 겹치면 `EmailTaken`,
+    열린 초대와 겹치면 `InviteEmailTaken`."""
+    email = team.normalize_email(invitee_email)
+    if email is None:
+        raise ValueError("invitee_email")
+    name = None
+    if invitee_name is not None and invitee_name.strip():
+        name = team.clean_display_name(invitee_name)
+        if name is None:
+            raise ValueError("invitee_name")
+    with _tx(conn):
+        if _one(conn, "SELECT 1 FROM members WHERE session_id = ? AND email = ?", (session_id, email)) is not None:
+            raise EmailTaken(email)
+        if any(r["invitee_email"] == email for r in _open_invite_rows(conn, session_id, now=now)):
+            raise InviteEmailTaken(email)
+        return _insert_link(conn, session_id, purpose="invite", role=role, member_id=None,
+                            created_by_member_id=created_by_member_id, now=now,
+                            ttl_seconds=INVITE_TTL_DAYS * 86400, invitee_email=email, invitee_name=name)
+
+
+def reissue_invite(conn: Connection, session_id: str, invite_id: str, *, now: str) -> str:
+    """열린 초대의 토큰·만료를 새로 — 같은 행, 새 토큰 원문을 돌려준다. 옛 토큰은 더 찾히지 않는다.
+    열린 초대가 아니면(재설정 링크·사용·취소·만료·다른 워크스페이스·없음) `NotFound`."""
+    token = secrets.token_urlsafe(32)
+    with _tx(conn):
+        if not any(r["invite_id"] == invite_id for r in _open_invite_rows(conn, session_id, now=now)):
+            raise NotFound(f"invite {invite_id}")
+        conn.execute("UPDATE member_invites SET token_sha256 = ?, expires_at = ? WHERE invite_id = ?",
+                     (_sha256(token), _plus_seconds(now, INVITE_TTL_DAYS * 86400), invite_id))
+    return token
 
 
 def issue_reset_link(conn: Connection, session_id: str, member_id: str, *, created_by_member_id: str | None,
@@ -1143,13 +1183,16 @@ def _mark_link_used(conn: Connection, invite_id: str, member_id: str, now: str) 
 
 def accept_invite(conn: Connection, token: str, *, email: str, display_name: str, password_hash: str,
                   now: str) -> str:
-    """초대로 새 멤버(초대의 역할)를 만든다. 무효 링크 `NotFound`, 이메일 중복 `EmailTaken`(링크는 그대로)."""
+    """초대로 새 멤버(초대의 역할)를 만든다. 무효 링크 `NotFound`, 이메일 중복 `EmailTaken`, 초대의 받는 사람 이메일과
+    다르면 `InviteEmailMismatch`(링크는 그대로). 이메일 없는 옛 초대는 입력 이메일 그대로."""
     normalized = _normalized_email(email)
     member_id = f"mem-{secrets.token_hex(4)}"
     with _tx(conn):
         invite = invite_for_token(conn, token, purpose="invite", now=now)
         if invite is None:
             raise NotFound("invite")
+        if invite["invitee_email"] is not None and invite["invitee_email"] != normalized:
+            raise InviteEmailMismatch(normalized)
         try:
             conn.execute(
                 "INSERT INTO members (member_id, session_id, display_name, role, created_at, email, password_hash)"
@@ -1186,13 +1229,8 @@ def revoke_invite(conn: Connection, session_id: str, invite_id: str, *, now: str
 
 
 def list_open_invites(conn: Connection, session_id: str, *, now: str) -> list[Row]:
-    """쓰지 않은·유효한 초대(재설정 링크 제외), 발급 순. 토큰 해시는 싣지 않는다."""
-    rows = conn.execute(
-        f"SELECT {_INVITE_COLUMNS} FROM member_invites WHERE session_id = ? AND purpose = 'invite'"
-        " AND used_at IS NULL AND revoked_at IS NULL ORDER BY created_at, invite_id",
-        (session_id,),
-    ).fetchall()
-    return [r for r in rows if _parse(now) < _parse(r["expires_at"])]
+    """쓰지 않은·유효한 초대(재설정 링크 제외), 발급 순. 받는 사람 이메일·이름을 싣고 토큰 해시는 싣지 않는다."""
+    return _open_invite_rows(conn, session_id, now=now)
 
 
 def get_session(conn: Connection, session_id: str) -> Row | None:

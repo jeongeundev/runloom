@@ -284,7 +284,7 @@ def test_01_admin_connects_github_attaches_a_claude_runner_and_invites_a_member(
     (source,) = http.get("/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
-    issued = http.post("/team/invites", data={"role": "member"})
+    issued = http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
     link = re.search(rf"{re.escape(world.central_url)}/invite/([A-Za-z0-9_-]+)", issued.text)
     assert link, issued.text[:1000]
     assert member.post(f"/invite/{link.group(1)}", data=MEMBER).status_code == 303

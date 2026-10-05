@@ -41,6 +41,8 @@ from workflow.adapters.errors import (
     DuplicateKind,
     DuplicateRule,
     EmailTaken,
+    InviteEmailMismatch,
+    InviteEmailTaken,
     KindInUse,
     KindProtected,
     LastAdmin,
@@ -499,6 +501,8 @@ def invite_accept(
         return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
     except EmailTaken:
         return _link_page(request, "invite", status=422, error="이미 쓰는 이메일입니다.", **refill)
+    except InviteEmailMismatch:
+        return _link_page(request, "invite", status=422, error="초대받은 이메일로만 가입할 수 있습니다.", **refill)
     logger.info("초대 가입")
     redirect = _logged_in_redirect(request, conn, member_id)
     redirect.headers["Referrer-Policy"] = "no-referrer"
@@ -2873,12 +2877,25 @@ def _team_member(conn: Connection, session_id: str, member_id: str) -> Row:
 def team_invite(
     request: Request,
     role: str = Form(""),
+    invitee_email: str = Form(""),
+    invitee_name: str = Form(""),
     member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
     conn: Connection = Depends(get_conn),
 ) -> HTMLResponse:
     """초대 링크 발급 — 같은 화면에 링크를 한 번만 보인다."""
-    _, token = repo.issue_invite(conn, member.session_id, role=_checked_role(role),
-                                 created_by_member_id=member.member_id, now=utc_now())
+    try:
+        _, token = repo.issue_invite(conn, member.session_id, role=_checked_role(role), invitee_email=invitee_email,
+                                     invitee_name=invitee_name, created_by_member_id=member.member_id, now=utc_now())
+    except ValueError as exc:
+        if str(exc) == "invitee_name":
+            raise PageError(422, "invalid_field", "이름은 1~40자로 입력하세요.", field="invitee_name") from None
+        raise PageError(422, "invalid_field", "이메일 형식이 올바르지 않습니다.", field="invitee_email") from None
+    except EmailTaken:
+        raise PageError(422, "invalid_field", "이미 팀에 있는 이메일입니다(비활성 멤버 포함).",
+                        field="invitee_email") from None
+    except InviteEmailTaken:
+        raise PageError(422, "invalid_field", "이 이메일로 보낸 초대가 아직 열려 있습니다 — 아래 목록에서"
+                        " [링크 다시 만들기] 를 누르세요.", field="invitee_email") from None
     logger.info("초대 링크 발급: %s", role)
     return _team_page(request, conn, member,
                       issued={"kind": "invite", "link": _link_url(request, "invite", token), "role": role})

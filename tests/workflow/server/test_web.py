@@ -1760,8 +1760,13 @@ def app_log_text(caplog) -> str:
     return "\n".join(r.getMessage() for r in caplog.records if not r.name.startswith("httpx"))
 
 
-def invite_token(conn, role: str = "member") -> str:
-    return repo.issue_invite(conn, SESSION, role=role, created_by_member_id=admin_id(conn), now=utc_now())[1]
+def invite_token(conn, role: str = "member", *, email: str | None = "new@example.com") -> str:
+    """`email=None` 은 이메일 없는 옛 초대(v24 이전) — 가입 화면에서 아무 이메일이나 넣는다."""
+    invite_id, token = repo.issue_invite(conn, SESSION, role=role, invitee_email=email or "old@example.com",
+                                         created_by_member_id=admin_id(conn), now=utc_now())
+    if email is None:
+        conn.execute("UPDATE member_invites SET invitee_email = NULL WHERE invite_id = ?", (invite_id,))
+    return token
 
 
 def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn):
@@ -1986,7 +1991,7 @@ def test_recover_throttles_on_the_recover_key_and_is_closed_before_setup(selfhos
 
 def test_invite_link_signs_up_member_and_logs_in_once(selfhost, conn, caplog):
     assert setup(TestClient(selfhost)).status_code == 303
-    token = invite_token(conn, role="member")
+    token = invite_token(conn, role="member", email="kim@example.com")
     client = TestClient(selfhost)
     page = client.get(f"/invite/{token}")
     assert page.status_code == 200
@@ -2013,10 +2018,10 @@ def test_invite_link_signs_up_member_and_logs_in_once(selfhost, conn, caplog):
 
 def test_invalid_expired_or_revoked_invite_shows_the_same_notice(selfhost, conn):
     assert setup(TestClient(selfhost)).status_code == 303
-    expired = repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin_id(conn),
-                                now="2000-01-01T00:00:00Z")[1]
-    revoked_id, revoked = repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin_id(conn),
-                                            now=utc_now())
+    expired = repo.issue_invite(conn, SESSION, role="member", invitee_email="x@example.com",
+                                created_by_member_id=admin_id(conn), now="2000-01-01T00:00:00Z")[1]
+    revoked_id, revoked = repo.issue_invite(conn, SESSION, role="member", invitee_email="x@example.com",
+                                            created_by_member_id=admin_id(conn), now=utc_now())
     repo.revoke_invite(conn, SESSION, revoked_id, now=utc_now())
     client = TestClient(selfhost)
     for token in ("not-a-real-token", expired, revoked):
@@ -2032,7 +2037,7 @@ def test_invalid_expired_or_revoked_invite_shows_the_same_notice(selfhost, conn)
 
 def test_invite_with_taken_email_is_422_and_keeps_the_link(selfhost, conn):
     assert setup(TestClient(selfhost)).status_code == 303
-    token = invite_token(conn)
+    token = invite_token(conn, email=None)  # 이메일 없는 옛 초대만 가입 때 이메일을 고른다
     client = TestClient(selfhost)
     taken = client.post(f"/invite/{token}", data={"email": ADMIN_EMAIL, "display_name": "중복",
                                                   "password": MEMBER_PASSWORD}, follow_redirects=False)

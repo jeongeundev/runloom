@@ -336,7 +336,7 @@ def test_01_admin_connects_github_and_invites_a_member(world):
     report = world.worker.tick()
     assert report.sync_errors == 0 and report.issues_created == 4 and report.tasks_started == 0
 
-    issued = http.post("/team/invites", data={"role": "member"})
+    issued = http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
     link = re.search(rf"{re.escape(world.central_url)}/invite/([A-Za-z0-9_-]+)", issued.text)
     assert link, issued.text[:1000]
     member = member_http(world)

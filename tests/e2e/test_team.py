@@ -199,7 +199,7 @@ def test_01_first_setup_with_the_token_then_admin_connects_github(world):
 
 
 def test_02_admin_invites_a_member_who_joins_and_logs_in(world):
-    issued = world.http.post("/team/invites", data={"role": "member"})
+    issued = world.http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
     assert issued.status_code == 200, issued.text[:500]
     link = re.search(rf"{re.escape(world.central_url)}/invite/([A-Za-z0-9_-]+)", issued.text)
     assert link, issued.text[:1000]
@@ -221,7 +221,7 @@ def test_02_admin_invites_a_member_who_joins_and_logs_in(world):
     assert forbidden.status_code == 403, forbidden.status_code
     team_tab = member.get("/team")
     assert team_tab.status_code == 200 and 'action="/team/invites"' not in team_tab.text
-    assert member.post("/team/invites", data={"role": "admin"}).status_code == 403
+    assert member.post("/team/invites", data={"role": "admin", "invitee_email": "x@example.com"}).status_code == 403
 
     saved = member.post("/me/webhook", data={"url": world.ctx["personal_url"]})
     assert saved.status_code in (200, 303), saved.text[:500]

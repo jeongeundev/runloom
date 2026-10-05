@@ -85,7 +85,7 @@ def logged_in(client: TestClient) -> bool:
 # --- 권한 ----------------------------------------------------------------------------------------
 
 TEAM_POSTS = [
-    ("/team/invites", {"role": "member"}),
+    ("/team/invites", {"role": "member", "invitee_email": "x@example.com"}),
     ("/team/invites/inv-000000000000/revoke", {}),
     ("/team/members/mem-00000000/role", {"role": "admin"}),
     ("/team/members/mem-00000000/disable", {}),
@@ -152,7 +152,8 @@ def test_team_without_public_url_shows_setting_hint(admin):
 
 
 def test_invite_link_shown_once_then_only_listed_without_token(app, admin, conn):
-    response = admin.post("/team/invites", data={"role": "member"})
+    response = admin.post("/team/invites", data={"role": "member", "invitee_email": " New@Example.com ",
+                                                 "invitee_name": "새 멤버"})
     assert response.status_code == 200, response.text
     token = link_token(response.text, "invite")
     assert f"http://testserver/invite/{token}" in response.text
@@ -162,6 +163,7 @@ def test_invite_link_shown_once_then_only_listed_without_token(app, admin, conn)
     assert token not in listed
     invite = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]
     assert f'data-invite-id="{invite["invite_id"]}"' in listed
+    assert (invite["invitee_email"], invite["invitee_name"]) == ("new@example.com", "새 멤버")
     assert token not in dump(conn)
 
     joined = TestClient(app).post(f"/invite/{token}", data={
@@ -171,12 +173,50 @@ def test_invite_link_shown_once_then_only_listed_without_token(app, admin, conn)
 
 
 def test_invite_role_admin_and_invalid_role(app, admin, conn):
-    token = link_token(admin.post("/team/invites", data={"role": "admin"}).text, "invite")
+    token = link_token(admin.post("/team/invites", data={"role": "admin", "invitee_email": "boss@example.com"}).text,
+                       "invite")
     TestClient(app).post(f"/invite/{token}", data={
         "email": "boss@example.com", "display_name": "새 관리자", "password": MEMBER_PASSWORD})
     assert repo.find_member_by_email(conn, SESSION, "boss@example.com")["role"] == "admin"
 
-    error(admin.post("/team/invites", data={"role": "owner"}), 422, "invalid_field")
+    error(admin.post("/team/invites", data={"role": "owner", "invitee_email": "x@example.com"}), 422,
+          "invalid_field")
+
+
+def test_invite_needs_valid_email_name_and_no_overlap(admin, conn):
+    before = len(repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z"))
+    for data, message in (
+        ({"role": "member"}, "이메일 형식이 올바르지 않습니다."),
+        ({"role": "member", "invitee_email": "not-an-email"}, "이메일 형식이 올바르지 않습니다."),
+        ({"role": "member", "invitee_email": "n@example.com", "invitee_name": "가" * 41}, "이름은 1~40자로 입력하세요."),
+        ({"role": "member", "invitee_email": ADMIN_EMAIL.upper()}, "이미 팀에 있는 이메일입니다(비활성 멤버 포함)."),
+    ):
+        response = admin.post("/team/invites", data=data)
+        error(response, 422, "invalid_field")
+        assert message in response.text
+    assert admin.post("/team/invites", data={"role": "member", "invitee_email": "dup@example.com"}).status_code == 200
+    again = admin.post("/team/invites", data={"role": "admin", "invitee_email": "DUP@example.com"})
+    error(again, 422, "invalid_field")
+    assert "이 이메일로 보낸 초대가 아직 열려 있습니다" in again.text
+    assert len(repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")) == before + 1
+
+
+def test_invite_accept_with_another_email_is_422_and_keeps_the_link(app, admin, conn):
+    token = link_token(admin.post("/team/invites", data={"role": "member", "invitee_email": "fix@example.com"}).text,
+                       "invite")
+    client = TestClient(app)
+    wrong = client.post(f"/invite/{token}", data={"email": "other@example.com", "display_name": "다른",
+                                                  "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert wrong.status_code == 422 and "초대받은 이메일로만 가입할 수 있습니다." in wrong.text
+    assert repo.find_member_by_email(conn, SESSION, "other@example.com") is None
+    joined = client.post(f"/invite/{token}", data={"email": "fix@example.com", "display_name": "고정",
+                                                   "password": MEMBER_PASSWORD}, follow_redirects=False)
+    assert joined.status_code == 303
+
+
+def test_invite_form_asks_invitee_email_and_name(admin):
+    page = admin.get("/team").text
+    assert 'name="invitee_email"' in page and 'type="email"' in page and 'name="invitee_name"' in page
 
 
 def test_invite_link_uses_public_url(settings, receiver):
@@ -184,14 +224,15 @@ def test_invite_link_uses_public_url(settings, receiver):
 
     app = create_app(replace(settings, public_url="https://runloom.example.com"))
     admin = log_in(TestClient(app, base_url="https://testserver"))
-    response = admin.post("/team/invites", data={"role": "member"})
+    response = admin.post("/team/invites", data={"role": "member", "invitee_email": "pub@example.com"})
     token = link_token(response.text, "invite")
     assert f"https://runloom.example.com/invite/{token}" in response.text
     assert "WORKFLOW_PUBLIC_URL" not in admin.get("/team").text
 
 
 def test_revoke_invite(app, admin, conn):
-    token = link_token(admin.post("/team/invites", data={"role": "member"}).text, "invite")
+    token = link_token(admin.post("/team/invites", data={"role": "member", "invitee_email": "rv@example.com"}).text,
+                       "invite")
     invite_id = repo.list_open_invites(conn, SESSION, now="2026-09-30T00:00:00Z")[-1]["invite_id"]
     response = admin.post(f"/team/invites/{invite_id}/revoke", follow_redirects=False)
     assert (response.status_code, response.headers["location"]) == (303, "/team")

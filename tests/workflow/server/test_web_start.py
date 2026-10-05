@@ -78,7 +78,8 @@ def test_items_complete_step_by_step_and_sidebar_hides_when_required_done(client
 def test_optional_invite_does_not_complete_required(client, conn):
     admin = log_in(client)
     admin_id = repo.find_member_by_email(conn, SESSION, "admin@example.com")["member_id"]
-    repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin_id, now=NOW)
+    repo.issue_invite(conn, SESSION, role="member", invitee_email="new@example.com", created_by_member_id=admin_id,
+                      now=NOW)
     html = page(admin)
     assert states_of(html) == {"source": "next", "runner": "todo", "invite": "done", "delegate": "todo"}
     assert 'href="/start"' in sidebar_of(html)

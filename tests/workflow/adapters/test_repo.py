@@ -17,6 +17,8 @@ from workflow.adapters.errors import (
     DuplicateRule,
     DuplicateStartKey,
     EmailTaken,
+    InviteEmailMismatch,
+    InviteEmailTaken,
     EventConflict,
     HashMismatch,
     InvalidTransition,
@@ -3689,15 +3691,18 @@ def test_set_member_display_name(sessions):
 
 def test_invite_accept_creates_member_with_role_once(sessions):
     admin = _admin_with_account(sessions)
-    invite_id, token = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    invite_id, token = repo.issue_invite(sessions, SESSION, role="member", invitee_email=" Dev@Example.com ",
+                                         invitee_name=" 김개발 ", created_by_member_id=admin, now=NOW)
     assert invite_id.startswith("inv-") and len(invite_id) == 16
     assert token not in _dump(sessions)
     shown = repo.invite_for_token(sessions, token, purpose="invite", now=LATER)
-    assert (shown["invite_id"], shown["role"], shown["session_id"]) == (invite_id, "member", SESSION)
+    assert (shown["invite_id"], shown["role"], shown["session_id"], shown["invitee_email"], shown["invitee_name"]) == (
+        invite_id, "member", SESSION, "dev@example.com", "김개발")
     assert repo.invite_for_token(sessions, token, purpose="reset", now=LATER) is None
     (listed,) = repo.list_open_invites(sessions, SESSION, now=LATER)
-    assert (listed["invite_id"], listed["role"], listed["expires_at"]) == (
-        invite_id, "member", _plus(repo.INVITE_TTL_DAYS * 86400))
+    assert (listed["invite_id"], listed["role"], listed["expires_at"], listed["invitee_email"],
+            listed["invitee_name"]) == (invite_id, "member", _plus(repo.INVITE_TTL_DAYS * 86400), "dev@example.com",
+                                        "김개발")
     assert "token_sha256" not in listed.keys()
 
     member = repo.accept_invite(sessions, token, email="Dev@Example.com", display_name="김개발",
@@ -3710,14 +3715,15 @@ def test_invite_accept_creates_member_with_role_once(sessions):
     assert repo.list_open_invites(sessions, SESSION, now=LATER) == []
     assert repo.invite_for_token(sessions, token, purpose="invite", now=LATER) is None
     with pytest.raises(NotFound):  # 두 번째 수락
-        repo.accept_invite(sessions, token, email="dev2@example.com", display_name="박개발",
+        repo.accept_invite(sessions, token, email="dev@example.com", display_name="박개발",
                            password_hash=PW_HASH, now=LATER)
     assert len(repo.list_members(sessions, SESSION)) == 2
 
 
 def test_invite_admin_role_is_applied(sessions):
     admin = _admin_with_account(sessions)
-    _, token = repo.issue_invite(sessions, SESSION, role="admin", created_by_member_id=admin, now=NOW)
+    _, token = repo.issue_invite(sessions, SESSION, role="admin", invitee_email="boss@example.com",
+                                 created_by_member_id=admin, now=NOW)
     member = repo.accept_invite(sessions, token, email="boss@example.com", display_name="박관리",
                                 password_hash=PW_HASH, now=LATER)
     assert repo.get_member(sessions, SESSION, member)["role"] == "admin"
@@ -3725,14 +3731,16 @@ def test_invite_admin_role_is_applied(sessions):
 
 def test_invite_expired_revoked_or_unknown_is_not_found(sessions):
     admin = _admin_with_account(sessions)
-    _, expired = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    _, expired = repo.issue_invite(sessions, SESSION, role="member", invitee_email="a@example.com",
+                                   created_by_member_id=admin, now=NOW)
     end = _plus(repo.INVITE_TTL_DAYS * 86400)
     assert repo.invite_for_token(sessions, expired, purpose="invite", now=end) is None
     assert repo.list_open_invites(sessions, SESSION, now=end) == []
     with pytest.raises(NotFound):
         repo.accept_invite(sessions, expired, email="a@example.com", display_name="가", password_hash=PW_HASH,
                            now=end)
-    revoked_id, revoked = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    revoked_id, revoked = repo.issue_invite(sessions, SESSION, role="member", invitee_email="b@example.com",
+                                            created_by_member_id=admin, now=NOW)
     repo.revoke_invite(sessions, SESSION, revoked_id, now=LATER)
     with pytest.raises(NotFound):
         repo.revoke_invite(sessions, SESSION, revoked_id, now=LATER)  # 이미 취소
@@ -3742,15 +3750,19 @@ def test_invite_expired_revoked_or_unknown_is_not_found(sessions):
     with pytest.raises(NotFound):
         repo.accept_invite(sessions, "unknown", email="c@example.com", display_name="다", password_hash=PW_HASH,
                            now=LATER)
-    other_id, _ = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    other_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email="c@example.com",
+                                    created_by_member_id=admin, now=NOW)
     with pytest.raises(NotFound):
         repo.revoke_invite(sessions, OTHER_SESSION, other_id, now=LATER)  # 다른 워크스페이스
     assert len(repo.list_members(sessions, SESSION)) == 1
 
 
 def test_invite_with_taken_email_raises_and_stays_usable(sessions):
+    """이메일 없는 옛 초대(v24 이전) — 입력 이메일로 가입하고, 겹치면 `EmailTaken`."""
     admin = _admin_with_account(sessions)
-    _, token = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    invite_id, token = repo.issue_invite(sessions, SESSION, role="member", invitee_email="old@example.com",
+                                         created_by_member_id=admin, now=NOW)
+    sessions.execute("UPDATE member_invites SET invitee_email = NULL WHERE invite_id = ?", (invite_id,))
     with pytest.raises(EmailTaken):
         repo.accept_invite(sessions, token, email="admin@example.com", display_name="김개발",
                            password_hash=PW_HASH, now=LATER)
@@ -3763,13 +3775,14 @@ def test_invite_with_taken_email_raises_and_stays_usable(sessions):
 def test_invite_second_accept_from_another_connection_fails(sessions, db_path):
     """두 연결이 같은 토큰으로 수락 — 한 번만 성공한다."""
     admin = _admin_with_account(sessions)
-    _, token = repo.issue_invite(sessions, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    _, token = repo.issue_invite(sessions, SESSION, role="member", invitee_email="dev@example.com",
+                                 created_by_member_id=admin, now=NOW)
     results = []
 
     def accept(i):
         c = connect(db_path)
         try:
-            results.append(repo.accept_invite(c, token, email=f"dev{i}@example.com", display_name=f"개발{i}",
+            results.append(repo.accept_invite(c, token, email="dev@example.com", display_name=f"개발{i}",
                                               password_hash=PW_HASH, now=LATER))
         except NotFound:
             results.append(None)
@@ -3783,6 +3796,130 @@ def test_invite_second_accept_from_another_connection_fails(sessions, db_path):
         t.join()
     assert len([r for r in results if r]) == 1
     assert len(repo.list_members(sessions, SESSION)) == 2
+
+
+def test_issue_invite_requires_valid_email_and_name(sessions):
+    admin = _admin_with_account(sessions)
+    for email in ("", "  ", "no-at-sign", "a b@example.com"):
+        with pytest.raises(ValueError, match="invitee_email"):
+            repo.issue_invite(sessions, SESSION, role="member", invitee_email=email, created_by_member_id=admin,
+                              now=NOW)
+    with pytest.raises(ValueError, match="invitee_name"):
+        repo.issue_invite(sessions, SESSION, role="member", invitee_email="dev@example.com", invitee_name="가" * 41,
+                          created_by_member_id=admin, now=NOW)
+    assert repo.list_open_invites(sessions, SESSION, now=NOW) == []
+    for n, name in enumerate((None, "", "   ")):  # 이름은 선택 — 빈 값은 NULL
+        invite_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email=f"n{n}@example.com",
+                                         invitee_name=name, created_by_member_id=admin, now=NOW)
+        row = sessions.execute("SELECT invitee_name FROM member_invites WHERE invite_id = ?", (invite_id,)).fetchone()
+        assert row[0] is None
+
+
+def test_issue_invite_rejects_member_email_and_open_invite_email(sessions):
+    admin = _admin_with_account(sessions)
+    with pytest.raises(EmailTaken):  # 활성 멤버
+        repo.issue_invite(sessions, SESSION, role="member", invitee_email="ADMIN@example.com",
+                          created_by_member_id=admin, now=NOW)
+    other = repo.add_member(sessions, SESSION, display_name="박", now=NOW)
+    repo.set_member_credentials(sessions, SESSION, other, email="off@example.com", password_hash=PW_HASH, now=NOW)
+    repo.disable_member(sessions, SESSION, other, now=NOW)
+    with pytest.raises(EmailTaken):  # 비활성 멤버도
+        repo.issue_invite(sessions, SESSION, role="member", invitee_email="off@example.com",
+                          created_by_member_id=admin, now=NOW)
+    invite_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email="dev@example.com",
+                                     created_by_member_id=admin, now=NOW)
+    with pytest.raises(InviteEmailTaken):  # 열린 초대
+        repo.issue_invite(sessions, SESSION, role="admin", invitee_email=" Dev@Example.com",
+                          created_by_member_id=admin, now=LATER)
+    assert len(repo.list_open_invites(sessions, SESSION, now=LATER)) == 1
+    # 다른 워크스페이스·만료·취소된 초대는 겹침이 아니다
+    repo.issue_invite(sessions, OTHER_SESSION, role="member", invitee_email="dev@example.com",
+                      created_by_member_id=None, now=NOW)
+    end = _plus(repo.INVITE_TTL_DAYS * 86400)
+    repo.issue_invite(sessions, SESSION, role="member", invitee_email="dev@example.com", created_by_member_id=admin,
+                      now=end)
+    revoked_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email="rv@example.com",
+                                      created_by_member_id=admin, now=NOW)
+    repo.revoke_invite(sessions, SESSION, revoked_id, now=LATER)
+    repo.issue_invite(sessions, SESSION, role="member", invitee_email="rv@example.com", created_by_member_id=admin,
+                      now=LATER)
+    assert invite_id
+
+
+def test_reissue_invite_replaces_token_and_extends_expiry(sessions):
+    admin = _admin_with_account(sessions)
+    invite_id, old = repo.issue_invite(sessions, SESSION, role="admin", invitee_email="dev@example.com",
+                                       invitee_name="김개발", created_by_member_id=admin, now=NOW)
+    before = sessions.execute("SELECT * FROM member_invites WHERE invite_id = ?", (invite_id,)).fetchone()
+    later = _plus(3 * 86400)
+    new = repo.reissue_invite(sessions, SESSION, invite_id, now=later)
+    assert new != old
+    assert old not in _dump(sessions) and new not in _dump(sessions)  # 원본은 반환만
+    assert repo.invite_for_token(sessions, old, purpose="invite", now=later) is None
+    shown = repo.invite_for_token(sessions, new, purpose="invite", now=later)
+    assert shown["invite_id"] == invite_id
+    after = sessions.execute("SELECT * FROM member_invites WHERE invite_id = ?", (invite_id,)).fetchone()
+    assert after["expires_at"] == _plus(repo.INVITE_TTL_DAYS * 86400, later)
+    assert after["token_sha256"] != before["token_sha256"]
+    unchanged = ("session_id", "purpose", "role", "created_at", "created_by_member_id", "invitee_email",
+                 "invitee_name", "used_at", "revoked_at")
+    assert [after[k] for k in unchanged] == [before[k] for k in unchanged]
+    assert sessions.execute("SELECT COUNT(*) FROM member_invites").fetchone()[0] == 1  # 같은 행
+    with pytest.raises(NotFound):
+        repo.accept_invite(sessions, old, email="dev@example.com", display_name="김개발", password_hash=PW_HASH,
+                           now=later)
+    member = repo.accept_invite(sessions, new, email="dev@example.com", display_name="김개발", password_hash=PW_HASH,
+                                now=later)
+    assert repo.get_member(sessions, SESSION, member)["role"] == "admin"
+
+
+def test_reissue_invite_rejects_closed_reset_and_foreign_links(sessions):
+    admin = _admin_with_account(sessions)
+    used_id, used = repo.issue_invite(sessions, SESSION, role="member", invitee_email="u@example.com",
+                                      created_by_member_id=admin, now=NOW)
+    repo.accept_invite(sessions, used, email="u@example.com", display_name="유", password_hash=PW_HASH, now=NOW)
+    revoked_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email="r@example.com",
+                                      created_by_member_id=admin, now=NOW)
+    repo.revoke_invite(sessions, SESSION, revoked_id, now=NOW)
+    expired_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email="e@example.com",
+                                      created_by_member_id=admin, now=NOW)
+    reset_id, _ = repo.issue_reset_link(sessions, SESSION, admin, created_by_member_id=admin, now=NOW)
+    open_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email="o@example.com",
+                                   created_by_member_id=admin, now=NOW)
+    before = _dump(sessions)
+    end = _plus(repo.INVITE_TTL_DAYS * 86400)
+    for session_id, invite_id, now in ((SESSION, used_id, LATER), (SESSION, revoked_id, LATER),
+                                       (SESSION, expired_id, end), (SESSION, reset_id, LATER),
+                                       (OTHER_SESSION, open_id, LATER), (SESSION, "inv-nope", LATER)):
+        with pytest.raises(NotFound):
+            repo.reissue_invite(sessions, session_id, invite_id, now=now)
+    assert _dump(sessions) == before
+
+
+def test_reissue_invite_works_for_old_invite_without_email(sessions):
+    admin = _admin_with_account(sessions)
+    invite_id, _ = repo.issue_invite(sessions, SESSION, role="member", invitee_email="old@example.com",
+                                     created_by_member_id=admin, now=NOW)
+    sessions.execute("UPDATE member_invites SET invitee_email = NULL WHERE invite_id = ?", (invite_id,))
+    token = repo.reissue_invite(sessions, SESSION, invite_id, now=LATER)
+    assert repo.invite_for_token(sessions, token, purpose="invite", now=LATER)["invitee_email"] is None
+    member = repo.accept_invite(sessions, token, email="Any@Example.com", display_name="옛", password_hash=PW_HASH,
+                                now=LATER)
+    assert repo.get_member(sessions, SESSION, member)["email"] == "any@example.com"
+
+
+def test_accept_invite_is_fixed_to_the_invitee_email(sessions):
+    admin = _admin_with_account(sessions)
+    _, token = repo.issue_invite(sessions, SESSION, role="member", invitee_email="dev@example.com",
+                                 created_by_member_id=admin, now=NOW)
+    with pytest.raises(InviteEmailMismatch):
+        repo.accept_invite(sessions, token, email="other@example.com", display_name="김개발", password_hash=PW_HASH,
+                           now=LATER)
+    assert len(repo.list_members(sessions, SESSION)) == 1
+    assert repo.invite_for_token(sessions, token, purpose="invite", now=LATER) is not None  # 링크는 그대로
+    member = repo.accept_invite(sessions, token, email=" DEV@example.com ", display_name="김개발",
+                                password_hash=PW_HASH, now=LATER)
+    assert repo.get_member(sessions, SESSION, member)["email"] == "dev@example.com"
 
 
 def test_reset_link_sets_password_revokes_sessions_and_earlier_links(sessions):
@@ -4249,14 +4386,16 @@ def test_start_facts_invited_is_two_active_members_or_issued_invite(sessions):
     conn = sessions
     admin = repo.ensure_first_admin(conn, SESSION, now=NOW)  # 세션을 만들 때 생긴 첫 관리자 1명
     repo.add_member(conn, OTHER_SESSION, display_name="남", now=NOW)
-    repo.issue_invite(conn, OTHER_SESSION, role="member", created_by_member_id=None, now=NOW)
+    repo.issue_invite(conn, OTHER_SESSION, role="member", invitee_email="x@example.com", created_by_member_id=None,
+                      now=NOW)
     repo.issue_reset_link(conn, SESSION, admin, created_by_member_id=None, now=NOW)  # 재설정 링크는 초대가 아니다
     assert not repo.start_facts(conn, SESSION).invited
     other = repo.add_member(conn, SESSION, display_name="멤버", now=NOW)
     assert repo.start_facts(conn, SESSION).invited
     repo.disable_member(conn, SESSION, other, now=LATER)
     assert not repo.start_facts(conn, SESSION).invited
-    repo.issue_invite(conn, SESSION, role="member", created_by_member_id=admin, now=NOW)
+    repo.issue_invite(conn, SESSION, role="member", invitee_email="x@example.com", created_by_member_id=admin,
+                      now=NOW)
     assert repo.start_facts(conn, SESSION).invited
 
 
