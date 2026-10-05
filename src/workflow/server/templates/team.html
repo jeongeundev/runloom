@@ -1,9 +1,13 @@
-{# 연결 화면 "팀·담당자" 탭(phase 16 step 6) — 멤버·초대(옛 /team, `manage_team`) + 에이전트 목록(옛 /agents, 로그인) + 러너(옛 /operator
-   러너 목록, `attach_runner` — 해제 버튼은 소유자 본인 또는 `remove_any_runner`(`can_revoke`)).
-   ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 초대·재설정 링크 원문은 발급 응답(`issued`)에만
+{# 팀 화면 `/team`(phase 23 step 1 — 옛 연결 화면 "팀·담당자" 탭 본문을 그대로 옮김, ARCHITECTURE "설정 UX — phase 23") — 멤버·초대(`manage_team`)
+   + 에이전트 목록(옛 /agents, 로그인) + 러너(옛 /operator 러너 목록, `attach_runner` — 해제 버튼은 소유자 본인 또는
+   `remove_any_runner`(`can_revoke`)) + 담당 범위. ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 초대·재설정 링크 원문은 발급 응답(`issued`)에만
    한 번 보이고 — 303 없음 — 서버에는 sha256 만 남는다. 비밀번호 해시는 싣지 않는다. 마지막 관리자 거부는 오류 화면(409 last_admin).
    에이전트 목록의 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). 맡기기 정책(phase 17)은 러너 소유자·관리자(`can_set_policy`)만
    바꾸는 폼, 다른 멤버에게는 글자로만 보인다. #}
+{% extends "base.html" %}
+{% block title %}팀 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">팀</div></div>
 {% import "_status.html" as st %}
 {% set role_labels = {'admin': '관리자', 'member': '멤버'} %}
 {% set policy_labels = {'run': '바로 실행', 'owner_approval': '내 승인 뒤 실행'} %}
@@ -107,7 +111,7 @@
 {% else %}
 <div class="empty" style="padding-top:0">
   <p>아직 에이전트가 없습니다.</p>
-  <p class="small" style="margin-top:8px">러너를 연결하면 그 에이전트가 이 워크스페이스에 붙습니다 · <a href="/connect?tab=sources">가져올 곳</a> 에서 러너 연결.</p>
+  <p class="small" style="margin-top:8px">러너를 연결하면 그 에이전트가 이 워크스페이스에 붙습니다 · <a href="/repos">가져올 곳</a> 에서 러너 연결.</p>
 </div>
 {% endif %}
 
@@ -169,3 +173,4 @@
   </form>
   {% endif %}
 </div>
+{% endblock %}

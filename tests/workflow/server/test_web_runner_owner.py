@@ -80,8 +80,8 @@ def test_issuer_becomes_runner_and_agent_owner(app, kim, conn):
     seed_agent(conn, "agent-kim", connector_id)
 
     assert repo.connector_owner(conn, connector_id) == member_id(conn, "김멤버")
-    assert "소유자 김멤버" in runner_row(kim.get("/connect?tab=team").text, connector_id)
-    team_tab = kim.get("/connect?tab=team").text
+    assert "소유자 김멤버" in runner_row(kim.get("/team").text, connector_id)
+    team_tab = kim.get("/team").text
     assert "소유자 김멤버" in team_tab[team_tab.index("<h2>에이전트</h2>"):team_tab.index("<h2>러너</h2>")]  # 에이전트 목록
     assert "소유자 김멤버" in kim.get("/agents/agent-kim").text
 
@@ -91,7 +91,7 @@ def test_runner_without_owner_is_admin_managed(admin, conn):
     seed_agent(conn, "agent-old", connector_id)
     seed_agent(conn, "agent-api", None)
 
-    assert "관리자 관리" in runner_row(admin.get("/connect?tab=team").text, connector_id)
+    assert "관리자 관리" in runner_row(admin.get("/team").text, connector_id)
     assert admin.get("/agents/agent-old").text.count("관리자 관리") == 1
     assert "관리자 관리" in admin.get("/agents/agent-api").text
 
@@ -103,7 +103,7 @@ def test_disabled_owner_runner_keeps_running_and_says_so(app, admin, kim, conn):
     assert admin.post(f"/team/members/{member_id(conn, '김멤버')}/disable", follow_redirects=False).status_code == 303
 
     assert repo.authenticate_connector(conn, token) == connector_id
-    row = runner_row(admin.get("/connect?tab=team").text, connector_id)
+    row = runner_row(admin.get("/team").text, connector_id)
     assert "소유자 김멤버" in row and "소유자 비활성" in row
     assert "소유자 비활성" in admin.get("/agents/agent-kim").text
 
@@ -113,17 +113,17 @@ def test_disabled_owner_runner_keeps_running_and_says_so(app, admin, kim, conn):
 
 def test_owner_revokes_own_runner(app, kim, conn):
     connector_id, token = issue_and_exchange(app, kim, conn)
-    assert f'action="/operator/connectors/{connector_id}/revoke"' in kim.get("/connect?tab=team").text
+    assert f'action="/operator/connectors/{connector_id}/revoke"' in kim.get("/team").text
 
     response = revoke(kim, connector_id)
 
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
+    assert (response.status_code, response.headers["location"]) == (303, "/team")
     assert repo.authenticate_connector(conn, token) is None
 
 
 def test_other_member_cannot_revoke(app, kim, lee, conn):
     connector_id, token = issue_and_exchange(app, kim, conn)
-    assert f"/operator/connectors/{connector_id}/revoke" not in lee.get("/connect?tab=team").text
+    assert f"/operator/connectors/{connector_id}/revoke" not in lee.get("/team").text
 
     response = revoke(lee, connector_id)
 
@@ -133,7 +133,7 @@ def test_other_member_cannot_revoke(app, kim, lee, conn):
 
 def test_admin_revokes_anyone_runner(app, admin, kim, conn):
     connector_id, token = issue_and_exchange(app, kim, conn)
-    assert f'action="/operator/connectors/{connector_id}/revoke"' in admin.get("/connect?tab=team").text
+    assert f'action="/operator/connectors/{connector_id}/revoke"' in admin.get("/team").text
 
     assert revoke(admin, connector_id).status_code == 303
     assert repo.authenticate_connector(conn, token) is None
@@ -141,7 +141,7 @@ def test_admin_revokes_anyone_runner(app, admin, kim, conn):
 
 def test_runner_without_owner_only_admin_revokes(admin, kim, conn):
     connector_id, token = legacy_runner(conn)
-    assert f"/operator/connectors/{connector_id}/revoke" not in kim.get("/connect?tab=team").text
+    assert f"/operator/connectors/{connector_id}/revoke" not in kim.get("/team").text
 
     assert revoke(kim, connector_id).status_code == 403
     assert repo.authenticate_connector(conn, token) == connector_id
@@ -155,7 +155,7 @@ def test_revoke_unknown_or_already_revoked_runner(admin, kim, conn):
     connector_id, _ = legacy_runner(conn)
     assert revoke(admin, connector_id).status_code == 303
     assert revoke(admin, connector_id).status_code == 404
-    assert "해제됨" in runner_row(admin.get("/connect?tab=team").text, connector_id)
+    assert "해제됨" in runner_row(admin.get("/team").text, connector_id)
 
 
 # --- 에이전트 삭제 ------------------------------------------------------------------------------------
@@ -165,8 +165,8 @@ def test_agent_delete_follows_runner_owner(app, admin, kim, lee, conn):
     connector_id, _ = issue_and_exchange(app, kim, conn)
     seed_agent(conn, "agent-kim", connector_id)
     seed_agent(conn, "agent-kim-2", connector_id)
-    assert 'action="/operator/agents/agent-kim/delete"' in kim.get("/connect?tab=advanced").text
-    assert "/operator/agents/agent-kim/delete" not in lee.get("/connect?tab=advanced").text
+    assert 'action="/operator/agents/agent-kim/delete"' in kim.get("/settings?tab=advanced").text
+    assert "/operator/agents/agent-kim/delete" not in lee.get("/settings?tab=advanced").text
 
     assert lee.post("/operator/agents/agent-kim/delete", follow_redirects=False).status_code == 403
     assert repo.get_agent(conn, "agent-kim") is not None
@@ -196,9 +196,9 @@ def test_member_sees_and_revokes_only_own_codes(app, admin, kim, lee, conn):
     lee_code = repo.list_connect_codes(conn, issued_by_member_id=member_id(conn, "이멤버"))[0]["code"]
     legacy = repo.issue_connect_code(conn, NOW)
 
-    text = kim.get("/connect?tab=advanced").text
+    text = kim.get("/settings?tab=advanced").text
     assert kim_code in text and lee_code not in text and legacy not in text
-    admin_text = admin.get("/connect?tab=advanced").text
+    admin_text = admin.get("/settings?tab=advanced").text
     assert kim_code in admin_text and lee_code in admin_text and legacy in admin_text
 
     assert lee.post(f"/operator/connect-codes/{kim_code}/revoke", follow_redirects=False).status_code == 403
@@ -238,16 +238,16 @@ def agent_row(text: str, agent_id: str) -> str:
 def test_owner_sets_the_delegation_policy(app, kim, conn):
     connector_id, _ = issue_and_exchange(app, kim, conn)
     seed_agent(conn, "agent-kim", connector_id)
-    row = agent_row(kim.get("/connect?tab=team").text, "agent-kim")
+    row = agent_row(kim.get("/team").text, "agent-kim")
     assert 'action="/agents/agent-kim/delegation-policy"' in row
     assert re.findall(r'<option value="(\w+)"[^>]*>([^<]*)</option>', row) == [
         ("run", "바로 실행"), ("owner_approval", "내 승인 뒤 실행")]
 
     response = set_policy(kim, "agent-kim", "owner_approval")
 
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=team")
+    assert (response.status_code, response.headers["location"]) == (303, "/team")
     assert policy_of(conn, "agent-kim") == "owner_approval"
-    row = agent_row(kim.get("/connect?tab=team").text, "agent-kim")
+    row = agent_row(kim.get("/team").text, "agent-kim")
     assert '<option value="owner_approval" selected>' in row
     assert set_policy(kim, "agent-kim", "run").status_code == 303
     assert policy_of(conn, "agent-kim") == "run"
@@ -268,7 +268,7 @@ def test_other_member_sees_the_policy_read_only_and_is_refused(app, kim, lee, co
     seed_agent(conn, "agent-api", None)
     assert set_policy(kim, "agent-kim", "owner_approval").status_code == 303
 
-    page = lee.get("/connect?tab=team").text
+    page = lee.get("/team").text
     row = agent_row(page, "agent-kim")
     assert "/delegation-policy" not in row and "<select" not in row and "내 승인 뒤 실행" in row
     assert "/delegation-policy" not in agent_row(page, "agent-api")  # 공용은 관리자만

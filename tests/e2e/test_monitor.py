@@ -376,7 +376,7 @@ def test_05_criteria_v2_then_run4_is_accepted_reworked_once_and_merged(world):
 def test_06_autostart_threshold_change_shows_the_preview_line(world):
     saved = world.http.post("/operator/triage/autostart/bug_fix", data={"enabled": "", "threshold": "0.70"})
     assert saved.status_code == 303, saved.text[:500]
-    html = unescape(page(world, "/connect", tab="triage"))
+    html = unescape(page(world, "/settings", tab="triage"))
     # 0.70 이상 bug_fix 제안 = RUN-1(0.95 제안대로)·RUN-2(0.85 다르게)·RUN-4(0.75 제안대로), 병합 둘 다
     assert "지금 기준값 0.70 이상 판단 3건 — 사람 일치 2/3 · 병합 2/2" in html
 

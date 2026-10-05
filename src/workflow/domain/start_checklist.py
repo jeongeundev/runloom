@@ -30,9 +30,9 @@ class StartItem:
 
 # (키, 이름, 필수, 버튼 주소, 필요 동작, 완료 사실 칸)
 START_ITEMS = (
-    ("source", "가져올 곳 연결", True, "/connect?tab=sources", team.MANAGE_CONNECTIONS, "has_source"),
-    ("runner", "러너 붙이기", True, "/connect?tab=sources", team.ATTACH_RUNNER, "has_runner"),
-    ("invite", "팀원 초대", False, "/connect?tab=team", team.MANAGE_TEAM, "invited"),
+    ("source", "가져올 곳 연결", True, "/repos", team.MANAGE_CONNECTIONS, "has_source"),
+    ("runner", "러너 붙이기", True, "/repos", team.ATTACH_RUNNER, "has_runner"),
+    ("invite", "팀원 초대", False, "/team", team.MANAGE_TEAM, "invited"),
     ("delegate", "첫 업무 맡기기", True, "/tasks?q=unassigned", team.DELEGATE, "delegated"),
 )
 

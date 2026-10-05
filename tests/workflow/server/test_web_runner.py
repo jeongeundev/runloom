@@ -56,7 +56,7 @@ def billing(op, conn, secrets, pem):
 def test_card_without_runner_shows_the_attach_button(op, conn, secrets, pem):
     source = billing(op, conn, secrets, pem)
 
-    card = card_of(visible(op.get("/connect?tab=sources").text), source.source_id)
+    card = card_of(visible(op.get("/repos").text), source.source_id)
 
     assert "data-runner-missing" in card and "이 저장소를 등록한 러너 없음" in card
     assert runner_action(source.source_id) in card and "러너 붙이기" in card
@@ -100,7 +100,7 @@ def test_matched_card_has_no_attach_button_only_a_folded_reattach(client, auto_s
     log_in(client)  # auto_source 의 주인 = 고정 워크스페이스
     assert op_session(client) == CYCLE_SESSION
 
-    card = card_of(client.get("/connect?tab=sources").text, SOURCE)
+    card = card_of(client.get("/repos").text, SOURCE)
 
     assert runner_action(SOURCE) not in visible(f"<main>{card}")
     assert "data-runner-missing" not in card

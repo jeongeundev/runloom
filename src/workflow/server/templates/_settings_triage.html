@@ -1,4 +1,4 @@
-{# 연결 화면 "판단" 탭 — phase 19 step 8, ADR-0025, ARCHITECTURE "판단 — phase 19" 화면. `manage_connections` 만 연다.
+{# 설정 화면 "판단" 탭 — phase 19 step 8, ADR-0025, ARCHITECTURE "판단 — phase 19" 화면. `manage_connections` 만 연다.
    판단 기준(현재 버전·편집·버전 이력·이전 본문 보기)과 종류별 자동 시작(자격 n/20·켬·기준값·기준값 미리보기(phase 20 step 8)·마지막 변경).
    기준 본문은 사용자 입력이다 — 자동 이스케이프로만 그린다(`|safe` 금지). 판단 에이전트는 저장소 카드(가져올 곳 탭)에서 고른다. #}
 <section class="card" data-triage-criteria>
@@ -14,7 +14,7 @@
   <h3>버전 이력</h3>
   <table>
     <tr><th>버전</th><th>누가</th><th>언제</th><th></th></tr>
-    {% for h in criteria_history %}<tr><td>v{{ h.version }}</td><td>{{ h.by or '처음 기준' }}</td><td>{{ h.created_at|kst }}</td><td><a href="/connect?tab=triage&amp;version={{ h.version }}">보기</a></td></tr>{% endfor %}
+    {% for h in criteria_history %}<tr><td>v{{ h.version }}</td><td>{{ h.by or '처음 기준' }}</td><td>{{ h.created_at|kst }}</td><td><a href="/settings?tab=triage&amp;version={{ h.version }}">보기</a></td></tr>{% endfor %}
   </table>
   {% if criteria_view %}
   <h3>v{{ criteria_view.version }} 본문 (읽기 전용)</h3>

@@ -44,9 +44,9 @@ def test_empty_workspace_first_item_is_next(client):
     assert list(items_of(html)) == ["source", "runner", "invite", "delegate"]
     assert states_of(html) == {"source": "next", "runner": "todo", "invite": "optional", "delegate": "todo"}
     items = items_of(html)
-    assert 'href="/connect?tab=sources"' in items["source"][1]
-    assert 'href="/connect?tab=sources"' in items["runner"][1]
-    assert 'href="/connect?tab=team"' in items["invite"][1]
+    assert 'href="/repos"' in items["source"][1]
+    assert 'href="/repos"' in items["runner"][1]
+    assert 'href="/team"' in items["invite"][1]
     assert 'href="/tasks?q=unassigned"' in items["delegate"][1]
     assert ASK_ADMIN not in html  # 관리자는 모두 할 수 있다
     for label in ("가져올 곳 연결", "러너 붙이기", "팀원 초대", "첫 업무 맡기기"):
@@ -84,12 +84,14 @@ def test_optional_invite_does_not_complete_required(client, conn):
     assert 'href="/start"' in sidebar_of(html)
 
 
-def test_sidebar_orders_start_between_connect_and_settings_and_marks_active(client):
+def test_sidebar_orders_start_between_settings_and_me_and_marks_active(client):
     admin = log_in(client)
     sidebar = sidebar_of(page(admin))
     nav = re.findall(r'<a href="([^"]+)"[^>]*>([^<]+)', sidebar[sidebar.index('class="nav"'):])
-    assert [href for href, _ in nav[:6]] == ["/tasks", "/requests", "/monitor", "/connect", "/start", "/me"]
-    assert [label.strip() for _, label in nav[:6]] == ["업무", "받은·보낸 요청", "모니터링", "연결", "시작하기", "내 설정"]
+    assert [href for href, _ in nav[:8]] == ["/tasks", "/requests", "/monitor", "/team", "/repos", "/settings",
+                                             "/start", "/me"]
+    assert [label.strip() for _, label in nav[:8]] == ["업무", "받은·보낸 요청", "모니터링", "팀", "저장소", "설정",
+                                                       "시작하기", "내 설정"]
     assert '<a href="/start" class="active">' in sidebar
 
 
@@ -98,9 +100,9 @@ def test_member_gets_ask_admin_for_admin_only_items(app, client):
     member = log_in_member(TestClient(app))  # 초대로 가입 — 초대 항목은 완료
     items = items_of(page(member))
     assert items["source"][0] == "next"
-    assert ASK_ADMIN in items["source"][1] and 'href="/connect?tab=sources"' not in items["source"][1]
+    assert ASK_ADMIN in items["source"][1] and 'href="/repos"' not in items["source"][1]
     assert items["invite"][0] == "done"
-    assert ASK_ADMIN in items["invite"][1] and 'href="/connect?tab=team"' not in items["invite"][1]
+    assert ASK_ADMIN in items["invite"][1] and 'href="/team"' not in items["invite"][1]
     # 러너 붙이기(attach_runner)·맡기기(delegate)는 멤버도 할 수 있다
-    assert ASK_ADMIN not in items["runner"][1] and 'href="/connect?tab=sources"' in items["runner"][1]
+    assert ASK_ADMIN not in items["runner"][1] and 'href="/repos"' in items["runner"][1]
     assert ASK_ADMIN not in items["delegate"][1] and 'href="/tasks?q=unassigned"' in items["delegate"][1]

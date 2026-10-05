@@ -13,7 +13,10 @@
     {
       "step": 1,
       "name": "nav-split",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T13:13:23+0900",
+      "summary": "자리만 옮김: web.py 연결 화면 → GET /team(team_page·_team_page·_team_context)·/repos(repos_page·_repos_page·_repos_context)·/settings?tab=kinds|triage|notify|inbound|advanced(settings_page·_settings_page·_settings_context·SETTINGS_TABS·_visible_settings_tabs·_to_settings), GET /connect 는 connect_redirect(로그인 검사 없이 CONNECT_TAB_TARGETS·_connect_target, triage 의 version 만 유지) — CONNECT_TABS·_to_connect·_connect_page·_tab_context·connect_page·옛 /team 303 라우트 삭제. 옛 GET 303(/sources→/settings?tab=inbound, /operator/github→/repos, /operator→advanced, /operator/notifications→notify, /agents→/team, /kinds→kinds), POST 뒤 303·POST 가 그리는 화면을 ARCHITECTURE 표대로(POST 경로 그대로). 템플릿: connect.html→settings.html(data-settings-tabs), _connect_team.html→team.html(본문 그대로 + base 확장), repos.html 신규(_repos_github·_repos_jira 포함), _connect_*→_repos_*/_settings_* 이름 바꾸기, 사이드바 업무·받은·보낸 요청·모니터링·팀·저장소·설정·시작하기·내 설정(문맥 nav 우선, 없으면 경로 접두사), 링크 표의 href(home·metrics·operator_github_app_new·agent_detail·_work_panel·internal_requests·task_new·_monitor_triage·_settings_triage 버전 보기), START_ITEMS source·runner→/repos, invite→/team. 절 문구·폼은 안 바꿈(team.html 의 '가져올 곳' 글자·_monitor_triage '연결 › 판단' 글자도 그대로 — href 만). 테스트: test_web_connect.py 를 새 주소 기준으로 다시 씀(사이드바 순서·활성·view_metrics 없는 역할·POST 가 그린 화면의 nav, 설정 탭 5개·멤버 2개·403, /connect 10가지·옛 GET 6개 303, POST 303 대상 12종, /start 링크), 옛 /connect?tab= 단정은 새 주소 단정으로 바꿈(test_web·test_ui·test_web_roles(판단·입구 탭 403 추가)·test_web_team·test_web_work_list·test_web_start·test_start_checklist·github/jira/runner/cycle/triage/notifications/metrics·e2e 8개 — sources 는 GitHub 쪽 /repos, 입구 쪽 /settings?tab=inbound 로 갈라 둘 다 검사). 문서 문구 테스트(test_selfhost_files·test_n8n_example 의 SELFHOST·n8n README 안 /connect?tab=)는 문서가 step 10 범위라 그대로 둠(옛 주소는 303 으로 동작). 검증: pytest 4483 passed·92 skipped, ruff 통과, WORKFLOW_E2E=1 e2e 8파일 64 passed(test_selfhost 는 Docker 라 미실행). 다음 step 주의: _team_page 는 HTMLResponse(status 인자) 반환 — step 3 의 422 인라인 오류가 이걸 씀. team.html 맨 위 빨간 WORKFLOW_PUBLIC_URL 경고·data-team-section 표식은 아직 없음(step 3·6). repos.html 에는 카드 안 이슈 목록이 아직 있음(step 7).",
+      "completed_at": "2026-10-05T14:00:00+0900"
     },
     {
       "step": 2,

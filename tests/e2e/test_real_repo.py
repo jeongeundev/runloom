@@ -311,7 +311,7 @@ def issue_task(world: World, number: int) -> str:
 
 def source_card(world: World, html: str | None = None) -> str:
     if html is None:
-        page = world.http.get("/connect?tab=sources")
+        page = world.http.get("/repos")
         assert page.status_code == 200, page.text[:500]
         html = page.text
     return html.split(f'data-source-card="{world.sources[REPO]}"', 1)[1].split("</section>", 1)[0]
@@ -365,7 +365,7 @@ def test_01_login_connect_github_and_set_the_notification_url(world):
 
     saved = http.post("/operator/notifications/webhook", data={"url": world.ctx["hook_url"]})
     assert saved.status_code in (200, 303), saved.text[:500]
-    page = http.get("/connect?tab=notify").text
+    page = http.get("/settings?tab=notify").text
     assert "설정됨" in page and HOOK_SECRET not in page
 
     world.worker = make_worker(world)
@@ -597,8 +597,8 @@ def test_08_secrets_stay_out_of_the_central_side(world):
             leaked += [f"{name}@{path.name}" for name, value in needles.items() if value in data]
     assert (world.workdir / "logs" / "central.log").stat().st_size > 0
 
-    pages = ["/tasks", f"/tasks/{world.tasks['A']}", f"/tasks/{world.tasks['B']}", "/connect?tab=sources",
-             "/connect?tab=notify", "/monitor", "/github/sources"]
+    pages = ["/tasks", f"/tasks/{world.tasks['A']}", f"/tasks/{world.tasks['B']}", "/repos",
+             "/settings?tab=notify", "/monitor", "/github/sources"]
     for page in pages:
         body = world.http.get(page).text
         leaked += [f"{name}@{page}" for name, value in needles.items() if value in body]

@@ -20,9 +20,9 @@ def states(facts: StartFacts) -> dict[str, str]:
 def test_items_are_four_in_order_with_labels_buttons_and_actions():
     items = start_items(EMPTY)
     assert [(i.key, i.label, i.required, i.href, i.action) for i in items] == [
-        ("source", "가져올 곳 연결", True, "/connect?tab=sources", team.MANAGE_CONNECTIONS),
-        ("runner", "러너 붙이기", True, "/connect?tab=sources", team.ATTACH_RUNNER),
-        ("invite", "팀원 초대", False, "/connect?tab=team", team.MANAGE_TEAM),
+        ("source", "가져올 곳 연결", True, "/repos", team.MANAGE_CONNECTIONS),
+        ("runner", "러너 붙이기", True, "/repos", team.ATTACH_RUNNER),
+        ("invite", "팀원 초대", False, "/team", team.MANAGE_TEAM),
         ("delegate", "첫 업무 맡기기", True, "/tasks?q=unassigned", team.DELEGATE),
     ]
     assert len(START_ITEMS) == 4

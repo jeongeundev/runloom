@@ -74,7 +74,7 @@ def test_every_path_is_operator_only(app, conn, secrets, receiver):
     # 로그인 전, 그리고 고정 워크스페이스가 아닌 워크스페이스의 로그인 쿠키 — 셀프호스트에서는 둘 다 로그인 안 된 것
     stranger = log_in_other_workspace(TestClient(app, base_url=BASE))
     for anonymous in (TestClient(app, base_url=BASE), stranger):
-        response = anonymous.get("/connect?tab=notify", follow_redirects=False)
+        response = anonymous.get("/settings?tab=notify", follow_redirects=False)
         assert (response.status_code, response.headers["location"]) == (303, "/login")
         for path, data in (("/operator/notifications/webhook", {"url": URL}),
                            ("/operator/notifications/webhook/delete", {}),
@@ -87,7 +87,7 @@ def test_every_path_is_operator_only(app, conn, secrets, receiver):
 
 def test_selfhost_without_login_redirects_to_login(app):
     client = TestClient(app, base_url=BASE)
-    response = client.get("/connect?tab=notify", follow_redirects=False)
+    response = client.get("/settings?tab=notify", follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == "/login"
 
 
@@ -95,7 +95,7 @@ def test_selfhost_without_login_redirects_to_login(app):
 
 
 def test_empty_page_shows_form_and_not_configured(op):
-    response = op.get("/connect?tab=notify")
+    response = op.get("/settings?tab=notify")
 
     assert response.status_code == 200
     assert 'action="/operator/notifications/webhook"' in response.text
@@ -107,11 +107,11 @@ def test_empty_page_shows_form_and_not_configured(op):
 def test_save_writes_0600_secret_and_page_shows_host_only(op, secrets, settings):
     response = save(op, f"  {URL} ")
 
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=notify"
+    assert response.status_code == 303 and response.headers["location"] == "/settings?tab=notify"
     assert secrets.read(secret_store.NOTIFY_WEBHOOK_URL) == URL
     path = settings.secret_dir / secret_store.NOTIFY_WEBHOOK_URL
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    page = op.get("/connect?tab=notify").text
+    page = op.get("/settings?tab=notify").text
     assert "data-notify-configured=\"true\"" in page
     assert "설정됨 · 호스트 discord.com" in page
     assert TOKEN not in page and "webhooks/123456" not in page
@@ -121,9 +121,9 @@ def test_delete_removes_secret_file(op, secrets, settings):
     save(op)
     response = op.post("/operator/notifications/webhook/delete", follow_redirects=False)
 
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=notify"
+    assert response.status_code == 303 and response.headers["location"] == "/settings?tab=notify"
     assert not (settings.secret_dir / secret_store.NOTIFY_WEBHOOK_URL).exists()
-    assert "data-notify-configured=\"false\"" in op.get("/connect?tab=notify").text
+    assert "data-notify-configured=\"false\"" in op.get("/settings?tab=notify").text
 
 
 @pytest.mark.parametrize("bad", [
@@ -159,7 +159,7 @@ def test_recent_notifications_listed_without_url_or_body(op, conn, secrets):
     )
     conn.commit()
 
-    page = op.get("/connect?tab=notify").text
+    page = op.get("/settings?tab=notify").text
     assert 'data-notification-event="human_request"' in page
     assert "비밀 본문" not in page
 
@@ -207,7 +207,7 @@ def test_send_test_without_url_is_409(op, receiver):
 def test_url_never_in_logs(op, receiver, caplog):
     caplog.set_level(logging.DEBUG)
     save(op)
-    op.get("/connect?tab=notify")
+    op.get("/settings?tab=notify")
     op.post("/operator/notifications/test")
     receiver.status = 500
     op.post("/operator/notifications/test")

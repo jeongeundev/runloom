@@ -1,0 +1,23 @@
+{# 설정 화면 `/settings?tab=…` — phase 23 step 1, ARCHITECTURE "설정 UX — phase 23". 탭 머리는 볼 수 있는 탭만(`tabs`),
+   본문은 옛 연결 화면 탭을 옮긴 부분 템플릿(`_settings_*.html`) — 문구·폼·`data-*` 는 그대로. 절별 권한은 부분 템플릿이 `allowed` 로 가른다. #}
+{% extends "base.html" %}
+{% block title %}설정 — Runloom{% endblock %}
+{% block content %}
+<div class="crumbs"><div class="crumb">설정</div></div>
+<nav class="tabs" data-settings-tabs>
+  {% for t in tabs %}<a href="/settings?tab={{ t.key }}" data-tab="{{ t.key }}"{% if t.key == tab %} class="active"{% endif %}>{{ t.label }}</a>{% endfor %}
+</nav>
+<section data-tab-body="{{ tab }}">
+{% if tab == 'kinds' %}
+{% include "_settings_kinds.html" %}
+{% elif tab == 'triage' %}
+{% include "_settings_triage.html" %}
+{% elif tab == 'notify' %}
+{% include "_settings_notify.html" %}
+{% elif tab == 'inbound' %}
+{% include "_settings_inbound.html" %}
+{% else %}
+{% include "_settings_advanced.html" %}
+{% endif %}
+</section>
+{% endblock %}

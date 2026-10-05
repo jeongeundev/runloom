@@ -300,7 +300,7 @@ def test_agents_zero_shows_runner_hint(client, conn):
     ensure_workspace(conn, NOW)
     admin = log_in(client)
     html = main_of(admin.get("/tasks").text)
-    assert "러너를 붙이면 에이전트가 생깁니다" in html and 'href="/connect?tab=sources"' in html
+    assert "러너를 붙이면 에이전트가 생깁니다" in html and 'href="/repos"' in html
 
 
 def test_home_has_no_agent_or_chain_cards(admin, people):
@@ -315,8 +315,10 @@ def test_home_has_no_agent_or_chain_cards(admin, people):
 def test_sidebar_has_new_items_and_no_recent_list(admin, people):
     sidebar = sidebar_of(admin.get("/tasks").text)
     nav = re.findall(r'<a href="([^"]+)"[^>]*>([^<]+)', sidebar[sidebar.index('class="nav"'):])
-    assert [label.strip() for _, label in nav[:6]] == ["업무", "받은·보낸 요청", "모니터링", "연결", "시작하기", "내 설정"]
-    assert [href for href, _ in nav[:6]] == ["/tasks", "/requests", "/monitor", "/connect", "/start", "/me"]
+    assert [label.strip() for _, label in nav[:8]] == ["업무", "받은·보낸 요청", "모니터링", "팀", "저장소", "설정",
+                                                       "시작하기", "내 설정"]
+    assert [href for href, _ in nav[:8]] == ["/tasks", "/requests", "/monitor", "/team", "/repos", "/settings",
+                                             "/start", "/me"]
     assert "최근" not in sidebar and 'href="/tasks/new"' not in sidebar and "data-work-key" not in sidebar
     # 시작하기는 필수 항목(가져올 곳·러너·첫 맡기기)이 남아 보인다 — 숨김 조건은 test_web_start
     assert "관리자 · 관리자" in sidebar and 'action="/logout"' in sidebar
@@ -329,8 +331,8 @@ def test_sidebar_turn_badge_counts_my_turn(admin, member, people):
 
 
 def test_sidebar_marks_active_by_path_prefix(admin, people):
-    nav = sidebar_of(admin.get("/connect?tab=advanced").text)
-    assert '<a href="/connect" class="active">' in nav
+    nav = sidebar_of(admin.get("/settings?tab=advanced").text)
+    assert '<a href="/settings" class="active">' in nav
     assert 'href="/tasks" class="active"' not in nav
     assert '<a href="/tasks" class="active">' in sidebar_of(admin.get("/tasks").text)
 
@@ -343,4 +345,4 @@ def test_sidebar_hides_items_without_permission(admin, member, people, monkeypat
                         lambda role: real(role) - {team.VIEW_METRICS, team.EDIT_OWN_SETTINGS})
     sidebar = sidebar_of(member.get("/tasks").text)
     assert 'href="/monitor"' not in sidebar and 'href="/me"' not in sidebar
-    assert 'href="/tasks"' in sidebar and 'href="/connect"' in sidebar
+    assert 'href="/tasks"' in sidebar and 'href="/team"' in sidebar and 'href="/settings"' in sidebar

@@ -506,7 +506,7 @@ def test_07_autostart_unlocks_at_20_handled_triages_and_hands_the_next_work_over
     assert q(world, "SELECT 1 FROM triage_autostart") == []
 
     _seed_handled(world, 18)
-    assert "판단 기록 20/20" in unescape(page(world, "/connect", tab="triage"))
+    assert "판단 기록 20/20" in unescape(page(world, "/settings", tab="triage"))
     enabled = http.post("/operator/triage/autostart/bug_fix", data={"enabled": "on", "threshold": "0.80"})
     assert enabled.status_code == 303, enabled.text[:500]
     (setting,) = q(world, "SELECT kind, version, enabled, threshold FROM triage_autostart")

@@ -1,16 +1,24 @@
-{# 왼쪽 사이드바 — UI_GUIDE "앱 셸". 제품명 · 탐색(업무 + 내 차례 수 배지 · 모니터링 · 연결 · 시작하기 · 내 설정) · 로그인 멤버(표시 이름·역할) + 로그아웃.
-   "최근" 목록·`+` 는 없다(업무 화면이 목록, 업무 등록은 도구 막대). 활성 표시는 경로 접두사. 권한 없는 항목(모니터링 `view_metrics`,
-   내 설정 `edit_own_settings`)은 숨긴다. 연결 = `/connect`(옛 설정 화면 경로도 활성). 시작하기는 필수 항목이 남았을 때만(`show_start`). #}
+{# 왼쪽 사이드바 — UI_GUIDE "앱 셸", ARCHITECTURE "설정 UX — phase 23" 사이드바. 제품명 · 탐색(업무 + 내 차례 수 배지 · 받은·보낸 요청 ·
+   모니터링 · 팀 · 저장소 · 설정 · 시작하기 · 내 설정) · 로그인 멤버(표시 이름·역할) + 로그아웃.
+   "최근" 목록·`+` 는 없다(업무 화면이 목록, 업무 등록은 도구 막대). 활성 표시는 화면 문맥 `nav`(팀·저장소·설정 화면이 싣는다 — POST 가 그린
+   화면 포함), 없으면 경로 접두사(옛 경로가 어느 메뉴에 속하는지는 주소 표). 권한 없는 항목(모니터링 `view_metrics`, 내 설정
+   `edit_own_settings`)은 숨긴다. 시작하기는 필수 항목이 남았을 때만(`show_start`). #}
 {% set path = request.url.path %}
+{% set github_path = path.startswith('/operator/github') or path.startswith('/operator/jira') %}
+{% set on_team = nav == 'team' if nav else (path.startswith('/team') or path.startswith('/agents')) %}
+{% set on_repos = nav == 'repos' if nav else (path.startswith('/repos') or github_path) %}
+{% set on_settings = nav == 'settings' if nav else (path.startswith('/settings') or path.startswith('/kinds') or path.startswith('/rules') or path.startswith('/sources') or path.startswith('/connect') or (path.startswith('/operator') and not github_path)) %}
 <aside class="sidebar">
   <a class="brand" href="/">Runloom</a>
   <nav class="nav">
-    <a href="/tasks"{% if path.startswith('/tasks') or path.startswith('/work') or path.startswith('/chains') %} class="active"{% endif %}>업무{% if turn_count %}<span class="nav-count" data-turn-count>{{ turn_count }}</span>{% endif %}</a>
-    <a href="/requests"{% if path.startswith('/requests') %} class="active"{% endif %}>받은·보낸 요청</a>
-    {% if 'view_metrics' in allowed %}<a href="/monitor"{% if path.startswith('/monitor') %} class="active"{% endif %}>모니터링</a>{% endif %}
-    <a href="/connect"{% if path.startswith('/connect') or path.startswith('/operator') or path.startswith('/sources') or path.startswith('/team') or path.startswith('/agents') or path.startswith('/kinds') %} class="active"{% endif %}>연결</a>
-    {% if show_start %}<a href="/start"{% if path == '/start' %} class="active"{% endif %}>시작하기</a>{% endif %}
-    {% if 'edit_own_settings' in allowed %}<a href="/me"{% if path == '/me' or path.startswith('/me/') %} class="active"{% endif %}>내 설정</a>{% endif %}
+    <a href="/tasks"{% if not nav and (path.startswith('/tasks') or path.startswith('/work') or path.startswith('/chains')) %} class="active"{% endif %}>업무{% if turn_count %}<span class="nav-count" data-turn-count>{{ turn_count }}</span>{% endif %}</a>
+    <a href="/requests"{% if not nav and path.startswith('/requests') %} class="active"{% endif %}>받은·보낸 요청</a>
+    {% if 'view_metrics' in allowed %}<a href="/monitor"{% if not nav and path.startswith('/monitor') %} class="active"{% endif %}>모니터링</a>{% endif %}
+    <a href="/team"{% if on_team %} class="active"{% endif %}>팀</a>
+    <a href="/repos"{% if on_repos %} class="active"{% endif %}>저장소</a>
+    <a href="/settings"{% if on_settings %} class="active"{% endif %}>설정</a>
+    {% if show_start %}<a href="/start"{% if not nav and path == '/start' %} class="active"{% endif %}>시작하기</a>{% endif %}
+    {% if 'edit_own_settings' in allowed %}<a href="/me"{% if not nav and (path == '/me' or path.startswith('/me/')) %} class="active"{% endif %}>내 설정</a>{% endif %}
   </nav>
   <div class="side-foot">{% if member %}{{ member.display_name }} · {{ "관리자" if member.role == "admin" else "멤버" }}{% else %}셀프호스트 워크스페이스{% endif %}
     <form method="post" action="/logout" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">로그아웃</button></form>

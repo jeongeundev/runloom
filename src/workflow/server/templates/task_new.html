@@ -23,7 +23,7 @@
         <option value="{{ k.capability_code }}" data-scope-key="{{ k.scope_key }}"{% if k.capability_code == form.capability_code %} selected{% endif %}>{{ k.label }} ({{ k.kind }}) · {{ k.capability_code }} · {{ k.scope_key }}</option>
         {% endfor %}
       </select>
-      <div class="help">종류 목록은 <a href="/connect?tab=kinds">종류·규칙</a>에서 등록합니다.</div>
+      <div class="help">종류 목록은 <a href="/settings?tab=kinds">종류·규칙</a>에서 등록합니다.</div>
     </div>
     <div class="field">
       <label for="scope_value">범위 값 (<span class="mono" id="scope-key">{{ form_scope_key }}</span>)</label>

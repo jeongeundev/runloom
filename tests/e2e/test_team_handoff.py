@@ -257,7 +257,7 @@ def assign(http: httpx.Client, key: str, agent_id: str, note: str = "") -> None:
 
 def set_policy(http: httpx.Client, agent_id: str, policy: str) -> None:
     response = http.post(f"/agents/{agent_id}/delegation-policy", data={"policy": policy})
-    assert (response.status_code, response.headers.get("location")) == (303, "/connect?tab=team"), response.text[:500]
+    assert (response.status_code, response.headers.get("location")) == (303, "/team"), response.text[:500]
 
 
 def open_request(world: World, http: httpx.Client, task_id: str, code: str) -> dict | None:

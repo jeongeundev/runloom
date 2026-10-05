@@ -99,13 +99,13 @@ def test_connect_checks_then_saves_token_in_secret_store_and_public_facts_in_db(
     caplog.set_level(logging.DEBUG)
     response = connect(op, site_url=" https://ACME.atlassian.net/ ", token=f"  {JIRA_TOKEN} ")
 
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=sources")
+    assert (response.status_code, response.headers["location"]) == (303, "/repos")
     assert jira.urls() == [f"GET {SITE}/_edge/tenant_info", f"GET {GATEWAY}/rest/api/3/myself"]
     assert secrets.read(secret_store.JIRA_API_TOKEN) == JIRA_TOKEN
     row = repo.get_jira_connection(conn, session)
     assert (row["site_url"], row["cloud_id"], row["api_base"], row["account_id"], row["display_name"]) == (
         SITE, CLOUD, "gateway", ACCOUNT, "김개발")
-    page = op.get("/connect?tab=sources").text
+    page = op.get("/repos").text
     dump = "\n".join(conn.iterdump())
     for text in (response.text, str(response.headers), page, dump, caplog.text):
         assert JIRA_TOKEN not in text
@@ -178,7 +178,7 @@ def test_reconnect_to_another_site_with_projects_is_409(project, connected, conn
 
 def test_reconnect_same_site_clears_auth_failure(connected, conn, session):
     repo.mark_jira_auth_failed(conn, session, now=NOW)
-    assert "Jira 토큰 확인 필요 — 다시 연결하세요" in connected.get("/connect?tab=sources").text
+    assert "Jira 토큰 확인 필요 — 다시 연결하세요" in connected.get("/repos").text
 
     assert connect(connected).status_code == 303
     assert repo.get_jira_connection(conn, session)["auth_failed_at"] is None
@@ -219,7 +219,7 @@ def test_project_search_401_marks_auth_failed(connected, conn, session, jira):
 def test_add_project_reads_project_and_candidates(connected, conn, session, github_source, jira):
     response = add_project(connected, start_mode="all_open")
 
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=sources")
+    assert (response.status_code, response.headers["location"]) == (303, "/repos")
     assert jira.urls() == [f"GET {GATEWAY}/rest/api/3/project/10000", f"GET {GATEWAY}/rest/api/3/project/SHOP/statuses"]
     [p] = repo.list_jira_projects(conn, session)
     assert (p.project_key, p.project_name, p.github_source_id, p.start_mode) == ("SHOP", "쇼핑몰", GH_SOURCE, "all_open")
@@ -258,7 +258,7 @@ def test_save_settings_keeps_candidate_spelling(connected, conn, session, projec
     response = save(connected, project, issue_types=["버그", "작업"], status_on_start="진행 중",
                     status_on_review="리뷰중", status_on_done="종료", followup_issue_type="작업")
 
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=sources")
+    assert (response.status_code, response.headers["location"]) == (303, "/repos")
     p = repo.get_jira_project(conn, session, project)
     assert (p.issue_types, p.status_on_start, p.status_on_review, p.status_on_done, p.followup_issue_type,
             p.enabled) == (["버그", "작업"], "진행 중", "리뷰중", "종료", "작업", True)
@@ -305,12 +305,12 @@ def test_disconnect_deletes_token_keeps_projects_and_work(connected, conn, sessi
 
     response = connected.post("/operator/jira/disconnect", follow_redirects=False)
 
-    assert (response.status_code, response.headers["location"]) == (303, "/connect?tab=sources")
+    assert (response.status_code, response.headers["location"]) == (303, "/repos")
     assert not secrets.exists(secret_store.JIRA_API_TOKEN)
     assert repo.get_jira_connection(conn, session)["disconnected_at"] is not None
     assert [p.source_id for p in repo.list_jira_projects(conn, session)] == [project]
     assert conn.execute("SELECT COUNT(*) FROM work_items").fetchone()[0] == works
-    page = connected.get("/connect?tab=sources").text
+    page = connected.get("/repos").text
     assert 'action="/operator/jira/connect"' in page and "연결됨 · 김개발" not in page
     error(connected.post(f"/operator/jira/projects/{project}/refresh"), 409, "jira_not_connected")
 
@@ -325,7 +325,7 @@ def _jira_section(text: str) -> str:
 
 
 def test_page_before_connecting_shows_inputs_and_token_link(op):
-    section = _jira_section(op.get("/connect?tab=sources").text)
+    section = _jira_section(op.get("/repos").text)
 
     assert 'action="/operator/jira/connect"' in section
     for name in ("site_url", "email", "token"):
@@ -342,7 +342,7 @@ def test_page_after_connecting_shows_account_and_project_form(connected, conn, s
                              status_on_start="진행 중", status_on_review=None, status_on_done=None,
                              followup_issue_type=None, enabled=True)
 
-    section = _jira_section(connected.get("/connect?tab=sources").text)
+    section = _jira_section(connected.get("/repos").text)
 
     assert jira.calls == []  # 화면은 Jira 를 부르지 않는다
     assert f"연결됨 · 김개발 · {SITE}" in section and 'action="/operator/jira/disconnect"' in section
@@ -362,7 +362,7 @@ def test_page_escapes_jira_strings(connected, conn, session, github_source, jira
     jira.statuses = [{"id": "10001", "name": "<b>버그</b>", "subtask": False, "statuses": [{"name": "<i>대기</i>"}]}]
     assert add_project(connected).status_code == 303
 
-    text = connected.get("/connect?tab=sources").text
+    text = connected.get("/repos").text
 
     for raw in ("<script>x</script>", "<b>버그</b>", "<i>대기</i>"):
         assert raw not in text
@@ -395,7 +395,7 @@ def test_member_gets_403(app, jira, method, url):
 def test_member_page_has_no_jira_section(app):
     member = log_in_member(TestClient(app, base_url=BASE))
 
-    assert "data-jira" not in member.get("/connect?tab=sources").text
+    assert "data-jira" not in member.get("/repos").text
 
 
 @pytest.mark.parametrize(("method", "url"), ROUTES)

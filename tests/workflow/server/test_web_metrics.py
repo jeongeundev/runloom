@@ -319,11 +319,11 @@ def test_triage_tab_follows_the_period(triaged):
 def test_triage_tab_empty_state_links_connect_only_for_managers(app, op):
     text = body(page(op, {"tab": "triage"}))  # operator 픽스처 — 판단 기록 없음
     assert "아직 판단 기록이 없습니다." in text
-    assert '<a href="/connect?tab=triage">연결 › 판단</a>' in text
+    assert '<a href="/settings?tab=triage">연결 › 판단</a>' in text
     member = log_in_member(TestClient(app))
     member_text = body(page(member, {"tab": "triage"}))
     assert "아직 판단 기록이 없습니다." in member_text and "연결 › 판단" in member_text
-    assert 'href="/connect?tab=triage"' not in member_text
+    assert 'href="/settings?tab=triage"' not in member_text
 
 
 # --- 담당자별 탭 -----------------------------------------------------------------------------------------

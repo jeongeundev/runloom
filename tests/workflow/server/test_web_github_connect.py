@@ -311,7 +311,7 @@ def test_setup_creates_a_source_per_installed_repository(op, conn, github, secre
                       params={"installation_id": 42, "setup_action": "install", "state": state_of(install)},
                       follow_redirects=False)
 
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=sources"
+    assert response.status_code == 303 and response.headers["location"] == "/repos"
     sources = names(conn, op_session(op))
     assert sorted(sources) == ["acme/billing", "acme/shop"]
     assert all(s.installation_id == 42 and s.intake == "all_open" and s.trigger_label == "runloom"
@@ -378,7 +378,7 @@ def test_pasted_token_is_checked_saved_and_makes_a_source(op, conn, github, secr
     response = op.post("/operator/github/token", data={"token": f"  {PAT} ", "repository_full_name": "acme/lib"},
                        follow_redirects=False)
 
-    assert response.status_code == 303 and response.headers["location"] == "/connect?tab=sources"
+    assert response.status_code == 303 and response.headers["location"] == "/repos"
     assert github.calls[0].headers["authorization"] == f"Bearer {PAT}"
     assert secrets.read(secret_store.GITHUB_TOKEN) == PAT
     lib = names(conn, op_session(op))["acme/lib"]
@@ -423,7 +423,7 @@ def test_whole_flow_leaks_no_secret(op, conn, github, secrets, pem, caplog):
                 follow_redirects=False))
     keep(op.post("/operator/github/token", data={"token": PAT, "repository_full_name": "acme/lib"},
                  follow_redirects=False))
-    keep(op.get("/connect?tab=sources"))
+    keep(op.get("/repos"))
 
     dump = "\n".join(conn.iterdump())
     key_body = pem.splitlines()[1]
@@ -540,7 +540,7 @@ def connect_app(op, secrets, pem) -> None:
 
 
 def test_page_before_connecting_is_one_button_and_a_folded_token_form(op):
-    text = op.get("/connect?tab=sources").text
+    text = op.get("/repos").text
 
     shown = visible(text)
     assert 'href="/operator/github/app/new"' in shown and "GitHub 연결" in shown
@@ -554,7 +554,7 @@ def test_page_before_connecting_is_one_button_and_a_folded_token_form(op):
 def test_page_after_app_setup_shows_a_card_per_repository(op, conn, secrets, pem):
     connect_app(op, secrets, pem)
 
-    text = op.get("/connect?tab=sources").text
+    text = op.get("/repos").text
 
     shown = visible(text)
     for name in ID_FIELDS:
@@ -581,7 +581,7 @@ def test_page_after_app_setup_shows_a_card_per_repository(op, conn, secrets, pem
 
 def test_card_explains_the_baseline_before_it_is_imported(op, conn, secrets, pem):
     connect_app(op, secrets, pem)
-    text = op.get("/connect?tab=sources").text
+    text = op.get("/repos").text
     for source in names(conn, op_session(op)).values():
         card = card_of(visible(text), source.source_id)
         assert "Runloom 도입 전 GitHub 이력으로 비교 기준을 만듭니다" in card
@@ -602,7 +602,7 @@ def test_card_shows_the_imported_baseline_summary(op, conn, secrets, pem):
     repo.replace_baseline(conn, session_id, source.source_id, links, opened_before="2026-09-27T00:00:00Z",
                           now="2026-09-27T11:20:00Z")
 
-    card = card_of(visible(op.get("/connect?tab=sources").text), source.source_id)
+    card = card_of(visible(op.get("/repos").text), source.source_id)
 
     assert "기준선 2건" in card and "이슈 열림 → 병합 중앙값 4시간 0분" in card
     assert "2026-09-27 20:20" in card  # 가져온 시각(KST)
@@ -611,7 +611,7 @@ def test_card_shows_the_imported_baseline_summary(op, conn, secrets, pem):
 
 def test_card_title_hides_internal_ids(op, conn, secrets, pem):
     connect_app(op, secrets, pem)
-    text = op.get("/connect?tab=sources").text
+    text = op.get("/repos").text
     for source in names(conn, op_session(op)).values():
         shown = re.sub(r"<[^>]+>", " ", card_of(visible(text), source.source_id))  # 보이는 글자만(요청 주소 속성 제외)
         assert source.source_id not in shown and "revision" not in shown
@@ -620,7 +620,7 @@ def test_card_title_hides_internal_ids(op, conn, secrets, pem):
 def test_card_shows_the_automatically_matched_agents_and_profile(client, auto_source, conn):
     log_in(client)  # auto_source 의 주인 = 고정 워크스페이스
 
-    card = card_of(client.get("/connect?tab=sources").text, SOURCE)
+    card = card_of(client.get("/repos").text, SOURCE)
 
     for value in ("billing", "agent-fix", "agent-review", "vp-pytest"):
         assert f'<span class="mono">{value}</span> (자동)' in card, value
@@ -632,7 +632,7 @@ def test_card_says_when_no_credential_can_collect(op, conn, app):
     (source,) = names(conn, op_session(op)).values()
     app.state.secrets.delete(secret_store.GITHUB_TOKEN)
 
-    card = card_of(op.get("/connect?tab=sources").text, source.source_id)
+    card = card_of(op.get("/repos").text, source.source_id)
     assert "GitHub 자격 없음" in card
 
 
@@ -640,7 +640,7 @@ def test_secret_status_is_only_connected_or_missing(op, conn, secrets, pem):
     connect_app(op, secrets, pem)
     op.post("/operator/github/token", data={"token": PAT, "repository_full_name": "acme/lib"})
 
-    text = op.get("/connect?tab=sources").text
+    text = op.get("/repos").text
 
     assert "붙여 넣은 토큰 연결됨" in text and "서버 환경변수 토큰(WORKFLOW_GITHUB_TOKEN) 없음" in text
     for secret in (PAT, CLIENT_SECRET, WEBHOOK_SECRET, INSTALL_TOKEN, pem.splitlines()[1]):
@@ -666,7 +666,7 @@ def test_delegate_button_only_for_open_tasks_without_an_instruction(cycle_op, co
 
     # phase 16: 업무 화면 표에는 행 동작 버튼이 없다(에이전트 맡기기는 패널의 담당 선택 — step 5)
     assert "/delegate" not in cycle_op.get("/tasks").text
-    text = cycle_op.get("/connect?tab=sources").text
+    text = cycle_op.get("/repos").text
     assert delegate_form(waiting) in text and "에이전트에게 맡기기" in text
     assert delegate_form(labelled) not in text and delegate_form(closed) not in text
 
@@ -710,7 +710,7 @@ def test_member_sees_the_delegate_button_regardless_of_is_operator(cycle_op, app
     conn.commit()
     for client in (cycle_op, log_in_member(TestClient(app))):
         assert delegate_form(task_id) in client.get(f"/tasks/{task_id}").text
-        assert delegate_form(task_id) in client.get("/connect?tab=sources").text  # phase 16: 업무 화면 표에는 버튼 없음
+        assert delegate_form(task_id) in client.get("/repos").text  # phase 16: 업무 화면 표에는 버튼 없음
 
 
 def test_home_without_github_is_unchanged(logged_in_client):

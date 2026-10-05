@@ -1712,80 +1712,170 @@ def artifact_view(
     )
 
 
-# --- 연결 화면 (phase 16 step 6, ARCHITECTURE "업무 화면 — phase 16" 연결 화면 탭) -----------------------------
-# 옛 설정 화면 7개의 본문을 탭 5개로 모은다. 탭 머리는 볼 수 있는 탭만, 권한 없는 탭을 직접 열면 403. 절별 권한은 템플릿이
-# `allowed` 로 가른다. 옛 GET 은 `_to_connect` 로 303(쿼리는 버림), POST 경로는 그대로이고 성공 뒤 303 대상만 새 탭.
+# --- 팀·저장소·설정 화면 (phase 23 step 1, ADR-0028, ARCHITECTURE "설정 UX — phase 23" 주소) -------------------------------
+# phase 16 의 연결 화면 탭을 `/team`·`/repos`·`/settings?tab=` 로 나눈다. 설정 탭 머리는 볼 수 있는 탭만, 권한 없는 탭을 직접
+# 열면 403. 절별 권한은 템플릿이 `allowed` 로 가른다. `/connect`·옛 GET 은 새 주소로 303(쿼리는 버림 — `/connect` 의 `version` 만
+# 유지), POST 경로는 그대로이고 성공 뒤 303 대상만 새 주소. 화면 문맥에는 사이드바 활성용 `nav` 를 늘 싣는다.
 
 # (tab, 이름, 탭을 보는 데 필요한 동작 — None 이면 로그인만)
-CONNECT_TABS = (
-    ("sources", "가져올 곳", None),
-    ("team", "팀·담당자", None),
+SETTINGS_TABS = (
     ("kinds", "업무 종류·규칙", None),
     ("triage", "판단", team.MANAGE_CONNECTIONS),
     ("notify", "알림", team.MANAGE_SHARED_NOTIFY),
+    ("inbound", "n8n 입구", team.MANAGE_CONNECTIONS),
     ("advanced", "고급", None),
 )
 
+# 옛 `/connect?tab=` → 새 주소. 모르는 탭·빈 탭은 `/repos`(옛 "볼 수 있는 첫 탭" = sources).
+CONNECT_TAB_TARGETS = {
+    "sources": "/repos",
+    "team": "/team",
+    "kinds": "/settings?tab=kinds",
+    "triage": "/settings?tab=triage",
+    "notify": "/settings?tab=notify",
+    "advanced": "/settings?tab=advanced",
+}
 
-def _to_connect(tab: str) -> RedirectResponse:
-    return RedirectResponse(f"/connect?tab={tab}", status_code=303)
+
+def _to_settings(tab: str) -> RedirectResponse:
+    return RedirectResponse(f"/settings?tab={tab}", status_code=303)
 
 
-def _visible_tabs(allowed: frozenset[str]) -> list[dict[str, str]]:
-    return [{"key": key, "label": label} for key, label, action in CONNECT_TABS if action is None or action in allowed]
+def _connect_target(tab: str, version: int | None) -> str:
+    target = CONNECT_TAB_TARGETS.get(tab, "/repos")
+    if tab == "triage" and version is not None:
+        target += f"&version={version}"
+    return target
 
 
-def _tab_context(request: Request, conn: Connection, member: LoggedIn, tab: str, now: str,
-                 allowed: frozenset[str]) -> dict[str, Any]:
+def _visible_settings_tabs(allowed: frozenset[str]) -> list[dict[str, str]]:
+    return [{"key": key, "label": label} for key, label, action in SETTINGS_TABS if action is None or action in allowed]
+
+
+def _team_context(request: Request, conn: Connection, member: LoggedIn, now: str,
+                  allowed: frozenset[str]) -> dict[str, Any]:
     session_id = member.session_id
     settings = _settings(request)
-    if tab == "sources":
-        context = views.github_context(conn, session_id, now=now, settings=settings, secrets=request.app.state.secrets)
-        if team.MANAGE_CONNECTIONS in allowed:
-            context |= _inbound_context(request, conn, session_id)
-            context |= jira_connect.connect_context(
-                conn, session_id, token_saved=request.app.state.secrets.exists(secret_store.JIRA_API_TOKEN))
-        return context
-    if tab == "team":
-        context: dict[str, Any] = {
-            "agents": [
-                {**views.agent_public(a, now=now, settings=settings),
-                 "owner": views.runner_owner(conn, session_id, owner_id),
-                 "can_set_policy": can_set_policy(member_id=member.member_id, role=member.role, owner_id=owner_id)}
-                for a in _session_agents(conn, session_id)
-                for owner_id in (views.agent_owner_id(conn, a),)
-            ],
-            "public_url_set": bool(settings.public_url),
-            "responsibilities": [
-                {**e.model_dump(), "problem": responsibility_store.entry_problem(conn, session_id, e)}
-                for e in responsibility_store.list_entries(conn, session_id)
-            ],
-            "directory_revision": repo.get_config_revision(conn, session_id),
-            "directory_members": [{"member_id": m["member_id"], "display_name": m["display_name"]}
-                                  for m in repo.list_members(conn, session_id) if not m["disabled_at"]],
-        }
-        if team.MANAGE_TEAM in allowed:
-            context |= views.team_context(conn, session_id, now=now)
-        if team.ATTACH_RUNNER in allowed:
-            context["runners"] = _runners(conn, session_id, member)
-        return context
+    context: dict[str, Any] = {
+        "agents": [
+            {**views.agent_public(a, now=now, settings=settings),
+             "owner": views.runner_owner(conn, session_id, owner_id),
+             "can_set_policy": can_set_policy(member_id=member.member_id, role=member.role, owner_id=owner_id)}
+            for a in _session_agents(conn, session_id)
+            for owner_id in (views.agent_owner_id(conn, a),)
+        ],
+        "public_url_set": bool(settings.public_url),
+        "responsibilities": [
+            {**e.model_dump(), "problem": responsibility_store.entry_problem(conn, session_id, e)}
+            for e in responsibility_store.list_entries(conn, session_id)
+        ],
+        "directory_revision": repo.get_config_revision(conn, session_id),
+        "directory_members": [{"member_id": m["member_id"], "display_name": m["display_name"]}
+                              for m in repo.list_members(conn, session_id) if not m["disabled_at"]],
+    }
+    if team.MANAGE_TEAM in allowed:
+        context |= views.team_context(conn, session_id, now=now)
+    if team.ATTACH_RUNNER in allowed:
+        context["runners"] = _runners(conn, session_id, member)
+    return context
+
+
+def _repos_context(request: Request, conn: Connection, member: LoggedIn, now: str,
+                   allowed: frozenset[str]) -> dict[str, Any]:
+    session_id = member.session_id
+    context = views.github_context(conn, session_id, now=now, settings=_settings(request),
+                                   secrets=request.app.state.secrets)
+    if team.MANAGE_CONNECTIONS in allowed:
+        context |= jira_connect.connect_context(
+            conn, session_id, token_saved=request.app.state.secrets.exists(secret_store.JIRA_API_TOKEN))
+    return context
+
+
+def _settings_context(request: Request, conn: Connection, member: LoggedIn, tab: str, now: str,
+                      allowed: frozenset[str]) -> dict[str, Any]:
+    session_id = member.session_id
     if tab == "kinds":
         return _kinds_context(conn, session_id)
     if tab == "triage":
         return views.triage_settings_context(conn, session_id)
     if tab == "notify":
         return views.notifications_context(conn, session_id, secrets=request.app.state.secrets)
+    if tab == "inbound":
+        return _inbound_context(request, conn, session_id)
     return _advanced_context(request, conn, session_id, now, member, allowed)
 
 
-def _connect_page(request: Request, conn: Connection, member: LoggedIn, tab: str, **extra: Any) -> str:
-    """연결 화면 한 탭. `extra` = 발급 응답 한 번뿐인 값(`issued`·`runner_issued`)이나 테스트 결과 — POST 응답이 같은 탭을 그린다."""
+def _team_page(request: Request, conn: Connection, member: LoggedIn, *, status: int = 200,
+               **extra: Any) -> HTMLResponse:
+    """팀 화면. `extra` = 발급 응답 한 번뿐인 값(`issued`) — POST 응답이 같은 화면을 그린다."""
     now = utc_now()
     base = _base(request, conn, member.session_id, now)
-    return _render("connect.html", **{
-        **base, **_tab_context(request, conn, member, tab, now, base["allowed"]),
-        "tabs": _visible_tabs(base["allowed"]), "tab": tab, **extra,
+    return HTMLResponse(_render("team.html", **{
+        **base, **_team_context(request, conn, member, now, base["allowed"]), "nav": "team", **extra,
+    }), status_code=status)
+
+
+def _repos_page(request: Request, conn: Connection, member: LoggedIn, **extra: Any) -> str:
+    """저장소 화면. `extra` = 발급 응답 한 번뿐인 값(`runner_issued`)이나 Jira 프로젝트 찾기 결과."""
+    now = utc_now()
+    base = _base(request, conn, member.session_id, now)
+    return _render("repos.html", **{
+        **base, **_repos_context(request, conn, member, now, base["allowed"]), "nav": "repos", **extra,
     })
+
+
+def _settings_page(request: Request, conn: Connection, member: LoggedIn, tab: str, **extra: Any) -> str:
+    """설정 화면 한 탭. `extra` = 발급 응답 한 번뿐인 값(`issued`)이나 테스트 결과 — POST 응답이 같은 탭을 그린다."""
+    now = utc_now()
+    base = _base(request, conn, member.session_id, now)
+    return _render("settings.html", **{
+        **base, **_settings_context(request, conn, member, tab, now, base["allowed"]),
+        "tabs": _visible_settings_tabs(base["allowed"]), "tab": tab, "nav": "settings", **extra,
+    })
+
+
+@router.get("/team", response_class=HTMLResponse)
+def team_page(
+    request: Request, member: LoggedIn = Depends(require_member), conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    return _team_page(request, conn, member)
+
+
+@router.get("/repos", response_class=HTMLResponse)
+def repos_page(
+    request: Request, member: LoggedIn = Depends(require_member), conn: Connection = Depends(get_conn),
+) -> str:
+    return _repos_page(request, conn, member)
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(
+    request: Request,
+    tab: str = Query(""),
+    version: int | None = Query(None),
+    member: LoggedIn = Depends(require_member),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    """모르는 `tab` 은 볼 수 있는 첫 탭, 아는 탭인데 권한이 없으면 403 forbidden. 판단 탭의 `version` 은 그 기준 본문
+    읽기 전용 보기(없는 버전 404)."""
+    visible = [t["key"] for t in _visible_settings_tabs(team.allowed_actions(member.role))]
+    if tab not in visible:
+        if any(tab == key for key, _, _ in SETTINGS_TABS):
+            raise PageError(403, "forbidden", "관리자 권한이 필요합니다.")
+        tab = visible[0]
+    extra: dict[str, Any] = {}
+    if tab == "triage" and version is not None:
+        row = repo.get_triage_criteria(conn, member.session_id, version)
+        if row is None:
+            raise PageError(404, "not_found", f"판단 기준 v{version} 이 없습니다.", field="version")
+        extra["criteria_view"] = {"version": row["version"], "body": row["body"]}
+    return _settings_page(request, conn, member, tab, **extra)
+
+
+@router.get("/connect")
+def connect_redirect(tab: str = Query(""), version: int | None = Query(None)) -> RedirectResponse:
+    """옛 연결 화면 — 새 주소로 303(로그인 검사는 대상 화면이). `version` 말고 다른 쿼리는 버린다."""
+    return RedirectResponse(_connect_target(tab, version), status_code=303)
 
 
 def _save_directory(conn: Connection, member: LoggedIn, entries: list[Responsibility], revision: int) -> RedirectResponse:
@@ -1798,7 +1888,7 @@ def _save_directory(conn: Connection, member: LoggedIn, entries: list[Responsibi
         raise PageError(409, "stale_directory", "담당 범위 표가 변경되었습니다. 팀·담당자 화면을 다시 열어 주세요.") from None
     except ValueError as exc:
         raise PageError(422, "invalid_field", str(exc), field="entries") from None
-    return _to_connect("team")
+    return RedirectResponse("/team", status_code=303)
 
 
 @router.post("/responsibilities/add")
@@ -1828,30 +1918,6 @@ def responsibility_remove(
     return _save_directory(conn, member, entries[:position] + entries[position + 1:], expected_revision)
 
 
-@router.get("/connect", response_class=HTMLResponse)
-def connect_page(
-    request: Request,
-    tab: str = Query(""),
-    version: int | None = Query(None),
-    member: LoggedIn = Depends(require_member),
-    conn: Connection = Depends(get_conn),
-) -> str:
-    """모르는 `tab` 은 볼 수 있는 첫 탭, 아는 탭인데 권한이 없으면 403 forbidden. 판단 탭의 `version` 은 그 기준 본문
-    읽기 전용 보기(없는 버전 404)."""
-    visible = [t["key"] for t in _visible_tabs(team.allowed_actions(member.role))]
-    if tab not in visible:
-        if any(tab == key for key, _, _ in CONNECT_TABS):
-            raise PageError(403, "forbidden", "관리자 권한이 필요합니다.")
-        tab = visible[0]
-    extra: dict[str, Any] = {}
-    if tab == "triage" and version is not None:
-        row = repo.get_triage_criteria(conn, member.session_id, version)
-        if row is None:
-            raise PageError(404, "not_found", f"판단 기준 v{version} 이 없습니다.", field="version")
-        extra["criteria_view"] = {"version": row["version"], "body": row["body"]}
-    return _connect_page(request, conn, member, tab, **extra)
-
-
 # --- 판단 설정 (phase 19 step 8, ADR-0025, ARCHITECTURE "판단 — phase 19" 경로) -------------------------------------
 # 기준 본문은 사용자 입력 — 요청문에 글로만 들어가고 화면은 자동 이스케이프로만 그린다. 모두 `manage_connections`.
 
@@ -1874,7 +1940,7 @@ def triage_criteria_save(
     except StaleCriteria:
         raise PageError(409, "stale_criteria", "다른 사람이 먼저 고쳤습니다 — 새로 고친 뒤 다시",
                         field="expected_version") from None
-    return _redirect("/connect?tab=triage", response)
+    return _redirect("/settings?tab=triage", response)
 
 
 @router.post("/operator/triage/autostart/{kind}")
@@ -1901,7 +1967,7 @@ def triage_autostart_save(
         raise PageError(409, "triage_autostart_locked",
                         f"판단 기록 {exc.count}/{AUTOSTART_MIN_HANDLED} — {AUTOSTART_MIN_HANDLED}건이 되면 켤 수 있습니다",
                         field="enabled") from None
-    return _redirect("/connect?tab=triage", response)
+    return _redirect("/settings?tab=triage", response)
 
 
 # --- 에이전트 — 러너 등록이 워크스페이스에 붙인다 (ADR-0018 결정 1) --------------
@@ -1909,8 +1975,8 @@ def triage_autostart_save(
 
 @router.get("/agents")
 def agents_list() -> RedirectResponse:
-    """옛 에이전트 목록 — 연결 화면 팀·담당자 탭(phase 16 step 6). 쿼리는 버린다."""
-    return _to_connect("team")
+    """옛 에이전트 목록 — 팀 화면(phase 23 step 1). 쿼리는 버린다."""
+    return RedirectResponse("/team", status_code=303)
 
 
 @router.post("/agents/{agent_id}/delegation-policy")
@@ -1934,7 +2000,7 @@ def agent_delegation_policy(
                                    now=utc_now())
     except NotFound:
         raise PageError(404, "not_found", "에이전트를 찾을 수 없습니다.", field="agent_id") from None
-    return _redirect("/connect?tab=team", response)
+    return _redirect("/team", response)
 
 
 @router.get("/agents/{agent_id}", response_class=HTMLResponse)
@@ -2006,8 +2072,8 @@ def _kinds_context(conn: Connection, session_id: str) -> dict[str, Any]:
 
 @router.get("/kinds")
 def kinds_page() -> RedirectResponse:
-    """옛 종류·규칙 화면 — 연결 화면 업무 종류·규칙 탭(phase 16 step 6)."""
-    return _to_connect("kinds")
+    """옛 종류·규칙 화면 — 설정 화면 업무 종류·규칙 탭(phase 23 step 1)."""
+    return _to_settings("kinds")
 
 
 @router.post("/kinds")
@@ -2047,7 +2113,7 @@ def kinds_create(
         repo.insert_kind(conn, session_id, spec, utc_now(), member_id=member.member_id)
     except DuplicateKind:
         raise PageError(409, "kind_exists", f"종류 {spec.kind} 은 이미 등록돼 있습니다.", field="kind") from None
-    return _redirect("/connect?tab=kinds", response)
+    return _redirect("/settings?tab=kinds", response)
 
 
 @router.post("/kinds/{kind}/delete")
@@ -2066,7 +2132,7 @@ def kinds_delete(
         raise PageError(409, "kind_in_use", _kind_in_use_message(conn, session_id, kind), field="kind") from None
     except NotFound:
         raise PageError(404, "not_found", f"종류 {kind}을 찾을 수 없습니다.", field="kind") from None
-    return _redirect("/connect?tab=kinds", response)
+    return _redirect("/settings?tab=kinds", response)
 
 
 @router.post("/rules")
@@ -2102,7 +2168,7 @@ def rules_create(
         raise PageError(
             409, "rule_exists", f"규칙 {rule.from_kind} → {rule.to_kind} 은 이미 등록돼 있습니다.",
         ) from None
-    return _redirect("/connect?tab=kinds", response)
+    return _redirect("/settings?tab=kinds", response)
 
 
 @router.post("/rules/{rule_id}/delete")
@@ -2118,7 +2184,7 @@ def rules_delete(
         repo.delete_rule(conn, session_id, rule_id, now=utc_now(), member_id=member.member_id)
     except NotFound:
         raise PageError(404, "not_found", f"규칙 {rule_id}을 찾을 수 없습니다.", field="rule_id") from None
-    return _redirect("/connect?tab=kinds", response)
+    return _redirect("/settings?tab=kinds", response)
 
 
 # --- 입구 (ADR-0010) — 워크스페이스(세션)가 입구 토큰을 발급·취소한다. 운영자 화면이 아니다 ------------------
@@ -2148,8 +2214,8 @@ def _inbound_context(request: Request, conn: Connection, session_id: str) -> dic
 
 @router.get("/sources")
 def sources_page() -> RedirectResponse:
-    """옛 입구 화면 — 연결 화면 가져올 곳 탭(phase 16 step 6)."""
-    return _to_connect("sources")
+    """옛 입구 화면 — 설정 화면 n8n 입구 탭(phase 23 step 1)."""
+    return _to_settings("inbound")
 
 
 @router.post("/sources/tokens", response_class=HTMLResponse)
@@ -2169,7 +2235,7 @@ def sources_issue_token(
             422, "invalid_field", f"활성 토큰은 {SOURCE_TOKEN_LIMIT}개까지입니다. 하나를 취소하세요.", field="label",
         )
     token_id, token_plain = repo.issue_source_token(conn, session_id, INBOUND_SOURCE, label.strip(), now)
-    return _connect_page(request, conn, member, "sources", issued={"token_id": token_id, "token": token_plain})
+    return _settings_page(request, conn, member, "inbound", issued={"token_id": token_id, "token": token_plain})
 
 
 @router.post("/sources/tokens/{token_id}/revoke")
@@ -2185,7 +2251,7 @@ def sources_revoke_token(
         repo.revoke_source_token(conn, session_id, token_id, utc_now())
     except NotFound:
         raise PageError(404, "not_found", f"토큰 {token_id}을 찾을 수 없습니다.", field="token_id") from None
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/settings?tab=inbound", response)
 
 
 # --- 운영자 (ADR-0005) --------------------------------------------------------------
@@ -2250,14 +2316,14 @@ def _advanced_context(
 
 @router.get("/operator")
 def operator_page() -> RedirectResponse:
-    """옛 운영자 화면 — 연결 화면 고급 탭(phase 16 step 6). 러너 목록은 팀·담당자 탭으로 옮겼다."""
-    return _to_connect("advanced")
+    """옛 운영자 화면 — 설정 화면 고급 탭(phase 23 step 1). 러너 목록은 팀 화면으로 옮겼다."""
+    return _to_settings("advanced")
 
 
 @router.get("/operator/github")
 def operator_github_page() -> RedirectResponse:
-    """옛 GitHub 연결 화면 — 연결 화면 가져올 곳 탭(phase 16 step 6)."""
-    return _to_connect("sources")
+    """옛 GitHub 연결 화면 — 저장소 화면(phase 23 step 1)."""
+    return RedirectResponse("/repos", status_code=303)
 
 
 @router.post("/operator/github/sources/{source_id}/runner", response_class=HTMLResponse)
@@ -2276,8 +2342,8 @@ def operator_attach_runner(
     code = repo.issue_connect_code(conn, now, issued_by_member_id=member.member_id)
     row = next(c for c in repo.list_connect_codes(conn) if c["code"] == code)
     server = _settings(request).public_url or str(request.base_url).rstrip("/")
-    return _connect_page(
-        request, conn, member, "sources",
+    return _repos_page(
+        request, conn, member,
         runner_issued={
             "source_id": source_id,
             "command": f"deploy/selfhost/install-runner.sh --server {server} --code {code} --repo <이 저장소를 클론한 폴더>",
@@ -2452,7 +2518,7 @@ def github_app_setup(
     github_connect.sync_installation_sources(conn, session_id, installation_id, repositories, utc_now(),
                                              member_id=member.member_id)
     response.delete_cookie(GH_STATE_COOKIE, path=GH_STATE_PATH)
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/repos", response)
 
 
 @router.post("/operator/github/token")
@@ -2486,7 +2552,7 @@ def github_token_connect(
                         field="token") from None
     request.app.state.secrets.write(secret_store.GITHUB_TOKEN, token)
     github_connect.ensure_token_source(conn, session_id, name, utc_now(), member_id=member.member_id)
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/repos", response)
 
 
 # --- Jira 연결 (phase 18 step 4, ADR-0024, ARCHITECTURE "Jira 소스 — phase 18" 경로) ----------------------------------
@@ -2564,7 +2630,7 @@ def jira_connect_route(
         raise PageError(409, "jira_site_mismatch", "이미 설정한 프로젝트가 다른 사이트의 것입니다.", field="site_url")
     request.app.state.secrets.write(secret_store.JIRA_API_TOKEN, token)
     repo.save_jira_connection(conn, facts, session_id=session_id, now=utc_now())
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/repos", response)
 
 
 @router.get("/operator/jira/projects", response_class=HTMLResponse)
@@ -2574,7 +2640,7 @@ def jira_project_search(
     member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS)),
     conn: Connection = Depends(get_conn),
 ) -> str:
-    """프로젝트 찾기 — 결과 줄을 연결 화면에 그린다(줄마다 연결 저장소·시작점 고르기 + [추가])."""
+    """프로젝트 찾기 — 결과 줄을 저장소 화면에 그린다(줄마다 연결 저장소·시작점 고르기 + [추가])."""
     session_id = member.session_id
     q = q.strip()
     if len(q) > JIRA_QUERY_MAX:
@@ -2585,7 +2651,7 @@ def jira_project_search(
     except JiraError as exc:
         raise _jira_page_error(exc, conn, session_id) from None
     added = {p.project_id for p in repo.list_jira_projects(conn, session_id)}
-    return _connect_page(request, conn, member, "sources", jira_query=q, jira_found=[
+    return _repos_page(request, conn, member, jira_query=q, jira_found=[
         {**ref.model_dump(mode="json"), "added": ref.project_id in added} for ref in found
     ])
 
@@ -2624,7 +2690,7 @@ def jira_project_add(
                               start_mode=start_mode, choices=choices, now=utc_now())
     except sqlite3.IntegrityError:
         raise PageError(409, "jira_project_exists", "이미 추가한 프로젝트입니다.", field="project_id") from None
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/repos", response)
 
 
 @router.post("/operator/jira/projects/{source_id}")
@@ -2657,7 +2723,7 @@ def jira_project_save(
         raise PageError(422, "invalid_field", str(exc), field=exc.field) from None
     repo.update_jira_project(conn, session_id, source_id, now=utc_now(), github_source_id=github_source_id,
                              enabled=bool(enabled), **settings)
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/repos", response)
 
 
 @router.post("/operator/jira/projects/{source_id}/refresh")
@@ -2677,7 +2743,7 @@ def jira_project_refresh(
     except JiraError as exc:
         raise _jira_page_error(exc, conn, session_id) from None
     repo.set_jira_choices(conn, session_id, source_id, choices, now=utc_now())
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/repos", response)
 
 
 @router.post("/operator/jira/disconnect")
@@ -2690,7 +2756,7 @@ def jira_disconnect(
     """끊기 — 토큰 파일 삭제 + `disconnected_at`. 프로젝트 설정·업무는 남는다(다시 연결하면 이어간다)."""
     request.app.state.secrets.delete(secret_store.JIRA_API_TOKEN)
     repo.disconnect_jira(conn, member.session_id, now=utc_now())
-    return _redirect("/connect?tab=sources", response)
+    return _redirect("/repos", response)
 
 
 # --- 알림 설정 (phase 12 step 8, ADR-0018 결정 5, ARCHITECTURE "새 경로 (step 8·9)") ------------------------------
@@ -2735,8 +2801,8 @@ def _send_test_notification(request: Request, url: str | None) -> dict[str, str]
 
 @router.get("/operator/notifications")
 def operator_notifications_page() -> RedirectResponse:
-    """옛 알림 화면 — 연결 화면 알림 탭(phase 16 step 6)."""
-    return _to_connect("notify")
+    """옛 알림 화면 — 설정 화면 알림 탭(phase 23 step 1)."""
+    return _to_settings("notify")
 
 
 @router.post("/operator/notifications/webhook")
@@ -2751,7 +2817,7 @@ def operator_notifications_save(
     url = _savable_webhook_url(url)
     request.app.state.secrets.write(secret_store.NOTIFY_WEBHOOK_URL, url)
     logger.info("알림 웹훅 저장: %s", notification.webhook_host(url))
-    return _redirect("/connect?tab=notify", response)
+    return _redirect("/settings?tab=notify", response)
 
 
 @router.post("/operator/notifications/webhook/delete")
@@ -2762,7 +2828,7 @@ def operator_notifications_delete(
     conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
     request.app.state.secrets.delete(secret_store.NOTIFY_WEBHOOK_URL)
-    return _redirect("/connect?tab=notify", response)
+    return _redirect("/settings?tab=notify", response)
 
 
 @router.post("/operator/notifications/test", response_class=HTMLResponse)
@@ -2773,7 +2839,7 @@ def operator_notifications_test(
 ) -> str:
     """저장된 URL 로 대기열 없이 한 번 보내고 결과(보냄·HTTP 상태·시간 초과·연결 오류)만 보인다."""
     result = _send_test_notification(request, request.app.state.secrets.read(secret_store.NOTIFY_WEBHOOK_URL))
-    return _connect_page(request, conn, member, "notify", test_result=result)
+    return _settings_page(request, conn, member, "notify", test_result=result)
 
 
 # --- 팀·내 설정 (phase 15 step 7, ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로) --------------------------------
@@ -2803,25 +2869,19 @@ def _team_member(conn: Connection, session_id: str, member_id: str) -> Row:
     return row
 
 
-@router.get("/team")
-def team_page() -> RedirectResponse:
-    """옛 팀 화면 — 연결 화면 팀·담당자 탭(phase 16 step 6)."""
-    return _to_connect("team")
-
-
 @router.post("/team/invites", response_class=HTMLResponse)
 def team_invite(
     request: Request,
     role: str = Form(""),
     member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
     conn: Connection = Depends(get_conn),
-) -> str:
+) -> HTMLResponse:
     """초대 링크 발급 — 같은 화면에 링크를 한 번만 보인다."""
     _, token = repo.issue_invite(conn, member.session_id, role=_checked_role(role),
                                  created_by_member_id=member.member_id, now=utc_now())
     logger.info("초대 링크 발급: %s", role)
-    return _connect_page(request, conn, member, "team",
-                         issued={"kind": "invite", "link": _link_url(request, "invite", token), "role": role})
+    return _team_page(request, conn, member,
+                      issued={"kind": "invite", "link": _link_url(request, "invite", token), "role": role})
 
 
 @router.post("/team/invites/{invite_id}/revoke")
@@ -2836,7 +2896,7 @@ def team_invite_revoke(
         repo.revoke_invite(conn, member.session_id, invite_id, now=utc_now())
     except NotFound:
         raise PageError(404, "not_found", f"초대 {invite_id}을 찾을 수 없습니다.", field="invite_id") from None
-    return _redirect("/connect?tab=team", response)
+    return _redirect("/team", response)
 
 
 @router.post("/team/members/{member_id}/role")
@@ -2853,7 +2913,7 @@ def team_member_role(
         repo.set_member_role(conn, member.session_id, member_id, _checked_role(role), now=utc_now())
     except LastAdmin:
         raise PageError(409, "last_admin", _LAST_ADMIN) from None
-    return _redirect("/connect?tab=team", response)
+    return _redirect("/team", response)
 
 
 @router.post("/team/members/{member_id}/disable")
@@ -2870,7 +2930,7 @@ def team_member_disable(
         repo.disable_member(conn, member.session_id, member_id, now=utc_now())
     except LastAdmin:
         raise PageError(409, "last_admin", _LAST_ADMIN) from None
-    return _redirect("/connect?tab=team", response)
+    return _redirect("/team", response)
 
 
 @router.post("/team/members/{member_id}/enable")
@@ -2883,7 +2943,7 @@ def team_member_enable(
 ) -> RedirectResponse:
     _team_member(conn, member.session_id, member_id)
     repo.enable_member(conn, member.session_id, member_id, now=utc_now())
-    return _redirect("/connect?tab=team", response)
+    return _redirect("/team", response)
 
 
 @router.post("/team/members/{member_id}/reset-link", response_class=HTMLResponse)
@@ -2892,13 +2952,13 @@ def team_member_reset_link(
     member_id: str,
     member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
     conn: Connection = Depends(get_conn),
-) -> str:
+) -> HTMLResponse:
     """재설정 링크 발급(그 멤버의 이전 미사용 링크는 취소) — 같은 화면에 링크를 한 번만 보인다."""
     target = _team_member(conn, member.session_id, member_id)
     _, token = repo.issue_reset_link(conn, member.session_id, member_id, created_by_member_id=member.member_id,
                                      now=utc_now())
     logger.info("재설정 링크 발급")
-    return _connect_page(request, conn, member, "team", issued={
+    return _team_page(request, conn, member, issued={
         "kind": "reset", "link": _link_url(request, "reset", token), "display_name": target["display_name"]})
 
 
@@ -3165,7 +3225,7 @@ def operator_register_agent(
         "credential_ref": credential_ref or None,
     })
     repo.register_session_agent(conn, session_id, agent_id, utc_now())  # 카탈로그 없음 — 워크스페이스에 바로 붙인다
-    return _redirect("/connect?tab=advanced", response)
+    return _redirect("/settings?tab=advanced", response)
 
 
 @router.post("/operator/agents/{agent_id}/delete")
@@ -3184,7 +3244,7 @@ def operator_delete_agent(
         repo.delete_agent(conn, agent_id)
     except NotFound:
         raise PageError(404, "not_found", f"에이전트 {agent_id}을 찾을 수 없습니다.", field="agent_id") from None
-    return _redirect("/connect?tab=advanced", response)
+    return _redirect("/settings?tab=advanced", response)
 
 
 @router.post("/operator/connect-codes", response_class=HTMLResponse)
@@ -3197,7 +3257,7 @@ def operator_issue_connect_code(
     now = utc_now()
     code = repo.issue_connect_code(conn, now, issued_by_member_id=member.member_id)
     row = next(c for c in repo.list_connect_codes(conn) if c["code"] == code)
-    return _connect_page(request, conn, member, "advanced", issued={"code": code, "expires_at": row["expires_at"]})
+    return _settings_page(request, conn, member, "advanced", issued={"code": code, "expires_at": row["expires_at"]})
 
 
 @router.post("/operator/connect-codes/{code}/revoke")
@@ -3216,7 +3276,7 @@ def operator_revoke_connect_code(
         repo.revoke_connect_code(conn, code, utc_now())
     except NotFound:
         raise PageError(404, "not_found", "취소할 수 있는 연결 코드가 아닙니다.", field="code") from None
-    return _redirect("/connect?tab=advanced", response)
+    return _redirect("/settings?tab=advanced", response)
 
 
 @router.post("/operator/connectors/{connector_id}/revoke")
@@ -3234,7 +3294,7 @@ def operator_revoke_connector(
         repo.revoke_connector(conn, connector_id, utc_now())
     except NotFound:
         raise PageError(404, "not_found", "해제할 수 있는 러너가 아닙니다.", field="connector_id") from None
-    return _redirect("/connect?tab=team", response)
+    return _redirect("/team", response)
 
 
 @router.post('/requests/{request_id}/resume')
