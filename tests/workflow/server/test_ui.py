@@ -269,8 +269,9 @@ def test_api_agent_row_shows_connected_without_last_seen(web, conn):
     cards = re.findall(r"<tr data-agent=\"[^\"]+\">\s*<td><a href=\"/agents/.*?</tr>", html, re.S)
     by_id = {re.search(r"agent-[a-z-]+", c).group(0): c for c in cards}
     ops, codex = by_id[API_AGENT], by_id["agent-codex-mac"]
-    assert 'data-status="연결됨"' in ops and "마지막 확인" not in ops
-    assert 'data-status="연결 끊김"' in codex and "마지막 확인 없음" in codex
+    # phase 23 step 6: 팀 화면 상태 칸은 켜짐·꺼짐, 러너 없는 로컬 에이전트는 `러너 없음`
+    assert 'data-status="켜짐"' in ops and "마지막 확인" not in ops
+    assert "러너 없음" in codex and "data-status=" not in codex
 
 
 # --- 결과 카드·뷰어 — 수정 결과(`bug_fix`) -------------------------------------------------

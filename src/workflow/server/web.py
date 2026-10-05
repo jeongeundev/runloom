@@ -1781,14 +1781,10 @@ def _team_context(request: Request, conn: Connection, member: LoggedIn, now: str
                   allowed: frozenset[str]) -> dict[str, Any]:
     session_id = member.session_id
     settings = _settings(request)
+    agents = _team_agents(conn, session_id, member, now=now, settings=settings)
+    members = repo.list_members(conn, session_id)
     context: dict[str, Any] = {
-        "agents": [
-            {**views.agent_public(a, now=now, settings=settings),
-             "owner": views.runner_owner(conn, session_id, owner_id),
-             "can_set_policy": can_set_policy(member_id=member.member_id, role=member.role, owner_id=owner_id)}
-            for a in _session_agents(conn, session_id)
-            for owner_id in (views.agent_owner_id(conn, a),)
-        ],
+        "agents": agents,
         "public_url_set": bool(settings.public_url),
         "responsibilities": [
             {**e.model_dump(), "problem": responsibility_store.entry_problem(conn, session_id, e)}
@@ -1796,13 +1792,43 @@ def _team_context(request: Request, conn: Connection, member: LoggedIn, now: str
         ],
         "directory_revision": repo.get_config_revision(conn, session_id),
         "directory_members": [{"member_id": m["member_id"], "display_name": m["display_name"]}
-                              for m in repo.list_members(conn, session_id) if not m["disabled_at"]],
+                              for m in members if not m["disabled_at"]],
+        "member_names": {m["member_id"]: m["display_name"] for m in members},
+        "agent_names": {a["agent_id"]: a["name"] for a in agents},
+        "request_kinds": views.REQUEST_KIND_LABELS,
     }
     if team.MANAGE_TEAM in allowed:
         context |= views.team_context(conn, session_id, now=now)
     if team.ATTACH_RUNNER in allowed:
-        context["runners"] = _runners(conn, session_id, member)
+        attached = {a["runner"]["connector_id"] for a in agents if a["runner"] is not None}
+        context["runners"] = _runners(conn, session_id, member, attached, now=now, settings=settings)
     return context
+
+
+def _team_agents(conn: Connection, session_id: str, member: LoggedIn, *, now: str,
+                 settings: Settings) -> list[dict[str, Any]]:
+    """팀 화면 에이전트 줄 — 러너 표를 합친다(ARCHITECTURE "설정 UX — phase 23" 팀 화면). 에이전트의 러너 =
+    `agents.connector_id`. 러너 [해제] 는 그 러너의 첫 줄에만(`can_revoke`), 해제된 러너면 없다."""
+    kinds = _kinds(conn, session_id)
+    runners = {c["connector_id"]: c for c in repo.list_connectors(conn)}
+    seen: set[str] = set()
+    rows = []
+    for agent in _session_agents(conn, session_id):
+        owner_id = views.agent_owner_id(conn, agent)
+        runner = runners.get(agent["connector_id"]) if agent["connector_id"] else None
+        first = runner is not None and runner["connector_id"] not in seen
+        if runner is not None:
+            seen.add(runner["connector_id"])
+        rows.append({
+            **views.agent_public(agent, now=now, settings=settings, kinds=kinds),
+            **views.team_agent_kinds(agent, kinds),
+            "owner": views.runner_owner(conn, session_id, owner_id),
+            "can_set_policy": can_set_policy(member_id=member.member_id, role=member.role, owner_id=owner_id),
+            "runner": {k: runner[k] for k in ("connector_id", "created_at", "revoked_at")} if runner else None,
+            "can_revoke": first and runner["revoked_at"] is None
+            and _may_remove_runner(member, runner["owner_member_id"]),
+        })
+    return rows
 
 
 def _repos_context(request: Request, conn: Connection, member: LoggedIn, now: str,
@@ -1922,12 +1948,15 @@ def responsibility_add(
     judgment_member_id: str = Form(...), agent_id: str = Form(""), expected_revision: int = Form(...),
     member: LoggedIn = Depends(require_action(team.MANAGE_RULES)), conn: Connection = Depends(get_conn),
 ) -> RedirectResponse:
+    if request_kind not in views.REQUEST_KIND_LABELS:  # 화면 폼은 고르는 목록만 — JSON API 는 식별자 형식만 본다
+        raise PageError(422, "invalid_field", "요청 유형을 목록에서 고르세요.", field="request_kind")
     try:
         entry = Responsibility(system_id=system_id, request_kind=request_kind,
                                recipient_member_id=recipient_member_id, judgment_member_id=judgment_member_id,
                                agent_id=agent_id or None)
     except ValidationError:
-        raise PageError(422, "invalid_field", "시스템과 요청 유형은 소문자 식별자로 입력하세요.") from None
+        raise PageError(422, "invalid_field", "시스템 이름은 소문자·숫자·밑줄로, 소문자로 시작해 입력하세요.",
+                        field="system_id") from None
     entries = responsibility_store.list_entries(conn, member.session_id)
     return _save_directory(conn, member, [*entries, entry], expected_revision)
 
@@ -2025,6 +2054,29 @@ def agent_delegation_policy(
                                    now=utc_now())
     except NotFound:
         raise PageError(404, "not_found", "에이전트를 찾을 수 없습니다.", field="agent_id") from None
+    return _redirect("/team", response)
+
+
+@router.post("/agents/{agent_id}/capabilities")
+def agent_capabilities(
+    response: Response,
+    agent_id: str,
+    kinds: list[str] = Form([]),
+    member: LoggedIn = Depends(require_action(team.MANAGE_RULES)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """팀 화면 "맡을 수 있는 일" — 체크된 사용자 정의 종류 집합이 원하는 상태(`repo.set_agent_kinds`, phase 23).
+    내장 종류 능력은 건드리지 않는다. 설정 번호는 올리지 않는다."""
+    try:
+        repo.set_agent_kinds(conn, member.session_id, agent_id, kinds=kinds, now=utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", "에이전트를 찾을 수 없습니다.", field="agent_id") from None
+    except AgentScopeUnknown as exc:
+        name = repo.get_agent(conn, agent_id)["name"]
+        raise PageError(422, "agent_scope_unknown", f"{name} 은 고를 수 없습니다 — {views.SCOPE_REASON_LABELS[exc.reason]}",
+                        field="agent_id") from None
+    except ValueError:
+        raise PageError(422, "invalid_field", "맡을 수 있는 일로 고를 수 없는 종류입니다.", field="kinds") from None
     return _redirect("/team", response)
 
 
@@ -2329,15 +2381,18 @@ def _forbid_runner_removal(owner_member_id: str | None) -> PageError:
     return PageError(403, "forbidden", "러너 소유자나 관리자만 할 수 있습니다.")
 
 
-def _runners(conn: Connection, session_id: str, member: LoggedIn) -> list[dict[str, Any]]:
-    """팀·담당자 탭의 러너 목록(옛 `/operator`) — 해제는 소유자 본인 또는 `remove_any_runner`."""
+def _runners(conn: Connection, session_id: str, member: LoggedIn, attached: set[str], *, now: str,
+             settings: Settings) -> list[dict[str, Any]]:
+    """팀 화면 에이전트 표 끝의 "에이전트 없는 러너" 줄 — 해제되지 않았고 에이전트 줄에 붙지 않은(`attached` 밖) 러너.
+    해제는 소유자 본인 또는 `remove_any_runner`."""
     return [
         {
-            **{k: c[k] for k in ("connector_id", "created_at", "last_seen_at", "revoked_at")},
+            **{k: c[k] for k in ("connector_id", "created_at", "last_seen_at")},
             "owner": views.runner_owner(conn, session_id, c["owner_member_id"]),
-            "can_revoke": c["revoked_at"] is None and _may_remove_runner(member, c["owner_member_id"]),
+            "online": views.runner_online(c["last_seen_at"], now=now, settings=settings),
+            "can_revoke": _may_remove_runner(member, c["owner_member_id"]),
         }
-        for c in repo.list_connectors(conn)
+        for c in repo.list_connectors(conn) if c["revoked_at"] is None and c["connector_id"] not in attached
     ]
 
 

@@ -37,6 +37,7 @@ from workflow.domain.kinds import (
     SCOPE_MANY_REPOSITORIES,
     SCOPE_NO_REPOSITORY,
     agent_repository_scope,
+    editable_kinds,
     get_kind,
     kind_for_capability,
 )
@@ -166,6 +167,13 @@ def agent_public(agent: Row, *, now: str, settings: Settings, kinds: Sequence[Ki
     return data
 
 
+def runner_online(last_seen_at: str | None, *, now: str, settings: Settings) -> bool:
+    """러너(연결 프로그램) 켜짐 — 마지막 요청이 `heartbeat_offline_seconds` 이내. 팀 화면의 에이전트 없는 러너 줄."""
+    if not last_seen_at:
+        return False
+    return _parse(now) - _parse(last_seen_at) <= timedelta(seconds=settings.limits.heartbeat_offline_seconds)
+
+
 def agent_owner_id(conn: Connection, agent: Row) -> str | None:
     """에이전트 소유자 = 그 러너(연결 프로그램)의 소유자. 로컬이 아니거나 러너가 없으면 None(관리자 관리) — `repo.agent_owner_id`."""
     return repo.agent_owner_id(conn, agent["agent_id"])
@@ -226,6 +234,27 @@ def kind_agent_choices(conn: Connection, session_id: str) -> list[dict[str, Any]
         choices.append({"agent_id": agent["agent_id"], "line": " · ".join(parts),
                         "reason": SCOPE_REASON_LABELS[reason] if reason is not None else None})
     return choices
+
+
+def team_agent_kinds(agent: Row, kinds: Sequence[KindSpec]) -> dict[str, Any]:
+    """팀 화면 에이전트 줄의 "맡을 수 있는 일" — `kind_labels`(능력 코드의 종류 화면 이름, 등록부에 없는 코드는 세지 않음),
+    편집 체크박스 `kind_choices`(편집 가능한 종류만, 지금 붙어 있으면 `checked`), 범위 값이 없으면 `scope_reason`."""
+    capabilities = _agent_capability_list(agent)
+    labels = [spec.label for c in capabilities if (spec := kind_for_capability(kinds, c.code)) is not None]
+    value, reason = agent_repository_scope(capabilities)
+    return {
+        "kind_labels": list(dict.fromkeys(labels)),
+        "kind_choices": [
+            {"kind": spec.kind, "label": spec.label,
+             "checked": Capability(code=spec.capability_code, scope={"repository_id": value}) in capabilities}
+            for spec in editable_kinds(kinds)
+        ] if value is not None else [],
+        "scope_reason": SCOPE_REASON_LABELS[reason] if reason is not None else None,
+    }
+
+
+# 담당 범위 요청 유형 — 화면 폼의 고르는 목록(순서 = select 순서). JSON API 는 식별자 형식만 본다(phase 23)
+REQUEST_KIND_LABELS = {"investigation": "조사", "bug_report": "버그 보고", "data_check": "데이터 확인"}
 
 
 def kind_agent_names(agents: Sequence[Row], capability_code: str) -> list[str]:

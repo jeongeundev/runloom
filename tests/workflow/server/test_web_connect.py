@@ -202,15 +202,16 @@ def test_team_page_has_members_agents_runners_and_directory(admin):
     response = admin.get("/team", follow_redirects=False)
     assert response.status_code == 200
     body = main_of(response.text)
-    for marker in ('action="/team/invites"', "data-member-id=", 'href="/agents/agent-codex-mac"', "연결된 러너 없음",
-                   'action="/responsibilities/add"'):
+    # phase 23 step 6: 러너는 에이전트 표에 합쳐졌다(옛 "연결된 러너 없음" 표 대신 에이전트 절)
+    for marker in ('action="/team/invites"', "data-member-id=", 'href="/agents/agent-codex-mac"',
+                   'data-team-section="agents"', 'action="/responsibilities/add"'):
         assert marker in body, marker
     assert "data-settings-tabs" not in body
 
 
 def test_team_page_for_member_hides_members_and_invites(member):
     body = main_of(member.get("/team").text)
-    assert 'href="/agents/agent-codex-mac"' in body and "연결된 러너 없음" in body
+    assert 'href="/agents/agent-codex-mac"' in body and 'data-team-section="agents"' in body
     assert "/team/invites" not in body and "data-member-id=" not in body
 
 

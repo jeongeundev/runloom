@@ -387,3 +387,8 @@ details.detail { font-size: 13px; color: var(--text-muted); }
 details.detail summary { cursor: pointer; }
 details.detail > :not(summary) { font-family: var(--mono); }
 .link-note { font-size: 13px; color: var(--text-muted); margin: -4px 0 16px; }
+
+/* 설정 UX — phase 23 step 6: 팀 화면 — 맡기기 select·[바꾸기] 한 덩어리, 담당 범위 넓은 입력 */
+.nowrap { white-space: nowrap; }
+.nowrap select { width: auto; }
+input.input-wide { width: 100%; }

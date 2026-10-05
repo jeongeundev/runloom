@@ -4,12 +4,13 @@
    한 번 보이고 — 303 없음 — 서버에는 sha256 만 남는다. 비밀번호 해시는 싣지 않는다. 마지막 관리자 거부는 오류 화면(409 last_admin).
    에이전트 목록의 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). 맡기기 정책(phase 17)은 러너 소유자·관리자(`can_set_policy`)만
    바꾸는 폼, 다른 멤버에게는 글자로만 보인다. phase 23 step 3: 초대는 받는 사람 이메일·이름 + [링크 다시 만들기], 초대 ID 는 "자세히" 안에만,
-   빨간 WORKFLOW_PUBLIC_URL 경고 대신 링크가 보일 때만 회색 한 줄(`data-public-url-note`), 초대 폼 오류는 폼 위 인라인(`data-invite-error`). #}
+   빨간 WORKFLOW_PUBLIC_URL 경고 대신 링크가 보일 때만 회색 한 줄(`data-public-url-note`), 초대 폼 오류는 폼 위 인라인(`data-invite-error`).
+   phase 23 step 6: 러너 표를 에이전트 표에 합침(에이전트 없는 러너만 `data-runner` 줄), 맡을 수 있는 일 편집(`manage_rules`),
+   담당 범위 요청 유형은 고르는 목록, 표에는 이름만. 내부 ID·능력 코드·connector id 는 줄의 "자세히" 안에만. #}
 {% extends "base.html" %}
 {% block title %}팀 — Runloom{% endblock %}
 {% block content %}
 <div class="crumbs"><div class="crumb">팀</div></div>
-{% import "_status.html" as st %}
 {% set role_labels = {'admin': '관리자', 'member': '멤버'} %}
 {% set policy_labels = {'run': '바로 실행', 'owner_approval': '내 승인 뒤 실행'} %}
 {% if 'manage_team' in allowed %}
@@ -97,70 +98,98 @@
 </section>
 {% endif %}
 
+{% macro mac(o) -%}{# 소유 칸 — `<소유자>의 Mac`, 소유자 없으면 `공용`, 비활성 소유자면 `(비활성)` #}
+<span data-owner>{% if o %}{{ o.display_name }}의 Mac{% if not o.active %} (비활성){% endif %}{% else %}공용{% endif %}</span>
+{%- endmacro %}
+{% macro power(online) -%}
+<span class="badge {{ 'badge-done' if online else 'badge-wait' }}" data-status="{{ '켜짐' if online else '꺼짐' }}"><span class="dot{% if online %} dot-filled{% endif %}" aria-hidden="true"></span>{{ '켜짐' if online else '꺼짐' }}</span>
+{%- endmacro %}
+
+<section data-team-section="agents">
 <h2>에이전트</h2>
-{% if agents %}
+{% if agents or runners %}
+<div class="card">
 <div class="table-wrap">
 <table>
-  <tr><th>이름</th><th>ID</th><th>소유</th><th>소유자</th><th>연결</th><th>능력</th><th>상태</th><th>맡기기</th></tr>
+  <tr><th>이름</th><th>소유</th><th>상태</th><th>맡을 수 있는 일</th><th>맡기기</th><th></th></tr>
   {% for a in agents %}
   <tr data-agent="{{ a.agent_id }}">
     <td><a href="/agents/{{ a.agent_id }}">{{ a.name }}</a></td>
-    <td class="mono">{{ a.agent_id }}</td>
-    <td>{{ a.owner_scope }}</td>
-    <td>{{ st.owner(a.owner) }}</td>
-    <td>{{ a.connection_type }}</td>
-    <td>{% for c in a.capabilities %}<span class="cap">{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
-    <td>{{ st.connection(a) }}</td>
-    <td>{% if a.can_set_policy %}
+    <td>{{ mac(a.owner) }}</td>
+    <td class="nowrap">{% if a.connection_type == 'api' %}{{ power(a.online) }}{% elif not a.runner %}러너 없음{% else %}{{ power(a.online) }}
+      <span class="small">마지막 확인 {{ a.last_seen_at|ago(now) if a.last_seen_at else '없음' }}</span>{% endif %}</td>
+    <td>{{ a.kind_labels|join(', ') if a.kind_labels else '—' }}</td>
+    <td class="nowrap">{% if a.can_set_policy %}
       <form method="post" action="/agents/{{ a.agent_id }}/delegation-policy" class="inline-form">
         <select name="policy" aria-label="{{ a.name }} 맡기기 정책">
           {% for value, label in policy_labels.items() %}<option value="{{ value }}"{% if a.delegation_policy == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
         </select>
         <button class="btn btn-secondary btn-small" type="submit">바꾸기</button></form>
       {% else %}{{ policy_labels.get(a.delegation_policy, a.delegation_policy) }}{% endif %}</td>
+    <td>
+      {% if a.can_revoke %}<form method="post" action="/operator/connectors/{{ a.runner.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">러너 해제</button></form>{% endif %}
+      {% if 'manage_rules' in allowed %}
+      {% if a.scope_reason %}<div class="muted small">{{ a.scope_reason }}</div>
+      {% else %}
+      <details class="row" data-capabilities="{{ a.agent_id }}"><summary>맡을 수 있는 일 바꾸기</summary>
+        <div class="row-body">
+        {% if a.kind_choices %}
+        <form method="post" action="/agents/{{ a.agent_id }}/capabilities">
+          <div class="check-list">
+            {% for k in a.kind_choices %}<label><input type="checkbox" name="kinds" value="{{ k.kind }}"{% if k.checked %} checked{% endif %}> {{ k.label }}</label>{% endfor %}
+          </div>
+          <button class="btn btn-secondary btn-small" type="submit" style="margin-top:8px">저장</button>
+        </form>
+        {% else %}
+        <p class="small" style="margin:0">고를 수 있는 업무 종류가 없습니다 — <a href="/settings?tab=kinds">설정 › 업무 종류·규칙</a>에서 등록하세요.</p>
+        {% endif %}
+        </div>
+      </details>
+      {% endif %}
+      {% endif %}
+      <details class="detail"><summary>자세히</summary><div>에이전트 ID {{ a.agent_id }} · 소유 구분 {{ a.owner_scope }} · 연결 유형 {{ a.connection_type }}</div>
+        <div>능력 {% for c in a.capabilities %}{{ c.code }}{% for k, v in c.scope.items() %} · {{ k }}={{ v }}{% endfor %}{% if not loop.last %}, {% endif %}{% else %}없음{% endfor %}</div>
+        {% if a.runner %}<div>러너 {{ a.runner.connector_id }} · 러너 연결 {{ a.runner.created_at|kst }}{% if a.runner.revoked_at %} · 러너 해제 {{ a.runner.revoked_at|kst }}{% endif %}</div>{% endif %}</details>
+    </td>
+  </tr>
+  {% endfor %}
+  {% for r in runners or [] %}
+  <tr data-runner="{{ r.connector_id }}">
+    <td>러너</td>
+    <td>{{ mac(r.owner) }}</td>
+    <td class="nowrap">{{ power(r.online) }} <span class="small">마지막 확인 {{ r.last_seen_at|ago(now) if r.last_seen_at else '없음' }}</span></td>
+    <td>아직 에이전트 없음 — 러너가 등록 폴더를 보고하면 생깁니다</td>
+    <td>—</td>
+    <td>{% if r.can_revoke %}<form method="post" action="/operator/connectors/{{ r.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">러너 해제</button></form>{% endif %}
+      <details class="detail"><summary>자세히</summary><div>러너 {{ r.connector_id }} · 러너 연결 {{ r.created_at|kst }}</div></details></td>
   </tr>
   {% endfor %}
 </table>
 </div>
+</div>
 {% else %}
 <div class="empty" style="padding-top:0">
   <p>아직 에이전트가 없습니다.</p>
-  <p class="small" style="margin-top:8px">러너를 연결하면 그 에이전트가 이 워크스페이스에 붙습니다 · <a href="/repos">가져올 곳</a> 에서 러너 연결.</p>
+  <p class="small" style="margin-top:8px"><a href="/repos">저장소 화면에서 러너를 붙이면 에이전트가 생깁니다</a></p>
 </div>
 {% endif %}
+</section>
 
-{% if 'attach_runner' in allowed %}
-<h2>러너</h2>
-<div class="card table-wrap">
-  <table>
-    <tr><th>러너</th><th>소유</th><th>연결</th><th>마지막 확인</th><th>상태</th></tr>
-    {% for r in runners %}
-    <tr data-runner="{{ r.connector_id }}">
-      <td class="mono">{{ r.connector_id }}</td>
-      <td>{{ st.owner(r.owner) }}</td>
-      <td>{{ r.created_at|kst }}</td>
-      <td>{{ r.last_seen_at|kst if r.last_seen_at else '없음' }}</td>
-      <td>{% if r.revoked_at %}해제됨 {{ r.revoked_at|kst }}{% elif r.can_revoke %}
-        <form method="post" action="/operator/connectors/{{ r.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">해제</button></form>{% else %}연결됨{% endif %}</td>
-    </tr>
-    {% else %}
-    <tr><td colspan="5" class="muted">연결된 러너 없음</td></tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %}
-
+<section data-team-section="responsibilities">
 <h2>담당 범위 표</h2>
 <p class="small">시스템과 요청 유형별로 요청을 받을 사람과 판단 담당자를 등록합니다. 등록만으로 업무가 배정되거나 실행 권한이 부여되지는 않습니다.</p>
-<div class="card table-wrap">
+<div class="card">
+  <div class="table-wrap">
   <table>
-    <tr><th>시스템</th><th>요청 유형</th><th>수신자</th><th>판단 담당자</th><th>에이전트</th><th>상태</th><th></th></tr>
+    <tr><th>시스템</th><th>요청 유형</th><th>받는 사람</th><th>판단 담당자</th><th>조사 에이전트</th><th>상태</th><th></th></tr>
     {% for e in responsibilities %}
     <tr>
-      <td>{{ e.system_id }}</td><td>{{ e.request_kind }}</td>
-      <td>{% for m in directory_members %}{% if m.member_id == e.recipient_member_id %}{{ m.display_name }}{% endif %}{% endfor %}<div class="muted small">{{ e.recipient_member_id }}</div></td>
-      <td>{% for m in directory_members %}{% if m.member_id == e.judgment_member_id %}{{ m.display_name }}{% endif %}{% endfor %}<div class="muted small">{{ e.judgment_member_id }}</div></td>
-      <td>{{ e.agent_id or '미지정' }}</td><td>{{ e.problem or '선택 가능' }}</td>
+      <td>{{ e.system_id }}</td>
+      <td>{% if e.request_kind in request_kinds %}{{ request_kinds[e.request_kind] }}{% else %}{{ e.request_kind }} <span class="muted small">(목록 밖)</span>{% endif %}</td>
+      <td>{{ member_names.get(e.recipient_member_id, '—') }}</td>
+      <td>{{ member_names.get(e.judgment_member_id, '—') }}</td>
+      <td>{% if not e.agent_id %}미지정{% elif e.agent_id in agent_names %}{{ agent_names[e.agent_id] }}{% else %}{{ e.problem }}{% endif %}</td>
+      <td>{{ e.problem or '선택 가능' }}</td>
       <td>{% if 'manage_rules' in allowed %}<form method="post" action="/responsibilities/remove">
         <input type="hidden" name="position" value="{{ loop.index0 }}">
         <input type="hidden" name="expected_revision" value="{{ directory_revision }}">
@@ -169,22 +198,27 @@
     </tr>
     {% else %}<tr><td colspan="7" class="muted">등록된 담당 범위가 없습니다.</td></tr>{% endfor %}
   </table>
+  </div>
   {% if 'manage_rules' in allowed %}
   <form method="post" action="/responsibilities/add" style="margin-top:16px">
     <input type="hidden" name="expected_revision" value="{{ directory_revision }}">
-    <div class="field"><label for="directory-system">시스템 식별자</label><input id="directory-system" name="system_id" required placeholder="billing"></div>
-    <div class="field"><label for="directory-kind">요청 유형 식별자</label><input id="directory-kind" name="request_kind" required placeholder="investigation"></div>
-    <div class="field"><label for="directory-recipient">수신자</label><select id="directory-recipient" name="recipient_member_id" required>
+    <div class="field"><label for="directory-system">시스템</label><input id="directory-system" type="text" class="input-wide" name="system_id" required placeholder="kube_proxy">
+      <div class="help">요청을 받는 시스템 이름 — 소문자·숫자·밑줄, 소문자로 시작</div></div>
+    <div class="field"><label for="directory-kind">요청 유형</label><select id="directory-kind" name="request_kind" required>
+      {% for value, label in request_kinds.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+    </select></div>
+    <div class="field"><label for="directory-recipient">받는 사람</label><select id="directory-recipient" name="recipient_member_id" required>
       <option value="">선택하세요</option>{% for m in directory_members %}<option value="{{ m.member_id }}">{{ m.display_name }}</option>{% endfor %}
     </select></div>
     <div class="field"><label for="directory-judgment">판단 담당자</label><select id="directory-judgment" name="judgment_member_id" required>
       <option value="">선택하세요</option>{% for m in directory_members %}<option value="{{ m.member_id }}">{{ m.display_name }}</option>{% endfor %}
     </select></div>
-    <div class="field"><label for="directory-agent">에이전트</label><select id="directory-agent" name="agent_id">
+    <div class="field"><label for="directory-agent">조사 에이전트</label><select id="directory-agent" name="agent_id">
       <option value="">미지정</option>{% for a in agents %}<option value="{{ a.agent_id }}">{{ a.name }}</option>{% endfor %}
     </select></div>
     <button class="btn" type="submit">담당 범위 추가</button>
   </form>
   {% endif %}
 </div>
+</section>
 {% endblock %}

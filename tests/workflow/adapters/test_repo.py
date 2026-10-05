@@ -1603,6 +1603,56 @@ def test_added_capability_makes_the_agent_selectable_for_the_new_kind(sessions):
     repo.remove_agent_capability(conn, agent_id=agent_id, capability=required)
     assert select_agent("t-1", required, pool()).status == "needs_selection"
 
+def test_set_agent_kinds_adds_and_removes_editable_kinds_only(sessions):
+    """phase 23 step 6 — 팀 화면 "맡을 수 있는 일": 체크된 집합이 원하는 상태. 내장 능력·편집 밖 능력은 그대로."""
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    audit = REVIEW.model_copy(update={"kind": "audit", "label": "감사", "capability_code": "audit"})
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    repo.insert_kind(conn, SESSION, audit, NOW)
+    manual = Capability(code="ops", scope={"workflow_id": "daily"})  # 편집 가능한 종류가 아닌 능력
+    repo.add_agent_capability(conn, agent_id=agent_id, capability=manual)
+    builtin = [c for c in _caps(conn, agent_id) if c["code"].startswith("code.")]
+
+    repo.set_agent_kinds(conn, SESSION, agent_id, kinds=["review", "audit"], now=NOW)
+    caps = _caps(conn, agent_id)
+    assert {"code": "review", "scope": {"repository_id": "billing"}} in caps
+    assert {"code": "audit", "scope": {"repository_id": "billing"}} in caps
+    repo.set_agent_kinds(conn, SESSION, agent_id, kinds=["audit"], now=NOW)
+    caps = _caps(conn, agent_id)
+    assert {"code": "review", "scope": {"repository_id": "billing"}} not in caps
+    assert {"code": "audit", "scope": {"repository_id": "billing"}} in caps
+    repo.set_agent_kinds(conn, SESSION, agent_id, kinds=[], now=NOW)
+    assert _caps(conn, agent_id) == [*builtin, manual.model_dump()]  # 내장·편집 밖 능력은 그대로
+    assert _revision(conn) == 3  # 종류 추가 두 번만 — 능력 변경은 번호를 올리지 않는다
+    assert not conn.in_transaction
+
+
+def test_set_agent_kinds_refuses_and_changes_nothing(sessions):
+    conn = sessions
+    agent_id = _runner_agent(conn)
+    repo.insert_kind(conn, SESSION, REVIEW, NOW)
+    fix_alias = REVIEW.model_copy(update={"kind": "fix_alias", "capability_code": "code.fix"})
+    repo.insert_kind(conn, SESSION, fix_alias, NOW)
+    outsider = _runner_agent(conn, "agent-outsider", session_id=OTHER_SESSION)
+    repo.upsert_agent(conn, _agent())  # 수동 등록 — 범위 값 없음
+    repo.register_session_agent(conn, SESSION, "agent-ops-demo", NOW)
+    before = _caps(conn, agent_id)
+
+    for kinds in (["review", "bug_fix"], ["review", "fix_alias"], ["review", "nope"]):
+        with pytest.raises(ValueError, match="kinds"):
+            repo.set_agent_kinds(conn, SESSION, agent_id, kinds=kinds, now=NOW)
+        assert _caps(conn, agent_id) == before
+    with pytest.raises(NotFound):
+        repo.set_agent_kinds(conn, SESSION, outsider, kinds=["review"], now=NOW)
+    with pytest.raises(NotFound):
+        repo.set_agent_kinds(conn, SESSION, "agent-nope", kinds=[], now=NOW)
+    with pytest.raises(AgentScopeUnknown) as info:
+        repo.set_agent_kinds(conn, SESSION, "agent-ops-demo", kinds=["review"], now=NOW)
+    assert info.value.reason == "no_repository"
+    assert not conn.in_transaction
+
+
 def test_insert_kind_attaches_capability_to_chosen_agents_in_one_transaction(sessions):
     """phase 23 step 5 — 종류 등록과 맡을 에이전트 능력 붙이기는 한 트랜잭션."""
     conn = sessions

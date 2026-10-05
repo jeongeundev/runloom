@@ -6,6 +6,7 @@ from workflow.domain.kinds import (
     SCOPE_MANY_REPOSITORIES,
     SCOPE_NO_REPOSITORY,
     agent_repository_scope,
+    editable_kinds,
     get_kind,
     kind_for_capability,
     validate_capability,
@@ -151,3 +152,15 @@ def test_agent_with_many_repositories_has_no_scope():
     caps = _caps(("code.fix", {"repository_id": "billing"}), ("code.review", {"repository_id": "shop"}))
     assert agent_repository_scope(caps) == (None, SCOPE_MANY_REPOSITORIES)
     assert SCOPE_MANY_REPOSITORIES == "many_repositories"
+
+
+# --- editable_kinds (phase 23 step 6) -----------------------------------------------------
+
+
+def test_editable_kinds_are_user_kinds_with_own_code_and_repository_scope():
+    fix_alias = REVIEW.model_copy(update={"kind": "fix_alias", "capability_code": "code.fix"})
+    workflow_scoped = REVIEW.model_copy(update={"kind": "ops", "capability_code": "ops", "scope_key": "workflow_id"})
+    audit = REVIEW.model_copy(update={"kind": "audit", "capability_code": "audit"})
+    kinds = [*BUILTIN_KINDS, REVIEW, fix_alias, workflow_scoped, audit]
+    assert [s.kind for s in editable_kinds(kinds)] == ["review", "audit"]  # 등록부 순서 그대로
+    assert editable_kinds(BUILTIN_KINDS) == []

@@ -53,7 +53,9 @@
     {
       "step": 6,
       "name": "team-page",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T14:54:14+0900",
+      "summary": "팀 화면 에이전트 표·맡을 수 있는 일·담당 범위: domain/kinds.editable_kinds(builtin 아님·능력 코드 내장 아님·scope_key=repository_id, 등록부 순서), repo.set_agent_kinds(conn, session_id, agent_id, *, kinds, now)(자체 트랜잭션, 워크스페이스 에이전트 아님 NotFound·편집 밖 값 ValueError('kinds')·범위 값 없음 AgentScopeUnknown, 같은 능력 코드 종류는 하나로 보고 더하기/떼기, 내장·편집 밖 능력 그대로, 설정 번호 안 올림). views.runner_online·team_agent_kinds(kind_labels·kind_choices·scope_reason)·REQUEST_KIND_LABELS. web.py _team_agents(러너 합침 — agents.connector_id, [러너 해제]는 그 러너 첫 줄·해제 안 된 러너만), _runners 는 에이전트 없는·해제 안 된 러너 줄만(attach_runner), 새 POST /agents/{id}/capabilities(manage_rules, 303 /team, 404 not_found·422 agent_scope_unknown·422 invalid_field '맡을 수 있는 일로 고를 수 없는 종류입니다.'), /responsibilities/add 가 목록 밖 request_kind 422 '요청 유형을 목록에서 고르세요.'·system_id 형식 문구 변경(field system_id). team.html: section[data-team-section=agents|responsibilities], 에이전트 줄 = 이름 링크·'<소유자>의 Mac'/공용/(비활성)·켜짐|꺼짐+마지막 확인 n분 전(API 는 켜짐/꺼짐만, 러너 없는 로컬은 '러너 없음')·맡을 수 있는 일(종류 화면 이름, 없으면 —)·맡기기(td.nowrap)·동작(러너 해제·details.row[data-capabilities] 체크박스, 범위 없으면 이유 문구)·details.detail(ID·소유 구분·연결 유형·능력 code · key=value·connector id·러너 연결/해제 시각), tr[data-runner] 러너 줄, 비면 /repos 안내, 옛 <h2>러너</h2> 표 삭제. 담당 범위 폼 시스템(input-wide·placeholder kube_proxy·help)·요청 유형 select·받는 사람·판단 담당자·조사 에이전트, 표는 이름만·목록 밖 값 '(목록 밖)'·해제된 에이전트는 entry_problem. style.css .nowrap·.nowrap select·input.input-wide. 기존 단정 변경: test_web_runner_owner(소유자 김멤버/관리자 관리/소유자 비활성/해제됨 러너 줄 → 에이전트 줄 '김멤버의 Mac'·'공용'·'(비활성)', 해제·에이전트 있는 러너는 data-runner 줄 없음, 안 쓰게 된 runner_row 삭제), test_web_connect('연결된 러너 없음' → data-team-section=agents), test_ui(연결됨/연결 끊김 → 켜짐·러너 없음), e2e test_team('소유자 X' → 'X의 Mac'). 검증: pytest 4544 passed·92 skipped, ruff 통과, WORKFLOW_E2E=1 team·team_handoff·work_ui·next_step_cycle·monitor 42 passed. 다음 step 주의: 에이전트 상세(/agents/{id})·_status.html owner/connection 매크로는 그대로(팀 화면만 새 문구). repo.list_connectors 는 워크스페이스 구분 없음(기존 그대로)."
     },
     {
       "step": 7,

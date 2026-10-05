@@ -63,11 +63,6 @@ def seed_agent(conn, agent_id: str, connector_id: str | None) -> None:
     repo.register_session_agent(conn, SESSION, agent_id, NOW)
 
 
-def runner_row(text: str, connector_id: str) -> str:
-    start = text.index(f'data-runner="{connector_id}"')
-    return text[start:text.index("</tr>", start)]
-
-
 def revoke(client: TestClient, connector_id: str):
     return client.post(f"/operator/connectors/{connector_id}/revoke", follow_redirects=False)
 
@@ -80,9 +75,10 @@ def test_issuer_becomes_runner_and_agent_owner(app, kim, conn):
     seed_agent(conn, "agent-kim", connector_id)
 
     assert repo.connector_owner(conn, connector_id) == member_id(conn, "김멤버")
-    assert "소유자 김멤버" in runner_row(kim.get("/team").text, connector_id)
     team_tab = kim.get("/team").text
-    assert "소유자 김멤버" in team_tab[team_tab.index("<h2>에이전트</h2>"):team_tab.index("<h2>러너</h2>")]  # 에이전트 목록
+    # phase 23 step 6: 러너 표는 에이전트 표에 합쳐졌다 — 에이전트가 붙은 러너는 따로 줄이 없고 소유는 `<소유자>의 Mac`
+    assert f'data-runner="{connector_id}"' not in team_tab
+    assert "김멤버의 Mac" in agent_row(team_tab, "agent-kim")
     assert "소유자 김멤버" in kim.get("/agents/agent-kim").text
 
 
@@ -91,7 +87,8 @@ def test_runner_without_owner_is_admin_managed(admin, conn):
     seed_agent(conn, "agent-old", connector_id)
     seed_agent(conn, "agent-api", None)
 
-    assert "관리자 관리" in runner_row(admin.get("/team").text, connector_id)
+    team_tab = admin.get("/team").text  # phase 23 step 6: 소유자 없는 러너의 에이전트는 `공용`
+    assert "공용" in agent_row(team_tab, "agent-old") and "공용" in agent_row(team_tab, "agent-api")
     assert admin.get("/agents/agent-old").text.count("관리자 관리") == 1
     assert "관리자 관리" in admin.get("/agents/agent-api").text
 
@@ -103,8 +100,8 @@ def test_disabled_owner_runner_keeps_running_and_says_so(app, admin, kim, conn):
     assert admin.post(f"/team/members/{member_id(conn, '김멤버')}/disable", follow_redirects=False).status_code == 303
 
     assert repo.authenticate_connector(conn, token) == connector_id
-    row = runner_row(admin.get("/team").text, connector_id)
-    assert "소유자 김멤버" in row and "소유자 비활성" in row
+    row = agent_row(admin.get("/team").text, "agent-kim")
+    assert "김멤버의 Mac (비활성)" in row
     assert "소유자 비활성" in admin.get("/agents/agent-kim").text
 
 
@@ -155,7 +152,7 @@ def test_revoke_unknown_or_already_revoked_runner(admin, kim, conn):
     connector_id, _ = legacy_runner(conn)
     assert revoke(admin, connector_id).status_code == 303
     assert revoke(admin, connector_id).status_code == 404
-    assert "해제됨" in runner_row(admin.get("/team").text, connector_id)
+    assert f'data-runner="{connector_id}"' not in admin.get("/team").text  # phase 23 step 6: 해제된 러너 줄은 그리지 않는다
 
 
 # --- 에이전트 삭제 ------------------------------------------------------------------------------------

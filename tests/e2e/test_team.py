@@ -245,7 +245,7 @@ def test_03_member_attaches_the_runner_and_owns_it(world):
     assert connector["owner_member_id"] == world.ctx["member_id"]
     (agent,) = q(world, "SELECT agent_id FROM agents WHERE local_registration_id = ?", REGISTRATION)
     world.ctx["agent_id"] = agent["agent_id"]
-    assert f"소유자 {MEMBER['display_name']}" in world.http.get("/team").text  # 관리자도 소유자를 본다
+    assert f"{MEMBER['display_name']}의 Mac" in world.http.get("/team").text  # 관리자도 소유자를 본다(phase 23 step 6 문구)
 
     world.spawn("connector", [py, "-m", "workflow.connector", "run", "--adapter", "codex",
                               "--claim-interval", "0.5", "--heartbeat-interval", "1"], world.connector_env)

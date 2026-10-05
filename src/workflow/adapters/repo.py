@@ -97,7 +97,7 @@ from workflow.domain.execution_policy import TRIAGE_OUTPUT_KIND, is_triage_kind
 from workflow.domain.field_mapping import PRIORITIES, MappingRow
 from workflow.domain import jira_intake
 from workflow.domain.jira_intake import initial_cursor_ms
-from workflow.domain.kinds import BUILTIN_CAPABILITY_CODES, agent_repository_scope
+from workflow.domain.kinds import BUILTIN_CAPABILITY_CODES, agent_repository_scope, editable_kinds
 from workflow.domain.assignee_metrics import (
     AgentLabel,
     AgentRunFact,
@@ -1408,6 +1408,28 @@ def remove_agent_capability(conn: Connection, *, agent_id: str, capability: Capa
         raise CapabilityProtected(capability.code)
     with _tx(conn):
         return _remove_capability(conn, agent_id, capability)
+
+
+def set_agent_kinds(conn: Connection, session_id: str, agent_id: str, *, kinds: Sequence[str], now: str) -> None:
+    """팀 화면 "맡을 수 있는 일" — 편집 가능한 종류(`editable_kinds`)마다 `kinds` 에 있으면 그 능력(`repository_id` = 범위
+    값)을 붙이고 없으면 뗀다(한 트랜잭션). 워크스페이스 에이전트 아님 NotFound, 범위 값 없음 AgentScopeUnknown,
+    편집 가능하지 않은 값 ValueError("kinds"). 설정 번호는 올리지 않는다(ADR-0028). `now` 는 시그니처 고정용."""
+    with _tx(conn):
+        if not is_session_agent(conn, session_id, agent_id):
+            raise NotFound(f"agent {agent_id}")
+        specs = editable_kinds(list_kinds(conn, session_id))
+        if not set(kinds) <= {spec.kind for spec in specs}:
+            raise ValueError("kinds")
+        value, reason = agent_repository_scope(_agent_capabilities(conn, agent_id))
+        if value is None:
+            raise AgentScopeUnknown(agent_id, reason)
+        wanted = {spec.capability_code for spec in specs if spec.kind in kinds}  # 같은 능력 코드의 종류는 하나로 본다
+        for code in dict.fromkeys(spec.capability_code for spec in specs):
+            capability = Capability(code=code, scope={"repository_id": value})
+            if code in wanted:
+                _add_capability(conn, agent_id, capability)
+            else:
+                _remove_capability(conn, agent_id, capability)
 
 
 def delete_agent(conn: Connection, agent_id: str) -> None:

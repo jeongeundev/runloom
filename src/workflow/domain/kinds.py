@@ -62,3 +62,10 @@ def agent_repository_scope(capabilities: Sequence[Capability]) -> tuple[str | No
     if len(values) > 1:
         return None, SCOPE_MANY_REPOSITORIES
     return next(iter(values)), None
+
+
+def editable_kinds(kinds: Sequence[KindSpec]) -> list[KindSpec]:
+    """팀 화면 "맡을 수 있는 일" 로 고칠 수 있는 종류 — 사용자 정의이고 능력 코드가 내장 것이 아니며 범위 키가
+    `repository_id`. 등록부 순서 그대로."""
+    return [spec for spec in kinds if not spec.builtin and spec.capability_code not in BUILTIN_CAPABILITY_CODES
+            and spec.scope_key == "repository_id"]
