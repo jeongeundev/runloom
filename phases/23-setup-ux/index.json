@@ -1,0 +1,61 @@
+{
+  "project": "workflow",
+  "phase": "23-setup-ux",
+  "steps": [
+    {
+      "step": 0,
+      "name": "setup-ux-design",
+      "status": "pending"
+    },
+    {
+      "step": 1,
+      "name": "nav-split",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "invite-schema",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "invite-ui",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "agent-capability",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "kind-form",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "team-page",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "repo-page",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "work-list",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "settings-page",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "setup-ux-verify",
+      "status": "pending"
+    }
+  ]
+}
