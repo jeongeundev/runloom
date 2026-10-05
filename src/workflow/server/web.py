@@ -333,10 +333,11 @@ def _install_access_log_filter() -> None:
 
 
 def _login_page(request: Request, mode: str, *, status: int = 200, error: str | None = None,
-                email: str = "", display_name: str = "") -> HTMLResponse:
-    """`login.html` 한 장 — mode: setup·login·recover·invite·reset·invalid."""
+                email: str = "", display_name: str = "", **extra: Any) -> HTMLResponse:
+    """`login.html` 한 장 — mode: setup·login·recover·invite·reset·invalid. `extra` = 초대 가입 화면의
+    `invite`(고정 이메일·초대한 사람·역할)·`error_code`."""
     body = _render("login.html", request=request, mode=mode, error=error, email=email,
-                   display_name=display_name)
+                   display_name=display_name, **extra)
     return HTMLResponse(body, status_code=status)
 
 
@@ -475,9 +476,21 @@ def recover(
 def invite_page(request: Request, token: str, conn: Connection = Depends(get_conn)) -> HTMLResponse | RedirectResponse:
     if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
         return RedirectResponse("/login", status_code=303)
-    if repo.invite_for_token(conn, token, purpose="invite", now=utc_now()) is None:
+    row = repo.invite_for_token(conn, token, purpose="invite", now=utc_now())
+    if row is None:
         return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
-    return _link_page(request, "invite")
+    return _signup_page(request, conn, row, email="", display_name=row["invitee_name"] or "")
+
+
+def _signup_page(request: Request, conn: Connection, row: Row, *, status: int = 200, error: str | None = None,
+                 error_code: str | None = None, email: str, display_name: str) -> HTMLResponse:
+    """초대 가입 화면 — 초대에 이메일이 있으면 그 이메일로 고정(readonly), 안내 `<초대한 사람> 이 <역할> 로 초대했습니다.`"""
+    inviter = (repo.get_member(conn, row["session_id"], row["created_by_member_id"])
+               if row["created_by_member_id"] else None)
+    invite = {"email": row["invitee_email"], "role": row["role"],
+              "inviter": inviter["display_name"] if inviter is not None else "관리자"}
+    return _link_page(request, "invite", status=status, error=error, error_code=error_code,
+                      email=row["invitee_email"] or email, display_name=display_name, invite=invite)
 
 
 @router.post("/invite/{token}", response_model=None)
@@ -488,21 +501,23 @@ def invite_accept(
     """초대로 가입(초대의 역할) → 로그인. 무효·만료·사용·취소는 같은 404 안내."""
     if repo.needs_first_setup(conn, SELFHOST_SESSION_ID):
         return RedirectResponse("/login", status_code=303)
-    if repo.invite_for_token(conn, token, purpose="invite", now=utc_now()) is None:
+    row = repo.invite_for_token(conn, token, purpose="invite", now=utc_now())
+    if row is None:
         return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
     refill = {"email": email.strip(), "display_name": display_name.strip()}
     problem = _account_problem(email, display_name, password)
     if problem:
-        return _link_page(request, "invite", status=422, error=problem, **refill)
+        return _signup_page(request, conn, row, status=422, error=problem, **refill)
     try:
         member_id = repo.accept_invite(conn, token, email=email, display_name=team.clean_display_name(display_name),
                                        password_hash=team.hash_password(password), now=utc_now())
     except NotFound:
         return _link_page(request, "invalid", status=404, error=_BAD_INVITE)
     except EmailTaken:
-        return _link_page(request, "invite", status=422, error="이미 쓰는 이메일입니다.", **refill)
+        return _signup_page(request, conn, row, status=422, error="이미 쓰는 이메일입니다.", **refill)
     except InviteEmailMismatch:
-        return _link_page(request, "invite", status=422, error="초대받은 이메일로만 가입할 수 있습니다.", **refill)
+        return _signup_page(request, conn, row, status=422, error="초대받은 이메일로만 가입할 수 있습니다.",
+                            error_code="invite_email_mismatch", **refill)
     logger.info("초대 가입")
     redirect = _logged_in_redirect(request, conn, member_id)
     redirect.headers["Referrer-Policy"] = "no-referrer"
@@ -2882,23 +2897,50 @@ def team_invite(
     member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
     conn: Connection = Depends(get_conn),
 ) -> HTMLResponse:
-    """초대 링크 발급 — 같은 화면에 링크를 한 번만 보인다."""
+    """초대 링크 발급 — 같은 화면에 링크를 한 번만 보인다. 오류는 폼 위 인라인(422, 입력값을 다시 채운다)."""
+    if role not in team.ROLES:
+        problem = ("invalid_field", "역할은 관리자 또는 멤버입니다.")
+    else:
+        try:
+            _, token = repo.issue_invite(conn, member.session_id, role=role, invitee_email=invitee_email,
+                                         invitee_name=invitee_name, created_by_member_id=member.member_id,
+                                         now=utc_now())
+        except ValueError as exc:
+            problem = (("invalid_field", "이름은 1~40자로 입력하세요.") if str(exc) == "invitee_name"
+                       else ("invalid_field", "이메일 형식이 올바르지 않습니다."))
+        except EmailTaken:
+            problem = ("invite_email_taken", "이미 팀에 있는 이메일입니다(비활성 멤버 포함).")
+        except InviteEmailTaken:
+            problem = ("invite_email_taken",
+                       "이 이메일로 보낸 초대가 아직 열려 있습니다 — 아래 목록에서 [링크 다시 만들기] 를 누르세요.")
+        else:
+            logger.info("초대 링크 발급: %s", role)
+            return _team_page(request, conn, member, issued={
+                "kind": "invite", "link": _link_url(request, "invite", token), "role": role,
+                "email": team.normalize_email(invitee_email)})
+    return _team_page(request, conn, member, status=422,
+                      invite_error={"code": problem[0], "message": problem[1]},
+                      invite_form={"invitee_email": invitee_email.strip(), "invitee_name": invitee_name.strip(),
+                                   "role": role})
+
+
+@router.post("/team/invites/{invite_id}/reissue", response_class=HTMLResponse)
+def team_invite_reissue(
+    request: Request,
+    invite_id: str,
+    member: LoggedIn = Depends(require_action(team.MANAGE_TEAM)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    """열린 초대의 링크 다시 만들기 — 같은 줄에 새 토큰, 옛 링크는 무효. 새 링크는 이 응답에만 한 번 보인다."""
     try:
-        _, token = repo.issue_invite(conn, member.session_id, role=_checked_role(role), invitee_email=invitee_email,
-                                     invitee_name=invitee_name, created_by_member_id=member.member_id, now=utc_now())
-    except ValueError as exc:
-        if str(exc) == "invitee_name":
-            raise PageError(422, "invalid_field", "이름은 1~40자로 입력하세요.", field="invitee_name") from None
-        raise PageError(422, "invalid_field", "이메일 형식이 올바르지 않습니다.", field="invitee_email") from None
-    except EmailTaken:
-        raise PageError(422, "invalid_field", "이미 팀에 있는 이메일입니다(비활성 멤버 포함).",
-                        field="invitee_email") from None
-    except InviteEmailTaken:
-        raise PageError(422, "invalid_field", "이 이메일로 보낸 초대가 아직 열려 있습니다 — 아래 목록에서"
-                        " [링크 다시 만들기] 를 누르세요.", field="invitee_email") from None
-    logger.info("초대 링크 발급: %s", role)
-    return _team_page(request, conn, member,
-                      issued={"kind": "invite", "link": _link_url(request, "invite", token), "role": role})
+        token = repo.reissue_invite(conn, member.session_id, invite_id, now=utc_now())
+    except NotFound:
+        raise PageError(404, "not_found", f"초대 {invite_id}을 찾을 수 없습니다.", field="invite_id") from None
+    row = next(r for r in repo.list_open_invites(conn, member.session_id, now=utc_now()) if r["invite_id"] == invite_id)
+    logger.info("초대 링크 다시 만들기: %s", row["role"])
+    return _team_page(request, conn, member, issued={
+        "kind": "invite", "link": _link_url(request, "invite", token), "role": row["role"],
+        "email": row["invitee_email"]})
 
 
 @router.post("/team/invites/{invite_id}/revoke")

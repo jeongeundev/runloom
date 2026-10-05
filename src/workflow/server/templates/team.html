@@ -3,7 +3,8 @@
    `remove_any_runner`(`can_revoke`)) + 담당 범위. ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 초대·재설정 링크 원문은 발급 응답(`issued`)에만
    한 번 보이고 — 303 없음 — 서버에는 sha256 만 남는다. 비밀번호 해시는 싣지 않는다. 마지막 관리자 거부는 오류 화면(409 last_admin).
    에이전트 목록의 자격 증명 참조는 컨텍스트에 없다 (views.agent_public). 맡기기 정책(phase 17)은 러너 소유자·관리자(`can_set_policy`)만
-   바꾸는 폼, 다른 멤버에게는 글자로만 보인다. #}
+   바꾸는 폼, 다른 멤버에게는 글자로만 보인다. phase 23 step 3: 초대는 받는 사람 이메일·이름 + [링크 다시 만들기], 초대 ID 는 "자세히" 안에만,
+   빨간 WORKFLOW_PUBLIC_URL 경고 대신 링크가 보일 때만 회색 한 줄(`data-public-url-note`), 초대 폼 오류는 폼 위 인라인(`data-invite-error`). #}
 {% extends "base.html" %}
 {% block title %}팀 — Runloom{% endblock %}
 {% block content %}
@@ -12,19 +13,20 @@
 {% set role_labels = {'admin': '관리자', 'member': '멤버'} %}
 {% set policy_labels = {'run': '바로 실행', 'owner_approval': '내 승인 뒤 실행'} %}
 {% if 'manage_team' in allowed %}
-{% if not public_url_set %}
-<div class="alert">링크 주소가 지금 연 주소 기준입니다. 다른 컴퓨터에서 열려면 <code>WORKFLOW_PUBLIC_URL</code> 을 설정하세요 — SELFHOST 문서(<code>docs/SELFHOST.md</code>) 참고.</div>
-{% endif %}
-
-{% if issued %}
+{% macro issued_box(kind) %}{# 발급 응답에만 한 번 — 링크 원문은 목록·다른 화면에 다시 나오지 않는다 #}
+{% if issued and issued.kind == kind %}
 <div class="alert" style="background:var(--bg-done);color:var(--state-done)" data-issued="{{ issued.kind }}">
-  {% if issued.kind == 'invite' %}초대 링크({{ role_labels[issued.role] }}){% else %}{{ issued.display_name }} 님의 비밀번호 재설정 링크{% endif %}:
+  {% if kind == 'invite' %}{% if issued.email %}{{ issued.email }} {% endif %}초대 링크({{ role_labels[issued.role] }}){% else %}{{ issued.display_name }} 님의 비밀번호 재설정 링크{% endif %}:
   <code id="issued-link">{{ issued.link }}</code>
   <button type="button" class="btn btn-secondary btn-small" data-copy-target="issued-link">복사</button><br>
-  이 링크는 다시 볼 수 없습니다. 지금 복사해 전하세요. {% if issued.kind == 'invite' %}7일 동안 한 번 쓸 수 있습니다.{% else %}24시간 동안 한 번 쓸 수 있습니다.{% endif %}
+  {% if kind == 'invite' %}이 링크는 지금만 보입니다. 놓치면 아래 목록에서 [링크 다시 만들기] 를 누르세요 — 옛 링크는 더 쓸 수 없습니다. 7일 동안 한 번 쓸 수 있습니다.{% else %}이 링크는 지금만 보입니다. 24시간 동안 한 번 쓸 수 있습니다.{% endif %}
 </div>
+{% if not public_url_set %}<p class="link-note" data-public-url-note>이 링크는 이 컴퓨터 주소 기준입니다 — 다른 컴퓨터에서 열려면 SELFHOST 문서의 WORKFLOW_PUBLIC_URL 을 설정하세요.</p>{% endif %}
 {% endif %}
+{% endmacro %}
 
+{{ issued_box('reset') }}
+<section data-team-section="members">
 <h2 style="margin-top:0">멤버</h2>
 <div class="card">
   <div class="table-wrap">
@@ -55,18 +57,23 @@
   </div>
   <p class="small" style="margin:8px 0 0">멤버는 지우지 않고 비활성화합니다. 비활성화하면 그 멤버의 로그인이 바로 끊깁니다. 활성 관리자는 한 명 이상 있어야 합니다.</p>
 </div>
+</section>
 
+<section data-team-section="invites">
 <h2>초대</h2>
+{{ issued_box('invite') }}
 <div class="card">
   {% if invites %}
   <div class="table-wrap">
   <table>
-    <tr><th>ID</th><th>역할</th><th>발급</th><th>만료</th><th></th></tr>
+    <tr><th>이메일</th><th>이름</th><th>역할</th><th>만료</th><th></th></tr>
     {% for i in invites %}
     <tr data-invite-id="{{ i.invite_id }}">
-      <td class="mono">{{ i.invite_id }}</td><td>{{ role_labels[i.role] }}</td>
-      <td>{{ i.created_at|kst }}</td><td>{{ i.expires_at|kst }}</td>
-      <td><form method="post" action="/team/invites/{{ i.invite_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">취소</button></form></td>
+      <td>{{ i.invitee_email or '이메일 없음(옛 초대)' }}</td><td>{{ i.invitee_name or '—' }}</td>
+      <td>{{ role_labels[i.role] }}</td><td>{{ i.expires_at|kst }}</td>
+      <td><form method="post" action="/team/invites/{{ i.invite_id }}/reissue" class="inline-form"><button class="btn btn-secondary btn-small" type="submit">링크 다시 만들기</button></form>
+        <form method="post" action="/team/invites/{{ i.invite_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">취소</button></form>
+        <details class="detail"><summary>자세히</summary><div>초대 ID {{ i.invite_id }} · 발급 {{ i.created_at|kst }}</div></details></td>
     </tr>
     {% endfor %}
   </table>
@@ -74,17 +81,20 @@
   {% else %}
   <p class="muted" style="margin:0">쓰지 않은 초대가 없습니다.</p>
   {% endif %}
+  {% set form = invite_form or {} %}
+  {% if invite_error %}<p class="alert" data-invite-error="{{ invite_error.code }}" style="margin:12px 0 0">{{ invite_error.message }}</p>{% endif %}
   <form method="post" action="/team/invites" style="margin-top:12px">
     <div class="field"><label for="invite-email">받는 사람 이메일</label>
-      <input id="invite-email" type="email" name="invitee_email" required></div>
+      <input id="invite-email" type="email" name="invitee_email" value="{{ form.invitee_email or '' }}" required></div>
     <div class="field"><label for="invite-name">이름</label>
-      <input id="invite-name" type="text" name="invitee_name" maxlength="40"></div>
+      <input id="invite-name" type="text" name="invitee_name" value="{{ form.invitee_name or '' }}" maxlength="40"></div>
     <div class="field"><label for="invite-role">역할</label>
-      <select id="invite-role" name="role"><option value="member" selected>멤버</option><option value="admin">관리자</option></select>
-      <div class="help">링크를 받은 사람이 이메일·표시 이름·비밀번호를 넣어 가입합니다. 이메일은 보내지 않습니다 — 링크를 복사해 전하세요.</div></div>
+      <select id="invite-role" name="role"><option value="member"{% if form.role != 'admin' %} selected{% endif %}>멤버</option><option value="admin"{% if form.role == 'admin' %} selected{% endif %}>관리자</option></select>
+      <div class="help">링크를 복사해 직접 전하세요 — 이메일은 보내지 않습니다. 받는 사람은 이 이메일로만 가입합니다.</div></div>
     <div class="actions"><button class="btn" type="submit">초대 링크 만들기</button></div>
   </form>
 </div>
+</section>
 {% endif %}
 
 <h2>에이전트</h2>

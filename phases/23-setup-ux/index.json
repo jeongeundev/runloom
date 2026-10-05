@@ -29,7 +29,9 @@
     {
       "step": 3,
       "name": "invite-ui",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-05T14:06:31+0900",
+      "summary": "초대 화면: web.py team_invite 오류를 오류 화면 대신 팀 화면 폼 위 인라인 422(`p.alert[data-invite-error]` 코드 invalid_field·invite_email_taken, 입력값·역할 다시 채움 — step 2 의 PageError invalid_field 대체, 역할 오류도 인라인), 새 POST /team/invites/{id}/reissue(team_invite_reissue → repo.reissue_invite, 열린 초대 아니면 404 not_found '초대 <id>을 찾을 수 없습니다.', 같은 팀 화면에 새 링크 1회), issued 에 email 추가, _signup_page(초대 이메일 readonly·이름 기본값·'<초대한 사람> 이 <역할> 로 초대했습니다.'·없으면 '관리자'), _login_page **extra(invite·error_code), 다른 이메일 POST 는 data-error-code=invite_email_mismatch 422. views.team_context 초대에 invitee_email·invitee_name. team.html: 빨간 WORKFLOW_PUBLIC_URL 경고 삭제, 발급 상자 매크로(재설정은 멤버 절 위·초대는 초대 절 안, ARCHITECTURE 안내 문구) + 링크 보일 때만 회색 p.link-note[data-public-url-note], section[data-team-section=members|invites], 초대 표 이메일(없으면 '이메일 없음(옛 초대)')·이름(—)·역할·만료·[링크 다시 만들기]·[취소]·details.detail(초대 ID·발급), 폼 help 새 문구. login.html invite 모드 고정 이메일·안내 줄. style.css details.detail·.link-note. 테스트 test_web_team: 옛 'WORKFLOW_PUBLIC_URL 안내 보임' 단정 → 빨간 경고 없음·회색 안내는 링크 있을 때만(공개 주소 설정 시 없음), 오류 단정 error()→인라인 코드, TEAM_POSTS 에 reissue(멤버 403·익명 303·없는 초대 404), 다시 만들기(새 링크 1회·옛 링크 GET/POST 404·새 링크 가입·쓴 초대 404), 가입 화면 고정·옛 초대 그대로, 목록 줄 이메일·이름·inv- 는 자세히 안에만. 검증: pytest 4502 passed·92 skipped, ruff 통과, WORKFLOW_E2E=1 tests/e2e/test_team.py 7 passed. 다음 step 주의: team.html 의 에이전트·러너·담당 범위 절은 아직 data-team-section 없음(step 6), 발급 상자 매크로 issued_box 는 manage_team 블록 안에 있다."
     },
     {
       "step": 4,

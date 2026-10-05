@@ -1229,7 +1229,8 @@ def notifications_context(conn: Connection, session_id: str, *, secrets: SecretS
 
 
 def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, Any]:
-    """팀 화면 — 멤버(표시 이름·이메일·역할·상태·가입·마지막 접속)와 쓰지 않은 초대(역할·만료). 비밀번호 해시·링크 토큰은 싣지 않는다."""
+    """팀 화면 — 멤버(표시 이름·이메일·역할·상태·가입·마지막 접속)와 쓰지 않은 초대(받는 사람 이메일·이름·역할·발급·만료).
+    비밀번호 해시·링크 토큰은 싣지 않는다."""
     last_seen = repo.member_last_seen(conn, session_id)
     return {
         "members": [
@@ -1238,7 +1239,7 @@ def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, An
             for row in repo.list_members(conn, session_id)
         ],
         "invites": [
-            {k: row[k] for k in ("invite_id", "role", "created_at", "expires_at")}
+            {k: row[k] for k in ("invite_id", "invitee_email", "invitee_name", "role", "created_at", "expires_at")}
             for row in repo.list_open_invites(conn, session_id, now=now)
         ],
     }
