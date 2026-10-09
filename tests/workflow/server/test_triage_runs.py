@@ -34,6 +34,7 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     make_worker,
     settings,
     worker,
+    seen_at,
 )
 
 TRIAGE_KINDS = [*ALL_KINDS, "triage"]
@@ -171,6 +172,7 @@ def test_owner_approval_policy_is_refused(conn, settings, judge):
 
 
 def test_offline_runner(conn, settings, judge):
+    seen_at(conn, NOW)  # 마지막 신호 NOW — OFFLINE 은 그 이틀 뒤
     assert route(conn, settings, new_issue(conn, 1), now=OFFLINE).reason == REASONS["offline"]
 
 

@@ -32,6 +32,7 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     request_of,
     settings,
     worker,
+    seen_at,
 )
 
 LATER = "2026-10-06T12:00:30Z"  # 연결 프로그램 마지막 신호(NOW) 30초 뒤 — 온라인
@@ -122,6 +123,7 @@ def test_agent_without_the_stage_capability_is_refused(conn, store, settings, ad
 
 
 def test_offline_runner_keeps_the_assignee_and_waits(conn, store, settings, admin, all_open):
+    seen_at(conn, NOW)  # 마지막 신호 NOW — OFFLINE 은 그 이틀 뒤
     task_id = import_issue(conn, 1, labels=[])
 
     assign(conn, store, settings, task_id, f"agent:{FIX}", admin, now=OFFLINE)  # 오류로 돌려주지 않는다

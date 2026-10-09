@@ -39,6 +39,7 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     make_worker,
     settings,
     worker,
+    seen_at,
 )
 from .test_triage_runs import LATER, OFFLINE, judge, logs, new_issue, work  # noqa: F401
 
@@ -168,6 +169,7 @@ def test_intake_route_ignores_the_after_result_capability(conn, settings, judge)
 
 
 def test_next_step_route_shares_the_agent_checks(conn, settings, needs_info):
+    seen_at(conn, NOW)  # 마지막 신호 NOW — OFFLINE 은 그 이틀 뒤
     assert next_step_runs.next_step_route(conn, needs_info, now=OFFLINE, settings=settings).reason == REASONS["offline"]
     repo.save_github_source(conn, SESSION, config(triage_agent_id=None), NOW)
     assert next_step_runs.next_step_route(conn, needs_info, now=LATER, settings=settings).reason == REASONS["no_agent"]

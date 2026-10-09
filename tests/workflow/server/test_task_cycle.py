@@ -40,7 +40,7 @@ from workflow.domain.kinds import get_kind
 from workflow.domain.metrics import compute_metrics
 from workflow.domain.work_status import work_status
 from workflow.server import human_api, task_cycle
-from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace
+from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.worker import TickReport, Worker
 
@@ -104,6 +104,13 @@ def _agent(agent_id: str, registration: str, code: str, repository: str) -> dict
     }
 
 
+def seen_at(conn, when: str) -> None:
+    """`cycle` 의 러너 둘·에이전트 셋의 마지막 확인을 `when` 으로 — 꺼짐을 시험하는 테스트는 NOW 로 되돌린 뒤 이틀 뒤 시각을 쓴다."""
+    for agent_id in (FIX, REVIEW, FIX_SHOP):
+        repo.set_agent_connection(conn, agent_id, "online", when)
+    conn.execute("UPDATE connectors SET last_seen_at = ? WHERE revoked_at IS NULL", (when,))
+
+
 @pytest.fixture
 def cycle(conn, client) -> dict:
     """고정 워크스페이스: acme/billing 소스(검토 Agent REVIEW, 재작업 1회) + 담당자 → FIX. 연결 프로그램 둘 —
@@ -125,8 +132,10 @@ def cycle(conn, client) -> dict:
     ):
         repo.update_registration(conn, registration, connector_id=connector, repository_id=repository,
                                  base_commit=BASE, verification_profile_ids=profiles, discovered={}, now=NOW)
+    # 마지막 확인은 실제 시각과 NOW 중 늦은 쪽 — 웹 요청은 실제 시계, 워커는 Clock(NOW)이라 어느 쪽에서도 켜짐이다
+    # (NOW 만 쓰면 실제 시각이 NOW + 90초를 넘긴 뒤 웹 화면에서 러너가 꺼짐으로 보인다 — 2026-10-06 이후 실패)
+    seen_at(conn, max(NOW, utc_now()))
     for connector in (billing, shop):
-        repo.touch_connector(conn, connector, NOW, None)
         repo.record_supported_kinds(conn, connector, ALL_KINDS)
     repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW), NOW)
     repo.bind_assignee(conn, SESSION, AssigneeBinding(source_id=SOURCE, github_user_id=ASSIGNEE,

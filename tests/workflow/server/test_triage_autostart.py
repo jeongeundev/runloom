@@ -30,6 +30,7 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     make_worker,
     settings,
     worker,
+    seen_at,
 )
 from .test_triage_dispatch import triage_logs
 from .test_triage_judge import fail, log_row, result_body, submit
@@ -231,7 +232,8 @@ def test_offline_runner_waits(admin, conn, store, worker, clock, source, eligibl
     autostart(conn)
     wid = new_issue(conn, 1, labels=[])
     log = proposed(conn, store, worker, wid)
-    clock.now = OFFLINE  # 러너 마지막 신호 이틀 뒤
+    seen_at(conn, NOW)
+    clock.now = OFFLINE  # 러너 마지막 신호(NOW) 이틀 뒤
 
     assert worker.tick().triage_autostarted == 1
 
