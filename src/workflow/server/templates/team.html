@@ -127,7 +127,7 @@
         <button class="btn btn-secondary btn-small" type="submit">바꾸기</button></form>
       {% else %}{{ policy_labels.get(a.delegation_policy, a.delegation_policy) }}{% endif %}</td>
     <td>
-      {% if a.can_revoke %}<form method="post" action="/operator/connectors/{{ a.runner.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">러너 해제</button></form>{% endif %}
+      {% if a.can_revoke %}<form method="post" action="/operator/connectors/{{ a.runner.connector_id }}/revoke" class="inline-form"><button class="btn btn-danger btn-small" type="submit">러너 해제</button></form>{% if a.runner_agents > 1 %}<div class="small muted">에이전트 {{ a.runner_agents }}개가 함께 멈춥니다</div>{% endif %}{% endif %}
       {% if 'manage_rules' in allowed %}
       {% if a.scope_reason %}<div class="muted small">{{ a.scope_reason }}</div>
       {% else %}

@@ -22,6 +22,7 @@ import secrets
 import sqlite3
 import string
 import time
+from collections import Counter
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1809,24 +1810,24 @@ def _team_context(request: Request, conn: Connection, member: LoggedIn, now: str
 def _team_agents(conn: Connection, session_id: str, member: LoggedIn, *, now: str,
                  settings: Settings) -> list[dict[str, Any]]:
     """팀 화면 에이전트 줄 — 러너 표를 합친다(ARCHITECTURE "설정 UX — phase 23" 팀 화면). 에이전트의 러너 =
-    `agents.connector_id`. 러너 [해제] 는 그 러너의 첫 줄에만(`can_revoke`), 해제된 러너면 없다."""
+    `agents.connector_id`. 러너 [해제] 는 그 러너를 쓰는 모든 줄에(`can_revoke`), 함께 멈추는 에이전트 수
+    `runner_agents` 와 함께. 해제된 러너면 없다."""
     kinds = _kinds(conn, session_id)
     runners = {c["connector_id"]: c for c in repo.list_connectors(conn)}
-    seen: set[str] = set()
+    agents = _session_agents(conn, session_id)
+    shared = Counter(a["connector_id"] for a in agents if a["connector_id"])
     rows = []
-    for agent in _session_agents(conn, session_id):
+    for agent in agents:
         owner_id = views.agent_owner_id(conn, agent)
         runner = runners.get(agent["connector_id"]) if agent["connector_id"] else None
-        first = runner is not None and runner["connector_id"] not in seen
-        if runner is not None:
-            seen.add(runner["connector_id"])
         rows.append({
             **views.agent_public(agent, now=now, settings=settings, kinds=kinds),
             **views.team_agent_kinds(agent, kinds),
             "owner": views.runner_owner(conn, session_id, owner_id),
             "can_set_policy": can_set_policy(member_id=member.member_id, role=member.role, owner_id=owner_id),
             "runner": {k: runner[k] for k in ("connector_id", "created_at", "revoked_at")} if runner else None,
-            "can_revoke": first and runner["revoked_at"] is None
+            "runner_agents": shared[runner["connector_id"]] if runner else 0,
+            "can_revoke": runner is not None and runner["revoked_at"] is None
             and _may_remove_runner(member, runner["owner_member_id"]),
         })
     return rows

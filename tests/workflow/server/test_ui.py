@@ -578,3 +578,12 @@ def test_sources_page_uses_app_shell(web):
     # 발급 응답도 같은 셸이다
     issued = web.post("/sources/tokens", data={"label": "n8n"}).text
     assert 'class="sidebar' in issued and 'id="issued-token"' in issued
+
+
+def test_email_url_number_inputs_share_text_input_width():
+    """초대 이메일 칸 등 `type="email"`·`url`·`.field` 안 `number` 입력도 글 입력과 같은 너비·테두리(phase 23 실화면 점검)."""
+    css = STYLE.read_text(encoding="utf-8")
+    rule = css[:css.index('input[type="password"]')]
+    selector = rule[rule.rindex("}") + 1:] + css[css.index('input[type="password"]'):css.index("{", css.index('input[type="password"]'))]
+    for part in ('input[type="email"]', 'input[type="url"]', '.field input[type="number"]'):
+        assert part in selector, part

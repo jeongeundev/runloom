@@ -3687,7 +3687,7 @@ POST 는 모두 기존 Origin 검사를 거친다. 응답·로그에 비밀값�
 | 상태 | `켜짐`·`꺼짐`(`views.agent_online`) + `마지막 확인 <n분 전>`, 러너 없는 에이전트는 `러너 없음` |
 | 맡을 수 있는 일 | 에이전트 능력의 `code` 에 해당하는 종류(`kind_for_capability` — 등록부)의 화면 이름들을 `, ` 로. 해당 종류가 없는 능력은 세지 않는다(코드는 "자세히"). 없으면 `—` |
 | 맡기기 | `can_set_policy` 면 select(`바로 실행`·`내 승인 뒤 실행`) + [바꾸기] 를 `white-space: nowrap` 한 덩어리로, 아니면 글자 |
-| 동작 | 러너 [해제](`POST /operator/connectors/{connector_id}/revoke`, `can_revoke` 일 때, 한 러너의 첫 줄만) · 관리자면 "맡을 수 있는 일" 편집 |
+| 동작 | 러너 [해제](`POST /operator/connectors/{connector_id}/revoke`, `can_revoke` 일 때, 그 러너를 쓰는 모든 줄 — 둘 이상이면 아래 `에이전트 N개가 함께 멈춥니다`, 2026-10-09 실화면 점검으로 바꿈) · 관리자면 "맡을 수 있는 일" 편집 |
 | 자세히 | `<details class="detail">` — 에이전트 ID · 소유 구분 · 연결 유형 · 능력(`code · key=value`) · connector id · 러너 연결 시각 · 러너 해제 시각(해제됐으면) |
 
 - 러너 합치기: 에이전트의 러너 = `agents.connector_id`(`repo.list_connectors` 와 맞춘다). 취소되지 않은 러너 중 붙은 에이전트가 없는 것은 같은 표 끝에 `tr[data-runner]` 줄(`러너` · `<소유자>의 Mac` · `켜짐|꺼짐 · 마지막 확인` · `아직 에이전트 없음 — 러너가 등록 폴더를 보고하면 생깁니다` · `—` · [해제] · 자세히(connector id)) — `attach_runner` 일 때만. 해제된 러너는 에이전트 없는 러너 줄로 그리지 않는다(그 러너의 에이전트 줄은 [해제] 없이 남는다). 표가 비면 `아직 에이전트가 없습니다.` + `저장소 화면에서 러너를 붙이면 에이전트가 생깁니다` 링크 `/repos`.

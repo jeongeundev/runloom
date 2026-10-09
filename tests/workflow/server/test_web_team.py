@@ -611,8 +611,10 @@ def test_agent_row_shows_owner_mac_state_kinds_policy_and_runner_revoke(app, adm
     assert "김개발의 Mac" in text and "꺼짐" in text and "마지막 확인 없음" in text
     assert "버그 수정, 커밋 검토" in text
     assert 'action="/agents/agt-0a1b2c/delegation-policy"' in row and "<select" in row
-    assert f'action="/operator/connectors/{connector_id}/revoke"' in row  # 러너 [해제] 는 그 러너의 첫 줄
-    assert "/revoke" not in row_of(html, "data-agent", "agt-0a1b2d")
+    for agent_id in ("agt-0a1b2c", "agt-0a1b2d"):  # 러너 [해제] 는 그 러너를 쓰는 모든 줄, 함께 멈추는 수를 함께
+        shared = row_of(html, "data-agent", agent_id)
+        assert f'action="/operator/connectors/{connector_id}/revoke"' in shared, agent_id
+        assert "에이전트 2개가 함께 멈춥니다" in " ".join(visible_text(shared).split()), agent_id
     assert f'data-runner="{connector_id}"' not in html  # 에이전트가 있는 러너는 따로 줄이 없다
     assert "<h2>러너</h2>" not in html
     detail = row[row.index('<details class="detail"'):]
