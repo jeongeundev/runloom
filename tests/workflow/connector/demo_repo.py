@@ -1,6 +1,6 @@
 """커넥터 어댑터 테스트용 데모 저장소 — 수정 전 변환부(`items` 만)와 가짜 에이전트가 쓸 수정본·재현 테스트.
 
-`main` 의 `scripts/scaffold_demo_repo.py`(scaffold)와 대본 에이전트 `workflow.scripted._common`(FIXED_TRANSFORMER·REPRO_TEST)
+태그 `contest-demo-2026` 의 `scripts/scaffold_demo_repo.py`(scaffold)와 대본 에이전트 `workflow.scripted._common`(FIXED_TRANSFORMER·REPRO_TEST)
 에서 옮겼다 — 둘은 `service` 에 없다 (ADR-0019). 가상 데모 자료이며 실제 서비스·기업의 코드가 아니다.
 """
 

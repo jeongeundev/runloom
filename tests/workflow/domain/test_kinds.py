@@ -31,7 +31,7 @@ KINDS = [*BUILTIN_KINDS, REVIEW]
 def test_kind_for_capability_finds_builtin_kinds():
     assert kind_for_capability(BUILTIN_KINDS, "code.fix") is BUG_FIX
     assert kind_for_capability(BUILTIN_KINDS, "code.review") is CODE_REVIEW
-    assert kind_for_capability(BUILTIN_KINDS, "operations.diagnose") is None  # 진단 데모는 main 전용 (ADR-0019)
+    assert kind_for_capability(BUILTIN_KINDS, "operations.diagnose") is None  # 진단 데모는 공개 데모 전용(종료) (ADR-0019)
 
 
 def test_kind_for_capability_finds_registered_kind():

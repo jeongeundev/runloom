@@ -9,6 +9,7 @@
 | UI_GUIDE-judge-first-visit.md | `docs/UI_GUIDE.md` 의 "심사자 첫 방문 흐름" 절 |
 | ARCHITECTURE-public-demo-deploy.md | `docs/ARCHITECTURE.md` 의 공개 데모 VM 구성과 오프라인 예시 실행 제안 |
 | CURRENT_HANDOFF-until-2026-09-26.md | `docs/CURRENT_HANDOFF.md` 의 2026-09-26 이전 기록 |
+| DEPLOY-public-demo-vm.md | `docs/DEPLOY.md` 공개 데모 VM 런북 (2026-10-09 VM 삭제·[ADR-0029](../../adr/0029-demo-shutdown-main-single-branch.md)로 이동) |
 | DIAG_EVAL*.md | `docs/` 의 진단 데모 모델 평가(종합 + 원본 4개). `scripts/diag_eval.py` 의 기본 출력 경로는 여전히 `docs/DIAG_EVAL.md` 다 |
 
-공개 데모의 코드(`src/diagnostic_demo/`, `src/workflow/scripted/`, `deploy/`)와 그 코드를 설명하는 현행 문서(GLOSSARY·ARCHITECTURE·DEPLOY·n8n 절차)는 코드가 남아 있는 동안 그대로 둔다.
+공개 데모의 코드(`src/diagnostic_demo/`, `src/workflow/scripted/`, `deploy/` VM 파일)는 태그 `contest-demo-2026` 에만 남아 있다(2026-10-09, [ADR-0029](../../adr/0029-demo-shutdown-main-single-branch.md)).

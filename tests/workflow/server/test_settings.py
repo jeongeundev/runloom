@@ -209,7 +209,7 @@ def test_workflow_mode_demo_or_other_value_is_a_settings_error(value):
     with pytest.raises(SettingsError) as exc:
         load_settings({**FULL, "WORKFLOW_MODE": value})
     message = str(exc.value)
-    assert "WORKFLOW_MODE" in message and "셀프호스트 전용" in message and "main" in message
+    assert "WORKFLOW_MODE" in message and "셀프호스트 전용" in message and "main" not in message
     assert issubclass(SettingsError, ValueError)
 
 
@@ -220,7 +220,7 @@ DIAGNOSIS_KEYS = (
 
 
 def test_diagnosis_settings_are_gone():
-    """진단 데모는 `main` 전용(ADR-0019) — 진단 토큰·주소·진단 한도를 읽지도 들고 있지도 않는다."""
+    """진단 데모는 공개 데모 전용(종료)(ADR-0019) — 진단 토큰·주소·진단 한도를 읽지도 들고 있지도 않는다."""
     env = _RecordingEnv({**FULL, **{key: "1" for key in DIAGNOSIS_KEYS}})
     s = load_settings(env)
     assert not set(DIAGNOSIS_KEYS) & (set(ENV_KEYS) | env.asked)

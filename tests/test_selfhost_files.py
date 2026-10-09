@@ -348,7 +348,7 @@ def test_install_creates_env_0600_with_generated_secrets(tmp_path):
     example = _env_example()
     assert set(values) == set(example)
     assert values["WORKFLOW_PORT"] == "8000"
-    assert not {"DIAG_API_TOKEN", "DIAG_API_URL"} & set(values)  # 진단 데모는 `main` 전용 (ADR-0019)
+    assert not {"DIAG_API_TOKEN", "DIAG_API_URL"} & set(values)  # 진단 데모는 공개 데모 전용(종료) (ADR-0019)
     # 출력에 비밀값이 없고 토큰 파일 위치·접속 주소·다음 할 일이 있다
     out = res.stdout + res.stderr
     assert values["OPERATOR_TOKEN"] not in out and values["SESSION_SECRET"] not in out
@@ -865,7 +865,7 @@ def test_selfhost_md_never_prints_secret_values():
     assert "wfc_" not in text.replace("wfc_…", "")
 
 
-@pytest.mark.parametrize("doc", ["docs/SELFHOST.md", "docs/README.md", "docs/DEPLOY.md"])
+@pytest.mark.parametrize("doc", ["docs/SELFHOST.md", "docs/README.md"])
 def test_doc_relative_links_resolve(doc):
     path = ROOT / doc
     text = path.read_text(encoding="utf-8")
@@ -887,7 +887,6 @@ def test_agents_md_commands_include_selfhost_install_and_backup():
     assert f"{COMPOSE_PREFIX} exec central python3 -m workflow.server.backup create" in section
 
 
-def test_docs_index_and_public_demo_runbook_point_at_selfhost():
+def test_docs_index_points_at_selfhost_and_public_demo_runbook_is_archived():
     assert "](SELFHOST.md)" in (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    head = (ROOT / "docs" / "DEPLOY.md").read_text(encoding="utf-8").splitlines()[:3]
-    assert any("공개 데모 VM 런북" in line and "SELFHOST.md" in line for line in head)
+    assert not (ROOT / "docs" / "DEPLOY.md").exists()  # 공개 데모 종료 (ADR-0029)

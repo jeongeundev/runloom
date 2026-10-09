@@ -509,7 +509,7 @@
 
 ### 11.1 `KindSpec`
 
-내장 종류(`BUILTIN_KINDS`)는 13절의 `bug_fix`·`code_review` 둘이다. 예전 내장 `diagnosis`·`code_change` 는 `main` 공개 데모에만 있다([ADR-0019](adr/0019-service-selfhost-only.md)).
+내장 종류(`BUILTIN_KINDS`)는 13절의 `bug_fix`·`code_review` 둘이다. 예전 내장 `diagnosis`·`code_change` 는 공개 데모(종료)에만 있다([ADR-0019](adr/0019-service-selfhost-only.md)).
 
 사용자 정의 `review` — diff 와 코드 수정 결과를 받아 검토 의견을 낸다. `output_kind` 는 항상 `generic_result`, 완료는 사람 검토:
 
@@ -531,7 +531,7 @@
 
 ### 11.2 `SuccessorRule`
 
-`main` 공개 데모의 진단 → 코드 수정 규칙(`service` 의 내장 규칙은 13절의 `bug_fix → code_review` 하나 — ADR-0019):
+공개 데모(종료)의 진단 → 코드 수정 규칙(`service` 의 내장 규칙은 13절의 `bug_fix → code_review` 하나 — ADR-0019):
 
 ```json
 { "from_kind": "diagnosis", "on_outcomes": ["ready_for_handoff"], "to_kind": "code_change", "handoff_kinds": ["diagnosis_result", "evidence"] }

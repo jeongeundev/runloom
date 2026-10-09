@@ -1,6 +1,6 @@
 # 현재 인계 — 업무 목록과 결과 기반 자동 실행
 
-갱신일: 2026-10-05. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
+갱신일: 2026-10-09. 2026-10-09 공개 데모 종료 — VM 삭제, `service` 를 `main` 으로 합치고 `service` 삭제, 데모 코드는 태그 `contest-demo-2026`([ADR-0029](adr/0029-demo-shutdown-main-single-branch.md)). 아래 기록의 `service` 는 지금의 `main` 이다. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
 ## 다음 작업: 23-setup-ux 완료 — service 병합 → 셀프호스트 v25 → K1 실연동 재개 (새 세션은 여기서 시작)
 
@@ -211,13 +211,13 @@ phase 11 에서 남긴 것: 수집 실패(rate limit·권한)는 DB 에 저장�
 
 phase 9 e2e 에서 발견한 결함 — 수정됨(step 13): 재작업 상한 1 에서 수정 요청 검토가 재작업을 시작시킨 뒤, 재작업 결과가 판정되기 전 tick 이 같은 검토를 다시 평가하면 `domain/task_followup.py` `_after_review` 가 `rounds_used(1) >= 상한(1)` 으로 `rework_limit_reached` 사람 요청을 하나 더 만들던 문제. 이제 그 검토가 이미 재작업(`rework:{검토 실행}`, 워커가 수정 Task 실행의 `start_key` 로 `handled_cause_keys` 에 넣음)을 일으켰으면 상한 판단 전에 `none`("이미 재작업을 시작한 검토") 을 낸다. 회귀: `tests/workflow/domain/test_task_followup.py`·`tests/workflow/server/test_task_cycle.py`, e2e `tests/e2e/test_metrics.py` 는 사람 요청 0·개입 1 로 단정.
 
-공모전 관련 작업은 더 하지 않는다(2026-09-27 사용자 결정). 공개 데모 VM 과 `main` 은 그대로 두고 손대지 않는다. 공모전 문서는 [보관 자료](archive/2026-09-27-contest-and-history/)로 옮겼다.
+공모전 관련 작업은 더 하지 않는다(2026-09-27 사용자 결정). 공개 데모 VM 은 2026-10-09 삭제했다([ADR-0029](adr/0029-demo-shutdown-main-single-branch.md)). 공모전 문서는 [보관 자료](archive/2026-09-27-contest-and-history/)로 옮겼다.
 
 ## 지금 상태
 
 | 항목 | 상태 |
 |---|---|
-| 브랜치 | `service` 가 실서비스 통합 브랜치. phase 6·7·8 과 문서 정리 포함. 새 phase 는 `service` 에서 `feat-*` 로 분기하고 끝나면 `--no-ff` 병합. 원격 푸시는 사용자 지시 때만 |
+| 브랜치 | `main` 하나(2026-10-09 `service` 를 합침). 새 phase 는 `main` 에서 `feat-*` 로 분기하고 끝나면 `--no-ff` 병합. 원격 푸시는 사용자 지시 때만 |
 | 완료 phase | 0-mvp, 1-diag-fix, 2-model-compare, 5-scripted-demo(공모전 데모), 6-typed-handoff([ADR-0009](adr/0009-registered-kinds-and-succession-rules.md)), 7-n8n-gateway([ADR-0010](adr/0010-n8n-inbox-and-callback.md)), 8-github-task-cycle([ADR-0014](adr/0014-github-task-cycle.md)), 9-measure([ADR-0015](adr/0015-measurement-events-and-baseline.md)), 10-selfhost([ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)), 11-github-app([ADR-0017](adr/0017-github-app-connection.md)) — 모두 `service` 병합됨(미푸시). 12-real-repo([ADR-0018](adr/0018-real-repo-cycle.md)) — `service` 병합됨(2e06218). 4-claude-issues 는 step 3 에서 종료 |
 | 계획만 | `3-limit-wait`([ADR-0007](adr/0007-usage-limit-wait-policy.md), 사용량 한도 대기). 실사용에서 한도에 걸리는 빈도를 보고 당긴다 |
 | 검증 | 2026-09-29 `service` 115f529 기준 `python3 -m pytest -q` 2932 passed/68 skipped, `ruff` 통과, `WORKFLOW_E2E=1` `test_github_app`·`test_real_repo` 13 passed. 이전: 2026-09-28 `feat-12-real-repo` step 10 기준 2918 passed/68 skipped. `WORKFLOW_E2E=1` e2e 67 passed/1 skipped(`test_real_repo.py` 7 포함), `WORKFLOW_DOCKER=1` 셀프호스트 e2e 는 phase 11 브랜치에서 1 passed(phase 12 에서 다시 돌리지 않음) |
@@ -228,7 +228,7 @@ phase 9 e2e 에서 발견한 결함 — 수정됨(step 13): 재작업 상한 1 �
 
 ```bash
 cd /Users/kje/00_Workspace/01_Coding/project/workflow
-git checkout service
+git checkout main
 python3 scripts/execute.py {task-name} --engine claude   # phases/{task-name}/index.json + step{N}.md
 ```
 

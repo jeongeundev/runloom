@@ -1,5 +1,7 @@
 # ADR-0006: 배포 구성 — 클라우드 VM + 도메인, 연결 프로그램은 운영자 Mac
 
+> 2026-10-09 [ADR-0029](0029-demo-shutdown-main-single-branch.md): 공개 데모 종료, `main` 단일 브랜치. 이 문서의 `main`·`service` 구분은 당시 기록이다.
+
 결정일: 2026-09-20. 사용자 확정. 구체적인 VM 제공자·도메인은 아직 지정하지 않았다.
 
 범위: 공개 데모. 셀프호스트는 [ADR-0016](0016-selfhost-docker-fixed-workspace.md)

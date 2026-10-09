@@ -63,7 +63,7 @@ def test_codex_env_allowlist_has_no_secret_names():
 
 
 def test_codex_env_passes_no_workflow_vars():
-    """대본 에이전트 속도 `WORKFLOW_SCRIPT_PACE_SECONDS` 도 더는 예외가 아니다 — 대본 에이전트는 `main` 전용 (ADR-0019)."""
+    """대본 에이전트 속도 `WORKFLOW_SCRIPT_PACE_SECONDS` 도 더는 예외가 아니다 — 대본 에이전트는 공개 데모 전용(종료) (ADR-0019)."""
     env = codex_env({
         "PATH": "/usr/bin", "WORKFLOW_SCRIPT_PACE_SECONDS": "25",
         "WORKFLOW_DB_PATH": "/y", "WORKFLOW_CONNECTOR_HOME": "/x", "WORKFLOW_SKIP_APP": "1",

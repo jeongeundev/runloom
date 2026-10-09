@@ -177,12 +177,10 @@ def test_readme_uses_the_same_commands_paths_and_settings_as_the_product(readme)
     assert "8000" in readme
 
 
-def test_readme_states_the_callback_rules_and_public_demo_limit(readme):
-    for needle in ("체인당 1회", "사람 차례", "started", "start_error", "허용 목록", "runloom.duckdns.org", "Error Trigger"):
+def test_readme_states_the_callback_rules(readme):
+    for needle in ("체인당 1회", "사람 차례", "started", "start_error", "허용 목록", "Error Trigger"):
         assert needle in readme, needle
-    # 공개 데모 VM 은 허용 목록이 비어 callback 이 오지 않는다 — 거기서 따라 하라고 적지 않는다
-    vm_line = next(line for line in readme.splitlines() if "runloom.duckdns.org" in line)
-    assert "비어" in vm_line and "오지 않" in vm_line
+    assert "duckdns" not in readme  # 공개 데모 VM 은 내렸다 (ADR-0029)
 
 
 def test_readme_avoids_forbidden_phrases_and_n8n_criticism(readme):

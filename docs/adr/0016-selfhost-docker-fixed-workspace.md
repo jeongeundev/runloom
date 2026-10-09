@@ -21,7 +21,7 @@
 ## 범위 조정
 
 - [ADR-0005](0005-access-model-anonymous-session-operator-token.md)(익명 세션·운영자 토큰)는 **공개 데모(demo 모드)에 한정**한다. 셀프호스트는 이 ADR 결정 3 을 따른다.
-- [ADR-0006](0006-deployment-vm-caddy-mac-connector.md)(VM + Caddy, 컨테이너 없음)은 **공개 데모에 한정**한다. 공개 데모 VM·`deploy/install-vm.sh`·`deploy/systemd/`·[DEPLOY](../DEPLOY.md) 런북은 바꾸지 않는다([ADR-0008](0008-public-demo-scripted-agents.md)).
+- [ADR-0006](0006-deployment-vm-caddy-mac-connector.md)(VM + Caddy, 컨테이너 없음)은 **공개 데모에 한정**한다. 공개 데모 VM·`deploy/install-vm.sh`·`deploy/systemd/`·[DEPLOY](../archive/2026-09-27-contest-and-history/DEPLOY-public-demo-vm.md) 런북은 바꾸지 않는다([ADR-0008](0008-public-demo-scripted-agents.md)).
 
 ## 대안
 

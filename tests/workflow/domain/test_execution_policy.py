@@ -42,7 +42,7 @@ def test_only_the_github_cycle_kinds_are_driven_by_readiness_and_followup_decisi
 
 def test_user_defined_kinds_get_the_generic_policy():
     assert policy_for("review") is GENERIC_POLICY
-    # 진단 데모의 옛 내장 이름은 main 전용 — service 에서는 사용자 정의 이름일 뿐이다 (ADR-0019)
+    # 진단 데모의 옛 내장 이름은 공개 데모 전용(종료) — 지금은 사용자 정의 이름일 뿐이다 (ADR-0019)
     assert policy_for("diagnosis") is GENERIC_POLICY
     assert policy_for("code_change") is GENERIC_POLICY
     assert (GENERIC_POLICY.target, GENERIC_POLICY.verifier, GENERIC_POLICY.cycle) == ("local", "generic", False)

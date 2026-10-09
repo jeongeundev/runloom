@@ -17,7 +17,7 @@ class Progress:
 
 
 def test_supported_builtin_kinds_are_bug_fix_code_review_and_triage():
-    # 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다 (ADR-0019) — claim 때 지원 종류로 선언하지 않는다
+    # 진단 데모의 `diagnosis`·`code_change` 는 공개 데모(종료)에만 있었다 (ADR-0019) — claim 때 지원 종류로 선언하지 않는다
     assert SUPPORTED_BUILTIN_KINDS == ("bug_fix", "code_review", "triage")
     assert "diagnosis" not in SUPPORTED_BUILTIN_KINDS and "code_change" not in SUPPORTED_BUILTIN_KINDS
 

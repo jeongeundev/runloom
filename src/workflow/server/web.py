@@ -718,7 +718,7 @@ def task_create(
     if selection_mode == "manual":
         _require_registered(conn, session_id, chosen_agent_id)
 
-    if completion_mode == "auto":  # 자동 완료 검증기가 있는 종류가 없다 — 진단 데모는 `main` 전용 (ADR-0019)
+    if completion_mode == "auto":  # 자동 완료 검증기가 있는 종류가 없다 — 진단 데모는 공개 데모 전용(종료) (ADR-0019)
         raise PageError(
             422, "invalid_field",
             "이 업무 종류는 자동 완료를 지원하지 않습니다. 검토 후 완료를 선택하세요.",

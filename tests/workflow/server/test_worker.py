@@ -3,7 +3,7 @@
 시계는 고정 문자열을 돌려주는 `Clock`. 규칙 기반 후속(`_spawn_successors`)·범용 결과 판정·callback 은 워크스페이스에
 등록한 사용자 정의 종류 `classify` → `review`(`repo.insert_kind`·`insert_rule`) 위에서 본다 — 내장 `bug_fix`·`code_review`
 는 업무 순환(`_advance_cycle`)이 잇고, 그 흐름은 `test_task_cycle.py` 가 본다. 여기서 `bug_fix` 는 코드 결과 확인
-(`_check_code_results`)과 인계 묶음 조립만 본다. 진단 데모 경로는 `main` 전용이다 (ADR-0019).
+(`_check_code_results`)과 인계 묶음 조립만 본다. 진단 데모 경로는 공개 데모 전용(종료)이다 (ADR-0019).
 """
 
 import dataclasses

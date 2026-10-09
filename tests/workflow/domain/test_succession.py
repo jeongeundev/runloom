@@ -26,7 +26,7 @@ def test_rule_for_registered_rule():
 def test_rule_for_missing_pair_is_none():
     assert rule_for(BUILTIN_RULES, "code_change", "review") is None
     assert rule_for(BUILTIN_RULES, "code_review", "bug_fix") is None
-    assert rule_for(BUILTIN_RULES, "diagnosis", "code_change") is None  # 진단 데모 규칙은 main 전용 (ADR-0019)
+    assert rule_for(BUILTIN_RULES, "diagnosis", "code_change") is None  # 진단 데모 규칙은 공개 데모 전용(종료) (ADR-0019)
     assert rule_for([], "bug_fix", "code_review") is None
 
 

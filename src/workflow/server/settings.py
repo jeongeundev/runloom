@@ -102,7 +102,7 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
     mode = env.get("WORKFLOW_MODE") or ""
     if mode not in ("", "selfhost"):
         raise SettingsError(
-            f"WORKFLOW_MODE={mode} 는 지원하지 않습니다 — service 브랜치는 셀프호스트 전용이며 공개 데모는 main 브랜치입니다"
+            f"WORKFLOW_MODE={mode} 는 지원하지 않습니다 — Runloom 은 셀프호스트 전용입니다 (공개 데모는 2026-10-09 종료)"
         )
     secrets_found: dict[str, str] = {}
     missing: list[str] = []

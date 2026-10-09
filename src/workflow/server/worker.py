@@ -4,7 +4,7 @@ DB 를 기준으로 상태를 전진시킨다: GitHub 수집 → Jira 가져오�
 커밋 검토 결과 확인 → 범용 결과 판정 → 업무 순환 → 후속 스캔 → 실패 반영 → callback 전달 → 초안 PR → 원본 이슈 반영 →
 Jira 상태 옮기기.
 각 단계는 자기 트랜잭션(repo 함수)으로 끝나고, HTTP(GitHub·callback POST)는 트랜잭션 밖에서 한다. 후속 스캔이 판정들 뒤에
-오므로 같은 tick 에 판정이 나면 바로 잇는다. 진단 데모(진단 API 전달·폴링·A 판정)는 `main` 전용이다 (ADR-0019).
+오므로 같은 tick 에 판정이 나면 바로 잇는다. 진단 데모(진단 API 전달·폴링·A 판정)는 공개 데모 전용(종료)이다 (ADR-0019).
 
 - 모델을 호출하지 않는다 (ADR-0004). 판정만으로 완료하지 않는다 — 완료는 사람 검토·병합 추적이 정한다.
 - 후속 착수 조건은 선행 결과 + 판정 `passed` + 결과 `outcome` ∈ 등록된 규칙 `on_outcomes` 다 (ADR-0009). 선행 Task 의
@@ -1312,7 +1312,7 @@ class Worker:
                 continue
             agent = repo.get_agent(conn, selection.selected_agent_id)
             if agent is None or agent["connection_type"] == "api":
-                # API Agent 는 이 워커가 실행을 전달하지 않는다 (진단 API 전달은 `main` 전용 — ADR-0019)
+                # API Agent 는 이 워커가 실행을 전달하지 않는다 (진단 API 전달은 공개 데모 전용(종료) — ADR-0019)
                 self._refresh_task(conn, task_id)
                 continue
             # 직접 작업 중인 업무도 직접 실행 모드처럼 입력만 준비한다 — 사람이 자기 세션에서 하는 중(phase 16)

@@ -12,7 +12,7 @@ from typing import Literal
 from workflow.contracts.v1 import KindSpec
 
 Target = Literal["code_change", "commit_review", "local", "triage"]
-# code_change: 버그 수정 결과(요청 ID·기준 커밋 대조). 진단·보고서 데모 판정기는 `main` 전용 (ADR-0019)
+# code_change: 버그 수정 결과(요청 ID·기준 커밋 대조). 진단·보고서 데모 판정기는 공개 데모 전용(종료) (ADR-0019)
 Verifier = Literal["code_change", "commit_review", "generic", "triage"]
 
 

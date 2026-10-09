@@ -60,7 +60,7 @@ def test_module_import_creates_app_when_not_skipped(monkeypatch, tmp_path):
 
 
 def test_app_starts_without_any_diagnosis_setting(settings):
-    """phase 10 — 진단 설정 없이 앱이 만들어지고 스키마를 연다. 진단은 `main` 전용이라 설정 칸도 없다 (ADR-0019)."""
+    """phase 10 — 진단 설정 없이 앱이 만들어지고 스키마를 연다. 진단은 공개 데모 전용(종료)이라 설정 칸도 없다 (ADR-0019)."""
     app = create_app(settings)
     assert isinstance(app, FastAPI)
     assert settings.db_path.exists()

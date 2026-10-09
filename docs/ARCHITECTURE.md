@@ -97,7 +97,7 @@ step 11 구현 상태: 사람 요청과 응답 후 재개. 응답 권한은 운�
 
 ### 진단 데모 코드 수정과 일반 버그 수정 비교
 
-> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+> 공개 데모 전용(종료)([ADR-0019](adr/0019-service-selfhost-only.md)) — phase 13 이 이 코드를 지웠다. 아래는 공개 데모(태그 `contest-demo-2026`)의 기록이다.
 
 | 항목 | 데모 `code_change`(유지) | 일반 `bug_fix`(신규) |
 |---|---|---|
@@ -368,7 +368,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ## 셀프호스트 — phase 10
 
-상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)을 따른다. 기본값·step 목록은 [phase 10 README](../phases/10-selfhost/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0016·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 공개 데모 구성(아래 "배포와 실행 예산", [DEPLOY](DEPLOY.md))은 바뀌지 않는다.
+상태(2026-09-28 step 6): step 0 설계, step 1~6 구현(아래 각 절의 구현 메모). [ADR-0016](adr/0016-selfhost-docker-fixed-workspace.md)을 따른다. 기본값·step 목록은 [phase 10 README](../phases/10-selfhost/README.md). 아래 이름은 괄호의 step 이 만든다 — 바꿀 때는 ADR-0016·이 절·[GLOSSARY](GLOSSARY.md)·테스트를 같이 고친다. 공개 데모 구성(아래 "배포와 실행 예산", [DEPLOY](archive/2026-09-27-contest-and-history/DEPLOY-public-demo-vm.md))은 바뀌지 않는다.
 
 ### 구성
 
@@ -394,7 +394,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ### 모드 — `WORKFLOW_MODE` (step 1·2·3)
 
-> [ADR-0019](adr/0019-service-selfhost-only.md) 로 `service` 에서 폐지 — 모드 없이 늘 selfhost 동작이고 `WORKFLOW_MODE=demo` 는 시작 때 설정 오류다. 아래는 `main` 기록이다.
+> [ADR-0019](adr/0019-service-selfhost-only.md) 로 폐지 — 모드 없이 늘 selfhost 동작이고 `WORKFLOW_MODE=demo` 는 시작 때 설정 오류다. 아래는 공개 데모(종료) 기록이다.
 
 `Settings.mode` 는 `"demo"`(미설정 기본) 또는 `"selfhost"`. 그 밖의 값은 `load_settings` 가 `ValueError`.
 
@@ -2518,7 +2518,7 @@ FastAPI `BackgroundTasks`만으로 장시간 실행을 관리하지 않는다. D
 
 ### 진단 모델과 평가 기준
 
-> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+> 공개 데모 전용(종료)([ADR-0019](adr/0019-service-selfhost-only.md)) — phase 13 이 이 코드를 지웠다. 아래는 공개 데모(태그 `contest-demo-2026`)의 기록이다.
 
 제공자는 OpenAI, 호출 방식은 Responses API, 모델은 `gpt-4.1-2025-04-14` 다(ADR-0003 확정). 첫 평가 후보였던 `gpt-4.1-mini-2025-04-14` 는 네 번의 평가에서 정상 사례를 3/3 통과하지 못해 제외했다([DIAG_EVAL](archive/2026-09-27-contest-and-history/DIAG_EVAL.md)). 최신·최고 성능 모델이라는 주장은 아니다. [모델 문서](https://developers.openai.com/api/docs/models/gpt-4.1)
 
@@ -2873,7 +2873,7 @@ API 진단 실행도 같은 논리적 이벤트를 보존한다. 상태 조회�
 
 ### 진단 결과와 근거
 
-> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+> 공개 데모 전용(종료)([ADR-0019](adr/0019-service-selfhost-only.md)) — phase 13 이 이 코드를 지웠다. 아래는 공개 데모(태그 `contest-demo-2026`)의 기록이다.
 
 진단 결과 봉투는 `contract_version`, `execution_id`, `task_id`, `run_id`, `outcome`, `summary`, `findings`, `diagnosis`, `repair_request`, `missing_information`, `attachments`, `provenance`를 필수로 가진다. 기존 PRD 예시는 설명용 발췌이며 완전한 봉투가 아니다.
 
@@ -2948,7 +2948,7 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 
 ## 배포와 실행 예산 — 2026-09-20 확정
 
-> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+> 공개 데모 전용(종료)([ADR-0019](adr/0019-service-selfhost-only.md)) — phase 13 이 이 코드를 지웠다. 아래는 공개 데모(태그 `contest-demo-2026`)의 기록이다.
 
 구성은 [ADR-0006](adr/0006-deployment-vm-caddy-mac-connector.md)을 따른다. 아래 수치 중 "초기값"은 측정 후 조정하며, 상한은 설정 파일 값으로 두고 코드에 박지 않는다.
 
@@ -3041,7 +3041,7 @@ A 완료 트랜잭션은 판정 기록·채택 Artifact·Task 완료 상태를 �
 
 ## 진단 완료 검증
 
-> `main` 전용([ADR-0019](adr/0019-service-selfhost-only.md)) — `service` 에서는 phase 13 이 이 코드를 지운다. 아래는 `main` 공개 데모의 기록이다.
+> 공개 데모 전용(종료)([ADR-0019](adr/0019-service-selfhost-only.md)) — phase 13 이 이 코드를 지웠다. 아래는 공개 데모(태그 `contest-demo-2026`)의 기록이다.
 
 진단 API는 PRD 도구와 모델로 자료를 비교한다. 호출 횟수·시간 상한을 두고 초과 시 실패로 보고한다. 모델 자격 증명은 진단 서비스에 둔다. 근거·로그는 조사 데이터이며 실행 지시가 아니다.
 

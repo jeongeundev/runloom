@@ -168,7 +168,7 @@ class LocalTarget(_Contract):
 
 # --- 업무 종류와 후속 규칙 (CONTRACT 11절) ---------------------------------
 
-# 셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 `main` 에만 있다
+# 셀프호스트 전용(ADR-0019) — 진단 데모의 `diagnosis`·`code_change` 는 공개 데모(종료)에만 있었다
 BUILTIN_KIND_NAMES: tuple[str, ...] = ("bug_fix", "code_review", "triage")
 
 
@@ -325,7 +325,7 @@ class ExecutionRequest(_OmitUnknownMeasure):
             return self
         if self.kind == "triage":
             raise ValueError("kind triage 는 kind_spec 이 있어야 합니다")
-        # `diagnosis`·`code_change` 는 `main` 의 진단 데모 요청(kind_spec 없음) 모양으로만 남는다 (ADR-0019).
+        # `diagnosis`·`code_change` 는 공개 데모(종료)의 진단 데모 요청(kind_spec 없음) 모양으로만 남는다 (ADR-0019).
         # kind_spec 이 있으면 그 이름의 사용자 정의 종류다 — 아래 else 로 간다
         if self.kind == "diagnosis" and self.kind_spec is None:
             if not isinstance(self.target, DiagnosisTarget):

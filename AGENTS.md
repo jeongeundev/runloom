@@ -7,7 +7,6 @@
 ## 기술 스택
 - Python 3.13 계열, 시스템 `python3` 사용 (가상환경 없음). [ADR-0002](docs/adr/0002-server-stack-python-fastapi-sqlite.md)
 - FastAPI + Uvicorn (웹/API), Jinja2 + CSS + 소량 브라우저 JavaScript (화면), Pydantic v2 (계약 검증), 표준 `sqlite3` + 명시적 SQL (저장), HTTPX (HTTP 클라이언트)
-- 진단 데모(OpenAI Responses API, [ADR-0003](docs/adr/0003-diagnosis-model-openai-gpt41-mini.md))는 `main` 전용 — `service` 에는 없다 ([ADR-0019](docs/adr/0019-service-selfhost-only.md))
 - 로컬 에이전트 어댑터: Codex CLI 1종 [ADR-0001](docs/adr/0001-first-local-agent-codex.md)
 - pytest, ruff. 의존성은 `pyproject.toml`
 
@@ -21,8 +20,8 @@
 - 업무 종류·후속 규칙은 워크스페이스 등록 데이터다(ADR-0009). 새 단계를 붙일 때 `composition.py`·`worker.py` 에 종류 이름 분기를 늘리지 않는다 — 규칙 행으로 되는지가 설계 기준.
 - 테스트 배치: `tests/` 가 `src/` 구조를 따라간다. `src/workflow/domain/selection.py` → `tests/workflow/domain/test_selection.py`. `tdd-guard.sh` 가 이 배치를 인식한다.
 
-## 제품 코드와 데모의 경계
-- `src/workflow/` 는 제품(중앙 웹/API·워커·연결 프로그램·계약). 진단 데모 서비스(`src/diagnostic_demo/`)·진단 fixture·보고서 데모 저장소는 `main` 전용이다 ([ADR-0019](docs/adr/0019-service-selfhost-only.md)).
+## 공개 데모 (종료)
+- 공모전 공개 데모(진단 데모·대본 에이전트·VM 배포)는 2026-10-09 종료했고 VM 도 내렸다. 코드는 태그 `contest-demo-2026` 에만 있다 ([ADR-0029](docs/adr/0029-demo-shutdown-main-single-branch.md)). 배포 형태는 셀프호스트 하나다.
 
 ## 개발 프로세스
 - CRITICAL: 새 기능 구현 시 반드시 테스트를 먼저 작성하고, 테스트가 통과하는 구현을 작성할 것 (TDD)
@@ -52,7 +51,7 @@ docker compose -p runloom -f deploy/selfhost/compose.yaml exec central python3 -
 codex exec --json --dangerously-bypass-approvals-and-sandbox <prompt>
 ```
 
-- 브랜치: `main` 은 공개 데모(VM 배포 원본, 심사 ~2026-10-05 동결 — 데모 수정만). 실서비스 통합 브랜치는 **`service`** — phase 는 `service` 를 checkout 한 상태에서 하네스를 돌리고(`feat-*` 가 거기서 갈라진다) 끝나면 `service` 에 `--no-ff` 로 병합한다. 2026-09-22 신설, phase 6 부터 적용.
+- 브랜치: **`main`** 하나다. phase 는 `main` 을 checkout 한 상태에서 하네스를 돌리고(`feat-*` 가 거기서 갈라진다) 끝나면 `main` 에 `--no-ff` 로 병합한다. 2026-10-09 `service` 를 `main` 으로 합치고 `service` 는 지웠다([ADR-0029](docs/adr/0029-demo-shutdown-main-single-branch.md)).
 - `python3 scripts/execute.py {task-name} [--push] [--engine codex|claude]` 로 실행한다. 워크플로우 전체는 `.claude/commands/harness.md` 참고. 2026-09-20 기준 Codex 사용량이 거의 남지 않아 `--engine claude` 로 실행한다.
 - `--dangerously-bypass-approvals-and-sandbox` 는 승인 프롬프트·샌드박스를 건너뛴다 (자동화 전용). 외부에서 통제된 환경에서만 쓴다.
 - codex 가 사용량 한도로 실패하면 같은 step 을 `claude -p --dangerously-skip-permissions --strict-mcp-config` 로 재실행하고, 그 실행의 남은 step 도 claude 로 돌린다. `--strict-mcp-config` 는 전역 MCP 를 물지 않게 한다 (step 세션은 내장 도구만 쓴다). 어느 엔진이 돌았는지는 `step{N}-output.json` 의 `engine` 에 남는다.

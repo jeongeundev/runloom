@@ -112,7 +112,7 @@ phase 8 은 `SCHEMA_VERSION` 을 4 → 5 로 올리며 **처음으로 데이터 
 1. 중앙·워커·연결 프로그램을 멈추고 DB 를 백업한다(VM 이면 `sudo systemctl start workflow-backup.service`, 로컬이면 `db.sqlite`·`-wal` 을 복사).
 2. **서버를 먼저** 올린다. 중앙 또는 워커가 시작할 때 `init_schema` 가 `BEGIN IMMEDIATE` 한 트랜잭션으로 올린다 — 실패하면 v4 그대로 남고 시작하지 못한다. 기존 사용자 정의 종류 이름이 `bug_fix`·`code_review` 면 `세션:종류` 목록이 오류에 찍힌다(그 종류를 다른 이름으로 옮긴 뒤 다시 시작).
 3. 그다음 연결 프로그램을 올린다. 구버전 연결 프로그램은 새 종류를 받지 않고 `executor_outdated` 대기가 된다(구버전 서버 + 신버전 연결 프로그램은 claim 이 422).
-4. v3 이하·v6 이상은 여전히 시작을 거부한다. 버전 2 인 공개 데모 VM 은 이 절차 대상이 아니다([DEPLOY](../DEPLOY.md)).
+4. v3 이하·v6 이상은 여전히 시작을 거부한다.
 
 개발 중 주의: `human_responses.agent_id` 를 배포 전 v5 DDL 에 더했다(step 11). 그 전 커밋으로 만든 로컬 v5 DB 는 다시 만들어야 한다.
 

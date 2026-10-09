@@ -1,5 +1,7 @@
 # ADR-0019: `service` 브랜치는 셀프호스트만 — demo 모드·진단 데모·대본 에이전트 제거
 
+> 2026-10-09 [ADR-0029](0029-demo-shutdown-main-single-branch.md): 공개 데모 종료, `main` 단일 브랜치. 이 문서의 `main`·`service` 구분은 당시 기록이다.
+
 결정일: 2026-09-29 (phase 13 step 0). 근거: [재설계 계획](../product/REDESIGN_PLAN.md) 16절 결정 2("`service` 는 셀프호스트만"), 2026-09-29 사용자 결정 "demo 걷어내기는 별도 phase 로 먼저, 그 뒤 14-task-model". 기본값은 [phase 13 README](../../phases/13-selfhost-only/README.md) "계획 기본값"이며 이 문서로 구현 기준을 고정한다. 적용 범위는 `service` 브랜치(실서비스 통합)이며 `main`(공개 데모, 심사 ~2026-10-05 동결)은 바꾸지 않는다. 이 시점에는 구현이 없다 — step 1~5 가 만든다.
 
 ## 결정

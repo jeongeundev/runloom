@@ -2,7 +2,7 @@
 
 갱신일: 2026-10-02. 결정은 [ADR-0010](../adr/0010-n8n-inbox-and-callback.md), 계약 예시는 [CONTRACT](../CONTRACT.md) 12절, 설계는 [ARCHITECTURE](../ARCHITECTURE.md) "n8n 입구와 출구" 절. 이 디렉터리의 `runloom-handoff.json` 은 n8n 에 그대로 import 하는 예시 워크플로우 하나이며, 제품은 워크플로우 JSON 을 만들지 않는다.
 
-이 절차는 **로컬(운영자 컴퓨터)** 에서 따라 한다. 공개 데모 VM(`runloom.duckdns.org`)은 callback 허용 목록이 비어 있어 callback 이 오지 않는다 — 심사 기간 동결 상태이며 이 절차의 대상이 아니다.
+이 절차는 **로컬(운영자 컴퓨터)** 에서 따라 한다.
 
 ## 1. 무엇을 하는가
 
@@ -125,4 +125,3 @@ curl -X POST http://localhost:5678/webhook/runloom-demo -H 'content-type: applic
 - `host.docker.internal` 은 Docker Desktop(Mac/Windows) 이름이다. Linux 는 `docker run` 에 `--add-host=host.docker.internal:host-gateway` 를 붙인다.
 - Webhook 트리거는 테스트용이다. 실제 운영에서는 Error Trigger(실패한 n8n 워크플로우) 나 Schedule 로 바꾸고 `run_id` 를 그 이벤트에서 뽑는다.
 - 셀프호스트는 진단 데모 종류를 제공하지 않는다.
-- 공개 데모 VM 은 허용 목록이 비어 있어 `callback_url` 이 있는 접수를 422 로 거부한다. 이 절차는 로컬 전용이다.

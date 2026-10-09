@@ -330,7 +330,7 @@ def _bundle_metrics(bundles: Sequence[_Bundle], index: _Index) -> dict[str, Any]
             to_human.append(_seconds(intake, human_at))
 
         # 접수 → 완료 — GitHub 이슈 묶음은 원본 이슈를 닫은 PR 의 병합 시각만(승인 시각은 쓰지 않는다).
-        # 직접 등록은 시작 Task 가 `완료` 로 바뀐 시각, v6 이전은 finished_at (진단 데모의 병합 확인은 `main` 전용 — ADR-0019)
+        # 직접 등록은 시작 Task 가 `완료` 로 바뀐 시각, v6 이전은 finished_at (진단 데모의 병합 확인은 공개 데모 전용(종료) — ADR-0019)
         root = bundle.root
         if root.issue_state is not None:
             done_at = root.pr_merged_at
