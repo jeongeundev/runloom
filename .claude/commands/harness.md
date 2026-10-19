@@ -139,6 +139,7 @@
 python3 scripts/execute.py {task-name}                  # 순차 실행 (기본 엔진 codex)
 python3 scripts/execute.py {task-name} --engine claude  # 처음부터 claude 로 실행
 python3 scripts/execute.py {task-name} --push           # 실행 후 push
+python3 scripts/execute.py {task-name} --pr             # 실행 후 push + main 행 PR (기본 경로)
 ```
 
 execute.py가 자동으로 처리하는 것:
@@ -150,6 +151,21 @@ execute.py가 자동으로 처리하는 것:
 - 엔진 폴백 — codex 가 사용량 한도로 실패하면 같은 step 부터 claude 독립 세션으로 전환
 - 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋
 - 타임스탬프 — started_at, completed_at, failed_at, blocked_at 자동 기록
+- `--pr` — 끝에 `feat-{task-name}` 를 push 하고 `main` 행 PR 을 연다(제목 `feat: {phase}`, 본문은 step summary 목록). PR 이 이미 있으면 push 로 갱신만 한다
+
+### F. PR 이후 — CI·리뷰·병합 (`/docs/adr/0030-pr-ci-review-flow.md`)
+
+로컬에서 `main` 에 병합하지 않는다. PR 이 열리면 GitHub 이 나머지를 맡는다.
+
+| 단계 | 누가 | 하는 일 |
+|---|---|---|
+| CI | `.github/workflows/ci.yml` | `ruff check` · `pytest -q`. 필수 검사 `test` |
+| 리뷰 | `.github/workflows/claude-review.yml` | PR 이 열리거나 커밋이 올라올 때마다 Claude 가 인라인·요약 코멘트. 지적은 `fix`·`decision`·`follow-up`. 필수 검사 `review` |
+| 수정 | 사람 | 리뷰를 읽고 직접 고쳐 push 하거나, PR 코멘트에 `@claude fix 지적 1·3 고쳐` 처럼 맡긴다(`claude.yml`). push 하면 CI·리뷰가 다시 돈다 |
+| 병합 | 사람 | 두 필수 검사가 초록이면 GitHub 에서 **squash merge**. 브랜치는 자동 삭제 |
+| 반영 | 사람 | 필요하면 셀프호스트에 `deploy/selfhost/install.sh` |
+
+`follow-up` 지적은 이슈를 자동으로 만들지 않는다. 등록은 사람이 판단한다.
 
 에러 복구:
 

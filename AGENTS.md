@@ -51,8 +51,8 @@ docker compose -p runloom -f deploy/selfhost/compose.yaml exec central python3 -
 codex exec --json --dangerously-bypass-approvals-and-sandbox <prompt>
 ```
 
-- 브랜치: **`main`** 하나다. phase 는 `main` 을 checkout 한 상태에서 하네스를 돌리고(`feat-*` 가 거기서 갈라진다) 끝나면 `main` 에 `--no-ff` 로 병합한다. 2026-10-09 `service` 를 `main` 으로 합치고 `service` 는 지웠다([ADR-0029](docs/adr/0029-demo-shutdown-main-single-branch.md)).
-- `python3 scripts/execute.py {task-name} [--push] [--engine codex|claude]` 로 실행한다. 워크플로우 전체는 `.claude/commands/harness.md` 참고. 2026-09-20 기준 Codex 사용량이 거의 남지 않아 `--engine claude` 로 실행한다.
+- 브랜치: **`main`** 하나다. phase 는 `main` 을 checkout 한 상태에서 하네스를 돌리고(`feat-*` 가 거기서 갈라진다) 끝나면 `--pr` 로 `main` 행 PR 을 연다. 병합은 CI(`test`)·Claude 리뷰(`review`) 필수 검사가 통과한 뒤 사람이 GitHub 에서 squash 로 한다. `main` 에 직접 push 하지 않는다 — 문서 작업도 PR 이다([ADR-0030](docs/adr/0030-pr-ci-review-flow.md)).
+- `python3 scripts/execute.py {task-name} --pr [--engine codex|claude]` 로 실행한다. 워크플로우 전체는 `.claude/commands/harness.md` 참고. 2026-09-20 기준 Codex 사용량이 거의 남지 않아 `--engine claude` 로 실행한다.
 - `--dangerously-bypass-approvals-and-sandbox` 는 승인 프롬프트·샌드박스를 건너뛴다 (자동화 전용). 외부에서 통제된 환경에서만 쓴다.
 - codex 가 사용량 한도로 실패하면 같은 step 을 `claude -p --dangerously-skip-permissions --strict-mcp-config` 로 재실행하고, 그 실행의 남은 step 도 claude 로 돌린다. `--strict-mcp-config` 는 전역 MCP 를 물지 않게 한다 (step 세션은 내장 도구만 쓴다). 어느 엔진이 돌았는지는 `step{N}-output.json` 의 `engine` 에 남는다.
 - step 산출물은 `phases/{task-name}/step{N}-output.json`, 진행 상태는 `index.json` 에 기록된다.
