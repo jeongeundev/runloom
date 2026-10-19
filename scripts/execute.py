@@ -3,7 +3,7 @@
 Harness Step Executor — phase 내 step을 순차 실행하고 자가 교정한다.
 
 Usage:
-    python3 scripts/execute.py <phase-dir> [--push] [--engine codex|claude]
+    python3 scripts/execute.py <phase-dir> [--push | --pr] [--engine codex|claude]
 """
 
 import argparse
@@ -72,7 +72,8 @@ class StepExecutor:
     # codex 가 한도 초과로 실패할 때 출력에 남는 문구 (usage_limit_reached / "You've hit your usage limit")
     QUOTA_RE = re.compile(r"usage[ _]limit", re.IGNORECASE)
 
-    def __init__(self, phase_dir_name: str, *, auto_push: bool = False, engine: str = "codex"):
+    def __init__(self, phase_dir_name: str, *, auto_push: bool = False, open_pr: bool = False,
+                 engine: str = "codex"):
         if engine not in self.ENGINES:
             raise ValueError(f"unknown engine: {engine}")
         self._root = str(ROOT)
@@ -81,6 +82,7 @@ class StepExecutor:
         self._phase_dir_name = phase_dir_name
         self._top_index_file = self._phases_dir / "index.json"
         self._auto_push = auto_push
+        self._open_pr_after = open_pr
         self._engine = engine
 
         if not self._phase_dir.is_dir():
@@ -126,6 +128,36 @@ class StepExecutor:
     def _run_git(self, *args) -> subprocess.CompletedProcess:
         cmd = ["git"] + list(args)
         return subprocess.run(cmd, cwd=self._root, capture_output=True, text=True)
+
+    def _run_gh(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(["gh", *args], cwd=self._root, capture_output=True, text=True)
+
+    def _push_branch(self):
+        branch = f"feat-{self._phase_name}"
+        r = self._run_git("push", "-u", "origin", branch)
+        if r.returncode != 0:
+            print(f"\n  ERROR: git push 실패: {r.stderr.strip()}")
+            sys.exit(1)
+        print(f"  ✓ Pushed to origin/{branch}")
+
+    def _open_pr(self):
+        """phase 결과를 main 으로 가는 PR 로 올린다. 병합은 CI·리뷰 뒤 사람이 GitHub 에서 한다."""
+        branch = f"feat-{self._phase_name}"
+        self._push_branch()
+
+        if self._run_gh("pr", "view", branch, "--json", "url", "-q", ".url").returncode == 0:
+            print(f"  ✓ PR 이미 있음 — push 로 갱신됨 ({branch})")
+            return
+
+        index = self._read_json(self._index_file)
+        lines = [f"- step {s['step']} `{s['name']}` — {s.get('summary', '')}" for s in index["steps"]]
+        body = f"phase `{self._phase_dir_name}` 하네스 실행 결과.\n\n" + "\n".join(lines)
+        r = self._run_gh("pr", "create", "--base", "main", "--head", branch,
+                         "--title", f"feat: {self._phase_name}", "--body", body)
+        if r.returncode != 0:
+            print(f"\n  ERROR: PR 생성 실패: {r.stderr.strip()}")
+            sys.exit(1)
+        print(f"  ✓ PR: {r.stdout.strip()}")
 
     def _checkout_branch(self):
         branch = f"feat-{self._phase_name}"
@@ -428,13 +460,10 @@ class StepExecutor:
             if r.returncode == 0:
                 print(f"  ✓ {msg}")
 
-        if self._auto_push:
-            branch = f"feat-{self._phase_name}"
-            r = self._run_git("push", "-u", "origin", branch)
-            if r.returncode != 0:
-                print(f"\n  ERROR: git push 실패: {r.stderr.strip()}")
-                sys.exit(1)
-            print(f"  ✓ Pushed to origin/{branch}")
+        if self._open_pr_after:
+            self._open_pr()
+        elif self._auto_push:
+            self._push_branch()
 
         print(f"\n{'='*60}")
         print(f"  Phase '{self._phase_name}' completed!")
@@ -445,11 +474,13 @@ def main():
     parser = argparse.ArgumentParser(description="Harness Step Executor")
     parser.add_argument("phase_dir", help="Phase directory name (e.g. 0-mvp)")
     parser.add_argument("--push", action="store_true", help="Push branch after completion")
+    parser.add_argument("--pr", action="store_true",
+                        help="완료 후 push 하고 main 으로 가는 PR 을 연다 (이미 있으면 재사용)")
     parser.add_argument("--engine", choices=sorted(StepExecutor.ENGINES), default="codex",
                         help="step 을 위임할 에이전트 (기본 codex). claude 를 주면 처음부터 claude 로 실행")
     args = parser.parse_args()
 
-    StepExecutor(args.phase_dir, auto_push=args.push, engine=args.engine).run()
+    StepExecutor(args.phase_dir, auto_push=args.push, open_pr=args.pr, engine=args.engine).run()
 
 
 if __name__ == "__main__":
