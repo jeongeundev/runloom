@@ -12,7 +12,8 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 셀프호스트 러너는 호스트 Mac(launchd) 전용이고, 그 설치 스크립트 테스트가 Darwin·Docker 없음을 전제한다
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
