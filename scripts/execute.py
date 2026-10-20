@@ -152,7 +152,8 @@ class StepExecutor:
         index = self._read_json(self._index_file)
         lines = [f"- step {s['step']} `{s['name']}` — {s.get('summary', '')}" for s in index["steps"]]
         body = f"phase `{self._phase_dir_name}` 하네스 실행 결과.\n\n" + "\n".join(lines)
-        concerns = [f"- step {s['step']} `{s['name']}` — {c}" for s in index["steps"] for c in s.get("concerns", [])]
+        concerns = [f"- step {s['step']} `{s['name']}` — {c}" for s in index["steps"]
+                    for c in self._as_list(s.get("concerns", []))]
         if concerns:
             body += "\n\n## 걸리는 점 (step 세션이 남김)\n\n" + "\n".join(concerns)
         r = self._run_gh("pr", "create", "--base", "main", "--head", branch,
@@ -440,13 +441,21 @@ class StepExecutor:
         return False  # unreachable
 
     @staticmethod
+    def _as_list(value) -> list:
+        """세션이 목록 대신 문자열 하나를 적어도 한 항목으로 다룬다."""
+        return value if isinstance(value, list) else [value]
+
+    @staticmethod
     def _missing_evidence(index: dict, step_num: int) -> Optional[str]:
         """completed 로 표시한 step 에 완료 증거가 없으면 그 이유를 돌려준다. 증거가 있으면 None."""
         step = next(s for s in index["steps"] if s["step"] == step_num)
         evidence = step.get("verification")
         if not isinstance(evidence, list) or not evidence:
             return "completed 로 표시했지만 verification(실행한 AC 명령과 종료 코드)이 없다"
-        failed = [e for e in evidence if not isinstance(e, dict) or not e.get("command") or e.get("exit_code") != 0]
+        # bool 은 int 의 하위형이라 False == 0 이 통과한다 — 정수 0 만 인정한다
+        failed = [e for e in evidence
+                  if not isinstance(e, dict) or not e.get("command")
+                  or type(e.get("exit_code")) is not int or e["exit_code"] != 0]
         if failed:
             return f"verification 에 command 가 없거나 exit_code 가 0 이 아닌 항목이 있다: {failed}"
         return None

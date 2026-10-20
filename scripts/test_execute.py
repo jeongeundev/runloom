@@ -525,6 +525,16 @@ class TestEvidenceGate:
         assert step["status"] == "error"
         assert "exit_code" in step["error_message"]
 
+    @pytest.mark.parametrize("entry", [
+        {"command": "python3 -m pytest -q", "exit_code": False},
+        {"command": "python3 -m pytest -q", "exit_code": "0"},
+        {"exit_code": 0},
+    ])
+    def test_malformed_evidence_is_not_accepted(self, executor, entry):
+        index = json.loads(executor._index_file.read_text())
+        index["steps"][2].update({"status": "completed", "verification": [entry]})
+        assert executor._missing_evidence(index, 2) is not None
+
     def test_preamble_asks_for_evidence_and_concerns(self, executor):
         p = executor._build_preamble("rules", "")
         assert "verification" in p
@@ -545,6 +555,24 @@ class TestEvidenceGate:
 
         args = next(c for c in gh_calls if c[:2] == ("pr", "create"))
         assert "연결 해제 시 재시도 정책은 정하지 않았다" in args[args.index("--body") + 1]
+
+    def test_pr_body_accepts_concerns_as_single_string(self, executor):
+        index = json.loads(executor._index_file.read_text())
+        index["steps"][1]["concerns"] = "재시도 정책 미정"
+        executor._index_file.write_text(json.dumps(index, ensure_ascii=False))
+        gh_calls = []
+        executor._run_git = lambda *a: MagicMock(returncode=0, stdout="", stderr="")
+        def fake_gh(*args):
+            gh_calls.append(args)
+            return MagicMock(returncode=1 if args[:2] == ("pr", "view") else 0, stdout="", stderr="")
+        executor._run_gh = fake_gh
+
+        executor._open_pr()
+
+        body = next(c for c in gh_calls if c[:2] == ("pr", "create"))
+        body = body[body.index("--body") + 1]
+        assert "— 재시도 정책 미정" in body
+        assert "— 재\n" not in body
 
 
 # ---------------------------------------------------------------------------
