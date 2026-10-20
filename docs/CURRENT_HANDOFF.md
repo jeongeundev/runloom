@@ -1,6 +1,6 @@
 # 현재 인계 — 업무 목록과 결과 기반 자동 실행
 
-갱신일: 2026-10-09. 2026-10-09 공개 데모 종료 — VM 삭제, `service` 를 `main` 으로 합치고 `service` 삭제, 데모 코드는 태그 `contest-demo-2026`([ADR-0029](adr/0029-demo-shutdown-main-single-branch.md)). 아래 기록의 `service` 는 지금의 `main` 이다. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
+갱신일: 2026-10-20. 2026-10-20 부터 `main` 은 PR 로만 바뀐다 — 필수 검사 `test`(CI)·`review`(Claude 리뷰), squash 병합, phase 는 `execute.py … --pr`([ADR-0030](adr/0030-pr-ci-review-flow.md)). 아래 할 일의 "`--no-ff` 병합" 은 "PR 병합" 으로 읽는다. 2026-10-09 공개 데모 종료 — VM 삭제, `service` 를 `main` 으로 합치고 `service` 삭제, 데모 코드는 태그 `contest-demo-2026`([ADR-0029](adr/0029-demo-shutdown-main-single-branch.md)). 아래 기록의 `service` 는 지금의 `main` 이다. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
 ## 다음 작업: 23-setup-ux 완료 — service 병합 → 셀프호스트 v25 → K1 실연동 재개 (새 세션은 여기서 시작)
 
