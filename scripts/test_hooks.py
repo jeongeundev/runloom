@@ -155,6 +155,44 @@ class TestToolchainGate:
         assert "npm run test" in r.stderr
 
 
+class TestPythonRelatedTestsOnly:
+    """매 턴 전체 pytest 대신 바뀐 파일에 대응하는 테스트만 돈다 — 전체는 CI 가 맡는다."""
+
+    PASS = "def test_ok():\n    assert True\n"
+    FAIL = "def test_bad():\n    assert False\n"
+
+    def test_unrelated_failing_test_is_not_run(self, repo):
+        (repo / "src").mkdir()
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_other.py").write_text(self.FAIL)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "other")
+        _mark_verified(repo)
+        (repo / "src" / "foo.py").write_text("A = 1\n")
+        (repo / "tests" / "test_foo.py").write_text(self.PASS)
+        r = run_verify(repo)
+        assert r.returncode == 0, r.stderr
+
+    def test_mirrored_test_of_changed_source_runs(self, repo):
+        (repo / "tests" / "pkg").mkdir(parents=True)
+        (repo / "tests" / "pkg" / "test_foo.py").write_text(self.FAIL)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "test")
+        _mark_verified(repo)
+        (repo / "src" / "pkg").mkdir(parents=True)
+        (repo / "src" / "pkg" / "foo.py").write_text("A = 1\n")
+        r = run_verify(repo)
+        assert r.returncode == 2
+        assert "test_bad" in r.stderr
+
+    def test_changed_test_file_runs(self, repo):
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_foo.py").write_text(self.FAIL)
+        r = run_verify(repo)
+        assert r.returncode == 2
+        assert "test_bad" in r.stderr
+
+
 class TestCommittedWorkStillVerified:
     """세션이 커밋하고 턴을 끝내도 검증은 건너뛰지 않는다.
 

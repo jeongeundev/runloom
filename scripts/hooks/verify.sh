@@ -95,10 +95,39 @@ fi
 PY_TESTS=$(find . \( -name 'test_*.py' -o -name '*_test.py' \) \
   -not -path './node_modules/*' -not -path './.venv/*' -not -path './.git/*' | head -1)
 
+# 바뀐 파일에 대응하는 테스트만 돈다 — 전체 테스트는 PR 의 CI 가 맡는다 (ADR-0030).
+# 대응 규칙은 tdd-guard.sh 가 테스트를 찾는 위치와 같다. 대응하는 테스트가 없는
+# 변경(템플릿·셸 스크립트 등)은 여기서 pytest 를 돌리지 않고 CI 에서 잡힌다.
+related_py_tests() {
+  local f dir base mirror
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f" .py)
+    case "$base" in
+      test_*|*_test) echo "$f"; continue ;;
+    esac
+    dir=$(dirname "$f")
+    mirror="$dir"
+    case "$mirror" in
+      src) mirror="" ;;
+      src/*) mirror="${mirror#src/}" ;;
+    esac
+    for t in "$dir/test_$base.py" "$dir/${base}_test.py" "$dir/tests/test_$base.py" \
+             "$(dirname "$dir")/tests/test_$base.py" "tests/test_$base.py" \
+             "tests/${mirror:+$mirror/}test_$base.py"; do
+      [ -f "$t" ] && echo "${t#./}"
+    done
+  done < <(printf '%s\n' "$CHANGED" | grep '\.py$') | sort -u
+}
+
 # pytest 실행파일 대신 python3 -m 을 쓴다 — pyenv shim 은 있는데
 # 활성 버전에는 pytest 가 없는 경우를 피하기 위해.
 if [ -n "$PY_TESTS" ] && python3 -c 'import pytest' >/dev/null 2>&1; then
-  run "pytest" python3 -m pytest -q
+  PY_TARGETS=()
+  while IFS= read -r t; do PY_TARGETS+=("$t"); done < <(related_py_tests)
+  if [ ${#PY_TARGETS[@]} -gt 0 ]; then
+    run "pytest" python3 -m pytest -q "${PY_TARGETS[@]}"
+  fi
 fi
 
 # Python 프로젝트 — ruff 가 설치돼 있으면 정적 검사도 돌린다 (AGENTS.md 린트 명령과 동일)

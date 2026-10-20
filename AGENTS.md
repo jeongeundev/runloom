@@ -42,7 +42,7 @@ deploy/selfhost/install-runner.sh                                 # 셀프호스
 docker compose -p runloom -f deploy/selfhost/compose.yaml exec central python3 -m workflow.server.backup create  # 셀프호스트 백업 (list · restore <이름> 은 SELFHOST.md)
 ```
 
-> `scripts/hooks/verify.sh` 는 소스가 바뀐 턴에 `python3 -m pytest -q` 와 `python3 -m ruff check .` 를 실행한다. 2026-09-20 `scripts/test_hooks.py` 로 감지를 확인했다.
+> `scripts/hooks/verify.sh` 는 소스가 바뀐 턴에 바뀐 파일에 대응하는 테스트(`tdd-guard.sh` 와 같은 대응 규칙)와 `python3 -m ruff check .` 를 실행한다. 전체 `pytest -q` 는 PR 의 CI 가 돈다([ADR-0030](docs/adr/0030-pr-ci-review-flow.md)).
 
 ## 하네스 (scripts/)
 `scripts/execute.py` 는 `phases/{task-name}/` 의 step 을 순차 실행하는 자가 교정 하네스다. 각 step 을 독립된 codex 세션에 위임한다:
@@ -59,7 +59,7 @@ codex exec --json --dangerously-bypass-approvals-and-sandbox <prompt>
 - 하네스 스크립트 자체를 수정할 때는 `python3 -m pytest scripts/` 를 green 으로 유지한다.
 
 ## 훅 (scripts/hooks/)
-판정 규칙은 `tdd-guard.sh`(테스트 없는 소스 작성 차단, `tests/` 미러 배치 인식)와 `verify.sh`(변경된 턴에 TDD 불변식 + pytest + ruff) 두 곳에만 있다.
+판정 규칙은 `tdd-guard.sh`(테스트 없는 소스 작성 차단, `tests/` 미러 배치 인식)와 `verify.sh`(변경된 턴에 TDD 불변식 + 대응 테스트 + ruff) 두 곳에만 있다.
 
 - Claude Code: `.claude/settings.json` 이 위 둘을 직접 건다.
 - Codex: `codex-block-dangerous.sh` / `codex-tdd-guard.sh` / `codex-verify-gate.sh` 가 codex 입출력 형식(apply_patch 패치 텍스트, `decision: block`)을 위 둘로 변환한다. 이 파일들은 `~/.codex/hooks.json`(전역)이 저장소 루트에서 찾아 실행하므로 프로젝트에 `.codex/hooks.json` 을 두지 않는다 — 두면 이중 실행된다. 실행 권한(`chmod +x`)이 없으면 전역 훅이 건너뛴다.
