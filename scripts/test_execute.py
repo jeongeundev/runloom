@@ -417,6 +417,63 @@ class TestCommitStep:
 
 
 # ---------------------------------------------------------------------------
+# _open_pr (mocked) — phase 결과는 로컬 병합 대신 PR 로 main 에 들어간다
+# ---------------------------------------------------------------------------
+
+class TestOpenPr:
+    def _setup(self, executor, *, view_rc, create_rc=0):
+        git_calls, gh_calls = [], []
+        def fake_git(*args):
+            git_calls.append(args)
+            return MagicMock(returncode=0, stdout="", stderr="")
+        def fake_gh(*args):
+            gh_calls.append(args)
+            if args[:2] == ("pr", "view"):
+                return MagicMock(returncode=view_rc, stdout="https://x/pull/1\n", stderr="")
+            return MagicMock(returncode=create_rc, stdout="https://x/pull/2\n", stderr="boom")
+        executor._run_git = fake_git
+        executor._run_gh = fake_gh
+        return git_calls, gh_calls
+
+    def test_pushes_then_creates_pr_against_main(self, executor):
+        git_calls, gh_calls = self._setup(executor, view_rc=1)
+
+        executor._open_pr()
+
+        assert ("push", "-u", "origin", "feat-mvp") in git_calls
+        create = [c for c in gh_calls if c[:2] == ("pr", "create")]
+        assert len(create) == 1
+        args = create[0]
+        assert args[args.index("--base") + 1] == "main"
+        assert args[args.index("--head") + 1] == "feat-mvp"
+        assert args[args.index("--title") + 1] == "feat: mvp"
+
+    def test_pr_body_lists_step_summaries(self, executor):
+        _, gh_calls = self._setup(executor, view_rc=1)
+
+        executor._open_pr()
+
+        args = next(c for c in gh_calls if c[:2] == ("pr", "create"))
+        body = args[args.index("--body") + 1]
+        assert "프로젝트 초기화 완료" in body
+        assert "핵심 로직 구현" in body
+
+    def test_reuses_existing_pr(self, executor):
+        _, gh_calls = self._setup(executor, view_rc=0)
+
+        executor._open_pr()
+
+        assert not [c for c in gh_calls if c[:2] == ("pr", "create")]
+
+    def test_create_failure_exits(self, executor):
+        self._setup(executor, view_rc=1, create_rc=1)
+
+        with pytest.raises(SystemExit) as exc_info:
+            executor._open_pr()
+        assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
 # _invoke_agent (mocked)
 # ---------------------------------------------------------------------------
 
@@ -611,6 +668,13 @@ class TestMainCli:
                 with patch.object(ex.StepExecutor, "run") as mock_run:
                     ex.main()
         assert mock_run.called
+
+    def test_pr_flag_passed_to_executor(self, tmp_project, phase_dir):
+        with patch("sys.argv", ["execute.py", "0-mvp", "--pr"]):
+            with patch.object(ex, "ROOT", tmp_project):
+                with patch.object(ex.StepExecutor, "run", autospec=True) as mock_run:
+                    ex.main()
+        assert mock_run.call_args.args[0]._open_pr_after is True
 
     def test_engine_flag_rejects_unknown(self):
         with patch("sys.argv", ["execute.py", "0-mvp", "--engine", "gemini"]):

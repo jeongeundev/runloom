@@ -1,0 +1,26 @@
+# main 으로 가는 PR 의 필수 검사. 로컬 verify.sh 훅과 같은 두 명령을 깨끗한 환경에서 다시 돌린다.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # 셀프호스트 러너는 호스트 Mac(launchd) 전용이고, 그 설치 스크립트 테스트가 Darwin·Docker 없음을 전제한다
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python3 -m pip install -e ".[dev]"
+      - run: python3 -m ruff check .
+      - run: python3 -m pytest -q

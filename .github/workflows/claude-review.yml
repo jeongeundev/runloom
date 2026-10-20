@@ -1,0 +1,43 @@
+# PR 이 열리거나 새 커밋이 올라올 때마다 Claude 가 리뷰 코멘트를 남긴다.
+# 브랜치 보호의 필수 검사라 PR head 마다 리뷰가 한 번은 돈다 — 리뷰 뒤 커밋이 오면 다시 돈다.
+# 수정은 하지 않는다. 고칠지는 사람이 정하고, 필요하면 PR 에 @claude 로 맡긴다(claude.yml).
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            이 PR 을 리뷰하라. 기준은 저장소의 AGENTS.md (특히 CRITICAL 규칙),
+            docs/GLOSSARY.md 용어, docs/ARCHITECTURE.md 계약이다. 한국어로 쓴다.
+
+            - 구체적인 결함은 해당 줄에 인라인 코멘트로 남긴다.
+            - 마지막에 요약 코멘트 하나를 남기고, 지적마다 분류를 붙인다:
+              `fix`(이 PR 에서 고쳐야 함) · `decision`(사람이 정해야 함) · `follow-up`(별도 이슈 후보).
+            - 구현 변경에 테스트가 따라오지 않았거나, 테스트가 삭제·skip·약화됐으면 반드시 지적한다.
+            - 지적이 없으면 없다고 적는다. 스타일 취향은 지적하지 않는다.
+          claude_args: |
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
