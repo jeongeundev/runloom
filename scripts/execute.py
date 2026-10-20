@@ -152,6 +152,9 @@ class StepExecutor:
         index = self._read_json(self._index_file)
         lines = [f"- step {s['step']} `{s['name']}` — {s.get('summary', '')}" for s in index["steps"]]
         body = f"phase `{self._phase_dir_name}` 하네스 실행 결과.\n\n" + "\n".join(lines)
+        concerns = [f"- step {s['step']} `{s['name']}` — {c}" for s in index["steps"] for c in s.get("concerns", [])]
+        if concerns:
+            body += "\n\n## 걸리는 점 (step 세션이 남김)\n\n" + "\n".join(concerns)
         r = self._run_gh("pr", "create", "--base", "main", "--head", branch,
                          "--title", f"feat: {self._phase_name}", "--body", body)
         if r.returncode != 0:
@@ -266,6 +269,11 @@ class StepExecutor:
             f"4. AC(Acceptance Criteria) 검증을 직접 실행하라.\n"
             f"5. /phases/{self._phase_dir_name}/index.json의 해당 step status를 업데이트하라:\n"
             f"   - AC 통과 → \"completed\" + \"summary\" 필드에 이 step의 산출물을 한 줄로 요약\n"
+            f"     + \"verification\": 실제로 실행한 AC 명령과 종료 코드 목록 "
+            f"(예: [{{\"command\": \"python3 -m pytest -q tests/...\", \"exit_code\": 0}}]). "
+            f"이 목록이 없거나 0 이 아닌 종료 코드가 있으면 완료로 인정하지 않는다\n"
+            f"     + 끝냈지만 걸리는 점(정하지 않고 넘어간 것, 확인하지 못한 것)이 있으면 "
+            f"\"concerns\": [\"...\"] 에 적어라. PR 본문에 그대로 실린다\n"
             f"   - {self.MAX_RETRIES}회 수정 시도 후에도 실패 → \"error\" + \"error_message\" 기록\n"
             f"   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → \"blocked\" + \"blocked_reason\" 기록 후 즉시 중단\n"
             f"6. 모든 변경사항을 커밋하라:\n"
@@ -382,7 +390,8 @@ class StepExecutor:
             status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
             ts = self._stamp()
 
-            if status == "completed":
+            missing = self._missing_evidence(index, step_num) if status == "completed" else None
+            if status == "completed" and missing is None:
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["completed_at"] = ts
@@ -402,7 +411,7 @@ class StepExecutor:
                 self._update_top_index("blocked")
                 sys.exit(2)
 
-            err_msg = next(
+            err_msg = missing or next(
                 (s.get("error_message", "Step did not update status") for s in index["steps"] if s["step"] == step_num),
                 "Step did not update status",
             )
@@ -429,6 +438,18 @@ class StepExecutor:
                 sys.exit(1)
 
         return False  # unreachable
+
+    @staticmethod
+    def _missing_evidence(index: dict, step_num: int) -> Optional[str]:
+        """completed 로 표시한 step 에 완료 증거가 없으면 그 이유를 돌려준다. 증거가 있으면 None."""
+        step = next(s for s in index["steps"] if s["step"] == step_num)
+        evidence = step.get("verification")
+        if not isinstance(evidence, list) or not evidence:
+            return "completed 로 표시했지만 verification(실행한 AC 명령과 종료 코드)이 없다"
+        failed = [e for e in evidence if not isinstance(e, dict) or not e.get("command") or e.get("exit_code") != 0]
+        if failed:
+            return f"verification 에 command 가 없거나 exit_code 가 0 이 아닌 항목이 있다: {failed}"
+        return None
 
     def _execute_all_steps(self, guardrails: str):
         while True:

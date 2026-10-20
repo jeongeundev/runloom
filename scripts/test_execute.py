@@ -474,6 +474,80 @@ class TestOpenPr:
 
 
 # ---------------------------------------------------------------------------
+# 증거로 완료 판정 — "completed" 만으로는 완료가 아니다. 실행한 AC 명령과 종료 코드가 있어야 한다
+# ---------------------------------------------------------------------------
+
+OK_EVIDENCE = [{"command": "python3 -m pytest -q", "exit_code": 0}]
+
+
+class TestEvidenceGate:
+    def _run(self, executor, results):
+        """시도마다 results[i] 를 step 2 에 써 넣는 가짜 에이전트로 step 2 를 실행한다."""
+        preambles = []
+        def fake_invoke(step, preamble):
+            preambles.append(preamble)
+            index = json.loads(executor._index_file.read_text())
+            index["steps"][2].update(results[len(preambles) - 1])
+            executor._index_file.write_text(json.dumps(index, ensure_ascii=False))
+            return {}
+        executor._invoke_agent = fake_invoke
+        executor._commit_step = MagicMock()
+        executor._update_top_index = MagicMock()
+        step = json.loads(executor._index_file.read_text())["steps"][2]
+        return executor._execute_single_step(step, "rules"), preambles
+
+    def _step2(self, executor):
+        return json.loads(executor._index_file.read_text())["steps"][2]
+
+    def test_completed_with_evidence_passes(self, executor):
+        ok, preambles = self._run(executor, [
+            {"status": "completed", "summary": "UI", "verification": OK_EVIDENCE},
+        ])
+        assert ok is True
+        assert len(preambles) == 1
+
+    def test_completed_without_evidence_is_retried(self, executor):
+        ok, preambles = self._run(executor, [
+            {"status": "completed", "summary": "UI"},
+            {"status": "completed", "summary": "UI", "verification": OK_EVIDENCE},
+        ])
+        assert ok is True
+        assert len(preambles) == 2
+        assert "verification" in preambles[1]
+
+    def test_nonzero_exit_code_fails_after_retries(self, executor):
+        bad = {"status": "completed", "summary": "UI",
+               "verification": [{"command": "python3 -m pytest -q", "exit_code": 1}]}
+        with pytest.raises(SystemExit) as exc_info:
+            self._run(executor, [bad] * executor.MAX_RETRIES)
+        assert exc_info.value.code == 1
+        step = self._step2(executor)
+        assert step["status"] == "error"
+        assert "exit_code" in step["error_message"]
+
+    def test_preamble_asks_for_evidence_and_concerns(self, executor):
+        p = executor._build_preamble("rules", "")
+        assert "verification" in p
+        assert "concerns" in p
+
+    def test_pr_body_lists_concerns(self, executor):
+        index = json.loads(executor._index_file.read_text())
+        index["steps"][1]["concerns"] = ["연결 해제 시 재시도 정책은 정하지 않았다"]
+        executor._index_file.write_text(json.dumps(index, ensure_ascii=False))
+        gh_calls = []
+        executor._run_git = lambda *a: MagicMock(returncode=0, stdout="", stderr="")
+        def fake_gh(*args):
+            gh_calls.append(args)
+            return MagicMock(returncode=1 if args[:2] == ("pr", "view") else 0, stdout="", stderr="")
+        executor._run_gh = fake_gh
+
+        executor._open_pr()
+
+        args = next(c for c in gh_calls if c[:2] == ("pr", "create"))
+        assert "연결 해제 시 재시도 정책은 정하지 않았다" in args[args.index("--body") + 1]
+
+
+# ---------------------------------------------------------------------------
 # _invoke_agent (mocked)
 # ---------------------------------------------------------------------------
 

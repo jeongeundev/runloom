@@ -75,9 +75,11 @@
 
 | 전이 | 기록되는 필드 | 기록 주체 |
 |------|-------------|----------|
-| → `completed` | `completed_at`, `summary` | Codex 세션 (summary), execute.py (timestamp) |
+| → `completed` | `completed_at`, `summary`, `verification`, `concerns`(선택) | Codex 세션 (summary·verification·concerns), execute.py (timestamp) |
 | → `error` | `failed_at`, `error_message` | Codex 세션 (message), execute.py (timestamp) |
 | → `blocked` | `blocked_at`, `blocked_reason` | Codex 세션 (reason), execute.py (timestamp) |
+
+**완료는 증거로 판정한다.** `verification`은 세션이 실제로 실행한 AC 명령과 종료 코드 목록(`[{"command": "...", "exit_code": 0}]`)이다. 비어 있거나 0 이 아닌 종료 코드가 있으면 execute.py는 `completed`로 인정하지 않고 재시도한다. 세션이 스스로 적는 값이라 위조를 막지는 못한다 — 최종 확인은 PR 의 CI 다. `concerns`는 끝냈지만 걸리는 점(정하지 않고 넘어간 것, 확인하지 못한 것)이고 `--pr` 이 PR 본문에 싣는다.
 
 `summary`는 step 완료 시 산출물을 한 줄로 요약한 것으로, execute.py가 다음 step 프롬프트에 컨텍스트로 누적 전달한다. 따라서 다음 step에 유용한 정보(생성된 파일, 핵심 결정 등)를 담아야 한다.
 
