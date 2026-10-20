@@ -30,9 +30,18 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD BRANCH: ${{ github.head_ref }}
 
-            이 PR 을 리뷰하라. 기준은 저장소의 AGENTS.md (특히 CRITICAL 규칙),
-            docs/GLOSSARY.md 용어, docs/ARCHITECTURE.md 계약이다. 한국어로 쓴다.
+            이 PR 을 리뷰하라. 한국어로 쓴다.
+
+            1. 설계대로 됐나 (먼저 본다). HEAD BRANCH 가 `feat-<phase>` 이면 하네스 phase 의 결과다.
+               `phases/<phase>/` 의 index.json·step*.md(있으면 README.md)가 이 PR 의 설계다.
+               각 step 의 요구·AC·금지사항이 diff 의 코드로 추적되는지 확인하고,
+               빠진 동작·어긴 금지사항·설계에 없는 추가 동작을 지적한다.
+               phase 브랜치가 아니면 PR 본문과 연결된 이슈를 설계로 본다.
+            2. 저장소 규칙 — AGENTS.md (특히 CRITICAL 규칙), docs/GLOSSARY.md 용어,
+               docs/ARCHITECTURE.md 계약.
+            판단 기준은 고정 체크리스트가 아니라 위 설계와 이 저장소의 기존 코드 관례에서 끌어낸다.
 
             - 구체적인 결함은 해당 줄에 인라인 코멘트로 남긴다.
             - 마지막에 요약 코멘트 하나를 남기고, 지적마다 분류를 붙인다:
