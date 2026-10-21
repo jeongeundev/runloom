@@ -6,14 +6,14 @@
 
 - ADR-0031 은 순서를 ① 사람용 JSON API → ② 인계 리포트 → ③ CLI → ④ IDE 앱으로 정했다. 이 ADR 은 ① 이다.
 - 지금 사람용 기능은 대부분 `server/web.py` 의 HTML 폼·303 응답이다(화면 라우트 105개). 업무 목록·업무 상태·업무 행동(맡기기·우선순위·직접 작업·판단 제안 처리)에는 JSON 이 없다.
-- JSON 라우트는 8개 라우터 파일에 41개 있다 — 러너(`machine_api.py` 7)·n8n 입구(`inbound_api.py` 1)·GitHub 소스 설정(`github_api.py` 7)·사람 요청 응답(`human_api.py` 2)·지표·기준선(`metrics_api.py` 3)·담당 범위(`responsibility_api.py` 4)·사내 요청(`internal_request_api.py` 15)·매핑 표(`mapping_api.py` 2). 주소에 공통 접두어가 없고, 사람용은 로그인 쿠키(`wf_login`)만 받는다.
+- JSON 라우트는 8개 라우터 파일에 39개 있다 — 러너(`machine_api.py` 7)·n8n 입구(`inbound_api.py` 1)·GitHub 소스 설정(`github_api.py` 7)·사람 요청 응답(`human_api.py` 2)·지표·기준선(`metrics_api.py` 3)·담당 범위(`responsibility_api.py` 4)·사내 요청(`internal_request_api.py` 13)·매핑 표(`mapping_api.py` 2). 주소에 공통 접두어가 없고, 사람용은 로그인 쿠키(`wf_login`)만 받는다.
 - ADR-0031 미결 "API 인증": 웹은 세션 쿠키, 앱·CLI·스크립트·n8n 이 "내 이름으로" 부를 멤버별 토큰이 없다.
 
 ## 코드 조사로 README 와 달라진 사실 (2026-10-21, `feat-24-human-api` = `main` `dfe65c3` + phase 파일)
 
 README 결정과 충돌하는 코드 사실은 없다. 아래는 결정을 구현 이름으로 옮기며 확인한 것이다. [사용자] 결정은 하나도 바꾸지 않았다.
 
-1. **JSON 라우트는 41개, 화면 라우트는 105개다.** 앱 라우트 = 화면(endpoint 모듈 `workflow.server.web`) 105 + JSON 41 + `/healthz`(endpoint 모듈 `workflow.server.app` — `add_api_route` 의 lambda) + FastAPI 기본 문서 4(`/openapi.json`·`/docs`·`/docs/oauth2-redirect`·`/redoc`) + `/static` 마운트(endpoint 없음). 라우트 분류 규칙(ARCHITECTURE)은 이 사실을 쓴다.
+1. **JSON 라우트는 39개, 화면 라우트는 105개다.** 앱 라우트 = 화면(endpoint 모듈 `workflow.server.web`) 105 + JSON 39 + `/healthz`(endpoint 모듈 `workflow.server.app` — `add_api_route` 의 lambda) + FastAPI 기본 문서 4(`/openapi.json`·`/docs`·`/docs/oauth2-redirect`·`/redoc`) + `/static` 마운트(endpoint 없음). 라우트 분류 규칙(ARCHITECTURE)은 이 사실을 쓴다.
 2. **`data-json-action` 은 정말 10곳이다.** `_cycle.html` 1(사람 응답), `_repos_github.html` 8(소스 설정 PUT·미리보기 2·담당 연결 2·기준선·중지·새 소스), `metrics.html` 1(기준선). 그 밖에 `metrics.html` 의 JSON·CSV 내려받기 링크 2개가 있다(D11).
 3. **읽기 전용 검사는 `require_member_api` 안에 두면 역할 검사보다 먼저 돈다.** `require_action(action, api=True)` 의 내부 의존성이 `require_member_api` 위에 서 있다. 그래서 D36 의 "역할 검사보다 먼저" 는 순서 코드를 따로 두지 않아도 된다.
 4. **`LoggedIn.login_id` 는 로그인 세션 id(`lgn-…`)이고 읽는 곳이 없다.** 토큰으로 들어온 요청에는 `login_id` 에 토큰 id(`mtk-…`)를 싣는다(ARCHITECTURE auth 규칙). 칸 이름은 바꾸지 않는다.

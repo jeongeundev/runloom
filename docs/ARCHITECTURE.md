@@ -3852,7 +3852,7 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 
 인증 칸: **쿠키·`wfm_`** = 로그인 쿠키 `wf_login` 또는 `Authorization: Bearer wfm_…`(Bearer 가 있으면 그것만, 읽기 전용 토큰은 GET 만). **쿠키만** = Bearer 헤더가 있으면 403 `cookie_required`. **`wfc_`** = 연결 토큰 Bearer 만(쿠키 무시). **`wfs_`** = 입구 토큰 Bearer 만. 동작 칸: **로그인** = 활성 멤버면 누구나(`require_member_api`), 그 밖은 `require_action(team.<동작>, api=True)`.
 
-**옮기는 기존 JSON 라우트 41개**
+**옮기는 기존 JSON 라우트 39개**
 
 | 옛 경로 | 새 경로 | 메서드 | 동작 | 인증 | 라우터(step) |
 |---|---|---|---|---|---|
@@ -3938,7 +3938,7 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 
 - **화면 라우트** = endpoint 함수의 `__module__` 이 `workflow.server.web` 인 라우트. 그래서 **화면 폼 라우트는 모두 `web.py` 에 둔다** — step 3 의 `/me/tokens` 폼도 `web.py`, JSON 토큰 API 만 `member_token_api.py`.
 - **예외** = `/healthz`(endpoint 모듈 `workflow.server.app` — `add_api_route` 의 lambda), FastAPI 기본 문서 `/openapi.json`·`/docs`·`/docs/oauth2-redirect`·`/redoc`(모듈 `fastapi.applications`), `/static` 마운트(`app.mount` — endpoint 없음). 2026-10-21 앱에서 확인한 실제 경로다.
-- **나머지 모든 라우트는 `/api/v1/` 로 시작해야 한다.** 그리고 위 주소 표의 새 경로(옮기는 41 + 새로 여는 15)가 모두 실제 라우트에 있어야 한다.
+- **나머지 모든 라우트는 `/api/v1/` 로 시작해야 한다.** 그리고 위 주소 표의 새 경로(옮기는 39 + 새로 여는 15)가 모두 실제 라우트에 있어야 한다.
 
 ### step 경계
 
