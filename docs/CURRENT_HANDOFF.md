@@ -2,6 +2,10 @@
 
 갱신일: 2026-10-20. 2026-10-20 부터 `main` 은 PR 로만 바뀐다 — 필수 검사 `test`(CI)·`review`(Claude 리뷰), squash 병합, phase 는 `execute.py … --pr`([ADR-0030](adr/0030-pr-ci-review-flow.md)). 아래 할 일의 "`--no-ff` 병합" 은 "PR 병합" 으로 읽는다. 2026-10-09 공개 데모 종료 — VM 삭제, `service` 를 `main` 으로 합치고 `service` 삭제, 데모 코드는 태그 `contest-demo-2026`([ADR-0029](adr/0029-demo-shutdown-main-single-branch.md)). 아래 기록의 `service` 는 지금의 `main` 이다. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
+## 방향 갱신 — 2026-10-21
+
+제품 역할을 "이해한 상태로 이어받는 인계"로 넓히고 화면 구성(웹 기본 · IDE 앱 선택 · API 우선)을 정했다([ADR-0031](adr/0031-handoff-understanding-and-clients.md)). 다음 phase 는 ① 사람용 JSON API — 설계 전에 어느 화면 기능부터 여는지 정한다. 아래 23 의 할 일은 그대로 남아 있다.
+
 ## 다음 작업: 23-setup-ux 완료 — service 병합 → 셀프호스트 v25 → K1 실연동 재개 (새 세션은 여기서 시작)
 
 **23-setup-ux 완료**(2026-10-05, `feat-23-setup-ux`, step 0~10, `service` `058d9bc` 에서 갈라짐, [phase 23 README](../phases/23-setup-ux/README.md), [ADR-0028](adr/0028-setup-ux.md), [ARCHITECTURE](ARCHITECTURE.md) "설정 UX — phase 23", 용어 [GLOSSARY](GLOSSARY.md) "계획 용어 — phase 23", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 23 설정 UX"). 계기: K1 실연동이 준비 1번(팀 초대)에서 멈춤 — [사내 요청 실연동 1회차](product/INTERNAL_REQUEST_LIVE_RUN_1.md) "결과" 의 화면 문제 15건. 사이드바 `연결` 을 `팀`(`/team` — 멤버·초대·에이전트(러너 합침)·담당 범위)·`저장소`(`/repos` — GitHub·Jira 연결과 저장소 카드, 이슈 목록 없음)·`설정`(`/settings?tab=kinds|triage|notify|inbound|advanced`)으로 나눴고 옛 주소는 303 으로 넘어간다(POST 경로 그대로). 초대는 받는 사람 이메일(필수)·이름 + [링크 다시 만들기](옛 링크 무효, 가입은 그 이메일로만 — 스키마 v25). 종류 폼은 화면 이름·지시문·결과값·맡을 에이전트(체크박스 — 그 종류의 능력을 붙임)만 묻고 식별자·능력 코드·scope 키·산출물은 "고급". 팀 화면 에이전트 줄에서 "맡을 수 있는 일" 편집, 담당 범위 요청 유형은 고르는 목록. 저장소 카드 본문에 판단 에이전트(설명 포함)·수정·검토 에이전트(이름만), 고급·카드 도구는 접힘, 담당 연결은 수집한 이슈의 GitHub 사용자에서 고른다. 업무 목록은 끝난 업무 묶음(맨 아래·접힘)·같은 값 칸 숨김·다음 할 일 중복 `—`·도구 막대(보기 옵션 접힘). 내부 ID·능력 코드는 "자세히" 안에만(설정 › 고급은 예외). **러너 프로토콜 변화 없음 — 러너 재설치 불필요.**

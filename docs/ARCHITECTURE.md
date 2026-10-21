@@ -1,6 +1,6 @@
 # 아키텍처 — 기존 에이전트 등록과 업무 자동 실행
 
-갱신일: 2026-10-01 (phase 19 step 0 — "판단 — phase 19" 절 추가: 흐름·판단 단계 가르기·스키마 v15·계약·러너·경로·화면·이름 고정). 이전: 2026-09-30 (phase 17 step 0 — "사람 사이 인계 — phase 17" 절 추가: 맡기기 정책·소유자 승인·꺼진 러너 대기·검증만 다시·요청문·저장소 보기·스키마 v13·이름 고정). 이전: 2026-09-30 (phase 16 step 0 — "업무 화면 — phase 16" 절 추가: 주소·스키마 v12·직접 작업·PR 신호·이름 고정). 이전: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
+갱신일: 2026-10-21 ("화면 계층과 인계 리포트 — ADR-0031" 절 추가, 설계 전). 이전: 2026-10-01 (phase 19 step 0 — "판단 — phase 19" 절 추가: 흐름·판단 단계 가르기·스키마 v15·계약·러너·경로·화면·이름 고정). 이전: 2026-09-30 (phase 17 step 0 — "사람 사이 인계 — phase 17" 절 추가: 맡기기 정책·소유자 승인·꺼진 러너 대기·검증만 다시·요청문·저장소 보기·스키마 v13·이름 고정). 이전: 2026-09-30 (phase 16 step 0 — "업무 화면 — phase 16" 절 추가: 주소·스키마 v12·직접 작업·PR 신호·이름 고정). 이전: 2026-09-27 (phase 11 step 8 — 연결 화면·[에이전트에게 맡기기] 버튼). 이전: 2026-09-27 (phase 11 step 6 — 자동 매칭 구현·대기 코드 표). 이전: 2026-09-27 (phase 11 step 0 — "GitHub App 연결 — phase 11" 절 추가). 이전: 2026-09-27 (phase 10 step 0 — "셀프호스트 — phase 10" 절 추가). 이전: 2026-09-27 (phase 9 step 0 — "측정 — phase 9" 절 추가, step 6 — 지표 결과 모양 `Stat.total`·`Ratio`·`MetricsGroup` 고정, step 12 — 접수 → 완료 = GitHub 병합 시각, 접수 → 승인 분리). 이전: 2026-09-23 phase 8 step 15 — GitHub 업무 순환 구현·대역 검증 완료
 상태: 현재 구현의 설계·계약과 초기 설계 이력을 포함한다. 새 제품 기준은 [ADR-0011](adr/0011-task-driven-work-cycle.md), 수용 기준은 [PRD](PRD.md)다. 아래 전환 설계는 미구현이며, 이후 본문의 phase 6·7 계약을 이미 변경했다는 뜻이 아니다. 실제 연결 검증 범위는 [VERIFICATION_LOG](VERIFICATION_LOG.md)를 따른다.
 
 ## 실서비스 전환 설계 — ADR-0011
@@ -3815,3 +3815,11 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 | 8 `work-list` | `CLOSED_GROUP_KEY`·`CLOSED_GROUP_LABEL`·`group_rows` 끝난 업무 묶음, `HIDEABLE_COLUMNS`·`hidden_columns`, `NO_NEXT_ACTION`·`shown_next_action`, `work_list_context` 의 `hidden_columns`, `home.html` 도구 막대·숨김 칸·`data-default-folded`, `base.html` 의 `data-auto-submit`·`wf_work_unfolded` |
 | 9 `settings-page` | `settings.html` 탭 순서·n8n 입구 탭, `views.rule_public` 글, 규칙 폼 라벨, 판단·알림·입구 탭의 `자세히`, 고급 탭 안내 한 줄 |
 | 10 `setup-ux-verify` | `tests/e2e/test_setup_ux.py`(화면 링크만 따라 초대 2·다시 만들기·종류·담당 범위·판단 에이전트, 노출 단정, 옛 주소 303), v24 → v25 업그레이드 e2e, 문서(SELFHOST v25·CURRENT_HANDOFF·VERIFICATION_LOG·INTERNAL_REQUEST_LIVE_RUN_1 준비 경로) |
+
+## 화면 계층과 인계 리포트 — ADR-0031 (설계 전)
+
+[ADR-0031](adr/0031-handoff-understanding-and-clients.md). 이 절은 방향만 적는다 — 이름·표·경로는 각 phase step 0 이 정한다.
+
+- **화면 계층.** 중앙(`server/`)이 JSON API 를 내고 웹·IDE 앱·CLI·n8n·에이전트가 그 클라이언트다. 지금 사람용 동작은 `server/web.py` 폼 처리(`work_actions` 등 도메인 호출)에 있다. API 는 같은 함수를 부르게 하고, 규칙을 경로마다 복제하지 않는다. 앱·CLI 인증은 멤버별 토큰(비밀값 규칙 그대로)이며 웹 세션 쿠키와 별개다.
+- **경계.** `server/`·`connector/` 상호 import 금지는 그대로다. IDE 앱 안의 러너는 지금의 `connector` 를 실행하며 앱이 러너 프로토콜(`machine_api`)을 새로 만들지 않는다.
+- **인계 리포트.** 에이전트용은 `handoff_bundle`(`assemble_handoff`)을 확장한다. 사람용 HTML 은 실행 산출물로 저장하고 API 로 꺼낸다. 리포트의 주장은 같은 실행의 산출물(diff·테스트 로그·결과 커밋)을 가리킨다. 생성 주체(보내는 쪽 러너 / 받는 쪽 에이전트)와 산출물 kind 이름은 미결.
