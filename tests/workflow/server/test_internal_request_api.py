@@ -105,8 +105,9 @@ def test_concurrent_submission_and_accept_are_recorded_once(logged_in_client, co
     from concurrent.futures import ThreadPoolExecutor
 
     recipient, work_id, body = setup_request(logged_in_client, conn)
+    url = work_url(conn, work_id)  # 스레드 밖에서 — 테스트의 sqlite 연결을 두 스레드가 같이 쓰면 InterfaceError 가 난다
     with ThreadPoolExecutor(max_workers=2) as pool:
-        responses = list(pool.map(lambda _: logged_in_client.post(work_url(conn, work_id), json=body), range(2)))
+        responses = list(pool.map(lambda _: logged_in_client.post(url, json=body), range(2)))
     assert all(r.status_code == 200 for r in responses)
     assert responses[0].json() == responses[1].json()
     request_id = responses[0].json()['request_id']
