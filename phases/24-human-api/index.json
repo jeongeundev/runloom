@@ -93,7 +93,8 @@
       ],
       "concerns": [
         "API_PREFIX 상수가 아직 없어 app.py 에 '/api/v1' 리터럴로 등록했다 — step 4 에서 상수로 교체해야 한다."
-      ]
+      ],
+      "completed_at": "2026-10-21T19:38:45+0900"
     },
     {
       "step": 4,
