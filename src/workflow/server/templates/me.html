@@ -1,5 +1,6 @@
 {# 내 설정 (`/me`, 모든 멤버) — ADR-0021, ARCHITECTURE "팀 — phase 15" 새 경로. 비밀번호는 되돌려 채우지 않는다.
-   개인 웹훅 URL 은 비밀 파일(`notify_webhook_url.<member_id>`, 0600)에만 두고 다시 보이지 않는다 — 저장됨/없음·호스트만. #}
+   개인 웹훅 URL 은 비밀 파일(`notify_webhook_url.<member_id>`, 0600)에만 두고 다시 보이지 않는다 — 저장됨/없음·호스트만.
+   phase 24 step 3: API 토큰 절 — 원문은 발급 응답(`issued`)에만 한 번, 303 없음. 서버에는 sha256 만. #}
 {% extends "base.html" %}
 {% block title %}내 설정 — Runloom{% endblock %}
 {% block content %}
@@ -42,6 +43,41 @@
   </div>
   {% endif %}
 </div>
+
+<section data-me-section="tokens">
+<h2>API 토큰</h2>
+{% set scope_labels = {'read': '읽기 전용', 'full': '내 권한 전부'} %}
+<div class="card">
+  <p class="small" style="margin-top:0">터미널·스크립트·n8n 이 내 이름으로 Runloom API 를 부를 때 씁니다. <code>Authorization: Bearer &lt;토큰&gt;</code> 헤더로 보냅니다.</p>
+  {% if issued %}{# 발급 응답에만 한 번 — 원문은 목록·다른 화면에 다시 나오지 않는다 #}
+  <div class="alert" style="background:var(--bg-done);color:var(--state-done)" data-issued="member-token">
+    {{ issued.name }}: <code id="issued-member-token">{{ issued.token }}</code>
+    <button type="button" class="btn btn-secondary btn-small" data-copy-target="issued-member-token">복사</button><br>
+    토큰은 지금 한 번만 보입니다. 안전한 곳에 복사해 두세요.
+  </div>
+  {% endif %}
+  <form method="post" action="/me/tokens">
+    <div class="field"><label for="me-token-name">토큰 이름</label>
+      <input type="text" id="me-token-name" name="name" maxlength="40" required placeholder="노트북 CLI"></div>
+    <div class="field"><span>권한</span>
+      <label><input type="radio" name="scope" value="read" checked> 읽기 전용</label>
+      <label><input type="radio" name="scope" value="full"> 내 권한 전부</label></div>
+    <div class="actions"><button class="btn" type="submit">토큰 만들기</button></div>
+  </form>
+  <table>
+    <tr><th>이름</th><th>권한</th><th>만든 시각</th><th>마지막 사용</th><th></th></tr>
+    {% for t in tokens %}
+    <tr data-member-token="{{ t.token_id }}"><td>{{ t.name }}
+        <details class="detail"><summary>자세히</summary><div>토큰 ID {{ t.token_id }}</div></details></td>
+      <td>{{ scope_labels[t.scope] }}</td><td>{{ t.created_at|kst }}</td>
+      <td>{{ t.last_used_at|kst if t.last_used_at else '사용 기록 없음' }}</td>
+      <td><form method="post" action="/me/tokens/{{ t.token_id }}/revoke"><button class="btn btn-secondary btn-small" type="submit">폐기</button></form></td></tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">만든 토큰이 없습니다.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+</section>
 
 <h2>내가 받는 최근 알림</h2>
 <div class="card">

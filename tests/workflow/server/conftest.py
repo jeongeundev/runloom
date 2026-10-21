@@ -247,7 +247,7 @@ def seed_execution(conn, execution_id: str, task_id: str, *, kind: str = "bug_fi
 def exchange(client, conn) -> tuple[str, str]:
     """연결 코드를 발급·교환해 (connector_id, token) 을 얻는다. 만료 검사가 서버 시각을 쓰므로 실제 시각으로 발급한다."""
     code = repo.issue_connect_code(conn, utc_now())
-    response = client.post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
+    response = client.post("/api/v1/connector/exchange", json={"contract_version": 1, "connect_code": code})
     assert response.status_code == 200, response.text
     body = response.json()
     return body["connector_id"], body["token"]
@@ -318,7 +318,7 @@ def running(client, headers, exec_fix) -> str:
         event(exec_fix, 2, "started", {"runtime_ref": "pid:48213;start:2026-09-20T01:00:03+09:00"}),
         event(exec_fix, 3, "progress", {"message": "재현 테스트 작성, 수정 전 실행 실패 확인"}),
     ):
-        response = client.post(f"/executions/{exec_fix}/events", json=body, headers=headers)
+        response = client.post(f"/api/v1/executions/{exec_fix}/events", json=body, headers=headers)
         assert response.status_code == 200, response.text
     return exec_fix
 

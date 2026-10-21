@@ -18,7 +18,7 @@ def test_directory_forms_save_remove_and_reject_stale(logged_in_client, conn):
     assert 'billing' in logged_in_client.get('/team').text
     removed = logged_in_client.post('/responsibilities/remove', data=dict(position=0, expected_revision=revision + 1))
     assert removed.status_code == 200
-    assert logged_in_client.get('/responsibilities').json()['entries'] == []
+    assert logged_in_client.get('/api/v1/responsibilities').json()['entries'] == []
 
 
 def test_member_reads_but_cannot_change_directory(client, logged_in_client):
@@ -37,4 +37,4 @@ def test_invalid_form_does_not_modify_directory(logged_in_client, conn):
     assert logged_in_client.post('/responsibilities/add', data=data).status_code == 422
     data.update(system_id='billing', recipient_member_id='missing')
     assert logged_in_client.post('/responsibilities/add', data=data).status_code == 422
-    assert logged_in_client.get('/responsibilities').json() == dict(config_revision=revision, entries=[])
+    assert logged_in_client.get('/api/v1/responsibilities').json() == dict(config_revision=revision, entries=[])

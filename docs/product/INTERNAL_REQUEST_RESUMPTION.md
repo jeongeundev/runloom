@@ -18,7 +18,7 @@
 
 ## API와 저장
 
-`POST /internal-requests/{request_id}/resume`
+`POST /api/v1/internal-requests/{request_id}/resume`
 
 ```json
 {"expected_revision": 4, "text": "반환된 원인을 확인하고 수정 작업을 재개했습니다."}

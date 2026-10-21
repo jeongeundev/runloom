@@ -5,6 +5,7 @@
 팀(phase 15, ADR-0021): 로그인 세션 쿠키 `wf_login` → 현재 멤버(`current_member`)·역할 × 동작(`require_action`),
 쿠키 인증 변경 요청의 Origin 검사(`check_origin`), 키별 로그인 실패 제한. 옛 `wf_session` 쿠키는 읽지 않는다.
 화면은 `require_member`(로그인)·`require_action(동작)`, API 는 `require_member_api`·`require_action(동작, api=True)` 를 건다.
+멤버 토큰(phase 24, ADR-0032): API 의존성은 `Authorization: Bearer wfm_…` 를 먼저 본다(`current_api_member`). 화면은 쿠키만.
 `sessions.is_operator` 는 권한 판정에 읽지 않는다(칸만 남는다).
 
 요청 범위 의존성(`get_conn`, `utc_now`) 도 여기 둔다. 인증이 가장 먼저 DB 와 시각을 쓴다.
@@ -23,6 +24,7 @@ from urllib.parse import urlsplit
 from fastapi import Depends, HTTPException, Request, Response
 
 from workflow.adapters import repo
+from workflow.contracts.v1 import API_PREFIX
 from workflow.domain import team
 from workflow.server.errors import ApiError, PageError
 from workflow.server.settings import Settings
@@ -126,13 +128,15 @@ def login_email_key(raw: str) -> str:
 
 @dataclass(frozen=True)
 class LoggedIn:
-    """로그인한 활성 멤버. 비밀번호 해시·이메일은 싣지 않는다."""
+    """로그인한 활성 멤버. 비밀번호 해시·이메일은 싣지 않는다.
+    멤버 토큰으로 들어오면 `token_scope` 가 `read`·`full` 이고 `login_id` 에 토큰 id 를 싣는다(쿠키 로그인 = None)."""
 
     session_id: str
     member_id: str
     role: str
     display_name: str
     login_id: str
+    token_scope: str | None = None
 
 
 _UNREAD = object()
@@ -162,8 +166,40 @@ def require_member(request: Request, conn: Connection = Depends(get_conn)) -> Lo
     return member
 
 
+def current_api_member(request: Request, conn: Connection) -> LoggedIn | None:
+    """API — `Authorization: Bearer` 가 있으면 멤버 토큰(`wfm_…`)만 본다. 틀리면 None 이고 쿠키로 넘어가지 않는다.
+    Bearer 가 없으면 `current_member`(쿠키). 요청마다 한 번만 읽는다(`request.state` — 토큰 원문은 담지 않는다)."""
+    cached = getattr(request.state, "api_member", _UNREAD)
+    if cached is not _UNREAD:
+        return cached
+    token = _bearer_token(request)
+    if token is None:
+        member = current_member(request, conn)
+    else:
+        member = None
+        row = repo.member_for_api_token(conn, token, now=utc_now())
+        if row is not None and row["session_id"] == SELFHOST_SESSION_ID:
+            member = LoggedIn(session_id=row["session_id"], member_id=row["member_id"], role=row["role"],
+                              display_name=row["display_name"], login_id=row["token_id"], token_scope=row["scope"])
+    request.state.api_member = member
+    return member
+
+
 def require_member_api(request: Request, conn: Connection = Depends(get_conn)) -> LoggedIn:
-    """API — 로그인 전이면 401 unauthenticated."""
+    """API — 미인증이면 401 unauthenticated. 읽기 전용 토큰의 GET·HEAD 밖 요청은 역할 검사보다 먼저 403 token_read_only."""
+    member = current_api_member(request, conn)
+    if member is None:
+        message = "유효한 멤버 토큰이 필요합니다." if _bearer_token(request) else "로그인이 필요합니다."
+        raise ApiError(401, "unauthenticated", message)
+    if member.token_scope == "read" and request.method not in ("GET", "HEAD"):
+        raise ApiError(403, "token_read_only", "읽기 전용 토큰입니다")
+    return member
+
+
+def require_member_cookie_api(request: Request, conn: Connection = Depends(get_conn)) -> LoggedIn:
+    """API(토큰 발급 전용) — Bearer 헤더가 있으면 유효성과 무관하게 403 cookie_required. 그 밖은 쿠키 로그인만."""
+    if _bearer_token(request) is not None:
+        raise ApiError(403, "cookie_required", "로그인 쿠키로만 할 수 있습니다.")
     member = current_member(request, conn)
     if member is None:
         raise ApiError(401, "unauthenticated", "로그인이 필요합니다.")
@@ -207,8 +243,8 @@ def clear_login_cookies(response: Response) -> None:
 # --- Origin 검사 (phase 15) ---------------------------------------------------------------------
 
 # Bearer 인증 경로 — 쿠키를 보지 않으므로 검사하지 않는다. `/sources/tokens…` 는 쿠키 경로라 검사 대상
-_BEARER_PREFIXES = ("/connector/", "/executions/")
-_CHAINS_PATH = re.compile(r"/sources/[^/]+/chains")
+_BEARER_PREFIXES = (f"{API_PREFIX}/connector/", f"{API_PREFIX}/executions/")
+_CHAINS_PATH = re.compile(rf"{API_PREFIX}/sources/[^/]+/chains")
 
 
 def _origin_of(url: str) -> str | None:
@@ -224,9 +260,12 @@ def _origin_of(url: str) -> str | None:
 
 
 def check_origin(request: Request, settings: Settings) -> bool:
-    """쿠키 인증 변경 요청의 출처가 이 서버인가. `Origin`, 없으면 `Referer` 의 출처를 요청 base URL·공개 주소와 비교한다.
+    """쿠키 인증 변경 요청의 출처가 이 서버인가. `/api/v1/` 아래 `Authorization: Bearer` 요청·러너·n8n 경로는 참. `Origin`, 없으면 `Referer` 의 출처를 요청 base URL·공개 주소와 비교한다.
     둘 다 없거나 `Origin: null` 이면 거짓. 메서드는 보지 않는다 — 앱 미들웨어가 GET·HEAD·OPTIONS 밖에서만 부른다."""
     path = request.url.path
+    # API 는 Bearer 가 있으면 쿠키를 보지 않는다(phase 24 D19). 화면 폼은 Bearer 를 무시하고 쿠키로 동작하므로 예외가 아니다
+    if path.startswith(f"{API_PREFIX}/") and _bearer_token(request) is not None:
+        return True
     if path.startswith(_BEARER_PREFIXES) or _CHAINS_PATH.fullmatch(path):
         return True
     origin = request.headers.get("origin")

@@ -37,11 +37,11 @@ def request_id(conn, cycle) -> str:  # noqa: F811
 
 def respond(client: TestClient, request_id: str, **overrides):
     body = {"response_id": "resp-1", "expected_revision": 1, "action": "resume", "text": "10,000원", **overrides}
-    return client.post(f"/human-requests/{request_id}/responses", json=body)
+    return client.post(f"/api/v1/human-requests/{request_id}/responses", json=body)
 
 
 def test_operator_lists_open_requests_and_answers_once(op, conn, request_id):
-    listed = op.get("/human-requests")
+    listed = op.get("/api/v1/human-requests")
     assert listed.status_code == 200
     (item,) = listed.json()["requests"]
     assert (item["request_id"], item["task_id"], item["code"], item["revision"], item["state"]) == (
@@ -53,7 +53,7 @@ def test_operator_lists_open_requests_and_answers_once(op, conn, request_id):
     assert response.json() == {"request_id": request_id, "task_id": "task-gh-1", "response_id": "resp-1",
                                "task_revision": 2, "created": True}
     assert repo.list_executions(conn, "task-gh-1") == []  # 응답은 실행을 만들지 않는다
-    assert op.get("/human-requests").json()["requests"] == []
+    assert op.get("/api/v1/human-requests").json()["requests"] == []
 
     # 응답 유실 뒤 재전송은 같은 결과, revision 은 다시 오르지 않는다
     again = respond(op, request_id)
@@ -83,10 +83,10 @@ def test_stale_revision_and_already_answered_requests_are_rejected(op, request_i
 def test_only_the_operator_session_can_answer(app, conn, request_id):
     anonymous = TestClient(app)
     assert respond(anonymous, request_id).status_code == 401
-    assert anonymous.get("/human-requests").status_code == 401
+    assert anonymous.get("/api/v1/human-requests").status_code == 401
     stranger = log_in_other_workspace(TestClient(app))  # 다른 워크스페이스의 로그인 쿠키 — 로그인 안 된 것으로 본다
     assert respond(stranger, request_id).status_code == 401
-    assert stranger.get("/human-requests").status_code == 401
+    assert stranger.get("/api/v1/human-requests").status_code == 401
     assert repo.get_human_request(conn, SESSION, request_id)["state"] == "open"
 
 
@@ -98,7 +98,7 @@ def test_other_operator_session_cannot_see_or_answer(op, conn):
     other_request, _ = repo.create_human_request_once(
         conn, "task-other", "fix_needs_information", "재현 금액이 필요합니다", "fix_needs_information:exec-9", NOW,
     )
-    assert op.get("/human-requests").json()["requests"] == []
+    assert op.get("/api/v1/human-requests").json()["requests"] == []
     response = respond(op, other_request)
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
@@ -221,3 +221,14 @@ def test_reverify_through_the_api_reads_the_result_commit(op, conn, store, worke
     answered = respond(op, failed["request_id"], action="reverify", text="")
     assert answered.status_code == 200, answered.text
     assert repo.list_human_responses(conn, task_id)[-1]["action"] == "reverify"
+
+
+def test_old_paths_without_api_prefix_are_gone(op, request_id):
+    """옛 주소는 별칭 없이 404(D9)."""
+    assert op.get("/human-requests").status_code == 404
+    assert respond_old(op, request_id).status_code == 404
+    assert [r["request_id"] for r in op.get("/api/v1/human-requests").json()["requests"]] == [request_id]
+
+
+def respond_old(client: TestClient, request_id: str):
+    return client.post(f"/human-requests/{request_id}/responses", json={"expected_revision": 1, "action": "close"})

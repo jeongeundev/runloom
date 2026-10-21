@@ -419,6 +419,6 @@ def test_old_run_route_and_api_respect_the_owner(app, conn, cycle, all_open):
     assert executions(conn, task_id) == []
     (request,) = approvals(conn, task_id)
     assert request["cause_key"] == f"owner_approval:{FIX}:{a}:1"
-    answer = client.post(f"/human-requests/{request['request_id']}/responses",
+    answer = client.post(f"/api/v1/human-requests/{request['request_id']}/responses",
                          json={"response_id": "resp-a", "expected_revision": 1, "action": "approve"})
     assert answer.status_code == 403 and answer.json()["code"] == "forbidden"

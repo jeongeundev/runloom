@@ -14,22 +14,27 @@ def setup_request(logged_in_client, conn):
     revision = repo.get_config_revision(conn, SESSION)
     entry = dict(system_id='billing', request_kind='investigation', recipient_member_id=recipient_id,
                  judgment_member_id=requester_id, agent_id=None)
-    assert logged_in_client.put('/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
+    assert logged_in_client.put('/api/v1/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
     body = dict(system_id='billing', request_kind='investigation', recipient_member_id=recipient_id,
                 expected_directory_revision=revision + 1, submission_key='request-1', purpose='에러 원인을 확인해 주세요.')
     return recipient, work_id, body
+
+
+def work_url(conn, work_id):
+    """사내 요청 업무 경로 — 내부 id 가 아니라 업무 키(`RUN-n`, D31)."""
+    return f"/api/v1/work-items/RUN-{repo.get_work_item(conn, SESSION, work_id)['key_number']}/internal-requests"
 
 
 def test_create_and_recipient_accept_preserve_original_work(logged_in_client, conn):
     recipient, work_id, body = setup_request(logged_in_client, conn)
     before = dict(repo.get_work_item(conn, SESSION, work_id))
     counts = {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in ('tasks', 'executions')}
-    response = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body)
+    response = logged_in_client.post(work_url(conn, work_id), json=body)
     assert response.status_code == 200, response.text
     request = response.json()
     assert request['state'] == 'pending' and request['revision'] == 1
-    assert recipient.get('/internal-requests').json()['requests'] == [request]
-    accepted = recipient.post(f"/internal-requests/{request['request_id']}/accept", json={'expected_revision': 1})
+    assert recipient.get('/api/v1/internal-requests').json()['requests'] == [request]
+    accepted = recipient.post(f"/api/v1/internal-requests/{request['request_id']}/accept", json={'expected_revision': 1})
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()['state'] == 'accepted' and accepted.json()['revision'] == 2
     assert accepted.json()['accepted_at'] is not None
@@ -39,11 +44,11 @@ def test_create_and_recipient_accept_preserve_original_work(logged_in_client, co
 
 def test_replayed_submission_is_same_request_and_changed_payload_conflicts(logged_in_client, conn):
     _, work_id, body = setup_request(logged_in_client, conn)
-    url = f'/work-items/{work_id}/internal-requests'
+    url = work_url(conn, work_id)
     first = logged_in_client.post(url, json=body).json()
     # 설정 변경 후에도 이미 접수된 같은 요청은 다시 만들지 않는다.
     revision = repo.get_config_revision(conn, SESSION)
-    logged_in_client.put('/responsibilities', json=dict(entries=[], expected_revision=revision))
+    logged_in_client.put('/api/v1/responsibilities', json=dict(entries=[], expected_revision=revision))
     assert logged_in_client.post(url, json=body).json() == first
     assert logged_in_client.post(url, json={**body, 'purpose': '다른 질문'}).status_code == 409
     assert logged_in_client.get(url).json()['requests'] == [first]
@@ -51,8 +56,8 @@ def test_replayed_submission_is_same_request_and_changed_payload_conflicts(logge
 
 def test_only_recipient_accepts_and_repeated_accept_is_idempotent(logged_in_client, conn):
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    created = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    url = f"/internal-requests/{created['request_id']}/accept"
+    created = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    url = f"/api/v1/internal-requests/{created['request_id']}/accept"
     assert logged_in_client.post(url, json={'expected_revision': 1}).status_code == 403  # 관리자도 수신자 아님
     assert recipient.post(url, json={'expected_revision': 9}).status_code == 409
     first = recipient.post(url, json={'expected_revision': 1}).json()
@@ -64,31 +69,36 @@ def test_only_recipient_accepts_and_repeated_accept_is_idempotent(logged_in_clie
 
 def test_create_revalidates_directory_and_accept_revalidates_members(logged_in_client, conn):
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    url = f'/work-items/{work_id}/internal-requests'
+    url = work_url(conn, work_id)
     assert logged_in_client.post(url, json={**body, 'expected_directory_revision': 1}).status_code == 409
     assert logged_in_client.post(url, json={**body, 'recipient_member_id': 'missing'}).status_code == 422
     created = logged_in_client.post(url, json=body).json()
     conn.execute('UPDATE members SET disabled_at = ? WHERE member_id = ?', (NOW, created['judgment_member_id']))
-    response = recipient.post(f"/internal-requests/{created['request_id']}/accept", json={'expected_revision': 1})
+    response = recipient.post(f"/api/v1/internal-requests/{created['request_id']}/accept", json={'expected_revision': 1})
     assert response.status_code == 422
-    assert recipient.get('/internal-requests').json()['requests'][0]['state'] == 'pending'
+    assert recipient.get('/api/v1/internal-requests').json()['requests'][0]['state'] == 'pending'
 
 
 def test_workspace_authentication_and_origin_boundaries(logged_in_client, conn):
     _, work_id, body = setup_request(logged_in_client, conn)
     anonymous = TestClient(logged_in_client.app)
-    assert anonymous.get('/internal-requests').status_code == 401
-    assert anonymous.post(f'/work-items/{work_id}/internal-requests', json=body).status_code == 401
-    assert logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body,
+    assert anonymous.get('/api/v1/internal-requests').status_code == 401
+    assert anonymous.post(work_url(conn, work_id), json=body).status_code == 401
+    assert logged_in_client.post(work_url(conn, work_id), json=body,
                                  headers={'Origin': 'https://foreign.invalid'}).status_code == 403
     repo.create_session(conn, 'other-scope', NOW)
     conn.execute('BEGIN IMMEDIATE')
-    other_work, _ = repo.create_work_item(conn, 'other-scope', title='외부', request='외부', kind='bug_fix',
-                                         source_type='manual', now=NOW)
+    for _ in range(2):  # 다른 워크스페이스에만 있는 키(RUN-2)
+        other_work, other_number = repo.create_work_item(conn, 'other-scope', title='외부', request='외부',
+                                                         kind='bug_fix', source_type='manual', now=NOW)
     conn.execute('COMMIT')
-    assert logged_in_client.get(f'/work-items/{other_work}/internal-requests').status_code == 404
-    assert logged_in_client.post(f'/work-items/{other_work}/internal-requests', json=body).status_code == 404
-    assert logged_in_client.post('/internal-requests/missing/accept', json={'expected_revision': 1}).status_code == 404
+    for key in (f'RUN-{other_number}', other_work, work_id, 'RUN-0', 'run-1'):
+        url = f'/api/v1/work-items/{key}/internal-requests'
+        for response in (logged_in_client.get(url), logged_in_client.post(url, json=body)):
+            assert response.status_code == 404, key
+            assert response.json() == {'code': 'not_found', 'message': '원래 업무를 찾을 수 없습니다.', 'field': None,
+                                       'details': None}
+    assert logged_in_client.post('/api/v1/internal-requests/missing/accept', json={'expected_revision': 1}).status_code == 404
 
 
 def test_concurrent_submission_and_accept_are_recorded_once(logged_in_client, conn):
@@ -96,16 +106,16 @@ def test_concurrent_submission_and_accept_are_recorded_once(logged_in_client, co
 
     recipient, work_id, body = setup_request(logged_in_client, conn)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        responses = list(pool.map(lambda _: logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body), range(2)))
+        responses = list(pool.map(lambda _: logged_in_client.post(work_url(conn, work_id), json=body), range(2)))
     assert all(r.status_code == 200 for r in responses)
     assert responses[0].json() == responses[1].json()
     request_id = responses[0].json()['request_id']
     with ThreadPoolExecutor(max_workers=2) as pool:
-        accepted = list(pool.map(lambda _: recipient.post(f'/internal-requests/{request_id}/accept', json={'expected_revision': 1}), range(2)))
+        accepted = list(pool.map(lambda _: recipient.post(f'/api/v1/internal-requests/{request_id}/accept', json={'expected_revision': 1}), range(2)))
     assert all(r.status_code == 200 for r in accepted)
     assert accepted[0].json() == accepted[1].json()
     assert accepted[0].json()['revision'] == 2
-    assert len(recipient.get('/internal-requests').json()['requests']) == 1
+    assert len(recipient.get('/api/v1/internal-requests').json()['requests']) == 1
 
 
 def test_registered_agent_is_rechecked_at_accept(logged_in_client, conn):
@@ -118,29 +128,29 @@ def test_registered_agent_is_rechecked_at_accept(logged_in_client, conn):
     entry = dict(system_id=body['system_id'], request_kind=body['request_kind'],
                  recipient_member_id=body['recipient_member_id'], judgment_member_id=requester,
                  agent_id='agent-codex-mac')
-    assert logged_in_client.put('/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
+    assert logged_in_client.put('/api/v1/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
     body['expected_directory_revision'] = revision + 1
-    created = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
+    created = logged_in_client.post(work_url(conn, work_id), json=body).json()
     assert created['agent_id'] == 'agent-codex-mac'
     repo.unregister_session_agent(conn, SESSION, 'agent-codex-mac')
-    assert recipient.post(f"/internal-requests/{created['request_id']}/accept", json={'expected_revision': 1}).status_code == 422
+    assert recipient.post(f"/api/v1/internal-requests/{created['request_id']}/accept", json={'expected_revision': 1}).status_code == 422
     fresh = {**body, 'submission_key': 'request-2', 'expected_directory_revision': repo.get_config_revision(conn, SESSION)}
-    assert logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=fresh).status_code == 422
-    assert recipient.get('/internal-requests').json()['requests'][0]['state'] == 'pending'
+    assert logged_in_client.post(work_url(conn, work_id), json=fresh).status_code == 422
+    assert recipient.get('/api/v1/internal-requests').json()['requests'][0]['state'] == 'pending'
 
 
 def test_inbox_contains_only_requests_for_current_member(logged_in_client, conn):
     _, work_id, body = setup_request(logged_in_client, conn)
-    assert logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).status_code == 200
+    assert logged_in_client.post(work_url(conn, work_id), json=body).status_code == 200
     outsider = log_in_member(TestClient(logged_in_client.app), display_name='다른 동료')
-    assert outsider.get('/internal-requests').json()['requests'] == []
+    assert outsider.get('/api/v1/internal-requests').json()['requests'] == []
 
 
 def test_not_responsible_and_explicit_reroute_preserve_history(logged_in_client, conn):
     recipient, work_id, body = setup_request(logged_in_client, conn)
     before = dict(repo.get_work_item(conn, SESSION, work_id))
-    old = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    reject_url = f"/internal-requests/{old['request_id']}/not-responsible"
+    old = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    reject_url = f"/api/v1/internal-requests/{old['request_id']}/not-responsible"
     rejection = dict(expected_revision=1, reason='<담당 아님> 결제 플랫폼 담당에게 확인 필요')
     assert logged_in_client.post(reject_url, json=rejection).status_code == 403
     assert recipient.post(reject_url, json={**rejection, 'reason': ' '}).status_code == 422
@@ -149,13 +159,13 @@ def test_not_responsible_and_explicit_reroute_preserve_history(logged_in_client,
     assert rejected.json()['rejection_reason'] == rejection['reason']
     assert recipient.post(reject_url, json=rejection).json() == rejected.json()
     assert recipient.post(reject_url, json={**rejection, 'reason': '다른 이유'}).status_code == 409
-    assert recipient.post(f"/internal-requests/{old['request_id']}/accept", json={'expected_revision': 2}).status_code == 409
+    assert recipient.post(f"/api/v1/internal-requests/{old['request_id']}/accept", json={'expected_revision': 2}).status_code == 409
     target_id = old['requester_member_id']
     revision = repo.get_config_revision(conn, SESSION)
     entry = dict(system_id='billing', request_kind='investigation', recipient_member_id=target_id,
                  judgment_member_id=target_id, agent_id=None)
-    assert logged_in_client.put('/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
-    reroute_url = f"/internal-requests/{old['request_id']}/reroute"
+    assert logged_in_client.put('/api/v1/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
+    reroute_url = f"/api/v1/internal-requests/{old['request_id']}/reroute"
     selection = dict(expected_revision=2, expected_directory_revision=revision + 1, recipient_member_id=target_id)
     assert recipient.post(reroute_url, json=selection).status_code == 403
     assert logged_in_client.post(reroute_url, json={**selection, 'expected_directory_revision': 1}).status_code == 409
@@ -168,21 +178,21 @@ def test_not_responsible_and_explicit_reroute_preserve_history(logged_in_client,
     assert new.json()['previous_rejection_reason'] == rejection['reason']
     assert rejected.json()['state'] == 'rejected'
     assert logged_in_client.post(reroute_url, json=selection).json() == new.json()
-    assert len(logged_in_client.get(f'/work-items/{work_id}/internal-requests').json()['requests']) == 2
+    assert len(logged_in_client.get(work_url(conn, work_id)).json()['requests']) == 2
     assert dict(repo.get_work_item(conn, SESSION, work_id)) == before
     assert conn.execute('SELECT COUNT(*) FROM executions').fetchone()[0] == 0
-    assert logged_in_client.post(f"/internal-requests/{new.json()['request_id']}/accept", json={'expected_revision': 1}).status_code == 200
+    assert logged_in_client.post(f"/api/v1/internal-requests/{new.json()['request_id']}/accept", json={'expected_revision': 1}).status_code == 200
 
 
 def test_not_responsible_requires_pending_and_current_revision(logged_in_client, conn):
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    row = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    url = f"/internal-requests/{row['request_id']}/not-responsible"
+    row = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    url = f"/api/v1/internal-requests/{row['request_id']}/not-responsible"
     assert recipient.post(url, json=dict(expected_revision=9, reason='다른 담당')).status_code == 409
-    assert logged_in_client.post(f"/internal-requests/{row['request_id']}/reroute", json=dict(
+    assert logged_in_client.post(f"/api/v1/internal-requests/{row['request_id']}/reroute", json=dict(
         expected_revision=1, expected_directory_revision=body['expected_directory_revision'],
         recipient_member_id=body['recipient_member_id'])).status_code == 409
-    assert recipient.post(f"/internal-requests/{row['request_id']}/accept", json={'expected_revision': 1}).status_code == 200
+    assert recipient.post(f"/api/v1/internal-requests/{row['request_id']}/accept", json={'expected_revision': 1}).status_code == 200
     assert recipient.post(url, json=dict(expected_revision=2, reason='다른 담당')).status_code == 409
 
 
@@ -190,8 +200,8 @@ def test_concurrent_rejection_and_reroute_are_recorded_once(logged_in_client, co
     from concurrent.futures import ThreadPoolExecutor
 
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    old = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    reject_url = f"/internal-requests/{old['request_id']}/not-responsible"
+    old = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    reject_url = f"/api/v1/internal-requests/{old['request_id']}/not-responsible"
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: recipient.post(reject_url, json=dict(expected_revision=1, reason='다른 담당')), range(2)))
     assert all(r.status_code == 200 for r in results)
@@ -199,10 +209,10 @@ def test_concurrent_rejection_and_reroute_are_recorded_once(logged_in_client, co
     revision = repo.get_config_revision(conn, SESSION)
     entry = dict(system_id=body['system_id'], request_kind=body['request_kind'],
                  recipient_member_id=old['requester_member_id'], judgment_member_id=old['requester_member_id'], agent_id=None)
-    assert logged_in_client.put('/responsibilities', json=dict(expected_revision=revision, entries=[entry])).status_code == 200
+    assert logged_in_client.put('/api/v1/responsibilities', json=dict(expected_revision=revision, entries=[entry])).status_code == 200
     target = dict(expected_revision=2, expected_directory_revision=revision + 1, recipient_member_id=old['requester_member_id'])
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: logged_in_client.post(f"/internal-requests/{old['request_id']}/reroute", json=target), range(2)))
+        results = list(pool.map(lambda _: logged_in_client.post(f"/api/v1/internal-requests/{old['request_id']}/reroute", json=target), range(2)))
     assert all(r.status_code == 200 for r in results)
     assert results[0].json() == results[1].json()
     assert conn.execute('SELECT COUNT(*) FROM internal_request_rejections').fetchone()[0] == 1
@@ -213,21 +223,21 @@ def test_accept_and_reject_race_has_one_winner(logged_in_client, conn):
     from concurrent.futures import ThreadPoolExecutor
 
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    old = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    base = f"/internal-requests/{old['request_id']}"
+    old = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    base = f"/api/v1/internal-requests/{old['request_id']}"
     with ThreadPoolExecutor(max_workers=2) as pool:
         accept = pool.submit(recipient.post, base + '/accept', json={'expected_revision': 1})
         reject = pool.submit(recipient.post, base + '/not-responsible', json=dict(expected_revision=1, reason='다른 담당'))
         assert sorted([accept.result().status_code, reject.result().status_code]) == [200, 409]
-    row = logged_in_client.get(f'/work-items/{work_id}/internal-requests').json()['requests'][0]
+    row = logged_in_client.get(work_url(conn, work_id)).json()['requests'][0]
     assert row['revision'] == 2
     assert (row['state'] == 'accepted') != (row['rejected_at'] is not None)
 
 
 def test_recipient_asks_and_requester_answers_with_history(logged_in_client, conn):
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    old = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    base = f"/internal-requests/{old['request_id']}"
+    old = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    base = f"/api/v1/internal-requests/{old['request_id']}"
     assert recipient.post(base + '/accept', json={'expected_revision': 1}).status_code == 200
     before = dict(repo.get_work_item(conn, SESSION, work_id))
     asked = recipient.post(base + '/questions', json=dict(expected_revision=2, submission_key='question-1', text='오류 발생 시각은?'))
@@ -251,8 +261,8 @@ def test_recipient_asks_and_requester_answers_with_history(logged_in_client, con
 
 def test_information_permissions_stale_inputs_replay_and_next_question(logged_in_client, conn):
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    row = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    base = f"/internal-requests/{row['request_id']}"
+    row = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    base = f"/api/v1/internal-requests/{row['request_id']}"
     question = dict(expected_revision=2, submission_key='q-1', text='시각?')
     assert recipient.post(base + '/questions', json=question).status_code == 409
     assert recipient.post(base + '/accept', json={'expected_revision': 1}).status_code == 200
@@ -275,21 +285,21 @@ def test_information_permissions_stale_inputs_replay_and_next_question(logged_in
     assert logged_in_client.post(answer_url, json=answer).json() == replied
     assert logged_in_client.post(answer_url, json={**answer, 'text': '16시'}).status_code == 409
     assert recipient.post(base + '/questions', json={**question, 'submission_key': 'q-2', 'text': '로그 ID?'}).status_code == 200
-    history = logged_in_client.get('/internal-requests').json()['requests'][0]
+    history = logged_in_client.get('/api/v1/internal-requests').json()['requests'][0]
     assert [q['text'] for q in history['questions']] == ['시각?', '로그 ID?']
     assert history['waiting_for_information'] is True
     assert all('submission_key' not in q for q in history['questions'])
     outsider = log_in_member(TestClient(logged_in_client.app), display_name='질문과 무관한 동료')
     assert outsider.post(answer_url, json=answer).status_code == 403
-    assert outsider.get('/internal-requests').json()['requests'] == []
+    assert outsider.get('/api/v1/internal-requests').json()['requests'] == []
 
 
 def test_concurrent_information_question_and_answer_are_recorded_once(logged_in_client, conn):
     from concurrent.futures import ThreadPoolExecutor
 
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    row = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    base = f"/internal-requests/{row['request_id']}"
+    row = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    base = f"/api/v1/internal-requests/{row['request_id']}"
     recipient.post(base + '/accept', json={'expected_revision': 1})
     question = dict(expected_revision=2, submission_key='concurrent', text='시각?')
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -314,7 +324,7 @@ def test_created_and_rerouted_requests_notify_the_recipient_once(logged_in_clien
     from workflow.adapters.secret_store import NOTIFY_WEBHOOK_URL
     logged_in_client.app.state.secrets.write(NOTIFY_WEBHOOK_URL, 'https://hooks.example/shared-token')
     recipient, work_id, body = setup_request(logged_in_client, conn)
-    url = f'/work-items/{work_id}/internal-requests'
+    url = work_url(conn, work_id)
     old = logged_in_client.post(url, json=body).json()
     assert logged_in_client.post(url, json=body).json() == old
     (row,) = _received(conn)
@@ -322,16 +332,31 @@ def test_created_and_rerouted_requests_notify_the_recipient_once(logged_in_clien
         f"internal_request_received:{old['request_id']}:shared", body['recipient_member_id'], None)
     assert row['content'].startswith('[Runloom] 요청 받음 — 결제 오류: ')
     assert 'shared-token' not in row['content']
-    recipient.post(f"/internal-requests/{old['request_id']}/not-responsible", json=dict(expected_revision=1, reason='팀 다름'))
+    recipient.post(f"/api/v1/internal-requests/{old['request_id']}/not-responsible", json=dict(expected_revision=1, reason='팀 다름'))
     target_id = old['requester_member_id']
     revision = repo.get_config_revision(conn, SESSION)
     entry = dict(system_id='billing', request_kind='investigation', recipient_member_id=target_id,
                  judgment_member_id=target_id, agent_id=None)
-    assert logged_in_client.put('/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
-    reroute_url = f"/internal-requests/{old['request_id']}/reroute"
+    assert logged_in_client.put('/api/v1/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
+    reroute_url = f"/api/v1/internal-requests/{old['request_id']}/reroute"
     selection = dict(expected_revision=2, expected_directory_revision=revision + 1, recipient_member_id=target_id)
     new = logged_in_client.post(reroute_url, json=selection).json()
     assert logged_in_client.post(reroute_url, json=selection).json() == new
     assert [(r['dedupe_key'], r['recipient_member_id']) for r in _received(conn)] == [
         (f"internal_request_received:{old['request_id']}:shared", body['recipient_member_id']),
         (f"internal_request_received:{new['request_id']}:shared", target_id)]
+
+
+def test_old_paths_without_api_prefix_are_gone(logged_in_client, conn):
+    """옛 주소(내부 id 경로 포함)는 별칭 없이 404(D9) — 화면 폼 `/work/{key}/internal-requests` 는 남는다."""
+    recipient, work_id, body = setup_request(logged_in_client, conn)
+    assert logged_in_client.get('/internal-requests').status_code == 404
+    assert logged_in_client.get(f'/work-items/{work_id}/internal-requests').status_code == 404
+    assert logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).status_code == 404
+    assert logged_in_client.get(work_url(conn, work_id)).json()['requests'] == []
+    created = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    base = f"/internal-requests/{created['request_id']}"
+    for suffix in ('/accept', '/investigation', '/return', '/not-responsible', '/reroute', '/questions',
+                   '/questions/q-1/answer', '/judgments', '/judgments/j-1/respond', '/resume'):
+        assert recipient.post(base + suffix, json={'expected_revision': 1}).status_code == 404, suffix
+    assert recipient.get('/api/v1/internal-requests').json()['requests'][0]['state'] == 'pending'

@@ -392,7 +392,7 @@ def test_01_admin_sets_up_github_a_member_webhooks_a_runner_the_triage_agent_and
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
     issued = http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
@@ -427,11 +427,11 @@ def test_01_admin_sets_up_github_a_member_webhooks_a_runner_the_triage_agent_and
         time.sleep(0.3)
     assert runner_capabilities(world) == ["after_result_triage", "verify_only"]
 
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     fields = ("repository_full_name", "intake", "workflow_repository_id", "label_filter", "selected_issue_numbers",
               "start_at", "fix_verification_profile_id", "review_agent_id", "run_mode", "max_rework_rounds",
               "trigger_label", "default_fix_agent_id", "enabled")
-    updated = http.put(f"/github/sources/{source['source_id']}", json={
+    updated = http.put(f"/api/v1/github/sources/{source['source_id']}", json={
         **{k: source[k] for k in fields}, "triage_agent_id": agent_id, "expected_revision": source["config_revision"]})
     assert updated.status_code == 200, updated.text[:500]
 

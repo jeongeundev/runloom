@@ -5,6 +5,7 @@
 """
 
 import json
+import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -15,10 +16,11 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from workflow.adapters import repo, secret_store
+from workflow.adapters import internal_request_store, repo, responsibility_store, secret_store
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.secret_store import SecretStore
+from workflow.contracts.responsibility import Responsibility
 from workflow.contracts.github import GitHubIssueSnapshot, GitHubSourceConfig
 from workflow.contracts.v1 import (
     Capability,
@@ -895,7 +897,7 @@ def _work_pulls(conn: Connection, work_item_id: str, stages: list[Row]) -> list[
 def _agent_choice_lines(conn: Connection, session_id: str, agents: Sequence[Row], *, member_id: str, now: str,
                         settings: Settings) -> list[dict[str, Any]]:
     """담당 후보 한 줄 — `이름 · <소유자>의 Mac · 켜짐|꺼짐`(소유자 없으면 `공용`), 누르는 사람이 맡기면 승인이 필요하면
-    ` · 승인 필요`. 꺼진 에이전트도 후보에 남는다."""
+    ` · 승인 필요`. 꺼진 에이전트도 후보에 남는다. 사람용 API 는 `label` 대신 `online`·`needs_owner_approval` 을 쓴다."""
     members = repo.list_members(conn, session_id)
     names = {m["member_id"]: m["display_name"] for m in members}
     admin_ids = frozenset(m["member_id"] for m in members if m["role"] == "admin" and m["disabled_at"] is None)
@@ -904,10 +906,12 @@ def _agent_choice_lines(conn: Connection, session_id: str, agents: Sequence[Row]
         owner_id = repo.agent_owner_id(conn, agent["agent_id"])
         online = agent_online(agent, now=now, settings=settings)
         label = candidate_label(agent["name"], names.get(owner_id) if owner_id else None, online)
-        if needs_owner_approval(policy=agent["delegation_policy"], requester_id=member_id, owner_id=owner_id,
-                                admin_ids=admin_ids):
+        approval = needs_owner_approval(policy=agent["delegation_policy"], requester_id=member_id, owner_id=owner_id,
+                                        admin_ids=admin_ids)
+        if approval:
             label += " · 승인 필요"
-        lines.append({"agent_id": agent["agent_id"], "name": agent["name"], "label": label, "online": online})
+        lines.append({"agent_id": agent["agent_id"], "name": agent["name"], "label": label, "online": online,
+                      "needs_owner_approval": approval})
     return lines
 
 
@@ -1041,6 +1045,127 @@ def work_panel_context(
         "triage": triage_panel(conn, session_id, work, allowed=allowed, now=now, settings=settings),
         "next_step": next_step_panel(conn, session_id, work, allowed=allowed, now=now, settings=settings),
     }
+
+
+def panel_actions(panel: Mapping[str, Any]) -> list[str]:
+    """지금 이 멤버가 할 수 있는 행동 이름 — 패널 버튼 조건(`can_*`·`triage.button`)만 읽는다(사람용 API `actions`)."""
+    actions = []
+    if panel["can_edit"]:
+        actions += ["assign", "set_priority"]
+    if panel["can_start_direct"]:
+        actions.append("start_direct")
+    if panel["direct"] is not None and panel["can_edit"]:
+        actions.append("stop_direct")
+    triage = panel["triage"]
+    if triage is not None:
+        if triage.get("button") is not None and not triage["button"]["disabled"]:
+            actions.append("request_triage")
+        if triage["state"] == "proposed":
+            actions += [name for name, flag in (("accept_triage", "can_accept"), ("dismiss_triage", "can_dismiss"))
+                        if triage[flag]]
+    found = panel["next_step"]
+    if found is not None and found["state"] == "proposed" and found["can_act"]:
+        actions += ["accept_next_step", "dismiss_next_step"]
+    return actions
+
+
+def internal_request_view(conn: Connection, session_id: str, member_id: str, allowed: frozenset[str], row: dict,
+                          artifact_store: Any) -> dict:
+    """사내 요청 한 건의 화면·API 표시 — 이름·단계 라벨·문제·가능 행동. 업무 패널·`/requests`·사람용 API 가 같이 쓴다."""
+    from workflow.server import internal_investigation  # internal_investigation → work_actions → views
+    work = repo.get_work_item(conn, session_id, row['work_item_id'])
+    names = {}
+    for role in ('requester', 'recipient', 'judgment'):
+        person = repo.get_member(conn, session_id, row[f'{role}_member_id'])
+        names[f'{role}_name'] = person['display_name'] if person else row[f'{role}_member_id']
+    entry = Responsibility(**{key: row[key] for key in
+                              ('system_id', 'request_kind', 'recipient_member_id', 'judgment_member_id', 'agent_id')})
+    problem = responsibility_store.entry_problem(conn, session_id, entry)
+    options = []
+    agent = repo.get_agent(conn, row['agent_id']) if row['agent_id'] else None
+    if agent is not None and agent['connection_type'] == 'local':
+        capabilities = json.loads(agent['capabilities_json'])
+        for spec in repo.list_kinds(conn, session_id):
+            if spec.output_kind != 'generic_result' or spec.input_kinds:
+                continue
+            for cap in capabilities:
+                if cap['code'] == spec.capability_code and spec.scope_key in cap['scope']:
+                    value = cap['scope'][spec.scope_key]
+                    options.append({'value': json.dumps({'kind': spec.kind, 'scope_value': value}),
+                                    'label': f"{spec.label} · {spec.scope_key}={value}"})
+    task = repo.get_task(conn, row['investigation_task_id']) if row['investigation_task_id'] else None
+    return_execution_id = None
+    return_reason = None
+    if task is not None and row['returned_at'] is None:
+        problem = problem or internal_request_store.investigation_problem(conn, task)
+        executions = repo.list_executions(conn, task['task_id'])
+        if executions:
+            try:
+                internal_investigation.reviewed_result(conn, artifact_store, row, executions[-1]['execution_id'])
+                return_execution_id = executions[-1]['execution_id']
+            except internal_request_store.RequestProblem as exc:
+                return_reason = str(exc)
+    basis_execution_id = return_execution_id or row['returned_execution_id']
+    judgment_reason = internal_request_store.judgment_problem(conn, session_id, row, basis_execution_id or '')
+    versions = internal_request_store.information_versions(row)
+    judgment_views = []
+    for judgment in row['judgments']:
+        current = judgment['execution_id'] == basis_execution_id and judgment['information_versions'] == versions
+        judgment_views.append({**judgment, 'is_current': current,
+            'can_respond': current and judgment['judgment_id'] == row['judgments'][-1]['judgment_id']
+                and judgment['judgment_member_id'] == member_id and judgment['decision'] is None
+                and row['returned_at'] is None and not row['waiting_for_information']
+                and team.RESPOND in allowed})
+    reroute_options = []
+    for candidate in responsibility_store.list_entries(conn, session_id):
+        if (candidate.system_id, candidate.request_kind) != (row['system_id'], row['request_kind']):
+            continue
+        if candidate.recipient_member_id == row['recipient_member_id'] or responsibility_store.entry_problem(conn, session_id, candidate):
+            continue
+        person = repo.get_member(conn, session_id, candidate.recipient_member_id)
+        reroute_options.append({'member_id': candidate.recipient_member_id, 'name': person['display_name']})
+    phase_label = '수락됨' if row['state'] == 'accepted' else '수락 대기'
+    if task:
+        phase_label = '조사 작업 연결됨'
+    if row['returned_at']:
+        phase_label = '결과 반환됨'
+    if row['resumption']:
+        phase_label = '업무 재개 기록됨'
+    if row['rejected_at']:
+        phase_label = '재전달됨' if row['new_request_id'] else '담당 아님'
+    if row['judgments'] and row['returned_at'] is None:
+        latest = row['judgments'][-1]
+        changed = latest['execution_id'] != basis_execution_id or latest['information_versions'] != versions
+        phase_label = '새 판단 필요' if changed else (
+            '판단 승인' if latest['decision'] == 'approve' else ('판단 거절' if latest['decision'] == 'reject' else '판단 응답 대기'))
+    if row['waiting_for_information']:
+        phase_label = '정보 답변 대기'
+    recipient = row['recipient_member_id'] == member_id
+    return {**row, **names, "work_key": format_work_key(work['key_number']), "problem": problem,
+            "phase_label": phase_label, "judgment_views": judgment_views, "judgment_reason": judgment_reason,
+            "judgment_submission_key": secrets.token_hex(16),
+            "can_request_judgment": recipient and return_execution_id is not None and row['returned_at'] is None
+                and not row['waiting_for_information'] and team.RESPOND in allowed
+                and not any(j['is_current'] for j in judgment_views),
+            "question_submission_key": secrets.token_hex(16),
+            "can_ask": recipient and row['state'] == 'accepted' and row['returned_at'] is None
+                       and not row['waiting_for_information'] and team.RESPOND in allowed,
+            "can_answer": row['requester_member_id'] == member_id and team.RESPOND in allowed,
+            "investigation_options": options, "investigation_status": task['status'] if task else None,
+            "investigation_reason": task['status_reason'] if task else None,
+            "can_investigate": recipient and row['state'] == 'accepted' and task is None and problem is None and not row['waiting_for_information']
+                               and team.DELEGATE in allowed,
+            "return_execution_id": return_execution_id, "return_reason": return_reason,
+            "can_resume": row['returned_at'] is not None and row['resumption'] is None
+                          and row['requester_member_id'] == member_id and team.RESPOND in allowed,
+            "can_return": recipient and return_execution_id is not None and not row['waiting_for_information'] and judgment_reason is None and team.RESPOND in allowed,
+            "reroute_options": reroute_options, "directory_revision": repo.get_config_revision(conn, session_id),
+            "can_reroute": row['requester_member_id'] == member_id and row['rejected_at'] is not None
+                           and row['new_request_id'] is None and team.DELEGATE in allowed,
+            "can_reject": recipient and row['state'] == 'pending' and row['rejected_at'] is None
+                          and team.RESPOND in allowed,
+            "can_accept": row['rejected_at'] is None and row['state'] == 'pending' and row['recipient_member_id'] == member_id
+                          and problem is None and team.RESPOND in allowed}
 
 
 # `triage_runs.REASONS` 중 버튼을 숨기는 이유(그 밖은 비활성 + 문구). `no_agent` 는 패널에 문구만, `running` 은 "판단 중"
@@ -1338,7 +1463,7 @@ def team_context(conn: Connection, session_id: str, *, now: str) -> dict[str, An
 
 def me_context(conn: Connection, session_id: str, member_id: str, *, secrets: SecretStore) -> dict[str, Any]:
     """내 설정 — 표시 이름·이메일·역할, 개인 웹훅은 설정됨/없음·호스트만(URL 은 다시 보이지 않는다),
-    내가 받는 최근 알림(사건·상태·시각·오류 분류만 — 본문 없음)."""
+    내가 받는 최근 알림(사건·상태·시각·오류 분류만 — 본문 없음), 내 활성 멤버 토큰(원문·해시 없음)."""
     row = repo.get_member(conn, session_id, member_id)
     url = secrets.read(secret_store.personal_webhook_name(member_id))
     return {
@@ -1349,6 +1474,7 @@ def me_context(conn: Connection, session_id: str, member_id: str, *, secrets: Se
             {k: n[k] for k in ("event", "channel", "state", "attempts", "last_error", "created_at", "sent_at")}
             for n in repo.list_notifications(conn, session_id, member_id=member_id)
         ],
+        "tokens": [dict(t) for t in repo.list_member_tokens(conn, member_id)],
     }
 
 

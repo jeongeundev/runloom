@@ -41,7 +41,7 @@ def test_exchange_sends_code_without_auth_and_returns_credentials(fake):
     assert client.exchange("code-1") == (CONNECTOR_ID, TOKEN)
 
     request = _last(fake)
-    assert (request.method, request.url.path) == ("POST", "/connector/exchange")
+    assert (request.method, request.url.path) == ("POST", "/api/v1/connector/exchange")
     assert "authorization" not in request.headers
     assert json.loads(request.content) == {"contract_version": 1, "connect_code": "code-1"}
 
@@ -64,7 +64,7 @@ def test_claim_sends_bearer_and_body_and_returns_request(fake, client):
     assert client.claim(CONNECTOR_ID) == request
 
     sent = _last(fake)
-    assert (sent.method, sent.url.path) == ("POST", "/connector/claim")
+    assert (sent.method, sent.url.path) == ("POST", "/api/v1/connector/claim")
     assert sent.headers["authorization"] == f"Bearer {TOKEN}"
     assert json.loads(sent.content) == {
         "contract_version": 1, "connector_id": CONNECTOR_ID, "supported_kinds": ["bug_fix", "code_review", "triage"],
@@ -158,7 +158,7 @@ def test_post_event_returns_ack(fake, client):
 
     assert ack == EventAck(execution_id=request.execution_id, last_event_seq=1, status="accepted")
     sent = _last(fake)
-    assert sent.url.path == f"/executions/{request.execution_id}/events"
+    assert sent.url.path == f"/api/v1/executions/{request.execution_id}/events"
     assert json.loads(sent.content)["contract_version"] == 1
 
 

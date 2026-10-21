@@ -36,17 +36,34 @@ UNAUTHENTICATED = {
 
 
 def _post_event(client, headers, execution_id, body):
-    return client.post(f"/executions/{execution_id}/events", json=body, headers=headers)
+    return client.post(f"/api/v1/executions/{execution_id}/events", json=body, headers=headers)
 
 
 def _upload(client, headers, execution_id, data: bytes, **meta_overrides):
     meta = {**meta_for(data), **meta_overrides}
     return client.post(
-        f"/executions/{execution_id}/artifacts",
+        f"/api/v1/executions/{execution_id}/artifacts",
         data={"meta": json.dumps(meta)},
         files={"file": (meta["name"], data, meta["content_type"])},
         headers=headers,
     )
+
+
+def test_old_runner_paths_are_404_without_alias(client, connector, headers):
+    """옛 러너 주소는 별칭 없이 404(phase 24 D9) — 러너는 `/api/v1` 아래만 부른다."""
+    connector_id = connector[0]
+    claim = {"contract_version": 1, "connector_id": connector_id}
+    for method, path, payload in (
+        ("POST", "/connector/exchange", {"contract_version": 1, "connect_code": "c"}),
+        ("POST", "/connector/claim", claim),
+        ("POST", "/connector/heartbeat", {**claim, "current_execution_id": None}),
+        ("POST", "/connector/registrations", _registration(connector_id)),
+        ("POST", f"/executions/{EXEC_FIX}/events", event(EXEC_FIX, 1, "accepted", {})),
+        ("POST", f"/executions/{EXEC_FIX}/artifacts", None),
+        ("GET", f"/executions/{EXEC_FIX}/artifacts/art-1", None),
+    ):
+        response = client.request(method, path, json=payload, headers=headers)
+        assert response.status_code == 404, (method, path)
 
 
 # --- exchange ---------------------------------------------------------------
@@ -54,20 +71,20 @@ def _upload(client, headers, execution_id, data: bytes, **meta_overrides):
 
 def test_exchange_returns_token_once_and_code_is_single_use(client, seeded):
     code = repo.issue_connect_code(seeded, utc_now())
-    first = client.post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
+    first = client.post("/api/v1/connector/exchange", json={"contract_version": 1, "connect_code": code})
     assert first.status_code == 200
     body = first.json()
     assert set(body) == {"connector_id", "token"}
     assert body["token"].startswith("wfc_")
     assert repo.authenticate_connector(seeded, body["token"]) == body["connector_id"]
 
-    again = client.post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
+    again = client.post("/api/v1/connector/exchange", json={"contract_version": 1, "connect_code": code})
     assert again.status_code == 404
     assert again.json()["code"] == "not_found"
     assert again.json()["field"] == "connect_code"
 
     heartbeat = client.post(
-        "/connector/heartbeat",
+        "/api/v1/connector/heartbeat",
         json={"contract_version": 1, "connector_id": body["connector_id"], "current_execution_id": None},
         headers=bearer(body["token"]),
     )
@@ -76,16 +93,16 @@ def test_exchange_returns_token_once_and_code_is_single_use(client, seeded):
 
 
 def test_exchange_unknown_code_404(client, seeded):
-    response = client.post("/connector/exchange", json={"contract_version": 1, "connect_code": "nope"})
+    response = client.post("/api/v1/connector/exchange", json={"contract_version": 1, "connect_code": "nope"})
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
 
 
 def test_exchange_rejects_unknown_field_and_bad_version(client, seeded):
-    response = client.post("/connector/exchange", json={"contract_version": 1, "connect_code": "c", "x": 1})
+    response = client.post("/api/v1/connector/exchange", json={"contract_version": 1, "connect_code": "c", "x": 1})
     assert response.status_code == 422
     assert response.json()["code"] == "unknown_field"
-    response = client.post("/connector/exchange", json={"contract_version": 2, "connect_code": "c"})
+    response = client.post("/api/v1/connector/exchange", json={"contract_version": 2, "connect_code": "c"})
     assert response.status_code == 422
     assert response.json()["code"] == "unsupported_contract_version"
 
@@ -94,7 +111,7 @@ def test_exchange_rejects_unknown_field_and_bad_version(client, seeded):
 
 
 def test_events_without_token_401(client, exec_fix):
-    response = client.post(f"/executions/{exec_fix}/events", json=event(exec_fix, 1, "accepted", {}))
+    response = client.post(f"/api/v1/executions/{exec_fix}/events", json=event(exec_fix, 1, "accepted", {}))
     assert response.status_code == 401
     assert response.json() == UNAUTHENTICATED
 
@@ -108,7 +125,7 @@ def test_events_with_revoked_token_401(client, seeded, connector, exec_fix):
 
 
 def test_unauthenticated_wins_over_invalid_body(client, exec_fix):
-    response = client.post(f"/executions/{exec_fix}/events", json={"contract_version": 2})
+    response = client.post(f"/api/v1/executions/{exec_fix}/events", json={"contract_version": 2})
     assert response.status_code == 401
 
 
@@ -118,23 +135,23 @@ def test_unauthenticated_wins_over_invalid_body(client, exec_fix):
 def test_claim_204_then_assignment_then_204_after_accepted(client, seeded, connector, headers):
     connector_id, _ = connector
     claim = {"contract_version": 1, "connector_id": connector_id}
-    empty = client.post("/connector/claim", json=claim, headers=headers)
+    empty = client.post("/api/v1/connector/claim", json=claim, headers=headers)
     assert empty.status_code == 204
     assert empty.content == b""
 
     seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id)
-    assigned = client.post("/connector/claim", json=claim, headers=headers)
+    assigned = client.post("/api/v1/connector/claim", json=claim, headers=headers)
     assert assigned.status_code == 200
     # 저장된 request_json 그대로 — 칸이 없던 요청의 업무 키 두 칸은 기본값으로 싣는다 (CONTRACT 15.2)
     assert assigned.json() == {**request_body(EXEC_FIX, TASK_B), "work_key": None, "branch_seq": 1}
 
-    repeat = client.post("/connector/claim", json=claim, headers=headers)  # 접수 전 재조회는 같은 배정
+    repeat = client.post("/api/v1/connector/claim", json=claim, headers=headers)  # 접수 전 재조회는 같은 배정
     assert repeat.status_code == 200
     assert repeat.json()["execution_id"] == EXEC_FIX
 
     accepted = _post_event(client, headers, EXEC_FIX, event(EXEC_FIX, 1, "accepted", {}))
     assert accepted.status_code == 200
-    assert client.post("/connector/claim", json=claim, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=claim, headers=headers).status_code == 204
 
 
 def test_claim_records_supported_kinds_declaration(client, seeded, connector, headers):
@@ -145,11 +162,11 @@ def test_claim_records_supported_kinds_declaration(client, seeded, connector, he
         return repo.get_connector(seeded, connector_id)["supported_kinds_json"]
 
     declared = {"contract_version": 1, "connector_id": connector_id, "supported_kinds": ["bug_fix", "code_review"]}
-    assert client.post("/connector/claim", json=declared, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=declared, headers=headers).status_code == 204
     assert json.loads(stored()) == ["bug_fix", "code_review"]
 
     legacy = {"contract_version": 1, "connector_id": connector_id}
-    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=legacy, headers=headers).status_code == 204
     assert stored() is None
 
 
@@ -170,15 +187,15 @@ def test_claim_records_known_runner_capabilities(client, seeded, connector, head
         return repo.get_connector(seeded, connector_id)["capabilities_json"]
 
     reported = {"contract_version": 1, "connector_id": connector_id, "capabilities": ["someday_feature", "verify_only"]}
-    assert client.post("/connector/claim", json=reported, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=reported, headers=headers).status_code == 204
     assert json.loads(stored()) == ["verify_only"]
 
     empty = {**reported, "capabilities": []}
-    assert client.post("/connector/claim", json=empty, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=empty, headers=headers).status_code == 204
     assert json.loads(stored()) == []
 
     legacy = {"contract_version": 1, "connector_id": connector_id}
-    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=legacy, headers=headers).status_code == 204
     assert stored() is None
 
 
@@ -188,11 +205,11 @@ def test_verify_only_execution_goes_only_to_a_runner_reporting_verify_only(clien
     assert repo.get_execution(seeded, EXEC_FIX)["verify_only"] == 1  # create_execution 이 요청에서 채운다
 
     legacy = {"contract_version": 1, "connector_id": connector_id}
-    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=legacy, headers=headers).status_code == 204
     other = {**legacy, "capabilities": ["someday_feature"]}
-    assert client.post("/connector/claim", json=other, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=other, headers=headers).status_code == 204
 
-    assigned = client.post("/connector/claim", json={**legacy, "capabilities": ["verify_only"]}, headers=headers)
+    assigned = client.post("/api/v1/connector/claim", json={**legacy, "capabilities": ["verify_only"]}, headers=headers)
     assert assigned.status_code == 200
     assert (assigned.json()["execution_id"], assigned.json()["verify_only_commit"]) == (EXEC_FIX, "c" * 40)
 
@@ -202,12 +219,12 @@ def test_ordinary_execution_keeps_verify_only_zero_and_goes_to_old_runners(clien
     seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id)
     assert repo.get_execution(seeded, EXEC_FIX)["verify_only"] == 0
     legacy = {"contract_version": 1, "connector_id": connector_id}
-    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 200
+    assert client.post("/api/v1/connector/claim", json=legacy, headers=headers).status_code == 200
 
 
 def test_claim_connector_id_must_match_token(client, connector, headers):
     response = client.post(
-        "/connector/claim", json={"contract_version": 1, "connector_id": "conn-someone-else"}, headers=headers
+        "/api/v1/connector/claim", json={"contract_version": 1, "connector_id": "conn-someone-else"}, headers=headers
     )
     assert response.status_code == 403
     assert response.json()["code"] == "forbidden"
@@ -219,11 +236,11 @@ def test_claim_returns_only_own_assignments(client, seeded, connector):
     seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=other_id)
 
     mine = client.post(
-        "/connector/claim", json={"contract_version": 1, "connector_id": mine_id}, headers=bearer(mine_token)
+        "/api/v1/connector/claim", json={"contract_version": 1, "connector_id": mine_id}, headers=bearer(mine_token)
     )
     assert mine.status_code == 204
     other = client.post(
-        "/connector/claim", json={"contract_version": 1, "connector_id": other_id}, headers=bearer(other_token)
+        "/api/v1/connector/claim", json={"contract_version": 1, "connector_id": other_id}, headers=bearer(other_token)
     )
     assert other.status_code == 200
     assert other.json()["execution_id"] == EXEC_FIX
@@ -241,16 +258,16 @@ def test_claim_registration_heads_update_only_own_agents_base_commit(client, see
         return repo.get_agent(seeded, "agent-codex-mac")["base_commit"]
 
     stolen = {"contract_version": 1, "connector_id": other_id, "registration_heads": {LOCAL_REGISTRATION: "e" * 40}}
-    assert client.post("/connector/claim", json=stolen, headers=bearer(other_token)).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=stolen, headers=bearer(other_token)).status_code == 204
     assert base() == BASE_COMMIT  # 다른 연결 프로그램의 보고는 무시
 
     body = {"contract_version": 1, "connector_id": mine_id,
             "registration_heads": {LOCAL_REGISTRATION: latest, "local-unknown": "e" * 40}}
-    assert client.post("/connector/claim", json=body, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=body, headers=headers).status_code == 204
     assert base() == latest
 
     legacy = {"contract_version": 1, "connector_id": mine_id}  # 칸 없는 구버전 요청 — 이전 값 유지
-    assert client.post("/connector/claim", json=legacy, headers=headers).status_code == 204
+    assert client.post("/api/v1/connector/claim", json=legacy, headers=headers).status_code == 204
     assert base() == latest
 
 
@@ -258,7 +275,7 @@ def test_claim_rejects_bad_registration_head(client, seeded, connector, headers)
     connector_id, _ = connector
     for bad in ("E" * 40, "e" * 39, "main"):
         body = {"contract_version": 1, "connector_id": connector_id, "registration_heads": {LOCAL_REGISTRATION: bad}}
-        response = client.post("/connector/claim", json=body, headers=headers)
+        response = client.post("/api/v1/connector/claim", json=body, headers=headers)
         assert response.status_code == 422, bad
 
 
@@ -546,7 +563,7 @@ def test_upload_rejects_bad_meta(client, headers, running):
     assert response.status_code == 422
     assert response.json()["code"] == "invalid_field"
     response = client.post(
-        f"/executions/{running}/artifacts",
+        f"/api/v1/executions/{running}/artifacts",
         data={"meta": "{broken"},
         files={"file": ("a", data, "text/plain")},
         headers=headers,
@@ -601,30 +618,30 @@ def test_download_allows_inputs_manifest_attachments_and_own_outputs(client, see
     own = b"diff"
     mine = _upload(client, headers, EXEC_FIX, own).json()
 
-    got_bundle = client.get(f"/executions/{EXEC_FIX}/artifacts/{bundle.artifact_id}", headers=headers)
+    got_bundle = client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{bundle.artifact_id}", headers=headers)
     assert got_bundle.status_code == 200
     assert got_bundle.content == manifest
     assert got_bundle.headers["content-type"].startswith("application/json")
 
-    got_evidence = client.get(f"/executions/{EXEC_FIX}/artifacts/{ev.artifact_id}", headers=headers)
+    got_evidence = client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{ev.artifact_id}", headers=headers)
     assert got_evidence.status_code == 200
     assert got_evidence.content == evidence
 
-    got_mine = client.get(f"/executions/{EXEC_FIX}/artifacts/{mine['artifact_id']}", headers=headers)
+    got_mine = client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{mine['artifact_id']}", headers=headers)
     assert got_mine.status_code == 200
     assert got_mine.content == own
     assert got_mine.headers["content-type"].startswith("text/plain")
 
-    got_result = client.get(f"/executions/{EXEC_FIX}/artifacts/{res.artifact_id}", headers=headers)  # source_result_artifact_id
+    got_result = client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{res.artifact_id}", headers=headers)  # source_result_artifact_id
     assert got_result.status_code == 200
 
-    denied = client.get(f"/executions/{EXEC_FIX}/artifacts/{trace.artifact_id}", headers=headers)  # 나열되지 않은 A 산출물
+    denied = client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{trace.artifact_id}", headers=headers)  # 나열되지 않은 A 산출물
     assert denied.status_code == 403
     assert denied.json()["code"] == "forbidden"
-    assert client.get(f"/executions/{EXEC_FIX}/artifacts/art-none", headers=headers).status_code == 403
-    assert client.get(f"/executions/exec-none/artifacts/{bundle.artifact_id}", headers=headers).status_code == 404
+    assert client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/art-none", headers=headers).status_code == 403
+    assert client.get(f"/api/v1/executions/exec-none/artifacts/{bundle.artifact_id}", headers=headers).status_code == 404
     _, other_token = exchange(client, seeded)
-    assert client.get(f"/executions/{EXEC_FIX}/artifacts/{bundle.artifact_id}", headers=bearer(other_token)).status_code == 403
+    assert client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{bundle.artifact_id}", headers=bearer(other_token)).status_code == 403
 
 
 def _meta_model(data: bytes, kind: str, name: str):
@@ -646,7 +663,7 @@ def test_heartbeat_touches_connector_and_marks_its_agents_online(client, seeded,
     repo.set_agent_connection(seeded, "agent-codex-mac", "offline", "2026-09-19T00:00:00Z")
 
     response = client.post(
-        "/connector/heartbeat",
+        "/api/v1/connector/heartbeat",
         json={"contract_version": 1, "connector_id": connector_id, "current_execution_id": "exec-fix-001"},
         headers=headers,
     )
@@ -663,7 +680,7 @@ def test_heartbeat_touches_connector_and_marks_its_agents_online(client, seeded,
 
 def _heartbeat(client, headers, connector_id, current):
     return client.post(
-        "/connector/heartbeat",
+        "/api/v1/connector/heartbeat",
         json={"contract_version": 1, "connector_id": connector_id, "current_execution_id": current},
         headers=headers,
     )
@@ -691,7 +708,7 @@ def test_heartbeat_does_not_speak_about_other_or_unknown_executions(client, seed
 
 def test_heartbeat_connector_id_must_match_token(client, connector, headers):
     response = client.post(
-        "/connector/heartbeat",
+        "/api/v1/connector/heartbeat",
         json={"contract_version": 1, "connector_id": "conn-other", "current_execution_id": None},
         headers=headers,
     )
@@ -718,7 +735,7 @@ def _registration(connector_id: str, **overrides) -> dict:
 
 def test_registration_updates_preregistered_agent(client, seeded, connector, headers):
     connector_id, _ = connector
-    response = client.post("/connector/registrations", json=_registration(connector_id), headers=headers)
+    response = client.post("/api/v1/connector/registrations", json=_registration(connector_id), headers=headers)
     assert response.status_code == 200
     assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
     agent = repo.get_agent(seeded, "agent-codex-mac")
@@ -736,7 +753,7 @@ def test_registration_updates_preregistered_agent(client, seeded, connector, hea
 def test_registration_discovered_size_limit_422(client, connector, headers):
     connector_id, _ = connector
     big = {"blob": "x" * 70_000}
-    response = client.post("/connector/registrations", json=_registration(connector_id, discovered=big), headers=headers)
+    response = client.post("/api/v1/connector/registrations", json=_registration(connector_id, discovered=big), headers=headers)
     assert response.status_code == 422
     assert response.json()["code"] == "invalid_field"
     assert response.json()["field"] == "discovered"
@@ -746,7 +763,7 @@ def test_registration_accepts_claude_tool(client, seeded, connector, headers):
     """`tool` 은 `codex`·`claude` 둘 다 같은 경로다. 중앙은 값을 저장하지 않으며(어댑터 선택은
     연결 프로그램의 로컬 등록 `state.sqlite` 의 `tool` 로만 정한다) 분기도 없다."""
     connector_id, _ = connector
-    response = client.post("/connector/registrations", json=_registration(connector_id, tool="claude"), headers=headers)
+    response = client.post("/api/v1/connector/registrations", json=_registration(connector_id, tool="claude"), headers=headers)
     assert response.status_code == 200
     assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
     agent = repo.get_agent(seeded, "agent-codex-mac")
@@ -756,16 +773,16 @@ def test_registration_accepts_claude_tool(client, seeded, connector, headers):
 
 def test_registration_rejects_other_tool_and_mismatched_connector(client, connector, headers):
     connector_id, _ = connector
-    response = client.post("/connector/registrations", json=_registration(connector_id, tool="gemini"), headers=headers)
+    response = client.post("/api/v1/connector/registrations", json=_registration(connector_id, tool="gemini"), headers=headers)
     assert response.status_code == 422
     assert response.json()["field"] == "tool"
-    response = client.post("/connector/registrations", json=_registration("conn-other"), headers=headers)
+    response = client.post("/api/v1/connector/registrations", json=_registration("conn-other"), headers=headers)
     assert response.status_code == 403
 
 
 def test_registration_rejects_short_commit(client, connector, headers):
     connector_id, _ = connector
-    response = client.post("/connector/registrations", json=_registration(connector_id, base_commit="3f9c2e1"), headers=headers)
+    response = client.post("/api/v1/connector/registrations", json=_registration(connector_id, base_commit="3f9c2e1"), headers=headers)
     assert response.status_code == 422
     assert response.json()["field"] == "base_commit"
 
@@ -794,7 +811,7 @@ def selfhost(settings, conn):
 def test_selfhost_registration_creates_agent_for_unknown_name(selfhost, conn):
     client, connector_id, headers = selfhost
 
-    response = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
+    response = client.post("/api/v1/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE),
                            headers=headers)
 
     assert response.status_code == 200, response.text
@@ -817,9 +834,9 @@ def test_selfhost_registration_creates_agent_for_unknown_name(selfhost, conn):
 
 def test_selfhost_registration_twice_is_idempotent(selfhost, conn):
     client, connector_id, headers = selfhost
-    first = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
+    first = client.post("/api/v1/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
 
-    second = client.post("/connector/registrations",
+    second = client.post("/api/v1/connector/registrations",
                          json=_registration(connector_id, **{**OPEN_ARCHIVE, "base_commit": "a" * 40}), headers=headers)
 
     assert second.status_code == 200
@@ -833,7 +850,7 @@ def test_selfhost_registration_of_preregistered_agent_keeps_existing_behavior(se
     client, connector_id, headers = selfhost
     before = len(repo.list_agents(seeded))
 
-    response = client.post("/connector/registrations", json=_registration(connector_id), headers=headers)
+    response = client.post("/api/v1/connector/registrations", json=_registration(connector_id), headers=headers)
 
     assert response.json() == {"agent_id": "agent-codex-mac", "created": False}
     assert len(repo.list_agents(seeded)) == before
@@ -841,10 +858,10 @@ def test_selfhost_registration_of_preregistered_agent_keeps_existing_behavior(se
 
 def test_selfhost_registration_name_used_by_another_connector_409(selfhost, conn):
     client, connector_id, headers = selfhost
-    first = client.post("/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
+    first = client.post("/api/v1/connector/registrations", json=_registration(connector_id, **OPEN_ARCHIVE), headers=headers)
     other_id, other_token = exchange(client, conn)
 
-    response = client.post("/connector/registrations", json=_registration(other_id, **OPEN_ARCHIVE),
+    response = client.post("/api/v1/connector/registrations", json=_registration(other_id, **OPEN_ARCHIVE),
                            headers=bearer(other_token))
 
     assert response.status_code == 409
@@ -856,7 +873,7 @@ def test_selfhost_registration_name_used_by_another_connector_409(selfhost, conn
 def test_registration_agent_name_is_limited_to_100_chars(selfhost):
     client, connector_id, headers = selfhost
 
-    response = client.post("/connector/registrations",
+    response = client.post("/api/v1/connector/registrations",
                            json=_registration(connector_id, **{**OPEN_ARCHIVE, "agent_name": "x" * 101}),
                            headers=headers)
 

@@ -38,7 +38,7 @@ GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수�
 
 - **fine-grained personal access token** 하나. Repository access 는 *Only select repositories* 로 대상 저장소만 고른다.
 - Repository permissions: **Issues: Read and write**, **Metadata: Read-only**(자동 포함). 그 밖(Contents·Pull requests·Actions 등)은 주지 않는다 — 코드 읽기·쓰기는 로컬 저장소에서 하고 GitHub 로 보내지 않는다.
-- 기준선 가져오기(phase 9, `POST /operator/github/sources/{source_id}/baseline`)를 쓸 때만 **Pull requests: Read-only** 를 더한다 — GraphQL 로 이슈를 닫은 병합 PR 의 번호·병합 시각을 읽는다(`list_issue_pr_links`). 쓰기 권한은 늘지 않는다.
+- 기준선 가져오기(phase 9, `POST /api/v1/github/sources/{source_id}/baseline`)를 쓸 때만 **Pull requests: Read-only** 를 더한다 — GraphQL 로 이슈를 닫은 병합 PR 의 번호·병합 시각을 읽는다(`list_issue_pr_links`). 쓰기 권한은 늘지 않는다.
 - 만료일을 짧게 둔다. classic PAT(`repo` scope)은 권한이 넓어 쓰지 않는다.
 - 권한 근거: [ARCHITECTURE "GitHub REST 경계"](../ARCHITECTURE.md#github-rest-경계-step-5) 의 요청별 권한 표와 공식 문서 링크(2026-09-23 확인).
 
@@ -93,9 +93,9 @@ GitHub 에 쓰는 요청은 댓글 생성(`POST …/issues/{n}/comments`)·수�
 | `run_mode` | `auto` 면 준비되면 착수, `manual` 이면 업무 상세의 `실행` 버튼. **가져올 때의 값이 Task 에 고정**된다 |
 | `max_rework_rounds` | 자동 재작업 상한 0~3(기본 1). 0 이면 수정 요청이 곧바로 사람 요청. 현재 설정을 매번 읽는다 |
 
-`label_filter`·`selected_issue_numbers` 가 둘 다 비면 422(전체 백로그 금지). 저장 전 `POST /github/sources/preview`(화면의 미리보기)가 문제를 모두 보여 준다 — GitHub 는 호출하지 않는다. PR 항목은 언제나 제외한다.
+`label_filter`·`selected_issue_numbers` 가 둘 다 비면 422(전체 백로그 금지). 저장 전 `POST /api/v1/github/sources/preview`(화면의 미리보기)가 문제를 모두 보여 준다 — GitHub 는 호출하지 않는다. PR 항목은 언제나 제외한다.
 
-담당 연결: `PUT /github/sources/{source_id}/assignees/{github_user_id}` `{github_login, agent_id}`. 로그인이 아니라 **숫자 ID** 로 잇는다(로그인은 바뀐다). 숫자 ID 는 GitHub 공개 API `https://api.github.com/users/<login>` 의 `id`. 담당자 0명(`assignee_missing`)·2명 이상(`assignee_multiple` — 사람 요청으로 Agent 선택)·연결 없음(`assignee_unbound`)은 자동 추정 없이 대기다. 연결 삭제 API 는 없다 — 다른 Agent 로 다시 연결해 교체한다.
+담당 연결: `PUT /api/v1/github/sources/{source_id}/assignees/{github_user_id}` `{github_login, agent_id}`. 로그인이 아니라 **숫자 ID** 로 잇는다(로그인은 바뀐다). 숫자 ID 는 GitHub 공개 API `https://api.github.com/users/<login>` 의 `id`. 담당자 0명(`assignee_missing`)·2명 이상(`assignee_multiple` — 사람 요청으로 Agent 선택)·연결 없음(`assignee_unbound`)은 자동 추정 없이 대기다. 연결 삭제 API 는 없다 — 다른 Agent 로 다시 연결해 교체한다.
 
 ## 5. 돌아가는 모습
 
@@ -120,13 +120,13 @@ phase 8 은 `SCHEMA_VERSION` 을 4 → 5 로 올리며 **처음으로 데이터 
 
 | 멈추려는 것 | 방법 | 남는 것 |
 |---|---|---|
-| 새 이슈 수집·댓글 반영 | `POST /github/sources/{id}/stop`(화면 `중지`) — `enabled=false`, `config_revision`+1 | **이미 가져온 Task 의 준비 판정·착수·검토는 계속된다**(중지는 원본 연동만 끈다) |
+| 새 이슈 수집·댓글 반영 | `POST /api/v1/github/sources/{id}/stop`(화면 `중지`) — `enabled=false`, `config_revision`+1 | **이미 가져온 Task 의 준비 판정·착수·검토는 계속된다**(중지는 원본 연동만 끈다) |
 | 모든 GitHub 호출 | `WORKFLOW_GITHUB_TOKEN` 을 비우고 워커 재시작 | 위와 같음 |
 | 로컬 실행 | 연결 프로그램 `run` 을 끈다 | 대기 Task 는 `executor_offline`, 진행 중 실행은 기존 `unknown` 규칙(120초) |
 | 특정 Task | 사람 요청에 `close` 응답, 또는 `확인 필요` 인 업무 상세 검토 폼의 종료 | `실패` 마감, 새 후속 없음 |
 | 새 Task 의 자동 착수 | 소스 `run_mode=manual` 로 변경 | 이미 가져온 Task 의 `run_mode` 는 그대로 |
 
-다시 켜기: `PUT /github/sources/{id}` 에 `enabled: true` 와 현재 `expected_revision`. 커서는 유지되어 멈춘 동안 바뀐 이슈를 이어서 받는다.
+다시 켜기: `PUT /api/v1/github/sources/{id}` 에 `enabled: true` 와 현재 `expected_revision`. 커서는 유지되어 멈춘 동안 바뀐 이슈를 이어서 받는다.
 
 ## 8. 복구
 

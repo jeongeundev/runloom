@@ -308,7 +308,7 @@ def test_01_admin_connects_github_attaches_a_claude_runner_and_picks_the_triage_
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
     assert source["triage_agent_id"] is None
 
@@ -335,14 +335,14 @@ def test_01_admin_connects_github_attaches_a_claude_runner_and_picks_the_triage_
     # 저장소 카드의 판단 Agent 칸 — 후보는 code.triage 가 있고 정책이 '바로 실행'인 에이전트
     card = source_card(world)
     assert 'name="triage_agent_id"' in card and f'<option value="{agent_id}"' in card
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     fields = ("repository_full_name", "intake", "workflow_repository_id", "label_filter", "selected_issue_numbers",
               "start_at", "fix_verification_profile_id", "review_agent_id", "run_mode", "max_rework_rounds",
               "trigger_label", "default_fix_agent_id", "enabled")
-    updated = http.put(f"/github/sources/{source['source_id']}", json={
+    updated = http.put(f"/api/v1/github/sources/{source['source_id']}", json={
         **{k: source[k] for k in fields}, "triage_agent_id": agent_id, "expected_revision": source["config_revision"]})
     assert updated.status_code == 200, updated.text[:500]
-    assert http.get("/github/sources").json()["sources"][0]["triage_agent_id"] == agent_id
+    assert http.get("/api/v1/github/sources").json()["sources"][0]["triage_agent_id"] == agent_id
 
 
 def test_02_two_new_issues_are_triaged_one_at_a_time(world):
@@ -559,8 +559,8 @@ def test_08_an_old_runner_gets_no_triage_and_the_fix_cycle_still_runs(world):
 
 
 def test_09_monitor_triage_tab_shows_the_same_numbers_as_metrics_json(world):
-    """phase 20 step 7 — 위에서 쌓인 판단(제안대로·다르게·실패·자동 시작)이 모니터링 판단 탭 요약에 /metrics.json 과 같은 숫자로."""
-    overall = world.http.get("/metrics.json").json()["triage"]["overall"]
+    """phase 20 step 7 — 위에서 쌓인 판단(제안대로·다르게·실패·자동 시작)이 모니터링 판단 탭 요약에 /api/v1/metrics 와 같은 숫자로."""
+    overall = world.http.get("/api/v1/metrics").json()["triage"]["overall"]
     assert overall["proposed"] > 0 and overall["failed"] > 0
     html = page(world, "/monitor", tab="triage")
     agreement, merged = overall["agreement"], overall["merged"]

@@ -360,7 +360,7 @@ def test_01_login_connect_github_and_set_the_notification_url(world):
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
     saved = http.post("/operator/notifications/webhook", data={"url": world.ctx["hook_url"]})
@@ -504,7 +504,7 @@ def test_05_merging_the_pr_completes_the_task_and_counts_in_metrics(world):
     (issue,) = q(world, "SELECT merged_pr_number, pr_merged_at FROM source_issues WHERE issue_number = 1")
     assert issue["merged_pr_number"] == PR_NUMBER and issue["pr_merged_at"] is not None
 
-    metrics = world.http.get("/metrics.json")
+    metrics = world.http.get("/api/v1/metrics")
     assert metrics.status_code == 200, metrics.text[:500]
     assert sum(g["intake_to_merge"]["n"] for g in metrics.json()["groups"]) == 1  # 도입 후 1건
     assert bare_git(world, "rev-parse", "refs/heads/main") == world.ctx["upstream"]  # 병합은 사람(가짜 GitHub) 몫
@@ -550,13 +550,13 @@ def test_07_failed_work_is_my_turn_and_retry_adds_a_new_stage_on_a_new_branch(wo
     work = work_of(world, b_id)
     assert work["key_number"] == 2
     assert (work["status"], work["status_reason"].startswith("실패 — ")) == ("내 차례", True), dict(work)
-    (request,) = [r for r in world.http.get("/human-requests").json()["requests"] if r["task_id"] == b_id]
+    (request,) = [r for r in world.http.get("/api/v1/human-requests").json()["requests"] if r["task_id"] == b_id]
     assert request["code"] == "stage_failed"
     assert world.http.get("/work/RUN-2").headers["location"] == "/tasks?open=RUN-2"  # 업무 주소(phase 16)
     detail = world.http.get("/tasks?open=RUN-2").text
     assert 'value="retry">다시 맡기기<' in detail and 'value="close">닫기<' in detail
 
-    response = world.http.post(f"/human-requests/{request['request_id']}/responses", json={
+    response = world.http.post(f"/api/v1/human-requests/{request['request_id']}/responses", json={
         "response_id": "resp-retry-b", "expected_revision": request["revision"], "action": "retry", "text": ""})
     assert response.status_code == 200, response.text[:500]
     stages = q(world, "SELECT * FROM tasks WHERE work_item_id = ? ORDER BY created_at, task_id", work["work_item_id"])
@@ -601,7 +601,7 @@ def test_08_secrets_stay_out_of_the_central_side(world):
     assert (world.workdir / "logs" / "central.log").stat().st_size > 0
 
     pages = ["/tasks", f"/tasks/{world.tasks['A']}", f"/tasks/{world.tasks['B']}", "/repos",
-             "/settings?tab=notify", "/monitor", "/github/sources"]
+             "/settings?tab=notify", "/monitor", "/api/v1/github/sources"]
     for page in pages:
         body = world.http.get(page).text
         leaked += [f"{name}@{page}" for name, value in needles.items() if value in body]

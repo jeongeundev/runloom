@@ -73,10 +73,10 @@ from workflow.contracts.responsibility import Responsibility
 from workflow.contracts.github import RepositoryFullName
 from workflow.contracts.jira import JiraProjectConfig, valid_email, valid_token
 from workflow.contracts.v1 import (
+    API_PREFIX,
     ARTIFACT_KINDS,
     BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
-    WORK_KEY_PREFIX,
     Capability,
     KindSpec,
     SuccessorRule,
@@ -101,7 +101,7 @@ from workflow.domain.triage import AUTOSTART_MIN_HANDLED, parse_threshold
 from workflow.domain.triage_criteria import CRITERIA_BODY_MAX
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_list import ListQuery, parse_list_query, shown_next_action
-from workflow.server import github_connect, jira_connect, metrics_api, stage_runs, triage_runs, views, work_actions
+from workflow.server import github_connect, jira_connect, member_token_api, metrics_api, stage_runs, triage_runs, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
@@ -121,6 +121,7 @@ from workflow.server.errors import ApiError, PageError
 from workflow.server import internal_investigation
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
+from workflow.server.work_lookup import WORK_KEY, work_by_key
 from workflow.server.worker import enqueue_request_notification
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -137,7 +138,7 @@ AUTO_KIND_TRIES = 5
 DEFAULT_KIND_OUTCOMES = "done, needs_information"
 # 입구 (ADR-0010) — 토큰은 지금 n8n 하나에 묶이고, 경로는 inbound_api 의 것을 화면에 그대로 적는다
 INBOUND_SOURCE = "n8n"
-INBOUND_PATH = "/sources/n8n/chains"
+INBOUND_PATH = f"{API_PREFIX}/sources/{INBOUND_SOURCE}/chains"
 SOURCE_TOKEN_LIMIT = 5  # 세션당 활성 입구 토큰 상한
 
 # 직접 등록 폼 기본값. 기본 종류는 내장 `bug_fix`(능력 `code.fix`) — 셀프호스트 실사용 종류 (ADR-0019)
@@ -629,7 +630,8 @@ def _panel(request: Request, conn: Connection, member: LoggedIn, work: Row, quer
     finally:
         conn.execute('ROLLBACK')
     return {**context, "close_href": views.list_href(query), "list_state": state,
-            "internal_requests": [_request_display(conn, member, r, request.app.state.store) for r in
+            "internal_requests": [views.internal_request_view(conn, member.session_id, member.member_id, allowed, r,
+                                                        request.app.state.store) for r in
                                   internal_request_store.list_for_work(conn, member.session_id, work['work_item_id'])],
             "directory_choices": choices, "directory_revision": directory_revision,
             "submission_key": secrets.token_hex(16)}
@@ -970,13 +972,10 @@ def start_chain(
     repo.mark_chain_started(conn, chain_id, now)
 
 
-_WORK_KEY = re.compile(rf"{WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})")
-
-
 @router.get("/work/{key}")
 def work_detail(key: str, response: Response, member: LoggedIn = Depends(require_member)) -> RedirectResponse:
     """옛 업무 상세 주소 — 키 형식이면 `/tasks?open=<key>`(없는 키는 그 화면이 안내), 아니면 404."""
-    if _WORK_KEY.fullmatch(key) is None:
+    if WORK_KEY.fullmatch(key) is None:
         raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
     return _redirect(work_path(key), response)
 
@@ -1004,8 +1003,7 @@ def work_panel(
 
 
 def _own_work(conn: Connection, session_id: str, key: str) -> Row:
-    match = _WORK_KEY.fullmatch(key)
-    work = repo.get_work_item_by_key(conn, session_id, int(match.group(1))) if match else None
+    work = work_by_key(conn, session_id, key)
     if work is None:
         raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
     return work
@@ -1018,107 +1016,13 @@ def _work_redirect(conn: Connection, work: Row, response: Response, q: str, grou
     return _redirect(f"/tasks?{views.list_query_params(query, open_key=work['key_number'])}", response)
 
 
-def _request_display(conn: Connection, member: LoggedIn, row: dict, artifact_store: Any) -> dict:
-    work = repo.get_work_item(conn, member.session_id, row['work_item_id'])
-    names = {}
-    for role in ('requester', 'recipient', 'judgment'):
-        person = repo.get_member(conn, member.session_id, row[f'{role}_member_id'])
-        names[f'{role}_name'] = person['display_name'] if person else row[f'{role}_member_id']
-    entry = Responsibility(**{key: row[key] for key in
-                              ('system_id', 'request_kind', 'recipient_member_id', 'judgment_member_id', 'agent_id')})
-    problem = responsibility_store.entry_problem(conn, member.session_id, entry)
-    options = []
-    agent = repo.get_agent(conn, row['agent_id']) if row['agent_id'] else None
-    if agent is not None and agent['connection_type'] == 'local':
-        capabilities = json.loads(agent['capabilities_json'])
-        for spec in repo.list_kinds(conn, member.session_id):
-            if spec.output_kind != 'generic_result' or spec.input_kinds:
-                continue
-            for cap in capabilities:
-                if cap['code'] == spec.capability_code and spec.scope_key in cap['scope']:
-                    value = cap['scope'][spec.scope_key]
-                    options.append({'value': json.dumps({'kind': spec.kind, 'scope_value': value}),
-                                    'label': f"{spec.label} · {spec.scope_key}={value}"})
-    task = repo.get_task(conn, row['investigation_task_id']) if row['investigation_task_id'] else None
-    return_execution_id = None
-    return_reason = None
-    if task is not None and row['returned_at'] is None:
-        problem = problem or internal_request_store.investigation_problem(conn, task)
-        executions = repo.list_executions(conn, task['task_id'])
-        if executions:
-            try:
-                internal_investigation.reviewed_result(conn, artifact_store, row, executions[-1]['execution_id'])
-                return_execution_id = executions[-1]['execution_id']
-            except internal_request_store.RequestProblem as exc:
-                return_reason = str(exc)
-    basis_execution_id = return_execution_id or row['returned_execution_id']
-    judgment_reason = internal_request_store.judgment_problem(conn, member.session_id, row, basis_execution_id or '')
-    versions = internal_request_store.information_versions(row)
-    judgment_views = []
-    for judgment in row['judgments']:
-        current = judgment['execution_id'] == basis_execution_id and judgment['information_versions'] == versions
-        judgment_views.append({**judgment, 'is_current': current,
-            'can_respond': current and judgment['judgment_id'] == row['judgments'][-1]['judgment_id']
-                and judgment['judgment_member_id'] == member.member_id and judgment['decision'] is None
-                and row['returned_at'] is None and not row['waiting_for_information']
-                and team.RESPOND in team.allowed_actions(member.role)})
-    reroute_options = []
-    for candidate in responsibility_store.list_entries(conn, member.session_id):
-        if (candidate.system_id, candidate.request_kind) != (row['system_id'], row['request_kind']):
-            continue
-        if candidate.recipient_member_id == row['recipient_member_id'] or responsibility_store.entry_problem(conn, member.session_id, candidate):
-            continue
-        person = repo.get_member(conn, member.session_id, candidate.recipient_member_id)
-        reroute_options.append({'member_id': candidate.recipient_member_id, 'name': person['display_name']})
-    phase_label = '수락됨' if row['state'] == 'accepted' else '수락 대기'
-    if task:
-        phase_label = '조사 작업 연결됨'
-    if row['returned_at']:
-        phase_label = '결과 반환됨'
-    if row['resumption']:
-        phase_label = '업무 재개 기록됨'
-    if row['rejected_at']:
-        phase_label = '재전달됨' if row['new_request_id'] else '담당 아님'
-    if row['judgments'] and row['returned_at'] is None:
-        latest = row['judgments'][-1]
-        changed = latest['execution_id'] != basis_execution_id or latest['information_versions'] != versions
-        phase_label = '새 판단 필요' if changed else (
-            '판단 승인' if latest['decision'] == 'approve' else ('판단 거절' if latest['decision'] == 'reject' else '판단 응답 대기'))
-    if row['waiting_for_information']:
-        phase_label = '정보 답변 대기'
-    recipient = row['recipient_member_id'] == member.member_id
-    return {**row, **names, "work_key": format_work_key(work['key_number']), "problem": problem,
-            "phase_label": phase_label, "judgment_views": judgment_views, "judgment_reason": judgment_reason,
-            "judgment_submission_key": secrets.token_hex(16),
-            "can_request_judgment": recipient and return_execution_id is not None and row['returned_at'] is None
-                and not row['waiting_for_information'] and team.RESPOND in team.allowed_actions(member.role)
-                and not any(j['is_current'] for j in judgment_views),
-            "question_submission_key": secrets.token_hex(16),
-            "can_ask": recipient and row['state'] == 'accepted' and row['returned_at'] is None
-                       and not row['waiting_for_information'] and team.RESPOND in team.allowed_actions(member.role),
-            "can_answer": row['requester_member_id'] == member.member_id and team.RESPOND in team.allowed_actions(member.role),
-            "investigation_options": options, "investigation_status": task['status'] if task else None,
-            "investigation_reason": task['status_reason'] if task else None,
-            "can_investigate": recipient and row['state'] == 'accepted' and task is None and problem is None and not row['waiting_for_information']
-                               and team.DELEGATE in team.allowed_actions(member.role),
-            "return_execution_id": return_execution_id, "return_reason": return_reason,
-            "can_resume": row['returned_at'] is not None and row['resumption'] is None
-                          and row['requester_member_id'] == member.member_id and team.RESPOND in team.allowed_actions(member.role),
-            "can_return": recipient and return_execution_id is not None and not row['waiting_for_information'] and judgment_reason is None and team.RESPOND in team.allowed_actions(member.role),
-            "reroute_options": reroute_options, "directory_revision": repo.get_config_revision(conn, member.session_id),
-            "can_reroute": row['requester_member_id'] == member.member_id and row['rejected_at'] is not None
-                           and row['new_request_id'] is None and team.DELEGATE in team.allowed_actions(member.role),
-            "can_reject": recipient and row['state'] == 'pending' and row['rejected_at'] is None
-                          and team.RESPOND in team.allowed_actions(member.role),
-            "can_accept": row['rejected_at'] is None and row['state'] == 'pending' and row['recipient_member_id'] == member.member_id
-                          and problem is None and team.RESPOND in team.allowed_actions(member.role)}
-
-
 @router.get('/requests', response_class=HTMLResponse)
 def requests_page(request: Request, member: LoggedIn = Depends(require_member),
                   conn: Connection = Depends(get_conn)) -> str:
     return _render('internal_requests.html', **_base(request, conn, member.session_id, utc_now()),
-                   requests=[_request_display(conn, member, row, request.app.state.store) for row in
+                   requests=[views.internal_request_view(conn, member.session_id, member.member_id,
+                                                        team.allowed_actions(member.role), row,
+                                                        request.app.state.store) for row in
                              internal_request_store.list_for_member(conn, member.session_id, member.member_id)])
 
 
@@ -3117,12 +3021,13 @@ def team_member_reset_link(
 
 
 def _me_page(request: Request, conn: Connection, member: LoggedIn, *, status: int = 200,
-             error: str | None = None, test_result: dict[str, str] | None = None) -> HTMLResponse:
+             error: str | None = None, test_result: dict[str, str] | None = None,
+             issued: dict[str, str] | None = None) -> HTMLResponse:
     now = utc_now()
     body = _render(
         "me.html", **_base(request, conn, member.session_id, now),
         **views.me_context(conn, member.session_id, member.member_id, secrets=request.app.state.secrets),
-        error=error, test_result=test_result,
+        error=error, test_result=test_result, issued=issued,
     )
     return HTMLResponse(body, status_code=status)
 
@@ -3220,6 +3125,31 @@ def me_webhook_test(
     return _me_page(request, conn, member, test_result=_send_test_notification(request, url))
 
 
+@router.post("/me/tokens", response_class=HTMLResponse)
+def me_token_issue(
+    request: Request,
+    name: str = Form(""),
+    scope: str = Form("read"),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    """멤버 토큰 발급 — 303 없이 같은 화면에 원문을 한 번만 보인다(초대 링크와 같은 방식). 원문은 쿠키·주소에 두지 않는다."""
+    token = member_token_api.issue(conn, member, name, scope, error=PageError)
+    logger.info("멤버 토큰 발급: %s", token["scope"])
+    return _me_page(request, conn, member, issued={k: token[k] for k in ("token_id", "name", "token")})
+
+
+@router.post("/me/tokens/{token_id}/revoke")
+def me_token_revoke(
+    request: Request,
+    response: Response,
+    token_id: str,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    member_token_api.revoke(conn, member, token_id, error=PageError)
+    return _redirect("/me", response)
+
 @router.get("/metrics")
 def metrics_redirect(request: Request) -> RedirectResponse:
     """옛 지표 주소 → `/monitor`(쿼리 그대로 — 값은 `/monitor` 의 파서가 검증)."""
@@ -3253,7 +3183,7 @@ def metrics_page(
     conn: Connection = Depends(get_conn),
 ) -> str:
     """모니터링 화면 탭 셋(phase 20) — `metrics_api` 와 같은 계산. 폼은 GET 이라 빈 칸은 "지정 안 함" 이다. 기준선 가져오기
-    버튼은 운영자 JSON API(`POST /operator/github/sources/{id}/baseline`)로 보낸다. `group_by` 는 전후 탭만 쓰지만 늘 검증한다."""
+    버튼은 운영자 JSON API(`POST /api/v1/github/sources/{id}/baseline`)로 보낸다. `group_by` 는 전후 탭만 쓰지만 늘 검증한다."""
     session_id = member.session_id
     now = utc_now()
     base = _base(request, conn, session_id, now)

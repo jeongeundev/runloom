@@ -1,0 +1,251 @@
+{
+  "project": "workflow",
+  "phase": "24-human-api",
+  "steps": [
+    {
+      "step": 0,
+      "name": "api-design",
+      "status": "completed",
+      "started_at": "2026-10-21T18:52:21+0900",
+      "summary": "문서만: ADR-0032(주소 체계·멤버 토큰·오류·판정 순서·업그레이드 영향, 코드 조사 사실 12건), ADR-0031 미결 'API 인증' → ADR-0032 한 줄, ARCHITECTURE '사람용 API — phase 24'(옛→새 주소 41개 + 새 라우트 15개 표·옮기지 않는 화면 경로 표·라우트 분류 규칙·step 경계·member_tokens v26 스키마·repo/auth 시그니처·토큰 API와 /me 화면·work_lookup·목록/상세 칸 표·panel_actions·행동 표·오류 코드), CONTRACT 18절(jsonc 예시 — 목록·상세·담당 PUT·토큰 발급·token_read_only 등), GLOSSARY phase 24 용어, AGENTS.md 비밀값에 멤버 토큰 wfm_, CURRENT_HANDOFF 진행 단락. src/tests 변경 없음, 전체 4623 passed·100 skipped. 다음 step 주의: 접두어는 contracts/v1.API_PREFIX 하나로 쓰고 include_router(prefix=)로 붙인다, 읽기 전용 검사는 require_member_api 안(역할 검사보다 먼저).",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest tests/workflow/server/test_app.py tests/workflow/contracts -q",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "README 에 없던 세부를 조정값으로 정함: API_PREFIX 를 contracts/v1.py 에 둠(서버·러너 공유), 토큰 목록·폐기는 Bearer 허용(발급만 쿠키), 목록은 활성 토큰만·폐기한 토큰 재폐기는 404, 토큰 이름 중복 허용, 상세 work 칸은 목록 항목과 같은 모양(status 문자열)이고 중첩 UserStatus 만 {label, reason}, confidence 는 화면과 같은 문자열, 상세에 form_fields 포함·댓글·Jira 반영·체인은 제외, 모르는 쿼리(group·view 등)는 무시.",
+        "tests/workflow/contracts 만 단독 실행하면 기존 순환 import(owner_approval → worker → next_step_runs)로 수집 오류가 난다 — 이 step 과 무관한 기존 문제이며 전체 실행과 test_app.py 와 함께 실행하면 통과한다.",
+        "Origin 예외 (a)(Bearer 헤더 있음)는 D19 그대로 경로를 가리지 않는다 — 화면 라우트는 Bearer 를 무시하고 쿠키를 쓰지만, 브라우저가 다른 출처 요청에 Authorization 을 붙일 수 없고 CORS 를 열지 않으므로 안전하다고 판단(ADR-0032 결정 15에 근거 기록)."
+      ],
+      "completed_at": "2026-10-21T19:09:25+0900"
+    },
+    {
+      "step": 1,
+      "name": "member-token-store",
+      "status": "completed",
+      "started_at": "2026-10-21T19:09:25+0900",
+      "summary": "db.py: SCHEMA_VERSION 26, _V26_TABLES(member_tokens + ix_member_tokens_member, scope CHECK 는 repo.MEMBER_TOKEN_SCOPES 로 생성), _migrate_25_to_26(문장→foreign_key_check→version 26), 체인에 25 추가. repo.py: MEMBER_TOKEN_PREFIX 'wfm_'·MEMBER_TOKEN_SCOPES·MEMBER_TOKEN_TOUCH_SECONDS 60, issue_member_token(이름 strip 1~40·scope 검사·비활성/남의 워크스페이스 NotFound, sha256 만 저장)·list_member_tokens(활성만, 해시 없음)·revoke_member_token(본인 활성만)·member_for_api_token(wfm_ 아니면 DB 안 봄, session_id·token_id·scope 실음, touch 호출)·touch_member_token(60초)·revoke_member_tokens, disable_member 가 같은 _tx 에서 토큰 폐기. 테스트: test_repo 멤버 토큰 11개·test_db v26 4개 추가, 기존 버전 단정 25→26·표 집합(PHASE24_TABLES)·sql_after/unchanged 필터·test_backup 행 수 dict 에 member_tokens 0·복원 비교(복원이 v26 으로 올림)·_SCHEMA.replace 체인에 _V26_TABLES. 전체 4638 passed·100 skipped. 다음 step 주의: member_for_api_token 결과의 session_id 를 auth 가 SELFHOST_SESSION_ID 와 비교해야 한다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "ARCHITECTURE 의 '저장' 행은 fixture tests/workflow/adapters/fixtures/schema_v25.sql 을 적었지만 step 지시대로 v25 fixture 는 만들지 않고 v24 fixture 를 24→25→26 체인으로 올려 검증했다."
+      ],
+      "completed_at": "2026-10-21T19:19:19+0900"
+    },
+    {
+      "step": 2,
+      "name": "token-auth",
+      "status": "completed",
+      "started_at": "2026-10-21T19:19:20+0900",
+      "summary": "auth.py: LoggedIn.token_scope(쿠키 None, 토큰 read/full·login_id=토큰 id), current_api_member(Bearer 있으면 member_for_api_token+SELFHOST_SESSION_ID 만 — 틀리면 None, 쿠키로 안 넘어감, request.state.api_member 캐시), require_member_api(401 문구 Bearer '유효한 멤버 토큰이 필요합니다.'/쿠키 '로그인이 필요합니다.', read 토큰 GET·HEAD 밖은 역할 검사보다 먼저 403 token_read_only), require_member_cookie_api(Bearer 있으면 403 cookie_required), check_origin 맨 앞 Bearer 헤더면 참(경로 예외는 옛 주소 그대로, /api/v1 전체 예외 없음). touch 는 repo.member_for_api_token 이 이미 부르므로 auth 에서 다시 부르지 않음. 라우터 파일 변경 없음. test_auth.py 에 probe 라우트 4개(POST member-api·POST team-api·GET api-member·POST cookie-api)와 테스트 15개(+파라미터 3) 추가. 전체 4655 passed·100 skipped. 다음 step 주의: 토큰 발급 라우트는 require_member_cookie_api 를 쓰고 역할 검사(EDIT_OWN_SETTINGS)는 라우트가 한다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q tests/workflow/server/test_auth.py",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "Authorization 헤더가 'Bearer ' 빈 값이거나 Basic 등 다른 스킴이면 _bearer_token 이 None 이라 Bearer 없음으로 보고 쿠키로 판정한다(기존 _bearer_token 규칙 그대로)."
+      ],
+      "completed_at": "2026-10-21T19:26:49+0900"
+    },
+    {
+      "step": 3,
+      "name": "me-tokens",
+      "status": "completed",
+      "started_at": "2026-10-21T19:26:50+0900",
+      "summary": "새 server/member_token_api.py(APIRouter(prefix='/me/tokens'), app.py 에서 include_router(prefix='/api/v1') — API_PREFIX 상수는 step 4): POST(require_member_cookie_api + 라우트에서 EDIT_OWN_SETTINGS 검사, MemberTokenCreate extra=forbid, 201 원문 1회)·GET(require_action(EDIT_OWN_SETTINGS, api=True), list_member_tokens 칸만)·DELETE(204, 남의·없는·폐기한 토큰 404 not_found field token_id, read 토큰 403 token_read_only). 공용 함수 member_token_api.issue/revoke(error=ApiError|PageError)를 화면 폼도 씀. web.py: me_token_issue POST /me/tokens(303 없이 _me_page(issued=…) 200), me_token_revoke POST /me/tokens/{token_id}/revoke(303 /me), _me_page 에 issued. views.me_context 에 tokens. me.html: 개인 알림 뒤 section[data-me-section=tokens] — 안내·이름·범위 라디오(read 기본)·발급 상자 code#issued-member-token+복사·목록(권한 라벨·만든 시각·마지막 사용/'사용 기록 없음'·자세히 안 토큰 ID·[폐기]). 테스트: test_member_token_api.py 8개 신규, test_web_team.py 화면 6개 추가 + ME_POSTS 에 새 폼 2개(익명 303 단정 확장). 전체 4669 passed·100 skipped. 다음 step 주의: app.py 의 '/api/v1' 리터럴을 API_PREFIX 로 바꾼다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "API_PREFIX 상수가 아직 없어 app.py 에 '/api/v1' 리터럴로 등록했다 — step 4 에서 상수로 교체해야 한다."
+      ],
+      "completed_at": "2026-10-21T19:38:45+0900"
+    },
+    {
+      "step": 4,
+      "name": "api-prefix",
+      "status": "completed",
+      "started_at": "2026-10-21T19:38:46+0900",
+      "summary": "contracts/v1.API_PREFIX='/api/v1' 추가, app.py 가 사람용 JSON 라우터 6개+member_token_api 를 include_router(prefix=API_PREFIX)로 등록(라우터 안 경로는 뒷부분만). metrics_api 이름 바꾸기 둘(/metrics.json→/metrics, /operator/github/sources/{id}/baseline→/github/sources/{id}/baseline). 새 server/work_lookup.py(WORK_KEY·work_by_key — 형식 틀림·없음·다른 워크스페이스 None), web 은 WORK_KEY 를 import 하고 _own_work 가 work_by_key 사용(PageError 404 그대로). internal_request_api 업무 경로를 {key}(RUN-n)로 — _work_item_id 가 404 not_found '원래 업무를 찾을 수 없습니다.'(field 없음) 후 기존 store 함수에 work_item_id 를 넘김, 응답 본문 그대로. 템플릿 data-json-action 10곳(_repos_github 8·metrics 1·_cycle 1)과 metrics.html JSON·CSV 링크를 /api/v1 로. 옛 경로 별칭 없음. 테스트: 33개 파일의 옛 JSON 경로를 줄 단위 규칙(문자열 시작 위치만, /responsibilities/add·remove·/operator/…/runner·/work/{key}/internal-requests 제외)으로 새 경로로, 사내 요청은 test_internal_request_api.work_url(conn, work_id) 로 키 경로, 다른 워크스페이스 404 단정은 키 기준(다른 워크스페이스에만 있는 RUN-2·내부 id·RUN-0·run-1)으로 바꾸고 본문 전체 단정. 라우터마다 옛 경로 404 테스트 1개(6개), test_work_lookup.py 3개, test_v1 API_PREFIX 1개, 렌더 결과에 옛 경로 없음 단정(앞 문맥 포함) 추가. 전체 4679 passed·100 skipped. 다음 step 주의: step 5 는 machine_api·inbound_api·connector/client.py 를 함께 옮기고 auth._BEARER_PREFIXES·_CHAINS_PATH·web.INBOUND_PATH 를 API_PREFIX 로.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "docs(CONTRACT·SELFHOST·UI_GUIDE·CURRENT_HANDOFF 등)의 옛 사람용 API 경로는 이 step 범위 밖이라 그대로 두었다 — step 8(ops-docs)이 고친다.",
+        "다른 워크스페이스 업무 404 테스트가 내부 id 기준에서 업무 키 기준으로 바뀌었다 — 키 번호는 워크스페이스별이라 같은 번호가 이 워크스페이스에도 있으면 이 워크스페이스 업무를 가리킨다(설계대로)."
+      ],
+      "completed_at": "2026-10-21T19:57:05+0900"
+    },
+    {
+      "step": 5,
+      "name": "connector-paths",
+      "status": "completed",
+      "started_at": "2026-10-21T19:57:06+0900",
+      "summary": "러너·n8n 프로토콜 주소를 /api/v1 아래로(뒷부분 그대로, 옛 경로 별칭 없음): app.py 가 machine_api·inbound_api 를 include_router(prefix=API_PREFIX)로 등록(라우터 안 경로는 그대로), auth._BEARER_PREFIXES=(f'{API_PREFIX}/connector/', f'{API_PREFIX}/executions/')·_CHAINS_PATH=rf'{API_PREFIX}/sources/[^/]+/chains'(/api/v1 전체 예외 아님), connector/client.py 7곳이 contracts.v1.API_PREFIX 를 앞에 붙임(server_url 설정 형식 그대로), web.INBOUND_PATH=f'{API_PREFIX}/sources/{INBOUND_SOURCE}/chains', docs/n8n/runloom-handoff.json·README.md 입구 주소를 새 경로로. 계약 본문 변경 없음. 테스트: 러너·입구 경로를 직접 부르는 11개 파일(test_machine_api·test_inbound_api·test_auth·server conftest·test_web·test_web_team·test_web_runner_owner·test_worker·connector conftest·test_client·test_runner)의 문자열 시작 경로만 /api/v1 로, test_web 입구 주소 표시 2곳+옛 주소 미표시 단정, test_n8n_example 2곳 새 주소. 신규: 옛 러너 경로 7개 404(test_machine_api), 옛 입구 404(test_inbound_api), check_origin 이 옛 러너·입구 경로와 쿠키 API(/api/v1/me/tokens·/api/v1/github/sources/…)를 예외로 두지 않음 단정. 전체 4681 passed·100 skipped. 다음 step 주의: 업그레이드 시 러너 재설치·n8n 주소 수정 필수(D9·D35) — SELFHOST 등 문서는 step 8.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "좁힌 테스트 묶음을 처음 돌렸을 때 test_web.py::test_app_home_has_work_toolbar_with_direct_register 가 setup 단계에서 ERROR 1번 났으나, 단독 실행·test_web.py 전체 실행·전체 pytest 에서는 통과했다. 이번 변경과 무관한 간헐 현상으로 보이지만 원인은 확인하지 못했다."
+      ],
+      "completed_at": "2026-10-21T20:09:28+0900"
+    },
+    {
+      "step": 6,
+      "name": "work-read-api",
+      "status": "completed",
+      "started_at": "2026-10-21T20:09:29+0900",
+      "summary": "새 server/work_api.py(APIRouter(prefix='/work-items'), app.py include_router(prefix=API_PREFIX), require_member_api): GET /api/v1/work-items — filter·closed·repository 엄격 검사(422 invalid_field, field=쿼리 이름, ARCHITECTURE 문구), ListQuery 로 views.work_list_context 의 rows·counts 를 _item(row, member_id) 로 옮김(groups·columns 없음, work_item_id·key_number·source_key_short 없음); GET /api/v1/work-items/{key} — _own_work(404 not_found '업무 {key}을 찾을 수 없습니다.' field key) + _detail(conn, request, member, work)가 views.work_panel_context·list_work_rows(closed_since=None)·internal_request_view 결과를 ARCHITECTURE 칸 표대로 변환(UserStatus→{label,reason}, 폼 숨은 입력·제출 키·response_id·directory_*·member_id·label 제외, triage.unavailable_reason=button.reason 또는 note). views: _agent_choice_lines 에 needs_owner_approval(같은 호출 결과, label 그대로), panel_actions(panel)(can_* 만 읽음), internal_request_view(conn, session_id, member_id, allowed, row, artifact_store)(web._request_display 본문 이동 — internal_investigation 은 순환 import 라 함수 안 import), web._panel·requests_page 가 이것을 부르고 _request_display 삭제(동작 그대로). 테스트: test_work_api.py 12개(필터·closed 조합별 웹 /tasks 와 키 집합·counts 동일, 항목 칸, 저장소 대소문자·422 3종, read 토큰 200·미인증 401, 상세 칸 집합·화면 전용 값 없음, 404 5종, 후보 online·needs_owner_approval 이 패널 표시와 같음, member·관리자 actions = 패널 버튼, 판단 제안·다음 단계 제안·사내 요청 요약, 비밀값 없음), test_views.py panel_actions 2개. 기존 테스트 수정 없음. 전체 4696 passed·100 skipped. 다음 step 주의: 행동 응답은 work_api._detail 을 다시 쓰고 _own_work 로 키를 찾는다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q tests/workflow/server/test_work_api.py tests/workflow/server/test_views.py",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "목록 counts 는 filter·closed 와 무관하게 웹과 같이 '저장소 필터 뒤·빠른 필터 전' 건수다(closed 범위는 반영) — ARCHITECTURE 대로 두었다.",
+        "app.py create_app 독스트링의 라우터 나열은 고치지 않았다(step 범위 밖 문서 문구)."
+      ],
+      "completed_at": "2026-10-21T20:20:07+0900"
+    },
+    {
+      "step": 7,
+      "name": "work-action-api",
+      "status": "completed",
+      "started_at": "2026-10-21T20:20:07+0900",
+      "summary": "server/work_api.py 에 행동 라우트 10개(PATCH {key} priority·PUT/DELETE assignee·PUT/DELETE direct-work·POST triage-runs 202·POST triage-proposals/{triage_id}/accept|dismiss·POST next-step-proposals/{triage_id}/accept|dismiss): 권한 require_action(team.DELEGATE, api=True)(웹과 같음), _own_work 로 키 조회, 웹 라우트와 같은 work_actions·triage_runs 함수·인자(store·settings·secrets 는 app.state), _api_errors 가 WorkActionError→ApiError(같은 status·code·message·field), triage 시작 못 하면 409 triage_unavailable f'{reason}.', 성공 응답 = _detail. 본문 모델 WorkPatch(priority Literal)·AssigneeBody(type Literal·id NonEmptyStr·note '') extra=forbid, 본문 없는 행동은 본문 안 읽음. 테스트: test_work_api.py 행동 테스트 25개(파라미터 포함) 추가 — 같은 fixture 의 RUN-1 웹 폼·RUN-2 API 로 DB 상태(담당·우선순위·상태·직접 작업·메모·실행 수·이벤트 종류) 비교(우선순위·직접 작업 시작/그만·멤버 배정·해제·소유자 승인 대기·꺼진 러너 대기), 에이전트 맡기기 실행 생성, 409 direct_work_active·execution_conflict·work_closed, 422 assignee·note·priority·type·id, 폼 본문 422·unknown_field, 행동 10개마다 404·401·read 토큰 403 token_read_only·역할 없음 403 forbidden(monkeypatch 로 member 에서 delegate 제거), Bearer 는 Origin 무관 통과·쿠키+다른 Origin 403, 판단 받기 202→409, 판단 제안 accept/dismiss 와 두 번째 409 triage_stale, 다음 단계 accept/dismiss 와 409 next_step_stale. 기존 테스트 수정 없음. 전체 4722 passed·100 skipped. 다음 step 주의: 문서(SELFHOST·업그레이드 안내)는 step 8.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "에이전트 맡기기는 같은 러너를 두 업무가 함께 쓸 수 없어(두 번째는 대기) 웹·API 나란히 비교 대신 test_web_work 와 같은 단정(담당·실행 1건·상태·선택)으로 확인했다.",
+        "두 역할(admin·member) 모두 delegate 를 가져 실제로 403 forbidden 이 나는 역할은 없다 — 테스트는 member 역할에서 delegate 를 monkeypatch 로 빼서 의존성 연결만 확인했다."
+      ],
+      "completed_at": "2026-10-21T20:30:17+0900"
+    },
+    {
+      "step": 8,
+      "name": "ops-docs",
+      "status": "completed",
+      "started_at": "2026-10-21T20:30:17+0900",
+      "summary": "문서만(src·tests 변경 없음): SELFHOST '업그레이드' 에 '- v26(phase 24)' bullet(member_tokens·모든 JSON API /api/v1 이동·옛 주소 404, 순서: 진행 중 실행 0건 → backup create → install.sh 스키마 26 → install-runner.sh 재설치 필수 → n8n 노드 URL …/api/v1/sources/n8n/chains → /healthz·claim·/me 'API 토큰' 확인, 멤버 토큰 사용법 하위 항목(만들기·Bearer wfm_…·읽기 전용 403 token_read_only·폐기·비활성화 시 폐기)) + 옛 주소 303 줄의 '.json·.csv 는 그대로' 를 v26 새 주소로. 옛 JSON 경로 일괄 교정: step 스크립트와 같은 정규식으로 줄 단위 교체(/metrics.json→/api/v1/metrics, /operator/github/sources/{id}/baseline→/api/v1/github/sources/{id}/baseline, /work-items/{work_item_id|id}/internal-requests→/api/v1/work-items/{key}/internal-requests, 나머지는 앞에 /api/v1) — ARCHITECTURE(지난 phase 절 42줄, 접두어 설명 한 줄은 문장 다시 씀)·CONTRACT 15(json 블록 수 그대로)·GLOSSARY 10·VERIFICATION_LOG 17(+스크립트가 못 잡는 http://127.0.0.1:18000/sources/n8n/chains 2곳)·ADR 7개·docs/github/README·docs/product 8개·UI_GUIDE·CURRENT_HANDOFF. 스크립트가 화면·새 경로를 잘못 잡은 줄 없음. n8n 예시·README 는 step 5 그대로 새 주소 확인. CURRENT_HANDOFF 맨 위 '다음 작업: 24-human-api 완료 — PR 병합 → 셀프호스트 v26(러너 재설치·n8n 주소) → ② 인계 리포트 설계'(할 일 3개, 사용자 지시 뒤), 23 제목은 '이전 다음 작업', 24 진행 단락 갱신. 검사 스크립트 마지막 줄 hits=0. 처음 curl 예시의 $RUNLOOM_TOKEN 이 test_selfhost_md_env_names_are_real 에 걸려 wfm_… 로 바꿈. 전체 4722 passed·100 skipped, ruff 통과. 다음 step 주의: step 9 라우트 대조 테스트.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q tests/test_selfhost_files.py tests/test_n8n_example.py",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 (step 8 옛 JSON 경로 검사 스크립트) → hits=0",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "tests/workflow/contracts/test_v1.py 를 단독으로 수집하면 workflow.server.next_step_runs ↔ worker 순환 import 로 collection error 가 난다(이 step 전부터, src 변경 없음). 전체 pytest 에서는 통과한다.",
+        "지난 phase 기록(VERIFICATION_LOG·ADR·GLOSSARY)의 옛 경로도 D33 대로 새 경로로 바꿔서, '주소 유지' 같은 당시 서술이 새 주소와 함께 읽힌다 — 뜻은 phase 24 전 주소 기준이다."
+      ],
+      "completed_at": "2026-10-21T20:46:34+0900"
+    },
+    {
+      "step": 9,
+      "name": "human-api-verify",
+      "status": "completed",
+      "started_at": "2026-10-21T20:46:34+0900",
+      "summary": "새 tests/e2e/test_human_api.py(TestClient·가짜 러너, WORKFLOW_E2E 없이 기본 실행에 듦, 번호 순 8개): A(관리자)·B(member) 가 /me 화면 폼으로 full·read 토큰 발급(원문은 발급 HTML 에서만, DB 는 sha256) → 쿠키·Origin 없는 Bearer 클라이언트로 B 의 my_turn 목록=[RUN-2]·상세(쿠키 상세와 같음, 담당 후보 A·B·agent-fix online, actions assign·set_priority, open_requests) → B PUT assignee 403 token_read_only·DB 그대로 → A 토큰 PUT RUN-1 에이전트 → 가짜 러너가 /api/v1/connector/claim·events·artifacts 로 수정 결과 → Worker.tick → 단계 (확인 필요, 검토 대기)·업무 (내 차례, 검토 대기), 웹 /tasks 상태 배지 = API 목록(토큰·쿠키) → A 토큰 사람 요청 응답(created, B 내 차례 비움) → B 비활성화 401 unauthenticated·재활성화 뒤도 401, A 자기 토큰 폼 폐기 401 → 옛 /human-requests·/metrics.json·/connector/claim(Bearer·쿠키+Origin)·/sources/n8n/chains 404, Origin·Bearer 없는 POST 403 forbidden_origin, 화면 폼 라우트 존재·/responsibilities/add 빈 폼 422·/tasks·/me 200·/work/RUN-1 303·/healthz 200 → DB 전 표·로그 캡처·발급 응답 둘 밖 모든 응답에 원문 없음. tests/workflow/server/test_app.py 대조 테스트 3개: 화면(web 모듈)·/healthz·FastAPI 문서·/static 밖 라우트는 모두 /api/v1/, ARCHITECTURE 주소 표(문서를 직접 파싱, 39+15=54행)의 (메서드, 경로)가 모두 실제 라우트에 있음, 반대로 /api/v1 라우트가 모두 표에 있음. 문서 정정: ARCHITECTURE·ADR-0032 의 '옮기는 JSON 라우트 41개'·'internal_request_api 15' 는 실제(main·지금 모두) 39·13 이라 숫자만 고침(표 행은 처음부터 39행으로 정확). src 변경 없음. 전체 4733 passed·100 skipped(+11), ruff 통과. 다음 주의: PR 병합 뒤 셀프호스트 v26 은 러너 재설치·n8n 주소 수정 필수.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q tests/e2e/test_human_api.py tests/workflow/server/test_app.py",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "step 0 문서가 옮기는 JSON 라우트를 41개(사내 요청 15)로 잘못 셌다 — 실제 39(13). 대조 테스트가 잡아 ARCHITECTURE 2곳·ADR-0032 2줄의 숫자만 고쳤다(표 내용·코드는 그대로 맞음). 다른 문서에 41 을 쓴 곳은 없다.",
+        "e2e 는 다른 tests/e2e 파일과 달리 WORKFLOW_E2E 게이트를 걸지 않았다 — TestClient 만 써서 1초 안에 끝나고, AC 의 pytest -q 에서 실제로 돌게 하려는 것. 서버 테스트 helper(conftest·test_task_cycle)를 import 해 쓴다.",
+        "TestClient 에는 uvicorn 접근 로그가 없어 '접근 로그 캡처'는 루트 로거(INFO, httpx 요청 줄·앱·워커 로그) 캡처로 대신했다.",
+        "업무 상태 단정은 단계 상태 '확인 필요' 가 업무에서는 '내 차례'(work_status 설계)로 보이는 것을 기준으로 했다."
+      ],
+      "completed_at": "2026-10-21T20:58:27+0900"
+    }
+  ],
+  "created_at": "2026-10-21T18:52:21+0900",
+  "completed_at": "2026-10-21T20:58:27+0900"
+}

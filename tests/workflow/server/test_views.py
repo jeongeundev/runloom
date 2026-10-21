@@ -1087,3 +1087,35 @@ def test_seen_github_users_pairs_ids_with_the_latest_login_sorted_by_login():
 def test_seen_github_users_is_empty_without_assignees():
     assert views.seen_github_users([]) == []
     assert views.seen_github_users([_issue_row("2026-10-06T01:00:00Z", [], [])]) == []
+
+
+# --- 사람용 API 패널 공용 (phase 24 step 6) -------------------------------------------------------------
+
+
+def _actions_panel(**overrides) -> dict:
+    return {"can_edit": False, "can_start_direct": False, "direct": None, "triage": None, "next_step": None,
+            **overrides}
+
+
+def test_panel_actions_read_only_the_panel_can_flags():
+    assert views.panel_actions(_actions_panel()) == []
+    assert views.panel_actions(_actions_panel(can_edit=True, can_start_direct=True)) == [
+        "assign", "set_priority", "start_direct"]
+    # 직접 작업 그만두기 = 직접 작업이 있고 can_edit (패널 버튼 조건)
+    direct = {"member_name": "김개발", "started_at": NOW, "branch": "run-1"}
+    assert views.panel_actions(_actions_panel(direct=direct)) == []
+    assert views.panel_actions(_actions_panel(can_edit=True, direct=direct)) == ["assign", "set_priority",
+                                                                                 "stop_direct"]
+
+
+def test_panel_actions_for_triage_and_next_step():
+    button = {"label": "다시 판단", "disabled": False, "reason": None}
+    triage = {"state": "proposed", "button": button, "can_accept": True, "can_dismiss": True}
+    assert views.panel_actions(_actions_panel(triage=triage)) == ["request_triage", "accept_triage", "dismiss_triage"]
+    triage = {**triage, "button": {**button, "disabled": True, "reason": "판단 중입니다"}, "can_accept": False}
+    assert views.panel_actions(_actions_panel(triage=triage)) == ["dismiss_triage"]
+    assert views.panel_actions(_actions_panel(triage={"state": "dismissed", "button": None})) == []
+    next_step = {"state": "proposed", "can_act": True}
+    assert views.panel_actions(_actions_panel(next_step=next_step)) == ["accept_next_step", "dismiss_next_step"]
+    assert views.panel_actions(_actions_panel(next_step={**next_step, "can_act": False})) == []
+    assert views.panel_actions(_actions_panel(next_step={"state": "stale"})) == []

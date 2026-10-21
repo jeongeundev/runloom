@@ -2,7 +2,7 @@
    판정하지 않는다: 대기 사유는 워커와 같은 준비 판정, 응답 동작은 human_api 의 허용 목록, 반영 상태는 SourceDelivery.state.
    GitHub 반영(댓글)·Agent 작업(상태 줄)·사람 대기(사람 요청)는 서로 다른 줄로 보인다. #}
 {% macro response_form(r) -%}
-<form class="card" data-json-action="/human-requests/{{ r.request_id }}/responses" data-request-id="{{ r.request_id }}">
+<form class="card" data-json-action="/api/v1/human-requests/{{ r.request_id }}/responses" data-request-id="{{ r.request_id }}">
   <input type="hidden" name="response_id" value="{{ r.response_id }}">
   <input type="hidden" name="expected_revision" value="{{ r.revision }}" data-json-type="int">
   {% if r.agent_choices %}

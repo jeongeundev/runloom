@@ -237,7 +237,7 @@ def test_heartbeat_failure_during_run_does_not_fail_execution(fake, client, stat
     request = assign_with_handoff(fake)
 
     def during(progress):
-        attempts = lambda: sum(1 for r in fake.requests if r.url.path == "/connector/heartbeat")  # noqa: E731
+        attempts = lambda: sum(1 for r in fake.requests if r.url.path == "/api/v1/connector/heartbeat")  # noqa: E731
         before = attempts()
         fake.reachable = False
         _wait_until(lambda: attempts() >= before + 2)
@@ -988,7 +988,7 @@ def test_claim_declares_supported_builtin_kinds(fake, client, state_conn, paths,
 
     runner.tick()
 
-    claim = next(r for r in fake.requests if r.url.path == "/connector/claim")
+    claim = next(r for r in fake.requests if r.url.path == "/api/v1/connector/claim")
     assert json.loads(claim.content)["supported_kinds"] == ["bug_fix", "code_review", "triage"]
 
 

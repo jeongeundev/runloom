@@ -370,7 +370,7 @@ def test_01_admin_connects_github_and_attaches_the_runner(world):
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
     issued = http.post(f"/operator/github/sources/{world.sources[REPO]}/runner")

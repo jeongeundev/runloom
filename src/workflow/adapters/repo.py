@@ -1022,17 +1022,18 @@ def set_member_role(conn: Connection, session_id: str, member_id: str, role: str
 
 
 def disable_member(conn: Connection, session_id: str, member_id: str, *, now: str) -> None:
-    """비활성화 + 로그인 세션 전부 폐기. 이미 비활성이면 그대로(멱등). 활성 관리자가 0 이 되면 `LastAdmin`."""
+    """비활성화 + 로그인 세션·멤버 토큰 전부 폐기. 이미 비활성이면 그대로(멱등). 활성 관리자가 0 이 되면 `LastAdmin`."""
     with _tx(conn):
         if _require_member(conn, session_id, member_id)["disabled_at"] is not None:
             return
         conn.execute("UPDATE members SET disabled_at = ? WHERE member_id = ?", (now, member_id))
         _require_active_admin(conn, session_id)
         revoke_login_sessions(conn, member_id, now=now)
+        revoke_member_tokens(conn, member_id, now=now)
 
 
 def enable_member(conn: Connection, session_id: str, member_id: str, *, now: str) -> None:
-    """다시 활성화(멱등). 폐기된 로그인 세션은 되살리지 않는다."""
+    """다시 활성화(멱등). 폐기된 로그인 세션·멤버 토큰은 되살리지 않는다."""
     cur = conn.execute("UPDATE members SET disabled_at = NULL WHERE session_id = ? AND member_id = ?",
                        (session_id, member_id))
     _require_rowcount(cur, f"member {member_id}")
@@ -1083,6 +1084,85 @@ def revoke_login_session(conn: Connection, token: str, *, now: str) -> bool:
 def revoke_login_sessions(conn: Connection, member_id: str, *, now: str) -> int:
     """그 멤버의 로그인 세션 전부 폐기. 자체 BEGIN 없음 — 호출자 트랜잭션 안에서도 쓴다."""
     cur = conn.execute("UPDATE login_sessions SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL",
+                       (now, member_id))
+    return cur.rowcount
+
+
+# --- 멤버 토큰 (ARCHITECTURE "사람용 API — phase 24", ADR-0032) ---------------------------------------------------
+
+MEMBER_TOKEN_PREFIX = "wfm_"
+MEMBER_TOKEN_SCOPES = ("read", "full")
+MEMBER_TOKEN_TOUCH_SECONDS = 60
+_MEMBER_TOKEN_NAME_MAX = 40
+
+
+def issue_member_token(conn: Connection, *, session_id: str, member_id: str, name: str, scope: str,
+                       now: str) -> tuple[str, str]:
+    """(token_id, 원문). 원문은 여기서 한 번만 나간다 — DB 에는 sha256 만. 같은 워크스페이스의 활성 멤버가 아니면
+    `NotFound`, 이름(앞뒤 공백 제거)이 1~40자가 아니면 `ValueError("name")`, scope 밖이면 `ValueError("scope")`."""
+    name = name.strip()
+    if not 1 <= len(name) <= _MEMBER_TOKEN_NAME_MAX:
+        raise ValueError("name")
+    if scope not in MEMBER_TOKEN_SCOPES:
+        raise ValueError("scope")
+    token_id, token = f"mtk-{secrets.token_hex(6)}", MEMBER_TOKEN_PREFIX + secrets.token_urlsafe(32)
+    with _tx(conn):
+        if _require_member(conn, session_id, member_id)["disabled_at"] is not None:
+            raise NotFound(f"member {member_id}")
+        conn.execute(
+            "INSERT INTO member_tokens (token_id, member_id, name, scope, token_sha256, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (token_id, member_id, name, scope, _sha256(token), now),
+        )
+    return token_id, token
+
+
+def list_member_tokens(conn: Connection, member_id: str) -> list[Row]:
+    """그 멤버의 활성 토큰, 최근 발급순. 원문·해시는 싣지 않는다."""
+    return conn.execute(
+        "SELECT token_id, name, scope, created_at, last_used_at FROM member_tokens"
+        " WHERE member_id = ? AND revoked_at IS NULL ORDER BY created_at DESC, token_id",
+        (member_id,),
+    ).fetchall()
+
+
+def revoke_member_token(conn: Connection, *, member_id: str, token_id: str, now: str) -> bool:
+    """그 멤버의 활성 토큰이면 폐기하고 True. 남의 토큰·없는 토큰·이미 폐기한 토큰은 False. 행은 지우지 않는다."""
+    cur = conn.execute("UPDATE member_tokens SET revoked_at = ? WHERE token_id = ? AND member_id = ?"
+                       " AND revoked_at IS NULL", (now, token_id, member_id))
+    return cur.rowcount > 0
+
+
+def member_for_api_token(conn: Connection, token: str, *, now: str) -> Row | None:
+    """유효한 멤버 토큰(미폐기)의 활성 멤버 칸 + `token_id`·`scope`. 접두어가 `wfm_` 가 아니면 DB 를 보지 않는다.
+    워크스페이스 일치는 호출자(auth)가 본다. `last_used_at` 은 `touch_member_token` 규칙대로 갱신한다."""
+    if not token.startswith(MEMBER_TOKEN_PREFIX):
+        return None
+    row = _one(
+        conn,
+        f"SELECT {_LOGIN_MEMBER_COLUMNS}, mt.token_id, mt.scope FROM member_tokens mt"
+        " JOIN members m ON m.member_id = mt.member_id"
+        " WHERE mt.token_sha256 = ? AND mt.revoked_at IS NULL AND m.disabled_at IS NULL",
+        (_sha256(token),),
+    )
+    if row is not None:
+        touch_member_token(conn, row["token_id"], now=now)
+    return row
+
+
+def touch_member_token(conn: Connection, token_id: str, *, now: str) -> None:
+    """`last_used_at` 이 없거나 60초 이상 지났을 때만 쓴다 — 매 요청 쓰기 방지. 자체 BEGIN 없음."""
+    row = _one(conn, "SELECT last_used_at FROM member_tokens WHERE token_id = ?", (token_id,))
+    if row is None:
+        return
+    last = row["last_used_at"]
+    if last is None or (_parse(now) - _parse(last)).total_seconds() >= MEMBER_TOKEN_TOUCH_SECONDS:
+        conn.execute("UPDATE member_tokens SET last_used_at = ? WHERE token_id = ?", (now, token_id))
+
+
+def revoke_member_tokens(conn: Connection, member_id: str, *, now: str) -> int:
+    """그 멤버의 활성 토큰 전부 폐기. 자체 BEGIN 없음 — 호출자 트랜잭션 안에서도 쓴다."""
+    cur = conn.execute("UPDATE member_tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL",
                        (now, member_id))
     return cur.rowcount
 

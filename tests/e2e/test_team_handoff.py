@@ -261,13 +261,13 @@ def set_policy(http: httpx.Client, agent_id: str, policy: str) -> None:
 
 
 def open_request(world: World, http: httpx.Client, task_id: str, code: str) -> dict | None:
-    listed = http.get("/human-requests")
+    listed = http.get("/api/v1/human-requests")
     assert listed.status_code == 200, listed.text[:500]
     return next((r for r in listed.json()["requests"] if r["task_id"] == task_id and r["code"] == code), None)
 
 
 def respond(http: httpx.Client, request: dict, response_id: str, action: str, text: str = "") -> httpx.Response:
-    return http.post(f"/human-requests/{request['request_id']}/responses", json={
+    return http.post(f"/api/v1/human-requests/{request['request_id']}/responses", json={
         "response_id": response_id, "expected_revision": request["revision"], "action": action, "text": text})
 
 
@@ -327,7 +327,7 @@ def test_01_admin_connects_github_and_invites_a_member(world):
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
     saved = http.post("/operator/notifications/webhook", data={"url": world.ctx["shared_url"]})
     assert saved.status_code in (200, 303), saved.text[:500]
@@ -355,12 +355,12 @@ def test_02_each_person_attaches_their_own_runner(world):
     assert owners == {connector_of(world, "a"): world.ctx["admin_id"], connector_of(world, "b"): world.ctx["member_id"]}
 
     # 재작업 상한 0. 수정·검토 에이전트는 빈 칸 그대로 — 사람이 맡긴 에이전트가 수정하고, 그 러너가 검토한다
-    (source,) = world.http.get("/github/sources").json()["sources"]
+    (source,) = world.http.get("/api/v1/github/sources").json()["sources"]
     assert (source["default_fix_agent_id"], source["review_agent_id"]) == (None, None)
     fields = ("repository_full_name", "intake", "workflow_repository_id", "label_filter", "selected_issue_numbers",
               "start_at", "fix_verification_profile_id", "review_agent_id", "run_mode", "trigger_label",
               "default_fix_agent_id", "enabled")
-    updated = world.http.put(f"/github/sources/{source['source_id']}", json={
+    updated = world.http.put(f"/api/v1/github/sources/{source['source_id']}", json={
         **{k: source[k] for k in fields}, "max_rework_rounds": 0, "expected_revision": source["config_revision"]})
     assert updated.status_code == 200, updated.text[:500]
 
@@ -453,7 +453,7 @@ def test_05_owner_declines_run3_and_the_work_goes_back_unassigned(world):
     assign(http, "RUN-3", agent_b)
     task_id = issue_task(world, 3)
     request = drive(world, lambda: open_request(world, member, task_id, "owner_approval"), "RUN-3 승인 요청")
-    assert http.post(f"/human-requests/{request['request_id']}/responses", json={
+    assert http.post(f"/api/v1/human-requests/{request['request_id']}/responses", json={
         "response_id": "decline-long", "expected_revision": request["revision"], "action": "decline",
         "text": "가" * 2001}).status_code == 422
 

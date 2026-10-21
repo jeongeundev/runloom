@@ -32,8 +32,8 @@
 
 | 경로 | 본문 | 의미 |
 |---|---|---|
-| `POST /internal-requests/{request_id}/investigation` | `expected_revision`, `kind`, `scope_value` | 수신자가 수락된 요청에 조사 작업 하나를 연결하고 착수 |
-| `POST /internal-requests/{request_id}/return` | `expected_revision`, `execution_id` | 수신자가 검토된 최신 조사 결과를 반환 |
+| `POST /api/v1/internal-requests/{request_id}/investigation` | `expected_revision`, `kind`, `scope_value` | 수신자가 수락된 요청에 조사 작업 하나를 연결하고 착수 |
+| `POST /api/v1/internal-requests/{request_id}/return` | `expected_revision`, `execution_id` | 수신자가 검토된 최신 조사 결과를 반환 |
 
 조사 시작은 `delegate`, 반환은 `respond`와 지정 수신자 본인 조건을 모두 검사한다. 관리자도 수신자를 대신할 수 없다. 수락 전 시작은 409 `not_accepted`; 부적합 종류·에이전트·범위는 422다.
 

@@ -2,7 +2,7 @@
 
 > 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고, 13.9 오류 본문도 서버 경로(step 6·11)가 생겨 모두 일반 `json` 펜스다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
-갱신일: 2026-10-01 (phase 19 step 0 — 17절 판단 `ExecutionRequest`·`TriageResult`·`TriageCandidates` 예시, `jsonc` contract-pending). 이전: 2026-09-28 (phase 12 step 5 — 14.2 `ResultReadyData.branch_pushed` 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 12 step 3 — 14.1 `ClaimRequest.registration_heads` 구현. 그 전: 2026-09-27 phase 12 step 1 — 14.3·14.4 등록 요청 `agent_name`·응답 `RegistrationResponse` 구현. 그 전: 2026-09-27 phase 12 step 0 — 14절 실제 저장소 순환 선택 칸 예시, `json contract-pending`
+갱신일: 2026-10-21 (phase 24 step 0 — 18절 사람용 API 업무 목록·상세·담당·멤버 토큰 예시, `jsonc` — 계약 모델 없음). 이전: 2026-10-01 (phase 19 step 0 — 17절 판단 `ExecutionRequest`·`TriageResult`·`TriageCandidates` 예시, `jsonc` contract-pending). 이전: 2026-09-28 (phase 12 step 5 — 14.2 `ResultReadyData.branch_pushed` 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 12 step 3 — 14.1 `ClaimRequest.registration_heads` 구현. 그 전: 2026-09-27 phase 12 step 1 — 14.3·14.4 등록 요청 `agent_name`·응답 `RegistrationResponse` 구현. 그 전: 2026-09-27 phase 12 step 0 — 14절 실제 저장소 순환 선택 칸 예시, `json contract-pending`
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -80,7 +80,7 @@
 
 ## 2. 코드 수정 실행 — 연결 프로그램 claim
 
-등록 보고 `POST /connector/registrations`, `Authorization: Bearer wfc_…`. 운영자가 미리 등록한 Agent 의 `local_registration_id` 와 맞춰 연결 정보를 채운다. `tool` 은 `codex` 또는 `claude` 이며 중앙은 값에 따라 분기하지 않는다 — 어댑터 선택은 연결 프로그램의 로컬 등록이 정한다. `discovered` 는 설정 존재 여부와 짧은 요약뿐이며 파일 전체·인증 파일·원격 URL 은 넣지 않는다.
+등록 보고 `POST /api/v1/connector/registrations`, `Authorization: Bearer wfc_…`. 운영자가 미리 등록한 Agent 의 `local_registration_id` 와 맞춰 연결 정보를 채운다. `tool` 은 `codex` 또는 `claude` 이며 중앙은 값에 따라 분기하지 않는다 — 어댑터 선택은 연결 프로그램의 로컬 등록이 정한다. `discovered` 는 설정 존재 여부와 짧은 요약뿐이며 파일 전체·인증 파일·원격 URL 은 넣지 않는다.
 
 ```json
 {
@@ -110,7 +110,7 @@
 
 성공은 `200`과 `{ "agent_id": "agent-codex-mac" }`. `local_registration_id` 에 해당하는 Agent 가 없으면 `404 not_found`, `tool` 이 위 둘이 아니면 `422`.
 
-`POST /connector/claim`, `Authorization: Bearer wfc_…`
+`POST /api/v1/connector/claim`, `Authorization: Bearer wfc_…`
 
 ```json
 { "contract_version": 1, "connector_id": "conn-mac-01" }
@@ -157,7 +157,7 @@
 
 ### 2.1 heartbeat 응답 — 끊긴 실행 내려놓기 (2026-09-29 실연동 1)
 
-`POST /connector/heartbeat` 요청은 `{"contract_version": 1, "connector_id": …, "current_execution_id": …|null}` 그대로다. 응답은 보통 `{}` 이고, 보고한 `current_execution_id` 가 **이 연결 프로그램에 배정된 실행**이면서 중앙에서 이미 끝났으면(`result_ready`·`failed` 이거나 잠금 해제) `{"current_execution_closed": true}` 로 알린다. 다른 연결 프로그램의 실행·없는 실행·null 에는 아무 말도 하지 않는다.
+`POST /api/v1/connector/heartbeat` 요청은 `{"contract_version": 1, "connector_id": …, "current_execution_id": …|null}` 그대로다. 응답은 보통 `{}` 이고, 보고한 `current_execution_id` 가 **이 연결 프로그램에 배정된 실행**이면서 중앙에서 이미 끝났으면(`result_ready`·`failed` 이거나 잠금 해제) `{"current_execution_closed": true}` 로 알린다. 다른 연결 프로그램의 실행·없는 실행·null 에는 아무 말도 하지 않는다.
 
 연결 프로그램은 재시작으로 끊긴 실행(로컬 `unknown_local_at` 이 있는 `launching`·`running`)에 대해서만 이 값을 보고 그 실행을 로컬에서 마감한다 — 이벤트를 보내지 않고, 프로세스 종료를 확인할 수 없으므로 worktree·인계 디렉터리를 지우지 않는다. 그 뒤 다음 claim 을 한다. 지금 도는 실행에는 쓰지 않는다. 구버전 서버의 `{}` 는 "마감 아님"과 같다.
 
@@ -228,7 +228,7 @@
 
 ## 4. 산출물 업로드·다운로드
 
-`POST /executions/{execution_id}/artifacts`, multipart: `meta`(JSON)와 `file`(바이트). 같은 실행에 같은 `kind`·`sha256`이 이미 있으면 기존 산출물을 `200`으로 돌려준다(재업로드 안전). 새 저장은 `201`.
+`POST /api/v1/executions/{execution_id}/artifacts`, multipart: `meta`(JSON)와 `file`(바이트). 같은 실행에 같은 `kind`·`sha256`이 이미 있으면 기존 산출물을 `200`으로 돌려준다(재업로드 안전). 새 저장은 `201`.
 
 ```json
 { "contract_version": 1, "kind": "test_log_before", "name": "pytest-before.txt", "content_type": "text/plain", "sha256": "7b3e9a1d5c8f2b6e0a4d7c1f9e3b6a8d2c5f0e7b1a4d8c3f6e9b2a5d0c7f1e4b", "size": 2184 }
@@ -240,7 +240,7 @@
 { "artifact_id": "art-test-before-001", "kind": "test_log_before", "sha256": "7b3e9a1d5c8f2b6e0a4d7c1f9e3b6a8d2c5f0e7b1a4d8c3f6e9b2a5d0c7f1e4b", "size": 2184 }
 ```
 
-본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
+본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /api/v1/executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
 산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`.
 
@@ -621,7 +621,7 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 
 인증: `Authorization: Bearer wfs_…` — 워크스페이스(세션)가 `/sources` 에서 발급한 입구 토큰(`auth.require_source_token`). 서버는 sha256 만 저장하고, 토큰 → `session_id` + `source`. 세션 쿠키로는 통과하지 않는다. 토큰 없음·취소는 401 `unauthenticated`, 경로의 출처가 `n8n` 이 아니면 404 `not_found`, 토큰의 `source` 가 경로(`/sources/n8n/…`)와 다르면 403 `forbidden`. 라우트는 `server/inbound_api.py`, 체인·Task 생성과 첫 업무 시작은 가져오기와 같은 본체 `web.create_chain`·`web.start_chain`. 멱등 키는 없다 — 같은 본문을 두 번 보내면 체인이 둘 생긴다.
 
-### 입구 요청 `InboundChainRequest` — `POST /sources/n8n/chains`
+### 입구 요청 `InboundChainRequest` — `POST /api/v1/sources/n8n/chains`
 
 항목 2개 — 진단(`incident`+`workflow:`+`run:`)과 그 뒤의 수정(`bug`+`repo:`, `blocked_by` 로 순서). `items` 는 1~10개, `key` 는 요청 안에서 유일, `blocked_by` 는 같은 요청의 `key` 만. `callback_url` 은 선택이며 http/https 만, 허용 목록 `WORKFLOW_CALLBACK_HOSTS` 안이어야 한다:
 
@@ -997,13 +997,13 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 
 | 요청 | 응답 | 오류 |
 |---|---|---|
-| `GET /github/sources` | `token_configured`·`allowed_repositories`·`sources`(`GitHubSourceConfig` 목록) | |
-| `POST /github/sources/preview` | `token_configured`·`problems`(`ErrorBody` 목록) — 저장하지 않고 아래 422 문제를 모두 모은다 | 형식 오류만 422 |
-| `POST /github/sources` | 201 `source`·`token_configured` — `source_id` `ghs-`+8 hex, `config_revision` 1, 저장소 표기는 허용 목록의 것 | 422 `repository_not_allowed`·`agent_not_registered`·`agent_capability_mismatch`·`verification_profile_unknown`, 409 `source_exists`(같은 워크스페이스에 같은 저장소)·`github_workspace_taken`(다른 세션이 이미 GitHub 소스를 가짐 — 셀프호스트 1개 워크스페이스) |
-| `GET /github/sources/{source_id}` | `source`·`token_configured`·`assignees`(`AssigneeBinding` 목록) | 404 |
-| `PUT /github/sources/{source_id}` | 본문 + `expected_revision` → `source`·`token_configured`(`config_revision` +1) | 409 `stale_config`(`details.current_revision`), 저장소 변경 422 `invalid_field`, 나머지는 생성과 같음 |
-| `POST /github/sources/{source_id}/stop` | `enabled: false`, `config_revision` +1(이미 멈췄으면 그대로) | 404 |
-| `PUT /github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
+| `GET /api/v1/github/sources` | `token_configured`·`allowed_repositories`·`sources`(`GitHubSourceConfig` 목록) | |
+| `POST /api/v1/github/sources/preview` | `token_configured`·`problems`(`ErrorBody` 목록) — 저장하지 않고 아래 422 문제를 모두 모은다 | 형식 오류만 422 |
+| `POST /api/v1/github/sources` | 201 `source`·`token_configured` — `source_id` `ghs-`+8 hex, `config_revision` 1, 저장소 표기는 허용 목록의 것 | 422 `repository_not_allowed`·`agent_not_registered`·`agent_capability_mismatch`·`verification_profile_unknown`, 409 `source_exists`(같은 워크스페이스에 같은 저장소)·`github_workspace_taken`(다른 세션이 이미 GitHub 소스를 가짐 — 셀프호스트 1개 워크스페이스) |
+| `GET /api/v1/github/sources/{source_id}` | `source`·`token_configured`·`assignees`(`AssigneeBinding` 목록) | 404 |
+| `PUT /api/v1/github/sources/{source_id}` | 본문 + `expected_revision` → `source`·`token_configured`(`config_revision` +1) | 409 `stale_config`(`details.current_revision`), 저장소 변경 422 `invalid_field`, 나머지는 생성과 같음 |
+| `POST /api/v1/github/sources/{source_id}/stop` | `enabled: false`, `config_revision` +1(이미 멈췄으면 그대로) | 404 |
+| `PUT /api/v1/github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
 
 Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review · repository_id=<workflow_repository_id>`, 소스의 `fix_verification_profile_id` 는 같은 범위의 `code.fix` Agent 중 하나가 보고한 프로필이어야 한다. `default_fix_agent_id` 는 `code.fix · repository_id=<workflow_repository_id>`. `all_open` 에서 `null` 인 칸은 검사하지 않고, `workflow_repository_id` 가 `null` 이면 능력·프로필 범위 검사를 건너뛴다(등록 여부만). `installation_id` 가 있는 소스(App 설치가 만든 것)의 변경은 `WORKFLOW_GITHUB_REPOS` 검사를 하지 않는다. 설정 변경·중지는 이미 만든 Task·Execution 의 입력을 바꾸지 않는다.
 
@@ -1013,8 +1013,8 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 | 요청 | 응답 | 오류 |
 |---|---|---|
-| `GET /human-requests` | `requests` — 이 세션의 열린 요청(`request_id`·`task_id`·`code`·`question`·`revision`·`state`·`created_at`, 만든 순) | |
-| `POST /human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`retry`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task — `stage_failed` 는 단계가 이미 `실패` 로 마감이라 예외), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, `stage_failed` 는 `retry`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
+| `GET /api/v1/human-requests` | `requests` — 이 세션의 열린 요청(`request_id`·`task_id`·`code`·`question`·`revision`·`state`·`created_at`, 만든 순) | |
+| `POST /api/v1/human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`retry`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task — `stage_failed` 는 단계가 이미 `실패` 로 마감이라 예외), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, `stage_failed` 는 `retry`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
 
 응답의 효과: `resume` 의 `text` 는 다음 실행 요청 문구 끝의 `## 사람 응답 (운영자)` 절로 붙는다(Task 요청 원문·원본 스냅샷은 그대로). `choose_agent` 는 같은 트랜잭션에서 Task 의 실행 Agent 를 지정하지만 담당자 연결·능력·위임 범위는 재평가가 다시 검사한다 — 응답은 권한이나 소스 설정을 바꾸지 않는다(위임 밖은 13.10 설정 API 로 따로 고친다). `close` 는 Task 를 `실패 · 운영자 종료 — 사람 요청 응답` 으로 마감하고 활성 실행을 해제한다. 같은 트랜잭션이라 착수와 겹쳐도 마감된 Task 에 실행이 붙지 않는다. 실행 실패 요청 `stage_failed`(phase 14 step 6)의 `retry` 는 같은 업무에 실패한 단계를 복사한 새 단계(`text` 는 그 요청 끝의 `## 사람 응답 (운영자)` 절)를, `close` 는 업무 `종료 · 닫음 — 실행 실패` 를 같은 트랜잭션에 기록한다.
 
@@ -1425,4 +1425,202 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
   "cause": { "cause": "request_returned", "execution_id": "exec-review-31", "task_id": "task-review-31", "kind": "code_review",
     "agent_id": "agt-9f3c2a1b", "outcome": "needs_information", "request_id": "req-7c8d9e0f" }
 }
+```
+
+## 18. 사람용 API — phase 24
+
+[ADR-0032](adr/0032-human-api-and-member-tokens.md), 이름·표·주소 전체는 [ARCHITECTURE](ARCHITECTURE.md) "사람용 API — phase 24". 사람용 응답은 계약 모델(`contracts/v1.py`)이 없어 펜스를 `jsonc` 로 둔다 — 계약 fixture 테스트 대상이 아니다. 인증은 로그인 쿠키 또는 `Authorization: Bearer wfm_…`(멤버 토큰). 오류 본문은 공통 규칙 그대로(`code`·`message`·`field`·`details`). 계약 버전 필드(`contract_version`)는 이 응답들에 없다.
+
+### 18.1 업무 목록 — `GET /api/v1/work-items?filter=my_turn`
+
+`filter`(`all` 기본·`my_turn`·`unassigned`·`agent_working`)·`repository`(워크스페이스 업무 저장소, 대소문자 무시)·`closed`(`recent` 기본·`all`). 모르는 값은 422 `invalid_field`(`field` = 쿼리 이름). `counts` 는 저장소 필터 뒤·빠른 필터 전 건수다.
+
+```jsonc
+{
+  "items": [
+    {
+      "key": "RUN-12",
+      "title": "결제 내역 CSV 의 날짜가 하루 밀림",
+      "kind": "bug_fix",
+      "kind_label": "버그 수정",
+      "priority": "high",
+      "assignee": { "type": "member", "id": "mem-1a2b3c4d", "name": "김지은", "active": true },
+      "status": "내 차례",
+      "status_reason": "정보 요청",
+      "my_turn": true,
+      "next_action": "CSV 를 만드는 서버의 시간대 설정을 알려 주세요.",
+      "triage": null,
+      "next_step": null,
+      "repository": "acme/billing",
+      "source": { "type": "github", "key": "acme/billing#42", "url": "https://github.com/acme/billing/issues/42" },
+      "updated_at": "2026-10-21T09:12:00.000000Z",
+      "closed_at": null
+    }
+  ],
+  "counts": { "all": 9, "my_turn": 1, "unassigned": 3, "agent_working": 2 }
+}
+```
+
+### 18.2 업무 상세 — `GET /api/v1/work-items/RUN-12`
+
+업무 패널과 같은 함수(`views.work_panel_context`)로 만든다. 화면 전용 값(폼 숨은 입력·제출 키)은 없다. `actions` 는 지금 이 멤버가 할 수 있는 행동, `assignee_candidates` 는 웹 담당 선택 목록과 같은 값이다. 키 형식이 틀리거나 없는 업무는 404 `not_found`.
+
+```jsonc
+{
+  "work": {
+    "key": "RUN-12",
+    "title": "결제 내역 CSV 의 날짜가 하루 밀림",
+    "kind": "bug_fix",
+    "kind_label": "버그 수정",
+    "priority": "high",
+    "assignee": { "type": "member", "id": "mem-1a2b3c4d", "name": "김지은", "active": true },
+    "status": "내 차례",
+    "status_reason": "정보 요청",
+    "my_turn": true,
+    "next_action": "CSV 를 만드는 서버의 시간대 설정을 알려 주세요.",
+    "triage": null,
+    "next_step": null,
+    "repository": "acme/billing",
+    "source": { "type": "github", "key": "acme/billing#42", "url": "https://github.com/acme/billing/issues/42" },
+    "updated_at": "2026-10-21T09:12:00.000000Z",
+    "closed_at": null,
+    "request": "10월 내역 CSV 의 거래일이 하루씩 앞당겨져 나옵니다.",
+    "created_at": "2026-10-20T23:40:00.000000Z",
+    "turn_recipients": ["김지은"],
+    "form_fields": [
+      { "key": "reproduction", "label": "재현 절차", "value": "10월 내역 CSV 내려받기", "source": "github" }
+    ]
+  },
+  "stages": [
+    { "title": "결제 내역 CSV 의 날짜가 하루 밀림", "kind": "bug_fix", "kind_label": "버그 수정",
+      "status": { "label": "내 차례", "reason": "정보 요청" }, "delegatable": false, "attempts": 1,
+      "created_at": "2026-10-20T23:40:00.000000Z" }
+  ],
+  "links": [],
+  "direct": null,
+  "open_requests": [
+    { "request_id": "hr-3c2b1a0f", "code": "bug_fix_needs_information",
+      "question": "CSV 를 만드는 서버의 시간대 설정을 알려 주세요.", "state": "open", "revision": 2,
+      "created_at": "2026-10-21T09:12:00.000000Z", "answered_at": null,
+      "actions": ["resume", "close"], "asks_information": true, "agent_choices": [] }
+  ],
+  "responses": [],
+  "triage": null,
+  "next_step": null,
+  "pull_requests": [],
+  "internal_requests": [],
+  "events": [
+    { "at": "2026-10-21T00:02:00.000000Z", "text": "담당 바뀜" }
+  ],
+  "assignee_candidates": [
+    { "type": "member", "id": "mem-1a2b3c4d", "name": "김지은" },
+    { "type": "member", "id": "mem-5e6f7a8b", "name": "박도윤" },
+    { "type": "agent", "id": "agt-9f3c2a1b", "name": "macbook-billing", "online": true, "needs_owner_approval": false },
+    { "type": "agent", "id": "agt-0d1e2f3a", "name": "studio-billing", "online": false, "needs_owner_approval": true }
+  ],
+  "actions": ["assign", "set_priority", "start_direct"]
+}
+```
+
+판단 제안이 있으면 `triage` 는 이렇게 온다(`confidence` 는 화면과 같은 문자열). 수락은 `POST /api/v1/work-items/RUN-12/triage-proposals/tri-7a8b9c0d/accept`.
+
+```jsonc
+{
+  "state": "proposed",
+  "triage_id": "tri-7a8b9c0d",
+  "criteria_version": 3,
+  "agent_name": "macbook-billing",
+  "failed_label": null,
+  "failed_message": null,
+  "proposal": {
+    "proceed": "진행",
+    "confidence": "0.85",
+    "kind_line": "버그 수정",
+    "assignee": "macbook-billing · 김지은의 Mac",
+    "predecessors": [],
+    "reasons": [{ "label": "재현 가능성", "note": "재현 절차와 기대 결과가 있다" }],
+    "missing": [],
+    "acceptable": true
+  },
+  "handled_by": null,
+  "handled_at": null,
+  "handled_text": null,
+  "unavailable_reason": null
+}
+```
+
+### 18.3 담당 정하기 — `PUT /api/v1/work-items/RUN-12/assignee`
+
+에이전트 = 맡기기(조건이 맞으면 착수), 멤버 = 배정만. 해제는 `DELETE /api/v1/work-items/RUN-12/assignee`. 동작 `delegate`. 성공하면 200 과 바뀐 업무 상세(18.2 와 같은 모양).
+
+```jsonc
+// 요청
+{ "type": "agent", "id": "agt-9f3c2a1b", "note": "날짜 처리는 billing/export.py 만 보면 됩니다." }
+```
+
+```jsonc
+// 응답 200 — 18.2 와 같은 모양, 바뀐 칸만 보인다
+{
+  "work": {
+    "key": "RUN-12",
+    "assignee": { "type": "agent", "id": "agt-9f3c2a1b", "name": "macbook-billing", "active": true },
+    "status": "에이전트 작업 중",
+    "status_reason": "버그 수정 실행 중"
+    // … 나머지 칸 생략
+  },
+  "actions": ["assign", "set_priority"]
+  // … 나머지 칸 생략
+}
+```
+
+담당 값이 틀리면 `WorkActionError` 그대로 옮긴다.
+
+```jsonc
+{ "code": "invalid_field", "message": "담당 값이 올바르지 않습니다.", "field": "assignee", "details": null }
+```
+
+### 18.4 멤버 토큰 발급 — `POST /api/v1/me/tokens`
+
+로그인 쿠키로만 부른다 — `Authorization: Bearer` 가 있으면 403 `cookie_required`. 원문 `token` 은 이 응답에만 있고, 서버에는 sha256 만 남는다. 목록(`GET /api/v1/me/tokens`)에는 원문이 없다.
+
+```jsonc
+// 요청
+{ "name": "노트북 CLI", "scope": "read" }
+```
+
+```jsonc
+// 응답 201
+{
+  "token_id": "mtk-4f5a6b7c8d9e",
+  "name": "노트북 CLI",
+  "scope": "read",
+  "token": "wfm_Q2hhbmdlLW1lLWV4YW1wbGUtb25seS1ub3QtYS1yZWFsLXRva2Vu",
+  "created_at": "2026-10-21T10:00:00.000000Z"
+}
+```
+
+```jsonc
+// GET /api/v1/me/tokens 응답 200
+{
+  "tokens": [
+    { "token_id": "mtk-4f5a6b7c8d9e", "name": "노트북 CLI", "scope": "read",
+      "created_at": "2026-10-21T10:00:00.000000Z", "last_used_at": null }
+  ]
+}
+```
+
+### 18.5 오류 본문 — 멤버 토큰
+
+읽기 전용 토큰(`scope: read`)으로 GET·HEAD 밖 요청을 보내면 역할 검사보다 먼저 403 이다(POST 인 미리보기도 같다).
+
+```jsonc
+{ "code": "token_read_only", "message": "읽기 전용 토큰입니다", "field": null, "details": null }
+```
+
+```jsonc
+{ "code": "cookie_required", "message": "로그인 쿠키로만 할 수 있습니다.", "field": null, "details": null }
+```
+
+```jsonc
+{ "code": "unauthenticated", "message": "유효한 멤버 토큰이 필요합니다.", "field": null, "details": null }
 ```

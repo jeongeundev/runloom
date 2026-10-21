@@ -967,7 +967,7 @@ def test_operator_issues_connect_code_and_exchange(app, web, conn, settings):
     assert "만료" in issued.text
 
     connector = TestClient(app)
-    exchanged = connector.post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
+    exchanged = connector.post("/api/v1/connector/exchange", json={"contract_version": 1, "connect_code": code})
     assert exchanged.status_code == 200
     assert exchanged.json()["token"].startswith("wfc_")
     assert code in web.get("/settings?tab=advanced").text  # 목록에 사용됨으로 남는다
@@ -1787,7 +1787,7 @@ def token_row_of(html: str, token_id: str) -> str:
 
 def inbound_post(client, token: str):
     return client.post(
-        "/sources/n8n/chains", json={"contract_version": 1, "items": [INBOUND_ITEM]},
+        "/api/v1/sources/n8n/chains", json={"contract_version": 1, "items": [INBOUND_ITEM]},
         headers={"Authorization": f"Bearer {token}"},
     )
 
@@ -1796,11 +1796,12 @@ def test_sources_page_shows_inbound_url_empty_state_example_and_sidebar_link(web
     text = sources_page(web)
     assert "입구" in text
     # 입구 주소 — public_url 이 없으면 요청의 스킴+호스트. 경로는 inbound_api 의 것 그대로
-    assert "http://testserver/sources/n8n/chains" in text
+    assert "http://testserver/api/v1/sources/n8n/chains" in text
+    assert "http://testserver/sources/n8n/chains" not in text  # 옛 주소는 404(phase 24 D9)
     assert "아직 발급한 토큰이 없습니다." in text
     assert 'action="/sources/tokens"' in text and 'name="label"' in text
     # 요청 예시 — 토큰 자리는 플레이스홀더, 본문은 CONTRACT 12절 (a) 와 같은 항목
-    assert "curl -X POST http://testserver/sources/n8n/chains" in text
+    assert "curl -X POST http://testserver/api/v1/sources/n8n/chains" in text
     assert "Authorization: Bearer wfs_…" in text and "content-type: application/json" in text
     assert '"key": "issue-1"' in text and '"labels": ["bug", "repo:my-repo"]' in text and '"blocked_by": []' in text
     assert "docs/n8n/README.md" in text
@@ -1824,7 +1825,7 @@ def test_sources_page_uses_public_url_and_lists_callback_hosts(settings, agents)
     # 공개 주소가 https 면 로그인 쿠키가 Secure — 브라우저처럼 https 로 연다
     client = log_in(TestClient(create_app(custom), base_url="https://testserver"))
     text = sources_page(client)
-    assert "https://runloom.example/sources/n8n/chains" in text
+    assert "https://runloom.example/api/v1/sources/n8n/chains" in text
     assert "http://testserver/sources" not in text
     assert "callback 허용 목록이 비어 있어" not in text
     assert "localhost:5678" in text and "127.0.0.1" in text
@@ -1981,7 +1982,7 @@ def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303, path
         assert response.headers["location"] == "/login", path
-    for path in ("/metrics.json", "/github/sources", "/human-requests"):
+    for path in ("/api/v1/metrics", "/api/v1/github/sources", "/api/v1/human-requests"):
         response = client.get(path)
         assert response.status_code == 401, path
         assert response.json()["code"] == "unauthenticated", path
@@ -2010,7 +2011,7 @@ def test_first_setup_creates_admin_account_and_logs_in(selfhost, conn, settings,
     assert session_of(client) == SELFHOST_SESSION_ID
     assert client.get("/", follow_redirects=False).headers["location"] == "/tasks"
     assert client.get("/tasks").status_code == 200
-    assert client.get("/metrics.json").status_code == 200  # 기존 운영자 판정을 통과한다(권한 전환은 step 6)
+    assert client.get("/api/v1/metrics").status_code == 200  # 기존 운영자 판정을 통과한다(권한 전환은 step 6)
     cookie = client.cookies[LOGIN_COOKIE]
     stored = all_rows_text(conn)
     assert ADMIN_PASSWORD not in stored and cookie not in stored and OPERATOR_TOKEN not in stored
@@ -2312,7 +2313,7 @@ def test_old_workspace_cookie_does_not_log_in(selfhost, conn, settings):
     client = TestClient(selfhost)
     client.cookies.set("wf_session", f"{SELFHOST_SESSION_ID}.{mac}")
     assert client.get("/tasks", follow_redirects=False).headers["location"] == "/login"
-    assert client.get("/metrics.json").status_code == 401
+    assert client.get("/api/v1/metrics").status_code == 401
 
 
 def test_access_log_masks_invite_and_reset_tokens(selfhost, caplog):

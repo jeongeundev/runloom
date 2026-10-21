@@ -179,14 +179,14 @@ def test_01_first_setup_with_the_token_then_admin_connects_github(world):
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
     # 재작업 상한 0 — 검토 수정 요청이 바로 사람 요청이 된다
     fields = ("repository_full_name", "intake", "workflow_repository_id", "label_filter", "selected_issue_numbers",
               "start_at", "fix_verification_profile_id", "review_agent_id", "run_mode", "trigger_label",
               "default_fix_agent_id", "enabled")
-    updated = http.put(f"/github/sources/{source['source_id']}", json={
+    updated = http.put(f"/api/v1/github/sources/{source['source_id']}", json={
         **{k: source[k] for k in fields}, "max_rework_rounds": 0, "expected_revision": source["config_revision"]})
     assert updated.status_code == 200, updated.text[:500]
 
@@ -263,7 +263,7 @@ def test_04_member_delegates_and_the_review_request_is_only_the_members_turn(wor
     (work,) = q(world, "SELECT * FROM work_items")
     assert work["requested_by_member_id"] == world.ctx["member_id"]
 
-    requests = drive(world, lambda: [r for r in member.get("/human-requests").json()["requests"]
+    requests = drive(world, lambda: [r for r in member.get("/api/v1/human-requests").json()["requests"]
                                      if r["task_id"] == a_id and r["code"] == "rework_limit_reached"],
                      "검토 수정 요청 → 사람 요청")
     world.ctx["request"] = requests[0]
@@ -295,7 +295,7 @@ def test_04_member_delegates_and_the_review_request_is_only_the_members_turn(wor
 def test_05_member_answers_the_request_and_work_continues(world):
     member = member_http(world)
     a_id, request = world.tasks["A"], world.ctx["request"]
-    response = member.post(f"/human-requests/{request['request_id']}/responses", json={
+    response = member.post(f"/api/v1/human-requests/{request['request_id']}/responses", json={
         "response_id": "resp-team-1", "expected_revision": request["revision"], "action": "resume",
         "text": "한 번 더 고쳐 주세요"})
     assert response.status_code == 200, response.text[:500]

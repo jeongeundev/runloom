@@ -21,7 +21,7 @@ NEW = [
 
 
 def test_get_lists_default_mapping_with_config_revision(logged_in_client, conn):
-    response = logged_in_client.get("/field-mappings")
+    response = logged_in_client.get("/api/v1/field-mappings")
     assert response.status_code == 200, response.text
     assert response.json() == {"config_revision": repo.get_config_revision(conn, SELFHOST_SESSION_ID),
                                "mappings": DEFAULT}
@@ -29,38 +29,45 @@ def test_get_lists_default_mapping_with_config_revision(logged_in_client, conn):
 
 def test_put_replaces_rows_in_order_and_bumps_config_revision(logged_in_client, conn):
     before = repo.get_config_revision(conn, SELFHOST_SESSION_ID)
-    response = logged_in_client.put("/field-mappings", json={"mappings": NEW})
+    response = logged_in_client.put("/api/v1/field-mappings", json={"mappings": NEW})
     assert response.status_code == 200, response.text
     assert response.json() == {"config_revision": before + 1, "mappings": NEW}
     assert [row.position for row in repo.list_field_mappings(conn, SELFHOST_SESSION_ID)] == [1, 2, 3]
-    assert logged_in_client.get("/field-mappings").json()["mappings"] == NEW
+    assert logged_in_client.get("/api/v1/field-mappings").json()["mappings"] == NEW
 
 
 def test_put_rejects_unknown_kind_or_bad_body_without_change(logged_in_client, conn):
     before = repo.get_config_revision(conn, SELFHOST_SESSION_ID)
     bad_kind = [{**DEFAULT[0], "runloom_value": "no_such_kind"}]
-    error(logged_in_client.put("/field-mappings", json={"mappings": bad_kind}), 422, "invalid_field", "mappings")
+    error(logged_in_client.put("/api/v1/field-mappings", json={"mappings": bad_kind}), 422, "invalid_field", "mappings")
     for body in ({"mappings": [{**DEFAULT[0], "source_type": "linear"}]},  # 원본 종류 밖
                  {"mappings": [{**DEFAULT[0], "field": "assignee"}]},  # 필드 밖
                  {"mappings": [{**DEFAULT[0], "source_value": ""}]},
                  {"mappings": DEFAULT, "extra": 1}):
-        assert logged_in_client.put("/field-mappings", json=body).status_code == 422
+        assert logged_in_client.put("/api/v1/field-mappings", json=body).status_code == 422
     assert repo.get_config_revision(conn, SELFHOST_SESSION_ID) == before
-    assert logged_in_client.get("/field-mappings").json()["mappings"] == DEFAULT
+    assert logged_in_client.get("/api/v1/field-mappings").json()["mappings"] == DEFAULT
 
 
 def test_every_endpoint_requires_operator_session(client, conn):
     signed = log_in_other_workspace(TestClient(client.app))  # 다른 워크스페이스의 로그인 — 로그인 안 된 것으로 본다
     for anonymous in (TestClient(client.app), signed):
-        error(anonymous.get("/field-mappings"), 401, "unauthenticated")
-        error(anonymous.put("/field-mappings", json={"mappings": NEW}), 401, "unauthenticated")
+        error(anonymous.get("/api/v1/field-mappings"), 401, "unauthenticated")
+        error(anonymous.put("/api/v1/field-mappings", json={"mappings": NEW}), 401, "unauthenticated")
     assert len(repo.list_field_mappings(conn, SELFHOST_SESSION_ID)) <= len(DEFAULT)
 
 
 def test_put_records_a_config_change_by_the_logged_in_member(logged_in_client, conn):
     """phase 20 — 매핑 표 교체 = 설정 변경 기록 한 행(원본 종류별 행 수만)."""
-    assert logged_in_client.put("/field-mappings", json={"mappings": NEW}).status_code == 200
+    assert logged_in_client.put("/api/v1/field-mappings", json={"mappings": NEW}).status_code == 200
     (row,) = repo.list_config_changes(conn, SELFHOST_SESSION_ID)
     admin = conn.execute("SELECT member_id FROM members WHERE session_id = ?", (SELFHOST_SESSION_ID,)).fetchone()[0]
     assert (row["revision"], row["area"], row["action"], row["subject"], row["by_member_id"]) == (
         repo.get_config_revision(conn, SELFHOST_SESSION_ID), "mapping", "change", "github 3행", admin)
+
+
+def test_old_paths_without_api_prefix_are_gone(logged_in_client):
+    """옛 주소는 별칭 없이 404(D9)."""
+    assert logged_in_client.get("/field-mappings").status_code == 404
+    assert logged_in_client.put("/field-mappings", json={"mappings": NEW}).status_code == 404
+    assert logged_in_client.get("/api/v1/field-mappings").json()["mappings"] == DEFAULT

@@ -15,10 +15,10 @@
 
 | 경로 | 필요 조건 | 동작 |
 |---|---|---|
-| `POST /work-items/{work_item_id}/internal-requests` | 로그인·`delegate` | 담당표 확인 후 요청 생성 또는 같은 접수 키 재전송 처리 |
-| `GET /work-items/{work_item_id}/internal-requests` | 같은 워크스페이스 로그인 | 원업무의 요청 목록 |
-| `GET /internal-requests` | 로그인 | 본인이 보냈거나 받은 요청 목록 |
-| `POST /internal-requests/{request_id}/accept` | 로그인·`respond`·지정 수신자 본인 | 요청 수락 |
+| `POST /api/v1/work-items/{key}/internal-requests` | 로그인·`delegate` | 담당표 확인 후 요청 생성 또는 같은 접수 키 재전송 처리 |
+| `GET /api/v1/work-items/{key}/internal-requests` | 같은 워크스페이스 로그인 | 원업무의 요청 목록 |
+| `GET /api/v1/internal-requests` | 로그인 | 본인이 보냈거나 받은 요청 목록 |
+| `POST /api/v1/internal-requests/{request_id}/accept` | 로그인·`respond`·지정 수신자 본인 | 요청 수락 |
 
 생성 본문:
 

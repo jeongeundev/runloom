@@ -115,14 +115,14 @@
   {% endif %}
   {% if s.match_blockers %}<ul class="blockers">{% for reason in s.match_blockers %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
   {% if manage %}
-  <form data-json-action="/github/sources/{{ c.source_id }}" data-json-method="PUT">
+  <form data-json-action="/api/v1/github/sources/{{ c.source_id }}" data-json-method="PUT">
     <input type="hidden" name="expected_revision" value="{{ c.config_revision }}" data-json-type="int">
     {{ source_main(c, c.source_id, s.triage_agents) }}
     <details class="row" data-source-advanced><summary>고급 설정</summary>
       <div class="row-body">{{ source_advanced(c, c.source_id) }}</div>
     </details>
     <div class="actions">
-      <button class="btn btn-secondary" type="submit" data-json-action="/github/sources/preview" data-json-method="POST" data-json-omit="expected_revision">미리보기</button>
+      <button class="btn btn-secondary" type="submit" data-json-action="/api/v1/github/sources/preview" data-json-method="POST" data-json-omit="expected_revision">미리보기</button>
       <button class="btn" type="submit">저장</button>
       <span class="action-note" data-json-result></span>
     </div>
@@ -151,7 +151,7 @@
       </div>
       <p class="small">수집한 이슈에서 본 GitHub 담당자 — GitHub 담당자와 이 서비스의 사용자는 같은 사람으로 보지 않습니다.</p>
       {% for u in s.seen_users %}
-      <form data-json-action="/github/sources/{{ c.source_id }}/assignees" data-json-method="PUT" data-json-path-field="github_user_id" class="actions">
+      <form data-json-action="/api/v1/github/sources/{{ c.source_id }}/assignees" data-json-method="PUT" data-json-path-field="github_user_id" class="actions">
         <input type="hidden" name="github_user_id" value="{{ u.github_user_id }}">
         <input type="hidden" name="github_login" value="{{ u.github_login }}">
         <span>{{ u.github_login }}</span>
@@ -162,7 +162,7 @@
       <p class="small muted">수집한 이슈에 GitHub 담당자가 없습니다</p>
       {% endfor %}
       <h3>목록에 없는 사용자</h3>
-      <form data-json-action="/github/sources/{{ c.source_id }}/assignees" data-json-method="PUT" data-json-path-field="github_user_id">
+      <form data-json-action="/api/v1/github/sources/{{ c.source_id }}/assignees" data-json-method="PUT" data-json-path-field="github_user_id">
         <div class="field-row">
           <div class="field"><label for="uid-{{ c.source_id }}">GitHub 사용자 번호</label><input type="number" id="uid-{{ c.source_id }}" name="github_user_id" min="1" required></div>
           <div class="field"><label for="login-{{ c.source_id }}">로그인</label><input type="text" id="login-{{ c.source_id }}" name="github_login" required></div>
@@ -173,14 +173,14 @@
         <div class="actions"><button class="btn" type="submit">연결</button><span class="action-note" data-json-result></span></div>
       </form>
       <h3>기준선</h3>
-      <form data-json-action="/operator/github/sources/{{ c.source_id }}/baseline" class="actions">
+      <form data-json-action="/api/v1/github/sources/{{ c.source_id }}/baseline" class="actions">
         <button class="btn btn-secondary btn-small" type="submit">{{ '기준선 다시 가져오기' if s.baseline else '기준선 가져오기' }}</button>
         {% if s.baseline %}<span class="small" data-baseline-summary>기준선 {{ s.baseline.n }}건 · 이슈 열림 → 병합 중앙값 {{ s.baseline.median }} · {{ s.baseline.fetched_at|kst }} 가져옴 · <a href="/monitor">지표에서 비교</a></span>
         {% else %}<span class="small">Runloom 도입 전 GitHub 이력으로 비교 기준을 만듭니다 (연결 전에 열려 PR 병합으로 닫힌 이슈)</span>{% endif %}
         <span class="action-note" data-json-result></span>
       </form>
       {% if c.enabled %}
-      <form data-json-action="/github/sources/{{ c.source_id }}/stop" class="actions">
+      <form data-json-action="/api/v1/github/sources/{{ c.source_id }}/stop" class="actions">
         <button class="btn btn-danger btn-small" type="submit">수집 중지</button><span class="action-note" data-json-result></span>
       </form>
       {% endif %}
@@ -207,11 +207,11 @@
     </form>
     {% if allowed_repositories %}
     <p class="small">서버 환경변수 토큰의 허용 저장소(<span class="mono">WORKFLOW_GITHUB_REPOS</span>): {% for r in allowed_repositories %}<span class="mono">{{ r }}</span>{% if not loop.last %}, {% endif %}{% endfor %} — 라벨·고른 이슈 범위로 연결합니다.</p>
-    <form data-json-action="/github/sources" class="card">
+    <form data-json-action="/api/v1/github/sources" class="card">
       {{ source_main(none, 'new') }}
       {{ source_advanced(none, 'new') }}
       <div class="actions">
-        <button class="btn btn-secondary" type="submit" data-json-action="/github/sources/preview">미리보기</button>
+        <button class="btn btn-secondary" type="submit" data-json-action="/api/v1/github/sources/preview">미리보기</button>
         <button class="btn" type="submit">연결</button>
         <span class="action-note" data-json-result></span>
       </div>

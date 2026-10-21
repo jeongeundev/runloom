@@ -2073,3 +2073,9 @@ def test_kind_candidate_startable_is_strict_bool():
     block = _next_step_candidates()
     with pytest.raises(ValidationError):
         TriageCandidates.model_validate({**block, "kinds": [{**block["kinds"][0], "startable": "false"}, block["kinds"][1]]})
+
+
+def test_api_prefix_is_shared_by_server_and_connector():
+    """사람용·러너·n8n JSON API 의 공통 접두어(ADR-0032) — 서버 include 와 러너 클라이언트가 이 값 하나를 쓴다."""
+    from workflow.contracts.v1 import API_PREFIX
+    assert API_PREFIX == "/api/v1"

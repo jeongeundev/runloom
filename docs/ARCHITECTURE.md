@@ -54,7 +54,7 @@ step 4 구현 상태: 새 세션(`repo.create_session`)은 내장 종류 4개·�
 
 step 5 구현 상태: `adapters/github_client.py` 의 `HttpGitHubClient`(HTTPX, transport 주입)가 있다. 아직 부르는 곳은 없다(수집 step 7, 댓글 전달 step 12). 아래 "GitHub REST 경계" 참고.
 
-step 6 구현 상태: `server/github_api.py` 가 운영자 설정 API(`/github/sources`·미리보기·변경·중지·담당 연결, 요청·오류는 [CONTRACT](CONTRACT.md) 13.10)를 제공한다. 운영자 세션만, 소스는 만든 세션 소유, 다른 세션이 이미 GitHub 소스를 가지면 새 소스를 거부한다(셀프호스트 1개 워크스페이스 — 전역 토큰을 두 워크스페이스가 나눠 쓰지 않게). 설정은 `Settings.github_token`(`WORKFLOW_GITHUB_TOKEN`, `OPTIONAL_SECRET_KEYS` — 비면 기능만 꺼지고 `WORKFLOW_DEV` 도 만들지 않음, `repr` 제외)·`Settings.github_repos`(`WORKFLOW_GITHUB_REPOS`)에서 읽고 응답은 `token_configured` 만 보인다. 저장소는 허용 목록 안(대소문자 무시, 저장은 목록 표기)에서만, 변경 시 저장소는 바꿀 수 없다(커서·원본 매핑이 그 저장소 것). `config_revision` 잠금은 `repo.save_github_source(..., expected_revision=)` 가 같은 트랜잭션에서 검사한다(`StaleConfig` → 409 `stale_config`). 검토 Agent·담당 Agent 는 세션 등록 + `code.review`/`code.fix {repository_id}` 능력 + (담당) 소스 검증 프로필 보고를 요구한다. 설정 변경은 이미 만든 Task·Execution 입력을 바꾸지 않는다. GitHub 클라이언트는 워커가 만든다(step 7).
+step 6 구현 상태: `server/github_api.py` 가 운영자 설정 API(`/api/v1/github/sources`·미리보기·변경·중지·담당 연결, 요청·오류는 [CONTRACT](CONTRACT.md) 13.10)를 제공한다. 운영자 세션만, 소스는 만든 세션 소유, 다른 세션이 이미 GitHub 소스를 가지면 새 소스를 거부한다(셀프호스트 1개 워크스페이스 — 전역 토큰을 두 워크스페이스가 나눠 쓰지 않게). 설정은 `Settings.github_token`(`WORKFLOW_GITHUB_TOKEN`, `OPTIONAL_SECRET_KEYS` — 비면 기능만 꺼지고 `WORKFLOW_DEV` 도 만들지 않음, `repr` 제외)·`Settings.github_repos`(`WORKFLOW_GITHUB_REPOS`)에서 읽고 응답은 `token_configured` 만 보인다. 저장소는 허용 목록 안(대소문자 무시, 저장은 목록 표기)에서만, 변경 시 저장소는 바꿀 수 없다(커서·원본 매핑이 그 저장소 것). `config_revision` 잠금은 `repo.save_github_source(..., expected_revision=)` 가 같은 트랜잭션에서 검사한다(`StaleConfig` → 409 `stale_config`). 검토 Agent·담당 Agent 는 세션 등록 + `code.review`/`code.fix {repository_id}` 능력 + (담당) 소스 검증 프로필 보고를 요구한다. 설정 변경은 이미 만든 Task·Execution 입력을 바꾸지 않는다. GitHub 클라이언트는 워커가 만든다(step 7).
 
 step 7 구현 상태: `server/github_sync.sync_source` 가 소스 하나를 목록 폴링으로 수집한다(webhook 없음). 워커는 `settings.github_token` 이 있을 때만 `HttpGitHubClient(settings.github_token, settings.github_repos)` 를 만들고, tick 첫 단계에서 켜진 소스마다 `GITHUB_SYNC_INTERVAL_SECONDS`(60초) 간격으로 부른다(rate limit 이면 알려준 시간, 없으면 60초 쉰다. 간격은 메모리 값이라 재시작하면 바로 한 번 부른다). 수집은 Task 만 만들고 착수하지 않는다 — 준비 판정·착수는 step 10.
 - 범위(`domain/issue_intake.intake_scope`, 아직 Task 가 없는 이슈만): 다른 저장소·PR 은 언제나 제외. `selected_issue_numbers` 로 고른 이슈는 명시적 선택이라 라벨·시작 시각·닫힘과 무관하게 받는다(닫혀 있으면 준비 판정이 `source_closed`). 그 밖은 open 이고 `label_filter` 라벨을 모두 가지며(대소문자 무시) `created_at >= start_at` 이어야 한다 — 시작 전 백로그(`before_start`)·라벨 불일치·닫힘·필터 없음(`not_selected`)은 받지 않고 `SyncReport.skipped` 에 사유별로 센다. 이미 받은 이슈는 범위를 벗어나도(라벨 제거 등) 계속 갱신한다.
@@ -236,7 +236,7 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 
 ### 화면 (step 13 구현 상태)
 
-- 운영자 `GET /operator/github`(`operator_github.html`, 비운영자 403): 토큰 `토큰 설정됨`/`토큰 없음`(값은 없음)·허용 저장소, 소스 설정(미리보기·변경·중지), 담당 연결(GitHub 사용자 숫자 ID → 수정 Agent), 수집한 실제 이슈 목록(원본 링크·Task 상태와 이유·GitHub 반영 상태), 열린 사람 요청. 쓰기 폼은 `data-json-action` 으로 `base.html` 스크립트가 기존 JSON API(`/github/sources…`·`/human-requests/{id}/responses`)에 보낸다 — 화면 전용 쓰기 경로는 없다. CSRF: 세션 쿠키 SameSite=Lax + 이 API 들은 JSON 본문만 받는다(폼·text/plain 본문은 422). 고급 규칙 JSON·자연어 워크플로우 입력은 없다.
+- 운영자 `GET /operator/github`(`operator_github.html`, 비운영자 403): 토큰 `토큰 설정됨`/`토큰 없음`(값은 없음)·허용 저장소, 소스 설정(미리보기·변경·중지), 담당 연결(GitHub 사용자 숫자 ID → 수정 Agent), 수집한 실제 이슈 목록(원본 링크·Task 상태와 이유·GitHub 반영 상태), 열린 사람 요청. 쓰기 폼은 `data-json-action` 으로 `base.html` 스크립트가 기존 JSON API(`/api/v1/github/sources…`·`/api/v1/human-requests/{id}/responses`)에 보낸다 — 화면 전용 쓰기 경로는 없다. CSRF: 세션 쿠키 SameSite=Lax + 이 API 들은 JSON 본문만 받는다(폼·text/plain 본문은 422). 고급 규칙 JSON·자연어 워크플로우 입력은 없다.
 - 업무 상세 `_cycle.html`(`views.cycle_context`): 업무 순환 종류이거나 원본 이슈가 있는 Task 에만. `실제 GitHub 이슈` 표시와 원본 링크(`https://github.com/{owner/name}/issues/{n}` — 응답의 `html_url` 을 링크로 쓰지 않음), GitHub 담당 → 연결 Agent, 대기 사유(워커와 같은 `task_cycle.evaluate` 의 `Blocker` 코드·문구·행동 주체), 사람 요청(운영자에게만 응답 폼 — 허용 동작은 `human_api.allowed_actions`, 폼마다 새 `response_id` 라 두 번 눌러도 한 번 반영), 입력 보충(응답 목록), 생성 근거(`repo.get_followup_link` — 어느 수정 실행 결과가 이 검토 Task 를 만들었나), 실행 횟수·자동 재작업 `사용/상한`, 검토 결과(`CodeReviewResult` outcome·요약·검토 커밋·지적), GitHub 반영(최신 `SourceDelivery` 의 `반영 대기`·`반영됨`·`반영 불확실`·`반영 실패`·시도 횟수·마지막 오류). 반영 줄·사람 요청·Task 상태 줄(Agent 작업)은 서로 다른 줄이다. fixture 가져오기 Task 는 `시연 데이터 · 실제 이슈 아님`.
 - 업무 순환 종류의 상태는 워커가 저장한 값(`views.status_of`)이다 — 선택 기록 기반 `user_status` 로 다시 판정하지 않는다. 선택 폼·데모 후속 등록 칩은 보이지 않고, 열린 사람 요청이 있으면 검토 폼 대신 응답 폼만 보인다.
 - 직접 실행 모드: 준비 판정에 `manual_mode` 만 남았거나(실행 없음), 결과 뒤 다음 실행을 워커가 직접 실행 모드로 멈춰 둔 때(`실행 가능`) `실행` 버튼. `POST /tasks/{id}/run` 은 업무 순환 종류면 `Worker.start_manually` — 이 Task 와 선행·후속만 tick 과 같은 규칙(`_cycle_followups`·`_start_ready_tasks`)으로 돌리고 이 Task 의 준비 판정에서만 `manual_mode` 를 뺀다. start_key(`auto:`·`review:`·`rework:`)가 같아 두 번 눌러도 실행은 하나, 새 실행이 없으면 지금 대기 사유로 409.
@@ -351,11 +351,11 @@ step 12 구현 상태: `server/github_delivery.py`. 워커는 GitHub 클라이�
 | 경로 | 위치 | 인증 | 동작 |
 |---|---|---|---|
 | `GET /metrics` | `server/web.py`(9), `metrics.html` | `require_session` + `_base(...)["is_operator"]` 아니면 `PageError(403, "forbidden")` — `/operator/github` 과 같음 | 맨 위 비교는 기준선과 도입 후 `intake_to_merge`(GitHub 이슈 묶음, 병합 없이 닫힘 건수) — "이슈 열림 → 병합" 끼리만. 접수 → 승인 은 아래 속도 표(step 12). 도입 후 지표와 기준선 나란히, n·미완료·모름·주석. GET 폼 쿼리 `from`·`to`·`group_by` 는 JSON 과 같되 빈 값 = 지정 안 함, 어긋나면 422 오류 화면. 계산은 `metrics_api._report`·`_baselines` 그대로, 표시는 `views.metrics_context`(모름은 "모름", 0 아님). 기준선 가져오기 버튼은 소스마다 `data-json-action` 으로 아래 POST |
-| `GET /metrics.json` | `server/metrics_api.py`(8) | `Depends(require_operator)` — 운영자 세션 쿠키 아니면 `ApiError(403, "forbidden")` | 쿼리 `from`·`to`(RFC 3339, 시간대 필수, `from < to`)·`group_by`(`config_revision`\|`folder_commit`) — 어긋나면 422 `invalid_field`. 운영자 세션(`session_id`)의 데이터만. 응답 `from`·`to`·`group_by`·`groups`(`MetricsGroup` 칸 그대로 — `Stat` 은 `median·n·incomplete·unknown·total`, `Ratio` 는 `numerator·denominator·rate·incomplete·unknown`)·`baselines`(세션 소스마다 `source_id`·`repository_full_name`·`imported`·`opened_before`·`fetched_at`·`intake_to_merge`·`note` — 가져온 적 없으면 null). 기준선은 기간·그룹과 무관 |
-| `GET /metrics.csv` | `server/metrics_api.py`(8) | 같음 | 같은 계산을 행 단위로. 열 `group`·`area`·`metric`·`unit`(`seconds`·`usd`·`tokens`·`count`·`ratio`)·`median`·`n`·`incomplete`·`unknown`·`total`·`numerator`·`denominator`·`note`. 비율 행은 분자·분모, 건수 하나(`bundles`·`done_by_finished_at`·`closed_failed`·`closed_unmerged`·`failed_code:<code>`)는 `total`, actor 별 대기는 `handoff_blocked:<actor>`. 기준선은 `group` = `baseline:<source_id>`, `metric` = `intake_to_merge`, `note` 에 주석. 모름은 빈 칸 |
-| `POST /operator/github/sources/{source_id}/baseline` | `server/metrics_api.py`(8) | `Depends(require_operator)` + 소스가 그 세션 소유(아니면 404 `not_found`, `github_api._existing` 과 같은 규칙). 본문 없음 — `POST /github/sources/{id}/stop` 처럼 세션 쿠키 SameSite=Lax 에 기댄다. 토큰 없으면(`Settings.github_token` 없음) 409 `github_token_missing`(새 코드 — 기존 설정 API 는 `token_configured` 만 보이고 이 경우 오류가 없다) | `list_issue_pr_links` → `replace_baseline`, 응답 `source_id`·`opened_before`·`item_count`. 요청 중 트랜잭션을 잡지 않는다(HTTP 는 트랜잭션 밖). GitHub 오류는 `ErrorBody`(예외 메시지 대신 고정 문구) — `GitHubRateLimited` 429 `github_rate_limited`(`details.retry_after_seconds`, 모르면 60), `GitHubRepositoryNotAllowed` 409 `repository_not_allowed`, `GitHubForbidden` 502 `github_forbidden`, `GitHubNotFound` 502 `github_not_found`, `GitHubUnavailable` 502 `github_unavailable`, 그 밖 502 `github_error`. 실패하면 이전 기준선 그대로. 클라이언트는 `app.state.github_client`(없으면 요청 때 `HttpGitHubClient`) — 테스트가 가짜로 바꾼다 |
+| `GET /api/v1/metrics` | `server/metrics_api.py`(8) | `Depends(require_operator)` — 운영자 세션 쿠키 아니면 `ApiError(403, "forbidden")` | 쿼리 `from`·`to`(RFC 3339, 시간대 필수, `from < to`)·`group_by`(`config_revision`\|`folder_commit`) — 어긋나면 422 `invalid_field`. 운영자 세션(`session_id`)의 데이터만. 응답 `from`·`to`·`group_by`·`groups`(`MetricsGroup` 칸 그대로 — `Stat` 은 `median·n·incomplete·unknown·total`, `Ratio` 는 `numerator·denominator·rate·incomplete·unknown`)·`baselines`(세션 소스마다 `source_id`·`repository_full_name`·`imported`·`opened_before`·`fetched_at`·`intake_to_merge`·`note` — 가져온 적 없으면 null). 기준선은 기간·그룹과 무관 |
+| `GET /api/v1/metrics.csv` | `server/metrics_api.py`(8) | 같음 | 같은 계산을 행 단위로. 열 `group`·`area`·`metric`·`unit`(`seconds`·`usd`·`tokens`·`count`·`ratio`)·`median`·`n`·`incomplete`·`unknown`·`total`·`numerator`·`denominator`·`note`. 비율 행은 분자·분모, 건수 하나(`bundles`·`done_by_finished_at`·`closed_failed`·`closed_unmerged`·`failed_code:<code>`)는 `total`, actor 별 대기는 `handoff_blocked:<actor>`. 기준선은 `group` = `baseline:<source_id>`, `metric` = `intake_to_merge`, `note` 에 주석. 모름은 빈 칸 |
+| `POST /api/v1/github/sources/{source_id}/baseline` | `server/metrics_api.py`(8) | `Depends(require_operator)` + 소스가 그 세션 소유(아니면 404 `not_found`, `github_api._existing` 과 같은 규칙). 본문 없음 — `POST /api/v1/github/sources/{id}/stop` 처럼 세션 쿠키 SameSite=Lax 에 기댄다. 토큰 없으면(`Settings.github_token` 없음) 409 `github_token_missing`(새 코드 — 기존 설정 API 는 `token_configured` 만 보이고 이 경우 오류가 없다) | `list_issue_pr_links` → `replace_baseline`, 응답 `source_id`·`opened_before`·`item_count`. 요청 중 트랜잭션을 잡지 않는다(HTTP 는 트랜잭션 밖). GitHub 오류는 `ErrorBody`(예외 메시지 대신 고정 문구) — `GitHubRateLimited` 429 `github_rate_limited`(`details.retry_after_seconds`, 모르면 60), `GitHubRepositoryNotAllowed` 409 `repository_not_allowed`, `GitHubForbidden` 502 `github_forbidden`, `GitHubNotFound` 502 `github_not_found`, `GitHubUnavailable` 502 `github_unavailable`, 그 밖 502 `github_error`. 실패하면 이전 기준선 그대로. 클라이언트는 `app.state.github_client`(없으면 요청 때 `HttpGitHubClient`) — 테스트가 가짜로 바꾼다 |
 
-- 경로 접두어: 기존 운영자 JSON API 는 `/github/sources…`(`github_api.router`)이지만 기준선 가져오기는 이 phase 계획대로 `/operator/github/sources/{source_id}/baseline` 에 둔다.
+- 경로 접두어: 기준선 가져오기는 `metrics_api` 라우터에 있지만 주소는 소스 API(`github_api.router`)와 같은 `/api/v1/github/sources/{source_id}/baseline` 이다(phase 24 에서 운영자 경로에서 옮겼다).
 - 화면 문구는 인과를 단정하지 않는다("도입 후 줄었다" 대신 "기준선 중앙값 X, 도입 후 중앙값 Y, n").
 
 ### CLI 결과에서 비용·토큰 얻기 (step 2)
@@ -513,7 +513,7 @@ Mac bind mount 를 쓰지 않는 이유: 호스트 디렉터리는 Docker Deskto
 
 ### 남기는 것
 
-`sessions`·`session_id`(뜻 = 워크스페이스 키)·`sessions.is_operator`·`session_agents`, 산출물 종류 `code_change_result`·`diff`·`test_log_*`·`verification_log`, n8n 입구(`POST /sources/n8n/chains`·`source_tokens`·`chains`·callback), 직접 등록 `/tasks/new`(종류 기본값 `bug_fix`), `deploy/selfhost/*`, phase 8·11·12 GitHub 순환 전부.
+`sessions`·`session_id`(뜻 = 워크스페이스 키)·`sessions.is_operator`·`session_agents`, 산출물 종류 `code_change_result`·`diff`·`test_log_*`·`verification_log`, n8n 입구(`POST /api/v1/sources/n8n/chains`·`source_tokens`·`chains`·callback), 직접 등록 `/tasks/new`(종류 기본값 `bug_fix`), `deploy/selfhost/*`, phase 8·11·12 GitHub 순환 전부.
 
 ### 내장 종류와 스키마 v9
 
@@ -690,10 +690,10 @@ manifest(step 7, `adapters/github_app.build_manifest(base_url, name)`):
   → 연결 코드 발급 + 명령 한 줄 표시: install-runner.sh --server S --code C --repo <폴더>
   → (호스트 Mac) install-runner.sh → pip install → connector setup → launchd 적재   (step 2·9)
         setup = connect(코드 → 토큰) + register(폴더 이름·GitHub owner/name 기본값, --link·--env 로컬 저장)
-        → POST /connector/registrations: Agent 없으면 selfhost 에서 새로 만듦(code.fix+code.review)   (step 1)
+        → POST /api/v1/connector/registrations: Agent 없으면 selfhost 에서 새로 만듦(code.fix+code.review)   (step 1)
   → 자동 매칭(phase 11): 소스 저장소 = found.github_repository → 같은 Agent 가 수정·검토 후보
   → 러너 claim 루프: 60초마다 등록별 git fetch origin → origin/HEAD 커밋                   (step 3)
-        → POST /connector/claim { registration_heads } → agents.base_commit 갱신
+        → POST /api/v1/connector/claim { registration_heads } → agents.base_commit 갱신
   → [에이전트에게 맡기기]/runloom 라벨 → 수정 실행(base_commit = 기본 브랜치 최신)
         worktree 생성 직후 --link 심볼릭 링크 + info/exclude, --env 는 검증·도구 환경    (step 4)
   → ready_for_review 결과 커밋 → git push origin task/<id>:task/<id> (force 없음)            (step 5)
@@ -741,7 +741,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 - `git_ops.fetch_origin(repo) -> None`(`git fetch --quiet origin`, 환경 `GIT_TERMINAL_PROMPT=0`, 제한 시간 `GIT_NETWORK_TIMEOUT_SECONDS` = 120), `git_ops.origin_head(repo) -> str | None`(`git symbolic-ref --quiet refs/remotes/origin/HEAD` 가 없으면 `git remote set-head origin --auto` 한 번, 그다음 `git rev-parse --verify refs/remotes/origin/HEAD^{commit}`; `origin` 원격이 없거나 실패면 None). 실패는 `GitError` 로 올리고 러너가 로그만 남긴다.
 - `Runner` 가 claim 전에 `_registration_heads() -> dict[str, str]` 를 만든다: 등록마다 마지막 fetch 뒤 `BASE_FETCH_INTERVAL_SECONDS`(60) 가 지났으면 fetch, 성공한 등록의 커밋을 메모리에 두고 매 claim 에 실어 보낸다. 실행 중에는 claim 을 하지 않으므로 fetch 도 없다.
-- 서버(`/connector/claim`): `repo.update_registration_heads(conn, connector_id, heads) -> int`(바뀐 Agent 수) — `UPDATE agents SET base_commit = ? WHERE connector_id = ? AND local_registration_id = ?`. 배정 판단보다 먼저 한다. `_start_fix` 의 우선순위(주어진 값 → 이 Task 의 마지막 결과 커밋 → `agents.base_commit`)는 바꾸지 않는다.
+- 서버(`/api/v1/connector/claim`): `repo.update_registration_heads(conn, connector_id, heads) -> int`(바뀐 Agent 수) — `UPDATE agents SET base_commit = ? WHERE connector_id = ? AND local_registration_id = ?`. 배정 판단보다 먼저 한다. `_start_fix` 의 우선순위(주어진 값 → 이 Task 의 마지막 결과 커밋 → `agents.base_commit`)는 바꾸지 않는다.
 - 구현: step 3 (2026-09-27). `origin_head` 는 origin 없음·읽기 실패를 None 으로 돌려준다(`fetch_origin` 만 GitError). 러너는 `state.list_registrations` 로 등록(최대 50)을 돌고, fetch 실패·커밋 못 읽음은 그 등록을 빼고 INFO 로그만 남긴다(origin 없는 로컬 저장소는 정상이라 경고하지 않음). `CentralClient.claim` 은 보고할 것이 없으면 칸을 뺀다. 최신 git 은 fetch 때 `origin/HEAD` 를 스스로 만들기도 한다 — `set-head --auto` 는 없을 때만.
 
 ### 브랜치 push (step 5)
@@ -932,7 +932,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 - seed: 새 워크스페이스(`create_session`)와 v10 마이그레이션이 `github · kind · * → bug_fix`(position 1) 한 행을 넣는다 — 지금 동작 그대로. `priority` 행은 seed 하지 않는다.
 - n8n 은 이 phase 에서 매핑 표를 읽지 않는다(라벨 규칙 `kind:<kind>` 그대로, 우선순위 `normal`). 직접 등록은 폼의 종류와 우선순위(기본 `normal`).
 - 설정 번호: `replace_field_mappings`(행 전부 교체 — 본문 순서가 `position`)는 같은 트랜잭션에서 `sessions.config_revision` +1(위 "설정 번호" 표의 "올린다" 열). seed 는 올리지 않는다. 매핑 변경은 이미 만든 업무를 바꾸지 않는다. 검사: `kind` 값은 등록된 종류, `priority` 값은 `PRIORITIES`, 같은 (원본 종류, 필드, 원본 값 casefold) 중복 금지 — 어기면 ValueError·변경 없음.
-- 운영자 API(`server/mapping_api.py`, 운영자 세션만): `GET /field-mappings` → `{"config_revision", "mappings": [{source_type, field, source_value, runloom_value}]}`(순서대로), `PUT /field-mappings` 본문 `{"mappings": [...]}`(Pydantic, 모르는 칸 422) → 교체 뒤 같은 모양. 검사 실패는 422 `invalid_field`(field `mappings`). 화면은 16-work-ui.
+- 운영자 API(`server/mapping_api.py`, 운영자 세션만): `GET /api/v1/field-mappings` → `{"config_revision", "mappings": [{source_type, field, source_value, runloom_value}]}`(순서대로), `PUT /api/v1/field-mappings` 본문 `{"mappings": [...]}`(Pydantic, 모르는 칸 422) → 교체 뒤 같은 모양. 검사 실패는 422 `invalid_field`(field `mappings`). 화면은 16-work-ui.
 - 구현(step 5): 수집(`github_sync._Intake`)은 소스마다 매핑 행·등록 종류를 한 번 읽고 새 이슈에 `issue_intake.issue_kind`·`issue_priority` 를 적용한다. 등록되지 않은 종류로 매핑돼도 `unmapped`. 이미 받은 이슈의 갱신은 매핑을 보지 않는다(종류는 첫 단계 그대로). `snapshot_to_task_spec(..., kind=<KindSpec>)` 의 능력·범위 키·완료 조건은 그 종류 봉투에서 온다(`ISSUE_KIND` 고정 제거).
 
 ### 양식 칸 (step 5)
@@ -1094,14 +1094,14 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | `GET /tasks`·`GET /work/{key}`·`GET /tasks/{id}`·`/live`·`/artifacts/{aid}`·`GET /chains/{id}`·`/live`·`GET /agents`·`GET /agents/{id}`·`GET /kinds`(`require_session`) | 로그인(설정 폼은 `manage_rules` 일 때만 보임) |
 | `GET /tasks/new`·`POST /tasks`(`require_session`) | `create_work` |
 | `POST /tasks/{id}/run`·`POST /tasks/{id}/select`·`POST /chains/{id}/start`(`require_session`), `POST /tasks/{id}/delegate`(`require_session` + `_require_operator_page`) | `delegate` |
-| `POST /tasks/{id}/review`(`require_session`), `POST /human-requests/{id}/responses`(`require_operator`) | `respond` |
-| `POST /kinds`·`POST /kinds/{kind}/delete`·`POST /rules`·`POST /rules/{id}/delete`(`require_session`), `PUT /field-mappings`(`require_operator`) | `manage_rules` |
-| `GET /field-mappings`(`require_operator`) | 로그인 |
+| `POST /tasks/{id}/review`(`require_session`), `POST /api/v1/human-requests/{id}/responses`(`require_operator`) | `respond` |
+| `POST /kinds`·`POST /kinds/{kind}/delete`·`POST /rules`·`POST /rules/{id}/delete`(`require_session`), `PUT /api/v1/field-mappings`(`require_operator`) | `manage_rules` |
+| `GET /api/v1/field-mappings`(`require_operator`) | 로그인 |
 | `GET /sources`·`POST /sources/tokens`·`POST /sources/tokens/{id}/revoke`(`require_session`) | `manage_connections` |
-| `GET /github/sources`·`GET /github/sources/{id}`(`require_operator`) | 로그인 |
-| `POST /github/sources/preview`·`POST /github/sources`·`PUT /github/sources/{id}`·`POST /github/sources/{id}/stop`·`PUT /github/sources/{id}/assignees/{uid}`(`require_operator`) | `manage_connections` |
+| `GET /api/v1/github/sources`·`GET /api/v1/github/sources/{id}`(`require_operator`) | 로그인 |
+| `POST /api/v1/github/sources/preview`·`POST /api/v1/github/sources`·`PUT /api/v1/github/sources/{id}`·`POST /api/v1/github/sources/{id}/stop`·`PUT /api/v1/github/sources/{id}/assignees/{uid}`(`require_operator`) | `manage_connections` |
 | `GET /operator/github/app/new`·`/callback`·`/setup`·`POST /operator/github/token`(`require_session` + `_require_operator_page`) | `manage_connections` |
-| `POST /operator/github/sources/{id}/baseline`(`require_operator`) | `manage_connections` |
+| `POST /api/v1/github/sources/{id}/baseline`(`require_operator`) | `manage_connections` |
 | `POST /operator/agents`·`POST /operator/agents/{id}/delete`(`require_operator`) | `manage_connections` |
 | `GET /operator`(`require_session`, 안에서 `is_operator`) | 로그인 — 절마다: 러너(연결 코드·러너 목록)는 `attach_runner`, 에이전트 수동 등록은 `manage_connections` |
 | `GET /operator/github`(`require_session`, 안에서 `is_operator`) | 로그인 — 카드 읽기와 [러너 붙이기]는 `attach_runner`, 연결·설정 폼은 `manage_connections` |
@@ -1109,9 +1109,9 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | `POST /operator/connect-codes`(`require_operator`) | `attach_runner` |
 | `POST /operator/connect-codes/{code}/revoke`(`require_operator`) | `attach_runner` + 발급자 본인, 아니면 `remove_any_runner` |
 | `GET /operator/notifications`·`POST …/webhook`·`…/webhook/delete`·`…/test`(`require_session` + `_require_operator_page`) | `manage_shared_notify` |
-| `GET /metrics`(`require_session`, 안에서 `is_operator`), `GET /metrics.json`·`/metrics.csv`(`require_operator`) | `view_metrics` |
+| `GET /metrics`(`require_session`, 안에서 `is_operator`), `GET /api/v1/metrics`·`/api/v1/metrics.csv`(`require_operator`) | `view_metrics` |
 | `GET /`·`GET·POST /login`·`/login/setup`·`/login/recover`·`/invite/{t}`·`/reset/{t}`·`POST /logout`·`GET /healthz` | 인증 경로(위 흐름) |
-| `/connector/*`·`/executions/*`(연결 토큰)·`POST /sources/{source}/chains`(입구 토큰) | 그대로 — 멤버 로그인과 무관 |
+| `/connector/*`·`/executions/*`(연결 토큰)·`POST /api/v1/sources/{source}/chains`(입구 토큰) | 그대로 — 멤버 로그인과 무관 |
 
 새 경로(step 7·10):
 
@@ -1146,7 +1146,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 경로 | 기록 |
 |---|---|
 | `POST /tasks/{id}/delegate` [에이전트에게 맡기기] | 누른 멤버 — `mark_issue_delegated(..., member_id=)` |
-| `POST /human-requests/{id}/responses` action `retry` [다시 맡기기] | 응답한 멤버 — `record_human_response_once(..., member_id=)` 가 `retry_task_id` 와 함께 |
+| `POST /api/v1/human-requests/{id}/responses` action `retry` [다시 맡기기] | 응답한 멤버 — `record_human_response_once(..., member_id=)` 가 `retry_task_id` 와 함께 |
 | `POST /chains/{id}/start` 체인 시작 | 누른 멤버 — 그 체인의 업무 전부 |
 | `POST /tasks` 직접 등록 | 등록한 멤버 — `insert_work_item_task(..., requested_by_member_id=)` |
 | `POST /tasks/{id}/run` 직접 실행 | 누른 멤버 — 그 단계의 업무 |
@@ -1171,7 +1171,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 `auth.check_origin(request, settings) -> bool` — 앱 미들웨어가 `GET`·`HEAD`·`OPTIONS` 밖의 모든 요청에 부르고, 거짓이면 403 `forbidden_origin`("요청 출처를 확인할 수 없습니다.", 화면은 HTML·API 는 JSON 오류 본문). 규칙:
 
-1. 제외(Bearer 인증 — 쿠키를 보지 않는다): 경로가 `/connector/` 로 시작, `/executions/` 로 시작, 또는 `/sources/{source}/chains` 모양(`/sources/tokens` 는 쿠키 경로라 검사 대상).
+1. 제외(Bearer 인증 — 쿠키를 보지 않는다): 경로가 `/connector/` 로 시작, `/executions/` 로 시작, 또는 `/api/v1/sources/{source}/chains` 모양(`/sources/tokens` 는 쿠키 경로라 검사 대상).
 2. 출처 = `Origin` 헤더. 없으면 `Referer` 의 scheme+host+port. 둘 다 없거나 `Origin: null` 이면 거짓.
 3. 허용 = 요청 base URL(`request.base_url`)의 scheme+host+port, 그리고 `WORKFLOW_PUBLIC_URL` 이 있으면 그 scheme+host+port. 비교는 소문자, 기본 포트(80·443)는 채워서.
 
@@ -1186,7 +1186,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | 단계 | 기록 |
 |---|---|
 | 연결 코드 발급(`POST /operator/connect-codes`, 카드 [러너 붙이기]) | `issue_connect_code(conn, now, *, issued_by_member_id)` → `connect_codes.issued_by_member_id` |
-| 교환(`POST /connector/exchange`) | `exchange_connect_code` 가 같은 트랜잭션에서 `connectors.owner_member_id` = 코드의 발급자 |
+| 교환(`POST /api/v1/connector/exchange`) | `exchange_connect_code` 가 같은 트랜잭션에서 `connectors.owner_member_id` = 코드의 발급자 |
 | 에이전트 | 소유자 = `agents.connector_id` 의 `connectors.owner_member_id`(에이전트에 칸 없음). `connection_type='local'` 이 아니거나 연결 프로그램이 없으면 소유자 없음 |
 
 - 화면: 운영자 화면 러너 목록·에이전트 목록·상세에 "소유자 <표시 이름>", 없으면 "관리자 관리". 연결 코드 목록은 관리자면 전부, 멤버면 자기가 발급한 것만.
@@ -1266,7 +1266,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 | `/metrics` | `/monitor`(쿼리 그대로) |
 | `/work/{key}` | `/tasks?open=<key>` |
 
-**바꾸지 않는 경로**: 모든 POST(성공 뒤 303 대상만 새 주소로 — step 6), `/operator/github/app/new`·`/operator/github/app/callback`·`/operator/github/app/setup`(GitHub App 에 등록된 URL), `/sources/{source}/chains`(입구 API), `/sources/{id}` 모양의 다른 경로, `/agents/{agent_id}`(에이전트 상세), `/chains/{chain_id}`·`/live`, `/tasks/new`, `/tasks/{task_id}`(단계 상세)·`/tasks/{task_id}/live`·`/tasks/{task_id}/artifacts/{artifact_id}`, `/metrics.json`·`/metrics.csv`, `/field-mappings`, `/github/sources*`, `/human-requests/*`, 러너 API(`/connector/*`·`/executions/*`), 로그인·초대·재설정·`/me*`·`/healthz`.
+**바꾸지 않는 경로**: 모든 POST(성공 뒤 303 대상만 새 주소로 — step 6), `/operator/github/app/new`·`/operator/github/app/callback`·`/operator/github/app/setup`(GitHub App 에 등록된 URL), `/api/v1/sources/{source}/chains`(입구 API), `/sources/{id}` 모양의 다른 경로, `/agents/{agent_id}`(에이전트 상세), `/chains/{chain_id}`·`/live`, `/tasks/new`, `/tasks/{task_id}`(단계 상세)·`/tasks/{task_id}/live`·`/tasks/{task_id}/artifacts/{artifact_id}`, `/api/v1/metrics`·`/api/v1/metrics.csv`, `/api/v1/field-mappings`, `/api/v1/github/sources*`, `/api/v1/human-requests/*`, 러너 API(`/connector/*`·`/executions/*`), 로그인·초대·재설정·`/me*`·`/healthz`.
 
 ### 끝난 업무와 빠른 필터 (step 2)
 
@@ -1616,7 +1616,7 @@ worktree 준비(step 4, `git_ops.link_prepared_paths(repo, worktree, links) -> l
 
 | 사건 | 부르는 함수 |
 |---|---|
-| 러너 실행 이벤트(`POST /executions/{id}/events`) — 새로 저장된 이벤트(재전송이 아님)마다 | `machine_api.post_event` 가 `repo.append_event` 뒤 `work_actions.refresh_task_status(conn, task_id, now, settings)`(`request.app.state.settings`). 단계가 마감됐으면 아무것도 하지 않는다(`update_task_status` 규칙 그대로). 이 함수가 `update_task_status` → `_refresh_stage_work` 로 업무 상태도 다시 계산한다 |
+| 러너 실행 이벤트(`POST /api/v1/executions/{id}/events`) — 새로 저장된 이벤트(재전송이 아님)마다 | `machine_api.post_event` 가 `repo.append_event` 뒤 `work_actions.refresh_task_status(conn, task_id, now, settings)`(`request.app.state.settings`). 단계가 마감됐으면 아무것도 하지 않는다(`update_task_status` 규칙 그대로). 이 함수가 `update_task_status` → `_refresh_stage_work` 로 업무 상태도 다시 계산한다 |
 | 워커 `_start_ready_tasks` 가 활성 실행이 있는 순환 단계를 볼 때 `_resume` 이 False 면 | `self._refresh_task(conn, task_id)` |
 
 `accepted` → `실행 요청됨 · 접수 확인`, `started`·`progress` → `실행 중 · <마지막 진행>`, `result_ready` → 판정 전 `확인 필요 · 판정 대기`(워커 판정이 뒤이어 바꾼다). `failed` 이벤트는 **다시 계산하지 않는다**(step 11 수정) — 단계 마감(`실패`)과 `stage_failed` 요청은 워커가 한 트랜잭션으로 쓴다. 이벤트 경로가 `실패` 를 먼저 저장하면 열린 요청 없이 모든 단계가 닫혀 업무가 `종료`(끝 상태)로 굳었다(`tests/e2e/test_real_repo.py` test_07).
@@ -2281,7 +2281,7 @@ ORDER BY w.created_at, w.key_number
 | `GET /connect?tab=triage` | `team.MANAGE_CONNECTIONS`(아니면 탭 없음·403) | `version`(선택 — 그 버전 본문 읽기 전용) | 연결 화면 판단 탭 | 404 `not_found`(없는 버전) |
 | `POST /operator/triage/criteria` | `team.MANAGE_CONNECTIONS` | `body`, `expected_version` | `repo.save_triage_criteria` → 303 `/connect?tab=triage` | 422 `invalid_field`(`body` 빈 값·8000자 넘음), 409 `stale_criteria` "다른 사람이 먼저 고쳤습니다 — 새로 고친 뒤 다시" |
 | `POST /operator/triage/autostart/{kind}` | `team.MANAGE_CONNECTIONS` | `enabled`(`on`\|없음), `threshold` | `repo.save_triage_autostart` → 303 | 404(없는 종류·판단 종류·시작할 수 없는 종류), 422 `invalid_field`(`threshold`), 409 `triage_autostart_locked` "판단 기록 n/20 — 20건이 되면 켤 수 있습니다" |
-| `PUT /github/sources/{id}` | 기존(`MANAGE_CONNECTIONS`) | 기존 본문 + `triage_agent_id` | 기존 저장 | 기존 + 422 `agent_not_registered`·`agent_capability_mismatch`(`code.triage`)·`triage_agent_policy` |
+| `PUT /api/v1/github/sources/{id}` | 기존(`MANAGE_CONNECTIONS`) | 기존 본문 + `triage_agent_id` | 기존 저장 | 기존 + 422 `agent_not_registered`·`agent_capability_mismatch`(`code.triage`)·`triage_agent_policy` |
 
 POST 는 모두 기존 Origin 검사(phase 15)를 거친다. 결과 문구·이유·기준 본문은 응답·로그에 비밀값을 싣지 않는다(판단에는 비밀값이 들어가지 않는다 — 요청문은 업무 글·후보·숫자뿐).
 
@@ -2343,7 +2343,7 @@ repo(step 8): `save_triage_criteria(conn, session_id, body: str, *, expected_ver
 GET /monitor?tab=…&from&to ─┬─ before_after: metrics_api._report (그대로) + repo.config_changes_by_revision → 그룹 머리
                             ├─ triage:       repo.list_triage_facts → triage_metrics.compute_triage_quality → views.triage_quality_context
                             └─ assignees:    repo.list_assignee_facts → assignee_metrics.compute_assignee_metrics(now) → views.assignee_context
-GET /metrics.json · /metrics.csv ─ 같은 세 계산을 더한다(기존 키·행 뒤에)
+GET /api/v1/metrics · /api/v1/metrics.csv ─ 같은 세 계산을 더한다(기존 키·행 뒤에)
 GET /connect?tab=triage ─ 자동 시작 행마다 triage_metrics.autostart_preview(kind, 저장된 기준값) → 한 줄
 ```
 
@@ -2459,8 +2459,8 @@ GET /connect?tab=triage ─ 자동 시작 행마다 triage_metrics.autostart_pre
 |---|---|---|---|---|
 | `GET /monitor` | `team.VIEW_METRICS`(관리자·멤버 — 사용자 결정 4) | `tab`(`before_after`\|`triage`\|`assignees`, 기본 `before_after`), `from`·`to`(공통, 빈 값 = 지정 안 함), `group_by`(전후 탭만 쓰지만 값 검증은 늘) | 탭 머리 = 연결 화면 탭과 같은 링크 모양(`from`·`to`·`group_by` 유지). 계산은 `metrics_api` 와 같은 함수 | 422 `invalid_field`: `tab` "탭은 전후·판단·담당자별 중 하나입니다."(field `tab`), 기간·그룹은 지금 문구 그대로 |
 | `GET /metrics` | (그대로) | — | 303 `/monitor?…`(쿼리 그대로 — `tab` 도 따라간다) | — |
-| `GET /metrics.json` | `team.VIEW_METRICS`(그대로) | `from`·`to`·`group_by`(그대로) | 기존 키(`from`·`to`·`group_by`·`groups`·`baselines`) 그대로 + 새 키 `triage`(`overall`·`by_kind`·`by_criteria`·`confidence` — 각 칸은 `TriageQuality`·`ConfidenceBucket` 이름 그대로, 기간 적용, `group_by` 무관), `assignees`(`members`·`agents`·`unassigned_open`·`responses_unknown_member` — 표시 이름 포함, 기간 적용), `config_changes`(`[{revision, area, action, subject, by_member_id, by_member_name, occurred_at}]`, `revision`·`id` 순, 기간 무관) | 그대로 |
-| `GET /metrics.csv` | (그대로) | (그대로) | 열 `CSV_COLUMNS` 그대로, 기존 행 뒤에 새 행. `area` = `triage` 일 때 `group` = `triage:all`·`triage:kind:<종류>`·`triage:criteria:v<n>`·`triage:confidence:<구간 키>`, `area` = `assignee` 일 때 `group` = `member:<member_id>`·`agent:<agent_id>`·`unassigned`. `metric` = 결과 칸 이름(분포는 `failed_code:<code>`·`handling:<값>`·`proceed:<값>`, 건수는 `total`). id 만 — 표시 이름·설정 변경 목록은 CSV 에 없다 | 그대로 |
+| `GET /api/v1/metrics` | `team.VIEW_METRICS`(그대로) | `from`·`to`·`group_by`(그대로) | 기존 키(`from`·`to`·`group_by`·`groups`·`baselines`) 그대로 + 새 키 `triage`(`overall`·`by_kind`·`by_criteria`·`confidence` — 각 칸은 `TriageQuality`·`ConfidenceBucket` 이름 그대로, 기간 적용, `group_by` 무관), `assignees`(`members`·`agents`·`unassigned_open`·`responses_unknown_member` — 표시 이름 포함, 기간 적용), `config_changes`(`[{revision, area, action, subject, by_member_id, by_member_name, occurred_at}]`, `revision`·`id` 순, 기간 무관) | 그대로 |
+| `GET /api/v1/metrics.csv` | (그대로) | (그대로) | 열 `CSV_COLUMNS` 그대로, 기존 행 뒤에 새 행. `area` = `triage` 일 때 `group` = `triage:all`·`triage:kind:<종류>`·`triage:criteria:v<n>`·`triage:confidence:<구간 키>`, `area` = `assignee` 일 때 `group` = `member:<member_id>`·`agent:<agent_id>`·`unassigned`. `metric` = 결과 칸 이름(분포는 `failed_code:<code>`·`handling:<값>`·`proceed:<값>`, 건수는 `total`). id 만 — 표시 이름·설정 변경 목록은 CSV 에 없다 | 그대로 |
 | `GET /connect?tab=triage` | `team.MANAGE_CONNECTIONS`(그대로) | (그대로) | 자동 시작 행마다 미리보기 한 줄 + `/monitor?tab=triage` 링크 | 그대로 |
 
 POST 경로는 새로 없다. 설정 저장 경로(위 지점 표)는 응답·동작 그대로이고 기록만 더한다.
@@ -2716,7 +2716,7 @@ n8n 쪽은 노드 4개다 — Webhook(또는 Error Trigger) → HTTP Request(이
 | 단계 | n8n | 이 제품 |
 |---|---|---|
 | 트리거 | 실패 이벤트·Webhook 을 받는다 | — |
-| 접수 | HTTP Request 로 `POST /sources/n8n/chains` | 항목을 라벨 규칙으로 매핑·구성해 체인 + Task 를 만들고 첫 업무를 시작한다 |
+| 접수 | HTTP Request 로 `POST /api/v1/sources/n8n/chains` | 항목을 라벨 규칙으로 매핑·구성해 체인 + Task 를 만들고 첫 업무를 시작한다 |
 | 실행·인계 | Wait 노드에서 멈춘다 | 계약 판정·근거 인계·후속 착수 — 사람 조작 없이 A → B |
 | 사람 차례 | callback 으로 깨어나 Slack 에 알린다 | `chain_settled` 시점에 `ChainCallback` 을 체인당 1회 POST |
 | 검토·승인 | — | 화면(`chain_url`)에서 사람이 승인·수정 요청·종료 |
@@ -2725,7 +2725,7 @@ n8n 쪽은 노드 4개다 — Webhook(또는 Error Trigger) → HTTP Request(이
 
 - **출처**: `n8n` 은 `TaskSource` 하나다 — `chains.source` 값 `'n8n'`, `domain/task_sources.Source` 에 `"n8n"`. 본문 항목 `InboundItem` 은 `Issue` 와 같은 모양(`key`·`title`·`body`·`labels`·`blocked_by`, `url` 은 None)이고 라벨 규칙(`incident`+`workflow:<id>`+`run:<run_id>`, `bug`+`repo:<id>`, `kind:<kind>`+`<scope_key>:<value>`)·`map_issue`·`compose` 를 그대로 쓴다. 매핑·구성·워커 후속 코드에 n8n 분기를 두지 않는다. fixture 출처 목록 `adapters/task_sources.SOURCES`(`github`·`jira`)는 그대로라 n8n 은 가져오기 화면(`/tasks/import`)에 나오지 않는다.
 - **토큰 발급·인증**: 워크스페이스(세션)가 `/sources` 화면에서 입구 토큰을 발급한다(`repo.issue_source_token`, 활성 토큰은 세션당 `SOURCE_TOKEN_LIMIT` 5개 — 초과는 422 `invalid_field`). 원문은 `SOURCE_TOKEN_PREFIX`(`wfs_`) + `secrets.token_urlsafe(32)`, 발급 응답 화면에서 한 번만 보이고(303 없이 같은 화면 렌더 — 쿠키·쿼리에 두지 않는다) 서버에는 sha256 만 남는다(`source_tokens`, 연결 토큰 `wfc_` 와 같은 방식). `Authorization: Bearer wfs_…` → `auth.require_source_token` → `token_id` + `session_id` + `source`, 성공 시 `last_used_at` 갱신. 세션 쿠키로는 통과하지 않는다(브라우저 CSRF 경로 없음). 취소(`repo.revoke_source_token`, 같은 세션만·재취소 멱등)하면 다음 요청부터 401 `unauthenticated`. 경로의 출처가 `n8n` 이 아니면 404 `not_found`, 토큰의 `source` 가 경로와 다르면 403 `forbidden`.
-- **`POST /sources/n8n/chains`**: JSON 본문 `InboundChainRequest`(`contract_version`, `items` 1~10개 — `key` 유일, `blocked_by` 는 같은 요청의 `key` 만, `callback_url` 선택), 응답 201 `InboundChainResponse`(`chain_id`·`chain_url`·`started`·`start_error`·`tasks`·`skipped`). 라우트는 `server/inbound_api.py` 하나이고 Task 를 직접 만들지 않는다 — 항목을 `Issue`(`source="n8n"`, `url=None`)로 바꿔 가져오기 화면과 **같은 본체** `web.create_chain`(등록 에이전트 확인 → `compose` → 활성 한도 → `insert_chain` → Task 삽입)으로 체인 + Task 들을 만들고, `web.start_chain`(첫 노드를 `_run_task` 로 실행, `mark_chain_started`)으로 **접수 즉시 첫 업무 시작을 시도한다** — n8n 트리거가 곧 사람의 "워크플로우 시작" 조작이다. 두 함수는 `error=` 인자로 웹(`PageError`)과 입구 API(`ApiError`)의 오류 형식만 다르다. 멱등 키는 없다 — 같은 본문을 두 번 보내면 체인 2개가 생긴다.
+- **`POST /api/v1/sources/n8n/chains`**: JSON 본문 `InboundChainRequest`(`contract_version`, `items` 1~10개 — `key` 유일, `blocked_by` 는 같은 요청의 `key` 만, `callback_url` 선택), 응답 201 `InboundChainResponse`(`chain_id`·`chain_url`·`started`·`start_error`·`tasks`·`skipped`). 라우트는 `server/inbound_api.py` 하나이고 Task 를 직접 만들지 않는다 — 항목을 `Issue`(`source="n8n"`, `url=None`)로 바꿔 가져오기 화면과 **같은 본체** `web.create_chain`(등록 에이전트 확인 → `compose` → 활성 한도 → `insert_chain` → Task 삽입)으로 체인 + Task 들을 만들고, `web.start_chain`(첫 노드를 `_run_task` 로 실행, `mark_chain_started`)으로 **접수 즉시 첫 업무 시작을 시도한다** — n8n 트리거가 곧 사람의 "워크플로우 시작" 조작이다. 두 함수는 `error=` 인자로 웹(`PageError`)과 입구 API(`ApiError`)의 오류 형식만 다르다. 멱등 키는 없다 — 같은 본문을 두 번 보내면 체인 2개가 생긴다.
 - **즉시 시작이 거부될 때**: 첫 업무가 후보 없음(409 `selection_required`)·상한(429 `daily_limit_reached` — 진단 상한)·조건 미충족(409 — 예: 항목이 모두 `skipped` 라 Task 가 없으면 `invalid_transition`)이면 체인은 남기고 `started=false` + `start_error`(`start_chain` 이 던진 `ApiError` 의 본문)로 201 을 돌려준다. 사람이 화면에서 에이전트를 확정하고 시작하면 된다. 체인을 만들기 전의 거부는 오류다 — 세션에 등록된 에이전트가 없으면 422 `agent_not_registered`, `blocked_by` 순환은 422 `dependency_cycle`, 세션 활성 업무 상한은 429 `active_task_limit_reached`(가져오기와 같은 검사).
 - **`callback_url`**: 선택이며 계약(`CallbackUrl`)은 http/https 시작·공백 없음·2048자 이하만 보고 정규화하지 않는다(n8n 의 `$execution.resumeUrl` 을 그대로 저장·전송). 허용 목록 밖이면 체인을 만들기 전에 422 `callback_host_not_allowed`(아래 출구). `items_json` 에 n8n 이 보낸 항목 원문(`skipped` 된 것 포함)을 남겨 체인 화면의 구성 이유를 다시 계산한다(가져오기의 fixture 재조회에 해당, `views._chain_issues`).
 
@@ -2748,7 +2748,7 @@ n8n 쪽은 노드 4개다 — Webhook(또는 Error Trigger) → HTTP Request(이
 
 ### 화면
 
-- `/sources`(사이드바 "입구" 링크, 세션 전용 — 운영자 화면이 아니다): 입구 주소(`WORKFLOW_PUBLIC_URL` 또는 요청 base URL + `/sources/n8n/chains`), 토큰 표(ID·라벨·발급·마지막 사용·상태 — 활성이면 `취소` 버튼, 취소됨이면 시각; 해시는 화면에 넘기지 않는다), 발급 폼(라벨 선택, `POST /sources/tokens` → 같은 화면 200 에 원문 한 번 + `이 값은 다시 볼 수 없습니다`), 취소(`POST /sources/tokens/{token_id}/revoke` → 303, 다른 세션은 404), CONTRACT 12절 (a) curl 예시(토큰 자리는 `wfs_…`), callback 허용 목록 상태 한 줄(비어 있으면 `callback_url` 이 거부된다고 안내).
+- `/sources`(사이드바 "입구" 링크, 세션 전용 — 운영자 화면이 아니다): 입구 주소(`WORKFLOW_PUBLIC_URL` 또는 요청 base URL + `/api/v1/sources/n8n/chains`), 토큰 표(ID·라벨·발급·마지막 사용·상태 — 활성이면 `취소` 버튼, 취소됨이면 시각; 해시는 화면에 넘기지 않는다), 발급 폼(라벨 선택, `POST /sources/tokens` → 같은 화면 200 에 원문 한 번 + `이 값은 다시 볼 수 없습니다`), 취소(`POST /sources/tokens/{token_id}/revoke` → 303, 다른 세션은 404), CONTRACT 12절 (a) curl 예시(토큰 자리는 `wfs_…`), callback 허용 목록 상태 한 줄(비어 있으면 `callback_url` 이 거부된다고 안내).
 - 체인 화면: 출처 칩 `n8n`(`SOURCE_LABELS`), `시연 데이터` 태그는 n8n 이 아닐 때만. callback 한 줄(`views._callback_state` → `<p class="callback-line" data-callback-state>`): `callback · {host} · 대기(사람 차례가 되면 보냄)` / `대기 · 재시도 {n}회 · {last_error}` / `전송됨 {n분 전}` / `실패 {n}회 · {last_error}`(미전송이고 `callback_attempts >= 5`). URL 전체는 찍지 않는다. `callback_url` 이 없으면 줄이 없다. 구성 이유는 `items_json` 으로 다시 계산한다(`views._chain_issues`).
 
 ### 한계
@@ -2789,10 +2789,10 @@ DB가 상태의 기준이다. 워커는 트랜잭션 안에서 실행을 생성�
 |---|---|
 | 서비스 → API `POST /runs` | 동일 Execution ID는 같은 실행 반환. 새 접수는 202와 실행 참조. 접수와 시작 구분 |
 | 서비스 → API `GET /runs/{execution_id}` | 접수·실행·결과·실패, 조회 이력·산출물 참조 수집 |
-| 연결 프로그램 → 서비스 `POST /connector/claim` | 인증된 프로그램에 배정된 실행 하나를 원자적으로 인수 |
-| 연결 프로그램 → 서비스 `POST /executions/{id}/events` | 접수·시작·진행·종료 이벤트. 같은 순번은 중복 반영하지 않음 |
-| 연결 프로그램 ↔ 서비스 `GET/POST /executions/{id}/artifacts` | 허용된 입력 다운로드·결과 업로드, 해시 확인 |
-| 연결 프로그램 → 서비스 `POST /connector/heartbeat` | 마지막 연결·현재 실행 ID 보고. 연결 생존과 모델 진행 구분. 보고한 실행이 중앙에서 이미 끝났으면 응답 `current_execution_closed` — 재시작으로 끊긴 실행을 러너가 내려놓는다([CONTRACT](CONTRACT.md) 2.1) |
+| 연결 프로그램 → 서비스 `POST /api/v1/connector/claim` | 인증된 프로그램에 배정된 실행 하나를 원자적으로 인수 |
+| 연결 프로그램 → 서비스 `POST /api/v1/executions/{id}/events` | 접수·시작·진행·종료 이벤트. 같은 순번은 중복 반영하지 않음 |
+| 연결 프로그램 ↔ 서비스 `GET/POST /api/v1/executions/{id}/artifacts` | 허용된 입력 다운로드·결과 업로드, 해시 확인 |
+| 연결 프로그램 → 서비스 `POST /api/v1/connector/heartbeat` | 마지막 연결·현재 실행 ID 보고. 연결 생존과 모델 진행 구분. 보고한 실행이 중앙에서 이미 끝났으면 응답 `current_execution_closed` — 재시작으로 끊긴 실행을 러너가 내려놓는다([CONTRACT](CONTRACT.md) 2.1) |
 
 API 추가 입력은 조사할 `run_id`다. 로컬 추가 입력은 `local_registration_id`, `base_commit`, 인계 자료 참조다. 외부에서 셸 명령 문자열을 받지 않고 어댑터가 고정된 실행 파일과 인자 배열을 만든다. 연결 토큰을 Codex 프로세스 환경에 상속하지 않는다.
 
@@ -2840,7 +2840,7 @@ PRD의 조사 요청은 이 봉투 안의 `task_id`, `request`, `target.run_id`�
 
 새 접수는 202, 동일 요청 재접수·상태 조회는 200과 `execution_id`, `status`, `last_event_seq`, `result_artifact_id`, `error`를 반환한다. 결과 전에는 결과 ID가 null, 실행 실패 전에는 error가 null이다. error는 `code`, `message`를 가진다. 결과 스키마가 깨진 채 프로세스가 끝난 경우도 수신 증거를 보존하고 확인 필요로 판정한다.
 
-`POST /connector/claim`은 `connector_id`를 인증된 주체와 대조한다. 아직 접수 확인되지 않은 배정이 있으면 같은 실행을 다시 반환하며, 작업이 없으면 204다. 프로그램은 로컬 접수 기록을 먼저 저장한 뒤 accepted 이벤트를 보낸다. 첫 데모는 연결 프로그램당 실행 하나로 제한한다. 이는 향후 독립 업무 병렬 실행을 없애는 제품 결정이 아니다.
+`POST /api/v1/connector/claim`은 `connector_id`를 인증된 주체와 대조한다. 아직 접수 확인되지 않은 배정이 있으면 같은 실행을 다시 반환하며, 작업이 없으면 204다. 프로그램은 로컬 접수 기록을 먼저 저장한 뒤 accepted 이벤트를 보낸다. 첫 데모는 연결 프로그램당 실행 하나로 제한한다. 이는 향후 독립 업무 병렬 실행을 없애는 제품 결정이 아니다.
 
 ### 실행 이벤트
 
@@ -3063,7 +3063,7 @@ B는 실제 테스트 기록·diff·보고서를 제출한다. 연결 프로그�
 | 4 | 진단 API | 실제 조회·정상 인계·자료 누락/충돌 보류·입력에 따른 진단 변화 |
 | 5 | A → B | 근거 검증 후 자동 착수, 재현 실패 → 수정 후 통과, 정확한 보고서와 사람 검토 대기 |
 | 6 | 세 번째 종류 — 대본 e2e 통과(`tests/e2e/test_scenario.py` test_22~28) + 실제 Claude 1회 통과(C 만 실제 `claude -p`, outcome `changes_requested`; 규칙 삭제 시나리오는 대본만) — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 두 절 | 화면으로 종류 `review` 와 규칙 `code_change --[ready_for_review]--> review` 를 등록하면 `composition.py`·`worker.py` 변경 없이 진단 → 수정 → 검토가 사람 조작 없이 착수(B 승인 전에 C), 규칙 삭제 시 C 대기, 검토는 저장소 불변 |
-| 7 | n8n 입구·출구 — 대본 e2e 통과(`tests/e2e/test_scenario.py` test_29~35: 토큰 발급 → 쿠키 없이 `POST /sources/n8n/chains` 201 → A 완료 → B 자동 착수 → `확인 필요 · 검토 대기` → 수신기가 `ChainCallback` 1건, B 승인 뒤에도 두 번째 없음, 허용 목록 밖 422·토큰 없음 401·취소 뒤 401, 36 passed 130초 — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 n8n 절) + **실제 n8n 1회 통과**(n8n 2.39.10 Docker, CLI import·publish, Webhook → HTTP Request 201 → A → B 대본 → 워커 callback 200 이 Wait 노드를 깨워 Slack 노드까지 `success`, 트리거부터 6.5초, B 승인 뒤 두 번째 없음 — 같은 문서 실제 n8n 절) | 실제 n8n(Docker)이 POST 한 항목으로 체인이 생겨 A → B 가 사람 조작 없이 돌고, B 검토 대기 시점에 callback 이 n8n Wait 노드를 깨운다(2xx) |
+| 7 | n8n 입구·출구 — 대본 e2e 통과(`tests/e2e/test_scenario.py` test_29~35: 토큰 발급 → 쿠키 없이 `POST /api/v1/sources/n8n/chains` 201 → A 완료 → B 자동 착수 → `확인 필요 · 검토 대기` → 수신기가 `ChainCallback` 1건, B 승인 뒤에도 두 번째 없음, 허용 목록 밖 422·토큰 없음 401·취소 뒤 401, 36 passed 130초 — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-22 n8n 절) + **실제 n8n 1회 통과**(n8n 2.39.10 Docker, CLI import·publish, Webhook → HTTP Request 201 → A → B 대본 → 워커 callback 200 이 Wait 노드를 깨워 Slack 노드까지 `success`, 트리거부터 6.5초, B 승인 뒤 두 번째 없음 — 같은 문서 실제 n8n 절) | 실제 n8n(Docker)이 POST 한 항목으로 체인이 생겨 A → B 가 사람 조작 없이 돌고, B 검토 대기 시점에 callback 이 n8n Wait 노드를 깨운다(2xx) |
 | 8 | GitHub 업무 순환 — 대역 e2e 통과(`tests/e2e/test_github_cycle.py` 13개: 127.0.0.1 가짜 GitHub·가짜 codex·임시 저장소 2개로 A~G 전체 순환, 수정 요청 재작업·상한 0·사람 응답 후 재개·POST 응답 유실 조정·재시작 멱등 — [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-23 대역 절) + **실제 GitHub·실제 Claude 1회 통과**(`claude` 2.1.280, 비공개 테스트 저장소의 버그 이슈 2건 → 재현 테스트 선작성·수정 → 판정 → `code_review` 자동 생성 → `approved` → 이슈마다 댓글 1개 POST 후 PATCH 갱신, 순환 본체 약 2분, 사람 조작 0회, push·PR·merge·이슈 종료 없음, 비용 CLI 보고 약 $1.19 — 같은 문서 실연동 절). **재작업 경로(`changes_requested`)는 실연동 미관찰** — 두 검토가 모두 승인 | 지정한 이슈만 접수해 담당 Agent 가 고치고, 결과 커밋을 읽은 검토가 스키마대로 답하며, 원본 이슈에 댓글 하나가 만들어져 갱신된다. 기준 브랜치·원격은 변하지 않는다 |
 
 스택·모델 평가안과 계약 v1의 필드·DB 제약을 작성했다. 다음은 중앙 서비스의 자동 정보 제안 방식, 사용자 인증·배포 환경, 실행 예산을 구체화하고 작은 구현 단계로 나누는 것이다. 실제 JSON Schema 생성·DB 마이그레이션·API 구현은 구현 요청 후 시작한다. 새 기능은 TDD로 시작한다. 기존 하네스를 수정하면 `python3 -m pytest scripts/`를 통과시킨다.
@@ -3439,7 +3439,7 @@ POST 는 모두 기존 Origin 검사를 거친다. 응답·로그에 비밀값�
 
 | 사건 | 언제 | 받는 사람 | `task_id` | `dedupe_key` | 문구(공용 경로는 끝에 ` → 이름`) | 링크 |
 |---|---|---|---|---|---|---|
-| `internal_request_received` | 사내 요청 행이 생김 — 사람 생성(웹 `POST /work/{key}/internal-requests`·API `POST /work-items/{id}/internal-requests`)·재전달(웹·API `reroute` — 알림 대상은 새로 생긴 요청 `new_request_id`)·[제안대로] `internal_request`. 같은 접수 키 재전송은 같은 `request_id` 라 `dedupe_key` 가 막는다 | 요청의 `recipient_member_id` 한 명 | NULL | `internal_request_received:<request_id>` | `[Runloom] 요청 받음 — <원래 업무 제목>: <요청자 이름> · <system_id>/<request_kind> · <목적 첫 줄 80자>` | `<public_url>/requests` |
+| `internal_request_received` | 사내 요청 행이 생김 — 사람 생성(웹 `POST /work/{key}/internal-requests`·API `POST /api/v1/work-items/{key}/internal-requests`)·재전달(웹·API `reroute` — 알림 대상은 새로 생긴 요청 `new_request_id`)·[제안대로] `internal_request`. 같은 접수 키 재전송은 같은 `request_id` 라 `dedupe_key` 가 막는다 | 요청의 `recipient_member_id` 한 명 | NULL | `internal_request_received:<request_id>` | `[Runloom] 요청 받음 — <원래 업무 제목>: <요청자 이름> · <system_id>/<request_kind> · <목적 첫 줄 80자>` | `<public_url>/requests` |
 | `next_step_proposed` | 결과 뒤 판단이 `proposed` 가 됨(`_judge_triage`) | `turn_recipients_of(원래 업무)` | 원인 Task | `next_step_proposed:<triage_id>` | `[Runloom] 다음 단계 제안 — <업무 제목>: <action_line> · 확신도 0.82` | 업무 주소(`work_path`) |
 
 `worker.enqueue_request_notification(conn: Connection, settings: Settings, secrets: SecretStore, *, request_id: str, now: str) -> None` — `enqueue_event_notification` 과 같은 경로 규칙(공용 웹훅 한 행 + 개인 웹훅을 저장한 받는 사람 행, 둘 다 없으면 쌓지 않음), 제목 = 원래 업무 제목, `task_id` NULL, payload `{"title", "task_url": <public_url>/requests, "pr_url": None}`. 웹(요청 생성·재전달)과 `work_actions.accept_next_step` 이 트랜잭션 뒤 부른다(비밀 저장소가 없으면 아무것도 하지 않는다). `next_step_proposed` 는 `Worker._notify(conn, "next_step_proposed", 원인 Task, f"next_step_proposed:{triage_id}", detail=…)`.
@@ -3586,7 +3586,7 @@ POST 는 모두 기존 Origin 검사를 거친다. 응답·로그에 비밀값�
 
 `web.py` 오류 문구 안의 `/operator/github 에서 …`(GitHub App 콜백·설치 오류)는 그대로 둔다(그 주소는 `/repos` 로 넘어간다).
 
-**바꾸지 않는 경로**: 모든 기존 POST, `/operator/github/app/new`·`/callback`·`/setup`(GitHub App 에 등록된 URL), `/agents/{agent_id}`(에이전트 상세), `/github/sources*`·`/responsibilities`(JSON API), `/sources/{source}/chains`(입구 API), 러너 API, 로그인·초대(`/invite/{token}`)·재설정·`/me*`, `/tasks*`·`/work/*`·`/requests*`·`/monitor`·`/start`.
+**바꾸지 않는 경로**: 모든 기존 POST, `/operator/github/app/new`·`/callback`·`/setup`(GitHub App 에 등록된 URL), `/agents/{agent_id}`(에이전트 상세), `/api/v1/github/sources*`·`/api/v1/responsibilities`(JSON API), `/api/v1/sources/{source}/chains`(입구 API), 러너 API, 로그인·초대(`/invite/{token}`)·재설정·`/me*`, `/tasks*`·`/work/*`·`/requests*`·`/monitor`·`/start`.
 
 **사이드바**(1) — 순서: `업무`(`/tasks`, 내 차례 수 배지) · `받은·보낸 요청`(`/requests`) · `모니터링`(`/monitor`, `view_metrics`) · `팀`(`/team`) · `저장소`(`/repos`) · `설정`(`/settings`) · `시작하기`(`/start`, `show_start`) · `내 설정`(`/me`, `edit_own_settings`). `연결` 항목은 없앤다.
 
@@ -3705,7 +3705,7 @@ POST 는 모두 기존 Origin 검사를 거친다. 응답·로그에 비밀값�
 | 조사 에이전트 | `agent_id` select(이름만, `미지정` 기본) | 이름, 없으면 `미지정`. 해제된 에이전트면 `entry_problem` 문구 |
 | 상태 | — | `entry_problem` 또는 `선택 가능`(그대로) |
 
-- 화면 폼의 `request_kind` 가 `REQUEST_KIND_LABELS` 밖이면 422 `invalid_field` `요청 유형을 목록에서 고르세요.`(field `request_kind`). `system_id` 형식 오류는 지금 문구를 `시스템 이름은 소문자·숫자·밑줄로, 소문자로 시작해 입력하세요.` 로. JSON API `PUT /responsibilities` 는 그대로(식별자 형식만).
+- 화면 폼의 `request_kind` 가 `REQUEST_KIND_LABELS` 밖이면 422 `invalid_field` `요청 유형을 목록에서 고르세요.`(field `request_kind`). `system_id` 형식 오류는 지금 문구를 `시스템 이름은 소문자·숫자·밑줄로, 소문자로 시작해 입력하세요.` 로. JSON API `PUT /api/v1/responsibilities` 는 그대로(식별자 형식만).
 - 목록 밖 기존 행은 [삭제] 가 된다(같은 위치 삭제 — 지금 경로).
 
 ### 종류 폼과 에이전트 능력 (step 4·5)
@@ -3752,14 +3752,14 @@ POST 는 모두 기존 Origin 검사를 거친다. 응답·로그에 비밀값�
 | 머리 | `div.card-title` 저장소 이름 · 수집 상태 `켜짐`/`멈춤` · `마지막 동기화 <시각>`(없으면 `아직 동기화 전`) · 자격 문구(지금) · `a[data-source-work]` `업무 <N>건 보기` → `/tasks?repo=<owner/name>`(N = 그 저장소의 끝나지 않은 업무 수 — `repo.list_work_rows(conn, session_id, closed_since=now)` 에서 `repository` 가 같고 `status not in TERMINAL_WORK_STATUSES` 인 행 수) |
 | 러너 | 러너 없으면 `이 저장소를 등록한 러너 없음` + [러너 붙이기](지금, `attach_runner`), 발급한 명령 상자(지금) |
 | 매칭 줄 | `로컬 저장소`·`수정 에이전트`·`검증 프로필`·`검토 에이전트`·`판단 에이전트` — 에이전트 칸은 **이름**(`views._match_rows` 가 `name` 을 싣는다), 값 출처 `설정`·`자동` 그대로, 없으면 `정해지지 않음` |
-| 카드 설정 폼 | `manage_connections` 일 때 지금 PUT `data-json-action="/github/sources/{id}"`·`expected_revision` 그대로. 폼 본문: **판단 에이전트** select(`triage_agent_id`, 옵션 이름만, `없음 — 판단하지 않음`) + help `새로 들어온 업무의 담당·종류를 제안하고, 결과가 규칙 밖이거나 정보가 모자라거나 사내 요청이 돌아오면 다음 단계를 제안합니다. 이 저장소를 등록했고 맡기기 정책이 '바로 실행'인 에이전트만 고를 수 있습니다.` · 수정 에이전트(`default_fix_agent_id`)·검토 에이전트(`review_agent_id`) select(이름만) · 실행 방식. 그 아래 폼 안 `details.row[data-source-advanced]` "고급 설정": 저장소(읽기 전용) · 로컬 저장소 ID · 트리거 라벨(또는 라벨·고른 이슈·시작 시각) · 수정 검증 프로필 · 자동 재작업 상한 · 수집 켜기. [미리보기]·[저장] 은 고급 접힘 밖(폼 끝) |
+| 카드 설정 폼 | `manage_connections` 일 때 지금 PUT `data-json-action="/api/v1/github/sources/{id}"`·`expected_revision` 그대로. 폼 본문: **판단 에이전트** select(`triage_agent_id`, 옵션 이름만, `없음 — 판단하지 않음`) + help `새로 들어온 업무의 담당·종류를 제안하고, 결과가 규칙 밖이거나 정보가 모자라거나 사내 요청이 돌아오면 다음 단계를 제안합니다. 이 저장소를 등록했고 맡기기 정책이 '바로 실행'인 에이전트만 고를 수 있습니다.` · 수정 에이전트(`default_fix_agent_id`)·검토 에이전트(`review_agent_id`) select(이름만) · 실행 방식. 그 아래 폼 안 `details.row[data-source-advanced]` "고급 설정": 저장소(읽기 전용) · 로컬 저장소 ID · 트리거 라벨(또는 라벨·고른 이슈·시작 시각) · 수정 검증 프로필 · 자동 재작업 상한 · 수집 켜기. [미리보기]·[저장] 은 고급 접힘 밖(폼 끝) |
 | 글자 보기 | `manage_connections` 이 없으면 폼 대신 같은 값을 글자로(판단·수정·검토 에이전트 이름, 실행 방식) |
 | 카드 도구 | 폼 밖 `details.row[data-source-tools]` "러너·담당 연결·기준선": 러너 다시 붙이기(`attach_runner`) · 담당 연결(아래) · 기준선 가져오기·요약 · 수집 중지(`manage_connections`) |
 | 자세히 | `<details class="detail">` — 소스 ID · App slug · 매칭 줄의 에이전트 ID 들 |
 
 - select 의 빈 후보 문구(지금 `code.review 능력의 등록 Agent 없음`·`code.fix 능력의 등록 Agent 없음`): `검토할 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다` · `고칠 수 있는 에이전트가 없습니다 — 러너를 붙이면 생깁니다`. 판단 후보가 없으면 select 아래 `고를 수 있는 판단 에이전트가 없습니다 — 이 저장소를 등록한 러너 에이전트의 맡기기 정책을 '바로 실행'으로 두세요`.
 - 카드 안 "업무 목록"(이슈 표·[에이전트에게 맡기기])은 뺀다. `views.github_context` 의 `issues` 는 담당 연결용 사용자 목록 계산에만 쓴다.
-- **담당 연결**(`manage_connections`): ① 연결된 줄 표 = GitHub 사용자(`login`) · 수정 에이전트 이름(ID 는 `자세히`). ② **수집한 이슈에서 본 사용자** 줄마다 폼 `data-json-action="/github/sources/{id}/assignees" data-json-method="PUT" data-json-path-field="github_user_id"`: 숨은 `github_user_id`·`github_login` + 글자 `login` + 수정 에이전트 select(이름만) + [연결]. 사용자 목록 = 그 소스 `source_issues.snapshot_json` 의 `assignee_ids`·`assignee_logins` 짝(같은 id 는 가장 최근 `issue_updated_at` 의 login), login 순. 없으면 `수집한 이슈에 GitHub 담당자가 없습니다`. ③ 그 아래 "목록에 없는 사용자" 폼(지금 폼 — 라벨 `GitHub 사용자 번호`·`로그인`, help `GitHub 프로필 주소의 사용자 번호(api.github.com/users/<login> 의 id). 같은 번호를 다시 연결하면 교체합니다.`). `PUT` 경로·`AssigneeBinding` 계약 그대로. 계산 함수 `views.seen_github_users(rows: Sequence[Row]) -> list[dict]`(`github_user_id`·`github_login`).
+- **담당 연결**(`manage_connections`): ① 연결된 줄 표 = GitHub 사용자(`login`) · 수정 에이전트 이름(ID 는 `자세히`). ② **수집한 이슈에서 본 사용자** 줄마다 폼 `data-json-action="/api/v1/github/sources/{id}/assignees" data-json-method="PUT" data-json-path-field="github_user_id"`: 숨은 `github_user_id`·`github_login` + 글자 `login` + 수정 에이전트 select(이름만) + [연결]. 사용자 목록 = 그 소스 `source_issues.snapshot_json` 의 `assignee_ids`·`assignee_logins` 짝(같은 id 는 가장 최근 `issue_updated_at` 의 login), login 순. 없으면 `수집한 이슈에 GitHub 담당자가 없습니다`. ③ 그 아래 "목록에 없는 사용자" 폼(지금 폼 — 라벨 `GitHub 사용자 번호`·`로그인`, help `GitHub 프로필 주소의 사용자 번호(api.github.com/users/<login> 의 id). 같은 번호를 다시 연결하면 교체합니다.`). `PUT` 경로·`AssigneeBinding` 계약 그대로. 계산 함수 `views.seen_github_users(rows: Sequence[Row]) -> list[dict]`(`github_user_id`·`github_login`).
 
 ### 업무 목록 (step 8)
 
@@ -3823,3 +3823,311 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 - **화면 계층.** 중앙(`server/`)이 JSON API 를 내고 웹·IDE 앱·CLI·n8n·에이전트가 그 클라이언트다. 지금 사람용 동작은 `server/web.py` 폼 처리(`work_actions` 등 도메인 호출)에 있다. API 는 같은 함수를 부르게 하고, 규칙을 경로마다 복제하지 않는다. 앱·CLI 인증은 멤버별 토큰(비밀값 규칙 그대로)이며 웹 세션 쿠키와 별개다.
 - **경계.** `server/`·`connector/` 상호 import 금지는 그대로다. IDE 앱 안의 러너는 지금의 `connector` 를 실행하며 앱이 러너 프로토콜(`machine_api`)을 새로 만들지 않는다.
 - **인계 리포트.** 에이전트용은 `handoff_bundle`(`assemble_handoff`)을 확장한다. 사람용 HTML 은 실행 산출물로 저장하고 API 로 꺼낸다. 리포트의 주장은 같은 실행의 산출물(diff·테스트 로그·결과 커밋)을 가리킨다. 생성 주체(보내는 쪽 러너 / 받는 쪽 에이전트)와 산출물 kind 이름은 미결.
+
+## 사람용 API — phase 24
+
+[ADR-0032](adr/0032-human-api-and-member-tokens.md) 를 따른다. step 목록은 [phase 24 README](../phases/24-human-api/README.md). 이 시점에는 구현이 없다 — 아래 이름·주소·표·시그니처·문구는 step 1~9 가 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** 계약 예시는 [CONTRACT](CONTRACT.md) 18절.
+
+### 한 줄 요약
+
+모든 JSON 라우트를 `/api/v1` 아래로 옮기고(옛 주소 즉시 404), 업무 목록·상세·행동 API 를 새로 연다. 멤버는 `/me` 에서 멤버 토큰(`wfm_…`, 읽기 전용 / 내 권한 전부)을 만들어 `Authorization: Bearer` 로 사람용 API 를 부른다. 화면·화면 폼 경로·`/healthz` 는 그대로다. 스키마 v26(`member_tokens`). 러너·n8n 주소가 바뀌어 업그레이드 때 러너 재설치·n8n 주소 수정이 필요하다.
+
+### 이름 고정 (다음 step 이 그대로 쓴다)
+
+| 대상 | 위치(step) | 이름 |
+|---|---|---|
+| 접두어 | `contracts/v1.py`(4) | `API_PREFIX = "/api/v1"` — 서버(`app.py` include·`auth` Origin 예외·`web.INBOUND_PATH`)와 러너(`connector/client.py`)가 같이 쓴다. `contracts/` 는 두 쪽이 공유하는 유일한 곳이다 |
+| 라우터 등록 | `server/app.py`(3·4·5·6) | JSON 라우터는 모두 `app.include_router(<모듈>.router, prefix=API_PREFIX)`. 라우터 파일 안의 `APIRouter(prefix=…)`·`@router` 경로는 `/api/v1` 뒤의 부분만 쓴다(예 `human_api` `APIRouter(prefix="/human-requests")` 그대로) |
+| 새 라우터 | `server/member_token_api.py`(3), `server/work_api.py`(6·7) | 각 `router = APIRouter(prefix="/me/tokens")`, `router = APIRouter(prefix="/work-items")`. 본문 모델은 라우터 파일 안(`human_api.ResponseBody` 와 같은 자리), `model_config = ConfigDict(extra="forbid")` |
+| 업무 키 조회 | `server/work_lookup.py`(4) | `WORK_KEY = re.compile(rf"{WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})")`(지금 `web._WORK_KEY` 를 옮긴다 — web 은 이 상수를 import), `work_by_key(conn: Connection, session_id: str, key: str) -> Row \| None`(fullmatch 실패·없는 업무·다른 워크스페이스 모두 None, 예외 없음) |
+| 저장 | `adapters/db.py`·`adapters/repo.py`(1) | `SCHEMA_VERSION = 26`, `_V26_TABLES`, `_migrate_25_to_26`, fixture `tests/workflow/adapters/fixtures/schema_v25.sql`, `MEMBER_TOKEN_PREFIX = "wfm_"`, `MEMBER_TOKEN_SCOPES = ("read", "full")`, `MEMBER_TOKEN_TOUCH_SECONDS = 60` + 아래 repo 함수 |
+| 인증 | `server/auth.py`(2) | `LoggedIn.token_scope`, `current_api_member`, `require_member_api`(Bearer 우선·읽기 전용 검사), `require_member_cookie_api`, `check_origin` 예외 — 아래 "auth 규칙" |
+| 오류 코드 | `server/auth.py`(2)·`server/member_token_api.py`(3)·`server/work_api.py`(6·7) | 새 코드 `token_read_only`(403)·`cookie_required`(403)·`triage_unavailable`(409 — 웹에 이미 있는 코드를 API 도 낸다) |
+| 패널 공용 | `server/views.py`(6) | `_agent_choice_lines` 줄에 `needs_owner_approval: bool` 칸 추가, `panel_actions(panel: dict[str, Any]) -> list[str]`, `internal_request_view(conn, session_id: str, member_id: str, allowed: frozenset[str], row: dict, artifact_store: Any) -> dict`(지금 `web._request_display` 를 옮긴다 — web 의 `_panel`·`requests_page` 가 이것을 부른다) |
+| `/me` 화면 | `server/web.py`·`templates/me.html`(3) | 폼 라우트 `me_token_issue` `POST /me/tokens`, `me_token_revoke` `POST /me/tokens/{token_id}/revoke`, `_me_page(..., issued: dict[str, str] \| None = None)`, `views.me_context` 에 `tokens`, 절 표식 `section[data-me-section="tokens"]` |
+
+### 주소 표 (step 3·4·5·6·7)
+
+철자 규칙: 앞에 `/api/v1`. 이름이 바뀌는 곳은 셋 — `/metrics.json` → `/api/v1/metrics`, `/operator/github/sources/{source_id}/baseline` → `/api/v1/github/sources/{source_id}/baseline`, `/work-items/{work_item_id}/internal-requests` → `/api/v1/work-items/{key}/internal-requests`(D31 — 내부 id 대신 업무 키). 러너·n8n 은 앞에 `/api/v1` 만(D8). 옛 경로는 별칭 없이 404(D9).
+
+인증 칸: **쿠키·`wfm_`** = 로그인 쿠키 `wf_login` 또는 `Authorization: Bearer wfm_…`(Bearer 가 있으면 그것만, 읽기 전용 토큰은 GET 만). **쿠키만** = Bearer 헤더가 있으면 403 `cookie_required`. **`wfc_`** = 연결 토큰 Bearer 만(쿠키 무시). **`wfs_`** = 입구 토큰 Bearer 만. 동작 칸: **로그인** = 활성 멤버면 누구나(`require_member_api`), 그 밖은 `require_action(team.<동작>, api=True)`.
+
+**옮기는 기존 JSON 라우트 39개**
+
+| 옛 경로 | 새 경로 | 메서드 | 동작 | 인증 | 라우터(step) |
+|---|---|---|---|---|---|
+| `/connector/exchange` | `/api/v1/connector/exchange` | POST | 없음(본문의 연결 코드) | 없음 | `machine_api`(5) |
+| `/connector/claim` | `/api/v1/connector/claim` | POST | — | `wfc_` | `machine_api`(5) |
+| `/connector/heartbeat` | `/api/v1/connector/heartbeat` | POST | — | `wfc_` | `machine_api`(5) |
+| `/connector/registrations` | `/api/v1/connector/registrations` | POST | — | `wfc_` | `machine_api`(5) |
+| `/executions/{execution_id}/events` | `/api/v1/executions/{execution_id}/events` | POST | — | `wfc_` | `machine_api`(5) |
+| `/executions/{execution_id}/artifacts` | `/api/v1/executions/{execution_id}/artifacts` | POST | — | `wfc_` | `machine_api`(5) |
+| `/executions/{execution_id}/artifacts/{artifact_id}` | `/api/v1/executions/{execution_id}/artifacts/{artifact_id}` | GET | — | `wfc_` | `machine_api`(5) |
+| `/sources/{source}/chains` | `/api/v1/sources/{source}/chains` | POST | — | `wfs_` | `inbound_api`(5) |
+| `/github/sources` | `/api/v1/github/sources` | GET | 로그인 | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/preview` | `/api/v1/github/sources/preview` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources` | `/api/v1/github/sources` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}` | `/api/v1/github/sources/{source_id}` | GET | 로그인 | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}` | `/api/v1/github/sources/{source_id}` | PUT | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}/stop` | `/api/v1/github/sources/{source_id}/stop` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}/assignees/{github_user_id}` | `/api/v1/github/sources/{source_id}/assignees/{github_user_id}` | PUT | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/human-requests` | `/api/v1/human-requests` | GET | 로그인 | 쿠키·`wfm_` | `human_api`(4) |
+| `/human-requests/{request_id}/responses` | `/api/v1/human-requests/{request_id}/responses` | POST | `RESPOND` | 쿠키·`wfm_` | `human_api`(4) |
+| `/metrics.json` | `/api/v1/metrics` | GET | `VIEW_METRICS` | 쿠키·`wfm_` | `metrics_api`(4) |
+| `/metrics.csv` | `/api/v1/metrics.csv` | GET | `VIEW_METRICS` | 쿠키·`wfm_` | `metrics_api`(4) |
+| `/operator/github/sources/{source_id}/baseline` | `/api/v1/github/sources/{source_id}/baseline` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `metrics_api`(4) |
+| `/responsibilities` | `/api/v1/responsibilities` | GET | 로그인 | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/responsibilities` | `/api/v1/responsibilities` | PUT | `MANAGE_RULES` | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/responsibilities/candidates` | `/api/v1/responsibilities/candidates` | GET | 로그인 | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/responsibilities/select` | `/api/v1/responsibilities/select` | POST | `DELEGATE` | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/internal-requests` | `/api/v1/internal-requests` | GET | 로그인 | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/work-items/{work_item_id}/internal-requests` | `/api/v1/work-items/{key}/internal-requests` | GET | 로그인 | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/work-items/{work_item_id}/internal-requests` | `/api/v1/work-items/{key}/internal-requests` | POST | `DELEGATE` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/accept` | `/api/v1/internal-requests/{request_id}/accept` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/investigation` | `/api/v1/internal-requests/{request_id}/investigation` | POST | `DELEGATE` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/return` | `/api/v1/internal-requests/{request_id}/return` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/not-responsible` | `/api/v1/internal-requests/{request_id}/not-responsible` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/reroute` | `/api/v1/internal-requests/{request_id}/reroute` | POST | `DELEGATE` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/questions` | `/api/v1/internal-requests/{request_id}/questions` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/questions/{question_id}/answer` | `/api/v1/internal-requests/{request_id}/questions/{question_id}/answer` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/judgments` | `/api/v1/internal-requests/{request_id}/judgments` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/judgments/{judgment_id}/respond` | `/api/v1/internal-requests/{request_id}/judgments/{judgment_id}/respond` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/resume` | `/api/v1/internal-requests/{request_id}/resume` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/field-mappings` | `/api/v1/field-mappings` | GET | 로그인 | 쿠키·`wfm_` | `mapping_api`(4) |
+| `/field-mappings` | `/api/v1/field-mappings` | PUT | `MANAGE_RULES` | 쿠키·`wfm_` | `mapping_api`(4) |
+
+사내 요청 키 경로(D31, step 4): `{key}` 는 `work_lookup.work_by_key` 로 찾고 없으면 404 `not_found` "원래 업무를 찾을 수 없습니다."(지금 문구 그대로, `field` 없음). 찾은 업무의 `work_item_id` 를 지금처럼 `internal_request_store.list_for_work`·`create` 에 넘긴다. 응답 본문은 바뀌지 않는다.
+
+**새로 여는 라우트**
+
+| 새 경로 | 메서드 | 동작 | 인증 | 성공 | 라우터(step) |
+|---|---|---|---|---|---|
+| `/api/v1/me/tokens` | POST | `EDIT_OWN_SETTINGS` | 쿠키만 | 201 | `member_token_api`(3) |
+| `/api/v1/me/tokens` | GET | `EDIT_OWN_SETTINGS` | 쿠키·`wfm_` | 200 | `member_token_api`(3) |
+| `/api/v1/me/tokens/{token_id}` | DELETE | `EDIT_OWN_SETTINGS` | 쿠키·`wfm_` | 204 | `member_token_api`(3) |
+| `/api/v1/work-items` | GET | 로그인 | 쿠키·`wfm_` | 200 | `work_api`(6) |
+| `/api/v1/work-items/{key}` | GET | 로그인 | 쿠키·`wfm_` | 200 | `work_api`(6) |
+| `/api/v1/work-items/{key}` | PATCH | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/assignee` | PUT | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/assignee` | DELETE | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/direct-work` | PUT | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/direct-work` | DELETE | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/triage-runs` | POST | `DELEGATE` | 쿠키·`wfm_` | 202 | `work_api`(7) |
+| `/api/v1/work-items/{key}/triage-proposals/{triage_id}/accept` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/triage-proposals/{triage_id}/dismiss` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/next-step-proposals/{triage_id}/accept` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/next-step-proposals/{triage_id}/dismiss` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+
+`work_api` 와 `internal_request_api` 는 같은 `/api/v1/work-items/{key}/…` 아래에 있지만 서로 다른 라우터다(경로가 겹치지 않는다 — `internal-requests` 는 `internal_request_api` 만).
+
+**옮기지 않는 경로**(D10 — 화면 라우트는 모두 `web.py`, 105개를 다 적지 않는다)
+
+| 묶음 | 예 | 이유 |
+|---|---|---|
+| 화면 GET | `/`·`/tasks`·`/tasks/new`·`/tasks/{task_id}…`·`/work/{key}`·`/work/{key}/panel`·`/chains/{chain_id}…`·`/requests`·`/team`·`/repos`·`/settings`·`/connect`·`/agents…`·`/kinds`·`/sources`·`/metrics`·`/monitor`·`/start`·`/me`·`/operator…` | HTML 화면 |
+| 업무 화면 폼 POST | `/tasks`·`/tasks/{task_id}/run`·`…/delegate`·`…/select`·`…/review`·`/chains/{chain_id}/start`·`/work/{key}/assignee`·`…/priority`·`…/direct`·`…/direct/stop`·`…/triage`·`…/triage/accept`·`…/triage/dismiss`·`…/next-step/accept`·`…/next-step/dismiss`·`/work/{key}/internal-requests` | 폼 + 303. 같은 동작의 JSON 은 위 새 라우트 |
+| 요청·담당 범위 폼 POST | `/requests/{request_id}/…`(accept·judgments·questions·not-responsible·reroute·investigation·return·resume), `/responsibilities/add`·`/responsibilities/remove` | 폼 + 303 |
+| 설정·팀 폼 POST | `/kinds…`·`/rules…`·`/agents/{agent_id}/…`·`/sources/tokens`·`/sources/tokens/{token_id}/revoke`·`/team/…`·`/me/…`(새 `/me/tokens`·`/me/tokens/{token_id}/revoke` 포함)·`/operator/…`(`/operator/github/sources/{source_id}/runner` 포함) | 폼 + 303 또는 같은 화면 렌더 |
+| 로그인 | `/login…`·`/invite/{token}`·`/reset/{token}`·`/logout` | 쿠키 발급 화면 |
+| GitHub App | `/operator/github/app/new`·`/operator/github/app/callback`·`/operator/github/app/setup` | GitHub 에 등록된 주소 |
+| 그 밖 | `/healthz`(compose healthcheck·`install.sh`), `/static`(마운트), `/docs`·`/docs/oauth2-redirect`·`/redoc`·`/openapi.json`(FastAPI 기본, D34) | 운영·기본 경로 |
+
+**옛 경로가 남는 문서 위치**: 이 절, ADR-0032, 그리고 한 줄에 `→` 와 새 `/api/v1` 경로가 함께 있는 대응 줄뿐이다 — step 8 의 옛 경로 검사 스크립트가 이 셋만 건너뛴다. CURRENT_HANDOFF·GLOSSARY 등 다른 문서에 옛 경로를 새로 쓰지 않는다.
+
+### 라우트 분류 규칙 (step 9 대조 테스트)
+
+- **화면 라우트** = endpoint 함수의 `__module__` 이 `workflow.server.web` 인 라우트. 그래서 **화면 폼 라우트는 모두 `web.py` 에 둔다** — step 3 의 `/me/tokens` 폼도 `web.py`, JSON 토큰 API 만 `member_token_api.py`.
+- **예외** = `/healthz`(endpoint 모듈 `workflow.server.app` — `add_api_route` 의 lambda), FastAPI 기본 문서 `/openapi.json`·`/docs`·`/docs/oauth2-redirect`·`/redoc`(모듈 `fastapi.applications`), `/static` 마운트(`app.mount` — endpoint 없음). 2026-10-21 앱에서 확인한 실제 경로다.
+- **나머지 모든 라우트는 `/api/v1/` 로 시작해야 한다.** 그리고 위 주소 표의 새 경로(옮기는 39 + 새로 여는 15)가 모두 실제 라우트에 있어야 한다.
+
+### step 경계
+
+| step | 옮기거나 만드는 것 |
+|---|---|
+| 3 `me-tokens` | `member_token_api`(새 라우트 3), `/me` 화면 토큰 절과 폼 라우트 2(`web.py`) |
+| 4 `api-prefix` | 사람용 JSON 라우터 6개(`github_api`·`human_api`·`metrics_api`·`responsibility_api`·`internal_request_api`·`mapping_api`)를 `prefix=API_PREFIX` 로, `metrics_api` 의 두 이름 바꾸기, 사내 요청 키 경로, `work_lookup`(웹 `_own_work`·`work_detail` 도 이것을 쓴다), 웹 스크립트(`data-json-action` 10곳)·`metrics.html` JSON·CSV 링크, 테스트 주소. 옛 주소는 사라진다 |
+| 5 `connector-paths` | 러너·n8n 프로토콜 — 서버 `machine_api`·`inbound_api` 와 `connector/client.py` 를 **함께**(한쪽만 옮기면 e2e 가 깨진다), `auth._BEARER_PREFIXES`·`_CHAINS_PATH` 를 새 경로로, `web.INBOUND_PATH = f"{API_PREFIX}/sources/n8n/chains"` |
+| 6 `work-read-api` | `work_api` 목록·상세, `views` 패널 공용 함수(`needs_owner_approval`·`panel_actions`·`internal_request_view`) |
+| 7 `work-action-api` | `work_api` 행동 9개 |
+
+### `member_tokens` 표 (스키마 v26, step 1)
+
+```sql
+CREATE TABLE IF NOT EXISTS member_tokens (
+  token_id     TEXT PRIMARY KEY,                            -- 'mtk-' + 12 hex (secrets.token_hex(6))
+  member_id    TEXT NOT NULL REFERENCES members(member_id),
+  name         TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),  -- 앞뒤 공백 제거한 값, 같은 멤버 안 중복 허용
+  scope        TEXT NOT NULL CHECK (scope IN ('read', 'full')),
+  token_sha256 TEXT NOT NULL UNIQUE,                        -- 원문 'wfm_' + secrets.token_urlsafe(32) 의 sha256
+  created_at   TEXT NOT NULL,
+  last_used_at TEXT,                                        -- NULL = 사용 기록 없음
+  revoked_at   TEXT                                         -- NULL = 활성
+);
+
+CREATE INDEX IF NOT EXISTS ix_member_tokens_member ON member_tokens(member_id);
+```
+
+- `session_id` 칸은 두지 않는다 — 워크스페이스는 `members.session_id` 를 JOIN 해 얻는다(`member_for_api_token` 이 싣는다).
+- 멤버당 개수 상한 없음(D37). 원문·접두어 외 부분은 어디에도 저장하지 않는다.
+- `_V26_TABLES` = 위 두 문장. `_migrate_25_to_26` 은 `_migrate_24_to_25` 와 같은 형식(문장 실행 → `PRAGMA foreign_key_check` → `UPDATE schema_version SET version = 26`). 스키마 버전을 박은 기존 테스트(`SCHEMA_VERSION`·`/healthz` 의 `schema_version`·마이그레이션 fixture 경로)는 26 으로 고친다.
+
+### repo 함수 (step 1)
+
+| 함수 | 동작 |
+|---|---|
+| `issue_member_token(conn, *, session_id: str, member_id: str, name: str, scope: str, now: str) -> tuple[str, str]` | (token_id, 원문). 같은 워크스페이스의 활성 멤버가 아니면 `NotFound`. `name` 은 앞뒤 공백을 지운 뒤 1~40자가 아니면 `ValueError("name")`, `scope` 가 `MEMBER_TOKEN_SCOPES` 밖이면 `ValueError("scope")`. 한 트랜잭션(`_tx`) |
+| `list_member_tokens(conn, member_id: str) -> list[Row]` | 그 멤버의 **활성**(`revoked_at IS NULL`) 토큰, `created_at` 최근순 → `token_id`. 칸 `token_id`·`name`·`scope`·`created_at`·`last_used_at` — 원문·해시 없음 |
+| `revoke_member_token(conn, *, member_id: str, token_id: str, now: str) -> bool` | 그 멤버의 활성 토큰이면 `revoked_at = now` 하고 True. 남의 토큰·없는 토큰·이미 폐기한 토큰은 False(API 는 404) |
+| `member_for_api_token(conn, token: str, *, now: str) -> Row \| None` | `token_sha256` 일치 + `revoked_at IS NULL` + 멤버 `disabled_at IS NULL` 이면 `_LOGIN_MEMBER_COLUMNS`(`member_id`·`session_id`·`display_name`·`role`·…) + `mt.token_id`·`mt.scope`. 찾으면 같은 함수 안에서 `touch_member_token(conn, token_id, now=now)` 를 부른다(`member_for_login_token` 이 `last_seen_at` 을 갱신하는 것과 같은 자리). 워크스페이스 일치(`SELFHOST_SESSION_ID`)는 auth 가 본다 |
+| `touch_member_token(conn, token_id: str, *, now: str) -> None` | `last_used_at` 이 NULL 이거나 `now` 와 `MEMBER_TOKEN_TOUCH_SECONDS`(60) 이상 차이 날 때만 `last_used_at = now`(D22). 자체 BEGIN 없음 |
+| `revoke_member_tokens(conn, member_id: str, *, now: str) -> int` | 그 멤버의 활성 토큰 전부 폐기, 바뀐 수. 자체 BEGIN 없음(`revoke_login_sessions` 와 같음) |
+| `disable_member`(바뀜) | 같은 `_tx` 안에서 `revoke_login_sessions` 뒤에 `revoke_member_tokens(conn, member_id, now=now)` 를 부른다(D14). `enable_member` 는 토큰을 되살리지 않는다. 비밀번호 변경(`set_member_credentials`)·재설정은 토큰을 건드리지 않는다 |
+
+### auth 규칙 (step 2)
+
+- `LoggedIn` 에 마지막 칸 `token_scope: str | None = None` 을 더한다. 쿠키 로그인 = None, 토큰 = `"read"`·`"full"`. 토큰으로 들어오면 `login_id` 에 토큰 id(`mtk-…`)를 싣는다(ADR-0032 사실 4 — 읽는 곳 없음).
+- `current_member(request, conn)` 는 **쿠키만** 본다(화면용 — 화면은 Bearer 를 받지 않는다). 바꾸지 않는다.
+- 새 `current_api_member(request, conn) -> LoggedIn | None`: `Authorization: Bearer` 가 있으면 `repo.member_for_api_token` 결과(+ `session_id == SELFHOST_SESSION_ID`)만 본다 — 틀리면 None 이고 쿠키로 넘어가지 않는다(D19). Bearer 가 없으면 `current_member(request, conn)`. 결과는 `request.state.api_member` 에 한 번만 담는다.
+- `require_member_api(request, conn) -> LoggedIn`(바뀜): `current_api_member` 가 None 이면 401 `unauthenticated` — Bearer 가 있었으면 "유효한 멤버 토큰이 필요합니다.", 없었으면 "로그인이 필요합니다."(지금 문구). 그다음 **`member.token_scope == "read"` 이고 `request.method` 가 GET·HEAD 가 아니면 403 `token_read_only` "읽기 전용 토큰입니다"**. `require_action(action, api=True)` 의 내부 의존성이 `require_member_api` 위에 서 있으므로 이 검사는 역할 검사(403 `forbidden`)보다 먼저 돈다(D24·D36). `require_member`(화면)·`require_action(api=False)` 는 그대로 쿠키만.
+- 새 `require_member_cookie_api(request, conn) -> LoggedIn`(토큰 발급 전용, D21): Bearer 헤더가 있으면(유효성과 무관) 403 `cookie_required` "로그인 쿠키로만 할 수 있습니다." — 그 밖은 `current_member` 가 None 이면 401 `unauthenticated` "로그인이 필요합니다.". 역할 검사는 라우트가 한다(`team.can(member.role, team.EDIT_OWN_SETTINGS)` 거짓이면 403 `forbidden` "관리자 권한이 필요합니다." — `require_action` 과 같은 문구).
+- `check_origin(request, settings)`(바뀜): 경로가 `/api/v1/` 로 시작하고 `_bearer_token(request) is not None` 이면 참(D19 (a) — 화면 폼 경로는 Bearer 가 붙어도 검사). 경로 예외 (b) 는 `_BEARER_PREFIXES`·`_CHAINS_PATH` 그대로 — step 5 가 `_BEARER_PREFIXES = (f"{API_PREFIX}/connector/", f"{API_PREFIX}/executions/")`, `_CHAINS_PATH = re.compile(rf"{API_PREFIX}/sources/[^/]+/chains")` 로 바꾼다. `/api/v1/` 접두어 전체를 예외로 두지 않는다. 미들웨어 구조(`app.py` 가 `web.origin_guard` 를 걸고 그것이 `GET`·`HEAD`·`OPTIONS` 밖에서 `check_origin` 을 부름)는 바꾸지 않는다.
+- 토큰 원문은 로그·예외 메시지·`request.state` 에 남기지 않는다(`LoggedIn` 에도 없다).
+
+### 토큰 API·화면 (step 3)
+
+| 요청 | 본문 | 성공 | 오류 |
+|---|---|---|---|
+| `POST /api/v1/me/tokens` | `name`(문자열), `scope`(문자열 — `read`\|`full`) — 둘 다 필수, 그 밖 칸 422 `unknown_field`. 본문 모델 `MemberTokenCreate(name: str, scope: str)`(`extra="forbid"`) — 값 검사는 `issue_member_token` 의 `ValueError` 를 아래 문구로 옮긴다 | 201 `token_id`·`name`(공백 지운 값)·`scope`·`token`(원문 — **이 응답에만**)·`created_at` | 403 `cookie_required`, 401, 422 `invalid_field`(`field` `name` "토큰 이름은 1~40자로 입력하세요." / `scope` "권한은 read(읽기 전용) 또는 full(내 권한 전부)입니다.") |
+| `GET /api/v1/me/tokens` | — | 200 `tokens` — `list_member_tokens` 의 칸(`token_id`·`name`·`scope`·`created_at`·`last_used_at`), 원문·해시 없음 | 401 |
+| `DELETE /api/v1/me/tokens/{token_id}` | — | 204 본문 없음 | 404 `not_found` "토큰 {token_id}을 찾을 수 없습니다."(`field` `token_id` — 남의 토큰·폐기한 토큰도), 403 `token_read_only`, 401 |
+
+`/me` 화면(`me.html`, "개인 알림" 절 뒤에 `<h2>API 토큰</h2>` 절 `section[data-me-section="tokens"]`):
+
+- 안내 한 줄: "터미널·스크립트·n8n 이 내 이름으로 Runloom API 를 부를 때 씁니다. `Authorization: Bearer <토큰>` 헤더로 보냅니다."
+- 발급 폼 `POST /me/tokens`(쿠키 폼, `web.py` `me_token_issue`): 이름 입력(`name`, 1~40자), 권한 라디오(`scope` — `read` 라벨 "읽기 전용", `full` 라벨 "내 권한 전부", 기본 `read`), [토큰 만들기]. 성공하면 **303 없이** `_me_page(..., issued={"token_id", "name", "token"})` 를 200 으로 그린다 — `/sources/tokens`·`/team/invites` 와 같은 방식(리다이렉트로는 원문을 넘길 수 없고, 쿠키·쿼리·flash 에 원문을 두지 않는다). 발급 상자 문구: "토큰은 지금 한 번만 보입니다. 안전한 곳에 복사해 두세요." + `<code id="issued-member-token">` 원문. 이름·권한 오류는 `PageError` 422 `invalid_field`(위 API 와 같은 문구).
+- 목록(활성 토큰만): 이름 · 권한 라벨(`읽기 전용`/`내 권한 전부`) · 만든 시각 · 마지막 사용(`last_used_at` 이 None 이면 "사용 기록 없음", 있으면 시각) · [폐기]. `token_id` 는 `<details class="detail">` "자세히" 안. 없으면 "만든 토큰이 없습니다.".
+- 폐기 폼 `POST /me/tokens/{token_id}/revoke`(`web.py` `me_token_revoke`) → 303 `/me`. 남의 토큰·없는 토큰은 `PageError` 404 `not_found`.
+- 두 폼 라우트는 `require_action(team.EDIT_OWN_SETTINGS)`(쿠키, 화면) — `/me` 와 같다. Origin 검사를 받는다(쿠키 폼).
+
+### 업무 키 조회 (step 4)
+
+`work_lookup.work_by_key(conn, session_id, key)` — `WORK_KEY.fullmatch(key)` 가 실패하면 None, 아니면 `repo.get_work_item_by_key(conn, session_id, int(번호))`(없으면 None). 예외를 던지지 않는다. 바꾸는 쪽:
+
+- 웹 `_own_work(conn, session_id, key) -> Row` = `work_by_key` + None 이면 `PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")`(지금 문구 그대로). `work_detail` 의 형식 검사도 `work_lookup.WORK_KEY`. `web._WORK_KEY` 는 지운다.
+- `work_api._own_work(conn, session_id, key) -> Row` = 같은 문구의 `ApiError` 404(step 6·7).
+- `internal_request_api` 키 경로 = None 이면 `ApiError(404, "not_found", "원래 업무를 찾을 수 없습니다.")`(지금 문구, step 4).
+
+### 업무 목록 응답 (step 6)
+
+`GET /api/v1/work-items?filter=&repository=&closed=`
+
+| 쿼리 | 값 집합 | 기본값 | 모르는 값 |
+|---|---|---|---|
+| `filter` | `work_list.QUICK_FILTERS` = `all`·`my_turn`·`unassigned`·`agent_working` | `all` | 422 `invalid_field` "filter 는 all·my_turn·unassigned·agent_working 중 하나입니다.", `field` `filter` |
+| `repository` | `repo.list_work_repositories(conn, session_id)` 의 값(`owner/name`), 대소문자 무시 — 응답·필터는 목록 표기 | 없음(빈 값 = 없음) | 422 `invalid_field` "저장소 {값} 는 이 워크스페이스 업무 저장소가 아닙니다.", `field` `repository` |
+| `closed` | `work_list.CLOSED_SCOPES` = `recent`(끝난 지 14일 안)·`all` | `recent` | 422 `invalid_field` "closed 는 recent·all 중 하나입니다.", `field` `closed` |
+
+그 밖 쿼리(`q`·`group`·`view`·`open` 등)는 읽지 않는다(FastAPI 기본 — 무시). 검증한 값으로 `ListQuery(q=filter, group=GROUP_BYS[0], view=VIEWS[0], closed=closed, open_key=None, repo=<목록 표기 또는 None>)` 를 만들어 **`views.work_list_context(conn, session_id, member_id=member.member_id, query=query, now=now)`** 를 부르고 그 `rows`·`counts` 를 쓴다(웹과 같은 함수 — 끝난 업무 범위·저장소 필터·빠른 필터·건수 기준이 같다). 순서는 `rows` 그대로(`list_work_rows` 의 키 번호 내림차순 — 묶기·보드 정렬 없음). 페이지 나누기 없음.
+
+응답 `{"items": [...], "counts": {"all": n, "my_turn": n, "unassigned": n, "agent_working": n}}` — `counts` 는 `filter_counts`(저장소 필터 뒤·빠른 필터 전). 항목 칸(`WorkRow` 에서, `work_api._item(row: WorkRow, *, member_id: str) -> dict`):
+
+| 칸 | 값 |
+|---|---|
+| `key` | `row.work_key`(`RUN-12`) |
+| `title` | `row.title` |
+| `kind` · `kind_label` | `row.kind` · `row.kind_label` |
+| `priority` | `high`\|`normal`\|`low` |
+| `assignee` | 담당 없으면 null, 있으면 `type`(`agent`\|`member`)·`id`·`name`(`assignee_name`, 없으면 id)·`active`(`assignee_active`) |
+| `status` · `status_reason` | 사용자 상태 라벨(GLOSSARY — `새로 들어옴`·`대기`·`에이전트 작업 중`·`직접 작업 중`·`내 차례`·`PR · 검토`·`완료`·`종료`) · 이유 문구 |
+| `my_turn` | `row.status == "내 차례" and member_id in row.recipients` — 요청 멤버 기준(`_matches` 의 `my_turn` 과 같은 식). `recipients`(member_id 목록)는 싣지 않는다 |
+| `next_action` | `row.next_action`(다음 할 일 원문 — 화면 중복 숨김 `shown_next_action` 은 쓰지 않는다) |
+| `triage` · `next_step` | `row.triage` · `row.next_step`(문구 또는 null) |
+| `repository` | `owner/name` 또는 null |
+| `source` | `type`(`row.source_type`)·`key`(`row.source_key`)·`url`(`row.source_url`) |
+| `updated_at` · `closed_at` | RFC 3339 · null |
+
+`work_item_id`·`key_number`·`source_key_short` 는 싣지 않는다(내부 id·화면 축약).
+
+### 업무 상세 응답 (step 6)
+
+`GET /api/v1/work-items/{key}` — 키 형식이 틀리거나 없는 업무는 404 `not_found`. 재료는 **`views.work_panel_context(conn, session_id, work_item_id, member_id=…, allowed=team.allowed_actions(member.role), now=…, settings=…)`**(웹 패널과 같은 함수) + 그 업무의 `WorkRow`(`repo.list_work_rows(conn, session_id, closed_since=None)` 에서 `work_item_id` 로 고른 것 — 끝난 업무도 보인다) + 사내 요청(`internal_request_store.list_for_work` → `views.internal_request_view`). 만드는 함수 `work_api._detail(conn, request, member, work: Row) -> dict`. `UserStatus` 는 모두 `{"label", "reason"}` 객체로 옮긴다. 화면 전용 값(폼 숨은 입력 `list_state`·`close_href`, 제출 키 `submission_key`·`judgment_submission_key`·`question_submission_key`·사람 요청 `response_id`, 담당 범위 선택 `directory_choices`·`directory_revision`, `member_id`, 선택 라벨 `label`)은 넣지 않는다.
+
+| 칸 | 내용(출처) |
+|---|---|
+| `work` | 목록 항목(`_item`)의 모든 칸 + `request`(요청 원문) · `created_at` · `turn_recipients`(패널 `work.recipients` — `내 차례` 받는 사람 표시 이름 목록) · `form_fields`(패널 `form_fields` 의 `key`·`label`·`value`·`source`) |
+| `stages` | 패널 `stages` 의 `title`·`kind`·`kind_label`·`status`(`{label, reason}`)·`delegatable`·`attempts`·`created_at` |
+| `links` | 패널 `links` 의 `type`·`label`·`key`·`title`·`status`(`{label, reason}`) |
+| `direct` | 패널 `direct` — null 또는 `member_name`·`started_at`·`branch` |
+| `open_requests` | 패널 `open_requests` 의 `request_id`·`code`·`question`·`state`·`revision`·`created_at`·`answered_at`·`actions`(값만 — `resume`·`choose_agent`·`retry`·`close` 중)·`asks_information`·`agent_choices`(`agent_id`·`name`). 응답은 기존 `POST /api/v1/human-requests/{request_id}/responses` 로 한다 |
+| `responses` | 패널 `responses` 의 `question`·`action`·`text`·`responder`·`created_at`·`task_revision` |
+| `triage` | 패널 `triage`(`views.triage_panel`) 가 None 이면 null. 아니면 `state`(`running`\|`failed`\|`proposed`\|`dismissed`\|`handled`\|null)·`triage_id`·`criteria_version`·`agent_name`·`failed_label`·`failed_message`·`proposal`(`proceed`·`confidence`(화면과 같은 문자열 `"0.85"`)·`kind_line`·`assignee`·`predecessors`(`key`·`title`)·`reasons`(`label`·`note`)·`missing`·`acceptable`)·`handled_by`·`handled_at`·`handled_text`·`unavailable_reason`(버튼이 있으면 `button.reason`, 없으면 `note` — 판단을 지금 시작할 수 없는 이유, 없으면 null). 패널에 없는 키는 null |
+| `next_step` | 패널 `next_step`(`views.next_step_panel`) 가 None 이면 null. 아니면 `state`(`running`\|`failed`\|`proposed`\|`stale`\|`accepted`\|`dismissed`)·`triage_id`·`criteria_version`·`agent_name`·`cause_line`·`failed_label`·`failed_message`·`proposal`(`action_label`·`proceed`·`confidence`·`line`·`purpose`·`question`·`reasons`·`missing`)·`handled_by`·`handled_at`. 패널에 없는 키는 null |
+| `pull_requests` | 패널 `pulls` 의 `state`·`label`·`number`·`url`·`draft`·`title`(Runloom PR 은 null)·`runloom`·`at` |
+| `internal_requests` | 사내 요청 요약 — `views.internal_request_view` 결과의 `request_id`·`system_id`·`request_kind`·`purpose`·`phase_label`·`requester_name`·`recipient_name`·`problem`·`created_at`·`returned_at`. 상세·행동은 기존 `/api/v1/internal-requests…` |
+| `events` | 패널 `events` 의 `at`·`text` |
+| `assignee_candidates` | 활성 멤버 먼저(패널 `members` → `type: "member"`·`id`·`name`), 그다음 에이전트(패널 `agents` = `_agent_choice_lines` → `type: "agent"`·`id`·`name`·`online: bool`·`needs_owner_approval: bool`). 웹 담당 선택 목록과 같은 함수·같은 값. 새 "맡길 수 있음" 판정은 없다(D28) |
+| `actions` | `views.panel_actions(panel)` — 지금 이 멤버가 할 수 있는 행동 이름(아래 표) |
+
+`views._agent_choice_lines` 는 줄마다 `needs_owner_approval: bool`(지금 `label` 에 " · 승인 필요" 를 붙이는 그 `needs_owner_approval(...)` 호출 결과)을 더한다. `label` 은 그대로 둔다(웹이 쓴다). label 문자열을 파싱하지 않는다.
+
+`views.panel_actions(panel)` — 패널 `can_*` 판정과 같은 값만 읽는다(새 판정 없음):
+
+| 행동 이름 | 조건(패널 값) | API |
+|---|---|---|
+| `assign` | `can_edit` | `PUT`·`DELETE …/assignee` |
+| `set_priority` | `can_edit` | `PATCH /api/v1/work-items/{key}` |
+| `start_direct` | `can_start_direct` | `PUT …/direct-work` |
+| `stop_direct` | `direct` 가 있고 `can_edit`(패널 [직접 작업 그만두기] 조건) | `DELETE …/direct-work` |
+| `request_triage` | `triage` 가 있고 `triage.button` 이 있고 `button.disabled` 가 거짓 | `POST …/triage-runs` |
+| `accept_triage` | `triage.state == "proposed"` 이고 `triage.can_accept` | `POST …/triage-proposals/{triage_id}/accept` |
+| `dismiss_triage` | `triage.state == "proposed"` 이고 `triage.can_dismiss` | `POST …/triage-proposals/{triage_id}/dismiss` |
+| `accept_next_step` · `dismiss_next_step` | `next_step.state == "proposed"` 이고 `next_step.can_act` | `POST …/next-step-proposals/{triage_id}/accept`·`dismiss` |
+
+패널 사내 요청 묶음: 지금 `web._panel`(web.py 610 근처)이 `internal_request_store.list_for_work` 결과를 `web._request_display(conn, member, row, store)` 로 바꾼다. step 6 은 `_request_display` 본문을 **`views.internal_request_view(conn, session_id, member_id, allowed, row, artifact_store)`** 로 옮기고(`member.role` 대신 `allowed` = `team.allowed_actions(role)` — 본문의 `team.RESPOND in team.allowed_actions(member.role)` 는 `team.RESPOND in allowed`), web 의 `_panel`·`requests_page` 는 이것을 부른다. 문구·판정은 바꾸지 않는다.
+
+### 업무 행동 (step 7)
+
+공통: 경로 `{key}` 는 `work_api._own_work`(없으면 404 `not_found`). 동작은 웹 라우트와 같은 `team.DELEGATE`(`web.work_assignee`·`work_priority`·`work_direct`·`work_direct_stop`·`work_triage`·`work_triage_accept`·`work_triage_dismiss`·`work_next_step_accept`·`work_next_step_dismiss` 가 모두 `require_action(team.DELEGATE)`). 호출 함수도 웹과 같다. `WorkActionError` → `ApiError(exc.status, exc.code, exc.message, field=exc.field)`(웹 `_page_errors` 와 같은 옮김). 성공 응답은 바뀐 업무 상세(위 표 — D29). 본문은 JSON 만(D25), 본문 없는 행동은 본문을 읽지 않는다.
+
+| 메서드·경로 | 본문 | 호출(웹과 같음) | 성공 |
+|---|---|---|---|
+| `PATCH /api/v1/work-items/{key}` | `priority`(`high`\|`normal`\|`low`, 필수). 그 밖 칸 422 `unknown_field` | `work_actions.set_priority(conn, session_id=…, work_item_id=…, priority=…, member_id=…, now=…)` | 200 상세 |
+| `PUT /api/v1/work-items/{key}/assignee` | `type`(`agent`\|`member`, 필수)·`id`(필수)·`note`(선택, 기본 `""`) | `work_actions.assign_work(..., value=f"{type}:{id}", note=note, ...)` — 값 형식 검사는 `parse_assignee`(틀리면 422 `invalid_field` `field` `assignee`) | 200 상세 |
+| `DELETE /api/v1/work-items/{key}/assignee` | 없음 | `work_actions.assign_work(..., value="none", ...)` | 200 상세 |
+| `PUT /api/v1/work-items/{key}/direct-work` | 없음 | `work_actions.start_direct(conn, session_id=…, work_item_id=…, member_id=…, now=…)` | 200 상세 |
+| `DELETE /api/v1/work-items/{key}/direct-work` | 없음 | `work_actions.stop_direct(conn, session_id=…, work_item_id=…, now=…)` | 200 상세 |
+| `POST /api/v1/work-items/{key}/triage-runs` | 없음 | `triage_runs.request_triage(conn, settings, session_id=…, work_item_id=…, trigger="manual", member_id=…, now=…)` — `started` 가 거짓이면 409 `triage_unavailable`, 메시지 `f"{reason}."`(웹과 같음) | 202 상세 |
+| `POST …/triage-proposals/{triage_id}/accept` | 없음 | `work_actions.accept_triage(..., triage_id=…)` | 200 상세 |
+| `POST …/triage-proposals/{triage_id}/dismiss` | 없음 | `work_actions.dismiss_triage(..., triage_id=…)` | 200 상세 |
+| `POST …/next-step-proposals/{triage_id}/accept` | 없음 | `work_actions.accept_next_step(..., triage_id=…)` | 200 상세 |
+| `POST …/next-step-proposals/{triage_id}/dismiss` | 없음 | `work_actions.dismiss_next_step(..., triage_id=…)` | 200 상세 |
+
+본문 모델(`work_api.py`): `WorkPatch(priority: Literal["high", "normal", "low"])`, `AssigneeBody(type: Literal["agent", "member"], id: NonEmptyStr, note: str = "")` — 둘 다 `extra="forbid"`. `priority` 값 오류는 `validation_error_to_api` 의 422 `invalid_field`(`field` `priority`) — 웹의 `set_priority` 422 와 같은 code·`field`.
+
+행동 오류(`WorkActionError` 그대로 + 이 절의 것):
+
+| 상태 | code | 언제 |
+|---|---|---|
+| 404 | `not_found` | 키 형식·없는 업무, 도메인의 업무 없음 |
+| 409 | `work_closed` | 끝난 업무 바꾸기 |
+| 409 | `execution_conflict` | 실행 중 담당 바꾸기·직접 작업 시작 |
+| 409 | `direct_work_active` | 직접 작업 중 에이전트 맡기기 |
+| 409 | `no_open_stage` · `stage_started` | 맡길 단계 없음 · 시작한 단계 종류 바꾸기 |
+| 409 | `triage_stale` · `next_step_stale` | 제안이 이미 처리됐거나 바뀜(`triage_id` 불일치 포함 — D30) |
+| 409 | `kind_unavailable` · `invalid_transition` | 제안 종류가 사라짐 · 지금 시작할 수 없음 |
+| 409 | `triage_unavailable` | 판단 받기를 지금 시작할 수 없음(메시지 = 이유) |
+| 422 | `invalid_field` | 담당 값·지시 메모 길이(`field` `note`)·우선순위 |
+| 그 밖 | 그대로 | `accept_next_step` 이 옮기는 사내 요청 오류(`exc.status`·`exc.code`) |
+
+### 오류 코드 (phase 24 에서 API 가 내는 것)
+
+| 상태 | code | 메시지 | 언제 |
+|---|---|---|---|
+| 401 | `unauthenticated` | "로그인이 필요합니다." / "유효한 멤버 토큰이 필요합니다." | 쿠키 없음 / Bearer 가 틀림·폐기·비활성 멤버 |
+| 403 | `token_read_only` | "읽기 전용 토큰입니다" | 읽기 전용 토큰으로 GET·HEAD 밖 요청 — 역할 검사보다 먼저 |
+| 403 | `cookie_required` | "로그인 쿠키로만 할 수 있습니다." | 토큰 발급에 Bearer 헤더 |
+| 403 | `forbidden` | "관리자 권한이 필요합니다." | 역할에 동작이 없음(기존) |
+| 403 | `forbidden_origin` | "요청 출처를 확인할 수 없습니다." | 쿠키로 부른 변경 요청의 Origin 불일치(기존 — Bearer 요청은 검사 안 함) |
+| 404 | `not_found` | 기존 문구 | 업무 키·토큰·리소스 없음. 옛 주소는 FastAPI 기본 404(`{"detail": "Not Found"}`) |
+| 409 | `triage_unavailable` 외 위 행동 오류 표 | — | — |
+| 422 | `invalid_field` · `unknown_field` | — | 쿼리·본문 값 / 모르는 본문 칸 |

@@ -1,4 +1,4 @@
-"""inbound_api.py — n8n 입구 `POST /sources/n8n/chains`. CONTRACT 12절(요청·응답·오류표), ADR-0010 결정 1·2·3·5.
+"""inbound_api.py — n8n 입구 `POST /api/v1/sources/n8n/chains`. CONTRACT 12절(요청·응답·오류표), ADR-0010 결정 1·2·3·5.
 
 인증은 세션이 발급한 입구 토큰(wfs_)만이다 — 세션 쿠키·연결 토큰으로는 통과하지 않는다.
 허용 목록·공개 주소는 conftest 의 `settings` 를 `dataclasses.replace` 로 바꿔 쓴다(기존 fixture 는 그대로).
@@ -100,7 +100,7 @@ def post(client, token: str | None, *, source: str = "n8n", body: dict | None = 
     if body is None:
         body = {"contract_version": 1, "items": [FIX_ITEM, REVIEW_ITEM], "callback_url": CALLBACK, **overrides}
     headers = bearer(token) if token is not None else {}
-    return client.post(f"/sources/{source}/chains", json=body, headers=headers)
+    return client.post(f"/api/v1/sources/{source}/chains", json=body, headers=headers)
 
 
 # --- 인증 (a) ------------------------------------------------------------------------------------
@@ -134,6 +134,14 @@ def test_source_other_than_n8n_is_404(client, conn, token, workspace):
     response = post(client, token, source="github")
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+    assert repo.list_chains(conn, workspace) == []
+
+
+def test_old_inbound_path_is_404_without_alias(client, conn, token, workspace):
+    """옛 입구 주소는 별칭 없이 404(phase 24 D9) — n8n 은 `/api/v1/sources/n8n/chains` 를 부른다."""
+    body = {"contract_version": 1, "items": [FIX_ITEM, REVIEW_ITEM], "callback_url": CALLBACK}
+    response = client.post("/sources/n8n/chains", json=body, headers=bearer(token))
+    assert response.status_code == 404
     assert repo.list_chains(conn, workspace) == []
 
 

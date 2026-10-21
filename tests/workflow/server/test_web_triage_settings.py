@@ -343,27 +343,27 @@ def test_card_match_rows_show_triage_agent(admin):
 def test_saving_triage_agent_bumps_revisions(admin, conn):
     repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW), NOW)  # 판단 Agent 없음
     before = revision(conn)
-    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
+    response = admin.put(f"/api/v1/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
     assert response.status_code == 200, response.text
     saved = repo.get_github_source(conn, SESSION, SOURCE)
     assert saved.triage_agent_id == FIX and saved.config_revision == 2
     assert revision(conn) == before + 1
 
     # 비우면 자동 판단 안 함
-    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=None))
+    response = admin.put(f"/api/v1/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=None))
     assert response.status_code == 200, response.text
     assert repo.get_github_source(conn, SESSION, SOURCE).triage_agent_id is None
 
 
 def test_saving_other_fields_keeps_the_triage_agent(admin, conn):
-    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, max_rework_rounds=2))
+    response = admin.put(f"/api/v1/github/sources/{SOURCE}", json=source_body(conn, max_rework_rounds=2))
     assert response.status_code == 200, response.text
     assert repo.get_github_source(conn, SESSION, SOURCE).triage_agent_id == FIX
 
 
 def test_owner_approval_agent_is_refused_as_triage_agent(admin, conn):
     repo.set_delegation_policy(conn, SESSION, FIX, "owner_approval", member_id=None, now=NOW)
-    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
+    response = admin.put(f"/api/v1/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
     error(response, 422, "triage_agent_policy")
     assert response.json()["field"] == "triage_agent_id"
 
@@ -371,7 +371,7 @@ def test_owner_approval_agent_is_refused_as_triage_agent(admin, conn):
 @pytest.mark.parametrize(("agent_id", "code"), [(REVIEW, "agent_capability_mismatch"),
                                                 ("agent-nope", "agent_not_registered")])
 def test_triage_agent_needs_registration_and_capability(admin, conn, agent_id, code):
-    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=agent_id))
+    response = admin.put(f"/api/v1/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=agent_id))
     error(response, 422, code)
     assert response.json()["field"] == "triage_agent_id"
 
@@ -385,7 +385,7 @@ def test_member_has_no_triage_tab_and_gets_403(app, admin, conn):
     error(member.get("/settings?tab=triage", follow_redirects=False), 403, "forbidden")
     error(save_criteria(member, "멤버 기준", 1), 403, "forbidden")
     error(save_autostart(member, "bug_fix", enabled=False), 403, "forbidden")
-    assert member.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=None)).status_code == 403
+    assert member.put(f"/api/v1/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=None)).status_code == 403
     assert repo.current_triage_criteria(conn, SESSION)["version"] == 1
 
 
@@ -432,7 +432,7 @@ def test_triage_agent_is_a_card_body_field_and_saving_it_starts_intake_triage(ad
     work_item_id = new_issue(conn, 1)
     assert route(conn, settings, work_item_id).agent_id is None
 
-    response = admin.put(f"/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
+    response = admin.put(f"/api/v1/github/sources/{SOURCE}", json=source_body(conn, triage_agent_id=FIX))
     assert response.status_code == 200, response.text
 
     found = route(conn, settings, work_item_id)

@@ -122,25 +122,25 @@ class FakeCentral:
         if not self.reachable:
             raise httpx.ConnectError("connection refused", request=request)
         path = request.url.path
-        if path == "/connector/exchange":
+        if path == "/api/v1/connector/exchange":
             return self._exchange(json.loads(request.content))
         if request.headers.get("authorization") != f"Bearer {self.token}":
             return _error(401, "unauthenticated", "유효한 연결 토큰이 필요합니다.")
-        if path == "/connector/claim":
+        if path == "/api/v1/connector/claim":
             return self._claim(json.loads(request.content))
-        if path == "/connector/heartbeat":
+        if path == "/api/v1/connector/heartbeat":
             body = json.loads(request.content)
             self.heartbeats.append(body)
             closed = body["current_execution_id"] in self.closed
             return httpx.Response(200, json={"current_execution_closed": True} if closed else {})
-        if path == "/connector/registrations":
+        if path == "/api/v1/connector/registrations":
             self.registrations.append(json.loads(request.content))
             return httpx.Response(200, json={"agent_id": "agent-codex-mac"})
-        if match := re.fullmatch(r"/executions/([^/]+)/events", path):
+        if match := re.fullmatch(r"/api/v1/executions/([^/]+)/events", path):
             return self._event(match.group(1), json.loads(request.content))
-        if match := re.fullmatch(r"/executions/([^/]+)/artifacts", path):
+        if match := re.fullmatch(r"/api/v1/executions/([^/]+)/artifacts", path):
             return self._upload(match.group(1), request)
-        if match := re.fullmatch(r"/executions/([^/]+)/artifacts/([^/]+)", path):
+        if match := re.fullmatch(r"/api/v1/executions/([^/]+)/artifacts/([^/]+)", path):
             return self._download(match.group(1), match.group(2))
         return _error(404, "not_found", path)
 

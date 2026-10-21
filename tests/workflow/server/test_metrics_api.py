@@ -147,15 +147,15 @@ def test_every_endpoint_requires_operator_session(client, conn):
     # 고정 워크스페이스가 아닌 워크스페이스의 유효한 로그인 쿠키 — 셀프호스트에서는 로그인 안 된 것으로 본다
     log_in_other_workspace(client)
     for anonymous in (TestClient(client.app), client):
-        error(anonymous.get("/metrics.json"), 401, "unauthenticated")
-        error(anonymous.get("/metrics.csv"), 401, "unauthenticated")
-        error(anonymous.post(f"/operator/github/sources/{SOURCE}/baseline"), 401, "unauthenticated")
+        error(anonymous.get("/api/v1/metrics"), 401, "unauthenticated")
+        error(anonymous.get("/api/v1/metrics.csv"), 401, "unauthenticated")
+        error(anonymous.post(f"/api/v1/github/sources/{SOURCE}/baseline"), 401, "unauthenticated")
 
 
 def test_other_operator_session_sees_only_its_own_data(operator, conn, store, fake):
     op, _ = operator
-    op.post(f"/operator/github/sources/{SOURCE}/baseline")
-    before_json, before_csv = op.get("/metrics.json").json(), op.get("/metrics.csv").text
+    op.post(f"/api/v1/github/sources/{SOURCE}/baseline")
+    before_json, before_csv = op.get("/api/v1/metrics").json(), op.get("/api/v1/metrics.csv").text
     # 다른 워크스페이스(운영자 세션)의 업무·실행·소스·기준선 — DB 에 직접 둔다
     other, other_source = "sess-other", "ghs-0000beef"
     repo.create_session(conn, other, "2026-09-20T00:00:00Z")
@@ -170,10 +170,10 @@ def test_other_operator_session_sees_only_its_own_data(operator, conn, store, fa
                           opened_before=OPENED_BEFORE, now="2026-09-21T00:00:00Z")
     assert len(repo.list_baseline(conn, other, other_source)[1]) == 1
 
-    assert op.get("/metrics.json").json() == before_json
-    assert op.get("/metrics.csv").text == before_csv
-    assert "이슈 3" not in op.get("/metrics.csv").text
-    error(op.post(f"/operator/github/sources/{other_source}/baseline"), 404, "not_found")
+    assert op.get("/api/v1/metrics").json() == before_json
+    assert op.get("/api/v1/metrics.csv").text == before_csv
+    assert "이슈 3" not in op.get("/api/v1/metrics.csv").text
+    error(op.post(f"/api/v1/github/sources/{other_source}/baseline"), 404, "not_found")
     assert fake.calls == [("acme/billing", OPENED_BEFORE)]
 
 
@@ -181,7 +181,7 @@ def test_other_operator_session_sees_only_its_own_data(operator, conn, store, fa
 
 
 def test_metrics_json_reports_values_with_unknowns_apart(op):
-    response = op.get("/metrics.json")
+    response = op.get("/api/v1/metrics")
     assert response.status_code == 200, response.text
     body = response.json()
     assert (body["from"], body["to"], body["group_by"]) == (None, None, None)
@@ -198,12 +198,12 @@ def test_metrics_json_reports_values_with_unknowns_apart(op):
 
 
 def test_metrics_json_filters_by_period_and_groups_by_config_revision(op):
-    body = op.get("/metrics.json", params={"from": "2026-09-21T00:00:00Z", "to": "2026-10-01T00:00:00+09:00"}).json()
+    body = op.get("/api/v1/metrics", params={"from": "2026-09-21T00:00:00Z", "to": "2026-10-01T00:00:00+09:00"}).json()
     assert (body["from"], body["to"]) == ("2026-09-21T00:00:00Z", "2026-10-01T00:00:00+09:00")
     [group] = body["groups"]
     assert (group["bundles"], group["failure"]["denominator"], group["failed_codes"]) == (1, 1, {"timeout": 1})
 
-    body = op.get("/metrics.json", params={"group_by": "config_revision"}).json()
+    body = op.get("/api/v1/metrics", params={"group_by": "config_revision"}).json()
     assert body["group_by"] == "config_revision"
     assert [(g["key"], g["bundles"], g["cost_usd"]["total"]) for g in body["groups"]] == [("1", 1, 0.5), ("2", 1, None)]
 
@@ -240,17 +240,17 @@ def test_github_bundle_is_done_at_merge_not_at_approval(operator, conn):
     seed_github_bundle(conn, session_id)
     params = {"from": "2026-09-26T00:00:00Z"}
 
-    [group] = op.get("/metrics.json", params=params).json()["groups"]
+    [group] = op.get("/api/v1/metrics", params=params).json()["groups"]
     assert group["intake_to_done"] == {"median": None, "n": 0, "incomplete": 1, "unknown": 0, "total": None}
     assert group["intake_to_merge"]["incomplete"] == 1
     assert (group["intake_to_approval"]["median"], group["intake_to_approval"]["n"]) == (7200.0, 1)
 
     record_merge(conn, session_id, None, "2026-09-26T03:00:00Z")  # 조회했지만 병합 없음
-    [group] = op.get("/metrics.json", params=params).json()["groups"]
+    [group] = op.get("/api/v1/metrics", params=params).json()["groups"]
     assert group["closed_unmerged"] == 1
 
     record_merge(conn, session_id, MERGE_7, "2026-09-26T06:00:00Z")
-    [group] = op.get("/metrics.json", params=params).json()["groups"]
+    [group] = op.get("/api/v1/metrics", params=params).json()["groups"]
     assert (group["intake_to_done"]["median"], group["intake_to_done"]["n"]) == (14400.0, 1)
     assert (group["intake_to_merge"]["median"], group["intake_to_merge"]["n"]) == (14400.0, 1)
     assert group["closed_unmerged"] == 0
@@ -264,7 +264,7 @@ def test_github_bundle_is_done_at_merge_not_at_approval(operator, conn):
     {"from": "2026-09-22T00:00:00Z", "to": "2026-09-21T00:00:00Z"},
 ])
 def test_invalid_parameters_are_rejected(op, params):
-    for path in ("/metrics.json", "/metrics.csv"):
+    for path in ("/api/v1/metrics", "/api/v1/metrics.csv"):
         error(op.get(path, params=params), 422, "invalid_field")
 
 
@@ -278,7 +278,7 @@ def _rows(response) -> list[dict]:
 
 
 def test_metrics_csv_has_one_row_per_metric_with_blank_unknowns(op):
-    rows = _rows(op.get("/metrics.csv"))
+    rows = _rows(op.get("/api/v1/metrics.csv"))
     assert list(rows[0]) == ["group", "area", "metric", "unit", "median", "n", "incomplete", "unknown", "total",
                              "numerator", "denominator", "note"]
     by_metric = {r["metric"]: r for r in rows if r["group"] == "all"}
@@ -299,7 +299,7 @@ def test_metrics_csv_has_one_row_per_metric_with_blank_unknowns(op):
 
 
 def test_metrics_csv_follows_the_same_parameters(op):
-    rows = _rows(op.get("/metrics.csv", params={"group_by": "config_revision"}))
+    rows = _rows(op.get("/api/v1/metrics.csv", params={"group_by": "config_revision"}))
     old = [r for r in rows if r["area"] not in ("triage", "assignee")]  # phase 20 행은 group_by 와 무관하게 뒤에 붙는다
     assert {r["group"] for r in old} == {"1", "2", f"baseline:{SOURCE}"}  # 기준선은 그룹과 무관한 행 하나
     assert rows[:len(old)] == old
@@ -365,7 +365,7 @@ def _stat(median=None, n: int = 0, incomplete: int = 0, unknown: int = 0, total=
 
 def test_metrics_json_adds_triage_assignees_and_config_changes_after_the_old_keys(triaged):
     op, admin = triaged
-    body = op.get("/metrics.json").json()
+    body = op.get("/api/v1/metrics").json()
     assert list(body) == ["from", "to", "group_by", "groups", "baselines", "triage", "assignees", "config_changes"]
     [group] = body["groups"]
     assert group["bundles"] == 2 and group["failure"]["denominator"] == 2  # 판단 단계 실행은 기존 지표에 섞이지 않는다
@@ -416,8 +416,8 @@ def test_metrics_json_adds_triage_assignees_and_config_changes_after_the_old_key
 
 def test_metrics_json_applies_the_period_to_new_areas_but_not_config_changes(triaged):
     op, _ = triaged
-    whole = op.get("/metrics.json").json()
-    body = op.get("/metrics.json", params={"from": "2026-09-21T00:00:00Z", "group_by": "config_revision"}).json()
+    whole = op.get("/api/v1/metrics").json()
+    body = op.get("/api/v1/metrics", params={"from": "2026-09-21T00:00:00Z", "group_by": "config_revision"}).json()
     overall = body["triage"]["overall"]
     assert (overall["proposed"], overall["failed"], overall["agreement"]) == (0, 1, _ratio(0, 0, None))
     assert [q["key"] for q in body["triage"]["by_kind"]] == ["unknown"]  # group_by 는 판단 묶음과 무관
@@ -429,7 +429,7 @@ def test_metrics_json_applies_the_period_to_new_areas_but_not_config_changes(tri
 
 def test_metrics_csv_adds_triage_and_assignee_rows_with_the_same_columns(triaged):
     op, admin = triaged
-    response = op.get("/metrics.csv")
+    response = op.get("/api/v1/metrics.csv")
     rows = _rows(response)
     assert list(rows[0]) == list(metrics_api.CSV_COLUMNS)
     new = [r for r in rows if r["area"] in ("triage", "assignee")]
@@ -475,39 +475,39 @@ def test_metrics_csv_adds_triage_and_assignee_rows_with_the_same_columns(triaged
 
 def test_member_role_reads_the_new_areas(app, triaged):
     member = log_in_member(TestClient(app))
-    body = member.get("/metrics.json")
+    body = member.get("/api/v1/metrics")
     assert body.status_code == 200, body.text
     assert body.json()["triage"]["overall"]["proposed"] == 1
-    assert any(r["area"] == "triage" for r in _rows(member.get("/metrics.csv")))
+    assert any(r["area"] == "triage" for r in _rows(member.get("/api/v1/metrics.csv")))
 
 
 # --- 기준선 가져오기 ------------------------------------------------------------------------
 
 
 def test_baseline_import_uses_source_created_at_and_is_idempotent(op, fake, conn, operator):
-    response = op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    response = op.post(f"/api/v1/github/sources/{SOURCE}/baseline")
     assert response.status_code == 200, response.text
     assert response.json() == {"source_id": SOURCE, "opened_before": OPENED_BEFORE, "item_count": 2}
     assert fake.calls == [("acme/billing", OPENED_BEFORE)]
     revision = repo.get_config_revision(conn, operator[1])
 
-    again = op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    again = op.post(f"/api/v1/github/sources/{SOURCE}/baseline")
     assert again.json() == response.json()
     assert len(repo.list_baseline(conn, operator[1], SOURCE)[1]) == 2
     assert repo.get_config_revision(conn, operator[1]) == revision  # 관측 이력이라 설정 번호 불변
 
-    [baseline] = op.get("/metrics.json").json()["baselines"]
+    [baseline] = op.get("/api/v1/metrics").json()["baselines"]
     assert baseline["source_id"] == SOURCE and baseline["repository_full_name"] == "acme/billing"
     assert baseline["opened_before"] == OPENED_BEFORE and baseline["fetched_at"] is not None
     assert baseline["intake_to_merge"]["median"] == 4 * 3600 and baseline["intake_to_merge"]["n"] == 2
     assert baseline["note"] == BASELINE_NOTE
 
-    [row] = [r for r in _rows(op.get("/metrics.csv")) if r["group"] == f"baseline:{SOURCE}"]
+    [row] = [r for r in _rows(op.get("/api/v1/metrics.csv")) if r["group"] == f"baseline:{SOURCE}"]
     assert (row["metric"], row["median"], row["n"], row["note"]) == ("intake_to_merge", "14400.0", "2", BASELINE_NOTE)
 
 
 def test_baseline_before_import_is_shown_as_unknown(op):
-    [baseline] = op.get("/metrics.json").json()["baselines"]
+    [baseline] = op.get("/api/v1/metrics").json()["baselines"]
     assert baseline["imported"] is False
     assert (baseline["opened_before"], baseline["fetched_at"], baseline["intake_to_merge"]) == (None, None, None)
     assert baseline["note"] == BASELINE_NOTE
@@ -519,19 +519,19 @@ def test_baseline_before_import_is_shown_as_unknown(op):
     (GitHubUnavailable("down"), 502, "github_unavailable"),
 ])
 def test_github_errors_keep_the_previous_baseline(app, op, fake, conn, operator, exc, status, code):
-    op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    op.post(f"/api/v1/github/sources/{SOURCE}/baseline")
     app.state.github_client = FakeGitHub(error=exc)
-    data = error(op.post(f"/operator/github/sources/{SOURCE}/baseline"), status, code)
+    data = error(op.post(f"/api/v1/github/sources/{SOURCE}/baseline"), status, code)
     if code == "github_rate_limited":
         assert data["details"] == {"retry_after_seconds": 60}
     assert len(repo.list_baseline(conn, operator[1], SOURCE)[1]) == 2
 
 
 def test_baseline_needs_a_token_and_an_owned_source(app, settings, op, fake):
-    error(op.post("/operator/github/sources/ghs-00000009/baseline"), 404, "not_found")
+    error(op.post("/api/v1/github/sources/ghs-00000009/baseline"), 404, "not_found")
     app.state.settings = dataclasses.replace(settings, github_token="")
     app.state.github_client = None  # 가짜를 치우면 소스 자격 선택으로 — App·PAT·환경변수 토큰 모두 없음
-    error(op.post(f"/operator/github/sources/{SOURCE}/baseline"), 409, "github_token_missing")
+    error(op.post(f"/api/v1/github/sources/{SOURCE}/baseline"), 409, "github_token_missing")
     assert fake.calls == []
 
 
@@ -546,7 +546,7 @@ def test_baseline_uses_the_source_credentials_without_env_token(app, settings, o
         return FakeGitHub(LINKS)
 
     monkeypatch.setattr(metrics_api.github_clients, "client_for", client_for)
-    response = op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    response = op.post(f"/api/v1/github/sources/{SOURCE}/baseline")
     assert response.status_code == 200 and response.json()["item_count"] == 2
     assert seen == [(SOURCE, True)]
 
@@ -554,14 +554,24 @@ def test_baseline_uses_the_source_credentials_without_env_token(app, settings, o
 def test_responses_carry_no_token_or_paths(app, op, fake, settings):
     app.state.github_client = FakeGitHub(error=GitHubForbidden(f"Bearer {TOKEN}"))
     texts = [
-        op.post(f"/operator/github/sources/{SOURCE}/baseline").text,
-        op.get("/metrics.json").text,
-        op.get("/metrics.csv").text,
+        op.post(f"/api/v1/github/sources/{SOURCE}/baseline").text,
+        op.get("/api/v1/metrics").text,
+        op.get("/api/v1/metrics.csv").text,
     ]
     app.state.github_client = fake
-    texts.append(op.post(f"/operator/github/sources/{SOURCE}/baseline").text)
+    texts.append(op.post(f"/api/v1/github/sources/{SOURCE}/baseline").text)
     for text in texts:
         assert TOKEN not in text
         assert str(settings.db_path.parent) not in text and str(settings.artifact_dir) not in text
         assert "local-demo-report" not in text  # 로컬 등록(저장소 폴더) 식별자도 내지 않는다
     json.loads(texts[1])
+
+
+def test_old_paths_without_api_prefix_are_gone(op, fake, conn, operator):
+    """옛 주소는 별칭 없이 404(D9) — `/metrics.json`·`/metrics.csv`·`/operator/github/sources/{id}/baseline`."""
+    _, session_id = operator
+    assert op.get("/metrics.json").status_code == 404
+    assert op.get("/metrics.csv").status_code == 404
+    assert op.post(f"/operator/github/sources/{SOURCE}/baseline").status_code == 404
+    assert repo.list_baseline(conn, session_id, SOURCE)[1] == []  # 옛 주소로는 가져오지 않았다
+    assert op.get("/api/v1/metrics").status_code == 200

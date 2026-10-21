@@ -369,7 +369,7 @@ def test_triage_result_is_judged_and_spawns_review_in_the_same_tick(flow, worker
 
     # 연결 프로그램이 claim API 로 그 실행을 받을 수 있다
     response = client.post(
-        "/connector/claim", json={"contract_version": 1, "connector_id": connector_id},
+        "/api/v1/connector/claim", json={"contract_version": 1, "connector_id": connector_id},
         headers=bearer(token),
     )
     assert response.status_code == 200, response.text
@@ -858,7 +858,7 @@ def test_callback_is_sent_once_when_chain_becomes_human_turn(conn, client, clock
     worker = make_worker(n8n_settings, callbacks)
 
     for body in (event(EXEC_T, 1, "accepted", {}), event(EXEC_T, 2, "started", {"runtime_ref": "pid:1"})):
-        response = client.post(f"/executions/{EXEC_T}/events", json=body, headers=bearer(token))
+        response = client.post(f"/api/v1/executions/{EXEC_T}/events", json=body, headers=bearer(token))
         assert response.status_code == 200, response.text
     report = worker.tick()  # T 실행 중 (저장 상태는 화면이 갱신한다 — 사람 차례 판정은 실행 상태로 한다)
     assert repo.get_execution(conn, EXEC_T)["status"] == "running"

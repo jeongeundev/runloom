@@ -38,18 +38,18 @@ ADMIN_PAGES = [
     ("POST", "/operator/notifications/test", {}),
 ]
 ADMIN_APIS = [
-    ("POST", "/github/sources/preview", {}),
-    ("POST", "/github/sources", {}),
-    ("PUT", f"/github/sources/{SOURCE}", {}),
-    ("POST", f"/github/sources/{SOURCE}/stop", {}),
-    ("PUT", f"/github/sources/{SOURCE}/assignees/1", {}),
-    ("POST", f"/operator/github/sources/{SOURCE}/baseline", None),
-    ("PUT", "/field-mappings", {"mappings": []}),
+    ("POST", "/api/v1/github/sources/preview", {}),
+    ("POST", "/api/v1/github/sources", {}),
+    ("PUT", f"/api/v1/github/sources/{SOURCE}", {}),
+    ("POST", f"/api/v1/github/sources/{SOURCE}/stop", {}),
+    ("PUT", f"/api/v1/github/sources/{SOURCE}/assignees/1", {}),
+    ("POST", f"/api/v1/github/sources/{SOURCE}/baseline", None),
+    ("PUT", "/api/v1/field-mappings", {"mappings": []}),
 ]
 # phase 23: 팀·저장소·설정 화면 — 멤버가 여는 화면·탭(설정의 판단·알림·n8n 입구 탭만 관리자)
 MEMBER_PAGES = ["/tasks", "/tasks/new", "/team", "/repos", "/settings?tab=kinds", "/settings?tab=advanced",
                 "/monitor"]
-MEMBER_APIS = ["/github/sources", "/human-requests", "/field-mappings", "/metrics.json", "/metrics.csv"]
+MEMBER_APIS = ["/api/v1/github/sources", "/api/v1/human-requests", "/api/v1/field-mappings", "/api/v1/metrics", "/api/v1/metrics.csv"]
 # phase 23 사이드바: 업무 · 모니터링(`view_metrics`, /monitor) · 팀 · 저장소 · 설정 · 내 설정(`edit_own_settings`) — 관리자 전용
 # 화면(입구·알림)은 사이드바가 아니라 설정 화면 탭으로 간다. 옛 `연결` 메뉴는 없다
 ADMIN_LINKS = ('href="/sources"', 'href="/operator/notifications"', 'href="/connect"')
@@ -229,18 +229,18 @@ def test_member_operator_page_shows_runner_but_not_agent_forms(member, admin):
 
 def test_member_github_page_shows_runner_but_not_connection_forms(member, admin):
     admin_text = admin.get("/repos").text
-    for marker in ("/operator/github/token", f'data-json-action="/github/sources/{SOURCE}"',
-                   f"/operator/github/sources/{SOURCE}/baseline", f"/github/sources/{SOURCE}/stop"):
+    for marker in ("/operator/github/token", f'data-json-action="/api/v1/github/sources/{SOURCE}"',
+                   f"/api/v1/github/sources/{SOURCE}/baseline", f"/api/v1/github/sources/{SOURCE}/stop"):
         assert marker in admin_text, marker
 
     text = member.get("/repos").text
     assert f'action="/operator/github/sources/{SOURCE}/runner"' in text
-    for marker in ("/operator/github/app/new", "/operator/github/token", f'data-json-action="/github/sources/{SOURCE}"',
-                   f"/operator/github/sources/{SOURCE}/baseline", f"/github/sources/{SOURCE}/stop",
-                   f"/github/sources/{SOURCE}/assignees"):
+    for marker in ("/operator/github/app/new", "/operator/github/token", f'data-json-action="/api/v1/github/sources/{SOURCE}"',
+                   f"/api/v1/github/sources/{SOURCE}/baseline", f"/api/v1/github/sources/{SOURCE}/stop",
+                   f"/api/v1/github/sources/{SOURCE}/assignees"):
         assert marker not in text, marker
 
 
 def test_member_metrics_page_hides_baseline_import(member, admin):
-    assert f"/operator/github/sources/{SOURCE}/baseline" in admin.get("/monitor").text
-    assert f"/operator/github/sources/{SOURCE}/baseline" not in member.get("/monitor").text
+    assert f"/api/v1/github/sources/{SOURCE}/baseline" in admin.get("/monitor").text
+    assert f"/api/v1/github/sources/{SOURCE}/baseline" not in member.get("/monitor").text

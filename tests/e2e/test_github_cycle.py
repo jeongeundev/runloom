@@ -647,7 +647,7 @@ def reviews_of(world: World, fix_task_id: str) -> list[sqlite3.Row]:
 
 
 def open_requests(world: World, task_id: str) -> list[dict]:
-    response = world.http.get("/human-requests")
+    response = world.http.get("/api/v1/human-requests")
     assert response.status_code == 200, response.text
     return [r for r in response.json()["requests"] if r["task_id"] == task_id]
 
@@ -655,7 +655,7 @@ def open_requests(world: World, task_id: str) -> list[dict]:
 def answer(world: World, request: dict, response_id: str, **body) -> httpx.Response:
     payload = {"response_id": response_id, "expected_revision": request["revision"], "action": "resume", "text": "",
                **body}
-    return world.http.post(f"/human-requests/{request['request_id']}/responses", json=payload)
+    return world.http.post(f"/api/v1/human-requests/{request['request_id']}/responses", json=payload)
 
 
 def settled(world: World, execution_id: str) -> bool:
@@ -729,7 +729,7 @@ def test_02_operator_connects_two_repositories_and_binds_assignees(world):
     http = world.http
     for full_name, scope, reviewer, rounds in (("acme/billing", "billing", REVIEW_BILLING, 1),
                                                 ("acme/shop", "shop", REVIEW_SHOP, 0)):
-        response = http.post("/github/sources", json={
+        response = http.post("/api/v1/github/sources", json={
             "repository_full_name": full_name, "workflow_repository_id": scope, "label_filter": ["bug"],
             "selected_issue_numbers": [], "start_at": START_AT, "fix_verification_profile_id": "vp-pytest",
             "review_agent_id": reviewer, "run_mode": "auto", "max_rework_rounds": rounds, "enabled": True,
@@ -739,7 +739,7 @@ def test_02_operator_connects_two_repositories_and_binds_assignees(world):
         world.sources[full_name] = response.json()["source"]["source_id"]
     for full_name, (user_id, login), agent_id in (("acme/billing", KIM, FIX_KIM), ("acme/billing", PARK, FIX_PARK),
                                                   ("acme/shop", LEE, FIX_LEE)):
-        response = http.put(f"/github/sources/{world.sources[full_name]}/assignees/{user_id}",
+        response = http.put(f"/api/v1/github/sources/{world.sources[full_name]}/assignees/{user_id}",
                             json={"github_login": login, "agent_id": agent_id})
         assert response.status_code == 200, response.text
 
