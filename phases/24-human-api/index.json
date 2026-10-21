@@ -53,7 +53,26 @@
     {
       "step": 2,
       "name": "token-auth",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T19:19:20+0900",
+      "summary": "auth.py: LoggedIn.token_scope(쿠키 None, 토큰 read/full·login_id=토큰 id), current_api_member(Bearer 있으면 member_for_api_token+SELFHOST_SESSION_ID 만 — 틀리면 None, 쿠키로 안 넘어감, request.state.api_member 캐시), require_member_api(401 문구 Bearer '유효한 멤버 토큰이 필요합니다.'/쿠키 '로그인이 필요합니다.', read 토큰 GET·HEAD 밖은 역할 검사보다 먼저 403 token_read_only), require_member_cookie_api(Bearer 있으면 403 cookie_required), check_origin 맨 앞 Bearer 헤더면 참(경로 예외는 옛 주소 그대로, /api/v1 전체 예외 없음). touch 는 repo.member_for_api_token 이 이미 부르므로 auth 에서 다시 부르지 않음. 라우터 파일 변경 없음. test_auth.py 에 probe 라우트 4개(POST member-api·POST team-api·GET api-member·POST cookie-api)와 테스트 15개(+파라미터 3) 추가. 전체 4655 passed·100 skipped. 다음 step 주의: 토큰 발급 라우트는 require_member_cookie_api 를 쓰고 역할 검사(EDIT_OWN_SETTINGS)는 라우트가 한다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q tests/workflow/server/test_auth.py",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "Authorization 헤더가 'Bearer ' 빈 값이거나 Basic 등 다른 스킴이면 _bearer_token 이 None 이라 Bearer 없음으로 보고 쿠키로 판정한다(기존 _bearer_token 규칙 그대로)."
+      ]
     },
     {
       "step": 3,

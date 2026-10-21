@@ -27,6 +27,7 @@ from workflow.server.auth import (
     require_connector,
     require_member,
     require_member_api,
+    require_member_cookie_api,
     require_source_token,
     set_login_cookie,
 )
@@ -247,6 +248,22 @@ def _member_app(settings):
     @app.post("/_probe/post")
     def _post():
         return {"ok": True}
+
+    @app.post("/_probe/member-api")
+    def _member_api_post(member: LoggedIn = Depends(require_member_api)):
+        return {"member_id": member.member_id}
+
+    @app.post("/_probe/team-api")
+    def _team_api_post(member: LoggedIn = Depends(require_action(team.MANAGE_TEAM, api=True))):
+        return {"member_id": member.member_id}
+
+    @app.get("/_probe/api-member")
+    def _api_member(member: LoggedIn = Depends(require_member_api)):
+        return dataclasses.asdict(member)
+
+    @app.post("/_probe/cookie-api")
+    def _cookie_api(member: LoggedIn = Depends(require_member_cookie_api)):
+        return {"member_id": member.member_id}
 
     @app.post("/sources/tokens/_probe")
     def _cookie_path():
@@ -551,3 +568,184 @@ def test_login_email_key_normalizes_or_falls_back_to_lowercase():
     assert login_email_key("  Admin@Example.COM ") == "email:admin@example.com"
     assert login_email_key("Not An Email") == "email:not an email"
     assert login_email_key("X" * 300) == "email:" + "x" * 254
+
+
+# --- phase 24 step 2 — 멤버 토큰 Bearer 인증·읽기 전용·쿠키 전용·Origin 예외 (ARCHITECTURE "auth 규칙") ---------
+
+
+def _member_token(conn, member_id: str, scope: str = "full") -> tuple[str, str]:
+    return repo.issue_member_token(conn, session_id=SELFHOST_SESSION_ID, member_id=member_id, name="ci",
+                                   scope=scope, now=NOW)
+
+
+def _token_client(settings, conn, *, role: str = "admin", email: str = "admin@example.com", scope: str = "full"):
+    """쿠키 없이 Bearer 멤버 토큰만 싣는 클라이언트."""
+    client = TestClient(_member_app(settings))
+    if role != "admin":
+        _account(conn)
+    member_id = _account(conn, role=role, email=email)
+    token_id, token = _member_token(conn, member_id, scope)
+    client.headers.update(bearer(token))
+    return client, member_id, token_id, token
+
+
+TOKEN_UNAUTHENTICATED = {
+    "code": "unauthenticated", "message": "유효한 멤버 토큰이 필요합니다.", "field": None, "details": None,
+}
+TOKEN_READ_ONLY = {"code": "token_read_only", "message": "읽기 전용 토큰입니다", "field": None, "details": None}
+
+
+def test_member_token_authenticates_existing_json_api_without_cookie(settings, conn):
+    client, member_id, token_id, _ = _token_client(settings, conn)
+    assert LOGIN_COOKIE not in client.cookies
+    assert client.get("/human-requests").status_code == 200
+    body = client.get("/_probe/api-member").json()
+    assert body["member_id"] == member_id and body["role"] == "admin"
+    assert body["session_id"] == SELFHOST_SESSION_ID
+    assert body["token_scope"] == "full" and body["login_id"] == token_id
+
+
+def test_cookie_login_has_no_token_scope(settings, conn):
+    client, _, _ = _logged_in(settings, conn)
+    assert client.get("/_probe/api-member").json()["token_scope"] is None
+    assert client.get("/_probe/member").json()["token_scope"] is None
+
+
+@pytest.mark.parametrize("header", ["Bearer wfm_not-a-real-token", "Bearer wfc_not-a-member-token", "Bearer x"])
+def test_wrong_member_token_is_401(settings, conn, header):
+    client = TestClient(_member_app(settings))
+    _account(conn)
+    response = client.get("/human-requests", headers={"Authorization": header})
+    assert response.status_code == 401 and response.json() == TOKEN_UNAUTHENTICATED
+
+
+def test_revoked_member_token_is_401(settings, conn):
+    client, member_id, token_id, _ = _token_client(settings, conn)
+    assert client.get("/human-requests").status_code == 200
+    assert repo.revoke_member_token(conn, member_id=member_id, token_id=token_id, now=NOW)
+    response = client.get("/human-requests")
+    assert response.status_code == 401 and response.json() == TOKEN_UNAUTHENTICATED
+
+
+def test_disabled_member_token_is_401(settings, conn):
+    client, member_id, _, _ = _token_client(settings, conn, role="member", email="m@example.com")
+    assert client.get("/human-requests").status_code == 200
+    repo.disable_member(conn, SELFHOST_SESSION_ID, member_id, now=NOW)
+    assert client.get("/human-requests").status_code == 401
+
+
+def test_member_token_of_another_workspace_is_401(settings, conn):
+    client = TestClient(_member_app(settings))
+    log_in_other_workspace(client)
+    other = repo.ensure_first_admin(conn, "sess-other", now=NOW)
+    client.cookies.clear()
+    _, token = repo.issue_member_token(conn, session_id="sess-other", member_id=other, name="ci", scope="full",
+                                       now=NOW)
+    response = client.get("/_probe/member-api", headers=bearer(token))
+    assert response.status_code == 401 and response.json() == TOKEN_UNAUTHENTICATED
+
+
+def test_wrong_bearer_does_not_fall_back_to_cookie(settings, conn):
+    client, _, _ = _logged_in(settings, conn)
+    assert client.get("/_probe/member-api").status_code == 200
+    response = client.get("/_probe/member-api", headers={"Authorization": "Bearer wfm_wrong"})
+    assert response.status_code == 401 and response.json() == TOKEN_UNAUTHENTICATED
+    response = client.get("/human-requests", headers={"Authorization": "Bearer wfm_wrong"})
+    assert response.status_code == 401
+
+
+def test_read_token_allows_get_and_blocks_writes_before_role_check(settings, conn):
+    client, member_id, _, _ = _token_client(settings, conn, role="member", email="m@example.com", scope="read")
+    assert client.get("/human-requests").status_code == 200
+    assert client.get("/_probe/member-api").json() == {"member_id": member_id}
+    for path in ("/_probe/member-api", "/_probe/team-api"):  # 관리자 API 도 역할보다 읽기 전용이 먼저
+        response = client.post(path)
+        assert response.status_code == 403 and response.json() == TOKEN_READ_ONLY
+    response = client.post("/human-requests/hr-none/responses", json={})
+    assert response.status_code == 403 and response.json() == TOKEN_READ_ONLY
+
+
+def test_full_token_follows_role_table(settings, conn):
+    member, member_id, _, _ = _token_client(settings, conn, role="member", email="m@example.com")
+    assert member.post("/_probe/member-api").json() == {"member_id": member_id}
+    response = member.post("/_probe/team-api")
+    assert response.status_code == 403 and response.json()["code"] == "forbidden"
+    assert member.get("/_probe/team-api").status_code == 403
+
+    admin = TestClient(member.app)
+    admin_id = repo.find_member_by_email(conn, SELFHOST_SESSION_ID, "admin@example.com")["member_id"]
+    admin.headers.update(bearer(_member_token(conn, admin_id)[1]))
+    assert admin.post("/_probe/team-api").json() == {"member_id": admin_id}
+
+
+def test_cookie_only_api_rejects_any_bearer(settings, conn):
+    client, member_id, _ = _logged_in(settings, conn)
+    assert client.post("/_probe/cookie-api").json() == {"member_id": member_id}
+    _, token = _member_token(conn, member_id)
+    for header in (f"Bearer {token}", "Bearer wfm_wrong"):
+        response = client.post("/_probe/cookie-api", headers={"Authorization": header})
+        assert response.status_code == 403
+        assert response.json() == {
+            "code": "cookie_required", "message": "로그인 쿠키로만 할 수 있습니다.", "field": None, "details": None,
+        }
+    anonymous = TestClient(client.app)
+    response = anonymous.post("/_probe/cookie-api")
+    assert response.status_code == 401 and response.json()["message"] == "로그인이 필요합니다."
+
+
+def test_bearer_request_skips_origin_check_but_cookie_post_does_not(settings, conn):
+    client, member_id, _, _ = _token_client(settings, conn)
+    del client.headers["origin"]
+    assert client.post("/_probe/member-api").json() == {"member_id": member_id}
+    client.headers["origin"] = "http://evil.example"
+    assert client.post("/_probe/member-api").json() == {"member_id": member_id}
+
+    cookie, _, _ = _logged_in(settings, conn)
+    del cookie.headers["origin"]
+    response = cookie.post("/_probe/member-api")
+    assert response.status_code == 403 and response.json()["code"] == "forbidden_origin"
+
+
+def test_check_origin_bearer_exception_is_header_not_api_prefix(settings):
+    def request(path: str, headers: dict[str, str]) -> Request:
+        return Request({
+            "type": "http", "method": "POST", "path": path, "root_path": "", "scheme": "http", "query_string": b"",
+            "server": ("testserver", 80), "headers": [(b"host", b"testserver")] + [
+                (k.lower().encode(), v.encode()) for k, v in headers.items()
+            ],
+        })
+
+    assert check_origin(request("/human-requests/x/responses", {"Authorization": "Bearer wfm_x"}), settings)
+    assert not check_origin(request("/human-requests/x/responses", {"Authorization": "Bearer "}), settings)
+    assert not check_origin(request("/api/v1/work", {}), settings)
+
+
+def test_page_route_does_not_accept_bearer(settings, conn):
+    client, _, _, _ = _token_client(settings, conn)
+    response = client.get("/tasks", follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/login"
+    response = client.get("/_probe/member", follow_redirects=False)
+    assert response.status_code == 303
+    assert client.get("/_probe/team", follow_redirects=False).status_code == 303
+
+
+def test_member_token_use_touches_last_used_at(settings, conn):
+    client, _, token_id, _ = _token_client(settings, conn)
+
+    def last_used():
+        return conn.execute("SELECT last_used_at FROM member_tokens WHERE token_id = ?", (token_id,)).fetchone()[0]
+
+    assert last_used() is None
+    assert client.get("/human-requests").status_code == 200
+    assert last_used() is not None
+
+
+def test_member_token_raw_value_is_not_kept_on_request_state(settings, conn):
+    client, _, _, token = _token_client(settings, conn)
+
+    @client.app.get("/_probe/state")
+    def _state(request: Request, member: LoggedIn = Depends(require_member_api)):
+        return {"state": repr(vars(request.state)), "member": repr(member)}
+
+    body = client.get("/_probe/state").json()
+    assert token not in body["state"] and token not in body["member"]
