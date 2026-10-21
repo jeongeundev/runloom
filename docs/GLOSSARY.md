@@ -346,6 +346,16 @@
 | 받는 사람 이메일 / `invitee_email` | 초대 행의 받는 사람 이메일(정규화 값)과 이름 `invitee_name`(step 2). 새 초대는 필수, 가입은 이 이메일로만(`InviteEmailMismatch`). v24 이전 초대는 NULL — 화면 `이메일 없음(옛 초대)` | `수신자`(담당 범위의 받는 사람과 혼동), `email`(멤버 칸과 혼동 — 코드는 `invitee_email`) |
 | 끝난 업무 묶음 / `CLOSED_GROUP_KEY` | 업무 목록에서 `TERMINAL_WORK_STATUSES`(`완료`·`종료`) 업무를 묶기와 무관하게 맨 아래 모은 묶음 하나 — 키 `closed`, 이름 `끝난 업무`, 기본 접힘(step 8). 끝난 업무 범위(`closed=recent\|all`)는 그대로이고 이 묶음은 그 안의 행만 담는다 | `보관`, `아카이브`, `완료 묶음`(`종료` 도 든다) |
 | "자세히" / `details.detail` | 내부 ID·코드를 두는 유일한 접힘 `<details class="detail"><summary>자세히</summary>`(step 3~9). 노출 단정은 이 요소를 지운 화면 글자에서 `agt-`·`conn-`·`inv-`·`code.(fix\|review\|triage)` 를 찾는다 | `고급`(설정 칸 접힘 — 다른 것), `디버그`, `원문 보기`(산출물 원문 토글 — 다른 것) |
+
+## 계획 용어 — phase 24 사람용 API (미구현)
+
+[ADR-0032](adr/0032-human-api-and-member-tokens.md), [ARCHITECTURE](ARCHITECTURE.md) "사람용 API — phase 24". 괄호는 만드는 step.
+
+| 용어 | 정의 | 금지 표현 |
+|---|---|---|
+| 멤버 토큰 / `member_tokens` | 멤버가 `/me` "API 토큰" 절(또는 `POST /api/v1/me/tokens`, 쿠키로만)에서 이름을 붙여 만드는 사람용 API 인증 토큰(step 1·3). 원문 `wfm_` + `secrets.token_urlsafe(32)`, 발급 응답에 한 번만 보이고 DB 에는 `token_sha256` 만. 한 멤버가 여러 개, 만료 없음, 하나씩 폐기, 멤버를 비활성화하면 모두 폐기. 요청 권한은 토큰 주인의 역할(`team.can`). `Authorization: Bearer wfm_…` 로 보낸다 | `API 키`, `PAT`(GitHub 토큰과 혼동), `연결 토큰`(러너의 `wfc_` — 다른 것), `입구 토큰`(n8n 의 `wfs_` — 다른 것), `세션` |
+| 읽기 전용 토큰 / `scope=read` | 발급 때 고르는 범위 `read` — GET·HEAD 만 되고 그 밖은 403 `token_read_only`(역할 검사보다 먼저, POST 인 미리보기도 막힘). 다른 값 `full` = 화면 라벨 `내 권한 전부`(step 2·3) | `읽기 권한`(역할 동작과 혼동), `viewer`, `게스트` |
+| `/api/v1` / `API_PREFIX` | 사람용 API·러너(`connector`·`executions`)·n8n 입구(`sources/{source}/chains`)가 함께 쓰는 JSON 주소 접두어(`contracts/v1.py` 상수, step 4·5). 화면·화면 폼 경로와 `/healthz` 에는 붙지 않는다. 옛 주소는 별칭 없이 404 | `v1 API`(계약 버전 `contract_version: 1` 과 혼동), `/api`(버전 없이) |
 | 요청 유형 목록 / `REQUEST_KIND_LABELS` | 담당 범위 화면 폼이 고르게 하는 요청 유형 — `investigation` 조사 · `bug_report` 버그 보고 · `data_check` 데이터 확인(step 6). 화면 폼에만 걸고 JSON API 는 식별자 형식만 본다. 목록 밖 기존 행은 `(목록 밖)` | `요청 종류`(업무 종류 `kind` 와 혼동 — 화면 말은 `요청 유형`), `카테고리` |
 
 ## 경계가 헷갈리는 개념

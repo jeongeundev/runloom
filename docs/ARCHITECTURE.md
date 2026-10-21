@@ -3823,3 +3823,311 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 - **화면 계층.** 중앙(`server/`)이 JSON API 를 내고 웹·IDE 앱·CLI·n8n·에이전트가 그 클라이언트다. 지금 사람용 동작은 `server/web.py` 폼 처리(`work_actions` 등 도메인 호출)에 있다. API 는 같은 함수를 부르게 하고, 규칙을 경로마다 복제하지 않는다. 앱·CLI 인증은 멤버별 토큰(비밀값 규칙 그대로)이며 웹 세션 쿠키와 별개다.
 - **경계.** `server/`·`connector/` 상호 import 금지는 그대로다. IDE 앱 안의 러너는 지금의 `connector` 를 실행하며 앱이 러너 프로토콜(`machine_api`)을 새로 만들지 않는다.
 - **인계 리포트.** 에이전트용은 `handoff_bundle`(`assemble_handoff`)을 확장한다. 사람용 HTML 은 실행 산출물로 저장하고 API 로 꺼낸다. 리포트의 주장은 같은 실행의 산출물(diff·테스트 로그·결과 커밋)을 가리킨다. 생성 주체(보내는 쪽 러너 / 받는 쪽 에이전트)와 산출물 kind 이름은 미결.
+
+## 사람용 API — phase 24
+
+[ADR-0032](adr/0032-human-api-and-member-tokens.md) 를 따른다. step 목록은 [phase 24 README](../phases/24-human-api/README.md). 이 시점에는 구현이 없다 — 아래 이름·주소·표·시그니처·문구는 step 1~9 가 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** 계약 예시는 [CONTRACT](CONTRACT.md) 18절.
+
+### 한 줄 요약
+
+모든 JSON 라우트를 `/api/v1` 아래로 옮기고(옛 주소 즉시 404), 업무 목록·상세·행동 API 를 새로 연다. 멤버는 `/me` 에서 멤버 토큰(`wfm_…`, 읽기 전용 / 내 권한 전부)을 만들어 `Authorization: Bearer` 로 사람용 API 를 부른다. 화면·화면 폼 경로·`/healthz` 는 그대로다. 스키마 v26(`member_tokens`). 러너·n8n 주소가 바뀌어 업그레이드 때 러너 재설치·n8n 주소 수정이 필요하다.
+
+### 이름 고정 (다음 step 이 그대로 쓴다)
+
+| 대상 | 위치(step) | 이름 |
+|---|---|---|
+| 접두어 | `contracts/v1.py`(4) | `API_PREFIX = "/api/v1"` — 서버(`app.py` include·`auth` Origin 예외·`web.INBOUND_PATH`)와 러너(`connector/client.py`)가 같이 쓴다. `contracts/` 는 두 쪽이 공유하는 유일한 곳이다 |
+| 라우터 등록 | `server/app.py`(3·4·5·6) | JSON 라우터는 모두 `app.include_router(<모듈>.router, prefix=API_PREFIX)`. 라우터 파일 안의 `APIRouter(prefix=…)`·`@router` 경로는 `/api/v1` 뒤의 부분만 쓴다(예 `human_api` `APIRouter(prefix="/human-requests")` 그대로) |
+| 새 라우터 | `server/member_token_api.py`(3), `server/work_api.py`(6·7) | 각 `router = APIRouter(prefix="/me/tokens")`, `router = APIRouter(prefix="/work-items")`. 본문 모델은 라우터 파일 안(`human_api.ResponseBody` 와 같은 자리), `model_config = ConfigDict(extra="forbid")` |
+| 업무 키 조회 | `server/work_lookup.py`(4) | `WORK_KEY = re.compile(rf"{WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})")`(지금 `web._WORK_KEY` 를 옮긴다 — web 은 이 상수를 import), `work_by_key(conn: Connection, session_id: str, key: str) -> Row \| None`(fullmatch 실패·없는 업무·다른 워크스페이스 모두 None, 예외 없음) |
+| 저장 | `adapters/db.py`·`adapters/repo.py`(1) | `SCHEMA_VERSION = 26`, `_V26_TABLES`, `_migrate_25_to_26`, fixture `tests/workflow/adapters/fixtures/schema_v25.sql`, `MEMBER_TOKEN_PREFIX = "wfm_"`, `MEMBER_TOKEN_SCOPES = ("read", "full")`, `MEMBER_TOKEN_TOUCH_SECONDS = 60` + 아래 repo 함수 |
+| 인증 | `server/auth.py`(2) | `LoggedIn.token_scope`, `current_api_member`, `require_member_api`(Bearer 우선·읽기 전용 검사), `require_member_cookie_api`, `check_origin` 예외 — 아래 "auth 규칙" |
+| 오류 코드 | `server/auth.py`(2)·`server/member_token_api.py`(3)·`server/work_api.py`(6·7) | 새 코드 `token_read_only`(403)·`cookie_required`(403)·`triage_unavailable`(409 — 웹에 이미 있는 코드를 API 도 낸다) |
+| 패널 공용 | `server/views.py`(6) | `_agent_choice_lines` 줄에 `needs_owner_approval: bool` 칸 추가, `panel_actions(panel: dict[str, Any]) -> list[str]`, `internal_request_view(conn, session_id: str, member_id: str, allowed: frozenset[str], row: dict, artifact_store: Any) -> dict`(지금 `web._request_display` 를 옮긴다 — web 의 `_panel`·`requests_page` 가 이것을 부른다) |
+| `/me` 화면 | `server/web.py`·`templates/me.html`(3) | 폼 라우트 `me_token_issue` `POST /me/tokens`, `me_token_revoke` `POST /me/tokens/{token_id}/revoke`, `_me_page(..., issued: dict[str, str] \| None = None)`, `views.me_context` 에 `tokens`, 절 표식 `section[data-me-section="tokens"]` |
+
+### 주소 표 (step 3·4·5·6·7)
+
+철자 규칙: 앞에 `/api/v1`. 이름이 바뀌는 곳은 셋 — `/metrics.json` → `/api/v1/metrics`, `/operator/github/sources/{source_id}/baseline` → `/api/v1/github/sources/{source_id}/baseline`, `/work-items/{work_item_id}/internal-requests` → `/api/v1/work-items/{key}/internal-requests`(D31 — 내부 id 대신 업무 키). 러너·n8n 은 앞에 `/api/v1` 만(D8). 옛 경로는 별칭 없이 404(D9).
+
+인증 칸: **쿠키·`wfm_`** = 로그인 쿠키 `wf_login` 또는 `Authorization: Bearer wfm_…`(Bearer 가 있으면 그것만, 읽기 전용 토큰은 GET 만). **쿠키만** = Bearer 헤더가 있으면 403 `cookie_required`. **`wfc_`** = 연결 토큰 Bearer 만(쿠키 무시). **`wfs_`** = 입구 토큰 Bearer 만. 동작 칸: **로그인** = 활성 멤버면 누구나(`require_member_api`), 그 밖은 `require_action(team.<동작>, api=True)`.
+
+**옮기는 기존 JSON 라우트 41개**
+
+| 옛 경로 | 새 경로 | 메서드 | 동작 | 인증 | 라우터(step) |
+|---|---|---|---|---|---|
+| `/connector/exchange` | `/api/v1/connector/exchange` | POST | 없음(본문의 연결 코드) | 없음 | `machine_api`(5) |
+| `/connector/claim` | `/api/v1/connector/claim` | POST | — | `wfc_` | `machine_api`(5) |
+| `/connector/heartbeat` | `/api/v1/connector/heartbeat` | POST | — | `wfc_` | `machine_api`(5) |
+| `/connector/registrations` | `/api/v1/connector/registrations` | POST | — | `wfc_` | `machine_api`(5) |
+| `/executions/{execution_id}/events` | `/api/v1/executions/{execution_id}/events` | POST | — | `wfc_` | `machine_api`(5) |
+| `/executions/{execution_id}/artifacts` | `/api/v1/executions/{execution_id}/artifacts` | POST | — | `wfc_` | `machine_api`(5) |
+| `/executions/{execution_id}/artifacts/{artifact_id}` | `/api/v1/executions/{execution_id}/artifacts/{artifact_id}` | GET | — | `wfc_` | `machine_api`(5) |
+| `/sources/{source}/chains` | `/api/v1/sources/{source}/chains` | POST | — | `wfs_` | `inbound_api`(5) |
+| `/github/sources` | `/api/v1/github/sources` | GET | 로그인 | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/preview` | `/api/v1/github/sources/preview` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources` | `/api/v1/github/sources` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}` | `/api/v1/github/sources/{source_id}` | GET | 로그인 | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}` | `/api/v1/github/sources/{source_id}` | PUT | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}/stop` | `/api/v1/github/sources/{source_id}/stop` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/github/sources/{source_id}/assignees/{github_user_id}` | `/api/v1/github/sources/{source_id}/assignees/{github_user_id}` | PUT | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `github_api`(4) |
+| `/human-requests` | `/api/v1/human-requests` | GET | 로그인 | 쿠키·`wfm_` | `human_api`(4) |
+| `/human-requests/{request_id}/responses` | `/api/v1/human-requests/{request_id}/responses` | POST | `RESPOND` | 쿠키·`wfm_` | `human_api`(4) |
+| `/metrics.json` | `/api/v1/metrics` | GET | `VIEW_METRICS` | 쿠키·`wfm_` | `metrics_api`(4) |
+| `/metrics.csv` | `/api/v1/metrics.csv` | GET | `VIEW_METRICS` | 쿠키·`wfm_` | `metrics_api`(4) |
+| `/operator/github/sources/{source_id}/baseline` | `/api/v1/github/sources/{source_id}/baseline` | POST | `MANAGE_CONNECTIONS` | 쿠키·`wfm_` | `metrics_api`(4) |
+| `/responsibilities` | `/api/v1/responsibilities` | GET | 로그인 | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/responsibilities` | `/api/v1/responsibilities` | PUT | `MANAGE_RULES` | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/responsibilities/candidates` | `/api/v1/responsibilities/candidates` | GET | 로그인 | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/responsibilities/select` | `/api/v1/responsibilities/select` | POST | `DELEGATE` | 쿠키·`wfm_` | `responsibility_api`(4) |
+| `/internal-requests` | `/api/v1/internal-requests` | GET | 로그인 | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/work-items/{work_item_id}/internal-requests` | `/api/v1/work-items/{key}/internal-requests` | GET | 로그인 | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/work-items/{work_item_id}/internal-requests` | `/api/v1/work-items/{key}/internal-requests` | POST | `DELEGATE` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/accept` | `/api/v1/internal-requests/{request_id}/accept` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/investigation` | `/api/v1/internal-requests/{request_id}/investigation` | POST | `DELEGATE` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/return` | `/api/v1/internal-requests/{request_id}/return` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/not-responsible` | `/api/v1/internal-requests/{request_id}/not-responsible` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/reroute` | `/api/v1/internal-requests/{request_id}/reroute` | POST | `DELEGATE` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/questions` | `/api/v1/internal-requests/{request_id}/questions` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/questions/{question_id}/answer` | `/api/v1/internal-requests/{request_id}/questions/{question_id}/answer` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/judgments` | `/api/v1/internal-requests/{request_id}/judgments` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/judgments/{judgment_id}/respond` | `/api/v1/internal-requests/{request_id}/judgments/{judgment_id}/respond` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/internal-requests/{request_id}/resume` | `/api/v1/internal-requests/{request_id}/resume` | POST | `RESPOND` | 쿠키·`wfm_` | `internal_request_api`(4) |
+| `/field-mappings` | `/api/v1/field-mappings` | GET | 로그인 | 쿠키·`wfm_` | `mapping_api`(4) |
+| `/field-mappings` | `/api/v1/field-mappings` | PUT | `MANAGE_RULES` | 쿠키·`wfm_` | `mapping_api`(4) |
+
+사내 요청 키 경로(D31, step 4): `{key}` 는 `work_lookup.work_by_key` 로 찾고 없으면 404 `not_found` "원래 업무를 찾을 수 없습니다."(지금 문구 그대로, `field` 없음). 찾은 업무의 `work_item_id` 를 지금처럼 `internal_request_store.list_for_work`·`create` 에 넘긴다. 응답 본문은 바뀌지 않는다.
+
+**새로 여는 라우트**
+
+| 새 경로 | 메서드 | 동작 | 인증 | 성공 | 라우터(step) |
+|---|---|---|---|---|---|
+| `/api/v1/me/tokens` | POST | `EDIT_OWN_SETTINGS` | 쿠키만 | 201 | `member_token_api`(3) |
+| `/api/v1/me/tokens` | GET | `EDIT_OWN_SETTINGS` | 쿠키·`wfm_` | 200 | `member_token_api`(3) |
+| `/api/v1/me/tokens/{token_id}` | DELETE | `EDIT_OWN_SETTINGS` | 쿠키·`wfm_` | 204 | `member_token_api`(3) |
+| `/api/v1/work-items` | GET | 로그인 | 쿠키·`wfm_` | 200 | `work_api`(6) |
+| `/api/v1/work-items/{key}` | GET | 로그인 | 쿠키·`wfm_` | 200 | `work_api`(6) |
+| `/api/v1/work-items/{key}` | PATCH | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/assignee` | PUT | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/assignee` | DELETE | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/direct-work` | PUT | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/direct-work` | DELETE | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/triage-runs` | POST | `DELEGATE` | 쿠키·`wfm_` | 202 | `work_api`(7) |
+| `/api/v1/work-items/{key}/triage-proposals/{triage_id}/accept` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/triage-proposals/{triage_id}/dismiss` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/next-step-proposals/{triage_id}/accept` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/work-items/{key}/next-step-proposals/{triage_id}/dismiss` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+
+`work_api` 와 `internal_request_api` 는 같은 `/api/v1/work-items/{key}/…` 아래에 있지만 서로 다른 라우터다(경로가 겹치지 않는다 — `internal-requests` 는 `internal_request_api` 만).
+
+**옮기지 않는 경로**(D10 — 화면 라우트는 모두 `web.py`, 105개를 다 적지 않는다)
+
+| 묶음 | 예 | 이유 |
+|---|---|---|
+| 화면 GET | `/`·`/tasks`·`/tasks/new`·`/tasks/{task_id}…`·`/work/{key}`·`/work/{key}/panel`·`/chains/{chain_id}…`·`/requests`·`/team`·`/repos`·`/settings`·`/connect`·`/agents…`·`/kinds`·`/sources`·`/metrics`·`/monitor`·`/start`·`/me`·`/operator…` | HTML 화면 |
+| 업무 화면 폼 POST | `/tasks`·`/tasks/{task_id}/run`·`…/delegate`·`…/select`·`…/review`·`/chains/{chain_id}/start`·`/work/{key}/assignee`·`…/priority`·`…/direct`·`…/direct/stop`·`…/triage`·`…/triage/accept`·`…/triage/dismiss`·`…/next-step/accept`·`…/next-step/dismiss`·`/work/{key}/internal-requests` | 폼 + 303. 같은 동작의 JSON 은 위 새 라우트 |
+| 요청·담당 범위 폼 POST | `/requests/{request_id}/…`(accept·judgments·questions·not-responsible·reroute·investigation·return·resume), `/responsibilities/add`·`/responsibilities/remove` | 폼 + 303 |
+| 설정·팀 폼 POST | `/kinds…`·`/rules…`·`/agents/{agent_id}/…`·`/sources/tokens`·`/sources/tokens/{token_id}/revoke`·`/team/…`·`/me/…`(새 `/me/tokens`·`/me/tokens/{token_id}/revoke` 포함)·`/operator/…`(`/operator/github/sources/{source_id}/runner` 포함) | 폼 + 303 또는 같은 화면 렌더 |
+| 로그인 | `/login…`·`/invite/{token}`·`/reset/{token}`·`/logout` | 쿠키 발급 화면 |
+| GitHub App | `/operator/github/app/new`·`/operator/github/app/callback`·`/operator/github/app/setup` | GitHub 에 등록된 주소 |
+| 그 밖 | `/healthz`(compose healthcheck·`install.sh`), `/static`(마운트), `/docs`·`/docs/oauth2-redirect`·`/redoc`·`/openapi.json`(FastAPI 기본, D34) | 운영·기본 경로 |
+
+**옛 경로가 남는 문서 위치**: 이 절, ADR-0032, 그리고 한 줄에 `→` 와 새 `/api/v1` 경로가 함께 있는 대응 줄뿐이다 — step 8 의 옛 경로 검사 스크립트가 이 셋만 건너뛴다. CURRENT_HANDOFF·GLOSSARY 등 다른 문서에 옛 경로를 새로 쓰지 않는다.
+
+### 라우트 분류 규칙 (step 9 대조 테스트)
+
+- **화면 라우트** = endpoint 함수의 `__module__` 이 `workflow.server.web` 인 라우트. 그래서 **화면 폼 라우트는 모두 `web.py` 에 둔다** — step 3 의 `/me/tokens` 폼도 `web.py`, JSON 토큰 API 만 `member_token_api.py`.
+- **예외** = `/healthz`(endpoint 모듈 `workflow.server.app` — `add_api_route` 의 lambda), FastAPI 기본 문서 `/openapi.json`·`/docs`·`/docs/oauth2-redirect`·`/redoc`(모듈 `fastapi.applications`), `/static` 마운트(`app.mount` — endpoint 없음). 2026-10-21 앱에서 확인한 실제 경로다.
+- **나머지 모든 라우트는 `/api/v1/` 로 시작해야 한다.** 그리고 위 주소 표의 새 경로(옮기는 41 + 새로 여는 15)가 모두 실제 라우트에 있어야 한다.
+
+### step 경계
+
+| step | 옮기거나 만드는 것 |
+|---|---|
+| 3 `me-tokens` | `member_token_api`(새 라우트 3), `/me` 화면 토큰 절과 폼 라우트 2(`web.py`) |
+| 4 `api-prefix` | 사람용 JSON 라우터 6개(`github_api`·`human_api`·`metrics_api`·`responsibility_api`·`internal_request_api`·`mapping_api`)를 `prefix=API_PREFIX` 로, `metrics_api` 의 두 이름 바꾸기, 사내 요청 키 경로, `work_lookup`(웹 `_own_work`·`work_detail` 도 이것을 쓴다), 웹 스크립트(`data-json-action` 10곳)·`metrics.html` JSON·CSV 링크, 테스트 주소. 옛 주소는 사라진다 |
+| 5 `connector-paths` | 러너·n8n 프로토콜 — 서버 `machine_api`·`inbound_api` 와 `connector/client.py` 를 **함께**(한쪽만 옮기면 e2e 가 깨진다), `auth._BEARER_PREFIXES`·`_CHAINS_PATH` 를 새 경로로, `web.INBOUND_PATH = f"{API_PREFIX}/sources/n8n/chains"` |
+| 6 `work-read-api` | `work_api` 목록·상세, `views` 패널 공용 함수(`needs_owner_approval`·`panel_actions`·`internal_request_view`) |
+| 7 `work-action-api` | `work_api` 행동 9개 |
+
+### `member_tokens` 표 (스키마 v26, step 1)
+
+```sql
+CREATE TABLE IF NOT EXISTS member_tokens (
+  token_id     TEXT PRIMARY KEY,                            -- 'mtk-' + 12 hex (secrets.token_hex(6))
+  member_id    TEXT NOT NULL REFERENCES members(member_id),
+  name         TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),  -- 앞뒤 공백 제거한 값, 같은 멤버 안 중복 허용
+  scope        TEXT NOT NULL CHECK (scope IN ('read', 'full')),
+  token_sha256 TEXT NOT NULL UNIQUE,                        -- 원문 'wfm_' + secrets.token_urlsafe(32) 의 sha256
+  created_at   TEXT NOT NULL,
+  last_used_at TEXT,                                        -- NULL = 사용 기록 없음
+  revoked_at   TEXT                                         -- NULL = 활성
+);
+
+CREATE INDEX IF NOT EXISTS ix_member_tokens_member ON member_tokens(member_id);
+```
+
+- `session_id` 칸은 두지 않는다 — 워크스페이스는 `members.session_id` 를 JOIN 해 얻는다(`member_for_api_token` 이 싣는다).
+- 멤버당 개수 상한 없음(D37). 원문·접두어 외 부분은 어디에도 저장하지 않는다.
+- `_V26_TABLES` = 위 두 문장. `_migrate_25_to_26` 은 `_migrate_24_to_25` 와 같은 형식(문장 실행 → `PRAGMA foreign_key_check` → `UPDATE schema_version SET version = 26`). 스키마 버전을 박은 기존 테스트(`SCHEMA_VERSION`·`/healthz` 의 `schema_version`·마이그레이션 fixture 경로)는 26 으로 고친다.
+
+### repo 함수 (step 1)
+
+| 함수 | 동작 |
+|---|---|
+| `issue_member_token(conn, *, session_id: str, member_id: str, name: str, scope: str, now: str) -> tuple[str, str]` | (token_id, 원문). 같은 워크스페이스의 활성 멤버가 아니면 `NotFound`. `name` 은 앞뒤 공백을 지운 뒤 1~40자가 아니면 `ValueError("name")`, `scope` 가 `MEMBER_TOKEN_SCOPES` 밖이면 `ValueError("scope")`. 한 트랜잭션(`_tx`) |
+| `list_member_tokens(conn, member_id: str) -> list[Row]` | 그 멤버의 **활성**(`revoked_at IS NULL`) 토큰, `created_at` 최근순 → `token_id`. 칸 `token_id`·`name`·`scope`·`created_at`·`last_used_at` — 원문·해시 없음 |
+| `revoke_member_token(conn, *, member_id: str, token_id: str, now: str) -> bool` | 그 멤버의 활성 토큰이면 `revoked_at = now` 하고 True. 남의 토큰·없는 토큰·이미 폐기한 토큰은 False(API 는 404) |
+| `member_for_api_token(conn, token: str, *, now: str) -> Row \| None` | `token_sha256` 일치 + `revoked_at IS NULL` + 멤버 `disabled_at IS NULL` 이면 `_LOGIN_MEMBER_COLUMNS`(`member_id`·`session_id`·`display_name`·`role`·…) + `mt.token_id`·`mt.scope`. 찾으면 같은 함수 안에서 `touch_member_token(conn, token_id, now=now)` 를 부른다(`member_for_login_token` 이 `last_seen_at` 을 갱신하는 것과 같은 자리). 워크스페이스 일치(`SELFHOST_SESSION_ID`)는 auth 가 본다 |
+| `touch_member_token(conn, token_id: str, *, now: str) -> None` | `last_used_at` 이 NULL 이거나 `now` 와 `MEMBER_TOKEN_TOUCH_SECONDS`(60) 이상 차이 날 때만 `last_used_at = now`(D22). 자체 BEGIN 없음 |
+| `revoke_member_tokens(conn, member_id: str, *, now: str) -> int` | 그 멤버의 활성 토큰 전부 폐기, 바뀐 수. 자체 BEGIN 없음(`revoke_login_sessions` 와 같음) |
+| `disable_member`(바뀜) | 같은 `_tx` 안에서 `revoke_login_sessions` 뒤에 `revoke_member_tokens(conn, member_id, now=now)` 를 부른다(D14). `enable_member` 는 토큰을 되살리지 않는다. 비밀번호 변경(`set_member_credentials`)·재설정은 토큰을 건드리지 않는다 |
+
+### auth 규칙 (step 2)
+
+- `LoggedIn` 에 마지막 칸 `token_scope: str | None = None` 을 더한다. 쿠키 로그인 = None, 토큰 = `"read"`·`"full"`. 토큰으로 들어오면 `login_id` 에 토큰 id(`mtk-…`)를 싣는다(ADR-0032 사실 4 — 읽는 곳 없음).
+- `current_member(request, conn)` 는 **쿠키만** 본다(화면용 — 화면은 Bearer 를 받지 않는다). 바꾸지 않는다.
+- 새 `current_api_member(request, conn) -> LoggedIn | None`: `Authorization: Bearer` 가 있으면 `repo.member_for_api_token` 결과(+ `session_id == SELFHOST_SESSION_ID`)만 본다 — 틀리면 None 이고 쿠키로 넘어가지 않는다(D19). Bearer 가 없으면 `current_member(request, conn)`. 결과는 `request.state.api_member` 에 한 번만 담는다.
+- `require_member_api(request, conn) -> LoggedIn`(바뀜): `current_api_member` 가 None 이면 401 `unauthenticated` — Bearer 가 있었으면 "유효한 멤버 토큰이 필요합니다.", 없었으면 "로그인이 필요합니다."(지금 문구). 그다음 **`member.token_scope == "read"` 이고 `request.method` 가 GET·HEAD 가 아니면 403 `token_read_only` "읽기 전용 토큰입니다"**. `require_action(action, api=True)` 의 내부 의존성이 `require_member_api` 위에 서 있으므로 이 검사는 역할 검사(403 `forbidden`)보다 먼저 돈다(D24·D36). `require_member`(화면)·`require_action(api=False)` 는 그대로 쿠키만.
+- 새 `require_member_cookie_api(request, conn) -> LoggedIn`(토큰 발급 전용, D21): Bearer 헤더가 있으면(유효성과 무관) 403 `cookie_required` "로그인 쿠키로만 할 수 있습니다." — 그 밖은 `current_member` 가 None 이면 401 `unauthenticated` "로그인이 필요합니다.". 역할 검사는 라우트가 한다(`team.can(member.role, team.EDIT_OWN_SETTINGS)` 거짓이면 403 `forbidden` "관리자 권한이 필요합니다." — `require_action` 과 같은 문구).
+- `check_origin(request, settings)`(바뀜): 맨 앞에 `_bearer_token(request) is not None` 이면 참(D19 (a)). 경로 예외 (b) 는 `_BEARER_PREFIXES`·`_CHAINS_PATH` 그대로 — step 5 가 `_BEARER_PREFIXES = (f"{API_PREFIX}/connector/", f"{API_PREFIX}/executions/")`, `_CHAINS_PATH = re.compile(rf"{API_PREFIX}/sources/[^/]+/chains")` 로 바꾼다. `/api/v1/` 접두어 전체를 예외로 두지 않는다. 미들웨어 구조(`app.py` 가 `web.origin_guard` 를 걸고 그것이 `GET`·`HEAD`·`OPTIONS` 밖에서 `check_origin` 을 부름)는 바꾸지 않는다.
+- 토큰 원문은 로그·예외 메시지·`request.state` 에 남기지 않는다(`LoggedIn` 에도 없다).
+
+### 토큰 API·화면 (step 3)
+
+| 요청 | 본문 | 성공 | 오류 |
+|---|---|---|---|
+| `POST /api/v1/me/tokens` | `name`(문자열), `scope`(문자열 — `read`\|`full`) — 둘 다 필수, 그 밖 칸 422 `unknown_field`. 본문 모델 `MemberTokenCreate(name: str, scope: str)`(`extra="forbid"`) — 값 검사는 `issue_member_token` 의 `ValueError` 를 아래 문구로 옮긴다 | 201 `token_id`·`name`(공백 지운 값)·`scope`·`token`(원문 — **이 응답에만**)·`created_at` | 403 `cookie_required`, 401, 422 `invalid_field`(`field` `name` "토큰 이름은 1~40자로 입력하세요." / `scope` "권한은 read(읽기 전용) 또는 full(내 권한 전부)입니다.") |
+| `GET /api/v1/me/tokens` | — | 200 `tokens` — `list_member_tokens` 의 칸(`token_id`·`name`·`scope`·`created_at`·`last_used_at`), 원문·해시 없음 | 401 |
+| `DELETE /api/v1/me/tokens/{token_id}` | — | 204 본문 없음 | 404 `not_found` "토큰 {token_id}을 찾을 수 없습니다."(`field` `token_id` — 남의 토큰·폐기한 토큰도), 403 `token_read_only`, 401 |
+
+`/me` 화면(`me.html`, "개인 알림" 절 뒤에 `<h2>API 토큰</h2>` 절 `section[data-me-section="tokens"]`):
+
+- 안내 한 줄: "터미널·스크립트·n8n 이 내 이름으로 Runloom API 를 부를 때 씁니다. `Authorization: Bearer <토큰>` 헤더로 보냅니다."
+- 발급 폼 `POST /me/tokens`(쿠키 폼, `web.py` `me_token_issue`): 이름 입력(`name`, 1~40자), 권한 라디오(`scope` — `read` 라벨 "읽기 전용", `full` 라벨 "내 권한 전부", 기본 `read`), [토큰 만들기]. 성공하면 **303 없이** `_me_page(..., issued={"token_id", "name", "token"})` 를 200 으로 그린다 — `/sources/tokens`·`/team/invites` 와 같은 방식(리다이렉트로는 원문을 넘길 수 없고, 쿠키·쿼리·flash 에 원문을 두지 않는다). 발급 상자 문구: "토큰은 지금 한 번만 보입니다. 안전한 곳에 복사해 두세요." + `<code id="issued-member-token">` 원문. 이름·권한 오류는 `PageError` 422 `invalid_field`(위 API 와 같은 문구).
+- 목록(활성 토큰만): 이름 · 권한 라벨(`읽기 전용`/`내 권한 전부`) · 만든 시각 · 마지막 사용(`last_used_at` 이 None 이면 "사용 기록 없음", 있으면 시각) · [폐기]. `token_id` 는 `<details class="detail">` "자세히" 안. 없으면 "만든 토큰이 없습니다.".
+- 폐기 폼 `POST /me/tokens/{token_id}/revoke`(`web.py` `me_token_revoke`) → 303 `/me`. 남의 토큰·없는 토큰은 `PageError` 404 `not_found`.
+- 두 폼 라우트는 `require_action(team.EDIT_OWN_SETTINGS)`(쿠키, 화면) — `/me` 와 같다. Origin 검사를 받는다(쿠키 폼).
+
+### 업무 키 조회 (step 4)
+
+`work_lookup.work_by_key(conn, session_id, key)` — `WORK_KEY.fullmatch(key)` 가 실패하면 None, 아니면 `repo.get_work_item_by_key(conn, session_id, int(번호))`(없으면 None). 예외를 던지지 않는다. 바꾸는 쪽:
+
+- 웹 `_own_work(conn, session_id, key) -> Row` = `work_by_key` + None 이면 `PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")`(지금 문구 그대로). `work_detail` 의 형식 검사도 `work_lookup.WORK_KEY`. `web._WORK_KEY` 는 지운다.
+- `work_api._own_work(conn, session_id, key) -> Row` = 같은 문구의 `ApiError` 404(step 6·7).
+- `internal_request_api` 키 경로 = None 이면 `ApiError(404, "not_found", "원래 업무를 찾을 수 없습니다.")`(지금 문구, step 4).
+
+### 업무 목록 응답 (step 6)
+
+`GET /api/v1/work-items?filter=&repository=&closed=`
+
+| 쿼리 | 값 집합 | 기본값 | 모르는 값 |
+|---|---|---|---|
+| `filter` | `work_list.QUICK_FILTERS` = `all`·`my_turn`·`unassigned`·`agent_working` | `all` | 422 `invalid_field` "filter 는 all·my_turn·unassigned·agent_working 중 하나입니다.", `field` `filter` |
+| `repository` | `repo.list_work_repositories(conn, session_id)` 의 값(`owner/name`), 대소문자 무시 — 응답·필터는 목록 표기 | 없음(빈 값 = 없음) | 422 `invalid_field` "저장소 {값} 는 이 워크스페이스 업무 저장소가 아닙니다.", `field` `repository` |
+| `closed` | `work_list.CLOSED_SCOPES` = `recent`(끝난 지 14일 안)·`all` | `recent` | 422 `invalid_field` "closed 는 recent·all 중 하나입니다.", `field` `closed` |
+
+그 밖 쿼리(`q`·`group`·`view`·`open` 등)는 읽지 않는다(FastAPI 기본 — 무시). 검증한 값으로 `ListQuery(q=filter, group=GROUP_BYS[0], view=VIEWS[0], closed=closed, open_key=None, repo=<목록 표기 또는 None>)` 를 만들어 **`views.work_list_context(conn, session_id, member_id=member.member_id, query=query, now=now)`** 를 부르고 그 `rows`·`counts` 를 쓴다(웹과 같은 함수 — 끝난 업무 범위·저장소 필터·빠른 필터·건수 기준이 같다). 순서는 `rows` 그대로(`list_work_rows` 의 키 번호 내림차순 — 묶기·보드 정렬 없음). 페이지 나누기 없음.
+
+응답 `{"items": [...], "counts": {"all": n, "my_turn": n, "unassigned": n, "agent_working": n}}` — `counts` 는 `filter_counts`(저장소 필터 뒤·빠른 필터 전). 항목 칸(`WorkRow` 에서, `work_api._item(row: WorkRow, *, member_id: str) -> dict`):
+
+| 칸 | 값 |
+|---|---|
+| `key` | `row.work_key`(`RUN-12`) |
+| `title` | `row.title` |
+| `kind` · `kind_label` | `row.kind` · `row.kind_label` |
+| `priority` | `high`\|`normal`\|`low` |
+| `assignee` | 담당 없으면 null, 있으면 `type`(`agent`\|`member`)·`id`·`name`(`assignee_name`, 없으면 id)·`active`(`assignee_active`) |
+| `status` · `status_reason` | 사용자 상태 라벨(GLOSSARY — `새로 들어옴`·`대기`·`에이전트 작업 중`·`직접 작업 중`·`내 차례`·`PR · 검토`·`완료`·`종료`) · 이유 문구 |
+| `my_turn` | `row.status == "내 차례" and member_id in row.recipients` — 요청 멤버 기준(`_matches` 의 `my_turn` 과 같은 식). `recipients`(member_id 목록)는 싣지 않는다 |
+| `next_action` | `row.next_action`(다음 할 일 원문 — 화면 중복 숨김 `shown_next_action` 은 쓰지 않는다) |
+| `triage` · `next_step` | `row.triage` · `row.next_step`(문구 또는 null) |
+| `repository` | `owner/name` 또는 null |
+| `source` | `type`(`row.source_type`)·`key`(`row.source_key`)·`url`(`row.source_url`) |
+| `updated_at` · `closed_at` | RFC 3339 · null |
+
+`work_item_id`·`key_number`·`source_key_short` 는 싣지 않는다(내부 id·화면 축약).
+
+### 업무 상세 응답 (step 6)
+
+`GET /api/v1/work-items/{key}` — 키 형식이 틀리거나 없는 업무는 404 `not_found`. 재료는 **`views.work_panel_context(conn, session_id, work_item_id, member_id=…, allowed=team.allowed_actions(member.role), now=…, settings=…)`**(웹 패널과 같은 함수) + 그 업무의 `WorkRow`(`repo.list_work_rows(conn, session_id, closed_since=None)` 에서 `work_item_id` 로 고른 것 — 끝난 업무도 보인다) + 사내 요청(`internal_request_store.list_for_work` → `views.internal_request_view`). 만드는 함수 `work_api._detail(conn, request, member, work: Row) -> dict`. `UserStatus` 는 모두 `{"label", "reason"}` 객체로 옮긴다. 화면 전용 값(폼 숨은 입력 `list_state`·`close_href`, 제출 키 `submission_key`·`judgment_submission_key`·`question_submission_key`·사람 요청 `response_id`, 담당 범위 선택 `directory_choices`·`directory_revision`, `member_id`, 선택 라벨 `label`)은 넣지 않는다.
+
+| 칸 | 내용(출처) |
+|---|---|
+| `work` | 목록 항목(`_item`)의 모든 칸 + `request`(요청 원문) · `created_at` · `turn_recipients`(패널 `work.recipients` — `내 차례` 받는 사람 표시 이름 목록) · `form_fields`(패널 `form_fields` 의 `key`·`label`·`value`·`source`) |
+| `stages` | 패널 `stages` 의 `title`·`kind`·`kind_label`·`status`(`{label, reason}`)·`delegatable`·`attempts`·`created_at` |
+| `links` | 패널 `links` 의 `type`·`label`·`key`·`title`·`status`(`{label, reason}`) |
+| `direct` | 패널 `direct` — null 또는 `member_name`·`started_at`·`branch` |
+| `open_requests` | 패널 `open_requests` 의 `request_id`·`code`·`question`·`state`·`revision`·`created_at`·`answered_at`·`actions`(값만 — `resume`·`choose_agent`·`retry`·`close` 중)·`asks_information`·`agent_choices`(`agent_id`·`name`). 응답은 기존 `POST /api/v1/human-requests/{request_id}/responses` 로 한다 |
+| `responses` | 패널 `responses` 의 `question`·`action`·`text`·`responder`·`created_at`·`task_revision` |
+| `triage` | 패널 `triage`(`views.triage_panel`) 가 None 이면 null. 아니면 `state`(`running`\|`failed`\|`proposed`\|`dismissed`\|`handled`\|null)·`triage_id`·`criteria_version`·`agent_name`·`failed_label`·`failed_message`·`proposal`(`proceed`·`confidence`(화면과 같은 문자열 `"0.85"`)·`kind_line`·`assignee`·`predecessors`(`key`·`title`)·`reasons`(`label`·`note`)·`missing`·`acceptable`)·`handled_by`·`handled_at`·`handled_text`·`unavailable_reason`(버튼이 있으면 `button.reason`, 없으면 `note` — 판단을 지금 시작할 수 없는 이유, 없으면 null). 패널에 없는 키는 null |
+| `next_step` | 패널 `next_step`(`views.next_step_panel`) 가 None 이면 null. 아니면 `state`(`running`\|`failed`\|`proposed`\|`stale`\|`accepted`\|`dismissed`)·`triage_id`·`criteria_version`·`agent_name`·`cause_line`·`failed_label`·`failed_message`·`proposal`(`action_label`·`proceed`·`confidence`·`line`·`purpose`·`question`·`reasons`·`missing`)·`handled_by`·`handled_at`. 패널에 없는 키는 null |
+| `pull_requests` | 패널 `pulls` 의 `state`·`label`·`number`·`url`·`draft`·`title`(Runloom PR 은 null)·`runloom`·`at` |
+| `internal_requests` | 사내 요청 요약 — `views.internal_request_view` 결과의 `request_id`·`system_id`·`request_kind`·`purpose`·`phase_label`·`requester_name`·`recipient_name`·`problem`·`created_at`·`returned_at`. 상세·행동은 기존 `/api/v1/internal-requests…` |
+| `events` | 패널 `events` 의 `at`·`text` |
+| `assignee_candidates` | 활성 멤버 먼저(패널 `members` → `type: "member"`·`id`·`name`), 그다음 에이전트(패널 `agents` = `_agent_choice_lines` → `type: "agent"`·`id`·`name`·`online: bool`·`needs_owner_approval: bool`). 웹 담당 선택 목록과 같은 함수·같은 값. 새 "맡길 수 있음" 판정은 없다(D28) |
+| `actions` | `views.panel_actions(panel)` — 지금 이 멤버가 할 수 있는 행동 이름(아래 표) |
+
+`views._agent_choice_lines` 는 줄마다 `needs_owner_approval: bool`(지금 `label` 에 " · 승인 필요" 를 붙이는 그 `needs_owner_approval(...)` 호출 결과)을 더한다. `label` 은 그대로 둔다(웹이 쓴다). label 문자열을 파싱하지 않는다.
+
+`views.panel_actions(panel)` — 패널 `can_*` 판정과 같은 값만 읽는다(새 판정 없음):
+
+| 행동 이름 | 조건(패널 값) | API |
+|---|---|---|
+| `assign` | `can_edit` | `PUT`·`DELETE …/assignee` |
+| `set_priority` | `can_edit` | `PATCH /api/v1/work-items/{key}` |
+| `start_direct` | `can_start_direct` | `PUT …/direct-work` |
+| `stop_direct` | `direct` 가 있고 `can_edit`(패널 [직접 작업 그만두기] 조건) | `DELETE …/direct-work` |
+| `request_triage` | `triage` 가 있고 `triage.button` 이 있고 `button.disabled` 가 거짓 | `POST …/triage-runs` |
+| `accept_triage` | `triage.state == "proposed"` 이고 `triage.can_accept` | `POST …/triage-proposals/{triage_id}/accept` |
+| `dismiss_triage` | `triage.state == "proposed"` 이고 `triage.can_dismiss` | `POST …/triage-proposals/{triage_id}/dismiss` |
+| `accept_next_step` · `dismiss_next_step` | `next_step.state == "proposed"` 이고 `next_step.can_act` | `POST …/next-step-proposals/{triage_id}/accept`·`dismiss` |
+
+패널 사내 요청 묶음: 지금 `web._panel`(web.py 610 근처)이 `internal_request_store.list_for_work` 결과를 `web._request_display(conn, member, row, store)` 로 바꾼다. step 6 은 `_request_display` 본문을 **`views.internal_request_view(conn, session_id, member_id, allowed, row, artifact_store)`** 로 옮기고(`member.role` 대신 `allowed` = `team.allowed_actions(role)` — 본문의 `team.RESPOND in team.allowed_actions(member.role)` 는 `team.RESPOND in allowed`), web 의 `_panel`·`requests_page` 는 이것을 부른다. 문구·판정은 바꾸지 않는다.
+
+### 업무 행동 (step 7)
+
+공통: 경로 `{key}` 는 `work_api._own_work`(없으면 404 `not_found`). 동작은 웹 라우트와 같은 `team.DELEGATE`(`web.work_assignee`·`work_priority`·`work_direct`·`work_direct_stop`·`work_triage`·`work_triage_accept`·`work_triage_dismiss`·`work_next_step_accept`·`work_next_step_dismiss` 가 모두 `require_action(team.DELEGATE)`). 호출 함수도 웹과 같다. `WorkActionError` → `ApiError(exc.status, exc.code, exc.message, field=exc.field)`(웹 `_page_errors` 와 같은 옮김). 성공 응답은 바뀐 업무 상세(위 표 — D29). 본문은 JSON 만(D25), 본문 없는 행동은 본문을 읽지 않는다.
+
+| 메서드·경로 | 본문 | 호출(웹과 같음) | 성공 |
+|---|---|---|---|
+| `PATCH /api/v1/work-items/{key}` | `priority`(`high`\|`normal`\|`low`, 필수). 그 밖 칸 422 `unknown_field` | `work_actions.set_priority(conn, session_id=…, work_item_id=…, priority=…, member_id=…, now=…)` | 200 상세 |
+| `PUT /api/v1/work-items/{key}/assignee` | `type`(`agent`\|`member`, 필수)·`id`(필수)·`note`(선택, 기본 `""`) | `work_actions.assign_work(..., value=f"{type}:{id}", note=note, ...)` — 값 형식 검사는 `parse_assignee`(틀리면 422 `invalid_field` `field` `assignee`) | 200 상세 |
+| `DELETE /api/v1/work-items/{key}/assignee` | 없음 | `work_actions.assign_work(..., value="none", ...)` | 200 상세 |
+| `PUT /api/v1/work-items/{key}/direct-work` | 없음 | `work_actions.start_direct(conn, session_id=…, work_item_id=…, member_id=…, now=…)` | 200 상세 |
+| `DELETE /api/v1/work-items/{key}/direct-work` | 없음 | `work_actions.stop_direct(conn, session_id=…, work_item_id=…, now=…)` | 200 상세 |
+| `POST /api/v1/work-items/{key}/triage-runs` | 없음 | `triage_runs.request_triage(conn, settings, session_id=…, work_item_id=…, trigger="manual", member_id=…, now=…)` — `started` 가 거짓이면 409 `triage_unavailable`, 메시지 `f"{reason}."`(웹과 같음) | 202 상세 |
+| `POST …/triage-proposals/{triage_id}/accept` | 없음 | `work_actions.accept_triage(..., triage_id=…)` | 200 상세 |
+| `POST …/triage-proposals/{triage_id}/dismiss` | 없음 | `work_actions.dismiss_triage(..., triage_id=…)` | 200 상세 |
+| `POST …/next-step-proposals/{triage_id}/accept` | 없음 | `work_actions.accept_next_step(..., triage_id=…)` | 200 상세 |
+| `POST …/next-step-proposals/{triage_id}/dismiss` | 없음 | `work_actions.dismiss_next_step(..., triage_id=…)` | 200 상세 |
+
+본문 모델(`work_api.py`): `WorkPatch(priority: Literal["high", "normal", "low"])`, `AssigneeBody(type: Literal["agent", "member"], id: NonEmptyStr, note: str = "")` — 둘 다 `extra="forbid"`. `priority` 값 오류는 `validation_error_to_api` 의 422 `invalid_field`(`field` `priority`) — 웹의 `set_priority` 422 와 같은 code·`field`.
+
+행동 오류(`WorkActionError` 그대로 + 이 절의 것):
+
+| 상태 | code | 언제 |
+|---|---|---|
+| 404 | `not_found` | 키 형식·없는 업무, 도메인의 업무 없음 |
+| 409 | `work_closed` | 끝난 업무 바꾸기 |
+| 409 | `execution_conflict` | 실행 중 담당 바꾸기·직접 작업 시작 |
+| 409 | `direct_work_active` | 직접 작업 중 에이전트 맡기기 |
+| 409 | `no_open_stage` · `stage_started` | 맡길 단계 없음 · 시작한 단계 종류 바꾸기 |
+| 409 | `triage_stale` · `next_step_stale` | 제안이 이미 처리됐거나 바뀜(`triage_id` 불일치 포함 — D30) |
+| 409 | `kind_unavailable` · `invalid_transition` | 제안 종류가 사라짐 · 지금 시작할 수 없음 |
+| 409 | `triage_unavailable` | 판단 받기를 지금 시작할 수 없음(메시지 = 이유) |
+| 422 | `invalid_field` | 담당 값·지시 메모 길이(`field` `note`)·우선순위 |
+| 그 밖 | 그대로 | `accept_next_step` 이 옮기는 사내 요청 오류(`exc.status`·`exc.code`) |
+
+### 오류 코드 (phase 24 에서 API 가 내는 것)
+
+| 상태 | code | 메시지 | 언제 |
+|---|---|---|---|
+| 401 | `unauthenticated` | "로그인이 필요합니다." / "유효한 멤버 토큰이 필요합니다." | 쿠키 없음 / Bearer 가 틀림·폐기·비활성 멤버 |
+| 403 | `token_read_only` | "읽기 전용 토큰입니다" | 읽기 전용 토큰으로 GET·HEAD 밖 요청 — 역할 검사보다 먼저 |
+| 403 | `cookie_required` | "로그인 쿠키로만 할 수 있습니다." | 토큰 발급에 Bearer 헤더 |
+| 403 | `forbidden` | "관리자 권한이 필요합니다." | 역할에 동작이 없음(기존) |
+| 403 | `forbidden_origin` | "요청 출처를 확인할 수 없습니다." | 쿠키로 부른 변경 요청의 Origin 불일치(기존 — Bearer 요청은 검사 안 함) |
+| 404 | `not_found` | 기존 문구 | 업무 키·토큰·리소스 없음. 옛 주소는 FastAPI 기본 404(`{"detail": "Not Found"}`) |
+| 409 | `triage_unavailable` 외 위 행동 오류 표 | — | — |
+| 422 | `invalid_field` · `unknown_field` | — | 쿼리·본문 값 / 모르는 본문 칸 |

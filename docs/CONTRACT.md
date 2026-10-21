@@ -2,7 +2,7 @@
 
 > 현재 구현 계약이다. [ADR-0011](adr/0011-task-driven-work-cycle.md)의 결과 기반 새 업무 생성·담당 관계·사람 요청과 응답은 GitHub 버그 수정 → 검토 한 유형으로 [ADR-0014](adr/0014-github-task-cycle.md)에서 확정했고, 그 확장 예시는 13절이다 — 모델은 step 1 에서 구현해 fixture 테스트 대상이고, 13.9 오류 본문도 서버 경로(step 6·11)가 생겨 모두 일반 `json` 펜스다. 1~12절 payload 와 계약 버전은 바뀌지 않는다 — 4절 kind 목록 끝에 `code_review_result` 가 추가됐을 뿐이다.
 
-갱신일: 2026-10-01 (phase 19 step 0 — 17절 판단 `ExecutionRequest`·`TriageResult`·`TriageCandidates` 예시, `jsonc` contract-pending). 이전: 2026-09-28 (phase 12 step 5 — 14.2 `ResultReadyData.branch_pushed` 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 12 step 3 — 14.1 `ClaimRequest.registration_heads` 구현. 그 전: 2026-09-27 phase 12 step 1 — 14.3·14.4 등록 요청 `agent_name`·응답 `RegistrationResponse` 구현. 그 전: 2026-09-27 phase 12 step 0 — 14절 실제 저장소 순환 선택 칸 예시, `json contract-pending`
+갱신일: 2026-10-21 (phase 24 step 0 — 18절 사람용 API 업무 목록·상세·담당·멤버 토큰 예시, `jsonc` — 계약 모델 없음). 이전: 2026-10-01 (phase 19 step 0 — 17절 판단 `ExecutionRequest`·`TriageResult`·`TriageCandidates` 예시, `jsonc` contract-pending). 이전: 2026-09-28 (phase 12 step 5 — 14.2 `ResultReadyData.branch_pushed` 구현, 펜스를 `json` 으로). 이전: 2026-09-27 phase 12 step 3 — 14.1 `ClaimRequest.registration_heads` 구현. 그 전: 2026-09-27 phase 12 step 1 — 14.3·14.4 등록 요청 `agent_name`·응답 `RegistrationResponse` 구현. 그 전: 2026-09-27 phase 12 step 0 — 14절 실제 저장소 순환 선택 칸 예시, `json contract-pending`
 상태: [ARCHITECTURE](ARCHITECTURE.md) 계약 v1의 필드 규칙을 완전한 예시로 옮긴 것. 구현 시 이 예시를 계약 테스트의 fixture로 그대로 사용한다. 식별자·해시·시각은 데모용 가상 값이며, 해시는 형식(SHA-256 소문자 64자리)만 맞춘 예시다. 규칙이 바뀌면 ARCHITECTURE와 이 파일을 함께 고친다.
 
 공통: 모든 본문은 `contract_version: 1`. 알 수 없는 필드는 422. 시각은 시간대 있는 RFC 3339. 오류 본문은 `code`, `message`, `field`(없으면 null), `details`(없으면 null)를 가진다. HTTP 상태: 401 인증, 403 권한, 404 없음, 409 충돌·불가능한 전환, 422 필드 오류, 429 상한 도달.
@@ -1425,4 +1425,202 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
   "cause": { "cause": "request_returned", "execution_id": "exec-review-31", "task_id": "task-review-31", "kind": "code_review",
     "agent_id": "agt-9f3c2a1b", "outcome": "needs_information", "request_id": "req-7c8d9e0f" }
 }
+```
+
+## 18. 사람용 API — phase 24
+
+[ADR-0032](adr/0032-human-api-and-member-tokens.md), 이름·표·주소 전체는 [ARCHITECTURE](ARCHITECTURE.md) "사람용 API — phase 24". 사람용 응답은 계약 모델(`contracts/v1.py`)이 없어 펜스를 `jsonc` 로 둔다 — 계약 fixture 테스트 대상이 아니다. 인증은 로그인 쿠키 또는 `Authorization: Bearer wfm_…`(멤버 토큰). 오류 본문은 공통 규칙 그대로(`code`·`message`·`field`·`details`). 계약 버전 필드(`contract_version`)는 이 응답들에 없다.
+
+### 18.1 업무 목록 — `GET /api/v1/work-items?filter=my_turn`
+
+`filter`(`all` 기본·`my_turn`·`unassigned`·`agent_working`)·`repository`(워크스페이스 업무 저장소, 대소문자 무시)·`closed`(`recent` 기본·`all`). 모르는 값은 422 `invalid_field`(`field` = 쿼리 이름). `counts` 는 저장소 필터 뒤·빠른 필터 전 건수다.
+
+```jsonc
+{
+  "items": [
+    {
+      "key": "RUN-12",
+      "title": "결제 내역 CSV 의 날짜가 하루 밀림",
+      "kind": "bug_fix",
+      "kind_label": "버그 수정",
+      "priority": "high",
+      "assignee": { "type": "member", "id": "mem-1a2b3c4d", "name": "김지은", "active": true },
+      "status": "내 차례",
+      "status_reason": "정보 요청",
+      "my_turn": true,
+      "next_action": "CSV 를 만드는 서버의 시간대 설정을 알려 주세요.",
+      "triage": null,
+      "next_step": null,
+      "repository": "acme/billing",
+      "source": { "type": "github", "key": "acme/billing#42", "url": "https://github.com/acme/billing/issues/42" },
+      "updated_at": "2026-10-21T09:12:00.000000Z",
+      "closed_at": null
+    }
+  ],
+  "counts": { "all": 9, "my_turn": 1, "unassigned": 3, "agent_working": 2 }
+}
+```
+
+### 18.2 업무 상세 — `GET /api/v1/work-items/RUN-12`
+
+업무 패널과 같은 함수(`views.work_panel_context`)로 만든다. 화면 전용 값(폼 숨은 입력·제출 키)은 없다. `actions` 는 지금 이 멤버가 할 수 있는 행동, `assignee_candidates` 는 웹 담당 선택 목록과 같은 값이다. 키 형식이 틀리거나 없는 업무는 404 `not_found`.
+
+```jsonc
+{
+  "work": {
+    "key": "RUN-12",
+    "title": "결제 내역 CSV 의 날짜가 하루 밀림",
+    "kind": "bug_fix",
+    "kind_label": "버그 수정",
+    "priority": "high",
+    "assignee": { "type": "member", "id": "mem-1a2b3c4d", "name": "김지은", "active": true },
+    "status": "내 차례",
+    "status_reason": "정보 요청",
+    "my_turn": true,
+    "next_action": "CSV 를 만드는 서버의 시간대 설정을 알려 주세요.",
+    "triage": null,
+    "next_step": null,
+    "repository": "acme/billing",
+    "source": { "type": "github", "key": "acme/billing#42", "url": "https://github.com/acme/billing/issues/42" },
+    "updated_at": "2026-10-21T09:12:00.000000Z",
+    "closed_at": null,
+    "request": "10월 내역 CSV 의 거래일이 하루씩 앞당겨져 나옵니다.",
+    "created_at": "2026-10-20T23:40:00.000000Z",
+    "turn_recipients": ["김지은"],
+    "form_fields": [
+      { "key": "reproduction", "label": "재현 절차", "value": "10월 내역 CSV 내려받기", "source": "github" }
+    ]
+  },
+  "stages": [
+    { "title": "결제 내역 CSV 의 날짜가 하루 밀림", "kind": "bug_fix", "kind_label": "버그 수정",
+      "status": { "label": "내 차례", "reason": "정보 요청" }, "delegatable": false, "attempts": 1,
+      "created_at": "2026-10-20T23:40:00.000000Z" }
+  ],
+  "links": [],
+  "direct": null,
+  "open_requests": [
+    { "request_id": "hr-3c2b1a0f", "code": "bug_fix_needs_information",
+      "question": "CSV 를 만드는 서버의 시간대 설정을 알려 주세요.", "state": "open", "revision": 2,
+      "created_at": "2026-10-21T09:12:00.000000Z", "answered_at": null,
+      "actions": ["resume", "close"], "asks_information": true, "agent_choices": [] }
+  ],
+  "responses": [],
+  "triage": null,
+  "next_step": null,
+  "pull_requests": [],
+  "internal_requests": [],
+  "events": [
+    { "at": "2026-10-21T00:02:00.000000Z", "text": "담당 바뀜" }
+  ],
+  "assignee_candidates": [
+    { "type": "member", "id": "mem-1a2b3c4d", "name": "김지은" },
+    { "type": "member", "id": "mem-5e6f7a8b", "name": "박도윤" },
+    { "type": "agent", "id": "agt-9f3c2a1b", "name": "macbook-billing", "online": true, "needs_owner_approval": false },
+    { "type": "agent", "id": "agt-0d1e2f3a", "name": "studio-billing", "online": false, "needs_owner_approval": true }
+  ],
+  "actions": ["assign", "set_priority", "start_direct"]
+}
+```
+
+판단 제안이 있으면 `triage` 는 이렇게 온다(`confidence` 는 화면과 같은 문자열). 수락은 `POST /api/v1/work-items/RUN-12/triage-proposals/tri-7a8b9c0d/accept`.
+
+```jsonc
+{
+  "state": "proposed",
+  "triage_id": "tri-7a8b9c0d",
+  "criteria_version": 3,
+  "agent_name": "macbook-billing",
+  "failed_label": null,
+  "failed_message": null,
+  "proposal": {
+    "proceed": "진행",
+    "confidence": "0.85",
+    "kind_line": "버그 수정",
+    "assignee": "macbook-billing · 김지은의 Mac",
+    "predecessors": [],
+    "reasons": [{ "label": "재현 가능성", "note": "재현 절차와 기대 결과가 있다" }],
+    "missing": [],
+    "acceptable": true
+  },
+  "handled_by": null,
+  "handled_at": null,
+  "handled_text": null,
+  "unavailable_reason": null
+}
+```
+
+### 18.3 담당 정하기 — `PUT /api/v1/work-items/RUN-12/assignee`
+
+에이전트 = 맡기기(조건이 맞으면 착수), 멤버 = 배정만. 해제는 `DELETE /api/v1/work-items/RUN-12/assignee`. 동작 `delegate`. 성공하면 200 과 바뀐 업무 상세(18.2 와 같은 모양).
+
+```jsonc
+// 요청
+{ "type": "agent", "id": "agt-9f3c2a1b", "note": "날짜 처리는 billing/export.py 만 보면 됩니다." }
+```
+
+```jsonc
+// 응답 200 — 18.2 와 같은 모양, 바뀐 칸만 보인다
+{
+  "work": {
+    "key": "RUN-12",
+    "assignee": { "type": "agent", "id": "agt-9f3c2a1b", "name": "macbook-billing", "active": true },
+    "status": "에이전트 작업 중",
+    "status_reason": "버그 수정 실행 중"
+    // … 나머지 칸 생략
+  },
+  "actions": ["assign", "set_priority"]
+  // … 나머지 칸 생략
+}
+```
+
+담당 값이 틀리면 `WorkActionError` 그대로 옮긴다.
+
+```jsonc
+{ "code": "invalid_field", "message": "담당 값이 올바르지 않습니다.", "field": "assignee", "details": null }
+```
+
+### 18.4 멤버 토큰 발급 — `POST /api/v1/me/tokens`
+
+로그인 쿠키로만 부른다 — `Authorization: Bearer` 가 있으면 403 `cookie_required`. 원문 `token` 은 이 응답에만 있고, 서버에는 sha256 만 남는다. 목록(`GET /api/v1/me/tokens`)에는 원문이 없다.
+
+```jsonc
+// 요청
+{ "name": "노트북 CLI", "scope": "read" }
+```
+
+```jsonc
+// 응답 201
+{
+  "token_id": "mtk-4f5a6b7c8d9e",
+  "name": "노트북 CLI",
+  "scope": "read",
+  "token": "wfm_Q2hhbmdlLW1lLWV4YW1wbGUtb25seS1ub3QtYS1yZWFsLXRva2Vu",
+  "created_at": "2026-10-21T10:00:00.000000Z"
+}
+```
+
+```jsonc
+// GET /api/v1/me/tokens 응답 200
+{
+  "tokens": [
+    { "token_id": "mtk-4f5a6b7c8d9e", "name": "노트북 CLI", "scope": "read",
+      "created_at": "2026-10-21T10:00:00.000000Z", "last_used_at": null }
+  ]
+}
+```
+
+### 18.5 오류 본문 — 멤버 토큰
+
+읽기 전용 토큰(`scope: read`)으로 GET·HEAD 밖 요청을 보내면 역할 검사보다 먼저 403 이다(POST 인 미리보기도 같다).
+
+```jsonc
+{ "code": "token_read_only", "message": "읽기 전용 토큰입니다", "field": null, "details": null }
+```
+
+```jsonc
+{ "code": "cookie_required", "message": "로그인 쿠키로만 할 수 있습니다.", "field": null, "details": null }
+```
+
+```jsonc
+{ "code": "unauthenticated", "message": "유효한 멤버 토큰이 필요합니다.", "field": null, "details": null }
 ```
