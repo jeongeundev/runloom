@@ -1,22 +1,29 @@
-"""업무 목록·상세 API — phase 24 step 6 (ADR-0032, ARCHITECTURE "업무 목록 응답"·"업무 상세 응답", CONTRACT 18.1·18.2).
+"""업무 목록·상세·행동 API — phase 24 step 6·7 (ADR-0032, ARCHITECTURE "업무 목록 응답"·"업무 상세 응답"·"업무 행동",
+CONTRACT 18.1~18.3).
 
 - 목록은 웹 업무 화면과 같은 `views.work_list_context`, 상세는 웹 패널과 같은 `views.work_panel_context` 로 만들고 칸만
   JSON 으로 옮긴다. 필터·건수·담당 후보·가능 행동을 여기서 따로 판정하지 않는다(README D4·D28).
 - 업무는 업무 키(`RUN-12`)로 가리킨다. 쿼리 값은 웹과 같은 집합이지만 모르는 값은 기본값 대신 422(D27).
 - 인증은 쿠키·멤버 토큰 모두(`require_member_api`).
+- 행동은 웹 폼 라우트(`web.work_assignee` 등)와 같은 `team.DELEGATE` 권한·같은 `work_actions`·`triage_runs` 함수·같은 인자.
+  본문은 JSON 만(`extra="forbid"`), 성공 응답은 바뀐 업무 상세(D29). 규칙을 여기서 따로 두지 않는다(D4·D30).
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from sqlite3 import Connection, Row
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, ConfigDict
 
 from workflow.adapters import internal_request_store, repo
+from workflow.contracts.v1 import NonEmptyStr
 from workflow.domain import team
 from workflow.domain.status import UserStatus
 from workflow.domain.work_list import CLOSED_SCOPES, GROUP_BYS, QUICK_FILTERS, VIEWS, ListQuery, WorkRow
-from workflow.server import views
-from workflow.server.auth import LoggedIn, get_conn, require_member_api, utc_now
+from workflow.server import triage_runs, views, work_actions
+from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_api, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.work_lookup import work_by_key
 
@@ -161,3 +168,154 @@ def get_work(
     conn: Connection = Depends(get_conn),
 ) -> dict[str, Any]:
     return _detail(conn, request, member, _own_work(conn, member.session_id, key))
+
+
+# --- 행동 (step 7) ------------------------------------------------------------------------------------------
+
+_delegate = require_action(team.DELEGATE, api=True)
+
+
+class WorkPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    priority: Literal["high", "normal", "low"]
+
+
+class AssigneeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["agent", "member"]
+    id: NonEmptyStr
+    note: str = ""
+
+
+@contextmanager
+def _api_errors() -> Iterator[None]:
+    """`work_actions` 의 오류를 API 오류로 — 웹 `_page_errors` 와 같은 옮김."""
+    try:
+        yield
+    except work_actions.WorkActionError as exc:
+        raise ApiError(exc.status, exc.code, exc.message, field=exc.field) from None
+
+
+def _assign(request: Request, conn: Connection, member: LoggedIn, key: str, value: str, note: str = "") -> dict:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.assign_work(conn, request.app.state.store, request.app.state.settings,
+                                 session_id=member.session_id, work_item_id=work["work_item_id"], value=value,
+                                 member_id=member.member_id, now=utc_now(), secrets=request.app.state.secrets,
+                                 note=note)
+    return _detail(conn, request, member, work)
+
+
+@router.patch("/{key}")
+def patch_work(
+    key: str, body: WorkPatch, request: Request, member: LoggedIn = Depends(_delegate),
+    conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.set_priority(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                  priority=body.priority, member_id=member.member_id, now=utc_now())
+    return _detail(conn, request, member, work)
+
+
+@router.put("/{key}/assignee")
+def put_assignee(
+    key: str, body: AssigneeBody, request: Request, member: LoggedIn = Depends(_delegate),
+    conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    return _assign(request, conn, member, key, f"{body.type}:{body.id}", body.note)
+
+
+@router.delete("/{key}/assignee")
+def delete_assignee(
+    key: str, request: Request, member: LoggedIn = Depends(_delegate), conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    return _assign(request, conn, member, key, "none")
+
+
+@router.put("/{key}/direct-work")
+def put_direct_work(
+    key: str, request: Request, member: LoggedIn = Depends(_delegate), conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.start_direct(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                  member_id=member.member_id, now=utc_now())
+    return _detail(conn, request, member, work)
+
+
+@router.delete("/{key}/direct-work")
+def delete_direct_work(
+    key: str, request: Request, member: LoggedIn = Depends(_delegate), conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.stop_direct(conn, session_id=member.session_id, work_item_id=work["work_item_id"], now=utc_now())
+    return _detail(conn, request, member, work)
+
+
+@router.post("/{key}/triage-runs", status_code=202)
+def post_triage_run(
+    key: str, request: Request, member: LoggedIn = Depends(_delegate), conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    started = triage_runs.request_triage(conn, request.app.state.settings, session_id=member.session_id,
+                                         work_item_id=work["work_item_id"], trigger="manual",
+                                         member_id=member.member_id, now=utc_now())
+    if not started.started:
+        raise ApiError(409, "triage_unavailable", f"{started.reason}.")
+    return _detail(conn, request, member, work)
+
+
+@router.post("/{key}/triage-proposals/{triage_id}/accept")
+def accept_triage(
+    key: str, triage_id: str, request: Request, member: LoggedIn = Depends(_delegate),
+    conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.accept_triage(conn, request.app.state.store, request.app.state.settings,
+                                   session_id=member.session_id, work_item_id=work["work_item_id"],
+                                   triage_id=triage_id, member_id=member.member_id, now=utc_now(),
+                                   secrets=request.app.state.secrets)
+    return _detail(conn, request, member, work)
+
+
+@router.post("/{key}/triage-proposals/{triage_id}/dismiss")
+def dismiss_triage(
+    key: str, triage_id: str, request: Request, member: LoggedIn = Depends(_delegate),
+    conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.dismiss_triage(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                    triage_id=triage_id, member_id=member.member_id, now=utc_now())
+    return _detail(conn, request, member, work)
+
+
+@router.post("/{key}/next-step-proposals/{triage_id}/accept")
+def accept_next_step(
+    key: str, triage_id: str, request: Request, member: LoggedIn = Depends(_delegate),
+    conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.accept_next_step(conn, request.app.state.store, request.app.state.settings,
+                                      session_id=member.session_id, work_item_id=work["work_item_id"],
+                                      triage_id=triage_id, member_id=member.member_id, now=utc_now(),
+                                      secrets=request.app.state.secrets)
+    return _detail(conn, request, member, work)
+
+
+@router.post("/{key}/next-step-proposals/{triage_id}/dismiss")
+def dismiss_next_step(
+    key: str, triage_id: str, request: Request, member: LoggedIn = Depends(_delegate),
+    conn: Connection = Depends(get_conn),
+) -> dict[str, Any]:
+    work = _own_work(conn, member.session_id, key)
+    with _api_errors():
+        work_actions.dismiss_next_step(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
+                                       triage_id=triage_id, member_id=member.member_id, now=utc_now())
+    return _detail(conn, request, member, work)

@@ -1,9 +1,10 @@
 # ruff: noqa: F811 — test_task_cycle·test_triage_runs·test_worker_next_step 픽스처를 가져와 인자로 쓴다
-"""업무 목록·상세 API(`/api/v1/work-items`) — phase 24 step 6 (ADR-0032, ARCHITECTURE "업무 목록 응답"·"업무 상세 응답",
-CONTRACT 18.1·18.2).
+"""업무 목록·상세·행동 API(`/api/v1/work-items`) — phase 24 step 6·7 (ADR-0032, ARCHITECTURE "업무 목록 응답"·
+"업무 상세 응답"·"업무 행동", CONTRACT 18.1~18.3).
 
 목록은 웹 업무 화면(`/tasks`)과 같은 함수(`views.work_list_context`), 상세는 웹 패널과 같은 함수(`views.work_panel_context`)
-로 만든다 — 테스트는 같은 데이터에서 웹 화면과 API 가 같은 키 집합·건수·후보·행동을 내는지 본다.
+로 만든다 — 테스트는 같은 데이터에서 웹 화면과 API 가 같은 키 집합·건수·후보·행동을 내는지 본다. 행동은 웹 폼 POST 와 같은
+`work_actions`·`triage_runs` 함수를 부른다 — 같은 데이터의 두 업무에 웹·API 를 각각 실행해 DB 상태를 비교한다.
 """
 
 import re
@@ -12,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from workflow.adapters import repo
+from workflow.domain import team
 from workflow.domain.work_list import QUICK_FILTERS
 
 from .conftest import ADMIN_EMAIL, NOW, SESSION, bearer, log_in, log_in_member, seed_agents
@@ -25,10 +27,12 @@ from .test_task_cycle import (  # noqa: F401 — 픽스처
     executions,
     import_issue,
     make_worker,
+    seen_at,
     settings,
     worker,
 )
-from .test_triage_runs import judge, new_issue  # noqa: F401 — 픽스처
+from .test_triage_judge import log_row
+from .test_triage_runs import judge, logs, new_issue  # noqa: F401 — 픽스처
 from .test_web_triage import propose as propose_triage
 from .test_web_work_list import AGENT, add_source, assign, counts_in, keys_in, new_work, set_status
 from .test_work_actions_next_step import propose as propose_next_step
@@ -328,3 +332,253 @@ def test_detail_with_a_read_token_has_no_secrets(app, web_admin, conn, issue_wor
             assert sha not in text
         for (ref,) in conn.execute("SELECT token_sha256 FROM connectors"):
             assert ref not in text
+
+
+# --- 행동 ------------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_issues(conn, cycle) -> tuple[str, str]:
+    """지시 전 이슈 둘 — RUN-1 은 웹 폼, RUN-2 는 API 로 같은 행동을 한다(all_open 소스, test_web_work 와 같다).
+    반환은 Task ID 둘."""
+    repo.save_github_source(conn, SESSION, config(review_agent_id=REVIEW, intake="all_open", label_filter=[],
+                                                  trigger_label="runloom"), NOW)
+    return import_issue(conn, 1, labels=[]), import_issue(conn, 2, labels=[])
+
+
+@pytest.fixture
+def actor(client, two_issues) -> TestClient:
+    return log_in(client)
+
+
+def work_state(conn, task_id: str) -> tuple:
+    """웹·API 비교용 업무 상태 — 담당·우선순위·상태·직접 작업 멤버·지시 메모·실행 수·이벤트 종류."""
+    work = repo.work_item_of_task(conn, task_id)
+    kinds = [e["type"] for e in repo.list_work_item_events(conn, work["work_item_id"])]
+    return (work["assignee_type"], work["assignee_id"], work["priority"], work["status"], work["status_reason"],
+            work["direct_member_id"], work["handoff_note"], len(executions(conn, task_id)), kinds)
+
+
+def ok(response, status: int = 200) -> dict:
+    assert response.status_code == status, response.text
+    body = response.json()
+    assert set(body) == DETAIL_KEYS
+    return body
+
+
+def web_post(client, path: str, data: dict | None = None) -> None:
+    response = client.post(path, data=data or {}, follow_redirects=False)
+    assert response.status_code == 303, response.text
+
+
+@pytest.mark.parametrize("web_path, data, method, api_path, body", [
+    ("priority", {"priority": "high"}, "PATCH", "", {"priority": "high"}),
+    ("direct", None, "PUT", "/direct-work", None),
+])
+def test_action_changes_the_db_like_the_web_form(actor, conn, two_issues, web_path, data, method, api_path, body):
+    web_task, api_task = two_issues
+    web_post(actor, f"/work/RUN-1/{web_path}", data)
+    found = ok(actor.request(method, f"{PATH}/RUN-2{api_path}", json=body))
+    assert work_state(conn, api_task) == work_state(conn, web_task)
+    assert found == detail(actor, "RUN-2")  # 응답 = 바뀐 업무 상세
+    assert found["work"]["key"] == "RUN-2"
+
+
+def test_assigning_an_agent_starts_an_execution_like_the_web(actor, conn, two_issues):
+    """같은 러너를 두 업무가 함께 쓸 수 없어 나란히 비교하지 않고 웹 테스트(test_web_work)와 같은 단정을 한다."""
+    _, api_task = two_issues
+    found = ok(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "agent", "id": FIX, "note": "결제 모듈만"}))
+    work = repo.work_item_of_task(conn, api_task)
+    assert (work["assignee_type"], work["assignee_id"], work["handoff_note"]) == ("agent", FIX, "결제 모듈만")
+    assert len(executions(conn, api_task)) == 1 and work["status"] == "에이전트 작업 중"
+    assert repo.get_selection(conn, api_task).selected_agent_id == FIX
+    assert found == detail(actor, "RUN-2") and found["work"]["assignee"]["id"] == FIX
+
+
+def test_member_assignment_and_release_like_the_web(actor, conn, two_issues):
+    web_task, api_task = two_issues
+    me = admin_id(conn)
+    web_post(actor, "/work/RUN-1/assignee", {"assignee": f"member:{me}"})
+    found = ok(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "member", "id": me}))
+    assert work_state(conn, api_task) == work_state(conn, web_task)
+    assert found["work"]["assignee"]["id"] == me and executions(conn, api_task) == []  # 멤버는 배정만
+    web_post(actor, "/work/RUN-1/assignee", {"assignee": "none"})
+    found = ok(actor.delete(f"{PATH}/RUN-2/assignee"))
+    assert work_state(conn, api_task) == work_state(conn, web_task)
+    assert found["work"]["assignee"] is None
+
+
+def test_stop_direct_work_like_the_web(actor, conn, two_issues):
+    web_task, api_task = two_issues
+    for key in ("RUN-1", "RUN-2"):
+        web_post(actor, f"/work/{key}/direct")
+    web_post(actor, "/work/RUN-1/direct/stop")
+    found = ok(actor.delete(f"{PATH}/RUN-2/direct-work"))
+    assert work_state(conn, api_task) == work_state(conn, web_task)
+    assert found["direct"] is None and repo.work_item_of_task(conn, api_task)["direct_member_id"] is None
+
+
+def test_assigning_an_agent_needing_owner_approval_waits_like_the_web(app, actor, conn, cycle, two_issues):
+    web_task, api_task = two_issues
+    log_in_member(TestClient(app), display_name="이소유")
+    conn.execute("UPDATE connectors SET owner_member_id = ? WHERE connector_id = ?",
+                 (member_named(conn, "이소유"), cycle["billing"]))
+    repo.set_delegation_policy(conn, SESSION, FIX, "owner_approval", member_id=None, now=NOW)
+    web_post(actor, "/work/RUN-1/assignee", {"assignee": f"agent:{FIX}"})
+    ok(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "agent", "id": FIX}))
+    assert work_state(conn, api_task) == work_state(conn, web_task)
+    assert executions(conn, api_task) == []
+    assert [a["state"] for a in repo.list_owner_approvals(conn, api_task)] == ["open"]
+
+
+def test_assigning_an_agent_with_its_runner_off_waits_like_the_web(actor, conn, two_issues):
+    web_task, api_task = two_issues
+    seen_at(conn, "2020-01-01T00:00:00Z")  # 러너 마지막 신호가 오래전 — 꺼짐
+    web_post(actor, "/work/RUN-1/assignee", {"assignee": f"agent:{FIX}"})
+    found = ok(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "agent", "id": FIX}))
+    assert work_state(conn, api_task) == work_state(conn, web_task)
+    assert executions(conn, api_task) == [] and found["work"]["status"] == "대기"
+    assert found["work"]["assignee"]["id"] == FIX
+
+
+def test_action_errors_are_the_work_action_errors(actor, conn, two_issues):
+    _, api_task = two_issues
+    ok(actor.put(f"{PATH}/RUN-2/direct-work"))
+    body = error(actor.delete(f"{PATH}/RUN-2/assignee"), 409, "direct_work_active")
+    assert body["message"] == "직접 작업 중인 업무입니다. 먼저 직접 작업을 그만두세요."
+    ok(actor.delete(f"{PATH}/RUN-2/direct-work"))
+    ok(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "agent", "id": FIX}))
+    error(actor.delete(f"{PATH}/RUN-2/assignee"), 409, "execution_conflict")
+    error(actor.put(f"{PATH}/RUN-2/direct-work"), 409, "execution_conflict")
+    error(actor.put(f"{PATH}/RUN-1/assignee", json={"type": "member", "id": "mem-nope"}), 422, "invalid_field",
+          "assignee")
+    error(actor.put(f"{PATH}/RUN-1/assignee", json={"type": "agent", "id": REVIEW}), 422, "invalid_field",
+          "assignee")
+    conn.execute("UPDATE work_items SET status = '종료', closed_at = ? WHERE key_number = 1", (NOW,))
+    error(actor.patch(f"{PATH}/RUN-1", json={"priority": "low"}), 409, "work_closed")
+    error(actor.put(f"{PATH}/RUN-1/assignee", json={"type": "agent", "id": "bad id"}), 422, "invalid_field",
+          "assignee")
+    assert repo.work_item_of_task(conn, api_task)["priority"] == "normal"
+
+
+def test_note_over_the_limit_is_422_like_the_web(actor, conn, two_issues):
+    _, api_task = two_issues
+    error(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "agent", "id": FIX, "note": "가" * 2001}),
+          422, "invalid_field", "note")
+    assert repo.work_item_of_task(conn, api_task)["assignee_type"] is None and executions(conn, api_task) == []
+
+
+@pytest.mark.parametrize("method, path", [
+    ("PATCH", ""), ("PUT", "/assignee"), ("DELETE", "/assignee"), ("PUT", "/direct-work"), ("DELETE", "/direct-work"),
+    ("POST", "/triage-runs"), ("POST", "/triage-proposals/trg-00000000/accept"),
+    ("POST", "/triage-proposals/trg-00000000/dismiss"), ("POST", "/next-step-proposals/trg-00000000/accept"),
+    ("POST", "/next-step-proposals/trg-00000000/dismiss"),
+])
+def test_unknown_key_read_token_and_role_are_refused_for_every_action(app, actor, conn, two_issues, monkeypatch,
+                                                                      method, path):
+    body = {"PATCH": {"priority": "high"}, "PUT": {"type": "agent", "id": FIX}}.get(method) if path in (
+        "", "/assignee") else None
+    before = work_state(conn, two_issues[1])
+    for key in ("RUN-99", "run-1", "RUN-0"):
+        found = error(actor.request(method, f"{PATH}/{key}{path}", json=body), 404, "not_found", "key")
+        assert found["message"] == f"업무 {key}을 찾을 수 없습니다."
+    anonymous = TestClient(app)
+    error(anonymous.request(method, f"{PATH}/RUN-2{path}", json=body), 401, "unauthenticated")
+    read = bearer(token_for(conn, admin_id(conn)))
+    found = error(anonymous.request(method, f"{PATH}/RUN-2{path}", json=body, headers=read), 403, "token_read_only")
+    assert found["message"] == "읽기 전용 토큰입니다"
+    # 역할에 delegate 가 없으면 403 forbidden — 지금 두 역할 모두 있으므로 member 역할에서 빼고 본다
+    member = log_in_member(TestClient(app), display_name="김멤버")
+    monkeypatch.setitem(team._ROLE_ACTIONS, "member", team._ROLE_ACTIONS["member"] - {team.DELEGATE})
+    error(member.request(method, f"{PATH}/RUN-2{path}", json=body), 403, "forbidden")
+    full = bearer(token_for(conn, member_named(conn, "김멤버"), "full"))
+    error(anonymous.request(method, f"{PATH}/RUN-2{path}", json=body, headers=full), 403, "forbidden")
+    assert work_state(conn, two_issues[1]) == before  # 거절된 요청은 아무것도 바꾸지 않는다
+
+
+def test_bodies_are_json_only_with_known_fields(actor, conn, two_issues):
+    _, api_task = two_issues
+    error(actor.patch(f"{PATH}/RUN-2", data={"priority": "high"}), 422, "invalid_field")
+    error(actor.put(f"{PATH}/RUN-2/assignee", data={"type": "agent", "id": FIX}), 422, "invalid_field")
+    found = error(actor.patch(f"{PATH}/RUN-2", json={"priority": "high", "title": "x"}), 422, "unknown_field", "title")
+    assert found["message"] == "필드 title는 허용되지 않습니다."
+    error(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "agent", "id": FIX, "assignee": "none"}), 422,
+          "unknown_field", "assignee")
+    error(actor.patch(f"{PATH}/RUN-2", json={"priority": "urgent"}), 422, "invalid_field", "priority")
+    error(actor.patch(f"{PATH}/RUN-2", json={}), 422, "invalid_field", "priority")
+    error(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "robot", "id": FIX}), 422, "invalid_field", "type")
+    error(actor.put(f"{PATH}/RUN-2/assignee", json={"type": "agent", "id": ""}), 422, "invalid_field", "id")
+    work = repo.work_item_of_task(conn, api_task)
+    assert (work["priority"], work["assignee_type"]) == ("normal", None) and executions(conn, api_task) == []
+
+
+def test_bearer_requests_pass_without_origin_and_cookie_requests_are_origin_checked(app, actor, conn, two_issues):
+    _, api_task = two_issues
+    full = bearer(token_for(conn, admin_id(conn), "full"))
+    anonymous = TestClient(app)
+    ok(anonymous.patch(f"{PATH}/RUN-2", json={"priority": "high"}, headers=full))
+    ok(anonymous.patch(f"{PATH}/RUN-2", json={"priority": "low"}, headers={**full, "Origin": "http://evil.example"}))
+    assert repo.work_item_of_task(conn, api_task)["priority"] == "low"
+    error(actor.patch(f"{PATH}/RUN-2", json={"priority": "high"}, headers={"Origin": "http://evil.example"}), 403,
+          "forbidden_origin")
+    assert repo.work_item_of_task(conn, api_task)["priority"] == "low"
+
+
+# --- 판단 받기·판단 제안 ------------------------------------------------------------------------------------
+
+
+def test_request_triage_is_202_then_409_while_it_runs(app, web_admin, conn, issue_work):
+    member = log_in_member(TestClient(app), display_name="김맡김")
+    found = ok(member.post(f"{PATH}/RUN-1/triage-runs"), 202)
+    (row,) = logs(conn, issue_work)
+    assert (row["state"], row["trigger"], row["requested_by_member_id"]) == ("running", "manual",
+                                                                             member_named(conn, "김맡김"))
+    assert found["triage"]["state"] == "running"
+    body = error(member.post(f"{PATH}/RUN-1/triage-runs"), 409, "triage_unavailable")  # 이미 판단 중 — 웹과 같다
+    web = member.post("/work/RUN-1/triage")
+    assert web.status_code == 409 and body["message"] in web.text
+    assert len(logs(conn, issue_work)) == 1
+
+
+def test_accept_triage_hands_over_and_the_second_accept_is_stale(web_admin, conn, store, settings, worker, issue_work):
+    log = propose_triage(conn, store, settings, worker, issue_work)
+    error(web_admin.post(f"{PATH}/RUN-1/triage-proposals/trg-nope0000/accept"), 409, "triage_stale")
+    found = ok(web_admin.post(f"{PATH}/RUN-1/triage-proposals/{log['triage_id']}/accept"))
+    work = repo.get_work_item(conn, SESSION, issue_work)
+    assert (work["assignee_type"], work["assignee_id"]) == ("agent", FIX)
+    row = log_row(conn, log["triage_id"])
+    assert (row["handling"], row["handled_by_member_id"]) == ("accepted", admin_id(conn))
+    assert found["triage"]["state"] == "handled" and found["work"]["assignee"]["id"] == FIX
+    body = error(web_admin.post(f"{PATH}/RUN-1/triage-proposals/{log['triage_id']}/accept"), 409, "triage_stale")
+    assert body["message"] == "판단 제안이 이미 처리됐거나 바뀌었습니다."
+
+
+def test_dismiss_triage_folds_the_proposal(web_admin, conn, store, settings, worker, issue_work):
+    log = propose_triage(conn, store, settings, worker, issue_work)
+    found = ok(web_admin.post(f"{PATH}/RUN-1/triage-proposals/{log['triage_id']}/dismiss"))
+    assert log_row(conn, log["triage_id"])["handling"] == "dismissed"
+    assert found["triage"]["state"] == "dismissed" and found["work"]["assignee"] is None
+    error(web_admin.post(f"{PATH}/RUN-1/triage-proposals/{log['triage_id']}/dismiss"), 409, "triage_stale")
+    error(web_admin.post(f"{PATH}/RUN-1/triage-proposals/{log['triage_id']}/accept"), 409, "triage_stale")
+
+
+def test_accept_next_step_applies_it_and_the_second_is_stale(client, capable, conn, store, worker):
+    admin = log_in(client)
+    _, _, wid, log = propose_next_step(conn, store, worker, {"type": "human", "question": "재현 금액은 얼마인가요?"})
+    found = ok(admin.post(f"{PATH}/RUN-1/next-step-proposals/{log['triage_id']}/accept"))
+    row = log_row(conn, log["triage_id"])
+    assert (row["handling"], row["handled_by_member_id"]) == ("accepted", admin_id(conn))
+    assert found["next_step"]["state"] == "accepted"
+    body = error(admin.post(f"{PATH}/RUN-1/next-step-proposals/{log['triage_id']}/accept"), 409, "next_step_stale")
+    assert body["message"] == "다음 단계 제안이 이미 처리됐거나 원인이 바뀌었습니다."
+    error(admin.post(f"{PATH}/RUN-1/next-step-proposals/{log['triage_id']}/dismiss"), 409, "next_step_stale")
+
+
+def test_dismiss_next_step_folds_the_proposal(client, capable, conn, store, worker):
+    admin = log_in(client)
+    _, _, wid, log = propose_next_step(conn, store, worker, {"type": "human", "question": "재현 금액은 얼마인가요?"})
+    error(admin.post(f"{PATH}/RUN-1/next-step-proposals/trg-nope0000/dismiss"), 409, "next_step_stale")
+    found = ok(admin.post(f"{PATH}/RUN-1/next-step-proposals/{log['triage_id']}/dismiss"))
+    assert log_row(conn, log["triage_id"])["handling"] == "dismissed"
+    assert found["next_step"]["state"] == "dismissed"
+    error(admin.post(f"{PATH}/RUN-1/next-step-proposals/{log['triage_id']}/accept"), 409, "next_step_stale")

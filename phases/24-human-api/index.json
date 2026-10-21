@@ -168,7 +168,23 @@
     {
       "step": 7,
       "name": "work-action-api",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T20:20:07+0900",
+      "summary": "server/work_api.py 에 행동 라우트 10개(PATCH {key} priority·PUT/DELETE assignee·PUT/DELETE direct-work·POST triage-runs 202·POST triage-proposals/{triage_id}/accept|dismiss·POST next-step-proposals/{triage_id}/accept|dismiss): 권한 require_action(team.DELEGATE, api=True)(웹과 같음), _own_work 로 키 조회, 웹 라우트와 같은 work_actions·triage_runs 함수·인자(store·settings·secrets 는 app.state), _api_errors 가 WorkActionError→ApiError(같은 status·code·message·field), triage 시작 못 하면 409 triage_unavailable f'{reason}.', 성공 응답 = _detail. 본문 모델 WorkPatch(priority Literal)·AssigneeBody(type Literal·id NonEmptyStr·note '') extra=forbid, 본문 없는 행동은 본문 안 읽음. 테스트: test_work_api.py 행동 테스트 25개(파라미터 포함) 추가 — 같은 fixture 의 RUN-1 웹 폼·RUN-2 API 로 DB 상태(담당·우선순위·상태·직접 작업·메모·실행 수·이벤트 종류) 비교(우선순위·직접 작업 시작/그만·멤버 배정·해제·소유자 승인 대기·꺼진 러너 대기), 에이전트 맡기기 실행 생성, 409 direct_work_active·execution_conflict·work_closed, 422 assignee·note·priority·type·id, 폼 본문 422·unknown_field, 행동 10개마다 404·401·read 토큰 403 token_read_only·역할 없음 403 forbidden(monkeypatch 로 member 에서 delegate 제거), Bearer 는 Origin 무관 통과·쿠키+다른 Origin 403, 판단 받기 202→409, 판단 제안 accept/dismiss 와 두 번째 409 triage_stale, 다음 단계 accept/dismiss 와 409 next_step_stale. 기존 테스트 수정 없음. 전체 4722 passed·100 skipped. 다음 step 주의: 문서(SELFHOST·업그레이드 안내)는 step 8.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "에이전트 맡기기는 같은 러너를 두 업무가 함께 쓸 수 없어(두 번째는 대기) 웹·API 나란히 비교 대신 test_web_work 와 같은 단정(담당·실행 1건·상태·선택)으로 확인했다.",
+        "두 역할(admin·member) 모두 delegate 를 가져 실제로 403 forbidden 이 나는 역할은 없다 — 테스트는 member 역할에서 delegate 를 monkeypatch 로 빼서 의존성 연결만 확인했다."
+      ]
     },
     {
       "step": 8,
