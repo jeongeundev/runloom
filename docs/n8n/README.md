@@ -13,7 +13,7 @@ n8n 쪽 노드는 4개다:
 | 노드 | 하는 일 | Runloom 쪽 대응 |
 |---|---|---|
 | Webhook (`POST /webhook/runloom-demo`) | 테스트용 트리거. 본문 `{"run_id": "daily-0920-0900", "repository_id": "billing"}` 을 받고 즉시 응답한다 | — (실제 운영에서는 Error Trigger 나 Schedule 로 바꾼다) |
-| HTTP Request (`POST …/sources/n8n/chains`) | 항목 2개(수정·검토)와 `callback_url: $execution.resumeUrl` 을 `InboundChainRequest` 로 보낸다. 인증은 Header Auth 자격 증명(입구 토큰) | 입구 API — 라벨 규칙으로 체인 + Task 2개를 만들고 첫 업무를 즉시 시작한다. 응답 `InboundChainResponse` 의 `chain_url` 이 체인 화면 |
+| HTTP Request (`POST …/api/v1/sources/n8n/chains`) | 항목 2개(수정·검토)와 `callback_url: $execution.resumeUrl` 을 `InboundChainRequest` 로 보낸다. 인증은 Header Auth 자격 증명(입구 토큰) | 입구 API — 라벨 규칙으로 체인 + Task 2개를 만들고 첫 업무를 즉시 시작한다. 응답 `InboundChainResponse` 의 `chain_url` 이 체인 화면 |
 | Wait (On Webhook Call) | `$execution.resumeUrl` 로 POST 가 올 때까지 잠든다 | 워커가 체인이 사람 차례(`chain_settled`)가 된 tick 의 마지막에 `ChainCallback` 을 체인당 1회 POST 한다 |
 | Slack (비활성) | callback 본문의 `title`·`human_gate`·`chain_url` 로 메시지를 만든다. 자격 증명을 넣기 전엔 비활성이라 데이터를 그대로 통과시킨다 | — |
 
@@ -43,7 +43,7 @@ deploy/selfhost/install.sh
 
 Docker 워커에서 호스트의 n8n 에 접속하려면 n8n 의 `WEBHOOK_URL` 을 `http://host.docker.internal:5678/` 로 설정하고 허용 목록도 `host.docker.internal:5678` 로 맞춘다. `localhost` 는 각 컨테이너 자신이므로 Docker 워커에서는 호스트 n8n 주소로 쓸 수 없다. 개발 서버를 호스트에서 직접 실행하는 경우에는 위 `localhost:5678` 값을 쓴다. `WORKFLOW_PUBLIC_URL` 은 사람이 여는 링크 주소다.
 
-HTTP Request 기본 URL 은 `http://host.docker.internal:8000/sources/n8n/chains` 다. 중앙 포트를 바꿨으면 노드 URL 도 바꾼다.
+HTTP Request 기본 URL 은 `http://host.docker.internal:8000/api/v1/sources/n8n/chains` 다. 중앙 포트를 바꿨으면 노드 URL 도 바꾼다.
 
 ## 3. Runloom 에서
 

@@ -503,14 +503,14 @@ def test_bearer_paths_are_not_origin_checked(settings, conn):
     client = TestClient(_member_app(settings))
     client.headers["origin"] = "http://evil.example"
     ensure_workspace(conn, NOW)
-    connector_id, token = exchange(client, conn)  # POST /connector/exchange
+    connector_id, token = exchange(client, conn)  # POST /api/v1/connector/exchange
     assert connector_id
-    response = client.post("/executions/exec-none/events", json={}, headers=bearer(token))
+    response = client.post("/api/v1/executions/exec-none/events", json={}, headers=bearer(token))
     assert response.json()["code"] != "forbidden_origin"
-    response = client.post("/sources/n8n/chains", json={})
+    response = client.post("/api/v1/sources/n8n/chains", json={})
     assert response.status_code == 401 and response.json()["code"] == "unauthenticated"
     del client.headers["origin"]
-    assert client.post("/connector/exchange", json={}).status_code != 403
+    assert client.post("/api/v1/connector/exchange", json={}).status_code != 403
 
 
 def test_check_origin_function_rules(settings):
@@ -525,12 +525,18 @@ def test_check_origin_function_rules(settings):
     assert check_origin(request("POST", "/tasks", {"Origin": "http://testserver"}), settings)
     assert not check_origin(request("POST", "/tasks", {}), settings)
     assert not check_origin(request("POST", "/tasks", {"Origin": "null"}), settings)
-    assert check_origin(request("POST", "/connector/heartbeat", {}), settings)
-    assert check_origin(request("PUT", "/executions/x/result", {}), settings)
-    assert check_origin(request("POST", "/sources/n8n/chains", {}), settings)
+    assert check_origin(request("POST", "/api/v1/connector/heartbeat", {}), settings)
+    assert check_origin(request("PUT", "/api/v1/executions/x/result", {}), settings)
+    assert check_origin(request("POST", "/api/v1/sources/n8n/chains", {}), settings)
     assert not check_origin(request("POST", "/sources/tokens", {}), settings)
     assert not check_origin(request("POST", "/sources/tokens/tok-1/revoke", {}), settings)
-    assert not check_origin(request("POST", "/sources/n8n/chains/extra", {}), settings)
+    assert not check_origin(request("POST", "/api/v1/sources/n8n/chains/extra", {}), settings)
+    # 옛 러너·입구 경로는 예외가 아니다(phase 24 D9) — `/api/v1/` 전체도 예외가 아니다(쿠키 API 는 검사, D19)
+    assert not check_origin(request("POST", "/connector/heartbeat", {}), settings)
+    assert not check_origin(request("POST", "/executions/x/events", {}), settings)
+    assert not check_origin(request("POST", "/sources/n8n/chains", {}), settings)
+    assert not check_origin(request("POST", "/api/v1/me/tokens", {}), settings)
+    assert not check_origin(request("PUT", "/api/v1/github/sources/ghs-1", {}), settings)
 
 
 # 키별 실패 제한 ------------------------------------------------------------------------------------

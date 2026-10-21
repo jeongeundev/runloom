@@ -38,7 +38,7 @@ def issue_and_exchange(app, owner: TestClient, conn) -> tuple[str, str]:
     before = {c["code"] for c in repo.list_connect_codes(conn)}
     assert owner.post("/operator/connect-codes").status_code == 200
     (code,) = {c["code"] for c in repo.list_connect_codes(conn)} - before
-    response = TestClient(app).post("/connector/exchange", json={"contract_version": 1, "connect_code": code})
+    response = TestClient(app).post("/api/v1/connector/exchange", json={"contract_version": 1, "connect_code": code})
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {"connector_id", "token"}  # 교환 응답 모양 불변

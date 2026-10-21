@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from fastapi import Depends, HTTPException, Request, Response
 
 from workflow.adapters import repo
+from workflow.contracts.v1 import API_PREFIX
 from workflow.domain import team
 from workflow.server.errors import ApiError, PageError
 from workflow.server.settings import Settings
@@ -242,8 +243,8 @@ def clear_login_cookies(response: Response) -> None:
 # --- Origin 검사 (phase 15) ---------------------------------------------------------------------
 
 # Bearer 인증 경로 — 쿠키를 보지 않으므로 검사하지 않는다. `/sources/tokens…` 는 쿠키 경로라 검사 대상
-_BEARER_PREFIXES = ("/connector/", "/executions/")
-_CHAINS_PATH = re.compile(r"/sources/[^/]+/chains")
+_BEARER_PREFIXES = (f"{API_PREFIX}/connector/", f"{API_PREFIX}/executions/")
+_CHAINS_PATH = re.compile(rf"{API_PREFIX}/sources/[^/]+/chains")
 
 
 def _origin_of(url: str) -> str | None:

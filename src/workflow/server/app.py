@@ -49,8 +49,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.jira_transport = None  # Jira 연결 경로의 httpx transport — 테스트는 가짜 Jira 로 바꾼다
     app.state.notify_transport = None  # 알림 [테스트 보내기] 의 httpx transport — 테스트는 가짜 수신으로 바꾼다
     install_error_handlers(app)
-    app.include_router(machine_api.router)
-    app.include_router(inbound_api.router)  # n8n 입구 (ADR-0010) — 입구 토큰만, 세션 쿠키 없음
+    app.include_router(machine_api.router, prefix=API_PREFIX)
+    app.include_router(inbound_api.router, prefix=API_PREFIX)  # n8n 입구 (ADR-0010) — 입구 토큰만, 세션 쿠키 없음
     app.include_router(github_api.router, prefix=API_PREFIX)  # GitHub 소스 설정 (ADR-0014)
     app.include_router(human_api.router, prefix=API_PREFIX)  # 사람 요청 응답 (ADR-0014)
     app.include_router(metrics_api.router, prefix=API_PREFIX)  # 지표·기준선 가져오기 (ADR-0015)

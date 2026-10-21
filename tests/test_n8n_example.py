@@ -81,7 +81,7 @@ def test_http_request_posts_inbound_chain_request_with_header_auth_credential(no
     node = nodes[1]
     params = node["parameters"]
     assert params["method"] == "POST"
-    assert params["url"].endswith("/sources/n8n/chains")
+    assert params["url"].endswith("/api/v1/sources/n8n/chains")
     assert params["url"].startswith("http://host.docker.internal:")
     assert params["authentication"] == "genericCredentialType"
     assert params["genericAuthType"] == "httpHeaderAuth"
@@ -156,7 +156,7 @@ def test_readme_uses_the_same_commands_paths_and_settings_as_the_product(readme)
         "WORKFLOW_CALLBACK_HOSTS=localhost:5678",
         "WORKFLOW_PUBLIC_URL=http://127.0.0.1:8000",
         "deploy/selfhost/install.sh",
-        "http://host.docker.internal:8000/sources/n8n/chains",
+        "http://host.docker.internal:8000/api/v1/sources/n8n/chains",
         "curl -X POST http://localhost:5678/webhook/runloom-demo",
         '"run_id":"daily-0920-0900"',
         "$execution.resumeUrl",

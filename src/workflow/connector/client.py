@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from workflow.connector.adapter import SUPPORTED_BUILTIN_KINDS
 from workflow.contracts.v1 import (
+    API_PREFIX,
     CONTRACT_VERSION,
     ArtifactCreated,
     ArtifactMeta,
@@ -106,7 +107,7 @@ class CentralClient:
     def exchange(self, connect_code: str) -> tuple[str, str]:
         """연결 코드 → (connector_id, 연결 토큰). 인증 없이 호출한다."""
         response = self._call(
-            "POST", "/connector/exchange",
+            "POST", f"{API_PREFIX}/connector/exchange",
             json={"contract_version": CONTRACT_VERSION, "connect_code": connect_code},
         )
         data = response.json()
@@ -124,7 +125,7 @@ class CentralClient:
         }
         if registration_heads:  # 보고할 것이 있을 때만 — 구버전 서버(extra=forbid)와 호환 (ADR-0018)
             body["registration_heads"] = registration_heads
-        response = self._call("POST", "/connector/claim", json=body)
+        response = self._call("POST", f"{API_PREFIX}/connector/claim", json=body)
         if response.status_code == 204:
             return None
         return ExecutionRequest.model_validate(response.json())
@@ -132,7 +133,7 @@ class CentralClient:
     def heartbeat(self, connector_id: str, current_execution_id: str | None) -> bool:
         """중앙이 `current_execution_id` 를 이미 마감했으면 True. 구버전 서버(빈 응답)는 언제나 False."""
         response = self._call(
-            "POST", "/connector/heartbeat",
+            "POST", f"{API_PREFIX}/connector/heartbeat",
             json={
                 "contract_version": CONTRACT_VERSION, "connector_id": connector_id,
                 "current_execution_id": current_execution_id,
@@ -157,23 +158,23 @@ class CentralClient:
         }
         if registration.get("agent_name"):  # 값이 있을 때만 — 구버전 서버(extra=forbid)와 호환
             body["agent_name"] = registration["agent_name"]
-        return self._call("POST", "/connector/registrations", json=body).json()
+        return self._call("POST", f"{API_PREFIX}/connector/registrations", json=body).json()
 
     def post_event(self, event: ExecutionEvent) -> EventAck:
         response = self._call(
-            "POST", f"/executions/{_segment(event.execution_id)}/events", json=event.model_dump(mode="json")
+            "POST", f"{API_PREFIX}/executions/{_segment(event.execution_id)}/events", json=event.model_dump(mode="json")
         )
         return EventAck.model_validate(response.json())
 
     def download_artifact(self, execution_id: str, artifact_id: str) -> tuple[bytes, str]:
         response = self._call(
-            "GET", f"/executions/{_segment(execution_id)}/artifacts/{_segment(artifact_id)}"
+            "GET", f"{API_PREFIX}/executions/{_segment(execution_id)}/artifacts/{_segment(artifact_id)}"
         )
         return response.content, response.headers.get("content-type", "application/octet-stream")
 
     def upload_artifact(self, execution_id: str, meta: ArtifactMeta, data: bytes) -> ArtifactCreated:
         response = self._call(
-            "POST", f"/executions/{_segment(execution_id)}/artifacts",
+            "POST", f"{API_PREFIX}/executions/{_segment(execution_id)}/artifacts",
             data={"meta": meta.model_dump_json()},
             files={"file": (meta.name, data, meta.content_type)},
         )

@@ -121,7 +121,22 @@
     {
       "step": 5,
       "name": "connector-paths",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T19:57:06+0900",
+      "summary": "러너·n8n 프로토콜 주소를 /api/v1 아래로(뒷부분 그대로, 옛 경로 별칭 없음): app.py 가 machine_api·inbound_api 를 include_router(prefix=API_PREFIX)로 등록(라우터 안 경로는 그대로), auth._BEARER_PREFIXES=(f'{API_PREFIX}/connector/', f'{API_PREFIX}/executions/')·_CHAINS_PATH=rf'{API_PREFIX}/sources/[^/]+/chains'(/api/v1 전체 예외 아님), connector/client.py 7곳이 contracts.v1.API_PREFIX 를 앞에 붙임(server_url 설정 형식 그대로), web.INBOUND_PATH=f'{API_PREFIX}/sources/{INBOUND_SOURCE}/chains', docs/n8n/runloom-handoff.json·README.md 입구 주소를 새 경로로. 계약 본문 변경 없음. 테스트: 러너·입구 경로를 직접 부르는 11개 파일(test_machine_api·test_inbound_api·test_auth·server conftest·test_web·test_web_team·test_web_runner_owner·test_worker·connector conftest·test_client·test_runner)의 문자열 시작 경로만 /api/v1 로, test_web 입구 주소 표시 2곳+옛 주소 미표시 단정, test_n8n_example 2곳 새 주소. 신규: 옛 러너 경로 7개 404(test_machine_api), 옛 입구 404(test_inbound_api), check_origin 이 옛 러너·입구 경로와 쿠키 API(/api/v1/me/tokens·/api/v1/github/sources/…)를 예외로 두지 않음 단정. 전체 4681 passed·100 skipped. 다음 step 주의: 업그레이드 시 러너 재설치·n8n 주소 수정 필수(D9·D35) — SELFHOST 등 문서는 step 8.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "좁힌 테스트 묶음을 처음 돌렸을 때 test_web.py::test_app_home_has_work_toolbar_with_direct_register 가 setup 단계에서 ERROR 1번 났으나, 단독 실행·test_web.py 전체 실행·전체 pytest 에서는 통과했다. 이번 변경과 무관한 간헐 현상으로 보이지만 원인은 확인하지 못했다."
+      ]
     },
     {
       "step": 6,

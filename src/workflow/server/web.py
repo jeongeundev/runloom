@@ -73,6 +73,7 @@ from workflow.contracts.responsibility import Responsibility
 from workflow.contracts.github import RepositoryFullName
 from workflow.contracts.jira import JiraProjectConfig, valid_email, valid_token
 from workflow.contracts.v1 import (
+    API_PREFIX,
     ARTIFACT_KINDS,
     BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
@@ -137,7 +138,7 @@ AUTO_KIND_TRIES = 5
 DEFAULT_KIND_OUTCOMES = "done, needs_information"
 # 입구 (ADR-0010) — 토큰은 지금 n8n 하나에 묶이고, 경로는 inbound_api 의 것을 화면에 그대로 적는다
 INBOUND_SOURCE = "n8n"
-INBOUND_PATH = "/sources/n8n/chains"
+INBOUND_PATH = f"{API_PREFIX}/sources/{INBOUND_SOURCE}/chains"
 SOURCE_TOKEN_LIMIT = 5  # 세션당 활성 입구 토큰 상한
 
 # 직접 등록 폼 기본값. 기본 종류는 내장 `bug_fix`(능력 `code.fix`) — 셀프호스트 실사용 종류 (ADR-0019)
