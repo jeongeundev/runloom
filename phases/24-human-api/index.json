@@ -72,7 +72,8 @@
       ],
       "concerns": [
         "Authorization 헤더가 'Bearer ' 빈 값이거나 Basic 등 다른 스킴이면 _bearer_token 이 None 이라 Bearer 없음으로 보고 쿠키로 판정한다(기존 _bearer_token 규칙 그대로)."
-      ]
+      ],
+      "completed_at": "2026-10-21T19:26:49+0900"
     },
     {
       "step": 3,
