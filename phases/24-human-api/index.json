@@ -214,7 +214,8 @@
       "concerns": [
         "tests/workflow/contracts/test_v1.py 를 단독으로 수집하면 workflow.server.next_step_runs ↔ worker 순환 import 로 collection error 가 난다(이 step 전부터, src 변경 없음). 전체 pytest 에서는 통과한다.",
         "지난 phase 기록(VERIFICATION_LOG·ADR·GLOSSARY)의 옛 경로도 D33 대로 새 경로로 바꿔서, '주소 유지' 같은 당시 서술이 새 주소와 함께 읽힌다 — 뜻은 phase 24 전 주소 기준이다."
-      ]
+      ],
+      "completed_at": "2026-10-21T20:46:34+0900"
     },
     {
       "step": 9,
