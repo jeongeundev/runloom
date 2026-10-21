@@ -630,7 +630,8 @@ def _panel(request: Request, conn: Connection, member: LoggedIn, work: Row, quer
     finally:
         conn.execute('ROLLBACK')
     return {**context, "close_href": views.list_href(query), "list_state": state,
-            "internal_requests": [_request_display(conn, member, r, request.app.state.store) for r in
+            "internal_requests": [views.internal_request_view(conn, member.session_id, member.member_id, allowed, r,
+                                                        request.app.state.store) for r in
                                   internal_request_store.list_for_work(conn, member.session_id, work['work_item_id'])],
             "directory_choices": choices, "directory_revision": directory_revision,
             "submission_key": secrets.token_hex(16)}
@@ -1015,107 +1016,13 @@ def _work_redirect(conn: Connection, work: Row, response: Response, q: str, grou
     return _redirect(f"/tasks?{views.list_query_params(query, open_key=work['key_number'])}", response)
 
 
-def _request_display(conn: Connection, member: LoggedIn, row: dict, artifact_store: Any) -> dict:
-    work = repo.get_work_item(conn, member.session_id, row['work_item_id'])
-    names = {}
-    for role in ('requester', 'recipient', 'judgment'):
-        person = repo.get_member(conn, member.session_id, row[f'{role}_member_id'])
-        names[f'{role}_name'] = person['display_name'] if person else row[f'{role}_member_id']
-    entry = Responsibility(**{key: row[key] for key in
-                              ('system_id', 'request_kind', 'recipient_member_id', 'judgment_member_id', 'agent_id')})
-    problem = responsibility_store.entry_problem(conn, member.session_id, entry)
-    options = []
-    agent = repo.get_agent(conn, row['agent_id']) if row['agent_id'] else None
-    if agent is not None and agent['connection_type'] == 'local':
-        capabilities = json.loads(agent['capabilities_json'])
-        for spec in repo.list_kinds(conn, member.session_id):
-            if spec.output_kind != 'generic_result' or spec.input_kinds:
-                continue
-            for cap in capabilities:
-                if cap['code'] == spec.capability_code and spec.scope_key in cap['scope']:
-                    value = cap['scope'][spec.scope_key]
-                    options.append({'value': json.dumps({'kind': spec.kind, 'scope_value': value}),
-                                    'label': f"{spec.label} · {spec.scope_key}={value}"})
-    task = repo.get_task(conn, row['investigation_task_id']) if row['investigation_task_id'] else None
-    return_execution_id = None
-    return_reason = None
-    if task is not None and row['returned_at'] is None:
-        problem = problem or internal_request_store.investigation_problem(conn, task)
-        executions = repo.list_executions(conn, task['task_id'])
-        if executions:
-            try:
-                internal_investigation.reviewed_result(conn, artifact_store, row, executions[-1]['execution_id'])
-                return_execution_id = executions[-1]['execution_id']
-            except internal_request_store.RequestProblem as exc:
-                return_reason = str(exc)
-    basis_execution_id = return_execution_id or row['returned_execution_id']
-    judgment_reason = internal_request_store.judgment_problem(conn, member.session_id, row, basis_execution_id or '')
-    versions = internal_request_store.information_versions(row)
-    judgment_views = []
-    for judgment in row['judgments']:
-        current = judgment['execution_id'] == basis_execution_id and judgment['information_versions'] == versions
-        judgment_views.append({**judgment, 'is_current': current,
-            'can_respond': current and judgment['judgment_id'] == row['judgments'][-1]['judgment_id']
-                and judgment['judgment_member_id'] == member.member_id and judgment['decision'] is None
-                and row['returned_at'] is None and not row['waiting_for_information']
-                and team.RESPOND in team.allowed_actions(member.role)})
-    reroute_options = []
-    for candidate in responsibility_store.list_entries(conn, member.session_id):
-        if (candidate.system_id, candidate.request_kind) != (row['system_id'], row['request_kind']):
-            continue
-        if candidate.recipient_member_id == row['recipient_member_id'] or responsibility_store.entry_problem(conn, member.session_id, candidate):
-            continue
-        person = repo.get_member(conn, member.session_id, candidate.recipient_member_id)
-        reroute_options.append({'member_id': candidate.recipient_member_id, 'name': person['display_name']})
-    phase_label = '수락됨' if row['state'] == 'accepted' else '수락 대기'
-    if task:
-        phase_label = '조사 작업 연결됨'
-    if row['returned_at']:
-        phase_label = '결과 반환됨'
-    if row['resumption']:
-        phase_label = '업무 재개 기록됨'
-    if row['rejected_at']:
-        phase_label = '재전달됨' if row['new_request_id'] else '담당 아님'
-    if row['judgments'] and row['returned_at'] is None:
-        latest = row['judgments'][-1]
-        changed = latest['execution_id'] != basis_execution_id or latest['information_versions'] != versions
-        phase_label = '새 판단 필요' if changed else (
-            '판단 승인' if latest['decision'] == 'approve' else ('판단 거절' if latest['decision'] == 'reject' else '판단 응답 대기'))
-    if row['waiting_for_information']:
-        phase_label = '정보 답변 대기'
-    recipient = row['recipient_member_id'] == member.member_id
-    return {**row, **names, "work_key": format_work_key(work['key_number']), "problem": problem,
-            "phase_label": phase_label, "judgment_views": judgment_views, "judgment_reason": judgment_reason,
-            "judgment_submission_key": secrets.token_hex(16),
-            "can_request_judgment": recipient and return_execution_id is not None and row['returned_at'] is None
-                and not row['waiting_for_information'] and team.RESPOND in team.allowed_actions(member.role)
-                and not any(j['is_current'] for j in judgment_views),
-            "question_submission_key": secrets.token_hex(16),
-            "can_ask": recipient and row['state'] == 'accepted' and row['returned_at'] is None
-                       and not row['waiting_for_information'] and team.RESPOND in team.allowed_actions(member.role),
-            "can_answer": row['requester_member_id'] == member.member_id and team.RESPOND in team.allowed_actions(member.role),
-            "investigation_options": options, "investigation_status": task['status'] if task else None,
-            "investigation_reason": task['status_reason'] if task else None,
-            "can_investigate": recipient and row['state'] == 'accepted' and task is None and problem is None and not row['waiting_for_information']
-                               and team.DELEGATE in team.allowed_actions(member.role),
-            "return_execution_id": return_execution_id, "return_reason": return_reason,
-            "can_resume": row['returned_at'] is not None and row['resumption'] is None
-                          and row['requester_member_id'] == member.member_id and team.RESPOND in team.allowed_actions(member.role),
-            "can_return": recipient and return_execution_id is not None and not row['waiting_for_information'] and judgment_reason is None and team.RESPOND in team.allowed_actions(member.role),
-            "reroute_options": reroute_options, "directory_revision": repo.get_config_revision(conn, member.session_id),
-            "can_reroute": row['requester_member_id'] == member.member_id and row['rejected_at'] is not None
-                           and row['new_request_id'] is None and team.DELEGATE in team.allowed_actions(member.role),
-            "can_reject": recipient and row['state'] == 'pending' and row['rejected_at'] is None
-                          and team.RESPOND in team.allowed_actions(member.role),
-            "can_accept": row['rejected_at'] is None and row['state'] == 'pending' and row['recipient_member_id'] == member.member_id
-                          and problem is None and team.RESPOND in team.allowed_actions(member.role)}
-
-
 @router.get('/requests', response_class=HTMLResponse)
 def requests_page(request: Request, member: LoggedIn = Depends(require_member),
                   conn: Connection = Depends(get_conn)) -> str:
     return _render('internal_requests.html', **_base(request, conn, member.session_id, utc_now()),
-                   requests=[_request_display(conn, member, row, request.app.state.store) for row in
+                   requests=[views.internal_request_view(conn, member.session_id, member.member_id,
+                                                        team.allowed_actions(member.role), row,
+                                                        request.app.state.store) for row in
                              internal_request_store.list_for_member(conn, member.session_id, member.member_id)])
 
 

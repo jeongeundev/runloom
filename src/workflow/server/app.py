@@ -18,7 +18,7 @@ from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import SCHEMA_VERSION, connect, init_schema
 from workflow.adapters.secret_store import SecretStore
 from workflow.contracts.v1 import API_PREFIX
-from workflow.server import github_api, human_api, inbound_api, machine_api, mapping_api, member_token_api, metrics_api, responsibility_api, internal_request_api, web
+from workflow.server import github_api, human_api, inbound_api, machine_api, mapping_api, member_token_api, metrics_api, responsibility_api, internal_request_api, web, work_api
 from workflow.server.auth import LoginThrottle
 from workflow.server.errors import install_error_handlers
 from workflow.server.settings import Settings, load_settings
@@ -58,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(internal_request_api.router, prefix=API_PREFIX)
     app.include_router(mapping_api.router, prefix=API_PREFIX)  # 매핑 표 (ADR-0020)
     app.include_router(member_token_api.router, prefix=API_PREFIX)  # 멤버 토큰 (ADR-0032)
+    app.include_router(work_api.router, prefix=API_PREFIX)  # 업무 목록·상세 (ADR-0032)
     web.install(app)  # 라우터 + PageError → error.html
     app.middleware("http")(web.origin_guard)  # 쿠키 인증 변경 요청의 Origin 검사 (phase 15) — Bearer 경로 제외
     app.add_api_route("/healthz", lambda: _healthz(settings), methods=["GET"])  # 인증 없음 (ADR-0016)
