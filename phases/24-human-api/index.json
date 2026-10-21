@@ -184,7 +184,8 @@
       "concerns": [
         "에이전트 맡기기는 같은 러너를 두 업무가 함께 쓸 수 없어(두 번째는 대기) 웹·API 나란히 비교 대신 test_web_work 와 같은 단정(담당·실행 1건·상태·선택)으로 확인했다.",
         "두 역할(admin·member) 모두 delegate 를 가져 실제로 403 forbidden 이 나는 역할은 없다 — 테스트는 member 역할에서 delegate 를 monkeypatch 로 빼서 의존성 연결만 확인했다."
-      ]
+      ],
+      "completed_at": "2026-10-21T20:30:17+0900"
     },
     {
       "step": 8,
