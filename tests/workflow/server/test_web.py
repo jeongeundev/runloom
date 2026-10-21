@@ -1981,7 +1981,7 @@ def test_selfhost_without_login_redirects_screens_and_rejects_api(selfhost, conn
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303, path
         assert response.headers["location"] == "/login", path
-    for path in ("/metrics.json", "/github/sources", "/human-requests"):
+    for path in ("/api/v1/metrics", "/api/v1/github/sources", "/api/v1/human-requests"):
         response = client.get(path)
         assert response.status_code == 401, path
         assert response.json()["code"] == "unauthenticated", path
@@ -2010,7 +2010,7 @@ def test_first_setup_creates_admin_account_and_logs_in(selfhost, conn, settings,
     assert session_of(client) == SELFHOST_SESSION_ID
     assert client.get("/", follow_redirects=False).headers["location"] == "/tasks"
     assert client.get("/tasks").status_code == 200
-    assert client.get("/metrics.json").status_code == 200  # 기존 운영자 판정을 통과한다(권한 전환은 step 6)
+    assert client.get("/api/v1/metrics").status_code == 200  # 기존 운영자 판정을 통과한다(권한 전환은 step 6)
     cookie = client.cookies[LOGIN_COOKIE]
     stored = all_rows_text(conn)
     assert ADMIN_PASSWORD not in stored and cookie not in stored and OPERATOR_TOKEN not in stored
@@ -2312,7 +2312,7 @@ def test_old_workspace_cookie_does_not_log_in(selfhost, conn, settings):
     client = TestClient(selfhost)
     client.cookies.set("wf_session", f"{SELFHOST_SESSION_ID}.{mac}")
     assert client.get("/tasks", follow_redirects=False).headers["location"] == "/login"
-    assert client.get("/metrics.json").status_code == 401
+    assert client.get("/api/v1/metrics").status_code == 401
 
 
 def test_access_log_masks_invite_and_reset_tokens(selfhost, caplog):

@@ -822,7 +822,7 @@ def test_responsibility_form_rejects_out_of_list_kind_and_bad_system(admin, conn
     response = admin.post("/responsibilities/add", data={**data, "request_kind": "investigation", "system_id": "Kube"})
     error(response, 422, "invalid_field")
     assert "시스템 이름은 소문자·숫자·밑줄로, 소문자로 시작해 입력하세요." in response.text
-    assert admin.get("/responsibilities").json()["entries"] == []
+    assert admin.get("/api/v1/responsibilities").json()["entries"] == []
 
 
 def test_out_of_list_request_kind_row_is_marked_and_removable(admin, conn):
@@ -830,14 +830,14 @@ def test_out_of_list_request_kind_row_is_marked_and_removable(admin, conn):
     revision = repo.get_config_revision(conn, SESSION)
     entry = dict(system_id="billing", request_kind="billing_check", recipient_member_id=me,
                  judgment_member_id=me, agent_id=None)
-    assert admin.put("/responsibilities", json={"expected_revision": revision, "entries": [entry]}).status_code == 200
+    assert admin.put("/api/v1/responsibilities", json={"expected_revision": revision, "entries": [entry]}).status_code == 200
     section = section_of(admin.get("/team").text, "responsibilities")
     text = " ".join(visible_text(section).split())
     assert "billing_check (목록 밖)" in text and "미지정" in text
     response = admin.post("/responsibilities/remove", data=dict(position=0, expected_revision=revision + 1),
                           follow_redirects=False)
     assert response.status_code == 303
-    assert admin.get("/responsibilities").json()["entries"] == []
+    assert admin.get("/api/v1/responsibilities").json()["entries"] == []
 
 
 def test_team_page_shows_no_internal_ids_outside_detail(app, admin, member, conn):

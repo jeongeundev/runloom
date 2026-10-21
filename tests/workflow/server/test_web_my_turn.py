@@ -82,7 +82,7 @@ def respond(client, conn, task_id: str, action: str = "retry"):
     (request,) = [r for r in repo.list_human_requests(conn, task_id) if r["state"] == "open"]
     body = {"response_id": f"resp-{action}-{member_id(conn, client)}", "expected_revision": request["revision"],
             "action": action, "text": ""}
-    return client.post(f"/human-requests/{request['request_id']}/responses", json=body)
+    return client.post(f"/api/v1/human-requests/{request['request_id']}/responses", json=body)
 
 
 def test_delegated_work_is_on_the_requesters_turn_only(admin, requester, conn, worker):

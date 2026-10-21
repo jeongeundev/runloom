@@ -576,11 +576,13 @@ def test_page_after_app_setup_shows_a_card_per_repository(op, conn, secrets, pem
         assert "GitHub App 설치" in card  # 수집 자격 — 종류만
         assert "이 저장소를 등록한 러너 없음" in card and "러너 붙이기" in card
         tools = folded(card, "러너·담당 연결·기준선")  # phase 23: 기준선·담당 연결은 카드 도구 접힘
-        assert f'data-json-action="/operator/github/sources/{source.source_id}/baseline"' in tools
+        assert f'data-json-action="/api/v1/github/sources/{source.source_id}/baseline"' in tools
         advanced = folded(card, "고급 설정")
         assert 'name="workflow_repository_id"' in advanced and "비워 두면 자동" in advanced
         assert 'name="intake" value="all_open"' in advanced
-        assert f'data-json-action="/github/sources/{source.source_id}/assignees"' in tools
+        assert f'data-json-action="/api/v1/github/sources/{source.source_id}/assignees"' in tools
+        assert 'data-json-action="/github/sources' not in card  # 옛 주소 없음(D9)
+        assert 'data-json-action="/operator/github/sources' not in card
 
 
 def test_card_explains_the_baseline_before_it_is_imported(op, conn, secrets, pem):
@@ -781,7 +783,7 @@ def block(html: str, marker: str) -> str:
 
 
 def settings_form(card: str) -> str:
-    found = re.search(rf'<form data-json-action="/github/sources/{SOURCE}" data-json-method="PUT">.*?</form>', card, re.S)
+    found = re.search(rf'<form data-json-action="/api/v1/github/sources/{SOURCE}" data-json-method="PUT">.*?</form>', card, re.S)
     assert found is not None
     return found.group(0)
 
@@ -889,7 +891,7 @@ def test_paused_source_says_so(named, conn):
         update={"enabled": False}), "2026-10-06T12:00:00Z")
     card = card_of(named.get("/repos").text, SOURCE)
     assert "수집 멈춤" in card and "수집 켜짐" not in card
-    assert f'data-json-action="/github/sources/{SOURCE}/stop"' not in card
+    assert f'data-json-action="/api/v1/github/sources/{SOURCE}/stop"' not in card
 
 
 def test_card_tools_hold_runner_assignees_baseline_and_stop(named):
@@ -897,9 +899,9 @@ def test_card_tools_hold_runner_assignees_baseline_and_stop(named):
     tools = block(card, "data-source-tools")
     assert "러너·담당 연결·기준선" in tools
     assert f'action="/operator/github/sources/{SOURCE}/runner"' in tools and "러너 다시 붙이기" in tools
-    assert f'data-json-action="/github/sources/{SOURCE}/assignees"' in tools
-    assert f'data-json-action="/operator/github/sources/{SOURCE}/baseline"' in tools
-    assert f'data-json-action="/github/sources/{SOURCE}/stop"' in tools
+    assert f'data-json-action="/api/v1/github/sources/{SOURCE}/assignees"' in tools
+    assert f'data-json-action="/api/v1/github/sources/{SOURCE}/baseline"' in tools
+    assert f'data-json-action="/api/v1/github/sources/{SOURCE}/stop"' in tools
     outside = card.replace(tools, "")
     for action in ("/runner", "/assignees", "/baseline", "/stop"):
         assert action not in outside, action
@@ -913,7 +915,7 @@ def test_assignee_binding_picks_users_seen_in_collected_issues(named, conn):
     bound = re.search(r"<table>.*?</table>", tools, re.S).group(0)  # 연결된 줄 = login · 에이전트 이름
     assert "kim-dev" in bound and "수정봇" in bound
     assert "agent-fix" not in re.sub(r'<details class="detail".*?</details>', "", bound, flags=re.S)
-    forms = re.findall(r'<form data-json-action="/github/sources/[^"]+/assignees"[^>]*>.*?</form>', tools, re.S)
+    forms = re.findall(r'<form data-json-action="/api/v1/github/sources/[^"]+/assignees"[^>]*>.*?</form>', tools, re.S)
     seen = [f for f in forms if 'type="hidden" name="github_user_id"' in f]
     assert len(seen) == 2
     assert 'value="5812345"' in seen[0] and 'name="github_login" value="kim-dev"' in seen[0]
@@ -931,7 +933,7 @@ def test_assignee_binding_picks_users_seen_in_collected_issues(named, conn):
 def test_seen_user_binding_put_is_the_same_api(named, conn):
     """화면의 숨은 값으로 보내는 PUT — 경로·`AssigneeBinding` 계약 그대로."""
     import_issue(conn, 1, assignee_ids=[777], assignee_logins=["park"])
-    response = named.put(f"/github/sources/{SOURCE}/assignees/777", json={"github_login": "park", "agent_id": "agent-fix"})
+    response = named.put(f"/api/v1/github/sources/{SOURCE}/assignees/777", json={"github_login": "park", "agent_id": "agent-fix"})
     assert response.status_code == 200, response.text
     bindings = {b.github_user_id: b.agent_id for b in repo.list_assignee_bindings(conn, CYCLE_SESSION, SOURCE)}
     assert bindings[777] == "agent-fix"

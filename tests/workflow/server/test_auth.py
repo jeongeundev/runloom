@@ -598,7 +598,7 @@ TOKEN_READ_ONLY = {"code": "token_read_only", "message": "읽기 전용 토큰�
 def test_member_token_authenticates_existing_json_api_without_cookie(settings, conn):
     client, member_id, token_id, _ = _token_client(settings, conn)
     assert LOGIN_COOKIE not in client.cookies
-    assert client.get("/human-requests").status_code == 200
+    assert client.get("/api/v1/human-requests").status_code == 200
     body = client.get("/_probe/api-member").json()
     assert body["member_id"] == member_id and body["role"] == "admin"
     assert body["session_id"] == SELFHOST_SESSION_ID
@@ -615,23 +615,23 @@ def test_cookie_login_has_no_token_scope(settings, conn):
 def test_wrong_member_token_is_401(settings, conn, header):
     client = TestClient(_member_app(settings))
     _account(conn)
-    response = client.get("/human-requests", headers={"Authorization": header})
+    response = client.get("/api/v1/human-requests", headers={"Authorization": header})
     assert response.status_code == 401 and response.json() == TOKEN_UNAUTHENTICATED
 
 
 def test_revoked_member_token_is_401(settings, conn):
     client, member_id, token_id, _ = _token_client(settings, conn)
-    assert client.get("/human-requests").status_code == 200
+    assert client.get("/api/v1/human-requests").status_code == 200
     assert repo.revoke_member_token(conn, member_id=member_id, token_id=token_id, now=NOW)
-    response = client.get("/human-requests")
+    response = client.get("/api/v1/human-requests")
     assert response.status_code == 401 and response.json() == TOKEN_UNAUTHENTICATED
 
 
 def test_disabled_member_token_is_401(settings, conn):
     client, member_id, _, _ = _token_client(settings, conn, role="member", email="m@example.com")
-    assert client.get("/human-requests").status_code == 200
+    assert client.get("/api/v1/human-requests").status_code == 200
     repo.disable_member(conn, SELFHOST_SESSION_ID, member_id, now=NOW)
-    assert client.get("/human-requests").status_code == 401
+    assert client.get("/api/v1/human-requests").status_code == 401
 
 
 def test_member_token_of_another_workspace_is_401(settings, conn):
@@ -650,18 +650,18 @@ def test_wrong_bearer_does_not_fall_back_to_cookie(settings, conn):
     assert client.get("/_probe/member-api").status_code == 200
     response = client.get("/_probe/member-api", headers={"Authorization": "Bearer wfm_wrong"})
     assert response.status_code == 401 and response.json() == TOKEN_UNAUTHENTICATED
-    response = client.get("/human-requests", headers={"Authorization": "Bearer wfm_wrong"})
+    response = client.get("/api/v1/human-requests", headers={"Authorization": "Bearer wfm_wrong"})
     assert response.status_code == 401
 
 
 def test_read_token_allows_get_and_blocks_writes_before_role_check(settings, conn):
     client, member_id, _, _ = _token_client(settings, conn, role="member", email="m@example.com", scope="read")
-    assert client.get("/human-requests").status_code == 200
+    assert client.get("/api/v1/human-requests").status_code == 200
     assert client.get("/_probe/member-api").json() == {"member_id": member_id}
     for path in ("/_probe/member-api", "/_probe/team-api"):  # 관리자 API 도 역할보다 읽기 전용이 먼저
         response = client.post(path)
         assert response.status_code == 403 and response.json() == TOKEN_READ_ONLY
-    response = client.post("/human-requests/hr-none/responses", json={})
+    response = client.post("/api/v1/human-requests/hr-none/responses", json={})
     assert response.status_code == 403 and response.json() == TOKEN_READ_ONLY
 
 
@@ -715,8 +715,8 @@ def test_check_origin_bearer_exception_is_header_not_api_prefix(settings):
             ],
         })
 
-    assert check_origin(request("/human-requests/x/responses", {"Authorization": "Bearer wfm_x"}), settings)
-    assert not check_origin(request("/human-requests/x/responses", {"Authorization": "Bearer "}), settings)
+    assert check_origin(request("/api/v1/human-requests/x/responses", {"Authorization": "Bearer wfm_x"}), settings)
+    assert not check_origin(request("/api/v1/human-requests/x/responses", {"Authorization": "Bearer "}), settings)
     assert not check_origin(request("/api/v1/work", {}), settings)
 
 
@@ -736,7 +736,7 @@ def test_member_token_use_touches_last_used_at(settings, conn):
         return conn.execute("SELECT last_used_at FROM member_tokens WHERE token_id = ?", (token_id,)).fetchone()[0]
 
     assert last_used() is None
-    assert client.get("/human-requests").status_code == 200
+    assert client.get("/api/v1/human-requests").status_code == 200
     assert last_used() is not None
 
 

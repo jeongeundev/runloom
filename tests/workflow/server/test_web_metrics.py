@@ -29,7 +29,7 @@ from .test_metrics_api import (  # noqa: F401 — fixture
 )
 
 CAUSAL_NOTE = "관측값이며 인과 효과로 단정하지 않는다"
-BASELINE_ACTION = f'data-json-action="/operator/github/sources/{SOURCE}/baseline"'
+BASELINE_ACTION = f'data-json-action="/api/v1/github/sources/{SOURCE}/baseline"'
 
 
 def page(client: TestClient, params: dict | None = None) -> str:
@@ -85,8 +85,8 @@ def test_old_metrics_page_redirects_to_monitor_keeping_query(op):
 
 
 def test_metrics_json_and_csv_paths_stay(op):
-    assert op.get("/metrics.json", follow_redirects=False).status_code == 200
-    csv = op.get("/metrics.csv", follow_redirects=False)
+    assert op.get("/api/v1/metrics", follow_redirects=False).status_code == 200
+    csv = op.get("/api/v1/metrics.csv", follow_redirects=False)
     assert csv.status_code == 200 and "text/csv" in csv.headers["content-type"]
 
 
@@ -125,14 +125,14 @@ def test_page_shows_values_with_n_and_unknown_counts(op):
 
 def test_top_compares_baseline_and_after_with_button_for_operator(op, fake):
     text = page(op)
-    assert BASELINE_ACTION in text
+    assert BASELINE_ACTION in text and 'data-json-action="/operator/github/sources' not in text  # 옛 주소 없음(D9)
     assert "가져온 적 없음" in text
     top = text.split('id="compare"', 1)[1].split("</section>", 1)[0]
     assert "이슈 열림 → 병합" in top and "도입 후" in top
     assert "n 0" in top and "미완료 2" not in top  # 직접 등록 업무 2개는 이슈 열림 → 병합 비교에 들어가지 않는다
     assert "승인" not in top  # 승인 지표는 아래 속도 표에
 
-    assert op.post(f"/operator/github/sources/{SOURCE}/baseline").status_code == 200
+    assert op.post(f"/api/v1/github/sources/{SOURCE}/baseline").status_code == 200
     text = page(op)
     top = text.split('id="compare"', 1)[1].split("</section>", 1)[0]
     assert "acme/billing" in top
@@ -166,7 +166,7 @@ def test_period_and_group_params_are_reflected(op):
     assert 'name="to" value="2026-10-01T00:00:00+09:00"' in text
     assert '<option value="config_revision" selected>' in text
     assert "설정 번호 1" in text and "설정 번호 2" in text
-    links = re.findall(r'href="(/metrics\.(?:json|csv)[^"]*)"', text)
+    links = re.findall(r'href="(/api/v1/metrics(?:\.csv)?\?[^"]*)"', text)
     assert len(links) == 2
     assert all("group_by=config_revision" in link and "from=2026-09-01T00%3A00%3A00Z" in link for link in links)
 
@@ -177,7 +177,8 @@ def test_period_and_group_params_are_reflected(op):
 def test_empty_form_values_mean_no_filter(op):
     text = page(op, {"from": "", "to": "", "group_by": ""})
     assert "전체" in text
-    assert 'href="/metrics.json"' in text and 'href="/metrics.csv"' in text
+    assert 'href="/api/v1/metrics"' in text and 'href="/api/v1/metrics.csv"' in text
+    assert 'href="/metrics.json' not in text and 'href="/metrics.csv' not in text  # 옛 주소 링크 없음(D9)
 
 
 def test_invalid_params_render_error_page(op):
@@ -192,7 +193,7 @@ def test_invalid_params_render_error_page(op):
 
 
 def test_page_has_no_secrets_or_paths(op, fake, settings):
-    op.post(f"/operator/github/sources/{SOURCE}/baseline")
+    op.post(f"/api/v1/github/sources/{SOURCE}/baseline")
     text = page(op, {"group_by": "folder_commit"})
     for secret in (TOKEN, settings.operator_token, settings.session_secret, str(settings.db_path.parent)):
         assert secret not in text
@@ -280,7 +281,7 @@ def test_config_revision_head_names_the_member_escaped(triaged, conn):
 
 def test_triage_tab_matches_metrics_json(triaged):
     op, _ = triaged
-    overall = op.get("/metrics.json").json()["triage"]["overall"]
+    overall = op.get("/api/v1/metrics").json()["triage"]["overall"]
     text = body(page(op, {"tab": "triage"}))
     summary = re.search(r"<p[^>]*data-triage-summary>([^<]*)</p>", text).group(1)
     merged = overall["merged"]

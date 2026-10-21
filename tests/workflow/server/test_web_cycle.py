@@ -1,8 +1,8 @@
 # ruff: noqa: F811 — test_task_cycle 픽스처(cycle·worker)를 가져와 인자로 쓴다
 """GitHub 업무 순환 화면 — 운영자 연결 화면·업무 상세의 원본·대기 사유·사람 응답·결과·반영 상태 (phase 8 step 13).
 
-서버 렌더만 본다(브라우저 스크립트는 돌리지 않는다). 쓰기는 화면이 부르는 JSON API(`/github/sources…`·
-`/human-requests/…/responses`)를 그대로 부른다 — 화면 전용 쓰기 경로를 따로 두지 않는다. 워커·연결 프로그램 흉내는
+서버 렌더만 본다(브라우저 스크립트는 돌리지 않는다). 쓰기는 화면이 부르는 JSON API(`/api/v1/github/sources…`·
+`/api/v1/human-requests/…/responses`)를 그대로 부른다 — 화면 전용 쓰기 경로를 따로 두지 않는다. 워커·연결 프로그램 흉내는
 test_task_cycle 의 시드를 그대로 쓴다(고정 워크스페이스에 `/login` 으로 로그인한 클라이언트가 소스·업무의 주인).
 """
 
@@ -101,10 +101,11 @@ def test_github_page_shows_settings_assignees_and_a_link_to_the_work(operator, c
     assert "acme/billing" in text and SOURCE in text
     # 설정·미리보기·담당 연결 폼은 저장소 카드의 접힌 고급 설정에서 JSON API 로 보낸다 — 토큰 입력칸은 접힌 고급 연결 폼 하나뿐,
     # 값을 채우지 않는다(phase 11 step 8). Jira 칸(phase 18 step 4)도 접힌 연결 폼에 빈 토큰 칸 하나를 둔다
-    assert 'data-json-action="/github/sources/preview"' in text
-    assert f'data-json-action="/github/sources/{SOURCE}"' in text and 'data-json-method="PUT"' in text
-    assert f'data-json-action="/github/sources/{SOURCE}/stop"' in text
-    assert f'data-json-action="/github/sources/{SOURCE}/assignees"' in text
+    assert 'data-json-action="/api/v1/github/sources/preview"' in text
+    assert f'data-json-action="/api/v1/github/sources/{SOURCE}"' in text and 'data-json-method="PUT"' in text
+    assert f'data-json-action="/api/v1/github/sources/{SOURCE}/stop"' in text
+    assert f'data-json-action="/api/v1/github/sources/{SOURCE}/assignees"' in text
+    assert 'data-json-action="/github/sources' not in text  # 옛 주소 없음(D9)
     assert re.findall(r'<input[^>]*name="token"[^>]*>', text) == [  # phase 23: Jira 절이 카드·토큰 연결보다 위
         '<input type="password" id="jira-token" name="token" autocomplete="off" required>',
         '<input type="password" id="gh-token" name="token" autocomplete="off" required>',
@@ -223,7 +224,8 @@ def test_open_request_renders_an_idempotent_response_form_and_resumes_after_answ
 
     text = page(operator, f"/tasks/{task_id}")
     assert request["question"] in text and 'data-blocker="assignee_multiple"' in text
-    assert f'data-json-action="/human-requests/{request_id}/responses"' in text
+    assert f'data-json-action="/api/v1/human-requests/{request_id}/responses"' in text
+    assert 'data-json-action="/human-requests' not in text
     response_id = form_value(text, request_id, "response_id")
     assert form_value(text, request_id, "expected_revision") == str(request["revision"])
     block = text.split(f'data-request-id="{request_id}"', 1)[1].split("</form>", 1)[0]
@@ -232,8 +234,8 @@ def test_open_request_renders_an_idempotent_response_form_and_resumes_after_answ
 
     body = {"response_id": response_id, "expected_revision": request["revision"], "action": "choose_agent",
             "text": "kim 이 맡습니다", "agent_id": FIX}
-    first = operator.post(f"/human-requests/{request_id}/responses", json=body)
-    again = operator.post(f"/human-requests/{request_id}/responses", json=body)  # 두 번 누름
+    first = operator.post(f"/api/v1/human-requests/{request_id}/responses", json=body)
+    again = operator.post(f"/api/v1/human-requests/{request_id}/responses", json=body)  # 두 번 누름
     assert (first.status_code, first.json()["created"]) == (200, True)
     assert (again.status_code, again.json()["created"]) == (200, False)
     assert repo.get_task(conn, task_id)["revision"] == 2
@@ -250,7 +252,7 @@ def test_response_api_rejects_form_posts_and_other_sessions(operator, client, co
     task_id = _two_assignees(conn)
     worker.tick()
     (request,) = repo.list_human_requests(conn, task_id)
-    url = f"/human-requests/{request['request_id']}/responses"
+    url = f"/api/v1/human-requests/{request['request_id']}/responses"
 
     # 교차 사이트 폼(text/plain·urlencoded)은 JSON 본문이 아니라 거부된다 — 기록 없음
     plain = operator.post(url, content='{"response_id": "x"}', headers={"content-type": "text/plain"})
@@ -270,7 +272,7 @@ def test_response_api_rejects_form_posts_and_other_sessions(operator, client, co
     repo.insert_work_item_task(conn, {**task_row("task-other"), "session_id": "sess-other"}, NOW)
     other_request, _ = repo.create_human_request_once(conn, "task-other", "decision", "q", "decision:other", NOW)
     assert operator.get("/tasks/task-other").status_code == 404
-    other = operator.post(f"/human-requests/{other_request}/responses",
+    other = operator.post(f"/api/v1/human-requests/{other_request}/responses",
                           json={"response_id": "x", "expected_revision": 1, "action": "close"})
     assert other.status_code == 404
     assert repo.get_human_request(conn, "sess-other", other_request)["state"] == "open"
@@ -517,7 +519,7 @@ def test_failed_work_offers_retry_and_close_and_retry_adds_a_stage(operator, con
 
     body = {"response_id": form_value(detail, request_id, "response_id"),
             "expected_revision": request["revision"], "action": "retry", "text": ""}
-    assert operator.post(f"/human-requests/{request_id}/responses", json=body).status_code == 200
+    assert operator.post(f"/api/v1/human-requests/{request_id}/responses", json=body).status_code == 200
 
     detail = page(operator, "/work/RUN-1")
     stages = detail.split("data-stages", 1)[1].split("</ol>", 1)[0]
@@ -531,6 +533,6 @@ def test_closing_a_failed_work_ends_it(operator, conn, store, worker):
     detail = page(operator, "/work/RUN-1")
     body = {"response_id": form_value(detail, request["request_id"], "response_id"),
             "expected_revision": request["revision"], "action": "close", "text": ""}
-    assert operator.post(f"/human-requests/{request['request_id']}/responses", json=body).status_code == 200
+    assert operator.post(f"/api/v1/human-requests/{request['request_id']}/responses", json=body).status_code == 200
     detail = page(operator, "/work/RUN-1")
     assert 'data-status="종료"' in detail and "닫음 — 실행 실패" in detail

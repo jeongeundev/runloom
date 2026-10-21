@@ -168,14 +168,14 @@ def test_open_request_shows_the_response_form_and_failure_offers_retry_and_close
     assert request["question"] in now
     block = now.split(f'data-request-id="{request["request_id"]}"', 1)[1].split("</form>", 1)[0]
     assert re.search(r'value="retry">다시 맡기기<', block) and re.search(r'value="close">닫기<', block)
-    assert 'data-json-action="/human-requests/' in now
+    assert 'data-json-action="/api/v1/human-requests/' in now
 
 
 def test_timeline_lists_stages_with_kind_status_and_attempts_then_responses(admin, conn, store, cycle, worker):
     fix_task, _ = fail_fix(conn, store, worker)
     (request,) = [r for r in repo.list_human_requests(conn, fix_task) if r["state"] == "open"]
     body = {"response_id": "resp-panel-1", "expected_revision": request["revision"], "action": "retry", "text": ""}
-    assert admin.post(f"/human-requests/{request['request_id']}/responses", json=body).status_code == 200
+    assert admin.post(f"/api/v1/human-requests/{request['request_id']}/responses", json=body).status_code == 200
 
     timeline = section(panel(admin), "timeline")
     stages = timeline.split("data-stages", 1)[1].split("</ol>", 1)[0]

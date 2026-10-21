@@ -266,7 +266,7 @@ Until = Annotated[Rfc3339 | None, Query(alias="to")]
 GroupBy = Annotated[Literal["config_revision", "folder_commit"] | None, Query()]
 
 
-@router.get("/metrics.json")
+@router.get("/metrics")
 def metrics_json(
     request: Request, since: Since = None, until: Until = None, group_by: GroupBy = None,
     member: LoggedIn = Depends(require_action(team.VIEW_METRICS, api=True)),
@@ -320,7 +320,7 @@ def _github_error(exc: GitHubError) -> ApiError:
     return ApiError(502, "github_error", "GitHub 응답을 처리하지 못했습니다.")
 
 
-@router.post("/operator/github/sources/{source_id}/baseline")
+@router.post("/github/sources/{source_id}/baseline")
 def import_baseline(
     request: Request, source_id: str,
     member: LoggedIn = Depends(require_action(team.MANAGE_CONNECTIONS, api=True)),

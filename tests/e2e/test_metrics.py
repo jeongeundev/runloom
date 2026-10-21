@@ -224,7 +224,7 @@ def world(tmp_path_factory):
 
 
 def metrics(world: World, **params) -> dict:
-    response = world.http.get("/metrics.json", params=params)
+    response = world.http.get("/api/v1/metrics", params=params)
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -257,7 +257,7 @@ def test_01_setup_connects_fix_by_claude_and_review_by_codex(world):
         assert time.monotonic() < deadline, world.log_tails()
         time.sleep(0.3)
 
-    response = http.post("/github/sources", json={
+    response = http.post("/api/v1/github/sources", json={
         "repository_full_name": REPO, "workflow_repository_id": "billing", "label_filter": ["bug"],
         "selected_issue_numbers": [], "start_at": START_AT, "fix_verification_profile_id": "vp-pytest",
         "review_agent_id": REVIEW, "run_mode": "auto", "max_rework_rounds": 1, "enabled": True,
@@ -265,7 +265,7 @@ def test_01_setup_connects_fix_by_claude_and_review_by_codex(world):
     assert response.status_code == 201, response.text
     world.sources[REPO] = response.json()["source"]["source_id"]
     user_id, login_name = KIM
-    response = http.put(f"/github/sources/{world.sources[REPO]}/assignees/{user_id}",
+    response = http.put(f"/api/v1/github/sources/{world.sources[REPO]}/assignees/{user_id}",
                         json={"github_login": login_name, "agent_id": FIX})
     assert response.status_code == 200, response.text
 
@@ -372,7 +372,7 @@ def test_05_baseline_import_shows_before_and_after_on_the_page(world):
     earlier = len([r for r in world.fake.requests if r[1] == "/graphql"])  # 병합 조회
 
     for _ in range(2):  # 멱등 — 다시 가져와도 같은 건수
-        response = world.http.post(f"/operator/github/sources/{source_id}/baseline")
+        response = world.http.post(f"/api/v1/github/sources/{source_id}/baseline")
         assert response.status_code == 200, response.text
         assert response.json()["item_count"] == 2
     graphql = [r for r in world.fake.requests if r[1] == "/graphql"][earlier:]
@@ -389,7 +389,7 @@ def test_05_baseline_import_shows_before_and_after_on_the_page(world):
     assert REPO in top and "n 2" in top and "4시간 0분" in top and BASELINE_NOTE in top
     assert "48시간 0분" in top and "승인" not in top  # 도입 후도 이슈 열림 → 병합. 승인 지표는 아래 속도 표에
     assert "접수 → 승인" in page.text
-    csv_text = world.http.get("/metrics.csv").text
+    csv_text = world.http.get("/api/v1/metrics.csv").text
     assert f"baseline:{source_id},speed,intake_to_merge,seconds,14400.0,2" in csv_text
 
     needle = TOKEN

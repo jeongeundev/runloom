@@ -537,7 +537,7 @@ def test_04_a_responsibility_row_with_names_only(world):
     table = section(get(http, team_path), 'data-team-section="responsibilities"')
     cells = [visible_text(c).strip() for c in re.findall(r"<td>(.*?)</td>", row_of(table, "kube_proxy"), re.S)]
     assert cells[:6] == ["kube_proxy", "조사", N["name"], J["name"], world.ctx["agent_name"], "선택 가능"], cells
-    (saved,) = http.get("/responsibilities").json()["entries"]
+    (saved,) = http.get("/api/v1/responsibilities").json()["entries"]
     assert saved == {**saved, "system_id": "kube_proxy", "request_kind": "investigation",
                      "recipient_member_id": world.ctx["members"][N["email"]],
                      "judgment_member_id": world.ctx["members"][J["email"]], "agent_id": world.ctx["agent_id"]}
@@ -556,7 +556,7 @@ def test_05_the_triage_agent_from_the_repo_card(world):
     (chosen,) = [o for o in form.field_named("triage_agent_id")["options"] if "selected" in o]
     assert chosen["text"] == world.ctx["agent_name"]
     assert f"<li><span>판단 에이전트</span><span>{world.ctx['agent_name']} (설정)</span></li>" in card
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     assert source["triage_agent_id"] == world.ctx["agent_id"]
 
 

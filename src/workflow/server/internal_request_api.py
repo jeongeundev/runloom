@@ -1,11 +1,12 @@
 """같은 워크스페이스의 업무 요청 접수 API."""
 from sqlite3 import Connection
 from fastapi import APIRouter, Depends, Request
-from workflow.adapters import repo, internal_request_store as store
+from workflow.adapters import internal_request_store as store
 from workflow.contracts.internal_request import InternalRequestCreate, InternalRequestAccept, InternalInvestigationStart, InternalResultReturn, InternalRequestReject, InternalRequestReroute, InternalInformationQuestion, InternalInformationAnswer, InternalJudgmentRequest, InternalJudgmentResponse
 from workflow.domain import team
 from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_api, utc_now
 from workflow.server.errors import ApiError
+from workflow.server.work_lookup import work_by_key
 from workflow.server import internal_investigation
 from workflow.server.worker import enqueue_request_notification
 
@@ -23,18 +24,26 @@ def inbox(member: LoggedIn = Depends(require_member_api), conn: Connection = Dep
     return {'requests': store.list_for_member(conn, member.session_id, member.member_id)}
 
 
-@router.get('/work-items/{work_item_id}/internal-requests')
-def for_work(work_item_id: str, member: LoggedIn = Depends(require_member_api),
-             conn: Connection = Depends(get_conn)) -> dict:
-    if repo.get_work_item(conn, member.session_id, work_item_id) is None:
+def _work_item_id(conn: Connection, session_id: str, key: str) -> str:
+    """업무 키(`RUN-12`, D31) → 내부 id. 형식이 틀리거나 이 워크스페이스에 없으면 404."""
+    work = work_by_key(conn, session_id, key)
+    if work is None:
         raise ApiError(404, 'not_found', '원래 업무를 찾을 수 없습니다.')
+    return work['work_item_id']
+
+
+@router.get('/work-items/{key}/internal-requests')
+def for_work(key: str, member: LoggedIn = Depends(require_member_api),
+             conn: Connection = Depends(get_conn)) -> dict:
+    work_item_id = _work_item_id(conn, member.session_id, key)
     return {'requests': store.list_for_work(conn, member.session_id, work_item_id)}
 
 
-@router.post('/work-items/{work_item_id}/internal-requests')
-def create(work_item_id: str, request: Request, body: InternalRequestCreate,
+@router.post('/work-items/{key}/internal-requests')
+def create(key: str, request: Request, body: InternalRequestCreate,
            member: LoggedIn = Depends(require_action(team.DELEGATE, api=True)),
            conn: Connection = Depends(get_conn)) -> dict:
+    work_item_id = _work_item_id(conn, member.session_id, key)
     try:
         result = store.create(conn, member.session_id, member.member_id, work_item_id, body, now=utc_now())
     except store.RequestProblem as exc:

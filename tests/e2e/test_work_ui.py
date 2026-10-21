@@ -221,7 +221,7 @@ def test_01_admin_connects_github_and_two_issues_land_unassigned(world):
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
     saved = http.post("/operator/notifications/webhook", data={"url": world.ctx["hook_url"]})
     assert saved.status_code in (200, 303), saved.text[:500]

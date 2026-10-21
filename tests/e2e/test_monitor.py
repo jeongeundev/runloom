@@ -1,4 +1,4 @@
-"""모니터링 e2e — 가짜 GitHub App·PATH 앞 가짜 `claude` 러너로 판단·인계를 쌓은 뒤 세 탭·`/metrics.json`·`/metrics.csv`
+"""모니터링 e2e — 가짜 GitHub App·PATH 앞 가짜 `claude` 러너로 판단·인계를 쌓은 뒤 세 탭·`/api/v1/metrics`·`/api/v1/metrics.csv`
 의 숫자를 본다 (phase 20 step 9, ADR-0026, ARCHITECTURE "모니터링 — phase 20").
 
 `test_triage_cycle` 의 구성(가짜 GitHub App + PR 경로, bare origin, uvicorn 스레드의 중앙 API, 테스트가 돌리는 워커)을
@@ -11,7 +11,7 @@
    RUN-2 는 다르게(김멤버 직접), RUN-3 은 [무시].
 3. 판단 기준 v2 저장 → 이슈 4 → 판단(v2) → 제안대로 → 검토 수정 요청 → 재작업 1회 → 병합.
 4. 자동 시작 기준값 0.70 저장(끈 채) → 연결 판단 탭 미리보기.
-5. `/monitor` 세 탭·`/metrics.json`·`/metrics.csv` 숫자.
+5. `/monitor` 세 탭·`/api/v1/metrics`·`/api/v1/metrics.csv` 숫자.
 마지막 함수는 따로: v15 사본(업무·판단 로그·실행) → 앱 시작이 v16 으로 올림 → 세 탭 200, 설정 번호 머리 `기록 없음`.
 
 `WORKFLOW_E2E=1` 일 때만 돈다. 실제 Claude·GitHub 호출 없음 — 네트워크는 127.0.0.1 과 MockTransport 뿐이다.
@@ -260,7 +260,7 @@ def ratio(value: dict) -> tuple[int, int]:
 
 
 def csv_rows(world: World) -> dict[tuple[str, str], dict]:
-    response = world.http.get("/metrics.csv")
+    response = world.http.get("/api/v1/metrics.csv")
     assert response.status_code == 200, response.text[:500]
     return {(r["group"], r["metric"]): r for r in csv.DictReader(io.StringIO(response.text))}
 
@@ -281,7 +281,7 @@ def test_01_admin_connects_github_attaches_a_claude_runner_and_invites_a_member(
     setup = http.get("/operator/github/app/setup", params={
         "installation_id": INSTALLATION_ID, "setup_action": "install", "state": state})
     assert setup.status_code == 303, setup.text[:500]
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     world.sources[REPO] = source["source_id"]
 
     issued = http.post("/team/invites", data={"role": "member", "invitee_email": MEMBER["email"]})
@@ -311,12 +311,12 @@ def test_01_admin_connects_github_attaches_a_claude_runner_and_invites_a_member(
         assert time.monotonic() < deadline, world.log_tails()
         time.sleep(0.3)
 
-    (source,) = http.get("/github/sources").json()["sources"]
+    (source,) = http.get("/api/v1/github/sources").json()["sources"]
     fields = ("repository_full_name", "intake", "workflow_repository_id", "label_filter", "selected_issue_numbers",
               "start_at", "fix_verification_profile_id", "review_agent_id", "run_mode", "max_rework_rounds",
               "trigger_label", "default_fix_agent_id", "enabled")
     assert source["max_rework_rounds"] == 1
-    updated = http.put(f"/github/sources/{source['source_id']}", json={
+    updated = http.put(f"/api/v1/github/sources/{source['source_id']}", json={
         **{k: source[k] for k in fields}, "triage_agent_id": agent_id, "expected_revision": source["config_revision"]})
     assert updated.status_code == 200, updated.text[:500]
 
@@ -338,7 +338,7 @@ def test_03_member_accepts_run1_answers_the_question_and_the_pr_is_merged(world)
     one = work(world, 1)
     assert (one["assignee_type"], one["assignee_id"], one["requested_by_member_id"]) == ("agent", agent_id, member_id)
     (fix,) = stages(world, 1)
-    request = drive(world, lambda: next((r for r in member.get("/human-requests").json()["requests"]
+    request = drive(world, lambda: next((r for r in member.get("/api/v1/human-requests").json()["requests"]
                                          if r["task_id"] == fix["task_id"]), None), "RUN-1 정보 요청")
     answered = respond(member, request, "answer-run1", "resume", "5자리로 고정합니다")
     assert answered.status_code == 200, answered.text[:500]
@@ -382,7 +382,7 @@ def test_06_autostart_threshold_change_shows_the_preview_line(world):
 
 
 def test_07_metrics_json_counts_triage_quality_assignees_and_config_changes(world):
-    data = world.http.get("/metrics.json").json()
+    data = world.http.get("/api/v1/metrics").json()
     agent_id, admin_id, member_id = world.ctx["agent_id"], world.ctx["admin_id"], world.ctx["member_id"]
     triage = data["triage"]
     overall = triage["overall"]
@@ -452,7 +452,7 @@ def test_08_metrics_csv_has_the_same_numbers_in_new_rows(world):
 
 
 def test_09_monitor_tabs_show_the_same_numbers(world):
-    data = world.http.get("/metrics.json").json()
+    data = world.http.get("/api/v1/metrics").json()
     triage = unescape(page(world, "/monitor", tab="triage"))
     assert "제안 4 · 사람 일치 2/3 · 병합 완료 2/2(진행 중 0)" in triage
     assert all(f"<th>{label}</th>" in triage for label in ("v1", "v2"))
@@ -524,5 +524,5 @@ def test_v15_copy_upgrades_to_v16_and_the_monitor_tabs_open(tmp_path):
             "before_after": 200, "triage": 200, "assignees": 200}
         assert "설정 3 — 기록 없음" in unescape(pages["before_after"].text)
         assert "아직 판단 기록이 없습니다" not in pages["triage"].text  # 옮긴 판단 로그(도는 중 1)가 보인다
-        data = client.get("/metrics.json").json()
+        data = client.get("/api/v1/metrics").json()
         assert data["config_changes"] == [] and data["triage"]["overall"]["running"] == 1

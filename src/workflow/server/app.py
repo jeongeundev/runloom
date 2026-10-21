@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from workflow.adapters.artifact_store import ArtifactStore
 from workflow.adapters.db import SCHEMA_VERSION, connect, init_schema
 from workflow.adapters.secret_store import SecretStore
+from workflow.contracts.v1 import API_PREFIX
 from workflow.server import github_api, human_api, inbound_api, machine_api, mapping_api, member_token_api, metrics_api, responsibility_api, internal_request_api, web
 from workflow.server.auth import LoginThrottle
 from workflow.server.errors import install_error_handlers
@@ -50,13 +51,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handlers(app)
     app.include_router(machine_api.router)
     app.include_router(inbound_api.router)  # n8n 입구 (ADR-0010) — 입구 토큰만, 세션 쿠키 없음
-    app.include_router(github_api.router)  # GitHub 소스 설정 (ADR-0014) — 운영자 세션만
-    app.include_router(human_api.router)  # 사람 요청 응답 (ADR-0014) — 운영자 세션만
-    app.include_router(metrics_api.router)  # 지표·기준선 가져오기 (ADR-0015) — 운영자 세션만
-    app.include_router(responsibility_api.router)
-    app.include_router(internal_request_api.router)
-    app.include_router(mapping_api.router)  # 매핑 표 (ADR-0020) — 운영자 세션만
-    app.include_router(member_token_api.router, prefix="/api/v1")  # 멤버 토큰 (ADR-0032) — 접두어 상수는 step 4
+    app.include_router(github_api.router, prefix=API_PREFIX)  # GitHub 소스 설정 (ADR-0014)
+    app.include_router(human_api.router, prefix=API_PREFIX)  # 사람 요청 응답 (ADR-0014)
+    app.include_router(metrics_api.router, prefix=API_PREFIX)  # 지표·기준선 가져오기 (ADR-0015)
+    app.include_router(responsibility_api.router, prefix=API_PREFIX)
+    app.include_router(internal_request_api.router, prefix=API_PREFIX)
+    app.include_router(mapping_api.router, prefix=API_PREFIX)  # 매핑 표 (ADR-0020)
+    app.include_router(member_token_api.router, prefix=API_PREFIX)  # 멤버 토큰 (ADR-0032)
     web.install(app)  # 라우터 + PageError → error.html
     app.middleware("http")(web.origin_guard)  # 쿠키 인증 변경 요청의 Origin 검사 (phase 15) — Bearer 경로 제외
     app.add_api_route("/healthz", lambda: _healthz(settings), methods=["GET"])  # 인증 없음 (ADR-0016)

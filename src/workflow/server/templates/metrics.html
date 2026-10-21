@@ -30,8 +30,8 @@
   </div>
   <div class="actions">
     <button class="btn btn-small" type="submit">보기</button>
-    <a href="/metrics.json{{ query }}">JSON</a>
-    <a href="/metrics.csv{{ query }}">CSV</a>
+    <a href="/api/v1/metrics{{ query }}">JSON</a>
+    <a href="/api/v1/metrics.csv{{ query }}">CSV</a>
   </div>
 </form>
 
@@ -84,7 +84,7 @@
 <div class="card">
   {% if not token_configured %}<p class="small">토큰 없음 — 서버 환경변수 <span class="mono">WORKFLOW_GITHUB_TOKEN</span> 이 있어야 가져올 수 있습니다.</p>{% endif %}
   {% for b in baselines %}
-  <form data-json-action="/operator/github/sources/{{ b.source_id }}/baseline" class="actions">
+  <form data-json-action="/api/v1/github/sources/{{ b.source_id }}/baseline" class="actions">
     <span class="mono">{{ b.repository_full_name }}</span>
     <span class="small">{% if b.fetched_at %}마지막 가져옴 {{ b.fetched_at|kst }} · {{ b.intake_to_merge.n }}건{% else %}가져온 적 없음{% endif %}</span>
     <button class="btn btn-secondary btn-small" type="submit">기준선 가져오기</button><span class="action-note" data-json-result></span>

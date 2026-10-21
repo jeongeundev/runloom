@@ -312,7 +312,7 @@ def test_01_operator_clicks_connect_creates_the_app_and_installs_it(world):
     assert kinds[("GET", f"/app/installations/{INSTALLATION_ID}")] == "jwt"
     assert kinds[("GET", "/installation/repositories")] == "token"
 
-    response = http.get("/github/sources")
+    response = http.get("/api/v1/github/sources")
     assert response.status_code == 200, response.text
     (source,) = response.json()["sources"]
     assert (source["repository_full_name"], source["intake"], source["trigger_label"], source["installation_id"],
@@ -463,7 +463,7 @@ def test_06_secrets_stay_in_the_secret_files(world):
     assert leaked == []
     assert (world.workdir / "logs" / "central.log").stat().st_size > 0  # 로그를 실제로 남겼다
     assert all(n not in c["body"] for c in world.fake.comments.values() for n in needles)
-    for path in ("/repos", "/tasks", "/github/sources"):
+    for path in ("/repos", "/tasks", "/api/v1/github/sources"):
         body = world.http.get(path).text
         assert all(n not in body for n in needles), path
     assert q(world, "SELECT COUNT(*) FROM executions WHERE failed_code IS NOT NULL")[0][0] == 0

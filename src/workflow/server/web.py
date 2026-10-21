@@ -76,7 +76,6 @@ from workflow.contracts.v1 import (
     ARTIFACT_KINDS,
     BUILTIN_KIND_NAMES,
     BUILTIN_KINDS,
-    WORK_KEY_PREFIX,
     Capability,
     KindSpec,
     SuccessorRule,
@@ -121,6 +120,7 @@ from workflow.server.errors import ApiError, PageError
 from workflow.server import internal_investigation
 from workflow.server.filters import ago, duration, kind_label, kst, outcome_label
 from workflow.server.settings import Settings
+from workflow.server.work_lookup import WORK_KEY, work_by_key
 from workflow.server.worker import enqueue_request_notification
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -970,13 +970,10 @@ def start_chain(
     repo.mark_chain_started(conn, chain_id, now)
 
 
-_WORK_KEY = re.compile(rf"{WORK_KEY_PREFIX}-([1-9][0-9]{{0,8}})")
-
-
 @router.get("/work/{key}")
 def work_detail(key: str, response: Response, member: LoggedIn = Depends(require_member)) -> RedirectResponse:
     """옛 업무 상세 주소 — 키 형식이면 `/tasks?open=<key>`(없는 키는 그 화면이 안내), 아니면 404."""
-    if _WORK_KEY.fullmatch(key) is None:
+    if WORK_KEY.fullmatch(key) is None:
         raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
     return _redirect(work_path(key), response)
 
@@ -1004,8 +1001,7 @@ def work_panel(
 
 
 def _own_work(conn: Connection, session_id: str, key: str) -> Row:
-    match = _WORK_KEY.fullmatch(key)
-    work = repo.get_work_item_by_key(conn, session_id, int(match.group(1))) if match else None
+    work = work_by_key(conn, session_id, key)
     if work is None:
         raise PageError(404, "not_found", f"업무 {key}을 찾을 수 없습니다.", field="key")
     return work
@@ -3279,7 +3275,7 @@ def metrics_page(
     conn: Connection = Depends(get_conn),
 ) -> str:
     """모니터링 화면 탭 셋(phase 20) — `metrics_api` 와 같은 계산. 폼은 GET 이라 빈 칸은 "지정 안 함" 이다. 기준선 가져오기
-    버튼은 운영자 JSON API(`POST /operator/github/sources/{id}/baseline`)로 보낸다. `group_by` 는 전후 탭만 쓰지만 늘 검증한다."""
+    버튼은 운영자 JSON API(`POST /api/v1/github/sources/{id}/baseline`)로 보낸다. `group_by` 는 전후 탭만 쓰지만 늘 검증한다."""
     session_id = member.session_id
     now = utc_now()
     base = _base(request, conn, session_id, now)

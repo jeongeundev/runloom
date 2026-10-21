@@ -4,7 +4,7 @@ from workflow.contracts.v1 import KindSpec
 from workflow.server.auth import utc_now
 from workflow.server.worker import Worker
 from .conftest import SESSION, exchange
-from .test_internal_request_api import setup_request
+from .test_internal_request_api import setup_request, work_url
 from .test_worker import seed_generic_result
 
 KIND = KindSpec(kind='investigate', label='오류 조사', capability_code='investigate', scope_key='system_id',
@@ -25,10 +25,10 @@ def investigation_request(logged_in_client, conn, *, judgment_member_id=None):
     requester_id = repo.get_work_item(conn, SESSION, work_id)['assignee_id']
     entry = dict(system_id='billing', request_kind='investigation', recipient_member_id=body['recipient_member_id'],
                  judgment_member_id=judgment_member_id or requester_id, agent_id='investigator')
-    assert logged_in_client.put('/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
+    assert logged_in_client.put('/api/v1/responsibilities', json=dict(entries=[entry], expected_revision=revision)).status_code == 200
     body['expected_directory_revision'] = revision + 1
-    created = logged_in_client.post(f'/work-items/{work_id}/internal-requests', json=body).json()
-    assert recipient.post(f"/internal-requests/{created['request_id']}/accept", json={'expected_revision': 1}).status_code == 200
+    created = logged_in_client.post(work_url(conn, work_id), json=body).json()
+    assert recipient.post(f"/api/v1/internal-requests/{created['request_id']}/accept", json={'expected_revision': 1}).status_code == 200
     return recipient, work_id, created['request_id']
 
 
@@ -36,7 +36,7 @@ def test_accepted_request_executes_registered_generic_kind_and_returns_reviewed_
     recipient, work_id, request_id = investigation_request(logged_in_client, conn)
     repo.refresh_work_status(conn, work_id, now=utc_now())
     before = dict(repo.get_work_item(conn, SESSION, work_id))
-    start = recipient.post(f'/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing'))
+    start = recipient.post(f'/api/v1/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing'))
     assert start.status_code == 200, start.text
     task_id = start.json()['investigation_task_id']
     assert start.json()['revision'] == 3
@@ -51,19 +51,19 @@ def test_accepted_request_executes_registered_generic_kind_and_returns_reviewed_
     worker = Worker(logged_in_client.app.state.conn_factory, store, None, settings, utc_now)
     assert worker.tick().generic_checked == 1
     assert recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'}).status_code == 200
-    returned = recipient.post(f'/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution['execution_id']))
+    returned = recipient.post(f'/api/v1/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution['execution_id']))
     assert returned.status_code == 200, returned.text
     assert returned.json()['returned_artifact_id'] == result_id
     assert returned.json()['returned_summary'] == '합성 기록에서 타임아웃을 확인했습니다.'
     assert returned.json()['revision'] == 4
     assert dict(repo.get_work_item(conn, SESSION, work_id)) == before
-    assert logged_in_client.get(f'/work-items/{work_id}/internal-requests').json()['requests'][0]['returned_artifact_id'] == result_id
+    assert logged_in_client.get(work_url(conn, work_id)).json()['requests'][0]['returned_artifact_id'] == result_id
 
 
 def test_waiting_investigation_rechecks_capability_before_worker_execution(logged_in_client, conn, store, settings):
     recipient, _, request_id = investigation_request(logged_in_client, conn)
     conn.execute("UPDATE agents SET last_seen_at = '2000-01-01T00:00:00Z' WHERE agent_id = 'investigator'")
-    started = recipient.post(f'/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing'))
+    started = recipient.post(f'/api/v1/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing'))
     assert started.status_code == 200
     task_id = started.json()['investigation_task_id']
     assert repo.list_executions(conn, task_id) == []
@@ -75,7 +75,7 @@ def test_waiting_investigation_rechecks_capability_before_worker_execution(logge
 
 def test_only_recipient_starts_and_kind_scope_are_validated_atomically(logged_in_client, conn):
     recipient, _, request_id = investigation_request(logged_in_client, conn)
-    url = f'/internal-requests/{request_id}/investigation'
+    url = f'/api/v1/internal-requests/{request_id}/investigation'
     body = dict(expected_revision=2, kind='investigate', scope_value='billing')
     count = conn.execute('SELECT COUNT(*) FROM work_items').fetchone()[0]
     assert logged_in_client.post(url, json=body).status_code == 403
@@ -88,7 +88,7 @@ def test_only_recipient_starts_and_kind_scope_are_validated_atomically(logged_in
 
 def reviewed_investigation(logged_in_client, conn, store, settings, *, outcome='reported', judgment_member_id=None):
     recipient, work_id, request_id = investigation_request(logged_in_client, conn, judgment_member_id=judgment_member_id)
-    start = recipient.post(f'/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing')).json()
+    start = recipient.post(f'/api/v1/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing')).json()
     task_id = start['investigation_task_id']
     execution = repo.list_executions(conn, task_id)[0]
     seed_generic_result(conn, store, execution['execution_id'], utc_now(), task_id=task_id,
@@ -99,7 +99,7 @@ def reviewed_investigation(logged_in_client, conn, store, settings, *, outcome='
 
 def test_result_return_requires_review_valid_verdict_current_execution_and_recipient(logged_in_client, conn, store, settings):
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
-    url = f'/internal-requests/{request_id}/return'
+    url = f'/api/v1/internal-requests/{request_id}/return'
     body = dict(expected_revision=3, execution_id=execution_id)
     assert recipient.post(url, json=body).status_code == 409
     assert logged_in_client.post(url, json=body).status_code == 403
@@ -116,7 +116,7 @@ def test_result_return_requires_review_valid_verdict_current_execution_and_recip
 def test_failed_contract_verdict_cannot_be_returned_even_if_task_approved(logged_in_client, conn, store, settings):
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings, outcome='not_registered')
     assert recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'}).status_code == 200
-    response = recipient.post(f'/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution_id))
+    response = recipient.post(f'/api/v1/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution_id))
     assert response.status_code == 409 and response.json()['code'] == 'result_not_valid'
 
 
@@ -125,7 +125,7 @@ def test_concurrent_start_and_return_do_not_duplicate_tasks_or_records(logged_in
 
     recipient, _, request_id = investigation_request(logged_in_client, conn)
     body = dict(expected_revision=2, kind='investigate', scope_value='billing')
-    url = f'/internal-requests/{request_id}/investigation'
+    url = f'/api/v1/internal-requests/{request_id}/investigation'
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(pool.map(lambda _: recipient.post(url, json=body), range(2)))
     assert all(r.status_code == 200 for r in responses)
@@ -138,7 +138,7 @@ def test_concurrent_start_and_return_do_not_duplicate_tasks_or_records(logged_in
     Worker(logged_in_client.app.state.conn_factory, store, None, settings, utc_now).tick()
     recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'})
     with ThreadPoolExecutor(max_workers=2) as pool:
-        returned = list(pool.map(lambda _: recipient.post(f'/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution_id)), range(2)))
+        returned = list(pool.map(lambda _: recipient.post(f'/api/v1/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution_id)), range(2)))
     assert all(r.status_code == 200 for r in returned)
     assert returned[0].json() == returned[1].json()
     assert returned[0].json()['revision'] == 4
@@ -151,7 +151,7 @@ def test_owner_approval_is_required_before_investigation_execution(logged_in_cli
     connector_id = repo.get_agent(conn, 'investigator')['connector_id']
     conn.execute('UPDATE connectors SET owner_member_id = ? WHERE connector_id = ?', (owner, connector_id))
     conn.execute("UPDATE agents SET delegation_policy = 'owner_approval' WHERE agent_id = 'investigator'")
-    response = recipient.post(f'/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing'))
+    response = recipient.post(f'/api/v1/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing'))
     assert response.status_code == 200, response.text
     task_id = response.json()['investigation_task_id']
     assert repo.list_executions(conn, task_id) == []
@@ -169,7 +169,7 @@ def test_review_retry_rechecks_fixed_investigation_agent(logged_in_client, conn,
 
 def test_unanswered_information_blocks_start_and_answer_enters_execution_context(logged_in_client, conn):
     recipient, _, request_id = investigation_request(logged_in_client, conn)
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     asked = recipient.post(base + '/questions', json=dict(expected_revision=2, submission_key='context', text='발생 시각?'))
     assert asked.status_code == 200
     task_count = conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
@@ -190,7 +190,7 @@ def test_information_after_execution_does_not_mutate_execution_and_blocks_return
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
     assert recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'}).status_code == 200
     before = dict(repo.get_execution(conn, execution_id))
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     asked = recipient.post(base + '/questions', json=dict(expected_revision=3, submission_key='later', text='추가 정보?'))
     assert asked.status_code == 200
     result = recipient.post(base + '/return', json=dict(expected_revision=3, execution_id=execution_id))
@@ -205,7 +205,7 @@ def test_information_after_execution_does_not_mutate_execution_and_blocks_return
 def test_pending_runner_waits_for_information_and_uses_answer(logged_in_client, conn, store, settings):
     recipient, _, request_id = investigation_request(logged_in_client, conn)
     conn.execute("UPDATE agents SET last_seen_at = '2000-01-01T00:00:00Z' WHERE agent_id = 'investigator'")
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     started = recipient.post(base + '/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing')).json()
     task_id = started['investigation_task_id']
     asked = recipient.post(base + '/questions', json=dict(expected_revision=3, submission_key='offline', text='고객 요청 ID?')).json()
@@ -222,7 +222,7 @@ def test_pending_runner_waits_for_information_and_uses_answer(logged_in_client, 
 
 def test_pending_question_blocks_review_retry_without_releasing_result(logged_in_client, conn, store, settings):
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
-    assert recipient.post(f'/internal-requests/{request_id}/questions', json=dict(
+    assert recipient.post(f'/api/v1/internal-requests/{request_id}/questions', json=dict(
         expected_revision=3, submission_key='review-wait', text='추가 로그?')).status_code == 200
     response = recipient.post(f'/tasks/{task_id}/review', data={'decision': 'request_changes', 'comment': '추가 정보 반영'})
     assert response.status_code == 409, response.text
@@ -234,7 +234,7 @@ def test_designated_judgment_gates_return_and_preserves_original_work(logged_in_
     recipient, work_id, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
     assert recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'}).status_code == 200
     before = dict(repo.get_work_item(conn, SESSION, work_id))
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     requested = recipient.post(base + '/judgments', json=dict(expected_revision=3, submission_key='judgment-1',
         execution_id=execution_id, issue='이 조사 결과를 원래 업무에 반환해도 될까요?'))
     assert requested.status_code == 200, requested.text
@@ -260,12 +260,12 @@ def test_judgment_inbox_and_only_designated_member_can_respond(logged_in_client,
     judge_id = next(m['member_id'] for m in repo.list_members(conn, SESSION) if m['display_name'] == '업무 판단 담당')
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(
         logged_in_client, conn, store, settings, judgment_member_id=judge_id)
-    assert judge.get('/internal-requests').json()['requests'] == []
+    assert judge.get('/api/v1/internal-requests').json()['requests'] == []
     recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'})
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     requested = recipient.post(base + '/judgments', json=dict(expected_revision=3, submission_key='separate-judge',
         execution_id=execution_id, issue='반환 여부를 확인하세요.')).json()
-    assert judge.get('/internal-requests').json()['requests'] == [requested]
+    assert judge.get('/api/v1/internal-requests').json()['requests'] == [requested]
     judgment_id = requested['judgments'][0]['judgment_id']
     url = base + f'/judgments/{judgment_id}/respond'
     body = dict(expected_revision=1, decision='approve', reason='검토 완료')
@@ -279,7 +279,7 @@ def test_judgment_inbox_and_only_designated_member_can_respond(logged_in_client,
 def test_judgment_basis_changes_with_information_and_old_approval_cannot_return(logged_in_client, conn, store, settings):
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
     recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'})
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     selection = dict(expected_revision=3, submission_key='basis-1', execution_id=execution_id, issue='반환 판단')
     first = recipient.post(base + '/judgments', json=selection).json()['judgments'][0]
     reply = dict(expected_revision=1, decision='approve', reason='근거 확인')
@@ -300,7 +300,7 @@ def test_judgment_basis_changes_with_information_and_old_approval_cannot_return(
 def test_information_change_invalidates_pending_judgment_and_requires_new_judgment(logged_in_client, conn, store, settings):
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
     recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'})
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     selection = dict(expected_revision=3, submission_key='old-basis', execution_id=execution_id, issue='반환 판단')
     old = recipient.post(base + '/judgments', json=selection).json()['judgments'][0]
     question = recipient.post(base + '/questions', json=dict(expected_revision=3, submission_key='extra', text='오류 범위?')).json()['questions'][0]
@@ -316,7 +316,7 @@ def test_information_change_invalidates_pending_judgment_and_requires_new_judgme
 
 def test_judgment_validation_replay_and_closed_request(logged_in_client, conn, store, settings):
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     selection = dict(expected_revision=3, submission_key='validation', execution_id=execution_id, issue='반환 여부')
     assert recipient.post(base + '/judgments', json=selection).status_code == 409  # Task 검토 전
     recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'})
@@ -350,7 +350,7 @@ def test_concurrent_judgment_request_and_response_are_recorded_once(logged_in_cl
 
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
     recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'})
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     selection = dict(expected_revision=3, submission_key='concurrent-judgment', execution_id=execution_id, issue='반환 판단')
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: recipient.post(base + '/judgments', json=selection), range(2)))
@@ -367,7 +367,7 @@ def test_concurrent_judgment_request_and_response_are_recorded_once(logged_in_cl
 
 def test_requester_records_resumption_after_return_without_changing_original_work(logged_in_client, conn, store, settings):
     recipient, work_id, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
-    base = f'/internal-requests/{request_id}'
+    base = f'/api/v1/internal-requests/{request_id}'
     body = dict(expected_revision=4, text='결과를 확인하고 원래 업무를 재개했습니다.')
     assert logged_in_client.post(base + '/resume', json=body).status_code == 409
     assert recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'}).status_code == 200
@@ -388,19 +388,19 @@ def test_resumption_validates_input_revision_and_concurrent_replay(logged_in_cli
 
     recipient, _, request_id, task_id, execution_id = reviewed_investigation(logged_in_client, conn, store, settings)
     recipient.post(f'/tasks/{task_id}/review', data={'decision': 'approve'})
-    recipient.post(f'/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution_id))
-    path = f'/internal-requests/{request_id}/resume'
+    recipient.post(f'/api/v1/internal-requests/{request_id}/return', json=dict(expected_revision=3, execution_id=execution_id))
+    path = f'/api/v1/internal-requests/{request_id}/resume'
     body = dict(expected_revision=4, text='수정 작업 재개')
     for invalid in [dict(body, text=' '), dict(body, text='x' * 4001), dict(body, command='anything'), dict(body, expected_revision='4')]:
         assert logged_in_client.post(path, json=invalid).status_code == 422
     assert logged_in_client.post(path, json=dict(body, expected_revision=3)).status_code == 409
-    assert logged_in_client.post('/internal-requests/missing/resume', json=body).status_code == 404
+    assert logged_in_client.post('/api/v1/internal-requests/missing/resume', json=body).status_code == 404
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: logged_in_client.post(path, json=body), range(2)))
     assert all(result.status_code == 200 for result in results)
     assert results[0].json() == results[1].json()
     assert results[0].json()['revision'] == 4
-    assert recipient.get('/internal-requests').json()['requests'][0]['resumption'] == results[0].json()['resumption']
+    assert recipient.get('/api/v1/internal-requests').json()['requests'][0]['resumption'] == results[0].json()['resumption']
 
 
 def test_synthetic_pilot_three_members_from_information_to_judgment_return_and_resumption(logged_in_client, conn, store, settings):
@@ -413,8 +413,8 @@ def test_synthetic_pilot_three_members_from_information_to_judgment_return_and_r
     recipient, work_id, request_id = investigation_request(logged_in_client, conn, judgment_member_id=judge_id)
     repo.refresh_work_status(conn, work_id, now=utc_now())
     before = dict(repo.get_work_item(conn, SESSION, work_id))
-    base = f'/internal-requests/{request_id}'
-    accepted = recipient.get('/internal-requests').json()['requests'][0]
+    base = f'/api/v1/internal-requests/{request_id}'
+    accepted = recipient.get('/api/v1/internal-requests').json()['requests'][0]
     assert len({accepted['requester_member_id'], accepted['recipient_member_id'], judge_id}) == 3
     assert accepted['state'] == 'accepted' and accepted['accepted_at']
 
@@ -474,7 +474,7 @@ def test_synthetic_pilot_three_members_from_information_to_judgment_return_and_r
     assert final['resumption']['artifact_id'] == final['returned_artifact_id'] == result_id
     assert final['questions'][0]['answer'] == answer['text']
     assert final['judgments'][0]['responded_by_member_id'] == judge_id
-    assert [r for r in logged_in_client.get(f'/work-items/{work_id}/internal-requests').json()['requests'] if r['request_id'] == request_id] == [final]
+    assert [r for r in logged_in_client.get(work_url(conn, work_id)).json()['requests'] if r['request_id'] == request_id] == [final]
     assert dict(repo.get_work_item(conn, SESSION, work_id)) == before
     times = [final['created_at'], final['accepted_at'], final['questions'][0]['asked_at'],
              final['questions'][0]['answered_at'], final['judgments'][0]['asked_at'],

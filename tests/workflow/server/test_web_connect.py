@@ -178,7 +178,7 @@ def test_repos_has_github_and_jira_but_not_n8n_for_admin(admin):
     body = main_of(response.text)
     for marker in (f'data-source-card="{SOURCE}"', f'action="/operator/github/sources/{SOURCE}/runner"',
                    'href="/operator/github/app/new"', 'action="/operator/github/token"',
-                   f'data-json-action="/operator/github/sources/{SOURCE}/baseline"',
+                   f'data-json-action="/api/v1/github/sources/{SOURCE}/baseline"',
                    'action="/operator/jira/connect"'):
         assert marker in body, marker
     assert 'id="inbound-url"' not in body and 'action="/sources/tokens"' not in body  # 설정 › n8n 입구로

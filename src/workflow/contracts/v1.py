@@ -18,6 +18,9 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SerializerFun
 
 CONTRACT_VERSION = 1
 
+# JSON API 공통 접두어(ADR-0032) — 서버 라우터 등록과 러너 클라이언트가 함께 쓴다
+API_PREFIX = "/api/v1"
+
 # CONTRACT.md 4절의 산출물 kind 18종
 ARTIFACT_KINDS: tuple[str, ...] = (
     "handoff_bundle",
