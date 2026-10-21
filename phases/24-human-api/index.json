@@ -142,7 +142,28 @@
     {
       "step": 6,
       "name": "work-read-api",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T20:09:29+0900",
+      "summary": "새 server/work_api.py(APIRouter(prefix='/work-items'), app.py include_router(prefix=API_PREFIX), require_member_api): GET /api/v1/work-items — filter·closed·repository 엄격 검사(422 invalid_field, field=쿼리 이름, ARCHITECTURE 문구), ListQuery 로 views.work_list_context 의 rows·counts 를 _item(row, member_id) 로 옮김(groups·columns 없음, work_item_id·key_number·source_key_short 없음); GET /api/v1/work-items/{key} — _own_work(404 not_found '업무 {key}을 찾을 수 없습니다.' field key) + _detail(conn, request, member, work)가 views.work_panel_context·list_work_rows(closed_since=None)·internal_request_view 결과를 ARCHITECTURE 칸 표대로 변환(UserStatus→{label,reason}, 폼 숨은 입력·제출 키·response_id·directory_*·member_id·label 제외, triage.unavailable_reason=button.reason 또는 note). views: _agent_choice_lines 에 needs_owner_approval(같은 호출 결과, label 그대로), panel_actions(panel)(can_* 만 읽음), internal_request_view(conn, session_id, member_id, allowed, row, artifact_store)(web._request_display 본문 이동 — internal_investigation 은 순환 import 라 함수 안 import), web._panel·requests_page 가 이것을 부르고 _request_display 삭제(동작 그대로). 테스트: test_work_api.py 12개(필터·closed 조합별 웹 /tasks 와 키 집합·counts 동일, 항목 칸, 저장소 대소문자·422 3종, read 토큰 200·미인증 401, 상세 칸 집합·화면 전용 값 없음, 404 5종, 후보 online·needs_owner_approval 이 패널 표시와 같음, member·관리자 actions = 패널 버튼, 판단 제안·다음 단계 제안·사내 요청 요약, 비밀값 없음), test_views.py panel_actions 2개. 기존 테스트 수정 없음. 전체 4696 passed·100 skipped. 다음 step 주의: 행동 응답은 work_api._detail 을 다시 쓰고 _own_work 로 키를 찾는다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q tests/workflow/server/test_work_api.py tests/workflow/server/test_views.py",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "목록 counts 는 filter·closed 와 무관하게 웹과 같이 '저장소 필터 뒤·빠른 필터 전' 건수다(closed 범위는 반영) — ARCHITECTURE 대로 두었다.",
+        "app.py create_app 독스트링의 라우터 나열은 고치지 않았다(step 범위 밖 문서 문구)."
+      ],
+      "completed_at": "2026-10-21T20:20:07+0900"
     },
     {
       "step": 7,
