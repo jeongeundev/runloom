@@ -52,7 +52,7 @@ README 결정과 충돌하는 코드 사실은 없다. 아래는 결정을 구�
 12. **범위(scope)**: 발급 때 `read`(읽기 전용 — GET·HEAD 만) 또는 `full`(내 권한 전부)을 고른다. 항목별 세부 권한은 없다. 토큰 요청의 권한은 토큰 주인 멤버의 역할(`team.can`)로 판정한다 — 웹과 같다.
 13. **비활성화하면 그 멤버 토큰은 모두 폐기**(`revoked_at`)된다 — `disable_member` 가 같은 트랜잭션에서 로그인 세션과 함께 폐기한다. 다시 활성화해도 되살아나지 않는다. 비밀번호 변경·재설정은 토큰을 건드리지 않는다. 관리자가 남의 토큰을 개별 폐기하는 화면은 없다.
 14. **인증**: 사람용 JSON API 는 `Authorization: Bearer <멤버 토큰>` 또는 로그인 쿠키를 받는다. Bearer 헤더가 있으면 토큰만 보고 쿠키는 무시한다 — 토큰이 틀리면 401 이고 쿠키로 넘어가지 않는다. 화면(HTML) 라우트는 Bearer 를 받지 않는다(쿠키만).
-15. **Origin 검사 예외는 둘뿐**: (a) `Authorization: Bearer` 헤더가 있는 요청, (b) 러너·n8n 입구의 정확한 새 경로(`/api/v1/connector/`·`/api/v1/executions/` 접두어, `/api/v1/sources/{source}/chains` fullmatch). `/api/v1/` 접두어 전체를 예외로 넓히지 않는다 — 쿠키로 부르는 API 가 CSRF 검사에서 빠진다. (a) 가 안전한 이유: 브라우저는 다른 출처 요청에 `Authorization` 헤더를 CORS 사전 요청 없이 붙이지 못하고, 이 앱은 CORS 를 열지 않는다.
+15. **Origin 검사 예외는 둘뿐**: (a) `/api/v1/` 아래에서 `Authorization: Bearer` 헤더가 있는 요청(화면 폼 경로는 Bearer 를 무시하고 쿠키로 동작하므로 Bearer 가 붙어도 검사한다 — PR #8 리뷰), (b) 러너·n8n 입구의 정확한 새 경로(`/api/v1/connector/`·`/api/v1/executions/` 접두어, `/api/v1/sources/{source}/chains` fullmatch). `/api/v1/` 접두어 전체를 예외로 넓히지 않는다 — 쿠키로 부르는 API 가 CSRF 검사에서 빠진다. (a) 가 안전한 이유: 브라우저는 다른 출처 요청에 `Authorization` 헤더를 CORS 사전 요청 없이 붙이지 못하고, 이 앱은 CORS 를 열지 않는다.
 16. 멤버 로그인을 요구하는 기존 JSON API(사람 요청·사내 요청·담당 범위)와 관리자 설정 API(GitHub 소스·매핑·지표·기준선)는 모두 같은 의존성(`require_member_api`·`require_action(…, api=True)`)이라 토큰도 받는다. 역할 검사는 그대로다.
 17. **토큰 발급(`POST /api/v1/me/tokens`)은 로그인 쿠키로만** — Bearer 가 오면 403 `cookie_required`. 토큰으로 토큰을 만들지 않는다(새면 퍼지지 않게). 목록·폐기는 토큰으로도 된다(읽기 전용 토큰의 폐기는 `token_read_only`).
 18. 마지막 사용 시각은 저장된 값과 60초 이상 차이 날 때만 쓴다(매 요청 쓰기 방지).

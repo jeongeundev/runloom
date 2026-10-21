@@ -260,11 +260,12 @@ def _origin_of(url: str) -> str | None:
 
 
 def check_origin(request: Request, settings: Settings) -> bool:
-    """쿠키 인증 변경 요청의 출처가 이 서버인가. `Authorization: Bearer` 요청·러너·n8n 경로는 참. `Origin`, 없으면 `Referer` 의 출처를 요청 base URL·공개 주소와 비교한다.
+    """쿠키 인증 변경 요청의 출처가 이 서버인가. `/api/v1/` 아래 `Authorization: Bearer` 요청·러너·n8n 경로는 참. `Origin`, 없으면 `Referer` 의 출처를 요청 base URL·공개 주소와 비교한다.
     둘 다 없거나 `Origin: null` 이면 거짓. 메서드는 보지 않는다 — 앱 미들웨어가 GET·HEAD·OPTIONS 밖에서만 부른다."""
-    if _bearer_token(request) is not None:  # Bearer 요청은 쿠키를 보지 않는다(phase 24 D19)
-        return True
     path = request.url.path
+    # API 는 Bearer 가 있으면 쿠키를 보지 않는다(phase 24 D19). 화면 폼은 Bearer 를 무시하고 쿠키로 동작하므로 예외가 아니다
+    if path.startswith(f"{API_PREFIX}/") and _bearer_token(request) is not None:
+        return True
     if path.startswith(_BEARER_PREFIXES) or _CHAINS_PATH.fullmatch(path):
         return True
     origin = request.headers.get("origin")

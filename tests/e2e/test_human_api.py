@@ -343,10 +343,11 @@ def test_07_old_json_paths_are_gone_and_screen_paths_stay(world):
     claim = {"contract_version": 1, "connector_id": world.connector_id}
     assert world.admin.get("/human-requests").status_code == 404
     assert world.admin.get("/metrics.json").status_code == 404
-    assert runner.post("/connector/claim", json=claim).status_code == 404  # Bearer — Origin 검사 통과 뒤 라우팅
+    # Bearer 예외는 /api/v1 아래뿐 — 옛 러너 경로는 Origin 없는 Bearer 요청이 라우팅 전에 막힌다
+    assert runner.post("/connector/claim", json=claim).json()["code"] == "forbidden_origin"
     assert world.admin.post("/connector/claim", json=claim).status_code == 404  # 쿠키 + Origin
     inbound = bearer_only(world, "wfs_e2e")
-    assert inbound.post("/sources/n8n/chains", json={}).status_code == 404
+    assert inbound.post("/sources/n8n/chains", json={}).json()["code"] == "forbidden_origin"
     # Origin·Bearer 둘 다 없으면 라우팅 전에 origin_guard 가 막는다
     bare = TestClient(world.app)
     del bare.headers["origin"]

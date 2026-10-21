@@ -250,6 +250,7 @@ def _member_app(settings):
         return {"ok": True}
 
     @app.post("/_probe/member-api")
+    @app.post("/api/v1/_probe/member-api")
     def _member_api_post(member: LoggedIn = Depends(require_member_api)):
         return {"member_id": member.member_id}
 
@@ -702,13 +703,16 @@ def test_cookie_only_api_rejects_any_bearer(settings, conn):
 def test_bearer_request_skips_origin_check_but_cookie_post_does_not(settings, conn):
     client, member_id, _, _ = _token_client(settings, conn)
     del client.headers["origin"]
-    assert client.post("/_probe/member-api").json() == {"member_id": member_id}
+    assert client.post("/api/v1/_probe/member-api").json() == {"member_id": member_id}
     client.headers["origin"] = "http://evil.example"
-    assert client.post("/_probe/member-api").json() == {"member_id": member_id}
+    assert client.post("/api/v1/_probe/member-api").json() == {"member_id": member_id}
+    # /api/v1 밖은 Bearer 가 있어도 Origin 을 본다 — 화면 폼은 쿠키로 동작하므로
+    response = client.post("/_probe/member-api")
+    assert response.status_code == 403 and response.json()["code"] == "forbidden_origin"
 
     cookie, _, _ = _logged_in(settings, conn)
     del cookie.headers["origin"]
-    response = cookie.post("/_probe/member-api")
+    response = cookie.post("/api/v1/_probe/member-api")
     assert response.status_code == 403 and response.json()["code"] == "forbidden_origin"
 
 
@@ -723,6 +727,9 @@ def test_check_origin_bearer_exception_is_header_not_api_prefix(settings):
 
     assert check_origin(request("/api/v1/human-requests/x/responses", {"Authorization": "Bearer wfm_x"}), settings)
     assert not check_origin(request("/api/v1/human-requests/x/responses", {"Authorization": "Bearer "}), settings)
+    # Bearer 예외는 /api/v1/ 아래에서만 — 화면 폼(쿠키)에 아무 Bearer 나 붙여 검사를 끌 수 없다
+    assert not check_origin(request("/work/RUN-1/assignee", {"Authorization": "Bearer wfm_x"}), settings)
+    assert not check_origin(request("/api/v1x", {"Authorization": "Bearer wfm_x"}), settings)
     assert not check_origin(request("/api/v1/work", {}), settings)
 
 
