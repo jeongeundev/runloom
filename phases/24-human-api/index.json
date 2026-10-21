@@ -32,7 +32,22 @@
     {
       "step": 1,
       "name": "member-token-store",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T19:09:25+0900",
+      "summary": "db.py: SCHEMA_VERSION 26, _V26_TABLES(member_tokens + ix_member_tokens_member, scope CHECK 는 repo.MEMBER_TOKEN_SCOPES 로 생성), _migrate_25_to_26(문장→foreign_key_check→version 26), 체인에 25 추가. repo.py: MEMBER_TOKEN_PREFIX 'wfm_'·MEMBER_TOKEN_SCOPES·MEMBER_TOKEN_TOUCH_SECONDS 60, issue_member_token(이름 strip 1~40·scope 검사·비활성/남의 워크스페이스 NotFound, sha256 만 저장)·list_member_tokens(활성만, 해시 없음)·revoke_member_token(본인 활성만)·member_for_api_token(wfm_ 아니면 DB 안 봄, session_id·token_id·scope 실음, touch 호출)·touch_member_token(60초)·revoke_member_tokens, disable_member 가 같은 _tx 에서 토큰 폐기. 테스트: test_repo 멤버 토큰 11개·test_db v26 4개 추가, 기존 버전 단정 25→26·표 집합(PHASE24_TABLES)·sql_after/unchanged 필터·test_backup 행 수 dict 에 member_tokens 0·복원 비교(복원이 v26 으로 올림)·_SCHEMA.replace 체인에 _V26_TABLES. 전체 4638 passed·100 skipped. 다음 step 주의: member_for_api_token 결과의 session_id 를 auth 가 SELFHOST_SESSION_ID 와 비교해야 한다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "ARCHITECTURE 의 '저장' 행은 fixture tests/workflow/adapters/fixtures/schema_v25.sql 을 적었지만 step 지시대로 v25 fixture 는 만들지 않고 v24 fixture 를 24→25→26 체인으로 올려 검증했다."
+      ]
     },
     {
       "step": 2,

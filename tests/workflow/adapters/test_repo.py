@@ -5258,3 +5258,165 @@ def test_config_changes_by_revision_groups_the_session_log(sessions):
     assert [r["subject"] for rows in repo.config_changes_by_revision(conn, OTHER_SESSION).values() for r in rows] == [
         "diagnosis"]
     assert repo.config_changes_by_revision(conn, "sess-none") == {}
+
+
+# --- phase 24 step 1: 멤버 토큰 (ARCHITECTURE "member_tokens 표"·"repo 함수 (step 1)") ------------------------------
+
+def _member_with_account(conn, email="dev@example.com") -> str:
+    member = repo.add_member(conn, SESSION, display_name="김개발", now=NOW)
+    repo.set_member_credentials(conn, SESSION, member, email=email, password_hash=PW_HASH, now=NOW)
+    return member
+
+
+def test_member_token_constants():
+    assert repo.MEMBER_TOKEN_PREFIX == "wfm_"
+    assert repo.MEMBER_TOKEN_SCOPES == ("read", "full")
+    assert repo.MEMBER_TOKEN_TOUCH_SECONDS == 60
+
+
+def test_issue_member_token_stores_only_sha256_and_resolves_member(sessions):
+    admin = _admin_with_account(sessions)
+    token_id, token = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="  노트북 ",
+                                              scope="read", now=NOW)
+    assert token.startswith("wfm_") and len(token) >= 40
+    assert token_id.startswith("mtk-") and len(token_id) == 16
+    (stored,) = sessions.execute("SELECT * FROM member_tokens").fetchall()
+    assert (stored["token_id"], stored["member_id"], stored["name"], stored["scope"], stored["created_at"],
+            stored["last_used_at"], stored["revoked_at"]) == (token_id, admin, "노트북", "read", NOW, None, None)
+    assert stored["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
+    assert token not in _dump(sessions) and token[4:] not in _dump(sessions)
+
+    row = repo.member_for_api_token(sessions, token, now=LATER)
+    assert (row["member_id"], row["session_id"], row["role"], row["display_name"], row["token_id"], row["scope"]) == (
+        admin, SESSION, "admin", "김관리", token_id, "read")
+    assert "password_hash" not in row.keys() and "token_sha256" not in row.keys()
+    assert sessions.execute("SELECT last_used_at FROM member_tokens").fetchone()[0] == LATER  # 첫 사용 기록
+
+
+def test_member_for_api_token_rejects_unknown_and_non_prefixed_without_lookup(sessions):
+    admin = _admin_with_account(sessions)
+    _, token = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="a", scope="full",
+                                       now=NOW)
+    assert repo.member_for_api_token(sessions, "wfm_nope", now=LATER) is None
+    assert repo.member_for_api_token(sessions, "", now=LATER) is None
+    # 접두어가 없으면 DB 를 보지 않는다 — 해시가 같은 행이 있어도 None
+    raw = token[len("wfm_"):]
+    sessions.execute("UPDATE member_tokens SET token_sha256 = ?", (hashlib.sha256(raw.encode()).hexdigest(),))
+    assert repo.member_for_api_token(sessions, raw, now=LATER) is None
+    login = repo.create_login_session(sessions, SESSION, admin, now=NOW, days=14)
+    assert repo.member_for_api_token(sessions, login, now=LATER) is None  # 로그인 쿠키 원문은 토큰이 아니다
+
+
+def test_issue_member_token_validates_name_scope_and_member(sessions):
+    admin = _admin_with_account(sessions)
+    for name in ("", "   ", "x" * 41):
+        with pytest.raises(ValueError, match="name"):
+            repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name=name, scope="read", now=NOW)
+    for scope in ("write", "admin", "", "READ"):
+        with pytest.raises(ValueError, match="scope"):
+            repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="a", scope=scope, now=NOW)
+    repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="x" * 40, scope="full", now=NOW)
+    with pytest.raises(NotFound):
+        repo.issue_member_token(sessions, session_id=OTHER_SESSION, member_id=admin, name="a", scope="read", now=NOW)
+    with pytest.raises(NotFound):
+        repo.issue_member_token(sessions, session_id=SESSION, member_id="mem-nope", name="a", scope="read", now=NOW)
+    member = _member_with_account(sessions)
+    repo.disable_member(sessions, SESSION, member, now=NOW)
+    with pytest.raises(NotFound):
+        repo.issue_member_token(sessions, session_id=SESSION, member_id=member, name="a", scope="read", now=NOW)
+    assert sessions.execute("SELECT COUNT(*) FROM member_tokens").fetchone()[0] == 1
+
+
+def test_list_member_tokens_active_only_newest_first_without_secrets(sessions):
+    admin = _admin_with_account(sessions)
+    member = _member_with_account(sessions)
+    first, _ = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="a", scope="read", now=NOW)
+    second, _ = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="b", scope="full",
+                                        now=LATER)
+    gone, _ = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="c", scope="read",
+                                      now=LATER)
+    repo.issue_member_token(sessions, session_id=SESSION, member_id=member, name="d", scope="read", now=NOW)
+    assert repo.revoke_member_token(sessions, member_id=admin, token_id=gone, now=LATER)
+    rows = repo.list_member_tokens(sessions, admin)
+    assert [(r["token_id"], r["name"], r["scope"], r["created_at"], r["last_used_at"]) for r in rows] == [
+        (second, "b", "full", LATER, None), (first, "a", "read", NOW, None)]
+    assert set(rows[0].keys()) == {"token_id", "name", "scope", "created_at", "last_used_at"}
+
+
+def test_revoke_member_token_only_own_and_only_once(sessions):
+    admin = _admin_with_account(sessions)
+    member = _member_with_account(sessions)
+    token_id, token = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="a", scope="full",
+                                              now=NOW)
+    assert not repo.revoke_member_token(sessions, member_id=member, token_id=token_id, now=LATER)  # 남의 토큰
+    assert repo.member_for_api_token(sessions, token, now=LATER) is not None
+    assert not repo.revoke_member_token(sessions, member_id=admin, token_id="mtk-nope", now=LATER)
+    assert repo.revoke_member_token(sessions, member_id=admin, token_id=token_id, now=LATER)
+    assert not repo.revoke_member_token(sessions, member_id=admin, token_id=token_id, now=LATER)  # 이미 폐기
+    assert repo.member_for_api_token(sessions, token, now=LATER) is None
+    assert sessions.execute("SELECT revoked_at FROM member_tokens").fetchone()[0] == LATER  # 행은 남는다
+
+
+def test_disable_member_revokes_tokens_and_enable_does_not_restore(sessions):
+    _admin_with_account(sessions)
+    member = _member_with_account(sessions)
+    tokens = [repo.issue_member_token(sessions, session_id=SESSION, member_id=member, name=n, scope="full",
+                                      now=NOW)[1] for n in ("a", "b")]
+    repo.disable_member(sessions, SESSION, member, now=LATER)
+    assert [repo.member_for_api_token(sessions, t, now=LATER) for t in tokens] == [None, None]
+    assert {r[0] for r in sessions.execute("SELECT revoked_at FROM member_tokens")} == {LATER}
+    repo.enable_member(sessions, SESSION, member, now=LATER)
+    assert [repo.member_for_api_token(sessions, t, now=LATER) for t in tokens] == [None, None]
+    assert repo.list_member_tokens(sessions, member) == []
+
+
+def test_member_for_api_token_none_for_disabled_member_row(sessions):
+    _admin_with_account(sessions)
+    member = _member_with_account(sessions)
+    _, token = repo.issue_member_token(sessions, session_id=SESSION, member_id=member, name="a", scope="read",
+                                       now=NOW)
+    sessions.execute("UPDATE members SET disabled_at = ? WHERE member_id = ?", (LATER, member))
+    assert repo.member_for_api_token(sessions, token, now=LATER) is None
+
+
+def test_revoke_member_tokens_counts_only_that_members_active_tokens(sessions):
+    admin = _admin_with_account(sessions)
+    member = _member_with_account(sessions)
+    for n in ("a", "b"):
+        repo.issue_member_token(sessions, session_id=SESSION, member_id=member, name=n, scope="read", now=NOW)
+    _, kept = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="c", scope="read", now=NOW)
+    assert repo.revoke_member_tokens(sessions, member, now=LATER) == 2
+    assert repo.revoke_member_tokens(sessions, member, now=LATER) == 0
+    assert repo.member_for_api_token(sessions, kept, now=LATER) is not None
+
+
+def test_password_change_and_reset_keep_member_tokens(sessions):
+    admin = _admin_with_account(sessions)
+    member = _member_with_account(sessions)
+    _, token = repo.issue_member_token(sessions, session_id=SESSION, member_id=member, name="a", scope="full",
+                                       now=NOW)
+    repo.set_member_credentials(sessions, SESSION, member, email="dev@example.com", password_hash=PW_HASH_2,
+                                now=LATER)
+    assert repo.member_for_api_token(sessions, token, now=LATER)["member_id"] == member
+    _, link = repo.issue_reset_link(sessions, SESSION, member, created_by_member_id=admin, now=NOW)
+    repo.use_reset_link(sessions, link, password_hash=PW_HASH, now=LATER)
+    assert repo.member_for_api_token(sessions, token, now=LATER)["member_id"] == member
+
+
+def test_touch_member_token_only_after_sixty_seconds(sessions):
+    admin = _admin_with_account(sessions)
+    token_id, token = repo.issue_member_token(sessions, session_id=SESSION, member_id=admin, name="a", scope="read",
+                                              now=NOW)
+
+    def used():
+        return sessions.execute("SELECT last_used_at FROM member_tokens").fetchone()[0]
+
+    assert used() is None
+    repo.touch_member_token(sessions, token_id, now=NOW)
+    assert used() == NOW  # 기록 없으면 바로 쓴다
+    repo.touch_member_token(sessions, token_id, now=_plus(repo.MEMBER_TOKEN_TOUCH_SECONDS - 1))
+    assert used() == NOW
+    repo.member_for_api_token(sessions, token, now=_plus(repo.MEMBER_TOKEN_TOUCH_SECONDS - 1))
+    assert used() == NOW
+    repo.member_for_api_token(sessions, token, now=_plus(repo.MEMBER_TOKEN_TOUCH_SECONDS))
+    assert used() == _plus(repo.MEMBER_TOKEN_TOUCH_SECONDS)

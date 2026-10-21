@@ -13,6 +13,7 @@ from pathlib import Path
 from workflow.contracts.jira import JIRA_DELIVERY_STATES
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES, TRIAGE_CAUSES
 from workflow.adapters.repo import (
+    MEMBER_TOKEN_SCOPES,
     ensure_first_admin,
     seed_default_field_mappings,
     seed_triage_criteria,
@@ -23,7 +24,7 @@ from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -1100,6 +1101,24 @@ ALTER TABLE member_invites ADD COLUMN invitee_name TEXT CHECK (invitee_name IS N
 """
 
 
+# v26 (phase 24, ADR-0032): 멤버 토큰. ARCHITECTURE "사람용 API — phase 24" member_tokens 표. 원문은 저장하지 않고
+# sha256 만 — 워크스페이스는 members.session_id 를 JOIN 해 얻는다.
+_V26_TABLES = f"""
+CREATE TABLE IF NOT EXISTS member_tokens (
+  token_id     TEXT PRIMARY KEY,
+  member_id    TEXT NOT NULL REFERENCES members(member_id),
+  name         TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
+  scope        TEXT NOT NULL CHECK (scope IN ({_in(MEMBER_TOKEN_SCOPES)})),
+  token_sha256 TEXT NOT NULL UNIQUE,
+  created_at   TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_member_tokens_member ON member_tokens(member_id);
+"""
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -1307,7 +1326,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES + _V17_TABLES + _V18_TABLES + _V19_TABLES + _V20_TABLES + _V21_TABLES + _V22_TABLES + _V23_TABLES + _V24_TABLES + _V25_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES + _V17_TABLES + _V18_TABLES + _V19_TABLES + _V20_TABLES + _V21_TABLES + _V22_TABLES + _V23_TABLES + _V24_TABLES + _V25_TABLES + _V26_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -1696,8 +1715,17 @@ def _migrate_24_to_25(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 25")
 
 
+def _migrate_25_to_26(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서 빈 멤버 토큰 표를 더한다. 데이터는 바꾸지 않는다."""
+    for statement in _statements(_V26_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 26")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~24 는 25 까지 차례로(4 → 5 → … → 24 → 25) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~25 는 26 까지 차례로(4 → 5 → … → 25 → 26) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다.
 
@@ -1718,11 +1746,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24):
+            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25):
                 steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
                          _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13,
                          _migrate_13_to_14, _migrate_14_to_15, _migrate_15_to_16, _migrate_16_to_17, _migrate_17_to_18, _migrate_18_to_19, _migrate_19_to_20, _migrate_20_to_21, _migrate_21_to_22, _migrate_22_to_23,
-                         _migrate_23_to_24, _migrate_24_to_25)
+                         _migrate_23_to_24, _migrate_24_to_25, _migrate_25_to_26)
                 for step in steps[row[0] - 4:]:
                     step(conn)
             elif row[0] != SCHEMA_VERSION:
