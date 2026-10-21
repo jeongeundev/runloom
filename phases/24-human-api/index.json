@@ -99,7 +99,24 @@
     {
       "step": 4,
       "name": "api-prefix",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T19:38:46+0900",
+      "summary": "contracts/v1.API_PREFIX='/api/v1' 추가, app.py 가 사람용 JSON 라우터 6개+member_token_api 를 include_router(prefix=API_PREFIX)로 등록(라우터 안 경로는 뒷부분만). metrics_api 이름 바꾸기 둘(/metrics.json→/metrics, /operator/github/sources/{id}/baseline→/github/sources/{id}/baseline). 새 server/work_lookup.py(WORK_KEY·work_by_key — 형식 틀림·없음·다른 워크스페이스 None), web 은 WORK_KEY 를 import 하고 _own_work 가 work_by_key 사용(PageError 404 그대로). internal_request_api 업무 경로를 {key}(RUN-n)로 — _work_item_id 가 404 not_found '원래 업무를 찾을 수 없습니다.'(field 없음) 후 기존 store 함수에 work_item_id 를 넘김, 응답 본문 그대로. 템플릿 data-json-action 10곳(_repos_github 8·metrics 1·_cycle 1)과 metrics.html JSON·CSV 링크를 /api/v1 로. 옛 경로 별칭 없음. 테스트: 33개 파일의 옛 JSON 경로를 줄 단위 규칙(문자열 시작 위치만, /responsibilities/add·remove·/operator/…/runner·/work/{key}/internal-requests 제외)으로 새 경로로, 사내 요청은 test_internal_request_api.work_url(conn, work_id) 로 키 경로, 다른 워크스페이스 404 단정은 키 기준(다른 워크스페이스에만 있는 RUN-2·내부 id·RUN-0·run-1)으로 바꾸고 본문 전체 단정. 라우터마다 옛 경로 404 테스트 1개(6개), test_work_lookup.py 3개, test_v1 API_PREFIX 1개, 렌더 결과에 옛 경로 없음 단정(앞 문맥 포함) 추가. 전체 4679 passed·100 skipped. 다음 step 주의: step 5 는 machine_api·inbound_api·connector/client.py 를 함께 옮기고 auth._BEARER_PREFIXES·_CHAINS_PATH·web.INBOUND_PATH 를 API_PREFIX 로.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "docs(CONTRACT·SELFHOST·UI_GUIDE·CURRENT_HANDOFF 등)의 옛 사람용 API 경로는 이 step 범위 밖이라 그대로 두었다 — step 8(ops-docs)이 고친다.",
+        "다른 워크스페이스 업무 404 테스트가 내부 id 기준에서 업무 키 기준으로 바뀌었다 — 키 번호는 워크스페이스별이라 같은 번호가 이 워크스페이스에도 있으면 이 워크스페이스 업무를 가리킨다(설계대로)."
+      ],
+      "completed_at": "2026-10-21T19:57:05+0900"
     },
     {
       "step": 5,
