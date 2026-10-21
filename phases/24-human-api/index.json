@@ -190,7 +190,31 @@
     {
       "step": 8,
       "name": "ops-docs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T20:30:17+0900",
+      "summary": "문서만(src·tests 변경 없음): SELFHOST '업그레이드' 에 '- v26(phase 24)' bullet(member_tokens·모든 JSON API /api/v1 이동·옛 주소 404, 순서: 진행 중 실행 0건 → backup create → install.sh 스키마 26 → install-runner.sh 재설치 필수 → n8n 노드 URL …/api/v1/sources/n8n/chains → /healthz·claim·/me 'API 토큰' 확인, 멤버 토큰 사용법 하위 항목(만들기·Bearer wfm_…·읽기 전용 403 token_read_only·폐기·비활성화 시 폐기)) + 옛 주소 303 줄의 '.json·.csv 는 그대로' 를 v26 새 주소로. 옛 JSON 경로 일괄 교정: step 스크립트와 같은 정규식으로 줄 단위 교체(/metrics.json→/api/v1/metrics, /operator/github/sources/{id}/baseline→/api/v1/github/sources/{id}/baseline, /work-items/{work_item_id|id}/internal-requests→/api/v1/work-items/{key}/internal-requests, 나머지는 앞에 /api/v1) — ARCHITECTURE(지난 phase 절 42줄, 접두어 설명 한 줄은 문장 다시 씀)·CONTRACT 15(json 블록 수 그대로)·GLOSSARY 10·VERIFICATION_LOG 17(+스크립트가 못 잡는 http://127.0.0.1:18000/sources/n8n/chains 2곳)·ADR 7개·docs/github/README·docs/product 8개·UI_GUIDE·CURRENT_HANDOFF. 스크립트가 화면·새 경로를 잘못 잡은 줄 없음. n8n 예시·README 는 step 5 그대로 새 주소 확인. CURRENT_HANDOFF 맨 위 '다음 작업: 24-human-api 완료 — PR 병합 → 셀프호스트 v26(러너 재설치·n8n 주소) → ② 인계 리포트 설계'(할 일 3개, 사용자 지시 뒤), 23 제목은 '이전 다음 작업', 24 진행 단락 갱신. 검사 스크립트 마지막 줄 hits=0. 처음 curl 예시의 $RUNLOOM_TOKEN 이 test_selfhost_md_env_names_are_real 에 걸려 wfm_… 로 바꿈. 전체 4722 passed·100 skipped, ruff 통과. 다음 step 주의: step 9 라우트 대조 테스트.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q tests/test_selfhost_files.py tests/test_n8n_example.py",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 (step 8 옛 JSON 경로 검사 스크립트) → hits=0",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "tests/workflow/contracts/test_v1.py 를 단독으로 수집하면 workflow.server.next_step_runs ↔ worker 순환 import 로 collection error 가 난다(이 step 전부터, src 변경 없음). 전체 pytest 에서는 통과한다.",
+        "지난 phase 기록(VERIFICATION_LOG·ADR·GLOSSARY)의 옛 경로도 D33 대로 새 경로로 바꿔서, '주소 유지' 같은 당시 서술이 새 주소와 함께 읽힌다 — 뜻은 phase 24 전 주소 기준이다."
+      ]
     },
     {
       "step": 9,

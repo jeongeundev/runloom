@@ -20,8 +20,8 @@
 
 ## API·저장
 
-- `POST /internal-requests/{id}/judgments`: 요청 `expected_revision`, `submission_key`, `execution_id`, `issue`. 응답 권한과 지정 수신자를 검사한다. 검토된 최신 결과·반환 전 상태·정보 답변 완료·활성 판단 담당자가 필요하다.
-- `POST /internal-requests/{id}/judgments/{judgment_id}/respond`: 판단 `expected_revision`, `decision`(`approve` 또는 `reject`), `reason`. 응답 권한과 지정 판단 담당자를 검사한다.
+- `POST /api/v1/internal-requests/{id}/judgments`: 요청 `expected_revision`, `submission_key`, `execution_id`, `issue`. 응답 권한과 지정 수신자를 검사한다. 검토된 최신 결과·반환 전 상태·정보 답변 완료·활성 판단 담당자가 필요하다.
+- `POST /api/v1/internal-requests/{id}/judgments/{judgment_id}/respond`: 판단 `expected_revision`, `decision`(`approve` 또는 `reject`), `reason`. 응답 권한과 지정 판단 담당자를 검사한다.
 - 요청 응답에 `judgments` 배열을 포함한다. 접수 키와 내부 JSON 열은 숨기고 정보 버전 목록을 제공한다. 지정 담당자의 목록에는 실제 판단 요청이 생성된 뒤부터 표시한다.
 - 판단 버전은 미응답 1, 응답 완료 2다. 요청의 수락·조사 revision은 변경하지 않는다. 같은 접수 키·내용 및 같은 판단·사유의 재시도는 기존 기록을 반환한다. 다른 내용으로 덮어쓰기는 충돌한다. 기록 재시도는 근거가 변경돼도 기존 기록만 반환하며 현재 반환 허용 여부는 별도로 검사한다.
 - 쟁점·사유는 최대 4,000자이며 공백만 있는 입력·추가 필드를 거부한다. 접수 키는 최대 128자다.

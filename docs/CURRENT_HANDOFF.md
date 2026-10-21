@@ -2,13 +2,20 @@
 
 갱신일: 2026-10-20. 2026-10-20 부터 `main` 은 PR 로만 바뀐다 — 필수 검사 `test`(CI)·`review`(Claude 리뷰), squash 병합, phase 는 `execute.py … --pr`([ADR-0030](adr/0030-pr-ci-review-flow.md)). 아래 할 일의 "`--no-ff` 병합" 은 "PR 병합" 으로 읽는다. 2026-10-09 공개 데모 종료 — VM 삭제, `service` 를 `main` 으로 합치고 `service` 삭제, 데모 코드는 태그 `contest-demo-2026`([ADR-0029](adr/0029-demo-shutdown-main-single-branch.md)). 아래 기록의 `service` 는 지금의 `main` 이다. 2026-09-26 이전 기록은 [보관 자료](archive/2026-09-27-contest-and-history/CURRENT_HANDOFF-until-2026-09-26.md).
 
+## 다음 작업: 24-human-api 완료 — PR 병합 → 셀프호스트 v26(러너 재설치·n8n 주소) → ② 인계 리포트 설계 (새 세션은 여기서 시작)
+
+**할 일**(순서대로, 모두 사용자 지시 뒤):
+1. `feat-24-human-api` → `main` PR 병합 — 필수 검사 `test`·`review` 통과 뒤 GitHub 에서 squash([ADR-0030](adr/0030-pr-ci-review-flow.md)).
+2. 셀프호스트 v26 — [SELFHOST](SELFHOST.md) "업그레이드" v26 순서대로: 진행 중 실행 0건 확인 → 백업(`backup create`) → `install.sh` → 스키마 26 → **러너 재설치 `install-runner.sh`(필수 — 옛 러너는 옛 주소를 불러 404)** → **n8n 워크플로우의 Runloom 주소를 `/api/v1/sources/n8n/chains` 로 수정** → 확인(`/healthz` 200, 러너 claim 이어짐, `/me` "API 토큰" 절).
+3. ② 인계 리포트 설계 — [ADR-0031](adr/0031-handoff-understanding-and-clients.md) 순서(API → 리포트 → CLI → 앱)의 다음 phase.
+
 ## 방향 갱신 — 2026-10-21
 
 제품 역할을 "이해한 상태로 이어받는 인계"로 넓히고 화면 구성(웹 기본 · IDE 앱 선택 · API 우선)을 정했다([ADR-0031](adr/0031-handoff-understanding-and-clients.md)). 다음 phase 는 ① 사람용 JSON API — 설계 전에 어느 화면 기능부터 여는지 정한다. 아래 23 의 할 일은 그대로 남아 있다.
 
-**24-human-api 진행 중**(2026-10-21, `feat-24-human-api`, [phase 24 README](../phases/24-human-api/README.md), [ADR-0032](adr/0032-human-api-and-member-tokens.md), [ARCHITECTURE](ARCHITECTURE.md) "사람용 API — phase 24", 예시 [CONTRACT](CONTRACT.md) 18절). step 0(설계 문서) 완료. 범위: 업무 목록·상세·행동(맡기기·우선순위·직접 작업·판단 받기·제안 수락/무시)을 JSON API 로 열고, 모든 JSON 라우트를 `/api/v1` 아래로 옮기며(옛 주소 즉시 404 — 러너·n8n 포함), `/me` 에서 만드는 멤버 토큰(`wfm_…`, 읽기 전용 / 내 권한 전부)으로 `Authorization: Bearer` 인증을 받는다. 화면 주소는 그대로. 스키마 v26. **셀프호스트 업그레이드 때 러너 재설치와 n8n 워크플로우 주소 수정이 필요하다**(step 8 이 SELFHOST 에 적는다). 적용은 phase 뒤 사용자 지시.
+**24-human-api 완료**(2026-10-21, `feat-24-human-api`, [phase 24 README](../phases/24-human-api/README.md), [ADR-0032](adr/0032-human-api-and-member-tokens.md), [ARCHITECTURE](ARCHITECTURE.md) "사람용 API — phase 24", 예시 [CONTRACT](CONTRACT.md) 18절). step 0~8 완료(설계 문서·멤버 토큰 저장·토큰 인증·`/me` 토큰·`/api/v1` 접두어·러너/n8n 주소·업무 읽기 API·업무 행동 API·운영 문서), step 9 는 라우트 대조 검증. 범위: 업무 목록·상세·행동(맡기기·우선순위·직접 작업·판단 받기·제안 수락/무시)을 JSON API 로 열고, 모든 JSON 라우트를 `/api/v1` 아래로 옮기며(옛 주소 즉시 404 — 러너·n8n 포함), `/me` 에서 만드는 멤버 토큰(`wfm_…`, 읽기 전용 / 내 권한 전부)으로 `Authorization: Bearer` 인증을 받는다. 화면 주소는 그대로. 스키마 v26. **셀프호스트 업그레이드 때 러너 재설치와 n8n 워크플로우 주소 수정이 필요하다**(SELFHOST "업그레이드" v26). 적용은 phase 뒤 사용자 지시.
 
-## 다음 작업: 23-setup-ux 완료 — service 병합 → 셀프호스트 v25 → K1 실연동 재개 (새 세션은 여기서 시작)
+## 이전 다음 작업: 23-setup-ux 완료 — service 병합 → 셀프호스트 v25 → K1 실연동 재개
 
 **23-setup-ux 완료**(2026-10-05, `feat-23-setup-ux`, step 0~10, `service` `058d9bc` 에서 갈라짐, [phase 23 README](../phases/23-setup-ux/README.md), [ADR-0028](adr/0028-setup-ux.md), [ARCHITECTURE](ARCHITECTURE.md) "설정 UX — phase 23", 용어 [GLOSSARY](GLOSSARY.md) "계획 용어 — phase 23", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 23 설정 UX"). 계기: K1 실연동이 준비 1번(팀 초대)에서 멈춤 — [사내 요청 실연동 1회차](product/INTERNAL_REQUEST_LIVE_RUN_1.md) "결과" 의 화면 문제 15건. 사이드바 `연결` 을 `팀`(`/team` — 멤버·초대·에이전트(러너 합침)·담당 범위)·`저장소`(`/repos` — GitHub·Jira 연결과 저장소 카드, 이슈 목록 없음)·`설정`(`/settings?tab=kinds|triage|notify|inbound|advanced`)으로 나눴고 옛 주소는 303 으로 넘어간다(POST 경로 그대로). 초대는 받는 사람 이메일(필수)·이름 + [링크 다시 만들기](옛 링크 무효, 가입은 그 이메일로만 — 스키마 v25). 종류 폼은 화면 이름·지시문·결과값·맡을 에이전트(체크박스 — 그 종류의 능력을 붙임)만 묻고 식별자·능력 코드·scope 키·산출물은 "고급". 팀 화면 에이전트 줄에서 "맡을 수 있는 일" 편집, 담당 범위 요청 유형은 고르는 목록. 저장소 카드 본문에 판단 에이전트(설명 포함)·수정·검토 에이전트(이름만), 고급·카드 도구는 접힘, 담당 연결은 수집한 이슈의 GitHub 사용자에서 고른다. 업무 목록은 끝난 업무 묶음(맨 아래·접힘)·같은 값 칸 숨김·다음 할 일 중복 `—`·도구 막대(보기 옵션 접힘). 내부 ID·능력 코드는 "자세히" 안에만(설정 › 고급은 예외). **러너 프로토콜 변화 없음 — 러너 재설치 불필요.**
 
@@ -49,7 +56,7 @@
 
 ## 이전 다음 작업: 판단·Jira·17 실연동·브라우저 확인(모니터링 세 탭 포함)
 
-**20-monitor 완료**(2026-10-02, `feat-20-monitor`, step 0~9, [ADR-0026](adr/0026-monitor.md), [ARCHITECTURE](ARCHITECTURE.md) "모니터링 — phase 20", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 20 모니터링"): `/monitor` 탭 셋 — `전후`(기존 화면 + 설정 번호 그룹 머리에 무엇을·누가·언제 바꿨는지, v16 이전 번호는 `기록 없음`)·`판단`(종류별·기준 버전별 제안 n·사람 처리·사람 일치·진행 여부·실제 결과(병합 완료·재작업 없이 병합·진행 중)·실패 코드·판단 시간·비용, 확신도 구간표)·`담당자별`(멤버 완료·진행·내 차례 대기·가장 오래 기다림·응답 시간, 에이전트 실행·실패율·1회 통과·재작업·실행 시간·비용, 담당 없음). 연결 "판단" 탭 자동 시작 행에 `지금 기준값 x 이상 판단 n건 — 사람 일치 a/b · 병합 c/d`. `/metrics.json` 키 `triage`·`assignees`·`config_changes`, `/metrics.csv` 는 열 그대로 새 행. 설정 변경 기록 `config_changes`(스키마 v16). 지표는 기존 기록에서 매번 계산(저장·캐시 없음). **러너 프로토콜 변화 없음 — 러너 재설치 불필요.**
+**20-monitor 완료**(2026-10-02, `feat-20-monitor`, step 0~9, [ADR-0026](adr/0026-monitor.md), [ARCHITECTURE](ARCHITECTURE.md) "모니터링 — phase 20", 검증은 [VERIFICATION_LOG](VERIFICATION_LOG.md) "phase 20 모니터링"): `/monitor` 탭 셋 — `전후`(기존 화면 + 설정 번호 그룹 머리에 무엇을·누가·언제 바꿨는지, v16 이전 번호는 `기록 없음`)·`판단`(종류별·기준 버전별 제안 n·사람 처리·사람 일치·진행 여부·실제 결과(병합 완료·재작업 없이 병합·진행 중)·실패 코드·판단 시간·비용, 확신도 구간표)·`담당자별`(멤버 완료·진행·내 차례 대기·가장 오래 기다림·응답 시간, 에이전트 실행·실패율·1회 통과·재작업·실행 시간·비용, 담당 없음). 연결 "판단" 탭 자동 시작 행에 `지금 기준값 x 이상 판단 n건 — 사람 일치 a/b · 병합 c/d`. `/api/v1/metrics` 키 `triage`·`assignees`·`config_changes`, `/api/v1/metrics.csv` 는 열 그대로 새 행. 설정 변경 기록 `config_changes`(스키마 v16). 지표는 기존 기록에서 매번 계산(저장·캐시 없음). **러너 프로토콜 변화 없음 — 러너 재설치 불필요.**
 
 **할 일**(순서대로, 모두 사용자 지시 뒤):
 1. ~~`feat-20-monitor` 를 `service` 에 `--no-ff` 병합~~ — 끝남(2026-10-02, `ee4e478`).

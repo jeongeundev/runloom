@@ -80,7 +80,7 @@
 
 ## 2. 코드 수정 실행 — 연결 프로그램 claim
 
-등록 보고 `POST /connector/registrations`, `Authorization: Bearer wfc_…`. 운영자가 미리 등록한 Agent 의 `local_registration_id` 와 맞춰 연결 정보를 채운다. `tool` 은 `codex` 또는 `claude` 이며 중앙은 값에 따라 분기하지 않는다 — 어댑터 선택은 연결 프로그램의 로컬 등록이 정한다. `discovered` 는 설정 존재 여부와 짧은 요약뿐이며 파일 전체·인증 파일·원격 URL 은 넣지 않는다.
+등록 보고 `POST /api/v1/connector/registrations`, `Authorization: Bearer wfc_…`. 운영자가 미리 등록한 Agent 의 `local_registration_id` 와 맞춰 연결 정보를 채운다. `tool` 은 `codex` 또는 `claude` 이며 중앙은 값에 따라 분기하지 않는다 — 어댑터 선택은 연결 프로그램의 로컬 등록이 정한다. `discovered` 는 설정 존재 여부와 짧은 요약뿐이며 파일 전체·인증 파일·원격 URL 은 넣지 않는다.
 
 ```json
 {
@@ -110,7 +110,7 @@
 
 성공은 `200`과 `{ "agent_id": "agent-codex-mac" }`. `local_registration_id` 에 해당하는 Agent 가 없으면 `404 not_found`, `tool` 이 위 둘이 아니면 `422`.
 
-`POST /connector/claim`, `Authorization: Bearer wfc_…`
+`POST /api/v1/connector/claim`, `Authorization: Bearer wfc_…`
 
 ```json
 { "contract_version": 1, "connector_id": "conn-mac-01" }
@@ -157,7 +157,7 @@
 
 ### 2.1 heartbeat 응답 — 끊긴 실행 내려놓기 (2026-09-29 실연동 1)
 
-`POST /connector/heartbeat` 요청은 `{"contract_version": 1, "connector_id": …, "current_execution_id": …|null}` 그대로다. 응답은 보통 `{}` 이고, 보고한 `current_execution_id` 가 **이 연결 프로그램에 배정된 실행**이면서 중앙에서 이미 끝났으면(`result_ready`·`failed` 이거나 잠금 해제) `{"current_execution_closed": true}` 로 알린다. 다른 연결 프로그램의 실행·없는 실행·null 에는 아무 말도 하지 않는다.
+`POST /api/v1/connector/heartbeat` 요청은 `{"contract_version": 1, "connector_id": …, "current_execution_id": …|null}` 그대로다. 응답은 보통 `{}` 이고, 보고한 `current_execution_id` 가 **이 연결 프로그램에 배정된 실행**이면서 중앙에서 이미 끝났으면(`result_ready`·`failed` 이거나 잠금 해제) `{"current_execution_closed": true}` 로 알린다. 다른 연결 프로그램의 실행·없는 실행·null 에는 아무 말도 하지 않는다.
 
 연결 프로그램은 재시작으로 끊긴 실행(로컬 `unknown_local_at` 이 있는 `launching`·`running`)에 대해서만 이 값을 보고 그 실행을 로컬에서 마감한다 — 이벤트를 보내지 않고, 프로세스 종료를 확인할 수 없으므로 worktree·인계 디렉터리를 지우지 않는다. 그 뒤 다음 claim 을 한다. 지금 도는 실행에는 쓰지 않는다. 구버전 서버의 `{}` 는 "마감 아님"과 같다.
 
@@ -228,7 +228,7 @@
 
 ## 4. 산출물 업로드·다운로드
 
-`POST /executions/{execution_id}/artifacts`, multipart: `meta`(JSON)와 `file`(바이트). 같은 실행에 같은 `kind`·`sha256`이 이미 있으면 기존 산출물을 `200`으로 돌려준다(재업로드 안전). 새 저장은 `201`.
+`POST /api/v1/executions/{execution_id}/artifacts`, multipart: `meta`(JSON)와 `file`(바이트). 같은 실행에 같은 `kind`·`sha256`이 이미 있으면 기존 산출물을 `200`으로 돌려준다(재업로드 안전). 새 저장은 `201`.
 
 ```json
 { "contract_version": 1, "kind": "test_log_before", "name": "pytest-before.txt", "content_type": "text/plain", "sha256": "7b3e9a1d5c8f2b6e0a4d7c1f9e3b6a8d2c5f0e7b1a4d8c3f6e9b2a5d0c7f1e4b", "size": 2184 }
@@ -240,7 +240,7 @@
 { "artifact_id": "art-test-before-001", "kind": "test_log_before", "sha256": "7b3e9a1d5c8f2b6e0a4d7c1f9e3b6a8d2c5f0e7b1a4d8c3f6e9b2a5d0c7f1e4b", "size": 2184 }
 ```
 
-본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
+본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /api/v1/executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
 산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`.
 
@@ -621,7 +621,7 @@ n8n 은 `TaskSource` 하나(`n8n`)이며 항목은 `Issue` 와 같은 모양이�
 
 인증: `Authorization: Bearer wfs_…` — 워크스페이스(세션)가 `/sources` 에서 발급한 입구 토큰(`auth.require_source_token`). 서버는 sha256 만 저장하고, 토큰 → `session_id` + `source`. 세션 쿠키로는 통과하지 않는다. 토큰 없음·취소는 401 `unauthenticated`, 경로의 출처가 `n8n` 이 아니면 404 `not_found`, 토큰의 `source` 가 경로(`/sources/n8n/…`)와 다르면 403 `forbidden`. 라우트는 `server/inbound_api.py`, 체인·Task 생성과 첫 업무 시작은 가져오기와 같은 본체 `web.create_chain`·`web.start_chain`. 멱등 키는 없다 — 같은 본문을 두 번 보내면 체인이 둘 생긴다.
 
-### 입구 요청 `InboundChainRequest` — `POST /sources/n8n/chains`
+### 입구 요청 `InboundChainRequest` — `POST /api/v1/sources/n8n/chains`
 
 항목 2개 — 진단(`incident`+`workflow:`+`run:`)과 그 뒤의 수정(`bug`+`repo:`, `blocked_by` 로 순서). `items` 는 1~10개, `key` 는 요청 안에서 유일, `blocked_by` 는 같은 요청의 `key` 만. `callback_url` 은 선택이며 http/https 만, 허용 목록 `WORKFLOW_CALLBACK_HOSTS` 안이어야 한다:
 
@@ -997,13 +997,13 @@ GitHub REST 응답에서 필요한 값만 뽑은 것. `is_pull_request: true` �
 
 | 요청 | 응답 | 오류 |
 |---|---|---|
-| `GET /github/sources` | `token_configured`·`allowed_repositories`·`sources`(`GitHubSourceConfig` 목록) | |
-| `POST /github/sources/preview` | `token_configured`·`problems`(`ErrorBody` 목록) — 저장하지 않고 아래 422 문제를 모두 모은다 | 형식 오류만 422 |
-| `POST /github/sources` | 201 `source`·`token_configured` — `source_id` `ghs-`+8 hex, `config_revision` 1, 저장소 표기는 허용 목록의 것 | 422 `repository_not_allowed`·`agent_not_registered`·`agent_capability_mismatch`·`verification_profile_unknown`, 409 `source_exists`(같은 워크스페이스에 같은 저장소)·`github_workspace_taken`(다른 세션이 이미 GitHub 소스를 가짐 — 셀프호스트 1개 워크스페이스) |
-| `GET /github/sources/{source_id}` | `source`·`token_configured`·`assignees`(`AssigneeBinding` 목록) | 404 |
-| `PUT /github/sources/{source_id}` | 본문 + `expected_revision` → `source`·`token_configured`(`config_revision` +1) | 409 `stale_config`(`details.current_revision`), 저장소 변경 422 `invalid_field`, 나머지는 생성과 같음 |
-| `POST /github/sources/{source_id}/stop` | `enabled: false`, `config_revision` +1(이미 멈췄으면 그대로) | 404 |
-| `PUT /github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
+| `GET /api/v1/github/sources` | `token_configured`·`allowed_repositories`·`sources`(`GitHubSourceConfig` 목록) | |
+| `POST /api/v1/github/sources/preview` | `token_configured`·`problems`(`ErrorBody` 목록) — 저장하지 않고 아래 422 문제를 모두 모은다 | 형식 오류만 422 |
+| `POST /api/v1/github/sources` | 201 `source`·`token_configured` — `source_id` `ghs-`+8 hex, `config_revision` 1, 저장소 표기는 허용 목록의 것 | 422 `repository_not_allowed`·`agent_not_registered`·`agent_capability_mismatch`·`verification_profile_unknown`, 409 `source_exists`(같은 워크스페이스에 같은 저장소)·`github_workspace_taken`(다른 세션이 이미 GitHub 소스를 가짐 — 셀프호스트 1개 워크스페이스) |
+| `GET /api/v1/github/sources/{source_id}` | `source`·`token_configured`·`assignees`(`AssigneeBinding` 목록) | 404 |
+| `PUT /api/v1/github/sources/{source_id}` | 본문 + `expected_revision` → `source`·`token_configured`(`config_revision` +1) | 409 `stale_config`(`details.current_revision`), 저장소 변경 422 `invalid_field`, 나머지는 생성과 같음 |
+| `POST /api/v1/github/sources/{source_id}/stop` | `enabled: false`, `config_revision` +1(이미 멈췄으면 그대로) | 404 |
+| `PUT /api/v1/github/sources/{source_id}/assignees/{github_user_id}` | 본문 `github_login`·`agent_id` → `assignee`(`AssigneeBinding`) | 422 `agent_not_registered`·`agent_capability_mismatch`(`code.fix {repository_id}`)·`verification_profile_unknown`(그 Agent 의 로컬 등록에 소스 프로필 없음), 404 |
 
 Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review · repository_id=<workflow_repository_id>`, 소스의 `fix_verification_profile_id` 는 같은 범위의 `code.fix` Agent 중 하나가 보고한 프로필이어야 한다. `default_fix_agent_id` 는 `code.fix · repository_id=<workflow_repository_id>`. `all_open` 에서 `null` 인 칸은 검사하지 않고, `workflow_repository_id` 가 `null` 이면 능력·프로필 범위 검사를 건너뛴다(등록 여부만). `installation_id` 가 있는 소스(App 설치가 만든 것)의 변경은 `WORKFLOW_GITHUB_REPOS` 검사를 하지 않는다. 설정 변경·중지는 이미 만든 Task·Execution 의 입력을 바꾸지 않는다.
 
@@ -1013,8 +1013,8 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 | 요청 | 응답 | 오류 |
 |---|---|---|
-| `GET /human-requests` | `requests` — 이 세션의 열린 요청(`request_id`·`task_id`·`code`·`question`·`revision`·`state`·`created_at`, 만든 순) | |
-| `POST /human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`retry`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task — `stage_failed` 는 단계가 이미 `실패` 로 마감이라 예외), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, `stage_failed` 는 `retry`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
+| `GET /api/v1/human-requests` | `requests` — 이 세션의 열린 요청(`request_id`·`task_id`·`code`·`question`·`revision`·`state`·`created_at`, 만든 순) | |
+| `POST /api/v1/human-requests/{request_id}/responses` | 본문 `response_id`·`expected_revision`·`action`(`resume`\|`choose_agent`\|`retry`\|`close`)·`text`(기본 `""`)·`agent_id`(`choose_agent` 만) → `request_id`·`task_id`·`response_id`·`task_revision`·`created`. 같은 `response_id`·같은 내용 재전송은 같은 값에 `created: false` | 409 `stale_request`(13.9, 이미 응답된 과거 요청 포함)·`response_conflict`(같은 `response_id` 에 다른 내용)·`task_closed`(마감된 Task — `stage_failed` 는 단계가 이미 `실패` 로 마감이라 예외), 422 `invalid_field`(`action` 이 요청에 맞지 않음 — `assignee_multiple` 은 `choose_agent`·`close`, `stage_failed` 는 `retry`·`close`, 그 밖은 `resume`·`close`; 정보 요청 `input_missing`·`*_needs_information` 에 빈 `text`; `agent_id` 없음)·`agent_not_registered` |
 
 응답의 효과: `resume` 의 `text` 는 다음 실행 요청 문구 끝의 `## 사람 응답 (운영자)` 절로 붙는다(Task 요청 원문·원본 스냅샷은 그대로). `choose_agent` 는 같은 트랜잭션에서 Task 의 실행 Agent 를 지정하지만 담당자 연결·능력·위임 범위는 재평가가 다시 검사한다 — 응답은 권한이나 소스 설정을 바꾸지 않는다(위임 밖은 13.10 설정 API 로 따로 고친다). `close` 는 Task 를 `실패 · 운영자 종료 — 사람 요청 응답` 으로 마감하고 활성 실행을 해제한다. 같은 트랜잭션이라 착수와 겹쳐도 마감된 Task 에 실행이 붙지 않는다. 실행 실패 요청 `stage_failed`(phase 14 step 6)의 `retry` 는 같은 업무에 실패한 단계를 복사한 새 단계(`text` 는 그 요청 끝의 `## 사람 응답 (운영자)` 절)를, `close` 는 업무 `종료 · 닫음 — 실행 실패` 를 같은 트랜잭션에 기록한다.
 

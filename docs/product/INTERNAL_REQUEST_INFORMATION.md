@@ -17,8 +17,8 @@
 
 ## API와 버전
 
-- `POST /internal-requests/{id}/questions`: `expected_revision`(요청 버전), `submission_key`, `text`. 응답 권한과 지정 수신자를 검사하고 수락·반환 전 상태를 확인한다.
-- `POST /internal-requests/{id}/questions/{question_id}/answer`: `expected_revision`(질문 버전), `text`. 응답 권한과 원래 요청자를 검사한다. 다른 요청의 질문 ID는 찾을 수 없는 질문으로 처리한다.
+- `POST /api/v1/internal-requests/{id}/questions`: `expected_revision`(요청 버전), `submission_key`, `text`. 응답 권한과 지정 수신자를 검사하고 수락·반환 전 상태를 확인한다.
+- `POST /api/v1/internal-requests/{id}/questions/{question_id}/answer`: `expected_revision`(질문 버전), `text`. 응답 권한과 원래 요청자를 검사한다. 다른 요청의 질문 ID는 찾을 수 없는 질문으로 처리한다.
 - GET·POST의 요청 응답은 `questions` 배열과 `waiting_for_information`을 포함한다. 접수 키는 응답에 노출하지 않는다.
 - 질문·답변은 요청의 수락·조사 버전을 증가시키지 않는다. 질문 자체의 버전은 미답변 1, 답변 완료 2다. 따라서 정보 왕복 후에도 기존 조사 착수·결과 반환 재시도 계약을 유지한다.
 - 같은 접수 키와 질문은 기존 기록을 반환한다. 같은 키의 다른 질문은 충돌한다. 같은 답변의 재시도는 기존 기록을 반환하며, 다른 답변으로 덮어쓰기는 허용하지 않는다. 기존 기록 재시도는 현재 요청 이력을 반환하므로 이후의 답변·질문도 포함될 수 있다.

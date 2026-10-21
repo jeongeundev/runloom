@@ -16,10 +16,10 @@
 
 | 경로 | 의미 |
 |---|---|
-| `GET /responsibilities` | `config_revision`, `entries` 조회 |
-| `PUT /responsibilities` | `expected_revision`, `entries`로 전체 교체 |
-| `GET /responsibilities/candidates?system_id=billing&request_kind=investigation` | 해당 후보와 `selectable`·`reason`, 항상 `selection_required=true` |
-| `POST /responsibilities/select` | 시스템·종류·수신 멤버·`expected_revision`을 받아 현재 선택 유효성 확인 |
+| `GET /api/v1/responsibilities` | `config_revision`, `entries` 조회 |
+| `PUT /api/v1/responsibilities` | `expected_revision`, `entries`로 전체 교체 |
+| `GET /api/v1/responsibilities/candidates?system_id=billing&request_kind=investigation` | 해당 후보와 `selectable`·`reason`, 항상 `selection_required=true` |
+| `POST /api/v1/responsibilities/select` | 시스템·종류·수신 멤버·`expected_revision`을 받아 현재 선택 유효성 확인 |
 
 항목 예시:
 

@@ -8,8 +8,8 @@
 
 ## API와 상태
 
-- `POST /internal-requests/{id}/not-responsible`: `expected_revision`, `reason`. 응답 권한과 지정 수신자 검사. 빈 사유·추가 필드를 거부한다.
-- `POST /internal-requests/{id}/reroute`: `expected_revision`, `expected_directory_revision`, `recipient_member_id`. 위임 권한과 원래 요청자 검사. 같은 수신자·미등록 후보·비활성 멤버·미등록 에이전트·오래된 담당표를 거부한다.
+- `POST /api/v1/internal-requests/{id}/not-responsible`: `expected_revision`, `reason`. 응답 권한과 지정 수신자 검사. 빈 사유·추가 필드를 거부한다.
+- `POST /api/v1/internal-requests/{id}/reroute`: `expected_revision`, `expected_directory_revision`, `recipient_member_id`. 위임 권한과 원래 요청자 검사. 같은 수신자·미등록 후보·비활성 멤버·미등록 에이전트·오래된 담당표를 거부한다.
 - 반려 시 기존 요청 revision은 1에서 2로 증가한다. 공개 응답 `state`는 `rejected`이며 DB의 기존 접수 상태는 보존한다. 수락 API는 반려 기록이 있으면 거부한다.
 - 재전달 시 새 요청 revision은 1이다. 원래 요청에는 `new_request_id`, 새 요청에는 `previous_request_id`와 `previous_rejection_reason`이 표시된다.
 - 같은 사유의 반려 재시도, 같은 수신자의 재전달 재시도는 이미 기록된 결과를 반환한다. 재전달 재시도는 기존 접수와 마찬가지로 변경된 담당표를 재검증하지 않는다. 다른 사유·수신자로 재시도하면 충돌한다.

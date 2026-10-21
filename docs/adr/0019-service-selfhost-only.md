@@ -11,7 +11,7 @@
    - `WORKFLOW_MODE=demo`(그 밖의 값도)는 `load_settings` 가 시작 때 설정 오류로 멈춘다 — `ValueError` 계열 `SettingsError`, 메시지는 "WORKFLOW_MODE=demo 는 지원하지 않습니다 — service 브랜치는 셀프호스트 전용이며 공개 데모는 main 브랜치입니다" 취지. 조용히 셀프호스트로 뜨지 않는다(공개 데모로 착각한 배포가 로그인 화면으로 바뀌는 것을 막는다).
    - `DIAG_API_TOKEN` 은 요구하지 않는다(진단이 없다). `/healthz` 응답의 `mode` 칸은 호환을 위해 `"selfhost"` 고정값으로 둔다.
    - `/` 는 로그인 상태면 `/tasks`, 아니면 `/login` 으로 303 한다(랜딩 없음). 예전 `/operator/login` 은 없앤다(404) — 로그인 경로는 `/login` 하나다(step 2).
-   - 카탈로그 등록 단계가 없으므로 `/operator/agents` 로 등록한 Agent 는 그 운영자 워크스페이스(`session_agents`)에 바로 붙는다. 러너 등록(`/connector/registrations`)은 지금처럼 새 Agent 만 워크스페이스에 붙인다(step 2).
+   - 카탈로그 등록 단계가 없으므로 `/operator/agents` 로 등록한 Agent 는 그 운영자 워크스페이스(`session_agents`)에 바로 붙는다. 러너 등록(`/api/v1/connector/registrations`)은 지금처럼 새 Agent 만 워크스페이스에 붙인다(step 2).
 2. **`service` 에서 지우는 것** (phase 13 README "조사로 확인한 현재" 전부, 원본은 `main` 에 남는다):
    - 모드 분기 — `server/auth.py`·`server/web.py`·`server/machine_api.py`·`adapters/repo.py`·`server/app.py` 의 `mode` 분기, 템플릿(`home.html`·`_sidebar.html`·`_live.html`·`operator.html`·`task_new.html`·`sources.html`·`login.html`)의 `mode` 분기, 공개 랜딩(`landing.html`), 익명 세션 발급.
    - 모드 가드 없이 열린 demo 전용 경로 — 카탈로그 등록(`/agents/register`·`/agents/{id}/unregister`, `agents.shared_to_all_sessions` 사용 코드), fixture 업무 가져오기(`/tasks/import`, `adapters/task_sources.py`·`task_source_fixtures/`), 시연 예시 폼(`web.EXAMPLES`·`with_successor`), 진단 기본 폼값(`web._EMPTY_FORM` 의 진단 값).
@@ -22,7 +22,7 @@
 3. **남기는 것** (지우면 셀프호스트 실사용이 깨진다):
    - `sessions` 와 `session_id` — 칸 이름은 그대로, 뜻은 "워크스페이스 키"(셀프호스트는 `sess-selfhost` 하나). `sessions.is_operator` — 셀프호스트 워크스페이스는 운영자다. `session_agents` — 러너가 만든 Agent 를 워크스페이스에 붙이며 GitHub 순환·후보 선택이 이 표를 쓴다.
    - 산출물 종류 `code_change_result`(`bug_fix` 의 결과), `diff`·`test_log_*`·`verification_log` 등 — 종류 이름 `code_change` 가 사라져도 산출물 종류는 계약 v1 그대로다.
-   - n8n 입구(`POST /sources/n8n/chains`, `source_tokens`, `chains`, callback) — 실사용 입구다([ADR-0010](0010-n8n-inbox-and-callback.md)).
+   - n8n 입구(`POST /api/v1/sources/n8n/chains`, `source_tokens`, `chains`, callback) — 실사용 입구다([ADR-0010](0010-n8n-inbox-and-callback.md)).
    - 직접 등록 폼(`/tasks/new`) — 종류 선택 기본값만 `bug_fix` 로 바꾼다.
    - 셀프호스트 배포 `deploy/selfhost/*`(러너 plist `com.workflow.selfhost.connector` — `deploy/launchd/` 와 무관).
    - phase 8·11·12 의 GitHub 순환(수집 → 수정 → 검토 → 초안 PR → 병합 추적) 전부.

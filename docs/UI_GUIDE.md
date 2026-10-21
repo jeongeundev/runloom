@@ -89,7 +89,7 @@ phase 16([ADR-0022](adr/0022-work-screen-and-direct-work.md), ARCHITECTURE "업�
 | 저장소 | `/repos` | 로그인(절별 권한) | GitHub 연결 상자 · Jira 연결 · 저장소 카드(이름 · 수집 상태 · `업무 N건 보기` → `/tasks?repo=` · 판단 에이전트(설명 포함) · 수정·검토 에이전트 이름 · 실행 방식 · 접힌 "고급 설정" · 접힌 "러너·담당 연결·기준선") · 접힌 "고급 — 토큰으로 연결". 카드 안 이슈 목록은 없다(업무 화면). 옛 `/operator/github`·`/connect?tab=sources` 는 여기로 |
 | 설정 | `/settings?tab=kinds\|triage\|notify\|inbound\|advanced` | 로그인(탭별 권한) | 탭 5개 — 업무 종류·규칙(종류 폼은 화면 이름·지시문·결과값·맡을 에이전트, 나머지는 "고급") / 판단(`manage_connections`) / 알림(`manage_shared_notify`) / n8n 입구(`manage_connections` — 입구 주소·토큰·요청 예시·callback 허용 목록) / 고급(연결 코드·에이전트 수동 등록 — 개발·운영용). 권한 없는 탭은 머리에서 숨긴다. 옛 `/kinds`·`/sources`·`/operator`·`/operator/notifications`·`/connect?tab=…` 는 여기로 |
 | 에이전트 상세 | `/agents/{agent_id}` | 로그인 | 능력 목록, 파악된 정보와 확인 수준, 최근 실행, 소유자. 브레드크럼은 팀 화면으로 |
-| 모니터링 | `/monitor` | `view_metrics` | 옛 지표 화면 그대로(이름만 모니터링). `/metrics` 는 넘어가고 `/metrics.json`·`/metrics.csv` 는 그대로 |
+| 모니터링 | `/monitor` | `view_metrics` | 옛 지표 화면 그대로(이름만 모니터링). `/metrics` 는 넘어가고 `/api/v1/metrics`·`/api/v1/metrics.csv` 는 그대로 |
 | 시작하기 | `/start` | 로그인 | 체크리스트 4항목 — 가져올 곳 연결(`/repos`) → 러너 붙이기(`/repos`) → 팀원 초대(선택, `/team`) → 첫 업무 맡기기. 항목마다 상태(완료·다음·할 일·선택)와 가는 버튼, 동작이 없는 멤버에게는 `관리자에게 요청`. 필수 항목이 끝나면 사이드바에서 숨긴다 |
 | 내 설정 | `/me` | `edit_own_settings` | 표시 이름·비밀번호·개인 웹훅 |
 | 로그인·초대·재설정 | `/login`·`/invite/{t}`·`/reset/{t}` | 누구나 | 셸 없이 단독. 초대 가입은 초대 이메일을 채워 고정하고 `<초대한 사람> 이 <역할> 로 초대했습니다` 한 줄 |

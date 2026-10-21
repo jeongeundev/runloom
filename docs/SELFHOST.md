@@ -304,7 +304,7 @@ deploy/selfhost/install-runner.sh
   1. 백업 먼저(`backup create`).
   2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 16.
   3. **러너 재설치는 필요 없다** — 러너 프로토콜(`connector`·`contracts/v1`)은 이 phase 에서 바뀌지 않았다(재설치해도 된다).
-  4. `/monitor` 에 탭 셋(`전후`·`판단`·`담당자별`)이 생기고, 연결 화면 "판단" 탭의 종류별 자동 시작 행에 저장된 기준값 이상 판단의 사람 일치·병합 한 줄이 보인다. `/metrics.json` 은 키 `triage`·`assignees`·`config_changes` 를 더하고, `/metrics.csv` 는 열은 그대로 새 행만 더한다.
+  4. `/monitor` 에 탭 셋(`전후`·`판단`·`담당자별`)이 생기고, 연결 화면 "판단" 탭의 종류별 자동 시작 행에 저장된 기준값 이상 판단의 사람 일치·병합 한 줄이 보인다. `/api/v1/metrics` 은 키 `triage`·`assignees`·`config_changes` 를 더하고, `/api/v1/metrics.csv` 는 열은 그대로 새 행만 더한다.
 - v24(phase 22) — 결과 뒤 판단: `triage_logs` 를 재생성해 원인 칸 셋(`cause` — 기존 행은 모두 `intake`, `cause_execution_id`·`cause_request_id`)과 원인별 부분 UNIQUE 둘을 더하고, `notifications` 를 재생성해 알림 사건 둘(`internal_request_received`·`next_step_proposed`)을 받게 하고, `internal_requests.created_by_triage_id` 칸을 더한다(id·행 그대로, 다른 표는 재생성하지 않는다). 과거 결과·반환에는 판단을 걸지 않는다 — 업그레이드 뒤 새로 나온 결과부터다. 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v23). 순서:
   1. 백업 먼저(`backup create`).
   2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 24.
@@ -316,7 +316,15 @@ deploy/selfhost/install-runner.sh
   3. **러너 재설치는 필요 없다** — 러너 프로토콜(`connector`·`contracts/v1`)은 이 phase 에서 바뀌지 않았다(재설치해도 된다).
   4. **북마크 주소가 바뀐다.** 왼쪽 목록의 `연결` 이 `팀`(`/team` — 멤버·초대·에이전트·담당 범위) · `저장소`(`/repos` — GitHub·Jira 연결과 저장소 카드) · `설정`(`/settings?tab=kinds|triage|notify|inbound|advanced` — 업무 종류·규칙 / 판단 / 알림 / n8n 입구 / 고급)으로 나뉜다. 옛 주소는 새 주소로 넘어간다(303) — `/connect`·`/connect?tab=sources` → `/repos`, `/connect?tab=team` → `/team`, `/connect?tab=<kinds|triage|notify|advanced>` → `/settings?tab=<같은 탭>`. POST 경로·GitHub App 경로는 그대로라 GitHub 쪽 App 설정을 고칠 일은 없다. 저장소 카드 안 이슈 목록은 빠지고 카드의 `업무 N건 보기` 가 업무 목록으로 간다.
   5. **열린 옛 초대는 이메일 없이 남는다** — 대기 중 초대 목록에 `이메일 없음(옛 초대)` 로 보이고, 링크는 그대로 쓸 수 있다(받는 사람이 이메일을 직접 넣는다). 줄의 [링크 다시 만들기]·[취소] 도 된다. 새 초대는 받는 사람 이메일이 필수이고, 그 이메일로만 가입한다.
-- 옛 주소는 넘어간다(303) — `/sources` → `/settings?tab=inbound`, `/operator/github` → `/repos`, `/operator` → `/settings?tab=advanced`, `/operator/notifications` → `/settings?tab=notify`, `/agents` → `/team`, `/kinds` → `/settings?tab=kinds`, `/connect?tab=…` → 위 v25 표, `/metrics` → `/monitor`(`.json`·`.csv` 는 그대로), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
+- v26(phase 24) — 사람용 API: 멤버 토큰 표 `member_tokens` 하나를 더하고(다른 표는 재생성하지 않고 행·업무 상태는 그대로), **모든 JSON API 주소를 `/api/v1` 아래로 옮긴다** — 러너(`/connector/…` → `/api/v1/connector/…`, `/executions/…` → `/api/v1/executions/…`)와 n8n 입구(`/sources/n8n/chains` → `/api/v1/sources/n8n/chains`), JSON 지표(`/metrics.json` → `/api/v1/metrics`) 포함. 옛 주소는 별칭 없이 404 다. 화면 주소·화면 폼·GitHub App 경로·`/healthz` 는 그대로다([ADR-0032](adr/0032-human-api-and-member-tokens.md), 주소 표는 [ARCHITECTURE](ARCHITECTURE.md) "사람용 API — phase 24"). 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v25). 순서:
+  1. 진행 중인 실행이 0건인지 확인한다 — 업그레이드부터 러너 재설치까지 옛 러너의 보고는 404 로 버려진다.
+  2. 백업 먼저(`backup create`).
+  3. `install.sh` → 스키마 26.
+  4. **러너도 `install-runner.sh` 로 다시 설치한다(필수)** — 옛 러너는 옛 주소를 불러 404 를 받아 실행을 받지 못한다. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
+  5. **n8n 워크플로우의 Runloom HTTP Request 노드 URL 을 `…/api/v1/sources/n8n/chains` 로 고친다**(예 `http://host.docker.internal:8000/api/v1/sources/n8n/chains`, [n8n 예시](n8n/README.md)). 고치기 전까지 n8n 의 요청은 404 다. 설정 화면 n8n 입구 탭이 새 주소를 보인다. 입구 토큰(`wfs_…`)은 그대로 쓴다.
+  6. 확인 — `/healthz` 200, 러너가 실행을 다시 받는다(claim 이 이어진다), `/me` 에 "API 토큰" 절이 보인다.
+  - 멤버 토큰 — `/me` 의 "API 토큰" 에서 이름과 권한(`읽기 전용` 기본 / `내 권한 전부`)을 골라 [토큰 만들기] 를 누르면 `wfm_…` 원문이 그 화면에 한 번만 보인다. 터미널·스크립트에서 `Authorization: Bearer wfm_…` 헤더로 `/api/v1/…` 를 부른다(예 `curl -H "Authorization: Bearer wfm_…" http://localhost:8000/api/v1/work-items`). 읽기 전용 토큰은 GET 만 되고 그 밖은 403 `token_read_only`, `내 권한 전부` 는 내 역할이 할 수 있는 것까지다. 쓰지 않는 토큰은 같은 목록의 [폐기] 로 지운다. 멤버를 비활성화하면 그 멤버의 토큰도 함께 폐기된다. DB 에는 토큰 해시만 둔다.
+- 옛 주소는 넘어간다(303) — `/sources` → `/settings?tab=inbound`, `/operator/github` → `/repos`, `/operator` → `/settings?tab=advanced`, `/operator/notifications` → `/settings?tab=notify`, `/agents` → `/team`, `/kinds` → `/settings?tab=kinds`, `/connect?tab=…` → 위 v25 표, `/metrics` → `/monitor`(`.json`·`.csv` 는 v26 부터 `/api/v1/metrics`·`/api/v1/metrics.csv`), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
 ## 제거
