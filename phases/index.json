@@ -119,7 +119,8 @@
     },
     {
       "dir": "24-human-api",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-10-21T20:58:27+0900"
     }
   ]
 }
