@@ -47,7 +47,8 @@
       ],
       "concerns": [
         "ARCHITECTURE 의 '저장' 행은 fixture tests/workflow/adapters/fixtures/schema_v25.sql 을 적었지만 step 지시대로 v25 fixture 는 만들지 않고 v24 fixture 를 24→25→26 체인으로 올려 검증했다."
-      ]
+      ],
+      "completed_at": "2026-10-21T19:19:19+0900"
     },
     {
       "step": 2,
