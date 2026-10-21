@@ -1,0 +1,79 @@
+{
+  "project": "workflow",
+  "phase": "24-human-api",
+  "steps": [
+    {
+      "step": 0,
+      "name": "api-design",
+      "status": "completed",
+      "started_at": "2026-10-21T18:52:21+0900",
+      "summary": "문서만: ADR-0032(주소 체계·멤버 토큰·오류·판정 순서·업그레이드 영향, 코드 조사 사실 12건), ADR-0031 미결 'API 인증' → ADR-0032 한 줄, ARCHITECTURE '사람용 API — phase 24'(옛→새 주소 41개 + 새 라우트 15개 표·옮기지 않는 화면 경로 표·라우트 분류 규칙·step 경계·member_tokens v26 스키마·repo/auth 시그니처·토큰 API와 /me 화면·work_lookup·목록/상세 칸 표·panel_actions·행동 표·오류 코드), CONTRACT 18절(jsonc 예시 — 목록·상세·담당 PUT·토큰 발급·token_read_only 등), GLOSSARY phase 24 용어, AGENTS.md 비밀값에 멤버 토큰 wfm_, CURRENT_HANDOFF 진행 단락. src/tests 변경 없음, 전체 4623 passed·100 skipped. 다음 step 주의: 접두어는 contracts/v1.API_PREFIX 하나로 쓰고 include_router(prefix=)로 붙인다, 읽기 전용 검사는 require_member_api 안(역할 검사보다 먼저).",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest tests/workflow/server/test_app.py tests/workflow/contracts -q",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "README 에 없던 세부를 조정값으로 정함: API_PREFIX 를 contracts/v1.py 에 둠(서버·러너 공유), 토큰 목록·폐기는 Bearer 허용(발급만 쿠키), 목록은 활성 토큰만·폐기한 토큰 재폐기는 404, 토큰 이름 중복 허용, 상세 work 칸은 목록 항목과 같은 모양(status 문자열)이고 중첩 UserStatus 만 {label, reason}, confidence 는 화면과 같은 문자열, 상세에 form_fields 포함·댓글·Jira 반영·체인은 제외, 모르는 쿼리(group·view 등)는 무시.",
+        "tests/workflow/contracts 만 단독 실행하면 기존 순환 import(owner_approval → worker → next_step_runs)로 수집 오류가 난다 — 이 step 과 무관한 기존 문제이며 전체 실행과 test_app.py 와 함께 실행하면 통과한다.",
+        "Origin 예외 (a)(Bearer 헤더 있음)는 D19 그대로 경로를 가리지 않는다 — 화면 라우트는 Bearer 를 무시하고 쿠키를 쓰지만, 브라우저가 다른 출처 요청에 Authorization 을 붙일 수 없고 CORS 를 열지 않으므로 안전하다고 판단(ADR-0032 결정 15에 근거 기록)."
+      ],
+      "completed_at": "2026-10-21T19:09:25+0900"
+    },
+    {
+      "step": 1,
+      "name": "member-token-store",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "token-auth",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "me-tokens",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "api-prefix",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "connector-paths",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "work-read-api",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "work-action-api",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "ops-docs",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "human-api-verify",
+      "status": "pending"
+    }
+  ],
+  "created_at": "2026-10-21T18:52:21+0900"
+}
