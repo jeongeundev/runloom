@@ -136,7 +136,8 @@
       ],
       "concerns": [
         "좁힌 테스트 묶음을 처음 돌렸을 때 test_web.py::test_app_home_has_work_toolbar_with_direct_register 가 setup 단계에서 ERROR 1번 났으나, 단독 실행·test_web.py 전체 실행·전체 pytest 에서는 통과했다. 이번 변경과 무관한 간헐 현상으로 보이지만 원인은 확인하지 못했다."
-      ]
+      ],
+      "completed_at": "2026-10-21T20:09:28+0900"
     },
     {
       "step": 6,
