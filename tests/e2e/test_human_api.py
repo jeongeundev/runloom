@@ -23,6 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.workflow.server.conftest import _settings, bearer, event, exchange, log_in, log_in_member, meta_for
+from tests.workflow.server.test_app import flat_routes
 from tests.workflow.server.test_github_sync import config
 from tests.workflow.server.test_task_cycle import (
     ALL_KINDS,
@@ -352,7 +353,7 @@ def test_07_old_json_paths_are_gone_and_screen_paths_stay(world):
     assert bare.post("/connector/claim", json=claim).json()["code"] == "forbidden_origin"
 
     # 화면·화면 폼 경로는 그대로 — 같은 접두어의 JSON 이 옮겨 가도 폼은 남는다
-    forms = {(m, r.path) for r in world.app.routes if getattr(r, "endpoint", None) is not None
+    forms = {(m, path) for r, path in flat_routes(world.app) if getattr(r, "endpoint", None) is not None
              and r.endpoint.__module__ == "workflow.server.web" for m in getattr(r, "methods", ())}
     assert {("POST", "/responsibilities/add"), ("POST", "/responsibilities/remove"), ("POST", "/me/tokens"),
             ("POST", "/work/{key}/assignee"), ("POST", "/sources/tokens"), ("GET", "/tasks"),

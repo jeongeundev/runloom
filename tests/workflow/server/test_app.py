@@ -4,6 +4,7 @@ import importlib
 import re
 from pathlib import Path
 
+import fastapi.routing
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.routing import Mount
@@ -134,8 +135,17 @@ def _documented_api_routes() -> set[tuple[str, str]]:
     return {(method, path) for path, method in rows}
 
 
-def _app_routes(settings) -> list:
-    return create_app(settings).routes
+def flat_routes(app) -> list[tuple]:
+    """(라우트, 접두어까지 붙은 경로) 목록. FastAPI 0.15x 부터 include_router 가 라우트를 `_IncludedRouter` 로 묶어
+    app.routes 에 두므로 공개 함수 iter_route_contexts 로 펼친다 — 그 함수가 없는 옛 버전은 app.routes 가 이미 평평하다."""
+    iter_contexts = getattr(fastapi.routing, "iter_route_contexts", None)
+    if iter_contexts is None:
+        return [(route, route.path) for route in app.routes]
+    return [(context.original_route, context.path) for context in iter_contexts(app.routes)]
+
+
+def _app_routes(settings) -> list[tuple]:
+    return flat_routes(create_app(settings))
 
 
 def test_every_non_screen_route_is_under_api_v1(settings):
@@ -143,31 +153,33 @@ def test_every_non_screen_route_is_under_api_v1(settings):
     `/api/v1/` 로 시작한다 — JSON 라우트가 접두어 없이 새로 붙으면 여기서 걸린다."""
     seen_non_api = {}
     outside = []
-    for route in _app_routes(settings):
+    for route, path in _app_routes(settings):
         if isinstance(route, Mount):
-            assert route.path == "/static", route.path
+            assert path == "/static", path
             continue
         module = route.endpoint.__module__
         if module == "workflow.server.web":
-            assert not route.path.startswith(API_PREFIX), route.path  # 화면 라우트는 /api/v1 아래에 두지 않는다
+            assert not path.startswith(API_PREFIX), path  # 화면 라우트는 /api/v1 아래에 두지 않는다
             continue
-        if route.path in NON_API_PATHS:
-            seen_non_api[route.path] = module
+        if path in NON_API_PATHS:
+            seen_non_api[path] = module
             continue
-        if not route.path.startswith(f"{API_PREFIX}/"):
-            outside.append((route.path, module))
+        if not path.startswith(f"{API_PREFIX}/"):
+            outside.append((path, module))
     assert outside == []
     assert seen_non_api == NON_API_PATHS
 
 
 def test_every_documented_api_route_exists(settings):
-    actual = {(method, route.path) for route in _app_routes(settings) if isinstance(route, APIRoute)
+    actual = {(method, path) for route, path in _app_routes(settings) if isinstance(route, APIRoute)
               for method in route.methods}
+    assert actual, "라우트를 하나도 못 읽었다"
     assert _documented_api_routes() - actual == set()
 
 
 def test_every_api_route_is_documented(settings):
     """반대쪽 — /api/v1 아래 라우트(HEAD 제외)는 모두 주소 표에 있다."""
-    actual = {(method, route.path) for route in _app_routes(settings) if isinstance(route, APIRoute)
-              for method in route.methods if route.path.startswith(f"{API_PREFIX}/") and method != "HEAD"}
+    actual = {(method, path) for route, path in _app_routes(settings) if isinstance(route, APIRoute)
+              for method in route.methods if path.startswith(f"{API_PREFIX}/") and method != "HEAD"}
+    assert actual, "라우트를 하나도 못 읽었다"
     assert actual - _documented_api_routes() == set()
