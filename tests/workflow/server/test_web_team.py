@@ -4,6 +4,7 @@
 `notify_webhook_url.<member_id>`(0600)에만 있고 화면에는 "저장됨"·호스트만. 실제 외부 웹훅은 부르지 않는다(MockTransport).
 """
 
+import hashlib
 import re
 import stat
 
@@ -121,6 +122,8 @@ ME_POSTS = [
     ("/me/webhook", {"url": URL}),
     ("/me/webhook/delete", {}),
     ("/me/webhook/test", {}),
+    ("/me/tokens", {"name": "x", "scope": "read"}),
+    ("/me/tokens/mtk-000000000000/revoke", {}),
 ]
 
 
@@ -539,6 +542,85 @@ def test_me_lists_only_notifications_i_receive(admin, member, conn):
     assert "본문-" not in page
     assert re.findall(r'data-notification-event="(\w+)"', admin.get("/me").text) == ["task_failed"]
 
+
+# --- /me: API 토큰 (phase 24 step 3, ARCHITECTURE "토큰 API·화면") ---------------------------------------
+
+ISSUED_NOTICE = "토큰은 지금 한 번만 보입니다. 안전한 곳에 복사해 두세요."
+
+
+def tokens_section(html: str) -> str:
+    start = html.index('data-me-section="tokens"')
+    return html[start:html.index("</section>", start)]
+
+
+def issued_token(html: str) -> str:
+    found = re.findall(r'<code id="issued-member-token">(wfm_[A-Za-z0-9_-]+)</code>', html)
+    assert len(found) == 1, html
+    return found[0]
+
+
+def test_me_shows_token_section_after_notifications_with_read_default(member):
+    page = member.get("/me").text
+    assert page.index("<h2>개인 알림</h2>") < page.index("<h2>API 토큰</h2>")
+    section = tokens_section(page)
+    assert "Authorization: Bearer &lt;토큰&gt;" in section
+    assert 'action="/me/tokens"' in section and 'maxlength="40"' in section
+    assert re.search(r'<input type="radio" name="scope" value="read"[^>]*checked', section)
+    assert re.search(r'<input type="radio" name="scope" value="full"(?![^>]*checked)[^>]*>', section)
+    assert "읽기 전용" in section and "내 권한 전부" in section
+    assert "만든 토큰이 없습니다." in section
+    assert "issued-member-token" not in page
+
+
+def test_issue_token_shows_raw_once_then_only_listed(member, conn):
+    response = member.post("/me/tokens", data={"name": "  노트북 CLI ", "scope": "full"}, follow_redirects=False)
+    assert response.status_code == 200  # 303 없이 같은 화면 — 원문을 리다이렉트로 넘기지 않는다
+    assert "set-cookie" not in response.headers
+    token = issued_token(response.text)
+    assert ISSUED_NOTICE in response.text and 'data-copy-target="issued-member-token"' in response.text
+    assert conn.execute("SELECT count(*) FROM member_tokens WHERE token_sha256 = ?",
+                        (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()[0] == 1
+    assert token not in dump(conn)
+
+    page = member.get("/me").text
+    assert token not in page and "issued-member-token" not in page
+    section = tokens_section(page)
+    row = conn.execute("SELECT token_id FROM member_tokens").fetchone()
+    shown = visible_text(section)
+    assert "노트북 CLI" in shown and "내 권한 전부" in shown and "사용 기록 없음" in shown
+    assert row["token_id"] not in shown  # 토큰 id 는 "자세히" 안에만
+    assert f'action="/me/tokens/{row["token_id"]}/revoke"' in section
+
+
+def test_issue_token_validation_is_422(member, conn):
+    error(member.post("/me/tokens", data={"name": " ", "scope": "read"}), 422, "invalid_field")
+    response = member.post("/me/tokens", data={"name": "x", "scope": "admin"})
+    error(response, 422, "invalid_field")
+    assert "권한은 read(읽기 전용) 또는 full(내 권한 전부)입니다." in response.text
+    assert conn.execute("SELECT count(*) FROM member_tokens").fetchone()[0] == 0
+
+
+def test_used_token_shows_last_used(app, member):
+    token = issued_token(member.post("/me/tokens", data={"name": "cli", "scope": "read"}).text)
+    assert TestClient(app).get("/api/v1/me/tokens", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert "사용 기록 없음" not in tokens_section(member.get("/me").text)
+
+
+def test_revoke_token_from_me(app, admin, member, conn):
+    token = issued_token(member.post("/me/tokens", data={"name": "cli", "scope": "full"}).text)
+    token_id = conn.execute("SELECT token_id FROM member_tokens").fetchone()[0]
+    error(admin.post(f"/me/tokens/{token_id}/revoke"), 404, "not_found")  # 남의 토큰
+    response = member.post(f"/me/tokens/{token_id}/revoke", follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (303, "/me")
+    assert "만든 토큰이 없습니다." in tokens_section(member.get("/me").text)
+    assert TestClient(app).get("/api/v1/me/tokens", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+    error(member.post(f"/me/tokens/{token_id}/revoke"), 404, "not_found")
+
+
+def test_me_token_names_are_escaped(member):
+    member.post("/me/tokens", data={"name": "<b>x</b>", "scope": "read"})
+    section = tokens_section(member.get("/me").text)
+    assert "&lt;b&gt;x&lt;/b&gt;" in section and "<b>x</b>" not in section
 
 # --- 에이전트 표·맡을 수 있는 일·담당 범위 (phase 23 step 6, ARCHITECTURE "설정 UX — phase 23" 팀 화면) ----------
 

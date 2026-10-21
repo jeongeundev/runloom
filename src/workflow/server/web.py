@@ -101,7 +101,7 @@ from workflow.domain.triage import AUTOSTART_MIN_HANDLED, parse_threshold
 from workflow.domain.triage_criteria import CRITERIA_BODY_MAX
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_list import ListQuery, parse_list_query, shown_next_action
-from workflow.server import github_connect, jira_connect, metrics_api, stage_runs, triage_runs, views, work_actions
+from workflow.server import github_connect, jira_connect, member_token_api, metrics_api, stage_runs, triage_runs, views, work_actions
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
@@ -3117,12 +3117,13 @@ def team_member_reset_link(
 
 
 def _me_page(request: Request, conn: Connection, member: LoggedIn, *, status: int = 200,
-             error: str | None = None, test_result: dict[str, str] | None = None) -> HTMLResponse:
+             error: str | None = None, test_result: dict[str, str] | None = None,
+             issued: dict[str, str] | None = None) -> HTMLResponse:
     now = utc_now()
     body = _render(
         "me.html", **_base(request, conn, member.session_id, now),
         **views.me_context(conn, member.session_id, member.member_id, secrets=request.app.state.secrets),
-        error=error, test_result=test_result,
+        error=error, test_result=test_result, issued=issued,
     )
     return HTMLResponse(body, status_code=status)
 
@@ -3219,6 +3220,31 @@ def me_webhook_test(
     url = request.app.state.secrets.read(secret_store.personal_webhook_name(member.member_id))
     return _me_page(request, conn, member, test_result=_send_test_notification(request, url))
 
+
+@router.post("/me/tokens", response_class=HTMLResponse)
+def me_token_issue(
+    request: Request,
+    name: str = Form(""),
+    scope: str = Form("read"),
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    """멤버 토큰 발급 — 303 없이 같은 화면에 원문을 한 번만 보인다(초대 링크와 같은 방식). 원문은 쿠키·주소에 두지 않는다."""
+    token = member_token_api.issue(conn, member, name, scope, error=PageError)
+    logger.info("멤버 토큰 발급: %s", token["scope"])
+    return _me_page(request, conn, member, issued={k: token[k] for k in ("token_id", "name", "token")})
+
+
+@router.post("/me/tokens/{token_id}/revoke")
+def me_token_revoke(
+    request: Request,
+    response: Response,
+    token_id: str,
+    member: LoggedIn = Depends(require_action(team.EDIT_OWN_SETTINGS)),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    member_token_api.revoke(conn, member, token_id, error=PageError)
+    return _redirect("/me", response)
 
 @router.get("/metrics")
 def metrics_redirect(request: Request) -> RedirectResponse:

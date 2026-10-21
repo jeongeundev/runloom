@@ -78,7 +78,22 @@
     {
       "step": 3,
       "name": "me-tokens",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-21T19:26:50+0900",
+      "summary": "새 server/member_token_api.py(APIRouter(prefix='/me/tokens'), app.py 에서 include_router(prefix='/api/v1') — API_PREFIX 상수는 step 4): POST(require_member_cookie_api + 라우트에서 EDIT_OWN_SETTINGS 검사, MemberTokenCreate extra=forbid, 201 원문 1회)·GET(require_action(EDIT_OWN_SETTINGS, api=True), list_member_tokens 칸만)·DELETE(204, 남의·없는·폐기한 토큰 404 not_found field token_id, read 토큰 403 token_read_only). 공용 함수 member_token_api.issue/revoke(error=ApiError|PageError)를 화면 폼도 씀. web.py: me_token_issue POST /me/tokens(303 없이 _me_page(issued=…) 200), me_token_revoke POST /me/tokens/{token_id}/revoke(303 /me), _me_page 에 issued. views.me_context 에 tokens. me.html: 개인 알림 뒤 section[data-me-section=tokens] — 안내·이름·범위 라디오(read 기본)·발급 상자 code#issued-member-token+복사·목록(권한 라벨·만든 시각·마지막 사용/'사용 기록 없음'·자세히 안 토큰 ID·[폐기]). 테스트: test_member_token_api.py 8개 신규, test_web_team.py 화면 6개 추가 + ME_POSTS 에 새 폼 2개(익명 303 단정 확장). 전체 4669 passed·100 skipped. 다음 step 주의: app.py 의 '/api/v1' 리터럴을 API_PREFIX 로 바꾼다.",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "API_PREFIX 상수가 아직 없어 app.py 에 '/api/v1' 리터럴로 등록했다 — step 4 에서 상수로 교체해야 한다."
+      ]
     },
     {
       "step": 4,
