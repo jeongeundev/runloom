@@ -5,6 +5,7 @@
 실행 요청의 `target.local_registration_id` 로 찾은 등록의 `tool` 로 하나를 고른다.
 """
 
+import hashlib
 import json
 import logging
 import subprocess
@@ -22,6 +23,8 @@ from workflow.contracts.v1 import (
     ExecutionRequest,
     ExecutionUsage,
     GenericResult,
+    HandoffReport,
+    HandoffReportRef,
     TriageResult,
     Verification,
 )
@@ -30,11 +33,14 @@ from .conftest import (
     BASE_COMMIT,
     CONNECTOR_ID,
     NOW,
+    REPORT_ID,
+    REPORT_REQUEST,
     REVIEW_SPEC,
     FakeCentral,
     assign_with_generic_handoff,
     assign_with_handoff,
     make_local_request,
+    make_report_job,
     make_request,
     make_review_request,
     make_triage_request,
@@ -1445,3 +1451,106 @@ def test_code_review_does_not_push(fake, client, state_conn, paths, tmp_path, mo
     events = fake.events_of(request.execution_id)
     assert events[-1]["type"] == "result_ready" and "branch_pushed" not in events[-1]["data"]
     assert pushed == []
+
+
+# --- 인계 리포트 (ARCHITECTURE "인계 리포트 — phase 25", step 7) ---------------------------------------------
+
+
+class ReportingStub(StubAdapter):
+    """실행 어댑터이면서 `ReportAdapter` — 리포트 작업 동안 `during()` 을 부른다."""
+
+    def __init__(self, during=None, **kwargs):
+        super().__init__(**kwargs)
+        self.report_calls: list[str] = []
+        self._report_during = during
+
+    def run_report(self, cwd, prompt_text, schema, progress, *, env=None):
+        self.report_calls.append(prompt_text)
+        if self._report_during is not None:
+            self._report_during()
+        return EchoAdapter().run_report(cwd, prompt_text, schema, progress)
+
+
+def test_claimed_report_job_runs_and_submits_without_local_execution_record(
+    fake, client, state_conn, paths, tmp_path,
+):
+    fake.report_jobs.append(make_report_job(job_type="tailored", request="# 맞춤 풀이: X\n\nclaim:change-1"))
+    adapter = ReportingStub(during=lambda: _wait_until(lambda: len(fake.heartbeats) >= 3))
+    runner = make_runner(client, state_conn, paths, adapter, tmp_path, heartbeat_interval=0.05)
+
+    runner.tick()
+
+    assert len(adapter.report_calls) == 1 and adapter.calls == []
+    assert HandoffReport.model_validate_json(fake.report_results[REPORT_ID]).job_type == "tailored"
+    assert state.active_execution(state_conn) is None  # 실행으로 기록하지 않는다 — 이벤트·seq 없음
+    during = fake.heartbeats[1:]
+    assert len(during) >= 2 and {h["current_execution_id"] for h in during} == {None}
+
+    request = assign_with_handoff(fake)
+    runner.tick()  # 다음 tick 은 실행을 받는다
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def _with_report(fake: FakeCentral, request: ExecutionRequest, decisions: list[dict], *,
+                 tamper: bool = False) -> tuple[ExecutionRequest, bytes]:
+    report = EchoAdapter().run_report(Path("."), REPORT_REQUEST, {}, lambda *a, **k: None).data
+    data = json.dumps({**report, "contract_version": 1, "report_id": REPORT_ID, "job_type": "original"},
+                      ensure_ascii=False).encode()
+    artifact_id = fake.add_artifact("exec-cause-001", "handoff_report", data, name="handoff_report.json")
+    ref = HandoffReportRef.model_validate({
+        "report_id": REPORT_ID, "artifact_id": artifact_id, "sha256": hashlib.sha256(data).hexdigest(),
+        "decisions": decisions,
+    })
+    if tamper:
+        fake.artifacts[artifact_id]["data"] = data + b" "
+    fake.allowed[request.execution_id].add(artifact_id)
+    return request.model_copy(update={"handoff_report": ref}), data
+
+
+DECISION = {"item_id": "change-1", "answer": "changed", "note": "쿠폰은 한 번만", "answered_by": "김정은",
+            "answered_at": "2026-10-23T01:00:00Z"}
+
+
+def test_handoff_report_is_written_as_report_and_decisions_json(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    fake.assignments[0], data = _with_report(fake, request, [DECISION])
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    files = adapter.handoff_files[0]
+    assert files["report.json"] == data
+    assert json.loads(files["decisions.json"]) == [DECISION]
+    assert fake.executions[request.execution_id]["status"] == "result_ready"
+
+
+def test_handoff_report_without_decisions_writes_only_report(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    fake.assignments[0], _ = _with_report(fake, request, [])
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert "report.json" in adapter.handoff_files[0] and "decisions.json" not in adapter.handoff_files[0]
+
+
+def test_handoff_report_hash_mismatch_fails_before_adapter(fake, client, state_conn, paths, tmp_path):
+    request = assign_with_handoff(fake)
+    fake.assignments[0], _ = _with_report(fake, request, [DECISION], tamper=True)
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert adapter.calls == []
+    failed = fake.events_of(request.execution_id)[-1]
+    assert failed["type"] == "failed" and failed["data"]["code"] == "handoff_hash_mismatch"
+    assert "handoff_report" in failed["data"]["message"]
+
+
+def test_no_handoff_report_means_no_report_files(fake, client, state_conn, paths, tmp_path):
+    assign_with_handoff(fake)
+    adapter = StubAdapter()
+
+    make_runner(client, state_conn, paths, adapter, tmp_path).tick()
+
+    assert not {"report.json", "decisions.json"} & set(adapter.handoff_files[0])

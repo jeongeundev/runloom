@@ -14,10 +14,19 @@ from workflow.connector.client import (
     Unauthenticated,
     Unreachable,
 )
-from workflow.contracts.v1 import ArtifactMeta, EventAck, ExecutionEvent
+from workflow.contracts.v1 import ArtifactMeta, EventAck, ExecutionEvent, ReportJob, ReportJobFailure
 from workflow.server.machine_api import RegistrationRequest
 
-from .conftest import CONNECTOR_ID, NOW, TOKEN, FakeCentral, assign_with_handoff, make_request
+from .conftest import (
+    CONNECTOR_ID,
+    NOW,
+    REPORT_ID,
+    TOKEN,
+    FakeCentral,
+    assign_with_handoff,
+    make_report_job,
+    make_request,
+)
 
 
 def _event(execution_id: str, seq: int, type_: str, data: dict) -> ExecutionEvent:
@@ -94,6 +103,50 @@ def test_claim_sends_registration_heads_only_when_given(fake, client):
 
 def test_claim_204_is_none(fake, client):
     assert client.claim(CONNECTOR_ID) is None
+
+
+def test_claim_with_job_type_is_report_job_and_without_is_execution_request(fake, client):
+    """ARCHITECTURE "claim 분기" — 응답에 `job_type` 키가 있으면 `ReportJob`, 없으면 `ExecutionRequest`."""
+    job = make_report_job("a" * 40)
+    request = make_request()
+    fake.report_jobs.append(job)
+    fake.assign(request)
+
+    first = client.claim(CONNECTOR_ID)
+    second = client.claim(CONNECTOR_ID)
+
+    assert isinstance(first, ReportJob) and first == job
+    assert second == request
+
+
+def test_submit_report_posts_raw_json_bytes_with_bearer(fake, client):
+    body = b'{"report_id": "x"}'
+
+    client.submit_report(REPORT_ID, body)
+
+    sent = _last(fake)
+    assert (sent.method, sent.url.path) == ("POST", f"/api/v1/report-jobs/{REPORT_ID}/result")
+    assert sent.headers["authorization"] == f"Bearer {TOKEN}"
+    assert sent.headers["content-type"] == "application/json"
+    assert fake.report_results[REPORT_ID] == body  # 받은 바이트 그대로 — 서버가 크기를 먼저 본다
+
+
+def test_fail_report_posts_failure_body(fake, client):
+    failure = ReportJobFailure(contract_version=1, failure_code="timeout", message="20분 초과")
+
+    client.fail_report(REPORT_ID, failure)
+
+    assert _last(fake).url.path == f"/api/v1/report-jobs/{REPORT_ID}/failure"
+    assert fake.report_failures[REPORT_ID] == {"contract_version": 1, "failure_code": "timeout", "message": "20분 초과"}
+
+
+def test_submit_report_late_is_central_error_409(fake, client):
+    fake.report_reject = (409, "report_not_leased")
+
+    with pytest.raises(CentralError) as exc:
+        client.submit_report(REPORT_ID, b"{}")
+
+    assert exc.value.status == 409 and exc.value.body.code == "report_not_leased"
 
 
 def test_claim_401_when_token_revoked(fake):

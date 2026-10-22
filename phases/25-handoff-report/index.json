@@ -179,7 +179,25 @@
     {
       "step": 7,
       "name": "report-connector",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-23T00:12:54+0900",
+      "summary": "connector/report_job.py run_report_job(client, state_conn, adapters, job, *, handoff_root)(등록 tool→ReportAdapter, 없음 registration_missing·adapter_missing; original=checkout_commit 이 등록 저장소에 있으면 local_tool._in_clean_checkout 안에서 로컬 근거(git_ops.log_lines 50줄·diff_stat 200줄, 기준 없으면 log -1) → build_report_prompt → run_report → HEAD·is_dirty 확인(readonly_violation), 없으면 handoff_root 아래 빈 임시 디렉터리 + '로컬 근거 없음 — 사유'; tailored=빈 임시 디렉터리·로컬 근거 없음, 임시 디렉터리에 파일 생기면 readonly_violation; HandoffReport 검증 실패 result_invalid, 체크아웃 GitError checkout_failed, 예외 adapter_error; 제출 전 mask_secrets+등록 env, 409·422 는 로그만). adapter.py ReportOutput(data, failed)·runtime_checkable ReportAdapter.run_report(cwd, prompt_text, schema, progress, *, env=None)·EchoAdapter.run_report(원본=요청문 첫 artifact:·commit:, '# 맞춤 풀이' 로 시작하면 첫 claim: 인용). local_tool.py HANDOFF_REPORT_OUTPUT_SCHEMA({sections(ReportSections 여섯 칸, maxItems 15), diagram}, 모든 객체 닫힘·전부 required)·LocalToolAdapter.run_report(launch_readonly→timeout·classify_failure·read_structured_message→result_invalid). client.py claim 은 job_type 있으면 ReportJob, submit_report(id, bytes)·fail_report(id, ReportJobFailure). runner.py ReportJob 이면 _run_report(heartbeat 스레드 current_execution_id=None, 로컬 state 기록 없음), _download_handoff 끝에 request.handoff_report → _download_checked(라벨 handoff_report) → report.json, decisions 있으면 decisions.json(HandoffDecision JSON 배열). prompt.py _report_note(report.json 있을 때만 '먼저 인계 디렉터리의 report.json(앞 단계 인계 리포트)[·decisions.json(받는 사람의 결정 답)]을 읽는다.' — bug_fix·review·generic 프롬프트의 인계 자료 목록 뒤)·build_report_prompt(job, local_evidence). 테스트: conftest FakeCentral 에 report_jobs·/report-jobs/{id}/result|failure·report_reject·make_report_job, test_report_job.py 신설, test_client·test_git_ops·test_adapter·test_local_tool·test_prompt·test_runner 추가. 기존 테스트 변경 없음. ARCHITECTURE 의 두 시그니처를 구현에 맞춤(run_report_job clock 제거, run_report env 키워드)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "ARCHITECTURE 시그니처와 두 곳이 다르다(문서를 고침): run_report_job 의 clock 인자는 쓸 곳이 없어 뺐고, run_report 에 env 키워드를 더했다 — 리포트 작업도 실행과 같은 로컬 등록 env 로 도구를 띄우기 위해서.",
+        "HANDOFF_REPORT_OUTPUT_SCHEMA 의 maxItems 를 실제 Codex 엄격 출력 모드·Claude --json-schema 가 받는지는 실제 도구로 확인하지 않았다(단위 테스트는 가짜 도구).",
+        "리포트 제출·실패 보고 중 중앙에 닿지 않으면(Unreachable) 로컬에 남기지 않으므로 그 작업은 서버의 30분 만료로 끝난다 — 재전송 큐는 만들지 않았다."
+      ],
+      "completed_at": "2026-10-23T01:30:00+0900"
     },
     {
       "step": 8,
