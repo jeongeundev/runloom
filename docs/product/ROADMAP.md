@@ -177,4 +177,4 @@ PRD의 5개 업무 시나리오(A·B 실행, A → 기존 C, B → 새 F, D·E �
 4. 실행 기록은 첫 단계부터 남긴다. MVP에서 집계는 수동으로 시작할 수 있다.
 5. 실제 사용에서 반복되는 불편을 확인해 v0.2 이후 우선순위를 갱신한다. 사용자 수 증가만으로 데이터가 충분하다고 가정하지 않는다.
 
-변경 시 제품 목적은 PRODUCT_BRIEF, 출시 범위와 단계는 이 문서, 구체적인 동작은 PRD, 기술 계약은 ARCHITECTURE/CONTRACT, 결정 이유는 ADR에 기록한다. 실행 완료는 CURRENT_HANDOFF와 VERIFICATION_LOG에 따로 남긴다.
+변경 시 제품 목적은 PRODUCT_BRIEF, 출시 범위와 단계는 이 문서, 구체적인 동작은 PRD, 기술 계약은 ARCHITECTURE/CONTRACT, 결정 이유는 ADR에 기록한다. 실행 완료는 VERIFICATION_LOG에 따로 남긴다(운영 인계 메모 CURRENT_HANDOFF 는 로컬 전용).

@@ -13,7 +13,7 @@
    [정보 부족 질문·답변](product/INTERNAL_REQUEST_INFORMATION.md) — 요청자 답변, 대기 표시, 새 실행 맥락과 기존 실행 보존, 스키마 v21.
    [지정 판단 담당자 응답](product/INTERNAL_REQUEST_JUDGMENT.md) — 근거에 고정한 승인·거절, 지정 응답자, 결과 반환 조건, 스키마 v22.
 1. [MVP 계획](product/MVP_PLAN.md) — 기존 제품 정의, 이웃 도구와의 경계, 측정 설계, 배포 경로, 10/2 범위와 phase 계획.
-2. [현재 인계](CURRENT_HANDOFF.md) — 다음 작업, 브랜치·phase 상태, 하네스 재개 방법.
+2. 현재 인계 — `docs/CURRENT_HANDOFF.md` 는 로컬 전용이다(git 에 올리지 않음). 다음 작업·셀프호스트 상태·하네스 재개 메모를 각자 로컬에 둔다.
 3. [로드맵](product/ROADMAP.md) — MVP → v1.0 단계별 범위·통과 기준·지표.
 4. [제품 개요](product/PRODUCT_BRIEF.md) — 문제, 가설, 차별성, 사용자와 에이전트.
 5. [PRD](PRD.md) — 실서비스 업무 순환 요구와 수용 시나리오.

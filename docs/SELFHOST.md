@@ -155,7 +155,7 @@ rm -r ~/Library/"Application Support"/workflow-connector-b ~/Library/Logs/workfl
 
 GitHub 이슈를 업무로 가져오고 결과를 이슈 댓글로 남긴다. 선택 기능이다. 기본은 **버튼 연결** — 내 GitHub 계정에 이 서버 전용 GitHub App 을 하나 만들어 설치한다([ADR-0017](adr/0017-github-app-connection.md)). 내부 ID·토큰을 입력하지 않는다. 자세한 동작·중지·복구는 [GitHub 런북](github/README.md).
 
-상태: 버튼 연결은 가짜 GitHub(`tests/e2e/test_github_app.py`)에 이어 2026-09-27 실제 github.com 에서 App 만들기·설치·이슈 수집까지 했다([CURRENT_HANDOFF](CURRENT_HANDOFF.md)). 결과 브랜치 push → 초안 PR → 병합 추적 → 알림(phase 12)은 가짜 GitHub·로컬 bare 저장소로만 검증했다(`tests/e2e/test_real_repo.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-28 phase 12 절). 아래 GitHub 화면 이름은 GitHub 문서 기준이고 실제 문구가 조금 다를 수 있다.
+상태: 버튼 연결은 가짜 GitHub(`tests/e2e/test_github_app.py`)에 이어 2026-09-27 실제 github.com 에서 App 만들기·설치·이슈 수집까지 했다. 결과 브랜치 push → 초안 PR → 병합 추적 → 알림(phase 12)은 가짜 GitHub·로컬 bare 저장소로만 검증했다(`tests/e2e/test_real_repo.py`, [VERIFICATION_LOG](VERIFICATION_LOG.md) 2026-09-28 phase 12 절). 아래 GitHub 화면 이름은 GitHub 문서 기준이고 실제 문구가 조금 다를 수 있다.
 
 ### 버튼으로 연결 (기본)
 
