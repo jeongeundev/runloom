@@ -174,7 +174,7 @@
         "lease_job 은 inputs_json 이 ReportJob 계약에 맞지 않으면 ValidationError(422)를 내고 그 행은 leased 로 남아 시간 초과까지 간다 — step 8 의 tailored 행 inputs_json 은 local_registration_id·checkout_commit(null)·base_commit(null)·request 를 꼭 채워야 한다.",
         "claim 마다 후보 실행 수만큼 원인 실행·리포트 조회를 한다(러너당 queued 실행은 보통 몇 개라 그대로 둠)."
       ],
-      "completed_at": "2026-10-23T00:20:00+0900"
+      "completed_at": "2026-10-23T00:12:54+0900"
     },
     {
       "step": 7,
