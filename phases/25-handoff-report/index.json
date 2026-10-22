@@ -128,7 +128,29 @@
     {
       "step": 5,
       "name": "report-worker",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-22T23:29:35+0900",
+      "summary": "server/handoff_reports.py: queue_original(conn, store, settings, github_for, *, execution_id, now) — 원인 실행의 기존 original 행이 있으면 그 행(멱등) → _target_facts(verdict passed·triage_logs.execution_id 의 cause·Agent·러너 revoked_at·capabilities_json) → 도메인 report_target: skip=None, unavailable=record_handoff_report_unavailable(inputs={}, agent_id=실행 agent, connector_id=Agent 의 러너 또는 None), make=PR 근거 수집(트랜잭션 밖)·build_report_request → create_handoff_report. inputs_json = {local_registration_id(target 값), checkout_commit, base_commit, request, evidence{artifacts·commits·pulls 정렬 목록, source_work, verification, claims: []}, pull_requests[{number,title,url}], pr_evidence_error} — 체크아웃은 target 모양으로(CodeChangeTarget=result_commit 없으면 base·같으면 base null / CommitReviewTarget=result·base / TriageTarget=base / 그 밖=executions.folder_commit), 근거 artifacts = 실행 산출물(텍스트 발췌) + input_artifact_ids + 입력 handoff_bundle 의 inputs·attachments·source_result_artifact_id(발췌 없이 목록만), verification = 봉투 verification 또는 verification_log 산출물. expire_reports(conn, settings, *, now) = expire_handoff_reports(older_than=now−wait, '{wait//60}분 안에 리포트가 오지 않음'). worker.py: Worker._queue_handoff_report(record_verdict 3곳 직후·_triage_verdict 의 record_triage_proposed True 직후 — 결과 뒤 판단은 도메인이 skip)·_expire_handoff_reports(tick 에서 _observe 뒤 _check_code_results 앞), TickReport.handoff_reports_queued·handoff_reports_expired, github_for 없으면 lambda: None('GitHub 연결 없음'). settings.py: Settings.handoff_report_wait_seconds=1800(WORKFLOW_HANDOFF_REPORT_WAIT_SECONDS)·HIDDEN_ENV_KEYS. 기존 단정 변경: test_settings 의 ENV_KEYS 단정 → set(ENV_KEYS)|set(HIDDEN_ENV_KEYS)(+ 둘이 겹치지 않음). 테스트: test_handoff_reports(bug_fix·needs_information·검토·실패·멱등·불가 사유 넷·PR 근거·PR 읽기 실패·30분 경계·done 보존·worker 미import), test_worker(범용 passed/failed), test_triage_judge(접수 판단 passed/failed), test_worker_next_step(결과 뒤 판단 결과 없음), test_internal_investigation(조사 passed), test_settings",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -c \"import workflow.server.worker; import workflow.server.handoff_reports\"",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "queue_original 이 예외를 내면(예: 산출물 저장소 이상) 그 tick 이 판정 커밋 뒤 멈추고, 판정은 이미 기록돼 다시 부르지 않으므로 그 실행엔 리포트 행이 영영 생기지 않는다(후속 착수는 다음 tick 에 진행). 일부러 포괄 except 를 넣지 않았다 — 필요하면 step 8 의 다시 만들기로 회복.",
+        "unavailable 행의 inputs_json 은 {} 다(ARCHITECTURE 에 정해진 모양 없음). step 8 report_view 는 pull_requests·pr_evidence_error 를 .get 으로 읽어야 한다.",
+        "요청문의 원본 종류 문구(GitHub 이슈·Jira 이슈·n8n 입구·직접 등록)는 ARCHITECTURE 에 없던 것을 이 step 이 정했다. 사내 요청으로 생긴 업무는 work_items.source_type 기준이라 '사내 요청' 으로 표시되지 않는다.",
+        "시간 초과 경계는 created_at·now 를 문자열로 비교한다 — 워커 시각이 utc_now 표기(마이크로초·Z)일 때만 정확하다(테스트도 그 표기로 맞춤)."
+      ]
     },
     {
       "step": 6,

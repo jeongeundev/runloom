@@ -1,5 +1,11 @@
-"""handoff_reports — 인계 리포트 서버 쪽 (phase 25). step 4: PR 근거 수집(ARCHITECTURE "PR 근거 수집", D22)."""
+# ruff: noqa: F811 — test_task_cycle 픽스처(cycle·worker)를 가져와 인자로 쓴다
+"""handoff_reports — 인계 리포트 서버 쪽 (phase 25). step 4: PR 근거 수집(ARCHITECTURE "PR 근거 수집", D22).
+step 5: 판정 통과한 실행 → 원본 리포트 작업(`queue_original`)·시간 초과(`expire_reports`) — ARCHITECTURE "대상 판정 —
+판정 지점 표"·"상태 전이". 여기서는 업무 순환(bug_fix·code_review)으로 본다 — 범용 종류는 test_worker, 접수 판단은
+test_triage_judge, 결과 뒤 판단은 test_worker_next_step, 사내 요청 조사는 test_internal_investigation.
+"""
 
+import json
 import logging
 
 import httpx
@@ -18,15 +24,32 @@ from workflow.adapters.github_client import (
     PullDetail,
     PullReviewComment,
 )
+from workflow.contracts.v1 import RUNNER_CAPABILITY_HANDOFF_REPORT
 from workflow.server import handoff_reports
 from workflow.server.handoff_reports import PrEvidence, PullEvidence
+from workflow.server.worker import _plus_seconds
 
 from .test_task_cycle import (  # noqa: F401 — 픽스처
+    BASE,
+    C1,
+    FIX,
     NOW,
+    REG_FIX,
+    REG_REVIEW,
+    REVIEW,
     SESSION,
     SOURCE,
+    _to_first_review,
+    clock,
     cycle,
+    executions,
+    finish_fix,
+    finish_review,
     import_issue,
+    make_worker,
+    review_tasks,
+    settings,
+    worker,
 )
 
 REPO = "acme/billing"
@@ -223,3 +246,221 @@ def test_installation_token_and_authorization_header_never_leave_the_client(conn
     assert evidence.pulls or evidence.error == "PR 읽기 실패 — GitHub 가 거부함(Pull requests 읽기 권한 확인)"
     for text in (repr(evidence), caplog.text):
         assert TOKEN not in text and "Bearer" not in text and "authorization" not in text.lower()
+
+
+# --- step 5: 판정 통과 → 원본 리포트 작업 ------------------------------------------------------
+
+
+def capable(conn, connector_id: str) -> None:
+    """러너가 마지막 claim 에 리포트 능력을 보고했다."""
+    repo.record_runner_capabilities(conn, connector_id, [RUNNER_CAPABILITY_HANDOFF_REPORT])
+    conn.commit()
+
+
+def reports(conn, execution_id: str) -> list:
+    return conn.execute("SELECT * FROM handoff_reports WHERE source_execution_id = ? ORDER BY created_at, rowid",
+                        (execution_id,)).fetchall()
+
+
+def fix_passed(conn, store, worker, **finish) -> tuple[str, str]:
+    """수정 단계 착수 → 결과 → 판정 tick. 반환은 (수정 Task, 실행)."""
+    task_id = import_issue(conn, 1)
+    worker.tick()
+    execution_id = executions(conn, task_id)[0]["execution_id"]
+    finish_fix(conn, store, execution_id, **finish)
+    worker.tick()
+    return task_id, execution_id
+
+
+def test_passed_fix_result_queues_one_original_report_with_inputs(cycle, conn, store, worker):
+    capable(conn, cycle["billing"])
+
+    task_id, execution_id = fix_passed(conn, store, worker)
+
+    (row,) = reports(conn, execution_id)
+    assert (row["job_type"], row["status"], row["reason"]) == ("original", "queued", None)
+    assert (row["agent_id"], row["connector_id"], row["source_task_id"]) == (FIX, cycle["billing"], task_id)
+    assert row["work_item_id"] == _work_id(conn, task_id) and row["created_at"] == NOW
+    inputs = json.loads(row["inputs_json"])
+    assert (inputs["local_registration_id"], inputs["checkout_commit"], inputs["base_commit"]) == (REG_FIX, C1, BASE)
+    assert (inputs["pull_requests"], inputs["pr_evidence_error"]) == ([], None)
+    evidence = inputs["evidence"]
+    # 판정 때의 산출물 — 검토 착수가 뒤에 원인 실행에 매다는 인계 묶음은 들어가지 않는다
+    own = {a["artifact_id"] for a in repo.artifacts_of(conn, execution_id) if a["kind"] != "handoff_bundle"}
+    assert set(evidence["artifacts"]) == own
+    assert evidence["commits"] == sorted([BASE, C1])
+    assert (evidence["pulls"], evidence["source_work"], evidence["verification"], evidence["claims"]) == (
+        [], True, True, [])
+    request = inputs["request"]
+    assert request.startswith("# 인계 리포트: RUN-")
+    assert "## 업무 원문 (source:work)" in request and "outcome: ready_for_review" in request
+    assert f"- commit:{C1}" in request and "연결된 PR 없음" in request
+    assert all(f"- artifact:{a}" in request for a in own)
+    # 후속 착수는 리포트를 기다리지 않는다 — 같은 tick 에 검토가 착수했다(대기는 claim 에서, step 6)
+    (review,) = review_tasks(conn, task_id)
+    assert len(executions(conn, review["task_id"])) == 1
+
+
+def test_failed_fix_verdict_makes_no_report(cycle, conn, store, worker):
+    capable(conn, cycle["billing"])
+    _task_id, execution_id = fix_passed(conn, store, worker, before_exit=0)
+    assert reports(conn, execution_id) == []
+
+
+def test_needs_information_fix_result_queues_a_report(cycle, conn, store, worker):
+    capable(conn, cycle["billing"])
+    _task_id, execution_id = fix_passed(conn, store, worker, outcome="needs_information", kinds=())
+    (row,) = reports(conn, execution_id)
+    inputs = json.loads(row["inputs_json"])
+    assert row["status"] == "queued"
+    # 결과 커밋이 없으면 기준 커밋을 체크아웃한다 — base 는 같아서 null
+    assert (inputs["checkout_commit"], inputs["base_commit"]) == (BASE, None)
+    assert inputs["evidence"]["verification"] is False
+
+
+def test_passed_review_result_queues_a_report_checking_out_the_reviewed_commit(cycle, conn, store, worker):
+    capable(conn, cycle["billing"])
+    _fix_task, _fix_exec, review_task, review_exec = _to_first_review(conn, store, worker)
+    finish_review(conn, store, review_exec, outcome="changes_requested")
+
+    worker.tick()
+
+    (row,) = reports(conn, review_exec)
+    inputs = json.loads(row["inputs_json"])
+    assert (row["status"], row["agent_id"], row["source_task_id"]) == ("queued", REVIEW, review_task)
+    assert (inputs["local_registration_id"], inputs["checkout_commit"], inputs["base_commit"]) == (REG_REVIEW, C1, BASE)
+    # 입력 인계 묶음과 그 안의 선행 산출물도 확인 가능한 근거다
+    request_ids = set(json.loads(repo.get_execution(conn, review_exec)["request_json"])["input_artifact_ids"])
+    assert request_ids <= set(inputs["evidence"]["artifacts"])
+
+
+def test_same_verdict_twice_keeps_one_row(cycle, conn, store, worker, make_worker, settings):
+    capable(conn, cycle["billing"])
+    _task_id, execution_id = fix_passed(conn, store, worker)
+    worker.tick()
+    make_worker().tick()
+
+    (row,) = reports(conn, execution_id)
+    again = handoff_reports.queue_original(conn, store, settings, lambda _c: None, execution_id=execution_id,
+                                           now="2026-10-06T13:00:00Z")
+    assert again["report_id"] == row["report_id"]
+    assert len(reports(conn, execution_id)) == 1
+
+
+def test_runner_without_the_capability_records_unavailable(cycle, conn, store, worker):
+    _task_id, execution_id = fix_passed(conn, store, worker)  # 러너가 능력을 보고하지 않음(NULL)
+
+    (row,) = reports(conn, execution_id)
+    assert (row["status"], row["reason"], row["finished_at"]) == (
+        "unavailable", "러너가 리포트를 지원하지 않음 — 러너 재설치 필요", NOW)
+    assert (row["agent_id"], row["connector_id"]) == (FIX, cycle["billing"])
+
+
+def _queue_again(conn, store, settings, execution_id: str):
+    conn.execute("DELETE FROM handoff_reports WHERE source_execution_id = ?", (execution_id,))
+    conn.commit()
+    return handoff_reports.queue_original(conn, store, settings, lambda _c: None, execution_id=execution_id, now=NOW)
+
+
+def test_api_agent_and_deleted_agent_and_revoked_runner_are_unavailable(cycle, conn, store, worker, settings):
+    capable(conn, cycle["billing"])
+    _task_id, execution_id = fix_passed(conn, store, worker)
+
+    conn.execute("UPDATE connectors SET revoked_at = ? WHERE connector_id = ?", (NOW, cycle["billing"]))
+    assert _queue_again(conn, store, settings, execution_id)["reason"] == "러너 연결 없음"
+    conn.execute("UPDATE agents SET connection_type = 'api' WHERE agent_id = ?", (FIX,))
+    assert _queue_again(conn, store, settings, execution_id)["reason"] == "API 연결형 에이전트"
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM agents WHERE agent_id = ?", (FIX,))
+    row = _queue_again(conn, store, settings, execution_id)
+    assert (row["status"], row["reason"], row["agent_id"], row["connector_id"]) == (
+        "unavailable", "원인 에이전트 없음", FIX, None)
+
+
+def test_pr_evidence_is_collected_when_the_row_is_made(cycle, conn, store, worker, settings):
+    capable(conn, cycle["billing"])
+    task_id, execution_id = fix_passed(conn, store, worker)
+    _detect(conn, _work_id(conn, task_id), 77, NOW)
+    conn.execute("DELETE FROM handoff_reports")
+    conn.commit()
+
+    row = handoff_reports.queue_original(conn, store, settings, lambda _c: FakeGitHub(commits=1),
+                                         execution_id=execution_id, now=NOW)
+
+    inputs = json.loads(row["inputs_json"])
+    assert inputs["pull_requests"] == [{"number": 77, "title": "PR 77", "url": f"https://github.com/{REPO}/pull/77"}]
+    assert inputs["pr_evidence_error"] is None
+    assert inputs["evidence"]["pulls"] == [77]
+    assert f"{0:040x}" in inputs["evidence"]["commits"]
+    assert "### pr:77 PR 77" in inputs["request"]
+
+
+def test_pr_read_failure_keeps_the_report_without_pr_evidence(cycle, conn, store, worker):
+    capable(conn, cycle["billing"])
+    task_id = import_issue(conn, 1)
+    _detect(conn, _work_id(conn, task_id), 77, NOW)
+    worker.tick()
+    execution_id = executions(conn, task_id)[0]["execution_id"]
+    finish_fix(conn, store, execution_id)
+
+    worker.tick()  # 이 워커에는 GitHub 클라이언트가 없다
+
+    (row,) = reports(conn, execution_id)
+    inputs = json.loads(row["inputs_json"])
+    assert (row["status"], inputs["pull_requests"], inputs["evidence"]["pulls"]) == ("queued", [], [])
+    assert inputs["pr_evidence_error"] == "PR 읽기 실패 — GitHub 연결 없음"
+    assert "PR 읽기 실패 — GitHub 연결 없음" in inputs["request"]
+
+
+# --- step 5: 시간 초과 --------------------------------------------------------------------
+
+
+def test_queued_and_leased_reports_time_out_at_the_wait_boundary(cycle, conn, store, worker, clock):
+    capable(conn, cycle["billing"])
+    clock.now = _plus_seconds(NOW, 0)  # `utc_now` 표기(마이크로초) — 실제 워커 시각과 같은 모양이어야 경계를 문자열로 비교한다
+    _task_id, execution_id = fix_passed(conn, store, worker)
+    (row,) = reports(conn, execution_id)
+    assert repo.lease_handoff_report(conn, cycle["billing"], now=NOW)["status"] == "leased"
+
+    clock.now = _plus_seconds(NOW, 1799)
+    worker.tick()
+    assert reports(conn, execution_id)[0]["status"] == "leased"
+
+    clock.now = _plus_seconds(NOW, 1800)  # 정확히 30분이면 시간 초과(경계 포함)
+    worker.tick()
+    (row,) = reports(conn, execution_id)
+    assert (row["status"], row["reason"], row["finished_at"]) == ("timed_out", "30분 안에 리포트가 오지 않음", clock.now)
+
+
+def test_expire_uses_the_setting_and_leaves_finished_reports(cycle, conn, store, worker, settings, clock):
+    import dataclasses
+
+    capable(conn, cycle["billing"])
+    clock.now = _plus_seconds(NOW, 0)
+    _task_id, execution_id = fix_passed(conn, store, worker)
+    (row,) = reports(conn, execution_id)
+    result_artifact = repo.get_execution(conn, execution_id)["result_artifact_id"]
+    conn.execute("UPDATE handoff_reports SET status = 'done', artifact_id = ?, finished_at = ? WHERE report_id = ?",
+                 (result_artifact, NOW, row["report_id"]))
+    conn.commit()
+    short = dataclasses.replace(settings, handoff_report_wait_seconds=120)
+
+    assert handoff_reports.expire_reports(conn, short, now=_plus_seconds(NOW, 7200)) == 0
+    assert reports(conn, execution_id)[0]["status"] == "done"
+
+    conn.execute("UPDATE handoff_reports SET status = 'queued', artifact_id = NULL, finished_at = NULL")
+    conn.commit()
+    assert handoff_reports.expire_reports(conn, short, now=_plus_seconds(NOW, 119)) == 0
+    assert handoff_reports.expire_reports(conn, short, now=_plus_seconds(NOW, 120)) == 1
+    assert reports(conn, execution_id)[0]["reason"] == "2분 안에 리포트가 오지 않음"
+
+
+def test_handoff_reports_does_not_import_the_worker():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(handoff_reports))
+    imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                for alias in node.names} | {node.module for node in ast.walk(tree)
+                                             if isinstance(node, ast.ImportFrom) and node.module}
+    assert not {"worker", "web", "workflow.server.worker", "workflow.server.web"} & imported

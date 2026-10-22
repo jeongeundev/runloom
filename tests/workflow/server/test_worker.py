@@ -24,6 +24,7 @@ from workflow.adapters.github_client import GitHubRateLimited, IssuePage
 from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import (
     BUILTIN_RULES,
+    RUNNER_CAPABILITY_HANDOFF_REPORT,
     ArtifactMeta,
     ChainCallback,
     ExecutionEvent,
@@ -581,6 +582,32 @@ def test_generic_result_in_spec_passes_and_waits_for_review(flow, worker, conn, 
     task_r = _task(conn, TASK_R)
     assert task_r["finished_at"] is None and repo.get_execution(conn, r)["released_at"] is None
     assert worker.tick().generic_checked == 0  # 한 번만 판정
+
+
+def _original_reports(conn, execution_id: str) -> list:
+    return conn.execute("SELECT * FROM handoff_reports WHERE source_execution_id = ? AND job_type = 'original'",
+                        (execution_id,)).fetchall()
+
+
+def test_passed_generic_result_queues_a_report_and_a_failed_one_does_not(flow, worker, conn, store, clock):
+    """판정 지점 표 — 사용자 정의 종류 passed → 원본 리포트 작업(phase 25 step 5). 체크아웃은 실행의 folder_commit."""
+    connector_id, _token = flow
+    repo.record_runner_capabilities(conn, connector_id, [RUNNER_CAPABILITY_HANDOFF_REPORT])
+    conn.commit()
+    r = spawn_review(worker, conn, store, clock)
+
+    (row,) = _original_reports(conn, EXEC_T)
+    inputs = json.loads(row["inputs_json"])
+    assert (row["status"], row["agent_id"], row["connector_id"]) == ("queued", "agent-codex-mac", connector_id)
+    assert (inputs["local_registration_id"], inputs["checkout_commit"], inputs["base_commit"]) == (
+        LOCAL_REGISTRATION, None, None)
+    assert "outcome: ready_for_handoff" in inputs["request"] and "종류: 분류" in inputs["request"]
+    assert len(_executions(conn, TASK_R)) == 1  # 후속 착수는 그대로
+
+    finish_review(conn, store, clock, r, outcome="merged")  # 허용 밖 outcome — 판정 실패
+    worker.tick()
+    assert _verdict(conn, r)["outcome"] == "failed"
+    assert _original_reports(conn, r) == []
 
 
 def test_generic_result_outcome_outside_spec_fails(flow, worker, conn, store, clock):

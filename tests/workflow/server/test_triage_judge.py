@@ -9,7 +9,7 @@
 import json
 
 from workflow.adapters import repo
-from workflow.contracts.v1 import TriageCandidates
+from workflow.contracts.v1 import RUNNER_CAPABILITY_HANDOFF_REPORT, TriageCandidates
 from workflow.server.worker import TRIAGE_USAGE_PAUSE_SECONDS, _plus_seconds
 
 from .test_task_cycle import (  # noqa: F401 — 픽스처
@@ -107,6 +107,37 @@ def test_valid_result_becomes_a_proposal_and_closes_the_triage_stage(conn, store
         stage_before["kind"], stage_before["chosen_agent_id"], None)
     assert repo.list_executions(conn, stage["task_id"]) == []
     assert worker.tick().triage_judged == 0  # 두 번 판정하지 않는다
+
+
+def test_intake_triage_proposal_queues_an_original_report(conn, store, worker, judge):
+    """판정 지점 표 — 접수 판단 passed → 원본 리포트 작업, 체크아웃은 판단 target 의 기준 커밋(phase 25 step 5)."""
+    repo.record_runner_capabilities(conn, judge["billing"], [RUNNER_CAPABILITY_HANDOFF_REPORT])
+    conn.commit()
+    started = started_triage(conn, worker)
+    log = started["log"]
+    submit(conn, store, log, result_body(log))
+
+    worker.tick()
+
+    (row,) = conn.execute("SELECT * FROM handoff_reports WHERE source_execution_id = ?",
+                          (log["execution_id"],)).fetchall()
+    inputs = json.loads(row["inputs_json"])
+    assert (row["job_type"], row["status"], row["agent_id"], row["source_task_id"]) == (
+        "original", "queued", FIX, log["task_id"])
+    assert (inputs["checkout_commit"], inputs["base_commit"]) == (BASE, None)
+
+
+def test_failed_triage_makes_no_report(conn, store, worker, judge):
+    repo.record_runner_capabilities(conn, judge["billing"], [RUNNER_CAPABILITY_HANDOFF_REPORT])
+    conn.commit()
+    started = started_triage(conn, worker)
+    log = started["log"]
+    submit(conn, store, log, result_body(log, inspected_commit="f" * 40))
+
+    worker.tick()
+
+    assert log_row(conn, log["triage_id"])["state"] == "failed"
+    assert conn.execute("SELECT COUNT(*) FROM handoff_reports").fetchone()[0] == 0
 
 
 def test_proposal_uses_the_candidates_fixed_at_start(conn, store, worker, judge):

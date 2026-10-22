@@ -127,6 +127,24 @@ def test_proposed_next_step_is_judged_with_the_next_step_rules(conn, store, work
     assert report.next_step_started == 0 and len(triage_logs(conn, wid)) == 1
 
 
+def test_next_step_triage_result_makes_no_report_but_its_cause_has_one(conn, store, worker, capable):
+    """판정 지점 표 — 결과 뒤 판단 자체의 결과에는 리포트를 만들지 않는다(D4). 원인 결과의 리포트는 판단을 막지 않는다(D15)."""
+    repo.record_runner_capabilities(conn, capable["billing"], ["verify_only", "after_result_triage", "handoff_report"])
+    conn.commit()
+    task_id, execution_id = fix_result(conn, store, worker, outcome="needs_information")
+    worker.tick()
+    wid = work_of(conn, task_id)["work_item_id"]
+    log = only_log(conn, wid)
+    assert log["cause"] == "after_result"
+    submit(conn, store, log, next_body(log))
+
+    worker.tick()
+
+    assert only_log(conn, wid)["state"] == "proposed"
+    sources = [r["source_execution_id"] for r in conn.execute("SELECT source_execution_id FROM handoff_reports")]
+    assert sources == [execution_id]
+
+
 def test_intake_rules_are_not_used_for_a_next_step(conn, store, worker, capable):
     """접수 판단 모양(제안 종류·담당, next_action 없음)은 결과 뒤 판단에서 후보 밖 제안이다."""
     task_id, execution_id = fix_result(conn, store, worker, outcome="needs_information")

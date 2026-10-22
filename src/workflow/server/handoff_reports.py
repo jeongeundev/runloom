@@ -2,15 +2,23 @@
 
 step 4: PR 근거 수집(D22). 중앙이 GitHub 에서 업무에 연결된 PR 의 본문·커밋·리뷰 코멘트를 읽는다(GET 만). 읽기 실패면
 PR 근거 전부 없이 사유만 남기고 예외를 내보내지 않는다. 사유·로그에 토큰·헤더·응답 본문을 넣지 않는다.
+step 5: 판정 통과한 실행 → 원본 리포트 작업(`queue_original`, 워커의 판정 지점이 직후에 부른다)·시간 초과(`expire_reports`).
+대상은 종류 이름이 아니라 판정·판단 단계·Agent 사실(도메인 `report_target`)로, 체크아웃 커밋은 요청 target 의 모양으로 고른다.
 `server/worker.py` 를 import 하지 않는다(순환 import).
 """
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from sqlite3 import Connection
+from datetime import UTC, datetime, timedelta
+from sqlite3 import Connection, Row
+
+from pydantic import ValidationError
 
 from workflow.adapters import repo
+from workflow.adapters.artifact_store import ArtifactStore
+from workflow.adapters.errors import ArtifactMissing, NotFound
 from workflow.adapters.github_client import (
     GitHubClient,
     GitHubError,
@@ -20,6 +28,26 @@ from workflow.adapters.github_client import (
     GitHubUnavailable,
 )
 from workflow.contracts.github import GitHubSourceConfig
+from workflow.contracts.v1 import (
+    RUNNER_CAPABILITY_HANDOFF_REPORT,
+    CodeChangeTarget,
+    CommitReviewTarget,
+    ExecutionRequest,
+    HandoffBundle,
+    TriageTarget,
+    format_work_key,
+)
+from workflow.domain.handoff_report import (
+    ArtifactFact,
+    EvidenceSet,
+    PullFact,
+    ReportRequestFacts,
+    TargetFacts,
+    VerificationFact,
+    build_report_request,
+    report_target,
+)
+from workflow.server.settings import Settings
 
 log = logging.getLogger("workflow.handoff_reports")
 
@@ -114,3 +142,174 @@ def collect_pr_evidence(
         log.warning("인계 리포트 PR 근거 읽기 실패 %s: %s", work_item_id, type(exc).__name__)
         return PrEvidence(error=f"PR 읽기 실패 — {reason}")
     return PrEvidence(pulls=tuple(pulls))
+
+
+# --- 판정 통과 → 원본 리포트 작업 (step 5) ---------------------------------------------------------
+
+_SOURCE_KINDS = {"github": "GitHub 이슈", "jira": "Jira 이슈", "n8n": "n8n 입구", "manual": "직접 등록"}
+_TEXT_TYPES = ("application/json",)
+
+
+def _target_facts(conn: Connection, execution: Row) -> tuple[TargetFacts, Row | None]:
+    """도메인 대상·불가 판정 재료와 원인 Agent 행."""
+    verdict = repo.get_verdict(conn, execution["execution_id"])
+    triage = conn.execute("SELECT cause FROM triage_logs WHERE execution_id = ?", (execution["execution_id"],)).fetchone()
+    agent = repo.get_agent(conn, execution["agent_id"])
+    connector = repo.get_connector(conn, agent["connector_id"]) if agent and agent["connector_id"] else None
+    capabilities = json.loads(connector["capabilities_json"] or "null") if connector else None
+    return TargetFacts(
+        verdict_passed=verdict is not None and json.loads(verdict["verdict_json"]).get("outcome") == "passed",
+        triage_stage=triage is not None,
+        triage_cause=triage["cause"] if triage else None,
+        agent_exists=agent is not None,
+        connection_type=agent["connection_type"] if agent else None,
+        runner_attached=connector is not None and connector["revoked_at"] is None,
+        runner_capable=RUNNER_CAPABILITY_HANDOFF_REPORT in (capabilities or ()),
+    ), agent
+
+
+def _result_data(conn: Connection, store: ArtifactStore, execution: Row) -> dict:
+    """결과 봉투 JSON(코드 수정·검토·범용·판단). 읽지 못하면 빈 dict — 요청문에 '없음' 으로 남는다."""
+    try:
+        data = json.loads(repo.read_artifact(conn, store, execution["result_artifact_id"]))
+    except (ValueError, NotFound, ArtifactMissing):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _commits(request: ExecutionRequest, result: dict, execution: Row) -> tuple[str | None, str | None]:
+    """(체크아웃 커밋, base 커밋) — ARCHITECTURE "근거" 의 체크아웃 커밋 규칙을 target 모양으로 고른다."""
+    target = request.target
+    if isinstance(target, CodeChangeTarget):
+        checkout = result.get("result_commit") or target.base_commit
+        return checkout, (target.base_commit if target.base_commit != checkout else None)
+    if isinstance(target, CommitReviewTarget):
+        return target.result_commit, target.base_commit
+    if isinstance(target, TriageTarget):
+        return target.base_commit, None
+    return execution["folder_commit"], None
+
+
+def _verification(result: dict) -> VerificationFact | None:
+    v = result.get("verification")
+    if not isinstance(v, dict):
+        return None
+    try:
+        return VerificationFact(profile_id=str(v["profile_id"]), exit_code=int(v["exit_code"]),
+                                result_commit=str(v["result_commit"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _artifact_fact(conn: Connection, store: ArtifactStore, row: Row, *, with_text: bool) -> ArtifactFact:
+    media_type = row["content_type"].split(";")[0].strip().lower()
+    text = None
+    if with_text and (media_type.startswith("text/") or media_type in _TEXT_TYPES):
+        try:
+            text = repo.read_artifact(conn, store, row["artifact_id"]).decode("utf-8", errors="replace")
+        except (NotFound, ArtifactMissing):
+            text = None
+    return ArtifactFact(artifact_id=row["artifact_id"], kind=row["kind"], name=row["name"], size=row["size"],
+                        media_type=media_type, text=text)
+
+
+def _input_artifact_ids(conn: Connection, store: ArtifactStore, request: ExecutionRequest) -> list[str]:
+    """실행의 입력 산출물 + 입력 인계 묶음이 가리키는 선행 산출물(inputs·attachments·원인 결과)."""
+    ids = list(request.input_artifact_ids)
+    for artifact_id in request.input_artifact_ids:
+        row = repo.get_artifact(conn, artifact_id)
+        if row is None or row["kind"] != "handoff_bundle":
+            continue
+        try:
+            bundle = HandoffBundle.model_validate_json(repo.read_artifact(conn, store, artifact_id))
+        except (ValidationError, ValueError, NotFound, ArtifactMissing):
+            continue
+        ids += [i.artifact_id for i in bundle.inputs] + [a.artifact_id for a in bundle.attachments]
+        ids.append(bundle.source_result_artifact_id)
+    return list(dict.fromkeys(ids))
+
+
+def _original_inputs(conn: Connection, store: ArtifactStore, github_for, execution: Row, task: Row) -> dict:
+    """`inputs_json` — 체크아웃 커밋·확인 가능한 근거·PR 근거·요청문. 비밀값·로컬 경로는 넣지 않는다."""
+    request = ExecutionRequest.model_validate_json(execution["request_json"])
+    result = _result_data(conn, store, execution)
+    checkout, base = _commits(request, result, execution)
+    work = conn.execute("SELECT * FROM work_items WHERE work_item_id = ?", (task["work_item_id"],)).fetchone()
+    pr = collect_pr_evidence(conn, github_for, work_item_id=work["work_item_id"])
+
+    own = repo.artifacts_of(conn, execution["execution_id"])
+    own_ids = {a["artifact_id"] for a in own}
+    inputs = [row for aid in _input_artifact_ids(conn, store, request)
+              if aid not in own_ids and (row := repo.get_artifact(conn, aid)) is not None]
+    artifacts = tuple(_artifact_fact(conn, store, a, with_text=True) for a in own) + tuple(
+        _artifact_fact(conn, store, a, with_text=False) for a in inputs)
+    verification = _verification(result)
+    evidence = EvidenceSet(
+        artifacts=frozenset(a.artifact_id for a in artifacts),
+        commits=frozenset({c for c in (checkout, base) if c} | {sha for p in pr.pulls for sha, _ in p.commits}),
+        pulls=frozenset(p.number for p in pr.pulls),
+        source_work=bool(work["request"].strip() or work["source_url"]),
+        verification=verification is not None or any(a.kind == "verification_log" for a in artifacts),
+        claims=frozenset(),
+    )
+    spec = repo.get_kind(conn, work["session_id"], execution["kind"])
+    outcome, summary = result.get("outcome"), result.get("summary")
+    text = build_report_request(ReportRequestFacts(
+        work_key=format_work_key(work["key_number"]), title=work["title"],
+        source_kind=_SOURCE_KINDS.get(work["source_type"], work["source_type"]), source_url=work["source_url"],
+        source_text=work["request"], kind_label=spec.label if spec else execution["kind"],
+        outcome=outcome if isinstance(outcome, str) else None, summary=summary if isinstance(summary, str) else None,
+        verification=verification, artifacts=artifacts,
+        pulls=tuple(PullFact(number=p.number, title=p.title, url=p.url, body=p.body, commits=p.commits,
+                             comments=p.comments) for p in pr.pulls),
+        pr_error=pr.error, evidence=evidence,
+    ))
+    return {
+        "local_registration_id": request.target.local_registration_id,
+        "checkout_commit": checkout,
+        "base_commit": base,
+        "request": text,
+        "evidence": {"artifacts": sorted(evidence.artifacts), "commits": sorted(evidence.commits),
+                     "pulls": sorted(evidence.pulls), "source_work": evidence.source_work,
+                     "verification": evidence.verification, "claims": []},
+        "pull_requests": [{"number": p.number, "title": p.title, "url": p.url} for p in pr.pulls],
+        "pr_evidence_error": pr.error,
+    }
+
+
+def queue_original(
+    conn: Connection, store: ArtifactStore, settings: Settings,
+    github_for: Callable[[GitHubSourceConfig], GitHubClient | None], *, execution_id: str, now: str,
+) -> Row | None:
+    """판정 통과한 실행의 원본 리포트 작업 — 이미 원본 행이 있으면(어느 상태든) 그 행(멱등). 대상 아님이면 None,
+    불가 사유면 `unavailable` 행, 그 밖은 PR 근거 수집(트랜잭션 밖)·요청문 조립 뒤 `queued` 행."""
+    existing = repo.latest_original_report(conn, execution_id)
+    if existing is not None:
+        return existing
+    execution = repo.get_execution(conn, execution_id)
+    facts, agent = _target_facts(conn, execution)
+    target = report_target(facts)
+    if target.action == "skip":
+        return None
+    task = repo.get_task(conn, execution["task_id"])
+    keys = {"session_id": task["session_id"], "work_item_id": task["work_item_id"],
+            "source_execution_id": execution_id, "source_task_id": task["task_id"], "job_type": "original",
+            "agent_id": execution["agent_id"], "connector_id": agent["connector_id"] if agent else None}
+    if target.action == "unavailable":
+        return repo.record_handoff_report_unavailable(conn, **keys, reason=target.reason, inputs={}, now=now)
+    inputs = _original_inputs(conn, store, github_for, execution, task)
+    row, _created = repo.create_handoff_report(conn, **keys, inputs=inputs, now=now)
+    return row
+
+
+def _minus_seconds(now: str, seconds: int) -> str:
+    """`utc_now` 와 같은 표기(UTC, 마이크로초, `Z`) — repo 의 문자열 비교와 맞는다."""
+    moved = (datetime.fromisoformat(now) - timedelta(seconds=seconds)).astimezone(UTC)
+    return moved.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def expire_reports(conn: Connection, settings: Settings, *, now: str) -> int:
+    """`queued`·`leased` 가 만들어진 지 대기 시간 이상이면 `timed_out`(경계 포함). 바뀐 수."""
+    wait = settings.handoff_report_wait_seconds
+    return repo.expire_handoff_reports(conn, older_than=_minus_seconds(now, wait),
+                                       reason=f"{wait // 60}분 안에 리포트가 오지 않음", now=now)
