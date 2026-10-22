@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from workflow.adapters import repo
 from workflow.adapters.errors import NotFound, RegistrationTaken
 from workflow.contracts.v1 import (
+    RUNNER_CAPABILITY_HANDOFF_REPORT,
     ArtifactMeta,
     ClaimRequest,
     CommitSha,
@@ -23,9 +24,11 @@ from workflow.contracts.v1 import (
     ExecutionRequest,
     HeartbeatRequest,
     NonEmptyStr,
+    ReportJobFailure,
 )
+from workflow.domain.handoff_report import UNAVAILABLE_REASONS
 from workflow.domain.status import TERMINAL_STATUSES
-from workflow.server import work_actions
+from workflow.server import handoff_reports, work_actions
 from workflow.server.auth import SELFHOST_SESSION_ID, ensure_workspace, get_conn, require_connector, utc_now
 from workflow.server.errors import ApiError
 
@@ -111,10 +114,25 @@ def claim(
     repo.record_runner_capabilities(conn, connector_id, body.capabilities)  # 검증만 다시 배정·준비 판정의 입력
     if body.registration_heads:  # 배정 판단보다 먼저 — 새 업무의 기준 커밋 (ADR-0018 결정 2)
         repo.update_registration_heads(conn, connector_id, body.registration_heads)
-    row = repo.claim_execution(conn, connector_id, utc_now())
+    # 인계 리포트(phase 25 — ARCHITECTURE "claim 규칙"): 능력을 선언한 러너는 리포트 작업을 실행보다 먼저 받고, 실행에는
+    # 원인 리포트 참조가 붙는다. 선언하지 않은 러너의 응답은 그대로다
+    now = utc_now()
+    capable = RUNNER_CAPABILITY_HANDOFF_REPORT in (body.capabilities or ())
+    if not capable:
+        repo.mark_connector_reports_unavailable(conn, connector_id, reason=UNAVAILABLE_REASONS["not_capable"], now=now)
+    elif (job := handoff_reports.lease_job(conn, connector_id, now=now)) is not None:
+        return _json(job)
+    row = repo.claim_execution(conn, connector_id, now)
     if row is None:
         return Response(status_code=204)
-    return _json(ExecutionRequest.model_validate_json(row["request_json"]))
+    request = ExecutionRequest.model_validate_json(row["request_json"])
+    if capable and not repo.is_triage_task(conn, row["task_id"]):
+        cause = repo.cause_execution_id(conn, row)
+        report = repo.latest_original_report(conn, cause) if cause else None
+        if report is not None and report["status"] == "done":  # 저장된 요청은 그대로 — claim 순간의 최신을 붙인다(D14)
+            ref = handoff_reports.report_ref(conn, report)
+            request = ExecutionRequest.model_validate_json(request.model_copy(update={"handoff_report": ref}).model_dump_json())
+    return _json(request)
 
 
 @router.post("/connector/heartbeat")
@@ -243,3 +261,42 @@ def download_artifact(
         )
     row = repo.get_artifact(conn, artifact_id)
     return Response(content=repo.read_artifact(conn, store, artifact_id), media_type=row["content_type"])
+
+
+# --- 인계 리포트 작업 (phase 25, ARCHITECTURE "러너 엔드포인트") -------------------------------------------
+
+
+async def _raw_body(request: Request) -> bytes:
+    """제출 본문 바이트 — 크기를 파싱보다 먼저 본다."""
+    return await request.body()
+
+
+def _report_call(call) -> dict:
+    try:
+        row = call()
+    except handoff_reports.ReportJobError as exc:
+        raise ApiError(exc.status, exc.code, exc.message) from None
+    return {"report_id": row["report_id"], "status": row["status"]}
+
+
+@router.post("/report-jobs/{report_id}/result")
+def submit_report(
+    report_id: str,
+    request: Request,
+    body: bytes = Depends(_raw_body),
+    connector_id: str = Depends(require_connector),
+    conn: Connection = Depends(get_conn),
+) -> dict:
+    return _report_call(lambda: handoff_reports.submit_result(
+        conn, request.app.state.store, connector_id=connector_id, report_id=report_id, body=body, now=utc_now()))
+
+
+@router.post("/report-jobs/{report_id}/failure")
+def fail_report(
+    report_id: str,
+    body: ReportJobFailure,
+    connector_id: str = Depends(require_connector),
+    conn: Connection = Depends(get_conn),
+) -> dict:
+    return _report_call(lambda: handoff_reports.submit_failure(
+        conn, connector_id=connector_id, report_id=report_id, failure=body, now=utc_now()))

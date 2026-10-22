@@ -2529,10 +2529,10 @@ def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None
     연결 프로그램당 실행 하나이므로 두 개가 queued 여도 먼저 내준 것을 유지한다. 상태는 바꾸지 않는다.
     검증만 다시 실행은 마지막 claim 이 `verify_only` 를 보고한 연결 프로그램에만 준다(phase 17 — 워커가 이미 막지만
     만든 뒤 러너가 옛 판으로 돌아간 경우). 판단 단계의 실행은 마지막 claim 의 `supported_kinds` 에 그 종류가 있는
-    연결 프로그램에만 준다(phase 19 — 옛 러너는 판단만 못 하고 나머지는 그대로)."""
+    연결 프로그램에만 준다(phase 19 — 옛 러너는 판단만 못 하고 나머지는 그대로). 판단 단계가 아닌 실행은 원인 리포트가
+    `queued`·`leased` 인 동안 건너뛴다(phase 25 D9·D15 — 러너 능력과 무관, 시간 초과가 풀어 준다)."""
     with _tx(conn):
-        row = _one(
-            conn,
+        rows = conn.execute(
             f"""
             SELECT e.* FROM executions e
             LEFT JOIN connectors c ON c.connector_id = e.assigned_connector_id
@@ -2544,10 +2544,10 @@ def claim_execution(conn: Connection, connector_id: str, now: str) -> Row | None
                 WHERE t.task_id = e.task_id AND {_TRIAGE_STAGE})
                 OR EXISTS (SELECT 1 FROM json_each(COALESCE(c.supported_kinds_json, '[]')) WHERE value = e.kind))
             ORDER BY (c.current_execution_id = e.execution_id) DESC, e.created_at, e.execution_id
-            LIMIT 1
             """,
             (connector_id, RUNNER_CAPABILITY_VERIFY_ONLY),
-        )
+        ).fetchall()
+        row = next((r for r in rows if is_triage_task(conn, r["task_id"]) or not _waits_for_report(conn, r)), None)
         if row is None:
             return None
         conn.execute(
@@ -2935,13 +2935,18 @@ def download_allowed(
     conn: Connection, store: ArtifactStore, execution_id: str, artifact_id: str
 ) -> bool:
     """실행의 `input_artifact_ids` 에 있거나, 그 입력 중 `handoff_bundle` manifest 의
-    `source_result_artifact_id`·`inputs`·`attachments` 에 나열됐거나, 이 실행이 만든 산출물이면 True.
+    `source_result_artifact_id`·`inputs`·`attachments` 에 나열됐거나, 이 실행이 만든 산출물이거나, 이 실행의 원인 실행에
+    붙은 완성된 원본 인계 리포트(claim 때 `handoff_report` 로 붙는 것, phase 25)면 True.
     manifest 를 읽어야 하므로 store 가 필요하다."""
     execution = get_execution(conn, execution_id)
     artifact = get_artifact(conn, artifact_id)
     if execution is None or artifact is None:
         return False
     if artifact["execution_id"] == execution_id:
+        return True
+    if artifact["kind"] == "handoff_report" and _one(
+        conn, "SELECT 1 FROM handoff_reports WHERE artifact_id = ? AND job_type = 'original' AND status = 'done'"
+              " AND source_execution_id = ?", (artifact_id, cause_execution_id(conn, execution))) is not None:
         return True
     request = ExecutionRequest.model_validate_json(execution["request_json"])
     if artifact_id in request.input_artifact_ids:
@@ -5219,6 +5224,30 @@ def mark_connector_reports_unavailable(conn: Connection, connector_id: str, *, r
             (reason, now, now, connector_id),
         )
     return cursor.rowcount
+
+
+def cause_execution_id(conn: Connection, execution: Row) -> str | None:
+    """원인 실행 — 리포트를 기다리고 받는 앞 실행(ARCHITECTURE "원인 실행 규칙"). 차례로 선행 실행, 재작업 `rework:<id>`,
+    후속 연결, 같은 업무에서 이 실행보다 먼저 만든 다른 실행의 최근 원본 리포트. 없으면 None."""
+    if execution["predecessor_execution_id"]:
+        return execution["predecessor_execution_id"]
+    if execution["start_key"].startswith("rework:"):
+        return execution["start_key"].removeprefix("rework:")
+    link = _one(conn, "SELECT cause_execution_id FROM followup_links WHERE task_id = ?", (execution["task_id"],))
+    if link is not None:
+        return link["cause_execution_id"]
+    report = _one(conn, "SELECT r.source_execution_id FROM handoff_reports r JOIN tasks t ON t.work_item_id = r.work_item_id"
+                        " WHERE t.task_id = ? AND r.job_type = 'original' AND r.created_at <= ?"
+                        " AND r.source_execution_id != ? ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1",
+                  (execution["task_id"], execution["created_at"], execution["execution_id"]))
+    return report["source_execution_id"] if report is not None else None
+
+
+def _waits_for_report(conn: Connection, execution: Row) -> bool:
+    """원인 리포트(원인 실행의 최신 original)가 진행 중인가 — 상태만 본다."""
+    cause = cause_execution_id(conn, execution)
+    report = latest_original_report(conn, cause) if cause else None
+    return report is not None and report["status"] in HANDOFF_REPORT_ACTIVE
 
 
 def get_handoff_report(conn: Connection, report_id: str) -> Row | None:

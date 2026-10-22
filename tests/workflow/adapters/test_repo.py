@@ -5649,3 +5649,86 @@ def test_answer_report_decision_rejects_bad_answer_and_note(reported):
     assert repo.list_report_decisions(conn, report["report_id"]) == []
     assert not [e for e in repo.list_work_item_events(conn, _work(conn)["work_item_id"])
                 if e["type"] == "report_decision"]
+
+
+# --- phase 25 step 6: 원인 실행·claim 대기 (ARCHITECTURE "원인 실행 규칙"·"claim 규칙") ------------------------------
+
+
+def _cause(conn, execution_id: str) -> str | None:
+    return repo.cause_execution_id(conn, repo.get_execution(conn, execution_id))
+
+
+def test_cause_execution_id_follows_predecessor_rework_and_followup_links(reported):
+    conn = reported
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-b", TASK_B, kind="code_change", inputs=["art-handoff-001"],
+                      predecessor="exec-1")
+    repo.insert_work_item_task(conn, _task("task-rework", kind="code_change"), NOW)
+    _create_execution(conn, "exec-rework", "task-rework", kind="code_change", inputs=["art-handoff-001"],
+                      start_key="rework:exec-1")
+    repo.insert_work_item_task(conn, _task("task-followup", kind="code_change"), NOW)
+    _create_execution(conn, "exec-followup", "task-followup", kind="code_change", inputs=["art-handoff-001"])
+    conn.execute("INSERT INTO followup_links (session_id, cause_execution_id, to_kind, task_id, rules_revision,"
+                 " created_at) VALUES (?, 'exec-1', 'code_change', 'task-followup', 1, ?)", (SESSION, NOW))
+
+    assert _cause(conn, "exec-b") == "exec-1"  # 1. predecessor_execution_id
+    assert _cause(conn, "exec-rework") == "exec-1"  # 2. start_key rework:<id>
+    assert _cause(conn, "exec-followup") == "exec-1"  # 3. followup_links
+    assert _cause(conn, "exec-1") is None  # 5. 없음
+
+
+def test_cause_execution_id_falls_back_to_the_latest_earlier_original_of_the_work(reported):
+    conn = reported
+    _original(conn, now=LATER)  # exec-1 의 원본 리포트 — LATER 에 만들어짐
+    repo.release_execution(conn, "exec-1", NOW)
+    _create_execution(conn, "exec-2", attempt_no=2, start_key="manual:2", now=NOW)  # 리포트보다 먼저 만든 실행
+    repo.release_execution(conn, "exec-2", LATER)
+    _create_execution(conn, "exec-3", attempt_no=3, start_key="manual:3", now=LATER)
+
+    assert _cause(conn, "exec-2") is None
+    assert _cause(conn, "exec-3") == "exec-1"  # 4. 같은 업무의 created_at <= 이 실행인 원본 중 최근
+    assert _cause(conn, "exec-1") is None  # 자기 리포트는 원인이 아니다
+
+
+def _finish_report(conn, report_id: str, status: str) -> None:
+    conn.execute("UPDATE handoff_reports SET status = ?, reason = '사유', finished_at = ? WHERE report_id = ?",
+                 (status, LATER, report_id))
+
+
+def test_claim_skips_an_execution_while_its_cause_report_is_queued_or_leased(reported):
+    conn = reported
+    _issue_connector(conn, CONNECTOR)
+    repo.insert_work_item_task(conn, _task(TASK_B, kind="code_change", predecessor=TASK_A), NOW)
+    _create_execution(conn, "exec-b", TASK_B, kind="code_change", connector=CONNECTOR,
+                      inputs=["art-handoff-001"], predecessor="exec-1")
+    report, _ = _original(conn, connector="conn-writer")  # 원인 리포트는 다른 러너가 쓴다
+
+    assert repo.claim_execution(conn, CONNECTOR, LATER) is None  # queued — 대기
+    conn.execute("UPDATE handoff_reports SET status = 'leased', leased_at = ?", (NOW,))
+    assert repo.claim_execution(conn, CONNECTOR, LATER) is None  # leased — 대기
+
+    # 대기하는 동안 원인 리포트가 없는 다른 실행은 나간다
+    repo.insert_work_item_task(conn, _task("task-other", kind="code_change"), NOW)
+    _create_execution(conn, "exec-other", "task-other", kind="code_change", connector=CONNECTOR,
+                      inputs=["art-handoff-001"], now=LATER)
+    assert repo.claim_execution(conn, CONNECTOR, LATER)["execution_id"] == "exec-other"
+    conn.execute("UPDATE connectors SET current_execution_id = NULL")
+    conn.execute("UPDATE executions SET released_at = ? WHERE execution_id = 'exec-other'", (LATER,))
+
+    for status in ("failed", "timed_out", "unavailable"):
+        conn.execute("UPDATE handoff_reports SET status = 'leased', reason = NULL, finished_at = NULL")
+        assert repo.claim_execution(conn, CONNECTOR, LATER) is None
+        _finish_report(conn, report["report_id"], status)
+        assert repo.claim_execution(conn, CONNECTOR, LATER)["execution_id"] == "exec-b", status
+        conn.execute("UPDATE connectors SET current_execution_id = NULL")
+
+
+def test_claim_does_not_hold_triage_executions_for_the_cause_report(reported):
+    conn = reported
+    _issue_connector(conn, CONNECTOR)
+    repo.record_supported_kinds(conn, CONNECTOR, ["triage"])
+    _triage_execution(conn, execution_id="exec-triage-1", task_id="triage-1", connector=CONNECTOR)
+    conn.execute("UPDATE executions SET predecessor_execution_id = 'exec-1' WHERE execution_id = 'exec-triage-1'")
+    _original(conn, connector="conn-writer")
+
+    assert repo.claim_execution(conn, CONNECTOR, LATER)["execution_id"] == "exec-triage-1"  # D15

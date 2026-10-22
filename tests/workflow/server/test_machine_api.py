@@ -951,3 +951,258 @@ def test_failed_event_with_usage_stores_known_values_only(client, headers, runni
                                         "usage": {"input_tokens": 10, "output_tokens": 3}})
     assert _post_event(client, headers, running, body).status_code == 200
     assert _measure(seeded, running) == (None, None, None, 10, 3)
+
+
+# --- phase 25 step 6: 인계 리포트 claim·전달·제출 (ARCHITECTURE "claim 규칙"·"러너 엔드포인트") ---------------------
+
+CAUSE = "exec-a"
+REPORT_INPUTS = {
+    "local_registration_id": LOCAL_REGISTRATION, "checkout_commit": BASE_COMMIT, "base_commit": None,
+    "request": "# 인계 리포트: RUN-1 보고서 변환 수정",
+    "evidence": {"artifacts": ["art-known"], "commits": [BASE_COMMIT], "pulls": [7], "source_work": True,
+                 "verification": False, "claims": []},
+    "pull_requests": [], "pr_evidence_error": None,
+}
+
+
+def _cause_report(conn, writer: str, *, successor_connector: str | None = None) -> str:
+    """원인 실행 exec-a(업무 A, 배정 없음)와 그 원본 리포트 작업(`writer` 러너, queued). `successor_connector` 를 주면
+    exec-a 를 이어받은 후속 실행 EXEC_FIX(업무 B)를 그 러너에 배정한다. 반환은 report_id."""
+    seed_execution(conn, CAUSE, TASK_A)
+    if successor_connector is not None:
+        seed_execution(conn, EXEC_FIX, TASK_B, connector_id=successor_connector, predecessor=CAUSE)
+    row, _ = repo.create_handoff_report(
+        conn, session_id=SESSION, work_item_id=repo.work_item_of_task(conn, TASK_A)["work_item_id"],
+        source_execution_id=CAUSE, source_task_id=TASK_A, job_type="original", agent_id="agent-codex-mac",
+        connector_id=writer, inputs=REPORT_INPUTS, now=NOW)
+    return row["report_id"]
+
+
+def _claim(client, headers, connector_id: str, *, capable: bool = True):
+    body = {"contract_version": 1, "connector_id": connector_id}
+    if capable:
+        body["capabilities"] = ["handoff_report"]
+    return client.post("/api/v1/connector/claim", json=body, headers=headers)
+
+
+def _report_status(conn, report_id: str) -> tuple:
+    row = repo.get_handoff_report(conn, report_id)
+    return row["status"], row["reason"]
+
+
+def _report_body(report_id: str, **overrides) -> dict:
+    claim = {"id": "c1", "text": "합계 반올림을 고침", "why": None, "evidence": [f"commit:{BASE_COMMIT[:7]}", "pr:7"]}
+    ask = {"id": "q1", "text": "반올림 기준 확인", "why": "기록 없음", "evidence": ["artifact:art-unknown"]}
+    return {
+        "contract_version": 1, "report_id": report_id, "job_type": "original",
+        "sections": {"changes": [claim], "decisions": [], "open_questions": [], "to_confirm": [ask],
+                     "constraints": [], "remaining_work": []},
+        "diagram": None, **overrides,
+    }
+
+
+def _submit(client, headers, report_id: str, body):
+    content = body if isinstance(body, bytes) else json.dumps(body).encode()
+    return client.post(f"/api/v1/report-jobs/{report_id}/result", content=content,
+                       headers={**headers, "content-type": "application/json"})
+
+
+def _done_report(client, headers, conn, connector_id: str, report_id: str) -> str:
+    """claim 으로 받아 제출까지 — 반환은 리포트 산출물 id."""
+    assert _claim(client, headers, connector_id).json()["report_id"] == report_id
+    assert _submit(client, headers, report_id, _report_body(report_id)).status_code == 200
+    return repo.get_handoff_report(conn, report_id)["artifact_id"]
+
+
+def test_capable_runner_gets_its_report_job_before_executions_then_waits(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id, successor_connector=connector_id)
+
+    first = _claim(client, headers, connector_id)
+
+    assert first.status_code == 200
+    assert first.json() == {
+        "contract_version": 1, "report_id": report_id, "job_type": "original", "agent_id": "agent-codex-mac",
+        "local_registration_id": LOCAL_REGISTRATION, "checkout_commit": BASE_COMMIT, "base_commit": None,
+        "request": REPORT_INPUTS["request"],
+    }
+    assert _report_status(seeded, report_id) == ("leased", None)
+    # 원인 리포트가 leased 인 동안 후속 실행은 나가지 않고, leased 작업은 다시 주지 않는다
+    assert _claim(client, headers, connector_id).status_code == 204
+
+
+def test_old_runner_never_gets_report_jobs_and_its_claim_bytes_are_unchanged(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id, successor_connector=connector_id)
+    expected = ExecutionRequest.model_validate_json(repo.get_execution(seeded, EXEC_FIX)["request_json"])
+
+    response = _claim(client, headers, connector_id, capable=False)
+
+    assert response.status_code == 200
+    assert response.content == json.dumps(expected.model_dump(mode="json"), ensure_ascii=False,
+                                          separators=(",", ":")).encode()
+    assert "handoff_report" not in response.json() and "job_type" not in response.json()
+    # 능력 선언을 그만둔 러너의 queued 작업은 리포트 없음으로 — 후속은 기다리지 않는다
+    assert _report_status(seeded, report_id) == ("unavailable", "러너가 리포트를 지원하지 않음 — 러너 재설치 필요")
+
+
+@pytest.mark.parametrize("status", ["done", "failed", "timed_out", "unavailable"])
+def test_successor_is_claimed_once_the_cause_report_finishes(client, seeded, connector, headers, store, status):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, "conn-writer", successor_connector=connector_id)  # 다른 러너가 쓰는 원인 리포트
+
+    assert _claim(client, headers, connector_id).status_code == 204  # queued — 대기
+    assert _claim(client, headers, connector_id, capable=False).status_code == 204  # 옛 받는 러너도 기다린다
+    if status == "done":
+        data = json.dumps(_report_body(report_id)).encode()
+        created, _ = repo.store_artifact(seeded, store, execution_id=CAUSE, session_id=SESSION,
+                                         meta=_meta_model(data, "handoff_report", "handoff_report.json"), data=data,
+                                         now=NOW)
+        seeded.execute("UPDATE handoff_reports SET status = 'done', artifact_id = ?, finished_at = ?",
+                       (created.artifact_id, NOW))
+    else:
+        seeded.execute("UPDATE handoff_reports SET status = ?, reason = '사유', finished_at = ?", (status, NOW))
+
+    response = _claim(client, headers, connector_id)
+    assert response.status_code == 200
+    assert response.json()["execution_id"] == EXEC_FIX
+    assert ("handoff_report" in response.json()) == (status == "done")
+
+
+def test_receiving_runner_gets_the_latest_report_and_decisions_at_each_claim(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id)
+    artifact_id = _done_report(client, headers, seeded, connector_id, report_id)
+    seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id, predecessor=CAUSE)
+    member = repo.add_member(seeded, SESSION, display_name="받는 사람", now=NOW)
+    repo.answer_report_decision(seeded, report_id=report_id, item_id="q1", answer="confirmed", note=None,
+                                member_id=member, now=NOW)
+    sha256 = repo.get_artifact(seeded, artifact_id)["sha256"]
+
+    first = _claim(client, headers, connector_id).json()
+    assert first["execution_id"] == EXEC_FIX
+    assert first["handoff_report"] == {
+        "report_id": report_id, "artifact_id": artifact_id, "sha256": sha256,
+        "decisions": [{"item_id": "q1", "answer": "confirmed", "note": None, "answered_by": "받는 사람",
+                       "answered_at": NOW}],
+    }
+    later = "2026-09-20T00:10:00Z"
+    repo.answer_report_decision(seeded, report_id=report_id, item_id="q1", answer="changed", note="1원 단위",
+                                member_id=member, now=later)
+    again = _claim(client, headers, connector_id).json()  # 접수 전 재claim — 그 순간의 최신
+    assert again["handoff_report"]["decisions"] == [
+        {"item_id": "q1", "answer": "changed", "note": "1원 단위", "answered_by": "받는 사람", "answered_at": later}]
+    # 저장된 요청은 그대로이고, 능력을 선언하지 않으면 칸이 없다
+    assert "handoff_report" not in json.loads(repo.get_execution(seeded, EXEC_FIX)["request_json"])
+    assert "handoff_report" not in _claim(client, headers, connector_id, capable=False).json()
+
+
+def test_receiving_runner_may_download_the_attached_report_but_others_may_not(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id)
+    artifact_id = _done_report(client, headers, seeded, connector_id, report_id)
+    seed_execution(seeded, EXEC_FIX, TASK_B, connector_id=connector_id, predecessor=CAUSE)
+    repo.insert_work_item_task(seeded, task_row("task-unrelated"), NOW)
+    seed_execution(seeded, "exec-unrelated", "task-unrelated", connector_id=connector_id)
+
+    got = client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{artifact_id}", headers=headers)
+    assert got.status_code == 200
+    assert got.content == json.dumps(_report_body(report_id)).encode()
+    unrelated = client.get(f"/api/v1/executions/exec-unrelated/artifacts/{artifact_id}", headers=headers)
+    assert unrelated.status_code == 403
+    _, other_token = exchange(client, seeded)
+    assert client.get(f"/api/v1/executions/{EXEC_FIX}/artifacts/{artifact_id}",
+                      headers=bearer(other_token)).status_code == 403
+
+
+def test_submitted_report_is_stored_on_the_cause_with_its_evidence_check(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id)
+    _claim(client, headers, connector_id)
+
+    response = _submit(client, headers, report_id, _report_body(report_id))
+
+    assert response.status_code == 200
+    assert response.json() == {"report_id": report_id, "status": "done"}
+    row = repo.get_handoff_report(seeded, report_id)
+    artifact = repo.get_artifact(seeded, row["artifact_id"])
+    assert (row["status"], artifact["kind"], artifact["execution_id"], artifact["name"]) == (
+        "done", "handoff_report", CAUSE, "handoff_report.json")
+    # 없는 근거 id 는 거절하지 않고 그 주장에 표시한다(D20)
+    assert json.loads(row["evidence_check_json"]) == {"claims": {
+        "c1": {"verified": True, "unverified": []},
+        "q1": {"verified": False, "unverified": ["artifact:art-unknown"]},
+    }}
+
+
+@pytest.mark.parametrize(("body", "reason"), [
+    (b"{" + b" " * 131072 + b"}", "리포트가 너무 큼"),
+    ({"contract_version": 1, "job_type": "original"}, "리포트 형식 오류 — "),
+    ("other-id", "리포트 형식 오류 — "),
+])
+def test_oversized_or_invalid_report_fails_the_job(client, seeded, connector, headers, body, reason):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id)
+    _claim(client, headers, connector_id)
+    if body == "other-id":
+        body = _report_body("hrp-000000000000")
+    elif isinstance(body, dict):
+        body = {**body, "report_id": report_id}
+
+    response = _submit(client, headers, report_id, body)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "report_invalid"
+    status, stored = _report_status(seeded, report_id)
+    assert status == "failed" and stored.startswith(reason)
+    assert repo.get_handoff_report(seeded, report_id)["artifact_id"] is None
+
+
+def test_report_submission_errors_for_unknown_foreign_and_unleased_jobs(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id)
+
+    assert _submit(client, headers, report_id, _report_body(report_id)).json()["code"] == "report_not_leased"  # queued
+    _claim(client, headers, connector_id)
+    _, other_token = exchange(client, seeded)
+    foreign = _submit(client, bearer(other_token), report_id, _report_body(report_id))
+    assert (foreign.status_code, foreign.json()["code"]) == (403, "forbidden")
+    unknown = _submit(client, headers, "hrp-ffffffffffff", _report_body("hrp-ffffffffffff"))
+    assert (unknown.status_code, unknown.json()["code"]) == (404, "not_found")
+
+    seeded.execute("UPDATE handoff_reports SET status = 'timed_out', reason = '30분 안에 리포트가 오지 않음',"
+                   " finished_at = ?", (NOW,))
+    late = _submit(client, headers, report_id, _report_body(report_id))  # 늦은 제출
+    assert (late.status_code, late.json()["code"]) == (409, "report_not_leased")
+    assert _report_status(seeded, report_id) == ("timed_out", "30분 안에 리포트가 오지 않음")
+
+
+def test_report_for_a_replaced_cause_result_is_still_attached_to_that_execution(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id)
+    _claim(client, headers, connector_id)
+    repo.release_execution(seeded, CAUSE, NOW)  # 재작업으로 대체됨
+    repo.create_execution(
+        seeded, execution_id="exec-a2", task_id=TASK_A, attempt_no=2, start_key="rework:exec-review",
+        agent_id="agent-codex-mac", kind="bug_fix", request=ExecutionRequest.model_validate(
+            request_body("exec-a2", TASK_A)), assigned_connector_id=None, predecessor_execution_id=None, now=NOW)
+
+    assert _submit(client, headers, report_id, _report_body(report_id)).status_code == 200
+
+    artifact = repo.get_artifact(seeded, repo.get_handoff_report(seeded, report_id)["artifact_id"])
+    assert artifact["execution_id"] == CAUSE  # D16
+
+
+def test_report_failure_marks_the_job_failed(client, seeded, connector, headers):
+    connector_id, _ = connector
+    report_id = _cause_report(seeded, connector_id)
+    _claim(client, headers, connector_id)
+    failure = {"contract_version": 1, "failure_code": "timeout", "message": "에이전트 시간 초과"}
+
+    response = client.post(f"/api/v1/report-jobs/{report_id}/failure", json=failure, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"report_id": report_id, "status": "failed"}
+    assert _report_status(seeded, report_id) == ("failed", "리포트 작성 실패 — 에이전트 시간 초과")
+    again = client.post(f"/api/v1/report-jobs/{report_id}/failure", json=failure, headers=headers)
+    assert (again.status_code, again.json()["code"]) == (409, "report_not_leased")

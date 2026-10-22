@@ -3917,6 +3917,8 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 | `/api/v1/work-items/{key}/triage-proposals/{triage_id}/dismiss` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
 | `/api/v1/work-items/{key}/next-step-proposals/{triage_id}/accept` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
 | `/api/v1/work-items/{key}/next-step-proposals/{triage_id}/dismiss` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
+| `/api/v1/report-jobs/{report_id}/result` | POST | 배정된 리포트 작업 | `wfc_` | 200 | `machine_api`(phase 25 step 6) |
+| `/api/v1/report-jobs/{report_id}/failure` | POST | 배정된 리포트 작업 | `wfc_` | 200 | `machine_api`(phase 25 step 6) |
 
 `work_api` 와 `internal_request_api` 는 같은 `/api/v1/work-items/{key}/…` 아래에 있지만 서로 다른 라우터다(경로가 겹치지 않는다 — `internal-requests` 는 `internal_request_api` 만).
 
@@ -4507,7 +4509,7 @@ CREATE TABLE IF NOT EXISTS handoff_report_decisions (
 
 ### 경로 (step 6·8·9)
 
-이 절의 경로는 아직 없다. 라우트를 만드는 step 이 위 "사람용 API — phase 24" 의 "### 주소 표" **"새로 여는 라우트" 표에 행을 더하고** `tests/workflow/server/test_app.py` 의 `39 + 15` 단정을 고친다 — step 6 `+2`(`/api/v1/report-jobs/{report_id}/result`·`/failure`, POST, `wfc_`, `machine_api`), step 8 `+5`(목록·조회·결정 답·맞춤 풀이·다시 만들기, 쿠키·`wfm_`, `report_api`), step 9 `+1`(`…/html`, `report_api`). 이 절에는 표 형식 행을 두지 않는다(대조 테스트는 "### 주소 표" 절만 읽는다). 화면 경로(`/work/{key}/reports/…` GET 1·POST 3)는 `web.py` 라 그 표 대상이 아니다.
+step 6 의 러너 경로 둘은 주소 표에 들어갔다(`39 + 15 + 2`). 라우트를 만드는 step 이 위 "사람용 API — phase 24" 의 "### 주소 표" **"새로 여는 라우트" 표에 행을 더하고** `tests/workflow/server/test_app.py` 의 `39 + 15` 단정을 고친다 — step 6 `+2`(`/api/v1/report-jobs/{report_id}/result`·`/failure`, POST, `wfc_`, `machine_api`), step 8 `+5`(목록·조회·결정 답·맞춤 풀이·다시 만들기, 쿠키·`wfm_`, `report_api`), step 9 `+1`(`…/html`, `report_api`). 이 절에는 표 형식 행을 두지 않는다(대조 테스트는 "### 주소 표" 절만 읽는다). 화면 경로(`/work/{key}/reports/…` GET 1·POST 3)는 `web.py` 라 그 표 대상이 아니다.
 
 ### step 경계
 

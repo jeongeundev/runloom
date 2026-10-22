@@ -156,7 +156,25 @@
     {
       "step": 6,
       "name": "report-claim",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-22T23:44:57+0900",
+      "summary": "repo.cause_execution_id(원인 실행 규칙 1~5: predecessor_execution_id → start_key rework:<id> → followup_links → 같은 업무 created_at<=실행 인 다른 실행의 최신 original) + 내부 _waits_for_report, claim_execution 은 후보를 전부 읽어(WHERE·ORDER 그대로, LIMIT 제거) 판단 단계가 아니고 원인 리포트가 queued·leased 인 것을 건너뜀(러너 능력 무관). download_allowed 에 '원인 실행의 done original 리포트 산출물' 규칙 추가. server/handoff_reports.py: ReportJobError(status, code, message)·lease_job(inputs_json → ReportJob, original·tailored 같은 길)·report_ref(answered_by=멤버 표시 이름)·submit_result(소유 403·leased 아님 409 report_not_leased·크기→'리포트가 너무 큼'·계약 위반→'리포트 형식 오류 — {loc}: {msg}'·report_id/job_type 불일치→failed, 422 report_invalid; 근거 확인 original=check_evidence(inputs_json.evidence 로 EvidenceSet), tailored=check_citations(evidence.claims) — step 8 은 tailored inputs_json.evidence.claims 에 원본 주장 id 를 넣어야 함; 산출물은 원인 실행에 kind handoff_report·이름 handoff_report.json·application/json, 받은 바이트 그대로)·submit_failure('리포트 작성 실패 — {message}'). machine_api.claim: 미선언이면 mark_connector_reports_unavailable(UNAVAILABLE_REASONS['not_capable']), 선언이면 lease_job 먼저, 실행이면 선언·판단 아님·원인 리포트 done 일 때만 handoff_report 를 붙임(request_json 은 그대로). 라우트 POST /api/v1/report-jobs/{report_id}/result(본문 바이트는 async 의존성 _raw_body)·/failure → {report_id, status}. ARCHITECTURE 주소 표 +2 행, test_app 단정 39+15 → 39+15+2. 테스트: test_repo(원인 실행 규칙·claim 대기·판단 미대기), test_machine_api(리포트 작업 우선·옛 러너 바이트 동일·종료 상태 넷 뒤 claim·결정 답 최신·내려받기 200/403·제출 정상/크기/계약/ID 불일치/404/403/409·D16·실패 보고), test_worker(사람 [시작] 실행 대기)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "claim 은 이미 내준(접수 전) 실행도 다시 판정한다 — 내준 뒤 원인 리포트가 다시 만들기로 queued 가 되면 그 실행은 재claim 때 대기로 빠진다(ARCHITECTURE 대로 후보 전체에 같은 조건). 러너가 이미 시작했다면 접수 이벤트는 그대로 받아들여진다.",
+        "lease_job 은 inputs_json 이 ReportJob 계약에 맞지 않으면 ValidationError(422)를 내고 그 행은 leased 로 남아 시간 초과까지 간다 — step 8 의 tailored 행 inputs_json 은 local_registration_id·checkout_commit(null)·base_commit(null)·request 를 꼭 채워야 한다.",
+        "claim 마다 후보 실행 수만큼 원인 실행·리포트 조회를 한다(러너당 queued 실행은 보통 몇 개라 그대로 둠)."
+      ],
+      "completed_at": "2026-10-23T00:20:00+0900"
     },
     {
       "step": 7,

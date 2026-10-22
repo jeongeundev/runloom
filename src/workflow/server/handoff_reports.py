@@ -4,9 +4,12 @@ step 4: PR 근거 수집(D22). 중앙이 GitHub 에서 업무에 연결된 PR �
 PR 근거 전부 없이 사유만 남기고 예외를 내보내지 않는다. 사유·로그에 토큰·헤더·응답 본문을 넣지 않는다.
 step 5: 판정 통과한 실행 → 원본 리포트 작업(`queue_original`, 워커의 판정 지점이 직후에 부른다)·시간 초과(`expire_reports`).
 대상은 종류 이름이 아니라 판정·판단 단계·Agent 사실(도메인 `report_target`)로, 체크아웃 커밋은 요청 target 의 모양으로 고른다.
+step 6: 러너 claim 의 리포트 작업(`lease_job`)·받는 러너 참조(`report_ref`)·제출 판정(`submit_result`·`submit_failure`).
+original·tailored 가 같은 길이다. 근거 ID 가 확인되지 않아도 거절하지 않고 표시한다(D20).
 `server/worker.py` 를 import 하지 않는다(순환 import).
 """
 
+import hashlib
 import json
 import logging
 from collections.abc import Callable
@@ -29,11 +32,18 @@ from workflow.adapters.github_client import (
 )
 from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import (
+    HANDOFF_REPORT_MAX_BYTES,
     RUNNER_CAPABILITY_HANDOFF_REPORT,
+    ArtifactMeta,
     CodeChangeTarget,
     CommitReviewTarget,
     ExecutionRequest,
     HandoffBundle,
+    HandoffDecision,
+    HandoffReport,
+    HandoffReportRef,
+    ReportJob,
+    ReportJobFailure,
     TriageTarget,
     format_work_key,
 )
@@ -45,6 +55,8 @@ from workflow.domain.handoff_report import (
     TargetFacts,
     VerificationFact,
     build_report_request,
+    check_citations,
+    check_evidence,
     report_target,
 )
 from workflow.server.settings import Settings
@@ -313,3 +325,110 @@ def expire_reports(conn: Connection, settings: Settings, *, now: str) -> int:
     wait = settings.handoff_report_wait_seconds
     return repo.expire_handoff_reports(conn, older_than=_minus_seconds(now, wait),
                                        reason=f"{wait // 60}분 안에 리포트가 오지 않음", now=now)
+
+
+# --- 러너 claim·제출 (step 6) ---------------------------------------------------------------------
+
+
+class ReportJobError(Exception):
+    """제출 경로 오류 — 라우터가 `ApiError` 로 옮긴다."""
+
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+def lease_job(conn: Connection, connector_id: str, *, now: str) -> ReportJob | None:
+    """그 러너에 배정된 가장 이른 `queued` 리포트 작업(original·tailored)을 `leased` 로 바꾸고 `ReportJob` 으로."""
+    row = repo.lease_handoff_report(conn, connector_id, now=now)
+    if row is None:
+        return None
+    inputs = json.loads(row["inputs_json"])
+    return ReportJob.model_validate({
+        "contract_version": 1, "report_id": row["report_id"], "job_type": row["job_type"], "agent_id": row["agent_id"],
+        "local_registration_id": inputs["local_registration_id"], "checkout_commit": inputs["checkout_commit"],
+        "base_commit": inputs["base_commit"], "request": inputs["request"],
+    })
+
+
+def report_ref(conn: Connection, report: Row) -> HandoffReportRef:
+    """`done` 원본 리포트 → 받는 러너에게 붙는 참조(산출물·sha256·그 순간의 결정 답)."""
+    artifact = repo.get_artifact(conn, report["artifact_id"])
+    decisions = [
+        HandoffDecision(item_id=d["item_id"], answer=d["answer"], note=d["note"], answered_at=d["answered_at"],
+                        answered_by=repo.get_member(conn, report["session_id"], d["member_id"])["display_name"])
+        for d in repo.list_report_decisions(conn, report["report_id"])
+    ]
+    return HandoffReportRef(report_id=report["report_id"], artifact_id=report["artifact_id"],
+                            sha256=artifact["sha256"], decisions=decisions)
+
+
+def _not_leased(report_id: str) -> ReportJobError:
+    return ReportJobError(409, "report_not_leased", f"{report_id}은 지금 받을 수 있는 리포트 작업이 아닙니다.")
+
+
+def _leased_report(conn: Connection, connector_id: str, report_id: str) -> Row:
+    row = repo.get_handoff_report(conn, report_id)
+    if row is None:
+        raise ReportJobError(404, "not_found", f"리포트 작업 {report_id}을 찾을 수 없습니다.")
+    if row["connector_id"] != connector_id:
+        raise ReportJobError(403, "forbidden", f"{report_id}은 {connector_id}에 배정되지 않았습니다.")
+    if row["status"] != "leased":
+        raise _not_leased(report_id)
+    return row
+
+
+def _reject(conn: Connection, row: Row, connector_id: str, reason: str, now: str) -> ReportJobError:
+    if not repo.fail_handoff_report(conn, row["report_id"], connector_id=connector_id, reason=reason, now=now):
+        return _not_leased(row["report_id"])
+    return ReportJobError(422, "report_invalid", reason)
+
+
+def _first_error(exc: ValidationError) -> str:
+    error = exc.errors()[0]
+    loc = ".".join(str(part) for part in error["loc"])
+    return f"{loc}: {error['msg']}" if loc else error["msg"]
+
+
+def _evidence_check(report: HandoffReport, row: Row) -> dict:
+    evidence = json.loads(row["inputs_json"]).get("evidence") or {}
+    if row["job_type"] == "tailored":
+        return check_citations(report, frozenset(evidence.get("claims", ()))).to_json()
+    return check_evidence(report, EvidenceSet(
+        artifacts=frozenset(evidence.get("artifacts", ())), commits=frozenset(evidence.get("commits", ())),
+        pulls=frozenset(evidence.get("pulls", ())), source_work=bool(evidence.get("source_work")),
+        verification=bool(evidence.get("verification")), claims=frozenset(evidence.get("claims", ())),
+    )).to_json()
+
+
+def submit_result(conn: Connection, store: ArtifactStore, *, connector_id: str, report_id: str, body: bytes,
+                  now: str) -> Row:
+    """판정 순서(ARCHITECTURE "러너 엔드포인트"): 행·소유·leased → 크기 → 계약 → 작업과 같은 id·종류 → 근거 확인 →
+    원인 실행에 산출물 저장 → done. 크기·계약·id 위반은 `failed` 로 바꾸고 422. 원인 결과가 대체됐는지는 보지 않는다(D16)."""
+    row = _leased_report(conn, connector_id, report_id)
+    if len(body) > HANDOFF_REPORT_MAX_BYTES:
+        raise _reject(conn, row, connector_id, "리포트가 너무 큼", now)
+    try:
+        report = HandoffReport.model_validate_json(body)
+    except ValidationError as exc:
+        raise _reject(conn, row, connector_id, f"리포트 형식 오류 — {_first_error(exc)}", now) from None
+    if (report.report_id, report.job_type) != (row["report_id"], row["job_type"]):
+        raise _reject(conn, row, connector_id, "리포트 형식 오류 — report_id·job_type 이 작업과 다름", now)
+    evidence_check = _evidence_check(report, row)
+    meta = ArtifactMeta(contract_version=1, kind="handoff_report", name="handoff_report.json",
+                        content_type="application/json", sha256=hashlib.sha256(body).hexdigest(), size=len(body))
+    created, _ = repo.store_artifact(conn, store, execution_id=row["source_execution_id"], session_id=row["session_id"],
+                                     meta=meta, data=body, now=now)
+    if not repo.finish_handoff_report(conn, report_id, connector_id=connector_id, artifact_id=created.artifact_id,
+                                      evidence_check=evidence_check, now=now):
+        raise _not_leased(report_id)
+    return repo.get_handoff_report(conn, report_id)
+
+
+def submit_failure(conn: Connection, *, connector_id: str, report_id: str, failure: ReportJobFailure, now: str) -> Row:
+    """러너의 실패 보고 → `failed`(`리포트 작성 실패 — {message}`). 자동 재시도 없음(D12)."""
+    _leased_report(conn, connector_id, report_id)
+    if not repo.fail_handoff_report(conn, report_id, connector_id=connector_id,
+                                    reason=f"리포트 작성 실패 — {failure.message}", now=now):
+        raise _not_leased(report_id)
+    return repo.get_handoff_report(conn, report_id)
