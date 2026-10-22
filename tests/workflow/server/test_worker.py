@@ -10,7 +10,10 @@ import dataclasses
 import inspect
 import json
 import re
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -1208,3 +1211,24 @@ def test_configure_logging_silences_http_request_lines():
         root.handlers[:] = saved_handlers
         for lg, level in zip(loggers, saved, strict=True):
             lg.setLevel(level)
+
+
+def _fresh_python(code: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
+                          env={"PATH": "/usr/bin:/bin", "WORKFLOW_SKIP_APP": "1"})
+
+
+def test_worker_module_loads_like_python_dash_m():
+    """`python3 -m workflow.server.worker`(셀프호스트 worker 컨테이너) 와 같은 적재 — 모듈이 sys.modules 에 없는 채로
+    본문이 돈다. 테스트 안의 import 순서로는 순환 import 가 숨어서 v24~v26 worker 가 시작하자마자 죽었다."""
+    result = _fresh_python("import runpy; runpy.run_module('workflow.server.worker', run_name='not_main')")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("module", sorted(
+    f"workflow.server.{path.stem}" for path in (Path(__file__).resolve().parents[3] / "src/workflow/server").glob("*.py")
+    if path.stem not in {"__init__", "__main__"}
+))
+def test_server_module_imports_first_in_a_fresh_process(module):
+    result = _fresh_python(f"import {module}")
+    assert result.returncode == 0, result.stderr

@@ -15,8 +15,15 @@ from workflow.contracts.v1 import format_work_key
 from workflow.domain import delegation
 from workflow.domain.delegation import ApprovalFact
 from workflow.domain.team import MemberFact
-from workflow.server import worker as worker_module  # 순환 import — 속성은 호출 때 읽는다(워커가 이 모듈을 쓴다)
 from workflow.server.settings import Settings
+
+
+def _enqueue_event_notification(*args, **kwargs) -> None:
+    # 워커가 이 모듈을 쓰므로 맨 위에서 import 하면 순환이다 — `python3 -m workflow.server.worker` 가 시작하자마자 죽는다
+    from workflow.server import worker
+
+    worker.enqueue_event_notification(*args, **kwargs)
+
 
 STARTABLE = ("not_needed", "approved")  # 실행을 만들어도 되는 승인 상태
 
@@ -105,7 +112,7 @@ def ensure_request(conn: Connection, task: Row, agent_id: str, *, now: str, expl
     request_id, created = repo.open_owner_approval(conn, task["task_id"], agent_id=agent_id, requester_id=requester,
                                                    question=question, now=now)
     if created and secrets is not None:
-        worker_module.enqueue_event_notification(
+        _enqueue_event_notification(
             conn, settings, secrets, event="human_request", task_id=task["task_id"],
             dedupe_key=f"human_request:{request_id}", detail=question, now=now,
         )
@@ -135,7 +142,7 @@ def notify_delegated(conn: Connection, task: Row, agent_id: str, *, now: str, se
     owner_id = repo.agent_owner_id(conn, agent_id)
     if requester == owner_id or (owner_id is None and requester in team.admin_ids):
         return
-    worker_module.enqueue_event_notification(
+    _enqueue_event_notification(
         conn, settings, secrets, event="delegated_to_you", task_id=task["task_id"],
         dedupe_key=f"delegated_to_you:{task['task_id']}:{agent_id}",
         recipients=delegation.approval_deciders(owner_id, team.members),
@@ -150,7 +157,7 @@ def notify_offline(conn: Connection, task: Row, agent_id: str, *, now: str, sett
     if secrets is None or work is None:
         return
     team = _Team(conn, task["session_id"])
-    worker_module.enqueue_event_notification(
+    _enqueue_event_notification(
         conn, settings, secrets, event="runner_offline_waiting", task_id=task["task_id"],
         dedupe_key=f"runner_offline:{work['work_item_id']}:{agent_id}",
         recipients=delegation.approval_deciders(repo.agent_owner_id(conn, agent_id), team.members),
@@ -168,7 +175,7 @@ def notify_declined(conn: Connection, request: Row, *, note: str, member_id: str
     team = _Team(conn, task["session_id"])
     if team.active_name(scope[1]) is None:
         return
-    worker_module.enqueue_event_notification(
+    _enqueue_event_notification(
         conn, settings, secrets, event="delegation_declined", task_id=task["task_id"],
         dedupe_key=f"delegation_declined:{request['request_id']}", recipients=(scope[1],),
         detail=delegation.declined_reason(team.names.get(member_id) if member_id else None, note), now=now,
