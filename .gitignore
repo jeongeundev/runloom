@@ -13,6 +13,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 
+# 현재 인계 메모 — 이 Mac 의 운영 상태(로컬 경로·백업·셀프호스트)라 공개 저장소에 두지 않는다. 로컬에만 둔다
+docs/CURRENT_HANDOFF.md
+
 # phase execution outputs
 phases/**/phase*-output.json
 phases/**/step*-output.json
