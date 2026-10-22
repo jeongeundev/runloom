@@ -124,7 +124,8 @@
     },
     {
       "dir": "25-handoff-report",
-      "status": "pending"
+      "status": "completed",
+      "completed_at": "2026-10-23T01:50:18+0900"
     }
   ]
 }
