@@ -5420,3 +5420,232 @@ def test_touch_member_token_only_after_sixty_seconds(sessions):
     assert used() == NOW
     repo.member_for_api_token(sessions, token, now=_plus(repo.MEMBER_TOKEN_TOUCH_SECONDS))
     assert used() == _plus(repo.MEMBER_TOKEN_TOUCH_SECONDS)
+
+
+# --- phase 25 step 2: 인계 리포트 작업 (ARCHITECTURE "인계 리포트 — phase 25" 표·repo 함수) -------------------------
+
+REPORT_INPUTS = {"local_registration_id": "local-demo-report", "checkout_commit": None, "base_commit": None,
+                 "request": "리포트를 써 주세요.", "evidence": [], "pull_requests": [], "pr_evidence_error": None}
+
+
+@pytest.fixture
+def reported(seeded):
+    """원인 실행 exec-1(TASK_A) 과 멤버 하나."""
+    _create_execution(seeded, "exec-1")
+    return seeded
+
+
+def _next_execution(conn, n: int) -> None:
+    """같은 Task 의 다음 실행 exec-n — 진행 중 실행은 Task 당 하나라 앞 실행을 놓는다."""
+    repo.release_execution(conn, f"exec-{n - 1}", NOW)
+    _create_execution(conn, f"exec-{n}", attempt_no=n, start_key=f"manual:{n}")
+
+
+def _original(conn, *, connector=CONNECTOR, now=NOW, execution_id="exec-1"):
+    return repo.create_handoff_report(
+        conn, session_id=SESSION, work_item_id=_work(conn)["work_item_id"], source_execution_id=execution_id,
+        source_task_id=TASK_A, job_type="original", agent_id="agent-ops-demo", connector_id=connector,
+        inputs=REPORT_INPUTS, now=now)
+
+
+def _tailored(conn, base_report_id, member_id, *, now=NOW):
+    return repo.create_handoff_report(
+        conn, session_id=SESSION, work_item_id=_work(conn)["work_item_id"], source_execution_id="exec-1",
+        source_task_id=TASK_A, job_type="tailored", agent_id="agent-codex-mac", connector_id=CONNECTOR,
+        inputs={**REPORT_INPUTS, "request": "내게 맞춰 풀어 주세요."}, now=now, base_report_id=base_report_id,
+        requested_by_member_id=member_id)
+
+
+def _done(conn, report_id, store, *, now=LATER):
+    data = b'{"report": 1}' + report_id.encode()
+    created, _ = repo.store_artifact(conn, store, execution_id="exec-1", session_id=SESSION,
+                                     meta=_meta(data, "handoff_report", "report.json"), data=data, now=now)
+    artifact_id = created.artifact_id
+    assert repo.lease_handoff_report(conn, CONNECTOR, now=now)["report_id"] == report_id
+    assert repo.finish_handoff_report(conn, report_id, connector_id=CONNECTOR, artifact_id=artifact_id,
+                                      evidence_check={"claims": {}}, now=now)
+    return artifact_id
+
+
+def test_handoff_report_constants():
+    assert repo.HANDOFF_REPORT_JOB_TYPES == ("original", "tailored")
+    assert repo.HANDOFF_REPORT_STATUSES == ("queued", "leased", "done", "failed", "timed_out", "unavailable")
+    assert repo.HANDOFF_REPORT_ACTIVE == ("queued", "leased")
+    assert repo.REPORT_DECISION_ANSWERS == ("confirmed", "changed")
+
+
+def test_create_handoff_report_queues_one_row_and_returns_the_active_one_again(reported):
+    conn = reported
+    row, created = _original(conn)
+    assert created is True
+    assert row["report_id"].startswith("hrp-") and len(row["report_id"]) == 16
+    assert (row["status"], row["job_type"], row["agent_id"], row["connector_id"], row["created_at"],
+            row["updated_at"], row["leased_at"], row["finished_at"]) == (
+        "queued", "original", "agent-ops-demo", CONNECTOR, NOW, NOW, None, None)
+    assert json.loads(row["inputs_json"]) == REPORT_INPUTS
+    again, created_again = _original(conn, now=LATER)  # 진행 중 원본이 있으면 그 행
+    assert created_again is False and again["report_id"] == row["report_id"] and again["created_at"] == NOW
+    repo.lease_handoff_report(conn, CONNECTOR, now=LATER)
+    leased_again, created_again = _original(conn, now=LATER)  # leased 도 진행 중
+    assert created_again is False and leased_again["report_id"] == row["report_id"]
+    assert conn.execute("SELECT COUNT(*) FROM handoff_reports").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("finish", ["failed", "done"])
+def test_recreating_after_the_previous_row_ended_makes_a_new_row(reported, store, finish):
+    conn = reported
+    first, _ = _original(conn)
+    if finish == "failed":
+        repo.lease_handoff_report(conn, CONNECTOR, now=NOW)
+        assert repo.fail_handoff_report(conn, first["report_id"], connector_id=CONNECTOR, reason="리포트 작성 실패 — x",
+                                        now=LATER)
+    else:
+        _done(conn, first["report_id"], store)
+    second, created = _original(conn, now="2026-09-20T00:00:09Z")
+    assert created is True and second["report_id"] != first["report_id"]
+    assert repo.latest_original_report(conn, "exec-1")["report_id"] == second["report_id"]
+
+
+def test_record_handoff_report_unavailable(reported):
+    conn = reported
+    row = repo.record_handoff_report_unavailable(
+        conn, session_id=SESSION, work_item_id=_work(conn)["work_item_id"], source_execution_id="exec-1",
+        source_task_id=TASK_A, job_type="original", agent_id=None, connector_id=None, reason="원인 에이전트 없음",
+        inputs=REPORT_INPUTS, now=NOW)
+    assert (row["status"], row["reason"], row["finished_at"], row["agent_id"]) == (
+        "unavailable", "원인 에이전트 없음", NOW, None)
+    assert repo.lease_handoff_report(conn, CONNECTOR, now=NOW) is None
+    assert _original(conn)[1] is True  # 진행 중이 아니다
+
+
+def test_lease_handoff_report_gives_the_oldest_queued_once(reported):
+    conn = reported
+    _next_execution(conn, 2)
+    later, _ = _original(conn, execution_id="exec-2", now=LATER)
+    first, _ = _original(conn)
+    other, _ = _original(conn, execution_id="exec-2", connector="conn-other")  # 진행 중 exec-2 가 있으니 그 행
+    assert other["report_id"] == later["report_id"]
+    assert repo.lease_handoff_report(conn, "conn-nope", now=LATER) is None  # 다른 러너 것은 주지 않는다
+    leased = repo.lease_handoff_report(conn, CONNECTOR, now=LATER)
+    assert (leased["report_id"], leased["status"], leased["leased_at"], leased["updated_at"]) == (
+        first["report_id"], "leased", LATER, LATER)
+    assert repo.lease_handoff_report(conn, CONNECTOR, now=LATER)["report_id"] == later["report_id"]
+    assert repo.lease_handoff_report(conn, CONNECTOR, now=LATER) is None  # leased 는 다시 주지 않는다
+
+
+def test_finish_and_fail_only_from_leased_by_the_same_connector(reported, store):
+    conn = reported
+    row, _ = _original(conn)
+    report_id = row["report_id"]
+    assert repo.fail_handoff_report(conn, report_id, connector_id=CONNECTOR, reason="x", now=LATER) is False  # queued
+    repo.lease_handoff_report(conn, CONNECTOR, now=NOW)
+    assert repo.fail_handoff_report(conn, report_id, connector_id="conn-nope", reason="x", now=LATER) is False
+    assert repo.fail_handoff_report(conn, report_id, connector_id=CONNECTOR, reason="가" * 300, now=LATER) is True
+    failed = repo.get_handoff_report(conn, report_id)
+    assert (failed["status"], len(failed["reason"]), failed["finished_at"]) == ("failed", 200, LATER)
+    assert repo.finish_handoff_report(conn, report_id, connector_id=CONNECTOR, artifact_id="art-x",
+                                      evidence_check={}, now=LATER) is False  # 끝난 행
+
+    second, _ = _original(conn, now=LATER)
+    artifact_id = _done(conn, second["report_id"], store)
+    done = repo.get_handoff_report(conn, second["report_id"])
+    assert (done["status"], done["artifact_id"], json.loads(done["evidence_check_json"]), done["finished_at"]) == (
+        "done", artifact_id, {"claims": {}}, LATER)
+    assert repo.get_handoff_report(conn, "hrp-000000000000") is None
+
+
+def test_expire_handoff_reports_includes_the_exact_boundary(reported):
+    conn = reported
+    _next_execution(conn, 2)
+    _next_execution(conn, 3)
+    at_boundary, _ = _original(conn, now="2026-09-20T00:00:00Z")
+    leased, _ = _original(conn, execution_id="exec-2", now="2026-09-20T00:00:00Z")
+    conn.execute("UPDATE handoff_reports SET created_at = '2026-09-20T00:00:01Z' WHERE report_id = ?",
+                 (leased["report_id"],))
+    young, _ = _original(conn, execution_id="exec-3", now="2026-09-20T00:00:02Z")
+    repo.lease_handoff_report(conn, CONNECTOR, now="2026-09-20T00:00:03Z")  # 가장 이른 at_boundary 가 leased
+    now = "2026-09-20T00:30:01Z"  # 30분 전 = 00:00:01 — 그 시각 이하만
+    assert repo.expire_handoff_reports(conn, older_than="2026-09-20T00:00:01Z", reason="30분 안에 리포트가 오지 않음",
+                                       now=now) == 2
+    statuses = {r["report_id"]: (r["status"], r["reason"], r["finished_at"])
+                for r in conn.execute("SELECT * FROM handoff_reports")}
+    assert statuses == {
+        at_boundary["report_id"]: ("timed_out", "30분 안에 리포트가 오지 않음", now),
+        leased["report_id"]: ("timed_out", "30분 안에 리포트가 오지 않음", now),
+        young["report_id"]: ("queued", None, None),
+    }
+    assert repo.expire_handoff_reports(conn, older_than="2026-09-20T00:00:01Z", reason="x", now=now) == 0
+
+
+def test_mark_connector_reports_unavailable_only_queued(reported):
+    conn = reported
+    _next_execution(conn, 2)
+    leased, _ = _original(conn)
+    queued, _ = _original(conn, execution_id="exec-2", now=LATER)
+    repo.lease_handoff_report(conn, CONNECTOR, now=LATER)
+    reason = "러너가 리포트를 지원하지 않음 — 러너 재설치 필요"
+    assert repo.mark_connector_reports_unavailable(conn, CONNECTOR, reason=reason, now=LATER) == 1
+    assert repo.get_handoff_report(conn, queued["report_id"])["status"] == "unavailable"
+    assert repo.get_handoff_report(conn, queued["report_id"])["reason"] == reason
+    assert repo.get_handoff_report(conn, leased["report_id"])["status"] == "leased"
+
+
+def test_list_work_reports_and_latest_tailored(reported, store):
+    conn = reported
+    member = repo.add_member(conn, SESSION, display_name="받는 사람", now=NOW)
+    other = repo.add_member(conn, SESSION, display_name="다른 사람", now=NOW)
+    original, _ = _original(conn)
+    _done(conn, original["report_id"], store)
+    assert repo.latest_tailored_report(conn, original["report_id"], member) is None
+    first, created = _tailored(conn, original["report_id"], member, now=LATER)
+    assert created is True and (first["base_report_id"], first["requested_by_member_id"]) == (
+        original["report_id"], member)
+    assert _tailored(conn, original["report_id"], member, now=LATER)[1] is False  # 진행 중 풀이는 (원본, 멤버)당 하나
+    theirs, created = _tailored(conn, original["report_id"], other, now="2026-09-20T00:00:07Z")
+    assert created is True
+    repo.lease_handoff_report(conn, CONNECTOR, now=LATER)
+    repo.fail_handoff_report(conn, first["report_id"], connector_id=CONNECTOR, reason="x", now=LATER)
+    second, _ = _tailored(conn, original["report_id"], member, now="2026-09-20T00:00:09Z")
+    assert repo.latest_tailored_report(conn, original["report_id"], member)["report_id"] == second["report_id"]
+    assert repo.latest_tailored_report(conn, original["report_id"], other)["report_id"] == theirs["report_id"]
+    assert repo.latest_original_report(conn, "exec-1")["report_id"] == original["report_id"]  # 풀이는 원본이 아니다
+    assert repo.latest_original_report(conn, "exec-nope") is None
+    assert [r["report_id"] for r in repo.list_work_reports(conn, _work(conn)["work_item_id"])] == [
+        original["report_id"], first["report_id"], theirs["report_id"], second["report_id"]]
+
+
+def test_answer_report_decision_overwrites_and_records_an_event(reported):
+    conn = reported
+    member = repo.add_member(conn, SESSION, display_name="받는 사람", now=NOW)
+    report, _ = _original(conn)
+    report_id = report["report_id"]
+    repo.answer_report_decision(conn, report_id=report_id, item_id="c1", answer="changed", note="  결제만  ",
+                                member_id=member, now=NOW)
+    repo.answer_report_decision(conn, report_id=report_id, item_id="c2", answer="confirmed", note="무시",
+                                member_id=member, now=NOW)
+    repo.answer_report_decision(conn, report_id=report_id, item_id="c1", answer="confirmed", note=None,
+                                member_id=member, now=LATER)  # 덮어쓰기
+    assert [(r["item_id"], r["answer"], r["note"], r["member_id"], r["answered_at"])
+            for r in repo.list_report_decisions(conn, report_id)] == [
+        ("c2", "confirmed", None, member, NOW), ("c1", "confirmed", None, member, LATER)]
+    events = [json.loads(e["data_json"]) for e in repo.list_work_item_events(conn, _work(conn)["work_item_id"])
+              if e["type"] == "report_decision"]
+    assert events == [
+        {"report_id": report_id, "item_id": "c1", "answer": "changed", "note": "결제만", "member_id": member},
+        {"report_id": report_id, "item_id": "c2", "answer": "confirmed", "note": None, "member_id": member},
+        {"report_id": report_id, "item_id": "c1", "answer": "confirmed", "note": None, "member_id": member},
+    ]
+
+
+def test_answer_report_decision_rejects_bad_answer_and_note(reported):
+    conn = reported
+    member = repo.add_member(conn, SESSION, display_name="받는 사람", now=NOW)
+    report, _ = _original(conn)
+    for answer, note, field in (("skipped", None, "answer"), ("changed", None, "note"), ("changed", "   ", "note"),
+                                ("changed", "x" * 501, "note")):
+        with pytest.raises(ValueError, match=field):
+            repo.answer_report_decision(conn, report_id=report["report_id"], item_id="c1", answer=answer, note=note,
+                                        member_id=member, now=NOW)
+    assert repo.list_report_decisions(conn, report["report_id"]) == []
+    assert not [e for e in repo.list_work_item_events(conn, _work(conn)["work_item_id"])
+                if e["type"] == "report_decision"]

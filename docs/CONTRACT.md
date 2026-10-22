@@ -242,7 +242,7 @@
 
 본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /api/v1/executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
-산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`.
+산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`, `handoff_report`.
 
 로컬 도구의 원시 로그 산출물 — 생산자와 내용:
 
@@ -253,6 +253,7 @@
 | `generic_result` | 연결 프로그램 | 사용자 정의 종류의 결과 봉투(`GenericResult`, 11절). 내장 종류의 `diagnosis_result`·`code_change_result` 와 구분 |
 | `code_review_result` | 연결 프로그램 | 내장 `code_review` 의 결과 봉투(`CodeReviewResult`, 13.4절) |
 | `triage_result` | 연결 프로그램 | 내장 `triage` 의 결과 봉투(`TriageResult`, 17.2절) |
+| `handoff_report` | 중앙 | 근거를 확인해 원인 실행에 저장한 인계 리포트(`HandoffReport`, 19절) |
 
 ## 5. 진단 결과 — `ready_for_handoff` 전체
 

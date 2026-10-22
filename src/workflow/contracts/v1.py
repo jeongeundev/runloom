@@ -41,6 +41,7 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     "generic_result",
     "code_review_result",
     "triage_result",
+    "handoff_report",
 )
 
 _RFC3339 = re.compile(

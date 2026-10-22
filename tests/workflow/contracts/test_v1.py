@@ -181,8 +181,9 @@ def test_constants():
         "generic_result",
         "code_review_result",
         "triage_result",
+        "handoff_report",
     )
-    assert len(ARTIFACT_KINDS) == 18
+    assert len(ARTIFACT_KINDS) == 19
 
 
 def test_artifact_kinds_match_contract_md_list():

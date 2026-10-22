@@ -52,7 +52,25 @@
     {
       "step": 2,
       "name": "report-store",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-22T22:46:35+0900",
+      "summary": "스키마 v27(db.py): SCHEMA_VERSION=27, _V27_TABLES = artifacts 재생성(ARTIFACT_KINDS 에 handoff_report — 마이그레이션 DB 에 빠져 있던 triage_result 도 들어감, D38)·work_item_events 재생성(WORK_ITEM_EVENT_TYPES = _V13_WORK_ITEM_EVENT_TYPES + report_decision, v13 은 _V13_ 상수로)·handoff_reports(+유일 인덱스 2·일반 3)·handoff_report_decisions, _migrate_26_to_27(백필 없음 D41). 재생성 문장이 _V27_TABLES 앞부분이라 새 DB 도 같은 원문(CREATE TABLE \"artifacts\")이 됨 — ARCHITECTURE 마이그레이션 순서 문단을 그에 맞게 고침. fixture tests/workflow/adapters/fixtures/schema_v26.sql(변경 전 코드 덤프). repo.py 끝: 상수 HANDOFF_REPORT_JOB_TYPES·HANDOFF_REPORT_STATUSES·HANDOFF_REPORT_ACTIVE·REPORT_DECISION_ANSWERS(db 가 import), 함수 create_handoff_report(진행 중 같은 키면 (기존, False))·record_handoff_report_unavailable·lease_handoff_report·finish_handoff_report·fail_handoff_report(사유 200자)·expire_handoff_reports(created_at <= older_than)·mark_connector_reports_unavailable·get_handoff_report·latest_original_report·list_work_reports·latest_tailored_report·answer_report_decision(덮어쓰기+report_decision 이벤트, ValueError('answer'|'note'), 없는 리포트 NotFound)·list_report_decisions — ARCHITECTURE 시그니처 그대로, 시각은 now 인자. contracts ARTIFACT_KINDS 끝에 handoff_report + CONTRACT 4절 kind 줄·생산자 표 행. 기존 단정 수정: test_v1 튜플·len 19, 스키마 버전 26→27(test_db·test_backup·test_internal_request_store), test_db TABLES·V15_TABLES(PHASE25_TABLES 제외)·'재생성하지 않는다' 제외 목록(_v27_rebuilt), test_v13_constants 는 _V13_WORK_ITEM_EVENT_TYPES, test_backup 행 수 dict 에 새 두 표",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "ARCHITECTURE 는 새 DB 가 _artifacts_table(\"artifacts\") 를 그대로 쓴다고 적었으나, 그러면 마이그레이션 DB(\"artifacts\" 따옴표 원문)와 sqlite_master 원문이 달라 일치 테스트가 깨진다 — 재생성 문장을 _V27_TABLES 에 넣어 새 DB 도 거치게 하고 ARCHITECTURE 문단을 고침",
+        "answer_report_decision 은 item_id 가 리포트 to_confirm 에 실제로 있는지, 리포트가 original 인지 보지 않는다 — 산출물 JSON 을 읽어야 해서 step 8 행동 함수에서 확인해야 함",
+        "lease_handoff_report 는 queued 중 created_at·report_id 순 — report_id 가 무작위라 같은 created_at 끼리 순서는 임의"
+      ],
+      "completed_at": "2026-10-22T23:04:19+0900"
     },
     {
       "step": 3,

@@ -5090,3 +5090,188 @@ def list_triage_autostart(conn: Connection, session_id: str, kind: str) -> list[
         " WHERE a.session_id = ? AND a.kind = ? ORDER BY a.version DESC",
         (session_id, kind),
     ).fetchall()
+
+
+# --- 인계 리포트 (phase 25, ADR-0033) ------------------------------------------
+# ARCHITECTURE "인계 리포트 — phase 25" 표 (스키마 v27)·repo 함수. 시각은 모두 인자 now.
+
+HANDOFF_REPORT_JOB_TYPES = ("original", "tailored")
+HANDOFF_REPORT_STATUSES = ("queued", "leased", "done", "failed", "timed_out", "unavailable")
+HANDOFF_REPORT_ACTIVE = ("queued", "leased")
+REPORT_DECISION_ANSWERS = ("confirmed", "changed")
+_REPORT_REASON_MAX = 200
+_REPORT_NOTE_MAX = 500
+_ACTIVE_REPORT = f"status IN ({', '.join(repr(s) for s in HANDOFF_REPORT_ACTIVE)})"
+
+
+def _active_report(conn: Connection, *, job_type: str, source_execution_id: str, base_report_id: str | None,
+                   requested_by_member_id: str | None) -> Row | None:
+    if job_type == "original":
+        return _one(conn, f"SELECT * FROM handoff_reports WHERE job_type = 'original' AND source_execution_id = ?"
+                          f" AND {_ACTIVE_REPORT}", (source_execution_id,))
+    return _one(conn, f"SELECT * FROM handoff_reports WHERE job_type = 'tailored' AND base_report_id = ?"
+                      f" AND requested_by_member_id = ? AND {_ACTIVE_REPORT}", (base_report_id, requested_by_member_id))
+
+
+def _insert_handoff_report(conn: Connection, *, session_id: str, work_item_id: str, source_execution_id: str,
+                           source_task_id: str, job_type: str, agent_id: str | None, connector_id: str | None,
+                           status: str, reason: str | None, inputs: dict, now: str, base_report_id: str | None,
+                           requested_by_member_id: str | None) -> Row:
+    report_id = f"hrp-{secrets.token_hex(6)}"
+    conn.execute(
+        "INSERT INTO handoff_reports (report_id, session_id, work_item_id, source_execution_id, source_task_id,"
+        " job_type, base_report_id, requested_by_member_id, agent_id, connector_id, status, reason, inputs_json,"
+        " created_at, updated_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (report_id, session_id, work_item_id, source_execution_id, source_task_id, job_type, base_report_id,
+         requested_by_member_id, agent_id, connector_id, status, reason, json.dumps(inputs, ensure_ascii=False),
+         now, now, None if status in HANDOFF_REPORT_ACTIVE else now),
+    )
+    return get_handoff_report(conn, report_id)
+
+
+def create_handoff_report(conn: Connection, *, session_id: str, work_item_id: str, source_execution_id: str,
+                          source_task_id: str, job_type: str, agent_id: str, connector_id: str, inputs: dict,
+                          now: str, base_report_id: str | None = None,
+                          requested_by_member_id: str | None = None) -> tuple[Row, bool]:
+    """`queued` 리포트 작업 하나. 같은 키(원본 = 원인 실행, 맞춤 풀이 = (원본 리포트, 요청 멤버))의 진행 중 행이 있으면
+    그 행과 False — 다시 만들기는 이전 행이 끝난(failed·timed_out·unavailable·done) 뒤에만 새 행이다."""
+    with _tx(conn):
+        existing = _active_report(conn, job_type=job_type, source_execution_id=source_execution_id,
+                                  base_report_id=base_report_id, requested_by_member_id=requested_by_member_id)
+        if existing is not None:
+            return existing, False
+        row = _insert_handoff_report(
+            conn, session_id=session_id, work_item_id=work_item_id, source_execution_id=source_execution_id,
+            source_task_id=source_task_id, job_type=job_type, agent_id=agent_id, connector_id=connector_id,
+            status="queued", reason=None, inputs=inputs, now=now, base_report_id=base_report_id,
+            requested_by_member_id=requested_by_member_id)
+    return row, True
+
+
+def record_handoff_report_unavailable(conn: Connection, *, session_id: str, work_item_id: str,
+                                      source_execution_id: str, source_task_id: str, job_type: str,
+                                      agent_id: str | None, connector_id: str | None, reason: str, inputs: dict,
+                                      now: str, base_report_id: str | None = None,
+                                      requested_by_member_id: str | None = None) -> Row:
+    """만들 수 없는 리포트 — `unavailable`·사유·`finished_at = now` 행 하나."""
+    with _tx(conn):
+        return _insert_handoff_report(
+            conn, session_id=session_id, work_item_id=work_item_id, source_execution_id=source_execution_id,
+            source_task_id=source_task_id, job_type=job_type, agent_id=agent_id, connector_id=connector_id,
+            status="unavailable", reason=reason, inputs=inputs, now=now, base_report_id=base_report_id,
+            requested_by_member_id=requested_by_member_id)
+
+
+def lease_handoff_report(conn: Connection, connector_id: str, *, now: str) -> Row | None:
+    """그 러너의 가장 이른 `queued` 를 `leased` 로. 없으면 None. `leased` 는 다시 주지 않는다."""
+    with _tx(conn):
+        row = _one(conn, "SELECT report_id FROM handoff_reports WHERE connector_id = ? AND status = 'queued'"
+                         " ORDER BY created_at, report_id LIMIT 1", (connector_id,))
+        if row is None:
+            return None
+        cursor = conn.execute("UPDATE handoff_reports SET status = 'leased', leased_at = ?, updated_at = ?"
+                              " WHERE report_id = ? AND status = 'queued'", (now, now, row["report_id"]))
+        if cursor.rowcount == 0:
+            return None
+        return get_handoff_report(conn, row["report_id"])
+
+
+def finish_handoff_report(conn: Connection, report_id: str, *, connector_id: str, artifact_id: str,
+                          evidence_check: dict, now: str) -> bool:
+    """그 러너의 `leased` 면 `done`. 아니면 False."""
+    with _tx(conn):
+        cursor = conn.execute(
+            "UPDATE handoff_reports SET status = 'done', artifact_id = ?, evidence_check_json = ?, finished_at = ?,"
+            " updated_at = ? WHERE report_id = ? AND connector_id = ? AND status = 'leased'",
+            (artifact_id, json.dumps(evidence_check, ensure_ascii=False), now, now, report_id, connector_id),
+        )
+    return cursor.rowcount == 1
+
+
+def fail_handoff_report(conn: Connection, report_id: str, *, connector_id: str, reason: str, now: str) -> bool:
+    """그 러너의 `leased` 면 `failed`(사유 200자까지). 아니면 False."""
+    with _tx(conn):
+        cursor = conn.execute(
+            "UPDATE handoff_reports SET status = 'failed', reason = ?, finished_at = ?, updated_at = ?"
+            " WHERE report_id = ? AND connector_id = ? AND status = 'leased'",
+            (reason[:_REPORT_REASON_MAX], now, now, report_id, connector_id),
+        )
+    return cursor.rowcount == 1
+
+
+def expire_handoff_reports(conn: Connection, *, older_than: str, reason: str, now: str) -> int:
+    """진행 중이고 `created_at <= older_than` 인 행 전부 `timed_out`(경계 포함). 바뀐 수."""
+    with _tx(conn):
+        cursor = conn.execute(
+            f"UPDATE handoff_reports SET status = 'timed_out', reason = ?, finished_at = ?, updated_at = ?"
+            f" WHERE {_ACTIVE_REPORT} AND created_at <= ?",
+            (reason, now, now, older_than),
+        )
+    return cursor.rowcount
+
+
+def mark_connector_reports_unavailable(conn: Connection, connector_id: str, *, reason: str, now: str) -> int:
+    """능력 선언을 그만둔 러너의 `queued` 전부 `unavailable`. 바뀐 수."""
+    with _tx(conn):
+        cursor = conn.execute(
+            "UPDATE handoff_reports SET status = 'unavailable', reason = ?, finished_at = ?, updated_at = ?"
+            " WHERE connector_id = ? AND status = 'queued'",
+            (reason, now, now, connector_id),
+        )
+    return cursor.rowcount
+
+
+def get_handoff_report(conn: Connection, report_id: str) -> Row | None:
+    return _one(conn, "SELECT * FROM handoff_reports WHERE report_id = ?", (report_id,))
+
+
+def latest_original_report(conn: Connection, source_execution_id: str) -> Row | None:
+    """원인 실행의 최신 `original` — `created_at` 최근 → `rowid` 최근."""
+    return _one(conn, "SELECT * FROM handoff_reports WHERE source_execution_id = ? AND job_type = 'original'"
+                      " ORDER BY created_at DESC, rowid DESC LIMIT 1", (source_execution_id,))
+
+
+def list_work_reports(conn: Connection, work_item_id: str) -> list[Row]:
+    """업무의 모든 리포트 행(원본·맞춤 풀이) — `created_at`·`rowid` 순."""
+    return conn.execute("SELECT * FROM handoff_reports WHERE work_item_id = ? ORDER BY created_at, rowid",
+                        (work_item_id,)).fetchall()
+
+
+def latest_tailored_report(conn: Connection, base_report_id: str, member_id: str) -> Row | None:
+    """(원본 리포트, 요청 멤버)의 최신 `tailored`(D8)."""
+    return _one(conn, "SELECT * FROM handoff_reports WHERE base_report_id = ? AND requested_by_member_id = ?"
+                      " AND job_type = 'tailored' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (base_report_id, member_id))
+
+
+def answer_report_decision(conn: Connection, *, report_id: str, item_id: str, answer: str, note: str | None,
+                           member_id: str, now: str) -> None:
+    """결정 답 덮어쓰기 + 업무 이벤트 `report_decision`(한 트랜잭션). `changed` 는 앞뒤 공백을 지운 note 1~500자,
+    `confirmed` 는 note 를 버린다. 리포트가 없으면 NotFound."""
+    if answer not in REPORT_DECISION_ANSWERS:
+        raise ValueError("answer")
+    if answer == "changed":
+        note = (note or "").strip()
+        if not note or len(note) > _REPORT_NOTE_MAX:
+            raise ValueError("note")
+    else:
+        note = None
+    with _tx(conn):
+        report = get_handoff_report(conn, report_id)
+        if report is None:
+            raise NotFound(report_id)
+        conn.execute(
+            "INSERT INTO handoff_report_decisions (report_id, item_id, answer, note, member_id, answered_at)"
+            " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(report_id, item_id) DO UPDATE SET answer = excluded.answer,"
+            " note = excluded.note, member_id = excluded.member_id, answered_at = excluded.answered_at",
+            (report_id, item_id, answer, note, member_id, now),
+        )
+        _work_item_event(conn, report["work_item_id"], report["session_id"], "report_decision",
+                         {"report_id": report_id, "item_id": item_id, "answer": answer, "note": note,
+                          "member_id": member_id}, now)
+
+
+def list_report_decisions(conn: Connection, report_id: str) -> list[Row]:
+    """리포트의 결정 답 — `answered_at` 순."""
+    return conn.execute("SELECT * FROM handoff_report_decisions WHERE report_id = ? ORDER BY answered_at, rowid",
+                        (report_id,)).fetchall()
