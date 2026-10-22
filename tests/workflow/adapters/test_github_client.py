@@ -22,6 +22,9 @@ from workflow.adapters.github_client import (
     IssuePage,
     InstallationTokenProvider,
     MAX_PULL_PAGES_PER_SYNC,
+    PullCommit,
+    PullDetail,
+    PullReviewComment,
     PullSummary,
 )
 from workflow.contracts.github import GitHubIssueSnapshot, IssuePrLink, PullRequestRef
@@ -931,4 +934,106 @@ def test_list_pulls_refuses_repository_outside_allowed_list():
     rec = Recorder({})
     with pytest.raises(GitHubRepositoryNotAllowed):
         _client(rec).list_pulls("other/repo", None)
+    assert rec.calls == []
+
+
+# ── PR 근거 읽기 (phase 25 step 4 — 인계 리포트) ─────────────────────────────
+
+
+def _pull_detail_json(**overrides) -> dict:
+    item = {
+        "number": 7, "title": "RUN-7 고침", "body": "본문 설명", "html_url": f"https://github.com/{REPO}/pull/7",
+        "state": "closed", "draft": False, "merged_at": "2026-10-20T01:00:00Z",
+        "head": {"ref": "task/t1", "sha": "a" * 40}, "user": {"login": "kim-dev"},
+    }
+    item.update(overrides)
+    return item
+
+
+def test_get_pull_detail_reads_needed_fields_and_null_body_is_empty():
+    rec = Recorder({("GET", f"/repos/{REPO}/pulls/7"): httpx.Response(200, json=_pull_detail_json(body=None))})
+
+    detail = _client(rec).get_pull_detail(REPO, 7)
+
+    assert rec.calls[0].method == "GET" and rec.calls[0].url.host == "api.github.com"
+    assert detail == PullDetail(number=7, title="RUN-7 고침", body="", html_url=f"https://github.com/{REPO}/pull/7",
+                                state="closed", draft=False, merged_at="2026-10-20T01:00:00Z", head_sha="a" * 40)
+
+
+def test_list_pull_commits_reads_first_page_and_first_message_line():
+    rec = Recorder({("GET", f"/repos/{REPO}/pulls/7/commits"): httpx.Response(200, json=[
+        {"sha": "b" * 40, "commit": {"message": "fix: 첫 줄\n\n본문 줄"}, "author": None},
+        {"sha": "c" * 40, "commit": {"message": "docs: 하나"}},
+    ])})
+
+    commits = _client(rec).list_pull_commits(REPO, 7)
+
+    assert _query(rec.calls[0]) == {"per_page": "100"}
+    assert commits == [PullCommit(sha="b" * 40, message="fix: 첫 줄"), PullCommit(sha="c" * 40, message="docs: 하나")]
+
+
+def test_list_pull_review_comments_reads_author_path_line_and_body():
+    rec = Recorder({("GET", f"/repos/{REPO}/pulls/7/comments"): httpx.Response(200, json=[
+        {"id": 1, "user": {"login": "rev"}, "path": "src/a.py", "line": 12, "body": "여기 확인",
+         "created_at": "2026-10-20T02:00:00Z"},
+        {"id": 2, "user": None, "path": "src/b.py", "line": None, "body": "파일 전체",
+         "created_at": "2026-10-20T03:00:00Z"},
+    ])})
+
+    comments = _client(rec).list_pull_review_comments(REPO, 7)
+
+    assert _query(rec.calls[0]) == {"per_page": "100"}
+    assert comments == [
+        PullReviewComment(author_login="rev", path="src/a.py", line=12, body="여기 확인", created_at="2026-10-20T02:00:00Z"),
+        PullReviewComment(author_login=None, path="src/b.py", line=None, body="파일 전체", created_at="2026-10-20T03:00:00Z"),
+    ]
+
+
+_PULL_READS = [
+    ("get_pull_detail", f"/repos/{REPO}/pulls/7"),
+    ("list_pull_commits", f"/repos/{REPO}/pulls/7/commits"),
+    ("list_pull_review_comments", f"/repos/{REPO}/pulls/7/comments"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), _PULL_READS)
+@pytest.mark.parametrize(("status", "expected"), [
+    (403, GitHubForbidden), (404, GitHubNotFound), (429, GitHubRateLimited), (502, GitHubUnavailable), (422, GitHubError),
+])
+def test_pull_reads_classify_http_errors_without_token(method, path, status, expected):
+    rec = Recorder({("GET", path): httpx.Response(status, json={"message": "secret body"})})
+    with pytest.raises(expected) as info:
+        getattr(_client(rec), method)(REPO, 7)
+    assert TOKEN not in str(info.value) and "secret body" not in str(info.value)
+
+
+@pytest.mark.parametrize(("method", "path"), _PULL_READS)
+def test_pull_reads_connection_error_is_unavailable(method, path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(GitHubUnavailable) as info:
+        getattr(_client(handler), method)(REPO, 7)
+    assert str(info.value) == f"GET {path}: ConnectError"
+
+
+@pytest.mark.parametrize(("method", "path", "body"), [
+    ("get_pull_detail", f"/repos/{REPO}/pulls/7", {"number": 7}),
+    ("get_pull_detail", f"/repos/{REPO}/pulls/7", [1]),
+    ("list_pull_commits", f"/repos/{REPO}/pulls/7/commits", {"not": "a list"}),
+    ("list_pull_commits", f"/repos/{REPO}/pulls/7/commits", [{"sha": "b" * 40}]),
+    ("list_pull_review_comments", f"/repos/{REPO}/pulls/7/comments", [{"body": "x"}]),
+])
+def test_pull_reads_bad_shape_is_github_error(method, path, body):
+    rec = Recorder({("GET", path): httpx.Response(200, json=body)})
+    with pytest.raises(GitHubError) as info:
+        getattr(_client(rec), method)(REPO, 7)
+    assert type(info.value) is GitHubError and str(info.value) == f"GET {path}: 응답 형식 오류"
+
+
+@pytest.mark.parametrize(("method", "path"), _PULL_READS)
+def test_pull_reads_refuse_repository_outside_allowed_list(method, path):
+    rec = Recorder({})
+    with pytest.raises(GitHubRepositoryNotAllowed):
+        getattr(_client(rec), method)("acme/other", 7)
     assert rec.calls == []
