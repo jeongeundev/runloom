@@ -70,7 +70,7 @@
         "answer_report_decision 은 item_id 가 리포트 to_confirm 에 실제로 있는지, 리포트가 original 인지 보지 않는다 — 산출물 JSON 을 읽어야 해서 step 8 행동 함수에서 확인해야 함",
         "lease_handoff_report 는 queued 중 created_at·report_id 순 — report_id 가 무작위라 같은 created_at 끼리 순서는 임의"
       ],
-      "completed_at": "2026-10-22T23:04:19+0900"
+      "completed_at": "2026-10-22T23:05:09+0900"
     },
     {
       "step": 3,
