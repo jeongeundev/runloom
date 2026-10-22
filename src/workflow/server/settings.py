@@ -38,6 +38,8 @@ ENV_KEYS = (
     *OPTIONAL_SECRET_KEYS,
     "WORKFLOW_GITHUB_REPOS",
 )
+# `load_settings` 가 읽지만 .env.example·compose·SELFHOST 에 싣지 않는 조정값(ARCHITECTURE 에만 적는다, ADR-0033 D39)
+HIDDEN_ENV_KEYS = ("WORKFLOW_HANDOFF_REPORT_WAIT_SECONDS",)
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,8 @@ class Settings:
     github_repos: tuple[str, ...] = ()
     # 비밀 파일 저장소 루트(ADR-0017, `adapters/secret_store.py`). 백업에 들어가지 않는다
     secret_dir: Path = Path("data/secrets")
+    # 인계 리포트 대기 상한(ADR-0033 D9) — 원본 리포트 작업이 만들어진 뒤 이 시간이 지나면 `timed_out`
+    handoff_report_wait_seconds: int = 1800
 
 
 class SettingsError(ValueError):
@@ -138,4 +142,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         github_token=env.get("WORKFLOW_GITHUB_TOKEN") or "",
         github_repos=tuple(r.strip() for r in (env.get("WORKFLOW_GITHUB_REPOS") or "").split(",") if r.strip()),
         secret_dir=Path(env.get("WORKFLOW_SECRET_DIR") or "data/secrets"),
+        handoff_report_wait_seconds=_int(env, "WORKFLOW_HANDOFF_REPORT_WAIT_SECONDS", 1800),
     )

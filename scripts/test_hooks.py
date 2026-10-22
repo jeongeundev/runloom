@@ -85,6 +85,19 @@ class TestTddInvariant:
         (d / "probe.py").write_text("print(1)")
         assert run_verify(repo).returncode == 0
 
+    def test_vendored_static_script_is_exempt(self, repo):
+        """static/vendor/ 아래 받아 둔 서드파티 파일(mermaid.min.js 등)은 우리 코드가 아니라 TDD 대상이 아니다."""
+        d = repo / "src" / "app" / "static" / "vendor"
+        d.mkdir(parents=True)
+        (d / "lib.min.js").write_text("var a=1;")
+        assert run_verify(repo).returncode == 0
+
+    def test_non_vendor_static_script_still_needs_a_test(self, repo):
+        d = repo / "src" / "app" / "static"
+        d.mkdir(parents=True)
+        (d / "app.js").write_text("var a=1;")
+        assert run_verify(repo).returncode == 2
+
     def test_python_source_with_mirrored_tests_dir_passes(self, repo):
         """tests/ 가 src/ 구조를 따라간 배치도 인정한다: src/a/b/x.py → tests/a/b/test_x.py."""
         (repo / "src" / "pkg" / "sub").mkdir(parents=True)

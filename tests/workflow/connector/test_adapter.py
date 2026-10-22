@@ -2,10 +2,17 @@
 
 import hashlib
 
-from workflow.connector.adapter import SUPPORTED_BUILTIN_KINDS, AdapterOutput, EchoAdapter, make_meta
-from workflow.contracts.v1 import ExecutionRequest, GenericResult
+from workflow.connector.adapter import (
+    SUPPORTED_BUILTIN_KINDS,
+    AdapterOutput,
+    EchoAdapter,
+    ReportAdapter,
+    make_meta,
+)
+from workflow.connector.local_tool import HANDOFF_REPORT_OUTPUT_SCHEMA
+from workflow.contracts.v1 import ExecutionRequest, GenericResult, HandoffReport
 
-from .conftest import BASE_COMMIT, make_local_request, make_request, make_triage_request
+from .conftest import BASE_COMMIT, REPORT_REQUEST, make_local_request, make_request, make_triage_request
 
 
 class Progress:
@@ -121,3 +128,33 @@ def test_echo_adapter_does_not_triage(tmp_path):
     output = EchoAdapter().run(make_triage_request(BASE_COMMIT), tmp_path, Progress())
 
     assert output.result is None and output.failed[0] == "unsupported_kind"
+
+
+# --- 인계 리포트 — EchoAdapter.run_report (ARCHITECTURE "리포트 작업 실행 — 러너") -----------------------------
+
+
+def _report(data: dict, job_type: str = "original") -> HandoffReport:
+    return HandoffReport.model_validate({
+        **data, "contract_version": 1, "report_id": "hrp-0123456789ab", "job_type": job_type,
+    })
+
+
+def test_echo_run_report_cites_one_artifact_and_one_commit_from_request(tmp_path):
+    progress = Progress()
+
+    output = EchoAdapter().run_report(tmp_path, REPORT_REQUEST, HANDOFF_REPORT_OUTPUT_SCHEMA, progress)
+
+    assert isinstance(EchoAdapter(), ReportAdapter)
+    assert output.failed is None
+    report = _report(output.data)  # 계약에 맞는다
+    assert report.sections.changes[0].evidence == ["artifact:art-diff-001", f"commit:{BASE_COMMIT}"]
+    assert set(output.data) == {"sections", "diagram"}  # report_id·job_type·contract_version 은 러너가 채운다
+    assert progress.calls[0][1] is not None
+
+
+def test_echo_run_report_for_tailored_cites_original_claims_only(tmp_path):
+    request = "# 맞춤 풀이: RUN-12 쿠폰\n\n원본 {\"evidence\": [\"artifact:art-diff-001\"]}\n\n## 확인 가능한 근거 ID\nclaim:change-1"
+
+    output = EchoAdapter().run_report(tmp_path, request, HANDOFF_REPORT_OUTPUT_SCHEMA, Progress())
+
+    assert _report(output.data, "tailored").sections.changes[0].evidence == ["claim:change-1"]

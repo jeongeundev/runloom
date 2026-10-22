@@ -4,6 +4,7 @@
 - 연결 오류·시간 초과·5xx 는 `Unreachable` — 호출자가 보류하고 다음 tick 에 같은 ID·seq 로 재시도한다.
 - 4xx 는 `CentralError`(status, body). 401 `Unauthenticated`, 409 `sequence_gap` → `SequenceGapError(expected_seq)`,
   409 `event_conflict` → `EventConflictError`.
+- claim 응답에 `job_type` 키가 있으면 인계 리포트 작업(`ReportJob`, CONTRACT 19.2), 없으면 실행(`ExecutionRequest`).
 - 토큰은 헤더에만 넣고 예외 메시지·repr 에 넣지 않는다.
 """
 
@@ -25,6 +26,8 @@ from workflow.contracts.v1 import (
     ExecutionEvent,
     ExecutionRequest,
     RUNNER_CAPABILITIES,
+    ReportJob,
+    ReportJobFailure,
 )
 
 
@@ -116,7 +119,7 @@ class CentralClient:
     def claim(
         self, connector_id: str, *, registration_heads: dict[str, str] | None = None,
         capabilities: Sequence[str] = RUNNER_CAPABILITIES,
-    ) -> ExecutionRequest | None:
+    ) -> ExecutionRequest | ReportJob | None:
         body: dict[str, Any] = {
             "contract_version": CONTRACT_VERSION, "connector_id": connector_id,
             "supported_kinds": list(SUPPORTED_BUILTIN_KINDS),
@@ -128,7 +131,8 @@ class CentralClient:
         response = self._call("POST", f"{API_PREFIX}/connector/claim", json=body)
         if response.status_code == 204:
             return None
-        return ExecutionRequest.model_validate(response.json())
+        data = response.json()
+        return ReportJob.model_validate(data) if "job_type" in data else ExecutionRequest.model_validate(data)
 
     def heartbeat(self, connector_id: str, current_execution_id: str | None) -> bool:
         """중앙이 `current_execution_id` 를 이미 마감했으면 True. 구버전 서버(빈 응답)는 언제나 False."""
@@ -179,3 +183,15 @@ class CentralClient:
             files={"file": (meta.name, data, meta.content_type)},
         )
         return ArtifactCreated.model_validate(response.json())
+
+    def submit_report(self, report_id: str, body: bytes) -> None:
+        """리포트 JSON 바이트 그대로 — 서버가 크기를 파싱 전에 본다."""
+        self._call(
+            "POST", f"{API_PREFIX}/report-jobs/{_segment(report_id)}/result",
+            content=body, headers={"Content-Type": "application/json"},
+        )
+
+    def fail_report(self, report_id: str, failure: ReportJobFailure) -> None:
+        self._call(
+            "POST", f"{API_PREFIX}/report-jobs/{_segment(report_id)}/failure", json=failure.model_dump(mode="json"),
+        )

@@ -30,6 +30,9 @@
   claim 을 하지 않으므로 fetch 도 없다.
 - 결과 브랜치 push(ADR-0018 결정 4): 수정 결과가 `ready_for_review`·결과 커밋이면 `result_ready` 전에 등록 폴더에서
   결과 브랜치(`contracts/v1.result_branch`)를 origin 에 push 하고 `branch_pushed` 로 보고한다. 검토·사용자 정의 종류는 push 하지 않는다.
+- 인계 리포트(ADR-0033): claim 이 `ReportJob` 을 주면 `report_job.run_report_job` 이 처리한다 — 로컬 실행 기록·이벤트가 없고,
+  그동안 heartbeat 는 `current_execution_id=None` 이다. 실행 요청에 `handoff_report` 가 있으면 그 산출물을 해시 확인 뒤
+  인계 디렉터리에 `report.json`, 결정 답이 있으면 `decisions.json` 으로 둔다. 없으면 두 파일을 만들지 않는다.
 """
 
 import hashlib
@@ -58,6 +61,7 @@ from workflow.connector.client import (
 from workflow.connector.config import ConnectorPaths
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import mask_secrets
+from workflow.connector.report_job import run_report_job
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
     ArtifactMeta,
@@ -71,6 +75,7 @@ from workflow.contracts.v1 import (
     GenericResult,
     HandoffBundle,
     LocalTarget,
+    ReportJob,
     TriageResult,
     TriageTarget,
 )
@@ -240,7 +245,7 @@ class Runner:
             return 0.0
         return max(0.0, self._heartbeat_interval - (time.monotonic() - self._last_heartbeat))
 
-    def _heartbeat_while_running(self, execution_id: str, stop: threading.Event) -> None:
+    def _heartbeat_while_running(self, execution_id: str | None, stop: threading.Event) -> None:
         """어댑터가 도는 동안 별도 스레드에서. 실패해도 스레드를 죽이지 않고 다음 주기에 다시 보낸다 — 실행 결과와 무관하다."""
         while not stop.wait(self._heartbeat_due_in()):
             try:
@@ -303,8 +308,25 @@ class Runner:
         request = self._client.claim(self._connector_id, registration_heads=self._registration_heads())
         if request is None:
             return
+        if isinstance(request, ReportJob):
+            self._run_report(request)
+            return
         state.record_claim(self._conn, request, self._clock())  # 로컬 접수 기록이 먼저
         self._start(state.get_execution(self._conn, request.execution_id))
+
+    def _run_report(self, job: ReportJob) -> None:
+        """리포트 작업은 실행이 아니다 — 도는 동안 heartbeat 는 현재 실행 없이(None) 보낸다."""
+        stop_heartbeat = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._heartbeat_while_running, args=(None, stop_heartbeat), daemon=True,
+            name=f"heartbeat-{job.report_id}",
+        )
+        heartbeat.start()
+        try:
+            run_report_job(self._client, self._conn, self._adapters, job, handoff_root=self._handoff_root)
+        finally:
+            stop_heartbeat.set()
+            heartbeat.join()
 
     def _registration_heads(self) -> dict[str, str]:
         """등록마다 간격이 지났으면 fetch 하고, 성공한 등록의 origin 기본 브랜치 커밋을 돌려준다."""
@@ -638,9 +660,18 @@ class Runner:
                     request.execution_id, bundle.source_result_artifact_id,
                 )
                 (handoff_dir / f"{bundle.source_kind}_result.{_extension(content_type)}").write_bytes(blob)
+        ref = request.handoff_report
+        if ref is not None:  # 앞 단계 인계 리포트와 받는 사람의 결정 답 (D23)
+            blob = self._download_checked(request.execution_id, ref.artifact_id, ref.sha256, "handoff_report")
+            (handoff_dir / "report.json").write_bytes(blob)
+            if ref.decisions:
+                decisions = [decision.model_dump(mode="json") for decision in ref.decisions]
+                (handoff_dir / "decisions.json").write_text(
+                    json.dumps(decisions, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
 
     def _download_checked(self, execution_id: str, artifact_id: str, sha256: str, label: str) -> bytes:
-        """manifest 가 적은 해시와 다르면 `HandoffHashMismatch` — 인계 자료를 어댑터에 넘기지 않는다."""
+        """manifest(또는 `handoff_report`)가 적은 해시와 다르면 `HandoffHashMismatch` — 인계 자료를 어댑터에 넘기지 않는다."""
         blob, _ = self._client.download_artifact(execution_id, artifact_id)
         digest = hashlib.sha256(blob).hexdigest()
         if digest != sha256:

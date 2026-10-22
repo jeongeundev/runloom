@@ -245,7 +245,10 @@
     <ol class="stage-list" data-stages>
       {% for s in panel.stages %}
       <li><a href="/tasks/{{ s.task_id }}">단계 {{ loop.index }}/{{ loop.length }} · {{ s.kind_label }}</a>
-        {{ st.mini(s.status.label) }} <span class="small">{{ s.status.reason }} · 실행 {{ s.attempts }}회</span></li>
+        {{ st.mini(s.status.label) }} <span class="small">{{ s.status.reason }} · 실행 {{ s.attempts }}회</span>
+        {% set r = (panel.stage_reports or {}).get(s.task_id) %}
+        {% if r %}<span class="small" data-stage-report="{{ r.status }}">{% if r.status in ('queued', 'leased') %}리포트 작성 중{% elif r.status == 'done' %}<a href="/work/{{ w.work_key }}/reports/{{ r.report_id }}">리포트 보기</a>{% else %}리포트 없음({{ r.reason }}){% if r.can_regenerate %}
+          <form method="post" action="/work/{{ w.work_key }}/reports/{{ r.report_id }}/regenerate" class="inline-form"><button class="btn btn-small" type="submit">리포트 다시 만들기</button></form>{% endif %}{% endif %}</span>{% endif %}</li>
       {% endfor %}
     </ol>
     {% if panel.pulls %}

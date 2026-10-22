@@ -235,6 +235,17 @@ def diff_text(repo: Path, base: str, head: str) -> str:
     return _git(["diff", base, head], repo)
 
 
+def log_lines(repo: Path, head: str, *, base: str | None = None, limit: int = 50) -> list[str]:
+    """`<sha>\t<첫 줄>` 최신순 — `base` 가 있으면 `base..head`, 없으면 `head` 하나. 인계 리포트의 로컬 근거."""
+    revision = [f"{base}..{head}"] if base is not None else ["-1", head]
+    return _git(["log", f"--max-count={limit}", "--format=%H%x09%s", *revision, "--"], repo).splitlines()
+
+
+def diff_stat(repo: Path, base: str, head: str, *, limit: int = 200) -> list[str]:
+    """`git diff --stat base head` 앞 `limit` 줄."""
+    return _git(["diff", "--stat", base, head, "--"], repo).splitlines()[:limit]
+
+
 def changed_test_files(repo: Path, base: str, head: str) -> list[str]:
     """base→head 에서 추가·수정된 `tests/` 아래 파일과 `test_*.py`."""
     names = _git(["diff", "--name-only", "--diff-filter=AM", base, head], repo).splitlines()

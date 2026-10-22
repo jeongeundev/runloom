@@ -104,6 +104,13 @@ def reply(structured):
     sys.exit(0)
 
 
+if prompt.startswith(("# 인계 리포트:", "# 맞춤 풀이:")):  # 인계 리포트 작업 — 읽기만, 요청문의 첫 근거 ID 를 인용한다
+    cite = re.findall(r"^- ((?:artifact|commit|claim):\S+)", prompt, re.M)[:1]
+    report = {"sections": {"changes": [{"id": "c1", "text": "가짜 인계 리포트", "why": None, "evidence": cite}],
+                           "decisions": [], "open_questions": [], "to_confirm": [], "constraints": [],
+                           "remaining_work": []}, "diagram": None}
+    reply(report)
+
 if "proceed" in props:  # 판단 — 기본 브랜치 체크아웃을 읽기만 한다
     agents = re.findall(r"^- agent:(\S+) ", prompt, re.M)
     assignee = "agt-outside" if "[triage:outside]" in prompt else agents[0]
@@ -615,7 +622,7 @@ def test_v14_copy_upgrades_to_v15_with_triage_seeds(tmp_path):
 
     conn = connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
         assert {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables} == before
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

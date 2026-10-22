@@ -59,6 +59,8 @@ TABLES = {
     "triage_autostart",
     "config_changes",
     "member_tokens",
+    "handoff_reports",
+    "handoff_report_decisions",
 }
 PHASE9_TABLES = {"task_events", "baseline_items", "baseline_imports"}
 PHASE12_TABLES = {"task_pull_requests", "notifications"}
@@ -69,7 +71,13 @@ PHASE18_TABLES = {"jira_connections", "jira_projects", "jira_issues", "jira_deli
 PHASE19_TABLES = {"triage_criteria", "triage_logs", "triage_autostart"}
 PHASE20_TABLES = {"config_changes"}
 PHASE24_TABLES = {"member_tokens"}
-V15_TABLES = TABLES - PHASE20_TABLES - PHASE24_TABLES
+PHASE25_TABLES = {"handoff_reports", "handoff_report_decisions"}
+V15_TABLES = TABLES - PHASE20_TABLES - PHASE24_TABLES - PHASE25_TABLES
+
+
+def _v27_rebuilt(name: str) -> bool:
+    """v27 이 재생성(artifacts·work_item_events)하거나 더하는(handoff_*) 표와 그 인덱스 이름."""
+    return "artifacts" in name or "work_item_events" in name or "handoff_report" in name
 V14_TABLES = V15_TABLES - PHASE19_TABLES
 V13_TABLES = V14_TABLES - PHASE18_TABLES  # v12 도 같은 표 집합(v13 은 칸·CHECK 만 바꿨다)
 V11_TABLES = V13_TABLES - PHASE16_TABLES
@@ -286,8 +294,8 @@ def _foreign_keys(conn, table: str) -> set[tuple[str, str, str]]:
     return {(r["table"], r["from"], r["to"]) for r in conn.execute(f"PRAGMA foreign_key_list({table})")}
 
 
-def test_schema_version_is_26():
-    assert SCHEMA_VERSION == 26
+def test_schema_version_is_27():
+    assert SCHEMA_VERSION == 27
 
 
 def test_phase6_tables_and_foreign_keys(conn):
@@ -2179,7 +2187,7 @@ def test_v13_constants():
         "human_request", "pr_opened", "task_failed", "delegated_to_you", "runner_offline_waiting",
         "delegation_declined",
     )
-    assert db.WORK_ITEM_EVENT_TYPES == (
+    assert db._V13_WORK_ITEM_EVENT_TYPES == (
         "status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked",
         "handoff_note",
     )
@@ -3162,7 +3170,7 @@ def test_migrates_v15_to_v16_adding_an_empty_config_changes_table(db_path):
                                              "member_invites": [*columns["member_invites"], "invitee_email", "invitee_name"]}  # v25 초대 칸
     assert _dump(c, V15_TABLES, columns) == before  # 행 그대로 — 설정 번호도
     sql_after = [tuple(r) for r in c.execute("SELECT type, name, sql, rootpage FROM sqlite_master ORDER BY name")]
-    assert [r for r in sql_after if "config_changes" not in r[1] and "responsibilities" not in r[1] and "internal_requests" not in r[1] and "internal_request_investigations" not in r[1] and "internal_request_rejections" not in r[1] and "internal_request_questions" not in r[1] and "internal_request_judgments" not in r[1] and "internal_request_resumptions" not in r[1] and r[1] != "ix_internal_request_unanswered" and "member_tokens" not in r[1] and "triage_logs" not in r[1] and "notifications" not in r[1] and r[1] != "member_invites"] == [r for r in sql_before if "triage_logs" not in r[1] and "notifications" not in r[1] and r[1] != "member_invites"]  # 기존 표는 재생성하지 않는다(v24 가 재생성하는 두 표·v25 가 칸을 더하는 초대 표 밖)
+    assert [r for r in sql_after if "config_changes" not in r[1] and "responsibilities" not in r[1] and "internal_requests" not in r[1] and "internal_request_investigations" not in r[1] and "internal_request_rejections" not in r[1] and "internal_request_questions" not in r[1] and "internal_request_judgments" not in r[1] and "internal_request_resumptions" not in r[1] and r[1] != "ix_internal_request_unanswered" and "member_tokens" not in r[1] and "triage_logs" not in r[1] and "notifications" not in r[1] and r[1] != "member_invites" and not _v27_rebuilt(r[1])] == [r for r in sql_before if "triage_logs" not in r[1] and "notifications" not in r[1] and r[1] != "member_invites" and not _v27_rebuilt(r[1])]  # 기존 표는 재생성하지 않는다(v24 가 재생성하는 두 표·v25 가 칸을 더하는 초대 표·v27 이 재생성·추가하는 표 밖)
     assert c.execute("SELECT COUNT(*) FROM config_changes").fetchone()[0] == 0  # 과거 변경을 추정해 채우지 않는다
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -3405,13 +3413,15 @@ def test_migrates_v23_to_v24_preserving_rows(db_path):
     before = _dump(c, tables, columns)
     unchanged = ("SELECT type, name, sql, rootpage FROM sqlite_master WHERE tbl_name NOT IN"
                  " ('triage_logs', 'notifications', 'internal_requests', 'member_invites', 'member_tokens',"
+                 " 'artifacts', 'work_item_events', 'handoff_reports', 'handoff_report_decisions',"
                  " 'schema_version') ORDER BY name")  # member_invites 는 v25 가 칸을 더하고 member_tokens 는 v26 이 만든다
+                                                       # artifacts·work_item_events 는 v27 이 재생성한다
     sql_before = c.execute(unchanged).fetchall()
     c.close()
 
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 26
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
     assert _dump(c, tables, columns) == before  # 행·id·기존 칸 값 그대로
     assert c.execute(unchanged).fetchall() == sql_before  # 그 밖의 표는 재생성하지 않는다
     assert [tuple(r) for r in c.execute("SELECT triage_id, cause, cause_execution_id, cause_request_id"
@@ -3472,12 +3482,12 @@ def test_fresh_schema_matches_v23_migrated_schema(tmp_path, old):
 
 
 @pytest.mark.parametrize("make", [_v4_db, _v14_db, _v22_db])
-def test_migrates_old_versions_to_v26(db_path, make):
+def test_migrates_old_versions_to_v27(db_path, make):
     c = make(db_path)
     c.close()
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 26
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
     assert "member_tokens" in _table_names(c)
     assert _column_lists(c, ["triage_logs"]) == {"triage_logs": TRIAGE_LOG_V24_COLUMNS}
     assert "created_by_triage_id" in _columns(c, "internal_requests")
@@ -3552,13 +3562,14 @@ def test_migrates_v24_to_v25_preserving_rows(db_path):
     counts = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("member_invites", "members", "tasks",
                                                                                "work_items")}
     unchanged = ("SELECT type, name, sql, rootpage FROM sqlite_master WHERE tbl_name NOT IN"
-                 " ('member_invites', 'member_tokens', 'schema_version') ORDER BY name")
+                 " ('member_invites', 'member_tokens', 'artifacts', 'work_item_events', 'handoff_reports',"
+                 " 'handoff_report_decisions', 'schema_version') ORDER BY name")  # v27 재생성·추가 표 밖
     sql_before = c.execute(unchanged).fetchall()
     c.close()
 
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 26
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
     assert _dump(c, tables, columns) == before  # 행·id·기존 칸 값 그대로
     assert {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in counts} == counts == {
         "member_invites": 4, "members": 2, "tasks": 2, "work_items": 1}
@@ -3640,7 +3651,7 @@ def test_migrates_v25_to_v26_adding_an_empty_member_tokens_table(db_path):
 
     c = connect(db_path)
     init_schema(c)
-    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 26
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
     assert _column_lists(c, ["member_tokens"]) == {"member_tokens": MEMBER_TOKEN_COLUMNS}
     assert c.execute("SELECT COUNT(*) FROM member_tokens").fetchone()[0] == 0
     assert {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables} == counts  # 기존 행 그대로
@@ -3659,3 +3670,209 @@ def test_v26_migration_rolls_back_on_foreign_key_violation(db_path):
     assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 24
     assert "member_tokens" not in _table_names(c)
     c.close()
+
+
+# --- phase 25: v26 → v27 인계 리포트 표 (ADR-0033, ARCHITECTURE "표 (스키마 v27)") ---------------------------------------
+
+V26_SCHEMA = (Path(__file__).parent / "fixtures" / "schema_v26.sql").read_text()
+HANDOFF_REPORT_COLUMNS = [
+    "report_id", "session_id", "work_item_id", "source_execution_id", "source_task_id", "job_type", "base_report_id",
+    "requested_by_member_id", "agent_id", "connector_id", "status", "reason", "inputs_json", "artifact_id",
+    "evidence_check_json", "leased_at", "created_at", "updated_at", "finished_at",
+]
+HANDOFF_REPORT_DECISION_COLUMNS = ["report_id", "item_id", "answer", "note", "member_id", "answered_at"]
+_REPORT_INSERT = (
+    "INSERT INTO handoff_reports (report_id, session_id, work_item_id, source_execution_id, source_task_id, job_type,"
+    " base_report_id, requested_by_member_id, agent_id, connector_id, status, reason, inputs_json, artifact_id,"
+    " leased_at, created_at, updated_at) VALUES (?, 's1', 'wi-000000000001', 'e1', 't1', ?, ?, ?, ?, ?, ?, ?, '{}', ?,"
+    " ?, ?, ?)"
+)
+_ARTIFACT_INSERT = ("INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256,"
+                    " size, store_ref, created_at) VALUES (?, 'e1', 's1', ?, 'n', 'application/json', ?, 1, 'r', ?)")
+
+
+def _report(report_id, *, job_type="original", base=None, member=None, agent="a1", connector="conn-1",
+            status="queued", reason=None, artifact=None, leased_at=None):
+    return (report_id, job_type, base, member, agent, connector, status, reason, artifact, leased_at, NOW, NOW)
+
+
+def _v26_db(db_path):
+    """phase 24 서버가 남긴 모양의 v26 DB — v24 기본 행(판단·사내 요청·초대) + 산출물 둘."""
+    c = connect(db_path)
+    c.executescript(V26_SCHEMA)
+    c.execute("INSERT INTO schema_version (version) VALUES (26)")
+    _triage_base(c)
+    _insert_internal_request(c, "req-00000001")
+    c.execute(_ARTIFACT_INSERT, ("art-00000001", "code_change_result", "sha-1", NOW))
+    c.execute(_ARTIFACT_INSERT, ("art-00000002", "triage_result", "sha-2", NOW))
+    return c
+
+
+def test_v27_constants():
+    from workflow.adapters import db
+
+    assert db.SCHEMA_VERSION == 27
+    assert db.HANDOFF_REPORT_JOB_TYPES == ("original", "tailored")
+    assert db.HANDOFF_REPORT_STATUSES == ("queued", "leased", "done", "failed", "timed_out", "unavailable")
+    assert db.HANDOFF_REPORT_ACTIVE == ("queued", "leased")
+    assert db.REPORT_DECISION_ANSWERS == ("confirmed", "changed")
+    assert db.WORK_ITEM_EVENT_TYPES == (*db._V13_WORK_ITEM_EVENT_TYPES, "report_decision")
+
+
+def test_v26_fixture_is_the_phase24_schema(db_path):
+    c = _v26_db(db_path)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 26
+    assert not {"handoff_reports", "handoff_report_decisions"} & _table_names(c)
+    assert "member_tokens" in _table_names(c)
+    with pytest.raises(sqlite3.IntegrityError):  # 옛 CHECK — handoff_report 산출물을 거절한다
+        c.execute(_ARTIFACT_INSERT, ("art-x", "handoff_report", "sha-x", NOW))
+    c.close()
+
+
+def test_fresh_db_has_v27_tables_keys_and_indexes(conn):
+    assert _column_lists(conn, ["handoff_reports", "handoff_report_decisions"]) == {
+        "handoff_reports": HANDOFF_REPORT_COLUMNS, "handoff_report_decisions": HANDOFF_REPORT_DECISION_COLUMNS}
+    assert _foreign_keys(conn, "handoff_reports") == {
+        ("sessions", "session_id", "session_id"), ("work_items", "work_item_id", "work_item_id"),
+        ("executions", "source_execution_id", "execution_id"), ("tasks", "source_task_id", "task_id"),
+        ("handoff_reports", "base_report_id", "report_id"), ("members", "requested_by_member_id", "member_id"),
+        ("artifacts", "artifact_id", "artifact_id")}
+    assert _foreign_keys(conn, "handoff_report_decisions") == {
+        ("handoff_reports", "report_id", "report_id"), ("members", "member_id", "member_id")}
+    indexes = {r["name"]: r["unique"] for r in conn.execute("PRAGMA index_list(handoff_reports)")}
+    assert {k: v for k, v in indexes.items() if not k.startswith("sqlite_autoindex")} == {
+        "ux_handoff_reports_original_active": 1, "ux_handoff_reports_tailored_active": 1,
+        "ix_handoff_reports_connector": 0, "ix_handoff_reports_source": 0, "ix_handoff_reports_work": 0}
+    assert "handoff_report" in conn.execute("SELECT sql FROM sqlite_master WHERE name = 'artifacts'").fetchone()[0]
+
+
+def test_v27_handoff_report_checks(conn):
+    _triage_base(conn)
+    conn.execute(_ARTIFACT_INSERT, ("art-1", "handoff_report", "sha-1", NOW))
+    conn.execute(_REPORT_INSERT, _report("hrp-000000000001"))
+    conn.execute(_REPORT_INSERT, _report("hrp-000000000002", status="done", artifact="art-1"))
+    conn.execute(_REPORT_INSERT, _report("hrp-000000000003", status="unavailable", agent=None, connector=None,
+                                         reason="원인 에이전트 없음"))
+    conn.execute(_REPORT_INSERT, _report("hrp-000000000004", job_type="tailored", base="hrp-000000000002",
+                                         member="mem-00000001", status="leased", leased_at=NOW))
+    for params in (
+        _report("hrp-00000000000a"),  # 같은 원인 실행에 진행 중 원본 둘
+        _report("hrp-00000000000b", job_type="tailored", base="hrp-000000000002", member="mem-00000001"),  # 진행 중 풀이 둘
+        _report("hrp-00000000000c", job_type="draft", status="failed", reason="x"),  # 작업 종류 밖
+        _report("hrp-00000000000d", status="running"),  # 상태 밖
+        _report("hrp-00000000000e", status="failed", base="hrp-000000000002", reason="x"),  # 원본에 base
+        _report("hrp-00000000000f", job_type="tailored", base="hrp-000000000002", status="failed",
+                reason="x"),  # 풀이에 요청 멤버 없음
+        _report("hrp-000000000010", status="done"),  # done 인데 산출물 없음
+        _report("hrp-000000000011", status="failed", artifact="art-1"),  # done 아닌데 산출물
+        _report("hrp-000000000012", status="timed_out"),  # 사유 없음
+        _report("hrp-000000000013", job_type="tailored", base="hrp-000000000002", member="mem-00000002",
+                connector=None),  # 진행 중인데 러너 없음
+        _report("hrp-000000000014", status="leased", job_type="tailored", base="hrp-000000000002",
+                member="mem-00000002"),  # leased 인데 leased_at 없음
+        _report("hrp-000000000015", status="failed", reason="x", member="mem-nope", job_type="tailored",
+                base="hrp-000000000002"),  # 없는 멤버
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_REPORT_INSERT, params)
+    # 끝난 원본은 몇 개든 — 다시 만들기
+    conn.execute(_REPORT_INSERT, _report("hrp-000000000020", status="failed", reason="리포트 작성 실패 — x"))
+
+
+def test_v27_handoff_report_decision_checks(conn):
+    _triage_base(conn)
+    conn.execute(_REPORT_INSERT, _report("hrp-000000000001"))
+    insert = ("INSERT INTO handoff_report_decisions (report_id, item_id, answer, note, member_id, answered_at)"
+              " VALUES (?, ?, ?, ?, ?, ?)")
+    conn.execute(insert, ("hrp-000000000001", "c1", "confirmed", None, "mem-00000001", NOW))
+    conn.execute(insert, ("hrp-000000000001", "c2", "changed", "다르게", "mem-00000001", NOW))
+    for params in (
+        ("hrp-000000000001", "c1", "changed", "x", "mem-00000001", NOW),  # (리포트, 항목) 하나
+        ("hrp-000000000001", "c3", "changed", None, "mem-00000001", NOW),  # changed 인데 note 없음
+        ("hrp-000000000001", "c4", "confirmed", "x", "mem-00000001", NOW),  # confirmed 인데 note
+        ("hrp-000000000001", "c5", "changed", "", "mem-00000001", NOW),  # 빈 note
+        ("hrp-000000000001", "c6", "changed", "x" * 501, "mem-00000001", NOW),  # 500자 초과
+        ("hrp-000000000001", "c7", "skipped", None, "mem-00000001", NOW),  # 답 밖
+        ("hrp-nope", "c8", "confirmed", None, "mem-00000001", NOW),  # 없는 리포트
+        ("hrp-000000000001", "c9", "confirmed", None, "mem-nope", NOW),  # 없는 멤버
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert, params)
+    conn.execute(_WORK_EVENT_INSERT, ("report_decision", NOW))
+
+
+def test_migrates_v26_to_v27_preserving_rows(db_path):
+    c = _v26_db(db_path)
+    tables = _table_names(c) - {"sqlite_sequence", "schema_version"}
+    columns = _column_lists(c, tables)
+    before = _dump(c, tables, columns)
+    unchanged = ("SELECT type, name, sql, rootpage FROM sqlite_master WHERE tbl_name NOT IN"
+                 " ('artifacts', 'work_item_events', 'handoff_reports', 'handoff_report_decisions', 'schema_version')"
+                 " ORDER BY name")
+    sql_before = c.execute(unchanged).fetchall()
+    c.close()
+
+    c = connect(db_path)
+    init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
+    assert _dump(c, tables, columns) == before  # 기존 산출물·이벤트 행·id 그대로
+    assert c.execute(unchanged).fetchall() == sql_before  # 그 밖의 표는 재생성하지 않는다
+    assert c.execute("SELECT COUNT(*) FROM handoff_reports").fetchone()[0] == 0  # 기존 결과에 채우지 않는다(D41)
+    assert c.execute("SELECT COUNT(*) FROM handoff_report_decisions").fetchone()[0] == 0
+    assert not {name for name in _table_names(c) if name.endswith("_v27")}
+    assert set(_referencing(c, "artifacts")) >= {"internal_request_judgments", "internal_request_resumptions",
+                                                 "internal_request_investigations", "handoff_reports"}
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    # 새 CHECK 가 올린 DB 에서도 동작한다
+    c.execute(_ARTIFACT_INSERT, ("art-00000003", "handoff_report", "sha-3", NOW))
+    c.execute(_WORK_EVENT_INSERT, ("report_decision", NOW))
+    with pytest.raises(sqlite3.IntegrityError):
+        c.execute(_ARTIFACT_INSERT, ("art-00000004", "handoff_note", "sha-4", NOW))
+
+    after = _dump(c, TABLES)
+    init_schema(c)  # 재실행은 아무것도 바꾸지 않는다
+    assert _dump(c, TABLES) == after
+    c.close()
+
+
+def test_migrated_v14_db_accepts_triage_result_and_handoff_report_artifacts(db_path):
+    """D38 — v15 이후 마이그레이션 DB 의 artifacts CHECK 에 빠져 있던 triage_result 가 v27 재생성으로 들어간다."""
+    c = _v14_db(db_path)
+    c.close()
+    c = connect(db_path)
+    init_schema(c)
+    execution_id, session_id = c.execute(
+        "SELECT e.execution_id, t.session_id FROM executions e JOIN tasks t USING (task_id)").fetchone()
+    insert = ("INSERT INTO artifacts (artifact_id, execution_id, session_id, kind, name, content_type, sha256, size,"
+              " store_ref, created_at) VALUES (?, ?, ?, ?, 'n', 'application/json', ?, 1, 'r', ?)")
+    c.execute(insert, ("art-t", execution_id, session_id, "triage_result", "sha-t", NOW))
+    c.execute(insert, ("art-h", execution_id, session_id, "handoff_report", "sha-h", NOW))
+    c.close()
+
+
+def test_v27_migration_rolls_back_on_foreign_key_violation(db_path):
+    c = _v26_db(db_path)
+    c.execute("PRAGMA foreign_keys=OFF")
+    c.execute("UPDATE tasks SET work_item_id = 'wi-nope' WHERE task_id = 't1'")  # 외래키 검사가 잡을 옛 결함
+    c.execute("PRAGMA foreign_keys=ON")
+    sql_before = c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    with pytest.raises(RuntimeError, match="외래키"):
+        init_schema(c)
+    assert c.execute("SELECT version FROM schema_version").fetchone()[0] == 26
+    assert c.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == sql_before
+    assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    c.close()
+
+
+@pytest.mark.parametrize("make", [_v14_db, _v24_db, _v26_db])
+def test_fresh_schema_matches_v27_migrated_schema(tmp_path, make):
+    fresh = connect(tmp_path / "fresh.sqlite")
+    init_schema(fresh)
+    migrated = make(tmp_path / "old.sqlite")
+    init_schema(migrated)
+    dump = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name != 'sqlite_sequence' ORDER BY name"
+    assert fresh.execute(dump).fetchall() == migrated.execute(dump).fetchall()  # CHECK 까지 같은 원문
+    fresh.close()
+    migrated.close()

@@ -6,6 +6,7 @@ import pytest
 
 from workflow.server.settings import (
     ENV_KEYS,
+    HIDDEN_ENV_KEYS,
     OPTIONAL_SECRET_KEYS,
     SECRET_KEYS,
     Limits,
@@ -160,6 +161,14 @@ def test_github_token_and_repos_are_read_and_token_stays_out_of_repr():
     assert token not in repr(s)
 
 
+def test_handoff_report_wait_defaults_to_30_minutes_and_reads_the_hidden_env_key():
+    assert load_settings(FULL).handoff_report_wait_seconds == 1800
+    assert load_settings({**FULL, "WORKFLOW_HANDOFF_REPORT_WAIT_SECONDS": "60"}).handoff_report_wait_seconds == 60
+    assert HIDDEN_ENV_KEYS == ("WORKFLOW_HANDOFF_REPORT_WAIT_SECONDS",)
+    with pytest.raises(ValueError):
+        load_settings({**FULL, "WORKFLOW_HANDOFF_REPORT_WAIT_SECONDS": "soon"})
+
+
 def test_non_integer_limit_raises():
     with pytest.raises(ValueError):
         load_settings({**FULL, "WORKFLOW_LIMIT_ACTIVE_TASKS_PER_SESSION": "many"})
@@ -185,10 +194,12 @@ class _RecordingEnv(dict):
 
 
 def test_env_keys_lists_exactly_what_load_settings_reads():
-    """deploy/selfhost/.env.example 이 이 목록과 비교된다 (tests/test_selfhost_files.py). 개발 플래그 WORKFLOW_DEV 는 제외."""
+    """deploy/selfhost/.env.example 이 ENV_KEYS 와 비교된다 (tests/test_selfhost_files.py). 개발 플래그 WORKFLOW_DEV 는 제외.
+    HIDDEN_ENV_KEYS 는 읽지만 배포 파일·SELFHOST 에 싣지 않는 조정값이다(D39)."""
     env = _RecordingEnv(FULL)
     load_settings(env)
-    assert env.asked - {"WORKFLOW_DEV"} == set(ENV_KEYS)
+    assert env.asked - {"WORKFLOW_DEV"} == set(ENV_KEYS) | set(HIDDEN_ENV_KEYS)
+    assert not set(ENV_KEYS) & set(HIDDEN_ENV_KEYS)
     assert set(SECRET_KEYS) | set(OPTIONAL_SECRET_KEYS) <= set(ENV_KEYS)
     assert len(ENV_KEYS) == len(set(ENV_KEYS))
 

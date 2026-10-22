@@ -1,0 +1,313 @@
+{
+  "project": "workflow",
+  "phase": "25-handoff-report",
+  "steps": [
+    {
+      "step": 0,
+      "name": "report-design",
+      "status": "completed",
+      "started_at": "2026-10-22T21:57:25+0900",
+      "summary": "ADR-0033·ARCHITECTURE '인계 리포트 — phase 25'(모듈 domain/handoff_report.py·server/handoff_reports.py·server/report_api.py·connector/report_job.py, 스키마 v27 handoff_reports·handoff_report_decisions, 원인 실행 규칙·claim 규칙·판정 지점 표·repo/서버 함수 이름·러너 엔드포인트 /api/v1/report-jobs/{id}/result|failure·사람용 API·화면 문구·mermaid 11.17.2 sha256·step 경계)·CONTRACT 19절(jsonc 예시 — step 1 이 json 으로 전환)·GLOSSARY phase 25 용어·ADR-0031 미결 두 줄에 ADR-0033 링크",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "원인 실행은 predecessor_execution_id 만으로 찾을 수 없어(재작업·결과 뒤 판단 제안·접수 판단 뒤 첫 단계) ARCHITECTURE '원인 실행 규칙' 넷으로 정함 — step 6 이 코드로 재확인 필요",
+        "v27 은 artifacts 외에 work_item_events 도 재생성(report_decision 이벤트 CHECK) — README 에 없던 마이그레이션 범위",
+        "D39 를 지키려 settings.HIDDEN_ENV_KEYS 를 도입하고 test_settings.py 단정을 step 5 가 고침",
+        "GitHub App pull_requests read 로 리뷰 코멘트 읽기는 문서 근거로만 판단, 실제 App 으로 확인하지 않음",
+        "이전 시도가 1800초 제한에 걸려 이번 시도는 남은 문서를 검토하고 AC 를 다시 돌려 마감함"
+      ],
+      "completed_at": "2026-10-22T22:35:38+0900"
+    },
+    {
+      "step": 1,
+      "name": "report-contract",
+      "status": "completed",
+      "started_at": "2026-10-22T22:35:38+0900",
+      "summary": "contracts/v1.py 끝에 인계 리포트 계약(ReportClaim·ReportSections(claims())·HandoffReport·ReportJob·ReportJobFailure·HandoffDecision·HandoffReportRef, 상수 HANDOFF_REPORT_MAX_BYTES·REPORT_*·REPORT_ID_PATTERN·REPORT_CLAIM_ID_PATTERN, 타입 ReportId·ReportClaimId·ReportJobType) — ExecutionRequest.handoff_report 는 문자열 전방 참조 + 파일 끝 model_rebuild(), _MEASURE_FIELDS 에 더해 null 이면 직렬화에서 빠짐. RUNNER_CAPABILITY_HANDOFF_REPORT 를 RUNNER_CAPABILITIES 끝에 더함(test_v1·test_client capabilities 단정, CONTRACT 16.2 값 목록 갱신). CONTRACT 19.1~19.4 를 json 블록으로(73→79, _SIGNATURES 에 HandoffReport·ReportJob·ReportJobFailure), 예시의 contract_version \"1\"→1, 19.4 code_review 예시에 input_artifact_ids 하나 추가(빈 배열은 ExecutionRequest 검증 실패). test_old_execution_requests_dump_without_verify_only_commit 의 '마지막 칸' 가정을 생략 칸 두 개 제외로 고침. ARTIFACT_KINDS 는 그대로(step 2)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "HandoffDecision.note·ReportClaim.why 는 길이만 보고 공백만 있는 값은 막지 않는다(ARCHITECTURE 가 text 에만 '공백만 안 됨'을 적음) — 결정 답 공백 거절이 필요하면 step 8 API 본문 검증에서 본다",
+        "ExecutionRequest 에 handoff_report 가 판단 단계 target 과 함께 와도 계약은 거절하지 않는다 — 서버가 판단 단계에는 채우지 않는 규칙(step 6)으로만 지킨다"
+      ],
+      "completed_at": "2026-10-22T22:46:35+0900"
+    },
+    {
+      "step": 2,
+      "name": "report-store",
+      "status": "completed",
+      "started_at": "2026-10-22T22:46:35+0900",
+      "summary": "스키마 v27(db.py): SCHEMA_VERSION=27, _V27_TABLES = artifacts 재생성(ARTIFACT_KINDS 에 handoff_report — 마이그레이션 DB 에 빠져 있던 triage_result 도 들어감, D38)·work_item_events 재생성(WORK_ITEM_EVENT_TYPES = _V13_WORK_ITEM_EVENT_TYPES + report_decision, v13 은 _V13_ 상수로)·handoff_reports(+유일 인덱스 2·일반 3)·handoff_report_decisions, _migrate_26_to_27(백필 없음 D41). 재생성 문장이 _V27_TABLES 앞부분이라 새 DB 도 같은 원문(CREATE TABLE \"artifacts\")이 됨 — ARCHITECTURE 마이그레이션 순서 문단을 그에 맞게 고침. fixture tests/workflow/adapters/fixtures/schema_v26.sql(변경 전 코드 덤프). repo.py 끝: 상수 HANDOFF_REPORT_JOB_TYPES·HANDOFF_REPORT_STATUSES·HANDOFF_REPORT_ACTIVE·REPORT_DECISION_ANSWERS(db 가 import), 함수 create_handoff_report(진행 중 같은 키면 (기존, False))·record_handoff_report_unavailable·lease_handoff_report·finish_handoff_report·fail_handoff_report(사유 200자)·expire_handoff_reports(created_at <= older_than)·mark_connector_reports_unavailable·get_handoff_report·latest_original_report·list_work_reports·latest_tailored_report·answer_report_decision(덮어쓰기+report_decision 이벤트, ValueError('answer'|'note'), 없는 리포트 NotFound)·list_report_decisions — ARCHITECTURE 시그니처 그대로, 시각은 now 인자. contracts ARTIFACT_KINDS 끝에 handoff_report + CONTRACT 4절 kind 줄·생산자 표 행. 기존 단정 수정: test_v1 튜플·len 19, 스키마 버전 26→27(test_db·test_backup·test_internal_request_store), test_db TABLES·V15_TABLES(PHASE25_TABLES 제외)·'재생성하지 않는다' 제외 목록(_v27_rebuilt), test_v13_constants 는 _V13_WORK_ITEM_EVENT_TYPES, test_backup 행 수 dict 에 새 두 표",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "ARCHITECTURE 는 새 DB 가 _artifacts_table(\"artifacts\") 를 그대로 쓴다고 적었으나, 그러면 마이그레이션 DB(\"artifacts\" 따옴표 원문)와 sqlite_master 원문이 달라 일치 테스트가 깨진다 — 재생성 문장을 _V27_TABLES 에 넣어 새 DB 도 거치게 하고 ARCHITECTURE 문단을 고침",
+        "answer_report_decision 은 item_id 가 리포트 to_confirm 에 실제로 있는지, 리포트가 original 인지 보지 않는다 — 산출물 JSON 을 읽어야 해서 step 8 행동 함수에서 확인해야 함",
+        "lease_handoff_report 는 queued 중 created_at·report_id 순 — report_id 가 무작위라 같은 created_at 끼리 순서는 임의"
+      ],
+      "completed_at": "2026-10-22T23:05:09+0900"
+    },
+    {
+      "step": 3,
+      "name": "report-domain",
+      "status": "completed",
+      "started_at": "2026-10-22T23:05:09+0900",
+      "summary": "domain/handoff_report.py(순수 — 금지 모듈 import 없음, tests/test_packages.py 가 도메인 전체로 확인): UNAVAILABLE_REASONS(agent_missing·api·no_runner·not_capable → ARCHITECTURE 사유 문구), TargetFacts·ReportTarget·report_target(skip→unavailable→make 순)·tailor_problem(판정·판단 칸 무시), EvidenceSet(artifacts·commits(40자)·pulls(int)·source_work·verification·claims, ids() = 요청문 근거 ID 줄 정렬 순)·ClaimCheck·EvidenceCheck(to_json = evidence_check_json 모양)·check_evidence(commit 은 7~40 소문자 hex 가 집합 중 하나와만 앞자리 일치, pr 은 앞자리 0 없는 정수, claim: 은 원본에서 확인 안 됨)·check_citations(claim:<id> 만), 요청문 재료 VerificationFact·ArtifactFact(text=텍스트 산출물 내용 또는 None)·PullFact(commits=(sha,첫 줄), comments=(작성자,위치,본문) — 서버 step 4 PrEvidence 가 이것으로 옮겨 넘김)·ReportRequestFacts(work_key·title·source_kind·source_url·source_text·kind_label·outcome·summary·verification·artifacts·pulls·pr_error·evidence)·TailoredRequestFacts(work_key·title·recipient_name·next_kind_label·original: HandoffReport), build_report_request(업무 원문 8000자·발췌 6000/합계 60000, 로그 kind 는 끝부분·그 밖 앞부분, REPORT_REQUEST_MAX 넘으면 발췌 예산을 줄여 다시 조립, 외부 글은 triage.fenced/one_line)·build_tailored_request(원본 JSON 전문 + claim:<id> 목록), PartyFacts·ReportParties·report_parties·can_answer·can_regenerate·can_tailor. 테스트 tests/workflow/domain/test_handoff_report.py 54개. 기존 테스트 변경 없음",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q tests/workflow/domain/test_handoff_report.py",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "ReportRequestFacts·TailoredRequestFacts·ArtifactFact·PullFact 칸은 ARCHITECTURE 가 이름만 정해 이 step 이 정함 — step 5·8 이 이 칸으로 재료를 모은다",
+        "EvidenceSet 의 inputs_json 직렬화·역직렬화는 만들지 않음(ARCHITECTURE 에 이름 없음) — step 5(저장)·6(근거 확인) 이 정해야 함",
+        "요청문 상한 초과 때 산출물 발췌만 줄인다 — PR 근거(서버 상수로 PR 3개 상한)와 업무 원문 합이 REPORT_REQUEST_MAX 를 넘는 경우는 없다고 보고 마지막 자르기를 두지 않음",
+        "report_parties 는 next_stage_member(다음 단계를 멤버가 직접 맡음)를 Agent 주인보다 먼저 본다 — ARCHITECTURE 는 Agent 주인만 적었으므로 step 8 party_facts 가 이 칸을 채울지 정해야 함"
+      ],
+      "completed_at": "2026-10-22T23:19:08+0900"
+    },
+    {
+      "step": 4,
+      "name": "report-github",
+      "status": "completed",
+      "started_at": "2026-10-22T23:19:08+0900",
+      "summary": "adapters/github_client.py: 반환 모델 PullDetail(number·title·body(null→\"\")·html_url·state·draft·merged_at·head_sha)·PullCommit(sha·message 첫 줄)·PullReviewComment(author_login|None·path·line|None·body·created_at)(frozen·extra=forbid) + GitHubClient Protocol 과 HttpGitHubClient 에 GET 전용 get_pull_detail·list_pull_commits·list_pull_review_comments(?per_page=100 첫 페이지만, _repo 허용 목록·check_response 오류 분류 그대로, 모양 틀리면 GitHubError 'GET {path}: 응답 형식 오류'). server/handoff_reports.py 신설: 상수 PR_EVIDENCE_MAX_PULLS=3·PR_BODY_MAX=4000·PR_COMMITS_MAX=50·PR_COMMIT_LINE_MAX=200(ARCHITECTURE 에 이름 없던 '첫 줄 200자')·PR_COMMENTS_MAX=30·PR_COMMENT_MAX=1000, frozen dataclass PullEvidence(number·title·url(https://github.com/{repo}/pull/{n} 로 계산 — GitHub html_url 안 씀)·body·commits((sha, 첫 줄))·comments((작성자 — 없으면 '알 수 없음', 'path' 또는 'path:line', 본문)))·PrEvidence(pulls=(), error=None), collect_pr_evidence(conn, github_for, *, work_item_id) — work_pull_requests + 업무 Task 의 task_pull_requests(pr_number 있는 것)를 갱신 최근순·(저장소 소문자, 번호) 중복 제거·3개, 소스 설정 repo.get_github_source(업무 session_id, source_id) → github_for(config)(소스별 한 번), PR 하나라도 실패하면 pulls=() + error 'PR 읽기 실패 — {사유}'(ARCHITECTURE 문구, 클라이언트/소스 없음 'GitHub 연결 없음', 설치 토큰 발급 실패 등 나머지 GitHubError '응답 형식 오류'), 로그는 예외 클래스 이름만. 공용 FakeGitHub 중 Protocol 준수를 단정하는 것이 없어 기존 가짜는 그대로. 테스트: test_github_client.py 끝에 PR 근거 읽기 절(경로·파싱·4xx/5xx/연결 오류·형식 오류·허용 목록), tests/workflow/server/test_handoff_reports.py(자체 FakeGitHub, pytestmark usefixtures('cycle') — test_task_cycle 픽스처). 기존 테스트 변경 없음",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q tests/workflow/adapters/test_github_client.py tests/workflow/server/test_handoff_reports.py",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "PR 하나라도 읽기 실패면 이미 읽은 다른 PR 근거도 버린다(ARCHITECTURE '읽기 실패면 PR 근거 전부 없이' 그대로). 실제 GitHub 로는 확인하지 않았다(MockTransport·가짜만)."
+      ],
+      "completed_at": "2026-10-22T23:29:35+0900"
+    },
+    {
+      "step": 5,
+      "name": "report-worker",
+      "status": "completed",
+      "started_at": "2026-10-22T23:29:35+0900",
+      "summary": "server/handoff_reports.py: queue_original(conn, store, settings, github_for, *, execution_id, now) — 원인 실행의 기존 original 행이 있으면 그 행(멱등) → _target_facts(verdict passed·triage_logs.execution_id 의 cause·Agent·러너 revoked_at·capabilities_json) → 도메인 report_target: skip=None, unavailable=record_handoff_report_unavailable(inputs={}, agent_id=실행 agent, connector_id=Agent 의 러너 또는 None), make=PR 근거 수집(트랜잭션 밖)·build_report_request → create_handoff_report. inputs_json = {local_registration_id(target 값), checkout_commit, base_commit, request, evidence{artifacts·commits·pulls 정렬 목록, source_work, verification, claims: []}, pull_requests[{number,title,url}], pr_evidence_error} — 체크아웃은 target 모양으로(CodeChangeTarget=result_commit 없으면 base·같으면 base null / CommitReviewTarget=result·base / TriageTarget=base / 그 밖=executions.folder_commit), 근거 artifacts = 실행 산출물(텍스트 발췌) + input_artifact_ids + 입력 handoff_bundle 의 inputs·attachments·source_result_artifact_id(발췌 없이 목록만), verification = 봉투 verification 또는 verification_log 산출물. expire_reports(conn, settings, *, now) = expire_handoff_reports(older_than=now−wait, '{wait//60}분 안에 리포트가 오지 않음'). worker.py: Worker._queue_handoff_report(record_verdict 3곳 직후·_triage_verdict 의 record_triage_proposed True 직후 — 결과 뒤 판단은 도메인이 skip)·_expire_handoff_reports(tick 에서 _observe 뒤 _check_code_results 앞), TickReport.handoff_reports_queued·handoff_reports_expired, github_for 없으면 lambda: None('GitHub 연결 없음'). settings.py: Settings.handoff_report_wait_seconds=1800(WORKFLOW_HANDOFF_REPORT_WAIT_SECONDS)·HIDDEN_ENV_KEYS. 기존 단정 변경: test_settings 의 ENV_KEYS 단정 → set(ENV_KEYS)|set(HIDDEN_ENV_KEYS)(+ 둘이 겹치지 않음). 테스트: test_handoff_reports(bug_fix·needs_information·검토·실패·멱등·불가 사유 넷·PR 근거·PR 읽기 실패·30분 경계·done 보존·worker 미import), test_worker(범용 passed/failed), test_triage_judge(접수 판단 passed/failed), test_worker_next_step(결과 뒤 판단 결과 없음), test_internal_investigation(조사 passed), test_settings",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -c \"import workflow.server.worker; import workflow.server.handoff_reports\"",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "queue_original 이 예외를 내면(예: 산출물 저장소 이상) 그 tick 이 판정 커밋 뒤 멈추고, 판정은 이미 기록돼 다시 부르지 않으므로 그 실행엔 리포트 행이 영영 생기지 않는다(후속 착수는 다음 tick 에 진행). 일부러 포괄 except 를 넣지 않았다 — 필요하면 step 8 의 다시 만들기로 회복.",
+        "unavailable 행의 inputs_json 은 {} 다(ARCHITECTURE 에 정해진 모양 없음). step 8 report_view 는 pull_requests·pr_evidence_error 를 .get 으로 읽어야 한다.",
+        "요청문의 원본 종류 문구(GitHub 이슈·Jira 이슈·n8n 입구·직접 등록)는 ARCHITECTURE 에 없던 것을 이 step 이 정했다. 사내 요청으로 생긴 업무는 work_items.source_type 기준이라 '사내 요청' 으로 표시되지 않는다.",
+        "시간 초과 경계는 created_at·now 를 문자열로 비교한다 — 워커 시각이 utc_now 표기(마이크로초·Z)일 때만 정확하다(테스트도 그 표기로 맞춤)."
+      ],
+      "completed_at": "2026-10-22T23:44:57+0900"
+    },
+    {
+      "step": 6,
+      "name": "report-claim",
+      "status": "completed",
+      "started_at": "2026-10-22T23:44:57+0900",
+      "summary": "repo.cause_execution_id(원인 실행 규칙 1~5: predecessor_execution_id → start_key rework:<id> → followup_links → 같은 업무 created_at<=실행 인 다른 실행의 최신 original) + 내부 _waits_for_report, claim_execution 은 후보를 전부 읽어(WHERE·ORDER 그대로, LIMIT 제거) 판단 단계가 아니고 원인 리포트가 queued·leased 인 것을 건너뜀(러너 능력 무관). download_allowed 에 '원인 실행의 done original 리포트 산출물' 규칙 추가. server/handoff_reports.py: ReportJobError(status, code, message)·lease_job(inputs_json → ReportJob, original·tailored 같은 길)·report_ref(answered_by=멤버 표시 이름)·submit_result(소유 403·leased 아님 409 report_not_leased·크기→'리포트가 너무 큼'·계약 위반→'리포트 형식 오류 — {loc}: {msg}'·report_id/job_type 불일치→failed, 422 report_invalid; 근거 확인 original=check_evidence(inputs_json.evidence 로 EvidenceSet), tailored=check_citations(evidence.claims) — step 8 은 tailored inputs_json.evidence.claims 에 원본 주장 id 를 넣어야 함; 산출물은 원인 실행에 kind handoff_report·이름 handoff_report.json·application/json, 받은 바이트 그대로)·submit_failure('리포트 작성 실패 — {message}'). machine_api.claim: 미선언이면 mark_connector_reports_unavailable(UNAVAILABLE_REASONS['not_capable']), 선언이면 lease_job 먼저, 실행이면 선언·판단 아님·원인 리포트 done 일 때만 handoff_report 를 붙임(request_json 은 그대로). 라우트 POST /api/v1/report-jobs/{report_id}/result(본문 바이트는 async 의존성 _raw_body)·/failure → {report_id, status}. ARCHITECTURE 주소 표 +2 행, test_app 단정 39+15 → 39+15+2. 테스트: test_repo(원인 실행 규칙·claim 대기·판단 미대기), test_machine_api(리포트 작업 우선·옛 러너 바이트 동일·종료 상태 넷 뒤 claim·결정 답 최신·내려받기 200/403·제출 정상/크기/계약/ID 불일치/404/403/409·D16·실패 보고), test_worker(사람 [시작] 실행 대기)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "claim 은 이미 내준(접수 전) 실행도 다시 판정한다 — 내준 뒤 원인 리포트가 다시 만들기로 queued 가 되면 그 실행은 재claim 때 대기로 빠진다(ARCHITECTURE 대로 후보 전체에 같은 조건). 러너가 이미 시작했다면 접수 이벤트는 그대로 받아들여진다.",
+        "lease_job 은 inputs_json 이 ReportJob 계약에 맞지 않으면 ValidationError(422)를 내고 그 행은 leased 로 남아 시간 초과까지 간다 — step 8 의 tailored 행 inputs_json 은 local_registration_id·checkout_commit(null)·base_commit(null)·request 를 꼭 채워야 한다.",
+        "claim 마다 후보 실행 수만큼 원인 실행·리포트 조회를 한다(러너당 queued 실행은 보통 몇 개라 그대로 둠)."
+      ],
+      "completed_at": "2026-10-23T00:12:54+0900"
+    },
+    {
+      "step": 7,
+      "name": "report-connector",
+      "status": "completed",
+      "started_at": "2026-10-23T00:12:54+0900",
+      "summary": "connector/report_job.py run_report_job(client, state_conn, adapters, job, *, handoff_root)(등록 tool→ReportAdapter, 없음 registration_missing·adapter_missing; original=checkout_commit 이 등록 저장소에 있으면 local_tool._in_clean_checkout 안에서 로컬 근거(git_ops.log_lines 50줄·diff_stat 200줄, 기준 없으면 log -1) → build_report_prompt → run_report → HEAD·is_dirty 확인(readonly_violation), 없으면 handoff_root 아래 빈 임시 디렉터리 + '로컬 근거 없음 — 사유'; tailored=빈 임시 디렉터리·로컬 근거 없음, 임시 디렉터리에 파일 생기면 readonly_violation; HandoffReport 검증 실패 result_invalid, 체크아웃 GitError checkout_failed, 예외 adapter_error; 제출 전 mask_secrets+등록 env, 409·422 는 로그만). adapter.py ReportOutput(data, failed)·runtime_checkable ReportAdapter.run_report(cwd, prompt_text, schema, progress, *, env=None)·EchoAdapter.run_report(원본=요청문 첫 artifact:·commit:, '# 맞춤 풀이' 로 시작하면 첫 claim: 인용). local_tool.py HANDOFF_REPORT_OUTPUT_SCHEMA({sections(ReportSections 여섯 칸, maxItems 15), diagram}, 모든 객체 닫힘·전부 required)·LocalToolAdapter.run_report(launch_readonly→timeout·classify_failure·read_structured_message→result_invalid). client.py claim 은 job_type 있으면 ReportJob, submit_report(id, bytes)·fail_report(id, ReportJobFailure). runner.py ReportJob 이면 _run_report(heartbeat 스레드 current_execution_id=None, 로컬 state 기록 없음), _download_handoff 끝에 request.handoff_report → _download_checked(라벨 handoff_report) → report.json, decisions 있으면 decisions.json(HandoffDecision JSON 배열). prompt.py _report_note(report.json 있을 때만 '먼저 인계 디렉터리의 report.json(앞 단계 인계 리포트)[·decisions.json(받는 사람의 결정 답)]을 읽는다.' — bug_fix·review·generic 프롬프트의 인계 자료 목록 뒤)·build_report_prompt(job, local_evidence). 테스트: conftest FakeCentral 에 report_jobs·/report-jobs/{id}/result|failure·report_reject·make_report_job, test_report_job.py 신설, test_client·test_git_ops·test_adapter·test_local_tool·test_prompt·test_runner 추가. 기존 테스트 변경 없음. ARCHITECTURE 의 두 시그니처를 구현에 맞춤(run_report_job clock 제거, run_report env 키워드)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "ARCHITECTURE 시그니처와 두 곳이 다르다(문서를 고침): run_report_job 의 clock 인자는 쓸 곳이 없어 뺐고, run_report 에 env 키워드를 더했다 — 리포트 작업도 실행과 같은 로컬 등록 env 로 도구를 띄우기 위해서.",
+        "HANDOFF_REPORT_OUTPUT_SCHEMA 의 maxItems 를 실제 Codex 엄격 출력 모드·Claude --json-schema 가 받는지는 실제 도구로 확인하지 않았다(단위 테스트는 가짜 도구).",
+        "리포트 제출·실패 보고 중 중앙에 닿지 않으면(Unreachable) 로컬에 남기지 않으므로 그 작업은 서버의 30분 만료로 끝난다 — 재전송 큐는 만들지 않았다."
+      ],
+      "completed_at": "2026-10-23T00:36:04+0900"
+    },
+    {
+      "step": 8,
+      "name": "report-api",
+      "status": "completed",
+      "started_at": "2026-10-23T00:36:04+0900",
+      "summary": "server/report_api.py(router, DecisionBody·TailorBody extra=forbid, app.py 등록) 5 라우트 GET /work-items/{key}/reports·GET /reports/{id}·PUT /reports/{id}/decisions/{item_id}·POST /reports/{id}/tailor(202)·POST /reports/{id}/regenerate(202) — 라우트는 호출만. server/handoff_reports.py 행동·보기(웹 step 9 가 그대로 쓸 것): own_report(같은 워크스페이스 아니면 404)·party_facts(다음 단계 = 원인 Task 뒤(created_at, rowid) 판단 아닌 최근 Task, Agent = 최근 실행→chosen→선택 기록, next_stage_member 는 늘 None)·tailor_choices·report_view(actions answer/tailor/regenerate, tailor 있을 때만 tailor_choices)·stage_reports(목록 응답 — ARCHITECTURE 에 새 행)·answer_decision(conn, store, …)(item_id ∈ to_confirm 확인에 산출물을 읽어 store 추가)·request_tailored(tailor_problem 을 주인 검사보다 먼저 — API 연결형은 주인이 없어 422 가 되게, inputs evidence.claims = 원본 주장 id)·regenerate(진행 중 원본이면 그 행, 아니면 queue_original 에서 뺀 _new_original — PR 근거 다시 수집, 불가면 unavailable). _target_facts 의 Agent·러너 부분을 _agent_facts 로 나눠 맞춤 풀이 판정과 공유. 오류는 WorkActionError → ApiError. 문서: ARCHITECTURE 주소 표 +5 행, 서버 함수 표(own_report·stage_reports 행, answer_decision store, request_tailored 순서, actions 조건, party_facts 주석). 기존 단정 변경: test_app 주소 표 행 수 39+15+2 → 39+15+2+5. 테스트 tests/workflow/server/test_report_api.py 17개",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "맞춤 풀이 Agent 검사 순서를 ARCHITECTURE 초안(주인 → 불가 사유)에서 불가 사유 → 주인으로 바꿨다 — API 연결형 Agent 는 주인이 없어 원래 순서로는 422 가 아니라 403 이 된다. 그 결과 남의 Agent 라도 쓸 수 없는 Agent 면 403 대신 422(사유)가 나온다",
+        "단계에는 멤버 담당 칸이 없어 PartyFacts.next_stage_member 를 늘 None 으로 둔다 — 받는 사람은 다음 단계 Agent 의 주인 → 업무 담당 순"
+      ],
+      "completed_at": "2026-10-23T00:51:31+0900"
+    },
+    {
+      "step": 9,
+      "name": "report-web",
+      "status": "completed",
+      "started_at": "2026-10-23T00:51:31+0900",
+      "summary": "단계 줄: web._panel 이 handoff_reports.stage_report_lines(conn, work_item_id)(단계 source_task_id → 최신 원본 report_id·status·reason) + can_regenerate(실패·시간 초과·불가 때만, domain report_parties/party_facts)를 panel.stage_reports 로 싣고 _work_panel.html 단계 줄 끝 data-stage-report (리포트 작성 중 / [리포트 보기] / 리포트 없음(사유) + [리포트 다시 만들기] 폼 — 템플릿은 stage_reports 없는 컨텍스트도 허용). 리포트 페이지: web.report_html(conn, request, member, work, report)(templates/report.html, _base 에 member 인자 추가 — 토큰 요청도 그 멤버로), GET /work/{key}/reports/{id}(업무 다르면 404)·POST …/decisions/{item_id}(answer·note)·…/tailor(agent_id)·…/regenerate → 303(결정=같은 페이지, 맞춤 풀이·다시 만들기=그 행 페이지), require_member + 행동 함수 권한(WorkActionError→PageError), Origin 은 기존 origin_guard. 근거 링크 artifact:→/tasks/{task}/artifacts/{id}(같은 워크스페이스만), commit:→task_cycle.origin config 저장소가 있으면 GitHub 커밋 주소, pr:→inputs pull_requests url, source:work→work.source_url(http(s)만) 또는 /tasks?open=, claim:→원본 #claim-<id>; 근거 확인 안 됨(data-unverified)·기록 없음·PR 읽기 실패·이전 원본 <details class=\"report-history\"><summary>자세히</summary>·맞춤 풀이 목록(data-tailored-list, 옛 리포트 기준). mermaid 11.17.2 min.js·LICENSE 를 curl 로 받아 sha256 확인 후 static/vendor/ 에 둠, diagram 있을 때만 로드·인라인 초기화(securityLevel 'strict', parse 실패면 텍스트). views._event_line report_decision 문구. report_api GET /reports/{id}/html(HTMLResponse, web.report_html 공유). INPUT_KIND_CHOICES 에서 handoff_report 제외. 기존 단정 변경: test_app 주소 표 행 수 39+15+2+5 → +1(ARCHITECTURE 주소 표 +1 행·경로 절 문장). 테스트 tests/workflow/server/test_web_report.py 22개. 하네스: verify.sh 가 받아 둔 mermaid.min.js 를 '테스트 없는 소스'로 잡아 tdd-guard.sh 에 */static/vendor/* 제외를 더함(scripts/test_hooks.py vendor 제외·비 vendor static .js 는 여전히 잡힘 테스트 2개)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "shasum -a 256 src/workflow/server/static/vendor/mermaid.min.js src/workflow/server/static/vendor/mermaid.LICENSE",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q scripts/",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "mermaid 렌더링(브라우저에서 SVG 로 바뀌는지)은 서버 렌더 테스트만 했고 실제 브라우저로 확인하지 않았다",
+        "패널 단계 줄의 [리포트 다시 만들기]는 리포트 페이지로 303 한다(업무 화면으로 돌아오지 않음) — ARCHITECTURE '새 행 페이지' 그대로",
+        "tdd-guard.sh 에 */static/vendor/* 제외를 더했다 — 서드파티 파일용이며, 이 경로에 직접 쓴 코드를 두면 TDD 검사를 받지 않는다"
+      ],
+      "completed_at": "2026-10-23T01:13:33+0900"
+    },
+    {
+      "step": 10,
+      "name": "ops-docs",
+      "status": "completed",
+      "started_at": "2026-10-23T01:13:33+0900",
+      "summary": "docs/SELFHOST.md 업그레이드에 v27(phase 25) 절: 표 둘(handoff_reports·handoff_report_decisions)·artifacts/work_item_events 재생성, 단계 줄로 보고 새 알림 없음(D33), 업그레이드 전 결과는 리포트 없음(D27·D41), 순서 백업→진행 중 실행 끝난 뒤 install.sh→스키마 27→보내는·받는 쪽 러너 모두 install-runner.sh(능력 handoff_report), 옛 러너는 '리포트 없음(러너가 리포트를 지원하지 않음 — 러너 재설치 필요)'·다음 단계 대기 없이 착수(D10), 확인 명령 = compose exec central python3 -c sqlite3 로 /data/central.sqlite connectors(connector_id·last_seen_at·capabilities_json, revoked_at IS NULL). 대기 시간 환경변수는 적지 않음(D39). AGENTS.md 는 명령어·경계 규칙 변화 없어 그대로. ls 확인: deploy/selfhost/install.sh·install-runner.sh·compose.yaml·docs/adr/0033-handoff-report.md 존재, /data/central.sqlite 는 compose WORKFLOW_DB_PATH 값",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "ls deploy/selfhost/install.sh deploy/selfhost/install-runner.sh deploy/selfhost/compose.yaml docs/adr/0033-handoff-report.md",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "v27 확인 명령(python3 -c sqlite3 조회)은 실제 셀프호스트 컨테이너에서 실행해 보지 않았다 — 금지사항대로 설치·재시작하지 않음. 로컬 python3 로 같은 형태의 문장만 확인"
+      ],
+      "completed_at": "2026-10-23T01:21:39+0900"
+    },
+    {
+      "step": 11,
+      "name": "report-verify",
+      "status": "completed",
+      "started_at": "2026-10-23T01:21:39+0900",
+      "summary": "tests/e2e/test_handoff_report.py(TestClient + 연결 토큰 가짜 러너 Runner — claim·이벤트·산출물·heartbeat·리포트 제출/실패·내려받기를 HTTP 로, 워커 tick, WORKFLOW_E2E 없이 기본 실행) 10개: 1 bug_fix passed→원본 리포트 작업이 queued 검토보다 먼저·leased 동안 검토 claim 204·done 뒤 claim 에 handoff_report(report_id·artifact_id·sha256·결정 답 changed/note/answered_by)·내려받기 200 sha256 일치, 2 실패·2b 시간 초과(1799초 대기·1800초 timed_out·늦은 제출 409) → 검토는 리포트 없이 착수·패널 '리포트 없음(사유)'·[다시 만들기] API → 같은 Agent 재작성 done·패널 [리포트 보기], 3 사용자 정의 종류(seed_user_flow)·3b 접수 판단 → 리포트, 3c 결과 뒤 판단 결과 → 없음(판단은 leased 원인 리포트를 기다리지 않음), 3d 직접 작업만 → 없음, 4 옛 러너 → unavailable·대기 없음·claim 바이트 동일·패널 사유, 5 받는이(러너 주인)가 자기 Agent 로 맞춤 풀이 → 그 러너가 tailored 제출 → API·페이지·원본 맞춤 풀이 목록, 6 없는 artifact·연결 안 된 pr·원본의 claim:·근거 없음 → done + 그 주장만 '근거 확인 안 됨'. 검토 단계는 수정과 같은 러너에서만 착수(review_repository_mismatch)라 보내는·받는 러너가 billing 하나 — 맞춤 풀이만 REVIEW 를 shop 으로 옮김(test_report_api world 와 같음). 대기 규칙(_waits_for_report)을 끄면 1·2b·3 이 실패함을 확인. 소스 결함 없음(소스 변경 없음). 7 실제 러너 e2e: 처음 13 실패 → 원인 셋 고침 — ① 옛 사본 업그레이드 단정 SCHEMA_VERSION == 25(phase 24 v26 부터 이미 틀림)→27(jira·triage·setup_ux·next_step), ② 러너 능력 단정에 handoff_report 추가(team_handoff·next_step_cycle), ③ 가짜 codex(test_github_cycle)·가짜 claude(monitor·metrics·next_step_cycle·triage_cycle)가 리포트 요청문('# 인계 리포트:'·'# 맞춤 풀이:')을 검토·수정으로 처리해 result_invalid·읽기 전용 위반으로 리포트가 조용히 실패하던 것 → 리포트 분기(요청문 첫 근거 ID 인용) 추가, test_github_cycle test_12 에 '원본 리포트 모두 done' 단정 추가. 결과 WORKFLOW_E2E=1 pytest tests/e2e 117 passed·1 skipped(WORKFLOW_DOCKER)",
+      "verification": [
+        {
+          "command": "python3 -m pytest tests/e2e/test_handoff_report.py -q",
+          "exit_code": 0
+        },
+        {
+          "command": "WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "test_next_step_cycle test_01 이 한 번 '--code: expected one argument' 로 실패했다가 재실행에서 통과 — 연결 코드가 '-' 로 시작하면 셋업 명령 argparse 가 옵션으로 읽는 기존 플래키(이 phase 와 무관, 고치지 않음). 실제 install-runner.sh 사용자에게도 같은 일이 생길 수 있는지는 확인하지 않았다",
+        "e2e 의 가짜 codex/claude 리포트 분기는 형식만 맞춘 고정 리포트다 — 실제 모델이 HANDOFF_REPORT_OUTPUT_SCHEMA 로 쓴 리포트 품질·근거 인용률은 실연동에서 확인해야 한다"
+      ],
+      "completed_at": "2026-10-23T01:50:18+0900"
+    }
+  ],
+  "created_at": "2026-10-22T21:57:25+0900",
+  "completed_at": "2026-10-23T01:50:18+0900"
+}

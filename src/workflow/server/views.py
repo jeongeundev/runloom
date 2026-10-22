@@ -875,6 +875,10 @@ def _event_line(event: Row, names: dict[str, str]) -> str:
         return f"우선순위 {PRIORITY_LABELS.get(data['to'], data['to'])}"
     if event["type"] == "handoff_note":
         return f"지시 메모 · {names.get(data['by'], data['by'] or '이름 없음')} — {data['note']}"
+    if event["type"] == "report_decision":  # 인계 리포트 결정 답 (phase 25)
+        who = names.get(data["member_id"], data["member_id"])
+        answer = "확인함" if data["answer"] == "confirmed" else f"다르게 정함 — {data['note']}"
+        return f"리포트 결정 답 · {who} · {answer}"
     return event["type"]
 
 

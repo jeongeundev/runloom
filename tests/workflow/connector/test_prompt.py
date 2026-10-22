@@ -7,6 +7,7 @@ from workflow.connector.prompt import (
     MAX_REVIEW_DIFF_CHARS,
     build_bug_fix_prompt,
     build_generic_prompt,
+    build_report_prompt,
     build_review_prompt,
     build_triage_prompt,
 )
@@ -14,10 +15,12 @@ from workflow.contracts.v1 import CodeChangeResult
 
 from .conftest import (
     BASE_COMMIT,
+    REPORT_REQUEST,
     REVIEW_REQUEST,
     REVIEW_SPEC,
     TRIAGE_REQUEST,
     make_local_request,
+    make_report_job,
     make_request,
     make_review_request,
     make_triage_request,
@@ -224,3 +227,56 @@ def test_triage_prompt_is_server_request_verbatim_plus_fixed_readonly_tail(tmp_p
     assert str(checkout) in tail
     for word in ("wfc_", "OPERATOR_TOKEN", "http://", "https://"):
         assert word not in text
+
+
+# --- 인계 리포트 — build_report_prompt·받는 쪽 한 줄 (ARCHITECTURE "인계 리포트 — phase 25") ----------------------
+
+REPORT_LINE_START = "먼저 인계 디렉터리의 report.json(앞 단계 인계 리포트)"
+
+
+def test_report_prompt_is_request_plus_local_evidence_and_fixed_tail():
+    job = make_report_job("a" * 40)
+
+    text = build_report_prompt(job, "abc\tfeat: 쿠폰")
+
+    assert text.startswith(REPORT_REQUEST + "\n")
+    tail = text[len(REPORT_REQUEST):]
+    assert "## 로컬 근거 (연결 프로그램이 모음)" in tail and "abc\tfeat: 쿠폰" in tail
+    assert "파일을 고치거나 커밋하지 않는다" in tail and "스키마 JSON 하나" in tail
+
+
+def test_report_prompt_without_local_evidence_has_no_local_section():
+    text = build_report_prompt(make_report_job(job_type="tailored"), None)
+
+    assert "## 로컬 근거" not in text
+    assert "스키마 JSON 하나" in text
+
+
+def _handoff_with(root, *names: str):
+    handoff = root / "fix.handoff"
+    handoff.mkdir(parents=True)
+    for name in names:
+        (handoff / name).write_text("{}")
+    return handoff
+
+
+def test_prompts_tell_to_read_report_and_decisions_first_only_when_files_exist(tmp_path):
+    worktree = tmp_path / "wt"
+
+    with_both = build_bug_fix_prompt(_bug_request(), _handoff_with(tmp_path / "a", "report.json", "decisions.json"),
+                                     worktree)
+    with_report = build_generic_prompt(make_local_request(), _handoff_with(tmp_path / "b", "report.json"))
+    without = build_bug_fix_prompt(_bug_request(), _handoff_with(tmp_path / "c", "manifest.json"), worktree)
+
+    assert f"{REPORT_LINE_START}·decisions.json(받는 사람의 결정 답)을 읽는다." in with_both
+    assert f"{REPORT_LINE_START}을 읽는다." in with_report and "decisions.json" not in with_report
+    assert "report.json" not in without and "decisions.json" not in without
+
+
+def test_review_prompt_tells_to_read_report_when_present(tmp_path):
+    handoff = _handoff_with(tmp_path, "report.json", "decisions.json")
+
+    prompt = build_review_prompt(make_review_request(REVIEW_BASE, REVIEW_RESULT), handoff, tmp_path / "co",
+                                 REVIEW_DIFF, _source())
+
+    assert f"{REPORT_LINE_START}·decisions.json(받는 사람의 결정 답)을 읽는다." in prompt
