@@ -31,7 +31,9 @@
 
 - **앱 기술.** 제안은 Swift + SwiftUI + libghostty + WKWebView(macOS 전용) — 러너가 이미 Mac 기준이고 다른 OS 팀원은 웹으로 참여한다. 대안은 Electron/Tauri + xterm.js(크로스 플랫폼, 터미널 품질·무게 손해). ④ 착수 전에 정한다.
 - **리포트를 누가 만드는가.** 보내는 쪽 러너(실제 diff·테스트 결과를 가짐)가 단계 끝에 만드는 안과, 받는 쪽 에이전트가 받는 사람에 맞춰 만드는 안. ② 설계에서 정한다.
+  → [ADR-0033](0033-handoff-report.md) 에서 정함.
 - **리포트 형식과 보관.** HTML 의 생성 방식(템플릿 + 데이터 / 모델 생성), 다이어그램 표현, 산출물 kind 이름, 결정 기록의 위치.
+  → [ADR-0033](0033-handoff-report.md) 에서 정함.
 - **API 인증.** 웹은 세션 쿠키. 앱·CLI 는 멤버별 토큰이 필요하며 비밀값 규칙(AGENTS.md)을 따른다. ① 설계에서 정한다.
   → [ADR-0032](0032-human-api-and-member-tokens.md) 에서 정함.
 

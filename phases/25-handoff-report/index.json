@@ -1,0 +1,86 @@
+{
+  "project": "workflow",
+  "phase": "25-handoff-report",
+  "steps": [
+    {
+      "step": 0,
+      "name": "report-design",
+      "status": "completed",
+      "started_at": "2026-10-22T21:57:25+0900",
+      "summary": "ADR-0033·ARCHITECTURE '인계 리포트 — phase 25'(모듈 domain/handoff_report.py·server/handoff_reports.py·server/report_api.py·connector/report_job.py, 스키마 v27 handoff_reports·handoff_report_decisions, 원인 실행 규칙·claim 규칙·판정 지점 표·repo/서버 함수 이름·러너 엔드포인트 /api/v1/report-jobs/{id}/result|failure·사람용 API·화면 문구·mermaid 11.17.2 sha256·step 경계)·CONTRACT 19절(jsonc 예시 — step 1 이 json 으로 전환)·GLOSSARY phase 25 용어·ADR-0031 미결 두 줄에 ADR-0033 링크",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "원인 실행은 predecessor_execution_id 만으로 찾을 수 없어(재작업·결과 뒤 판단 제안·접수 판단 뒤 첫 단계) ARCHITECTURE '원인 실행 규칙' 넷으로 정함 — step 6 이 코드로 재확인 필요",
+        "v27 은 artifacts 외에 work_item_events 도 재생성(report_decision 이벤트 CHECK) — README 에 없던 마이그레이션 범위",
+        "D39 를 지키려 settings.HIDDEN_ENV_KEYS 를 도입하고 test_settings.py 단정을 step 5 가 고침",
+        "GitHub App pull_requests read 로 리뷰 코멘트 읽기는 문서 근거로만 판단, 실제 App 으로 확인하지 않음",
+        "이전 시도가 1800초 제한에 걸려 이번 시도는 남은 문서를 검토하고 AC 를 다시 돌려 마감함"
+      ]
+    },
+    {
+      "step": 1,
+      "name": "report-contract",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "report-store",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "report-domain",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "report-github",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "report-worker",
+      "status": "pending"
+    },
+    {
+      "step": 6,
+      "name": "report-claim",
+      "status": "pending"
+    },
+    {
+      "step": 7,
+      "name": "report-connector",
+      "status": "pending"
+    },
+    {
+      "step": 8,
+      "name": "report-api",
+      "status": "pending"
+    },
+    {
+      "step": 9,
+      "name": "report-web",
+      "status": "pending"
+    },
+    {
+      "step": 10,
+      "name": "ops-docs",
+      "status": "pending"
+    },
+    {
+      "step": 11,
+      "name": "report-verify",
+      "status": "pending"
+    }
+  ],
+  "created_at": "2026-10-22T21:57:25+0900"
+}
