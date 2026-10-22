@@ -3919,6 +3919,11 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 | `/api/v1/work-items/{key}/next-step-proposals/{triage_id}/dismiss` | POST | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |
 | `/api/v1/report-jobs/{report_id}/result` | POST | 배정된 리포트 작업 | `wfc_` | 200 | `machine_api`(phase 25 step 6) |
 | `/api/v1/report-jobs/{report_id}/failure` | POST | 배정된 리포트 작업 | `wfc_` | 200 | `machine_api`(phase 25 step 6) |
+| `/api/v1/work-items/{key}/reports` | GET | 로그인 | 쿠키·`wfm_` | 200 | `report_api`(phase 25 step 8) |
+| `/api/v1/reports/{report_id}` | GET | 로그인 | 쿠키·`wfm_` | 200 | `report_api`(phase 25 step 8) |
+| `/api/v1/reports/{report_id}/decisions/{item_id}` | PUT | `can_answer` | 쿠키·`wfm_` | 200 | `report_api`(phase 25 step 8) |
+| `/api/v1/reports/{report_id}/tailor` | POST | `can_tailor` | 쿠키·`wfm_` | 202 | `report_api`(phase 25 step 8) |
+| `/api/v1/reports/{report_id}/regenerate` | POST | `can_regenerate` | 쿠키·`wfm_` | 202 | `report_api`(phase 25 step 8) |
 
 `work_api` 와 `internal_request_api` 는 같은 `/api/v1/work-items/{key}/…` 아래에 있지만 서로 다른 라우터다(경로가 겹치지 않는다 — `internal-requests` 는 `internal_request_api` 만).
 
@@ -4434,7 +4439,7 @@ CREATE TABLE IF NOT EXISTS handoff_report_decisions (
 | `can_regenerate(parties, *, member_id, role) -> bool` | 보낸 사람·받는 사람·`admin`(D12) |
 | `can_tailor(parties, *, member_id) -> bool` | 받는 사람만(D8 — 관리자라도 받는 사람이 아니면 거짓) |
 
-보낸 사람·받는 사람(D7): **보낸 사람** = 원인 실행 Agent 의 주인 멤버(`repo.agent_owner_id` — 러너 소유자, 없으면 None). **받는 사람** = ① 다음 단계 담당: 다음 단계(같은 업무에서 원인 Task 보다 뒤에 만든 판단 아닌 Task 중 가장 최근)가 있으면 — 그 단계의 Agent(최근 실행의 `agent_id`, 없으면 `chosen_agent_id`, 없으면 선택 기록)의 주인 멤버, 주인 없는 공유 Agent 면 ② 로 ② 업무 담당: `work_items.assignee_type = 'member'` 면 그 멤버, `'agent'` 면 그 Agent 의 주인 멤버 ③ 그도 없으면 None(관리자만). 서버가 사실을 모은다: `handoff_reports.party_facts(conn, report: Row) -> PartyFacts`. 판단 시점은 조회·행동 순간(저장하지 않는다).
+보낸 사람·받는 사람(D7): **보낸 사람** = 원인 실행 Agent 의 주인 멤버(`repo.agent_owner_id` — 러너 소유자, 없으면 None). **받는 사람** = ① 다음 단계 담당: 다음 단계(같은 업무에서 원인 Task 보다 뒤에 만든 판단 아닌 Task 중 가장 최근)가 있으면 — 그 단계의 Agent(최근 실행의 `agent_id`, 없으면 `chosen_agent_id`, 없으면 선택 기록)의 주인 멤버, 주인 없는 공유 Agent 면 ② 로 ② 업무 담당: `work_items.assignee_type = 'member'` 면 그 멤버, `'agent'` 면 그 Agent 의 주인 멤버 ③ 그도 없으면 None(관리자만). 서버가 사실을 모은다: `handoff_reports.party_facts(conn, report: Row) -> PartyFacts`(단계는 멤버가 맡지 않으므로 `next_stage_member` 는 늘 None — 같은 시각에 만든 Task 는 나중에 넣은 것이 뒤). 판단 시점은 조회·행동 순간(저장하지 않는다).
 
 ### 서버 함수 (step 4·5·6·8 — `server/handoff_reports.py`)
 
@@ -4447,10 +4452,12 @@ CREATE TABLE IF NOT EXISTS handoff_report_decisions (
 | `report_ref(conn, report: Row) -> HandoffReportRef` | 6 | 위 "받는 러너 전달" |
 | `submit_result(conn, store, *, connector_id, report_id, body: bytes, now) -> Row` · `submit_failure(conn, *, connector_id, report_id, failure: ReportJobFailure, now) -> Row` | 6 | 위 "판정 순서". 오류는 `ReportJobError(status, code, message)` → `ApiError` |
 | `party_facts(conn, report) -> PartyFacts` | 8 | 위 "보낸 사람·받는 사람" |
-| `report_view(conn, store, *, report: Row, member_id, role) -> dict` | 8 | API JSON·웹 템플릿이 같이 쓰는 묶음(아래 응답 칸) |
-| `tailor_choices(conn, *, session_id, member_id, report: Row) -> list[dict]` | 8 | 그 멤버가 주인인 Agent 중 맞춤 풀이 가능(`tailor_problem` None)한 것, 기본값(다음 단계 Agent)이 맨 앞 — `{agent_id, name, default: bool}` |
-| `answer_decision(conn, *, session_id, member, report_id, item_id, answer, note, now) -> Row` | 8 | 권한 `can_answer` → 원본·`done`·`item_id ∈ to_confirm` 확인 → `repo.answer_report_decision` |
-| `request_tailored(conn, store, *, session_id, member, report_id, agent_id, now) -> tuple[Row, bool]` | 8 | 원본 `done` 확인 → `can_tailor` → Agent 주인 = 멤버(아니면 403) → `tailor_problem`(있으면 422 `tailor_unavailable`, 메시지 = 사유) → `build_tailored_request` → `create_handoff_report(job_type="tailored", base_report_id, requested_by_member_id, connector_id = Agent 의 러너)` — 진행 중이면 그 행(False) |
+| `report_view(conn, store, *, report: Row, member_id, role) -> dict` | 8 | API JSON·웹 템플릿이 같이 쓰는 묶음(아래 응답 칸). `actions`: `answer` = 원본 `done` + `can_answer` · `tailor` = 원본 `done` + `can_tailor` + `tailor_choices` 가 비지 않음 · `regenerate` = 원본 + 그 원인 실행에 진행 중 원본 없음 + `can_regenerate` |
+| `tailor_choices(conn, *, session_id, member_id, report: Row) -> list[dict]` | 8 | 그 멤버가 주인인 Agent 중 맞춤 풀이 가능(`tailor_problem` None)한 것, 기본값(다음 단계 Agent)이 맨 앞 — `{agent_id, name, default: bool}`. 다음 단계 Agent 가 목록에 없으면 모두 `default: false` |
+| `own_report(conn, session_id, report_id) -> Row` | 8 | 같은 워크스페이스의 행, 아니면 404 `not_found` — API·웹이 리포트를 찾는 한 곳 |
+| `stage_reports(conn, store, *, work_item_id, member_id, role) -> dict` | 8 | 목록 API 응답 — 단계(원인 Task, 만든 순)마다 `latest`·`previous`(최근순) 원본 보기 묶음, `tailored` = (원본, 요청 멤버)마다 최신 |
+| `answer_decision(conn, store, *, session_id, member, report_id, item_id, answer, note, now) -> Row` | 8 | 권한 `can_answer` → 원본·`done` → `item_id ∈ to_confirm`(리포트 산출물을 읽어야 해서 `store` 를 받는다) → `repo.answer_report_decision`(`ValueError("note")` → 422 `invalid_field`) |
+| `request_tailored(conn, store, *, session_id, member, report_id, agent_id, now) -> tuple[Row, bool]` | 8 | 원본 `done` 확인 → `can_tailor` → 워크스페이스에 없는 Agent 403 → `tailor_problem`(있으면 422 `tailor_unavailable`, 메시지 = 사유 — 주인 검사보다 먼저: API 연결형 Agent 는 주인이 없어 주인 검사로는 403 이 되므로) → Agent 주인 = 멤버(아니면 403) → `build_tailored_request` → `create_handoff_report(job_type="tailored", base_report_id, requested_by_member_id, connector_id = Agent 의 러너)` — `inputs_json` 은 커밋 null·`evidence.claims` = 원본 주장 id 전부·PR 없음. 진행 중이면 그 행(False) |
 | `regenerate(conn, store, settings, github_for, *, session_id, member, report_id, now) -> Row` | 8 | 원본 행만 → `can_regenerate` → 진행 중 원본이 있으면 그 행, 아니면 새 원본(같은 원인 실행·같은 Agent, PR 근거 다시 수집 — 불가 사유면 바로 `unavailable`) |
 | `stage_report_lines(conn, work_item_id) -> dict[str, dict]` | 9 | 단계(`source_task_id`)마다 최신 원본 상태 → 단계 줄 재료 |
 
@@ -4509,7 +4516,7 @@ CREATE TABLE IF NOT EXISTS handoff_report_decisions (
 
 ### 경로 (step 6·8·9)
 
-step 6 의 러너 경로 둘은 주소 표에 들어갔다(`39 + 15 + 2`). 라우트를 만드는 step 이 위 "사람용 API — phase 24" 의 "### 주소 표" **"새로 여는 라우트" 표에 행을 더하고** `tests/workflow/server/test_app.py` 의 `39 + 15` 단정을 고친다 — step 6 `+2`(`/api/v1/report-jobs/{report_id}/result`·`/failure`, POST, `wfc_`, `machine_api`), step 8 `+5`(목록·조회·결정 답·맞춤 풀이·다시 만들기, 쿠키·`wfm_`, `report_api`), step 9 `+1`(`…/html`, `report_api`). 이 절에는 표 형식 행을 두지 않는다(대조 테스트는 "### 주소 표" 절만 읽는다). 화면 경로(`/work/{key}/reports/…` GET 1·POST 3)는 `web.py` 라 그 표 대상이 아니다.
+step 6 의 러너 경로 둘·step 8 의 사람용 다섯은 주소 표에 들어갔다(`39 + 15 + 2 + 5`). 라우트를 만드는 step 이 위 "사람용 API — phase 24" 의 "### 주소 표" **"새로 여는 라우트" 표에 행을 더하고** `tests/workflow/server/test_app.py` 의 `39 + 15` 단정을 고친다 — step 6 `+2`(`/api/v1/report-jobs/{report_id}/result`·`/failure`, POST, `wfc_`, `machine_api`), step 8 `+5`(목록·조회·결정 답·맞춤 풀이·다시 만들기, 쿠키·`wfm_`, `report_api`), step 9 `+1`(`…/html`, `report_api`). 이 절에는 표 형식 행을 두지 않는다(대조 테스트는 "### 주소 표" 절만 읽는다). 화면 경로(`/work/{key}/reports/…` GET 1·POST 3)는 `web.py` 라 그 표 대상이 아니다.
 
 ### step 경계
 

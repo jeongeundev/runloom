@@ -6,6 +6,8 @@ step 5: 판정 통과한 실행 → 원본 리포트 작업(`queue_original`, �
 대상은 종류 이름이 아니라 판정·판단 단계·Agent 사실(도메인 `report_target`)로, 체크아웃 커밋은 요청 target 의 모양으로 고른다.
 step 6: 러너 claim 의 리포트 작업(`lease_job`)·받는 러너 참조(`report_ref`)·제출 판정(`submit_result`·`submit_failure`).
 original·tailored 가 같은 길이다. 근거 ID 가 확인되지 않아도 거절하지 않고 표시한다(D20).
+step 8: 사람용 보기 묶음(`report_view`·`stage_reports`)·행동(`answer_decision`·`request_tailored`·`regenerate`). 권한은 도메인
+판정(보낸 사람·받는 사람은 조회·행동 순간에 `party_facts` 로)이고, API(`report_api`)와 웹(step 9)이 이 함수를 같이 부른다.
 `server/worker.py` 를 import 하지 않는다(순환 import).
 """
 
@@ -47,19 +49,30 @@ from workflow.contracts.v1 import (
     TriageTarget,
     format_work_key,
 )
+from workflow.domain.execution_policy import is_triage_kind
 from workflow.domain.handoff_report import (
     ArtifactFact,
     EvidenceSet,
+    PartyFacts,
     PullFact,
     ReportRequestFacts,
+    TailoredRequestFacts,
     TargetFacts,
     VerificationFact,
     build_report_request,
+    build_tailored_request,
+    can_answer,
+    can_regenerate,
+    can_tailor,
     check_citations,
     check_evidence,
+    report_parties,
     report_target,
+    tailor_problem,
 )
+from workflow.server.auth import LoggedIn
 from workflow.server.settings import Settings
+from workflow.server.stage_runs import WorkActionError
 
 log = logging.getLogger("workflow.handoff_reports")
 
@@ -162,21 +175,31 @@ _SOURCE_KINDS = {"github": "GitHub 이슈", "jira": "Jira 이슈", "n8n": "n8n �
 _TEXT_TYPES = ("application/json",)
 
 
+def _agent_facts(conn: Connection, agent: Row | None, *, verdict_passed: bool = True, triage_cause: str | None = None,
+                 triage_stage: bool = False) -> TargetFacts:
+    """Agent·러너 사실(+ 원본이면 판정·판단 단계) — 원본 대상 판정과 맞춤 풀이 Agent 판정이 같이 쓴다."""
+    connector = repo.get_connector(conn, agent["connector_id"]) if agent and agent["connector_id"] else None
+    capabilities = json.loads(connector["capabilities_json"] or "null") if connector else None
+    return TargetFacts(
+        verdict_passed=verdict_passed,
+        triage_stage=triage_stage,
+        triage_cause=triage_cause,
+        agent_exists=agent is not None,
+        connection_type=agent["connection_type"] if agent else None,
+        runner_attached=connector is not None and connector["revoked_at"] is None,
+        runner_capable=RUNNER_CAPABILITY_HANDOFF_REPORT in (capabilities or ()),
+    )
+
+
 def _target_facts(conn: Connection, execution: Row) -> tuple[TargetFacts, Row | None]:
     """도메인 대상·불가 판정 재료와 원인 Agent 행."""
     verdict = repo.get_verdict(conn, execution["execution_id"])
     triage = conn.execute("SELECT cause FROM triage_logs WHERE execution_id = ?", (execution["execution_id"],)).fetchone()
     agent = repo.get_agent(conn, execution["agent_id"])
-    connector = repo.get_connector(conn, agent["connector_id"]) if agent and agent["connector_id"] else None
-    capabilities = json.loads(connector["capabilities_json"] or "null") if connector else None
-    return TargetFacts(
+    return _agent_facts(
+        conn, agent,
         verdict_passed=verdict is not None and json.loads(verdict["verdict_json"]).get("outcome") == "passed",
-        triage_stage=triage is not None,
-        triage_cause=triage["cause"] if triage else None,
-        agent_exists=agent is not None,
-        connection_type=agent["connection_type"] if agent else None,
-        runner_attached=connector is not None and connector["revoked_at"] is None,
-        runner_capable=RUNNER_CAPABILITY_HANDOFF_REPORT in (capabilities or ()),
+        triage_stage=triage is not None, triage_cause=triage["cause"] if triage else None,
     ), agent
 
 
@@ -298,6 +321,13 @@ def queue_original(
     existing = repo.latest_original_report(conn, execution_id)
     if existing is not None:
         return existing
+    return _new_original(conn, store, github_for, execution_id=execution_id, now=now)
+
+
+def _new_original(conn: Connection, store: ArtifactStore,
+                  github_for: Callable[[GitHubSourceConfig], GitHubClient | None], *, execution_id: str,
+                  now: str) -> Row | None:
+    """새 원본 행 — 대상 판정 → 불가면 `unavailable`, 만들면 PR 근거 수집·요청문 조립 뒤 `queued`(진행 중이면 그 행)."""
     execution = repo.get_execution(conn, execution_id)
     facts, agent = _target_facts(conn, execution)
     target = report_target(facts)
@@ -432,3 +462,257 @@ def submit_failure(conn: Connection, *, connector_id: str, report_id: str, failu
                                     reason=f"리포트 작성 실패 — {failure.message}", now=now):
         raise _not_leased(report_id)
     return repo.get_handoff_report(conn, report_id)
+
+
+# --- 사람용 행동 (step 8 — API·웹이 같이 쓴다, ADR-0031 결정 3) -------------------------------------
+
+
+def _member_name(conn: Connection, session_id: str, member_id: str | None) -> str | None:
+    member = repo.get_member(conn, session_id, member_id) if member_id else None
+    return member["display_name"] if member else None
+
+
+def _next_stage(conn: Connection, source_task: Row) -> Row | None:
+    """같은 업무에서 원인 Task 보다 뒤에 만든 판단 아닌 Task 중 가장 최근(같은 시각이면 나중에 넣은 것)."""
+    later = conn.execute(
+        "SELECT * FROM tasks WHERE work_item_id = ? AND (created_at > ? OR (created_at = ?"
+        " AND rowid > (SELECT rowid FROM tasks WHERE task_id = ?))) ORDER BY created_at DESC, rowid DESC",
+        (source_task["work_item_id"], source_task["created_at"], source_task["created_at"], source_task["task_id"]),
+    ).fetchall()
+    for task in later:
+        spec = repo.get_kind(conn, task["session_id"], task["kind"])
+        if spec is None or not is_triage_kind(spec):
+            return task
+    return None
+
+
+def _stage_agent_id(conn: Connection, task: Row) -> str | None:
+    """단계의 Agent — 최근 실행의 Agent, 없으면 고른 Agent, 없으면 선택 기록."""
+    runs = repo.list_executions(conn, task["task_id"])
+    if runs:
+        return runs[-1]["agent_id"]
+    if task["chosen_agent_id"]:
+        return task["chosen_agent_id"]
+    selection = repo.get_selection(conn, task["task_id"])
+    return selection.selected_agent_id if selection else None
+
+
+def party_facts(conn: Connection, report: Row) -> PartyFacts:
+    """보낸 사람·받는 사람 재료(D7) — 조회·행동 순간에 모은다. 맞춤 풀이 행도 같은 원인 실행이라 원본과 같다."""
+    source = repo.get_execution(conn, report["source_execution_id"])
+    source_task = repo.get_task(conn, report["source_task_id"])
+    next_task = _next_stage(conn, source_task)
+    next_agent = _stage_agent_id(conn, next_task) if next_task is not None else None
+    work = conn.execute("SELECT assignee_type, assignee_id FROM work_items WHERE work_item_id = ?",
+                        (report["work_item_id"],)).fetchone()
+    return PartyFacts(
+        source_agent_owner=repo.agent_owner_id(conn, source["agent_id"]),
+        next_stage_member=None,  # 단계는 멤버가 맡지 않는다 — 단계 담당은 Agent 이고 그 주인이 받는 사람이다
+        next_stage_agent_owner=repo.agent_owner_id(conn, next_agent) if next_agent else None,
+        next_stage_has_agent=next_agent is not None,
+        work_assignee_member=work["assignee_id"] if work["assignee_type"] == "member" else None,
+        work_assignee_agent_owner=(repo.agent_owner_id(conn, work["assignee_id"])
+                                   if work["assignee_type"] == "agent" else None),
+    )
+
+
+def _forbidden(message: str) -> WorkActionError:
+    return WorkActionError(403, "forbidden", message)
+
+
+def own_report(conn: Connection, session_id: str, report_id: str) -> Row:
+    row = repo.get_handoff_report(conn, report_id)
+    if row is None or row["session_id"] != session_id:
+        raise WorkActionError(404, "not_found", f"리포트 {report_id}을 찾을 수 없습니다.")
+    return row
+
+
+def _done_original(row: Row) -> None:
+    if row["job_type"] != "original":
+        raise WorkActionError(409, "not_original", "원본 리포트에서만 할 수 있습니다.")
+    if row["status"] != "done":
+        raise WorkActionError(409, "report_not_done", "아직 완성된 리포트가 아닙니다.")
+
+
+def _report_json(conn: Connection, store: ArtifactStore, row: Row) -> HandoffReport:
+    return HandoffReport.model_validate_json(repo.read_artifact(conn, store, row["artifact_id"]))
+
+
+def _next_stage_agent(conn: Connection, report: Row) -> str | None:
+    next_task = _next_stage(conn, repo.get_task(conn, report["source_task_id"]))
+    return _stage_agent_id(conn, next_task) if next_task is not None else None
+
+
+def tailor_choices(conn: Connection, *, session_id: str, member_id: str, report: Row) -> list[dict]:
+    """그 멤버가 주인인 Agent 중 맞춤 풀이를 할 수 있는 것(D8) — 다음 단계 Agent 가 있으면 맨 앞·기본값."""
+    default = _next_stage_agent(conn, report)
+    choices = [
+        {"agent_id": a["agent_id"], "name": a["name"], "default": a["agent_id"] == default}
+        for a in repo.list_session_agents(conn, session_id)
+        if repo.agent_owner_id(conn, a["agent_id"]) == member_id and tailor_problem(_agent_facts(conn, a)) is None
+    ]
+    return sorted(choices, key=lambda c: not c["default"])
+
+
+def _active_original(conn: Connection, report: Row) -> Row | None:
+    latest = repo.latest_original_report(conn, report["source_execution_id"])
+    return latest if latest is not None and latest["status"] in repo.HANDOFF_REPORT_ACTIVE else None
+
+
+def report_view(conn: Connection, store: ArtifactStore, *, report: Row, member_id: str, role: str) -> dict:
+    """API JSON·웹 템플릿이 같이 쓰는 보기 묶음. 요청문·확인 가능한 근거 집합 원본·토큰은 싣지 않는다."""
+    session_id = report["session_id"]
+    original = report["job_type"] == "original"
+    execution = repo.get_execution(conn, report["source_execution_id"])
+    task = repo.get_task(conn, report["source_task_id"])
+    spec = repo.get_kind(conn, session_id, task["kind"])
+    outcome = _result_data(conn, store, execution).get("outcome")
+    agent = repo.get_agent(conn, report["agent_id"]) if report["agent_id"] else None
+    inputs = json.loads(report["inputs_json"])
+    done = report["status"] == "done"
+    parties = report_parties(party_facts(conn, report))
+    decisions = [
+        {"item_id": d["item_id"], "answer": d["answer"], "note": d["note"],
+         "answered_by": _member_name(conn, session_id, d["member_id"]), "answered_at": d["answered_at"]}
+        for d in repo.list_report_decisions(conn, report["report_id"])
+    ] if original else []
+    actions = []
+    choices: list[dict] = []
+    if original and done and can_answer(parties, member_id=member_id, role=role):
+        actions.append("answer")
+    if original and done and can_tailor(parties, member_id=member_id):
+        choices = tailor_choices(conn, session_id=session_id, member_id=member_id, report=report)
+        if choices:
+            actions.append("tailor")
+    if (original and _active_original(conn, report) is None
+            and can_regenerate(parties, member_id=member_id, role=role)):
+        actions.append("regenerate")
+    latest = repo.latest_original_report(conn, report["source_execution_id"])
+    view = {
+        "report_id": report["report_id"],
+        "job_type": report["job_type"],
+        "status": report["status"],
+        "reason": report["reason"],
+        "stage": {"title": task["title"], "kind": task["kind"], "kind_label": spec.label if spec else task["kind"]},
+        "source": {"attempt_no": execution["attempt_no"], "outcome": outcome if isinstance(outcome, str) else None},
+        "agent": {"name": agent["name"]} if agent else None,
+        "requested_by": _member_name(conn, session_id, report["requested_by_member_id"]),
+        "base_report_id": report["base_report_id"],
+        "stale": not original and (latest is None or latest["report_id"] != report["base_report_id"]),
+        "created_at": report["created_at"],
+        "finished_at": report["finished_at"],
+        "report": json.loads(repo.read_artifact(conn, store, report["artifact_id"])) if done else None,
+        "evidence_check": json.loads(report["evidence_check_json"]) if done else None,
+        "pull_requests": inputs.get("pull_requests", []),
+        "pr_evidence_error": inputs.get("pr_evidence_error"),
+        "decisions": decisions,
+        "parties": {"sender": _member_name(conn, session_id, parties.sender_member_id),
+                    "recipient": _member_name(conn, session_id, parties.recipient_member_id)},
+        "actions": actions,
+    }
+    if "tailor" in actions:
+        view["tailor_choices"] = choices
+    return view
+
+
+def answer_decision(conn: Connection, store: ArtifactStore, *, session_id: str, member: LoggedIn, report_id: str,
+                    item_id: str, answer: str, note: str | None, now: str) -> Row:
+    """결정 답(D13) — 받는 사람·관리자, 완성된 원본의 `to_confirm` 항목만. 마지막 답이 유효(덮어쓰기)."""
+    row = own_report(conn, session_id, report_id)
+    if not can_answer(report_parties(party_facts(conn, row)), member_id=member.member_id, role=member.role):
+        raise _forbidden("받는 사람이나 관리자만 답할 수 있습니다.")
+    _done_original(row)
+    if item_id not in {c.id for c in _report_json(conn, store, row).sections.to_confirm}:
+        raise WorkActionError(404, "not_found", f"결정 항목 {item_id}을 찾을 수 없습니다.")
+    try:
+        repo.answer_report_decision(conn, report_id=report_id, item_id=item_id, answer=answer, note=note,
+                                    member_id=member.member_id, now=now)
+    except ValueError as exc:
+        if str(exc) == "note":
+            raise WorkActionError(422, "invalid_field", "한 줄 이유를 1~500자로 적어 주세요.", "note") from None
+        raise WorkActionError(422, "invalid_field", "answer 는 confirmed·changed 중 하나입니다.", "answer") from None
+    return repo.get_handoff_report(conn, report_id)
+
+
+def request_tailored(conn: Connection, store: ArtifactStore, *, session_id: str, member: LoggedIn, report_id: str,
+                     agent_id: str, now: str) -> tuple[Row, bool]:
+    """맞춤 풀이(D8) — 받는 사람이 자기 Agent 로. 진행 중이면 그 행(False). 근거는 원본 주장만(`claim:<id>`).
+    할 수 없는 Agent(API 연결형·러너 미지원 등)는 주인과 무관하게 422 + 사유 — API 연결형에는 주인이 없다."""
+    row = own_report(conn, session_id, report_id)
+    _done_original(row)
+    if not can_tailor(report_parties(party_facts(conn, row)), member_id=member.member_id):
+        raise _forbidden("받는 사람만 맞춤 풀이를 요청할 수 있습니다.")
+    agent = repo.get_agent(conn, agent_id)
+    if agent is None or not repo.is_session_agent(conn, session_id, agent_id):
+        raise _forbidden("내 에이전트만 고를 수 있습니다.")
+    problem = tailor_problem(_agent_facts(conn, agent))
+    if problem is not None:
+        raise WorkActionError(422, "tailor_unavailable", problem)
+    if repo.agent_owner_id(conn, agent_id) != member.member_id:
+        raise _forbidden("내 에이전트만 고를 수 있습니다.")
+    original = _report_json(conn, store, row)
+    work = conn.execute("SELECT key_number, title FROM work_items WHERE work_item_id = ?",
+                        (row["work_item_id"],)).fetchone()
+    next_task = _next_stage(conn, repo.get_task(conn, row["source_task_id"]))
+    next_spec = repo.get_kind(conn, session_id, next_task["kind"]) if next_task is not None else None
+    text = build_tailored_request(TailoredRequestFacts(
+        work_key=format_work_key(work["key_number"]), title=work["title"], recipient_name=member.display_name,
+        next_kind_label=next_spec.label if next_spec else None, original=original,
+    ))
+    inputs = {
+        "local_registration_id": agent["local_registration_id"], "checkout_commit": None, "base_commit": None,
+        "request": text,
+        "evidence": {"artifacts": [], "commits": [], "pulls": [], "source_work": False, "verification": False,
+                     "claims": [c.id for c in original.sections.claims()]},
+        "pull_requests": [], "pr_evidence_error": None,
+    }
+    return repo.create_handoff_report(
+        conn, session_id=session_id, work_item_id=row["work_item_id"], source_execution_id=row["source_execution_id"],
+        source_task_id=row["source_task_id"], job_type="tailored", agent_id=agent_id,
+        connector_id=agent["connector_id"], inputs=inputs, now=now, base_report_id=report_id,
+        requested_by_member_id=member.member_id)
+
+
+def regenerate(conn: Connection, store: ArtifactStore, settings: Settings,
+               github_for: Callable[[GitHubSourceConfig], GitHubClient | None], *, session_id: str, member: LoggedIn,
+               report_id: str, now: str) -> Row:
+    """다시 만들기(D12) — 보낸 사람·받는 사람·관리자. 진행 중 원본이 있으면 그 행, 아니면 같은 원인 실행·같은 Agent 로
+    새 원본(PR 근거 다시 수집 — 불가 사유면 바로 `unavailable`)."""
+    row = own_report(conn, session_id, report_id)
+    if row["job_type"] != "original":
+        raise WorkActionError(409, "not_original", "원본 리포트에서만 할 수 있습니다.")
+    parties = report_parties(party_facts(conn, row))
+    if not can_regenerate(parties, member_id=member.member_id, role=member.role):
+        raise _forbidden("보낸 사람·받는 사람·관리자만 다시 만들 수 있습니다.")
+    active = _active_original(conn, row)
+    if active is not None:
+        return active
+    return _new_original(conn, store, github_for, execution_id=row["source_execution_id"], now=now)
+
+
+def stage_reports(conn: Connection, store: ArtifactStore, *, work_item_id: str, member_id: str, role: str) -> dict:
+    """업무의 리포트 — 단계(원인 Task)마다 최신 원본과 이전 원본(최근순), 맞춤 풀이는 (원본, 요청 멤버)마다 최신."""
+    rows = repo.list_work_reports(conn, work_item_id)
+    stages: dict[str, list[Row]] = {}
+    tailored: dict[tuple[str, str], Row] = {}
+    for row in rows:
+        if row["job_type"] == "original":
+            stages.setdefault(row["source_task_id"], []).append(row)
+        else:
+            tailored[(row["base_report_id"], row["requested_by_member_id"])] = row
+    tasks = {t["task_id"]: t for t in conn.execute(
+        "SELECT t.task_id, t.title, t.kind, t.session_id FROM tasks t WHERE t.work_item_id = ?"
+        " ORDER BY t.created_at, t.rowid", (work_item_id,))}
+
+    def _view(row: Row) -> dict:
+        return report_view(conn, store, report=row, member_id=member_id, role=role)
+
+    result = []
+    for task_id, task in tasks.items():
+        if task_id not in stages:
+            continue
+        spec = repo.get_kind(conn, task["session_id"], task["kind"])
+        originals = stages[task_id]
+        result.append({"title": task["title"], "kind": task["kind"], "kind_label": spec.label if spec else task["kind"],
+                       "latest": _view(originals[-1]), "previous": [_view(r) for r in reversed(originals[:-1])]})
+    return {"stages": result, "tailored": [_view(r) for r in tailored.values()]}
