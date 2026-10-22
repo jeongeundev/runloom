@@ -255,7 +255,26 @@
     {
       "step": 10,
       "name": "ops-docs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-23T01:13:33+0900",
+      "summary": "docs/SELFHOST.md 업그레이드에 v27(phase 25) 절: 표 둘(handoff_reports·handoff_report_decisions)·artifacts/work_item_events 재생성, 단계 줄로 보고 새 알림 없음(D33), 업그레이드 전 결과는 리포트 없음(D27·D41), 순서 백업→진행 중 실행 끝난 뒤 install.sh→스키마 27→보내는·받는 쪽 러너 모두 install-runner.sh(능력 handoff_report), 옛 러너는 '리포트 없음(러너가 리포트를 지원하지 않음 — 러너 재설치 필요)'·다음 단계 대기 없이 착수(D10), 확인 명령 = compose exec central python3 -c sqlite3 로 /data/central.sqlite connectors(connector_id·last_seen_at·capabilities_json, revoked_at IS NULL). 대기 시간 환경변수는 적지 않음(D39). AGENTS.md 는 명령어·경계 규칙 변화 없어 그대로. ls 확인: deploy/selfhost/install.sh·install-runner.sh·compose.yaml·docs/adr/0033-handoff-report.md 존재, /data/central.sqlite 는 compose WORKFLOW_DB_PATH 값",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "ls deploy/selfhost/install.sh deploy/selfhost/install-runner.sh deploy/selfhost/compose.yaml docs/adr/0033-handoff-report.md",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "v27 확인 명령(python3 -c sqlite3 조회)은 실제 셀프호스트 컨테이너에서 실행해 보지 않았다 — 금지사항대로 설치·재시작하지 않음. 로컬 python3 로 같은 형태의 문장만 확인"
+      ]
     },
     {
       "step": 11,

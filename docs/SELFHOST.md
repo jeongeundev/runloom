@@ -324,6 +324,15 @@ deploy/selfhost/install-runner.sh
   5. **n8n 워크플로우의 Runloom HTTP Request 노드 URL 을 `…/api/v1/sources/n8n/chains` 로 고친다**(예 `http://host.docker.internal:8000/api/v1/sources/n8n/chains`, [n8n 예시](n8n/README.md)). 고치기 전까지 n8n 의 요청은 404 다. 설정 화면 n8n 입구 탭이 새 주소를 보인다. 입구 토큰(`wfs_…`)은 그대로 쓴다.
   6. 확인 — `/healthz` 200, 러너가 실행을 다시 받는다(claim 이 이어진다), `/me` 에 "API 토큰" 절이 보인다.
   - 멤버 토큰 — `/me` 의 "API 토큰" 에서 이름과 권한(`읽기 전용` 기본 / `내 권한 전부`)을 골라 [토큰 만들기] 를 누르면 `wfm_…` 원문이 그 화면에 한 번만 보인다. 터미널·스크립트에서 `Authorization: Bearer wfm_…` 헤더로 `/api/v1/…` 를 부른다(예 `curl -H "Authorization: Bearer wfm_…" http://localhost:8000/api/v1/work-items`). 읽기 전용 토큰은 GET 만 되고 그 밖은 403 `token_read_only`, `내 권한 전부` 는 내 역할이 할 수 있는 것까지다. 쓰지 않는 토큰은 같은 목록의 [폐기] 로 지운다. 멤버를 비활성화하면 그 멤버의 토큰도 함께 폐기된다. DB 에는 토큰 해시만 둔다.
+- v27(phase 25) — 인계 리포트: 표 둘(`handoff_reports` 리포트·`handoff_report_decisions` 받는 사람의 결정 답)을 더하고, `artifacts` 를 재생성해 산출물 종류 `handoff_report` 를 받게 하고, `work_item_events` 를 재생성해 업무 이벤트 `report_decision` 을 받게 한다(id·행 그대로, 다른 표는 재생성하지 않는다). 결과가 통과로 판정되면 그 결과를 만든 에이전트의 러너가 인계 리포트를 쓰고, 다음 단계는 리포트가 끝날 때까지 착수를 기다린다([ADR-0033](adr/0033-handoff-report.md), 설계는 [ARCHITECTURE](ARCHITECTURE.md) "인계 리포트 — phase 25"). 새 알림 종류는 없다 — 업무 패널의 단계 줄(`리포트 작성 중` / [리포트 보기] / `리포트 없음(사유)`)로 본다. **업그레이드 전에 끝난 결과에는 리포트가 없다** — 채워 넣지 않는다, 업그레이드 뒤 새로 통과한 결과부터다. 외래키 검사에 걸리는 옛 행이 있으면 올리지 않고 멈춘다(그대로 v26). 순서:
+  1. 백업 먼저(`backup create`).
+  2. 진행 중인 실행이 끝난 뒤 `install.sh` → 스키마 27.
+  3. **러너도 `install-runner.sh` 로 다시 설치한다 — 리포트를 보내는 쪽(결과를 만든 에이전트의 러너)과 받는 쪽(다음 단계 에이전트의 러너) 모두.** 러너 프로토콜이 바뀌었다(claim `capabilities` 에 `handoff_report`, 리포트 작업 결과·실패 보고 `/api/v1/report-jobs/…`, 실행 요청의 `handoff_report`). 옛 러너는 v27 서버에 그대로 붙어 수정·검토·판단은 계속 하지만 리포트를 만들지도 받지도 못한다 — 그 러너의 에이전트가 낸 결과는 `리포트 없음(러너가 리포트를 지원하지 않음 — 러너 재설치 필요)` 이 되고, 다음 단계는 대기 없이 착수한다. 한 Mac 에 러너를 둘 이상 두었으면 이름마다(`--name b` 등) 다시 실행한다.
+  4. 확인 — 재설치한 러너가 한 번 claim 한 뒤(몇 초) 러너 능력 칸에 `handoff_report` 가 있는지 본다. 해제하지 않은 러너마다 한 줄이고, `capabilities_json` 에 `handoff_report` 가 없는 줄이 옛 러너다:
+
+     ```bash
+     docker compose -p runloom -f deploy/selfhost/compose.yaml exec central python3 -c "import sqlite3; [print(*r) for r in sqlite3.connect('/data/central.sqlite').execute('SELECT connector_id, last_seen_at, capabilities_json FROM connectors WHERE revoked_at IS NULL')]"
+     ```
 - 옛 주소는 넘어간다(303) — `/sources` → `/settings?tab=inbound`, `/operator/github` → `/repos`, `/operator` → `/settings?tab=advanced`, `/operator/notifications` → `/settings?tab=notify`, `/agents` → `/team`, `/kinds` → `/settings?tab=kinds`, `/connect?tab=…` → 위 v25 표, `/metrics` → `/monitor`(`.json`·`.csv` 는 v26 부터 `/api/v1/metrics`·`/api/v1/metrics.csv`), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 
