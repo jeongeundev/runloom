@@ -280,7 +280,31 @@
     {
       "step": 11,
       "name": "report-verify",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-23T01:21:39+0900",
+      "summary": "tests/e2e/test_handoff_report.py(TestClient + 연결 토큰 가짜 러너 Runner — claim·이벤트·산출물·heartbeat·리포트 제출/실패·내려받기를 HTTP 로, 워커 tick, WORKFLOW_E2E 없이 기본 실행) 10개: 1 bug_fix passed→원본 리포트 작업이 queued 검토보다 먼저·leased 동안 검토 claim 204·done 뒤 claim 에 handoff_report(report_id·artifact_id·sha256·결정 답 changed/note/answered_by)·내려받기 200 sha256 일치, 2 실패·2b 시간 초과(1799초 대기·1800초 timed_out·늦은 제출 409) → 검토는 리포트 없이 착수·패널 '리포트 없음(사유)'·[다시 만들기] API → 같은 Agent 재작성 done·패널 [리포트 보기], 3 사용자 정의 종류(seed_user_flow)·3b 접수 판단 → 리포트, 3c 결과 뒤 판단 결과 → 없음(판단은 leased 원인 리포트를 기다리지 않음), 3d 직접 작업만 → 없음, 4 옛 러너 → unavailable·대기 없음·claim 바이트 동일·패널 사유, 5 받는이(러너 주인)가 자기 Agent 로 맞춤 풀이 → 그 러너가 tailored 제출 → API·페이지·원본 맞춤 풀이 목록, 6 없는 artifact·연결 안 된 pr·원본의 claim:·근거 없음 → done + 그 주장만 '근거 확인 안 됨'. 검토 단계는 수정과 같은 러너에서만 착수(review_repository_mismatch)라 보내는·받는 러너가 billing 하나 — 맞춤 풀이만 REVIEW 를 shop 으로 옮김(test_report_api world 와 같음). 대기 규칙(_waits_for_report)을 끄면 1·2b·3 이 실패함을 확인. 소스 결함 없음(소스 변경 없음). 7 실제 러너 e2e: 처음 13 실패 → 원인 셋 고침 — ① 옛 사본 업그레이드 단정 SCHEMA_VERSION == 25(phase 24 v26 부터 이미 틀림)→27(jira·triage·setup_ux·next_step), ② 러너 능력 단정에 handoff_report 추가(team_handoff·next_step_cycle), ③ 가짜 codex(test_github_cycle)·가짜 claude(monitor·metrics·next_step_cycle·triage_cycle)가 리포트 요청문('# 인계 리포트:'·'# 맞춤 풀이:')을 검토·수정으로 처리해 result_invalid·읽기 전용 위반으로 리포트가 조용히 실패하던 것 → 리포트 분기(요청문 첫 근거 ID 인용) 추가, test_github_cycle test_12 에 '원본 리포트 모두 done' 단정 추가. 결과 WORKFLOW_E2E=1 pytest tests/e2e 117 passed·1 skipped(WORKFLOW_DOCKER)",
+      "verification": [
+        {
+          "command": "python3 -m pytest tests/e2e/test_handoff_report.py -q",
+          "exit_code": 0
+        },
+        {
+          "command": "WORKFLOW_E2E=1 python3 -m pytest tests/e2e -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "test_next_step_cycle test_01 이 한 번 '--code: expected one argument' 로 실패했다가 재실행에서 통과 — 연결 코드가 '-' 로 시작하면 셋업 명령 argparse 가 옵션으로 읽는 기존 플래키(이 phase 와 무관, 고치지 않음). 실제 install-runner.sh 사용자에게도 같은 일이 생길 수 있는지는 확인하지 않았다",
+        "e2e 의 가짜 codex/claude 리포트 분기는 형식만 맞춘 고정 리포트다 — 실제 모델이 HANDOFF_REPORT_OUTPUT_SCHEMA 로 쓴 리포트 품질·근거 인용률은 실연동에서 확인해야 한다"
+      ]
     }
   ],
   "created_at": "2026-10-22T21:57:25+0900"

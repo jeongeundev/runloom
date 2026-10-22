@@ -99,6 +99,13 @@ def reply(structured):
     sys.exit(0)
 
 
+if prompt.startswith(("# 인계 리포트:", "# 맞춤 풀이:")):  # 인계 리포트 작업 — 읽기만, 요청문의 첫 근거 ID 를 인용한다
+    cite = re.findall(r"^- ((?:artifact|commit|claim):\S+)", prompt, re.M)[:1]
+    report = {"sections": {"changes": [{"id": "c1", "text": "가짜 인계 리포트", "why": None, "evidence": cite}],
+                           "decisions": [], "open_questions": [], "to_confirm": [], "constraints": [],
+                           "remaining_work": []}, "diagram": None}
+    reply(report)
+
 if "proceed" in props:  # 판단 — 확신도는 본문 표식
     agents = re.findall(r"^- agent:(\S+) ", prompt, re.M)
     confidence = float(re.search(r"\[confidence:([0-9.]+)\]", prompt).group(1))

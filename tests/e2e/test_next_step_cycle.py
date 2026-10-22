@@ -105,6 +105,13 @@ def reply(structured):
     sys.exit(0)
 
 
+if prompt.startswith(("# 인계 리포트:", "# 맞춤 풀이:")):  # 인계 리포트 작업 — 읽기만, 요청문의 첫 근거 ID 를 인용한다
+    cite = re.findall(r"^- ((?:artifact|commit|claim):\S+)", prompt, re.M)[:1]
+    report = {"sections": {"changes": [{"id": "c1", "text": "가짜 인계 리포트", "why": None, "evidence": cite}],
+                           "decisions": [], "open_questions": [], "to_confirm": [], "constraints": [],
+                           "remaining_work": []}, "diagram": None}
+    reply(report)
+
 if "next_action" in props:  # 결과 뒤 판단 — 기본 브랜치 체크아웃을 읽기만 한다
     current = re.search(r"^지금 단계: (\S+) ", prompt, re.M).group(1)
     if "## 반환된 사내 요청" in prompt:
@@ -425,7 +432,7 @@ def test_01_admin_sets_up_github_a_member_webhooks_a_runner_the_triage_agent_and
             world, "SELECT 1 FROM agents WHERE agent_id = ? AND base_commit IS NOT NULL", agent_id):
         assert time.monotonic() < deadline, world.log_tails()
         time.sleep(0.3)
-    assert runner_capabilities(world) == ["after_result_triage", "verify_only"]
+    assert runner_capabilities(world) == ["after_result_triage", "handoff_report", "verify_only"]
 
     (source,) = http.get("/api/v1/github/sources").json()["sources"]
     fields = ("repository_full_name", "intake", "workflow_repository_id", "label_filter", "selected_issue_numbers",
@@ -662,7 +669,7 @@ def test_v23_copy_upgrades_to_v24(tmp_path):
 
     conn = connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
         assert {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables} == before
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
