@@ -304,7 +304,8 @@
       "concerns": [
         "test_next_step_cycle test_01 이 한 번 '--code: expected one argument' 로 실패했다가 재실행에서 통과 — 연결 코드가 '-' 로 시작하면 셋업 명령 argparse 가 옵션으로 읽는 기존 플래키(이 phase 와 무관, 고치지 않음). 실제 install-runner.sh 사용자에게도 같은 일이 생길 수 있는지는 확인하지 않았다",
         "e2e 의 가짜 codex/claude 리포트 분기는 형식만 맞춘 고정 리포트다 — 실제 모델이 HANDOFF_REPORT_OUTPUT_SCHEMA 로 쓴 리포트 품질·근거 인용률은 실연동에서 확인해야 한다"
-      ]
+      ],
+      "completed_at": "2026-10-23T01:50:18+0900"
     }
   ],
   "created_at": "2026-10-22T21:57:25+0900"
