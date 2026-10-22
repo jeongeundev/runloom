@@ -218,7 +218,8 @@
       "concerns": [
         "맞춤 풀이 Agent 검사 순서를 ARCHITECTURE 초안(주인 → 불가 사유)에서 불가 사유 → 주인으로 바꿨다 — API 연결형 Agent 는 주인이 없어 원래 순서로는 422 가 아니라 403 이 된다. 그 결과 남의 Agent 라도 쓸 수 없는 Agent 면 403 대신 422(사유)가 나온다",
         "단계에는 멤버 담당 칸이 없어 PartyFacts.next_stage_member 를 늘 None 으로 둔다 — 받는 사람은 다음 단계 Agent 의 주인 → 업무 담당 순"
-      ]
+      ],
+      "completed_at": "2026-10-23T00:51:31+0900"
     },
     {
       "step": 9,
