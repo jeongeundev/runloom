@@ -150,7 +150,8 @@
         "unavailable 행의 inputs_json 은 {} 다(ARCHITECTURE 에 정해진 모양 없음). step 8 report_view 는 pull_requests·pr_evidence_error 를 .get 으로 읽어야 한다.",
         "요청문의 원본 종류 문구(GitHub 이슈·Jira 이슈·n8n 입구·직접 등록)는 ARCHITECTURE 에 없던 것을 이 step 이 정했다. 사내 요청으로 생긴 업무는 work_items.source_type 기준이라 '사내 요청' 으로 표시되지 않는다.",
         "시간 초과 경계는 created_at·now 를 문자열로 비교한다 — 워커 시각이 utc_now 표기(마이크로초·Z)일 때만 정확하다(테스트도 그 표기로 맞춤)."
-      ]
+      ],
+      "completed_at": "2026-10-22T23:44:57+0900"
     },
     {
       "step": 6,
