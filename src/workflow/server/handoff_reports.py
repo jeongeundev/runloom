@@ -716,3 +716,13 @@ def stage_reports(conn: Connection, store: ArtifactStore, *, work_item_id: str, 
         result.append({"title": task["title"], "kind": task["kind"], "kind_label": spec.label if spec else task["kind"],
                        "latest": _view(originals[-1]), "previous": [_view(r) for r in reversed(originals[:-1])]})
     return {"stages": result, "tailored": [_view(r) for r in tailored.values()]}
+
+
+def stage_report_lines(conn: Connection, work_item_id: str) -> dict[str, dict]:
+    """단계(`source_task_id`)마다 최신 원본의 상태 — 업무 패널 단계 줄 재료(D32). 행이 없는 단계는 빠진다."""
+    lines: dict[str, dict] = {}
+    for row in repo.list_work_reports(conn, work_item_id):
+        if row["job_type"] == "original":
+            lines[row["source_task_id"]] = {"report_id": row["report_id"], "status": row["status"],
+                                            "reason": row["reason"]}
+    return lines

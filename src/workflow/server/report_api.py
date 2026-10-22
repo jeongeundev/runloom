@@ -3,7 +3,7 @@
 - 업무의 리포트 목록·리포트 보기 묶음·결정 답·맞춤 풀이 요청·다시 만들기. 보기 묶음과 행동 판정은
   `handoff_reports` 의 함수가 하고 라우트는 호출만 한다 — 웹 폼(step 9)이 같은 함수를 부른다(ADR-0031 결정 3).
 - 인증은 쿠키·멤버 토큰(`require_member_api` — 읽기 전용 토큰은 GET 만). 그 위 권한은 역할이 아니라 도메인 판정
-  (받는 사람·보낸 사람·관리자)이다. 리포트 HTML 은 step 9.
+  (받는 사람·보낸 사람·관리자)이다. 리포트 HTML(step 9)은 화면 리포트 페이지와 같은 렌더(`web.report_html`).
 """
 
 from collections.abc import Iterator
@@ -12,10 +12,12 @@ from sqlite3 import Connection
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict
 
 from workflow.contracts.v1 import NonEmptyStr
-from workflow.server import github_clients, handoff_reports
+from workflow.adapters import repo
+from workflow.server import github_clients, handoff_reports, web
 from workflow.server.auth import LoggedIn, get_conn, require_member_api, utc_now
 from workflow.server.errors import ApiError
 from workflow.server.stage_runs import WorkActionError
@@ -70,6 +72,17 @@ def get_report(
     conn: Connection = Depends(get_conn),
 ) -> dict[str, Any]:
     return _view(request, conn, member, report_id)
+
+
+@router.get("/reports/{report_id}/html", response_class=HTMLResponse)
+def get_report_html(
+    report_id: str, request: Request, member: LoggedIn = Depends(require_member_api),
+    conn: Connection = Depends(get_conn),
+) -> HTMLResponse:
+    with _api_errors():
+        row = handoff_reports.own_report(conn, member.session_id, report_id)
+    work = repo.get_work_item(conn, member.session_id, row["work_item_id"])
+    return HTMLResponse(web.report_html(conn, request, member, work, row))
 
 
 @router.put("/reports/{report_id}/decisions/{item_id}")
