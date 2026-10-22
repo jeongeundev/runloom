@@ -197,7 +197,7 @@
         "HANDOFF_REPORT_OUTPUT_SCHEMA 의 maxItems 를 실제 Codex 엄격 출력 모드·Claude --json-schema 가 받는지는 실제 도구로 확인하지 않았다(단위 테스트는 가짜 도구).",
         "리포트 제출·실패 보고 중 중앙에 닿지 않으면(Unreachable) 로컬에 남기지 않으므로 그 작업은 서버의 30분 만료로 끝난다 — 재전송 큐는 만들지 않았다."
       ],
-      "completed_at": "2026-10-23T01:30:00+0900"
+      "completed_at": "2026-10-23T00:36:04+0900"
     },
     {
       "step": 8,
