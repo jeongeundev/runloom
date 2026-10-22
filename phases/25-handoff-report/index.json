@@ -122,7 +122,8 @@
       ],
       "concerns": [
         "PR 하나라도 읽기 실패면 이미 읽은 다른 PR 근거도 버린다(ARCHITECTURE '읽기 실패면 PR 근거 전부 없이' 그대로). 실제 GitHub 로는 확인하지 않았다(MockTransport·가짜만)."
-      ]
+      ],
+      "completed_at": "2026-10-22T23:29:35+0900"
     },
     {
       "step": 5,
