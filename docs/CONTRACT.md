@@ -1180,7 +1180,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 ### 16.2 `ClaimRequest` — 러너 능력 보고
 
-`capabilities` 는 러너가 할 수 있는 선택 동작 목록이다. 알려진 값은 `"verify_only"`(검증만 다시) 하나. 값 형식 `^[a-z][a-z0-9_]{0,39}$`, 최대 20개, 중복이면 422. 서버는 알려진 값만 저장하고 모르는 값은 무시한다. null(생략)은 보고 없음 — 옛 러너로 보고 검증만 다시 요청을 배정하지 않는다("연결 프로그램 업데이트 필요 — 검증만 다시 미지원"으로 기다린다). 새 러너는 늘 보낸다. 구버전 서버는 이 칸을 422 `unknown_field` 로 거부하므로 업그레이드 순서는 서버 → 러너(14절과 같다).
+`capabilities` 는 러너가 할 수 있는 선택 동작 목록이다. 알려진 값은 `"verify_only"`(검증만 다시)·`"after_result_triage"`(결과 뒤 판단, 17.4)·`"handoff_report"`(인계 리포트 작업과 받는 쪽 리포트 전달, 19절) 셋이고 새 러너는 셋 모두 보낸다. 값 형식 `^[a-z][a-z0-9_]{0,39}$`, 최대 20개, 중복이면 422. 서버는 알려진 값만 저장하고 모르는 값은 무시한다. null(생략)은 보고 없음 — 옛 러너로 보고 검증만 다시 요청을 배정하지 않는다("연결 프로그램 업데이트 필요 — 검증만 다시 미지원"으로 기다린다). 새 러너는 늘 보낸다. 구버전 서버는 이 칸을 422 `unknown_field` 로 거부하므로 업그레이드 순서는 서버 → 러너(14절과 같다).
 
 ```json
 { "contract_version": 1, "connector_id": "conn-mac-02", "supported_kinds": ["bug_fix", "code_review"], "registration_heads": { "local-billing": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c" }, "capabilities": ["verify_only"] }
@@ -1627,15 +1627,15 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 ## 19. 인계 리포트 — phase 25
 
-설계는 [ARCHITECTURE "인계 리포트 — phase 25"](ARCHITECTURE.md#인계-리포트--phase-25)·[ADR-0033](adr/0033-handoff-report.md). 이 시점에는 모델이 없다 — **아래 계약 모델 예시는 ` ```jsonc ` 로 둔다**(`test_v1.py` 가 ` ```json ` 블록을 모두 모델로 검증하므로). step 1 이 모델을 만들 때 HandoffReport·ReportJob·ReportJobFailure·claim 응답(ExecutionRequest) 블록을 ` ```json ` 으로 바꾸고 블록 수·`_SIGNATURES` 단정을 고친다. API 응답 예시(19.5·19.6)는 계속 `jsonc` 다.
+설계는 [ARCHITECTURE "인계 리포트 — phase 25"](ARCHITECTURE.md#인계-리포트--phase-25)·[ADR-0033](adr/0033-handoff-report.md). 모델은 phase 25 step 1 이 구현했고 19.1~19.4 의 ` ```json ` 블록은 fixture 테스트 대상이다(`test_v1.py` 키 서명 — `HandoffReport` 는 `sections`, `ReportJob` 은 `sections` 없는 `job_type`, `ReportJobFailure` 는 `failure_code`, 19.4 는 기존 `ExecutionRequest`). API 요청·응답 예시(19.5·19.6)는 `jsonc` 다.
 
 ### 19.1 HandoffReport — 러너가 제출하는 리포트
 
 `POST /api/v1/report-jobs/{report_id}/result` 본문이자 산출물 kind `handoff_report`(`handoff_report.json`)의 내용. `why: null` 은 "기록 없음", `evidence` 의 근거 ID 형식은 중앙이 확인해 "근거 확인 안 됨" 으로 표시만 한다(거절하지 않는다).
 
-```jsonc
+```json
 {
-  "contract_version": "1",
+  "contract_version": 1,
   "report_id": "hrp-0a1b2c3d4e5f",
   "job_type": "original",
   "sections": {
@@ -1666,9 +1666,9 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 맞춤 풀이(`job_type: "tailored"`)도 같은 모양이고 근거는 원본 주장만 `claim:<id>` 로 인용한다.
 
-```jsonc
+```json
 {
-  "contract_version": "1",
+  "contract_version": 1,
   "report_id": "hrp-1b2c3d4e5f6a",
   "job_type": "tailored",
   "sections": {
@@ -1690,9 +1690,9 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 능력 `handoff_report` 를 선언한 러너에게 claim 이 실행보다 먼저 돌려준다. 최상위 `job_type` 이 있으면 리포트 작업이다. `request` 는 중앙이 만든 요청문(글)이고 러너가 `## 로컬 근거` 절을 붙인다. 어느 칸도 명령·경로로 쓰지 않는다.
 
-```jsonc
+```json
 {
-  "contract_version": "1",
+  "contract_version": 1,
   "report_id": "hrp-0a1b2c3d4e5f",
   "job_type": "original",
   "agent_id": "agt-1a2b3c4d5e6f",
@@ -1703,9 +1703,9 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 }
 ```
 
-```jsonc
+```json
 {
-  "contract_version": "1",
+  "contract_version": 1,
   "report_id": "hrp-1b2c3d4e5f6a",
   "job_type": "tailored",
   "agent_id": "agt-6f5e4d3c2b1a",
@@ -1720,24 +1720,24 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 `POST /api/v1/report-jobs/{report_id}/failure` 본문. 리포트 행은 `failed`, 사유 `리포트 작성 실패 — {message}`.
 
-```jsonc
-{ "contract_version": "1", "failure_code": "readonly_violation", "message": "리포트 작성 중 체크아웃이 바뀌었습니다" }
+```json
+{ "contract_version": 1, "failure_code": "readonly_violation", "message": "리포트 작성 중 체크아웃이 바뀌었습니다" }
 ```
 
 ### 19.4 claim 응답(실행) — 원인 리포트 참조
 
 받는 러너가 능력을 선언했고 원인 리포트가 `done` 이면 `ExecutionRequest` 끝에 `handoff_report` 가 붙는다(없으면 칸이 빠져 지금 바이트 그대로). 러너는 `artifact_id` 를 기존 산출물 내려받기 경로로 받아 `sha256` 을 확인하고 handoff dir 에 `report.json`·`decisions.json` 을 쓴다.
 
-```jsonc
+```json
 {
-  "contract_version": "1",
+  "contract_version": 1,
   "execution_id": "exe-5d6e7f8a9b0c",
   "task_id": "tsk-2b3c4d5e6f7a",
   "kind": "code_review",
   "agent_id": "agt-6f5e4d3c2b1a",
   "task_revision": 1,
   "request": "W-12 결과 커밋을 검토한다",
-  "input_artifact_ids": [],
+  "input_artifact_ids": ["art-3c4d5e6f7a8b"],
   "target": {
     "local_registration_id": "reg-review-bot",
     "source_execution_id": "exe-4c5d6e7f8a9b",

@@ -68,7 +68,7 @@ def test_claim_sends_bearer_and_body_and_returns_request(fake, client):
     assert sent.headers["authorization"] == f"Bearer {TOKEN}"
     assert json.loads(sent.content) == {
         "contract_version": 1, "connector_id": CONNECTOR_ID, "supported_kinds": ["bug_fix", "code_review", "triage"],
-        "capabilities": ["verify_only", "after_result_triage"],
+        "capabilities": ["verify_only", "after_result_triage", "handoff_report"],
     }
 
 
@@ -78,7 +78,7 @@ def test_claim_reports_capabilities_on_every_claim(fake, client):
     client.claim(CONNECTOR_ID, capabilities=())
 
     reported, empty = fake.claim_bodies
-    assert reported["capabilities"] == ["verify_only", "after_result_triage"]
+    assert reported["capabilities"] == ["verify_only", "after_result_triage", "handoff_report"]
     assert empty["capabilities"] == []
 
 

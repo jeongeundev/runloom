@@ -38,6 +38,9 @@ from workflow.contracts.v1 import (
     ExecutionUsage,
     GenericResult,
     HandoffBundle,
+    HandoffDecision,
+    HandoffReport,
+    HandoffReportRef,
     HeartbeatRequest,
     InboundChainRequest,
     InboundChainResponse,
@@ -45,6 +48,8 @@ from workflow.contracts.v1 import (
     InputRef,
     KindSpec,
     LocalTarget,
+    ReportJob,
+    ReportJobFailure,
     ReviewComment,
     ReviewFinding,
     RunStatus,
@@ -100,6 +105,9 @@ _SIGNATURES = [
     ("SourceDelivery", lambda k: "delivery_id" in k, SourceDelivery),
     ("TriageResult", lambda k: "proceed" in k, TriageResult),
     ("TriageCandidates", lambda k: "current_kind" in k, TriageCandidates),
+    ("HandoffReport", lambda k: "sections" in k, HandoffReport),
+    ("ReportJob", lambda k: "job_type" in k and "sections" not in k, ReportJob),
+    ("ReportJobFailure", lambda k: "failure_code" in k, ReportJobFailure),
 ]
 
 
@@ -125,7 +133,7 @@ INLINE = _inline_blocks()
 
 
 def test_contract_md_has_expected_block_counts():
-    assert len(FENCED) == 73
+    assert len(FENCED) == 79
     assert len(INLINE) == 8
 
 
@@ -1592,12 +1600,16 @@ def _verify_only_request() -> dict:
 def test_runner_capability_constants():
     assert v1.RUNNER_CAPABILITY_VERIFY_ONLY == "verify_only"
     assert v1.RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE == "after_result_triage"
-    assert v1.RUNNER_CAPABILITIES == ("verify_only", "after_result_triage")
+    assert v1.RUNNER_CAPABILITY_HANDOFF_REPORT == "handoff_report"
+    assert v1.RUNNER_CAPABILITIES == ("verify_only", "after_result_triage", "handoff_report")
 
 
 def test_old_execution_requests_dump_without_verify_only_commit():
     """칸 없는 요청은 그대로 통과하고 직렬화도 바이트 단위로 같다 — 옛 러너(extra=forbid)가 받는다."""
-    olds = [b for b in FENCED if _model_for(b) is ExecutionRequest and "verify_only_commit" not in b]
+    olds = [
+        b for b in FENCED
+        if _model_for(b) is ExecutionRequest and "verify_only_commit" not in b and "handoff_report" not in b
+    ]
     assert olds
     for block in olds:
         parsed = ExecutionRequest.model_validate(block)
@@ -1605,7 +1617,9 @@ def test_old_execution_requests_dump_without_verify_only_commit():
         assert "verify_only_commit" not in parsed.model_dump()
         assert "verify_only_commit" not in json.loads(parsed.model_dump_json())
         # 옛 dump 그대로 — 칸 순서까지
-        assert list(parsed.model_dump(mode="json")) == list(ExecutionRequest.model_fields)[:-1]
+        assert list(parsed.model_dump(mode="json")) == [
+            f for f in ExecutionRequest.model_fields if f not in ("verify_only_commit", "handoff_report")
+        ]
 
 
 def test_explicit_null_verify_only_commit_is_omitted():
@@ -2079,3 +2093,221 @@ def test_api_prefix_is_shared_by_server_and_connector():
     """사람용·러너·n8n JSON API 의 공통 접두어(ADR-0032) — 서버 include 와 러너 클라이언트가 이 값 하나를 쓴다."""
     from workflow.contracts.v1 import API_PREFIX
     assert API_PREFIX == "/api/v1"
+
+
+# --- 인계 리포트 (phase 25 step 1, CONTRACT 19절) ---------------------------------
+
+
+def _reports(job_type: str) -> list[dict]:
+    return [json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is HandoffReport and b["job_type"] == job_type]
+
+
+def _report_job(job_type: str) -> dict:
+    return next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ReportJob and b["job_type"] == job_type)
+
+
+def _claim(i: int) -> dict:
+    return {"id": f"c{i}", "text": f"주장 {i}", "why": None, "evidence": []}
+
+
+def test_report_constants():
+    assert (v1.HANDOFF_REPORT_MAX_BYTES, v1.REPORT_SECTION_MAX_CLAIMS, v1.REPORT_TOTAL_MAX_CLAIMS) == (131072, 15, 60)
+    assert (v1.REPORT_TEXT_MAX, v1.REPORT_EVIDENCE_MAX, v1.REPORT_EVIDENCE_ID_MAX) == (600, 8, 120)
+    assert (v1.REPORT_DIAGRAM_MAX, v1.REPORT_REQUEST_MAX) == (5000, 200000)
+    assert v1.REPORT_ID_PATTERN == r"^hrp-[0-9a-f]{12}$"
+    assert v1.REPORT_CLAIM_ID_PATTERN == r"^[a-z][a-z0-9-]{0,23}$"
+
+
+def test_handoff_report_examples_round_trip():
+    (original,) = _reports("original")
+    (tailored,) = _reports("tailored")
+    for block in (original, tailored):
+        parsed = HandoffReport.model_validate(block)
+        assert HandoffReport.model_validate_json(parsed.model_dump_json()) == parsed
+        assert json.loads(parsed.model_dump_json()) == block
+    parsed = HandoffReport.model_validate(original)
+    assert parsed.sections.decisions[0].why is None  # null = 기록 없음
+    assert parsed.sections.changes[0].evidence == ["commit:3f2a9c1", "source:work"]
+    assert HandoffReport.model_validate(tailored).diagram is None
+
+
+def test_handoff_report_requires_all_sections_and_one_change():
+    (block,) = _reports("original")
+    for name in ("changes", "decisions", "open_questions", "to_confirm", "constraints", "remaining_work"):
+        broken = json.loads(json.dumps(block))
+        del broken["sections"][name]
+        with pytest.raises(ValidationError):
+            HandoffReport.model_validate(broken)
+    with pytest.raises(ValidationError):
+        HandoffReport.model_validate({**block, "sections": {**block["sections"], "changes": []}})
+    for key in ("report_id", "job_type", "sections", "diagram", "contract_version"):
+        with pytest.raises(ValidationError):
+            HandoffReport.model_validate({k: v for k, v in block.items() if k != key})
+
+
+def test_handoff_report_size_limits():
+    (block,) = _reports("original")
+    sections = {name: [] for name in block["sections"]}
+    full = {**sections, "changes": [_claim(i) for i in range(15)]}
+    HandoffReport.model_validate({**block, "sections": full})
+    with pytest.raises(ValidationError):  # 절당 15개 초과
+        HandoffReport.model_validate({**block, "sections": {**full, "changes": [_claim(i) for i in range(16)]}})
+    names = list(sections)
+    total = {name: [_claim(n * 100 + i) for i in range(10 if n else 11)] for n, name in enumerate(names)}
+    with pytest.raises(ValidationError):  # 합계 61개
+        HandoffReport.model_validate({**block, "sections": total})
+    total["changes"].pop()
+    HandoffReport.model_validate({**block, "sections": total})  # 합계 60개
+
+    one = block["sections"]["changes"][0]
+    for bad in (
+        {**one, "text": "가" * 601},
+        {**one, "text": ""},
+        {**one, "text": "   "},
+        {**one, "why": "가" * 601},
+        {**one, "why": ""},
+        {**one, "evidence": [f"artifact:a{i}" for i in range(9)]},
+        {**one, "evidence": ["x" * 121]},
+        {**one, "evidence": [""]},
+    ):
+        with pytest.raises(ValidationError):
+            HandoffReport.model_validate({**block, "sections": {**block["sections"], "changes": [bad]}})
+    HandoffReport.model_validate({**block, "sections": {**block["sections"], "changes": [
+        {**one, "text": "가" * 600, "why": "나" * 600, "evidence": ["x" * 120] + [f"artifact:a{i}" for i in range(7)]}
+    ]}})
+    HandoffReport.model_validate({**block, "diagram": "가" * 5000})
+    for diagram in ("가" * 5001, ""):
+        with pytest.raises(ValidationError):
+            HandoffReport.model_validate({**block, "diagram": diagram})
+
+
+def test_handoff_report_rejects_duplicate_ids_and_bad_shapes():
+    (block,) = _reports("original")
+    s = block["sections"]
+    dup_across = {**s, "remaining_work": [{**s["changes"][0], "text": "다른 절"}]}
+    dup_within = {**s, "changes": [s["changes"][0], {**s["changes"][0], "text": "같은 절"}]}
+    for sections in (dup_across, dup_within):
+        with pytest.raises(ValidationError):
+            HandoffReport.model_validate({**block, "sections": sections})
+    one = s["changes"][0]
+    for bad in (
+        {**one, "id": "C1"},
+        {**one, "id": "1c"},
+        {**one, "id": "c" * 25},
+        {**one, "evidence": ["commit:3f2a9c1", "commit:3f2a9c1"]},  # 중복 근거
+        {**one, "evidence": "commit:3f2a9c1"},
+        {**one, "extra": 1},
+        {k: v for k, v in one.items() if k != "why"},  # why 는 null 이라도 칸이 있어야 한다
+    ):
+        with pytest.raises(ValidationError):
+            HandoffReport.model_validate({**block, "sections": {**s, "changes": [bad]}})
+    for change in (
+        {"report_id": "hrp-0A1B2C3D4E5F"},
+        {"report_id": "rep-0a1b2c3d4e5f"},
+        {"job_type": "summary"},
+        {"contract_version": "1"},
+        {"extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            HandoffReport.model_validate({**block, **change})
+    # 근거 ID 형식은 계약이 보지 않는다 — 도메인 근거 확인이 "근거 확인 안 됨" 으로 표시한다 (D20)
+    odd = {**one, "evidence": ["무엇이든", "claim:zz", "pr:not-a-number"]}
+    HandoffReport.model_validate({**block, "sections": {**s, "changes": [odd]}})
+
+
+def test_report_job_examples():
+    original = ReportJob.model_validate(_report_job("original"))
+    tailored = ReportJob.model_validate(_report_job("tailored"))
+    assert (original.job_type, tailored.job_type) == ("original", "tailored")
+    assert original.checkout_commit is not None and original.base_commit is not None
+    assert (tailored.checkout_commit, tailored.base_commit) == (None, None)
+    for job in (original, tailored):
+        assert ReportJob.model_validate_json(job.model_dump_json()) == job
+
+
+def test_report_job_rules():
+    original = _report_job("original")
+    tailored = _report_job("tailored")
+    commit = original["checkout_commit"]
+    ReportJob.model_validate({**original, "base_commit": None})
+    ReportJob.model_validate({**original, "checkout_commit": None, "base_commit": None})  # 사용자 정의 종류 — 체크아웃 없음
+    for bad in (
+        {**tailored, "checkout_commit": commit},
+        {**tailored, "base_commit": commit},
+        {**original, "checkout_commit": None},  # base 만 있음
+        {**original, "base_commit": commit},  # 둘이 같음
+        {**original, "checkout_commit": "3f2a9c1"},
+        {**original, "job_type": "summary"},
+        {**original, "report_id": "hrp-1"},
+        {**original, "request": ""},
+        {**original, "request": "가" * 200001},
+        {**original, "agent_id": ""},
+        {**original, "local_registration_id": ""},
+        {**original, "extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            ReportJob.model_validate(bad)
+    ReportJob.model_validate({**original, "request": "가" * 200000})
+
+
+def test_report_job_failure():
+    block = next(b for b in FENCED if _model_for(b) is ReportJobFailure)
+    parsed = ReportJobFailure.model_validate(block)
+    assert parsed.failure_code == "readonly_violation"
+    ReportJobFailure.model_validate({**block, "message": "가" * 500})
+    for bad in ({**block, "message": ""}, {**block, "message": "가" * 501}, {**block, "failure_code": "Bad-Code"}):
+        with pytest.raises(ValidationError):
+            ReportJobFailure.model_validate(bad)
+
+
+def _report_request() -> dict:
+    return next(json.loads(json.dumps(b)) for b in FENCED if _model_for(b) is ExecutionRequest and "handoff_report" in b)
+
+
+def test_execution_request_with_handoff_report():
+    block = _report_request()
+    parsed = ExecutionRequest.model_validate(block)
+    assert isinstance(parsed.handoff_report, HandoffReportRef)
+    (decision,) = parsed.handoff_report.decisions
+    assert (decision.item_id, decision.answer) == ("t1", "changed")
+    assert ExecutionRequest.model_validate_json(parsed.model_dump_json()) == parsed
+    assert json.loads(parsed.model_dump_json())["handoff_report"] == block["handoff_report"]
+    ref = block["handoff_report"]
+    assert HandoffReportRef.model_validate({**ref, "decisions": []}).decisions == []
+    for bad in ({**ref, "sha256": "abc"}, {**ref, "report_id": "x"}, {**ref, "artifact_id": ""}, {**ref, "extra": 1}):
+        with pytest.raises(ValidationError):
+            ExecutionRequest.model_validate({**block, "handoff_report": bad})
+
+
+def test_execution_request_without_handoff_report_dumps_same_bytes():
+    """칸이 None 이면 직렬화에서 빠진다 — 능력을 선언하지 않은 러너의 응답은 지금과 같은 바이트다 (D35)."""
+    olds = [b for b in FENCED if _model_for(b) is ExecutionRequest and "handoff_report" not in b]
+    assert olds
+    for block in olds:
+        parsed = ExecutionRequest.model_validate(block)
+        assert parsed.handoff_report is None
+        assert "handoff_report" not in parsed.model_dump_json()
+        assert parsed.model_dump_json() == ExecutionRequest.model_validate_json(parsed.model_dump_json()).model_dump_json()
+    block = _report_request()
+    del block["handoff_report"]
+    with_none = ExecutionRequest.model_validate({**block, "handoff_report": None})
+    assert with_none.model_dump_json() == ExecutionRequest.model_validate(block).model_dump_json()
+    assert "handoff_report" not in with_none.model_dump_json()
+
+
+def test_handoff_decision_note_rules():
+    base = {"item_id": "t1", "answered_by": "박검토", "answered_at": "2026-10-22T09:30:00.000000Z"}
+    assert HandoffDecision.model_validate({**base, "answer": "confirmed", "note": None}).note is None
+    HandoffDecision.model_validate({**base, "answer": "changed", "note": "가" * 500})
+    for bad in (
+        {**base, "answer": "confirmed", "note": "이유"},
+        {**base, "answer": "changed", "note": None},
+        {**base, "answer": "changed", "note": ""},
+        {**base, "answer": "changed", "note": "가" * 501},
+        {**base, "answer": "rejected", "note": None},
+        {**base, "answer": "confirmed", "note": None, "item_id": "T1"},
+        {**base, "answer": "confirmed", "note": None, "answered_at": "2026-10-22T09:30:00"},
+        {**base, "answer": "confirmed", "note": None, "answered_by": ""},
+    ):
+        with pytest.raises(ValidationError):
+            HandoffDecision.model_validate(bad)

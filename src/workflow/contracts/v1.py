@@ -301,8 +301,10 @@ class ExecutionRequest(_OmitUnknownMeasure):
     branch_seq: int = Field(default=1, ge=1)
     # 검증만 다시 (CONTRACT 16.1): 에이전트 없이 이 커밋을 다시 검증한다. null 이면 직렬화에서 빠진다 — 옛 러너가 받는다
     verify_only_commit: CommitSha | None = None
+    # 원인 인계 리포트와 결정 답 (CONTRACT 19.4) — 서버가 claim 때만 채운다. null 이면 직렬화에서 빠진다 — 옛 러너가 받는다
+    handoff_report: "HandoffReportRef | None" = None
 
-    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ("verify_only_commit",)
+    _MEASURE_FIELDS: ClassVar[tuple[str, ...]] = ("verify_only_commit", "handoff_report")
 
     @model_validator(mode="after")
     def _check_kind_target(self) -> "ExecutionRequest":
@@ -359,7 +361,12 @@ class ExecutionRequest(_OmitUnknownMeasure):
 RunnerCapability = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
 RUNNER_CAPABILITY_VERIFY_ONLY = "verify_only"
 RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE = "after_result_triage"  # 결과 뒤 판단(ADR-0027) — `TriageTarget.mode = next_step`
-RUNNER_CAPABILITIES: tuple[str, ...] = (RUNNER_CAPABILITY_VERIFY_ONLY, RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE)
+RUNNER_CAPABILITY_HANDOFF_REPORT = "handoff_report"  # 인계 리포트 작업·받는 쪽 리포트 전달(ADR-0033)
+RUNNER_CAPABILITIES: tuple[str, ...] = (
+    RUNNER_CAPABILITY_VERIFY_ONLY,
+    RUNNER_CAPABILITY_AFTER_RESULT_TRIAGE,
+    RUNNER_CAPABILITY_HANDOFF_REPORT,
+)
 
 
 class ClaimRequest(_OmitUnknownMeasure):
@@ -1083,3 +1090,128 @@ class ChainCallback(_Contract):
     settled_at: Rfc3339
     human_gate: CallbackGate
     tasks: list[CallbackTask] = Field(min_length=1)
+
+
+# --- 인계 리포트 (CONTRACT 19절, ADR-0033) ----------------------------------
+# 크기 상한(D31) — 위반은 ValidationError, 서버가 리포트 행을 `failed` 로 판정한다. 글 칸은 저장·표시만 한다.
+
+HANDOFF_REPORT_MAX_BYTES = 131072  # 제출 본문 바이트 — 파싱 전에 본다
+REPORT_SECTION_MAX_CLAIMS = 15
+REPORT_TOTAL_MAX_CLAIMS = 60
+REPORT_TEXT_MAX = 600
+REPORT_EVIDENCE_MAX = 8
+REPORT_EVIDENCE_ID_MAX = 120
+REPORT_DIAGRAM_MAX = 5000
+REPORT_REQUEST_MAX = 200000
+REPORT_ID_PATTERN = r"^hrp-[0-9a-f]{12}$"
+REPORT_CLAIM_ID_PATTERN = r"^[a-z][a-z0-9-]{0,23}$"
+
+ReportId = Annotated[str, Field(pattern=REPORT_ID_PATTERN)]
+ReportClaimId = Annotated[str, Field(pattern=REPORT_CLAIM_ID_PATTERN)]
+ReportJobType = Literal["original", "tailored"]
+ReportText = Annotated[str, Field(min_length=1, max_length=REPORT_TEXT_MAX)]
+EvidenceId = Annotated[str, Field(min_length=1, max_length=REPORT_EVIDENCE_ID_MAX)]
+_Claims = Annotated[list["ReportClaim"], Field(max_length=REPORT_SECTION_MAX_CLAIMS)]
+
+
+class ReportClaim(_Contract):
+    """주장 하나. `why` null = 기록 없음. 근거 ID 형식은 보지 않는다 — 도메인 근거 확인이 "근거 확인 안 됨" 으로 표시한다(D20)."""
+
+    id: ReportClaimId
+    text: Annotated[ReportText, AfterValidator(_not_blank)]
+    why: ReportText | None
+    evidence: Annotated[list[EvidenceId], Field(max_length=REPORT_EVIDENCE_MAX)]
+
+    @model_validator(mode="after")
+    def _check_evidence(self) -> "ReportClaim":
+        _check_unique(self.evidence, "evidence")
+        return self
+
+
+class ReportSections(_Contract):
+    changes: Annotated[_Claims, Field(min_length=1)]
+    decisions: _Claims
+    open_questions: _Claims
+    to_confirm: _Claims
+    constraints: _Claims
+    remaining_work: _Claims
+
+    def claims(self) -> list[ReportClaim]:
+        return [*self.changes, *self.decisions, *self.open_questions, *self.to_confirm, *self.constraints,
+                *self.remaining_work]
+
+
+class HandoffReport(_Contract):
+    """러너가 제출하는 리포트이자 산출물 kind `handoff_report` 의 내용 (CONTRACT 19.1). 맞춤 풀이도 같은 모양이다."""
+
+    contract_version: ContractVersion
+    report_id: ReportId
+    job_type: ReportJobType
+    sections: ReportSections
+    diagram: Annotated[str, Field(min_length=1, max_length=REPORT_DIAGRAM_MAX)] | None
+
+    @model_validator(mode="after")
+    def _check_claims(self) -> "HandoffReport":
+        claims = self.sections.claims()
+        if len(claims) > REPORT_TOTAL_MAX_CLAIMS:
+            raise ValueError(f"주장은 모두 합해 {REPORT_TOTAL_MAX_CLAIMS}개까지입니다")
+        _check_unique([c.id for c in claims], "주장 id")
+        return self
+
+
+class ReportJob(_Contract):
+    """claim 응답의 리포트 작업 (CONTRACT 19.2). 최상위 `job_type` 이 있으면 실행이 아니라 리포트 작업이다."""
+
+    contract_version: ContractVersion
+    report_id: ReportId
+    job_type: ReportJobType
+    agent_id: NonEmptyStr
+    local_registration_id: NonEmptyStr
+    checkout_commit: CommitSha | None
+    base_commit: CommitSha | None
+    request: Annotated[str, Field(min_length=1, max_length=REPORT_REQUEST_MAX)]
+
+    @model_validator(mode="after")
+    def _check_commits(self) -> "ReportJob":
+        if self.job_type == "tailored" and (self.checkout_commit is not None or self.base_commit is not None):
+            raise ValueError("맞춤 풀이는 체크아웃이 없습니다 — checkout_commit·base_commit 이 null 이어야 합니다")
+        if self.base_commit is not None:
+            if self.checkout_commit is None:
+                raise ValueError("base_commit 은 checkout_commit 이 있을 때만 씁니다")
+            if self.base_commit == self.checkout_commit:
+                raise ValueError("base_commit 은 checkout_commit 과 달라야 합니다")
+        return self
+
+
+class ReportJobFailure(_Contract):
+    contract_version: ContractVersion
+    failure_code: Identifier
+    message: Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class HandoffDecision(_Contract):
+    """받는 사람의 결정 답 하나. `changed` 면 한 줄 이유가 있어야 하고 `confirmed` 면 null 이다."""
+
+    item_id: ReportClaimId
+    answer: Literal["confirmed", "changed"]
+    note: Annotated[str, Field(min_length=1, max_length=500)] | None
+    answered_by: NonEmptyStr
+    answered_at: Rfc3339
+
+    @model_validator(mode="after")
+    def _check_note(self) -> "HandoffDecision":
+        if (self.answer == "changed") != (self.note is not None):
+            raise ValueError("note 는 answer 가 changed 일 때만, 그때는 반드시 있어야 합니다")
+        return self
+
+
+class HandoffReportRef(_Contract):
+    """받는 러너에게 붙는 원인 리포트 참조 (CONTRACT 19.4) — 산출물은 기존 내려받기 경로로 받아 sha256 을 확인한다."""
+
+    report_id: ReportId
+    artifact_id: NonEmptyStr
+    sha256: Sha256
+    decisions: list[HandoffDecision]
+
+
+ExecutionRequest.model_rebuild()

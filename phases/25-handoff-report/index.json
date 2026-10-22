@@ -30,7 +30,24 @@
     {
       "step": 1,
       "name": "report-contract",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-22T22:35:38+0900",
+      "summary": "contracts/v1.py 끝에 인계 리포트 계약(ReportClaim·ReportSections(claims())·HandoffReport·ReportJob·ReportJobFailure·HandoffDecision·HandoffReportRef, 상수 HANDOFF_REPORT_MAX_BYTES·REPORT_*·REPORT_ID_PATTERN·REPORT_CLAIM_ID_PATTERN, 타입 ReportId·ReportClaimId·ReportJobType) — ExecutionRequest.handoff_report 는 문자열 전방 참조 + 파일 끝 model_rebuild(), _MEASURE_FIELDS 에 더해 null 이면 직렬화에서 빠짐. RUNNER_CAPABILITY_HANDOFF_REPORT 를 RUNNER_CAPABILITIES 끝에 더함(test_v1·test_client capabilities 단정, CONTRACT 16.2 값 목록 갱신). CONTRACT 19.1~19.4 를 json 블록으로(73→79, _SIGNATURES 에 HandoffReport·ReportJob·ReportJobFailure), 예시의 contract_version \"1\"→1, 19.4 code_review 예시에 input_artifact_ids 하나 추가(빈 배열은 ExecutionRequest 검증 실패). test_old_execution_requests_dump_without_verify_only_commit 의 '마지막 칸' 가정을 생략 칸 두 개 제외로 고침. ARTIFACT_KINDS 는 그대로(step 2)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "HandoffDecision.note·ReportClaim.why 는 길이만 보고 공백만 있는 값은 막지 않는다(ARCHITECTURE 가 text 에만 '공백만 안 됨'을 적음) — 결정 답 공백 거절이 필요하면 step 8 API 본문 검증에서 본다",
+        "ExecutionRequest 에 handoff_report 가 판단 단계 target 과 함께 와도 계약은 거절하지 않는다 — 서버가 판단 단계에는 채우지 않는 규칙(step 6)으로만 지킨다"
+      ],
+      "completed_at": "2026-10-22T23:10:00+0900"
     },
     {
       "step": 2,
