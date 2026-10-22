@@ -47,7 +47,7 @@
         "HandoffDecision.note·ReportClaim.why 는 길이만 보고 공백만 있는 값은 막지 않는다(ARCHITECTURE 가 text 에만 '공백만 안 됨'을 적음) — 결정 답 공백 거절이 필요하면 step 8 API 본문 검증에서 본다",
         "ExecutionRequest 에 handoff_report 가 판단 단계 target 과 함께 와도 계약은 거절하지 않는다 — 서버가 판단 단계에는 채우지 않는 규칙(step 6)으로만 지킨다"
       ],
-      "completed_at": "2026-10-22T23:10:00+0900"
+      "completed_at": "2026-10-22T22:46:35+0900"
     },
     {
       "step": 2,
