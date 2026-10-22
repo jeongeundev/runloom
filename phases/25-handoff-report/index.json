@@ -24,7 +24,8 @@
         "D39 를 지키려 settings.HIDDEN_ENV_KEYS 를 도입하고 test_settings.py 단정을 step 5 가 고침",
         "GitHub App pull_requests read 로 리뷰 코멘트 읽기는 문서 근거로만 판단, 실제 App 으로 확인하지 않음",
         "이전 시도가 1800초 제한에 걸려 이번 시도는 남은 문서를 검토하고 AC 를 다시 돌려 마감함"
-      ]
+      ],
+      "completed_at": "2026-10-22T22:35:38+0900"
     },
     {
       "step": 1,
