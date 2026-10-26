@@ -12,13 +12,18 @@ runner 와의 약속:
   `TriageResult`, 내장이 아닌 종류(`LocalTarget`)면 `GenericResult`. 처리하지 못하는 target 은 `unsupported_kind` 로 끝낸다.
 - `AdapterOutput.usage` 는 도구가 보고한 비용·토큰(ADR-0015). 모르면 None 이며 0 으로 채우지 않는다. runner 가
   `result_ready`·`failed` 에 싣는다.
+
+인계 리포트 작업(ADR-0033)은 `ExecutionRequest` 가 아니므로 `run` 을 쓰지 않는다 — `ReportAdapter.run_report` 가 읽기 전용으로
+도구를 `cwd`(결과 커밋 체크아웃 또는 빈 임시 디렉터리)에서 띄워 마지막 구조화 메시지를 객체로 돌려준다. 계약 검사·마스킹·
+제출은 `report_job` 이 한다.
 """
 
 import hashlib
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from workflow.contracts.v1 import (
     ArtifactMeta,
@@ -51,6 +56,19 @@ class AdapterOutput:
 
 class ExecutionAdapter(Protocol):
     def run(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput: ...
+
+
+@dataclass(frozen=True)
+class ReportOutput:
+    data: dict | None  # 스키마 `{sections, diagram}` 객체 — None 이면 실패
+    failed: tuple[str, str] | None = None  # (failure_code, message)
+
+
+@runtime_checkable
+class ReportAdapter(Protocol):
+    def run_report(
+        self, cwd: Path, prompt_text: str, schema: dict, progress: Progress, *, env: Mapping[str, str] | None = None,
+    ) -> ReportOutput: ...
 
 
 def make_meta(kind: str, name: str, data: bytes, content_type: str) -> tuple[ArtifactMeta, bytes]:
@@ -118,6 +136,31 @@ class EchoAdapter:
             artifact_ids=[],
         )
         return AdapterOutput(result=result, artifacts=[], failed=None, runtime_ref=runtime_ref)
+
+
+    def run_report(
+        self, cwd: Path, prompt_text: str, schema: dict, progress: Progress, *, env: Mapping[str, str] | None = None,
+    ) -> ReportOutput:
+        """요청문의 근거 ID 하나씩(원본은 `artifact:`·`commit:`, 맞춤 풀이는 `claim:`)을 붙인 고정 리포트."""
+        progress("EchoAdapter 리포트 — 실제 도구를 띄우지 않는다", runtime_ref="echo:report")
+        if prompt_text.startswith("# 맞춤 풀이"):
+            evidence = _first_ids(prompt_text, (_CLAIM_ID,))
+        else:
+            evidence = _first_ids(prompt_text, (_ARTIFACT_ID, _COMMIT_ID))
+        claim = {"id": "change-1", "text": "EchoAdapter: 요청문을 읽었고 파일을 바꾸지 않았다.", "why": None,
+                 "evidence": evidence}
+        sections = {"changes": [claim], "decisions": [], "open_questions": [], "to_confirm": [], "constraints": [],
+                    "remaining_work": []}
+        return ReportOutput(data={"sections": sections, "diagram": None})
+
+
+_ARTIFACT_ID = re.compile(r"artifact:[A-Za-z0-9_-]+")
+_COMMIT_ID = re.compile(r"commit:[0-9a-f]{7,40}\b")
+_CLAIM_ID = re.compile(r"claim:[a-z][a-z0-9-]{0,23}\b")
+
+
+def _first_ids(text: str, patterns: tuple[re.Pattern, ...]) -> list[str]:
+    return [match.group(0) for pattern in patterns if (match := pattern.search(text))]
 
 
 def _listing(handoff_dir: Path) -> list[str]:

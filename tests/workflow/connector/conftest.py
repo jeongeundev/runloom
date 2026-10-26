@@ -27,6 +27,8 @@ from workflow.contracts.v1 import (
     HandoffBundle,
     InputRef,
     KindSpec,
+    ReportJob,
+    ReportJobFailure,
 )
 
 TOKEN = "wfc_" + "t" * 43
@@ -76,6 +78,10 @@ class FakeCentral:
         self.closed: set[str] = set()  # 중앙이 이미 마감한 실행 — heartbeat 가 `current_execution_closed` 로 알린다
         self.registrations: list[dict] = []
         self.requests: list[httpx.Request] = []
+        self.report_jobs: list[ReportJob] = []  # claim 이 실행보다 먼저 주는 리포트 작업 (ARCHITECTURE "claim 분기")
+        self.report_results: dict[str, bytes] = {}  # report_id → 제출 본문 바이트
+        self.report_failures: dict[str, dict] = {}  # report_id → 실패 보고 본문
+        self.report_reject: tuple[int, str] | None = None  # 제출에 돌려줄 오류 (status, code) — 409·422 흉내
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -136,6 +142,8 @@ class FakeCentral:
         if path == "/api/v1/connector/registrations":
             self.registrations.append(json.loads(request.content))
             return httpx.Response(200, json={"agent_id": "agent-codex-mac"})
+        if match := re.fullmatch(r"/api/v1/report-jobs/([^/]+)/(result|failure)", path):
+            return self._report(match.group(1), match.group(2), request)
         if match := re.fullmatch(r"/api/v1/executions/([^/]+)/events", path):
             return self._event(match.group(1), json.loads(request.content))
         if match := re.fullmatch(r"/api/v1/executions/([^/]+)/artifacts", path):
@@ -156,11 +164,25 @@ class FakeCentral:
         ClaimRequest.model_validate(body)  # 서버 모델(extra=forbid) 그대로 통과해야 한다
         if body.get("connector_id") != self.connector_id:
             return _error(403, "forbidden", "connector_id 불일치", field="connector_id")
+        if self.report_jobs:
+            return httpx.Response(200, json=self.report_jobs.pop(0).model_dump(mode="json"))
         if self.current is None and self.assignments:
             self.current = self.assignments.pop(0)
         if self.current is None:
             return httpx.Response(204)
         return httpx.Response(200, json=self.current.model_dump(mode="json"))
+
+    def _report(self, report_id: str, action: str, request: httpx.Request) -> httpx.Response:
+        if self.report_reject is not None:
+            status, code = self.report_reject
+            return _error(status, code, f"{report_id} 거부")
+        if action == "result":
+            self.report_results[report_id] = request.content
+            return httpx.Response(200, json={"report_id": report_id, "status": "done"})
+        body = json.loads(request.content)
+        ReportJobFailure.model_validate(body)  # 서버 모델 그대로 통과해야 한다
+        self.report_failures[report_id] = body
+        return httpx.Response(200, json={"report_id": report_id, "status": "failed"})
 
     def _event(self, execution_id: str, body: dict) -> httpx.Response:
         execution = self.executions.get(execution_id)
@@ -295,6 +317,24 @@ def assign_with_handoff(fake: FakeCentral, request: ExecutionRequest | None = No
         request = request.model_copy(update={"input_artifact_ids": [bundle_id]})
     fake.assign(request, {bundle_id, diagnosis.artifact_id, response_id, log_id})
     return request
+
+
+REPORT_ID = "hrp-0123456789ab"
+REPORT_REQUEST = (
+    "# 인계 리포트: RUN-12 쿠폰이 두 번 적용됨\n\n## 할 일\n절 여섯 개를 채운다.\n\n"
+    "## 확인 가능한 근거 ID\nartifact:art-diff-001\ncommit:3f9c2e1a7b0d4c6e8f1a2b3c4d5e6f7a8b9c0d1e\nsource:work"
+)
+
+
+def make_report_job(checkout_commit: str | None = None, base_commit: str | None = None, *,
+                    job_type: str = "original", request: str = REPORT_REQUEST,
+                    local_registration_id: str = "local-demo-report") -> ReportJob:
+    """claim 응답의 리포트 작업 (CONTRACT 19.2)."""
+    return ReportJob.model_validate({
+        "contract_version": 1, "report_id": REPORT_ID, "job_type": job_type, "agent_id": "agent-claude-mac",
+        "local_registration_id": local_registration_id, "checkout_commit": checkout_commit,
+        "base_commit": base_commit, "request": request,
+    })
 
 
 # --- 사용자 정의 종류 (CONTRACT 11절 `review`) ------------------------------------------------

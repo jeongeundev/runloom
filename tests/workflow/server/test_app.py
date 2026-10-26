@@ -127,11 +127,11 @@ NON_API_PATHS = {"/healthz": "workflow.server.app", "/openapi.json": "fastapi.ap
 
 
 def _documented_api_routes() -> set[tuple[str, str]]:
-    """ARCHITECTURE "주소 표" 절의 새 경로 칸(옮기는 39 + 새로 여는 15) — (메서드, 경로)."""
+    """ARCHITECTURE "주소 표" 절의 새 경로 칸(옮기는 39 + 새로 여는 15 + phase 25 러너 2 + 사람용 리포트 5 + 리포트 HTML 1) — (메서드, 경로)."""
     text = ARCHITECTURE.read_text(encoding="utf-8")
     section = text[text.index("### 주소 표 (step 3·4·5·6·7)"):text.index("### 라우트 분류 규칙")]
     rows = re.findall(r"`(/api/v1/[^`]+)` \| (GET|POST|PUT|PATCH|DELETE) \|", section)
-    assert len(rows) == 39 + 15, rows  # 표가 바뀌면 이 수도 같이 본다
+    assert len(rows) == 39 + 15 + 2 + 5 + 1, rows  # 표가 바뀌면 이 수도 같이 본다
     return {(method, path) for path, method in rows}
 
 

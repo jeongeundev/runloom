@@ -89,6 +89,7 @@ from workflow.domain.defaults import default_run_mode
 from workflow.domain import notification, start_checklist, team
 from workflow.domain.delegation import DELEGATION_POLICIES, can_set_policy
 from workflow.domain.execution_policy import is_triage_kind
+from workflow.domain.handoff_report import can_regenerate, report_parties
 from workflow.domain.kinds import (
     get_kind,
     kind_for_capability,
@@ -101,7 +102,19 @@ from workflow.domain.triage import AUTOSTART_MIN_HANDLED, parse_threshold
 from workflow.domain.triage_criteria import CRITERIA_BODY_MAX
 from workflow.domain.work_keys import work_path
 from workflow.domain.work_list import ListQuery, parse_list_query, shown_next_action
-from workflow.server import github_connect, jira_connect, member_token_api, metrics_api, stage_runs, triage_runs, views, work_actions
+from workflow.server import (
+    github_clients,
+    github_connect,
+    handoff_reports,
+    jira_connect,
+    member_token_api,
+    metrics_api,
+    stage_runs,
+    task_cycle,
+    triage_runs,
+    views,
+    work_actions,
+)
 from workflow.server.auth import (
     LOGIN_COOKIE,
     SELFHOST_SESSION_ID,
@@ -129,8 +142,9 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 OWNER_SCOPES = ("personal", "team", "company")
 CONNECTION_TYPES = ("local", "api")
 REVIEW_DECISIONS = ("approve", "request_changes", "close")
-# 종류·규칙 폼의 산출물 kind 선택지 — 묶음 자체(`handoff_bundle`)는 받는 산출물도 넘기는 산출물도 아니다
-INPUT_KIND_CHOICES = tuple(k for k in ARTIFACT_KINDS if k != "handoff_bundle")
+# 종류·규칙 폼의 산출물 kind 선택지 — 묶음 자체(`handoff_bundle`)는 받는 산출물도 넘기는 산출물도 아니다.
+# 인계 리포트(`handoff_report`)도 단계 산출물이 아니라 결과 뒤 리포트 작업이 원인 실행에 붙이는 것이다(D26)
+INPUT_KIND_CHOICES = tuple(k for k in ARTIFACT_KINDS if k not in ("handoff_bundle", "handoff_report"))
 # 종류 폼(phase 23 step 5) — 식별자를 비우면 `k_` + hex 6 자동, 결과값 칸의 기본 채움 값
 AUTO_KIND_PREFIX = "k_"
 AUTO_KIND_HEX = 6
@@ -207,10 +221,11 @@ def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def _base(request: Request, conn: Connection, session_id: str, now: str) -> dict[str, Any]:
+def _base(request: Request, conn: Connection, session_id: str, now: str,
+          member: LoggedIn | None = None) -> dict[str, Any]:
     """모든 화면에 들어가는 공통 컨텍스트 — 탐색·왼쪽 목록용. `allowed` = 로그인한 멤버의 역할이 할 수 있는 동작
-    (템플릿은 `'manage_rules' in allowed` 처럼 본다)."""
-    member = current_member(request, conn)
+    (템플릿은 `'manage_rules' in allowed` 처럼 본다). `member` 를 주면 쿠키 대신 그 멤버(멤버 토큰으로 읽는 리포트 HTML)."""
+    member = member or current_member(request, conn)
     return {
         "request": request,
         "now": now,
@@ -629,7 +644,12 @@ def _panel(request: Request, conn: Connection, member: LoggedIn, work: Row, quer
             })
     finally:
         conn.execute('ROLLBACK')
-    return {**context, "close_href": views.list_href(query), "list_state": state,
+    reports = handoff_reports.stage_report_lines(conn, work["work_item_id"])
+    for line in reports.values():  # [리포트 다시 만들기] — 리포트가 없을 때(실패·시간 초과·불가)만, 보낸 사람·받는 사람·관리자
+        row = repo.get_handoff_report(conn, line["report_id"])
+        line["can_regenerate"] = line["status"] in _REPORT_MISSING and can_regenerate(
+            report_parties(handoff_reports.party_facts(conn, row)), member_id=member.member_id, role=member.role)
+    return {**context, "close_href": views.list_href(query), "list_state": state, "stage_reports": reports,
             "internal_requests": [views.internal_request_view(conn, member.session_id, member.member_id, allowed, r,
                                                         request.app.state.store) for r in
                                   internal_request_store.list_for_work(conn, member.session_id, work['work_item_id'])],
@@ -1395,6 +1415,187 @@ def work_next_step_dismiss(
         work_actions.dismiss_next_step(conn, session_id=member.session_id, work_item_id=work["work_item_id"],
                                        triage_id=triage_id, member_id=member.member_id, now=utc_now())
     return _work_redirect(conn, work, response, q, group, view, closed, repo_name)
+
+
+# --- 인계 리포트 (phase 25 step 9, ADR-0033, ARCHITECTURE "인계 리포트 — phase 25" 의 "화면") -----------------------------
+# 판정·권한은 `handoff_reports` 의 행동 함수(사람용 API 와 같다). 모델이 쓴 글은 자동 이스케이프만(D25 — `|safe` 금지).
+
+_REPORT_MISSING = ("unavailable", "failed", "timed_out")
+_REPORT_SECTIONS = (
+    ("changes", "바뀐 것"), ("decisions", "결정과 근거"), ("open_questions", "정하지 않고 남긴 것"),
+    ("to_confirm", "받는 사람이 결정·확인할 것"), ("constraints", "지킬 제약"), ("remaining_work", "남은 일"),
+)
+_COMMIT_ID = re.compile(r"[0-9a-f]{7,40}")
+
+
+def _web_link(url: str | None) -> str | None:
+    """바깥 주소는 http(s) 만 링크로 — 원본 주소 칸에 다른 스킴이 와도 누를 수 있게 만들지 않는다."""
+    return url if url is not None and url.startswith(("https://", "http://")) else None
+
+
+def _evidence_links(conn: Connection, *, session_id: str, work: Row, report: Row, view: dict[str, Any],
+                    base_href: str) -> Any:
+    """근거 ID → `{label, href}` — 산출물 화면·커밋·PR·원본 주소·원본 리포트 주장. 연결할 곳이 없으면 href None(글자만)."""
+    config = task_cycle.origin(conn, repo.get_task(conn, report["source_task_id"])).config
+    repository = config.repository_full_name if config is not None else None
+    pulls = {p["number"]: p["url"] for p in view["pull_requests"]}
+    original_id = report["base_report_id"] or report["report_id"]
+
+    def link(evidence_id: str) -> dict[str, str | None]:
+        kind, _, value = evidence_id.partition(":")
+        href = None
+        if kind == "artifact":
+            artifact = repo.get_artifact(conn, value)
+            if artifact is not None and artifact["session_id"] == session_id:
+                execution = repo.get_execution(conn, artifact["execution_id"])
+                href = f"/tasks/{execution['task_id']}/artifacts/{value}"
+        elif kind == "commit" and _COMMIT_ID.fullmatch(value):
+            if repository is not None:
+                href = f"https://github.com/{repository}/commit/{value}"
+            return {"label": f"커밋 {value[:7]}", "href": href}
+        elif kind == "pr" and value.isdigit():
+            href = _web_link(pulls.get(int(value)))
+            return {"label": f"PR #{value}", "href": href}
+        elif evidence_id == "source:work":
+            href = _web_link(work["source_url"]) or f"/tasks?open={format_work_key(work['key_number'])}"
+            return {"label": "업무 원문", "href": href}
+        elif kind == "claim":
+            href = f"{base_href}/{original_id}#claim-{value}"
+        return {"label": evidence_id, "href": href}
+
+    return link
+
+
+def report_html(conn: Connection, request: Request, member: LoggedIn, work: Row, report: Row) -> str:
+    """리포트 페이지 — 화면 `GET /work/{key}/reports/{id}` 와 `GET /api/v1/reports/{id}/html` 이 같이 쓴다."""
+    session_id = member.session_id
+    view = handoff_reports.report_view(conn, request.app.state.store, report=report, member_id=member.member_id,
+                                       role=member.role)
+    key = format_work_key(work["key_number"])
+    base_href = f"/work/{key}/reports"
+    link = _evidence_links(conn, session_id=session_id, work=work, report=report, view=view, base_href=base_href)
+    checks = (view["evidence_check"] or {}).get("claims", {})
+    decisions = {d["item_id"]: d for d in view["decisions"]}
+    sections = []
+    if view["report"] is not None:
+        for name, title in _REPORT_SECTIONS:
+            sections.append({"name": name, "title": title, "claims": [
+                {**claim, "links": [link(e) for e in claim["evidence"]],
+                 "verified": checks.get(claim["id"], {}).get("verified", False), "decision": decisions.get(claim["id"])}
+                for claim in view["report"]["sections"][name]
+            ]})
+    rows = repo.list_work_reports(conn, work["work_item_id"])
+    history = [
+        {"report_id": r["report_id"], "status": r["status"], "created_at": r["created_at"]}
+        for r in reversed(rows)
+        if r["job_type"] == "original" and r["source_task_id"] == report["source_task_id"]
+        and r["report_id"] != report["report_id"]
+    ] if report["job_type"] == "original" else []
+    tailored: dict[tuple[str, str], Row] = {}
+    if report["job_type"] == "original":
+        for r in rows:
+            if r["job_type"] == "tailored" and r["source_execution_id"] == report["source_execution_id"]:
+                tailored[(r["base_report_id"], r["requested_by_member_id"])] = r
+    tailored_views = [
+        handoff_reports.report_view(conn, request.app.state.store, report=r, member_id=member.member_id,
+                                    role=member.role)
+        for r in tailored.values()
+    ]
+    return _render(
+        "report.html",
+        **_base(request, conn, session_id, utc_now(), member),
+        work_key=key, work_title=work["title"], base_href=base_href, view=view, sections=sections,
+        history=history, tailored=tailored_views, writing=report["status"] in repo.HANDOFF_REPORT_ACTIVE,
+    )
+
+
+def _work_report(conn: Connection, member: LoggedIn, key: str, report_id: str) -> tuple[Row, Row]:
+    """업무 키와 리포트가 같은 워크스페이스·같은 업무여야 한다 — 아니면 404."""
+    work = _own_work(conn, member.session_id, key)
+    with _page_errors():
+        report = handoff_reports.own_report(conn, member.session_id, report_id)
+    if report["work_item_id"] != work["work_item_id"]:
+        raise PageError(404, "not_found", f"리포트 {report_id}을 찾을 수 없습니다.")
+    return work, report
+
+
+def _report_redirect(work: Row, report_id: str, response: Response) -> RedirectResponse:
+    return _redirect(f"/work/{format_work_key(work['key_number'])}/reports/{report_id}", response)
+
+
+@router.get("/work/{key}/reports/{report_id}", response_class=HTMLResponse)
+def report_page(
+    request: Request,
+    key: str,
+    report_id: str,
+    member: LoggedIn = Depends(require_member),
+    conn: Connection = Depends(get_conn),
+) -> str:
+    work, report = _work_report(conn, member, key, report_id)
+    return report_html(conn, request, member, work, report)
+
+
+@router.post("/work/{key}/reports/{report_id}/decisions/{item_id}")
+def report_decision(
+    request: Request,
+    response: Response,
+    key: str,
+    report_id: str,
+    item_id: str,
+    answer: str = Form(""),
+    note: str = Form(""),
+    member: LoggedIn = Depends(require_member),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """결정 답(D13) — [확인함] / [다르게 정함 + 한 줄]. 권한은 받는 사람·관리자(`answer_decision`)."""
+    work, _ = _work_report(conn, member, key, report_id)
+    with _page_errors():
+        handoff_reports.answer_decision(conn, request.app.state.store, session_id=member.session_id, member=member,
+                                        report_id=report_id, item_id=item_id, answer=answer, note=note or None,
+                                        now=utc_now())
+    return _report_redirect(work, report_id, response)
+
+
+@router.post("/work/{key}/reports/{report_id}/tailor")
+def report_tailor(
+    request: Request,
+    response: Response,
+    key: str,
+    report_id: str,
+    agent_id: str = Form(""),
+    member: LoggedIn = Depends(require_member),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[내게 맞춰 풀기](D8) — 받는 사람이 고른 자기 Agent 로. 303 은 맞춤 풀이 페이지."""
+    work, _ = _work_report(conn, member, key, report_id)
+    with _page_errors():
+        row, _created = handoff_reports.request_tailored(conn, request.app.state.store, session_id=member.session_id,
+                                                         member=member, report_id=report_id, agent_id=agent_id,
+                                                         now=utc_now())
+    return _report_redirect(work, row["report_id"], response)
+
+
+@router.post("/work/{key}/reports/{report_id}/regenerate")
+def report_regenerate(
+    request: Request,
+    response: Response,
+    key: str,
+    report_id: str,
+    member: LoggedIn = Depends(require_member),
+    conn: Connection = Depends(get_conn),
+) -> RedirectResponse:
+    """[리포트 다시 만들기](D12) — 보낸 사람·받는 사람·관리자. 303 은 새(또는 진행 중) 원본 페이지."""
+    work, _ = _work_report(conn, member, key, report_id)
+    state = request.app.state
+
+    def github_for(config):  # 수집과 같은 자격 — 테스트는 `github_client` 로 바꾼다
+        return state.github_client or github_clients.client_for(config, state.settings, state.secrets,
+                                                                transport=state.github_transport)
+
+    with _page_errors():
+        row = handoff_reports.regenerate(conn, state.store, state.settings, github_for, session_id=member.session_id,
+                                         member=member, report_id=report_id, now=utc_now())
+    return _report_redirect(work, row["report_id"], response)
 
 
 def _refuse_direct_work(conn: Connection, task_id: str) -> None:

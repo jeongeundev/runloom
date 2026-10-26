@@ -84,6 +84,15 @@ leaked = [k for k, v in os.environ.items() if TOKEN in v or k in ("WORKFLOW_GITH
 if leaked:
     print(f"GitHub 토큰이 도구 환경에 있다: {leaked}", file=sys.stderr)
     sys.exit(3)
+if prompt.startswith(("# 인계 리포트:", "# 맞춤 풀이:")):  # 인계 리포트 작업 — 읽기만, 요청문의 첫 근거 ID 를 인용한다
+    cite = re.findall(r"^- ((?:artifact|commit|claim):\S+)", prompt, re.M)[:1]
+    report = {"sections": {"changes": [{"id": "c1", "text": "가짜 인계 리포트", "why": None, "evidence": cite}],
+                           "decisions": [], "open_questions": [], "to_confirm": [], "constraints": [],
+                           "remaining_work": []}, "diagram": None}
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "",
+                      "structured_output": report, "total_cost_usd": 0.0,
+                      "usage": {"input_tokens": 100, "output_tokens": 20}}, ensure_ascii=False))
+    sys.exit(0)
 scenario = re.search(r"\[scenario:([a-z]+)\]", prompt).group(1)
 attempt = "rework" if "# 이전 검토 지적" in prompt else "first"
 files = FIXES[f"{scenario}:{attempt}"]

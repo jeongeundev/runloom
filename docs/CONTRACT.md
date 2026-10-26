@@ -242,7 +242,7 @@
 
 본문 해시가 `meta.sha256`과 다르면 `422 hash_mismatch`. 다운로드는 `GET /api/v1/executions/{execution_id}/artifacts/{artifact_id}`이며, 해당 실행의 `input_artifact_ids`와 manifest에 나열된 것만 허용하고 나머지는 `403`.
 
-산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`.
+산출물 `kind` 목록: `handoff_bundle`, `diagnosis_result`, `tool_trace`, `evidence`, `codex_jsonl`, `codex_stderr`, `diff`, `test_log_before`, `test_log_after`, `verification_log`, `report_output`, `code_change_result`, `review_comment`, `claude_jsonl`, `claude_stderr`, `generic_result`, `code_review_result`, `triage_result`, `handoff_report`.
 
 로컬 도구의 원시 로그 산출물 — 생산자와 내용:
 
@@ -253,6 +253,7 @@
 | `generic_result` | 연결 프로그램 | 사용자 정의 종류의 결과 봉투(`GenericResult`, 11절). 내장 종류의 `diagnosis_result`·`code_change_result` 와 구분 |
 | `code_review_result` | 연결 프로그램 | 내장 `code_review` 의 결과 봉투(`CodeReviewResult`, 13.4절) |
 | `triage_result` | 연결 프로그램 | 내장 `triage` 의 결과 봉투(`TriageResult`, 17.2절) |
+| `handoff_report` | 중앙 | 근거를 확인해 원인 실행에 저장한 인계 리포트(`HandoffReport`, 19절) |
 
 ## 5. 진단 결과 — `ready_for_handoff` 전체
 
@@ -1180,7 +1181,7 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 ### 16.2 `ClaimRequest` — 러너 능력 보고
 
-`capabilities` 는 러너가 할 수 있는 선택 동작 목록이다. 알려진 값은 `"verify_only"`(검증만 다시) 하나. 값 형식 `^[a-z][a-z0-9_]{0,39}$`, 최대 20개, 중복이면 422. 서버는 알려진 값만 저장하고 모르는 값은 무시한다. null(생략)은 보고 없음 — 옛 러너로 보고 검증만 다시 요청을 배정하지 않는다("연결 프로그램 업데이트 필요 — 검증만 다시 미지원"으로 기다린다). 새 러너는 늘 보낸다. 구버전 서버는 이 칸을 422 `unknown_field` 로 거부하므로 업그레이드 순서는 서버 → 러너(14절과 같다).
+`capabilities` 는 러너가 할 수 있는 선택 동작 목록이다. 알려진 값은 `"verify_only"`(검증만 다시)·`"after_result_triage"`(결과 뒤 판단, 17.4)·`"handoff_report"`(인계 리포트 작업과 받는 쪽 리포트 전달, 19절) 셋이고 새 러너는 셋 모두 보낸다. 값 형식 `^[a-z][a-z0-9_]{0,39}$`, 최대 20개, 중복이면 422. 서버는 알려진 값만 저장하고 모르는 값은 무시한다. null(생략)은 보고 없음 — 옛 러너로 보고 검증만 다시 요청을 배정하지 않는다("연결 프로그램 업데이트 필요 — 검증만 다시 미지원"으로 기다린다). 새 러너는 늘 보낸다. 구버전 서버는 이 칸을 422 `unknown_field` 로 거부하므로 업그레이드 순서는 서버 → 러너(14절과 같다).
 
 ```json
 { "contract_version": 1, "connector_id": "conn-mac-02", "supported_kinds": ["bug_fix", "code_review"], "registration_heads": { "local-billing": "5d1c9a3e7b2f4c6a8e0d1b3f5a7c9e2d4b6f8a0c" }, "capabilities": ["verify_only"] }
@@ -1623,4 +1624,184 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 
 ```jsonc
 { "code": "unauthenticated", "message": "유효한 멤버 토큰이 필요합니다.", "field": null, "details": null }
+```
+
+## 19. 인계 리포트 — phase 25
+
+설계는 [ARCHITECTURE "인계 리포트 — phase 25"](ARCHITECTURE.md#인계-리포트--phase-25)·[ADR-0033](adr/0033-handoff-report.md). 모델은 phase 25 step 1 이 구현했고 19.1~19.4 의 ` ```json ` 블록은 fixture 테스트 대상이다(`test_v1.py` 키 서명 — `HandoffReport` 는 `sections`, `ReportJob` 은 `sections` 없는 `job_type`, `ReportJobFailure` 는 `failure_code`, 19.4 는 기존 `ExecutionRequest`). API 요청·응답 예시(19.5·19.6)는 `jsonc` 다.
+
+### 19.1 HandoffReport — 러너가 제출하는 리포트
+
+`POST /api/v1/report-jobs/{report_id}/result` 본문이자 산출물 kind `handoff_report`(`handoff_report.json`)의 내용. `why: null` 은 "기록 없음", `evidence` 의 근거 ID 형식은 중앙이 확인해 "근거 확인 안 됨" 으로 표시만 한다(거절하지 않는다).
+
+```json
+{
+  "contract_version": 1,
+  "report_id": "hrp-0a1b2c3d4e5f",
+  "job_type": "original",
+  "sections": {
+    "changes": [
+      { "id": "c1", "text": "로그인 만료 시 토큰 갱신을 한 번만 시도하도록 바꿨다",
+        "why": "갱신 실패가 무한 재시도로 이어졌다는 이슈 본문",
+        "evidence": ["commit:3f2a9c1", "source:work"] }
+    ],
+    "decisions": [
+      { "id": "d1", "text": "재시도 횟수는 설정값이 아니라 상수 1 로 둔다", "why": null,
+        "evidence": ["artifact:art-7c8d9e0f1a2b"] }
+    ],
+    "open_questions": [
+      { "id": "q1", "text": "갱신 실패 시 사용자에게 보일 문구는 정하지 않았다", "why": null, "evidence": [] }
+    ],
+    "to_confirm": [
+      { "id": "t1", "text": "로그아웃 대신 로그인 화면으로 보내는 동작이 맞는지 확인",
+        "why": "PR 리뷰 코멘트에서 의견이 갈렸다", "evidence": ["pr:42"] }
+    ],
+    "constraints": [
+      { "id": "k1", "text": "토큰 저장 형식은 바꾸지 않는다", "why": null, "evidence": ["verification"] }
+    ],
+    "remaining_work": []
+  },
+  "diagram": "flowchart LR\n  A[요청] --> B{토큰 만료?}\n  B -- 예 --> C[갱신 1회]\n  B -- 아니오 --> D[통과]"
+}
+```
+
+맞춤 풀이(`job_type: "tailored"`)도 같은 모양이고 근거는 원본 주장만 `claim:<id>` 로 인용한다.
+
+```json
+{
+  "contract_version": 1,
+  "report_id": "hrp-1b2c3d4e5f6a",
+  "job_type": "tailored",
+  "sections": {
+    "changes": [
+      { "id": "c1", "text": "검토할 곳은 토큰 갱신 한 곳이다 — 재시도는 한 번뿐", "why": null,
+        "evidence": ["claim:c1", "claim:d1"] }
+    ],
+    "decisions": [], "open_questions": [],
+    "to_confirm": [
+      { "id": "t1", "text": "화면 이동 동작을 검토 기준에 넣을지", "why": null, "evidence": ["claim:t1"] }
+    ],
+    "constraints": [], "remaining_work": []
+  },
+  "diagram": null
+}
+```
+
+### 19.2 ReportJob — claim 응답(리포트 작업)
+
+능력 `handoff_report` 를 선언한 러너에게 claim 이 실행보다 먼저 돌려준다. 최상위 `job_type` 이 있으면 리포트 작업이다. `request` 는 중앙이 만든 요청문(글)이고 러너가 `## 로컬 근거` 절을 붙인다. 어느 칸도 명령·경로로 쓰지 않는다.
+
+```json
+{
+  "contract_version": 1,
+  "report_id": "hrp-0a1b2c3d4e5f",
+  "job_type": "original",
+  "agent_id": "agt-1a2b3c4d5e6f",
+  "local_registration_id": "reg-acme-api",
+  "checkout_commit": "3f2a9c1d4e5b6a7980c1d2e3f4a5b6c7d8e9f0a1",
+  "base_commit": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d",
+  "request": "# 인계 리포트: W-12 로그인 만료 처리\n## 할 일\n…\n## 확인 가능한 근거 ID\n- artifact:art-7c8d9e0f1a2b\n- commit:3f2a9c1d4e5b6a7980c1d2e3f4a5b6c7d8e9f0a1\n- pr:42\n- source:work\n- verification\n"
+}
+```
+
+```json
+{
+  "contract_version": 1,
+  "report_id": "hrp-1b2c3d4e5f6a",
+  "job_type": "tailored",
+  "agent_id": "agt-6f5e4d3c2b1a",
+  "local_registration_id": "reg-review-bot",
+  "checkout_commit": null,
+  "base_commit": null,
+  "request": "# 맞춤 풀이: W-12 로그인 만료 처리\n받는 사람: 박검토 · 다음 단계 코드 검토\n…\n## 확인 가능한 근거 ID\n- claim:c1\n- claim:d1\n- claim:t1\n"
+}
+```
+
+### 19.3 ReportJobFailure — 러너 실패 보고
+
+`POST /api/v1/report-jobs/{report_id}/failure` 본문. 리포트 행은 `failed`, 사유 `리포트 작성 실패 — {message}`.
+
+```json
+{ "contract_version": 1, "failure_code": "readonly_violation", "message": "리포트 작성 중 체크아웃이 바뀌었습니다" }
+```
+
+### 19.4 claim 응답(실행) — 원인 리포트 참조
+
+받는 러너가 능력을 선언했고 원인 리포트가 `done` 이면 `ExecutionRequest` 끝에 `handoff_report` 가 붙는다(없으면 칸이 빠져 지금 바이트 그대로). 러너는 `artifact_id` 를 기존 산출물 내려받기 경로로 받아 `sha256` 을 확인하고 handoff dir 에 `report.json`·`decisions.json` 을 쓴다.
+
+```json
+{
+  "contract_version": 1,
+  "execution_id": "exe-5d6e7f8a9b0c",
+  "task_id": "tsk-2b3c4d5e6f7a",
+  "kind": "code_review",
+  "agent_id": "agt-6f5e4d3c2b1a",
+  "task_revision": 1,
+  "request": "W-12 결과 커밋을 검토한다",
+  "input_artifact_ids": ["art-3c4d5e6f7a8b"],
+  "target": {
+    "local_registration_id": "reg-review-bot",
+    "source_execution_id": "exe-4c5d6e7f8a9b",
+    "base_commit": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d",
+    "result_commit": "3f2a9c1d4e5b6a7980c1d2e3f4a5b6c7d8e9f0a1"
+  },
+  "handoff_report": {
+    "report_id": "hrp-0a1b2c3d4e5f",
+    "artifact_id": "art-8d9e0f1a2b3c",
+    "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+    "decisions": [
+      { "item_id": "t1", "answer": "changed", "note": "로그인 화면이 아니라 홈으로 보낸다",
+        "answered_by": "박검토", "answered_at": "2026-10-22T09:30:00.000000Z" }
+    ]
+  }
+}
+```
+
+(실행 칸은 2절 `ExecutionRequest` 그대로다.)
+
+### 19.5 결정 답 — `PUT /api/v1/reports/{report_id}/decisions/{item_id}`
+
+```jsonc
+// 요청 — 확인함
+{ "answer": "confirmed" }
+```
+
+```jsonc
+// 요청 — 다르게 정함 (note 1~500자 필수)
+{ "answer": "changed", "note": "로그인 화면이 아니라 홈으로 보낸다" }
+```
+
+```jsonc
+// 응답 200 — 보기 묶음 중 decisions 부분
+{
+  "report_id": "hrp-0a1b2c3d4e5f",
+  "job_type": "original",
+  "status": "done",
+  "decisions": [
+    { "item_id": "t1", "answer": "changed", "note": "로그인 화면이 아니라 홈으로 보낸다",
+      "answered_by": "박검토", "answered_at": "2026-10-22T09:30:00.000000Z" }
+  ],
+  "actions": ["answer", "tailor", "regenerate"]
+  // … 나머지 보기 묶음 칸 (ARCHITECTURE "사람용 API")
+}
+```
+
+### 19.6 오류 본문 — 인계 리포트
+
+```jsonc
+// 러너 늦은 제출 (409)
+{ "code": "report_not_leased", "message": "리포트 작업이 진행 중이 아닙니다.", "field": null, "details": null }
+```
+
+```jsonc
+// 제출 형식 오류 (422) — 행은 failed
+{ "code": "report_invalid", "message": "리포트 형식 오류 — sections.changes: 1개 이상 필요", "field": null, "details": null }
+```
+
+```jsonc
+{ "code": "invalid_field", "message": "한 줄 이유를 1~500자로 적어 주세요.", "field": "note", "details": null }
+```
+
+```jsonc
+{ "code": "tailor_unavailable", "message": "API 연결형 에이전트", "field": "agent_id", "details": null }
 ```

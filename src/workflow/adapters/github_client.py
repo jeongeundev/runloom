@@ -188,6 +188,42 @@ class PullSummary(BaseModel):
     updated_at: str
 
 
+class PullDetail(BaseModel):
+    """PR 하나 — 인계 리포트 PR 근거(phase 25, ARCHITECTURE "PR 근거 수집"). 본문이 null 이면 빈 문자열."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    number: int
+    title: str
+    body: str
+    html_url: str
+    state: Literal["open", "closed"]
+    draft: bool
+    merged_at: str | None
+    head_sha: str
+
+
+class PullCommit(BaseModel):
+    """PR 커밋 하나 — `message` 는 커밋 메시지 첫 줄."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    sha: str
+    message: str
+
+
+class PullReviewComment(BaseModel):
+    """PR 리뷰 코멘트 하나 — `path` 는 표시용 문자열(경로로 쓰지 않는다)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    author_login: str | None
+    path: str
+    line: int | None
+    body: str
+    created_at: str
+
+
 class TokenProvider(Protocol):
     """요청마다 부르는 토큰 공급자. `invalidate()` 는 401 을 받았을 때 캐시를 버리게 한다."""
 
@@ -255,6 +291,12 @@ class GitHubClient(Protocol):
     def get_pull_request(self, repo: str, number: int) -> PullRequestRef: ...
 
     def list_pulls(self, repo: str, cursor: str | None) -> list[PullSummary]: ...
+
+    def get_pull_detail(self, repo: str, number: int) -> PullDetail: ...
+
+    def list_pull_commits(self, repo: str, number: int) -> list[PullCommit]: ...
+
+    def list_pull_review_comments(self, repo: str, number: int) -> list[PullReviewComment]: ...
 
 
 def _header_int(response: httpx.Response, name: str) -> int | None:
@@ -532,6 +574,46 @@ class HttpGitHubClient:
             if page is None:
                 return pulls
         return pulls
+
+    # ── PR 근거 읽기 (phase 25 — 인계 리포트, GET 만) ──
+
+    def get_pull_detail(self, repo: str, number: int) -> PullDetail:
+        path = f"/repos/{self._repo(repo)}/pulls/{int(number)}"
+        item = self._json(self._call("GET", path), "GET", path)
+        try:
+            return PullDetail(
+                number=item["number"], title=item["title"], body=item.get("body") or "", html_url=item["html_url"],
+                state=item["state"], draft=bool(item.get("draft") or False), merged_at=item.get("merged_at"),
+                head_sha=item["head"]["sha"],
+            )
+        except (KeyError, TypeError, AttributeError, ValidationError):
+            raise GitHubError(f"GET {path}: 응답 형식 오류") from None
+
+    def list_pull_commits(self, repo: str, number: int) -> list[PullCommit]:
+        """첫 페이지(최대 100개)만."""
+        path = f"/repos/{self._repo(repo)}/pulls/{int(number)}/commits"
+        items = self._json_list(self._call("GET", path, params={"per_page": PER_PAGE}), path)
+        try:
+            return [
+                PullCommit(sha=item["sha"], message=item["commit"]["message"].split("\n", 1)[0]) for item in items
+            ]
+        except (KeyError, TypeError, AttributeError, ValidationError):
+            raise GitHubError(f"GET {path}: 응답 형식 오류") from None
+
+    def list_pull_review_comments(self, repo: str, number: int) -> list[PullReviewComment]:
+        """첫 페이지(최대 100개)만."""
+        path = f"/repos/{self._repo(repo)}/pulls/{int(number)}/comments"
+        items = self._json_list(self._call("GET", path, params={"per_page": PER_PAGE}), path)
+        try:
+            return [
+                PullReviewComment(
+                    author_login=(item.get("user") or {}).get("login"), path=item["path"], line=item.get("line"),
+                    body=item["body"], created_at=item["created_at"],
+                )
+                for item in items
+            ]
+        except (KeyError, TypeError, AttributeError, ValidationError):
+            raise GitHubError(f"GET {path}: 응답 형식 오류") from None
 
     # ── 내부 ──
 

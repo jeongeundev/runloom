@@ -111,6 +111,7 @@ from workflow.domain.work_status import STAGE_FAILED
 from workflow.server import (
     github_delivery,
     github_sync,
+    handoff_reports,
     jira_delivery,
     jira_sync,
     next_step_runs,
@@ -186,6 +187,8 @@ class TickReport:
     triage_autostarted: int = 0  # 자동 시작 설정으로 맡긴 판단 제안(판단 로그 auto_started)
     next_step_started: int = 0  # 결과 뒤 판단 시작(워크스페이스마다 tick 당 최대 1건, phase 22)
     next_step_fallbacks: int = 0  # 결과 뒤 판단 대신 연 원래 사람 요청(② — 시작 불가·실패·무시·대기 상한)
+    handoff_reports_queued: int = 0  # 판정 통과로 만든 원본 리포트 작업(queued — 불가 사유 행은 세지 않음, phase 25)
+    handoff_reports_expired: int = 0  # 대기 시간을 넘겨 timed_out 으로 바꾼 리포트 작업
 
     def any(self) -> bool:
         return any(v for v in asdict(self).values())
@@ -440,6 +443,7 @@ class Worker:
             self._sync_jira(conn, report)
             self._mark_offline(conn, report)
             self._observe(conn, report)
+            self._expire_handoff_reports(conn, report)
             self._check_code_results(conn, report)
             self._check_review_results(conn, report)
             self._check_generic_results(conn, report)
@@ -607,6 +611,19 @@ class Worker:
             )
             report.observations += 1
 
+    # --- 5b. 인계 리포트 (phase 25, ADR-0033) ------------------------------------------------
+
+    def _queue_handoff_report(self, conn: Connection, execution_id: str, report: TickReport | None = None) -> None:
+        """판정 지점 직후 — 판정이 passed 면 원본 리포트 작업(대상·불가는 `handoff_reports.queue_original` 이 고른다).
+        후속 착수는 기다리지 않는다(대기는 claim 한 곳, D9·D15)."""
+        row = handoff_reports.queue_original(conn, self._store, self._settings, self._github_for or (lambda _c: None),
+                                             execution_id=execution_id, now=self._clock())
+        if report is not None and row is not None and row["status"] == "queued":
+            report.handoff_reports_queued += 1
+
+    def _expire_handoff_reports(self, conn: Connection, report: TickReport) -> None:
+        report.handoff_reports_expired += handoff_reports.expire_reports(conn, self._settings, now=self._clock())
+
     # --- 6. 코드 수정 결과 확인 ---------------------------------------------------------------
 
     def _check_code_results(self, conn: Connection, report: TickReport) -> None:
@@ -625,6 +642,7 @@ class Worker:
                 status="확인 필요", reason=reason, finish=False, now=self._clock(),
             )
             report.results_checked += 1
+            self._queue_handoff_report(conn, execution["execution_id"], report)
 
     def _code_result_checks(self, conn: Connection, execution: Row, policy: ExecutionPolicy) -> list[dict[str, Any]]:
         """CONTRACT 7절·13.5 정상 제출 조건. 결과의 요청 ID·기준 커밋이 요청과 같은지 보고 필수 산출물·재현 테스트·검증
@@ -703,6 +721,7 @@ class Worker:
                 finish=False, now=self._clock(),
             )
             report.reviews_checked += 1
+            self._queue_handoff_report(conn, execution["execution_id"], report)
 
     def _review_result_checks(self, conn: Connection, execution: Row) -> list[dict[str, Any]]:
         try:
@@ -746,6 +765,7 @@ class Worker:
                 status="확인 필요", reason=reason, finish=False, now=self._clock(),
             )
             report.generic_checked += 1
+            self._queue_handoff_report(conn, execution["execution_id"], report)
 
     def _generic_result_checks(self, conn: Connection, execution: Row) -> list[dict[str, Any]]:
         """envelope_valid(파싱) → ids_match(execution_id·task_id·kind) → outcome_in_spec(요청에 고정된 kind_spec.outcomes)."""
@@ -1441,6 +1461,8 @@ class Worker:
                 )
                 if proposed and log["cause"] != "intake":
                     self._notify_next_step(conn, log, result, candidates)
+                if proposed:
+                    self._queue_handoff_report(conn, execution_id)
                 return proposed
             return repo.record_triage_failed(
                 conn, log["triage_id"], execution_id=execution_id, code="triage_invalid",

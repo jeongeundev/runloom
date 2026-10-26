@@ -18,6 +18,7 @@ import pytest
 from workflow.connector import git_ops, state
 from workflow.connector.adapter import Progress
 from workflow.connector.local_tool import (
+    HANDOFF_REPORT_OUTPUT_SCHEMA,
     NO_REPRO_TEST_LOG,
     RESULT_SCHEMA,
     REVIEW_RESULT_SCHEMA,
@@ -30,10 +31,13 @@ from workflow.connector.local_tool import (
     resolve_pythonpath,
 )
 from workflow.contracts.v1 import (
+    REPORT_EVIDENCE_MAX,
+    REPORT_SECTION_MAX_CLAIMS,
     CodeChangeResult,
     CodeReviewResult,
     ExecutionRequest,
     GenericResult,
+    ReportSections,
     TriageResult,
     Verification,
 )
@@ -2008,3 +2012,69 @@ def test_next_step_output_schema_is_strict_and_has_only_model_fields():
     assert "oneOf" not in json.dumps(schema)
     for key in ("proposed_kind", "assignee", "predecessors", "execution_id", "task_id", "inspected_commit"):
         assert key not in schema["properties"]
+
+
+# --- 인계 리포트 — run_report·HANDOFF_REPORT_OUTPUT_SCHEMA (ARCHITECTURE "리포트 작업 실행 — 러너") -------------
+
+
+def _report_message() -> str:
+    claim = {"id": "change-1", "text": "쿠폰 재적용을 막았다", "why": None, "evidence": ["artifact:art-diff-001"]}
+    sections = {"changes": [claim], "decisions": [], "open_questions": [], "to_confirm": [], "constraints": [],
+                "remaining_work": []}
+    return json.dumps({"sections": sections, "diagram": None}, ensure_ascii=False)
+
+
+def _objects(schema: dict):
+    if schema.get("type") == "object":
+        yield schema
+    for value in schema.values():
+        if isinstance(value, dict):
+            yield from _objects(value)
+
+
+def test_handoff_report_schema_is_strict_and_limited_by_contract_constants():
+    schema = HANDOFF_REPORT_OUTPUT_SCHEMA
+    assert sorted(schema["required"]) == ["diagram", "sections"]
+    for obj in _objects(schema):  # Codex 엄격 출력 — 모든 객체가 닫혀 있고 모든 칸이 필수
+        assert obj["additionalProperties"] is False
+        assert sorted(obj["required"]) == sorted(obj["properties"])
+    sections = schema["properties"]["sections"]["properties"]
+    assert sorted(sections) == sorted(ReportSections.model_fields)
+    claim = sections["changes"]["items"]
+    assert sections["changes"]["maxItems"] == REPORT_SECTION_MAX_CLAIMS
+    assert claim["properties"]["why"]["type"] == ["string", "null"]
+    assert claim["properties"]["evidence"]["maxItems"] == REPORT_EVIDENCE_MAX
+    assert schema["properties"]["diagram"]["type"] == ["string", "null"]
+    json.dumps(schema)
+
+
+def test_run_report_launches_readonly_with_schema_and_registration_env(state_conn, tmp_path):
+    seen_env = []
+
+    def script(_cwd: Path) -> ToolRun:
+        seen_env.append(adapter.child_env())
+        return _run(last_message=_report_message())
+
+    adapter = ScriptedTool(state_conn, script)
+
+    output = adapter.run_report(tmp_path, "요청문", HANDOFF_REPORT_OUTPUT_SCHEMA, Recorder(),
+                                env={"MY_CONFIG": "value-123"})
+
+    assert output.failed is None and output.data == json.loads(_report_message())
+    assert adapter.launched_readonly_with == [(tmp_path, "요청문", HANDOFF_REPORT_OUTPUT_SCHEMA)]
+    assert seen_env[0]["MY_CONFIG"] == "value-123"
+
+
+def test_run_report_failures_timeout_classify_unavailable_and_unreadable(state_conn, tmp_path):
+    def missing(_cwd):
+        raise FileNotFoundError(2, "No such file", "fake")
+
+    timeout = ScriptedTool(state_conn, lambda _c: _run(timed_out=True)).run_report(tmp_path, "x", {}, Recorder())
+    limited = LimitedTool(state_conn, lambda _c: _run(stderr=b"limit\n")).run_report(tmp_path, "x", {}, Recorder())
+    unavailable = ScriptedTool(state_conn, missing).run_report(tmp_path, "x", {}, Recorder())
+    unreadable = ScriptedTool(state_conn, lambda _c: _run(last_message=None)).run_report(tmp_path, "x", {}, Recorder())
+
+    assert timeout.data is None and timeout.failed[0] == "timeout"
+    assert limited.failed == ("usage_limit", "fake 사용량 한도")
+    assert unavailable.failed[0] == "fake_unavailable"
+    assert unreadable.failed[0] == "result_invalid" and "파일 없음" in unreadable.failed[1]

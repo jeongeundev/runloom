@@ -65,7 +65,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from workflow.connector import git_ops, state
-from workflow.connector.adapter import AdapterOutput, Progress, make_meta
+from workflow.connector.adapter import AdapterOutput, Progress, ReportOutput, make_meta
 from workflow.connector.git_ops import GitError
 from workflow.connector.masking import codex_env, mask_secrets, registered_env
 from workflow.connector.prompt import (
@@ -76,6 +76,8 @@ from workflow.connector.prompt import (
 )
 from workflow.contracts.v1 import (
     CONTRACT_VERSION,
+    REPORT_EVIDENCE_MAX,
+    REPORT_SECTION_MAX_CLAIMS,
     TRIAGE_CRITERIA,
     TRIAGE_MODE_NEXT_STEP,
     TRIAGE_PROCEED,
@@ -87,6 +89,7 @@ from workflow.contracts.v1 import (
     ExecutionUsage,
     GenericResult,
     LocalTarget,
+    ReportSections,
     TriageResult,
     TriageTarget,
     Verification,
@@ -222,6 +225,40 @@ NEXT_STEP_OUTPUT_SCHEMA = {
     "additionalProperties": False,
 }
 
+_REPORT_CLAIM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "description": "소문자로 시작하는 짧은 id, 리포트 안에서 유일"},
+        "text": {"type": "string"},
+        "why": {"type": ["string", "null"], "description": "뒷받침하는 기록이 없으면 null"},
+        "evidence": {"type": "array", "items": {"type": "string"}, "maxItems": REPORT_EVIDENCE_MAX,
+                     "description": "확인 가능한 근거 ID 중에서"},
+    },
+    "required": ["id", "text", "why", "evidence"],
+    "additionalProperties": False,
+}
+
+# 인계 리포트(원본·맞춤 풀이)의 마지막 메시지 스키마 — `HandoffReport` 중 모델이 채우는 칸만(ARCHITECTURE "계약").
+# `report_id`·`job_type`·`contract_version` 은 연결 프로그램이 `ReportJob` 에서 채우고, 길이·합계·id 유일은 계약 검증이 본다.
+HANDOFF_REPORT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sections": {
+            "type": "object",
+            "properties": {
+                name: {"type": "array", "items": _REPORT_CLAIM_SCHEMA, "maxItems": REPORT_SECTION_MAX_CLAIMS}
+                for name in ReportSections.model_fields
+            },
+            "required": list(ReportSections.model_fields),
+            "additionalProperties": False,
+        },
+        "diagram": {"type": ["string", "null"], "description": "mermaid 그림 하나 또는 null"},
+    },
+    "required": ["sections", "diagram"],
+    "additionalProperties": False,
+}
+
+
 def resolve_pythonpath(env: Mapping[str, str], cwd: Path) -> dict[str, str]:
     """`PYTHONPATH` 의 상대 항목을 `cwd` 기준 절대 경로로 바꾼 사본. 빈 항목·`~` 로 시작하는 항목·절대 경로는 그대로,
     심볼릭 링크는 따라가지 않는다(파일 시스템을 읽지 않는다). 다른 변수는 건드리지 않는다."""
@@ -341,6 +378,26 @@ class LocalToolAdapter:
         `cwd` 를 주면 등록 `PYTHONPATH` 의 상대 항목을 그 기준으로 푼다."""
         env = {**codex_env(self._env_base), **registered_env(self._registered_env)}
         return env if cwd is None else resolve_pythonpath(env, cwd)
+
+    def run_report(
+        self, cwd: Path, prompt_text: str, schema: dict, progress: Progress, *, env: Mapping[str, str] | None = None,
+    ) -> ReportOutput:
+        """인계 리포트 작업 — `cwd` 에서 `launch_readonly` → 시간 초과·`classify_failure` → `read_structured_message`.
+        `env` 는 작업이 고른 로컬 등록의 env. 쓰기 금지 확인·계약 검사는 `report_job` 이 한다."""
+        self._registered_env = dict(env or {})
+        try:
+            run = self.launch_readonly(cwd, prompt_text, schema, progress)
+        except OSError as exc:
+            return ReportOutput(None, (f"{self.tool_name}_unavailable", f"{self.tool_name} 을 시작하지 못함: {exc}"))
+        if run.timed_out:
+            return ReportOutput(None, ("timeout", f"{self.tool_name} 실행이 {self._timeout}초를 초과해 종료했습니다."))
+        failure = self.classify_failure(run)
+        if failure is not None:
+            return ReportOutput(None, failure)
+        data, note = self.read_structured_message(run.last_message)
+        if data is None:
+            return ReportOutput(None, ("result_invalid", f"{self.tool_name} 리포트를 읽지 못함 ({note})"))
+        return ReportOutput(data)
 
     def run(self, request: ExecutionRequest, handoff_dir: Path, progress: Progress) -> AdapterOutput:
         target = request.target

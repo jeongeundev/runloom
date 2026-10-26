@@ -144,6 +144,16 @@ if leaked:
     sys.exit(3)
 print(json.dumps({"type": "thread.started", "thread_id": "fake-cycle"}), flush=True)
 
+if prompt.startswith(("# 인계 리포트:", "# 맞춤 풀이:")):  # 인계 리포트 작업 — 읽기만, 요청문의 첫 근거 ID 를 인용한다
+    cite = re.findall(r"^- ((?:artifact|commit|claim):\S+)", prompt, re.M)[:1]
+    report = {"sections": {"changes": [{"id": "c1", "text": "가짜 인계 리포트", "why": None, "evidence": cite}],
+                           "decisions": [], "open_questions": [], "to_confirm": [], "constraints": [],
+                           "remaining_work": []}, "diagram": None}
+    with open(last_message, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False)
+    print(json.dumps({"type": "turn.completed"}), flush=True)
+    sys.exit(0)
+
 if sandbox == "read-only":
     findings = []
     for root, dirs, files in os.walk(cwd):
@@ -1026,6 +1036,14 @@ def test_12_everything_settles_without_duplicates_and_github_sees_one_comment_pe
                        " JOIN tasks c ON c.work_item_id = l.to_work_item_id WHERE a.task_id = ? AND c.task_id = ?",
                 t["A"], t["C"])
     assert link["type"] == "blocks"
+
+    # 인계 리포트 (phase 25) — 러너가 능력을 선언하므로 판정 통과한 결과마다 그 Agent 가 원본 리포트를 썼다(실패 없음)
+    def reports_settled() -> bool:
+        return not q(world, "SELECT 1 FROM handoff_reports WHERE status IN ('queued', 'leased')")
+
+    drive(world, reports_settled, "인계 리포트 작성")
+    reports = q(world, "SELECT status, reason FROM handoff_reports WHERE job_type = 'original'")
+    assert reports and {(r["status"], r["reason"]) for r in reports} == {("done", None)}
 
 
 def test_13_github_token_never_leaves_the_central_environment(world):

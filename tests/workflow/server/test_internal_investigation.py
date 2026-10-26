@@ -1,6 +1,6 @@
 import json
 from workflow.adapters import repo
-from workflow.contracts.v1 import KindSpec
+from workflow.contracts.v1 import RUNNER_CAPABILITY_HANDOFF_REPORT, KindSpec
 from workflow.server.auth import utc_now
 from workflow.server.worker import Worker
 from .conftest import SESSION, exchange
@@ -58,6 +58,23 @@ def test_accepted_request_executes_registered_generic_kind_and_returns_reviewed_
     assert returned.json()['revision'] == 4
     assert dict(repo.get_work_item(conn, SESSION, work_id)) == before
     assert logged_in_client.get(work_url(conn, work_id)).json()['requests'][0]['returned_artifact_id'] == result_id
+
+
+def test_passed_investigation_result_queues_an_original_report(logged_in_client, conn, store, settings):
+    """판정 지점 표 — 사내 요청 조사 결과는 범용 판정을 지나고 passed 면 원본 리포트 작업(phase 25 step 5)."""
+    recipient, work_id, request_id = investigation_request(logged_in_client, conn)
+    connector_id = repo.get_agent(conn, 'investigator')['connector_id']
+    repo.record_runner_capabilities(conn, connector_id, [RUNNER_CAPABILITY_HANDOFF_REPORT])
+    conn.commit()
+    start = recipient.post(f'/api/v1/internal-requests/{request_id}/investigation', json=dict(expected_revision=2, kind='investigate', scope_value='billing'))
+    task_id = start.json()['investigation_task_id']
+    execution = repo.list_executions(conn, task_id)[0]
+    seed_generic_result(conn, store, execution['execution_id'], utc_now(), task_id=task_id,
+                        kind='investigate', outcome='reported', summary='합성 기록에서 타임아웃을 확인했습니다.')
+    Worker(logged_in_client.app.state.conn_factory, store, None, settings, utc_now).tick()
+    (row,) = conn.execute('SELECT * FROM handoff_reports WHERE source_execution_id = ?', (execution['execution_id'],)).fetchall()
+    assert (row['job_type'], row['status'], row['agent_id'], row['connector_id']) == ('original', 'queued', 'investigator', connector_id)
+    assert row['work_item_id'] == repo.get_task(conn, task_id)['work_item_id']
 
 
 def test_waiting_investigation_rechecks_capability_before_worker_execution(logged_in_client, conn, store, settings):

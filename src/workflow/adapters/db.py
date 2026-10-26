@@ -13,7 +13,11 @@ from pathlib import Path
 from workflow.contracts.jira import JIRA_DELIVERY_STATES
 from workflow.contracts.v1 import ARTIFACT_KINDS, BUILTIN_KINDS, BUILTIN_RULES, TRIAGE_CAUSES
 from workflow.adapters.repo import (
+    HANDOFF_REPORT_ACTIVE,
+    HANDOFF_REPORT_JOB_TYPES,
+    HANDOFF_REPORT_STATUSES,
     MEMBER_TOKEN_SCOPES,
+    REPORT_DECISION_ANSWERS,
     ensure_first_admin,
     seed_default_field_mappings,
     seed_triage_criteria,
@@ -24,7 +28,7 @@ from workflow.domain.status import EXECUTION_STATUSES, USER_STATUS_LABELS
 from workflow.domain.team import ROLES
 from workflow.domain.work_status import TERMINAL_WORK_STATUSES, WORK_STATUSES, work_status
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # phase 8 이 기존 세션에 더하는 내장 종류 (ADR-0014). 같은 이름의 사용자 정의 종류가 있으면 마이그레이션을 되돌린다.
 PHASE8_KIND_NAMES = ("bug_fix", "code_review")
@@ -451,7 +455,7 @@ ALTER TABLE connectors ADD COLUMN owner_member_id TEXT REFERENCES members(member
 
 # v12 (phase 16, ADR-0022): 직접 작업·감지 PR·PR 커서·업무 이벤트 종류. ARCHITECTURE "업무 화면 — phase 16" 스키마 v12.
 # tasks 는 재생성하지 않는다. work_item_events 만 type CHECK 를 넓히려고 재생성한다 — 이 표를 참조하는 표는 없다.
-# v12 가 만든 업무 이벤트 종류. v13 이 표를 다시 재생성해 WORK_ITEM_EVENT_TYPES 로 넓힌다.
+# v12 가 만든 업무 이벤트 종류. v13 이 표를 다시 재생성해 _V13_WORK_ITEM_EVENT_TYPES 로 넓힌다.
 _V12_WORK_ITEM_EVENT_TYPES = (
     "status_changed", "assigned", "priority_changed", "direct_started", "direct_stopped", "pull_request_linked",
 )
@@ -516,7 +520,8 @@ CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(sessi
 # 그대로 둔다(owner_approval·approve·decline·reverify·withdraw 는 값만 새로 쓴다).
 # v13 이 넓힌 알림 사건. v24 가 표를 재생성해 NOTIFICATION_EVENTS 로 다시 넓힌다.
 _V13_NOTIFICATION_EVENTS = (*_V8_NOTIFICATION_EVENTS, "delegated_to_you", "runner_offline_waiting", "delegation_declined")
-WORK_ITEM_EVENT_TYPES = (*_V12_WORK_ITEM_EVENT_TYPES, "handoff_note")
+# v13 이 넓힌 업무 이벤트 종류. v27 이 표를 재생성해 WORK_ITEM_EVENT_TYPES 로 다시 넓힌다.
+_V13_WORK_ITEM_EVENT_TYPES = (*_V12_WORK_ITEM_EVENT_TYPES, "handoff_note")
 
 _V13_TABLES = f"""
 ALTER TABLE agents ADD COLUMN delegation_policy TEXT NOT NULL DEFAULT 'run'
@@ -562,7 +567,7 @@ CREATE TABLE work_item_events_v13 (
   id              INTEGER PRIMARY KEY,
   work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
   session_id      TEXT NOT NULL REFERENCES sessions(session_id),
-  type            TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_EVENT_TYPES)})),
+  type            TEXT NOT NULL CHECK (type IN ({_in(_V13_WORK_ITEM_EVENT_TYPES)})),
   config_revision INTEGER NOT NULL,
   occurred_at     TEXT NOT NULL,
   data_json       TEXT NOT NULL
@@ -1119,6 +1124,87 @@ CREATE INDEX IF NOT EXISTS ix_member_tokens_member ON member_tokens(member_id);
 """
 
 
+# v27 (phase 25, ADR-0033): 인계 리포트. ARCHITECTURE "인계 리포트 — phase 25" 표 (스키마 v27).
+# artifacts 는 kind CHECK 에 handoff_report 를 넣으려고 재생성한다(v4 → v5 방식) — v15 이후 마이그레이션 DB 에 빠져 있던
+# triage_result 도 함께 들어간다(README D38). 새 DB 도 같은 문장을 거쳐 마이그레이션 DB 와 원문이 같다("artifacts").
+# artifacts 를 참조하는 외래키(internal_request_* 셋)는 이름으로 다시 붙는다. work_item_events 는 v13 방식으로 type CHECK 만
+# 넓힌다(+ report_decision). 기존 결과에 리포트를 채우지 않는다(D41).
+WORK_ITEM_EVENT_TYPES = (*_V13_WORK_ITEM_EVENT_TYPES, "report_decision")
+
+_V27_TABLES = _artifacts_table("artifacts_v27") + f"""
+INSERT INTO artifacts_v27 SELECT * FROM artifacts;
+DROP TABLE artifacts;
+ALTER TABLE artifacts_v27 RENAME TO artifacts;
+
+-- 업무 이벤트 재생성: v13 과 같은 칸·순서, type CHECK 만 넓힌다(+ report_decision).
+CREATE TABLE work_item_events_v27 (
+  id              INTEGER PRIMARY KEY,
+  work_item_id    TEXT NOT NULL REFERENCES work_items(work_item_id),
+  session_id      TEXT NOT NULL REFERENCES sessions(session_id),
+  type            TEXT NOT NULL CHECK (type IN ({_in(WORK_ITEM_EVENT_TYPES)})),
+  config_revision INTEGER NOT NULL,
+  occurred_at     TEXT NOT NULL,
+  data_json       TEXT NOT NULL
+);
+INSERT INTO work_item_events_v27 (id, work_item_id, session_id, type, config_revision, occurred_at, data_json)
+  SELECT id, work_item_id, session_id, type, config_revision, occurred_at, data_json FROM work_item_events;
+DROP TABLE work_item_events;
+ALTER TABLE work_item_events_v27 RENAME TO work_item_events;
+CREATE INDEX IF NOT EXISTS ix_work_item_events_item ON work_item_events(work_item_id, id);
+CREATE INDEX IF NOT EXISTS ix_work_item_events_session ON work_item_events(session_id, occurred_at);
+
+-- 리포트 작업. 비밀값·토큰·로컬 경로는 들어가지 않는다(inputs_json 은 요청문·근거 집합·PR 링크).
+CREATE TABLE IF NOT EXISTS handoff_reports (
+  report_id              TEXT PRIMARY KEY,                       -- 'hrp-' + 12 hex
+  session_id             TEXT NOT NULL REFERENCES sessions(session_id),
+  work_item_id           TEXT NOT NULL REFERENCES work_items(work_item_id),
+  source_execution_id    TEXT NOT NULL REFERENCES executions(execution_id),  -- 원인 실행
+  source_task_id         TEXT NOT NULL REFERENCES tasks(task_id),           -- 원인 실행의 Task (단계 줄)
+  job_type               TEXT NOT NULL CHECK (job_type IN ({_in(HANDOFF_REPORT_JOB_TYPES)})),
+  base_report_id         TEXT REFERENCES handoff_reports(report_id),       -- tailored 만: 원본 report_id
+  requested_by_member_id TEXT REFERENCES members(member_id),               -- tailored 만: 요청한 받는 사람
+  agent_id               TEXT,                                            -- 리포트를 쓰는 Agent (FK 없음 — 지워질 수 있다)
+  connector_id           TEXT,                                            -- 그 Agent 의 러너 (unavailable 이면 NULL 가능)
+  status                 TEXT NOT NULL CHECK (status IN ({_in(HANDOFF_REPORT_STATUSES)})),
+  reason                 TEXT,                                            -- 사람이 읽는 사유 (unavailable·failed·timed_out)
+  inputs_json            TEXT NOT NULL,                                   -- 리포트 작업 입력 자료
+  artifact_id            TEXT REFERENCES artifacts(artifact_id),          -- done: kind handoff_report
+  evidence_check_json    TEXT,                                            -- done: 근거 확인 결과
+  leased_at              TEXT,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  finished_at            TEXT,                                            -- done·failed·timed_out·unavailable
+  CHECK ((job_type = 'original') = (base_report_id IS NULL AND requested_by_member_id IS NULL)),
+  CHECK (job_type = 'original' OR (base_report_id IS NOT NULL AND requested_by_member_id IS NOT NULL)),
+  CHECK ((status = 'done') = (artifact_id IS NOT NULL)),
+  CHECK (status NOT IN ('failed', 'timed_out', 'unavailable') OR reason IS NOT NULL),
+  CHECK (status NOT IN ({_in(HANDOFF_REPORT_ACTIVE)}) OR (agent_id IS NOT NULL AND connector_id IS NOT NULL)),
+  CHECK (status != 'leased' OR leased_at IS NOT NULL)
+);
+
+-- 진행 중(queued·leased) 은 원본이면 원인 실행당 하나, 맞춤 풀이면 (원본 리포트, 요청 멤버)당 하나 — 다시 만들기는 새 행
+CREATE UNIQUE INDEX IF NOT EXISTS ux_handoff_reports_original_active ON handoff_reports(source_execution_id)
+  WHERE job_type = 'original' AND status IN ({_in(HANDOFF_REPORT_ACTIVE)});
+CREATE UNIQUE INDEX IF NOT EXISTS ux_handoff_reports_tailored_active ON handoff_reports(base_report_id, requested_by_member_id)
+  WHERE job_type = 'tailored' AND status IN ({_in(HANDOFF_REPORT_ACTIVE)});
+CREATE INDEX IF NOT EXISTS ix_handoff_reports_connector ON handoff_reports(connector_id, status, created_at);
+CREATE INDEX IF NOT EXISTS ix_handoff_reports_source ON handoff_reports(source_execution_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_handoff_reports_work ON handoff_reports(work_item_id, created_at);
+
+-- 결정 답 — (리포트, 항목)당 마지막 답 하나(덮어쓰기). 이력은 업무 이벤트 report_decision.
+CREATE TABLE IF NOT EXISTS handoff_report_decisions (
+  report_id   TEXT NOT NULL REFERENCES handoff_reports(report_id),       -- 원본(original) 리포트만
+  item_id     TEXT NOT NULL,                                             -- sections.to_confirm 의 주장 id
+  answer      TEXT NOT NULL CHECK (answer IN ({_in(REPORT_DECISION_ANSWERS)})),
+  note        TEXT CHECK (note IS NULL OR length(note) BETWEEN 1 AND 500),
+  member_id   TEXT NOT NULL REFERENCES members(member_id),
+  answered_at TEXT NOT NULL,
+  PRIMARY KEY (report_id, item_id),
+  CHECK ((answer = 'changed') = (note IS NOT NULL))
+);
+"""
+
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
@@ -1326,7 +1412,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_usage (
   execution_id TEXT NOT NULL,
   started_at   TEXT NOT NULL
 );
-""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES + _V17_TABLES + _V18_TABLES + _V19_TABLES + _V20_TABLES + _V21_TABLES + _V22_TABLES + _V23_TABLES + _V24_TABLES + _V25_TABLES + _V26_TABLES
+""" + _V5_TABLES + _V6_TABLES + _V6_SOURCE_ISSUE_ALTERS + _V7_SOURCE_ISSUE_ALTERS + _V8_EXECUTION_ALTERS + _V8_TABLES + _V10_TABLES + _V11_TABLES + _V12_TABLES + _V13_TABLES + _V14_TABLES + _V15_TABLES + _V16_TABLES + _V17_TABLES + _V18_TABLES + _V19_TABLES + _V20_TABLES + _V21_TABLES + _V22_TABLES + _V23_TABLES + _V24_TABLES + _V25_TABLES + _V26_TABLES + _V27_TABLES
 
 
 def _statements(script: str) -> list[str]:
@@ -1724,13 +1810,23 @@ def _migrate_25_to_26(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE schema_version SET version = 26")
 
 
+def _migrate_26_to_27(conn: sqlite3.Connection) -> None:
+    """호출자가 연 트랜잭션 안에서(외래키를 끈 채) artifacts·work_item_events 를 재생성하고 빈 리포트 표 둘을 더한다 —
+    행·id 그대로, 기존 결과에 리포트를 채우지 않는다(D41)."""
+    for statement in _statements(_V27_TABLES):
+        conn.execute(statement)
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("마이그레이션 뒤 외래키 검사 실패")
+    conn.execute("UPDATE schema_version SET version = 27")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """멱등. 빈 DB 는 새로 만들고, 4~25 는 26 까지 차례로(4 → 5 → … → 25 → 26) 한 트랜잭션으로 올린다
+    """멱등. 빈 DB 는 새로 만들고, 4~26 은 27 까지 차례로(4 → 5 → … → 26 → 27) 한 트랜잭션으로 올린다
     (데이터 보존, 실패하면 원래 버전 그대로).
     그 밖의 버전은 지원하지 않는다 — 3 이하는 `WORKFLOW_RESET_DB=1` 재생성 대상이다.
 
     올릴 때는 트랜잭션 밖에서 외래키를 끄고 끝나면(실패해도) 다시 켠다 — v14 가 자식 FK 가 있는 work_items 를
-    재생성하기 때문이다(트랜잭션 안에서는 이 PRAGMA 가 무시된다). 각 단계 끝의 `foreign_key_check` 가 결함을 잡는다."""
+    재생성하기 때문이다(v27 의 artifacts 도 같다 — 트랜잭션 안에서는 이 PRAGMA 가 무시된다). 각 단계 끝의 `foreign_key_check` 가 결함을 잡는다."""
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
     ).fetchone()
@@ -1746,11 +1842,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25):
+            elif row[0] in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26):
                 steps = (_migrate_4_to_5, _migrate_5_to_6, _migrate_6_to_7, _migrate_7_to_8, _migrate_8_to_9,
                          _migrate_9_to_10, _migrate_10_to_11, _migrate_11_to_12, _migrate_12_to_13,
                          _migrate_13_to_14, _migrate_14_to_15, _migrate_15_to_16, _migrate_16_to_17, _migrate_17_to_18, _migrate_18_to_19, _migrate_19_to_20, _migrate_20_to_21, _migrate_21_to_22, _migrate_22_to_23,
-                         _migrate_23_to_24, _migrate_24_to_25, _migrate_25_to_26)
+                         _migrate_23_to_24, _migrate_24_to_25, _migrate_25_to_26, _migrate_26_to_27)
                 for step in steps[row[0] - 4:]:
                     step(conn)
             elif row[0] != SCHEMA_VERSION:

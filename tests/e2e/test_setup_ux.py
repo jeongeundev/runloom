@@ -672,7 +672,7 @@ def test_v24_copy_upgrades_to_v25_and_an_open_old_invite_can_be_reissued_and_rev
 
     conn = connect(db_path)
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 25
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION == 27
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         rows = {r["invite_id"]: r for r in conn.execute("SELECT * FROM member_invites")}
         assert rows["inv-0000000000a1"]["used_at"] is not None and rows["inv-0000000000a1"]["invitee_email"] is None

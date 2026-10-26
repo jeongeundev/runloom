@@ -358,6 +358,23 @@
 | `/api/v1` / `API_PREFIX` | 사람용 API·러너(`connector`·`executions`)·n8n 입구(`sources/{source}/chains`)가 함께 쓰는 JSON 주소 접두어(`contracts/v1.py` 상수, step 4·5). 화면·화면 폼 경로와 `/healthz` 에는 붙지 않는다. 옛 주소는 별칭 없이 404 | `v1 API`(계약 버전 `contract_version: 1` 과 혼동), `/api`(버전 없이) |
 | 요청 유형 목록 / `REQUEST_KIND_LABELS` | 담당 범위 화면 폼이 고르게 하는 요청 유형 — `investigation` 조사 · `bug_report` 버그 보고 · `data_check` 데이터 확인(step 6). 화면 폼에만 걸고 JSON API 는 식별자 형식만 본다. 목록 밖 기존 행은 `(목록 밖)` | `요청 종류`(업무 종류 `kind` 와 혼동 — 화면 말은 `요청 유형`), `카테고리` |
 
+## 계획 용어 — phase 25 인계 리포트 (미구현)
+
+설계는 [ARCHITECTURE "인계 리포트 — phase 25"](ARCHITECTURE.md#인계-리포트--phase-25)·[ADR-0033](adr/0033-handoff-report.md). 구현 step 이 만들 때 이 이름을 그대로 쓴다.
+
+| 용어 | 정의 | 금지 표현 |
+|---|---|---|
+| 인계 리포트 / `HandoffReport` | 판정을 통과한 실행 결과를 다음 사람이 이해한 상태로 이어받도록 원인 실행의 Agent 가 쓰는 구조화 리포트 — 절 여섯 개(바뀐 것·결정과 근거·정하지 않고 남긴 것·받는 사람이 결정·확인할 것·지킬 제약·남은 일)와 다이어그램, 주장마다 근거 ID(step 1). 행은 `handoff_reports`(v27, step 2) | `요약`, `문서화`, `보고서`(결과 봉투와 혼동), `report_output` |
+| 원본 리포트 / `original` | 판정 통과 때 중앙이 만드는 리포트 작업 종류 — 원인 실행의 Agent·러너가 결과 커밋의 읽기 전용 체크아웃에서 쓴다. 원인 실행마다 최신 원본 하나가 다음 단계에 전달된다 | `기본 리포트`, `최초 리포트` |
+| 맞춤 풀이 / `tailored` | 받는 사람이 [내게 맞춰 풀기]로 자기 Agent 에게 시키는 리포트 작업 종류 — 원본 리포트의 주장만 `claim:<id>` 로 인용해 받는 사람 관점으로 다시 쓴다. 다음 단계에 전달되지 않고 결정 답을 받지 않는다 | `번역`, `요약본`, `재작성` |
+| 리포트 작업 / `ReportJob` | claim 이 능력 `handoff_report` 를 선언한 러너에게 실행보다 먼저 주는 일 하나(원본·맞춤 풀이). 상태 `queued`·`leased`·`done`·`failed`·`timed_out`·`unavailable` — `Execution` 이 아니다(실행 이벤트·seq·시도 없음) | `실행`, `리포트 실행`, `run` |
+| 결정 항목 | 원본 리포트 `sections.to_confirm` 의 주장 하나 — 받는 사람이 확인하거나 다르게 정할 것. id 가 `item_id` | `할 일`(남은 일 절과 혼동), `질문`(정하지 않고 남긴 것 절과 혼동) |
+| 결정 답 / `handoff_report_decisions` | 결정 항목에 받는 사람(또는 관리자)이 남긴 답 — `confirmed` 확인함 · `changed` 다르게 정함(한 줄 이유 `note` 필수). 마지막 답이 유효하고 이력은 업무 이벤트 `report_decision`. 다음 단계 claim 때 `decisions.json` 으로 전달 | `승인`(검토 결과와 혼동), `댓글`, `피드백` |
+| 보낸 사람 | 원인 실행 Agent 의 주인 멤버. 리포트 다시 만들기를 할 수 있다 | `작성자`(리포트를 쓰는 것은 Agent), `발신자` |
+| 받는 사람 | 다음 단계 담당(그 단계 Agent 의 주인) → 없으면 업무 담당 → 없으면 없음(관리자만). 결정 답·맞춤 풀이·다시 만들기를 할 수 있다. 조회 순간에 정하고 저장하지 않는다 | `수신자`, `리뷰어`, `담당 범위의 받는 사람`(phase 21 — 다른 것) |
+| `handoff_report`(산출물 kind·러너 능력) | 리포트 JSON 산출물의 kind(`ARTIFACT_KINDS` 19번째, 이름 `handoff_report.json`, 원인 실행에 매단다)이자 러너 능력 값(`RUNNER_CAPABILITY_HANDOFF_REPORT`). 종류·규칙의 입력 종류 선택지에는 없다 | `report_output`(결과 봉투 산출물과 혼동), `요약`, `문서화`, `handoff_bundle`(입력 묶음 — 다른 것) |
+| 근거 확인 안 됨 | 주장의 근거 ID 가 비었거나, 형식이 틀렸거나, 확인 가능한 근거 집합에 없을 때의 화면 표시. 리포트를 거절하지 않는다 | `근거 없음`(근거가 비지 않아도 붙는다), `거짓`, `검증 실패` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.

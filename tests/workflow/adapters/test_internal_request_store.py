@@ -81,7 +81,7 @@ def test_v22_migration_adds_resumptions_and_preserves_workspace(tmp_path):
     conn.execute("INSERT INTO sessions (session_id, created_at) VALUES ('existing', '2026-10-04T00:00:00Z')")
     db.init_schema(conn)
     db.init_schema(conn)
-    assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 26
+    assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 27
     assert conn.execute('SELECT session_id FROM sessions').fetchone()[0] == 'existing'
     assert conn.execute('SELECT COUNT(*) FROM internal_request_resumptions').fetchone()[0] == 0
     assert conn.execute('PRAGMA foreign_key_check').fetchall() == []

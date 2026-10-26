@@ -44,6 +44,13 @@ case "$REL" in
     ;;
 esac
 
+# 받아 둔 서드파티 정적 파일(예: static/vendor/mermaid.min.js — sha256 은 그 기능의 테스트가 본다)
+case "/$REL" in
+  */static/vendor/*)
+    exit 0
+    ;;
+esac
+
 # 설정/타입/스타일 파일은 테스트 불필요 — 허용
 case "$REL" in
   *.json|*.css|*.scss|*.md|*.yml|*.yaml|*.env*|*.config.*|*tailwind*|*postcss*|*next.config*|*tsconfig*)

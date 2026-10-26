@@ -24,6 +24,7 @@ from workflow.adapters.github_client import GitHubRateLimited, IssuePage
 from workflow.contracts.github import GitHubSourceConfig
 from workflow.contracts.v1 import (
     BUILTIN_RULES,
+    RUNNER_CAPABILITY_HANDOFF_REPORT,
     ArtifactMeta,
     ChainCallback,
     ExecutionEvent,
@@ -549,6 +550,29 @@ def test_manual_review_gets_bundle_without_execution_and_is_runnable(conn, clien
     assert r["predecessor_execution_id"] == EXEC_T
 
 
+def test_human_started_successor_waits_at_claim_for_the_cause_report(conn, client, clock, make_worker, store):
+    """사람 [시작]으로 만든 실행도 원인 리포트가 끝날 때까지 claim 되지 않는다(D9 — 모든 착수 경로가 claim 을 지난다)."""
+    connector_id, token = seed_user_flow(conn, client, clock, r_run_mode="manual")
+    repo.record_runner_capabilities(conn, connector_id, [RUNNER_CAPABILITY_HANDOFF_REPORT])
+    conn.commit()
+    finish_triage(conn, store, clock)
+    make_worker().tick()
+    (report,) = _original_reports(conn, EXEC_T)
+    repo.set_agent_connection(conn, "agent-claude-mac", "online", utc_now())
+    log_in(client)
+    assert client.post(f"/tasks/{TASK_R}/run", follow_redirects=False).status_code == 303
+    (r,) = _executions(conn, TASK_R)
+    headers = bearer(token)
+    claim = {"contract_version": 1, "connector_id": connector_id, "capabilities": [RUNNER_CAPABILITY_HANDOFF_REPORT]}
+
+    assert client.post("/api/v1/connector/claim", json=claim, headers=headers).json()["report_id"] == report["report_id"]
+    assert client.post("/api/v1/connector/claim", json=claim, headers=headers).status_code == 204  # leased — 대기
+    failure = {"contract_version": 1, "failure_code": "agent_failed", "message": "실패"}
+    assert client.post(f"/api/v1/report-jobs/{report['report_id']}/failure", json=failure,
+                       headers=headers).status_code == 200
+    assert client.post("/api/v1/connector/claim", json=claim, headers=headers).json()["execution_id"] == r["execution_id"]
+
+
 def test_successor_under_direct_work_gets_bundle_without_execution(flow, worker, conn, store, clock):
     """직접 작업 중인 업무의 후속은 직접 실행 모드처럼 입력만 준비한다 — 사람이 자기 세션에서 하는 중(phase 16 step 8)."""
     work_item_id = repo.work_item_of_task(conn, TASK_R)["work_item_id"]
@@ -581,6 +605,32 @@ def test_generic_result_in_spec_passes_and_waits_for_review(flow, worker, conn, 
     task_r = _task(conn, TASK_R)
     assert task_r["finished_at"] is None and repo.get_execution(conn, r)["released_at"] is None
     assert worker.tick().generic_checked == 0  # 한 번만 판정
+
+
+def _original_reports(conn, execution_id: str) -> list:
+    return conn.execute("SELECT * FROM handoff_reports WHERE source_execution_id = ? AND job_type = 'original'",
+                        (execution_id,)).fetchall()
+
+
+def test_passed_generic_result_queues_a_report_and_a_failed_one_does_not(flow, worker, conn, store, clock):
+    """판정 지점 표 — 사용자 정의 종류 passed → 원본 리포트 작업(phase 25 step 5). 체크아웃은 실행의 folder_commit."""
+    connector_id, _token = flow
+    repo.record_runner_capabilities(conn, connector_id, [RUNNER_CAPABILITY_HANDOFF_REPORT])
+    conn.commit()
+    r = spawn_review(worker, conn, store, clock)
+
+    (row,) = _original_reports(conn, EXEC_T)
+    inputs = json.loads(row["inputs_json"])
+    assert (row["status"], row["agent_id"], row["connector_id"]) == ("queued", "agent-codex-mac", connector_id)
+    assert (inputs["local_registration_id"], inputs["checkout_commit"], inputs["base_commit"]) == (
+        LOCAL_REGISTRATION, None, None)
+    assert "outcome: ready_for_handoff" in inputs["request"] and "종류: 분류" in inputs["request"]
+    assert len(_executions(conn, TASK_R)) == 1  # 후속 착수는 그대로
+
+    finish_review(conn, store, clock, r, outcome="merged")  # 허용 밖 outcome — 판정 실패
+    worker.tick()
+    assert _verdict(conn, r)["outcome"] == "failed"
+    assert _original_reports(conn, r) == []
 
 
 def test_generic_result_outcome_outside_spec_fails(flow, worker, conn, store, clock):

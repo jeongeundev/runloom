@@ -483,3 +483,45 @@ def test_push_task_branch_refuses_bad_work_key(origin_clone):
     _, clone = origin_clone
     with pytest.raises(ValueError):
         git_ops.push_task_branch(clone, "task-3", work_key="main")
+
+
+# --- 인계 리포트 로컬 근거 (ARCHITECTURE "리포트 작업 실행 — 러너") -------------------------------------
+
+
+def _commit_file(repo, name: str, text: str, message: str) -> str:
+    (repo / name).write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+    return git_ops.head_sha(repo)
+
+
+def test_log_lines_lists_sha_and_subject_between_base_and_head_newest_first(repo):
+    base = git_ops.head_sha(repo)
+    first = _commit_file(repo, "a.py", "A = 1\n", "feat: a 추가\n\n본문은 빠진다")
+    second = _commit_file(repo, "b.py", "B = 1\n", "fix: b 고침")
+
+    assert git_ops.log_lines(repo, second, base=base) == [f"{second}\tfix: b 고침", f"{first}\tfeat: a 추가"]
+
+
+def test_log_lines_without_base_is_only_head_and_respects_limit(repo):
+    base = git_ops.head_sha(repo)
+    head = _commit_file(repo, "a.py", "A = 1\n", "feat: a")
+    _commit_file(repo, "b.py", "B = 1\n", "feat: b")
+
+    assert git_ops.log_lines(repo, head) == [f"{head}\tfeat: a"]
+    assert len(git_ops.log_lines(repo, git_ops.head_sha(repo), base=base, limit=1)) == 1
+
+
+def test_diff_stat_lines_are_limited(repo):
+    base = git_ops.head_sha(repo)
+    head = _commit_file(repo, "a.py", "A = 1\nB = 2\n", "feat: a")
+
+    lines = git_ops.diff_stat(repo, base, head)
+
+    assert any("a.py" in line for line in lines) and "changed" in lines[-1]
+    assert git_ops.diff_stat(repo, base, head, limit=1) == lines[:1]
+
+
+def test_log_lines_unknown_commit_raises_git_error(repo):
+    with pytest.raises(GitError):
+        git_ops.log_lines(repo, "f" * 40)
