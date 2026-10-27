@@ -61,7 +61,8 @@
       ],
       "concerns": [
         "docs/CONTRACT.md 251행(codex_jsonl 마스킹 'wfc_·sk-')과 docs/VERIFICATION_LOG.md 34행은 step 범위(ARCHITECTURE 만) 밖이라 고치지 않음 — CONTRACT 쪽은 wfm_ 추가가 맞을 수 있음"
-      ]
+      ],
+      "completed_at": "2026-10-27T23:41:05+0900"
     },
     {
       "step": 3,
