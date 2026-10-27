@@ -112,7 +112,8 @@
       "concerns": [
         "list 한 줄 꼴(' · ' 구분, '담당 <이름>')은 ARCHITECTURE 에 예시가 없어 정했다 — step 6 의 docs/CLI.md 가 이 꼴을 적어야 한다",
         "리포트 상태 본문(작성 중·없음) 앞에 빈 줄을 하나 두었다 — ARCHITECTURE 예시에는 done 꼴만 있다"
-      ]
+      ],
+      "completed_at": "2026-10-28T00:10:51+0900"
     },
     {
       "step": 5,
