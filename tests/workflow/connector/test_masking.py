@@ -1,9 +1,10 @@
-"""masking — 산출물·로그의 `wfc_`·`sk-` 마스킹과 Codex 환경변수 허용 목록 (ARCHITECTURE 인증 절)."""
+"""masking — 산출물·로그의 `wfc_`·`wfm_`·`sk-` 마스킹과 Codex 환경변수 허용 목록 (ARCHITECTURE 인증 절)."""
 
 from workflow.connector.masking import ENV_ALLOWLIST, codex_env, mask_secrets, registered_env
 
 WFC = "wfc_" + "a" * 43
 SK = "sk-proj-" + "b" * 40
+WFM = "wfm_" + "c" * 43
 
 
 def test_masks_connect_token_and_counts():
@@ -11,6 +12,14 @@ def test_masks_connect_token_and_counts():
 
     assert WFC not in text
     assert text == "Authorization: Bearer wfc_***\nnext line wfc_***"
+    assert count == 2
+
+
+def test_masks_member_token_and_counts():
+    text, count = mask_secrets(f"RUNLOOM_TOKEN={WFM} Bearer {WFM}")
+
+    assert WFM not in text
+    assert text == "RUNLOOM_TOKEN=wfm_*** Bearer wfm_***"
     assert count == 2
 
 
@@ -110,6 +119,19 @@ def test_registered_env_cannot_override_allowlist_or_reserved_names():
         "DATABASE_URL": DB_URL, "PATH": "/evil", "HOME": "/evil", "LANG": "C", "XDG_CONFIG_HOME": "/evil",
         "CODEX_HOME": "/evil", "WORKFLOW_SCRIPT_PACE_SECONDS": "0", "WORKFLOW_DB_PATH": "/x",
         "OPENAI_API_KEY": SK, "OPERATOR_TOKEN": "o", "1BAD": "x", "BAD-NAME": "x",
+        "RUNLOOM_TOKEN": WFM, "RUNLOOM_SERVER": "http://central.test",
     })
 
     assert env == {"DATABASE_URL": DB_URL}
+
+
+def test_registered_env_keeps_runloom_home():
+    """`RUNLOOM_HOME` 은 자격 파일 위치일 뿐 비밀값이 아니라 예약하지 않는다 (phase 26 D12)."""
+    assert registered_env({"RUNLOOM_HOME": "/tmp/rl"}) == {"RUNLOOM_HOME": "/tmp/rl"}
+
+
+def test_codex_env_does_not_pass_runloom_credentials():
+    """사람용 CLI 자격(`RUNLOOM_TOKEN`·`RUNLOOM_SERVER`)은 상속으로 Codex 에 새지 않는다 — 허용 목록 회귀 고정."""
+    env = codex_env({"PATH": "/usr/bin", "RUNLOOM_TOKEN": WFM, "RUNLOOM_SERVER": "http://central.test"})
+
+    assert env == {"PATH": "/usr/bin"}

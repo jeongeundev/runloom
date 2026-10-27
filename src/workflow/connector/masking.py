@@ -11,9 +11,10 @@ from collections.abc import Mapping
 
 SECRET_PATTERNS = (
     re.compile(r"wfc_[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"wfm_[A-Za-z0-9_\-]{8,}"),
     re.compile(r"(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{8,}"),  # 낱말 안의 `sk-`(`task-…` 의 끝)는 키가 아니다
 )
-_REPLACEMENTS = ("wfc_***", "sk-***")
+_REPLACEMENTS = ("wfc_***", "wfm_***", "sk-***")
 ENV_MASK_MIN_LENGTH = 8  # 이보다 짧은 값(`1`·`dev`)은 흔한 낱말이라 가리면 로그 전체가 망가진다
 
 ENV_ALLOWLIST = frozenset({
@@ -21,8 +22,10 @@ ENV_ALLOWLIST = frozenset({
 })
 
 # `--env` 로 넘길 수 없는 이름 (접두사 `WORKFLOW_` 도). 등록 때(cli) 거부하고 실행 때(`registered_env`) 다시 뺀다.
+# `RUNLOOM_TOKEN`·`RUNLOOM_SERVER` 는 사람용 CLI 자격 — 러너가 띄운 에이전트는 CLI 를 쓰지 않는다 (phase 26 D12).
 RESERVED_ENV_NAMES = frozenset({
     "OPERATOR_TOKEN", "DIAG_API_TOKEN", "OPENAI_API_KEY", "SESSION_SECRET", "WORKFLOW_GITHUB_TOKEN", "PATH", "HOME",
+    "RUNLOOM_TOKEN", "RUNLOOM_SERVER",
 })
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
