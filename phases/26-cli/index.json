@@ -137,7 +137,8 @@
       ],
       "concerns": [
         "respond 의 '같은 응답이 이미 저장되어 있습니다' 문구(created=false)는 매 실행 새 response_id 라 실제로 나올 길이 없어 테스트하지 않았다"
-      ]
+      ],
+      "completed_at": "2026-10-28T00:20:17+0900"
     },
     {
       "step": 6,
