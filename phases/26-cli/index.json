@@ -170,7 +170,8 @@
         "git+https://github.com/jeongeundev/runloom@<태그> 설치는 실행해 보지 않았다(저장소 접근 권한·빌드 백엔드 네트워크 필요)",
         "ARCHITECTURE 'CLI — phase 26' 첫 문단의 '이 시점에는 구현이 없다' 는 step 0 시점 서술이라 그대로 두었다",
         "Cloudflare Access 대안으로 CLI.md 에 Tailscale 등 Access 없는 주소를 적었다 — 실제 원격 접속 구성으로 확인하지 않았다"
-      ]
+      ],
+      "completed_at": "2026-10-28T00:30:07+0900"
     }
   ],
   "created_at": "2026-10-27T23:08:07+0900"
