@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -57,6 +58,8 @@ class StepExecutor:
     STEP_TIMEOUT = 1800  # 초. 한 step 의 에이전트 세션 상한
     FEAT_MSG = "feat({phase}): step {num} — {name}"
     CHORE_MSG = "chore({phase}): step {num} output"
+    PR_TEMPLATE = Path(".github") / "pull_request_template.md"
+    PR_TITLE_RE = re.compile(r"^(feat|fix|docs|refactor|chore|test)(\([^)]+\))?: \S")
     TZ = timezone(timedelta(hours=9))
 
     # step 을 위임할 에이전트. codex 가 기본이고, 사용량 한도에 걸리면 claude 로 넘어간다.
@@ -149,6 +152,66 @@ class StepExecutor:
             print(f"  ✓ PR 이미 있음 — push 로 갱신됨 ({branch})")
             return
 
+        written = self._write_pr_description(branch)
+        if written:
+            title, body = written
+        else:
+            print("  WARN: PR 본문 작성 세션이 형식에 맞는 결과를 남기지 않음 — step summary 로 조립")
+            title, body = f"feat: {self._phase_name}", self._fallback_pr_body()
+        r = self._run_gh("pr", "create", "--base", "main", "--head", branch,
+                         "--title", title, "--body", body)
+        if r.returncode != 0:
+            print(f"\n  ERROR: PR 생성 실패: {r.stderr.strip()}")
+            sys.exit(1)
+        print(f"  ✓ PR: {r.stdout.strip()}")
+
+    def _write_pr_description(self, branch: str) -> Optional[tuple[str, str]]:
+        """세션 하나가 phase 전체를 보고 PR 템플릿 칸을 채운다. 형식이 틀리면 None."""
+        template_file = Path(self._root) / self.PR_TEMPLATE
+        if not template_file.exists():
+            return None
+        template = template_file.read_text()
+        sections = [line for line in template.splitlines() if line.startswith("## ")]
+        with tempfile.TemporaryDirectory() as tmp:
+            title_file, body_file = Path(tmp) / "title.txt", Path(tmp) / "body.md"
+            self._run_engine(self._pr_prompt(branch, template, title_file, body_file))
+            if not (title_file.exists() and body_file.exists()):
+                return None
+            title = title_file.read_text().strip()
+            body = body_file.read_text().strip()
+        if not self.PR_TITLE_RE.match(title) or "\n" in title:
+            return None
+        if any(h not in body.splitlines() for h in sections):
+            return None
+        return title, body
+
+    def _pr_prompt(self, branch: str, template: str, title_file: Path, body_file: Path) -> str:
+        phase = f"phases/{self._phase_dir_name}/"
+        return (
+            f"{self._project} 프로젝트 phase `{self._phase_dir_name}` 의 하네스 실행이 끝났다. "
+            f"`{branch}` → `main` PR 의 제목과 본문을 써라.\n\n"
+            f"## 읽을 것\n\n"
+            f"- `{phase}README.md` — 왜·범위·결정\n"
+            f"- `{phase}index.json` — step 별 summary·concerns (step 세션이 다음 세션에게 남긴 메모다. "
+            f"그대로 옮기지 말고 사람이 읽을 문장으로 다시 써라)\n"
+            f"- `git diff --stat main...{branch}` 와 필요한 부분의 diff\n\n"
+            f"## 쓸 것\n\n"
+            f"제목 파일: {title_file}\n"
+            f"본문 파일: {body_file}\n\n"
+            f"- 제목: 한 줄, conventional commits 형식 + 영어 한 줄 설명 "
+            f"(예: `feat: add handoff reports with evidence before next stage starts`). "
+            f"squash 병합 때 main 커밋 첫 줄이 된다.\n"
+            f"- 본문: 아래 템플릿의 `## ` 칸을 순서·이름 그대로 두고 `<!-- -->` 안내를 따라 채운 뒤 안내 주석은 지운다. "
+            f"내용은 한국어. 빈 칸은 `None`.\n"
+            f"- 읽는 사람: 병합 전의 운영자, 나중에 맥락 없이 보는 다른 사람, 리뷰 봇. "
+            f"step 별 상세·파일·함수 목록은 넣지 않는다 (phases/ 와 diff 에 있다).\n"
+            f"- Needs decision 에는 사람이 판단해야 할 것만 `- [ ]` 로 적는다 — 설계(README 결정)에서 벗어난 것, "
+            f"정하지 않고 넘어간 것. 실제 환경에서 확인하지 못한 것은 Not verified 로.\n"
+            f"- 저장소 파일을 고치거나 커밋·push·PR 생성을 하지 마라. 위 두 파일만 쓴다.\n\n"
+            f"## 템플릿\n\n{template}"
+        )
+
+    def _fallback_pr_body(self) -> str:
         index = self._read_json(self._index_file)
         lines = [f"- step {s['step']} `{s['name']}` — {s.get('summary', '')}" for s in index["steps"]]
         body = f"phase `{self._phase_dir_name}` 하네스 실행 결과.\n\n" + "\n".join(lines)
@@ -156,12 +219,7 @@ class StepExecutor:
                     for c in self._as_list(s.get("concerns", []))]
         if concerns:
             body += "\n\n## 걸리는 점 (step 세션이 남김)\n\n" + "\n".join(concerns)
-        r = self._run_gh("pr", "create", "--base", "main", "--head", branch,
-                         "--title", f"feat: {self._phase_name}", "--body", body)
-        if r.returncode != 0:
-            print(f"\n  ERROR: PR 생성 실패: {r.stderr.strip()}")
-            sys.exit(1)
-        print(f"  ✓ PR: {r.stdout.strip()}")
+        return body
 
     def _checkout_branch(self):
         branch = f"feat-{self._phase_name}"
@@ -274,7 +332,7 @@ class StepExecutor:
             f"(예: [{{\"command\": \"python3 -m pytest -q tests/...\", \"exit_code\": 0}}]). "
             f"이 목록이 없거나 0 이 아닌 종료 코드가 있으면 완료로 인정하지 않는다\n"
             f"     + 끝냈지만 걸리는 점(정하지 않고 넘어간 것, 확인하지 못한 것)이 있으면 "
-            f"\"concerns\": [\"...\"] 에 적어라. PR 본문에 그대로 실린다\n"
+            f"\"concerns\": [\"...\"] 에 적어라. 마지막에 PR 본문을 쓰는 세션이 읽는다\n"
             f"   - {self.MAX_RETRIES}회 수정 시도 후에도 실패 → \"error\" + \"error_message\" 기록\n"
             f"   - 사용자 개입이 필요한 경우 (API 키, 인증, 수동 설정 등) → \"blocked\" + \"blocked_reason\" 기록 후 즉시 중단\n"
             f"6. 모든 변경사항을 커밋하라:\n"
