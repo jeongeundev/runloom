@@ -143,7 +143,34 @@
     {
       "step": 6,
       "name": "usage-docs",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-28T00:20:17+0900",
+      "summary": "docs/CLI.md 신설(설치 -e·git+URL@태그, /me API 토큰 읽기 전용/내 권한 전부 → pbpaste | runloom login, 자격 파일·RUNLOOM_TOKEN·SERVER·HOME·http 는 localhost 만, 명령별 예시 next·show·report·list·decide·respond·start·stop 은 render·main 문구 그대로, --json·exit code 표, 터미널 에이전트 지시 예·러너 에이전트 미사용, 하지 않는 것·Cloudflare Access 미지원); SELFHOST 업그레이드에 '- v27 그대로(phase 26)' 항목(스키마 그대로, install.sh 필수, 러너 재설치 선택 — RUNLOOM_ 이름 없이, CLI.md 링크); docs/README 문서 표에 CLI.md·adr/0034 행; ARCHITECTURE 'CLI — phase 26'·ADR-0034 를 main.py·render.py·config.py 와 대조 — 명령·인자·문구·exit code 불일치 없어 고치지 않음; runloom --help(editable 설치 상태) 와 python3 -m workflow.cli <명령> --help 출력이 CLI.md 와 일치",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m workflow.cli --help",
+          "exit_code": 0
+        },
+        {
+          "command": "runloom --help",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "CLI.md 의 출력 예시는 구현 문구로 손으로 맞춘 것이고 문서-구현 대조 테스트는 없다 — 문구가 바뀌면 문서가 낡을 수 있다",
+        "실제 셀프호스트(install.sh 재실행)·실제 Claude Code/Codex 에이전트로 runloom next→decide→start 흐름을 돌려 보지 않았다",
+        "git+https://github.com/jeongeundev/runloom@<태그> 설치는 실행해 보지 않았다(저장소 접근 권한·빌드 백엔드 네트워크 필요)",
+        "ARCHITECTURE 'CLI — phase 26' 첫 문단의 '이 시점에는 구현이 없다' 는 step 0 시점 서술이라 그대로 두었다",
+        "Cloudflare Access 대안으로 CLI.md 에 Tailscale 등 Access 없는 주소를 적었다 — 실제 원격 접속 구성으로 확인하지 않았다"
+      ]
     }
   ],
   "created_at": "2026-10-27T23:08:07+0900"

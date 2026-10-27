@@ -33,12 +33,14 @@
 | [github/](github/README.md) | GitHub 업무 순환 운영 런북 |
 | [n8n/](n8n/README.md) | n8n 입구·출구 연동 예시와 절차 |
 | [SELFHOST.md](SELFHOST.md) | 셀프호스트 설치·러너 연결·백업·업그레이드·문제 해결(`deploy/selfhost/`, phase 10) |
+| [CLI.md](CLI.md) | 사람용 CLI `runloom` — 설치·멤버 토큰 로그인·명령(`next`·`show`·`report`·`decide`·`respond`·`start`·`stop`·`list`)·exit code, 터미널 에이전트에게 쓰게 하기(phase 26) |
 | [VERIFICATION_LOG.md](VERIFICATION_LOG.md) | 실제 외부 도구를 호출한 검증의 원본 기록 |
 | [adr/](adr/) | 결정 기록. 0003(진단 모델)·0005(익명 세션)·0006(VM 배포)·0008(대본 데모)은 공모전 데모 구성의 기록이다 |
 | [adr/0019](adr/0019-service-selfhost-only.md) | `service` 브랜치는 셀프호스트만 — demo 모드·진단 데모·대본 에이전트 제거, 내장 종류 `bug_fix`·`code_review`, 스키마 v9(phase 13) |
 | [adr/0029](adr/0029-demo-shutdown-main-single-branch.md) | 공개 데모 종료 — VM 삭제, `main` 단일 브랜치, 데모 코드는 태그 `contest-demo-2026` |
 | [adr/0030](adr/0030-pr-ci-review-flow.md) | phase 결과는 PR 로 — CI·Claude 리뷰 필수 검사, squash 병합 |
 | [adr/0031](adr/0031-handoff-understanding-and-clients.md) | 제품 역할 — 이해한 상태로 이어받는 인계, API 우선, 웹 기본 · IDE 앱 선택, 구현 순서 API → 인계 리포트 → CLI → 앱 |
+| [adr/0034](adr/0034-cli.md) | 사람용 CLI — 내 다음 업무·인계 리포트 조회, 결정 답·사람 요청 응답·직접 작업 시작, `GET /api/v1/me`, 자격 파일·멤버 토큰 |
 | [archive/](archive/) | 이력. 현행 요구사항이 아니다 |
 
 ## 보관 자료
