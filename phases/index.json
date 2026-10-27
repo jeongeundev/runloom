@@ -126,6 +126,10 @@
       "dir": "25-handoff-report",
       "status": "completed",
       "completed_at": "2026-10-23T01:50:18+0900"
+    },
+    {
+      "dir": "26-cli",
+      "status": "pending"
     }
   ]
 }

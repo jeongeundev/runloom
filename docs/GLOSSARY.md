@@ -375,6 +375,18 @@
 | `handoff_report`(산출물 kind·러너 능력) | 리포트 JSON 산출물의 kind(`ARTIFACT_KINDS` 19번째, 이름 `handoff_report.json`, 원인 실행에 매단다)이자 러너 능력 값(`RUNNER_CAPABILITY_HANDOFF_REPORT`). 종류·규칙의 입력 종류 선택지에는 없다 | `report_output`(결과 봉투 산출물과 혼동), `요약`, `문서화`, `handoff_bundle`(입력 묶음 — 다른 것) |
 | 근거 확인 안 됨 | 주장의 근거 ID 가 비었거나, 형식이 틀렸거나, 확인 가능한 근거 집합에 없을 때의 화면 표시. 리포트를 거절하지 않는다 | `근거 없음`(근거가 비지 않아도 붙는다), `거짓`, `검증 실패` |
 
+## 계획 용어 — phase 26 CLI (미구현)
+
+설계는 [ARCHITECTURE "CLI — phase 26"](ARCHITECTURE.md#cli--phase-26)·[ADR-0034](adr/0034-cli.md). 구현 step 이 만들 때 이 이름을 그대로 쓴다.
+
+| 용어 | 정의 | 금지 표현 |
+|---|---|---|
+| `runloom` CLI / `workflow.cli` | 사람(과 그 사람이 터미널에 켜 둔 에이전트)이 멤버 토큰으로 `/api/v1` 을 부르는 명령줄 도구 — `login`·`logout`·`list`·`next`·`show`·`report`·`decide`·`respond`·`start`·`stop`(step 3~5). console script `runloom`, `python3 -m workflow.cli` 도 같다. `server`·`connector`·`domain`·`adapters` 를 import 하지 않는다 | `러너`, `연결 프로그램`, `connector`(러너 CLI 는 `python3 -m workflow.connector` — 다른 것), `에이전트`(CLI 를 쓰는 쪽이 에이전트다) |
+| 자격 파일 | CLI 가 `login` 성공 때 쓰는 `~/.config/runloom/credentials.json`(디렉터리 0700, 파일 0600, `RUNLOOM_HOME` 으로 위치를 바꿈) — `server`·`token`(`wfm_…`) 두 칸. `RUNLOOM_TOKEN`·`RUNLOOM_SERVER` 가 있으면 각각 먼저 쓴다. 러너의 `token.json`(`wfc_`)과 다른 파일이다 | `토큰 파일`(러너 `token.json` 과 혼동), `설정 파일`, `세션` |
+| 내 차례(`next` 후보) | `runloom next` 가 고르는 후보 — `GET /api/v1/work-items?filter=my_turn` 결과, 웹 업무 목록 `내 차례` 필터와 같은 뜻(상태 `내 차례` 이고 내가 받는 사람). 내가 직접 작업 중인 업무는 아니다. 그중 우선순위 → `updated_at` 오래된 순으로 하나 | `할당된 업무`, `내 업무`(담당 전부와 혼동), `대기열` |
+| 펼친 리포트 | `show`·`next` 가 본문까지 출력하는 리포트 — 최신 원본 `created_at` 이 가장 늦은 단계의 최신 원본과, 그 단계 원본을 기준으로 내가 요청한 최신 맞춤 풀이. 나머지 원본은 한 줄씩 | `최신 리포트`(단계마다 최신이 있다), `요약` |
+| 옛 리포트 기준 | 펼친 맞춤 풀이의 기준 원본이 펼친 원본이 아닐 때(보기 묶음 `stale` 이거나 `base_report_id` 가 다름) CLI 가 붙이는 표시. 웹 맞춤 풀이 목록의 같은 글자는 `stale` 만 본다 | `만료`, `오래됨`, `무효` |
+
 ## 경계가 헷갈리는 개념
 
 - `Execution`과 `run`: Execution은 이 제품이 만든 Task의 시도이고, run은 진단 대상 자동화(일일 보고서)의 실행이다. `run_id`는 진단 요청의 `target`에만 나온다.

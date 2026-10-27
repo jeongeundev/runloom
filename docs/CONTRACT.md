@@ -1805,3 +1805,49 @@ Agent 검사: 이 세션에 등록된 Agent 만. 검토 Agent 는 `code.review �
 ```jsonc
 { "code": "tailor_unavailable", "message": "API 연결형 에이전트", "field": "agent_id", "details": null }
 ```
+
+## 20. CLI — phase 26
+
+설계는 [ARCHITECTURE "CLI — phase 26"](ARCHITECTURE.md#cli--phase-26)·[ADR-0034](adr/0034-cli.md). CLI 는 아래 둘과 18·19절의 기존 사람용 API 만 부른다. 사람용 응답은 계약 모델이 없어 펜스를 `jsonc` 로 둔다 — 계약 fixture 테스트 대상이 아니다(18절과 같다).
+
+### 20.1 내 정보 — `GET /api/v1/me`
+
+`runloom login` 이 저장 전에 토큰을 확인하고, `show`·`next` 가 내 맞춤 풀이를 고를 때 부른다. 쿠키·`wfm_` 모두 받고 읽기 전용 토큰도 된다. 토큰 원문·해시·토큰 id·이메일은 싣지 않는다.
+
+```jsonc
+// 응답 200 — 멤버 토큰(Authorization: Bearer wfm_…)
+{ "member_id": "mem-1a2b3c4d5e6f", "display_name": "박검토", "role": "member", "token_scope": "read" }
+```
+
+```jsonc
+// 응답 200 — 로그인 쿠키(wf_login)
+{ "member_id": "mem-0f1e2d3c4b5a", "display_name": "김관리", "role": "admin", "token_scope": null }
+```
+
+```jsonc
+// 401 — 틀리거나 폐기한 토큰
+{ "code": "unauthenticated", "message": "유효한 멤버 토큰이 필요합니다.", "field": null, "details": null }
+```
+
+### 20.2 리포트 보기 묶음 — 요청 멤버 id
+
+보기 묶음(`GET /api/v1/reports/{report_id}`, 목록 `GET /api/v1/work-items/{key}/reports` 의 `latest`·`previous`·`tailored`, 결정 답·맞춤 풀이·다시 만들기 응답)에 `requested_by_member_id` 가 붙는다 — 원본은 null, 맞춤 풀이는 요청한 멤버의 id(`GET /api/v1/me` 의 `member_id` 와 비교한다). 표시 이름 `requested_by` 는 그대로다.
+
+```jsonc
+// 목록 응답 — 맞춤 풀이 부분
+{
+  "stages": [
+    { "title": "로그인 만료 처리", "kind": "bug_fix", "kind_label": "버그 수정",
+      "latest": { "report_id": "hrp-0a1b2c3d4e5f", "job_type": "original", "status": "done",
+                  "requested_by": null, "requested_by_member_id": null, "base_report_id": null, "stale": false,
+                  "created_at": "2026-10-22T09:00:00.000000Z" /* … 보기 묶음 나머지 */ },
+      "previous": [] }
+  ],
+  "tailored": [
+    { "report_id": "hrp-1b2c3d4e5f6a", "job_type": "tailored", "status": "done",
+      "requested_by": "박검토", "requested_by_member_id": "mem-1a2b3c4d5e6f",
+      "base_report_id": "hrp-0a1b2c3d4e5f", "stale": false,
+      "created_at": "2026-10-22T09:40:00.000000Z" /* … */ }
+  ]
+}
+```

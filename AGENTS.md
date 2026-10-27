@@ -12,9 +12,9 @@
 
 ## 아키텍처 규칙
 - CRITICAL: 도메인 규칙(`src/workflow/domain/`)은 FastAPI·sqlite3·HTTPX·subprocess·Git 을 import 하지 않는다. DB·HTTP·프로세스·Git 은 `adapters/`·`server/`·`connector/` 경계 모듈에서만 다룬다.
-- CRITICAL: `src/workflow/server/` 와 `src/workflow/connector/` 는 서로 import 하지 않고 `src/workflow/contracts/` 만 공유한다.
+- CRITICAL: `src/workflow/server/`·`src/workflow/connector/`·`src/workflow/cli/` 는 서로 import 하지 않고 `src/workflow/contracts/` 만 공유한다. `cli` 는 `domain`·`adapters` 도 import 하지 않는다 — `contracts`·HTTPX·표준 라이브러리만. [ADR-0034](docs/adr/0034-cli.md)
 - CRITICAL: 외부 입력(요청 본문·산출물·근거 문서·모델 응답)에서 셸 명령이나 파일 경로를 받아 실행하지 않는다. 실행 파일과 인자 배열은 어댑터가 고정한다.
-- CRITICAL: 비밀값(연결 토큰 `wfc_…`, 멤버 토큰 `wfm_…`, `OPERATOR_TOKEN`, `OPENAI_API_KEY`, `SESSION_SECRET`, `WORKFLOW_GITHUB_TOKEN`, GitHub App 개인 키·client secret·webhook secret·설치 토큰, 붙여 넣은 GitHub PAT)은 환경변수 또는 비밀 저장소(`adapters/secret_store.py`, 0600 파일)에서만 읽는다. DB·로그·응답·템플릿·백업·Codex 프로세스 환경에 넣지 않는다. 설치 토큰은 프로세스 메모리에만 둔다. [ADR-0017](docs/adr/0017-github-app-connection.md)
+- CRITICAL: 비밀값(연결 토큰 `wfc_…`, 멤버 토큰 `wfm_…`(CLI 는 자격 파일 `~/.config/runloom/credentials.json`(0600)과 환경변수 `RUNLOOM_TOKEN` 에서도 읽는다), `OPERATOR_TOKEN`, `OPENAI_API_KEY`, `SESSION_SECRET`, `WORKFLOW_GITHUB_TOKEN`, GitHub App 개인 키·client secret·webhook secret·설치 토큰, 붙여 넣은 GitHub PAT)은 환경변수 또는 비밀 저장소(`adapters/secret_store.py`, 0600 파일)에서만 읽는다. DB·로그·응답·템플릿·백업·Codex 프로세스 환경에 넣지 않는다. 설치 토큰은 프로세스 메모리에만 둔다. [ADR-0017](docs/adr/0017-github-app-connection.md)
 - 상태 전환·중복 방지·완료 판정은 `docs/ARCHITECTURE.md` 계약 v1 과 `docs/CONTRACT.md` 예시를 따른다. 모델의 "완료했다" 응답이나 프로세스 종료 코드만으로 완료 처리하지 않는다.
 - 이름은 `docs/GLOSSARY.md` 의 코드 식별자를 그대로 쓴다 (`Execution` ≠ `run`, `Agent` ≠ `connector`, `outcome` ≠ 상태).
 - 업무 종류·후속 규칙은 워크스페이스 등록 데이터다(ADR-0009). 새 단계를 붙일 때 `composition.py`·`worker.py` 에 종류 이름 분기를 늘리지 않는다 — 규칙 행으로 되는지가 설계 기준.
@@ -33,6 +33,7 @@ python3 -m pip install -e ".[dev]"                               # 의존성 설
 python3 -m uvicorn workflow.server.app:app --reload --port 8000  # 개발 서버: 중앙 웹/API
 python3 -m workflow.server.worker                                 # 중앙 워커
 python3 -m workflow.connector                                     # 로컬 연결 프로그램 (운영자 Mac)
+runloom --help                                                    # 사람용 CLI (docs/CLI.md)
                                                                   # 빌드: 없음
 python3 -m ruff check .                                           # 린트
 python3 -m pytest -q                                              # 테스트 — scripts/ + tests/ (pyproject testpaths)

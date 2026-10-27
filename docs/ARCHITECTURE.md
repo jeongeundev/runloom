@@ -4535,3 +4535,286 @@ step 6 의 러너 경로 둘·step 8 의 사람용 다섯·step 9 의 HTML 하�
 | 9 | report-web | 단계 줄·리포트 페이지·폼·mermaid·`…/html` | 주소 표 +1, `test_app.py` 행 수, `INPUT_KIND_CHOICES` |
 | 10 | ops-docs | SELFHOST "업그레이드" v27, AGENTS(바뀐 경우만) | — |
 | 11 | report-verify | `tests/e2e/test_handoff_report.py` | — |
+
+## CLI — phase 26
+
+[ADR-0034](adr/0034-cli.md) 를 따른다. step 목록은 [phase 26 README](../phases/26-cli/README.md). 이 시점에는 구현이 없다 — 아래 이름·인자·출력·문구·시그니처는 step 1~6 이 그대로 만든다(괄호의 숫자는 만드는 step). **README 와 다르면 이 절이 기준이다.** 계약 예시는 [CONTRACT](CONTRACT.md) 20절.
+
+### 한 줄 요약
+
+사람용 CLI `runloom` 은 `/api/v1` 을 멤버 토큰(`wfm_…`)으로 부르는 얇은 클라이언트다. `runloom next` 가 내 차례 업무 하나와 그 업무의 최신 인계 리포트(와 내 맞춤 풀이)를 한국어 텍스트 또는 `--json` 으로 내고, `decide`·`respond`·`start`·`stop` 으로 결정 답·사람 요청 응답·직접 작업 시작/그만을 한다. 서버는 `GET /api/v1/me` 와 리포트 보기 묶음의 `requested_by_member_id` 만 더한다(스키마 v27 그대로). 러너는 `RUNLOOM_*` 를 등록 `--env` 에서 막고 `wfm_` 를 로그에서 가린다.
+
+### 모듈 (step 3·4·5)
+
+`src/workflow/cli/` — 모두 `workflow.contracts`·`httpx`·표준 라이브러리만 import 한다(아래 "경계").
+
+| 파일 | step | 내용 |
+|---|---|---|
+| `__init__.py` | 3 | 모듈 설명 docstring 만 |
+| `__main__.py` | 4 | `python3 -m workflow.cli` — `from workflow.cli.main import main_entry` 후 `main_entry()` |
+| `config.py` | 3 | 자격 파일·환경변수·서버 주소 규칙 |
+| `client.py` | 3 | HTTP — `ApiClient`·`ApiError`·`Unreachable` |
+| `main.py` | 4·5 | argparse·명령·고르기(`pick_next`·`pick_reports`)·출력·exit code |
+| `render.py` | 4·5 | 텍스트 렌더 순수 함수(입력 dict → 문자열) |
+
+**`config.py`**
+
+| 이름 | 시그니처 · 동작 |
+|---|---|
+| `ConfigError` | `Exception` 하위. 메시지는 그대로 stderr 에 쓰는 한국어 한 줄(아래 "오류와 exit code") — `main` 이 exit 2 로 옮긴다 |
+| `Credentials` | `@dataclass(frozen=True) class Credentials: server: str; token: str = field(repr=False)` — `repr` 에 토큰이 없다 |
+| `credentials_path` | `credentials_path(env: Mapping[str, str]) -> Path` — `env["RUNLOOM_HOME"]` 이 비어 있지 않으면 `Path(그 값) / "credentials.json"`, 아니면 `Path(env["HOME"]) / ".config" / "runloom" / "credentials.json"`(`HOME` 이 없으면 `Path.home()`). `XDG_CONFIG_HOME` 은 보지 않는다 |
+| `normalize_server` | `normalize_server(url: str) -> str` — 아래 "서버 주소 규칙". 위반이면 `ConfigError` |
+| `load` | `load(env: Mapping[str, str]) -> Credentials` — 토큰 = `env["RUNLOOM_TOKEN"]`(비어 있지 않으면) 아니면 파일 `token`, 서버 = `env["RUNLOOM_SERVER"]`(비어 있지 않으면) 아니면 파일 `server` — 각각 따로. 둘 다 환경변수에 있으면 파일을 열지 않는다. 파일을 열어야 할 때: 없으면 `ConfigError`(로그인 안내), 모드에 `0o077` 비트가 있으면 `ConfigError`(chmod 안내), JSON 이 아니거나 `server`·`token` 이 문자열이 아니면 `ConfigError`(다시 로그인 안내). 서버는 어느 출처든 `normalize_server` 를 거친다 |
+| `save` | `save(env: Mapping[str, str], creds: Credentials) -> Path` — 디렉터리 `mkdir(parents=True, exist_ok=True)` 뒤 `chmod 0o700`, 같은 디렉터리의 임시 파일을 `os.open(..., O_WRONLY \| O_CREAT \| O_EXCL, 0o600)` 로 쓰고 `os.replace` 로 교체. 내용 `{"server": …, "token": …}`(`indent=2`). 저장한 경로를 돌려준다 |
+| `delete` | `delete(env: Mapping[str, str]) -> bool` — 파일이 있었으면 지우고 True, 없으면 False |
+
+**`client.py`**
+
+| 이름 | 시그니처 · 동작 |
+|---|---|
+| `ApiError` | `Exception` 하위, 속성 `status: int`·`code: str`·`message: str`. 2xx 가 아닌 응답 — 본문이 JSON 객체이고 `code`·`message` 가 있으면 그 값, 아니면 `code = "http_error"`, `message` = 상태 문구(`response.reason_phrase`). `field`·`details` 는 읽지 않는다 |
+| `Unreachable` | `Exception` 하위, 속성 `server: str`·`reason: str`(`연결 실패` \| `시간 초과`). `httpx.TimeoutException` → `시간 초과`, 그 밖 `httpx.TransportError` → `연결 실패` |
+| `ApiClient` | `ApiClient(server: str, token: str, *, http: httpx.Client \| None = None, timeout: float = 30.0)`. `http` 가 있으면 그 클라이언트를 쓰고(테스트는 `fastapi.testclient.TestClient(app)` — 기준 주소는 그 클라이언트의 것, `server` 는 오류 문구에만), 없으면 `httpx.Client(base_url=server, timeout=timeout)` 를 만든다 |
+| `ApiClient.get` | `get(path: str, params: Mapping[str, str] \| None = None) -> Any` |
+| `ApiClient.put` · `post` | `put(path: str, json: Any = None) -> Any` · `post(path: str, json: Any = None) -> Any` — `json` 이 None 이면 본문 없이 보낸다 |
+| `ApiClient.delete` | `delete(path: str) -> Any` |
+
+공통: 요청 주소 = `contracts.v1.API_PREFIX + path`(`path` 는 `/me`·`/work-items/RUN-12` 처럼 접두어 뒤 부분), 헤더 `Authorization: Bearer <token>`. 2xx 면 JSON 본문(204·빈 본문은 None). 토큰을 로그·예외 문구·`repr` 에 넣지 않는다. 자동 재시도 없음. 응답의 모르는 키는 무시한다(서버가 더 새 버전일 수 있다).
+
+**`main.py`**
+
+| 이름 | 시그니처 · 동작 |
+|---|---|
+| `main` | `main(argv: list[str] \| None = None, *, env: Mapping[str, str] \| None = None, stdin: TextIO \| None = None, stdout: TextIO \| None = None, stderr: TextIO \| None = None, http: httpx.Client \| None = None) -> int` — None 이면 각각 `sys.argv[1:]`·`os.environ`·`sys.stdin`·`sys.stdout`·`sys.stderr`·새 클라이언트. **`SystemExit` 을 밖으로 던지지 않고 exit code 를 돌려준다** |
+| `main_entry` | `main_entry() -> NoReturn` — `sys.exit(main())`. pyproject `[project.scripts] runloom = "workflow.cli.main:main_entry"`(step 4), `__main__.py` 도 이것을 부른다 |
+| `pick_next` | `pick_next(items: list[dict]) -> tuple[dict \| None, int]` — 아래 "next 고르기". (고른 항목 또는 None, 나머지 건수) |
+| `pick_reports` | `pick_reports(reports: dict, *, member_id: str) -> tuple[dict \| None, dict \| None]` — 아래 "리포트 고르기". (펼칠 원본 보기 묶음, 내 맞춤 풀이 보기 묶음) |
+
+argparse: `argparse.ArgumentParser` 하위 클래스(`main.py` 안 `_Parser`)가 `_print_message`(주입된 `stdout`·`stderr` 로 — 도움말은 `stdout`, 사용법 오류는 `stderr`)·`exit`(내부 예외로 status 를 넘김)·`error`(사용법 + `runloom: error: …` 를 `stderr` 에 쓰고 2)를 덮는다. 그래서 `--help` 는 주입된 `stdout` + 0, 사용법 오류는 주입된 `stderr` + 2 이고 `main` 은 반환값으로 끝난다. 하위 명령은 `add_subparsers(dest="command", required=True)`, `prog="runloom"`. 공통 `--json` 은 모든 하위 명령이 받는다(부모 파서 `parents=[…]`) — `runloom next --json`. 최상위 `runloom --json next` 꼴은 받지 않는다.
+
+`render.py`(순수 함수 — 모델이 쓴 글은 그대로 출력하고 이스케이프·실행하지 않는다):
+
+| 이름 | 시그니처 |
+|---|---|
+| `work_line` | `work_line(item: dict) -> str` — 목록 한 줄 |
+| `work_list` | `work_list(body: dict) -> str` — 목록 응답 전체(없으면 `업무가 없습니다.`) |
+| `work_detail` | `work_detail(detail: dict) -> str` — 업무 상세 텍스트 |
+| `report` | `report(view: dict, *, old_base: bool = False) -> str` — 리포트 한 건(원본·맞춤 풀이) |
+| `report_status` | `report_status(view: dict) -> str` — `작성 중` \| `완성` \| `리포트 없음({reason})` |
+| `show` | `show(detail: dict, reports: dict, report: dict \| None, tailored: dict \| None) -> str` — `work_detail` + 리포트 절(아래) |
+
+### 경계 (step 3)
+
+- `src/workflow/cli/*.py` 는 `workflow.server`·`workflow.connector`·`workflow.domain`·`workflow.adapters` 를 import 하지 않는다. `src/workflow/server`·`src/workflow/connector` 는 `workflow.cli` 를 import 하지 않는다. `tests/workflow/cli/test_boundary.py` 가 `ast` 로 단정한다(기존 `tests/test_packages.py` 의 정규식 검사는 그대로).
+- 그래서 리포트 절 제목·상태 문구(`web._REPORT_SECTIONS`·`report.html` 과 같은 글자)와 역할 값은 `cli` 가 따로 가진다 — 역할은 번역하지 않고 API 의 `role` 값(`admin`·`member`) 그대로 쓴다.
+- 테스트(`tests/workflow/cli/`)는 서버 앱을 띄워도 된다. 서버 픽스처는 `tests/workflow/cli/conftest.py` 가 `tests.workflow.server.conftest` 에서 다시 내보낸다(step 3).
+
+### 자격 파일·환경변수 (step 3·4)
+
+| 항목 | 값 |
+|---|---|
+| 경로 | `~/.config/runloom/credentials.json`, `RUNLOOM_HOME` 이 있으면 `$RUNLOOM_HOME/credentials.json` |
+| 권한 | 디렉터리 0700, 파일 0600. 읽을 때 `mode & 0o077` 이 0 이 아니면 거절(exit 2) |
+| 형식 | `{"server": "https://runloom.example.com", "token": "wfm_…"}` — 다른 칸 없음 |
+| 쓰기 | `login` 성공 때만, 임시 파일 → `os.replace`(원자 교체) |
+| 지우기 | `logout` — 파일만. 디렉터리는 남긴다 |
+| `RUNLOOM_TOKEN` | 있으면 파일의 `token` 보다 먼저 |
+| `RUNLOOM_SERVER` | 있으면 파일의 `server` 보다 먼저, "서버 주소 규칙" 적용(위반 exit 2) |
+| `RUNLOOM_HOME` | 자격 파일 디렉터리 덮어쓰기(테스트·여러 서버용). 비밀값이 아니다 |
+
+### 서버 주소 규칙 (step 3)
+
+`normalize_server(url)`(`urllib.parse.urlsplit`):
+
+1. 스킴이 `https` 면 허용. `http` 면 호스트(`hostname`, 소문자)가 `localhost`·`127.0.0.1`·`::1` 일 때만 허용. 그 밖 스킴(`ftp` 등)·호스트 없음은 거절.
+2. 경로는 비었거나 `/` 만 허용(끝 `/` 는 지운다). 그 밖 경로·쿼리·프래그먼트가 있으면 거절.
+3. 결과 = `<스킴>://<netloc>`. 예: `http://localhost:8000/` → `http://localhost:8000`, `http://[::1]:8000` 허용, `https://runloom.example.com` 허용, `http://example.com`·`http://192.168.0.5:8000`·`ftp://x`·`https://x/path`·`https://x?a=1` 거절.
+
+### 명령 표 (step 4·5)
+
+모든 명령은 `--json` 을 받는다. 경로는 `/api/v1` 뒤 부분. "자격" = `config.load(env)` 를 쓰는 명령(없으면 exit 2 + 로그인 안내).
+
+| 명령 | 인자 | 부르는 API | 텍스트 출력 | `--json` | step |
+|---|---|---|---|---|---|
+| `login` | `--server URL`(필수). 토큰은 표준 입력 첫 줄(앞뒤 공백 제거, 비면 exit 2) | `GET /me`(입력 토큰·정규화한 주소로) | `<display_name>(<role>, 토큰 <token_scope>)로 로그인했습니다.` | `/me` 응답 | 4 |
+| `logout` | 없음 | 없음 | 지웠으면 `로그인 정보를 지웠습니다: <경로>`, 없었으면 `지울 로그인 정보가 없습니다.` 다음 줄 `서버의 토큰은 웹 /me 에서 폐기하세요.` (exit 0) | `{"deleted": bool}` | 4 |
+| `list` | `--filter`(기본 `all`), `--repository OWNER/NAME`, `--closed` — argparse `choices` 없음, 값 검사는 서버(422 → exit 1) | `GET /work-items?filter=…[&repository=…][&closed=…]`(준 것만) | `render.work_list` | 응답 그대로 | 4 |
+| `next` | 없음 | `GET /work-items?filter=my_turn` → 고른 업무로 `show` 와 같은 세 호출 | 고른 업무의 `show` 출력 + 나머지가 있으면 빈 줄 뒤 `내 차례 <n>건 더 — runloom list --filter my_turn`. 없으면 `내 차례 업무가 없습니다.`(exit 0) | 아래 "`--json`" | 4 |
+| `show` | `KEY`(예 `RUN-12`) | `GET /work-items/{key}` · `GET /work-items/{key}/reports` · `GET /me` | `render.show` | 아래 "`--json`" | 4 |
+| `report` | `REPORT_ID` | `GET /reports/{report_id}` | `render.report(view, old_base=view["stale"])` | 응답 그대로 | 4 |
+| `decide` | `REPORT_ID ITEM_ID` + 상호 배타 필수 그룹 `--confirm` \| `--change TEXT`(없거나 둘 다면 exit 2) | `PUT /reports/{report_id}/decisions/{item_id}` 본문 `{"answer": "confirmed"}` 또는 `{"answer": "changed", "note": TEXT}` | `답을 저장했습니다.` + 빈 줄 + `render.report(응답)` | 응답 그대로 | 5 |
+| `respond` | `REQUEST_ID ACTION`(`ACTION` 은 `choices` 없음 — 서버 검사), `--text TEXT`(기본 `""`), `--agent AGENT_ID` | `GET /human-requests` → 그 `request_id` 의 `revision` → `POST /human-requests/{request_id}/responses` 본문 `{"response_id": uuid.uuid4().hex, "expected_revision": revision, "action": ACTION, "text": TEXT}` + `--agent` 를 줄 때만 `"agent_id"` | `created` 가 참이면 `응답을 저장했습니다: <request_id> <action>`, 거짓이면 `같은 응답이 이미 저장되어 있습니다: <request_id>`. 목록에 없으면 stderr `열린 사람 요청 <request_id> 가 없습니다.` exit 1 | POST 응답 그대로 | 5 |
+| `start` | `KEY` | `PUT /work-items/{key}/direct-work` | `직접 작업을 시작했습니다.` 다음 줄 `브랜치: <detail.direct.branch>`. 로컬 git 은 실행하지 않는다 | 응답 그대로 | 5 |
+| `stop` | `KEY` | `DELETE /work-items/{key}/direct-work` | `직접 작업을 그만두었습니다.` | 응답 그대로 | 5 |
+
+`--json` 출력은 `json.dumps(obj, ensure_ascii=False, indent=2)` + 줄바꿈. 텍스트 출력도 줄바꿈으로 끝난다.
+
+### `--json` (D23, step 4)
+
+단일 API 호출 명령은 응답 본문 그대로. 여러 호출을 합치는 `show`·`next` 는 아래 객체 — `detail` = `GET /work-items/{key}` 응답, `reports` = `GET /work-items/{key}/reports` 응답, `report` = "리포트 고르기" 의 펼친 원본 보기 묶음(없으면 null), `tailored` = 내 맞춤 풀이 보기 묶음(없으면 null). `next` 만 `more_my_turn`(고른 것 밖의 내 차례 건수)을 더한다. `/me` 응답은 넣지 않는다.
+
+```jsonc
+// runloom next --json — 업무 있음
+{
+  "detail": { "work": { "key": "RUN-12", "title": "로그인 만료 처리", "priority": "high", "status": "내 차례", /* … */ },
+              "stages": [ /* … */ ], "direct": null, "open_requests": [ /* … */ ], "actions": ["assign", "start_direct"] /* … 업무 상세 응답 전체 */ },
+  "reports": { "stages": [ { "title": "…", "kind": "bug_fix", "kind_label": "버그 수정", "latest": { /* 보기 묶음 */ }, "previous": [] } ],
+               "tailored": [] },
+  "report": { "report_id": "hrp-0a1b2c3d4e5f", "job_type": "original", "status": "done", /* … 보기 묶음 전체 */ },
+  "tailored": null,
+  "more_my_turn": 2
+}
+```
+
+```jsonc
+// runloom next --json — 내 차례 업무 없음 (exit 0)
+{ "detail": null, "reports": null, "report": null, "tailored": null, "more_my_turn": 0 }
+```
+
+`show --json` 은 같은 객체에서 `more_my_turn` 만 없다.
+
+### next 고르기 (D14, step 4)
+
+`pick_next(items)`: `GET /work-items?filter=my_turn` 의 `items` 를 (우선순위 순위 `high`=0·`normal`=1·`low`=2, `updated_at` 오름차순)으로 **안정 정렬**해 첫 항목을 고른다(둘 다 같으면 API 목록 순서 — 키 번호 큰 것 먼저). 나머지 건수 = `len(items) - 1`(없으면 0). 후보는 서버의 `my_turn` 필터 그대로다 — 웹 `내 차례` 필터와 같은 뜻이고, 내가 직접 작업 중인 업무(상태 `직접 작업 중`)는 들어오지 않는다. `updated_at` 은 RFC 3339 문자열 비교로 정렬한다(서버가 같은 형식으로 낸다). 웹 목록 순서(같은 우선순위에서 최근 변경 먼저)와 다를 수 있다.
+
+### 리포트 고르기 (D16·D17, step 4)
+
+`pick_reports(reports, *, member_id)` — `reports` = `GET /work-items/{key}/reports` 응답, `member_id` = `GET /me` 의 `member_id`.
+
+1. **펼칠 단계** = `stages` 중 `latest` 가 null 이 아닌 것에서 `latest.created_at` 이 가장 늦은 단계(같으면 목록에서 뒤의 것). 펼칠 원본 = 그 단계의 `latest`(상태와 무관 — `done` 이 아니면 상태만 보인다). 단계가 없으면 (None, None).
+2. **내 맞춤 풀이** = `tailored` 중 `requested_by_member_id == member_id` 이고 `base_report_id` 가 그 단계의 `latest.report_id` 또는 `previous[].report_id` 중 하나인 것에서 `created_at` 이 가장 늦은 것(없으면 None). 기준이 최신 원본이 아니어도(이전 원본이어도) 고른다. 남이 요청한 맞춤 풀이는 펼치지 않는다.
+3. **옛 리포트 기준** = 맞춤 풀이의 `stale` 이 참이거나 `base_report_id != 펼친 원본.report_id`. (`stale` 은 같은 원인 실행 기준이라 재작업으로 원인 실행이 바뀐 단계에서는 거짓일 수 있다 — ADR-0034 사실 1.) `render.show` 가 `render.report(tailored, old_base=…)` 로 넘긴다.
+4. **나머지 원본** = 모든 단계의 원본 중 펼친 원본을 뺀 것 — 단계 순서대로, 단계 안에서 `latest` 먼저 그다음 `previous`(최근순). 한 줄씩 `- <kind_label> · <report_id> · <report_status>`, 이전 원본이면 끝에 ` · 이전`.
+
+### 업무 상세 텍스트 (D15, step 4)
+
+`render.work_detail(detail)` — `detail.work` 등에서(값이 null 이면 `없음`):
+
+```text
+# RUN-12 로그인 만료 처리
+- 종류: 버그 수정 (bug_fix)
+- 우선순위: high
+- 담당: 김개발 (member)
+- 상태: 내 차례 — 검토 결과를 확인해 주세요
+- 다음 할 일: 검토 결과 확인
+- 원본: https://github.com/acme/api/issues/12
+- 직접 작업: 김개발 · 브랜치 run-12-login-expiry
+- 할 수 있는 행동: assign, set_priority, start_direct
+
+## 열린 사람 요청
+- hrq-1a2b3c4d5e6f · input_missing · 어느 환경에서 재현되나요?
+  행동: resume, close
+```
+
+- `담당` = `work.assignee` 가 null 이면 `없음`, 아니면 `<name> (<type>)`. `상태` = `<status> — <status_reason>`(이유가 비면 `<status>` 만). `원본` = `source.url`, 없으면 `source.key`, 둘 다 없으면 `없음`.
+- `직접 작업` 줄은 `detail.direct` 가 있을 때만 — `<member_name> · 브랜치 <branch>`.
+- `할 수 있는 행동` = `detail.actions` 를 `, ` 로(비면 `없음`).
+- `## 열린 사람 요청` 절: `open_requests` 마다 `- <request_id> · <code> · <question>` 과 다음 줄 `  행동: <actions 를 , 로>`. 없으면 절 아래 `없음`.
+
+### 리포트 텍스트 (D16~D18, step 4)
+
+`render.show` 는 `work_detail` 뒤에 빈 줄 + 리포트 절:
+
+- 리포트가 하나도 없으면(펼칠 원본 None) `## 인계 리포트` 다음 줄 `인계 리포트 없음`.
+- 있으면 `render.report(펼친 원본)`, 내 맞춤 풀이가 있으면 빈 줄 + `render.report(맞춤 풀이, old_base=…)`, 나머지 원본이 있으면 빈 줄 + `## 다른 리포트` 와 "리포트 고르기" 4 의 줄들.
+
+`render.report(view, *, old_base=False)`:
+
+```text
+## 인계 리포트 · 버그 수정 · 시도 1 · hrp-0a1b2c3d4e5f
+보낸 사람 김개발 · 받는 사람 박검토
+
+### 바뀐 것
+- [c1] 로그인 만료 시 토큰 갱신을 한 번만 시도하도록 바꿨다
+  왜: 갱신 실패가 무한 재시도로 이어졌다는 이슈 본문
+  근거: commit:3f2a9c1, source:work
+
+### 결정과 근거
+- [d1] 재시도 횟수는 설정값이 아니라 상수 1 로 둔다
+  왜: 기록 없음
+  근거: artifact:art-7c8d9e0f1a2b · 근거 확인 안 됨
+
+### 정하지 않고 남긴 것
+- [q1] 갱신 실패 시 사용자에게 보일 문구는 정하지 않았다
+  왜: 기록 없음
+  근거: 없음 · 근거 확인 안 됨
+
+### 받는 사람이 결정·확인할 것
+- [t1] 로그아웃 대신 로그인 화면으로 보내는 동작이 맞는지 확인
+  왜: PR 리뷰 코멘트에서 의견이 갈렸다
+  근거: pr:42
+  답: 다르게 정함 — 로그인 화면이 아니라 홈으로 보낸다 · 박검토 · 2026-10-22T09:30:00.000000Z
+
+### 지킬 제약
+- [k1] 토큰 저장 형식은 바꾸지 않는다
+  왜: 기록 없음
+  근거: verification
+
+### 남은 일
+없음
+
+### 다이어그램
+flowchart LR
+  A[요청] --> B{토큰 만료?}
+```
+
+- **머리 줄**: 원본 = `## 인계 리포트 · <stage.kind_label> · 시도 <source.attempt_no> · <report_id>`, 맞춤 풀이 = `## 맞춤 풀이 · <requested_by 또는 이름 없음> · <agent.name 또는 에이전트 없음> · <report_id>`(기준 원본 `base_report_id` 는 둘째 줄 `원본 리포트: <base_report_id>`). `old_base` 면 머리 줄 끝에 ` · 옛 리포트 기준`. 웹 리포트 페이지 머리와 같은 순서다.
+- **둘째 줄**(원본): `보낸 사람 <parties.sender 또는 없음> · 받는 사람 <parties.recipient 또는 없음(관리자)>`. `pr_evidence_error` 가 있으면 다음 줄에 그 글 그대로.
+- **상태**: `status` 가 `queued`·`leased` 면 본문 대신 `리포트 작성 중`, `done` 이 아니면 `리포트 없음(<reason>)` — 웹 `report.html` 과 같은 글자. 한 줄 목록의 `report_status` 는 `작성 중`·`완성`·`리포트 없음(<reason>)`.
+- **절 제목**(`###`, 웹 `web._REPORT_SECTIONS` 와 같은 글자·순서): `changes` `바뀐 것` · `decisions` `결정과 근거` · `open_questions` `정하지 않고 남긴 것` · `to_confirm` `받는 사람이 결정·확인할 것` · `constraints` `지킬 제약` · `remaining_work` `남은 일`. 빈 절은 `없음`. `report.diagram` 이 있으면 마지막에 `### 다이어그램` + 텍스트 그대로.
+- **주장**: `- [<id>] <text>`, `  왜: <why>`(null 이면 `기록 없음`), `  근거: <evidence 를 , 로>`(비면 `없음`), `evidence_check.claims[<id>].verified` 가 참이 아니면 근거 줄 끝에 ` · 근거 확인 안 됨`.
+- **결정 항목**(원본 `to_confirm` 만 — 맞춤 풀이는 답이 없다): 주장 아래 `  답: ` + `decisions` 에서 `item_id == id` 인 것 — `confirmed` 면 `확인함 · <answered_by> · <answered_at>`, `changed` 면 `다르게 정함 — <note> · <answered_by> · <answered_at>`, 없으면 `아직 없음`. 시각은 API 값(RFC 3339) 그대로.
+- 모델이 쓴 글(`text`·`why`·`note`·`diagram`·`reason`)은 그대로 출력한다 — 셸·마크다운 이스케이프 없음, 실행 없음.
+
+### 오류와 exit code (D24·D25, step 3·4·5)
+
+| exit | 언제 | stderr |
+|---|---|---|
+| 0 | 성공(`next` 의 내 차례 없음, `logout` 의 파일 없음 포함), `--help` | — |
+| 1 | 서버 오류 응답(`client.ApiError`) | `오류 <status> <code>: <message>` 한 줄. 401 이면 다음 줄 `runloom login 으로 다시 로그인하세요.` |
+| 1 | 네트워크 실패·시간 초과(`client.Unreachable`, 30초) | `서버에 연결할 수 없습니다(<연결 실패 \| 시간 초과>): <server>` |
+| 1 | `respond` 의 요청이 열린 목록에 없음 | `열린 사람 요청 <request_id> 가 없습니다.` |
+| 2 | 사용법 오류(argparse) | argparse 사용법 + `runloom: error: …` |
+| 2 | 설정 오류(`config.ConfigError`) | 아래 문구 |
+
+`ConfigError` 문구:
+
+| 언제 | 문구 |
+|---|---|
+| 자격 없음(파일 없음이고 환경변수도 모자람) | `runloom login --server URL 로 먼저 로그인하세요.` |
+| 파일 권한 | `자격 파일 권한이 너무 넓습니다: <경로> — chmod 600 <경로>` |
+| 파일 형식 | `자격 파일을 읽을 수 없습니다: <경로> — runloom login --server URL 로 다시 로그인하세요.` |
+| 서버 주소 스킴·호스트 | `서버 주소는 https:// 여야 합니다(http:// 는 localhost·127.0.0.1·::1 만): <url>` |
+| 서버 주소 경로·쿼리 | `서버 주소에 경로·쿼리를 붙이지 마세요: <url>` |
+| `login` 표준 입력이 빔 | `토큰을 표준 입력으로 주세요 (예: pbpaste \| runloom login --server URL).` |
+
+- 읽기 전용 토큰으로 `decide`·`respond`·`start`·`stop` → 서버 403 `token_read_only` 가 위 형식 그대로(`오류 403 token_read_only: 읽기 전용 토큰입니다`). 그 밖 권한(받는 사람이 아님 등)도 서버 403 을 그대로 보인다.
+- 대화형 프롬프트는 없다(`login` 의 표준 입력 제외). 자동 재시도 없음. 토큰 원문은 어떤 출력(stdout·stderr·`--json`)에도 넣지 않는다 — `login --json` 은 `/me` 응답이라 토큰이 없다.
+- `login` 실패(401 등)면 파일을 쓰지 않는다.
+
+### 서버 변경 (D3·D28, step 1)
+
+- **`GET /api/v1/me`** — `server/member_token_api.py` 의 두 번째 라우터 `me_router = APIRouter(prefix="/me")`, `@me_router.get("")`, 의존성 `require_member_api`(쿠키·`wfm_` 모두, 읽기 전용 토큰 허용, 미인증 401 `unauthenticated`). `app.py` 가 `app.include_router(member_token_api.me_router, prefix=API_PREFIX)` 로 등록한다. 기존 `router`(`/me/tokens`)의 경로·동작은 그대로.
+  - 응답 200 `{"member_id": member.member_id, "display_name": member.display_name, "role": member.role, "token_scope": member.token_scope}` — `token_scope` 는 `read`·`full`, 쿠키 로그인은 null. 토큰 원문·해시·토큰 id·이메일·비밀번호 해시·`session_id` 는 싣지 않는다. 예시는 CONTRACT 20.1.
+- **보기 묶음 `requested_by_member_id`** — `handoff_reports.report_view` 반환에 칸을 더한다(원본 = None, 맞춤 풀이 = `report["requested_by_member_id"]`). 기존 `requested_by`(표시 이름)는 그대로, 웹 템플릿은 이 칸을 쓰지 않는다. 리포트 API 의 모든 보기 묶음 응답(목록의 `latest`·`previous`·`tailored`, 조회, 결정 답·맞춤 풀이·다시 만들기 응답)에 함께 실린다. 예시는 CONTRACT 20.2.
+- **주소 표**: step 1 이 위 "사람용 API — phase 24" 의 "### 주소 표" **"새로 여는 라우트" 표에** `/api/v1/me` · GET · 로그인 · 쿠키·`wfm_` · 200 · `member_token_api`(phase 26 step 1) 행을 더하고 `tests/workflow/server/test_app.py` 의 행 수 단정을 `39 + 15 + 2 + 5 + 1 + 1` 로 고친다. 이 절에는 표 형식 행을 두지 않는다(대조 테스트는 "### 주소 표" 절만 읽는다).
+
+### 러너 변경 (D12·D13, step 2)
+
+- `connector/masking.py` `RESERVED_ENV_NAMES` 에 `RUNLOOM_TOKEN`·`RUNLOOM_SERVER` — 러너 등록 `--env RUNLOOM_TOKEN=…` 을 기존 예약 이름과 같은 방식·같은 exit code 로 거절하고, 이미 저장된 등록에 그 이름이 있어도 `registered_env` 가 실행 환경에 넣지 않는다. `RUNLOOM_HOME` 은 비밀값이 아니라 예약하지 않는다.
+- `SECRET_PATTERNS` 에 `re.compile(r"wfm_[A-Za-z0-9_\-]{8,}")`, `_REPLACEMENTS` 에 대응 `wfm_***`(`wfc_` 와 같은 꼴).
+- `codex_env` 허용 목록은 넓히지 않는다 — 이미 허용 목록이라 기본 환경의 `RUNLOOM_TOKEN` 은 넘어가지 않는다(회귀 테스트로 고정).
+- 러너 프로토콜(claim·결과 제출)은 바꾸지 않는다 — 러너 재설치는 선택이다(D31).
+
+### step 경계
+
+| step | 이름 | 만드는 것 | 결정 | 고칠 기존 단정 |
+|---|---|---|---|---|
+| 0 | cli-design | 이 절·ADR-0034·CONTRACT 20절·GLOSSARY phase 26·AGENTS.md | 전부 | — |
+| 1 | me-api | `GET /api/v1/me`(`member_token_api.me_router`)·`report_view.requested_by_member_id` | D3·D28 | 주소 표 +1, `test_app.py` 행 수 |
+| 2 | runner-secrets | `RESERVED_ENV_NAMES`·`SECRET_PATTERNS`·`_REPLACEMENTS` | D12 | 예약 이름·마스킹 목록을 나열하는 ARCHITECTURE 줄 |
+| 3 | cli-core | `cli/__init__.py`·`config.py`·`client.py`, `tests/workflow/cli/conftest.py`·경계 테스트 | D5·D6·D7·D9·D10·D11·D24 | — |
+| 4 | cli-read | `main.py`(`login`·`logout`·`list`·`next`·`show`·`report`)·`render.py`·`__main__.py`·pyproject `[project.scripts]` | D4·D7·D8·D14~D18·D22~D26 | — |
+| 5 | cli-actions | `main.py`(`decide`·`respond`·`start`·`stop`) | D19~D21·D24·D25 | — |
+| 6 | usage-docs | `docs/CLI.md`·SELFHOST 업그레이드 메모·`docs/README.md` 문서 표, 이 절과 구현 대조 | D26·D27·D29~D31 | — |
