@@ -88,7 +88,31 @@
     {
       "step": 4,
       "name": "cli-read",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-27T23:58:21+0900",
+      "summary": "src/workflow/cli/main.py — main(argv,*,env,stdin,stdout,stderr,http)->int·main_entry·pick_next·pick_reports, _Parser(streams=(out,err) 주입, exit→내부 _Exit, SystemExit 안 던짐), 공통 --json 은 parents 부모 파서, 하위 명령 add(name, handler, help) 로 등록(handler 는 set_defaults), _Context(env,stdin,stdout,http).client()=config.load→ApiClient·emit(args, body, text 함수); 명령 login(정규화→stdin 첫 줄→GET /me→save)·logout({deleted})·list(filter 기본 all, repository·closed 는 준 것만)·show/next(_gather = detail·reports·/me→pick_reports, /me 는 JSON 에 안 넣음; next 는 more_my_turn·빈 경우 null 객체)·report(old_base=stale); 오류 ConfigError→2, ApiError→'오류 s c: m'(+401 재로그인 줄)→1, Unreachable→1. render.py — work_line('KEY · priority · status · title · 담당 이름|없음')·work_list·work_detail·report_status·report·show(나머지 원본 '## 다른 리포트', old_base = stale 또는 base≠펼친 원본); __main__.py, pyproject [project.scripts] runloom. 테스트 test_render(14)·test_main(29: 서버 test_report_api.world·test_web_work_list.new_work 재사용, 두 단계는 repo.record_handoff_report_unavailable 로 심음). 기존 테스트 변경 없음",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q tests/workflow/cli/",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m pip install -q -e . && runloom --help",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "list 한 줄 꼴(' · ' 구분, '담당 <이름>')은 ARCHITECTURE 에 예시가 없어 정했다 — step 6 의 docs/CLI.md 가 이 꼴을 적어야 한다",
+        "리포트 상태 본문(작성 중·없음) 앞에 빈 줄을 하나 두었다 — ARCHITECTURE 예시에는 done 꼴만 있다"
+      ]
     },
     {
       "step": 5,
