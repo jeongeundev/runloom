@@ -44,9 +44,32 @@ jobs:
             판단 기준은 고정 체크리스트가 아니라 위 설계와 이 저장소의 기존 코드 관례에서 끌어낸다.
 
             - 구체적인 결함은 해당 줄에 인라인 코멘트로 남긴다.
-            - 마지막에 요약 코멘트 하나를 남기고, 지적마다 분류를 붙인다:
-              `fix`(이 PR 에서 고쳐야 함) · `decision`(사람이 정해야 함) · `follow-up`(별도 이슈 후보).
             - 구현 변경에 테스트가 따라오지 않았거나, 테스트가 삭제·skip·약화됐으면 반드시 지적한다.
-            - 지적이 없으면 없다고 적는다. 스타일 취향은 지적하지 않는다.
+            - 스타일 취향은 지적하지 않는다.
+            - PR 본문 `## Needs decision` 의 항목마다 코드를 보고 의견을 붙인다
+              (`추천: <선택> — <이유>`). 리뷰가 새로 찾은 판단거리와 같은 칸에 모은다.
+
+            마지막에 요약 코멘트 하나를 아래 형식 그대로 남긴다. 칸 이름은 영어, 내용은 한국어.
+            빈 칸은 `None`. 항목은 `파일:줄` — 문제 — 제안 순으로 짧게.
+
+            ```
+            ## Verdict
+            병합 가능 | 병합 전 수정 필요 — Fix N · Needs decision N · Follow-up N
+
+            ## Fix
+            <!-- 이 PR 에서 고쳐야 병합할 수 있는 결함 -->
+
+            ## Needs decision
+            <!-- 사람이 정해야 할 것. `- [ ]` 체크박스, 선택지와 추천 -->
+
+            ## Follow-up
+            <!-- 병합은 막지 않는 별도 이슈 후보 -->
+
+            ## Checked
+            <!-- 확인했고 결함이 없던 것 (설계 추적·CRITICAL 규칙·테스트) -->
+
+            ## Not reviewed
+            <!-- 읽지 않은 범위 -->
+            ```
           claude_args: |
             --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"

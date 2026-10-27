@@ -4,6 +4,7 @@ execute.py 리팩터링 안전망 테스트.
 """
 
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -422,6 +423,8 @@ class TestCommitStep:
 
 class TestOpenPr:
     def _setup(self, executor, *, view_rc, create_rc=0):
+        # 본문 작성 세션은 TestPrDescription 이 본다. 여기서는 아무것도 쓰지 않아 기계 조립 본문으로 간다.
+        executor._run_engine = lambda prompt: MagicMock(returncode=1, stdout="", stderr="")
         git_calls, gh_calls = [], []
         def fake_git(*args):
             git_calls.append(args)
@@ -471,6 +474,106 @@ class TestOpenPr:
         with pytest.raises(SystemExit) as exc_info:
             executor._open_pr()
         assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# PR 본문 작성 세션 — 마지막에 세션 하나가 .github/pull_request_template.md 칸을 채운다
+# ---------------------------------------------------------------------------
+
+PR_SECTIONS = ("Summary", "Why", "Changes", "Impact", "Testing", "Needs decision", "Not verified")
+GOOD_BODY = "\n\n".join(f"## {h}\n내용" for h in PR_SECTIONS)
+
+
+class TestPrDescription:
+    @pytest.fixture
+    def writer(self, executor, tmp_project):
+        """템플릿을 두고, 엔진 대신 프롬프트가 가리키는 파일에 제목·본문을 쓰는 가짜를 건다."""
+        (tmp_project / ".github").mkdir()
+        (tmp_project / ".github" / "pull_request_template.md").write_text(
+            ex.ROOT.joinpath(".github", "pull_request_template.md").read_text())
+        prompts, gh_calls = [], []
+
+        def setup(title="feat: add login flow", body=GOOD_BODY):
+            def fake_engine(prompt):
+                prompts.append(prompt)
+                title_path = re.search(r"제목 파일: (\S+)", prompt).group(1)
+                body_path = re.search(r"본문 파일: (\S+)", prompt).group(1)
+                if title is not None:
+                    Path(title_path).write_text(title + "\n")
+                if body is not None:
+                    Path(body_path).write_text(body)
+                return MagicMock(returncode=0, stdout="", stderr="")
+            executor._run_engine = fake_engine
+            executor._run_git = lambda *a: MagicMock(returncode=0, stdout="", stderr="")
+
+            def fake_gh(*args):
+                gh_calls.append(args)
+                return MagicMock(returncode=1 if args[:2] == ("pr", "view") else 0,
+                                 stdout="https://x/pull/2\n", stderr="")
+            executor._run_gh = fake_gh
+            return prompts, gh_calls
+        return setup
+
+    @staticmethod
+    def _created(gh_calls):
+        args = next(c for c in gh_calls if c[:2] == ("pr", "create"))
+        return args[args.index("--title") + 1], args[args.index("--body") + 1]
+
+    def test_repo_template_has_sections(self):
+        text = ex.ROOT.joinpath(".github", "pull_request_template.md").read_text()
+        assert [line[3:] for line in text.splitlines() if line.startswith("## ")] == list(PR_SECTIONS)
+
+    def test_uses_title_and_body_written_by_session(self, executor, writer):
+        _, gh_calls = writer()
+
+        executor._open_pr()
+
+        title, body = self._created(gh_calls)
+        assert title == "feat: add login flow"
+        assert body == GOOD_BODY
+
+    def test_prompt_carries_template_and_phase_sources(self, executor, writer):
+        prompts, _ = writer()
+
+        executor._open_pr()
+
+        p = prompts[0]
+        assert "## Needs decision" in p
+        assert "phases/0-mvp/" in p
+        assert "main...feat-mvp" in p
+
+    def test_falls_back_when_session_writes_nothing(self, executor, writer):
+        _, gh_calls = writer(title=None, body=None)
+
+        executor._open_pr()
+
+        title, body = self._created(gh_calls)
+        assert title == "feat: mvp"
+        assert "프로젝트 초기화 완료" in body
+
+    def test_falls_back_when_body_misses_section(self, executor, writer):
+        _, gh_calls = writer(body=GOOD_BODY.replace("## Not verified", "## Notes"))
+
+        executor._open_pr()
+
+        title, _ = self._created(gh_calls)
+        assert title == "feat: mvp"
+
+    def test_falls_back_when_title_not_conventional(self, executor, writer):
+        _, gh_calls = writer(title="인계 리포트 추가")
+
+        executor._open_pr()
+
+        title, _ = self._created(gh_calls)
+        assert title == "feat: mvp"
+
+    def test_existing_pr_skips_session(self, executor, writer):
+        prompts, gh_calls = writer()
+        executor._run_gh = lambda *a: (gh_calls.append(a), MagicMock(returncode=0, stdout="u", stderr=""))[1]
+
+        executor._open_pr()
+
+        assert prompts == []
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +648,7 @@ class TestEvidenceGate:
         index["steps"][1]["concerns"] = ["연결 해제 시 재시도 정책은 정하지 않았다"]
         executor._index_file.write_text(json.dumps(index, ensure_ascii=False))
         gh_calls = []
+        executor._run_engine = lambda prompt: MagicMock(returncode=1, stdout="", stderr="")
         executor._run_git = lambda *a: MagicMock(returncode=0, stdout="", stderr="")
         def fake_gh(*args):
             gh_calls.append(args)
@@ -561,6 +665,7 @@ class TestEvidenceGate:
         index["steps"][1]["concerns"] = "재시도 정책 미정"
         executor._index_file.write_text(json.dumps(index, ensure_ascii=False))
         gh_calls = []
+        executor._run_engine = lambda prompt: MagicMock(returncode=1, stdout="", stderr="")
         executor._run_git = lambda *a: MagicMock(returncode=0, stdout="", stderr="")
         def fake_gh(*args):
             gh_calls.append(args)

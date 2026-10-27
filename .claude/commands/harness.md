@@ -96,7 +96,7 @@
 | → `error` | `failed_at`, `error_message` | Codex 세션 (message), execute.py (timestamp) |
 | → `blocked` | `blocked_at`, `blocked_reason` | Codex 세션 (reason), execute.py (timestamp) |
 
-**완료는 증거로 판정한다.** `verification`은 세션이 실제로 실행한 AC 명령과 종료 코드 목록(`[{"command": "...", "exit_code": 0}]`)이다. 비어 있거나 0 이 아닌 종료 코드가 있으면 execute.py는 `completed`로 인정하지 않고 재시도한다. 세션이 스스로 적는 값이라 위조를 막지는 못한다 — 최종 확인은 PR 의 CI 다. `concerns`는 끝냈지만 걸리는 점(정하지 않고 넘어간 것, 확인하지 못한 것)이고 `--pr` 이 PR 본문에 싣는다.
+**완료는 증거로 판정한다.** `verification`은 세션이 실제로 실행한 AC 명령과 종료 코드 목록(`[{"command": "...", "exit_code": 0}]`)이다. 비어 있거나 0 이 아닌 종료 코드가 있으면 execute.py는 `completed`로 인정하지 않고 재시도한다. 세션이 스스로 적는 값이라 위조를 막지는 못한다 — 최종 확인은 PR 의 CI 다. `concerns`는 끝냈지만 걸리는 점(정하지 않고 넘어간 것, 확인하지 못한 것)이고 `--pr` 의 PR 본문 작성 세션이 읽는다.
 
 `summary`는 step 완료 시 산출물을 한 줄로 요약한 것으로, execute.py가 다음 step 프롬프트에 컨텍스트로 누적 전달한다. 따라서 다음 step에 유용한 정보(생성된 파일, 핵심 결정 등)를 담아야 한다.
 
@@ -181,7 +181,7 @@ execute.py가 자동으로 처리하는 것:
 - 엔진 폴백 — codex 가 사용량 한도로 실패하면 같은 step 부터 claude 독립 세션으로 전환
 - 2단계 커밋 — 코드 변경(`feat`)과 메타데이터(`chore`)를 분리 커밋
 - 타임스탬프 — started_at, completed_at, failed_at, blocked_at 자동 기록
-- `--pr` — 끝에 `feat-{task-name}` 를 push 하고 `main` 행 PR 을 연다(제목 `feat: {phase}`, 본문은 step summary 목록). PR 이 이미 있으면 push 로 갱신만 한다
+- `--pr` — 끝에 `feat-{task-name}` 를 push 하고, 세션 하나를 더 띄워 README·index.json·diff 를 읽고 `.github/pull_request_template.md` 칸(Summary·Why·Changes·Impact·Testing·Needs decision·Not verified)을 채운 본문과 conventional 제목으로 `main` 행 PR 을 연다. 세션 결과가 형식에 맞지 않으면 step summary 목록으로 조립한다(제목 `feat: {phase}`). PR 이 이미 있으면 push 로 갱신만 한다
 
 ### F. PR 이후 — CI·리뷰·병합 (`/docs/adr/0030-pr-ci-review-flow.md`)
 
@@ -190,12 +190,12 @@ execute.py가 자동으로 처리하는 것:
 | 단계 | 누가 | 하는 일 |
 |---|---|---|
 | CI | `.github/workflows/ci.yml` | `ruff check` · `pytest -q`. 필수 검사 `test` |
-| 리뷰 | `.github/workflows/claude-review.yml` | PR 이 열리거나 커밋이 올라올 때마다 Claude 가 인라인·요약 코멘트. 지적은 `fix`·`decision`·`follow-up`. 필수 검사 `review` |
+| 리뷰 | `.github/workflows/claude-review.yml` | PR 이 열리거나 커밋이 올라올 때마다 Claude 가 인라인·요약 코멘트. 요약은 Verdict·Fix·Needs decision·Follow-up·Checked·Not reviewed 칸, PR 본문 Needs decision 항목마다 추천을 붙인다. 필수 검사 `review` |
 | 수정 | 사람 | 리뷰를 읽고 직접 고쳐 push 하거나, PR 코멘트에 `@claude fix 지적 1·3 고쳐` 처럼 맡긴다(`claude.yml`). push 하면 CI·리뷰가 다시 돈다 |
 | 병합 | 사람 | 두 필수 검사가 초록이면 GitHub 에서 **squash merge**. 브랜치는 자동 삭제 |
 | 반영 | 사람 | 필요하면 셀프호스트에 `deploy/selfhost/install.sh` |
 
-`follow-up` 지적은 이슈를 자동으로 만들지 않는다. 등록은 사람이 판단한다.
+Follow-up 지적은 이슈를 자동으로 만들지 않는다. 등록은 사람이 판단한다.
 
 에러 복구:
 
