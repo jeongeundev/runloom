@@ -67,7 +67,22 @@
     {
       "step": 3,
       "name": "cli-core",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-27T23:41:05+0900",
+      "summary": "src/workflow/cli/{__init__,config,client}.py — config: ConfigError·Credentials(token repr=False)·credentials_path(RUNLOOM_HOME 또는 HOME/.config/runloom, XDG 무시)·normalize_server(https, http 는 localhost·127.0.0.1·::1, 경로·쿼리·프래그먼트 거절, 끝 / 제거)·load(RUNLOOM_TOKEN·SERVER 각각 우선, 둘 다면 파일 안 엶, 0o077 권한·형식 오류·없음은 ARCHITECTURE 문구 그대로)·save(디렉터리 0700, O_EXCL 0600 임시 파일→os.replace)·delete(bool); client: ApiError(status,code,message — 비JSON 은 http_error+reason_phrase)·Unreachable(server, 연결 실패|시간 초과)·ApiClient(server, token, *, http=None, timeout=30.0).get/put/post/delete — API_PREFIX+path, Bearer 헤더, 204·빈 본문 None, 재시도 없음, repr 에 토큰 없음; 테스트: tests/workflow/cli/conftest.py 가 tests.workflow.server.conftest 의 _cheap_scrypt·app·client·conn·settings·log_in·log_in_member 재내보내기 + issue_token(logged_in, scope, name)·member(김개발)·member_token fixture, test_config(41)·test_client(11)·test_boundary(ast, 상대 import 풀이 포함 3). 기존 테스트 변경 없음",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ],
+      "concerns": [
+        "conftest 의 member fixture 는 재내보낸 app fixture 를 매개변수로 받아 ruff F811 이 나서 그 줄에만 noqa 를 달았다"
+      ]
     },
     {
       "step": 4,
