@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn, TextIO
@@ -46,6 +47,12 @@ class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         self.exit(2, f"{self.prog}: error: {message}\n")
+
+
+class _NoOpenRequest(Exception):
+    def __init__(self, request_id: str) -> None:
+        super().__init__(request_id)
+        self.request_id = request_id
 
 
 @dataclass
@@ -161,6 +168,43 @@ def _report(args: argparse.Namespace, ctx: _Context) -> int:
     return ctx.emit(args, view, lambda: render.report(view, old_base=bool(view["stale"])))
 
 
+def _decide(args: argparse.Namespace, ctx: _Context) -> int:
+    body = {"answer": "confirmed"} if args.confirm else {"answer": "changed", "note": args.change}
+    view = ctx.client().put(f"/reports/{args.report_id}/decisions/{args.item_id}", json=body)
+    return ctx.emit(args, view, lambda: "답을 저장했습니다.\n\n" + render.report(view, old_base=bool(view["stale"])))
+
+
+def _respond(args: argparse.Namespace, ctx: _Context) -> int:
+    """`expected_revision` 은 열린 요청 목록의 서버 값(D20). `response_id` 는 명령 1회마다 새 값 — 재시도 없음(D24)."""
+    client = ctx.client()
+    request = next((r for r in client.get("/human-requests")["requests"] if r["request_id"] == args.request_id), None)
+    if request is None:
+        raise _NoOpenRequest(args.request_id)
+    body = {"response_id": uuid.uuid4().hex, "expected_revision": request["revision"], "action": args.action,
+            "text": args.text}
+    if args.agent is not None:
+        body["agent_id"] = args.agent
+    saved = client.post(f"/human-requests/{args.request_id}/responses", json=body)
+
+    def text() -> str:
+        if saved["created"]:
+            return f"응답을 저장했습니다: {args.request_id} {args.action}"
+        return f"같은 응답이 이미 저장되어 있습니다: {args.request_id}"
+
+    return ctx.emit(args, saved, text)
+
+
+def _start(args: argparse.Namespace, ctx: _Context) -> int:
+    """서버가 정한 브랜치 이름을 보이기만 한다 — 로컬 git 은 실행하지 않는다(D21)."""
+    detail = ctx.client().put(f"/work-items/{args.key}/direct-work")
+    return ctx.emit(args, detail, lambda: f"직접 작업을 시작했습니다.\n브랜치: {detail['direct']['branch']}")
+
+
+def _stop(args: argparse.Namespace, ctx: _Context) -> int:
+    detail = ctx.client().delete(f"/work-items/{args.key}/direct-work")
+    return ctx.emit(args, detail, lambda: "직접 작업을 그만두었습니다.")
+
+
 def _build_parser(stdout: TextIO, stderr: TextIO) -> _Parser:
     streams = (stdout, stderr)
     common = _Parser(add_help=False, streams=streams)
@@ -186,6 +230,21 @@ def _build_parser(stdout: TextIO, stderr: TextIO) -> _Parser:
     show.add_argument("key", metavar="KEY", help="업무 키 (예: RUN-12)")
     report = add("report", _report, "인계 리포트 한 건")
     report.add_argument("report_id", metavar="REPORT_ID", help="리포트 id (예: hrp-0a1b2c3d4e5f)")
+    decide = add("decide", _decide, "리포트의 결정·확인 항목에 답한다 (받는 사람·관리자)")
+    decide.add_argument("report_id", metavar="REPORT_ID", help="리포트 id")
+    decide.add_argument("item_id", metavar="ITEM_ID", help="항목 id (예: q1)")
+    answer = decide.add_mutually_exclusive_group(required=True)
+    answer.add_argument("--confirm", action="store_true", help="그대로 확인한다")
+    answer.add_argument("--change", metavar="TEXT", help="다르게 정한 내용 (1~500자)")
+    respond = add("respond", _respond, "열린 사람 요청에 응답한다")
+    respond.add_argument("request_id", metavar="REQUEST_ID", help="사람 요청 id")
+    respond.add_argument("action", metavar="ACTION", help="행동 (resume · close · retry · choose_agent … — 서버가 검사)")
+    respond.add_argument("--text", default="", help="응답 글")
+    respond.add_argument("--agent", help="choose_agent 로 지정할 에이전트 id")
+    start = add("start", _start, "직접 작업을 시작하고 브랜치 이름을 보인다 (로컬 git 은 실행하지 않음)")
+    start.add_argument("key", metavar="KEY", help="업무 키 (예: RUN-12)")
+    stop = add("stop", _stop, "직접 작업을 그만둔다")
+    stop.add_argument("key", metavar="KEY", help="업무 키 (예: RUN-12)")
     return parser
 
 
@@ -209,6 +268,9 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None,
         stderr.write(f"오류 {error.status} {error.code}: {error.message}\n")
         if error.status == 401:
             stderr.write("runloom login 으로 다시 로그인하세요.\n")
+        return 1
+    except _NoOpenRequest as error:
+        stderr.write(f"열린 사람 요청 {error.request_id} 가 없습니다.\n")
         return 1
     except Unreachable as error:
         stderr.write(f"서버에 연결할 수 없습니다({error.reason}): {error.server}\n")

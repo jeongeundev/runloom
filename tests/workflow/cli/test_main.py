@@ -1,5 +1,5 @@
 # ruff: noqa: F811 — 서버 테스트 픽스처(world·cycle·worker …)를 가져와 인자로 쓴다
-"""`runloom` 조회 명령(login·logout·list·next·show·report) — phase 26 step 4 (ARCHITECTURE "CLI — phase 26" 명령 표·
+"""`runloom` 조회 명령(login·logout·list·next·show·report, step 4)과 행동 명령(decide·respond·start·stop, step 5) — phase 26 (ARCHITECTURE "CLI — phase 26" 명령 표·
 "--json"·"next 고르기"·"리포트 고르기"·"오류와 exit code").
 
 `main(..., http=TestClient(app))` 로 실제 앱에 붙인다. 리포트 상태(작성 중·실패·done·맞춤 풀이)는 러너를 돌리지 않고
@@ -21,10 +21,12 @@ from tests.workflow.server.conftest import NOW as SERVER_NOW
 from tests.workflow.server.conftest import SESSION, log_in_member, store  # noqa: F401 — 픽스처
 from tests.workflow.server.test_report_api import finish_job, report_body, tailor, world  # noqa: F401 — 픽스처
 from tests.workflow.server.test_task_cycle import (  # noqa: F401 — 픽스처
+    FIX_SHOP,
     NOW,
     REVIEW,
     clock,
     cycle,
+    import_issue,
     make_worker,
     settings,
     worker,
@@ -380,3 +382,146 @@ def test_config_error_from_a_bad_env_server(app, home, member_token):
     env = {"RUNLOOM_HOME": str(home), "RUNLOOM_TOKEN": member_token, "RUNLOOM_SERVER": "https://x/path"}
     assert main(["list"], env=env, stdin=StringIO(), stdout=out, stderr=err, http=TestClient(app)) == 2
     assert err.getvalue() == "서버 주소에 경로·쿼리를 붙이지 마세요: https://x/path\n"
+
+
+# --- 행동: decide ---------------------------------------------------------------------------------------
+
+
+def decisions_of(conn, report_id: str) -> list[tuple]:
+    return [(d["item_id"], d["answer"], d["note"]) for d in repo.list_report_decisions(conn, report_id)]
+
+
+def test_decide_confirm_and_change_save_the_answer_and_print_the_report(app, home, world, conn):
+    token = token_of(conn, "받는이")
+    done = run(app, home, "decide", world["report_id"], "q1", "--confirm", token=token)
+
+    assert done.code == 0, done.err
+    assert done.out.startswith(f"답을 저장했습니다.\n\n## 인계 리포트 · 버그 수정 · 시도 1 · {world['report_id']}")
+    assert any(line.startswith("  답: 확인함 · 받는이 · ") for line in done.out.splitlines())
+    assert decisions_of(conn, world["report_id"]) == [("q1", "confirmed", None)]
+
+    changed = run(app, home, "decide", world["report_id"], "q1", "--change", "다르게", "--json", token=token)
+    assert changed.code == 0, changed.err
+    assert changed.json()["report_id"] == world["report_id"]
+    assert [(d["answer"], d["note"]) for d in changed.json()["decisions"]] == [("changed", "다르게")]
+    assert decisions_of(conn, world["report_id"]) == [("q1", "changed", "다르게")]
+
+
+def test_decide_needs_exactly_one_answer_and_the_server_checks_the_rest(app, home, world, conn):
+    token = token_of(conn, "받는이")
+    both = run(app, home, "decide", world["report_id"], "q1", "--confirm", "--change", "x", token=token)
+    neither = run(app, home, "decide", world["report_id"], "q1", token=token)
+    assert (both.code, neither.code) == (2, 2) and both.out == neither.out == ""
+
+    long = run(app, home, "decide", world["report_id"], "q1", "--change", "가" * 501, token=token)
+    assert long.code == 1 and long.err.startswith("오류 422 invalid_field: ")
+    for name in ("보낸이", "다른이"):
+        refused = run(app, home, "decide", world["report_id"], "q1", "--confirm", token=token_of(conn, name))
+        assert refused.code == 1 and refused.err.startswith("오류 403 forbidden: "), refused.err
+    assert decisions_of(conn, world["report_id"]) == []
+
+
+# --- 행동: respond --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def responder(app, conn, cycle) -> str:
+    """cycle 워크스페이스의 멤버 김개발 full 토큰."""
+    log_in_member(TestClient(app), display_name=MEMBER_NAME)
+    return token_of(conn, MEMBER_NAME)
+
+
+def open_request(conn, number: int, code: str, question: str = "재현 금액이 필요합니다") -> str:
+    task_id = import_issue(conn, number)
+    request_id, _ = repo.create_human_request_once(conn, task_id, code, question, f"{code}:exec-{number}", NOW)
+    return request_id
+
+
+def test_respond_uses_the_server_revision_and_a_second_run_finds_no_open_request(app, home, conn, responder):
+    request_id = open_request(conn, 1, "fix_needs_information")
+
+    done = run(app, home, "respond", request_id, "resume", "--text", "10,000원", token=responder)
+
+    assert done.code == 0, done.err
+    assert done.out == f"응답을 저장했습니다: {request_id} resume\n"
+    assert repo.get_human_request(conn, SESSION, request_id)["state"] == "answered"
+    assert repo.get_task(conn, "task-gh-1")["revision"] == 2
+    again = run(app, home, "respond", request_id, "resume", "--text", "10,000원", token=responder)
+    assert (again.code, again.out, again.err) == (1, "", f"열린 사람 요청 {request_id} 가 없습니다.\n")
+    assert repo.get_task(conn, "task-gh-1")["revision"] == 2
+
+
+def test_respond_json_is_the_post_response(app, home, conn, responder):
+    request_id = open_request(conn, 1, "decision")
+    body = run(app, home, "respond", request_id, "close", "--json", token=responder).json()
+    assert (body["request_id"], body["task_revision"], body["created"]) == (request_id, 2, True)
+    assert set(body) == {"request_id", "task_id", "response_id", "task_revision", "created"}
+
+
+def test_respond_unknown_request_and_wrong_action(app, home, conn, responder):
+    missing = run(app, home, "respond", "hreq-nope", "resume", token=responder)
+    assert (missing.code, missing.err) == (1, "열린 사람 요청 hreq-nope 가 없습니다.\n")
+
+    request_id = open_request(conn, 1, "fix_needs_information")
+    wrong = run(app, home, "respond", request_id, "approve", token=responder)
+    assert wrong.code == 1 and wrong.err.startswith("오류 422 invalid_field: ")
+    blank = run(app, home, "respond", request_id, "resume", token=responder)  # --text 없음 → "" 를 보낸다
+    assert blank.code == 1 and blank.err == "오류 422 invalid_field: 요청한 정보를 text 에 적어야 합니다.\n"
+    assert repo.get_human_request(conn, SESSION, request_id)["state"] == "open"
+
+
+def test_respond_passes_the_agent(app, home, conn, responder):
+    request_id = open_request(conn, 2, "assignee_multiple", "누구?")
+    without = run(app, home, "respond", request_id, "choose_agent", token=responder)
+    assert without.code == 1 and without.err.startswith("오류 422 invalid_field: ")
+
+    done = run(app, home, "respond", request_id, "choose_agent", "--agent", FIX_SHOP, token=responder)
+    assert done.code == 0, done.err
+    assert repo.get_task(conn, "task-gh-2")["chosen_agent_id"] == FIX_SHOP
+
+
+# --- 행동: start·stop -----------------------------------------------------------------------------------
+
+
+def test_start_prints_the_branch_and_stop_releases_it(app, home, conn, member, member_token):
+    ensure_workspace(conn, SERVER_NOW)
+    work_item_id, key = new_work(conn, "로그인 만료")
+    conn.commit()
+
+    started = run(app, home, "start", key, token=member_token)
+
+    assert started.code == 0, started.err
+    work = repo.get_work_item(conn, SESSION, work_item_id)
+    assert work["status"] == "직접 작업 중" and work["direct_branch"]
+    assert started.out == f"직접 작업을 시작했습니다.\n브랜치: {work['direct_branch']}\n"
+
+    stopped = run(app, home, "stop", key, "--json", token=member_token)
+    assert stopped.code == 0, stopped.err
+    assert stopped.json()["direct"] is None and stopped.json()["work"]["key"] == key
+    assert repo.get_work_item(conn, SESSION, work_item_id)["direct_member_id"] is None
+    assert run(app, home, "start", key, token=member_token).code == 0
+    assert run(app, home, "stop", key, token=member_token).out == "직접 작업을 그만두었습니다.\n"
+
+
+def test_start_while_an_agent_works_is_the_server_error(app, home, world, conn):
+    done = run(app, home, "start", world["key"], token=token_of(conn, "받는이"))
+    assert done.code == 1 and done.err.startswith("오류 409 execution_conflict: "), done.err
+
+
+# --- 행동 명령 공통 -------------------------------------------------------------------------------------
+
+
+def test_read_token_cannot_act_and_no_token_is_printed(app, home, world, conn):
+    request_id = open_request(conn, 3, "fix_needs_information")
+    reader = token_of(conn, "받는이", "read")
+    for argv in (["decide", world["report_id"], "q1", "--confirm"], ["respond", request_id, "resume", "--text", "x"],
+                 ["start", world["key"]], ["stop", world["key"]]):
+        done = run(app, home, *argv, token=reader)
+        assert (done.code, done.out) == (1, ""), argv
+        assert done.err == "오류 403 token_read_only: 읽기 전용 토큰입니다\n", (argv, done.err)
+        assert reader not in done.out + done.err
+    writer = token_of(conn, "받는이")
+    for argv in (["decide", world["report_id"], "q1", "--confirm"], ["respond", request_id, "resume", "--text", "x"]):
+        done = run(app, home, *argv, token=writer)
+        assert done.code == 0, (argv, done.err)
+        assert writer not in done.out + done.err
