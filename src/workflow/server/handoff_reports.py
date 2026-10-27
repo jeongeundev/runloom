@@ -597,6 +597,7 @@ def report_view(conn: Connection, store: ArtifactStore, *, report: Row, member_i
         "source": {"attempt_no": execution["attempt_no"], "outcome": outcome if isinstance(outcome, str) else None},
         "agent": {"name": agent["name"]} if agent else None,
         "requested_by": _member_name(conn, session_id, report["requested_by_member_id"]),
+        "requested_by_member_id": report["requested_by_member_id"],  # 원본 = None (phase 26 D28 — CLI 가 내 맞춤 풀이를 고른다)
         "base_report_id": report["base_report_id"],
         "stale": not original and (latest is None or latest["report_id"] != report["base_report_id"]),
         "created_at": report["created_at"],

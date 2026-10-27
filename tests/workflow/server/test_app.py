@@ -131,7 +131,7 @@ def _documented_api_routes() -> set[tuple[str, str]]:
     text = ARCHITECTURE.read_text(encoding="utf-8")
     section = text[text.index("### 주소 표 (step 3·4·5·6·7)"):text.index("### 라우트 분류 규칙")]
     rows = re.findall(r"`(/api/v1/[^`]+)` \| (GET|POST|PUT|PATCH|DELETE) \|", section)
-    assert len(rows) == 39 + 15 + 2 + 5 + 1, rows  # 표가 바뀌면 이 수도 같이 본다
+    assert len(rows) == 39 + 15 + 2 + 5 + 1 + 1, rows  # 표가 바뀌면 이 수도 같이 본다 (+1 = phase 26 `/api/v1/me`)
     return {(method, path) for path, method in rows}
 
 

@@ -28,7 +28,19 @@
     {
       "step": 1,
       "name": "me-api",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-10-27T23:22:02+0900",
+      "summary": "GET /api/v1/me = member_token_api.me_router(prefix '/me', require_member_api, 응답 member_id·display_name·role·token_scope — 쿠키는 null), app.py 등록; handoff_reports.report_view 에 requested_by_member_id(원본 None, 맞춤 풀이 = 요청 멤버) — 템플릿 그대로; ARCHITECTURE 주소 표 '새로 여는 라우트' 에 /api/v1/me 행, test_app 행 수 39+15+2+5+1+1; 테스트: test_member_token_api 에 /me 4건(쿠키·read·full·401/폐기), test_report_api VIEW_KEYS 에 칸 추가·원본 None·맞춤 풀이 id(조회·목록)",
+      "verification": [
+        {
+          "command": "python3 -m pytest -q",
+          "exit_code": 0
+        },
+        {
+          "command": "python3 -m ruff check .",
+          "exit_code": 0
+        }
+      ]
     },
     {
       "step": 2,

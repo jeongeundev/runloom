@@ -37,9 +37,9 @@ from .test_work_api import error, member_named, token_for
 
 pytestmark = pytest.mark.usefixtures("cycle")
 
-VIEW_KEYS = {"report_id", "job_type", "status", "reason", "stage", "source", "agent", "requested_by", "base_report_id",
-             "stale", "created_at", "finished_at", "report", "evidence_check", "pull_requests", "pr_evidence_error",
-             "decisions", "parties", "actions"}
+VIEW_KEYS = {"report_id", "job_type", "status", "reason", "stage", "source", "agent", "requested_by",
+             "requested_by_member_id", "base_report_id", "stale", "created_at", "finished_at", "report",
+             "evidence_check", "pull_requests", "pr_evidence_error", "decisions", "parties", "actions"}
 
 
 def report_body(report_id: str, job_type: str = "original") -> dict:
@@ -110,6 +110,7 @@ def test_report_view_has_the_report_evidence_check_parties_and_no_internal_input
     assert body["source"] == {"attempt_no": 1, "outcome": "ready_for_review"}
     assert body["agent"] == {"name": FIX}
     assert (body["requested_by"], body["base_report_id"], body["stale"]) == (None, None, False)
+    assert body["requested_by_member_id"] is None  # 원본은 요청자 없음 (phase 26 D28)
     assert body["report"] == report_body(world["report_id"])
     claims = body["evidence_check"]["claims"]
     assert claims["c1"] == {"verified": True, "unverified": []}
@@ -232,6 +233,7 @@ def test_recipient_tailors_with_own_agent_and_twice_is_the_same_job(world, conn,
     body = first.json()
     assert (body["job_type"], body["status"], body["requested_by"], body["base_report_id"], body["stale"]) == (
         "tailored", "queued", "받는이", report_id, False)
+    assert body["requested_by_member_id"] == member_named(conn, "받는이")  # phase 26 D28 — CLI 가 내 맞춤 풀이를 고른다
     assert body["agent"] == {"name": REVIEW} and body["actions"] == []
     row = repo.get_handoff_report(conn, body["report_id"])
     assert (row["agent_id"], row["connector_id"], row["source_execution_id"]) == (
@@ -251,6 +253,7 @@ def test_recipient_tailors_with_own_agent_and_twice_is_the_same_job(world, conn,
     assert view(recipient, body["report_id"])["stale"] is True
     listed = recipient.get(f"/api/v1/work-items/{world['key']}/reports").json()["tailored"]
     assert [t["report_id"] for t in listed] == [body["report_id"]]
+    assert listed[0]["requested_by_member_id"] == member_named(conn, "받는이")
 
 
 def test_tailor_refuses_other_agents_non_recipients_and_unusable_agents(world, conn, cycle):

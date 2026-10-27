@@ -3905,6 +3905,7 @@ assert INTERNAL_ID.search(visible_text(page.text)) is None
 | `/api/v1/me/tokens` | POST | `EDIT_OWN_SETTINGS` | 쿠키만 | 201 | `member_token_api`(3) |
 | `/api/v1/me/tokens` | GET | `EDIT_OWN_SETTINGS` | 쿠키·`wfm_` | 200 | `member_token_api`(3) |
 | `/api/v1/me/tokens/{token_id}` | DELETE | `EDIT_OWN_SETTINGS` | 쿠키·`wfm_` | 204 | `member_token_api`(3) |
+| `/api/v1/me` | GET | 로그인 | 쿠키·`wfm_` | 200 | `member_token_api`(phase 26 step 1) |
 | `/api/v1/work-items` | GET | 로그인 | 쿠키·`wfm_` | 200 | `work_api`(6) |
 | `/api/v1/work-items/{key}` | GET | 로그인 | 쿠키·`wfm_` | 200 | `work_api`(6) |
 | `/api/v1/work-items/{key}` | PATCH | `DELEGATE` | 쿠키·`wfm_` | 200 | `work_api`(7) |

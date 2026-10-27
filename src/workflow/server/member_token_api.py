@@ -2,6 +2,7 @@
 
 - 발급은 로그인 쿠키로만(`require_member_cookie_api` — Bearer 헤더면 403 cookie_required). 원문은 201 응답에만 한 번,
   서버에는 sha256 만. 목록·폐기는 쿠키·`wfm_` 모두, 읽기 전용 토큰의 폐기는 `require_member_api` 가 403 token_read_only.
+- `GET /me`(phase 26, `me_router`)는 로그인한 멤버 자신의 id·표시 이름·역할·토큰 권한만. 읽기 전용 토큰도 된다.
 - 자기 토큰만 본다·폐기한다. 관리자의 남의 토큰 화면은 없다(README D14). `/me` 화면 폼(`web.py`)과 같은 repo 함수를 쓴다.
 """
 
@@ -13,10 +14,12 @@ from pydantic import BaseModel, ConfigDict
 
 from workflow.adapters import repo
 from workflow.domain import team
-from workflow.server.auth import LoggedIn, get_conn, require_action, require_member_cookie_api, utc_now
+from workflow.server.auth import (LoggedIn, get_conn, require_action, require_member_api, require_member_cookie_api,
+                                  utc_now)
 from workflow.server.errors import ApiError
 
 router = APIRouter(prefix="/me/tokens")
+me_router = APIRouter(prefix="/me")  # 자기 정보 — phase 26 step 1 (ADR-0034 D28, CONTRACT 20.1)
 
 # `issue_member_token` 의 ValueError(칸 이름) → 화면·API 공용 문구
 INVALID_MESSAGES = {
@@ -82,3 +85,9 @@ def delete_token(
 ) -> Response:
     revoke(conn, member, token_id)
     return Response(status_code=204)
+
+
+@me_router.get("")
+def read_me(member: LoggedIn = Depends(require_member_api)) -> JSONResponse:
+    return JSONResponse({"member_id": member.member_id, "display_name": member.display_name, "role": member.role,
+                         "token_scope": member.token_scope})

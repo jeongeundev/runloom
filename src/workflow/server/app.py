@@ -58,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(internal_request_api.router, prefix=API_PREFIX)
     app.include_router(mapping_api.router, prefix=API_PREFIX)  # 매핑 표 (ADR-0020)
     app.include_router(member_token_api.router, prefix=API_PREFIX)  # 멤버 토큰 (ADR-0032)
+    app.include_router(member_token_api.me_router, prefix=API_PREFIX)  # 내 정보 (ADR-0034)
     app.include_router(work_api.router, prefix=API_PREFIX)  # 업무 목록·상세 (ADR-0032)
     app.include_router(report_api.router, prefix=API_PREFIX)  # 인계 리포트 (ADR-0033)
     web.install(app)  # 라우터 + PageError → error.html
