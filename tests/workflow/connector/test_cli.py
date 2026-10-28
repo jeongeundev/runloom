@@ -238,7 +238,7 @@ def test_register_rejects_unsafe_copy(env, repo, connected, path):
 
 @pytest.mark.parametrize("name", [
     "OPENAI_API_KEY", "OPERATOR_TOKEN", "DIAG_API_TOKEN", "SESSION_SECRET", "WORKFLOW_GITHUB_TOKEN",
-    "WORKFLOW_CONNECTOR_HOME", "PATH", "HOME", "1BAD", "BAD-NAME",
+    "WORKFLOW_CONNECTOR_HOME", "PATH", "HOME", "RUNLOOM_TOKEN", "RUNLOOM_SERVER", "1BAD", "BAD-NAME",
 ])
 def test_register_rejects_reserved_or_malformed_env_name_without_echoing_value(env, repo, connected, capsys, name):
     with pytest.raises(SystemExit) as info:
@@ -331,6 +331,20 @@ def test_setup_without_token_requires_code(env, repo, capsys):
     assert code == 2
     assert "--code" in capsys.readouterr().err
     assert not connector_paths(env).token_file.exists()
+
+
+@pytest.mark.parametrize("name", ["RUNLOOM_TOKEN", "RUNLOOM_SERVER", "OPERATOR_TOKEN"])
+def test_setup_rejects_reserved_env_name_without_echoing_value(env, repo, capsys, name):
+    fake = FakeCentral()
+    fake.connect_codes["code-1"] = CONNECTOR_ID
+
+    with pytest.raises(SystemExit) as info:
+        main(["setup", "--server", "http://central.test", "--code", "code-1", "--repo", str(repo),
+              "--tool", "codex", "--env", f"{name}={SECRET_VALUE}"], env=env, transport=fake.transport())
+    assert info.value.code == 2
+    assert fake.registrations == []
+    printed = capsys.readouterr()
+    assert SECRET_VALUE not in printed.err and SECRET_VALUE not in printed.out
 
 
 def test_setup_with_bad_code_does_not_register(env, repo):

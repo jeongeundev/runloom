@@ -333,6 +333,11 @@ deploy/selfhost/install-runner.sh
      ```bash
      docker compose -p runloom -f deploy/selfhost/compose.yaml exec central python3 -c "import sqlite3; [print(*r) for r in sqlite3.connect('/data/central.sqlite').execute('SELECT connector_id, last_seen_at, capabilities_json FROM connectors WHERE revoked_at IS NULL')]"
      ```
+- v27 그대로(phase 26) — 사람용 CLI `runloom`: 서버는 `GET /api/v1/me`(지금 로그인한 멤버·토큰 권한)를 더하고 리포트 보기 묶음에 `requested_by_member_id` 칸을 싣는다. 스키마 변화는 없다(v27 그대로, 백업·복원 형식도 그대로). 순서:
+  1. 백업 먼저(`backup create`).
+  2. `install.sh` 를 다시 실행한다(필수) — 옛 서버는 `/api/v1/me` 가 404 라 CLI 의 `login`·`next`·`show` 가 실패한다.
+  3. 러너 재설치는 선택이다 — 러너 프로토콜은 그대로라 옛 러너도 그대로 돈다. `install-runner.sh` 로 다시 설치하면 러너가 CLI 토큰 환경변수를 에이전트 등록(`--env`)에서 막고 멤버 토큰을 실행 로그에서 가린다.
+  4. 확인 — `/healthz` 200. CLI 설치·로그인·명령은 [CLI](CLI.md).
 - 옛 주소는 넘어간다(303) — `/sources` → `/settings?tab=inbound`, `/operator/github` → `/repos`, `/operator` → `/settings?tab=advanced`, `/operator/notifications` → `/settings?tab=notify`, `/agents` → `/team`, `/kinds` → `/settings?tab=kinds`, `/connect?tab=…` → 위 v25 표, `/metrics` → `/monitor`(`.json`·`.csv` 는 v26 부터 `/api/v1/metrics`·`/api/v1/metrics.csv`), `/work/RUN-n` → `/tasks?open=RUN-n`. 북마크는 그대로 써도 된다. GitHub App 만들기·콜백·설치 경로와 POST 경로는 바뀌지 않아 GitHub 쪽 App 설정을 고칠 일은 없다. 알림·원본 댓글의 새 링크는 업무 주소(`/tasks?open=RUN-n`)다.
 - 러너는 저장소를 `pip install -e` 로 쓰므로 `git pull` 로 코드가 바뀐다. `install-runner.sh` 재실행이 러너를 다시 띄운다. 서버를 먼저, 러너를 나중에 올린다.
 

@@ -8,7 +8,9 @@ import hashlib
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import bearer, log_in, log_in_member
+from workflow.adapters import repo
+
+from .conftest import SESSION, bearer, log_in, log_in_member
 
 PATH = "/api/v1/me/tokens"
 
@@ -123,3 +125,39 @@ def test_read_token_cannot_delete(app, member, conn):
     assert conn.execute("SELECT revoked_at FROM member_tokens WHERE token_id = ?",
                         (read["token_id"],)).fetchone()[0] is None
 
+
+
+# --- GET /api/v1/me — phase 26 step 1 (ADR-0034 D28, CONTRACT 20.1) ---
+
+ME = "/api/v1/me"
+
+
+def test_me_with_cookie_has_no_token_scope(member, conn):
+    response = member.get(ME)
+    assert response.status_code == 200, response.text
+    row = repo.find_member_by_email(conn, SESSION, "dev@example.com")
+    assert response.json() == {"member_id": row["member_id"], "display_name": "김개발", "role": "member",
+                               "token_scope": None}
+
+
+@pytest.mark.parametrize("scope", ["read", "full"])
+def test_me_with_token_shows_its_scope_and_no_secrets(app, member, conn, scope):
+    body = issue(member, scope=scope)
+    response = TestClient(app).get(ME, headers=bearer(body["token"]))
+    assert response.status_code == 200, response.text
+    me = response.json()
+    assert set(me) == {"member_id", "display_name", "role", "token_scope"}
+    assert (me["display_name"], me["role"], me["token_scope"]) == ("김개발", "member", scope)
+    row = repo.find_member_by_email(conn, SESSION, "dev@example.com")
+    sha = hashlib.sha256(body["token"].encode()).hexdigest()
+    for secret in (body["token"], sha, body["token_id"], "dev@example.com", row["password_hash"]):
+        assert secret not in response.text
+
+
+def test_me_without_or_with_revoked_token_is_401(app, member):
+    client = TestClient(app)
+    error(client.get(ME), 401, "unauthenticated")
+    error(client.get(ME, headers=bearer("wfm_nope")), 401, "unauthenticated")
+    body = issue(member)
+    assert member.delete(f"{PATH}/{body['token_id']}").status_code == 204
+    error(client.get(ME, headers=bearer(body["token"])), 401, "unauthenticated")
