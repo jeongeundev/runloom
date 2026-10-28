@@ -40,7 +40,8 @@ def work_detail(detail: dict) -> str:
     ]
     if detail["direct"]:
         lines.append(f"- 직접 작업: {detail['direct']['member_name']} · 브랜치 {detail['direct']['branch']}")
-    lines += [f"- 할 수 있는 행동: {', '.join(detail['actions']) or '없음'}", "", "## 열린 사람 요청"]
+    lines += [f"- 할 수 있는 행동: {', '.join(detail['actions']) or '없음'}", "", "## 요청",
+              _or_none(work["request"]), "", "## 열린 사람 요청"]
     for request in detail["open_requests"]:
         lines += [f"- {request['request_id']} · {request['code']} · {request['question']}",
                   f"  행동: {', '.join(request['actions'])}"]

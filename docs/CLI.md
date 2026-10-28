@@ -77,6 +77,9 @@ $ runloom next
 - 원본: https://github.com/acme/api/issues/12
 - 할 수 있는 행동: assign, set_priority, start_direct
 
+## 요청
+토큰이 만료되면 갱신을 무한 재시도한다.
+
 ## 열린 사람 요청
 없음
 

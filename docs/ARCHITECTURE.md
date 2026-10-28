@@ -4703,6 +4703,9 @@ argparse: `argparse.ArgumentParser` 하위 클래스(`main.py` 안 `_Parser`)가
 - 직접 작업: 김개발 · 브랜치 run-12-login-expiry
 - 할 수 있는 행동: assign, set_priority, start_direct
 
+## 요청
+토큰이 만료되면 갱신을 무한 재시도한다.
+
 ## 열린 사람 요청
 - hrq-1a2b3c4d5e6f · input_missing · 어느 환경에서 재현되나요?
   행동: resume, close
@@ -4711,6 +4714,7 @@ argparse: `argparse.ArgumentParser` 하위 클래스(`main.py` 안 `_Parser`)가
 - `담당` = `work.assignee` 가 null 이면 `없음`, 아니면 `<name> (<type>)`. `상태` = `<status> — <status_reason>`(이유가 비면 `<status>` 만). `원본` = `source.url`, 없으면 `source.key`, 둘 다 없으면 `없음`.
 - `직접 작업` 줄은 `detail.direct` 가 있을 때만 — `<member_name> · 브랜치 <branch>`.
 - `할 수 있는 행동` = `detail.actions` 를 `, ` 로(비면 `없음`).
+- `## 요청` 절: `work.request`(업무 요청 원문) 그대로, 비면 `없음`.
 - `## 열린 사람 요청` 절: `open_requests` 마다 `- <request_id> · <code> · <question>` 과 다음 줄 `  행동: <actions 를 , 로>`. 없으면 절 아래 `없음`.
 
 ### 리포트 텍스트 (D16~D18, step 4)

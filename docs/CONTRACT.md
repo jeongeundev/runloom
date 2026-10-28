@@ -248,7 +248,7 @@
 
 | kind | 생산자 | 내용 |
 |---|---|---|
-| `codex_jsonl` / `codex_stderr` | 연결 프로그램 Codex 어댑터 | `codex exec --json` 의 원문 stdout(JSONL) / stderr. 업로드 전 `wfc_`·`sk-` 마스킹 적용 |
+| `codex_jsonl` / `codex_stderr` | 연결 프로그램 Codex 어댑터 | `codex exec --json` 의 원문 stdout(JSONL) / stderr. 업로드 전 `wfc_`·`wfm_`·`sk-` 마스킹 적용 |
 | `claude_jsonl` / `claude_stderr` | 연결 프로그램 Claude 어댑터 | `claude -p --output-format json` 의 원문 stdout / stderr. 같은 마스킹 적용 |
 | `generic_result` | 연결 프로그램 | 사용자 정의 종류의 결과 봉투(`GenericResult`, 11절). 내장 종류의 `diagnosis_result`·`code_change_result` 와 구분 |
 | `code_review_result` | 연결 프로그램 | 내장 `code_review` 의 결과 봉투(`CodeReviewResult`, 13.4절) |

@@ -14,7 +14,8 @@ def item(**overrides) -> dict:
 
 
 def detail(**overrides) -> dict:
-    base = {"work": item(), "stages": [], "links": [],
+    work = {**item(), "request": "토큰이 만료되면 갱신을 무한 재시도한다.\n재현: 30분 대기 후 새로고침"}
+    base = {"work": work, "stages": [], "links": [],
             "direct": {"member_name": "김개발", "started_at": "2026-10-22T09:00:00Z", "branch": "run-12-login-expiry"},
             "open_requests": [{"request_id": "hrq-1a2b3c4d5e6f", "code": "input_missing",
                                "question": "어느 환경에서 재현되나요?", "state": "open", "revision": 1,
@@ -103,6 +104,10 @@ def test_work_detail_matches_the_architecture_example():
         "- 직접 작업: 김개발 · 브랜치 run-12-login-expiry",
         "- 할 수 있는 행동: assign, set_priority, start_direct",
         "",
+        "## 요청",
+        "토큰이 만료되면 갱신을 무한 재시도한다.",
+        "재현: 30분 대기 후 새로고침",
+        "",
         "## 열린 사람 요청",
         "- hrq-1a2b3c4d5e6f · input_missing · 어느 환경에서 재현되나요?",
         "  행동: resume, close",
@@ -110,15 +115,16 @@ def test_work_detail_matches_the_architecture_example():
 
 
 def test_work_detail_empty_values():
-    work = item(assignee=None, status_reason="", next_action=None,
+    work = item(assignee=None, status_reason="", next_action=None, request="",
                 source={"type": "manual", "key": None, "url": None})
     text = render.work_detail(detail(work=work, direct=None, open_requests=[], actions=[]))
     lines = text.splitlines()
     assert "- 담당: 없음" in lines and "- 상태: 내 차례" in lines and "- 다음 할 일: 없음" in lines
     assert "- 원본: 없음" in lines and "- 할 수 있는 행동: 없음" in lines
     assert not any(line.startswith("- 직접 작업") for line in lines)
+    assert "## 요청\n없음\n\n## 열린 사람 요청" in text
     assert text.endswith("## 열린 사람 요청\n없음")
-    source_key = item(source={"type": "github", "key": "acme/api#12", "url": None})
+    source_key = item(source={"type": "github", "key": "acme/api#12", "url": None}, request="본문")
     assert "- 원본: acme/api#12" in render.work_detail(detail(work=source_key)).splitlines()
 
 
